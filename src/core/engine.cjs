@@ -1,0 +1,185 @@
+'use strict';
+// engine.cjs — one dispatch for every Core method (api.md §3). The same `handle(method, params)` serves
+// the pipe and in-process calls, so nothing is reachable over one path and not the other.
+//
+// Authority (ADR 0010 §4) is decided here and only here, from `params.caller`: the role decides which
+// methods exist, and `caller.worker_id` decides which lease a worker may touch. A `caller` field inside
+// a method's own arguments is not authority — the in-process facade strips it and substitutes the
+// identity `openCore` was given from argv, and over the pipe the client sets it from its own argv.
+// Nothing a model says reaches this decision.
+
+const { err } = require('./errors.cjs');
+const { ROLES } = require('./schema.cjs');
+const { pidAlive, readOwnerLock, pipeName } = require('./lock.cjs');
+const memory = require('./methods-memory.cjs');
+const run = require('./methods-run.cjs');
+const task = require('./methods-task.cjs');
+const continuity = require('./continuity.cjs');
+const status = require('./status.cjs');
+const diff = require('./methods-diff.cjs');
+const permission = require('./methods-permission.cjs');
+
+const ALL = ROLES;
+const ORCH = ['orchestrator'];
+// `belay run` (build step 5a) attaches and ends the run as role operator: it is the process that
+// spawns the orchestrator and is therefore the store owner and control server for the run's
+// lifetime (ADR 0009). Build step 6a widened this to
+// task.assign too, named below; every other orchestrator-only method is unaffected.
+const ORCH_OR_OPERATOR = ['orchestrator', 'operator'];
+
+const METHODS = {
+  'memory.store': { roles: ALL, kind: 'write', fn: memory.store },
+  'memory.get': { roles: ALL, kind: 'read', fn: memory.get },
+  'memory.search': { roles: ALL, kind: 'read', fn: memory.search },
+  'memory.list': { roles: ALL, kind: 'read', fn: memory.list },
+  'memory.delete': { roles: ALL, kind: 'write', fn: memory.delete },
+  'memory.stats': { roles: ALL, kind: 'read', fn: memory.stats },
+  // build 12b E2: start the embedder child and its load ahead of first use (the run's warm-up), so the
+  // fork stall and the cold load happen before agents talk to the owner. kind 'write' so it reaches the owner.
+  'memory.warm': { roles: ALL, kind: 'write', fn: memory.warm },
+
+  'status.get': { roles: ALL, kind: 'read', fn: status.get },
+
+  'run.attach': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.attach },
+  'run.end': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.end },
+  // build step 6f, ADR 0023 amendment 3 decision 4.1: open to orchestrator and operator, same as
+  // run.attach/run.end above — the run process itself writes it (role operator, belay run's own
+  // identity), and it is read back through the ordinary run row.
+  'run.setPaused': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.setPaused },
+  'run.get': { roles: ALL, kind: 'read', fn: run.getRun },
+  // build step 4a: every run's current row, so a CLI with no run id argument (belay status,
+  // belay workers) has a way to find the current run at all.
+  'run.list': { roles: ALL, kind: 'read', fn: run.listRuns },
+
+  'worker.write': { roles: ORCH, kind: 'write', fn: run.writeWorker },
+  'worker.get': { roles: ALL, kind: 'read', fn: run.getWorker },
+  'worker.list': { roles: ALL, kind: 'read', fn: run.listWorkers },
+  // build step 6b, ADR 0019 decision 6: operator only, the CLI's `worker rm` (mode W); no MCP tool.
+  'worker.forget': { roles: ['operator'], kind: 'write', fn: run.forgetWorker },
+
+  'task.create': { roles: ORCH, kind: 'write', fn: task.create },
+  // build step 6a, ADR 0010 §4 amendment 1: opened to the operator as well (see the comment above
+  // ORCH_OR_OPERATOR); the MCP adapter's task_assign tool stays orchestrator-only.
+  'task.assign': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: task.assign },
+  'task.list': { roles: ALL, kind: 'read', fn: task.list },
+  'task.get': { roles: ALL, kind: 'read', fn: task.get },
+  'task.evaluate': { roles: ORCH, kind: 'write', fn: task.evaluate },
+
+  'lease.renew': { roles: ['worker'], kind: 'write', fn: task.renew },
+  'lease.release': { roles: ['worker', 'operator'], kind: 'write', fn: task.release },
+  'lease.takeControl': { roles: ['operator'], kind: 'write', fn: task.takeControl },
+
+  'continuity.checkpoint': { roles: ['worker', 'orchestrator'], kind: 'write', fn: continuity.checkpoint },
+  'continuity.resumeLine': { roles: ALL, kind: 'read', fn: continuity.resumeLine },
+  'continuity.resumeDoc': { roles: ALL, kind: 'read', fn: continuity.resumeDoc },
+
+  // build step 4c: rows added, updated, superseded or expired since a mark the caller supplies
+  //. A read: no election, no write.
+  'store.diff': { roles: ALL, kind: 'read', fn: diff.diff },
+
+  // build step 6d, ADR 0020 decision 2: the permission channel. `wait` is a third kind — dispatched
+  // through the write path (index.cjs, since only kind 'read' takes the read path), so a worker with
+  // no owner lands E_NO_OWNER having created nothing, and excluded from READ_METHODS/WRITE_METHODS
+  // below so the client's "may have committed" write-timeout advice never fires for it.
+  'permission.request': { roles: ['worker'], kind: 'write', fn: permission.request },
+  'permission.list': { roles: ALL, kind: 'read', fn: permission.list },
+  'permission.decide': { roles: ['operator', 'orchestrator', 'worker'], kind: 'write', fn: permission.decide },
+  'permission.wait': { roles: ['worker'], kind: 'wait', fn: permission.wait },
+};
+
+const METHOD_NAMES = Object.keys(METHODS);
+const READ_METHODS = new Set(METHOD_NAMES.filter(m => METHODS[m].kind === 'read'));
+const WRITE_METHODS = new Set(METHOD_NAMES.filter(m => METHODS[m].kind === 'write'));
+
+function validateCaller(caller) {
+  if (!caller || typeof caller !== 'object') throw err('E_ARGS', 'every call needs a caller identity taken from the process arguments');
+  if (!ROLES.includes(caller.role)) throw err('E_ARGS', `caller.role must be one of ${ROLES.join(', ')}, and this call carried ${JSON.stringify(caller.role)}`);
+  if (typeof caller.run_id !== 'string' || !caller.run_id) throw err('E_ARGS', 'caller.run_id must be the run id this process was launched with');
+  if (caller.role === 'worker' && (typeof caller.worker_id !== 'string' || !caller.worker_id)) {
+    throw err('E_ARGS', 'a worker-role caller must carry the worker_id it was launched with, because a worker cannot name itself');
+  }
+  return caller;
+}
+
+class Engine {
+  // `owner` is set only when this engine belongs to the process that holds the lock; `establishedBy`
+  // says how the rows behind a read were obtained ('owner', 'copy' or 'none').
+  constructor({ dataDir, store, getEmbedder = null, owner = null, establishedBy = 'copy' }) {
+    this.dataDir = dataDir;
+    this.store = store;
+    // A provider, not a loaded model: the embedding library is reached only by a call that needs a
+    // vector, and an engine reading a copy of the store has no way to get one at all.
+    this._getEmbedder = getEmbedder;
+    this.owner = owner;
+    this.establishedBy = establishedBy;
+    // build step 6d: in-process waiters for `permission.wait`, keyed by permission id — meaningful only
+    // on the live owner's engine; a copy's engine has an empty map and nothing to resolve.
+    this.waiters = new Map();
+  }
+
+  addWaiter(id, resolve) {
+    if (!this.waiters.has(id)) this.waiters.set(id, new Set());
+    this.waiters.get(id).add(resolve);
+  }
+
+  removeWaiter(id, resolve) {
+    const set = this.waiters.get(id);
+    if (!set) return;
+    set.delete(resolve);
+    if (!set.size) this.waiters.delete(id);
+  }
+
+  // Called by permission.decide once its transaction has committed: every waiter registered for this
+  // id is woken with the verdict row it just wrote, and the id's entry is cleared.
+  resolveWaiters(id, row) {
+    const set = this.waiters.get(id);
+    if (!set) return;
+    this.waiters.delete(id);
+    for (const resolve of set) resolve(row);
+  }
+
+  // Owner.stop() calls this right after its in-flight-controls wait and before timers are cleared, so
+  // no permission.wait outlives the owner: every waiter, for every id, is resolved with a settle
+  // marker rather than left to hang past the process that alone could ever answer it.
+  settleWaiters() {
+    for (const [id, set] of this.waiters) {
+      for (const resolve of set) resolve(null);
+    }
+    this.waiters.clear();
+  }
+
+  getEmbedder() {
+    if (!this._getEmbedder) {
+      return Promise.reject(err('E_NO_EMBEDDER', 'no owner answered, so this read fell back to a copy of the store and has no embedder; supply a vector with the call'));
+    }
+    return this._getEmbedder();
+  }
+
+  // The identity every written row carries: a worker writes under its worker id, anyone else under its
+  // role. api.md §3, memory defaults.
+  writtenBy(caller) { return caller.role === 'worker' ? caller.worker_id : caller.role; }
+
+  noteWrite() { if (this.owner && this.owner.noteWrite) this.owner.noteWrite(); }
+
+  ownerFact() {
+    if (this.owner) return { pid: process.pid, pipe: this.owner.pipe, alive: true, established_by: 'this process holds the lock (in-process)' };
+    const lock = readOwnerLock(this.dataDir);
+    if (!lock) return { pid: null, pipe: pipeName(this.dataDir), alive: false, established_by: 'no owner.lock in the data dir' };
+    return { pid: lock.pid, pipe: lock.pipe || pipeName(this.dataDir), alive: pidAlive(lock.pid), established_by: 'owner.lock pid check' };
+  }
+
+  async handle(method, params) {
+    const spec = METHODS[method];
+    if (!spec) throw err('E_ARGS', `${method} is not a Core API method`, { method });
+    const p = params || {};
+    const caller = validateCaller(p.caller);
+    if (!spec.roles.includes(caller.role)) {
+      throw err('E_ROLE', `${method} is available to ${spec.roles.join(', ')} and this call came from role ${caller.role}`, { method, role: caller.role, allowed: spec.roles });
+    }
+    const args = { ...p };
+    delete args.caller;
+    return spec.fn(this, caller, args);
+  }
+}
+
+module.exports = { Engine, METHODS, METHOD_NAMES, READ_METHODS, WRITE_METHODS, validateCaller };

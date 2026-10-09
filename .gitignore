@@ -1,0 +1,6 @@
+node_modules/
+.belay/
+*.tgz
+npm-debug.log*
+belay-run/
+sandbox/

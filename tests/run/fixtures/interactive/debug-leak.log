@@ -1,0 +1,17 @@
+2026-10-07T18:27:17.755Z [DEBUG] Read hooks.json for plugin example-plugin (enabled=true): C:\Home\dev\.claude\plugins\cache\example\example-plugin\0.2.6\hooks\hooks.json
+2026-10-07T18:27:17.756Z [DEBUG] Read hooks.json for plugin codex (enabled=true): C:\Home\dev\.claude\plugins\cache\openai-codex\codex\1.0.6\hooks\hooks.json
+2026-10-07T18:27:17.804Z [DEBUG] Found 8 plugins (7 enabled, 1 disabled)
+2026-10-07T18:27:17.861Z [DEBUG] Loaded 17 unique skills (17 unconditional, 0 conditional, managed: 0, user: 8, project: 0, additional: 0, legacy commands: 0)
+2026-10-07T18:27:20.144Z [DEBUG] Read hooks.json for plugin example-plugin (enabled=true): C:\Home\dev\.claude\plugins\cache\example\example-plugin\0.2.6\hooks\hooks.json
+2026-10-07T18:27:20.144Z [DEBUG] Read hooks.json for plugin codex (enabled=true): C:\Home\dev\.claude\plugins\cache\openai-codex\codex\1.0.6\hooks\hooks.json
+2026-10-07T18:27:20.154Z [DEBUG] Found 8 plugins (7 enabled, 1 disabled)
+2026-10-07T18:27:22.556Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.293.d9e; cc_entrypoint=cli; cch=00000;
+2026-10-07T18:27:22.795Z [DEBUG] "Loaded 5 CLAUDE.md/rules files:\n  [User] C:\\Home\\dev\\.claude\\CLAUDE.md (70 chars)\n  [Project] C:\\Home\\dev\\CLAUDE.md (7483 chars)\n  [Project] C:\\Home\\dev\\AppData\\Local\\Temp\\belay-iosurf-1007a\\C0\\CLAUDE.md (53 chars)\n  [Project] C:\\Home\\dev\\AppData\\Local\\Temp\\belay-iosurf-1007a\\C0\\wt\\CLAUDE.md (52 chars)\n  [AutoMem] C:\\Home
+2026-10-07T18:27:22.975Z [DEBUG] MCP server "claude.ai Mail": Successfully connected (transport: claudeai-proxy) in 20ms
+2026-10-07T18:27:22.979Z [DEBUG] MCP server "claude.ai Files": Successfully connected (transport: claudeai-proxy) in 20ms
+2026-10-07T18:27:23.023Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.293.21b; cc_entrypoint=cli; cch=00000; cc_prompt_id=cff497af-80aa-4d21-aa4f-e9d3869bb559; cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;
+2026-10-07T18:27:23.110Z [DEBUG] Loaded plugins - Enabled: 7, Disabled: 1, Commands: 11, Agents: 6, Errors: 0
+2026-10-07T18:27:23.516Z [DEBUG] MCP server "claude.ai Claude Docs": Successfully connected (transport: claudeai-proxy) in 565ms
+2026-10-07T18:27:31.767Z [DEBUG] MCP server "plugin:example-plugin:example": Successfully connected (transport: stdio) in 9309ms
+2026-10-07T18:27:45.159Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.293.21b; cc_entrypoint=cli; cch=00000; cc_prev_req=req_011CfoMBKEGcDPicWoVEwmzm; cc_prompt_id=cff497af-80aa-4d21-aa4f-e9d3869bb559; cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;
+2026-10-07T18:28:02.638Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.293.21b; cc_entrypoint=cli; cch=00000; cc_prev_req=req_011CfoMCwgY6qFTeWfpE1v3Z;

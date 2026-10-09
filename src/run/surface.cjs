@@ -1,0 +1,154 @@
+'use strict';
+// surface.cjs — build step S2, ADR 0024: a worker sees
+// only the tools, instructions and settings belay gives it, on every launch including a resume.
+// Everything ADR 0024 adds lives here: the positive tool list, the settings-source restriction, the
+// ancestor instruction-file excludes, the hygiene settings block, and the gate that reads a
+// system/init and refuses one whose surface differs. Pure: no process, no fs, no network. Invariant 9
+// (CLAUDE.md): no read path may import anything beyond node:path and node:crypto.
+
+const path = require('node:path');
+const crypto = require('node:crypto');
+
+// ADR 0024 decisions 1 and 2: one positive list, every role, every launch (fresh or resume).
+const CLAUDE_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash'];
+// ADR 0024 decision 3 as replaced by amendment 1: no settings file is read except belay's own
+// `--settings`. ONE argv token, exactly the form the settings-sources probe measured; the two-token form
+// with an empty value was never measured. The worktree's CLAUDE.md arrives by instructions.cjs instead.
+const SETTING_SOURCES_ARG = '--setting-sources=';
+
+const fwd = (p) => String(p).replace(/\\/g, '/');
+
+// Strict ancestors of an absolute, forward-slashed path, root-inclusive, nearest first. Works on a
+// drive-rooted path ('C:/a/b') and a posix one ('/a/b') alike, without relying on path.dirname's own
+// platform behaviour (which would treat a posix-shaped string as win32 on this host). The root keeps
+// exactly one trailing slash internally so a caller can strip it once, uniformly (ancestorExcludes).
+function ancestorsOf(resolved) {
+  const isDrive = /^[A-Za-z]:\//.test(resolved);
+  const rootLen = isDrive ? 3 : 1; // 'C:/'.length === 3, '/'.length === 1
+  const root = resolved.slice(0, rootLen);
+  const out = [];
+  let cur = resolved;
+  for (;;) {
+    const trimmed = cur.length > rootLen && cur.endsWith('/') ? cur.slice(0, -1) : cur;
+    const idx = trimmed.lastIndexOf('/');
+    if (idx < rootLen - 1) break; // nothing left above the root
+    const parent = idx === rootLen - 1 ? root : trimmed.slice(0, idx);
+    out.push(parent);
+    if (parent === root) break;
+    cur = parent;
+  }
+  return out;
+}
+
+// ADR 0024 decision 4: every ancestor of the worktree, root-inclusive, cwd-exclusive, gets its own
+// instruction files excluded — never the cwd's own copy, which the worker is meant to keep reading.
+function ancestorExcludes(cwd) {
+  const resolved = fwd(path.resolve(cwd));
+  const out = [];
+  for (const a of ancestorsOf(resolved)) {
+    // The root already carries exactly one trailing slash ('C:/', '/'); every other ancestor has
+    // none. Stripping it uniformly before appending is what keeps 'C:/CLAUDE.md' from becoming
+    // 'C://CLAUDE.md'.
+    const base = a.endsWith('/') ? a.slice(0, -1) : a;
+    out.push(`${base}/CLAUDE.md`, `${base}/CLAUDE.local.md`, `${base}/.claude/CLAUDE.md`, `${base}/.claude/rules/**`);
+  }
+  return out;
+}
+
+// ADR 0024 decisions 4 and 5, one settings-file block.
+function hygieneSettings(cwd) {
+  return { claudeMdExcludes: ancestorExcludes(cwd), autoMemoryEnabled: false, autoDreamEnabled: false };
+}
+
+// ADR 0024 decision 6: the ready event reports the surface the worker actually got; a wrong surface
+// is a failed launch. Reads only `tools`, `plugins` and `memory_paths` off the ready event the parser
+// already built (parsers.cjs), never the raw system/init line.
+function checkSurface(ready, { permissionPrompt = false } = {}) {
+  const tools = ready && ready.tools;
+  if (!Array.isArray(tools)) {
+    return {
+      ok: false,
+      reason: `the system/init surface is not the one ADR 0024 allows: tools is not an array (system/init carried ${JSON.stringify(tools)})`,
+    };
+  }
+
+  const reasons = [];
+  const builtins = tools.filter((t) => !String(t).startsWith('mcp__'));
+  const mcpTools = tools.filter((t) => String(t).startsWith('mcp__'));
+
+  const wantSet = new Set(CLAUDE_TOOLS);
+  const gotSet = new Set(builtins);
+  const extra = builtins.filter((t) => !wantSet.has(t));
+  const missing = CLAUDE_TOOLS.filter((t) => !gotSet.has(t));
+  if (extra.length) reasons.push(`extra built-in tool(s) beyond ADR 0024's list: ${extra.join(', ')}`);
+  if (missing.length) reasons.push(`missing built-in tool(s) from ADR 0024's list: ${missing.join(', ')}`);
+
+  const foreign = mcpTools.filter((t) => !t.startsWith('mcp__belay__'));
+  if (foreign.length) reasons.push(`mcp tool(s) not under mcp__belay__: ${foreign.join(', ')}`);
+
+  // F2 (S2 review 1, should-fix 2, to ADR 0024 decision 6's letter): the belay tool set is "any
+  // mcp__belay__*, and at least one" — the adapter's own tool list is its business, and mcp_servers
+  // (ready.cjs) already proves the connection, but an init naming none at all names no adapter.
+  const belayTools = mcpTools.filter((t) => t.startsWith('mcp__belay__'));
+  if (belayTools.length === 0) reasons.push('no mcp__belay__* tool is listed (ADR 0024 decision 6 expects at least one)');
+
+  if (permissionPrompt && mcpTools.includes('mcp__belay__permit')) {
+    reasons.push('mcp__belay__permit is listed even though a permission-prompt tool was configured for this launch (ADR 0024 decision 7)');
+  }
+
+  // F1/F2 (should-fix 1 and 2): plugins must be an array, and only ever refused, never thrown on — a
+  // blind .filter over an object or a string (review 1 finding 1) left verifyReady rejecting instead
+  // of refusing, and the orchestrator's un-caught .then an unhandled rejection. Absent, null or any
+  // other non-array shape is refused by naming its own shape.
+  const pluginsField = ready && ready.plugins;
+  let plugins = [];
+  if (!Array.isArray(pluginsField)) {
+    reasons.push(`plugins is not an array (system/init carried ${JSON.stringify(pluginsField)})`);
+  } else {
+    plugins = pluginsField;
+    const badPlugins = plugins.filter((p) => !(p && String(p.source).endsWith('@builtin')));
+    if (badPlugins.length) {
+      reasons.push(`non-builtin plugin(s): ${badPlugins.map((p) => (p && p.source) || JSON.stringify(p)).join(', ')}`);
+    }
+  }
+
+  // F2: decision 6 expects no memory_paths at all — any value that is not null or undefined is
+  // refused, not only a truthy `.auto` (review 1 finding 2: {project:...}, a string, an array and
+  // {auto:''} all passed the looser check).
+  const memoryPaths = ready && ready.memory_paths;
+  if (memoryPaths !== null && memoryPaths !== undefined) {
+    if (memoryPaths && typeof memoryPaths === 'object' && 'auto' in memoryPaths) {
+      reasons.push(`memory_paths.auto is set: ${memoryPaths.auto}`);
+    } else {
+      reasons.push(`memory_paths is present, and ADR 0024 decision 6 expects none: ${JSON.stringify(memoryPaths)}`);
+    }
+  }
+
+  if (reasons.length) {
+    return { ok: false, reason: `the system/init surface is not the one ADR 0024 allows: ${reasons.join('; ')}` };
+  }
+
+  const toolsHash = crypto.createHash('sha256').update([...tools].sort().join('\n')).digest('hex');
+  return {
+    ok: true,
+    evidence: {
+      tools_hash: toolsHash,
+      builtins: [...builtins].sort(),
+      belay_tools: belayTools.sort(),
+      plugins,
+    },
+  };
+}
+
+// F4 (S2 review 1, should-fix 4): the fields spawn, restart, resume and the orchestrator report as
+// `surface`, picked from checkSurface's own evidence — never `mcp_servers`, which is ready.cjs's own
+// concern, never stored alongside it. `null` when there is no evidence yet (a launch that never
+// reached this gate, or a Codex worker, whose verifyReady branch returns none of these fields).
+function surfaceFields(evidence) {
+  if (!evidence) return null;
+  const { tools_hash, builtins, belay_tools, plugins } = evidence;
+  if (tools_hash === undefined && builtins === undefined && belay_tools === undefined && plugins === undefined) return null;
+  return { tools_hash: tools_hash ?? null, builtins: builtins ?? null, belay_tools: belay_tools ?? null, plugins: plugins ?? null };
+}
+
+module.exports = { CLAUDE_TOOLS, SETTING_SOURCES_ARG, ancestorExcludes, hygieneSettings, checkSurface, surfaceFields };

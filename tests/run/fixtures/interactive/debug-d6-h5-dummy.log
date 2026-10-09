@@ -1,0 +1,67 @@
+2026-10-08T06:29:18.369Z [DEBUG] MDM settings load completed in 3ms
+2026-10-08T06:29:18.385Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Program Files\ClaudeCode\managed-settings.json
+2026-10-08T06:29:18.391Z [DEBUG] CA certs: Config fallback - globalEnv keys: , settingsEnv keys: none
+2026-10-08T06:29:18.396Z [DEBUG] [init] configureGlobalMTLS starting
+2026-10-08T06:29:18.396Z [DEBUG] [init] configureGlobalMTLS complete
+2026-10-08T06:29:18.396Z [DEBUG] [init] configureGlobalAgents starting
+2026-10-08T06:29:18.396Z [DEBUG] CA certs: stores=bundled,system, extraCertsPath=undefined
+2026-10-08T06:29:18.396Z [DEBUG] CA certs: Loaded 121 bundled root certificates
+2026-10-08T06:29:18.412Z [DEBUG] CA certs: Dropped 6 expired certificate(s) from system store
+2026-10-08T06:29:18.412Z [DEBUG] CA certs: Loaded 67 system CA certificates
+2026-10-08T06:29:18.412Z [DEBUG] mTLS: Creating HTTPS agent with custom certificates
+2026-10-08T06:29:18.412Z [DEBUG] [init] configureGlobalAgents complete
+2026-10-08T06:29:18.415Z [DEBUG] Using bash path: "C:\Program Files\Git\bin\bash.exe"
+2026-10-08T06:29:18.417Z [DEBUG] Git remote URL: null
+2026-10-08T06:29:18.418Z [DEBUG] No git remote URL found
+2026-10-08T06:29:18.422Z [DEBUG] Error log sink initialized
+2026-10-08T06:29:18.426Z [DEBUG] clearPluginCache: invalidating loadAllPlugins cache (preAction: --plugin-dir inline plugins)
+2026-10-08T06:29:18.511Z [DEBUG] [ToolSearch:optimistic] mode=tst, ENABLE_TOOL_SEARCH=undefined, result=true
+2026-10-08T06:29:18.518Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Home\dev\AppData\Local\Temp\belay-iohr\H5-muz5ovbk\repo\.claude\settings.json
+2026-10-08T06:29:18.519Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Home\dev\AppData\Local\Temp\belay-iohr\H5-muz5ovbk\repo\.claude\settings.local.json
+2026-10-08T06:29:18.520Z [DEBUG] [STARTUP] Loading MCP configs...
+2026-10-08T06:29:18.523Z [DEBUG] [STARTUP] Running setup()...
+2026-10-08T06:29:18.529Z [DEBUG] [win32-kernel32] bun:ffi loaded
+2026-10-08T06:29:18.554Z [DEBUG] Loaded 3 installed plugins from C:\Home\dev\.claude\plugins\installed_plugins.json
+2026-10-08T06:29:18.557Z [DEBUG] Loading skills from: managed=C:\Program Files\ClaudeCode\.claude\skills, user=C:\Home\dev\.claude\skills, project=[]
+2026-10-08T06:29:18.560Z [DEBUG] Failed to stat directory C:\Program Files\ClaudeCode\.claude\agents: ENOENT: no such file or directory, stat 'C:\Program Files\ClaudeCode\.claude\agents'
+2026-10-08T06:29:18.563Z [DEBUG] Failed to stat directory C:\Program Files\ClaudeCode\.claude\commands: ENOENT: no such file or directory, stat 'C:\Program Files\ClaudeCode\.claude\commands'
+2026-10-08T06:29:18.566Z [DEBUG] Loaded 0 unique skills (0 unconditional, 0 conditional, managed: 0, user: 0, project: 0, additional: 0, legacy commands: 0)
+2026-10-08T06:29:18.582Z [INFO] [uds-messaging] Listening: \\.\pipe\LOCAL\cc-msg-373a3997ea598d5863c0cd338db8858e
+2026-10-08T06:29:18.582Z [INFO] [uds-messaging] Inject messages (auth line REQUIRED here; a pipe is not reachable via socat/AF_UNIX): node -e "const c=require('net').connect(process.argv[1],()=>{c.write(JSON.stringify({type:'auth',token:[REDACTED]})+'\n'+JSON.stringify({type:'user',message:{role:'user',content:'hello'}})+'\n');c.end()})" "\\.\pipe\LOCAL\cc-msg-373a3997ea598d5863c0cd338db8858e"
+2026-10-08T06:29:18.582Z [INFO] [uds-messaging] Connect when the data is ready (run the command first, then connect and write its output as ONE line, as in the node recipe above): a connection that sends no complete line within 30000 ms is closed
+2026-10-08T06:29:18.587Z [DEBUG] Error log sink initialized
+2026-10-08T06:29:18.605Z [DEBUG] [STARTUP] setup() completed in 82ms
+2026-10-08T06:29:18.609Z [DEBUG] [STARTUP] Loading commands and agents...
+2026-10-08T06:29:18.613Z [DEBUG] Read hooks.json for plugin codex (enabled=false; will NOT register, plugin is disabled): C:\Home\dev\.claude\plugins\cache\openai-codex\codex\1.0.6\hooks\hooks.json
+2026-10-08T06:29:18.613Z [DEBUG] Read hooks.json for plugin example-plugin (enabled=false; will NOT register, plugin is disabled): C:\Home\dev\.claude\plugins\cache\example\example-plugin\0.2.6\hooks\hooks.json
+2026-10-08T06:29:18.615Z [DEBUG] --plugin-dir C:\Home\dev\AppData\Local\Temp\belay-iohr\H5-muz5ovbk\dummy-plugin is one plugin: .claude-plugin at its top marks it
+2026-10-08T06:29:18.633Z [DEBUG] Loaded inline plugin from path: handrun-dummy
+2026-10-08T06:29:18.634Z [DEBUG] Loaded 1 directory-loaded plugins
+2026-10-08T06:29:18.636Z [DEBUG] Found 9 plugins (5 enabled, 4 disabled)
+2026-10-08T06:29:18.638Z [DEBUG] getPluginSkills: Processing 5 enabled plugins
+2026-10-08T06:29:18.638Z [DEBUG] Checking plugin handrun-dummy: skillsPath=exists, skillsPaths=0 paths
+2026-10-08T06:29:18.638Z [DEBUG] Attempting to load skills from plugin handrun-dummy default skillsPath: C:\Home\dev\AppData\Local\Temp\belay-iohr\H5-muz5ovbk\dummy-plugin\skills
+2026-10-08T06:29:18.638Z [DEBUG] Checking plugin cc-plugin-agents-md: skillsPath=none, skillsPaths=0 paths
+2026-10-08T06:29:18.638Z [DEBUG] Checking plugin cc-plugin-telemetry: skillsPath=none, skillsPaths=0 paths
+2026-10-08T06:29:18.638Z [DEBUG] Checking plugin cc-plugin-plugin-authoring: skillsPath=none, skillsPaths=0 paths
+2026-10-08T06:29:18.638Z [DEBUG] Checking plugin cc-plugin-diff: skillsPath=none, skillsPaths=0 paths
+2026-10-08T06:29:18.638Z [DEBUG] Total plugin workflows loaded: 0
+2026-10-08T06:29:18.640Z [DEBUG] Total plugin commands loaded: 0
+2026-10-08T06:29:18.641Z [DEBUG] hooks modules not loaded until workspace trust is accepted: cc-plugin-agents-md, cc-plugin-telemetry, cc-plugin-diff
+2026-10-08T06:29:18.642Z [DEBUG] plugin-dir watch: watching nothing; folders of plugins C:\Home\dev\AppData\Local\Temp\belay-iohr\H5-muz5ovbk\dummy-plugin
+2026-10-08T06:29:18.643Z [DEBUG] Registered 0 hooks from 5 plugins
+2026-10-08T06:29:18.658Z [DEBUG] Loaded 1 agents from plugin handrun-dummy default directory
+2026-10-08T06:29:18.658Z [DEBUG] Total plugin agents loaded: 1
+2026-10-08T06:29:18.663Z [DEBUG] Loaded 1 skills from plugin handrun-dummy default directory
+2026-10-08T06:29:18.663Z [DEBUG] Total plugin skills loaded: 1 (0 duplicate/user-owned entries skipped)
+2026-10-08T06:29:18.665Z [DEBUG] getSkills returning: 0 skill dir commands, 1 plugin skills, 39 bundled skills, 1 builtin plugin skills
+2026-10-08T06:29:18.673Z [DEBUG] Artifact gates frozen: capabilities=true comments=true db=true files=true types=true type_create=true type_catalog=true read_page_data=false room=false verify=false delete=true preview=false preview_browser=unread open=true endpoints=false pin=true share=false versions=false flag_source=disk gb_fresh=false
+2026-10-08T06:29:18.683Z [DEBUG] [STARTUP] Commands and agents loaded in 74ms
+2026-10-08T06:29:18.693Z [DEBUG] [servedCatalog] primary: using served rows (12 rows via cache over the org route, fetched 2373s ago); the served list replaces the compiled picker for this session
+2026-10-08T06:29:18.699Z [DEBUG] nonBlockingStdout: not installed (unsupported_platform)
+2026-10-08T06:29:18.701Z [DEBUG] [STARTUP] Running showSetupScreens()...
+2026-10-08T06:29:18.707Z [DEBUG] [keybindings] KeybindingSetup initialized with 223 bindings, 0 warnings
+2026-10-08T06:29:18.727Z [DEBUG] [keybindings] Watching for changes to C:\Home\dev\.claude\keybindings.json
+2026-10-08T06:29:18.731Z [DEBUG] XTVERSION: no reply (terminal ignored query)
+2026-10-08T06:29:18.731Z [DEBUG] Terminal capabilities: extendedKeys=no (env: terminal=vscode, no answer); synchronizedOutput=yes (env: TERM_PROGRAM=vscode, no answer); kittyKeyboard=no (probe: no reply to CSI ? u); kittyGraphics=no (env: terminal=vscode, not asked yet, no answer); mousePixels=no (env: terminal=vscode, not asked yet, no answer); terminal said: no reply to CSI ? u; DECRQM 2026 not asked (no XTVERSION reply)
+2026-10-08T06:29:18.731Z [DEBUG] DECSTBM: gated (TMUX=unset ZELLIJ=unset TERM_PROGRAM=vscode TERM=unset)

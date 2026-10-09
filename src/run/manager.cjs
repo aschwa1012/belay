@@ -1,0 +1,499 @@
+'use strict';
+// RunManager: the orchestrator adapter's half of the surface (contract §5), parent process of every
+// worker (invariant 1). Per-worker mechanics live in worker.cjs; this file is the methods and policy.
+
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+
+const L = require('./launch.cjs');
+const { createParser } = require('./parsers.cjs');
+const P = require('./process.cjs');
+const PI = require('./pid-identity.cjs'); // ADR 0039
+const W = require('./worker.cjs');
+const { verifyReady } = require('./ready.cjs');
+const { rotateWireLog } = require('./wire-log.cjs');
+const S = require('./surface.cjs'); // ADR 0024, S2 fix round F4: the surface fields spawn/restart/resume return
+const I = require('./instructions.cjs'); // ADR 0024 amendment 1: the spawn-time CLAUDE.md copy
+const { fail } = require('./errors.cjs');
+const { validateSpawnArgs } = require('./spawn-args.cjs');
+// build step 6c: `wait`, `decideBranch`, `restartFirstText` and the resume-window constants moved
+// verbatim into their own files (the 500-line rule); re-exported under the same names below.
+const { createWait } = require('./wait.cjs');
+const { decideBranch, restartFirstText, CLAUDE_RESUME_WINDOW_MS, CODEX_RESUME_WINDOW_MS } = require('./restart.cjs');
+// build step 6e-4: pause and resume (the park design, ADR 0023 amendment 2), and the one per-worker
+// operation slot pause, resume, restart and stop all share.
+const { createPause, INTERRUPT_TIMEOUT_MS, EXIT_TIMEOUT_MS } = require('./pause.cjs');
+const LC = require('./lifecycle.cjs');
+// build step 6i-2 design item 3 (R4): writeRow moved verbatim here to keep this file under its own
+// 500-line budget once the closed-flag fix (shutdownFlags below) landed.
+const { createWriteRow } = require('./write-row.cjs');
+// A park's own worst case, the longest one started during a restart's first turn takes to settle (`restart`).
+const PARK_SETTLE_WAIT_MS = INTERRUPT_TIMEOUT_MS + EXIT_TIMEOUT_MS;
+const LIST = require('./list.cjs');
+
+const { POLL_MS } = require('./exit-hold.cjs');
+const now = () => Date.now();
+
+function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = null }) {
+  if (!core) fail('E_ARGS', 'createRunManager needs a core');
+  if (!dataDir) fail('E_ARGS', 'createRunManager needs a dataDir');
+  if (!runId) fail('E_ARGS', 'createRunManager needs a runId');
+
+  // `paths` is optional and unknown keys are ignored (contract §1); `mcpBinary` defaults to
+  // src/mcp/belay-mcp.cjs, the rest to the host binaries, all overridable so tests can substitute fakes.
+  const root = L.fwd(path.resolve(dataDir));
+  const exeFor = (s) => (s === 'codex' ? paths.codexExe || L.codexExe() : paths.claudeExe || L.claudeExe());
+  const mcpSource = paths.mcpBinary || paths.mcpServer || null;
+  const mcpPath = mcpSource ? L.fwd(path.resolve(mcpSource)) : L.mcpServerPath();
+  const settingsSource = paths.userSettings || null; // ~/.claude/settings.json unless overridden
+
+  const workers = new Map();
+  const pendingIds = new Set(); // ids reserved by a spawn still asking its task (ADR 0030)
+  const adopting = new Map(); // forWorker's adopt (below) coalesces per id: concurrent callers share one `w`
+  let poll = null;
+  // build step 6i-2 design item 3 (R4): flipped by shutdown() once every worker has been asked to stop
+  // (lifecycle.cjs), so a write still queued behind it (the exit-code fill-in a late channel queues,
+  // exit.cjs) elects no store owner in this process — write-row.cjs checks it first, before core.
+  const shutdownFlags = { closed: false };
+
+  // 6i-2 fix round (item 3, should-fix): `shutdownFlags` carried on ctx itself, so worker.cjs's onTurnEnd
+  // (through turn-record.cjs) can gate its own checkpoint/memory write on it exactly as writeRow does.
+  const ctx = { core, runId, adapterPid: paths.adapterPid || process.pid, writeRow: null, shutdownFlags, compactAt: compactAtTokens };
+  const writeRow = createWriteRow(ctx, shutdownFlags);
+  ctx.writeRow = writeRow;
+
+  function get(workerId) {
+    const w = workers.get(workerId);
+    if (!w) fail('E_NOT_FOUND', 'no worker with that id in this run manager', { worker_id: workerId });
+    return w;
+  }
+
+  // The one shape a failed start takes (contract §5): E_NO_READY { pid, exit_code, stderr_tail,
+  // reason }. Nothing rejects before the worker is settled and its `dead` row is written (invariant 5).
+  async function failNoReady(w, reason, extra = {}) {
+    // The launch is over from here; a turn end mid-teardown must not write a `running` row for a
+    // start the caller is being told failed. Tree first, then the exact pid (ADR 0011 §2, contract §5).
+    w.launchFailed = true;
+    if (!w.settled && w.pid) {
+      w.treeKill = (await PI.killWorker(w)).tree;
+      await W.waitExit(w, 5000);
+    }
+    // The exit code is the most useful field this error carries, and a pid check can establish the
+    // death before the exit event delivers one (by seconds under load). Wait, bounded, for it.
+    if (W.deathByPidCheck(w)) await W.awaitExitCode(w, W.EXIT_CODE_WAIT_MS);
+    await w.queue;
+    if (w.state !== 'dead') await writeRow(w, 'dead');
+    fail('E_NO_READY', reason, {
+      worker_id: w.id, pid: w.pid, exit_code: w.exitCode, exit_signal: w.exitSignal,
+      stderr_tail: w.stderr.slice(-2000), reason, spawn_error: w.spawnError,
+      death_established_by: w.deathEstablishedBy, ...extra,
+    });
+  }
+
+  function startPoll() {
+    if (poll) return;
+    poll = setInterval(() => {
+      for (const w of workers.values()) {
+        // The exit event has not fired but the pid is gone: settle it on this poll (contract §5; 6i item 7b/C11).
+        if (w.child && ['starting', 'running', 'stopping'].includes(w.state) && w.pid && !P.pidAlive(w.pid) && !W.holdForExitEvent(w)) {
+          W.settle(w, w.exitCode, w.exitSignal, 'pid-poll', ctx); // after its bounded hold for the exit code
+        }
+      }
+    }, POLL_MS);
+    if (poll.unref) poll.unref();
+  }
+
+  // ------------------------------------------------------------------ launch
+
+  function writeFilesFor(w) {
+    const adapterLog = L.wireLogPath(w.dir); // every worker adapter logs here (build 12 A1)
+    const { mcpJsonPath, settingsPath, plugins } = L.writeWorkerFiles({
+      dir: w.dir, workerId: w.id, runId, dataDir: root, mcpPath, settingsPath: settingsSource, logPath: adapterLog,
+      permit: w.permissionPrompt, permitWaitMs: w.permitWaitMs, cwd: w.worktree, compactAt: ctx.compactAt, // ADR 0024; ADR 0007 decision 3
+    });
+    // ADR 0007 §6 hygiene never degrades quietly: an unreadable/unparseable user settings file would
+    // disable nothing, so the launch fails instead (a file that just does not exist is not a failure).
+    if (plugins.unreadable) fail('E_ARGS', plugins.error, { settings_path: plugins.path, worker_id: w.id });
+    w.plugins = plugins;
+    w.mcpJsonPath = mcpJsonPath;
+    w.workerSettingsPath = settingsPath;
+    // Codex's ADR 0001 §8 ready check reads the wire log (WR-5); a Claude Code adapter logs there too
+    // (ADR 0026 §3's keepalive lines) but its ready check does not.
+    w.adapterLogPath = adapterLog;
+    w.adapterArgs = L.workerAdapterArgs({
+      workerId: w.id, runId, dataDir: root, mcpPath, logPath: w.adapterLogPath,
+    });
+  }
+
+  function launch(w, { resume = null, prompt = null } = {}) {
+    let args;
+    if (w.substrate === 'claude-code') {
+      args = L.claudeLaunchArgv({
+        workerId: w.id, mcpJsonPath: w.mcpJsonPath, settingsPath: w.workerSettingsPath,
+        model: w.model || L.DEFAULT_CLAUDE_MODEL, allowedTools: w.allowedTools,
+        permissionMode: w.permissionMode, resumeSessionId: resume,
+        permissionPromptTool: w.permissionPrompt, appendSystemPromptFile: w.instructions && w.instructions.path,
+        effort: w.effort, // ADR 0028 decision 2: every launch, fresh or resumed
+      });
+    } else if (resume) {
+      args = L.codexResumeArgv({ threadId: resume, adapterArgs: w.adapterArgs, prompt, model: w.model });
+    } else {
+      args = L.codexLaunchArgv({
+        worktree: w.worktree, adapterArgs: w.adapterArgs, prompt, sandbox: w.sandbox, model: w.model,
+      });
+    }
+    const { command, prefixArgs } = L.resolveExe(exeFor(w.substrate));
+    const spec = { exe: command, args: [...prefixArgs, ...args], cwd: w.worktree };
+    w.argvHash = L.writeArgvJson(w.dir, spec);
+    w.settled = false; w.pidGoneAt = null; w.pidGonePid = null; // the exit-event hold is per launch
+    w.exitedAt = null;
+    w.turnEnded = false;
+    w.readyAt = null;
+    w.parkRequested = null; w.paused = null; w.staleSince = null; w.bgTasks = new Map(); w.controlWaiters.clear(); w.pendingTurnEnd = null; // 6e-4/6e-6: fresh
+    // The adapter log is shared across a worker's launches: rotate it if large (review B1), then remember
+    // where it ended, so a previous process's tools/list never passes this one's ready check.
+    if (w.adapterLogPath) rotateWireLog(w.adapterLogPath);
+    w.adapterLogBytes = w.adapterLogPath ? (fs.statSync(w.adapterLogPath, { throwIfNoEntry: false }) || { size: 0 }).size : 0;
+    w.parser = createParser(w.substrate);
+    const child = P.spawnWorker({
+      // ADR 0016: `cwd` goes to `buildEnv` too, so `PWD` agrees with the real working directory. 6d:
+      // MCP_TOOL_TIMEOUT is set only with permission_prompt, always outside permit_wait_ms's own bound.
+      exe: spec.exe, args: spec.args, cwd: w.worktree,
+      env: L.buildEnv(process.env, {
+        substrate: w.substrate, cwd: w.worktree,
+        mcpToolTimeoutMs: w.permissionPrompt ? w.permitWaitMs + 60000 : null,
+      }),
+      stdin: w.substrate === 'claude-code' ? 'pipe' : 'ignore',
+    });
+    w.launches += 1;
+    w.launchedAt = now();
+    W.attach(w, child, ctx);
+    startPoll();
+    return spec;
+  }
+
+  function sendStdin(w, text) {
+    const line = JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } }) + '\n';
+    w.child.stdin.write(line);
+    w.parser.noteStdinWrite();
+    return Buffer.byteLength(text, 'utf8');
+  }
+
+  // The resume line goes into the first message (ADR 0007 §2), against the `starting` row (contract §3):
+  // it cannot wait for ready, since Claude Code emits no system/init until a message is on stdin (measured,
+  // tests/run/receipts/init-timing.json).
+  async function preface(w) {
+    if (!w.taskId) return '';
+    await core.task.assign({ task_id: w.taskId, worker_id: w.id });
+    try {
+      const rl = await core.continuity.resumeLine({ task_id: w.taskId });
+      return rl && rl.text ? rl.text + '\n\n' : '';
+    } catch (e) {
+      w.lastError = { where: 'continuity.resumeLine', code: e && e.code, message: e && e.message };
+      return '';
+    }
+  }
+
+  // Send the opening message for a launch. Claude Code takes it on stdin; Codex already has it in
+  // argv, but the turn is still one the harness asked for, so the parser is told either way.
+  function openWith(w, text) {
+    if (w.substrate === 'claude-code') sendStdin(w, text);
+    else w.parser.noteStdinWrite();
+  }
+
+  // ---------------------------------------------------------------- methods
+
+  async function spawn(opts) {
+    const {
+      substrate, worktree, prompt, task_id = null, model = null, allowed_tools = null,
+      permission_mode = null, startup_timeout_ms = 60000, worker_id = null, sandbox = null,
+      permission_prompt = false, permit_wait_ms = 600000, effort = null,
+    } = opts || {};
+    validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id });
+
+    const id = worker_id || crypto.randomUUID();
+    if (workers.has(id) || pendingIds.has(id)) fail('E_ARGS', 'a worker with that id already exists in this run', { worker_id: id });
+    // ADR 0030 decision 4: ask the core whether the task can be assigned before anything is written, so a
+    // refusal leaves no directory, no row, and the id free. Later refusals still take the write-dead path.
+    // The id is reserved synchronously: the await below must not let a second spawn with it pass the check above.
+    pendingIds.add(id);
+    let w;
+    try {
+      if (task_id) await core.task.assign({ task_id, check_only: true });
+      w = W.newWorkerRecord({
+        id, substrate, worktree, dataDir: root, taskId: task_id, model,
+        allowedTools: allowed_tools, permissionMode: permission_mode, sandbox,
+        permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort,
+      });
+      workers.set(id, w);
+    } finally { pendingIds.delete(id); }
+    writeFilesFor(w);
+    if (substrate === 'claude-code') w.instructions = I.snapshotInstructions(w.worktree, w.dir); // spawn only
+
+    // The worker row comes first, with no pid yet: `task.assign` refuses a worker with no row, and the
+    // resume line needs the lease it creates. Only `running` is pid-checked, so this is legitimate.
+    const t0 = now();
+    await writeRow(w, 'starting');
+    let first;
+    try {
+      first = (await preface(w)) + prompt;
+    } catch (e) {
+      // The task refused the assignment (an open dependency, ADR 0013 §1; the operator's lease; no such
+      // task). Nothing has launched, so the `starting` row is written `dead` before the refusal is handed
+      // back unchanged (already names what would clear it, so it is not translated into E_NO_READY).
+      w.launchFailed = true;
+      await writeRow(w, 'dead');
+      throw e;
+    }
+    w.firstMessage = first;
+
+    launch(w, substrate === 'claude-code' ? {} : { prompt: first });
+    await writeRow(w, 'starting');
+    openWith(w, first);
+
+    const ready = await W.waitReady(w, startup_timeout_ms);
+    if (!ready) {
+      await failNoReady(w, 'the worker produced no ready event inside the startup window', { startup_timeout_ms });
+    }
+    const v = await verifyReady(w, ready, t0 + startup_timeout_ms);
+    if (!v.ok) await failNoReady(w, v.reason, { startup_timeout_ms, session_id: w.sessionId });
+    w.readyEvidence = v.evidence;
+    const init = W.noteInit(w, ready); // ADR 0021 decisions 3 and 4
+
+    const ready_ms = now() - t0;
+    // `running` is a claim about a process, and a worker can die before this line. writeRow returns null
+    // when the pid was gone or the core refused E_WORKER_NOT_LIVE; either way the row is `dead` and the
+    // caller is owed E_NO_READY, never a `running` row the store never took.
+    const written = await writeRow(w, 'running');
+    if (!written) {
+      await w.queue;
+      // One exception: a Codex turn can finish before this line; a settled `idle` worker did start, so
+      // the row to return is the store's own (`worker.get`'s pid_alive/last_event_age_ms dropped here).
+      if (w.state === 'idle') {
+        const { pid_alive, last_event_age_ms, ...row } = await core.worker.get({ worker_id: id });
+        return { ...row, ready_ms, permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions) };
+      }
+      await failNoReady(w, `the worker reached ready but its pid ${w.pid} was no longer alive when the running row would have been written`, { ready_ms });
+    }
+    return { ...written, ready_ms, permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions) };
+  }
+
+  async function message({ worker_id, text }) {
+    const w = await forWorker(worker_id);
+    PZ.refuseIfPaused(w);
+    if (typeof text !== 'string' || !text) fail('E_ARGS', 'message needs text');
+    if (w.substrate === 'claude-code') {
+      W.assertTakesMessage(w, fail, P.pidAlive); // live stdin, and no harness /compact in flight (E_BUSY)
+      // A message starts a turn, mid-turn again until the next `result` (`launch` resets this per process).
+      // 5b fix round, finding 4: the send runs INSIDE turnStarted, before its own await, so no window is
+      // left between the liveness check above and the write for a death to land in.
+      const { sent: bytes } = await W.turnStarted(w, ctx, () => sendStdin(w, text));
+      w.lastEventAt = now();
+      return { worker_id, channel: 'stdin', bytes, pid: w.pid, turn: w.turns + 1 };
+    }
+    // Codex: the previous process has exited by design, so a message is a new resume process
+    // (ADR 0001 §4, ADR 0008 §6). Returns at once with the new pid; the turn lands later.
+    if (!w.sessionId) fail('E_SUBSTRATE', 'codex worker has no thread id to resume', { worker_id, substrate: w.substrate, state: w.state });
+    // An adopted worker whose pid is still alive is a process a previous adapter owns. belay is not
+    // its parent (invariant 1), so it cannot see that turn end, and starting a second process on
+    // the same worktree is the one thing one-process-per-turn exists to prevent. Stop it first.
+    if (!w.child && w.pid && P.pidAlive(w.pid)) {
+      fail('E_SUBSTRATE', 'codex worker is a live process this adapter did not spawn, so it cannot be given a turn; stop it first', { worker_id, substrate: w.substrate, state: w.state, pid: w.pid, adopted: true });
+    }
+    if (w.child && P.pidAlive(w.pid)) {
+      fail('E_SUBSTRATE', 'codex worker is mid-turn; one process per turn', { worker_id, substrate: w.substrate, state: w.state, pid: w.pid });
+    }
+    launch(w, { resume: w.sessionId, prompt: text });
+    w.parser.noteStdinWrite();
+    await writeRow(w, 'running');
+    return { worker_id, channel: 'codex-resume', bytes: Buffer.byteLength(text, 'utf8'), pid: w.pid, turn: w.turns + 1 };
+  }
+
+  // ADR 0023 amendment 2 decision 3: stop always wins, waiting out a pause, resume or restart in flight.
+  // 6e-5/6e-6 (pause.cjs `clearParkForStop`): a stale park record is caught before any write, never overwritten.
+  async function stop({ worker_id, mode = 'graceful', timeout_ms = 10000 }) {
+    const w = await forWorker(worker_id);
+    return LC.runOp(w, 'stop', async () => {
+      const { stale, wasParked } = await PZ.clearParkForStop(w, worker_id); // wasParked: fix round #2, manager.cjs:351
+      if (!stale) W.noteStoppedWhileSettled(w); // item 2 (wait.cjs:32): fixes the settled state too
+      return doStop(w, mode, timeout_ms, { skipRowWrite: stale, treatPidAsDead: wasParked });
+    }, { waitFor: ['pause', 'resume', 'restart'] });
+  }
+
+  async function doStop(w, mode, timeout_ms, { skipRowWrite = false, treatPidAsDead = false } = {}) {
+    const worker_id = w.id;
+    const t0 = now();
+    const pid = w.pid;
+    w.stopRequested = true;
+    // Already gone, or a parked worker's dead-by-construction pid, never re-checked (fix round #2, :351).
+    if (!pid || treatPidAsDead || !P.pidAlive(pid)) {
+      W.settleHeld(w, ctx, 'pid-check-on-stop'); await w.queue; // a death the poll still holds settles now
+      const state = W.terminalState(w);
+      // Fix round: `paused` dropped here. 6e-5: `skipRowWrite` (a stale record) writes nothing over it.
+      if (!skipRowWrite && !['stopped', 'dead', 'idle'].includes(w.state)) await writeRow(w, state);
+      return { worker_id, pid, exit_code: w.exitCode, exit_signal: w.exitSignal, ms_to_exit: 0, graceful: false, killed: false, session_id: w.sessionId, stale: skipRowWrite || undefined };
+    }
+    // Fix round (6f-2): pause.cjs's own step 1b already wrote this row `stopping` — never repeated here.
+    if (w.state !== 'stopping') await writeRow(w, 'stopping');
+    let graceful = false;
+    let killed = false; let refused = null; let notKilled = null;
+    // Closing stdin needs a stdin: an adopted worker's pipes belong to the adapter that spawned it,
+    // so there is nothing to close and the kill is the only channel left.
+    if (mode === 'graceful' && w.substrate === 'claude-code' && w.child) {
+      graceful = (await P.gracefulStop(w.child, timeout_ms)).graceful;
+    }
+    if (!graceful) {
+      // The subtree first, then the exact pid as the backstop that produces the exit event (ADR 0011 §2).
+      const kr = await PI.killWorker(w); // ADR 0039: `killed` is what the kill did, never what was attempted
+      w.treeKill = kr.tree; refused = kr.refused; notKilled = kr.descendants_not_killed; killed = !refused;
+      if (w.child) await W.waitExit(w, Math.max(2000, Math.min(timeout_ms, 10000)));
+      else await P.waitPidGone(pid, { timeoutMs: Math.max(2000, Math.min(timeout_ms, 10000)) });
+    }
+    if (w.child) await W.waitExit(w, 5000);
+    await w.queue;
+    // No child means no exit event, so nothing else will write this row: same fix as the finding above.
+    // A refusal that proved nothing leaves the process possibly running: no terminal row then (a 'mismatch' or an
+    // 'absent' proves the worker is not at that pid, so its terminal row is true).
+    const maybeLive = refused && refused.kind === 'unverifiable' && P.pidAlive(pid);
+    if (!w.child && !maybeLive && w.state !== W.terminalState(w)) await writeRow(w, W.terminalState(w));
+    return {
+      worker_id, pid, exit_code: w.exitCode, exit_signal: w.exitSignal,
+      ms_to_exit: (w.exitedAt || now()) - t0, graceful, killed, session_id: w.sessionId,
+      tree_kill: w.treeKill || null, ...(refused ? { refused: refused.refused, kind: refused.kind, detail: refused.detail } : {}), ...(notKilled ? { descendants_not_killed: notKilled } : {}),
+    };
+  }
+
+  // `workers` holds only what this process launched; an unknown id is looked up in the store rather
+  // than refused (ADR 0009's A3 row), lazily, so touching no old id costs nothing and creates nothing.
+  async function forWorker(workerId) {
+    const known = workers.get(workerId);
+    if (known) return known;
+    if (adopting.has(workerId)) return adopting.get(workerId);
+    const p = W.adopt({ core, workerId, dataDir: root }).then((w) => {
+      workers.set(workerId, w);
+      writeFilesFor(w); // mcp.json, settings.json and the adapter log path belong to this run now
+      if (w.substrate === 'claude-code') w.instructions = I.existingInstructions(w.dir); // never the worktree
+      return w;
+    });
+    adopting.set(workerId, p);
+    try { return await p; } finally { if (adopting.get(workerId) === p) adopting.delete(workerId); }
+  }
+
+  // Shared by `restart` and by `resume` (pause.cjs): `firstTextOverride(branch)` replaces
+  // `restartFirstText`'s own text when given; `appendMessage` follows two newlines; `awaitFirstTurn: false`
+  // returns once the relaunch's `running` row lands, before its first turn ends.
+  async function doRestart(w, { firstTextOverride = null, appendMessage = null, awaitFirstTurn = true, first_turn_timeout_ms = 180000, onFirstText = null, skipDeadPidKill = false } = {}) {
+    const worker_id = w.id;
+    const old_pid = w.pid;
+    const d = decideBranch(w);
+    if (W.settleHeld(w, ctx, 'pid-check-on-restart')) await w.queue; // a held death gets its dead row before the relaunch
+    if (w.child && P.pidAlive(w.pid)) await doStop(w, 'graceful', 10000);
+    // Fix round, should-fix finding: `skipDeadPidKill` (resume, pause.cjs) skips this branch — a park's own
+    // pid is dead by construction, so treating it as a still-alive orphan risks killing a bystander that reused it.
+    else if (!skipDeadPidKill && !w.child && w.pid && P.pidAlive(w.pid)) {
+      w.adoptedKill = (await PI.killWorker(w)).tree;
+      await P.waitPidGone(w.pid, { timeoutMs: 5000 });
+    }
+    w.stopRequested = false;
+
+    const overridden = firstTextOverride ? await firstTextOverride(d.branch) : undefined;
+    let firstText = overridden !== undefined ? overridden : await restartFirstText(w, d.branch, { core });
+    if (d.branch === 'replace') {
+      w.sessionId = null;
+      w.parser = createParser(w.substrate);
+    }
+    if (appendMessage) firstText = firstText ? `${firstText}\n\n${appendMessage}` : appendMessage;
+    if (onFirstText) onFirstText(firstText);
+
+    const resume = d.branch === 'resume' ? w.sessionId : null;
+    launch(w, w.substrate === 'claude-code' ? { resume } : { resume, prompt: firstText });
+    await writeRow(w, 'starting');
+    openWith(w, firstText);
+
+    const t0 = now();
+    const ready = await W.waitReady(w, 60000);
+    if (!ready) {
+      await failNoReady(w, 'the relaunched worker produced no ready event inside the startup window', { branch: d.branch });
+    }
+    const v = await verifyReady(w, ready, t0 + 60000);
+    if (!v.ok) await failNoReady(w, v.reason, { branch: d.branch });
+    w.readyEvidence = v.evidence;
+    const init = W.noteInit(w, ready); // ADR 0021 decisions 3 and 4
+    if (!(await writeRow(w, 'running')) && w.state !== 'idle') {
+      await failNoReady(w, `the relaunched worker reached ready but its pid ${w.pid} was no longer alive when the running row would have been written`, { branch: d.branch });
+    }
+    const turn = awaitFirstTurn ? await W.waitTurn(w, first_turn_timeout_ms) : null;
+    await w.queue;
+    return {
+      worker_id, branch: d.branch, reason: d.reason, old_pid, new_pid: w.pid,
+      session_id: w.sessionId, checkpoint_id: (turn && turn.checkpoint_id) || w.lastCheckpointId,
+      first_turn_usage: turn ? turn.usage : null, first_turn_timed_out: awaitFirstTurn ? turn === null : null,
+      permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions), // F4
+      worker: W.rowOf(w, w.state, ctx), first_turn_awaited: awaitFirstTurn,
+    };
+  }
+
+  // No waitFor: a pause, resume or another restart in flight refuses this one E_BUSY; a fully paused
+  // worker is refused E_PAUSED. 6e-5 item 4: the slot covers only the relaunch, up to its 'running' row,
+  // so a `stop` during the first turn is never held behind it. 6e-6 item 1 (carried item 1, manager.cjs:460):
+  // `w.restartInFlight` names only the relaunch, cleared the instant it settles — a second `restart`
+  // arriving during it shares that promise; one after starts its own, so a `stop` during the first turn,
+  // then a fresh `restart`, relaunches again rather than returning the first's receipt. Once the relaunch
+  // has settled, each caller waits for its own first turn.
+  async function restart({ worker_id, first_turn_timeout_ms = 180000 }) {
+    const w = await forWorker(worker_id);
+    let relaunched;
+    if (w.restartInFlight) {
+      relaunched = await w.restartInFlight;
+    } else {
+      const p = LC.runOp(w, 'restart', () => {
+        PZ.refuseIfPaused(w);
+        return doRestart(w, { first_turn_timeout_ms, awaitFirstTurn: false });
+      }, {});
+      w.restartInFlight = p;
+      try {
+        relaunched = await p;
+      } finally {
+        if (w.restartInFlight === p) w.restartInFlight = null;
+      }
+    }
+    // 6e-6 item 2 (carried items 1 and 5): the wait also ends on the worker's own exit (`turn.exited`),
+    // never the rest of `first_turn_timeout_ms`. A pause's own interrupt (`turn.paused`) lands well
+    // before the park's exit and row write, waited out here too, so `worker` reads `paused`, not `running`.
+    const turn = await W.waitTurn(w, first_turn_timeout_ms);
+    if (turn && turn.paused) await W.waitExit(w, PARK_SETTLE_WAIT_MS);
+    await w.queue;
+    return {
+      ...relaunched, worker: W.rowOf(w, w.state, ctx),
+      checkpoint_id: (turn && turn.checkpoint_id) || w.lastCheckpointId,
+      first_turn_usage: turn && !turn.exited ? turn.usage : null, first_turn_timed_out: turn === null,
+      first_turn_ended_by: turn === null ? 'timeout' : (turn.exited ? 'exit' : 'turn'), first_turn_awaited: true,
+    };
+  }
+
+  const wait = createWait({ workers, get });
+  // build step 6e-4 (ADR 0023 amendment 2): pause parks the worker; resume relaunches it through doRestart.
+  const PZ = createPause({ core, forWorker, doStop, doRestart, runOp: LC.runOp, adapterPid: ctx.adapterPid, writeRow });
+
+  const list = () => LIST.listWorkers(workers);
+
+  // build step 6e-5 design item 1: moved into lifecycle.cjs, verbatim apart from the left_parked skip.
+  // build step 6i-2 design item 3 (R4): `markClosed` flips shutdownFlags only once every worker has
+  // been asked to stop and its queue drained (lifecycle.cjs's own ordering), never before.
+  const shutdown = () => LC.shutdown(workers, {
+    stop, core, clearPoll: () => { if (poll) { clearInterval(poll); poll = null; } },
+    markClosed: () => { shutdownFlags.closed = true; },
+  });
+
+  return {
+    spawn, message, stop, restart, list, shutdown,
+    wait, pause: PZ.pause, resume: PZ.resume,
+    // Read-only handles for tests and for the CLI's own views. Neither writes.
+    _worker: (id) => workers.get(id),
+    _waitTurn: (id, ms) => W.waitTurn(get(id), ms),
+    _waitExit: (id, ms) => W.waitExit(get(id), ms),
+  };
+}
+
+module.exports = { createRunManager, POLL_MS, CLAUDE_RESUME_WINDOW_MS, CODEX_RESUME_WINDOW_MS };

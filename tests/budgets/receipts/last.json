@@ -1,0 +1,166 @@
+{
+  "help_usage_error": {
+    "gate": "help_usage_error",
+    "floor": {
+      "min": 313,
+      "median": 366
+    },
+    "commands": {
+      "help": {
+        "min": 351,
+        "median": 383,
+        "over_floor_ms": 38
+      },
+      "usage_error": {
+        "min": 253,
+        "median": 348,
+        "over_floor_ms": -60
+      }
+    }
+  },
+  "cold_start": {
+    "gate": "cold_start",
+    "floor": {
+      "min": 252,
+      "median": 324
+    },
+    "commands": {
+      "config_path": {
+        "min": 226,
+        "median": 350,
+        "over_floor_ms": -26
+      },
+      "settings": {
+        "min": 299,
+        "median": 350,
+        "over_floor_ms": 47
+      },
+      "doctor": {
+        "min": 306,
+        "median": 387,
+        "over_floor_ms": 54
+      },
+      "mcp_status": {
+        "min": 229,
+        "median": 331,
+        "over_floor_ms": -23
+      }
+    }
+  },
+  "reads_dead_store": {
+    "gate": "reads_dead_store",
+    "floor": {
+      "min": 160,
+      "median": 169
+    },
+    "commands": {
+      "status": {
+        "min": 224,
+        "median": 262,
+        "over_floor_ms": 64
+      },
+      "workers": {
+        "min": 226,
+        "median": 251,
+        "over_floor_ms": 66
+      },
+      "tasks": {
+        "min": 224,
+        "median": 239,
+        "over_floor_ms": 64
+      },
+      "receipts": {
+        "min": 236,
+        "median": 254,
+        "over_floor_ms": 76
+      },
+      "memory_stats": {
+        "min": 224,
+        "median": 257,
+        "over_floor_ms": 64
+      },
+      "briefing": {
+        "min": 236,
+        "median": 265,
+        "over_floor_ms": 76
+      },
+      "logs": {
+        "min": 222,
+        "median": 232,
+        "over_floor_ms": 62
+      },
+      "diff": {
+        "min": 226,
+        "median": 233,
+        "over_floor_ms": 66
+      }
+    }
+  },
+  "panel_reads_dead_store": {
+    "gate": "panel_reads_dead_store",
+    "floor": {
+      "min": 161,
+      "median": 170
+    },
+    "commands": {
+      "transcript": {
+        "min": 250,
+        "median": 264,
+        "over_floor_ms": 89
+      },
+      "notices": {
+        "min": 244,
+        "median": 261,
+        "over_floor_ms": 83
+      },
+      "agents": {
+        "min": 259,
+        "median": 267,
+        "over_floor_ms": 98
+      },
+      "wake_stream": {
+        "min": 185,
+        "median": 191,
+        "over_floor_ms": 24
+      }
+    }
+  },
+  "controls_no_owner": {
+    "gate": "controls_no_owner",
+    "floor": {
+      "min": 163,
+      "median": 173
+    },
+    "commands": {
+      "take_control": {
+        "min": 226,
+        "median": 230,
+        "over_floor_ms": 63
+      },
+      "task_assign": {
+        "min": 212,
+        "median": 231,
+        "over_floor_ms": 49
+      }
+    }
+  },
+  "reads_no_store": {
+    "gate": "reads_no_store",
+    "floor": {
+      "min": 163,
+      "median": 173
+    },
+    "commands": {
+      "status": {
+        "min": 230,
+        "median": 287,
+        "over_floor_ms": 67
+      },
+      "workers": {
+        "min": 218,
+        "median": 226,
+        "over_floor_ms": 55
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+2026-10-07T18:28:35.228Z [DEBUG] Loaded 0 unique skills (0 unconditional, 0 conditional, managed: 0, user: 0, project: 0, additional: 0, legacy commands: 0)
+2026-10-07T18:28:35.282Z [DEBUG] Read hooks.json for plugin codex (enabled=false; will NOT register, plugin is disabled): C:\Home\dev\.claude\plugins\cache\openai-codex\codex\1.0.6\hooks\hooks.json
+2026-10-07T18:28:35.282Z [DEBUG] Read hooks.json for plugin example-plugin (enabled=false; will NOT register, plugin is disabled): C:\Home\dev\.claude\plugins\cache\example\example-plugin\0.2.6\hooks\hooks.json
+2026-10-07T18:28:35.287Z [DEBUG] Found 8 plugins (4 enabled, 4 disabled)
+2026-10-07T18:28:37.709Z [DEBUG] Read hooks.json for plugin codex (enabled=false; will NOT register, plugin is disabled): C:\Home\dev\.claude\plugins\cache\openai-codex\codex\1.0.6\hooks\hooks.json
+2026-10-07T18:28:37.709Z [DEBUG] Read hooks.json for plugin example-plugin (enabled=false; will NOT register, plugin is disabled): C:\Home\dev\.claude\plugins\cache\example\example-plugin\0.2.6\hooks\hooks.json
+2026-10-07T18:28:37.778Z [DEBUG] Found 8 plugins (4 enabled, 4 disabled)
+2026-10-07T18:28:39.734Z [DEBUG] No CLAUDE.md/rules files found
+2026-10-07T18:28:40.126Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.293.d9e; cc_entrypoint=cli; cch=00000;
+2026-10-07T18:28:40.196Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.293.21b; cc_entrypoint=cli; cch=00000; cc_prompt_id=8cdb32cf-137d-425b-8572-afe0f2211eca; cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;
+2026-10-07T18:28:40.505Z [DEBUG] Loaded plugins - Enabled: 4, Disabled: 4, Commands: 0, Agents: 0, Errors: 0
+2026-10-07T18:28:40.705Z [DEBUG] MCP server "belay": Successfully connected (transport: stdio) in 969ms
+2026-10-07T18:28:55.792Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.293.21b; cc_entrypoint=cli; cch=00000; cc_prev_req=req_011CfoMGzzKdRJJXZFP5ZdAb; cc_prompt_id=8cdb32cf-137d-425b-8572-afe0f2211eca; cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;
+2026-10-07T18:28:58.366Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.293.21b; cc_entrypoint=cli; cch=00000; cc_prev_req=req_011CfoMJ9fW7BtghmBuGKSjS; cc_prompt_id=8cdb32cf-137d-425b-8572-afe0f2211eca; cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;
+2026-10-07T18:29:02.379Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.293.21b; cc_entrypoint=cli; cch=00000; cc_prev_req=req_011CfoMJLjkDYKJVV2YyYBxB;
