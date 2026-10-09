@@ -1,0 +1,29 @@
+'use strict';
+// run-identity.cjs — ADR 0039 decision 1 for `belay run`: the creation times of the two processes the run
+// itself starts or is. Neither read may delay the run: the orchestrator's own adapter attaches right after
+// this process does and the epoch order is part of the contract. So this process's time is prefetched when
+// the run begins and used at attach if it is done by then (else null), and the orchestrator's is read beside
+// the attach and lands in the receipt (`orchestrator.pid_created`, or null with `pid_created_error`).
+
+const P = require('../core/process.cjs');
+
+function createRunIdentity(ownPid) {
+  const own = P.createdOf(ownPid).catch(() => null);
+  let orch = null; let orchPid = null;
+  return {
+    // This process's creation time for run.attach, never waiting on the snapshot.
+    async ownNow() {
+      const r = await Promise.race([own, new Promise((res) => setImmediate(() => res(null)))]);
+      return r && r.created != null ? r.created : null;
+    },
+    watchOrchestrator(pid) { orchPid = pid; orch = P.createdOf(pid).catch(() => null); },
+    async orchestratorFacts() {
+      if (!orch) return { pid_created: null, pid_created_error: 'the orchestrator was never started' };
+      const r = await orch;
+      return r && r.created != null ? { pid_created: r.created, pid_created_error: null }
+        : { pid_created: null, pid_created_error: `the process snapshot had no creation time for pid ${orchPid} (unreadable, or the process had already gone)` };
+    },
+  };
+}
+
+module.exports = { createRunIdentity };

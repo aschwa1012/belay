@@ -1,0 +1,49 @@
+{
+  "name": "@aschwa1012/belay",
+  "version": "0.1.0",
+  "description": "Orchestration substrate: runs Claude Code and Codex CLI sessions as worker processes, coordinates them through a shared store, and lets one human watch and intervene.",
+  "keywords": [
+    "claude-code",
+    "codex",
+    "orchestration",
+    "agents",
+    "mcp",
+    "multi-agent",
+    "cli"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/aschwa1012/belay#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aschwa1012/belay.git"
+  },
+  "bugs": {
+    "url": "https://github.com/aschwa1012/belay/issues"
+  },
+  "os": [
+    "win32"
+  ],
+  "engines": {
+    "node": ">=24.19.0"
+  },
+  "bin": {
+    "belay": "src/cli/belay.cjs",
+    "belay-mcp": "src/mcp/belay-mcp.cjs"
+  },
+  "files": [
+    "src/",
+    "!src/mod/tests/",
+    "README.md",
+    "INSTALL.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node scripts/test.cjs",
+    "test:budgets": "node --test --test-timeout=60000 \"tests/budgets/**/*.test.cjs\""
+  },
+  "dependencies": {},
+  "devDependencies": {},
+  "optionalDependencies": {
+    "@huggingface/transformers": "4.3.0"
+  }
+}

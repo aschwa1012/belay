@@ -1,0 +1,8 @@
+{
+  "_note": "A copy of the shape of ~/.claude/settings.json on this host at build time, so the settings-file test does not depend on the operator's live settings. ADR 0007 §6: every plugin named here is disabled in a worker.",
+  "enabledPlugins": {
+    "example-plugin@example": true,
+    "example-extra@example": true,
+    "codex@openai-codex": true
+  }
+}

@@ -1,0 +1,319 @@
+// tools.cjs — the nineteen tools of ADR 0010 §2 as amended by ADR 0015, their schemas, and the
+// route each one takes into the Core API or the RunManager. `toolsFor(role)` returns exactly what `tools/list` sends for that role:
+// the nine both-role tools plus that role's own. ROUTES is kept separate from the schemas so that no
+// routing field is ever serialised into the listing, which is measured against the ADR 0010 §5 budget
+// (10,240 bytes orchestrator since ADR 0010 amendment 4, 4,096 bytes worker). Descriptions say what the tool returns as proof and
+// when it refuses; nothing else, because every byte is a per-turn tax on the orchestrator's context.
+//
+// Two places where ADR 0010 disagrees with itself or with src/core/api.md, resolved in favour of the
+// §2 table and the contract, and reported to the lead:
+//   - §5 prose says the worker role lists ten tools; the §2 table gives it twelve (nine both-role plus
+//     lease_renew, lease_release, checkpoint_write). Twelve are listed.
+//   - §2 routes worker_stop to `run.stopWorker` or `run.kill` by mode; api.md §5 gives one RunManager
+//     method, `stop({ worker_id, mode, timeout_ms })`. The contract wins; `mode` is required.
+'use strict';
+
+const S = (properties, required) => {
+  const s = { type: 'object', properties };
+  if (required) s.required = required;
+  return s;
+};
+const str = (description) => (description ? { type: 'string', description } : { type: 'string' });
+const int = (description) => (description ? { type: 'integer', description } : { type: 'integer' });
+const num = () => ({ type: 'number' });
+const bool = () => ({ type: 'boolean' });
+const strs = (description) => {
+  const a = { type: 'array', items: { type: 'string' } };
+  if (description) a.description = description;
+  return a;
+};
+
+// name -> { role, via, method }. `via` is 'core' (a dotted Core method), 'run' (a RunManager method)
+// or 'briefing' (the one tool that composes two Core calls into { line, doc }).
+const ROUTES = {
+  memory_store: { role: 'both', via: 'core', method: 'memory.store' },
+  memory_retrieve: { role: 'both', via: 'core', method: 'memory.get' },
+  memory_search: { role: 'both', via: 'core', method: 'memory.search' },
+  memory_list: { role: 'both', via: 'core', method: 'memory.list' },
+  memory_delete: { role: 'both', via: 'core', method: 'memory.delete' },
+  memory_stats: { role: 'both', via: 'core', method: 'memory.stats' },
+  status: { role: 'both', via: 'core', method: 'status.get' },
+  task_list: { role: 'both', via: 'core', method: 'task.list' },
+  briefing: { role: 'both', via: 'briefing', method: 'continuity.resumeLine+resumeDoc' },
+  worker_spawn: { role: 'orchestrator', via: 'run', method: 'spawn' },
+  worker_message: { role: 'orchestrator', via: 'run', method: 'message' },
+  worker_stop: { role: 'orchestrator', via: 'run', method: 'stop' },
+  worker_restart: { role: 'orchestrator', via: 'run', method: 'restart' },
+  task_create: { role: 'orchestrator', via: 'core', method: 'task.create' },
+  task_assign: { role: 'orchestrator', via: 'core', method: 'task.assign' },
+  // ADR 0010 amendment 3: the only way an orchestrator over MCP can write `done` and clear a dependency.
+  task_evaluate: { role: 'orchestrator', via: 'core', method: 'task.evaluate' },
+  // ADR 0015: admitted to the surface, which is nineteen tools from that record. It is the only way
+  // to wait in the deployment ADR 0009 §1 names first — an operator's own session, which belay
+  // attaches to and therefore cannot wake, because it does not own that session's stdin.
+  worker_wait: { role: 'orchestrator', via: 'run', method: 'wait' },
+  lease_renew: { role: 'worker', via: 'core', method: 'lease.renew' },
+  lease_release: { role: 'worker', via: 'core', method: 'lease.release' },
+  checkpoint_write: { role: 'worker', via: 'core', method: 'continuity.checkpoint' },
+  // build step 6d, ADR 0020 decisions 1 and 5: the worker adapter's own prompt tool (listed only for
+  // an adapter launched with --permit, never through toolsFor, and hidden from the model — measured in
+  // ADR 0020's evidence table) and the orchestrator's window and hand on the same channel.
+  permit: { role: 'worker', via: 'permit', method: 'permission.request+wait' },
+  permission_list: { role: 'orchestrator', via: 'core', method: 'permission.list' },
+  permission_decide: { role: 'orchestrator', via: 'core', method: 'permission.decide' },
+};
+
+const BOTH = [
+  {
+    name: 'memory_store',
+    description: 'Store one entry. Returns the row written: id, action inserted or updated, namespace, worker id. Refuses text past the embedder\'s window.',
+    inputSchema: S({
+      text: str('One self-contained statement'),
+      namespace: str('Defaults to this run'),
+      type: { type: 'string', enum: ['fact', 'episode', 'procedure'] },
+      tags: strs(),
+      provenance: str('Source, e.g. a path'),
+      supersedes: str('id this replaces'),
+      ttl_seconds: num(),
+    }, ['text']),
+  },
+  {
+    name: 'memory_retrieve',
+    description: 'Fetch one entry by id. Returns the row without its vector, or found false.',
+    inputSchema: S({ id: str() }, ['id']),
+  },
+  {
+    name: 'memory_search',
+    description: 'Semantic search over every worker\'s entries. Returns rows with score, worker id, tags and provenance. Fails rather than returning empty when no embedder is loaded.',
+    inputSchema: S({
+      query: str('Natural language'),
+      namespace: str(),
+      k: int('default 10'),
+      min_score: num(),
+      include_superseded: bool(),
+    }, ['query']),
+  },
+  {
+    name: 'memory_list',
+    description: 'List recent entries in a namespace. Returns the rows.',
+    inputSchema: S({ namespace: str(), limit: int(), offset: int() }),
+  },
+  {
+    name: 'memory_delete',
+    description: 'Delete one entry by id. Returns id and whether a row was deleted.',
+    inputSchema: S({ id: str() }, ['id']),
+  },
+  {
+    name: 'memory_stats',
+    description: 'Row-derived counts plus the owner pid, pipe and whether it answered.',
+    inputSchema: S({}),
+  },
+  {
+    name: 'status',
+    description: 'The liveness ladder: every rung with whether it held and what established it, the run, and per worker pid_alive, last-event age, turns, tokens and cost. Never refuses; a dead system is a valid answer.',
+    inputSchema: S({ deep: bool('Also query the substrate registry; slower') }),
+  },
+  {
+    name: 'task_list',
+    description: 'Tasks with their current lease holder and expiry, whether that holder\'s pid is alive, and the last checkpoint id and time.',
+    inputSchema: S({ states: strs('open, assigned, released or done') }),
+  },
+  {
+    name: 'briefing',
+    description: 'Resume material rebuilt from the store. Returns line, at most 400 bytes, and doc, at most 4096, with anything a worker said labelled unverified. Give worker_id or task_id.',
+    inputSchema: S({ worker_id: str(), task_id: str() }),
+  },
+];
+
+const ORCHESTRATOR = [
+  {
+    name: 'worker_spawn',
+    description: 'Launch a real Claude Code or Codex process and wait for its ready event. Returns the worker row: id, substrate, pid, session id, argv hash, started_at, ready_ms. If no ready event arrives it fails with the exit code and stderr tail and writes the row dead, never running. Takes seconds.',
+    inputSchema: S({
+      substrate: { type: 'string', enum: ['claude-code', 'codex'] },
+      worktree: str('Absolute path; the worker\'s cwd'),
+      prompt: str('First message'),
+      task_id: str('Assign this task once ready and prepend its resume line'),
+      model: str(),
+      effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      allowed_tools: strs(),
+      permission_mode: str(),
+      startup_timeout_ms: int('default 60000'),
+      worker_id: str('Otherwise generated'),
+    }, ['substrate', 'worktree', 'prompt']),
+  },
+  {
+    // ADR 0015. `worker_spawn` above returns at the ready event and the worker keeps running; this is
+    // the call that waits for what happens next. A timeout is a result rather than an error because
+    // the caller's own tool timeout has to be the outer bound, and a refusal would lose the fact that
+    // nothing had finished yet.
+    name: 'worker_wait',
+    description: 'Block until one of the named workers, or any worker this session launched, finishes a turn or dies, or the timeout passes. Returns which worker, what happened, what established it, its turn and checkpoint id, and how long the call held. A timeout is a result, not an error: call it again.',
+    inputSchema: S({
+      worker_ids: strs('Otherwise every worker this session launched'),
+      timeout_ms: int('default 110000'),
+    }),
+  },
+  {
+    name: 'worker_message',
+    description: 'Send text to a live worker. Returns the channel used, bytes written, pid and turn. Refuses, naming the substrate, when that substrate cannot take a message in its current state.',
+    inputSchema: S({ worker_id: str(), text: str() }, ['worker_id', 'text']),
+  },
+  {
+    name: 'worker_stop',
+    description: 'Stop a worker by its exact pid. Returns exit code, signal, ms to exit, whether it was graceful or killed, and the session id to resume from later.',
+    inputSchema: S({
+      worker_id: str(),
+      mode: { type: 'string', enum: ['graceful', 'kill'] },
+      timeout_ms: int('default 10000'),
+    }, ['worker_id', 'mode']),
+  },
+  {
+    name: 'worker_restart',
+    description: 'Restart a worker from its last checkpoint. Returns which branch was taken, resume or replace, and why, the old and new pid, session id, checkpoint id and the first turn\'s usage.',
+    inputSchema: S({ worker_id: str(), first_turn_timeout_ms: int('default 180000') }, ['worker_id']),
+  },
+  {
+    name: 'task_create',
+    description: 'Create a task with the checks that decide it is done, the files it owns and the tasks it must wait for. Returns the task row in state open. Refuses, naming the other task and the paths, when a file is already owned by a task that is not done, and refuses a dependency that has no row.',
+    inputSchema: S({
+      spec: str('What is to be done'),
+      acceptance: S({
+        commands: {
+          type: 'array',
+          items: S({ argv: strs(), cwd: str(), timeout_ms: int() }, ['argv']),
+        },
+        files_within_owned: bool(),
+      }),
+      files_owned: strs('Paths relative to the worktree'),
+      depends_on: strs('Task ids that must be done before this one can be assigned'),
+      repairs: str('A fix task: the id of the work task it repairs; capped by max_fix_rounds'),
+      id: str(),
+    }, ['spec']),
+  },
+  {
+    name: 'task_assign',
+    description: 'Assign a task to a live worker and take a lease for it. Returns the old and new lease rows and the task row. Refuses when the operator holds the lease, when a dependency of the task is not done, naming it and its holder, or when the worker is not starting, running or idle.',
+    inputSchema: S({ task_id: str(), worker_id: str(), ttl_ms: int('default 600000') }, ['task_id', 'worker_id']),
+  },
+  {
+    // ADR 0020 decision 5: the orchestrator's window onto the permission channel, so a headless run
+    // with a prompting worker does not stall until a human types.
+    name: 'permission_list',
+    description: 'List permission requests waiting on a verdict. Returns each with its tool, input, age and whether the requesting adapter is still alive. Defaults to pending only.',
+    inputSchema: S({ run_id: str(), states: strs('pending, allowed, denied or expired; default pending') }),
+  },
+  {
+    name: 'permission_decide',
+    description: 'Allow or deny one pending permission request. Returns the request and verdict rows, and whether the requesting adapter is alive to act on it.',
+    inputSchema: S({ id: str(), verdict: { type: 'string', enum: ['allow', 'deny'] }, reason: str() }, ['id', 'verdict']),
+  },
+  {
+    name: 'task_evaluate',
+    description: 'Run a task\'s checks in worktree. Returns row and results; done (unblocks dependents) only if all pass.',
+    inputSchema: S({
+      task_id: str(),
+      worktree: str(),
+      base: str('Diff base; default merge-base main'),
+    }, ['task_id', 'worktree']),
+  },
+];
+
+const WORKER = [
+  {
+    name: 'lease_renew',
+    description: 'Extend the lease you hold. Returns the lease row with its new expiry. Refuses if you are not the holder or it already expired.',
+    inputSchema: S({ lease_id: str() }, ['lease_id']),
+  },
+  {
+    name: 'lease_release',
+    description: 'Release your lease. Returns the released task row; refuses if not the holder. result (max 4KB) hands back branch, head, tests, findings; a review sets verdict holds|refuted and summary. The orchestrator reads it as handoff.',
+    inputSchema: S({ lease_id: str(), reason: str(), result: { type: 'object' } }, ['lease_id']),
+  },
+  {
+    name: 'checkpoint_write',
+    description: 'Record what you did and what is next. Stored as your claim, not as fact. Returns the checkpoint row: turn, files touched, next step, open questions. Refuses unless you hold the task\'s current lease.',
+    inputSchema: S({
+      task_id: str(),
+      turn: int(),
+      files_touched: strs(),
+      summary: str(),
+      next_step: str(),
+      open_questions: strs(),
+    }, ['task_id']),
+  },
+];
+
+const ROLES = ['orchestrator', 'worker'];
+
+// build step 6d, ADR 0020 decision 1: the worker adapter's own prompt tool, listed only for an
+// adapter launched with --permit (belay-mcp.cjs appends it to toolsFor's own listing, never through
+// this function), and measured on this build: the model cannot see it (ADR 0020, the
+// measured receipt), so its bytes are never a per-turn tax on the worker's own context and are
+// capped separately from ADR 0010 §5's 4,096 byte worker budget.
+const PERMIT_TOOL = {
+  name: 'permit',
+  description: 'Answers a permission prompt from the operator or orchestrator. Called by the substrate itself, never by the model.',
+  inputSchema: S({ tool_name: str(), input: { type: 'object' }, tool_use_id: str() }),
+};
+
+function toolsFor(role) {
+  if (role === 'orchestrator') return BOTH.concat(ORCHESTRATOR);
+  if (role === 'worker') return BOTH.concat(WORKER);
+  throw Object.assign(new Error(`unknown role ${role}`), { code: 'E_ROLE' });
+}
+
+const permitBytes = () => Buffer.byteLength(JSON.stringify(PERMIT_TOOL), 'utf8');
+
+// Which role may call a tool, without building a listing. Returns 'both', 'orchestrator', 'worker', or
+// undefined when the name is not a tool at all.
+const roleOf = (name) => (ROUTES[name] ? ROUTES[name].role : undefined);
+const routeOf = (name) => ROUTES[name];
+const allows = (role, name) => {
+  const r = roleOf(name);
+  return r === 'both' || r === role;
+};
+
+const BUDGET = { orchestrator: 10240, worker: 4096, permit: 320 }; // ADR 0010 amendment 4: orchestrator 10 KB
+const listingBytes = (role) => Buffer.byteLength(JSON.stringify(toolsFor(role)), 'utf8');
+
+const BY_NAME = new Map();
+for (const t of BOTH.concat(ORCHESTRATOR, WORKER)) BY_NAME.set(t.name, t);
+const schemaOf = (name) => (BY_NAME.get(name) || {}).inputSchema;
+
+// Optional arguments where an explicit null is refused, not read as absent: the core refuses it too
+// (ADR 0010 amendment 3), and the boundary must say the same thing before the call reaches it.
+const NO_NULL = { task_evaluate: ['base'] };
+
+// The model is a boundary, so the required fields and the declared type of each named top-level
+// property are checked here rather than left for the core to discover. Properties the schema does not
+// name are passed through untouched: the core owns what it accepts, and this is not a JSON Schema
+// implementation. Throws E_ARGS naming the field.
+function validateArgs(name, args) {
+  const schema = schemaOf(name);
+  if (!schema) return args;
+  const a = args || {};
+  const bad = (message, detail) => { throw Object.assign(new Error(message), { code: 'E_ARGS', detail }); };
+  if (typeof a !== 'object' || Array.isArray(a)) bad(`${name} takes an object of arguments`, { tool: name });
+  for (const k of schema.required || []) {
+    if (a[k] === undefined || a[k] === null) bad(`${name} needs ${k}`, { tool: name, missing: k });
+  }
+  for (const [k, spec] of Object.entries(schema.properties || {})) {
+    const v = a[k];
+    if (v === null && (NO_NULL[name] || []).includes(k)) bad(`${name}: ${k} must be ${spec.type}, not null`, { tool: name, field: k, expected: spec.type });
+    if (v === undefined || v === null) continue;
+    const t = spec.type;
+    const ok = t === 'string' ? typeof v === 'string'
+      : t === 'integer' ? Number.isInteger(v)
+        : t === 'number' ? typeof v === 'number'
+          : t === 'boolean' ? typeof v === 'boolean'
+            : t === 'array' ? Array.isArray(v)
+              : t === 'object' ? (typeof v === 'object' && !Array.isArray(v))
+                : true;
+    if (!ok) bad(`${name}: ${k} must be ${t}`, { tool: name, field: k, expected: t });
+    if (spec.enum && !spec.enum.includes(v)) bad(`${name}: ${k} must be one of ${spec.enum.join(', ')}`, { tool: name, field: k, expected: spec.enum });
+  }
+  return a;
+}
+
+module.exports = { toolsFor, roleOf, routeOf, allows, schemaOf, validateArgs, ROUTES, ROLES, BUDGET, listingBytes, PERMIT_TOOL, permitBytes };

@@ -1,0 +1,130 @@
+// belay's mod: the contract of the values it keeps in `$.state`, one block per feature under the
+// plugin's name. Self-contained (the engine reads this file alone). The panel's block is `panel*`;
+// the wake adds its own block beside it.
+
+export type BelayDisplayState = 'running' | 'waiting' | 'idle' | 'stalled' | 'permission' | 'parked' | 'dead' | 'done' | 'starting' | 'stopping' | 'unknown'
+
+export type BelayCache = {
+  ttlS: number | null
+  ttlBy: string | null
+  lastRequestAtMs: number | null
+  ageMs: number | null
+  leftMs: number | null
+  state: 'warm' | 'low' | 'cold' | 'unknown'
+}
+
+export type BelayAgent = {
+  id: string
+  role: string | null
+  substrate: string | null
+  model: string | null
+  effort: string | null
+  state: BelayDisplayState
+  stateRaw: string | null
+  stateBy: string | null
+  ctxTokens: number | null
+  ctxWindow: number | null
+  ctxPct: number | null
+  costUsd: number | null
+  costSource: string | null
+  cache: BelayCache | null
+  task: { id: string; title: string | null; titleSource: string | null; source: string | null } | null
+  launchMode: string | null
+  version: string | null
+  pid: number | null
+}
+
+export type BelayNotice = {
+  key: string
+  kind: string
+  tone: 'permission' | 'dead' | 'stalled' | 'holds' | 'refuted' | 'paused' | 'ended' | 'stopped'
+  ts: number | null
+  agentId: string | null
+  taskId: string | null
+  text: string
+  ids: string
+  cmd: string | null
+}
+
+export type BelayEntry = { kind: string; text: string; ts: number | null }
+
+export type BelaySettings = {
+  pane: 'docked' | 'above-prompt'
+  marks: 'shapes' | 'words' | 'colour'
+  cache: 'countdown' | 'bar' | 'both'
+  context: 'figure' | 'bar' | 'both'
+  task: 'kind' | 'title' | 'off'
+  band: 'one-line' | 'two-lines' | 'minimal'
+}
+
+export type BelayPanelFooter = {
+  agents: number
+  totalCostUsd: number | null
+  notRecorded: number
+  asOfMs: number | null
+  highestCtxPct: number | null
+}
+
+export type BelayPanelSnap = {
+  fetchedAt: number
+  runId: string | null
+  mode: string | null
+  /** From the orchestrator's row in the current successful agents read only; null when unknown or stale. */
+  runState: 'running' | 'paused' | 'ended' | 'dead' | null
+  /** The agents read of this round failed: the data above is from an earlier read. */
+  stale: boolean
+  /** A configuration error that stops every read (belay-run.json, no CLI). */
+  fatal: string | null
+  /** The last transcript read succeeded, and when (the snapshot's fetch time). */
+  transcriptOk: boolean
+  transcriptAt: number | null
+  startedAtMs: number | null
+  pausedAtMs: number | null
+  /** The first read at which the orchestrator was dead: the elapsed time stops there. */
+  frozenAtMs: number | null
+  endedAtMs: number | null
+  tasks: { done: number | null; total: number | null; held: number } | null
+  /** The run row records the limit, not the rounds used. */
+  maxFixRounds: number | null
+  embedder: string | null
+  agents: BelayAgent[]
+  footer: BelayPanelFooter | null
+  notices: BelayNotice[]
+  transcript: BelayEntry[] | null
+  settings: BelaySettings
+  /** One line per failing command: the command and its exit code. */
+  errors: string[]
+}
+
+export type BelayPanelWatch = {
+  runId: string | null
+  dataDir: string | null
+  cli: string | null
+  node: string | null
+  /** belay-run.json exists but is unusable. Nothing is read and nothing falls back. */
+  error: string | null
+  /** Bound by belay-run.json: the CLI is exactly [node, cli]; a lack of either is an error, not a fallback. */
+  fixed: boolean
+}
+
+export type BelayPanelUi = {
+  open: boolean
+  selected: string | null
+  legend: boolean
+  foldOpen: boolean
+  /** Keys of the orchestrator's tool-call groups the person expanded. */
+  groups: string[]
+  /** A docked Pane is actually seated; the inline panel is drawn while it is not. */
+  placed: boolean
+  seen: string[]
+}
+
+declare module 'claude-code' {
+  interface PluginState {
+    belay: {
+      panelWatch: BelayPanelWatch | null
+      panelSnap: BelayPanelSnap | null
+      panelUi: BelayPanelUi
+    }
+  }
+}

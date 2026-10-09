@@ -1,0 +1,29 @@
+2026-10-08T11:14:14.521Z [DEBUG] MDM settings load completed in 2ms
+2026-10-08T11:14:14.533Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Program Files\ClaudeCode\managed-settings.json
+2026-10-08T11:14:14.538Z [DEBUG] CA certs: Config fallback - globalEnv keys: , settingsEnv keys: none
+2026-10-08T11:14:14.542Z [DEBUG] [init] configureGlobalMTLS starting
+2026-10-08T11:14:14.542Z [DEBUG] [init] configureGlobalMTLS complete
+2026-10-08T11:14:14.542Z [DEBUG] [init] configureGlobalAgents starting
+2026-10-08T11:14:14.542Z [DEBUG] CA certs: stores=bundled,system, extraCertsPath=undefined
+2026-10-08T11:14:14.542Z [DEBUG] CA certs: Loaded 121 bundled root certificates
+2026-10-08T11:14:14.556Z [DEBUG] CA certs: Dropped 6 expired certificate(s) from system store
+2026-10-08T11:14:14.557Z [DEBUG] CA certs: Loaded 67 system CA certificates
+2026-10-08T11:14:14.557Z [DEBUG] mTLS: Creating HTTPS agent with custom certificates
+2026-10-08T11:14:14.557Z [DEBUG] [init] configureGlobalAgents complete
+2026-10-08T11:14:14.559Z [DEBUG] Using bash path: "C:\Program Files\Git\bin\bash.exe"
+2026-10-08T11:14:14.561Z [DEBUG] Git remote URL: null
+2026-10-08T11:14:14.561Z [DEBUG] No git remote URL found
+2026-10-08T11:14:14.564Z [DEBUG] Error log sink initialized
+2026-10-08T11:14:14.566Z [DEBUG] clearPluginCache: invalidating loadAllPlugins cache (preAction: --plugin-dir inline plugins)
+2026-10-08T11:14:14.639Z [DEBUG] [ToolSearch:optimistic] mode=tst, ENABLE_TOOL_SEARCH=undefined, result=true
+2026-10-08T11:14:14.643Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Home\dev\AppData\Local\Temp\belay-iofs\F-H5-muzfvate\repo\.claude\settings.json
+2026-10-08T11:14:14.644Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Home\dev\AppData\Local\Temp\belay-iofs\F-H5-muzfvate\repo\.claude\settings.local.json
+2026-10-08T11:14:14.645Z [DEBUG] [STARTUP] Loading MCP configs...
+2026-10-08T11:14:14.646Z [DEBUG] [STARTUP] Running setup()...
+2026-10-08T11:14:14.651Z [DEBUG] [win32-kernel32] bun:ffi loaded
+2026-10-08T11:14:14.680Z [DEBUG] Loaded 3 installed plugins from C:\Home\dev\.claude\plugins\installed_plugins.json
+2026-10-08T11:14:14.683Z [DEBUG] Loading skills from: managed=C:\Program Files\ClaudeCode\.claude\skills, user=C:\Home\dev\.claude\skills, project=[]
+2026-10-08T11:14:14.688Z [DEBUG] Failed to stat directory C:\Program Files\ClaudeCode\.claude\agents: ENOENT: no such file or directory, stat 'C:\Program Files\ClaudeCode\.claude\agents'
+2026-10-08T11:14:14.691Z [DEBUG] Failed to stat directory C:\Program Files\ClaudeCode\.claude\commands: ENOENT: no such file or directory, stat 'C:\Program Files\ClaudeCode\.claude\commands'
+2026-10-08T11:14:14.694Z [DEBUG] Loaded 0 unique skills (0 unconditional, 0 conditional, managed: 0, user: 0, project: 0, additional: 0, legacy commands: 0)
+2026-10-08T11:14:14.719Z [INFO] [uds-messaging] Listening: \\.\pipe\LOCAL\cc-msg-32995024116df36cf0f11f78c06fadd2
