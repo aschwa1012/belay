@@ -43,9 +43,12 @@ function rereadOwnerLock(dataDir, attempts = 5) {
   return null;
 }
 
+// ADR 0040 §2, routing: a keyword search needs no vector, and a supplied vector needs no embedder, so both take
+// the ordinary bound and may fall back to the copy. Semantic and hybrid with no vector wait on the owner's embedder.
 function readTimeoutFor(method, params) {
-  if (method === 'memory.search' && !params.query_embedding && !params.query_embedding_b64) return EMBEDDING_READ_TIMEOUT_MS;
-  return READ_TIMEOUT_MS;
+  if (method !== 'memory.search' || params.mode === 'keyword') return READ_TIMEOUT_MS;
+  if (params.query_embedding || params.query_embedding_b64) return READ_TIMEOUT_MS;
+  return EMBEDDING_READ_TIMEOUT_MS;
 }
 
 // memory.warm({ wait }) may be given a longer limit for a cold cache (timeout_ms, at most 600,000 ms).
@@ -121,7 +124,15 @@ class Core {
 
   // ---- read: owner first, then copy-then-read ----------------------------
   async _read(method, params) {
-    const viaOwner = await this._tryOwner(method, params);
+    let viaOwner, embedderFailure = null;
+    try { viaOwner = await this._tryOwner(method, params); }
+    catch (e) {
+      // A hybrid search that cannot reach its owner's embedder still has its keyword half: it answers from the
+      // copy, and the result names the cause in modes_failed. Every other read keeps the refusal.
+      if (!(method === 'memory.search' && params.mode === 'hybrid' && isTransport(e))) throw e;
+      embedderFailure = { code: e.code, message: e.message };
+      viaOwner = { ok: false };
+    }
     if (viaOwner.ok) return viaOwner.value;
     const note = viaOwner.unresponsive ? unresponsive.describe(viaOwner.unresponsive) : null;
     const { Store } = require('./store.cjs');
@@ -134,14 +145,14 @@ class Core {
     if (!fs.existsSync(path.join(this.dataDir, 'memory.db'))) {
       const store = new Store(':memory:');
       try {
-        const engine = new Engine({ dataDir: this.dataDir, store, getEmbedder: null, owner: null, establishedBy: 'none' });
+        const engine = new Engine({ dataDir: this.dataDir, store, getEmbedder: null, owner: null, establishedBy: 'none', embedderFailure });
         return await engine.handle(method, params);
       } finally { try { store.close(); } catch { /* throwaway */ } }
     }
     return withCopy(this.dataDir, async (dbPath, establishedBy) => {
       const store = new Store(dbPath);
       try {
-        const engine = new Engine({ dataDir: this.dataDir, store, getEmbedder: null, owner: null, establishedBy: note ? `${establishedBy}; ${note}` : establishedBy });
+        const engine = new Engine({ dataDir: this.dataDir, store, getEmbedder: null, owner: null, establishedBy: note ? `${establishedBy}; ${note}` : establishedBy, embedderFailure });
         return await engine.handle(method, params);
       } finally { try { store.close(); } catch { /* throwaway copy */ } }
     });
@@ -375,4 +386,4 @@ async function openCore(opts = {}) {
   return new Core(opts);
 }
 
-module.exports = { openCore, CoreError, pipeName, pidAlive, METHOD_NAMES };
+module.exports = { openCore, CoreError, pipeName, pidAlive, METHOD_NAMES, readTimeoutFor };

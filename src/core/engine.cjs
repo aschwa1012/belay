@@ -18,6 +18,23 @@ const continuity = require('./continuity.cjs');
 const status = require('./status.cjs');
 const diff = require('./methods-diff.cjs');
 const permission = require('./methods-permission.cjs');
+const search = require('./memory-search.cjs');
+
+// A method whose module is built apart: loaded on its first call, so this file does not need the module to
+// load. A checkout without it refuses by name instead of throwing a bare require error.
+function lazy(file, name) {
+  return (E, caller, args) => {
+    let mod;
+    try { mod = require(file); }
+    catch (e) {
+      if (e && e.code === 'MODULE_NOT_FOUND' && String(e.message).includes(file.slice(2))) {
+        throw err('E_INTERNAL', `${name} is not available: ${file} is missing from this build`, { file, method: name });
+      }
+      throw e;
+    }
+    return mod[name](E, caller, args);
+  };
+}
 
 const ALL = ROLES;
 const ORCH = ['orchestrator'];
@@ -29,9 +46,17 @@ const ORCH_OR_OPERATOR = ['orchestrator', 'operator'];
 
 const METHODS = {
   'memory.store': { roles: ALL, kind: 'write', fn: memory.store },
-  'memory.get': { roles: ALL, kind: 'read', fn: memory.get },
-  'memory.search': { roles: ALL, kind: 'read', fn: memory.search },
-  'memory.list': { roles: ALL, kind: 'read', fn: memory.list },
+  // ADR 0040 §2: the read methods live in memory-search.cjs (layered, filtered, hybrid, with the honesty contract).
+  'memory.get': { roles: ALL, kind: 'read', fn: search.get },
+  'memory.search': { roles: ALL, kind: 'read', fn: search.search },
+  'memory.list': { roles: ALL, kind: 'read', fn: search.list },
+  'memory.timeline': { roles: ALL, kind: 'read', fn: search.timeline },
+  'memory.get_many': { roles: ALL, kind: 'read', fn: search.getMany },
+  'memory.setStatus': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-status.cjs', 'setStatus') },
+  'memory.recordEvent': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-ledger.cjs', 'recordEvent') },
+  'memory.events': { roles: ALL, kind: 'read', fn: lazy('./methods-ledger.cjs', 'events') },
+  'usage.record': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-ledger.cjs', 'usageRecord') },
+  'usage.list': { roles: ALL, kind: 'read', fn: lazy('./methods-ledger.cjs', 'usageList') },
   'memory.delete': { roles: ALL, kind: 'write', fn: memory.delete },
   'memory.stats': { roles: ALL, kind: 'read', fn: memory.stats },
   // build 12b E2: start the embedder child and its load ahead of first use (the run's warm-up), so the
@@ -104,7 +129,7 @@ function validateCaller(caller) {
 class Engine {
   // `owner` is set only when this engine belongs to the process that holds the lock; `establishedBy`
   // says how the rows behind a read were obtained ('owner', 'copy' or 'none').
-  constructor({ dataDir, store, getEmbedder = null, owner = null, establishedBy = 'copy' }) {
+  constructor({ dataDir, store, getEmbedder = null, owner = null, establishedBy = 'copy', embedderFailure = null }) {
     this.dataDir = dataDir;
     this.store = store;
     // A provider, not a loaded model: the embedding library is reached only by a call that needs a
@@ -112,6 +137,9 @@ class Engine {
     this._getEmbedder = getEmbedder;
     this.owner = owner;
     this.establishedBy = establishedBy;
+    // Why the owner could not be asked for a vector on this read ({ code, message }): set by a copy read that fell
+    // back from a wedged or still-loading owner, so a hybrid search reports that cause and not "no embedder".
+    this.embedderFailure = embedderFailure;
     // build step 6d: in-process waiters for `permission.wait`, keyed by permission id — meaningful only
     // on the live owner's engine; a copy's engine has an empty map and nothing to resolve.
     this.waiters = new Map();
@@ -149,6 +177,9 @@ class Engine {
   }
 
   getEmbedder() {
+    if (!this._getEmbedder && this.embedderFailure) {
+      return Promise.reject(err(this.embedderFailure.code, `the owner could not be asked for a vector: ${this.embedderFailure.message}`));
+    }
     if (!this._getEmbedder) {
       return Promise.reject(err('E_NO_EMBEDDER', 'no owner answered, so this read fell back to a copy of the store and has no embedder; supply a vector with the call'));
     }
