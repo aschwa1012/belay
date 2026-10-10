@@ -161,3 +161,22 @@ test('manager, lever on: the task, then a message, each on the turn it starts, w
     assert.ok(!JSON.stringify(got).includes(shim.SECRET));
   });
 });
+
+test('the harness /compact is recorded as kind compact, and the bottle shows it as generated, never as the orchestrator', () => {
+  const dir = tmp();
+  try {
+    const w = worker(dir);
+    const ctx = ctxOn();
+    SL.record(w, ctx, 'task', 'the spec');
+    fs.appendFileSync(w.streamPath, RESULT);
+    const row = SL.record(w, ctx, 'compact', '/compact keep the plan');
+    assert.deepStrictEqual([row.kind, row.turn], ['compact', 2]);
+    // compaction.cjs's own write goes through the same record with the same kind.
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'run', 'compaction.cjs'), 'utf8');
+    assert.match(src, /record\(w, ctx, 'compact', text\)/);
+    const { buildBottle } = require('../../src/run/bottle.cjs');
+    const b = buildBottle({ streamPath: path.join(__dirname, 'fixtures', 'claude-stream.jsonl'), sentPath: SL.sentPath(w), redact: (t) => ({ text: t, redactions: [] }) });
+    assert.ok(b.text.includes('user (generated, compact): /compact keep the plan'));
+    assert.ok(!b.text.includes('user: /compact'));
+  } finally { cleanup(dir); }
+});

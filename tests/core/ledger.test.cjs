@@ -198,3 +198,16 @@ test('recordEvent: a failed wrapup does not block the retry, and only a successf
     return true;
   });
 });
+
+test('recordEvent scrubs the message as a stored row is scrubbed, and keeps it as written with the redact lever off', async () => {
+  const { SECRET } = require('../run/redact-shim.cjs');
+  const said = `verdict holds; token ${SECRET} was in the handoff`;
+  const on = await call('memory.recordEvent', orch, { kind: 'wrapup', run_id: 'r-red', key: 'task:t-red', message: said });
+  assert.ok(!on.message.includes(SECRET), 'the secret is not stored');
+  assert.ok(on.message.startsWith('verdict holds; token ') && on.message.endsWith(' was in the handoff'));
+  const off = callerFor('orchestrator', { run_id: 'run-redact-off' });
+  await call('run.attach', off, { adapter_pid: process.pid, memory_levers: JSON.stringify({ redact: false }) });
+  const kept = await call('memory.recordEvent', off, { kind: 'bottle', ok: false, code: 'E_X', message: said });
+  assert.strictEqual(kept.message, said, 'the run asked for text as written');
+  assert.strictEqual((await call('memory.recordEvent', orch, { kind: 'bottle' })).message, null, 'no message stays null');
+});
