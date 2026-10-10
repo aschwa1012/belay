@@ -400,7 +400,7 @@ async function atRunEnd(ctx) {
 
 // The run's end from `belay run`, after the orchestrator's adapter has closed (ADR 0043 decision 2). The adapter
 // runs the same jobs in its own shutdown, but Claude Code ends its stdio server a few hundred ms after closing
-// its stdin (docs/research/run-close), so with any live worker that run is cut short. This one needs nothing but
+// its stdin (measured at about 300 to 400 ms), so with any live worker that run is cut short. This one needs nothing but
 // the store: it reads the run's task and worker rows, and `core` is the store `belay run` owns. Idempotent with a
 // partial adapter-side run (see atRunEnd). Never throws; returns { outcome, unfinished?, error? }.
 async function runEndJobs({ core, runId, levers, boundMs = null, modules = null }) {
