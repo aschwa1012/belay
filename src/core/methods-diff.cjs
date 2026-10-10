@@ -104,6 +104,52 @@ function diffMemory(store, sinceMs, runId, nowMs) {
   return { added, updated, superseded, expired, note: EXPIRED_NOTE };
 }
 
+// ADR 0043 decision 3: additive memory fields. They sit beside `tables` and `counts`, never inside them, so
+// every existing shape (and the CLI's text, which sums `counts`) is unchanged. Counts by type and status are
+// over the rows added or updated since the mark; the ledger tables are append-only, so "since the mark" is
+// written_at > since_ms. The row lists are capped; `count` is always the whole.
+const LEDGER_CAP = 200;
+
+function ledgerSince(store, table, sinceMs, runId) {
+  const where = `written_at > ?${runId != null ? ' AND run_id = ?' : ''}`;
+  const params = runId != null ? [sinceMs, runId] : [sinceMs];
+  try {
+    const count = Number(store.p(`SELECT COUNT(*) AS n FROM ${table} WHERE ${where}`).get(...params).n);
+    const found = store.p(`SELECT * FROM ${table} WHERE ${where} ORDER BY seq LIMIT ${LEDGER_CAP}`).all(...params);
+    const rowsOut = table === 'memory_event'
+      ? found.map(r => ({ ...r, row_ids: parseIds(r.row_ids) }))
+      : found;
+    return { count, truncated: count > rowsOut.length, rows: rowsOut };
+  } catch (e) {
+    if (/no such table/i.test(String(e && e.message))) return { count: 0, truncated: false, rows: [], table_absent: true };
+    throw e;
+  }
+}
+
+function parseIds(s) {
+  if (typeof s !== 'string') return null;
+  try { return JSON.parse(s); } catch { return s; }
+}
+
+function tally(store, expr, sinceMs, runId) {
+  const ns = runId != null ? ' AND namespace = ?' : '';
+  const params = runId != null ? [sinceMs, sinceMs, `run/${runId}`] : [sinceMs, sinceMs];
+  const out = {};
+  for (const r of store.p(`SELECT ${expr} AS k, COUNT(*) AS n FROM memory_entries WHERE (created_at > ? OR updated_at > ?)${ns} GROUP BY k ORDER BY k`).all(...params)) {
+    out[r.k] = Number(r.n);
+  }
+  return out;
+}
+
+function memoryLedger(store, sinceMs, runId) {
+  return {
+    by_type: tally(store, "COALESCE(type, 'untyped')", sinceMs, runId),
+    by_status: tally(store, "COALESCE(status, 'unverified')", sinceMs, runId),
+    events: ledgerSince(store, 'memory_event', sinceMs, runId),
+    usage: ledgerSince(store, 'usage', sinceMs, runId),
+  };
+}
+
 async function diff(E, caller, args) {
   const sinceMs = args.since_ms;
   if (typeof sinceMs !== 'number' || !Number.isFinite(sinceMs) || !Number.isInteger(sinceMs) || sinceMs < 0) {
@@ -126,7 +172,9 @@ async function diff(E, caller, args) {
     superseded: mem.superseded.length, expired: mem.expired.length,
   };
 
-  return { since_ms: sinceMs, now_ms: nowMs, run_id: runId, tables, counts, established_by: E.establishedBy };
+  const memory_ledger = memoryLedger(E.store, sinceMs, runId);
+
+  return { since_ms: sinceMs, now_ms: nowMs, run_id: runId, tables, counts, memory_ledger, established_by: E.establishedBy };
 }
 
 module.exports = { diff };

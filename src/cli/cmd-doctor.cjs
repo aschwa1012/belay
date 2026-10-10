@@ -119,6 +119,34 @@ function embedderChecks() {
   return [row('embedder', MISSING, `${why}; vector calls are refused E_MODEL_ABSENT until fixed: run ${fixes.join(' then ')}`, { path: chk.dir, package: pkg, fix: fixes.join(' then ') })];
 }
 
+// ADR 0043 decision 3: is the keyword index there? Reads `meta.memory_fts_version` out of a copy of the
+// store (invariant 6: never the live file, no sidecar), with a plain handle so nothing migrates the copy.
+// '1' is present, '0' is an owner that found no FTS5 in this SQLite, no marker is an index nobody built yet.
+// Imports no embedder: the copy reader and node:sqlite only.
+const ABSENT = 'absent (no owner has opened this store since the index landed)';
+
+async function memoryIndexCheck(dataDir) {
+  const dbPath = `${dataDir}/memory.db`;
+  if (!statOf(dbPath)) return row('memory-index', MISSING, `${ABSENT}; there is no memory.db at ${dbPath} yet`, { path: dbPath, state: 'absent' });
+  try {
+    const { withCopy } = require('../core/copy-read.cjs');
+    const { DatabaseSync } = require('node:sqlite');
+    const marker = await withCopy(dataDir, async (copy) => {
+      const db = new DatabaseSync(copy);
+      try {
+        if (!db.prepare("SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'meta'").get()) return null;
+        const r = db.prepare("SELECT value FROM meta WHERE key = 'memory_fts_version'").get();
+        return r ? String(r.value) : null;
+      } finally { db.close(); }
+    });
+    if (marker === '1') return row('memory-index', OK, 'present (meta.memory_fts_version is 1, read from a copy of the store; the index itself was not opened)', { path: dbPath, state: 'present' });
+    if (marker === '0') return row('memory-index', ERROR, 'unsupported (FTS5 not compiled): meta.memory_fts_version is 0, so keyword and hybrid search report E_NO_INDEX on this machine', { path: dbPath, state: 'unsupported' });
+    return row('memory-index', MISSING, `${ABSENT}${marker === null ? '' : `; meta.memory_fts_version is ${JSON.stringify(marker)}, which this build does not know`}`, { path: dbPath, state: 'absent' });
+  } catch (e) {
+    return row('memory-index', ERROR, `the store could not be copied and read: ${e.message}`, { path: dbPath });
+  }
+}
+
 function applyFix(checks) {
   const fixed = [];
   for (const c of checks) {
@@ -146,7 +174,7 @@ async function run(ctx) {
 
   const found = C.discover(ctx.cwd);
   const dataDir = C.dataDirOf(found, ctx);
-  const checks = [...configChecks(found), ...storeChecks(dataDir), ...substrateChecks(found), ...embedderChecks()];
+  const checks = [...configChecks(found), ...storeChecks(dataDir), ...substrateChecks(found), ...embedderChecks(), await memoryIndexCheck(dataDir)];
 
   const fixed = ctx.fix ? applyFix(checks) : [];
 
