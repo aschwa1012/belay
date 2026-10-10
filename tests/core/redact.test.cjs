@@ -9,7 +9,7 @@ const { redact, redactDeep, KINDS } = require('../../src/core/redact.cjs');
 const SAMPLES = {
   private: ['note <private>hidden</private> end', 'note  end'],
   anthropic_key: ['k ' + 'sk' + '-ant-' + 'a'.repeat(40) + ' z', 'k [REDACTED:anthropic_key] z'],
-  openai_key: ['k ' + 'sk' + '-proj-' + 'b'.repeat(40) + ' z', 'k [REDACTED:openai_key] z'],
+  openai_key: ['k ' + 'sk' + '-proj-' + 'bQ7'.repeat(14) + ' z', 'k [REDACTED:openai_key] z'],
   github_token: ['k ' + 'gh' + 'p_' + 'x'.repeat(36) + ' z', 'k [REDACTED:github_token] z'],
   aws_access_key: ['k ' + 'AK' + 'IA' + 'ABCDEFGHIJKLMNOP' + ' z', 'k [REDACTED:aws_access_key] z'],
   google_api_key: ['k ' + 'AI' + 'za' + 'A'.repeat(35) + ' z', 'k [REDACTED:google_api_key] z'],
@@ -283,10 +283,11 @@ test('jwt: a five-segment encrypted token is redacted', () => {
   assert.equal(redact('see ' + t + ' now').text, 'see [REDACTED:jwt] now');
 });
 
-test('the right-hand token boundary: a key followed by token characters is left alone', () => {
+test('a key glued to more token characters is redacted through the whole run', () => {
   const key = 'gh' + 'p_' + 'x'.repeat(36);
-  assert.equal(redact(key + '_tail').text, key + '_tail');
-  assert.equal(redact(key + '-more').text, key + '-more');
+  assert.equal(clean(key + '_tail'), '[REDACTED:github_token]');
+  assert.equal(clean(key + '-more'), '[REDACTED:github_token]');
+  assert.deepEqual(redact(key + key), { text: '[REDACTED:github_token]', redactions: { github_token: 1 } });
   assert.equal(redact(key + ' tail').text, '[REDACTED:github_token] tail');
   assert.equal(redact(key + '.').text, '[REDACTED:github_token].');
   const aws = 'AK' + 'IA' + 'ABCDEFGHIJKLMNOP';
@@ -320,12 +321,134 @@ test('adversarial 256 KB inputs stay linear', () => {
     quotes: 'token="x ',
     dots: 'ey' + 'Jabcde.',
     colons: '{"a":1,',
+    skippedHeads: 'API_KEY=[REDACTED:x]',
+    nextLine: 'TOKEN: \n',
+    bearer: 'Authorization: Bearer ',
+  };
+  // Linear: four times the text costs about four times as much; a quadratic scan
+  // costs sixteen. The ratio bound allows noise; the absolute cap catches a hang.
+  const time = (text) => {
+    let best = Infinity;
+    for (let i = 0; i < 3; i++) {
+      const t0 = process.hrtime.bigint();
+      redact(text);
+      best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
+    }
+    return best;
   };
   for (const [name, unit] of Object.entries(shapes)) {
-    const text = unit.repeat(Math.ceil((256 * 1024) / unit.length));
-    const t0 = process.hrtime.bigint();
-    redact(text);
-    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-    assert.ok(ms < 1500, `${name}: ${ms.toFixed(0)} ms`);
+    const small = time(unit.repeat(Math.ceil((64 * 1024) / unit.length)));
+    const big = time(unit.repeat(Math.ceil((256 * 1024) / unit.length)));
+    assert.ok(big < 1500, `${name}: ${big.toFixed(0)} ms`);
+    assert.ok(big < 3 + small * 9, `${name}: 64 KB ${small.toFixed(1)} ms, 256 KB ${big.toFixed(1)} ms`);
   }
+});
+
+// --- second review: names, forms, code, and redactDeep robustness -----------------
+
+const red = (s) => { const t = clean(s); assert.match(t, /\[REDACTED:/, s); return t; };
+const kept = (s) => assert.deepEqual(redact(s), { text: s, redactions: {} }, s);
+
+test('names: the last word decides, compounds and trailing digits included', () => {
+  for (const n of ['PGPASSWORD', 'PASSWORD1', 'API_KEY2', 'GITHUBTOKEN', 'oauthtoken', 'DB_PASSWD', 'SSH_PASSPHRASE',
+    'clientSecret', 'aws_secret_access_key']) {
+    assert.equal(red(n + '=' + PW), n + '=[REDACTED:env_secret]');
+  }
+  assert.equal(red('export DBPASSWORD=' + PW), 'export DBPASSWORD=[REDACTED:env_secret]');
+  for (const s of ['TOKEN_COUNT=5', 'secret_santa=yes', 'key: value', 'auth: required', 'KEY_FILE=/etc/x', 'sort_key=name',
+    'secretary: Bob', 'num_tokens=5']) kept(s);
+});
+
+test('Authorization headers in any quoting, and a bare Bearer that looks like a token', () => {
+  const T = 'opaque' + 'Tok' + 'x9'.repeat(10);
+  assert.equal(clean('{"Authorization": "Bearer ' + T + '"}'), '{"Authorization": "Bearer [REDACTED:bearer]"}');
+  assert.equal(clean("headers: { Authorization: 'Bearer " + T + "' }"), "headers: { Authorization: 'Bearer [REDACTED:bearer]' }");
+  assert.equal(clean('curl -H "Bearer ' + T + '"'), 'curl -H "Bearer [REDACTED:bearer]"');
+  kept('Bear' + 'er authentication-mechanisms are described below; Bear' + 'er t0k3n' + '12ab is short');
+});
+
+test('env_secret: escaped JSON, compact JS, subscripts, headers in strings', () => {
+  assert.equal(red('{\\"token\\": \\"' + PW + '\\"}'), '{\\"token\\": \\"[REDACTED:env_secret]\\"}');
+  assert.equal(red('log: "{\\"api_key\\":\\"' + PW + '\\"}"'), 'log: "{\\"api_key\\":\\"[REDACTED:env_secret]\\"}"');
+  assert.equal(red('const c={apiKey:"' + PW + '",x:1}'), 'const c={apiKey:"[REDACTED:env_secret]",x:1}');
+  assert.equal(red('os.environ["API_KEY"] = "' + PW + '"'), 'os.environ["API_KEY"] = "[REDACTED:env_secret]"');
+  assert.equal(red("config['password'] = '" + PW + "'"), "config['password'] = '[REDACTED:env_secret]'");
+  assert.equal(red('curl -H "x-api-key: ' + PW + '" x'), 'curl -H "x-api-key: [REDACTED:env_secret]" x');
+  // a marker is atomic: its ] does not end a flow value on the next pass
+  assert.equal(clean('{token: export ]api_key'), '{token: [REDACTED:env_secret] ]api_key');
+  assert.equal(red('PASSWORD\uff1d' + PW), 'PASSWORD\uff1d[REDACTED:env_secret]');
+  assert.equal(red('PASSWORD\u00a0=\u00a0' + PW), 'PASSWORD\u00a0=\u00a0[REDACTED:env_secret]');
+});
+
+test('env_secret: a value on the next line, a block scalar, and a nested mapping', () => {
+  assert.equal(red('password:\n  ' + PW + '\nnext: 1'), 'password:\n  [REDACTED:env_secret]\nnext: 1');
+  assert.equal(red('password: |\n  ' + PW + '\n  more\nnext: 1'), 'password: |\n  [REDACTED:env_secret]\nnext: 1');
+  assert.equal(red('{\n  "token":\n    "' + PW + '"\n}'), '{\n  "token":\n    "[REDACTED:env_secret]"\n}');
+  kept('password:\n  min_length: 8\n  rotate: true');
+  kept('tokens:\n  - a\n  - b');
+});
+
+test('env_secret: flags, fish, SQL and XML forms', () => {
+  assert.equal(red('tool --password ' + PW + ' -v'), 'tool --password [REDACTED:env_secret] -v');
+  assert.equal(red('tool --password=' + PW), 'tool --password=[REDACTED:env_secret]');
+  assert.equal(red('set -gx API_TOKEN ' + PW), 'set -gx API_TOKEN [REDACTED:env_secret]');
+  assert.equal(red("ALTER USER x WITH PASSWORD '" + PW + "'"), "ALTER USER x WITH PASSWORD '[REDACTED:env_secret]'");
+  assert.equal(red('<password>' + PW + '</password>'), '<password>[REDACTED:env_secret]</password>');
+  kept('the password field is required');
+});
+
+test('env_secret: code that only names a secret is left alone', () => {
+  for (const s of ['sorted(xs, key=lambda x: x.name)', '<li key={item.id}>x</li>', 'id = models.AutoField(primary_key=True)',
+    '  token = self.next_token()', '  password: string;', 'def f(self, token: str):', 'interface A { apiKey: string }',
+    'if token == None:', 'x = {"key": "name", "dir": "asc"}', 'cache_key = f"u:{id}"', 'password = f"{prefix}-{suffix}"', 'api_key = os.environ["API_KEY"]',
+    'const token = req.headers.authorization;', 'className="' + 's' + 'k-folding-cube-container-x"']) kept(s);
+  assert.equal(red('token: str = "' + PW + '"'), 'token: str = "[REDACTED:env_secret]"');
+  assert.equal(red('API_KEY=Hunter2(' + PW + ')'), 'API_KEY=[REDACTED:env_secret]');
+});
+
+test('url_credentials: / # @ in the password, @ in the user; a port or a path @ is not one', () => {
+  assert.equal(red('postgres:' + '//u:pa/ss' + PW + '@host/db'), 'postgres:' + '//[REDACTED:url_credentials]@host/db');
+  assert.equal(red('https:' + '//me' + '@' + 'corp.com:' + PW + '@host/x'), 'https:' + '//[REDACTED:url_credentials]@host/x');
+  assert.equal(red('redis:' + '//u:p#' + PW + '@host'), 'redis:' + '//[REDACTED:url_credentials]@host');
+  kept('https:' + '//registry.npmjs.org:443/@scope/pkg');
+  kept('https:' + '//host/a:b@c and https:' + '//h/x?email=a@b.c');
+});
+
+test('every key family variant: ASIA, xoxp, gho, and a chain of two kinds', () => {
+  assert.equal(redact('k ' + 'AS' + 'IA' + 'ABCDEFGHIJKLMNOP').text, 'k [REDACTED:aws_access_key]');
+  assert.equal(redact('k ' + 'xo' + 'xp-' + '1234567890-abcdefghij').text, 'k [REDACTED:slack_token]');
+  assert.equal(redact('k ' + 'gh' + 'o_' + 'y'.repeat(36)).text, 'k [REDACTED:github_token]');
+  const chain = redact('AK' + 'IA' + 'ABCDEFGHIJKLMNOP' + 'gh' + 'p_' + 'z'.repeat(36));
+  assert.deepEqual(chain, { text: '[REDACTED:aws_access_key][REDACTED:github_token]', redactions: { aws_access_key: 1, github_token: 1 } });
+});
+
+test('a key prefix glued after token characters, or a short Google key, is not a key', () => {
+  kept('task-sk-' + 'Ab1'.repeat(10));
+  kept('my_gh' + 'p_' + 'x'.repeat(36));
+  kept('AI' + 'za' + 'A'.repeat(30));
+});
+
+test('private: tags with spaces or attributes', () => {
+  assert.equal(redact('a < private>' + PW + '</private> b').text, 'a  b');
+  assert.equal(redact('a <private reason="x">' + PW + '</ private > b').text, 'a  b');
+});
+
+test('redactDeep: secret-named keys, cycles, depth, shared references, array properties', () => {
+  const r = redactDeep({ api_key: PW, key: 'name', nested: { password: PW, n: 1 }, done: '[REDACTED:jwt]', empty: '' });
+  assert.deepEqual(r.value, { api_key: '[REDACTED:env_secret]', key: 'name', nested: { password: '[REDACTED:env_secret]', n: 1 },
+    done: '[REDACTED:jwt]', empty: '' });
+  assert.deepEqual(r.redactions, { env_secret: 2 });
+  const cyc = { a: 1 };
+  cyc.self = { back: cyc };
+  assert.throws(() => redactDeep(cyc), (e) => e.code === 'E_ARGS' && /cycle/.test(e.message));
+  const shared = { t: 'TOKEN=' + PW };
+  assert.deepEqual(redactDeep([shared, shared]).value, [{ t: 'TOKEN=[REDACTED:env_secret]' }, { t: 'TOKEN=[REDACTED:env_secret]' }]);
+  let deep = 'TOKEN=' + PW;
+  for (let i = 0; i < 20000; i++) deep = [deep];
+  let out = redactDeep(deep).value;
+  for (let i = 0; i < 20000; i++) out = out[0];
+  assert.equal(out, 'TOKEN=[REDACTED:env_secret]');
+  const arr = ['a'];
+  arr.extra = 'TOKEN=' + PW;
+  assert.equal(redactDeep(arr).value.extra, 'TOKEN=[REDACTED:env_secret]');
 });
