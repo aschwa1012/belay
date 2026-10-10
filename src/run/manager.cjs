@@ -21,6 +21,7 @@ const MP = require('./memory-preface.cjs'); // ADR 0042: the first-message prefa
 // build step 6c: `wait`, `decideBranch`, `restartFirstText` and the resume-window constants moved
 // verbatim into their own files (the 500-line rule); re-exported under the same names below.
 const { createWait } = require('./wait.cjs');
+const SENT = require('./sent-log.cjs'); // ADR 0042 decision 4: the record of what is written to a worker's stdin
 const { decideBranch, restartFirstText, CLAUDE_RESUME_WINDOW_MS, CODEX_RESUME_WINDOW_MS } = require('./restart.cjs');
 // build step 6e-4: pause and resume (the park design, ADR 0023 amendment 2), and the one per-worker
 // operation slot pause, resume, restart and stop all share.
@@ -174,17 +175,18 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     return spec;
   }
 
-  function sendStdin(w, text) {
+  function sendStdin(w, text, kind = 'message') {
     const line = JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } }) + '\n';
     w.child.stdin.write(line);
     w.parser.noteStdinWrite();
+    SENT.record(w, ctx, kind, text); // ADR 0042 decision 4: the user side of a bottle, only with memory.bottle on
     return Buffer.byteLength(text, 'utf8');
   }
 
   // Send the opening message for a launch. Claude Code takes it on stdin; Codex already has it in
   // argv, but the turn is still one the harness asked for, so the parser is told either way.
-  function openWith(w, text) {
-    if (w.substrate === 'claude-code') sendStdin(w, text);
+  function openWith(w, text, kind) {
+    if (w.substrate === 'claude-code') sendStdin(w, text, kind);
     else w.parser.noteStdinWrite();
   }
 
@@ -236,7 +238,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
     launch(w, substrate === 'claude-code' ? {} : { prompt: first });
     await writeRow(w, 'starting');
-    openWith(w, first);
+    openWith(w, first, 'task');
 
     const ready = await W.waitReady(w, startup_timeout_ms);
     if (!ready) {
@@ -384,7 +386,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     w.stopRequested = false;
 
     const overridden = firstTextOverride ? await firstTextOverride(d.branch) : undefined;
-    let firstText = overridden !== undefined ? overridden : await restartFirstText(w, d.branch, { core });
+    let firstText = overridden !== undefined ? overridden : await restartFirstText(w, d.branch, { core, ctx });
     firstText = await MP.relaunch(w, ctx, firstText); // ADR 0042 decision 3: the index minus the rows already shown
     if (d.branch === 'replace') {
       w.sessionId = null;
@@ -396,7 +398,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const resume = d.branch === 'resume' ? w.sessionId : null;
     launch(w, w.substrate === 'claude-code' ? { resume } : { resume, prompt: firstText });
     await writeRow(w, 'starting');
-    openWith(w, firstText);
+    openWith(w, firstText, 'resume');
 
     const t0 = now();
     const ready = await W.waitReady(w, 60000);

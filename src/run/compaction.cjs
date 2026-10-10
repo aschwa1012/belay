@@ -166,8 +166,9 @@ function swallow(w, e, ctx) {
   return true;
 }
 
-function sendRaw(w, text) {
+function sendRaw(w, text, ctx) {
   w.child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } }) + '\n');
+  require('./sent-log.cjs').record(w, ctx, 'message', text); // ADR 0042 decision 4; a no-op with memory.bottle off
   return w.parser.noteStdinWrite();
 }
 const live = (w, ctx) => w.child && w.child.stdin && !w.child.stdin.destroyed && !w.settled && !w.stopRequested
@@ -216,7 +217,7 @@ async function afterTurn(w, e, ctx, turnStarted) {
   turnStarted(w, ctx, () => {
     const text = `/compact ${INSTRUCTIONS}`;
     s.sent += 1;
-    const idx = sendRaw(w, text);
+    const idx = sendRaw(w, text, ctx);
     s.sentIdx.add(idx);
     s.inflight = { at: Date.now(), idx, pre_ctx: tokens, boundary: false };
     return Buffer.byteLength(text, 'utf8');
