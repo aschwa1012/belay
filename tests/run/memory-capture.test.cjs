@@ -133,6 +133,8 @@ test('one observation per turn: embed false, source harness, task_id, the turn r
     const obs = observations(core);
     assert.strictEqual(obs.length, 1);
     const o = obs[0];
+    assert.strictEqual(o.body.kind, o.body.files_modified.length ? 'change' : o.body.kind, 'the class is kept in the body');
+    assert.ok(['change', 'discovery', 'failure', 'turn'].includes(o.body.kind));
     assert.strictEqual(o.embed, false);
     assert.strictEqual(o.source, 'harness');
     assert.strictEqual(o.task_id, 't1');

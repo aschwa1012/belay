@@ -15,7 +15,7 @@ const { deriveTitle, indexRowOf, dupVeto, filterSql } = require('./memory-rows.c
 const { ftsReady } = require('./memory-schema.cjs');
 const { scanCeiling } = require('./schema.cjs');
 const { toUnitF32 } = require('./store.cjs');
-const { nsFor, resolveNamespace, withEmbedding } = require('./methods-memory.cjs');
+const { nsFor, resolveNamespace, runAlpha, withEmbedding } = require('./methods-memory.cjs');
 
 const MODES = ['semantic', 'keyword', 'hybrid'];
 const VIEWS = ['full', 'index'];
@@ -159,7 +159,9 @@ function parseSearch(E, caller, args) {
   if (!args.query_embedding && typeof args.query !== 'string') throw bad('memory.search needs a query string or a query_embedding');
   const mode = enumArg('mode', args.mode, MODES, 'semantic');
   if (mode === 'keyword' && typeof args.query !== 'string') throw bad('mode keyword needs a query string', 'query');
-  const alpha = args.alpha === undefined ? DEFAULT_ALPHA : args.alpha;
+  // No alpha in the call: the run's memory.alpha lever, else the built-in default (the fusion block reports the one used).
+  const lever = args.alpha === undefined ? runAlpha(E, caller) : null;
+  const alpha = args.alpha === undefined ? (lever === null ? DEFAULT_ALPHA : lever) : args.alpha;
   if (typeof alpha !== 'number' || !(alpha >= 0 && alpha <= 1)) throw bad('alpha must be a number from 0 to 1', 'alpha');
   const order = enumArg('order', args.order, ['score', 'newest', 'oldest'], 'score');
   const filter = args.filter == null ? {} : args.filter;

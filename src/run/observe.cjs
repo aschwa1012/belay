@@ -117,21 +117,23 @@ function textOf(body, title) {
   return lines.join('\n');
 }
 
-// buildObservation({ turn, worker_id, task_id, substrate, events, final_text }) → { title, type, body, text }.
+// buildObservation({ turn, worker_id, task_id, substrate, events, final_text }) → { title, type, body, text }. `type` is the class
+// (change, discovery, failure, turn); the stored row's type stays 'observation' and the class is kept as `body.kind`.
 // `worker_id`, `task_id` and `substrate` are the caller's tags for the stored row; they do not shape the
 // body, so the same turn under two ids yields the same observation.
 function buildObservation(input) {
   const { turn, events, final_text: finalText } = input || {};
   const c = scan(Array.isArray(events) ? events : []);
+  const kind = typeOf(c);
   const body = {
-    v: 1, turn: turn === undefined ? null : turn,
+    v: 1, kind, turn: turn === undefined ? null : turn,
     files_read: c.filesRead, files_modified: c.filesModified,
     commands: c.commands, tool_counts: c.toolCounts, errors: c.errors,
     facts: [], narrative: cutBytes(typeof finalText === 'string' ? finalText : '', NARRATIVE_MAX),
     narrative_source: 'worker-stated',
   };
   const title = titleOf(body.turn === null ? '?' : body.turn, c);
-  return { title, type: typeOf(c), body, text: textOf(body, title) };
+  return { title, type: kind, body, text: textOf(body, title) };
 }
 
 module.exports = { buildObservation, NARRATIVE_MAX, TITLE_MAX };

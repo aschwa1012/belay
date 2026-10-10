@@ -65,11 +65,22 @@ const HARNESS_FIELDS = ['task_id', 'turn', 'source'];
 // The run's `memory.redact` lever, read from the run row of the caller's run (run.attach recorded it). Redaction
 // is on unless that row says `redact: false`; no row, no lever and an unreadable lever all mean on, because a
 // write is never allowed to skip the scrub for want of knowing (ADR 0040 §3).
-function redactOn(E, caller) {
+function leversOf(E, caller) {
   let raw = null;
-  try { const run = rows.current(E.store, 'run', caller.run_id); raw = run ? run.memory_levers : null; } catch { return true; }
-  if (raw == null) return true;
-  try { const o = typeof raw === 'string' ? JSON.parse(raw) : raw; return !(o && o.redact === false); } catch { return true; }
+  try { const run = rows.current(E.store, 'run', caller && caller.run_id); raw = run ? run.memory_levers : null; } catch { return undefined; }
+  if (raw == null) return null;
+  try { const o = typeof raw === 'string' ? JSON.parse(raw) : raw; return o && typeof o === 'object' ? o : null; } catch { return undefined; }
+}
+function redactOn(E, caller) {
+  const o = leversOf(E, caller);
+  return !(o && o.redact === false);
+}
+
+// The run's `memory.alpha` lever for a search that gave no alpha (ADR 0040 §4); null when the run has none or the
+// value is not a valid weight, so the caller falls back to the built-in default. A read: nothing is written.
+function runAlpha(E, caller) {
+  const o = leversOf(E, caller);
+  return o && typeof o.alpha === 'number' && o.alpha >= 0 && o.alpha <= 1 ? o.alpha : null;
 }
 
 // A worker's task is the one lease it holds right now, else none. Derived from the store, never from the call.
@@ -98,15 +109,18 @@ function checkWrite(caller, args) {
 // its secret is one row, and a re-run after a lost owner (ADR 0033) hashes the same bytes. With the lever off
 // nothing is touched and the row says so.
 function scrub(on, args) {
-  if (!on) return { text: args.text, title: args.title ?? null, body: args.body ?? null, redactions: { disabled: 1 } };
+  if (!on) return { text: args.text, title: args.title ?? null, body: args.body ?? null, tags: args.tags, provenance: args.provenance, redactions: { disabled: 1 } };
   const counts = {};
   const add = r => { for (const [k, n] of Object.entries(r)) counts[k] = (counts[k] || 0) + n; };
   const t = redact(args.text); add(t.redactions);
   let title = null, body = null;
   if (args.title != null) { const r = redact(args.title); add(r.redactions); title = r.text; }
   if (args.body != null) { const r = redactDeep(args.body); add(r.redactions); body = r.value; }
+  let tags = args.tags, provenance = args.provenance;
+  if (Array.isArray(tags)) { const r = redactDeep(tags); add(r.redactions); tags = r.value; }
+  if (typeof provenance === 'string') { const r = redact(provenance); add(r.redactions); provenance = r.text; }
   if (!t.text.trim()) throw bad('the text is empty after redaction', 'text', { reason: 'empty after redaction', redactions: counts });
-  return { text: t.text, title, body, redactions: Object.keys(counts).length ? counts : null };
+  return { text: t.text, title, body, tags, provenance, redactions: Object.keys(counts).length ? counts : null };
 }
 
 async function store(E, caller, args) {
@@ -120,7 +134,7 @@ async function store(E, caller, args) {
   const { embed, task_id, turn, source, title: _title, body: _body, text: _text, ...rest } = args;
   const worker = caller.role === 'worker';
   const base = {
-    ...rest, namespace: nsFor(E, caller, args), worker_id: E.writtenBy(caller), text: s.text, title, body: s.body, redactions: s.redactions,
+    ...rest, tags: s.tags, provenance: s.provenance, namespace: nsFor(E, caller, args), worker_id: E.writtenBy(caller), text: s.text, title, body: s.body, redactions: s.redactions,
     run_id: caller.run_id, task_id: worker ? derivedTask(E, caller) : (task_id ?? null), turn: worker ? null : (turn ?? null),
     source: source || (caller.role === 'operator' ? 'operator' : 'model'),
   };
@@ -161,4 +175,4 @@ async function warm(E, caller, args = {}) {
   return { state, pid: o && o.embedInfo ? o.embedInfo.pid : null, error: o && o.embedError ? o.embedError : null };
 }
 
-module.exports = { store, delete: del, stats, warm, nsFor, resolveNamespace, projectOf, withEmbedding, notifyEmbedderFailure };
+module.exports = { runAlpha, store, delete: del, stats, warm, nsFor, resolveNamespace, projectOf, withEmbedding, notifyEmbedderFailure };
