@@ -13,6 +13,7 @@ const path = require('node:path');
 const { err } = require('./errors.cjs');
 const { ensureSchema, scanCeiling } = require('./schema.cjs');
 const { checkSchema, stampStore } = require('./schema-stamp.cjs');
+const { migrateOwner } = require('./memory-schema.cjs');
 
 const now = () => Date.now();
 const hashText = t => crypto.createHash('sha256').update(String(t).trim()).digest('hex');
@@ -46,7 +47,7 @@ class Store {
     try {
       checkSchema(this.db, dbPath);
       ensureSchema(this.db);
-      if (this.opts.stamp) stampStore(this.db);
+      if (this.opts.stamp) { stampStore(this.db); migrateOwner(this.db); }
     } catch (e) { try { this.db.close(); } catch { /* already closed */ } throw e; }
     this._stmts = new Map();
     this.cache = new Map(); // namespace -> { rows: [{id, vec, ttl_at}], superseded: Set<id> }
