@@ -16,17 +16,18 @@ const DEFAULT_FOR_MS = 30000;
 function usageError(message) {
   return {
     code: 2,
-    text: `belay logs: ${message}\n\nusage: belay logs <worker-id> [--tail <n>] [-f] [--for <ms>] [--data <dir>] [--json]\n`,
+    text: `belay logs: ${message}\n\nusage: belay logs <worker-id> [--tail <n>] [-f] [--for <ms>] [--memory] [--data <dir>] [--json]\n`,
     json: { error: message },
   };
 }
 
 function parseArgs(argv) {
-  let follow = false, tail = DEFAULT_TAIL, forMs = DEFAULT_FOR_MS;
+  let follow = false, tail = DEFAULT_TAIL, forMs = DEFAULT_FOR_MS, memory = false;
   const rest = [];
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '-f' || a === '--follow') { follow = true; continue; }
+    if (a === '--memory') { memory = true; continue; }
     if (a === '--tail') {
       const v = argv[i += 1]; const n = Number(v);
       if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) return { error: `--tail needs a non-negative integer; got ${v}` };
@@ -41,7 +42,7 @@ function parseArgs(argv) {
     rest.push(a);
   }
   if (rest.length !== 1) return { error: `belay logs needs exactly one argument, a worker id; got ${rest.length}` };
-  return { workerId: rest[0], follow, tail, forMs };
+  return { workerId: rest[0], follow, tail, forMs, memory };
 }
 
 // The tail's own byte offset: how far into the file the printed lines begin, computed from the exact
@@ -69,6 +70,34 @@ function readTail(streamPath, n) {
 function renderHeader(w, tailInfo) {
   const base = `worker ${w.id} ${w.state} pid ${w.pid} pid_alive ${w.pid_alive} stream ${w.stream_path}`;
   return tailInfo.exists ? `${base} bytes ${tailInfo.bytes} offset ${tailInfo.offset}` : `${base} (no stream file yet)`;
+}
+
+// ADR 0043 decision 3. The worker's memory rows (index view) and its memory_events, oldest first. A stream
+// line carries no wall-clock time, so the two cannot be merged line by line: the items are ordered by their own
+// times and printed as one block after the tail, and the receipt says so. Read only, through the same core.
+const MEMORY_LIMIT = 50;
+
+async function readMemory(core, w) {
+  const [list, ev] = await Promise.all([
+    core.memory.list({ namespaces: [`run/${w.run_id}`], filter: { worker_id: w.id }, view: 'index', order: 'oldest', limit: MEMORY_LIMIT }),
+    core.memory.events({ worker_id: w.id }),
+  ]);
+  const items = [
+    ...list.rows.map((r) => ({ at: r.created_at, kind: 'row', id: r.id, type: r.type, status: r.status, title: r.title, task_id: r.task_id })),
+    ...ev.events.map((e) => ({ at: e.written_at, kind: 'event', id: e.id, event: e.kind, ok: !!e.ok, code: e.code ?? null, key: e.key ?? null, message: e.message ?? null, task_id: e.task_id ?? null })),
+  ].map((x, i) => [x, i]).sort(([a, i], [b, j]) => (a.at ?? 0) - (b.at ?? 0) || i - j).map(([x]) => x);
+  return { items, rows_total: list.total, events_total: ev.events.length, table_absent: !!ev.table_absent };
+}
+
+function memoryText(m) {
+  const head = `-- memory: ${m.items.length} item(s) (${m.rows_total} row(s), ${m.events_total} event(s)); ordered by their own times, not interleaved, because stream lines carry no time --`;
+  const lines = m.items.map((x) => {
+    const at = new Date(x.at).toISOString();
+    return x.kind === 'row'
+      ? `${at}  memory row ${x.id} ${x.type || 'untyped'}/${x.status} ${x.title}`
+      : `${at}  memory event ${x.event} ${x.ok ? 'ok' : `failed ${x.code}`}${x.key ? ` key ${x.key}` : ''} ${x.id}`;
+  });
+  return [head, ...lines];
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -143,9 +172,10 @@ async function run(ctx) {
   const dataDir = C.dataDirOf(found, ctx);
 
   const core = await openCore({ dataDir, caller: { role: 'operator', run_id: 'cli', pid: process.pid } });
-  let w;
+  let w, memory = null;
   try {
     w = await core.worker.get({ worker_id: parsed.workerId });
+    if (parsed.memory) memory = await readMemory(core, w);
   } catch (e) {
     await core.close();
     const detail = { code: e.code || 'E_INTERNAL', message: e.message };
@@ -167,16 +197,18 @@ async function run(ctx) {
     worker_id: w.id, run_id: w.run_id, state: w.state, pid: w.pid, pid_alive: w.pid_alive,
     stream_path: w.stream_path, stream_bytes: tailInfo.exists ? tailInfo.bytes : null,
     offset: tailInfo.exists ? tailInfo.offset : null,
+    ...(memory ? { memory } : {}),
   };
+  const memLines = memory ? memoryText(memory) : [];
 
   if (!parsed.follow) {
-    const text = tailInfo.exists ? [header, ...tailInfo.lines, ''].join('\n') : `${header}\n`;
+    const text = tailInfo.exists ? [header, ...tailInfo.lines, ...memLines, ''].join('\n') : [header, ...memLines, ''].join('\n');
     return { code: 0, text, json: { ...baseJson, lines: tailInfo.lines, followed: false } };
   }
 
   const collected = [...tailInfo.lines];
   const emit = ctx.emit || null;
-  if (emit) { emit(`${header}\n`); for (const l of tailInfo.lines) emit(`${l}\n`); }
+  if (emit) { emit(`${header}\n`); for (const l of tailInfo.lines) emit(`${l}\n`); for (const l of memLines) emit(`${l}\n`); }
   let followLines = 0;
   const announce = (line) => { collected.push(line); followLines += 1; if (emit) emit(`${line}\n`); };
 
