@@ -27,6 +27,7 @@ const FLAGS = {
   '--out': { key: 'out', type: 'one' },
   '--namespace-map': { key: 'namespaceMaps', type: 'many' },
   '--no-embed': { key: 'noEmbed', type: 'bool' },
+  '--all': { key: 'all', type: 'bool' },
 };
 
 const FILTER_FLAGS = ['--type', '--status', '--task', '--worker', '--since', '--namespace'];
@@ -39,7 +40,7 @@ const VERBS = {
   timeline: { flags: ['--before', '--after', '--scope'], positional: [1, 1], usage: 'belay memory timeline <id> [--before n] [--after n] [--scope task|worker|run|namespace]' },
   verify: { flags: ['--status', '--receipt'], positional: [1, 1], usage: 'belay memory verify <id> --status verified|refuted|unverified --receipt <r>' },
   stats: { flags: [], positional: [0, 1], usage: 'belay memory stats [run-id]' },
-  export: { flags: ['--namespace', '--since', '--out'], positional: [0, 1], usage: 'belay memory export [run-id] [--namespace ns]... [--since <ms|iso>] [--out <file>]' },
+  export: { flags: ['--namespace', '--since', '--out', '--all'], positional: [0, 1], usage: 'belay memory export [run-id] [--namespace ns]... [--since <ms|iso>] [--out <file>] [--all]' },
   import: { flags: ['--namespace-map', '--namespace', '--no-embed'], positional: [1, 1], usage: 'belay memory import <file> [--namespace-map from=to]... [--namespace ns] [--no-embed]' },
 };
 
@@ -235,6 +236,8 @@ function renderImportText(r) {
   const ignored = r.status_ignored ? `  status ignored on ${r.status_ignored} row${r.status_ignored === 1 ? '' : 's'} (imported rows are unverified)` : '';
   const out = [`file: ${r.file}  sha256: ${r.sha256.slice(0, 12)}  lines: ${r.lines}`,
     `inserted: ${r.inserted}  updated: ${r.updated}  refused: ${r.refused.length}${ignored}`];
+  const sk = r.skipped || {};
+  if (sk.refuted || sk.superseded) out.push(`skipped (not live in the file): refuted ${sk.refuted || 0}, superseded ${sk.superseded || 0}`);
   for (const x of r.refused) out.push(`refused line ${x.line}: ${x.code}${x.message ? ` (${x.message})` : ''}`);
   return `${out.join('\n')}\n`;
 }

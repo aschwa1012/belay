@@ -127,15 +127,38 @@ const PAGE = 500; // memory.list's own page limit
 const CHUNK = 50; // memory.get_many's id limit
 const sha256 = buf => crypto.createHash('sha256').update(buf).digest('hex');
 
-// The rows of the chosen namespaces, oldest first, in full and without vectors. The index view of list
-// gives the ids page by page (no row text is cut), get_many then gives each row whole.
-async function exportRows(core, args) {
-  const ids = [];
+// Every row of list's pages, oldest first. The full view carries status, ttl_at and supersedes (its text is cut,
+// which does not matter here: get_many gives each exported row whole).
+async function listAll(core, args) {
+  const out = [];
   for (let offset = 0; ; offset += PAGE) {
-    const page = await core.memory.list({ ...args, view: 'index', order: 'oldest', limit: PAGE, offset });
-    ids.push(...page.rows.map(r => r.id));
-    if (page.rows.length < PAGE || ids.length >= page.total) break;
+    const page = await core.memory.list({ ...args, order: 'oldest', limit: PAGE, offset });
+    out.push(...page.rows);
+    if (page.rows.length < PAGE || out.length >= page.total) break;
   }
+  return out;
+}
+
+// The rows of the chosen namespaces, oldest first, in full and without vectors. By default only live rows go:
+// a refuted, superseded or expired row is left out and counted, because an import writes every row it reads as
+// a new unverified row with no supersedes link, which would bring a dead claim back as a live one. `--all`
+// exports them too; import then skips the refuted and superseded ones itself.
+async function exportRows(core, args, all) {
+  const listed = await listAll(core, args);
+  const skipped = { refuted: 0, superseded: 0, expired: 0 };
+  let keep = listed;
+  if (!all) {
+    // Superseded by any row of its namespace, whether or not the filter selects the newer row.
+    const every = args.filter ? await listAll(core, { ...args, filter: undefined }) : listed;
+    const dead = new Set(every.filter(r => r.supersedes).map(r => `${r.namespace}\0${r.supersedes}`));
+    const now = Date.now();
+    keep = listed.filter((r) => {
+      const why = r.status === 'refuted' ? 'refuted' : dead.has(`${r.namespace}\0${r.id}`) ? 'superseded' : r.ttl_at != null && r.ttl_at < now ? 'expired' : null;
+      if (why) skipped[why] += 1;
+      return !why;
+    });
+  }
+  const ids = keep.map(r => r.id);
   const rows = [];
   for (let i = 0; i < ids.length; i += CHUNK) {
     const got = await need(core, 'memory', 'get_many')({ ids: ids.slice(i, i + CHUNK) });
@@ -145,7 +168,7 @@ async function exportRows(core, args) {
       rows.push(row);
     }
   }
-  return rows;
+  return { rows, skipped };
 }
 
 async function doExport(core, parsed, ctx) {
@@ -154,11 +177,11 @@ async function doExport(core, parsed, ctx) {
   const args = namespaceArgs(opts, runId);
   const filter = R.filterOf(opts);
   if (Object.keys(filter).length) args.filter = filter;
-  const rows = await exportRows(core, args);
+  const { rows, skipped } = await exportRows(core, args, !!opts.all);
   // No clock in the header: the same rows export to the same bytes, so a seed file's hash is stable.
-  const header = { export: 1, written_by: 'operator', schema_version: SCHEMA_VERSION, count: rows.length };
+  const header = { export: 1, written_by: 'operator', schema_version: SCHEMA_VERSION, rows: opts.all ? 'all' : 'live', count: rows.length };
   const body = `${[header, ...rows].map(r => JSON.stringify(r)).join('\n')}\n`;
-  if (!opts.out) return { code: 0, text: body, json: { header, rows } };
+  if (!opts.out) return { code: 0, text: body, json: { header, rows, ...(opts.all ? {} : { skipped }) } };
   const out = path.resolve(ctx.cwd, opts.out);
   try {
     fs.writeFileSync(out, body, { flag: 'wx' }); // an export never overwrites a file
@@ -167,8 +190,10 @@ async function doExport(core, parsed, ctx) {
     const message = exists ? `${out} exists; export never overwrites` : `cannot write ${out}: ${e.code || e.message}`;
     return { code: 1, text: `belay memory export: ${message}\n`, json: { error: { code: exists ? 'E_EXISTS' : e.code || 'E_INTERNAL', message } } };
   }
-  const receipt = { out, count: rows.length, bytes: Buffer.byteLength(body), sha256: sha256(body), header };
-  return { code: 0, text: `exported ${rows.length} row${rows.length === 1 ? '' : 's'} to ${out}  bytes: ${receipt.bytes}  sha256: ${receipt.sha256.slice(0, 12)}\n`, json: receipt };
+  const receipt = { out, count: rows.length, bytes: Buffer.byteLength(body), sha256: sha256(body), header, ...(opts.all ? {} : { skipped }) };
+  const left = opts.all ? 0 : skipped.refuted + skipped.superseded + skipped.expired;
+  const leftText = left ? `\nleft out ${left} row${left === 1 ? '' : 's'} that ${left === 1 ? 'is' : 'are'} not live: refuted ${skipped.refuted}, superseded ${skipped.superseded}, expired ${skipped.expired} (--all exports them)` : '';
+  return { code: 0, text: `exported ${rows.length} row${rows.length === 1 ? '' : 's'} to ${out}  bytes: ${receipt.bytes}  sha256: ${receipt.sha256.slice(0, 12)}${leftText}\n`, json: receipt };
 }
 
 // The file, read and split before any store is opened: a file that cannot be read or is not an export
@@ -229,13 +254,30 @@ function importArgs(row, line, opts, sha) {
   return { args };
 }
 
+// The rows of the file that are not live: refuted, or superseded by another row of the file in the same
+// namespace. An imported row carries no status and no supersedes link, so either would come back live.
+function deadInFile(items, opts) {
+  const nsOf = row => (isStr(row.namespace) ? row.namespace : (opts.namespaces && opts.namespaces[0]) || '');
+  const superseded = new Set();
+  for (const { row } of items) if (row && isStr(row.supersedes)) superseded.add(`${nsOf(row)}\0${row.supersedes}`);
+  return (row) => {
+    if (!row || typeof row !== 'object') return null;
+    if (row.status === 'refuted') return 'refuted';
+    return isStr(row.id) && superseded.has(`${nsOf(row)}\0${row.id}`) ? 'superseded' : null;
+  };
+}
+
 async function doImport(core, parsed, read) {
   const { opts } = parsed;
   const refused = [...read.refused];
   const rows = [];
+  const skipped = { refuted: 0, superseded: 0 };
   let inserted = 0, updated = 0, statusIgnored = 0;
   const store = need(core, 'memory', 'store');
+  const dead = deadInFile(read.items, opts);
   for (const { line, row } of read.items) {
+    const why = dead(row);
+    if (why) { skipped[why] += 1; continue; }
     const built = importArgs(row, line, opts, read.sha256);
     if (built.error) { refused.push({ line, ...built.error }); continue; }
     if (row.status && row.status !== 'unverified') statusIgnored += 1; // a status that would have meant something
@@ -248,7 +290,7 @@ async function doImport(core, parsed, read) {
     }
   }
   refused.sort((a, b) => a.line - b.line);
-  const result = { file: read.file, sha256: read.sha256, lines: read.lines, inserted, updated, refused, status_ignored: statusIgnored, rows };
+  const result = { file: read.file, sha256: read.sha256, lines: read.lines, inserted, updated, refused, skipped, status_ignored: statusIgnored, rows };
   return { code: refused.length ? 1 : 0, text: R.renderImportText(result), json: result };
 }
 

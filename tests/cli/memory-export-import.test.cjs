@@ -55,7 +55,7 @@ function fakeCore(seedRows = []) {
         const all = [...rows.values()].filter(r => ns.includes(r.namespace) && (since === undefined || r.created_at >= since))
           .sort((x, y) => x.created_at - y.created_at);
         const page = all.slice(a.offset || 0, (a.offset || 0) + Math.min(a.limit || 50, 500));
-        return { rows: page.map(r => ({ id: r.id })), total: all.length };
+        return { rows: page.map(r => ({ id: r.id, namespace: r.namespace, status: r.status, supersedes: r.supersedes || null, ttl_at: r.ttl_at ?? null })), total: all.length };
       },
       get_many: async ({ ids }) => {
         if (ids.length > 50) throw new Error('get_many takes at most 50 ids');
@@ -93,7 +93,7 @@ test('export: a header line, then the full rows oldest first, no vectors; the sa
     const a = await run(dir, ['export', '--namespace', 'run/r1'], core);
     assert.strictEqual(a.code, 0);
     const [header, ...rows] = lines(a.text);
-    assert.deepStrictEqual(header, { export: 1, written_by: 'operator', schema_version: 2, count: 3 });
+    assert.deepStrictEqual(header, { export: 1, written_by: 'operator', schema_version: 2, rows: 'live', count: 3 });
     assert.deepStrictEqual(rows.map(r => r.id), ['a1', 'a2', 'a3']);
     assert.strictEqual(rows[0].text, 'src/dates.cjs reads TZ at module load');
     assert.deepStrictEqual(rows[0].body, { file: 'src/dates.cjs' });
@@ -381,5 +381,77 @@ test('REAL import: the stored row carries source operator, the title, the body a
       assert.ok(row.redactions && Object.keys(row.redactions).length, 'the redaction is recorded on the row');
       assert.strictEqual(row.status, 'unverified');
     } finally { await core.shutdownOwner(); await core.close(); }
+  } finally { cleanup(dir); }
+});
+
+// ---- live rows only (a dead row must not come back live through a file) ----------------------------------
+
+const deadSeed = () => [
+  { id: 'old', namespace: 'run/r1', type: 'decision', text: 'use port 80', created_at: 10 },
+  { id: 'new', namespace: 'run/r1', type: 'decision', text: 'use port 8080', supersedes: 'old', created_at: 20 },
+  { id: 'bad', namespace: 'run/r1', type: 'summary', text: 'a summary that was wrong', status: 'refuted', created_at: 30 },
+  { id: 'gone', namespace: 'run/r1', type: 'fact', text: 'expired fact', ttl_at: 1, created_at: 40 },
+  { id: 'ok', namespace: 'run/r1', type: 'fact', text: 'a live fact', created_at: 50 },
+];
+
+test('export: only live rows by default, the rest counted; --all keeps them; import skips the refuted and superseded', async () => {
+  const dir = sandbox();
+  try {
+    const live = await run(dir, ['export', 'r1', '--out', 'live.jsonl'], fakeCore(deadSeed()));
+    assert.strictEqual(live.code, 0, live.text);
+    assert.deepStrictEqual(live.json.skipped, { refuted: 1, superseded: 1, expired: 1 });
+    assert.match(live.text, /left out 3 rows that are not live: refuted 1, superseded 1, expired 1 \(--all exports them\)/);
+    const [h1, ...r1] = lines(fs.readFileSync(`${dir}/live.jsonl`, 'utf8'));
+    assert.strictEqual(h1.rows, 'live');
+    assert.deepStrictEqual(r1.map(x => x.id), ['new', 'ok']);
+    // A filter that leaves out the newer row still leaves out the row it superseded.
+    const filtered = await run(dir, ['export', 'r1', '--since', '5'], fakeCore(deadSeed()));
+    assert.deepStrictEqual(lines(filtered.text).slice(1).map(x => x.id), ['new', 'ok']);
+
+    const all = await run(dir, ['export', 'r1', '--all', '--out', 'all.jsonl'], fakeCore(deadSeed()));
+    assert.strictEqual(all.json.skipped, undefined);
+    const [h2, ...r2] = lines(fs.readFileSync(`${dir}/all.jsonl`, 'utf8'));
+    assert.strictEqual(h2.rows, 'all');
+    assert.deepStrictEqual(r2.map(x => x.id), ['old', 'new', 'bad', 'gone', 'ok']);
+
+    const target = fakeCore();
+    const imp = await run(dir, ['import', 'all.jsonl'], target);
+    assert.strictEqual(imp.code, 0, imp.text);
+    assert.deepStrictEqual(imp.json.skipped, { refuted: 1, superseded: 1 });
+    assert.match(imp.text, /skipped \(not live in the file\): refuted 1, superseded 1/);
+    assert.deepStrictEqual(target.calls.store.map(a => a.text), ['use port 8080', 'expired fact', 'a live fact']);
+  } finally { cleanup(dir); }
+});
+
+test('REAL export then import: superseded and refuted rows do not come back live in the index or the corpus', async () => {
+  const dir = sandbox();
+  const src = `${dir}/a/.belay`, dst = `${dir}/b/.belay`;
+  const caller = { role: 'orchestrator', run_id: 'run-q', pid: process.pid };
+  const lasting = async (dataDir) => {
+    const c = await openCore({ dataDir, caller: { ...caller, role: 'operator' } });
+    try {
+      const ix = await c.memory.index({ namespaces: ['run/run-q'] });
+      const co = await c.memory.corpus({});
+      return { index: ix.row_ids.length, corpus: co.row_ids.length };
+    } finally { await c.close(); }
+  };
+  try {
+    const c = await openCore({ dataDir: src, caller });
+    try {
+      const ns = 'run/run-q';
+      const a = await c.memory.store({ namespace: ns, text: 'decision: use port 80', type: 'decision', embed: false });
+      await c.memory.store({ namespace: ns, text: 'decision: use port 8080', type: 'decision', embed: false, supersedes: a.id });
+      const r = await c.memory.store({ namespace: ns, text: 'summary that was wrong', type: 'summary', embed: false });
+      await c.memory.setStatus({ id: r.id, status: 'refuted', receipt: 'test:it was wrong' });
+    } finally { await c.shutdownOwner(); await c.close(); }
+    assert.deepStrictEqual(await lasting(src), { index: 1, corpus: 1 });
+    for (const [file, extra] of [['live.jsonl', []], ['all.jsonl', ['--all']]]) {
+      const out = spawnSync(process.execPath, [CLI, 'memory', 'export', 'run-q', '--out', `${dir}/${file}`, '--data', src, ...extra], { cwd: ROOT, windowsHide: true, encoding: 'utf8' });
+      assert.strictEqual(out.status, 0, out.stderr);
+    }
+    assert.strictEqual(lines(fs.readFileSync(`${dir}/live.jsonl`, 'utf8')).length - 1, 1, 'only the live decision is exported');
+    const imp = spawnSync(process.execPath, [CLI, 'memory', 'import', `${dir}/all.jsonl`, '--no-embed', '--data', dst], { cwd: ROOT, windowsHide: true, encoding: 'utf8' });
+    assert.strictEqual(imp.status, 0, `${imp.stdout} / ${imp.stderr}`);
+    assert.deepStrictEqual(await lasting(dst), { index: 1, corpus: 1 }, 'the import of an --all file holds the one live row, as the source did');
   } finally { cleanup(dir); }
 });
