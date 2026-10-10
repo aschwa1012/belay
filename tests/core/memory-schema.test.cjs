@@ -302,3 +302,33 @@ test('VACUUM INTO keeps rowids, so the external-content index of a backup still 
     } finally { s.close(); }
   } finally { cleanup(dir); }
 });
+
+test('a store with the old wrap-up index (failed rows included) is upgraded by the owner: dropped, recreated, rows kept', () => {
+  const dir = sandbox();
+  try {
+    const f = path.join(dir, 'memory.db');
+    const first = ownerOpen(f);
+    first.db.exec('DROP INDEX ux_memory_event_wrapup');
+    first.db.exec("CREATE UNIQUE INDEX ux_memory_event_wrapup ON memory_event(run_id, key) WHERE kind = 'wrapup'");
+    const ev = (id, ok) => first.db.prepare("INSERT INTO memory_event(id, run_id, kind, key, ok, code, written_at, written_by) VALUES (?, 'r', 'wrapup', 'run', ?, ?, 1, 't')").run(id, ok, ok ? null : 'E_X');
+    ev('f1', 0);
+    assert.throws(() => ev('f2', 0), /UNIQUE constraint failed/, 'the old index blocks even a second failure');
+    first.close();
+    // A read copy's ensureSchema never rewrites the index (invariant 6): only the owner's open does.
+    const reader = new Store(f);
+    try { assert.doesNotMatch(reader.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'ux_memory_event_wrapup'").get().sql, /ok\s*=\s*1/); } finally { reader.close(); }
+    const owner = ownerOpen(f);
+    try {
+      assert.match(owner.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'ux_memory_event_wrapup'").get().sql, /ok\s*=\s*1/);
+      assert.strictEqual(owner.db.prepare("SELECT COUNT(*) AS n FROM memory_event WHERE id = 'f1'").get().n, 1, 'the existing row is kept');
+      ev2(owner, 'f3', 0);
+      ev2(owner, 's1', 1);
+      assert.throws(() => ev2(owner, 's2', 1), /UNIQUE constraint failed/, 'a second success is still refused');
+      migrateOwner(owner.db); // idempotent
+      assert.strictEqual(owner.db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'ux_memory_event_wrapup'").get().n, 1);
+    } finally { owner.close(); }
+  } finally { cleanup(dir); }
+});
+function ev2(s, id, ok) {
+  s.db.prepare("INSERT INTO memory_event(id, run_id, kind, key, ok, code, written_at, written_by) VALUES (?, 'r', 'wrapup', 'run', ?, ?, 1, 't')").run(id, ok, ok ? null : 'E_X');
+}

@@ -19,6 +19,7 @@ const { Client } = require('./client.cjs');
 const { withCopy } = require('./copy-read.cjs');
 const { ping } = require('./ping.cjs');
 const unresponsive = require('./unresponsive.cjs');
+const { withSemanticFailure } = require('./memory-search.cjs');
 
 const ELECTION_PING_TIMEOUT_MS = 300; // 5a-3: becomeOwner()'s refusal ping
 const READ_TIMEOUT_MS = 300;       // api.md §1: the bounded round trip before falling back to a copy
@@ -117,7 +118,13 @@ class Core {
     if (capMs !== undefined && capMs < limit) limit = capMs; // a re-run gets only what its first attempt left
     const writes = method === 'memory.store';
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(err('E_TIMEOUT', method + ' did not finish within ' + limit + ' ms in this process (the owner); its embedder is still loading or embedding and the load continues, so ' + (writes ? 'RE-READ before retrying: the row is written when the load finishes' : 'a retry waits on the same load'), { method, timeout_ms: limit, in_process: true, ...(writes ? { may_have_committed: true } : {}) })), limit);
+      const timer = setTimeout(() => {
+        const e = err('E_TIMEOUT', method + ' did not finish within ' + limit + ' ms in this process (the owner); its embedder is still loading or embedding and the load continues, so ' + (writes ? 'RE-READ before retrying: the row is written when the load finishes' : 'a retry waits on the same load'), { method, timeout_ms: limit, in_process: true, ...(writes ? { may_have_committed: true } : {}) });
+        // A hybrid search still has its keyword half: answer from it, naming the timeout in modes_failed.
+        if (method === 'memory.search' && params.mode === 'hybrid') {
+          this.owner.engine.handle(method, { ...params, mode: 'keyword' }).then(r => resolve(withSemanticFailure(r, e)), () => reject(e));
+        } else reject(e);
+      }, limit);
       run.then(v => { clearTimeout(timer); resolve(v); }, e => { clearTimeout(timer); reject(e); });
     });
   }

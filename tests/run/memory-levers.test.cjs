@@ -54,3 +54,13 @@ test('leversFor: a partial stored block is filled with defaults, an unreadable o
   await assert.rejects(leversFor(flaky, 'r'), /owner busy/);
   assert.strictEqual((await leversFor(flaky, 'r')).bottle, true, 'the failure was not cached');
 });
+
+test('leversFor: a runId other than the core\'s own run is refused, not answered with the caller\'s levers', async () => {
+  const c = { ...coreWith(JSON.stringify({ capture: true })), caller: { run_id: 'mine' } };
+  assert.deepStrictEqual(await leversFor(c, 'mine'), { ...DEFAULTS, capture: true });
+  await assert.rejects(leversFor(c, 'other'), /bound to run mine/);
+  const d = coreWith(null);
+  const got = d.run.get;
+  d.run.get = async () => ({ ...(await got()), run: { id: 'someone-else', memory_levers: JSON.stringify({ capture: true }) } });
+  await assert.rejects(leversFor(d, 'r1'), /answered for run someone-else/);
+});

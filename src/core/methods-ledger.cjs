@@ -80,7 +80,7 @@ async function recordEvent(E, caller, args) {
     info = E.store.p(sql).run(...vals);
   } catch (e) {
     if (/UNIQUE constraint failed/i.test(String(e && e.message)) && args.kind === 'wrapup') {
-      const prior = E.store.p("SELECT * FROM memory_event WHERE run_id = ? AND key = ? AND kind = 'wrapup' ORDER BY seq LIMIT 1").get(runId, key);
+      const prior = E.store.p("SELECT * FROM memory_event WHERE run_id = ? AND key = ? AND kind = 'wrapup' AND ok = 1 ORDER BY seq LIMIT 1").get(runId, key);
       throw err('E_EXISTS', `a wrapup event for key ${key} already exists in run ${runId}; nothing was written`, { run_id: runId, key, existing: eventOut(prior) });
     }
     throw e;

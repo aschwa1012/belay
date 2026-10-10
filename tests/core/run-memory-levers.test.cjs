@@ -30,6 +30,7 @@ test('run.attach without the keys leaves both columns null', async () => {
 test('run.attach refuses bad memory_levers and project with E_ARGS and writes nothing', async () => {
   const count = (await orch.run.get()).epochs.length;
   for (const args of [{ memory_levers: 'not json' }, { memory_levers: '[1]' }, { memory_levers: 'null' }, { memory_levers: { a: 1 } },
+    { memory_levers: '{"bogus":1}' }, { memory_levers: '{"alpha":5}' }, { memory_levers: '{"observations":true}' },
     { project: 'Upper' }, { project: '' }, { project: 7 }, { project: 'x'.repeat(65) }]) {
     await assert.rejects(orch.run.attach({ adapter_pid: process.pid, ...args }), (e) => e.code === 'E_ARGS', JSON.stringify(args));
   }
