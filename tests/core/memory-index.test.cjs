@@ -85,7 +85,7 @@ test('R17 matches by path prefix on a directory, and by folder for an owned file
   const under = await row(ns, 'under the owned directory', { body: JSON.stringify({ files_read: ['lib/run/deep/x.cjs'] }) });
   const sibling = await row(ns, 'beside the owned file', { body: JSON.stringify({ files_modified: ['tests/core/b.test.cjs'] }) });
   const lookalike = await row(ns, 'a lookalike directory', { body: JSON.stringify({ files_modified: ['lib/runner/x.cjs'] }) });
-  const elsewhere = await row(ns, 'elsewhere', { body: JSON.stringify({ files_modified: ['docs/x.md'] }) });
+  const elsewhere = await row(ns, 'elsewhere', { body: JSON.stringify({ files_modified: ['notes/x.md'] }) });
   const r = await call('memory.index', { namespaces: [ns], task_id: t.id });
   assert.deepStrictEqual(new Set(ids(r).slice(0, 2)), new Set([under, sibling]));
   assert.deepStrictEqual(new Set(ids(r).slice(2)), new Set([lookalike, elsewhere]));
