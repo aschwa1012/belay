@@ -86,6 +86,8 @@ test('the first question spawns the agent with the corpus on disk, the project n
   assert.strictEqual(s.model, K.KNOWLEDGE_MODEL);
   assert.deepStrictEqual(s.allowed_tools, K.KNOWLEDGE_TOOLS);
   assert.ok(!s.allowed_tools.includes('Bash') && !s.allowed_tools.includes('Edit') && !s.allowed_tools.includes('Write'));
+  // --allowedTools only pre-approves; the built-in surface itself is narrowed (--tools), and the launch is checked against it.
+  assert.deepStrictEqual(s.tools, ['Read', 'Glob', 'Grep']);
   assert.strictEqual(s.worktree, dir);
   assert.ok(s.prompt.includes('You are the knowledge agent'), 'the prompt template leads the first message');
   assert.ok(s.prompt.includes(`${dir}/workers/${ID}/corpus.md`) && s.prompt.endsWith('why a pipe?'));
@@ -96,7 +98,9 @@ test('the first question spawns the agent with the corpus on disk, the project n
   assert.strictEqual(r.turn, 1);
   assert.strictEqual(r.uncited_claims, false);
   assert.strictEqual(typeof r.waited_ms, 'number');
-  assert.deepStrictEqual(m.waits, [{ worker_ids: [ID], timeout_ms: 110000 }]);
+  assert.strictEqual(m.waits.length, 1);
+  assert.deepStrictEqual(m.waits[0].worker_ids, [ID]);
+  assert.ok(m.waits[0].timeout_ms <= 110000 && m.waits[0].timeout_ms > 100000, 'the wait gets what is left of the one budget');
 });
 
 test('every cited id is looked up, and an id with no row is reported found: false, never dropped', async () => {

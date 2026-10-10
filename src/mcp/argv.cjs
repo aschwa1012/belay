@@ -4,12 +4,12 @@
 // returns. Moved out of belay-mcp.cjs unchanged, to keep that file under its line budget.
 //
 // Usage: node belay-mcp.cjs --role orchestrator|worker --run <id> --data <dir>
-//                           [--worker-id <id>] [--no-embed] [--log <file>]
+//                           [--worker-id <id>] [--no-embed] [--log <file>] [--worktree <dir>]
 
 const path = require('node:path');
 const CP = require('../run/compaction.cjs'); // fs and path only; parses --compact-at
 
-const VALUE_FLAGS = new Set(['--role', '--run', '--data', '--worker-id', '--log', '--permit-wait-ms', '--compact-at']);
+const VALUE_FLAGS = new Set(['--role', '--run', '--data', '--worker-id', '--log', '--permit-wait-ms', '--compact-at', '--worktree']);
 const BOOL_FLAGS = new Set(['--no-embed', '--experimental-worker-wait', '--permit']);
 
 function die(reason) {
@@ -46,6 +46,7 @@ function parseArgv(argv) {
     else if (a === '--data') out.dataDir = v;
     else if (a === '--worker-id') out.workerId = v;
     else if (a === '--log') out.logFile = v;
+    else if (a === '--worktree') out.worktree = path.resolve(v).split('\\').join('/'); // ADR 0043 decision 1: the run's worktree
     else if (a === '--compact-at') { // ADR 0007 decision 3: the run's compact_at_tokens, for the workers this manager spawns
       out.compactAt = CP.parseCompactAt(/^\d+$/.test(v) ? Number(v) : NaN).value;
       if (!out.compactAt) die(`--compact-at must be a positive integer, got ${v}`);

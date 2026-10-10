@@ -12,6 +12,16 @@ const { DEFAULTS, parseMemoryBlock, isDefault } = require('../core/memory-levers
 // the defaults, and so is an unreadable column: a bad stored value is never silently half-applied.
 const cache = new WeakMap(); // core -> Map(runId -> Promise<levers>)
 
+// The levers a run row records: its parsed memory block, or the defaults for none or an unreadable one.
+function leversOfRow(row) {
+  const raw = row ? row.memory_levers : null;
+  if (raw == null) return { ...DEFAULTS };
+  let obj;
+  try { obj = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return { ...DEFAULTS }; }
+  const parsed = parseMemoryBlock(obj);
+  return parsed.error ? { ...DEFAULTS } : parsed.value;
+}
+
 async function readLevers(core, runId) {
   const got = await core.run.get();
   // run.get answers for the caller's own run only; a different runId would silently get that run's levers.
@@ -21,12 +31,7 @@ async function readLevers(core, runId) {
   if (got && got.run && got.run.id !== undefined && got.run.id !== runId) {
     throw new Error(`leversFor(${runId}): run.get answered for run ${got.run.id}`);
   }
-  const raw = got && got.run ? got.run.memory_levers : null;
-  if (raw == null) return { ...DEFAULTS };
-  let obj;
-  try { obj = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return { ...DEFAULTS }; }
-  const parsed = parseMemoryBlock(obj);
-  return parsed.error ? { ...DEFAULTS } : parsed.value;
+  return leversOfRow(got && got.run);
 }
 
 function leversFor(core, runId) {
@@ -39,4 +44,4 @@ function leversFor(core, runId) {
   return byRun.get(runId);
 }
 
-module.exports = { DEFAULTS, parseMemoryBlock, leversFor, isDefault };
+module.exports = { DEFAULTS, parseMemoryBlock, leversFor, leversOfRow, isDefault };
