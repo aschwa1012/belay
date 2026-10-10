@@ -13,7 +13,8 @@ const path = require('node:path');
 const { err } = require('./errors.cjs');
 const { ensureSchema, scanCeiling } = require('./schema.cjs');
 const { checkSchema, stampStore } = require('./schema-stamp.cjs');
-const { migrateOwner } = require('./memory-schema.cjs');
+const { migrateOwner, ftsReady } = require('./memory-schema.cjs');
+const { deriveTitle } = require('./memory-rows.cjs');
 
 const now = () => Date.now();
 const hashText = t => crypto.createHash('sha256').update(String(t).trim()).digest('hex');
@@ -66,12 +67,21 @@ class Store {
   }
 
   // ---- memory write path -------------------------------------------------
+  // ADR 0040 §1-3. `title`, `body`, `redactions` (objects or text), and the harness provenance `run_id`,
+  // `task_id`, `turn` and `source` are written as given: deriving them is the method's work (methods-memory.cjs),
+  // and this layer trusts none of them to come from a caller. A dedup update (same namespace, same hash) refreshes
+  // title, body and redactions only where the new write has them, and never touches status or provenance:
+  // the row stays what it was first written as, verified or refuted included.
   store(a) {
     const ns = a.namespace, wid = a.worker_id;
     if (!ns || !wid || typeof a.text !== 'string' || !a.text.trim()) throw err('E_ARGS', 'memory.store needs a namespace, a worker id and non-empty text');
     if (a.embedding && !(a.embedding_model && a.dim)) throw err('E_ARGS', 'an embedding must arrive with its embedding_model and dim');
     const t = now(), th = hashText(a.text), ttl = a.ttl_seconds ? t + Math.round(a.ttl_seconds * 1000) : null;
     const createdAt = a.created_at != null ? Math.floor(a.created_at) : t;
+    const asText = v => (v == null ? null : typeof v === 'string' ? v : JSON.stringify(v));
+    const title = a.title == null ? null : String(a.title);
+    const body = asText(a.body);
+    const redactions = a.redactions && typeof a.redactions === 'object' && !Object.keys(a.redactions).length ? null : asText(a.redactions);
     return this.tx(() => {
       let vec = null;
       if (a.embedding) {
@@ -85,7 +95,7 @@ class Store {
       if (a.supersedes && !this.p('SELECT 1 FROM memory_entries WHERE id = ?').get(a.supersedes)) {
         throw err('E_SUPERSEDES', `the row this write supersedes (${a.supersedes}) is not in the store`, { supersedes: a.supersedes });
       }
-      const dup = this.p('SELECT id, worker_id FROM memory_entries WHERE namespace = ? AND text_hash = ?').get(ns, th);
+      const dup = this.p('SELECT id, worker_id, text, status, title, run_id, task_id, redactions, embedding IS NOT NULL AS has_vec FROM memory_entries WHERE namespace = ? AND text_hash = ?').get(ns, th);
       const tags = a.tags ? JSON.stringify(a.tags) : null;
       const prov = a.provenance || null;
       const blob = vec ? Buffer.from(vec.buffer) : null;
@@ -94,15 +104,18 @@ class Store {
         id = dup.id; action = 'updated';
         this.p(`UPDATE memory_entries SET last_writer_id = ?, type = ?, embedding = COALESCE(?, embedding),
                 tags = COALESCE(?, tags), provenance = COALESCE(?, provenance), supersedes = COALESCE(?, supersedes),
+                title = COALESCE(?, title), body = COALESCE(?, body), redactions = COALESCE(?, redactions),
                 updated_at = ?, ttl_at = ? WHERE id = ?`)
-          .run(wid, a.type || 'fact', blob, tags, prov, a.supersedes || null, t, ttl, id);
+          .run(wid, a.type || 'fact', blob, tags, prov, a.supersedes || null, title, body, redactions, t, ttl, id);
       } else {
         id = a.id || crypto.randomUUID(); action = 'inserted';
         this.p(`INSERT INTO memory_entries(id, namespace, worker_id, last_writer_id, type, text, text_hash, embedding,
-                embedding_model, embedding_revision, dim, tags, provenance, supersedes, created_at, updated_at, ttl_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                embedding_model, embedding_revision, dim, tags, provenance, supersedes, created_at, updated_at, ttl_at,
+                title, body, redactions, run_id, task_id, turn, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
           .run(id, ns, wid, wid, a.type || 'fact', a.text, th, blob, a.embedding_model || null,
-            a.embedding_revision || null, a.dim || null, tags, prov, a.supersedes || null, createdAt, createdAt, ttl);
+            a.embedding_revision || null, a.dim || null, tags, prov, a.supersedes || null, createdAt, createdAt, ttl,
+            title, body, redactions, a.run_id ?? null, a.task_id ?? null, a.turn ?? null, a.source ?? null);
       }
       const c = this.cache.get(ns);
       if (c) {
@@ -111,10 +124,26 @@ class Store {
         if (i >= 0) c.rows[i] = row; else c.rows.push(row);
         if (a.supersedes) c.superseded.add(a.supersedes);
       }
+      const stored = this.p('SELECT status, title, run_id, task_id, turn, source, redactions, embedding IS NOT NULL AS has_vec FROM memory_entries WHERE id = ?').get(id);
       return {
         id, action, namespace: ns, text_hash: th, worker_id: dup ? dup.worker_id : wid,
         last_writer_id: wid, created_at: dup ? undefined : createdAt, updated_at: t, ttl_at: ttl,
+        status: stored.status || 'unverified', title: stored.title || deriveTitle(dup ? dup.text : a.text),
+        run_id: stored.run_id, task_id: stored.task_id, turn: stored.turn, source: stored.source,
+        redactions: stored.redactions ? JSON.parse(stored.redactions) : null, has_embedding: !!stored.has_vec,
       };
+    });
+  }
+
+  // ADR 0040 §2 memory.setStatus. One row, one transaction; the FTS trigger fires on title and text only,
+  // so a status change leaves the keyword index alone.
+  setStatus(id, f) {
+    return this.tx(() => {
+      const row = this.p('SELECT status FROM memory_entries WHERE id = ?').get(id);
+      if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
+      this.p('UPDATE memory_entries SET status = ?, status_receipt = ?, status_by = ?, status_at = ? WHERE id = ?')
+        .run(f.status, f.receipt, f.by, f.at, id);
+      return { id, status: f.status, previous_status: row.status || 'unverified', status_receipt: f.receipt, status_by: f.by, status_at: f.at };
     });
   }
 
@@ -230,14 +259,28 @@ class Store {
                         SUM(CASE WHEN ttl_at IS NOT NULL AND ttl_at < ? THEN 1 ELSE 0 END) AS expired,
                         MIN(created_at) AS oldest, MAX(created_at) AS newest FROM memory_entries`).get(t);
     const sz = f => { try { return fs.statSync(f).size; } catch { return 0; } };
+    const ready = ftsReady(this.db);
+    const marker = this.db.prepare("SELECT value FROM meta WHERE key = 'memory_fts_version'").get();
     return {
       ...tot,
+      by_type: this._countBy("COALESCE(type, 'fact')"),
+      by_status: this._countBy("COALESCE(status, 'unverified')"),
+      unembedded: Number(this.p('SELECT COUNT(*) AS n FROM memory_entries WHERE embedding IS NULL').get().n),
+      // ADR 0040 §5: the keyword index as a fact. `version` is the marker as stored ('0' = this SQLite has no
+      // FTS5, null = no owner has migrated this store); rows is read only when the marker says the index exists.
+      fts: { present: ready, version: marker ? marker.value : null, rows: ready ? Number(this.db.prepare('SELECT COUNT(*) AS n FROM memory_fts').get().n) : null },
       by_namespace: this.p('SELECT namespace, COUNT(*) AS n FROM memory_entries GROUP BY namespace ORDER BY n DESC LIMIT 50').all(),
       heartbeat: this.p('SELECT * FROM owner_heartbeat WHERE id = 1').get() || null,
       db_bytes: sz(this.dbPath), wal_bytes: sz(this.dbPath + '-wal'),
       sqlite_version: this.p('SELECT sqlite_version() AS v').get().v,
       cached_namespaces: this.cache.size,
     };
+  }
+
+  _countBy(expr) {
+    const out = {};
+    for (const r of this.db.prepare(`SELECT ${expr} AS k, COUNT(*) AS n FROM memory_entries GROUP BY k`).all()) out[r.k] = Number(r.n);
+    return out;
   }
 
   heartbeat(pid, pipe, startedAt) {
