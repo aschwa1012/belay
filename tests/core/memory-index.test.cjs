@@ -221,5 +221,5 @@ test('a worker may call it, and reading it writes nothing', async () => {
 test('the module requires nothing that reaches the embedder', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'core', 'memory-index.cjs'), 'utf8');
   const reqs = [...src.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1]).filter((r) => !r.startsWith('node:'));
-  assert.deepStrictEqual(reqs.sort(), ['./errors.cjs', './fit-budget.cjs', './memory-rows.cjs', './rows.cjs']);
+  assert.deepStrictEqual(reqs.sort(), ['./errors.cjs', './fit-budget.cjs', './memory-relevance.cjs', './memory-rows.cjs', './rows.cjs']);
 });

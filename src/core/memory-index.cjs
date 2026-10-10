@@ -5,13 +5,14 @@
 //
 // Only lasting rows count (a summary, a decision, or a verified row; never refuted, superseded or expired),
 // ranked mechanically in three tiers: rows about files under the task's files_owned, rows written for the
-// task, then the rest of the project by recency. The text carries no clock, no age and no relative time, so
+// task, then the rest; within a tier by relevance to the task text (memory-relevance.cjs), then recency. The text carries no clock, no age and no relative time, so
 // identical inputs render identical bytes (ADR 0042 decision 5). The clock is read only to drop expired rows.
 
 const crypto = require('node:crypto');
 const { err } = require('./errors.cjs');
 const { fit } = require('./fit-budget.cjs');
 const { deriveTitle } = require('./memory-rows.cjs');
+const relevance = require('./memory-relevance.cjs');
 const rows = require('./rows.cjs');
 
 const DEFAULT_BYTES = 1200;
@@ -128,14 +129,23 @@ async function index(E, caller, args = {}) {
   const live = found.filter((r) => !o.exclude.has(r.id));
   const excluded = found.length - live.length;
 
-  const ranked = live.map((r) => ({ r, tier: tierOf(r, o.taskId, owned) })).sort((a, b) => (
+  // Relevance to the task text (the query, then the task's spec) orders rows within each tier; a row with
+  // none keeps the old order after the relevant ones. `relevance` in the result says what ran.
+  const rq = relevance.parseArgs(args);
+  const text = [rq.query, task && typeof task.spec === 'string' ? task.spec : null].filter(Boolean).join('\n');
+  const source = [rq.query && 'query', task && task.spec && 'task.spec'].filter(Boolean).join('+') || null;
+  const rel = relevance.score(E, live, { text, source, queryEmbedding: rq.queryEmbedding, embeddingModel: rq.embeddingModel, namespaces });
+  const relOf = (r) => rel.scores.get(r.id) || 0;
+
+  const ranked = live.map((r) => ({ r, tier: tierOf(r, o.taskId, owned), rel: relOf(r) })).sort((a, b) => (
     (a.tier - b.tier)
+    || (b.rel - a.rel)
     || ((b.r.status === 'verified') - (a.r.status === 'verified'))
     || (b.r.created_at - a.r.created_at)
     || (a.r.id < b.r.id ? -1 : a.r.id > b.r.id ? 1 : 0)
   ));
 
-  const base = { considered: found.length, excluded_already_injected: excluded };
+  const base = { considered: found.length, excluded_already_injected: excluded, ...(rel.info ? { relevance: rel.info } : {}) };
   const empty = (dropped, over) => ({ text: '', bytes: 0, row_ids: [], dropped, over_budget: over, sha256: sha256(''), ...base });
   if (!ranked.length) return empty(0, false);
 
