@@ -302,6 +302,7 @@ async function run(ctx) {
           mcpToolTimeoutMs: parsed.mcp_tool_timeout_ms, pollMs: parsed.poll_ms,
           closeGraceMs: parsed.close_grace_ms, compactAtTokens: parsed.levers.compact_at_tokens, // ADR 0007 decision 3
           interactiveSurfaceMs: parsed.interactive_surface_ms, fullscreen: parsed.fullscreen,
+          knowledgeAgent: !!(parsed.levers.memory_levers && parsed.levers.memory_levers.knowledge_agent),
         },
         onAttached, stopControl: attachHook, console: ce, print: RI.printer(ctx), deps: ctx.interactiveDeps,
         wakeRelease: ce ? () => runPauseControl.takeResume() : undefined,

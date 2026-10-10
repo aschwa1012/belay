@@ -90,10 +90,36 @@ async function setStatus(E, caller, args) {
   const at = Date.now();
   const out = E.store.setStatus(id, { status, receipt: kept, by: E.writtenBy(caller), at });
   E.noteWrite();
+  const row = E.store.p('SELECT * FROM memory_entries WHERE id = ?').get(id);
   if (status === 'verified') {
-    const row = E.store.p('SELECT * FROM memory_entries WHERE id = ?').get(id);
     const target = projectCopyTarget(E, row);
     if (target) out.project_copy = await copyVerified(E, caller, row, target, kept, at);
+  }
+  const followed = await followCopies(E, caller, row, { status, receipt: kept, at }, out.project_copy && out.project_copy.id);
+  if (followed.length) out.copies = followed;
+  return out;
+}
+
+// A copy outlives its run, so it must never keep a status its source has lost: a row refuted (or set back to
+// unverified) after it was verified would otherwise stay verified in the project namespace, and the index and
+// the corpus would go on serving it. Every row that names this one as its source (copy-of:<id>, written here or
+// by the run's summary copy) takes the same status and receipt, and each change is a project_write event.
+async function followCopies(E, caller, row, change, skipId) {
+  const copies = E.store.p('SELECT id, namespace, status FROM memory_entries WHERE provenance = ? AND id <> ?').all(`${COPY_PREFIX}${row.id}`, row.id);
+  const out = [];
+  for (const c of copies) {
+    if (c.id === skipId) continue;
+    try {
+      const s = E.store.setStatus(c.id, { status: change.status, receipt: change.receipt, by: E.writtenBy(caller), at: change.at });
+      E.noteWrite();
+      await recordCopy(E, caller, row, { ok: true, row_ids: [c.id], newest_row_id: c.id, message: `set copy ${c.id} in ${c.namespace} to ${change.status}, as its source ${row.id}` });
+      out.push({ ok: true, id: c.id, namespace: c.namespace, status: s.status, source_id: row.id });
+    } catch (e) {
+      const code = e && typeof e.code === 'string' && e.code.startsWith('E_') ? e.code : 'E_INTERNAL';
+      const message = String((e && e.message) || e).slice(0, 300);
+      await recordCopy(E, caller, row, { ok: false, code, row_ids: [c.id], message });
+      out.push({ ok: false, id: c.id, namespace: c.namespace, code, message, source_id: row.id });
+    }
   }
   return out;
 }

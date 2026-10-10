@@ -33,7 +33,7 @@ after(() => { store.close(); cleanup(dir); });
 
 test('a worker passing task_id, turn or source gets E_ARGS naming the field, and nothing is written', async () => {
   const before = store.count();
-  for (const [k, v] of [['task_id', 't-9'], ['turn', 3], ['source', 'harness']]) {
+  for (const [k, v] of [['task_id', 't-9'], ['turn', 3], ['source', 'harness'], ['worker_id', 'w-2']]) {
     await rejected(call('memory.store', worker, { text: `worker ${k}`, [k]: v, embed: false }), 'E_ARGS', k);
   }
   assert.strictEqual(store.count(), before);
@@ -81,6 +81,17 @@ test('the orchestrator and operator pass task_id, turn and source; source defaul
   assert.strictEqual((await call('memory.store', orch, { text: 'orchestrator row', embed: false })).source, 'model');
   await rejected(call('memory.store', orch, { text: 'bad source', embed: false, source: 'worker' }), 'E_ARGS', 'source');
   await rejected(call('memory.store', orch, { text: 'bad turn', embed: false, turn: -1 }), 'E_ARGS', 'turn');
+});
+
+test('the orchestrator and operator name the worker a harness row is about; without it the row is the caller\'s', async () => {
+  const h = await call('memory.store', orch, { text: 'observation of w-7', embed: false, worker_id: 'w-7', source: 'harness' });
+  assert.strictEqual(dbRow(h.id).worker_id, 'w-7');
+  const o = await call('memory.store', operator, { text: 'operator row for w-8', embed: false, worker_id: 'w-8' });
+  assert.strictEqual(dbRow(o.id).worker_id, 'w-8');
+  const plain = await call('memory.store', orch, { text: 'the orchestrator row of its own', embed: false });
+  assert.notStrictEqual(dbRow(plain.id).worker_id, 'w-7');
+  await rejected(call('memory.store', orch, { text: 'empty worker', embed: false, worker_id: '' }), 'E_ARGS', 'worker_id');
+  await rejected(call('memory.store', orch, { text: 'numeric worker', embed: false, worker_id: 7 }), 'E_ARGS', 'worker_id');
 });
 
 test('embed: false never calls getEmbedder, stores no vector, and says so', async () => {

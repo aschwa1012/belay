@@ -118,7 +118,7 @@ test('embedder: the identity is one transaction, and only the exact legacy MiniL
     // The embedder identity is asserted exactly; the G3 stamp (written by the owner's open) apart from it.
     const { schema_version, written_by, memory_fts_version, ...identity } = metaOf(c);
     assert.deepStrictEqual(identity, { embedding_model: VOYAGE.id });
-    assert.strictEqual(schema_version, '1');
+    assert.strictEqual(schema_version, '2');
     assert.match(written_by, /^belay@\S+\+\S+$/);
   });
   if (noVoyage) return;

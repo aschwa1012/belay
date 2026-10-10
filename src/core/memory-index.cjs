@@ -48,10 +48,16 @@ function underOwned(file, owned) {
   });
 }
 
+// The files a row's body names. An observation body (observe.cjs) carries files_modified and files_read at the
+// top level; a summary body (summarise.cjs) carries looked_at and done.files_modified. Both shapes count.
 function touchedFiles(body) {
   if (!body || typeof body !== 'object') return [];
   const out = [];
-  for (const k of ['files_modified', 'files_read']) if (Array.isArray(body[k])) for (const f of body[k]) if (typeof f === 'string') out.push(f);
+  const take = (l) => { if (Array.isArray(l)) for (const f of l) if (typeof f === 'string') out.push(f); };
+  take(body.files_modified);
+  take(body.files_read);
+  take(body.looked_at);
+  if (body.done && typeof body.done === 'object') take(body.done.files_modified);
   return out;
 }
 

@@ -12,7 +12,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { err } = require('./errors.cjs');
 const { ensureSchema, scanCeiling } = require('./schema.cjs');
-const { checkSchema, stampStore } = require('./schema-stamp.cjs');
+const { checkSchema, putStamp } = require('./schema-stamp.cjs');
 const { migrateOwner, ftsReady } = require('./memory-schema.cjs');
 const { deriveTitle } = require('./memory-rows.cjs');
 
@@ -41,14 +41,23 @@ class Store {
     this.db = new DatabaseSync(dbPath);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=${this.opts.synchronous}; PRAGMA busy_timeout=${this.opts.busyTimeoutMs}; PRAGMA temp_store=MEMORY;`);
     // G3: refuse a newer schema before ensureSchema can write anything to it. Only the owner passes
-    // `stamp: true`; a read opens a throwaway copy and never stamps.
-    // NOTE: ensureSchema and the stamp are separate transactions. The first real SCHEMA_VERSION bump that
-    // changes a layout must stamp INSIDE the migration's own transaction, or a crash between the two
-    // leaves a migrated store still carrying the old version.
+    // `stamp: true`; a read opens a throwaway copy and never stamps. The owner checks, migrates and stamps
+    // in one transaction, so no crash can leave a migrated store still carrying the old version, which an
+    // older core would then open and write into as if the layout were its own.
     try {
-      checkSchema(this.db, dbPath);
-      ensureSchema(this.db);
-      if (this.opts.stamp) { stampStore(this.db); migrateOwner(this.db); }
+      if (this.opts.stamp) {
+        this.db.exec('BEGIN IMMEDIATE');
+        try {
+          checkSchema(this.db, dbPath);
+          ensureSchema(this.db);
+          putStamp(this.db);
+          this.db.exec('COMMIT');
+        } catch (e) { try { this.db.exec('ROLLBACK'); } catch { /* already out */ } throw e; }
+        migrateOwner(this.db);
+      } else {
+        checkSchema(this.db, dbPath);
+        ensureSchema(this.db);
+      }
     } catch (e) { try { this.db.close(); } catch { /* already closed */ } throw e; }
     this._stmts = new Map();
     this.cache = new Map(); // namespace -> { rows: [{id, vec, ttl_at}], superseded: Set<id> }

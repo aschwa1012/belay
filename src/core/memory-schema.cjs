@@ -58,7 +58,7 @@ function migrateWrapupIndex(db) {
   const hasTable = db.prepare("SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'memory_event'").get();
   if (!hasTable) return false;
   const cur = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'ux_memory_event_wrapup'").get();
-  if (cur && /oks*=s*1/.test(cur.sql)) return false;
+  if (cur && /ok\s*=\s*1/.test(cur.sql)) return false;
   db.exec('BEGIN IMMEDIATE');
   try {
     db.exec('DROP INDEX IF EXISTS ux_memory_event_wrapup');

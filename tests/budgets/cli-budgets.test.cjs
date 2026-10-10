@@ -197,7 +197,7 @@ test('budgets: config path, doctor and mcp status each add under 500 ms to the h
   assertGate(result);
 });
 
-test('budgets: status, workers, tasks, receipts, memory stats and reads, usage, briefing, logs and diff each add under 500 ms to the host floor, interleaved, on a dead store', () => {
+test('budgets: status, workers, tasks, receipts, memory stats and reads (a hybrid search among them), usage, briefing, logs (with --memory too) and diff each add under 500 ms to the host floor, interleaved, on a dead store', () => {
   const result = interleaved({
     spawnFloor: makeSpawnFloor(),
     commands: {
@@ -207,6 +207,9 @@ test('budgets: status, workers, tasks, receipts, memory stats and reads, usage, 
       receipts: () => timedCli(['receipts', '--data', dataDir], {}, 0, dataDir),
       memory_stats: () => timedCli(['memory', 'stats', '--data', dataDir], {}, 0, dataDir),
       memory_search_keyword: () => timedCli(['memory', 'search', 'about task', '--mode', 'keyword', '--index', 'run-budgets', '--data', dataDir], {}, 0, dataDir),
+      // A hybrid search with no owner: the semantic half cannot embed the query and is named in modes_failed;
+      // the keyword half answers from the copy, so the command still exits 0 and pays only the read path.
+      memory_search_hybrid: () => timedCli(['memory', 'search', 'about task', '--mode', 'hybrid', '--index', 'run-budgets', '--data', dataDir], {}, 0, dataDir),
       memory_list: () => timedCli(['memory', 'list', 'run-budgets', '--index', '--data', dataDir], {}, 0, dataDir),
       memory_show: () => timedCli(['memory', 'show', memoryId, '--data', dataDir], {}, 0, dataDir),
       memory_timeline: () => timedCli(['memory', 'timeline', memoryId, '--data', dataDir], {}, 0, dataDir),
@@ -214,6 +217,7 @@ test('budgets: status, workers, tasks, receipts, memory stats and reads, usage, 
       usage: () => timedCli(['usage', 'run-budgets', '--by', 'worker', '--data', dataDir], {}, 0, dataDir),
       briefing: () => timedCli(['briefing', 'w1', '--data', dataDir], {}, 0, dataDir),
       logs: () => timedCli(['logs', 'w1', '--tail', '5', '--data', dataDir], {}, 0, dataDir),
+      logs_memory: () => timedCli(['logs', 'w1', '--tail', '5', '--memory', '--data', dataDir], {}, 0, dataDir),
       diff: () => timedCli(['diff', '--data', dataDir], {}, 0, dataDir),
     },
     n: N,

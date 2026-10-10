@@ -45,6 +45,17 @@ const PROMPT_FILE = path.join(__dirname, 'prompts', 'knowledge.md');
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const workerIdFor = (runId) => `knowledge-${runId}`;
 
+// The record under the agent's id must be the read-only agent this module launched: its built-in tools exactly
+// Read, Glob and Grep. A record with any other surface (an id taken before the prefix was reserved, or a relaunch
+// that lost the narrowed list) is refused rather than handed the corpus and a question.
+function checkTools(rec, id) {
+  if (!rec) return;
+  const got = Array.isArray(rec.tools) ? [...rec.tools].sort() : null;
+  if (JSON.stringify(got) !== JSON.stringify([...KNOWLEDGE_BUILTINS].sort())) {
+    fail('E_SUBSTRATE', `worker ${id} is not the read-only knowledge agent: its built-in tools are ${got ? got.join(', ') : 'the full list'}, not ${KNOWLEDGE_BUILTINS.join(', ')}`, { worker_id: id, tools: got });
+  }
+}
+
 const states = new WeakMap(); // manager -> { sha, chain }
 function stateOf(manager) {
   let s = states.get(manager);
@@ -125,6 +136,10 @@ async function doAsk(manager, ctx, state, args) {
   let relaunch = null;
   try {
     stand = await standing(manager, core, id);
+    const held = manager._worker(id);
+    if (held) checkTools(held, id);
+    // A row an earlier adapter left is relaunched with the launch options its argv.json names: check them first.
+    else if (stand === 'ended') checkTools({ tools: require('./lifecycle.cjs').readLaunchOptions(L.workerDir(ctx.dataDir, id)).tools }, id);
     if (stand === 'live' && manager._worker(id).turnEnded === false) {
       // Mid-turn on an earlier question that timed out: wait that turn out; its answer is not this question's.
       const prior = await manager.wait({ worker_ids: [id], timeout_ms: left() });
@@ -134,6 +149,7 @@ async function doAsk(manager, ctx, state, args) {
     }
     if (stand === 'ended') {
       relaunch = await manager.restart({ worker_id: id, first_turn_timeout_ms: left() });
+      checkTools(manager._worker(id), id); // a row an earlier adapter left: its launch options come from argv.json
       if (relaunch.first_turn_timed_out) fail('E_BUSY', 'the relaunched knowledge agent has not finished its first turn; ask again later', { worker_id: id, branch: relaunch.branch });
     }
   } catch (e) {

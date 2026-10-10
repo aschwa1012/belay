@@ -186,6 +186,7 @@ test('summary: written once per (task, worker) under concurrent turns, labelled,
   assert.strictEqual(s.title, 'summary: task t1 (mechanical)');
   assert.strictEqual(s.embed, false);
   assert.strictEqual(s.task_id, 't1');
+  assert.strictEqual(s.worker_id, 'w1', 'the summary names the worker it is about');
   assert.ok(s.text.startsWith(MJ.SUMMARY_LABEL));
   assert.match(s.text, /learned: worker-stated: built it/);
   assert.match(s.text, /modified b\.cjs/);
@@ -258,6 +259,7 @@ test('project writes: an observation and a summary are copied with copy-of, each
   assert.strictEqual(copies[0].args.type, 'observation');
   assert.strictEqual(copies[0].args.embed, false);
   assert.strictEqual(copies[0].args.source, 'harness');
+  assert.ok(copies.every((c) => c.args.worker_id === 'w1'), 'each copy names the worker it is about');
   assert.match(copies[1].args.provenance, /^copy-of:m\d+$/);
   assert.strictEqual(copies[1].args.type, 'summary');
   const writes = core.events.filter((e) => e.kind === 'project_write');

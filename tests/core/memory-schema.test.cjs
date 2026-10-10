@@ -199,12 +199,29 @@ test('a copy of an owner store keeps the index and ftsReady is true on it', () =
   } finally { cleanup(dir); }
 });
 
-test('SCHEMA_VERSION is still 1 and the stamp says so', () => {
-  assert.strictEqual(SCHEMA_VERSION, 1);
+test('SCHEMA_VERSION is 2 (the memory columns and redaction) and the stamp says so', () => {
+  assert.strictEqual(SCHEMA_VERSION, 2);
   const dir = sandbox();
   try {
     const s = ownerOpen(path.join(dir, 'memory.db'));
-    try { assert.strictEqual(metaOf(s.db, 'schema_version'), '1'); } finally { s.close(); }
+    try { assert.strictEqual(metaOf(s.db, 'schema_version'), '2'); } finally { s.close(); }
+  } finally { cleanup(dir); }
+});
+
+test('a second owner open of a built store changes no schema object: PRAGMA schema_version does not move', () => {
+  const dir = sandbox();
+  try {
+    const f = path.join(dir, 'memory.db');
+    const pragma = s => s.db.prepare('PRAGMA schema_version').get().schema_version;
+    const first = ownerOpen(f);
+    const v1 = pragma(first);
+    first.close();
+    const second = ownerOpen(f);
+    try {
+      assert.strictEqual(pragma(second), v1, 'the wrap-up index, the FTS table and the triggers are left as they are');
+      migrateOwner(second.db);
+      assert.strictEqual(pragma(second), v1, 'migrateOwner on a built store is a no-op');
+    } finally { second.close(); }
   } finally { cleanup(dir); }
 });
 

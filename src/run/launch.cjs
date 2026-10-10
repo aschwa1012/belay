@@ -330,14 +330,16 @@ function assertOutsideDataDir(dir, dataDir) {
   return d;
 }
 
-function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, logPath = null, cwd = null, compactAt = null }) {
+// `knowledgeAgent`: the run's memory block turns the knowledge agent on, so the adapter is told the worktree (its
+// cwd). With the lever off the adapter's argv is the base one, byte for byte.
+function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, logPath = null, cwd = null, compactAt = null, knowledgeAgent = false }) {
   const outDir = assertOutsideDataDir(dir, dataDir);
   fs.mkdirSync(outDir, { recursive: true });
   const mcpJsonPath = fwd(path.join(outDir, 'mcp.json'));
   const orchSettingsPath = fwd(path.join(outDir, 'settings.json'));
   fs.writeFileSync(
     mcpJsonPath,
-    JSON.stringify(orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath, compactAt, worktree: cwd }), null, 2) + '\n'
+    JSON.stringify(orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath, compactAt, worktree: knowledgeAgent ? cwd : null }), null, 2) + '\n'
   );
   // Same hygiene as a worker (ADR 0007 §6): the operator's plugins and their hooks are disabled, so
   // the orchestrator's own context is not shaped by whatever is installed on the host. For the
