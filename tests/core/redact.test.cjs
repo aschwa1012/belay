@@ -452,3 +452,40 @@ test('redactDeep: secret-named keys, cycles, depth, shared references, array pro
   arr.extra = 'TOKEN=' + PW;
   assert.equal(redactDeep(arr).value.extra, 'TOKEN=[REDACTED:env_secret]');
 });
+
+// --- third review: qualifiers after the secret word, literal values, bare key/auth --
+
+test('names: a secret word anywhere counts; a metadata last word clears the name', () => {
+  for (const n of ['SECRET_KEY_BASE', 'API_KEY_PROD', 'GITHUB_TOKEN_RO', 'STRIPE_SECRET_KEY_LIVE', 'JWT_SECRET_B64', 'TOKEN_VALUE',
+    'AUTH_HEADER', 'DB_PASS', 'MYSQL_PWD', 'SALT']) assert.equal(red(n + '=' + PW), n + '=[REDACTED:env_secret]');
+  for (const s of ['CLIENT_SECRET_ID=abc', 'PWD=/home/x', 'SECRET_NAME=prod-db', 'TOKEN_TTL=3600', 'secret_santa=yes']) kept(s);
+  assert.equal(red('and SECRET_KEY_BASE: ' + PW + ' here'), 'and SECRET_KEY_BASE: [REDACTED:env_secret] here');
+});
+
+test('a bare key or auth is a secret only with a random-looking value', () => {
+  assert.equal(red('GET /api?key=' + PW + '&q=x'), 'GET /api?key=[REDACTED:env_secret]&q=x');
+  assert.equal(red('auth: ' + PW), 'auth: [REDACTED:env_secret]');
+  kept('key: primary');
+  const r = redactDeep({ key: PW, auth: 'basic', headers: { Authorization: 'Bearer ' + 'a'.repeat(30) } });
+  assert.deepEqual(r.value, { key: '[REDACTED:env_secret]', auth: 'basic', headers: { Authorization: '[REDACTED:env_secret]' } });
+});
+
+test('values: a dotenv line is literal, and code needs its whole shape', () => {
+  for (const s of ['DB_PASSWORD=$' + PW, 'REDIS_PASSWORD=(' + PW + ')', 'API_TOKEN=abc123.' + PW, 'PASSWORD=hunter(' + PW + ')',
+    'PASSWORD=true ' + PW]) assert.match(red(s), /=\[REDACTED:env_secret\]$/, s);
+  for (const s of ['password: null ' + PW, 'password: {' + PW, 'token: str | ' + PW, 'password: lambda ' + PW]) {
+    assert.match(red(s), /: \[REDACTED:env_secret\]$/, s);
+  }
+  assert.equal(red('TOKEN = f"' + PW + '{x}"'), 'TOKEN = f"[REDACTED:env_secret]"');
+  assert.equal(red('const token = `' + PW + '${x}`'), 'const token = `[REDACTED:env_secret]`');
+  for (const s of ['PASSWORD=$DB_PASSWORD', 'PASSWORD=${DB_PASSWORD}', 'token: Optional[str] = None', 'secret: str | None']) kept(s);
+});
+
+test('openai_key: sk-proj- always, a random body in any case, never a kebab-case name', () => {
+  for (const body of ['a1b2c3d4'.repeat(4), 'A1B2C3D4'.repeat(4)]) assert.equal(redact('k sk-' + body).text, 'k [REDACTED:openai_key]');
+  for (const body of ['ab1_'.repeat(10), 'abcdef-ghijkl-mnopqr-stuvwx']) assert.equal(redact('k sk-' + 'proj-' + body).text, 'k [REDACTED:openai_key]');
+});
+
+test('url_credentials: digits then / in the password are not a port when a host follows', () => {
+  assert.equal(red('postgres:' + '//admin:1234/' + PW + '@db/x'), 'postgres:' + '//[REDACTED:url_credentials]@db/x');
+});
