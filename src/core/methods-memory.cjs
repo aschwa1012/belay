@@ -1,14 +1,35 @@
 'use strict';
-// methods-memory.cjs — the six memory methods (api.md §3, ADR 0002 §4, ADR 0003). Identity on a written
-// row comes from `caller` and nothing else: a worker writes under its worker id, anyone else under its
-// role. `namespace` defaults to `run/<run_id>`.
+// methods-memory.cjs — the memory write, delete, stats and warm methods (api.md §3, ADR 0002 §4, ADR 0003); the
+// read methods live in memory-search.cjs. Identity on a written row comes from `caller` and nothing
+// else: a worker writes under its worker id, anyone else under its role. `namespace` defaults to
+// `run/<run_id>`, and the alias `project` resolves through the run row (below).
 
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 const { SOURCES } = require('./memory-rows.cjs');
 const { redact, redactDeep } = require('./redact.cjs');
 
-const nsFor = (caller, args) => args.namespace || `run/${caller.run_id}`;
+// ADR 0041 §5. The run's project name is the `project` column of its run row, which run.attach set from the spec's
+// `memory.project`. It is never derived from a folder, a cwd or a git remote. A store copy that predates the column,
+// a caller with no run and a run with no project are all "no project", not an error.
+function projectOf(E, caller) {
+  if (!caller || !caller.run_id) return null;
+  try {
+    const r = E.store.p('SELECT project FROM run WHERE id = ? ORDER BY seq DESC LIMIT 1').get(caller.run_id);
+    return r && r.project ? r.project : null;
+  } catch { return null; }
+}
+
+// In any namespace argument the literal "project" means `project/<run.project>` when the caller's run has a
+// project. With none it stays the literal namespace it has always been, so a run without a project reads and
+// writes exactly what it did before.
+function resolveNamespace(E, caller, ns) {
+  if (ns !== 'project') return ns;
+  const p = projectOf(E, caller);
+  return p ? `project/${p}` : ns;
+}
+
+const nsFor = (E, caller, args) => resolveNamespace(E, caller, args.namespace) || `run/${caller.run_id}`;
 
 // ADR 0034 decision 2: an error out of the embedder phase goes to the owner's onEmbedderFailure hook (set by
 // `belay run`, which decides by detail.embedder === true whether it is an embedder failure), then is rethrown.
@@ -99,7 +120,7 @@ async function store(E, caller, args) {
   const { embed, task_id, turn, source, title: _title, body: _body, text: _text, ...rest } = args;
   const worker = caller.role === 'worker';
   const base = {
-    ...rest, namespace: nsFor(caller, args), worker_id: E.writtenBy(caller), text: s.text, title, body: s.body, redactions: s.redactions,
+    ...rest, namespace: nsFor(E, caller, args), worker_id: E.writtenBy(caller), text: s.text, title, body: s.body, redactions: s.redactions,
     run_id: caller.run_id, task_id: worker ? derivedTask(E, caller) : (task_id ?? null), turn: worker ? null : (turn ?? null),
     source: source || (caller.role === 'operator' ? 'operator' : 'model'),
   };
@@ -107,27 +128,6 @@ async function store(E, caller, args) {
   const row = E.store.store(a);
   E.noteWrite();
   return row;
-}
-
-async function get(E, caller, args) {
-  if (!args.id) throw err('E_ARGS', 'memory.get needs an id');
-  // memory.get is a read method (engine.cjs), and invariant 6 says reading never writes: without the
-  // false here, retrieve() stamps accessed_at on the live store, moving memory.db's mtime and leaving
-  // the owner's idle-TRUNCATE flag set so the checkpoint never re-runs.
-  const row = E.store.retrieve(args.id, false);
-  return row ? { ...row, found: true } : { id: args.id, found: false };
-}
-
-async function search(E, caller, args) {
-  if (!args.query_embedding && typeof args.query !== 'string') {
-    throw err('E_ARGS', 'memory.search needs a query string or a query_embedding');
-  }
-  const a = await withEmbedding(E, { ...args, namespace: nsFor(caller, args) }, 'query_embedding', 'query', caller);
-  return E.store.search(a);
-}
-
-async function list(E, caller, args) {
-  return { rows: E.store.list({ ...args, namespace: nsFor(caller, args) }) };
 }
 
 async function del(E, caller, args) {
@@ -161,4 +161,4 @@ async function warm(E, caller, args = {}) {
   return { state, pid: o && o.embedInfo ? o.embedInfo.pid : null, error: o && o.embedError ? o.embedError : null };
 }
 
-module.exports = { store, get, search, list, delete: del, stats, warm, nsFor };
+module.exports = { store, delete: del, stats, warm, nsFor, resolveNamespace, projectOf, withEmbedding, notifyEmbedderFailure };

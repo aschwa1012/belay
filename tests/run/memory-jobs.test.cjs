@@ -90,7 +90,7 @@ test('every lever off: a spy core sees zero calls, and no queue is made', async 
   const core = spyCore({ tasks: { t1: releasedTask() } });
   const ctx = mkCtx(core, lv({}));
   const w = worker();
-  MJ.afterTurn(w, ctx, { turnEvents: [], checkpointId: 'c1', turnRowId: 'o1' });
+  MJ.afterTurn(w, ctx, { turnEvents: [], checkpointId: 'c1', observationId: 'o1' });
   await tick();
   await MJ.atRunEnd(ctx);
   assert.deepStrictEqual(core.calls, []);
@@ -251,7 +251,7 @@ test('project writes: an observation and a summary are copied with copy-of, each
   core.rows.set('obs9', { id: 'obs9', type: 'observation', title: 'turn 1: modified b.cjs', text: 'obs text', body: { v: 1 } });
   const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical', project: 'demo', project_writes: true }));
   const w = worker();
-  MJ.afterTurn(w, ctx, { turnRowId: 'obs9' }); await flush(w);
+  MJ.afterTurn(w, ctx, { observationId: 'obs9' }); await flush(w);
   const copies = methodsOf(core, 'memory.store').filter((c) => c.args.namespace === 'project/demo');
   assert.strictEqual(copies.length, 2);
   assert.strictEqual(copies[0].args.provenance, 'copy-of:obs9');
@@ -271,8 +271,8 @@ test('project writes: a row that is not an observation, and a failed copy, are o
   core.rows.set('o9', { id: 'o9', type: 'observation', title: 't', text: 'x', body: {} });
   const ctx = mkCtx(core, lv({ capture: true, observations: true, project: 'demo', project_writes: true }));
   const w = worker();
-  MJ.afterTurn(w, ctx, { turnRowId: 't9' }); await flush(w);
-  MJ.afterTurn(Object.assign(w, { turns: 2 }), ctx, { turnRowId: 'o9' }); await flush(w);
+  MJ.afterTurn(w, ctx, { observationId: 't9' }); await flush(w);
+  MJ.afterTurn(Object.assign(w, { turns: 2 }), ctx, { observationId: 'o9' }); await flush(w);
   const evs = core.events.filter((e) => e.kind === 'project_write');
   assert.deepStrictEqual(evs.map((e) => [e.ok, e.code]), [[0, 'E_ARGS'], [0, 'E_NAMESPACE_TOO_LARGE']]);
 });

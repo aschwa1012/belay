@@ -15,6 +15,7 @@ const { deriveTitle, indexRowOf, dupVeto, filterSql } = require('./memory-rows.c
 const { ftsReady } = require('./memory-schema.cjs');
 const { scanCeiling } = require('./schema.cjs');
 const { toUnitF32 } = require('./store.cjs');
+const { nsFor, resolveNamespace, withEmbedding } = require('./methods-memory.cjs');
 
 const MODES = ['semantic', 'keyword', 'hybrid'];
 const VIEWS = ['full', 'index'];
@@ -24,7 +25,6 @@ const DEFAULT_ALPHA = 0.5, DUP_THRESHOLD = 0.95;
 
 const bad = (msg, field) => err('E_ARGS', msg, field ? { field } : undefined);
 const marks = list => list.map(() => '?').join(', ');
-const nsFor = (caller, args) => args.namespace || `run/${caller.run_id}`;
 const asCode = e => (e && typeof e.code === 'string' && e.code.startsWith('E_') ? e.code : 'E_INTERNAL');
 
 function intArg(name, v, dflt, min, max) {
@@ -42,14 +42,14 @@ function enumArg(name, v, allowed, dflt) {
   if (!allowed.includes(v)) throw bad(`${name} must be one of ${allowed.join(', ')}`, name);
   return v;
 }
-function namespacesOf(caller, args) {
-  if (args.namespaces === undefined || args.namespaces === null) return [nsFor(caller, args)];
+function namespacesOf(E, caller, args) {
+  if (args.namespaces === undefined || args.namespaces === null) return [nsFor(E, caller, args)];
   if (args.namespace) throw bad('pass namespace or namespaces, not both', 'namespaces');
   const l = args.namespaces;
   if (!Array.isArray(l) || !l.length || l.length > NS_MAX || l.some(x => typeof x !== 'string' || !x)) {
     throw bad(`namespaces must be an array of 1 to ${NS_MAX} non-empty strings`, 'namespaces');
   }
-  return [...new Set(l)];
+  return [...new Set(l.map(x => resolveNamespace(E, caller, x)))];
 }
 
 const parseJson = s => { if (s == null) return null; try { return JSON.parse(s); } catch { return s; } };
@@ -77,22 +77,12 @@ function rowsByIds(E, ids) {
 
 // ---- the two stages ---------------------------------------------------------------------------------------
 
-// The ADR 0034 hook: an embedder failure on a run goes to the owner's onEmbedderFailure (the run decides by
-// detail.embedder whether it is one). A keyword stage never reaches this.
-function notifyEmbedderFailure(E, caller, error) {
-  const h = E.owner && E.owner.opts && E.owner.opts.onEmbedderFailure;
-  if (typeof h !== 'function') return;
-  try { Promise.resolve(h({ caller, by: E.writtenBy(caller), call: 'memory.search', error })).catch(() => {}); } catch { /* the hook is the run's, never the caller's */ }
-}
-
 async function queryVector(E, caller, o) {
   if (o.queryEmbedding) return { vec: o.queryEmbedding, model: o.embeddingModel || null };
-  try {
-    // Loads on first use; raises E_NO_EMBEDDER, E_MODEL_ABSENT or E_MODEL_CHANGED as the case may be.
-    const embedder = await E.getEmbedder();
-    const e = await embedder.embed(o.query, { as: 'query' });
-    return { vec: e.embedding, model: e.embedding_model };
-  } catch (e) { notifyEmbedderFailure(E, caller, e); throw e; }
+  // The shared embedding phase: loads on first use, raises E_NO_EMBEDDER, E_MODEL_ABSENT or E_MODEL_CHANGED, and
+  // reports a failure to the ADR 0034 hook. A keyword stage never reaches this.
+  const e = await withEmbedding(E, { query: o.query }, 'query_embedding', 'query', caller);
+  return { vec: e.query_embedding, model: e.embedding_model };
 }
 
 // Exact cosine over the cached unit vectors of every stated namespace, restricted to the filter. Returns the
@@ -165,7 +155,7 @@ function baseWhere(o) {
 
 // ---- search ------------------------------------------------------------------------------------------------
 
-function parseSearch(caller, args) {
+function parseSearch(E, caller, args) {
   if (!args.query_embedding && typeof args.query !== 'string') throw bad('memory.search needs a query string or a query_embedding');
   const mode = enumArg('mode', args.mode, MODES, 'semantic');
   if (mode === 'keyword' && typeof args.query !== 'string') throw bad('mode keyword needs a query string', 'query');
@@ -177,7 +167,7 @@ function parseSearch(caller, args) {
   return {
     mode, view: enumArg('view', args.view, VIEWS, 'full'), order, alpha, filter, filterSql: fsql,
     k: intArg('k', args.k, 10, 1, K_MAX), offset: intArg('offset', args.offset, 0, 0, OFFSET_MAX),
-    namespaces: namespacesOf(caller, args),
+    namespaces: namespacesOf(E, caller, args),
     query: typeof args.query === 'string' ? args.query : null,
     queryEmbedding: args.query_embedding || null, embeddingModel: args.embedding_model || null,
     minScore: numArg('min_score', args.min_score, -1), dupThreshold: numArg('dup_threshold', args.dup_threshold, DUP_THRESHOLD),
@@ -201,7 +191,7 @@ function warningFor(o, ran, failed, results, absence, unembedded) {
 }
 
 async function search(E, caller, args) {
-  const o = parseSearch(caller, args);
+  const o = parseSearch(E, caller, args);
   const depth = o.order === 'score' ? Math.min(Math.max((o.offset + o.k) * 3, 60), DEPTH_MAX) : DEPTH_MAX;
   const base = baseWhere(o);
   const db = E.store.db;
@@ -333,7 +323,7 @@ async function get(E, caller, args) {
 }
 
 async function list(E, caller, args) {
-  const namespaces = namespacesOf(caller, args);
+  const namespaces = namespacesOf(E, caller, args);
   const view = enumArg('view', args.view, VIEWS, 'full');
   const order = enumArg('order', args.order, ['newest', 'oldest'], 'newest');
   const limit = Math.min(intArg('limit', args.limit, 50, 1, Number.MAX_SAFE_INTEGER), LIST_MAX);
