@@ -118,7 +118,7 @@ test('levers on: the resume line, then the index, then the prompt, with an index
     assert.strictEqual(m._worker('w3').firstMessage, expected);
     assert.deepStrictEqual(received(recv), [expected]);
     const idx = core.calls.find((c) => c.method === 'memory.index');
-    assert.deepStrictEqual(idx.args, { task_id: 't1', worker_id: 'w3', max_bytes: 900, exclude_ids: [] });
+    assert.deepStrictEqual(idx.args, { task_id: 't1', worker_id: 'w3', max_bytes: 900, exclude_ids: [], query: PROMPT });
     assert.strictEqual(core.events.length, 1);
     assert.deepStrictEqual(
       { kind: core.events[0].kind, ok: core.events[0].ok, worker_id: core.events[0].worker_id, task_id: core.events[0].task_id, row_ids: core.events[0].row_ids, bytes: core.events[0].bytes, sha256: core.events[0].sha256, dropped: core.events[0].dropped, over_budget: core.events[0].over_budget },
@@ -234,6 +234,26 @@ test('runEnd: does nothing with the job levers off; calls atRunEnd when one is o
   const ctx = { core: memoryCore({ levers: { wrapup: true } }), runId: 'r', modules: { jobs: { atRunEnd: async () => { throw Object.assign(new Error('boom'), { code: 'E_X' }); } } } };
   await MP.runEnd(ctx);
   assert.strictEqual(ctx.runEndError.code, 'E_X');
+});
+
+test('the prompt reaches memory.index as its relevance query; without one no query is sent', async () => {
+  const core = memoryCore({ levers: { first_message_index: true }, rows: ['mem-a'] });
+  const ctx = { core, runId: 'run-fake' };
+  const spec = 'Add a --since <date> option to tally report; dates are UTC days';
+  assert.strictEqual(await MP.memoryPreface({ id: 'wq', taskId: 't1' }, ctx, spec), 'INDEX mem-a\n\n');
+  const idx = () => core.calls.filter((c) => c.method === 'memory.index');
+  assert.deepStrictEqual(idx()[0].args, { task_id: 't1', worker_id: 'wq', max_bytes: 1200, exclude_ids: [], query: spec });
+  // A relaunch has no prompt: the core ranks by the task's spec on its own, so no query key is sent.
+  await MP.relaunch({ id: 'wr', taskId: 't1' }, ctx, 'resumed');
+  assert.ok(!('query' in idx()[1].args), JSON.stringify(idx()[1].args));
+  // A blank prompt is no query, and a very long one is cut to what the core accepts.
+  await MP.memoryPreface({ id: 'ws' }, ctx, '   ');
+  assert.ok(!('query' in idx()[2].args));
+  await MP.memoryPreface({ id: 'wt' }, ctx, 'x'.repeat(40000));
+  assert.strictEqual(idx()[3].args.query.length, 16384);
+  // preface passes its third argument through.
+  await MP.preface({ id: 'wu' }, ctx, 'through preface');
+  assert.strictEqual(idx()[4].args.query, 'through preface');
 });
 
 test('the preface text holds no clock under two Date.now values', async () => {

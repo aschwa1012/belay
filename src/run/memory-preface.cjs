@@ -61,16 +61,24 @@ async function shownBefore(ctx, w) {
   return [...ids];
 }
 
+// The prompt as the index's relevance query: the core weighs at most 128 distinct terms and accepts 64 KB,
+// so 16,384 characters (at most 64 KB in UTF-8) is all of any prompt that could matter.
+const QUERY_CHARS = 16384;
+const queryOf = (prompt) => (typeof prompt === 'string' && prompt.trim() ? prompt.slice(0, QUERY_CHARS) : undefined);
+
 // The index text for this worker's launch, or '' (lever off, no rows, or a failed call). The event is the
-// receipt either way once the lever is on.
-async function indexBlock(w, ctx) {
+// receipt either way once the lever is on. `prompt`, when the caller has it, ranks the rows by relevance to
+// it; the core adds the task's spec on its own, so a relaunch without the prompt still ranks by the task.
+async function indexBlock(w, ctx, prompt) {
   const lv = await levers(ctx, w);
   if (!lv.first_message_index) return '';
   let got;
   try {
     const exclude = await shownBefore(ctx, w);
+    const query = queryOf(prompt);
     got = await ctx.core.memory.index({
       task_id: w.taskId || undefined, worker_id: w.id, max_bytes: lv.index_bytes, exclude_ids: exclude,
+      ...(query ? { query } : {}),
     });
   } catch (e) {
     noteError(w, 'memory.index', e);
@@ -85,8 +93,8 @@ async function indexBlock(w, ctx) {
 }
 
 // ADR 0042 decision 2: after the resume line, before the prompt; the block and a blank line, or ''.
-async function memoryPreface(w, ctx) {
-  const text = await indexBlock(w, ctx);
+async function memoryPreface(w, ctx, prompt) {
+  const text = await indexBlock(w, ctx, prompt);
   return text ? `${text}\n\n` : '';
 }
 
@@ -100,8 +108,9 @@ async function relaunch(w, ctx, firstText) {
 // The opening message's preface, moved verbatim out of manager.cjs (the 500-line rule): assign the task,
 // then the resume line (ADR 0007 decision 2), then the memory index. Assignment errors are the caller's.
 // It runs against the `starting` row and cannot wait for ready: Claude Code emits no system/init until a
-// message is on stdin (measured, tests/run/receipts/init-timing.json).
-async function preface(w, ctx) {
+// message is on stdin (measured, tests/run/receipts/init-timing.json). `prompt` (optional) is the text the
+// preface goes in front of; the index ranks rows by relevance to it.
+async function preface(w, ctx, prompt) {
   let head = '';
   if (w.taskId) {
     await ctx.core.task.assign({ task_id: w.taskId, worker_id: w.id });
@@ -112,7 +121,7 @@ async function preface(w, ctx) {
       w.lastError = { where: 'continuity.resumeLine', code: e && e.code, message: e && e.message };
     }
   }
-  return head + await memoryPreface(w, ctx);
+  return head + await memoryPreface(w, ctx, prompt);
 }
 
 // ADR 0043 decision 1: the knowledge agent, only with its lever on. The module is built apart.
