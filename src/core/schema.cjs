@@ -68,8 +68,9 @@ CREATE TABLE IF NOT EXISTS memory_event (
   written_at INTEGER NOT NULL, written_by TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_memory_event_id ON memory_event(id, seq);
 CREATE INDEX IF NOT EXISTS ix_memory_event_run ON memory_event(run_id, seq);
--- ADR 0043 decision 2: the store, not a check that could race, guarantees one wrap-up per (run, key).
-CREATE UNIQUE INDEX IF NOT EXISTS ux_memory_event_wrapup ON memory_event(run_id, key) WHERE kind = 'wrapup';
+-- ADR 0043 decision 2: the store, not a check that could race, guarantees one successful wrap-up per (run, key);
+-- a failed one (ok 0) is a receipt, not a claim, so a retry may still succeed. migrateOwner upgrades an older index.
+CREATE UNIQUE INDEX IF NOT EXISTS ux_memory_event_wrapup ON memory_event(run_id, key) WHERE kind = 'wrapup' AND ok = 1;
 
 -- ADR 0041 decision 6: the usage ledger, one row per turn.
 CREATE TABLE IF NOT EXISTS usage (

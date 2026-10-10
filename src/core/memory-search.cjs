@@ -32,6 +32,11 @@ function intArg(name, v, dflt, min, max) {
   if (!Number.isInteger(v) || v < min || v > max) throw bad(`${name} must be an integer from ${min} to ${max}`, name);
   return v;
 }
+function numArg(name, v, dflt) {
+  if (v === undefined || v === null) return dflt;
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < -1 || v > 1) throw bad(`${name} must be a number from -1 to 1`, name);
+  return v;
+}
 function enumArg(name, v, allowed, dflt) {
   if (v === undefined || v === null) return dflt;
   if (!allowed.includes(v)) throw bad(`${name} must be one of ${allowed.join(', ')}`, name);
@@ -175,12 +180,12 @@ function parseSearch(caller, args) {
     namespaces: namespacesOf(caller, args),
     query: typeof args.query === 'string' ? args.query : null,
     queryEmbedding: args.query_embedding || null, embeddingModel: args.embedding_model || null,
-    minScore: args.min_score ?? -1, dupThreshold: args.dup_threshold ?? DUP_THRESHOLD,
+    minScore: numArg('min_score', args.min_score, -1), dupThreshold: numArg('dup_threshold', args.dup_threshold, DUP_THRESHOLD),
     includeSuperseded: !!args.include_superseded, allowSlow: !!args.allow_slow,
   };
 }
 
-function warningFor(o, ran, failed, results, absence) {
+function warningFor(o, ran, failed, results, absence, unembedded) {
   if (failed.length) {
     const did = failed.map(f => `${f.mode} search did not run (${f.code})`).join('; ');
     const what = ran.length ? `these are ${ran.join(' and ')} matches only` : 'nothing was searched';
@@ -190,6 +195,7 @@ function warningFor(o, ran, failed, results, absence) {
   if (o.mode !== 'hybrid') {
     return `${o.mode} search only; ${o.mode === 'semantic' ? 'keyword' : 'semantic'} search did not run; no match here does not mean no such memory`;
   }
+  if (unembedded) return `${unembedded} in-scope row${unembedded === 1 ? ' has' : 's have'} no vector, so semantic search could not see ${unembedded === 1 ? 'it' : 'them'}; keyword search alone covers ${unembedded === 1 ? 'it' : 'them'}; no match here does not mean no such memory`;
   if (!absence) return 'both modes ran but offset or min_score narrowed the result; an empty page does not mean no such memory';
   return null;
 }
@@ -253,11 +259,16 @@ async function search(E, caller, args) {
     results.push(out);
   }
 
-  const absence = ran.includes('semantic') && ran.includes('keyword') && !results.length && !pool.length && o.offset === 0 && o.minScore <= -1;
+  // Absence needs every in-scope row covered by BOTH modes. The keyword index sees every row; the semantic scan
+  // sees only rows with a vector in a namespace bound to a model, so the rows it did not scan are named, and a
+  // search that left any of them out establishes nothing (same ttl, superseded and filter predicates as `considered`).
+  const unembedded = sem ? Math.max(0, considered - sem.scanned) : 0;
+  const absence = ran.includes('semantic') && ran.includes('keyword') && unembedded === 0 && !results.length && !pool.length && o.offset === 0 && o.minScore <= -1;
   const searched = { namespaces: o.namespaces, filter: o.filter, rows_considered: considered, fts: ftsReady(db) };
+  if (unembedded) searched.rows_without_vector = unembedded;
   if (kw && kw.dropped.length) searched.keyword_terms_dropped = kw.dropped;
   const out = {
-    warning: warningFor(o, ran, failed, results, absence),
+    warning: warningFor(o, ran, failed, results, absence, unembedded),
     results,
     scanned: sem ? sem.scanned : 0, model: sem ? sem.model : null, dim: sem ? sem.dim : null,
   };
@@ -325,8 +336,7 @@ async function list(E, caller, args) {
   const namespaces = namespacesOf(caller, args);
   const view = enumArg('view', args.view, VIEWS, 'full');
   const order = enumArg('order', args.order, ['newest', 'oldest'], 'newest');
-  const limit = Math.min(args.limit || 50, LIST_MAX);
-  if (!Number.isInteger(limit) || limit < 1) throw bad('limit must be a positive integer', 'limit');
+  const limit = Math.min(intArg('limit', args.limit, 50, 1, Number.MAX_SAFE_INTEGER), LIST_MAX);
   const offset = intArg('offset', args.offset, 0, 0, Number.MAX_SAFE_INTEGER);
   const f = args.filter == null ? {} : args.filter;
   const fsql = filterSql(f, 'e');
@@ -348,4 +358,15 @@ async function list(E, caller, args) {
   return { rows, total, searched: { namespaces, filter: f, rows_considered: total } };
 }
 
-module.exports = { search, timeline, getMany, get, list };
+// A hybrid search whose semantic half timed out in the owner's own process answers from its keyword half: this
+// puts the named failure on a keyword-mode result (warning first, as a search result carries it).
+function withSemanticFailure(result, failure) {
+  const { warning, ...rest } = result;
+  const failed = { mode: 'semantic', code: failure.code, message: failure.message };
+  return {
+    warning: `semantic search did not run (${failure.code}); these are keyword matches only; no match here does not mean no such memory`,
+    ...rest, modes_failed: [failed, ...(rest.modes_failed || [])], absence_established: false,
+  };
+}
+
+module.exports = { search, timeline, getMany, get, list, withSemanticFailure };

@@ -50,9 +50,28 @@ function intact(db) {
   return names.has('memory_fts') && Object.keys(TRIGGERS).every(n => names.has(n));
 }
 
+// A store built before the wrap-up index counted only successes holds the old definition (every wrap-up row,
+// failed ones included, which blocked every retry of a failed wrap-up). The owner drops and recreates it; the
+// rows are untouched. A store whose failed rows already collide cannot hold the old index, so none exist.
+const WRAPUP_INDEX = "CREATE UNIQUE INDEX ux_memory_event_wrapup ON memory_event(run_id, key) WHERE kind = 'wrapup' AND ok = 1";
+function migrateWrapupIndex(db) {
+  const hasTable = db.prepare("SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'memory_event'").get();
+  if (!hasTable) return false;
+  const cur = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'ux_memory_event_wrapup'").get();
+  if (cur && /oks*=s*1/.test(cur.sql)) return false;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.exec('DROP INDEX IF EXISTS ux_memory_event_wrapup');
+    db.exec(WRAPUP_INDEX);
+    db.exec('COMMIT');
+  } catch (e) { try { db.exec('ROLLBACK'); } catch { /* already out */ } throw e; }
+  return true;
+}
+
 // Owner-only. Idempotent: a second call on a built store changes nothing and answers 'present'.
 // `opts.hasFts5` replaces the compile-option probe (tests stub a SQLite without FTS5).
 function migrateOwner(db, opts = {}) {
+  migrateWrapupIndex(db);
   const hasFts5 = opts.hasFts5 ? opts.hasFts5(db) : fts5Compiled(db);
   const marker = getMeta(db, META_KEY);
   if (!hasFts5) {

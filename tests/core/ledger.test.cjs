@@ -185,3 +185,16 @@ test('a store without the tables reads as an empty ledger that says so', async (
     assert.deepStrictEqual(u.groups, []);
   } finally { s2.close(); cleanup(d2); }
 });
+
+test('recordEvent: a failed wrapup does not block the retry, and only a successful one claims the key', async () => {
+  const failed = await call('memory.recordEvent', orch, { kind: 'wrapup', run_id: 'r-retry', key: 'task:t-1', ok: 0, code: 'E_INTERNAL' });
+  assert.strictEqual(failed.ok, 0);
+  await call('memory.recordEvent', orch, { kind: 'wrapup', run_id: 'r-retry', key: 'task:t-1', ok: 0, code: 'E_INTERNAL' }); // failures repeat
+  const good = await call('memory.recordEvent', orch, { kind: 'wrapup', run_id: 'r-retry', key: 'task:t-1' });
+  assert.strictEqual(good.ok, 1);
+  await assert.rejects(call('memory.recordEvent', orch, { kind: 'wrapup', run_id: 'r-retry', key: 'task:t-1' }), e => {
+    assert.strictEqual(e.code, 'E_EXISTS');
+    assert.strictEqual(e.detail.existing.id, good.id, 'E_EXISTS names the successful wrap-up, not a failed one');
+    return true;
+  });
+});

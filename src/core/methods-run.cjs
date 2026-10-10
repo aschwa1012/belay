@@ -16,6 +16,7 @@ const { resolveParks, parseRunRow, clearedPause, pauseFields } = require('./paus
 const { runCommand } = require('./evaluate.cjs');
 
 const { EFFORT_LEVELS } = require('./effort-levels.cjs');
+const { parseMemoryBlock } = require('../run/memory-levers.cjs'); // pure: no requires, so the read path stays light
 
 const PROJECT_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const fwd = (p) => String(p).replace(/\\/g, '/');
@@ -63,6 +64,8 @@ async function attach(E, caller, args) {
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       throw err('E_ARGS', 'run.attach memory_levers must be null or the JSON text of an object', { memory_levers: args.memory_levers });
     }
+    const checked = parseMemoryBlock(parsed);
+    if (checked.error) throw err('E_ARGS', `run.attach memory_levers is not a valid memory block: ${checked.error}`, { memory_levers: args.memory_levers });
   }
   const projectGiven = args.project !== undefined;
   if (projectGiven && args.project !== null && !(typeof args.project === 'string' && PROJECT_RE.test(args.project))) {
