@@ -10,7 +10,7 @@
 
 const { err } = require('./errors.cjs');
 const { toMatch } = require('./fts-query.cjs');
-const { rrf, K } = require('./fusion.cjs');
+const { rrf } = require('./fusion.cjs');
 const { deriveTitle, indexRowOf, dupVeto, filterSql } = require('./memory-rows.cjs');
 const { ftsReady } = require('./memory-schema.cjs');
 const { scanCeiling } = require('./schema.cjs');
@@ -21,7 +21,8 @@ const MODES = ['semantic', 'keyword', 'hybrid'];
 const VIEWS = ['full', 'index'];
 const SCOPES = ['task', 'worker', 'run', 'namespace'];
 const NS_MAX = 10, OFFSET_MAX = 1000, K_MAX = 100, ID_MAX = 50, SPAN_MAX = 50, LIST_MAX = 500, DEPTH_MAX = 1200;
-const DEFAULT_ALPHA = 0.5, DUP_THRESHOLD = 0.95;
+// ADR 0040 amendment (hybrid default): rrf k=10, alpha 0.3, AND join, chosen by the second hybrid evaluation.
+const DEFAULT_ALPHA = 0.3, RRF_K = 10, DUP_THRESHOLD = 0.95;
 
 const bad = (msg, field) => err('E_ARGS', msg, field ? { field } : undefined);
 const marks = list => list.map(() => '?').join(', ');
@@ -166,9 +167,14 @@ function baseWhere(o) {
 
 // ---- search ------------------------------------------------------------------------------------------------
 
+// The default mode: hybrid when there is a query string, semantic for a call that supplies only a vector.
+function defaultMode(args) {
+  return typeof args.query === 'string' ? 'hybrid' : 'semantic';
+}
+
 function parseSearch(E, caller, args) {
   if (!args.query_embedding && typeof args.query !== 'string') throw bad('memory.search needs a query string or a query_embedding');
-  const mode = enumArg('mode', args.mode, MODES, 'semantic');
+  const mode = enumArg('mode', args.mode, MODES, defaultMode(args));
   if (mode === 'keyword' && typeof args.query !== 'string') throw bad('mode keyword needs a query string', 'query');
   // No alpha in the call: the run's memory.alpha lever, else the built-in default (the fusion block reports the one used).
   const lever = args.alpha === undefined ? runAlpha(E, caller) : null;
@@ -229,8 +235,8 @@ async function search(E, caller, args) {
   let ranked, fusion = null;
   const cosine = new Map(sem ? sem.hits.map(h => [h.id, h.score]) : []);
   if (sem && kw) {
-    ranked = rrf(sem.hits, kw.hits, { alpha: o.alpha }).map(h => ({ id: h.id, score: h.score, ranks: h.ranks }));
-    fusion = { method: 'rrf', alpha: o.alpha, k: K };
+    ranked = rrf(sem.hits, kw.hits, { alpha: o.alpha, k: RRF_K }).map(h => ({ id: h.id, score: h.score, ranks: h.ranks }));
+    fusion = { method: 'rrf', alpha: o.alpha, k: RRF_K };
   } else if (sem) ranked = sem.hits.map(h => ({ id: h.id, score: h.score }));
   else if (kw) ranked = kw.hits.map(h => ({ id: h.id, score: h.score }));
   else ranked = [];

@@ -73,7 +73,9 @@ test('a summary outranks a verified fact when the budget forces a drop, even whe
   const full = await corpus(E, orch, { project: 'prio' });
   assert.strictEqual(full.row_ids.length, 2);
   const lines = full.text.split('\n');
-  const one = Buffer.byteLength(lines[0]) + 1 + Buffer.byteLength(lines.slice(1, 3).join('\n'));
+  // the frame is a title line, a BEGIN line, the rows (a header line and an indented text line each) and END;
+  // keep the summary's two lines and drop the fact's
+  const one = Buffer.byteLength([...lines.slice(0, 4), lines[lines.length - 1]].join('\n'));
   const r = await corpus(E, orch, { project: 'prio', max_bytes: one });
   assert.deepStrictEqual(r.row_ids, [s.id]);
   assert.strictEqual(r.dropped, 1);

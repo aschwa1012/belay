@@ -196,7 +196,7 @@ test('during the backoff a vector read still pings, and against a wedged owner f
     const c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
     await c.memory.list({}); // arms the backoff
     assert.ok(unresponsive.get(core('index.cjs').pipeName(dir), child.pid), 'backoff armed');
-    for (const call of [() => c.memory.search({ query: 'which process?' }), () => c.memory.store({ text: 'x' })]) {
+    for (const call of [() => c.memory.search({ query: 'which process?', mode: 'semantic' }), () => c.memory.store({ text: 'x' })]) {
       const t0 = Date.now();
       await assert.rejects(call(), e => {
         assert.strictEqual(e.code, 'E_OWNER_LOST', `${e.code}: ${e.message}`);

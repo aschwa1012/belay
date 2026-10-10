@@ -59,16 +59,24 @@ test('memory: search against a store with no live owner is refused E_NO_EMBEDDER
     await core.close();
   }
 
-  const r = checked(() => memorySearchJson(['anything', 'run-x'], dataDir), dataDir, 'memory search (dead store)');
+  const r = checked(() => memorySearchJson(['anything', 'run-x', '--mode', 'semantic'], dataDir), dataDir, 'memory search (dead store)');
   assert.strictEqual(r.status, 1, `memory search: ${r.stdout} / ${r.stderr}`);
   const j = JSON.parse(r.stderr);
   assert.strictEqual(j.error.code, 'E_NO_EMBEDDER');
   assert.match(j.reason, /needs a live owner to embed the query/);
 
   // Text output names the reason too, not only --json (B3).
-  const rText = checked(() => memorySearchText(['anything', 'run-x'], dataDir), dataDir, 'memory search (dead store, text)');
+  const rText = checked(() => memorySearchText(['anything', 'run-x', '--mode', 'semantic'], dataDir), dataDir, 'memory search (dead store, text)');
   assert.strictEqual(rText.status, 1);
   assert.match(rText.stderr, /needs a live owner to embed the query/);
+
+  // The default mode is hybrid for a query string: with no owner it answers from its keyword half and names the semantic failure.
+  const rDef = checked(() => memorySearchJson(['stored', 'run-x'], dataDir), dataDir, 'memory search (dead store, default mode)');
+  assert.strictEqual(rDef.status, 0, `memory search (default): ${rDef.stdout} / ${rDef.stderr}`);
+  const jDef = JSON.parse(rDef.stdout);
+  assert.deepStrictEqual(jDef.modes_run, ['keyword']);
+  assert.strictEqual(jDef.modes_failed.length, 1);
+  assert.strictEqual(jDef.modes_failed[0].mode, 'semantic');
 
   const rStats = checked(() => memoryStatsJson(['run-x'], dataDir), dataDir, 'memory stats (dead store)');
   assert.strictEqual(rStats.status, 0, `memory stats: ${rStats.stdout} / ${rStats.stderr}`);
@@ -132,7 +140,7 @@ test('memory: search against a live owner with no model in its cache is E_MODEL_
     const before = listRecursive(dataDir);
     // The core re-pings a live owner once with a 2,000 ms bound before calling it lost (build 12b E2), so a
     // healthy owner that stalled on a fork no longer needs a retry here.
-    const r = memorySearchJson(['anything at all', '-k', '2', runId], dataDir);
+    const r = memorySearchJson(['anything at all', '-k', '2', runId, '--mode', 'semantic'], dataDir);
     assert.strictEqual(r.status, 1, `memory search: ${r.stdout} / ${r.stderr}`);
     const j = JSON.parse(r.stderr);
     assert.strictEqual(j.error.code, 'E_MODEL_ABSENT', `unexpected refusal: ${JSON.stringify(j)}`);

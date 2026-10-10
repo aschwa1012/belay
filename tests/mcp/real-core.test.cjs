@@ -67,7 +67,7 @@ test('the real core\'s refusal codes and details reach the model unchanged', asy
   await a.initialize();
 
   // --no-embed: the core fails rather than returning an empty result.
-  for (const [tool, args] of [['memory_store', { text: 'a fact' }], ['memory_search', { query: 'a fact' }]]) {
+  for (const [tool, args] of [['memory_store', { text: 'a fact' }], ['memory_search', { query: 'a fact', mode: 'semantic' }]]) {
     const r = await a.call(tool, args);
     assert.strictEqual(r.isError, true, `${tool} must refuse under --no-embed`);
     assert.strictEqual(r.structuredContent.error, 'E_NO_EMBEDDER');

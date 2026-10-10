@@ -1,7 +1,7 @@
 'use strict';
 // memory-relevance.cjs — how well each memory.index candidate fits the task in hand (ADR 0042 decision 2,
 // amendment "relevance"). Without it the index ranks rows that carry no files and no task id by recency
-// alone, so every task of a project is shown the same newest rows (docs/research/memory-value/REPORT.md §3).
+// alone, so every task of a project is shown the same newest rows.
 //
 // Two signals, both read-only and both embedder-free:
 //   - keyword: BM25 from FTS5's bm25() over the trigram index (memory_fts), queried with the task text's

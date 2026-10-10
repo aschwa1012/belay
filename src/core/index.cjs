@@ -103,6 +103,8 @@ class Core {
     const spec = METHODS[method];
     if (!spec) throw err('E_ARGS', `${method} is not a Core API method`, { method });
     const params = { ...(args || {}), caller: this.caller };
+    // memory.search's default mode (memory-search.cjs defaultMode), made explicit here so routing sees it.
+    if (method === 'memory.search' && params.mode === undefined) params.mode = typeof params.query === 'string' ? 'hybrid' : 'semantic';
     if (this.owner && !this.owner.stopped) return this._local(method, params);
     return spec.kind === 'read' ? this._read(method, params) : this._write(method, params);
   }

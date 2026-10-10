@@ -101,7 +101,7 @@ test('R17 matches a real summary body: looked_at and done.files_modified, as the
   };
   const read = await bodyOf([{ body: { files_read: ['src/mcp/belay-mcp.cjs'], files_modified: [] } }]);
   const wrote = await bodyOf([{ body: { files_read: [], files_modified: ['src/mcp/tools.cjs'] } }]);
-  const none = await bodyOf([{ body: { files_read: ['docs/x.md'], files_modified: ['notes/y.md'] } }]);
+  const none = await bodyOf([{ body: { files_read: ['guides/x.md'], files_modified: ['notes/y.md'] } }]);
   assert.ok(!('files_modified' in JSON.parse(read)), 'the summariser writes no top-level files_modified');
   const other = await row(ns, 'a summary elsewhere', { body: none }, { created_at: 9000 });
   const r1 = await row(ns, 'a summary that read the folder', { body: read }, { created_at: 10 });

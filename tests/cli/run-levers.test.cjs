@@ -169,7 +169,7 @@ test('template: the shipped orchestrator prompt has both placeholders and the fo
 
 test('memory levers: parseLevers omits the block when absent or all-default, and refuses each bad key and each missing prerequisite', () => {
   assert.deepStrictEqual(parseLevers({ memory: {} }), parseLevers({}));
-  assert.deepStrictEqual(parseLevers({ memory: { redact: true, alpha: 0.5, summaries: 'off' } }), parseLevers({}));
+  assert.deepStrictEqual(parseLevers({ memory: { redact: true, alpha: 0.3, summaries: 'off' } }), parseLevers({}));
   const ok = parseLevers({ memory: { capture: true, observations: true, project: 'acme', project_writes: true, summaries: 'mechanical', index_bytes: 4096 } });
   assert.strictEqual(ok.memory_levers.project, 'acme');
   assert.strictEqual(ok.memory_levers.summaries, 'mechanical');
