@@ -226,7 +226,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     await writeRow(w, 'starting');
     let first;
     try {
-      first = (await MP.preface(w, ctx)) + prompt; // the resume line, then the memory index, against the `starting` row (ADR 0007 §2, 0042 §2)
+      first = (await MP.preface(w, ctx, prompt)) + prompt; // the resume line, then the memory index, against the `starting` row (ADR 0007 §2, 0042 §2)
     } catch (e) {
       // The task refused the assignment (an open dependency, ADR 0013 §1; the operator's lease; no such
       // task). Nothing has launched, so the `starting` row is written `dead` before the refusal is handed
