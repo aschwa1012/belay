@@ -14,7 +14,7 @@ const { err } = require('./errors.cjs');
 const { ensureSchema, scanCeiling } = require('./schema.cjs');
 const { checkSchema, putStamp } = require('./schema-stamp.cjs');
 const { migrateOwner, ftsReady } = require('./memory-schema.cjs');
-const { deriveTitle } = require('./memory-rows.cjs');
+const { deriveTitle, validId } = require('./memory-rows.cjs');
 
 const now = () => Date.now();
 const hashText = t => crypto.createHash('sha256').update(String(t).trim()).digest('hex');
@@ -80,7 +80,8 @@ class Store {
   // `task_id`, `turn` and `source` are written as given: deriving them is the method's work (methods-memory.cjs),
   // and this layer trusts none of them to come from a caller. A dedup update (same namespace, same hash) refreshes
   // title, body and redactions only where the new write has them, and never touches status or provenance:
-  // the row stays what it was first written as, verified or refuted included.
+  // the row stays what it was first written as, verified or refuted included. Only the row's own writer, with the
+  // same source, updates an unverified row this way; every other hit returns the row unchanged (action 'unchanged').
   store(a) {
     const ns = a.namespace, wid = a.worker_id;
     if (!ns || !wid || typeof a.text !== 'string' || !a.text.trim()) throw err('E_ARGS', 'memory.store needs a namespace, a worker id and non-empty text');
@@ -91,7 +92,16 @@ class Store {
     const title = a.title == null ? null : String(a.title);
     const body = asText(a.body);
     const redactions = a.redactions && typeof a.redactions === 'object' && !Object.keys(a.redactions).length ? null : asText(a.redactions);
+    if (a.id != null && !validId(a.id)) throw err('E_ARGS', 'a row id must be 1 to 128 letters, digits, dot, colon, dash or underscore', { field: 'id' });
     return this.tx(() => {
+      const dup = this.p('SELECT id, worker_id, source, text, status, title, run_id, task_id, redactions, embedding IS NOT NULL AS has_vec FROM memory_entries WHERE namespace = ? AND text_hash = ?').get(ns, th);
+      // A dedup hit updates the row only for the writer that wrote it, with the same source, while it is still
+      // unverified. Anyone else's row, and any verified or refuted row, is left exactly as it was and returned as
+      // it stands: otherwise a writer that read a verified row could resend its text under a new title and type and
+      // keep the verified status (ADR 0040 §1, dedup).
+      if (dup && !(dup.worker_id === wid && (dup.source || 'model') === (a.source || 'model') && (dup.status || 'unverified') === 'unverified')) {
+        return this._unchanged(dup, ns, th);
+      }
       let vec = null;
       if (a.embedding) {
         const m = this.p('SELECT embedding_model, dim FROM namespace_models WHERE namespace = ?').get(ns);
@@ -104,7 +114,6 @@ class Store {
       if (a.supersedes && !this.p('SELECT 1 FROM memory_entries WHERE id = ?').get(a.supersedes)) {
         throw err('E_SUPERSEDES', `the row this write supersedes (${a.supersedes}) is not in the store`, { supersedes: a.supersedes });
       }
-      const dup = this.p('SELECT id, worker_id, text, status, title, run_id, task_id, redactions, embedding IS NOT NULL AS has_vec FROM memory_entries WHERE namespace = ? AND text_hash = ?').get(ns, th);
       const tags = a.tags ? JSON.stringify(a.tags) : null;
       const prov = a.provenance || null;
       const blob = vec ? Buffer.from(vec.buffer) : null;
@@ -142,6 +151,18 @@ class Store {
         redactions: stored.redactions ? JSON.parse(stored.redactions) : null, has_embedding: !!stored.has_vec,
       };
     });
+  }
+
+  // The answer to a dedup hit that changed nothing: the row as it stands, named, so the caller has its id as proof.
+  _unchanged(dup, ns, th) {
+    const cur = this.p('SELECT * FROM memory_entries WHERE id = ?').get(dup.id);
+    const status = cur.status || 'unverified';
+    return {
+      id: cur.id, action: 'unchanged', unchanged_reason: status !== 'unverified' ? `the row is ${status}` : 'the row has another writer or source',
+      namespace: ns, text_hash: th, worker_id: cur.worker_id, last_writer_id: cur.last_writer_id, updated_at: cur.updated_at, ttl_at: cur.ttl_at,
+      status, title: cur.title || deriveTitle(cur.text), run_id: cur.run_id, task_id: cur.task_id, turn: cur.turn, source: cur.source,
+      redactions: cur.redactions ? JSON.parse(cur.redactions) : null, has_embedding: !!cur.embedding,
+    };
   }
 
   // ADR 0040 §2 memory.setStatus. One row, one transaction; the FTS trigger fires on title and text only,

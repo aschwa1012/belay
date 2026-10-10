@@ -137,8 +137,8 @@ test('every Core method is reachable over the pipe against an owner in another p
     assert.ok(renewed.expires_at >= a.new_lease.expires_at);
 
     // Vectors cross the pipe as base64 float32 and come back as scores, not as arrays.
-    const stored = await w.memory.store({ namespace: 'wire', text: 'vector over the wire', embedding: [0.6, 0.8], embedding_model: 'm', dim: 2 });
-    const found = await w.memory.search({ namespace: 'wire', query_embedding: [0.6, 0.8], k: 1 });
+    const stored = await orch.memory.store({ namespace: 'run/test-run', text: 'vector over the wire', embedding: [0.6, 0.8], embedding_model: 'm', dim: 2 });
+    const found = await w.memory.search({ query_embedding: [0.6, 0.8], k: 1 });
     assert.strictEqual(found.results[0].id, stored.id);
     assert.ok(found.results[0].score > 0.999);
 

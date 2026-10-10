@@ -120,5 +120,5 @@ test('filterSql refuses what it cannot honour instead of widening', () => {
 
 test('STATUSES and SOURCES are the ADR 0040 values', () => {
   assert.deepStrictEqual([...m.STATUSES], ['unverified', 'verified', 'refuted']);
-  assert.deepStrictEqual([...m.SOURCES], ['model', 'harness', 'operator', 'summariser']);
+  assert.deepStrictEqual([...m.SOURCES], ['model', 'harness', 'operator', 'summariser', 'import']);
 });

@@ -156,7 +156,8 @@ test('no copy without project_writes, without a project, for other statuses, or 
   cases.push(await call('memory.setStatus', proj, { id: elsewhere.id, status: 'verified', receipt: 'commit:abc1234' }));
   for (const c of cases) assert.strictEqual(c.project_copy, undefined, JSON.stringify(c));
   assert.strictEqual(count(), before + 4, 'only the four source rows were added');
-  assert.deepStrictEqual(Object.keys(cases[0]).sort(), ['id', 'previous_status', 'status', 'status_at', 'status_by', 'status_receipt']);
+  assert.deepStrictEqual(Object.keys(cases[0]).sort(), ['id', 'previous_status', 'receipt_check', 'status', 'status_at', 'status_by', 'status_receipt']);
+  assert.strictEqual(cases[0].receipt_check.checked, false, 'no worktree is known for these rows, and the answer says the commit was not checked');
 });
 
 test('a row already in the project is not copied again, and a refused receipt copies nothing', async () => {

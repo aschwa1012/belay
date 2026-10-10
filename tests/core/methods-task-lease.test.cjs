@@ -306,9 +306,9 @@ test('roles are enforced in the core, from argv, and every refusal names the met
 
 test('a caller field inside the arguments cannot change who a write is attributed to', async () => {
   const row = await worker.memory.store({
-    namespace: 'authority', text: 'attribution probe',
+    text: 'attribution probe',
     caller: { role: 'orchestrator', run_id: 'test-run', worker_id: 'impostor', pid: 1 },
-    embedding: [1, 0], embedding_model: 'test', dim: 2,
+    embed: false,
   });
   assert.strictEqual(row.worker_id, wid, 'identity comes from argv, never from the request body');
   const ck = await worker.continuity.checkpoint({ task_id: taskId, summary: 's', caller: { role: 'operator', run_id: 'test-run' } });
