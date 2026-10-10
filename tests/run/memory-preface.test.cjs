@@ -118,7 +118,7 @@ test('levers on: the resume line, then the index, then the prompt, with an index
     assert.strictEqual(m._worker('w3').firstMessage, expected);
     assert.deepStrictEqual(received(recv), [expected]);
     const idx = core.calls.find((c) => c.method === 'memory.index');
-    assert.deepStrictEqual(idx.args, { task_id: 't1', worker_id: 'w3', max_bytes: 900, exclude_ids: [] });
+    assert.deepStrictEqual(idx.args, { task_id: 't1', worker_id: 'w3', max_bytes: 900, exclude_ids: [], query: PROMPT });
     assert.strictEqual(core.events.length, 1);
     assert.deepStrictEqual(
       { kind: core.events[0].kind, ok: core.events[0].ok, worker_id: core.events[0].worker_id, task_id: core.events[0].task_id, row_ids: core.events[0].row_ids, bytes: core.events[0].bytes, sha256: core.events[0].sha256, dropped: core.events[0].dropped, over_budget: core.events[0].over_budget },
