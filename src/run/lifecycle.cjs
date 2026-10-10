@@ -96,7 +96,7 @@ async function killSurvivor(w, e) {
   const gone = await P.waitPidGone(pid, { timeoutMs: 5000 });
   return { worker_id: w.id, code: (e && e.code) || null, pid, pid_gone_ms: gone, tree_kill: w.treeKill || null };
 }
-async function shutdown(workers, { stop, core, clearPoll, markClosed }) {
+async function shutdown(workers, { stop, core, clearPoll, markClosed, onDrained }) {
   const t0 = now();
   const stopped = [];
   const left_parked = [];
@@ -134,6 +134,9 @@ async function shutdown(workers, { stop, core, clearPoll, markClosed }) {
     clearTimeout(timer);
     if (!done) { gaveUp.push(w.id); w.lastError = { where: 'shutdown', state: 'memory-queue-gave-up', bound_ms: MEMORY_DRAIN_MS }; }
   }));
+  // ADR 0041/0043: the run's end-of-run memory jobs run once every queue has drained and before the owner goes, so
+  // their writes cannot re-elect one. They catch their own failures; this await never blocks the shutdown on one.
+  if (onDrained) await onDrained().catch(() => {});
   clearPoll();
   // ADR 0029 amendment 2 item 3: stop only an owner this process holds. An adapter that is not the owner
   // would otherwise send the pipe `shutdown` to belay run's own store owner. A core with no isOwner is a

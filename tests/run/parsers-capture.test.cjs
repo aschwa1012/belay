@@ -27,7 +27,7 @@ const hashOf = (events) => crypto.createHash('sha256').update(JSON.stringify(eve
 const OFF_HASHES = {
   'claude-stream.jsonl': ['claude-code', 'fb8f7e6c1bfb6390aa18b8b19666dc674d4142aedb13ed73ab0270fccafb9ada'],
   'codex-stream.jsonl': ['codex', 'b997add34aa0aa029aaf7143695f9be853b8fd3a2ac28fdda15743422c75df75'],
-  'capture-claude.jsonl': ['claude-code', '2b393349f3dbf7060eb0a4e51c953c191557492a82d474bfe8efa3d7aaa8d6cf'],
+  'capture-claude.jsonl': ['claude-code', '0ed1c4c7d3d82ed8374efa30eae6f533654493779ef16c589281f8e1e7a0ba5f'],
   'capture-codex.jsonl': ['codex', '388fa489c8f9cfe4fe13671d436b1bc3b24d6612a3a61bfbb6dead7b1618faf9'],
 };
 

@@ -46,8 +46,8 @@ test('model-cache.cjs requires only node built-ins, and models.cjs only the erro
 });
 
 test('the memory read modules require nothing but the error module', () => {
-  const allowed = { 'fts-query.cjs': [], 'fusion.cjs': ['./errors.cjs'], 'memory-rows.cjs': ['./errors.cjs'], 'memory-schema.cjs': [], 'fit-budget.cjs': [] };
-  for (const [name, want] of Object.entries(allowed)) assert.deepStrictEqual(requiresOf(path.join(SRC, 'core', name)).filter(r => !r.startsWith('node:')), want, name);
+  const allowed = { 'fts-query.cjs': [], 'fusion.cjs': ['./errors.cjs'], 'memory-rows.cjs': ['./errors.cjs'], 'memory-schema.cjs': [], 'fit-budget.cjs': [], 'memory-index.cjs': ['./errors.cjs', './fit-budget.cjs', './memory-rows.cjs', './rows.cjs'], 'memory-corpus.cjs': ['./errors.cjs', './fit-budget.cjs', './memory-rows.cjs'] };
+  for (const [name, want] of Object.entries(allowed)) assert.deepStrictEqual(requiresOf(path.join(SRC, 'core', name)).filter(r => !r.startsWith('node:')).sort(), [...want].sort(), name);
 });
 
 test('no file under src requires embedder.cjs except owner.cjs, which does so inside a function', () => {
