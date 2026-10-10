@@ -56,7 +56,7 @@ test('memory rules: the placeholder sits at the end of an existing line, and an 
 });
 
 test('memory rules: the text stays within 1,200 bytes and carries each rule the ADR names', () => {
-  const text = fs.readFileSync(RULES, 'utf8');
+  const text = lf(fs.readFileSync(RULES, 'utf8')); // the checkout may be CRLF; substitution matches the prompt's endings
   assert.ok(Buffer.byteLength(text) <= 1200, `rules are ${Buffer.byteLength(text)} bytes`);
   assert.ok(text.startsWith('\n'), 'the text opens on a new line, so the placeholder needs no space before it');
   assert.match(text, /view: "index"/, 'index first');
