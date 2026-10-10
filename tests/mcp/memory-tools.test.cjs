@@ -125,7 +125,7 @@ test('the new arguments are typed at the boundary', () => {
   bad('memory_timeline', {}, /needs anchor_id/);
   bad('memory_timeline', { anchor_id: 'm', scope: 'galaxy' }, /scope must be one of task, worker, run, namespace/);
   bad('memory_timeline', { anchor_id: 'm', before: 'two' }, /before must be integer/);
-  bad('memory_verify', { id: 'm', status: 'verified' }, /needs receipt/);
+  assert.doesNotThrow(() => tools.validateArgs('memory_verify', { id: 'm', status: 'unverified' }), 'setting unverified needs no receipt (ADR 0040); the core refuses verified or refuted without one');
   bad('memory_verify', { id: 'm', status: 'trusted', receipt: 'commit:abc1234' }, /status must be one of unverified, verified, refuted/);
   bad('memory_store', { text: 'x', title: 7 }, /title must be string/);
 });
