@@ -88,6 +88,16 @@ function currentLeaseForTask(store, taskId) {
   return parseRow('lease', store.p('SELECT * FROM lease WHERE task_id = ? ORDER BY seq DESC LIMIT 1').get(taskId));
 }
 
+// The leases a worker holds right now: the current lease row of each task (highest seq), held by this worker
+// in role worker, not released and not past its expiry. Memory provenance is derived from this (ADR 0040 §2):
+// a worker's task_id is its one held lease's task, else null, never something it says.
+function leasesHeldBy(store, workerId, at = Date.now()) {
+  const sql = `SELECT l.* FROM lease l JOIN (SELECT task_id, MAX(seq) AS m FROM lease GROUP BY task_id) x ON l.seq = x.m
+               WHERE l.holder = ? AND l.holder_role = 'worker' AND l.released_at IS NULL
+               AND (l.expires_at IS NULL OR l.expires_at >= ?) ORDER BY l.seq`;
+  return store.p(sql).all(workerId, at).map(r => parseRow('lease', r));
+}
+
 function lastCheckpoint(store, taskId, source) {
   const sql = source
     ? 'SELECT * FROM checkpoint WHERE task_id = ? AND source = ? ORDER BY seq DESC LIMIT 1'
@@ -100,5 +110,5 @@ const newId = () => crypto.randomUUID();
 
 module.exports = {
   COLUMNS, JSON_COLUMNS, bind, parseRow, append, current, currentAll, history,
-  currentLeaseForTask, lastCheckpoint, newId,
+  currentLeaseForTask, leasesHeldBy, lastCheckpoint, newId,
 };

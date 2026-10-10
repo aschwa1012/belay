@@ -4,6 +4,9 @@
 // role. `namespace` defaults to `run/<run_id>`.
 
 const { err } = require('./errors.cjs');
+const rows = require('./rows.cjs');
+const { SOURCES } = require('./memory-rows.cjs');
+const { redact, redactDeep } = require('./redact.cjs');
 
 const nsFor = (caller, args) => args.namespace || `run/${caller.run_id}`;
 
@@ -31,9 +34,76 @@ async function withEmbedding(E, args, field, textField, caller) {
   }
 }
 
+const TITLE_MAX = 160;
+const BODY_MAX = 8192;
+// Fields only the core sets (ADR 0040 §2): the run comes from argv, status from memory.setStatus.
+const CORE_SET = ['run_id', 'status', 'status_receipt', 'status_by', 'status_at', 'redactions', 'text_hash', 'last_writer_id'];
+// Harness provenance: the orchestrator and the operator may pass these; from a worker they are refused (invariant 3).
+const HARNESS_FIELDS = ['task_id', 'turn', 'source'];
+
+// The run's `memory.redact` lever, read from the run row of the caller's run (run.attach recorded it). Redaction
+// is on unless that row says `redact: false`; no row, no lever and an unreadable lever all mean on, because a
+// write is never allowed to skip the scrub for want of knowing (ADR 0040 §3).
+function redactOn(E, caller) {
+  let raw = null;
+  try { const run = rows.current(E.store, 'run', caller.run_id); raw = run ? run.memory_levers : null; } catch { return true; }
+  if (raw == null) return true;
+  try { const o = typeof raw === 'string' ? JSON.parse(raw) : raw; return !(o && o.redact === false); } catch { return true; }
+}
+
+// A worker's task is the one lease it holds right now, else none. Derived from the store, never from the call.
+function derivedTask(E, caller) {
+  const held = rows.leasesHeldBy(E.store, caller.worker_id);
+  return held.length === 1 ? held[0].task_id : null;
+}
+
+const bad = (message, field, more) => err('E_ARGS', `memory.store: ${message}`, { field, ...more });
+
+function checkWrite(caller, args) {
+  for (const k of CORE_SET) if (args[k] !== undefined) throw bad(`${k} is set by the core and cannot be passed`, k);
+  if (caller.role === 'worker') {
+    for (const k of HARNESS_FIELDS) if (args[k] !== undefined) throw bad(`${k} is a harness field and a worker cannot set it`, k, { role: caller.role });
+  }
+  if (args.task_id != null && (typeof args.task_id !== 'string' || !args.task_id)) throw bad('task_id must be a non-empty string', 'task_id');
+  if (args.turn != null && !(Number.isSafeInteger(args.turn) && args.turn >= 0)) throw bad('turn must be a non-negative integer', 'turn');
+  if (args.source !== undefined && !SOURCES.includes(args.source)) throw bad(`source must be one of ${SOURCES.join(', ')}`, 'source');
+  if (args.title != null && typeof args.title !== 'string') throw bad('title must be a string', 'title');
+  if (args.body != null && (typeof args.body !== 'object' || Array.isArray(args.body))) throw bad('body must be an object', 'body');
+  if (args.embed !== undefined && typeof args.embed !== 'boolean') throw bad('embed must be true or false', 'embed');
+  if (args.embed === false && (args.embedding || args.embedding_b64)) throw bad('embed: false and an embedding contradict each other', 'embed');
+}
+
+// text, title and body are scrubbed before they are hashed or embedded, so the same fact written with and without
+// its secret is one row, and a re-run after a lost owner (ADR 0033) hashes the same bytes. With the lever off
+// nothing is touched and the row says so.
+function scrub(on, args) {
+  if (!on) return { text: args.text, title: args.title ?? null, body: args.body ?? null, redactions: { disabled: 1 } };
+  const counts = {};
+  const add = r => { for (const [k, n] of Object.entries(r)) counts[k] = (counts[k] || 0) + n; };
+  const t = redact(args.text); add(t.redactions);
+  let title = null, body = null;
+  if (args.title != null) { const r = redact(args.title); add(r.redactions); title = r.text; }
+  if (args.body != null) { const r = redactDeep(args.body); add(r.redactions); body = r.value; }
+  if (!t.text.trim()) throw bad('the text is empty after redaction', 'text', { reason: 'empty after redaction', redactions: counts });
+  return { text: t.text, title, body, redactions: Object.keys(counts).length ? counts : null };
+}
+
 async function store(E, caller, args) {
   if (typeof args.text !== 'string' || !args.text.trim()) throw err('E_ARGS', 'memory.store needs non-empty text');
-  const a = await withEmbedding(E, { ...args, namespace: nsFor(caller, args), worker_id: E.writtenBy(caller) }, 'embedding', 'text', caller);
+  checkWrite(caller, args);
+  const s = scrub(redactOn(E, caller), args);
+  // One line of at most 160 bytes: whitespace runs collapse, and the bound is on what is stored (after redaction).
+  const title = s.title === null ? null : (s.title.replace(/\s+/g, ' ').trim() || null);
+  if (title !== null && Buffer.byteLength(title) > TITLE_MAX) throw bad(`title is over ${TITLE_MAX} bytes`, 'title', { bytes: Buffer.byteLength(title), max: TITLE_MAX });
+  if (s.body !== null && Buffer.byteLength(JSON.stringify(s.body)) > BODY_MAX) throw bad(`body is over ${BODY_MAX} bytes once serialised`, 'body', { max: BODY_MAX });
+  const { embed, task_id, turn, source, title: _title, body: _body, text: _text, ...rest } = args;
+  const worker = caller.role === 'worker';
+  const base = {
+    ...rest, namespace: nsFor(caller, args), worker_id: E.writtenBy(caller), text: s.text, title, body: s.body, redactions: s.redactions,
+    run_id: caller.run_id, task_id: worker ? derivedTask(E, caller) : (task_id ?? null), turn: worker ? null : (turn ?? null),
+    source: source || (caller.role === 'operator' ? 'operator' : 'model'),
+  };
+  const a = embed === false ? base : await withEmbedding(E, base, 'embedding', 'text', caller);
   const row = E.store.store(a);
   E.noteWrite();
   return row;
