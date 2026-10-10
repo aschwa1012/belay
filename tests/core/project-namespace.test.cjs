@@ -112,6 +112,37 @@ test('verified copy: under project_writes, with copy-of provenance, the same rec
   assert.strictEqual(store.p("SELECT COUNT(*) AS n FROM memory_entries WHERE namespace = 'project/acme' AND provenance = ?").get(`copy-of:${src.id}`).n, 1);
 });
 
+test('a source refuted after its copy was verified refutes the copy: the project index and corpus drop it', async () => {
+  const src = await fresh(proj, { text: 'the cache is safe to share', type: 'fact' });
+  const v = await call('memory.setStatus', proj, { id: src.id, status: 'verified', receipt: 'test:looked fine' });
+  const copyId = v.project_copy.id;
+  const inIndex = async () => (await call('memory.index', proj, { namespaces: ['project/acme'] })).row_ids.includes(copyId);
+  const inCorpus = async () => (await call('memory.corpus', proj, { project: 'acme' })).row_ids.includes(copyId);
+  assert.ok(await inIndex(), 'the verified copy is in the project index');
+  assert.ok(await inCorpus(), 'and in the corpus');
+
+  const r = await call('memory.setStatus', proj, { id: src.id, status: 'refuted', receipt: 'test:race found' });
+  assert.deepStrictEqual(r.copies, [{ ok: true, id: copyId, namespace: 'project/acme', status: 'refuted', source_id: src.id }]);
+  const copy = dbRow(copyId);
+  assert.strictEqual(copy.status, 'refuted');
+  assert.strictEqual(copy.status_receipt, 'test:race found');
+  assert.strictEqual(await inIndex(), false, 'a refuted copy is never injected into a later run');
+  assert.strictEqual(await inCorpus(), false, 'nor served by the corpus');
+  const ev = events().filter(e => e.key === `copy-of:${src.id}`);
+  assert.deepStrictEqual(ev.map(e => [e.ok, JSON.parse(e.row_ids)]), [[1, [copyId]], [1, [copyId]]]);
+  assert.match(ev[1].message, /to refuted/);
+
+  // Back to unverified: the copy follows and its receipt is cleared.
+  const u = await call('memory.setStatus', proj, { id: src.id, status: 'unverified' });
+  assert.strictEqual(u.copies[0].status, 'unverified');
+  assert.strictEqual(dbRow(copyId).status_receipt, null);
+  // Verified again: the copy is found again (one row, not two) and is verified, reported once.
+  const again = await call('memory.setStatus', proj, { id: src.id, status: 'verified', receipt: 'test:fixed' });
+  assert.strictEqual(again.project_copy.id, copyId);
+  assert.strictEqual(again.copies, undefined, 'the copy just written is not set a second time');
+  assert.strictEqual(dbRow(copyId).status, 'verified');
+});
+
 test('no copy without project_writes, without a project, for other statuses, or outside the run namespace', async () => {
   const before = count();
   const cases = [];

@@ -58,8 +58,10 @@ function queueMemory(w, e, ctx, memoryTextMax, checkpointId) {
     let turnRowId = null;
     if (text) {
       try {
+        // With a memory lever on, the row names the worker it is about (the adapter writes it as the
+        // orchestrator). With every lever off it is the base row, byte for byte.
         const row = await core.memory.store({
-          text, type: 'turn',
+          text, type: 'turn', ...(plan ? { worker_id: w.id } : {}),
           tags: [w.taskId, w.id, 'turn:' + turn].filter(Boolean),
           provenance: checkpointId ? 'checkpoint:' + checkpointId : 'worker:' + w.id,
         });

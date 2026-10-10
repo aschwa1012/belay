@@ -7,6 +7,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { execFileSync } = require('node:child_process');
 const { DatabaseSync } = require('node:sqlite');
 const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
 
@@ -129,6 +130,72 @@ test('a schema_version that is not a positive integer is refused too', () => {
       assert.throws(() => new Store(f, { stamp: true }), e => e.code === 'E_SCHEMA_NEWER' && e.detail.reason === 'malformed' && /not a positive integer/.test(e.message), `value ${bad}`);
     } finally { cleanup(dir); }
   }
+});
+
+// The base core (93b1a0b, schema 1, before the memory columns), loaded from git into the sandbox: its store,
+// its schema, its stamp and its errors are the whole of what its Store requires.
+function baseCore(dir) {
+  const root = path.join(dir, 'base');
+  fs.mkdirSync(path.join(root, 'src', 'core'), { recursive: true });
+  for (const m of ['store', 'schema', 'schema-stamp', 'errors']) {
+    const src = execFileSync('git', ['show', `93b1a0b:src/core/${m}.cjs`], { cwd: path.resolve(__dirname, '..', '..'), encoding: 'utf8', maxBuffer: 1 << 24 });
+    fs.writeFileSync(path.join(root, 'src', 'core', `${m}.cjs`), src);
+  }
+  return require(path.join(root, 'src', 'core', 'store.cjs')).Store;
+}
+
+test('a version-1 store written by the base core migrates to version 2, and the base core then refuses it', () => {
+  const dir = sandbox();
+  try {
+    const BaseStore = baseCore(dir);
+    const f = path.join(dir, 'data', 'memory.db');
+    const b = new BaseStore(f, { stamp: true });
+    b.store({ namespace: 'run/r1', worker_id: 'w1', text: 'base row one pidAlive' });
+    b.store({ namespace: 'run/r1', worker_id: 'w1', text: 'base row two' });
+    b.close();
+    assert.strictEqual(metaOf(f).schema_version, '1', 'the base core stamps schema 1');
+
+    const s = new Store(f, { stamp: true });
+    try {
+      assert.strictEqual(s.db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version').value, '2');
+      const rows = s.db.prepare('SELECT text, title, status, redactions FROM memory_entries ORDER BY text').all().map(r => ({ ...r }));
+      assert.deepStrictEqual(rows, [
+        { text: 'base row one pidAlive', title: null, status: null, redactions: null },
+        { text: 'base row two', title: null, status: null, redactions: null },
+      ]);
+      const hit = s.db.prepare('SELECT COUNT(*) AS n FROM memory_fts WHERE memory_fts MATCH ?').get('"pidAlive"').n;
+      assert.strictEqual(hit, 1, 'the keyword index is backfilled over the base rows');
+      s.store({ namespace: 'run/r1', worker_id: 'w2', text: 'new row three', title: 'T3' });
+    } finally { s.close(); }
+
+    // The base core, as owner or as a reader, refuses the migrated store before writing anything to it.
+    const before = { sha: sha(f), ls: files(path.dirname(f)) };
+    for (const opts of [{ stamp: true }, {}]) {
+      assert.throws(() => new BaseStore(f, opts), e => e.code === 'E_SCHEMA_NEWER' && e.detail.store_schema === '2' && e.detail.known_schema === 1);
+    }
+    assert.deepStrictEqual({ sha: sha(f), ls: files(path.dirname(f)) }, before);
+    // This core still opens it, read and owner alike, and the rows are all there.
+    const again = new Store(f);
+    try { assert.strictEqual(again.db.prepare('SELECT COUNT(*) AS n FROM memory_entries').get().n, 3); } finally { again.close(); }
+  } finally { cleanup(dir); }
+});
+
+test('the owner open checks, migrates and stamps in one transaction: a failed migration leaves the old stamp', () => {
+  const dir = sandbox();
+  try {
+    const f = path.join(dir, 'memory.db');
+    const db = new DatabaseSync(f);
+    // A version-1 store whose meta table exists but whose memory_entries is a view, so ensureSchema's index fails.
+    db.exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT); INSERT INTO meta VALUES ('schema_version', '1'); CREATE VIEW memory_entries AS SELECT 1 AS id");
+    db.close();
+    assert.throws(() => new Store(f, { stamp: true }), /views may not be indexed/);
+    assert.strictEqual(metaOf(f).schema_version, '1', 'no version-2 stamp on a store whose migration did not commit');
+    const left = new DatabaseSync(f, { readOnly: true });
+    try {
+      const tables = left.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(r => r.name);
+      assert.deepStrictEqual(tables, ['meta'], 'the half-run migration rolled back whole: no table it created is left');
+    } finally { left.close(); }
+  } finally { cleanup(dir); }
 });
 
 test('a store at this core\'s own schema opens, and an owner open leaves schema_version unchanged', () => {

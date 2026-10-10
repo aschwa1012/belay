@@ -330,7 +330,10 @@ const NO_NULL = { task_evaluate: ['base'] };
 // the core, never something a model says (invariant 3), so the boundary refuses them in either role,
 // by name, before the core sees them. The schema does not list them, which is why the listing does
 // not pay for them either.
-const HARNESS_ONLY = { memory_store: ['task_id', 'turn', 'source', 'embed', 'body'] };
+const HARNESS_ONLY = { memory_store: ['task_id', 'turn', 'source', 'embed', 'body', 'worker_id'] };
+// ADR 0043 decision 1: the knowledge agent's id, knowledge-<run>, is the harness's. A worker the orchestrator named
+// with that prefix would be taken for the agent (or block it), so a caller-chosen id with it is refused.
+const RESERVED_WORKER_PREFIX = 'knowledge-';
 const MAX_IDS = 50;
 
 // The model is a boundary, so the required fields and the declared type of each named top-level
@@ -345,6 +348,9 @@ function validateArgs(name, args) {
   if (typeof a !== 'object' || Array.isArray(a)) bad(`${name} takes an object of arguments`, { tool: name });
   for (const k of HARNESS_ONLY[name] || []) {
     if (Object.prototype.hasOwnProperty.call(a, k)) bad(`${name}: ${k} is a harness field and cannot be set from a tool call`, { tool: name, field: k, reason: 'harness_only' });
+  }
+  if (name === 'worker_spawn' && typeof a.worker_id === 'string' && a.worker_id.startsWith(RESERVED_WORKER_PREFIX)) {
+    bad(`worker_spawn: worker ids starting ${RESERVED_WORKER_PREFIX} are reserved for the knowledge agent`, { tool: name, field: 'worker_id', reason: 'reserved', prefix: RESERVED_WORKER_PREFIX });
   }
   for (const k of schema.required || []) {
     if (a[k] === undefined || a[k] === null) bad(`${name} needs ${k}`, { tool: name, missing: k });
@@ -378,4 +384,4 @@ function validateArgs(name, args) {
   return a;
 }
 
-module.exports = { toolsFor, roleOf, routeOf, allows, schemaOf, validateArgs, ROUTES, ROLES, BUDGET, listingBytes, PERMIT_TOOL, permitBytes, HARNESS_ONLY, KNOWLEDGE_TOOL };
+module.exports = { toolsFor, roleOf, routeOf, allows, schemaOf, validateArgs, ROUTES, ROLES, BUDGET, listingBytes, PERMIT_TOOL, permitBytes, HARNESS_ONLY, KNOWLEDGE_TOOL, RESERVED_WORKER_PREFIX };

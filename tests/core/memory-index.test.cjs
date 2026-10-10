@@ -91,6 +91,25 @@ test('R17 matches by path prefix on a directory, and by folder for an owned file
   assert.deepStrictEqual(new Set(ids(r).slice(2)), new Set([lookalike, elsewhere]));
 });
 
+test('R17 matches a real summary body: looked_at and done.files_modified, as the summariser writes them', async () => {
+  const { summarise } = require('../../src/run/summarise.cjs');
+  const ns = fresh();
+  const t = await call('task.create', { spec: 'summary paths', files_owned: ['src/mcp'] });
+  const bodyOf = async (obs) => {
+    const s = await summarise({ task: { spec: 'x', state: 'done' }, observations: obs, checkpoints: [], handoff: {} }, { kind: 'mechanical' });
+    return JSON.stringify({ v: 1, ...s.fields, generator: s.generator });
+  };
+  const read = await bodyOf([{ body: { files_read: ['src/mcp/belay-mcp.cjs'], files_modified: [] } }]);
+  const wrote = await bodyOf([{ body: { files_read: [], files_modified: ['src/mcp/tools.cjs'] } }]);
+  const none = await bodyOf([{ body: { files_read: ['docs/x.md'], files_modified: ['notes/y.md'] } }]);
+  assert.ok(!('files_modified' in JSON.parse(read)), 'the summariser writes no top-level files_modified');
+  const other = await row(ns, 'a summary elsewhere', { body: none }, { created_at: 9000 });
+  const r1 = await row(ns, 'a summary that read the folder', { body: read }, { created_at: 10 });
+  const r2 = await row(ns, 'a summary that changed the folder', { body: wrote }, { created_at: 20 });
+  const r = await call('memory.index', { namespaces: [ns], task_id: t.id });
+  assert.deepStrictEqual(ids(r), [r2, r1, other]);
+});
+
 test('exclude_ids removes rows and counts them', async () => {
   const ns = fresh();
   const a = await row(ns, 'first');

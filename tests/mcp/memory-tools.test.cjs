@@ -81,8 +81,8 @@ test('role allows: memory_verify is the orchestrator\'s alone, memory_timeline i
 });
 
 test('HARNESS_ONLY: memory_store refuses each harness field by name, in both roles', async (t) => {
-  assert.deepStrictEqual(tools.HARNESS_ONLY.memory_store, ['task_id', 'turn', 'source', 'embed', 'body']);
-  const values = { task_id: 't-1', turn: 3, source: 'harness', embed: false, body: { a: 1 } };
+  assert.deepStrictEqual(tools.HARNESS_ONLY.memory_store, ['task_id', 'turn', 'source', 'embed', 'body', 'worker_id']);
+  const values = { task_id: 't-1', turn: 3, source: 'harness', embed: false, body: { a: 1 }, worker_id: 'w-other' };
   for (const role of ['orchestrator', 'worker']) {
     const a = await adapter(role, t);
     for (const [field, value] of Object.entries(values)) {

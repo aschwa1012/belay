@@ -7,6 +7,11 @@
 // not read correctly (a dropped or retyped column, a changed row meaning). Additive columns in MIGRATIONS
 // do not need a bump: an older core ignores a column it does not select.
 //
+// Version 2 (ADR 0040 section 1, amended): the memory columns and the redaction lever. An older core can
+// still parse the layout, but it would write into it wrongly: it stores secrets raw with `redactions` null,
+// which a reader cannot tell from a row that was scanned and found clean. A version-1 core must therefore
+// refuse a version-2 store, and the bump is what makes it refuse (E_SCHEMA_NEWER).
+//
 // Reading never writes (invariant 6): `checkSchema` only reads and `stampStore` is called only by the
 // owner's own open for write. A read goes through a copy, and the check runs on that copy.
 
@@ -14,7 +19,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { err } = require('./errors.cjs');
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const ROOT = path.resolve(__dirname, '..', '..');
 
 function metaGet(db, key) {
@@ -90,17 +95,24 @@ function writtenBy() {
   return cached;
 }
 
-// The stamp, one transaction: written_by names the build that last opened the store for write;
-// schema_version only ever rises (a store already at this version or a legacy one becomes this version).
-function stampStore(db, by = writtenBy()) {
-  db.exec('BEGIN IMMEDIATE');
-  try {
-    const put = db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)');
-    put.run('schema_version', String(SCHEMA_VERSION));
-    put.run('written_by', by);
-    db.exec('COMMIT');
-  } catch (e) { try { db.exec('ROLLBACK'); } catch { /* already out */ } throw e; }
+// The two stamp rows, written inside the caller's transaction: written_by names the build that last opened
+// the store for write; schema_version only ever rises (checkSchema has already refused a newer store, so a
+// store at this version or an older one becomes this version).
+function putStamp(db, by = writtenBy()) {
+  const put = db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)');
+  put.run('schema_version', String(SCHEMA_VERSION));
+  put.run('written_by', by);
   return { schema_version: SCHEMA_VERSION, written_by: by };
 }
 
-module.exports = { SCHEMA_VERSION, checkSchema, stampStore, writtenBy, readCommit, metaGet };
+// The stamp as a transaction of its own, for a caller that holds none.
+function stampStore(db, by = writtenBy()) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const out = putStamp(db, by);
+    db.exec('COMMIT');
+    return out;
+  } catch (e) { try { db.exec('ROLLBACK'); } catch { /* already out */ } throw e; }
+}
+
+module.exports = { SCHEMA_VERSION, checkSchema, stampStore, putStamp, writtenBy, readCommit, metaGet };
