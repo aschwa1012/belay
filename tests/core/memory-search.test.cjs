@@ -48,8 +48,18 @@ before(async () => {
 });
 after(() => { store.close(); cleanup(dir); });
 
-test('semantic mode is the default and returns today\'s rows plus the additive fields', async () => {
-  const r = await call('memory.search', { namespace: 'n1', query: 'alpha', k: 3 });
+test('the default mode is hybrid with a query string and semantic with only a vector', async () => {
+  const h = await call('memory.search', { namespace: 'n1', query: 'alpha', k: 3 });
+  assert.deepStrictEqual(h.modes_run, ['semantic', 'keyword']);
+  assert.deepStrictEqual(h.fusion, { method: 'rrf', alpha: 0.3, k: 10 });
+  const v = await call('memory.search', { namespace: 'n1', query_embedding: [1, 0, 0], embedding_model: 'm', k: 3 });
+  assert.deepStrictEqual(v.modes_run, ['semantic'], 'no query string, so no keyword half');
+  assert.strictEqual(v.fusion, null);
+  assert.strictEqual(v.results[0].id, rows.pid.id);
+});
+
+test('semantic mode returns today\'s rows plus the additive fields', async () => {
+  const r = await call('memory.search', { namespace: 'n1', query: 'alpha', k: 3, mode: 'semantic' });
   assert.strictEqual(r.results[0].id, rows.pid.id);
   assert.ok(r.results[0].score > 0.99);
   assert.strictEqual(r.results[0].has_embedding, true);
@@ -86,7 +96,7 @@ test('hybrid fuses both lists and reports the fusion it used', async () => {
   // "alpha pidAlive" matches no row as a whole by keyword (both terms are required), so the keyword list is
   // empty and the semantic list leads; a one-term query makes the two lists meet.
   assert.deepStrictEqual(r.modes_run, ['semantic', 'keyword']);
-  assert.deepStrictEqual(r.fusion, { method: 'rrf', alpha: 0.5, k: 60 });
+  assert.deepStrictEqual(r.fusion, { method: 'rrf', alpha: 0.3, k: 10 });
   const q = await call('memory.search', { namespace: 'n1', query: 'alpha', mode: 'hybrid', k: 10 });
   assert.strictEqual(q.results[0].id, rows.pid.id, 'semantic rank 1 leads when keyword finds nothing');
   const one = await call('memory.search', { namespace: 'n1', query: 'pidAlive', mode: 'hybrid', k: 10 });
@@ -195,7 +205,9 @@ test('hybrid with no embedder gives keyword results plus modes_failed; semantic 
   assert.strictEqual(r.modes_failed[0].code, 'E_NO_EMBEDDER');
   assert.strictEqual(r.absence_established, false);
   assert.strictEqual(r.fusion, null);
-  await assert.rejects(noEmbed.handle('memory.search', { caller: orch, namespace: 'n1', query: 'pidAlive' }), e => e.code === 'E_NO_EMBEDDER');
+  const d = await noEmbed.handle('memory.search', { caller: orch, namespace: 'n1', query: 'pidAlive' });
+  assert.deepStrictEqual(d.modes_run, ['keyword'], 'the default mode is hybrid, so it answers from its keyword half');
+  assert.strictEqual(d.modes_failed[0].code, 'E_NO_EMBEDDER');
   await assert.rejects(noEmbed.handle('memory.search', { caller: orch, namespace: 'n1', query: 'pidAlive', mode: 'semantic' }), e => e.code === 'E_NO_EMBEDDER');
 });
 
@@ -389,7 +401,7 @@ test('an embedder failure reaches the run hook from a semantic or hybrid search,
   const h = await e.handle('memory.search', { caller: orch, namespace: 'n1', query: 'pidAlive', mode: 'hybrid' });
   assert.strictEqual(h.modes_failed[0].code, 'E_MODEL_ABSENT');
   assert.deepStrictEqual(calls, ['memory.search']);
-  await assert.rejects(e.handle('memory.search', { caller: orch, namespace: 'n1', query: 'pidAlive' }), x => x === boom);
+  await assert.rejects(e.handle('memory.search', { caller: orch, namespace: 'n1', query: 'pidAlive', mode: 'semantic' }), x => x === boom);
   assert.strictEqual(calls.length, 2);
 });
 

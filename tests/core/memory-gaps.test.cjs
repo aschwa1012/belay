@@ -40,9 +40,9 @@ test('memory.search takes its default alpha from the run lever, and the call ove
   const alphaOf = async (runId, extra = {}) => (await call('memory.search', callerFor('orchestrator', { run_id: runId }), { ...q, ...extra })).fusion.alpha;
   assert.strictEqual(await alphaOf('run-a'), 0.25, 'the lever is the default');
   assert.strictEqual(await alphaOf('run-a', { alpha: 0.9 }), 0.9, 'the call wins');
-  assert.strictEqual(await alphaOf('run-b'), 0.5, 'a run with no alpha lever uses the built-in default');
-  assert.strictEqual(await alphaOf('run-c'), 0.5, 'an invalid stored alpha falls back rather than failing the search');
-  assert.strictEqual(await alphaOf('no-such-run'), 0.5, 'no run row means the default');
+  assert.strictEqual(await alphaOf('run-b'), 0.3, 'a run with no alpha lever uses the built-in default');
+  assert.strictEqual(await alphaOf('run-c'), 0.3, 'an invalid stored alpha falls back rather than failing the search');
+  assert.strictEqual(await alphaOf('no-such-run'), 0.3, 'no run row means the default');
 });
 
 test('tags and provenance are redacted, counted, and kept out of the dedup hash', async () => {

@@ -7,7 +7,7 @@
 const DEFAULTS = Object.freeze({
   redact: true,
   rules: false,
-  alpha: 0.5,
+  alpha: 0.3,
   capture: false,
   observations: false,
   summaries: 'off',

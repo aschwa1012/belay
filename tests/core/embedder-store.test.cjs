@@ -206,7 +206,7 @@ test('embedder: a query is embedded with the query prompt through the owner, not
   assert.ok(expected < 0.999, 'the prompts must matter for this test to mean anything');
   await withCore({}, async (c) => {
     await c.memory.store({ namespace: 'q', text });
-    const s = await c.memory.search({ namespace: 'q', query: text, k: 1 });
+    const s = await c.memory.search({ namespace: 'q', query: text, k: 1, mode: 'semantic' });
     assert.ok(Math.abs(s.results[0].score - expected) < 1e-3, `the score ${s.results[0].score} is not the query-vs-document cosine ${expected}`);
   });
 });
@@ -283,7 +283,7 @@ test('embedder: a child that dies after a good load makes later calls say so, an
       assert.ok(!/before it finished loading/.test(x.message), x.message);
       return true;
     });
-    await assert.rejects(c.memory.search({ namespace: 'sf1', query: 'first' }), x => x.code === 'E_MODEL_ABSENT');
+    await assert.rejects(c.memory.search({ namespace: 'sf1', query: 'first', mode: 'semantic' }), x => x.code === 'E_MODEL_ABSENT');
     const s = (await c.memory.stats({})).owner;
     assert.strictEqual(s.embedder_error.code, 'E_MODEL_ABSENT');
     assert.strictEqual(s.embedder, null);
@@ -308,7 +308,7 @@ test('embedder: a failure after a good load is coded, closes the child and publi
       const s = (await c.memory.stats({})).owner;
       assert.strictEqual(s.embedder_error.code, 'E_INTERNAL');
       assert.strictEqual(s.embedder, null, 'nothing half-published');
-      await assert.rejects(c.memory.search({ namespace: 'sf2', query: 'x' }), x => x.code === 'E_INTERNAL', 'sticky, with the same code');
+      await assert.rejects(c.memory.search({ namespace: 'sf2', query: 'x', mode: 'semantic' }), x => x.code === 'E_INTERNAL', 'sticky, with the same code');
     });
   } finally { I.writeMeta = real; }
   assert.strictEqual(pidAlive(pid), false, 'the child was closed');
@@ -325,7 +325,7 @@ test('memory.search: a vector call that times out against a live owner is E_TIME
     await c.memory.search({ namespace: 'n', query_embedding: [1, 0], embedding_model: 'm' }); // dials the owner
     assert.ok(c.client, 'the core is a client of the live owner');
     c.client.call = async () => { throw err('E_TIMEOUT', 'the owner did not answer in time'); };
-    await assert.rejects(c.memory.search({ namespace: 'n', query: 'which process?' }), x => {
+    await assert.rejects(c.memory.search({ namespace: 'n', query: 'which process?', mode: 'semantic' }), x => {
       assert.strictEqual(x.code, 'E_TIMEOUT', `${x.code}: ${x.message}`);
       assert.strictEqual(x.detail.owner_pid, o.info.pid);
       assert.ok(x.detail.timeout_ms >= 100000, 'the bound is the 100 s vector bound');
