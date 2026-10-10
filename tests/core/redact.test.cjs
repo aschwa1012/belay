@@ -220,3 +220,112 @@ test('an unquoted env value is redacted to the end of the line', () => {
   assert.equal(redact('export TOKEN=a b c').text, 'export TOKEN=[REDACTED:env_secret]');
   assert.equal(redact('AUTHOR=Jane Doe').text, 'AUTHOR=Jane Doe');
 });
+
+// Secret-shaped samples are joined from parts so no literal sits in the source.
+const PW = 'hunter' + '2hunter2';
+const clean = (s) => { const r = redact(s); assert.doesNotMatch(r.text, /hunter2/, s); assert.equal(redact(r.text).text, r.text, s); return r.text; };
+
+test('env_secret: a secret member after a non-secret member on the same line is redacted', () => {
+  assert.equal(clean(JSON.stringify({ id: 3, token: PW })), '{"id":3,"token":"[REDACTED:env_secret]"}');
+  assert.equal(clean('{"n": 1, "api_key": "' + PW + '"}'), '{"n": 1, "api_key": "[REDACTED:env_secret]"}');
+  assert.equal(clean('{"ok": true, "password": "' + PW + '"}'), '{"ok": true, "password": "[REDACTED:env_secret]"}');
+  assert.equal(clean('{a: 1, token: ' + PW + '}'), '{a: 1, token: [REDACTED:env_secret]}');
+  assert.equal(clean('{"x": null, "y": [1, 2], "secret": "' + PW + '"}'), '{"x": null, "y": [1, 2], "secret": "[REDACTED:env_secret]"}');
+});
+
+test('env_secret: quoting edge cases still lose the whole value', () => {
+  assert.equal(clean('{"token": "ab\\"' + PW + '"}'), '{"token": "[REDACTED:env_secret]"}');
+  assert.equal(clean("password: 'it''s " + PW + "'"), "password: '[REDACTED:env_secret]'");
+  assert.equal(clean('{"token": "' + PW + '}'), '{"token": "[REDACTED:env_secret]');
+  assert.equal(clean('PASSWORD="' + PW), 'PASSWORD="[REDACTED:env_secret]');
+  assert.equal(clean('{"token": "abc"' + PW + '}'), '{"token": "[REDACTED:env_secret]"}');
+});
+
+test('env_secret: inline assignments and URL query parameters', () => {
+  assert.equal(clean('run API_TOKEN=' + PW + ' node build.js'), 'run API_TOKEN=[REDACTED:env_secret] node build.js');
+  assert.equal(clean('GET /x?api_key=' + PW + '&page=2'), 'GET /x?api_key=[REDACTED:env_secret]&page=2');
+});
+
+test('env_secret: prose and counters are not assignments', () => {
+  for (const s of ['Note on the API key: rotate it monthly', 'max_tokens: 4096', 'monkey=banana', 'The password: see the vault', 'cache_keys: 12']) {
+    assert.deepEqual(redact(s), { text: s, redactions: {} }, s);
+  }
+  assert.equal(redact('apiKey: ' + PW).text, 'apiKey: [REDACTED:env_secret]');
+  assert.equal(redact('APIKEY=' + PW).text, 'APIKEY=[REDACTED:env_secret]');
+  assert.equal(redact('- token: ' + PW).text, '- token: [REDACTED:env_secret]');
+});
+
+test('url_credentials: empty user, and an @ inside the password', () => {
+  assert.equal(clean('redis:' + '//:' + PW + '@host:6379'), 'redis:' + '//[REDACTED:url_credentials]@host:6379');
+  assert.equal(clean('postgres:' + '//u:' + 'p@ss' + PW + '@host/db'), 'postgres:' + '//[REDACTED:url_credentials]@host/db');
+});
+
+test('private: nested spans and tags joined by a removal', () => {
+  const r = redact('a <private>x <private>y</private> ' + PW + '</private> b');
+  assert.equal(r.text, 'a  b');
+  assert.deepEqual(r.redactions, { private: 1 });
+  assert.equal(redact('a <private>x <private>y</private> z').text, 'a ');
+  assert.equal(redact('a </private> b').text, 'a </private> b');
+  const joined = redact('<pri<private>x</private>vate>' + PW + '</private>');
+  assert.equal(joined.text, '');
+  assert.equal(redact(joined.text).text, joined.text);
+});
+
+test('pem_private_key: an unterminated block is redacted to the end of the text', () => {
+  const r = redact('before\n-----BEGIN ' + 'RSA PRIVATE KEY-----\nMIIabc\n' + PW);
+  assert.equal(r.text, 'before\n[REDACTED:pem_private_key]');
+  assert.deepEqual(r.redactions, { pem_private_key: 1 });
+});
+
+test('jwt: a five-segment encrypted token is redacted', () => {
+  const seg = (c) => c.repeat(12);
+  const t = 'ey' + 'J' + seg('h') + '.' + seg('k') + '.' + seg('i') + '.' + seg('c') + '.' + seg('t');
+  assert.equal(redact('see ' + t + ' now').text, 'see [REDACTED:jwt] now');
+});
+
+test('the right-hand token boundary: a key followed by token characters is left alone', () => {
+  const key = 'gh' + 'p_' + 'x'.repeat(36);
+  assert.equal(redact(key + '_tail').text, key + '_tail');
+  assert.equal(redact(key + '-more').text, key + '-more');
+  assert.equal(redact(key + ' tail').text, '[REDACTED:github_token] tail');
+  assert.equal(redact(key + '.').text, '[REDACTED:github_token].');
+  const aws = 'AK' + 'IA' + 'ABCDEFGHIJKLMNOP';
+  assert.equal(redact(aws + 'Q').text, aws + 'Q');
+});
+
+test('redactDeep: non-plain objects pass through and an own __proto__ key survives', () => {
+  const d = new Date(0);
+  const map = new Map([['a', 'TOKEN=' + PW]]);
+  const buf = Buffer.from('abc');
+  const r = redactDeep({ d, map, buf, list: [d] });
+  assert.equal(r.value.d, d);
+  assert.equal(r.value.map, map);
+  assert.equal(r.value.buf, buf);
+  assert.equal(r.value.list[0], d);
+  const input = JSON.parse('{"__proto__": {"x": "TOKEN=' + PW + '"}, "y": 1}');
+  assert.deepEqual(Object.keys(input), ['__proto__', 'y']);
+  const out = redactDeep(input).value;
+  assert.deepEqual(Object.keys(out), ['__proto__', 'y']);
+  assert.equal(Object.getPrototypeOf(out), Object.prototype);
+  assert.equal(Object.getOwnPropertyDescriptor(out, '__proto__').value.x, 'TOKEN=[REDACTED:env_secret]');
+  assert.equal({}.x, undefined);
+});
+
+test('adversarial 256 KB inputs stay linear', () => {
+  const shapes = {
+    openers: '<private>x ',
+    pem: '-----BEGIN ' + 'RSA PRIVATE KEY----- ',
+    heads: 'a=1 api_key: ',
+    urls: 'a:' + '//b:c ',
+    quotes: 'token="x ',
+    dots: 'ey' + 'Jabcde.',
+    colons: '{"a":1,',
+  };
+  for (const [name, unit] of Object.entries(shapes)) {
+    const text = unit.repeat(Math.ceil((256 * 1024) / unit.length));
+    const t0 = process.hrtime.bigint();
+    redact(text);
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.ok(ms < 1500, `${name}: ${ms.toFixed(0)} ms`);
+  }
+});
