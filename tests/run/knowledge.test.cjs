@@ -46,7 +46,7 @@ function fakeManager(replies, { wait } = {}) {
   const m = { spawned: [], messages: [], waits: [], record: null };
   let n = 0;
   const reply = () => { m.record.lastAssistantText = replies[Math.min(n, replies.length - 1)]; n += 1; };
-  m.spawn = async (a) => { m.spawned.push(a); m.record = { id: a.worker_id, lastAssistantText: '' }; reply(); return { id: a.worker_id }; };
+  m.spawn = async (a) => { m.spawned.push(a); m.record = { id: a.worker_id, tools: a.tools, lastAssistantText: '' }; reply(); return { id: a.worker_id }; };
   m.message = async (a) => { m.messages.push(a); reply(); return { worker_id: a.worker_id, channel: 'stdin' }; };
   m.wait = async (a) => {
     m.waits.push(a);
@@ -266,5 +266,5 @@ test('citedIds keeps the order first cited and ignores other brackets', () => {
 test('the module requires no embedder and no core', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'run', 'knowledge.cjs'), 'utf8');
   const reqs = [...src.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1]).filter((r) => !r.startsWith('node:'));
-  assert.deepStrictEqual(reqs.sort(), ['./bottle.cjs', './errors.cjs', './launch.cjs', './memory-levers.cjs']);
+  assert.deepStrictEqual(reqs.sort(), ['./bottle.cjs', './errors.cjs', './launch.cjs', './lifecycle.cjs', './memory-levers.cjs']);
 });

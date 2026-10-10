@@ -53,11 +53,11 @@ function turnManager() {
     m.turns.push(t);
     return t;
   };
-  m.spawn = async (a) => { m.spawned.push(a); m.rec = { id: a.worker_id, turns: 0, turnEnded: false, settled: false, sessionId: 's1', lastAssistantText: '' }; startTurn(); return { id: a.worker_id }; };
+  m.spawn = async (a) => { m.spawned.push(a); m.rec = { id: a.worker_id, tools: a.tools, turns: 0, turnEnded: false, settled: false, sessionId: 's1', lastAssistantText: '' }; startTurn(); return { id: a.worker_id }; };
   m.message = async (a) => { m.messages.push(a); startTurn(); return { worker_id: a.worker_id }; };
   m.restart = async (a) => {
     m.restarts.push(a);
-    m.rec = m.rec || { id: a.worker_id, turns: 0, sessionId: null, lastAssistantText: '' };
+    m.rec = m.rec || { id: a.worker_id, tools: m.adoptTools === undefined ? K.KNOWLEDGE_BUILTINS : m.adoptTools, turns: 0, sessionId: null, lastAssistantText: '' };
     Object.assign(m.rec, { settled: false, sessionId: m.branch === 'resume' ? m.rec.sessionId : 's2', turnEnded: true, lastAssistantText: 'resumed, continuing' });
     return { worker_id: a.worker_id, branch: m.branch || 'replace', first_turn_timed_out: false };
   };
@@ -138,8 +138,17 @@ test('a session replaced by someone else is re-primed; the same session is not',
   assert.ok(m.messages[1].text.startsWith('The corpus changed. Read'));
 });
 
+// The argv.json an earlier adapter left for the agent, as the real launch writes it.
+function leaveArgv(tools) {
+  const wd = L.workerDir(dir, ID);
+  fs.mkdirSync(wd, { recursive: true });
+  const args = L.claudeLaunchArgv({ workerId: ID, mcpJsonPath: 'x/mcp.json', settingsPath: 'x/s.json', allowedTools: K.KNOWLEDGE_TOOLS, ...(tools ? { tools } : {}) });
+  fs.writeFileSync(path.join(wd, 'argv.json'), JSON.stringify({ spec: { args } }));
+}
+
 test('an agent row left by an earlier adapter of this run is relaunched through restart, never spawned again', async () => {
   const core = fakeCore({ workerRow: true });
+  leaveArgv(K.KNOWLEDGE_BUILTINS);
   const m = turnManager();
   m.branch = 'resume';
   const a = K.ask(m, ctxOf(core), { question: 'q?' });
@@ -148,6 +157,21 @@ test('an agent row left by an earlier adapter of this run is relaunched through 
   assert.strictEqual(m.spawned.length, 0);
   assert.strictEqual(m.restarts.length, 1);
   assert.strictEqual(r.answer, 'answer');
+});
+
+test('a worker under the agent id with any other tool surface is refused, and is never sent the question', async () => {
+  // A record this manager holds, launched with the full built-in list.
+  const m = turnManager();
+  m.rec = { id: ID, tools: null, turns: 1, turnEnded: true, settled: false, sessionId: 's1', lastAssistantText: '' };
+  const core = fakeCore();
+  await assert.rejects(K.ask(m, ctxOf(core), { question: 'q?' }), (e) => e.code === 'E_SUBSTRATE' && /not the read-only knowledge agent/.test(e.message) && /full list/.test(e.message));
+  assert.deepStrictEqual([m.messages.length, m.spawned.length, m.restarts.length], [0, 0, 0]);
+  assert.strictEqual(core.events.filter((e) => e.kind === 'knowledge_ask' && e.ok === false).length, 1, 'the refusal is recorded');
+  // A row an earlier adapter left whose argv.json shows a wider surface is refused before it is relaunched.
+  const m2 = turnManager();
+  leaveArgv(['Read', 'Glob', 'Grep', 'Edit']);
+  await assert.rejects(K.ask(m2, ctxOf(fakeCore({ workerRow: true })), { question: 'q?' }), (e) => e.code === 'E_SUBSTRATE' && /Edit/.test(e.message));
+  assert.strictEqual(m2.restarts.length, 0, 'nothing was relaunched');
 });
 
 test('ask refuses E_ARGS without the run worktree, before anything is spawned', async () => {
