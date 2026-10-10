@@ -14,7 +14,7 @@ test('a zero budget returns an empty block and says it is over budget', () => {
 
 test('zero is an accepted budget and an empty frame fits it', () => {
   assert.deepEqual(fit([], { max_bytes: 0 }), { text: '', bytes: 0, kept: [], dropped: 0, over_budget: false });
-  assert.throws(() => fit([], { max_bytes: -1 }), { message: /non-negative/ });
+  assert.throws(() => fit([], { max_bytes: -1 }), { message: /^fit: max_bytes must be a non-negative integer$/ });
   assert.throws(() => fit([], { max_bytes: 1.5 }), TypeError);
 });
 

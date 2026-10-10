@@ -22,10 +22,10 @@ test('k = 1 is accepted and k = 0 is not', () => {
 });
 
 test('a bad list is named in the error, semantic and keyword alike', () => {
-  assert.throws(() => rrf('x', []), { code: 'E_ARGS', message: /semantic/ });
-  assert.throws(() => rrf([], 'x'), { code: 'E_ARGS', message: /keyword/ });
-  assert.throws(() => rrf([], [{}]), { code: 'E_ARGS', message: /keyword/ });
-  assert.throws(() => rrf([{}], []), { code: 'E_ARGS', message: /semantic/ });
+  assert.throws(() => rrf('x', []), { code: 'E_ARGS', message: /semantic must be an array$/ });
+  assert.throws(() => rrf([], 'x'), { code: 'E_ARGS', message: /keyword must be an array$|keyword has no id$/ });
+  assert.throws(() => rrf([], [{}]), { code: 'E_ARGS', message: /an item in keyword has no id$/ });
+  assert.throws(() => rrf([{}], []), { code: 'E_ARGS', message: /an item in semantic has no id$/ });
 });
 
 test('alpha at both ends is accepted', () => {

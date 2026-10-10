@@ -212,3 +212,10 @@ test('a receipt that cannot be written is named on the worker with the plain mes
   MJ.afterTurn(w, ctx, {}); await flush(w);
   assert.deepStrictEqual(w.lastError, { where: 'memory.recordEvent', code: 'E_TIMEOUT', message: 'ledger down' });
 });
+
+test('a task read that fails on the turn path is named on the worker as memory-jobs.afterTurn', async () => {
+  const core = spyCore({ tasks: { t1: releasedTask() }, fail: { 'task.get': () => failing('E_OWNER_LOST', 'no owner') } });
+  const w = worker();
+  MJ.afterTurn(w, mkCtx(core, lv({ wrapup: true })), {}); await flush(w);
+  assert.deepStrictEqual(w.lastError, { where: 'memory-jobs.afterTurn', code: 'E_OWNER_LOST', message: 'no owner' });
+});

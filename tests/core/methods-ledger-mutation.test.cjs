@@ -32,7 +32,7 @@ test('zero is a valid count for bytes, turn and tokens, and a negative or fracti
 });
 
 test('an ok event with a code, and a failed event with none, are refused with the reason', async () => {
-  await message(call('memory.recordEvent', { kind: 'observation', ok: true, code: 'E_X' }), 'E_ARGS', /an ok event carries no code/);
+  await message(call('memory.recordEvent', { kind: 'observation', ok: true, code: 'E_X' }), 'E_ARGS', /an ok event carries no code$/);
   await message(call('memory.recordEvent', { kind: 'observation', ok: false }), 'E_ARGS', /must name the code that failed it/);
   await message(call('memory.recordEvent', { kind: 'wrapup', run_id: 'r1' }), 'E_ARGS', /needs a key/);
   await message(call('memory.recordEvent', { kind: 'nonsense' }), 'E_ARGS', /one of observation/);

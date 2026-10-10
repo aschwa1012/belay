@@ -49,6 +49,8 @@ test('setStatus names the field of a bad id or status, and an unknown id is E_NO
       return true;
     });
   }
+  // the row is looked up before the receipt is judged, so a missing row with a bad receipt is still not found
+  await assert.rejects(call('memory.setStatus', orch, { id: 'no-such-row', status: 'verified', receipt: 'hunch:feels right' }), (e) => e.code === 'E_NOT_FOUND');
   assert.strictEqual(total(), before);
 });
 
