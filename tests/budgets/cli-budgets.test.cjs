@@ -56,6 +56,7 @@ async function plant(dataDir, runId, pid) {
   const core = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
   try {
     await core.run.attach({ adapter_pid: pid });
+    await core.usage.record({ worker_id: 'w1', turn: 1, substrate: 'claude-code', model: 'sonnet', input_tokens: 10, output_tokens: 5, cost_usd: 0.01, cost_basis: 'delta-of-cumulative' }); // the ledger `usage` reads
     await core.worker.write({ id: 'w1', substrate: 'claude-code', pid, state: 'running', turns: 0, started_at: Date.now() });
     const t1 = await core.task.create({ spec: 'first task, assigned to w1 and checkpointed' });
     await core.task.create({ spec: 'second task, depends on the first', depends_on: [t1.id] });
@@ -196,7 +197,7 @@ test('budgets: config path, doctor and mcp status each add under 500 ms to the h
   assertGate(result);
 });
 
-test('budgets: status, workers, tasks, receipts, memory stats, briefing, logs and diff each add under 500 ms to the host floor, interleaved, on a dead store', () => {
+test('budgets: status, workers, tasks, receipts, memory stats and reads, usage, briefing, logs and diff each add under 500 ms to the host floor, interleaved, on a dead store', () => {
   const result = interleaved({
     spawnFloor: makeSpawnFloor(),
     commands: {
@@ -209,6 +210,8 @@ test('budgets: status, workers, tasks, receipts, memory stats, briefing, logs an
       memory_list: () => timedCli(['memory', 'list', 'run-budgets', '--index', '--data', dataDir], {}, 0, dataDir),
       memory_show: () => timedCli(['memory', 'show', memoryId, '--data', dataDir], {}, 0, dataDir),
       memory_timeline: () => timedCli(['memory', 'timeline', memoryId, '--data', dataDir], {}, 0, dataDir),
+      memory_export: () => timedCli(['memory', 'export', 'run-budgets', '--data', dataDir], {}, 0, dataDir),
+      usage: () => timedCli(['usage', 'run-budgets', '--by', 'worker', '--data', dataDir], {}, 0, dataDir),
       briefing: () => timedCli(['briefing', 'w1', '--data', dataDir], {}, 0, dataDir),
       logs: () => timedCli(['logs', 'w1', '--tail', '5', '--data', dataDir], {}, 0, dataDir),
       diff: () => timedCli(['diff', '--data', dataDir], {}, 0, dataDir),
