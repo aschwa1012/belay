@@ -164,3 +164,109 @@ test('template: the shipped orchestrator prompt has both placeholders and the fo
   assert.ok(!done.text.includes('{{'), 'substitution leaves no placeholder');
   assert.deepStrictEqual(done.substituted, { max_fix_rounds: 2, fix_cutoff_rule: 1 });
 });
+
+// ---- ADR 0041 decision 1 and ADR 0040 decision 6: the spec's `memory` block and the {{memory_rules}} placeholder ----
+
+test('memory levers: parseLevers omits the block when absent or all-default, and refuses each bad key and each missing prerequisite', () => {
+  assert.deepStrictEqual(parseLevers({ memory: {} }), parseLevers({}));
+  assert.deepStrictEqual(parseLevers({ memory: { redact: true, alpha: 0.5, summaries: 'off' } }), parseLevers({}));
+  const ok = parseLevers({ memory: { capture: true, observations: true, project: 'acme', project_writes: true, summaries: 'mechanical', index_bytes: 4096 } });
+  assert.strictEqual(ok.memory_levers.project, 'acme');
+  assert.strictEqual(ok.memory_levers.summaries, 'mechanical');
+  assert.strictEqual(ok.memory_levers.redact, true, 'defaults are filled in');
+  const bad = [
+    [{ colour: 1 }, /memory\.colour is not a known memory lever/],
+    [{ redact: 'yes' }, /memory\.redact must be true or false/],
+    [{ alpha: 1.5 }, /memory\.alpha/], [{ alpha: '0.5' }, /memory\.alpha/],
+    [{ summaries: 'full' }, /memory\.summaries must be one of off, mechanical/],
+    [{ project: 'Bad Name' }, /memory\.project/], [{ project: '' }, /memory\.project/], [{ project: 'x'.repeat(65) }, /memory\.project/],
+    [{ index_bytes: 4097 }, /memory\.index_bytes/], [{ index_bytes: 0 }, /memory\.index_bytes/], [{ index_bytes: 1.5 }, /memory\.index_bytes/],
+    [{ bottle_bytes: 262145 }, /memory\.bottle_bytes/],
+    [{ observations: true }, /memory\.observations needs memory\.capture/],
+    [{ project_writes: true }, /memory\.project_writes needs memory\.project/],
+    [{ capture: true, summaries: 'mechanical' }, /memory\.summaries "mechanical" needs memory\.observations/],
+  ];
+  for (const [block, re] of bad) assert.match(parseLevers({ memory: block }).error, re, JSON.stringify(block));
+  assert.match(parseLevers({ memory: [] }).error, /memory must be an object/);
+  for (const k of ['capture', 'cost_ledger', 'first_message_index', 'bottle', 'wrapup', 'knowledge_agent']) {
+    assert.strictEqual(parseLevers({ memory: { [k]: true } }).memory_levers[k], true, k);
+  }
+});
+
+test('memory levers: the rules placeholder is empty with rules off (byte-identical) and holds the trimmed rules text with rules on', () => {
+  const rulesFile = `${fwd(os.tmpdir())}/belay-rules-${process.pid}.md`;
+  fs.writeFileSync(rulesFile, '\n  Memory rules:\n  - one\n');
+  try {
+    const prompt = 'line 16\nline 17 end.{{memory_rules}}\nline 18\n';
+    const off = substituteLevers(prompt, parseLevers({ memory: { capture: true } }), 0);
+    assert.strictEqual(off.text, 'line 16\nline 17 end.\nline 18\n');
+    assert.deepStrictEqual(off.substituted, { max_fix_rounds: 0, fix_cutoff_rule: 0 }, 'no memory_rules count with rules off');
+    assert.strictEqual(substituteLevers(prompt, parseLevers({}), 0).text, off.text, 'the same as a run with no block');
+
+    const on = parseLevers({ memory: { rules: true } }, { rulesFile });
+    assert.ok(!('rules_text' in JSON.parse(JSON.stringify(on))), 'the rules text is not part of the receipt');
+    const sub = substituteLevers(prompt, on, 0);
+    assert.strictEqual(sub.text, 'line 16\nline 17 end.\n  Memory rules:\n  - one\nline 18\n');
+    assert.strictEqual(sub.substituted.memory_rules, 1);
+    const crlf = substituteLevers(prompt.replace(/\n/g, '\r\n'), on, 0).text;
+    assert.ok(!/[^\r]\n/.test(crlf), 'a CRLF prompt gets CRLF rules');
+    assert.ok(crlf.includes('end.\r\n  Memory rules:\r\n  - one\r\nline 18'));
+
+    const missing = parseLevers({ memory: { rules: true } }, { rulesFile: `${rulesFile}.absent` });
+    assert.match(missing.error, /memory\.rules is true but the rules text could not be read/);
+  } finally { fs.rmSync(rulesFile, { force: true }); }
+});
+
+test('memory levers: the shipped prompts take the shipped rules text, and off is the placeholder-free prompt', () => {
+  const real = `${ROOT}/src/run/prompts/memory-rules.md`;
+  for (const name of ['orchestrator.md', 'orchestrator-interactive.md']) {
+    const text = fs.readFileSync(`${ROOT}/src/run/prompts/${name}`, 'utf8');
+    const off = substituteLevers(text, parseLevers({}), 600000).text;
+    assert.ok(!off.includes('{{'), `${name}: no placeholder left`);
+    if (!fs.existsSync(real)) continue;
+    const lv = parseLevers({ memory: { rules: true } });
+    assert.ok(!lv.error, lv.error);
+    const on = substituteLevers(text, lv, 600000).text;
+    assert.ok(on.length > off.length && on.includes('Memory rules'), name);
+    assert.ok(!on.includes('{{'), `${name}: no placeholder left with rules on`);
+  }
+  if (!fs.existsSync(real)) assert.match(parseLevers({ memory: { rules: true } }).error, /could not be read/);
+});
+
+// The last run row of a finished run, read from a copy of the store (reading never writes to the live file).
+function runRow(r) {
+  const tmp = fwd(fs.mkdtempSync(path.join(os.tmpdir(), 'belay-run-levers-copy-')));
+  try {
+    for (const x of ['', '-wal', '-shm']) if (fs.existsSync(`${r.dir}/.belay/memory.db${x}`)) fs.copyFileSync(`${r.dir}/.belay/memory.db${x}`, `${tmp}/memory.db${x}`);
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(`${tmp}/memory.db`);
+    try { return db.prepare('SELECT memory_levers, project FROM run ORDER BY seq DESC LIMIT 1').get(); } finally { db.close(); }
+  } finally { cleanup(tmp); }
+}
+
+test('run: a bad memory block exits 2 before anything is created; a good one runs, is recorded on the run row and printed in the receipt', () => {
+  const bad = go('hi\n', { memory: { observations: true } });
+  try {
+    assert.strictEqual(bad.status, 2, bad.stderr);
+    assert.match(bad.stderr + bad.stdout, /memory\.observations needs memory\.capture/);
+    assert.ok(!fs.existsSync(`${bad.dir}/.belay`));
+  } finally { cleanup(bad.dir); }
+  const ok = go('hi\n', { memory: { capture: true, project: 'acme' } });
+  try {
+    assert.strictEqual(ok.status, 0, ok.stderr.slice(-600));
+    const rc = JSON.parse(ok.stdout);
+    assert.strictEqual(rc.levers.memory_levers.capture, true);
+    const row = runRow(ok);
+    assert.strictEqual(row.project, 'acme');
+    assert.strictEqual(JSON.parse(row.memory_levers).capture, true);
+  } finally { cleanup(ok.dir); }
+  const plain = go('hi\n', {});
+  try {
+    assert.strictEqual(plain.status, 0, plain.stderr.slice(-600));
+    const rc = JSON.parse(plain.stdout);
+    assert.ok(!('memory_levers' in rc.levers), 'a default block leaves the receipt as it was');
+    const row = runRow(plain);
+    assert.strictEqual(row.memory_levers, null);
+    assert.strictEqual(row.project, null);
+  } finally { cleanup(plain.dir); }
+});
