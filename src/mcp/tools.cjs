@@ -297,9 +297,17 @@ const PERMIT_TOOL = {
   inputSchema: S({ tool_name: str(), input: { type: 'object' }, tool_use_id: str() }),
 };
 
+// ADR 0043 decision 1: the knowledge agent reads memory it did not write, the corpus among it, so its adapter (a
+// worker adapter whose argv worker id carries the reserved prefix, which only the harness can give) lists and allows
+// the memory read tools and nothing else: no store, no delete, no lease or checkpoint.
+const KNOWLEDGE_READ_TOOLS = ['memory_retrieve', 'memory_search', 'memory_timeline', 'memory_list', 'memory_stats'];
+const isKnowledgeAgent = (role, workerId) => role === 'worker' && typeof workerId === 'string' && workerId.startsWith('knowledge-');
+
 // `knowledge` (orchestrator only) adds knowledge_ask; omitted or false, the listing is byte-for-byte what it was.
-function toolsFor(role, { knowledge = false } = {}) {
+// `workerId` (the adapter's argv) narrows the knowledge agent's listing to its read tools.
+function toolsFor(role, { knowledge = false, workerId = null } = {}) {
   if (role === 'orchestrator') return knowledge ? BOTH.concat(ORCHESTRATOR, [KNOWLEDGE_TOOL]) : BOTH.concat(ORCHESTRATOR);
+  if (isKnowledgeAgent(role, workerId)) return BOTH.filter((t) => KNOWLEDGE_READ_TOOLS.includes(t.name));
   if (role === 'worker') return BOTH.concat(WORKER);
   throw Object.assign(new Error(`unknown role ${role}`), { code: 'E_ROLE' });
 }
@@ -310,7 +318,8 @@ const permitBytes = () => Buffer.byteLength(JSON.stringify(PERMIT_TOOL), 'utf8')
 // undefined when the name is not a tool at all.
 const roleOf = (name) => (ROUTES[name] ? ROUTES[name].role : undefined);
 const routeOf = (name) => ROUTES[name];
-const allows = (role, name) => {
+const allows = (role, name, workerId = null) => {
+  if (isKnowledgeAgent(role, workerId)) return KNOWLEDGE_READ_TOOLS.includes(name);
   const r = roleOf(name);
   return r === 'both' || r === role;
 };
@@ -331,6 +340,9 @@ const NO_NULL = { task_evaluate: ['base'] };
 // by name, before the core sees them. The schema does not list them, which is why the listing does
 // not pay for them either.
 const HARNESS_ONLY = { memory_store: ['task_id', 'turn', 'source', 'embed', 'body', 'worker_id'] };
+// Tools that take exactly the properties their schema names: memory_store's row is written from its arguments, so an
+// unnamed one (an id, a created_at, a vector and its model) would reach the core as if the harness had chosen it.
+const CLOSED = new Set(['memory_store']);
 // ADR 0043 decision 1: the knowledge agent's id, knowledge-<run>, is the harness's. A worker the orchestrator named
 // with that prefix would be taken for the agent (or block it), so a caller-chosen id with it is refused.
 const RESERVED_WORKER_PREFIX = 'knowledge-';
@@ -348,6 +360,10 @@ function validateArgs(name, args) {
   if (typeof a !== 'object' || Array.isArray(a)) bad(`${name} takes an object of arguments`, { tool: name });
   for (const k of HARNESS_ONLY[name] || []) {
     if (Object.prototype.hasOwnProperty.call(a, k)) bad(`${name}: ${k} is a harness field and cannot be set from a tool call`, { tool: name, field: k, reason: 'harness_only' });
+  }
+  if (CLOSED.has(name)) {
+    const extra = Object.keys(a).find((k) => !Object.prototype.hasOwnProperty.call(schema.properties || {}, k));
+    if (extra !== undefined) bad(`${name}: ${extra} is not one of its arguments`, { tool: name, field: extra, reason: 'unknown_field' });
   }
   if (name === 'worker_spawn' && typeof a.worker_id === 'string' && a.worker_id.startsWith(RESERVED_WORKER_PREFIX)) {
     bad(`worker_spawn: worker ids starting ${RESERVED_WORKER_PREFIX} are reserved for the knowledge agent`, { tool: name, field: 'worker_id', reason: 'reserved', prefix: RESERVED_WORKER_PREFIX });
@@ -384,4 +400,4 @@ function validateArgs(name, args) {
   return a;
 }
 
-module.exports = { toolsFor, roleOf, routeOf, allows, schemaOf, validateArgs, ROUTES, ROLES, BUDGET, listingBytes, PERMIT_TOOL, permitBytes, HARNESS_ONLY, KNOWLEDGE_TOOL, RESERVED_WORKER_PREFIX };
+module.exports = { toolsFor, roleOf, routeOf, allows, schemaOf, validateArgs, ROUTES, ROLES, BUDGET, listingBytes, PERMIT_TOOL, permitBytes, HARNESS_ONLY, KNOWLEDGE_TOOL, KNOWLEDGE_READ_TOOLS, RESERVED_WORKER_PREFIX };

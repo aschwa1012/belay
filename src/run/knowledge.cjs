@@ -34,7 +34,9 @@ const { fail } = require('./errors.cjs');
 
 // ADR 0021 decision 1 as amended: researchers and reviewers run on Opus. The agent only reads.
 const KNOWLEDGE_MODEL = 'claude-opus-5-5';
-const KNOWLEDGE_TOOLS = ['Read', 'Glob', 'Grep', 'mcp__belay']; // pre-approved (--allowedTools)
+// Pre-approved (--allowedTools): the built-ins and only the memory read tools. Its adapter lists nothing else for a
+// knowledge-<run> worker (src/mcp/tools.cjs KNOWLEDGE_READ_TOOLS), so the agent cannot write or delete a row.
+const KNOWLEDGE_TOOLS = ['Read', 'Glob', 'Grep', ...['memory_retrieve', 'memory_search', 'memory_timeline', 'memory_list', 'memory_stats'].map((t) => `mcp__belay__${t}`)];
 const KNOWLEDGE_BUILTINS = ['Read', 'Glob', 'Grep']; // the only built-ins the agent has (--tools)
 const QUESTION_MAX_BYTES = 4096;
 const GET_MANY_MAX = 50;

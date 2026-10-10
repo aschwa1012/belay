@@ -36,10 +36,10 @@ before(async () => {
   orch = callerFor('orchestrator');
   const w1 = callerFor('worker', { worker_id: 'w1' });
   // Namespace n1: the corpus most tests search.
-  rows.pid = await put('n1', 'Retry policy for pidAlive checks raises E_OWNER_LOST on a wedged pipe', [1, 0, 0], { type: 'decision', created_at: 1000, caller: w1 });
+  rows.pid = await put('n1', 'Retry policy for pidAlive checks raises E_OWNER_LOST on a wedged pipe', [1, 0, 0], { type: 'decision', created_at: 1000, worker_id: 'w1' });
   rows.lazy = await put('n1', 'The embedder loads lazily inside the owner process', [0, 1, 0], { type: 'fact', created_at: 2000 });
   rows.noOwner = await put('n1', 'E_NO_OWNER means no owner.lock exists in the data dir', [0.99, 0.1, 0], { type: 'fact', created_at: 3000 });
-  rows.cold = await put('n1', 'Cold start costs a model load of several seconds', [0, 0, 1], { type: 'observation', created_at: 4000, caller: w1 });
+  rows.cold = await put('n1', 'Cold start costs a model load of several seconds', [0, 0, 1], { type: 'observation', created_at: 4000, worker_id: 'w1' });
   setCols(rows.pid.id, { status: 'verified', task_id: 'T1', run_id: 'run-a', title: 'Retry policy' });
   setCols(rows.lazy.id, { status: 'refuted', task_id: 'T2', run_id: 'run-a' });
   setCols(rows.cold.id, { tags: JSON.stringify(['T9', 'misc']) });

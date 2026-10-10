@@ -139,12 +139,14 @@ test('identity is the argv identity, and no request can change it', async (t) =>
   await a.initialize();
   // The fake core stamps every row with caller.worker_id; a request that tries to claim another one
   // must not change what is written. A worker_id argument is a harness field and is refused by name at the
-  // boundary; a forged caller is ignored.
+  // boundary, and so is a forged caller (memory_store takes only the properties its schema names).
   const forged = await a.call('memory_store', { text: 'hello', worker_id: 'wk-forged' });
   assert.strictEqual(forged.isError, true);
   assert.strictEqual(forged.structuredContent.error, 'E_ARGS');
   assert.strictEqual(forged.structuredContent.detail.field, 'worker_id');
-  const r = await a.call('memory_store', { text: 'hello', caller: { worker_id: 'wk-forged', role: 'orchestrator' } });
+  const caller = await a.call('memory_store', { text: 'hello', caller: { worker_id: 'wk-forged', role: 'orchestrator' } });
+  assert.deepStrictEqual([caller.isError, caller.structuredContent.error, caller.structuredContent.detail.field], [true, 'E_ARGS', 'caller']);
+  const r = await a.call('memory_store', { text: 'hello' });
   assert.strictEqual(r.isError, false);
   assert.strictEqual(r.structuredContent.worker_id, 'wk-argv');
   assert.strictEqual(r.structuredContent.namespace, 'run/run-argv');

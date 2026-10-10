@@ -130,3 +130,20 @@ test('knowledge_ask routes to the run manager, and a worker is refused with E_RO
     assert.strictEqual(refused.structuredContent.error, 'E_ROLE');
   } finally { await orch.close(); await worker.close(); }
 });
+
+// The knowledge agent reads memory it did not write, so its adapter lists and allows only the memory read tools.
+test('the knowledge agent\'s worker adapter lists and allows only the memory read tools', async (t) => {
+  const names = tools.toolsFor('worker', { workerId: 'knowledge-r1' }).map((x) => x.name).sort();
+  assert.deepStrictEqual(names, [...tools.KNOWLEDGE_READ_TOOLS].sort());
+  for (const n of ['memory_store', 'memory_delete', 'lease_release', 'checkpoint_write', 'task_list']) assert.strictEqual(tools.allows('worker', n, 'knowledge-r1'), false, n);
+  for (const n of tools.KNOWLEDGE_READ_TOOLS) assert.strictEqual(tools.allows('worker', n, 'knowledge-r1'), true, n);
+  assert.strictEqual(tools.allows('worker', 'memory_store', 'w1'), true, 'any other worker keeps its surface');
+  const { KNOWLEDGE_TOOLS } = require('../../src/run/knowledge.cjs');
+  assert.deepStrictEqual(KNOWLEDGE_TOOLS.filter((x) => x.startsWith('mcp__')).sort(), tools.KNOWLEDGE_READ_TOOLS.map((x) => `mcp__belay__${x}`).sort(), 'the pre-approved list names the same tools');
+  const a = launch({ role: 'worker', data: dataDir('kw'), workerId: 'knowledge-r1', env: { BELAY_FAKE_CORE: FAKE } });
+  t.after(async () => { await a.close(); a.kill(); });
+  await a.initialize();
+  assert.deepStrictEqual((await a.list()).map((x) => x.name).sort(), names);
+  const r = await a.call('memory_store', { text: 'a knowledge agent write' });
+  assert.deepStrictEqual([r.isError, r.structuredContent.error], [true, 'E_ROLE']);
+});

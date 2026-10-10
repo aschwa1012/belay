@@ -8,14 +8,19 @@
 // ADR 0041 §5: verifying a row of a run's own namespace copies it into the run's project namespace, but only when that
 // run's levers have `project_writes` on and name a project. Every other call answers exactly as it did before.
 
+const fs = require('node:fs');
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 const { parseReceipt, STATUSES } = require('./memory-rows.cjs');
 
 const COPY_PREFIX = 'copy-of:';
+const GIT_BOUND_MS = 10000;
+const WORKTREES_MAX = 5;
+const TEST_CLAIM = 'a test: receipt is the verifier\'s own statement that a test ran and passed; belay did not run it';
 const noReceipt = (receipt, reason) => err('E_RECEIPT', `memory.setStatus: receipt ${JSON.stringify(receipt)} refused: ${reason}`, { receipt, reason });
 
-// Existence checks for the receipt kinds that name a row. commit: and test: are syntax only (parseReceipt).
+// Existence checks for the receipt kinds that name a row. commit: is checked against git below; test: is the
+// verifier's claim, and the answer says so.
 function checkRef(E, parsed, receipt, id, status) {
   if (parsed.kind === 'checkpoint') {
     if (!rows.current(E.store, 'checkpoint', parsed.ref)) throw noReceipt(receipt, `no checkpoint ${parsed.ref}`);
@@ -28,6 +33,35 @@ function checkRef(E, parsed, receipt, id, status) {
     if (parsed.ref === id) throw noReceipt(receipt, 'a row cannot be its own receipt');
     if (!E.store.p('SELECT 1 FROM memory_entries WHERE id = ?').get(parsed.ref)) throw noReceipt(receipt, `no memory row ${parsed.ref}`);
   }
+}
+
+// The worktrees a commit receipt can be checked in: the row's own worker's, then the other workers' of the row's run.
+// Read from the worker rows, never from the caller.
+function worktreesOf(E, row) {
+  const out = [];
+  const add = (w) => { if (w && typeof w === 'string' && !out.includes(w)) out.push(w); };
+  try {
+    if (row.worker_id) { const w = rows.current(E.store, 'worker', row.worker_id); if (w && w.run_id === row.run_id) add(w.worktree); }
+    if (row.run_id) for (const r of E.store.p('SELECT DISTINCT worktree FROM worker WHERE run_id = ? AND worktree IS NOT NULL ORDER BY seq DESC LIMIT 20').all(row.run_id)) add(r.worktree);
+  } catch { /* a store copy without the worker table knows no worktree */ }
+  return out.slice(0, WORKTREES_MAX);
+}
+
+// ADR 0040 §2, commit receipts: a commit the row's run can see in git, when the run has a worktree that git answers
+// in. git rev-parse --verify exits 1 for a name that is no commit there (refused), and otherwise (no repository, no
+// git, a timeout) the worktree is passed over; when none answered, the answer says the commit was not checked.
+async function checkCommit(E, row, sha, receipt) {
+  const trees = worktreesOf(E, row);
+  const misses = [];
+  const { runCommand } = require('./evaluate.cjs');
+  for (const wt of trees) {
+    if (!fs.existsSync(wt)) continue;
+    const r = await runCommand(['git', 'rev-parse', '--verify', '--quiet', `${sha}^{commit}`], wt, GIT_BOUND_MS);
+    if (r.exit_code === 0) return { kind: 'commit', checked: true, found: true, worktree: wt, commit: String(r.stdout || '').trim() };
+    if (r.exit_code === 1) misses.push(wt);
+  }
+  if (misses.length) throw noReceipt(receipt, `no commit ${sha} in ${misses.join(', ')}`);
+  return { kind: 'commit', checked: false, reason: trees.length ? 'git did not answer in any worktree of the row\'s run' : 'no worktree is known for the row\'s run; the receipt was checked by syntax only' };
 }
 
 // The levers and project of the run that wrote the row, from that run's latest row. A store without the columns, an
@@ -56,10 +90,16 @@ async function recordCopy(E, caller, row, ev) {
 // on the source has already been written; a failed copy is returned and recorded, never swallowed.
 async function copyVerified(E, caller, row, namespace, receipt, at) {
   try {
-    const vec = row.embedding && row.dim ? Array.from(new Float32Array(row.embedding.buffer.slice(row.embedding.byteOffset, row.embedding.byteOffset + row.dim * 4))) : null;
+    // A project namespace is always scrubbed (ADR 0040 §3), whatever the source run's redact lever was. A copy whose
+    // text the scrub changed does not carry the source's vector, which was made from the unscrubbed text.
+    const parse = (t) => { try { return t ? JSON.parse(t) : null; } catch { return null; } };
+    const s = require('./methods-memory.cjs').scrub(true, { text: row.text, title: row.title, body: parse(row.body), tags: parse(row.tags) || undefined, provenance: undefined });
+    const keepVec = s.text === row.text;
+    const vec = keepVec && row.embedding && row.dim ? Array.from(new Float32Array(row.embedding.buffer.slice(row.embedding.byteOffset, row.embedding.byteOffset + row.dim * 4))) : null;
+    const was = parse(row.redactions);
     const copy = E.store.store({
-      namespace, worker_id: E.writtenBy(caller), type: row.type, text: row.text, title: row.title, body: row.body,
-      redactions: row.redactions, tags: row.tags ? JSON.parse(row.tags) : undefined, provenance: `${COPY_PREFIX}${row.id}`,
+      namespace, worker_id: E.writtenBy(caller), type: row.type, text: s.text, title: s.title, body: s.body,
+      redactions: s.redactions || (was && !was.disabled ? was : null), tags: s.tags, provenance: `${COPY_PREFIX}${row.id}`,
       run_id: row.run_id, task_id: row.task_id, turn: row.turn, source: row.source,
       ...(vec ? { embedding: vec, embedding_model: row.embedding_model, embedding_revision: row.embedding_revision, dim: row.dim } : {}),
     });
@@ -79,17 +119,20 @@ async function setStatus(E, caller, args) {
   if (typeof id !== 'string' || !id) throw err('E_ARGS', 'memory.setStatus needs an id', { field: 'id' });
   if (!STATUSES.includes(status)) throw err('E_ARGS', `memory.setStatus status must be one of ${STATUSES.join(', ')}`, { field: 'status', value: status });
   if (!E.store.p('SELECT 1 FROM memory_entries WHERE id = ?').get(id)) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
-  let kept = null;
+  let kept = null, check = null;
   if (status !== 'unverified') {
     // Before any write: a refused receipt changes nothing.
     const parsed = parseReceipt(receipt);
     if (parsed.error) throw noReceipt(receipt, parsed.error);
     checkRef(E, parsed, receipt, id, status);
+    if (parsed.kind === 'commit') check = await checkCommit(E, E.store.p('SELECT id, worker_id, run_id FROM memory_entries WHERE id = ?').get(id), parsed.ref, receipt);
+    else if (parsed.kind === 'test') check = { kind: 'test', checked: false, claim: TEST_CLAIM };
     kept = receipt;
   }
   const at = Date.now();
   const out = E.store.setStatus(id, { status, receipt: kept, by: E.writtenBy(caller), at });
   E.noteWrite();
+  if (check) out.receipt_check = check;
   const row = E.store.p('SELECT * FROM memory_entries WHERE id = ?').get(id);
   if (status === 'verified') {
     const target = projectCopyTarget(E, row);

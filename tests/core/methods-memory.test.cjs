@@ -51,11 +51,14 @@ test('memory.store returns the row it wrote and dedups by text within a namespac
   assert.strictEqual(a.namespace, 'mem');
   assert.strictEqual(a.worker_id, 'orchestrator');
   assert.ok(a.text_hash && a.id && a.updated_at);
-  const b = await worker.memory.store({ namespace: 'mem', text: 'one', embedding: [1, 0, 0], embedding_model: 'm', dim: 3 });
+  const b = await orch.memory.store({ namespace: 'mem', text: 'one', embedding: [1, 0, 0], embedding_model: 'm', dim: 3 });
   assert.strictEqual(b.action, 'updated');
   assert.strictEqual(b.id, a.id);
-  assert.strictEqual(b.worker_id, 'orchestrator', 'the original writer survives an upsert');
-  assert.strictEqual(b.last_writer_id, wid);
+  assert.strictEqual(b.worker_id, 'orchestrator');
+  assert.strictEqual(b.last_writer_id, 'orchestrator');
+  // A worker reaches its run's namespace and its project only, and never passes a vector of its own.
+  await rejects(worker.memory.store({ namespace: 'mem', text: 'one', embed: false }), 'E_ROLE');
+  await rejects(worker.memory.store({ text: 'one', embedding: [1, 0, 0], embedding_model: 'm', dim: 3 }), 'E_ARGS');
 });
 
 test('memory.get, list, search and delete return rows, and a namespace is bound to its first model', async () => {

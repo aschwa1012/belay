@@ -50,7 +50,7 @@ test('a project corpus holds the verified rows, summaries and decisions, and not
   assert.strictEqual(r.dropped, 0);
   assert.strictEqual(r.over_budget, false);
   assert.ok(r.text.startsWith('# belay memory corpus: project/demo'));
-  assert.ok(r.text.includes(`[${rows.verified.id}] [fact/verified] Owner lock\nThe owner lock is a pid file`));
+  assert.ok(r.text.includes(`[${rows.verified.id}] [fact/verified] Owner lock\n  The owner lock is a pid file`));
   assert.ok(r.text.includes(`[${rows.decision.id}] [decision/unverified]`), 'a decision is shown with its own status, never promoted');
   for (const k of ['unverified', 'refuted', 'old', 'expired', 'other', 'run']) assert.ok(!r.text.includes(`[${rows[k].id}]`), `${k} is not in the corpus`);
   assert.strictEqual(r.bytes, Buffer.byteLength(r.text));
@@ -64,7 +64,11 @@ test('without a project the corpus is the run namespace', async () => {
 
 test('the same rows give the same bytes and sha256, and a change gives a different one', async () => {
   const a = await corpus(E, orch, { project: 'demo' });
+  // A worker reaches its own run's project only: give the test run the project demo for this read.
+  store.db.prepare("INSERT INTO run(id, epoch, written_at, written_by, project) VALUES ('test-run', 1, 0, 'test', 'demo')").run();
   const b = await corpus(E, callerFor('worker', { worker_id: 'w1' }), { project: 'demo' });
+  await assert.rejects(corpus(E, callerFor('worker', { worker_id: 'w1' }), { project: 'other' }), (e) => e.code === 'E_ROLE');
+  store.db.prepare("DELETE FROM run WHERE id = 'test-run'").run();
   assert.strictEqual(a.sha256, b.sha256);
   assert.strictEqual(a.text, b.text);
   assert.match(a.sha256, /^[0-9a-f]{64}$/);
@@ -117,7 +121,7 @@ test('reading the corpus writes nothing and stamps no accessed_at', async () => 
 test('the module requires only read-safe modules', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'core', 'memory-corpus.cjs'), 'utf8');
   const reqs = [...src.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)].map(m => m[1]).filter(r => !r.startsWith('node:'));
-  assert.deepStrictEqual(reqs.sort(), ['./errors.cjs', './fit-budget.cjs', './memory-rows.cjs']);
+  assert.deepStrictEqual(reqs.sort(), ['./errors.cjs', './fit-budget.cjs', './memory-reach.cjs', './memory-rows.cjs']);
 });
 
 test('a row superseded only by a row of another namespace stays in this namespace\'s corpus, as in memory.index', async () => {

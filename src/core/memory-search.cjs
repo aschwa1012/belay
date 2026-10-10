@@ -15,7 +15,7 @@ const { deriveTitle, indexRowOf, dupVeto, filterSql } = require('./memory-rows.c
 const { ftsReady } = require('./memory-schema.cjs');
 const { scanCeiling } = require('./schema.cjs');
 const { toUnitF32 } = require('./store.cjs');
-const { nsFor, resolveNamespace, runAlpha, withEmbedding } = require('./methods-memory.cjs');
+const { nsFor, resolveNamespace, runAlpha, withEmbedding, reachOf, checkReach } = require('./methods-memory.cjs');
 
 const MODES = ['semantic', 'keyword', 'hybrid'];
 const VIEWS = ['full', 'index'];
@@ -42,15 +42,24 @@ function enumArg(name, v, allowed, dflt) {
   if (!allowed.includes(v)) throw bad(`${name} must be one of ${allowed.join(', ')}`, name);
   return v;
 }
+// The namespaces a read covers, held to the caller's reach: a worker reads only its run's namespace and its run's
+// project (methods-memory.cjs reachOf); the orchestrator and the operator read any.
 function namespacesOf(E, caller, args) {
-  if (args.namespaces === undefined || args.namespaces === null) return [nsFor(E, caller, args)];
-  if (args.namespace) throw bad('pass namespace or namespaces, not both', 'namespaces');
-  const l = args.namespaces;
-  if (!Array.isArray(l) || !l.length || l.length > NS_MAX || l.some(x => typeof x !== 'string' || !x)) {
-    throw bad(`namespaces must be an array of 1 to ${NS_MAX} non-empty strings`, 'namespaces');
+  let out;
+  if (args.namespaces === undefined || args.namespaces === null) out = [nsFor(E, caller, args)];
+  else {
+    if (args.namespace) throw bad('pass namespace or namespaces, not both', 'namespaces');
+    const l = args.namespaces;
+    if (!Array.isArray(l) || !l.length || l.length > NS_MAX || l.some(x => typeof x !== 'string' || !x)) {
+      throw bad(`namespaces must be an array of 1 to ${NS_MAX} non-empty strings`, 'namespaces');
+    }
+    out = [...new Set(l.map(x => resolveNamespace(E, caller, x)))];
   }
-  return [...new Set(l.map(x => resolveNamespace(E, caller, x)))];
+  checkReach(E, caller, out, 'read');
+  return out;
 }
+// A row a worker may not read is reported as not found, by id as by search: its existence is not the worker's to learn.
+const visible = (reach, r) => !reach || reach.has(r.namespace);
 
 const parseJson = s => { if (s == null) return null; try { return JSON.parse(s); } catch { return s; } };
 
@@ -148,7 +157,9 @@ function keywordStage(E, o, depth, base) {
 function baseWhere(o) {
   const where = [`e.namespace IN (${marks(o.namespaces)})`, '(e.ttl_at IS NULL OR e.ttl_at >= ?)'];
   const params = [...o.namespaces, Date.now()];
-  if (!o.includeSuperseded) where.push('NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND s.namespace = e.namespace)');
+  // The unary + keeps SQLite on ix_entries_supersedes for the inner lookup: on (namespace, created_at) it scans the
+  // whole namespace per outer row, which is quadratic (minutes, not milliseconds, at ten thousand rows).
+  if (!o.includeSuperseded) where.push('NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND +s.namespace = e.namespace)');
   if (o.filterSql.where) { where.push(o.filterSql.where); params.push(...o.filterSql.params); }
   return { where: where.join(' AND '), params };
 }
@@ -279,7 +290,9 @@ async function timeline(E, caller, args) {
   const before = intArg('before', args.before, 5, 0, SPAN_MAX), after = intArg('after', args.after, 5, 0, SPAN_MAX);
   const view = enumArg('view', args.view, VIEWS, 'index');
   const scope = enumArg('scope', args.scope, SCOPES, undefined);
-  const a = E.store.db.prepare('SELECT * FROM memory_entries WHERE id = ?').get(args.anchor_id);
+  const reach = reachOf(E, caller);
+  const anchor = E.store.db.prepare('SELECT * FROM memory_entries WHERE id = ?').get(args.anchor_id);
+  const a = anchor && visible(reach, anchor) ? anchor : null;
   if (!a) throw err('E_NOT_FOUND', `memory.timeline: there is no row ${args.anchor_id}`, { anchor_id: args.anchor_id });
   const use = scope || (a.task_id ? 'task' : 'namespace');
   const col = SCOPE_COLUMN[use];
@@ -288,9 +301,10 @@ async function timeline(E, caller, args) {
   }
   const key = a[col];
   const live = '(ttl_at IS NULL OR ttl_at >= ?)';
+  const within = reach ? ` AND namespace IN (${marks([...reach])})` : '';
   const side = (cmp, dir, n) => (n === 0 ? [] : E.store.db.prepare(
-    `SELECT * FROM memory_entries WHERE ${col} = ? AND ${live} AND (created_at ${cmp} ? OR (created_at = ? AND id ${cmp} ?)) ORDER BY created_at ${dir}, id ${dir} LIMIT ?`,
-  ).all(key, Date.now(), a.created_at, a.created_at, a.id, n));
+    `SELECT * FROM memory_entries WHERE ${col} = ? AND ${live}${within} AND (created_at ${cmp} ? OR (created_at = ? AND id ${cmp} ?)) ORDER BY created_at ${dir}, id ${dir} LIMIT ?`,
+  ).all(key, Date.now(), ...(reach ? [...reach] : []), a.created_at, a.created_at, a.id, n));
   return {
     anchor: viewRow(a, view),
     before: side('<', 'DESC', before).reverse().map(r => viewRow(r, view)),
@@ -305,10 +319,11 @@ async function getMany(E, caller, args) {
     throw bad(`ids must be an array of 1 to ${ID_MAX} non-empty strings`, 'ids');
   }
   const view = enumArg('view', args.view, VIEWS, 'full');
+  const reach = reachOf(E, caller);
   const rows = rowsByIds(E, [...new Set(ids)]);
   const out = [], missing = [];
   for (const id of ids) {
-    const r = rows.get(id);
+    const r = rows.has(id) && visible(reach, rows.get(id)) ? rows.get(id) : null;
     if (r) out.push({ ...viewRow(r, view), found: true });
     else { out.push({ id, found: false }); if (!missing.includes(id)) missing.push(id); }
   }
@@ -320,7 +335,8 @@ async function get(E, caller, args) {
   if (!args.id) throw bad('memory.get needs an id', 'id');
   const view = enumArg('view', args.view, VIEWS, 'full');
   // A read: a plain SELECT, so invariant 6 holds (retrieve() would stamp accessed_at).
-  const r = E.store.db.prepare('SELECT * FROM memory_entries WHERE id = ?').get(args.id);
+  const got = E.store.db.prepare('SELECT * FROM memory_entries WHERE id = ?').get(args.id);
+  const r = got && visible(reachOf(E, caller), got) ? got : null;
   return r ? { ...viewRow(r, view), found: true } : { id: args.id, found: false };
 }
 

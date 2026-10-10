@@ -85,7 +85,7 @@ test('on: resume.md is the bottle built from the stream and the sent record, wri
     const text = await restartFirstText(w, 'replace', { core, ctx: ctxWith(core) });
     const md = resumeMd(dir);
     assert.notStrictEqual(md, DOC);
-    assert.ok(md.startsWith('Conversation so far'));
+    assert.ok(md.startsWith('BEGIN MEMORY: conversation so far'));
     assert.ok(md.includes('user: Read input.md and tell me its first five words.'), 'the task spec from the sent record');
     assert.ok(md.includes('user: Now say done.'));
     assert.ok(md.includes('assistant: done'));
@@ -153,7 +153,7 @@ test('on, observations unreadable: the bottle is still built, without them, and 
   try {
     const core = stubCore({ failList: true });
     await restartFirstText(w, 'replace', { core, ctx: ctxWith(core, { capture: true, observations: true }) });
-    assert.ok(resumeMd(dir).startsWith('Conversation so far'));
+    assert.ok(resumeMd(dir).startsWith('BEGIN MEMORY: conversation so far'));
     assert.match(core.events[0].message, /observations unavailable \(E_OWNER_LOST\)/);
     assert.strictEqual(w.lastError.where, 'memory.list');
   } finally { cleanup(dir); }
@@ -253,7 +253,7 @@ test('manager: a replace restart delivers the bottle with the task and the later
     const r2 = await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 });
     assert.strictEqual(r2.branch, 'replace');
     const md = fs.readFileSync(path.join(sb.dir('w1'), 'resume.md'), 'utf8');
-    assert.ok(md.startsWith('Conversation so far'));
+    assert.ok(md.startsWith('BEGIN MEMORY: conversation so far'));
     assert.ok(md.includes('build the widget'), 'the task spec, from the sent record');
     assert.ok(md.includes('and mind the edge case'));
     const bottles = core.events.filter((e) => e.kind === 'bottle');

@@ -140,7 +140,7 @@ test('export: more rows than one list page and one get_many chunk are all export
 
 // ---- import ------------------------------------------------------------------------------------------------
 
-test('import: round trip. An export imports into another store with the namespace map applied, type/title/body/tags kept, source operator, provenance from the file hash and the original id, status not imported', async () => {
+test('import: round trip. An export imports into another store with the namespace map applied, title/body/tags kept, type imported (the file\'s type in body.imported_type), source import, provenance from the file hash and the original id, status not imported', async () => {
   const dir = sandbox();
   try {
     await run(dir, ['export', '--namespace', 'run/r1', '--out', 'x.jsonl'], fakeCore(seed()));
@@ -154,8 +154,9 @@ test('import: round trip. An export imports into another store with the namespac
     const stored = [...target.rows.values()];
     assert.deepStrictEqual(stored.map(x => x.namespace), ['project/tally', 'project/tally', 'project/tally']);
     const a1 = stored[0];
-    assert.deepStrictEqual([a1.type, a1.title, a1.tags, a1.body], ['finding', 'TZ is read at load', ['tz'], { file: 'src/dates.cjs' }]);
-    assert.strictEqual(a1.source, 'operator');
+    assert.deepStrictEqual([a1.type, a1.title, a1.tags, a1.body], ['imported', 'TZ is read at load', ['tz'], { file: 'src/dates.cjs', imported_type: 'finding' }]);
+    assert.strictEqual(a1.source, 'import');
+    assert.ok(stored.every(x => x.type === 'imported'), 'no line of a file arrives as a decision or a summary');
     assert.strictEqual(a1.provenance, `import:${sha12}:a1`);
     assert.ok(stored.every(x => x.status === 'unverified'), 'a verified row arrives unverified');
     assert.ok(target.calls.store.every(a => !('status' in a) && !('id' in a) && !('created_at' in a)), 'no status, id or time is passed to memory.store');
@@ -175,7 +176,7 @@ test('import: redaction is the core\'s, applied to what the file holds (the stor
   try {
     fs.writeFileSync(`${dir}/s.jsonl`, `${JSON.stringify({ namespace: 'project/t', type: 'finding', text: `calls need key ${SECRET} to work` })}\n`);
     const target = fakeCore();
-    const r = await run(dir, ['import', 's.jsonl'], target);
+    const r = await run(dir, ['import', 's.jsonl', '--namespace', 'project/t'], target);
     assert.strictEqual(r.code, 0, r.text);
     assert.ok(target.calls.store[0].text.includes(SECRET), 'the CLI hands the text to memory.store unchanged: redaction is not done twice or skipped here');
     const row = [...target.rows.values()][0];
@@ -193,7 +194,7 @@ test('import: tags are scrubbed by the CLI, since the store keeps tags as given;
     ];
     fs.writeFileSync(`${dir}/s.jsonl`, rows.map((r) => `${JSON.stringify(r)}\n`).join(''));
     const target = fakeCore();
-    const r = await run(dir, ['import', 's.jsonl'], target);
+    const r = await run(dir, ['import', 's.jsonl', '--namespace', 'project/t'], target);
     assert.strictEqual(r.code, 0, r.text);
     assert.deepStrictEqual(target.calls.store[0].tags, ['tz', 'dates']);
     assert.ok(!('tags' in target.calls.store[1]), 'no tags left: none are sent');
@@ -217,7 +218,7 @@ test('import: a header-less seed file, --namespace as the default, --no-embed, a
     ].join('\n');
     fs.writeFileSync(`${dir}/seed.jsonl`, file);
     const target = fakeCore();
-    const r = await run(dir, ['import', 'seed.jsonl', '--namespace', 'project/default', '--no-embed'], target);
+    const r = await run(dir, ['import', 'seed.jsonl', '--namespace', 'project/default', '--namespace-map', 'project/t=project/t', '--no-embed'], target);
     assert.strictEqual(r.code, 1, 'a refused line makes the exit non-zero');
     assert.deepStrictEqual([r.json.inserted, r.json.updated], [2, 0]);
     assert.deepStrictEqual(r.json.refused.map(x => [x.line, x.code]), [[2, 'E_PARSE'], [3, 'E_ARGS'], [5, 'E_TIMEOUT'], [6, 'E_ARGS'], [7, 'E_ARGS'], [8, 'E_ARGS']]);
@@ -234,7 +235,7 @@ test('import: without --no-embed the store is asked to embed (no embed argument 
   try {
     fs.writeFileSync(`${dir}/e.jsonl`, `${JSON.stringify({ namespace: 'project/t', text: 'embed me' })}\n`);
     const target = fakeCore();
-    await run(dir, ['import', 'e.jsonl'], target);
+    await run(dir, ['import', 'e.jsonl', '--namespace', 'project/t'], target);
     assert.ok(!('embed' in target.calls.store[0]));
   } finally { cleanup(dir); }
 });
@@ -350,7 +351,9 @@ test('REAL import: an exported file round trips into another data dir through th
       assert.strictEqual(rows.length, 3);
       const got = await core.memory.get_many({ ids: rows.map(x => x.id) });
       const byText = Object.fromEntries(got.rows.map(x => [x.text, x]));
-      assert.strictEqual(byText['second finding about money'].type, 'decision');
+      assert.strictEqual(byText['second finding about money'].type, 'imported');
+      assert.strictEqual(byText['second finding about money'].body.imported_type, 'decision');
+      assert.ok(got.rows.every(x => x.source === 'import'));
       assert.deepStrictEqual(byText['third, with a tag'].tags, ['t']);
       assert.match(byText['first finding about dates'].provenance, /^import:[0-9a-f]{12}:/);
       assert.ok(got.rows.every(x => (x.status || 'unverified') === 'unverified'));
@@ -363,19 +366,20 @@ test('REAL import: an exported file round trips into another data dir through th
   } finally { cleanup(dir); }
 });
 
-test('REAL import: the stored row carries source operator, the title, the body and the redacted text (needs the ADR 0040 write path)', { skip: REAL_WRITE_PATH ? false : 'memory.store has no write path for title, body, source and redaction yet; re-run once it lands' }, async () => {
+test('REAL import: the stored row carries source import, the title, the body and the redacted text (needs the ADR 0040 write path)', { skip: REAL_WRITE_PATH ? false : 'memory.store has no write path for title, body, source and redaction yet; re-run once it lands' }, async () => {
   const dir = sandbox();
   try {
     const target = `${dir}/.belay`;
     fs.writeFileSync(`${dir}/s.jsonl`, `${JSON.stringify({ namespace: 'project/t', type: 'finding', title: 'a title', body: { file: 'a.cjs' }, text: `needs ${SECRET} here`, status: 'verified' })}\n`);
-    const r = await memory.run({ argv: ['import', `${dir}/s.jsonl`], cwd: dir, dataDir: target, dataDirGiven: true, json: false, openCore: realWithVectors(target) });
+    const r = await memory.run({ argv: ['import', `${dir}/s.jsonl`, '--namespace', 'project/t'], cwd: dir, dataDir: target, dataDirGiven: true, json: false, openCore: realWithVectors(target) });
     assert.strictEqual(r.code, 0, r.text);
     const core = await openCore({ dataDir: target, caller: { role: 'operator', run_id: 'cli', pid: process.pid } });
     try {
       const row = (await core.memory.get_many({ ids: [r.json.rows[0].id] })).rows[0];
-      assert.strictEqual(row.source, 'operator');
+      assert.strictEqual(row.source, 'import');
+      assert.strictEqual(row.type, 'imported');
       assert.strictEqual(row.title, 'a title');
-      assert.deepStrictEqual(row.body, { file: 'a.cjs' });
+      assert.deepStrictEqual(row.body, { file: 'a.cjs', imported_type: 'finding' });
       assert.ok(!row.text.includes(SECRET), 'the secret is not stored');
       assert.match(row.text, /\[REDACTED:/);
       assert.ok(row.redactions && Object.keys(row.redactions).length, 'the redaction is recorded on the row');
@@ -415,7 +419,7 @@ test('export: only live rows by default, the rest counted; --all keeps them; imp
     assert.deepStrictEqual(r2.map(x => x.id), ['old', 'new', 'bad', 'gone', 'ok']);
 
     const target = fakeCore();
-    const imp = await run(dir, ['import', 'all.jsonl'], target);
+    const imp = await run(dir, ['import', 'all.jsonl', '--namespace-map', 'run/r1=project/r1'], target);
     assert.strictEqual(imp.code, 0, imp.text);
     assert.deepStrictEqual(imp.json.skipped, { refuted: 1, superseded: 1 });
     assert.match(imp.text, /skipped \(not live in the file\): refuted 1, superseded 1/);
@@ -423,7 +427,7 @@ test('export: only live rows by default, the rest counted; --all keeps them; imp
   } finally { cleanup(dir); }
 });
 
-test('REAL export then import: superseded and refuted rows do not come back live in the index or the corpus', async () => {
+test('REAL export then import: superseded and refuted rows do not come back live, and an imported row is not lasting until verified', async () => {
   const dir = sandbox();
   const src = `${dir}/a/.belay`, dst = `${dir}/b/.belay`;
   const caller = { role: 'orchestrator', run_id: 'run-q', pid: process.pid };
@@ -450,8 +454,13 @@ test('REAL export then import: superseded and refuted rows do not come back live
       assert.strictEqual(out.status, 0, out.stderr);
     }
     assert.strictEqual(lines(fs.readFileSync(`${dir}/live.jsonl`, 'utf8')).length - 1, 1, 'only the live decision is exported');
-    const imp = spawnSync(process.execPath, [CLI, 'memory', 'import', `${dir}/all.jsonl`, '--no-embed', '--data', dst], { cwd: ROOT, windowsHide: true, encoding: 'utf8' });
+    const imp = spawnSync(process.execPath, [CLI, 'memory', 'import', `${dir}/all.jsonl`, '--no-embed', '--namespace-map', 'run/run-q=run/run-q', '--data', dst, '--json'], { cwd: ROOT, windowsHide: true, encoding: 'utf8' });
     assert.strictEqual(imp.status, 0, `${imp.stdout} / ${imp.stderr}`);
-    assert.deepStrictEqual(await lasting(dst), { index: 1, corpus: 1 }, 'the import of an --all file holds the one live row, as the source did');
+    const got = JSON.parse(imp.stdout);
+    assert.deepStrictEqual([got.inserted, got.skipped], [1, { refuted: 1, superseded: 1 }], 'only the one live row is written');
+    assert.deepStrictEqual(await lasting(dst), { index: 0, corpus: 0 }, 'an imported row is a claim until it is verified here');
+    const v = spawnSync(process.execPath, [CLI, 'memory', 'verify', got.rows[0].id, '--status', 'verified', '--receipt', 'test:checked by hand', '--data', dst], { cwd: ROOT, windowsHide: true, encoding: 'utf8' });
+    assert.strictEqual(v.status, 0, `${v.stdout} / ${v.stderr}`);
+    assert.deepStrictEqual(await lasting(dst), { index: 1, corpus: 1 }, 'verified, it is lasting, as the source row was');
   } finally { cleanup(dir); }
 });

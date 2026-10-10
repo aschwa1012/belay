@@ -76,6 +76,10 @@ function statedText(v) {
   if (Array.isArray(v)) return v.map(statedText).filter(Boolean).join('; ');
   return '';
 }
+// Words a worker or a row wrote go into the summary on one line each: the summary text is rendered line by line
+// (memory-jobs.cjs render), and a newline inside a worker-stated field could start a line that passes for a row,
+// a status or the harness's own verdict.
+const flat = (v) => String(v).replace(/\s+/g, ' ').trim();
 
 function mechanical(input) {
   const i = input || {};
@@ -85,24 +89,27 @@ function mechanical(input) {
   const checkpoints = asArray(i.checkpoints).map(bodyOf);
 
   const spec = typeof task.spec === 'string' ? task.spec : (typeof task.title === 'string' ? task.title : '');
-  const learned = statedText(handoff.findings) || statedText(handoff.summary);
-  const nexts = [...checkpoints.map((c) => c.next_step), handoff.next_step].map(statedText).filter(Boolean);
+  const learned = flat(statedText(handoff.findings) || statedText(handoff.summary));
+  const nexts = [...checkpoints.map((c) => c.next_step), handoff.next_step].map((v) => flat(statedText(v))).filter(Boolean);
   const commands = bodies.flatMap((b) => asArray(b.commands)).map((c) => ({
     command: c.command, exit_code: c.exit_code === undefined ? null : c.exit_code,
   }));
   const errors = bodies.reduce((n, b) => n + (Number.isInteger(b.errors) ? b.errors : 0), 0);
-  const verdict = statedText(handoff.verdict) || statedText(handoff.acceptance) || statedText(task.verdict);
+  // Two verdicts, never one field: the harness's, from task.evaluate (the caller passes task.verdict), and what the
+  // worker said of its own work in its handoff, labelled as the worker's.
+  const verdict = flat(statedText(task.verdict));
+  const workerVerdict = flat(statedText(handoff.verdict) || statedText(handoff.acceptance));
 
   return {
-    asked: cutBytes(spec, ASKED_MAX),
-    looked_at: uniq(bodies.flatMap((b) => asArray(b.files_read))),
+    asked: cutBytes(flat(spec), ASKED_MAX),
+    looked_at: uniq(bodies.flatMap((b) => asArray(b.files_read)).map((f) => (typeof f === 'string' ? flat(f) : f))),
     learned: learned ? `worker-stated: ${learned}` : NOT_STATED,
     done: {
-      files_modified: uniq(bodies.flatMap((b) => asArray(b.files_modified))),
+      files_modified: uniq(bodies.flatMap((b) => asArray(b.files_modified)).map((f) => (typeof f === 'string' ? flat(f) : f))),
       commands, task_state: typeof task.state === 'string' ? task.state : null,
     },
     next: nexts.length ? `worker-stated: ${nexts[nexts.length - 1]}` : '',
-    notes: { errors, verdict: verdict || null },
+    notes: { errors, verdict: verdict || null, worker_verdict: workerVerdict ? `worker-stated: ${workerVerdict}` : null },
   };
 }
 

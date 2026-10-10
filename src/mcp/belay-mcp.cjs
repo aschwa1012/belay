@@ -238,7 +238,7 @@ async function callCore(dotted, args) {
 async function callTool(name, args) {
   const route = routeOf(name);
   if (!route) throw fail('E_ARGS', `no such tool ${name}`, { tool: name });
-  if (!allows(opts.role, name)) {
+  if (!allows(opts.role, name, opts.workerId)) {
     throw fail('E_ROLE', `${name} is not available in ${opts.role} role; it belongs to ${roleOf(name)}`, { tool: name, role: opts.role });
   }
   validateArgs(name, args);
@@ -331,7 +331,7 @@ async function handle(msg) {
   if (typeof method === 'string' && method.startsWith('notifications/')) return undefined;
   if (method === 'ping') return send({ jsonrpc: '2.0', id, result: {} });
   if (method === 'tools/list') {
-    const list = toolsFor(opts.role, { knowledge: await knowledgeListed() }).concat(opts.permit ? [PERMIT_TOOL] : []);
+    const list = toolsFor(opts.role, { knowledge: await knowledgeListed(), workerId: opts.workerId }).concat(opts.permit ? [PERMIT_TOOL] : []);
     return send({ jsonrpc: '2.0', id, result: { tools: list } });
   }
   if (method === 'tools/call') {

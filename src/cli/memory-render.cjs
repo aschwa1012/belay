@@ -1,6 +1,11 @@
 'use strict';
 // memory-render.cjs — argument parsing and text rendering for the `belay memory` verbs (ADR 0040 §5, ADR 0043 §3).
 // Pure functions: nothing here opens a store, reads a file or prints. cmd-memory.cjs owns the calls.
+//
+// Every value a row holds reaches the terminal through panel-common's sanitiser (P.clean): a title or a text is
+// model-written, and an escape sequence in it (a screen clear, an OSC 8 link) would otherwise act on the terminal.
+
+const P = require('./panel-common.cjs');
 
 const MODES = ['semantic', 'keyword', 'hybrid'];
 const STATUSES = ['unverified', 'verified', 'refuted'];
@@ -143,8 +148,14 @@ function filterOf(opts) {
   return f;
 }
 
-const one = s => String(s == null ? '' : s).replace(/\s+/g, ' ');
-const dash = v => (v === null || v === undefined || v === '' ? '-' : String(v));
+const CAP = 1e6; // the sanitiser's code-point cap; the table cuts its own cells
+const one = s => P.clean(s == null ? '' : s, CAP).replace(/\s+/g, ' ');
+const dash = v => (v === null || v === undefined || v === '' ? '-' : P.clean(v, CAP));
+// A text shown whole keeps its lines and their leading indentation; each line is sanitised on its own.
+const block = s => String(s == null ? '' : s).split(/\r\n|\r|\n/).map((l) => {
+  const lead = /^ */.exec(l)[0];
+  return lead + P.clean(l.slice(lead.length), CAP);
+}).join('\n');
 
 function table(cols, rows) {
   const cells = rows.map(r => cols.map(c => c.cell(r)));
@@ -203,9 +214,9 @@ function renderShowText(r) {
     out.push(`id: ${row.id}`, `title: ${dash(row.title)}`,
       `status: ${dash(row.status || 'unverified')}${row.status_receipt ? ` (receipt ${row.status_receipt})` : ''}`,
       `namespace: ${dash(row.namespace)}  type: ${dash(row.type)}  worker_id: ${dash(row.worker_id)}  task_id: ${dash(row.task_id)}  run_id: ${dash(row.run_id)}`,
-      `source: ${dash(row.source)}  created_at: ${dash(row.created_at)}`, '', String(row.text == null ? '' : row.text), '');
+      `source: ${dash(row.source)}  created_at: ${dash(row.created_at)}`, '', block(row.text), '');
   }
-  if ((r.missing || []).length) out.push(`missing: ${r.missing.join(', ')}`);
+  if ((r.missing || []).length) out.push(`missing: ${r.missing.map(dash).join(', ')}`);
   return `${out.join('\n')}\n`;
 }
 
@@ -235,16 +246,16 @@ function mapNamespace(ns, map) {
 function renderImportText(r) {
   const ignored = r.status_ignored ? `  status ignored on ${r.status_ignored} row${r.status_ignored === 1 ? '' : 's'} (imported rows are unverified)` : '';
   const out = [`file: ${r.file}  sha256: ${r.sha256.slice(0, 12)}  lines: ${r.lines}`,
-    `inserted: ${r.inserted}  updated: ${r.updated}  refused: ${r.refused.length}${ignored}`];
+    `inserted: ${r.inserted}  updated: ${r.updated}${r.unchanged ? `  unchanged: ${r.unchanged}` : ''}  refused: ${r.refused.length}${ignored}`];
   const sk = r.skipped || {};
   if (sk.refuted || sk.superseded) out.push(`skipped (not live in the file): refuted ${sk.refuted || 0}, superseded ${sk.superseded || 0}`);
-  for (const x of r.refused) out.push(`refused line ${x.line}: ${x.code}${x.message ? ` (${x.message})` : ''}`);
+  for (const x of r.refused) out.push(`refused line ${x.line}: ${x.code}${x.message ? ` (${P.clean(x.message, 300)})` : ''}`);
   return `${out.join('\n')}\n`;
 }
 
 function renderStatsText(s) {
   const o = s.owner || {};
-  const pairs = obj => Object.entries(obj).map(([k, v]) => `${k}=${v}`).join(' ') || '-';
+  const pairs = obj => Object.entries(obj).map(([k, v]) => `${P.clean(k, 80)}=${v}`).join(' ') || '-';
   const lines = [`entries: ${s.n}  namespaces: ${s.namespaces}  workers: ${s.workers}  expired: ${s.expired}`];
   if (s.by_type) lines.push(`by_type: ${pairs(s.by_type)}`);
   if (s.by_status) lines.push(`by_status: ${pairs(s.by_status)}`);
@@ -255,7 +266,7 @@ function renderStatsText(s) {
 }
 
 module.exports = {
-  MODES, STATUSES, SCOPES, VERBS, parseArgs, parseSince, filterOf, usageText,
+  MODES, STATUSES, SCOPES, VERBS, parseArgs, clean: (s) => P.clean(s, 2000), parseSince, filterOf, usageText,
   mapNamespace, renderSearchText, renderListText, renderShowText, renderTimelineText, renderVerifyText, renderStatsText,
   renderImportText,
 };
