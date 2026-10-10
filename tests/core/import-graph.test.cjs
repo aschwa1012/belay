@@ -94,3 +94,11 @@ test('the embedder is reachable, so the assertion above is about laziness and no
   assert.strictEqual(typeof Embedder, 'function');
   assert.strictEqual(loaded().length, 1, 'an explicit require does put it in the cache');
 });
+
+test('memory-search.cjs, the read path of the memory methods, requires no embedder', () => {
+  const want = ['./errors.cjs', './fts-query.cjs', './fusion.cjs', './memory-rows.cjs', './memory-schema.cjs', './schema.cjs', './store.cjs'];
+  assert.deepStrictEqual(requiresOf(path.join(SRC, 'core', 'memory-search.cjs')).filter(r => !r.startsWith('node:')).sort(), want);
+  const engine = requiresOf(path.join(SRC, 'core', 'engine.cjs'));
+  assert.ok(engine.includes('./memory-search.cjs'));
+  assert.ok(!engine.some(r => /embed/.test(r)), 'engine.cjs requires no embedder module');
+});
