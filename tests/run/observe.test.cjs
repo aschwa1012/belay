@@ -4,10 +4,21 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
 const { buildObservation, NARRATIVE_MAX, TITLE_MAX } = require('../../src/run/observe.cjs');
+const { createParser } = require('../../src/run/parsers.cjs');
 
-const use = (tool, args, id, extra) => ({ type: 'tool_use', tool, args, tool_use_id: id, at: '2026-01-01T00:00:00Z', ...extra });
-const res = (tool, id, extra) => ({ type: 'tool_result', tool, tool_use_id: id, bytes: 10, is_error: false, at: '2026-01-01T00:00:01Z', ...extra });
+const ident = (t) => ({ text: t, redactions: [] });
+function parsed(substrate, file, opts) {
+  const p = createParser(substrate, opts);
+  const events = [];
+  for (const l of fs.readFileSync(path.join(__dirname, 'fixtures', file), 'utf8').trim().split('\n')) for (const e of p.pushLine(l)) events.push(e);
+  return events;
+}
+
+const use = (tool, args, id, extra) => ({ kind: 'tool_use', tool, args, tool_use_id: id, at: '2026-01-01T00:00:00Z', ...extra });
+const res = (tool, id, extra) => ({ kind: 'tool_result', tool, tool_use_id: id, bytes: 10, is_error: false, at: '2026-01-01T00:00:01Z', ...extra });
 const bash = (id, command, exit_code, source = 'reported') => [
   use('Bash', { command }, id, { command }),
   res('Bash', id, { exit_code, exit_code_source: source, is_error: exit_code !== 0 }),
@@ -66,7 +77,7 @@ test('body shape: facts stay empty, narrative is labelled and bounded, commands 
   assert.strictEqual(Buffer.byteLength(o.body.narrative), NARRATIVE_MAX);
   assert.deepStrictEqual(o.body.files_read, ['a.cjs']);
   assert.deepStrictEqual(o.body.files_modified, []);
-  assert.deepStrictEqual(o.body.commands, [{ command: 'npm test', exit_code: 0, exit_code_source: 'no-error' }]);
+  assert.deepStrictEqual(o.body.commands, [{ tool_use_id: 'b1', command: 'npm test', exit_code: 0, exit_code_source: 'no-error' }]);
   assert.deepStrictEqual(o.body.tool_counts, { Read: 2, Bash: 1 });
   assert.strictEqual(o.body.errors, 0);
   assert.match(o.text, /worker-stated: x+/);
@@ -120,4 +131,48 @@ test('missing or hostile input degrades to an empty turn observation', () => {
     assert.strictEqual(o.body.narrative, '');
   }
   assert.strictEqual(buildObservation({}).title, 'turn ?: no tool activity');
+});
+
+test('real parser output (capture on, recorded Claude stream) yields files, commands and tool counts', () => {
+  const o = buildObservation({ turn: 1, events: parsed('claude-code', 'capture-claude.jsonl', { capture: true, redact: ident }), final_text: 'ok' });
+  assert.strictEqual(o.type, 'change');
+  assert.ok(o.body.files_modified.includes('C:/work/a.txt'));
+  assert.deepStrictEqual(o.body.files_read, ['C:/work/b.txt']);
+  assert.ok(o.body.tool_counts.Bash >= 2 && o.body.tool_counts.Edit >= 1);
+  const codes = o.body.commands.map((c) => c.exit_code);
+  assert.deepStrictEqual(codes.slice(0, 2), [0, 127]);
+  assert.match(o.body.commands[0].tool_use_id, /^toolu_/);
+  assert.strictEqual(o.body.errors, 2);
+});
+
+test('real parser output (capture on, Codex stream) yields commands, exit codes and patch files', () => {
+  const o = buildObservation({ turn: 1, events: parsed('codex', 'capture-codex.jsonl', { capture: true, redact: ident }), final_text: '' });
+  assert.deepStrictEqual(o.body.files_modified, ['src/a.js', 'src/b.js']);
+  assert.deepStrictEqual(o.body.commands.map((c) => c.exit_code), [0, 2]);
+  assert.strictEqual(o.body.errors, 1);
+});
+
+test('Codex file_change items from the parser make a change observation', () => {
+  const o = buildObservation({ turn: 1, events: parsed('codex', 'capture-codex-filechange.jsonl', { capture: true, redact: ident }), final_text: '' });
+  assert.strictEqual(o.type, 'change');
+  assert.deepStrictEqual(o.body.files_modified, ['src/new.js', 'src/old.js']); // src/bad.js failed
+  assert.strictEqual(o.body.errors, 1);
+});
+
+test('the same command run twice is two entries keyed by tool_use_id, each with its own exit code', () => {
+  const o = build([...bash('b1', 'npm test', 1), ...bash('b2', 'npm test', 0)]);
+  assert.deepStrictEqual(o.body.commands.map((c) => [c.tool_use_id, c.exit_code]), [['b1', 1], ['b2', 0]]);
+});
+
+test('a withheld command (capture without a redactor) never falls back to the raw args', () => {
+  const secret = 'sk' + '-ant-' + 'a'.repeat(40);
+  const events = parsed('claude-code', 'capture-claude.jsonl', { capture: true, redact: () => ({ text: null }) });
+  const raw = events.find((e) => e.kind === 'tool_use' && e.tool === 'Bash');
+  assert.strictEqual(raw.command, null);
+  const o = buildObservation({ turn: 1, events, final_text: '' });
+  assert.strictEqual(o.body.commands[0].command, null);
+  assert.match(o.text, /command: \(command withheld: redaction unavailable\) -> exit/);
+  assert.ok(!JSON.stringify(o).includes('auto-probe-ok'));
+  const hand = build([use('Bash', { command: 'curl ' + secret }, 'b1', { command: null }), res('Bash', 'b1', { exit_code: 0, exit_code_source: 'reported' })]);
+  assert.ok(!JSON.stringify(hand).includes(secret));
 });

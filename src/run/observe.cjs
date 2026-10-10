@@ -10,6 +10,9 @@ const TITLE_FILES = 3;
 
 const READ_TOOLS = new Set(['Read', 'NotebookRead']);
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
+// Events are the parser's: the discriminator is `kind` (parsers.cjs ev()), not `type`.
+const WITHHELD = '(command withheld: redaction unavailable)';
+
 // Codex reports edits as patch or file-change items, under names the parser passes through unchanged.
 const isEditTool = (t) => EDIT_TOOLS.has(t) || (typeof t === 'string' && /patch|file_?change/i.test(t));
 
@@ -33,12 +36,14 @@ const argPath = (args) => {
   return null;
 };
 
+// The command comes from the redacted `command` field only. When capture ran without a redactor that field is
+// null: the raw args.command is never used in its place (it would reach the stored body and text). Returns
+// undefined for an event that ran no command, null for one whose command was withheld.
 function commandOf(e) {
   if (typeof e.command === 'string' && e.command) return e.command;
   const a = e.args;
-  if (a && typeof a.command === 'string' && a.command) return a.command;
-  if (a && Array.isArray(a.command) && a.command.length) return a.command.join(' ');
-  return null;
+  const raw = !!a && typeof a === 'object' && ((typeof a.command === 'string' && a.command) || (Array.isArray(a.command) && a.command.length));
+  return raw ? null : undefined;
 }
 
 function scan(events) {
@@ -51,25 +56,26 @@ function scan(events) {
 
   for (const e of events) {
     if (!e || typeof e !== 'object') continue;
-    if (e.type === 'tool_use') {
+    if (e.kind === 'tool_use') {
       toolCounts[e.tool] = (toolCounts[e.tool] || 0) + 1;
       const cmd = commandOf(e);
-      if (cmd !== null) {
-        commands.push({ command: cmd, exit_code: null, exit_code_source: null });
+      if (cmd !== undefined) {
+        commands.push({ tool_use_id: e.tool_use_id === undefined ? null : e.tool_use_id, command: cmd, exit_code: null, exit_code_source: null });
         if (e.tool_use_id) byUseId.set(e.tool_use_id, commands.length - 1);
       }
       const p = argPath(e.args);
       if (p && READ_TOOLS.has(e.tool)) pushUnique(filesRead, p);
       if (p && isEditTool(e.tool)) pushUnique(filesModified, p);
-    } else if (e.type === 'tool_result') {
+    } else if (e.kind === 'tool_result') {
       if (e.is_error) errors += 1;
-      const idx = e.tool_use_id !== undefined ? byUseId.get(e.tool_use_id) : undefined;
+      const idx = e.tool_use_id !== undefined && e.tool_use_id !== null ? byUseId.get(e.tool_use_id) : undefined;
       if (idx !== undefined) {
         commands[idx].exit_code = Number.isInteger(e.exit_code) ? e.exit_code : null;
         commands[idx].exit_code_source = e.exit_code_source || null;
       }
       const target = isEditTool(e.tool) ? filesModified : (READ_TOOLS.has(e.tool) ? filesRead : null);
-      if (target) for (const p of filesOf(e)) pushUnique(target, p);
+      // A failed result names no file it changed (a failed Codex file_change lists what it tried).
+      if (target && !e.is_error) for (const p of filesOf(e)) pushUnique(target, p);
     }
   }
   // A file that was modified is not also listed as merely read.
@@ -104,7 +110,7 @@ function textOf(body, title) {
   if (body.files_modified.length) lines.push(`files modified: ${body.files_modified.join(', ')}`);
   if (body.files_read.length) lines.push(`files read: ${body.files_read.join(', ')}`);
   for (const c of body.commands) {
-    lines.push(`command: ${c.command} -> exit ${c.exit_code === null ? 'unknown' : c.exit_code}${c.exit_code_source ? ` (${c.exit_code_source})` : ''}`);
+    lines.push(`command: ${c.command === null ? WITHHELD : c.command} -> exit ${c.exit_code === null ? 'unknown' : c.exit_code}${c.exit_code_source ? ` (${c.exit_code_source})` : ''}`);
   }
   if (body.errors) lines.push(`tool errors: ${body.errors}`);
   if (body.narrative) lines.push(`worker-stated: ${body.narrative}`);

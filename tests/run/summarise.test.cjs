@@ -26,12 +26,12 @@ test('an empty input gives class empty, mechanical generator, no model', async (
 
 test('mechanical fields come from the task, observations, checkpoints and handoff', async () => {
   const obs1 = buildObservation({ turn: 1, events: [
-    { type: 'tool_use', tool: 'Read', args: { file_path: 'a.cjs' }, tool_use_id: 'r' },
-    { type: 'tool_use', tool: 'Bash', args: { command: 'npm test' }, tool_use_id: 'b', command: 'npm test' },
-    { type: 'tool_result', tool: 'Bash', tool_use_id: 'b', exit_code: 1, exit_code_source: 'reported', is_error: true },
+    { kind: 'tool_use', tool: 'Read', args: { file_path: 'a.cjs' }, tool_use_id: 'r' },
+    { kind: 'tool_use', tool: 'Bash', args: { command: 'npm test' }, tool_use_id: 'b', command: 'npm test' },
+    { kind: 'tool_result', tool: 'Bash', tool_use_id: 'b', exit_code: 1, exit_code_source: 'reported', is_error: true },
   ], final_text: 'looked' });
   const obs2 = buildObservation({ turn: 2, events: [
-    { type: 'tool_use', tool: 'Edit', args: { file_path: 'b.cjs' }, tool_use_id: 'e' },
+    { kind: 'tool_use', tool: 'Edit', args: { file_path: 'b.cjs' }, tool_use_id: 'e' },
   ], final_text: 'edited' });
   const r = await summarise({
     task: { spec: 's'.repeat(500), state: 'done', verdict: 'holds' },

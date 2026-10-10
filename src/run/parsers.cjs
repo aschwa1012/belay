@@ -311,10 +311,12 @@ class Parser {
     }
 
     if (j.type === 'user' && j.message && Array.isArray(j.message.content)) {
+      // The message's top-level tool_use_result describes one result; with several blocks it names none of them.
+      const nResults = j.message.content.filter((x) => x && x.type === 'tool_result').length;
       for (const b of j.message.content) {
         if (b.type !== 'tool_result') continue;
         const f = { tool: this.toolNames.get(b.tool_use_id) || null, bytes: byteLength(textOf(b.content)), is_error: !!b.is_error };
-        if (this.capture) Object.assign(f, this.claudeCapture(b, j.tool_use_result, f));
+        if (this.capture) Object.assign(f, this.claudeCapture(b, nResults === 1 ? j.tool_use_result : null, f));
         out.push(this.ev('tool_result', f, rawType));
       }
       if (out.length) return out;
@@ -336,6 +338,7 @@ class Parser {
         const entry = this.unansweredWrites.shift();
         answersWrite = entry ? entry.index : null;
       }
+      if (this.capture) this.capture.calls.clear(); // a call interrupted without a result must not leak
       const openTurnsAfter = this.openTurns.length;
       const externally = answersWrite === null;
       out.push(
@@ -392,6 +395,26 @@ class Parser {
 
   // ------------------------------------------------------------------ Codex
 
+  codexFileChange(j, it, rawType) {
+    const out = [];
+    const id = it.id == null ? null : it.id;
+    const changes = Array.isArray(it.changes) ? it.changes : [];
+    const seen = id !== null && this.capture.calls.has(id);
+    if (!seen) {
+      if (id !== null) this.capture.calls.set(id, { tool: 'file_change', args: { changes } });
+      out.push(this.ev('tool_use', { tool: 'file_change', args: { changes }, tool_use_id: id, command: null }, rawType));
+    }
+    if (j.type === 'item.completed') {
+      if (id !== null) this.capture.calls.delete(id);
+      const files = CF.codexFiles(it);
+      out.push(this.ev('tool_result', {
+        tool: 'file_change', bytes: byteLength(changes), is_error: it.status === 'failed' || !!it.error,
+        tool_use_id: id, exit_code: null, exit_code_source: null, head: files.join('\n'), tail: '', redaction: 'applied', files,
+      }, rawType));
+    }
+    return out;
+  }
+
   codex(j) {
     const out = [];
     const it = j.item || null;
@@ -405,6 +428,7 @@ class Parser {
     }
 
     if (j.type === 'turn.completed') {
+      if (this.capture) this.capture.calls.clear();
       const externally = this.pendingTurns > 0 ? false : true;
       if (this.pendingTurns > 0) this.pendingTurns -= 1;
       const u = j.usage || null;
@@ -432,6 +456,13 @@ class Parser {
       return [this.ev('turn_failed', { error: j.error || null }, rawType)];
     }
 
+    // Capture only (the off output stays as before): Codex reports an edit as a file_change item whose
+    // changes[{path, kind}] name the files. The shape follows Codex exec's JSON item schema; no recorded
+    // stream in this repository carries one.
+    if (this.capture && it && it.type === 'file_change' && (j.type === 'item.started' || j.type === 'item.completed')) {
+      return this.codexFileChange(j, it, rawType);
+    }
+
     if (it && j.type === 'item.started' && (it.type === 'mcp_tool_call' || it.type === 'command_execution' || it.tool)) {
       const f = { tool: it.tool || it.name || it.type, args: it.arguments == null ? {} : it.arguments };
       if (this.capture) {
@@ -446,6 +477,8 @@ class Parser {
         const payload = it.result !== undefined ? it.result : it.output !== undefined ? it.output : it;
         const f = { tool: it.tool || it.name || it.type, bytes: byteLength(payload), is_error: !!it.error };
         if (this.capture) Object.assign(f, this.codexCapture(it, payload));
+        // A failed command is an error whatever the item's error field says: nonzero exit or status failed.
+        if (this.capture && it.type === 'command_execution') f.is_error = f.is_error || (Number.isInteger(it.exit_code) && it.exit_code !== 0) || it.status === 'failed';
         out.push(this.ev('tool_result', f, rawType));
       }
       if (it.type === 'agent_message') {
