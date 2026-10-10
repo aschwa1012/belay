@@ -64,6 +64,9 @@ const ROUTES = {
   permit: { role: 'worker', via: 'permit', method: 'permission.request+wait' },
   permission_list: { role: 'orchestrator', via: 'core', method: 'permission.list' },
   permission_decide: { role: 'orchestrator', via: 'core', method: 'permission.decide' },
+  // ADR 0043 decision 1: listed only when the run's knowledge_agent lever is on (toolsFor's knowledge option);
+  // with the lever off the manager refuses it E_LEVER_OFF, and the listing never mentions it.
+  knowledge_ask: { role: 'orchestrator', via: 'run', method: 'ask' },
 };
 
 const BOTH = [
@@ -275,6 +278,14 @@ const WORKER = [
 
 const ROLES = ['orchestrator', 'worker'];
 
+// ADR 0043 decision 1. Not in ORCHESTRATOR: the listing carries it only for a run whose knowledge_agent lever is
+// on, so a run without the lever pays no byte for it. Workers never get it; a worker asks through its result.
+const KNOWLEDGE_TOOL = {
+  name: 'knowledge_ask',
+  description: 'Ask the run\'s knowledge agent about stored memory. Returns answer, cited ids with found and status, uncited_claims. Answers from memory only; unverified rows are marked. Refuses E_LEVER_OFF when the lever is off.',
+  inputSchema: S({ question: str() }, ['question']),
+};
+
 // build step 6d, ADR 0020 decision 1: the worker adapter's own prompt tool, listed only for an
 // adapter launched with --permit (belay-mcp.cjs appends it to toolsFor's own listing, never through
 // this function), and measured on this build: the model cannot see it (ADR 0020, the
@@ -286,8 +297,9 @@ const PERMIT_TOOL = {
   inputSchema: S({ tool_name: str(), input: { type: 'object' }, tool_use_id: str() }),
 };
 
-function toolsFor(role) {
-  if (role === 'orchestrator') return BOTH.concat(ORCHESTRATOR);
+// `knowledge` (orchestrator only) adds knowledge_ask; omitted or false, the listing is byte-for-byte what it was.
+function toolsFor(role, { knowledge = false } = {}) {
+  if (role === 'orchestrator') return knowledge ? BOTH.concat(ORCHESTRATOR, [KNOWLEDGE_TOOL]) : BOTH.concat(ORCHESTRATOR);
   if (role === 'worker') return BOTH.concat(WORKER);
   throw Object.assign(new Error(`unknown role ${role}`), { code: 'E_ROLE' });
 }
@@ -304,10 +316,10 @@ const allows = (role, name) => {
 };
 
 const BUDGET = { orchestrator: 10240, worker: 5120, permit: 320 }; // ADR 0010 amendment 4: orchestrator 10 KB; ADR 0040 §4: worker 5 KB
-const listingBytes = (role) => Buffer.byteLength(JSON.stringify(toolsFor(role)), 'utf8');
+const listingBytes = (role, opts) => Buffer.byteLength(JSON.stringify(toolsFor(role, opts)), 'utf8');
 
 const BY_NAME = new Map();
-for (const t of BOTH.concat(ORCHESTRATOR, WORKER)) BY_NAME.set(t.name, t);
+for (const t of BOTH.concat(ORCHESTRATOR, WORKER, [KNOWLEDGE_TOOL])) BY_NAME.set(t.name, t);
 const schemaOf = (name) => (BY_NAME.get(name) || {}).inputSchema;
 
 // Optional arguments where an explicit null is refused, not read as absent: the core refuses it too
@@ -366,4 +378,4 @@ function validateArgs(name, args) {
   return a;
 }
 
-module.exports = { toolsFor, roleOf, routeOf, allows, schemaOf, validateArgs, ROUTES, ROLES, BUDGET, listingBytes, PERMIT_TOOL, permitBytes, HARNESS_ONLY };
+module.exports = { toolsFor, roleOf, routeOf, allows, schemaOf, validateArgs, ROUTES, ROLES, BUDGET, listingBytes, PERMIT_TOOL, permitBytes, HARNESS_ONLY, KNOWLEDGE_TOOL };
