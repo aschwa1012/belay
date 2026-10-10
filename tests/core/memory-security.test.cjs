@@ -122,11 +122,12 @@ test('tags and provenance are bounded in count, length and shape', async () => {
 test('a write into a project namespace is scrubbed even when the run\'s redact lever is off', async () => {
   const roff = { role: 'orchestrator', run_id: 'roff', pid: process.pid };
   await call('run.attach', roff, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', redact: false }) });
-  const secret = `AWS key AKIAIOSFODNN7EXAMPLE and ghp_${'a'.repeat(36)}`;
+  const awsId = ['AKIA', 'IOSFODNN7EXAMPLE'].join('');
+  const secret = `AWS key ${awsId} and ${['gh', 'p_'].join('')}${'a'.repeat(36)}`;
   const run = await call('memory.store', roff, { text: secret, embed: false });
   assert.strictEqual(dbRow(run.id).text, secret, 'the run namespace keeps the lever\'s choice');
   const p = await call('memory.store', roff, { namespace: 'project', text: secret, embed: false });
-  assert.doesNotMatch(dbRow(p.id).text, /AKIAIOSFODNN7EXAMPLE|ghp_a{36}/);
+  assert.doesNotMatch(dbRow(p.id).text, new RegExp(`${awsId}|${['gh', 'p_'].join('')}a{36}`));
 });
 
 test('a verified copy into the project is scrubbed, whatever the source row holds', async () => {

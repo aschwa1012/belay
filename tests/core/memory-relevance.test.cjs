@@ -2,7 +2,7 @@
 // memory-relevance.test.cjs — memory.index ranks rows by relevance to the task text (ADR 0042 decision 2,
 // amendment "relevance"): BM25 over the trigram index with the text's salient terms joined by OR, cosine
 // over stored vectors only when the caller supplies a query embedding, inside the unchanged tiers. The
-// store is G2's: the fourteen rows of docs/research/memory-value/seed-relevant.jsonl, all verified, none
+// store is G2's: the fourteen seeded rows, all verified, none
 // carrying a file under the task's files_owned or the task's id, so without relevance every task saw the
 // same newest rows. No model is loaded: rows are stored without vectors, or with supplied ones.
 
@@ -16,7 +16,7 @@ const { Engine } = core('engine.cjs');
 const { Store } = core('store.cjs');
 const R = core('memory-relevance.cjs');
 
-const SEEDS = path.join(__dirname, '..', '..', 'docs', 'research', 'memory-value', 'seed-relevant.jsonl');
+const SEEDS = path.join(__dirname, 'fixtures', 'memory-seed-relevant.jsonl');
 const seedRows = () => fs.readFileSync(SEEDS, 'utf8').split('\n').filter((l) => l.trim()).slice(1).map((l) => JSON.parse(l));
 
 let dir, store, E, orch;
