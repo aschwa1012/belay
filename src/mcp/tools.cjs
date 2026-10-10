@@ -246,8 +246,8 @@ const ORCHESTRATOR = [
     inputSchema: S({
       id: str(),
       status: { type: 'string', enum: ['unverified', 'verified', 'refuted'] },
-      receipt: str('checkpoint:id, task:id, memory:id, commit:sha or test:text'),
-    }, ['id', 'status', 'receipt']),
+      receipt: str('checkpoint:id, task:id, memory:id, commit:sha or test:text; none for unverified'),
+    }, ['id', 'status']),
   },
 ];
 

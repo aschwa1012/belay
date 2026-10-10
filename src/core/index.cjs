@@ -64,7 +64,7 @@ function vectorLimit(method, params) {
 
 function writeTimeoutFor(method, params) {
   if (method === 'task.evaluate') return EVALUATE_TIMEOUT_MS;
-  if (method === 'memory.store' && !params.embedding && !params.embedding_b64) return EMBEDDING_READ_TIMEOUT_MS;
+  if (method === 'memory.store' && params.embed !== false && !params.embedding && !params.embedding_b64) return EMBEDDING_READ_TIMEOUT_MS; // embed: false needs no vector (ADR 0040)
   if (method === 'memory.warm' && params.wait) return warmLimit(params) + 5000; // the engine's own limit, plus the round trip
   // build step 6d: permission.wait's own deadline is the caller's timeout_ms plus a 5,000 ms margin
   // for the round trip itself, so the client never times out before the engine's own bound would.
