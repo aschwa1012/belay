@@ -218,9 +218,10 @@ function readImport(ctx, parsed) {
     lines += 1;
     items.push({ line, row });
   }
-  const bad = !header ? null
-    : header.export !== 1 ? `unsupported export version ${JSON.stringify(header.export)}; this build reads 1`
-      : header.schema_version > SCHEMA_VERSION ? `written at schema ${header.schema_version}, newer than this build's ${SCHEMA_VERSION}; upgrade belay` : null;
+  const unnamed = unnamedNamespaces(items, parsed.opts);
+  const bad = header && header.export !== 1 ? `unsupported export version ${JSON.stringify(header.export)}; this build reads 1`
+    : header && header.schema_version > SCHEMA_VERSION ? `written at schema ${header.schema_version}, newer than this build's ${SCHEMA_VERSION}; upgrade belay`
+      : unnamed.length ? `the file names namespace${unnamed.length === 1 ? '' : 's'} ${unnamed.join(', ')}, which no --namespace-map entry or --namespace names; an import writes only where the operator says (--namespace-map <from>=<to>)` : null;
   const fail = bad ? { code: 1, text: `belay memory import: ${file}: ${bad}\n`, json: { error: { code: 'E_ARGS', message: bad } } }
     : !lines ? { code: 1, text: `belay memory import: ${file} holds no rows\n`, json: { error: { code: 'E_ARGS', message: 'the file holds no rows' } } } : null;
   return { file, sha256: sha256(buf), header, items, refused, lines, fail };
@@ -228,9 +229,22 @@ function readImport(ctx, parsed) {
 
 const isStr = v => typeof v === 'string' && v.length > 0;
 
+// Every namespace a line names must be named by the operator: by a --namespace-map entry (exactly, or as a prefix
+// ending at a slash) or by --namespace itself. A file is a stranger's words, so it does not get to choose a live
+// run's namespace or a project's on its own (ADR 0043 §3). Returns the namespaces nobody named, sorted.
+function unnamedNamespaces(items, opts) {
+  const map = opts.nsMap || new Map();
+  const named = ns => (opts.namespaces || []).includes(ns) || map.has(ns) || [...map.keys()].some(from => ns.startsWith(`${from}/`));
+  const out = new Set();
+  for (const { row } of items) if (row && typeof row === 'object' && isStr(row.namespace) && !named(row.namespace)) out.add(row.namespace);
+  return [...out].sort();
+}
+
 // One row's store arguments, or the reason it cannot be one. Status, ids, times, supersedes, ttl and the
 // export's provenance fields are not carried: an imported row is a new row of this store, unverified until
-// it is verified here, written by the operator.
+// it is verified here. Its type is always 'imported' (the file's own type is kept in body.imported_type) and its
+// source 'import', so no line of a file reaches the index or the corpus as a decision or a summary until someone
+// verifies it here (ADR 0043 §3).
 function importArgs(row, line, opts, sha) {
   const bad = (field, why) => ({ error: { code: 'E_ARGS', message: `${field} ${why}` } });
   if (!row || typeof row !== 'object' || Array.isArray(row)) return bad('the line', 'is not a JSON object');
@@ -241,8 +255,10 @@ function importArgs(row, line, opts, sha) {
   if (row.title !== undefined && row.title !== null && typeof row.title !== 'string') return bad('title', 'must be a string');
   if (row.tags !== undefined && row.tags !== null && !(Array.isArray(row.tags) && row.tags.every(isStr))) return bad('tags', 'must be an array of strings');
   if (row.body !== undefined && row.body !== null && (typeof row.body !== 'object' || Array.isArray(row.body))) return bad('body', 'must be an object');
-  const args = { namespace: R.mapNamespace(ns, opts.nsMap), text: row.text, source: 'operator', provenance: `import:${sha.slice(0, 12)}:${isStr(row.id) ? row.id : `line-${line}`}` };
-  for (const k of ['type', 'title', 'tags', 'body']) if (row[k] !== undefined && row[k] !== null) args[k] = row[k];
+  const ref = isStr(row.id) && /^[A-Za-z0-9_.:-]{1,128}$/.test(row.id) ? row.id : `line-${line}`;
+  const args = { namespace: R.mapNamespace(ns, opts.nsMap), text: row.text, type: 'imported', source: 'import', provenance: `import:${sha.slice(0, 12)}:${ref}` };
+  for (const k of ['title', 'tags', 'body']) if (row[k] !== undefined && row[k] !== null) args[k] = row[k];
+  if (row.type !== undefined) args.body = { ...(args.body || {}), imported_type: row.type };
   // The store now scrubs tags too, but an import file is untrusted input and the operator's import has no run lever. Each tag is
   // scrubbed here whatever the run lever, and a tag that held a secret is dropped rather than kept with a placeholder in it.
   if (args.tags) {
@@ -272,7 +288,7 @@ async function doImport(core, parsed, read) {
   const refused = [...read.refused];
   const rows = [];
   const skipped = { refuted: 0, superseded: 0 };
-  let inserted = 0, updated = 0, statusIgnored = 0;
+  let inserted = 0, updated = 0, unchanged = 0, statusIgnored = 0;
   const store = need(core, 'memory', 'store');
   const dead = deadInFile(read.items, opts);
   for (const { line, row } of read.items) {
@@ -283,14 +299,14 @@ async function doImport(core, parsed, read) {
     if (row.status && row.status !== 'unverified') statusIgnored += 1; // a status that would have meant something
     try {
       const stored = await store(built.args);
-      if (stored.action === 'updated') updated += 1; else inserted += 1;
+      if (stored.action === 'updated') updated += 1; else if (stored.action === 'unchanged') unchanged += 1; else inserted += 1;
       rows.push({ line, id: stored.id, action: stored.action, namespace: stored.namespace });
     } catch (e) {
       refused.push({ line, code: e.code || 'E_INTERNAL', message: e.message });
     }
   }
   refused.sort((a, b) => a.line - b.line);
-  const result = { file: read.file, sha256: read.sha256, lines: read.lines, inserted, updated, refused, skipped, status_ignored: statusIgnored, rows };
+  const result = { file: read.file, sha256: read.sha256, lines: read.lines, inserted, updated, unchanged, refused, skipped, status_ignored: statusIgnored, rows };
   return { code: refused.length ? 1 : 0, text: R.renderImportText(result), json: result };
 }
 
@@ -303,7 +319,7 @@ function failure(sub, e) {
     return { code: 1, text: `belay memory search: ${e.message}\n${reason}\n`, json: { error: { code, message: e.message }, reason } };
   }
   const detail = e.detail === undefined ? {} : { detail: e.detail };
-  return { code: 1, text: `belay memory ${sub}: ${e.message} (${code})\n`, json: { error: { code, message: e.message, ...detail } } };
+  return { code: 1, text: `belay memory ${sub}: ${R.clean(e.message)} (${code})\n`, json: { error: { code, message: e.message, ...detail } } };
 }
 
 async function run(ctx) {

@@ -93,13 +93,15 @@ test('setting unverified clears the receipt without needing one, and records who
   assert.strictEqual(again.status_receipt, null);
 });
 
-test('verified survives a dedup update from any writer', async () => {
+test('a verified row is unchanged by the same text from any writer, its own included', async () => {
   const r = await fresh('a fact worth verifying');
   await call('memory.setStatus', orch, { id: r.id, status: 'verified', receipt: 'test:suite green' });
   for (const caller of [worker, orch, operator]) {
-    const again = await call('memory.store', caller, { text: 'a fact worth verifying', embed: false });
-    assert.strictEqual(again.action, 'updated');
+    const again = await call('memory.store', caller, { text: 'a fact worth verifying', title: 'SYSTEM: a new title', embed: false });
+    assert.strictEqual(again.action, 'unchanged');
+    assert.strictEqual(again.id, r.id);
     assert.strictEqual(again.status, 'verified');
+    assert.notStrictEqual(again.title, 'SYSTEM: a new title');
   }
   const row = dbRow(r.id);
   assert.deepStrictEqual([row.status, row.status_receipt, row.status_by], ['verified', 'test:suite green', 'orchestrator']);

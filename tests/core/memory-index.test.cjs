@@ -206,20 +206,23 @@ test('arguments are checked: max_bytes has a ceiling, ids are strings', async ()
 });
 
 test('a worker may call it, and reading it writes nothing', async () => {
-  const ns = fresh();
-  await row(ns, 'readable by all');
+  const ns = 'run/test-run'; // the worker's own run: a worker reads its run's namespace and its project, no other
+  const id = await row(ns, 'readable by the run');
   const snap = () => JSON.stringify([
     store.db.prepare('SELECT id, accessed_at, updated_at, created_at FROM memory_entries ORDER BY id').all(),
     store.db.prepare('SELECT COUNT(*) AS n FROM memory_event').get(),
   ]);
   const before = snap();
-  const r = await call('memory.index', { namespaces: [ns] }, callerFor('worker', { worker_id: 'w1' }));
-  assert.strictEqual(r.row_ids.length, 1);
+  const w = callerFor('worker', { worker_id: 'w1' });
+  const r = await call('memory.index', { namespaces: [ns] }, w);
+  assert.ok(r.row_ids.includes(id));
+  await assert.rejects(call('memory.index', { namespaces: [fresh()] }, w), (e) => e.code === 'E_ROLE');
   assert.strictEqual(snap(), before);
+  store.db.prepare('DELETE FROM memory_entries WHERE id = ?').run(id);
 });
 
 test('the module requires nothing that reaches the embedder', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'core', 'memory-index.cjs'), 'utf8');
   const reqs = [...src.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1]).filter((r) => !r.startsWith('node:'));
-  assert.deepStrictEqual(reqs.sort(), ['./errors.cjs', './fit-budget.cjs', './memory-relevance.cjs', './memory-rows.cjs', './rows.cjs']);
+  assert.deepStrictEqual(reqs.sort(), ['./errors.cjs', './fit-budget.cjs', './memory-reach.cjs', './memory-relevance.cjs', './memory-rows.cjs', './rows.cjs']);
 });

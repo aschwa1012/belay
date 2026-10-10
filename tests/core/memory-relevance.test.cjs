@@ -135,7 +135,7 @@ test('reading writes nothing and never loads the embedder', async () => {
     store.db.prepare('SELECT COUNT(*) AS n FROM memory_event').get(),
   ]);
   const before0 = snap();
-  const r = await call('memory.index', { namespaces: [name], query: 'dates and TZ' }, callerFor('worker', { worker_id: 'w1' }));
+  const r = await call('memory.index', { namespaces: [name], query: 'dates and TZ' });
   assert.ok(r.row_ids.length > 0);
   assert.strictEqual(snap(), before0);
   const loaded = Object.keys(require.cache).filter((k) => /[\\/]src[\\/]core[\\/]embedder\.cjs$|@huggingface|onnxruntime/i.test(k));

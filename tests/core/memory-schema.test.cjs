@@ -118,8 +118,10 @@ test('insert, delete and a dedup update through Store keep FTS in step', () => {
       assert.strictEqual(a.action, 'inserted');
       assert.deepStrictEqual(hits(s.db, 'kiwi'), [a.id]);
       assert.strictEqual(ftsCount(s.db), 2);
-      // a dedup update of the same text by another writer changes no indexed column and adds no FTS row
-      const again = s.store({ namespace: 'n', worker_id: 'w2', text: 'persistent kiwi marker' });
+      // the same text from another writer changes nothing; from its own writer it is a dedup update that changes no
+      // indexed column and adds no FTS row
+      assert.strictEqual(s.store({ namespace: 'n', worker_id: 'w2', text: 'persistent kiwi marker' }).action, 'unchanged');
+      const again = s.store({ namespace: 'n', worker_id: 'w1', text: 'persistent kiwi marker' });
       assert.strictEqual(again.action, 'updated');
       assert.strictEqual(again.id, a.id);
       assert.strictEqual(ftsCount(s.db), 2);
