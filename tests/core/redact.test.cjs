@@ -412,6 +412,7 @@ test('url_credentials: / # @ in the password, @ in the user; a port or a path @ 
   assert.equal(red('redis:' + '//u:p#' + PW + '@host'), 'redis:' + '//[REDACTED:url_credentials]@host');
   kept('https:' + '//registry.npmjs.org:443/@scope/pkg');
   kept('https:' + '//host/a:b@c and https:' + '//h/x?email=a@b.c');
+  assert.equal(red('postgres:' + '//admin:1234/' + PW + '@db/x'), 'postgres:' + '//[REDACTED:url_credentials]@db/x');
 });
 
 test('every key family variant: ASIA, xoxp, gho, and a chain of two kinds', () => {
@@ -453,12 +454,10 @@ test('redactDeep: secret-named keys, cycles, depth, shared references, array pro
   assert.equal(redactDeep(arr).value.extra, 'TOKEN=[REDACTED:env_secret]');
 });
 
-// --- third review: qualifiers after the secret word, literal values, bare key/auth --
-
 test('names: a secret word anywhere counts; a metadata last word clears the name', () => {
   for (const n of ['SECRET_KEY_BASE', 'API_KEY_PROD', 'GITHUB_TOKEN_RO', 'STRIPE_SECRET_KEY_LIVE', 'JWT_SECRET_B64', 'TOKEN_VALUE',
-    'AUTH_HEADER', 'DB_PASS', 'MYSQL_PWD', 'SALT']) assert.equal(red(n + '=' + PW), n + '=[REDACTED:env_secret]');
-  for (const s of ['CLIENT_SECRET_ID=abc', 'PWD=/home/x', 'SECRET_NAME=prod-db', 'TOKEN_TTL=3600', 'secret_santa=yes']) kept(s);
+    'AUTH_HEADER', 'DB_PASS', 'MYSQL_PWD', 'SALT', 'VAULT_SECRET_ID', 'secret_id']) assert.equal(red(n + '=' + PW), n + '=[REDACTED:env_secret]');
+  for (const s of ['PWD=/home/x', 'Error: missing GITHUB_TOKEN: set it in .env', 'see AWS_SECRET_ACCESS_KEY: rotate monthly', 'SECRET_NAME=prod-db', 'TOKEN_TTL=3600', 'secret_santa=yes']) kept(s);
   assert.equal(red('and SECRET_KEY_BASE: ' + PW + ' here'), 'and SECRET_KEY_BASE: [REDACTED:env_secret] here');
 });
 
@@ -479,13 +478,18 @@ test('values: a dotenv line is literal, and code needs its whole shape', () => {
   assert.equal(red('TOKEN = f"' + PW + '{x}"'), 'TOKEN = f"[REDACTED:env_secret]"');
   assert.equal(red('const token = `' + PW + '${x}`'), 'const token = `[REDACTED:env_secret]`');
   for (const s of ['PASSWORD=$DB_PASSWORD', 'PASSWORD=${DB_PASSWORD}', 'token: Optional[str] = None', 'secret: str | None']) kept(s);
+  const V = 'Zq9' + PW;
+  for (const s of ['password: Summer(' + V + ')', 'password: ' + V + '(2024)!', 'password: {' + V + '}', 'DB_PASSWORD = (' + V + ')',
+    'PASSWORD = env.' + V, 'API_TOKEN = ' + V + '(x)', 'run API_TOKEN=' + V + '(1) node']) assert.doesNotMatch(red(s), /Zq9/, s);
+  for (const s of ['token = tokens[i]', 'token = None if x else y', 'TOKEN=$(cat token.txt)', 'token = parts[0].strip()', 'API_KEY="$API_KEY"',
+    'const token = await getToken();', 'let password = form.password.value;', 'client_secret = secrets.client_secret',
+    'GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}']) kept(s);
+  // An expression must span the value, hold only names, and end at a boundary.
+  for (const s of ['password: (' + PW + '!)', 'password: self.x ' + PW]) assert.doesNotMatch(red(s), /hunter2/, s);
+  assert.notEqual(redact('{token: a[b]c}').text, '{token: a[b]c}');
 });
 
 test('openai_key: sk-proj- always, a random body in any case, never a kebab-case name', () => {
   for (const body of ['a1b2c3d4'.repeat(4), 'A1B2C3D4'.repeat(4)]) assert.equal(redact('k sk-' + body).text, 'k [REDACTED:openai_key]');
   for (const body of ['ab1_'.repeat(10), 'abcdef-ghijkl-mnopqr-stuvwx']) assert.equal(redact('k sk-' + 'proj-' + body).text, 'k [REDACTED:openai_key]');
-});
-
-test('url_credentials: digits then / in the password are not a port when a host follows', () => {
-  assert.equal(red('postgres:' + '//admin:1234/' + PW + '@db/x'), 'postgres:' + '//[REDACTED:url_credentials]@db/x');
 });

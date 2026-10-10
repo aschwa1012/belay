@@ -10,20 +10,14 @@
 // key glued to more token characters (two keys back to back, `KEY-backup`) is
 // replaced to the end of that run, so no part of a second key survives.
 //
-// Names (secretName), split into words on separators and camelCase, trailing digits
-// dropped. A secret word anywhere makes a secret: a word containing PASSWORD,
-// PASSWD, PASSPHRASE or CREDENTIAL (PGPASSWORD), ending in TOKEN or SECRET
-// (GITHUBTOKEN, SECRET_KEY_BASE), a glued key word (APIKEY), KEY after a word that
-// is not a data qualifier (API_KEY_PROD, not primary_key), or AUTH beside another
-// word. PASS, PWD and SALT count as the last word (DB_PASS). The name is cleared
-// when its last word is metadata about the secret (TOKEN_COUNT, KEY_FILE); that
-// includes ID, so CLIENT_SECRET_ID is spared: an OAuth client id is an identifier.
-// A bare `key` or `auth` is a secret only with a random-looking value (looseName).
+// Names (secretName, ADR 0040 section 3): a secret word anywhere (PASSWORD, TOKEN,
+// SECRET, KEY after a non-data word, AUTH, and PASS, PWD or SALT last) makes a
+// secret, unless the last word is metadata (TOKEN_COUNT, KEY_FILE; SECRET_ID stays
+// a secret). A bare `key` or `auth` is one only with a random-looking value.
 
 const TOK = 'A-Za-z0-9_-';
 const NOT_BEFORE = `(?<![${TOK}])`;
 const REST = `[${TOK}]*`;
-
 const PASS_WORDS = ['PASSWORD', 'PASSWD', 'PASSPHRASE', 'CREDENTIAL'];
 const GLUED = /^(?:API|ACCESS|PRIVATE|SECRET|SESSION|REFRESH|CLIENT|MASTER|SIGNING|ENCRYPTION)KEY$/;
 const DATA_KEYS = new Set(['PRIMARY', 'FOREIGN', 'SORT', 'PARTITION', 'CACHE', 'HASH', 'RANGE', 'ROUTING', 'LOOKUP',
@@ -37,7 +31,7 @@ function secretName(name) {
   if (!NAME_GATE.test(name)) return false;
   const words = name.split(/[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])/).map((s) => s.toUpperCase().replace(/\d+$/, '')).filter(Boolean);
   const last = words[words.length - 1];
-  if (!last || META.has(last)) return false;
+  if (!last || (META.has(last) && !(last === 'ID' && words[words.length - 2] === 'SECRET'))) return false;
   if (last === 'SALT' || ((last === 'PASS' || last === 'PWD') && words.length > 1)) return true;
   return words.some((w, i) => PASS_WORDS.some((p) => w.includes(p)) || /(?:TOKEN|SECRET)$/.test(w) || GLUED.test(w) ||
     (w === 'KEY' && i > 0 && !DATA_KEYS.has(words[i - 1])) || (w === 'AUTH' && words.length > 1));
@@ -46,7 +40,6 @@ function secretName(name) {
 const looseName = (name) => /^(?:key|auth)$/i.test(name);
 // A value that looks generated: 10 or more token characters with letters and digits.
 const randomish = (v) => /^[A-Za-z0-9_+\/=.-]{10,}$/.test(v) && /[A-Za-z]/.test(v) && /\d/.test(v);
-
 const marker = (kind) => `[REDACTED:${kind}]`;
 const isMarker = (v) => /^\[REDACTED:[a-z_]+\]$/.test(v);
 
@@ -195,35 +188,45 @@ const quoteChar = (ch) => ch === '"' || ch === "'" || ch === '`';
 // (`["name"]`). The value is parsed by hand from the end of a secret head.
 const HEAD = /(?<![A-Za-z0-9_.])(\\?["']|)([A-Za-z_][A-Za-z0-9_.-]*)\1(\]?)(?:[ \t\u00a0\u3000]*([=:\uff1d\uff1a])|(?=[ \t\u00a0\u3000]))/g;
 const SCALAR = /[|>][+-]?\d?[+-]?[ \t]*(?:\r?\n|\r?$)/y;
-
 const KEYWORDS = new Set(['True', 'False', 'None', 'null', 'NULL', 'true', 'false', 'undefined', 'nil', 'yes', 'no', 'on', 'off']);
-const CODE_SHAPES = /^(?:lambda\b[^:\n]*:|new [A-Z][\w.]*\(|(?:async )?function\b[^(\n]*\(|await [\w.]+\(|typeof \w)/;
+const REFERENCE = /^\$(?:\{\{[^}\n]*\}\}|\{[^}\n]*\}|\([^)\n]*\)|[A-Z_][A-Z0-9_]*)$/;
+const CODE_SHAPES = /^(?:lambda\b[^:\n]*:|new [A-Z][\w.]*\(|(?:async )?function\b[^(\n]*\(|typeof \w)/;
+const CHAIN = /^(?:await )?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[[^\]\n]*\]|\((?:[^()\n]|\([^()\n]*\))*\))*/;
+const CONDITIONAL = /^\S+ if \S.*? else [\w$.()[\]"']+/;
 const ROOTS = new Set(['self', 'this', 'cls', 'process', 'os', 'config', 'settings', 'env', 'req', 'request', 'opts',
-  'options', 'props', 'ctx', 'args', 'params']);
+  'options', 'props', 'ctx', 'args', 'params', 'form', 'secrets', 'vars', 'inputs']);
 const TYPES = new Set(['str', 'string', 'String', 'bytes', 'int', 'float', 'number', 'bool', 'boolean', 'any', 'unknown',
   'object', 'Optional', 'SecretStr']);
+// An identifier that looks generated (upper, lower and a digit) is a value, not a name.
+const opaque = (s) => (s.replace(/(["'])(?:\\.|(?!\1).)*\1/g, '').match(/[A-Za-z_$][\w$]*/g) || [])
+  .some((id) => /[A-Z]/.test(id) && /[a-z]/.test(id) && /\d/.test(id));
 
-// Code that only names a secret. Returns 'code', 'type' (after a colon) or null. A
-// keyword or a `${X}` / `$VAR` reference counts only as the whole value. In a dotenv
-// line (`literal`) nothing else is code. Elsewhere: a bracket that closes, an
-// expression keyword in its code shape, a call, a member of a known object.
-function codeKind(v, colon, literal) {
-  const whole = v.replace(/[\s;,)]+$/, '');
-  if (KEYWORDS.has(whole) || /^\$(?:\{[^}\n]*\}|[A-Z_][A-Z0-9_]*)$/.test(whole)) return 'code';
+// Code that only names a secret ('code', or 'type' after a colon); v is the value,
+// rest its line. A keyword or a reference (${X}, ${{ x }}, $(cmd), $VAR) counts only
+// as the whole value; a dotenv line (literal) has no other code. Elsewhere code is an
+// expression spanning the value with no generated-looking name in it: a closed
+// bracket of names, a conditional, or a chain with a call, subscript or known root.
+function codeKind(v, rest, colon, literal) {
+  const whole = v.replace(/[\s;,]+$/, '');
+  if (KEYWORDS.has(whole) || REFERENCE.test(whole)) return 'code';
   if (literal || v.startsWith('[REDACTED:')) return null;
-  const close = { '{': '}', '[': ']', '(': ')', '<': '>' }[v[0]];
-  if (close) return v.includes(close) ? 'code' : null;
-  if (CODE_SHAPES.test(v)) return 'code';
-  const w = /^[A-Za-z_$][\w$]*/.exec(v);
-  if (!w) return null;
-  const rest = v.slice(w[0].length);
-  if (colon && TYPES.has(w[0])) {
-    const t = /^(?:\[[^\]\n]*\])?((?:[ \t]*\|[ \t]*[\w.]+)*)(?:[\s,;)}\]=]|$)/.exec(rest);
+  if (CODE_SHAPES.test(rest)) return 'code';
+  const w = /^[A-Za-z_$][\w$]*/.exec(rest);
+  if (colon && w && TYPES.has(w[0])) {
+    const t = /^(?:\[[^\]\n]*\])?((?:[ \t]*\|[ \t]*[\w.]+)*)(?:[\s,;)}\]=]|$)/.exec(rest.slice(w[0].length));
     const parts = t ? t[1].split('|').map((p) => p.trim()).filter(Boolean) : null;
     if (parts && parts.every((p) => TYPES.has(p) || KEYWORDS.has(p))) return 'type';
   }
-  const after = rest.slice(/^(?:\.[A-Za-z_$][\w$]*)*/.exec(rest)[0].length);
-  if (/^[ \t]*\(/.test(after) || (ROOTS.has(w[0]) && /^[.[]/.test(rest))) return 'code';
+  let len = 0;
+  const close = { '{': '}', '[': ']', '(': ')', '<': '>' }[rest[0]];
+  if (close) {
+    const i = rest.indexOf(close);
+    if (i > 0 && /^[\w$.,\s'"]*$/.test(rest.slice(1, i))) len = i + 1;
+  } else {
+    const c = CONDITIONAL.exec(rest) || CHAIN.exec(rest);
+    if (c && (/[(\[ ]/.test(c[0]) || (ROOTS.has(w[0]) && c[0].includes('.')))) len = c[0].length;
+  }
+  if (len && len >= whole.length && !/[^\s;,)\]}]/.test(rest[len] || '') && !opaque(rest.slice(0, len))) return 'code';
   return null;
 }
 
@@ -272,21 +275,22 @@ function quotedValue(text, i) {
   const glued = closed ? j + open.length : j;
   let tail = glued;
   while (closed && tail < text.length && !/[\s,;:}\])\\]/.test(text[tail])) tail++;
-  if (inner === '' || (isMarker(inner) && tail === glued)) return null;
+  if (inner === '' || (isMarker(inner) && tail === glued) || REFERENCE.test(inner)) return null;
   if (q === '`' && interpolated(inner)) return null;
   return { start: i, end: tail, rep: open + marker('env_secret') + (closed ? open : '') };
 }
 
 // An unquoted value from v0 to its end (`stop` says where), unless it is code.
 function bareValue(text, v0, stop, colon, literal) {
-  // A leading marker is atomic: its `]` does not end a flow value. Code is judged on
-  // a bounded prefix first: a value that is skipped must not be scanned to its
-  // end, or a long line of skipped heads would be quadratic.
+  // A leading marker is atomic (its `]` ends no flow value). Code is judged on a
+  // bounded prefix, so a skipped value is never scanned to its end (linear).
   const done = /\[REDACTED:[a-z_]+\]/y;
   done.lastIndex = v0;
   let e = done.test(text) ? done.lastIndex : v0;
   while (e < text.length && e < v0 + 200 && !stop(text[e])) e++;
-  const code = codeKind(text.slice(v0, e), colon, literal);
+  let r = v0;
+  while (r < v0 + 200 && !eol(text[r])) r++;
+  const code = codeKind(text.slice(v0, e), text.slice(v0, r), colon, literal);
   if (code === 'code') return null;
   while (e < text.length && !stop(text[e])) e++;
   let core = text.slice(v0, e).trimEnd();
@@ -374,8 +378,7 @@ function assignments(text, hit) {
   while ((m = nextHead(text, gate, head, last)) !== null) {
     const strict = secretName(m[2]);
     if (!strict && !looseName(m[2])) continue;
-    const quote = m[1];
-    const sep = m[4];
+    const quote = m[1], sep = m[4];
     if (m[3] && !(quote && text[m.index - 1] === '[')) continue;
     while (nextNl !== -1 && nextNl < m.index) { lineStart = nextNl + 1; nextNl = text.indexOf('\n', lineStart); }
     const ctx = context(text, lineStart, m.index, quote);
@@ -383,14 +386,14 @@ function assignments(text, hit) {
     let v0 = after;
     while (ws(text[v0])) v0++;
     const colon = sep === ':' || sep === '\uff1a';
-    let v = null;
+    let v = null, shout = false;
     if (sep === undefined) {
       // Space-separated: a flag, fish's `set -x`, or a quoted value (SQL's PASSWORD 'v').
       const quoted = quoteChar(text[v0]) || text[v0] === '\\';
       if (ctx.flag || ctx.fish || quoted) v = valueAt(text, v0, { stop: (ch) => eol(ch) || /[\s;)`]/.test(ch), colon: false });
     } else if (colon) {
       // Mid-line, only an env-shaped name (SECRET_KEY_BASE: v) is an assignment.
-      const shout = !quote && !(ctx.block || ctx.flow || ctx.str) && /^[A-Z][A-Z0-9]*_[A-Z0-9_]+$/.test(m[2]);
+      shout = !quote && !(ctx.block || ctx.flow || ctx.str) && /^[A-Z][A-Z0-9]*_[A-Z0-9_]+$/.test(m[2]);
       if (!quote && !(ctx.block || ctx.flow || ctx.str || shout)) continue;
       if (!quote && ctx.block && !ws(text[after]) && !eol(text[after])) continue;
       SCALAR.lastIndex = v0;
@@ -408,7 +411,7 @@ function assignments(text, hit) {
     }
     if (!v) continue;
     // A bare `key` or `auth` is a secret only when its value looks generated.
-    if (!strict && !randomish(text.slice(v.start, v.end).replace(/^\\?["'`]|\\?["'`]$/g, ''))) continue;
+    if ((!strict || (shout && !quoteChar(text[v.start]))) && !randomish(text.slice(v.start, v.end).replace(/^\\?["'`]|\\?["'`]$/g, ''))) continue;
     out += text.slice(last, v.start) + v.rep;
     hit();
     last = v.end;
