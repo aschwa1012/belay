@@ -128,7 +128,7 @@ test('initialize answers under 1,000 ms and leaves the data dir empty', async (t
   assert.strictEqual(fs.existsSync(data), false, 'initialize created the data dir');
   assert.deepStrictEqual(fs.readdirSync(parent), [], 'initialize wrote into the sandbox');
   // tools/list is also answerable without a store.
-  assert.strictEqual((await a.list()).length, 19);
+  assert.strictEqual((await a.list()).length, 21);
   assert.strictEqual(fs.existsSync(data), false, 'tools/list created the data dir');
 });
 

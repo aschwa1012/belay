@@ -31,7 +31,7 @@ async function withRole(role, t, fn, workerId) {
   return fn(a, data);
 }
 
-test('A8 the six memory tools return the rows their proof columns name', async (t) => {
+test('A8 the memory tools return the rows their proof columns name', async (t) => {
   await withRole('orchestrator', t, async (a) => {
     has(assertOk(await a.call('memory_store', { text: 'a fact', tags: ['x'] }), 'memory_store'),
       ['id', 'action', 'namespace', 'worker_id', 'updated_at'], 'memory_store');

@@ -1,5 +1,5 @@
 // schema-budget.test.cjs — A5, the ADR 0010 §5 budget: the byte length of the `tools/list` result is
-// at most 10,240 bytes (ADR 0010 amendment 4) for the orchestrator role and 4,096 for the worker role. Measured twice: on the
+// at most 10,240 bytes (ADR 0010 amendment 4) for the orchestrator role and 5,120 for the worker role (ADR 0040 §4). Measured twice: on the
 // module directly, and on what a live child actually sends over the wire, because only the second is
 // what the orchestrator pays for. Every failure prints the number.
 'use strict';
@@ -12,13 +12,13 @@ const { launch, sandboxDir } = require('./rpc.cjs');
 
 const EXPECTED = {
   orchestrator: [
-    'memory_store', 'memory_retrieve', 'memory_search', 'memory_list', 'memory_delete', 'memory_stats',
+    'memory_store', 'memory_retrieve', 'memory_search', 'memory_timeline', 'memory_list', 'memory_delete', 'memory_stats',
     'status', 'task_list', 'briefing',
     'worker_spawn', 'worker_wait', 'worker_message', 'worker_stop', 'worker_restart', 'task_create', 'task_assign',
-    'permission_list', 'permission_decide', 'task_evaluate',
+    'permission_list', 'permission_decide', 'task_evaluate', 'memory_verify',
   ],
   worker: [
-    'memory_store', 'memory_retrieve', 'memory_search', 'memory_list', 'memory_delete', 'memory_stats',
+    'memory_store', 'memory_retrieve', 'memory_search', 'memory_timeline', 'memory_list', 'memory_delete', 'memory_stats',
     'status', 'task_list', 'briefing',
     'lease_renew', 'lease_release', 'checkpoint_write',
   ],
@@ -38,15 +38,18 @@ test('A5 the module listing is inside the budget for both roles', () => {
   assert.ok(permitBytes <= tools.BUDGET.permit, `permit is ${permitBytes} bytes, over the ${tools.BUDGET.permit} byte budget`);
 });
 
-test('the twenty-two tools of ADR 0010 §2 as amended by ADR 0015, 0020 and amendment 3 are split nine both, ten orchestrator, three worker', () => {
-  // Nineteen until ADR 0020 admitted permission_list and permission_decide (permit itself is hidden
-  // from the model and never in this listing, measured separately above).
+test('the twenty-four tools of ADR 0010 §2 as amended by ADR 0015, 0020, amendment 3 and ADR 0040 are split ten both, eleven orchestrator, three worker', () => {
+  // Nineteen until ADR 0020 admitted permission_list and permission_decide, twenty-one with ADR 0040's
+  // memory_timeline and memory_verify (permit itself is hidden from the model and never in this
+  // listing, measured separately above).
   const names = new Set([...EXPECTED.orchestrator, ...EXPECTED.worker]);
-  assert.strictEqual(names.size, 22, 'twenty-two distinct tools');
+  assert.strictEqual(names.size, 24, 'twenty-four distinct tools');
   assert.deepStrictEqual(tools.toolsFor('orchestrator').map((t) => t.name), EXPECTED.orchestrator);
   assert.deepStrictEqual(tools.toolsFor('worker').map((t) => t.name), EXPECTED.worker);
-  assert.strictEqual(tools.toolsFor('orchestrator').length, 19);
-  assert.strictEqual(tools.toolsFor('worker').length, 12);
+  assert.strictEqual(tools.toolsFor('orchestrator').length, 21);
+  assert.strictEqual(tools.toolsFor('worker').length, 13);
+  assert.strictEqual(tools.BUDGET.worker, 5120, 'ADR 0040 §4 raised the worker budget from 4,096');
+  assert.strictEqual(tools.BUDGET.orchestrator, 10240, 'and left the orchestrator budget alone');
 });
 
 test('every tool has a route into exactly one Core or RunManager method', () => {

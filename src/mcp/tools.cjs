@@ -1,8 +1,8 @@
-// tools.cjs — the nineteen tools of ADR 0010 §2 as amended by ADR 0015, their schemas, and the
+// tools.cjs — the tools of ADR 0010 §2 as amended by ADR 0015 and ADR 0040 §4, their schemas, and the
 // route each one takes into the Core API or the RunManager. `toolsFor(role)` returns exactly what `tools/list` sends for that role:
-// the nine both-role tools plus that role's own. ROUTES is kept separate from the schemas so that no
+// the ten both-role tools plus that role's own. ROUTES is kept separate from the schemas so that no
 // routing field is ever serialised into the listing, which is measured against the ADR 0010 §5 budget
-// (10,240 bytes orchestrator since ADR 0010 amendment 4, 4,096 bytes worker). Descriptions say what the tool returns as proof and
+// (10,240 bytes orchestrator since ADR 0010 amendment 4, 5,120 bytes worker since ADR 0040 §4). Descriptions say what the tool returns as proof and
 // when it refuses; nothing else, because every byte is a per-turn tax on the orchestrator's context.
 //
 // Two places where ADR 0010 disagrees with itself or with src/core/api.md, resolved in favour of the
@@ -34,6 +34,9 @@ const ROUTES = {
   memory_store: { role: 'both', via: 'core', method: 'memory.store' },
   memory_retrieve: { role: 'both', via: 'core', method: 'memory.get' },
   memory_search: { role: 'both', via: 'core', method: 'memory.search' },
+  // ADR 0040 §4: the timeline around one row, and the orchestrator's status-with-receipt hand.
+  memory_timeline: { role: 'both', via: 'core', method: 'memory.timeline' },
+  memory_verify: { role: 'orchestrator', via: 'core', method: 'memory.setStatus' },
   memory_list: { role: 'both', via: 'core', method: 'memory.list' },
   memory_delete: { role: 'both', via: 'core', method: 'memory.delete' },
   memory_stats: { role: 'both', via: 'core', method: 'memory.stats' },
@@ -74,24 +77,40 @@ const BOTH = [
       tags: strs(),
       provenance: str('Source, e.g. a path'),
       supersedes: str('id this replaces'),
+      title: str('One line, at most 160 bytes'),
       ttl_seconds: num(),
     }, ['text']),
   },
   {
     name: 'memory_retrieve',
-    description: 'Fetch one entry by id. Returns the row without its vector, or found false.',
-    inputSchema: S({ id: str() }, ['id']),
+    description: 'Fetch entries by id, or by ids (at most 50). Returns the row without its vector, or found false; ids returns rows in the order asked and names the missing.',
+    inputSchema: S({ id: str(), ids: strs() }),
   },
   {
     name: 'memory_search',
-    description: 'Semantic search over every worker\'s entries. Returns rows with score, worker id, tags and provenance. Fails rather than returning empty when no embedder is loaded.',
+    description: 'Search memory; view index returns ids and titles only. Result names modes_run, modes_failed and absence_established; absence_established false means not searched fully.',
     inputSchema: S({
       query: str('Natural language'),
       namespace: str(),
       k: int('default 10'),
       min_score: num(),
       include_superseded: bool(),
+      mode: { type: 'string', enum: ['semantic', 'keyword', 'hybrid'] },
+      view: { type: 'string', enum: ['full', 'index'] },
+      filter: { type: 'object' },
+      order: { type: 'string', enum: ['score', 'newest', 'oldest'] },
+      offset: int(),
     }, ['query']),
+  },
+  {
+    name: 'memory_timeline',
+    description: 'Entries around one entry, oldest first. Returns anchor, before, after, scope. Refuses an unknown anchor.',
+    inputSchema: S({
+      anchor_id: str(),
+      before: int('default 5'),
+      after: int('default 5'),
+      scope: { type: 'string', enum: ['task', 'worker', 'run', 'namespace'] },
+    }, ['anchor_id']),
   },
   {
     name: 'memory_list',
@@ -217,6 +236,16 @@ const ORCHESTRATOR = [
       base: str('Diff base; default merge-base main'),
     }, ['task_id', 'worktree']),
   },
+  {
+    // ADR 0040 §4. A worker cannot verify a claim, so this is not on the worker listing.
+    name: 'memory_verify',
+    description: 'Set an entry\'s status with its evidence. Returns id, status, previous status, receipt. Refuses a receipt that fails its grammar.',
+    inputSchema: S({
+      id: str(),
+      status: { type: 'string', enum: ['unverified', 'verified', 'refuted'] },
+      receipt: str('checkpoint:id, task:id, memory:id, commit:sha or test:text'),
+    }, ['id', 'status', 'receipt']),
+  },
 ];
 
 const WORKER = [
@@ -274,7 +303,7 @@ const allows = (role, name) => {
   return r === 'both' || r === role;
 };
 
-const BUDGET = { orchestrator: 10240, worker: 4096, permit: 320 }; // ADR 0010 amendment 4: orchestrator 10 KB
+const BUDGET = { orchestrator: 10240, worker: 5120, permit: 320 }; // ADR 0010 amendment 4: orchestrator 10 KB; ADR 0040 §4: worker 5 KB
 const listingBytes = (role) => Buffer.byteLength(JSON.stringify(toolsFor(role)), 'utf8');
 
 const BY_NAME = new Map();
@@ -284,6 +313,13 @@ const schemaOf = (name) => (BY_NAME.get(name) || {}).inputSchema;
 // Optional arguments where an explicit null is refused, not read as absent: the core refuses it too
 // (ADR 0010 amendment 3), and the boundary must say the same thing before the call reaches it.
 const NO_NULL = { task_evaluate: ['base'] };
+
+// ADR 0040 §4: harness fields on memory_store. They are provenance the run manager passes straight to
+// the core, never something a model says (invariant 3), so the boundary refuses them in either role,
+// by name, before the core sees them. The schema does not list them, which is why the listing does
+// not pay for them either.
+const HARNESS_ONLY = { memory_store: ['task_id', 'turn', 'source', 'embed', 'body'] };
+const MAX_IDS = 50;
 
 // The model is a boundary, so the required fields and the declared type of each named top-level
 // property are checked here rather than left for the core to discover. Properties the schema does not
@@ -295,8 +331,17 @@ function validateArgs(name, args) {
   const a = args || {};
   const bad = (message, detail) => { throw Object.assign(new Error(message), { code: 'E_ARGS', detail }); };
   if (typeof a !== 'object' || Array.isArray(a)) bad(`${name} takes an object of arguments`, { tool: name });
+  for (const k of HARNESS_ONLY[name] || []) {
+    if (Object.prototype.hasOwnProperty.call(a, k)) bad(`${name}: ${k} is a harness field and cannot be set from a tool call`, { tool: name, field: k, reason: 'harness_only' });
+  }
   for (const k of schema.required || []) {
     if (a[k] === undefined || a[k] === null) bad(`${name} needs ${k}`, { tool: name, missing: k });
+  }
+  if (name === 'memory_retrieve') {
+    const hasId = a.id !== undefined && a.id !== null;
+    const hasIds = a.ids !== undefined && a.ids !== null;
+    if (!hasId && !hasIds) bad('memory_retrieve needs id or ids', { tool: name, missing: 'id' });
+    if (hasId && hasIds) bad('memory_retrieve takes id or ids, not both', { tool: name, field: 'ids' });
   }
   for (const [k, spec] of Object.entries(schema.properties || {})) {
     const v = a[k];
@@ -313,7 +358,12 @@ function validateArgs(name, args) {
     if (!ok) bad(`${name}: ${k} must be ${t}`, { tool: name, field: k, expected: t });
     if (spec.enum && !spec.enum.includes(v)) bad(`${name}: ${k} must be one of ${spec.enum.join(', ')}`, { tool: name, field: k, expected: spec.enum });
   }
+  if (name === 'memory_retrieve' && Array.isArray(a.ids)) {
+    if (a.ids.length < 1 || a.ids.length > MAX_IDS) bad(`memory_retrieve: ids must hold 1 to ${MAX_IDS} ids, got ${a.ids.length}`, { tool: name, field: 'ids', max: MAX_IDS });
+    const i = a.ids.findIndex((x) => typeof x !== 'string' || x === '');
+    if (i >= 0) bad(`memory_retrieve: ids[${i}] must be a non-empty string`, { tool: name, field: 'ids', index: i });
+  }
   return a;
 }
 
-module.exports = { toolsFor, roleOf, routeOf, allows, schemaOf, validateArgs, ROUTES, ROLES, BUDGET, listingBytes, PERMIT_TOOL, permitBytes };
+module.exports = { toolsFor, roleOf, routeOf, allows, schemaOf, validateArgs, ROUTES, ROLES, BUDGET, listingBytes, PERMIT_TOOL, permitBytes, HARNESS_ONLY };
