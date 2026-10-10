@@ -16,7 +16,7 @@ const { resolveParks, parseRunRow, clearedPause, pauseFields } = require('./paus
 const { runCommand } = require('./evaluate.cjs');
 
 const { EFFORT_LEVELS } = require('./effort-levels.cjs');
-const { parseMemoryBlock } = require('../run/memory-levers.cjs'); // pure: no requires, so the read path stays light
+const { parseMemoryBlock } = require('./memory-levers.cjs'); // pure: no requires, so the read path stays light
 
 const PROJECT_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const fwd = (p) => String(p).replace(/\\/g, '/');
