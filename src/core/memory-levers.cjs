@@ -58,6 +58,10 @@ function parseMemoryBlock(block) {
   if (!boundedInt(v.bottle_bytes, BOTTLE_BYTES_MAX)) return { error: `memory.bottle_bytes must be an integer from 1 to ${BOTTLE_BYTES_MAX}` };
   if (v.observations && !v.capture) return { error: 'memory.observations needs memory.capture' };
   if (v.project_writes && v.project === null) return { error: 'memory.project_writes needs memory.project' };
+  // A project namespace outlives the run and is read by every later one, so it never takes unredacted text.
+  if (v.project_writes && v.redact === false) {
+    return { error: 'memory.redact false cannot be combined with memory.project_writes true: the project namespace outlives the run and must never hold unredacted text' };
+  }
   if (v.summaries === 'mechanical' && !v.observations) return { error: 'memory.summaries "mechanical" needs memory.observations' };
   return { value: v };
 }

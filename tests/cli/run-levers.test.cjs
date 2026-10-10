@@ -184,6 +184,7 @@ test('memory levers: parseLevers omits the block when absent or all-default, and
     [{ bottle_bytes: 262145 }, /memory\.bottle_bytes/],
     [{ observations: true }, /memory\.observations needs memory\.capture/],
     [{ project_writes: true }, /memory\.project_writes needs memory\.project/],
+    [{ project: 'acme', project_writes: true, redact: false }, /memory\.redact false cannot be combined with memory\.project_writes true/],
     [{ capture: true, summaries: 'mechanical' }, /memory\.summaries "mechanical" needs memory\.observations/],
   ];
   for (const [block, re] of bad) assert.match(parseLevers({ memory: block }).error, re, JSON.stringify(block));
@@ -251,6 +252,12 @@ test('run: a bad memory block exits 2 before anything is created; a good one run
     assert.match(bad.stderr + bad.stdout, /memory\.observations needs memory\.capture/);
     assert.ok(!fs.existsSync(`${bad.dir}/.belay`));
   } finally { cleanup(bad.dir); }
+  const raw = go('hi\n', { memory: { project: 'acme', project_writes: true, redact: false } });
+  try {
+    assert.strictEqual(raw.status, 2, raw.stderr);
+    assert.match(raw.stderr + raw.stdout, /memory\.redact false cannot be combined with memory\.project_writes true/);
+    assert.ok(!fs.existsSync(`${raw.dir}/.belay`));
+  } finally { cleanup(raw.dir); }
   const ok = go('hi\n', { memory: { capture: true, project: 'acme' } });
   try {
     assert.strictEqual(ok.status, 0, ok.stderr.slice(-600));
