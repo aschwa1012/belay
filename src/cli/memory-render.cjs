@@ -1,5 +1,5 @@
 'use strict';
-// memory-render.cjs — argument parsing and text rendering for the `belay memory` verbs (ADR 0040 §5).
+// memory-render.cjs — argument parsing and text rendering for the `belay memory` verbs (ADR 0040 §5, ADR 0043 §3).
 // Pure functions: nothing here opens a store, reads a file or prints. cmd-memory.cjs owns the calls.
 
 const MODES = ['semantic', 'keyword', 'hybrid'];
@@ -24,6 +24,9 @@ const FLAGS = {
   '--after': { key: 'after', type: 'one' },
   '--scope': { key: 'scope', type: 'one' },
   '--receipt': { key: 'receipt', type: 'one' },
+  '--out': { key: 'out', type: 'one' },
+  '--namespace-map': { key: 'namespaceMaps', type: 'many' },
+  '--no-embed': { key: 'noEmbed', type: 'bool' },
 };
 
 const FILTER_FLAGS = ['--type', '--status', '--task', '--worker', '--since', '--namespace'];
@@ -36,6 +39,8 @@ const VERBS = {
   timeline: { flags: ['--before', '--after', '--scope'], positional: [1, 1], usage: 'belay memory timeline <id> [--before n] [--after n] [--scope task|worker|run|namespace]' },
   verify: { flags: ['--status', '--receipt'], positional: [1, 1], usage: 'belay memory verify <id> --status verified|refuted|unverified --receipt <r>' },
   stats: { flags: [], positional: [0, 1], usage: 'belay memory stats [run-id]' },
+  export: { flags: ['--namespace', '--since', '--out'], positional: [0, 1], usage: 'belay memory export [run-id] [--namespace ns]... [--since <ms|iso>] [--out <file>]' },
+  import: { flags: ['--namespace-map', '--namespace', '--no-embed'], positional: [1, 1], usage: 'belay memory import <file> [--namespace-map from=to]... [--namespace ns] [--no-embed]' },
 };
 
 function usageText() {
@@ -73,6 +78,19 @@ function checkOpts(sub, opts) {
     const r = wholeNumber(name, opts[key], min);
     if (r.error) return r;
     opts[key] = r.value;
+  }
+  if (opts.out !== undefined && !opts.out) return { error: '--out needs a file name' };
+  if (sub === 'import') {
+    const maps = new Map();
+    for (const m of opts.namespaceMaps || []) {
+      const eq = m.indexOf('=');
+      if (eq < 1 || eq === m.length - 1) return { error: `--namespace-map must be from=to with both sides non-empty; got ${m}` };
+      const from = m.slice(0, eq);
+      if (maps.has(from)) return { error: `--namespace-map names ${from} twice` };
+      maps.set(from, m.slice(eq + 1));
+    }
+    opts.nsMap = maps;
+    if (opts.namespaces && opts.namespaces.length > 1) return { error: 'belay memory import takes one --namespace, the default for rows that carry none' };
   }
   if (sub === 'verify') {
     if (opts.status === undefined) return { error: 'belay memory verify needs --status verified|refuted|unverified' };
@@ -204,6 +222,23 @@ function renderVerifyText(r) {
   return `${r.id}: ${r.status}${was}  receipt: ${dash(r.status_receipt)}  by: ${dash(r.status_by)}\n`;
 }
 
+// The namespace a row lands in: an exact match in the map, else the longest mapped prefix (`from/`), else
+// the row's own. Pure, so the table of cases is testable without a store.
+function mapNamespace(ns, map) {
+  if (map.has(ns)) return map.get(ns);
+  let best = null;
+  for (const from of map.keys()) if (ns.startsWith(`${from}/`) && (best === null || from.length > best.length)) best = from;
+  return best === null ? ns : `${map.get(best)}${ns.slice(best.length)}`;
+}
+
+function renderImportText(r) {
+  const ignored = r.status_ignored ? `  status ignored on ${r.status_ignored} row${r.status_ignored === 1 ? '' : 's'} (imported rows are unverified)` : '';
+  const out = [`file: ${r.file}  sha256: ${r.sha256.slice(0, 12)}  lines: ${r.lines}`,
+    `inserted: ${r.inserted}  updated: ${r.updated}  refused: ${r.refused.length}${ignored}`];
+  for (const x of r.refused) out.push(`refused line ${x.line}: ${x.code}${x.message ? ` (${x.message})` : ''}`);
+  return `${out.join('\n')}\n`;
+}
+
 function renderStatsText(s) {
   const o = s.owner || {};
   const pairs = obj => Object.entries(obj).map(([k, v]) => `${k}=${v}`).join(' ') || '-';
@@ -218,5 +253,6 @@ function renderStatsText(s) {
 
 module.exports = {
   MODES, STATUSES, SCOPES, VERBS, parseArgs, parseSince, filterOf, usageText,
-  renderSearchText, renderListText, renderShowText, renderTimelineText, renderVerifyText, renderStatsText,
+  mapNamespace, renderSearchText, renderListText, renderShowText, renderTimelineText, renderVerifyText, renderStatsText,
+  renderImportText,
 };
