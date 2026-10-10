@@ -13,7 +13,8 @@ const { createParser } = require('../../src/run/parsers.cjs');
 const CF = require('../../src/run/capture-fields.cjs');
 
 const lines = (n) => fs.readFileSync(path.join(__dirname, 'fixtures', n), 'utf8').trim().split('\n');
-const ident = (t) => t;
+// The redactor signature of src/core/redact.cjs: redact(text) -> { text, redactions }.
+const ident = (t) => ({ text: t, redactions: [] });
 
 function run(substrate, ls, opts) {
   const p = createParser(substrate, opts);
@@ -62,7 +63,10 @@ test('capture on changes only the added fields: the rest of every event is the s
       const strip = { ...e, at: 0 };
       if (e.kind === 'tool_use') { delete strip.tool_use_id; delete strip.command; }
       if (e.kind === 'tool_result') for (const k of ['tool_use_id', 'exit_code', 'exit_code_source', 'head', 'tail', 'files', 'redaction']) delete strip[k];
-      assert.deepStrictEqual(strip, { ...off[i], at: 0 }, f + ' event ' + i);
+      const want = { ...off[i], at: 0 };
+      // A failed Codex command counts as an error under capture (checked in its own test).
+      if (sub === 'codex' && e.kind === 'tool_result' && e.raw_type.endsWith('command_execution')) { delete strip.is_error; delete want.is_error; }
+      assert.deepStrictEqual(strip, want, f + ' event ' + i);
     });
   }
 });
@@ -155,4 +159,66 @@ test('head, tail and command are redacted before they leave the parser', { skip:
 test('a redactor that throws is not swallowed', () => {
   const ls = [lines('capture-claude.jsonl')[1]];
   assert.throws(() => run('claude-code', ls, { capture: true, redact: () => { throw new Error('boom'); } }), /boom/);
+});
+
+test('Codex: a failed command (nonzero exit or status failed) is an error under capture, and only under capture', () => {
+  const ls = lines('capture-codex.jsonl');
+  const on = results(run('codex', ls, { capture: true, redact: ident }));
+  assert.deepStrictEqual(on.map((r) => r.is_error), [false, true, false, false]);
+  const off = results(run('codex', ls));
+  assert.deepStrictEqual(off.map((r) => r.is_error), [false, false, false, false]);
+  const failedNoCode = JSON.stringify({ type: 'item.completed', item: { id: 'i9', type: 'command_execution', command: 'x', aggregated_output: '', exit_code: null, status: 'failed' } });
+  assert.strictEqual(results(run('codex', [failedNoCode], { capture: true, redact: ident }))[0].is_error, true);
+});
+
+// No recorded Codex stream in this repository carries a file_change item, so the fixture follows the item schema
+// of `codex exec --json`: { id, type: 'file_change', changes: [{ path, kind }], status }.
+test('Codex: file_change items become tool_use and tool_result with their files under capture, and stay raw when off', () => {
+  const ls = lines('capture-codex-filechange.jsonl');
+  const ev = run('codex', ls, { capture: true, redact: ident });
+  const u = uses(ev);
+  const r = results(ev);
+  assert.deepStrictEqual(u.map((e) => [e.tool, e.tool_use_id, e.command]), [['file_change', 'item_0', null], ['file_change', 'item_1', null]]);
+  assert.deepStrictEqual(r.map((e) => [e.tool_use_id, e.is_error]), [['item_0', false], ['item_1', true]]);
+  assert.deepStrictEqual(r[0].files, ['src/new.js', 'src/old.js']);
+  assert.deepStrictEqual(r[1].files, ['src/bad.js']);
+  const off = run('codex', ls);
+  assert.strictEqual(uses(off).length + results(off).length, 0);
+  assert.strictEqual(off.filter((e) => e.kind === 'raw').length, 3); // turn.started and both items
+  // item.started then item.completed makes one tool_use, not two.
+  const started = JSON.stringify({ type: 'item.started', item: { id: 'f1', type: 'file_change', changes: [{ path: 'a.js', kind: 'add' }], status: 'in_progress' } });
+  const done = JSON.stringify({ type: 'item.completed', item: { id: 'f1', type: 'file_change', changes: [{ path: 'a.js', kind: 'add' }], status: 'completed' } });
+  const both = run('codex', [started, done], { capture: true, redact: ident });
+  assert.deepStrictEqual(both.map((e) => e.kind), ['tool_use', 'tool_result']);
+});
+
+test('Claude Code: a top-level tool_use_result applies to a single tool_result block, not to each of several', () => {
+  const tu = (id, p) => ({ type: 'tool_use', id, name: 'Read', input: { file_path: p } });
+  const trs = (id) => ({ type: 'tool_result', tool_use_id: id, content: 'x' });
+  const ls = [
+    JSON.stringify({ type: 'assistant', message: { id: 'm1', content: [tu('a', 'one.txt'), tu('b', 'two.txt')] } }),
+    JSON.stringify({ type: 'user', message: { content: [trs('a'), trs('b')] }, tool_use_result: { filePath: 'wrong.txt' } }),
+  ];
+  const r = results(run('claude-code', ls, { capture: true, redact: ident }));
+  assert.deepStrictEqual(r.map((e) => e.files), [['one.txt'], ['two.txt']]);
+});
+
+test('a redactor that does not return { text } withholds head, tail and command instead of leaking or crashing', () => {
+  const ev = run('claude-code', lines('capture-claude.jsonl'), { capture: true, redact: (t) => t });
+  assert.ok(uses(ev).every((e) => e.command === null));
+  assert.ok(results(ev).every((e) => e.head === null && e.tail === null && e.redaction === 'unavailable'));
+});
+
+test('capture state is cleared at turn end: a call interrupted without a result does not leak', () => {
+  const p = createParser('claude-code', { capture: true, redact: ident });
+  p.pushLine(JSON.stringify({ type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 'lost', name: 'Bash', input: { command: 'x' } }] } }));
+  assert.deepStrictEqual([...p.capture.calls.keys()], ['lost']);
+  p.pushLine(JSON.stringify({ type: 'result', subtype: 'success', result: '' }));
+  assert.strictEqual(p.capture.calls.size, 0);
+  const c = createParser('codex', { capture: true, redact: ident });
+  c.pushLine(JSON.stringify({ type: 'item.started', item: { id: 'i1', type: 'command_execution', command: 'x' } }));
+  c.pushLine(JSON.stringify({ type: 'item.started', item: { id: 'f1', type: 'file_change', changes: [] } }));
+  assert.strictEqual(c.capture.calls.size, 1);
+  c.pushLine(JSON.stringify({ type: 'turn.completed', usage: {} }));
+  assert.strictEqual(c.capture.calls.size, 0);
 });

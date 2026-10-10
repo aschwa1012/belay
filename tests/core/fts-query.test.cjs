@@ -77,3 +77,16 @@ test('probe: the expression runs against a real fts5 trigram table and syntax ch
   assert.deepStrictEqual(toMatch('ab'), { error: 'E_QUERY_SHORT' });
   db.close();
 });
+
+test('toMatch splits on control characters so a NUL never reaches the phrase', () => {
+  assert.deepStrictEqual(toMatch('\u0000\u0000\u0000'), { error: 'E_QUERY_SHORT' });
+  assert.deepStrictEqual(toMatch('abc\u0000def\u0001ghi'), { match: '"abc" "def" "ghi"' });
+  const db = new DatabaseSync(':memory:');
+  db.exec("CREATE VIRTUAL TABLE t USING fts5(c, tokenize='trigram')");
+  db.prepare('INSERT INTO t(c) VALUES (?)').run('abcdef ghi');
+  for (const q of ['\u0000\u0000\u0000 abc', 'abc\u0000def', '\u001fabcdef\u001f']) {
+    const r = toMatch(q);
+    if (!r.match) continue;
+    assert.doesNotThrow(() => db.prepare('SELECT c FROM t WHERE t MATCH ?').all(r.match), q);
+  }
+});

@@ -8,18 +8,25 @@
 const MAX_LINES = 3;
 const MAX_BYTES = 300;
 
+// A redactor has the signature of src/core/redact.cjs: redact(text) -> { text, redactions }.
 let redactFn; // undefined = not tried, null = module absent
 function defaultRedact() {
   if (redactFn === undefined) {
     try {
       const m = require('../core/redact.cjs'); // lazy: the module is built beside this one
-      redactFn = (t) => m.redact(t).text;
+      redactFn = m.redact;
     } catch (e) {
       if (e && e.code === 'MODULE_NOT_FOUND') redactFn = null;
       else throw e;
     }
   }
   return redactFn;
+}
+
+// Run a redactor; a result without a string `text` is a failed redaction, never raw text.
+function scrub(fn, text) {
+  const r = fn(text);
+  return r && typeof r.text === 'string' ? r.text : null;
 }
 
 // Cut to at most `max` bytes without splitting a character; `fromEnd` keeps the end instead.
@@ -41,7 +48,9 @@ function clip(s, max, fromEnd) {
 function headTail(text, redact) {
   const fn = redact || defaultRedact();
   if (!fn) return { head: null, tail: null, redaction: 'unavailable' };
-  const lines = fn(String(text == null ? '' : text)).split(/\r?\n/).filter((l) => l.trim() !== '');
+  const clean = scrub(fn, String(text == null ? '' : text));
+  if (clean === null) return { head: null, tail: null, redaction: 'unavailable' };
+  const lines = clean.split(/\r?\n/).filter((l) => l.trim() !== '');
   const head = clip(lines.slice(0, MAX_LINES).join('\n'), MAX_BYTES, false);
   const rest = lines.length > MAX_LINES ? lines.slice(Math.max(MAX_LINES, lines.length - MAX_LINES)) : [];
   return { head, tail: clip(rest.join('\n'), MAX_BYTES, true), redaction: 'applied' };
@@ -52,7 +61,8 @@ function commandOf(input, redact) {
   if (c == null) return null;
   const fn = redact || defaultRedact();
   if (!fn) return null;
-  return clip(fn(c), MAX_BYTES, false);
+  const clean = scrub(fn, c);
+  return clean === null ? null : clip(clean, MAX_BYTES, false);
 }
 
 // Claude Code: `Exit code N` opens an error result's text. A Bash result that is not an error ran

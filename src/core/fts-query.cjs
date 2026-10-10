@@ -11,13 +11,14 @@ const MIN_TERM = 3;
 // A cap keeps one pasted page from becoming a thousand-phrase expression.
 const MAX_TERMS = 32;
 
-// Terms split on whitespace and on the double quote, the one character a quoted phrase cannot carry. Length is
+// Terms split on whitespace, on control characters (a NUL or other control character in a phrase makes SQLite
+// throw an uncoded error) and on the double quote, the one character a quoted phrase cannot carry. Length is
 // counted in code points, which is how the trigram tokenizer counts characters.
 function toMatch(query) {
   if (typeof query !== 'string') return { error: 'E_QUERY_SHORT' };
   const seen = new Set();
   const terms = [];
-  for (const t of query.split(/[\s"]+/)) {
+  for (const t of query.split(/[\s"\u0000-\u001f]+/)) {
     if (!t || [...t].length < MIN_TERM || seen.has(t)) continue;
     seen.add(t);
     terms.push(`"${t}"`);
