@@ -59,6 +59,26 @@ CREATE TABLE IF NOT EXISTS permission (
   state TEXT NOT NULL, verdict_by TEXT, reason TEXT, requested_at INTEGER, decided_at INTEGER,
   written_at INTEGER NOT NULL, written_by TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_permission_id ON permission(id, seq);
+
+-- ADR 0041 decision 3: a receipt for every harness memory action. Append-only like the tables above.
+CREATE TABLE IF NOT EXISTS memory_event (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL, run_id TEXT, worker_id TEXT, task_id TEXT,
+  kind TEXT NOT NULL, key TEXT, row_ids TEXT, newest_row_id TEXT, bytes INTEGER, sha256 TEXT,
+  ok INTEGER NOT NULL, code TEXT, message TEXT, dropped INTEGER, over_budget INTEGER,
+  written_at INTEGER NOT NULL, written_by TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_memory_event_id ON memory_event(id, seq);
+CREATE INDEX IF NOT EXISTS ix_memory_event_run ON memory_event(run_id, seq);
+-- ADR 0043 decision 2: the store, not a check that could race, guarantees one wrap-up per (run, key).
+CREATE UNIQUE INDEX IF NOT EXISTS ux_memory_event_wrapup ON memory_event(run_id, key) WHERE kind = 'wrapup';
+
+-- ADR 0041 decision 6: the usage ledger, one row per turn.
+CREATE TABLE IF NOT EXISTS usage (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL, run_id TEXT, worker_id TEXT, task_id TEXT,
+  turn INTEGER, substrate TEXT, model TEXT, input_tokens INTEGER, output_tokens INTEGER,
+  cache_read_tokens INTEGER, cache_creation_tokens INTEGER, cost_usd REAL, cost_basis TEXT, at INTEGER,
+  written_at INTEGER NOT NULL, written_by TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_usage_id ON usage(id, seq);
+CREATE INDEX IF NOT EXISTS ix_usage_run ON usage(run_id, seq);
 `;
 
 // Additive columns so an existing data dir upgrades in place. First (session-3 hardening MS-5): on a
@@ -134,6 +154,31 @@ const MIGRATIONS = [
   // The executable image name the spawner launched (path.basename of the child's spawnfile), the only thing a null pid_created can be checked against.
   'ALTER TABLE worker ADD COLUMN pid_image TEXT',
   'ALTER TABLE run ADD COLUMN adapter_pid_created INTEGER',
+  // ADR 0040 decision 1: structure for a memory row. Every column nullable; a row written before them reads as
+  // untitled, unverified and of unknown source. Run, task and turn name who wrote the row (derived, never self-reported).
+  'ALTER TABLE memory_entries ADD COLUMN title TEXT',
+  'ALTER TABLE memory_entries ADD COLUMN status TEXT',
+  'ALTER TABLE memory_entries ADD COLUMN status_receipt TEXT',
+  'ALTER TABLE memory_entries ADD COLUMN status_by TEXT',
+  'ALTER TABLE memory_entries ADD COLUMN status_at INTEGER',
+  'ALTER TABLE memory_entries ADD COLUMN run_id TEXT',
+  'ALTER TABLE memory_entries ADD COLUMN task_id TEXT',
+  'ALTER TABLE memory_entries ADD COLUMN turn INTEGER',
+  'ALTER TABLE memory_entries ADD COLUMN source TEXT',
+  'ALTER TABLE memory_entries ADD COLUMN redactions TEXT',
+  'ALTER TABLE memory_entries ADD COLUMN body TEXT',
+  // ADR 0041 decision 1: the run's memory levers as JSON text, and its project name; written by run.attach, carried forward.
+  'ALTER TABLE run ADD COLUMN memory_levers TEXT',
+  'ALTER TABLE run ADD COLUMN project TEXT',
+];
+
+// Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot
+// index it until the column exists. IF NOT EXISTS makes them safe on every open, including a read copy.
+const MEMORY_INDEXES = [
+  'CREATE INDEX IF NOT EXISTS ix_entries_run ON memory_entries(run_id)',
+  'CREATE INDEX IF NOT EXISTS ix_entries_task ON memory_entries(task_id)',
+  'CREATE INDEX IF NOT EXISTS ix_entries_status ON memory_entries(status)',
+  'CREATE INDEX IF NOT EXISTS ix_entries_ns_created ON memory_entries(namespace, created_at)',
 ];
 
 // build step 6b: 'forgotten' is the state worker.forget appends over a dead worker's rows, always last
@@ -157,9 +202,10 @@ function ensureSchema(db) {
   for (const stmt of MIGRATIONS) {
     try { db.exec(stmt); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
   }
+  for (const stmt of MEMORY_INDEXES) db.exec(stmt);
 }
 
 module.exports = {
-  ensureSchema, MEMORY_SCHEMA, ORCHESTRATION_SCHEMA, MIGRATIONS,
+  ensureSchema, MEMORY_SCHEMA, ORCHESTRATION_SCHEMA, MIGRATIONS, MEMORY_INDEXES,
   WORKER_STATES, TASK_STATES, SUBSTRATES, ROLES, PERMISSION_STATES, DEFAULT_LEASE_TTL_MS, NAMESPACE_SCAN_CEILING, scanCeiling,
 };
