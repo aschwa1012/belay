@@ -74,7 +74,7 @@ test('an old wrap-up index that counted every row is replaced by the successes-o
   });
 });
 
-test('a store whose wrap-up index is current is left alone by a second open', { todo: 'suspected bug in memory-schema.cjs line 61: the regex /oks*=s*1/ lost its backslashes, so the current index is never recognised and is dropped and recreated on every owner open' }, () => {
+test('a store whose wrap-up index is current is left alone by a second open', () => {
   withDb((db) => {
     migrateOwner(db, noFts);
     const v = schemaVersion(db);
