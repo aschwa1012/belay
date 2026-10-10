@@ -40,7 +40,7 @@ async function plantRows(dataDir) {
     await sleep(25);
     await orch.worker.write({ id: 'w1', substrate: 'claude-code', pid: process.pid, state: 'running', started_at: markMs - 1000 });
     worker = await openCore({ dataDir, caller: { role: 'worker', worker_id: 'w1', run_id: RUN, pid: process.pid }, embed: false });
-    const a = await worker.memory.store({ namespace: `run/${RUN}`, text: 'w1 found the parser skips blank lines', type: 'finding', embedding: vec(1), embedding_model: 'fixture', dim: 384 });
+    const a = await worker.memory.store({ namespace: `run/${RUN}`, text: 'w1 found the parser skips blank lines', type: 'finding', embed: false });
     // The observation is written as the harness writes it (memory-capture.cjs): by the adapter's orchestrator
     // caller, naming the worker it is about. The finding above is the worker's own memory_store.
     const b = await orch.memory.store({ namespace: `run/${RUN}`, text: 'w1 observation: ran the suite', type: 'observation', embed: false, source: 'harness', worker_id: 'w1', task_id: 't-1', turn: 1 });
