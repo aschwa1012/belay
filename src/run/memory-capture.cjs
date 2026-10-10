@@ -19,6 +19,7 @@ const batches = new WeakMap(); // turn_end event -> { events, dropped }
 const wants = (lv) => !!(lv && lv.capture && (lv.observations || jobLevers(lv)));
 const jobLevers = (lv) => !!(lv && ((lv.summaries && lv.summaries !== 'off') || lv.project_writes || lv.cost_ledger || lv.wrapup));
 
+const closed = (ctx) => !!(ctx.shutdownFlags && ctx.shutdownFlags.closed);
 const codeOf = (e) => (e && typeof e.code === 'string' && e.code.startsWith('E_') ? e.code : 'E_INTERNAL');
 const noteError = (w, where, e) => { w.lastError = { where, code: e && e.code, message: e && e.message }; };
 
@@ -51,17 +52,37 @@ function takeTurn(w, e) {
   return events;
 }
 
+// The turn's own numbers, read at its turn_end. The queued work runs later, after this turn's memory store (an
+// embed: about 0.5 s, seconds on an owner's first turn), by which time a later turn_end may have moved every
+// counter on the record; whatever the observation and the jobs say about this turn comes from here.
+function snapshotOf(w, e) {
+  return {
+    turn: w.turns, usage: w.lastTurnUsage || null, cost: w.costUsd, pid: w.pid, substrate: w.substrate,
+    model: w.initModel || w.model || null, taskId: w.taskId || null, workerId: w.id,
+    finalText: (e && e.text) || w.lastAssistantText || '',
+  };
+}
+
 // What the turn's queued work needs, decided synchronously at turn end: null when every lever that uses the
-// capture is off.
+// capture is off. `snap` is the turn's numbers as they stood when it ended.
 function plan(w, e, ctx) {
   const lv = ctx.memoryLevers;
   if (!lv || !(lv.observations || jobLevers(lv))) return null;
   const b = batches.get(e);
   batches.delete(e);
-  return { levers: lv, events: b ? b.events : [], dropped: b ? b.dropped : 0 };
+  return { levers: lv, events: b ? b.events : [], dropped: b ? b.dropped : 0, snap: snapshotOf(w, e) };
+}
+
+// Once shutdown has closed the flag, no write is sent: the owner may already be gone, and a write would elect
+// a new one in this process (turn-record.cjs). The drop is named on the record.
+function shutDown(w, ctx, state) {
+  if (!closed(ctx)) return false;
+  w.lastError = { where: 'after-shutdown', state };
+  return true;
 }
 
 async function record(ctx, w, fields) {
+  if (shutDown(w, ctx, 'turn-observation-event')) return false;
   try {
     await ctx.core.memory.recordEvent({ worker_id: w.id, task_id: w.taskId || undefined, ...fields });
     return true;
@@ -75,13 +96,14 @@ async function record(ctx, w, fields) {
 // A failure is a memory_event with ok 0 and its code, never retried. Returns the stored row, or null.
 async function storeObservation(w, e, ctx, p) {
   if (!p.levers.observations) return null;
-  const turn = w.turns;
+  const snap = p.snap || snapshotOf(w, e);
+  const turn = snap.turn;
   let obs;
   try {
     const { buildObservation } = require('./observe.cjs');
     obs = buildObservation({
-      turn, worker_id: w.id, task_id: w.taskId || null, substrate: w.substrate,
-      events: p.events, final_text: e.text || w.lastAssistantText || '',
+      turn, worker_id: snap.workerId, task_id: snap.taskId, substrate: snap.substrate,
+      events: p.events, final_text: snap.finalText,
     });
   } catch (err) {
     noteError(w, 'memory.observe', err);
@@ -89,7 +111,8 @@ async function storeObservation(w, e, ctx, p) {
     return null;
   }
   const args = { type: 'observation', title: obs.title, text: obs.text, body: obs.body, embed: false, source: 'harness', turn };
-  if (w.taskId) args.task_id = w.taskId;
+  if (snap.taskId) args.task_id = snap.taskId;
+  if (shutDown(w, ctx, 'turn-observation')) return null;
   let row;
   try {
     row = await ctx.core.memory.store(args);
@@ -113,7 +136,7 @@ async function afterTurn(w, ctx, p, extra) {
   if (!jobLevers(p.levers)) return;
   try {
     const mod = (ctx.modules && ctx.modules.jobs) || require('./memory-jobs.cjs');
-    await mod.afterTurn(w, ctx, { turnEvents: p.events, ...extra });
+    await mod.afterTurn(w, ctx, { turnEvents: p.events, ...extra, snap: p.snap });
   } catch (err) {
     noteError(w, 'memory.afterTurn', err);
   }
@@ -121,8 +144,9 @@ async function afterTurn(w, ctx, p, extra) {
 
 // The whole after-turn memory work for a planned turn, in order: the observation, then the jobs.
 async function finish(w, e, ctx, p, extra) {
+  if (shutDown(w, ctx, 'turn-memory')) return;
   const row = await storeObservation(w, e, ctx, p);
   await afterTurn(w, ctx, p, { ...extra, observationId: row ? row.id : null });
 }
 
-module.exports = { onEvent, takeTurn, plan, finish, storeObservation, MAX_TURN_EVENTS };
+module.exports = { onEvent, takeTurn, plan, finish, storeObservation, snapshotOf, MAX_TURN_EVENTS };

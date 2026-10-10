@@ -47,35 +47,39 @@ function once(s, key, fn) {
   return p;
 }
 
-// ctx.memoryLevers is set by memory-preface's `levers`; a caller that reaches here first asks it to read.
+// ctx.memoryLevers is handed in by the manager's creator (the adapter's attach row) or set by memory-preface's
+// `levers`; a caller that reaches here with neither asks it to read.
 async function leversOf(ctx, w) {
   if (ctx.memoryLevers) return ctx.memoryLevers;
   try { return await require('./memory-preface.cjs').levers(ctx, w); } catch (e) { note(w, 'memory.levers', e); return { ...DEFAULTS }; }
 }
 
 // J: the job context. `gate.aborted` is set when atRunEnd gives up, so a step that has not started never does.
-function jobCtx(ctx, lv, w, gate) { return { ctx, core: ctx.core, lv, w, gate: gate || { aborted: false }, s: stateOf(ctx) }; }
+// `turnPath` marks a turn's jobs: once shutdown has closed the flag they send nothing, because the owner may
+// already be gone and a write would elect a new one in this process. The run-end jobs run after the flag is
+// closed and before the owner stops (lifecycle.cjs), so they are not turn-path work and are not gated on it.
+function jobCtx(ctx, lv, w, gate, turnPath = false) { return { ctx, core: ctx.core, lv, w, gate: gate || { aborted: false }, s: stateOf(ctx), turnPath }; }
+const SHUT = 'E_SHUTDOWN';
 async function call(J, fn) {
   if (J.gate.aborted) throw Object.assign(new Error('the run-end memory jobs gave up'), { code: 'E_TIMEOUT' });
+  if (J.turnPath && closed(J.ctx)) throw Object.assign(new Error('the run manager has shut down, so the write was not sent'), { code: SHUT });
   return fn();
 }
 // A receipt. Returns the event row or null; a failure to write the receipt is named on the worker.
 async function event(J, fields) {
   try { return await call(J, () => J.core.memory.recordEvent({ ...fields })); } catch (e) {
-    if (J.w) note(J.w, 'memory.recordEvent', e);
+    if (J.w) J.w.lastError = e && e.code === SHUT ? { where: 'after-shutdown', state: 'turn-memory-jobs' } : { where: 'memory.recordEvent', code: e && e.code, message: e && e.message };
     return null;
   }
 }
 const failure = (J, kind, fields, e) => event(J, { kind, ok: false, code: codeOf(e), message: String((e && e.message) || e).slice(0, 300), ...fields });
 
 // ---- usage (ADR 0041 decision 6) -------------------------------------------------------------------------
-// The turn's numbers are snapshotted when afterTurn is called: the queued job may run after a later turn_end
-// has moved the worker's counters. Claude Code's cost is cumulative per process, so the row carries the delta
-// from the previous row of the same process; a new process (or a counter that went down) restarts from zero.
-function snapshotOf(w) {
-  const u = w.lastTurnUsage || null;
-  return { turn: w.turns, usage: u, cost: w.costUsd, pid: w.pid, substrate: w.substrate, model: w.initModel || w.model || null, taskId: w.taskId || null, workerId: w.id };
-}
+// The turn's numbers are the snapshot memory-capture.cjs's `plan` took at the turn_end itself: this job runs
+// after the turn's memory store, by which time a later turn_end may have moved the worker's counters. Claude
+// Code's cost is cumulative per process, so the row carries the delta from the previous row of the same
+// process; a new process (or a counter that went down) restarts from zero.
+const { snapshotOf } = require('./memory-capture.cjs');
 const num = (x) => (typeof x === 'number' && Number.isFinite(x) ? x : 0);
 function tokensOf(snap) {
   const u = snap.usage;
@@ -165,7 +169,7 @@ function render(fields, generator) {
   ].join('\n');
 }
 async function alreadySummarised(J, taskId, workerId) {
-  const got = await call(J, () => J.core.memory.events({ task_id: taskId, worker_id: workerId, kinds: ['summary'] }));
+  const got = await call(J, () => J.core.memory.events({ run_id: J.ctx.runId || undefined, task_id: taskId, worker_id: workerId, kinds: ['summary'] }));
   const hit = ((got && got.events) || []).find((ev) => ev.ok === 1 || ev.ok === true);
   return hit ? hit : null;
 }
@@ -285,19 +289,20 @@ async function runWrapup(J, tasks) {
 
 // ---- entry points ---------------------------------------------------------------------------------------
 // Queues this turn's jobs on the worker's memory queue and returns at once. `observationId` is the observation
-// row the capture step stored for this turn (null when there is none).
-function afterTurn(w, ctx, { turnEvents, checkpointId, turnRowId: turnRow = null, observationId = null } = {}) {
+// row the capture step stored for this turn (null when there is none); `snap` is the turn's numbers as they
+// stood at its turn_end (memory-capture.cjs `plan`), read from the record only by a caller that has none.
+function afterTurn(w, ctx, { turnEvents, checkpointId, turnRowId: turnRow = null, observationId = null, snap: given = null } = {}) {
   const turnRowId = observationId; // the project copy is of the turn's observation row; the turn row (turnRow) is not an observation
   void turnEvents; void checkpointId; // the observation already carries what the events held
-  if (closed(ctx)) return;
+  if (closed(ctx)) { w.lastError = { where: 'after-shutdown', state: 'turn-memory-jobs' }; return; }
   if (ctx.memoryLevers && !anyJob(ctx.memoryLevers)) return;
-  const snap = snapshotOf(w);
+  const snap = given || snapshotOf(w);
   w.memoryQueue = (w.memoryQueue || Promise.resolve()).then(async () => {
     if (closed(ctx)) { w.lastError = { where: 'after-shutdown', state: 'turn-memory-jobs' }; return; }
     try {
       const lv = await leversOf(ctx, w);
       if (!anyJob(lv)) return;
-      const J = jobCtx(ctx, lv, w);
+      const J = jobCtx(ctx, lv, w, null, true);
       if (lv.cost_ledger) await usageJob(J, snap);
       if (lv.project_writes && lv.project) await projectCopyOfTurn(J, snap, turnRowId);
       const wantSummary = lv.summaries !== 'off';
@@ -355,32 +360,53 @@ async function runEndWork(J, progress) {
   }
 }
 
-function afterBound(ms, fn) {
+function afterBound(ms, fn, box = {}) {
   let timer;
   const timeout = new Promise((res) => { timer = setTimeout(() => res('timeout'), ms); });
-  return Promise.race([fn().then(() => 'done', () => 'error'), timeout]).finally(() => clearTimeout(timer));
+  return Promise.race([fn().then(() => 'done', (e) => { box.error = e; return 'error'; }), timeout]).finally(() => clearTimeout(timer));
 }
 
+// The run's end. Returns { outcome: 'off' | 'done' | 'error' | 'timeout', unfinished? } and sets ctx.runEndError
+// on anything short of done. A run-end that does not finish leaves a `run:gave-up` wrap-up event naming what did
+// not run, so the loss is on the ledger, never silent. Safe to run twice for one run (a partial adapter-side run,
+// then belay run's own): a summary is once per (task, worker) by the store's own summary events, and a wrap-up
+// once per (run, key) by the store's unique index (E_EXISTS is the record that it is already there).
 async function atRunEnd(ctx) {
   try {
     const lv = await leversOf(ctx, null);
-    if (!anyJob(lv)) return;
+    if (!anyJob(lv)) return { outcome: 'off' };
     const total = Number.isInteger(ctx.runEndBoundMs) && ctx.runEndBoundMs > 0 ? ctx.runEndBoundMs : RUN_END_BOUND_MS; // the override is for tests
     const giveUpMs = Math.min(GIVE_UP_MS, Math.floor(total / 4));
     const gate = { aborted: false };
     const J = jobCtx(ctx, lv, null, gate);
     const progress = { stage: 'start', planned: null, done: new Set() };
-    const outcome = await afterBound(total - giveUpMs, () => runEndWork(J, progress));
-    if (outcome === 'error') { const e = new Error('a run-end memory job failed'); ctx.runEndError = { where: 'memory-jobs.atRunEnd', code: 'E_INTERNAL', message: e.message }; }
-    if (outcome !== 'timeout') return;
+    const box = {};
+    const outcome = await afterBound(total - giveUpMs, () => runEndWork(J, progress), box);
+    if (outcome === 'done') return { outcome };
     gate.aborted = true; // no step that has not started will start
     const left = progress.planned ? progress.planned.filter((x) => !progress.done.has(x)) : ['plan'];
+    const unfinished = left.length ? left : [progress.stage];
+    const code = outcome === 'timeout' ? 'E_TIMEOUT' : codeOf(box.error);
+    const why = outcome === 'timeout' ? `stopped after ${total - giveUpMs} ms` : `failed at ${progress.stage}: ${(box.error && box.error.message) || box.error}`;
     const record = jobCtx(ctx, lv, null, { aborted: false });
-    await afterBound(giveUpMs, () => event(record, { kind: 'wrapup', key: 'run:gave-up', ok: false, code: 'E_TIMEOUT', message: `run-end memory jobs stopped after ${total - giveUpMs} ms; not done: ${(left.length ? left : [progress.stage]).join(', ')}`.slice(0, 600) }));
-    ctx.runEndError = { where: 'memory-jobs.atRunEnd', code: 'E_TIMEOUT', message: 'gave up', unfinished: left };
+    await afterBound(giveUpMs, () => event(record, { kind: 'wrapup', key: 'run:gave-up', ok: false, code, message: `run-end memory jobs ${why}; not done: ${unfinished.join(', ')}`.slice(0, 600) }));
+    ctx.runEndError = { where: 'memory-jobs.atRunEnd', code, message: outcome === 'timeout' ? 'gave up' : why, unfinished };
+    return { outcome, unfinished };
   } catch (e) {
     ctx.runEndError = { where: 'memory-jobs.atRunEnd', code: codeOf(e), message: e && e.message };
+    return { outcome: 'error' };
   }
 }
 
-module.exports = { afterTurn, atRunEnd, RUN_END_BOUND_MS, WRAPUP_MAX, SUMMARY_LABEL, NEW_PROCESS };
+// The run's end from `belay run`, after the orchestrator's adapter has closed (ADR 0043 decision 2). The adapter
+// runs the same jobs in its own shutdown, but Claude Code ends its stdio server a few hundred ms after closing
+// its stdin (docs/research/run-close), so with any live worker that run is cut short. This one needs nothing but
+// the store: it reads the run's task and worker rows, and `core` is the store `belay run` owns. Idempotent with a
+// partial adapter-side run (see atRunEnd). Never throws; returns { outcome, unfinished?, error? }.
+async function runEndJobs({ core, runId, levers, boundMs = null, modules = null }) {
+  const ctx = { core, runId, memoryLevers: levers || { ...DEFAULTS }, runEndBoundMs: boundMs, modules };
+  const got = await atRunEnd(ctx);
+  return ctx.runEndError ? { ...got, error: ctx.runEndError } : got;
+}
+
+module.exports = { afterTurn, atRunEnd, runEndJobs, RUN_END_BOUND_MS, WRAPUP_MAX, SUMMARY_LABEL, NEW_PROCESS };

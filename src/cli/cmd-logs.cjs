@@ -80,7 +80,7 @@ const MEMORY_LIMIT = 50;
 async function readMemory(core, w) {
   const [list, ev] = await Promise.all([
     core.memory.list({ namespaces: [`run/${w.run_id}`], filter: { worker_id: w.id }, view: 'index', order: 'oldest', limit: MEMORY_LIMIT }),
-    core.memory.events({ worker_id: w.id }),
+    core.memory.events({ run_id: w.run_id, worker_id: w.id }), // a worker id is unique only within its run
   ]);
   const items = [
     ...list.rows.map((r) => ({ at: r.created_at, kind: 'row', id: r.id, type: r.type, status: r.status, title: r.title, task_id: r.task_id })),

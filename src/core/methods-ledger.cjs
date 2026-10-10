@@ -8,6 +8,8 @@
 
 const crypto = require('node:crypto');
 const { err } = require('./errors.cjs');
+const rows = require('./rows.cjs');
+const { redact } = require('./redact.cjs');
 
 const EVENT_KINDS = ['observation', 'summary', 'project_write', 'usage', 'index_injected', 'bottle', 'wrapup',
   'corpus_primed', 'knowledge_ask'];
@@ -34,6 +36,17 @@ const flag = (v, what) => {
   if (v === false || v === 0) return 0;
   throw err('E_ARGS', `${what} must be a boolean or 0/1`);
 };
+
+// The run's `memory.redact` lever, read as methods-memory.cjs reads it for a row: on unless the caller's run row
+// says `redact: false`. A receipt's message can carry a worker's own words (a wrap-up quotes the handoff verdict),
+// so it is scrubbed exactly as a stored row's text is (ADR 0040 §3).
+function redactOn(E, caller) {
+  let raw = null;
+  try { const run = rows.current(E.store, 'run', caller.run_id); raw = run ? run.memory_levers : null; } catch { return true; }
+  if (raw == null) return true;
+  try { const o = typeof raw === 'string' ? JSON.parse(raw) : raw; return !(o && o.redact === false); } catch { return true; }
+}
+const scrubMessage = (E, caller, m) => (m == null || !redactOn(E, caller) ? m : redact(m).text);
 
 const isMissingTable = e => /no such table/i.test(String(e && e.message));
 
@@ -68,7 +81,7 @@ async function recordEvent(E, caller, args) {
   const vals = [
     `me-${crypto.randomUUID()}`, runId, optStr(args.worker_id, 'worker_id'), optStr(args.task_id, 'task_id'),
     args.kind, key, rowIds, optStr(args.newest_row_id, 'newest_row_id'), optCount(args.bytes, 'bytes'),
-    optStr(args.sha256, 'sha256'), ok, code, optStr(args.message, 'message'),
+    optStr(args.sha256, 'sha256'), ok, code, scrubMessage(E, caller, optStr(args.message, 'message')),
     args.dropped === undefined || args.dropped === null ? null : flag(args.dropped, 'dropped'),
     args.over_budget === undefined || args.over_budget === null ? null : flag(args.over_budget, 'over_budget'),
     Date.now(), E.writtenBy(caller),

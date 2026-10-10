@@ -50,8 +50,9 @@ async function record(ctx, w, fields) {
 }
 
 // The ids this worker was already shown: the union of its earlier `index_injected` events (ADR 0042 decision 3).
+// Scoped to this run: a worker id is unique only within its run, so coder-1 of an earlier run is another worker.
 async function shownBefore(ctx, w) {
-  const got = await ctx.core.memory.events({ worker_id: w.id, kinds: ['index_injected'] });
+  const got = await ctx.core.memory.events({ run_id: ctx.runId, worker_id: w.id, kinds: ['index_injected'] });
   const ids = new Set();
   for (const ev of (got && got.events) || []) {
     if (ev.ok === 0 || ev.ok === false || !Array.isArray(ev.row_ids)) continue;

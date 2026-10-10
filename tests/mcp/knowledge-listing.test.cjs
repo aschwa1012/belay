@@ -97,6 +97,23 @@ test('a run row that never answers is given up on inside the bound', { timeout: 
   assert.ok(Date.now() - t0 < 15000);
 });
 
+test('once the adapter has attached, the listing and the run manager take the levers from the attach row: no run.get at all', async () => {
+  const data = dataDir('kl-attached');
+  const countFile = path.join(data, 'run-get-count.txt');
+  const wt = sandboxDir('kl-wt');
+  const a = launch({ data, extra: ['--worktree', wt], env: { BELAY_FAKE_CORE: FAKE, BELAY_FAKE_LEVERS: ON, BELAY_FAKE_COUNT_FILE: countFile } });
+  try {
+    await a.initialize();
+    const asked = await a.call('knowledge_ask', { question: 'q' }); // opens the run manager, which attaches first
+    assert.strictEqual(asked.isError, false, JSON.stringify(asked));
+    assert.strictEqual(asked.structuredContent.manager_levers.knowledge_agent, true, 'the manager was handed the levers');
+    assert.strictEqual(asked.structuredContent.manager_worktree, wt, 'and the run worktree from --worktree');
+    const list = await a.list();
+    assert.ok(list.some((t) => t.name === 'knowledge_ask'));
+    assert.ok(!fs.existsSync(countFile), 'run.get was never called');
+  } finally { await a.close(); }
+});
+
 test('knowledge_ask routes to the run manager, and a worker is refused with E_ROLE', async () => {
   const data = dataDir('kl-call');
   const orch = launch({ data, env: { BELAY_FAKE_CORE: FAKE, BELAY_FAKE_LEVERS: ON } });

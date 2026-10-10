@@ -184,6 +184,23 @@ test('import: redaction is the core\'s, applied to what the file holds (the stor
   } finally { cleanup(dir); }
 });
 
+test('import: tags are scrubbed by the CLI, since the store keeps tags as given; a tag that held a secret is dropped', async () => {
+  const dir = sandbox();
+  try {
+    const rows = [
+      { namespace: 'project/t', text: 'row one', tags: ['tz', `key:${SECRET}`, 'dates'] },
+      { namespace: 'project/t', text: 'row two', tags: [SECRET] },
+    ];
+    fs.writeFileSync(`${dir}/s.jsonl`, rows.map((r) => `${JSON.stringify(r)}\n`).join(''));
+    const target = fakeCore();
+    const r = await run(dir, ['import', 's.jsonl'], target);
+    assert.strictEqual(r.code, 0, r.text);
+    assert.deepStrictEqual(target.calls.store[0].tags, ['tz', 'dates']);
+    assert.ok(!('tags' in target.calls.store[1]), 'no tags left: none are sent');
+    assert.ok(!JSON.stringify(target.calls.store).includes(SECRET));
+  } finally { cleanup(dir); }
+});
+
 test('import: a header-less seed file, --namespace as the default, --no-embed, and rows the file cannot make are listed by line', async () => {
   const dir = sandbox();
   try {
