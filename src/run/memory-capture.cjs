@@ -111,6 +111,7 @@ async function storeObservation(w, e, ctx, p) {
     return null;
   }
   const args = { type: 'observation', title: obs.title, text: obs.text, body: obs.body, embed: false, source: 'harness', turn };
+  if (snap.workerId) args.worker_id = snap.workerId; // the worker the row is about; the adapter writes it as the orchestrator
   if (snap.taskId) args.task_id = snap.taskId;
   if (shutDown(w, ctx, 'turn-observation')) return null;
   let row;

@@ -139,6 +139,8 @@ test('one observation per turn: embed false, source harness, task_id, the turn r
     assert.strictEqual(o.source, 'harness');
     assert.strictEqual(o.task_id, 't1');
     assert.strictEqual(o.turn, 1);
+    assert.strictEqual(o.worker_id, 'w1', 'the observation names the worker it is about');
+    assert.strictEqual(core.stores.find((s) => s.type === 'turn').worker_id, 'w1', 'and so does the turn row, with a lever on');
     assert.ok(o.title.startsWith('turn 1:') && /read input\.md/.test(o.title), o.title);
     assert.deepStrictEqual(o.body.files_read, ['input.md']);
     assert.strictEqual(o.body.tool_counts.Read, 1);

@@ -121,7 +121,7 @@ async function copyToProject(J, row, workerId, taskId) {
   try {
     const out = await call(J, () => J.core.memory.store({
       namespace: ns, type: row.type, title: row.title, text: row.text, body: row.body, embed: false, source: 'harness',
-      task_id: taskId || undefined, provenance: `copy-of:${row.id}`,
+      task_id: taskId || undefined, worker_id: workerId || undefined, provenance: `copy-of:${row.id}`,
     }));
     await event(J, { kind: 'project_write', ok: true, worker_id: workerId, task_id: taskId || undefined, row_ids: [out.id], newest_row_id: out.id, key: `copy-of:${row.id}`, message: `copied ${row.id} to ${ns}` });
   } catch (e) {
@@ -199,7 +199,7 @@ function ensureSummary(J, taskId, workerId, { taskRow, retry } = {}) {
       const text = render(result.fields, result.generator);
       const stored = await call(J, () => J.core.memory.store({
         type: 'summary', title: `summary: task ${taskId} (mechanical)`, text, body: { v: 1, ...result.fields, generator: result.generator },
-        embed: false, source: 'summariser', task_id: taskId, tags: [taskId, workerId],
+        embed: false, source: 'summariser', task_id: taskId, worker_id: workerId || undefined, tags: [taskId, workerId],
       }));
       s.summaryDone.add(key); s.summaryFailed.delete(key); s.summaryIds.set(key, stored.id);
       await event(J, { kind: 'summary', ok: true, worker_id: workerId, task_id: taskId, row_ids: [stored.id], newest_row_id: stored.id, bytes: Buffer.byteLength(text, 'utf8'), sha256: sha(text) });

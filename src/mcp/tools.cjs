@@ -330,7 +330,7 @@ const NO_NULL = { task_evaluate: ['base'] };
 // the core, never something a model says (invariant 3), so the boundary refuses them in either role,
 // by name, before the core sees them. The schema does not list them, which is why the listing does
 // not pay for them either.
-const HARNESS_ONLY = { memory_store: ['task_id', 'turn', 'source', 'embed', 'body'] };
+const HARNESS_ONLY = { memory_store: ['task_id', 'turn', 'source', 'embed', 'body', 'worker_id'] };
 const MAX_IDS = 50;
 
 // The model is a boundary, so the required fields and the declared type of each named top-level

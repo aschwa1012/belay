@@ -41,7 +41,9 @@ async function plantRows(dataDir) {
     await orch.worker.write({ id: 'w1', substrate: 'claude-code', pid: process.pid, state: 'running', started_at: markMs - 1000 });
     worker = await openCore({ dataDir, caller: { role: 'worker', worker_id: 'w1', run_id: RUN, pid: process.pid }, embed: false });
     const a = await worker.memory.store({ namespace: `run/${RUN}`, text: 'w1 found the parser skips blank lines', type: 'finding', embedding: vec(1), embedding_model: 'fixture', dim: 384 });
-    const b = await worker.memory.store({ namespace: `run/${RUN}`, text: 'w1 observation: ran the suite', type: 'observation', embedding: vec(2), embedding_model: 'fixture', dim: 384 });
+    // The observation is written as the harness writes it (memory-capture.cjs): by the adapter's orchestrator
+    // caller, naming the worker it is about. The finding above is the worker's own memory_store.
+    const b = await orch.memory.store({ namespace: `run/${RUN}`, text: 'w1 observation: ran the suite', type: 'observation', embed: false, source: 'harness', worker_id: 'w1', task_id: 't-1', turn: 1 });
     const ev = await orch.memory.recordEvent({ kind: 'observation', worker_id: 'w1', task_id: 't-1', row_ids: [b.id], newest_row_id: b.id });
     const wrap = await orch.memory.recordEvent({ kind: 'wrapup', key: 'task:t-1', task_id: 't-1', worker_id: 'w1', bytes: 31, message: 'task t-1 done, 2 files, summary mem-x' });
     const run = await orch.memory.recordEvent({ kind: 'wrapup', key: 'run', message: 'run finished: 1 task done' });
