@@ -94,6 +94,8 @@ function projectOf(E, runId) {
   } catch { return null; }
 }
 
+// The superseded test is written with +s.namespace so its inner lookup uses ix_entries_supersedes, not the
+// namespace index (which made it quadratic in the namespace size); memory-search.cjs baseWhere says the same.
 function candidates(E, namespaces) {
   const sql = `SELECT e.id, e.namespace, e.type, e.status, e.title, substr(e.text, 1, 2000) AS title_src, e.body, e.tags,
     e.task_id, e.created_at FROM memory_entries e
@@ -101,7 +103,7 @@ function candidates(E, namespaces) {
       AND (e.type IN (${marks(LASTING_TYPES)}) OR e.status = 'verified')
       AND COALESCE(e.status, 'unverified') <> 'refuted'
       AND (e.ttl_at IS NULL OR e.ttl_at >= ?)
-      AND NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND s.namespace = e.namespace)
+      AND NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND +s.namespace = e.namespace)
     ORDER BY e.created_at DESC, e.id ASC LIMIT ${CANDIDATES_MAX}`;
   return E.store.db.prepare(sql).all(...namespaces, ...LASTING_TYPES, Date.now());
 }

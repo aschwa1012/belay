@@ -157,7 +157,9 @@ function keywordStage(E, o, depth, base) {
 function baseWhere(o) {
   const where = [`e.namespace IN (${marks(o.namespaces)})`, '(e.ttl_at IS NULL OR e.ttl_at >= ?)'];
   const params = [...o.namespaces, Date.now()];
-  if (!o.includeSuperseded) where.push('NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND s.namespace = e.namespace)');
+  // The unary + keeps SQLite on ix_entries_supersedes for the inner lookup: on (namespace, created_at) it scans the
+  // whole namespace per outer row, which is quadratic (minutes, not milliseconds, at ten thousand rows).
+  if (!o.includeSuperseded) where.push('NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND +s.namespace = e.namespace)');
   if (o.filterSql.where) { where.push(o.filterSql.where); params.push(...o.filterSql.params); }
   return { where: where.join(' AND '), params };
 }

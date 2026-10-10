@@ -52,9 +52,10 @@ async function corpus(E, caller, args = {}) {
   const db = E.store.db;
   // Live rows only: not expired, not superseded by another row of the same namespace (as memory-index.cjs reads it). Verified rows, summaries and decisions qualify;
   // a refuted row never does, whatever its type.
+  // +s.namespace keeps the inner lookup on ix_entries_supersedes (memory-search.cjs baseWhere explains why).
   const where = `e.namespace = ?
     AND (e.ttl_at IS NULL OR e.ttl_at >= ?)
-    AND NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND s.namespace = e.namespace)
+    AND NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND +s.namespace = e.namespace)
     AND COALESCE(e.status, 'unverified') <> 'refuted'
     AND (COALESCE(e.status, 'unverified') = 'verified' OR e.type IN ('summary', 'decision'))`;
   const params = [namespace, Date.now()];
