@@ -52,6 +52,7 @@ const vec = (seed) => Array.from({ length: 384 }, (_, i) => (((i + seed) % 7) + 
 // core handle is declared before the try so the finally can always reach it. Build step 4c: a 30-line
 // stream.jsonl for w1, so the `logs` gate below reads a real tail rather than a missing file.
 async function plant(dataDir, runId, pid) {
+  let memoryId = null;
   const core = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
   try {
     await core.run.attach({ adapter_pid: pid });
@@ -61,7 +62,8 @@ async function plant(dataDir, runId, pid) {
     await core.task.assign({ task_id: t1.id, worker_id: 'w1' });
     await core.continuity.checkpoint({ task_id: t1.id, worker_id: 'w1', turn: 1, files_touched: ['a.txt'] });
     for (let i = 0; i < 3; i += 1) {
-      await core.memory.store({ namespace: `run/${runId}`, text: `note ${i} about task ${t1.id}`, tags: [t1.id], embedding: vec(i), embedding_model: 'fixture', dim: 384 });
+      const stored = await core.memory.store({ namespace: `run/${runId}`, text: `note ${i} about task ${t1.id}`, tags: [t1.id], embedding: vec(i), embedding_model: 'fixture', dim: 384 });
+      if (i === 0) memoryId = stored.id;
     }
   } finally {
     await core.shutdownOwner();
@@ -72,6 +74,7 @@ async function plant(dataDir, runId, pid) {
   const lines = [];
   for (let i = 1; i <= 30; i += 1) lines.push(`${JSON.stringify({ line: i })}\n`);
   fs.writeFileSync(`${streamDir}/stream.jsonl`, lines.join(''));
+  return { memoryId };
 }
 
 // One belay invocation, spawned with the exact options `makeSpawnFloor` below builds its paired floor
@@ -141,6 +144,7 @@ function assertGate(result) {
 
 let dir = null;
 let dataDir = null;
+let memoryId = null;
 let projDir = null;
 let noStoreDir = null;
 let orchDir = null;
@@ -148,7 +152,7 @@ let orchDir = null;
 before(async () => {
   dir = sandbox();
   dataDir = `${dir}/.belay`;
-  await plant(dataDir, 'run-budgets', process.pid);
+  ({ memoryId } = await plant(dataDir, 'run-budgets', process.pid));
   projDir = projectSandbox();
   noStoreDir = `${dir}/.belay-no-store`; // exists, holds no memory.db (build step 6h design item 6)
   fs.mkdirSync(noStoreDir, { recursive: true });
@@ -201,6 +205,10 @@ test('budgets: status, workers, tasks, receipts, memory stats, briefing, logs an
       tasks: () => timedCli(['tasks', '--data', dataDir], {}, 0, dataDir),
       receipts: () => timedCli(['receipts', '--data', dataDir], {}, 0, dataDir),
       memory_stats: () => timedCli(['memory', 'stats', '--data', dataDir], {}, 0, dataDir),
+      memory_search_keyword: () => timedCli(['memory', 'search', 'about task', '--mode', 'keyword', '--index', 'run-budgets', '--data', dataDir], {}, 0, dataDir),
+      memory_list: () => timedCli(['memory', 'list', 'run-budgets', '--index', '--data', dataDir], {}, 0, dataDir),
+      memory_show: () => timedCli(['memory', 'show', memoryId, '--data', dataDir], {}, 0, dataDir),
+      memory_timeline: () => timedCli(['memory', 'timeline', memoryId, '--data', dataDir], {}, 0, dataDir),
       briefing: () => timedCli(['briefing', 'w1', '--data', dataDir], {}, 0, dataDir),
       logs: () => timedCli(['logs', 'w1', '--tail', '5', '--data', dataDir], {}, 0, dataDir),
       diff: () => timedCli(['diff', '--data', dataDir], {}, 0, dataDir),
