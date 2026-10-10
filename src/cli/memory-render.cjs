@@ -160,7 +160,7 @@ const COL = {
   namespace: { head: 'namespace', cell: r => dash(r.namespace) },
   worker: { head: 'worker_id', cell: r => dash(r.worker_id) },
   task: { head: 'task_id', cell: r => dash(r.task_id) },
-  type: { head: 'type', cell: r => dash(r.type) },
+  type: { head: 'type', cell: r => dash(r.type) + (r.body && typeof r.body.kind === 'string' ? `/${r.body.kind}` : '') },
   created: { head: 'created_at', cell: r => dash(r.created_at) },
   title: { head: 'title', cell: r => one(r.title == null ? r.text : r.title).slice(0, 80) || '-' },
   text: { head: 'text', cell: r => one(r.text).slice(0, 80) },

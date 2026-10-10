@@ -135,3 +135,12 @@ test('reading a briefing writes nothing to the data dir', async () => {
   // Re-elect so the after() hook has an owner to stop; the run manager writes resume.md, not the core.
   await orch.run.attach({ adapter_pid: process.pid });
 });
+
+test('resumeDoc resolves the "project" namespace alias like memory.store does', async () => {
+  await orch.run.attach({ adapter_pid: process.pid, project: 'demo' });
+  await orch.memory.store({ namespace: 'project/demo', text: 'project-wide finding for the alias', tags: [taskId], embed: false });
+  const viaAlias = await orch.continuity.resumeDoc({ task_id: taskId, namespace: 'project' });
+  assert.ok(viaAlias.text.includes('project-wide finding for the alias'), 'the alias reaches project/demo');
+  const viaName = await orch.continuity.resumeDoc({ task_id: taskId, namespace: 'project/demo' });
+  assert.ok(viaName.text.includes('project-wide finding for the alias'));
+});

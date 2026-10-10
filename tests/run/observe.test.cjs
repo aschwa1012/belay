@@ -29,6 +29,7 @@ test('type table: change, discovery, failure, turn', () => {
   const edit = [use('Edit', { file_path: 'src/a.cjs' }, 'e1'), res('Edit', 'e1', { files: ['src/a.cjs'] })];
   const read = [use('Read', { file_path: 'src/b.cjs' }, 'r1'), res('Read', 'r1', { files: ['src/b.cjs'] })];
   assert.strictEqual(build(edit).type, 'change');
+  assert.strictEqual(build(edit).body.kind, 'change', 'the class is kept as body.kind');
   assert.strictEqual(build(read).type, 'discovery');
   assert.strictEqual(build(bash('b1', 'npm test', 1)).type, 'failure');
   assert.strictEqual(build(bash('b1', 'npm test', 0)).type, 'turn');

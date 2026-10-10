@@ -396,3 +396,26 @@ test('a worker with no task still gets usage rows and no summary or wrap-up', as
   assert.strictEqual(core.usageRows[0].task_id, undefined);
   assert.deepStrictEqual(core.calls.map((c) => c.method), ['usage.record']);
 });
+
+test('wrap-up: the rendered text carries no clock, so two Date.now values give identical bytes', async () => {
+  const render = async (now) => {
+    const real = Date.now;
+    Date.now = () => now;
+    try {
+      const core = spyCore({ tasks: { t1: releasedTask() }, observations: [{ id: 'o', body: { files_modified: ['src/a.cjs'] } }] });
+      const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical', cost_ledger: true, wrapup: true }));
+      const w = worker();
+      MJ.afterTurn(w, ctx, {}); await flush(w);
+      Object.assign(w, { turns: 2, costUsd: 0.02 });
+      MJ.afterTurn(w, ctx, {}); await flush(w);
+      return core.events.filter((e) => e.kind === 'wrapup').map((e) => e.message);
+    } finally { Date.now = real; }
+  };
+  const a = await render(1_700_000_000_000);
+  const b = await render(1_900_000_000_000);
+  assert.strictEqual(a.length, 1);
+  assert.ok(Buffer.from(a[0]).equals(Buffer.from(b[0])), 'same input, same bytes');
+  assert.doesNotMatch(a[0], /\d{4}-\d{2}-\d{2}T?\d{2}:\d{2}/, 'no ISO timestamp');
+  assert.doesNotMatch(a[0], /\b1[5-9]\d{11}\b|\b1[5-9]\d{8}\b/, 'no epoch value');
+  assert.doesNotMatch(a[0], /\b\d+\s*(ms|s|sec|seconds?|minutes?|min|hours?|h|days?)\s+ago\b|\bago\b|\bjust now\b/i, 'no relative time');
+});

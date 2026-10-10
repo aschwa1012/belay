@@ -218,9 +218,8 @@ function importArgs(row, line, opts, sha) {
   if (row.body !== undefined && row.body !== null && (typeof row.body !== 'object' || Array.isArray(row.body))) return bad('body', 'must be an object');
   const args = { namespace: R.mapNamespace(ns, opts.nsMap), text: row.text, source: 'operator', provenance: `import:${sha.slice(0, 12)}:${isStr(row.id) ? row.id : `line-${line}`}` };
   for (const k of ['type', 'title', 'tags', 'body']) if (row[k] !== undefined && row[k] !== null) args[k] = row[k];
-  // The store scrubs text, title and body but keeps tags as given, and an import file is untrusted input. Each tag is
-  // scrubbed here, whatever the run's redact lever (the operator's import has no run), and a tag that held a secret
-  // is dropped rather than kept with a placeholder in it.
+  // The store now scrubs tags too, but an import file is untrusted input and the operator's import has no run lever. Each tag is
+  // scrubbed here whatever the run lever, and a tag that held a secret is dropped rather than kept with a placeholder in it.
   if (args.tags) {
     const { redact } = require('../core/redact.cjs');
     args.tags = args.tags.map((t) => redact(t)).filter((r) => !Object.keys(r.redactions).length).map((r) => r.text);
