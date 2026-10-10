@@ -19,6 +19,7 @@ const status = require('./status.cjs');
 const diff = require('./methods-diff.cjs');
 const permission = require('./methods-permission.cjs');
 const search = require('./memory-search.cjs');
+const memoryIndex = require('./memory-index.cjs');
 
 // A method whose module is built apart: loaded on its first call, so this file does not need the module to
 // load. A checkout without it refuses by name instead of throwing a bare require error.
@@ -52,6 +53,9 @@ const METHODS = {
   'memory.list': { roles: ALL, kind: 'read', fn: search.list },
   'memory.timeline': { roles: ALL, kind: 'read', fn: search.timeline },
   'memory.get_many': { roles: ALL, kind: 'read', fn: search.getMany },
+  // ADR 0042 §2: the bounded first-message index; ADR 0043 §1: the knowledge agent's corpus (module built apart).
+  'memory.index': { roles: ALL, kind: 'read', fn: memoryIndex.index },
+  'memory.corpus': { roles: ALL, kind: 'read', fn: lazy('./memory-corpus.cjs', 'corpus') },
   'memory.setStatus': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-status.cjs', 'setStatus') },
   'memory.recordEvent': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-ledger.cjs', 'recordEvent') },
   'memory.events': { roles: ALL, kind: 'read', fn: lazy('./methods-ledger.cjs', 'events') },
