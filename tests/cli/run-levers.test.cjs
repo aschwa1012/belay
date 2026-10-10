@@ -266,6 +266,7 @@ test('run: a bad memory block exits 2 before anything is created; a good one run
     const row = runRow(ok);
     assert.strictEqual(row.project, 'acme');
     assert.strictEqual(JSON.parse(row.memory_levers).capture, true);
+    assert.ok(!adapterArgs(ok).includes('--worktree'), 'the knowledge agent is off, so the adapter is not told the worktree');
   } finally { cleanup(ok.dir); }
   const plain = go('hi\n', {});
   try {
@@ -275,5 +276,17 @@ test('run: a bad memory block exits 2 before anything is created; a good one run
     const row = runRow(plain);
     assert.strictEqual(row.memory_levers, null);
     assert.strictEqual(row.project, null);
+    assert.ok(!adapterArgs(plain).includes('--worktree'), 'with every lever off the orchestrator mcp.json is the base one');
   } finally { cleanup(plain.dir); }
+  const ka = go('hi\n', { memory: { knowledge_agent: true } });
+  try {
+    assert.strictEqual(ka.status, 0, ka.stderr.slice(-600));
+    const a = adapterArgs(ka);
+    assert.strictEqual(a[a.indexOf('--worktree') + 1], `${ka.dir}/wt`, 'with the knowledge agent on, the adapter gets the worktree');
+  } finally { cleanup(ka.dir); }
 });
+
+// The belay adapter's argv in the orchestrator's mcp.json.
+function adapterArgs(r) {
+  return JSON.parse(fs.readFileSync(`${r.orchDir}/mcp.json`, 'utf8')).mcpServers.belay.args;
+}
