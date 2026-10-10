@@ -114,7 +114,7 @@ function capturedCommands(observations) {
 
 const sentEntry = (r, spec) => ({
   kind: 'text', role: 'user', spec,
-  text: r.kind === 'wake' || r.kind === 'resume' ? `user (generated, ${r.kind}): ${r.text}` : `user: ${r.text}`,
+  text: r.kind === 'wake' || r.kind === 'resume' || r.kind === 'compact' ? `user (generated, ${r.kind}): ${r.text}` : `user: ${r.text}`,
 });
 
 function collect(events, observations, sent) {

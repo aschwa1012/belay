@@ -7,10 +7,15 @@
 // that fails or runs past its bound answers "not listed" and says so on both channels, and is not cached, so the
 // next `tools/list` asks again. The lever is also enforced where the question is answered (the run manager
 // refuses E_LEVER_OFF), so a missed listing costs the orchestrator a tool, never a lever.
+//
+// The read is the one core call the levers cost a run at the defaults, and ADR 0043 decision 1 places it here:
+// Claude Code lists the tools at startup, before the orchestrator calls anything, so the run row is not yet in
+// the adapter's hands and the listing cannot wait for it. Once the adapter's own run.attach has returned the row
+// (`attachedRun`), the gate answers from it and reads nothing.
 
 const DEFAULT_BOUND_MS = 3000;
 
-function createKnowledgeGate({ role, runId, storeExists, openCore, log, boundMs = DEFAULT_BOUND_MS }) {
+function createKnowledgeGate({ role, runId, storeExists, openCore, log, boundMs = DEFAULT_BOUND_MS, attachedRun = () => null }) {
   let answer = null; // true or false once a read has answered; null until then
   let inflight = null;
 
@@ -33,6 +38,11 @@ function createKnowledgeGate({ role, runId, storeExists, openCore, log, boundMs 
   return async function knowledgeListed() {
     if (role !== 'orchestrator') return false;
     if (answer !== null) return answer;
+    const row = attachedRun();
+    if (row) {
+      answer = require('../run/memory-levers.cjs').leversOfRow(row).knowledge_agent === true;
+      return answer;
+    }
     if (!storeExists()) return false;
     if (!inflight) {
       inflight = bounded()

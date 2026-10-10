@@ -119,3 +119,15 @@ test('the module requires only read-safe modules', () => {
   const reqs = [...src.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)].map(m => m[1]).filter(r => !r.startsWith('node:'));
   assert.deepStrictEqual(reqs.sort(), ['./errors.cjs', './fit-budget.cjs', './memory-rows.cjs']);
 });
+
+test('a row superseded only by a row of another namespace stays in this namespace\'s corpus, as in memory.index', async () => {
+  const kept = await put('project/scope', 'Scoped verified statement', { type: 'fact', created_at: 10000 });
+  const other = await put('project/elsewhere', 'A row elsewhere that names it', { type: 'fact', created_at: 10001 });
+  setCols(kept.id, { status: 'verified' });
+  setCols(other.id, { supersedes: kept.id });
+  const r = await corpus(E, orch, { project: 'scope' });
+  assert.deepStrictEqual(r.row_ids, [kept.id]);
+  const same = await put('project/scope', 'Its replacement in the same namespace', { type: 'fact', created_at: 10002 });
+  setCols(same.id, { status: 'verified', supersedes: kept.id });
+  assert.deepStrictEqual((await corpus(E, orch, { project: 'scope' })).row_ids, [same.id], 'a same-namespace successor still hides it');
+});

@@ -3,7 +3,8 @@
 // record"). belay's Claude launches pass no --replay-user-messages, so the stream holds no user text and the
 // bottle cannot learn the task spec or a later message from it. The run manager is the only writer to a
 // worker's stdin, so it records each message here: one JSON line of workers/<id>/sent.jsonl,
-// { seq, turn, kind: 'task' | 'message' | 'wake' | 'resume', text }.
+// { seq, turn, kind: 'task' | 'message' | 'wake' | 'resume' | 'compact', text }. 'compact' is the harness's own
+// /compact turn (compaction.cjs): generated, never the orchestrator's words.
 //
 // Only with `memory.bottle` on; with it off nothing here reads, writes or creates anything. `turn` is the
 // 1-based turn the message starts or is folded into, counted the way bottle.cjs counts: one more than the
@@ -16,7 +17,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const FILE = 'sent.jsonl';
-const KINDS = ['task', 'message', 'wake', 'resume'];
+const KINDS = ['task', 'message', 'wake', 'resume', 'compact'];
 
 const sentPath = (w) => path.join(w.dir, FILE).replace(/\\/g, '/');
 

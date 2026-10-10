@@ -14,7 +14,9 @@ function memoryCore(opts = {}) {
   const core = createFakeCore({ runId, resumeLineText });
   const events = [];
   const stores = [];
-  core.run = { get: async () => ({ run: { memory_levers: levers === null ? null : JSON.stringify(levers) } }) };
+  const row = { memory_levers: levers === null ? null : JSON.stringify(levers) };
+  core.run = { get: async () => { core.calls.push({ method: 'run.get', args: {} }); return { run: row }; } };
+  core.runRow = row; // what run.attach hands the adapter, for a test that passes the levers in as the adapter does
   const baseStore = core.memory.store;
   core.memory.store = async (a) => {
     stores.push(a);

@@ -168,7 +168,7 @@ function swallow(w, e, ctx) {
 
 function sendRaw(w, text, ctx) {
   w.child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } }) + '\n');
-  require('./sent-log.cjs').record(w, ctx, 'message', text); // ADR 0042 decision 4; a no-op with memory.bottle off
+  require('./sent-log.cjs').record(w, ctx, 'compact', text); // ADR 0042 decision 4: generated; a no-op with memory.bottle off
   return w.parser.noteStdinWrite();
 }
 const live = (w, ctx) => w.child && w.child.stdin && !w.child.stdin.destroyed && !w.settled && !w.stopRequested

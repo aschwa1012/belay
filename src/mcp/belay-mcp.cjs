@@ -135,7 +135,10 @@ const storeExists = () => {
   try { return fs.statSync(`${opts.dataDir}/memory.db`).isFile(); } catch { return false; }
 };
 // ADR 0043 decision 1: knowledge_ask is listed only when the run's knowledge_agent lever is on.
-const knowledgeListed = createKnowledgeGate({ role: opts.role, runId: opts.runId, storeExists, openCore: openCoreOnce, log: wlog });
+// ADR 0041/0043: the run row this adapter's own run.attach returned carries the memory levers, so neither the
+// gate (once attached) nor the run manager reads them again: a run at the defaults makes no extra core call.
+const attachedRun = () => (ATTACH && ATTACH.run) || null;
+const knowledgeListed = createKnowledgeGate({ role: opts.role, runId: opts.runId, storeExists, openCore: openCoreOnce, log: wlog, attachedRun });
 
 // ADR 0009 promises that a new orchestrator session reconstructs the run from the store, and
 // `run.attach` is that reconstruction: it opens the next epoch and supersedes every worker row the
@@ -180,7 +183,8 @@ function openRunManagerOnce() {
         // if belay is installed or run from another checkout, where the default would guess wrong.
         // BELAY_FAKE_PATHS, honoured only when set, merges over it so a test can point the run
         // manager at a fake substrate binary without touching the environment the workers inherit.
-        compactAtTokens: opts.compactAt, // ADR 0007 decision 3
+        compactAtTokens: opts.compactAt, worktree: opts.worktree || null, // ADR 0007 decision 3; ADR 0043 decision 1
+        memoryLevers: attachedRun() ? require('../run/memory-levers.cjs').leversOfRow(attachedRun()) : null,
         paths: { mcpBinary: __filename.split(path.sep).join('/'), ...FAKE_PATHS },
       }))
       .then(async (r) => {

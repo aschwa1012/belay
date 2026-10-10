@@ -4,7 +4,9 @@
 // use, and cores whose run row carries no memory block, the explicit defaults, and levers that feed nothing
 // on the turn path. With every capture, observation and job lever off the store calls, the rows and the bytes
 // written to stdin must be what the base build produced, and no memory method beyond the base turn store may
-// be called.
+// be called. The run manager is handed its levers the way the orchestrator adapter hands them (from the row its
+// own run.attach returned), so it makes no read of its own: the core methods called are the base build's, run.get
+// included.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -13,7 +15,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { createRunManager } = require('../../src/run/index.cjs');
-const { DEFAULTS } = require('../../src/run/memory-levers.cjs');
+const { DEFAULTS, leversOfRow } = require('../../src/run/memory-levers.cjs');
 const { createFakeCore } = require('./fake-core.cjs');
 const { memoryCore } = require('./fake-memory.cjs');
 const { cleanup } = require('../core/helpers.cjs');
@@ -29,10 +31,10 @@ function sandbox() {
 }
 
 // The script, and everything it leaves that the memory work could change.
-async function runScript(core) {
+async function runScript(core, { handLevers = true } = {}) {
   const sb = sandbox();
   const m = createRunManager({
-    core, dataDir: sb.data, runId: 'run-fake',
+    core, dataDir: sb.data, runId: 'run-fake', memoryLevers: handLevers && core.runRow ? leversOfRow(core.runRow) : null,
     paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') },
   });
   const recv = path.join(sb.data, 'recv.jsonl');
@@ -88,10 +90,33 @@ test('levers off: stdin bytes, memory store calls and rows equal the base build 
     assert.strictEqual(got.turns, base.turns, `${name}: turns`);
     assert.strictEqual(got.memBuf, undefined, `${name}: nothing buffered`);
     assert.strictEqual(got.lastError, base.lastError, `${name}: no error noted`);
-    // Everything the run called, less the run.get the levers read goes through (not a core call on the fake).
+    // Everything the run called, run.get included: the levers came in with the manager, so nothing read them.
     assert.deepStrictEqual(got.allMethods, base.allMethods, `${name}: core methods called`);
+    assert.ok(!got.allMethods.includes('run.get'), `${name}: no run.get`);
     assert.deepStrictEqual(core.events, [], `${name}: no memory_event`);
   }
+});
+
+test('a manager handed its levers makes no core call at shutdown when nothing was spawned; one not handed them reads once', async () => {
+  const plain = createFakeCore({ runId: 'run-fake' });
+  const psb = sandbox();
+  try { await createRunManager({ core: plain, dataDir: psb.data, runId: 'run-fake', paths: { claudeExe: FAKE } }).shutdown(); } finally { cleanup(psb.data); }
+  const baseCalls = plain.calls.map((c) => c.method);
+  for (const hand of [true, false]) {
+    const core = memoryCore({ levers: DEFAULTS, resumeLineText: RL });
+    const sb = sandbox();
+    const m = createRunManager({ core, dataDir: sb.data, runId: 'run-fake', memoryLevers: hand ? leversOfRow(core.runRow) : null, paths: { claudeExe: FAKE } });
+    try { await m.shutdown(); } finally { cleanup(sb.data); }
+    // The base build's own shutdown calls, and, only for a manager not handed its levers, the one read.
+    assert.deepStrictEqual(core.calls.map((c) => c.method), hand ? baseCalls : ['run.get', ...baseCalls], `handed ${hand}`);
+  }
+  // Not handed the levers, a spawn costs exactly the one run.get on top of the base calls, and nothing else changes.
+  const base = await runScript(createFakeCore({ runId: 'run-fake', resumeLineText: RL }));
+  const core = memoryCore({ levers: null, resumeLineText: RL });
+  const got = await runScript(core, { handLevers: false });
+  assert.deepStrictEqual(got.stdin, base.stdin);
+  assert.deepStrictEqual(got.allMethods, [...base.allMethods, 'run.get'].sort());
+  assert.strictEqual(core.calls.filter((c) => c.method === 'run.get').length, 1);
 });
 
 test('levers on is observably different (the identity test would notice): an observation store and an event appear', async () => {

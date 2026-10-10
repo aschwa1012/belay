@@ -151,7 +151,7 @@ async function shutdown(workers, { stop, core, clearPoll, markClosed, onDrained 
 // this build's bare defaults. The last launch's own argv.json (written by `launch`, manager.cjs) and
 // mcp.json name what actually ran; a read or parse failure is recorded on the result, never thrown.
 function readLaunchOptions(dir) {
-  const out = { model: null, allowedTools: null, permissionPrompt: false, permitWaitMs: null, error: null };
+  const out = { model: null, allowedTools: null, tools: null, permissionPrompt: false, permitWaitMs: null, error: null };
   try {
     const argv = JSON.parse(fs.readFileSync(path.join(dir, 'argv.json'), 'utf8')).spec.args;
     const modelAt = argv.indexOf('--model');
@@ -163,6 +163,8 @@ function readLaunchOptions(dir) {
       out.allowedTools = tools;
     }
     out.permissionPrompt = argv.includes('--permission-prompt-tool');
+    const builtinsAt = argv.indexOf('--tools'); // ADR 0024: a narrowed list survives a cross-adapter relaunch
+    if (builtinsAt >= 0) out.tools = require('./surface.cjs').narrowTools(String(argv[builtinsAt + 1]).split(','));
   } catch (e) {
     out.error = { where: 'argv.json', code: e && e.code, message: e && e.message };
   }

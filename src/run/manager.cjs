@@ -37,7 +37,8 @@ const LIST = require('./list.cjs');
 const { POLL_MS } = require('./exit-hold.cjs');
 const now = () => Date.now();
 
-function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = null }) {
+// `memoryLevers`: the run's levers when the caller holds the run row (ADR 0041); `worktree`: the run's (ADR 0043).
+function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = null, memoryLevers = null, worktree = null }) {
   if (!core) fail('E_ARGS', 'createRunManager needs a core');
   if (!dataDir) fail('E_ARGS', 'createRunManager needs a dataDir');
   if (!runId) fail('E_ARGS', 'createRunManager needs a runId');
@@ -61,7 +62,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
   // 6i-2 fix round (item 3, should-fix): `shutdownFlags` carried on ctx itself, so worker.cjs's onTurnEnd
   // (through turn-record.cjs) can gate its own checkpoint/memory write on it exactly as writeRow does.
-  const ctx = { core, runId, dataDir: root, adapterPid: paths.adapterPid || process.pid, writeRow: null, shutdownFlags, compactAt: compactAtTokens };
+  const ctx = { core, runId, dataDir: root, adapterPid: paths.adapterPid || process.pid, writeRow: null, shutdownFlags, compactAt: compactAtTokens, memoryLevers, worktree };
   const writeRow = createWriteRow(ctx, shutdownFlags);
   ctx.writeRow = writeRow;
 
@@ -136,7 +137,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
         model: w.model || L.DEFAULT_CLAUDE_MODEL, allowedTools: w.allowedTools,
         permissionMode: w.permissionMode, resumeSessionId: resume,
         permissionPromptTool: w.permissionPrompt, appendSystemPromptFile: w.instructions && w.instructions.path,
-        effort: w.effort, // ADR 0028 decision 2: every launch, fresh or resumed
+        effort: w.effort, tools: w.tools, // ADR 0028 decision 2: every launch, fresh or resumed; ADR 0024: a narrowed list too
       });
     } else if (resume) {
       args = L.codexResumeArgv({ threadId: resume, adapterArgs: w.adapterArgs, prompt, model: w.model });
@@ -196,7 +197,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const {
       substrate, worktree, prompt, task_id = null, model = null, allowed_tools = null,
       permission_mode = null, startup_timeout_ms = 60000, worker_id = null, sandbox = null,
-      permission_prompt = false, permit_wait_ms = 600000, effort = null,
+      permission_prompt = false, permit_wait_ms = 600000, effort = null, tools = null,
     } = opts || {};
     validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id });
 
@@ -212,7 +213,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       w = W.newWorkerRecord({
         id, substrate, worktree, dataDir: root, taskId: task_id, model,
         allowedTools: allowed_tools, permissionMode: permission_mode, sandbox,
-        permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort,
+        permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort, tools,
       });
       workers.set(id, w);
     } finally { pendingIds.delete(id); }

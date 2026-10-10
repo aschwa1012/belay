@@ -45,11 +45,11 @@ async function corpus(E, caller, args = {}) {
   const namespace = namespaceOf(caller, args);
   const maxBytes = maxBytesOf(args.max_bytes);
   const db = E.store.db;
-  // Live rows only: not expired, not superseded by another row. Verified rows, summaries and decisions qualify;
+  // Live rows only: not expired, not superseded by another row of the same namespace (as memory-index.cjs reads it). Verified rows, summaries and decisions qualify;
   // a refuted row never does, whatever its type.
   const where = `e.namespace = ?
     AND (e.ttl_at IS NULL OR e.ttl_at >= ?)
-    AND NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id)
+    AND NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND s.namespace = e.namespace)
     AND COALESCE(e.status, 'unverified') <> 'refuted'
     AND (COALESCE(e.status, 'unverified') = 'verified' OR e.type IN ('summary', 'decision'))`;
   const params = [namespace, Date.now()];
