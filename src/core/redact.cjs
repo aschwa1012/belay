@@ -73,11 +73,23 @@ const RULES = [
         const q = v[0] === '"' || v[0] === "'" ? v[0] : '';
         return q + marker('env_secret') + q;
       };
+      // An unquoted value runs to the end of the line. trimEnd (not a regex) keeps
+      // the trailing-whitespace cut linear; `comma` also drops a JSON/YAML comma.
+      const sub = (head, name, sep, v, comma) => {
+        if (!secretName(name)) return null;
+        let core = v;
+        if (v[0] !== '"' && v[0] !== "'") {
+          core = v.trimEnd();
+          while (comma && core.endsWith(',')) core = core.slice(0, -1).trimEnd();
+        }
+        if (!core || !value(core)) return null;
+        return head + name + sep + swap(core) + v.slice(core.length);
+      };
       return text
-        .replace(/^([ \t]*(?:export[ \t]+)?)([A-Za-z_][A-Za-z0-9_]*)=("[^"\n]+"|'[^'\n]+'|[^\s"']\S*)/gm,
-          (m, head, name, v) => (secretName(name) && value(v) ? `${head}${name}=${swap(v)}` : m))
-        .replace(/(?<![A-Za-z0-9_.-])(["']?)([A-Za-z_][A-Za-z0-9_.-]*)\1([ \t]*:[ \t]*)("[^"\n]+"|'[^'\n]+'|[^\s,}\]"'][^\s,}\]]*)/g,
-          (m, q, name, sep, v) => (secretName(name) && value(v) ? `${q}${name}${q}${sep}${swap(v)}` : m));
+        .replace(/^([ \t]*(?:export[ \t]+)?)([A-Za-z_][A-Za-z0-9_]*)(=)("[^"\n]+"|'[^'\n]+'|[^\s"'][^\n]*)/gm,
+          (m, head, name, sep, v) => sub(head, name, sep, v, false) ?? m)
+        .replace(/(?<![A-Za-z0-9_.-])(["']?)([A-Za-z_][A-Za-z0-9_.-]*)\1([ \t]*:[ \t]*)("[^"\n]+"|'[^'\n]+'|[^\s,}\]"'][^\n]*)/g,
+          (m, q, name, sep, v) => sub(q, name + q, sep, v, true) ?? m);
     },
   },
 ];

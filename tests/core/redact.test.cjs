@@ -184,3 +184,39 @@ test('the module requires nothing', () => {
   const src = fs.readFileSync(path.join(__dirname, '../../src/core/redact.cjs'), 'utf8');
   assert.doesNotMatch(src, /\brequire\s*\(/);
 });
+
+const GH = 'gh' + 'p_' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4';
+
+test('env_secret output is idempotent for YAML/JSON and .env forms', () => {
+  const samples = [
+    'db_password: hunter2',
+    'api_key: ' + GH,
+    'PASSWORD=pw ' + GH,
+    'API_TOKEN=' + GH,
+    '"api_key": "' + GH + '",',
+    "secret: 'abc def'",
+    'export DB_PASSWORD=hunter2',
+    '{"password": "hunter2", "n": 1}',
+  ];
+  for (const s of samples) {
+    const once = redact(s);
+    assert.doesNotMatch(once.text, /\]\]/, s);
+    assert.ok(once.text.includes('[REDACTED:'), s);
+    const twice = redact(once.text);
+    assert.equal(twice.text, once.text, s);
+    assert.deepEqual(twice.redactions, {}, s);
+  }
+  assert.equal(redact('db_password: hunter2').text, 'db_password: [REDACTED:env_secret]');
+  assert.equal(redact('api_key: ' + GH).text, 'api_key: [REDACTED:github_token]');
+});
+
+test('an unquoted env value is redacted to the end of the line', () => {
+  const env = redact('PASSWORD=correct horse battery staple  \nNEXT=1');
+  assert.equal(env.text, 'PASSWORD=[REDACTED:env_secret]  \nNEXT=1');
+  assert.deepEqual(env.redactions, { env_secret: 1 });
+  const yaml = redact('db_password: correct horse battery staple,  \nname: x');
+  assert.equal(yaml.text, 'db_password: [REDACTED:env_secret],  \nname: x');
+  assert.deepEqual(yaml.redactions, { env_secret: 1 });
+  assert.equal(redact('export TOKEN=a b c').text, 'export TOKEN=[REDACTED:env_secret]');
+  assert.equal(redact('AUTHOR=Jane Doe').text, 'AUTHOR=Jane Doe');
+});
