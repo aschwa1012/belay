@@ -1,0 +1,10 @@
+{"type":"thread.started","thread_id":"01a083ca-d728-7d32-82c6-a5d696255c28"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll read `input.md` and return its first five words.\n"}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"\"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\" -Command 'Get-Content -LiteralPath input.md -Raw'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"\"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\" -Command 'Get-Content -LiteralPath input.md -Raw'","aggregated_output":"The belay harness is the parent process of every worker.\n\r\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"The belay harness is the"}}
+{"type":"item.started","item":{"id":"item_3","type":"command_execution","command":"node bad.js","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_3","type":"command_execution","command":"node bad.js","aggregated_output":"boom\nat x\n","exit_code":2,"status":"failed"}}
+{"type":"item.completed","item":{"id":"item_4","type":"command_execution","command":"sleep","aggregated_output":"","exit_code":null,"status":"declined"}}
+{"type":"item.completed","item":{"id":"item_5","type":"mcp_tool_call","tool":"patch","changes":[{"path":"src/a.js"},{"path":"src/b.js"}],"result":"ok"}}
