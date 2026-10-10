@@ -286,7 +286,8 @@ async function runWrapup(J, tasks) {
 // ---- entry points ---------------------------------------------------------------------------------------
 // Queues this turn's jobs on the worker's memory queue and returns at once. `turnRowId` is the observation
 // row the capture step stored for this turn (null when there is none).
-function afterTurn(w, ctx, { turnEvents, checkpointId, turnRowId } = {}) {
+function afterTurn(w, ctx, { turnEvents, checkpointId, turnRowId: turnRow = null, observationId = null } = {}) {
+  const turnRowId = observationId; // the project copy is of the turn's observation row; the turn row (turnRow) is not an observation
   void turnEvents; void checkpointId; // the observation already carries what the events held
   if (closed(ctx)) return;
   if (ctx.memoryLevers && !anyJob(ctx.memoryLevers)) return;

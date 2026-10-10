@@ -31,7 +31,13 @@ async function levers(ctx, w) {
 
 // createParser's second argument. Sync: it reads what `levers` stored, so a launch before any levers read
 // (the defaults) captures nothing.
-const parserOpts = (ctx) => ({ capture: !!(ctx.memoryLevers && ctx.memoryLevers.capture) });
+const parserOpts = (ctx) => {
+  const lv = ctx.memoryLevers || {};
+  if (!lv.capture) return { capture: false };
+  // ADR 0041 decision 2: captured heads, tails and commands are redacted before they leave the parser; with the
+  // redact lever off they are kept as written, which the store records as redactions { disabled: 1 }.
+  return lv.redact === false ? { capture: true, redact: (t) => ({ text: t, redactions: {} }) } : { capture: true, redact: require('../core/redact.cjs').redact };
+};
 
 async function record(ctx, w, fields) {
   try {
