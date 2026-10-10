@@ -3,7 +3,7 @@
 //
 // The orchestrator's adapter runs them in its own shutdown, after it has stopped each worker (up to 10 s each)
 // and drained the memory queues (up to 5 s). Claude Code ends its stdio server 324 to 424 ms after closing the
-// server's stdin, with no handlers run (docs/research/run-close/receipts/probes.json), so with any live worker
+// server's stdin, with no handlers run, so with any live worker
 // that run is cut short and nothing records it. `belay run` owns the store and outlives the adapter: once the
 // adapter has closed, the workers are closed and run.end has settled the rows, it runs the same jobs against
 // its own store. They are store-only (task and worker rows, memory rows and events) and idempotent with any
