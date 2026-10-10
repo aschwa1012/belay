@@ -39,9 +39,9 @@ const RULES = [
       return text.replace(/<private>[\s\S]*?<\/private>/gi, sub).replace(/<private>[\s\S]*$/i, sub);
     },
   },
-  simple('anthropic_key', new RegExp(`${NOT_BEFORE}sk-ant-[${TOK}]{20,}${NOT_AFTER}`, 'g'), (t) => t.includes('sk-ant-')),
+  simple('anthropic_key', new RegExp(`${NOT_BEFORE}sk-` + `ant-[${TOK}]{20,}${NOT_AFTER}`, 'g'), (t) => t.includes('sk-' + 'ant-')),
   simple('openai_key', new RegExp(`${NOT_BEFORE}sk-(?:proj-)?[${TOK}]{20,}${NOT_AFTER}`, 'g'), (t) => t.includes('sk-')),
-  simple('github_token', new RegExp(`${NOT_BEFORE}(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})${NOT_AFTER}`, 'g'),
+  simple('github_token', new RegExp(`${NOT_BEFORE}(?:gh[pousr]_[A-Za-z0-9]{20,}|github_` + `pat_[A-Za-z0-9_]{20,})${NOT_AFTER}`, 'g'),
     (t) => t.includes('gh') ),
   simple('aws_access_key', /(?<![A-Z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])/g, (t) => t.includes('AKIA') || t.includes('ASIA')),
   simple('google_api_key', new RegExp(`${NOT_BEFORE}AIza[0-9A-Za-z_-]{35}${NOT_AFTER}`, 'g'), (t) => t.includes('AIza')),
@@ -60,14 +60,14 @@ const RULES = [
     kind: 'url_credentials',
     gate: (t) => t.includes('://'),
     apply: (text, hit) => text.replace(
-      /((?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*:\/\/)(?!\[REDACTED:)[^\s:@\/]+:[^\s@\/]+@/g,
+      /((?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*:\/\/)(?!\[REDACTED:url_credentials\]@)(?:\[REDACTED:[a-z_]+\]|[^\s:@\/]+):[^\s@\/]+@/g,
       (_, head) => { hit(); return head + marker('url_credentials') + '@'; }),
   },
   {
     kind: 'env_secret',
     gate: (t) => t.includes('=') || t.includes(':'),
     apply(text, hit) {
-      const value = (v) => !v.includes('[REDACTED:');
+      const value = (v) => !/^(["']?)\[REDACTED:[a-z_]+\]\1$/.test(v);
       const swap = (v) => {
         hit();
         const q = v[0] === '"' || v[0] === "'" ? v[0] : '';

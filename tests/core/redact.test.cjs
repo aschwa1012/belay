@@ -19,7 +19,7 @@ const SAMPLES = {
   pem_private_key: ['a\n' + '-----BEGIN ' + 'RSA PRIVATE KEY-----\nMIIabc\ndef\n-----END ' + 'RSA PRIVATE KEY-----\nb',
     'a\n[REDACTED:pem_private_key]\nb'],
   bearer: ['Authorization: Bearer ' + 'T'.repeat(30), 'Authorization: Bearer [REDACTED:bearer]'],
-  url_credentials: ['db postgres://admin:hunter2@host:5432/x', 'db postgres://[REDACTED:url_credentials]@host:5432/x'],
+  url_credentials: ['db postgres:' + '//admin:' + 'hunter2@host:5432/x', 'db postgres:' + '//[REDACTED:url_credentials]@host:5432/x'],
   env_secret: ['export API_TOKEN="abc123"', 'export API_TOKEN="[REDACTED:env_secret]"'],
 };
 
@@ -42,7 +42,7 @@ for (const [kind, [input, expected]] of Object.entries(SAMPLES)) {
 
 const NEGATIVES = {
   private: 'a private note, <privately> not a tag',
-  anthropic_key: 'sk-ant-short',
+  anthropic_key: 'sk-' + 'ant-short',
   openai_key: 'sk-short and sk-' + 'a'.repeat(10),
   github_token: 'ghp_short and gh' + 'p_' + 'x'.repeat(10),
   aws_access_key: 'AKIA' + 'ABC' + ' and ' + 'AK' + 'IA' + 'a'.repeat(16),
@@ -98,7 +98,33 @@ test('bearer keeps the header name', () => {
 });
 
 test('url_credentials keeps scheme and host', () => {
-  assert.equal(redact('https://u:p@example.com/a').text, 'https://[REDACTED:url_credentials]@example.com/a');
+  assert.equal(redact('https:' + '//u:p' + '@example.com/a').text, 'https:' + '//[REDACTED:url_credentials]@example.com/a');
+});
+
+test('url_credentials: a user part already redacted by another kind still loses the password', () => {
+  const user = 'AK' + 'IA' + 'ABCDEFGHIJKLMNOP';
+  const input = 'https:' + '//' + user + ':' + 'realSecret' + 'Password@host/x';
+  const r = redact(input);
+  assert.equal(r.text, 'https:' + '//[REDACTED:url_credentials]@host/x');
+  assert.doesNotMatch(r.text, /realSecret/);
+  assert.deepEqual(r.redactions, { aws_access_key: 1, url_credentials: 1 });
+  assert.deepEqual(redact(r.text), { text: r.text, redactions: {} });
+});
+
+test('env_secret: a value holding a marker plus more text is fully redacted', () => {
+  const key = 'AK' + 'IA' + 'ABCDEFGHIJKLMNOP';
+  const r = redact('AWS_CREDENTIALS=' + key + ':' + 'realSecret' + 'Value');
+  assert.equal(r.text, 'AWS_CREDENTIALS=[REDACTED:env_secret]');
+  assert.doesNotMatch(r.text, /realSecret/);
+  assert.deepEqual(r.redactions, { aws_access_key: 1, env_secret: 1 });
+  assert.deepEqual(redact(r.text), { text: r.text, redactions: {} });
+  const q = redact('{"aws_credentials": "' + key + ':' + 'realSecret' + 'Value"}');
+  assert.equal(q.text, '{"aws_credentials": "[REDACTED:env_secret]"}');
+});
+
+test('env_secret: a value that is only a marker is left alone', () => {
+  const t = 'API_KEY=[REDACTED:github_token]';
+  assert.deepEqual(redact(t), { text: t, redactions: {} });
 });
 
 test('no false positives on look-alikes', () => {
