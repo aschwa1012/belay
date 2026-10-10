@@ -26,7 +26,7 @@ const { callWorkerAdapter, pauseBoundMs, resumeBoundMs } = require('./adapter-pi
 const { closeRunWorkers, workersClosedBlock } = require('./run-close.cjs');
 const { warmEmbedder, createEmbedderGuard } = require('../run/embedder-guard.cjs');
 const { RESUME_WARM_MS } = require('./embedder-bounds.cjs');
-const { parseLevers, substituteLevers, countReviewRounds } = require('./run-levers.cjs');
+const { parseLevers, attachMemory, memoryText, substituteLevers, countReviewRounds } = require('./run-levers.cjs');
 
 const fwd = (p) => String(p).split('\\').join('/');
 
@@ -45,7 +45,7 @@ const openCore = resolveOpenCore();
 const KNOWN_KEYS = new Set([
   'worktree', 'prompt_file', 'run_id', 'model', 'allowed_tools', 'orchestrator_dir',
   'startup_timeout_ms', 'timeout_ms', 'mcp_tool_timeout_ms', 'poll_ms', 'close_grace_ms',
-  'max_fix_rounds', 'fix_cutoff', 'on_embedder_failure', 'compact_at_tokens', 'mode', 'interactive_surface_ms', 'fullscreen',
+  'max_fix_rounds', 'fix_cutoff', 'on_embedder_failure', 'compact_at_tokens', 'memory', 'mode', 'interactive_surface_ms', 'fullscreen',
 ]);
 const REQUIRED_KEYS = ['worktree', 'prompt_file'];
 
@@ -154,7 +154,7 @@ function renderText(receipt) {
   else if (pl && pl.unchanged === false) lines.push(`plugin copy changed after spawn: ${(pl.changed_files || []).join(', ') || 'unreadable'}`); // ADR 0037 amendment 5 decision 4
   if (receipt.levers) {
     const rr = receipt.review_rounds === null ? `unknown (${receipt.review_rounds_reason})` : receipt.review_rounds;
-    lines.push(`levers: max_fix_rounds ${receipt.levers.max_fix_rounds}, fix_cutoff ${receipt.levers.fix_cutoff}, on_embedder_failure ${receipt.levers.on_embedder_failure}; review_rounds: ${rr}`);
+    lines.push(`levers: max_fix_rounds ${receipt.levers.max_fix_rounds}, fix_cutoff ${receipt.levers.fix_cutoff}, on_embedder_failure ${receipt.levers.on_embedder_failure}${memoryText(receipt.levers)}; review_rounds: ${rr}`);
   }
   lines.push(...RI.embedderLines(receipt));
   if (receipt.receipt_path) lines.push(`receipt: ${receipt.receipt_path}`);
@@ -339,7 +339,7 @@ async function run(ctx) {
   async function onAttached({ pid }) {
     try {
       RID.watchOrchestrator(pid); // ADR 0039: run-identity.cjs; the attach never waits on a snapshot
-      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds });
+      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, ...attachMemory(parsed.levers) });
       return { ok: true, attach: attachRow };
     } catch (e) {
       return { ok: false, error: (e && e.message) || String(e) };
