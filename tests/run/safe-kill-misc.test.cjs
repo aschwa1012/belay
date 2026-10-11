@@ -53,7 +53,13 @@ test('ownCreatedProbe: never waits for the snapshot, and has the answer once it 
   const early = await probe();
   assert.ok(Date.now() - t0 < 300, 'the probe must not block on the snapshot');
   assert.strictEqual(early, null);
-  await sleep(2500);
-  const later = await probe();
-  assert.ok(Number.isFinite(later) && later < Date.now(), String(later));
+  // Wait for the snapshot to finish, not for a fixed time: poll the probe, which turns non-null the moment the
+  // read is done. The bound is reached only on a hang (the snapshot itself times out well inside it).
+  const deadline = Date.now() + 90000;
+  let later = null;
+  while (later === null && Date.now() < deadline) {
+    later = await probe();
+    if (later === null) await sleep(50);
+  }
+  assert.ok(Number.isFinite(later) && later < Date.now(), `the answer never arrived: ${String(later)}`);
 });
