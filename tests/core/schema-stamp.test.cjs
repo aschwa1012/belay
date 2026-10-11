@@ -7,7 +7,6 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { execFileSync } = require('node:child_process');
 const { DatabaseSync } = require('node:sqlite');
 const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
 
@@ -132,13 +131,13 @@ test('a schema_version that is not a positive integer is refused too', () => {
   }
 });
 
-// The base core (93b1a0b, schema 1, before the memory columns), loaded from git into the sandbox: its store,
+// The 0.1.0 core (schema 1, before the memory columns), copied from its fixture into the sandbox: its store,
 // its schema, its stamp and its errors are the whole of what its Store requires.
 function baseCore(dir) {
   const root = path.join(dir, 'base');
   fs.mkdirSync(path.join(root, 'src', 'core'), { recursive: true });
   for (const m of ['store', 'schema', 'schema-stamp', 'errors']) {
-    const src = execFileSync('git', ['show', `93b1a0b:src/core/${m}.cjs`], { cwd: path.resolve(__dirname, '..', '..'), encoding: 'utf8', maxBuffer: 1 << 24 });
+    const src = fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'v0.1.0', 'src', 'core', `${m}.cjs`), 'utf8');
     fs.writeFileSync(path.join(root, 'src', 'core', `${m}.cjs`), src);
   }
   return require(path.join(root, 'src', 'core', 'store.cjs')).Store;

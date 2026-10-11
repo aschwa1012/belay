@@ -7,7 +7,6 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 const { DatabaseSync } = require('node:sqlite');
 const { core, sandbox, cleanup } = require('./helpers.cjs');
 
@@ -17,8 +16,8 @@ const { SCHEMA_VERSION } = core('schema-stamp.cjs');
 const { ensureSchema } = core('schema.cjs');
 const { CoreError, CODES } = core('errors.cjs');
 
-const BASE_SHA = '93b1a0b';
-const ROOT = path.resolve(__dirname, '..', '..');
+// The 0.1.0 core's schema module, kept as a fixture so the test needs no git history.
+const BASE_DIR = path.resolve(__dirname, '..', 'fixtures', 'v0.1.0');
 
 const NEW_ENTRY_COLUMNS = ['title', 'status', 'status_receipt', 'status_by', 'status_at', 'run_id', 'task_id', 'turn', 'source', 'redactions', 'body'];
 const TRIGGER_NAMES = ['memory_fts_ad', 'memory_fts_ai', 'memory_fts_au'];
@@ -30,9 +29,9 @@ const ftsCount = db => db.prepare('SELECT COUNT(*) AS n FROM memory_fts_docsize'
 const hits = (db, term) => db.prepare('SELECT m.id FROM memory_fts f JOIN memory_entries m ON m.rowid = f.rowid WHERE memory_fts MATCH ? ORDER BY m.id')
   .all(`"${term}"`).map(r => r.id);
 
-// A store as the base commit made it: the base ensureSchema SQL (git show), none of the new columns, with rows.
+// A store as 0.1.0 made it: the 0.1.0 ensureSchema SQL, none of the new columns, with rows.
 function baseStore(dir, rows) {
-  const src = execFileSync('git', ['show', `${BASE_SHA}:src/core/schema.cjs`], { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 24 });
+  const src = fs.readFileSync(path.join(BASE_DIR, 'src', 'core', 'schema.cjs'), 'utf8');
   const modPath = path.join(dir, 'base-schema.cjs');
   fs.writeFileSync(modPath, src);
   const f = path.join(dir, 'memory.db');
