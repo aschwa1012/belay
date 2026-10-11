@@ -76,7 +76,8 @@ test('BL1: a message during a harness /compact is refused E_BUSY and written now
   try {
     await withEnv({ FAKE_CTX_START: '1200', FAKE_CTX_STEP: '0', FAKE_RECV_FILE: recv, FAKE_COMPACT_DELAY_MS: '1200' }, async () => {
       await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'wb' });
-      await m._waitTurn('wb', 8000);
+      // No turn wait here: a wait that starts once the harness's /compact is sent waits the compaction out (it is
+      // invisible as a turn), which on a slow host ate the window this test needs. The /compact arriving is the signal.
       await until(() => lines(recv).some((r) => r.text.startsWith('/compact')));
       await assert.rejects(m.message({ worker_id: 'wb', text: 'two' }), (e) => {
         assert.strictEqual(e.code, 'E_BUSY');
@@ -107,7 +108,8 @@ test('BL1: a pause during a harness /compact leaves no stranded state: resume wo
   try {
     await withEnv({ FAKE_CTX_START: '1200', FAKE_CTX_STEP: '0', FAKE_RECV_FILE: recv, FAKE_COMPACT_DELAY_MS: '1500' }, async () => {
       await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'wp' });
-      await m._waitTurn('wp', 8000);
+      // No turn wait here: a wait that starts once the harness's /compact is sent waits the compaction out (it is
+      // invisible as a turn), which on a slow host ate the window this test needs. The /compact arriving is the signal.
       await until(() => lines(recv).some((r) => r.text.startsWith('/compact')));
       await assert.rejects(m.message({ worker_id: 'wp', text: 'A' }), (e) => e.code === 'E_BUSY');
       await m.pause({ worker_id: 'wp', by: 'operator:1' });
