@@ -6,12 +6,15 @@
 
 const W = require('./worker.cjs');
 
-// Resolves like W.waitTurn: a turn's facts, an exit's facts, or null at the bound. The queue is drained first
-// so a turn end already parsed has finished recording; the check and the registration then share one tick.
-async function waitTurnOrLanded(w, ms) {
-  await w.queue;
-  if (w.turnEnded) return { usage: w.lastTurnUsage, checkpoint_id: w.lastCheckpointId, paused: !!w.parkRequested, already: true };
-  if (w.settled) return { exited: true, exit_code: w.exitCode, exit_signal: w.exitSignal, already: true };
+// Resolves like W.waitTurn: a turn's facts, an exit's facts, or null at the bound. Decided synchronously, never
+// after an await: draining the worker's queue first would hold the caller behind unrelated queued work (a
+// harness /compact's), so the check and the registration share one tick. A turn whose end is parsed but still
+// recording (`pendingTurnEnd` set) has not resolved its waiters yet, so a waiter registered now still gets it.
+function waitTurnOrLanded(w, ms) {
+  if (w.turnEnded && !w.pendingTurnEnd) {
+    return Promise.resolve({ usage: w.lastTurnUsage, checkpoint_id: w.lastCheckpointId, paused: !!w.parkRequested, already: true });
+  }
+  if (w.settled && !w.pendingTurnEnd) return Promise.resolve({ exited: true, exit_code: w.exitCode, exit_signal: w.exitSignal, already: true });
   return W.waitTurn(w, ms);
 }
 
