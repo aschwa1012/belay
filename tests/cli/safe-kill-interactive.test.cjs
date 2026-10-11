@@ -1,6 +1,7 @@
 'use strict';
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1';
 process.env.BELAY_FAKE_CORE = require('node:path').resolve(__dirname, 'fakes', 'core-attach-late-rejects.cjs'); // read once, at cmd-run's load
+require(process.env.BELAY_FAKE_CORE); // first: it wraps child_process.spawn before src takes its reference
 // safe-kill-interactive.test.cjs — ADR 0039 review round, interactive orchestrator: the attach-failure kill
 // must not act on a claude whose exit was already seen (the injected pidAlive says "alive", as a reused pid
 // would), and the console's SIGHUP snapshot is reused only while it is young.
