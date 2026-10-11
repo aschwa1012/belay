@@ -116,7 +116,12 @@ test('two concurrent spawns with one worker_id and a task_id: one wins, the othe
     assert.match(bad[0].reason.message, /already exists/);
     assert.strictEqual((await m.list()).workers.length, 1, 'one child exists');
     assert.strictEqual(fake.callsTo('task.assign').filter((c) => !c.args.check_only).length, 1, 'one real assign');
-    assert.deepStrictEqual(fake.rowsFor('wrace').map((r) => r.state), ['starting', 'starting', 'running']);
+    // The fake answers at once, and its turn end restates `running`; whether that row has landed by now depends
+    // on the host's speed, so wait for the turn and the row writes behind it, then expect it every time.
+    const waited = await m.wait({ worker_ids: ['wrace'], timeout_ms: 8000 });
+    assert.strictEqual(waited.timed_out, false, 'the winner\'s first turn never ended');
+    await m._worker('wrace').queue;
+    assert.deepStrictEqual(fake.rowsFor('wrace').map((r) => r.state), ['starting', 'starting', 'running', 'running']);
   } finally {
     try { await m.shutdown(); } finally {
       // A regressed reservation leaves a child the manager no longer tracks; stop each recorded pid by its exact pid.

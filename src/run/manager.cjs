@@ -451,7 +451,12 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     // 6e-6 item 2 (carried items 1 and 5): the wait also ends on the worker's own exit (`turn.exited`),
     // never the rest of `first_turn_timeout_ms`. A pause's own interrupt (`turn.paused`) lands well
     // before the park's exit and row write, waited out here too, so `worker` reads `paused`, not `running`.
-    const turn = await W.waitTurn(w, first_turn_timeout_ms);
+    // A fast first turn can end, its waiters resolved with none registered, while the relaunch still writes its
+    // `running` row; it is read from the record, never waited out. Check and registration share one tick.
+    await w.queue;
+    const turn = w.turnEnded ? { usage: w.lastTurnUsage, checkpoint_id: w.lastCheckpointId, paused: !!w.parkRequested }
+      : w.settled ? { exited: true, exit_code: w.exitCode, exit_signal: w.exitSignal }
+      : await W.waitTurn(w, first_turn_timeout_ms);
     if (turn && turn.paused) await W.waitExit(w, PARK_SETTLE_WAIT_MS);
     await w.queue;
     return {
