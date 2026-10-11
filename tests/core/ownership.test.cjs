@@ -352,17 +352,32 @@ test('a stale lock is taken over by exactly one of several racing processes', as
     fs.writeFileSync(path.join(lockDir, 'owner.json'), JSON.stringify({ pid: deadPid(), pipe: 'stale', acquired_at: Date.now() - 60000 }));
     assert.strictEqual(pidAlive(readOwnerLock(dir).pid), false, 'the fixture lock must name a dead pid');
 
-    // build step 6i item 9(c) (should-fix, review: the instrument's log was never a file this test
-    // read): every racer's spawn/attempt/exit is logged here, so a two-winner failure below carries the
-    // whole race's own timeline, not just the winners' pids. `count` (6) is the barrier every racer's
-    // own attempt marks, so the winner's release waits for every sibling rather than a timer alone.
+    // Every racer's spawn, attempt and exit is logged, so a failure below carries the race's timeline.
+    // The winner holds until this test writes `release`, which it does only once every racer has
+    // printed its result or exited: no timer, so a racer whose node startup a loaded machine delays is
+    // still racing a live owner, never the lock an owner that already left behind.
     const logPath = path.join(dir, 'race.ndjson');
-    const results = await Promise.all(Array.from({ length: 6 }, () => runFixture('lock-race.cjs', [dir, '1200', '6', logPath])));
-    const parsed = results.map(r => JSON.parse(r.stdout.trim()));
-    const winners = parsed.filter(p => p.won);
+    const { spawn } = require('node:child_process');
+    let reported = 0;
+    const releaseOnce = () => { if (++reported === 6) fs.writeFileSync(path.join(dir, 'release'), '1'); };
+    const results = await Promise.all(Array.from({ length: 6 }, () => new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [path.join(FIXTURES, 'lock-race.cjs'), dir, logPath], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      let out = '', errText = '', printed = false;
+      child.stdout.on('data', d => { out += d.toString(); if (!printed && out.includes('\n')) { printed = true; releaseOnce(); } });
+      child.stderr.on('data', d => { errText += d.toString(); });
+      child.on('error', reject);
+      child.on('close', code => { if (!printed) { printed = true; releaseOnce(); } resolve({ code, stdout: out, stderr: errText }); });
+    })));
+    const lines = results.map(r => r.stdout.trim().split('\n').filter(Boolean).map(l => JSON.parse(l)));
+    const parsed = lines.map(l => l[0]);
+    const winners = parsed.filter(p => p && p.won);
+    const exits = lines.map(l => l.find(e => e.exit)).filter(Boolean);
     let log = '';
     try { log = fs.readFileSync(logPath, 'utf8'); } catch { /* instrumentation only */ }
-    assert.strictEqual(winners.length, 1, `exactly one process may take over a stale lock, got ${winners.length}: ${JSON.stringify(parsed)}\n${log}`);
+    const why = `${JSON.stringify(lines)}\n${log}`;
+    assert.strictEqual(winners.length, 1, `exactly one process may take over a stale lock, got ${winners.length}: ${why}`);
+    assert.deepStrictEqual(exits.map(e => e.robbed), [null], `the winner held its lock until released, never losing it: ${why}`);
+    assert.strictEqual(exits[0].released, true, `the winner left on the release, not on its safety bound: ${why}`);
     assert.strictEqual(readOwnerLock(dir).pid, winners[0].pid, 'the lock names the process that actually won');
   } finally { cleanup(dir); }
 });
@@ -372,7 +387,8 @@ test('a live lock is never taken over', async () => {
   try {
     const mine = acquireLock(dir, { pipe: 'test' });
     assert.strictEqual(mine.won, true);
-    const r = JSON.parse((await runFixture('lock-race.cjs', [dir, '10'])).stdout.trim());
+    fs.writeFileSync(path.join(dir, 'release'), '1'); // a wrongful winner leaves at once, not after 60 s
+    const r = JSON.parse((await runFixture('lock-race.cjs', [dir])).stdout.trim().split('\n')[0]);
     assert.strictEqual(r.won, false, 'a lock held by a live pid is not stale');
     assert.strictEqual(readOwnerLock(dir).pid, process.pid);
   } finally {
