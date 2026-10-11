@@ -39,7 +39,7 @@ function makeSpec(dir, overrides = {}, promptText = `${MARKER}\nthe interactive 
 function fakeGate({
   debug = { ok: true, facts: { version: '2.1.293' } },
   session = { ok: true, facts: { permission_mode: 'auto', version: '2.1.293', effort: 'high' } },
-  debugMs = 50, sessionMs = 300, firstMs = 100, learned = {}, afterDebug = null,
+  debugMs = 50, sessionMs = 300, firstMs = 100, learned = {}, afterDebug = null, debugWhen = null,
 } = {}) {
   const seen = [];
   const make = (opts) => {
@@ -48,11 +48,14 @@ function fakeGate({
     const stoppers = [];
     const later = (v, ms, whenStopped, after) => new Promise((r) => {
       if (ms === null) stoppers.push(() => r(whenStopped));
-      else timers.push(setTimeout(() => { r(v); if (after) after(); }, ms));
+      else if (whenStopped && whenStopped.waitFor) { // fire `ms` after the condition holds, so a slow machine's late child still exists to be judged
+        const poll = setInterval(() => { if (whenStopped.waitFor()) { clearInterval(poll); timers.push(setTimeout(() => { r(v); if (after) after(); }, ms)); } }, 25);
+        timers.push(poll); stoppers.push(() => { clearInterval(poll); r({ ok: null, facts: {} }); });
+      } else timers.push(setTimeout(() => { r(v); if (after) after(); }, ms));
     });
     const unsettled = () => ({ ok: null, facts: { ...learned } });
     return {
-      debug: later(debug, debugMs, unsettled(), afterDebug),
+      debug: later(debug, debugMs, debugWhen ? Object.assign(unsettled(), { waitFor: debugWhen }) : unsettled(), afterDebug),
       session: later(session, sessionMs, unsettled()),
       firstMessage: later(Date.now(), firstMs, null),
       current: () => ({ debug: unsettled(), session: unsettled() }),
