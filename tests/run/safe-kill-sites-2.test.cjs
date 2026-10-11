@@ -35,6 +35,8 @@ test('M11: orchestrator killChild never reaches a kill for a child whose exit wa
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-m11-'));
   fs.mkdirSync(path.join(d, 'wt'));
   const bystander = sleeper();
+  const savedExe = process.env.BELAY_CLAUDE_EXE;
+  process.env.BELAY_CLAUDE_EXE = FAKE; // never depend on a claude installed on the host; spawnWorker is stubbed below
   const saved = { spawnWorker: P.spawnWorker, killProcess: P.killProcess, killTree: P.killTree, killPid: P.killPid };
   const calls = [];
   const child = spentChild(bystander.pid);
@@ -53,6 +55,7 @@ test('M11: orchestrator killChild never reaches a kill for a child whose exit wa
     assert.strictEqual(running(bystander), true, 'the process holding the pid must survive');
   } finally {
     Object.assign(P, saved); bystander.kill(); cleanup(d);
+    if (savedExe === undefined) delete process.env.BELAY_CLAUDE_EXE; else process.env.BELAY_CLAUDE_EXE = savedExe;
   }
 });
 
