@@ -55,10 +55,19 @@ function pidAlive(pid) {
 const lockPath = dataDir => path.join(dataDir, 'owner.lock');
 const metaPath = dataDir => path.join(lockPath(dataDir), 'owner.json');
 
-// Read-only: never creates the data dir, the lock dir or anything else.
+// Read-only: never creates the data dir, the lock dir or anything else. An owner that is serving says
+// so in its listening marker (markListening below); a lock that still says `listening: false` is read
+// as listening when the marker for this very lock is there.
 function readOwnerLock(dataDir) {
-  try { return JSON.parse(fs.readFileSync(metaPath(dataDir), 'utf8')); }
-  catch { return null; }
+  let meta;
+  try { meta = JSON.parse(fs.readFileSync(metaPath(dataDir), 'utf8')); } catch { return null; }
+  if (meta && meta.listening === false && meta.token) {
+    try {
+      const m = JSON.parse(fs.readFileSync(path.join(lockPath(dataDir), listeningName(meta)), 'utf8'));
+      if (m && m.pid === meta.pid && m.token === meta.token) return { ...meta, listening: true, listening_at: m.listening_at };
+    } catch { /* no marker yet: the owner is starting */ }
+  }
+  return meta;
 }
 
 const sleepSync = ms => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* no SAB */ } };
@@ -107,11 +116,12 @@ function removeDir(dir) {
   try { fs.rmSync(dir, { recursive: true, force: true }); return true; } catch { return false; }
 }
 
-// Replaces a file whole, by rename, retried while a reader briefly holds it open.
-function replaceFile(file, body) {
+// Replaces a file whole, by rename, retried while a reader briefly holds it open. Windows refuses the
+// rename for as long as any reader has the target open, so readers polling in a loop can starve it.
+function replaceFile(file, body, attempts = 100) {
   const tmp = aside(file, 'tmp');
   fs.writeFileSync(tmp, body);
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < attempts; i++) {
     try { fs.renameSync(tmp, file); return true; } catch (e) {
       if (!TRANSIENT.has(e.code)) break;
       sleepSync(10);
@@ -125,6 +135,7 @@ function replaceFile(file, body) {
 // (written by something other than this module) is 'nometa'.
 const lockId = seen => (seen.state !== 'ok' ? 'nometa'
   : String(seen.meta.token || `${seen.meta.pid}-${seen.meta.acquired_at}`).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64));
+const listeningName = meta => `listening-${lockId({ state: 'ok', meta })}.json`;
 const sameLock = (a, b) => (a.state === 'ok' ? b.state === 'ok' && lockId(a) === lockId(b) : b.state === 'absent' || b.state === 'corrupt');
 
 function readSettled(file) {
@@ -190,14 +201,39 @@ function acquireLock(dataDir, info, opts = {}) {
 
 // The lock's metadata is published with the directory, because a stale-lock takeover needs a pid to
 // check. But the owner is not serving yet at that moment, so what it publishes first is
-// `listening: false`, and this rewrites it once the pipe is up. A reader that finds
-// `listening === false` knows the difference between an owner that is starting and one that is wedged,
-// and takes neither for a server. Only the process named in the lock may amend it.
+// `listening: false`. A reader that finds `listening === false` knows the difference between an owner
+// that is starting and one that is wedged, and takes neither for a server. Only the process named in
+// the lock may mark it.
+//
+// The fact that the pipe is up is published as a new file beside owner.json, named by this lock's
+// token: listening-<token>.json, written aside and renamed to a name that has never existed, so no
+// reader can be holding it open and Windows has nothing to refuse. Rewriting owner.json itself is a
+// rename onto a file readers poll, which Windows refuses while any of them has it open; three readers in
+// a loop starved it for a whole second. The name carries the token, so a takeover's new lock never
+// inherits its predecessor's marker. owner.json is then also rewritten with `listening: true` for
+// readers that look only there, best effort and briefly, since the marker is what readOwnerLock reads.
+// Returns true once the marker is in place (or was already); false means no reader will ever see this
+// owner as listening, and the caller must not serve as if it were.
 function markListening(lockDir, at = Date.now()) {
   const meta = path.join(lockDir, 'owner.json');
   const cur = readSettled(meta);
   if (cur.state !== 'ok' || cur.meta.pid !== process.pid) return false;
-  return replaceFile(meta, JSON.stringify({ ...cur.meta, listening: true, listening_at: at }));
+  const marker = path.join(lockDir, listeningName(cur.meta));
+  if (!fs.existsSync(marker)) {
+    const tmp = aside(marker, 'tmp');
+    try { fs.writeFileSync(tmp, JSON.stringify({ pid: process.pid, token: cur.meta.token || null, listening_at: at })); }
+    catch { try { fs.unlinkSync(tmp); } catch { /* never made */ } return false; }
+    let placed = false;
+    for (let i = 0; i < 50 && !placed; i++) {
+      try { fs.renameSync(tmp, marker); placed = true; } catch (e) {
+        if (!TRANSIENT.has(e.code)) break;
+        sleepSync(10);
+      }
+    }
+    if (!placed) { try { fs.unlinkSync(tmp); } catch { /* gone */ } return false; }
+  }
+  try { replaceFile(meta, JSON.stringify({ ...cur.meta, listening: true, listening_at: at }), 5); } catch { /* best effort */ }
+  return true;
 }
 
 // Only the process named in the lock may release it, so a takeover cannot be undone by its victim.
