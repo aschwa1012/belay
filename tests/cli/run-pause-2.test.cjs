@@ -118,27 +118,38 @@ test('run: a worker whose park is in progress (row stopping, pid live) holds the
   const spawnedPids = [];
   let ctx;
   try {
-    ctx = await startRun(dir, {}, { FAKE_ANSWER_DELAY_MS: '300' });
+    // The orchestrator's prompt turn is held until the gate file exists, so it goes idle only once w1's row
+    // reads stopping. A fixed answer delay raced the park: an idle-running w1 (deliberately not a hold) let
+    // the idle rule close the run before a slow park's stopping row landed.
+    const gate = `${dir}/orchestrator-gate`;
+    ctx = await startRun(dir, {}, { FAKE_ANSWER_GATE_FILE: gate });
     process.env.FAKE_IGNORE_STDIN_END = '1'; // this worker never exits on stdin close: its own park hangs at 'stopping'
     const row = await ctx.m.spawn({ substrate: 'claude-code', worktree: workerWorktree(dir, 'w1'), prompt: 'hello', worker_id: 'w1' });
     spawnedPids.push({ pid: row.pid, created: row.pid_created });
     delete process.env.FAKE_IGNORE_STDIN_END;
     await sleep(300);
 
-    const pauseP = ctx.m.pause({ worker_id: 'w1', by: 'operator:1', interrupt_timeout_ms: 500, exit_timeout_ms: 3000 });
-    // Past the interrupt and the descendant snapshot (P.childPids's own PowerShell query, unbounded and
-    // sometimes slow on Windows): the graceful close is now in flight, ignored by the fake.
+    // The park's stopping row is stalled 1,500 ms, as a slow runner lands it; the gate makes that harmless.
+    const write = ctx.core.worker.write.bind(ctx.core.worker);
+    ctx.core.worker.write = async (r) => { if (r.state === 'stopping') await sleep(1500); return write(r); };
+    const pauseP = ctx.m.pause({ worker_id: 'w1', by: 'operator:1', interrupt_timeout_ms: 500, exit_timeout_ms: 8000 });
     const midRow = await waitUntil(async () => {
       const w = await ctx.core.worker.get({ worker_id: 'w1' });
       return w.state === 'stopping' ? w : null;
-    }, 5000, 100);
+    }, 8000, 100);
     assert.ok(midRow, "w1's row never reached stopping");
     assert.strictEqual(midRow.pid_alive, true);
+    assert.strictEqual(ctx.cliProc.proc.exitCode, null, 'the run closed before the orchestrator went idle');
 
-    await sleep(400); // a 300 ms poll cycle has had time to see it
+    fs.writeFileSync(gate, ''); // the orchestrator now ends its turn, with w1 mid-park (the fake ignores the close)
+    const turnEnded = await waitUntil(() => {
+      try { return /"type":"result"/.test(fs.readFileSync(`${ctx.orchestratorDir}/stream.jsonl`, 'utf8')); } catch { return false; }
+    }, 8000, 25);
+    assert.ok(turnEnded, "the orchestrator's turn never ended once the gate opened");
+    await sleep(400); // a 300 ms poll cycle of an idle orchestrator has had time to see the stopping row
     assert.strictEqual(ctx.cliProc.proc.exitCode, null, 'a worker mid-park must hold the run open, named under live');
 
-    const paused = await pauseP; // the kill fallback lands at ~3,000 ms
+    const paused = await pauseP; // the kill fallback lands at ~8,000 ms
     assert.strictEqual(paused.paused, true);
 
     const stop = await cliAsync(['worker', 'stop', 'w1'], ctx.dataDir); // lets the run end (run-pause.test.cjs's s10)
