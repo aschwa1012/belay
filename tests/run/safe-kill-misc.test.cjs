@@ -49,10 +49,10 @@ test('run close, fast: with less budget than a snapshot takes the kill is refuse
 test('ownCreatedProbe: never waits for the snapshot, and has the answer once it is done', async (t) => {
   if (process.platform !== 'win32') return t.skip('the CIM snapshot is Windows only');
   const probe = ID.ownCreatedProbe(process.pid);
-  const t0 = Date.now();
+  // A probe that waited for the snapshot would come back with the answer; null right away proves it did not wait.
+  // No wall-clock bound: on a starved machine even a non-blocking await can take longer than any fixed figure.
   const early = await probe();
-  assert.ok(Date.now() - t0 < 300, 'the probe must not block on the snapshot');
-  assert.strictEqual(early, null);
+  assert.strictEqual(early, null, 'the probe must not block on the snapshot');
   // Wait for the snapshot to finish, not for a fixed time: poll the probe, which turns non-null the moment the
   // read is done. The bound is reached only on a hang (the snapshot itself times out well inside it).
   const deadline = Date.now() + 90000;
