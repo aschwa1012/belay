@@ -38,15 +38,15 @@ test('orchestrator prompt: every mcp__belay__ tool name the template mentions is
 });
 
 // ADR 0040 section 6: the memory rules text is substituted at {{memory_rules}}, only when the lever is on.
-const { execFileSync } = require('node:child_process');
-const BASE_SHA = '93b1a0b';
+// The 0.1.0 prompts, kept as a fixture so the test needs no git history.
+const BASE_PROMPTS = path.join(__dirname, '..', 'fixtures', 'v0.1.0', 'src', 'run', 'prompts');
 const RULES = path.join(ROOT, 'src/run/prompts/memory-rules.md');
 const lf = (s) => s.replace(/\r\n/g, '\n');
 
 test('memory rules: the placeholder sits at the end of an existing line, and an empty substitution is the base prompt byte for byte', () => {
   for (const f of ['orchestrator.md', 'orchestrator-interactive.md']) {
     const now = lf(fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8'));
-    const base = lf(execFileSync('git', ['show', `${BASE_SHA}:src/run/prompts/${f}`], { cwd: ROOT, encoding: 'utf8' }));
+    const base = lf(fs.readFileSync(path.join(BASE_PROMPTS, f), 'utf8'));
     assert.strictEqual(now.split('{{memory_rules}}').length, 2, `${f} carries the placeholder once`);
     assert.match(now, /\{\{memory_rules\}\}\n/, `${f}: the placeholder ends its line`);
     assert.strictEqual(now.split('\n').length, base.split('\n').length, `${f}: no line added`);
