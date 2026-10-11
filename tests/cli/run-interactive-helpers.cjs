@@ -48,7 +48,7 @@ function fakeGate({
     const stoppers = [];
     const later = (v, ms, whenStopped, after) => new Promise((r) => {
       if (ms === null) stoppers.push(() => r(whenStopped));
-      else if (whenStopped.waitFor) { // fire `ms` after the condition holds, so a slow machine's late child still exists to be judged
+      else if (whenStopped && whenStopped.waitFor) { // fire `ms` after the condition holds, so a slow machine's late child still exists to be judged
         const poll = setInterval(() => { if (whenStopped.waitFor()) { clearInterval(poll); timers.push(setTimeout(() => { r(v); if (after) after(); }, ms)); } }, 25);
         timers.push(poll); stoppers.push(() => { clearInterval(poll); r({ ok: null, facts: {} }); });
       } else timers.push(setTimeout(() => { r(v); if (after) after(); }, ms));

@@ -16,5 +16,5 @@ const { openCore } = require(path.join(ROOT, 'src', 'core', 'index.cjs'));
     const st = await c.status.get({});
     out.push({ ms: Date.now() - t0, via: st.established_by });
   }
-  process.stdout.write(JSON.stringify({ done: true, reads: out }) + '\n');
+  process.stdout.write(JSON.stringify({ done: true, main_done_at: Date.now(), reads: out }) + '\n');
 })().catch((e) => { console.log(JSON.stringify({ error: e.code || e.message })); });
