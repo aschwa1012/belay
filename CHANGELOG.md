@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+Added
+- Windows CI: GitHub Actions runs the full test suite on every push to main
+  and every pull request
+
+Fixed
+- two processes racing to take over a stale store lock could both win; a
+  takeover now claims the specific stale lock it judged, by token, and only
+  one process can claim it. Found by CI on a slow hosted runner
+- the store owner announces that it is listening in a new file that no reader
+  can hold open; a start that cannot announce it fails cleanly instead of
+  running unreachable
+- a worker whose turn ended just after a stop began was briefly marked running
+  again before it stopped. The 0.2.0 notes described this as "two stops of the
+  same worker can both run"; the stops were always merged into one
+- a restarted worker whose first turn ended very quickly was reported as
+  timed out, after a wait of the whole first-turn timeout; restart now
+  reports the turn that already ended
+- tests no longer read old code from git history, assume Claude Code is
+  installed, or rely on fixed sleeps, so the suite passes in any clone and on
+  slow machines
+
 ## 0.2.0
 
 Memory: truthful hybrid search, row status, redaction and safe framing on by

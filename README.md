@@ -329,7 +329,6 @@ These are settled rules, not aspirations:
 - **Pause and compaction are Claude Code features.** A Codex worker can't be paused or parked yet, and the compaction lever applies to Claude Code workers only.
 - **The panel depends on Claude Code's plugin engine**, measured on Claude Code 2.1.293.
 - **One store owner**, single-threaded: about 1,200 operations a second.
-- **Two known races under heavy load.** On a slow, heavily loaded machine (seen on a hosted CI runner), two processes racing to take over a stale store lock can both succeed, and two stops of the same worker can both run. Neither has been seen on a developer machine; a fix is in progress.
 - **Memory is mostly scaffolding.** Most memory features are off by default. Only delivery of a hand-written row has been shown to help. Redaction is pattern matching, and a worker's raw stream log is not redacted. Keyword search ignores query terms shorter than three characters and says so. Read commands copy the store, so they slow down on stores of tens of thousands of rows.
 
 ## Status and roadmap
@@ -353,7 +352,7 @@ Bugs, ideas and porting help: [GitHub Issues](https://github.com/aschwa1012/bela
 
 Issues and pull requests are welcome. To run the tests, clone the repository and run `npm install`. You need Windows and Node >= 24.19.0.
 
-- **`npm test`** runs the unit, conformance and budget suites against fake Claude Code and Codex executables, so it spends nothing.
+- **`npm test`** runs the unit, conformance and budget suites against fake Claude Code and Codex executables, so it spends nothing. CI runs the same suite on a GitHub Windows runner for every pull request.
 - One integration test launches a real Claude Code worker on your account and costs tokens. It is skipped unless you set `BELAY_REAL=1`.
 - Some timing tests are sensitive to machine load; if one fails, rerun it alone before reporting it.
 
