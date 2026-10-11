@@ -46,6 +46,8 @@ belay doctor
 
 At this point doctor will report the embedder model as missing, and, outside a project, the config and store as absent. That is expected.
 
+`belay doctor` also reports whether the store has its keyword index. It is built the first time a 0.2.0 run (or `belay memory verify`) opens an existing store. Until then the check says `absent`, and a keyword search says the index is missing.
+
 ### Finding Claude Code
 
 belay launches Claude Code itself, as a real executable. Node cannot spawn the npm `claude.cmd` shim without a shell, so belay never runs the shim. It looks, in this order:
@@ -75,6 +77,8 @@ belay embedder fetch
 This downloads the `onnx-community/voyage-4-nano-ONNX` model (q4 weights, about 253 MB) from huggingface.co into `%LOCALAPPDATA%\belay\models`, and checks every file's size and sha256 against a table in belay's source. It is belay's only network access, and is needed once per machine. `belay embedder verify` re-hashes what is there.
 
 Why it is required: belay's workers and orchestrator share a memory store with semantic search. A run warms the embedder before it spawns anything and refuses to start if it cannot load, so memory never degrades silently. Read commands work without it.
+
+Keyword search, memory listing, `memory show` and `memory stats` also work without the embedder. A search without it runs keyword only and says so. Semantic-only search and `belay run` still need it.
 
 ## First run
 
@@ -168,6 +172,7 @@ An unknown key is a usage error.
 | `mode` | `headless` | `headless` or `interactive` (`--interactive` wins). |
 | `interactive_surface_ms` | 15000 | How long the interactive launch check waits. |
 | `fullscreen` | true | Interactive only: Claude Code's fullscreen mode. |
+| `memory` | none | Optional block of memory levers, all off except `redact`. See the README section on memory. An unknown key or a bad value is a usage error. |
 
 `belay run` also takes `--effort low|medium|high|xhigh|max` for the orchestrator.
 
@@ -196,6 +201,8 @@ npm install -g github:aschwa1012/belay
 ```
 
 The embedding model stays in its cache and does not need fetching again unless a release changes it (`belay doctor` will say so). Stop any live run before updating.
+
+**From 0.1.0 to 0.2.0: back up `.belay\` before the first 0.2.0 run.** That run upgrades an existing store to a new format (schema version 2): it adds columns and a keyword index. After the upgrade, **belay 0.1.0 can no longer open the store**; it refuses with a message to upgrade belay rather than risk writing rows the new version would misread. To go back to 0.1.0, restore your backup.
 
 ## Uninstalling
 
@@ -245,7 +252,7 @@ The error code (`E_NO_OWNER`) appears only with `--json`. Read commands still wo
 | What | Where |
 |---|---|
 | Config | `belay.config.json` at the project root (found by walking up from the current directory, never into your home directory). |
-| The store | `<project>\.belay\memory.db` with its SQLite sidecars, plus `owner.lock\` while an owner is alive. |
+| The store | `<project>\.belay\memory.db` with its SQLite sidecars, plus `owner.lock\` while an owner is alive. It also holds the keyword index and, when levers are on, per-turn usage and memory action records. `belay memory export` writes rows to a file you choose. |
 | Per-worker files | `<project>\.belay\workers\<worker-id>\`: the launch config, the raw `stream.jsonl`, `stderr.txt`, the adapter log and the resume document. |
 | Orchestrator files and run receipt | `%TEMP%\belay-run\<run-id>\`, including `run.json`, unless the spec sets `orchestrator_dir`. |
 | Embedding model | `%LOCALAPPDATA%\belay\models`, or the folder named by `BELAY_MODEL_CACHE`. |
