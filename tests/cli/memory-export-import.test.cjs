@@ -327,8 +327,11 @@ test('REAL export: a dead store is read from its copy, creating nothing, and the
     const [header, ...rows] = lines(r.stdout);
     assert.strictEqual(header.count, 3);
     assert.deepStrictEqual(rows.map(x => x.id).sort(), [...ids].sort());
-    assert.deepStrictEqual(rows.map(x => x.text), ['first finding about dates', 'second finding about money', 'third, with a tag']);
-    assert.deepStrictEqual(rows.map(x => x.type), ['finding', 'decision', 'finding']);
+    // Oldest first means by created_at, ties by id: rows stored in one millisecond (a fast host) come out in id
+    // order, not the order they were stored, so the order is checked by created_at and the rows by their text.
+    for (let i = 1; i < rows.length; i += 1) assert.ok(rows[i - 1].created_at <= rows[i].created_at, 'oldest first');
+    const byText = Object.fromEntries(rows.map(x => [x.text, x.type]));
+    assert.deepStrictEqual(byText, { 'first finding about dates': 'finding', 'second finding about money': 'decision', 'third, with a tag': 'finding' });
     for (const x of rows) assert.ok(!('embedding' in x) && !('has_embedding' in x));
   } finally { cleanup(dir); }
 });

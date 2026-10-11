@@ -88,13 +88,15 @@ test('turn memory (r-f2): shutdown with a store in flight completes within its b
 });
 
 // Amendment 4, items 1 and 2: two turns of one worker, the first turn's memory write slow, the second fast.
-async function twoTurns(tag, storeStub) {
+// `hold.m` is the manager, set before the first turn so a store stub can read its closed flag.
+async function twoTurns(tag, storeStub, hold = {}) {
   const { sb, dataDir, wt } = sandbox(tag);
   const runId = `run-${tag}`;
   const core = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
   await core.run.attach({ adapter_pid: process.pid });
   core.memory.store = storeStub;
   const m = createRunManager({ core, dataDir, runId, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: USER_SETTINGS } });
+  hold.m = m;
   await m.spawn({ substrate: 'claude-code', worktree: wt, prompt: 'one', worker_id: 'w1' });
   await m._waitTurn('w1', 8000);
   await m.message({ worker_id: 'w1', text: 'two' });
@@ -103,12 +105,21 @@ async function twoTurns(tag, storeStub) {
 }
 const turnOf = (a) => (a.tags.find((t) => /^turn:\d+$/.test(t)) || '');
 
-test('turn memory (r-f3): a write queued before shutdown but started after it is dropped, and elects no owner', async () => {
+// The first write stays in flight until shutdown has flipped its closed flag (the event the drop keys on),
+// never for a fixed time: a graceful stop that outlasts a fixed sleep let the second write start before the
+// flag flipped. `stopDelayMs` stalls every worker-row write made during shutdown, as a slow runner does.
+async function droppedAfterShutdown(tag, stopDelayMs) {
   const starts = [];
+  const hold = {};
   let ctx;
   try {
-    ctx = await twoTurns('f3', async (a) => { starts.push(turnOf(a)); await sleep(starts.length === 1 ? 2500 : 0, true); return { id: 'stub' }; });
+    ctx = await twoTurns(tag, async (a) => {
+      starts.push(turnOf(a));
+      if (starts.length === 1) await until(() => hold.m._closed(), 30000);
+      return { id: 'stub' };
+    }, hold);
     assert.deepStrictEqual(starts, ['turn:1'], 'the first write is in flight and the second is queued behind it');
+    if (stopDelayMs) { const write = ctx.core.worker.write.bind(ctx.core.worker); ctx.core.worker.write = async (row) => { await sleep(stopDelayMs); return write(row); }; }
     const receipt = await ctx.m.shutdown();
     assert.deepStrictEqual(receipt.memory_gave_up, [], 'the in-flight write finished inside the bound');
     await sleep(100);
@@ -118,7 +129,11 @@ test('turn memory (r-f3): a write queued before shutdown but started after it is
   } finally {
     if (ctx) { if (ctx.core.isOwner()) await ctx.core.shutdownOwner().catch(() => {}); try { fs.rmSync(ctx.sb, { recursive: true, force: true }); } catch { /* best effort */ } }
   }
-});
+}
+
+test('turn memory (r-f3): a write queued before shutdown but started after it is dropped, and elects no owner', () => droppedAfterShutdown('f3', 0));
+
+test('turn memory (r-f3): the drop holds when the graceful stop is slow (row writes stalled 3,000 ms)', () => droppedAfterShutdown('f3s', 3000));
 
 test('turn memory (r-f4): a worker\'s memory writes land in turn order even when the first is slow', async () => {
   const done = [];

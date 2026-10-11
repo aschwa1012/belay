@@ -32,6 +32,9 @@ const mgr = (sb, core) => createRunManager({
   core, dataDir: sb.data, runId: 'run-a3', paths: { claudeExe: FAKE, userSettings: USER_SETTINGS },
 });
 
+// An upper bound on a wait for a real event (a relaunched worker's first turn), not a budget: the wait returns the moment
+// the event happens, so a generous bound costs nothing on a fast machine and keeps a loaded one from reading as a failure.
+const SLOW = 45000;
 const cleanup = (sb) => { try { fs.rmSync(sb.root, { recursive: true, force: true }); } catch { /* temp dir */ } };
 
 test('a new adapter restarts a worker of a session that has ended', async () => {
@@ -41,7 +44,7 @@ test('a new adapter restarts a worker of a session that has ended', async () => 
   let second = null;
   try {
     const born = await first.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w-a3', task_id: 't-a3' });
-    await first._waitTurn('w-a3', 8000);
+    await first._waitTurn('w-a3', SLOW);
     await sleep(120);
     const checkpointBefore = core.checkpoints[core.checkpoints.length - 1].id;
 
@@ -54,7 +57,7 @@ test('a new adapter restarts a worker of a session that has ended', async () => 
     second = mgr(sb, core);
     assert.deepEqual(second.list().workers, [], 'the new manager starts with an empty view');
 
-    const r = await second.restart({ worker_id: 'w-a3', first_turn_timeout_ms: 8000 });
+    const r = await second.restart({ worker_id: 'w-a3', first_turn_timeout_ms: SLOW });
     assert.equal(r.branch, 'resume', 'the session id and last event came from the store: ' + r.reason);
     assert.match(r.reason, /inside the 3300000 ms claude-code window/);
     assert.equal(r.old_pid, born.pid, 'the old pid is the one the store held');
@@ -101,7 +104,7 @@ test('an adopted worker whose pid is still alive is taken by that exact pid befo
     await waitCreated(core, 'w-live');
 
     second = mgr(sb, core);
-    const r = await second.restart({ worker_id: 'w-live', first_turn_timeout_ms: 8000 });
+    const r = await second.restart({ worker_id: 'w-live', first_turn_timeout_ms: SLOW });
     assert.equal(r.old_pid, born.pid);
     assert.ok(r.new_pid !== born.pid);
     assert.equal(P.pidAlive(born.pid), false, "the previous adapter process must not outlive the restart");
@@ -129,7 +132,7 @@ test('adoption does not re-validate an inherited bad started_at: an adopted work
     const seeded = rows.length;
 
     second = mgr(sb, core);
-    const r = await second.restart({ worker_id: 'w-badstart', first_turn_timeout_ms: 8000 });
+    const r = await second.restart({ worker_id: 'w-badstart', first_turn_timeout_ms: SLOW });
     assert.equal(r.worker.state, 'running');
     assert.equal(core.currentWorker('w-badstart').state, 'running');
     const after = core.workerRows.get('w-badstart').slice(seeded);
@@ -211,7 +214,7 @@ test('a write failure after a relaunch still leaves no live child once shutdown 
     second = mgr(sb, core);
     const realWrite = core.worker.write;
     core.worker.write = async () => { const e = new Error('forced write failure'); e.code = 'E_ARGS'; throw e; };
-    await assert.rejects(second.restart({ worker_id: 'w-wfail', first_turn_timeout_ms: 8000 }), (e) => e.code === 'E_ARGS');
+    await assert.rejects(second.restart({ worker_id: 'w-wfail', first_turn_timeout_ms: SLOW }), (e) => e.code === 'E_ARGS');
     pid = second._worker('w-wfail').pid;
     child = second._worker('w-wfail').child; // ADR 0039: the live handle, for the safety net below
     assert.ok(Number.isInteger(pid) && P.pidAlive(pid), 'the relaunched child is alive after the failed write');

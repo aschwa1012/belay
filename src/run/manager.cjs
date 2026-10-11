@@ -33,6 +33,7 @@ const { createWriteRow } = require('./write-row.cjs');
 // A park's own worst case, the longest one started during a restart's first turn takes to settle (`restart`).
 const PARK_SETTLE_WAIT_MS = INTERRUPT_TIMEOUT_MS + EXIT_TIMEOUT_MS;
 const LIST = require('./list.cjs');
+const { waitTurnOrLanded } = require('./turn-wait.cjs'); // a turn that ended before the wait began is answered
 
 const { POLL_MS } = require('./exit-hold.cjs');
 const now = () => Date.now();
@@ -451,7 +452,8 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     // 6e-6 item 2 (carried items 1 and 5): the wait also ends on the worker's own exit (`turn.exited`),
     // never the rest of `first_turn_timeout_ms`. A pause's own interrupt (`turn.paused`) lands well
     // before the park's exit and row write, waited out here too, so `worker` reads `paused`, not `running`.
-    const turn = await W.waitTurn(w, first_turn_timeout_ms);
+    // A fast first turn can end while the relaunch still writes its `running` row: read, never waited out.
+    const turn = await waitTurnOrLanded(w, first_turn_timeout_ms);
     if (turn && turn.paused) await W.waitExit(w, PARK_SETTLE_WAIT_MS);
     await w.queue;
     return {
@@ -483,8 +485,9 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     ask: (args) => MP.ask(manager, ctx, args), // ADR 0043 decision 1
     // Read-only handles for tests and for the CLI's own views. Neither writes.
     _worker: (id) => workers.get(id),
-    _waitTurn: (id, ms) => W.waitTurn(get(id), ms),
+    _waitTurn: (id, ms) => waitTurnOrLanded(get(id), ms),
     _waitExit: (id, ms) => W.waitExit(get(id), ms),
+    _closed: () => shutdownFlags.closed, // flipped by shutdown once every worker is stopped (lifecycle.cjs)
   };
   return manager;
 }

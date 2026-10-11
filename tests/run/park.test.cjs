@@ -289,8 +289,10 @@ test('resume: a parked worker is relaunched on its session with the resume line 
     assert.notStrictEqual(r.new_pid, paused.row.pid);
     assert.strictEqual(r.first_turn_awaited, false);
     assert.strictEqual(m._worker('w1').op, null, 'the slot must be free once resume resolves, before the turn ends');
-    const turn = await m._waitTurn('w1', 8000);
-    assert.ok(turn, 'the resumed worker\'s next turn never ended');
+    // m.wait, not the raw _waitTurn: the resumed turn answers at once and can end before this line runs; wait
+    // answers `already` for a turn that has landed, where the bare per-call waiter would miss it.
+    const waited = await m.wait({ worker_ids: ['w1'], timeout_ms: 8000 });
+    assert.strictEqual(waited.timed_out, false, 'the resumed worker\'s next turn never ended');
     assert.ok(resumeMs < 2000, `resume took ${resumeMs} ms, which suggests it waited for the turn`);
     const w = m._worker('w1');
     assert.match(w.lastAssistantText, /paused you a moment ago/);
@@ -312,13 +314,13 @@ test('resume: a worker parked between turns is relaunched with the pause-over li
     await m.pause({ worker_id: 'w1', by: 'operator:1' });
     const r1 = await m.resume({ worker_id: 'w1', by: 'operator:2' });
     assert.strictEqual(r1.interrupted, false);
-    await m._waitTurn('w1', 8000);
+    assert.strictEqual((await m.wait({ worker_ids: ['w1'], timeout_ms: 8000 })).timed_out, false); // m.wait: the turn can end before this line
     assert.match(m._worker('w1').lastAssistantText, /pause is over/);
 
     await m.pause({ worker_id: 'w1', by: 'operator:1' });
     const r2 = await m.resume({ worker_id: 'w1', by: 'operator:2', message: 'carry on' });
     assert.ok(r2.text_bytes > Buffer.byteLength('carry on', 'utf8'), 'the pause-over line plus the message must both be sent');
-    await m._waitTurn('w1', 8000);
+    assert.strictEqual((await m.wait({ worker_ids: ['w1'], timeout_ms: 8000 })).timed_out, false);
     assert.match(m._worker('w1').lastAssistantText, /pause is over/);
     assert.match(m._worker('w1').lastAssistantText, /carry on/);
   } finally { await teardown({ m, sb }); }

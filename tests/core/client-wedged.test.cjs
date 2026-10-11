@@ -243,16 +243,19 @@ test('a process that does 6 reads against a wedged owner and returns from main e
   try {
     owner = await startOwner('owner-wedged.cjs', dir, ['20000']);
     await new Promise(r => setTimeout(r, 700));
-    const t0 = Date.now();
     const reader = spawn(process.execPath, [`${FIX}/wedged-reads.cjs`, dir, '6'], { windowsHide: true, stdio: ['ignore', 'pipe', 'inherit'] });
     let out = '';
     reader.stdout.on('data', d => { out += d; });
     const code = await new Promise(res => reader.once('exit', res));
-    const ms = Date.now() - t0;
+    const exitedAt = Date.now();
     assert.strictEqual(code, 0, out);
     const j = JSON.parse(out.trim());
+    // The bound is on the exit after main returned (a pending connect to a wedged pipe would hold the process ~30 s),
+    // so it is measured from the moment main reported done, not from the spawn: node start-up and module load are
+    // the machine's, not belay's.
+    const ms = exitedAt - j.main_done_at;
     assert.strictEqual(j.reads.length, 6);
-    assert.ok(ms < 3000, `the reader process took ${ms} ms to exit (reads: ${JSON.stringify(j.reads)})`);
+    assert.ok(ms < 3000, `the reader process took ${ms} ms to exit after main returned (reads: ${JSON.stringify(j.reads)})`);
   } finally {
     if (owner && owner.exitCode === null) { try { process.kill(owner.pid); } catch { /* gone */ } }
     cleanup(dir);

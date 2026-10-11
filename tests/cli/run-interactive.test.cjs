@@ -230,7 +230,7 @@ test('closeRunWorkers: with `fast`, the adapter wait is skipped, or cut short wh
 // ---------------------------------------------------------------- the gate
 
 test('a failing gate: claude is killed by its pid, the close runs, and ended_by names the check', async (t) => withRun(t, async (dir) => {
-  const gate = fakeGate({ debug: { ok: false, failed: 'skills', detail: '2 skills loaded' }, debugMs: 400 });
+  const gate = fakeGate({ debug: { ok: false, failed: 'skills', detail: '2 skills loaded' }, debugMs: 400, debugWhen: () => fs.existsSync(`${dir}/stub-record.json`) });
   const r = start(dir, { env: { FAKE_NEVER_EXIT: '1' }, gate });
   const res = await r.done;
   const rec = r.record();
@@ -257,7 +257,7 @@ const resetOnce = (term, { altScreen = true } = {}) => { // fullscreen is the de
 test('a claude killed by a failed gate gets the terminal reset written once, after its exit (probe ide-leak)', async (t) => withRun(t, async (dir) => {
   let pid = null;
   const term = fakeTerm(() => pid);
-  const gate = fakeGate({ debug: { ok: false, failed: 'mcp_servers', detail: 'connected: belay, ide; expected exactly belay' }, debugMs: 400 });
+  const gate = fakeGate({ debug: { ok: false, failed: 'mcp_servers', detail: 'connected: belay, ide; expected exactly belay' }, debugMs: 400, debugWhen: () => fs.existsSync(`${dir}/stub-record.json`) });
   const r = start(dir, { env: { FAKE_NEVER_EXIT: '1' }, gate, deps: { termOut: term.out } });
   pid = (await waitUntil(() => r.record(), 15000)).pid;
   const res = await r.done;
@@ -271,7 +271,7 @@ test('fullscreen false: a killed claude gets the reset without the alternate-scr
   try {
     let pid = null;
     const term = fakeTerm(() => pid);
-    const gate = fakeGate({ debug: { ok: false, failed: 'skills', detail: 'x' }, debugMs: 400 });
+    const gate = fakeGate({ debug: { ok: false, failed: 'skills', detail: 'x' }, debugMs: 400, debugWhen: () => fs.existsSync(`${dir}/stub-record.json`) });
     const r = start(dir, { env: { FAKE_NEVER_EXIT: '1' }, gate, deps: { termOut: term.out }, specOverrides: { fullscreen: false } });
     pid = (await waitUntil(() => r.record(), 15000)).pid;
     await r.done;

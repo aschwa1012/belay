@@ -15,6 +15,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { createRunManager } = require('../../src/run/index.cjs');
+const P = require('../../src/run/process.cjs');
 const { DEFAULTS, leversOfRow } = require('../../src/run/memory-levers.cjs');
 const { createFakeCore } = require('./fake-core.cjs');
 const { memoryCore } = require('./fake-memory.cjs');
@@ -30,8 +31,16 @@ function sandbox() {
   return { data: d.replace(/\\/g, '/'), worktree: path.join(d, 'wt').replace(/\\/g, '/') };
 }
 
-// The script, and everything it leaves that the memory work could change.
-async function runScript(core, { handLevers = true } = {}) {
+// The row that restates the pid's creation time (pid-identity.cjs) lands whenever the process snapshot answers
+// (about a second, longer on a slow runner), so where it falls in the sequence, and whether it falls before the
+// rows are read, is timing and not memory work. It is the guarded rewrite of the previous row's state that first
+// carries the identity, and it alone is left out of the comparison.
+const hasIdentity = (r) => r.pid_created != null || r.pid_created_error != null;
+const isPidRestatement = (r, prev) => !!prev && r.expect_seq !== undefined && r.state === prev.state && hasIdentity(r) && !hasIdentity(prev);
+
+// The script, and everything it leaves that the memory work could change. `readDelayMs` replaces the process
+// snapshot with one that answers after that long, to place the restatement at a chosen moment.
+async function runScript(core, { handLevers = true, readDelayMs = null } = {}) {
   const sb = sandbox();
   const m = createRunManager({
     core, dataDir: sb.data, runId: 'run-fake', memoryLevers: handLevers && core.runRow ? leversOfRow(core.runRow) : null,
@@ -41,6 +50,8 @@ async function runScript(core, { handLevers = true } = {}) {
   const saved = { FAKE_RECV_FILE: process.env.FAKE_RECV_FILE, FAKE_TOOL_USES: process.env.FAKE_TOOL_USES };
   process.env.FAKE_RECV_FILE = recv;
   process.env.FAKE_TOOL_USES = '2';
+  const createdOf = P.createdOf;
+  if (readDelayMs !== null) P.createdOf = () => new Promise((r) => { setTimeout(() => r({ created: 1 }), readDelayMs).unref(); });
   try {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1', task_id: 't1' });
     await m._waitTurn('w1', 8000);
@@ -48,17 +59,20 @@ async function runScript(core, { handLevers = true } = {}) {
     await m._waitTurn('w1', 8000);
     await sleep(500); // the turn memory writes are off the turn path
     const w = m._worker('w1');
+    await w.memoryQueue; // and chained on this queue: every one has landed once it settles
     const stdin = fs.readFileSync(recv, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l).text);
     return {
       stdin,
       memoryCalls: core.calls.filter((c) => /^memory\./.test(c.method)).map((c) => ({ method: c.method, args: { ...c.args, provenance: String(c.args.provenance).replace(/[0-9a-f-]{36}/, '<id>') } })),
       allMethods: [...new Set(core.calls.map((c) => c.method))].sort(),
-      states: core.rowsFor('w1').map((r) => r.state),
+      states: core.rowsFor('w1').filter((r, i, rows) => !isPidRestatement(r, rows[i - 1])).map((r) => r.state),
+      restated: core.rowsFor('w1').some((r, i, rows) => isPidRestatement(r, rows[i - 1])),
       turns: w.turns,
       memBuf: w.memBuf,
       lastError: w.lastError,
     };
   } finally {
+    P.createdOf = createdOf;
     for (const k of Object.keys(saved)) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
     try { await m.shutdown(); } catch { /* best effort */ }
     cleanup(sb.data);
@@ -94,6 +108,16 @@ test('levers off: stdin bytes, memory store calls and rows equal the base build 
     assert.deepStrictEqual(got.allMethods, base.allMethods, `${name}: core methods called`);
     assert.ok(!got.allMethods.includes('run.get'), `${name}: no run.get`);
     assert.deepStrictEqual(core.events, [], `${name}: no memory_event`);
+  }
+});
+
+test('levers off: the rows compare equal wherever the pid creation-time restatement lands, before or after they are read', async () => {
+  const base = await runScript(createFakeCore({ runId: 'run-fake', resumeLineText: RL }), { readDelayMs: 10000 });
+  assert.strictEqual(base.restated, false, 'the base read answers after the rows are read');
+  for (const ms of [0, 300]) { // during the start, and after the second turn
+    const got = await runScript(memoryCore({ levers: { capture: true }, resumeLineText: RL }), { readDelayMs: ms });
+    assert.strictEqual(got.restated, true, `a read answering at ${ms} ms restates a row before the rows are read`);
+    assert.deepStrictEqual(got.states, base.states, `read at ${ms} ms: worker rows`);
   }
 });
 

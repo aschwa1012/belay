@@ -14,7 +14,8 @@ const path = require('node:path');
 const { Store } = require('./store.cjs');
 const { Engine } = require('./engine.cjs');
 const { err } = require('./errors.cjs');
-const { pipeName, acquireLock, releaseLock, markListening, resolveDataDir } = require('./lock.cjs');
+const lockApi = require('./lock.cjs'); // markListening is called through it, so a test can make it fail
+const { pipeName, acquireLock, releaseLock, resolveDataDir } = lockApi;
 
 const MAX_LINE_BYTES = 1024 * 1024; // a peer that never sends a newline must not grow this buffer forever
 
@@ -68,11 +69,16 @@ class Owner {
       this.store.heartbeat(process.pid, this.pipe, this.startedAt);
       this.engine = new Engine({ dataDir: this.dataDir, store: this.store, getEmbedder: () => this.getEmbedder(), owner: this, establishedBy: 'owner' });
       await this._listen();
+      // An owner no reader can see as listening is never dialled, so serving on would hold the lock
+      // for nothing. Not marked means not started: the whole start is undone and the caller told.
+      if (!lockApi.markListening(this.lockDir)) {
+        throw err('E_INTERNAL', `the owner at ${this.dataDir} could not publish that its pipe is listening, so it gave up the lock rather than hold it unreachable`, { data_dir: this.dataDir, lock_dir: this.lockDir, cause: 'listening marker not written' });
+      }
       this.listening = true;
-      markListening(this.lockDir);
     } catch (e) {
-      try { if (this.store) this.store.close(); } catch { /* nothing open */ }
-      releaseLock(this.lockDir);
+      // stop() undoes whatever got this far, each step guarded on its own: timers, the pipe server,
+      // the store and, last, the lock.
+      try { await this.stop(); } catch { /* the start's own error is the one to report */ }
       throw e;
     }
     return { pid: process.pid, pipe: this.pipe, db: this.store.dbPath, embedder: this.embedInfo || null };
