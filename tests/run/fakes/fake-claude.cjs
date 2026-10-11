@@ -28,6 +28,8 @@ const HANG_AFTER = process.env.FAKE_HANG_AFTER === undefined ? null : Number(pro
 let msgsSeen = 0;
 // belay run (step 5a): hold every answer this many ms, so a test can observe a turn end mid-orchestrator-turn.
 const ANSWER_DELAY_MS = Number(process.env.FAKE_ANSWER_DELAY_MS || 0);
+// Hold every answer until this file exists, so a test decides when a turn ends instead of guessing a delay.
+const ANSWER_GATE_FILE = process.env.FAKE_ANSWER_GATE_FILE || null;
 const HEARTBEAT_MS = Number(process.env.FAKE_HEARTBEAT_MS || 0);
 // The belay MCP server's reported status: 'connected', any other, 'none' (empty list), 'absent' (no key).
 const MCP = process.env.FAKE_MCP || 'connected';
@@ -273,7 +275,10 @@ function answer(text, uuid) {
     batch = null;
     process.stdout.write(burst);
   };
-  if (ANSWER_DELAY_MS > 0) {
+  if (ANSWER_GATE_FILE && !require('node:fs').existsSync(ANSWER_GATE_FILE)) {
+    const timer = setInterval(() => { if (require('node:fs').existsSync(ANSWER_GATE_FILE)) { clearInterval(timer); finish(); } }, 20);
+    pendingFinish = { uuid, timer }; // an interrupt's clearTimeout clears this interval too
+  } else if (ANSWER_DELAY_MS > 0) {
     // FAKE_HEARTBEAT_MS: a tool_progress line this often until the turn ends, as the real binary does mid-tool.
     const hb = HEARTBEAT_MS > 0 ? setInterval(() => say({ type: 'tool_progress', session_id: SESSION }), HEARTBEAT_MS) : null;
     const timer = setTimeout(() => { if (hb) clearInterval(hb); finish(); }, ANSWER_DELAY_MS);

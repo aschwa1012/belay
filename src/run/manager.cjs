@@ -485,6 +485,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     _worker: (id) => workers.get(id),
     _waitTurn: (id, ms) => W.waitTurn(get(id), ms),
     _waitExit: (id, ms) => W.waitExit(get(id), ms),
+    _closed: () => shutdownFlags.closed, // flipped by shutdown once every worker is stopped (lifecycle.cjs)
   };
   return manager;
 }
