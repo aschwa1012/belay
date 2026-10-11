@@ -437,14 +437,21 @@ test('run: a worker parked alone holds the idle close, the hold names it as park
   const spawnedPids = [];
   let ctx;
   try {
-    ctx = await startRun(dir, {}, { FAKE_ANSWER_DELAY_MS: '300' });
+    // The orchestrator's prompt turn is held until w1 is mid-turn (as in s2): a fixed 300 ms answer could let
+    // the idle rule close the run before a slow spawn landed.
+    const gate = `${dir}/orchestrator-gate`;
+    ctx = await startRun(dir, {}, { FAKE_ANSWER_DELAY_MS: '300', FAKE_ANSWER_GATE_FILE: gate });
     // Build step E1 (finding F): the worker's own stated 5,000 ms turn, so the pause lands mid-turn by
     // construction rather than by a slow turn end.
     process.env.FAKE_ANSWER_DELAY_MS = '5000';
     const row = await ctx.m.spawn({ substrate: 'claude-code', worktree: workerWorktree(dir, 'w1'), prompt: 'hello', worker_id: 'w1' });
     process.env.FAKE_ANSWER_DELAY_MS = '300';
     spawnedPids.push({ pid: row.pid, created: row.pid_created });
-    await sleep(300);
+    fs.writeFileSync(gate, '');
+    const idle = await waitUntil(() => {
+      try { return /"type":"result"/.test(fs.readFileSync(`${ctx.orchestratorDir}/stream.jsonl`, 'utf8')); } catch { return false; }
+    }, 4000, 25);
+    assert.ok(idle, "the orchestrator's turn never ended once the gate opened");
     assert.strictEqual(ctx.m._worker('w1').turnEnded, false, 'precondition: w1 is mid-turn when it is paused');
 
     const p = await cliAsync(['pause', 'w1'], ctx.dataDir); // the worker form: no run-level pause at all
