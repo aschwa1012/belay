@@ -5,6 +5,7 @@
 // `restartFirstText` takes `core` as a parameter now instead of closing over manager.cjs's own.
 
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const path = require('node:path');
 const L = require('./launch.cjs');
 
@@ -22,17 +23,78 @@ function decideBranch(w) {
   return { branch: 'replace', reason: `last event ${age_ms} ms ago, outside the ${window_ms} ms ${w.substrate} window`, age_ms, window_ms };
 }
 
-async function restartFirstText(w, branch, { core }) {
+const OBS_MAX = 200; // observations fetched for a bottle: the newest turns matter most, and the page is bounded
+const GET_MANY_MAX = 50;
+
+// The turn observations stored for this worker's task, oldest first, for the bottle's exit data. Never throws:
+// an unavailable store gives `{ rows: [], note }` and the bottle is built without them, which the event says.
+async function storedObservations(w, core, lv) {
+  if (!lv.observations) return { rows: [], note: 'observations lever off' };
+  if (!w.taskId) return { rows: [], note: 'no task, so no observations are looked up' };
+  try {
+    const listed = await core.memory.list({ filter: { types: ['observation'], task_id: w.taskId }, order: 'newest', limit: OBS_MAX, view: 'index' });
+    const ids = ((listed && listed.rows) || []).map((r) => r.id).reverse();
+    const rows = [];
+    for (let i = 0; i < ids.length; i += GET_MANY_MAX) {
+      const got = await core.memory.get_many({ ids: ids.slice(i, i + GET_MANY_MAX), view: 'full' });
+      for (const r of (got && got.rows) || []) if (r && r.found !== false) rows.push(r);
+    }
+    return { rows, note: `${rows.length} observations` };
+  } catch (e) {
+    w.lastError = { where: 'memory.list', code: e && e.code, message: e && e.message };
+    return { rows: [], note: `observations unavailable (${(e && e.code) || 'E_INTERNAL'})` };
+  }
+}
+
+// ADR 0042 decision 4: on the replace branch with `memory.bottle` on, resume.md is the bottle, written
+// atomically. True when it was written; false when the caller must fall back to today's resume document, and
+// then a `bottle` event with ok 0 names why. Every outcome is a receipt; nothing is silent.
+async function writeBottle(w, ctx, core, lv) {
+  const B = require('./bottle.cjs');
+  const SL = require('./sent-log.cjs');
+  const event = async (fields) => {
+    try { await core.memory.recordEvent({ worker_id: w.id, task_id: w.taskId || undefined, kind: 'bottle', ...fields }); }
+    catch (e) { w.lastError = { where: 'memory.recordEvent', code: e && e.code, message: e && e.message }; }
+  };
+  await SL.flush(w, ctx);
+  const obs = await storedObservations(w, core, lv);
+  const built = B.buildBottle({ streamPath: w.streamPath, sentPath: SL.sentPath(w), observations: obs.rows, maxBytes: lv.bottle_bytes });
+  const detail = `user_messages=${built.user_messages}; ${obs.note}`;
+  if (built.fallback) {
+    await event({ ok: 0, code: built.fallback, dropped: built.dropped > 0 ? 1 : 0, over_budget: built.over_budget ? 1 : 0, message: `fell back to the resume document; ${detail}` });
+    return false;
+  }
+  try {
+    B.writeAtomic(L.fwd(path.join(w.dir, 'resume.md')), built.text);
+  } catch (e) {
+    w.lastError = { where: 'bottle.writeAtomic', code: e && e.code, message: e && e.message };
+    await event({ ok: 0, code: 'E_BOTTLE_WRITE', message: `fell back to the resume document; ${detail}` });
+    return false;
+  }
+  await event({
+    ok: 1, bytes: built.bytes, sha256: crypto.createHash('sha256').update(built.text).digest('hex'),
+    dropped: built.dropped > 0 ? 1 : 0, over_budget: 0,
+    message: `${detail}; messages=${built.messages}; tool_calls=${built.tool_calls_replaced}; dropped=${built.dropped}`,
+  });
+  return true;
+}
+
+// `ctx` is optional: without it (or with `memory.bottle` off) the replace branch is exactly what it was.
+async function restartFirstText(w, branch, { core, ctx }) {
   if (branch === 'resume') {
     const rl = w.taskId ? await core.continuity.resumeLine({ task_id: w.taskId }).catch(() => null) : null;
     return 'You were interrupted and resumed. Continue from where you left off.' + (rl && rl.text ? '\n\n' + rl.text : '');
   }
   const key = w.taskId ? { task_id: w.taskId } : { worker_id: w.id };
-  try {
-    const doc = await core.continuity.resumeDoc(key);
-    if (doc && doc.text) fs.writeFileSync(L.fwd(path.join(w.dir, 'resume.md')), doc.text);
-  } catch (e) {
-    w.lastError = { where: 'continuity.resumeDoc', code: e && e.code, message: e && e.message };
+  const lv = ctx ? await require('./memory-preface.cjs').levers(ctx, w) : null;
+  const bottled = !!(lv && lv.bottle) && await writeBottle(w, ctx, core, lv);
+  if (!bottled) {
+    try {
+      const doc = await core.continuity.resumeDoc(key);
+      if (doc && doc.text) fs.writeFileSync(L.fwd(path.join(w.dir, 'resume.md')), doc.text);
+    } catch (e) {
+      w.lastError = { where: 'continuity.resumeDoc', code: e && e.code, message: e && e.message };
+    }
   }
   const rl = await core.continuity.resumeLine(key).catch(() => null);
   return (rl && rl.text ? rl.text + '\n\n' : '') +

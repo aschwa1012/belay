@@ -14,6 +14,7 @@ const { initFacts } = require('./ready.cjs');
 const BG = require('./background.cjs'); // build step 6e-3: background-task tracking and its own control requests
 const LC = require('./lifecycle.cjs'); // 6e-5: readLaunchOptions (design item 5)
 const EX = require('./exit.cjs'); // 6f-2 design items 6 and 9: terminalState, noteStoppedWhileSettled, settle
+const MC = require('./memory-capture.cjs'); // ADR 0041 decision 7: the turn's event buffer, lever-gated
 const TR = require('./turn-record.cjs'); // 6i-2 fix round (item 3, should-fix): onTurnEnd's checkpoint/memory write, gated on shutdownFlags
 const { lookupSha } = require('./head-lookup.cjs'); // W2-3: base_sha at record creation, head_sha at settle (write-row.cjs)
 const CP = require('./compaction.cjs'); // ADR 0007 decision 3: the compact_at_tokens lever (inert while ctx.compactAt is null)
@@ -27,12 +28,13 @@ const EDIT_TOOLS = ['Edit', 'Write', 'NotebookEdit', 'MultiEdit'];
 const sha12 = (v) => crypto.createHash('sha256').update(JSON.stringify(v === undefined ? null : v)).digest('hex').slice(0, 12);
 const now = () => Date.now();
 
-function newWorkerRecord({ id, substrate, worktree, dataDir, taskId, model, allowedTools, permissionMode, sandbox, permissionPrompt = false, permitWaitMs = 600000, captureBase = true, effort = null }) {
+function newWorkerRecord({ id, substrate, worktree, dataDir, taskId, model, allowedTools, permissionMode, sandbox, permissionPrompt = false, permitWaitMs = 600000, captureBase = true, effort = null, tools = null }) {
+  const narrowed = L.narrowTools(tools); // ADR 0024: checked before the directory exists; null is the full list
   const dir = L.workerDir(dataDir, id);
   fs.mkdirSync(dir, { recursive: true });
   const w = {
     id, substrate, worktree: L.fwd(path.resolve(worktree)), dir, taskId: taskId || null,
-    model: model || null, effort: effort || null, allowedTools: allowedTools || L.DEFAULT_ALLOWED_TOOLS,
+    model: model || null, effort: effort || null, tools: narrowed, allowedTools: allowedTools || L.DEFAULT_ALLOWED_TOOLS,
     permissionMode: permissionMode || L.DEFAULT_PERMISSION_MODE, sandbox: sandbox || L.DEFAULT_CODEX_SANDBOX,
     // ADR 0021 decisions 3-4: what the last launch's system/init said it started with (noteInit); null
     // until a ready event carries it, always null for Codex.
@@ -86,7 +88,7 @@ async function adopt({ core, workerId, dataDir }) {
   const launchOpts = LC.readLaunchOptions(L.workerDir(dataDir, row.id));
   const w = newWorkerRecord({
     id: row.id, substrate: row.substrate, worktree: row.worktree, dataDir, taskId: row.task_id,
-    model: launchOpts.model, allowedTools: launchOpts.allowedTools,
+    model: launchOpts.model, allowedTools: launchOpts.allowedTools, tools: launchOpts.tools,
     permissionMode: row.permission_mode_requested || null, sandbox: null,
     permissionPrompt: launchOpts.permissionPrompt, permitWaitMs: launchOpts.permitWaitMs || 600000,
     effort: row.effort_requested || null, // ADR 0028 decision 2: a cross-adapter relaunch keeps the level
@@ -340,6 +342,7 @@ function attach(w, child, ctx) {
     for (const e of events) {
       w.lastEventAt = e.at;
       CP.note(w, e, ctx);
+      MC.onEvent(w, e, ctx.memoryLevers); // ADR 0041 decision 7
       if (e.kind === 'ready') {
         w.sessionId = e.session_id || w.sessionId;
         if (e.model) w.initModel = e.model; // W2-3: what init reported, never the requested string

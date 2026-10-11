@@ -16,7 +16,9 @@ const { resolveParks, parseRunRow, clearedPause, pauseFields } = require('./paus
 const { runCommand } = require('./evaluate.cjs');
 
 const { EFFORT_LEVELS } = require('./effort-levels.cjs');
+const { parseMemoryBlock } = require('./memory-levers.cjs'); // pure: no requires, so the read path stays light
 
+const PROJECT_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const fwd = (p) => String(p).replace(/\\/g, '/');
 
 // The states that claim a live worker, and so must be re-checked against a pid when a new epoch attaches.
@@ -30,7 +32,7 @@ const ATTACH_SUSPECT = LIFE_CLAIMING_STATES;
 // Fix round for 6f (diff-scope): `rows.cjs` (unowned) lacks paused_at/paused_by in COLUMNS.run, so
 // rows.append would drop both. This local insert (its own shape, via exported bind/parseRow) adds them.
 function appendRun(E, values, writtenBy, at = Date.now()) {
-  const cols = [...rows.COLUMNS.run, 'paused_at', 'paused_by', 'pause_parks']; // item 1: 6th local column
+  const cols = [...rows.COLUMNS.run, 'paused_at', 'paused_by', 'pause_parks', 'memory_levers', 'project']; // item 1: 6th local column; ADR 0041 decision 1: the memory levers and the project
   const all = [...cols, 'written_at', 'written_by'];
   const sql = `INSERT INTO run(${all.join(', ')}) VALUES (${all.map(() => '?').join(', ')})`;
   const params = cols.map(c => rows.bind(values[c]));
@@ -52,6 +54,22 @@ async function attach(E, caller, args) {
   const fixCapGiven = args.max_fix_rounds !== undefined;
   if (fixCapGiven && args.max_fix_rounds !== null && !(Number.isSafeInteger(args.max_fix_rounds) && args.max_fix_rounds >= 0)) {
     throw err('E_ARGS', 'run.attach max_fix_rounds must be null or a non-negative integer', { max_fix_rounds: args.max_fix_rounds });
+  }
+  // ADR 0041 decision 1: the memory levers (the parsed block as JSON text) and the project name, written once by
+  // the launching attach and carried forward like max_fix_rounds. The core is the boundary: bad values are refused.
+  const leversGiven = args.memory_levers !== undefined;
+  if (leversGiven && args.memory_levers !== null) {
+    let parsed = null;
+    try { parsed = typeof args.memory_levers === 'string' ? JSON.parse(args.memory_levers) : null; } catch { /* refused below */ }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw err('E_ARGS', 'run.attach memory_levers must be null or the JSON text of an object', { memory_levers: args.memory_levers });
+    }
+    const checked = parseMemoryBlock(parsed);
+    if (checked.error) throw err('E_ARGS', `run.attach memory_levers is not a valid memory block: ${checked.error}`, { memory_levers: args.memory_levers });
+  }
+  const projectGiven = args.project !== undefined;
+  if (projectGiven && args.project !== null && !(typeof args.project === 'string' && PROJECT_RE.test(args.project))) {
+    throw err('E_ARGS', 'run.attach project must be null or match ^[a-z0-9][a-z0-9._-]{0,63}$', { project: args.project });
   }
   const runId = caller.run_id;
   const t = Date.now();
@@ -107,6 +125,8 @@ async function attach(E, caller, args) {
     orch_effort_requested: effortGiven ? args.orch_effort_requested : (carryPause ? prev.orch_effort_requested : null),
     // ADR 0031 decision 6: the fix-round cap `belay run` launched with, same carry rule as the effort.
     max_fix_rounds: fixCapGiven ? args.max_fix_rounds : (carryPause ? prev.max_fix_rounds : null),
+    memory_levers: leversGiven ? args.memory_levers : (carryPause ? prev.memory_levers : null), // same carry rule
+    project: projectGiven ? args.project : (carryPause ? prev.project : null),
   }, by, t);
   E.noteWrite();
   return { run, epoch, reattached: !!prev, previous: parseRunRow(prev), workers_marked_dead: marked }; // item c

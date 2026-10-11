@@ -130,7 +130,7 @@ test('continue: the error goes back to the caller, the run is not paused, and th
   let ctx;
   try {
     ctx = await startRun(dir, { on_embedder_failure: 'continue' }, {});
-    await assert.rejects(ctx.core.memory.search({ query: 'anything' }), (e) => e.code === 'E_TIMEOUT');
+    await assert.rejects(ctx.core.memory.search({ query: 'anything', mode: 'semantic' }), (e) => e.code === 'E_TIMEOUT');
     await new Promise((r) => setTimeout(r, 1500)); // a pause, were one coming, lands well inside this
     assert.strictEqual(currentRunRow(ctx.dataDir, ctx.runId).paused_at, null, 'the run must not be paused');
 

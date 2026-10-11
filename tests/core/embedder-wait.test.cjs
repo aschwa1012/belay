@@ -64,7 +64,7 @@ test('a hung load fails once with its cause, and every later call gets that caus
     assert.ok(Date.now() - t0 < 10000, `reported in ${Date.now() - t0} ms`);
     const pid = c.owner.embedderObj.pid;
     const t1 = Date.now();
-    const second = await c.memory.search({ namespace: 'w2', query: 'again' }).then(() => null, e => e);
+    const second = await c.memory.search({ namespace: 'w2', query: 'again', mode: 'semantic' }).then(() => null, e => e);
     assert.ok(Date.now() - t1 < 500, `the later call took ${Date.now() - t1} ms`);
     assert.strictEqual(second.code, 'E_EMBEDDER_TIMEOUT');
     assert.strictEqual(second.detail.cause, 'timeout');
@@ -103,7 +103,7 @@ test('a live owner that is only busy for 700 ms and misses the 300 ms ping is no
     c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
     const t0 = Date.now();
     // The owner has embedding off, so a refusal of E_NO_EMBEDDER is what an ANSWERING owner says.
-    const r = await c.memory.search({ query: 'which process?' }).then(() => null, e => e);
+    const r = await c.memory.search({ query: 'which process?', mode: 'semantic' }).then(() => null, e => e);
     assert.ok(r, 'the owner has no embedder, so the call must be refused');
     assert.notStrictEqual(r.code, 'E_OWNER_LOST', `a busy owner was reported lost: ${r.message}`);
     assert.ok(Date.now() - t0 < 2500, `took ${Date.now() - t0} ms`);

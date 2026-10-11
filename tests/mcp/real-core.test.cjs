@@ -67,7 +67,7 @@ test('the real core\'s refusal codes and details reach the model unchanged', asy
   await a.initialize();
 
   // --no-embed: the core fails rather than returning an empty result.
-  for (const [tool, args] of [['memory_store', { text: 'a fact' }], ['memory_search', { query: 'a fact' }]]) {
+  for (const [tool, args] of [['memory_store', { text: 'a fact' }], ['memory_search', { query: 'a fact', mode: 'semantic' }]]) {
     const r = await a.call(tool, args);
     assert.strictEqual(r.isError, true, `${tool} must refuse under --no-embed`);
     assert.strictEqual(r.structuredContent.error, 'E_NO_EMBEDDER');
@@ -152,7 +152,10 @@ test('a worker-role adapter carries its argv identity into the real core and nev
   // No owner is alive and a worker never elects one, so a write cannot succeed. Whether the core
   // refuses for want of an owner or an embedder first, both are contract codes and neither is a
   // silent success.
-  const w = await a.call('memory_store', { text: 'x', worker_id: 'wk-forged' });
+  // A worker_id argument never gets that far: it is a harness field, refused by name at the boundary.
+  const forged = await a.call('memory_store', { text: 'x', worker_id: 'wk-forged' });
+  assert.strictEqual(forged.structuredContent.error, 'E_ARGS');
+  const w = await a.call('memory_store', { text: 'x' });
   assert.strictEqual(w.isError, true, 'a worker write with no owner must not succeed');
   assert.ok(['E_NO_OWNER', 'E_NO_EMBEDDER'].includes(w.structuredContent.error),
     `expected E_NO_OWNER or E_NO_EMBEDDER, got ${w.structuredContent.error}`);

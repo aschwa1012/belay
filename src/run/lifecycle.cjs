@@ -96,7 +96,7 @@ async function killSurvivor(w, e) {
   const gone = await P.waitPidGone(pid, { timeoutMs: 5000 });
   return { worker_id: w.id, code: (e && e.code) || null, pid, pid_gone_ms: gone, tree_kill: w.treeKill || null };
 }
-async function shutdown(workers, { stop, core, clearPoll, markClosed }) {
+async function shutdown(workers, { stop, core, clearPoll, markClosed, onDrained }) {
   const t0 = now();
   const stopped = [];
   const left_parked = [];
@@ -134,6 +134,9 @@ async function shutdown(workers, { stop, core, clearPoll, markClosed }) {
     clearTimeout(timer);
     if (!done) { gaveUp.push(w.id); w.lastError = { where: 'shutdown', state: 'memory-queue-gave-up', bound_ms: MEMORY_DRAIN_MS }; }
   }));
+  // ADR 0041/0043: the run's end-of-run memory jobs run once every queue has drained and before the owner goes, so
+  // their writes cannot re-elect one. They catch their own failures; this await never blocks the shutdown on one.
+  if (onDrained) await onDrained().catch(() => {});
   clearPoll();
   // ADR 0029 amendment 2 item 3: stop only an owner this process holds. An adapter that is not the owner
   // would otherwise send the pipe `shutdown` to belay run's own store owner. A core with no isOwner is a
@@ -148,7 +151,7 @@ async function shutdown(workers, { stop, core, clearPoll, markClosed }) {
 // this build's bare defaults. The last launch's own argv.json (written by `launch`, manager.cjs) and
 // mcp.json name what actually ran; a read or parse failure is recorded on the result, never thrown.
 function readLaunchOptions(dir) {
-  const out = { model: null, allowedTools: null, permissionPrompt: false, permitWaitMs: null, error: null };
+  const out = { model: null, allowedTools: null, tools: null, permissionPrompt: false, permitWaitMs: null, error: null };
   try {
     const argv = JSON.parse(fs.readFileSync(path.join(dir, 'argv.json'), 'utf8')).spec.args;
     const modelAt = argv.indexOf('--model');
@@ -160,6 +163,8 @@ function readLaunchOptions(dir) {
       out.allowedTools = tools;
     }
     out.permissionPrompt = argv.includes('--permission-prompt-tool');
+    const builtinsAt = argv.indexOf('--tools'); // ADR 0024: a narrowed list survives a cross-adapter relaunch
+    if (builtinsAt >= 0) out.tools = require('./surface.cjs').narrowTools(String(argv[builtinsAt + 1]).split(','));
   } catch (e) {
     out.error = { where: 'argv.json', code: e && e.code, message: e && e.message };
   }

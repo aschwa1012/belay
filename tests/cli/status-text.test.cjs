@@ -121,7 +121,7 @@ test('status text: an open row with a dead adapter pid reads not running, an end
     assert.ok(lines[6].startsWith('verdict: '), `${runId}: line 7 must be verdict::\n${r.stdout}`);
     assert.ok(lines[7].startsWith('established_by: '), `${runId}: line 8 must be established_by::\n${r.stdout}`);
     assert.strictEqual(lines[8], expectedRunLine, `${runId}: the run: line must match exactly`);
-    assert.match(lines[9], /^store: schema 1, last written by belay@\S+\+(?:[0-9a-f]{12}|unknown)$/, `${runId}: the store: line must name the stamp:\n${r.stdout}`);
+    assert.match(lines[9], /^store: schema 2, last written by belay@\S+\+(?:[0-9a-f]{12}|unknown)$/, `${runId}: the store: line must name the stamp:\n${r.stdout}`);
     assert.strictEqual(lines.length, 10,`${runId}: unexpected extra lines:\n${r.stdout}`);
     assert.ok(!r.stdout.includes('null'), `${runId}: text output must name every fact, never print the literal "null":\n${r.stdout}`);
   }

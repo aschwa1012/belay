@@ -12,6 +12,8 @@
 //   review_verdict      a verdict check on a review task's results (ADR 0025)
 //   run_paused          the run row's paused_at while the run has not ended
 //   run_ended           the run row's ended_at
+//   memory_wrapup       a wrap-up memory_event of the run (ADR 0043 decision 2): one per task and one per run, once
+//                       each because the store refuses a second (run, key)
 
 const fs = require('node:fs');
 const C = require('./config.cjs');
@@ -136,6 +138,25 @@ function runEvents(run) {
   return out;
 }
 
+// ADR 0043 decision 2. One notice per wrap-up event, keyed by the event's key: the store's partial unique
+// index already allows one per (run, key), and the key set here keeps a hand-planted duplicate from showing twice.
+function wrapupEvents(events, runId) {
+  const seen = new Set();
+  const out = [];
+  for (const e of events) {
+    if (e.kind !== 'wrapup') continue;
+    const key = e.key ?? e.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      kind: 'memory_wrapup', ts: num(e.written_at), run_id: runId, task_id: e.task_id ?? null, key: e.key ?? null,
+      ok: !!e.ok, code: e.code ?? null, text: e.message ?? null, bytes: num(e.bytes), row_ids: e.row_ids ?? null,
+      source: `memory_event ${e.id}`,
+    });
+  }
+  return out;
+}
+
 // Oldest first; an event with no timestamp sorts last, and `--since` keeps it, since nothing proves it is old.
 function ordered(events, since) {
   const kept = since == null ? events : events.filter((e) => e.ts == null || e.ts >= since);
@@ -161,6 +182,8 @@ function summaryOf(e) {
       return `${id('worker', e.worker_id)} ${P.v(e.state, 12)} mid-turn, last event ${e.last_event_age_ms}ms ago by ${P.v(e.last_event_age_source, 20)} (over ${e.stall_ms}ms), pid ${P.v(e.pid)} pid_alive ${P.v(e.pid_alive)}`;
     case 'review_verdict':
       return `${id('task', e.task_id)} verdict ${P.v(e.verdict, 20)} passed ${P.v(e.passed)} executable ${P.v(e.executable)} judged by ${P.v(e.judged_by, 60)}${e.reason ? ` reason ${P.v(e.reason, 120)}` : ''}`;
+    case 'memory_wrapup':
+      return `${id('key', e.key)} ${e.ok ? P.v(e.text, 600) : `failed ${P.v(e.code, 40)}`}`;
     case 'run_paused':
       return `${id('run', e.run_id)} paused by ${P.v(e.paused_by, 60)}`;
     default:
@@ -198,10 +221,12 @@ async function run(ctx) {
     const { requests } = await core.permission.list({ run_id: chosen.id, states: ['pending'] });
     const { workers } = await core.worker.list({});
     const { tasks } = await core.task.list({});
+    const { events: ledger } = await core.memory.events({ run_id: chosen.id, kinds: ['wrapup'] });
     const events = ordered([
       ...permissionEvents(requests, chosen.id),
       ...workerEvents(workers.filter((w) => w.run_id === chosen.id), chosen.id, parsed.stallMs, dataDir),
       ...verdictEvents(tasks.filter((t) => t.run_id === chosen.id), chosen.id),
+      ...wrapupEvents(ledger, chosen.id),
       ...runEvents(chosen),
     ], parsed.since);
     const receipt = {
@@ -216,4 +241,4 @@ async function run(ctx) {
   }
 }
 
-module.exports = { run, verdictEvents, runEvents, ordered, workerEvents, stallAge };
+module.exports = { run, wrapupEvents, verdictEvents, runEvents, ordered, workerEvents, stallAge };

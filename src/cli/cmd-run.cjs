@@ -13,7 +13,6 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const crypto = require('node:crypto');
 
 const C = require('./config.cjs');
 const L = require('../run/launch.cjs');
@@ -26,7 +25,7 @@ const { callWorkerAdapter, pauseBoundMs, resumeBoundMs } = require('./adapter-pi
 const { closeRunWorkers, workersClosedBlock } = require('./run-close.cjs');
 const { warmEmbedder, createEmbedderGuard } = require('../run/embedder-guard.cjs');
 const { RESUME_WARM_MS } = require('./embedder-bounds.cjs');
-const { parseLevers, substituteLevers, countReviewRounds } = require('./run-levers.cjs');
+const { attachMemory, memoryText, substituteLevers, countReviewRounds } = require('./run-levers.cjs');
 
 const fwd = (p) => String(p).split('\\').join('/');
 
@@ -42,13 +41,6 @@ function resolveOpenCore() {
 }
 const openCore = resolveOpenCore();
 
-const KNOWN_KEYS = new Set([
-  'worktree', 'prompt_file', 'run_id', 'model', 'allowed_tools', 'orchestrator_dir',
-  'startup_timeout_ms', 'timeout_ms', 'mcp_tool_timeout_ms', 'poll_ms', 'close_grace_ms',
-  'max_fix_rounds', 'fix_cutoff', 'on_embedder_failure', 'compact_at_tokens', 'mode', 'interactive_surface_ms', 'fullscreen',
-]);
-const REQUIRED_KEYS = ['worktree', 'prompt_file'];
-
 function usageError(message) {
   return {
     code: 2,
@@ -57,74 +49,8 @@ function usageError(message) {
   };
 }
 
-// All of it: usage errors here return before the data dir is created, the core is opened, or a
-// process is spawned (TASK.md step 1).
-function parseSpec(specPath, cwd) {
-  let raw;
-  try { raw = fs.readFileSync(specPath, 'utf8'); }
-  catch (e) { return { error: `could not read spec file ${specPath}: ${e.message}` }; }
-  let spec;
-  try { spec = JSON.parse(raw); }
-  catch (e) { return { error: `spec file ${specPath} is not valid JSON: ${e.message}` }; }
-  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
-    return { error: `spec file ${specPath} must be a JSON object` };
-  }
-  for (const k of Object.keys(spec)) {
-    if (!KNOWN_KEYS.has(k)) return { error: `unknown spec key "${k}"` };
-  }
-  for (const k of REQUIRED_KEYS) {
-    if (spec[k] === undefined || spec[k] === null || spec[k] === '') {
-      return { error: `spec is missing required key "${k}"` };
-    }
-  }
-
-  const specDir = fwd(path.dirname(specPath));
-  const resolveRel = (p) => (path.isAbsolute(String(p)) ? fwd(p) : fwd(path.resolve(specDir, String(p))));
-
-  const worktree = resolveRel(spec.worktree);
-  let wtStat;
-  try { wtStat = fs.statSync(worktree); } catch { return { error: `worktree ${worktree} does not exist` }; }
-  if (!wtStat.isDirectory()) return { error: `worktree ${worktree} is not a directory` };
-
-  const promptFile = resolveRel(spec.prompt_file);
-  let promptText;
-  try { promptText = fs.readFileSync(promptFile, 'utf8'); }
-  catch (e) { return { error: `prompt_file ${promptFile} could not be read: ${e.message}` }; }
-
-  if (spec.allowed_tools !== undefined) {
-    const at = spec.allowed_tools;
-    if (!Array.isArray(at) || !at.every((x) => typeof x === 'string')) {
-      return { error: 'allowed_tools must be an array of strings' };
-    }
-  }
-
-  const numeric = {};
-  for (const [key, dflt] of [
-    ['startup_timeout_ms', 60000], ['timeout_ms', 0],
-    ['mcp_tool_timeout_ms', 120000], ['poll_ms', 1000], ['close_grace_ms', 10000],
-  ]) {
-    const v = spec[key] === undefined ? dflt : Number(spec[key]);
-    if (!Number.isFinite(v) || v < 0) return { error: `${key} must be a non-negative number` };
-    // ADR 0029 amendment 1 item 4: Claude Code parses MCP_TOOL_TIMEOUT with parseInt, so a decimal (or zero)
-    // would set a client timeout the adapter's digits-only wait cap does not see.
-    if (key === 'mcp_tool_timeout_ms' && (!Number.isSafeInteger(v) || v <= 0)) return { error: `${key} must be a positive integer` };
-    numeric[key] = v;
-  }
-
-  const levers = parseLevers(spec); // ADR 0031 decisions 3 and 5
-  if (levers.error) return { error: levers.error };
-  const modeKeys = RI.parseModeKeys(spec); // ADR 0037 decision 1
-  if (modeKeys.error) return { error: modeKeys.error };
-
-  const runId = spec.run_id ? String(spec.run_id) : crypto.randomUUID();
-  return {
-    specPath, worktree, promptFile, promptText, runId, levers,
-    model: spec.model || L.DEFAULT_ORCHESTRATOR_MODEL,
-    allowedTools: spec.allowed_tools === undefined ? null : spec.allowed_tools,
-    orchestratorDirRaw: spec.orchestrator_dir ? resolveRel(spec.orchestrator_dir) : null,
-    ...numeric, ...modeKeys.fields,
-  };
-}
+const { parseSpec } = require('./run-spec.cjs'); // the spec's keys and their checks
+const { memoryRunEnd } = require('./run-memory-end.cjs'); // ADR 0043 decision 2: the run-end memory jobs, after the adapter
 
 // 5a-4 item 4: the two no-write paths (a refusal, an election failure) return before run.json is ever
 // attempted, so the old unconditional last line told an operator to go read a receipt that was never
@@ -154,7 +80,7 @@ function renderText(receipt) {
   else if (pl && pl.unchanged === false) lines.push(`plugin copy changed after spawn: ${(pl.changed_files || []).join(', ') || 'unreadable'}`); // ADR 0037 amendment 5 decision 4
   if (receipt.levers) {
     const rr = receipt.review_rounds === null ? `unknown (${receipt.review_rounds_reason})` : receipt.review_rounds;
-    lines.push(`levers: max_fix_rounds ${receipt.levers.max_fix_rounds}, fix_cutoff ${receipt.levers.fix_cutoff}, on_embedder_failure ${receipt.levers.on_embedder_failure}; review_rounds: ${rr}`);
+    lines.push(`levers: max_fix_rounds ${receipt.levers.max_fix_rounds}, fix_cutoff ${receipt.levers.fix_cutoff}, on_embedder_failure ${receipt.levers.on_embedder_failure}${memoryText(receipt.levers)}; review_rounds: ${rr}`);
   }
   lines.push(...RI.embedderLines(receipt));
   if (receipt.receipt_path) lines.push(`receipt: ${receipt.receipt_path}`);
@@ -339,7 +265,7 @@ async function run(ctx) {
   async function onAttached({ pid }) {
     try {
       RID.watchOrchestrator(pid); // ADR 0039: run-identity.cjs; the attach never waits on a snapshot
-      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds });
+      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, ...attachMemory(parsed.levers) });
       return { ok: true, attach: attachRow };
     } catch (e) {
       return { ok: false, error: (e && e.message) || String(e) };
@@ -361,6 +287,7 @@ async function run(ctx) {
   let shutdown = null;
   let stopReceipt = null;
   let closed = null;
+  let memoryEnd = null;
   let reviewRounds = { value: null, reason: 'the run was never attached, so no tasks were read' };
   // ADR 0039 follow-up: one worker close (ADR 0029); a fast close runs it inside the loop, before the gate collect.
   const workerClose = RI.onceClose(ce, () => ((ctx.interactiveDeps && ctx.interactiveDeps.closeRunWorkers) || closeRunWorkers)({ core, runId: parsed.runId, graceMs: parsed.close_grace_ms, fast: RI.fastOf(ce) }), () => !!attachRow);
@@ -375,6 +302,7 @@ async function run(ctx) {
           mcpToolTimeoutMs: parsed.mcp_tool_timeout_ms, pollMs: parsed.poll_ms,
           closeGraceMs: parsed.close_grace_ms, compactAtTokens: parsed.levers.compact_at_tokens, // ADR 0007 decision 3
           interactiveSurfaceMs: parsed.interactive_surface_ms, fullscreen: parsed.fullscreen,
+          knowledgeAgent: !!(parsed.levers.memory_levers && parsed.levers.memory_levers.knowledge_agent),
         },
         onAttached, stopControl: attachHook, console: ce, print: RI.printer(ctx), deps: ctx.interactiveDeps,
         wakeRelease: ce ? () => runPauseControl.takeResume() : undefined,
@@ -422,6 +350,8 @@ async function run(ctx) {
         if (partial) postFailure = chain(postFailure, x.what, x.msg);
         else if (!crashedBy) crashedBy = `belay run crashed while ending the run: ${x.msg}`;
       }
+      // The adapter has closed and run.end has settled the rows; this process still owns the store.
+      memoryEnd = await memoryRunEnd({ core, runId: parsed.runId, levers: parsed.levers, ce, late: (m) => { postFailure = chain(postFailure, 'fast close', m); } });
     }
   } finally {
     // shutdownOwner() on every path this far, because becomeOwner's owner: true still stands.
@@ -486,6 +416,7 @@ async function run(ctx) {
     levers: parsed.levers, embedder: warm, embedder_failures: ie ? ie.annotate(guard.events()) : guard.events(),
     review_rounds: reviewRounds.value, review_rounds_reason: reviewRounds.reason,
     workers_closed: closed ? workersClosedBlock(closed, endedRow ? (endedRow.workers_marked_dead || []) : null) : null,
+    ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), // only with a run-end memory lever on
   };
   try {
     fs.writeFileSync(receiptPath, `${JSON.stringify({ ...receipt, receipt_path: receiptPath }, null, 2)}\n`);

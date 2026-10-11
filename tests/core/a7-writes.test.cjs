@@ -40,7 +40,7 @@ test('two client processes x 100 stores: acked equals rows, and integrity is ok'
     const reader = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
     const rows = [];
     for (let offset = 0; offset < 2 * N + 50; offset += 200) {
-      const page = await reader.memory.list({ namespace: 'a7', limit: 200, offset });
+      const page = await reader.memory.list({ namespace: 'run/a7', limit: 200, offset });
       if (!page.rows.length) break;
       rows.push(...page.rows);
     }

@@ -60,10 +60,21 @@ function hygieneSettings(cwd) {
   return { claudeMdExcludes: ancestorExcludes(cwd), autoMemoryEnabled: false, autoDreamEnabled: false };
 }
 
+// ADR 0024 decisions 1 and 3: a launch may narrow the built-in list (the knowledge agent reads only), never widen it.
+// Returns null for the full list, or the narrowed list; anything else is refused before any file or row exists.
+function narrowTools(tools) {
+  if (tools == null) return null;
+  const ok = Array.isArray(tools) && tools.length > 0 && new Set(tools).size === tools.length && tools.every((t) => CLAUDE_TOOLS.includes(t));
+  if (!ok) throw Object.assign(new Error(`tools must be a non-empty subset of ${CLAUDE_TOOLS.join(', ')} with no repeats`), { code: 'E_ARGS', detail: { tools } });
+  return tools.length === CLAUDE_TOOLS.length ? null : [...tools];
+}
+
 // ADR 0024 decision 6: the ready event reports the surface the worker actually got; a wrong surface
 // is a failed launch. Reads only `tools`, `plugins` and `memory_paths` off the ready event the parser
 // already built (parsers.cjs), never the raw system/init line.
-function checkSurface(ready, { permissionPrompt = false } = {}) {
+// `tools`: the narrowed built-in list this launch was given (launch.cjs narrowTools), checked exactly as the full
+// list is; null for the full list.
+function checkSurface(ready, { permissionPrompt = false, tools: wanted = null } = {}) {
   const tools = ready && ready.tools;
   if (!Array.isArray(tools)) {
     return {
@@ -76,10 +87,11 @@ function checkSurface(ready, { permissionPrompt = false } = {}) {
   const builtins = tools.filter((t) => !String(t).startsWith('mcp__'));
   const mcpTools = tools.filter((t) => String(t).startsWith('mcp__'));
 
-  const wantSet = new Set(CLAUDE_TOOLS);
+  const want = wanted || CLAUDE_TOOLS;
+  const wantSet = new Set(want);
   const gotSet = new Set(builtins);
   const extra = builtins.filter((t) => !wantSet.has(t));
-  const missing = CLAUDE_TOOLS.filter((t) => !gotSet.has(t));
+  const missing = want.filter((t) => !gotSet.has(t));
   if (extra.length) reasons.push(`extra built-in tool(s) beyond ADR 0024's list: ${extra.join(', ')}`);
   if (missing.length) reasons.push(`missing built-in tool(s) from ADR 0024's list: ${missing.join(', ')}`);
 
@@ -151,4 +163,4 @@ function surfaceFields(evidence) {
   return { tools_hash: tools_hash ?? null, builtins: builtins ?? null, belay_tools: belay_tools ?? null, plugins: plugins ?? null };
 }
 
-module.exports = { CLAUDE_TOOLS, SETTING_SOURCES_ARG, ancestorExcludes, hygieneSettings, checkSurface, surfaceFields };
+module.exports = { CLAUDE_TOOLS, narrowTools, SETTING_SOURCES_ARG, ancestorExcludes, hygieneSettings, checkSurface, surfaceFields };

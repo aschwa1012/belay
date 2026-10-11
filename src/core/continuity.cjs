@@ -130,7 +130,7 @@ function block(name, body) { return { name, text: `## ${name}\n${body}\n\n` }; }
 async function resumeDoc(E, caller, args) {
   const task = resolveTask(E, args);
   const c = leaseAndCheckpoints(E, task.id);
-  const ns = args.namespace || `run/${caller.run_id}`;
+  const ns = require('./methods-memory.cjs').resolveNamespace(E, caller, args.namespace) || `run/${caller.run_id}`;
 
   const candidates = [];
   candidates.push(block('spec', String(task.spec || '(no spec recorded)')));

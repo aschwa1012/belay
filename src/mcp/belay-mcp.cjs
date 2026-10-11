@@ -22,92 +22,12 @@ const { createLogWriter } = require('./log-writer.cjs');
 // nothing but net and src/core/lock.cjs, so it costs a worker-role adapter nothing on its own read
 // path either.
 const { createWorkerControl } = require('../run/control.cjs');
-const CP = require('../run/compaction.cjs'); // fs and path only; parses --compact-at
+const { createKnowledgeGate } = require('./knowledge-gate.cjs');
+const { parseArgv, die } = require('./argv.cjs'); // identity from argv only; moved out to keep this file short
 
 const SERVER_NAME = 'belay';
-const SERVER_VERSION = '0.1.0';
+const SERVER_VERSION = '0.2.0';
 const DEFAULT_PROTOCOL = '2025-06-18';
-
-// ---------------------------------------------------------------- argv -> identity
-
-const VALUE_FLAGS = new Set(['--role', '--run', '--data', '--worker-id', '--log', '--permit-wait-ms', '--compact-at']);
-const BOOL_FLAGS = new Set(['--no-embed', '--experimental-worker-wait', '--permit']);
-
-function die(reason) {
-  process.stderr.write(`belay-mcp: ${reason}\n`);
-  process.exit(2);
-}
-
-function parseArgv(argv) {
-  const out = { embed: true };
-  for (let i = 0; i < argv.length; i += 1) {
-    const a = argv[i];
-    // Kept as a named refusal (build 2): there is no headless mode of this adapter. Headlessness is a property
-    // of the Claude session the CLI spawns (`claude -p`, ADR 0009 §1); this process's argv is identical either
-    // way, which keeps identity argv-only (invariant 3). See src/run/launch.cjs orchestratorLaunchArgv.
-    if (a === '--headless') {
-      die('--headless is not a mode of this adapter; a headless orchestrator is a `claude -p` session '
-        + 'that the CLI spawns with this adapter in its --mcp-config, and its argv is unchanged. '
-        + 'See src/run/launch.cjs orchestratorLaunchArgv (ADR 0009 §1)');
-    }
-    if (a === '--no-embed') { out.embed = false; continue; }
-    // Accepted and ignored. It gated worker_wait while ADR 0014 finding 1 was being probed; ADR 0015
-    // admitted the tool, so the flag names the default. Kept so older probe drivers
-    // that pass it still run against this adapter unchanged.
-    if (a === '--experimental-worker-wait') continue;
-    // --permit is a worker adapter's flag; the role check runs once argv is fully parsed.
-    if (a === '--permit') { out.permit = true; continue; }
-    if (BOOL_FLAGS.has(a)) continue;
-    if (!VALUE_FLAGS.has(a)) die(`unknown argument ${a}`);
-    const v = argv[i + 1];
-    if (v === undefined || v.startsWith('--')) die(`${a} needs a value`);
-    i += 1;
-    if (a === '--role') out.role = v;
-    else if (a === '--run') out.runId = v;
-    else if (a === '--data') out.dataDir = v;
-    else if (a === '--worker-id') out.workerId = v;
-    else if (a === '--log') out.logFile = v;
-    else if (a === '--compact-at') { // ADR 0007 decision 3: the run's compact_at_tokens, for the workers this manager spawns
-      out.compactAt = CP.parseCompactAt(/^\d+$/.test(v) ? Number(v) : NaN).value;
-      if (!out.compactAt) die(`--compact-at must be a positive integer, got ${v}`);
-    } else if (a === '--permit-wait-ms') {
-      if (!/^-?\d+$/.test(v) || Number(v) <= 0) die(`--permit-wait-ms must be a positive integer, got ${v}`);
-      out.permitWaitMs = Number(v);
-    }
-  }
-  if (out.role !== 'orchestrator' && out.role !== 'worker') {
-    die(`--role must be orchestrator or worker, got ${out.role === undefined ? '(missing)' : out.role}`);
-  }
-  if (!out.runId) die('--run <id> is required; a run id is part of this process\'s identity and cannot come from a request');
-  if (out.role === 'worker' && !out.workerId) die('--worker-id <id> is required in worker role; a worker cannot name itself');
-  if (out.role === 'orchestrator' && out.workerId) die('--worker-id is not accepted in orchestrator role');
-  if (out.permit && out.role === 'orchestrator') die('--permit is a worker adapter\'s flag');
-  out.permit = !!out.permit;
-  if (out.permitWaitMs === undefined) out.permitWaitMs = 600000;
-  const defaulted = !out.dataDir;
-  out.dataDir = path.resolve(out.dataDir || path.join(process.cwd(), '.belay')).split('\\').join('/');
-  // A store in a place nobody named is the silent divergence invariant 5 exists to prevent, so the
-  // default is announced. api.md §1 writes --data unbracketed; the lead is settling whether it is
-  // required. Until then it defaults and says so.
-  if (defaulted) process.stderr.write(`belay-mcp: --data not given, defaulting to ${out.dataDir}\n`);
-  if (out.logFile) {
-    const lf = path.resolve(out.logFile).split('\\').join('/');
-    if (lf === out.dataDir || lf.startsWith(`${out.dataDir}/`)) {
-      // api.md §1: the data dir layout is fixed, and the one place a log may live inside it is a
-      // worker's own directory, beside the adapter.log the run manager already writes there. A worker
-      // adapter may only write under its own id: `workers/<worker-id>/` is the caller's directory, not
-      // any worker's.
-      const rest = lf.slice(out.dataDir.length + 1).split('/');
-      const wellPlaced = out.workerId !== undefined
-        && rest.length >= 3 && rest[0] === 'workers' && rest[1] === out.workerId;
-      if (!wellPlaced) {
-        die(`--log must not point inside the data dir except under workers/${out.workerId || '<worker-id>'}/, and only from the adapter whose id that is; api.md §1 fixes what lives there`);
-      }
-    }
-    out.logFile = lf;
-  }
-  return out;
-}
 
 const opts = parseArgv(process.argv.slice(2));
 const CALLER = Object.freeze({
@@ -214,6 +134,11 @@ function attachOnce(c) {
 const storeExists = () => {
   try { return fs.statSync(`${opts.dataDir}/memory.db`).isFile(); } catch { return false; }
 };
+// ADR 0043 decision 1: knowledge_ask is listed only when the run's knowledge_agent lever is on.
+// ADR 0041/0043: the run row this adapter's own run.attach returned carries the memory levers, so neither the
+// gate (once attached) nor the run manager reads them again: a run at the defaults makes no extra core call.
+const attachedRun = () => (ATTACH && ATTACH.run) || null;
+const knowledgeListed = createKnowledgeGate({ role: opts.role, runId: opts.runId, storeExists, openCore: openCoreOnce, log: wlog, attachedRun });
 
 // ADR 0009 promises that a new orchestrator session reconstructs the run from the store, and
 // `run.attach` is that reconstruction: it opens the next epoch and supersedes every worker row the
@@ -258,7 +183,8 @@ function openRunManagerOnce() {
         // if belay is installed or run from another checkout, where the default would guess wrong.
         // BELAY_FAKE_PATHS, honoured only when set, merges over it so a test can point the run
         // manager at a fake substrate binary without touching the environment the workers inherit.
-        compactAtTokens: opts.compactAt, // ADR 0007 decision 3
+        compactAtTokens: opts.compactAt, worktree: opts.worktree || null, // ADR 0007 decision 3; ADR 0043 decision 1
+        memoryLevers: attachedRun() ? require('../run/memory-levers.cjs').leversOfRow(attachedRun()) : null,
         paths: { mcpBinary: __filename.split(path.sep).join('/'), ...FAKE_PATHS },
       }))
       .then(async (r) => {
@@ -312,7 +238,7 @@ async function callCore(dotted, args) {
 async function callTool(name, args) {
   const route = routeOf(name);
   if (!route) throw fail('E_ARGS', `no such tool ${name}`, { tool: name });
-  if (!allows(opts.role, name)) {
+  if (!allows(opts.role, name, opts.workerId)) {
     throw fail('E_ROLE', `${name} is not available in ${opts.role} role; it belongs to ${roleOf(name)}`, { tool: name, role: opts.role });
   }
   validateArgs(name, args);
@@ -405,7 +331,7 @@ async function handle(msg) {
   if (typeof method === 'string' && method.startsWith('notifications/')) return undefined;
   if (method === 'ping') return send({ jsonrpc: '2.0', id, result: {} });
   if (method === 'tools/list') {
-    const list = toolsFor(opts.role).concat(opts.permit ? [PERMIT_TOOL] : []);
+    const list = toolsFor(opts.role, { knowledge: await knowledgeListed(), workerId: opts.workerId }).concat(opts.permit ? [PERMIT_TOOL] : []);
     return send({ jsonrpc: '2.0', id, result: { tools: list } });
   }
   if (method === 'tools/call') {
