@@ -17,6 +17,7 @@ const { cleanup } = require('../core/helpers.cjs');
 const { Client } = require('../../src/core/client.cjs');
 const { adapterPipeName } = require('../../src/core/lock.cjs');
 const P = require('../../src/run/process.cjs');
+const PI = require('../../src/run/pid-identity.cjs');
 
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/\\/g, '/');
 const CALLER_OPERATOR = { role: 'operator', run_id: 'cli', pid: process.pid };
@@ -95,6 +96,14 @@ test('worker control: a stop over the pipe and the orchestrator\'s own stop of t
   const m = mgr(sb, core);
   let control = null; let client = null;
   process.env.FAKE_IGNORE_STDIN_END = '1';
+  // doStop is counted where it acts, not by its rows: in this case (a live claude-code child, graceful mode) each
+  // doStop closes stdin exactly once and, the close never landing, kills exactly once. A row count cannot tell:
+  // the pid creation-time read (a process snapshot, slow on a loaded host) may land mid-stop and restate the
+  // current state, a second `stopping` row from one doStop.
+  const saved = { gracefulStop: P.gracefulStop, killWorker: PI.killWorker };
+  let closes = 0; let kills = 0;
+  P.gracefulStop = (...a) => { closes += 1; return saved.gracefulStop(...a); };
+  PI.killWorker = (...a) => { kills += 1; return saved.killWorker(...a); };
   try {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
     control = createWorkerControl({ dataDir: sb.data, manager: m });
@@ -109,10 +118,15 @@ test('worker control: a stop over the pipe and the orchestrator\'s own stop of t
     assert.deepStrictEqual(direct, viaPipe, 'the two callers must share one receipt, not race to two');
     assert.strictEqual(direct.killed, true, 'FAKE_IGNORE_STDIN_END means the graceful close never lands, so the kill happened');
 
-    const stoppingRows = core.rowsFor('w1').filter((r) => r.state === 'stopping');
-    assert.strictEqual(stoppingRows.length, 1, 'coalescing means doStop ran exactly once');
+    assert.strictEqual(closes, 1, 'coalescing means doStop ran exactly once: one stdin close');
+    assert.strictEqual(kills, 1, 'and one kill');
+    const states = core.rowsFor('w1').map((r) => r.state);
+    const entries = states.filter((st, i) => st === 'stopping' && states[i - 1] !== 'stopping');
+    assert.strictEqual(entries.length, 1, `one move into stopping: ${states.join(', ')}`);
+    assert.ok(!states.slice(states.indexOf('stopping')).includes('running'), `no running row over a stop in flight: ${states.join(', ')}`);
     assert.strictEqual(core.currentWorker('w1').state, 'stopped');
   } finally {
+    P.gracefulStop = saved.gracefulStop; PI.killWorker = saved.killWorker;
     delete process.env.FAKE_IGNORE_STDIN_END;
     await teardown({ client, control, m, sb });
   }

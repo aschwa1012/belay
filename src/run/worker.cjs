@@ -309,7 +309,9 @@ async function onTurnEnd(w, e, ctx) {
   }
   // 6e-5 item 3: no row is written here while a park is under way — the exit handler's own write is the
   // only one a park ever produces, so the store never claims a non-live state for a still-live process.
-  if (!w.parkRequested) {
+  // Nor while a stop is under way: a turn ending after doStop's `stopping` row must not restate `running` over it
+  // (the stop's terminal row carries this turn's facts), exactly as refreshRow already holds off for a stop.
+  if (!w.parkRequested && !w.stopRequested) {
     try {
       await writeRow(w, w.substrate === 'codex' ? 'idle' : 'running');
     } catch (err) {
