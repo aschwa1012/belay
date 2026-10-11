@@ -77,6 +77,22 @@ test('writeOrchestratorFiles writes an mcp.json and a plugin-disabling settings.
   } finally { cleanup(dir); }
 });
 
+test('the adapter is told the worktree only when the knowledge agent is on; off, its argv is the base one', () => {
+  const dir = sandbox();
+  try {
+    const dataDir = `${dir}/.belay`;
+    const wt = `${dir}/wt`;
+    const argsOf = (r) => JSON.parse(fs.readFileSync(r.mcpJsonPath, 'utf8')).mcpServers.belay.args;
+    const off = argsOf(launch.writeOrchestratorFiles({ dir: `${dir}/off`, runId: 'r', dataDir, mcpPath: MCP_BIN, settingsPath: null, cwd: wt }));
+    const plain = argsOf(launch.writeOrchestratorFiles({ dir: `${dir}/plain`, runId: 'r', dataDir, mcpPath: MCP_BIN, settingsPath: null }));
+    assert.ok(!off.includes('--worktree'), 'a cwd alone adds nothing');
+    assert.deepStrictEqual(off, plain, 'with the lever off the argv equals one written with no cwd at all');
+    const on = argsOf(launch.writeOrchestratorFiles({ dir: `${dir}/on`, runId: 'r', dataDir, mcpPath: MCP_BIN, settingsPath: null, cwd: wt, knowledgeAgent: true }));
+    assert.strictEqual(on[on.indexOf('--worktree') + 1], wt);
+    assert.deepStrictEqual(on.filter((a, i) => a !== '--worktree' && on[i - 1] !== '--worktree'), plain, 'and nothing else changes');
+  } finally { cleanup(dir); }
+});
+
 test('the launch argv is a headless stream-json session with a strict mcp config', () => {
   const argv = launch.orchestratorLaunchArgv({ mcpJsonPath: '/tmp/orch/mcp.json', settingsPath: '/tmp/orch/settings.json' });
   assert.ok(argv.includes('-p'), 'headless');

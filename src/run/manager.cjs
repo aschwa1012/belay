@@ -17,9 +17,11 @@ const S = require('./surface.cjs'); // ADR 0024, S2 fix round F4: the surface fi
 const I = require('./instructions.cjs'); // ADR 0024 amendment 1: the spawn-time CLAUDE.md copy
 const { fail } = require('./errors.cjs');
 const { validateSpawnArgs } = require('./spawn-args.cjs');
+const MP = require('./memory-preface.cjs'); // ADR 0042: the first-message preface and the memory hooks
 // build step 6c: `wait`, `decideBranch`, `restartFirstText` and the resume-window constants moved
 // verbatim into their own files (the 500-line rule); re-exported under the same names below.
 const { createWait } = require('./wait.cjs');
+const SENT = require('./sent-log.cjs'); // ADR 0042 decision 4: the record of what is written to a worker's stdin
 const { decideBranch, restartFirstText, CLAUDE_RESUME_WINDOW_MS, CODEX_RESUME_WINDOW_MS } = require('./restart.cjs');
 // build step 6e-4: pause and resume (the park design, ADR 0023 amendment 2), and the one per-worker
 // operation slot pause, resume, restart and stop all share.
@@ -35,7 +37,8 @@ const LIST = require('./list.cjs');
 const { POLL_MS } = require('./exit-hold.cjs');
 const now = () => Date.now();
 
-function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = null }) {
+// `memoryLevers`: the run's levers when the caller holds the run row (ADR 0041); `worktree`: the run's (ADR 0043).
+function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = null, memoryLevers = null, worktree = null }) {
   if (!core) fail('E_ARGS', 'createRunManager needs a core');
   if (!dataDir) fail('E_ARGS', 'createRunManager needs a dataDir');
   if (!runId) fail('E_ARGS', 'createRunManager needs a runId');
@@ -59,7 +62,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
   // 6i-2 fix round (item 3, should-fix): `shutdownFlags` carried on ctx itself, so worker.cjs's onTurnEnd
   // (through turn-record.cjs) can gate its own checkpoint/memory write on it exactly as writeRow does.
-  const ctx = { core, runId, adapterPid: paths.adapterPid || process.pid, writeRow: null, shutdownFlags, compactAt: compactAtTokens };
+  const ctx = { core, runId, dataDir: root, adapterPid: paths.adapterPid || process.pid, writeRow: null, shutdownFlags, compactAt: compactAtTokens, memoryLevers, worktree };
   const writeRow = createWriteRow(ctx, shutdownFlags);
   ctx.writeRow = writeRow;
 
@@ -134,7 +137,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
         model: w.model || L.DEFAULT_CLAUDE_MODEL, allowedTools: w.allowedTools,
         permissionMode: w.permissionMode, resumeSessionId: resume,
         permissionPromptTool: w.permissionPrompt, appendSystemPromptFile: w.instructions && w.instructions.path,
-        effort: w.effort, // ADR 0028 decision 2: every launch, fresh or resumed
+        effort: w.effort, tools: w.tools, // ADR 0028 decision 2: every launch, fresh or resumed; ADR 0024: a narrowed list too
       });
     } else if (resume) {
       args = L.codexResumeArgv({ threadId: resume, adapterArgs: w.adapterArgs, prompt, model: w.model });
@@ -155,7 +158,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     // where it ended, so a previous process's tools/list never passes this one's ready check.
     if (w.adapterLogPath) rotateWireLog(w.adapterLogPath);
     w.adapterLogBytes = w.adapterLogPath ? (fs.statSync(w.adapterLogPath, { throwIfNoEntry: false }) || { size: 0 }).size : 0;
-    w.parser = createParser(w.substrate);
+    w.parser = createParser(w.substrate, MP.parserOpts(ctx));
     const child = P.spawnWorker({
       // ADR 0016: `cwd` goes to `buildEnv` too, so `PWD` agrees with the real working directory. 6d:
       // MCP_TOOL_TIMEOUT is set only with permission_prompt, always outside permit_wait_ms's own bound.
@@ -173,32 +176,18 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     return spec;
   }
 
-  function sendStdin(w, text) {
+  function sendStdin(w, text, kind = 'message') {
     const line = JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } }) + '\n';
     w.child.stdin.write(line);
     w.parser.noteStdinWrite();
+    SENT.record(w, ctx, kind, text); // ADR 0042 decision 4: the user side of a bottle, only with memory.bottle on
     return Buffer.byteLength(text, 'utf8');
-  }
-
-  // The resume line goes into the first message (ADR 0007 §2), against the `starting` row (contract §3):
-  // it cannot wait for ready, since Claude Code emits no system/init until a message is on stdin (measured,
-  // tests/run/receipts/init-timing.json).
-  async function preface(w) {
-    if (!w.taskId) return '';
-    await core.task.assign({ task_id: w.taskId, worker_id: w.id });
-    try {
-      const rl = await core.continuity.resumeLine({ task_id: w.taskId });
-      return rl && rl.text ? rl.text + '\n\n' : '';
-    } catch (e) {
-      w.lastError = { where: 'continuity.resumeLine', code: e && e.code, message: e && e.message };
-      return '';
-    }
   }
 
   // Send the opening message for a launch. Claude Code takes it on stdin; Codex already has it in
   // argv, but the turn is still one the harness asked for, so the parser is told either way.
-  function openWith(w, text) {
-    if (w.substrate === 'claude-code') sendStdin(w, text);
+  function openWith(w, text, kind) {
+    if (w.substrate === 'claude-code') sendStdin(w, text, kind);
     else w.parser.noteStdinWrite();
   }
 
@@ -208,7 +197,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const {
       substrate, worktree, prompt, task_id = null, model = null, allowed_tools = null,
       permission_mode = null, startup_timeout_ms = 60000, worker_id = null, sandbox = null,
-      permission_prompt = false, permit_wait_ms = 600000, effort = null,
+      permission_prompt = false, permit_wait_ms = 600000, effort = null, tools = null,
     } = opts || {};
     validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id });
 
@@ -224,7 +213,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       w = W.newWorkerRecord({
         id, substrate, worktree, dataDir: root, taskId: task_id, model,
         allowedTools: allowed_tools, permissionMode: permission_mode, sandbox,
-        permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort,
+        permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort, tools,
       });
       workers.set(id, w);
     } finally { pendingIds.delete(id); }
@@ -237,7 +226,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     await writeRow(w, 'starting');
     let first;
     try {
-      first = (await preface(w)) + prompt;
+      first = (await MP.preface(w, ctx, prompt)) + prompt; // the resume line, then the memory index, against the `starting` row (ADR 0007 §2, 0042 §2)
     } catch (e) {
       // The task refused the assignment (an open dependency, ADR 0013 §1; the operator's lease; no such
       // task). Nothing has launched, so the `starting` row is written `dead` before the refusal is handed
@@ -250,7 +239,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
     launch(w, substrate === 'claude-code' ? {} : { prompt: first });
     await writeRow(w, 'starting');
-    openWith(w, first);
+    openWith(w, first, 'task');
 
     const ready = await W.waitReady(w, startup_timeout_ms);
     if (!ready) {
@@ -398,10 +387,11 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     w.stopRequested = false;
 
     const overridden = firstTextOverride ? await firstTextOverride(d.branch) : undefined;
-    let firstText = overridden !== undefined ? overridden : await restartFirstText(w, d.branch, { core });
+    let firstText = overridden !== undefined ? overridden : await restartFirstText(w, d.branch, { core, ctx });
+    firstText = await MP.relaunch(w, ctx, firstText); // ADR 0042 decision 3: the index minus the rows already shown
     if (d.branch === 'replace') {
       w.sessionId = null;
-      w.parser = createParser(w.substrate);
+      w.parser = createParser(w.substrate, MP.parserOpts(ctx));
     }
     if (appendMessage) firstText = firstText ? `${firstText}\n\n${appendMessage}` : appendMessage;
     if (onFirstText) onFirstText(firstText);
@@ -409,7 +399,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const resume = d.branch === 'resume' ? w.sessionId : null;
     launch(w, w.substrate === 'claude-code' ? { resume } : { resume, prompt: firstText });
     await writeRow(w, 'starting');
-    openWith(w, firstText);
+    openWith(w, firstText, 'resume');
 
     const t0 = now();
     const ready = await W.waitReady(w, 60000);
@@ -484,16 +474,19 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   const shutdown = () => LC.shutdown(workers, {
     stop, core, clearPoll: () => { if (poll) { clearInterval(poll); poll = null; } },
     markClosed: () => { shutdownFlags.closed = true; },
+    onDrained: () => MP.runEnd(ctx),
   });
 
-  return {
+  const manager = {
     spawn, message, stop, restart, list, shutdown,
     wait, pause: PZ.pause, resume: PZ.resume,
+    ask: (args) => MP.ask(manager, ctx, args), // ADR 0043 decision 1
     // Read-only handles for tests and for the CLI's own views. Neither writes.
     _worker: (id) => workers.get(id),
     _waitTurn: (id, ms) => W.waitTurn(get(id), ms),
     _waitExit: (id, ms) => W.waitExit(get(id), ms),
   };
+  return manager;
 }
 
 module.exports = { createRunManager, POLL_MS, CLAUDE_RESUME_WINDOW_MS, CODEX_RESUME_WINDOW_MS };

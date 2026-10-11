@@ -319,6 +319,21 @@ function checkResult(caller, result) {
   if (bytes > HANDOFF_MAX_BYTES) throw err('E_ARGS', `lease.release: result is ${bytes} bytes serialized and the limit is ${HANDOFF_MAX_BYTES}`, { bytes, limit: HANDOFF_MAX_BYTES });
 }
 
+// ADR 0040 decision 6: a worker cites memory as `result.memory_ids`. Each id is looked up in the store; the ones
+// with no row are recorded beside the hand-back as `memory_ids_missing`. A citation is a claim, so a missing
+// id never refuses the release. Returns null when the result cites nothing, and the field is then not written.
+function missingCitations(E, result) {
+  if (!Object.prototype.hasOwnProperty.call(result, 'memory_ids')) return null;
+  const ids = result.memory_ids;
+  if (!Array.isArray(ids)) return [ids];
+  const find = E.store.p('SELECT 1 FROM memory_entries WHERE id = ?');
+  const missing = [];
+  for (const id of ids) {
+    if (typeof id !== 'string' || !id || !find.get(id)) { if (!missing.some((m) => m === id)) missing.push(id); }
+  }
+  return missing;
+}
+
 async function release(E, caller, args) {
   if (args.result !== undefined) checkResult(caller, args.result);
   const out = E.store.tx(() => {
@@ -337,7 +352,12 @@ async function release(E, caller, args) {
     }
     const t = Date.now(), by = E.writtenBy(caller);
     rows.append(E.store, 'lease', { ...l, released_at: t }, by, t);
-    const handoff = args.result !== undefined ? { result: args.result, by: caller.worker_id, lease_id: l.id, at: t } : task.handoff;
+    let handoff = task.handoff;
+    if (args.result !== undefined) {
+      handoff = { result: args.result, by: caller.worker_id, lease_id: l.id, at: t };
+      const missing = missingCitations(E, args.result);
+      if (missing !== null) handoff.memory_ids_missing = missing;
+    }
     const row = rows.append(E.store, 'task', { ...task, state: task.state === 'done' ? 'done' : 'released', handoff }, by, t);
     const ck = rows.lastCheckpoint(E.store, l.task_id);
     return { ...row, last_checkpoint_id: ck ? ck.id : null, released_reason: args.reason || null };

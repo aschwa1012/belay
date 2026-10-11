@@ -180,6 +180,7 @@ function claudeLaunchArgv(opts) {
     appendSystemPromptFile = null,
     permissionPromptTool = false,
     effort = null,
+    tools = null,
   } = opts;
   const argv = [
     '-p',
@@ -198,7 +199,7 @@ function claudeLaunchArgv(opts) {
     '--settings',
     fwd(settingsPath),
     '--tools', // ADR 0024 decisions 1 and 3: on every call, with or without a resume.
-    S.CLAUDE_TOOLS.join(','),
+    (S.narrowTools(tools) || S.CLAUDE_TOOLS).join(','),
     S.SETTING_SOURCES_ARG, // ADR 0024 amendment 1: one token, no setting sources
     '--allowedTools',
     ...allowedTools,
@@ -290,7 +291,7 @@ function codexResumeArgv(opts) {
 // ADR 0021 amendment 4: the orchestrator is Opus 5.5. Sonnet 5 is retired.
 const DEFAULT_ORCHESTRATOR_MODEL = 'claude-opus-5-5';
 
-function orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath = null, compactAt = null }) {
+function orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath = null, compactAt = null, worktree = null }) {
   const argv = [
     mcpPath || mcpServerPath(),
     '--role',
@@ -302,16 +303,17 @@ function orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath = null, comp
   ];
   if (logPath) argv.push('--log', fwd(logPath));
   if (compactAt != null) argv.push('--compact-at', String(compactAt)); // ADR 0007 decision 3: the workers' lever
+  if (worktree) argv.push('--worktree', fwd(path.resolve(worktree))); // ADR 0043 decision 1: the knowledge agent's cwd
   return argv;
 }
 
-function orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath = null, compactAt = null }) {
+function orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath = null, compactAt = null, worktree = null }) {
   return {
     mcpServers: {
       [MCP_SERVER_NAME]: {
         type: 'stdio',
         command: fwd(process.execPath),
-        args: orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath, compactAt }),
+        args: orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath, compactAt, worktree }),
       },
     },
   };
@@ -328,14 +330,16 @@ function assertOutsideDataDir(dir, dataDir) {
   return d;
 }
 
-function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, logPath = null, cwd = null, compactAt = null }) {
+// `knowledgeAgent`: the run's memory block turns the knowledge agent on, so the adapter is told the worktree (its
+// cwd). With the lever off the adapter's argv is the base one, byte for byte.
+function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, logPath = null, cwd = null, compactAt = null, knowledgeAgent = false }) {
   const outDir = assertOutsideDataDir(dir, dataDir);
   fs.mkdirSync(outDir, { recursive: true });
   const mcpJsonPath = fwd(path.join(outDir, 'mcp.json'));
   const orchSettingsPath = fwd(path.join(outDir, 'settings.json'));
   fs.writeFileSync(
     mcpJsonPath,
-    JSON.stringify(orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath, compactAt }), null, 2) + '\n'
+    JSON.stringify(orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath, compactAt, worktree: knowledgeAgent ? cwd : null }), null, 2) + '\n'
   );
   // Same hygiene as a worker (ADR 0007 §6): the operator's plugins and their hooks are disabled, so
   // the orchestrator's own context is not shaped by whatever is installed on the host. For the
@@ -450,6 +454,7 @@ module.exports = {
   DEFAULT_CODEX_SANDBOX,
   MCP_SERVER_NAME,
   EFFORT_LEVELS,
+  narrowTools: S.narrowTools,
   SCRUB_EXACT,
   SCRUB_PREFIXES,
   SCRUB_CWD,

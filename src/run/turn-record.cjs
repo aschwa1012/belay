@@ -8,6 +8,8 @@
 // through writeRow. Gated the same way: checked first, before any core call, and the drop is named on
 // the record exactly as write-row.cjs names its own.
 
+const MC = require('./memory-capture.cjs');
+
 // Runs the turn's own checkpoint and memory write, or, once `ctx.shutdownFlags.closed` is set, neither —
 // recording the drop instead. Returns the checkpoint id (or null), exactly as the inline block did.
 // `memoryTextMax` and `digestKeep` are worker.cjs's own constants, passed in rather than duplicated.
@@ -47,20 +49,28 @@ async function recordTurn(w, e, ctx, memoryTextMax, digestKeep) {
 // lifecycle.cjs's shutdown awaits every queue for at most 5,000 ms before it closes the core.
 function queueMemory(w, e, ctx, memoryTextMax, checkpointId) {
   const text = (e.text || w.lastAssistantText || '').slice(0, memoryTextMax);
-  if (!text || (ctx.shutdownFlags && ctx.shutdownFlags.closed)) return;
+  const plan = MC.plan(w, e, ctx); // null with the capture and job levers off: then nothing below differs from base
+  if ((!text && !plan) || (ctx.shutdownFlags && ctx.shutdownFlags.closed)) return;
   const turn = w.turns;
   const { core } = ctx;
   w.memoryQueue = (w.memoryQueue || Promise.resolve()).then(async () => {
     if (ctx.shutdownFlags && ctx.shutdownFlags.closed) { w.lastError = { where: 'after-shutdown', state: 'turn-memory' }; return; }
-    try {
-      await core.memory.store({
-        text, type: 'turn',
-        tags: [w.taskId, w.id, 'turn:' + turn].filter(Boolean),
-        provenance: checkpointId ? 'checkpoint:' + checkpointId : 'worker:' + w.id,
-      });
-    } catch (err) {
-      w.lastError = { where: 'memory.store', code: err && err.code, message: err && err.message };
+    let turnRowId = null;
+    if (text) {
+      try {
+        // With a memory lever on, the row names the worker it is about (the adapter writes it as the
+        // orchestrator). With every lever off it is the base row, byte for byte.
+        const row = await core.memory.store({
+          text, type: 'turn', ...(plan ? { worker_id: w.id } : {}),
+          tags: [w.taskId, w.id, 'turn:' + turn].filter(Boolean),
+          provenance: checkpointId ? 'checkpoint:' + checkpointId : 'worker:' + w.id,
+        });
+        turnRowId = (row && row.id) || null;
+      } catch (err) {
+        w.lastError = { where: 'memory.store', code: err && err.code, message: err && err.message };
+      }
     }
+    if (plan) await MC.finish(w, e, ctx, plan, { checkpointId, turnRowId }); // the observation, then the jobs (ADR 0041 decisions 3, 7)
   });
 }
 

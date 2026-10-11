@@ -19,6 +19,7 @@ const { Client } = require('./client.cjs');
 const { withCopy } = require('./copy-read.cjs');
 const { ping } = require('./ping.cjs');
 const unresponsive = require('./unresponsive.cjs');
+const { withSemanticFailure } = require('./memory-search.cjs');
 
 const ELECTION_PING_TIMEOUT_MS = 300; // 5a-3: becomeOwner()'s refusal ping
 const READ_TIMEOUT_MS = 300;       // api.md §1: the bounded round trip before falling back to a copy
@@ -43,9 +44,12 @@ function rereadOwnerLock(dataDir, attempts = 5) {
   return null;
 }
 
+// ADR 0040 §2, routing: a keyword search needs no vector, and a supplied vector needs no embedder, so both take
+// the ordinary bound and may fall back to the copy. Semantic and hybrid with no vector wait on the owner's embedder.
 function readTimeoutFor(method, params) {
-  if (method === 'memory.search' && !params.query_embedding && !params.query_embedding_b64) return EMBEDDING_READ_TIMEOUT_MS;
-  return READ_TIMEOUT_MS;
+  if (method !== 'memory.search' || params.mode === 'keyword') return READ_TIMEOUT_MS;
+  if (params.query_embedding || params.query_embedding_b64) return READ_TIMEOUT_MS;
+  return EMBEDDING_READ_TIMEOUT_MS;
 }
 
 // memory.warm({ wait }) may be given a longer limit for a cold cache (timeout_ms, at most 600,000 ms).
@@ -60,7 +64,7 @@ function vectorLimit(method, params) {
 
 function writeTimeoutFor(method, params) {
   if (method === 'task.evaluate') return EVALUATE_TIMEOUT_MS;
-  if (method === 'memory.store' && !params.embedding && !params.embedding_b64) return EMBEDDING_READ_TIMEOUT_MS;
+  if (method === 'memory.store' && params.embed !== false && !params.embedding && !params.embedding_b64) return EMBEDDING_READ_TIMEOUT_MS; // embed: false needs no vector (ADR 0040)
   if (method === 'memory.warm' && params.wait) return warmLimit(params) + 5000; // the engine's own limit, plus the round trip
   // build step 6d: permission.wait's own deadline is the caller's timeout_ms plus a 5,000 ms margin
   // for the round trip itself, so the client never times out before the engine's own bound would.
@@ -99,6 +103,8 @@ class Core {
     const spec = METHODS[method];
     if (!spec) throw err('E_ARGS', `${method} is not a Core API method`, { method });
     const params = { ...(args || {}), caller: this.caller };
+    // memory.search's default mode (memory-search.cjs defaultMode), made explicit here so routing sees it.
+    if (method === 'memory.search' && params.mode === undefined) params.mode = typeof params.query === 'string' ? 'hybrid' : 'semantic';
     if (this.owner && !this.owner.stopped) return this._local(method, params);
     return spec.kind === 'read' ? this._read(method, params) : this._write(method, params);
   }
@@ -114,14 +120,28 @@ class Core {
     if (capMs !== undefined && capMs < limit) limit = capMs; // a re-run gets only what its first attempt left
     const writes = method === 'memory.store';
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(err('E_TIMEOUT', method + ' did not finish within ' + limit + ' ms in this process (the owner); its embedder is still loading or embedding and the load continues, so ' + (writes ? 'RE-READ before retrying: the row is written when the load finishes' : 'a retry waits on the same load'), { method, timeout_ms: limit, in_process: true, ...(writes ? { may_have_committed: true } : {}) })), limit);
+      const timer = setTimeout(() => {
+        const e = err('E_TIMEOUT', method + ' did not finish within ' + limit + ' ms in this process (the owner); its embedder is still loading or embedding and the load continues, so ' + (writes ? 'RE-READ before retrying: the row is written when the load finishes' : 'a retry waits on the same load'), { method, timeout_ms: limit, in_process: true, ...(writes ? { may_have_committed: true } : {}) });
+        // A hybrid search still has its keyword half: answer from it, naming the timeout in modes_failed.
+        if (method === 'memory.search' && params.mode === 'hybrid') {
+          this.owner.engine.handle(method, { ...params, mode: 'keyword' }).then(r => resolve(withSemanticFailure(r, e)), () => reject(e));
+        } else reject(e);
+      }, limit);
       run.then(v => { clearTimeout(timer); resolve(v); }, e => { clearTimeout(timer); reject(e); });
     });
   }
 
   // ---- read: owner first, then copy-then-read ----------------------------
   async _read(method, params) {
-    const viaOwner = await this._tryOwner(method, params);
+    let viaOwner, embedderFailure = null;
+    try { viaOwner = await this._tryOwner(method, params); }
+    catch (e) {
+      // A hybrid search that cannot reach its owner's embedder still has its keyword half: it answers from the
+      // copy, and the result names the cause in modes_failed. Every other read keeps the refusal.
+      if (!(method === 'memory.search' && params.mode === 'hybrid' && isTransport(e))) throw e;
+      embedderFailure = { code: e.code, message: e.message };
+      viaOwner = { ok: false };
+    }
     if (viaOwner.ok) return viaOwner.value;
     const note = viaOwner.unresponsive ? unresponsive.describe(viaOwner.unresponsive) : null;
     const { Store } = require('./store.cjs');
@@ -134,14 +154,14 @@ class Core {
     if (!fs.existsSync(path.join(this.dataDir, 'memory.db'))) {
       const store = new Store(':memory:');
       try {
-        const engine = new Engine({ dataDir: this.dataDir, store, getEmbedder: null, owner: null, establishedBy: 'none' });
+        const engine = new Engine({ dataDir: this.dataDir, store, getEmbedder: null, owner: null, establishedBy: 'none', embedderFailure });
         return await engine.handle(method, params);
       } finally { try { store.close(); } catch { /* throwaway */ } }
     }
     return withCopy(this.dataDir, async (dbPath, establishedBy) => {
       const store = new Store(dbPath);
       try {
-        const engine = new Engine({ dataDir: this.dataDir, store, getEmbedder: null, owner: null, establishedBy: note ? `${establishedBy}; ${note}` : establishedBy });
+        const engine = new Engine({ dataDir: this.dataDir, store, getEmbedder: null, owner: null, establishedBy: note ? `${establishedBy}; ${note}` : establishedBy, embedderFailure });
         return await engine.handle(method, params);
       } finally { try { store.close(); } catch { /* throwaway copy */ } }
     });
@@ -375,4 +395,4 @@ async function openCore(opts = {}) {
   return new Core(opts);
 }
 
-module.exports = { openCore, CoreError, pipeName, pidAlive, METHOD_NAMES };
+module.exports = { openCore, CoreError, pipeName, pidAlive, METHOD_NAMES, readTimeoutFor };

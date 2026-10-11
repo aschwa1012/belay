@@ -36,3 +36,41 @@ test('orchestrator prompt: every mcp__belay__ tool name the template mentions is
   const orch = new Set(T.toolsFor('orchestrator').map((t) => t.name));
   for (const n of named) assert.ok(orch.has(n), `mcp__belay__${n} is not on the orchestrator's listing`);
 });
+
+// ADR 0040 section 6: the memory rules text is substituted at {{memory_rules}}, only when the lever is on.
+// The 0.1.0 prompts, kept as a fixture so the test needs no git history.
+const BASE_PROMPTS = path.join(__dirname, '..', 'fixtures', 'v0.1.0', 'src', 'run', 'prompts');
+const RULES = path.join(ROOT, 'src/run/prompts/memory-rules.md');
+const lf = (s) => s.replace(/\r\n/g, '\n');
+
+test('memory rules: the placeholder sits at the end of an existing line, and an empty substitution is the base prompt byte for byte', () => {
+  for (const f of ['orchestrator.md', 'orchestrator-interactive.md']) {
+    const now = lf(fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8'));
+    const base = lf(fs.readFileSync(path.join(BASE_PROMPTS, f), 'utf8'));
+    assert.strictEqual(now.split('{{memory_rules}}').length, 2, `${f} carries the placeholder once`);
+    assert.match(now, /\{\{memory_rules\}\}\n/, `${f}: the placeholder ends its line`);
+    assert.strictEqual(now.split('\n').length, base.split('\n').length, `${f}: no line added`);
+    assert.strictEqual(Buffer.compare(Buffer.from(now.split('{{memory_rules}}').join('')), Buffer.from(base)), 0,
+      `${f}: substituting '' gives the base prompt byte for byte`);
+  }
+});
+
+test('memory rules: the text stays within 1,200 bytes and carries each rule the ADR names', () => {
+  const text = lf(fs.readFileSync(RULES, 'utf8')); // the checkout may be CRLF; substitution matches the prompt's endings
+  assert.ok(Buffer.byteLength(text) <= 1200, `rules are ${Buffer.byteLength(text)} bytes`);
+  assert.ok(text.startsWith('\n'), 'the text opens on a new line, so the placeholder needs no space before it');
+  assert.match(text, /view: "index"/, 'index first');
+  assert.match(text, /memory_timeline/, 'a timeline');
+  assert.match(text, /memory_retrieve[^\n]*`ids`[^\n]*only/, 'full rows only for what matters');
+  assert.match(text, /memory_ids/, 'cite ids');
+  assert.match(text, /absence_established: false[^\n]*not searched properly yet/, 'absence is not established');
+  assert.match(text, /`unverified` row as a claim/, 'an unverified row is never presented as fact');
+  assert.match(text, /`refuted`/, 'refuted rows');
+  const named = [...text.matchAll(/mcp__belay__([a-z_]+)/g)].map((m) => m[1]);
+  const T = require(path.join(ROOT, 'src/mcp/tools.cjs'));
+  const orch = new Set(T.toolsFor('orchestrator').map((t) => t.name));
+  // memory_timeline and memory_verify arrive with the tool surface (ADR 0040 section 4).
+  for (const n of ['memory_timeline', 'memory_verify']) orch.add(n);
+  for (const n of named) assert.ok(orch.has(n), `mcp__belay__${n} is not an orchestrator tool`);
+  assert.ok(!/\r/.test(text), 'LF only');
+});

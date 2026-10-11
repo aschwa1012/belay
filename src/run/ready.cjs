@@ -50,7 +50,7 @@ function verifyClaudeReady(w, ready) {
   }
   // ADR 0024, build step S2: a surface other than the one it allows fails this same gate, for a
   // fresh launch, a restart, a resume and the orchestrator alike (extends the gate; adds no new one).
-  const surface = S.checkSurface(ready, { permissionPrompt: !!(w && w.permissionPrompt) });
+  const surface = S.checkSurface(ready, { permissionPrompt: !!(w && w.permissionPrompt), tools: (w && w.tools) || null });
   if (!surface.ok) return { ok: false, reason: surface.reason };
   return { ok: true, evidence: { mcp_servers: seen, ...surface.evidence } };
 }

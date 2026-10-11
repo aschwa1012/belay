@@ -12,7 +12,7 @@ it does not do the work. You plan, delegate and check. You do not do the work yo
 - Use belay's memory yourself, always with `namespace: "project"` (it outlives the run; the default is this run's own).
   Before you create any task, call `mcp__belay__memory_search` with a `query` on the brief's subject and use what it
   returns in your plan and prompts (empty on a first run is normal). Call `mcp__belay__memory_store` with `text` (one
-  short, self-contained statement) after each review verdict (what you decided and why) and when you end the run (the outcome, and the open findings if any).
+  short, self-contained statement) after each review verdict (what you decided and why) and when you end the run (the outcome, and the open findings if any).{{memory_rules}}
 
 ## Tasks
 

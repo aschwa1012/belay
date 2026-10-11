@@ -128,7 +128,7 @@ test('initialize answers under 1,000 ms and leaves the data dir empty', async (t
   assert.strictEqual(fs.existsSync(data), false, 'initialize created the data dir');
   assert.deepStrictEqual(fs.readdirSync(parent), [], 'initialize wrote into the sandbox');
   // tools/list is also answerable without a store.
-  assert.strictEqual((await a.list()).length, 19);
+  assert.strictEqual((await a.list()).length, 21);
   assert.strictEqual(fs.existsSync(data), false, 'tools/list created the data dir');
 });
 
@@ -138,8 +138,15 @@ test('identity is the argv identity, and no request can change it', async (t) =>
   t.after(async () => { await a.close(); a.kill(); });
   await a.initialize();
   // The fake core stamps every row with caller.worker_id; a request that tries to claim another one
-  // must not change what is written.
-  const r = await a.call('memory_store', { text: 'hello', worker_id: 'wk-forged', caller: { worker_id: 'wk-forged', role: 'orchestrator' } });
+  // must not change what is written. A worker_id argument is a harness field and is refused by name at the
+  // boundary, and so is a forged caller (memory_store takes only the properties its schema names).
+  const forged = await a.call('memory_store', { text: 'hello', worker_id: 'wk-forged' });
+  assert.strictEqual(forged.isError, true);
+  assert.strictEqual(forged.structuredContent.error, 'E_ARGS');
+  assert.strictEqual(forged.structuredContent.detail.field, 'worker_id');
+  const caller = await a.call('memory_store', { text: 'hello', caller: { worker_id: 'wk-forged', role: 'orchestrator' } });
+  assert.deepStrictEqual([caller.isError, caller.structuredContent.error, caller.structuredContent.detail.field], [true, 'E_ARGS', 'caller']);
+  const r = await a.call('memory_store', { text: 'hello' });
   assert.strictEqual(r.isError, false);
   assert.strictEqual(r.structuredContent.worker_id, 'wk-argv');
   assert.strictEqual(r.structuredContent.namespace, 'run/run-argv');

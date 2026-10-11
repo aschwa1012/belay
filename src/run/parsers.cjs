@@ -26,6 +26,8 @@
 //   bg_task       { op, task_id, tasks, status, is_backgrounded, description }  Claude Code only, build
 //                 step 6e-3, ADR 0023 amendment 1: task_started (only when is_backgrounded),
 //                 background_tasks_changed, task_updated, task_notification
+//   (ADR 0041 Â§2, capture on only: tool_use gains tool_use_id and command; tool_result gains tool_use_id,
+//   exit_code, exit_code_source, head, tail, files; see capture-fields.cjs)
 //   raw           { line }                      anything unrecognised, including non-JSON
 //
 // ADR 0008 §5: a second `system/init` for a session id already seen is NOT a restart. It is emitted
@@ -50,6 +52,8 @@
 const { StringDecoder } = require('node:string_decoder');
 
 const SUBSTRATES = ['claude-code', 'codex'];
+
+const CF = require('./capture-fields.cjs');
 
 function textOf(content) {
   if (typeof content === 'string') return content;
@@ -87,9 +91,12 @@ function fiveMinuteCacheWrite(usage) {
 }
 
 class Parser {
-  constructor(substrate) {
+  constructor(substrate, opts = {}) {
     if (!SUBSTRATES.includes(substrate)) throw new Error('unknown substrate: ' + substrate);
     this.substrate = substrate;
+    // ADR 0041 Â§2: with capture off no state is kept and no event changes. `opts.redact` replaces the
+    // default redactor (tests); production uses src/core/redact.cjs.
+    this.capture = opts && opts.capture ? { calls: new Map(), redact: opts.redact || null } : null;
     this.sessionId = null;
     this.initCount = 0;
     this.pendingTurns = 0; // Codex branch only: stdin writes made and not yet seen a turn for
@@ -282,7 +289,13 @@ class Parser {
         if (b.type === 'text' && typeof b.text === 'string') text += b.text;
         if (b.type === 'tool_use') {
           this.toolNames.set(b.id, b.name);
-          out.push(this.ev('tool_use', { tool: b.name, args: b.input == null ? {} : b.input }, rawType));
+          const f = { tool: b.name, args: b.input == null ? {} : b.input };
+          if (this.capture) {
+            this.capture.calls.set(b.id, { tool: b.name, args: f.args });
+            f.tool_use_id = b.id;
+            f.command = CF.commandOf(f.args, this.capture.redact);
+          }
+          out.push(this.ev('tool_use', f, rawType));
         }
       }
       if (text) {
@@ -298,15 +311,13 @@ class Parser {
     }
 
     if (j.type === 'user' && j.message && Array.isArray(j.message.content)) {
+      // The message's top-level tool_use_result describes one result; with several blocks it names none of them.
+      const nResults = j.message.content.filter((x) => x && x.type === 'tool_result').length;
       for (const b of j.message.content) {
         if (b.type !== 'tool_result') continue;
-        out.push(
-          this.ev(
-            'tool_result',
-            { tool: this.toolNames.get(b.tool_use_id) || null, bytes: byteLength(textOf(b.content)), is_error: !!b.is_error },
-            rawType
-          )
-        );
+        const f = { tool: this.toolNames.get(b.tool_use_id) || null, bytes: byteLength(textOf(b.content)), is_error: !!b.is_error };
+        if (this.capture) Object.assign(f, this.claudeCapture(b, nResults === 1 ? j.tool_use_result : null, f));
+        out.push(this.ev('tool_result', f, rawType));
       }
       if (out.length) return out;
       return [this.ev('raw', { line: JSON.stringify(j).slice(0, 2000) }, rawType)];
@@ -327,6 +338,7 @@ class Parser {
         const entry = this.unansweredWrites.shift();
         answersWrite = entry ? entry.index : null;
       }
+      if (this.capture) this.capture.calls.clear(); // a call interrupted without a result must not leak
       const openTurnsAfter = this.openTurns.length;
       const externally = answersWrite === null;
       out.push(
@@ -358,7 +370,50 @@ class Parser {
     return [this.ev('raw', { line: JSON.stringify(j).slice(0, 2000) }, rawType)];
   }
 
+  // Capture fields (ADR 0041 Â§2). Called only when capture is on.
+  claudeCapture(b, toolUseResult, f) {
+    const call = this.capture.calls.get(b.tool_use_id) || {};
+    this.capture.calls.delete(b.tool_use_id);
+    const text = textOf(b.content);
+    const { head, tail, redaction } = CF.headTail(text, this.capture.redact);
+    return {
+      tool_use_id: b.tool_use_id == null ? null : b.tool_use_id,
+      ...CF.claudeExit(f.tool, f.is_error, text),
+      head,
+      tail,
+      redaction,
+      files: CF.claudeFiles(toolUseResult, call.args),
+    };
+  }
+
+  codexCapture(it, payload) {
+    this.capture.calls.delete(it.id);
+    const text = typeof it.aggregated_output === 'string' ? it.aggregated_output : typeof payload === 'string' ? payload : JSON.stringify(payload == null ? '' : payload);
+    const { head, tail, redaction } = CF.headTail(text, this.capture.redact);
+    return { tool_use_id: it.id == null ? null : it.id, ...CF.codexExit(it), head, tail, redaction, files: CF.codexFiles(it) };
+  }
+
   // ------------------------------------------------------------------ Codex
+
+  codexFileChange(j, it, rawType) {
+    const out = [];
+    const id = it.id == null ? null : it.id;
+    const changes = Array.isArray(it.changes) ? it.changes : [];
+    const seen = id !== null && this.capture.calls.has(id);
+    if (!seen) {
+      if (id !== null) this.capture.calls.set(id, { tool: 'file_change', args: { changes } });
+      out.push(this.ev('tool_use', { tool: 'file_change', args: { changes }, tool_use_id: id, command: null }, rawType));
+    }
+    if (j.type === 'item.completed') {
+      if (id !== null) this.capture.calls.delete(id);
+      const files = CF.codexFiles(it);
+      out.push(this.ev('tool_result', {
+        tool: 'file_change', bytes: byteLength(changes), is_error: it.status === 'failed' || !!it.error,
+        tool_use_id: id, exit_code: null, exit_code_source: null, head: files.join('\n'), tail: '', redaction: 'applied', files,
+      }, rawType));
+    }
+    return out;
+  }
 
   codex(j) {
     const out = [];
@@ -373,6 +428,7 @@ class Parser {
     }
 
     if (j.type === 'turn.completed') {
+      if (this.capture) this.capture.calls.clear();
       const externally = this.pendingTurns > 0 ? false : true;
       if (this.pendingTurns > 0) this.pendingTurns -= 1;
       const u = j.usage || null;
@@ -400,20 +456,30 @@ class Parser {
       return [this.ev('turn_failed', { error: j.error || null }, rawType)];
     }
 
+    // Capture only (the off output stays as before): Codex reports an edit as a file_change item whose
+    // changes[{path, kind}] name the files. The shape follows Codex exec's JSON item schema; no recorded
+    // stream in this repository carries one.
+    if (this.capture && it && it.type === 'file_change' && (j.type === 'item.started' || j.type === 'item.completed')) {
+      return this.codexFileChange(j, it, rawType);
+    }
+
     if (it && j.type === 'item.started' && (it.type === 'mcp_tool_call' || it.type === 'command_execution' || it.tool)) {
-      return [this.ev('tool_use', { tool: it.tool || it.name || it.type, args: it.arguments == null ? {} : it.arguments }, rawType)];
+      const f = { tool: it.tool || it.name || it.type, args: it.arguments == null ? {} : it.arguments };
+      if (this.capture) {
+        f.tool_use_id = it.id == null ? null : it.id;
+        f.command = CF.commandOf(it, this.capture.redact);
+      }
+      return [this.ev('tool_use', f, rawType)];
     }
 
     if (it && j.type === 'item.completed') {
       if (it.type === 'mcp_tool_call' || it.type === 'command_execution' || it.tool) {
         const payload = it.result !== undefined ? it.result : it.output !== undefined ? it.output : it;
-        out.push(
-          this.ev(
-            'tool_result',
-            { tool: it.tool || it.name || it.type, bytes: byteLength(payload), is_error: !!it.error },
-            rawType
-          )
-        );
+        const f = { tool: it.tool || it.name || it.type, bytes: byteLength(payload), is_error: !!it.error };
+        if (this.capture) Object.assign(f, this.codexCapture(it, payload));
+        // A failed command is an error whatever the item's error field says: nonzero exit or status failed.
+        if (this.capture && it.type === 'command_execution') f.is_error = f.is_error || (Number.isInteger(it.exit_code) && it.exit_code !== 0) || it.status === 'failed';
+        out.push(this.ev('tool_result', f, rawType));
       }
       if (it.type === 'agent_message') {
         this.lastMessage = typeof it.text === 'string' ? it.text : '';
@@ -426,8 +492,8 @@ class Parser {
   }
 }
 
-function createParser(substrate) {
-  return new Parser(substrate);
+function createParser(substrate, opts) {
+  return new Parser(substrate, opts);
 }
 
 module.exports = { Parser, createParser, contextTokensOf, fiveMinuteCacheWrite, byteLength, textOf, SUBSTRATES };

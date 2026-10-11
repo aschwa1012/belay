@@ -31,7 +31,7 @@ async function withRole(role, t, fn, workerId) {
   return fn(a, data);
 }
 
-test('A8 the six memory tools return the rows their proof columns name', async (t) => {
+test('A8 the memory tools return the rows their proof columns name', async (t) => {
   await withRole('orchestrator', t, async (a) => {
     has(assertOk(await a.call('memory_store', { text: 'a fact', tags: ['x'] }), 'memory_store'),
       ['id', 'action', 'namespace', 'worker_id', 'updated_at'], 'memory_store');
@@ -291,5 +291,21 @@ test('S11 worker_spawn takes effort: five levels in the listing, a bad level ref
     const w = assertOk(await a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'x', effort: 'xhigh' }), 'worker_spawn');
     assert.strictEqual(w.__effort, 'xhigh', 'the manager received effort: xhigh');
     assert.strictEqual(assertOk(await a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'x' }), 'worker_spawn').__effort, null);
+  });
+});
+
+test('worker_spawn refuses a caller-chosen id with the knowledge agent prefix, at the boundary', async (t) => {
+  const tools = require('../../src/mcp/tools.cjs');
+  const base = { substrate: 'claude-code', worktree: '/w', prompt: 'x' };
+  for (const id of ['knowledge-run-1', 'knowledge-']) {
+    assert.throws(() => tools.validateArgs('worker_spawn', { ...base, worker_id: id }),
+      (e) => e.code === 'E_ARGS' && e.detail.field === 'worker_id' && e.detail.reason === 'reserved' && /reserved for the knowledge agent/.test(e.message), id);
+  }
+  for (const id of ['w1', 'my-knowledge-1', 'Knowledge-x']) assert.doesNotThrow(() => tools.validateArgs('worker_spawn', { ...base, worker_id: id }), id);
+  await withRole('orchestrator', t, async (a, data) => {
+    const r = await a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'x', worker_id: 'knowledge-run-x' });
+    assert.strictEqual(r.isError, true);
+    assert.strictEqual(r.structuredContent.error, 'E_ARGS');
+    assert.strictEqual(r.structuredContent.detail.field, 'worker_id');
   });
 });

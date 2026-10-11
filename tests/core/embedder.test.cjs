@@ -88,7 +88,7 @@ test('embedder: the owner finds a stored row by a text query', async t => {
     await c.memory.store({ namespace: 'sem', text: 'Bananas ripen faster in a paper bag.' });
     assert.strictEqual(a.action, 'inserted');
 
-    const s = await c.memory.search({ namespace: 'sem', query: 'which process opens the sqlite file?', k: 2 });
+    const s = await c.memory.search({ namespace: 'sem', query: 'which process opens the sqlite file?', k: 2, mode: 'semantic' });
     assert.strictEqual(s.model, VOYAGE.id);
     assert.strictEqual(s.dim, 1024);
     assert.strictEqual(s.results[0].id, a.id, 'the nearer row by meaning comes first');
@@ -134,7 +134,7 @@ test('embedder: a canary vector with cosine below 0.9999 is E_MODEL_CHANGED nami
     await c.run.attach({ adapter_pid: process.pid });
     const task = await c.task.create({ spec: 'a wrong canary must not stop the harness recording work' });
     assert.strictEqual(task.state, 'open');
-    for (const call of [() => c.memory.store({ text: 'unembeddable' }), () => c.memory.search({ query: 'anything' })]) {
+    for (const call of [() => c.memory.store({ text: 'unembeddable' }), () => c.memory.search({ query: 'anything', mode: 'semantic' })]) {
       await assert.rejects(call(), e => {
         assert.strictEqual(e.code, 'E_MODEL_CHANGED');
         assert.ok(e.message.includes('model, dtype or dimension changed'));
@@ -268,7 +268,7 @@ test('an absent model or package fails the calls that need a vector, and only th
       assert.ok(e.message.includes('C:/definitely/not/a/transformers/package'), 'the refusal names the path it looked in');
       return true;
     });
-    await assert.rejects(c.memory.search({ query: 'anything' }), e => e.code === 'E_MODEL_ABSENT');
+    await assert.rejects(c.memory.search({ query: 'anything', mode: 'semantic' }), e => e.code === 'E_MODEL_ABSENT');
     const row = await c.memory.store({ text: 'caller supplied', embedding: [1, 0], embedding_model: 'm', dim: 2 });
     assert.strictEqual(row.action, 'inserted');
   } finally {

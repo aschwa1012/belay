@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"01a083ca-d728-7d32-82c6-a5d696255c29"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"file_change","changes":[{"path":"src/new.js","kind":"add"},{"path":"src/old.js","kind":"update"}],"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"file_change","changes":[{"path":"src/bad.js","kind":"update"}],"status":"failed"}}
+{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5}}
