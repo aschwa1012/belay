@@ -120,12 +120,16 @@ async function droppedAfterShutdown(tag, stopDelayMs) {
     }, hold);
     assert.deepStrictEqual(starts, ['turn:1'], 'the first write is in flight and the second is queued behind it');
     if (stopDelayMs) { const write = ctx.core.worker.write.bind(ctx.core.worker); ctx.core.worker.write = async (row) => { await sleep(stopDelayMs); return write(row); }; }
+    // Every error the record is given, in order: a late row restatement (the pid creation time, about a second after
+    // launch) can be dropped after this one on a fast host, so the drop is looked for in the history, not as the last.
+    const errs = []; const w1 = ctx.m._worker('w1'); let last = w1.lastError;
+    Object.defineProperty(w1, 'lastError', { configurable: true, get: () => last, set: (v) => { last = v; errs.push(v); } });
     const receipt = await ctx.m.shutdown();
     assert.deepStrictEqual(receipt.memory_gave_up, [], 'the in-flight write finished inside the bound');
     await sleep(100);
     assert.deepStrictEqual(starts, ['turn:1'], 'the write queued before shutdown but started after it was dropped');
     assert.strictEqual(ctx.core.isOwner(), false, 'and no owner was elected');
-    assert.strictEqual(ctx.m._worker('w1').lastError && ctx.m._worker('w1').lastError.state, 'turn-memory');
+    assert.ok(errs.some((e) => e && e.where === 'after-shutdown' && e.state === 'turn-memory'), `the drop is named: ${JSON.stringify(errs)}`);
   } finally {
     if (ctx) { if (ctx.core.isOwner()) await ctx.core.shutdownOwner().catch(() => {}); try { fs.rmSync(ctx.sb, { recursive: true, force: true }); } catch { /* best effort */ } }
   }
