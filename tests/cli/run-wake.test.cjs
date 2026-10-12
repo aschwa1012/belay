@@ -358,6 +358,10 @@ test('run: an unsolicited turn spanning a wake does not answer it; the wake expi
     FAKE_EXTRA_INIT: '1',
     FAKE_EXTRA_INIT_DELAY_MS: '4000',
     FAKE_HANG_AFTER: '1',
+    // The orchestrator's first answer is held until w1 is spawned: a fixed 500 ms raced the spawn on a slow host,
+    // the run closed as idle before w1 existed, and w1's turn never ended. The unsolicited turn's 4,000 ms gap
+    // starts at that first answer, so w1's 2,000 ms turn still ends inside it.
+    FAKE_ANSWER_GATE_FILE: `${dir}/orchestrator-gate`,
   };
   const runCliProc = runCli(specPath, dataDir, env);
   let core = null; let m = null; const spawnedPids = [];
@@ -379,6 +383,7 @@ test('run: an unsolicited turn spanning a wake does not answer it; the wake expi
 
     async function spawnWorker() { return m.spawn({ substrate: 'claude-code', worktree: workerWorktree(dir, 'w1'), prompt: 'hello', worker_id: 'w1' }); }
     spawnedPids.push({ pid: row.pid, created: row.pid_created });
+    fs.writeFileSync(env.FAKE_ANSWER_GATE_FILE, ''); // w1 is mid-turn: the orchestrator may now end its first turn
 
     const exited = await waitForExit(runCliProc.proc, 20000);
     assert.ok(exited, 'the CLI did not exit in time');

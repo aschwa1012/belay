@@ -133,6 +133,10 @@ test('run pause: a worker\'s turn ending while the run is paused is held, not wr
     const p = await cliAsync(['pause', ctx.runId], ctx.dataDir);
     assert.strictEqual(p.status, 0, `${p.stdout} / ${p.stderr}`);
     assert.strictEqual(p.receipt.workers.length, 1, JSON.stringify(p.receipt));
+    // A wake is held only when the run's own poll (poll_ms 300) sees w1's row while the run is paused; a fast host
+    // ran pause and resume inside one poll interval and held nothing. Nothing outside the run shows a held wake,
+    // so wait out several of its polls: its own fixed timer, not a guess at another process's speed.
+    await sleep(1200);
 
     const r = await cliAsync(['resume', ctx.runId], ctx.dataDir);
     assert.strictEqual(r.status, 0, `${r.stdout} / ${r.stderr}`);
