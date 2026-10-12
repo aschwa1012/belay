@@ -151,6 +151,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const spec = { exe: command, args: [...prefixArgs, ...args], cwd: w.worktree };
     w.argvHash = L.writeArgvJson(w.dir, spec);
     w.settled = false; w.pidGoneAt = null; w.pidGonePid = null; // the exit-event hold is per launch
+    w.settledState = null; // the last process's end; a restatement of this one's row must never carry it
     w.exitedAt = null;
     w.turnEnded = false;
     w.readyAt = null;
