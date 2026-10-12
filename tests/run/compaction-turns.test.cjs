@@ -115,7 +115,16 @@ test('BL1: a pause during a harness /compact leaves no stranded state: resume wo
       await m.pause({ worker_id: 'wp', by: 'operator:1' });
       await assert.rejects(m.message({ worker_id: 'wp', text: 'A' }), (e) => e.code === 'E_PAUSED');
       await m.resume({ worker_id: 'wp', by: 'operator:1' });
-      const b = await m.message({ worker_id: 'wp', text: 'B' });
+      // The resumed turn's context is still over the threshold, so the harness may start a new /compact as that turn
+      // ends; a message then is refused E_BUSY op compact until it finishes. Nothing is stranded if B is accepted
+      // once any compaction has ended: retry only that refusal, inside a bound.
+      let b = null;
+      for (const end = Date.now() + 30000; !b;) {
+        try { b = await m.message({ worker_id: 'wp', text: 'B' }); } catch (e) {
+          if (e.code !== 'E_BUSY' || !e.detail || e.detail.op !== 'compact' || Date.now() > end) throw e;
+          await new Promise((r) => setTimeout(r, 50));
+        }
+      }
       assert.strictEqual(b.channel, 'stdin');
       await until(() => lines(recv).some((r) => r.text === 'B'));
       assert.ok(!lines(recv).some((r) => r.text === 'A'), 'the refused message was never delivered, now or later');
