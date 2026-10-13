@@ -11,6 +11,18 @@
 
 const ID = require('../src/core/proc-identity.cjs');
 
+// A snapshot that cannot be read (CIM stalled past its timeout, or bad output) is taken again, as belay's own
+// kill path does (snapshotRetry): unreadable is not an answer, and reading it as one fails a crash for nothing.
+const SNAPSHOT_ATTEMPTS = 3;
+function snapshotSync() {
+  for (let i = 0; i < SNAPSHOT_ATTEMPTS; i++) {
+    if (i) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200 * 2 ** (i - 1));
+    const s = ID.processSnapshotSync();
+    if (s) return s;
+  }
+  return null;
+}
+
 const noted = new Map(); // pid -> creation time, kept only while its handle was live when the read landed
 
 function note(handle, { snapshot = ID.processSnapshot } = {}) { // `snapshot` is a test seam
@@ -35,7 +47,7 @@ function crash(target, created) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   const want = created != null ? created : noted.get(pid);
   if (want == null) return false;
-  const s = ID.processSnapshotSync(); const e = s && s.get(pid);
+  const s = snapshotSync(); const e = s && s.get(pid);
   if (!e || e.created !== want) return false;
   try { process.kill(pid, 'SIGKILL'); return true; } catch { return false; }
 }
@@ -45,14 +57,14 @@ function crash(target, created) {
 // resumes and settles the death (with no exit code) before the child's 'exit' event is read.
 async function crashAsync(pid, created) {
   if (!Number.isInteger(pid) || pid <= 0 || created == null) return false;
-  const s = await ID.processSnapshot(); const e = s && s.get(pid);
+  const s = await ID.snapshotRetry({ attempts: SNAPSHOT_ATTEMPTS }); const e = s && s.get(pid);
   if (!e || e.created !== created) return false;
   try { process.kill(pid, 'SIGKILL'); return true; } catch { return false; }
 }
 
 // One snapshot, leaves first: killing a parent first would hide its children (their recorded parent is gone).
 function crashDescendants(pids) {
-  const s = ID.processSnapshotSync();
+  const s = snapshotSync();
   if (!s) return [];
   const want = new Set(pids.filter((p) => Number.isInteger(p) && p > 0));
   const killed = [];
@@ -67,7 +79,7 @@ const crashDescendant = (pid) => crashDescendants([pid]).length === 1;
 // Record the creation time of a pid that is, right now, in this process's own tree, so a later crash(pid) can
 // end it after its parent is gone (an orphaned grandchild). Returns whether it was recorded.
 function noteDescendant(pid) {
-  const s = ID.processSnapshotSync();
+  const s = snapshotSync();
   const d = s && ID.descendantsOf(process.pid, s).leavesFirst.find((x) => x.pid === pid);
   if (!d || d.created == null) return false;
   noted.set(pid, d.created);
