@@ -68,7 +68,7 @@ test('permit: listed last only for an adapter launched with --permit, its bytes 
 
 // ================================================================ (h) allow
 
-test("permit: a call writes a pending row from argv identity and answers allow with updatedInput equal to the input within 500 ms of the orchestrator's decide", async (t) => {
+test("permit: a call writes a pending row from argv identity and answers allow with updatedInput equal to the input promptly once the orchestrator decides, not after its wait slice", async (t) => {
   const dataDir = `${sandboxDir('permit-h')}/store`;
   const orchCore = await setupOwner(dataDir, 'run-h');
   t.after(async () => { await orchCore.shutdownOwner().catch(() => {}); await orchCore.close(); });
@@ -94,7 +94,9 @@ test("permit: a call writes a pending row from argv identity and answers allow w
   await orchCore.permission.decide({ id: toolUseId, verdict: 'allow' });
   const msg = await callPromise;
   const elapsed = Date.now() - t0;
-  assert.ok(elapsed < 500, `the call answered ${elapsed} ms after the decide`);
+  // The wait is woken by the decide, so a quiet host answers in tens of ms; a missed wake costs the adapter's 25 s wait
+  // slice. 500 ms was thin for a hosted runner, so the bound is 10 s, still well under the slice.
+  assert.ok(elapsed < 10000, `the call answered ${elapsed} ms after the decide`);
   const body = JSON.parse(msg.result.content[0].text);
   assert.strictEqual(body.behavior, 'allow');
   assert.deepStrictEqual(body.updatedInput, input);
@@ -132,7 +134,7 @@ test('permit: deny answers the reason as the message and the row reads denied wi
 
 // ================================================================ (j) the adapter's own bound
 
-test('permit: with --permit-wait-ms 1500 and no verdict the call answers deny naming the bound within 1,500 to 4,000 ms, and the row reads expired with verdict_by adapter-bound:<adapter pid>', async (t) => {
+test('permit: with --permit-wait-ms 1500 and no verdict the call answers deny naming the bound at its 1,500 ms, not after the full wait slice, and the row reads expired with verdict_by adapter-bound:<adapter pid>', async (t) => {
   const dataDir = `${sandboxDir('permit-j')}/store`;
   const orchCore = await setupOwner(dataDir, 'run-j');
   t.after(async () => { await orchCore.shutdownOwner().catch(() => {}); await orchCore.close(); });
@@ -144,7 +146,8 @@ test('permit: with --permit-wait-ms 1500 and no verdict the call answers deny na
   const t0 = Date.now();
   const msg = await a.send('tools/call', { name: 'permit', arguments: { tool_name: 'Bash', tool_use_id: toolUseId, input: {} } });
   const elapsed = Date.now() - t0;
-  assert.ok(elapsed >= 1500 && elapsed <= 4000, `the call answered in ${elapsed} ms, expected 1,500 to 4,000`);
+  assert.ok(elapsed >= 1500 && elapsed <= 12000, `the call answered in ${elapsed} ms, expected 1,500 to 12,000`);
+  // The upper bound separates the 1,500 ms bound honoured from a slice that was not shortened to it (25 s).
   const body = JSON.parse(msg.result.content[0].text);
   assert.strictEqual(body.behavior, 'deny');
   assert.match(body.message, /1500/);

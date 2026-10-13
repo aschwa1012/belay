@@ -163,7 +163,7 @@ test('redactDeep: values redacted, keys kept, input unmutated, counts summed', (
   assert.deepEqual(r.redactions, { github_token: 2, env_secret: 1 });
 });
 
-test('performance: 64 KB of mixed text in under 5 ms (median of 20)', () => {
+test('performance: 64 KB of mixed text in under 20 ms (median of 20)', () => {
   const unit = 'The quick brown fox: see https://example.com/a?b=1 and commit ' + 'a1b2c3d4'.repeat(5) +
     ' plus task-sk-1 key=value, "name": "x" -- ' + 'ey' + 'Jabc not a token\nline two NAME=val\n';
   let text = '';
@@ -177,7 +177,10 @@ test('performance: 64 KB of mixed text in under 5 ms (median of 20)', () => {
   }
   times.sort((a, b) => a - b);
   const median = (times[9] + times[10]) / 2;
-  assert.ok(median < 5, `median ${median.toFixed(2)} ms`);
+  // 5 ms is a quiet host's figure and a hosted runner measured about 8 ms per call; the bound is 20 ms, 2.5x the runner's
+  // figure, so a slowdown of about 6x or more from a quiet host fails. A quadratic or backtracking regression is caught
+  // by the 256 KB test below.
+  assert.ok(median < 20, `median ${median.toFixed(2)} ms`);
 });
 
 test('the module requires nothing', () => {

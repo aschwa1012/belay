@@ -148,7 +148,7 @@ test("permission.decide: a worker may only expire, and only its own row; allow, 
   assert.strictEqual(result.verdict.verdict_by, `adapter-bound:${process.pid}`);
 });
 
-test('permission.wait: an already-decided row answers at once with already true; a pending row resolves within 500 ms of a decide over the pipe with the verdict row; the bound answers timed_out true with the pending row; a wait past 25,000 ms or below 1 is E_ARGS; a worker with no owner is E_NO_OWNER having created nothing', async () => {
+test('permission.wait: an already-decided row answers at once with already true; a pending row resolves promptly once decided over the pipe, with the verdict row, rather than after its wait slice; the bound answers timed_out true with the pending row; a wait past 25,000 ms or below 1 is E_ARGS; a worker with no owner is E_NO_OWNER having created nothing', async () => {
   // already-decided
   const id1 = `perm-d1-${crypto.randomUUID()}`;
   await w1.permission.request({ id: id1, tool: 'Bash', input: null });
@@ -167,7 +167,9 @@ test('permission.wait: an already-decided row answers at once with already true;
   const t0 = Date.now();
   const resolved = await waitPromise;
   const elapsed = Date.now() - t0;
-  assert.ok(elapsed < 800, `wait resolved in ${elapsed} ms, expected close to the 300 ms decide`);
+  // The decide lands at 300 ms; the bug is a wake that never comes, so the wait runs out its 5,000 ms. A loaded
+  // runner needs headroom over the 300 ms, hence 4,000.
+  assert.ok(elapsed < 4000, `wait resolved in ${elapsed} ms, expected close to the 300 ms decide`);
   assert.strictEqual(resolved.timed_out, false);
   assert.strictEqual(resolved.already, false);
   assert.strictEqual(resolved.request.state, 'allowed');

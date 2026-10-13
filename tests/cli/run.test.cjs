@@ -137,11 +137,12 @@ test('run: the orchestrator is a child of the CLI, the run row is written, stdin
   const env = {
     ...process.env,
     BELAY_CLAUDE_EXE: FAKE_CLAUDE,
-    FAKE_ANSWER_DELAY_MS: '6000',
+    // The orchestrator's first answer is held until the test has planted the mid-turn worker row, so the setup
+    // cannot lose a race against a fixed answer delay on a slow host.
+    FAKE_ANSWER_GATE_FILE: `${dir}/orchestrator-gate`,
     FAKE_SESSION_ID: 'fake-session-run-test-0001',
   };
 
-  const t0 = Date.now();
   const cliProc = spawn(process.execPath, [CLI, 'run', specPath, '--data', dataDir, '--json'], {
     cwd: ROOT, env, windowsHide: true,
   });
@@ -169,8 +170,7 @@ test('run: the orchestrator is a child of the CLI, the run row is written, stdin
       state: 'running', turns: 0, started_at: Date.now(),
     });
     assert.strictEqual(written.state, 'running', 'the worker row must have been written as running');
-    const setupMs = Date.now() - t0;
-    assert.ok(setupMs < 5000, `test setup (spawning the fake worker and writing its row) took ${setupMs} ms since the CLI's own spawn: the test's own setup was too slow, not a defect in the code under test`);
+    fs.writeFileSync(env.FAKE_ANSWER_GATE_FILE, ''); // the worker is mid-turn in the store: the orchestrator may now end its turn
 
     const streamPath = `${orchestratorDir}/stream.jsonl`;
     const gotResult = await waitForFileLine(streamPath, '"type":"result"', 15000);

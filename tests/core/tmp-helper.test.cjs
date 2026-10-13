@@ -21,17 +21,20 @@ test('tmp helper: a directory held by a surviving child is left for the guard, a
     "const c = spawn(process.execPath, ['-e', \"require('fs').writeFileSync('ready', '1'); setTimeout(() => {}, 20000)\"], { cwd: dir, detached: true, stdio: 'ignore', windowsHide: true });",
     "c.unref();",
     "const t0 = Date.now(); while (!fs.existsSync(path.join(dir, 'ready')) && Date.now() - t0 < 10000) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);",
-    "console.log(c.pid);",
+    "console.log(c.pid + ' ' + Date.now());",
   ].join('\n'));
   const tmp = path.join(scratch, 'tmp');
   fs.mkdirSync(tmp);
   let pid = null;
   try {
-    const t0 = Date.now();
     const r = spawnSync(process.execPath, ['--require', HELPER, script], { encoding: 'utf8', env: { ...process.env, TEMP: tmp, TMP: tmp, TMPDIR: tmp } });
-    const ms = Date.now() - t0;
-    pid = Number(r.stdout.trim());
+    const doneAt = Date.now();
+    const [pidText, mainDoneAt] = r.stdout.trim().split(' ');
+    pid = Number(pidText);
     assert.ok(Number.isInteger(pid) && pid > 0, r.stdout + r.stderr);
+    // Measured from the moment the driver's main was done, not from the spawn: node start-up and the child's launch
+    // are the machine's. The stall this catches is the exit waiting out the cleanup budget (3 s) or the child's 20 s.
+    const ms = doneAt - Number(mainDoneAt);
     assert.ok(ms < 2500, `exit stalled ${ms} ms`);
     const left = leaked(tmp);
     assert.strictEqual(left.length, 1, JSON.stringify(left));

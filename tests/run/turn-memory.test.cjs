@@ -48,7 +48,9 @@ test('turn memory (r-f1): the waiter resolves and the row lands before a slow me
     await m.spawn({ substrate: 'claude-code', worktree: wt, prompt: 'one', worker_id: 'w1' });
     await m._waitTurn('w1', 8000);
     const waited = Date.now() - t0;
-    assert.ok(waited < 2500, `the turn's waiter waited ${waited} ms: it sat behind the 3,000 ms memory write`);
+    // Ordered by event, not by clock: a waiter that sat behind the 3,000 ms write resolves after it, with the text already
+    // stored. (A wall bound here read the spawn's own time on a slow runner.)
+    assert.strictEqual(stored.length, 0, `the turn's waiter resolved after ${waited} ms with the write already done: it sat behind the memory write`);
     assert.ok(await until(async () => (await core.worker.get({ worker_id: 'w1' })).state === 'running', 2000), 'the running row never landed');
     assert.strictEqual(stored.length, 0, 'the row landed while the slow store was still in flight');
     assert.ok(await until(() => stored.length === 1, 8000), 'the turn text never reached memory');
@@ -78,7 +80,9 @@ test('turn memory (r-f2): shutdown with a store in flight completes within its b
     const t0 = Date.now();
     const receipt = await m.shutdown();
     const ms = Date.now() - t0;
-    assert.ok(ms < 9000, `shutdown took ${ms} ms with a 30,000 ms store in flight`);
+    // Shutdown gives the memory queue up after MEMORY_DRAIN_MS (5000); waiting out the store takes 30,000 ms. 20000 separates
+    // them with 15 s of room for a slow runner.
+    assert.ok(ms < 20000, `shutdown took ${ms} ms with a 30,000 ms store in flight`);
     assert.deepStrictEqual(receipt.memory_gave_up, ['w1'], 'the queue it gave up on is named');
     assert.strictEqual(core.isOwner(), false, 'shutdown must leave no owner elected in this process');
   } finally {

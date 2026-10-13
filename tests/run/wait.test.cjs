@@ -33,14 +33,15 @@ test('wait answers at once for a worker whose turn already ended, and names what
   await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hello', worker_id: 'w1' });
   await m._waitTurn('w1', 8000);
 
-  const r = await m.wait({ worker_ids: ['w1'], timeout_ms: 2000 });
+  const r = await m.wait({ worker_ids: ['w1'], timeout_ms: 30000 });
   assert.equal(r.worker_id, 'w1');
   assert.equal(r.event, 'turn_end');
   assert.equal(r.already, true, 'the turn had ended before the call, and the result says so');
   assert.equal(r.timed_out, false);
   assert.equal(r.turn, 1);
   assert.match(r.established_by, /result event on the worker stream/);
-  assert.ok(r.waited_ms < 500, `an already-ended turn should not hold the call: ${r.waited_ms} ms`);
+  // A call that held for its budget waits 30,000 ms; 10,000 keeps a hosted runner's lag out of the way.
+  assert.ok(r.waited_ms < 10000, `an already-ended turn should not hold the call: ${r.waited_ms} ms`);
   assert.deepEqual(r.watched, ['w1']);
   await m.shutdown();
 });
@@ -242,11 +243,13 @@ test('forced lag: a relaunch between the poll settle and the old exit event does
     delayExit(w.child, 60000); // the old child's exit event never arrives inside this test
     require('../crash.cjs').crash(m._worker('w12').child);
     await m._waitExit('w12', 8000);
-    const p = m.wait({ worker_ids: ['w12'], timeout_ms: 20000 });
+    const p = m.wait({ worker_ids: ['w12'], timeout_ms: 120000 });
     await new Promise((r) => setTimeout(r, 200));
     await m.restart({ worker_id: 'w12', first_turn_timeout_ms: 20000 });
     const r = await p;
-    assert.ok(r.waited_ms < 15000, 'the wait ended on the relaunch, not on its 20,000 ms budget: ' + r.waited_ms);
+    // Held for the old exit event it waits 60,000 ms (delayExit above), held for its budget 120,000 ms. 45,000 leaves a slow
+    // runner room (this whole test took 29.6 s there once); the old budget of 20,000 left a bound of 15,000.
+    assert.ok(r.waited_ms < 45000, 'the wait ended on the relaunch, not on its 120,000 ms budget: ' + r.waited_ms);
   } finally { await m.shutdown(); }
 });
 
