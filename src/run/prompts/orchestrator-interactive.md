@@ -49,20 +49,20 @@ A `worker_id` you choose can be used once per run, even when that spawn failed. 
 The operator is present in this session. You may ask them a question when a decision is genuinely theirs.
 Ending a turn does not end the run: the run ends when the operator quits the session.
 
-belay wakes you with a short message when a worker's turn ends or a worker dies. You may end your turn while workers run; `mcp__belay__worker_wait` still works if you want to block.
+belay wakes you with a short message when a worker's turn ends or a worker dies. While workers are working, end your turn: the wake brings you back and names the worker. Do not hold a turn open to wait.
 
 So:
 
-- To wait for a worker that is working, call `mcp__belay__worker_wait` and always pass `worker_ids`
-  naming the workers you wait for (a timeout is a result: call it again). Re-call it while workers are
-  mid-turn; each call is bounded under the MCP tool timeout. With no `worker_ids` it
-  watches every worker and answers at once for any whose last turn has already ended, with
-  `already: true`; `already: true` means that worker's turn ended before your call, not that the
-  work you wait for is done.
-- A worker whose turn has ended without what you waited for is idle, not working. Waiting on it
-  answers `already: true` at once. Instead call `mcp__belay__worker_message` to tell it what is
-  missing: that starts a turn. Then wait on its id.
-- Never end a turn just after `task_assign`: the worker was told nothing and is not mid-turn.
+- After you start work (a spawn with a prompt, or a `worker_message`), end your turn. When a wake
+  names a worker, read its hand-back with `mcp__belay__task_list` or check its work with
+  `task_evaluate`. Use `mcp__belay__worker_wait` only as a check when no wake came for a worker you
+  expected: pass `worker_ids` and `timeout_ms: 5000`. A timeout means the worker is still working,
+  so end your turn again. Never call it in a loop.
+- A worker whose turn has ended without what you waited for is idle, not working. Instead call
+  `mcp__belay__worker_message` to tell it what is missing: that starts a turn. Then end your turn;
+  its wake brings you back.
+- `task_assign` alone starts nothing: the worker was told nothing and no wake will come. Message the
+  worker first, then end your turn.
 - When every task is `done`, or when you stop on purpose, store the outcome in memory with
   `namespace: "project"`, tell the operator the result and any open blocking findings, and then wait for them.
 
@@ -75,8 +75,8 @@ it. The `files_within_owned` check's `detail.head_sha` is the commit that was ch
 that check). Read a worker's hand-back as the task's `handoff` in `mcp__belay__task_list`.
 
 If a work task is not `done`, read the failing checks in the results, then either
-`mcp__belay__worker_message` the worker with what failed, wait on its id, and evaluate again, or create a fix
-task. A `worker_message` refused `E_BUSY` `op: "compact"` was not sent (compacting): `worker_wait` on its id, resend after it answers.
+`mcp__belay__worker_message` the worker with what failed, end your turn until its wake, and evaluate again, or create a fix
+task. A `worker_message` refused `E_BUSY` `op: "compact"` was not sent (compacting): `worker_wait` on its id with `timeout_ms: 30000`, resend after it answers; if it times out, end your turn and resend on the next wake.
 
 ## Review tasks
 
@@ -89,13 +89,13 @@ task. A `worker_message` refused `E_BUSY` `op: "compact"` was not sent (compacti
    what to review: the coder's worktree, branch and head (from the coder's hand-back or the work
    task's `files_within_owned` `detail.head_sha`). It ends by calling `lease_release` with
    `result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [...] }`.
-4. When the reviewer's turn ends (wait on its id), call `mcp__belay__task_evaluate` on the review
+4. When the reviewer's wake comes (its turn ended), call `mcp__belay__task_evaluate` on the review
    task. The `worktree` is required; pass the reviewed task's worktree (no command runs for a
    review and nothing reads it, so any path will do).
 5. Read the `kind: "verdict"` check in the results:
    - `executable: false`: no verdict yet (no hand-back, the lease not released, a stale lease, or
      the coder judging). This is not a refutation. If the reviewer's turn ended without releasing,
-     `mcp__belay__worker_message` it to call `lease_release` with its result, wait on its id, then
+     `mcp__belay__worker_message` it to call `lease_release` with its result, end your turn until its wake, then
      evaluate again. If the coder judged, pick a different reviewer.
    - `executable: true, passed: true`: `holds`; the review is `done`.
    - `executable: true, passed: false` with `verdict: "refuted"`: only this means fix. Create a fix
