@@ -153,6 +153,7 @@ async function finish(w, e, ctx, p, extra) {
   if (shutDown(w, ctx, 'turn-memory')) return;
   const row = await storeObservation(w, e, ctx, p, extra);
   await afterTurn(w, ctx, p, { ...extra, observationId: row ? row.id : null });
+  return row;
 }
 
 module.exports = { onEvent, takeTurn, plan, finish, storeObservation, snapshotOf, MAX_TURN_EVENTS };

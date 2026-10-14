@@ -46,7 +46,7 @@ function spyCore({ tasks = {}, workers = [], observations = [], ownRows = [], ch
       get: async (a) => { rec('memory.get', a); await gate('memory.get'); const r = rows.get(a.id); if (!r) throw failing('E_NOT_FOUND'); return r; },
       list: async (a) => {
         rec('memory.list', a); await gate('memory.list'); const off = a.offset || 0;
-        const src = a.filter && a.filter.types ? observations : ownRows; // the summary lists observations; the promotion lists the task's rows
+        const src = a.filter && a.filter.types ? observations : ownRows.filter((r) => r.written_by === a.filter.written_by); // the summary lists observations; the promotion lists the task's rows
         return { rows: src.slice(off, off + (a.limit || 50)).map((o) => { const { body, ...rest } = o; return rest; }), total: src.length };
       },
       promote: async (a) => { rec('memory.promote', a); await gate('memory.promote'); return { namespace: 'project/demo', moved: a.ids.map((id) => ({ id })), existing: [], refused: [], skipped: [], capped: 0 }; },
@@ -271,6 +271,19 @@ test('project writes: the summary is written once, straight into the project, an
   const writes = core.events.filter((e) => e.kind === 'project_write');
   assert.strictEqual(writes.length, 1);
   assert.ok(writes[0].ok === 1 && writes[0].key === `summary:${writes[0].row_ids[0]}`);
+});
+
+test('project writes: the summary text names its task, worker and run, so two tasks never collapse onto one row', async () => {
+  const texts = [];
+  for (const taskId of ['t1', 't2']) {
+    const core = spyCore({ tasks: { [taskId]: releasedTask({ id: taskId }) }, observations: [] });
+    const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical', project: 'demo', project_writes: true }));
+    const w = worker({ taskId });
+    MJ.afterTurn(w, ctx, {}); await flush(w);
+    texts.push(methodsOf(core, 'memory.store')[0].args.text);
+  }
+  assert.match(texts[0], /about: task t1, worker w1, run r1/);
+  assert.notStrictEqual(texts[0], texts[1]);
 });
 
 test('project writes: with no project, or the lever off, the summary goes to the run as before', async () => {

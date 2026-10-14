@@ -115,7 +115,7 @@ function dupVeto(a, b) {
   return { only_in_query: sorted(onlyA), only_in_row: sorted(onlyB) };
 }
 
-const FILTER_KEYS = ['types', 'statuses', 'worker_id', 'task_id', 'run_id', 'since_ms', 'until_ms'];
+const FILTER_KEYS = ['types', 'statuses', 'worker_id', 'written_by', 'task_id', 'run_id', 'since_ms', 'until_ms'];
 const bad = (msg, detail) => err('E_ARGS', msg, detail);
 
 function strList(name, v, allowed) {
@@ -156,6 +156,7 @@ function filterSql(filter, alias) {
   if (f.types !== undefined) inList(`${p}type`, strList('types', f.types));
   if (f.statuses !== undefined) inList(`COALESCE(${p}status, 'unverified')`, strList('statuses', f.statuses, STATUSES));
   if (f.worker_id !== undefined) { where.push(`${p}worker_id = ?`); params.push(str('worker_id', f.worker_id)); }
+  if (f.written_by !== undefined) { where.push(`${p}written_by = ?`); params.push(str('written_by', f.written_by)); }
   if (f.run_id !== undefined) { where.push(`${p}run_id = ?`); params.push(str('run_id', f.run_id)); }
   if (f.task_id !== undefined) {
     const t = str('task_id', f.task_id);
