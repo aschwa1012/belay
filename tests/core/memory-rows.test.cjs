@@ -19,10 +19,11 @@ test('deriveTitle takes the first non-empty line, collapsed, within 160 bytes', 
 });
 
 test('indexRowOf keeps ids and titles only and defaults status and title', () => {
-  const row = { id: 'm1', type: 'fact', text: 'Body line\nmore', tags: ['t'], namespace: 'ns', worker_id: 'w1', created_at: 5, status: null, task_id: 'T-1', embedding: Buffer.from([1]) };
+  const row = { id: 'm1', type: 'fact', text: 'Body line\nmore', tags: ['t'], namespace: 'ns', worker_id: 'w1', written_by: 'harness', created_at: 5, status: null, task_id: 'T-1', embedding: Buffer.from([1]) };
   assert.deepStrictEqual(m.indexRowOf(row, 0.8), {
-    id: 'm1', type: 'fact', status: 'unverified', score: 0.8, title: 'Body line', created_at: 5, namespace: 'ns', worker_id: 'w1', task_id: 'T-1',
+    id: 'm1', type: 'fact', status: 'unverified', score: 0.8, title: 'Body line', created_at: 5, namespace: 'ns', worker_id: 'w1', written_by: 'harness', task_id: 'T-1',
   });
+  assert.strictEqual(m.indexRowOf({ ...row, written_by: undefined }).written_by, null, 'a row from before the column is unknown, never guessed');
   const own = m.indexRowOf({ ...row, title: 'Own', status: 'verified', task_id: undefined });
   assert.strictEqual(own.title, 'Own');
   assert.strictEqual(own.status, 'verified');

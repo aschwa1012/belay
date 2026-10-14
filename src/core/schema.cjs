@@ -105,6 +105,9 @@ CREATE INDEX IF NOT EXISTS ix_usage_run ON usage(run_id, seq);
 // `run.resume` can match by equality with it instead of comparing two processes' clocks.
 const MIGRATIONS = [
   'ALTER TABLE memory_entries ADD COLUMN last_writer_id TEXT',
+  // ADR 0044 decision 6: who wrote the row (`worker:<id>`, `orchestrator`, `harness` or `operator`), set by the core on
+  // insert and never changed. Null on a row written before the column, and read as unknown; nothing guesses it.
+  'ALTER TABLE memory_entries ADD COLUMN written_by TEXT',
   'ALTER TABLE task ADD COLUMN depends_on TEXT',
   'ALTER TABLE worker ADD COLUMN mid_turn INTEGER',
   'ALTER TABLE worker ADD COLUMN death_established_by TEXT',

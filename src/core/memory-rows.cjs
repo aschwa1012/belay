@@ -43,6 +43,7 @@ function indexRowOf(row, score) {
     created_at: row.created_at,
     namespace: row.namespace,
     worker_id: row.worker_id,
+    written_by: row.written_by ?? null,
     task_id: row.task_id ?? null,
   };
 }

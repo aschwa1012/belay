@@ -22,8 +22,9 @@ const anyJob = (lv) => !!(lv && ((lv.summaries && lv.summaries !== 'off') || lv.
 async function memoryRunEnd({ core, runId, levers, ce = null, late = () => {}, jobs = null }) {
   const lv = levers && levers.memory_levers;
   if (!anyJob(lv)) return null;
+  // ADR 0044 decision 6: these rows are belay's, not the operator's; the run process writes them on the harness channel.
   const MJ = jobs || require('../run/memory-jobs.cjs');
-  return RI.within(ce, MJ.runEndJobs({ core, runId, levers: lv }), 'the run-end memory jobs', { outcome: 'cut' }, late, RI.END_RESERVE_MS);
+  return RI.within(ce, MJ.runEndJobs({ core: core.harness ? core.harness() : core, runId, levers: lv }), 'the run-end memory jobs', { outcome: 'cut' }, late, RI.END_RESERVE_MS);
 }
 
 module.exports = { memoryRunEnd };

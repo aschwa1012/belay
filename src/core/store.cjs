@@ -97,7 +97,7 @@ class Store {
     const redactions = a.redactions && typeof a.redactions === 'object' && !Object.keys(a.redactions).length ? null : asText(a.redactions);
     if (a.id != null && !validId(a.id)) throw err('E_ARGS', 'a row id must be 1 to 128 letters, digits, dot, colon, dash or underscore', { field: 'id' });
     return this.tx(() => {
-      const dup = this.p('SELECT id, worker_id, source, text, status, title, run_id, task_id, redactions, embedding IS NOT NULL AS has_vec FROM memory_entries WHERE namespace = ? AND text_hash = ?').get(ns, th);
+      const dup = this.p('SELECT id, worker_id, source, text, status, title, run_id, task_id, redactions, written_by, embedding IS NOT NULL AS has_vec FROM memory_entries WHERE namespace = ? AND text_hash = ?').get(ns, th);
       // A dedup hit updates the row only for the writer that wrote it, with the same source, while it is still
       // unverified. Anyone else's row, and any verified or refuted row, is left exactly as it was and returned as
       // it stands: otherwise a writer that read a verified row could resend its text under a new title and type and
@@ -132,11 +132,11 @@ class Store {
         id = a.id || crypto.randomUUID(); action = 'inserted';
         this.p(`INSERT INTO memory_entries(id, namespace, worker_id, last_writer_id, type, text, text_hash, embedding,
                 embedding_model, embedding_revision, dim, tags, provenance, supersedes, created_at, updated_at, ttl_at,
-                title, body, redactions, run_id, task_id, turn, source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                title, body, redactions, run_id, task_id, turn, source, written_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
           .run(id, ns, wid, wid, a.type || 'fact', a.text, th, blob, a.embedding_model || null,
             a.embedding_revision || null, a.dim || null, tags, prov, a.supersedes || null, createdAt, createdAt, ttl,
-            title, body, redactions, a.run_id ?? null, a.task_id ?? null, a.turn ?? null, a.source ?? null);
+            title, body, redactions, a.run_id ?? null, a.task_id ?? null, a.turn ?? null, a.source ?? null, a.written_by ?? null);
       }
       const c = this.cache.get(ns);
       if (c) {
@@ -145,10 +145,10 @@ class Store {
         if (i >= 0) c.rows[i] = row; else c.rows.push(row);
         if (a.supersedes) c.superseded.add(a.supersedes);
       }
-      const stored = this.p('SELECT status, title, run_id, task_id, turn, source, redactions, embedding IS NOT NULL AS has_vec FROM memory_entries WHERE id = ?').get(id);
+      const stored = this.p('SELECT written_by, status, title, run_id, task_id, turn, source, redactions, embedding IS NOT NULL AS has_vec FROM memory_entries WHERE id = ?').get(id);
       return {
         id, action, namespace: ns, text_hash: th, worker_id: dup ? dup.worker_id : wid,
-        last_writer_id: wid, created_at: dup ? undefined : createdAt, updated_at: t, ttl_at: ttl,
+        last_writer_id: wid, written_by: stored.written_by ?? null, created_at: dup ? undefined : createdAt, updated_at: t, ttl_at: ttl,
         status: stored.status || 'unverified', title: stored.title || deriveTitle(dup ? dup.text : a.text),
         run_id: stored.run_id, task_id: stored.task_id, turn: stored.turn, source: stored.source,
         redactions: stored.redactions ? JSON.parse(stored.redactions) : null, has_embedding: !!stored.has_vec,
@@ -162,7 +162,7 @@ class Store {
     const status = cur.status || 'unverified';
     return {
       id: cur.id, action: 'unchanged', unchanged_reason: status !== 'unverified' ? `the row is ${status}` : 'the row has another writer or source',
-      namespace: ns, text_hash: th, worker_id: cur.worker_id, last_writer_id: cur.last_writer_id, updated_at: cur.updated_at, ttl_at: cur.ttl_at,
+      namespace: ns, text_hash: th, worker_id: cur.worker_id, last_writer_id: cur.last_writer_id, written_by: cur.written_by ?? null, updated_at: cur.updated_at, ttl_at: cur.ttl_at,
       status, title: cur.title || deriveTitle(cur.text), run_id: cur.run_id, task_id: cur.task_id, turn: cur.turn, source: cur.source,
       redactions: cur.redactions ? JSON.parse(cur.redactions) : null, has_embedding: !!cur.embedding,
     };
@@ -210,7 +210,7 @@ class Store {
   }
 
   list(a) {
-    return this.p(`SELECT id, namespace, worker_id, last_writer_id, type, substr(text, 1, 200) AS text, tags,
+    return this.p(`SELECT id, namespace, worker_id, last_writer_id, written_by, type, substr(text, 1, 200) AS text, tags,
                    provenance, supersedes, created_at, updated_at, ttl_at FROM memory_entries
                    WHERE namespace = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`)
       .all(a.namespace, Math.min(a.limit || 50, 500), a.offset || 0)

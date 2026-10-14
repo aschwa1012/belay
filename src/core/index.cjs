@@ -99,10 +99,32 @@ class Core {
   // arguments carried.
   handle(method, args) { return this._invoke(method, args); }
 
-  async _invoke(method, args) {
+  // ADR 0044 decision 6: the run manager's view of this Core. The same connection and owner, but every call carries
+  // the frozen caller with `channel: 'harness'`, so the core records its memory rows as `harness`. Only code that holds
+  // this Core object can ask for it: a tool call reaches `core[group][name]` and nothing else, and the caller is
+  // set here from the process's own identity, replacing any `caller` the arguments carried.
+  harness() {
+    if (this._harness) return this._harness;
+    if (this.caller.role === 'worker') throw err('E_ROLE', 'a worker has no harness channel', { role: this.caller.role });
+    const caller = Object.freeze({ ...this.caller, channel: 'harness' });
+    const view = { caller, get owner() { return self.owner; } };
+    const self = this;
+    for (const m of METHOD_NAMES) {
+      const [group, name] = m.split('.');
+      if (!view[group]) view[group] = {};
+      view[group][name] = args => self._invoke(m, args, caller);
+    }
+    for (const k of Object.getOwnPropertyNames(Core.prototype)) {
+      if (k !== 'constructor' && !k.startsWith('_') && k !== 'harness' && k !== 'handle' && typeof self[k] === 'function') view[k] = self[k].bind(self);
+    }
+    view.handle = (method, args) => self._invoke(method, args, caller);
+    return (this._harness = Object.freeze(view));
+  }
+
+  async _invoke(method, args, caller = this.caller) {
     const spec = METHODS[method];
     if (!spec) throw err('E_ARGS', `${method} is not a Core API method`, { method });
-    const params = { ...(args || {}), caller: this.caller };
+    const params = { ...(args || {}), caller };
     // memory.search's default mode (memory-search.cjs defaultMode), made explicit here so routing sees it.
     if (method === 'memory.search' && params.mode === undefined) params.mode = typeof params.query === 'string' ? 'hybrid' : 'semantic';
     if (this.owner && !this.owner.stopped) return this._local(method, params);

@@ -93,7 +93,7 @@ test('a run-end that cannot read the run\'s rows leaves run:gave-up on the ledge
 
 test('memoryRunEnd with every job lever off loads nothing and calls nothing', async () => {
   const jobs = { runEndJobs: () => { throw new Error('must not be called'); } };
-  const spy = new Proxy({}, { get: () => { throw new Error('the core must not be touched'); } });
+  const spy = new Proxy({}, { get: (_, k) => { if (k === 'harness') return undefined; throw new Error('the core must not be touched'); } });
   assert.strictEqual(await memoryRunEnd({ core: spy, runId: RUN, levers: { max_fix_rounds: 2 }, jobs }), null, 'no memory block at all');
   assert.strictEqual(await memoryRunEnd({ core: spy, runId: RUN, levers: { memory_levers: { ...DEFAULTS, capture: true, first_message_index: true } }, jobs }), null, 'levers on that feed no run-end job');
   let got = null;
@@ -101,4 +101,8 @@ test('memoryRunEnd with every job lever off loads nothing and calls nothing', as
   assert.deepStrictEqual(r, { outcome: 'done' });
   assert.strictEqual(got.runId, RUN);
   assert.strictEqual(got.levers.wrapup, true);
+  // ADR 0044 decision 6: the jobs get the core's harness view, so the rows they write are the harness's
+  const view = { channel: 'harness-view' };
+  await memoryRunEnd({ core: { harness: () => view }, runId: RUN, levers: { memory_levers: { ...DEFAULTS, wrapup: true } }, jobs: { runEndJobs: async (a) => { got = a; return { outcome: 'done' }; } } });
+  assert.strictEqual(got.core, view);
 });

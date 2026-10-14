@@ -41,7 +41,7 @@ async function withEmbedding(E, args, field, textField, caller) {
 const TITLE_MAX = 160;
 const BODY_MAX = 8192;
 // Fields only the core sets (ADR 0040 §2): the run comes from argv, status from memory.setStatus.
-const CORE_SET = ['run_id', 'status', 'status_receipt', 'status_by', 'status_at', 'redactions', 'text_hash', 'last_writer_id'];
+const CORE_SET = ['run_id', 'status', 'status_receipt', 'status_by', 'status_at', 'redactions', 'text_hash', 'last_writer_id', 'written_by'];
 // Harness provenance: the orchestrator and the operator may pass these; from a worker they are refused (invariant 3).
 // `worker_id` names the worker a harness-written row is about (its observation, summary or turn row): the run
 // manager writes those rows as the orchestrator, and without it every one of them read as the orchestrator's.
@@ -161,7 +161,7 @@ async function store(E, caller, args) {
   const { embed, task_id, turn, source, worker_id: harnessWorker, title: _title, body: _body, text: _text, ...rest } = args;
   const worker = caller.role === 'worker';
   const base = {
-    ...rest, tags: s.tags, provenance: s.provenance, namespace, worker_id: (!worker && harnessWorker) || E.writtenBy(caller), text: s.text, title, body: s.body, redactions: s.redactions,
+    ...rest, tags: s.tags, provenance: s.provenance, namespace, worker_id: (!worker && harnessWorker) || E.writtenBy(caller), text: s.text, title, body: s.body, redactions: s.redactions, written_by: E.memoryWriter(caller),
     run_id: caller.run_id, task_id: worker ? derivedTask(E, caller) : (task_id ?? null), turn: worker ? null : (turn ?? null),
     source: source || (caller.role === 'operator' ? 'operator' : 'model'),
   };

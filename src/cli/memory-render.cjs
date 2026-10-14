@@ -214,7 +214,7 @@ function renderShowText(r) {
     out.push(`id: ${row.id}`, `title: ${dash(row.title)}`,
       `status: ${dash(row.status || 'unverified')}${row.status_receipt ? ` (receipt ${row.status_receipt})` : ''}`,
       `namespace: ${dash(row.namespace)}  type: ${dash(row.type)}  worker_id: ${dash(row.worker_id)}  task_id: ${dash(row.task_id)}  run_id: ${dash(row.run_id)}`,
-      `source: ${dash(row.source)}  created_at: ${dash(row.created_at)}`, '', block(row.text), '');
+      `source: ${dash(row.source)}  written_by: ${row.written_by == null ? 'unknown' : row.written_by}  created_at: ${dash(row.created_at)}`, '', block(row.text), '');
   }
   if ((r.missing || []).length) out.push(`missing: ${r.missing.map(dash).join(', ')}`);
   return `${out.join('\n')}\n`;
