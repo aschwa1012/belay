@@ -61,7 +61,7 @@ function diffOrchestrationTable(store, table, sinceMs, runId) {
 
 // The exact columns a diff row returns — no embedding, text cut at 200 characters at the SQL layer,
 // matching store.list()'s own SELECT (store.cjs) rather than loading the vector and discarding it.
-const MEMORY_COLUMNS = `id, namespace, worker_id, last_writer_id, type, substr(text, 1, 200) AS text,
+const MEMORY_COLUMNS = `id, namespace, worker_id, last_writer_id, written_by, type, substr(text, 1, 200) AS text,
   tags, provenance, supersedes, created_at, updated_at, ttl_at`;
 
 function memRowOut(r) { return { ...r, tags: r.tags ? JSON.parse(r.tags) : null }; }

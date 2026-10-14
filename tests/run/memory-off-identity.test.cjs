@@ -63,7 +63,9 @@ async function runScript(core, { handLevers = true, readDelayMs = null } = {}) {
     const stdin = fs.readFileSync(recv, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l).text);
     return {
       stdin,
-      memoryCalls: core.calls.filter((c) => /^memory\./.test(c.method)).map((c) => ({ method: c.method, args: { ...c.args, provenance: String(c.args.provenance).replace(/[0-9a-f-]{36}/, '<id>') } })),
+      // every argument but `written_by`: the core sets that column from the channel (ADR 0044 decision 6), so the
+      // levers cannot change it and it is not compared
+      memoryCalls: core.calls.filter((c) => /^memory\./.test(c.method)).map((c) => { const { written_by: _w, ...args } = c.args; return { method: c.method, args: { ...args, provenance: String(args.provenance).replace(/[0-9a-f-]{36}/, '<id>') } }; }),
       allMethods: [...new Set(core.calls.map((c) => c.method))].sort(),
       states: core.rowsFor('w1').filter((r, i, rows) => !isPidRestatement(r, rows[i - 1])).map((r) => r.state),
       restated: core.rowsFor('w1').some((r, i, rows) => isPidRestatement(r, rows[i - 1])),

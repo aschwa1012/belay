@@ -69,7 +69,7 @@ const parseJson = s => { if (s == null) return null; try { return JSON.parse(s);
 function fullRow(r) {
   const { embedding, ...rest } = r;
   return {
-    ...rest, tags: parseJson(rest.tags), has_embedding: !!embedding,
+    ...rest, written_by: r.written_by ?? null, tags: parseJson(rest.tags), has_embedding: !!embedding,
     status: r.status || 'unverified', title: r.title || deriveTitle(r.text),
     body: parseJson(r.body), redactions: parseJson(r.redactions),
   };
@@ -359,7 +359,7 @@ async function list(E, caller, args) {
   const dir = order === 'newest' ? 'DESC' : 'ASC';
   const db = E.store.db;
   const total = db.prepare(`SELECT COUNT(*) AS n FROM memory_entries e WHERE ${where}`).get(...params).n;
-  const found = db.prepare(`SELECT e.id, e.namespace, e.worker_id, e.last_writer_id, e.type, substr(e.text, 1, 200) AS text,
+  const found = db.prepare(`SELECT e.id, e.namespace, e.worker_id, e.last_writer_id, e.written_by, e.type, substr(e.text, 1, 200) AS text,
     substr(e.text, 1, 2000) AS title_src, e.tags, e.provenance, e.supersedes, e.created_at, e.updated_at, e.ttl_at, e.title, e.status,
     e.status_receipt, e.status_by, e.status_at, e.run_id, e.task_id, e.turn, e.source, e.redactions
     FROM memory_entries e WHERE ${where} ORDER BY e.created_at ${dir}, e.id ${dir} LIMIT ? OFFSET ?`).all(...params, limit, offset);

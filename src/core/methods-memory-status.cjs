@@ -98,7 +98,7 @@ async function copyVerified(E, caller, row, namespace, receipt, at) {
     const vec = keepVec && row.embedding && row.dim ? Array.from(new Float32Array(row.embedding.buffer.slice(row.embedding.byteOffset, row.embedding.byteOffset + row.dim * 4))) : null;
     const was = parse(row.redactions);
     const copy = E.store.store({
-      namespace, worker_id: E.writtenBy(caller), type: row.type, text: s.text, title: s.title, body: s.body,
+      namespace, worker_id: E.writtenBy(caller), written_by: E.memoryWriter(caller), type: row.type, text: s.text, title: s.title, body: s.body,
       redactions: s.redactions || (was && !was.disabled ? was : null), tags: s.tags, provenance: `${COPY_PREFIX}${row.id}`,
       run_id: row.run_id, task_id: row.task_id, turn: row.turn, source: row.source,
       ...(vec ? { embedding: vec, embedding_model: row.embedding_model, embedding_revision: row.embedding_revision, dim: row.dim } : {}),

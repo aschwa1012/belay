@@ -127,6 +127,12 @@ function validateCaller(caller) {
   if (caller.role === 'worker' && (typeof caller.worker_id !== 'string' || !caller.worker_id)) {
     throw err('E_ARGS', 'a worker-role caller must carry the worker_id it was launched with, because a worker cannot name itself');
   }
+  if (caller.channel !== undefined && caller.channel !== 'tool' && caller.channel !== 'harness') {
+    throw err('E_ARGS', `caller.channel must be tool or harness, and this call carried ${JSON.stringify(caller.channel)}`);
+  }
+  if (caller.channel === 'harness' && caller.role !== 'orchestrator' && caller.role !== 'operator') {
+    throw err('E_ARGS', 'the harness channel belongs to belay run: the run manager (the orchestrator adapter) and the run-end jobs (the run process)', { role: caller.role });
+  }
   return caller;
 }
 
@@ -193,6 +199,13 @@ class Engine {
   // The identity every written row carries: a worker writes under its worker id, anyone else under its
   // role. api.md §3, memory defaults.
   writtenBy(caller) { return caller.role === 'worker' ? caller.worker_id : caller.role; }
+
+  // ADR 0044 decision 6: the writer a memory row records. The channel is set by the process that built the caller,
+  // never by an argument: the run manager's frozen harness caller is `harness`; a tool call is the model's role.
+  memoryWriter(caller) {
+    if (caller.channel === 'harness') return 'harness';
+    return caller.role === 'worker' ? `worker:${caller.worker_id}` : caller.role;
+  }
 
   noteWrite() { if (this.owner && this.owner.noteWrite) this.owner.noteWrite(); }
 

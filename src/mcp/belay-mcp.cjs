@@ -175,7 +175,9 @@ function openRunManagerOnce() {
     runPromise = openCoreOnce()
       .then((c) => attachOnce(c).then(() => c))
       .then((c) => runModule().createRunManager({
-        core: c,
+        // ADR 0044 decision 6: the run manager writes memory on the harness channel, the tool router on the tool one.
+        // A fixture core has no channel to give.
+        core: typeof c.harness === 'function' ? c.harness() : c,
         dataDir: opts.dataDir,
         runId: opts.runId,
         // api.md §1: paths = { mcpBinary? }, defaulting to src/mcp/belay-mcp.cjs resolved from src/run.
