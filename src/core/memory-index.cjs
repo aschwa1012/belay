@@ -3,7 +3,7 @@
 // message carries. A read: every statement is a SELECT, nothing is stamped, and nothing here requires an
 // embedder, so any read path may load it.
 //
-// Only lasting rows count (a summary, a decision, a verified row, or a worker's row promoted to a project namespace; never refuted, superseded or expired),
+// Only lasting rows count (a summary, a decision, a verified row, or a worker's row promoted to a project namespace, which a successful promote event shows, not a direct write; never refuted, superseded or expired),
 // ranked mechanically in three tiers: rows about files under the task's files_owned, rows written for the
 // task, then the rest; within a tier by relevance to the task text (memory-relevance.cjs), then recency. The text carries no clock, no age and no relative time, so
 // identical inputs render identical bytes (ADR 0042 decision 5). The clock is read only to drop expired rows.
@@ -104,7 +104,8 @@ function candidates(E, namespaces) {
     e.task_id, e.created_at, e.status_receipt, e.written_by FROM memory_entries e
     WHERE e.namespace IN (${marks(namespaces)})
       AND (e.type IN (${marks(LASTING_TYPES)}) OR e.status = 'verified'
-        OR (substr(e.namespace, 1, 8) = 'project/' AND substr(e.written_by, 1, 7) = 'worker:'))
+        OR (substr(e.namespace, 1, 8) = 'project/' AND substr(e.written_by, 1, 7) = 'worker:'
+          AND e.id IN (SELECT substr(key, 9) FROM memory_event WHERE kind = 'project_write' AND ok = 1 AND key >= 'promote:' AND key < 'promote;')))
       AND COALESCE(e.status, 'unverified') <> 'refuted'
       AND (e.ttl_at IS NULL OR e.ttl_at >= ?)
       AND NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND +s.namespace = e.namespace)

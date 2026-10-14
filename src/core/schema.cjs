@@ -108,6 +108,8 @@ const MIGRATIONS = [
   // ADR 0044 decision 6: who wrote the row (`worker:<id>`, `orchestrator`, `harness` or `operator`), set by the core on
   // insert and never changed. Null on a row written before the column, and read as unknown; nothing guesses it.
   'ALTER TABLE memory_entries ADD COLUMN written_by TEXT',
+  // ADR 0044 decision 3: the first-message index looks up promoted rows by their `promote:<id>` key.
+  "CREATE INDEX IF NOT EXISTS ix_memory_event_promote ON memory_event(key) WHERE kind = 'project_write' AND ok = 1",
   'ALTER TABLE task ADD COLUMN depends_on TEXT',
   'ALTER TABLE worker ADD COLUMN mid_turn INTEGER',
   'ALTER TABLE worker ADD COLUMN death_established_by TEXT',
