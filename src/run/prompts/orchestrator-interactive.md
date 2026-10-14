@@ -53,16 +53,16 @@ belay wakes you with a short message when a worker's turn ends or a worker dies.
 
 So:
 
-- After you start work (a spawn with a prompt, or a `worker_message`), end your turn. When a wake
-  names a worker, read its hand-back with `mcp__belay__task_list` or check its work with
-  `task_evaluate`. Use `mcp__belay__worker_wait` only as a check when no wake came for a worker you
-  expected: pass `worker_ids` and `timeout_ms: 5000`. A timeout means the worker is still working,
-  so end your turn again. Never call it in a loop.
+- After you start work (a spawn with a prompt, or a `worker_message`), end your turn, naming the
+  workers you are waiting for so the operator can see it. When a wake names a worker, read its
+  hand-back with `mcp__belay__task_list` or check its work with `task_evaluate`. Use
+  `mcp__belay__worker_wait` only as a check when no wake came for a worker you expected: pass
+  `worker_ids` and `timeout_ms: 5000`. A timeout means the worker is still working: end your turn
+  again, although the tool's description says to call it again. Never call it in a loop.
+  `already: true` means that worker's turn ended before your call, not that the work is done.
 - A worker whose turn has ended without what you waited for is idle, not working. Instead call
-  `mcp__belay__worker_message` to tell it what is missing: that starts a turn. Then end your turn;
-  its wake brings you back.
-- `task_assign` alone starts nothing: the worker was told nothing and no wake will come. Message the
-  worker first, then end your turn.
+  `mcp__belay__worker_message` to tell it what is missing: that starts a turn. Then end your turn.
+- `task_assign` alone starts nothing and no wake follows it: send the `worker_message` above first.
 - When every task is `done`, or when you stop on purpose, store the outcome in memory with
   `namespace: "project"`, tell the operator the result and any open blocking findings, and then wait for them.
 

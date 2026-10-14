@@ -25,6 +25,9 @@ const REPLACED = [
   'is not mid-turn, and the run closes.',
   'To stop on purpose, store the outcome in memory, say why, then end a turn with no worker mid-turn.',
   'and when you end the run (the outcome',
+  // amendment 6: the headless waiting rules
+  'a timeout is a result: call it again',
+  'Never end a turn just after `task_assign`',
 ];
 // The same sentences as the default fix_cutoff substitution carries them (run-levers.cjs cutoffRule).
 const REPLACED_IN_RULE = [
@@ -55,6 +58,19 @@ test('interactive prompt: says what the mode is', () => {
   assert.ok(!/Re-call it/.test(TWIN), 'no instruction to re-call worker_wait');
   assert.ok(!/wait on its id/.test(TWIN), 'no "wait on its id"');
   assert.match(TWIN, /`timeout_ms: 5000`[^]*Never call it in a loop\./);
+  const iWait = T.indexOf('- After you start work (a spawn with a prompt, or a `worker_message`), end your turn, naming the');
+  assert.deepStrictEqual(T.slice(iWait, iWait + 10), [
+    '- After you start work (a spawn with a prompt, or a `worker_message`), end your turn, naming the',
+    '  workers you are waiting for so the operator can see it. When a wake names a worker, read its',
+    '  hand-back with `mcp__belay__task_list` or check its work with `task_evaluate`. Use',
+    '  `mcp__belay__worker_wait` only as a check when no wake came for a worker you expected: pass',
+    '  `worker_ids` and `timeout_ms: 5000`. A timeout means the worker is still working: end your turn',
+    '  again, although the tool\'s description says to call it again. Never call it in a loop.',
+    '  `already: true` means that worker\'s turn ended before your call, not that the work is done.',
+    '- A worker whose turn has ended without what you waited for is idle, not working. Instead call',
+    '  `mcp__belay__worker_message` to tell it what is missing: that starts a turn. Then end your turn.',
+    '- `task_assign` alone starts nothing and no wake follows it: send the `worker_message` above first.',
+  ], 'the waiting bullets, pinned line for line');
   assert.match(TWIN, /`namespace: "project"`, tell the operator the result and any open blocking findings, and then wait for them/);
   // the no-wakes wording is one self-contained paragraph a later amendment can swap
   const para = TWIN.split(/\n\n/).find((p) => p.startsWith('belay wakes you'));
