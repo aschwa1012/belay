@@ -100,3 +100,19 @@ test('the promote lookup stays cheap on a large project', async () => {
   console.log(`index over 2000 project rows: ${ms.toFixed(1)} ms`);
   assert.ok(ms < 2000);
 });
+
+test('the promote lookup uses its index and ignores unrelated events', async () => {
+  const plan = store.db.prepare("EXPLAIN QUERY PLAN SELECT e.id FROM memory_entries e WHERE e.id IN (SELECT substr(key, 9) FROM memory_event WHERE kind = 'project_write' AND ok = 1 AND key >= 'promote:' AND key < 'promote;')").all().map((r) => r.detail).join('\n');
+  assert.match(plan, /ix_memory_event_promote/);
+  const proj = `project/${fresh('noise')}`;
+  for (let i = 0; i < 200; i++) await promote(await row(proj, `worker fact ${i}`, { written_by: 'worker:w1' }));
+  const ins = store.db.prepare("INSERT INTO memory_event (id, kind, key, ok, written_at, written_by) VALUES (?, 'index_injected', ?, 1, 1, 'harness')");
+  store.db.exec('BEGIN');
+  for (let i = 0; i < 50000; i++) ins.run(`me-noise-${i}`, `k${i}`);
+  store.db.exec('COMMIT');
+  const t0 = process.hrtime.bigint();
+  const r = await call('memory.index', { namespaces: [proj] });
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  console.log(`index with 50000 unrelated events: ${ms.toFixed(1)} ms`);
+  assert.ok(r.row_ids.length > 0 && ms < 2000);
+});
