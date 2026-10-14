@@ -60,7 +60,11 @@ function eventOut(r) {
 // memory.recordEvent — one receipt for one harness memory action. A failed action is recorded with
 // ok 0 and the code that failed it, never skipped (ADR 0041 decision 3). A wrap-up is once per
 // (run, key): the store's partial unique index decides, so the loser gets E_EXISTS naming the winner.
-async function recordEvent(E, caller, args) {
+async function recordEvent(E, caller, args) { return recordEventSync(E, caller, args); }
+
+// The same write with no await in it, so a caller already inside a store transaction (memory.promote) records its
+// event in that transaction: the move and its receipt commit together or not at all.
+function recordEventSync(E, caller, args) {
   if (!EVENT_KINDS.includes(args.kind)) {
     throw err('E_ARGS', `memory.recordEvent kind must be one of ${EVENT_KINDS.join(', ')}, and this call carried ${JSON.stringify(args.kind)}`);
   }
@@ -204,4 +208,4 @@ async function usageList(E, caller, args) {
   return { groups: [...by].map(([k, rs]) => summarise(k, rs)), totals };
 }
 
-module.exports = { recordEvent, events, usageRecord, usageList, EVENT_KINDS };
+module.exports = { recordEvent, recordEventSync, events, usageRecord, usageList, EVENT_KINDS };

@@ -119,7 +119,7 @@ test('rows that do not qualify do not move, and each is named with its reason', 
   const harnessRow = seed({ row: { written_by: 'harness', source: 'harness' } });
   const verified = seed(); store.setStatus(verified.id, { status: 'verified', receipt: 'test:x', by: 'orchestrator', at: Date.now() });
   const refuted = seed(); store.setStatus(refuted.id, { status: 'refuted', receipt: 'test:x', by: 'orchestrator', at: Date.now() });
-  const old = seed(); store.store({ namespace: `run/${RUN}`, worker_id: 'w1', written_by: 'worker:w1', task_id: 't1', run_id: RUN, text: 'the replacement', supersedes: old.id });
+  const old = seed({ worker: 'w3' }); store.store({ namespace: `run/${RUN}`, worker_id: 'w3', written_by: 'worker:w3', task_id: 't1', run_id: RUN, text: 'the replacement by another worker', supersedes: old.id });
   const expired = seed({ row: { ttl_seconds: -5 } });
   const wrongTask = seed({ row: { task_id: 't9' } });
   const elsewhere = seed({ row: { namespace: 'run/some-other-run' } });
@@ -132,7 +132,7 @@ test('rows that do not qualify do not move, and each is named with its reason', 
   assert.match(reasons[harnessRow.id], /not written by this worker/);
   assert.match(reasons[verified.id], /verified/);
   assert.match(reasons[refuted.id], /refuted/);
-  assert.match(reasons[old.id], /superseded/);
+  assert.match(reasons[old.id], /not written by this worker/);
   assert.match(reasons[expired.id], /expired/);
   assert.match(reasons[wrongTask.id], /not carrying this task/);
   assert.match(reasons[elsewhere.id], /namespace/);
@@ -140,6 +140,49 @@ test('rows that do not qualify do not move, and each is named with its reason', 
   assert.match(reasons['no-such-row'], /no such row/);
   for (const r of all.filter((x) => x !== elsewhere)) assert.strictEqual(dbRow(r.id).namespace, `run/${RUN}`);
   assert.strictEqual(dbRow(elsewhere.id).namespace, 'run/some-other-run');
+});
+
+test('a supersede chain moves whole: the stale row does not come back in the run', async () => {
+  const a = seed({ row: { text: 'chain A the ferry leaves at nine' } });
+  const b = seed({ row: { text: 'chain B the ferry leaves at ten', supersedes: a.id } });
+  const find = async (ns, q) => (await call('memory.search', orch, { query: q, mode: 'keyword', namespaces: [ns], include_superseded: true })).results.map((x) => x.id);
+  const out = await promote([b.id]); // only the newest is named
+  assert.deepStrictEqual(out.moved.map((m) => m.id).sort(), [a.id, b.id].sort());
+  assert.deepStrictEqual(await find(`run/${RUN}`, 'the ferry leaves'), [], 'neither is left behind in the run');
+  assert.deepStrictEqual((await find('project/acme', 'the ferry leaves')).sort(), [a.id, b.id].sort());
+  const plain = (await call('memory.search', orch, { query: 'the ferry leaves', mode: 'keyword', namespaces: ['project/acme'] })).results.map((x) => x.id);
+  assert.deepStrictEqual(plain, [b.id], 'A is still superseded by B in the project');
+});
+
+test('a chain with a member that cannot move moves none of it, and says why', async () => {
+  const a = seed({ row: { text: 'chain2 A first claim' } });
+  store.setStatus(a.id, { status: 'verified', receipt: 'test:x', by: 'orchestrator', at: Date.now() });
+  const b = seed({ row: { text: 'chain2 B second claim', supersedes: a.id } });
+  const out = await promote([b.id]);
+  assert.deepStrictEqual(out.moved, []);
+  assert.match(out.skipped.find((s) => s.id === b.id).reason, /supersede chain stays whole: .* cannot move .the row is verified./);
+  assert.strictEqual(dbRow(b.id).namespace, `run/${RUN}`);
+  // a dedup collision on one member keeps the chain whole too
+  const c = seed({ row: { text: 'chain3 A shared text with the project' } });
+  const d = seed({ row: { text: 'chain3 B newer', supersedes: c.id } });
+  await call('memory.store', orch, { namespace: 'project', text: 'chain3 A shared text with the project', embed: false });
+  const out2 = await promote([d.id]);
+  assert.deepStrictEqual(out2.moved, []);
+  assert.strictEqual(out2.existing.length, 1);
+  assert.strictEqual(dbRow(d.id).namespace, `run/${RUN}`);
+});
+
+test('the move and its event are one transaction: a failing event rolls the move back', async () => {
+  const r = seed();
+  store.db.exec("CREATE TRIGGER fail_event BEFORE INSERT ON memory_event WHEN NEW.key = 'promote:" + r.id + "' BEGIN SELECT RAISE(ABORT, 'event refused'); END");
+  try {
+    await assert.rejects(() => promote([r.id]), /event refused/);
+    assert.strictEqual(dbRow(r.id).namespace, `run/${RUN}`, 'no move without its receipt');
+  } finally { store.db.exec('DROP TRIGGER fail_event'); }
+});
+
+test('a caller with no run is refused', async () => {
+  await assert.rejects(() => call('memory.promote', callerFor('operator'), { ids: ['x'], to: 'project', task_id: 't1', worker_id: 'w1' }), { code: 'E_ARGS' });
 });
 
 test('a worker cannot call it', async () => {
