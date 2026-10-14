@@ -14,7 +14,7 @@ const failing = (code, message) => Object.assign(new Error(message || code), { c
 
 // A spy core. `rows` are the memory rows by id; `tasks` the task views; `workers` the worker rows. A hook in
 // `fail` makes a method throw; a hook in `hang` never answers.
-function spyCore({ tasks = {}, workers = [], observations = [], fail = {}, hang = {}, existingSummary = false } = {}) {
+function spyCore({ tasks = {}, workers = [], observations = [], checkpoints = [], fail = {}, hang = {}, existingSummary = false } = {}) {
   const calls = [];
   const events = [];
   const rows = new Map();
@@ -34,6 +34,7 @@ function spyCore({ tasks = {}, workers = [], observations = [], fail = {}, hang 
       get: async (a) => { rec('task.get', a); await gate('task.get'); const t = tasks[a.task_id]; if (!t) throw failing('E_NOT_FOUND'); return t; },
       list: async (a) => { rec('task.list', a); await gate('task.list'); return { tasks: Object.values(tasks) }; },
     },
+    store: { diff: async (a) => { rec('store.diff', a); await gate('store.diff'); return { tables: { checkpoint: { added: checkpoints, updated: [] } } }; } },
     worker: { list: async (a) => { rec('worker.list', a); await gate('worker.list'); return { workers }; } },
     memory: {
       store: async (a) => {
@@ -184,14 +185,14 @@ test('summary: written once per (task, worker) under concurrent turns, labelled,
   assert.strictEqual(stores.length, 1);
   const s = stores[0].args;
   assert.strictEqual(s.source, 'summariser');
-  assert.strictEqual(s.title, 'summary: task t1 (mechanical)');
+  assert.strictEqual(s.title, 'worker-stated: built it');
   assert.strictEqual(s.embed, false);
   assert.strictEqual(s.task_id, 't1');
   assert.strictEqual(s.worker_id, 'w1', 'the summary names the worker it is about');
   assert.ok(s.text.startsWith(MJ.SUMMARY_LABEL));
   assert.match(s.text, /learned: worker-stated: built it/);
   assert.match(s.text, /modified b\.cjs/);
-  assert.strictEqual(s.body.v, 1);
+  assert.strictEqual(s.body.v, 2);
   assert.strictEqual(s.body.generator.kind, 'mechanical');
   const evs = core.events.filter((e) => e.kind === 'summary');
   assert.strictEqual(evs.length, 1);

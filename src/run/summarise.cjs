@@ -6,12 +6,18 @@
 // without deciding what happens to its empty, malformed, refused and oversize answers.
 
 const { CoreError } = require('../core/errors.cjs');
+const { redact } = require('../core/redact.cjs');
 
 const FIELD_KEYS = ['asked', 'looked_at', 'learned', 'done', 'next', 'notes'];
+// `final` (body v2) is optional so a v1 shape still classifies; when present it must be a string.
+const OPTIONAL_STRING_KEYS = ['final'];
 const NOT_STATED = '(not stated)';
 const ASKED_MAX = 400;
 const MAX_BYTES = 8192;
-const GENERATOR_VERSION = 1;
+const GENERATOR_VERSION = 2;
+const TITLE_MAX = 160; // the store's title bound (methods-memory.cjs)
+const FINAL_MAX = 1200; // the whole `final` field, label included
+const WORKER_LABEL = 'worker-stated: ';
 // What a long task may put in a summary (ADR 0044 decision 4.1): the last commands and the first files, each
 // with a count of the rest. The fields are fitted under BODY_ROOM so the stored body (fields plus the row's
 // version and generator keys) stays under MAX_BYTES.
@@ -69,7 +75,8 @@ function classify(output) {
   if (!Array.isArray(f.looked_at)) return 'malformed';
   if (f.done === null || typeof f.done !== 'object') return 'malformed';
   if (f.notes === null || typeof f.notes !== 'object') return 'malformed';
-  if (FIELD_KEYS.every((k) => isBlank(f[k]))) return 'empty';
+  for (const k of OPTIONAL_STRING_KEYS) if (k in f && typeof f[k] !== 'string') return 'malformed';
+  if ([...FIELD_KEYS, ...OPTIONAL_STRING_KEYS].every((k) => isBlank(f[k]))) return 'empty';
   if (Buffer.byteLength(JSON.stringify(f), 'utf8') > MAX_BYTES) return 'over_budget';
   return 'ok';
 }
@@ -91,6 +98,24 @@ function statedText(v) {
 // (memory-jobs.cjs render), and a newline inside a worker-stated field could start a line that passes for a row,
 // a status or the harness's own verdict.
 const flat = (v) => String(v).replace(/\s+/g, ' ').trim();
+
+// A title is one line the index renders after `- <id> [type/status] `: control characters become spaces, whitespace
+// collapses, the text is redacted, and only then is it cut, on a character edge, to the store's bound (the store
+// redacts again and refuses a title over the bound, so the cut must follow the redaction).
+function titleOf(taskId, learned) {
+  const text = typeof learned === 'string' ? learned.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim() : '';
+  if (!text) return `summary: task ${taskId} (no findings stated)`;
+  return cutBytes(redact(WORKER_LABEL + text).text.replace(/\s+/g, ' ').trim(), TITLE_MAX);
+}
+// The last turn's final text: the newest observation that states one (observe.cjs keeps it as `narrative`).
+function finalOf(bodies) {
+  for (let i = bodies.length - 1; i >= 0; i -= 1) {
+    const n = bodies[i] && bodies[i].narrative;
+    const t = typeof n === 'string' ? flat(n) : '';
+    if (t) return WORKER_LABEL + capText(t, FINAL_MAX - WORKER_LABEL.length);
+  }
+  return '';
+}
 
 const sizeOf = (f) => Buffer.byteLength(JSON.stringify(f), 'utf8');
 // Cuts a string to `max` bytes on a character boundary and says how much was cut; a string within `max` is returned as is.
@@ -129,7 +154,8 @@ function mechanical(input) {
 
   const spec = typeof task.spec === 'string' ? task.spec : (typeof task.title === 'string' ? task.title : '');
   const learned = capText(flat(statedText(handoff.findings) || statedText(handoff.summary)), LEARNED_MAX);
-  const nexts = [...checkpoints.map((c) => c.next_step), handoff.next_step].map((v) => capText(flat(statedText(v)), NEXT_MAX)).filter(Boolean);
+  // A worker checkpoint states its next step under `stated`; a harness checkpoint states none.
+  const nexts = [...checkpoints.map((c) => (c.stated && typeof c.stated === 'object' ? c.stated.next_step : c.next_step)), handoff.next_step].map((v) => capText(flat(statedText(v)), NEXT_MAX)).filter(Boolean);
   const allCommands = bodies.flatMap((b) => asArray(b.commands)).map((c) => ({
     command: c.command, exit_code: c.exit_code === undefined ? null : c.exit_code,
   }));
@@ -152,6 +178,7 @@ function mechanical(input) {
       files_modified: modified.kept,
       commands: [], task_state: typeof task.state === 'string' ? task.state : null,
     },
+    final: finalOf(bodies),
     next: nexts.length ? `worker-stated: ${nexts[nexts.length - 1]}` : '',
     notes: { errors, verdict: verdict || null, worker_verdict: workerVerdict ? `worker-stated: ${workerVerdict}` : null },
   };
@@ -172,9 +199,12 @@ async function summarise(input, opts) {
     throw coded('E_SUMMARISER_ABSENT', 'the model summariser is not built; a later decision record must add it as a belay-spawned, budgeted process (ADR 0041 section 4)');
   }
   if (kind !== 'mechanical') throw coded('E_ARGS', `unknown summariser kind '${kind}'; expected 'mechanical' or 'model'`);
-  const result = { fields: mechanical(input), generator: { kind: 'mechanical', version: GENERATOR_VERSION, model: null } };
+  const fields = mechanical(input);
+  const stated = fields.learned.startsWith(WORKER_LABEL) ? fields.learned.slice(WORKER_LABEL.length) : '';
+  const taskId = input && input.task && input.task.id;
+  const result = { fields, title: titleOf(taskId, stated), generator: { kind: 'mechanical', version: GENERATOR_VERSION, model: null } };
   result.output_class = classify(result);
   return result;
 }
 
-module.exports = { summarise, classify, POLICY, FIELD_KEYS, MAX_BYTES };
+module.exports = { summarise, classify, titleOf, POLICY, FIELD_KEYS, MAX_BYTES };
