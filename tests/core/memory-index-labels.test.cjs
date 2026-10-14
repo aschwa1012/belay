@@ -23,6 +23,7 @@ async function row(ns, text, cols = {}, extra = {}) {
   if (Object.keys(cols).length) setCols(r.id, cols);
   return r.id;
 }
+const promote = (id, ok = 1) => call('memory.recordEvent', { kind: 'project_write', key: `promote:${id}`, row_ids: [id], ok: !!ok, ...(ok ? {} : { code: 'E_X' }) });
 const lineFor = (text, id) => text.split('\n').find((l) => l.startsWith(`- ${id} `));
 
 before(() => {
@@ -37,12 +38,19 @@ test('a promoted worker row in a project namespace is listed; the same row elsew
   const proj = `project/${fresh('p')}`;
   const run = fresh('run');
   const promoted = await row(proj, 'promoted worker fact', { written_by: 'worker:w1' });
+  await promote(promoted);
+  const direct = await row(proj, 'direct worker write', { written_by: 'worker:w1' });
+  const failed = await row(proj, 'failed promotion', { written_by: 'worker:w1' });
+  await promote(failed, 0);
   const byOrch = await row(proj, 'orchestrator fact', { written_by: 'orchestrator' });
   const oldRow = await row(proj, 'old null-writer fact', { written_by: null });
   const inRun = await row(run, 'worker fact in a run', { written_by: 'worker:w1' });
   const p = await call('memory.index', { namespaces: [proj] });
   assert.deepStrictEqual(p.row_ids, [promoted]);
   assert.ok(!p.row_ids.includes(byOrch) && !p.row_ids.includes(oldRow));
+  assert.ok(!p.row_ids.includes(direct) && !p.row_ids.includes(failed));
+  await promote(direct);
+  assert.ok((await call('memory.index', { namespaces: [proj] })).row_ids.includes(direct));
   assert.strictEqual((await call('memory.index', { namespaces: [run] })).row_ids.length, 0);
   assert.ok(inRun);
 });
@@ -81,4 +89,14 @@ test('identical inputs render identical bytes, and labels stay inside the budget
   assert.ok(a.bytes <= 1200 && Buffer.byteLength(a.text) === a.bytes);
   assert.ok(a.dropped > 0 && !a.over_budget);
   assert.ok(a.text.includes('verified:review'));
+});
+
+test('the promote lookup stays cheap on a large project', async () => {
+  const proj = `project/${fresh('big')}`;
+  for (let i = 0; i < 2000; i++) await promote(await row(proj, `worker fact ${i}`, { written_by: 'worker:w1' }));
+  const t0 = process.hrtime.bigint();
+  await call('memory.index', { namespaces: [proj] });
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  console.log(`index over 2000 project rows: ${ms.toFixed(1)} ms`);
+  assert.ok(ms < 2000);
 });
