@@ -99,7 +99,9 @@ function statedText(v) {
 // Words a worker or a row wrote go into the summary on one line each: the summary text is rendered line by line
 // (memory-jobs.cjs render), and a newline inside a worker-stated field could start a line that passes for a row,
 // a status or the harness's own verdict.
-const flat = (v) => String(v).replace(/\s+/g, ' ').trim();
+// Control characters (C0, DEL, C1 such as U+0085) become spaces here and in titleOf, so no worker-stated field keeps one.
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/g;
+const flat = (v) => String(v).replace(CONTROL, ' ').replace(/\s+/g, ' ').trim();
 
 // A title is one line the index renders after `- <id> [type/status] `: control characters become spaces, whitespace
 // collapses, the text is redacted, and only then is it cut, on a character edge, to the store's bound (the store
@@ -108,7 +110,7 @@ const flat = (v) => String(v).replace(/\s+/g, ' ').trim();
 // ends inside a marker moves back before it, and the cut text is redacted again and re-cut until it is a fixed point.
 function titleOf(taskId, learned) {
   const plain = `summary: task ${taskId} (no findings stated)`;
-  const text = typeof learned === 'string' ? learned.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim() : '';
+  const text = typeof learned === 'string' ? flat(learned) : '';
   if (!text) return plain;
   const tidy = (v) => v.replace(/\s+/g, ' ').trim();
   let t = tidy(redact(WORKER_LABEL + text).text);

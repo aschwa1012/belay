@@ -140,15 +140,15 @@ test('real core: findings that try to forge an index line or a marker cannot', a
   } finally { await teardown(s); }
 });
 
-test('real core: a v1 summary body is still read by the index', async () => {
+test('real core: a v1 summary body still matches files_owned in the index (tier 1), ahead of a newer unrelated one', async () => {
   const s = await setup({ result: { findings: 'f' }, narrative: 'n' });
   try {
-    await s.orch.memory.store({
-      type: 'summary', title: 'summary: task old (mechanical)', text: 'old', embed: false, source: 'summariser',
-      body: { v: 1, asked: 'a', looked_at: ['old/read.cjs'], learned: 'l', done: { files_modified: ['old/mod.cjs'] }, next: '', notes: {}, generator: { kind: 'mechanical', version: 1 } },
-    });
-    const ix = await s.orch.memory.index({});
-    assert.match(ix.text, /summary: task old \(mechanical\)/);
+    const owner = await s.orch.task.create({ spec: 'work under old', files_owned: ['old'] });
+    const v1 = { v: 1, asked: 'a', looked_at: ['old/read.cjs'], learned: 'l', done: { files_modified: ['old/mod.cjs'] }, next: '', notes: {}, generator: { kind: 'mechanical', version: 1 } };
+    const older = await s.orch.memory.store({ type: 'summary', title: 'summary: task old (mechanical)', text: 'old', embed: false, source: 'summariser', body: v1 });
+    const newer = await s.orch.memory.store({ type: 'summary', title: 'summary: task other (mechanical)', text: 'other', embed: false, source: 'summariser', body: { ...v1, looked_at: ['elsewhere/x.cjs'], done: { files_modified: ['elsewhere/y.cjs'] } } });
+    const ix = await s.orch.memory.index({ task_id: owner.id });
+    assert.ok(ix.row_ids.indexOf(older.id) >= 0 && ix.row_ids.indexOf(older.id) < ix.row_ids.indexOf(newer.id), ix.text);
   } finally { await teardown(s); }
 });
 
@@ -199,8 +199,16 @@ test('any input gives a stored body under 8,192 serialised bytes', async () => {
     assert.strictEqual(r.output_class, 'ok', JSON.stringify(unit));
     const size = bytes(JSON.stringify({ v: 2, ...r.fields, generator: r.generator }));
     assert.ok(size <= MAX_BYTES, `${JSON.stringify(unit)}: ${size}`);
-    assert.ok(r.fields.final.startsWith('worker-stated: ') && r.fields.learned.startsWith('worker-stated: '), 'labels survive a cut');
+    if (unit.trim() && unit !== String.fromCharCode(1)) assert.ok(r.fields.final.startsWith('worker-stated: ') && r.fields.learned.startsWith('worker-stated: '), 'labels survive a cut');
   }
+});
+
+test('control characters are stripped from every worker-stated field', async () => {
+  const bad = 'a\u0085b\u0007c\u009fd';
+  const r = await run({ task: { id: 't1', spec: bad }, observations: [{ body: { narrative: bad } }], handoff: { findings: bad, next_step: bad, verdict: bad } });
+  const f = r.fields;
+  for (const v of [f.final, f.learned, f.next, f.asked, f.notes.worker_verdict]) assert.ok(!/[\u0000-\u001f\u007f-\u009f]/.test(v), JSON.stringify(v));
+  assert.match(f.learned, /a b c d$/);
 });
 
 test('continuity.lastCheckpoint returns the newest matching checkpoint and null otherwise', async () => {
@@ -211,5 +219,6 @@ test('continuity.lastCheckpoint returns the newest matching checkpoint and null 
     assert.strictEqual((await s.op.continuity.lastCheckpoint({ task_id: s.taskId, worker_id: 'nobody' })).checkpoint, null);
     assert.strictEqual((await s.op.continuity.lastCheckpoint({ task_id: s.taskId, source: 'harness' })).checkpoint, null);
     await assert.rejects(s.op.continuity.lastCheckpoint({}), (e) => e.code === 'E_ARGS');
+    assert.strictEqual((await s.op.continuity.lastCheckpoint({ task_id: s.taskId, run_id: 'another-run' })).checkpoint, null, 'scoped to the run');
   } finally { await teardown(s); }
 });

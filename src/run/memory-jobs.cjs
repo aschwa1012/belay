@@ -182,8 +182,9 @@ function byTurn(x, y) {
 // The worker's newest checkpoint for the task, so `next` can come from it (ADR 0044 decision 4.4): one indexed row from
 // continuity.lastCheckpoint, not the run's tables. A failed read is not hidden: it reaches the summary's notes by code.
 async function workerCheckpoints(J, taskId, workerId) {
+  if (!J.ctx.runId) return { checkpoints: [], error: null }; // task ids repeat across runs: with no run there is nothing to scope to
   try {
-    const got = await call(J, () => J.core.continuity.lastCheckpoint({ task_id: taskId, worker_id: workerId || undefined, source: 'worker' }));
+    const got = await call(J, () => J.core.continuity.lastCheckpoint({ task_id: taskId, run_id: J.ctx.runId, worker_id: workerId || undefined, source: 'worker' }));
     return { checkpoints: got && got.checkpoint ? [got.checkpoint] : [], error: null };
   } catch (e) { return { checkpoints: [], error: codeOf(e) }; }
 }
