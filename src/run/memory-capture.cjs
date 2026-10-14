@@ -103,7 +103,7 @@ async function storeObservation(w, e, ctx, p) {
     const { buildObservation } = require('./observe.cjs');
     obs = buildObservation({
       turn, worker_id: snap.workerId, task_id: snap.taskId, substrate: snap.substrate,
-      events: p.events, final_text: snap.finalText,
+      events: p.events, final_text: snap.finalText, worktree: w.worktree,
     });
   } catch (err) {
     noteError(w, 'memory.observe', err);

@@ -177,3 +177,24 @@ test('a withheld command (capture without a redactor) never falls back to the ra
   const hand = build([use('Bash', { command: 'curl ' + secret }, 'b1', { command: null }), res('Bash', 'b1', { exit_code: 0, exit_code_source: 'reported' })]);
   assert.ok(!JSON.stringify(hand).includes(secret));
 });
+
+test('paths under the worktree are stored relative, in forward slashes; others stay absolute', () => {
+  const root = 'C:/Work/Temp/wt';
+  const edit = (p, id) => [use('Edit', { file_path: p }, id), res('Edit', id, { files: [p] })];
+  const b = build([
+    ...edit('C:\\Work\\Temp\\wt\\bin\\dispatch.cjs', 'e1'),
+    ...edit('c:/work/temp/wt/src/a.cjs', 'e2'),
+    ...edit('C:\\Work\\Temp\\other\\x.cjs', 'e3'),
+    ...edit('C:/Work/Temp/wt2/y.cjs', 'e4'),
+  ], { worktree: root });
+  assert.deepStrictEqual(b.body.files_modified, ['bin/dispatch.cjs', 'src/a.cjs', 'C:/Work/Temp/other/x.cjs', 'C:/Work/Temp/wt2/y.cjs']);
+  assert.ok(!b.text.includes('\\'), 'the text carries no backslash path');
+  // The same turn under a root that is spelled with backslashes gives the same body.
+  assert.deepStrictEqual(build([...edit('C:/Work/Temp/wt/bin/dispatch.cjs', 'e1')], { worktree: 'C:\\Work\\Temp\\wt\\' }).body.files_modified, ['bin/dispatch.cjs']);
+});
+
+test('a Codex patch path under the worktree is stored relative', () => {
+  const p = '/work/wt/src/b.cjs';
+  const events = [use('file_change', {}, 'c1'), res('file_change', 'c1', { files: [p, '/elsewhere/z.cjs'] })];
+  assert.deepStrictEqual(build(events, { worktree: '/work/wt' }).body.files_modified, ['src/b.cjs', '/elsewhere/z.cjs']);
+});
