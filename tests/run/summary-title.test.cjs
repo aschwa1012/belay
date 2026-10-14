@@ -34,7 +34,7 @@ test('the title is cut at 160 bytes on a character boundary', () => {
 });
 
 test('the title is redacted before it is cut, so no secret survives at the cut', () => {
-  const secret = 'sk' + '-ant-api03-' + 'A1b2C3d4'.repeat(8);
+  const secret = 'sk' + '-ant-api03-' + 'A1b2C3d4'.repeat(8); // built at run time: the source carries no key-shaped literal
   const t = titleOf('t1', 'x'.repeat(120) + ' ' + secret);
   assert.ok(!t.includes('A1b2C3d4'), t);
   assert.ok(bytes(t) <= 160);
