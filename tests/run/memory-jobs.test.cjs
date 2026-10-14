@@ -43,7 +43,7 @@ function spyCore({ tasks = {}, workers = [], observations = [], fail = {}, hang 
         return { id, action: 'inserted', namespace: a.namespace || 'run/r1' };
       },
       get: async (a) => { rec('memory.get', a); await gate('memory.get'); const r = rows.get(a.id); if (!r) throw failing('E_NOT_FOUND'); return r; },
-      list: async (a) => { rec('memory.list', a); await gate('memory.list'); return { rows: observations, total: observations.length }; },
+      list: async (a) => { rec('memory.list', a); await gate('memory.list'); const off = a.offset || 0; return { rows: observations.slice(off, off + (a.limit || 50)).map((o) => { const { body, ...rest } = o; return rest; }), total: observations.length }; },
       get_many: async (a) => { rec('memory.get_many', a); await gate('memory.get_many'); return { rows: a.ids.map((id) => observations.find((o) => o.id === id) || { id, found: false }) }; },
       recordEvent: async (a) => {
         rec('memory.recordEvent', a); await gate('memory.recordEvent');

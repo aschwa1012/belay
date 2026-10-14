@@ -80,3 +80,66 @@ test('500 observations with commands still give a stored summary under 8192 byte
     assert.match(row.text, /ran 500 commands/);
   } finally { await teardown(s); }
 });
+
+const turns = (n) => Array.from({ length: n }, (_, i) => ({ v: 1, turn: i + 1, files_read: [], files_modified: [`f${i}.cjs`], commands: [{ command: `c${i}`, exit_code: 0 }], errors: 0 }));
+const failOnCall = (core, which) => {
+  const real = core.memory.get_many.bind(core.memory);
+  let n = 0;
+  core.memory.get_many = async (a) => { n += 1; if (n >= which) throw Object.assign(new Error('busy'), { code: 'E_BUSY' }); return real(a); };
+};
+
+test('the kept commands are the last 30, in order, and the files the first 50', async () => {
+  const s = await setup(turns(120));
+  try {
+    await MJ.runEndJobs({ core: s.op, runId: RUN, levers: LEVERS });
+    const row = await summaryOf(s);
+    assert.deepStrictEqual(row.body.done.commands.map((c) => c.command), Array.from({ length: 30 }, (_, i) => `c${90 + i}`));
+    assert.strictEqual(row.body.done.commands_omitted, 90);
+    assert.deepStrictEqual(row.body.done.files_modified.slice(0, 3), ['f0.cjs', 'f1.cjs', 'f2.cjs']);
+    assert.strictEqual(row.body.done.files_modified_omitted, 70);
+  } finally { await teardown(s); }
+});
+
+test('a read that stops partway keeps what it read and says the list is incomplete', async () => {
+  const s = await setup(turns(120));
+  try {
+    failOnCall(s.op, 2);
+    await MJ.runEndJobs({ core: s.op, runId: RUN, levers: LEVERS });
+    const row = await summaryOf(s);
+    assert.deepStrictEqual(row.body.observations_partial, { read: 50, listed: 120, code: 'E_BUSY' });
+    assert.strictEqual(row.body.done.commands.length + row.body.done.commands_omitted, 50);
+    assert.match(row.text, /observation list incomplete \(read 50 of 120 listed, E_BUSY\)/);
+  } finally { await teardown(s); }
+});
+
+test('nothing read of a task that has observations is a failed summary, not an empty one', async () => {
+  const s = await setup(turns(3));
+  try {
+    failOnCall(s.op, 1);
+    await MJ.runEndJobs({ core: s.op, runId: RUN, levers: LEVERS });
+    const ev = (await s.op.memory.events({ run_id: RUN, kinds: ['summary'] })).events;
+    assert.strictEqual(ev.length, 1);
+    assert.strictEqual(ev[0].ok, 0);
+    assert.strictEqual(ev[0].code, 'E_BUSY');
+    assert.strictEqual((await s.op.memory.list({ filter: { types: ['summary'] }, view: 'index' })).rows.length, 0);
+  } finally { await teardown(s); }
+});
+
+test('the stored body is under 8192 bytes for hostile input of every kind', async () => {
+  const { summarise } = require('../../src/run/summarise.cjs');
+  const big = (n, c = 'x') => c.repeat(n);
+  const cases = {
+    'huge findings': { handoff: { findings: big(20000), next_step: big(20000), verdict: big(20000) } },
+    'huge multibyte findings': { handoff: { findings: big(5000, '\u{1F600}'), next_step: big(5000, '\u00e9'), verdict: big(5000, '\u4e2d') } },
+    'huge commands': { observations: [{ body: { commands: Array.from({ length: 300 }, (_, i) => ({ command: big(5000, '\u00e9') + i, exit_code: 1 })) } }] },
+    'many long files': { observations: [{ body: { files_read: Array.from({ length: 400 }, (_, i) => big(900) + i), files_modified: Array.from({ length: 400 }, (_, i) => big(900, '\u4e2d') + i) } }] },
+    'everything': { handoff: { findings: big(9000), next_step: big(9000), verdict: big(9000) }, observations: [{ body: { commands: Array.from({ length: 100 }, () => ({ command: big(4000), exit_code: 2 })), files_read: Array.from({ length: 200 }, (_, i) => big(500) + i), files_modified: Array.from({ length: 200 }, (_, i) => big(500) + i) } }] },
+  };
+  for (const [name, input] of Object.entries(cases)) {
+    const out = await summarise({ task: { spec: big(2000), state: 'done' }, ...input }, { kind: 'mechanical' });
+    assert.strictEqual(out.output_class, 'ok', name);
+    const body = JSON.stringify({ v: 1, ...out.fields, generator: out.generator });
+    assert.ok(Buffer.byteLength(body, 'utf8') <= 8192, `${name}: ${Buffer.byteLength(body, 'utf8')} bytes`);
+    assert.ok(!body.includes('\ufffd'), `${name}: no broken character`);
+  }
+});
