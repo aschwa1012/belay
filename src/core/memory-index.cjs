@@ -3,7 +3,7 @@
 // message carries. A read: every statement is a SELECT, nothing is stamped, and nothing here requires an
 // embedder, so any read path may load it.
 //
-// Only lasting rows count (a summary, a decision, or a verified row; never refuted, superseded or expired),
+// Only lasting rows count (a summary, a decision, a verified row, or a worker's row promoted to a project namespace; never refuted, superseded or expired),
 // ranked mechanically in three tiers: rows about files under the task's files_owned, rows written for the
 // task, then the rest; within a tier by relevance to the task text (memory-relevance.cjs), then recency. The text carries no clock, no age and no relative time, so
 // identical inputs render identical bytes (ADR 0042 decision 5). The clock is read only to drop expired rows.
@@ -21,6 +21,8 @@ const CEILING_BYTES = 4096; // ADR 0042 decision 2: the hard ceiling of index_by
 const IDS_MAX = 5000;
 const CANDIDATES_MAX = 1000;
 const LASTING_TYPES = ['summary', 'decision'];
+// The receipt kinds a verified row's label may name (ADR 0044 decision 5); any other kind is plain `verified`.
+const RECEIPT_KINDS = new Set(['commit', 'task', 'review', 'test', 'memory', 'checkpoint']);
 
 // The framing (memory-rows.cjs FRAME) in its compact form: the index has a 1,200-byte budget, so the header says
 // in one line what the corpus and the bottle say in full. Every row line starts "- " and a validated id, and a title
@@ -99,9 +101,10 @@ function projectOf(E, runId) {
 // namespace index (which made it quadratic in the namespace size); memory-search.cjs baseWhere says the same.
 function candidates(E, namespaces) {
   const sql = `SELECT e.id, e.namespace, e.type, e.status, e.title, substr(e.text, 1, 2000) AS title_src, e.body, e.tags,
-    e.task_id, e.created_at FROM memory_entries e
+    e.task_id, e.created_at, e.status_receipt, e.written_by FROM memory_entries e
     WHERE e.namespace IN (${marks(namespaces)})
-      AND (e.type IN (${marks(LASTING_TYPES)}) OR e.status = 'verified')
+      AND (e.type IN (${marks(LASTING_TYPES)}) OR e.status = 'verified'
+        OR (substr(e.namespace, 1, 8) = 'project/' AND substr(e.written_by, 1, 7) = 'worker:'))
       AND COALESCE(e.status, 'unverified') <> 'refuted'
       AND (e.ttl_at IS NULL OR e.ttl_at >= ?)
       AND NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND +s.namespace = e.namespace)
@@ -119,7 +122,14 @@ function tierOf(r, taskId, owned) {
   return 3;
 }
 
-const lineOf = (r) => `- ${r.id} [${safeType(r.type)}/${r.status || 'unverified'}] ${deriveTitle(r.title || r.title_src)}`;
+// The status tag names what verified a row, from the receipt's kind alone: a fixed allow-list, so no receipt text
+// ever reaches the line.
+function statusTag(r) {
+  if (r.status !== 'verified') return r.status || 'unverified';
+  const kind = typeof r.status_receipt === 'string' ? r.status_receipt.split(':', 1)[0] : '';
+  return RECEIPT_KINDS.has(kind) ? `verified:${kind}` : 'verified';
+}
+const lineOf = (r) => `- ${r.id} [${safeType(r.type)}/${statusTag(r)}] ${deriveTitle(r.title || r.title_src)}`;
 // A row whose id predates id validation and would not render as one token is left out of the block.
 const renderable = (r) => validId(r.id);
 
