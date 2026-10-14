@@ -27,6 +27,20 @@ function cutBytes(s, max) {
   return out;
 }
 
+// ADR 0044 decision 7: a path under the worktree root is stored relative to it, in forward slashes; a path
+// outside it stays absolute, in forward slashes, and so never matches a worktree-relative files_owned entry.
+// A Windows root (drive letter or UNC) compares without regard to case. A relative path is only normalised.
+function relativeTo(p, root) {
+  const f = String(p).replace(/\\/g, '/');
+  if (typeof root !== 'string' || !root) return f;
+  const r = root.replace(/\\/g, '/').replace(/\/+$/, '');
+  const fold = /^([A-Za-z]:|\/\/)/.test(r);
+  const a = fold ? f.toLowerCase() : f;
+  const b = fold ? r.toLowerCase() : r;
+  if (a === b) return '.';
+  return a.startsWith(`${b}/`) ? f.slice(r.length + 1) : f;
+}
+
 const base = (p) => String(p).split(/[\\/]/).filter(Boolean).pop() || String(p);
 const pushUnique = (list, v) => { if (typeof v === 'string' && v && !list.includes(v)) list.push(v); };
 const filesOf = (e) => (Array.isArray(e && e.files) ? e.files : []);
@@ -46,7 +60,7 @@ function commandOf(e) {
   return raw ? null : undefined;
 }
 
-function scan(events) {
+function scan(events, root) {
   const filesRead = [];
   const filesModified = [];
   const toolCounts = {};
@@ -63,7 +77,8 @@ function scan(events) {
         commands.push({ tool_use_id: e.tool_use_id === undefined ? null : e.tool_use_id, command: cmd, exit_code: null, exit_code_source: null });
         if (e.tool_use_id) byUseId.set(e.tool_use_id, commands.length - 1);
       }
-      const p = argPath(e.args);
+      const argp = argPath(e.args);
+      const p = argp && relativeTo(argp, root);
       if (p && READ_TOOLS.has(e.tool)) pushUnique(filesRead, p);
       if (p && isEditTool(e.tool)) pushUnique(filesModified, p);
     } else if (e.kind === 'tool_result') {
@@ -75,7 +90,7 @@ function scan(events) {
       }
       const target = isEditTool(e.tool) ? filesModified : (READ_TOOLS.has(e.tool) ? filesRead : null);
       // A failed result names no file it changed (a failed Codex file_change lists what it tried).
-      if (target && !e.is_error) for (const p of filesOf(e)) pushUnique(target, p);
+      if (target && !e.is_error) for (const p of filesOf(e)) pushUnique(target, relativeTo(p, root));
     }
   }
   // A file that was modified is not also listed as merely read.
@@ -117,13 +132,13 @@ function textOf(body, title) {
   return lines.join('\n');
 }
 
-// buildObservation({ turn, worker_id, task_id, substrate, events, final_text }) → { title, type, body, text }. `type` is the class
+// buildObservation({ turn, worker_id, task_id, substrate, events, final_text, worktree }) → { title, type, body, text }. `type` is the class
 // (change, discovery, failure, turn); the stored row's type stays 'observation' and the class is kept as `body.kind`.
 // `worker_id`, `task_id` and `substrate` are the caller's tags for the stored row; they do not shape the
 // body, so the same turn under two ids yields the same observation.
 function buildObservation(input) {
-  const { turn, events, final_text: finalText } = input || {};
-  const c = scan(Array.isArray(events) ? events : []);
+  const { turn, events, final_text: finalText, worktree } = input || {};
+  const c = scan(Array.isArray(events) ? events : [], worktree);
   const kind = typeOf(c);
   const body = {
     v: 1, kind, turn: turn === undefined ? null : turn,
@@ -136,4 +151,4 @@ function buildObservation(input) {
   return { title, type: kind, body, text: textOf(body, title) };
 }
 
-module.exports = { buildObservation, NARRATIVE_MAX, TITLE_MAX };
+module.exports = { buildObservation, relativeTo, NARRATIVE_MAX, TITLE_MAX };
