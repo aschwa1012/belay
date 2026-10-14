@@ -1,4 +1,5 @@
 'use strict';
+const path = require('node:path');
 // observe.cjs — the mechanical observation builder (ADR 0041 §3). One observation per turn, never per tool
 // call. Pure and deterministic: no clock, no I/O, no model call. Every field is read off the turn's events
 // (captured shape, ADR 0041 §2) or the turn's final text; `facts` stays empty because a mechanical builder
@@ -30,15 +31,24 @@ function cutBytes(s, max) {
 // ADR 0044 decision 7: a path under the worktree root is stored relative to it, in forward slashes; a path
 // outside it stays absolute, in forward slashes, and so never matches a worktree-relative files_owned entry.
 // A Windows root (drive letter or UNC) compares without regard to case. A relative path is only normalised.
+// One spelling: forward slashes, a \\?\ long-path prefix dropped, '.' and '..' resolved, no trailing slash.
+function normPath(p) {
+  let f = String(p).replace(/\\/g, '/').replace(/^\/\/[?.]\//, '');
+  const unc = /^\/\/[^/]/.test(f);
+  f = path.posix.normalize(f);
+  if (unc && !f.startsWith('//')) f = '/' + f;
+  return f.length > 1 ? f.replace(/\/+$/, '') : f;
+}
+
 function relativeTo(p, root) {
-  const f = String(p).replace(/\\/g, '/');
+  const f = normPath(p);
   if (typeof root !== 'string' || !root) return f;
-  const r = root.replace(/\\/g, '/').replace(/\/+$/, '');
+  const r = normPath(root);
   const fold = /^([A-Za-z]:|\/\/)/.test(r);
   const a = fold ? f.toLowerCase() : f;
   const b = fold ? r.toLowerCase() : r;
   if (a === b) return '.';
-  return a.startsWith(`${b}/`) ? f.slice(r.length + 1) : f;
+  return a.startsWith(b.endsWith('/') ? b : b + '/') ? f.slice(b.endsWith('/') ? r.length : r.length + 1) : f;
 }
 
 const base = (p) => String(p).split(/[\\/]/).filter(Boolean).pop() || String(p);
