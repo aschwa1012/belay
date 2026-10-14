@@ -102,7 +102,10 @@ class Store {
       // unverified. Anyone else's row, and any verified or refuted row, is left exactly as it was and returned as
       // it stands: otherwise a writer that read a verified row could resend its text under a new title and type and
       // keep the verified status (ADR 0040 §1, dedup).
-      if (dup && !(dup.worker_id === wid && (dup.source || 'model') === (a.source || 'model') && (dup.status || 'unverified') === 'unverified')) {
+      // The row's writer must be the incoming writer too (ADR 0044 decision 6): a model cannot rewrite belay's row by
+      // resending its text. A row from before the column (written_by null) keeps the rule above alone.
+      const sameWriter = dup && (dup.written_by == null || a.written_by == null || dup.written_by === a.written_by);
+      if (dup && !(sameWriter && dup.worker_id === wid && (dup.source || 'model') === (a.source || 'model') && (dup.status || 'unverified') === 'unverified')) {
         return this._unchanged(dup, ns, th);
       }
       let vec = null;
