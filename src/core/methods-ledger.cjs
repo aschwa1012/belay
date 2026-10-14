@@ -84,7 +84,7 @@ async function recordEvent(E, caller, args) {
     optStr(args.sha256, 'sha256'), ok, code, scrubMessage(E, caller, optStr(args.message, 'message')),
     args.dropped === undefined || args.dropped === null ? null : flag(args.dropped, 'dropped'),
     args.over_budget === undefined || args.over_budget === null ? null : flag(args.over_budget, 'over_budget'),
-    Date.now(), E.writtenBy(caller),
+    Date.now(), caller.channel === 'harness' ? 'harness' : E.writtenBy(caller), // ADR 0044: the run manager's events say harness
   ];
   const sql = `INSERT INTO memory_event(id, run_id, worker_id, task_id, kind, key, row_ids, newest_row_id, bytes,
     sha256, ok, code, message, dropped, over_budget, written_at, written_by) VALUES (${vals.map(() => '?').join(', ')})`;

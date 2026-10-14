@@ -11,7 +11,7 @@ const { launch, sandboxDir, ROOT } = require('./rpc.cjs');
 
 const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
 const USER_SETTINGS = `${ROOT}/tests/run/fixtures/user-settings.json`;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const { openCore } = require('../../src/core/index.cjs');
 
 test('a tool write is the orchestrator and the run manager turn row is the harness; a forged argument changes nothing', { timeout: 90000 }, async (t) => {
   const data = sandboxDir('memory-writer');
@@ -40,14 +40,17 @@ test('a tool write is the orchestrator and the run manager turn row is the harne
 
   const w = (await a.call('worker_spawn', { substrate: 'claude-code', worktree, prompt: 'do the thing', worker_id: 'w1' })).structuredContent;
   assert.ok(w.pid, 'a real worker');
-  let turn = null;
-  for (let i = 0; i < 120 && !turn; i++) { // the real event: the manager's turn row lands once the turn ends
-    const listed = (await a.call('memory_list', { limit: 100 })).structuredContent;
-    turn = (listed.rows || []).find((r) => r.type === 'turn') || null;
-    if (!turn) await sleep(250);
-  }
-  assert.ok(turn, 'the run manager wrote a turn row');
-  assert.strictEqual(turn.written_by, 'harness');
-  const listed = (await a.call('memory_list', { limit: 100 })).structuredContent.rows;
-  assert.deepStrictEqual(listed.map((r) => r.written_by).sort(), ['harness', 'orchestrator']);
+  // The real events, not a sleep: worker_wait returns when the turn ends, and the adapter's shutdown drains the
+  // manager's memory queue before it exits, so the turn row is in the store once the adapter has exited.
+  const waited = (await a.call('worker_wait', { worker_ids: ['w1'], timeout_ms: 30000 })).structuredContent;
+  assert.notStrictEqual(waited.timed_out, true, 'the turn ended');
+  await a.close();
+  const reader = await openCore({ dataDir: data, caller: { role: 'operator', run_id: 'run-1', pid: process.pid }, embed: false });
+  try {
+    const rows = (await reader.memory.list({ namespace: 'run/run-1', limit: 100 })).rows;
+    const turn = rows.find((r) => r.type === 'turn');
+    assert.ok(turn, 'the run manager wrote a turn row');
+    assert.strictEqual(turn.written_by, 'harness');
+    assert.deepStrictEqual(rows.map((r) => r.written_by).sort(), ['harness', 'orchestrator']);
+  } finally { await reader.close(); }
 });
