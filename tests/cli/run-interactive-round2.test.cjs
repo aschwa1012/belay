@@ -129,11 +129,11 @@ const slow = (ms, v) => new Promise((r) => { setTimeout(() => r(v), ms).unref();
 test('F7: run.get is bounded by the fast close budget and leaves time for the shutdown and run.json', async () => {
   const ce = hupped();
   try {
-    const core = { run: { end: async () => ({ epoch: 1 }), get: () => slow(8000, { run: {} }) } };
+    const core = { run: { end: async () => ({ epoch: 1 }), get: () => slow(30000, { run: {} }) } };
     const late = [];
     const t0 = Date.now();
     const out = await RI.endRun({ core, ce, runId: 'r', exitReason: 'x', usage: null, reviewRounds: { value: null, reason: 'never' }, countReviewRounds: async () => ({ value: 1, reason: null }), late: (m) => late.push(m) });
-    assert.ok(Date.now() - t0 < 4000, `run.get held the close for ${Date.now() - t0} ms`);
+    assert.ok(Date.now() - t0 < 15000, `run.get held the close for ${Date.now() - t0} ms`); // the budget cuts it near 3 s; the stub would hold it 30 s
     assert.deepStrictEqual(out.endedRow, { epoch: 1 });
     assert.strictEqual(out.gotRun, null);
     assert.ok(late.some((m) => /run\.get/.test(m)), JSON.stringify(late));
@@ -147,8 +147,8 @@ test('F7: a cut review count says "not counted: fast-close budget", never "never
     const core = { run: { end: async () => ({ epoch: 1 }), get: async () => ({ run: {} }) } };
     const late = [];
     const t0 = Date.now();
-    const out = await RI.endRun({ core, ce, runId: 'r', exitReason: 'x', usage: null, reviewRounds: { value: null, reason: 'the run was never attached, so no tasks were read' }, countReviewRounds: () => slow(8000, { value: 3, reason: null }), late: (m) => late.push(m) });
-    assert.ok(Date.now() - t0 < 4000);
+    const out = await RI.endRun({ core, ce, runId: 'r', exitReason: 'x', usage: null, reviewRounds: { value: null, reason: 'the run was never attached, so no tasks were read' }, countReviewRounds: () => slow(30000, { value: 3, reason: null }), late: (m) => late.push(m) });
+    assert.ok(Date.now() - t0 < 15000); // the budget cuts it near 3 s; the stub would hold it 30 s
     assert.strictEqual(out.reviewRounds.value, null);
     assert.strictEqual(out.reviewRounds.reason, 'not counted: fast-close budget');
     assert.ok(!/never attached/.test(JSON.stringify(out.reviewRounds)));
@@ -170,14 +170,16 @@ test('F7: the owner shutdown keeps its reserve AT ITS CALL SITE in cmd-run: a ru
   assert.ok(reserves[0] >= 100 && reserves[0] < RI.END_RESERVE_MS, `reserve ${reserves[0]}`);
 }));
 
-test('F7: within() with that reserve cuts the shutdown before the budget ends, not at it', async () => {
+test('F7: within() cuts at the budget less the reserve it is given, not at the default reserve or the whole budget', async () => {
   const ce = hupped();
   try {
     const t0 = Date.now();
-    const v = await RI.within(ce, never(), 'the owner shutdown', 'cut', () => {}, 200);
+    // A reserve of 3300 ms cuts near 200 ms into the 3500 ms budget; the default reserve (FAST_RESERVE_MS, 1300) would cut
+    // at 2200 and no reserve at 3500. A bound of 1500 sits 1300 ms above the cut and 700 ms below the default's.
+    const v = await RI.within(ce, never(), 'the owner shutdown', 'cut', () => {}, 3300);
     const ms = Date.now() - t0;
     assert.strictEqual(v, 'cut');
-    assert.ok(ms < 3500 - 200 + 120, `the shutdown was held ${ms} ms, the whole budget`);
+    assert.ok(ms < 1500, `the shutdown was held ${ms} ms, past the given reserve's cut (default would be 2200, none 3500)`);
   } finally { ce.dispose(); }
 });
 
@@ -202,7 +204,9 @@ test('F7: after a SIGHUP a claude that does not exit is ended by its pid within 
   try {
     const res = await r.done;
     const ms = Date.now() - hupAt;
-    assert.ok(ms < 3500 + 1500, `the close took ${ms} ms after the SIGHUP`);
+    // The design bound is 3500 ms, and a loaded host runs well past it. What this separates is a close that waits on a
+    // claude that never exits (the run's own timeout is far longer), so 15 s.
+    assert.ok(ms < 15000, `the close took ${ms} ms after the SIGHUP`);
     assert.strictEqual(res.code, 1);
     assert.match(res.json.ended_by, /^claude did not exit within the fast close budget; claude ended by its pid; then console closed \(fast close\)$/);
     assert.ok(!P.pidAlive(rec.pid));

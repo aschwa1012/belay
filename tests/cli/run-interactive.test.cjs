@@ -216,13 +216,14 @@ test('closeRunWorkers: with `fast`, the adapter wait is skipped, or cut short wh
   try {
     let t = Date.now();
     let out = await closeRunWorkers({ core, runId: 'r', graceMs: 20000, ownPid: -1, fast: { requested: () => true } });
-    assert.ok(Date.now() - t < 1000 && out.fast_close === true && out.adapter_wait_ms === 0, JSON.stringify(out));
+    // The adapter wait it skips is graceMs (20 s); 10 s separates a skipped wait from a held one on a loaded host.
+    assert.ok(Date.now() - t < 10000 && out.fast_close === true && out.adapter_wait_ms === 0, JSON.stringify(out));
     let flip = false;
     setTimeout(() => { flip = true; }, 400);
     t = Date.now();
     out = await closeRunWorkers({ core, runId: 'r', graceMs: 20000, ownPid: -1, fast: { requested: () => flip } });
     const ms = Date.now() - t;
-    assert.ok(ms >= 300 && ms < 3000 && out.fast_close === true && out.adapter_gone === false, `${ms} ${JSON.stringify(out)}`);
+    assert.ok(ms >= 300 && ms < 10000 && out.fast_close === true && out.adapter_gone === false, `${ms} ${JSON.stringify(out)}`);
     assert.ok(P.pidAlive(adapter.pid), 'the close touched the adapter');
   } finally { require('../crash.cjs').crash(adapter); }
 });

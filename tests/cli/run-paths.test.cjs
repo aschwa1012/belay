@@ -379,7 +379,8 @@ test("run: a starting row whose pid dies while the orchestrator is idle holds st
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, wt, orchestratorDir, runId } = makeSpec(dir, { poll_ms: 300 });
-  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '4000' };
+  const holdsFile = `${dir}/holds.jsonl`;
+  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '4000', BELAY_TEST_HOLDS_FILE: holdsFile };
 
   const t0 = Date.now();
   const runCliProc = runCli(specPath, dataDir, env);
@@ -393,7 +394,9 @@ test("run: a starting row whose pid dies while the orchestrator is idle holds st
     const streamPath = `${orchestratorDir}/stream.jsonl`;
     const gotResult = await waitForFileLine(streamPath, '"type":"result"', 10000);
     assert.ok(gotResult, "the orchestrator's own first turn never ended");
-    await sleep(2 * 300);
+    // Kill only once an idle poll has held on the live worker; on a slow runner polls can be over a second apart.
+    const sawBusy = await waitForFileLine(holdsFile, '"busy":["w-dead-start"]', 10000);
+    assert.ok(sawBusy, 'the run never recorded the worker as busy');
     require('../crash.cjs').crash(planted);
 
     const exited = await waitForExit(runCliProc.proc, 15000 - (Date.now() - t0));
@@ -423,7 +426,8 @@ test('run: a dead row landing inside the grace produces the death wake with the 
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, wt, orchestratorDir, runId } = makeSpec(dir, { poll_ms: 300 });
-  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '4000' };
+  const holdsFile = `${dir}/holds.jsonl`;
+  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '4000', BELAY_TEST_HOLDS_FILE: holdsFile };
 
   const t0 = Date.now();
   const runCliProc = runCli(specPath, dataDir, env);
@@ -440,7 +444,9 @@ test('run: a dead row landing inside the grace produces the death wake with the 
     await sleep(2 * 300);
     const plantedPid = planted.pid;
     require('../crash.cjs').crash(planted);
-    await sleep(2 * 300);
+    // The dead row must land after the run's poll has seen the dead pid; on a slow runner polls can be over a second apart.
+    const sawPending = await waitForFileLine(holdsFile, '"pending_deaths":["w-dead-detected"]', 10000);
+    assert.ok(sawPending, 'the run never recorded the dead pid as a pending death');
     await testCore.worker.write({
       id: 'w-dead-detected', run_id: runId, substrate: 'claude-code', pid: plantedPid,
       state: 'dead', exit_code: null, exit_signal: 'SIGKILL',

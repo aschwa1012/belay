@@ -29,6 +29,7 @@ const { createRunManager } = require('../../src/run/index.cjs');
 const { wakeText } = require('../../src/run/wake.cjs');
 const P = require('../../src/run/process.cjs');
 const { cleanupRun } = require('./run-teardown.cjs');
+const { waitUntil, waitForFileLine, sampleHolds } = require('./holds-helpers.cjs'); // the polling helpers (READ_BOUND_MS, boundedRead) live there
 
 const ROOT = path.resolve(__dirname, '..', '..').split(path.sep).join('/');
 const CLI = `${ROOT}/src/cli/belay.cjs`;
@@ -49,47 +50,6 @@ function cleanup(dir) {
   }
   try { fs.rmSync(dir, { recursive: true, force: true }); }
   catch (e) { process.emitWarning(`sandbox left behind at ${dir}: ${e.code || e.message}`); }
-}
-
-// A3: the read `fn` wraps (a store read, a file read) is raced against this bound. A read that has
-// not settled after READ_BOUND_MS is a hung read, not a slow one, and ends the wait with `null` at
-// once instead of being retried — a caller whose own assertion depended on a real value then fails on
-// that assertion, rather than the whole suite hanging on a read that will never come back.
-const READ_BOUND_MS = 5000;
-
-function boundedRead(fn) {
-  return () => new Promise((resolve) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      resolve({ hung: true });
-    }, READ_BOUND_MS);
-    Promise.resolve().then(fn).then(
-      (v) => { if (!settled) { settled = true; clearTimeout(timer); resolve({ hung: false, value: v }); } },
-      () => { if (!settled) { settled = true; clearTimeout(timer); resolve({ hung: false, value: null }); } }
-    );
-  });
-}
-
-async function waitUntil(fn, timeoutMs, stepMs = 100) {
-  const t0 = Date.now();
-  const read = boundedRead(fn);
-  for (;;) {
-    const r = await read();
-    if (r.hung) return null; // a hung read fails the wait at once; it is never retried
-    if (r.value) return r.value;
-    if (Date.now() - t0 >= timeoutMs) return null;
-    await sleep(stepMs);
-  }
-}
-
-function waitForFileLine(filePath, needle, timeoutMs) {
-  return waitUntil(() => {
-    let text = '';
-    try { text = fs.readFileSync(filePath, 'utf8'); } catch { return null; }
-    return text.includes(needle) ? true : null;
-  }, timeoutMs, 100);
 }
 
 function waitForExit(child, timeoutMs) {
@@ -216,12 +176,13 @@ test("run: a worker's turn end reaches the orchestrator as a user message, recor
   }
 });
 
-test('run: a worker killed by exact pid produces a death wake within one poll, established by what the death detector recorded, written while the orchestrator was idle', async () => {
+test('run: a worker killed by exact pid produces a death wake shortly after the kill (about a poll plus the detector landing), established by what the death detector recorded, written while the orchestrator was idle', async () => {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, runId, orchestratorDir } = makeSpec(dir, { poll_ms: 300 });
-  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '1500' };
-  const t0 = Date.now();
+  const holdsFile = `${dir}/holds.jsonl`;
+  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '1500', BELAY_TEST_HOLDS_FILE: holdsFile };
+  const sampler = sampleHolds(holdsFile);
   const runCliProc = runCli(specPath, dataDir, env);
   let core = null; let m = null; const spawnedPids = [];
   try {
@@ -243,10 +204,14 @@ test('run: a worker killed by exact pid produces a death wake within one poll, e
     const streamPath = `${orchestratorDir}/stream.jsonl`;
     const gotResult = await waitForFileLine(streamPath, '"type":"result"', 15000);
     assert.ok(gotResult, "the orchestrator's own first turn never ended");
-    await sleep(2 * 300);
-
-    const killAt = Date.now() - t0;
+    // Kill only once an idle poll has held on the live worker, and take that moment as the clock reference.
+    const sawBusy = await waitForFileLine(holdsFile, '"busy":["w1"]', 10000);
+    assert.ok(sawBusy, 'the run never recorded the worker as busy');
+    await waitUntil(() => sampler.seen.find((s) => Array.isArray(s.hold.busy) && s.hold.busy[0] === 'w1') || null, 2000, 20);
+    const ref = sampler.seen.find((s) => Array.isArray(s.hold.busy) && s.hold.busy[0] === 'w1');
+    assert.ok(ref, 'the sampler never saw the busy hold');
     // Async: this process hosts the worker's manager, and a blocked loop lets its pid poll beat the exit event.
+    const killAt = Date.now();
     assert.ok(await require('../crash.cjs').crashAsync(row.pid, row.pid_created), 'the planted worker was not killed');
 
     const exited = await waitForExit(runCliProc.proc, 20000);
@@ -265,10 +230,14 @@ test('run: a worker killed by exact pid produces a death wake within one poll, e
       `neither an integer exit_code nor a string exit_signal: ${JSON.stringify({ exit_code: w.exit_code, exit_signal: w.exit_signal })}`
     );
     assert.strictEqual(w.orchestrator_idle_at_write, true);
-    assert.ok(
-      Math.abs(w.at_ms - killAt) <= 300 * 2 + 1500,
-      `wake at_ms ${w.at_ms} too far from the kill measured at ${killAt}`
-    );
+    // Both on the run's clock: the kill is placed by the busy hold moment's at_ms plus the test-clock time since
+    // that moment was first seen (good to the 20 ms sampling). The wake may not precede the kill by more than that
+    // slack, and lands within about one poll (300 ms) plus the detector's landing; 3 s is generous for a slow runner
+    // where polls run over a second apart, and still far short of a wake that missed its poll and waited on the
+    // next event or an expiry.
+    const killRunMs = ref.hold.at_ms + (killAt - ref.seenAt);
+    const lag = w.at_ms - killRunMs;
+    assert.ok(lag >= -100 && lag <= 3000, `wake at_ms ${w.at_ms} is ${lag} ms from the kill at run-clock ${killRunMs}`);
 
     const streamText = fs.readFileSync(streamPath, 'utf8');
     assert.match(streamText, /worker w1 died during turn 0/);
@@ -286,6 +255,7 @@ test('run: a worker killed by exact pid produces a death wake within one poll, e
     assert.strictEqual(stored.state, 'dead');
     assert.strictEqual(stored.death_established_by, w.death_established_by);
   } finally {
+    sampler.stop();
     await cleanupRun({ m, core, cliProc: runCliProc, spawnedPids, dir, runId, cleanup });
   }
 });
@@ -351,13 +321,17 @@ test("run: a worker given a second message holds stdin until its second turn end
 test('run: an unsolicited turn spanning a wake does not answer it; the wake expires, the run then closes, and the external turn is counted', async () => {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
-  const { specPath, runId } = makeSpec(dir, { poll_ms: 300, mcp_tool_timeout_ms: 8000 });
+  const { specPath, runId, orchestratorDir } = makeSpec(dir, { poll_ms: 300, mcp_tool_timeout_ms: 8000 });
   const env = {
     BELAY_CLAUDE_EXE: FAKE_CLAUDE,
     FAKE_ANSWER_DELAY_MS: '500',
     FAKE_EXTRA_INIT: '1',
     FAKE_EXTRA_INIT_DELAY_MS: '4000',
     FAKE_HANG_AFTER: '1',
+    // The orchestrator's first answer is held until w1 is spawned: a fixed 500 ms raced the spawn on a slow host,
+    // the run closed as idle before w1 existed, and w1's turn never ended. The unsolicited turn's 4,000 ms gap
+    // starts at that first answer; w1's own turn is held on a gate of its own (below) and released into that gap.
+    FAKE_ANSWER_GATE_FILE: `${dir}/orchestrator-gate`,
   };
   const runCliProc = runCli(specPath, dataDir, env);
   let core = null; let m = null; const spawnedPids = [];
@@ -365,32 +339,36 @@ test('run: an unsolicited turn spanning a wake does not answer it; the wake expi
     core = await connectOrchestratorCore(dataDir, runId);
     m = createRunManager({ core, dataDir, runId, paths: { claudeExe: FAKE_CLAUDE, userSettings: USER_SETTINGS } });
 
-    // The test asserts a wake written INSIDE the unsolicited turn's 4,000 ms gap. It used to get there
-    // only because a worker's turn end was slow (recordTurn awaited its memory write, an embed or a
-    // library import), which a fast or empty cache changes. The worker's own turn now takes a stated
-    // 2,000 ms (its fake's answer delay, set only around this spawn), so its turn end lands 1.5 to 3 s
-    // into the gap wherever the spawn falls: the orchestrator's first turn ends 0.5 s after its prompt
-    // and the spawn happens within about a second of that, whatever the model cache holds.
-    const spawnStartedAt = Date.now();
-    const keptDelay = process.env.FAKE_ANSWER_DELAY_MS;
-    process.env.FAKE_ANSWER_DELAY_MS = '2000';
+    // The test asserts a wake written INSIDE the unsolicited turn's 4,000 ms gap. The worker's turn is held on its own
+    // gate file (read by the fake at launch, so set only around this spawn) and released once the orchestrator's
+    // stream shows the unsolicited turn's second init, so the worker's turn end, which writes the wake, can only
+    // land after the gap opens (by construction); that it also lands before the gap closes is asserted below as a
+    // named precondition on the release-to-turn-end time, not assumed.
+    const workerGate = `${dir}/worker-gate`;
+    const keptGate = process.env.FAKE_ANSWER_GATE_FILE;
+    process.env.FAKE_ANSWER_GATE_FILE = workerGate;
     let row;
-    try { row = await spawnWorker(); } finally { if (keptDelay === undefined) delete process.env.FAKE_ANSWER_DELAY_MS; else process.env.FAKE_ANSWER_DELAY_MS = keptDelay; }
-
-    async function spawnWorker() { return m.spawn({ substrate: 'claude-code', worktree: workerWorktree(dir, 'w1'), prompt: 'hello', worker_id: 'w1' }); }
+    try { row = await m.spawn({ substrate: 'claude-code', worktree: workerWorktree(dir, 'w1'), prompt: 'hello', worker_id: 'w1' }); } finally { if (keptGate === undefined) delete process.env.FAKE_ANSWER_GATE_FILE; else process.env.FAKE_ANSWER_GATE_FILE = keptGate; }
     spawnedPids.push({ pid: row.pid, created: row.pid_created });
+    fs.writeFileSync(env.FAKE_ANSWER_GATE_FILE, ''); // w1 is mid-turn: the orchestrator may now end its first turn
+
+    const streamPath = `${orchestratorDir}/stream.jsonl`;
+    const secondInit = await waitUntil(() => {
+      let text = ''; try { text = fs.readFileSync(streamPath, 'utf8'); } catch { return null; }
+      return (text.match(/"subtype":"init"/g) || []).length >= 2 ? true : null;
+    }, 20000, 50);
+    assert.ok(secondInit, "the orchestrator's unsolicited turn never started");
+    assert.strictEqual(m._worker('w1').lastTurnEndAt, null, "the worker's turn ended before it was released");
+    const releaseAt = Date.now();
+    fs.writeFileSync(workerGate, ''); // now the worker's turn may end, inside the unsolicited turn's gap
+    const turnEnded = await waitUntil(() => m._worker('w1').lastTurnEndAt || null, 10000, 20);
+    assert.ok(turnEnded, "the worker's turn never ended after its release");
+    assert.ok(turnEnded - releaseAt < 2500, `precondition: the worker's turn ended ${turnEnded - releaseAt} ms after its release, too close to the 4000 ms gap for the wake to land inside it`);
 
     const exited = await waitForExit(runCliProc.proc, 20000);
     assert.ok(exited, 'the CLI did not exit in time');
     assert.strictEqual(exited.code, 0, `stdout: ${runCliProc.stdout}, stderr: ${runCliProc.stderr}`);
     const receipt = receiptOf(runCliProc, 0);
-
-    // PRECONDITION, asserted before the behaviour: the worker's turn end (which is what writes the wake)
-    // landed inside its stated 2,000 ms turn window measured from the spawn call, i.e. the spawn was not
-    // slow. A slow spawn or a slow host fails here, named as a precondition, not as a wake-handling bug.
-    const turnEndAfterSpawnMs = m._worker('w1').lastTurnEndAt - spawnStartedAt;
-    assert.ok(turnEndAfterSpawnMs >= 2000 && turnEndAfterSpawnMs <= 2000 + 2500,
-      `precondition: the worker's turn ended ${turnEndAfterSpawnMs} ms after the spawn call, outside its stated 2,000 ms window (+2,500 ms of spawn slack); the wake could not have landed inside the unsolicited turn's gap`);
 
     assert.strictEqual(receipt.orchestrator.turns, 2, JSON.stringify(receipt.orchestrator));
     assert.strictEqual(receipt.orchestrator.externally_triggered_turns, 1, JSON.stringify(receipt.orchestrator));
@@ -454,7 +432,8 @@ test('run-wake scaffolding: a hung store read fails the wait instead of hanging 
   const result = await waitUntil(() => new Promise(() => {}), 30000, 100);
   assert.strictEqual(result, null, 'a hung read must resolve the wait to null, not to a value');
   const took = Date.now() - t0;
-  assert.ok(took < 6000, `waitUntil took ${took} ms to give up on a read that never settles`);
+  // The read is cut at READ_BOUND_MS (5 s); a wait that retried or hung would run to its 30 s deadline or forever.
+  assert.ok(took < 20000, `waitUntil took ${took} ms to give up on a read that never settles`);
 });
 
 // The wake-correlation fix: two workers end
@@ -464,7 +443,7 @@ test('run-wake scaffolding: a hung store read fails the wait instead of hanging 
 test('run: two wakes answered by one orchestrator turn are both answered, one by init order and one by its command_lifecycle, and the run closes without waiting for the expiry', async () => {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
-  const { specPath, runId } = makeSpec(dir, { poll_ms: 300, mcp_tool_timeout_ms: 30000 });
+  const { specPath, runId } = makeSpec(dir, { poll_ms: 300, mcp_tool_timeout_ms: 60000 }); // the stranded wake holds the run to this expiry; the bounds below sit well under it
   const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '3000', FAKE_FOLD: '1' };
   const runCliProc = runCli(specPath, dataDir, env);
   let core = null; let m = null; const spawnedPids = [];
@@ -476,8 +455,8 @@ test('run: two wakes answered by one orchestrator turn are both answered, one by
       m.spawn({ substrate: 'claude-code', worktree: workerWorktree(dir, id), prompt: 'hello', worker_id: id })));
     for (const r of rows) spawnedPids.push({ pid: r.pid, created: r.pid_created });
 
-    const exited = await waitForExit(runCliProc.proc, 25000);
-    assert.ok(exited, 'the CLI did not exit in time: a stranded wake holds it until the 30,000 ms expiry');
+    const exited = await waitForExit(runCliProc.proc, 50000);
+    assert.ok(exited, 'the CLI did not exit in time: a stranded wake holds it until the 60,000 ms expiry');
     assert.strictEqual(exited.code, 0, `stdout: ${runCliProc.stdout}, stderr: ${runCliProc.stderr}`);
     const receipt = receiptOf(runCliProc, 0);
     assert.strictEqual(receipt.wakes.length, 2, JSON.stringify(receipt.wakes));
@@ -485,7 +464,7 @@ test('run: two wakes answered by one orchestrator turn are both answered, one by
     for (const w of receipt.wakes) assert.ok(Number.isFinite(w.answered_at_ms) && !w.expired, JSON.stringify(w));
     assert.ok(receipt.wakes.some((w) => w.answered_by === 'command_lifecycle'), `no wake answered by its lifecycle: ${JSON.stringify(receipt.wakes)}`);
     assert.strictEqual(receipt.orchestrator.turns, 2, `the second wake was folded, not a turn of its own: ${JSON.stringify(receipt.orchestrator)}`);
-    assert.ok(receipt.ms < 25000, `the run waited on something: ${receipt.ms} ms`);
+    assert.ok(receipt.ms < 45000, `the run waited on something: ${receipt.ms} ms`);
   } finally {
     await cleanupRun({ m, core, cliProc: runCliProc, spawnedPids, dir, runId, cleanup });
   }

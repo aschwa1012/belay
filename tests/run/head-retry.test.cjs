@@ -146,7 +146,9 @@ for (const ms of [2500]) {
       const { core, ms: took } = await runShutdown(repo.dir);
       const last = core.writes[core.writes.length - 1];
       assert.strictEqual(last.head_sha, repo.head, `rows: ${JSON.stringify(core.writes.map((r) => [r.head_sha, r.head_error]))}`);
-      assert.ok(took < 5500, `took ${took} ms`);
+      // The head must land (asserted above); this tells a drain that ended when git answered (2500 ms) from one that sat out
+      // its full HEAD_DRAIN_MS bound (5500 ms). Under 5000 leaves 2,500 ms of runner lag (CI max seen 3.76 s).
+      assert.ok(took < 5000, `took ${took} ms`);
     } finally { slowMs = 0; fs.rmSync(repo.dir, { recursive: true, force: true }); }
   });
 }

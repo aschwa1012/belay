@@ -255,7 +255,7 @@ test('transcript -f: ends on a dead orchestrator pid once the stream stops growi
     assert.strictEqual(r.status, 0, r.stderr);
     const j = JSON.parse(r.stdout);
     assert.ok(j.ended_because.includes('orchestrator pid dead'), j.ended_because);
-    assert.ok(j.followed_ms < 10000, `followed ${j.followed_ms} ms against a 60000 ms bound`);
+    assert.ok(j.followed_ms < 30000, `followed ${j.followed_ms} ms against a 60000 ms bound`);
   } finally { cleanup(dir); }
 });
 
@@ -279,6 +279,6 @@ test('transcript -f: SIGINT ends the follow as interrupted (the signal is emitte
     assert.strictEqual(r.status, 0, r.stderr);
     const j = JSON.parse(r.stdout);
     assert.strictEqual(j.ended_because, 'interrupted');
-    assert.ok(j.followed_ms < 20000, `followed ${j.followed_ms} ms against a 60000 ms bound`);
+    assert.ok(j.followed_ms < 30000, `followed ${j.followed_ms} ms against a 60000 ms bound`);
   } finally { cleanup(dir); }
 });

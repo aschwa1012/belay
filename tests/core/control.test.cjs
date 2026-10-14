@@ -71,7 +71,9 @@ test('control: with no owner, control rejects E_NO_OWNER without dialling and cr
     const c = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
     const t0 = Date.now();
     await assert.rejects(c.control('run.stop', { run_id: 'r1' }), (e) => { assert.strictEqual(e.code, 'E_NO_OWNER'); return true; });
-    assert.ok(Date.now() - t0 < 200, `control took ${Date.now() - t0} ms with no lock at all`);
+    // control() dials with elect:false and connectRetries:1, so a missing pipe fails at once. The bug the 3000 bound
+    // catches is a default 25-retry connect (about 5 s). 200 ms left no room for a loaded runner's scheduling.
+    assert.ok(Date.now() - t0 < 3000, `control took ${Date.now() - t0} ms with no lock at all`);
     assert.deepStrictEqual(listDataDir(dir), before, 'no lock means control creates nothing');
     await c.close();
 
@@ -80,7 +82,7 @@ test('control: with no owner, control rejects E_NO_OWNER without dialling and cr
     const c2 = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
     const t1 = Date.now();
     await assert.rejects(c2.control('run.stop', { run_id: 'r1' }), (e) => { assert.strictEqual(e.code, 'E_NO_OWNER'); return true; });
-    assert.ok(Date.now() - t1 < 200, `control took ${Date.now() - t1} ms against a lock naming a dead pid`);
+    assert.ok(Date.now() - t1 < 3000, `control took ${Date.now() - t1} ms against a lock naming a dead pid`);
     await c2.close();
   } finally { cleanup(dir); }
 });

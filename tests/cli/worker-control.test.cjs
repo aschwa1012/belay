@@ -306,7 +306,9 @@ test('worker stop: a pipe that accepts and never answers is named within the bou
     // + max(pauseBoundMs(), resumeBoundMs())=145000 (resume now carries failNoReady's 15000) = 158000
     assert.match(r.receipt.reason, /did not answer worker\.stop within 158000 ms/);
     assert.match(r.receipt.reason, /may have acted/);
-    assert.ok(ms <= 158000 + 3000, `command took ${ms} ms, over the 158000+3000 ms bound`);
+    // The bound is the product's own, so a slow host adds only the CLI's start and the reply; the slack stays under
+    // this test's 180000 ms timeout, which an unbounded wait would hit.
+    assert.ok(ms <= 158000 + 12000, `command took ${ms} ms, over the 158000+12000 ms bound`);
   } finally {
     if (server) await new Promise((resolve) => server.close(resolve));
     if (core) {

@@ -168,7 +168,8 @@ test("worker kill: with a live run manager the adapter's detector lands the dead
     assert.strictEqual(r.receipt.row_after.state, 'dead', `the manager's own detector must have landed a dead row: ${JSON.stringify(r.receipt)}`);
     assert.match(r.receipt.row_after.death_established_by || '', /exit-event|pid-poll/);
     assert.match(r.receipt.row_after_established_by, /the adapter's detector wrote seq \d+ dead \(.+\) within \d+ ms/);
-    assert.ok(r.receipt.row_after_waited_ms < 8000, `row_after_waited_ms ${r.receipt.row_after_waited_ms} must be under the 8,000 ms bound`);
+    // The command waits at most DEATH_LAND_MS (about 7.5 s) for the row, then one more read; 15 s covers a slow read.
+    assert.ok(r.receipt.row_after_waited_ms < 15000, `row_after_waited_ms ${r.receipt.row_after_waited_ms} must be under the 15,000 ms bound`);
     assert.strictEqual(r.receipt.pid_alive_after, false);
     // build step 6c item 8: ms_to_dead is measured from before killTree, so it is never shorter than
     // the tree kill's own ms whenever the tree kill actually terminated something.

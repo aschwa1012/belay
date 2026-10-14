@@ -58,6 +58,8 @@ const fwd = (p) => String(p).split('\\').join('/');
 
 // 5b-4: what it bounds is exit-hold.cjs's: the detector's landing, pid-poll exit-event hold included. Not a spec key.
 const { DEATH_GRACE_MS, ORPHAN_GRACE_MS } = require('./exit-hold.cjs');
+// Tests only: each new hold moment as a JSON line, so a test acts on what a poll saw rather than guessing when it ran.
+const HOLDS_FILE = process.env.BELAY_TEST_MODE === '1' ? (process.env.BELAY_TEST_HOLDS_FILE || null) : null;
 
 // spec: { worktree, promptText, orchestratorDir, model, allowedTools, startupTimeoutMs, timeoutMs,
 //         mcpToolTimeoutMs, pollMs, closeGraceMs }. onAttached({ pid }) performs run.attach as the
@@ -184,7 +186,9 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   // A moment, not a tick (5a-2, 5b-4, 6f design item 1, 6f-2 design item 1): `holdRecorder` (wake.cjs)
   // does the actual work now, keeping this file under its own line budget; `live` is 6f-2's own addition.
   function recordHold(turn, busy, awaiting, establishedBy, pendingDeaths, parked, live) {
+    const n = state.holds.length;
     holdRecorder.record(state.holds, Date.now() - t0, turn, busy, awaiting, establishedBy, pendingDeaths, parked, live);
+    if (HOLDS_FILE && state.holds.length > n) { try { fs.appendFileSync(HOLDS_FILE, JSON.stringify(state.holds[n]) + '\n'); } catch { /* best effort */ } }
   }
 
   // The unanswered-write bookkeeping, its two answers and its expiry at `mcp_tool_timeout_ms` (the

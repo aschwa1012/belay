@@ -133,6 +133,10 @@ test('run pause: a worker\'s turn ending while the run is paused is held, not wr
     const p = await cliAsync(['pause', ctx.runId], ctx.dataDir);
     assert.strictEqual(p.status, 0, `${p.stdout} / ${p.stderr}`);
     assert.strictEqual(p.receipt.workers.length, 1, JSON.stringify(p.receipt));
+    // A wake is held only when the run's own poll (poll_ms 300) sees w1's row while the run is paused; a fast host
+    // ran pause and resume inside one poll interval and held nothing. Nothing outside the run shows a held wake,
+    // so wait out several of its polls: its own fixed timer, not a guess at another process's speed.
+    await sleep(1200);
 
     const r = await cliAsync(['resume', ctx.runId], ctx.dataDir);
     assert.strictEqual(r.status, 0, `${r.stdout} / ${r.stderr}`);
@@ -311,15 +315,17 @@ test('run pause: the timeout clock stops while paused and resume re-arms what re
   try {
     // A long answer delay keeps the orchestrator's own prompt turn open well past this test's own
     // steps, so the idle-close rule (not the timeout) never gets a chance to end the run first.
-    ctx = await startRun(dir, { timeout_ms: 2500 }, { FAKE_ANSWER_DELAY_MS: '6000' });
+    // timeout_ms leaves a slow runner room to start the pause CLI before the clock runs out; the paused wait
+    // below is sized from what remained, so the proof costs no more than that.
+    ctx = await startRun(dir, { timeout_ms: 10000 }, { FAKE_ANSWER_DELAY_MS: '60000' });
     await sleep(300);
 
     const p = await cliAsync(['pause', ctx.runId], ctx.dataDir);
     assert.strictEqual(p.status, 0, `${p.stdout} / ${p.stderr}`);
     assert.ok(p.receipt.timeout && Number.isInteger(p.receipt.timeout.remaining_ms), JSON.stringify(p.receipt.timeout));
-    assert.ok(p.receipt.timeout.remaining_ms > 0 && p.receipt.timeout.remaining_ms <= 2500, JSON.stringify(p.receipt.timeout));
+    assert.ok(p.receipt.timeout.remaining_ms > 0 && p.receipt.timeout.remaining_ms <= 10000, JSON.stringify(p.receipt.timeout));
 
-    await sleep(4000); // longer than the original 2,500 ms timeout_ms — proves the clock is stopped
+    await sleep(p.receipt.timeout.remaining_ms + 1000); // longer than what remained — proves the clock is stopped
     assert.strictEqual(ctx.cliProc.proc.exitCode, null, 'a paused run\'s timeout must not have fired');
 
     const r = await cliAsync(['resume', ctx.runId], ctx.dataDir);

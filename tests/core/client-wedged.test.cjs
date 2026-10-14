@@ -59,6 +59,7 @@ test('a wedged owner: 8 reads in one process cost one dial and finish fast, each
     const ms = Date.now() - t0;
     // The dial count below is the strict regression check. The time bound only has to stay far under what a regression
     // costs without the back-off (every read dialling a wedged owner, up to 8 x 30 s); a fixed 2.5 s failed under full-suite load.
+    // The worst hosted-runner time seen was about 3 s, so 20 s keeps a wide margin and stays far under 8 x 30 s.
     assert.ok(ms < 20000, `8 reads took ${ms} ms`);
     assert.ok(dials <= 1, `${dials} dials; only the first read may dial a wedged owner`);
     assert.ok(vias.every(v => /owner unresponsive \(answer timed out at 300 ms; pid \d+, .*\); read from copy until \d{4}-/.test(v)), JSON.stringify(vias));
@@ -190,7 +191,7 @@ test('during the backoff a vector read still pings, and against a wedged owner f
   const dir = sandbox();
   let child = null;
   try {
-    child = await startOwner('owner-wedged.cjs', dir, ['12000']);
+    child = await startOwner('owner-wedged.cjs', dir, ['30000']);
     await new Promise(r => setTimeout(r, 700));
     unresponsive.reset();
     const c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
@@ -203,9 +204,12 @@ test('during the backoff a vector read still pings, and against a wedged owner f
         assert.match(e.message, /did not answer a 300 ms ping/);
         return true;
       });
-      assert.ok(Date.now() - t0 < 4000, `took ${Date.now() - t0} ms`);
+      // 300 ms ping plus one 2,000 ms re-ping is the nominal cost; the bug is a wait out of the 30 s wedge (or a 30 s dial).
+      // The wedge outlasts the bound for both calls, so 10 s separates the two on a slow runner.
+      assert.ok(Date.now() - t0 < 10000, `took ${Date.now() - t0} ms`);
     }
     await c.close();
+    if (child.exitCode === null) { try { process.kill(child.pid); } catch { /* gone */ } } // the exact pid this test spawned
   } finally {
     if (child && child.exitCode === null) { try { process.kill(child.pid); } catch { /* gone */ } }
     cleanup(dir);
@@ -237,7 +241,7 @@ test('a healthy owner: every read is dialled once and answered by the owner, nev
   }
 });
 
-test('a process that does 6 reads against a wedged owner and returns from main exits within 3 s', async () => {
+test('a process that does 6 reads against a wedged owner and returns from main exits within 10 s', async () => {
   const dir = sandbox();
   let owner = null;
   try {
@@ -255,7 +259,8 @@ test('a process that does 6 reads against a wedged owner and returns from main e
     // the machine's, not belay's.
     const ms = exitedAt - j.main_done_at;
     assert.strictEqual(j.reads.length, 6);
-    assert.ok(ms < 3000, `the reader process took ${ms} ms to exit after main returned (reads: ${JSON.stringify(j.reads)})`);
+    // A normal exit is well under a second; the bug is ~30 s. A hosted runner needed 3 s once, so the bound is 10 s.
+    assert.ok(ms < 10000, `the reader process took ${ms} ms to exit after main returned (reads: ${JSON.stringify(j.reads)})`);
   } finally {
     if (owner && owner.exitCode === null) { try { process.kill(owner.pid); } catch { /* gone */ } }
     cleanup(dir);

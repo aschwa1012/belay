@@ -281,9 +281,9 @@ test('the lock says listening:false until the pipe is up, and a client dialling 
   }
 });
 
-test('a read gives the owner 300 ms, and a search the owner must embed gives it 5,000 ms', async () => {
+test('a read gives the owner 300 ms, and a search the owner must embed gives it the long vector bound', async () => {
   const dir = sandbox();
-  const DELAY = 900; // longer than the read budget, well inside the search budget
+  const DELAY = 3000; // longer than the read budget (300 ms) by enough that a slow runner's copy read still beats it
   const conns = new Set();
   // An owner that answers everything, slowly. Not wedged: the difference between the two budgets is
   // only visible against a server that does eventually reply.
@@ -333,7 +333,8 @@ test('a read gives the owner 300 ms, and a search the owner must embed gives it 
     const searchMs = Date.now() - t1;
     assert.strictEqual(found.results[0].id, 'answered-by-the-owner', 'the answer came from the owner, not a copy');
     assert.ok(searchMs >= DELAY, `the search waited for the owner, ${searchMs} ms`);
-    assert.ok(searchMs < 5000, `and still inside its own budget, ${searchMs} ms`);
+    // A search that gave up at the read's 300 ms would not have been answered at all; this only rules out a hang.
+    assert.ok(searchMs < 30000, `and answered long before the 100,000 ms vector bound, ${searchMs} ms`);
     await reader.close();
   } finally {
     try { fs.rmSync(path.join(dir, 'owner.lock'), { recursive: true, force: true }); } catch { /* gone */ }
@@ -424,7 +425,8 @@ test('a wedged owner times out instead of hanging, and a read falls back to the 
       assert.strictEqual(e.detail.timeout_ms, 150);
       return true;
     });
-    assert.ok(Date.now() - t0 < 3000, 'the deadline must fire, not the test runner');
+    // The deadline is 150 ms; the bug is no deadline at all (a hang), so 10 s is far under it and clear of a slow runner.
+    assert.ok(Date.now() - t0 < 10000, 'the deadline must fire, not the test runner');
 
     // api.md §6: a deadline says nothing about whether the owner ran the call. On a write the row may
     // already be committed, and these tables are append-only, so a blind retry would double it. The

@@ -79,15 +79,19 @@ test('a git killed at its 5000 ms timeout 250 ms late still lands its head_error
     assert.strictEqual(last.head_sha, null);
     assert.match(String(last.head_error), /timed out after 5000 ms/, JSON.stringify(last.head_error));
     assert.ok(!(w.lastError && w.lastError.where === 'after-shutdown'), JSON.stringify(w.lastError));
-    assert.ok(ms < 6500, `shutdown took ${ms} ms`);
+    // The drain is bounded at HEAD_DRAIN_MS (5500). Here git calls back at about 5250 ms, so an unbounded drain would end
+    // near 5.3 s; only a drain that ran twice (about 11,000 ms) is told apart here, and the never-calls-back test below
+    // pins the bound itself. 9000 leaves a slow runner 3,500 ms of lag over the bound and still fails that. (6500 left 1,000.)
+    assert.ok(ms < 9000, `shutdown took ${ms} ms`);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('a git that never calls back holds shutdown for no more than 6500 ms', async () => {
+test('a git that never calls back holds shutdown for one drain, not two', async () => {
   const dir = makeDir();
   try {
     killLagMs = Infinity;
     const { ms } = await runShutdown(dir);
-    assert.ok(ms <= 6500, `shutdown took ${ms} ms`);
+    // Same separation as above: the bound is 5500 ms, a second drain would make it 11,000 ms.
+    assert.ok(ms <= 9000, `shutdown took ${ms} ms`);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

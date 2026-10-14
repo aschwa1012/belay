@@ -40,8 +40,10 @@ test("stop control: ms_to_exit and every worker-phase timestamp measure from the
   sc.attach(hook);
   const receipt = await sc.handle({ run_id: 'r1', caller: { pid: 111 } });
 
-  assert.ok(receipt.orchestrator.ms_to_exit >= STOP_DELAY_MS && receipt.orchestrator.ms_to_exit < 1000,
-    `ms_to_exit ${receipt.orchestrator.ms_to_exit} was not between ${STOP_DELAY_MS} and 1,000`);
+  // The upper bound separates the stop's own t0 from the child's lifetime, which the stub reports as 987,654 ms; 1000 sat
+  // 140 ms over what a hosted runner took for this whole test, so it is 30,000.
+  assert.ok(receipt.orchestrator.ms_to_exit >= STOP_DELAY_MS && receipt.orchestrator.ms_to_exit < 30000,
+    `ms_to_exit ${receipt.orchestrator.ms_to_exit} was not between ${STOP_DELAY_MS} and 30,000`);
 
   assert.strictEqual(receipt.workers.length, 1);
   const m = receipt.workers[0].established_by.match(/at (\d+) ms after the stop began/);

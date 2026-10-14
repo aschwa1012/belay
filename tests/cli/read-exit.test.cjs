@@ -12,7 +12,9 @@ const { ROOT, CLI, sandbox, cleanup } = require('./stop-helpers.cjs');
 const { finish, COMMANDS } = require('../../src/cli/belay.cjs');
 
 const WEDGED = `${ROOT}/tests/cli/fakes/wedged-owner.cjs`;
-const EXIT_BOUND_MS = 3000;
+// What this catches is a linger of up to 30 s. A read here waits out its own dial to the wedged owner, so one run
+// takes about a second on a developer machine and was seen at 6 s on a loaded hosted runner; 10 s keeps both apart.
+const EXIT_BOUND_MS = 10000;
 
 function startWedged(dataDir) {
   return new Promise((resolve, reject) => {

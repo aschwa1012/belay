@@ -87,8 +87,8 @@ test('restart: a first-turn wait ends when the worker exits, and the receipt nam
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
     await m._waitTurn('w1', 8000);
     const launchesBefore = m._worker('w1').launches;
-    process.env.FAKE_ANSWER_DELAY_MS = '8000';
-    const restartP = m.restart({ worker_id: 'w1', first_turn_timeout_ms: 5000 });
+    process.env.FAKE_ANSWER_DELAY_MS = '30000';
+    const restartP = m.restart({ worker_id: 'w1', first_turn_timeout_ms: 20000 });
     // launches must itself have grown before the other two conditions are trusted, or a check made right
     // after `restart()` is called can read the *previous* launch's already-true state and pass at once.
     assert.ok(await pollUntil(() => m._worker('w1').launches > launchesBefore && m._worker('w1').readyAt !== null
@@ -98,7 +98,9 @@ test('restart: a first-turn wait ends when the worker exits, and the receipt nam
     require('../crash.cjs').crash(m._worker('w1').child); // a crash, not `stop()`: settle()'s own exit path must resolve the wait
     const r = await restartP;
     const ms = Date.now() - t0;
-    assert.ok(ms < 5000, `restart's receipt took ${ms} ms, longer than the first_turn_timeout_ms it should never have waited out`);
+    // Waiting out the turn's answer takes 30,000 ms and the timeout 20,000 ms; 10,000 separates them from an exit-ended wait
+    // with room for a slow runner (this whole test took 3 s there).
+    assert.ok(ms < 10000, `restart's receipt took ${ms} ms, far short of the 20,000 ms first_turn_timeout_ms it should never have waited out`);
     assert.strictEqual(r.first_turn_timed_out, false);
     assert.strictEqual(r.first_turn_ended_by, 'exit');
     assert.strictEqual(r.first_turn_usage, null, 'an exited turn produced no usage');

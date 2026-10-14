@@ -113,7 +113,7 @@ test('BELAY_FAKE_CORE is refused unless it names a fixture under this repo\'s te
   assert.match(r.err, /BELAY_FAKE_CORE must name a fixture under/);
 });
 
-test('initialize answers under 1,000 ms and leaves the data dir empty', async (t) => {
+test('initialize answers without opening a store and leaves the data dir empty', async (t) => {
   const parent = sandboxDir('init');
   const data = `${parent}/store`;   // deliberately not created; opening the store would create it
   const a = launch({ role: 'orchestrator', data });
@@ -124,7 +124,9 @@ test('initialize answers under 1,000 ms and leaves the data dir empty', async (t
   console.log(`initialize: ${ms.toFixed(1)} ms`);
   assert.strictEqual(r.result.serverInfo.name, 'belay');
   assert.strictEqual(r.result.protocolVersion, '2025-06-18');
-  assert.ok(ms < 1000, `initialize took ${ms.toFixed(1)} ms`);
+  // The dir and sandbox assertions below are the strict check that initialize opens no store. The time bound only has to
+  // stay under what opening one costs; a loaded host took 1.07 s for the whole test, so the bound is 5 s.
+  assert.ok(ms < 5000, `initialize took ${ms.toFixed(1)} ms`);
   assert.strictEqual(fs.existsSync(data), false, 'initialize created the data dir');
   assert.deepStrictEqual(fs.readdirSync(parent), [], 'initialize wrote into the sandbox');
   // tools/list is also answerable without a store.
@@ -222,11 +224,12 @@ test('worker_spawn takes seconds and does not block status or the other calls', 
   t.after(async () => { await a.close(); a.kill(); });
   await a.initialize();
   const t0 = Date.now();
-  const spawning = a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'go', __delay_ms: 900 });
+  const spawning = a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'go', __delay_ms: 4000 });
   const st = await a.call('status', {});
   const statusMs = Date.now() - t0;
   assert.strictEqual(st.isError, false);
-  assert.ok(statusMs < 700, `status answered in ${statusMs} ms while worker_spawn was still running`);
+  // The spawn holds for 4 s; a status that waited on it would take at least that. A hosted runner needed 100 ms, so 2.5 s.
+  assert.ok(statusMs < 2500, `status answered in ${statusMs} ms while worker_spawn was still running`);
   const sp = await spawning;
   const spawnMs = Date.now() - t0;
   assert.strictEqual(sp.isError, false);

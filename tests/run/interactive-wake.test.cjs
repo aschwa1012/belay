@@ -121,7 +121,8 @@ test('wake-stream: no line for the heartbeat timeout is exit 1; an unreachable p
     assert.strictEqual(res.code, 1);
     assert.strictEqual(res.json.ended, 'no heartbeat');
     assert.match(res.text, /no line from .* for 300 ms/);
-    assert.ok(Date.now() - t0 < 3000);
+    // the parsed timeout is 300 ms; 10,000 ms rules out a hang and the 15,000 ms default (HEARTBEAT_TIMEOUT_MS) being armed
+    assert.ok(Date.now() - t0 < 10000, `took ${Date.now() - t0} ms`);
   } finally { silent.close(); }
   // a slow trickle that never goes 300 ms silent outlives the timeout: every line re-arms it
   const socks = [];

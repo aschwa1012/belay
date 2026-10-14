@@ -258,7 +258,7 @@ test('stop: with no live run it exits 1, names the last run\'s id and exit reaso
       assert.match(r.receipt.last.exit_reason, /stdin closed/);
       assert.deepStrictEqual(listRecursive(dataDir), before, 'stop changed the data dir');
       assert.ok(!fs.existsSync(`${dataDir}/owner.lock`), 'owner.lock appeared');
-      assert.ok(ms < 5000, `stop took ${ms} ms`);
+      assert.ok(ms < 20000, `stop took ${ms} ms`); // a read; this only rules out a hang. An owner election is caught by the owner.lock and data-dir asserts above
     } finally {
       // 5c-2 fix (round-2 review, note): the exit wait above can fail (a loaded host past 15,000 ms)
       // and leave this run process, its orchestrator child and its owner.lock behind — every spawned

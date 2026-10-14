@@ -12,7 +12,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 
 const {
-  ROOT, CLI, sleep, sandbox, cleanup, makeSpec, runCli, connectOrchestratorCore,
+  ROOT, CLI, sleep, sandbox, cleanup, makeSpec, runCli, connectOrchestratorCore, waitUntil,
 } = require('./stop-helpers.cjs');
 const { createRunManager, createWorkerControl } = require('../../src/run/index.cjs');
 const { createRunPauseControl } = require('../../src/run/run-pause.cjs');
@@ -80,7 +80,11 @@ test('run: a park whose stopping row lands before the orchestrator\'s turn ends 
   const spawnedPids = [];
   let ctx;
   try {
-    ctx = await startRun(dir, {}, { FAKE_ANSWER_DELAY_MS: '300' });
+    // The orchestrator's prompt turn is held until w1's stopping row has landed, then released, so the turn ends
+    // with that row in place by construction. A fixed 300 ms answer let a fast host idle both before the park
+    // began, and the idle rule (correctly) closed the run.
+    const gate = `${dir}/orchestrator-gate`;
+    ctx = await startRun(dir, {}, { FAKE_ANSWER_GATE_FILE: gate });
     process.env.FAKE_IGNORE_STDIN_END = '1';
     process.env.FAKE_IGNORE_INTERRUPT = '1';
     const row = await ctx.m.spawn({ substrate: 'claude-code', worktree: workerWorktree(dir, 'w1'), prompt: 'hello', worker_id: 'w1' });
@@ -99,6 +103,7 @@ test('run: a park whose stopping row lands before the orchestrator\'s turn ends 
     assert.strictEqual(ready.turns >= 1 && ready.mid_turn === 0, true, `w1 never reached an idle turn: ${JSON.stringify(ready)}`);
 
     const INTERRUPT_TIMEOUT_MS = 1200; // FAKE_IGNORE_INTERRUPT never answers it: sendInterrupt holds this whole bound.
+    const pauseAt = Date.now();
     const pauseP = ctx.m.pause({ worker_id: 'w1', by: 'operator:1', interrupt_timeout_ms: INTERRUPT_TIMEOUT_MS, exit_timeout_ms: 5000 });
 
     // Step 1b's write must land at the park's acceptance, well inside the interrupt bound doStop's own
@@ -115,7 +120,12 @@ test('run: a park whose stopping row lands before the orchestrator\'s turn ends 
     // The load-bearing assertion: nothing but this `stopping` row (a live pid, not yet paused, not
     // mid-turn) holds the idle-close open here (plant P2: the run closes partway through this same
     // bound instead, since w1's row reads plain `running` — not mid-turn, not stopping, not parked).
-    await sleep(INTERRUPT_TIMEOUT_MS - 300);
+    fs.writeFileSync(gate, ''); // the orchestrator now ends its turn, with w1's row reading stopping
+    const idle = await waitUntil(() => {
+      try { return /"type":"result"/.test(fs.readFileSync(`${ctx.orchestratorDir}/stream.jsonl`, 'utf8')); } catch { return false; }
+    }, 4000, 25);
+    assert.ok(idle, "the orchestrator's turn never ended once the gate opened");
+    await sleep(Math.max(0, pauseAt + INTERRUPT_TIMEOUT_MS - 300 - Date.now())); // polls of an idle orchestrator, still inside the bound
     assert.strictEqual(ctx.cliProc.proc.exitCode, null, 'the run must stay open through the park, not end under a worker with no held wake');
 
     const paused = await pauseP;

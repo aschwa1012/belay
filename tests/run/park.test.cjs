@@ -272,33 +272,37 @@ test('resume: a parked worker is relaunched on its session with the resume line 
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core);
-  process.env.FAKE_ANSWER_DELAY_MS = '8000';
+  // A gate file holds every turn of this test's workers (the first, interrupted one and the resumed one) until
+  // the test releases it, so "resume does not await the first turn" is asserted against a turn that is
+  // provably still running when resume returns, not against a wall-clock guess.
+  const gate = path.join(sb.data, 'answer-gate').replace(/\\/g, '/');
+  process.env.FAKE_ANSWER_GATE_FILE = gate;
   try {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1', task_id: 't-1' });
     await sleep(300);
     const paused = await m.pause({ worker_id: 'w1', by: 'operator:1' });
     assert.strictEqual(paused.interrupted, true);
     const sessionBefore = paused.session_id;
-    delete process.env.FAKE_ANSWER_DELAY_MS; // the resumed turn answers at once
-    const t0 = Date.now();
     const r = await m.resume({ worker_id: 'w1', by: 'operator:2' });
-    const resumeMs = Date.now() - t0;
     assert.strictEqual(r.resumed, true);
     assert.strictEqual(r.interrupted, true);
     assert.strictEqual(r.session_id, sessionBefore);
     assert.notStrictEqual(r.new_pid, paused.row.pid);
     assert.strictEqual(r.first_turn_awaited, false);
     assert.strictEqual(m._worker('w1').op, null, 'the slot must be free once resume resolves, before the turn ends');
-    // m.wait, not the raw _waitTurn: the resumed turn answers at once and can end before this line runs; wait
+    // The resumed turn is gated, so it cannot have answered yet: resume returned while it was still running.
+    assert.ok(!fs.existsSync(gate));
+    assert.doesNotMatch(m._worker('w1').lastAssistantText, /paused you a moment ago/, 'the resumed turn had already ended when resume returned');
+    fs.writeFileSync(gate, '');
+    // m.wait, not the raw _waitTurn: the released turn can end before this line runs; wait
     // answers `already` for a turn that has landed, where the bare per-call waiter would miss it.
     const waited = await m.wait({ worker_ids: ['w1'], timeout_ms: 8000 });
     assert.strictEqual(waited.timed_out, false, 'the resumed worker\'s next turn never ended');
-    assert.ok(resumeMs < 2000, `resume took ${resumeMs} ms, which suggests it waited for the turn`);
     const w = m._worker('w1');
     assert.match(w.lastAssistantText, /paused you a moment ago/);
     assert.match(w.lastAssistantText, /t-1/);
   } finally {
-    delete process.env.FAKE_ANSWER_DELAY_MS;
+    delete process.env.FAKE_ANSWER_GATE_FILE;
     await teardown({ m, sb });
   }
 });

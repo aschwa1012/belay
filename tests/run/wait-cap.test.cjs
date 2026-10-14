@@ -1,7 +1,8 @@
 'use strict';
 // wait under MCP_TOOL_TIMEOUT — ADR 0029 decision 5. A wait longer than the client's tool timeout fails at
 // the client, so the adapter caps it at that timeout less 10,000 ms (at least 1,000 ms) and the answer
-// names the cap. Every case sets the variable itself and restores process.env in a finally.
+// names the cap. The upper bounds on waited_ms only separate the capped wait from the uncapped (600,000 ms) or margin-less one; a
+// hosted runner adds seconds of lag. Every case sets the variable itself and restores process.env in a finally.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -52,7 +53,7 @@ test('a request above the cap comes back timed_out near the cap, naming requeste
     await withEnv('12000', async () => {
       const r = await m.wait({ worker_ids: ['c1'], timeout_ms: 600000 });
       assert.equal(r.timed_out, true);
-      assert.ok(r.waited_ms >= 1900 && r.waited_ms < 4000, `waited ${r.waited_ms} ms, expected near 2000`);
+      assert.ok(r.waited_ms >= 1900 && r.waited_ms < 10000, `waited ${r.waited_ms} ms, expected near 2000`);
       assert.equal(r.timeout_capped.requested_ms, 600000);
       assert.equal(r.timeout_capped.used_ms, 2000);
       assert.match(r.timeout_capped.by, /MCP_TOOL_TIMEOUT 12000 ms less a 10,000 ms margin \(ADR 0029\)/);
@@ -64,10 +65,10 @@ test('a request above the cap comes back timed_out near the cap, naming requeste
 test('a request under the cap is unchanged and carries no timeout_capped', async () => {
   const m = await midTurn('c2');
   try {
-    await withEnv('12000', async () => {
+    await withEnv('30000', async () => { // cap 20,000: a 300 ms request that was raised to the cap would wait 20 s
       const r = await m.wait({ worker_ids: ['c2'], timeout_ms: 300 });
       assert.equal(r.timed_out, true);
-      assert.ok(r.waited_ms >= 280 && r.waited_ms < 1500, `waited ${r.waited_ms} ms`);
+      assert.ok(r.waited_ms >= 280 && r.waited_ms < 10000, `waited ${r.waited_ms} ms`);
       assert.equal('timeout_capped' in r, false);
     });
   } finally { await m.shutdown(); }
@@ -79,7 +80,7 @@ test('the default request (110,000 ms) is capped too: cap 15,000 gives 5,000', a
     await withEnv('15000', async () => {
       const r = await m.wait({ worker_ids: ['c3'] });
       assert.equal(r.timed_out, true);
-      assert.ok(r.waited_ms >= 4900 && r.waited_ms < 7000, `waited ${r.waited_ms} ms, expected near 5000`);
+      assert.ok(r.waited_ms >= 4900 && r.waited_ms < 12000, `waited ${r.waited_ms} ms, expected near 5000`);
       assert.equal(r.timeout_capped.requested_ms, 110000);
       assert.equal(r.timeout_capped.used_ms, 5000);
     });
@@ -93,7 +94,7 @@ test('the floor is 1,000 ms: a cap at or under 10,000 still waits 1,000', async 
       const r = await m.wait({ worker_ids: ['c4'], timeout_ms: 600000 });
       assert.equal(r.timed_out, true);
       assert.equal(r.timeout_capped.used_ms, 1000);
-      assert.ok(r.waited_ms >= 900 && r.waited_ms < 3000, `waited ${r.waited_ms} ms`);
+      assert.ok(r.waited_ms >= 900 && r.waited_ms < 4500, `waited ${r.waited_ms} ms`);
     });
   } finally { await m.shutdown(); }
 });
@@ -136,7 +137,7 @@ test('absent, empty, garbage, zero and negative values leave a wait uncapped', a
         const r = await m.wait({ worker_ids: ['c6'], timeout_ms: 200 });
         assert.equal(r.timed_out, true, `value ${JSON.stringify(v)}`);
         assert.equal('timeout_capped' in r, false, `value ${JSON.stringify(v)} must not cap`);
-        assert.ok(r.waited_ms >= 180 && r.waited_ms < 1500, `value ${JSON.stringify(v)}: waited ${r.waited_ms} ms`);
+        assert.ok(r.waited_ms >= 180 && r.waited_ms < 5000, `value ${JSON.stringify(v)}: waited ${r.waited_ms} ms`);
       });
     }
     // Uncapped is also the shape of an event answer: no key.
