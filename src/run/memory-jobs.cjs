@@ -1,6 +1,6 @@
 'use strict';
 // memory-jobs.cjs — the memory work that follows a turn and the work that closes a run (ADR 0041 decisions
-// 4 to 6, ADR 0043 decision 2): a mechanical summary once per (task, worker), project copies, usage rows from
+// 4 to 6, ADR 0043 decision 2): a mechanical summary once per (task, worker), the worker's own rows moved to the project, usage rows from
 // the turn's own numbers, and a bounded wrap-up per task and per run.
 //
 // Every entry point reads the lever first and returns before it touches the core when the lever is off, so a
@@ -18,6 +18,7 @@ const RUN_END_BOUND_MS = 5000; // atRunEnd's whole budget, the give-up record in
 const GIVE_UP_MS = 500;
 const WRAPUP_MAX = 600;
 const LIST_LIMIT = 200;
+const LIST_MAX = 500; // memory.list's page bound
 const OBS_CAP = 2000; // observations read for one summary; the summary bounds what it keeps
 const GET_MANY_MAX = 50; // memory.get_many takes 1 to 50 ids
 // The summary's own framing: belay assembled it, and every field marked worker-stated is the worker's unchecked words.
@@ -37,7 +38,7 @@ const STATE = new WeakMap();
 function stateOf(ctx) {
   let s = STATE.get(ctx);
   if (!s) {
-    s = { summaryDone: new Set(), summaryFailed: new Set(), wrapDone: new Set(), wrapFailed: new Set(), inflight: new Map(), summaryIds: new Map() };
+    s = { summaryDone: new Set(), summaryFailed: new Set(), wrapDone: new Set(), wrapFailed: new Set(), inflight: new Map(), summaryIds: new Map(), promoteDone: new Set() };
     STATE.set(ctx, s);
   }
   return s;
@@ -118,31 +119,29 @@ async function usageJob(J, snap) {
   }
 }
 
-// ---- project copies (ADR 0041 decision 5) ---------------------------------------------------------------
-async function copyToProject(J, row, workerId, taskId) {
-  const ns = `project/${J.lv.project}`;
-  try {
-    const out = await call(J, () => J.core.memory.store({
-      namespace: ns, type: row.type, title: row.title, text: row.text, body: row.body, embed: false, source: 'harness',
-      task_id: taskId || undefined, worker_id: workerId || undefined, provenance: `copy-of:${row.id}`,
-    }));
-    await event(J, { kind: 'project_write', ok: true, worker_id: workerId, task_id: taskId || undefined, row_ids: [out.id], newest_row_id: out.id, key: `copy-of:${row.id}`, message: `copied ${row.id} to ${ns}` });
-  } catch (e) {
-    await failure(J, 'project_write', { worker_id: workerId, task_id: taskId || undefined, key: `copy-of:${row.id}`, row_ids: [row.id] }, e);
-  }
-}
-async function projectCopyOfTurn(J, snap, turnRowId) {
-  if (!turnRowId) return; // no observation row for this turn (the observation lever is off, or its store failed and was recorded)
-  try {
-    const row = await call(J, () => J.core.memory.get({ id: turnRowId, view: 'full' }));
-    if (!row || row.type !== 'observation') {
-      await event(J, { kind: 'project_write', ok: false, code: 'E_ARGS', worker_id: snap.workerId, task_id: snap.taskId || undefined, row_ids: [turnRowId], message: `row ${turnRowId} is not an observation, so it was not copied` });
-      return;
+// ---- what reaches the project (ADR 0044 decision 2) -----------------------------------------------------
+// The summary is written straight into the project (below) and observations stay in the run. A worker's own rows
+// move there when its task ends: `memory.promote` changes the namespace and keeps the id, and core decides which
+// rows qualify and records each move. This only names the candidates: the task's rows in the run, by this worker.
+const wantsProject = (lv) => !!(lv.project_writes && lv.project);
+async function ensurePromote(J, taskId, workerId) {
+  const { s } = J;
+  const key = `${taskId}|${workerId}`;
+  if (!workerId || s.promoteDone.has(key)) return null;
+  return once(s, 'promote:' + key, async () => {
+    if (s.promoteDone.has(key)) return null;
+    try {
+      const got = await call(J, () => J.core.memory.list({ filter: { task_id: taskId }, view: 'index', order: 'newest', limit: LIST_MAX }));
+      const ids = ((got && got.rows) || []).filter((r) => r.written_by === `worker:${workerId}`).map((r) => r.id);
+      s.promoteDone.add(key);
+      if (!ids.length) return null;
+      return await call(J, () => J.core.memory.promote({ ids, to: 'project', task_id: taskId, worker_id: workerId }));
+    } catch (e) {
+      s.promoteDone.add(key);
+      await failure(J, 'project_write', { worker_id: workerId, task_id: taskId, key: `promote:${taskId}|${workerId}` }, e);
+      return null;
     }
-    await copyToProject(J, row, snap.workerId, snap.taskId);
-  } catch (e) {
-    await failure(J, 'project_write', { worker_id: snap.workerId, task_id: snap.taskId || undefined, row_ids: [turnRowId] }, e);
-  }
+  });
 }
 
 // ---- summaries (ADR 0041 decision 4) --------------------------------------------------------------------
@@ -242,15 +241,16 @@ function ensureSummary(J, taskId, workerId, { taskRow, retry } = {}) {
       const title = typeof result.title === 'string' && result.title ? result.title : `summary: task ${taskId} (no findings stated)`;
       const body = { v: 2, ...result.fields, generator: result.generator };
       const text = render(result.fields, result.generator);
+      // With project writes on the summary goes straight into the project: no run original and no copy (ADR 0044 decision 2).
+      const toProject = wantsProject(J.lv);
       const stored = await call(J, () => J.core.memory.store({
+        ...(toProject ? { namespace: `project/${J.lv.project}` } : {}),
         type: 'summary', title, text, body,
         embed: false, source: 'summariser', task_id: taskId, worker_id: workerId || undefined, tags: [taskId, workerId],
       }));
       s.summaryDone.add(key); s.summaryFailed.delete(key); s.summaryIds.set(key, stored.id);
       await event(J, { kind: 'summary', ok: true, worker_id: workerId, task_id: taskId, row_ids: [stored.id], newest_row_id: stored.id, bytes: Buffer.byteLength(text, 'utf8'), sha256: sha(text) });
-      if (J.lv.project_writes && J.lv.project) {
-        await copyToProject(J, { id: stored.id, type: 'summary', title, text, body }, workerId, taskId);
-      }
+      if (toProject) await event(J, { kind: 'project_write', ok: true, worker_id: workerId, task_id: taskId, row_ids: [stored.id], newest_row_id: stored.id, key: `summary:${stored.id}`, message: `wrote ${stored.id} to project/${J.lv.project}` });
       return stored.id;
     } catch (e) {
       s.summaryFailed.add(key);
@@ -338,8 +338,7 @@ async function runWrapup(J, tasks) {
 // Queues this turn's jobs on the worker's memory queue and returns at once. `observationId` is the observation
 // row the capture step stored for this turn (null when there is none); `snap` is the turn's numbers as they
 // stood at its turn_end (memory-capture.cjs `plan`), read from the record only by a caller that has none.
-function afterTurn(w, ctx, { turnEvents, checkpointId, turnRowId: turnRow = null, observationId = null, snap: given = null } = {}) {
-  const turnRowId = observationId; // the project copy is of the turn's observation row; the turn row (turnRow) is not an observation
+function afterTurn(w, ctx, { turnEvents, checkpointId, snap: given = null } = {}) {
   void turnEvents; void checkpointId; // the observation already carries what the events held
   if (closed(ctx)) { w.lastError = { where: 'after-shutdown', state: 'turn-memory-jobs' }; return; }
   if (ctx.memoryLevers && !anyJob(ctx.memoryLevers)) return;
@@ -351,17 +350,19 @@ function afterTurn(w, ctx, { turnEvents, checkpointId, turnRowId: turnRow = null
       if (!anyJob(lv)) return;
       const J = jobCtx(ctx, lv, w, null, true);
       if (lv.cost_ledger) await usageJob(J, snap);
-      if (lv.project_writes && lv.project) await projectCopyOfTurn(J, snap, turnRowId);
       const wantSummary = lv.summaries !== 'off';
-      if (!snap.taskId || !(wantSummary || lv.wrapup)) return;
+      const wantPromote = wantsProject(lv);
+      if (!snap.taskId || !(wantSummary || lv.wrapup || wantPromote)) return;
       const s = J.s;
       const sKey = `${snap.taskId}|${snap.workerId}`;
       const needSummary = wantSummary && !s.summaryDone.has(sKey) && !s.summaryFailed.has(sKey);
       const needWrap = lv.wrapup && !s.wrapDone.has(`task:${snap.taskId}`) && !s.wrapFailed.has(`task:${snap.taskId}`);
-      if (!needSummary && !needWrap) return;
+      const needPromote = wantPromote && !s.promoteDone.has(sKey);
+      if (!needSummary && !needWrap && !needPromote) return;
       const task = await call(J, () => J.core.task.get({ task_id: snap.taskId }));
       if (!task || !ENDED_TASK.has(task.state)) return;
       if (wantSummary) await ensureSummary(J, snap.taskId, snap.workerId, { taskRow: task });
+      if (wantPromote) await ensurePromote(J, snap.taskId, snap.workerId);
       if (lv.wrapup) await ensureWrapup(J, snap.taskId, { taskRow: task });
     } catch (e) {
       note(w, 'memory-jobs.afterTurn', e);
@@ -386,12 +387,20 @@ async function runEndWork(J, progress) {
   }
   progress.planned = [];
   if (lv.summaries !== 'off') for (const [t, wk] of pairs) progress.planned.push(`summary:${t.id}/${wk.id}`);
+  if (wantsProject(lv)) for (const [t, wk] of pairs) progress.planned.push(`promote:${t.id}/${wk.id}`);
   if (lv.wrapup) { for (const id of endedTasks) progress.planned.push(`wrapup:task:${id}`); progress.planned.push('wrapup:run'); }
   progress.done = new Set();
   if (lv.summaries !== 'off') {
     for (const [t, wk] of pairs) {
       progress.stage = `summary:${t.id}/${wk.id}`;
       await ensureSummary(J, t.id, wk.id, { taskRow: t, retry: true });
+      progress.done.add(progress.stage);
+    }
+  }
+  if (wantsProject(lv)) {
+    for (const [t, wk] of pairs) {
+      progress.stage = `promote:${t.id}/${wk.id}`;
+      await ensurePromote(J, t.id, wk.id);
       progress.done.add(progress.stage);
     }
   }

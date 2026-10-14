@@ -75,7 +75,7 @@ const BOTH = [
     description: 'Store one entry. Returns the row written: id, action inserted or updated, namespace, worker id. Refuses text past the embedder\'s window.',
     inputSchema: S({
       text: str('One self-contained statement'),
-      namespace: str('Defaults to this run'),
+      namespace: str('Defaults to this run; moved to the project when your task ends'),
       type: { type: 'string', enum: ['fact', 'episode', 'procedure'] },
       tags: strs(),
       provenance: str('Source, e.g. a path'),

@@ -57,6 +57,7 @@ const METHODS = {
   'memory.index': { roles: ALL, kind: 'read', fn: memoryIndex.index },
   'memory.corpus': { roles: ALL, kind: 'read', fn: lazy('./memory-corpus.cjs', 'corpus') },
   'memory.setStatus': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-status.cjs', 'setStatus') },
+  'memory.promote': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-promote.cjs', 'promote') },
   'memory.recordEvent': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-ledger.cjs', 'recordEvent') },
   'memory.events': { roles: ALL, kind: 'read', fn: lazy('./methods-ledger.cjs', 'events') },
   'usage.record': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-ledger.cjs', 'usageRecord') },

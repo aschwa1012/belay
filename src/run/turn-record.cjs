@@ -56,7 +56,8 @@ function queueMemory(w, e, ctx, memoryTextMax, checkpointId) {
   w.memoryQueue = (w.memoryQueue || Promise.resolve()).then(async () => {
     if (ctx.shutdownFlags && ctx.shutdownFlags.closed) { w.lastError = { where: 'after-shutdown', state: 'turn-memory' }; return; }
     let turnRowId = null;
-    if (text) {
+    // With observations on, the observation is the turn's only row (ADR 0044 decision 1): no turn row is written.
+    if (text && !(plan && plan.levers.observations)) {
       try {
         // With a memory lever on, the row names the worker it is about (the adapter writes it as the
         // orchestrator). With every lever off it is the base row, byte for byte.

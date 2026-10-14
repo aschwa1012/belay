@@ -131,7 +131,8 @@ test('the ok receipt carries the row id, the byte count and the sha256 of the st
   const row = await MC.storeObservation(w, { kind: 'turn_end' }, ctx, { levers: ON, events, dropped: 0, snap: MC.snapshotOf(w, { text: 'done é' }) });
   assert.strictEqual(row.id, 'row-1');
   const a = stored[0];
-  assert.deepStrictEqual([a.type, a.embed, a.source, a.turn, a.task_id], ['observation', false, 'harness', 5, 't9']);
+  assert.deepStrictEqual([a.type, a.embed, a.source, a.turn, a.task_id], ['observation', undefined, 'harness', 5, 't9']);
+  assert.deepStrictEqual([a.tags, a.provenance], [['t9', 'w1', 'turn:5'], 'worker:w1']);
   assert.strictEqual(a.body.kind, 'change');
   const ev = recorded[0];
   assert.strictEqual(ev.ok, 1);
