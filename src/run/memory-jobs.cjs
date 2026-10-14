@@ -179,16 +179,12 @@ function byTurn(x, y) {
   if (tx !== null && ty !== null && tx !== ty) return tx - ty;
   return (x.created_at || 0) - (y.created_at || 0) || (tx !== null && ty !== null ? 0 : String(x.id).localeCompare(String(y.id)));
 }
-// The worker's checkpoints for the task, oldest first, so `next` can come from one (ADR 0044 decision 4.4). The core
-// has no per-task checkpoint read, so this reads the run's checkpoint table through store.diff and filters. A failed
-// read is not hidden: it reaches the summary's notes by code.
+// The worker's newest checkpoint for the task, so `next` can come from it (ADR 0044 decision 4.4): one indexed row from
+// continuity.lastCheckpoint, not the run's tables. A failed read is not hidden: it reaches the summary's notes by code.
 async function workerCheckpoints(J, taskId, workerId) {
   try {
-    const got = await call(J, () => J.core.store.diff({ since_ms: 0, run_id: J.ctx.runId || undefined }));
-    const t = got && got.tables && got.tables.checkpoint;
-    const all = [...((t && t.added) || []), ...((t && t.updated) || [])];
-    const mine = all.filter((c) => c && c.source === 'worker' && c.task_id === taskId && (!workerId || c.worker_id === workerId));
-    return { checkpoints: mine.sort((x, y) => (x.seq || 0) - (y.seq || 0)), error: null };
+    const got = await call(J, () => J.core.continuity.lastCheckpoint({ task_id: taskId, worker_id: workerId || undefined, source: 'worker' }));
+    return { checkpoints: got && got.checkpoint ? [got.checkpoint] : [], error: null };
   } catch (e) { return { checkpoints: [], error: codeOf(e) }; }
 }
 const verdictOf = (task) => (task && task.state === 'done' ? 'accepted (task.evaluate)' : undefined);

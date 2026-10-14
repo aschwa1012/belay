@@ -34,7 +34,7 @@ function spyCore({ tasks = {}, workers = [], observations = [], checkpoints = []
       get: async (a) => { rec('task.get', a); await gate('task.get'); const t = tasks[a.task_id]; if (!t) throw failing('E_NOT_FOUND'); return t; },
       list: async (a) => { rec('task.list', a); await gate('task.list'); return { tasks: Object.values(tasks) }; },
     },
-    store: { diff: async (a) => { rec('store.diff', a); await gate('store.diff'); return { tables: { checkpoint: { added: checkpoints, updated: [] } } }; } },
+    continuity: { lastCheckpoint: async (a) => { rec('continuity.lastCheckpoint', a); await gate('continuity.lastCheckpoint'); const mine = checkpoints.filter((c) => c.task_id === a.task_id && c.source === 'worker'); return { checkpoint: mine[mine.length - 1] || null }; } },
     worker: { list: async (a) => { rec('worker.list', a); await gate('worker.list'); return { workers }; } },
     memory: {
       store: async (a) => {
