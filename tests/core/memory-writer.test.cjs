@@ -55,6 +55,12 @@ test('belay run (the operator-role run process) writes its run-end rows on the h
   assert.deepStrictEqual([h.written_by, cli.written_by], ['harness', 'operator']);
 });
 
+test('a memory_event written on the harness channel says harness; the tool channel says the role', async () => {
+  const h = await orch.harness().memory.recordEvent({ kind: 'observation', ok: true });
+  const t = await orch.memory.recordEvent({ kind: 'observation', ok: true });
+  assert.deepStrictEqual([h.written_by, t.written_by], ['harness', 'orchestrator']);
+});
+
 test('the harness channel crosses the owner pipe, and a tool call on the same adapter stays the orchestrator', async () => {
   const h = await orchB.harness().memory.store({ text: 'harness over the pipe', embed: false });
   const t = await orchB.memory.store({ text: 'tool over the pipe', embed: false });
