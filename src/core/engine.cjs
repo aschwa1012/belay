@@ -99,6 +99,7 @@ const METHODS = {
   'lease.takeControl': { roles: ['operator'], kind: 'write', fn: task.takeControl },
 
   'continuity.checkpoint': { roles: ['worker', 'orchestrator'], kind: 'write', fn: continuity.checkpoint },
+  'continuity.lastCheckpoint': { roles: ALL, kind: 'read', fn: continuity.lastCheckpoint },
   'continuity.resumeLine': { roles: ALL, kind: 'read', fn: continuity.resumeLine },
   'continuity.resumeDoc': { roles: ALL, kind: 'read', fn: continuity.resumeDoc },
 

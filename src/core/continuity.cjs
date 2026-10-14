@@ -125,6 +125,21 @@ async function resumeLine(E, caller, args) {
   };
 }
 
+// The newest checkpoint for a task in one run, optionally of one worker and one source: one indexed row, never the
+// table. Task ids repeat across runs, so the run is part of the key: `run_id`, else the caller's.
+// `{ task_id, run_id?, worker_id?, source? }` -> `{ checkpoint: row | null }`. A read; it writes nothing.
+async function lastCheckpoint(E, caller, args) {
+  if (!args.task_id) throw err('E_ARGS', 'continuity.lastCheckpoint needs a task_id');
+  if (args.source != null && args.source !== 'worker' && args.source !== 'harness') throw err('E_ARGS', 'source must be worker or harness');
+  const runId = args.run_id != null ? String(args.run_id) : caller.run_id;
+  if (!runId) throw err('E_ARGS', 'continuity.lastCheckpoint needs a run: pass run_id or call with a run');
+  const where = ['task_id = ?', 'run_id = ?']; const params = [args.task_id, runId];
+  if (args.worker_id != null) { where.push('worker_id = ?'); params.push(String(args.worker_id)); }
+  if (args.source != null) { where.push('source = ?'); params.push(args.source); }
+  const row = E.store.p(`SELECT * FROM checkpoint WHERE ${where.join(' AND ')} ORDER BY seq DESC LIMIT 1`).get(...params);
+  return { checkpoint: rows.parseRow('checkpoint', row) || null };
+}
+
 function block(name, body) { return { name, text: `## ${name}\n${body}\n\n` }; }
 
 async function resumeDoc(E, caller, args) {
@@ -181,4 +196,4 @@ async function resumeDoc(E, caller, args) {
   return { text, bytes: Buffer.byteLength(text, 'utf8'), sections };
 }
 
-module.exports = { checkpoint, resumeLine, resumeDoc, truncBytes, LINE_MAX, DOC_MAX };
+module.exports = { checkpoint, lastCheckpoint, resumeLine, resumeDoc, truncBytes, LINE_MAX, DOC_MAX };
