@@ -162,7 +162,7 @@ test('wrap-up: a task with no handoff, or a verdict that is not text, still gets
   assert.match(core.events.find((e) => e.kind === 'wrapup').message, /worker-stated verdict: holds/);
 });
 
-test('project copy of a summary carries the summary\'s own body, version 1 included, and the copy of a non-observation names the row', async () => {
+test('project copy of a summary carries the summary\'s own body, version 2 included, and the copy of a non-observation names the row', async () => {
   const core = spyCore({ tasks: { t1: releasedTask() }, observations: OBS });
   core.rows.set('t9', { id: 't9', type: 'turn', text: 'x' });
   const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical', project: 'demo', project_writes: true }));
@@ -171,7 +171,7 @@ test('project copy of a summary carries the summary\'s own body, version 1 inclu
   const stores = methodsOf(core, 'memory.store').map((c) => c.args);
   const summary = stores.find((a) => a.type === 'summary' && !a.namespace);
   const copy = stores.find((a) => a.namespace === 'project/demo');
-  assert.strictEqual(summary.body.v, 1);
+  assert.strictEqual(summary.body.v, 2);
   assert.deepStrictEqual(copy.body, summary.body);
   assert.strictEqual(copy.title, summary.title);
   assert.strictEqual(copy.text, summary.text);

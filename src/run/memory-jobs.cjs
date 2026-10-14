@@ -179,6 +179,18 @@ function byTurn(x, y) {
   if (tx !== null && ty !== null && tx !== ty) return tx - ty;
   return (x.created_at || 0) - (y.created_at || 0) || (tx !== null && ty !== null ? 0 : String(x.id).localeCompare(String(y.id)));
 }
+// The worker's checkpoints for the task, oldest first, so `next` can come from one (ADR 0044 decision 4.4). The core
+// has no per-task checkpoint read, so this reads the run's checkpoint table through store.diff and filters. A failed
+// read is not hidden: it reaches the summary's notes by code.
+async function workerCheckpoints(J, taskId, workerId) {
+  try {
+    const got = await call(J, () => J.core.store.diff({ since_ms: 0, run_id: J.ctx.runId || undefined }));
+    const t = got && got.tables && got.tables.checkpoint;
+    const all = [...((t && t.added) || []), ...((t && t.updated) || [])];
+    const mine = all.filter((c) => c && c.source === 'worker' && c.task_id === taskId && (!workerId || c.worker_id === workerId));
+    return { checkpoints: mine.sort((x, y) => (x.seq || 0) - (y.seq || 0)), error: null };
+  } catch (e) { return { checkpoints: [], error: codeOf(e) }; }
+}
 const verdictOf = (task) => (task && task.state === 'done' ? 'accepted (task.evaluate)' : undefined);
 function render(fields, generator) {
   const files = fields.done.files_modified;
@@ -192,8 +204,9 @@ function render(fields, generator) {
     `looked at: ${fields.looked_at.length ? fields.looked_at.join(', ') + more(fields.looked_at_omitted) : '(none captured)'}`,
     `learned: ${fields.learned}`,
     `done: ${files.length ? 'modified ' + files.join(', ') + more(fields.done.files_modified_omitted) : 'no files modified'}; ran ${nCmds} command${nCmds === 1 ? '' : 's'}${failed ? ` (${failed} failed${fields.done.commands_omitted ? ' of the last ' + cmds.length : ''})` : ''}; task ${fields.done.task_state || 'state unknown'}`,
+    ...(fields.final ? [`final: ${fields.final}`] : []),
     `next: ${fields.next || '(not stated)'}`,
-    `notes: ${fields.observations_partial ? `observation list incomplete (read ${fields.observations_partial.read} of ${fields.observations_partial.listed} listed, ${fields.observations_partial.code}); ` : ''}${fields.notes.errors} error${fields.notes.errors === 1 ? '' : 's'}${fields.notes.verdict ? '; verdict ' + fields.notes.verdict : ''}${fields.notes.worker_verdict ? '; worker verdict ' + fields.notes.worker_verdict : ''}`,
+    `notes: ${fields.checkpoints_unread ? `checkpoints unread (${fields.checkpoints_unread}); ` : ''}${fields.observations_partial ? `observation list incomplete (read ${fields.observations_partial.read} of ${fields.observations_partial.listed} listed, ${fields.observations_partial.code}); ` : ''}${fields.notes.errors} error${fields.notes.errors === 1 ? '' : 's'}${fields.notes.verdict ? '; verdict ' + fields.notes.verdict : ''}${fields.notes.worker_verdict ? '; worker verdict ' + fields.notes.worker_verdict : ''}`,
     `generator: ${generator.kind} v${generator.version}`,
   ].join('\n');
 }
@@ -217,7 +230,8 @@ function ensureSummary(J, taskId, workerId, { taskRow, retry } = {}) {
       // Nothing could be read of a task whose list failed or is not empty: no summary, and the ordinary failed-summary path retries it.
       if (partial && partial.read === 0) throw partial.error;
       const handoff = task && task.handoff && task.handoff.result;
-      const input = { partial: partial ? { read: partial.read, listed: partial.listed, code: partial.code } : undefined, task: { spec: task && task.spec, state: task && task.state, verdict: verdictOf(task) }, observations, checkpoints: [], handoff: handoff || {} };
+      const cp = await workerCheckpoints(J, taskId, workerId);
+      const input = { partial: partial ? { read: partial.read, listed: partial.listed, code: partial.code } : undefined, task: { id: taskId, spec: task && task.spec, state: task && task.state, verdict: verdictOf(task) }, observations, checkpoints: cp.checkpoints, handoff: handoff || {} };
       const summariser = (J.ctx.modules && J.ctx.modules.summarise) || summarise;
       const result = await summariser(input, { kind: 'mechanical' });
       const cls = result.output_class;
@@ -227,15 +241,18 @@ function ensureSummary(J, taskId, workerId, { taskRow, retry } = {}) {
         await event(J, { kind: 'summary', ok: false, code: policy.code, worker_id: workerId, task_id: taskId, message: `no summary row: the summariser's output was ${cls}` });
         return null;
       }
+      if (cp.error) result.fields.checkpoints_unread = cp.error;
+      const title = typeof result.title === 'string' && result.title ? result.title : `summary: task ${taskId} (no findings stated)`;
+      const body = { v: 2, ...result.fields, generator: result.generator };
       const text = render(result.fields, result.generator);
       const stored = await call(J, () => J.core.memory.store({
-        type: 'summary', title: `summary: task ${taskId} (mechanical)`, text, body: { v: 1, ...result.fields, generator: result.generator },
+        type: 'summary', title, text, body,
         embed: false, source: 'summariser', task_id: taskId, worker_id: workerId || undefined, tags: [taskId, workerId],
       }));
       s.summaryDone.add(key); s.summaryFailed.delete(key); s.summaryIds.set(key, stored.id);
       await event(J, { kind: 'summary', ok: true, worker_id: workerId, task_id: taskId, row_ids: [stored.id], newest_row_id: stored.id, bytes: Buffer.byteLength(text, 'utf8'), sha256: sha(text) });
       if (J.lv.project_writes && J.lv.project) {
-        await copyToProject(J, { id: stored.id, type: 'summary', title: `summary: task ${taskId} (mechanical)`, text, body: { v: 1, ...result.fields, generator: result.generator } }, workerId, taskId);
+        await copyToProject(J, { id: stored.id, type: 'summary', title, text, body }, workerId, taskId);
       }
       return stored.id;
     } catch (e) {
