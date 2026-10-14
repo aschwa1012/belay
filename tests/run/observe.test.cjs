@@ -183,7 +183,7 @@ test('paths under the worktree are stored relative, in forward slashes; others s
   const edit = (p, id) => [use('Edit', { file_path: p }, id), res('Edit', id, { files: [p] })];
   const b = build([
     ...edit('C:\\Work\\Temp\\wt\\bin\\dispatch.cjs', 'e1'),
-    ...edit('c:/work/temp/wt/src/a.cjs', 'e2'),
+    ...edit('c:/work/temp/WT/src/a.cjs', 'e2'),
     ...edit('C:\\Work\\Temp\\other\\x.cjs', 'e3'),
     ...edit('C:/Work/Temp/wt2/y.cjs', 'e4'),
   ], { worktree: root });
