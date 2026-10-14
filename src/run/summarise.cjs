@@ -18,6 +18,8 @@ const GENERATOR_VERSION = 2;
 const TITLE_MAX = 160; // the store's title bound (methods-memory.cjs)
 const FINAL_MAX = 1200; // the whole `final` field, label included
 const WORKER_LABEL = 'worker-stated: ';
+const TITLE_PASSES = 8;
+const STRING_FLOOR = 64; // the least a worker-stated string is shortened to when the body is still over
 // What a long task may put in a summary (ADR 0044 decision 4.1): the last commands and the first files, each
 // with a count of the rest. The fields are fitted under BODY_ROOM so the stored body (fields plus the row's
 // version and generator keys) stays under MAX_BYTES.
@@ -102,10 +104,26 @@ const flat = (v) => String(v).replace(/\s+/g, ' ').trim();
 // A title is one line the index renders after `- <id> [type/status] `: control characters become spaces, whitespace
 // collapses, the text is redacted, and only then is it cut, on a character edge, to the store's bound (the store
 // redacts again and refuses a title over the bound, so the cut must follow the redaction).
+// The cut may land inside a redaction marker, or leave a fragment the redactor now reads as a key; so a cut that
+// ends inside a marker moves back before it, and the cut text is redacted again and re-cut until it is a fixed point.
 function titleOf(taskId, learned) {
+  const plain = `summary: task ${taskId} (no findings stated)`;
   const text = typeof learned === 'string' ? learned.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim() : '';
-  if (!text) return `summary: task ${taskId} (no findings stated)`;
-  return cutBytes(redact(WORKER_LABEL + text).text.replace(/\s+/g, ' ').trim(), TITLE_MAX);
+  if (!text) return plain;
+  const tidy = (v) => v.replace(/\s+/g, ' ').trim();
+  let t = tidy(redact(WORKER_LABEL + text).text);
+  for (let n = 0; n < TITLE_PASSES; n += 1) {
+    if (Buffer.byteLength(t, 'utf8') > TITLE_MAX) {
+      t = cutBytes(t, TITLE_MAX);
+      const open = t.lastIndexOf('[REDACTED:');
+      if (open >= 0 && t.indexOf(']', open) < 0) t = t.slice(0, open);
+      t = t.trimEnd();
+    }
+    const again = tidy(redact(t).text);
+    if (again === t) return t || plain;
+    t = again;
+  }
+  return plain; // never settled: a title the store would refuse is worse than a plain one
 }
 // The last turn's final text: the newest observation that states one (observe.cjs keeps it as `narrative`).
 function finalOf(bodies) {
@@ -133,7 +151,24 @@ function boundCommands(done, all) {
   if (all.length > kept.length) done.commands_omitted = all.length - kept.length;
 }
 function boundList(all, keep) { return { kept: all.slice(0, keep), omitted: Math.max(0, all.length - keep) }; }
-// If the fields are still over, commands go before anything else, then the file lists are halved.
+const MARKER_TAIL = /…\[\+(\d+) bytes\]$/;
+// Shortens one string field so the serialised fields fit; the cut text keeps its label and ends in a marker that counts
+// everything cut so far. A JSON byte is never fewer than the text byte it encodes, so cutting `excess` text bytes is enough.
+function shrinkString(owner, key, fields) {
+  const v = owner[key];
+  if (typeof v !== 'string') return;
+  const excess = sizeOf(fields) - BODY_ROOM;
+  if (excess <= 0) return;
+  const m = MARKER_TAIL.exec(v);
+  const base = m ? v.slice(0, m.index) : v;
+  const before = m ? Number(m[1]) : 0;
+  const keep = Math.max(STRING_FLOOR, Buffer.byteLength(base, 'utf8') - excess - 24);
+  if (keep >= Buffer.byteLength(base, 'utf8')) return;
+  const cut = cutBytes(base, keep);
+  owner[key] = `${cut}…[+${before + Buffer.byteLength(base, 'utf8') - Buffer.byteLength(cut, 'utf8')} bytes]`;
+}
+// If the fields are still over (measured as serialised JSON), commands go first, then the file lists are halved, then
+// the worker-stated strings are shortened: final, then learned, then the rest.
 function fitFields(fields, allCommands, allLooked, allFiles) {
   if (sizeOf(fields) <= BODY_ROOM) return;
   fields.done.commands = [];
@@ -142,6 +177,9 @@ function fitFields(fields, allCommands, allLooked, allFiles) {
     const lk = boundList(allLooked, keep); const fm = boundList(allFiles, keep);
     fields.looked_at = lk.kept; fields.done.files_modified = fm.kept;
     for (const [obj, key, n] of [[fields, 'looked_at_omitted', lk.omitted], [fields.done, 'files_modified_omitted', fm.omitted]]) { if (n) obj[key] = n; else delete obj[key]; }
+  }
+  for (const [owner, key] of [[fields, 'final'], [fields, 'learned'], [fields, 'next'], [fields.notes, 'worker_verdict'], [fields, 'asked'], [fields.notes, 'verdict'], [fields.done, 'task_state']]) {
+    for (let pass = 0; pass < 4 && sizeOf(fields) > BODY_ROOM; pass += 1) shrinkString(owner, key, fields);
   }
 }
 

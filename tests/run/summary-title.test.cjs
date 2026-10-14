@@ -151,3 +151,65 @@ test('real core: a v1 summary body is still read by the index', async () => {
     assert.match(ix.text, /summary: task old \(mechanical\)/);
   } finally { await teardown(s); }
 });
+
+// ---- cuts that stay valid, and bodies that stay bounded ---------------------------------------------------------
+
+// Key-shaped text is built at run time so no fixture holds a secret. Every title must be a fixed point of the
+// redactor and within the bound wherever the cut falls, because the store redacts again and refuses a longer one.
+test('a title is stable under the store redaction wherever the cut falls', () => {
+  const { redact } = require('../../src/core/redact.cjs');
+  const seeds = ['AKIA' + 'B'.repeat(16), 'API_KEY=' + 'g'.repeat(30), 'ghp_' + 'a'.repeat(36), 'sk-' + 'i'.repeat(48), 'Authorization: Bearer ' + 'f'.repeat(40),
+    'https://user:pw' + '@' + 'host.example/x', '"token": "' + 'h'.repeat(30) + '"', 'PASSWORD=x'];
+  let n = 0;
+  for (const seed of seeds) for (let pad = 0; pad < 200; pad += 1) for (const tail of ['', 'zzzzzz', '-x']) {
+    const t = titleOf('t1', 'p'.repeat(pad) + ' ' + seed + tail + ' more words after');
+    assert.ok(bytes(t) <= 160, `${bytes(t)}: ${t}`);
+    assert.strictEqual(redact(t).text, t);
+    assert.ok(!/\[REDACTED:[a-z_]*$/.test(t), 'no partial marker: ' + t);
+    n += 1;
+  }
+  assert.ok(n > 4000);
+});
+
+test('the store accepts the title of a findings text cut inside a redaction marker', async () => {
+  const s = await setup({ result: { findings: 'summary' }, narrative: 'n' });
+  try {
+    for (let pad = 100; pad < 140; pad += 1) {
+      const title = titleOf('t1', 'p'.repeat(pad) + ' API_KEY=' + 'g'.repeat(30) + ' after');
+      const r = await s.orch.memory.store({ type: 'summary', title, text: 'pad ' + pad, embed: false, source: 'summariser' });
+      assert.ok(r.id, title);
+    }
+  } finally { await teardown(s); }
+});
+
+test('any input gives a stored body under 8,192 serialised bytes', async () => {
+  const BS = String.fromCharCode(92);
+  const units = ['a', '中', BS, '"', '\u0001', `C:${BS}w${BS}`, '😀', 'é\n'];
+  for (const unit of units) {
+    const u = (n) => unit.repeat(n);
+    const obs = Array.from({ length: 40 }, (_, i) => ({ body: {
+      commands: Array.from({ length: 20 }, () => ({ command: u(400), exit_code: 1 })),
+      files_read: Array.from({ length: 80 }, (_, j) => `src/${u(20)}/f${i}-${j}.cjs`), files_modified: Array.from({ length: 80 }, (_, j) => `src/${u(5)}m${i}-${j}.cjs`),
+      errors: 1, narrative: u(5000),
+    } }));
+    const r = await run({
+      task: { id: 't-1', spec: u(2000), state: 'done', verdict: u(900) }, observations: obs,
+      checkpoints: [{ stated: { next_step: u(5000) } }], handoff: { findings: u(9000), next_step: u(5000), verdict: u(5000) },
+    });
+    assert.strictEqual(r.output_class, 'ok', JSON.stringify(unit));
+    const size = bytes(JSON.stringify({ v: 2, ...r.fields, generator: r.generator }));
+    assert.ok(size <= MAX_BYTES, `${JSON.stringify(unit)}: ${size}`);
+    assert.ok(r.fields.final.startsWith('worker-stated: ') && r.fields.learned.startsWith('worker-stated: '), 'labels survive a cut');
+  }
+});
+
+test('continuity.lastCheckpoint returns the newest matching checkpoint and null otherwise', async () => {
+  const s = await setup({ result: { findings: 'f' }, narrative: 'n', checkpoint: 'first step' });
+  try {
+    const hit = await s.op.continuity.lastCheckpoint({ task_id: s.taskId, worker_id: 'coder-1', source: 'worker' });
+    assert.strictEqual(hit.checkpoint.stated.next_step, 'first step');
+    assert.strictEqual((await s.op.continuity.lastCheckpoint({ task_id: s.taskId, worker_id: 'nobody' })).checkpoint, null);
+    assert.strictEqual((await s.op.continuity.lastCheckpoint({ task_id: s.taskId, source: 'harness' })).checkpoint, null);
+    await assert.rejects(s.op.continuity.lastCheckpoint({}), (e) => e.code === 'E_ARGS');
+  } finally { await teardown(s); }
+});
