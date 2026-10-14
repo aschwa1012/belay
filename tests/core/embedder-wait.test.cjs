@@ -106,7 +106,8 @@ test('a live owner that is only busy for 700 ms and misses the 300 ms ping is no
     const r = await c.memory.search({ query: 'which process?', mode: 'semantic' }).then(() => null, e => e);
     assert.ok(r, 'the owner has no embedder, so the call must be refused');
     assert.notStrictEqual(r.code, 'E_OWNER_LOST', `a busy owner was reported lost: ${r.message}`);
-    assert.ok(Date.now() - t0 < 2500, `took ${Date.now() - t0} ms`);
+    // The owner is busy for 700 ms; the bug is a verdict of lost (asserted above) or a wait on a limit of 100 s or more.
+    assert.ok(Date.now() - t0 < 20000, `took ${Date.now() - t0} ms`);
     await c.shutdownOwner();
   } finally {
     if (c) await c.close();
@@ -205,7 +206,7 @@ test('a warm wait over the pipe pings a wedged owner first and fails within the 
   const dir = sandbox();
   let child = null, c = null;
   try {
-    child = spawn(process.execPath, [`${ROOT}/tests/core/fixtures/owner-wedged.cjs`, dir, '6000'], { windowsHide: true, stdio: ['ignore', 'pipe', 'inherit'] });
+    child = spawn(process.execPath, [`${ROOT}/tests/core/fixtures/owner-wedged.cjs`, dir, '20000'], { windowsHide: true, stdio: ['ignore', 'pipe', 'inherit'] });
     const exited = new Promise(res => child.once('exit', res));
     let buf = '';
     child.stdout.on('data', d => { buf += d; });
@@ -217,7 +218,10 @@ test('a warm wait over the pipe pings a wedged owner first and fails within the 
     const x = await c.memory.warm({ wait: true }).then(() => null, r => r);
     assert.ok(x, 'the call failed');
     assert.strictEqual(x.code, 'E_OWNER_LOST', `${x.code}: ${x.message}`);
-    assert.ok(Date.now() - t0 < 4000, `took ${Date.now() - t0} ms`);
+    // 300 ms ping plus one 2,000 ms re-ping is nominal; the bug is a wait of 105 s. The wedge lasts 20 s and the test
+    // kills the owner itself by its exact pid, so 10 s separates the two on a slow runner.
+    assert.ok(Date.now() - t0 < 10000, `took ${Date.now() - t0} ms`);
+    if (child.exitCode === null) { try { process.kill(child.pid); } catch { /* gone */ } }
     await exited;
   } finally {
     if (c) await c.close();

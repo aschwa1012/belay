@@ -78,7 +78,7 @@ async function heldDeath(id, m, core, sb) {
   const w = m._worker(id);
   const emit = w.child.emit;
   w.child.emit = function (ev, ...a) {
-    if (ev === 'exit') { setTimeout(() => emit.call(this, ev, ...a), 3000); return true; }
+    if (ev === 'exit') return true; // the event never arrives: only the pid poll settles a held death, at POLL_EXIT_HOLD_MS (6000)
     return emit.call(this, ev, ...a);
   };
   const oldPid = w.pid;
@@ -94,7 +94,9 @@ test('stop during the hold settles the held death and writes a stopped row at on
     await heldDeath('hold3', m, core, sb);
     const t0 = Date.now();
     await m.stop({ worker_id: 'hold3' });
-    assert.ok(Date.now() - t0 < 2000, 'stop did not wait out the hold');
+    // The exit event never comes, so a stop that waited for the held death would sit out the pid-poll settle
+    // (POLL_EXIT_HOLD_MS, 6,000 ms, from the poll's first sight of the death); 4000 leaves more than 2 s of runner lag.
+    assert.ok(Date.now() - t0 < 4000, 'stop did not wait out the hold');
     assert.equal(core.currentWorker('hold3').state, 'stopped');
   } finally { await m.shutdown(); cleanup(sb.data); }
 });

@@ -56,7 +56,9 @@ test('test-runner: a hung phase is stopped by exact pid, its tree included, with
     assert.strictEqual(r.timed_out, true, `the hung phase must report timed_out: ${JSON.stringify(r)}`);
     assert.strictEqual(r.status, 124);
     assert.ok(!r.stop_failed, `the tree must be confirmed stopped: ${JSON.stringify(r)}`);
-    assert.ok(took < 10000, `runPhase took ${took} ms, over the 10,000 ms bound`);
+    // timeoutMs is 2000. A phase that was not stopped runs until the fixture ends itself at 30 s, so 20,000 separates the two; the
+    // old 10,000 left a loaded runner (7.2 s for this whole test) under 3 s of room.
+    assert.ok(took < 20000, `runPhase took ${took} ms, over the 20,000 ms bound`);
     assert.ok(fs.existsSync(pidsFile), 'the fixture never wrote its pids: it was stopped before it started, so the tree claim is unchecked');
     pids = JSON.parse(fs.readFileSync(pidsFile, 'utf8'));
     assert.ok(await waitDead(pids.child, 5000), `fixture child pid ${pids.child} is still alive`);

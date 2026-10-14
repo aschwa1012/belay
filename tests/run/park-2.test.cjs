@@ -147,20 +147,21 @@ test('restart: the slot is released at the running row, so a stop during the fir
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
     await m._waitTurn('w1', 8000);
     const launchesBefore = m._worker('w1').launches;
-    process.env.FAKE_ANSWER_DELAY_MS = '8000'; // the relaunch's own first turn is held open
-    const restartP = m.restart({ worker_id: 'w1', first_turn_timeout_ms: 3000 });
+    process.env.FAKE_ANSWER_DELAY_MS = '40000'; // the relaunch's own first turn is held open
+    const restartP = m.restart({ worker_id: 'w1', first_turn_timeout_ms: 20000 });
     // 6e-6 item 7 (carried item 3, note park.test.cjs:169): `launches` must itself have grown before the
     // poll's other two conditions are trusted, or a check made right after `restart()` is called (before
     // `launch()` has reset `readyAt`/`op` for the new attempt) can read the *previous* launch's already-
     // true state and pass on its first look, never truly waiting for anything.
-    // fix round (review, park-2.test.cjs:156): bound tightened well under first_turn_timeout_ms (3000)
+    // fix round (review, park-2.test.cjs:156): bound tightened well under first_turn_timeout_ms (now 20,000 so a hosted runner's lag fits)
     // above — the old 5000 ms bound outlasted the regression this test is named for, so it always passed.
     assert.ok(await pollUntil(() => m._worker('w1').launches > launchesBefore && m._worker('w1').readyAt !== null
-      && m._worker('w1').op === null, 1500), 'the operation slot was never released at the running row');
+      && m._worker('w1').op === null, 8000), 'the operation slot was never released at the running row');
     const t0 = Date.now();
     const stopped = await m.stop({ worker_id: 'w1', mode: 'kill', timeout_ms: 5000 });
     const stopMs = Date.now() - t0;
-    assert.ok(stopMs < 3000, `stop took ${stopMs} ms, which suggests it waited behind restart's first turn`);
+    // Waiting behind the first turn takes 20,000 ms (its timeout); 10,000 leaves a slow runner room.
+    assert.ok(stopMs < 10000, `stop took ${stopMs} ms, which suggests it waited behind restart's first turn`);
     assert.strictEqual(stopped.pid, m._worker('w1').pid);
     delete process.env.FAKE_ANSWER_DELAY_MS;
     const restarted = await restartP;

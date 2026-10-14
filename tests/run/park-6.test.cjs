@@ -58,8 +58,11 @@ test('wake: a park records park_turns on its own stopping row, so a turn that en
   try {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
 
-    // Poll 0: the baseline a real orchestrator poll would already hold well before the turn ends.
-    const rowAtStart = await core.worker.get({ worker_id: 'w1' });
+    // Poll 0: the baseline a real orchestrator poll would already hold well before the turn ends: the last row
+    // the store had before turn 1 counted (read after spawn, a fast host had already landed the turn's own row).
+    const before = core.rowsFor('w1').filter((r) => r.turns === 0).pop();
+    assert.ok(before, 'a row with turns 0 was written before the turn ended');
+    const rowAtStart = { ...before, pid_alive: true };
     let prev = {};
     ({ next: prev } = diffWorkers({ prev, rows: [rowAtStart], runId: RUN, nowMs: 0, graceMs: 1500 }));
 

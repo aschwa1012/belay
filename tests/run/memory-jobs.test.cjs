@@ -349,7 +349,9 @@ test('run end: bounded; a hung core call is given up on, named, and nothing is t
   const t0 = Date.now();
   await MJ.atRunEnd(ctx);
   const ms = Date.now() - t0;
-  assert.ok(ms < 1200, `returned in ${ms} ms`);
+  // The whole run-end budget is 600 ms here and the default is 5,000 ms (RUN_END_BOUND_MS): a bound that was ignored or a call
+  // left unbounded takes 4,500 ms or more, or never returns. 3500 separates those from a slow runner (the call itself took 485 ms in CI).
+  assert.ok(ms < 3500, `returned in ${ms} ms`);
   const gave = core.events.find((e) => e.key === 'run:gave-up');
   assert.ok(gave && gave.ok === 0 && gave.code === 'E_TIMEOUT');
   assert.match(gave.message, /summary:t1\/w1/);
