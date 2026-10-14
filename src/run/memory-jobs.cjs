@@ -69,7 +69,7 @@ const SHUT = 'E_SHUTDOWN';
 async function call(J, fn, paired = false) {
   if (J.gate.aborted) throw Object.assign(new Error('the run-end memory jobs gave up'), { code: 'E_TIMEOUT' });
   if (J.turnPath && (paired ? ownerGone(J.ctx) : closed(J.ctx))) throw Object.assign(new Error('the run manager has shut down, so the write was not sent'), { code: SHUT });
-  return fn();
+  return paired && J.turnPath ? pairedWrite(J.ctx, fn) : fn();
 }
 // A receipt. Returns the event row or null; a failure to write the receipt is named on the worker.
 async function event(J, fields, paired = false) {
@@ -85,7 +85,7 @@ const failure = (J, kind, fields, e, paired = false) => event(J, { kind, ok: fal
 // after the turn's memory store, by which time a later turn_end may have moved the worker's counters. Claude
 // Code's cost is cumulative per process, so the row carries the delta from the previous row of the same
 // process; a new process (or a counter that went down) restarts from zero.
-const { snapshotOf } = require('./memory-capture.cjs');
+const { snapshotOf, pairedWrite } = require('./memory-capture.cjs');
 const num = (x) => (typeof x === 'number' && Number.isFinite(x) ? x : 0);
 function tokensOf(snap) {
   const u = snap.usage;
@@ -109,15 +109,16 @@ async function usageJob(J, snap) {
   const t = w.memoryJobs || (w.memoryJobs = { pid: null, lastCost: 0, seen: false, lastTurn: 0 });
   if (snap.turn <= t.lastTurn) return; // one row per turn
   const c = costOf(w, snap);
+  let sent = false;
   try {
-    await call(J, () => J.core.usage.record({
+    await call(J, () => { sent = true; return J.core.usage.record({
       worker_id: snap.workerId, task_id: snap.taskId || undefined, turn: snap.turn, substrate: snap.substrate,
       model: snap.model || undefined, ...tokensOf(snap), cost_usd: c.cost_usd, cost_basis: c.cost_basis,
-    }));
+    }); });
     t.lastTurn = snap.turn;
     if (c.advance) c.advance();
   } catch (e) {
-    await failure(J, 'usage', { worker_id: snap.workerId, task_id: snap.taskId || undefined, message: `usage row for turn ${snap.turn} not written: ${(e && e.message) || e}`.slice(0, 300) }, e);
+    await failure(J, 'usage', { worker_id: snap.workerId, task_id: snap.taskId || undefined, message: `usage row for turn ${snap.turn} not written: ${(e && e.message) || e}`.slice(0, 300) }, e, sent);
   }
 }
 
@@ -132,15 +133,16 @@ async function ensurePromote(J, taskId, workerId) {
   if (!workerId || s.promoteDone.has(key)) return null;
   return once(s, 'promote:' + key, async () => {
     if (s.promoteDone.has(key)) return null;
+    let sent = false;
     try {
       const got = await call(J, () => J.core.memory.list({ filter: { task_id: taskId, written_by: `worker:${workerId}` }, view: 'index', order: 'newest', limit: LIST_MAX }));
       const ids = ((got && got.rows) || []).map((r) => r.id);
       s.promoteDone.add(key);
       if (!ids.length) return null;
-      return await call(J, () => J.core.memory.promote({ ids, to: 'project', task_id: taskId, worker_id: workerId }));
+      return await call(J, () => { sent = true; return J.core.memory.promote({ ids, to: 'project', task_id: taskId, worker_id: workerId }); });
     } catch (e) {
       s.promoteDone.add(key);
-      await failure(J, 'project_write', { worker_id: workerId, task_id: taskId, key: `promote:${taskId}|${workerId}` }, e);
+      await failure(J, 'project_write', { worker_id: workerId, task_id: taskId, key: `promote:${taskId}|${workerId}` }, e, sent);
       return null;
     }
   });

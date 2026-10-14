@@ -59,7 +59,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   // build step 6i-2 design item 3 (R4): flipped by shutdown() once every worker has been asked to stop
   // (lifecycle.cjs), so a write still queued behind it (the exit-code fill-in a late channel queues,
   // exit.cjs) elects no store owner in this process — write-row.cjs checks it first, before core.
-  const shutdownFlags = { closed: false, ownerGone: false };
+  const shutdownFlags = { closed: false, ownerGone: false, paired: new Set() };
 
   // 6i-2 fix round (item 3, should-fix): `shutdownFlags` carried on ctx itself, so worker.cjs's onTurnEnd
   // (through turn-record.cjs) can gate its own checkpoint/memory write on it exactly as writeRow does.
@@ -477,7 +477,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   const shutdown = () => LC.shutdown(workers, {
     stop, core, clearPoll: () => { if (poll) { clearInterval(poll); poll = null; } },
     markClosed: () => { shutdownFlags.closed = true; },
-    markOwnerGone: () => { shutdownFlags.ownerGone = true; },
+    markOwnerGone: () => { shutdownFlags.ownerGone = true; return shutdownFlags.paired; },
     onDrained: () => MP.runEnd(ctx),
   });
 
@@ -490,6 +490,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     _waitTurn: (id, ms) => waitTurnOrLanded(get(id), ms),
     _waitExit: (id, ms) => W.waitExit(get(id), ms),
     _closed: () => shutdownFlags.closed, // flipped by shutdown once every worker is stopped (lifecycle.cjs)
+    _flags: () => shutdownFlags,
   };
   return manager;
 }

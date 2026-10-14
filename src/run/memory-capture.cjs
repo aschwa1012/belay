@@ -84,12 +84,27 @@ function shutDown(w, ctx, state) {
 
 // `paired` marks the event that names a row already sent: it is recorded after the flag closes and is dropped
 // only once the owner is gone (lifecycle.cjs), so a row that landed is never left without its event.
+// Runs a paired write and tracks it, so shutdown can wait for it to land before the owner goes. `fn` is called
+// at once, in the same tick as the ownerGone check, so a write that passed the check is always in the set.
+function pairedWrite(ctx, fn) {
+  const p = (async () => fn())();
+  const flags = ctx.shutdownFlags;
+  if (flags) {
+    const set = flags.paired || (flags.paired = new Set());
+    const rm = () => set.delete(p);
+    set.add(p);
+    p.then(rm, rm);
+  }
+  return p;
+}
+
 async function record(ctx, w, fields, paired = false) {
   if (paired) {
     if (ownerGone(ctx)) { w.lastError = { where: 'after-shutdown', state: 'turn-observation-event' }; return false; }
   } else if (shutDown(w, ctx, 'turn-observation-event')) return false;
   try {
-    await ctx.core.memory.recordEvent({ worker_id: w.id, task_id: w.taskId || undefined, ...fields });
+    const send = () => ctx.core.memory.recordEvent({ worker_id: w.id, task_id: w.taskId || undefined, ...fields });
+    await (paired ? pairedWrite(ctx, send) : send());
     return true;
   } catch (err) {
     noteError(w, 'memory.recordEvent', err);
@@ -161,4 +176,4 @@ async function finish(w, e, ctx, p, extra) {
   return row;
 }
 
-module.exports = { onEvent, takeTurn, plan, finish, storeObservation, snapshotOf, MAX_TURN_EVENTS };
+module.exports = { pairedWrite, onEvent, takeTurn, plan, finish, storeObservation, snapshotOf, MAX_TURN_EVENTS };

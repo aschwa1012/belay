@@ -70,6 +70,7 @@ const parked = (w) => w.state === 'paused' && !w.child;
 // the store), and only then does the poll stop and the owner go — a write queued after this point (a
 // late `exit` event's own fill-in) finds the flag already flipped and elects nothing (write-row.cjs).
 const MEMORY_DRAIN_MS = 5000;
+const PAIRED_DRAIN_MS = 2000; // paired events already sent when the owner is about to go
 // 500 ms longer than head-lookup.cjs's TOTAL_MS, to cover the kill of a git that timed out at its own bound.
 const HEAD_DRAIN_MS = 5500;
 async function drainHeads(workers) {
@@ -126,7 +127,8 @@ async function shutdown(workers, { stop, core, clearPoll, markClosed, markOwnerG
   await Promise.all([...workers.values()].map((w) => w.queue.catch(() => {})));
   // Review 3, finding F: the turn memory writes (turn-record.cjs queueMemory) are off the turn path; a
   // write already in flight is given at most 5,000 ms to land before the core goes, and any queue still
-  // busy after that is named on the record. A write not yet started sees the closed flag and drops itself.
+  // busy after that is named on the record. A write not yet started sees the closed flag and drops itself;
+  // the event for a write already sent is kept until the owner goes (below).
   const gaveUp = [];
   await Promise.all([...workers.values()].filter((w) => w.memoryQueue).map(async (w) => {
     let timer = null;
@@ -142,10 +144,21 @@ async function shutdown(workers, { stop, core, clearPoll, markClosed, markOwnerG
   // would otherwise send the pipe `shutdown` to belay run's own store owner. A core with no isOwner is a
   // test double, which never holds one: the rule fails closed, as belay-mcp.cjs's own shutdown does.
   const holdsOwner = typeof core.isOwner === 'function' && core.isOwner();
-  // A write that was already sent may still pair an event with its row until here; past this line none is sent.
-  if (markOwnerGone) markOwnerGone();
+  // An event for a row already sent is kept until here; past this line none is sent. Those already sent get
+  // PAIRED_DRAIN_MS to land, and a macrotask, before the owner goes: a write begun after it would elect another.
+  let pairedGaveUp = 0;
+  if (markOwnerGone) {
+    const inflight = [...(markOwnerGone() || [])];
+    if (inflight.length) {
+      let timer = null;
+      const done = await Promise.race([Promise.allSettled(inflight).then(() => true), new Promise((res) => { timer = setTimeout(() => res(false), PAIRED_DRAIN_MS); })]);
+      clearTimeout(timer);
+      if (!done) pairedGaveUp = inflight.length;
+    }
+    await new Promise((res) => setImmediate(res));
+  }
   if (holdsOwner && typeof core.shutdownOwner === 'function') await core.shutdownOwner().catch(() => {});
-  return { stopped, left_parked, left_stale, stop_failed, memory_gave_up: gaveUp, ms: now() - t0 };
+  return { stopped, left_parked, left_stale, stop_failed, memory_gave_up: gaveUp, paired_gave_up: pairedGaveUp, ms: now() - t0 };
 }
 
 // build step 6e-5 design item 5 (review 1/2, worker.cjs's `adopt`): the worker row carries no column for
