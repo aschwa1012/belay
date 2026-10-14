@@ -19,6 +19,10 @@ Fixed
 - a restarted worker whose first turn ended very quickly was reported as
   timed out, after a wait of the whole first-turn timeout; restart now
   reports the turn that already ended
+- about a second after a resume, a resumed worker was marked paused again
+  while it ran, and messages to it were refused; a worker restarted after a
+  stop was marked stopped the same way. A relaunch now clears how the last
+  process ended
 - tests no longer read old code from git history, assume Claude Code is
   installed, or rely on fixed sleeps, so the suite passes in any clone and on
   slow machines
