@@ -162,23 +162,19 @@ test('wrap-up: a task with no handoff, or a verdict that is not text, still gets
   assert.match(core.events.find((e) => e.kind === 'wrapup').message, /worker-stated verdict: holds/);
 });
 
-test('project copy of a summary carries the summary\'s own body, version 2 included, and the copy of a non-observation names the row', async () => {
+test('the summary written into the project carries its own body (version 2) and its project_write event names it', async () => {
   const core = spyCore({ tasks: { t1: releasedTask() }, observations: OBS });
-  core.rows.set('t9', { id: 't9', type: 'turn', text: 'x' });
   const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical', project: 'demo', project_writes: true }));
   const w = worker();
-  MJ.afterTurn(w, ctx, { observationId: 't9' }); await flush(w);
+  MJ.afterTurn(w, ctx, {}); await flush(w);
   const stores = methodsOf(core, 'memory.store').map((c) => c.args);
-  const summary = stores.find((a) => a.type === 'summary' && !a.namespace);
-  const copy = stores.find((a) => a.namespace === 'project/demo');
-  assert.strictEqual(summary.body.v, 2);
-  assert.deepStrictEqual(copy.body, summary.body);
-  assert.strictEqual(copy.title, summary.title);
-  assert.strictEqual(copy.text, summary.text);
-  const refused = core.events.find((e) => e.kind === 'project_write' && e.ok === 0);
-  assert.deepStrictEqual(refused.row_ids, ['t9']);
-  assert.strictEqual(refused.code, 'E_ARGS');
-  assert.match(refused.message, /row t9 is not an observation/);
+  assert.strictEqual(stores.length, 1);
+  assert.strictEqual(stores[0].namespace, 'project/demo');
+  assert.strictEqual(stores[0].body.v, 2);
+  assert.strictEqual(stores[0].text.startsWith(MJ.SUMMARY_LABEL), true);
+  const ev = core.events.find((e) => e.kind === 'project_write');
+  assert.deepStrictEqual([ev.ok, ev.worker_id, ev.task_id, ev.row_ids.length], [1, 'w1', 't1', 1]);
+  assert.match(ev.message, /^wrote m\d+ to project\/demo$/);
 });
 
 test('a failing usage write is an ok 0 usage event with E_INTERNAL for an uncoded error and the turn in its message', async () => {

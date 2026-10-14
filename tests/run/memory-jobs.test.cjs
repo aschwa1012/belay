@@ -14,7 +14,7 @@ const failing = (code, message) => Object.assign(new Error(message || code), { c
 
 // A spy core. `rows` are the memory rows by id; `tasks` the task views; `workers` the worker rows. A hook in
 // `fail` makes a method throw; a hook in `hang` never answers.
-function spyCore({ tasks = {}, workers = [], observations = [], checkpoints = [], fail = {}, hang = {}, existingSummary = false } = {}) {
+function spyCore({ tasks = {}, workers = [], observations = [], ownRows = [], checkpoints = [], fail = {}, hang = {}, existingSummary = false } = {}) {
   const calls = [];
   const events = [];
   const rows = new Map();
@@ -44,7 +44,12 @@ function spyCore({ tasks = {}, workers = [], observations = [], checkpoints = []
         return { id, action: 'inserted', namespace: a.namespace || 'run/r1' };
       },
       get: async (a) => { rec('memory.get', a); await gate('memory.get'); const r = rows.get(a.id); if (!r) throw failing('E_NOT_FOUND'); return r; },
-      list: async (a) => { rec('memory.list', a); await gate('memory.list'); const off = a.offset || 0; return { rows: observations.slice(off, off + (a.limit || 50)).map((o) => { const { body, ...rest } = o; return rest; }), total: observations.length }; },
+      list: async (a) => {
+        rec('memory.list', a); await gate('memory.list'); const off = a.offset || 0;
+        const src = a.filter && a.filter.types ? observations : ownRows; // the summary lists observations; the promotion lists the task's rows
+        return { rows: src.slice(off, off + (a.limit || 50)).map((o) => { const { body, ...rest } = o; return rest; }), total: src.length };
+      },
+      promote: async (a) => { rec('memory.promote', a); await gate('memory.promote'); return { namespace: 'project/demo', moved: a.ids.map((id) => ({ id })), existing: [], refused: [], skipped: [], capped: 0 }; },
       get_many: async (a) => { rec('memory.get_many', a); await gate('memory.get_many'); return { rows: a.ids.map((id) => observations.find((o) => o.id === id) || { id, found: false }) }; },
       recordEvent: async (a) => {
         rec('memory.recordEvent', a); await gate('memory.recordEvent');
@@ -249,36 +254,75 @@ test('summary: an empty, refused or malformed result stores no row and records i
   }
 });
 
-test('project writes: an observation and a summary are copied with copy-of, each with a project_write event', async () => {
+test('project writes: the summary is written once, straight into the project, and no observation is copied', async () => {
   const core = spyCore({ tasks: { t1: releasedTask() }, observations: OBS });
-  core.rows.set('obs9', { id: 'obs9', type: 'observation', title: 'turn 1: modified b.cjs', text: 'obs text', body: { v: 1 } });
+  core.rows.set('obs9', { id: 'obs9', type: 'observation', title: 'turn 1: modified b.cjs', text: 'obs text', body: { v: 2 } });
   const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical', project: 'demo', project_writes: true }));
   const w = worker();
   MJ.afterTurn(w, ctx, { observationId: 'obs9' }); await flush(w);
-  const copies = methodsOf(core, 'memory.store').filter((c) => c.args.namespace === 'project/demo');
-  assert.strictEqual(copies.length, 2);
-  assert.strictEqual(copies[0].args.provenance, 'copy-of:obs9');
-  assert.strictEqual(copies[0].args.type, 'observation');
-  assert.strictEqual(copies[0].args.embed, false);
-  assert.strictEqual(copies[0].args.source, 'harness');
-  assert.ok(copies.every((c) => c.args.worker_id === 'w1'), 'each copy names the worker it is about');
-  assert.match(copies[1].args.provenance, /^copy-of:m\d+$/);
-  assert.strictEqual(copies[1].args.type, 'summary');
+  const stores = methodsOf(core, 'memory.store');
+  assert.strictEqual(stores.length, 1, 'one write: no run original and no copy');
+  assert.strictEqual(stores[0].args.namespace, 'project/demo');
+  assert.strictEqual(stores[0].args.type, 'summary');
+  assert.strictEqual(stores[0].args.source, 'summariser');
+  assert.strictEqual(stores[0].args.provenance, undefined, 'no copy-of');
+  assert.strictEqual(stores[0].args.worker_id, 'w1');
+  assert.strictEqual(methodsOf(core, 'memory.get').length, 0, 'no observation is read back for a copy');
   const writes = core.events.filter((e) => e.kind === 'project_write');
-  assert.strictEqual(writes.length, 2);
-  assert.ok(writes.every((e) => e.ok === 1 && e.row_ids.length === 1));
+  assert.strictEqual(writes.length, 1);
+  assert.ok(writes[0].ok === 1 && writes[0].key === `summary:${writes[0].row_ids[0]}`);
 });
 
-test('project writes: a row that is not an observation, and a failed copy, are ok:0 events', async () => {
-  const core = spyCore({ fail: { 'memory.store': 'E_NAMESPACE_TOO_LARGE' } });
-  core.rows.set('t9', { id: 't9', type: 'turn', text: 'x' });
-  core.rows.set('o9', { id: 'o9', type: 'observation', title: 't', text: 'x', body: {} });
+test('project writes: with no project, or the lever off, the summary goes to the run as before', async () => {
+  for (const over of [{ project_writes: true }, { project: 'demo' }]) {
+    const core = spyCore({ tasks: { t1: releasedTask() }, observations: OBS });
+    const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical', ...over }));
+    const w = worker();
+    MJ.afterTurn(w, ctx, {}); await flush(w);
+    const stores = methodsOf(core, 'memory.store');
+    assert.strictEqual(stores.length, 1, JSON.stringify(over));
+    assert.strictEqual(stores[0].args.namespace, undefined);
+    assert.strictEqual(methodsOf(core, 'memory.promote').length, 0);
+    assert.strictEqual(core.events.filter((e) => e.kind === 'project_write').length, 0);
+  }
+});
+
+test('promote: when the task ends the rows of the worker are named to memory.promote, once, without the summary lever', async () => {
+  const ownRows = [{ id: 'a', written_by: 'worker:w1' }, { id: 'h', written_by: 'harness' }, { id: 'c', written_by: 'worker:w2' }, { id: 'b', written_by: 'worker:w1' }];
+  const core = spyCore({ tasks: { t1: releasedTask() }, ownRows });
   const ctx = mkCtx(core, lv({ capture: true, observations: true, project: 'demo', project_writes: true }));
   const w = worker();
-  MJ.afterTurn(w, ctx, { observationId: 't9' }); await flush(w);
-  MJ.afterTurn(Object.assign(w, { turns: 2 }), ctx, { observationId: 'o9' }); await flush(w);
+  MJ.afterTurn(w, ctx, {}); await flush(w);
+  MJ.afterTurn(Object.assign(w, { turns: 2 }), ctx, {}); await flush(w);
+  const calls = methodsOf(core, 'memory.promote');
+  assert.strictEqual(calls.length, 1, 'once per (task, worker)');
+  assert.deepStrictEqual(calls[0].args, { ids: ['a', 'b'], to: 'project', task_id: 't1', worker_id: 'w1' });
+  assert.strictEqual(methodsOf(core, 'memory.list')[0].args.filter.task_id, 't1');
+});
+
+test('promote: a task that has not ended, no rows of the worker, or the lever off, call nothing', async () => {
+  const cases = [
+    [{ tasks: { t1: { ...releasedTask(), state: 'assigned' } }, ownRows: [{ id: 'a', written_by: 'worker:w1' }] }, { project: 'demo', project_writes: true }],
+    [{ tasks: { t1: releasedTask() }, ownRows: [{ id: 'a', written_by: 'harness' }] }, { project: 'demo', project_writes: true }],
+    [{ tasks: { t1: releasedTask() }, ownRows: [{ id: 'a', written_by: 'worker:w1' }] }, { project: 'demo', project_writes: false, summaries: 'mechanical' }],
+  ];
+  for (const [spy, over] of cases) {
+    const core = spyCore(spy);
+    const ctx = mkCtx(core, lv({ capture: true, observations: true, ...over }));
+    const w = worker(); MJ.afterTurn(w, ctx, {}); await flush(w);
+    assert.strictEqual(methodsOf(core, 'memory.promote').length, 0, JSON.stringify(over));
+  }
+});
+
+test('promote: a refused promotion is an ok:0 project_write event with its code and is not retried', async () => {
+  const core = spyCore({ tasks: { t1: releasedTask() }, ownRows: [{ id: 'a', written_by: 'worker:w1' }], fail: { 'memory.promote': 'E_MODEL' } });
+  const ctx = mkCtx(core, lv({ capture: true, observations: true, project: 'demo', project_writes: true }));
+  const w = worker();
+  MJ.afterTurn(w, ctx, {}); await flush(w);
+  MJ.afterTurn(Object.assign(w, { turns: 2 }), ctx, {}); await flush(w);
+  assert.strictEqual(methodsOf(core, 'memory.promote').length, 1);
   const evs = core.events.filter((e) => e.kind === 'project_write');
-  assert.deepStrictEqual(evs.map((e) => [e.ok, e.code]), [[0, 'E_ARGS'], [0, 'E_NAMESPACE_TOO_LARGE']]);
+  assert.deepStrictEqual(evs.map((e) => [e.ok, e.code, e.key]), [[0, 'E_MODEL', 'promote:t1|w1']]);
 });
 
 test('wrap-up: at most 600 bytes, keyed task:<id>, in the event message, once', async () => {
