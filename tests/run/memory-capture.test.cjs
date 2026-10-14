@@ -177,7 +177,7 @@ test('two turns give two observations, each with only its own events', async () 
   }, { FAKE_TOOL_USES: '3' });
 });
 
-test('a failed observation store is an ok 0 event with the code, is not retried, and nothing else is written for the turn', async () => {
+test('a failed observation store is an ok 0 event with the code, is not retried, and the turn row is written as the lever-off path writes it', async () => {
   const core = memoryCore({ levers: ON, failStore: 'observation' });
   await run(core, async (m, sb) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
@@ -189,8 +189,11 @@ test('a failed observation store is an ok 0 event with the code, is not retried,
     assert.strictEqual(ev.ok, 0);
     assert.strictEqual(ev.code, 'E_OWNER_LOST');
     assert.strictEqual(ev.row_ids, undefined);
-    assert.strictEqual(core.memories.length, 0, 'no turn row stands in for it');
-    assert.strictEqual(m._worker('w1').lastError.where, 'memory.store');
+    assert.strictEqual(core.memories.length, 1, 'the turn is not lost: the turn row stands in');
+    const t = core.stores.find((s) => s.type === 'turn');
+    assert.deepStrictEqual(Object.keys(t).sort(), ['provenance', 'tags', 'text', 'type', 'worker_id']);
+    assert.deepStrictEqual(t.tags, ['w1', 'turn:1']);
+    assert.match(t.text, /^echo: /);
   });
 });
 
