@@ -43,10 +43,19 @@ const BASE_PROMPTS = path.join(__dirname, '..', 'fixtures', 'v0.1.0', 'src', 'ru
 const RULES = path.join(ROOT, 'src/run/prompts/memory-rules.md');
 const lf = (s) => s.replace(/\r\n/g, '\n');
 
+// ADR 0037 amendment 6 rewrote these 1-based lines of the interactive twin after 0.1.0 (the waiting text);
+// interactive-prompt.test.cjs pins their new wording, so here they are taken from the base before comparing.
+const AMD6_LINES = { 'orchestrator-interactive.md': [52, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 78, 79, 92, 98] };
+
 test('memory rules: the placeholder sits at the end of an existing line, and an empty substitution is the base prompt byte for byte', () => {
   for (const f of ['orchestrator.md', 'orchestrator-interactive.md']) {
-    const now = lf(fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8'));
+    let now = lf(fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8'));
     const base = lf(fs.readFileSync(path.join(BASE_PROMPTS, f), 'utf8'));
+    if (AMD6_LINES[f]) {
+      const n = now.split('\n'); const b = base.split('\n');
+      for (const i of AMD6_LINES[f]) { assert.notStrictEqual(n[i - 1], b[i - 1], `${f}:${i} is an amendment 6 line`); n[i - 1] = b[i - 1]; }
+      now = n.join('\n');
+    }
     assert.strictEqual(now.split('{{memory_rules}}').length, 2, `${f} carries the placeholder once`);
     assert.match(now, /\{\{memory_rules\}\}\n/, `${f}: the placeholder ends its line`);
     assert.strictEqual(now.split('\n').length, base.split('\n').length, `${f}: no line added`);
