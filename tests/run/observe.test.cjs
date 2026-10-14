@@ -198,3 +198,15 @@ test('a Codex patch path under the worktree is stored relative', () => {
   const events = [use('file_change', {}, 'c1'), res('file_change', 'c1', { files: [p, '/elsewhere/z.cjs'] })];
   assert.deepStrictEqual(build(events, { worktree: '/work/wt' }).body.files_modified, ['src/b.cjs', '/elsewhere/z.cjs']);
 });
+
+test('a path is normalised before the under-root test', () => {
+  const { relativeTo } = require('../../src/run/observe.cjs');
+  const root = 'C:/T/wt';
+  assert.strictEqual(relativeTo('C:/T/wt/../wt2/x.js', root), 'C:/T/wt2/x.js', 'a dot-dot escape stays absolute');
+  assert.strictEqual(relativeTo('C:/T/wt/src/../a.js', root), 'a.js');
+  assert.strictEqual(relativeTo('./a.js', root), 'a.js');
+  assert.strictEqual(relativeTo('src/./b.js', root), 'src/b.js');
+  assert.strictEqual(relativeTo('\\\\?\\C:\\T\\wt\\src\\c.js', root), 'src/c.js', 'a long-path prefix is dropped');
+  assert.strictEqual(relativeTo('\\\\?\\C:\\T\\other\\c.js', root), 'C:/T/other/c.js');
+  assert.strictEqual(relativeTo('C:/T/wt/', root), '.');
+});
