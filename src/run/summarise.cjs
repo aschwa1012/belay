@@ -12,6 +12,13 @@ const NOT_STATED = '(not stated)';
 const ASKED_MAX = 400;
 const MAX_BYTES = 8192;
 const GENERATOR_VERSION = 1;
+// What a long task may put in a summary (ADR 0044 decision 4.1): the last commands and the first files, each
+// with a count of the rest. The fields are fitted under BODY_ROOM so the stored body (fields plus the row's
+// version and generator keys) stays under MAX_BYTES.
+const KEEP_COMMANDS = 30;
+const KEEP_FILES = 50;
+const ITEM_MAX = 200;
+const BODY_ROOM = MAX_BYTES - 512;
 
 // class -> what the caller does. `store` false means no row; `code` is the memory_event code recorded.
 const POLICY = Object.freeze({
@@ -81,6 +88,27 @@ function statedText(v) {
 // a status or the harness's own verdict.
 const flat = (v) => String(v).replace(/\s+/g, ' ').trim();
 
+const sizeOf = (f) => Buffer.byteLength(JSON.stringify(f), 'utf8');
+const clip = (v) => (typeof v === 'string' ? cutBytes(v, ITEM_MAX) : v);
+// Keeps the newest `keep` commands (a command's text is clipped) and the first `keep` of a list; the rest is a count.
+function boundCommands(done, all) {
+  const kept = all.slice(-KEEP_COMMANDS).map((c) => ({ command: clip(c.command), exit_code: c.exit_code }));
+  done.commands = kept;
+  if (all.length > kept.length) done.commands_omitted = all.length - kept.length;
+}
+function boundList(all, keep) { return { kept: all.slice(0, keep).map(clip), omitted: Math.max(0, all.length - keep) }; }
+// If the fields are still over, commands go before anything else, then the file lists are halved.
+function fitFields(fields, allCommands, allLooked, allFiles) {
+  if (sizeOf(fields) <= BODY_ROOM) return;
+  fields.done.commands = [];
+  fields.done.commands_omitted = allCommands.length;
+  for (let keep = KEEP_FILES >> 1; sizeOf(fields) > BODY_ROOM && keep >= 0; keep = keep ? keep >> 1 : -1) {
+    const lk = boundList(allLooked, keep); const fm = boundList(allFiles, keep);
+    fields.looked_at = lk.kept; fields.done.files_modified = fm.kept;
+    for (const [obj, key, n] of [[fields, 'looked_at_omitted', lk.omitted], [fields.done, 'files_modified_omitted', fm.omitted]]) { if (n) obj[key] = n; else delete obj[key]; }
+  }
+}
+
 function mechanical(input) {
   const i = input || {};
   const task = i.task && typeof i.task === 'object' ? i.task : {};
@@ -91,7 +119,7 @@ function mechanical(input) {
   const spec = typeof task.spec === 'string' ? task.spec : (typeof task.title === 'string' ? task.title : '');
   const learned = flat(statedText(handoff.findings) || statedText(handoff.summary));
   const nexts = [...checkpoints.map((c) => c.next_step), handoff.next_step].map((v) => flat(statedText(v))).filter(Boolean);
-  const commands = bodies.flatMap((b) => asArray(b.commands)).map((c) => ({
+  const allCommands = bodies.flatMap((b) => asArray(b.commands)).map((c) => ({
     command: c.command, exit_code: c.exit_code === undefined ? null : c.exit_code,
   }));
   const errors = bodies.reduce((n, b) => n + (Number.isInteger(b.errors) ? b.errors : 0), 0);
@@ -100,17 +128,27 @@ function mechanical(input) {
   const verdict = flat(statedText(task.verdict));
   const workerVerdict = flat(statedText(handoff.verdict) || statedText(handoff.acceptance));
 
-  return {
+  const allLooked = uniq(bodies.flatMap((b) => asArray(b.files_read)).map((f) => (typeof f === 'string' ? flat(f) : f)));
+  const allFiles = uniq(bodies.flatMap((b) => asArray(b.files_modified)).map((f) => (typeof f === 'string' ? flat(f) : f)));
+  const looked = boundList(allLooked, KEEP_FILES);
+  const modified = boundList(allFiles, KEEP_FILES);
+
+  const fields = {
     asked: cutBytes(flat(spec), ASKED_MAX),
-    looked_at: uniq(bodies.flatMap((b) => asArray(b.files_read)).map((f) => (typeof f === 'string' ? flat(f) : f))),
+    looked_at: looked.kept,
     learned: learned ? `worker-stated: ${learned}` : NOT_STATED,
     done: {
-      files_modified: uniq(bodies.flatMap((b) => asArray(b.files_modified)).map((f) => (typeof f === 'string' ? flat(f) : f))),
-      commands, task_state: typeof task.state === 'string' ? task.state : null,
+      files_modified: modified.kept,
+      commands: [], task_state: typeof task.state === 'string' ? task.state : null,
     },
     next: nexts.length ? `worker-stated: ${nexts[nexts.length - 1]}` : '',
     notes: { errors, verdict: verdict || null, worker_verdict: workerVerdict ? `worker-stated: ${workerVerdict}` : null },
   };
+  boundCommands(fields.done, allCommands);
+  if (looked.omitted) fields.looked_at_omitted = looked.omitted;
+  if (modified.omitted) fields.done.files_modified_omitted = modified.omitted;
+  fitFields(fields, allCommands, allLooked, allFiles);
+  return fields;
 }
 
 // summarise(input, { kind }) → Promise<{ fields, generator, output_class }>. `input = { task, observations,

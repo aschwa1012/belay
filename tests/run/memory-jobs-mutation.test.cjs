@@ -40,6 +40,7 @@ function spyCore({ tasks = {}, workers = [], observations = [], fail = {}, hang 
       store: async (a) => { rec('memory.store', a); await gate('memory.store'); const id = `m${++n}`; rows.set(id, { id, ...a }); return { id, action: 'inserted' }; },
       get: async (a) => { rec('memory.get', a); await gate('memory.get'); const r = rows.get(a.id); if (!r) throw failing('E_NOT_FOUND'); return r; },
       list: async (a) => { rec('memory.list', a); await gate('memory.list'); return { rows: observations, total: observations.length }; },
+      get_many: async (a) => { rec('memory.get_many', a); await gate('memory.get_many'); return { rows: a.ids.map((id) => observations.find((o) => o.id === id) || { id, found: false }) }; },
       recordEvent: async (a) => {
         rec('memory.recordEvent', a); await gate('memory.recordEvent');
         if (a.kind === 'wrapup' && a.ok !== false && events.some((e) => e.kind === 'wrapup' && e.key === a.key && e.ok)) throw failing('E_EXISTS', 'a wrapup event for this key already exists');
