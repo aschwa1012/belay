@@ -131,8 +131,8 @@ async function ensurePromote(J, taskId, workerId) {
   return once(s, 'promote:' + key, async () => {
     if (s.promoteDone.has(key)) return null;
     try {
-      const got = await call(J, () => J.core.memory.list({ filter: { task_id: taskId }, view: 'index', order: 'newest', limit: LIST_MAX }));
-      const ids = ((got && got.rows) || []).filter((r) => r.written_by === `worker:${workerId}`).map((r) => r.id);
+      const got = await call(J, () => J.core.memory.list({ filter: { task_id: taskId, written_by: `worker:${workerId}` }, view: 'index', order: 'newest', limit: LIST_MAX }));
+      const ids = ((got && got.rows) || []).map((r) => r.id);
       s.promoteDone.add(key);
       if (!ids.length) return null;
       return await call(J, () => J.core.memory.promote({ ids, to: 'project', task_id: taskId, worker_id: workerId }));
@@ -188,7 +188,9 @@ async function workerCheckpoints(J, taskId, workerId) {
   } catch (e) { return { checkpoints: [], error: codeOf(e) }; }
 }
 const verdictOf = (task) => (task && task.state === 'done' ? 'accepted (task.evaluate)' : undefined);
-function render(fields, generator) {
+// `meta` names the task, worker and run the summary is about, in the header, so two tasks with the same spec and no
+// findings are two rows in a project namespace where the store dedups on text (ADR 0044 decision 2).
+function render(fields, generator, meta) {
   const files = fields.done.files_modified;
   const cmds = fields.done.commands;
   const nCmds = cmds.length + (fields.done.commands_omitted || 0);
@@ -196,6 +198,7 @@ function render(fields, generator) {
   const failed = cmds.filter((c) => c.exit_code !== null && c.exit_code !== 0).length;
   return [
     SUMMARY_LABEL,
+    `about: task ${meta.taskId}${meta.workerId ? `, worker ${meta.workerId}` : ''}${meta.runId ? `, run ${meta.runId}` : ''}`,
     `asked: ${fields.asked || '(not stated)'}`,
     `looked at: ${fields.looked_at.length ? fields.looked_at.join(', ') + more(fields.looked_at_omitted) : '(none captured)'}`,
     `learned: ${fields.learned}`,
@@ -240,7 +243,7 @@ function ensureSummary(J, taskId, workerId, { taskRow, retry } = {}) {
       if (cp.error) result.fields.checkpoints_unread = cp.error;
       const title = typeof result.title === 'string' && result.title ? result.title : `summary: task ${taskId} (no findings stated)`;
       const body = { v: 2, ...result.fields, generator: result.generator };
-      const text = render(result.fields, result.generator);
+      const text = render(result.fields, result.generator, { taskId, workerId, runId: J.ctx.runId });
       // With project writes on the summary goes straight into the project: no run original and no copy (ADR 0044 decision 2).
       const toProject = wantsProject(J.lv);
       const stored = await call(J, () => J.core.memory.store({
