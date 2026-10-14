@@ -96,7 +96,7 @@ async function killSurvivor(w, e) {
   const gone = await P.waitPidGone(pid, { timeoutMs: 5000 });
   return { worker_id: w.id, code: (e && e.code) || null, pid, pid_gone_ms: gone, tree_kill: w.treeKill || null };
 }
-async function shutdown(workers, { stop, core, clearPoll, markClosed, onDrained }) {
+async function shutdown(workers, { stop, core, clearPoll, markClosed, markOwnerGone, onDrained }) {
   const t0 = now();
   const stopped = [];
   const left_parked = [];
@@ -142,6 +142,8 @@ async function shutdown(workers, { stop, core, clearPoll, markClosed, onDrained 
   // would otherwise send the pipe `shutdown` to belay run's own store owner. A core with no isOwner is a
   // test double, which never holds one: the rule fails closed, as belay-mcp.cjs's own shutdown does.
   const holdsOwner = typeof core.isOwner === 'function' && core.isOwner();
+  // A write that was already sent may still pair an event with its row until here; past this line none is sent.
+  if (markOwnerGone) markOwnerGone();
   if (holdsOwner && typeof core.shutdownOwner === 'function') await core.shutdownOwner().catch(() => {});
   return { stopped, left_parked, left_stale, stop_failed, memory_gave_up: gaveUp, ms: now() - t0 };
 }
