@@ -79,9 +79,12 @@ class Store {
   // ADR 0040 §1-3. `title`, `body`, `redactions` (objects or text), and the harness provenance `run_id`,
   // `task_id`, `turn` and `source` are written as given: deriving them is the method's work (methods-memory.cjs),
   // and this layer trusts none of them to come from a caller. A dedup update (same namespace, same hash) refreshes
-  // title, body and redactions only where the new write has them, and never touches status or provenance:
-  // the row stays what it was first written as, verified or refuted included. Only the row's own writer, with the
-  // same source, updates an unverified row this way; every other hit returns the row unchanged (action 'unchanged').
+  // body and redactions only where the new write has them, keeps the row's first type and first title (a null title
+  // takes the new one), and never touches status or provenance: the row stays what it was first written as,
+  // verified or refuted included. `redactions` is one aggregate count over the whole write, so when the first
+  // title is kept it may still count redactions made in the discarded title; the counts are not split by field.
+  // Only the row's own writer, with the same source, updates an unverified row this way; every other hit returns
+  // the row unchanged (action 'unchanged').
   store(a) {
     const ns = a.namespace, wid = a.worker_id;
     if (!ns || !wid || typeof a.text !== 'string' || !a.text.trim()) throw err('E_ARGS', 'memory.store needs a namespace, a worker id and non-empty text');
