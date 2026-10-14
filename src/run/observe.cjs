@@ -132,13 +132,15 @@ function titleOf(turn, { filesModified, filesRead, commands }) {
 
 function textOf(body, title) {
   const lines = [title];
+  // The narrative sits on the line after the title, so the vector (the row is the turn's only embedded row) is
+  // mostly about what the worker said; the files and commands follow (ADR 0044 decision 1).
+  if (body.narrative) lines.push(`worker-stated: ${body.narrative}`);
   if (body.files_modified.length) lines.push(`files modified: ${body.files_modified.join(', ')}`);
   if (body.files_read.length) lines.push(`files read: ${body.files_read.join(', ')}`);
   for (const c of body.commands) {
     lines.push(`command: ${c.command === null ? WITHHELD : c.command} -> exit ${c.exit_code === null ? 'unknown' : c.exit_code}${c.exit_code_source ? ` (${c.exit_code_source})` : ''}`);
   }
   if (body.errors) lines.push(`tool errors: ${body.errors}`);
-  if (body.narrative) lines.push(`worker-stated: ${body.narrative}`);
   return lines.join('\n');
 }
 
@@ -151,7 +153,7 @@ function buildObservation(input) {
   const c = scan(Array.isArray(events) ? events : [], worktree);
   const kind = typeOf(c);
   const body = {
-    v: 1, kind, turn: turn === undefined ? null : turn,
+    v: 2, kind, turn: turn === undefined ? null : turn,
     files_read: c.filesRead, files_modified: c.filesModified,
     commands: c.commands, tool_counts: c.toolCounts, errors: c.errors,
     facts: [], narrative: cutBytes(typeof finalText === 'string' ? finalText : '', NARRATIVE_MAX),

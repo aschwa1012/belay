@@ -183,6 +183,16 @@ class Store {
     });
   }
 
+  // ADR 0044 decision 2: a row's namespace is the only thing that changes, and its id stays. The keyword index is over
+  // title and text and joins the namespace from this table, so it needs nothing; the vector caches are keyed by
+  // namespace, so both are dropped and reloaded on the next search. Called inside the caller's transaction.
+  moveRow(id, from, to) {
+    const r = this.p('UPDATE memory_entries SET namespace = ? WHERE id = ? AND namespace = ?').run(to, id, from);
+    if (!Number(r.changes)) throw err('E_NOT_FOUND', `no memory row ${id} in ${from}`, { id });
+    this.cache.delete(from);
+    this.cache.delete(to);
+  }
+
   delete(id) {
     return this.tx(() => {
       const row = this.p('SELECT * FROM memory_entries WHERE id = ?').get(id);

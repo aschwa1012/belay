@@ -92,9 +92,10 @@ async function record(ctx, w, fields) {
   }
 }
 
-// The observation row for the turn (ADR 0041 decision 3): one per turn, `embed: false`, source `harness`.
-// A failure is a memory_event with ok 0 and its code, never retried. Returns the stored row, or null.
-async function storeObservation(w, e, ctx, p) {
+// The observation row for the turn (ADR 0041 decision 3, ADR 0044 decision 1): with the lever on it is the turn's
+// only row, so it carries the turn row's tags and provenance and is the one embedded row of the turn. Source
+// `harness`. A failure is a memory_event with ok 0 and its code, never retried. Returns the stored row, or null.
+async function storeObservation(w, e, ctx, p, extra = {}) {
   if (!p.levers.observations) return null;
   const snap = p.snap || snapshotOf(w, e);
   const turn = snap.turn;
@@ -110,7 +111,11 @@ async function storeObservation(w, e, ctx, p) {
     await record(ctx, w, { kind: 'observation', ok: 0, code: codeOf(err), message: String((err && err.message) || err).slice(0, 300) });
     return null;
   }
-  const args = { type: 'observation', title: obs.title, text: obs.text, body: obs.body, embed: false, source: 'harness', turn };
+  const args = {
+    type: 'observation', title: obs.title, text: obs.text, body: obs.body, source: 'harness', turn,
+    tags: [snap.taskId, snap.workerId, 'turn:' + turn].filter(Boolean),
+    provenance: extra.checkpointId ? 'checkpoint:' + extra.checkpointId : 'worker:' + snap.workerId,
+  };
   if (snap.workerId) args.worker_id = snap.workerId; // the worker the row is about; the adapter writes it as the orchestrator
   if (snap.taskId) args.task_id = snap.taskId;
   if (shutDown(w, ctx, 'turn-observation')) return null;
@@ -146,7 +151,7 @@ async function afterTurn(w, ctx, p, extra) {
 // The whole after-turn memory work for a planned turn, in order: the observation, then the jobs.
 async function finish(w, e, ctx, p, extra) {
   if (shutDown(w, ctx, 'turn-memory')) return;
-  const row = await storeObservation(w, e, ctx, p);
+  const row = await storeObservation(w, e, ctx, p, extra);
   await afterTurn(w, ctx, p, { ...extra, observationId: row ? row.id : null });
 }
 

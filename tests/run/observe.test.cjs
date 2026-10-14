@@ -71,7 +71,7 @@ test('body shape: facts stay empty, narrative is labelled and bounded, commands 
     use('Read', { file_path: 'a.cjs' }, 'r2'),
     ...bash('b1', 'npm test', 0, 'no-error'),
   ], { final_text: 'x'.repeat(NARRATIVE_MAX + 500) });
-  assert.strictEqual(o.body.v, 1);
+  assert.strictEqual(o.body.v, 2);
   assert.strictEqual(o.body.turn, 3);
   assert.deepStrictEqual(o.body.facts, []);
   assert.strictEqual(o.body.narrative_source, 'worker-stated');
@@ -83,6 +83,9 @@ test('body shape: facts stay empty, narrative is labelled and bounded, commands 
   assert.strictEqual(o.body.errors, 0);
   assert.match(o.text, /worker-stated: x+/);
   assert.match(o.text, /command: npm test -> exit 0 \(no-error\)/);
+  const lines = o.text.split(String.fromCharCode(10));
+  assert.match(lines[1], /^worker-stated: x+/, 'the narrative is the line after the title');
+  assert.ok(lines.indexOf(lines.find((l) => l.startsWith('files read:'))) > 1, 'the files follow it');
 });
 
 test('errors count failed tool results; a file modified is not also listed as read', () => {
