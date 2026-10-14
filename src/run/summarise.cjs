@@ -17,7 +17,11 @@ const GENERATOR_VERSION = 1;
 // version and generator keys) stays under MAX_BYTES.
 const KEEP_COMMANDS = 30;
 const KEEP_FILES = 50;
-const ITEM_MAX = 200;
+const COMMAND_MAX = 200;
+// Worker-stated fields are bounded so no handoff can push a summary over budget (cap in bytes, before the label).
+const LEARNED_MAX = 2000;
+const NEXT_MAX = 600;
+const VERDICT_MAX = 300;
 const BODY_ROOM = MAX_BYTES - 512;
 
 // class -> what the caller does. `store` false means no row; `code` is the memory_event code recorded.
@@ -89,19 +93,26 @@ function statedText(v) {
 const flat = (v) => String(v).replace(/\s+/g, ' ').trim();
 
 const sizeOf = (f) => Buffer.byteLength(JSON.stringify(f), 'utf8');
-const clip = (v) => (typeof v === 'string' ? cutBytes(v, ITEM_MAX) : v);
-// Keeps the newest `keep` commands (a command's text is clipped) and the first `keep` of a list; the rest is a count.
+// Cuts a string to `max` bytes on a character boundary and says how much was cut; a string within `max` is returned as is.
+function capText(v, max) {
+  if (typeof v !== 'string') return v;
+  const total = Buffer.byteLength(v, 'utf8');
+  if (total <= max) return v;
+  const kept = cutBytes(v, Math.max(0, max - 24));
+  return `${kept}…[+${total - Buffer.byteLength(kept, 'utf8')} bytes]`;
+}
+// Keeps the newest commands (a command's text is cut with a visible marker) and the first `keep` of a list; the rest is a count.
 function boundCommands(done, all) {
-  const kept = all.slice(-KEEP_COMMANDS).map((c) => ({ command: clip(c.command), exit_code: c.exit_code }));
+  const kept = all.slice(-KEEP_COMMANDS).map((c) => ({ command: capText(c.command, COMMAND_MAX), exit_code: c.exit_code }));
   done.commands = kept;
   if (all.length > kept.length) done.commands_omitted = all.length - kept.length;
 }
-function boundList(all, keep) { return { kept: all.slice(0, keep).map(clip), omitted: Math.max(0, all.length - keep) }; }
+function boundList(all, keep) { return { kept: all.slice(0, keep), omitted: Math.max(0, all.length - keep) }; }
 // If the fields are still over, commands go before anything else, then the file lists are halved.
 function fitFields(fields, allCommands, allLooked, allFiles) {
   if (sizeOf(fields) <= BODY_ROOM) return;
   fields.done.commands = [];
-  fields.done.commands_omitted = allCommands.length;
+  if (allCommands.length) fields.done.commands_omitted = allCommands.length;
   for (let keep = KEEP_FILES >> 1; sizeOf(fields) > BODY_ROOM && keep >= 0; keep = keep ? keep >> 1 : -1) {
     const lk = boundList(allLooked, keep); const fm = boundList(allFiles, keep);
     fields.looked_at = lk.kept; fields.done.files_modified = fm.kept;
@@ -117,8 +128,8 @@ function mechanical(input) {
   const checkpoints = asArray(i.checkpoints).map(bodyOf);
 
   const spec = typeof task.spec === 'string' ? task.spec : (typeof task.title === 'string' ? task.title : '');
-  const learned = flat(statedText(handoff.findings) || statedText(handoff.summary));
-  const nexts = [...checkpoints.map((c) => c.next_step), handoff.next_step].map((v) => flat(statedText(v))).filter(Boolean);
+  const learned = capText(flat(statedText(handoff.findings) || statedText(handoff.summary)), LEARNED_MAX);
+  const nexts = [...checkpoints.map((c) => c.next_step), handoff.next_step].map((v) => capText(flat(statedText(v)), NEXT_MAX)).filter(Boolean);
   const allCommands = bodies.flatMap((b) => asArray(b.commands)).map((c) => ({
     command: c.command, exit_code: c.exit_code === undefined ? null : c.exit_code,
   }));
@@ -126,7 +137,7 @@ function mechanical(input) {
   // Two verdicts, never one field: the harness's, from task.evaluate (the caller passes task.verdict), and what the
   // worker said of its own work in its handoff, labelled as the worker's.
   const verdict = flat(statedText(task.verdict));
-  const workerVerdict = flat(statedText(handoff.verdict) || statedText(handoff.acceptance));
+  const workerVerdict = capText(flat(statedText(handoff.verdict) || statedText(handoff.acceptance)), VERDICT_MAX);
 
   const allLooked = uniq(bodies.flatMap((b) => asArray(b.files_read)).map((f) => (typeof f === 'string' ? flat(f) : f)));
   const allFiles = uniq(bodies.flatMap((b) => asArray(b.files_modified)).map((f) => (typeof f === 'string' ? flat(f) : f)));
@@ -145,6 +156,8 @@ function mechanical(input) {
     notes: { errors, verdict: verdict || null, worker_verdict: workerVerdict ? `worker-stated: ${workerVerdict}` : null },
   };
   boundCommands(fields.done, allCommands);
+  const part = i.partial;
+  if (part && typeof part === 'object') fields.observations_partial = { read: part.read, listed: part.listed, code: part.code };
   if (looked.omitted) fields.looked_at_omitted = looked.omitted;
   if (modified.omitted) fields.done.files_modified_omitted = modified.omitted;
   fitFields(fields, allCommands, allLooked, allFiles);

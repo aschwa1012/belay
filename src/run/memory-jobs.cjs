@@ -146,14 +146,17 @@ async function projectCopyOfTurn(J, snap, turnRowId) {
 }
 
 // ---- summaries (ADR 0041 decision 4) --------------------------------------------------------------------
+// Reads the task's observations. Core's list never returns a body, so the ids are listed (newest first, paged,
+// at most OBS_CAP) and the bodies read by id. A read that stops early keeps what it got and says so in
+// `partial`: a list that is not the whole list is never passed off as one. `error` is the failure itself.
 async function gather(J, taskId, taskRow) {
   const task = taskRow || await call(J, () => J.core.task.get({ task_id: taskId }));
-  let observations = [];
+  const ids = [];
+  const observations = [];
+  let partial = null;
   try {
-    // A list never returns `body`, so the ids are listed (paged) and the bodies read by id in chunks the batch read accepts.
-    const ids = [];
     for (let total = Infinity; ids.length < total && ids.length < OBS_CAP;) {
-      const got = await call(J, () => J.core.memory.list({ filter: { types: ['observation'], task_id: taskId }, view: 'index', order: 'oldest', limit: LIST_LIMIT, offset: ids.length }));
+      const got = await call(J, () => J.core.memory.list({ filter: { types: ['observation'], task_id: taskId }, view: 'index', order: 'newest', limit: LIST_LIMIT, offset: ids.length }));
       const page = ((got && got.rows) || []).map((r) => r.id);
       total = (got && got.total) || 0;
       if (!page.length) break;
@@ -163,8 +166,18 @@ async function gather(J, taskId, taskRow) {
       const many = await call(J, () => J.core.memory.get_many({ ids: ids.slice(i, i + GET_MANY_MAX), view: 'full' }));
       for (const r of (many && many.rows) || []) if (r && r.found !== false) observations.push(r);
     }
-  } catch (_) { observations = []; } // a summary without observations says so; the failed read is not the summary's failure
-  return { task, observations };
+  } catch (e) {
+    partial = { read: observations.length, listed: ids.length, code: (e && e.code) || 'E_INTERNAL', error: e };
+  }
+  observations.sort(byTurn);
+  return { task, observations, partial };
+}
+const turnOf = (o) => { const b = typeof o.body === 'string' ? safeParse(o.body) : o.body; return b && Number.isInteger(b.turn) ? b.turn : null; };
+// Oldest first: by the turn the row records, else by creation time; list order within one millisecond is not creation order.
+function byTurn(x, y) {
+  const tx = turnOf(x); const ty = turnOf(y);
+  if (tx !== null && ty !== null && tx !== ty) return tx - ty;
+  return (x.created_at || 0) - (y.created_at || 0) || (tx !== null && ty !== null ? 0 : String(x.id).localeCompare(String(y.id)));
 }
 const verdictOf = (task) => (task && task.state === 'done' ? 'accepted (task.evaluate)' : undefined);
 function render(fields, generator) {
@@ -180,7 +193,7 @@ function render(fields, generator) {
     `learned: ${fields.learned}`,
     `done: ${files.length ? 'modified ' + files.join(', ') + more(fields.done.files_modified_omitted) : 'no files modified'}; ran ${nCmds} command${nCmds === 1 ? '' : 's'}${failed ? ` (${failed} failed${fields.done.commands_omitted ? ' of the last ' + cmds.length : ''})` : ''}; task ${fields.done.task_state || 'state unknown'}`,
     `next: ${fields.next || '(not stated)'}`,
-    `notes: ${fields.notes.errors} error${fields.notes.errors === 1 ? '' : 's'}${fields.notes.verdict ? '; verdict ' + fields.notes.verdict : ''}${fields.notes.worker_verdict ? '; worker verdict ' + fields.notes.worker_verdict : ''}`,
+    `notes: ${fields.observations_partial ? `observation list incomplete (read ${fields.observations_partial.read} of ${fields.observations_partial.listed} listed, ${fields.observations_partial.code}); ` : ''}${fields.notes.errors} error${fields.notes.errors === 1 ? '' : 's'}${fields.notes.verdict ? '; verdict ' + fields.notes.verdict : ''}${fields.notes.worker_verdict ? '; worker verdict ' + fields.notes.worker_verdict : ''}`,
     `generator: ${generator.kind} v${generator.version}`,
   ].join('\n');
 }
@@ -200,9 +213,11 @@ function ensureSummary(J, taskId, workerId, { taskRow, retry } = {}) {
     try {
       const prior = await alreadySummarised(J, taskId, workerId);
       if (prior) { s.summaryDone.add(key); if (prior.newest_row_id) s.summaryIds.set(key, prior.newest_row_id); return prior.newest_row_id || null; }
-      const { task, observations } = await gather(J, taskId, taskRow);
+      const { task, observations, partial } = await gather(J, taskId, taskRow);
+      // Nothing could be read of a task whose list failed or is not empty: no summary, and the ordinary failed-summary path retries it.
+      if (partial && partial.read === 0) throw partial.error;
       const handoff = task && task.handoff && task.handoff.result;
-      const input = { task: { spec: task && task.spec, state: task && task.state, verdict: verdictOf(task) }, observations, checkpoints: [], handoff: handoff || {} };
+      const input = { partial: partial ? { read: partial.read, listed: partial.listed, code: partial.code } : undefined, task: { spec: task && task.spec, state: task && task.state, verdict: verdictOf(task) }, observations, checkpoints: [], handoff: handoff || {} };
       const summariser = (J.ctx.modules && J.ctx.modules.summarise) || summarise;
       const result = await summariser(input, { kind: 'mechanical' });
       const cls = result.output_class;
