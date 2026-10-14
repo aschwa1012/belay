@@ -120,11 +120,11 @@ class Store {
       let id, action;
       if (dup) {
         id = dup.id; action = 'updated';
-        this.p(`UPDATE memory_entries SET last_writer_id = ?, type = ?, embedding = COALESCE(?, embedding),
+        this.p(`UPDATE memory_entries SET last_writer_id = ?, embedding = COALESCE(?, embedding),
                 tags = COALESCE(?, tags), provenance = COALESCE(?, provenance), supersedes = COALESCE(?, supersedes),
-                title = COALESCE(?, title), body = COALESCE(?, body), redactions = COALESCE(?, redactions),
+                title = COALESCE(title, ?), body = COALESCE(?, body), redactions = COALESCE(?, redactions),
                 updated_at = ?, ttl_at = ? WHERE id = ?`)
-          .run(wid, a.type || 'fact', blob, tags, prov, a.supersedes || null, title, body, redactions, t, ttl, id);
+          .run(wid, blob, tags, prov, a.supersedes || null, title, body, redactions, t, ttl, id);
       } else {
         id = a.id || crypto.randomUUID(); action = 'inserted';
         this.p(`INSERT INTO memory_entries(id, namespace, worker_id, last_writer_id, type, text, text_hash, embedding,
