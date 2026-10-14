@@ -8,6 +8,18 @@ const path = require('node:path');
 const NARRATIVE_MAX = 1200;
 const TITLE_MAX = 160;
 const TITLE_FILES = 3;
+// The stored body must stay under the store's 8,192 bytes once serialised, after redaction has had its say, and the
+// embedded text must fit the embedder's window whatever the turn did (a token is at least one byte, so a text of
+// at most TEXT_MAX bytes is at most TEXT_MAX tokens). Lists are bounded in steps (BOUNDS); the narrative is cut last.
+const BODY_TARGET = 6500;
+const TEXT_MAX = 6144;
+const BOUNDS = [
+  { cmdKeep: 30, cmdClip: 200, fileKeep: 50, pathClip: 200, toolKeep: 30 },
+  { cmdKeep: 30, cmdClip: 120, fileKeep: 25, pathClip: 160, toolKeep: 20 },
+  { cmdKeep: 15, cmdClip: 80, fileKeep: 10, pathClip: 120, toolKeep: 10 },
+  { cmdKeep: 5, cmdClip: 60, fileKeep: 5, pathClip: 100, toolKeep: 5 },
+  { cmdKeep: 0, cmdClip: 0, fileKeep: 0, pathClip: 80, toolKeep: 3 },
+];
 
 const READ_TOOLS = new Set(['Read', 'NotebookRead']);
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
@@ -107,6 +119,40 @@ function scan(events, root) {
   return { filesRead: filesRead.filter((p) => !filesModified.includes(p)), filesModified, toolCounts, commands, errors };
 }
 
+// A string cut to `max` bytes ends in a marker saying how many bytes the cut took.
+function clip(v, max) {
+  if (typeof v !== 'string' || byteLength(v) <= max) return v;
+  const kept = cutBytes(v, Math.max(0, max - 16));
+  return `${kept}…[+${byteLength(v) - byteLength(kept)}b]`;
+}
+
+// The body at one bound: the newest `cmdKeep` commands, the first `fileKeep` of each file list, the `toolKeep`
+// most used tools; each clipped string carries a marker and every dropped item is counted, never silent.
+function bounded(body, b) {
+  const out = { ...body };
+  const cmds = body.commands.slice(Math.max(0, body.commands.length - b.cmdKeep));
+  out.commands = cmds.map((c) => ({ ...c, command: clip(c.command, b.cmdClip), tool_use_id: clip(c.tool_use_id, 64) }));
+  if (body.commands.length > cmds.length) out.commands_omitted = body.commands.length - cmds.length;
+  for (const k of ['files_read', 'files_modified']) {
+    out[k] = body[k].slice(0, b.fileKeep).map((f) => clip(f, b.pathClip));
+    if (body[k].length > out[k].length) out[`${k}_omitted`] = body[k].length - out[k].length;
+  }
+  const tools = Object.entries(body.tool_counts).sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1));
+  out.tool_counts = Object.fromEntries(tools.slice(0, b.toolKeep).map(([k, n]) => [clip(k, 64), n]));
+  if (tools.length > b.toolKeep) out.tool_counts_omitted = tools.length - b.toolKeep;
+  return out;
+}
+
+// Picks the first bound whose body fits with the whole narrative; only when none does is the narrative cut, last.
+function fitBody(body) {
+  const size = (o) => byteLength(JSON.stringify(o));
+  let out;
+  for (const b of BOUNDS) { out = bounded(body, b); if (size(out) <= BODY_TARGET) return out; }
+  const room = Math.max(0, byteLength(out.narrative) - (size(out) - BODY_TARGET) - 64);
+  out.narrative = clip(out.narrative, room);
+  return out;
+}
+
 function typeOf({ filesModified, filesRead, commands }) {
   if (filesModified.length) return 'change';
   if (filesRead.length) return 'discovery';
@@ -140,8 +186,10 @@ function textOf(body, title) {
   for (const c of body.commands) {
     lines.push(`command: ${c.command === null ? WITHHELD : c.command} -> exit ${c.exit_code === null ? 'unknown' : c.exit_code}${c.exit_code_source ? ` (${c.exit_code_source})` : ''}`);
   }
+  if (body.commands_omitted) lines.push(`commands omitted: ${body.commands_omitted}`);
   if (body.errors) lines.push(`tool errors: ${body.errors}`);
-  return lines.join('\n');
+  const text = lines.join('\n');
+  return byteLength(text) <= TEXT_MAX ? text : `${cutBytes(text, TEXT_MAX - 40)}\n...[text cut to ${TEXT_MAX} bytes]`;
 }
 
 // buildObservation({ turn, worker_id, task_id, substrate, events, final_text, worktree }) → { title, type, body, text }. `type` is the class
@@ -160,7 +208,8 @@ function buildObservation(input) {
     narrative_source: 'worker-stated',
   };
   const title = titleOf(body.turn === null ? '?' : body.turn, c);
-  return { title, type: kind, body, text: textOf(body, title) };
+  const stored = fitBody(body);
+  return { title, type: kind, body: stored, text: textOf(stored, title) };
 }
 
-module.exports = { buildObservation, relativeTo, NARRATIVE_MAX, TITLE_MAX };
+module.exports = { buildObservation, relativeTo, NARRATIVE_MAX, TITLE_MAX, BODY_TARGET, TEXT_MAX };
