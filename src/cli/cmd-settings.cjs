@@ -98,7 +98,12 @@ function writeAtomic(file, text, expectRaw) {
   }
 }
 
-function setResult(found, key, rawValue, ctx) {
+// The one writer of a setting, for the command and for any caller that sets one from elsewhere (a run-pause prompt).
+// `found` is C.discover's answer, `value` the CLI's text or an already-typed value, `ctx` carries `cwd`. Validates (the whole
+// memory block included), writes the config file atomically and returns { code, text, json } with the old and new value;
+// a refusal writes nothing.
+function writeSetting(found, key, rawValue, ctx) {
+  if (!SETTING_NAMES.includes(key)) return usageError(`unknown key ${key}; the keys are ${SETTING_NAMES.join(', ')}`);
   const parsed = K.parseValue(key, rawValue);
   if (parsed.error) return usageError(parsed.error);
   const { value } = parsed;
@@ -163,7 +168,7 @@ async function run(ctx) {
   const found = C.discover(ctx.cwd);
   if (key === undefined) return listResult(found, ctx.json);
   if (value === undefined) return oneResult(found, key, ctx.json);
-  return setResult(found, key, value, ctx);
+  return writeSetting(found, key, value, ctx);
 }
 
-module.exports = { run, USAGE, seams };
+module.exports = { run, writeSetting, USAGE, seams };

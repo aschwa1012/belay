@@ -89,11 +89,11 @@ function isDefault(levers) {
 // entry: the type comes from the default's own type unless OVERRIDES names a tighter one, so a lever added to
 // DEFAULTS is listed and settable with no edit here. parseMemoryBlock stays the one judge of a value: a caller
 // that parses a value by its type here still asks parseMemoryBlock before it writes.
-// type: 'boolean' | 'number' | 'integer' | 'enum' | 'string_or_null'.
+// TYPES[key] = { type: 'boolean'|'number'|'integer'|'enum'|'string', values?, min?, max?, minExclusive?, nullable? }; `values` only for enums.
 const OVERRIDES = {
   alpha: { type: 'number', min: 0, max: 1 },
-  summaries: { type: 'enum', allowed: SUMMARIES },
-  project: { type: 'string_or_null' },
+  summaries: { type: 'enum', values: SUMMARIES },
+  project: { type: 'string', nullable: true },
   index_bytes: { type: 'integer', min: 1, max: INDEX_BYTES_MAX },
   bottle_bytes: { type: 'integer', min: 1, max: BOTTLE_BYTES_MAX },
   notes_match_threshold: { type: 'number', min: 0, max: 1, minExclusive: true },
@@ -103,9 +103,9 @@ const OVERRIDES = {
 function specOf(key) {
   if (OVERRIDES[key]) return Object.freeze({ ...OVERRIDES[key] });
   const t = typeof DEFAULTS[key];
-  return Object.freeze({ type: t === 'boolean' || t === 'number' ? t : 'string_or_null' });
+  return Object.freeze({ type: t === 'boolean' || t === 'number' ? t : 'string', ...(DEFAULTS[key] === null ? { nullable: true } : {}) });
 }
 
-const LEVER_SPEC = Object.freeze(Object.fromEntries(Object.keys(DEFAULTS).map((k) => [k, specOf(k)])));
+const TYPES = Object.freeze(Object.fromEntries(Object.keys(DEFAULTS).map((k) => [k, specOf(k)])));
 
-module.exports = { DEFAULTS, LEVER_SPEC, parseMemoryBlock, isDefault };
+module.exports = { DEFAULTS, TYPES, parseMemoryBlock, isDefault };

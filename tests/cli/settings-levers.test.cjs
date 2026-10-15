@@ -232,3 +232,23 @@ test('belay run end to end: the receipt carries memory_sources and agent_setting
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { path: cfg, types: { orchestrator: { model: 'cfg-orch', effort: 'low' }, coder: { model: 'cfg-coder', effort: 'medium' } } });
   } finally { cleanup(sb.dir); }
 });
+
+test('writeSetting: the exported writer takes a typed value, validates the whole block and writes atomically', () => {
+  const { writeSetting } = require('../../src/cli/cmd-settings.cjs');
+  const C = require('../../src/cli/config.cjs');
+  const dir = project();
+  try {
+    const refused = writeSetting(C.discover(dir), 'memory.notes', true, { cwd: dir });
+    assert.strictEqual(refused.code, 2);
+    assert.strictEqual(fs.existsSync(`${dir}/belay.config.json`), false);
+    assert.strictEqual(writeSetting(C.discover(dir), 'memory.project', 'acme', { cwd: dir }).code, 0);
+    const ok = writeSetting(C.discover(dir), 'memory.notes', true, { cwd: dir });
+    assert.strictEqual(ok.code, 0);
+    assert.deepStrictEqual([ok.json.old.value, ok.json.new.value], [false, true]);
+    assert.strictEqual(writeSetting(C.discover(dir), 'memory.index_bytes', '7', { cwd: dir }).json.new.value, 7);
+    assert.strictEqual(writeSetting(C.discover(dir), 'memory.index_bytes', 'x', { cwd: dir }).code, 2);
+    assert.strictEqual(writeSetting(C.discover(dir), 'memory.alpha', 'x'.length, { cwd: dir }).code, 0);
+    assert.strictEqual(writeSetting(C.discover(dir), 'memory.alpha', 5, { cwd: dir }).code, 2);
+    assert.deepStrictEqual(readConfig(dir).memory, { project: 'acme', notes: true, index_bytes: 7, alpha: 1 });
+  } finally { cleanup(dir); }
+});

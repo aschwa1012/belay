@@ -27,10 +27,10 @@ function shape(key) {
       ? { type: 'enum', allowed: [...AD.EFFORT_LEVELS, null], text: `${AD.EFFORT_LEVELS.join(' | ')} | null` }
       : { type: 'model', allowed: null, text: 'a model name | null (no default)' };
   }
-  const s = ML.LEVER_SPEC[leverOf(key)];
+  const s = ML.TYPES[leverOf(key)];
   if (s.type === 'boolean') return { type: 'boolean', allowed: [true, false], text: 'true | false' };
-  if (s.type === 'enum') return { type: 'enum', allowed: s.allowed, text: s.allowed.join(' | ') };
-  if (s.type === 'string_or_null') return { type: 'string_or_null', allowed: null, text: 'a name | null' };
+  if (s.type === 'enum') return { type: 'enum', allowed: s.values, text: s.values.join(' | ') };
+  if (s.type === 'string') return { type: 'string', nullable: !!s.nullable, allowed: null, text: s.nullable ? 'a name | null' : 'a string' };
   const range = s.min !== undefined ? ` ${s.minExclusive ? '>' : ''}${s.min}${s.minExclusive ? '' : '..'}${s.minExclusive ? ' to ' : ''}${s.max}` : '';
   return { type: s.type, allowed: null, text: `${s.type}${range}` };
 }
@@ -45,13 +45,17 @@ function defaultOf(key) {
 // the whole block before anything is written.
 function parseValue(key, raw) {
   const sh = shape(key);
+  if (typeof raw !== 'string') { // an already-typed value from a caller other than the command line
+    const ok = kindOf(key) === 'mod' ? sh.allowed.includes(raw) : checkStored(key, raw).ok;
+    return ok ? { value: raw } : { error: `${JSON.stringify(raw)} is not a value of ${key} (${sh.text})` };
+  }
   const bad = (what) => ({ error: `${JSON.stringify(raw)} is not ${what} for ${key}` });
   switch (sh.type) {
     case 'boolean': return raw === 'true' || raw === 'false' ? { value: raw === 'true' } : bad('true or false');
     case 'integer': return /^-?\d+$/.test(raw) ? { value: Number(raw) } : bad('an integer');
     case 'number': return /^-?\d+(\.\d+)?$/.test(raw) ? { value: Number(raw) } : bad('a number');
     case 'model': return raw === 'null' ? { value: null } : raw ? { value: raw } : bad('a model name or null');
-    case 'string_or_null': return { value: raw === 'null' ? null : raw };
+    case 'string': return { value: raw === 'null' && sh.nullable ? null : raw };
     default: {
       if (raw === 'null' && sh.allowed.includes(null)) return { value: null };
       return sh.allowed.includes(raw) ? { value: raw }
@@ -78,8 +82,8 @@ function checkStored(key, value) {
   }
   const block = { [leverOf(key)]: value };
   const t = typeof value;
-  const s = ML.LEVER_SPEC[leverOf(key)];
-  const typeOk = s.type === 'boolean' ? t === 'boolean' : s.type === 'string_or_null' ? value === null || t === 'string' : s.type === 'enum' ? s.allowed.includes(value) : t === 'number';
+  const s = ML.TYPES[leverOf(key)];
+  const typeOk = s.type === 'boolean' ? t === 'boolean' : s.type === 'string' ? (value === null ? !!s.nullable : t === 'string') : s.type === 'enum' ? s.values.includes(value) : t === 'number';
   if (!typeOk) return { ok: false, reason: `${JSON.stringify(value)} is not ${shape(key).text}` };
   // Ranges and patterns are parseMemoryBlock's to judge; a prerequisite on another key is not this key's fault.
   const r = ML.parseMemoryBlock(block);
