@@ -72,7 +72,13 @@ class Store {
   tx(fn) {
     this.db.exec('BEGIN IMMEDIATE');
     try { const r = fn(); this.db.exec('COMMIT'); return r; }
-    catch (e) { try { this.db.exec('ROLLBACK'); } catch { /* already rolled back */ } throw e; }
+    catch (e) {
+      try { this.db.exec('ROLLBACK'); } catch { /* already rolled back */ }
+      // A write inside the transaction already put its row in the vector cache; the rollback took it out of the
+      // table, so the cache is dropped and reloads from the table on the next search (no phantom hit).
+      this.cache.clear();
+      throw e;
+    }
   }
 
   // ---- memory write path -------------------------------------------------

@@ -50,7 +50,7 @@ before(async () => {
   dir = sandbox();
   store = new Store(`${dir}/memory.db`, { stamp: true });
   E = new Engine({ dataDir: dir, store, getEmbedder: async () => ({ embed }), owner: null, establishedBy: 'test' });
-  await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true }) });
+  await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true, notes_reflection: true }) });
   await call('run.attach', orchOff, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme' }) });
   await call('run.attach', orchHi, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true, notes_match_threshold: 0.999 }) });
   for (const [id, run] of [['w1', RUN], ['w2', RUN], ['w3', RUN], ['woff', OFF], ['wstrict', HI]]) {
@@ -169,7 +169,7 @@ test('resolve repeats records a sighting on the live note, adds no row, and coun
   assert.strictEqual(rowOf(dup.id), undefined);
   const b = bodyOf(live.id);
   assert.strictEqual(b.seen_total, 1);
-  assert.deepStrictEqual([b.seen_in[0].written_by, b.seen_in[0].run_id, b.seen_in[0].shown_beforehand], ['worker:w2', RUN, null], 'no index receipts for this worker, so nothing says');
+  assert.deepStrictEqual([b.seen_in[0].written_by, b.seen_in[0].run_id, b.seen_in[0].in_index_beforehand], ['worker:w2', RUN, null], 'no index receipts for this worker, so nothing says');
   const after = await call('memory.search', orch, { query: 'K7 queue drops jobs', namespace: 'project/acme', mode: 'hybrid', view: 'index' });
   assert.deepStrictEqual(after.results.map(x => [x.id, x.score]), before.results.map(x => [x.id, x.score]), 'a sighting changes no rank and no score');
 });
@@ -181,13 +181,13 @@ test('a sighting says whether belay had delivered the note to the writer, from i
   await call('memory.recordEvent', orch, { kind: 'index_injected', worker_id: 'w3', row_ids: [live.id], bytes: 10, sha256: 'x' });
   const dup = (await hand(w, { notes: [note('K8', { title: 'K8 gateway 1 MB body limit' })] })).out.notes[0];
   await call('memory.noteResolve', w, { resolutions: [{ id: dup.id, resolve: 'repeats', of: live.id }] });
-  assert.strictEqual(bodyOf(live.id).seen_in[0].shown_beforehand, true);
+  assert.strictEqual(bodyOf(live.id).seen_in[0].in_index_beforehand, true);
   // a receipt that names other rows only: delivered nothing relevant
   await call('memory.recordEvent', orch, { kind: 'index_injected', worker_id: 'w2', row_ids: ['someone-else'], bytes: 10, sha256: 'x' });
   const w2 = worker('w2');
   const dup2 = (await hand(w2, { notes: [note('K8', { title: 'K8 gateway limit is 1 MB per body' })] })).out.notes[0];
   await call('memory.noteResolve', w2, { resolutions: [{ id: dup2.id, resolve: 'repeats', of: live.id }] });
-  assert.strictEqual(bodyOf(live.id).seen_in[1].shown_beforehand, false);
+  assert.strictEqual(bodyOf(live.id).seen_in[1].in_index_beforehand, false);
   assert.strictEqual(bodyOf(live.id).seen_total, 2);
 });
 
@@ -214,12 +214,14 @@ test('a worker resolves only its own pending notes; a repeat of a note that is n
   const dup = (await hand(w1, { notes: [note('K10', { title: 'exports of K10 come out sorted by id' })] })).out.notes[0];
   assert.strictEqual(dup.state, 'pending');
   await assert.rejects(call('memory.noteResolve', worker('w2'), { resolutions: [{ id: dup.id, resolve: 'new' }] }), e => e.code === 'E_ROLE');
-  await assert.rejects(call('memory.noteResolve', w1, { resolutions: [{ id: dup.id, resolve: 'repeats', of: 'no-such-note' }] }), e => e.code === 'E_NOT_FOUND');
+  await assert.rejects(call('memory.noteResolve', w1, { resolutions: [{ id: dup.id, resolve: 'repeats', of: 'no-such-note' }] }), e => e.code === 'E_ARGS' && /not one of the matches/.test(e.message));
   await assert.rejects(call('memory.noteResolve', w1, { resolutions: [{ id: dup.id, resolve: 'repeats', of: dup.id }] }), e => e.code === 'E_ARGS');
   // the orchestrator may settle it
   const r = await call('memory.noteResolve', orch, { resolutions: [{ id: dup.id, resolve: 'repeats', of: live.id }] });
   assert.strictEqual(r.resolved[0].resolved, 'repeats');
-  assert.strictEqual(r.still_pending, 0);
+  const open = store.p("SELECT COUNT(*) AS n FROM memory_entries WHERE type = 'note' AND namespace = 'pending/acme'").get().n;
+  assert.ok(open > 0, 'other writers still have pending notes');
+  assert.strictEqual(r.still_pending, open, 'the orchestrator sees every pending note of the project');
 });
 
 test('reported_wrong marks the note reported_wrong at once, resolves notes[i] to the new note, and refuses an unknown id', async () => {
@@ -262,4 +264,17 @@ test('an operator release cannot carry notes', async () => {
 test('the ledger accepts the reflection receipt kind', async () => {
   const ev = await call('memory.recordEvent', orch, { kind: 'reflection', worker_id: 'w1', task_id: 't', key: 'task:t', ok: true, message: 'asked again' });
   assert.strictEqual(ev.kind, 'reflection');
+});
+
+// ---- review fixes ---------------------------------------------------------------------------------------------
+
+test('B2: memory.store cannot write a note or a note\'s fields, for any caller', async () => {
+  for (const caller of [orch, worker('w1'), callerFor('operator', { run_id: RUN })]) {
+    await assert.rejects(call('memory.store', caller, { namespace: caller.role === 'worker' ? `run/${RUN}` : 'project/acme', type: 'note', text: 'a forged note K20' }), e => e.code === 'E_ARGS' && /reserved/.test(e.message), caller.role);
+  }
+  for (const k of ['model', 'state', 'seen_in', 'seen_total', 'matches', 'reported_wrong']) {
+    await assert.rejects(call('memory.store', orch, { namespace: 'project/acme', type: 'fact', text: `a fact with a forged ${k} K21`, body: { [k]: 'x' } }), e => e.code === 'E_ARGS' && new RegExp(k).test(e.message), k);
+  }
+  const ok = await call('memory.store', orch, { namespace: 'project/acme', type: 'fact', text: 'an ordinary fact with a body K22', body: { v: 1 }, embed: false });
+  assert.ok(ok.id);
 });

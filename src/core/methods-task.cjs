@@ -358,6 +358,7 @@ async function release(E, caller, args) {
     if (prep && l.released_at != null) {
       // A second call on a released lease only adds notes (the reflection turn): the release stands as it was written.
       if (args.result !== undefined) throw err('E_ARGS', `lease.release: lease ${l.id} was already released, so a second call may carry notes but not a new result`, { lease_id: l.id });
+      NM.claimAfterRelease(E, caller, prep, l, task.id); // only with memory.notes_reflection, once per lease
       return { ...task, last_checkpoint_id: (rows.lastCheckpoint(E.store, l.task_id) || {}).id || null, released_reason: args.reason || null, ...NM.commit(E, caller, prep, { task_id: task.id }) };
     }
     rows.append(E.store, 'lease', { ...l, released_at: t }, by, t);

@@ -113,14 +113,15 @@ function checkResolutions(list) {
   return list.map((r, i) => {
     const at = `resolutions[${i}]`;
     if (!isObj(r)) throw err('E_ARGS', `${at} must be an object { id, resolve, of, evidence }`, { field: 'resolutions', index: i });
-    for (const k of Object.keys(r)) if (!['id', 'resolve', 'of', 'evidence'].includes(k)) throw err('E_ARGS', `${at}.${k} is not a field; use id, resolve, of, evidence`, { field: 'resolutions', index: i });
+    for (const k of Object.keys(r)) if (!['id', 'resolve', 'of', 'evidence', 'title'].includes(k)) throw err('E_ARGS', `${at}.${k} is not a field; use id, resolve, of, evidence`, { field: 'resolutions', index: i });
     if (!validId(r.id)) throw err('E_ARGS', `${at}.id must be a pending note id`, { field: 'resolutions', index: i });
     if (seen.has(r.id)) throw err('E_ARGS', `${at}.id ${r.id} is resolved twice in one call`, { field: 'resolutions', index: i });
     seen.add(r.id);
     if (!RESOLVES.includes(r.resolve)) throw err('E_ARGS', `${at}.resolve must be one of ${RESOLVES.join(', ')}`, { field: 'resolutions', index: i });
     if (r.resolve === 'new') {
       if (r.of !== undefined || r.evidence !== undefined) throw err('E_ARGS', `${at}: resolve new takes neither of nor evidence`, { field: 'resolutions', index: i });
-      return { id: r.id, resolve: 'new' };
+      // A changed title is how a note that clashes with a row of the same text is made distinct.
+      return r.title === undefined ? { id: r.id, resolve: 'new' } : { id: r.id, resolve: 'new', title: checkTitle(r.title, `${at}.`) };
     }
     if (!validId(r.of) || r.of === r.id) throw err('E_ARGS', `${at}.of must be the id of the live note this ${r.resolve === 'repeats' ? 'repeats' : 'supersedes'}`, { field: 'resolutions', index: i });
     if (r.resolve === 'repeats') {
@@ -135,4 +136,4 @@ function checkResolutions(list) {
   });
 }
 
-module.exports = { KINDS, BASES, RESOLVES, TITLE_MAX, NOTES_MAX, checkNote, checkNotes, noteText, checkReportedWrong, checkResolutions, oneLine, SELF_REF };
+module.exports = { checkTitle, KINDS, BASES, RESOLVES, TITLE_MAX, NOTES_MAX, checkNote, checkNotes, noteText, checkReportedWrong, checkResolutions, oneLine, SELF_REF };
