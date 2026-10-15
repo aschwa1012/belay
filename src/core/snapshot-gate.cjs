@@ -8,7 +8,7 @@
 
 // `take({ timeoutMs, batch })` -> Promise<Map|null>. The gate enforces `timeoutMs` itself, so a take that never
 // settles still ends. `batch` is { startSeq, callers, kinds } and is read by the take's own log at its end.
-function createGate({ take, timeoutMs = 8000, now = Date.now } = {}) {
+function createGate({ take, timeoutMs = 15000, now = Date.now } = {}) {
   let seq = 0;
   let lastSignalSeq = 0;
   let inflight = null;

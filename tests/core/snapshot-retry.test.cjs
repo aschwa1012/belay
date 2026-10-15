@@ -39,10 +39,36 @@ test('snapshotRetry (for test helpers): an unreadable snapshot is taken again, u
   assert.strictEqual(n, 2, 'never more than `attempts`');
 });
 
-test('the snapshot budget is one attempt of 8000 ms, and the retry constants are gone', () => {
-  assert.strictEqual(ID.SNAPSHOT_TIMEOUT_MS, 8000);
+test('the snapshot budget is one attempt of 15000 ms, and the retry constants are gone', () => {
+  assert.strictEqual(ID.readSnapshotTimeout(undefined).ms, 15000);
+  assert.strictEqual(ID.SNAPSHOT_TIMEOUT_MS, ID.readSnapshotTimeout(process.env.BELAY_SNAPSHOT_TIMEOUT_MS).ms, 'the timeout in force is the default or a valid override');
   assert.strictEqual(P.KILL_SNAPSHOT_ATTEMPTS, undefined);
   assert.strictEqual(PI.SPAWN_READ_ATTEMPTS, undefined);
+});
+
+test('BELAY_SNAPSHOT_TIMEOUT_MS: a positive integer of at least 1000 ms is used, anything else is ignored and recorded', () => {
+  assert.deepStrictEqual(ID.readSnapshotTimeout('1000'), { ms: 1000, ignored: null });
+  assert.deepStrictEqual(ID.readSnapshotTimeout('30000'), { ms: 30000, ignored: null });
+  assert.deepStrictEqual(ID.readSnapshotTimeout(''), { ms: 15000, ignored: null }, 'unset or empty is the default, not an error');
+  for (const bad of ['999', '0', '-5', '1.5', '12e3', 'abc', '15000ms']) assert.deepStrictEqual(ID.readSnapshotTimeout(bad), { ms: 15000, ignored: bad }, bad);
+});
+
+test('BELAY_SNAPSHOT_TIMEOUT_MS: a process started with it uses it, and with an invalid value logs the ignored text with every snapshot', () => {
+  const { spawnSync } = require('node:child_process');
+  const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-snaptmo-'));
+  try {
+    const script = path.join(dir, 'p.cjs');
+    fs.writeFileSync(script, "const ID=require(process.argv[2]);ID.processSnapshotSync();process.stdout.write(String(ID.SNAPSHOT_TIMEOUT_MS)+' '+ID.SNAPSHOT_TIMEOUT_IGNORED);");
+    const idPath = path.resolve(__dirname, '../../src/core/proc-identity.cjs');
+    const run = (v) => { const log = path.join(dir, 'log' + Math.random() + '.jsonl'); const r = spawnSync(process.execPath, [script, idPath], { encoding: 'utf8', windowsHide: true, env: { ...process.env, BELAY_SNAPSHOT_TIMEOUT_MS: v, BELAY_SNAPSHOT_LOG: log } }); return { out: r.stdout, rec: fs.existsSync(log) ? JSON.parse(fs.readFileSync(log, 'utf8').trim().split(String.fromCharCode(10))[0]) : null }; };
+    const ok = run('20000');
+    assert.strictEqual(ok.out, '20000 null');
+    if (ok.rec) assert.strictEqual(ok.rec.timeoutMs, 20000, 'the receipt records the timeout used');
+    const bad = run('soon');
+    assert.strictEqual(bad.out, '15000 soon');
+    if (bad.rec) { assert.strictEqual(bad.rec.timeoutMs, 15000); assert.strictEqual(bad.rec.timeout_env_ignored, 'soon'); }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('kill: an unreadable kill-time snapshot refuses at once, after exactly one attempt, and says why', async () => {

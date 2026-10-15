@@ -12,7 +12,20 @@ const path = require('node:path');
 
 const IS_WINDOWS = process.platform === 'win32';
 const { createGate } = require('./snapshot-gate.cjs');
-const SNAPSHOT_TIMEOUT_MS = 8000; // ADR 0048 decision 1: one attempt
+// ADR 0048 decision 1: one attempt. BELAY_SNAPSHOT_TIMEOUT_MS overrides the default: a positive integer, floor 1000 ms;
+// anything else is ignored, the default is used, and the ignored text is kept in SNAPSHOT_TIMEOUT_IGNORED for the log.
+const DEFAULT_SNAPSHOT_TIMEOUT_MS = 15000;
+const MIN_SNAPSHOT_TIMEOUT_MS = 1000;
+function readSnapshotTimeout(raw) {
+  if (raw == null || raw === '') return { ms: DEFAULT_SNAPSHOT_TIMEOUT_MS, ignored: null };
+  const t = String(raw).trim();
+  const n = /^[0-9]+$/.test(t) ? Number(t) : NaN;
+  if (Number.isSafeInteger(n) && n >= MIN_SNAPSHOT_TIMEOUT_MS) return { ms: n, ignored: null };
+  return { ms: DEFAULT_SNAPSHOT_TIMEOUT_MS, ignored: String(raw).slice(0, 40) };
+}
+const SNAPSHOT_TIMEOUT = readSnapshotTimeout(process.env.BELAY_SNAPSHOT_TIMEOUT_MS);
+const SNAPSHOT_TIMEOUT_MS = SNAPSHOT_TIMEOUT.ms;
+const SNAPSHOT_TIMEOUT_IGNORED = SNAPSHOT_TIMEOUT.ignored;
 
 const PS_SNAPSHOT = 'Get-CimInstance Win32_Process | ForEach-Object { $c=$null; if ($_.CreationDate) { $c=([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() }; [pscustomobject]@{p=$_.ProcessId;pp=$_.ParentProcessId;c=$c;n=$_.Name} } | ConvertTo-Json -Compress';
 
@@ -69,7 +82,7 @@ function snapLog(rec) {
   const f = process.env.BELAY_SNAPSHOT_LOG;
   if (!f) return;
   const stall = envStall();
-  try { fs.appendFileSync(f, JSON.stringify({ caller: process.pid, file: process.argv[1] && path.basename(process.argv[1]), ...(stall ? { stall_ms: stall } : {}), ...rec }) + String.fromCharCode(10)); } catch { /* best effort */ }
+  try { fs.appendFileSync(f, JSON.stringify({ caller: process.pid, file: process.argv[1] && path.basename(process.argv[1]), ...(stall ? { stall_ms: stall } : {}), ...(SNAPSHOT_TIMEOUT_IGNORED != null ? { timeout_env_ignored: SNAPSHOT_TIMEOUT_IGNORED } : {}), ...rec }) + String.fromCharCode(10)); } catch { /* best effort */ }
 }
 // One real snapshot: one PowerShell, one attempt. Callers reach it only through the gate (below).
 function rawSnapshot({ timeoutMs = SNAPSHOT_TIMEOUT_MS, batch = null } = {}) {
@@ -202,5 +215,5 @@ function descendantsOf(rootPid, snap) {
 }
 
 module.exports = {
-  IS_WINDOWS, SNAPSHOT_TIMEOUT_MS, gate, snapshotShared, stallMs, psArgs, processSnapshot, processSnapshotSync, snapshotRetry, createdOf, ownCreatedProbe, handleLive, checkIdentity, descendantsOf, imageIn,
+  IS_WINDOWS, SNAPSHOT_TIMEOUT_MS, SNAPSHOT_TIMEOUT_IGNORED, readSnapshotTimeout, gate, snapshotShared, stallMs, psArgs, processSnapshot, processSnapshotSync, snapshotRetry, createdOf, ownCreatedProbe, handleLive, checkIdentity, descendantsOf, imageIn,
 };

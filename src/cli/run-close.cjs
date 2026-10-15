@@ -7,11 +7,13 @@
 const processDefaults = require('../core/process.cjs');
 const KL = require('../core/kill-log.cjs');
 const { pidAlive } = require('../core/lock.cjs');
+const { SNAPSHOT_TIMEOUT_MS } = require('../core/proc-identity.cjs');
 const { LIFE_CLAIMING_STATES } = require('../core/methods-run.cjs');
 
 const KILL_GONE_BOUND_MS = 5000;
 const FRESH_SNAPSHOT_NEEDS_MS = 1200; // a CIM snapshot takes about a second
-// Amendment 1 item 2: the adapter's graceful stop takes up to 10,000 ms per worker (lifecycle.cjs).
+// Amendment 1 item 2: the adapter's graceful stop takes up to 10,000 ms per worker (lifecycle.cjs), and each kill it makes
+// may first wait out one process snapshot (ADR 0048): N x (10 s + T) + (5 s + T), T the snapshot timeout in force.
 const ADAPTER_STOP_PER_WORKER_MS = 10000;
 const ADAPTER_STOP_SLACK_MS = 5000;
 
@@ -23,6 +25,9 @@ function outcomeOf(e) {
   if (e.refused) return e.kind === 'no_budget' ? 'refused_no_budget' : (e.kind === 'unverifiable' ? 'refused_unverifiable' : `refused_${e.kind || 'identity'}`);
   return e.signalled ? 'signalled_still_alive' : 'not_signalled_still_alive';
 }
+
+const adapterStopBoundMs = (n, snapMs = SNAPSHOT_TIMEOUT_MS) => n * (ADAPTER_STOP_PER_WORKER_MS + snapMs) + ADAPTER_STOP_SLACK_MS + snapMs;
+const adapterWaitBoundMs = (n, graceMs, snapMs = SNAPSHOT_TIMEOUT_MS) => Math.max(graceMs, adapterStopBoundMs(n, snapMs));
 
 // A Codex `idle` row has no process by design (api.md §2): run.end closes it, belay run never kills it.
 const hasProcess = (w) => !(w.substrate === 'codex' && w.state === 'idle');
@@ -56,7 +61,7 @@ async function closeRunWorkers({ core, runId, graceMs, ownPid = process.pid, dep
   // A cut before the final listing still names the workers known now (finalizeCut).
   if (fast) { fast.progress = { out, unrecorded, cut }; for (const w of before || []) if (claimsLiveProcess(w)) unrecorded.set(w.id, { w, touched: () => false }); }
   const liveCount = before ? before.filter(claimsLiveProcess).length : 0;
-  out.adapter_wait_bound_ms = Math.max(graceMs, liveCount * ADAPTER_STOP_PER_WORKER_MS + ADAPTER_STOP_SLACK_MS);
+  out.adapter_wait_bound_ms = Math.max(graceMs, adapterWaitBoundMs(liveCount, graceMs));
   if (out.adapter_pid != null && out.adapter_pid !== ownPid && pidAlive(out.adapter_pid)) {
     if (fast && fast.requested()) {
       out.adapter_gone = false; out.adapter_wait_ms = 0; out.fast_close = true;
@@ -162,4 +167,4 @@ function workersClosedBlock(closed, markedDead) {
   };
 }
 
-module.exports = { closeRunWorkers, workersClosedBlock, finalizeCut };
+module.exports = { adapterStopBoundMs, adapterWaitBoundMs, closeRunWorkers, workersClosedBlock, finalizeCut };

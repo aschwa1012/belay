@@ -41,7 +41,8 @@ test('run close: a pid still alive after its kill is named in still_alive (kill 
   } finally { if (P.pidAlive(w.pid)) require('../crash.cjs').crash(w); }
 });
 
-test('run close: the adapter wait bound is the larger of close_grace_ms and live workers x 10,000 + 5,000, and is recorded', async () => {
+test('run close: the adapter wait bound is the larger of close_grace_ms and N x (10 s + T) + (5 s + T), T the snapshot timeout, and is recorded', async () => {
+  const T = require('../../src/core/proc-identity.cjs').SNAPSHOT_TIMEOUT_MS;
   const adapter = sleeper();
   const a = sleeper();
   const b = sleeper();
@@ -51,13 +52,13 @@ test('run close: the adapter wait bound is the larger of close_grace_ms and live
     const deps = { waitPidGone: async (pid, o) => { if (pid === adapter.pid) { seen.push(o.timeoutMs); return null; } return 1; }, killProcess: async () => ({ tree: null, pidKill: { signalled: false } }) };
     const workers = [row('w1', a.pid), row('w2', b.pid), row('cx', idleCodex.pid, { substrate: 'codex', state: 'idle' }), row('w-dead', 999999999), row('w-stopped', a.pid, { state: 'stopped' })];
     let out = await closeRunWorkers({ core: stub(adapter.pid, workers), runId: 'r1', graceMs: 10000, deps });
-    assert.strictEqual(out.adapter_wait_bound_ms, 25000, 'two live Claude Code rows; the Codex idle row and the stopped row do not count');
+    assert.strictEqual(out.adapter_wait_bound_ms, Math.max(10000, 2 * (10000 + T) + 5000 + T), 'two live Claude Code rows; the Codex idle row and the stopped row do not count');
     assert.strictEqual(out.adapter_gone, false);
     out = await closeRunWorkers({ core: stub(adapter.pid, workers), runId: 'r1', graceMs: 60000, deps });
-    assert.strictEqual(out.adapter_wait_bound_ms, 60000);
+    assert.strictEqual(out.adapter_wait_bound_ms, Math.max(60000, 2 * (10000 + T) + 5000 + T));
     out = await closeRunWorkers({ core: stub(adapter.pid, []), runId: 'r1', graceMs: 1000, deps });
-    assert.strictEqual(out.adapter_wait_bound_ms, 5000, 'no live worker: the 5,000 ms slack');
-    assert.deepStrictEqual(seen, [25000, 60000, 5000], 'the wait itself used the recorded bound');
+    assert.strictEqual(out.adapter_wait_bound_ms, Math.max(1000, 5000 + T), 'no live worker: the 5,000 ms slack plus one snapshot');
+    assert.deepStrictEqual(seen, [Math.max(10000, 2 * (10000 + T) + 5000 + T), Math.max(60000, 2 * (10000 + T) + 5000 + T), Math.max(1000, 5000 + T)], 'the wait itself used the recorded bound');
   } finally { for (const c of [adapter, a, b, idleCodex]) if (P.pidAlive(c.pid)) require('../crash.cjs').crash(c); }
 });
 
