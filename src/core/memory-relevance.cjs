@@ -11,8 +11,7 @@
 // With both, the two rankings are fused by reciprocal rank (fusion.cjs) with memory.search's hybrid weights (alpha 0.3, or the
 // run's memory.alpha lever; k 10); with one, its own score is used.
 //
-// Why OR here when memory.search uses AND (fts-query.cjs): a search answers "is there a row about all of
-// this", where a missing term must exclude the row. The index answers "which rows are most worth showing",
+// Why OR: memory.search joins by OR as well (fts-query.cjs). The index answers "which rows are most worth showing",
 // and a task text is a paragraph, not a query: no row contains every word of it, so AND would match
 // nothing. OR lets BM25 weigh each shared term by its rarity across the store, so a term every row carries
 // (the project's name) counts for almost nothing and a rare one (TZ, CRLF) counts most.
@@ -20,7 +19,7 @@
 // Nothing here writes, reads the clock or depends on iteration order: equal scores stay equal and the caller
 // breaks ties by its own keys, ending with the id.
 
-const { toMatch, MIN_TERM, MAX_TERMS } = require('./fts-query.cjs');
+const { toMatch, MIN_TERM, MAX_TERMS, BM25 } = require('./fts-query.cjs');
 const { rrfMany, HYBRID_ALPHA, HYBRID_K } = require('./fusion.cjs');
 const { ftsReady } = require('./memory-schema.cjs');
 const { err } = require('./errors.cjs');
@@ -130,7 +129,7 @@ const termsOf = (text, cap) => termStats(text, cap).map((x) => x.t);
 
 // Every matching row of the stated namespaces, with its bm25() for one FTS5 expression.
 function matchRows(db, match, namespaces) {
-  return db.prepare(`SELECT e.id AS id, bm25(memory_fts) AS bm FROM memory_fts JOIN memory_entries e ON e.rowid = memory_fts.rowid
+  return db.prepare(`SELECT e.id AS id, ${BM25} AS bm FROM memory_fts JOIN memory_entries e ON e.rowid = memory_fts.rowid
     WHERE memory_fts MATCH ? AND e.namespace IN (${marks(namespaces)})`).all(match, ...namespaces);
 }
 
@@ -149,11 +148,11 @@ function selectTerms(db, stats, namespaces) {
 }
 
 // The FTS5 OR expression of a term list: fts-query.cjs quotes every term as a phrase (so no operator in the
-// text is parsed), and the implicit AND between phrases becomes OR. A term never holds a double quote.
+// text is parsed), and phrases are joined by OR. A term never holds a double quote.
 function orMatch(terms) {
   const m = toMatch(terms.join(' '));
   if (m.error) return null;
-  return m.match.split('" "').join('" OR "');
+  return m.match;
 }
 
 // FTS5's bm25() of an OR query is the sum, over its phrases, of each phrase's own bm25(); it is computed here
