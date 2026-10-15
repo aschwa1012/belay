@@ -35,6 +35,7 @@ const { createWriteRow } = require('./write-row.cjs');
 // A park's own worst case, the longest one started during a restart's first turn takes to settle (`restart`).
 const PARK_SETTLE_WAIT_MS = INTERRUPT_TIMEOUT_MS + EXIT_TIMEOUT_MS;
 const LIST = require('./list.cjs');
+const { EARLY, createBudget } = require('./restart-budget.cjs');
 const { waitTurnOrLanded } = require('./turn-wait.cjs'); // a turn that ended before the wait began is answered
 
 const { POLL_MS } = require('./exit-hold.cjs');
@@ -420,23 +421,14 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   // relaunch carries on (the slot is released when it ends, and a failed one writes its own dead row), so the caller waits with
   // worker_wait as after a spawn. The CLI passes no budget and is unchanged.
   async function restart({ worker_id, first_turn_timeout_ms = 180000, mcp_budget_ms = null }) {
-    const tStart = now();
+    const bud = createBudget(mcp_budget_ms);
+    const { budgeted, left, within } = bud;
     const w = await forWorker(worker_id);
-    const budgeted = Number.isFinite(mcp_budget_ms);
     const oldPid = w.pid;
-    const left = () => mcp_budget_ms - (now() - tStart);
-    // Resolves to EARLY at the budget; the timer is cleared when the race ends.
-    const EARLY = Symbol('early');
-    const within = (promise) => {
-      if (!budgeted) return promise;
-      let timer = null;
-      const cut = new Promise((res) => { timer = setTimeout(() => res(EARLY), Math.max(1, left())); });
-      return Promise.race([promise, cut]).finally(() => clearTimeout(timer));
-    };
     const earlyReceipt = () => ({
       worker_id, branch: null, reason: null, old_pid: oldPid, new_pid: w.pid === oldPid ? null : w.pid, session_id: w.sessionId, checkpoint_id: w.lastCheckpointId,
       first_turn_usage: null, first_turn_timed_out: null, first_turn_ended_by: null, worker: W.rowOf(w, w.state, ctx), first_turn_awaited: false,
-      status: 'not ready yet', restart_path: 'early_return', elapsed_ms: now() - tStart,
+      status: 'not ready yet', restart_path: 'early_return', elapsed_ms: bud.elapsed(),
     });
     let p = w.restartInFlight;
     if (!p) {
@@ -463,7 +455,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     return {
       ...base,
       first_turn_usage: turn && !turn.exited ? turn.usage : null, first_turn_timed_out: turn === null,
-      first_turn_ended_by: turn === null ? 'timeout' : (turn.exited ? 'exit' : 'turn'), first_turn_awaited: true, restart_path: 'awaited', elapsed_ms: now() - tStart,
+      first_turn_ended_by: turn === null ? 'timeout' : (turn.exited ? 'exit' : 'turn'), first_turn_awaited: true, restart_path: 'awaited', elapsed_ms: bud.elapsed(),
     };
   }
 
