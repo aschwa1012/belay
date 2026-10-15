@@ -23,7 +23,7 @@ const DEFAULT_ALLOWED_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash', 
 // the ready event's `permission_mode` says which one it got (decision 3).
 const DEFAULT_PERMISSION_MODE = 'auto';
 // ADR 0028 decision 1: the levels `--effort` takes; a worker's level is a spawn argument.
-const { EFFORT_LEVELS } = require('./agent-defaults.cjs');
+const { EFFORT_LEVELS, ORCHESTRATOR_MODEL } = require('./agent-defaults.cjs');
 const DEFAULT_CODEX_SANDBOX = 'workspace-write';
 const WORKER_NAME_PREFIX = 'belay-';
 
@@ -290,7 +290,7 @@ function codexResumeArgv(opts) {
 // it. So the caller supplies a directory outside the data dir and this refuses one inside, rather
 // than inventing an `orchestrator/` entry the contract does not have.
 // ADR 0021 amendment 4: the orchestrator is Opus 5.5. Sonnet 5 is retired.
-const DEFAULT_ORCHESTRATOR_MODEL = 'claude-opus-5-5';
+const DEFAULT_ORCHESTRATOR_MODEL = ORCHESTRATOR_MODEL;
 
 function orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath = null, compactAt = null, worktree = null, agentDefaultsPath = null }) {
   const argv = [

@@ -53,7 +53,8 @@ test('settings: every memory lever is listed as memory.<key> with its default, d
     assert.ok(agents.every((s) => s.source === 'default'));
     const by = Object.fromEntries(agents.map((s) => [s.key, s.value]));
     assert.deepStrictEqual([by['agents.coder.model'], by['agents.coder.effort'], by['agents.reviewer.model'], by['agents.reviewer.effort'], by['agents.orchestrator.model']],
-      ['claude-sonnet-5-5', null, 'claude-opus-5-5', 'high', null], 'the roster is the built-in default');
+      ['claude-sonnet-5-5', null, 'claude-opus-5-5', 'high', 'claude-opus-5-5'], 'the roster is the built-in default');
+    assert.strictEqual(by['agents.orchestrator.effort'], null, 'the orchestrator has no built-in effort');
     const text = cli(dir, ['settings'], { json: false });
     assert.match(text.stdout, /memory\.index_bytes\s+1200\s+\(from default\)\s+\[integer 1\.\.4096\]/);
     assert.match(text.stdout, /agents\.reviewer\.effort\s+"high"\s+\(from default\)\s+\[low \| medium \| high \| xhigh \| max \| null\]/);

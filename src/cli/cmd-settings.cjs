@@ -33,7 +33,8 @@ const USAGE = [
   '',
   `keys: ${K.MOD_NAMES.join(', ')}`,
   '      memory.<lever>   a memory lever, the default every run inherits (the run spec overrides it key by key)',
-  '      agents.<type>.model | agents.<type>.effort   a default for coder, tester, reviewer, researcher or orchestrator',
+  '      agents.<type>.model | agents.<type>.effort   a default for coder, tester, reviewer, researcher or orchestrator;',
+  '          null returns a key to the built-in roster default; it cannot select the substrate\'s own default',
   '',
 ].join('\n');
 

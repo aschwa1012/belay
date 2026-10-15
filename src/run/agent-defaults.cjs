@@ -10,6 +10,7 @@ const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']; // ADR 0028 dec
 const WORKER_TYPES = ['coder', 'tester', 'reviewer', 'researcher'];
 const AGENT_KEYS = [...WORKER_TYPES, 'orchestrator'];
 const FIELDS = ['model', 'effort'];
+const ORCHESTRATOR_MODEL = 'claude-opus-5-5'; // ADR 0021 amendment 4; launch.cjs's DEFAULT_ORCHESTRATOR_MODEL. The orchestrator has no built-in effort.
 
 // The production roster (ADR 0021): what a worker of each type gets when neither the spawn nor the config says. Coders and
 // testers have no built-in effort. The orchestrator has no entry here: its built-in model is launch.cjs's.
@@ -64,7 +65,7 @@ function pick(defaults, type, field, explicit, explicitLabel) {
 function forWorker(defaults, { agent_type, model, effort, substrate }) {
   const none = { value: null, source: 'default' };
   const m = substrate === 'codex' && (model === undefined || model === null || model === '') ? none : pick(defaults, agent_type, 'model', model, 'spawn argument');
-  const e = substrate === 'codex' && (effort === undefined || effort === null)
+  const e = substrate === 'codex' && (effort === undefined || effort === null || effort === '')
     ? none
     : pick(defaults, agent_type, 'effort', effort, 'spawn argument');
   return { agent_type, model: m, effort: e };
@@ -87,4 +88,4 @@ function writeFile(dir, defaults) {
   return file;
 }
 
-module.exports = { BUILTIN, forOrchestrator, writeFile, EFFORT_LEVELS, WORKER_TYPES, AGENT_KEYS, FIELDS, parseAgentsBlock, fromConfig, pick, forWorker };
+module.exports = { ORCHESTRATOR_MODEL, BUILTIN, forOrchestrator, writeFile, EFFORT_LEVELS, WORKER_TYPES, AGENT_KEYS, FIELDS, parseAgentsBlock, fromConfig, pick, forWorker };

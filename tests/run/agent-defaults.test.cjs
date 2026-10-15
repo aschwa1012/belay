@@ -104,6 +104,8 @@ test('agent_type: a Codex spawn gets neither the configured model nor the config
   assert.deepStrictEqual(codex.model, { value: null, source: 'default' }, 'a configured Claude model is not given to Codex');
   assert.deepStrictEqual(codex.effort, { value: null, source: 'default' });
   assert.strictEqual(AD.forWorker(DEFAULTS, { agent_type: 'coder', model: 'gpt-x', substrate: 'codex' }).model.value, 'gpt-x', 'an explicit one is still passed');
+  const cxEmpty = AD.forWorker(null, { agent_type: 'reviewer', model: '', effort: '', substrate: 'codex' });
+  assert.deepStrictEqual([cxEmpty.model.value, cxEmpty.effort.value], [null, null], 'an empty effort on Codex is not the built-in high');
   const empty = AD.forWorker(DEFAULTS, { agent_type: 'coder', model: '', effort: '', substrate: 'claude-code' });
   assert.deepStrictEqual([empty.model, empty.effort], [
     { value: 'cfg-coder', source: `${CFG} agents.coder.model` }, { value: 'low', source: `${CFG} agents.coder.effort` }]);

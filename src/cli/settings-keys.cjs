@@ -39,6 +39,7 @@ function defaultOf(key) {
   const kind = kindOf(key);
   if (kind === 'mod') return C.KEYS[key].default;
   if (kind === 'memory') return ML.DEFAULTS[leverOf(key)];
+  if (key === 'agents.orchestrator.model') return AD.ORCHESTRATOR_MODEL;
   const built = AD.BUILTIN[key.split('.')[1]]; // the built-in roster default, which a stored null falls back to
   return built && built[fieldOf(key)] !== undefined ? built[fieldOf(key)] : null;
 }
