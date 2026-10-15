@@ -17,16 +17,16 @@ const noteError = (w, where, e) => { w.lastError = { where, code: e && e.code, m
 // The run's levers, read once and kept on ctx so a launch can ask for them without waiting. A core without
 // `run.get` is a test double and has the defaults. A failed read is not cached and is named on the worker:
 // the run then proceeds with every lever off for this call, which is the only safe reading of an unknown.
-async function levers(ctx, w) {
+async function levers(ctx, w, { receipt = false } = {}) {
   if (ctx.memoryLevers) return ctx.memoryLevers;
   if (!ctx.core || !ctx.core.run || typeof ctx.core.run.get !== 'function') return { ...DEFAULTS };
   try {
     ctx.memoryLevers = await leversFor(ctx.core, ctx.runId);
     return ctx.memoryLevers;
   } catch (e) {
-    // Never silence: a failed read is a receipt (ok 0, with the code) and is named on the worker. The receipt is also how the
-    // core knows this worker was launched without --notes and the contract (ADR 0047), so it is written for a worker only.
-    if (w && !w.leversUnreadRecorded) {
+    // Never silence: a failed read is named on the worker, and at a worker's launch (`receipt`) it is also a receipt (ok 0,
+    // with the code). That receipt is how the core knows this worker was launched without --notes and the contract (ADR 0047).
+    if (receipt && w && !w.leversUnreadRecorded) {
       w.leversUnreadRecorded = true;
       await record(ctx, w, { kind: 'levers_unread', ok: false, code: codeOf(e), message: String((e && e.message) || e).slice(0, 300) });
     }

@@ -226,7 +226,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       });
       workers.set(id, w);
     } finally { pendingIds.delete(id); }
-    await MP.levers(ctx, w); // ADR 0047: the worker adapter's argv carries the notes lever, so the levers are known before the files are written
+    await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the worker adapter's argv carries the notes lever, so the levers are known before the files are written
     writeFilesFor(w);
     if (substrate === 'claude-code') w.instructions = I.snapshotInstructions(w.worktree, w.dir); // spawn only
 
@@ -329,7 +329,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     if (adopting.has(workerId)) return adopting.get(workerId);
     const p = W.adopt({ core, workerId, dataDir: root }).then(async (w) => {
       workers.set(workerId, w);
-      await MP.levers(ctx, w); // ADR 0047: the argv written below carries the notes lever
+      await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the argv written below carries the notes lever
       writeFilesFor(w); // mcp.json, settings.json and the adapter log path belong to this run now
       if (w.substrate === 'claude-code') w.instructions = I.existingInstructions(w.dir); // never the worktree
       return w;

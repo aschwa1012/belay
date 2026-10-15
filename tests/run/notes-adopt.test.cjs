@@ -95,7 +95,9 @@ test('a failed levers read at spawn is a levers_unread receipt with ok 0 and the
   const ctx = { runId: 'r', core: { run: { get: async () => { throw Object.assign(new Error('run row unreadable'), { code: 'E_OWNER_LOST' }); } }, memory: { recordEvent: async (a) => { events.push(a); } } } };
   const w = { id: 'w9', taskId: 't9' };
   await MP.levers(ctx, w);
-  await MP.levers(ctx, w);
+  assert.strictEqual(events.length, 0, 'a read during a turn leaves no receipt');
+  await MP.levers(ctx, w, { receipt: true });
+  await MP.levers(ctx, w, { receipt: true });
   assert.strictEqual(events.length, 1);
   assert.deepStrictEqual([events[0].kind, events[0].ok, events[0].code, events[0].worker_id, events[0].task_id], ['levers_unread', false, 'E_OWNER_LOST', 'w9', 't9']);
   assert.strictEqual(w.lastError.where, 'memory.levers', 'and it is named on the worker too');
