@@ -58,7 +58,7 @@ async function archive(core, parsed) {
   return { code: 0, text, json: res };
 }
 
-const WRITES = { restore: p => !p.opts.candidates, archive: () => true };
+const WRITES = { restore: p => !p.opts.candidates, archive: () => true, scrub: () => true, review: () => true, resolve: () => true };
 const writes = parsed => !!(WRITES[parsed.sub] && WRITES[parsed.sub](parsed));
 
-module.exports = { VERB_FN: { proposals, restore, archive }, writes };
+module.exports = { VERB_FN: { proposals, restore, archive, ...require('./cmd-memory-stages.cjs').VERB_FN }, writes };
