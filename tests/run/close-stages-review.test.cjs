@@ -202,7 +202,7 @@ test('closeStages: the scrub then the review, one manager built only when a chil
   let built = 0;
   const { log, core } = X.calls(X.coreFor('apply'));
   const none = await closeStages({ core, runId: RUN.apply, levers: { memory_levers: lv() }, dataDir: T.dir, worktree: T.repo, makeManager: async () => { built += 1; } });
-  assert.deepStrictEqual([none.scrub.reason, none.review.reason, built, log], ['empty scope', 'empty queue', 0, ['memory.scrubScope', 'memory.reviewQueue']], 'two reads, no manager, nothing created');
+  assert.deepStrictEqual([none.scrub.reason, none.review.reason, built, log], ['empty scope', 'empty queue', 0, ['memory.nominate', 'memory.scrubScope', 'memory.reviewQueue']], 'the nomination call and two reads, no manager, nothing created');
   const evBefore = T.store.p('SELECT COUNT(*) AS n FROM memory_event').get().n;
   const rows = T.store.p('SELECT COUNT(*) AS n FROM memory_entries').get().n;
   await closeStages({ core: X.coreFor('apply'), runId: RUN.apply, levers: lv(), dataDir: T.dir, worktree: T.repo });

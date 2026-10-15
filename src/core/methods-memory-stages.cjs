@@ -110,7 +110,7 @@ async function scrubScope(E, caller, args) {
   for (const r of reported) addNew(r.id, 'reported_wrong');
   const pending = E.store.p("SELECT id FROM memory_entries WHERE type = 'note' AND namespace = ? AND run_id = ? ORDER BY created_at, id").all(N.pendingNs(project), runId);
   for (const r of pending) addNew(r.id, 'pending');
-  for (const nom of nominationsForScope(E, project) || []) addNew(nom.id, 'nominated', { nomination: nom.facts || null });
+  for (const nom of nominationsForScope(E, project) || []) { const { id: nid, ...facts } = nom; addNew(nid, 'nominated', { nomination: facts }); }
   const items = [...byId.values()].sort((a, b) => Math.min(...a.why.map(w => ORDER[w])) - Math.min(...b.why.map(w => ORDER[w])));
   const counts = { items: items.length, owed: 0, reported_wrong: 0, pending: 0, nominated: 0 };
   for (const it of items) for (const w of it.why) counts[w] += 1;

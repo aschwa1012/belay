@@ -65,6 +65,9 @@ async function owe(core, runId, ids, e, workerId) {
 async function runScrub({ core, runId, lv, dataDir, getManager, worktree = null, goal = null, summary = null }) {
   if (!lv || !lv.notes) return { ran: false, reason: 'notes off' };
   if (lv.scrub_action === 'off') return { ran: false, reason: 'scrub_action off' };
+  // The promotion step writes this run's nominations first (a harness call), so the scope below can list them. A core without the
+  // method, or a failed nomination, only means nothing is nominated: the other two kinds of scope are unaffected.
+  try { if (typeof core.memory.nominate === 'function') await core.memory.nominate({}); } catch { /* not built, or refused: no nominations */ }
   let scope;
   try { scope = await core.memory.scrubScope({}); } catch (e) { return { ran: false, reason: 'scope unreadable', code: J.codeOf(e), message: String(e && e.message).slice(0, 200) }; }
   if (!scope.items.length) return { ran: false, reason: 'empty scope', counts: scope.counts };

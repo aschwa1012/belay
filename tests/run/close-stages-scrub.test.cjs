@@ -25,7 +25,7 @@ test('an empty scope spawns nothing, writes nothing and never asks for a manager
   const eventsBefore = T.store.p('SELECT COUNT(*) AS n FROM memory_event').get().n;
   const o = await runScrub({ core, runId: RUN.apply, lv: LV.apply, dataDir: T.dir, getManager: async () => { asked += 1; return null; } });
   assert.deepStrictEqual([o.ran, o.reason, asked], [false, 'empty scope', 0]);
-  assert.deepStrictEqual(log, ['memory.scrubScope'], 'one read and nothing else');
+  assert.deepStrictEqual(log, ['memory.nominate', 'memory.scrubScope'], 'the nomination call, then one read, and nothing else');
   assert.strictEqual(T.store.p('SELECT COUNT(*) AS n FROM memory_entries').get().n, before);
   assert.strictEqual(T.store.p('SELECT COUNT(*) AS n FROM memory_event').get().n, eventsBefore);
 });

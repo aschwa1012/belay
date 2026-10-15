@@ -110,7 +110,9 @@ const METHODS = {
   // belay workers) has a way to find the current run at all.
   'run.list': { roles: ALL, kind: 'read', fn: run.listRuns },
 
-  'worker.write': { roles: ORCH, kind: 'write', fn: run.writeWorker },
+  // `harnessRoles`: the roles a call on the harness channel (core.harness(), never a tool call) may also come from. The run process
+  // (role operator) becomes the parent of the run-close stages' child, and writes its rows as the run manager does.
+  'worker.write': { roles: ORCH, harnessRoles: ORCH_OR_OPERATOR, kind: 'write', fn: run.writeWorker },
   'worker.get': { roles: ALL, kind: 'read', fn: run.getWorker },
   'worker.list': { roles: ALL, kind: 'read', fn: run.listWorkers },
   // build step 6b, ADR 0019 decision 6: operator only, the CLI's `worker rm` (mode W); no MCP tool.
@@ -128,7 +130,7 @@ const METHODS = {
   'lease.release': { roles: ['worker', 'operator'], kind: 'write', fn: task.release },
   'lease.takeControl': { roles: ['operator'], kind: 'write', fn: task.takeControl },
 
-  'continuity.checkpoint': { roles: ['worker', 'orchestrator'], kind: 'write', fn: continuity.checkpoint },
+  'continuity.checkpoint': { roles: ['worker', 'orchestrator'], harnessRoles: ['worker', 'orchestrator', 'operator'], kind: 'write', fn: continuity.checkpoint },
   'continuity.lastCheckpoint': { roles: ALL, kind: 'read', fn: continuity.lastCheckpoint },
   'continuity.resumeLine': { roles: ALL, kind: 'read', fn: continuity.resumeLine },
   'continuity.resumeDoc': { roles: ALL, kind: 'read', fn: continuity.resumeDoc },
@@ -275,8 +277,9 @@ class Engine {
     if (!spec) throw err('E_ARGS', `${method} is not a Core API method`, { method });
     const p = params || {};
     const caller = validateCaller(p.caller);
-    if (!spec.roles.includes(caller.role)) {
-      throw err('E_ROLE', `${method} is available to ${spec.roles.join(', ')} and this call came from role ${caller.role}`, { method, role: caller.role, allowed: spec.roles });
+    const allowedRoles = caller.channel === 'harness' && spec.harnessRoles ? spec.harnessRoles : spec.roles;
+    if (!allowedRoles.includes(caller.role)) {
+      throw err('E_ROLE', `${method} is available to ${allowedRoles.join(', ')} and this call came from role ${caller.role}`, { method, role: caller.role, allowed: allowedRoles });
     }
     const args = { ...p };
     delete args.caller;

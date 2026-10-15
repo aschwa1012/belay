@@ -4,8 +4,9 @@
 // step's, and it is not built yet: until it is, nothing is nominated. The scrub scope calls this one function, so wiring the
 // rule in changes nothing else.
 //
-// Returns an array of { id, facts } for notes of the project that are live and nominated; `facts` is the nomination's own
-// record (the tasks and runs counted), shown to the scrubber as data. Reads only.
+// Returns an array of { id, nomination_id, title, text, counts, nominated_at } for nominated notes without a draft (the shape the
+// promotion step's own nominationsForScope returns; everything but `id` is shown to the scrubber as data). Synchronous, reads only.
+// When the promotion step merges, the one require of this file in methods-memory-stages.cjs is swapped for memory-nominate.cjs.
 
 function nominationsForScope(E, project) { // eslint-disable-line no-unused-vars
   return [];
