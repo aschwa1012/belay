@@ -12,7 +12,7 @@ const { Engine } = core('engine.cjs');
 const { Store } = core('store.cjs');
 const R = core('memory-relevance.cjs');
 const { ENGLISH_STOP_WORDS } = core('stopwords-en.cjs');
-const { MAX_TERMS } = core('fts-query.cjs');
+const { MAX_TERMS, DEFAULT_PAGE } = core('fts-query.cjs');
 
 const orch = callerFor('orchestrator');
 
@@ -68,15 +68,29 @@ test('a term in half the rows or more is dropped as zero IDF, and a row matching
 });
 
 test('the zero-IDF rule starts at ZERO_IDF_MIN_ROWS rows and uses the rows of the namespaces searched', async () => {
-  assert.strictEqual(R.ZERO_IDF_MIN_ROWS, 10);
+  assert.strictEqual(R.ZERO_IDF_MIN_ROWS, DEFAULT_PAGE + 1, 'a store of at most one default page is one page: nothing to protect');
   await withStore(async ({ E, put }) => {
-    for (let i = 0; i < 9; i++) put(`harbour note ${i} quokka${i === 0 ? '' : 'x'}`);
-    const small = await search(E, { query: 'harbour', mode: 'keyword' });
-    assert.strictEqual(small.results.length, 9, 'with 9 rows a term in every row is still searched');
+    for (let i = 0; i < DEFAULT_PAGE; i++) put(`harbour note ${i}`);
+    const small = await search(E, { query: 'harbour', mode: 'keyword', k: 100 });
+    assert.strictEqual(small.results.length, DEFAULT_PAGE, 'with one page of rows a term in every row is still searched');
     put('one more row');
-    const ten = await search(E, { query: 'harbour', mode: 'keyword' });
-    assert.strictEqual(ten.modes_failed[0].code, 'E_QUERY_SHORT', 'with 10 rows it is in 9 of them and nothing is left to rank');
-    assert.match(ten.modes_failed[0].message, /harbour: zero-idf/);
+    const over = await search(E, { query: 'harbour', mode: 'keyword' });
+    assert.strictEqual(over.modes_failed[0].code, 'E_QUERY_SHORT', 'with 11 rows it is in 10 of them and nothing is left to rank');
+    assert.match(over.modes_failed[0].message, /harbour: zero-idf/);
+  });
+});
+
+test('three-letter plain words are searchable: API, SQL, key and TTL are not dropped as too short', async () => {
+  const dropped = [];
+  const t = R.termStats('rotate the API key, run the SQL with a TTL', 128, dropped);
+  for (const w of ['api', 'key', 'sql', 'ttl']) assert.ok(t.some((x) => x.t === w), w);
+  assert.ok(!dropped.some((d) => d.reason === 'too-short'), JSON.stringify(dropped));
+  await withStore(async ({ E, put }) => {
+    filler(put, 12);
+    put('Rotate the API key every quarter');
+    const r = await search(E, { query: 'API key', mode: 'keyword' });
+    assert.strictEqual(r.results.length, 1);
+    assert.strictEqual(r.searched.keyword_terms_dropped, undefined);
   });
 });
 
@@ -134,5 +148,22 @@ test('memory.search and memory.index share one extractor: the search receipt is 
     const picked = R.pickTerms(store.db, q, ['n']);
     assert.deepStrictEqual(r.searched.keyword_terms_dropped, picked.dropped);
     assert.deepStrictEqual(picked.terms.map((x) => x.t).sort(), ['quokka', 'sight']);
+  });
+});
+
+test('document frequencies count the rows of the namespaces searched, not of the store', async () => {
+  await withStore(async ({ E, store, put }) => {
+    for (let i = 0; i < 6; i++) put(`harbour note ${i}`);
+    for (let i = 0; i < 6; i++) put(`unrelated entry ${i}`);
+    // Another namespace holds zebra and a great many harbour rows; neither may change what 'n' reports.
+    store.store({ namespace: 'other', worker_id: 'w', text: 'zebra crossing' });
+    for (let i = 0; i < 30; i++) store.store({ namespace: 'other', worker_id: 'w', text: `harbour elsewhere ${i}` });
+    const z = await search(E, { query: 'zebra', mode: 'keyword' });
+    assert.strictEqual(reasonOf(z, 'zebra'), 'no-row', 'a term only another namespace holds is in no row of this one');
+    const h = await search(E, { query: 'harbour', mode: 'keyword' });
+    assert.strictEqual(h.modes_failed[0].code, 'E_QUERY_SHORT');
+    assert.match(h.modes_failed[0].message, /harbour: zero-idf/, 'harbour is in 6 of the 12 rows of n');
+    const both = await E.handle('memory.search', { caller: orch, query: 'zebra', mode: 'keyword', namespaces: ['n', 'other'] });
+    assert.strictEqual(both.results.length, 1, 'searching both namespaces finds it (the store is then covered)');
   });
 });

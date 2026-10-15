@@ -53,7 +53,9 @@ test('a task about dates and the TZ zone surfaces the dates row first', async ()
   const { name, ids } = await g2Store();
   const [dates] = byMarker(ids, /process\.env\.TZ/);
   const r = await call('memory.index', { namespaces: [name], query: 'Report entries since a given date. Day boundaries depend on the TZ zone that src/dates.cjs reads at load.' });
-  assert.strictEqual(r.row_ids[0], dates, titleOf(r.row_ids[0]));
+  // "Day" is a searchable three-letter term now and the report row (dates.dayStart, zone) also fits the task, so the dates row
+  // may be second; it must be in the first two.
+  assert.ok(r.row_ids.slice(0, 2).includes(dates), titleOf(r.row_ids[0]));
   assert.strictEqual(r.relevance.keyword, 'ran');
   assert.strictEqual(r.relevance.semantic, 'not_requested');
   assert.strictEqual(r.relevance.source, 'query');
@@ -192,12 +194,13 @@ test('arguments are checked', async () => {
   await bad({ embedding_model: '' });
 });
 
-test('terms: function and framing words dropped, short plain words dropped, identifiers kept whole, plurals stemmed', () => {
+test('terms: stopwords and framing words dropped, terms under three characters dropped, three-letter words kept, identifiers kept whole, plurals stemmed', () => {
   const t = R.termsOf('You are working in the repository. Add `tally export --csv` to src/cmd-export.cjs; the dates and amounts, run the tests. TZ day');
   assert.ok(t.includes('--csv') === false && t.includes('csv'), 'a flag is kept, without its dashes');
   assert.ok(t.includes('src/cmd-export.cjs'));
   assert.ok(t.includes('date') && t.includes('amount') && t.includes('test'), JSON.stringify(t));
-  for (const gone of ['you', 'the', 'are', 'working', 'repository', 'run', 'day', 'tz']) assert.ok(!t.includes(gone), gone);
+  for (const gone of ['the', 'are', 'working', 'repository', 'tz']) assert.ok(!t.includes(gone), gone);
+  for (const kept of ['day', 'run', 'you']) assert.ok(t.includes(kept), `${kept}: three letters and not in the published list`);
   assert.deepStrictEqual(R.termsOf(''), []);
   assert.ok(R.termsOf('word '.repeat(5) + Array.from({ length: 300 }, (_, i) => `term${i}`).join(' ')).length <= 128);
   assert.strictEqual(R.termsOf('dates dates dates zones')[0], 'date', 'the more often the text repeats a term, the earlier');

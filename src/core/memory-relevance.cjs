@@ -19,7 +19,7 @@
 // Nothing here writes, reads the clock or depends on iteration order: equal scores stay equal and the caller
 // breaks ties by its own keys, ending with the id.
 
-const { toMatch, MIN_TERM, MAX_TERMS, BM25 } = require('./fts-query.cjs');
+const { toMatch, MIN_TERM, MAX_TERMS, DEFAULT_PAGE, BM25 } = require('./fts-query.cjs');
 const { rrfMany, HYBRID_ALPHA, HYBRID_K } = require('./fusion.cjs');
 const { ftsReady } = require('./memory-schema.cjs');
 const { err } = require('./errors.cjs');
@@ -92,11 +92,10 @@ function stem(t) {
   return t;
 }
 
-// A trigram phrase matches inside words, so a short plain word is noise ("day" in "today", "old" in
-// "holds"). Plain words need four characters; an identifier-shaped term (a flag such as --csv, a path, a
-// dotted name, a digit, an inner capital) keeps the trigram minimum of three.
-// PLAIN_MIN, CANDIDATE_TERMS and fts-query's MAX_TERMS are tuned constants and UNMEASURED: none was chosen by a study.
-const PLAIN_MIN = 4;
+// Every term needs the trigram minimum, MIN_TERM (3) characters, plain word or identifier alike: "API", "SQL", "key" and "TTL" are
+// searchable. A trigram phrase also matches inside longer words ("day" in "today"); the stopword list and the zero-IDF rule, not a
+// longer minimum, keep that from ranking junk.
+// CANDIDATE_TERMS and fts-query's MAX_TERMS are tuned constants and UNMEASURED: none was chosen by a study.
 const CANDIDATE_TERMS = 128;
 
 // The task text's candidate terms with how often the text uses each, at most `cap`, in a fixed order. Words
@@ -117,7 +116,7 @@ function termStats(text, cap = CANDIDATE_TERMS, dropped = null) {
     const lower = trimmed.toLowerCase();
     const shaped = /^-/.test(raw) || /[._/\d-]/.test(trimmed) || /\p{Ll}\p{Lu}/u.test(trimmed);
     if (STOPWORDS.has(lower)) { drop(lower, 'stopword'); continue; }
-    if ([...lower].length < (shaped ? MIN_TERM : PLAIN_MIN)) { drop(lower, 'too-short'); continue; }
+    if ([...lower].length < MIN_TERM) { drop(lower, 'too-short'); continue; }
     const t = shaped ? lower : stem(lower); // a path or identifier is matched as written, never stemmed
     if (STOPWORDS.has(t)) { drop(lower, 'stopword'); continue; } // "changes" stems to a stopword
     const cur = seen.get(t);
@@ -129,6 +128,25 @@ function termStats(text, cap = CANDIDATE_TERMS, dropped = null) {
   return ordered.slice(0, cap).map(({ t, count }) => ({ t, count }));
 }
 const termsOf = (text, cap) => termStats(text, cap).map((x) => x.t);
+
+// Document frequency of one FTS5 expression, without materialising a row. The whole index is counted first (a count over the index
+// alone costs a fraction of the join with memory_entries that a namespace needs); the namespaces are consulted only when the answer
+// depends on them: when they do not cover every namespace of the store, a hit must be shown to lie in one (an early-exit probe),
+// and the exact in-namespace count is taken only when the term could be in half the rows or more. Returns { all, n } where `all` is
+// the store-wide count and `n` the count in the namespaces, exact whenever it can decide the zero-IDF rule, else null (below N / 2).
+function docFrequency(db, match, namespaces, ctx) {
+  const all = db.prepare('SELECT COUNT(*) AS n FROM memory_fts WHERE memory_fts MATCH ?').get(match).n;
+  if (!all) return { all, n: 0 };
+  if (ctx.coversStore) return { all, n: all };
+  const ns = marks(namespaces);
+  const hit = db.prepare(`SELECT 1 AS x FROM memory_fts JOIN memory_entries e ON e.rowid = memory_fts.rowid
+    WHERE memory_fts MATCH ? AND e.namespace IN (${ns}) LIMIT 1`).get(match, ...namespaces);
+  if (!hit) return { all, n: 0 };
+  if (2 * all < ctx.N) return { all, n: null }; // present, and fewer than N / 2 rows hold it anywhere
+  const n = db.prepare(`SELECT COUNT(*) AS n FROM memory_fts JOIN memory_entries e ON e.rowid = memory_fts.rowid
+    WHERE memory_fts MATCH ? AND e.namespace IN (${ns})`).get(match, ...namespaces).n;
+  return { all, n };
+}
 
 // Every matching row of the stated namespaces, with its bm25() for one FTS5 expression.
 function matchRows(db, match, namespaces) {
@@ -145,31 +163,42 @@ function matchRows(db, match, namespaces) {
 //     document frequency says nothing (with 2 rows every term is in half of them) and the rule would leave a small store with
 //     no keyword half at all;
 //   - it falls beyond MAX_TERMS ('over-cap').
-// Ties keep termStats's order. Each kept term comes back with its rows. `dropped`, when given, collects { term, reason }.
-// UNMEASURED: 10 is a judgement, and 0 gives the rule exactly as stated (n >= N / 2 at any N).
-const ZERO_IDF_MIN_ROWS = 10;
-function selectTerms(db, stats, namespaces, dropped = null) {
+// Ties keep termStats's order. Each kept term comes back with its document frequency `n` and, unless `withRows` is false, its
+// rows (memory.index scores from them; memory.search needs only the terms). Only the kept terms fetch rows. `dropped`, when given,
+// collects { term, reason }.
+//
+// ZERO_IDF_MIN_ROWS is derived from the default search page (DEFAULT_PAGE, k = 10): in a store of at most k rows the whole store
+// is one page, so a junk term can reorder the page but cannot push a row off it, and the rule has nothing to protect (and with
+// 2 rows every term is in half of them). Above k rows a junk term can displace a row. The 1,200-byte index lists fewer lines than
+// a page of k rows, so for the index the argument is weaker: a junk term can push a row off the index with fewer rows than this.
+// The rule at any N would be ZERO_IDF_MIN_ROWS = 0.
+const ZERO_IDF_MIN_ROWS = DEFAULT_PAGE + 1;
+function selectTerms(db, stats, namespaces, dropped = null, withRows = true) {
   const drop = (term, reason) => { if (dropped) dropped.push({ term, reason }); };
   const N = db.prepare(`SELECT COUNT(*) AS n FROM memory_entries WHERE namespace IN (${marks(namespaces)})`).get(...namespaces).n;
+  const inStore = new Set(db.prepare('SELECT DISTINCT namespace FROM memory_entries').all().map((r) => r.namespace));
+  const ctx = { N, coversStore: [...inStore].every((x) => namespaces.includes(x)) };
   const found = [];
   stats.forEach((s, i) => {
     const m = toMatch(s.t);
     if (m.error) { drop(s.t, 'too-short'); return; }
-    const rows = matchRows(db, m.match, namespaces);
-    if (!rows.length) drop(s.t, 'no-row');
-    else if (N >= ZERO_IDF_MIN_ROWS && 2 * rows.length >= N) drop(s.t, 'zero-idf');
-    else found.push({ ...s, rows, i });
+    const f = docFrequency(db, m.match, namespaces, ctx);
+    if (!f.n && f.n !== null) drop(s.t, 'no-row');
+    else if (N >= ZERO_IDF_MIN_ROWS && f.n !== null && 2 * f.n >= N) drop(s.t, 'zero-idf');
+    else found.push({ ...s, n: f.all, match: m.match, i }); // rarest first by the store-wide count; with one namespace it is the same
   });
-  found.sort((a, b) => (a.rows.length - b.rows.length) || (a.i - b.i));
+  found.sort((a, b) => (a.n - b.n) || (a.i - b.i));
   for (const x of found.slice(MAX_TERMS)) drop(x.t, 'over-cap');
-  return found.slice(0, MAX_TERMS);
+  const kept = found.slice(0, MAX_TERMS);
+  if (withRows) for (const x of kept) x.rows = matchRows(db, x.match, namespaces);
+  return kept;
 }
 
 // The one term extractor of the keyword half, shared by memory.index and memory.search: termStats, then selectTerms.
-// Returns { terms (selected, with rows), dropped: [{ term, reason }] }.
-function pickTerms(db, text, namespaces) {
+// Returns { terms (selected; with rows unless { rows: false }), dropped: [{ term, reason }] }.
+function pickTerms(db, text, namespaces, { rows = true } = {}) {
   const dropped = [];
-  const terms = selectTerms(db, termStats(text, CANDIDATE_TERMS, dropped), namespaces, dropped);
+  const terms = selectTerms(db, termStats(text, CANDIDATE_TERMS, dropped), namespaces, dropped, rows);
   return { terms, dropped };
 }
 
