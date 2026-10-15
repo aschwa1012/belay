@@ -40,7 +40,7 @@ const COMMANDS = {
   notices: { mode: 'R', module: './cmd-notices.cjs', summary: "a run's events from store rows: pending requests, dead or stopped workers, stalls, review verdicts, pause and end" },
   agents:  { mode: 'R', module: './cmd-agents.cjs',  summary: "the orchestrator and each worker: role, model, effort, state, context size, cost; the run cost meter" },
   'wake-stream': { mode: 'R', module: './cmd-wake-stream.cjs', summary: "wake-stream --run <id> --nonce <n>: print the interactive run's wake lines from its harness-owned pipe; exits on close or after 15 s of silence" },
-  memory:  { mode: 'R', module: './cmd-memory.cjs',  summary: 'memory search|list|show|timeline|verify|stats|export|import: reads answer from the store or its copy; semantic and hybrid search need a live owner, verify and import elect one' },
+  memory:  { mode: 'R', module: './cmd-memory.cjs',  summary: 'memory search|list|show|timeline|verify|stats|export|import|embed: reads answer from the store or its copy; semantic and hybrid search need a live owner, verify, import and embed elect one (embed --dry-run only reads)' },
   usage:   { mode: 'R', module: './cmd-usage.cjs',   summary: 'usage [run-id] [--by task|worker|model|turn]: tokens and dollars per turn from the usage ledger; a turn with no dollars is not zero' },
   briefing: { mode: 'R', module: './cmd-briefing.cjs', summary: 'the resume line and orientation document for a worker or a task' },
   logs:    { mode: 'R', module: './cmd-logs.cjs',    summary: "a worker's stream.jsonl: path, byte offset, then the tail; -f follows, bounded" },
