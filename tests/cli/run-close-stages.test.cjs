@@ -129,11 +129,35 @@ test('a stage cut off while a child is starting: its pid, recorded at spawn, is 
   const a = sleeper(), b = sleeper();
   try {
     const killed = [];
-    const killPid = async (core, rec) => { killed.push(rec.pid); if (rec.pid === a.pid) a.kill(); }; // b resists
+    const killPid = async (core, recs) => { for (const rec of recs) { killed.push(rec.pid); if (rec.pid === a.pid) a.kill(); } }; // b resists
     const stages = { closeStages: (x) => { x.sink.pids.push({ worker_id: 'scrub-r-a', pid: a.pid }, { worker_id: 'archreview-r-b', pid: b.pid }); return new Promise(() => {}); } };
     const out = await runCloseStages({ core: {}, runId: 'r', levers: { memory_levers: { notes: true } }, dataDir: 'd', ce, late: () => {}, stages, killPid });
     assert.deepStrictEqual(killed.sort(), [a.pid, b.pid].sort(), 'every recorded child that was alive was killed by its pid');
     assert.ok(!pidAlive(a.pid));
     assert.deepStrictEqual(out, { cut: true, survivors: [b.pid] }, 'only the one still alive is named');
   } finally { require('../crash.cjs').crash(a); require('../crash.cjs').crash(b); }
+});
+
+test('the reap after a cut is one batch, bounded by what the fast close has left, and never waits past it', async () => {
+  const { runCloseStages } = require('../../src/cli/run-close-stages.cjs');
+  const { TIMED_OUT } = require('../../src/run/orchestrator-interactive.cjs');
+  const { spawn } = require('node:child_process');
+  const { pidAlive } = require('../../src/core/lock.cjs');
+  const sleeper = () => spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
+  const kids = [sleeper(), sleeper(), sleeper(), sleeper()];
+  try {
+    const batches = [];
+    // 400 ms are left once the stages are cut (a fake clock: leftMs is the budget the console reports); the killer is slow for the last pid.
+    const ce = { hupSeen: () => true, bound: async () => TIMED_OUT, leftMs: (reserve = 0) => 600 - reserve, snapshot: () => null };
+    const killPid = async (core, recs) => { batches.push(recs.map((r) => r.pid)); for (const r of recs.slice(0, 3)) kids.find((k) => k.pid === r.pid).kill(); await new Promise((r) => setTimeout(r, 5000)); };
+    const stages = { closeStages: (x) => { x.sink.pids.push(...kids.map((k, i) => ({ worker_id: `scrub-r-${i}`, pid: k.pid }))); return new Promise(() => {}); } };
+    const t0 = Date.now();
+    const out = await runCloseStages({ core: {}, runId: 'r', levers: { memory_levers: { notes: true } }, dataDir: 'd', ce, late: () => {}, stages, killPid });
+    const took = Date.now() - t0;
+    assert.strictEqual(batches.length, 1, 'one batch (one snapshot) for every recorded pid');
+    assert.deepStrictEqual(batches[0].sort(), kids.map((k) => k.pid).sort());
+    assert.ok(took < 1000, `the reap took ${took} ms, past the 400 ms the close had left`);
+    assert.deepStrictEqual(out.survivors, [kids[3].pid], 'only the one still alive when the time ran out is named');
+    assert.ok(kids.slice(0, 3).every((k) => !pidAlive(k.pid)));
+  } finally { for (const k of kids) require('../crash.cjs').crash(k); }
 });

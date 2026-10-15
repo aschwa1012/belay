@@ -6,23 +6,35 @@
 
 const RI = require('./run-interactive.cjs');
 
-const REAP_WAIT_MS = 1500;
-// The exact-pid kill of ADR 0039: the worker row's creation time and image are the identity, and a pid they do not match is refused.
-async function defaultKill(core, rec) {
+const REAP_WAIT_MS = 1500; // the longest a reap waits for the pids to go when no close budget applies
+const REAP_MIN_MS = 100;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// The exact-pid kills of ADR 0039, all from ONE process snapshot (killMany): each recorded child's worker row gives its creation time and
+// image, and a pid they do not match is refused. Under a console close the snapshot is the one the SIGHUP started.
+async function defaultKill(core, recs, ce) {
   const PR = require('../core/process.cjs');
-  let row = null;
-  try { const got = await core.worker.get({ worker_id: rec.worker_id }); row = got && (got.worker || got); } catch { row = null; }
-  return PR.killProcess(PR.rowTarget(row && row.pid === rec.pid ? row : { pid: rec.pid, pid_created: null }));
+  const targets = await Promise.all(recs.map(async (rec) => {
+    let row = null;
+    try { const got = await core.worker.get({ worker_id: rec.worker_id }); row = got && (got.worker || got); } catch { row = null; }
+    return PR.rowTarget(row && row.pid === rec.pid ? row : { pid: rec.pid, pid_created: null });
+  }));
+  return PR.killMany(targets, ce && ce.snapshot ? { snapshot: () => ce.snapshot(0) } : {});
 }
-// After a cut: every child recorded at spawn that is still alive is killed by its exact pid; any that is still alive after that is named.
-async function reap(core, sink, kill) {
+// After a cut: every child recorded at spawn that is still alive is killed by its exact pid, in one batch, and any still alive when the time
+// is up is named. The time is what the fast close has left once its stages are cut, less the owner shutdown's reserve (run.end and the
+// shutdown must not start late); with no console budget (a Ctrl-C in a headless run) it is a few seconds. It never waits past that.
+async function reap(core, sink, kill, ce) {
   const { pidAlive } = require('../core/lock.cjs');
-  const { waitPidGone } = require('../core/process.cjs');
-  for (const rec of sink.pids) {
-    if (sink.survivors.includes(rec.pid) || !pidAlive(rec.pid)) continue;
-    try { await kill(core, rec); } catch { /* the pid check below decides */ }
-    if (pidAlive(rec.pid) && (await waitPidGone(rec.pid, { timeoutMs: REAP_WAIT_MS })) === null) sink.survivors.push(rec.pid);
-  }
+  const live = sink.pids.filter((r) => !sink.survivors.includes(r.pid) && pidAlive(r.pid));
+  if (!live.length) return;
+  const budget = ce && ce.leftMs ? Math.min(REAP_WAIT_MS, Math.max(REAP_MIN_MS, ce.leftMs(RI.SHUTDOWN_RESERVE_MS))) : REAP_WAIT_MS;
+  const t0 = Date.now();
+  const work = (async () => {
+    try { await kill(core, live, ce); } catch { /* the pid checks below decide */ }
+    while (live.some((r) => pidAlive(r.pid)) && Date.now() - t0 < budget) await sleep(25);
+  })();
+  await Promise.race([work, sleep(budget)]);
+  for (const r of live) if (pidAlive(r.pid)) sink.survivors.push(r.pid);
 }
 
 // `levers` is the parsed spec's lever block (`memory_levers` present only when it differs from the defaults).
@@ -35,7 +47,7 @@ async function runCloseStages({ core, runId, levers, dataDir, worktree = null, g
   const sink = { survivors: [], pids: [] };
   const fast = () => !!((ce && ce.hupSeen()) || (interrupted && interrupted()));
   const out = await RI.within(ce, S.closeStages({ core: core.harness ? core.harness() : core, runId, levers: lv, dataDir, worktree, goal, summary, fast, log, sink, ...deps }), 'the run-close stages', { cut: true }, late, RI.END_RESERVE_MS);
-  if (out && out.cut) await reap(core, sink, killPid || defaultKill); // a cut stage's children are found by the pids recorded at spawn
+  if (out && out.cut) await reap(core, sink, killPid || defaultKill, ce); // a cut stage's children are found by the pids recorded at spawn
   return sink.survivors.length && out && out.cut ? { ...out, survivors: sink.survivors } : out;
 }
 
