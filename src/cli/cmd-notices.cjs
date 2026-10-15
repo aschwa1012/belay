@@ -14,6 +14,14 @@
 //   run_ended           the run row's ended_at
 //   memory_wrapup       a wrap-up memory_event of the run (ADR 0043 decision 2): one per task and one per run, once
 //                       each because the store refuses a second (run, key)
+//   scrub_alarm         the run-close scrub made more hold marks than is normal (scrub_alarm_holds): look before the archive reviewer runs
+//   scrub_owed          items the run-close scrub did not reach (a crash, a timeout, a cost over the cap or the item cap); the next scrub takes them first
+//   stage_overrun       a run-close scrub or archive review that spent its cost cap: nothing was applied, the next attempt takes half the items, and the line names the lever to raise
+//   scrub_dropped       items a scrub child gave no entry in two scrubs: named here, and not offered again until a new report, sighting or nomination
+//   scrub_failed        a run-close scrub or archive review that failed, with its code
+//   notes_unembedded    notes stored without a vector (on_embedder_failure keyword), in any project namespace: a count from
+//                       the rows, whatever the run. Only `belay memory embed` embeds them. Its ts is the newest such note's
+//                       creation time.
 
 const fs = require('node:fs');
 const C = require('./config.cjs');
@@ -158,6 +166,35 @@ function wrapupEvents(events, runId) {
   return out;
 }
 
+// The run-close stages' receipts (the scrubber and the archive reviewer): the alarm, the owed items and a failed stage. A stage that
+// worked is a receipt in `belay memory proposals` and the store, not a notice.
+const STAGE_KINDS = ['scrub_alarm', 'scrub_owed', 'scrub_job', 'review_stage', 'stage_overrun'];
+function stageEvents(events, runId) {
+  // An owed receipt is shown only while an id it names is still owed: the last owed receipt for the id, with no later ok scrub_job.
+  const stillOwed = new Map();
+  events.forEach((e, i) => {
+    const ids = Array.isArray(e.row_ids) ? e.row_ids : [];
+    if (e.kind === 'scrub_owed' && e.code !== 'E_DROPPED') ids.forEach((id) => stillOwed.set(id, i));
+    else if (e.kind === 'scrub_owed') ids.forEach((id) => stillOwed.delete(id));
+    else if (e.kind === 'scrub_job' && e.ok) ids.forEach((id) => stillOwed.delete(id));
+  });
+  const out = [];
+  events.forEach((e, i) => {
+    const ok = !!e.ok;
+    if (e.kind === 'scrub_owed' && e.code !== 'E_DROPPED' && !(Array.isArray(e.row_ids) && e.row_ids.some((id) => stillOwed.get(id) === i))) return;
+    const kind = e.kind === 'scrub_alarm' ? 'scrub_alarm' : e.kind === 'scrub_owed' && e.code === 'E_DROPPED' ? 'scrub_dropped' : e.kind === 'scrub_owed' ? 'scrub_owed' : e.kind === 'stage_overrun' ? 'stage_overrun' : !ok ? 'scrub_failed' : null;
+    if (!kind) return;
+    out.push({ kind, ts: num(e.written_at), run_id: runId, stage: e.kind, ok, code: e.code ?? null, text: e.message ?? null, row_ids: e.row_ids ?? null, source: `memory_event ${e.id}` });
+  });
+  return out;
+}
+
+// The standing count of notes with no vector, one event while there are any (memory.unembedded, a plain read).
+function unembeddedEvents(u, runId) {
+  if (!u || !(u.total > 0)) return [];
+  return [{ kind: 'notes_unembedded', ts: num(u.newest_at), run_id: runId, count: u.total, by_project: u.by_project || {}, command: 'belay memory embed', source: 'memory_entries rows of type note with no vector' }];
+}
+
 // Oldest first; an event with no timestamp sorts last, and `--since` keeps it, since nothing proves it is old.
 function ordered(events, since) {
   const kept = since == null ? events : events.filter((e) => e.ts == null || e.ts >= since);
@@ -185,6 +222,14 @@ function summaryOf(e) {
       return `${id('task', e.task_id)} verdict ${P.v(e.verdict, 20)} passed ${P.v(e.passed)} executable ${P.v(e.executable)} judged by ${P.v(e.judged_by, 60)}${e.reason ? ` reason ${P.v(e.reason, 120)}` : ''}`;
     case 'memory_wrapup':
       return `${id('key', e.key)} ${e.ok ? P.v(e.text, 600) : `failed ${P.v(e.code, 40)}`}`;
+    case 'scrub_alarm':
+    case 'scrub_owed':
+    case 'scrub_failed':
+    case 'scrub_dropped':
+    case 'stage_overrun':
+      return `${e.stage} ${e.code ? `failed ${P.v(e.code, 40)}: ` : ''}${P.v(e.text, 300)}${Array.isArray(e.row_ids) && e.row_ids.length ? ` (notes: ${e.row_ids.slice(0, 5).map((x) => P.v(x, 40)).join(', ')}${e.row_ids.length > 5 ? `, and ${e.row_ids.length - 5} more` : ''})` : ''}`;
+    case 'notes_unembedded':
+      return P.unembeddedText({ total: e.count, by_project: e.by_project });
     case 'run_paused':
       return `${id('run', e.run_id)} paused by ${P.v(e.paused_by, e.embedder_failure ? 160 : 60)}${e.embedder_failure ? ` (an embedder failure, on_embedder_failure required: belay settings memory.on_embedder_failure keyword|off saves a choice for later runs, belay resume ${e.run_id} --embedder keyword|off resumes with one, or leave it paused)` : ''}`;
     default:
@@ -211,10 +256,12 @@ async function run(ctx) {
   const core = await openCore({ dataDir, caller: { role: 'operator', run_id: parsed.runId || 'cli', pid: process.pid } });
   try {
     const { chosen, source } = await P.chooseRun(core, parsed.runId);
+    const unembedded = await core.memory.unembedded({});
     if (!chosen) {
       if (!parsed.runId) {
-        const empty = { run_id: null, run_id_source: source, since: parsed.since, stall_ms: parsed.stallMs, events: [], count: 0 };
-        return { code: 0, text: renderText([]), json: empty };
+        const events = ordered(unembeddedEvents(unembedded, null), parsed.since);
+        const empty = { run_id: null, run_id_source: source, since: parsed.since, stall_ms: parsed.stallMs, events, count: events.length };
+        return { code: 0, text: renderText(events), json: empty };
       }
       const message = `no run row exists for ${parsed.runId}`;
       return { code: 1, text: `belay notices: ${P.clean(message)}\n`, json: { error: { code: 'E_NOT_FOUND', message, run_id: parsed.runId } } };
@@ -222,12 +269,14 @@ async function run(ctx) {
     const { requests } = await core.permission.list({ run_id: chosen.id, states: ['pending'] });
     const { workers } = await core.worker.list({});
     const { tasks } = await core.task.list({});
-    const { events: ledger } = await core.memory.events({ run_id: chosen.id, kinds: ['wrapup'] });
+    const { events: ledger } = await core.memory.events({ run_id: chosen.id, kinds: ['wrapup', ...STAGE_KINDS] });
     const events = ordered([
       ...permissionEvents(requests, chosen.id),
       ...workerEvents(workers.filter((w) => w.run_id === chosen.id), chosen.id, parsed.stallMs, dataDir),
       ...verdictEvents(tasks.filter((t) => t.run_id === chosen.id), chosen.id),
       ...wrapupEvents(ledger, chosen.id),
+      ...stageEvents(ledger, chosen.id),
+      ...unembeddedEvents(unembedded, chosen.id),
       ...runEvents(chosen),
     ], parsed.since);
     const receipt = {
@@ -242,4 +291,4 @@ async function run(ctx) {
   }
 }
 
-module.exports = { run, wrapupEvents, verdictEvents, runEvents, ordered, workerEvents, stallAge, renderText };
+module.exports = { run, stageEvents, wrapupEvents, verdictEvents, runEvents, ordered, workerEvents, stallAge, renderText };

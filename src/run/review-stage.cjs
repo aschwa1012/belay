@@ -1,0 +1,119 @@
+'use strict';
+// review-stage.cjs — the Opus 5.5 archive reviewer ("hold, then decide"), a stage of run close after the scrub. The run manager spawns
+// one read-only child that clears the WHOLE held queue of the project in one spawn, with no item cap, under its wall cap and its cost
+// cap (the recorded cost is the binding check). It runs when the queue has at least `review_min_held` marks, or the oldest has waited
+// `review_max_age_runs` runs, or a mark targets a note a review verified; `belay memory review` runs it with no trigger at all.
+//
+// The child is given each held row with both notes, the cites, and the files the cites name as they were at the mark's head commit
+// (read with git, saved beside the brief). It hands back `{ "verdicts": [ ... ] }`, which memory.reviewApply checks and applies; a note
+// it leaves out stays held and carries over to the next review. This stage trusts nothing in the answer.
+
+const path = require('node:path');
+const J = require('./stage-job.cjs');
+
+const JOB_PREFIX = 'archreview-';
+const VERDICTS_PER_APPLY = 500; // checkVerdicts takes 1 to 500
+const STREAMS_MAX = 50;
+const FILES_MAX = 60;
+const LINE_SUFFIX = /:\d+(?:-\d+)?$/;
+const abs = (p) => J.fwd(path.resolve(p));
+
+// Why the reviewer runs, or null: the three triggers of the rulings.
+function triggerOf(counts, lv) {
+  if (counts.count >= lv.review_min_held) return `${counts.count} marks held (review_min_held ${lv.review_min_held})`;
+  if (counts.max_runs_waited >= lv.review_max_age_runs && counts.count > 0) return `the oldest mark has waited ${counts.max_runs_waited} runs (review_max_age_runs ${lv.review_max_age_runs})`;
+  if (counts.review_verified > 0) return `${counts.review_verified} mark(s) target a note a review verified`;
+  return null;
+}
+
+function buildBrief({ runId, project, held }) {
+  return [
+    '# Archive review brief', '',
+    `Run: ${runId}   Project: ${project}   Held marks: ${held.length}`,
+    'Each entry is one held note. "files" are the repository files the mark cites, saved as they were at the mark\'s head commit.',
+    'target_review_verified = a review confirmed this note earlier: weigh a mark against it with care.', '',
+    '```json', JSON.stringify(held, null, 1), '```', '',
+  ].join('\n');
+}
+
+function promptFor(briefFile) {
+  return J.fill(J.readTemplate('archive-review-job.md'), { brief_file: briefFile });
+}
+
+// The files each mark cites, at its head commit, saved under `dir`. Returns the entries with a `files` list and the stream paths named.
+async function withFiles(held, worktree, dir) {
+  const streams = new Set();
+  let n = 0;
+  const out = [];
+  for (const h of held) {
+    const files = [];
+    for (const c of h.cites || []) {
+      if (String(c.where).startsWith('stream:')) { streams.add(abs(String(c.where).slice(7))); continue; }
+      if (!h.head_sha || !worktree || n >= FILES_MAX) { files.push({ where: c.where, saved_at: null }); continue; }
+      const rel = J.fwd(String(c.where).replace(LINE_SUFFIX, ''));
+      if (files.some((f) => f.path === rel)) continue;
+      const text = await J.fileAt(worktree, h.head_sha, rel);
+      n += 1;
+      files.push({ where: c.where, path: rel, saved_at: J.writeFileIn(path.join(dir, 'files'), `${h.held_row}-${files.length}.txt`, text) });
+    }
+    out.push({ ...h, files });
+  }
+  return { held: out, streams: [...streams] };
+}
+
+// opts: { core, runId, lv, dataDir, getManager, worktree, force }. Never throws; every outcome is a receipt and a returned fact.
+async function runReview({ core, runId, lv, dataDir, getManager, worktree = null, force = false, fast = null, log = null, sink = null }) {
+  if (!lv || !lv.notes) return { ran: false, reason: 'notes off' };
+  if (lv.scrub_action === 'off' && !force) return { ran: false, reason: 'scrub_action off' };
+  let q;
+  try { q = await core.memory.reviewQueue({}); } catch (e) { return { ran: false, reason: 'queue unreadable', code: J.codeOf(e), message: String(e && e.message).slice(0, 200) }; }
+  if (!q.held.length) return { ran: false, reason: 'empty queue', counts: q.counts };
+  if (fast && fast()) return { ran: false, reason: 'fast close', counts: q.counts }; // the marks stay held; the next review takes them
+  const why = force ? 'asked by hand' : triggerOf(q.counts, lv);
+  if (!why) return { ran: false, reason: 'below the triggers', counts: q.counts };
+  const limit = await J.attemptLimit(core, 'review', 'review_stage', q.held.length); // half of an overrun attempt, oldest first, down to 1
+  const queued = q.held.slice(0, limit);
+  const jobId = `${JOB_PREFIX}${runId}-${Date.now().toString(36)}`;
+  const out = { ran: true, job: jobId, trigger: why, counts: q.counts, queue: q.held.length, offered: queued.length };
+  const base = { run_id: runId, worker_id: jobId, key: `run:${runId}` };
+  const noteOverrun = async (failedJob) => {
+    if (out.overrun || !J.overran(out.cost, lv.review_cost_cap_usd, failedJob)) return;
+    out.overrun = { cost: out.cost, cap: lv.review_cost_cap_usd, attempted: queued.length, next: Math.max(1, Math.floor(queued.length / 2)) };
+    await J.receipt(core, { kind: 'stage_overrun', ok: false, code: 'E_COST_CAP', run_id: runId, worker_id: jobId, key: 'review', row_ids: queued.map((h) => h.id), message: `the review of ${queued.length} held mark(s) cost $${Number(out.cost).toFixed(4)} against a cap of $${lv.review_cost_cap_usd}; no verdict was applied and the next attempt takes ${out.overrun.next}, oldest first; raise memory.review_cost_cap_usd to take more` });
+  };
+  try {
+    const workers = ((await core.worker.list({})).workers) || [];
+    const cwd = worktree || (workers.filter((w) => w.run_id === runId && w.worktree).pop() || {}).worktree;
+    if (!cwd) throw J.coded('E_ARGS', 'no worktree is known for the run, so the review child has nowhere to run and no commit can be read');
+    const dir = path.join(dataDir, 'workers', jobId, 'inputs');
+    const { held, streams } = await withFiles(queued, cwd, dir);
+    const briefFile = J.writeFileIn(dir, 'brief.md', buildBrief({ runId, project: q.project, held }));
+    if (log) log(`run close: reviewing ${queued.length} held mark(s), at most ${lv.review_wall_s} s and $${lv.review_cost_cap_usd}`);
+    const got = await J.runChild({ manager: await getManager(), workerId: jobId, worktree: cwd, model: lv.archive_review_model, capUsd: lv.review_cost_cap_usd, wallMs: lv.review_wall_s * 1000, prompt: promptFor(briefFile), label: 'archive review', fast, sink });
+    out.cost = got.cost;
+    if (got.survivor) out.survivor = got.survivor;
+    await noteOverrun(!!got.error);
+    if (got.error) throw got.error;
+    const bad = J.costError(got.cost, lv.review_cost_cap_usd, 'archive review');
+    if (bad) throw bad;
+    const parsed = J.parseList(got.text, 'verdicts');
+    if (parsed.error) throw J.coded('E_ARGS', parsed.error);
+    const tally = { verdicts: parsed.list.length, applied: 0, refused: 0 };
+    const applied = [], refused = [];
+    for (let i = 0; i < parsed.list.length; i += VERDICTS_PER_APPLY) {
+      const r = await core.memory.reviewApply({ verdicts: parsed.list.slice(i, i + VERDICTS_PER_APPLY), worktree: abs(cwd), evidence_files: streams.slice(0, STREAMS_MAX) });
+      tally.applied += r.counts.applied; tally.refused += r.counts.refused;
+      applied.push(...r.applied.map((a) => ({ id: a.id, outcome: a.outcome, receipt: a.receipt }))); refused.push(...r.refused.map((a) => ({ id: a.id, code: a.code })));
+    }
+    out.result = { counts: tally, applied, refused };
+    out.left_held = q.held.length - applied.length; // every mark not decided stays held and carries over
+    await J.receipt(core, { kind: 'review_stage', ok: true, ...base, row_ids: applied.map((a) => a.id), message: `${why}: ${tally.verdicts} verdicts for ${queued.length} of ${q.held.length} held marks; applied ${tally.applied}, refused ${tally.refused}; cost $${got.cost.toFixed(4)}` });
+  } catch (e) {
+    await noteOverrun(true);
+    out.error = { code: J.codeOf(e), message: String((e && e.message) || e).slice(0, 300) };
+    await J.receipt(core, { kind: 'review_stage', row_ids: queued.map((h) => h.id), ...base, ...J.failFields(e) });
+  }
+  return out;
+}
+
+module.exports = { runReview, triggerOf, buildBrief, promptFor, JOB_PREFIX };

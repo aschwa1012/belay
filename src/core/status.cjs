@@ -13,6 +13,7 @@ const { pidAlive, readOwnerLock, pipeName } = require('./lock.cjs');
 const { ping } = require('./ping.cjs');
 const unresponsive = require('./unresponsive.cjs');
 const { metaGet } = require('./schema-stamp.cjs');
+const { count: unembeddedCount } = require('./notes-unembedded.cjs');
 
 const RESPONSIVE_WINDOW_MS = 30000;
 const OWNER_PING_TIMEOUT_MS = 300;
@@ -132,10 +133,15 @@ async function get(E, caller, args = {}) {
     } catch { /* a handle that cannot answer reports null, never a guess */ }
   }
 
+  // Notes stored without a vector (on_embedder_failure keyword). Nothing embeds them but `belay memory embed`; a plain read
+  // of the rows already open, none when the store is absent.
+  const notesUnembedded = storePresent ? unembeddedCount(E.store) : { total: 0, by_project: {}, newest_at: null };
+
   return {
     verdict,
     data_dir: dataDir,
     store,
+    notes_unembedded: notesUnembedded,
     established_by: E.owner ? 'owner' : E.establishedBy,
     ms: Date.now() - t0,
     rungs,

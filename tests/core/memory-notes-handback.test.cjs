@@ -225,7 +225,7 @@ test('a worker resolves only its own pending notes; a repeat of a note that is n
   assert.strictEqual(r.still_pending, open, 'the orchestrator sees every pending note of the project');
 });
 
-test('reported_wrong marks the note reported_wrong at once, resolves notes[i] to the new note, and refuses an unknown id', async () => {
+test('reported_wrong marks the note reported_wrong at once, resolves notes[i] to the new note, and skips an id that is not live', async () => {
   const w = worker('w2');
   const target = (await hand(w, { notes: [note('K11', { title: 'the K11 scheduler runs hourly' })] })).out.notes[0];
   const w3 = worker('w3');
@@ -239,8 +239,10 @@ test('reported_wrong marks the note reported_wrong at once, resolves notes[i] to
   assert.strictEqual(b.reported_wrong.length, 1);
   assert.deepStrictEqual([b.reported_wrong[0].why, b.reported_wrong[0].by, b.reported_wrong[0].run_id, b.reported_wrong[0].replaced_by], ['saw it fire every five minutes', 'worker:w3', RUN, out.notes[0].id]);
   assert.strictEqual(rowOf(target.id).namespace, 'project/acme', 'a report is not a retirement: the note stays');
+  const skip = await lease(w3);
+  const skipped = await call('lease.release', w3, { lease_id: skip.lease_id, notes: [], reported_wrong: [{ id: 'nope', why: 'x' }] });
+  assert.deepStrictEqual(skipped.reported_wrong, [{ id: 'nope', skipped: 'not_live', state: 'missing' }], 'an id that is not live is skipped and returned, and the release goes on');
   const l = await lease(w3);
-  await assert.rejects(call('lease.release', w3, { lease_id: l.lease_id, notes: [], reported_wrong: [{ id: 'nope', why: 'x' }] }), e => e.code === 'E_NOT_FOUND');
   await assert.rejects(call('lease.release', w3, { lease_id: l.lease_id, notes: [], reported_wrong: [{ id: target.id, why: 'x', replaced_by: 'notes[3]' }] }), e => e.code === 'E_ARGS');
   assert.strictEqual(bodyOf(target.id).reported_wrong.length, 1, 'a refused call marks nothing');
 });

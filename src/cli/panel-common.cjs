@@ -85,4 +85,13 @@ function contentText(content) {
   return content.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n');
 }
 
-module.exports = { WIDTH, STREAM_NAME, fwd, orchestratorStreamPath, chooseRun, clean, v, iso, money, wrapLine, contentText };
+// The count of notes stored without a vector, as one line with the command that embeds them. `u` is the core's
+// { total, by_project }; a project name is core-written but still goes through the sanitiser.
+function unembeddedText(u) {
+  const names = Object.keys(u.by_project || {}).sort();
+  const where = names.length === 1 ? ` --project ${clean(names[0], 64)}` : ' --project <p>';
+  const per = names.length > 1 ? ` (${names.map((p) => `${clean(p, 64)} ${u.by_project[p]}`).join(', ')})` : '';
+  return `${u.total} note${u.total === 1 ? '' : 's'} unembedded${per}: embed with belay memory embed${where}`;
+}
+
+module.exports = { unembeddedText, WIDTH, STREAM_NAME, fwd, orchestratorStreamPath, chooseRun, clean, v, iso, money, wrapLine, contentText };
