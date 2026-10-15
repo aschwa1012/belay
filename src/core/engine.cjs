@@ -60,6 +60,14 @@ const METHODS = {
   'memory.promote': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-promote.cjs', 'promote') },
   // ADR 0047 decision 4: settles the pending notes a hand-back returned; the writer's own, or the orchestrator's or operator's.
   'memory.noteResolve': { roles: ALL, kind: 'write', fn: lazy('./methods-memory-notes.cjs', 'resolve') },
+  // The notes lifecycle (scrub, review, archive). scrubApply and reviewApply are harness-channel calls (the check is inside);
+  // noteRestore is the orchestrator's or the operator's; archivePurge is the operator's alone; the two reads are SELECTs.
+  'memory.scrubApply': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-scrub.cjs', 'scrubApply') },
+  'memory.reviewApply': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-review.cjs', 'reviewApply') },
+  'memory.noteRestore': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-archive.cjs', 'noteRestore') },
+  'memory.archivePurge': { roles: ['operator'], kind: 'write', fn: lazy('./methods-memory-archive.cjs', 'archivePurge') },
+  'memory.proposals': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-archive.cjs', 'proposals') },
+  'memory.archivedDuplicates': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-archive.cjs', 'archivedDuplicates') },
   // ADR 0047 decision 1: run summaries found on demand; with the notes lever on they live in summary/<project>.
   'memory.summaries': { roles: ALL, kind: 'read', fn: lazy('./memory-summaries.cjs', 'summaries') },
   'memory.recordEvent': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-ledger.cjs', 'recordEvent') },

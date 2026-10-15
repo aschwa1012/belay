@@ -193,6 +193,29 @@ async function noteDeliveries(E, caller, args) {
     throw e;
   }
   let list = found.map(chanceOut);
+  // A kept note answers for the duplicates archived into it: their deliveries are its lesson's deliveries. A chance
+  // recorded for a duplicate is joined as it is (note_id the kept note, from_duplicate the archived one); a delivery
+  // only the transfer kept (delivery_history) is joined when no chance covers the same task, worker and route.
+  const keptRow = E.store.p("SELECT body FROM memory_entries WHERE id = ?").get(args.note_id);
+  const kept = (keptRow && parse(keptRow.body)) || {};
+  const taken = new Set(list.map(c => `${c.task_id}|${c.worker_id}|${c.route || 'index'}`));
+  for (const m of Array.isArray(kept.merged_from) ? kept.merged_from : []) {
+    if (!m || !validId(m.id)) continue;
+    for (const r of E.store.p("SELECT * FROM memory_event WHERE kind = 'note_chance' AND row_ids = ? ORDER BY seq").all(JSON.stringify([m.id]))) {
+      const c = chanceOut(r);
+      const k = `${c.task_id}|${c.worker_id}|${c.route || 'index'}`;
+      if (taken.has(k)) continue;
+      taken.add(k);
+      list.push({ ...c, note_id: args.note_id, from_duplicate: m.id });
+    }
+  }
+  for (const d of Array.isArray(kept.delivery_history) ? kept.delivery_history : []) {
+    if (!d || !validId(d.from)) continue;
+    const k = `${d.task_id}|${d.worker_id}|${d.route || 'index'}`;
+    if (taken.has(k)) continue;
+    taken.add(k);
+    list.push({ id: null, seq: null, task_id: d.task_id, run_id: d.run_id, worker_id: d.worker_id, note_id: args.note_id, from_duplicate: d.from, route: d.route || 'index', delivered_at: d.at, recorded_at: d.at, used: false, from_history: true });
+  }
   // A hand-back after the record (the reflection turn) can still cite the note: join those later ids on read.
   const later = new Map();
   for (const c of list) {

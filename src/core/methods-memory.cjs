@@ -160,6 +160,7 @@ async function store(E, caller, args) {
   checkWrite(caller, args);
   const namespace = nsFor(E, caller, args);
   checkReach(E, caller, [namespace], 'write to');
+  if (isReserved(namespace)) throw err('E_ROLE', `namespace ${namespace} is the notes lifecycle's: only the harness writes there, and not through memory.store`, { namespace, role: caller.role });
   if (args.supersedes != null) checkOwnRow(E, caller, args.supersedes, 'supersede');
   if (caller.role === 'worker') {
     const n = E.store.p('SELECT COUNT(*) AS n FROM memory_entries WHERE namespace = ? AND worker_id = ?').get(namespace, caller.worker_id).n;
@@ -186,9 +187,18 @@ async function store(E, caller, args) {
   return row;
 }
 
+// The notes lifecycle's namespaces belong to the harness: only its own writes put a row there (memory.store refuses
+// them), and a delete of anything in them, or of any note, is the operator's (the archive purge is the way out).
+const RESERVED_NS = ['archive/', 'held/', 'proposal/', 'draft/'];
+const isReserved = ns => typeof ns === 'string' && RESERVED_NS.some(p => ns.startsWith(p));
+
 async function del(E, caller, args) {
   if (!args.id) throw err('E_ARGS', 'memory.delete needs an id');
   if (!validId(args.id)) throw err('E_ARGS', 'memory.delete id must be a row id', { field: 'id' });
+  if (caller.role !== 'operator') {
+    const r = E.store.p('SELECT type, namespace FROM memory_entries WHERE id = ?').get(args.id);
+    if (r && (r.type === 'note' || isReserved(r.namespace))) throw err('E_ROLE', `row ${args.id} is a ${r.type === 'note' ? 'note' : `row of ${r.namespace.split('/')[0]}/`}, and only the operator deletes those (an archived note leaves only by the operator's purge)`, { id: args.id, role: caller.role });
+  }
   checkOwnRow(E, caller, args.id, 'delete');
   const r = E.store.delete(args.id);
   E.noteWrite();
