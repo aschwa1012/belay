@@ -37,6 +37,7 @@ const claimsLiveProcess = (w) => LIFE_CLAIMING_STATES.has(w.state) && hasProcess
 async function closeRunWorkers({ core, runId, graceMs, ownPid = process.pid, deps = {}, fast = null }) {
   const { killProcess, waitPidGone, withKillLock } = { ...processDefaults, ...deps };
   const { rowTarget } = processDefaults;
+  const cut = { v: false }; // set when the budget's race timer fires or finalizeCut runs: a snapshot landing after it signals nothing
   const unrecorded = new Map(); // workers whose entry is not written yet, for a close the budget cuts (finalizeCut)
   const out = { adapter_pid: null, adapter_gone: true, adapter_wait_ms: 0, adapter_wait_bound_ms: graceMs, killed: [], still_alive: [], left_parked: [], errors: [] };
   const listRun = async () => {
@@ -52,6 +53,8 @@ async function closeRunWorkers({ core, runId, graceMs, ownPid = process.pid, dep
     out.adapter_pid = Number.isInteger(pid) ? pid : null;
   } catch (e) { out.errors.push(`run.get: ${(e && e.message) || String(e)}`); }
   const before = await listRun();
+  // A cut before the final listing still names the workers known now (finalizeCut).
+  if (fast) { fast.progress = { out, unrecorded, cut }; for (const w of before || []) if (claimsLiveProcess(w)) unrecorded.set(w.id, { w, touched: () => false }); }
   const liveCount = before ? before.filter(claimsLiveProcess).length : 0;
   out.adapter_wait_bound_ms = Math.max(graceMs, liveCount * ADAPTER_STOP_PER_WORKER_MS + ADAPTER_STOP_SLACK_MS);
   if (out.adapter_pid != null && out.adapter_pid !== ownPid && pidAlive(out.adapter_pid)) {
@@ -83,7 +86,7 @@ async function closeRunWorkers({ core, runId, graceMs, ownPid = process.pid, dep
   const workers = await listRun();
   // ADR 0023 amendment 5: a run quit while paused leaves its parked workers parked (no process, no pid to kill); named, not touched.
   out.left_parked = (workers || []).filter((w) => w.state === 'paused').map((w) => w.id);
-  if (fast) fast.progress = { out, unrecorded };
+  unrecorded.clear();
   for (const w of workers || []) {
     if (!claimsLiveProcess(w)) continue;
     unrecorded.set(w.id, { w, touched: () => false });
@@ -101,9 +104,9 @@ async function closeRunWorkers({ core, runId, graceMs, ownPid = process.pid, dep
     const noBudget = () => fast && fast.snapshot && fast.leftMs && fast.leftMs() < FRESH_SNAPSHOT_NEEDS_MS && !(fast.snapshotPending && fast.snapshotPending());
     const killP = withKillLock(() => {
       if (noBudget()) return { noBudget: `no budget for a fresh snapshot in the fast close (${Math.round(fast.leftMs())} ms left, a snapshot needs ${FRESH_SNAPSHOT_NEEDS_MS} ms); nothing was signalled` };
-      return killProcess(rowTarget(w), fast && fast.snapshot ? { snapshot: async () => { const r = await fast.snapshot(); if (fast.leftMs && fast.leftMs() <= 0) return { snap: null, error: 'deadline', startSeq: null }; touched = true; return r; } } : {});
+      return killProcess(rowTarget(w), fast && fast.snapshot ? { snapshot: async () => { const r = await fast.snapshot(); if (cut.v || (fast.leftMs && fast.leftMs() <= 0)) return { snap: null, error: 'deadline', startSeq: null }; touched = true; return r; } } : {});
     }).catch((e) => ({ tree: null, pidKill: { signalled: false }, identity: null, refused: { refused: 'identity', detail: (e && e.message) || String(e) } }));
-    const kp = fast && fast.leftMs ? await Promise.race([killP, new Promise((r) => { setTimeout(r, Math.min(left(), 2147483647)).unref(); })]) : await killP;
+    const kp = fast && fast.leftMs ? await Promise.race([killP, new Promise((r) => { setTimeout(() => { cut.v = true; r(); }, Math.min(left(), 2147483647)).unref(); })]) : await killP;
     if (kp && kp.noBudget) {
       const rec = KL.begin('fastCloseSkip', rowTarget(w)); if (rec) rec({ ok: false, kind: 'no_budget', detail: kp.noBudget });
       const manual = manualWithId(w);
@@ -116,7 +119,7 @@ async function closeRunWorkers({ core, runId, graceMs, ownPid = process.pid, dep
     // A refused kill signalled nothing, so there is no death to wait for: one pid check, and the close's budget is
     // left for the next worker (a fast close that waited here lost every refusal with the deadline).
     const goneMs = kp && kp.refused ? (pidAlive(w.pid) ? null : 0) : await waitPidGone(w.pid, { timeoutMs: Math.max(100, Math.min(KILL_GONE_BOUND_MS, left())) });
-    const entry = { worker_id: w.id, pid: w.pid, gone: goneMs !== null, gone_ms: goneMs, tree_terminated: tree && tree.terminated != null ? tree.terminated : null, signalled: sig.signalled, identity: kp ? kp.identity : null, ...(kp && kp.refused ? { refused: kp.refused.refused, kind: kp.refused.kind, detail: kp.refused.detail, ...(kp.refused.manual ? { manual: kp.refused.manual } : {}) } : {}), ...(kp ? {} : touched ? { refused: 'identity', kind: 'unverifiable', detail: 'the fast-close budget ran out while the kill was proving the process' } : { refused: 'identity', kind: 'no_budget', detail: 'the fast-close budget ran out before a snapshot could prove the process; nothing was signalled' }) };
+    const entry = { worker_id: w.id, pid: w.pid, gone: goneMs !== null, gone_ms: goneMs, tree_terminated: tree && tree.terminated != null ? tree.terminated : null, signalled: !!(sig.signalled || (tree && tree.killed && tree.killed.includes(w.pid))), identity: kp ? kp.identity : null, ...(kp && kp.refused ? { refused: kp.refused.refused, kind: kp.refused.kind, detail: kp.refused.detail, ...(kp.refused.manual ? { manual: kp.refused.manual } : {}) } : {}), ...(kp ? {} : touched ? { refused: 'identity', kind: 'unverifiable', detail: 'the fast-close budget ran out while the kill was proving the process' } : { refused: 'identity', kind: 'no_budget', detail: 'the fast-close budget ran out before a snapshot could prove the process; nothing was signalled' }) };
     entry.outcome = outcomeOf(entry);
     const proved = entry.kind === 'mismatch' || entry.kind === 'absent'; // another process provably holds the pid: no advice to kill it
     if (!entry.gone && !entry.manual && !proved) entry.manual = manualWithId(w);
@@ -134,7 +137,8 @@ async function closeRunWorkers({ core, runId, graceMs, ownPid = process.pid, dep
 // already proving the process), the manual hint and `belay worker kill`. Later pushes to the live record are ignored.
 function finalizeCut(progress) {
   if (!progress) return null;
-  const { out, unrecorded } = progress;
+  const { out, unrecorded, cut: flag } = progress;
+  if (flag) flag.v = true; // from here no kill of this close signals, whatever the clocks say
   const cut = { ...out, killed: [...out.killed], still_alive: [...out.still_alive], errors: [...out.errors], fast_close: true };
   for (const { w, touched } of unrecorded.values()) {
     const proving = touched();

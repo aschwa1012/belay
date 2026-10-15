@@ -51,3 +51,36 @@ test('fast close with a snapshot that cannot fit: nothing is signalled, the rece
     } finally { RP.snapshotShared = realShared; ID.snapshotShared = realCore; await releaseCore(core); }
   } finally { require('../crash.cjs').crash(w); }
 }));
+
+// The reviewer's probe: the snapshot is not stuck, it lands after the budget is spent. The close has already reported the
+// worker as not signalled, so nothing may signal it afterwards.
+test('fast close: a snapshot that lands after the budget signals nothing, and the receipt was true', async (t) => withRun(t, async (dir) => {
+  const w = sleeper();
+  const realShared = RP.snapshotShared; const realCore = ID.snapshotShared;
+  try {
+    const made = await readCreated(w.pid);
+    const pre = await ID.processSnapshot();
+    assert.ok(pre && pre.get(w.pid), 'precondition: the snapshot could not read the sleeper');
+    const exitFile = `${dir}/claude-quit`;
+    const r = start(dir, { env: { FAKE_EXIT_FILE: exitFile }, gate: fakeGate({ debugMs: 10, sessionMs: 20, firstMs: 10 }) });
+    let core;
+    try {
+      assert.ok(await waitUntil(() => r.record(), 15000));
+      core = await openCore({ dataDir: r.dataDir, caller: { role: 'orchestrator', run_id: r.runId, pid: process.pid } });
+      assert.ok(await waitUntil(async () => (await core.run.get()).run, 15000));
+      await core.worker.write({ id: 'w-late', run_id: r.runId, substrate: 'claude-code', state: 'running', turns: 0, started_at: Date.now(), pid: w.pid, pid_created: made.created, pid_image: 'node.exe' });
+      let landed = false;
+      const late = () => new Promise((res) => { setTimeout(() => { landed = true; res(pre); }, 4300); }); // past the 3500 ms budget
+      RP.snapshotShared = late; ID.snapshotShared = late;
+      process.emit('SIGHUP');
+      require('node:fs').writeFileSync(exitFile, 'x');
+      const res = await r.done;
+      const k = res.json.workers_closed.killed.find((x) => x.worker_id === 'w-late');
+      assert.ok(k && k.signalled === false && ['no_budget', 'unverifiable'].includes(k.kind), JSON.stringify(k));
+      assert.ok(await waitUntil(() => landed, 10000, 50), 'the late snapshot never landed');
+      await new Promise((res) => setTimeout(res, 300)); // the continuation after it would signal within a tick
+      assert.strictEqual(w.exitCode, null, 'a snapshot that landed after the budget signalled the worker');
+      assert.ok(require('../../src/run/process.cjs').pidAlive(w.pid));
+    } finally { RP.snapshotShared = realShared; ID.snapshotShared = realCore; await releaseCore(core); }
+  } finally { require('../crash.cjs').crash(w); }
+}));
