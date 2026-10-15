@@ -407,6 +407,10 @@ async function run(ctx) {
     && !guard.fatal()
     && !RI.embedderUnsafe(mode, parsed.levers, guard.events()) ? 0 : 1; // ADR 0034: a run ended by an embedder failure it could not survive is never a clean exit
 
+  // Index-query embeds that hit their bound (memory.embedQuery's `embed_bound` events): not failures of the model, so not in
+  // embedder_failures, but a slow embedder the operator should see at run level.
+  let embedBounds = null;
+  try { embedBounds = ((await core.memory.events({ run_id: parsed.runId, kinds: ['embed_bound'], limit: 1000 })).events || []).map((e) => ({ at: e.written_at, worker_id: e.worker_id, task_id: e.task_id, detail: e.message })); } catch { /* the receipt still stands without it */ }
   const receiptPath = `${orchestratorDir}/run.json`;
   const receipt = {
     run_id: parsed.runId, mode, data_dir: dataDir, spec_path: specPath, orchestrator_dir: orchestratorDir,
@@ -414,7 +418,7 @@ async function run(ctx) {
     ended_by: endedBy, holds, polls, wakes, wakes_suppressed: wakesSuppressed, wakes_expired: wakesExpired,
     wakes_held: wakesHeld, pauses,
     stop: stopReceipt, ms: Date.now() - t0, receipt_path: null,
-    levers: parsed.levers, embedder: warm, embedder_failures: ie ? ie.annotate(guard.events()) : guard.events(),
+    levers: parsed.levers, embedder: warm, embedder_failures: ie ? ie.annotate(guard.events()) : guard.events(), ...(embedBounds && embedBounds.length ? { embedder_bounds: embedBounds } : {}),
     review_rounds: reviewRounds.value, review_rounds_reason: reviewRounds.reason,
     workers_closed: closed ? workersClosedBlock(closed, endedRow ? (endedRow.workers_marked_dead || []) : null) : null,
     ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), // only with a run-end memory lever on
