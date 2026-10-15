@@ -16,6 +16,8 @@ const CODES = new Set([
   'E_SUMMARY_REFUSED', 'E_SUMMARY_OVER_BUDGET', 'E_LEVER_OFF', 'E_EXISTS',
   // ADR 0047: a note whose shape is refused (never truncated)
   'E_NOTE_SHAPE',
+  // wave 4: a review verdict whose cited quote is not in the evidence the reviewed task recorded
+  'E_CITATION', 'E_COST_CAP',
 ]);
 
 class CoreError extends Error {
