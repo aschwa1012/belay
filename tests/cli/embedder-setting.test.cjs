@@ -75,3 +75,25 @@ test('parseSpec reads the config mode from the cwd it is given, not the process 
     assert.notStrictEqual(other.levers && other.levers.on_embedder_failure, 'off');
   } finally { rm(d); }
 });
+
+test('the run record and the receipt agree: the resolved mode is recorded on its own, never inside memory_levers', () => {
+  const { attachMemory } = require('../../src/cli/run-levers.cjs');
+  const cfg = (memory) => ({ path: 'cfg/belay.config.json', memory });
+  // spec top level required, config keyword: the run is required, and the row says nothing else about the mode
+  const a = parseLevers({ on_embedder_failure: 'required' }, { config: cfg({ on_embedder_failure: 'keyword' }) });
+  assert.strictEqual(a.on_embedder_failure, 'required');
+  assert.ok(!a.memory_levers && !a.memory_sources, 'a config that sets only this lever makes no memory_levers');
+  assert.deepStrictEqual(attachMemory(a), {}, 'and the run row carries none');
+  // with another lever set, memory_levers exists, has no on_embedder_failure, and the source names the winner
+  const b = parseLevers({ on_embedder_failure: 'required' }, { config: cfg({ on_embedder_failure: 'keyword', capture: true }) });
+  assert.strictEqual(b.on_embedder_failure, 'required');
+  assert.strictEqual(b.memory_levers.capture, true);
+  assert.ok(!('on_embedder_failure' in b.memory_levers));
+  assert.ok(!('on_embedder_failure' in JSON.parse(attachMemory(b).memory_levers)));
+  assert.strictEqual(b.memory_sources.on_embedder_failure, 'spec');
+  // config alone wins over the default and is its own source
+  const c = parseLevers({ memory: { capture: true } }, { config: cfg({ on_embedder_failure: 'keyword' }) });
+  assert.strictEqual(c.on_embedder_failure, 'keyword');
+  assert.strictEqual(c.memory_sources.on_embedder_failure, 'cfg/belay.config.json');
+  assert.strictEqual(parseLevers({ memory: { capture: true } }).memory_sources.on_embedder_failure, 'default');
+});

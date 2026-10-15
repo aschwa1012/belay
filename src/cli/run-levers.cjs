@@ -92,8 +92,13 @@ function parseLevers(spec, opts = {}) {
   if (merged.error) return { error: merged.error };
   const mem = ML.parseMemoryBlock(merged.block);
   if (mem.error) return { error: merged.fromConfig ? `${mem.error} (memory defaults come from ${opts.config.path}, the spec's own memory block over them)` : mem.error };
-  if (!ML.isDefault(mem.value)) {
-    out.memory_levers = mem.value;
+  // on_embedder_failure is resolved above (spec top level, spec memory block, config, default) and recorded on its own: the
+  // run's memory_levers never carries it, so the row cannot contradict the receipt, a config that sets only this lever does not
+  // make every run row carry memory_levers, and an older core (which refuses the unknown key) still reads the block.
+  const recorded = { ...mem.value }; delete recorded.on_embedder_failure;
+  if (merged.sources) merged.sources.on_embedder_failure = given ? 'spec' : (opts.config && opts.config.memory && opts.config.memory.on_embedder_failure !== undefined ? opts.config.path : 'default');
+  if (!ML.isDefault({ ...recorded, on_embedder_failure: ML.DEFAULTS.on_embedder_failure })) {
+    out.memory_levers = recorded;
     if (merged.sources) out.memory_sources = merged.sources; // each lever's origin; absent for a default block, like memory_levers
     if (mem.value.rules) {
       // Read only when the lever is on; a missing file is a refusal that names it, never a silent empty rules text.

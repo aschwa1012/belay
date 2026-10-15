@@ -11,14 +11,14 @@ const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
 const { Engine } = core('engine.cjs');
 const { Store } = core('store.cjs');
 
-let dir, store, E, off = false, mode = 'required', failEmbed = false, embeds = 0;
+let dir, store, E, ending = false, off = false, mode = 'required', failEmbed = false, embeds = 0;
 const call = (method, args) => E.handle(method, { ...args, caller: callerFor('orchestrator', { channel: 'harness' }) });
 const rowCount = () => store.p('SELECT COUNT(*) AS n FROM memory_entries').get().n;
 
 before(() => {
   dir = sandbox();
   store = new Store(path.join(dir, 'memory.db'), { stamp: true });
-  const owner = { opts: { embedderMode: () => (off ? 'off' : mode), memoryOff: () => off } };
+  const owner = { opts: { embedderMode: () => (off ? 'off' : mode), memoryOff: () => off, runEnding: () => ending } };
   const embedder = { embed: async () => { embeds++; if (failEmbed) throw Object.assign(new Error('embedder down'), { code: 'E_MODEL_ABSENT', detail: { embedder: true, cause: 'dead' } }); return { embedding: [1, 0, 0], embedding_model: 'stub', embedding_revision: 'r', dim: 3 }; } };
   E = new Engine({ dataDir: dir, store, getEmbedder: async () => embedder, owner, establishedBy: 'test' });
 });
@@ -141,14 +141,20 @@ test('a copy-fallback engine (no owner) enforces off through the run process tes
   await copy.handle('memory.list', { caller: orch, namespace: 'n' }); // and with memory on again it answers
 });
 
-test('under required an embedder failure on a memory call names the three choices and the resume command; under keyword it does not', async () => {
+test('under required an embedder failure names the choices and the resume command to the orchestrator, another text to a worker, the ending to both when the run is ending; under keyword nothing', async () => {
   failEmbed = true;
   try {
     mode = 'required';
     await assert.rejects(call('memory.store', { namespace: 'n', text: 'needs a vector' }), (e) => e.code === 'E_MODEL_ABSENT'
       && /paused for an embedder failure/.test(e.message) && /keyword \(rank by keywords only\), off \(memory off for the run\), or stay paused/.test(e.message)
       && /belay resume \S+ --embedder keyword\|off/.test(e.message));
+    await assert.rejects(wcall('memory.store', { namespace: 'project/acme', text: 'a worker write' }), (e) => /paused for an embedder failure and this call was not written/.test(e.message)
+      && /call it again/.test(e.message) && /Do not run belay commands/.test(e.message) && !/belay resume/.test(e.message) && !/ask the operator/i.test(e.message));
+    ending = true;
+    await assert.rejects(call('memory.store', { namespace: 'n', text: 'orchestrator while ending' }), (e) => /ENDING/.test(e.message) && !/paused for/.test(e.message) && !/belay resume/.test(e.message) && !/ask the operator/i.test(e.message));
+    await assert.rejects(wcall('memory.store', { namespace: 'project/acme', text: 'worker while ending' }), (e) => /ENDING/.test(e.message) && !/belay resume/.test(e.message));
+    ending = false;
     mode = 'keyword';
-    await assert.rejects(call('memory.store', { namespace: 'n', text: 'needs a vector too' }), (e) => !/belay resume/.test(e.message));
-  } finally { mode = 'required'; failEmbed = false; }
+    await assert.rejects(call('memory.store', { namespace: 'n', text: 'needs a vector too' }), (e) => !/belay resume|ENDING|embedder failure and this call/.test(e.message));
+  } finally { mode = 'required'; failEmbed = false; ending = false; }
 });

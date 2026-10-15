@@ -28,4 +28,10 @@ const describe = () => `${MODES.join(', ')} (the old values stop and continue ar
 // refuses or fails a call because of it (a memory call, a worker tool on a parked worker, a refused spawn).
 const pauseAdvice = (runId) => `The run is paused for an embedder failure (on_embedder_failure required). Stop and ask the operator which they want: keyword (rank by keywords only), off (memory off for the run), or stay paused. Apply their choice with: belay resume ${runId || '<run>'} --embedder keyword|off, or, after the embedder is fixed, belay resume ${runId || '<run>'}.`;
 
-module.exports = { pauseAdvice, MODES, ALIASES, ALLOWED, DEFAULT_MODE, normalize, describe };
+// A worker is told something else: it is not the one who chooses, and it must not run belay commands.
+const workerPauseAdvice = () => 'The run is paused for an embedder failure and this call was not written. Stop and wait: you will be resumed. After the resume, call it again (hand back again). Do not run belay commands.';
+
+// The run is being ENDED (a failure no resume can fix, in a headless run): nobody is asked, and nothing is to be retried.
+const endingAdvice = (code, forWorker) => `The run is ENDING because of this embedder failure (${code || 'E_MODEL_CHANGED'}), which cannot be fixed inside a run, and there is no resume. ${forWorker ? 'Stop; do not retry and do not run belay commands.' : 'Do not retry and do not spawn again; end your work and report it.'}`;
+
+module.exports = { pauseAdvice, workerPauseAdvice, endingAdvice, MODES, ALIASES, ALLOWED, DEFAULT_MODE, normalize, describe };

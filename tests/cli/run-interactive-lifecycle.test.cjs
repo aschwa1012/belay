@@ -33,9 +33,11 @@ test('L1: under required, an embedder failure pauses an interactive run (it does
   const exitFile = `${dir}/quit.flag`;
   fs.mkdirSync(`${dir}/proj/.git`, { recursive: true }); // the run's own project: the resume's config choice is written here, never in the repository
   const home = process.cwd(); process.chdir(`${dir}/proj`); // claude starts in the run's project too, as a real one does
-  const r = start(dir, { cwd: `${dir}/proj`, env: { FAKE_EXIT_FILE: exitFile }, specOverrides: { on_embedder_failure: 'stop' }, deps: { onGuard: (g) => { guard = g; } } });
-  const rec = await waitUntil(() => r.record(), 15000);
-  process.chdir(home);
+  let r, rec;
+  try {
+    r = start(dir, { cwd: `${dir}/proj`, env: { FAKE_EXIT_FILE: exitFile }, specOverrides: { on_embedder_failure: 'stop' }, deps: { onGuard: (g) => { guard = g; } } });
+    rec = await waitUntil(() => r.record(), 15000);
+  } finally { process.chdir(home); }
   assert.ok(rec, 'the stub never started');
   assert.ok(await waitUntil(() => currentRunRow(r.dataDir, r.runId), 15000), 'no run row');
   await guard.onFailure(failure());
@@ -56,7 +58,7 @@ test('L1: under required, an embedder failure pauses an interactive run (it does
   assert.ok(P.pidAlive(rec.pid), 'claude died with the resume');
   fs.writeFileSync(exitFile, 'x');
   const done = await r.done;
-  // exit 1 here is the stub's unsettled surface gate (the stub keeps its session elsewhere when started from a project folder), not the embedder
+  // the stub's own exit code is not asserted: a fast quit can beat the fake surface gate's 300 ms sessionMs timer, which ends the run 'unsettled' and exit 1 (it does on main too)
   assert.match(done.json.ended_by, /^claude exited \(code 0\)/, done.text);
   assert.ok(!/embedder/.test(done.json.ended_by), 'the run was ended by the embedder failure');
   assert.strictEqual(done.json.embedder_failures[0].pause.ok, true);
