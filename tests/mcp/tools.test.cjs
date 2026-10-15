@@ -299,7 +299,7 @@ test('worker_spawn refuses a caller-chosen id with the knowledge agent prefix, a
   const base = { substrate: 'claude-code', worktree: '/w', prompt: 'x' };
   for (const id of ['knowledge-run-1', 'knowledge-']) {
     assert.throws(() => tools.validateArgs('worker_spawn', { ...base, worker_id: id }),
-      (e) => e.code === 'E_ARGS' && e.detail.field === 'worker_id' && e.detail.reason === 'reserved' && /reserved for the knowledge agent/.test(e.message), id);
+      (e) => e.code === 'E_ARGS' && e.detail.field === 'worker_id' && e.detail.reason === 'reserved' && /are reserved for belay's own workers/.test(e.message), id);
   }
   for (const id of ['w1', 'my-knowledge-1', 'Knowledge-x']) assert.doesNotThrow(() => tools.validateArgs('worker_spawn', { ...base, worker_id: id }), id);
   await withRole('orchestrator', t, async (a, data) => {

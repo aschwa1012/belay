@@ -14,7 +14,7 @@
 
 const RI = require('./run-interactive.cjs');
 
-const anyJob = (lv) => !!(lv && ((lv.summaries && lv.summaries !== 'off') || lv.project_writes || lv.cost_ledger || lv.wrapup));
+const anyJob = (lv) => !!(lv && ((lv.summaries && lv.summaries !== 'off') || lv.project_writes || lv.cost_ledger || lv.wrapup || lv.notes));
 
 // `levers` is the parsed spec's lever block (`memory_levers` present only when it differs from the defaults).
 // Returns null when no job lever is on, else { outcome, unfinished?, error? } (memory-jobs.cjs runEndJobs), or

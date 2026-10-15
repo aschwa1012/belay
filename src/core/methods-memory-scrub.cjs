@@ -112,7 +112,7 @@ async function one(E, caller, ctx, raw, index) {
     const named = (st.note.b.reported_wrong || []).some(w => w && w.replaced_by === ent.of) || (st.note.b.matches || []).some(m => m && m.id === ent.of);
     if (ent.of && !ctx.scope.has(ent.of) && !named) throw err('E_SCOPE', `note ${ent.of} is neither in the scope list nor named by a report or a stored match on ${ent.id}, so a hold may not stand against it`, { id: ent.id, of: ent.of });
   }
-  const sources = ent.cites && ent.cites.length ? await checkCitations(ent.cites, { ...ctx.evidence, own: ownTexts(st.note) }) : [];
+  const sources = ent.cites && ent.cites.length ? await checkCitations(ent.cites, { ...ctx.evidence, own: ownTexts(st.note), title: st.note.title }) : [];
   ent = C.redactEntry(ent); // after the verbatim check, before anything is stored or returned
   if (ent.ground === 'code_contradicts' && !sources.some(s => s.source !== 'stream')) throw err('E_CITATION', 'ground code_contradicts needs at least one citation of a file at the head commit: a stream quotes what was said, not what the code is', { id: ent.id });
   if (ctx.mode === 'propose') {

@@ -13,6 +13,7 @@
 //     method, `stop({ worker_id, mode, timeout_ms })`. The contract wins; `mode` is required.
 'use strict';
 
+const { isJobId } = require('../run/job-prefixes.cjs'); // pure
 const NOTES = require('./tools-notes.cjs'); // ADR 0047: the listing of a worker whose run has the notes lever on
 const { WORKER_TYPES } = require('../run/agent-defaults.cjs'); // pure; the agent_type enum
 const S = (properties, required) => {
@@ -64,6 +65,8 @@ const ROUTES = {
   memory_note_resolve: { role: 'worker', via: 'core', method: 'memory.noteResolve' },
   // ADR 0047 decision 1: listed for the orchestrator of a notes run only; callable by either role, the core refuses E_LEVER_OFF otherwise.
   memory_summaries: { role: 'both', via: 'core', method: 'memory.summaries' },
+  // Wave 4: the refuted-note wake carries ids; the reasons are read here. Orchestrator only.
+  memory_note_refutation: { role: 'orchestrator', via: 'core', method: 'memory.noteRefutation' },
   // build step 6d, ADR 0020 decisions 1 and 5: the worker adapter's own prompt tool (listed only for
   // an adapter launched with --permit, never through toolsFor, and hidden from the model — measured in
   // ADR 0020's evidence table) and the orchestrator's window and hand on the same channel.
@@ -309,14 +312,16 @@ const PERMIT_TOOL = {
 // the memory read tools and nothing else: no store, no delete, no lease or checkpoint.
 const KNOWLEDGE_READ_TOOLS = ['memory_retrieve', 'memory_search', 'memory_timeline', 'memory_list', 'memory_stats'];
 const isKnowledgeAgent = (role, workerId) => role === 'worker' && typeof workerId === 'string' && workerId.startsWith('knowledge-');
+const isReviewJob = (role, workerId) => role === 'worker' && typeof workerId === 'string' && isJobId(workerId); // belay's read-only jobs (the note review job, the run-close scrubber and archive reviewer): it reads files and lists no belay tool
 
 // `knowledge` (orchestrator only) adds knowledge_ask; omitted or false, the listing is byte-for-byte what it was.
 // `workerId` (the adapter's argv) narrows the knowledge agent's listing to its read tools.
 function toolsFor(role, { knowledge = false, workerId = null, notes = false } = {}) {
   if (role === 'orchestrator') {
     const base = knowledge ? BOTH.concat(ORCHESTRATOR, [KNOWLEDGE_TOOL]) : BOTH.concat(ORCHESTRATOR);
-    return notes ? base.concat([NOTES.SUMMARIES]) : base;
+    return notes ? base.concat([NOTES.SUMMARIES, NOTES.NOTE_REFUTATION]) : base;
   }
+  if (isReviewJob(role, workerId)) return [];
   if (isKnowledgeAgent(role, workerId)) return BOTH.filter((t) => KNOWLEDGE_READ_TOOLS.includes(t.name));
   if (role === 'worker') return notes ? NOTES.notesWorkerListing(BOTH.concat(WORKER)) : BOTH.concat(WORKER);
   throw Object.assign(new Error(`unknown role ${role}`), { code: 'E_ROLE' });
@@ -329,6 +334,7 @@ const permitBytes = () => Buffer.byteLength(JSON.stringify(PERMIT_TOOL), 'utf8')
 const roleOf = (name) => (ROUTES[name] ? ROUTES[name].role : undefined);
 const routeOf = (name) => ROUTES[name];
 const allows = (role, name, workerId = null) => {
+  if (isReviewJob(role, workerId)) return false;
   if (isKnowledgeAgent(role, workerId)) return KNOWLEDGE_READ_TOOLS.includes(name);
   const r = roleOf(name);
   return r === 'both' || r === role;
@@ -338,7 +344,7 @@ const BUDGET = { orchestrator: 11264, worker: 7168, permit: 320 }; // ADR 0010 a
 const listingBytes = (role, opts) => Buffer.byteLength(JSON.stringify(toolsFor(role, opts)), 'utf8');
 
 const BY_NAME = new Map();
-for (const t of BOTH.concat(ORCHESTRATOR, WORKER, [KNOWLEDGE_TOOL, NOTES.NOTE_RESOLVE, NOTES.SUMMARIES])) BY_NAME.set(t.name, t);
+for (const t of BOTH.concat(ORCHESTRATOR, WORKER, [KNOWLEDGE_TOOL, NOTES.NOTE_RESOLVE, NOTES.SUMMARIES, NOTES.NOTE_REFUTATION])) BY_NAME.set(t.name, t);
 // `notes` (a notes run's worker adapter): lease_release is the schema that requires `notes`.
 const schemaOf = (name, notes = false) => (notes && name === 'lease_release' ? NOTES.LEASE_RELEASE : BY_NAME.get(name) || {}).inputSchema;
 
@@ -376,8 +382,8 @@ function validateArgs(name, args, { notes = false } = {}) {
     const extra = Object.keys(a).find((k) => !Object.prototype.hasOwnProperty.call(schema.properties || {}, k));
     if (extra !== undefined) bad(`${name}: ${extra} is not one of its arguments`, { tool: name, field: extra, reason: 'unknown_field' });
   }
-  if (name === 'worker_spawn' && typeof a.worker_id === 'string' && a.worker_id.startsWith(RESERVED_WORKER_PREFIX)) {
-    bad(`worker_spawn: worker ids starting ${RESERVED_WORKER_PREFIX} are reserved for the knowledge agent`, { tool: name, field: 'worker_id', reason: 'reserved', prefix: RESERVED_WORKER_PREFIX });
+  if (name === 'worker_spawn' && typeof a.worker_id === 'string' && (a.worker_id.startsWith(RESERVED_WORKER_PREFIX) || isJobId(a.worker_id))) {
+    bad(`worker_spawn: worker ids starting ${RESERVED_WORKER_PREFIX}, notereview-, scrub- or archreview- are reserved for belay's own workers`, { tool: name, field: 'worker_id', reason: 'reserved', prefix: RESERVED_WORKER_PREFIX });
   }
   for (const k of schema.required || []) {
     if (a[k] === undefined || a[k] === null) bad(`${name} needs ${k}`, { tool: name, missing: k });

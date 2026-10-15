@@ -182,6 +182,7 @@ function claudeLaunchArgv(opts) {
     permissionPromptTool = false,
     effort = null,
     tools = null,
+    maxBudgetUsd = null,
   } = opts;
   const argv = [
     '-p',
@@ -208,6 +209,7 @@ function claudeLaunchArgv(opts) {
     permissionMode,
   ];
   if (effort) argv.push('--effort', effort); // ADR 0028: on every launch, a resume included
+  if (maxBudgetUsd) argv.push('--max-budget-usd', String(maxBudgetUsd)); // the review job's cost cap (a spawn argument)
   // build step 6d, ADR 0020 decision 1: the worker adapter's own prompt tool, named after the MCP
   // server (`belay`) as the adapter itself is configured under, and before the resume/system-prompt
   // flags, opt-in per spawn.
