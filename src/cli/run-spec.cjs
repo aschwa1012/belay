@@ -10,6 +10,8 @@ const crypto = require('node:crypto');
 const L = require('../run/launch.cjs');
 const RI = require('./run-interactive.cjs');
 const { parseLevers } = require('./run-levers.cjs');
+const C = require('./config.cjs');
+const AD = require('../run/agent-defaults.cjs');
 
 const fwd = (p) => String(p).split('\\').join('/');
 
@@ -22,7 +24,9 @@ const REQUIRED_KEYS = ['worktree', 'prompt_file'];
 
 // All of it: usage errors here return before the data dir is created, the core is opened, or a
 // process is spawned (TASK.md step 1).
-function parseSpec(specPath, cwd) {
+// `opts.found` is the discovered config (default: discovered from cwd); `opts.effort` is `--effort`, which beats the
+// config's agents.orchestrator.effort.
+function parseSpec(specPath, cwd, opts = {}) {
   let raw;
   try { raw = fs.readFileSync(specPath, 'utf8'); }
   catch (e) { return { error: `could not read spec file ${specPath}: ${e.message}` }; }
@@ -74,16 +78,20 @@ function parseSpec(specPath, cwd) {
     numeric[key] = v;
   }
 
-  // ADR 0034 amendment 1: a spec that does not name on_embedder_failure takes the config file's memory.on_embedder_failure, else required.
-  const levers = parseLevers(spec, { configMode: require('./embedder-setting.cjs').readConfigMode(cwd) }); // ADR 0031 decisions 3 and 5
+  const found = opts.found || C.discover(cwd);
+  if (found.found && found.parse_error) return { error: `refusing to start: ${found.parse_error}` }; // its memory and agents defaults cannot be read
+  const agents = AD.fromConfig(found);
+  if (agents.error) return { error: agents.error };
+  const levers = parseLevers(spec, { config: found.found ? { path: found.path, memory: found.config.memory } : null }); // ADR 0031 decisions 3 and 5
   if (levers.error) return { error: levers.error };
   const modeKeys = RI.parseModeKeys(spec); // ADR 0037 decision 1
   if (modeKeys.error) return { error: modeKeys.error };
 
+  const orch = AD.forOrchestrator(agents, { model: spec.model, effort: opts.effort || null, builtinModel: L.DEFAULT_ORCHESTRATOR_MODEL });
   const runId = spec.run_id ? String(spec.run_id) : crypto.randomUUID();
   return {
     specPath, worktree, promptFile, promptText, runId, levers,
-    model: spec.model || L.DEFAULT_ORCHESTRATOR_MODEL,
+    model: orch.model.value, effort: orch.effort.value, agentSettings: { orchestrator: orch }, agentDefaults: agents,
     allowedTools: spec.allowed_tools === undefined ? null : spec.allowed_tools,
     orchestratorDirRaw: spec.orchestrator_dir ? resolveRel(spec.orchestrator_dir) : null,
     ...numeric, ...modeKeys.fields,

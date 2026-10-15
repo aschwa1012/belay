@@ -130,7 +130,8 @@ function verdictEvents(tasks, runId) {
 function runEvents(run) {
   const out = [];
   if (run.paused_at != null && run.ended_at == null) {
-    out.push({ kind: 'run_paused', ts: num(run.paused_at), run_id: run.id, paused_by: run.paused_by ?? null, source: `run row seq ${run.seq}` });
+    const embedder = /embedder-failure [(]/.test(run.paused_by || '');
+    out.push({ kind: 'run_paused', ts: num(run.paused_at), run_id: run.id, paused_by: run.paused_by ?? null, ...(embedder ? { embedder_failure: true } : {}), source: `run row seq ${run.seq}` });
   }
   if (run.ended_at != null) {
     out.push({ kind: 'run_ended', ts: num(run.ended_at), run_id: run.id, exit_reason: run.exit_reason ?? null, source: `run row seq ${run.seq}` });
@@ -185,7 +186,7 @@ function summaryOf(e) {
     case 'memory_wrapup':
       return `${id('key', e.key)} ${e.ok ? P.v(e.text, 600) : `failed ${P.v(e.code, 40)}`}`;
     case 'run_paused':
-      return `${id('run', e.run_id)} paused by ${P.v(e.paused_by, 60)}`;
+      return `${id('run', e.run_id)} paused by ${P.v(e.paused_by, e.embedder_failure ? 160 : 60)}${e.embedder_failure ? ` (an embedder failure, on_embedder_failure required: belay settings memory.on_embedder_failure keyword|off saves a choice for later runs, belay resume ${e.run_id} --embedder keyword|off resumes with one, or leave it paused)` : ''}`;
     default:
       return `${id('run', e.run_id)} ended, exit_reason ${P.v(e.exit_reason, 60)}`;
   }
@@ -241,4 +242,4 @@ async function run(ctx) {
   }
 }
 
-module.exports = { run, wrapupEvents, verdictEvents, runEvents, ordered, workerEvents, stallAge };
+module.exports = { run, wrapupEvents, verdictEvents, runEvents, ordered, workerEvents, stallAge, renderText };

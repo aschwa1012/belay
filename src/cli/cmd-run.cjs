@@ -126,8 +126,10 @@ async function run(ctx) {
     return usageError(`belay run needs exactly one argument, a path to a spec JSON file; got ${fl.rest.length}`);
   }
   const specPath = fwd(path.resolve(ctx.cwd, fl.rest[0]));
-  const parsed = parseSpec(specPath, ctx.cwd);
+  const found = C.discover(ctx.cwd);
+  const parsed = parseSpec(specPath, ctx.cwd, { found, effort: eff.effort });
   if (parsed.error) return usageError(parsed.error);
+  eff.effort = parsed.effort; // --effort, else the config's agents.orchestrator.effort; parsed.agentSettings names which
   const mode = fl.interactive ? 'interactive' : parsed.mode; // ADR 0037 decision 1: the flag wins over the spec key
   const modeRefusal = RI.refusal(mode, parsed);
   if (modeRefusal) return usageError(modeRefusal);
@@ -139,7 +141,6 @@ async function run(ctx) {
   parsed.promptText = sub.text;
   parsed.levers.substituted = sub.substituted;
   const ce = mode === 'interactive' ? makeConsole() : null; // decision 6: the close can see a SIGHUP that arrives during it
-  const found = C.discover(ctx.cwd);
   require('../run/exe-discovery.cjs').exportConfigured(found, C.effective); // config claude_exe/codex_exe reach every child
   // The orchestrator is always Claude Code: a missing executable exits 1 (a host prerequisite, like the embedder) before any file is created.
   try { require('../run/exe-discovery.cjs').exeFor('claude'); } catch (e) { return { code: 1, text: `belay run: ${e.message}\n`, json: { error: e.message } }; }
@@ -242,7 +243,7 @@ async function run(ctx) {
     store: { owner_pid: ownerPid, attach: null, ended: null, shutdown: null, established_by: establishedBy },
     ended_by: endedBy, holds: [], polls: 0, wakes: [], wakes_suppressed: [], wakes_expired: [],
     wakes_held: [], pauses: [], stop: null, workers_closed: null,
-    levers: parsed.levers, embedder: null, embedder_failures: [], review_rounds: null, review_rounds_reason: 'the run never started', ms: Date.now() - t0, receipt_path: null,
+    levers: parsed.levers, agent_settings: parsed.agentSettings, embedder: null, embedder_failures: [], review_rounds: null, review_rounds_reason: 'the run never started', ms: Date.now() - t0, receipt_path: null,
   });
   if (electionError) {
     await core.close().catch(() => {});
@@ -316,7 +317,7 @@ async function run(ctx) {
         core, runId: parsed.runId, dataDir,
         spec: {
           worktree: parsed.worktree, promptText: parsed.promptText, orchestratorDir,
-          model: parsed.model, allowedTools: parsed.allowedTools, effort: eff.effort,
+          model: parsed.model, allowedTools: parsed.allowedTools, effort: eff.effort, agentDefaults: parsed.agentDefaults,
           startupTimeoutMs: parsed.startup_timeout_ms, timeoutMs: parsed.timeout_ms,
           mcpToolTimeoutMs: parsed.mcp_tool_timeout_ms, pollMs: parsed.poll_ms,
           closeGraceMs: parsed.close_grace_ms, compactAtTokens: parsed.levers.compact_at_tokens, // ADR 0007 decision 3
@@ -432,7 +433,7 @@ async function run(ctx) {
   const receiptPath = `${orchestratorDir}/run.json`;
   const receipt = {
     run_id: parsed.runId, mode, data_dir: dataDir, spec_path: specPath, orchestrator_dir: orchestratorDir,
-    orchestrator: { ...orchestratorBlock, ...(await RID.orchestratorFacts()) }, store: storeBlock, orch_effort_requested: eff.effort, // ADR 0028 (SF3); ADR 0039 pid_created
+    orchestrator: { ...orchestratorBlock, ...(await RID.orchestratorFacts()) }, store: storeBlock, orch_effort_requested: eff.effort, agent_settings: parsed.agentSettings, // ADR 0028 (SF3); ADR 0039 pid_created
     ended_by: endedBy, holds, polls, wakes, wakes_suppressed: wakesSuppressed, wakes_expired: wakesExpired,
     wakes_held: wakesHeld, pauses,
     stop: stopReceipt, ms: Date.now() - t0, receipt_path: null,

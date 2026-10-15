@@ -180,16 +180,17 @@ async function runForm(core, command, run, msgText, embedder, cwd) {
     // ADR 0034 amendment 1: the choice persists. It is written only after the run took it (the resume succeeded), to the config file's
     // memory.on_embedder_failure, so a later run starts in the same mode; a write that fails is named and does not undo the resume.
     if (embedder) {
-      // SWAP POINT (see embedder-setting.cjs): at the merge with the settings CLI this is its writeSetting, same signature.
-      const ES = require('./embedder-setting.cjs');
       receipt.embedder_choice = embedder;
       // The config is the RUN's own project's (run.project_dir, written by the launching attach), never the folder the CLI happens to
       // run from. When no config exists there one is created in that project root, and the receipt names the path.
       if (!run.project_dir) {
         receipt.embedder_setting = { error: { code: 2, message: `run ${run.id} records no project directory (it was started before runs recorded one), so no config file was written; set it with belay settings memory.on_embedder_failure ${embedder} from the project` } };
       } else {
-        const w = ES.writeSetting(C.discover(run.project_dir), ES.CONFIG_KEY, embedder, { cwd: run.project_dir });
-        receipt.embedder_setting = w.code === 0 ? w.json : { error: { code: w.code, message: w.json.error } };
+        // The settings CLI's validated writer, pointed at the run's project: it reads the config found from there and creates it at the project root.
+        const w = require('./cmd-settings.cjs').writeSetting(C.discover(run.project_dir), 'memory.on_embedder_failure', embedder, { cwd: run.project_dir });
+        receipt.embedder_setting = w.code === 0
+          ? { path: w.json.path, created: w.json.created, old: w.json.old.value, new: w.json.new.value }
+          : { error: { code: w.code, message: (w.json && w.json.error) || String(w.text).trim() } };
       }
     }
     // design item 9: exits 1 when the orchestrator was mid-turn and its interrupt was not confirmed, as

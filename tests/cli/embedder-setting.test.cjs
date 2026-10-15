@@ -10,7 +10,6 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { parseLevers } = require('../../src/cli/run-levers.cjs');
-const S = require('../../src/cli/embedder-setting.cjs');
 
 function project() {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-embsetting-'));
@@ -32,62 +31,33 @@ test('the run spec: required is the default, each value is accepted, the old nam
 });
 
 test('precedence: the spec, then the memory block, then the config file, then the default', () => {
-  assert.strictEqual(parseLevers({ on_embedder_failure: 'off', memory: { on_embedder_failure: 'keyword' } }, { configMode: 'required' }).on_embedder_failure, 'off');
-  assert.strictEqual(parseLevers({ memory: { on_embedder_failure: 'keyword' } }, { configMode: 'off' }).on_embedder_failure, 'keyword');
-  assert.strictEqual(parseLevers({}, { configMode: 'off' }).on_embedder_failure, 'off');
-  assert.strictEqual(parseLevers({}, { configMode: 'continue' }).on_embedder_failure, 'keyword');
-  assert.strictEqual(parseLevers({}, { configMode: 'nonsense' }).on_embedder_failure, 'required', 'an unusable config value is ignored, not trusted');
+  assert.strictEqual(parseLevers({ on_embedder_failure: 'off', memory: { on_embedder_failure: 'keyword' } }, { config: { path: 'c', memory: { on_embedder_failure: 'required' } } }).on_embedder_failure, 'off');
+  assert.strictEqual(parseLevers({ memory: { on_embedder_failure: 'keyword' } }, { config: { path: 'c', memory: { on_embedder_failure: 'off' } } }).on_embedder_failure, 'keyword');
+  assert.strictEqual(parseLevers({}, { config: { path: 'c', memory: { on_embedder_failure: 'off' } } }).on_embedder_failure, 'off');
+  assert.strictEqual(parseLevers({}, { config: { path: 'c', memory: { on_embedder_failure: 'continue' } } }).on_embedder_failure, 'keyword');
+  assert.match(parseLevers({}, { config: { path: 'c', memory: { on_embedder_failure: 'nonsense' } } }).error, /must be one of required, keyword, off/, 'an unusable config value is refused');
 });
 
 const C = require('../../src/cli/config.cjs');
-const K = S.CONFIG_KEY;
-const write = (cwd, value, key = K) => S.writeSetting(C.discover(cwd), key, value, { cwd });
+const ST = require('../../src/cli/cmd-settings.cjs');
+const K = 'memory.on_embedder_failure';
+const write = (cwd, value) => ST.writeSetting(C.discover(cwd), K, value, { cwd });
 
-test('writeSetting: creates the config file at the project root, keeps other keys, and returns { code, text, json } with the old and new value', () => {
+test('the settings CLI lists memory.on_embedder_failure with its three values and writes it at the project root', async () => {
   const d = project();
   try {
+    const listed = await ST.run({ argv: [], json: true, cwd: d });
+    const row = listed.json.settings.find((r) => r.key === K);
+    assert.ok(row, 'listed');
+    assert.deepStrictEqual([row.value, row.source], ['required', 'default']);
+    assert.deepStrictEqual(row.allowed, ['required', 'keyword', 'off']);
     fs.mkdirSync(`${d}/sub/dir`, { recursive: true });
     const first = write(`${d}/sub/dir`, 'keyword');
-    assert.strictEqual(first.code, 0);
-    assert.deepStrictEqual(first.json, { key: K, path: `${d}/belay.config.json`, created: true, old: null, new: 'keyword' });
-    assert.match(first.text, /memory\.on_embedder_failure: unset -> keyword/);
+    assert.strictEqual(first.code, 0, first.text);
+    assert.deepStrictEqual([first.json.path, first.json.created, first.json.new.value], [`${d}/belay.config.json`, true, 'keyword']);
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(first.json.path, 'utf8')), { memory: { on_embedder_failure: 'keyword' } });
-    fs.writeFileSync(first.json.path, JSON.stringify({ dataDir: '.belay', memory: { project: 'demo', on_embedder_failure: 'keyword' } }));
-    const second = write(`${d}/sub`, 'off');
-    assert.deepStrictEqual([second.code, second.json.created, second.json.old, second.json.new], [0, false, 'keyword', 'off']);
-    assert.deepStrictEqual(JSON.parse(fs.readFileSync(first.json.path, 'utf8')), { dataDir: '.belay', memory: { project: 'demo', on_embedder_failure: 'off' } });
-    assert.deepStrictEqual(fs.readdirSync(d).filter((n) => n.endsWith('.tmp')), [], 'no temp file is left');
-    assert.strictEqual(write(d, 'continue').json.new, 'keyword', 'the old name is stored as the new');
-    assert.strictEqual(S.readConfigMode(`${d}/sub`), 'keyword', 'and read back as a default for a run');
-  } finally { rm(d); }
-});
-
-test('writeSetting refuses with code 2 and writes nothing: a bad key, a bad value, a block that does not validate, a broken file; a failed write is code 1', () => {
-  const d = project();
-  try {
-    for (const bad of ['maybe', '', undefined, 'Off']) assert.strictEqual(write(d, bad).code, 2, String(bad));
-    assert.strictEqual(write(d, 'off', 'memory.alpha').code, 2, 'a key it does not write');
-    assert.match(write(d, 'maybe').json.error, /must be one of required, keyword, off/);
-    assert.ok(!fs.existsSync(`${d}/belay.config.json`), 'a refused value creates no file');
-    fs.writeFileSync(`${d}/belay.config.json`, JSON.stringify({ memory: { notes: true } })); // notes needs a project: the block does not validate
-    const invalid = write(d, 'off');
-    assert.strictEqual(invalid.code, 2);
-    assert.match(invalid.json.error, /memory\.notes needs memory\.project/);
-    fs.writeFileSync(`${d}/belay.config.json`, '{ not json');
-    const broken = write(d, 'off');
-    assert.strictEqual(broken.code, 2);
-    assert.match(broken.json.error, /not valid JSON/);
-    assert.strictEqual(fs.readFileSync(`${d}/belay.config.json`, 'utf8'), '{ not json', 'a broken file is left as it was');
-    assert.strictEqual(S.readConfigMode(d), null);
-    fs.writeFileSync(`${d}/belay.config.json`, '{"memory":{"on_embedder_failure":"keyword"}}');
-    const real = S.seams.rename;
-    S.seams.rename = () => { throw new Error('disk full'); };
-    let failed;
-    try { failed = write(d, 'off'); } finally { S.seams.rename = real; }
-    assert.strictEqual(failed.code, 1);
-    assert.match(failed.json.error, /disk full/);
-    assert.strictEqual(JSON.parse(fs.readFileSync(`${d}/belay.config.json`, 'utf8')).memory.on_embedder_failure, 'keyword', 'a failed write leaves the old value');
-    assert.deepStrictEqual(fs.readdirSync(d).filter((n) => n.endsWith('.tmp')), [], 'and no temp file');
+    assert.strictEqual(write(d, 'maybe').code, 2, 'a bad value is a usage error');
+    assert.strictEqual(parseLevers({}, { config: { path: 'c', memory: { on_embedder_failure: 'keyword' } } }).on_embedder_failure, 'keyword', 'and a run reads it back');
   } finally { rm(d); }
 });
 
