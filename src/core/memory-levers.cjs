@@ -39,6 +39,15 @@ const DEFAULTS = Object.freeze({
   note_review: false, // wave 4: when a task that wrote notes ends with no reviewer, belay starts one short read-only review job for them; off until the planted-false-claim gate sets its model
   note_review_model: 'claude-haiku-5-5', // the review job's model; a lever, set by the planted-false-claim gate
   note_review_cost_cap_usd: 0.05, // the review job's cost cap in dollars: passed to the substrate as its budget, and a job that went over leaves its notes unreviewed
+  // The run-close stages (the Haiku scrubber and the Opus archive reviewer). Caps are real: the recorded cost is the binding check.
+  scrub_wall_s: 300, // the scrubber's wall cap in seconds
+  scrub_cost_cap_usd: 0.1, // the scrubber's cost cap in dollars: passed to the substrate as its budget; a scrub that recorded more applies nothing and its items are owed
+  scrub_model: 'claude-haiku-5-5', // the scrubber's model: a Claude 5.5 id
+  review_min_held: 3, // the archive reviewer runs at run close when the held queue has at least this many marks
+  review_max_age_runs: 3, // ... or the oldest mark has waited this many runs
+  review_wall_s: 600, // the reviewer's wall cap in seconds
+  review_cost_cap_usd: 2, // the reviewer's cost cap in dollars (the whole queue is one spawn; leftovers carry over)
+  archive_review_model: 'claude-opus-5-5', // the reviewer's model: a Claude 5.5 id
   notes_sink: 'off', // off | record | penalty: record writes a note_chance fact per delivered note at task end; penalty records the same, its rank shift is not built yet
 });
 
@@ -99,6 +108,9 @@ function parseMemoryBlock(block) {
   if (typeof v.note_review_model !== 'string' || !MODEL_RE.test(v.note_review_model)) return { error: 'memory.note_review_model must be a Claude 5.5 model id (claude-haiku-5-5, claude-sonnet-5-5 or claude-opus-5-5)' };
   if (typeof v.note_review_cost_cap_usd !== 'number' || !(v.note_review_cost_cap_usd > 0 && v.note_review_cost_cap_usd <= 5)) return { error: 'memory.note_review_cost_cap_usd must be a number above 0 and at most 5' };
   for (const k of ['notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording', 'note_review']) if (v[k] && !v.notes) return { error: `memory.${k} needs memory.notes` };
+  for (const [k, max] of [['scrub_wall_s', 3600], ['review_wall_s', 7200], ['review_min_held', 500], ['review_max_age_runs', 1000]]) if (!boundedInt(v[k], max)) return { error: `memory.${k} must be an integer from 1 to ${max}` };
+  for (const [k, max] of [['scrub_cost_cap_usd', 5], ['review_cost_cap_usd', 20]]) if (typeof v[k] !== 'number' || !(v[k] > 0 && v[k] <= max)) return { error: `memory.${k} must be a number above 0 and at most ${max}` };
+  for (const k of ['scrub_model', 'archive_review_model']) if (typeof v[k] !== 'string' || !MODEL_RE.test(v[k])) return { error: `memory.${k} must be a Claude 5.5 model id (claude-haiku-5-5, claude-sonnet-5-5 or claude-opus-5-5)` };
   if (!SINKS.includes(v.notes_sink)) return { error: `memory.notes_sink must be one of ${SINKS.join(', ')}` };
   if (v.notes_sink !== 'off' && !v.notes) return { error: 'memory.notes_sink needs memory.notes' };
   if (v.summaries === 'mechanical' && !v.observations) return { error: 'memory.summaries "mechanical" needs memory.observations' };
@@ -130,6 +142,12 @@ const OVERRIDES = {
   scrub_max_items: { type: 'integer', min: 1, max: 500 },
   scrub_alarm_holds: { type: 'integer', min: 1, max: 500 },
   notes_sink: { type: 'enum', values: SINKS },
+  scrub_wall_s: { type: 'integer', min: 1, max: 3600 },
+  review_wall_s: { type: 'integer', min: 1, max: 7200 },
+  review_min_held: { type: 'integer', min: 1, max: 500 },
+  review_max_age_runs: { type: 'integer', min: 1, max: 1000 },
+  scrub_cost_cap_usd: { type: 'number', min: 0, max: 5, minExclusive: true },
+  review_cost_cap_usd: { type: 'number', min: 0, max: 20, minExclusive: true },
 };
 
 function specOf(key) {

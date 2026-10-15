@@ -38,6 +38,11 @@ const FLAGS = {
   '--older-than': { key: 'olderThan', type: 'one' },
   '--confirm': { key: 'confirm', type: 'bool' },
   '--project': { key: 'project', type: 'one' },
+  '--run': { key: 'run', type: 'one' },
+  '--worktree': { key: 'worktree', type: 'one' },
+  '--goal': { key: 'goal', type: 'one' },
+  '--summary': { key: 'summary', type: 'one' },
+  '--evidence': { key: 'evidence', type: 'one' },
   '--dry-run': { key: 'dryRun', type: 'bool' },
   '--candidates': { key: 'candidates', type: 'bool' },
   '--approve': { key: 'approve', type: 'bool' },
@@ -59,6 +64,9 @@ const VERBS = {
   import: { flags: ['--namespace-map', '--namespace', '--no-embed'], positional: [1, 1], usage: 'belay memory import <file> [--namespace-map from=to]... [--namespace ns] [--no-embed]' },
   proposals: { flags: ['--project', '--all'], positional: [0, 0], usage: 'belay memory proposals [--project p] [--all]' },
   restore: { flags: ['--reason', '--candidates'], positional: [1, 1], usage: 'belay memory restore <id> --reason <text>   |   belay memory restore <id> --candidates' },
+  scrub: { flags: ['--run', '--worktree', '--goal', '--summary'], positional: [0, 0], usage: 'belay memory scrub [--run <id>] [--worktree <dir>] [--goal <text>] [--summary <text>]' },
+  review: { flags: ['--run', '--worktree', '--all'], positional: [0, 0], usage: 'belay memory review [--all] [--run <id>] [--worktree <dir>]' },
+  resolve: { flags: ['--evidence'], positional: [2, 3], usage: 'belay memory resolve <id> new   |   belay memory resolve <id> repeats <of>   |   belay memory resolve <id> supersedes <of> --evidence <text>' },
   promote: { flags: ['--approve', '--reject', '--reason'], positional: [1, 1], usage: 'belay memory promote <note-id> (--approve | --reject) [--reason <text>]' },
   archive: { flags: ['--ids', '--older-than', '--confirm', '--project'], positional: [1, 1], usage: 'belay memory archive purge (--ids a,b | --older-than <days>) --confirm [--project p]' },
 };
@@ -98,7 +106,18 @@ function checkPurge(opts) {
   return {};
 }
 
-function checkOpts(sub, opts) {
+// resolve <id> new | repeats <of> | supersedes <of> --evidence <text>: the shape memory.noteResolve takes, checked before any store is opened.
+function checkResolve(opts, positional) {
+  const [, how, of] = positional;
+  if (!['new', 'repeats', 'supersedes'].includes(how)) return { error: `belay memory resolve takes new, repeats <of> or supersedes <of>; got ${how}` };
+  if (how === 'new' && of !== undefined) return { error: 'belay memory resolve <id> new takes no other note id' };
+  if (how !== 'new' && of === undefined) return { error: `belay memory resolve <id> ${how} needs the id of the live note it ${how === 'repeats' ? 'repeats' : 'supersedes'}` };
+  if (how === 'supersedes' && !(typeof opts.evidence === 'string' && opts.evidence.trim())) return { error: 'belay memory resolve <id> supersedes needs --evidence <text>: what you saw that makes the older note wrong' };
+  if (how !== 'supersedes' && opts.evidence !== undefined) return { error: `belay memory resolve <id> ${how} takes no --evidence (only supersedes does)` };
+  return {};
+}
+
+function checkOpts(sub, opts, positional = []) {
   if (opts.mode !== undefined && !MODES.includes(opts.mode)) return { error: `--mode must be one of ${MODES.join(', ')}; got ${opts.mode}` };
   if (opts.status !== undefined && !STATUSES.includes(opts.status)) return { error: `--status must be one of ${STATUSES.join(', ')}; got ${opts.status}` };
   if (opts.scope !== undefined && !SCOPES.includes(opts.scope)) return { error: `--scope must be one of ${SCOPES.join(', ')}; got ${opts.scope}` };
@@ -129,6 +148,7 @@ function checkOpts(sub, opts) {
     if (opts.namespaces && opts.namespaces.length > 1) return { error: 'belay memory import takes one --namespace, the default for rows that carry none' };
   }
   if (sub === 'restore' && !opts.candidates && !opts.reason) return { error: 'belay memory restore needs --reason <text> (or --candidates to list the archived duplicates of a note)' };
+  if (sub === 'resolve') return checkResolve(opts, positional);
   if (sub === 'promote' && !!opts.approve === !!opts.reject) return { error: 'belay memory promote needs exactly one of --approve or --reject' };
   if (sub === 'archive') return checkPurge(opts);
   if (sub === 'verify') {
@@ -165,7 +185,7 @@ function parseArgs(argv) {
   if (positional.length < min || positional.length > max) {
     return { error: `belay memory ${sub} takes ${min === max ? min : `${min} to ${max}`} positional argument${max === 1 ? '' : 's'}; got ${positional.length}` };
   }
-  const checked = checkOpts(sub, opts);
+  const checked = checkOpts(sub, opts, positional);
   if (checked.error) return checked;
   return { sub, positional, opts };
 }
