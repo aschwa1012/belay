@@ -13,6 +13,7 @@
 //     method, `stop({ worker_id, mode, timeout_ms })`. The contract wins; `mode` is required.
 'use strict';
 
+const { isJobId } = require('../run/job-prefixes.cjs'); // pure
 const NOTES = require('./tools-notes.cjs'); // ADR 0047: the listing of a worker whose run has the notes lever on
 const { WORKER_TYPES } = require('../run/agent-defaults.cjs'); // pure; the agent_type enum
 const S = (properties, required) => {
@@ -311,7 +312,7 @@ const PERMIT_TOOL = {
 // the memory read tools and nothing else: no store, no delete, no lease or checkpoint.
 const KNOWLEDGE_READ_TOOLS = ['memory_retrieve', 'memory_search', 'memory_timeline', 'memory_list', 'memory_stats'];
 const isKnowledgeAgent = (role, workerId) => role === 'worker' && typeof workerId === 'string' && workerId.startsWith('knowledge-');
-const isReviewJob = (role, workerId) => role === 'worker' && typeof workerId === 'string' && workerId.startsWith('notereview-'); // the note review job: it reads files and lists no belay tool
+const isReviewJob = (role, workerId) => role === 'worker' && typeof workerId === 'string' && isJobId(workerId); // belay's read-only jobs (the note review job, the run-close scrubber and archive reviewer): it reads files and lists no belay tool
 
 // `knowledge` (orchestrator only) adds knowledge_ask; omitted or false, the listing is byte-for-byte what it was.
 // `workerId` (the adapter's argv) narrows the knowledge agent's listing to its read tools.
@@ -381,8 +382,8 @@ function validateArgs(name, args, { notes = false } = {}) {
     const extra = Object.keys(a).find((k) => !Object.prototype.hasOwnProperty.call(schema.properties || {}, k));
     if (extra !== undefined) bad(`${name}: ${extra} is not one of its arguments`, { tool: name, field: extra, reason: 'unknown_field' });
   }
-  if (name === 'worker_spawn' && typeof a.worker_id === 'string' && (a.worker_id.startsWith(RESERVED_WORKER_PREFIX) || a.worker_id.startsWith('notereview-'))) {
-    bad(`worker_spawn: worker ids starting ${RESERVED_WORKER_PREFIX} or notereview- are reserved for belay's own workers`, { tool: name, field: 'worker_id', reason: 'reserved', prefix: RESERVED_WORKER_PREFIX });
+  if (name === 'worker_spawn' && typeof a.worker_id === 'string' && (a.worker_id.startsWith(RESERVED_WORKER_PREFIX) || isJobId(a.worker_id))) {
+    bad(`worker_spawn: worker ids starting ${RESERVED_WORKER_PREFIX}, notereview-, scrub- or archreview- are reserved for belay's own workers`, { tool: name, field: 'worker_id', reason: 'reserved', prefix: RESERVED_WORKER_PREFIX });
   }
   for (const k of schema.required || []) {
     if (a[k] === undefined || a[k] === null) bad(`${name} needs ${k}`, { tool: name, missing: k });

@@ -143,11 +143,21 @@ function listNs(E, kind, project, where, params) {
 }
 
 async function proposals(E, caller, args) {
-  C.allowKeys(args, ['project', 'all'], 'memory.proposals');
+  C.allowKeys(args, ['project', 'all', 'root'], 'memory.proposals');
+  if (args.root !== undefined && caller.role !== 'operator') throw err('E_ROLE', 'memory.proposals reads instruction files under root only for the operator', { role: caller.role });
   const project = projectScope(E, caller, args);
   const heldWhere = args.all === true ? null : "json_extract(body, '$.state') = 'held'";
   const proposalRows = listNs(E, 'proposal', project), held = listNs(E, 'held', project, heldWhere), drafts = listNs(E, 'draft', project);
-  return { project, proposals: proposalRows, held, drafts, counts: { proposals: proposalRows.length, held: held.length, drafts: drafts.length }, limit: LIST_MAX };
+  // Nominations for promotion to an instruction file, each with its stored drafts; with the operator's root, whether each
+  // draft's text is already in its target file and which promoted notes' text has been removed (a read; nothing changes).
+  const nominations = require('./memory-nominate.cjs').listNominations(E, project, args.all === true);
+  const out = { project, proposals: proposalRows, held, drafts, nominations, counts: { proposals: proposalRows.length, held: held.length, drafts: drafts.length, nominations: nominations.length }, limit: LIST_MAX };
+  if (args.root !== undefined) {
+    const P = require('./methods-memory-promote-note.cjs');
+    for (const n of nominations) for (const d of n.drafts) d.present = P.textPresent(args.root, d.target, d.rule).state;
+    out.promoted_check = P.checkPromoted(E, args.root, project);
+  }
+  return out;
 }
 
 async function archivedDuplicates(E, caller, args) {

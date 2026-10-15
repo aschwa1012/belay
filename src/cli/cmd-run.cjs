@@ -50,6 +50,7 @@ function usageError(message) {
 }
 
 const { parseSpec } = require('./run-spec.cjs'); // the spec's keys and their checks
+const { runCloseStages } = require('./run-close-stages.cjs'); // the scrubber and the archive reviewer, after the workers close and before run.end
 const { memoryRunEnd } = require('./run-memory-end.cjs'); // ADR 0043 decision 2: the run-end memory jobs, after the adapter
 
 // 5a-4 item 4: the two no-write paths (a refusal, an election failure) return before run.json is ever
@@ -307,6 +308,7 @@ async function run(ctx) {
   let stopReceipt = null;
   let closed = null;
   let memoryEnd = null;
+  let closeStages = null;
   let reviewRounds = { value: null, reason: 'the run was never attached, so no tasks were read' };
   // ADR 0039 follow-up: one worker close (ADR 0029); a fast close runs it inside the loop, before the gate collect.
   const fastClose = RI.fastOf(ce);
@@ -363,6 +365,13 @@ async function run(ctx) {
         }
       } catch (e) { failClose((e && e.message) || String(e)); }
       RI.applyConsole(partial, ce); // a SIGHUP during the close
+      // Ctrl-C (SIGINT, SIGBREAK on Windows) during the stages is a console close: no stage spawns, a running child is killed by its exact pid.
+      let interrupted = false;
+      const onInterrupt = () => { interrupted = true; };
+      for (const sig of ['SIGINT', 'SIGBREAK']) process.on(sig, onInterrupt);
+      try { closeStages = await runCloseStages({ core, runId: parsed.runId, levers: parsed.levers, dataDir, worktree: parsed.worktree, goal: parsed.promptText, ce, late, stages: ctx.closeStagesModule, deps: ctx.closeStagesDeps, log: (m) => RI.printer(ctx)(`${m}\n`), interrupted: () => interrupted });
+        const survivors = [...['scrub', 'review'].map((k) => closeStages && closeStages[k] && closeStages[k].survivor), ...((closeStages && closeStages.survivors) || [])].filter(Boolean);
+        if (survivors.length) failClose(`a run-close stage child (pid ${survivors.join(', ')}) is still alive after its kill`); } catch (e) { closeStages = { error: (e && e.message) || String(e) }; } finally { for (const sig of ['SIGINT', 'SIGBREAK']) process.off(sig, onInterrupt); } // never the run's failure
       const er = await RI.endRun({
         core, ce, runId: parsed.runId, exitReason: partial ? partial.ended_by : crashedBy, usage: partial ? partial.orchestrator.usage : null,
         reviewRounds, countReviewRounds, late,
@@ -441,6 +450,7 @@ async function run(ctx) {
     levers: parsed.levers, on_embedder_failure_final: guard.mode(), memory_off: guard.memoryOff(), embedder: warm, embedder_failures: guard.events(), ...(embedBounds && embedBounds.length ? { embedder_bounds: embedBounds } : {}),
     review_rounds: reviewRounds.value, review_rounds_reason: reviewRounds.reason,
     workers_closed: closed ? workersClosedBlock(closed, endedRow ? (endedRow.workers_marked_dead || []) : null) : null,
+    ...(closeStages ? { close_stages: closeStages } : {}), // only with notes on
     ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), // only with a run-end memory lever on
   };
   try {
