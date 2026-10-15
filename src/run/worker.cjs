@@ -15,6 +15,7 @@ const BG = require('./background.cjs'); // build step 6e-3: background-task trac
 const LC = require('./lifecycle.cjs'); // 6e-5: readLaunchOptions (design item 5)
 const EX = require('./exit.cjs'); // 6f-2 design items 6 and 9: terminalState, noteStoppedWhileSettled, settle
 const MC = require('./memory-capture.cjs'); // ADR 0041 decision 7: the turn's event buffer, lever-gated
+const NC = require('./note-chances.cjs'); // the notes sink record: what a worker was shown, sent to the core at task end
 const TR = require('./turn-record.cjs'); // 6i-2 fix round (item 3, should-fix): onTurnEnd's checkpoint/memory write, gated on shutdownFlags
 const { lookupSha } = require('./head-lookup.cjs'); // W2-3: base_sha at record creation, head_sha at settle (write-row.cjs)
 const CP = require('./compaction.cjs'); // ADR 0007 decision 3: the compact_at_tokens lever (inert while ctx.compactAt is null)
@@ -345,6 +346,7 @@ function attach(w, child, ctx) {
       w.lastEventAt = e.at;
       CP.note(w, e, ctx);
       MC.onEvent(w, e, ctx.memoryLevers); // ADR 0041 decision 7
+      NC.onEvent(w, e, ctx);
       if (e.kind === 'ready') {
         w.sessionId = e.session_id || w.sessionId;
         if (e.model) w.initModel = e.model; // W2-3: what init reported, never the requested string
