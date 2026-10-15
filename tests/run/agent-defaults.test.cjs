@@ -44,9 +44,9 @@ test('agent_type: the configured model and effort are used, each with its source
     assert.strictEqual(row.effort_requested, 'low');
     const a = argsOf(sb, 'wc');
     assert.deepStrictEqual([flag(a, '--model'), flag(a, '--effort')], ['cfg-coder', 'low']);
-    // A type with only one default: the other is the built-in default.
+    // A type with only one configured default: the other is the built-in default.
     const rv = await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'wr', agent_type: 'reviewer' });
-    assert.deepStrictEqual(rv.agent.model, { value: null, source: 'default' });
+    assert.deepStrictEqual(rv.agent.model, { value: 'claude-opus-5-5', source: 'built-in default for reviewer' });
     assert.deepStrictEqual(rv.agent.effort, { value: 'high', source: `${CFG} agents.reviewer.effort` });
   } finally { await m.shutdown().catch(() => {}); cleanup(sb.data); }
 });
@@ -82,7 +82,7 @@ test('agent_type: absent, the spawn is what it was (no agent field, nothing take
 
 test('agent_type: with no configured defaults the type changes nothing; codex is given no configured effort or model', () => {
   const none = AD.forWorker(null, { agent_type: 'coder', model: undefined, effort: undefined, substrate: 'claude-code' });
-  assert.deepStrictEqual([none.model, none.effort], [{ value: null, source: 'default' }, { value: null, source: 'default' }]);
+  assert.deepStrictEqual([none.model, none.effort], [{ value: 'claude-sonnet-5-5', source: 'built-in default for coder' }, { value: null, source: 'default' }]);
   const codex = AD.forWorker(DEFAULTS, { agent_type: 'coder', substrate: 'codex' });
   assert.deepStrictEqual(codex.effort, { value: null, source: 'default' }, 'ADR 0028: codex takes no effort, so none is applied');
   assert.strictEqual(codex.model.value, null, 'nor the configured model');
@@ -108,7 +108,7 @@ test('agent_type: a Codex spawn gets neither the configured model nor the config
   assert.deepStrictEqual([empty.model, empty.effort], [
     { value: 'cfg-coder', source: `${CFG} agents.coder.model` }, { value: 'low', source: `${CFG} agents.coder.effort` }]);
   const bare = AD.forWorker(null, { agent_type: 'coder', model: '', substrate: 'claude-code' });
-  assert.deepStrictEqual(bare.model, { value: null, source: 'default' }, 'never "" from spawn argument');
+  assert.deepStrictEqual(bare.model, { value: 'claude-sonnet-5-5', source: 'built-in default for coder' }, 'never "" from spawn argument');
   const orch = AD.forOrchestrator({ path: CFG, types: {} }, { model: '', effort: '', builtinModel: 'builtin' });
   assert.deepStrictEqual(orch.model, { value: 'builtin', source: 'default' });
   assert.deepStrictEqual(orch.effort, { value: null, source: 'default' });
@@ -127,4 +127,20 @@ test('--agent-defaults: the adapter argv is parsed into agentDefaults and the ru
     assert.strictEqual(row.agent.model.value, 'cfg-coder');
     assert.strictEqual(flag(argsOf(sb, 'wa'), '--model'), 'cfg-coder');
   } finally { await m.shutdown().catch(() => {}); cleanup(sb.data); }
+});
+
+test('agent_type: each type resolves to the roster with no config, config over built-in, explicit over both, Codex untouched', () => {
+  const roster = { coder: ['claude-sonnet-5-5', null], tester: ['claude-sonnet-5-5', null], reviewer: ['claude-opus-5-5', 'high'], researcher: ['claude-opus-5-5', 'high'] };
+  for (const [type, [model, effort]] of Object.entries(roster)) {
+    const r = AD.forWorker(null, { agent_type: type, substrate: 'claude-code' });
+    assert.deepStrictEqual(r.model, { value: model, source: `built-in default for ${type}` }, type);
+    assert.deepStrictEqual(r.effort, effort ? { value: effort, source: `built-in default for ${type}` } : { value: null, source: 'default' }, type);
+    const cfg = { path: CFG, types: { [type]: { model: 'cfg-m', effort: 'max' } } };
+    const c = AD.forWorker(cfg, { agent_type: type, substrate: 'claude-code' });
+    assert.deepStrictEqual([c.model.value, c.effort.value, c.model.source], ['cfg-m', 'max', `${CFG} agents.${type}.model`], type);
+    const x = AD.forWorker(cfg, { agent_type: type, model: 'x', effort: 'low', substrate: 'claude-code' });
+    assert.deepStrictEqual([x.model.source, x.effort.source], ['spawn argument', 'spawn argument'], type);
+    const cx = AD.forWorker(null, { agent_type: type, substrate: 'codex' });
+    assert.deepStrictEqual([cx.model.value, cx.effort.value], [null, null], `${type}: codex gets no built-in`);
+  }
 });

@@ -38,7 +38,9 @@ function shape(key) {
 function defaultOf(key) {
   const kind = kindOf(key);
   if (kind === 'mod') return C.KEYS[key].default;
-  return kind === 'memory' ? ML.DEFAULTS[leverOf(key)] : null;
+  if (kind === 'memory') return ML.DEFAULTS[leverOf(key)];
+  const built = AD.BUILTIN[key.split('.')[1]]; // the built-in roster default, which a stored null falls back to
+  return built && built[fieldOf(key)] !== undefined ? built[fieldOf(key)] : null;
 }
 
 // Parses the CLI's text into the value its key takes. Returns { value } or { error }; parseMemoryBlock still judges
@@ -128,6 +130,8 @@ function refusal(config, key, value) {
 }
 
 // After a write, would a fresh read see this value from this file? A stored null on an agents key is "unset", read as the default.
+// A null written to an agents key is read back as that key's built-in default.
+const expectedValue = (key, value) => (kindOf(key) === 'agents' && value === null ? defaultOf(key) : value);
 const expectedSource = (key, value, file) => (kindOf(key) === 'agents' && value === null ? 'default' : file);
 
 // The memory block's own verdict, for a listing: an error string when the stored block would be refused by a run.
@@ -137,4 +141,4 @@ function memoryBlockError(found) {
   return r.error || null;
 }
 
-module.exports = { NAMES, MOD_NAMES, MEMORY_NAMES, AGENT_NAMES, kindOf, shape, parseValue, effective, refusal, expectedSource, memoryBlockError };
+module.exports = { NAMES, MOD_NAMES, MEMORY_NAMES, AGENT_NAMES, kindOf, shape, parseValue, effective, refusal, expectedSource, expectedValue, memoryBlockError };

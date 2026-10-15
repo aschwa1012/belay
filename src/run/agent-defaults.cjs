@@ -11,6 +11,15 @@ const WORKER_TYPES = ['coder', 'tester', 'reviewer', 'researcher'];
 const AGENT_KEYS = [...WORKER_TYPES, 'orchestrator'];
 const FIELDS = ['model', 'effort'];
 
+// The production roster (ADR 0021): what a worker of each type gets when neither the spawn nor the config says. Coders and
+// testers have no built-in effort. The orchestrator has no entry here: its built-in model is launch.cjs's.
+const BUILTIN = Object.freeze({
+  coder: Object.freeze({ model: 'claude-sonnet-5-5' }),
+  tester: Object.freeze({ model: 'claude-sonnet-5-5' }),
+  reviewer: Object.freeze({ model: 'claude-opus-5-5', effort: 'high' }),
+  researcher: Object.freeze({ model: 'claude-opus-5-5', effort: 'high' }),
+});
+
 // Returns { value: { <type>: { model?, effort? } } } holding only the set fields, or { error }. A null field is
 // "unset". Unknown types and fields are refused, never ignored: a typo would otherwise be a default that never applies.
 function parseAgentsBlock(block) {
@@ -39,11 +48,14 @@ function fromConfig(found) {
   return { types: parsed.value, path: found && found.found ? found.path : null };
 }
 
-// One value and its source: the explicit one if given (an empty string is not given), else the configured default, else null from 'default'.
+// One value and its source: the explicit one if given (an empty string is not given), else the configured default,
+// else the type's built-in default, else null from 'default'.
 function pick(defaults, type, field, explicit, explicitLabel) {
   if (explicit !== undefined && explicit !== null && explicit !== '') return { value: explicit, source: explicitLabel };
   const set = defaults && defaults.types && defaults.types[type] && defaults.types[type][field];
   if (set !== undefined && set !== null) return { value: set, source: `${defaults.path} agents.${type}.${field}` };
+  const built = BUILTIN[type] && BUILTIN[type][field];
+  if (built !== undefined) return { value: built, source: `built-in default for ${type}` };
   return { value: null, source: 'default' };
 }
 
@@ -75,4 +87,4 @@ function writeFile(dir, defaults) {
   return file;
 }
 
-module.exports = { forOrchestrator, writeFile, EFFORT_LEVELS, WORKER_TYPES, AGENT_KEYS, FIELDS, parseAgentsBlock, fromConfig, pick, forWorker };
+module.exports = { BUILTIN, forOrchestrator, writeFile, EFFORT_LEVELS, WORKER_TYPES, AGENT_KEYS, FIELDS, parseAgentsBlock, fromConfig, pick, forWorker };

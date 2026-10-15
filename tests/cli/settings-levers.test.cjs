@@ -50,10 +50,13 @@ test('settings: every memory lever is listed as memory.<key> with its default, d
     const agents = r.out.settings.filter((s) => s.key.startsWith('agents.'));
     assert.deepStrictEqual(agents.map((s) => s.key).slice(0, 4), ['agents.coder.model', 'agents.coder.effort', 'agents.tester.model', 'agents.tester.effort']);
     assert.strictEqual(agents.length, 10);
-    assert.ok(agents.every((s) => s.value === null && s.source === 'default'));
+    assert.ok(agents.every((s) => s.source === 'default'));
+    const by = Object.fromEntries(agents.map((s) => [s.key, s.value]));
+    assert.deepStrictEqual([by['agents.coder.model'], by['agents.coder.effort'], by['agents.reviewer.model'], by['agents.reviewer.effort'], by['agents.orchestrator.model']],
+      ['claude-sonnet-5-5', null, 'claude-opus-5-5', 'high', null], 'the roster is the built-in default');
     const text = cli(dir, ['settings'], { json: false });
     assert.match(text.stdout, /memory\.index_bytes\s+1200\s+\(from default\)\s+\[integer 1\.\.4096\]/);
-    assert.match(text.stdout, /agents\.reviewer\.effort\s+null\s+\(from default\)\s+\[low \| medium \| high \| xhigh \| max \| null\]/);
+    assert.match(text.stdout, /agents\.reviewer\.effort\s+"high"\s+\(from default\)\s+\[low \| medium \| high \| xhigh \| max \| null\]/);
   } finally { cleanup(dir); }
 });
 
@@ -116,7 +119,7 @@ test('settings: agents.<type>.model and .effort are written, refused when wrong,
   try {
     const m = cli(dir, ['settings', 'agents.coder.model', 'claude-sonnet-5-5']);
     assert.strictEqual(m.code, 0, m.stderr);
-    assert.deepStrictEqual([m.out.old.value, m.out.new.value], [null, 'claude-sonnet-5-5']);
+    assert.deepStrictEqual([m.out.old.value, m.out.new.value], ['claude-sonnet-5-5', 'claude-sonnet-5-5']);
     assert.strictEqual(cli(dir, ['settings', 'agents.reviewer.effort', 'high']).code, 0);
     const bad = cli(dir, ['settings', 'agents.reviewer.effort', 'ultra']);
     assert.strictEqual(bad.code, 2);
@@ -125,7 +128,7 @@ test('settings: agents.<type>.model and .effort are written, refused when wrong,
     assert.deepStrictEqual(readConfig(dir), { agents: { coder: { model: 'claude-sonnet-5-5' }, reviewer: { effort: 'high' } } });
     const unset = cli(dir, ['settings', 'agents.coder.model', 'null']);
     assert.strictEqual(unset.code, 0, unset.stderr);
-    assert.deepStrictEqual([unset.out.new.value, unset.out.new.source], [null, 'default']);
+    assert.deepStrictEqual([unset.out.new.value, unset.out.new.source], ['claude-sonnet-5-5', 'default'], 'unset falls back to the built-in roster');
     assert.strictEqual(cli(dir, ['settings', 'agents.reviewer.effort']).out.value, 'high');
   } finally { cleanup(dir); }
 });

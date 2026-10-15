@@ -21,9 +21,11 @@ test('orchestrator prompt: every mcp__belay__ tool name the template mentions is
   for (const must of ['task_create', 'task_assign', 'worker_spawn', 'worker_wait', 'task_evaluate', 'task_list']) {
     assert.ok(named.includes(must), `the template names mcp__belay__${must}`);
   }
-  // ADR 0028 amendment 1 (operator, 2026-10-02): reviewers are spawned at effort high.
-  assert.match(text, /reviewers `"high"`/, 'the template says reviewers are spawned at effort high');
-  assert.match(text, /spawned with `effort: "high"`/, 'the review steps spawn the reviewer at effort high');
+  // Operator 2026-10-15: the orchestrator passes agent_type; a reviewer's effort high is the built-in default for that type.
+  assert.match(text, /`agent_type`, always \(`coder\|tester\|reviewer\|researcher`/, 'the template always passes agent_type');
+  assert.match(text, /only when your plan needs another/, 'model and effort only to override');
+  assert.match(text, /spawned with `agent_type: "reviewer"`/, 'the review steps spawn the reviewer by type');
+  assert.ok(!/reviewers `"high"`/.test(text), 'no instruction to pass effort high by hand');
   // H4 (operator): the orchestrator itself searches memory before creating tasks and stores at decision points.
   assert.match(text, /always with `namespace: "project"`/, 'a namespace that outlives the run');
   assert.match(text, /Before you create any task, call `mcp__belay__memory_search` with a `query` on the brief's subject/);
@@ -45,7 +47,11 @@ const lf = (s) => s.replace(/\r\n/g, '\n');
 
 // ADR 0037 amendment 6 rewrote these 1-based lines of the interactive twin after 0.1.0 (the waiting text);
 // interactive-prompt.test.cjs pins their new wording, so here they are taken from the base before comparing.
-const AMD6_LINES = { 'orchestrator-interactive.md': [52, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 78, 79, 92, 98] };
+// The operator's 2026-10-15 ruling rewrote the two spawn lines of each prompt (agent_type always; no hand-passed effort); same treatment.
+const AMD6_LINES = {
+  'orchestrator.md': [32, 33, 81],
+  'orchestrator-interactive.md': [34, 35, 52, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 78, 79, 85, 92, 98],
+};
 
 test('memory rules: the placeholder sits at the end of an existing line, and an empty substitution is the base prompt byte for byte', () => {
   for (const f of ['orchestrator.md', 'orchestrator-interactive.md']) {

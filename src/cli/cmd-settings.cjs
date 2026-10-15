@@ -145,7 +145,7 @@ function writeSetting(found, key, rawValue, ctx) {
   // The proof is a fresh read of the file just written, not the value we meant to write. From here the
   // file is on disk, so a failure says written: true.
   const back = K.effective(seams.discover(ctx.cwd), key);
-  if (back.value !== value || back.source !== K.expectedSource(key, value, file)) {
+  if (back.value !== K.expectedValue(key, value) || back.source !== K.expectedSource(key, value, file)) {
     return fail(`wrote ${file} but reading it back gave ${JSON.stringify(back.value)} from ${back.source}`, key, { written: true, path: file });
   }
 
