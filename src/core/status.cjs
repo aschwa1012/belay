@@ -141,7 +141,7 @@ async function get(E, caller, args = {}) {
     rungs,
     // Fix round: reuse runAdapterAlive (the run-alive rung's own fact) so this can't drift from it.
     run: runRow
-      ? { id: runRow.id, epoch: runRow.epoch, adapter_pid: runRow.adapter_pid, alive: runAdapterAlive, ended_at: runRow.ended_at, exit_reason: runRow.exit_reason, paused_at: runRow.paused_at == null ? null : runRow.paused_at, paused_by: runRow.paused_by == null ? null : runRow.paused_by }
+      ? { id: runRow.id, epoch: runRow.epoch, adapter_pid: runRow.adapter_pid, alive: runAdapterAlive, ended_at: runRow.ended_at, exit_reason: runRow.exit_reason, paused_at: runRow.paused_at == null ? null : runRow.paused_at, paused_by: runRow.paused_by == null ? null : runRow.paused_by, ...embedBoundsOf(E, runRow.id) }
       : null,
     // build step 6b: a forgotten row is hidden here too, the same rule worker.list's default carries.
     workers: allWorkers.filter(w => w.state !== 'forgotten').map(w => ({
@@ -153,6 +153,15 @@ async function get(E, caller, args = {}) {
       mid_turn: w.mid_turn, death_established_by: w.death_established_by,
     })),
   };
+}
+
+// The index-query embeds of this run that hit their bound (memory.embedQuery writes an `embed_bound` event for each call in which
+// one did), so a slow embedder shows at run level. Present only when there are any; a store with no such table says nothing.
+function embedBoundsOf(E, runId) {
+  try {
+    const n = E.store.p("SELECT COUNT(*) AS n FROM memory_event WHERE run_id = ? AND kind = 'embed_bound'").get(runId).n;
+    return n > 0 ? { embed_bounds: n } : {};
+  } catch { return {}; }
 }
 
 module.exports = { get, RESPONSIVE_WINDOW_MS, OWNER_PING_TIMEOUT_MS };

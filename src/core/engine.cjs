@@ -62,13 +62,24 @@ const METHODS = {
   'memory.noteResolve': { roles: ALL, kind: 'write', fn: lazy('./methods-memory-notes.cjs', 'resolve') },
   // wave 4: a reviewer's per-note verdicts applied by belay after the citation check (harness channel only for the orchestrator role),
   // and the two reads the refuted-note wake and a review's brief are built from.
-  'memory.noteVerdicts': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-review.cjs', 'noteVerdicts') },
-  'memory.noteRefutation': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-review.cjs', 'noteRefutation') },
-  'memory.reviewBrief': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-review.cjs', 'reviewBrief') },
+  'memory.noteVerdicts': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-note-review.cjs', 'noteVerdicts') },
+  'memory.noteRefutation': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-note-review.cjs', 'noteRefutation') },
+  'memory.reviewBrief': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-note-review.cjs', 'reviewBrief') },
+  // The notes lifecycle (scrub, review, archive). scrubApply and reviewApply are harness-channel calls (the check is inside);
+  // noteRestore is the orchestrator's or the operator's; archivePurge is the operator's alone; the two reads are SELECTs.
+  'memory.scrubApply': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-scrub.cjs', 'scrubApply') },
+  'memory.reviewApply': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-review.cjs', 'reviewApply') },
+  'memory.noteRestore': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-archive.cjs', 'noteRestore') },
+  'memory.archivePurge': { roles: ['operator'], kind: 'write', fn: lazy('./methods-memory-archive.cjs', 'archivePurge') },
+  'memory.proposals': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-archive.cjs', 'proposals') },
+  'memory.archivedDuplicates': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-archive.cjs', 'archivedDuplicates') },
   // ADR 0047 decision 1: run summaries found on demand; with the notes lever on they live in summary/<project>.
   'memory.summaries': { roles: ALL, kind: 'read', fn: lazy('./memory-summaries.cjs', 'summaries') },
   'memory.recordEvent': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-ledger.cjs', 'recordEvent') },
   'memory.events': { roles: ALL, kind: 'read', fn: lazy('./methods-ledger.cjs', 'events') },
+  // The notes lifecycle's delivery, area and use facts (run's notes_sink lever): written at task end by the harness, read by note.
+  'memory.recordChances': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./memory-chances.cjs', 'recordChances') },
+  'memory.noteDeliveries': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./memory-chances.cjs', 'noteDeliveries') },
   'usage.record': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-ledger.cjs', 'usageRecord') },
   'usage.list': { roles: ALL, kind: 'read', fn: lazy('./methods-ledger.cjs', 'usageList') },
   'memory.delete': { roles: ALL, kind: 'write', fn: memory.delete },
@@ -76,6 +87,9 @@ const METHODS = {
   // build 12b E2: start the embedder child and its load ahead of first use (the run's warm-up), so the
   // fork stall and the cold load happen before agents talk to the owner. kind 'write' so it reaches the owner.
   'memory.warm': { roles: ALL, kind: 'write', fn: memory.warm },
+  // The first-message index's query vector, made by the owner's embedder (the path memory.search uses). kind 'write' only so the call
+  // reaches the owner, as memory.warm does; it writes nothing. Harness channel only (the run manager).
+  'memory.embedQuery': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-embed-query.cjs', 'embedQuery') },
 
   'status.get': { roles: ALL, kind: 'read', fn: status.get },
 
@@ -127,6 +141,9 @@ const METHODS = {
   'permission.wait': { roles: ['worker'], kind: 'wait', fn: permission.wait },
 };
 
+// The methods that read or write memory rows and are refused when the run's memory is off.
+const MEMORY_OFF_REFUSED = new Set(['memory.store', 'memory.delete', 'memory.search', 'memory.get', 'memory.list', 'memory.timeline', 'memory.get_many', 'memory.setStatus', 'memory.promote', 'memory.noteResolve', 'memory.corpus', 'memory.summaries']);
+
 const METHOD_NAMES = Object.keys(METHODS);
 const READ_METHODS = new Set(METHOD_NAMES.filter(m => METHODS[m].kind === 'read'));
 const WRITE_METHODS = new Set(METHOD_NAMES.filter(m => METHODS[m].kind === 'write'));
@@ -150,13 +167,15 @@ function validateCaller(caller) {
 class Engine {
   // `owner` is set only when this engine belongs to the process that holds the lock; `establishedBy`
   // says how the rows behind a read were obtained ('owner', 'copy' or 'none').
-  constructor({ dataDir, store, getEmbedder = null, owner = null, establishedBy = 'copy', embedderFailure = null }) {
+  constructor({ dataDir, store, getEmbedder = null, owner = null, establishedBy = 'copy', embedderFailure = null, memoryOffFn = null }) {
     this.dataDir = dataDir;
     this.store = store;
     // A provider, not a loaded model: the embedding library is reached only by a call that needs a
     // vector, and an engine reading a copy of the store has no way to get one at all.
     this._getEmbedder = getEmbedder;
     this.owner = owner;
+    // The run's memory-off test for an engine with no owner (a copy-fallback read in the run process; ADR 0034 amendment 1).
+    this._memoryOffFn = memoryOffFn;
     this.establishedBy = establishedBy;
     // Why the owner could not be asked for a vector on this read ({ code, message }): set by a copy read that fell
     // back from a wedged or still-loading owner, so a hybrid search reports that cause and not "no embedder".
@@ -164,6 +183,24 @@ class Engine {
     // build step 6d: in-process waiters for `permission.wait`, keyed by permission id — meaningful only
     // on the live owner's engine; a copy's engine has an empty map and nothing to resolve.
     this.waiters = new Map();
+  }
+
+  // ADR 0034 amendment 1: under on_embedder_failure `off`, once an embedder failure has turned the run's memory off (the owner's
+  // `memoryOff()`, set by belay run), the memory methods that read or write rows refuse, and memory.index answers an empty block.
+  // The run's own receipts (memory.recordEvent, memory.events) and the ordinary run, task and worker methods are not memory.
+  memoryOff(method) {
+    const o = this.owner && this.owner.opts;
+    const test = o && typeof o.memoryOff === 'function' ? o.memoryOff : this._memoryOffFn;
+    if (typeof test !== 'function' || !test()) return null;
+    if (method === 'memory.index') return 'empty';
+    return MEMORY_OFF_REFUSED.has(method) ? 'refuse' : null;
+  }
+
+  // The run's on_embedder_failure mode as the owner's guard has it now, canonical; the default when none is set.
+  embedderMode() {
+    const o = this.owner && this.owner.opts;
+    const raw = o && typeof o.embedderMode === 'function' ? o.embedderMode() : null;
+    return raw === 'continue' ? 'keyword' : (raw === 'stop' || !raw) ? 'required' : raw; // the module that owns the mode names stay out of the read path's imports
   }
 
   addWaiter(id, resolve) {
@@ -237,6 +274,9 @@ class Engine {
     }
     const args = { ...p };
     delete args.caller;
+    const off = this.memoryOff(method);
+    if (off === 'refuse') throw err('E_LEVER_OFF', `${method}: memory is off for this run (on_embedder_failure off, after an embedder failure), so nothing is read or written through it`, { lever: 'on_embedder_failure' });
+    if (off === 'empty') return { text: '', bytes: 0, row_ids: [], dropped: 0, over_budget: false, sha256: require('node:crypto').createHash('sha256').update('', 'utf8').digest('hex'), considered: 0, excluded_already_injected: 0, memory_off: true };
     return spec.fn(this, caller, args);
   }
 }

@@ -255,7 +255,7 @@ test('R15: reviewBrief names a refuted note a reviewed task\'s worker was shown,
 
 test('R16 (review B-1): a note cannot be confirmed by quoting itself: belay tool results and the note\'s own title or evidence are not evidence', async () => {
   const title = 'the K40 loader skips unlisted fixtures';
-  const w = await written('w-p', 'K40', 'loader.js read 3 files\n');
+  const w = await written('w-p', 'K40', 'loader.js read 3 files in the fixtures dir\n');
   // what the adapter hands the worker as the lease_release result echoes the note's title; a search result echoes notes too
   fs.appendFileSync(`${dir}/workers/w-p/stream.jsonl`, toolResultLine(JSON.stringify({ notes: [{ title }] }), 'mcp__belay__lease_release'));
   fs.appendFileSync(`${dir}/workers/w-p/stream.jsonl`, toolResultLine(`grep hit: ${title} (from a file)`));
@@ -267,19 +267,19 @@ test('R16 (review B-1): a note cannot be confirmed by quoting itself: belay tool
   assert.strictEqual(viaBelay.refused[0].code, 'E_CITATION');
   const viaHit = await only('grep hit: the K40 loader skips unlisted fixtures (from a file)');
   assert.strictEqual(viaHit.refused[0].code, 'E_CITATION', 'a quote that contains the note\'s title is the note quoting itself');
-  const sub = await only('loader skips unlisted');
+  const sub = await only('loader skips unlisted fixtures');
   assert.strictEqual(sub.refused[0].code, 'E_CITATION', 'a fragment of the title is too');
   const saw = await only('the unlisted file was never read');
   assert.strictEqual(saw.refused[0].code, 'E_CITATION', 'and so is what the note says it saw');
   assert.strictEqual(rowOf(w.note).status ?? 'unverified', 'unverified');
-  const real = await only('loader.js read 3 files');
+  const real = await only('loader.js read 3 files in the fixtures dir');
   assert.strictEqual(real.applied.length, 1, 'a line the world answered is still evidence');
 });
 
 test('R17 (review B-2): a confirm whose check was in flight when a refute landed is refused; a refuted note is never verified again', async () => {
   const w = await written('w-q', 'K41');
   await call('worker.write', orch, { id: `notereview-${w.task}`, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's-job', last_event_at: Date.now() });
-  const CC = core('citation-check.cjs');
+  const CC = core('memory-citations.cjs');
   CC.seam.afterCheck = async () => {
     CC.seam.afterCheck = null;
     const rt = await review('rev-q', w.task, [verdict(w.note, 'refuted', [cite('fixtures/unlisted.json was never opened')])]);
@@ -292,6 +292,27 @@ test('R17 (review B-2): a confirm whose check was in flight when a refute landed
   } finally { CC.seam.afterCheck = null; }
   assert.strictEqual(rowOf(w.note).status, 'refuted');
   assert.match(rowOf(w.note).status_receipt, /^review:rev-q|^review:[0-9a-f-]{36}$/);
+});
+
+test('R19 (review S-A, X4): an observed note is confirmed by the file line that holds its own evidence text; the same words are refused from a stream', async () => {
+  const line = "return 'skips unlisted fixtures'";
+  const w = await written('w-s', 'K43', `${line}\n`);
+  store.patchBody(w.note, (b) => { b.evidence = [{ where: 'loader.js', saw: line }]; return b; });
+  const stream = await review('rev-s1', w.task, [verdict(w.note, 'confirmed', [cite(line)])]);
+  assert.strictEqual((await apply(stream)).refused[0].code, 'E_CITATION', 'a stream cite of the note\'s own evidence text proves nothing');
+  const file = await review('rev-s2', w.task, [verdict(w.note, 'confirmed', [cite(line, 'loader.js')])]);
+  const out = await apply(file);
+  assert.deepStrictEqual([out.applied.length, rowOf(w.note).status], [1, 'verified'], JSON.stringify(out.refused));
+});
+
+test('R20: a quote under 24 bytes, "./" and a directory are refused before anything is read', async () => {
+  const w = await written('w-t', 'K44');
+  for (const c of [cite('too short a quote'), cite('fixtures/unlisted.json was never opened', './'), cite('fixtures/unlisted.json was never opened', 'src/')]) {
+    const out = await apply(await review(`rev-t${++seq}`, w.task, [verdict(w.note, 'confirmed', [c])]));
+    assert.strictEqual(out.applied.length, 0);
+    assert.ok(['E_ARGS', 'E_CITATION'].includes(out.refused[0].code), out.refused[0].code);
+  }
+  assert.strictEqual(rowOf(w.note).status ?? 'unverified', 'unverified');
 });
 
 test('R18: the job route needs the review job\'s own id for the task', async () => {
