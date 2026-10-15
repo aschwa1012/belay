@@ -310,7 +310,8 @@ async function doImport(core, parsed, read) {
   return { code: refused.length ? 1 : 0, text: R.renderImportText(result), json: result };
 }
 
-const VERB_FN = { export: doExport, import: doImport, search: doSearch, list: doList, show: doShow, timeline: doTimeline, verify: doVerify, stats: doStats };
+const LC = require('./cmd-memory-lifecycle.cjs');
+const VERB_FN = { ...LC.VERB_FN, export: doExport, import: doImport, search: doSearch, list: doList, show: doShow, timeline: doTimeline, verify: doVerify, stats: doStats };
 
 function failure(sub, e) {
   const code = e.code || 'E_INTERNAL';
@@ -334,9 +335,9 @@ async function run(ctx) {
   const dataDir = C.dataDirOf(found, ctx);
 
   // Mode W for verify, as for `worker rm`: it never creates the data dir.
-  if (parsed.sub === 'verify' && !fs.existsSync(dataDir)) {
+  if ((parsed.sub === 'verify' || LC.writes(parsed)) && !fs.existsSync(dataDir)) {
     const message = `no such data dir: ${dataDir}`;
-    return { code: 1, text: `belay memory verify: ${message}\n`, json: { error: { code: 'E_NOT_FOUND', message } } };
+    return { code: 1, text: `belay memory ${parsed.sub}: ${message}\n`, json: { error: { code: 'E_NOT_FOUND', message } } };
   }
 
   // A test may hand in a fake core. Production always uses the real one.
@@ -349,7 +350,7 @@ async function run(ctx) {
   } finally {
     // verify and import may have won the election; the owner is shut down here so no owner.lock and no node
     // process outlives the command. A read verb never elects, so this is a no-op on their paths.
-    if ((parsed.sub === 'verify' || parsed.sub === 'import') && typeof core.isOwner === 'function' && core.isOwner()) {
+    if ((parsed.sub === 'verify' || parsed.sub === 'import' || LC.writes(parsed)) && typeof core.isOwner === 'function' && core.isOwner()) {
       try { await core.shutdownOwner(); } catch { /* best effort */ }
     }
     await core.close();
