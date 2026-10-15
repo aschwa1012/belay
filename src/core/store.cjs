@@ -85,7 +85,9 @@ class Store {
   // title is kept it may still count redactions made in the discarded title; the counts are not split by field.
   // Only the row's own writer, with the same source, updates an unverified row this way; every other hit returns
   // the row unchanged (action 'unchanged').
-  store(a) {
+  // `storeIn` is the write without its own transaction, for a caller already inside one (a hand-back that stores
+  // notes in the transaction that releases the lease); `store` wraps it.
+  storeIn(a) {
     const ns = a.namespace, wid = a.worker_id;
     if (!ns || !wid || typeof a.text !== 'string' || !a.text.trim()) throw err('E_ARGS', 'memory.store needs a namespace, a worker id and non-empty text');
     if (a.embedding && !(a.embedding_model && a.dim)) throw err('E_ARGS', 'an embedding must arrive with its embedding_model and dim');
@@ -96,7 +98,7 @@ class Store {
     const body = asText(a.body);
     const redactions = a.redactions && typeof a.redactions === 'object' && !Object.keys(a.redactions).length ? null : asText(a.redactions);
     if (a.id != null && !validId(a.id)) throw err('E_ARGS', 'a row id must be 1 to 128 letters, digits, dot, colon, dash or underscore', { field: 'id' });
-    return this.tx(() => {
+    {
       const dup = this.p('SELECT id, worker_id, source, text, status, title, run_id, task_id, redactions, written_by, embedding IS NOT NULL AS has_vec FROM memory_entries WHERE namespace = ? AND text_hash = ?').get(ns, th);
       // A dedup hit updates the row only for the writer that wrote it, with the same source, while it is still
       // unverified. Anyone else's row, and any verified or refuted row, is left exactly as it was and returned as
@@ -156,7 +158,29 @@ class Store {
         run_id: stored.run_id, task_id: stored.task_id, turn: stored.turn, source: stored.source,
         redactions: stored.redactions ? JSON.parse(stored.redactions) : null, has_embedding: !!stored.has_vec,
       };
-    });
+    }
+  }
+
+  store(a) { return this.tx(() => this.storeIn(a)); }
+
+  // Rewrites one row's body through `fn(parsedBody)` (ADR 0047: a note's reported_wrong marks and sightings). Inside
+  // the caller's transaction; the keyword index is over title and text, so a body change leaves it alone.
+  patchBody(id, fn) {
+    const row = this.p('SELECT body FROM memory_entries WHERE id = ?').get(id);
+    if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
+    let cur = {};
+    try { cur = row.body ? JSON.parse(row.body) : {}; } catch { cur = {}; }
+    const next = fn(cur) || cur;
+    this.p('UPDATE memory_entries SET body = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(next), now(), id);
+    return next;
+  }
+
+  // Points a row at the row it replaces (ADR 0047 decision 4, supersedes). Inside the caller's transaction.
+  setSupersedes(id, target) {
+    const row = this.p('SELECT namespace FROM memory_entries WHERE id = ?').get(id);
+    if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
+    this.p('UPDATE memory_entries SET supersedes = ?, updated_at = ? WHERE id = ?').run(target, now(), id);
+    this.cache.delete(row.namespace);
   }
 
   // The answer to a dedup hit that changed nothing: the row as it stands, named, so the caller has its id as proof.

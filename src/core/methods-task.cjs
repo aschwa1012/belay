@@ -336,6 +336,10 @@ function missingCitations(E, result) {
 
 async function release(E, caller, args) {
   if (args.result !== undefined) checkResult(caller, args.result);
+  // ADR 0047: with the run's notes lever on, the hand-back's notes and marks are checked and embedded here, before
+  // anything is written; with it off this is null and the release below is exactly what it was.
+  const NM = require('./methods-memory-notes.cjs');
+  const prep = await NM.prepare(E, caller, args);
   const out = E.store.tx(() => {
     // Releasing a superseded lease would destroy the current holder's live lease, so the currency rule
     // applies to the operator too; what the operator overrides is the holder check, not the rule that a
@@ -351,6 +355,11 @@ async function release(E, caller, args) {
       throw err('E_ARGS', `lease.release: task ${task.id} is done, so its hand-back cannot be replaced; release without a result`, { task_id: task.id });
     }
     const t = Date.now(), by = E.writtenBy(caller);
+    if (prep && l.released_at != null) {
+      // A second call on a released lease only adds notes (the reflection turn): the release stands as it was written.
+      if (args.result !== undefined) throw err('E_ARGS', `lease.release: lease ${l.id} was already released, so a second call may carry notes but not a new result`, { lease_id: l.id });
+      return { ...task, last_checkpoint_id: (rows.lastCheckpoint(E.store, l.task_id) || {}).id || null, released_reason: args.reason || null, ...NM.commit(E, caller, prep, { task_id: task.id }) };
+    }
     rows.append(E.store, 'lease', { ...l, released_at: t }, by, t);
     let handoff = task.handoff;
     if (args.result !== undefined) {
@@ -360,7 +369,7 @@ async function release(E, caller, args) {
     }
     const row = rows.append(E.store, 'task', { ...task, state: task.state === 'done' ? 'done' : 'released', handoff }, by, t);
     const ck = rows.lastCheckpoint(E.store, l.task_id);
-    return { ...row, last_checkpoint_id: ck ? ck.id : null, released_reason: args.reason || null };
+    return { ...row, last_checkpoint_id: ck ? ck.id : null, released_reason: args.reason || null, ...(prep ? NM.commit(E, caller, prep, { task_id: task.id }) : {}) };
   });
   E.noteWrite();
   return out;

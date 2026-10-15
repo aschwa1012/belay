@@ -204,4 +204,4 @@ async function warm(E, caller, args = {}) {
   return { state, pid: o && o.embedInfo ? o.embedInfo.pid : null, error: o && o.embedError ? o.embedError : null };
 }
 
-module.exports = { runAlpha, store, delete: del, stats, warm, nsFor, resolveNamespace, projectOf, withEmbedding, notifyEmbedderFailure, reachOf, checkReach, scrub };
+module.exports = { leversOf, runAlpha, store, delete: del, stats, warm, nsFor, resolveNamespace, projectOf, withEmbedding, notifyEmbedderFailure, reachOf, checkReach, scrub };

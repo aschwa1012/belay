@@ -58,13 +58,15 @@ const warmLimit = params => Math.min(Number.isInteger(params.timeout_ms) && para
 // The limit a vector call has, whether it goes over the pipe or runs in this process; 0 for any other call.
 function vectorLimit(method, params) {
   if (method === 'memory.warm') return params.wait ? warmLimit(params) : 0;
-  const t = method === 'memory.search' ? readTimeoutFor(method, params) : method === 'memory.store' ? writeTimeoutFor(method, params) : 0;
+  const t = method === 'memory.search' ? readTimeoutFor(method, params) : method === 'memory.store' || method === 'lease.release' ? writeTimeoutFor(method, params) : 0;
   return t === EMBEDDING_READ_TIMEOUT_MS ? t : 0;
 }
 
 function writeTimeoutFor(method, params) {
   if (method === 'task.evaluate') return EVALUATE_TIMEOUT_MS;
   if (method === 'memory.store' && params.embed !== false && !params.embedding && !params.embedding_b64) return EMBEDDING_READ_TIMEOUT_MS; // embed: false needs no vector (ADR 0040)
+  // ADR 0047: a hand-back carrying notes embeds each one, so it has the vector limit; one without notes does not.
+  if (method === 'lease.release' && Array.isArray(params.notes) && params.notes.length) return EMBEDDING_READ_TIMEOUT_MS;
   if (method === 'memory.warm' && params.wait) return warmLimit(params) + 5000; // the engine's own limit, plus the round trip
   // build step 6d: permission.wait's own deadline is the caller's timeout_ms plus a 5,000 ms margin
   // for the round trip itself, so the client never times out before the engine's own bound would.
@@ -140,7 +142,7 @@ class Core {
     let limit = method === 'memory.warm' ? vectorLimit(method, params) : (vectorLimit(method, params) && this.vectorLimitMs) || vectorLimit(method, params);
     if (!limit) return run;
     if (capMs !== undefined && capMs < limit) limit = capMs; // a re-run gets only what its first attempt left
-    const writes = method === 'memory.store';
+    const writes = method === 'memory.store' || method === 'lease.release';
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         const e = err('E_TIMEOUT', method + ' did not finish within ' + limit + ' ms in this process (the owner); its embedder is still loading or embedding and the load continues, so ' + (writes ? 'RE-READ before retrying: the row is written when the load finishes' : 'a retry waits on the same load'), { method, timeout_ms: limit, in_process: true, ...(writes ? { may_have_committed: true } : {}) });
