@@ -19,7 +19,8 @@ const R = core('memory-relevance.cjs');
 // Texts about shipping sit at [0, 1, 0], texts about dates at [0, 0, 1], anything else at [1, 0, 0]: meaning, not words.
 const vecOf = (text) => (/ship|release|deploy/i.test(text) ? [0, 1, 0] : /date|calendar/i.test(text) ? [0, 0, 1] : [1, 0, 0]);
 let mode = 'ok';
-let delayMs = 0;
+let gate = null; // while set, every embed waits on it: a held embedder, released by the test, never by a clock
+const running = new Set(); // the embeds the stub has started and not finished: the test waits on these, never on a sleep
 const hookCalls = [];
 const embedded = [];
 
@@ -34,15 +35,15 @@ before(() => {
   dir = sandbox();
   store = new Store(path.join(dir, 'memory.db'), { stamp: true });
   const owner = { opts: { embedderMode: 'stop', onEmbedderFailure: (ev) => { hookCalls.push(ev); } } };
-  const getEmbedder = async () => ({
-    embed: async (text) => {
-      embedded.push(text);
-      if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
-      if (mode === 'embedder') throw err('E_TIMEOUT', 'the embedder did not answer', { embedder: true, cause: 'timeout' });
-      if (mode === 'caller') throw err('E_TOO_LONG', 'past the window');
-      return { embedding: vecOf(text), embedding_model: 'stub', embedding_revision: 'r', dim: 3 };
-    },
-  });
+  const embedOne = async (text) => {
+    embedded.push(text);
+    if (gate) await gate;
+    if (mode === 'embedder') throw err('E_TIMEOUT', 'the embedder did not answer', { embedder: true, cause: 'timeout' });
+    if (mode === 'caller') throw err('E_TOO_LONG', 'past the window');
+    return { embedding: vecOf(text), embedding_model: 'stub', embedding_revision: 'r', dim: 3 };
+  };
+  const embedder = { embed: (text) => { const p = embedOne(text); running.add(p); const done = () => running.delete(p); p.then(done, done); return p; } };
+  const getEmbedder = async () => embedder;
   E = new Engine({ dataDir: dir, store, getEmbedder, owner, establishedBy: 'test' });
   harness = callerFor('orchestrator', { channel: 'harness' });
   orch = callerFor('orchestrator');
@@ -104,15 +105,77 @@ test('an error that is not an embedder failure is that query\'s entry, flagged s
   assert.strictEqual(hookCalls.length, 1, 'the hook is told of every error and decides by detail.embedder itself');
 });
 
-test('the call has its own bound: past it a query is timed out, the hook is not told, and nothing waits on the slow embed', async () => {
-  mode = 'ok'; hookCalls.length = 0; delayMs = 800;
-  try {
-    const t0 = Date.now();
-    const r = await call('memory.embedQuery', { task_id: 't-ship', extra_texts: ['release checklist'], timeout_ms: 500 });
-    assert.ok(Date.now() - t0 < 750, `returned at the bound, not at the embed (${Date.now() - t0} ms)`);
-    assert.deepStrictEqual(r.queries.map((q) => [q.label, q.ok, q.code, q.timed_out]), [['task', false, 'E_EMBED_BOUND', true], ['extra:1', false, 'E_EMBED_BOUND', true]]);
+// A held embedder: every embed waits on a gate the test opens, then the test waits on the stub's own promises.
+async function held(fn) {
+  let open;
+  gate = new Promise((r) => { open = r; });
+  try { return await fn(); } finally { gate = null; open(); await Promise.allSettled([...running]); }
+}
+
+test('the call has its own bound: past it a query is timed out, the hook is not told, and the late embed finishes on its own', async () => {
+  mode = 'ok'; hookCalls.length = 0; embedded.length = 0;
+  await held(async () => {
+    const r = await call('memory.embedQuery', { task_id: 't-ship', timeout_ms: 500 });
+    assert.deepStrictEqual(r.queries.map((q) => [q.label, q.ok, q.code, q.timed_out]), [['task', false, 'E_EMBED_BOUND', true]]);
+    assert.strictEqual(running.size, 1, 'the abandoned embed is still running in the stub');
     assert.deepStrictEqual(hookCalls, [], 'a late answer is not a failed model');
-  } finally { delayMs = 0; await new Promise((r) => setTimeout(r, 900)); } // let the abandoned embed finish
+  });
+  assert.strictEqual(running.size, 0, 'the abandoned embed finished by itself');
+  assert.deepStrictEqual(hookCalls, [], 'and finishing late told the hook nothing');
+});
+
+test('an embed still in flight for the same text is joined, not started again, so abandoned embeds do not pile up', async () => {
+  mode = 'ok'; embedded.length = 0;
+  await held(async () => {
+    const a = await call('memory.embedQuery', { task_id: 't-ship', timeout_ms: 500 });
+    const b = await call('memory.embedQuery', { task_id: 't-ship', timeout_ms: 500 });
+    assert.ok(a.queries[0].timed_out && b.queries[0].timed_out);
+    assert.strictEqual(embedded.length, 1, 'the second call joined the first call\'s embed');
+  });
+  // joined, the late result serves the next caller at once
+  const c = await call('memory.embedQuery', { task_id: 't-ship' });
+  assert.strictEqual(c.queries[0].ok, true);
+});
+
+test('no more than eight embeds are in flight: a ninth text is not started, and says why', async () => {
+  mode = 'ok'; embedded.length = 0;
+  await held(async () => {
+    const texts = (from) => Array.from({ length: 4 }, (_, i) => `distinct query ${from + i}`);
+    for (const from of [0, 4]) await call('memory.embedQuery', { extra_texts: texts(from), timeout_ms: 500 });
+    assert.strictEqual(embedded.length, 8);
+    const r = await call('memory.embedQuery', { extra_texts: ['one more distinct query'], timeout_ms: 500 });
+    assert.strictEqual(embedded.length, 8, 'nothing new was started');
+    assert.strictEqual(r.queries[0].code, 'E_EMBED_BOUND');
+    assert.match(r.queries[0].message, /still running in the owner's serial embedder/);
+  });
+});
+
+test('the task and four extras share one bound: each is attempted, and the task\'s text has half of it', async () => {
+  mode = 'ok'; embedded.length = 0;
+  await held(async () => {
+    const r = await call('memory.embedQuery', { task_id: 't-ship', extra_texts: ['e one', 'e two', 'e three', 'e four'], timeout_ms: 1000 });
+    assert.strictEqual(embedded.length, 5, 'every text was started: the task did not eat the bound');
+    assert.deepStrictEqual(r.queries.map((q) => q.label), ['task', 'extra:1', 'extra:2', 'extra:3', 'extra:4']);
+    assert.ok(r.queries.every((q) => q.code === 'E_EMBED_BOUND'));
+    assert.match(r.queries[0].message, /^the [45]\d\d ms share of the 1000 ms bound/, 'the task\'s share is half');
+  });
+});
+
+test('a call that hit the bound writes one embed_bound event, and status counts it for the run', async () => {
+  mode = 'ok';
+  fakeRun('test-run');
+  const before = (await call('memory.events', { kinds: ['embed_bound'] })).events.length;
+  await held(async () => { await call('memory.embedQuery', { task_id: 't-ship', extra_texts: ['bound event query'], worker_id: 'coder-9', timeout_ms: 500 }); });
+  const got = (await call('memory.events', { kinds: ['embed_bound'] })).events;
+  assert.strictEqual(got.length, before + 1, 'one event for the call, not one per text');
+  const ev = got[got.length - 1];
+  assert.deepStrictEqual([ev.ok, ev.code, ev.worker_id, ev.task_id, ev.written_by], [0, 'E_EMBED_BOUND', 'coder-9', 't-ship', 'harness']);
+  assert.deepStrictEqual(JSON.parse(ev.message), { labels: ['task', 'extra:1'], bound_ms: 500 });
+  const st = await call('status.get', {});
+  assert.strictEqual(st.run.embed_bounds, before + 1);
+  // a call that embeds in time writes nothing
+  await call('memory.embedQuery', { task_id: 't-ship' });
+  assert.strictEqual((await call('memory.events', { kinds: ['embed_bound'] })).events.length, before + 1);
 });
 
 // ---- the index with several vectors ---------------------------------------------------------------------------

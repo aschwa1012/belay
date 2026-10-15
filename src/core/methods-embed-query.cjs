@@ -11,7 +11,9 @@
 //   extra_texts up to 4 further short queries (strings, or { label, text }), written by the orchestrator in time; labelled
 //               `extra:1`, `extra:2`, ... unless they carry a label. Nothing in the run manager sends them yet.
 //   worker_id   the worker the call is for, for the hook's label.
-//   timeout_ms  the whole call's bound, 12,000 ms by default (500 to 100,000): a spawn must not wait on a slow embedder.
+//   timeout_ms  the whole call's bound, 12,000 ms by default (500 to 100,000): a spawn must not wait on a slow embedder. The task's
+//               text gets half of it when there are extras (the rest is shared evenly among them, time a text does not use
+//               carrying forward), so the task and four extras cannot together blow the bound.
 // Each text is cut to TEXT_CHARS characters first (the embedder's cost grows with the text; on the real model 2,048 characters
 // take about 3 s), and the call's input is at most INPUT_MAX bytes.
 //
@@ -19,18 +21,24 @@
 //           on_embedder_failure, embed_ms }. A text that could not be embedded is its own entry with ok false and its code; an
 // embedder failure (detail.embedder true) also reaches the hook. A text still unembedded when the bound passes is ok false,
 // timed_out true, code E_EMBED_BOUND, and does NOT reach the hook (it is a late answer, not a failed model); the embed in
-// flight finishes on its own and a failure of it is reported to the hook then. A bad call (E_ARGS) or a call from another
-// channel (E_ROLE) is thrown. Writes nothing; it is a `write` method in the engine table only so that the call reaches the
-// owner (as memory.warm does). Harness channel only: the run manager holds it, a model's tool call never does.
+// flight finishes on its own and a failure of it is reported to the hook then. The owner's embedder is serial, so abandoned embeds
+// must not pile up: an embed in flight for the same text is joined, never started twice, and past INFLIGHT_MAX embeds in flight a
+// new text is not started at all (timed out at once, E_EMBED_BOUND, saying so). A call in which any text hit the bound writes one
+// `embed_bound` memory_event (ok 0, code E_EMBED_BOUND, the worker, the labels), which `belay status` counts for the run and the run
+// receipt reports. A bad call (E_ARGS) or a call from another
+// channel (E_ROLE) is thrown. Its only write is that `embed_bound` event; it is a `write` method in the engine table so that the
+// call reaches the owner (as memory.warm does). Harness channel only: the run manager holds it, a model's tool call never does.
 
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 const { withEmbedding } = require('./methods-memory.cjs');
+const { recordEventSync } = require('./methods-ledger.cjs');
 
 const TEXT_CHARS = 2048;
 const EXTRA_MAX = 4;
 const INPUT_MAX = 65536;
 const DEFAULT_TIMEOUT_MS = 12000;
+const INFLIGHT_MAX = 8;
 const CALL = 'memory.embedQuery';
 
 const isStr = (v) => typeof v === 'string' && v.trim().length > 0;
@@ -64,26 +72,42 @@ async function embedQuery(E, caller, args = {}) {
   texts.push(...extras);
 
   const mode = E.owner && E.owner.opts ? E.owner.opts.embedderMode : null;
+  const inflight = E._embedInflight || (E._embedInflight = new Map()); // cut text -> the embed running for it (settles to { e } or { error })
   const t0 = Date.now();
   const deadline = t0 + timeout;
   const queries = [];
-  for (const t of texts) {
-    const left = deadline - Date.now();
-    const s0 = Date.now();
-    const timedOut = (label) => ({ label, ok: false, ms: Date.now() - s0, code: 'E_EMBED_BOUND', timed_out: true, message: `the ${timeout} ms bound for embedding the index query passed before ${label} was embedded` });
-    if (left <= 0) { queries.push(timedOut(t.label)); continue; }
+  for (let i = 0; i < texts.length; i++) {
+    const t = texts[i];
+    const now = Date.now();
+    const left = deadline - now;
+    // The task's text (first) gets half the bound when extras follow; every other text gets an even share of what is left.
+    const share = texts.length > 1 && t.label === 'task' ? Math.floor(left / 2) : Math.floor(left / (texts.length - i));
+    const s0 = now;
+    const cut = t.text.slice(0, TEXT_CHARS);
+    const timedOut = (message) => ({ label: t.label, ok: false, ms: Date.now() - s0, code: 'E_EMBED_BOUND', timed_out: true, message });
+    if (share <= 0) { queries.push(timedOut(`the ${timeout} ms bound for embedding the index queries had passed before ${t.label} was started`)); continue; }
+    let work = inflight.get(cut);
+    if (!work) {
+      if (inflight.size >= INFLIGHT_MAX) { queries.push(timedOut(`${inflight.size} embeds for earlier queries are still running in the owner's serial embedder, so ${t.label} was not started`)); continue; }
+      work = withEmbedding(E, { query: cut }, 'query_embedding', 'query', caller, CALL, args.worker_id).then((e) => ({ e }), (error) => ({ error }));
+      inflight.set(cut, work);
+      work.then(() => { if (inflight.get(cut) === work) inflight.delete(cut); });
+    }
     let timer;
-    const bound = new Promise((resolve) => { timer = setTimeout(() => resolve('bound'), left); });
-    const work = withEmbedding(E, { query: t.text.slice(0, TEXT_CHARS) }, 'query_embedding', 'query', caller, CALL, args.worker_id).then((e) => ({ e }), (error) => ({ error }));
+    const bound = new Promise((resolve) => { timer = setTimeout(() => resolve('bound'), share); });
     const got = await Promise.race([work, bound]);
     clearTimeout(timer);
-    if (got === 'bound') { queries.push(timedOut(t.label)); continue; }
+    if (got === 'bound') { queries.push(timedOut(`the ${share} ms share of the ${timeout} ms bound for embedding the index queries passed before ${t.label} was embedded`)); continue; }
     if (got.e) {
       queries.push({ label: t.label, ok: true, ms: Date.now() - s0, query_embedding: got.e.query_embedding, embedding_model: got.e.embedding_model, dim: got.e.query_embedding.length });
       continue;
     }
     const e = got.error;
     queries.push({ label: t.label, ok: false, ms: Date.now() - s0, code: (e && e.code) || 'E_INTERNAL', message: String((e && e.message) || e).slice(0, 300), cause: (e && e.detail && e.detail.cause) || null, embedder: !!(e && e.detail && e.detail.embedder === true) });
+  }
+  const bounded = queries.filter((q) => q.timed_out);
+  if (bounded.length) {
+    try { recordEventSync(E, caller, { kind: 'embed_bound', ok: 0, code: 'E_EMBED_BOUND', worker_id: args.worker_id, task_id: args.task_id, message: JSON.stringify({ labels: bounded.map((q) => q.label), bound_ms: timeout }) }); } catch { /* the receipt is best effort; the result below still names the bound */ }
   }
   return { queries, on_embedder_failure: mode === 'stop' || mode === 'continue' ? mode : null, embed_ms: Date.now() - t0 };
 }
