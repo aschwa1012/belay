@@ -10,7 +10,7 @@
 
 const { err } = require('./errors.cjs');
 const { toMatch } = require('./fts-query.cjs');
-const { rrf } = require('./fusion.cjs');
+const { rrf, HYBRID_ALPHA, HYBRID_K } = require('./fusion.cjs');
 const { deriveTitle, indexRowOf, dupVeto, filterSql } = require('./memory-rows.cjs');
 const { ftsReady } = require('./memory-schema.cjs');
 const { scanCeiling } = require('./schema.cjs');
@@ -22,7 +22,7 @@ const VIEWS = ['full', 'index'];
 const SCOPES = ['task', 'worker', 'run', 'namespace'];
 const NS_MAX = 10, OFFSET_MAX = 1000, K_MAX = 100, ID_MAX = 50, SPAN_MAX = 50, LIST_MAX = 500, DEPTH_MAX = 1200;
 // ADR 0040 amendment (hybrid default): rrf k=10, alpha 0.3, AND join, chosen by the second hybrid evaluation.
-const DEFAULT_ALPHA = 0.3, RRF_K = 10, DUP_THRESHOLD = 0.95;
+const DEFAULT_ALPHA = HYBRID_ALPHA, RRF_K = HYBRID_K, DUP_THRESHOLD = 0.95;
 
 const bad = (msg, field) => err('E_ARGS', msg, field ? { field } : undefined);
 const marks = list => list.map(() => '?').join(', ');

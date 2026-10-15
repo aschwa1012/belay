@@ -171,6 +171,7 @@ async function run(ctx) {
         'run.pause': (params) => runPauseControl.pause(params), 'run.resume': (params) => runPauseControl.resume(params),
       },
       onEmbedderFailure: (ev) => guard.onFailure(ev),
+      embedderMode: parsed.levers.on_embedder_failure, // read by memory.embedQuery, so the run manager knows what a failure means
     },
   });
   stopControl = createStopControl({

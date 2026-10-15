@@ -71,6 +71,9 @@ const METHODS = {
   // build 12b E2: start the embedder child and its load ahead of first use (the run's warm-up), so the
   // fork stall and the cold load happen before agents talk to the owner. kind 'write' so it reaches the owner.
   'memory.warm': { roles: ALL, kind: 'write', fn: memory.warm },
+  // The first-message index's query vector, made by the owner's embedder (the path memory.search uses). kind 'write' only so the call
+  // reaches the owner, as memory.warm does; it writes nothing. Harness channel only (the run manager).
+  'memory.embedQuery': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-embed-query.cjs', 'embedQuery') },
 
   'status.get': { roles: ALL, kind: 'read', fn: status.get },
 

@@ -191,7 +191,7 @@ async function index(E, caller, c) {
   const rq = relevance.parseArgs(args);
   const text = [rq.query, task && typeof task.spec === 'string' ? task.spec : null].filter(Boolean).join('\n');
   const source = [rq.query && 'query', task && task.spec && 'task.spec'].filter(Boolean).join('+') || null;
-  const rel = relevance.score(E, live, { text, source, queryEmbedding: rq.queryEmbedding, embeddingModel: rq.embeddingModel, namespaces });
+  const rel = relevance.score(E, live, { text, source, queries: rq.queries, embeddingModel: rq.embeddingModel, namespaces, alpha: relevance.alphaOf(lv) });
 
   // N is bounded: at most CANDIDATES_MAX notes plus the tasks of this project's runs (one read of the task table per call).
   const project = (namespaces.find((n) => n.startsWith('project/')) || '').slice(8) || null;
