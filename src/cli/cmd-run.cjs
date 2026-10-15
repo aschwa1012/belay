@@ -230,7 +230,7 @@ async function run(ctx) {
     store: { owner_pid: ownerPid, attach: null, ended: null, shutdown: null, established_by: establishedBy },
     ended_by: endedBy, holds: [], polls: 0, wakes: [], wakes_suppressed: [], wakes_expired: [],
     wakes_held: [], pauses: [], stop: null, workers_closed: null,
-    levers: parsed.levers, embedder: null, embedder_failures: [], review_rounds: null, review_rounds_reason: 'the run never started', ms: Date.now() - t0, receipt_path: null,
+    levers: parsed.levers, agent_settings: parsed.agentSettings, embedder: null, embedder_failures: [], review_rounds: null, review_rounds_reason: 'the run never started', ms: Date.now() - t0, receipt_path: null,
   });
   if (electionError) {
     await core.close().catch(() => {});

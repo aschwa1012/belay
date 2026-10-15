@@ -39,20 +39,21 @@ function fromConfig(found) {
   return { types: parsed.value, path: found && found.found ? found.path : null };
 }
 
-// One value and its source: the explicit one if given, else the configured default, else null from 'default'.
+// One value and its source: the explicit one if given (an empty string is not given), else the configured default, else null from 'default'.
 function pick(defaults, type, field, explicit, explicitLabel) {
-  if (explicit !== undefined && explicit !== null) return { value: explicit, source: explicitLabel };
+  if (explicit !== undefined && explicit !== null && explicit !== '') return { value: explicit, source: explicitLabel };
   const set = defaults && defaults.types && defaults.types[type] && defaults.types[type][field];
   if (set !== undefined && set !== null) return { value: set, source: `${defaults.path} agents.${type}.${field}` };
   return { value: null, source: 'default' };
 }
 
-// The model and effort a worker spawn uses. Codex takes no effort (ADR 0028 decision 6), so a configured effort is
-// not applied to it; an explicit one is left for spawn validation to refuse as before.
+// The model and effort a worker spawn uses. Codex takes no effort (ADR 0028 decision 6) and the configured models are
+// Claude's, so neither is applied to a Codex spawn from the config; an explicit one is left for validation as before.
 function forWorker(defaults, { agent_type, model, effort, substrate }) {
-  const m = pick(defaults, agent_type, 'model', model, 'spawn argument');
+  const none = { value: null, source: 'default' };
+  const m = substrate === 'codex' && (model === undefined || model === null || model === '') ? none : pick(defaults, agent_type, 'model', model, 'spawn argument');
   const e = substrate === 'codex' && (effort === undefined || effort === null)
-    ? { value: null, source: 'default' }
+    ? none
     : pick(defaults, agent_type, 'effort', effort, 'spawn argument');
   return { agent_type, model: m, effort: e };
 }

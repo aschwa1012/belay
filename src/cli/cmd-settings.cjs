@@ -8,7 +8,8 @@
 //
 // `settings` and `settings <key>` are mode R: discovery and one read, no file created, no process
 // started. `settings <key> <value>` writes the config file and nothing else — never the store — and
-// returns the old and new value as its receipt (invariant 5). Nothing here imports src/core.
+// returns the old and new value as its receipt (invariant 5). Nothing here imports src/core beyond the pure
+// src/core/memory-levers.cjs (it requires nothing), through settings-keys.cjs.
 
 const fs = require('node:fs');
 const C = require('./config.cjs');
@@ -66,8 +67,10 @@ function listResult(found, json) {
 
 function oneResult(found, key, json) {
   const r = row(found, key);
-  if (json) return { code: 0, text: '', json: r };
-  const warn = r.invalid ? `warning: ${key}: ${r.invalid.reason}\n` : '';
+  const memoryError = key.startsWith('memory.') ? K.memoryBlockError(found) : null;
+  if (json) return { code: 0, text: '', json: memoryError ? { ...r, memory_error: memoryError } : r };
+  const warn = (r.invalid ? `warning: ${key}: ${r.invalid.reason}\n` : '')
+    + (memoryError ? `warning: the memory block would be refused by a run: ${memoryError}\n` : '');
   return { code: 0, text: `${warn}${line(r, key.length)}\n`, json: r };
 }
 

@@ -1,6 +1,6 @@
 // summaries-listing.test.cjs — ADR 0047 decision 1 and ADR 0010 amendment 6: memory_summaries is listed for the orchestrator and
 // the workers of a notes run, with knowledge_ask too, inside the 11,264 and 7,168 byte budgets; with the lever off the
-// listings are the ones they always were (4,965 and 9,829). Every combination is measured on the module and on the wire.
+// listings are those of a run without notes (4,965 and 9,829, the latter counting worker_spawn's agent_type). Every combination is measured on the module and on the wire.
 'use strict';
 
 const test = require('node:test');

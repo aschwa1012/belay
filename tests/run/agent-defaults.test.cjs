@@ -80,12 +80,12 @@ test('agent_type: absent, the spawn is what it was (no agent field, nothing take
   } finally { await m.shutdown().catch(() => {}); cleanup(sb.data); }
 });
 
-test('agent_type: with no configured defaults the type changes nothing; codex is given no configured effort', () => {
+test('agent_type: with no configured defaults the type changes nothing; codex is given no configured effort or model', () => {
   const none = AD.forWorker(null, { agent_type: 'coder', model: undefined, effort: undefined, substrate: 'claude-code' });
   assert.deepStrictEqual([none.model, none.effort], [{ value: null, source: 'default' }, { value: null, source: 'default' }]);
   const codex = AD.forWorker(DEFAULTS, { agent_type: 'coder', substrate: 'codex' });
   assert.deepStrictEqual(codex.effort, { value: null, source: 'default' }, 'ADR 0028: codex takes no effort, so none is applied');
-  assert.strictEqual(codex.model.value, 'cfg-coder');
+  assert.strictEqual(codex.model.value, null, 'nor the configured model');
 });
 
 test('worker_spawn lists agent_type as an enum of the four worker types, and the listing stays inside its budgets', () => {
@@ -97,4 +97,34 @@ test('worker_spawn lists agent_type as an enum of the four worker types, and the
     console.log(`agent_type ${role}: ${bytes} bytes, budget ${tools.BUDGET[role]}`);
     assert.ok(bytes <= tools.BUDGET[role], `${role} listing ${bytes} over ${tools.BUDGET[role]}`);
   }
+});
+
+test('agent_type: a Codex spawn gets neither the configured model nor the configured effort; an empty model counts as none', () => {
+  const codex = AD.forWorker(DEFAULTS, { agent_type: 'coder', substrate: 'codex' });
+  assert.deepStrictEqual(codex.model, { value: null, source: 'default' }, 'a configured Claude model is not given to Codex');
+  assert.deepStrictEqual(codex.effort, { value: null, source: 'default' });
+  assert.strictEqual(AD.forWorker(DEFAULTS, { agent_type: 'coder', model: 'gpt-x', substrate: 'codex' }).model.value, 'gpt-x', 'an explicit one is still passed');
+  const empty = AD.forWorker(DEFAULTS, { agent_type: 'coder', model: '', effort: '', substrate: 'claude-code' });
+  assert.deepStrictEqual([empty.model, empty.effort], [
+    { value: 'cfg-coder', source: `${CFG} agents.coder.model` }, { value: 'low', source: `${CFG} agents.coder.effort` }]);
+  const bare = AD.forWorker(null, { agent_type: 'coder', model: '', substrate: 'claude-code' });
+  assert.deepStrictEqual(bare.model, { value: null, source: 'default' }, 'never "" from spawn argument');
+  const orch = AD.forOrchestrator({ path: CFG, types: {} }, { model: '', effort: '', builtinModel: 'builtin' });
+  assert.deepStrictEqual(orch.model, { value: 'builtin', source: 'default' });
+  assert.deepStrictEqual(orch.effort, { value: null, source: 'default' });
+});
+
+test('--agent-defaults: the adapter argv is parsed into agentDefaults and the run manager built from it resolves agent_type', async () => {
+  const { parseArgv } = require('../../src/mcp/argv.cjs');
+  const sb = sandbox();
+  const file = `${sb.data}/agent-defaults-in.json`;
+  fs.writeFileSync(file, JSON.stringify(DEFAULTS));
+  const opts = parseArgv(['--role', 'orchestrator', '--run', 'run-agentdef-argv', '--data', `${sb.data}/store`, '--agent-defaults', file]);
+  assert.deepStrictEqual(opts.agentDefaults, DEFAULTS);
+  const m = mgr(sb, createFakeCore(), opts.agentDefaults);
+  try {
+    const row = await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'wa', agent_type: 'coder' });
+    assert.strictEqual(row.agent.model.value, 'cfg-coder');
+    assert.strictEqual(flag(argsOf(sb, 'wa'), '--model'), 'cfg-coder');
+  } finally { await m.shutdown().catch(() => {}); cleanup(sb.data); }
 });

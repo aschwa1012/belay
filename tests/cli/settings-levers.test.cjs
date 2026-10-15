@@ -225,7 +225,7 @@ test('belay run end to end: the receipt carries memory_sources and agent_setting
     const args = JSON.parse(fs.readFileSync(`${sb.dir}/orch/argv.json`, 'utf8')).spec.args;
     assert.strictEqual(args[args.indexOf('--model') + 1], 'cfg-orch');
     assert.strictEqual(args[args.indexOf('--effort') + 1], 'low');
-    // The adapter learns the worker-type defaults from a file beside its mcp.json; the orchestrator's own entry is not in it.
+    // The adapter learns the worker-type defaults from a file beside its mcp.json; the file is the config's resolved agents block, orchestrator entry included (the adapter ignores it).
     const mcp = JSON.parse(fs.readFileSync(`${sb.dir}/orch/mcp.json`, 'utf8'));
     const adapterArgs = Object.values(mcp.mcpServers)[0].args;
     const file = adapterArgs[adapterArgs.indexOf('--agent-defaults') + 1];
@@ -250,5 +250,30 @@ test('writeSetting: the exported writer takes a typed value, validates the whole
     assert.strictEqual(writeSetting(C.discover(dir), 'memory.alpha', 'x'.length, { cwd: dir }).code, 0);
     assert.strictEqual(writeSetting(C.discover(dir), 'memory.alpha', 5, { cwd: dir }).code, 2);
     assert.deepStrictEqual(readConfig(dir).memory, { project: 'acme', notes: true, index_bytes: 7, alpha: 1 });
+  } finally { cleanup(dir); }
+});
+
+test('settings: an empty spec model is the built-in orchestrator model, never --model ""', () => {
+  const sb = runSandbox({ agents: { orchestrator: { model: 'cfg-orch' } } }, { model: '' });
+  try {
+    const p = parseSpec(sb.specPath, sb.dir);
+    assert.strictEqual(p.model, 'cfg-orch');
+    assert.match(p.agentSettings.orchestrator.model.source, /agents\.orchestrator\.model$/);
+  } finally { cleanup(sb.dir); }
+  const bare = runSandbox(null, { model: '' });
+  try {
+    assert.strictEqual(parseSpec(bare.specPath, bare.dir).model, require('../../src/run/launch.cjs').DEFAULT_ORCHESTRATOR_MODEL);
+  } finally { cleanup(bare.dir); }
+});
+
+test('settings: a single memory key warns, as the listing does, when the stored block as a whole would be refused', () => {
+  const dir = project();
+  try {
+    writeConfig(dir, { memory: { notes: true } });
+    const one = cli(dir, ['settings', 'memory.notes']);
+    assert.match(one.out.memory_error, /memory\.notes needs memory\.project/);
+    const text = cli(dir, ['settings', 'memory.alpha'], { json: false });
+    assert.match(text.stdout, /warning: the memory block would be refused by a run: memory\.notes needs memory\.project/);
+    assert.strictEqual(cli(dir, ['settings', 'agents.coder.model']).out.memory_error, undefined);
   } finally { cleanup(dir); }
 });
