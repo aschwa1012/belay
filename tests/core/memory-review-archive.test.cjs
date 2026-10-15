@@ -220,3 +220,16 @@ test('nothing in the lifecycle deletes a row: only the purge removes any', async
   const after = T.store.p('SELECT COUNT(*) AS n FROM memory_entries').get().n;
   assert.strictEqual(after, before + 2, 'the note and its held row; both still there');
 });
+
+
+test('reviewApply re-checks a duplicate against the run\'s notes_match_threshold, not a constant', async () => {
+  const kept = T.note('lever review kept', { vec: A, created_at: 1000 });
+  const near = T.note('lever review near', { vec: A_NEAR, created_at: 2000 });
+  await hold(dup(near, kept));
+  const r = await T.call(T.who.harness('strict'), 'memory.reviewApply', { verdicts: [archiveV(near)], ...T.evidence });
+  assert.strictEqual(r.refused.length, 1);
+  assert.strictEqual(r.refused[0].code, 'E_PRECONDITION');
+  assert.match(r.refused[0].message, /needs 0\.995/);
+  const ok = await review([archiveV(near)]);
+  assert.strictEqual(ok.applied[0].outcome, 'archived');
+});

@@ -15,6 +15,7 @@ const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
 const { Engine } = core('engine.cjs');
 const { Store } = core('store.cjs');
 const R = core('memory-relevance.cjs');
+const { BM25 } = core('fts-query.cjs');
 
 const SEEDS = path.join(__dirname, 'fixtures', 'memory-seed-relevant.jsonl');
 const seedRows = () => fs.readFileSync(SEEDS, 'utf8').split('\n').filter((l) => l.trim()).slice(1).map((l) => JSON.parse(l));
@@ -48,11 +49,13 @@ before(() => {
 });
 after(() => { store.close(); cleanup(dir); });
 
-test('a task about dates and the TZ zone surfaces the dates row first', async () => {
+test('a task about dates and the TZ zone lists the report row, then the dates row', async () => {
   const { name, ids } = await g2Store();
   const [dates] = byMarker(ids, /process\.env\.TZ/);
+  const [report] = byMarker(ids, /dates[.]dayStart/);
   const r = await call('memory.index', { namespaces: [name], query: 'Report entries since a given date. Day boundaries depend on the TZ zone that src/dates.cjs reads at load.' });
-  assert.strictEqual(r.row_ids[0], dates, titleOf(r.row_ids[0]));
+  // "Day" is a searchable three-letter term now, and the report row (dates.dayStart, zone) fits the task too, so it comes first.
+  assert.deepStrictEqual(r.row_ids.slice(0, 2), [report, dates], r.row_ids.slice(0, 2).map(titleOf).join(' | '));
   assert.strictEqual(r.relevance.keyword, 'ran');
   assert.strictEqual(r.relevance.semantic, 'not_requested');
   assert.strictEqual(r.relevance.source, 'query');
@@ -191,18 +194,19 @@ test('arguments are checked', async () => {
   await bad({ embedding_model: '' });
 });
 
-test('terms: function and framing words dropped, short plain words dropped, identifiers kept whole, plurals stemmed', () => {
+test('terms: stopwords and framing words dropped, terms under three characters dropped, three-letter words kept, identifiers kept whole, plurals stemmed', () => {
   const t = R.termsOf('You are working in the repository. Add `tally export --csv` to src/cmd-export.cjs; the dates and amounts, run the tests. TZ day');
   assert.ok(t.includes('--csv') === false && t.includes('csv'), 'a flag is kept, without its dashes');
   assert.ok(t.includes('src/cmd-export.cjs'));
   assert.ok(t.includes('date') && t.includes('amount') && t.includes('test'), JSON.stringify(t));
-  for (const gone of ['you', 'the', 'are', 'working', 'repository', 'run', 'day', 'tz']) assert.ok(!t.includes(gone), gone);
+  for (const gone of ['the', 'are', 'working', 'repository', 'tz']) assert.ok(!t.includes(gone), gone);
+  for (const kept of ['day', 'run', 'you']) assert.ok(t.includes(kept), `${kept}: three letters and not in the published list`);
   assert.deepStrictEqual(R.termsOf(''), []);
   assert.ok(R.termsOf('word '.repeat(5) + Array.from({ length: 300 }, (_, i) => `term${i}`).join(' ')).length <= 128);
   assert.strictEqual(R.termsOf('dates dates dates zones')[0], 'date', 'the more often the text repeats a term, the earlier');
 });
 
-test('the OR expression quotes every term, and unit weights give the OR query its own bm25', async () => {
+test('the OR expression quotes every term, and unit weights give the OR query its own weighted bm25', async () => {
   assert.strictEqual(R.orMatch(['alpha', 'beta"x', 'NOT']), '"alpha" OR "beta" OR "NOT"', 'an operator is a quoted phrase; a quote splits a term');
   assert.strictEqual(R.orMatch([]), null);
   const { name, ids } = await g2Store();
@@ -211,7 +215,7 @@ test('the OR expression quotes every term, and unit weights give the OR query it
   assert.ok(terms.length >= 2);
   for (let i = 1; i < terms.length; i++) assert.ok(terms[i - 1].rows.length <= terms[i].rows.length, 'rarest first');
   const summed = R.keywordScores(terms, new Set(ids));
-  const or = db.prepare(`SELECT e.id AS id, bm25(memory_fts) AS bm FROM memory_fts JOIN memory_entries e ON e.rowid = memory_fts.rowid
+  const or = db.prepare(`SELECT e.id AS id, ${BM25} AS bm FROM memory_fts JOIN memory_entries e ON e.rowid = memory_fts.rowid
     WHERE memory_fts MATCH ? AND e.namespace = ?`).all(R.orMatch(terms.map((x) => x.t)), name);
   assert.strictEqual(or.length, summed.size);
   for (const r of or) assert.ok(Math.abs(summed.get(r.id) + r.bm) < 1e-9, `${r.id}: ${summed.get(r.id)} vs ${-r.bm}`);

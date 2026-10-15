@@ -64,7 +64,7 @@ function dismiss(E, ctx, ent, index, sources, note) {
 
 function hold(E, caller, ctx, ent, index, sources, state) {
   const { note, pending } = state;
-  const facts = checkHoldFacts(E, ctx.project, note, ent.kind, ent.of, ent.ground);
+  const facts = checkHoldFacts(E, ctx.project, note, ent.kind, ent.of, ent.ground, ctx.threshold);
   const receipt = scrubReceipt(ctx, ent, index, sources);
   if (pending) {
     // Marks on a pending note need no review: it hides nothing. Applied directly to the pending row.
@@ -116,7 +116,7 @@ async function one(E, caller, ctx, raw, index) {
   ent = C.redactEntry(ent); // after the verbatim check, before anything is stored or returned
   if (ent.ground === 'code_contradicts' && !sources.some(s => s.source !== 'stream')) throw err('E_CITATION', 'ground code_contradicts needs at least one citation of a file at the head commit: a stream quotes what was said, not what the code is', { id: ent.id });
   if (ctx.mode === 'propose') {
-    const facts = ent.action === 'hold' ? checkHoldFacts(E, ctx.project, st.note, ent.kind, ent.of, ent.ground) : null;
+    const facts = ent.action === 'hold' ? checkHoldFacts(E, ctx.project, st.note, ent.kind, ent.of, ent.ground, ctx.threshold) : null;
     return E.store.tx(() => propose(E, caller, ctx, ent, index, sources, facts));
   }
   if (ent.action === 'resolve') return settle(E, caller, ctx, ent, index, sources, st.note.id);
@@ -139,7 +139,7 @@ async function scrubApply(E, caller, args) {
   const scope = checkScope(args.scope);
   const outside = entries.filter(e => !scope.has(e.id)).map(e => e.id);
   if (outside.length) throw err('E_SCOPE', `the scrub names ${outside.length} note${outside.length === 1 ? '' : 's'} outside the scope list (${outside.slice(0, 5).join(', ')}); the scrubber acts only on what it was given, so nothing was written`, { ids: outside });
-  const ctx = { mode, project, runId, scope, evidence: evidenceOf(args) };
+  const ctx = { mode, project, runId, scope, evidence: evidenceOf(args), threshold: lv.notes_match_threshold };
   const applied = [], proposed = [], refused = [];
   for (const [i, ent] of entries.entries()) {
     try {

@@ -215,3 +215,21 @@ test('draft stores a promotion draft and promotes nothing', async () => {
   assert.strictEqual(T.row(n).namespace, `project/${PROJECT}`);
   assert.strictEqual(T.body(n).promoted_to, undefined);
 });
+
+
+test('the duplicate and supersede cosine is the notes_match_threshold lever: a stricter run refuses a pair the default accepts', async () => {
+  const kept = T.note('lever kept claim', { vec: A, created_at: 1000 });
+  const near = T.note('lever near duplicate', { vec: A_NEAR, created_at: 2000 });
+  const dup = { id: near, action: 'hold', kind: 'duplicate', of: kept, ground: 'same_claim', reason: 'same claim in other words', cites: [T.cite] };
+  const strict = await scrub('strict', [dup]);
+  assert.strictEqual(strict.refused.length, 1);
+  assert.strictEqual(strict.refused[0].code, 'E_PRECONDITION');
+  assert.match(strict.refused[0].message, /needs 0\.995/);
+  const loose = await scrub('apply', [dup]);
+  assert.strictEqual(loose.applied[0].facts.via, 'similarity');
+  const newer = T.note('lever replacement', { vec: A_NEAR, created_at: 5000 });
+  const sup = { id: kept, action: 'hold', kind: 'superseded', of: newer, ground: 'replaced_by_newer', reason: 'a newer note says it', cites: [T.cite] };
+  const s = await scrub('strict', [sup]);
+  assert.strictEqual(s.refused[0].code, 'E_PRECONDITION');
+  assert.match(s.refused[0].message, /needs 0\.995/);
+});
