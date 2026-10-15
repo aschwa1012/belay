@@ -113,7 +113,7 @@ function checkResolutions(list) {
   return list.map((r, i) => {
     const at = `resolutions[${i}]`;
     if (!isObj(r)) throw err('E_ARGS', `${at} must be an object { id, resolve, of, evidence }`, { field: 'resolutions', index: i });
-    for (const k of Object.keys(r)) if (!['id', 'resolve', 'of', 'evidence', 'title'].includes(k)) throw err('E_ARGS', `${at}.${k} is not a field; use id, resolve, of, evidence`, { field: 'resolutions', index: i });
+    for (const k of Object.keys(r)) if (!['id', 'resolve', 'of', 'evidence', 'title'].includes(k)) throw err('E_ARGS', `${at}.${k} is not a field; use id, resolve, of, evidence, title`, { field: 'resolutions', index: i });
     if (!validId(r.id)) throw err('E_ARGS', `${at}.id must be a pending note id`, { field: 'resolutions', index: i });
     if (seen.has(r.id)) throw err('E_ARGS', `${at}.id ${r.id} is resolved twice in one call`, { field: 'resolutions', index: i });
     seen.add(r.id);

@@ -148,12 +148,12 @@ test('a dedup update by the rows own writer refreshes body and tags but keeps ti
 
 test('a dedup update takes the new title only when the first title is null', () => {
   const base = { namespace: 'run/test-run', worker_id: 'orchestrator', text: 'untitled subject' };
-  const first = store.store({ ...base, type: 'note' });
+  const first = store.store({ ...base, type: 'decision' });
   assert.strictEqual(dbRow(first.id).title, null);
   const again = store.store({ ...base, title: 'late title', type: 'fact' });
   assert.strictEqual(again.action, 'updated');
   const row = dbRow(first.id);
-  assert.deepStrictEqual([row.title, row.type], ['late title', 'note']);
+  assert.deepStrictEqual([row.title, row.type], ['late title', 'decision']);
 });
 
 test('the same text from another writer, another source, or onto a verified row changes nothing', async () => {

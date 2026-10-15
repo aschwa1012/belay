@@ -105,7 +105,7 @@ class Store {
     const redactions = a.redactions && typeof a.redactions === 'object' && !Object.keys(a.redactions).length ? null : asText(a.redactions);
     if (a.id != null && !validId(a.id)) throw err('E_ARGS', 'a row id must be 1 to 128 letters, digits, dot, colon, dash or underscore', { field: 'id' });
     {
-      const dup = this.p('SELECT id, worker_id, source, text, status, title, run_id, task_id, redactions, written_by, embedding IS NOT NULL AS has_vec FROM memory_entries WHERE namespace = ? AND text_hash = ?').get(ns, th);
+      const dup = this.p('SELECT id, type, worker_id, source, text, status, title, run_id, task_id, redactions, written_by, embedding IS NOT NULL AS has_vec FROM memory_entries WHERE namespace = ? AND text_hash = ?').get(ns, th);
       // A dedup hit updates the row only for the writer that wrote it, with the same source, while it is still
       // unverified. Anyone else's row, and any verified or refuted row, is left exactly as it was and returned as
       // it stands: otherwise a writer that read a verified row could resend its text under a new title and type and
@@ -113,7 +113,8 @@ class Store {
       // The row's writer must be the incoming writer too (ADR 0044 decision 6): a model cannot rewrite belay's row by
       // resending its text. A row from before the column (written_by null) keeps the rule above alone.
       const sameWriter = dup && (dup.written_by == null || a.written_by == null || dup.written_by === a.written_by);
-      if (dup && !(sameWriter && dup.worker_id === wid && (dup.source || 'model') === (a.source || 'model') && (dup.status || 'unverified') === 'unverified')) {
+      // A note's body is belay's record (state, sightings, reports, evidence, model): a dedup hit on a note never rewrites it.
+      if (dup && (dup.type === 'note' || !(sameWriter && dup.worker_id === wid && (dup.source || 'model') === (a.source || 'model') && (dup.status || 'unverified') === 'unverified'))) {
         return this._unchanged(dup, ns, th);
       }
       let vec = null;
@@ -194,7 +195,7 @@ class Store {
     const cur = this.p('SELECT * FROM memory_entries WHERE id = ?').get(dup.id);
     const status = cur.status || 'unverified';
     return {
-      id: cur.id, action: 'unchanged', unchanged_reason: status !== 'unverified' ? `the row is ${status}` : 'the row has another writer or source',
+      id: cur.id, action: 'unchanged', unchanged_reason: cur.type === 'note' ? 'the row is a note, which memory.store never rewrites' : status !== 'unverified' ? `the row is ${status}` : 'the row has another writer or source',
       namespace: ns, text_hash: th, worker_id: cur.worker_id, last_writer_id: cur.last_writer_id, written_by: cur.written_by ?? null, updated_at: cur.updated_at, ttl_at: cur.ttl_at,
       status, title: cur.title || deriveTitle(cur.text), run_id: cur.run_id, task_id: cur.task_id, turn: cur.turn, source: cur.source,
       redactions: cur.redactions ? JSON.parse(cur.redactions) : null, has_embedding: !!cur.embedding,
