@@ -23,27 +23,24 @@ const { toMatch, MIN_TERM, MAX_TERMS, BM25 } = require('./fts-query.cjs');
 const { rrfMany, HYBRID_ALPHA, HYBRID_K } = require('./fusion.cjs');
 const { ftsReady } = require('./memory-schema.cjs');
 const { err } = require('./errors.cjs');
+const { ENGLISH_STOP_WORDS } = require('./stopwords-en.cjs');
 
 const QUERY_MAX = 65536; // bytes of query text accepted; at most CANDIDATE_TERMS distinct terms of it are weighed
 const DIM_MAX = 8192;
 const QUERIES_MAX = 8; // query vectors in one call
 
-// Function words carry no topic.
-const FUNCTION_WORDS = `
-about above after again against all also and any are aren because been before being below between both but
-can cannot could did does doing done down during each either else even ever every few for from further had
-has have having her here hers him his how however into its itself just let like may might more most much
-must not now off once only other our ours out over own same she should since some such than that the their
-theirs them then there these they this those through too under until upon very was were what when where
-whether which while who whom whose why will with within without would yet you your yours`;
-// The vocabulary of being given a task, not of what it is about. A spec often opens with the same framing for
-// every task ("you are working in the repository at the current directory ... reply with a summary of what
-// you changed"). Those words are rare in a project's store, so BM25 would weigh them above the task's own.
-// Other generic words stay: BM25 discounts any term most rows share.
+// Function words: a named, published list kept verbatim in stopwords-en.cjs (Lucene EnglishAnalyzer's default set). The hand-made
+// list that stood here is gone; a word every row carries is dropped by the zero-IDF rule in selectTerms instead.
+//
+// FRAMING_WORDS is a hand-made judgement list and UNMEASURED. It is the vocabulary of being given a task, not of what it is about:
+// a spec often opens with the same framing for every task ("you are working in the repository at the current directory ... reply
+// with a summary of what you changed"). Those words are rare in a small store, so BM25 would weigh them above the task's own.
+// In a populated store the zero-IDF rule may make the list unnecessary (calibration/framing-coverage.cjs measures it on the scale
+// corpus); until that is decided it stays.
 const FRAMING_WORDS = `
 work working repository directory current project memory summary task tasks reply finish change changed
 make used using`;
-const STOPWORDS = new Set(`${FUNCTION_WORDS} ${FRAMING_WORDS}`.trim().split(/\s+/));
+const STOPWORDS = new Set([...ENGLISH_STOP_WORDS, ...FRAMING_WORDS.trim().split(/\s+/)]);
 
 const bad = (msg, field) => err('E_ARGS', msg, field ? { field } : undefined);
 const marks = (list) => list.map(() => '?').join(', ');
@@ -98,6 +95,7 @@ function stem(t) {
 // A trigram phrase matches inside words, so a short plain word is noise ("day" in "today", "old" in
 // "holds"). Plain words need four characters; an identifier-shaped term (a flag such as --csv, a path, a
 // dotted name, a digit, an inner capital) keeps the trigram minimum of three.
+// PLAIN_MIN, CANDIDATE_TERMS and fts-query's MAX_TERMS are tuned constants and UNMEASURED: none was chosen by a study.
 const PLAIN_MIN = 4;
 const CANDIDATE_TERMS = 128;
 
@@ -105,8 +103,12 @@ const CANDIDATE_TERMS = 128;
 // split on anything that is not a letter, digit, `_`, `.`, `/` or `-`, so paths and identifiers
 // (src/dates.cjs, usage.fail) stay whole. Order: identifier-shaped first, then the more often the text repeats
 // it, then the longer, then the earlier. `score` keeps at most MAX_TERMS, choosing by rarity in the store.
-function termStats(text, cap = CANDIDATE_TERMS) {
+//
+// `dropped`, when given, collects { term, reason } for every term left out here: 'too-short', 'stopword' or 'over-cap'.
+function termStats(text, cap = CANDIDATE_TERMS, dropped = null) {
   if (typeof text !== 'string' || !text) return [];
+  const gone = new Set();
+  const drop = (term, reason) => { if (dropped && !gone.has(term)) { gone.add(term); dropped.push({ term, reason }); } };
   const seen = new Map();
   let pos = 0;
   for (const raw of text.split(/[^\p{L}\p{N}_./-]+/u)) {
@@ -114,16 +116,17 @@ function termStats(text, cap = CANDIDATE_TERMS) {
     if (!trimmed) continue;
     const lower = trimmed.toLowerCase();
     const shaped = /^-/.test(raw) || /[._/\d-]/.test(trimmed) || /\p{Ll}\p{Lu}/u.test(trimmed);
-    if ([...lower].length < (shaped ? MIN_TERM : PLAIN_MIN) || STOPWORDS.has(lower)) continue;
-    const t = shaped ? lower : stem(lower); // a path or identifier is matched as written
-    if (STOPWORDS.has(t)) continue; // "changes" stems to a stopword
+    if (STOPWORDS.has(lower)) { drop(lower, 'stopword'); continue; }
+    if ([...lower].length < (shaped ? MIN_TERM : PLAIN_MIN)) { drop(lower, 'too-short'); continue; }
+    const t = shaped ? lower : stem(lower); // a path or identifier is matched as written, never stemmed
+    if (STOPWORDS.has(t)) { drop(lower, 'stopword'); continue; } // "changes" stems to a stopword
     const cur = seen.get(t);
     if (cur) { cur.count++; cur.shaped = cur.shaped || shaped; } else seen.set(t, { t, count: 1, shaped, at: pos++ });
   }
-  return [...seen.values()]
-    .sort((a, b) => (b.shaped - a.shaped) || (b.count - a.count) || ([...b.t].length - [...a.t].length) || (a.at - b.at))
-    .slice(0, cap)
-    .map(({ t, count }) => ({ t, count }));
+  const ordered = [...seen.values()]
+    .sort((a, b) => (b.shaped - a.shaped) || (b.count - a.count) || ([...b.t].length - [...a.t].length) || (a.at - b.at));
+  for (const x of ordered.slice(cap)) drop(x.t, 'over-cap');
+  return ordered.slice(0, cap).map(({ t, count }) => ({ t, count }));
 }
 const termsOf = (text, cap) => termStats(text, cap).map((x) => x.t);
 
@@ -133,18 +136,41 @@ function matchRows(db, match, namespaces) {
     WHERE memory_fts MATCH ? AND e.namespace IN (${marks(namespaces)})`).all(match, ...namespaces);
 }
 
-// The terms the keyword score uses: those that occur in at least one row of the stated namespaces, rarest
-// first, at most MAX_TERMS. A term no row holds cannot change a score, so it never takes a slot, and the
-// rarest terms are the ones BM25 weighs most. Ties keep termStats's order. Each comes back with its rows.
-function selectTerms(db, stats, namespaces) {
+// The terms the keyword score uses, rarest first, at most MAX_TERMS (UNMEASURED). A term is left out when
+//   - no row of the stated namespaces holds it ('no-row': it cannot change a score and would take a slot);
+//   - it has zero IDF in FTS5's own formula, idf = log((N - n + 0.5) / (n + 0.5)) floored to 1e-6 (fts5_aux.c), which is
+//     n >= N / 2 ('zero-idf'). N is the count of rows in the stated namespaces, n the count of those rows holding the
+//     term. Under rank fusion such a term would still earn a full rank for a score of about zero; here it earns none, and a
+//     row that matches only such terms gets no keyword rank. The rule applies only from ZERO_IDF_MIN_ROWS rows: below that a
+//     document frequency says nothing (with 2 rows every term is in half of them) and the rule would leave a small store with
+//     no keyword half at all;
+//   - it falls beyond MAX_TERMS ('over-cap').
+// Ties keep termStats's order. Each kept term comes back with its rows. `dropped`, when given, collects { term, reason }.
+// UNMEASURED: 10 is a judgement, and 0 gives the rule exactly as stated (n >= N / 2 at any N).
+const ZERO_IDF_MIN_ROWS = 10;
+function selectTerms(db, stats, namespaces, dropped = null) {
+  const drop = (term, reason) => { if (dropped) dropped.push({ term, reason }); };
+  const N = db.prepare(`SELECT COUNT(*) AS n FROM memory_entries WHERE namespace IN (${marks(namespaces)})`).get(...namespaces).n;
   const found = [];
   stats.forEach((s, i) => {
     const m = toMatch(s.t);
-    if (m.error) return;
+    if (m.error) { drop(s.t, 'too-short'); return; }
     const rows = matchRows(db, m.match, namespaces);
-    if (rows.length) found.push({ ...s, rows, i });
+    if (!rows.length) drop(s.t, 'no-row');
+    else if (N >= ZERO_IDF_MIN_ROWS && 2 * rows.length >= N) drop(s.t, 'zero-idf');
+    else found.push({ ...s, rows, i });
   });
-  return found.sort((a, b) => (a.rows.length - b.rows.length) || (a.i - b.i)).slice(0, MAX_TERMS);
+  found.sort((a, b) => (a.rows.length - b.rows.length) || (a.i - b.i));
+  for (const x of found.slice(MAX_TERMS)) drop(x.t, 'over-cap');
+  return found.slice(0, MAX_TERMS);
+}
+
+// The one term extractor of the keyword half, shared by memory.index and memory.search: termStats, then selectTerms.
+// Returns { terms (selected, with rows), dropped: [{ term, reason }] }.
+function pickTerms(db, text, namespaces) {
+  const dropped = [];
+  const terms = selectTerms(db, termStats(text, CANDIDATE_TERMS, dropped), namespaces, dropped);
+  return { terms, dropped };
 }
 
 // The FTS5 OR expression of a term list: fts-query.cjs quotes every term as a phrase (so no operator in the
@@ -256,4 +282,4 @@ function score(E, cands, o) {
   return { scores, info };
 }
 
-module.exports = { QUERIES_MAX, alphaOf, parseArgs, termsOf, termStats, selectTerms, orMatch, keywordScores, score, STOPWORDS, QUERY_MAX };
+module.exports = { QUERIES_MAX, alphaOf, parseArgs, termsOf, termStats, selectTerms, pickTerms, ZERO_IDF_MIN_ROWS, FRAMING_WORDS, orMatch, keywordScores, score, STOPWORDS, QUERY_MAX };
