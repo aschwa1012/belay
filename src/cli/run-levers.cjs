@@ -9,10 +9,10 @@ const CP = require('../run/compaction.cjs');
 const ML = require('../run/memory-levers.cjs');
 
 const FIX_CUTOFFS = ['orchestrator', 'cap-only'];
-const { ON_FAILURE } = require('../run/embedder-guard.cjs');
 const DEFAULT_MAX_FIX_ROUNDS = 2;
 const DEFAULT_FIX_CUTOFF = 'orchestrator';
-const DEFAULT_ON_EMBEDDER_FAILURE = 'stop'; // ADR 0034 decision 2
+const EM = require('../core/embedder-mode.cjs');
+const DEFAULT_ON_EMBEDDER_FAILURE = EM.DEFAULT_MODE; // ADR 0034 decision 2, amendment 1
 const MEMORY_RULES_FILE = path.join(__dirname, '..', 'run', 'prompts', 'memory-rules.md');
 
 // The time-bound condition is observable only if the orchestrator is told the bound and can read elapsed time
@@ -54,12 +54,18 @@ function parseLevers(spec, opts = {}) {
     }
     fixCutoff = spec.fix_cutoff;
   }
+  // ADR 0034 amendment 1: the run spec's own on_embedder_failure wins, then the memory block's, then the config file's
+  // (`opts.configMode`, read by cmd-run), then the default. The old values stop and continue are accepted as required and keyword.
   let onEmbedderFailure = DEFAULT_ON_EMBEDDER_FAILURE;
-  if (spec.on_embedder_failure !== undefined) {
-    if (!ON_FAILURE.includes(spec.on_embedder_failure)) {
-      return { error: `on_embedder_failure must be one of ${ON_FAILURE.join(', ')}` };
-    }
-    onEmbedderFailure = spec.on_embedder_failure;
+  const memGiven = spec.memory && typeof spec.memory === 'object' ? spec.memory.on_embedder_failure : undefined;
+  const given = spec.on_embedder_failure !== undefined ? ['on_embedder_failure', spec.on_embedder_failure]
+    : memGiven !== undefined ? ['memory.on_embedder_failure', memGiven] : null;
+  if (given) {
+    const m = EM.normalize(given[1]);
+    if (m === null) return { error: `${given[0]} must be one of ${EM.describe()}` };
+    onEmbedderFailure = m;
+  } else if (opts.configMode) {
+    onEmbedderFailure = EM.normalize(opts.configMode) || DEFAULT_ON_EMBEDDER_FAILURE;
   }
   const out = { max_fix_rounds: maxFixRounds, fix_cutoff: fixCutoff, on_embedder_failure: onEmbedderFailure };
   const ca = CP.parseCompactAt(spec.compact_at_tokens);

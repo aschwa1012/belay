@@ -171,7 +171,9 @@ async function run(ctx) {
         'run.pause': (params) => runPauseControl.pause(params), 'run.resume': (params) => runPauseControl.resume(params),
       },
       onEmbedderFailure: (ev) => guard.onFailure(ev),
-      embedderMode: parsed.levers.on_embedder_failure, // read by memory.embedQuery, so the run manager knows what a failure means
+      // read by memory.embedQuery and the owner's engine at each call, so the run manager knows what a failure means, and an
+      // operator's choice at a resume (belay resume --embedder keyword|off) takes effect at once
+      embedderMode: () => guard.mode(), memoryOff: () => guard.memoryOff(),
     },
   });
   stopControl = createStopControl({
@@ -181,8 +183,18 @@ async function run(ctx) {
   runPauseControl = createRunPauseControl({
     runId: parsed.runId, core, hook: hookBox, stopInFlight: () => stopControl.stopping(), interactive: !!ce,
     // ADR 0034 decision 2: resuming an embedder-failure pause re-attempts the load; a load that still fails keeps the run paused.
-    beforeResume: async (row) => {
+    // ADR 0034 amendment 1: the operator may choose at the resume (params.embedder): keyword or off. The choice sets the run's mode here
+    // and the resume goes ahead without re-loading the model; with no choice the model is re-loaded, and a load that still fails keeps
+    // the run paused.
+    beforeResume: async (row, params) => {
       if (!/embedder-failure [(]/.test(row.paused_by || '')) return;
+      const choice = params && params.embedder != null ? require('../core/embedder-mode.cjs').normalize(params.embedder) : null;
+      if (params && params.embedder != null && (choice === null || choice === 'required')) {
+        const e = new Error('run.resume embedder must be keyword or off (or leave it out to stay on required and re-load the model)');
+        e.code = 'E_ARGS';
+        throw e;
+      }
+      if (choice) { guard.setMode(choice); return; }
       const w = await warmEmbedder(core, { retry: true, timeoutMs: RESUME_WARM_MS });
       if (!w.ok) {
         const e = new Error(`the embedder still cannot load, so the run stays paused: ${w.code}: ${w.message}; fix: ${w.fix}`);
@@ -249,7 +261,13 @@ async function run(ctx) {
   // so a run never starts on a host that cannot do what its memory tools promise. Nothing has been written.
   const skipped = warmupSkipped();
   const warm = skipped ? { ok: true, skipped } : await warmEmbedder(core);
-  if (!warm.ok) {
+  // ADR 0034 amendment 1: under required a warm-up that fails refuses the run (as before); under keyword or off the run starts in that
+  // mode and the failure is recorded as the run's first embedder event.
+  if (!warm.ok && guard.mode() !== 'required') {
+    guard.noteWarmFailure(warm);
+    warm.proceeded_as = guard.mode();
+  }
+  if (!warm.ok && guard.mode() === 'required') {
     let sd = null;
     try { sd = await core.shutdownOwner(); } catch (e) { sd = { error: (e && e.message) || String(e) }; }
     const endedBy = `the embedder could not be warmed, so the run did not start: ${warm.code}: ${warm.message}; fix: ${warm.fix}`;

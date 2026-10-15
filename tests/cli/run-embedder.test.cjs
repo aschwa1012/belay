@@ -77,10 +77,10 @@ test('warm-up: an absent model refuses the run at start, names the cause and the
   } finally { cleanup(dir); }
 });
 
-test('warm-up: a fake warm-up failure refuses the run even when the lever is continue (the lever governs the run, not its start)', () => {
+test('warm-up: a fake warm-up failure refuses the run under required, the default and the old name stop', () => {
   const dir = sandbox();
   try {
-    const { specPath } = makeSpec(dir, { on_embedder_failure: 'continue' });
+    const { specPath } = makeSpec(dir, { on_embedder_failure: 'required' });
     const r = spawnSync(process.execPath, [CLI, 'run', specPath, '--data', `${dir}/.belay`, '--json'], {
       cwd: ROOT, encoding: 'utf8', windowsHide: true, timeout: 90000,
       env: { ...process.env, BELAY_CLAUDE_EXE: FAKE_CLAUDE, BELAY_FAKE_CORE: FAKE_CORE, FAKE_EMBEDDER_MODE: 'warm-fails' },
@@ -92,7 +92,7 @@ test('warm-up: a fake warm-up failure refuses the run even when the lever is con
   } finally { cleanup(dir); }
 });
 
-test('stop (the default): an embedder failure mid-run pauses the run, records the event, and status and receipts show it', { timeout: 240000 }, async () => {
+test('required (the default): an embedder failure mid-run pauses the run, records the event, and status and receipts show it', { timeout: 240000 }, async () => {
   const dir = sandbox();
   let ctx;
   try {
@@ -114,7 +114,7 @@ test('stop (the default): an embedder failure mid-run pauses the run, records th
     await cli(['stop', ctx.runId], ctx.dataDir);
     await waitForExit(ctx.run.proc, 20000);
     const receipt = JSON.parse(fs.readFileSync(`${ctx.orchestratorDir}/run.json`, 'utf8'));
-    assert.strictEqual(receipt.levers.on_embedder_failure, 'stop');
+    assert.strictEqual(receipt.levers.on_embedder_failure, 'required');
     assert.strictEqual(receipt.embedder.ok, true);
     assert.strictEqual(receipt.embedder.load_ms, 7);
     assert.strictEqual(receipt.embedder_failures.length, 1);
@@ -125,7 +125,7 @@ test('stop (the default): an embedder failure mid-run pauses the run, records th
   } finally { await finish({ ...ctx, dir }); }
 });
 
-test('continue: the error goes back to the caller, the run is not paused, and the failure is recorded in the receipt', { timeout: 240000 }, async () => {
+test('keyword (the old name continue): the error goes back to the caller, the run is not paused, and the failure is recorded in the receipt', { timeout: 240000 }, async () => {
   const dir = sandbox();
   let ctx;
   try {
@@ -137,7 +137,7 @@ test('continue: the error goes back to the caller, the run is not paused, and th
     await cli(['stop', ctx.runId], ctx.dataDir);
     await waitForExit(ctx.run.proc, 20000);
     const receipt = JSON.parse(fs.readFileSync(`${ctx.orchestratorDir}/run.json`, 'utf8'));
-    assert.strictEqual(receipt.levers.on_embedder_failure, 'continue');
+    assert.strictEqual(receipt.levers.on_embedder_failure, 'keyword');
     assert.strictEqual(receipt.embedder_failures.length, 1);
     assert.deepStrictEqual([receipt.embedder_failures[0].call, receipt.embedder_failures[0].action, receipt.embedder_failures[0].pause], ['memory.search', 'continue', null]);
   } finally { await finish({ ...ctx, dir }); }
@@ -196,21 +196,41 @@ test('fix text keys on the cause: exited is not "fetch the model", an op timeout
   assert.doesNotMatch(fixFor('E_TIMEOUT', null), /fetch|hung/);
 });
 
-test('lever: on_embedder_failure defaults to stop and accepts only stop or continue', () => {
-  assert.strictEqual(parseLevers({}).on_embedder_failure, 'stop');
-  assert.strictEqual(parseLevers({ on_embedder_failure: 'continue' }).on_embedder_failure, 'continue');
+test('lever: on_embedder_failure defaults to required and accepts required, keyword, off and the old names stop and continue', () => {
+  assert.strictEqual(parseLevers({}).on_embedder_failure, 'required');
+  assert.strictEqual(parseLevers({ on_embedder_failure: 'continue' }).on_embedder_failure, 'keyword');
+  assert.strictEqual(parseLevers({ on_embedder_failure: 'stop' }).on_embedder_failure, 'required');
+  assert.strictEqual(parseLevers({ on_embedder_failure: 'off' }).on_embedder_failure, 'off');
   for (const bad of ['Stop', '', 'pause', 1, null, true, [], {}]) {
-    assert.match(parseLevers({ on_embedder_failure: bad }).error, /on_embedder_failure must be one of stop, continue/, String(bad));
+    assert.match(parseLevers({ on_embedder_failure: bad }).error, /on_embedder_failure must be one of required, keyword, off/, String(bad));
   }
   const dir = sandbox();
   try {
     const { specPath } = makeSpec(dir, { on_embedder_failure: 'pause' });
     const r = spawnSync(process.execPath, [CLI, 'run', specPath, '--data', `${dir}/.belay`], { cwd: ROOT, encoding: 'utf8', windowsHide: true, timeout: 60000 });
     assert.strictEqual(r.status, 2);
-    assert.match(r.stderr + r.stdout, /on_embedder_failure must be one of stop, continue/);
+    assert.match(r.stderr + r.stdout, /on_embedder_failure must be one of required, keyword, off/);
     assert.strictEqual(fs.existsSync(`${dir}/.belay`), false, 'a usage error creates no data dir');
   } finally { cleanup(dir); }
 });
+
+for (const mode of ['keyword', 'off']) {
+  test(`warm-up under ${mode}: a failed warm-up does not refuse the run; it starts in that mode and the failure is its first embedder event`, { timeout: 240000 }, async () => {
+    const dir = sandbox();
+    let ctx;
+    try {
+      ctx = await startRun(dir, { on_embedder_failure: mode }, { FAKE_EMBEDDER_MODE: 'warm-fails' });
+      await cli(['stop', ctx.runId], ctx.dataDir);
+      await waitForExit(ctx.run.proc, 20000);
+      const receipt = JSON.parse(fs.readFileSync(`${ctx.orchestratorDir}/run.json`, 'utf8'));
+      assert.strictEqual(receipt.embedder.ok, false);
+      assert.strictEqual(receipt.embedder.code, 'E_MODEL_ABSENT');
+      assert.strictEqual(receipt.embedder.proceeded_as, mode);
+      assert.deepStrictEqual([receipt.embedder_failures[0].call, receipt.embedder_failures[0].code, receipt.embedder_failures[0].action], ['warm-up', 'E_MODEL_ABSENT', mode === 'off' ? 'off' : 'continue']);
+      assert.notStrictEqual(receipt.orchestrator.pid, null, 'the run started');
+    } finally { await finish({ ...ctx, dir }); }
+  });
+}
 
 test('guard: only detail.embedder === true is an embedder failure, every embedder failure asks the idempotent run pause, message text never read', async () => {
   assert.strictEqual(isEmbedderFailure({ code: 'E_MODEL_ABSENT', message: 'the embedder is dead', detail: {} }), false);
