@@ -21,8 +21,6 @@ const gate = require('./memory-note-gate.cjs');
 const TOP = 200; // candidates taken from each ranking
 const NEWEST = 1000; // the fallback when nothing ranks
 const PAD = 200; // the newest notes added to the union, so a small store is listed whole and path and term notes that match no text still compete
-const SINK_MISSES = 8; // a note is demoted after MORE than this many recorded misses (run lever memory.notes_sink = penalty)
-const SINK_FACTOR = 0.85;
 
 const marks = (list) => list.map(() => '?').join(', ');
 const desc = (m) => [...m.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).map(([id]) => id);
@@ -120,16 +118,20 @@ function select(E, namespaces, pool, o) {
   return { ids, scores, info, candidates: cand };
 }
 
-// The sinking penalty: after MORE than SINK_MISSES recorded misses a note's relevance is multiplied by SINK_FACTOR. Only the index
-// applies it, and only for `memory.notes_sink: penalty`; with the lever off or record this is never called.
-function penalise(E, notes, scores) {
-  const misses = require('./memory-chances.cjs').missCounts(E, notes);
-  const out = new Map(scores);
-  const demoted = [];
-  for (const n of notes) {
-    if ((misses.get(n.id) || 0) > SINK_MISSES && out.has(n.id)) { out.set(n.id, out.get(n.id) * SINK_FACTOR); demoted.push(n.id); }
-  }
-  return { scores: out, demoted };
+// The sinking seam. A note's relevance is multiplied by sinkFactor(note, ctx) in the index ranking. It returns 1 for every note and
+// every notes_sink mode: the operator has gated a live penalty until pinning, a calibration and the simulation arms exist
+// (the notes-lifecycle rulings, Sinking), and `penalty` records exactly like `record`. The
+// notes-lifecycle owner fills this function in; the miss definition it needs is not built, so nothing here counts misses.
+// note: { id, b (parsed body), status }; ctx: { lv (the run's levers), runId }.
+function sinkFactor(note, ctx) { // eslint-disable-line no-unused-vars
+  return 1;
 }
 
-module.exports = { liveIds, select, penalise, TOP, NEWEST, SINK_MISSES, SINK_FACTOR };
+// The scores with the seam applied (a new Map; the input is not changed).
+function sunk(notes, scores, ctx) {
+  const out = new Map(scores);
+  for (const n of notes) if (out.has(n.id)) out.set(n.id, out.get(n.id) * sinkFactor(n, ctx));
+  return out;
+}
+
+module.exports = { liveIds, select, sinkFactor, sunk, TOP, NEWEST };

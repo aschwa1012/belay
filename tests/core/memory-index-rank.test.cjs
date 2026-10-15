@@ -85,57 +85,23 @@ test('no signal: the newest notes, source newest', async () => {
   assert.strictEqual(r.candidates.total, 1);
 });
 
-// ---- the sinking penalty ----
+// ---- the sinking seam ----
 
-function misses(noteId, count, over = {}) {
-  const facts = { route: 'index', area: true, applied_reported: true, used: false, ...over };
-  for (let i = 0; i < count; i++) {
-    store.db.prepare(`INSERT INTO memory_event (id, run_id, worker_id, task_id, kind, key, row_ids, ok, message, written_at, written_by) VALUES (?, 'old-run', 'w1', ?, 'note_chance', ?, ?, 1, ?, ?, 'harness')`)
-      .run(`me-${noteId}-${i}-${n++}`, `t${i}`, `k-${noteId}-${i}-${n}`, JSON.stringify([noteId]), JSON.stringify(facts), Date.now());
-  }
-}
-// Two notes equal in every signal; the newer one leads until the lever demotes it.
-function pair() {
+test('sinkFactor is a no-op: the ranking and the bytes are identical for notes_sink off, record and penalty, whatever was recorded', async () => {
   const space = fresh();
   const older = note(space, 'equal claim a gadget', [1, 0, 0], { created_at: 10 });
   const newer = note(space, 'equal claim a gadget too', [1, 0, 0], { created_at: 20 });
-  return { space, older, newer };
-}
-const args = (space) => ({ namespaces: [space], query_embedding: [1, 0, 0], embedding_model: 'm' });
-
-test('sink penalty: more than 8 misses demotes a note by 0.85; 8 do not; record and off leave the ranking untouched', async () => {
-  const { space, older, newer } = pair();
-  const base = await index('on', args(space));
-  assert.deepStrictEqual(base.row_ids, [newer, older], 'the newer note leads on a tie');
-  misses(newer, 8);
-  assert.deepStrictEqual((await index('penalty', args(space))).row_ids, [newer, older], 'eight misses are not more than eight');
-  misses(newer, 1);
-  const pen = await index('penalty', args(space));
-  assert.deepStrictEqual(pen.row_ids, [older, newer], 'nine misses demote it');
-  assert.deepStrictEqual(pen.sunk, [newer]);
-  for (const k of ['on', 'off', 'record']) {
-    const r = await index(k, args(space));
-    assert.strictEqual(r.text, base.text, `lever ${k}: byte-identical`);
-    assert.deepStrictEqual(r.row_ids, base.row_ids);
-    assert.strictEqual(r.sunk, undefined);
+  for (let i = 0; i < 20; i++) {
+    store.db.prepare("INSERT INTO memory_event (id, run_id, worker_id, task_id, kind, key, row_ids, ok, message, written_at, written_by) VALUES (?, 'old-run', 'w1', ?, 'note_chance', ?, ?, 1, ?, ?, 'harness')")
+      .run(`me-${i}-${n++}`, `t${i}`, `k${i}-${n}`, JSON.stringify([newer]), JSON.stringify({ route: 'index', area: true, applied_reported: true, used: false }), Date.now());
   }
-});
-
-test('sink penalty counts only relevant, reported, unused chances (the recorded facts), and the factor is 0.85', async () => {
-  const { space, older, newer } = pair();
-  misses(newer, 9, { used: true });
-  misses(newer, 9, { area: false });
-  misses(newer, 9, { applied_reported: false });
-  assert.deepStrictEqual((await index('penalty', args(space))).row_ids, [newer, older], 'chances that are not misses never demote');
-  assert.strictEqual(R.SINK_FACTOR, 0.85);
-  assert.strictEqual(R.SINK_MISSES, 8);
-  // A demoted note keeps ranking by 0.85 x its score: a clearly more relevant note still leads.
-  const space2 = fresh();
-  const strong = note(space2, 'gadget gadget quokkas strong', [1, 0, 0], { created_at: 10 });
-  const weak = note(space2, 'something else entirely', [0.2, 1, 0], { created_at: 20 });
-  misses(strong, 20);
-  const r = await index('penalty', { namespaces: [space2], query: 'gadget quokkas', query_embedding: [1, 0, 0], embedding_model: 'm' });
-  assert.deepStrictEqual(r.sunk, [strong]);
-  assert.strictEqual(r.row_ids[0], strong, 'a demotion, not a deletion');
-  assert.ok(r.row_ids.includes(weak));
+  const args = { namespaces: [space], query_embedding: [1, 0, 0], embedding_model: 'm' };
+  const base = await index('on', args);
+  assert.deepStrictEqual(base.row_ids, [newer, older]);
+  for (const k of ['off', 'record', 'penalty']) {
+    const r = await index(k, args);
+    assert.strictEqual(r.text, base.text, `notes_sink ${k}`);
+    assert.deepStrictEqual(r.row_ids, base.row_ids);
+  }
+  assert.strictEqual(R.sinkFactor({ id: newer, b: {} }, { lv: LEVERS.penalty, runId: 'x' }), 1);
 });

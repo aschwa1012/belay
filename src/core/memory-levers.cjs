@@ -48,7 +48,7 @@ const DEFAULTS = Object.freeze({
   review_wall_s: 600, // the reviewer's wall cap in seconds
   review_cost_cap_usd: 2, // the reviewer's cost cap in dollars (the whole queue is one spawn; leftovers carry over)
   archive_review_model: 'claude-opus-5-5', // the reviewer's model: a Claude 5.5 id
-  notes_sink: 'off', // off | record | penalty: record writes a note_chance fact per delivered note at task end; penalty records the same and the first-message index multiplies the relevance of a note by 0.85 after more than 8 recorded misses (memory-index-rank.cjs)
+  notes_sink: 'off', // off | record | penalty: record writes a note_chance fact per delivered note at task end; penalty records the same, its rank shift is not built yet (the index has a no-op seam, memory-index-rank.cjs sinkFactor)
 });
 
 const BOOLEAN_KEYS = ['redact', 'rules', 'capture', 'observations', 'project_writes', 'cost_ledger',

@@ -206,9 +206,7 @@ async function index(E, caller, c) {
   const sel = rank.select(E, namespaces, fresh, { text, source, queries: rq.queries, embeddingModel: rq.embeddingModel, alpha: relevance.alphaOf(lv) });
   const found = rowsOf(E, sel.ids);
   const live = found;
-  let scores = sel.scores, sunk = null;
-  if (lv.notes_sink === 'penalty') { const p = rank.penalise(E, found, scores); scores = p.scores; sunk = p.demoted; }
-  const rel = { scores, info: sel.info };
+  const rel = { scores: rank.sunk(found, sel.scores, { lv, runId: caller.run_id }), info: sel.info }; // the sinking seam (a no-op today)
 
   // N is bounded: at most the candidates (about 400) plus the tasks of this project's runs (one read of the task table per call).
   const project = (namespaces.find((n) => n.startsWith('project/')) || '').slice(8) || null;
@@ -254,7 +252,7 @@ async function index(E, caller, c) {
     }
   }
   const info = {
-    considered: found.length, excluded_already_injected: excluded, candidates: sel.candidates, ...(sunk ? { sunk } : {}), ...(rel.info ? { relevance: rel.info } : {}),
+    considered: found.length, excluded_already_injected: excluded, candidates: sel.candidates, ...(rel.info ? { relevance: rel.info } : {}),
     notes: { path: ranked.filter((x) => x.tier === 1).length, term: ranked.filter((x) => x.tier === 2).length, unlisted_path_or_term: Math.max(overflow, 0) },
   };
   if (!fitted.kept.length) return { ...empty(found.length, excluded, ranked.length, fitted.over_budget), ...info };
