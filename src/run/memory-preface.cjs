@@ -74,7 +74,7 @@ const queryOf = (prompt) => (typeof prompt === 'string' && prompt.trim() ? promp
 
 // The spawn's own bound for embedding the index queries (a slow embedder must not hold a spawn): past it the index is
 // built from keywords alone and the receipt names the failure. The core enforces it (memory.embedQuery timeout_ms).
-const SPAWN_EMBED_MS = 12000;
+const { SPAWN_EMBED_MS } = require('../core/spawn-bounds.cjs');
 const NO_EMBED = Object.freeze({ attempted: false, embeddings: [], queries: [], failure: null, stop: false, ms: 0 });
 
 // The query vectors of this worker's index, made by the store owner's embedder (memory.embedQuery: the path memory.search
@@ -97,12 +97,12 @@ async function embedForIndex(ctx, w, lv) {
     const message = wiring ? `the run manager's core has no harness view, so memory.embedQuery was refused (a wiring fault, not an embedder failure): ${(e && e.message) || e}` : String((e && e.message) || e);
     return { attempted: true, embeddings: [], queries: [], failure: { code: codeOf(e), message: message.slice(0, 200) }, stop: false, ms: Date.now() - t0 };
   }
-  const queries = ((r && r.queries) || []).map((q) => ({ label: q.label, ms: q.ms, ok: !!q.ok, ...(q.ok ? {} : { code: q.code, message: q.message, embedder: !!q.embedder, timed_out: !!q.timed_out }) }));
+  const queries = ((r && r.queries) || []).map((q) => ({ label: q.label, ms: q.ms, ok: !!q.ok, ...(q.ok ? {} : { code: q.code, message: q.message, cause: q.cause || null, embedder: !!q.embedder, timed_out: !!q.timed_out }) }));
   const embeddings = ((r && r.queries) || []).filter((q) => q.ok).map((q) => ({ vector: q.query_embedding, model: q.embedding_model, label: q.label }));
   const bad = queries.find((q) => !q.ok);
   return {
     attempted: true, embeddings, queries, ms: Number.isInteger(r && r.embed_ms) ? r.embed_ms : Date.now() - t0,
-    failure: bad ? { code: bad.code || 'E_INTERNAL', message: String(bad.message || '').slice(0, 200) } : null,
+    failure: bad ? { code: bad.code || 'E_INTERNAL', message: String(bad.message || '').slice(0, 200), cause: bad.cause || null } : null,
     stop: !!(r && r.on_embedder_failure === 'stop' && queries.some((q) => !q.ok && q.embedder)),
   };
 }
@@ -194,7 +194,14 @@ async function preface(w, ctx, prompt) {
   w.indexEmbedMs = emb.ms;
   if (emb.stop) {
     await stopReceipt(ctx, w, emb);
-    fail('E_PAUSED', `the run is pausing because the embedder failed while embedding the index query for ${w.id} (on_embedder_failure is stop), so this worker was not launched; spawn it again after the resume: ${emb.failure.code}: ${emb.failure.message}`, { cause: 'embedder_failure', code: emb.failure.code, worker_id: w.id });
+    // The guard ENDS the run, instead of pausing it, for a failure no resume can fix (embedder-guard.cjs isFatal: the store's model is not
+    // the one in use). The message says which, so the orchestrator does not wait for a resume that will not come.
+    const fatal = emb.failure.code === 'E_MODEL_CHANGED' || emb.failure.cause === 'canary';
+    const what = `${emb.failure.code}: ${emb.failure.message}`;
+    fail('E_PAUSED', fatal
+      ? `worker ${w.id} was not launched: the embedder failed while embedding its index query (${what}), which no resume can fix, so on_embedder_failure stop is ENDING the run, not pausing it. Do not spawn again; end your work and report it.`
+      : `worker ${w.id} was not launched: the embedder failed while embedding its index query (${what}), and on_embedder_failure is stop, so the run is pausing. After the resume, spawn the task again with a NEW worker id (${w.id} is now a dead row).`,
+    { cause: 'embedder_failure', code: emb.failure.code, worker_id: w.id, run_ending: fatal });
   }
   let head = '';
   if (w.taskId) {

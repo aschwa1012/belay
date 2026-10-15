@@ -94,7 +94,7 @@ test('stop: preface refuses the spawn with E_PAUSED, assigns nothing, records ok
   const { core, calls, events } = makeCore({ embed: failEmbed('stop') });
   core.task = { assign: async () => { calls.push({ method: 'task.assign' }); } };
   const w = W();
-  await assert.rejects(MP.preface(w, ctxOf(core), PROMPT), (e) => e.code === 'E_PAUSED' && e.detail.code === 'E_MODEL_ABSENT' && /spawn it again after the resume/.test(e.message));
+  await assert.rejects(MP.preface(w, ctxOf(core), PROMPT), (e) => e.code === 'E_PAUSED' && e.detail.code === 'E_MODEL_ABSENT' && /spawn the task again with a NEW worker id/.test(e.message));
   assert.deepStrictEqual(names(calls), ['embedQuery', 'recordEvent'], 'no assignment, no index');
   assert.strictEqual(events[0].ok, 0);
   assert.strictEqual(events[0].code, 'E_MODEL_ABSENT');
@@ -216,13 +216,52 @@ test('through the manager under stop: the spawn is refused, the starting row is 
   });
 });
 
-test('through the manager: the embedding time is the harness\'s wait, not the worker\'s ready_ms', async () => {
-  const slow = async () => { await new Promise((r) => setTimeout(r, 1500)); return { queries: [okQuery()], on_embedder_failure: 'stop', embed_ms: 1500 }; };
+test('through the manager: the embedding time is the harness wait, not part of ready_ms', async () => {
+  // The stub takes real time and records it itself. total = the whole spawn; ready_ms starts after the embed, so what is left of
+  // the total once ready_ms is taken off is at least the embed's own time. Were the embed counted in ready_ms, that remainder would be
+  // only the little work before the embed. No absolute bound is asserted.
+  let embedStart = 0, embedEnd = 0;
+  const slow = async () => {
+    embedStart = Date.now();
+    await new Promise((r) => setTimeout(r, 400));
+    embedEnd = Date.now();
+    return { queries: [okQuery()], on_embedder_failure: 'stop', embed_ms: embedEnd - embedStart };
+  };
   await withManager(slow, async (m, sb, core, events) => {
     const t0 = Date.now();
     const row = await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w1', task_id: 't1' });
-    assert.ok(Date.now() - t0 >= 1500, 'the spawn did wait for the embedding');
-    assert.ok(row.ready_ms < 1400, `ready_ms ${row.ready_ms} excludes the 1500 ms embedding`);
+    const total = Date.now() - t0;
+    assert.ok(embedEnd > 0, 'the spawn waited for the embedding');
+    assert.ok(total - row.ready_ms >= embedEnd - embedStart, `total ${total} - ready_ms ${row.ready_ms} must hold the ${embedEnd - embedStart} ms embed`);
     assert.strictEqual(detail(events[0]).queries[0].ok, true);
   });
 });
+
+test('the message of a refused spawn names the cause plainly and says to spawn again with a NEW worker id after the resume', async () => {
+  const { core } = makeCore({ embed: failEmbed('stop') });
+  const w = W();
+  await assert.rejects(MP.preface(w, ctxOf(core), PROMPT), (e) => {
+    assert.strictEqual(e.code, 'E_PAUSED');
+    assert.match(e.message, /worker w1 was not launched/);
+    assert.match(e.message, /E_MODEL_ABSENT: the model is gone/);
+    assert.match(e.message, /the run is pausing/);
+    assert.match(e.message, /After the resume, spawn the task again with a NEW worker id/);
+    assert.strictEqual(e.detail.run_ending, false);
+    return true;
+  });
+});
+
+test('when the guard ENDS the run (a canary or E_MODEL_CHANGED), the refused spawn says so and not "pausing"', async () => {
+  for (const over of [{ code: 'E_MODEL_CHANGED', cause: 'canary' }, { code: 'E_TIMEOUT', cause: 'canary' }]) {
+    const { core } = makeCore({ embed: failEmbed('stop', over) });
+    await assert.rejects(MP.preface(W(), ctxOf(core), PROMPT), (e) => {
+      assert.strictEqual(e.code, 'E_PAUSED');
+      assert.match(e.message, /ENDING the run, not pausing it/);
+      assert.match(e.message, /Do not spawn again/);
+      assert.doesNotMatch(e.message, /the run is pausing|NEW worker id/);
+      assert.strictEqual(e.detail.run_ending, true);
+      return true;
+    });
+  }
+});
+
