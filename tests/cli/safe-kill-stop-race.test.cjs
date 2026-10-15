@@ -76,7 +76,8 @@ test('stop vs fast close: the second killer waits, re-snapshots and finds the wo
     assert.ok(Date.parse(closeLine.time) >= Date.parse(ok[0].time), 'the close acted before the stop finished');
     if (closeLine.kind === 'absent') assert.ok(consoleSnaps >= 2, 'the close used the snapshot from before the stop\'s signal instead of taking a new one');
     assert.ok(['absent', 'no_budget', 'unverifiable'].includes(out.killed[0].kind), JSON.stringify(out.killed));
-    assert.ok(!RP.pidAlive(w.pid) && !RP.pidAlive(kid), 'the stop did not end the worker and its descendant');
+    // Both were signalled; their end is the host's, so wait for it rather than assume it was instant.
+    assert.ok(await RP.waitPidGone(w.pid, { timeoutMs: 10000 }) !== null && await RP.waitPidGone(kid, { timeoutMs: 10000 }) !== null, 'the stop did not end the worker and its descendant');
   } finally {
     RP.snapshotShared = realRun; ce.dispose();
     if (stopKill) await stopKill.catch(() => {});

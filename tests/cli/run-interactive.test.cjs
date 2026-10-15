@@ -376,9 +376,10 @@ test('belay stop against an interactive run ends claude by its pid, runs the clo
       assert.strictEqual(stopped.json.stopped, true);
       assert.strictEqual(stopped.json.orchestrator.pid, rec.pid);
       const res = await r.done;
-      assert.ok(!P.pidAlive(rec.pid), 'claude is still alive after belay stop');
+      // The kill lands before the run returns, but the process's end is the host's: wait for it, never assume it was instant.
+      assert.ok(await P.waitPidGone(rec.pid, { timeoutMs: 10000 }) !== null, 'claude is still alive after belay stop');
       // (whether claude's descendant survives is the host's job-object behaviour, not belay's: L4 asserts the kill calls instead)
-      assert.ok(!P.pidAlive(w.pid), "the run's worker outlived the stop");
+      assert.ok(await P.waitPidGone(w.pid, { timeoutMs: 10000 }) !== null, "the run's worker outlived the stop");
       assert.strictEqual(res.json.stop.caller_pid, process.pid);
       assert.match(res.json.ended_by, /^stopped by belay stop \(caller pid \d+\); claude ended by its pid$/);
       assert.match(res.text, /stopped by: pid /);
