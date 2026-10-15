@@ -30,7 +30,7 @@ function renderProposals(res) {
   if (!noms.length) out.push('  none');
   for (const n of noms) {
     const b = n.body || {}, c = b.counts || {};
-    out.push(`  ${b.note_id}  [${b.state}]  ${c.tasks} tasks across ${c.runs} runs  nominated ${when(n.created_at)}  (${n.project})`);
+    out.push(`  ${b.note_id}  [${b.state}]  ${c.tasks} tasks across ${c.runs} runs  nominated ${when(n.created_at)}  (${n.project})${n.note_state && n.note_state !== 'live' ? `  NOTE IS ${String(n.note_state).toUpperCase()}: reject it` : ''}${c.unrecorded ? `  [${c.unrecorded} sighting${c.unrecorded === 1 ? '' : 's'} not counted: delivery facts not recorded]` : ''}`);
     if (!n.drafts.length) out.push('    no draft yet: the scrubber drafts it at a run close');
     for (const d of n.drafts.slice(0, 1)) out.push(`    draft (${d.source}) -> ${d.target}: ${one(d.rule).slice(0, 160)}${d.present ? `  [${d.present === 'present' ? 'already in the file' : 'not in the file'}]` : ''}`);
   }
@@ -56,7 +56,7 @@ async function proposals(core, parsed, ctx, found) {
 async function promote(core, parsed, ctx, found) {
   const id = parsed.positional[0];
   const decision = parsed.opts.approve ? 'approve' : 'reject';
-  const res = await core.memory.promote({ note_id: id, decision, ...(parsed.opts.reason ? { reason: parsed.opts.reason } : {}) });
+  const res = await core.memory.notePromote({ note_id: id, decision, ...(parsed.opts.reason ? { reason: parsed.opts.reason } : {}) });
   const lines = [`${decision === 'approve' ? 'approved' : 'rejected'} ${res.note_id}  nomination ${res.nomination.id}  at ${when(res.receipt.at)}${res.receipt.reason ? `  reason: ${one(res.receipt.reason)}` : ''}`];
   let check = null;
   if (decision === 'approve') {

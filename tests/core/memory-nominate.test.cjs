@@ -10,9 +10,16 @@ const fs = require('node:fs');
 const { setup, PROJECT, A, A_NEAR } = require('./lifecycle-env.cjs');
 const { callerFor } = require('./helpers.cjs');
 const NM = require('../../src/core/memory-nominate.cjs');
+const PN = require('../../src/core/methods-memory-promote-note.cjs');
 
 let T;
-before(async () => { T = await setup(); });
+const sinkRun = (id, sink) => T.call(callerFor('orchestrator', { run_id: id }), 'run.attach', { adapter_pid: process.pid, project: PROJECT, memory_levers: JSON.stringify({ project: PROJECT, notes: true, ...(sink ? { notes_sink: sink } : {}) }) });
+before(async () => {
+  T = await setup();
+  // The runs that produced the sightings: those that recorded delivery facts, and one that did not.
+  for (const r of ['rA', 'rB', 'rC', 'rD']) await sinkRun(r, 'record');
+  await sinkRun('rOff', null);
+});
 after(() => T.close());
 
 let ids = 0;
@@ -69,16 +76,57 @@ test('a writer shown the note by the index flag, a search or a retrieve beforeha
   assert.deepStrictEqual(c.excluded.map(e => [e.writer, e.shown_by]), [['worker:w3', 'search']]);
 });
 
-test('a delivery that does not exclude: another task, another worker, or after the write', async () => {
+test('a delivery that does not exclude: another worker, or after the write; one just before does', async () => {
   const n = mk(k => [sight(`b${k}`, 'rB', 'w2'), sight(`c${k}`, 'rA', 'w3')]);
   const c3 = T.body(n).seen_in[1].task_id, b2 = T.body(n).seen_in[0].task_id;
-  await chance(n, 'elsewhere', 'w3', 'search', 4000);   // w3 was shown the note in another task
-  await chance(n, c3, 'w9', 'index', 4000);             // another worker in w3's task
+  await chance(n, c3, 'w9', 'index', 4000);             // another worker
   await chance(n, c3, 'w3', 'retrieve', 9000);          // w3 saw it after it wrote its own (at 5000)
-  await chance(n, b2, 'w2', 'index', 4999);             // ...but this one is just before w2's write
+  await chance(n, b2, 'w2', 'index', 4999);             // just before w2's write
   const c = await NM.countFor(T.E, T.row(n));
   assert.deepStrictEqual(c.excluded.map(e => e.writer), ['worker:w2']);
   assert.deepStrictEqual([c.tasks, c.runs], [2, 1], 'author and w3 remain, both of run rA');
+});
+
+test('P2: a writer shown the note in an EARLIER task is shown for every later sighting', async () => {
+  const n = mk(k => [sight(`b${k}`, 'rB', 'w2'), sight(`c${k}`, 'rB', 'w3')]);
+  await chance(n, 'x-p2', 'w3', 'search', 2000); // w3 searched and read the note in another task, before writing at 5000
+  const c = await NM.countFor(T.E, T.row(n));
+  assert.deepStrictEqual(c.excluded.map(e => [e.writer, e.shown_by]), [['worker:w3', 'search']]);
+  assert.deepStrictEqual([c.tasks, c.runs], [2, 2]);
+  assert.strictEqual(hits(await nominate(), n).length, 0);
+});
+
+test('P1: the author repeating its own note in a later task is not a second sighting', async () => {
+  const n = T.note('p1 self echo', { task_id: 'a-p1', run_id: 'rA', created_at: 1000, written_by: 'worker:w1', seen_in: [sight('b-p1', 'rA', 'w1'), sight('c-p1', 'rB', 'w7')] });
+  const c = await NM.countFor(T.E, T.row(n));
+  assert.deepStrictEqual([c.tasks, c.runs], [2, 2]);
+  assert.deepStrictEqual(c.excluded.map(e => [e.writer, e.shown_by]), [['worker:w1', 'earlier_sighting']]);
+  // and a second writer's own second task is the same
+  const m = mk(k => [sight(`b${k}`, 'rB', 'w2'), sight(`c${k}`, 'rB', 'w2')]);
+  assert.strictEqual((await NM.countFor(T.E, T.row(m))).tasks, 2);
+});
+
+test('a sighting from a run that did not record delivery facts is not counted, and the row says how many', async () => {
+  const off = mk(k => [sight(`b${k}`, 'rB', 'w2'), sight(`c${k}`, 'rOff', 'w3'), sight(`d${k}`, 'no-such-run', 'w4')]);
+  const c = await NM.countFor(T.E, T.row(off));
+  assert.deepStrictEqual(c.unrecorded.map(u => u.writer).sort(), ['worker:w3', 'worker:w4']);
+  assert.deepStrictEqual([c.tasks, c.runs], [2, 2]);
+  assert.strictEqual(hits(await nominate(), off).length, 0, 'no nomination from facts that were never recorded');
+  const ok = mk(k => [sight(`b${k}`, 'rB', 'w2'), sight(`c${k}`, 'rOff', 'w3'), sight(`d${k}`, 'rC', 'w4')]);
+  const h = hits(await nominate(), ok)[0];
+  assert.strictEqual(h.body.counts.unrecorded, 1);
+  assert.deepStrictEqual([h.body.counts.tasks], [3]);
+  const p = await T.call(T.who.operator('propose'), 'memory.proposals', { project: PROJECT });
+  assert.strictEqual(p.nominations.find(x => x.body.note_id === ok).body.counts.unrecorded, 1);
+});
+
+test('an index receipt shows a writer the note even with no note_chance (the archived duplicate\'s author too)', async () => {
+  const n = mk(k => [sight(`b${k}`, 'rB', 'w2'), sight(`c${k}`, 'rA', 'w3', { transferred_from: 'gone-pending' })]);
+  const task = T.body(n).seen_in[1].task_id;
+  await T.call(callerFor('orchestrator', { run_id: 'rA' }), 'memory.recordEvent', { kind: 'index_injected', worker_id: 'w3', task_id: 'earlier-task', row_ids: [n] });
+  T.store.p("UPDATE memory_event SET written_at = 4000 WHERE kind = 'index_injected' AND task_id = 'earlier-task' AND worker_id = 'w3'").run();
+  const c = await NM.countFor(T.E, T.row(n));
+  assert.deepStrictEqual(c.excluded.map(e => [e.task_id, e.shown_by]), [[task, 'index']]);
 });
 
 test('transferred sightings count, and their history answers for the archived duplicate', async () => {
@@ -138,17 +186,21 @@ test('memory.promote: operator only, needs a nomination, and an approval needs a
   const n = mk(k => [sight(`b${k}`, 'rB', 'w2'), sight(`c${k}`, 'rA', 'w3')]);
   await nominate();
   const dec = { note_id: n, decision: 'approve', reason: 'ok' };
+  await assert.rejects(T.call(callerFor('operator', { run_id: 'lc-propose', channel: 'harness' }), 'memory.notePromote', dec), x => x.code === 'E_ROLE', 'P3: the run process is not the operator at a terminal');
+  await assert.rejects(T.call(callerFor('operator', { run_id: 'lc-propose', channel: 'harness' }), 'memory.notePromote', { note_id: n, decision: 'reject' }), x => x.code === 'E_ROLE');
+  assert.strictEqual(T.body(n).promoted_to, undefined);
   for (const caller of [T.who.tool('propose'), T.who.harness('propose'), callerFor('worker', { run_id: 'lc-propose', worker_id: 'w1' })]) {
-    await assert.rejects(T.call(caller, 'memory.promote', dec), x => x.code === 'E_ROLE', 'only the operator decides');
+    await assert.rejects(T.call(caller, 'memory.notePromote', dec), x => x.code === 'E_ROLE', 'only the operator decides');
   }
-  await assert.rejects(T.call(T.who.operator('propose'), 'memory.promote', dec), x => x.code === 'E_ARGS' && /no drafted rule/.test(x.message));
-  await assert.rejects(T.call(T.who.operator('propose'), 'memory.promote', { note_id: n, decision: 'maybe' }), x => x.code === 'E_ARGS');
-  await assert.rejects(T.call(T.who.operator('propose'), 'memory.promote', { note_id: n, decision: 'approve', extra: 1 }), x => x.code === 'E_ARGS');
+  await assert.rejects(T.call(T.who.operator('propose'), 'memory.notePromote', dec), x => x.code === 'E_ARGS' && /no drafted rule/.test(x.message));
+  await assert.rejects(T.call(T.who.operator('propose'), 'memory.notePromote', { note_id: n, decision: 'maybe' }), x => x.code === 'E_ARGS');
+  await assert.rejects(T.call(T.who.operator('propose'), 'memory.notePromote', { note_id: n, decision: 'approve', extra: 1 }), x => x.code === 'E_ARGS');
   const plain = T.note('never nominated');
-  await assert.rejects(T.call(T.who.operator('propose'), 'memory.promote', { note_id: plain, decision: 'reject' }), x => x.code === 'E_ARGS' && /never nominated/.test(x.message));
+  await assert.rejects(T.call(T.who.operator('propose'), 'memory.notePromote', { note_id: plain, decision: 'reject' }), x => x.code === 'E_ARGS' && /never nominated/.test(x.message));
   assert.strictEqual(T.body(n).promoted_to, undefined, 'nothing was written by the refusals');
 });
 
+const stateOf = id => JSON.parse(T.store.p("SELECT body FROM memory_entries WHERE type = 'nomination' AND json_extract(body, '$.note_id') = ? ORDER BY created_at DESC, rowid DESC").get(id).body).state;
 const draft = (run, id, rule, target) => T.call(T.who.harness(run), 'memory.scrubApply', { scrub: [{ id, action: 'draft', reason: 'the lesson holds', draft: { rule, target } }], scope: [id], ...T.evidence });
 
 test('nominationsForScope lists the nominated notes that still need a draft, and stops asking once drafted or decided', async () => {
@@ -172,7 +224,7 @@ test('approve sets promoted_to from the draft and closes the nomination with a r
   await nominate();
   await draft('apply', n, 'Mock the gate in unit tests.', 'CLAUDE.md');
   const before = fs.readdirSync(T.repo).sort();
-  const r = await T.call(T.who.operator('propose'), 'memory.promote', { note_id: n, decision: 'approve', reason: 'seen by three workers' });
+  const r = await T.call(T.who.operator('propose'), 'memory.notePromote', { note_id: n, decision: 'approve', reason: 'seen by three workers' });
   assert.deepStrictEqual([r.note_id, r.decision, r.receipt.kind, r.receipt.by, r.receipt.reason], [n, 'approve', 'approve', 'operator', 'seen by three workers']);
   assert.deepStrictEqual([r.promoted_to.target, r.promoted_to.text, typeof r.promoted_to.at], ['CLAUDE.md', 'Mock the gate in unit tests.', 'number']);
   assert.deepStrictEqual(T.body(n).promoted_to, r.promoted_to, 'the row on disk says the same');
@@ -181,18 +233,59 @@ test('approve sets promoted_to from the draft and closes the nomination with a r
   assert.strictEqual(r.receipt.draft.source, 'draft');
   assert.deepStrictEqual(fs.readdirSync(T.repo).sort(), before, 'no instruction file is created or edited');
   assert.strictEqual(T.row(n).namespace, `project/${PROJECT}`, 'the note stays; the index filter reads promoted_to');
-  await assert.rejects(T.call(T.who.operator('propose'), 'memory.promote', { note_id: n, decision: 'approve' }), x => x.code === 'E_ARGS' && /promoted/.test(x.message), 'decided once');
+  await assert.rejects(T.call(T.who.operator('propose'), 'memory.notePromote', { note_id: n, decision: 'approve' }), x => x.code === 'E_ARGS' && /promoted/.test(x.message), 'decided once');
   const again = await nominate();
   assert.strictEqual(hits(again, n).length, 0);
   assert.strictEqual(skippedFor(again, n).reason, 'promoted');
   assert.ok(!NM.nominationsForScope(T.E, PROJECT).some(x => x.id === n));
 });
 
+test('P4: approve refuses a note that was refuted, held, or superseded after its nomination; the nomination can still be rejected', async () => {
+  for (const [how, patch] of [['refuted', n => T.store.p("UPDATE memory_entries SET status = 'refuted' WHERE id = ?").run(n)], ['held', n => T.store.patchBody(n, b => { b.held = { row: 'h', kind: 'wrong' }; return b; })], ['superseded', n => T.store.patchBody(n, b => { b.superseded_by = 'newer'; return b; })]]) {
+    const n = mk(k => [sight(`b${k}`, 'rB', 'w2'), sight(`c${k}`, 'rA', 'w3')]);
+    await nominate();
+    await draft('apply', n, `P4 rule ${how}.`, 'CLAUDE.md');
+    patch(n);
+    const p = await T.call(T.who.operator('propose'), 'memory.proposals', { project: PROJECT });
+    assert.strictEqual(p.nominations.find(x => x.body.note_id === n).note_state, how, 'proposals shows the note\'s state beside the nomination');
+    await assert.rejects(T.call(T.who.operator('propose'), 'memory.notePromote', { note_id: n, decision: 'approve' }), x => x.code === 'E_ARGS' && x.message.includes(how));
+    assert.strictEqual(T.body(n).promoted_to, undefined);
+    assert.strictEqual(stateOf(n), 'nominated');
+    const r = await T.call(T.who.operator('propose'), 'memory.notePromote', { note_id: n, decision: 'reject', reason: how });
+    assert.strictEqual(r.nomination.body.state, 'rejected');
+  }
+});
+
+test('approve refuses a drafted target that is absolute or outside the project', async () => {
+  for (const target of ['../outside.md', 'C:/Windows/x.md', '/etc/x']) {
+    const n = mk(k => [sight(`b${k}`, 'rB', 'w2'), sight(`c${k}`, 'rA', 'w3')]);
+    await nominate(); await draft('apply', n, 'Unsafe target rule.', target);
+    await assert.rejects(T.call(T.who.operator('propose'), 'memory.notePromote', { note_id: n, decision: 'approve' }), x => x.code === 'E_ARGS' && /outside the project/.test(x.message), target);
+  }
+});
+
+test('P5/P6: textPresent follows no link out of the root; a name starting with two dots is fine', () => {
+  const base = fs.mkdtempSync(`${require('node:os').tmpdir()}/b4link-`);
+  try {
+    const root = `${base}/root`, outside = `${base}/outside`;
+    fs.mkdirSync(root); fs.mkdirSync(outside);
+    fs.writeFileSync(`${outside}/secret.txt`, 'the secret phrase is swordfish\n');
+    fs.symlinkSync(outside, `${root}/link`, 'junction');
+    assert.strictEqual(PN.textPresent(root, 'link/secret.txt', 'swordfish').state, 'target_unsafe');
+    assert.strictEqual(PN.textPresent(root, 'link/secret.txt', 'marlin').state, 'target_unsafe', 'present and absent look the same from outside');
+    fs.writeFileSync(`${root}/..notes.md`, 'rule here\n');
+    assert.strictEqual(PN.textPresent(root, '..notes.md', 'rule here').state, 'present');
+    fs.mkdirSync(`${root}/real`); fs.writeFileSync(`${root}/real/f.md`, 'inside rule\n');
+    assert.strictEqual(PN.textPresent(root, 'real/f.md', 'inside rule').state, 'present');
+    assert.strictEqual(PN.textPresent(root, '../outside/secret.txt', 'swordfish').state, 'target_unsafe');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
 test('reject closes the nomination; no renomination until a new independent sighting, and a shown one does not count', async () => {
   const n = mk(k => [sight(`b${k}`, 'rB', 'w2'), sight(`c${k}`, 'rA', 'w3')]);
   const first = await nominate();
   const old = hits(first, n)[0];
-  const r = await T.call(T.who.operator('propose'), 'memory.promote', { note_id: n, decision: 'reject', reason: 'too project specific' });
+  const r = await T.call(T.who.operator('propose'), 'memory.notePromote', { note_id: n, decision: 'reject', reason: 'too project specific' });
   assert.deepStrictEqual([r.decision, r.receipt.kind, r.receipt.reason, r.nomination.body.state], ['reject', 'reject', 'too project specific', 'rejected']);
   assert.strictEqual(r.promoted_to, undefined);
   assert.strictEqual(T.body(n).promoted_to, undefined);
@@ -212,7 +305,7 @@ test('reject closes the nomination; no renomination until a new independent sigh
   assert.strictEqual(T.row(old.id).type, 'nomination', 'the rejected nomination is kept');
   assert.strictEqual(JSON.parse(T.row(old.id).body).state, 'rejected');
   // and the second rejection does not forget the first
-  await T.call(T.who.operator('propose'), 'memory.promote', { note_id: n, decision: 'reject' });
+  await T.call(T.who.operator('propose'), 'memory.notePromote', { note_id: n, decision: 'reject' });
   assert.strictEqual(skippedFor(await nominate(), n).reason, 'rejected, and no new independent sighting since');
 });
 
@@ -242,13 +335,14 @@ test('promotedCheck reports a promoted note whose text left its file, a missing 
   const mkP = async (rule, target) => {
     const n = mk(k => [sight(`b${k}`, 'rB', 'w2'), sight(`c${k}`, 'rA', 'w3')]);
     await nominate(); await draft('apply', n, rule, target);
-    await T.call(T.who.operator('propose'), 'memory.promote', { note_id: n, decision: 'approve' });
+    await T.call(T.who.operator('propose'), 'memory.notePromote', { note_id: n, decision: 'approve' });
     return n;
   };
   const kept = await mkP('Keep the manifest sorted.', 'KEEP.md');
   const gone = await mkP('Never retry the loader twice.', 'GONE.md');
   const nofile = await mkP('Run the gate suite last.', 'MISSING.md');
-  const unsafe = await mkP('Escape hatch rule here.', '../outside.md');
+  const unsafe = await mkP('Escape hatch rule here.', 'unsafe-placeholder.md');
+  T.store.patchBody(unsafe, b => { b.promoted_to.target = '../outside.md'; return b; });
   fs.writeFileSync(`${T.repo}/KEEP.md`, 'Keep the manifest sorted.\n');
   fs.writeFileSync(`${T.repo}/GONE.md`, 'Something else entirely now.\n');
   const before = T.store.p('SELECT COUNT(*) AS c, MAX(updated_at) AS u FROM memory_entries').get();

@@ -19,7 +19,8 @@
 const L =require('./memory-lifecycle.cjs');
 const C = require('./lifecycle-common.cjs');
 const { parse } = require('./memory-facts.cjs');
-const { noteDeliveries } = require('./memory-chances.cjs');
+const { noteDeliveries, sinkOf } = require('./memory-chances.cjs');
+const { leversOf } = require('./methods-memory.cjs');
 
 const MIN_TASKS = 3, MIN_RUNS = 2;
 const LIST_MAX = 200;
@@ -60,25 +61,44 @@ function countSightings(E, row, deliveries) {
       ...(s.transferred_from ? { transferred_from: s.transferred_from } : {}), at: writtenAt(E, s), shown: s.in_index_beforehand === true,
     });
   }
-  const seen = new Set(), sightings = [], excluded = [];
+  const seen = new Set(), known = new Set(), sightings = [], excluded = [], unrecorded = [];
+  const recorded = new Map();
+  const sinkOn = run => {
+    if (!recorded.has(run)) recorded.set(run, sinkOf(leversOf(E, { run_id: run })) !== 'off');
+    return recorded.get(run);
+  };
   for (const c of candidates) {
     const key = keyOf(c.task_id, c.writer);
     if (seen.has(key)) continue; // the same writer in the same task counts once, the first record deciding
     seen.add(key);
-    let why = c.shown ? 'index' : null;
     const wid = workerOf(c.writer);
+    let why = null;
+    // A writer who authored the note, or already holds a sighting of it, knows it for every later sighting.
+    if (known.has(c.writer)) why = 'earlier_sighting';
+    known.add(c.writer);
+    // A run that did not record full delivery facts (notes_sink off) cannot show a sighting independent: not counted.
+    if (!why && !sinkOn(c.run_id)) { unrecorded.push({ key, task_id: c.task_id, writer: c.writer, run_id: c.run_id }); continue; }
+    if (!why && c.shown) why = 'index';
     if (!why && wid) {
-      // A delivery with no time (a search or retrieve the stream did not stamp) is taken as before the write.
-      const d = deliveries.find(x => x.task_id === c.task_id && x.worker_id === wid && (x.delivered_at == null || x.delivered_at <= c.at));
+      // By writer, in any task, at or before the write. A delivery with no time is taken as before it.
+      const d = deliveries.find(x => x.worker_id === wid && (x.delivered_at == null || x.delivered_at <= c.at));
       if (d) why = d.route || 'index';
     }
+    if (!why && wid && indexShown(E, row.id, c.run_id, wid, c.at)) why = 'index';
     if (why) { excluded.push({ key, task_id: c.task_id, writer: c.writer, shown_by: why }); continue; }
     sightings.push({ key, task_id: c.task_id, run_id: c.run_id, writer: c.writer, via: c.via, ...(c.transferred_from ? { transferred_from: c.transferred_from } : {}) });
   }
   return {
-    sightings, excluded, keys: sightings.map(s => s.key),
+    sightings, excluded, unrecorded, keys: sightings.map(s => s.key),
     tasks: new Set(sightings.map(s => s.task_id)).size, runs: new Set(sightings.map(s => s.run_id)).size,
   };
+}
+
+// Did an index receipt of this run and worker list the note at or before the write? Recorded whatever the sink says.
+function indexShown(E, noteId, runId, workerId, at) {
+  let evs;
+  try { evs = E.store.p("SELECT row_ids FROM memory_event WHERE kind = 'index_injected' AND ok = 1 AND run_id = ? AND worker_id = ? AND written_at <= ?").all(runId, workerId, at); } catch { return false; }
+  return evs.some(ev => { try { return JSON.parse(ev.row_ids).includes(noteId); } catch { return false; } });
 }
 
 const meets = c => c.tasks >= MIN_TASKS && c.runs >= MIN_RUNS;
@@ -128,7 +148,7 @@ async function nominate(E, caller, args) {
         title: `nomination: ${row.id}`,
         body: {
           state: 'nominated', note_id: row.id, run_id: runId, at: Date.now(), previous: prior ? prior.id : null,
-          counts: { tasks: counted.tasks, runs: counted.runs, sightings: counted.sightings.length, excluded: counted.excluded.length },
+          counts: { tasks: counted.tasks, runs: counted.runs, sightings: counted.sightings.length, excluded: counted.excluded.length, unrecorded: counted.unrecorded.length },
           sightings: counted.sightings.slice(-SIGHTINGS_KEEP), excluded: counted.excluded.slice(-SIGHTINGS_KEEP), keys: counted.keys,
         },
       });
@@ -182,7 +202,9 @@ function listNominations(E, project, all) {
     if (!body.note_id || seen.has(k)) continue;
     seen.add(k);
     if (!all && body.state !== 'nominated') continue;
-    out.push({ id: r.id, project: p, run_id: r.run_id, created_at: r.created_at, body, drafts: draftsFor(E, p, body.note_id, r.created_at) });
+    const note = E.store.p('SELECT namespace, status, body FROM memory_entries WHERE id = ?').get(body.note_id);
+    const note_state = !note ? 'missing' : note.namespace !== `project/${p}` ? `in ${note.namespace}` : (notCandidate(note, parse(note.body) || {}) || 'live');
+    out.push({ id: r.id, project: p, run_id: r.run_id, created_at: r.created_at, body, note_state, drafts: draftsFor(E, p, body.note_id, r.created_at) });
     if (out.length >= LIST_MAX) break;
   }
   return out;
