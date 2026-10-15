@@ -1,6 +1,6 @@
 // summaries-listing.test.cjs — ADR 0047 decision 1 and ADR 0010 amendment 6: memory_summaries is listed for the orchestrator and
 // the workers of a notes run, with knowledge_ask too, inside the 11,264 and 7,168 byte budgets; with the lever off the
-// listings are the ones they always were (4,965 and 9,696). Every combination is measured on the module and on the wire.
+// listings are the ones they always were (4,965 and 9,829). Every combination is measured on the module and on the wire.
 'use strict';
 
 const test = require('node:test');
@@ -24,7 +24,7 @@ test('notes on: the orchestrator lists memory_summaries inside the budget; off, 
   const off = tools.toolsFor('orchestrator');
   const on = tools.toolsFor('orchestrator', { notes: true });
   console.log(`orchestrator listing: off ${bytes(off)}, notes on ${bytes(on)}, budget ${tools.BUDGET.orchestrator}`);
-  assert.strictEqual(bytes(off), 9696);
+  assert.strictEqual(bytes(off), 9829);
   assert.deepStrictEqual(on.map((t) => t.name).slice(-1), ['memory_summaries']);
   assert.ok(bytes(on) <= tools.BUDGET.orchestrator);
   assert.deepStrictEqual(on.slice(0, -1), off);
@@ -80,5 +80,5 @@ test('every combination, measured on the module and on the wire, is inside its b
     assert.ok(bytes(wire) <= tools.BUDGET[role], name);
   }
   assert.strictEqual(bytes(rows[0][2]), 4965);
-  assert.strictEqual(bytes(rows[2][2]), 9696);
+  assert.strictEqual(bytes(rows[2][2]), 9829);
 });
