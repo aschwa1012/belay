@@ -19,6 +19,7 @@ const { spawn } = require('node:child_process');
 const H = require('./stop-helpers.cjs');
 const { openCore } = require('../../src/core/index.cjs');
 const P = require('../../src/run/process.cjs');
+const ID = require('../../src/core/proc-identity.cjs');
 const cmdRun = require('../../src/cli/cmd-run.cjs');
 const cmdStop = require('../../src/cli/cmd-stop.cjs');
 const cmdPause = require('../../src/cli/cmd-pause.cjs');
@@ -189,13 +190,21 @@ test('SIGINT and SIGBREAK are recorded, never acted on: the launcher stays, and 
 }));
 
 test('SIGHUP: the fast close kills workers by pid, closes the row, and ends with the console-closed cause', async (t) => withRun(t, async (dir) => {
-  const r = start(dir, { env: { FAKE_HOLD_MS: '800' } });
   const w = sleeper();
   let core;
+  let r = null;
+  // ADR 0048 decision 8 (b): the 3500 ms fast close is a product budget that includes its snapshot, so this test supplies
+  // the SIGHUP's snapshot (a real one, taken now) through the same seam the fast-close test uses, and never depends on
+  // how long CIM takes. The no-fit path has its own test (run-interactive-nofit.test.cjs).
+  const realShared = P.snapshotShared;
   try {
+    const pre = await ID.processSnapshot(); // before the run starts, so its time is nobody's bound
+    assert.ok(pre && pre.get(w.pid), 'precondition: the snapshot could not read the sleeper');
+    r = start(dir, { env: { FAKE_HOLD_MS: '800' } });
     assert.ok(await waitUntil(() => r.record(), 15000));
     core = await openCore({ dataDir: r.dataDir, caller: { role: 'orchestrator', run_id: r.runId, pid: process.pid } });
     assert.ok(await waitUntil(async () => (await core.run.get()).run, 15000));
+    P.snapshotShared = () => Promise.resolve(pre);
     await core.worker.write({ id: 'w-hup', run_id: r.runId, substrate: 'claude-code', pid: w.pid, pid_image: 'node.exe', state: 'running', turns: 0, started_at: Date.now() });
     process.emit('SIGHUP');
     const res = await r.done;
@@ -207,7 +216,7 @@ test('SIGHUP: the fast close kills workers by pid, closes the row, and ends with
     const row = currentRunRow(r.dataDir, r.runId);
     assert.ok(row.ended_at != null && row.exit_reason === 'console closed (fast close)');
     assert.ok(!fs.existsSync(`${r.dataDir}/owner.lock`));
-  } finally { require('../crash.cjs').crash(w); await releaseCore(core); }
+  } finally { P.snapshotShared = realShared; require('../crash.cjs').crash(w); await releaseCore(core); }
 }));
 
 test('closeRunWorkers: with `fast`, the adapter wait is skipped, or cut short when the request arrives during it', async () => {

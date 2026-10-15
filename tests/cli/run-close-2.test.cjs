@@ -33,7 +33,8 @@ test('run close: a pid still alive after its kill is named in still_alive (kill 
       waitPidGone: async () => null,
     };
     const out = await closeRunWorkers({ core: stub(process.pid, [row('w1', w.pid)]), runId: 'r1', graceMs: 100, deps });
-    assert.deepStrictEqual(out.still_alive, [{ worker_id: 'w1', pid: w.pid }]);
+    assert.deepStrictEqual(out.still_alive.map((x) => ({ worker_id: x.worker_id, pid: x.pid, outcome: x.outcome })), [{ worker_id: 'w1', pid: w.pid, outcome: 'not_signalled_still_alive' }]);
+    assert.match(out.still_alive[0].manual, /belay worker kill w1/);
     assert.strictEqual(out.killed[0].gone, false);
     assert.deepStrictEqual(calls, [['proc', w.pid, null, ['claude.exe']]], 'killed through the row identity (ADR 0039): its pid, no creation time recorded, the substrate images');
   } finally { if (P.pidAlive(w.pid)) require('../crash.cjs').crash(w); }

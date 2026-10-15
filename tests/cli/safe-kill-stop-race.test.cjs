@@ -31,7 +31,7 @@ test('stop vs fast close: the second killer waits, re-snapshots and finds the wo
   // The worker and its descendant: the descendant's pid is the one nothing holds.
   const src = `const{spawn}=require('child_process');const k=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});require('fs').writeFileSync(${JSON.stringify(kidFile)},String(k.pid));setInterval(()=>{},1000);`;
   const w = spawn(process.execPath, ['-e', src], { windowsHide: true, stdio: 'ignore' });
-  const realRun = RP.processSnapshot;
+  const realRun = RP.snapshotShared;
   const ce = makeConsole();
   let stopKill = null;
   try {
@@ -42,7 +42,8 @@ test('stop vs fast close: the second killer waits, re-snapshots and finds the wo
     const row = { id: 'w-race', run_id: 'r', substrate: 'claude-code', state: 'running', pid: w.pid, pid_created: pre.get(w.pid).created, pid_image: 'node.exe' };
     // The console's SIGHUP snapshot is `pre`: taken before the stop's kill, as on a host where it began at the SIGHUP.
     let consoleSnaps = 0;
-    RP.processSnapshot = (...a) => { consoleSnaps++; return consoleSnaps === 1 ? Promise.resolve(pre) : realRun(...a); };
+    // Stamped on the real gate's counter at the SIGHUP, so the stop's later signal makes it stale at use (ADR 0048 rule 4).
+    RP.snapshotShared = (...a) => { consoleSnaps++; return consoleSnaps === 1 ? Promise.resolve({ snap: pre, startSeq: P.gate.stamp(), error: null }) : realRun(...a); };
     ce.install();
     process.emit('SIGHUP');
     let lists = 0;
@@ -75,7 +76,7 @@ test('stop vs fast close: the second killer waits, re-snapshots and finds the wo
     assert.ok(['absent', 'no_budget', 'unverifiable'].includes(out.killed[0].kind), JSON.stringify(out.killed));
     assert.ok(!RP.pidAlive(w.pid) && !RP.pidAlive(kid), 'the stop did not end the worker and its descendant');
   } finally {
-    RP.processSnapshot = realRun; ce.dispose();
+    RP.snapshotShared = realRun; ce.dispose();
     if (stopKill) await stopKill.catch(() => {});
     require('../crash.cjs').crash(w); // its handle, if it is still live
     if (prevLog === undefined) delete process.env.BELAY_KILL_LOG; else process.env.BELAY_KILL_LOG = prevLog;

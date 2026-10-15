@@ -1,6 +1,7 @@
 'use strict';
 // crash.test.cjs — ADR 0039: the test helper that plays "the outside world" signals only what it can prove.
 
+const { readCreated } = require('../helpers/created.cjs');
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { spawn } = require('node:child_process');
@@ -49,7 +50,7 @@ test('crash: a live handle, or a pid with its true creation time, is signalled',
   const b = sleeper();
   try {
     await sleep(300);
-    const made = await P.createdOf(b.pid);
+    const made = await readCreated(b.pid);
     assert.strictEqual(crash(b.pid, made.created), true);
     await new Promise((r) => b.once('exit', r));
   } finally { if (running(b)) b.kill(); }
