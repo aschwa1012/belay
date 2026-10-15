@@ -148,9 +148,9 @@ test('a supersede chain moves whole: the stale row does not come back in the run
   const find = async (ns, q) => (await call('memory.search', orch, { query: q, mode: 'keyword', namespaces: [ns], include_superseded: true })).results.map((x) => x.id);
   const out = await promote([b.id]); // only the newest is named
   assert.deepStrictEqual(out.moved.map((m) => m.id).sort(), [a.id, b.id].sort());
-  assert.deepStrictEqual(await find(`run/${RUN}`, 'the ferry leaves'), [], 'neither is left behind in the run');
-  assert.deepStrictEqual((await find('project/acme', 'the ferry leaves')).sort(), [a.id, b.id].sort());
-  const plain = (await call('memory.search', orch, { query: 'the ferry leaves', mode: 'keyword', namespaces: ['project/acme'] })).results.map((x) => x.id);
+  assert.deepStrictEqual(await find(`run/${RUN}`, 'leaves'), [], 'neither is left behind in the run');
+  assert.deepStrictEqual((await find('project/acme', 'leaves')).sort(), [a.id, b.id].sort());
+  const plain = (await call('memory.search', orch, { query: 'leaves', mode: 'keyword', namespaces: ['project/acme'] })).results.map((x) => x.id);
   assert.deepStrictEqual(plain, [b.id], 'A is still superseded by B in the project');
 });
 

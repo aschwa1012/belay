@@ -234,7 +234,7 @@ test('a query with no term of three characters is E_QUERY_SHORT by name, never a
   assert.strictEqual(h.absence_established, false);
   const mixed = await call('memory.search', { namespace: 'n1', query: 'ab pidAlive', mode: 'keyword' });
   assert.deepStrictEqual(ids(mixed), [rows.pid.id]);
-  assert.deepStrictEqual(mixed.searched.keyword_terms_dropped, ['ab'], 'a dropped short term is named');
+  assert.deepStrictEqual(mixed.searched.keyword_terms_dropped, [{ term: 'ab', reason: 'too-short' }], 'a dropped short term is named');
 });
 
 test('FTS syntax characters in a query are searched as text and cannot inject', async () => {

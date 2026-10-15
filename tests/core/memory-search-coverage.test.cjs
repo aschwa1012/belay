@@ -31,15 +31,15 @@ test('absence is not established while in-scope rows have no vector: the row cou
     // The embed:false shape: keyword-findable, semantic-invisible. No vector, so the namespace has no model binding.
     store.store({ namespace: 'n', worker_id: 'w', text: 'The owner pipe wedges when the loop blocks on CreateProcess' });
     store.store({ namespace: 'n', worker_id: 'w', text: 'Retry the ping twice before reporting the owner lost' });
-    const r = await search(E, { namespace: 'n', query: 'why does the owner pipe wedge', mode: 'hybrid' });
+    const r = await search(E, { namespace: 'n', query: 'zzzqqq xxxyyy', mode: 'hybrid' });
     assert.strictEqual(r.searched.rows_considered, 2);
     assert.strictEqual(r.scanned, 0);
     assert.strictEqual(r.absence_established, false, 'a semantic scan that saw no row cannot join in establishing absence');
     assert.strictEqual(r.searched.rows_without_vector, 2);
     assert.match(r.warning, /^2 in-scope rows have no vector/);
     assert.match(r.warning, /does not mean no such memory/);
-    const k = await search(E, { namespace: 'n', query: 'owner pipe', mode: 'keyword' });
-    assert.strictEqual(k.results.length, 1, 'the row the hybrid query missed is findable by keyword');
+    const k = await search(E, { namespace: 'n', query: 'CreateProcess', mode: 'keyword' });
+    assert.strictEqual(k.results.length, 1, 'the row is findable by keyword');
     // One embedded row beside an unembedded one: the namespace is bound, yet the unembedded row is still uncovered.
     await E.handle('memory.store', { caller: orch, namespace: 'm', text: 'embedded row', embedding: [1, 0, 0], embedding_model: 'm', dim: 3 });
     store.store({ namespace: 'm', worker_id: 'w', text: 'plain unembedded row' });
@@ -104,7 +104,7 @@ test('a wedged owner (live pid, no pipe): hybrid answers from the copy naming E_
     assert.strictEqual(h.absence_established, false);
     assert.strictEqual(Object.keys(h)[0], 'warning');
     await assert.rejects(c.memory.search({ query: 'owner pipe', mode: 'semantic' }), e => e.code === 'E_OWNER_LOST');
-    const k = await c.memory.search({ query: 'owner pipe', mode: 'keyword' });
+    const k = await c.memory.search({ query: 'CreateProcess', mode: 'keyword' });
     assert.strictEqual(k.results.length, 1);
     assert.strictEqual(k.modes_failed.length, 0);
     await c.close(); c = null;
@@ -132,4 +132,17 @@ test("the owner's own hybrid search that times out answers from keyword with E_T
     assert.match(h.warning, /^semantic search did not run \(E_TIMEOUT\)/);
     await assert.rejects(c.memory.search({ query: 'owner pipe', mode: 'semantic' }), e => e.code === 'E_TIMEOUT');
   } finally { if (c) { c.owner = null; await c.close(); } if (store) store.close(); cleanup(dir); }
+});
+
+test('a natural keyword query matches a row holding only some of its terms and ranks the row with more of them first', async () => {
+  const dir = sandbox();
+  const { store, E } = engineOver(dir);
+  try {
+    store.store({ namespace: 'n', worker_id: 'w', text: 'The owner pipe wedges when the loop blocks on CreateProcess' });
+    store.store({ namespace: 'n', worker_id: 'w', text: 'Retry the ping twice before reporting the owner lost' });
+    store.store({ namespace: 'n', worker_id: 'w', text: 'Unrelated note about cache eviction order' });
+    const k = await search(E, { namespace: 'n', query: 'why does the owner pipe wedge when CreateProcess blocks', mode: 'keyword' });
+    assert.strictEqual(k.results.length, 2, 'the row with only "owner" matches too');
+    assert.match(k.results[0].text, /CreateProcess/, 'the row with more of the rare terms leads');
+  } finally { store.close(); cleanup(dir); }
 });

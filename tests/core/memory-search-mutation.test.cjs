@@ -122,7 +122,7 @@ test('the result echoes the filter and namespaces searched, and the dropped keyw
   const r = await call('memory.search', { namespace: 'kw', query: 'needle ab', mode: 'keyword', filter });
   assert.deepStrictEqual(r.searched.filter, filter);
   assert.deepStrictEqual(r.searched.namespaces, ['kw']);
-  assert.deepStrictEqual(r.searched.keyword_terms_dropped, ['ab']);
+  assert.deepStrictEqual(r.searched.keyword_terms_dropped, [{ term: 'ab', reason: 'too-short' }]);
   assert.strictEqual(r.searched.fts, true);
   const none = await call('memory.search', { namespace: 'kw', query: 'needle', mode: 'keyword' });
   assert.deepStrictEqual(none.searched.filter, {});
