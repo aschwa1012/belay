@@ -12,15 +12,16 @@ const path = require('node:path');
 
 const IS_WINDOWS = process.platform === 'win32';
 const { createGate } = require('./snapshot-gate.cjs');
-// ADR 0048 decision 1: one attempt. BELAY_SNAPSHOT_TIMEOUT_MS overrides the default: a positive integer, floor 1000 ms;
+// ADR 0048 decision 1: one attempt. BELAY_SNAPSHOT_TIMEOUT_MS overrides the default: a positive integer, floor 1000 ms, ceiling 600000 ms;
 // anything else is ignored, the default is used, and the ignored text is kept in SNAPSHOT_TIMEOUT_IGNORED for the log.
 const DEFAULT_SNAPSHOT_TIMEOUT_MS = 15000;
 const MIN_SNAPSHOT_TIMEOUT_MS = 1000;
+const MAX_SNAPSHOT_TIMEOUT_MS = 600000; // a larger value would overflow a timer (Node clamps it to 1 ms) long before it was useful
 function readSnapshotTimeout(raw) {
   if (raw == null || raw === '') return { ms: DEFAULT_SNAPSHOT_TIMEOUT_MS, ignored: null };
   const t = String(raw).trim();
   const n = /^[0-9]+$/.test(t) ? Number(t) : NaN;
-  if (Number.isSafeInteger(n) && n >= MIN_SNAPSHOT_TIMEOUT_MS) return { ms: n, ignored: null };
+  if (Number.isSafeInteger(n) && n >= MIN_SNAPSHOT_TIMEOUT_MS && n <= MAX_SNAPSHOT_TIMEOUT_MS) return { ms: n, ignored: null };
   return { ms: DEFAULT_SNAPSHOT_TIMEOUT_MS, ignored: String(raw).slice(0, 40) };
 }
 const SNAPSHOT_TIMEOUT = readSnapshotTimeout(process.env.BELAY_SNAPSHOT_TIMEOUT_MS);

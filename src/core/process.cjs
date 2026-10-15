@@ -59,15 +59,17 @@ const unreadable = (pid, m) => (m && m.stale ? `signals in this process kept lan
 
 // What the operator can do by hand about a process belay will not kill because nothing proves what it is: the
 // pid, the image belay expected, and the exact way to end it once they have confirmed that image themselves.
-function manualStopHint(pid, image, why = '') {
+// `holderPid` is the pid of the adapter that holds the worker's live child handle (the row's adapter_pid). A pending
+// creation-time read is retried only by that process, so "try again shortly" is said only while it is alive.
+function manualStopHint(pid, image, why = '', holderPid = null) {
   const img = (Array.isArray(image) ? image : [image]).filter(Boolean).join(' or ') || 'the program you expect';
-  return `belay will not kill pid ${pid}: it cannot prove the process is the one it started. If pid ${pid} is still running and its image is ${img} (check Task Manager > Details, or Get-Process -Id ${pid}), end it by hand: Stop-Process -Id ${pid}${/retrying while the worker runs/.test(String(why)) ? '. The row may be verified shortly: its creation time is still being read, so try `belay worker kill` again in a minute' : ''}`;
+  return `belay will not kill pid ${pid}: it cannot prove the process is the one it started. If pid ${pid} is still running and its image is ${img} (check Task Manager > Details, or Get-Process -Id ${pid}), end it by hand: Stop-Process -Id ${pid}${/retrying while the worker runs/.test(String(why)) && Number.isInteger(holderPid) && pidAlive(holderPid) ? '. The row may be verified shortly: its creation time is still being read, so try `belay worker kill` again in a minute' : ''}`;
 }
 // `target` is the kill's target: a row's identity that could not be proved gets the manual hint.
 function refusal(base, detail, kind = 'unverifiable', target = null) {
   refusals.push({ at: Date.now(), pid: base.pid, detail, kind });
   if (refusals.length > 50) refusals.shift();
-  const manual = kind === 'unverifiable' && isDescriptor(target) ? { manual: manualStopHint(base.pid, target.image, target.unverified) } : {};
+  const manual = kind === 'unverifiable' && isDescriptor(target) ? { manual: manualStopHint(base.pid, target.image, target.unverified, target.holder_pid) } : {};
   return { ...base, ok: false, refused: 'identity', kind, detail, identity: null, ...manual };
 }
 // The kill lock (ADR 0039 review): belay stop's worker phase and the run's worker close run in one process and may
@@ -180,7 +182,7 @@ function rowTarget(row, pidField = 'pid', createdField = 'pid_created') {
     pid: row[pidField], created: Number.isFinite(row[createdField]) ? row[createdField] : null,
     image: row.pid_image ? [row.pid_image] : (SUBSTRATE_IMAGES[row.substrate] || []),
   };
-  if (row.pid_created_error) t.unverified = row.pid_created_error;
+  if (row.pid_created_error) { t.unverified = row.pid_created_error; if (Number.isInteger(row.adapter_pid)) t.holder_pid = row.adapter_pid; }
   return t;
 }
 

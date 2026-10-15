@@ -36,12 +36,18 @@ function createGate({ take, timeoutMs = 15000, now = Date.now } = {}) {
       clearTimeout(timer);
       const endedAt = now();
       const r = { snap: snap || null, error: snap ? null : (error || 'unreadable'), startSeq: b.startSeq, startedAt: b.startedAt, endedAt, ms: endedAt - b.startedAt, callers: b.callers, kinds: [...b.kinds] };
-      inflight = null;
       b.resolve(r);
-      if (waiting) { const next = waiting; waiting = null; start(next); }
-      else for (const w of idleWaiters.splice(0)) w();
-      // After the next snapshot started, so a harvester that requests one sees `inflight` accurate.
-      for (const h of [...harvesters]) { try { h(r); } catch { /* a harvester never changes a snapshot */ } }
+      // The callers served by this snapshot act in microtasks right after the resolve, and a signal they send must
+      // be stamped before the next snapshot starts, or that snapshot would be stale for them by construction. So the
+      // gate stays "in flight" until the next macrotask: requests that arrive meanwhile join the waiting batch, and
+      // the waiting batch and the harvesters go after the current users have acted.
+      setImmediate(() => {
+        inflight = null;
+        if (waiting) { const next = waiting; waiting = null; start(next); }
+        else for (const w of idleWaiters.splice(0)) w();
+        // After the next snapshot started, so a harvester that requests one sees `inflight` accurate.
+        for (const h of [...harvesters]) { try { h(r); } catch { /* a harvester never changes a snapshot */ } }
+      });
     };
     timer = setTimeout(() => done(null, 'timeout'), timeoutMs);
     if (timer.unref) timer.unref();

@@ -13,7 +13,8 @@ const P = require('../../src/core/process.cjs');
 const PI = require('../../src/run/pid-identity.cjs');
 
 const mapOf = (rows) => new Map(rows.map(([pid, created]) => [pid, { ppid: 1, created, image: 'node.exe' }]));
-const tick = () => new Promise((r) => setImmediate(r));
+// Two turns of the loop: the gate starts a waiting snapshot on a setImmediate registered after a take settles.
+const tick = async () => { await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r)); };
 
 // A gate whose snapshots the test resolves by hand: take() records each call and hands back its resolver.
 function handGate(opts = {}) {
@@ -59,7 +60,7 @@ test('a signal stamped after a snapshot started fails the use check; the caller 
   const { gate, takes } = handGate();
   const b = gate.request();
   takes[0].resolve(mapOf([[1, 1]]));
-  const r2 = await b;
+  const r2 = await b; await tick();
   assert.strictEqual(gate.fresh(r2.startSeq), true, 'no signal since it started');
   gate.signal();
   assert.strictEqual(gate.fresh(r2.startSeq), false, 'a signal after the start makes it unusable');
@@ -87,6 +88,63 @@ test('a signal stamped after a snapshot started fails the use check; the caller 
     assert.ok(Number.isInteger(ok.signalled_at) && Number.isInteger(ok.snapshot_ms), 'the receipt names signalled_at and snapshot_ms');
   } finally { ID.snapshotShared = realShared; }
 });
+
+// Swap the process's gate for a hand-resolved one, so P.killPid (which reads ID.gate and ID.snapshotShared at each
+// call) runs its real ordering check against snapshots the test resolves.
+function withHandGate(fn) {
+  const { gate, takes } = handGate();
+  const realGate = ID.gate; const realShared = ID.snapshotShared;
+  ID.gate = gate; ID.snapshotShared = (o) => gate.request(o);
+  return Promise.resolve(fn({ gate, takes })).finally(() => { ID.gate = realGate; ID.snapshotShared = realShared; });
+}
+
+test('three concurrent killers: the next snapshot starts only after the current callers have signalled, so none is refused', () => withHandGate(async ({ gate, takes }) => {
+  const sent = [];
+  const kill = (pid) => sent.push(pid);
+  const all = mapOf([[4401, 5], [4402, 5], [4403, 5]]);
+  const kA = P.killPid({ pid: 4401, created: 5 }, 'SIGKILL', { kill });
+  const kB = P.killPid({ pid: 4402, created: 5 }, 'SIGKILL', { kill });
+  const kC = P.killPid({ pid: 4403, created: 5 }, 'SIGKILL', { kill });
+  assert.strictEqual(takes.length, 1, 'S1 serves A alone; B and C wait for the next');
+  takes[0].resolve(all);
+  const a = await kA; await tick();
+  assert.strictEqual(a.ok, true, JSON.stringify(a));
+  assert.strictEqual(takes.length, 2, 'S2 started once A had signalled');
+  assert.ok(gate.fresh(takes[1].batch.startSeq), 'S2 started after A\'s signal, so B may use it');
+  takes[1].resolve(all); // B signals first; C's copy of S2 then predates a signal and is re-taken, not refused
+  const b = await kB; await tick();
+  assert.strictEqual(b.ok, true, JSON.stringify(b));
+  assert.strictEqual(takes.length, 3, 'C re-took once: S3');
+  takes[2].resolve(all);
+  const c = await kC;
+  assert.strictEqual(c.ok, true, JSON.stringify(c));
+  assert.deepStrictEqual(sent, [4401, 4402, 4403]);
+  assert.strictEqual(takes.length, 3, 'three snapshots in all, none wasted');
+}));
+
+test('fault injection: snapshots stall while a killer arrives between them and a signal from outside lands; no kill is made on a snapshot that predates a signal, and a refusal says so', () => withHandGate(async ({ gate, takes }) => {
+  const sent = [];
+  const kill = (pid) => sent.push(pid);
+  const snap = mapOf([[4411, 5], [4412, 5], [4413, 5]]);
+  const kA = P.killPid({ pid: 4411, created: 5 }, 'SIGKILL', { kill });          // S1, stalled
+  const kB = P.killPid({ pid: 4412, created: 5 }, 'SIGKILL', { kill });          // waits for S2
+  takes[0].resolve(snap); const a = await kA; await tick();                     // A signals; S2 starts and stalls
+  assert.strictEqual(takes.length, 2);
+  const kC = P.killPid({ pid: 4413, created: 5 }, 'SIGKILL', { kill });          // arrives during S2's stall: waits for S3
+  gate.signal();                                                                  // a signal from another caller, during the stall
+  takes[1].resolve(snap); await tick();                                          // B's S2 predates that signal: B asks again and joins C in S3
+  assert.strictEqual(takes.length, 3, 'S3 started after the outside signal and after the second request');
+  takes[2].resolve(snap);
+  const [b, c] = await Promise.all([kB, kC]);
+  assert.strictEqual(a.ok, true, JSON.stringify(a));
+  // C is served first, signals, and so B's copy of S3 predates a signal too. B has used both of its snapshots: refused, nothing sent for it.
+  assert.strictEqual(c.ok, true, JSON.stringify(c));
+  assert.strictEqual(b.ok, false);
+  assert.strictEqual(b.kind, 'unverifiable');
+  assert.match(b.detail, /signals in this process kept landing after each snapshot started/);
+  assert.deepStrictEqual(sent, [4411, 4413], 'a kill was sent only on a snapshot that started after the last signal');
+  assert.strictEqual(takes.length, 3);
+}));
 
 function fakeChild(pid) { const c = new EventEmitter(); Object.assign(c, { pid, exitCode: null, signalCode: null, spawnfile: 'node.exe' }); return c; }
 const noSchedule = { schedule: [1e9], every: 1e9 };
@@ -130,7 +188,7 @@ test('a snapshot that never resolves is ended by the timeout, and the waiting on
   const b = gate.request();
   const ra = await a;
   assert.strictEqual(ra.snap, null);
-  assert.strictEqual(ra.error, 'timeout');
+  assert.strictEqual(ra.error, 'timeout'); await tick();
   assert.strictEqual(takes.length, 2, 'S2 started once S1 timed out');
   takes[1].resolve(mapOf([[1, 9]]));
   assert.strictEqual((await b).snap.get(1).created, 9);
@@ -151,7 +209,7 @@ test('harvest: a pending pid_created is filled only by a snapshot that started a
   const late = gate.request(); await tick();
   child.exitCode = 1;
   takes[2].resolve(mapOf([[7002, Date.now()]]));
-  await late;
+  await late; await tick();
   assert.strictEqual(w.pidCreated, null, 'a snapshot that ended after the handle exited is not accepted');
   // A live handle and a snapshot that started after the spawn fill it, with no read of its own.
   const w2 = { pid: 7003 }; const live = fakeChild(7003);
@@ -160,11 +218,11 @@ test('harvest: a pending pid_created is filled only by a snapshot that started a
   assert.match(w2.pidCreatedError, /try 1/);
   const other = gate.request(); await tick();
   takes[3].resolve(mapOf([[7003, Date.now() - 5000]]));  // earlier than one second before the spawn: a misread
-  await other;
+  await other; await tick();
   assert.strictEqual(w2.pidCreated, null, 'a creation time long before the spawn is a misread');
   const other2 = gate.request(); await tick();
   takes[4].resolve(mapOf([[7003, Date.now()]]));
-  await other2;
+  await other2; await tick();
   assert.ok(Number.isFinite(w2.pidCreated));
   assert.strictEqual(w2.pidCreatedError, null);
 });
@@ -198,6 +256,6 @@ test('the creation-time slack is taken from before the spawn call, on the first 
   await PI.noteSpawn(w3, c3, { gate, createdOf: async () => null, ...noSchedule });
   const other = gate.request(); await tick();
   takes[0].resolve(mapOf([[7012, Date.now() - 3500]]));
-  await other;
+  await other; await tick(); // harvesters run after the next macrotask
   assert.ok(Number.isFinite(w3.pidCreated), 'a late reading within the slack of the call start is accepted');
 });

@@ -19,6 +19,7 @@ const { sandbox, cleanup, listRecursive, readStoreCopy } = require('./stop-helpe
 const { openCore } = require('../../src/core/index.cjs');
 const { createRunManager, createWorkerControl } = require('../../src/run/index.cjs');
 const { adapterPipeName } = require('../../src/core/lock.cjs');
+const { stopBoundMs } = require('../../src/cli/adapter-pipe.cjs');
 const P = require('../../src/run/process.cjs');
 
 const ROOT = path.resolve(__dirname, '..', '..').split(path.sep).join('/');
@@ -283,10 +284,12 @@ test('worker stop, restart and message: each rung refuses naming the fact, creat
 
 // ================================================================ (i) a wedged pipe is named within its bound
 
-// 6e-5 fix round: stopBoundMs(1000) is now 158000 ms (design item 4), over scripts/test.cjs's fixed
-// 60000 ms --test-timeout; a per-test timeout keeps this pinned test itself green under npm test without
-// touching the unowned runner.
-test('worker stop: a pipe that accepts and never answers is named within the bound the arguments give', { timeout: 180000 }, async () => {
+// The bound is stopBoundMs(1000, T), which grows with the snapshot timeout T (ADR 0048). The CLI under test runs with
+// BELAY_SNAPSHOT_TIMEOUT_MS=1000 (the override's floor), so the wait stays short and the bound is derived from the
+// same T, not a pinned number. A per-test timeout keeps it clear of scripts/test.cjs's fixed 60000 ms.
+test('worker stop: a pipe that accepts and never answers is named within the bound the arguments give', { timeout: 400000 }, async () => {
+  const T = 1000;
+  const bound = stopBoundMs(1000, T);
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   let core = null; let server = null;
@@ -300,17 +303,14 @@ test('worker stop: a pipe that accepts and never answers is named within the bou
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(pipe, resolve); });
 
     const t0 = Date.now();
-    const r = await cliAsync(['worker', 'stop', 'w-wedged', '--timeout-ms', '1000'], dataDir);
+    const r = await cliAsync(['worker', 'stop', 'w-wedged', '--timeout-ms', '1000'], dataDir, { BELAY_SNAPSHOT_TIMEOUT_MS: String(T) });
     const ms = Date.now() - t0;
     assert.strictEqual(r.status, 1, `${r.stdout} / ${r.stderr}`);
     assert.strictEqual(r.receipt.stopped, false);
-    // 6e-5 design item 4: stopBoundMs(1000) = 1000 + max(2000, min(1000,10000)) + 5000 + 5000
-    // + max(pauseBoundMs(), resumeBoundMs())=145000 (resume now carries failNoReady's 15000) = 158000
-    assert.match(r.receipt.reason, /did not answer worker\.stop within 158000 ms/);
+    assert.ok(r.receipt.reason.includes(`did not answer worker.stop within ${bound} ms`), r.receipt.reason);
     assert.match(r.receipt.reason, /may have acted/);
-    // The bound is the product's own, so a slow host adds only the CLI's start and the reply; the slack stays under
-    // this test's 180000 ms timeout, which an unbounded wait would hit.
-    assert.ok(ms <= 158000 + 12000, `command took ${ms} ms, over the 158000+12000 ms bound`);
+    // The bound is the product's own, so a slow host adds only the CLI's start and the reply.
+    assert.ok(ms <= bound + 12000, `command took ${ms} ms, over the ${bound}+12000 ms bound`);
   } finally {
     if (server) await new Promise((resolve) => server.close(resolve));
     if (core) {

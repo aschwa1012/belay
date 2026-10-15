@@ -48,9 +48,10 @@ test('the snapshot budget is one attempt of 15000 ms, and the retry constants ar
 
 test('BELAY_SNAPSHOT_TIMEOUT_MS: a positive integer of at least 1000 ms is used, anything else is ignored and recorded', () => {
   assert.deepStrictEqual(ID.readSnapshotTimeout('1000'), { ms: 1000, ignored: null });
+  assert.deepStrictEqual(ID.readSnapshotTimeout('600000'), { ms: 600000, ignored: null }, 'the ceiling itself is allowed');
   assert.deepStrictEqual(ID.readSnapshotTimeout('30000'), { ms: 30000, ignored: null });
   assert.deepStrictEqual(ID.readSnapshotTimeout(''), { ms: 15000, ignored: null }, 'unset or empty is the default, not an error');
-  for (const bad of ['999', '0', '-5', '1.5', '12e3', 'abc', '15000ms']) assert.deepStrictEqual(ID.readSnapshotTimeout(bad), { ms: 15000, ignored: bad }, bad);
+  for (const bad of ['999', '0', '-5', '1.5', '12e3', '600001', '3000000000', 'abc', '15000ms']) assert.deepStrictEqual(ID.readSnapshotTimeout(bad), { ms: 15000, ignored: bad }, bad);
 });
 
 test('BELAY_SNAPSHOT_TIMEOUT_MS: a process started with it uses it, and with an invalid value logs the ignored text with every snapshot', () => {
@@ -104,10 +105,14 @@ test('spawn: one read; a failure leaves the row pending (error names the retry),
     assert.strictEqual(calls, 1, 'one read, no retry');
     assert.strictEqual(w.pidCreated, null);
     assert.match(w.pidCreatedError, /retrying while the worker runs \(try 1\)/);
-    // Another process meeting this row refuses, and says it may be verified shortly.
-    const k = await P.killProcess(P.rowTarget({ pid: 4203, substrate: 'claude-code', pid_image: 'claude.exe', pid_created_error: w.pidCreatedError }), { kill: noKill, snapshot: async () => mapOf([[4203, 1, T, 'claude.exe']]) });
+    // Another process meeting this row refuses. It says the row may be verified shortly only while the adapter holding
+    // the live handle (the row's adapter_pid) is alive; with that adapter gone, or unnamed, nobody will read it again.
+    const ask = (adapterPid) => P.killProcess(P.rowTarget({ pid: 4203, substrate: 'claude-code', pid_image: 'claude.exe', pid_created_error: w.pidCreatedError, adapter_pid: adapterPid }), { kill: noKill, snapshot: async () => mapOf([[4203, 1, T, 'claude.exe']]) });
+    const k = await ask(process.pid);
     assert.strictEqual(k.refused.kind, 'unverifiable');
     assert.match(k.refused.manual, /verified shortly/);
+    assert.doesNotMatch((await ask(null)).refused.manual, /verified shortly/, 'no adapter named: no promise');
+    assert.doesNotMatch((await ask(2147483000)).refused.manual, /verified shortly/, 'the adapter is gone: no promise');
   } finally { live.kill(); }
 });
 

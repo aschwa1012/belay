@@ -13,13 +13,15 @@ const { LIFE_CLAIMING_STATES } = require('../core/methods-run.cjs');
 const KILL_GONE_BOUND_MS = 5000;
 const FRESH_SNAPSHOT_NEEDS_MS = 1200; // a CIM snapshot takes about a second
 // Amendment 1 item 2: the adapter's graceful stop takes up to 10,000 ms per worker (lifecycle.cjs), and each kill it makes
-// may first wait out one process snapshot (ADR 0048): N x (10 s + T) + (5 s + T), T the snapshot timeout in force.
+// may first wait out one process snapshot (ADR 0048): N x (10 s + T) + (5 s + T), T the snapshot timeout in force. An
+// estimate by the operator's decision, not a worst case: a kill that queues behind another snapshot can pay 2 x T. The
+// wait only decides when this close stops waiting for the adapter and kills what is left itself.
 const ADAPTER_STOP_PER_WORKER_MS = 10000;
 const ADAPTER_STOP_SLACK_MS = 5000;
 
 // ADR 0048 decision 5: the three ways a worker is left alive are told apart, and each names the command that can still prove it.
 const withIdHint = (manual, id) => manual + '. Or run "belay worker kill ' + id + '", which proves the identity again from the row with a full snapshot budget';
-const manualWithId = (w) => withIdHint(processDefaults.manualStopHint(w.pid, processDefaults.rowTarget(w).image), w.id);
+const manualWithId = (w) => withIdHint(processDefaults.manualStopHint(w.pid, processDefaults.rowTarget(w).image, w.pid_created_error, w.adapter_pid), w.id);
 function outcomeOf(e) {
   if (e.gone) return 'closed';
   if (e.refused) return e.kind === 'no_budget' ? 'refused_no_budget' : (e.kind === 'unverifiable' ? 'refused_unverifiable' : `refused_${e.kind || 'identity'}`);
