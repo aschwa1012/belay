@@ -9,7 +9,7 @@ const { parse } = require('./memory-facts.cjs');
 
 const HISTORY_KEEP = 50; // delivery entries kept on the kept note, newest; the full count is in merged_from
 const MERGED_KEEP = 20;
-const EVENT_KINDS = ['index_injected', 'note_chance'];
+const EVENT_KINDS = ['note_chance', 'index_injected']; // a chance is the richer record, so it is read first and wins a tie
 
 // The namespace's model binding is carried to the new namespace as memory.promote does, so a search of it still works.
 function bindNamespace(E, ns, row) {
@@ -22,16 +22,25 @@ function bindNamespace(E, ns, row) {
 // chance) held. The ledger is append-only and is not rewritten; the entries are copied to the kept note's body.
 function deliveriesOf(E, id) {
   const out = [];
+  // One delivery is one (task, worker, route): the same index delivery is recorded both by index_injected and by a
+  // note_chance, and is copied once.
+  const seen = new Set();
   for (const kind of EVENT_KINDS) {
     let found;
     try {
-      found = E.store.p("SELECT run_id, worker_id, task_id, row_ids, written_at FROM memory_event WHERE kind = ? AND ok = 1 AND row_ids LIKE ? ESCAPE '\\'")
+      found = E.store.p("SELECT run_id, worker_id, task_id, row_ids, message, written_at FROM memory_event WHERE kind = ? AND ok = 1 AND row_ids LIKE ? ESCAPE '\\'")
         .all(kind, `%"${id.replace(/[\\%_]/g, c => `\\${c}`)}"%`);
     } catch { continue; } // a store without the ledger, or without these columns, has no history to move
     for (const ev of found) {
       let ids = [];
       try { ids = JSON.parse(ev.row_ids) || []; } catch { /* unreadable: not counted */ }
-      if (Array.isArray(ids) && ids.includes(id)) out.push({ from: id, kind, run_id: ev.run_id, worker_id: ev.worker_id, task_id: ev.task_id, at: ev.written_at });
+      if (!(Array.isArray(ids) && ids.includes(id))) continue;
+      let route = 'index';
+      if (kind === 'note_chance') { try { route = JSON.parse(ev.message).route || 'index'; } catch { /* a chance without its route reads as the index */ } }
+      const key = `${ev.task_id}|${ev.worker_id}|${route}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ from: id, kind, route, run_id: ev.run_id, worker_id: ev.worker_id, task_id: ev.task_id, at: ev.written_at });
     }
   }
   return out.sort((a, b) => a.at - b.at);

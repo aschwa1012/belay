@@ -248,3 +248,36 @@ test('R2-A a file citation at the head commit may quote the very line the note q
   await hold(wrong(m));
   assert.strictEqual((await review([archiveV(m)])).applied[0].outcome, 'archived', 'an archive verdict may quote the line the note relied on');
 });
+
+test('M-2 one delivery recorded by both index_injected and note_chance is copied once; a different route is a different delivery', async () => {
+  const kept = T.note('dedupe kept', { vec: A, created_at: 100 }), dupe = T.note('dedupe dupe', { vec: A_NEAR, created_at: 200 });
+  const ev = (kind, extra) => T.call(tool(), 'memory.recordEvent', { kind, worker_id: 'w9', task_id: 'tz', row_ids: [dupe], ...extra });
+  await ev('index_injected', {});
+  await ev('note_chance', { key: 'tz:w9:d:index', message: JSON.stringify({ route: 'index', slot: 1, delivered_at: 5 }) });
+  await ev('note_chance', { key: 'tz:w9:d:search', message: JSON.stringify({ route: 'search', slot: 1, delivered_at: 6 }) });
+  await ev('index_injected', { task_id: 'tz2' });
+  await hold(dup(dupe, kept));
+  const v = (await review([archiveV(dupe)])).applied[0];
+  assert.strictEqual(v.history_moved.deliveries, 3, 'tz/index once, tz/search, tz2/index');
+  const dh = T.body(kept).delivery_history;
+  assert.deepStrictEqual(dh.map(d => `${d.task_id}|${d.route}|${d.kind}`).sort(), ['tz2|index|index_injected', 'tz|index|note_chance', 'tz|search|note_chance']);
+});
+
+test('M-3 noteDeliveries on a kept note includes the deliveries of the duplicates archived into it', async () => {
+  const kept = T.note('wake kept', { vec: A, created_at: 100 }), dupe = T.note('wake dupe', { vec: A_NEAR, created_at: 200 });
+  const rec = (id, task, route, extra = {}) => T.call(tool(), 'memory.recordEvent', { kind: 'note_chance', worker_id: 'w9', task_id: task, row_ids: [id], key: `${task}:w9:${id}:${route}`, message: JSON.stringify({ route, delivered_at: 10, used: false }), ...extra });
+  await rec(kept, 't-own', 'index');
+  await rec(dupe, 't-dupe', 'index');
+  await T.call(tool(), 'memory.recordEvent', { kind: 'index_injected', worker_id: 'w8', task_id: 't-hist', row_ids: [dupe] });
+  await hold(dup(dupe, kept)); await review([archiveV(dupe)]);
+  const r = await T.call(tool(), 'memory.noteDeliveries', { note_id: kept });
+  const by = Object.fromEntries(r.deliveries.map(d => [d.task_id, d]));
+  assert.deepStrictEqual(Object.keys(by).sort(), ['t-dupe', 't-hist', 't-own']);
+  assert.strictEqual(by['t-own'].from_duplicate, undefined);
+  assert.strictEqual(by['t-dupe'].from_duplicate, dupe);
+  assert.strictEqual(by['t-dupe'].note_id, kept);
+  assert.strictEqual(by['t-hist'].from_duplicate, dupe, 'a delivery only the index receipt held is joined too');
+  assert.strictEqual(r.deliveries.length, 3, 'nothing is listed twice');
+  const none = await T.call(tool(), 'memory.noteDeliveries', { note_id: dupe });
+  assert.deepStrictEqual(none.deliveries.map(d => d.task_id), ['t-dupe'], 'the archived duplicate still answers for its own');
+});

@@ -106,6 +106,17 @@ function checkReportedWrong(list) {
   });
 }
 
+// memory_ids: the note ids the worker actually applied, [] when none. A claim, so an id need not exist; the shape is
+// checked and never truncated.
+const MEMORY_IDS_MAX = 50;
+function checkMemoryIds(list) {
+  if (list === undefined || list === null) return null;
+  if (!Array.isArray(list) || list.length > MEMORY_IDS_MAX || list.some(x => !validId(x))) {
+    throw err('E_ARGS', `memory_ids must be an array of at most ${MEMORY_IDS_MAX} memory ids ([] when no note was applied)`, { field: 'memory_ids' });
+  }
+  return [...new Set(list)];
+}
+
 // memory.noteResolve: [{ id, resolve: 'new' | 'repeats' | 'supersedes', of?, evidence? }].
 function checkResolutions(list) {
   if (!Array.isArray(list) || !list.length || list.length > RESOLUTIONS_MAX) throw err('E_ARGS', `resolutions must be an array of 1 to ${RESOLUTIONS_MAX} entries`, { field: 'resolutions' });
@@ -136,4 +147,4 @@ function checkResolutions(list) {
   });
 }
 
-module.exports = { checkTitle, KINDS, BASES, RESOLVES, TITLE_MAX, NOTES_MAX, checkNote, checkNotes, noteText, checkReportedWrong, checkResolutions, oneLine, SELF_REF };
+module.exports = { checkTitle, KINDS, BASES, RESOLVES, TITLE_MAX, NOTES_MAX, checkNote, checkNotes, noteText, checkReportedWrong, checkMemoryIds, checkResolutions, oneLine, SELF_REF };
