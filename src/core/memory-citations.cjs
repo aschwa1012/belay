@@ -39,6 +39,8 @@ async function checkCitations(cites, ctx) {
   for (const [i, c] of cites.entries()) {
     const fail = reason => err('E_CITATION', `cites[${i}] (${c.where}) refused: ${reason}`, { index: i, where: c.where, reason });
     const quote = norm(c.quote);
+    // A note is quoted back to itself by a stream that carries its index line; that proves nothing about the code.
+    if ((ctx.own || []).some(t => norm(t).includes(quote))) throw fail('the quote is the note\'s own text, which cannot be evidence about the note');
     let text;
     if (c.where.startsWith('stream:')) {
       const want = fwd(c.where.slice('stream:'.length));

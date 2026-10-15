@@ -27,7 +27,7 @@ const USE_OR_MISS = /use|miss|unused|sink|deliver|cite|stale|inert|ignor|apply|a
 
 const DUP_SIMILARITY = 0.8; // S4: a stored similarity at least this, or a worker report naming the kept note
 const SCOPE_MAX = 500, VERDICTS_MAX = 500, CITES_MAX = 6;
-const REASON_MAX = 500, WHERE_MAX = 300, QUOTE_MAX = 1000, QUOTE_MIN = 8, RULE_MAX = 1000, TARGET_MAX = 200;
+const REASON_MAX = 500, WHERE_MAX = 300, QUOTE_MAX = 1000, QUOTE_MIN = 24, RULE_MAX = 1000, TARGET_MAX = 200;
 
 const nsOf = (kind, project) => `${kind}/${project}`;
 const isObj = v => v !== null && typeof v === 'object' && !Array.isArray(v);

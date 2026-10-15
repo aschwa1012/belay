@@ -44,7 +44,7 @@ async function restore(core, parsed) {
     return { code: 0, text: `${lines.join('\n')}\n`, json: res };
   }
   const res = await core.memory.noteRestore({ id, reason: parsed.opts.reason });
-  const stays = res.history_stays_with ? `\nits sightings stay with ${res.history_stays_with}` : '';
+  const stays = res.history_returned ? `\nits sightings came back from ${res.history_returned.from}` : '';
   return { code: 0, text: `restored ${res.id} to ${res.namespace}  reason: ${one(res.receipt.reason)}  at ${when(res.receipt.at)}${stays}\n`, json: res };
 }
 

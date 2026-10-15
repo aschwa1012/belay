@@ -13,7 +13,7 @@ let T;
 before(async () => { T = await setup(); });
 after(() => T.close());
 
-const scrub = (entries, extra = {}) => T.call(T.who.harness('apply'), 'memory.scrubApply', { scrub: entries, scope: entries.map(e => e.id), ...T.evidence, ...extra });
+const scrub = (entries, extra = {}) => T.call(T.who.harness('apply'), 'memory.scrubApply', { scrub: entries, scope: entries.flatMap(e => [e.id, e.of].filter(Boolean)), ...T.evidence, ...extra });
 const review = (verdicts, extra = {}) => T.call(T.who.harness('apply'), 'memory.reviewApply', { verdicts, ...T.evidence, ...extra });
 const hold = async (e) => (await scrub([e])).applied[0].held;
 const wrong = (id, over = {}) => ({ id, action: 'hold', kind: 'wrong', ground: 'report_confirmed', reason: 'contradicted by the code', cites: [T.cite], ...over });
@@ -150,7 +150,7 @@ test('noteRestore brings an archived note back to live with a reason and a recei
   await assert.rejects(T.call(tool, 'memory.noteRestore', { id: kept, reason: 'not archived' }), x => x.code === 'E_NOT_FOUND');
   await assert.rejects(T.call(callerFor('worker', { run_id: 'lc-apply', worker_id: 'w1' }), 'memory.noteRestore', { id: dupe, reason: 'x' }), x => x.code === 'E_ROLE');
   const r = await T.call(tool, 'memory.noteRestore', { id: dupe, reason: 'the kept note was refuted' });
-  assert.deepStrictEqual([r.id, r.restored, r.namespace, r.history_stays_with], [dupe, true, `project/${PROJECT}`, kept]);
+  assert.deepStrictEqual([r.id, r.restored, r.namespace, r.history_returned.from], [dupe, true, `project/${PROJECT}`, kept]);
   assert.strictEqual(r.receipt.reason, 'the kept note was refuted');
   assert.strictEqual(r.receipt.was_archived.kind, 'duplicate');
   assert.strictEqual(T.row(dupe).namespace, `project/${PROJECT}`);

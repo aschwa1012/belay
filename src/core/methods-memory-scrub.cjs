@@ -14,14 +14,14 @@
 const { err } = require('./errors.cjs');
 const L = require('./memory-lifecycle.cjs');
 const C = require('./lifecycle-common.cjs');
-const { loadNote, checkHoldFacts } = require('./memory-facts.cjs');
+const { loadNote, checkHoldFacts, ownTexts } = require('./memory-facts.cjs');
 const { checkCitations, evidenceOf } = require('./memory-citations.cjs');
 const { archiveNote } = require('./memory-archive.cjs');
 const N = require('./methods-memory-notes.cjs');
 const { validId } = require('./memory-rows.cjs');
 
 const KEYS = ['scrub', 'scope', 'run_id', 'head_sha', 'worktree', 'evidence_files'];
-const REFUSALS = new Set(['E_CITATION', 'E_PRECONDITION', 'E_NOT_FOUND', 'E_EXISTS', 'E_ARGS', 'E_ROLE', 'E_MODEL']);
+const REFUSALS = new Set(['E_CITATION', 'E_PRECONDITION', 'E_SCOPE', 'E_NOT_FOUND', 'E_EXISTS', 'E_ARGS', 'E_ROLE', 'E_MODEL']);
 const DISMISS_KEEP = 20;
 
 function checkScope(scope) {
@@ -64,7 +64,7 @@ function dismiss(E, ctx, ent, index, sources, note) {
 
 function hold(E, caller, ctx, ent, index, sources, state) {
   const { note, pending } = state;
-  const facts = checkHoldFacts(E, ctx.project, note, ent.kind, ent.of);
+  const facts = checkHoldFacts(E, ctx.project, note, ent.kind, ent.of, ent.ground);
   const receipt = scrubReceipt(ctx, ent, index, sources);
   if (pending) {
     // Marks on a pending note need no review: it hides nothing. Applied directly to the pending row.
@@ -105,9 +105,16 @@ async function one(E, caller, ctx, ent, index) {
   const st = target(E, ctx.project, ent.id);
   const wants = ent.action === 'resolve' ? st.pending : ent.action === 'hold' ? true : st.live;
   if (!wants) throw err('E_ARGS', `note ${ent.id} is ${st.live ? 'live' : 'pending'}, and ${ent.action} acts on a ${ent.action === 'resolve' ? 'pending' : 'live'} note`, { id: ent.id, action: ent.action });
-  const sources = ent.cites && ent.cites.length ? await checkCitations(ent.cites, ctx.evidence) : [];
+  if (ent.action === 'hold') {
+    if (st.live && st.note.b.held) throw err('E_EXISTS', `note ${ent.id} is already held (${st.note.b.held.row}); the reviewer settles it before another hold`, { id: ent.id, held_row: st.note.b.held.row });
+    // S2 reaches the note a hold stands against: it is in scope, or a report or a stored match already names it.
+    const named = (st.note.b.reported_wrong || []).some(w => w && w.replaced_by === ent.of) || (st.note.b.matches || []).some(m => m && m.id === ent.of);
+    if (ent.of && !ctx.scope.has(ent.of) && !named) throw err('E_SCOPE', `note ${ent.of} is neither in the scope list nor named by a report or a stored match on ${ent.id}, so a hold may not stand against it`, { id: ent.id, of: ent.of });
+  }
+  const sources = ent.cites && ent.cites.length ? await checkCitations(ent.cites, { ...ctx.evidence, own: ownTexts(st.note) }) : [];
+  if (ent.ground === 'code_contradicts' && !sources.some(s => s.source !== 'stream')) throw err('E_CITATION', 'ground code_contradicts needs at least one citation of a file at the head commit: a stream quotes what was said, not what the code is', { id: ent.id });
   if (ctx.mode === 'propose') {
-    const facts = ent.action === 'hold' ? checkHoldFacts(E, ctx.project, st.note, ent.kind, ent.of) : null;
+    const facts = ent.action === 'hold' ? checkHoldFacts(E, ctx.project, st.note, ent.kind, ent.of, ent.ground) : null;
     return E.store.tx(() => propose(E, caller, ctx, ent, index, sources, facts));
   }
   if (ent.action === 'resolve') return settle(E, caller, ctx, ent, index, sources, st.note.id);
@@ -130,7 +137,7 @@ async function scrubApply(E, caller, args) {
   const scope = checkScope(args.scope);
   const outside = entries.filter(e => !scope.has(e.id)).map(e => e.id);
   if (outside.length) throw err('E_SCOPE', `the scrub names ${outside.length} note${outside.length === 1 ? '' : 's'} outside the scope list (${outside.slice(0, 5).join(', ')}); the scrubber acts only on what it was given, so nothing was written`, { ids: outside });
-  const ctx = { mode, project, runId, evidence: evidenceOf(args) };
+  const ctx = { mode, project, runId, scope, evidence: evidenceOf(args) };
   const applied = [], proposed = [], refused = [];
   for (const [i, ent] of entries.entries()) {
     try {

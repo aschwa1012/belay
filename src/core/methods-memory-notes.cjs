@@ -268,21 +268,23 @@ async function resolve(E, caller, args) {
         return { id: r.id, resolved: 'supersedes', of: target.id, state: 'live', namespace: projectNs(project) };
       }
       // repeats: a sighting on the live note, and no new row. A note cannot be a sighting of itself: the same
-      // writer in the same task is one observation, not two. The pending row was only the holding place, so it goes;
-      // the sighting keeps who saw it, when, and the evidence the writer gave.
+      // writer in the same task is one observation, not two. The pending row was only the holding place: it moves to
+      // archive/<project> (nothing is deleted), and the sighting keeps who saw it, when, and the evidence the writer gave.
       if (target.task_id === r.task_id && target.written_by === r.written_by) {
         throw err('E_ARGS', `resolutions[${i}]: note ${target.id} was written by the same writer in the same task, so this is not a second sighting of it`, { id: r.id, of: target.id });
       }
       const pb = bodyOf(r);
-      const sighting = { task_id: r.task_id, written_by: r.written_by, run_id: r.run_id, in_index_beforehand: inIndexBeforehand(E, r, target.id), at: t, evidence: (pb.evidence || []).slice(0, 3) };
+      const sighting = { task_id: r.task_id, written_by: r.written_by, run_id: r.run_id, in_index_beforehand: inIndexBeforehand(E, r, target.id), at: t, evidence: (pb.evidence || []).slice(0, 3), transferred_from: r.id };
       const next = E.store.patchBody(target.id, b => {
         b.seen_in = [...(b.seen_in || []), sighting].slice(-SEEN_MAX);
         b.seen_total = (b.seen_total || 0) + 1;
+        b.merged_from = [...(b.merged_from || []), { id: r.id, at: t, seen_total: 1, seen_in: 1, deliveries: 0, own: true, run_id: r.run_id, review: null, via: 'repeats' }].slice(-20);
         return fitBody(b);
       });
-      E.store.p('DELETE FROM memory_entries WHERE id = ?').run(r.id);
-      E.store.cache.delete(r.namespace);
-      return { id: r.id, resolved: 'repeats', of: target.id, sighting, seen_total: next.seen_total, pending_row_removed: true };
+      // The row keeps its id and its body, and a restore can bring it back to pending (the sighting then goes back too).
+      const moved = { to: target.id, seen_total: 1, seen_in: 1, deliveries: 0 };
+      require('./memory-archive.cjs').archiveNote(E, project, r, { kind: 'duplicate', of: target.id, ground: 'same_claim', reason: 'resolved as repeats', run_id: caller.run_id, direct: true, no_transfer: true, history_moved: moved }, target);
+      return { id: r.id, resolved: 'repeats', of: target.id, sighting, seen_total: next.seen_total, pending_row_archived: true, archived_as: `archive/${project}` };
     });
     // The writer sees its own pending notes still open; the orchestrator and the operator see the project's.
     const left = caller.role === 'worker'

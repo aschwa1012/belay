@@ -18,6 +18,7 @@ const M = require('./methods-memory.cjs');
 const N = require('./methods-memory-notes.cjs');
 const { loadNote, parse } = require('./memory-facts.cjs');
 const { validId } = require('./memory-rows.cjs');
+const { recordEventSync } = require('./methods-ledger.cjs');
 
 const RESTORED_KEEP = 20;
 const PURGE_IDS_MAX = 500;
@@ -36,11 +37,22 @@ async function noteRestore(E, caller, args) {
     if (!row || row.type !== 'note' || !row.namespace.startsWith('archive/')) throw err('E_NOT_FOUND', `no archived note ${args.id}${row ? ` (it is in ${row.namespace})` : ''}`, { id: args.id });
     const project = row.namespace.slice('archive/'.length);
     if (caller.role === 'orchestrator' && M.projectOf(E, caller) !== project) throw err('E_ROLE', `note ${row.id} is archived in project ${project}, not this run's`, { id: row.id, role: caller.role });
-    N.release(E, row, project); // the same move as a resolved pending note: a clash with a live row of the same text is E_EXISTS
     const was = row.b.archived || null;
-    const entry = { at: Date.now(), by: E.memoryWriter(caller), role: caller.role, run_id: caller.run_id, reason, was_archived: was };
-    E.store.patchBody(row.id, b => { b.state = 'live'; b.restored = [...(b.restored || []), entry].slice(-RESTORED_KEEP); delete b.archived; return N.fitBody(b); });
-    return { id: row.id, restored: true, namespace: N.projectNs(project), receipt: { kind: 'restore', ...entry }, history_stays_with: was && was.history_moved ? was.history_moved.to : null, row: C.rowOut(E, row.id) };
+    // Back to where it came from: a note archived while pending returns to pending (and its resolution), never to live.
+    const toPending = !!(was && typeof was.from === 'string' && was.from.startsWith('pending/'));
+    if (toPending) {
+      const to = N.pendingNs(project);
+      const clash = E.store.p('SELECT id FROM memory_entries WHERE namespace = ? AND text_hash = ? AND id != ?').get(to, row.text_hash, row.id);
+      if (clash) throw err('E_EXISTS', `note ${row.id} has the same text as ${clash.id} in ${to}`, { id: row.id, existing_id: clash.id });
+      E.store.moveRow(row.id, row.namespace, to);
+    } else {
+      N.release(E, row, project); // the same move as a resolved pending note: a clash with a live row of the same text is E_EXISTS
+    }
+    // What the kept note took from this one comes back, so the lesson is counted once wherever it ends up.
+    const returned = require('./memory-archive.cjs').untransfer(E, row);
+    const entry = { at: Date.now(), by: E.memoryWriter(caller), role: caller.role, run_id: caller.run_id, reason, was_archived: was, history_returned: returned };
+    E.store.patchBody(row.id, b => { b.state = toPending ? 'pending' : 'live'; b.restored = [...(b.restored || []), entry].slice(-RESTORED_KEEP); delete b.archived; if (!toPending) delete b.matches; return N.fitBody(b); });
+    return { id: row.id, restored: true, namespace: toPending ? N.pendingNs(project) : N.projectNs(project), receipt: { kind: 'restore', ...entry }, history_returned: returned, row: C.rowOut(E, row.id) };
   });
   E.noteWrite();
   return out;
@@ -78,12 +90,16 @@ async function archivePurge(E, caller, args) {
   if (args.ids !== undefined && (!Array.isArray(args.ids) || !args.ids.length || args.ids.length > PURGE_IDS_MAX || args.ids.some(x => !validId(x)))) throw err('E_ARGS', `ids must be an array of 1 to ${PURGE_IDS_MAX} note ids`, { field: 'ids' });
   if (args.older_than_days !== undefined && !(Number.isFinite(args.older_than_days) && args.older_than_days >= 0)) throw err('E_ARGS', 'older_than_days must be a number of days, 0 or more', { field: 'older_than_days' });
   if (args.project !== undefined && (typeof args.project !== 'string' || !args.project)) throw err('E_ARGS', 'project must be a project name', { field: 'project' });
-  const out = E.store.tx(() => {
+  let written = null;
+  let out;
+  try {
+    out = E.store.tx(() => {
     const { rows, skipped } = selectPurge(E, args);
     if (!rows.length) return { count: 0, path: null, sha256: null, ids: [], skipped };
     // The rows go to the file first and the file is read back; only then are they removed, in this transaction, so a
     // failed write leaves every row where it was.
     const { file, fd } = purgeFile(E.dataDir);
+    written = file;
     try {
       const text = rows.map(r => { const { embedding, ...rest } = r; return JSON.stringify({ ...rest, embedding_b64: embedding ? Buffer.from(embedding).toString('base64') : null }); }).join('\n') + '\n';
       fs.writeSync(fd, text);
@@ -93,8 +109,15 @@ async function archivePurge(E, caller, args) {
     if (fs.readFileSync(file, 'utf8').trim().split('\n').length !== rows.length) throw err('E_INTERNAL', `the purge file ${file} does not hold the ${rows.length} rows; nothing was removed`);
     for (const r of rows) E.store.p('DELETE FROM memory_entries WHERE id = ?').run(r.id);
     for (const ns of new Set(rows.map(r => r.namespace))) E.store.cache.delete(ns);
+    // The receipt outlives the call: a ledger row names the file, its hash and the ids, in the same transaction.
+    recordEventSync(E, caller, { kind: 'archive_purge', key: file, row_ids: rows.map(r => r.id), bytes: fs.statSync(file).size, sha256, ok: true, message: `purged ${rows.length} archived notes to ${file}` });
     return { count: rows.length, path: file, sha256, ids: rows.map(r => r.id), skipped };
-  });
+    });
+  } catch (e) {
+    // The rows are still there, so the file written for them must not be left behind as if they were gone.
+    if (written) { try { fs.unlinkSync(written); } catch { /* already gone */ } }
+    throw e;
+  }
   E.noteWrite();
   return out;
 }
@@ -116,7 +139,7 @@ const lite = r => ({ id: r.id, namespace: r.namespace, type: r.type, title: r.ti
 function listNs(E, kind, project, where, params) {
   const nsClause = project ? 'namespace = ?' : "namespace LIKE ? ESCAPE '\\'";
   const nsParam = project ? `${kind}/${project}` : `${kind}/%`;
-  return E.store.p(`SELECT id, namespace, type, title, run_id, created_at, body FROM memory_entries WHERE ${nsClause}${where ? ` AND ${where}` : ''} ORDER BY created_at DESC, id LIMIT ${LIST_MAX}`).all(nsParam, ...(params || [])).map(lite);
+  return E.store.p(`SELECT id, namespace, type, title, run_id, created_at, body FROM memory_entries WHERE ${nsClause} AND written_by = 'harness'${where ? ` AND ${where}` : ''} ORDER BY created_at DESC, id LIMIT ${LIST_MAX}`).all(nsParam, ...(params || [])).map(lite);
 }
 
 async function proposals(E, caller, args) {

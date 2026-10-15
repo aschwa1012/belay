@@ -10,7 +10,7 @@
 const { err } = require('./errors.cjs');
 const L = require('./memory-lifecycle.cjs');
 const C = require('./lifecycle-common.cjs');
-const { loadNote, checkHoldFacts } = require('./memory-facts.cjs');
+const { loadNote, checkHoldFacts, ownTexts } = require('./memory-facts.cjs');
 const { checkCitations, evidenceOf } = require('./memory-citations.cjs');
 const { archiveNote } = require('./memory-archive.cjs');
 const N = require('./methods-memory-notes.cjs');
@@ -20,7 +20,7 @@ const REVIEWS_KEEP = 20;
 
 // The one active hold of a note, as a row with its parsed body, or null.
 function activeHold(E, project, noteId) {
-  const r = E.store.p(`SELECT id, namespace, body FROM memory_entries WHERE namespace = ? AND type = 'held'
+  const r = E.store.p(`SELECT id, namespace, body FROM memory_entries WHERE namespace = ? AND type = 'held' AND written_by = 'harness'
     AND json_extract(body, '$.note_id') = ? AND json_extract(body, '$.state') = 'held' ORDER BY created_at DESC LIMIT 1`).get(L.nsOf('held', project), noteId);
   return r ? { id: r.id, namespace: r.namespace, b: JSON.parse(r.body) } : null;
 }
@@ -52,7 +52,7 @@ function archive(E, ctx, held, v, sources) {
   };
   if (!note || note.namespace !== N.projectNs(ctx.project)) return refuse('E_NOT_FOUND', `note ${held.b.note_id} is no longer a live note of the project (${note ? note.namespace : 'gone'}), so there is nothing to archive`);
   let facts;
-  try { facts = checkHoldFacts(E, ctx.project, note, held.b.kind, held.b.of); } catch (e) {
+  try { facts = checkHoldFacts(E, ctx.project, note, held.b.kind, held.b.of, held.b.ground); } catch (e) {
     if (e.code !== 'E_PRECONDITION') throw e;
     return refuse(e.code, `S4 no longer holds at apply time: ${e.message}`, e.detail);
   }
@@ -72,7 +72,9 @@ async function one(E, ctx, v, index) {
   if (v.verdict === 'release') return E.store.tx(() => release(E, ctx, held, v));
   let sources = [];
   try {
-    sources = await checkCitations(v.cites, { ...ctx.evidence, head_sha: ctx.evidence.head_sha || held.b.head_sha });
+    const own = loadNote(E, v.id);
+    sources = await checkCitations(v.cites, { ...ctx.evidence, head_sha: ctx.evidence.head_sha || held.b.head_sha, own: own ? ownTexts(own) : [] });
+    if (held.b.ground === 'code_contradicts' && !sources.some(s => s.source !== 'stream')) throw err('E_CITATION', 'a hold on the ground code_contradicts is archived on a citation of a file at the head commit', { id: v.id });
   } catch (e) {
     if (e.code !== 'E_CITATION') throw e;
     return E.store.tx(() => {

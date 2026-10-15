@@ -38,13 +38,17 @@ function deliveriesOf(E, id) {
 }
 
 // B's sightings and delivery history go to A. B keeps nothing of them (they are not counted twice), and A records
-// where they came from. Returns what moved.
+// where they came from. A note already listed in A's merged_from has been handed over once and is not handed over
+// again (a restored duplicate that is archived a second time). Returns what moved.
 function transferHistory(E, B, A, meta) {
+  if ((A.b.merged_from || []).some(m => m && m.id === B.id)) return { to: A.id, seen_total: 0, seen_in: 0, deliveries: 0, already: true };
   const bb = B.b;
   const at = Date.now();
   const moved = (Array.isArray(bb.seen_in) ? bb.seen_in : []).map(s => ({ ...s, transferred_from: B.id }));
-  // As with `repeats`: the same writer in the same task as A is one observation, not a second sighting.
-  const own = !(A.task_id === B.task_id && A.written_by === B.written_by);
+  // As with `repeats`: the same writer in the same task as A is one observation, not a second sighting; and a
+  // sighting A already holds from this task and writer is not added again.
+  const dupeOfA = (A.b.seen_in || []).some(s => s && s.task_id === B.task_id && s.written_by === B.written_by);
+  const own = !(A.task_id === B.task_id && A.written_by === B.written_by) && !dupeOfA;
   const sighting = own ? { task_id: B.task_id, written_by: B.written_by, run_id: B.run_id, in_index_beforehand: null, at, evidence: (bb.evidence || []).slice(0, 3), transferred_from: B.id } : null;
   const total = (Number.isInteger(bb.seen_total) ? bb.seen_total : moved.length) + (own ? 1 : 0);
   const deliveries = deliveriesOf(E, B.id);
@@ -53,7 +57,7 @@ function transferHistory(E, B, A, meta) {
     b.seen_total = (b.seen_total || 0) + total;
     b.delivery_history = [...(b.delivery_history || []), ...deliveries].slice(-HISTORY_KEEP);
     b.merged_from = [...(b.merged_from || []), {
-      id: B.id, at, seen_total: total, seen_in: moved.length + (sighting ? 1 : 0), deliveries: deliveries.length, run_id: meta.run_id || null, review: meta.receipt || null,
+      id: B.id, at, seen_total: total, seen_in: moved.length + (sighting ? 1 : 0), deliveries: deliveries.length, own, run_id: meta.run_id || null, review: meta.receipt || null,
     }].slice(-MERGED_KEEP);
     return fitBody(b);
   });
@@ -61,12 +65,36 @@ function transferHistory(E, B, A, meta) {
   return { to: A.id, seen_total: total, seen_in: moved.length + (sighting ? 1 : 0), deliveries: deliveries.length };
 }
 
+// The reverse, for a restore: whatever A took from B comes back to B, so the lesson is not counted twice if B is
+// resolved or archived again, and not stranded on an A that is itself archived or refuted. A purged or absent A has
+// nothing to give back.
+function untransfer(E, B) {
+  const to = B.b.archived && B.b.archived.history_moved && B.b.archived.history_moved.to;
+  if (!to) return null;
+  const A = E.store.p('SELECT id, body FROM memory_entries WHERE id = ?').get(to);
+  if (!A) return null;
+  let back = null;
+  E.store.patchBody(A.id, b => {
+    const entry = (b.merged_from || []).find(m => m && m.id === B.id);
+    if (!entry) return b;
+    const mine = (b.seen_in || []).filter(s => s && s.transferred_from === B.id);
+    back = { seen_total: Math.max(0, entry.seen_total - (entry.own ? 1 : 0)), seen_in: mine.filter(s => !(entry.own && s.task_id === B.task_id && s.written_by === B.written_by)).map(({ transferred_from, ...s }) => s) };
+    b.seen_in = (b.seen_in || []).filter(s => !(s && s.transferred_from === B.id));
+    b.seen_total = Math.max(0, (b.seen_total || 0) - entry.seen_total);
+    b.delivery_history = (b.delivery_history || []).filter(d => !(d && d.from === B.id));
+    b.merged_from = b.merged_from.filter(m => m !== entry);
+    return b;
+  });
+  if (back) E.store.patchBody(B.id, b => { b.seen_in = back.seen_in; b.seen_total = back.seen_total; return b; });
+  return back && { from: A.id, ...back };
+}
+
 // Moves the note to archive/<project>. `meta` is what the archive records: { kind, of, ground, reason, cites, run_id,
 // head_sha, held_row, receipt, direct }. For a duplicate with `of`, the history moves to `of` first.
 function archiveNote(E, project, note, meta, kept) {
   const to = `archive/${project}`;
   const from = note.namespace;
-  const transfer = meta.kind === 'duplicate' && kept ? transferHistory(E, note, kept, meta) : null;
+  const transfer = meta.history_moved || (meta.kind === 'duplicate' && kept && !meta.no_transfer ? transferHistory(E, note, kept, meta) : null);
   bindNamespace(E, to, note);
   E.store.moveRow(note.id, from, to);
   const at = Date.now();
@@ -76,10 +104,10 @@ function archiveNote(E, project, note, meta, kept) {
       at, from, kind: meta.kind, of: meta.of || null, ground: meta.ground || null, reason: meta.reason, cites: meta.cites || [], run_id: meta.run_id || null,
       head_sha: meta.head_sha || null, held_row: meta.held_row || null, review: meta.receipt || null, direct: !!meta.direct, ...(transfer ? { history_moved: transfer } : {}),
     };
-    delete b.held; delete b.matches;
+    delete b.held;
     return fitBody(b);
   });
   return { at, to, from, history_moved: transfer };
 }
 
-module.exports = { archiveNote, transferHistory, deliveriesOf, bindNamespace, parse };
+module.exports = { archiveNote, transferHistory, untransfer, deliveriesOf, bindNamespace, parse };

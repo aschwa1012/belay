@@ -164,9 +164,10 @@ test('resolve repeats records a sighting on the live note, adds no row, and coun
   assert.strictEqual(dup.state, 'pending');
   const rowsBefore = store.count();
   const r = await call('memory.noteResolve', w, { resolutions: [{ id: dup.id, resolve: 'repeats', of: live.id }] });
-  assert.deepStrictEqual([r.resolved[0].resolved, r.resolved[0].of, r.resolved[0].pending_row_removed], ['repeats', live.id, true]);
-  assert.strictEqual(store.count(), rowsBefore - 1, 'the pending row goes; no new row');
-  assert.strictEqual(rowOf(dup.id), undefined);
+  assert.deepStrictEqual([r.resolved[0].resolved, r.resolved[0].of, r.resolved[0].pending_row_archived], ['repeats', live.id, true]);
+  assert.strictEqual(store.count(), rowsBefore, 'nothing is deleted: the pending row moves to the archive; no new row');
+  assert.strictEqual(rowOf(dup.id).namespace, 'archive/acme');
+  assert.strictEqual(bodyOf(dup.id).archived.of, live.id);
   const b = bodyOf(live.id);
   assert.strictEqual(b.seen_total, 1);
   assert.deepStrictEqual([b.seen_in[0].written_by, b.seen_in[0].run_id, b.seen_in[0].in_index_beforehand], ['worker:w2', RUN, null], 'no index receipts for this worker, so nothing says');

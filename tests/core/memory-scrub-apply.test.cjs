@@ -13,7 +13,7 @@ after(() => T.close());
 
 const heldRows = () => T.store.p("SELECT id FROM memory_entries WHERE namespace = ?").all(`held/${PROJECT}`);
 const proposalRows = () => T.store.p("SELECT id FROM memory_entries WHERE namespace = ?").all(`proposal/${PROJECT}`);
-const scrub = (kind, entries, scope, extra = {}) => T.call(T.who.harness(kind), 'memory.scrubApply', { scrub: entries, scope: scope || entries.map(e => e.id), ...T.evidence, ...extra });
+const scrub = (kind, entries, scope, extra = {}) => T.call(T.who.harness(kind), 'memory.scrubApply', { scrub: entries, scope: scope || entries.flatMap(e => [e.id, e.of].filter(Boolean)), ...T.evidence, ...extra });
 const holdWrong = (id, over = {}) => ({ id, action: 'hold', kind: 'wrong', ground: 'report_confirmed', reason: 'the loader does throw for an unlisted name', cites: [T.cite], ...over });
 
 test('only the harness channel may call it: a tool call, a worker and a missing lever are all refused', async () => {
@@ -194,7 +194,8 @@ test('resolve settles a pending note with the existing resolve logic; a pending 
   const pend = T.note('pending repeat', { ns: `pending/${PROJECT}`, vec: A_NEAR, state: 'pending', matches: [{ id: live, title: 'resolve target', kind: 'lesson', basis: 'observed', similarity: 0.99 }], task_id: 'other-task' });
   const r = await scrub('apply', [{ id: pend, action: 'resolve', resolve: 'repeats', of: live, ground: 'same_claim', reason: 'same claim', cites: [] }]);
   assert.strictEqual(r.applied[0].resolved.resolved, 'repeats');
-  assert.strictEqual(T.row(pend), undefined, 'the pending row was only the holding place');
+  assert.strictEqual(T.row(pend).namespace, `archive/${PROJECT}`, 'nothing is deleted: the pending row is archived');
+  assert.strictEqual(T.body(pend).archived.of, live);
   assert.strictEqual(T.body(live).seen_total, 1);
   const pend2 = T.note('pending wrong', { ns: `pending/${PROJECT}`, vec: B, state: 'pending', reported_wrong: [T.report()] });
   const h = await scrub('apply', [holdWrong(pend2)]);
