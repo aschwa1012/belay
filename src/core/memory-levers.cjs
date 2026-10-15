@@ -4,7 +4,7 @@
 // It requires nothing, so run.attach can validate a block without loading the run manager; src/run reads the
 // parsed block back with `leversFor`. Every lever that does anything new defaults off.
 
-const { DEFAULT_MODE, ALLOWED: MODE_VALUES, normalize: normalizeMode, describe: describeModes } = require('./embedder-mode.cjs');
+const { DEFAULT_MODE, MODES, ALLOWED: MODE_VALUES, normalize: normalizeMode, describe: describeModes } = require('./embedder-mode.cjs');
 
 const DEFAULTS = Object.freeze({
   // ADR 0034 amendment 1: what the run does when the embedder fails: required (pause loudly, the default), keyword or off.
@@ -32,28 +32,6 @@ const DEFAULTS = Object.freeze({
   notes_lesson_question: false, // write ablation: the question aimed at lessons learned
   notes_overflow_line: false, // ADR 0047 decision 6: one neutral line counting the path and term notes the index could not hold; off until measured
   notes_trust_wording: false, // ADR 0047 decision 6: basis, evidence and review status instead of "unverified"; off until the harm arms have run
-});
-
-// Every lever's type and allowed values, for anything that must list them (the settings CLI derives each memory.* key, its default and
-// its allowed values from DEFAULTS and TYPES). type: 'boolean' | 'number' | 'integer' | 'enum' | 'string'; an enum has `values`;
-// a number or integer may have `min`/`max` (and `minExclusive` when min itself is not allowed); `nullable` when null is allowed. A key added to DEFAULTS without an entry here is a test failure.
-const TYPES = Object.freeze({
-  // the aliases stop (required) and continue (keyword) are handled by the parser, not listed in values
-  on_embedder_failure: { type: 'enum', values: ['required', 'keyword', 'off'] },
-  redact: { type: 'boolean' }, rules: { type: 'boolean' },
-  alpha: { type: 'number', min: 0, max: 1 },
-  capture: { type: 'boolean' }, observations: { type: 'boolean' },
-  summaries: { type: 'enum', values: ['off', 'mechanical'] },
-  project: { type: 'string', nullable: true }, // null or ^[a-z0-9][a-z0-9._-]{0,63}$, checked by the parser
-  project_writes: { type: 'boolean' }, cost_ledger: { type: 'boolean' }, first_message_index: { type: 'boolean' },
-  index_bytes: { type: 'integer', min: 1, max: 4096 },
-  bottle: { type: 'boolean' },
-  bottle_bytes: { type: 'integer', min: 1, max: 262144 },
-  wrapup: { type: 'boolean' }, knowledge_agent: { type: 'boolean' }, notes: { type: 'boolean' },
-  notes_match_threshold: { type: 'number', min: 0, max: 1, minExclusive: true },
-  notes_match_n: { type: 'integer', min: 1, max: 10 },
-  notes_reflection: { type: 'boolean' }, notes_lesson_question: { type: 'boolean' },
-  notes_overflow_line: { type: 'boolean' }, notes_trust_wording: { type: 'boolean' },
 });
 
 const BOOLEAN_KEYS = ['redact', 'rules', 'capture', 'observations', 'project_writes', 'cost_ledger',
@@ -113,5 +91,30 @@ function isDefault(levers) {
   if (!levers) return true;
   return Object.keys(DEFAULTS).every((k) => levers[k] === DEFAULTS[k]);
 }
+
+// What each lever is, for a command that lists and sets them (`belay settings`). Every key of DEFAULTS has an
+// entry: the type comes from the default's own type unless OVERRIDES names a tighter one, so a lever added to
+// DEFAULTS is listed and settable with no edit here. parseMemoryBlock stays the one judge of a value: a caller
+// that parses a value by its type here still asks parseMemoryBlock before it writes.
+// TYPES[key] = { type: 'boolean'|'number'|'integer'|'enum'|'string', values?, min?, max?, minExclusive?, nullable? }; `values` only for enums.
+const OVERRIDES = {
+  // the aliases stop (required) and continue (keyword) are handled by the parser, not listed in values
+  on_embedder_failure: { type: 'enum', values: MODES },
+  alpha: { type: 'number', min: 0, max: 1 },
+  summaries: { type: 'enum', values: SUMMARIES },
+  project: { type: 'string', nullable: true },
+  index_bytes: { type: 'integer', min: 1, max: INDEX_BYTES_MAX },
+  bottle_bytes: { type: 'integer', min: 1, max: BOTTLE_BYTES_MAX },
+  notes_match_threshold: { type: 'number', min: 0, max: 1, minExclusive: true },
+  notes_match_n: { type: 'integer', min: 1, max: 10 },
+};
+
+function specOf(key) {
+  if (OVERRIDES[key]) return Object.freeze({ ...OVERRIDES[key] });
+  const t = typeof DEFAULTS[key];
+  return Object.freeze({ type: t === 'boolean' || t === 'number' ? t : 'string', ...(DEFAULTS[key] === null ? { nullable: true } : {}) });
+}
+
+const TYPES = Object.freeze(Object.fromEntries(Object.keys(DEFAULTS).map((k) => [k, specOf(k)])));
 
 module.exports = { DEFAULTS, TYPES, MODE_VALUES, parseMemoryBlock, isDefault };

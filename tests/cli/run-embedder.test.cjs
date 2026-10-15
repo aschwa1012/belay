@@ -106,6 +106,10 @@ test('required (the default): an embedder failure mid-run pauses the run, record
     assert.strictEqual(st.json.run.paused_by, paused.paused_by);
     const stText = spawnSync(process.execPath, [CLI, 'status', ctx.runId, '--data', ctx.dataDir], { cwd: ROOT, encoding: 'utf8', windowsHide: true });
     assert.match(stText.stdout, /run paused at .* by operator:\d+ \[embedder-failure .*an embedder failure/);
+    assert.match(stText.stdout, /belay settings memory\.on_embedder_failure keyword \| off/);
+    assert.match(stText.stdout, /belay resume .* --embedder keyword \| --embedder off/);
+    const nt = spawnSync(process.execPath, [CLI, 'notices', ctx.runId, '--data', ctx.dataDir], { cwd: ROOT, encoding: 'utf8', windowsHide: true });
+    assert.match(nt.stdout.replace(/\s+/g, ' '), /paused by operator:\d+ \[embedder-failure \(orchestrator, memory\.store, E_TIMEOUT, timeout\)\] \(an embedder failure.*belay settings memory\.on_embedder_failure.*--embedder keyword\|off/);
     const rc = await cli(['receipts', ctx.runId], ctx.dataDir);
     assert.strictEqual(rc.json.run.paused_by, paused.paused_by);
     const rcText = spawnSync(process.execPath, [CLI, 'receipts', ctx.runId, '--data', ctx.dataDir], { cwd: ROOT, encoding: 'utf8', windowsHide: true });

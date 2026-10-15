@@ -142,6 +142,10 @@ test('verdictEvents and runEvents: a verdict check becomes an event naming the v
   assert.strictEqual(ev[0].source, 'task rv1 results, verdict check');
 
   assert.deepStrictEqual(N.runEvents({ id: RUN, seq: 4, paused_at: 50, paused_by: 'operator:9', ended_at: null }).map((e) => [e.kind, e.ts, e.paused_by]), [['run_paused', 50, 'operator:9']]);
+  const embPause = N.runEvents({ id: RUN, seq: 4, paused_at: 50, paused_by: 'operator:9 [embedder-failure (orchestrator, memory.store, E_TIMEOUT, timeout)]', ended_at: null });
+  assert.strictEqual(embPause[0].embedder_failure, true);
+  const embText = N.renderText(embPause).replace(/\s+/g, ' ');
+  assert.match(embText, /embedder-failure \(orchestrator, memory\.store, E_TIMEOUT, timeout\)\] \(an embedder failure.*belay settings memory\.on_embedder_failure keyword\|off.*belay resume .* --embedder keyword\|off/);
   assert.deepStrictEqual(N.runEvents({ id: RUN, seq: 5, paused_at: null, ended_at: 70, exit_reason: 'idle' }).map((e) => [e.kind, e.ts]), [['run_ended', 70]]);
   assert.deepStrictEqual(N.runEvents({ id: RUN, seq: 6, paused_at: 50, ended_at: 70 }).map((e) => e.kind), ['run_ended'], 'a pause ends with its run');
 
