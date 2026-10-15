@@ -17,7 +17,7 @@ const evidence = { type: 'array', items: S({ where: str(), saw: str() }) };
 
 const LEASE_RELEASE = {
   name: 'lease_release',
-  description: 'Release your lease. Returns the released task row; refuses if not the holder. result (max 4KB) hands back branch, head, tests, findings; a review sets verdict holds|refuted and summary. notes is required, [] for most tasks. Pending notes in the answer: call memory_note_resolve.',
+  description: 'Release your lease. Returns the released task row; refuses if not the holder. result (max 4KB) hands back branch, head, tests, findings; a review sets verdict holds|refuted and summary. notes is required, [] for most tasks. Pending notes: call memory_note_resolve.',
   inputSchema: S({
     lease_id: str(),
     reason: str(),
@@ -33,17 +33,17 @@ const LEASE_RELEASE = {
         subjects: strs(),
       }, ['kind', 'title', 'basis']),
     },
-    reported_wrong: { type: 'array', items: S({ id: str(), why: str(), replaced_by: str() }, ['id', 'why']) },
+    reported_wrong: { type: 'array', items: S({ id: str(), why: str(), replaced_by: { type: ['string', 'null'] } }, ['id', 'why']) },
   }, ['lease_id', 'notes']),
 };
 
 const NOTE_RESOLVE = {
   name: 'memory_note_resolve',
-  description: 'Settle pending notes after a release: new, repeats or supersedes an id (with evidence). Returns what each became.',
+  description: 'Settle pending notes: new, repeats or supersedes an id (with evidence). Returns what each became.',
   inputSchema: S({
     resolutions: {
       type: 'array',
-      items: S({ id: str(), resolve: { type: 'string', enum: ['new', 'repeats', 'supersedes'] }, of: str(), evidence }, ['id', 'resolve']),
+      items: S({ id: str(), resolve: { type: 'string', enum: ['new', 'repeats', 'supersedes'] }, of: str(), title: str(), evidence }, ['id', 'resolve']),
     },
   }, ['resolutions']),
 };
