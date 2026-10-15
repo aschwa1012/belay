@@ -16,6 +16,8 @@ const CODES = new Set([
   'E_SUMMARY_REFUSED', 'E_SUMMARY_OVER_BUDGET', 'E_LEVER_OFF', 'E_EXISTS',
   // ADR 0047: a note whose shape is refused (never truncated)
   'E_NOTE_SHAPE',
+  // the notes lifecycle (scrub, review, archive): out of scope, an unverifiable citation, a failed fact precondition, a ground that is not allowed
+  'E_SCOPE', 'E_CITATION', 'E_PRECONDITION', 'E_GROUND',
 ]);
 
 class CoreError extends Error {

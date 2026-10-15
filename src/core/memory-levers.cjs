@@ -27,12 +27,17 @@ const DEFAULTS = Object.freeze({
   notes_reflection: false, // write ablation: a second end-of-task question as its own turn after the hand-back
   notes_lesson_question: false, // write ablation: the question aimed at lessons learned
   notes_overflow_line: false, // ADR 0047 decision 6: one neutral line counting the path and term notes the index could not hold; off until measured
+  // The scrubber's write side (the lifecycle): off refuses, propose writes proposals and applies nothing, apply writes holds.
+  scrub_action: 'propose',
+  scrub_max_items: 40, // entries in one scrub hand-back
+  scrub_alarm_holds: 20, // more holds than this from one scrub raise the alarm field (the call still succeeds)
   notes_trust_wording: false, // ADR 0047 decision 6: basis, evidence and review status instead of "unverified"; off until the harm arms have run
 });
 
 const BOOLEAN_KEYS = ['redact', 'rules', 'capture', 'observations', 'project_writes', 'cost_ledger',
   'first_message_index', 'bottle', 'wrapup', 'knowledge_agent', 'notes', 'notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording'];
 const SUMMARIES = ['off', 'mechanical'];
+const SCRUB_ACTIONS = ['off', 'propose', 'apply'];
 const PROJECT_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const INDEX_BYTES_MAX = 4096; // ADR 0042 decision 2
 const BOTTLE_BYTES_MAX = 262144; // ADR 0042 decision 4
@@ -71,6 +76,9 @@ function parseMemoryBlock(block) {
     return { error: 'memory.redact false cannot be combined with memory.project_writes true: the project namespace outlives the run and must never hold unredacted text' };
   }
   if (typeof v.notes_match_threshold !== 'number' || !(v.notes_match_threshold > 0 && v.notes_match_threshold <= 1)) return { error: 'memory.notes_match_threshold must be a number above 0 and at most 1' };
+  if (!SCRUB_ACTIONS.includes(v.scrub_action)) return { error: `memory.scrub_action must be one of ${SCRUB_ACTIONS.join(', ')}` };
+  if (!boundedInt(v.scrub_max_items, 500)) return { error: 'memory.scrub_max_items must be an integer from 1 to 500' };
+  if (!boundedInt(v.scrub_alarm_holds, 500)) return { error: 'memory.scrub_alarm_holds must be an integer from 1 to 500' };
   if (!boundedInt(v.notes_match_n, 10)) return { error: 'memory.notes_match_n must be an integer from 1 to 10' };
   if (v.notes && v.project === null) return { error: 'memory.notes needs memory.project: notes live in the project namespace' };
   // Notes outlive the run in the project namespace, so they never take unredacted text.
@@ -98,6 +106,9 @@ const OVERRIDES = {
   bottle_bytes: { type: 'integer', min: 1, max: BOTTLE_BYTES_MAX },
   notes_match_threshold: { type: 'number', min: 0, max: 1, minExclusive: true },
   notes_match_n: { type: 'integer', min: 1, max: 10 },
+  scrub_action: { type: 'enum', values: SCRUB_ACTIONS },
+  scrub_max_items: { type: 'integer', min: 1, max: 500 },
+  scrub_alarm_holds: { type: 'integer', min: 1, max: 500 },
 };
 
 function specOf(key) {

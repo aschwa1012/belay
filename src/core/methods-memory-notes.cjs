@@ -294,4 +294,4 @@ async function resolve(E, caller, args) {
   return out;
 }
 
-module.exports = { prepare, commit, resolve, claimAfterRelease, notesLevers, findMatches, SEEN_MAX };
+module.exports = { prepare, commit, resolve, claimAfterRelease, notesLevers, findMatches, SEEN_MAX, fitBody, release, bodyOf, projectNs, pendingNs };
