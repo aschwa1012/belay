@@ -16,4 +16,21 @@ async function readCreated(pid, tries = 3) {
   return null;
 }
 
-module.exports = { readCreated };
+// A manager's own spawn-time read, waited for in the store: the row's pid_created. One snapshot attempt can fail on a loaded machine and
+// leaves the read pending (ADR 0048 decision 3); any snapshot this process then completes fills it, so each time the guard lapses the
+// setup takes one itself. The guard is what one caller can wait for a snapshot, never a bound the snapshot's speed decides.
+async function waitCreated(core, id, tries = 3) {
+  const guard = 2 * ID.SNAPSHOT_TIMEOUT_MS + 2000;
+  for (let i = 0; i < tries; i++) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < guard) {
+      const c = core.currentWorker(id);
+      if (c && c.pid_created) return;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    await ID.snapshotShared({ kind: 'test-setup' });
+  }
+  assert.fail(`precondition: pid_created never landed for ${id} in ${tries} reads (the machine is too loaded for this test's setup; this is not a product failure)`);
+}
+
+module.exports = { readCreated, waitCreated };

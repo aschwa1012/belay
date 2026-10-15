@@ -28,6 +28,7 @@ const { openCore } = require('../../src/core/index.cjs');
 const { createRunManager } = require('../../src/run/index.cjs');
 const { wakeText } = require('../../src/run/wake.cjs');
 const P = require('../../src/run/process.cjs');
+const { SNAPSHOT_TIMEOUT_MS } = require('../../src/core/proc-identity.cjs');
 const { cleanupRun } = require('./run-teardown.cjs');
 const { waitUntil, waitForFileLine, sampleHolds } = require('./holds-helpers.cjs'); // the polling helpers (READ_BOUND_MS, boundedRead) live there
 
@@ -139,7 +140,8 @@ test("run: a worker's turn end reaches the orchestrator as a user message, recor
     const row = await m.spawn({ substrate: 'claude-code', worktree: workerWorktree(dir, 'w1'), prompt: 'hello', worker_id: 'w1' });
     spawnedPids.push({ pid: row.pid, created: row.pid_created });
 
-    const exited = await waitForExit(runCliProc.proc, 20000);
+    // A hang guard: the receipt waits for the creation-time reads, so it allows what one caller can wait for a snapshot (ADR 0048).
+    const exited = await waitForExit(runCliProc.proc, 20000 + 2 * SNAPSHOT_TIMEOUT_MS);
     assert.ok(exited, 'the CLI did not exit in time');
     assert.strictEqual(exited.code, 0, `stdout: ${runCliProc.stdout}, stderr: ${runCliProc.stderr}`);
     const receipt = receiptOf(runCliProc, 0);
