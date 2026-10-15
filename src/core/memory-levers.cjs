@@ -22,7 +22,7 @@ const DEFAULTS = Object.freeze({
   knowledge_agent: false,
   // ADR 0047: notes workers mean to share. Every behaviour below sits behind `notes`; the other four tune it.
   notes: false,
-  notes_match_threshold: 0.85, // provisional: the planted-duplicate study sets it (cosine of the hybrid search's semantic half)
+  notes_match_threshold: 0.8, // operator 2026-10-15 from the planted-duplicate study (offline/duplicates): valid only for the embedder it was measured on (voyage-4-nano q4, 1024); re-measure if the embedder changes
   notes_match_n: 3, // provisional: at most this many matches are returned for a pending note
   notes_reflection: false, // write ablation: a second end-of-task question as its own turn after the hand-back
   notes_lesson_question: false, // write ablation: the question aimed at lessons learned

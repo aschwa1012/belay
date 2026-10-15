@@ -125,7 +125,7 @@ test('a close match makes the note pending: the lease is released, the matches c
   assert.deepStrictEqual([p.state, p.namespace], ['pending', 'pending/acme']);
   assert.strictEqual(p.matches.length, 1);
   assert.deepStrictEqual([p.matches[0].id, p.matches[0].kind, p.matches[0].basis], [first.id, 'lesson', 'observed']);
-  assert.ok(p.matches[0].similarity >= 0.85 && p.matches[0].similarity <= 1);
+  assert.ok(p.matches[0].similarity >= 0.8 && p.matches[0].similarity <= 1);
   assert.match(out.next, /memory_note_resolve/);
   assert.strictEqual(rowOf(p.id).namespace, 'pending/acme');
   assert.strictEqual(bodyOf(p.id).state, 'pending');
