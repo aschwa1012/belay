@@ -30,7 +30,7 @@ const esc = s => s.replace(/[\\%_]/g, c => `\\${c}`);
 async function noteRestore(E, caller, args) {
   C.allowKeys(args, ['id', 'reason'], 'memory.noteRestore');
   if (!validId(args.id)) throw err('E_ARGS', 'memory.noteRestore needs the id of an archived note', { field: 'id' });
-  const reason = L.checkText(args.reason, 'reason', 500, 'memory.noteRestore: ');
+  const reason = C.clean(L.checkText(args.reason, 'reason', 500, 'memory.noteRestore: ')).text;
   if (caller.role !== 'operator' && !N.notesLevers(E, caller)) throw err('E_LEVER_OFF', 'memory.noteRestore needs the run\'s memory.notes lever, and this run has it off', { lever: 'notes' });
   const out = E.store.tx(() => {
     const row = loadNote(E, args.id);

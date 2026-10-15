@@ -39,8 +39,6 @@ async function checkCitations(cites, ctx) {
   for (const [i, c] of cites.entries()) {
     const fail = reason => err('E_CITATION', `cites[${i}] (${c.where}) refused: ${reason}`, { index: i, where: c.where, reason });
     const quote = norm(c.quote);
-    // A note is quoted back to itself by a stream that carries its index line; that proves nothing about the code.
-    if ((ctx.own || []).some(t => norm(t).includes(quote))) throw fail('the quote is the note\'s own text, which cannot be evidence about the note');
     let text;
     if (c.where.startsWith('stream:')) {
       const want = fwd(c.where.slice('stream:'.length));
@@ -54,6 +52,9 @@ async function checkCitations(cites, ctx) {
       }
       const got = cache.get(c.where);
       if (got.error) throw fail(got.error);
+      // A stream carries the note's own index line, and quoting that back proves nothing. A file read at the head commit
+      // is evidence even when the note quoted the same line, so this applies to streams only.
+      if ((ctx.own || []).some(t => norm(t).includes(quote))) throw fail('the quote is the note\'s own text, which cannot be evidence about the note');
       // A stream is JSON lines: a quote with a quote mark or a newline in it is stored escaped.
       const escaped = JSON.stringify(c.quote.trim()).slice(1, -1);
       if (!norm(got.text).includes(quote) && !got.text.includes(escaped)) throw fail('the quote does not appear in that stream');

@@ -23,6 +23,7 @@ const relevance = require('./memory-relevance.cjs');
 const { checkReach } = require('./memory-reach.cjs');
 const rows = require('./rows.cjs');
 
+const redactText = (s) => require('./redact.cjs').redact(String(s)).text; // the held line shows redacted text whatever a body holds
 const CANDIDATES_MAX = 1000;
 const WHERE_SHOWN = 80; // bytes of the evidence location shown (the location, not the claim, is cut)
 const HELD_WHY_SHOWN = 60; // bytes of a hold's reason shown
@@ -157,7 +158,7 @@ function lineOf(r, body, trust, runId) {
   // The notes lifecycle: a note held for archive carries a short warning in every later run until the reviewer settles it.
   // Display only: it changes no rank and no order, and it is inside this line, so it is counted in the same budget.
   if (body && body.held && typeof body.held.kind === 'string' && typeof body.held.reason === 'string' && oneLine(body.held.reason)) {
-    out += ` [held: ${oneLine(body.held.kind).slice(0, 12)}, ${cutBytes(oneLine(body.held.reason), HELD_WHY_SHOWN)}]`;
+    out += ` [held: ${oneLine(body.held.kind).slice(0, 12)}, ${cutBytes(oneLine(redactText(body.held.reason)), HELD_WHY_SHOWN)}]`;
   }
   return out;
 }

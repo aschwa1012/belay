@@ -43,4 +43,24 @@ function rowOut(E, id) {
   return r ? { ...r, body: parse(r.body) } : null;
 }
 
-module.exports = { needHarness, allowKeys, notesContext, putRow, rowOut };
+// Every piece of model- or operator-supplied text the lifecycle stores (a reason, a quote, a draft rule) goes through
+// belay's redactor first: a note body lives in the project namespace and a hold reason reaches the index, and the
+// project namespace never holds unredacted text (ADR 0040 section 3). Checks that need the raw text (the verbatim
+// citation) run before this; what is stored and returned is the redacted copy, and `redacted` counts the changes.
+const { redact } = require('./redact.cjs');
+function clean(text) {
+  const r = redact(String(text));
+  return { text: r.text, n: Object.values(r.redactions || {}).reduce((a, b) => a + b, 0) };
+}
+function redactEntry(ent) {
+  let n = 0;
+  const c = s => { const r = clean(s); n += r.n; return r.text; };
+  const out = { ...ent };
+  if (typeof ent.reason === 'string') out.reason = c(ent.reason);
+  if (Array.isArray(ent.cites)) out.cites = ent.cites.map(x => ({ where: c(x.where), quote: c(x.quote) }));
+  if (ent.draft) out.draft = { rule: c(ent.draft.rule), target: c(ent.draft.target) };
+  out.redacted = n;
+  return out;
+}
+
+module.exports = { clean, redactEntry, needHarness, allowKeys, notesContext, putRow, rowOut };

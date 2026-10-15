@@ -195,3 +195,56 @@ test('#8 a held note shows a short warning in the index, and a long reason canno
   const one = mkHeld('single held', 'duplicate of another note about the same thing');
   assert.match((await idx()).text, new RegExp(`${one}.*\\[held: duplicate, duplicate of another note`));
 });
+
+const TOKEN = 'ghp_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8';
+
+test('R2-1 lifecycle text is redacted before it is stored: a token in a reason, a quote or a restore reason never lands', async () => {
+  const everywhere = id => JSON.stringify(T.body(id)) + JSON.stringify(T.row(id));
+  // hold reason: in the held row, on the note, and on the index line
+  const n = T.note('token hold target', { reported_wrong: [T.report()] });
+  const r = await scrub([wrong(n, { reason: `${TOKEN} was in the loader config` })]);
+  const h = r.applied[0].held;
+  assert.ok(!JSON.stringify(h).includes(TOKEN) && !JSON.stringify(r).includes(TOKEN), 'the held row and the result');
+  assert.ok(!everywhere(n).includes(TOKEN), 'the note body');
+  assert.ok(h.body.scrub.redacted >= 1, 'the redactions are counted');
+  const idx = await T.call(tool(), 'memory.index', {});
+  assert.ok(!idx.text.includes(TOKEN) && !idx.text.includes('ghp_a1B2'), 'the index line');
+  assert.match(idx.text.split('\n').find(l => l.includes(n)), /\[held: wrong, /);
+  // even a body that already holds a raw token shows redacted on the line
+  const b = T.body(n); b.held.reason = `${TOKEN} raw in the body`; T.store.p('UPDATE memory_entries SET body = ? WHERE id = ?').run(JSON.stringify(b), n);
+  assert.ok(!(await T.call(tool(), 'memory.index', {})).text.includes('ghp_a1B2'), 'the display redacts too');
+  // review reason and the release record
+  const rel = await review([{ id: n, verdict: 'release', reason: `fine, ${TOKEN}` }]);
+  assert.ok(!JSON.stringify(rel).includes(TOKEN) && !everywhere(n).includes(TOKEN));
+  // dismiss: reason and a cited stream line
+  const d = T.note('token dismiss target', { reported_wrong: [T.report()] });
+  const stream = `${T.dir}/token-stream.jsonl`;
+  fs.writeFileSync(stream, `${JSON.stringify({ env: `GITHUB_TOKEN=${TOKEN} printed by the failing job` })}\n`);
+  const dis = await scrub([{ id: d, action: 'dismiss', ground: 'report_unfounded', reason: `saw ${TOKEN}`, cites: [{ where: `stream:${stream}`, quote: `GITHUB_TOKEN=${TOKEN} printed by the failing job` }] }], { evidence_files: [stream] });
+  assert.strictEqual(dis.applied[0].outcome, 'applied', JSON.stringify(dis.refused));
+  assert.ok(!everywhere(d).includes(TOKEN) && !JSON.stringify(dis).includes(TOKEN));
+  // restore reason
+  const k = T.note('token restore target', { reported_wrong: [T.report()] });
+  await hold(wrong(k)); await review([archiveV(k)]);
+  const rs = await T.call(tool(), 'memory.noteRestore', { id: k, reason: `restoring ${TOKEN}` });
+  assert.ok(!JSON.stringify(rs).includes(TOKEN) && !everywhere(k).includes(TOKEN));
+  // draft and proposal
+  const p = T.note('token draft target');
+  const dr = await scrub([{ id: p, action: 'draft', reason: `r ${TOKEN}`, draft: { rule: `never print ${TOKEN}`, target: 'CLAUDE.md' } }]);
+  assert.ok(!JSON.stringify(dr).includes(TOKEN));
+  const q = T.note('token proposal target', { reported_wrong: [T.report()] });
+  const pr = await scrub([wrong(q, { reason: `x ${TOKEN}` })], {}, 'propose');
+  assert.ok(!JSON.stringify(pr).includes(TOKEN));
+  const stored = T.store.p('SELECT id FROM memory_entries WHERE body LIKE ? OR text LIKE ?').all(`%${TOKEN}%`, `%${TOKEN}%`);
+  assert.strictEqual(stored.length, 0, 'no stored row holds the token');
+});
+
+test('R2-A a file citation at the head commit may quote the very line the note quoted', async () => {
+  const withEvidence = (title) => { const id = T.note(title, { reported_wrong: [T.report()] }); const b = T.body(id); b.evidence = [{ where: 'loader.js', saw: T.cite.quote }]; T.store.p('UPDATE memory_entries SET body = ? WHERE id = ?').run(JSON.stringify(b), id); return id; };
+  const n = withEvidence('loader still throws');
+  const r = await scrub([{ id: n, action: 'dismiss', ground: 'code_supports_note', reason: 'the code still says it', cites: [T.cite] }]);
+  assert.strictEqual(r.applied[0].outcome, 'applied', JSON.stringify(r.refused));
+  const m = withEvidence('loader still throws too');
+  await hold(wrong(m));
+  assert.strictEqual((await review([archiveV(m)])).applied[0].outcome, 'archived', 'an archive verdict may quote the line the note relied on');
+});

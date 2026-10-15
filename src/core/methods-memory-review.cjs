@@ -17,6 +17,7 @@ const N = require('./methods-memory-notes.cjs');
 
 const KEYS = ['verdicts', 'run_id', 'head_sha', 'worktree', 'evidence_files'];
 const REVIEWS_KEEP = 20;
+const pick = e => ({ reason: e.reason, cites: e.cites });
 
 // The one active hold of a note, as a row with its parsed body, or null.
 function activeHold(E, project, noteId) {
@@ -66,10 +67,11 @@ function archive(E, ctx, held, v, sources) {
   return { id: note.id, verdict: 'archive', outcome: 'archived', receipt: entry.receipt, facts, history_moved: done.history_moved, held: C.rowOut(E, held.id), row: C.rowOut(E, note.id) };
 }
 
-async function one(E, ctx, v, index) {
+async function one(E, ctx, raw, index) {
+  let v = raw;
   const held = activeHold(E, ctx.project, v.id);
   if (!held) throw err('E_NOT_FOUND', `note ${v.id} has no active hold in held/${ctx.project}`, { id: v.id });
-  if (v.verdict === 'release') return E.store.tx(() => release(E, ctx, held, v));
+  if (v.verdict === 'release') { v = { ...v, ...pick(C.redactEntry(v)) }; return E.store.tx(() => release(E, ctx, held, v)); }
   let sources = [];
   try {
     const own = loadNote(E, v.id);
@@ -77,12 +79,14 @@ async function one(E, ctx, v, index) {
     if (held.b.ground === 'code_contradicts' && !sources.some(s => s.source !== 'stream')) throw err('E_CITATION', 'a hold on the ground code_contradicts is archived on a citation of a file at the head commit', { id: v.id });
   } catch (e) {
     if (e.code !== 'E_CITATION') throw e;
+    v = { ...v, ...pick(C.redactEntry(v)) };
     return E.store.tx(() => {
       const entry = review(ctx, held, v, 'refused', { code: e.code, message: e.message });
       record(E, held.id, entry);
       return { id: v.id, verdict: 'archive', outcome: 'refused', receipt: entry.receipt, code: e.code, message: e.message, held: C.rowOut(E, held.id), row: C.rowOut(E, v.id) };
     });
   }
+  v = { ...v, ...pick(C.redactEntry(v)) };
   return E.store.tx(() => {
     const fresh = activeHold(E, ctx.project, v.id); // the state at the write
     if (!fresh) throw err('E_NOT_FOUND', `the hold on note ${v.id} was settled while the verdict was being checked`, { id: v.id });

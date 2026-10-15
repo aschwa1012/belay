@@ -40,7 +40,7 @@ function target(E, project, id) {
 }
 
 const scrubReceipt = (ctx, ent, index, sources) => ({
-  run_id: ctx.runId, index, at: Date.now(), mode: ctx.mode, action: ent.action, ground: ent.ground || null, reason: ent.reason, cites: ent.cites || [], verified: sources,
+  run_id: ctx.runId, index, at: Date.now(), mode: ctx.mode, action: ent.action, ground: ent.ground || null, reason: ent.reason, cites: ent.cites || [], verified: sources, redacted: ent.redacted || 0,
 });
 
 // The proposal row: the entry as the scrubber gave it, what S3 verified, and the facts S4 found. Applies nothing.
@@ -101,7 +101,8 @@ async function settle(E, caller, ctx, ent, index, sources, pending) {
   return { index, id: ent.id, action: 'resolve', outcome: 'applied', resolved: out.resolved[0], still_pending: out.still_pending, scrub: scrubReceipt(ctx, ent, index, sources), pending_row: pending };
 }
 
-async function one(E, caller, ctx, ent, index) {
+async function one(E, caller, ctx, raw, index) {
+  let ent = raw;
   const st = target(E, ctx.project, ent.id);
   const wants = ent.action === 'resolve' ? st.pending : ent.action === 'hold' ? true : st.live;
   if (!wants) throw err('E_ARGS', `note ${ent.id} is ${st.live ? 'live' : 'pending'}, and ${ent.action} acts on a ${ent.action === 'resolve' ? 'pending' : 'live'} note`, { id: ent.id, action: ent.action });
@@ -112,6 +113,7 @@ async function one(E, caller, ctx, ent, index) {
     if (ent.of && !ctx.scope.has(ent.of) && !named) throw err('E_SCOPE', `note ${ent.of} is neither in the scope list nor named by a report or a stored match on ${ent.id}, so a hold may not stand against it`, { id: ent.id, of: ent.of });
   }
   const sources = ent.cites && ent.cites.length ? await checkCitations(ent.cites, { ...ctx.evidence, own: ownTexts(st.note) }) : [];
+  ent = C.redactEntry(ent); // after the verbatim check, before anything is stored or returned
   if (ent.ground === 'code_contradicts' && !sources.some(s => s.source !== 'stream')) throw err('E_CITATION', 'ground code_contradicts needs at least one citation of a file at the head commit: a stream quotes what was said, not what the code is', { id: ent.id });
   if (ctx.mode === 'propose') {
     const facts = ent.action === 'hold' ? checkHoldFacts(E, ctx.project, st.note, ent.kind, ent.of, ent.ground) : null;
