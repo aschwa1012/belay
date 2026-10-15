@@ -58,15 +58,17 @@ function pathsOf(body, norm) {
 const related = (a, f) => a === f || f.startsWith(`${a}/`) || a.startsWith(`${f}/`);
 
 // idf over live notes and tasks. Exported for the tests: the formula is the contract.
-// n(p) is the number of notes and tasks with ANY path related to p (equal, inside it, or containing it), so a
-// directory inherits the frequency of everything under it and `src` is never more specific than `src/core/x.cjs`.
+// n(p) is the number of notes and tasks with a path equal to p or INSIDE p, so a folder inherits the frequency of
+// everything under it (`src` is never more specific than `src/core/x.cjs`) but a file does not inherit its parents:
+// a note on `src` or `src/core` does not turn `src/core/x.cjs` into a hub.
+const within = (p, q) => q === p || q.startsWith(`${p}/`);
 function pathWeights(noteBodies, taskOwned, norm) {
   const f = fold(norm);
   const sets = [...noteBodies.map((b) => pathsOf(b, norm)), ...taskOwned.map((o) => [...new Set(o.map(f).filter(Boolean))])];
   const total = sets.length;
   const memo = new Map();
   const n = (p) => {
-    if (!memo.has(p)) memo.set(p, sets.filter((s) => s.some((q) => related(p, q))).length);
+    if (!memo.has(p)) memo.set(p, sets.filter((s) => s.some((q) => within(p, q))).length);
     return memo.get(p);
   };
   return { total, idf: (p) => { const c = n(p); return c > 0 ? Math.log(total / c) : 0; } };
@@ -82,15 +84,15 @@ const pathMatches = (paths, owned) => paths.some((a) => owned.some((f) => relate
 
 // ---- tier 2: subject terms ----
 // The task text is cut into a lower-case word set once (prepareText); a word subject is a set lookup, so a match costs
-// no regular expression. A subject needs at least 4 characters unless it is path-like (holds / \ . _ : or -). A word
+// no regular expression. A word subject of 4 or more characters matches with forms; 2 or 3 characters match exactly; a path-like one needs 3. A word
 // subject also matches with an s or es ending, and a subject ending in s or es matches its singular, but only when the
 // stem keeps 4 letters (so `news` does not find `new`, nor `uses` `use`); there is no ed rule (`test` does not find
 // `tested`). A path-like or multi-word subject matches as a lower-case substring with a word edge before it and after it
 // (or after an s), so `db/migrations` finds `db/migrations/001.sql`.
 const WORD = /[\p{L}\p{N}_]/u;
-const PATHLIKE = /[/\._:-]/;
+const PATHLIKE = /[/\\._:-]/;
 function prepareText(text) {
-  const lower = String(text || '').toLowerCase();
+  const lower = String(text || '').toLowerCase().replace(/\\/g, '/'); // a backslash path reads as a slash path
   return { lower, words: new Set(lower.split(/[^\p{L}\p{N}_]+/u).filter(Boolean)) };
 }
 function formsOf(w) {
@@ -109,17 +111,26 @@ function hasEdged(lower, s, tailS) {
   }
   return false;
 }
-function subjectMatches(subject, prep) {
-  const s = oneLine(subject).toLowerCase();
+// A short word (2 or 3 characters: API, MCP, git) matches exactly, with no plural or singular form. A path-like
+// subject is put through norm (backslashes, leading ./, trailing slash) and needs 3 characters.
+function subjectMatches(subject, prep, norm) {
+  let s = oneLine(subject);
   if (!s) return false;
-  if (!PATHLIKE.test(s) && !/\s/.test(s)) return [...s].length >= 4 && formsOf(s).some((f) => prep.words.has(f));
-  return [...s].length >= 2 && hasEdged(prep.lower, s, /\p{L}$/u.test(s));
+  if (!PATHLIKE.test(s) && !/\s/.test(s)) {
+    s = s.toLowerCase();
+    const len = [...s].length;
+    if (len < 2) return false;
+    return len < 4 ? prep.words.has(s) : formsOf(s).some((f) => prep.words.has(f));
+  }
+  if (PATHLIKE.test(s) && norm) s = norm(s);
+  s = s.toLowerCase();
+  return [...s].length >= 3 && hasEdged(prep.lower, s, /\p{L}$/u.test(s));
 }
-function subjectHits(subjects, text) {
+function subjectHits(subjects, text, norm) {
   if (!text || !Array.isArray(subjects)) return 0;
   const prep = typeof text === 'string' ? prepareText(text) : text;
   let n = 0;
-  for (const s of new Set(subjects.filter((x) => typeof x === 'string'))) if (subjectMatches(s, prep)) n += 1;
+  for (const s of new Set(subjects.filter((x) => typeof x === 'string'))) if (subjectMatches(s, prep, norm)) n += 1;
   return n;
 }
 
@@ -146,8 +157,8 @@ function lineOf(r, body, trust, runId) {
 }
 
 const overflowLine = (c) => (c === 1
-  ? '1 more note names a file or term in this task (memory_search can find it)'
-  : `${c} more notes name files or terms in this task (memory_search can find them)`);
+  ? '1 more note names a file or term in this task'
+  : `${c} more notes name files or terms in this task`);
 
 function candidates(E, namespaces) {
   const sql = `SELECT e.id, e.namespace, e.type, e.status, e.title, substr(e.text, 1, 2000) AS title_src, e.body, e.tags,
@@ -197,7 +208,7 @@ async function index(E, caller, c) {
   const ranked = live.map((r) => {
     const paths = ownedF.length ? pathsOf(r.b, norm) : [];
     const ps = paths.length ? pathScore(paths, ownedF, w.idf) : 0;
-    const hits = ps > 0 ? 0 : subjectHits(r.b && r.b.subjects, prep);
+    const hits = ps > 0 ? 0 : subjectHits(r.b && r.b.subjects, prep, norm);
     // A path match whose idf is 0 names a task file but adds no rank; it is still a fact, so the overflow line counts it.
     const fact = ps > 0 || hits > 0 || (paths.length > 0 && pathMatches(paths, ownedF));
     return { r, ps, hits, fact, tier: ps > 0 ? 1 : hits > 0 ? 2 : 3, rel: rel.scores.get(r.id) || 0 };
