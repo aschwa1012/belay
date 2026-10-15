@@ -55,6 +55,8 @@ function chainOf(E, id) {
 
 // memory.promote { ids, to: 'project', task_id, worker_id } → { namespace, moved, existing, refused, skipped, capped }
 async function promote(E, caller, args) {
+  // The same method name carries the operator's decision on a nominated note (note_id, decision): its own module.
+  if (args && (args.decision !== undefined || args.note_id !== undefined)) return require('./methods-memory-promote-note.cjs').promoteNote(E, caller, args);
   if (args.to !== 'project') throw bad('to must be "project"', 'to');
   if (!Array.isArray(args.ids) || !args.ids.length || args.ids.length > IDS_MAX || args.ids.some((x) => typeof x !== 'string' || !x)) throw bad(`ids must be an array of 1 to ${IDS_MAX} row ids`, 'ids');
   if (typeof args.task_id !== 'string' || !args.task_id) throw bad('task_id must name the task whose rows move', 'task_id');

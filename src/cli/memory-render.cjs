@@ -40,6 +40,8 @@ const FLAGS = {
   '--project': { key: 'project', type: 'one' },
   '--dry-run': { key: 'dryRun', type: 'bool' },
   '--candidates': { key: 'candidates', type: 'bool' },
+  '--approve': { key: 'approve', type: 'bool' },
+  '--reject': { key: 'reject', type: 'bool' },
 };
 
 const FILTER_FLAGS = ['--type', '--status', '--task', '--worker', '--since', '--namespace'];
@@ -57,6 +59,7 @@ const VERBS = {
   import: { flags: ['--namespace-map', '--namespace', '--no-embed'], positional: [1, 1], usage: 'belay memory import <file> [--namespace-map from=to]... [--namespace ns] [--no-embed]' },
   proposals: { flags: ['--project', '--all'], positional: [0, 0], usage: 'belay memory proposals [--project p] [--all]' },
   restore: { flags: ['--reason', '--candidates'], positional: [1, 1], usage: 'belay memory restore <id> --reason <text>   |   belay memory restore <id> --candidates' },
+  promote: { flags: ['--approve', '--reject', '--reason'], positional: [1, 1], usage: 'belay memory promote <note-id> (--approve | --reject) [--reason <text>]' },
   archive: { flags: ['--ids', '--older-than', '--confirm', '--project'], positional: [1, 1], usage: 'belay memory archive purge (--ids a,b | --older-than <days>) --confirm [--project p]' },
 };
 
@@ -126,6 +129,7 @@ function checkOpts(sub, opts) {
     if (opts.namespaces && opts.namespaces.length > 1) return { error: 'belay memory import takes one --namespace, the default for rows that carry none' };
   }
   if (sub === 'restore' && !opts.candidates && !opts.reason) return { error: 'belay memory restore needs --reason <text> (or --candidates to list the archived duplicates of a note)' };
+  if (sub === 'promote' && !!opts.approve === !!opts.reject) return { error: 'belay memory promote needs exactly one of --approve or --reject' };
   if (sub === 'archive') return checkPurge(opts);
   if (sub === 'verify') {
     if (opts.status === undefined) return { error: 'belay memory verify needs --status verified|refuted|unverified' };
