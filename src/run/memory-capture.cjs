@@ -20,6 +20,7 @@ const wants = (lv) => !!(lv && lv.capture && (lv.observations || jobLevers(lv)))
 const jobLevers = (lv) => !!(lv && ((lv.summaries && lv.summaries !== 'off') || lv.project_writes || lv.cost_ledger || lv.wrapup));
 
 const closed = (ctx) => !!(ctx.shutdownFlags && ctx.shutdownFlags.closed);
+const ownerGone = (ctx) => !!(ctx.shutdownFlags && ctx.shutdownFlags.ownerGone);
 const codeOf = (e) => (e && typeof e.code === 'string' && e.code.startsWith('E_') ? e.code : 'E_INTERNAL');
 const noteError = (w, where, e) => { w.lastError = { where, code: e && e.code, message: e && e.message }; };
 
@@ -81,10 +82,29 @@ function shutDown(w, ctx, state) {
   return true;
 }
 
-async function record(ctx, w, fields) {
-  if (shutDown(w, ctx, 'turn-observation-event')) return false;
+// `paired` marks the event that names a row already sent: it is recorded after the flag closes and is dropped
+// only once the owner is gone (lifecycle.cjs), so a row that landed is never left without its event.
+// Runs a paired write and tracks it, so shutdown can wait for it to land before the owner goes. `fn` is called
+// at once, in the same tick as the ownerGone check, so a write that passed the check is always in the set.
+function pairedWrite(ctx, fn) {
+  const p = (async () => fn())();
+  const flags = ctx.shutdownFlags;
+  if (flags) {
+    const set = flags.paired || (flags.paired = new Set());
+    const rm = () => set.delete(p);
+    set.add(p);
+    p.then(rm, rm);
+  }
+  return p;
+}
+
+async function record(ctx, w, fields, paired = false) {
+  if (paired) {
+    if (ownerGone(ctx)) { w.lastError = { where: 'after-shutdown', state: 'turn-observation-event' }; return false; }
+  } else if (shutDown(w, ctx, 'turn-observation-event')) return false;
   try {
-    await ctx.core.memory.recordEvent({ worker_id: w.id, task_id: w.taskId || undefined, ...fields });
+    const send = () => ctx.core.memory.recordEvent({ worker_id: w.id, task_id: w.taskId || undefined, ...fields });
+    await (paired ? pairedWrite(ctx, send) : send());
     return true;
   } catch (err) {
     noteError(w, 'memory.recordEvent', err);
@@ -124,7 +144,7 @@ async function storeObservation(w, e, ctx, p, extra = {}) {
     row = await ctx.core.memory.store(args);
   } catch (err) {
     noteError(w, 'memory.store', err);
-    await record(ctx, w, { kind: 'observation', ok: 0, code: codeOf(err), message: String((err && err.message) || err).slice(0, 300), dropped: p.dropped > 0 ? 1 : 0 });
+    await record(ctx, w, { kind: 'observation', ok: 0, code: codeOf(err), message: String((err && err.message) || err).slice(0, 300), dropped: p.dropped > 0 ? 1 : 0 }, true);
     return null;
   }
   const id = row && row.id;
@@ -132,7 +152,7 @@ async function storeObservation(w, e, ctx, p, extra = {}) {
     kind: 'observation', ok: 1, row_ids: id ? [id] : [], newest_row_id: id || undefined,
     bytes: Buffer.byteLength(obs.text, 'utf8'), sha256: crypto.createHash('sha256').update(obs.text).digest('hex'),
     dropped: p.dropped > 0 ? 1 : 0,
-  });
+  }, true);
   return row;
 }
 
@@ -156,4 +176,4 @@ async function finish(w, e, ctx, p, extra) {
   return row;
 }
 
-module.exports = { onEvent, takeTurn, plan, finish, storeObservation, snapshotOf, MAX_TURN_EVENTS };
+module.exports = { pairedWrite, onEvent, takeTurn, plan, finish, storeObservation, snapshotOf, MAX_TURN_EVENTS };

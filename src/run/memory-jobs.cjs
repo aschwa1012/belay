@@ -31,6 +31,7 @@ const codeOf = (e) => (e && typeof e.code === 'string' && e.code.startsWith('E_'
 const sha = (s) => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
 const note = (w, where, e) => { if (w) w.lastError = { where, code: e && e.code, message: e && e.message }; };
 const closed = (ctx) => !!(ctx.shutdownFlags && ctx.shutdownFlags.closed);
+const ownerGone = (ctx) => !!(ctx.shutdownFlags && ctx.shutdownFlags.ownerGone);
 const anyJob = (lv) => lv.summaries !== 'off' || lv.project_writes || lv.cost_ledger || lv.wrapup;
 
 // Per-manager bookkeeping: what this manager has already done, so a second trigger does no second write.
@@ -64,26 +65,27 @@ async function leversOf(ctx, w) {
 // closed and before the owner stops (lifecycle.cjs), so they are not turn-path work and are not gated on it.
 function jobCtx(ctx, lv, w, gate, turnPath = false) { return { ctx, core: ctx.core, lv, w, gate: gate || { aborted: false }, s: stateOf(ctx), turnPath }; }
 const SHUT = 'E_SHUTDOWN';
-async function call(J, fn) {
+// `paired` is the receipt of a row already sent: it waits for the owner going, not the closed flag.
+async function call(J, fn, paired = false) {
   if (J.gate.aborted) throw Object.assign(new Error('the run-end memory jobs gave up'), { code: 'E_TIMEOUT' });
-  if (J.turnPath && closed(J.ctx)) throw Object.assign(new Error('the run manager has shut down, so the write was not sent'), { code: SHUT });
-  return fn();
+  if (J.turnPath && (paired ? ownerGone(J.ctx) : closed(J.ctx))) throw Object.assign(new Error('the run manager has shut down, so the write was not sent'), { code: SHUT });
+  return paired && J.turnPath ? pairedWrite(J.ctx, fn) : fn();
 }
 // A receipt. Returns the event row or null; a failure to write the receipt is named on the worker.
-async function event(J, fields) {
-  try { return await call(J, () => J.core.memory.recordEvent({ ...fields })); } catch (e) {
+async function event(J, fields, paired = false) {
+  try { return await call(J, () => J.core.memory.recordEvent({ ...fields }), paired); } catch (e) {
     if (J.w) J.w.lastError = e && e.code === SHUT ? { where: 'after-shutdown', state: 'turn-memory-jobs' } : { where: 'memory.recordEvent', code: e && e.code, message: e && e.message };
     return null;
   }
 }
-const failure = (J, kind, fields, e) => event(J, { kind, ok: false, code: codeOf(e), message: String((e && e.message) || e).slice(0, 300), ...fields });
+const failure = (J, kind, fields, e, paired = false) => event(J, { kind, ok: false, code: codeOf(e), message: String((e && e.message) || e).slice(0, 300), ...fields }, paired);
 
 // ---- usage (ADR 0041 decision 6) -------------------------------------------------------------------------
 // The turn's numbers are the snapshot memory-capture.cjs's `plan` took at the turn_end itself: this job runs
 // after the turn's memory store, by which time a later turn_end may have moved the worker's counters. Claude
 // Code's cost is cumulative per process, so the row carries the delta from the previous row of the same
 // process; a new process (or a counter that went down) restarts from zero.
-const { snapshotOf } = require('./memory-capture.cjs');
+const { snapshotOf, pairedWrite } = require('./memory-capture.cjs');
 const num = (x) => (typeof x === 'number' && Number.isFinite(x) ? x : 0);
 function tokensOf(snap) {
   const u = snap.usage;
@@ -107,15 +109,16 @@ async function usageJob(J, snap) {
   const t = w.memoryJobs || (w.memoryJobs = { pid: null, lastCost: 0, seen: false, lastTurn: 0 });
   if (snap.turn <= t.lastTurn) return; // one row per turn
   const c = costOf(w, snap);
+  let sent = false;
   try {
-    await call(J, () => J.core.usage.record({
+    await call(J, () => { sent = true; return J.core.usage.record({
       worker_id: snap.workerId, task_id: snap.taskId || undefined, turn: snap.turn, substrate: snap.substrate,
       model: snap.model || undefined, ...tokensOf(snap), cost_usd: c.cost_usd, cost_basis: c.cost_basis,
-    }));
+    }); });
     t.lastTurn = snap.turn;
     if (c.advance) c.advance();
   } catch (e) {
-    await failure(J, 'usage', { worker_id: snap.workerId, task_id: snap.taskId || undefined, message: `usage row for turn ${snap.turn} not written: ${(e && e.message) || e}`.slice(0, 300) }, e);
+    await failure(J, 'usage', { worker_id: snap.workerId, task_id: snap.taskId || undefined, message: `usage row for turn ${snap.turn} not written: ${(e && e.message) || e}`.slice(0, 300) }, e, sent);
   }
 }
 
@@ -130,15 +133,16 @@ async function ensurePromote(J, taskId, workerId) {
   if (!workerId || s.promoteDone.has(key)) return null;
   return once(s, 'promote:' + key, async () => {
     if (s.promoteDone.has(key)) return null;
+    let sent = false;
     try {
       const got = await call(J, () => J.core.memory.list({ filter: { task_id: taskId, written_by: `worker:${workerId}` }, view: 'index', order: 'newest', limit: LIST_MAX }));
       const ids = ((got && got.rows) || []).map((r) => r.id);
       s.promoteDone.add(key);
       if (!ids.length) return null;
-      return await call(J, () => J.core.memory.promote({ ids, to: 'project', task_id: taskId, worker_id: workerId }));
+      return await call(J, () => { sent = true; return J.core.memory.promote({ ids, to: 'project', task_id: taskId, worker_id: workerId }); });
     } catch (e) {
       s.promoteDone.add(key);
-      await failure(J, 'project_write', { worker_id: workerId, task_id: taskId, key: `promote:${taskId}|${workerId}` }, e);
+      await failure(J, 'project_write', { worker_id: workerId, task_id: taskId, key: `promote:${taskId}|${workerId}` }, e, sent);
       return null;
     }
   });
@@ -222,6 +226,7 @@ function ensureSummary(J, taskId, workerId, { taskRow, retry } = {}) {
   if (s.summaryDone.has(key) || (s.summaryFailed.has(key) && !retry)) return Promise.resolve(s.summaryIds.get(key) || null);
   return once(s, 'summary:' + key, async () => {
     if (s.summaryDone.has(key)) return s.summaryIds.get(key) || null;
+    let sent = false; // the summary row's store was sent: its receipt, ok or not, is a paired write
     try {
       const prior = await alreadySummarised(J, taskId, workerId);
       if (prior) { s.summaryDone.add(key); if (prior.newest_row_id) s.summaryIds.set(key, prior.newest_row_id); return prior.newest_row_id || null; }
@@ -246,18 +251,18 @@ function ensureSummary(J, taskId, workerId, { taskRow, retry } = {}) {
       const text = render(result.fields, result.generator, { taskId, workerId, runId: J.ctx.runId });
       // With project writes on the summary goes straight into the project: no run original and no copy (ADR 0044 decision 2).
       const toProject = wantsProject(J.lv);
-      const stored = await call(J, () => J.core.memory.store({
+      const stored = await call(J, () => { sent = true; return J.core.memory.store({
         ...(toProject ? { namespace: `project/${J.lv.project}` } : {}),
         type: 'summary', title, text, body,
         embed: false, source: 'summariser', task_id: taskId, worker_id: workerId || undefined, tags: [taskId, workerId],
-      }));
+      }); });
       s.summaryDone.add(key); s.summaryFailed.delete(key); s.summaryIds.set(key, stored.id);
-      await event(J, { kind: 'summary', ok: true, worker_id: workerId, task_id: taskId, row_ids: [stored.id], newest_row_id: stored.id, bytes: Buffer.byteLength(text, 'utf8'), sha256: sha(text) });
-      if (toProject) await event(J, { kind: 'project_write', ok: true, worker_id: workerId, task_id: taskId, row_ids: [stored.id], newest_row_id: stored.id, key: `summary:${stored.id}`, message: `wrote ${stored.id} to project/${J.lv.project}` });
+      await event(J, { kind: 'summary', ok: true, worker_id: workerId, task_id: taskId, row_ids: [stored.id], newest_row_id: stored.id, bytes: Buffer.byteLength(text, 'utf8'), sha256: sha(text) }, true);
+      if (toProject) await event(J, { kind: 'project_write', ok: true, worker_id: workerId, task_id: taskId, row_ids: [stored.id], newest_row_id: stored.id, key: `summary:${stored.id}`, message: `wrote ${stored.id} to project/${J.lv.project}` }, true);
       return stored.id;
     } catch (e) {
       s.summaryFailed.add(key);
-      await failure(J, 'summary', { worker_id: workerId, task_id: taskId }, e);
+      await failure(J, 'summary', { worker_id: workerId, task_id: taskId }, e, sent);
       return null;
     }
   });

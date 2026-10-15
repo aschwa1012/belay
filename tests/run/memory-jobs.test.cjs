@@ -482,3 +482,18 @@ test('wrap-up: the rendered text carries no clock, so two Date.now values give i
   assert.doesNotMatch(a[0], /\b1[5-9]\d{11}\b|\b1[5-9]\d{8}\b/, 'no epoch value');
   assert.doesNotMatch(a[0], /\b\d+\s*(ms|s|sec|seconds?|minutes?|min|hours?|h|days?)\s+ago\b|\bago\b|\bjust now\b/i, 'no relative time');
 });
+
+test('a summary row sent before close keeps its event; once the owner is gone the event is not sent', async () => {
+  for (const gone of [false, true]) {
+    const core = spyCore({ tasks: { t1: releasedTask() }, observations: OBS });
+    const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical' }));
+    const store = core.memory.store;
+    core.memory.store = async (a) => { const r = await store(a); ctx.shutdownFlags.closed = true; ctx.shutdownFlags.ownerGone = gone; return r; };
+    const w = worker();
+    MJ.afterTurn(w, ctx, {}); await flush(w);
+    assert.strictEqual(methodsOf(core, 'memory.store').filter((c) => c.args.type === 'summary').length, 1);
+    const evs = core.events.filter((e) => e.kind === 'summary' && e.ok);
+    assert.strictEqual(evs.length, gone ? 0 : 1);
+    if (gone) assert.deepStrictEqual(w.lastError, { where: 'after-shutdown', state: 'turn-memory-jobs' });
+  }
+});
