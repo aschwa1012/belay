@@ -47,7 +47,9 @@ async function killHung(child) {
 // a child would still be this process's own descendant when the count is taken right after the call
 // returns. Scoped to this process's own subtree, unlike a system-wide node.exe count, so it stays
 // truthful when other test files are spawning and killing node processes of their own at the same time.
+// A snapshot's PowerShell is one of this process's children, so the count waits for the gate to be idle first (ADR 0048).
 async function ownChildCount() {
+  await require('../../src/core/proc-identity.cjs').gate.whenIdle();
   return (await P.childPids(process.pid)).length;
 }
 

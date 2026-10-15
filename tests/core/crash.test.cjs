@@ -6,7 +6,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { spawn } = require('node:child_process');
 
-const { crash, note, crashDescendant, noted } = require('../crash.cjs');
+const { crash, note, crashDescendant, noted, noteSettled } = require('../crash.cjs');
 const P = require('../../src/core/process.cjs');
 
 const sleeper = () => spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { windowsHide: true, stdio: 'ignore' });
@@ -64,7 +64,7 @@ test('note(): a bare pid throws; a live handle is recorded; a child that exited 
   try {
     note(live); note(gone);
     gone.kill(); // exits while its snapshot is still being read
-    await sleep(2800);
+    await Promise.all([noteSettled(live), noteSettled(gone)]); // the real event: both reads landed
     assert.ok(noted.has(live.pid), 'a handle still live when the read landed is kept');
     assert.ok(!noted.has(gone.pid), 'a handle that exited before the read landed is discarded');
     assert.strictEqual(crash(live.pid), true);

@@ -213,8 +213,9 @@ test('run: the orchestrator that ignores a closed stdin is killed after close_gr
     assert.ok(gotResult, `stream.jsonl at ${streamPath} never held a result line within 10,000 ms`);
     const turnEndAt = Date.now();
 
-    const exited = await waitForExit(runCliProc.proc, 9000);
-    assert.ok(exited, 'the CLI did not exit within 9,000 ms');
+    // A hang guard: the exact bound is asserted below, with the kill's snapshot subtracted (it is in the receipt).
+    const exited = await waitForExit(runCliProc.proc, 9000 + 2 * SNAPSHOT_TIMEOUT_MS);
+    assert.ok(exited, `the CLI did not exit within ${9000 + 2 * SNAPSHOT_TIMEOUT_MS} ms`);
     const totalMs = Date.now() - t0;
     const sinceTurnEnd = Date.now() - turnEndAt;
     // ADR 0048, rule a: the orchestrator kill's own identity snapshot is not what this bound is about. It is read from

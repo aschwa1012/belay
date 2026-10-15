@@ -70,7 +70,9 @@ test('stop vs fast close: the second killer waits, re-snapshots and finds the wo
     // The close waited for the stop, then either re-snapshotted and found the worker absent, or (a loaded host) had no
     // budget left for a new snapshot and signalled nothing. It never proved the worker from the SIGHUP's snapshot.
     const closeLine = all.find((l) => /^src\/cli\/run-close\.cjs:/.test(l.caller));
-    assert.ok(closeLine && closeLine.ok === false && ['absent', 'no_budget'].includes(closeLine.kind), `the close did not wait and find the worker absent: ${JSON.stringify(all)}`);
+    // A snapshot too slow for the budget (a stalled one) ends as unverifiable with the deadline named: still nothing signalled.
+    const noFit = closeLine && closeLine.kind === 'unverifiable' && /(deadline)/.test(String(closeLine.detail));
+    assert.ok(closeLine && closeLine.ok === false && (['absent', 'no_budget'].includes(closeLine.kind) || noFit), `the close did not wait and find the worker absent: ${JSON.stringify(all)}`);
     assert.ok(Date.parse(closeLine.time) >= Date.parse(ok[0].time), 'the close acted before the stop finished');
     if (closeLine.kind === 'absent') assert.ok(consoleSnaps >= 2, 'the close used the snapshot from before the stop\'s signal instead of taking a new one');
     assert.ok(['absent', 'no_budget', 'unverifiable'].includes(out.killed[0].kind), JSON.stringify(out.killed));

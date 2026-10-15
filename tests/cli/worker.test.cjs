@@ -44,7 +44,9 @@ async function killHung(child) {
   try { await P.killTree(child); } catch { /* best effort: the test's own kill may already have reaped it */ }
 }
 
+// A snapshot's PowerShell is one of this process's children, so the count waits for the gate to be idle first (ADR 0048).
 async function ownChildCount() {
+  await require('../../src/core/proc-identity.cjs').gate.whenIdle();
   return (await P.childPids(process.pid)).length;
 }
 
