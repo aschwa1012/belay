@@ -20,7 +20,7 @@ const restate = (w, force) => { if (w.ctx && w.ctx.writeRow) require('./write-ro
 
 function noteSpawn(w, child, { createdOf = P.createdOf, gate = ID.gate, schedule = RETRY_SCHEDULE_MS, every = RETRY_EVERY_MS, snapshotShared = ID.snapshotShared } = {}) {
   const pid = child.pid;
-  const spawnedAt = Date.now();
+  const spawnedAt = Number.isFinite(child.belaySpawnStartedAt) ? child.belaySpawnStartedAt : Date.now(); // the time before the spawn call, when the spawner took it
   const spawnSeq = gate.stamp(); // a snapshot counts for this spawn only if it started after this
   w.pidCreated = null; w.pidCreatedError = null;
   w.pidImage = child.spawnfile ? path.basename(String(child.spawnfile)) : null;
@@ -44,7 +44,7 @@ function noteSpawn(w, child, { createdOf = P.createdOf, gate = ID.gate, schedule
     if (!mine()) return;
     // A child that exited before the read may have lost its pid to another process: its snapshot entry proves nothing.
     if (exitedYet(child)) w.pidCreatedError = `the child had already exited when the creation time of pid ${pid} was read, so the reading is discarded`;
-    else if (r && Number.isFinite(r.created)) w.pidCreated = r.created;
+    else if (r && Number.isFinite(r.created) && (!Number.isFinite(child.belaySpawnStartedAt) || r.created >= spawnedAt - SPAWN_SLACK_MS)) w.pidCreated = r.created; // the same rule as a later reading
     else {
       pending = true; tries = 1;
       setPending(`the process snapshot had no creation time for pid ${pid} (unreadable, or the process had already gone)`);

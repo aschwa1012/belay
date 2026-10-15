@@ -179,3 +179,25 @@ test('a worker that exits before its creation time was read has a final error', 
   child.exitCode = 0; child.emit('exit', 0, null);
   assert.match(w.pidCreatedError, /^never read: the worker exited before its creation time was read \(1 try\)$/);
 });
+
+test('the creation-time slack is taken from before the spawn call, on the first read and on later ones', async () => {
+  const now = Date.now();
+  // The spawn call returned 3 s after CreateProcess started (antivirus): the process's creation time is 3 s before noteSpawn runs.
+  const slow = fakeChild(7010); slow.belaySpawnStartedAt = now - 3000;
+  const w = { pid: 7010 };
+  await PI.noteSpawn(w, slow, { createdOf: async () => ({ created: now - 3200 }), ...noSchedule });
+  assert.strictEqual(w.pidCreated, now - 3200, 'a creation time within 1 s of the spawn call start is accepted on the first read');
+  const early = fakeChild(7011); early.belaySpawnStartedAt = now;
+  const w2 = { pid: 7011 };
+  await PI.noteSpawn(w2, early, { createdOf: async () => ({ created: now - 5000 }), ...noSchedule });
+  assert.strictEqual(w2.pidCreated, null, 'a creation time long before the spawn is a misread on the first read too');
+  assert.match(w2.pidCreatedError, /retrying while the worker runs/);
+  // A late reading uses the same stamp.
+  const { gate, takes } = handGate();
+  const w3 = { pid: 7012 }; const c3 = fakeChild(7012); c3.belaySpawnStartedAt = Date.now() - 3000;
+  await PI.noteSpawn(w3, c3, { gate, createdOf: async () => null, ...noSchedule });
+  const other = gate.request(); await tick();
+  takes[0].resolve(mapOf([[7012, Date.now() - 3500]]));
+  await other;
+  assert.ok(Number.isFinite(w3.pidCreated), 'a late reading within the slack of the call start is accepted');
+});

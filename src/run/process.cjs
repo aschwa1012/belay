@@ -24,12 +24,15 @@ function pidAlive(pid) {
 // Spawn a worker. stdin is a pipe for Claude Code (the control channel, ADR 0008 §1) and ignored
 // for Codex (one process per turn, prompt in argv).
 function spawnWorker({ exe, args, cwd, env, stdin = 'pipe' }) {
+  // Taken before the call: Windows stamps the creation time when CreateProcess starts, and the call can return late (antivirus), ADR 0048.
+  const startedAt = Date.now();
   const child = spawn(exe, args, {
     cwd,
     env,
     stdio: [stdin, 'pipe', 'pipe'],
     windowsHide: true,
   });
+  child.belaySpawnStartedAt = startedAt;
   return child;
 }
 
