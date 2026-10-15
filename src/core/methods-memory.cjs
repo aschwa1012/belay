@@ -189,7 +189,7 @@ async function store(E, caller, args) {
 
 // The notes lifecycle's namespaces belong to the harness: only its own writes put a row there (memory.store refuses
 // them), and a delete of anything in them, or of any note, is the operator's (the archive purge is the way out).
-const RESERVED_NS = ['archive/', 'held/', 'proposal/', 'draft/'];
+const RESERVED_NS = ['archive/', 'held/', 'proposal/', 'draft/', 'nomination/'];
 const isReserved = ns => typeof ns === 'string' && RESERVED_NS.some(p => ns.startsWith(p));
 
 async function del(E, caller, args) {

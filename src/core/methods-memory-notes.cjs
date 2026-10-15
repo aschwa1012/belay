@@ -96,10 +96,14 @@ async function prepare(E, caller, args) {
     const l = args.lease_id ? rows.current(E.store, 'lease', args.lease_id) : null;
     if (!l || l.released_at == null) throw err('E_ARGS', 'lease.release: memory_ids is required in this run (the ids of the notes you applied, [] when none)', { field: 'memory_ids' });
   }
-  for (const [i, w] of wrong.entries()) {
+  // A report on a note that is no longer live in the project (archived, pending, gone) is skipped and returned as such; the release goes on.
+  const skipped = [];
+  for (const [i, w] of [...wrong.entries()].reverse()) {
     const r = E.store.p('SELECT id, namespace, type FROM memory_entries WHERE id = ?').get(w.id);
     if (!r || r.type !== 'note' || r.namespace !== projectNs(project)) {
-      throw err('E_NOT_FOUND', `reported_wrong[${i}]: ${w.id} is not a live note of project ${project}`, { id: w.id, field: 'reported_wrong', index: i });
+      skipped.unshift({ id: w.id, skipped: 'not_live', state: r && r.type === 'note' ? r.namespace.split('/')[0] : 'missing' });
+      wrong.splice(i, 1);
+      continue;
     }
     const m = NT.SELF_REF.exec(w.replaced_by || '');
     if (m && Number(m[1]) >= notes.length) throw err('E_ARGS', `reported_wrong[${i}].replaced_by names ${w.replaced_by} and this call has ${notes.length} notes`, { field: 'reported_wrong', index: i });
@@ -128,7 +132,7 @@ async function prepare(E, caller, args) {
     prepared.push({ index: i, kind: n.kind, basis: n.basis, title, text: s.text, body: s.body, redactions: s.redactions, emb: emb || {}, unembedded: embedFailed, matches, model });
   }
   const verdict = args.result && typeof args.result === 'object' && typeof args.result.verdict === 'string' ? args.result.verdict : null;
-  return { project, lv, notes: prepared, wrong, memoryIds, verdict };
+  return { project, lv, notes: prepared, wrong, skipped, memoryIds, verdict };
 }
 
 // A second `lease.release` on a released lease may add notes only in a run that asked for the reflection turn, and
@@ -184,7 +188,7 @@ function commit(E, caller, prep, { task_id }) {
   });
   const pending = items.filter(i => i.state === 'pending').length;
   return {
-    notes: items, reported_wrong: marked, pending,
+    notes: items, reported_wrong: [...marked, ...(prep.skipped || [])], pending,
     ...(prep.memoryIds ? { memory_ids: require('./memory-chances.cjs').recordApplied(E, caller, prep, task_id) } : {}),
     ...(pending ? { next: 'resolve each pending note with memory_note_resolve: new, repeats <id>, or supersedes <id> with evidence' } : {}),
   };

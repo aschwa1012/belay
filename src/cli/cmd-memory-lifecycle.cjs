@@ -4,6 +4,7 @@
 // copy) and start no process. `restore` and `archive purge` write, so they elect an owner on demand and cmd-memory.cjs
 // shuts it down again. The purge is the operator's alone: this CLI process is the operator, and no tool reaches it.
 
+const path = require('node:path');
 const P = require('./panel-common.cjs');
 
 const one = s => P.clean(s == null ? '' : s, 2000).replace(/\s+/g, ' ');
@@ -19,20 +20,54 @@ function rowLine(r) {
 }
 
 function renderProposals(res) {
-  const out = [`project: ${res.project || 'all'}`, `held: ${res.counts.held}  proposals: ${res.counts.proposals}  drafts: ${res.counts.drafts}`];
+  const out = [`project: ${res.project || 'all'}`, `held: ${res.counts.held}  proposals: ${res.counts.proposals}  drafts: ${res.counts.drafts}  nominations: ${res.counts.nominations || 0}`];
   for (const [title, list] of [['held (waiting on the reviewer)', res.held], ['proposals (nothing applied)', res.proposals], ['drafts', res.drafts]]) {
     out.push('', `${title}:`);
     if (!list.length) out.push('  none'); else for (const r of list) out.push(rowLine(r));
   }
+  out.push('', 'nominated for an instruction file (the operator decides: belay memory promote <note-id> --approve|--reject):');
+  const noms = res.nominations || [];
+  if (!noms.length) out.push('  none');
+  for (const n of noms) {
+    const b = n.body || {}, c = b.counts || {};
+    out.push(`  ${b.note_id}  [${b.state}]  ${c.tasks} tasks across ${c.runs} runs  nominated ${when(n.created_at)}  (${n.project})${n.note_state && n.note_state !== 'live' ? `  NOTE IS ${String(n.note_state).toUpperCase()}: reject it` : ''}${c.unrecorded ? `  [${c.unrecorded} sighting${c.unrecorded === 1 ? '' : 's'} not counted: delivery facts not recorded]` : ''}`);
+    if (!n.drafts.length) out.push('    no draft yet: the scrubber drafts it at a run close');
+    for (const d of n.drafts.slice(0, 1)) out.push(`    draft (${d.source}) -> ${d.target}: ${one(d.rule).slice(0, 160)}${d.present ? `  [${d.present === 'present' ? 'already in the file' : 'not in the file'}]` : ''}`);
+  }
+  const pc = res.promoted_check;
+  if (pc) {
+    out.push('', `promoted notes whose text was removed from its file: ${pc.removed.length} of ${pc.checked}`);
+    for (const r of pc.removed) out.push(`  ${r.note_id}  ${r.target}  (${r.state === 'file_missing' ? 'the file is gone' : 'text not found'})  ${one(r.text).slice(0, 100)}`);
+  }
   return `${out.join('\n')}\n`;
 }
 
-async function proposals(core, parsed) {
-  const args = {};
+// The directory a target file is relative to: the project root the config was found in, else the working directory.
+const rootOf = (ctx, found) => path.resolve((found && found.found && found.dir) || (ctx && ctx.cwd) || process.cwd());
+
+async function proposals(core, parsed, ctx, found) {
+  const args = { root: rootOf(ctx, found) };
   if (parsed.opts.project) args.project = parsed.opts.project;
   if (parsed.opts.all) args.all = true;
   const res = await core.memory.proposals(args);
   return { code: 0, text: renderProposals(res), json: res };
+}
+
+async function promote(core, parsed, ctx, found) {
+  const id = parsed.positional[0];
+  const decision = parsed.opts.approve ? 'approve' : 'reject';
+  const res = await core.memory.notePromote({ note_id: id, decision, ...(parsed.opts.reason ? { reason: parsed.opts.reason } : {}) });
+  const lines = [`${decision === 'approve' ? 'approved' : 'rejected'} ${res.note_id}  nomination ${res.nomination.id}  at ${when(res.receipt.at)}${res.receipt.reason ? `  reason: ${one(res.receipt.reason)}` : ''}`];
+  let check = null;
+  if (decision === 'approve') {
+    const p = res.promoted_to;
+    check = await core.memory.promotedCheck({ root: rootOf(ctx, found), project: res.project });
+    const mine = check.promoted.find(x => x.note_id === res.note_id);
+    const state = mine ? mine.state : 'unknown';
+    lines.push(`promoted to: ${p.target}`, `rule: ${one(p.text)}`,
+      state === 'present' ? `the text is already in ${p.target}` : `the text is NOT yet in ${p.target} (${state}): belay does not edit instruction files; add it yourself`);
+  } else lines.push('a new nomination needs a new independent sighting');
+  return { code: 0, text: `${lines.join('\n')}\n`, json: { ...res, ...(check ? { text_check: check.promoted.find(x => x.note_id === res.note_id) || null } : {}) } };
 }
 
 async function restore(core, parsed) {
@@ -58,7 +93,7 @@ async function archive(core, parsed) {
   return { code: 0, text, json: res };
 }
 
-const WRITES = { restore: p => !p.opts.candidates, archive: () => true };
+const WRITES = { restore: p => !p.opts.candidates, archive: () => true, promote: () => true };
 const writes = parsed => !!(WRITES[parsed.sub] && WRITES[parsed.sub](parsed));
 
-module.exports = { VERB_FN: { proposals, restore, archive }, writes };
+module.exports = { VERB_FN: { proposals, restore, archive, promote }, writes };
