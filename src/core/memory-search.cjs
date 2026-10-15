@@ -9,7 +9,8 @@
 // namespaces and filter and found nothing. A weaker result carries a `warning`, the first key of the object.
 
 const { err } = require('./errors.cjs');
-const { toMatch, BM25 } = require('./fts-query.cjs');
+const { BM25 } = require('./fts-query.cjs');
+const { pickTerms, orMatch } = require('./memory-relevance.cjs');
 const { rrf, HYBRID_ALPHA, HYBRID_K } = require('./fusion.cjs');
 const { deriveTitle, indexRowOf, dupVeto, filterSql } = require('./memory-rows.cjs');
 const { ftsReady } = require('./memory-schema.cjs');
@@ -135,19 +136,25 @@ async function semanticStage(E, caller, o, depth) {
 const fail = (code, message) => ({ failed: { code, message } });
 
 // FTS5 over title and text (trigram), restricted to the stated namespaces and filter, expired and superseded
-// rows excluded as the semantic scan excludes them. Never throws for a reason the caller can act on: the
-// result names it, so a missing index is "keyword did not run", never an empty list.
+// rows excluded as the semantic scan excludes them. The terms come from the one extractor memory.index also uses
+// (memory-relevance pickTerms): stopwords, too-short terms, terms in half the rows or more (zero IDF) and terms over
+// the cap are left out, and each is named with its reason in `dropped`. A row that matches only left-out terms matches
+// nothing. Never throws for a reason the caller can act on: the result names it, so a missing index is "keyword did not
+// run", never an empty list. A query whose every term was left out for being uninformative did not run either; one whose
+// informative terms sit in no row ran and found nothing.
 function keywordStage(E, o, depth, base) {
   const db = E.store.db;
   if (!ftsReady(db)) return fail('E_NO_INDEX', 'this store has no keyword index (it was never opened by a current owner, or this SQLite has no FTS5); keyword search did not run');
   if (typeof o.query !== 'string') return fail('E_QUERY_SHORT', 'a keyword search needs query text; only a vector was supplied');
-  const m = toMatch(o.query);
-  if (m.error) return fail('E_QUERY_SHORT', 'the query has no term of at least 3 characters, which the trigram index needs; keyword search did not run');
-  const used = new Set(m.match.slice(1, -1).split('" OR "'));
-  const dropped = [...new Set(o.query.split(/[\s"]+/).filter(Boolean))].filter(t => !used.has(t));
   try {
+    const { terms, dropped } = pickTerms(db, o.query, o.namespaces);
+    if (!terms.length && !dropped.some(d => d.reason === 'no-row')) {
+      const why = dropped.length ? dropped.map(d => `${d.term}: ${d.reason}`).join(', ') : 'the query has no words';
+      return fail('E_QUERY_SHORT', `the query has no term the keyword index can rank (${why}); keyword search did not run`);
+    }
+    if (!terms.length) return { hits: [], dropped };
     const rows = db.prepare(`SELECT e.id AS id, ${BM25} AS bm FROM memory_fts JOIN memory_entries e ON e.rowid = memory_fts.rowid
-      WHERE memory_fts MATCH ? AND ${base.where} ORDER BY ${BM25}, e.created_at DESC, e.id LIMIT ?`).all(m.match, ...base.params, depth);
+      WHERE memory_fts MATCH ? AND ${base.where} ORDER BY ${BM25}, e.created_at DESC, e.id LIMIT ?`).all(orMatch(terms.map(t => t.t)), ...base.params, depth);
     return { hits: rows.map(r => ({ id: r.id, score: -r.bm })), dropped };
   } catch (e) {
     return fail(/no such (table|column)|malformed/i.test(e.message) ? 'E_NO_INDEX' : 'E_INTERNAL', `the keyword index could not be read: ${e.message}`);

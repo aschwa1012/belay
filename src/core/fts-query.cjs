@@ -9,7 +9,7 @@
 // The shortest term the trigram tokenizer can match.
 const MIN_TERM = 3;
 
-// A cap keeps one pasted page from becoming a thousand-phrase expression.
+// A cap keeps one pasted page from becoming a thousand-phrase expression. UNMEASURED: 32 is a judgement, not a result.
 const MAX_TERMS = 32;
 
 // Terms split on whitespace, on control characters (a NUL or other control character in a phrase makes SQLite
