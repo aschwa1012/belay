@@ -136,3 +136,15 @@ test('a copy-fallback engine (no owner) enforces off through the run process tes
   } finally { off = false; }
   await copy.handle('memory.list', { caller: orch, namespace: 'n' }); // and with memory on again it answers
 });
+
+test('under required an embedder failure on a memory call names the three choices and the resume command; under keyword it does not', async () => {
+  failEmbed = true;
+  try {
+    mode = 'required';
+    await assert.rejects(call('memory.store', { namespace: 'n', text: 'needs a vector' }), (e) => e.code === 'E_MODEL_ABSENT'
+      && /paused for an embedder failure/.test(e.message) && /keyword \(rank by keywords only\), off \(memory off for the run\), or stay paused/.test(e.message)
+      && /belay resume \S+ --embedder keyword\|off/.test(e.message));
+    mode = 'keyword';
+    await assert.rejects(call('memory.store', { namespace: 'n', text: 'needs a vector too' }), (e) => !/belay resume/.test(e.message));
+  } finally { mode = 'required'; failEmbed = false; }
+});

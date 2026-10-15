@@ -51,6 +51,8 @@ Ending a turn does not end the run: the run ends when the operator quits the ses
 
 belay wakes you with a short message when a worker's turn ends or a worker dies. While workers are working, end your turn: the wake brings you back and names the worker. Do not hold a turn open to wait.
 
+If a memory call or a worker tool fails saying the run is paused for an embedder failure, stop and ask the operator which of the three they want: `keyword`, `off`, or stay paused. Then give them the exact `belay resume` command the message names for their choice; you have no shell to run it.
+
 So:
 
 - After you start work (a spawn with a prompt, or a `worker_message`), end your turn, naming the

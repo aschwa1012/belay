@@ -24,4 +24,8 @@ function normalize(v) {
 
 const describe = () => `${MODES.join(', ')} (the old values stop and continue are accepted as required and keyword)`;
 
-module.exports = { MODES, ALIASES, ALLOWED, DEFAULT_MODE, normalize, describe };
+// What to tell the orchestrator (and so the operator) when a run is paused for an embedder failure. One text for every place that
+// refuses or fails a call because of it (a memory call, a worker tool on a parked worker, a refused spawn).
+const pauseAdvice = (runId) => `The run is paused for an embedder failure (on_embedder_failure required). Stop and ask the operator which they want: keyword (rank by keywords only), off (memory off for the run), or stay paused. Apply their choice with: belay resume ${runId || '<run>'} --embedder keyword|off, or, after the embedder is fixed, belay resume ${runId || '<run>'}.`;
+
+module.exports = { pauseAdvice, MODES, ALIASES, ALLOWED, DEFAULT_MODE, normalize, describe };

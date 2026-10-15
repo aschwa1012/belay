@@ -57,6 +57,14 @@ test('memory rules: the placeholder sits at the end of an existing line, and an 
   for (const f of ['orchestrator.md', 'orchestrator-interactive.md']) {
     let now = lf(fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8'));
     const base = lf(fs.readFileSync(path.join(BASE_PROMPTS, f), 'utf8'));
+    // ADR 0034 amendment 2: the interactive twin adds one paragraph (and its blank line) on the embedder-failure pause.
+    if (f === 'orchestrator-interactive.md') {
+      const n = now.split('\n');
+      const at = n.findIndex((l) => l.startsWith('If a memory call or a worker tool fails saying the run is paused for an embedder failure'));
+      assert.ok(at > 0 && n[at - 1] === '' && n[at + 1] === '', 'the embedder-failure pause paragraph is in the interactive twin');
+      n.splice(at, 2);
+      now = n.join('\n');
+    }
     if (AMD6_LINES[f]) {
       const n = now.split('\n'); const b = base.split('\n');
       for (const i of AMD6_LINES[f]) { assert.notStrictEqual(n[i - 1], b[i - 1], `${f}:${i} is an amendment 6 line`); n[i - 1] = b[i - 1]; }

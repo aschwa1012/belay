@@ -105,6 +105,7 @@ async function embedForIndex(ctx, w, lv) {
     attempted: true, embeddings, queries, ms: Number.isInteger(r && r.embed_ms) ? r.embed_ms : Date.now() - t0,
     failure: bad ? { code: bad.code || 'E_INTERNAL', message: String(bad.message || '').slice(0, 200), cause: bad.cause || null } : null,
     stop: !!(r && r.on_embedder_failure === 'required' && failedModel),
+    run_ending: r && typeof r.run_ending === 'boolean' ? r.run_ending : null, // null: the core did not say
     off: !!(r && (r.memory_off || (r.on_embedder_failure === 'off' && failedModel))),
   };
 }
@@ -205,11 +206,11 @@ async function preface(w, ctx, prompt) {
     await stopReceipt(ctx, w, emb);
     // The guard ENDS the run, instead of pausing it, for a failure no resume can fix (embedder-guard.cjs isFatal: the store's model is not
     // the one in use). The message says which, so the orchestrator does not wait for a resume that will not come.
-    const fatal = emb.failure.code === 'E_MODEL_CHANGED' || emb.failure.cause === 'canary';
+    const fatal = emb.run_ending !== null ? emb.run_ending : (emb.failure.code === 'E_MODEL_CHANGED' || emb.failure.cause === 'canary'); // the run's guard said it is ENDING this run (never an interactive run: that pauses)
     const what = `${emb.failure.code}: ${emb.failure.message}`;
     fail('E_PAUSED', fatal
       ? `worker ${w.id} was not launched: the embedder failed while embedding its index query (${what}), which no resume can fix, so on_embedder_failure required is ENDING the run, not pausing it. Do not spawn again; end your work and report it.`
-      : `worker ${w.id} was not launched: the embedder failed while embedding its index query (${what}), and on_embedder_failure is required, so the run is pausing. After the resume, spawn the task again with a NEW worker id (${w.id} is now a dead row).`,
+      : `worker ${w.id} was not launched: the embedder failed while embedding its index query (${what}), and on_embedder_failure is required, so the run is pausing. ${require('../core/embedder-mode.cjs').pauseAdvice(ctx.runId)} After the resume, spawn the task again with a NEW worker id (${w.id} is now a dead row).`,
     { cause: 'embedder_failure', code: emb.failure.code, worker_id: w.id, run_ending: fatal });
   }
   let head = '';

@@ -36,6 +36,10 @@ async function withEmbedding(E, args, field, textField, caller, call, workerId) 
       : { ...args, query_embedding: e.embedding, embedding_model: e.embedding_model };
   } catch (e) {
     notifyEmbedderFailure(E, caller, call || (field === 'embedding' ? 'memory.store' : 'memory.search'), e, workerId);
+    // Under `required` in a run (an owner with a guard) this failure pauses the run: the caller is told what to do next.
+    if (e && e.detail && e.detail.embedder === true && E.owner && E.owner.opts && typeof E.owner.opts.embedderMode === 'function' && E.embedderMode() === 'required' && !String(e.message).includes('belay resume')) {
+      e.message = `${e.message} ${require('./embedder-mode.cjs').pauseAdvice(caller && caller.run_id)}`;
+    }
     throw e;
   }
 }
