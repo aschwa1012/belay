@@ -11,13 +11,14 @@ const { Store } = core('store.cjs');
 const { Engine } = core('engine.cjs');
 
 const PROJECT = 'lc';
-const RUNS = { apply: 'lc-apply', propose: 'lc-propose', off: 'lc-off', alarm: 'lc-alarm', plain: 'lc-plain' };
+const RUNS = { apply: 'lc-apply', propose: 'lc-propose', off: 'lc-off', alarm: 'lc-alarm', plain: 'lc-plain', strict: 'lc-strict' };
 const LEVERS = {
   apply: { project: PROJECT, notes: true, scrub_action: 'apply' },
   propose: { project: PROJECT, notes: true },
   off: { project: PROJECT, notes: true, scrub_action: 'off' },
   alarm: { project: PROJECT, notes: true, scrub_action: 'apply', scrub_alarm_holds: 2 },
   plain: { project: PROJECT },
+  strict: { project: PROJECT, notes: true, scrub_action: 'apply', notes_match_threshold: 0.995 },
 };
 
 const A = [1, 0, 0], A_NEAR = [0.99, 0.141, 0], B = [0, 1, 0];

@@ -102,8 +102,10 @@ async function runChild({ manager, workerId, worktree, model, capUsd, wallMs, pr
   notePid();
   const first = await raceFast(sp, fast, notePid);
   if (first === 'fast') { // kill at once (the record exists from the start of spawn), again if the spawn settles meanwhile, and name a survivor
+    notePid(); // the pid may have arrived after the tick that saw the fast close: the close deadline's reaper reads the sink
     await kill();
     await Promise.race([sp, sleep(FAST_SETTLE_MS)]);
+    notePid();
     await kill();
     await reportSurvivor(manager, workerId, kill, sink);
     throw coded('E_ABORTED', `a fast close was requested while the ${label} was starting; it was killed`); }
