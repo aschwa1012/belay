@@ -57,7 +57,7 @@ const GROUND_TRIGGER = { refuted_review: 'refuted_review', report_confirmed: 're
 
 // Throws E_PRECONDITION naming the missing fact, else returns the facts that held. `ground`, when given, must be
 // one the facts support (refuted_review needs a refuted status; report_confirmed a report from another writer).
-function checkHoldFacts(E, project, note, kind, ofId, ground) {
+function checkHoldFacts(E, project, note, kind, ofId, ground, threshold = DUP_SIMILARITY) {
   if (kind === 'wrong') {
     const others = (note.b.reported_wrong || []).filter(w => w && w.by !== note.written_by);
     const refuted = (note.status || 'unverified') === 'refuted';
@@ -74,16 +74,16 @@ function checkHoldFacts(E, project, note, kind, ofId, ground) {
     // REPORT S4: the replacement must also be about the same thing: a shared path or subject, or a stored cosine at the threshold.
     const sim = storedCosine(note, target);
     const path = shares(lower(note.b.applies_to), lower(target.b.applies_to)), subject = shares(lower(note.b.subjects), lower(target.b.subjects));
-    if (!path && !subject && !(sim !== null && sim >= DUP_SIMILARITY)) throw refuse(`${target.id} shares no path or subject with ${note.id} and its stored similarity is ${sim === null ? 'unavailable' : round3(sim)} (needs ${DUP_SIMILARITY}), so it is not shown to replace it`, { id: note.id, of: target.id });
+    if (!path && !subject && !(sim !== null && sim >= threshold)) throw refuse(`${target.id} shares no path or subject with ${note.id} and its stored similarity is ${sim === null ? 'unavailable' : round3(sim)} (needs ${threshold}), so it is not shown to replace it`, { id: note.id, of: target.id });
     return { replacement: target.id, replacement_created_at: target.created_at, note_created_at: note.created_at, shared: path ? 'path' : subject ? 'subject' : 'similarity', similarity: sim === null ? null : round3(sim) };
   }
   const sim = storedCosine(note, target);
   const matched = (note.b.matches || []).find(m => m && m.id === target.id);
   const best = Math.max(sim === null ? -1 : sim, matched && typeof matched.similarity === 'number' ? matched.similarity : -1);
   const reported = (note.b.reported_wrong || []).some(w => w && w.replaced_by === target.id);
-  if (best >= DUP_SIMILARITY) return { via: 'similarity', similarity: round3(best), kept: target.id };
+  if (best >= threshold) return { via: 'similarity', similarity: round3(best), kept: target.id };
   if (reported) return { via: 'report', similarity: best < 0 ? null : round3(best), kept: target.id };
-  throw refuse(`note ${note.id} is not shown to duplicate ${target.id}: the stored similarity is ${best < 0 ? 'unavailable' : round3(best)} (needs ${DUP_SIMILARITY}) and no worker report names ${target.id} as the replacement`, { id: note.id, of: target.id, similarity: best < 0 ? null : round3(best) });
+  throw refuse(`note ${note.id} is not shown to duplicate ${target.id}: the stored similarity is ${best < 0 ? 'unavailable' : round3(best)} (needs ${threshold}) and no worker report names ${target.id} as the replacement`, { id: note.id, of: target.id, similarity: best < 0 ? null : round3(best) });
 }
 
 module.exports = { ownTexts, loadNote, storedCosine, liveKept, checkHoldFacts, parse, COLS };
