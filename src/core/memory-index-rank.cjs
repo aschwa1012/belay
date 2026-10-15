@@ -120,7 +120,7 @@ function select(E, namespaces, pool, o) {
 
 // The sinking seam. A note's relevance is multiplied by sinkFactor(note, ctx) in the index ranking. It returns 1 for every note and
 // every notes_sink mode: the operator has gated a live penalty until pinning, a calibration and the simulation arms exist
-// (the notes-lifecycle rulings, Sinking), and `penalty` records exactly like `record`. The
+// (the operator's sinking ruling of 2026-10-15), and `penalty` records exactly like `record`. The
 // notes-lifecycle owner fills this function in; the miss definition it needs is not built, so nothing here counts misses.
 // note: { id, b (parsed body), status }; ctx: { lv (the run's levers), runId }.
 function sinkFactor(note, ctx) { // eslint-disable-line no-unused-vars

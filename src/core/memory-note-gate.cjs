@@ -13,8 +13,9 @@
 //                   (2) the writer's lease on that task is released (hand-back), a failed acceptance included,
 //                   (3) the note's run row is closed (`ended_at` set),
 //                   (4) the note has no run, or its run has no row: nothing in the store says its writer is still working.
-// pending/, archive/ and held/ are kept out by namespace: memory.index, memory.search and memory.list read project/<p> unless the
-// caller NAMES another namespace, and the reviewer names archive/<p> on purpose, so the gate does not also test the prefix.
+// The lifecycle namespaces (archive/, held/, pending/, proposal/, draft/, nomination/) are not read through the gate at all: a gated
+// caller on the tool channel that NAMES one on memory.index, memory.search or memory.list is refused E_ROLE (checkNamespaces, called
+// from checkReach in memory-reach.cjs). The harness channel and the operator keep their access, because the stages read them.
 // `unverified` and `verified` are both visible; a pending or absent review hides nothing. "The scrubber passed it" is no clause.
 //
 // Only rows of type `note` are filtered. The operator (the CLI) is not gated: it is the window onto every row. A worker or the
@@ -27,9 +28,24 @@
 // statement excludes with one json_each parameter. The two clauses that read the body (a promoted note, a pending state) are a JS
 // test, bodyLive, on the rows a route already fetched; the list route, which fetches no body, puts the same test in SQL (bodySql).
 
+const { err } = require('./errors.cjs');
+
+const LIFECYCLE_NS = ['archive/', 'held/', 'pending/', 'proposal/', 'draft/', 'nomination/'];
+
 const gated = (caller) => !!caller && (caller.role === 'worker' || caller.role === 'orchestrator');
 
 const OPEN_RUNS = 'SELECT r.id FROM run r WHERE r.ended_at IS NULL AND r.seq = (SELECT MAX(seq) FROM run WHERE id = r.id)';
+
+// Refuses (E_ROLE, nothing read) a gated caller on the tool channel naming a lifecycle namespace. A caller with channel 'harness' and
+// the operator are not refused.
+function checkNamespaces(caller, namespaces) {
+  if (!gated(caller) || caller.channel === 'harness') return;
+  for (const ns of namespaces) {
+    if (LIFECYCLE_NS.some((p) => String(ns).startsWith(p))) {
+      throw err('E_ROLE', `a ${caller.role} may not read ${ns}: the lifecycle namespaces (${LIFECYCLE_NS.join(', ')}) are read by the harness and the operator only`, { namespace: ns, role: caller.role });
+    }
+  }
+}
 
 // The ids of the notes the gate hides from `caller`: refuted, not yet ended (another run's, still open), and superseded unless
 // `includeSuperseded`. `ids`, when given, restricts the answer to those ids (a single-row check).
@@ -90,4 +106,4 @@ function visible(E, caller, id, opts) {
   return !row || bodyLive(row);
 }
 
-module.exports = { hiddenIds, sql, and, bodySql, bodyLive, visible, gated };
+module.exports = { checkNamespaces, LIFECYCLE_NS, hiddenIds, sql, and, bodySql, bodyLive, visible, gated };

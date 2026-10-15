@@ -129,14 +129,34 @@ test('clause c: a pending state, a promoted note and a superseded note are not l
   assert.match(idx.text, /\[held: wrong, being checked\]/, 'the held note shows its warning line');
 });
 
-test('pending, archive and held namespaces are kept out by namespace: the project read does not reach them, and a named read does', async () => {
-  const proj = fresh(), archive = proj.replace('project/', 'archive/');
+test('the lifecycle namespaces are refused to a tool-channel worker or orchestrator on index, search and list; the harness and the operator keep them', async () => {
   task('t-ns', WRITER, 'done');
-  const a = note(archive, 'archived', { task_id: 't-ns' });
+  const proj = fresh();
   const p = note(proj, 'live', { task_id: 't-ns' });
-  const viaProject = await seen(orch(READER), proj);
-  assert.ok(viaProject.search.includes(p) && !viaProject.search.includes(a));
-  assert.ok((await seen(orch(READER), archive)).search.includes(a), 'the reviewer names the archive on purpose');
+  assert.ok((await seen(orch(READER), proj)).search.includes(p), 'the project read still works');
+  for (const prefix of ['archive/', 'held/', 'pending/', 'proposal/', 'draft/', 'nomination/']) {
+    const space = proj.replace('project/', prefix);
+    const id = note(space, `in ${prefix}`, { task_id: 't-ns' });
+    const worker = callerFor('worker', { run_id: READER, worker_id: 'w-read' });
+    for (const who of [orch(READER), worker]) {
+      for (const [method, args] of [['memory.index', { namespaces: [space] }], ['memory.search', { namespaces: [space], query: 'gatecase', mode: 'keyword' }], ['memory.list', { namespaces: [space] }]]) {
+        await assert.rejects(call(who, method, args), (e) => e.code === 'E_ROLE' && e.detail && e.detail.namespace === space, `${who.role} ${method} ${space}`);
+      }
+    }
+    const harness = { ...orch(READER), channel: 'harness' };
+    assert.ok((await call(harness, 'memory.search', { namespaces: [space], query: 'gatecase', mode: 'keyword' })).results.some((r) => r.id === id), `harness reads ${prefix}`);
+    assert.ok((await call(callerFor('operator'), 'memory.list', { namespaces: [space] })).rows.some((r) => r.id === id), `operator reads ${prefix}`);
+  }
+});
+
+test('a note with no task, written by the orchestrator in another open run, stays hidden until that run ends', async () => {
+  const space = fresh();
+  await call(orch('rn-orch-open'), 'run.attach', { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true }) });
+  const id = note(space, 'orchestrator note', { run_id: 'rn-orch-open', task_id: null, worker_id: 'orchestrator' });
+  assert.deepStrictEqual(await everywhere(orch(READER), space, id), NONE, 'its run is open');
+  assert.deepStrictEqual(await everywhere(orch('rn-orch-open'), space, id), ALL, 'its own run sees it');
+  endRun('rn-orch-open');
+  assert.deepStrictEqual(await everywhere(orch(READER), space, id), ALL, 'visible once the run ends');
 });
 
 test('only notes are gated, and the operator is not', async () => {

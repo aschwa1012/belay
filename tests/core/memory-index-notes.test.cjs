@@ -285,8 +285,8 @@ test('a broad directory is not the most specific: a src note ranks below notes n
 test('paths are compared case-insensitively and in one spelling', async () => {
   const space = fresh();
   const id = note(space, 'mixed case', { applies_to: ['Src\\Core\\X.cjs'] });
-  note(space, 'elsewhere', { applies_to: ['docs/other.md'], created_at: 1 });
-  note(space, 'elsewhere two', { applies_to: ['docs/third.md'], created_at: 2 });
+  note(space, 'elsewhere', { applies_to: ['lib/other.md'], created_at: 1 });
+  note(space, 'elsewhere two', { applies_to: ['lib/third.md'], created_at: 2 });
   const t = await task('x', ['src/core/x.cjs']);
   const r = await index('on', { namespaces: [space], task_id: t });
   assert.strictEqual(r.notes.path, 1);
