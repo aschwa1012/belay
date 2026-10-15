@@ -84,6 +84,25 @@ function createWait({ workers, get }) {
     // emits error and close, never exit) has none coming and answers at once (review 2 R2-B1).
     const withCode = (w) => (W.deathByPidCheck(w)
       ? W.awaitExitCode(w, Math.max(0, ms - (now() - t0))) : undefined);
+    // ADR 0048: a restart whose relaunch is still under way (it returned early over MCP) has not settled. Until it launches, the
+    // record is still the OLD life, whose stop would otherwise be answered as if it were this worker's end. Wait for the relaunch
+    // inside this call's own budget; if it fails, that failure is the answer, never the old life's stop.
+    const relaunching = ws.filter((w) => w.restartInFlight);
+    if (relaunching.length) {
+      let timer = null;
+      const out = await Promise.race([
+        Promise.all(relaunching.map((w) => w.restartInFlight)).then(() => null, (e) => ({ e })),
+        new Promise((res) => { timer = setTimeout(() => res({ timedOut: true }), Math.max(1, ms - (now() - t0))); if (timer.unref) timer.unref(); }),
+      ]);
+      clearTimeout(timer);
+      if (out && out.e) {
+        const w = relaunching[0];
+        return done({ worker_id: w.id, event: 'restart_failed', established_by: `the relaunch failed: ${out.e.message || out.e}`, error_code: out.e.code || null, exit_code: w.exitCode, exit_signal: w.exitSignal, turn: w.turns });
+      }
+      if (out && out.timedOut) {
+        return { worker_id: null, event: null, timed_out: true, waited_ms: now() - t0, watched: ids, busy: relaunching.map((w) => ({ worker_id: w.id, state: w.state, relaunching: true, pid_alive: w.pid ? P.pidAlive(w.pid) : false, turns: w.turns })), ...capNote };
+      }
+    }
     for (const w of ws) {
       if (w.staleSince) return done({ ...staleOf(w), already: true });
       if (w.settled) { if (w.exitCode == null && w.exitSignal == null) await withCode(w); return done({ ...settledOf(w), already: true }); }

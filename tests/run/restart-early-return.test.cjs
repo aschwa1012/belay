@@ -110,3 +110,62 @@ test('restart: the fast path still awaits the first turn and says so, with or wi
     cleanup(data);
   }
 });
+
+// The budget can end before launch(): during the old life's stop, its kill snapshot or the index embed. The record is then still
+// the old life, which has already settled, so a wait must not answer that stop as this worker's end.
+function holdOldStop(core, oldPid, fail) {
+  let release = null; let armed = false;
+  const held = new Promise((res) => { release = res; });
+  const write = core.worker.write.bind(core.worker);
+  core.worker.write = async (row) => {
+    if (!armed && row.pid === oldPid && (row.state === 'stopping' || row.state === 'stopped')) {
+      armed = true; await held;
+      if (fail) throw Object.assign(new Error('the stop row could not be written'), { code: 'E_SUBSTRATE' });
+    }
+    return write(row);
+  };
+  return { release: () => release(), armed: () => armed };
+}
+
+test('restart: a budget that ends before launch() leaves a worker_wait that waits for the relaunch, never answers the old life\'s stop', async () => {
+  const { data, worktree, core, m } = setup('belay-restart-early-d-');
+  try {
+    const first = await m.spawn({ substrate: 'claude-code', worktree, prompt: 'hello', worker_id: 'w1' });
+    await m._waitTurn('w1', 8000);
+    const hold = holdOldStop(core, first.pid, false);
+    const r = await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 20000, mcp_budget_ms: 1500 });
+    assert.strictEqual(r.restart_path, 'early_return', JSON.stringify(r));
+    assert.strictEqual(r.relaunch_in_flight, true);
+    assert.strictEqual(hold.armed(), true, 'the old life\'s stop was still being written when the budget ended');
+    const waiting = m.wait({ worker_ids: ['w1'], timeout_ms: 30000 });
+    hold.release();
+    const w = await waiting;
+    assert.strictEqual(w.timed_out, false, JSON.stringify(w));
+    assert.notStrictEqual(w.event, 'stopped', `the old life's stop was answered: ${JSON.stringify(w)}`);
+    assert.strictEqual(w.event, 'turn_end', JSON.stringify(w));
+    assert.notStrictEqual(m._worker('w1').pid, first.pid, 'the answer is the new life\'s turn');
+  } finally {
+    try { await m.shutdown(); } catch { /* best effort */ }
+    cleanup(data);
+  }
+});
+
+test('restart: when the relaunch that outlived the budget fails, worker_wait answers that failure, not the old life\'s stop', async () => {
+  const { data, worktree, core, m } = setup('belay-restart-early-e-');
+  try {
+    const first = await m.spawn({ substrate: 'claude-code', worktree, prompt: 'hello', worker_id: 'w1' });
+    await m._waitTurn('w1', 8000);
+    const hold = holdOldStop(core, first.pid, true);
+    const r = await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 20000, mcp_budget_ms: 1500 });
+    assert.strictEqual(r.restart_path, 'early_return', JSON.stringify(r));
+    const waiting = m.wait({ worker_ids: ['w1'], timeout_ms: 30000 });
+    hold.release();
+    const w = await waiting;
+    assert.strictEqual(w.event, 'restart_failed', JSON.stringify(w));
+    assert.match(w.established_by, /the relaunch failed: the stop row could not be written/);
+    assert.strictEqual(w.error_code, 'E_SUBSTRATE');
+  } finally {
+    try { await m.shutdown(); } catch { /* best effort */ }
+    cleanup(data);
+  }
+});
