@@ -114,11 +114,14 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   // ------------------------------------------------------------------ launch
 
   function writeFilesFor(w) {
+    // ADR 0047: one decision per worker, taken here with the adapter's argv and kept on the record, so the contract text
+    // is only ever sent to an adapter that was launched with --notes (a levers read that failed means off, and is recorded).
+    w.notesOn = !!(ctx.memoryLevers && ctx.memoryLevers.notes);
     const adapterLog = L.wireLogPath(w.dir); // every worker adapter logs here (build 12 A1)
     const { mcpJsonPath, settingsPath, plugins } = L.writeWorkerFiles({
       dir: w.dir, workerId: w.id, runId, dataDir: root, mcpPath, settingsPath: settingsSource, logPath: adapterLog,
       permit: w.permissionPrompt, permitWaitMs: w.permitWaitMs, cwd: w.worktree, compactAt: ctx.compactAt, // ADR 0024; ADR 0007 decision 3
-      notes: !!(ctx.memoryLevers && ctx.memoryLevers.notes), // ADR 0047
+      notes: w.notesOn, // ADR 0047
     });
     // ADR 0007 §6 hygiene never degrades quietly: an unreadable/unparseable user settings file would
     // disable nothing, so the launch fails instead (a file that just does not exist is not a failure).
@@ -130,7 +133,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     // (ADR 0026 §3's keepalive lines) but its ready check does not.
     w.adapterLogPath = adapterLog;
     w.adapterArgs = L.workerAdapterArgs({
-      workerId: w.id, runId, dataDir: root, mcpPath, logPath: w.adapterLogPath, notes: !!(ctx.memoryLevers && ctx.memoryLevers.notes),
+      workerId: w.id, runId, dataDir: root, mcpPath, logPath: w.adapterLogPath, notes: w.notesOn,
     });
   }
 
@@ -223,7 +226,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       });
       workers.set(id, w);
     } finally { pendingIds.delete(id); }
-    await MP.levers(ctx, null); // ADR 0047: the worker adapter's argv carries the notes lever, so the levers are known before the files are written
+    await MP.levers(ctx, w); // ADR 0047: the worker adapter's argv carries the notes lever, so the levers are known before the files are written
     writeFilesFor(w);
     if (substrate === 'claude-code') w.instructions = I.snapshotInstructions(w.worktree, w.dir); // spawn only
 
@@ -233,7 +236,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     await writeRow(w, 'starting');
     let first;
     try {
-      first = (await MP.preface(w, ctx, prompt)) + prompt + (await MP.contractTail(ctx)); // the resume line, then the memory index, against the `starting` row (ADR 0007 §2, 0042 §2)
+      first = (await MP.preface(w, ctx, prompt)) + prompt + (await MP.contractTail(ctx, w)); // the resume line, then the memory index, against the `starting` row (ADR 0007 §2, 0042 §2)
     } catch (e) {
       // The task refused the assignment (an open dependency, ADR 0013 §1; the operator's lease; no such
       // task). Nothing has launched, so the `starting` row is written `dead` before the refusal is handed
@@ -324,8 +327,9 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const known = workers.get(workerId);
     if (known) return known;
     if (adopting.has(workerId)) return adopting.get(workerId);
-    const p = W.adopt({ core, workerId, dataDir: root }).then((w) => {
+    const p = W.adopt({ core, workerId, dataDir: root }).then(async (w) => {
       workers.set(workerId, w);
+      await MP.levers(ctx, w); // ADR 0047: the argv written below carries the notes lever
       writeFilesFor(w); // mcp.json, settings.json and the adapter log path belong to this run now
       if (w.substrate === 'claude-code') w.instructions = I.existingInstructions(w.dir); // never the worktree
       return w;

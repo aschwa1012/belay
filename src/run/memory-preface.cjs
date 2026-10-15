@@ -100,16 +100,16 @@ async function memoryPreface(w, ctx, prompt) {
 
 // ADR 0047 decision 3: with the run's notes lever on, the end-of-task question and the note rules close the opening
 // message (a worker reads what it must do last); '' with the lever off, so the message is the one it always was.
-async function contractTail(ctx) {
-  const lv = await levers(ctx, null);
-  return lv.notes ? `\n\n${require('./notes-contract.cjs').contract(lv)}` : '';
+async function contractTail(ctx, w) {
+  if (!w || !w.notesOn) return ''; // decided with the adapter's argv (manager writeFilesFor), never re-read here
+  return `\n\n${require('./notes-contract.cjs').contract(ctx.memoryLevers)}`;
 }
 
 // A relaunch (replace or parked resume): the same index minus the rows already shown, after the relaunch's own text.
 async function relaunch(w, ctx, firstText) {
   const text = await indexBlock(w, ctx);
   const out = !text ? firstText : firstText ? `${firstText}\n\n${text}` : text;
-  const tail = await contractTail(ctx);
+  const tail = await contractTail(ctx, w);
   return tail ? (out ? `${out}${tail}` : tail.trimStart()) : out;
 }
 
