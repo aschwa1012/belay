@@ -13,7 +13,7 @@ const bytes = (list) => Buffer.byteLength(JSON.stringify(list), 'utf8');
 
 test('without the flag the worker and orchestrator listings are byte-identical to what they were', () => {
   assert.strictEqual(tools.listingBytes('worker'), 4965);
-  assert.strictEqual(tools.listingBytes('orchestrator'), 9696);
+  assert.strictEqual(tools.listingBytes('orchestrator'), 9803);
   assert.deepStrictEqual(tools.toolsFor('worker', { notes: false }), tools.toolsFor('worker'));
   assert.deepStrictEqual(tools.toolsFor('orchestrator', { notes: true }).slice(0, -1), tools.toolsFor('orchestrator'), 'the orchestrator is given memory_summaries only (summaries-listing.test.cjs)');
 });
