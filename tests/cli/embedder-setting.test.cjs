@@ -90,3 +90,18 @@ test('writeSetting refuses with code 2 and writes nothing: a bad key, a bad valu
     assert.deepStrictEqual(fs.readdirSync(d).filter((n) => n.endsWith('.tmp')), [], 'and no temp file');
   } finally { rm(d); }
 });
+
+test('parseSpec reads the config mode from the cwd it is given, not the process cwd', () => {
+  const d = project();
+  try {
+    fs.writeFileSync(`${d}/belay.config.json`, JSON.stringify({ memory: { on_embedder_failure: 'off' } }));
+    fs.mkdirSync(`${d}/wt`);
+    fs.writeFileSync(`${d}/prompt.txt`, 'p\n');
+    fs.writeFileSync(`${d}/spec.json`, JSON.stringify({ worktree: `${d}/wt`, prompt_file: `${d}/prompt.txt` }));
+    const spec = require('../../src/cli/run-spec.cjs').parseSpec(`${d}/spec.json`, d);
+    assert.ok(!spec.error, spec.error);
+    assert.strictEqual(spec.levers.on_embedder_failure, 'off');
+    const other = require('../../src/cli/run-spec.cjs').parseSpec(`${d}/spec.json`, os.tmpdir());
+    assert.notStrictEqual(other.levers && other.levers.on_embedder_failure, 'off');
+  } finally { rm(d); }
+});

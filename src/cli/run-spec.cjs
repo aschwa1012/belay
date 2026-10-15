@@ -75,7 +75,7 @@ function parseSpec(specPath, cwd) {
   }
 
   // ADR 0034 amendment 1: a spec that does not name on_embedder_failure takes the config file's memory.on_embedder_failure, else required.
-  const levers = parseLevers(spec, { configMode: require('./embedder-setting.cjs').readConfigMode(process.cwd()) }); // ADR 0031 decisions 3 and 5
+  const levers = parseLevers(spec, { configMode: require('./embedder-setting.cjs').readConfigMode(cwd) }); // ADR 0031 decisions 3 and 5
   if (levers.error) return { error: levers.error };
   const modeKeys = RI.parseModeKeys(spec); // ADR 0037 decision 1
   if (modeKeys.error) return { error: modeKeys.error };

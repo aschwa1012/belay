@@ -182,9 +182,15 @@ async function runForm(core, command, run, msgText, embedder, cwd) {
     if (embedder) {
       // SWAP POINT (see embedder-setting.cjs): at the merge with the settings CLI this is its writeSetting, same signature.
       const ES = require('./embedder-setting.cjs');
-      const w = ES.writeSetting(C.discover(cwd), ES.CONFIG_KEY, embedder, { cwd });
-      receipt.embedder_setting = w.code === 0 ? w.json : { error: { code: w.code, message: w.json.error } };
       receipt.embedder_choice = embedder;
+      // The config is the RUN's own project's (run.project_dir, written by the launching attach), never the folder the CLI happens to
+      // run from. When no config exists there one is created in that project root, and the receipt names the path.
+      if (!run.project_dir) {
+        receipt.embedder_setting = { error: { code: 2, message: `run ${run.id} records no project directory (it was started before runs recorded one), so no config file was written; set it with belay settings memory.on_embedder_failure ${embedder} from the project` } };
+      } else {
+        const w = ES.writeSetting(C.discover(run.project_dir), ES.CONFIG_KEY, embedder, { cwd: run.project_dir });
+        receipt.embedder_setting = w.code === 0 ? w.json : { error: { code: w.code, message: w.json.error } };
+      }
     }
     // design item 9: exits 1 when the orchestrator was mid-turn and its interrupt was not confirmed, as
     // the worker form does, and when a run resume left a worker parked on an actual error (not merely
@@ -198,6 +204,11 @@ async function runForm(core, command, run, msgText, embedder, cwd) {
       ? `a run pause exists only for a headless run or an interactive run (ADR 0023 amendment 5); its workers can be paused one by one (this owner is not a belay run process)`
       : e.message;
     const receipt = { run_id: run.id, [key]: false, reason, error: { code: e.code, message: e.message, detail: e.detail } };
+    // A resume that lands after this call timed out still changes the run's mode, but this process writes no config for it.
+    if (embedder) {
+      receipt.embedder_setting = { not_written: 'the resume was not confirmed, so no config file was written; if it lands later the run takes the mode and the config stays as it was' };
+      receipt.reason = `${receipt.reason}; no config file was written, and a resume that lands later changes the run's mode without one`;
+    }
     return { code: 1, text: render(receipt), json: receipt };
   }
 }
