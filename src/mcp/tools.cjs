@@ -309,6 +309,7 @@ const PERMIT_TOOL = {
 // the memory read tools and nothing else: no store, no delete, no lease or checkpoint.
 const KNOWLEDGE_READ_TOOLS = ['memory_retrieve', 'memory_search', 'memory_timeline', 'memory_list', 'memory_stats'];
 const isKnowledgeAgent = (role, workerId) => role === 'worker' && typeof workerId === 'string' && workerId.startsWith('knowledge-');
+const isReviewJob = (role, workerId) => role === 'worker' && typeof workerId === 'string' && workerId.startsWith('notereview-'); // the note review job: it reads files and lists no belay tool
 
 // `knowledge` (orchestrator only) adds knowledge_ask; omitted or false, the listing is byte-for-byte what it was.
 // `workerId` (the adapter's argv) narrows the knowledge agent's listing to its read tools.
@@ -317,6 +318,7 @@ function toolsFor(role, { knowledge = false, workerId = null, notes = false } = 
     const base = knowledge ? BOTH.concat(ORCHESTRATOR, [KNOWLEDGE_TOOL]) : BOTH.concat(ORCHESTRATOR);
     return notes ? base.concat([NOTES.SUMMARIES]) : base;
   }
+  if (isReviewJob(role, workerId)) return [];
   if (isKnowledgeAgent(role, workerId)) return BOTH.filter((t) => KNOWLEDGE_READ_TOOLS.includes(t.name));
   if (role === 'worker') return notes ? NOTES.notesWorkerListing(BOTH.concat(WORKER)) : BOTH.concat(WORKER);
   throw Object.assign(new Error(`unknown role ${role}`), { code: 'E_ROLE' });
@@ -329,6 +331,7 @@ const permitBytes = () => Buffer.byteLength(JSON.stringify(PERMIT_TOOL), 'utf8')
 const roleOf = (name) => (ROUTES[name] ? ROUTES[name].role : undefined);
 const routeOf = (name) => ROUTES[name];
 const allows = (role, name, workerId = null) => {
+  if (isReviewJob(role, workerId)) return false;
   if (isKnowledgeAgent(role, workerId)) return KNOWLEDGE_READ_TOOLS.includes(name);
   const r = roleOf(name);
   return r === 'both' || r === role;
@@ -376,7 +379,7 @@ function validateArgs(name, args, { notes = false } = {}) {
     const extra = Object.keys(a).find((k) => !Object.prototype.hasOwnProperty.call(schema.properties || {}, k));
     if (extra !== undefined) bad(`${name}: ${extra} is not one of its arguments`, { tool: name, field: extra, reason: 'unknown_field' });
   }
-  if (name === 'worker_spawn' && typeof a.worker_id === 'string' && a.worker_id.startsWith(RESERVED_WORKER_PREFIX)) {
+  if (name === 'worker_spawn' && typeof a.worker_id === 'string' && (a.worker_id.startsWith(RESERVED_WORKER_PREFIX) || a.worker_id.startsWith('notereview-'))) {
     bad(`worker_spawn: worker ids starting ${RESERVED_WORKER_PREFIX} are reserved for the knowledge agent`, { tool: name, field: 'worker_id', reason: 'reserved', prefix: RESERVED_WORKER_PREFIX });
   }
   for (const k of schema.required || []) {
