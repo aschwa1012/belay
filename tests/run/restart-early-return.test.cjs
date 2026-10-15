@@ -169,3 +169,48 @@ test('restart: when the relaunch that outlived the budget fails, worker_wait ans
     cleanup(data);
   }
 });
+
+test('worker_wait over several workers answers one that has already finished while another is still relaunching', async () => {
+  const { data, worktree, core, m } = setup('belay-restart-early-f-');
+  try {
+    const w1 = await m.spawn({ substrate: 'claude-code', worktree, prompt: 'hello', worker_id: 'w1' });
+    await m.spawn({ substrate: 'claude-code', worktree, prompt: 'hello', worker_id: 'w2' });
+    await m._waitTurn('w1', 8000); await m._waitTurn('w2', 8000);
+    const hold = holdOldStop(core, w1.pid, false);
+    const r = await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 20000, mcp_budget_ms: 1500 });
+    assert.strictEqual(r.relaunch_in_flight, true, JSON.stringify(r));
+    const w = await m.wait({ worker_ids: ['w1', 'w2'], timeout_ms: 30000 });
+    assert.strictEqual(w.worker_id, 'w2', `the finished worker is answered while w1 still relaunches: ${JSON.stringify(w)}`);
+    assert.strictEqual(w.already, true);
+    assert.strictEqual(hold.armed(), true);
+    hold.release();
+    const after = await m.wait({ worker_ids: ['w1'], timeout_ms: 30000 });
+    assert.strictEqual(after.event, 'turn_end', JSON.stringify(after));
+  } finally {
+    try { await m.shutdown(); } catch { /* best effort */ }
+    cleanup(data);
+  }
+});
+
+test('worker_wait names the worker whose relaunch failed, not the first one relaunching', async () => {
+  const { data, worktree, core, m } = setup('belay-restart-early-g-');
+  try {
+    const w2 = await m.spawn({ substrate: 'claude-code', worktree, prompt: 'hello', worker_id: 'w2' });
+    const w1 = await m.spawn({ substrate: 'claude-code', worktree, prompt: 'hello', worker_id: 'w1' });
+    await m._waitTurn('w1', 8000); await m._waitTurn('w2', 8000);
+    const hold2 = holdOldStop(core, w2.pid, false); // w2's relaunch is listed first and does not fail
+    const hold1 = holdOldStop(core, w1.pid, true);  // w1's relaunch fails
+    const r2 = await m.restart({ worker_id: 'w2', first_turn_timeout_ms: 20000, mcp_budget_ms: 1500 });
+    const r1 = await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 20000, mcp_budget_ms: 1500 });
+    assert.strictEqual(r2.relaunch_in_flight && r1.relaunch_in_flight, true);
+    const waiting = m.wait({ worker_ids: ['w2', 'w1'], timeout_ms: 30000 });
+    hold1.release();
+    const w = await waiting;
+    assert.strictEqual(w.event, 'restart_failed', JSON.stringify(w));
+    assert.strictEqual(w.worker_id, 'w1', JSON.stringify(w));
+    hold2.release();
+  } finally {
+    try { await m.shutdown(); } catch { /* best effort */ }
+    cleanup(data);
+  }
+});

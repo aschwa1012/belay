@@ -85,25 +85,13 @@ function createWait({ workers, get }) {
     const withCode = (w) => (W.deathByPidCheck(w)
       ? W.awaitExitCode(w, Math.max(0, ms - (now() - t0))) : undefined);
     // ADR 0048: a restart whose relaunch is still under way (it returned early over MCP) has not settled. Until it launches, the
-    // record is still the OLD life, whose stop would otherwise be answered as if it were this worker's end. Wait for the relaunch
-    // inside this call's own budget; if it fails, that failure is the answer, never the old life's stop.
-    const relaunching = ws.filter((w) => w.restartInFlight);
-    if (relaunching.length) {
-      let timer = null;
-      const out = await Promise.race([
-        Promise.all(relaunching.map((w) => w.restartInFlight)).then(() => null, (e) => ({ e })),
-        new Promise((res) => { timer = setTimeout(() => res({ timedOut: true }), Math.max(1, ms - (now() - t0))); if (timer.unref) timer.unref(); }),
-      ]);
-      clearTimeout(timer);
-      if (out && out.e) {
-        const w = relaunching[0];
-        return done({ worker_id: w.id, event: 'restart_failed', established_by: `the relaunch failed: ${out.e.message || out.e}`, error_code: out.e.code || null, exit_code: w.exitCode, exit_signal: w.exitSignal, turn: w.turns });
-      }
-      if (out && out.timedOut) {
-        return { worker_id: null, event: null, timed_out: true, waited_ms: now() - t0, watched: ids, busy: relaunching.map((w) => ({ worker_id: w.id, state: w.state, relaunching: true, pid_alive: w.pid ? P.pidAlive(w.pid) : false, turns: w.turns })), ...capNote };
-      }
-    }
+    // record is still the OLD life, whose stop would otherwise be answered as if it were this worker's end. So a worker with a
+    // restart in flight is skipped by the already-finished checks and watched through its relaunch instead; the call answers
+    // whichever comes first, a worker that has already finished or any relaunch (a failed one is the answer, naming its worker).
+    const failedOf = (w, e) => ({ worker_id: w.id, event: 'restart_failed', established_by: `the relaunch failed: ${(e && e.message) || e}`, error_code: (e && e.code) || null, exit_code: w.exitCode, exit_signal: w.exitSignal, turn: w.turns });
+    const finishedOf = (w) => (w.staleSince ? { ...staleOf(w), already: true } : w.settled ? { ...settledOf(w), already: true } : w.turnEnded ? { ...turnOf(w, null), already: true } : null);
     for (const w of ws) {
+      if (w.restartInFlight) continue;
       if (w.staleSince) return done({ ...staleOf(w), already: true });
       if (w.settled) { if (w.exitCode == null && w.exitSignal == null) await withCode(w); return done({ ...settledOf(w), already: true }); }
       if (w.turnEnded) return done({ ...turnOf(w, null), already: true });
@@ -114,12 +102,17 @@ function createWait({ workers, get }) {
     // `settledOf`, exactly as `waitExit`'s own resolution is, so a worker that dies mid-turn (no
     // `turn_end` event ever reached) still answers its settled state (`dead`, `stopped`, `paused`…),
     // never a manufactured `turn_end` this stream never produced.
+    const watch = (w) => (w.restartInFlight
+      ? w.restartInFlight.then(() => finishedOf(w) || watch(w), (e) => failedOf(w, e))
+      : Promise.race([
+        W.waitTurn(w, ms).then((v) => (v ? (v.exited ? { ...settledOf(w) } : { ...turnOf(w, v) }) : never)),
+        W.waitExit(w, ms).then((v) => (v ? { ...settledOf(w) } : never)),
+      ]));
     const winner = await Promise.race([
-      ...ws.map((w) => W.waitTurn(w, ms).then((v) => (v ? (v.exited ? { ...settledOf(w) } : { ...turnOf(w, v) }) : never))),
-      ...ws.map((w) => W.waitExit(w, ms).then((v) => (v ? { ...settledOf(w) } : never))),
+      ...ws.map(watch),
       new Promise((res) => { const t = setTimeout(() => res(null), ms); if (t.unref) t.unref(); }),
     ]);
-    if (winner && 'exit_code' in winner && winner.exit_code == null && winner.exit_signal == null) {
+    if (winner && winner.event !== 'restart_failed' && 'exit_code' in winner && winner.exit_code == null && winner.exit_signal == null) {
       const w = ws.find((x) => x.id === winner.worker_id);
       if (w) { await withCode(w); return done({ ...settledOf(w) }); }
     }
