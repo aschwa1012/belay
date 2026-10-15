@@ -118,3 +118,22 @@ test('a stage cut off by the fast close deadline still names the children that s
   assert.deepStrictEqual(out, { cut: true, survivors: [4321] });
   assert.match(late[0], /run-close stages/);
 });
+
+test('a stage cut off while a child is starting: its pid, recorded at spawn, is found, killed by pid, and a survivor is named', async () => {
+  const { runCloseStages } = require('../../src/cli/run-close-stages.cjs');
+  const { TIMED_OUT } = require('../../src/run/orchestrator-interactive.cjs');
+  const { spawn } = require('node:child_process');
+  const { pidAlive } = require('../../src/core/lock.cjs');
+  const sleeper = () => spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
+  const ce = { hupSeen: () => true, bound: async () => TIMED_OUT };
+  const a = sleeper(), b = sleeper();
+  try {
+    const killed = [];
+    const killPid = async (core, rec) => { killed.push(rec.pid); if (rec.pid === a.pid) a.kill(); }; // b resists
+    const stages = { closeStages: (x) => { x.sink.pids.push({ worker_id: 'scrub-r-a', pid: a.pid }, { worker_id: 'archreview-r-b', pid: b.pid }); return new Promise(() => {}); } };
+    const out = await runCloseStages({ core: {}, runId: 'r', levers: { memory_levers: { notes: true } }, dataDir: 'd', ce, late: () => {}, stages, killPid });
+    assert.deepStrictEqual(killed.sort(), [a.pid, b.pid].sort(), 'every recorded child that was alive was killed by its pid');
+    assert.ok(!pidAlive(a.pid));
+    assert.deepStrictEqual(out, { cut: true, survivors: [b.pid] }, 'only the one still alive is named');
+  } finally { require('../crash.cjs').crash(a); require('../crash.cjs').crash(b); }
+});

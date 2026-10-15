@@ -20,7 +20,7 @@ const C = require('./lifecycle-common.cjs');
 const M = require('./methods-memory.cjs');
 const N = require('./methods-memory-notes.cjs');
 const { parse } = require('./memory-facts.cjs');
-const { nominationsForScope } = require('./memory-nominate.cjs');
+const { nominationsForScope, countFor } = require('./memory-nominate.cjs');
 
 const fwd = p => String(p).split('\\').join('/');
 const TEXT_CUT = 1500;
@@ -68,6 +68,19 @@ function scrubHistory(E, runId) {
     }
   }
   return { owed, handled, dropped };
+}
+
+// When the note's newest COUNTED independent sighting (the promotion step's own counting: not shown the note beforehand, one per task
+// and writer) was recorded; 0 when it has none. A dropped nomination comes back when this passes the drop.
+async function newestCountedSighting(E, noteId) {
+  const row = E.store.p('SELECT id, task_id, run_id, written_by, created_at, status, body FROM memory_entries WHERE id = ?').get(noteId);
+  if (!row) return 0;
+  let counted;
+  try { counted = await countFor(E, row); } catch { return 0; }
+  const keys = new Set(counted.keys);
+  let newest = keys.has(`${row.task_id}|${row.written_by}`) ? row.created_at || 0 : 0;
+  for (const s of (parse(row.body).seen_in || [])) if (s && keys.has(`${s.task_id}|${s.written_by}`)) newest = Math.max(newest, Number(s.at) || 0);
+  return newest;
 }
 
 function streamsOf(E, ids) {
@@ -127,9 +140,10 @@ async function scrubScope(E, caller, args) {
   for (const r of pending) addNew(r.id, 'pending');
   for (const nom of nominationsForScope(E, project) || []) {
     const { id: nid, ...facts } = nom;
-    // A nominated note the scrubber declined to draft in two scrubs stops being offered, in any run, until a newer nomination (a new independent sighting).
+    // A nominated note the scrubber declined to draft in two scrubs stops being offered, in any run, until it has a new COUNTED independent
+    // sighting after the drop. (A nomination is never re-written while it is open, so its own time says nothing about news.)
     const droppedAt = history.dropped.get(nid);
-    if (droppedAt !== undefined && !(Number(nom.nominated_at) > droppedAt)) continue;
+    if (droppedAt !== undefined && !((await newestCountedSighting(E, nid)) > droppedAt)) continue;
     addNew(nid, 'nominated', { nomination: facts });
   }
   const items = [...byId.values()].sort((a, b) => Math.min(...a.why.map(w => ORDER[w])) - Math.min(...b.why.map(w => ORDER[w])));

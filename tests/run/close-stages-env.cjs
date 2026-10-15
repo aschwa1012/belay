@@ -43,7 +43,7 @@ async function env() {
 function fakeManager(T, kind, answer, { cost = 0.01, event = 'turn_end', spawnError = null } = {}) {
   const m = { spawned: [], stopped: [], waits: [], recs: new Map() };
   m.spawn = async (a) => {
-    m.spawned.push(a);
+    m.spawned.push(a); fakeManager.last = a;
     if (spawnError) throw spawnError;
     await T.call(T.who.tool(kind), 'worker.write', { id: a.worker_id, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's', last_event_at: Date.now(), worktree: a.worktree });
     m.recs.set(a.worker_id, { lastAssistantText: typeof answer === 'function' ? answer(a) : answer, costUsd: cost });

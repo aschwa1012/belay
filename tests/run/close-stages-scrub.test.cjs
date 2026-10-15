@@ -339,20 +339,18 @@ test('the notices: an overrun is a line naming the lever; an owed receipt shows 
   assert.deepStrictEqual(N.stageEvents(synth, 'r').map((e) => [e.kind, e.row_ids]), [['scrub_owed', ['n2']]], 'n1 was cleared by the ok job');
 });
 
-// A nomination as the promotion step writes it, planted for a live note (the rule under test is the scrubber's, not the counting).
-function nominate(noteId, at) {
-  return T.store.storeIn({ namespace: 'nomination/lc', worker_id: 'harness', type: 'nomination', text: `nomination of ${noteId} ${at}`, title: 'nomination', run_id: 'old-run', source: 'harness', written_by: 'harness',
-    body: { state: 'nominated', note_id: noteId, counts: { tasks: 3, runs: 2 } } }).id;
-}
+const { callerFor } = require('../core/helpers.cjs');
 const stageFor = (kind, answer) => runScrub({ core: X.coreFor(kind), runId: RUN[kind], lv: LV[kind], dataDir: T.dir, getManager: async () => fakeManager(T, kind, answer), worktree: T.repo });
+const sinkRun = (id) => T.call(callerFor('orchestrator', { run_id: id }), 'run.attach', { adapter_pid: process.pid, project: 'lc', memory_levers: JSON.stringify({ project: 'lc', notes: true, notes_sink: 'record' }) });
+const sight = (task, run, w) => ({ task_id: task, written_by: `worker:${w}`, run_id: run, in_index_beforehand: false, at: 5000, evidence: [] });
 
-test('a nominated note the scrubber declines to draft in two scrubs, in two runs, stops being offered until a newer nomination; the drop is named', async () => {
+test('a nominated note the scrubber declines to draft in two scrubs stops being offered; a REAL new independent sighting (a resolved repeat) brings it back', async () => {
   await settleAll();
-  const n = T.note('a nominee the scrubber will not draft');
-  const nom = nominate(n);
-  T.store.p('UPDATE memory_entries SET created_at = ? WHERE id = ?').run(Date.now() - 50000, nom);
-  const first = await stageFor('apply', json('scrub', []));
-  assert.ok(first.owed.includes(n), 'declined once: owed');
+  for (const r of ['nA', 'nB', 'nC']) await sinkRun(r);
+  // 3 tasks across 2 runs, all independent: the promotion step nominates it through its own call.
+  const n = T.note('a nominee the scrubber will not draft', { task_id: 'na1', run_id: 'nA', created_at: 1000, seen_in: [sight('nb1', 'nB', 'w2'), sight('na2', 'nA', 'w3')] });
+  const first = await stageFor('apply', json('scrub', []));   // run 'apply' calls memory.nominate itself
+  assert.ok(first.counts.nominated === 1 && first.owed.includes(n), 'nominated by the real call, declined once: owed');
   const second = await stageFor('propose', json('scrub', []));
   assert.deepStrictEqual(second.dropped, [n], 'declined twice: dropped, and named');
   const ev = X.events('scrub_owed').filter((e) => e.code === 'E_DROPPED').pop();
@@ -362,9 +360,15 @@ test('a nominated note the scrubber declines to draft in two scrubs, in two runs
   const N = require('../../src/cli/cmd-notices.cjs');
   const ledger = (await T.call(T.who.operator('apply'), 'memory.events', { kinds: ['scrub_owed', 'scrub_job'] })).events;
   assert.ok(N.stageEvents(ledger, RUN.apply).some((e) => e.kind === 'scrub_dropped' && e.text.includes(n)), 'the notice names the dropped note');
-  nominate(n, 2); // a new independent sighting makes a newer nomination
+  // News: a fourth writer, in a fourth task, is not shown the note and resolves its pending copy as a repeat, through the normal path.
+  await new Promise((r) => setTimeout(r, 5));
+  const pend = T.note('the same lesson, written again', { ns: 'pending/lc', state: 'pending', run_id: 'nC', task_id: 'nc1', written_by: 'worker:w9', matches: [{ id: n, similarity: 0.9 }] });
+  const res = await T.call(T.who.operator('apply'), 'memory.noteResolve', { resolutions: [{ id: pend, resolve: 'repeats', of: n }] });
+  assert.strictEqual(res.resolved[0].resolved, 'repeats');
   const fourth = await stageFor('alarm', json('scrub', []));
-  assert.strictEqual(fourth.ran, true, 'a newer nomination brings it back');
+  assert.strictEqual(fourth.ran, true, 'a new counted sighting after the drop brings the nominee back');
+  const brief = fs.readFileSync(/(\S+brief\.md)/.exec(fakeManager.last.prompt)[1], 'utf8');
+  assert.ok(brief.includes(n) && brief.includes('nominated'));
 });
 
 test('every dropped item is named on the receipt: a reported note the child skipped twice', async () => {
@@ -388,4 +392,18 @@ test('a fast close names a child that survives its kill, on the sink, even when 
   assert.strictEqual(o.error.code, 'E_ABORTED');
   assert.deepStrictEqual(sink.survivors, [process.pid]);
   assert.strictEqual(o.survivor, process.pid);
+});
+
+test('runChild records the child pid on the sink as soon as the manager has one, even while spawn is still waiting for the ready event', async () => {
+  await settleAll();
+  X.reported('pid recorded during spawn');
+  const m = fakeManager(T, 'apply', '');
+  const real = m.spawn;
+  m.spawn = async (a) => { const r = await real(a); m.recs.get(a.worker_id).pid = 4242; await new Promise((res) => setTimeout(res, 400)); return r; };
+  let flag = false;
+  const sink = { survivors: [], pids: [] };
+  setTimeout(() => { flag = true; }, 250);
+  const o = await stage('apply', m, { fast: () => flag, sink });
+  assert.strictEqual(o.error.code, 'E_ABORTED');
+  assert.deepStrictEqual(sink.pids.map((p) => p.pid), [4242], 'recorded before the spawn settled');
 });

@@ -65,10 +65,10 @@ async function attemptLimit(core, stage, successKind, full) {
   return Math.max(1, Math.min(full, Math.floor(tried / 2)));
 }
 
-const raceFast = (p, fast) => {
-  if (!fast) return p;
+const raceFast = (p, fast, tick = null) => {
+  if (!fast && !tick) return p;
   let timer;
-  const flagged = new Promise((res) => { timer = setInterval(() => { if (fast()) res('fast'); }, FAST_POLL_MS); });
+  const flagged = new Promise((res) => { timer = setInterval(() => { if (tick) tick(); if (fast && fast()) res('fast'); }, FAST_POLL_MS); });
   return Promise.race([p, flagged]).finally(() => clearInterval(timer));
 };
 
@@ -92,21 +92,29 @@ async function runChild({ manager, workerId, worktree, model, capUsd, wallMs, pr
   if (typeof manager._closed === 'function' && manager._closed()) throw coded('E_SHUTDOWN', `the run manager is shutting down, so the ${label} was not started`);
   if (fast && fast()) throw coded('E_ABORTED', `a fast close was requested, so the ${label} was not started`);
   const kill = () => Promise.resolve(manager.stop({ worker_id: workerId, mode: 'kill', timeout_ms: KILL_BOUND_MS })).catch(() => {});
+  // The child's pid goes on the sink as soon as the manager has one (while spawn is still waiting for the ready event, too), so a stage cut off
+  // by the close deadline can still find and kill it by that pid.
+  const notePid = () => {
+    const r = manager._worker && manager._worker(workerId);
+    if (r && r.pid && sink && Array.isArray(sink.pids) && !sink.pids.some((p) => p.worker_id === workerId)) sink.pids.push({ worker_id: workerId, pid: r.pid });
+  };
   const sp = Promise.resolve(manager.spawn({ substrate: 'claude-code', worktree, worker_id: workerId, model, allowed_tools: BUILTINS, tools: BUILTINS, max_budget_usd: capUsd, prompt })).then(() => null, (e) => ({ e }));
-  const first = await raceFast(sp, fast);
+  notePid();
+  const first = await raceFast(sp, fast, notePid);
   if (first === 'fast') { // kill at once (the record exists from the start of spawn), again if the spawn settles meanwhile, and name a survivor
     await kill();
     await Promise.race([sp, sleep(FAST_SETTLE_MS)]);
     await kill();
     await reportSurvivor(manager, workerId, kill, sink);
     throw coded('E_ABORTED', `a fast close was requested while the ${label} was starting; it was killed`); }
+  notePid();
   if (first && first.e) throw first.e;
   let text = '', cost = null, error = null, survivor = null, aborted = false;
   try {
     const t0 = Date.now();
     let got, first = true;
     for (;;) { // a wait capped by MCP_TOOL_TIMEOUT (it says so) is asked again until the stage's own wall is spent
-      got = await raceFast(manager.wait({ worker_ids: [workerId], timeout_ms: first ? wallMs : Math.max(1, wallMs - (Date.now() - t0)) }), fast); first = false;
+      got = await raceFast(manager.wait({ worker_ids: [workerId], timeout_ms: first ? wallMs : Math.max(1, wallMs - (Date.now() - t0)) }), fast, notePid); first = false;
       if (got === 'fast' || !(got.timed_out && got.timeout_capped && Date.now() - t0 < wallMs)) break;
     }
     const rec = manager._worker(workerId);
