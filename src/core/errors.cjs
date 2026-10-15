@@ -14,6 +14,8 @@ const CODES = new Set([
   // ADR 0040 to 0043 (memory architecture)
   'E_NO_INDEX', 'E_QUERY_SHORT', 'E_RECEIPT', 'E_SUMMARISER_ABSENT', 'E_SUMMARY_EMPTY', 'E_SUMMARY_MALFORMED',
   'E_SUMMARY_REFUSED', 'E_SUMMARY_OVER_BUDGET', 'E_LEVER_OFF', 'E_EXISTS',
+  // ADR 0047: a note whose shape is refused (never truncated)
+  'E_NOTE_SHAPE',
 ]);
 
 class CoreError extends Error {

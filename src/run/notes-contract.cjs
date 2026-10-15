@@ -1,0 +1,27 @@
+'use strict';
+// notes-contract.cjs — ADR 0047 decision 3: the worker contract text for a run with the `notes` lever on. The
+// end-of-task question lives in src/run/prompts (one file per wording) so a test can pin it and an evaluation can
+// swap it. Two levers choose between wordings and add a turn, both off by default (write ablation):
+//   notes_lesson_question  the question aimed at what the worker learned, not at what the next one would get wrong
+//   notes_reflection       the question asked again as a turn of its own after the hand-back
+// Nothing here reads a store or runs a process; it returns text.
+
+const fs = require('node:fs');
+const path = require('node:path');
+
+const DIR = path.join(__dirname, 'prompts');
+const cache = new Map();
+const read = (name) => {
+  if (!cache.has(name)) cache.set(name, fs.readFileSync(path.join(DIR, name), 'utf8').replace(/\r\n/g, '\n').replace(/\n+$/, ''));
+  return cache.get(name);
+};
+
+const question = (lv) => read(lv && lv.notes_lesson_question ? 'notes-question-lesson.md' : 'notes-question.md');
+const fill = (template, lv) => template.split('{{question}}').join(question(lv));
+
+// Appended to a worker's opening message; '' with the lever off.
+const contract = (lv) => (lv && lv.notes ? fill(read('notes-contract.md'), lv) : '');
+// The reflection turn's message; '' unless both levers are on.
+const reflection = (lv) => (lv && lv.notes && lv.notes_reflection ? fill(read('notes-reflection.md'), lv) : '');
+
+module.exports = { contract, reflection, question };

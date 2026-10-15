@@ -20,10 +20,16 @@ const DEFAULTS = Object.freeze({
   bottle_bytes: 65536,
   wrapup: false,
   knowledge_agent: false,
+  // ADR 0047: notes workers mean to share. Every behaviour below sits behind `notes`; the other four tune it.
+  notes: false,
+  notes_match_threshold: 0.85, // provisional: the planted-duplicate study sets it (cosine of the hybrid search's semantic half)
+  notes_match_n: 3, // provisional: at most this many matches are returned for a pending note
+  notes_reflection: false, // write ablation: a second end-of-task question as its own turn after the hand-back
+  notes_lesson_question: false, // write ablation: the question aimed at lessons learned
 });
 
 const BOOLEAN_KEYS = ['redact', 'rules', 'capture', 'observations', 'project_writes', 'cost_ledger',
-  'first_message_index', 'bottle', 'wrapup', 'knowledge_agent'];
+  'first_message_index', 'bottle', 'wrapup', 'knowledge_agent', 'notes', 'notes_reflection', 'notes_lesson_question'];
 const SUMMARIES = ['off', 'mechanical'];
 const PROJECT_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const INDEX_BYTES_MAX = 4096; // ADR 0042 decision 2
@@ -62,6 +68,12 @@ function parseMemoryBlock(block) {
   if (v.project_writes && v.redact === false) {
     return { error: 'memory.redact false cannot be combined with memory.project_writes true: the project namespace outlives the run and must never hold unredacted text' };
   }
+  if (typeof v.notes_match_threshold !== 'number' || !(v.notes_match_threshold > 0 && v.notes_match_threshold <= 1)) return { error: 'memory.notes_match_threshold must be a number above 0 and at most 1' };
+  if (!boundedInt(v.notes_match_n, 10)) return { error: 'memory.notes_match_n must be an integer from 1 to 10' };
+  if (v.notes && v.project === null) return { error: 'memory.notes needs memory.project: notes live in the project namespace' };
+  // Notes outlive the run in the project namespace, so they never take unredacted text.
+  if (v.notes && v.redact === false) return { error: 'memory.redact false cannot be combined with memory.notes true: the project namespace outlives the run and must never hold unredacted text' };
+  for (const k of ['notes_reflection', 'notes_lesson_question']) if (v[k] && !v.notes) return { error: `memory.${k} needs memory.notes` };
   if (v.summaries === 'mechanical' && !v.observations) return { error: 'memory.summaries "mechanical" needs memory.observations' };
   return { value: v };
 }

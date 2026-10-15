@@ -10,7 +10,7 @@ const path = require('node:path');
 const CP = require('../run/compaction.cjs'); // fs and path only; parses --compact-at
 
 const VALUE_FLAGS = new Set(['--role', '--run', '--data', '--worker-id', '--log', '--permit-wait-ms', '--compact-at', '--worktree']);
-const BOOL_FLAGS = new Set(['--no-embed', '--experimental-worker-wait', '--permit']);
+const BOOL_FLAGS = new Set(['--no-embed', '--experimental-worker-wait', '--permit', '--notes']);
 
 function die(reason) {
   process.stderr.write(`belay-mcp: ${reason}\n`);
@@ -36,6 +36,9 @@ function parseArgv(argv) {
     if (a === '--experimental-worker-wait') continue;
     // --permit is a worker adapter's flag; the role check runs once argv is fully parsed.
     if (a === '--permit') { out.permit = true; continue; }
+    // --notes (ADR 0047): the run has the notes lever on, so this worker adapter lists the notes fields. The run manager
+    // passes it from the run row; it changes what is listed, never who the caller is.
+    if (a === '--notes') { out.notes = true; continue; }
     if (BOOL_FLAGS.has(a)) continue;
     if (!VALUE_FLAGS.has(a)) die(`unknown argument ${a}`);
     const v = argv[i + 1];
@@ -62,7 +65,9 @@ function parseArgv(argv) {
   if (out.role === 'worker' && !out.workerId) die('--worker-id <id> is required in worker role; a worker cannot name itself');
   if (out.role === 'orchestrator' && out.workerId) die('--worker-id is not accepted in orchestrator role');
   if (out.permit && out.role === 'orchestrator') die('--permit is a worker adapter\'s flag');
+  if (out.notes && out.role !== 'worker') die('--notes is a worker adapter\'s flag');
   out.permit = !!out.permit;
+  out.notes = !!out.notes;
   if (out.permitWaitMs === undefined) out.permitWaitMs = 600000;
   const defaulted = !out.dataDir;
   out.dataDir = path.resolve(out.dataDir || path.join(process.cwd(), '.belay')).split('\\').join('/');

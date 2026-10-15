@@ -52,6 +52,7 @@ const HARNESS_FIELDS = ['task_id', 'turn', 'source', 'worker_id'];
 // index, sit at the top of recency forever, or bind a fresh namespace to a model and dimension no real write matches.
 const CALLER_FIELDS = ['text', 'namespace', 'type', 'tags', 'provenance', 'supersedes', 'title', 'ttl_seconds', 'body', 'embed'];
 const HARNESS_STORE_FIELDS = ['id', 'created_at', 'embedding', 'embedding_model', 'embedding_revision', 'dim'];
+const NOTE_BODY_KEYS = ['model', 'state', 'seen_in', 'seen_total', 'matches', 'reported_wrong', 'resolved', 'superseded_by'];
 const TAGS_MAX = 32, TAG_MAX = 200, PROVENANCE_MAX = 512;
 // A worker's own rows in one run namespace: a model in a loop cannot fill the store.
 const WORKER_ROWS_MAX = 2000;
@@ -96,6 +97,11 @@ function checkWrite(caller, args) {
   if (args.namespace != null && (typeof args.namespace !== 'string' || !args.namespace)) throw bad('namespace must be a non-empty string', 'namespace');
   if (args.id != null && !validId(args.id)) throw bad('id must be 1 to 128 letters, digits, dot, colon, dash or underscore, starting with a letter or digit', 'id');
   if (args.type != null && (typeof args.type !== 'string' || !TYPE_RE.test(args.type))) throw bad('type must be 1 to 32 lower-case letters, digits, dash or underscore, starting with a letter', 'type');
+  // ADR 0047: a note is written by the hand-back only. Its type and the fields belay keeps on it are never a caller's.
+  if (args.type === 'note') throw bad('type note is reserved for the notes path (the notes of lease_release), so memory.store cannot write one', 'type');
+  if (args.body != null && typeof args.body === 'object' && !Array.isArray(args.body)) {
+    for (const k of NOTE_BODY_KEYS) if (Object.prototype.hasOwnProperty.call(args.body, k)) throw bad(`body.${k} is a field belay keeps on a note and no caller may set it`, 'body');
+  }
   if (args.supersedes != null && !validId(args.supersedes)) throw bad('supersedes must be a row id', 'supersedes');
   if (args.created_at != null && !(Number.isSafeInteger(args.created_at) && args.created_at >= 0 && args.created_at <= Date.now() + 60000)) throw bad('created_at must be epoch milliseconds, not in the future', 'created_at');
   if (args.tags != null && (!Array.isArray(args.tags) || args.tags.length > TAGS_MAX || args.tags.some(t => typeof t !== 'string' || Buffer.byteLength(t) > TAG_MAX))) {
@@ -152,7 +158,7 @@ async function store(E, caller, args) {
   }
   // A project namespace outlives the run and every later run reads it, so a write into it is always scrubbed,
   // whatever the run's redact lever says (ADR 0040 §3).
-  const s = scrub(redactOn(E, caller) || namespace.startsWith('project/'), args);
+  const s = scrub(redactOn(E, caller) || namespace.startsWith('project/') || namespace.startsWith('summary/'), args);
   // One line of at most 160 bytes: control characters become spaces, whitespace runs collapse, and the bound is on
   // what is stored (after redaction). A title is rendered in the index, so it carries no escape sequence.
   const title = s.title === null ? null : (s.title.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim() || null);
@@ -204,4 +210,4 @@ async function warm(E, caller, args = {}) {
   return { state, pid: o && o.embedInfo ? o.embedInfo.pid : null, error: o && o.embedError ? o.embedError : null };
 }
 
-module.exports = { runAlpha, store, delete: del, stats, warm, nsFor, resolveNamespace, projectOf, withEmbedding, notifyEmbedderFailure, reachOf, checkReach, scrub };
+module.exports = { leversOf, runAlpha, store, delete: del, stats, warm, nsFor, resolveNamespace, projectOf, withEmbedding, notifyEmbedderFailure, reachOf, checkReach, scrub };

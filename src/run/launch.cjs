@@ -75,7 +75,7 @@ function workerName(workerId) {
 // tools/list check reads the same file. The argv hash is over the substrate's own argv, which names
 // mcp.json by path and not by content, so adding `--log` here does not change it; a worker launched by
 // an older belay keeps the mcp.json its process already read, and a restart rewrites the file.
-function workerAdapterArgs({ workerId, runId, dataDir, mcpPath, logPath = null, permit = false, permitWaitMs = null }) {
+function workerAdapterArgs({ workerId, runId, dataDir, mcpPath, logPath = null, permit = false, permitWaitMs = null, notes = false }) {
   const argv = [
     mcpPath || mcpServerPath(),
     '--role',
@@ -93,17 +93,18 @@ function workerAdapterArgs({ workerId, runId, dataDir, mcpPath, logPath = null, 
     argv.push('--permit');
     if (typeof permitWaitMs === 'number') argv.push('--permit-wait-ms', String(permitWaitMs));
   }
+  if (notes) argv.push('--notes'); // ADR 0047: the run has the notes lever on; the adapter lists the notes fields
   if (logPath) argv.push('--log', fwd(logPath));
   return argv;
 }
 
-function mcpConfig({ workerId, runId, dataDir, mcpPath, logPath = null, permit = false, permitWaitMs = null }) {
+function mcpConfig({ workerId, runId, dataDir, mcpPath, logPath = null, permit = false, permitWaitMs = null, notes = false }) {
   return {
     mcpServers: {
       [MCP_SERVER_NAME]: {
         type: 'stdio',
         command: fwd(process.execPath),
-        args: workerAdapterArgs({ workerId, runId, dataDir, mcpPath, logPath, permit, permitWaitMs }),
+        args: workerAdapterArgs({ workerId, runId, dataDir, mcpPath, logPath, permit, permitWaitMs, notes }),
       },
     },
   };
@@ -146,13 +147,13 @@ function workerSettings(pluginNames, { cwd } = {}) {
   return { enabledPlugins, ...S.hygieneSettings(cwd) };
 }
 
-function writeWorkerFiles({ dir, workerId, runId, dataDir, mcpPath, settingsPath, logPath = null, permit = false, permitWaitMs = null, cwd = null, compactAt = null }) {
+function writeWorkerFiles({ dir, workerId, runId, dataDir, mcpPath, settingsPath, logPath = null, permit = false, permitWaitMs = null, cwd = null, compactAt = null, notes = false }) {
   fs.mkdirSync(dir, { recursive: true });
   const mcpJsonPath = fwd(path.join(dir, 'mcp.json'));
   const workerSettingsPath = fwd(path.join(dir, 'settings.json'));
   fs.writeFileSync(
     mcpJsonPath,
-    JSON.stringify(mcpConfig({ workerId, runId, dataDir, mcpPath, logPath, permit, permitWaitMs }), null, 2) + '\n'
+    JSON.stringify(mcpConfig({ workerId, runId, dataDir, mcpPath, logPath, permit, permitWaitMs, notes }), null, 2) + '\n'
   );
   const plugins = readPluginConfig(settingsPath);
   const hooks = CP.hooksBlock({ dir, compactAt }); // null, and no `hooks` key at all, unless the lever is on
