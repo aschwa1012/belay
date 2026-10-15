@@ -38,6 +38,7 @@ const FLAGS = {
   '--older-than': { key: 'olderThan', type: 'one' },
   '--confirm': { key: 'confirm', type: 'bool' },
   '--project': { key: 'project', type: 'one' },
+  '--dry-run': { key: 'dryRun', type: 'bool' },
   '--candidates': { key: 'candidates', type: 'bool' },
 };
 
@@ -52,6 +53,7 @@ const VERBS = {
   verify: { flags: ['--status', '--receipt'], positional: [1, 1], usage: 'belay memory verify <id> --status verified|refuted|unverified --receipt <r>' },
   stats: { flags: [], positional: [0, 1], usage: 'belay memory stats [run-id]' },
   export: { flags: ['--namespace', '--since', '--out', '--all'], positional: [0, 1], usage: 'belay memory export [run-id] [--namespace ns]... [--since <ms|iso>] [--out <file>] [--all]' },
+  embed: { flags: ['--project', '--dry-run'], positional: [0, 0], usage: 'belay memory embed [--project <p>] [--dry-run]' },
   import: { flags: ['--namespace-map', '--namespace', '--no-embed'], positional: [1, 1], usage: 'belay memory import <file> [--namespace-map from=to]... [--namespace ns] [--no-embed]' },
   proposals: { flags: ['--project', '--all'], positional: [0, 0], usage: 'belay memory proposals [--project p] [--all]' },
   restore: { flags: ['--reason', '--candidates'], positional: [1, 1], usage: 'belay memory restore <id> --reason <text>   |   belay memory restore <id> --candidates' },
@@ -109,6 +111,7 @@ function checkOpts(sub, opts) {
     if (r.error) return r;
     opts[key] = r.value;
   }
+  if (opts.project !== undefined && !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(opts.project)) return { error: `--project must be a project name (lower-case letters, digits, dot, dash, underscore; at most 64); got ${opts.project}` };
   if (opts.out !== undefined && !opts.out) return { error: '--out needs a file name' };
   if (sub === 'import') {
     const maps = new Map();

@@ -122,6 +122,7 @@ async function setStatus(E, caller, args) {
   let kept = null, check = null;
   if (status !== 'unverified') {
     // Before any write: a refused receipt changes nothing.
+    if (typeof receipt === 'string' && receipt.startsWith('review:')) throw noReceipt(receipt, 'a review: receipt is written only by belay, when it applies a reviewer\'s verdict whose citations it has checked (memory.noteVerdicts)');
     const parsed = parseReceipt(receipt);
     if (parsed.error) throw noReceipt(receipt, parsed.error);
     checkRef(E, parsed, receipt, id, status);

@@ -60,6 +60,11 @@ const METHODS = {
   'memory.promote': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-promote.cjs', 'promote') },
   // ADR 0047 decision 4: settles the pending notes a hand-back returned; the writer's own, or the orchestrator's or operator's.
   'memory.noteResolve': { roles: ALL, kind: 'write', fn: lazy('./methods-memory-notes.cjs', 'resolve') },
+  // wave 4: a reviewer's per-note verdicts applied by belay after the citation check (harness channel only for the orchestrator role),
+  // and the two reads the refuted-note wake and a review's brief are built from.
+  'memory.noteVerdicts': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-note-review.cjs', 'noteVerdicts') },
+  'memory.noteRefutation': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-note-review.cjs', 'noteRefutation') },
+  'memory.reviewBrief': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-note-review.cjs', 'reviewBrief') },
   // The notes lifecycle (scrub, review, archive). scrubApply and reviewApply are harness-channel calls (the check is inside);
   // noteRestore is the orchestrator's or the operator's; archivePurge is the operator's alone; the two reads are SELECTs.
   'memory.scrubApply': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-scrub.cjs', 'scrubApply') },
@@ -79,6 +84,10 @@ const METHODS = {
   'usage.list': { roles: ALL, kind: 'read', fn: lazy('./methods-ledger.cjs', 'usageList') },
   'memory.delete': { roles: ALL, kind: 'write', fn: memory.delete },
   'memory.stats': { roles: ALL, kind: 'read', fn: memory.stats },
+  // The notes stored without a vector, counted (and listed on request) by a plain read; status, notices and the panel show the count.
+  'memory.unembedded': { roles: ALL, kind: 'read', fn: lazy('./notes-unembedded.cjs', 'unembedded') },
+  // `belay memory embed`: one such note gets its vector and the near-duplicate check its hand-back skipped. The operator starts it; nothing else calls it.
+  'memory.embedNote': { roles: ['operator'], kind: 'write', fn: lazy('./methods-memory-embed.cjs', 'embedNote') },
   // build 12b E2: start the embedder child and its load ahead of first use (the run's warm-up), so the
   // fork stall and the cold load happen before agents talk to the owner. kind 'write' so it reaches the owner.
   'memory.warm': { roles: ALL, kind: 'write', fn: memory.warm },
@@ -137,7 +146,7 @@ const METHODS = {
 };
 
 // The methods that read or write memory rows and are refused when the run's memory is off.
-const MEMORY_OFF_REFUSED = new Set(['memory.store', 'memory.delete', 'memory.search', 'memory.get', 'memory.list', 'memory.timeline', 'memory.get_many', 'memory.setStatus', 'memory.promote', 'memory.noteResolve', 'memory.corpus', 'memory.summaries']);
+const MEMORY_OFF_REFUSED = new Set(['memory.store', 'memory.delete', 'memory.search', 'memory.get', 'memory.list', 'memory.timeline', 'memory.get_many', 'memory.setStatus', 'memory.promote', 'memory.noteResolve', 'memory.embedNote', 'memory.corpus', 'memory.summaries']);
 
 const METHOD_NAMES = Object.keys(METHODS);
 const READ_METHODS = new Set(METHOD_NAMES.filter(m => METHODS[m].kind === 'read'));

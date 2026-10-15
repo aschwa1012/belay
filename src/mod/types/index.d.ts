@@ -37,7 +37,7 @@ export type BelayAgent = {
 export type BelayNotice = {
   key: string
   kind: string
-  tone: 'permission' | 'dead' | 'stalled' | 'holds' | 'refuted' | 'paused' | 'ended' | 'stopped'
+  tone: 'permission' | 'dead' | 'stalled' | 'holds' | 'refuted' | 'paused' | 'ended' | 'stopped' | 'memory'
   ts: number | null
   agentId: string | null
   taskId: string | null

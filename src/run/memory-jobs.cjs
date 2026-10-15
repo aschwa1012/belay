@@ -32,14 +32,14 @@ const sha = (s) => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
 const note = (w, where, e) => { if (w) w.lastError = { where, code: e && e.code, message: e && e.message }; };
 const closed = (ctx) => !!(ctx.shutdownFlags && ctx.shutdownFlags.closed);
 const ownerGone = (ctx) => !!(ctx.shutdownFlags && ctx.shutdownFlags.ownerGone);
-const anyJob = (lv) => lv.summaries !== 'off' || lv.project_writes || lv.cost_ledger || lv.wrapup || !!(lv.notes && lv.notes_reflection);
+const anyJob = (lv) => lv.summaries !== 'off' || lv.project_writes || lv.cost_ledger || lv.wrapup || !!lv.notes; // notes: the reflection turn and the notes' review (wave 4)
 
 // Per-manager bookkeeping: what this manager has already done, so a second trigger does no second write.
 const STATE = new WeakMap();
 function stateOf(ctx) {
   let s = STATE.get(ctx);
   if (!s) {
-    s = { summaryDone: new Set(), summaryFailed: new Set(), wrapDone: new Set(), wrapFailed: new Set(), inflight: new Map(), summaryIds: new Map(), promoteDone: new Set(), reflectDone: new Set() };
+    s = { summaryDone: new Set(), summaryFailed: new Set(), wrapDone: new Set(), wrapFailed: new Set(), inflight: new Map(), summaryIds: new Map(), promoteDone: new Set(), reflectDone: new Set(), reviewSeen: new Set() };
     STATE.set(ctx, s);
   }
   return s;
@@ -363,19 +363,22 @@ function afterTurn(w, ctx, { turnEvents, checkpointId, snap: given = null } = {}
       const wantSummary = lv.summaries !== 'off';
       const wantPromote = wantsProject(lv);
       const wantReflect = !!(lv.notes && lv.notes_reflection); // ADR 0047 write ablation: the question again, as a turn of its own
-      if (!snap.taskId || !(wantSummary || lv.wrapup || wantPromote || wantReflect)) return;
+      const wantReview = !!lv.notes; // wave 4: a review task's verdicts, or the short review job for a task that wrote notes
+      if (!snap.taskId || !(wantSummary || lv.wrapup || wantPromote || wantReflect || wantReview)) return;
       const s = J.s;
       const sKey = `${snap.taskId}|${snap.workerId}`;
       const needSummary = wantSummary && !s.summaryDone.has(sKey) && !s.summaryFailed.has(sKey);
       const needWrap = lv.wrapup && !s.wrapDone.has(`task:${snap.taskId}`) && !s.wrapFailed.has(`task:${snap.taskId}`);
       const needPromote = wantPromote && !s.promoteDone.has(sKey);
       const needReflect = wantReflect && !s.reflectDone.has(sKey);
-      if (!needSummary && !needWrap && !needPromote && !needReflect) return;
+      const needReview = wantReview && !s.reviewSeen.has(snap.taskId);
+      if (!needSummary && !needWrap && !needPromote && !needReflect && !needReview) return;
       const task = await call(J, () => J.core.task.get({ task_id: snap.taskId }));
       if (!task || !ENDED_TASK.has(task.state)) return;
       if (wantSummary) await ensureSummary(J, snap.taskId, snap.workerId, { taskRow: task });
       if (wantPromote) await ensurePromote(J, snap.taskId, snap.workerId);
       if (lv.wrapup) await ensureWrapup(J, snap.taskId, { taskRow: task });
+      if (needReview) { s.reviewSeen.add(snap.taskId); void require('./note-review.cjs').onTaskEnded(J, task).catch((e) => note(w, 'note-review', e)); }
       if (needReflect) await require('./notes-reflection.cjs').reflect(J, { taskId: snap.taskId, workerId: snap.workerId }, event);
     } catch (e) {
       note(w, 'memory-jobs.afterTurn', e);
@@ -402,6 +405,7 @@ async function runEndWork(J, progress) {
   if (lv.summaries !== 'off') for (const [t, wk] of pairs) progress.planned.push(`summary:${t.id}/${wk.id}`);
   if (wantsProject(lv)) for (const [t, wk] of pairs) progress.planned.push(`promote:${t.id}/${wk.id}`);
   if (lv.wrapup) { for (const id of endedTasks) progress.planned.push(`wrapup:task:${id}`); progress.planned.push('wrapup:run'); }
+  if (lv.notes) progress.planned.push('review:sweep');
   progress.done = new Set();
   if (lv.summaries !== 'off') {
     for (const [t, wk] of pairs) {
@@ -426,6 +430,11 @@ async function runEndWork(J, progress) {
     progress.stage = 'wrapup:run';
     await runWrapup(J, tasks);
     progress.done.add('wrapup:run');
+  }
+  if (lv.notes) { // wave 4: the notes' review that could not finish while the run was open (store-only)
+    progress.stage = 'review:sweep';
+    await require('./note-review.cjs').sweep(J, tasks, workers);
+    progress.done.add('review:sweep');
   }
 }
 

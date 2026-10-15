@@ -310,7 +310,7 @@ async function run(ctx) {
   let reviewRounds = { value: null, reason: 'the run was never attached, so no tasks were read' };
   // ADR 0039 follow-up: one worker close (ADR 0029); a fast close runs it inside the loop, before the gate collect.
   const fastClose = RI.fastOf(ce);
-  const workerClose = RI.onceClose(ce, () => ((ctx.interactiveDeps && ctx.interactiveDeps.closeRunWorkers) || closeRunWorkers)({ core, runId: parsed.runId, graceMs: parsed.close_grace_ms, fast: fastClose }), () => !!attachRow);
+  const workerClose = RI.onceClose(ce, () => ((ctx.interactiveDeps && ctx.interactiveDeps.closeRunWorkers) || closeRunWorkers)({ core, runId: parsed.runId, graceMs: parsed.close_grace_ms, fast: fastClose, noteReview: !!(parsed.levers.memory_levers && parsed.levers.memory_levers.note_review) }), () => !!attachRow);
   try {
     try {
       partial = await (ce ? runInteractiveOrchestrator : runOrchestrator)({
@@ -323,6 +323,7 @@ async function run(ctx) {
           closeGraceMs: parsed.close_grace_ms, compactAtTokens: parsed.levers.compact_at_tokens, // ADR 0007 decision 3
           interactiveSurfaceMs: parsed.interactive_surface_ms, fullscreen: parsed.fullscreen,
           knowledgeAgent: !!(parsed.levers.memory_levers && parsed.levers.memory_levers.knowledge_agent),
+          notes: !!(parsed.levers.memory_levers && parsed.levers.memory_levers.notes), // wave 4: the refuted-note wake reads receipts only for a notes run
         },
         onAttached, stopControl: attachHook, console: ce, print: RI.printer(ctx), deps: ctx.interactiveDeps,
         wakeRelease: ce ? () => runPauseControl.takeResume() : undefined,
