@@ -323,20 +323,22 @@ test('SIGHUP fast close: a claude that does not follow is killed and gets the te
   } finally { P.killPid(rec.pid, 'SIGKILL'); await r.done.catch(() => {}); }
 }));
 
-test('fullscreen: the orchestrator env carries CLAUDE_CODE_NO_FLICKER=1 by default, 0 when the spec says false, and an explicit belay env wins', async (t) => {
-  const saved = process.env.CLAUDE_CODE_NO_FLICKER;
-  delete process.env.CLAUDE_CODE_NO_FLICKER;
-  try {
-    for (const [over, env, want] of [[{}, {}, '1'], [{ fullscreen: true }, {}, '1'], [{ fullscreen: false }, {}, '0'], [{ fullscreen: true }, { CLAUDE_CODE_NO_FLICKER: '0' }, '0'], [{ fullscreen: false }, { CLAUDE_CODE_NO_FLICKER: '1' }, '1']]) {
+// One test per case: each run ends after the creation-time reads its receipt waits for, so five runs in one test count five
+// snapshots against the one test's 60 s timeout (ADR 0048 decision 8, c).
+for (const [over, env, want] of [[{}, {}, '1'], [{ fullscreen: true }, {}, '1'], [{ fullscreen: false }, {}, '0'], [{ fullscreen: true }, { CLAUDE_CODE_NO_FLICKER: '0' }, '0'], [{ fullscreen: false }, { CLAUDE_CODE_NO_FLICKER: '1' }, '1']]) {
+  test(`fullscreen: the orchestrator env carries CLAUDE_CODE_NO_FLICKER=${want} for ${JSON.stringify([over, env])} (1 by default, 0 when the spec says false, an explicit belay env wins)`, async (t) => {
+    const saved = process.env.CLAUDE_CODE_NO_FLICKER;
+    delete process.env.CLAUDE_CODE_NO_FLICKER;
+    try {
       await withRun(t, async (dir) => {
         const r = start(dir, { env, specOverrides: over });
         const res = await r.done;
         assert.strictEqual(res.code, 0);
         assert.strictEqual(r.record().env.CLAUDE_CODE_NO_FLICKER, want, JSON.stringify([over, env]));
       });
-    }
-  } finally { if (saved === undefined) delete process.env.CLAUDE_CODE_NO_FLICKER; else process.env.CLAUDE_CODE_NO_FLICKER = saved; }
-});
+    } finally { if (saved === undefined) delete process.env.CLAUDE_CODE_NO_FLICKER; else process.env.CLAUDE_CODE_NO_FLICKER = saved; }
+  });
+}
 
 test('fullscreen: a non-boolean is a usage error, and the key is refused on a headless run, both before anything is created', async (t) => withRun(t, async (dir) => {
   for (const [over, argv, re] of [[{ fullscreen: 'yes' }, [], /fullscreen must be true or false/], [{ fullscreen: 1 }, [], /fullscreen must be true or false/], [{ mode: 'headless', fullscreen: true }, [], /fullscreen is an interactive key/]]) {

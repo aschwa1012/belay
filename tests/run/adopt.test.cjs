@@ -14,12 +14,15 @@ const path = require('node:path');
 const { createRunManager } = require('../../src/run/index.cjs');
 const { createFakeCore } = require('./fake-core.cjs');
 const P = require('../../src/run/process.cjs');
+const { SNAPSHOT_TIMEOUT_MS } = require('../../src/core/proc-identity.cjs');
 
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/\\/g, '/');
 const USER_SETTINGS = path.join(__dirname, 'fixtures', 'user-settings.json').replace(/\\/g, '/');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ADR 0039: a kill needs the creation time the manager restates about a second after spawn; an adopter acts long after that.
-const waitCreated = async (core, id) => { for (let i = 0; i < 100; i++) { const c = core.currentWorker(id); if (c && c.pid_created) return; await sleep(100); } throw new Error('pid_created never landed for ' + id); };
+// ADR 0048: the read is one snapshot attempt, so the wait is a hang guard of what one caller can wait for a snapshot (a wait behind one
+// in flight, then its own) plus the restate, never a bound the snapshot's speed decides.
+const waitCreated = async (core, id) => { const t0 = Date.now(); const guard = 2 * SNAPSHOT_TIMEOUT_MS + 5000; while (Date.now() - t0 < guard) { const c = core.currentWorker(id); if (c && c.pid_created) return; await sleep(100); } throw new Error(`precondition: pid_created never landed for ${id} in ${guard} ms (the snapshot read failed or the machine is too loaded for this setup)`); };
 
 function sandbox() {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-run-adopt-'));
