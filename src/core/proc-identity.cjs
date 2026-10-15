@@ -28,7 +28,10 @@ function parseSnapshot(stdout) {
   }
   return map.size ? map : null;
 }
-const PS_ARGS = ['-NoProfile', '-NonInteractive', '-Command', PS_SNAPSHOT];
+// DIAG (temporary): BELAY_DIAG_SNAPSHOT_STALL_MS stalls every real snapshot inside PowerShell, before the query,
+// so the product's own timeout and retry run unchanged against a slow snapshot.
+const DIAG_STALL = Number(process.env.BELAY_DIAG_SNAPSHOT_STALL_MS) || 0;
+const PS_ARGS = ['-NoProfile', '-NonInteractive', '-Command', (DIAG_STALL ? `Start-Sleep -Milliseconds ${DIAG_STALL}; ` : '') + PS_SNAPSHOT];
 
 // PowerShell's own TEMP. Every PowerShell start writes two __PSScriptPolicyTest_* probe files to TEMP and deletes
 // them a moment later; one ended in that moment leaves them for good. A Windows child that is not detached dies
@@ -52,13 +55,24 @@ function snapshotEnv() {
   return { ...process.env, TEMP: SNAP_TEMP, TMP: SNAP_TEMP };
 }
 
+// DIAG (temporary): BELAY_SNAPSHOT_LOG names a file; every snapshot appends one JSON line.
+function snapLog(rec) {
+  const f = process.env.BELAY_SNAPSHOT_LOG;
+  if (!f) return;
+  try { fs.appendFileSync(f, JSON.stringify({ caller: process.pid, file: process.argv[1] && path.basename(process.argv[1]), ...rec }) + String.fromCharCode(10)); } catch { /* best effort */ }
+}
 function processSnapshot({ timeoutMs = SNAPSHOT_TIMEOUT_MS } = {}) {
   return new Promise((resolve) => {
     if (!IS_WINDOWS) return resolve(null);
+    const t0 = Date.now();
     try {
-      execFile('powershell.exe', PS_ARGS, { windowsHide: true, timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024, env: snapshotEnv() },
-        (e, stdout) => resolve(e ? null : parseSnapshot(stdout)));
-    } catch { resolve(null); }
+      const cp = execFile('powershell.exe', PS_ARGS, { windowsHide: true, timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024, env: snapshotEnv() },
+        (e, stdout, stderr) => {
+          const m = e ? null : parseSnapshot(stdout);
+          snapLog({ kind: 'async', t0, t1: Date.now(), ms: Date.now() - t0, timeoutMs, ps: cp && cp.pid, err: e ? (e.killed ? 'killed' : (e.code || String(e.message).slice(0, 80))) : null, signal: e && e.signal, bytes: String(stdout || '').length, rows: m ? m.size : 0, stderr: String(stderr || '').slice(0, 120) });
+          resolve(m);
+        });
+    } catch (e) { snapLog({ kind: 'async', t0, t1: Date.now(), ms: Date.now() - t0, err: 'throw ' + String(e && e.message).slice(0, 80) }); resolve(null); }
   });
 }
 
@@ -66,8 +80,9 @@ function processSnapshot({ timeoutMs = SNAPSHOT_TIMEOUT_MS } = {}) {
 // uses the async one so it never stalls an event loop.
 function processSnapshotSync({ timeoutMs = SNAPSHOT_TIMEOUT_MS } = {}) {
   if (!IS_WINDOWS) return null;
-  try { return parseSnapshot(require('node:child_process').execFileSync('powershell.exe', PS_ARGS, { windowsHide: true, timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], env: snapshotEnv() })); }
-  catch { return null; }
+  const t0 = Date.now();
+  try { const m = parseSnapshot(require('node:child_process').execFileSync('powershell.exe', PS_ARGS, { windowsHide: true, timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], env: snapshotEnv() })); snapLog({ kind: 'sync', t0, t1: Date.now(), ms: Date.now() - t0, timeoutMs, err: null, rows: m ? m.size : 0 }); return m; }
+  catch (e) { snapLog({ kind: 'sync', t0, t1: Date.now(), ms: Date.now() - t0, timeoutMs, err: e && (e.code || 'error'), signal: e && e.signal, rows: 0 }); return null; }
 }
 
 // One snapshot, taken again while it is unreadable: `attempts` in all, the wait between them doubling from

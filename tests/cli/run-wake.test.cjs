@@ -211,8 +211,9 @@ test('run: a worker killed by exact pid produces a death wake shortly after the 
     const ref = sampler.seen.find((s) => Array.isArray(s.hold.busy) && s.hold.busy[0] === 'w1');
     assert.ok(ref, 'the sampler never saw the busy hold');
     // Async: this process hosts the worker's manager, and a blocked loop lets its pid poll beat the exit event.
-    const killAt = Date.now();
-    assert.ok(await require('../crash.cjs').crashAsync(row.pid, row.pid_created), 'the planted worker was not killed');
+    // The kill's moment is when the signal was sent, after the identity snapshot, not when the call began.
+    const killAt = await require('../crash.cjs').crashAsync(row.pid, row.pid_created);
+    assert.ok(killAt, 'the planted worker was not killed');
 
     const exited = await waitForExit(runCliProc.proc, 20000);
     assert.ok(exited, 'the CLI did not exit in time');
