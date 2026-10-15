@@ -40,7 +40,7 @@ function noteSpawn(w, child, { createdOf = P.createdOf, gate = ID.gate, schedule
     timer = setTimeout(() => { if (!pending) return; tries += 1; snapshotShared({ kind: 'spawn-read' }).then((r) => { if (pending && !(r.snap && r.startSeq > spawnSeq && accept(r.snap.get(pid)))) { setPending(r.snap ? `the process snapshot had no creation time for pid ${pid}` : 'the process snapshot was unreadable'); scheduleNext(); } }, () => scheduleNext()); }, wait);
     if (timer.unref) timer.unref();
   };
-  w.pidCreatedPromise = Promise.resolve().then(() => createdOf(pid)).then((r) => {
+  w.pidCreatedPromise = Promise.resolve().then(() => createdOf(pid, { kind: 'spawn-read' })).then((r) => {
     if (!mine()) return;
     // A child that exited before the read may have lost its pid to another process: its snapshot entry proves nothing.
     if (exitedYet(child)) w.pidCreatedError = `the child had already exited when the creation time of pid ${pid} was read, so the reading is discarded`;
