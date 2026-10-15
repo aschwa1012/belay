@@ -29,7 +29,7 @@ test('with notes on the worker listing fits its 5,120 byte budget and carries th
   assert.deepStrictEqual(lr.inputSchema.properties.notes.items.properties.basis.enum, ['observed', 'inferred', 'relayed']);
   assert.deepStrictEqual(lr.inputSchema.properties.notes.items.properties.kind.enum, ['lesson', 'flag', 'recurring', 'gotcha']);
   assert.deepStrictEqual(lr.inputSchema.properties.notes.items.required, ['kind', 'title', 'basis']);
-  assert.ok(lr.inputSchema.properties.found_wrong, 'found_wrong is in the schema');
+  assert.ok(lr.inputSchema.properties.reported_wrong, 'reported_wrong is in the schema');
   assert.ok(list.some((t) => t.name === 'memory_note_resolve'));
   for (const kept of ['memory_store', 'memory_search', 'memory_retrieve', 'memory_timeline', 'lease_renew', 'checkpoint_write', 'briefing']) assert.ok(list.some((t) => t.name === kept), kept);
   for (const dropped of ['status', 'task_list', 'memory_list', 'memory_stats', 'memory_delete']) assert.ok(!list.some((t) => t.name === dropped), `${dropped} is not listed`);

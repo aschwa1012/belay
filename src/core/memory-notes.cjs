@@ -89,19 +89,19 @@ function noteText(n) {
   return lines.join('\n');
 }
 
-// found_wrong: [{ id, why, replaced_by? }]. `replaced_by` is a note id, `notes[<i>]` (the i-th note of the same
+// reported_wrong: [{ id, why, replaced_by? }]. `replaced_by` is a note id, `notes[<i>]` (the i-th note of the same
 // call, resolved after it is stored) or null.
 const SELF_REF = /^notes\[(\d+)\]$/;
-function checkFoundWrong(list) {
+function checkReportedWrong(list) {
   if (list === undefined || list === null) return [];
-  if (!Array.isArray(list) || list.length > WRONG_MAX) throw err('E_ARGS', `found_wrong must be an array of at most ${WRONG_MAX} { id, why, replaced_by }`, { field: 'found_wrong' });
+  if (!Array.isArray(list) || list.length > WRONG_MAX) throw err('E_ARGS', `reported_wrong must be an array of at most ${WRONG_MAX} { id, why, replaced_by }`, { field: 'reported_wrong' });
   return list.map((w, i) => {
-    if (!isObj(w)) throw err('E_ARGS', `found_wrong[${i}] must be an object { id, why, replaced_by }`, { field: 'found_wrong', index: i });
-    for (const k of Object.keys(w)) if (!['id', 'why', 'replaced_by'].includes(k)) throw err('E_ARGS', `found_wrong[${i}].${k} is not a field; use id, why, replaced_by`, { field: 'found_wrong', index: i });
-    if (!validId(w.id)) throw err('E_ARGS', `found_wrong[${i}].id must be a note id`, { field: 'found_wrong', index: i });
-    if (typeof w.why !== 'string' || !w.why.trim() || bytes(w.why) > WHY_MAX) throw err('E_ARGS', `found_wrong[${i}].why must be a non-empty string of at most ${WHY_MAX} bytes`, { field: 'found_wrong', index: i });
+    if (!isObj(w)) throw err('E_ARGS', `reported_wrong[${i}] must be an object { id, why, replaced_by }`, { field: 'reported_wrong', index: i });
+    for (const k of Object.keys(w)) if (!['id', 'why', 'replaced_by'].includes(k)) throw err('E_ARGS', `reported_wrong[${i}].${k} is not a field; use id, why, replaced_by`, { field: 'reported_wrong', index: i });
+    if (!validId(w.id)) throw err('E_ARGS', `reported_wrong[${i}].id must be a note id`, { field: 'reported_wrong', index: i });
+    if (typeof w.why !== 'string' || !w.why.trim() || bytes(w.why) > WHY_MAX) throw err('E_ARGS', `reported_wrong[${i}].why must be a non-empty string of at most ${WHY_MAX} bytes`, { field: 'reported_wrong', index: i });
     const rb = w.replaced_by === undefined ? null : w.replaced_by;
-    if (rb !== null && !(validId(rb) || SELF_REF.test(rb))) throw err('E_ARGS', `found_wrong[${i}].replaced_by must be null, a note id or notes[<index>]`, { field: 'found_wrong', index: i });
+    if (rb !== null && !(validId(rb) || SELF_REF.test(rb))) throw err('E_ARGS', `reported_wrong[${i}].replaced_by must be null, a note id or notes[<index>]`, { field: 'reported_wrong', index: i });
     return { id: w.id, why: oneLine(w.why), replaced_by: rb };
   });
 }
@@ -135,4 +135,4 @@ function checkResolutions(list) {
   });
 }
 
-module.exports = { KINDS, BASES, RESOLVES, TITLE_MAX, NOTES_MAX, checkNote, checkNotes, noteText, checkFoundWrong, checkResolutions, oneLine, SELF_REF };
+module.exports = { KINDS, BASES, RESOLVES, TITLE_MAX, NOTES_MAX, checkNote, checkNotes, noteText, checkReportedWrong, checkResolutions, oneLine, SELF_REF };

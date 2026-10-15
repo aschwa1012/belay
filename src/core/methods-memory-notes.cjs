@@ -1,6 +1,6 @@
 'use strict';
 // methods-memory-notes.cjs — ADR 0047 decisions 2 to 5: notes handed back on `lease.release`, the two-step write
-// against near-duplicates, `found_wrong`, and `memory.noteResolve`.
+// against near-duplicates, `reported_wrong`, and `memory.noteResolve`.
 //
 // A note is a memory row of type `note`. A note with no close match is stored in `project/<project>`. A note with
 // matches is stored `pending` in `pending/<project>`: kept, but outside the namespace the index and the search read,
@@ -60,28 +60,28 @@ async function findMatches(E, caller, project, text, emb, lv) {
 // Everything about a hand-back that can be checked and embedded before anything is written. Returns null when the
 // call carries no notes business (lever off, no notes, no marks), else the prepared hand-back.
 async function prepare(E, caller, args) {
-  const given = args.notes !== undefined || args.found_wrong !== undefined;
+  const given = args.notes !== undefined || args.reported_wrong !== undefined;
   if (caller.role !== 'worker') {
-    if (given) throw err('E_ARGS', 'lease.release: an operator release hands nothing back; notes and found_wrong belong to the worker holding the lease');
+    if (given) throw err('E_ARGS', 'lease.release: an operator release hands nothing back; notes and reported_wrong belong to the worker holding the lease');
     return null;
   }
   const lv = notesLevers(E, caller);
   if (!lv) {
-    if (given) throw err('E_LEVER_OFF', 'lease.release: notes and found_wrong need the run\'s memory.notes lever, and this run has it off', { lever: 'notes' });
+    if (given) throw err('E_LEVER_OFF', 'lease.release: notes and reported_wrong need the run\'s memory.notes lever, and this run has it off', { lever: 'notes' });
     return null;
   }
   if (args.notes === undefined) throw err('E_ARGS', 'lease.release: notes is required in this run ([] when there is nothing to share)', { field: 'notes' });
   const project = M.projectOf(E, caller);
   if (!project) throw err('E_ARGS', 'lease.release: this run has no project, so there is nowhere to write a note', { field: 'notes' });
   const notes = NT.checkNotes(args.notes);
-  const wrong = NT.checkFoundWrong(args.found_wrong);
+  const wrong = NT.checkReportedWrong(args.reported_wrong);
   for (const [i, w] of wrong.entries()) {
     const r = E.store.p('SELECT id, namespace, type FROM memory_entries WHERE id = ?').get(w.id);
     if (!r || r.type !== 'note' || r.namespace !== projectNs(project)) {
-      throw err('E_NOT_FOUND', `found_wrong[${i}]: ${w.id} is not a live note of project ${project}`, { id: w.id, field: 'found_wrong', index: i });
+      throw err('E_NOT_FOUND', `reported_wrong[${i}]: ${w.id} is not a live note of project ${project}`, { id: w.id, field: 'reported_wrong', index: i });
     }
     const m = NT.SELF_REF.exec(w.replaced_by || '');
-    if (m && Number(m[1]) >= notes.length) throw err('E_ARGS', `found_wrong[${i}].replaced_by names ${w.replaced_by} and this call has ${notes.length} notes`, { field: 'found_wrong', index: i });
+    if (m && Number(m[1]) >= notes.length) throw err('E_ARGS', `reported_wrong[${i}].replaced_by names ${w.replaced_by} and this call has ${notes.length} notes`, { field: 'reported_wrong', index: i });
   }
   const worker = rows.current(E.store, 'worker', caller.worker_id);
   // The model the worker was launched on, as the substrate reported it for the process belay spawned. Never from a note.
@@ -129,7 +129,7 @@ function commit(E, caller, prep, { task_id }) {
   });
   const pending = items.filter(i => i.state === 'pending').length;
   return {
-    notes: items, found_wrong: marked, pending,
+    notes: items, reported_wrong: marked, pending,
     ...(pending ? { next: 'resolve each pending note with memory_note_resolve: new, repeats <id>, or supersedes <id> with evidence' } : {}),
   };
 }

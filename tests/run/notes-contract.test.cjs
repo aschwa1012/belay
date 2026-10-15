@@ -64,7 +64,7 @@ test('the contract text carries the ADR question, the rules and the made-up exam
   assert.ok(text.includes(QUESTION));
   assert.ok(Buffer.byteLength(text) <= 1400, `${Buffer.byteLength(text)} bytes`);
   for (const must of ['`[]` is the normal answer', 'Your findings are not shown to the next worker', 'Do not note what the diff or your hand-back already shows',
-    'State the rule and where you saw it, not the next value; mark a snapshot "as of"', 'test/fixtures/index.json', '`found_wrong`', '`memory_note_resolve`']) {
+    'State the rule and where you saw it, not the next value; mark a snapshot "as of"', 'test/fixtures/index.json', '`reported_wrong`', '`memory_note_resolve`']) {
     assert.ok(text.includes(must), must);
   }
   assert.ok(!text.includes('{{'), 'no placeholder is left');

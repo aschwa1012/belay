@@ -1,6 +1,6 @@
 'use strict';
 // memory-notes-handback.test.cjs — ADR 0047 decisions 2 to 5 at the core: notes handed back on lease.release, the
-// two-step write against near-duplicates, found_wrong, and memory.noteResolve. A fake embedder gives the notes
+// two-step write against near-duplicates, reported_wrong, and memory.noteResolve. A fake embedder gives the notes
 // vectors we choose, so "close" and "distinct" are facts of the test, not of a model.
 
 const { test, before, after } = require('node:test');
@@ -64,9 +64,9 @@ test('lever off: a release is what it was, and a release that passes notes is re
   const before = store.count();
   const { out } = await hand(w, { result: { summary: 'x' } }, OFF);
   assert.strictEqual(out.state, 'released');
-  assert.ok(!('notes' in out) && !('found_wrong' in out), 'no notes fields on the result');
+  assert.ok(!('notes' in out) && !('reported_wrong' in out), 'no notes fields on the result');
   await assert.rejects(hand(w, { notes: [] }, OFF), e => e.code === 'E_LEVER_OFF');
-  await assert.rejects(hand(w, { found_wrong: [] }, OFF), e => e.code === 'E_LEVER_OFF');
+  await assert.rejects(hand(w, { reported_wrong: [] }, OFF), e => e.code === 'E_LEVER_OFF');
   await assert.rejects(call('memory.noteResolve', worker('woff', OFF), { resolutions: [{ id: 'x', resolve: 'new' }] }), e => e.code === 'E_LEVER_OFF');
   assert.strictEqual(store.count(), before, 'no row was written');
 });
@@ -79,7 +79,7 @@ test('lever on: notes is required, [] is valid and writes nothing', async () => 
   assert.strictEqual((await call('task.get', orch, { task_id: l.task_id })).state, 'assigned', 'a refused release leaves the lease held');
   const out = await call('lease.release', w, { lease_id: l.lease_id, notes: [] });
   assert.strictEqual(out.state, 'released');
-  assert.deepStrictEqual([out.notes, out.found_wrong, out.pending], [[], [], 0]);
+  assert.deepStrictEqual([out.notes, out.reported_wrong, out.pending], [[], [], 0]);
   assert.strictEqual(store.count(), before);
 });
 
@@ -222,23 +222,23 @@ test('a worker resolves only its own pending notes; a repeat of a note that is n
   assert.strictEqual(r.still_pending, 0);
 });
 
-test('found_wrong marks the note reported_wrong at once, resolves notes[i] to the new note, and refuses an unknown id', async () => {
+test('reported_wrong marks the note reported_wrong at once, resolves notes[i] to the new note, and refuses an unknown id', async () => {
   const w = worker('w2');
   const target = (await hand(w, { notes: [note('K11', { title: 'the K11 scheduler runs hourly' })] })).out.notes[0];
   const w3 = worker('w3');
   const { out } = await hand(w3, {
     notes: [note('K12', { title: 'the K12 scheduler runs every five minutes' })],
-    found_wrong: [{ id: target.id, why: 'saw it fire every five minutes', replaced_by: 'notes[0]' }],
+    reported_wrong: [{ id: target.id, why: 'saw it fire every five minutes', replaced_by: 'notes[0]' }],
   });
-  assert.strictEqual(out.found_wrong[0].marked, 'reported_wrong');
-  assert.strictEqual(out.found_wrong[0].replaced_by, out.notes[0].id);
+  assert.strictEqual(out.reported_wrong[0].marked, 'reported_wrong');
+  assert.strictEqual(out.reported_wrong[0].replaced_by, out.notes[0].id);
   const b = bodyOf(target.id);
   assert.strictEqual(b.reported_wrong.length, 1);
   assert.deepStrictEqual([b.reported_wrong[0].why, b.reported_wrong[0].by, b.reported_wrong[0].run_id, b.reported_wrong[0].replaced_by], ['saw it fire every five minutes', 'worker:w3', RUN, out.notes[0].id]);
   assert.strictEqual(rowOf(target.id).namespace, 'project/acme', 'a report is not a retirement: the note stays');
   const l = await lease(w3);
-  await assert.rejects(call('lease.release', w3, { lease_id: l.lease_id, notes: [], found_wrong: [{ id: 'nope', why: 'x' }] }), e => e.code === 'E_NOT_FOUND');
-  await assert.rejects(call('lease.release', w3, { lease_id: l.lease_id, notes: [], found_wrong: [{ id: target.id, why: 'x', replaced_by: 'notes[3]' }] }), e => e.code === 'E_ARGS');
+  await assert.rejects(call('lease.release', w3, { lease_id: l.lease_id, notes: [], reported_wrong: [{ id: 'nope', why: 'x' }] }), e => e.code === 'E_NOT_FOUND');
+  await assert.rejects(call('lease.release', w3, { lease_id: l.lease_id, notes: [], reported_wrong: [{ id: target.id, why: 'x', replaced_by: 'notes[3]' }] }), e => e.code === 'E_ARGS');
   assert.strictEqual(bodyOf(target.id).reported_wrong.length, 1, 'a refused call marks nothing');
 });
 

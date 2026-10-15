@@ -52,12 +52,12 @@ test('a field the harness owns (model, written_by, id) is refused: a note cannot
   assert.throws(() => N.checkNotes('x'), e => e.code === 'E_ARGS');
 });
 
-test('found_wrong and resolutions are checked', () => {
-  assert.deepStrictEqual(N.checkFoundWrong(undefined), []);
-  assert.deepStrictEqual(N.checkFoundWrong([{ id: 'n1', why: 'it moved' }]), [{ id: 'n1', why: 'it moved', replaced_by: null }]);
-  assert.strictEqual(N.checkFoundWrong([{ id: 'n1', why: 'w', replaced_by: 'notes[0]' }])[0].replaced_by, 'notes[0]');
-  assert.throws(() => N.checkFoundWrong([{ id: 'n1' }]), e => e.code === 'E_ARGS');
-  assert.throws(() => N.checkFoundWrong([{ id: 'n1', why: 'w', replaced_by: 'bad id' }]), e => e.code === 'E_ARGS');
+test('reported_wrong and resolutions are checked', () => {
+  assert.deepStrictEqual(N.checkReportedWrong(undefined), []);
+  assert.deepStrictEqual(N.checkReportedWrong([{ id: 'n1', why: 'it moved' }]), [{ id: 'n1', why: 'it moved', replaced_by: null }]);
+  assert.strictEqual(N.checkReportedWrong([{ id: 'n1', why: 'w', replaced_by: 'notes[0]' }])[0].replaced_by, 'notes[0]');
+  assert.throws(() => N.checkReportedWrong([{ id: 'n1' }]), e => e.code === 'E_ARGS');
+  assert.throws(() => N.checkReportedWrong([{ id: 'n1', why: 'w', replaced_by: 'bad id' }]), e => e.code === 'E_ARGS');
   assert.deepStrictEqual(N.checkResolutions([{ id: 'p', resolve: 'new' }]), [{ id: 'p', resolve: 'new' }]);
   assert.throws(() => N.checkResolutions([{ id: 'p', resolve: 'repeats' }]), e => e.code === 'E_ARGS');
   assert.throws(() => N.checkResolutions([{ id: 'p', resolve: 'supersedes', of: 'q' }]), /evidence/);

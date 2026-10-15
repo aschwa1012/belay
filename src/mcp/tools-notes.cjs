@@ -1,6 +1,6 @@
 'use strict';
 // tools-notes.cjs — ADR 0047 decisions 3 and 4: what a worker's tool listing says when its run has the `notes` lever
-// on. `lease_release` gains `notes` (required, `[]` valid) and `found_wrong` in its schema, not in prose, and
+// on. `lease_release` gains `notes` (required, `[]` valid) and `reported_wrong` in its schema, not in prose, and
 // `memory_note_resolve` joins the listing. With the lever off none of this is listed and the listing is the one it
 // always was. The 5,120 byte worker budget (ADR 0040 section 4) is not loosened: the schema above costs about 1,340
 // bytes, so the listing also drops the five tools a worker least needs while it is writing notes (their descriptions
@@ -33,7 +33,7 @@ const LEASE_RELEASE = {
         subjects: strs(),
       }, ['kind', 'title', 'basis']),
     },
-    found_wrong: { type: 'array', items: S({ id: str(), why: str(), replaced_by: str() }, ['id', 'why']) },
+    reported_wrong: { type: 'array', items: S({ id: str(), why: str(), replaced_by: str() }, ['id', 'why']) },
   }, ['lease_id', 'notes']),
 };
 
