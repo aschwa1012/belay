@@ -9,7 +9,7 @@
 // namespaces and filter and found nothing. A weaker result carries a `warning`, the first key of the object.
 
 const { err } = require('./errors.cjs');
-const { BM25 } = require('./fts-query.cjs');
+const { BM25, DEFAULT_PAGE } = require('./fts-query.cjs');
 const { pickTerms, orMatch } = require('./memory-relevance.cjs');
 const { rrf, HYBRID_ALPHA, HYBRID_K } = require('./fusion.cjs');
 const { deriveTitle, indexRowOf, dupVeto, filterSql } = require('./memory-rows.cjs');
@@ -147,7 +147,7 @@ function keywordStage(E, o, depth, base) {
   if (!ftsReady(db)) return fail('E_NO_INDEX', 'this store has no keyword index (it was never opened by a current owner, or this SQLite has no FTS5); keyword search did not run');
   if (typeof o.query !== 'string') return fail('E_QUERY_SHORT', 'a keyword search needs query text; only a vector was supplied');
   try {
-    const { terms, dropped } = pickTerms(db, o.query, o.namespaces);
+    const { terms, dropped } = pickTerms(db, o.query, o.namespaces, { rows: false });
     if (!terms.length && !dropped.some(d => d.reason === 'no-row')) {
       const why = dropped.length ? dropped.map(d => `${d.term}: ${d.reason}`).join(', ') : 'the query has no words';
       return fail('E_QUERY_SHORT', `the query has no term the keyword index can rank (${why}); keyword search did not run`);
@@ -192,7 +192,7 @@ function parseSearch(E, caller, args) {
   const fsql = filterSql(filter, 'e');
   return {
     mode, view: enumArg('view', args.view, VIEWS, 'full'), order, alpha, filter, filterSql: fsql,
-    k: intArg('k', args.k, 10, 1, K_MAX), offset: intArg('offset', args.offset, 0, 0, OFFSET_MAX),
+    k: intArg('k', args.k, DEFAULT_PAGE, 1, K_MAX), offset: intArg('offset', args.offset, 0, 0, OFFSET_MAX),
     namespaces: namespacesOf(E, caller, args),
     query: typeof args.query === 'string' ? args.query : null,
     queryEmbedding: args.query_embedding || null, embeddingModel: args.embedding_model || null,

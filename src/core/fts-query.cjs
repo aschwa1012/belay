@@ -12,6 +12,9 @@ const MIN_TERM = 3;
 // A cap keeps one pasted page from becoming a thousand-phrase expression. UNMEASURED: 32 is a judgement, not a result.
 const MAX_TERMS = 32;
 
+// The default page of a search (memory.search's k). The keyword half's zero-IDF rule starts above it (memory-relevance).
+const DEFAULT_PAGE = 10;
+
 // Terms split on whitespace, on control characters (a NUL or other control character in a phrase makes SQLite
 // throw an uncoded error) and on the double quote, the one character a quoted phrase cannot carry. Length is
 // counted in code points, which is how the trigram tokenizer counts characters.
@@ -32,4 +35,4 @@ function toMatch(query) {
 // bm25() with the title column weighted above the body (columns: title, text). Lower is better.
 const BM25 = 'bm25(memory_fts, 3.0, 1.0)';
 
-module.exports = { toMatch, MIN_TERM, MAX_TERMS, BM25 };
+module.exports = { toMatch, MIN_TERM, MAX_TERMS, DEFAULT_PAGE, BM25 };
