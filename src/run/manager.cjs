@@ -430,7 +430,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const earlyReceipt = () => ({
       worker_id, branch: null, reason: null, old_pid: oldPid, new_pid: w.pid === oldPid ? null : w.pid, session_id: w.sessionId, checkpoint_id: w.lastCheckpointId,
       first_turn_usage: null, first_turn_timed_out: null, first_turn_ended_by: null, worker: W.rowOf(w, w.state, ctx), first_turn_awaited: false,
-      status: 'not ready yet', restart_path: 'early_return', elapsed_ms: bud.elapsed(),
+      status: 'not ready yet', relaunch_in_flight: true, restart_path: 'early_return', elapsed_ms: bud.elapsed(),
     });
     let p = w.restartInFlight;
     if (!p) {
@@ -453,7 +453,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     if (turn && turn.paused) await W.waitExit(w, PARK_SETTLE_WAIT_MS);
     await w.queue;
     const base = { ...relaunched, worker: W.rowOf(w, w.state, ctx), checkpoint_id: (turn && turn.checkpoint_id) || w.lastCheckpointId };
-    if (turn === null && budgeted && waitMs < first_turn_timeout_ms) return { ...earlyReceipt(), ...{ branch: relaunched.branch, reason: relaunched.reason, new_pid: relaunched.new_pid, session_id: relaunched.session_id, checkpoint_id: base.checkpoint_id, worker: base.worker } };
+    if (turn === null && budgeted && waitMs < first_turn_timeout_ms) return { ...earlyReceipt(), ...{ relaunch_in_flight: false, branch: relaunched.branch, reason: relaunched.reason, new_pid: relaunched.new_pid, session_id: relaunched.session_id, checkpoint_id: base.checkpoint_id, worker: base.worker } };
     return {
       ...base,
       first_turn_usage: turn && !turn.exited ? turn.usage : null, first_turn_timed_out: turn === null,
