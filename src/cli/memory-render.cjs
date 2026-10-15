@@ -33,6 +33,12 @@ const FLAGS = {
   '--namespace-map': { key: 'namespaceMaps', type: 'many' },
   '--no-embed': { key: 'noEmbed', type: 'bool' },
   '--all': { key: 'all', type: 'bool' },
+  '--reason': { key: 'reason', type: 'one' },
+  '--ids': { key: 'ids', type: 'one' },
+  '--older-than': { key: 'olderThan', type: 'one' },
+  '--confirm': { key: 'confirm', type: 'bool' },
+  '--project': { key: 'project', type: 'one' },
+  '--candidates': { key: 'candidates', type: 'bool' },
 };
 
 const FILTER_FLAGS = ['--type', '--status', '--task', '--worker', '--since', '--namespace'];
@@ -47,6 +53,9 @@ const VERBS = {
   stats: { flags: [], positional: [0, 1], usage: 'belay memory stats [run-id]' },
   export: { flags: ['--namespace', '--since', '--out', '--all'], positional: [0, 1], usage: 'belay memory export [run-id] [--namespace ns]... [--since <ms|iso>] [--out <file>] [--all]' },
   import: { flags: ['--namespace-map', '--namespace', '--no-embed'], positional: [1, 1], usage: 'belay memory import <file> [--namespace-map from=to]... [--namespace ns] [--no-embed]' },
+  proposals: { flags: ['--project', '--all'], positional: [0, 0], usage: 'belay memory proposals [--project p] [--all]' },
+  restore: { flags: ['--reason', '--candidates'], positional: [1, 1], usage: 'belay memory restore <id> --reason <text>   |   belay memory restore <id> --candidates' },
+  archive: { flags: ['--ids', '--older-than', '--confirm', '--project'], positional: [1, 1], usage: 'belay memory archive purge (--ids a,b | --older-than <days>) --confirm [--project p]' },
 };
 
 function usageText() {
@@ -67,6 +76,21 @@ function parseSince(v) {
 function wholeNumber(name, v, min) {
   if (!/^\d+$/.test(v) || !Number.isSafeInteger(Number(v)) || Number(v) < min) return { error: `${name} must be an integer of at least ${min}; got ${v}` };
   return { value: Number(v) };
+}
+
+// archive purge: exactly one selector, and --confirm. The sub-subcommand is the positional (checked by the caller).
+function checkPurge(opts) {
+  if ((opts.ids === undefined) === (opts.olderThan === undefined)) return { error: 'belay memory archive purge takes --ids a,b or --older-than <days>, one of them' };
+  if (opts.ids !== undefined) {
+    opts.idList = opts.ids.split(',').map(s => s.trim()).filter(Boolean);
+    if (!opts.idList.length) return { error: '--ids needs at least one note id' };
+  } else {
+    const days = Number(opts.olderThan);
+    if (!/^\d+(\.\d+)?$/.test(opts.olderThan) || !Number.isFinite(days)) return { error: `--older-than must be a number of days; got ${opts.olderThan}` };
+    opts.days = days;
+  }
+  if (!opts.confirm) return { error: 'belay memory archive purge removes rows for good: pass --confirm' };
+  return {};
 }
 
 function checkOpts(sub, opts) {
@@ -98,6 +122,8 @@ function checkOpts(sub, opts) {
     opts.nsMap = maps;
     if (opts.namespaces && opts.namespaces.length > 1) return { error: 'belay memory import takes one --namespace, the default for rows that carry none' };
   }
+  if (sub === 'restore' && !opts.candidates && !opts.reason) return { error: 'belay memory restore needs --reason <text> (or --candidates to list the archived duplicates of a note)' };
+  if (sub === 'archive') return checkPurge(opts);
   if (sub === 'verify') {
     if (opts.status === undefined) return { error: 'belay memory verify needs --status verified|refuted|unverified' };
     if (opts.receipt === undefined && opts.status !== 'unverified') return { error: 'belay memory verify needs --receipt <r>: a status without evidence is refused' };
