@@ -33,6 +33,7 @@ const LEASE_RELEASE = {
       }, ['kind', 'title', 'basis']),
     },
     reported_wrong: { type: 'array', items: S({ id: str(), why: str(), replaced_by: { type: ['string', 'null'] } }, ['id', 'why']) },
+    memory_ids: strs(),
   }, ['lease_id', 'notes']),
 };
 

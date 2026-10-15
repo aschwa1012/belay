@@ -67,24 +67,25 @@ function leversUnread(E, caller) {
 // Everything about a hand-back that can be checked and embedded before anything is written. Returns null when the
 // call carries no notes business (lever off, no notes, no marks), else the prepared hand-back.
 async function prepare(E, caller, args) {
-  const given = args.notes !== undefined || args.reported_wrong !== undefined;
+  const given = args.notes !== undefined || args.reported_wrong !== undefined || args.memory_ids !== undefined;
   if (caller.role !== 'worker') {
-    if (given) throw err('E_ARGS', 'lease.release: an operator release hands nothing back; notes and reported_wrong belong to the worker holding the lease');
+    if (given) throw err('E_ARGS', 'lease.release: an operator release hands nothing back; notes, reported_wrong and memory_ids belong to the worker holding the lease');
     return null;
   }
   const lv = notesLevers(E, caller);
   if (!lv) {
-    if (given) throw err('E_LEVER_OFF', 'lease.release: notes and reported_wrong need the run\'s memory.notes lever, and this run has it off', { lever: 'notes' });
+    if (given) throw err('E_LEVER_OFF', 'lease.release: notes, reported_wrong and memory_ids need the run\'s memory.notes lever, and this run has it off', { lever: 'notes' });
     return null;
   }
   // A worker whose spawn could not read the levers was launched without --notes and without the contract (the manager
   // recorded a levers_unread receipt for it): it never saw the field, so a release without it is the ordinary one.
-  if (args.notes === undefined && args.reported_wrong === undefined && leversUnread(E, caller)) return null;
+  if (args.notes === undefined && args.reported_wrong === undefined && args.memory_ids === undefined && leversUnread(E, caller)) return null;
   if (args.notes === undefined) throw err('E_ARGS', 'lease.release: notes is required in this run ([] when there is nothing to share)', { field: 'notes' });
   const project = M.projectOf(E, caller);
   if (!project) throw err('E_ARGS', 'lease.release: this run has no project, so there is nowhere to write a note', { field: 'notes' });
   const notes = NT.checkNotes(args.notes);
   const wrong = NT.checkReportedWrong(args.reported_wrong);
+  const memoryIds = NT.checkMemoryIds(args.memory_ids); // the note ids applied, or null when the field was not given
   for (const [i, w] of wrong.entries()) {
     const r = E.store.p('SELECT id, namespace, type FROM memory_entries WHERE id = ?').get(w.id);
     if (!r || r.type !== 'note' || r.namespace !== projectNs(project)) {
@@ -106,7 +107,7 @@ async function prepare(E, caller, args) {
     const matches = await findMatches(E, caller, project, emb, lv);
     prepared.push({ index: i, kind: n.kind, basis: n.basis, title, text: s.text, body: s.body, redactions: s.redactions, emb, matches, model });
   }
-  return { project, lv, notes: prepared, wrong };
+  return { project, lv, notes: prepared, wrong, memoryIds };
 }
 
 // A second `lease.release` on a released lease may add notes only in a run that asked for the reflection turn, and
@@ -162,6 +163,7 @@ function commit(E, caller, prep, { task_id }) {
   const pending = items.filter(i => i.state === 'pending').length;
   return {
     notes: items, reported_wrong: marked, pending,
+    ...(prep.memoryIds ? { memory_ids: require('./memory-chances.cjs').recordApplied(E, caller, prep, task_id) } : {}),
     ...(pending ? { next: 'resolve each pending note with memory_note_resolve: new, repeats <id>, or supersedes <id> with evidence' } : {}),
   };
 }
