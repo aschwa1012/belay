@@ -243,7 +243,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
     // The worker row comes first, with no pid yet: `task.assign` refuses a worker with no row, and the
     // resume line needs the lease it creates. Only `running` is pid-checked, so this is legitimate.
-    const t0 = now();
+    let t0 = now();
     await writeRow(w, 'starting');
     let first;
     try {
@@ -256,6 +256,9 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       await writeRow(w, 'dead');
       throw e;
     }
+    // The index's embedding is the harness's wait, not the worker's: it counts neither toward the startup window nor in ready_ms
+    // (Codex's verifyReady and the returned ready_ms run from here). Its own time is in the index_injected receipt.
+    t0 += w.indexEmbedMs || 0;
     w.firstMessage = first;
 
     launch(w, substrate === 'claude-code' ? {} : { prompt: first });

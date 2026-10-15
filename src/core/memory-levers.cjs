@@ -4,7 +4,11 @@
 // It requires nothing, so run.attach can validate a block without loading the run manager; src/run reads the
 // parsed block back with `leversFor`. Every lever that does anything new defaults off.
 
+const { DEFAULT_MODE, MODES, ALLOWED: MODE_VALUES, normalize: normalizeMode, describe: describeModes } = require('./embedder-mode.cjs');
+
 const DEFAULTS = Object.freeze({
+  // ADR 0034 amendment 1: what the run does when the embedder fails: required (pause loudly, the default), keyword or off.
+  on_embedder_failure: DEFAULT_MODE,
   redact: true,
   rules: false,
   alpha: 0.3,
@@ -59,6 +63,9 @@ function parseMemoryBlock(block) {
     }
   }
   const v = { ...DEFAULTS, ...block };
+  const mode = normalizeMode(v.on_embedder_failure);
+  if (mode === null) return { error: `memory.on_embedder_failure must be one of ${describeModes()}` };
+  v.on_embedder_failure = mode;
   for (const k of BOOLEAN_KEYS) {
     if (typeof v[k] !== 'boolean') return { error: `memory.${k} must be true or false` };
   }
@@ -103,6 +110,8 @@ function isDefault(levers) {
 // that parses a value by its type here still asks parseMemoryBlock before it writes.
 // TYPES[key] = { type: 'boolean'|'number'|'integer'|'enum'|'string', values?, min?, max?, minExclusive?, nullable? }; `values` only for enums.
 const OVERRIDES = {
+  // the aliases stop (required) and continue (keyword) are handled by the parser, not listed in values
+  on_embedder_failure: { type: 'enum', values: MODES },
   alpha: { type: 'number', min: 0, max: 1 },
   summaries: { type: 'enum', values: SUMMARIES },
   project: { type: 'string', nullable: true },
@@ -124,4 +133,4 @@ function specOf(key) {
 
 const TYPES = Object.freeze(Object.fromEntries(Object.keys(DEFAULTS).map((k) => [k, specOf(k)])));
 
-module.exports = { DEFAULTS, TYPES, parseMemoryBlock, isDefault };
+module.exports = { DEFAULTS, TYPES, MODE_VALUES, parseMemoryBlock, isDefault };

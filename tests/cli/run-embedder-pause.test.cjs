@@ -34,12 +34,12 @@ function cli(args, dataDir) {
   });
 }
 
-async function start(dir, fixedFile, extraEnv = {}, withWorker = true) {
+async function start(dir, fixedFile, extraEnv = {}, withWorker = true, runCwd = ROOT) {
   const dataDir = `${dir}/.belay`;
   const { specPath, runId } = makeSpec(dir, { poll_ms: 300, on_embedder_failure: 'stop' });
   const cliProc = runCli(specPath, dataDir, {
     BELAY_CLAUDE_EXE: FAKE_CLAUDE, BELAY_FAKE_CORE: FAKE_CORE, FAKE_ANSWER_DELAY_MS: '60000', FAKE_EMBEDDER_FIXED: fixedFile, ...extraEnv,
-  });
+  }, runCwd);
   const core = await connectOrchestratorCore(dataDir, runId);
   const m = createRunManager({ core, dataDir, runId, paths: { claudeExe: FAKE_CLAUDE, userSettings: USER_SETTINGS } });
   const control = createWorkerControl({ dataDir, manager: m, pid: cliProc.proc.pid });
@@ -145,5 +145,80 @@ test('a second embedder failure after a resume pauses the run again, and a pause
     // The worker's own turn-text store fails too (the run stores every turn), so there may be more than two.
     assert.ok(receipt.embedder_failures.length >= 2, JSON.stringify(receipt.embedder_failures));
     assert.ok(receipt.embedder_failures.every((f) => f.pause && f.pause.ok === true), JSON.stringify(receipt.embedder_failures));
+  } finally { if (ctx) await teardown(ctx, dir); else cleanup(dir); }
+});
+
+// ---- ADR 0034 amendment 1: the operator's choice at a resume --------------------------------------------------------
+// A run under required (the spec's old name stop) pauses on an embedder failure; `belay resume --embedder keyword|off` takes the choice
+// without re-loading the model, and writes it to the config file's memory.on_embedder_failure of the RUN's own project, wherever the CLI runs.
+function cliIn(cwd, args, dataDir) {
+  return new Promise((resolve) => {
+    const proc = spawn(process.execPath, [CLI, ...args, '--data', dataDir, '--json'], { cwd, windowsHide: true });
+    let stdout = ''; proc.stdout.on('data', (d) => { stdout += d; });
+    let stderr = ''; proc.stderr.on('data', (d) => { stderr += d; });
+    proc.once('exit', (status) => {
+      let json = null;
+      try { json = JSON.parse(status === 0 ? stdout : stderr); } catch { /* left null */ }
+      resolve({ status, stdout, stderr, json });
+    });
+  });
+}
+
+async function pausedByFailure(ctx) {
+  await sleep(500);
+  await assert.rejects(ctx.core.memory.store({ text: 'a note' }), (e) => e.detail && e.detail.embedder === true);
+  assert.ok(await pausedRow(ctx), 'the run never paused');
+}
+
+for (const choice of ['keyword', 'off']) {
+  test(`resume --embedder ${choice}: the run goes on without the model, and the choice is written to the config file`, { timeout: 300000 }, async () => {
+    const dir = sandbox();
+    let ctx;
+    try {
+      fs.mkdirSync(`${dir}/proj/.git`, { recursive: true }); // the run's project root: the run is started there
+      fs.mkdirSync(`${dir}/elsewhere`, { recursive: true }); // and the resume runs from an unrelated folder
+      ctx = await start(dir, `${dir}/never-fixed.flag`, {}, false, `${dir}/proj`);
+      await pausedByFailure(ctx);
+      const res = await cliIn(`${dir}/elsewhere`, ['resume', ctx.runId, '--embedder', choice], ctx.dataDir);
+      assert.strictEqual(res.status, 0, `${res.stdout} / ${res.stderr}`);
+      assert.strictEqual(res.json.resumed, true);
+      assert.strictEqual(res.json.embedder_choice, choice);
+      assert.strictEqual(res.json.embedder_setting.new, choice);
+      assert.strictEqual(res.json.embedder_setting.created, true);
+      assert.strictEqual(res.json.embedder_setting.path, `${dir}/proj/belay.config.json`, 'the receipt names the path');
+      assert.ok(!fs.existsSync(`${dir}/elsewhere/belay.config.json`), 'nothing is written in the folder the CLI ran from');
+      assert.strictEqual(currentRunRow(ctx.dataDir, ctx.runId).paused_at, null, 'the run is resumed although the embedder is still down');
+      const file = JSON.parse(fs.readFileSync(`${dir}/proj/belay.config.json`, 'utf8'));
+      assert.deepStrictEqual(file, { memory: { on_embedder_failure: choice } }, 'the setting persists');
+      if (choice === 'off') {
+        // memory is off: the call is refused by name, and nothing was written
+        await assert.rejects(ctx.core.memory.store({ text: 'after off' }), (e) => e.code === 'E_LEVER_OFF');
+        await assert.rejects(ctx.core.memory.search({ query: 'x', mode: 'keyword' }), (e) => e.code === 'E_LEVER_OFF');
+        const idx = await ctx.core.memory.index({});
+        assert.deepStrictEqual([idx.bytes, idx.memory_off], [0, true]);
+      } else {
+        // keyword: a failure is recorded and goes back to the caller, and the run is not paused again
+        await assert.rejects(ctx.core.memory.search({ query: 'anything', mode: 'semantic' }), (e) => e.code === 'E_TIMEOUT');
+        await sleep(1500); // a pause, were one coming, lands well inside this
+        assert.strictEqual(currentRunRow(ctx.dataDir, ctx.runId).paused_at, null, 'the run must not pause again under keyword');
+      }
+    } finally { if (ctx) await teardown(ctx, dir); else cleanup(dir); }
+  });
+}
+
+test('resume --embedder is refused for anything but keyword or off, for a pause that was not an embedder failure, and writes nothing then', { timeout: 300000 }, async () => {
+  const dir = sandbox();
+  let ctx;
+  try {
+    fs.mkdirSync(`${dir}/proj/.git`, { recursive: true });
+    ctx = await start(dir, `${dir}/never-fixed.flag`, {}, false);
+    await sleep(500);
+    for (const bad of ['required', 'stop', 'maybe']) {
+      const r = await cliIn(`${dir}/proj`, ['resume', ctx.runId, '--embedder', bad], ctx.dataDir);
+      assert.strictEqual(r.status, 2, `${bad}: ${r.stdout} / ${r.stderr}`);
+    }
+    const notPaused = await cliIn(`${dir}/proj`, ['resume', ctx.runId, '--embedder', 'keyword'], ctx.dataDir);
+    assert.notStrictEqual(notPaused.status, 0, 'the run is not paused, so there is nothing to resume');
+    assert.ok(!fs.existsSync(`${dir}/proj/belay.config.json`), 'a refused choice writes no config file');
   } finally { if (ctx) await teardown(ctx, dir); else cleanup(dir); }
 });
