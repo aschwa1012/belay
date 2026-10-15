@@ -36,6 +36,20 @@ function cutoffRule(fixCutoff, timeoutMs, mode = 'headless') {
     + (timeoutMs > 0 ? '' : ' The run has no time bound.');
 }
 
+// The memory block a run uses: the config file's `memory` block as project defaults, the run spec's own block over it
+// key by key. `config` is { path, memory } or null. Returns { block, sources } or { error }; `sources` names, for every
+// lever, 'default', the config path or 'spec'. The merged block is validated once, by parseMemoryBlock, in parseLevers.
+function mergeMemory(specBlock, config) {
+  const cfg = config && config.memory !== undefined && config.memory !== null ? config.memory : null;
+  if (cfg !== null && (typeof cfg !== 'object' || Array.isArray(cfg))) return { error: `${config.path}: memory must be an object` };
+  const own = specBlock !== undefined && specBlock !== null && typeof specBlock === 'object' && !Array.isArray(specBlock) ? specBlock : null;
+  if (own === null && specBlock !== undefined && specBlock !== null) return { block: specBlock, sources: null }; // not an object: parseMemoryBlock says so
+  const block = { ...(cfg || {}), ...(own || {}) };
+  const sources = {};
+  for (const k of Object.keys(ML.DEFAULTS)) sources[k] = own && Object.prototype.hasOwnProperty.call(own, k) ? 'spec' : cfg && Object.prototype.hasOwnProperty.call(cfg, k) ? config.path : 'default';
+  return { block: cfg === null && own === null ? undefined : block, sources, fromConfig: cfg !== null && Object.keys(cfg).length > 0 };
+}
+
 // Returns { max_fix_rounds, fix_cutoff, on_embedder_failure[, compact_at_tokens] } or { error }. `compact_at_tokens` (ADR 0007 decision 3,
 // null by default) is present only when set, so a run without it has the receipt it always had.
 function parseLevers(spec, opts = {}) {
@@ -67,10 +81,14 @@ function parseLevers(spec, opts = {}) {
   if (ca.value !== null) out.compact_at_tokens = ca.value;
   // ADR 0041 decision 1: the memory block. Present on the result only when it differs from the defaults, so a
   // run without it has the levers, the receipt and the run row it always had.
-  const mem = ML.parseMemoryBlock(spec.memory);
-  if (mem.error) return { error: mem.error };
+  // The config's `memory` block is the project default under the spec's own (opts.config = { path, memory }).
+  const merged = mergeMemory(spec.memory, opts.config);
+  if (merged.error) return { error: merged.error };
+  const mem = ML.parseMemoryBlock(merged.block);
+  if (mem.error) return { error: merged.fromConfig ? `${mem.error} (memory defaults come from ${opts.config.path}, the spec's own memory block over them)` : mem.error };
   if (!ML.isDefault(mem.value)) {
     out.memory_levers = mem.value;
+    if (merged.sources) out.memory_sources = merged.sources; // each lever's origin; absent for a default block, like memory_levers
     if (mem.value.rules) {
       // Read only when the lever is on; a missing file is a refusal that names it, never a silent empty rules text.
       const file = opts.rulesFile || MEMORY_RULES_FILE;
@@ -141,4 +159,4 @@ async function countReviewRounds(core, runId) {
   }
 }
 
-module.exports = { parseLevers, attachMemory, memoryText, substituteLevers, countReviewRounds, cutoffRule, FIX_CUTOFFS };
+module.exports = { mergeMemory, parseLevers, attachMemory, memoryText, substituteLevers, countReviewRounds, cutoffRule, FIX_CUTOFFS };
