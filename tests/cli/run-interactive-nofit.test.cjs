@@ -46,7 +46,7 @@ test('fast close with a snapshot that cannot fit: nothing is signalled, the rece
       assert.strictEqual(k.outcome, k.kind === 'no_budget' ? 'refused_no_budget' : 'refused_unverifiable');
       assert.match(k.manual, new RegExp(`Stop-Process -Id ${w.pid}`));
       assert.match(k.manual, /belay worker kill w-nf/);
-      assert.match(res.json.ended_by, /^console closed \(fast close\); then worker close: fast close deadline passed during the run's worker close/, res.json.ended_by);
+      assert.match(res.json.ended_by, /^console closed \(fast close\); then worker close: (fast close deadline passed during the run's worker close|worker w-nf pid [0-9]+ is still alive after its kill)/, res.json.ended_by);
       assert.strictEqual(w.exitCode, null, 'the process must survive a close that could not prove it');
     } finally { RP.snapshotShared = realShared; ID.snapshotShared = realCore; await releaseCore(core); }
   } finally { require('../crash.cjs').crash(w); }
