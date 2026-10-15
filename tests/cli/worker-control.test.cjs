@@ -281,10 +281,10 @@ test('worker stop, restart and message: each rung refuses naming the fact, creat
 
 // ================================================================ (i) a wedged pipe is named within its bound
 
-// 6e-5 fix round: stopBoundMs(1000) is now 158000 ms (design item 4), over scripts/test.cjs's fixed
+// 6e-5 fix round: stopBoundMs(1000) is now 170000 ms (design item 4), over scripts/test.cjs's fixed
 // 60000 ms --test-timeout; a per-test timeout keeps this pinned test itself green under npm test without
 // touching the unowned runner.
-test('worker stop: a pipe that accepts and never answers is named within the bound the arguments give', { timeout: 180000 }, async () => {
+test('worker stop: a pipe that accepts and never answers is named within the bound the arguments give', { timeout: 210000 }, async () => {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   let core = null; let server = null;
@@ -303,12 +303,12 @@ test('worker stop: a pipe that accepts and never answers is named within the bou
     assert.strictEqual(r.status, 1, `${r.stdout} / ${r.stderr}`);
     assert.strictEqual(r.receipt.stopped, false);
     // 6e-5 design item 4: stopBoundMs(1000) = 1000 + max(2000, min(1000,10000)) + 5000 + 5000
-    // + max(pauseBoundMs(), resumeBoundMs())=145000 (resume now carries failNoReady's 15000) = 158000
-    assert.match(r.receipt.reason, /did not answer worker\.stop within 158000 ms/);
+    // + max(pauseBoundMs(), resumeBoundMs())=157000 (resume carries failNoReady's 15000 and the relaunch's 12000 index embed) = 170000
+    assert.match(r.receipt.reason, /did not answer worker\.stop within 170000 ms/);
     assert.match(r.receipt.reason, /may have acted/);
     // The bound is the product's own, so a slow host adds only the CLI's start and the reply; the slack stays under
-    // this test's 180000 ms timeout, which an unbounded wait would hit.
-    assert.ok(ms <= 158000 + 12000, `command took ${ms} ms, over the 158000+12000 ms bound`);
+    // this test's 210000 ms timeout, which an unbounded wait would hit.
+    assert.ok(ms <= 170000 + 12000, `command took ${ms} ms, over the 170000+12000 ms bound`);
   } finally {
     if (server) await new Promise((resolve) => server.close(resolve));
     if (core) {

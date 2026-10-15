@@ -9,10 +9,10 @@ const CP = require('../run/compaction.cjs');
 const ML = require('../run/memory-levers.cjs');
 
 const FIX_CUTOFFS = ['orchestrator', 'cap-only'];
-const { ON_FAILURE } = require('../run/embedder-guard.cjs');
 const DEFAULT_MAX_FIX_ROUNDS = 2;
 const DEFAULT_FIX_CUTOFF = 'orchestrator';
-const DEFAULT_ON_EMBEDDER_FAILURE = 'stop'; // ADR 0034 decision 2
+const EM = require('../core/embedder-mode.cjs');
+const DEFAULT_ON_EMBEDDER_FAILURE = EM.DEFAULT_MODE; // ADR 0034 decision 2, amendment 1
 const MEMORY_RULES_FILE = path.join(__dirname, '..', 'run', 'prompts', 'memory-rules.md');
 
 // The time-bound condition is observable only if the orchestrator is told the bound and can read elapsed time
@@ -68,12 +68,18 @@ function parseLevers(spec, opts = {}) {
     }
     fixCutoff = spec.fix_cutoff;
   }
+  // ADR 0034 amendment 1: the run spec's own on_embedder_failure wins, then the memory block's, then the config file's
+  // (`opts.config.memory`, discovered by the caller), then the default. The old values stop and continue are accepted as required and keyword.
   let onEmbedderFailure = DEFAULT_ON_EMBEDDER_FAILURE;
-  if (spec.on_embedder_failure !== undefined) {
-    if (!ON_FAILURE.includes(spec.on_embedder_failure)) {
-      return { error: `on_embedder_failure must be one of ${ON_FAILURE.join(', ')}` };
-    }
-    onEmbedderFailure = spec.on_embedder_failure;
+  const memGiven = spec.memory && typeof spec.memory === 'object' ? spec.memory.on_embedder_failure : undefined;
+  const given = spec.on_embedder_failure !== undefined ? ['on_embedder_failure', spec.on_embedder_failure]
+    : memGiven !== undefined ? ['memory.on_embedder_failure', memGiven] : null;
+  if (given) {
+    const m = EM.normalize(given[1]);
+    if (m === null) return { error: `${given[0]} must be one of ${EM.describe()}` };
+    onEmbedderFailure = m;
+  } else if (opts.config && opts.config.memory && opts.config.memory.on_embedder_failure !== undefined) {
+    onEmbedderFailure = EM.normalize(opts.config.memory.on_embedder_failure) || DEFAULT_ON_EMBEDDER_FAILURE; // a bad config value is refused by parseMemoryBlock below
   }
   const out = { max_fix_rounds: maxFixRounds, fix_cutoff: fixCutoff, on_embedder_failure: onEmbedderFailure };
   const ca = CP.parseCompactAt(spec.compact_at_tokens);
@@ -86,8 +92,13 @@ function parseLevers(spec, opts = {}) {
   if (merged.error) return { error: merged.error };
   const mem = ML.parseMemoryBlock(merged.block);
   if (mem.error) return { error: merged.fromConfig ? `${mem.error} (memory defaults come from ${opts.config.path}, the spec's own memory block over them)` : mem.error };
-  if (!ML.isDefault(mem.value)) {
-    out.memory_levers = mem.value;
+  // on_embedder_failure is resolved above (spec top level, spec memory block, config, default) and recorded on its own: the
+  // run's memory_levers never carries it, so the row cannot contradict the receipt, a config that sets only this lever does not
+  // make every run row carry memory_levers, and an older core (which refuses the unknown key) still reads the block.
+  const recorded = { ...mem.value }; delete recorded.on_embedder_failure;
+  if (merged.sources) merged.sources.on_embedder_failure = given ? 'spec' : (opts.config && opts.config.memory && opts.config.memory.on_embedder_failure !== undefined ? opts.config.path : 'default');
+  if (!ML.isDefault({ ...recorded, on_embedder_failure: ML.DEFAULTS.on_embedder_failure })) {
+    out.memory_levers = recorded;
     if (merged.sources) out.memory_sources = merged.sources; // each lever's origin; absent for a default block, like memory_levers
     if (mem.value.rules) {
       // Read only when the lever is on; a missing file is a refusal that names it, never a silent empty rules text.

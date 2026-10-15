@@ -6,6 +6,7 @@
 
 const { adapterPipeName, pidAlive } = require('../core/lock.cjs');
 const { Client } = require('../core/client.cjs');
+const { SPAWN_EMBED_MS } = require('../core/spawn-bounds.cjs');
 
 // Amendment 1 item 2: the bound a verb waits is the sum of the manager method's own nested waits, read
 // from src/run/manager.cjs (stop's three waits; restart's own stop plus its 60,000 ms ready window
@@ -25,7 +26,8 @@ function stopBoundMs(timeout_ms) {
 }
 function restartBoundMs(first_turn_timeout_ms) {
   // + EXIT_CODE_WAIT_MS (15,000): failNoReady's bounded hold for a pid-established death's exit code
-  return doStopInternalBoundMs(10000) + 5000 + 60000 + 15000 + first_turn_timeout_ms;
+  // + SPAWN_EMBED_MS: the relaunch embeds the task's text for its index before the process starts (memory-preface.cjs)
+  return doStopInternalBoundMs(10000) + 5000 + 60000 + 15000 + first_turn_timeout_ms + SPAWN_EMBED_MS;
 }
 function messageBoundMs() {
   return 30000 + 5000;
@@ -40,7 +42,8 @@ function pauseBoundMs(interrupt_timeout_ms = 5000, exit_timeout_ms = 10000) {
 // row's write; the CLI's margin.
 function resumeBoundMs() {
   // + 15000: failNoReady's bounded hold for the exit code (worker.EXIT_CODE_WAIT_MS)
-  return 30000 + 5000 + 60000 + 15000 + 30000 + 5000;
+  // + SPAWN_EMBED_MS: the relaunch embeds the task's text for its index before the process starts (memory-preface.cjs)
+  return 30000 + 5000 + 60000 + 15000 + 30000 + 5000 + SPAWN_EMBED_MS;
 }
 
 function failure(workerId, ladder, last, reason, error) {

@@ -162,7 +162,7 @@ function createRunPauseControl({ runId, core, hook, pauseWorker, resumeWorker, s
     if (exited) return exited;
     if (!isActuallyPaused(run)) return refused('E_ARGS', `run ${runId} is not paused`, { run_id: runId });
     // ADR 0034 decision 2: an injected check (the embedder re-load) that may refuse the resume; the run stays paused.
-    if (typeof beforeResume === 'function') await beforeResume(run);
+    if (typeof beforeResume === 'function') await beforeResume(run, params);
     const by = `${params.caller.role}:${params.caller.pid}`;
     // fix-up (a): read from the run row alone, never an in-memory fallback (amendment 4, "rejected
     // alternatives": the store is the resume's real source; the row must always answer null or an

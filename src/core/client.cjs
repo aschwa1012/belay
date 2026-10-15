@@ -28,6 +28,7 @@ function encodeWire(params) {
   let out = params;
   if (Array.isArray(out.embedding)) { out = { ...out, embedding_b64: floatsToB64(out.embedding) }; delete out.embedding; }
   if (Array.isArray(out.query_embedding)) { out = { ...out, query_embedding_b64: floatsToB64(out.query_embedding) }; delete out.query_embedding; }
+  if (Array.isArray(out.query_embeddings)) out = { ...out, query_embeddings: out.query_embeddings.map((q) => (q && Array.isArray(q.vector) ? { ...q, vector: undefined, vector_b64: floatsToB64(q.vector) } : q)) };
   return out;
 }
 

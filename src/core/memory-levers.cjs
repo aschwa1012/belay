@@ -4,7 +4,11 @@
 // It requires nothing, so run.attach can validate a block without loading the run manager; src/run reads the
 // parsed block back with `leversFor`. Every lever that does anything new defaults off.
 
+const { DEFAULT_MODE, MODES, ALLOWED: MODE_VALUES, normalize: normalizeMode, describe: describeModes } = require('./embedder-mode.cjs');
+
 const DEFAULTS = Object.freeze({
+  // ADR 0034 amendment 1: what the run does when the embedder fails: required (pause loudly, the default), keyword or off.
+  on_embedder_failure: DEFAULT_MODE,
   redact: true,
   rules: false,
   alpha: 0.3,
@@ -32,12 +36,14 @@ const DEFAULTS = Object.freeze({
   scrub_max_items: 40, // entries in one scrub hand-back
   scrub_alarm_holds: 20, // more holds than this from one scrub raise the alarm field (the call still succeeds)
   notes_trust_wording: false, // ADR 0047 decision 6: basis, evidence and review status instead of "unverified"; off until the harm arms have run
+  notes_sink: 'off', // off | record | penalty: record writes a note_chance fact per delivered note at task end; penalty records the same, its rank shift is not built yet
 });
 
 const BOOLEAN_KEYS = ['redact', 'rules', 'capture', 'observations', 'project_writes', 'cost_ledger',
   'first_message_index', 'bottle', 'wrapup', 'knowledge_agent', 'notes', 'notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording'];
 const SUMMARIES = ['off', 'mechanical'];
 const SCRUB_ACTIONS = ['off', 'propose', 'apply'];
+const SINKS = ['off', 'record', 'penalty'];
 const PROJECT_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const INDEX_BYTES_MAX = 4096; // ADR 0042 decision 2
 const BOTTLE_BYTES_MAX = 262144; // ADR 0042 decision 4
@@ -57,6 +63,9 @@ function parseMemoryBlock(block) {
     }
   }
   const v = { ...DEFAULTS, ...block };
+  const mode = normalizeMode(v.on_embedder_failure);
+  if (mode === null) return { error: `memory.on_embedder_failure must be one of ${describeModes()}` };
+  v.on_embedder_failure = mode;
   for (const k of BOOLEAN_KEYS) {
     if (typeof v[k] !== 'boolean') return { error: `memory.${k} must be true or false` };
   }
@@ -84,6 +93,8 @@ function parseMemoryBlock(block) {
   // Notes outlive the run in the project namespace, so they never take unredacted text.
   if (v.notes && v.redact === false) return { error: 'memory.redact false cannot be combined with memory.notes true: the project namespace outlives the run and must never hold unredacted text' };
   for (const k of ['notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording']) if (v[k] && !v.notes) return { error: `memory.${k} needs memory.notes` };
+  if (!SINKS.includes(v.notes_sink)) return { error: `memory.notes_sink must be one of ${SINKS.join(', ')}` };
+  if (v.notes_sink !== 'off' && !v.notes) return { error: 'memory.notes_sink needs memory.notes' };
   if (v.summaries === 'mechanical' && !v.observations) return { error: 'memory.summaries "mechanical" needs memory.observations' };
   return { value: v };
 }
@@ -99,6 +110,8 @@ function isDefault(levers) {
 // that parses a value by its type here still asks parseMemoryBlock before it writes.
 // TYPES[key] = { type: 'boolean'|'number'|'integer'|'enum'|'string', values?, min?, max?, minExclusive?, nullable? }; `values` only for enums.
 const OVERRIDES = {
+  // the aliases stop (required) and continue (keyword) are handled by the parser, not listed in values
+  on_embedder_failure: { type: 'enum', values: MODES },
   alpha: { type: 'number', min: 0, max: 1 },
   summaries: { type: 'enum', values: SUMMARIES },
   project: { type: 'string', nullable: true },
@@ -109,6 +122,7 @@ const OVERRIDES = {
   scrub_action: { type: 'enum', values: SCRUB_ACTIONS },
   scrub_max_items: { type: 'integer', min: 1, max: 500 },
   scrub_alarm_holds: { type: 'integer', min: 1, max: 500 },
+  notes_sink: { type: 'enum', values: SINKS },
 };
 
 function specOf(key) {
@@ -119,4 +133,4 @@ function specOf(key) {
 
 const TYPES = Object.freeze(Object.fromEntries(Object.keys(DEFAULTS).map((k) => [k, specOf(k)])));
 
-module.exports = { DEFAULTS, TYPES, parseMemoryBlock, isDefault };
+module.exports = { DEFAULTS, TYPES, MODE_VALUES, parseMemoryBlock, isDefault };

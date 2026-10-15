@@ -61,7 +61,8 @@ function createPause({ core, forWorker, doStop, doRestart, runOp, adapterPid = p
     // stop of a paused worker clears them ahead of — reading it here raced a null `src` into a TypeError.
     const src = w.parkRequested || w.paused;
     if (src) {
-      fail('E_PAUSED', `worker ${w.id} is paused (by ${src.by} at ${src.at}); resume it first`,
+      const advice = /embedder-failure [(]/.test(String(src.by)) ? ` ${require('../core/embedder-mode.cjs').pauseAdvice(w.run_id)}` : '';
+      fail('E_PAUSED', `worker ${w.id} is paused (by ${src.by} at ${src.at}); resume it first${advice}`,
         { worker_id: w.id, paused_at: src.at, paused_by: src.by });
     } else if (w.state === 'paused') fail('E_PAUSED', `worker ${w.id} is paused; resume it first`, { worker_id: w.id }); // fix round #2, pause.cjs:81: a stale stop leaves w.state 'paused' after clearing parkRequested/paused
   }

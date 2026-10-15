@@ -16,13 +16,15 @@ const nsFor = (E, caller, args) => resolveNamespace(E, caller, args.namespace) |
 
 // ADR 0034 decision 2: an error out of the embedder phase goes to the owner's onEmbedderFailure hook (set by
 // `belay run`, which decides by detail.embedder === true whether it is an embedder failure), then is rethrown.
-function notifyEmbedderFailure(E, caller, call, error) {
+function notifyEmbedderFailure(E, caller, call, error, workerId) {
   const h = E.owner && E.owner.opts && E.owner.opts.onEmbedderFailure;
   if (typeof h !== 'function') return;
-  try { Promise.resolve(h({ caller, by: E.writtenBy(caller), call, error })).catch(() => {}); } catch { /* the hook is the run's, never the caller's */ }
+  try { Promise.resolve(h({ caller, by: E.writtenBy(caller), call, error, ...(workerId ? { worker_id: workerId } : {}) })).catch(() => {}); } catch { /* the hook is the run's, never the caller's */ }
 }
 
-async function withEmbedding(E, args, field, textField, caller) {
+// `call` names the Core call for the hook (default: memory.store or memory.search by the field); `workerId` is the worker the
+// call is for when the caller is the run manager, which holds no worker identity of its own.
+async function withEmbedding(E, args, field, textField, caller, call, workerId) {
   if (args[field]) return args;
   try {
     // Loads on first use, and raises E_NO_EMBEDDER, E_MODEL_ABSENT or E_MODEL_CHANGED as the case may be.
@@ -33,7 +35,14 @@ async function withEmbedding(E, args, field, textField, caller) {
       ? { ...args, embedding: e.embedding, embedding_model: e.embedding_model, embedding_revision: e.embedding_revision, dim: e.dim }
       : { ...args, query_embedding: e.embedding, embedding_model: e.embedding_model };
   } catch (e) {
-    notifyEmbedderFailure(E, caller, field === 'embedding' ? 'memory.store' : 'memory.search', e);
+    notifyEmbedderFailure(E, caller, call || (field === 'embedding' ? 'memory.store' : 'memory.search'), e, workerId);
+    // Under `required` in a run (an owner with a guard) this failure pauses the run: the caller is told what to do next.
+    if (e && e.detail && e.detail.embedder === true && E.owner && E.owner.opts && typeof E.owner.opts.embedderMode === 'function' && E.embedderMode() === 'required' && !e.detail.advised) {
+      e.detail.advised = true;
+      const EMA = require('./embedder-mode.cjs'), o = E.owner.opts, worker = caller && caller.role === 'worker';
+      const ending = typeof o.runEnding === 'function' && o.runEnding(); // the guard is ENDING the run: read after it saw this failure
+      e.message = `${e.message} ${ending ? EMA.endingAdvice(e.code, worker) : worker ? EMA.workerPauseAdvice() : EMA.pauseAdvice(caller && caller.run_id)}`;
+    }
     throw e;
   }
 }

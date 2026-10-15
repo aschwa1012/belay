@@ -167,7 +167,7 @@ async function index(E, caller, args = {}) {
   const rq = relevance.parseArgs(args);
   const text = [rq.query, task && typeof task.spec === 'string' ? task.spec : null].filter(Boolean).join('\n');
   const source = [rq.query && 'query', task && task.spec && 'task.spec'].filter(Boolean).join('+') || null;
-  const rel = relevance.score(E, live, { text, source, queryEmbedding: rq.queryEmbedding, embeddingModel: rq.embeddingModel, namespaces });
+  const rel = relevance.score(E, live, { text, source, queries: rq.queries, embeddingModel: rq.embeddingModel, namespaces, alpha: relevance.alphaOf(lv) });
   const relOf = (r) => rel.scores.get(r.id) || 0;
 
   const ranked = live.map((r) => ({ r, tier: tierOf(r, o.taskId, owned), rel: relOf(r) })).sort((a, b) => (

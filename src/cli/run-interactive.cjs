@@ -16,7 +16,6 @@ const FAST_CLOSE_ENDED_BY = 'console closed (fast close)';
 const FAST_RESERVE_MS = 1300; // decision 6: the kills and the worker close are cut this long before the 3500 ms budget ends
 const END_RESERVE_MS = 600; // the review count, run.end and run.get are cut here, which leaves >= 500 ms for the owner shutdown and run.json
 const SHUTDOWN_RESERVE_MS = 200; // the owner shutdown is cut here: only the run.json write is left (the shutdown gets END - SHUTDOWN = 400 ms, the two together 600)
-const PAUSE_NOTE = 'pause unavailable interactively; stopped instead';
 
 // The refusal path never got far enough to know any of this about a process it never spawned.
 function emptyOrchestratorBlock() {
@@ -128,25 +127,6 @@ async function endRun({ core, ce, runId, exitReason, usage, reviewRounds, countR
   return out;
 }
 
-// ADR 0034 in an interactive run. Wave 1 has no run pause, so a failure that asks for a pause stops the run, by the
-// existing stop (claude's exact pid), and the receipt says so. One stop serves a burst; a refused one is retried.
-function interactiveEmbedder(stopRun) {
-  let p = null;
-  return {
-    pauseRun: (why) => {
-      if (!p) { p = Promise.resolve().then(() => stopRun(`${why}: ${PAUSE_NOTE}; stdin closed`)); p.catch(() => { p = null; }); }
-      return p.then(() => ({ already: false }));
-    },
-    // The guard records a pause; here it was a stop. Rewritten so the receipt never claims a pause.
-    // A stop still in flight when the fast close cut the wait has neither result: it is recorded as requested, not confirmed.
-    annotate: (events) => events.map((e) => {
-      if (e.pause) return { ...e, action: 'stop', pause: null, stop: e.pause.ok ? { ok: true } : { ok: false, error: e.pause.error }, note: PAUSE_NOTE };
-      if ((e.action === 'pause' || e.action === 'stop') && !e.stop) return { ...e, action: 'stop', pause: null, stop: null, stop_pending: true, note: PAUSE_NOTE };
-      return e;
-    }),
-  };
-}
-
 // ADR 0034: the warm-up's load time, and every embedder failure the run met with what was done about it.
 function embedderLines(receipt) {
   const out = [];
@@ -155,12 +135,10 @@ function embedderLines(receipt) {
   else if (em && em.ok) out.push(`embedder: warmed in ${em.warm_ms} ms (model load ${em.load_ms === null ? 'unrecorded' : `${em.load_ms} ms`})`);
   else if (em) out.push(`embedder: warm-up FAILED, ${em.code}: ${em.message}; fix: ${em.fix}`);
   for (const f of receipt.embedder_failures || []) {
-    const ended = f.note ? `${f.note}: run ended` : 'run ended (cannot be fixed inside a run)'; // `note`: an interactive run's pause became a stop
+    const ended = 'run ended (cannot be fixed inside a run)';
     let p;
     if (f.stop && f.stop.ok) p = ended;
-    else if (f.stop && (f.note || receipt.mode === 'interactive') && /already exited/.test(String(f.stop.error))) p = 'nothing left to stop: claude had already exited'; // the run was over; the stop had no target
     else if (f.stop) p = `run NOT ended: ${f.stop.error}`;
-    else if (f.stop_pending) p = 'stop requested, not confirmed: the fast close cut the wait'; // F8: this run did not "continue"
     else if (f.pause) p = f.pause.ok ? 'run paused' : `run NOT paused: ${f.pause.error}`;
     else p = 'run continued';
     out.push(`embedder failure: ${f.worker}, ${f.call}, ${f.code}${f.cause ? ` (${f.cause})` : ''}; ${p}`);
@@ -168,10 +146,7 @@ function embedderLines(receipt) {
   return out;
 }
 
-// Interactive exit code: a failure under `stop` is never a clean exit, whether or not the stop landed.
-const embedderUnsafe = (mode, levers, events) => mode === 'interactive' && levers.on_embedder_failure === 'stop' && events.length > 0;
-
 module.exports = {
-  INTERACTIVE_MARKER, INTERACTIVE_PROMPT, FAST_CLOSE_ENDED_BY, FAST_RESERVE_MS, END_RESERVE_MS, SHUTDOWN_RESERVE_MS, PAUSE_NOTE, endRun, emptyOrchestratorBlock, takeFlag, parseModeKeys,
-  refusal, printer, applyConsole, endedCleanly, within, interactiveEmbedder, embedderUnsafe, hasMarker, embedderLines, fastOf, onceClose,
+  INTERACTIVE_MARKER, INTERACTIVE_PROMPT, FAST_CLOSE_ENDED_BY, FAST_RESERVE_MS, END_RESERVE_MS, SHUTDOWN_RESERVE_MS, endRun, emptyOrchestratorBlock, takeFlag, parseModeKeys,
+  refusal, printer, applyConsole, endedCleanly, within, hasMarker, embedderLines, fastOf, onceClose,
 };
