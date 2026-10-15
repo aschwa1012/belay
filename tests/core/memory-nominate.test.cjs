@@ -30,8 +30,8 @@ function mk(seen, over = {}) {
   return T.note(`nominee ${k} about the gate`, { task_id: `a${k}`, run_id: 'rA', created_at: 1000, seen_in: seen(k), seen_total: 0, ...over });
 }
 const nominate = (run = 'propose') => T.call(T.who.harness(run), 'memory.nominate', {});
-const chance = (note, task, worker, route, at, key) => T.call(T.who.tool('propose'), 'memory.recordEvent', {
-  kind: 'note_chance', worker_id: worker, task_id: task, row_ids: [note], key: key || `${task}:${worker}:${note}:${route}:${++ids}`, message: JSON.stringify({ route, delivered_at: at, used: false }),
+const chance = (note, task, worker, route, at, run = 'rA') => T.call(callerFor('orchestrator', { run_id: run }), 'memory.recordEvent', {
+  kind: 'note_chance', worker_id: worker, task_id: task, row_ids: [note], key: `${task}:${worker}:${note}:${route}:${++ids}`, message: JSON.stringify({ route, delivered_at: at, used: false }),
 });
 const hits = (r, id) => r.nominated.filter(n => n.body.note_id === id);
 const skippedFor = (r, id) => r.skipped.find(s => s.id === id);
@@ -81,7 +81,7 @@ test('a delivery that does not exclude: another worker, or after the write; one 
   const c3 = T.body(n).seen_in[1].task_id, b2 = T.body(n).seen_in[0].task_id;
   await chance(n, c3, 'w9', 'index', 4000);             // another worker
   await chance(n, c3, 'w3', 'retrieve', 9000);          // w3 saw it after it wrote its own (at 5000)
-  await chance(n, b2, 'w2', 'index', 4999);             // just before w2's write
+  await chance(n, b2, 'w2', 'index', 4999, 'rB');             // just before w2's write
   const c = await NM.countFor(T.E, T.row(n));
   assert.deepStrictEqual(c.excluded.map(e => e.writer), ['worker:w2']);
   assert.deepStrictEqual([c.tasks, c.runs], [2, 1], 'author and w3 remain, both of run rA');
@@ -89,11 +89,27 @@ test('a delivery that does not exclude: another worker, or after the write; one 
 
 test('P2: a writer shown the note in an EARLIER task is shown for every later sighting', async () => {
   const n = mk(k => [sight(`b${k}`, 'rB', 'w2'), sight(`c${k}`, 'rB', 'w3')]);
-  await chance(n, 'x-p2', 'w3', 'search', 2000); // w3 searched and read the note in another task, before writing at 5000
+  await chance(n, 'x-p2', 'w3', 'search', 2000, 'rB'); // w3 searched and read the note in another task, before writing at 5000
   const c = await NM.countFor(T.E, T.row(n));
   assert.deepStrictEqual(c.excluded.map(e => [e.writer, e.shown_by]), [['worker:w3', 'search']]);
   assert.deepStrictEqual([c.tasks, c.runs], [2, 2]);
   assert.strictEqual(hits(await nominate(), n).length, 0);
+});
+
+test('R1: a worker id reused in another run is another writer, for the earlier-sighting rule', async () => {
+  const n = T.note('r1 reused id', { task_id: 'a-r1', run_id: 'rA', created_at: 1000, written_by: 'worker:coder-1', seen_in: [sight('b-r1', 'rB', 'coder-1'), sight('c-r1', 'rC', 'w9')] });
+  const c = await NM.countFor(T.E, T.row(n));
+  assert.deepStrictEqual([c.tasks, c.runs, c.excluded.length], [3, 3, 0]);
+  const m = T.note('r1 same run', { task_id: 'a-r1b', run_id: 'rA', created_at: 1000, written_by: 'worker:coder-1', seen_in: [sight('b-r1b', 'rA', 'coder-1')] });
+  assert.strictEqual((await NM.countFor(T.E, T.row(m))).excluded[0].shown_by, 'earlier_sighting', 'within one run the rule is unchanged');
+});
+
+test('R1b: a delivery to a worker id in another run does not exclude this run\'s worker', async () => {
+  const n = mk(k => [sight(`b${k}`, 'rB', 'coder-2'), sight(`c${k}`, 'rC', 'w3')]);
+  await chance(n, 'elsewhere', 'coder-2', 'search', 2000, 'rD');
+  assert.strictEqual((await NM.countFor(T.E, T.row(n))).excluded.length, 0);
+  await chance(n, 'elsewhere2', 'coder-2', 'search', 2000, 'rB');
+  assert.deepStrictEqual((await NM.countFor(T.E, T.row(n))).excluded.map(e => e.writer), ['worker:coder-2']);
 });
 
 test('P1: the author repeating its own note in a later task is not a second sighting', async () => {

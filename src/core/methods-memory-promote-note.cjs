@@ -1,6 +1,6 @@
 'use strict';
 // methods-memory-promote-note.cjs — the operator's decision on a nominated note, and the read that checks promoted
-// text is still where it was put. `memory.promote { note_id, decision: approve | reject, reason? }` is the OPERATOR's
+// text is still where it was put. `memory.notePromote { note_id, decision: approve | reject, reason? }` is the OPERATOR's
 // alone (no tool call reaches it). belay NEVER edits CLAUDE.md or any instruction file: approve records `promoted_to:
 // { target, text, at }` on the note and moves the nomination to `promoted`; the operator puts the text in the file.
 //
@@ -64,7 +64,7 @@ function checkArgs(args) {
   return args.reason ? C.clean(args.reason.trim()).text : null;
 }
 
-// memory.promote { note_id, decision, reason? } → { note_id, decision, receipt, promoted_to?, nomination, note }
+// memory.notePromote { note_id, decision, reason? } → { note_id, decision, receipt, promoted_to?, nomination, note }
 async function promoteNote(E, caller, args) {
   if (caller.role !== 'operator' || caller.channel === 'harness') throw err('E_ROLE', 'memory.notePromote decides a promotion to an instruction file: only the operator, from the CLI, decides (not a tool call, and not the run process\'s harness channel)', { role: caller.role });
   const reason = checkArgs(args);

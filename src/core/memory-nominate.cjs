@@ -74,14 +74,15 @@ function countSightings(E, row, deliveries) {
     const wid = workerOf(c.writer);
     let why = null;
     // A writer who authored the note, or already holds a sighting of it, knows it for every later sighting.
-    if (known.has(c.writer)) why = 'earlier_sighting';
-    known.add(c.writer);
+    const who = `${c.run_id}|${c.writer}`; // a worker id belongs to one run: the same id in another run is another process
+    if (known.has(who)) why = 'earlier_sighting';
+    known.add(who);
     // A run that did not record full delivery facts (notes_sink off) cannot show a sighting independent: not counted.
     if (!why && !sinkOn(c.run_id)) { unrecorded.push({ key, task_id: c.task_id, writer: c.writer, run_id: c.run_id }); continue; }
     if (!why && c.shown) why = 'index';
     if (!why && wid) {
       // By writer, in any task, at or before the write. A delivery with no time is taken as before it.
-      const d = deliveries.find(x => x.worker_id === wid && (x.delivered_at == null || x.delivered_at <= c.at));
+      const d = deliveries.find(x => x.worker_id === wid && (x.run_id == null || x.run_id === c.run_id) && (x.delivered_at == null || x.delivered_at <= c.at));
       if (d) why = d.route || 'index';
     }
     if (!why && wid && indexShown(E, row.id, c.run_id, wid, c.at)) why = 'index';
