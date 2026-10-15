@@ -1,6 +1,6 @@
-// summaries-listing.test.cjs — ADR 0047 decision 1: memory_summaries is listed for the orchestrator of a notes run, inside the
-// 10 KB budget; with the lever off the listing is the one it always was; a worker does not list it (its 5 KB budget
-// has no room); with knowledge_ask also listed it would not fit, and is left out rather than the budget raised.
+// summaries-listing.test.cjs — ADR 0047 decision 1 and ADR 0010 amendment 6: memory_summaries is listed for the orchestrator and
+// the workers of a notes run, with knowledge_ask too, inside the 11,264 and 7,168 byte budgets; with the lever off the
+// listings are the ones they always were (4,965 and 9,696). Every combination is measured on the module and on the wire.
 'use strict';
 
 const test = require('node:test');
@@ -30,15 +30,16 @@ test('notes on: the orchestrator lists memory_summaries inside the budget; off, 
   assert.deepStrictEqual(on.slice(0, -1), off);
 });
 
-test('notes and knowledge_ask together do not fit, so the summaries tool is the one left out', () => {
+test('notes and knowledge_ask together list both tools, inside the budget', () => {
   const both = tools.toolsFor('orchestrator', { notes: true, knowledge: true });
-  assert.ok(bytes(both) <= tools.BUDGET.orchestrator);
-  assert.ok(!both.some((t) => t.name === 'memory_summaries'));
-  assert.ok(both.some((t) => t.name === 'knowledge_ask'));
+  assert.ok(bytes(both) <= tools.BUDGET.orchestrator, `${bytes(both)} bytes`);
+  assert.ok(both.some((t) => t.name === 'memory_summaries') && both.some((t) => t.name === 'knowledge_ask'));
 });
 
-test('a worker never lists memory_summaries, notes or not, but the route and the role allow the call', () => {
-  for (const notes of [false, true]) assert.ok(!tools.toolsFor('worker', { notes }).some((t) => t.name === 'memory_summaries'));
+test('a worker lists memory_summaries in a notes run only, and the route and the role allow the call', () => {
+  assert.ok(!tools.toolsFor('worker').some((t) => t.name === 'memory_summaries'));
+  assert.ok(tools.toolsFor('worker', { notes: true }).some((t) => t.name === 'memory_summaries'));
+  assert.ok(!tools.toolsFor('worker', { workerId: 'knowledge-r1', notes: true }).some((t) => t.name === 'memory_summaries'), 'the knowledge agent keeps its read tools only');
   assert.strictEqual(tools.routeOf('memory_summaries').method, 'memory.summaries');
   assert.strictEqual(tools.allows('worker', 'memory_summaries'), true);
   assert.strictEqual(tools.allows('orchestrator', 'memory_summaries'), true);
@@ -54,4 +55,30 @@ test('over the wire: the notes lever in the run row lists the tool, once, and no
   assert.deepStrictEqual(none, tools.toolsFor('orchestrator'));
   const w = await listing(JSON.stringify({ notes: true, project: 'p' }), 'worker');
   assert.deepStrictEqual(w, tools.toolsFor('worker'), 'a worker adapter without --notes lists the ordinary tools');
+});
+
+test('every combination, measured on the module and on the wire, is inside its budget; lever off is byte-identical to before', async () => {
+  const run = async (levers, role = 'orchestrator', extra = []) => {
+    const data = sandboxDir('sl2');
+    fs.writeFileSync(`${data}/memory.db`, '');
+    const a = launch({ role, workerId: role === 'worker' ? 'w1' : undefined, data, extra, env: { BELAY_FAKE_CORE: FAKE, ...(levers ? { BELAY_FAKE_LEVERS: levers } : {}) } });
+    try { await a.initialize(); return await a.list(); } finally { await a.close(); }
+  };
+  const N = JSON.stringify({ notes: true, project: 'p' });
+  const NK = JSON.stringify({ notes: true, knowledge_agent: true, project: 'p' });
+  const rows = [
+    ['worker, notes off', tools.toolsFor('worker'), await run(undefined, 'worker'), 'worker'],
+    ['worker, notes on', tools.toolsFor('worker', { notes: true }), await run(N, 'worker', ['--notes']), 'worker'],
+    ['orchestrator, notes off', tools.toolsFor('orchestrator'), await run(undefined), 'orchestrator'],
+    ['orchestrator, notes on', tools.toolsFor('orchestrator', { notes: true }), await run(N), 'orchestrator'],
+    ['orchestrator, knowledge_ask', tools.toolsFor('orchestrator', { knowledge: true }), await run(JSON.stringify({ knowledge_agent: true })), 'orchestrator'],
+    ['orchestrator, notes on and knowledge_ask', tools.toolsFor('orchestrator', { notes: true, knowledge: true }), await run(NK), 'orchestrator'],
+  ];
+  for (const [name, mod, wire, role] of rows) {
+    console.log(`${name}: module ${bytes(mod)} bytes, wire ${bytes(wire)} bytes, budget ${tools.BUDGET[role]}`);
+    assert.deepStrictEqual(wire, mod, name);
+    assert.ok(bytes(wire) <= tools.BUDGET[role], name);
+  }
+  assert.strictEqual(bytes(rows[0][2]), 4965);
+  assert.strictEqual(bytes(rows[2][2]), 9696);
 });

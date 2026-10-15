@@ -18,7 +18,7 @@ test('without the flag the worker and orchestrator listings are byte-identical t
   assert.deepStrictEqual(tools.toolsFor('orchestrator', { notes: true }).slice(0, -1), tools.toolsFor('orchestrator'), 'the orchestrator is given memory_summaries only (summaries-listing.test.cjs)');
 });
 
-test('with notes on the worker listing fits its 5,120 byte budget and carries the schema', () => {
+test('with notes on the worker listing fits its 7,168 byte budget, every ordinary tool still listed, and carries the schema', () => {
   const list = tools.toolsFor('worker', { notes: true });
   const b = bytes(list);
   console.log(`worker listing, notes on: ${list.length} tools, ${b} bytes, budget ${tools.BUDGET.worker}, headroom ${tools.BUDGET.worker - b} (off: ${tools.listingBytes('worker')})`);
@@ -34,7 +34,10 @@ test('with notes on the worker listing fits its 5,120 byte budget and carries th
   assert.ok(list.find((t) => t.name === 'memory_note_resolve').inputSchema.properties.resolutions.items.properties.title, 'resolve new takes a changed title');
   assert.ok(list.some((t) => t.name === 'memory_note_resolve'));
   for (const kept of ['memory_store', 'memory_search', 'memory_retrieve', 'memory_timeline', 'lease_renew', 'checkpoint_write', 'briefing']) assert.ok(list.some((t) => t.name === kept), kept);
-  for (const dropped of ['status', 'task_list', 'memory_list', 'memory_stats', 'memory_delete']) assert.ok(!list.some((t) => t.name === dropped), `${dropped} is not listed`);
+  // ADR 0010 amendment 6: no tool is unlisted in a notes run; the notes listing is the ordinary one plus memory_note_resolve and memory_summaries
+  const ordinary = tools.toolsFor('worker').map((t) => t.name);
+  assert.deepStrictEqual(list.map((t) => t.name), [...ordinary, 'memory_note_resolve', 'memory_summaries']);
+  assert.ok(tools.listingBytes('worker', { notes: true }) > tools.listingBytes('worker'));
 });
 
 test('the knowledge agent\'s listing ignores notes', () => {

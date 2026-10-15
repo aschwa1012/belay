@@ -36,7 +36,7 @@ async function setupOwner(dataDir, runId) {
 
 // ================================================================ (g) listing and the missing-flag refusal
 
-test('permit: listed last only for an adapter launched with --permit, its bytes under 320, the worker listing without it unchanged and under 5,120, and a call without --permit is refused naming the flag', async (t) => {
+test('permit: listed last only for an adapter launched with --permit, its bytes under 320, the worker listing without it unchanged and under 7,168, and a call without --permit is refused naming the flag', async (t) => {
   const dataDir = `${sandboxDir('permit-g')}/store`;
   const orchCore = await setupOwner(dataDir, 'run-g');
   t.after(async () => { await orchCore.shutdownOwner().catch(() => {}); await orchCore.close(); });
@@ -47,7 +47,7 @@ test('permit: listed last only for an adapter launched with --permit, its bytes 
   const listWithout = await withoutPermit.list();
   assert.ok(!listWithout.some((x) => x.name === 'permit'), 'permit must not be listed with no --permit');
   const bytesWithout = Buffer.byteLength(JSON.stringify(listWithout), 'utf8');
-  assert.ok(bytesWithout <= 5120, `worker listing without permit is ${bytesWithout} bytes`);
+  assert.ok(bytesWithout <= 7168, `worker listing without permit is ${bytesWithout} bytes`);
   assert.strictEqual(bytesWithout, REAL_TOOLS.listingBytes('worker'), 'unchanged from toolsFor(worker) alone');
 
   const withPermit = real({ role: 'worker', run: 'run-g', workerId: 'w-g2', data: dataDir, extra: ['--permit'] });

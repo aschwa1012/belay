@@ -1,7 +1,7 @@
 // memory-tools.test.cjs — ADR 0040 §4: the memory tool surface. Routes (against a fake core that echoes
 // the arguments it was called with, because the real methods land separately), role allows, the
 // harness-only refusals naming the field, and the listing bytes printed for both roles and kept under
-// their budgets (10,240 orchestrator, 5,120 worker).
+// their budgets (11,264 orchestrator, 7,168 worker).
 'use strict';
 
 const test = require('node:test');
@@ -131,8 +131,8 @@ test('the new arguments are typed at the boundary', () => {
 });
 
 test('listing bytes for both roles are printed and inside the ADR 0040 §4 budgets', async (t) => {
-  assert.strictEqual(tools.BUDGET.worker, 5120);
-  assert.strictEqual(tools.BUDGET.orchestrator, 10240);
+  assert.strictEqual(tools.BUDGET.worker, 7168);
+  assert.strictEqual(tools.BUDGET.orchestrator, 11264);
   for (const role of ['orchestrator', 'worker']) {
     const bytes = tools.listingBytes(role);
     console.log(`ADR 0040 §4 ${role}: ${tools.toolsFor(role).length} tools, ${bytes} bytes, budget ${tools.BUDGET[role]}, headroom ${tools.BUDGET[role] - bytes}`);
