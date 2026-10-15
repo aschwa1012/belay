@@ -62,7 +62,7 @@ async function warmEmbedder(core, { retry = false, timeoutMs = WARM_TIMEOUT_MS }
 // names stop and continue are accepted. The mode can change while the run is paused: `setMode` is the operator's choice at a resume
 // (`belay resume --embedder keyword|off`). Under `off` the first failure turns the run's memory off (`memoryOff()`), which the owner
 // enforces: no memory index and no memory writes.
-function createEmbedderGuard({ mode: initialMode, pauseRun, stopRun }) {
+function createEmbedderGuard({ mode: initialMode, pauseRun, stopRun, interactive = false }) {
   let mode = normalizeMode(initialMode) || 'required';
   let off = false;
   const events = [];
@@ -78,7 +78,9 @@ function createEmbedderGuard({ mode: initialMode, pauseRun, stopRun }) {
     events.push(ev);
     if (mode === 'off') off = true;
     if (mode !== 'required') return undefined;
-    if (isFatal(error)) {
+    // An interactive run is never ended by an embedder failure (operator, 2026-10-15): even one no re-load can fix pauses it, and
+    // the operator resumes with `--embedder keyword|off`.
+    if (isFatal(error) && !interactive) {
       // Resuming can never succeed, so under `stop` the run ends, with the error and why, through the existing stop.
       ev.action = 'stop';
       const stopWhy = `ended by an embedder failure that cannot be fixed inside a run: ${ev.code}: ${ev.message}; ${fixFor(ev.code, ev.cause)}; stdin closed`;

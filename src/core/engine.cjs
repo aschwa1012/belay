@@ -184,7 +184,7 @@ class Engine {
   embedderMode() {
     const o = this.owner && this.owner.opts;
     const raw = o && typeof o.embedderMode === 'function' ? o.embedderMode() : null;
-    return require('./embedder-mode.cjs').normalize(raw) || require('./embedder-mode.cjs').DEFAULT_MODE;
+    return raw === 'continue' ? 'keyword' : (raw === 'stop' || !raw) ? 'required' : raw; // the module that owns the mode names stay out of the read path's imports
   }
 
   addWaiter(id, resolve) {

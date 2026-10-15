@@ -51,6 +51,7 @@ test('interactive prompt: says what the mode is', () => {
   assert.match(TWIN, /operator is present in this session/);
   assert.match(TWIN, /belay wakes you with a short message when a worker's turn ends or a worker dies\. While workers are working, end your turn: the wake brings you back and names the worker\. Do not hold a turn open to wait\./);
   assert.ok(!/There are no wakes/.test(TWIN), 'the no-wakes claim is gone');
+  assert.match(flat(TWIN), /paused for an embedder failure, stop and ask the operator which of the three they want: `keyword`, `off`, or stay paused\. Then give them the exact `belay resume` command/);
   assert.match(TWIN, /Ending a turn does not end the run/);
   assert.match(TWIN, /the run ends when the operator quits the session/);
   // ADR 0037 amendment 6: the wake is how the orchestrator waits; worker_wait is a short check, never a loop

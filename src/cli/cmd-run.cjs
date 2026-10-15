@@ -174,7 +174,7 @@ async function run(ctx) {
       onEmbedderFailure: (ev) => guard.onFailure(ev),
       // read by memory.embedQuery and the owner's engine at each call, so the run manager knows what a failure means, and an
       // operator's choice at a resume (belay resume --embedder keyword|off) takes effect at once
-      embedderMode: () => guard.mode(), memoryOff: () => guard.memoryOff(),
+      embedderMode: () => guard.mode(), memoryOff: () => guard.memoryOff(), runEnding: () => !!guard.fatal(),
     },
   });
   stopControl = createStopControl({
@@ -213,10 +213,9 @@ async function run(ctx) {
   });
   const opCaller = { role: 'operator', run_id: parsed.runId, pid: process.pid };
   const stopRun = (why) => stopControl.handle({ run_id: parsed.runId, caller: opCaller }, why);
-  const ie = ce ? RI.interactiveEmbedder(stopRun) : null; // ADR 0034 in an interactive run: no run pause exists, so it stops
   guard = createEmbedderGuard({
-    mode: parsed.levers.on_embedder_failure, stopRun,
-    pauseRun: ie ? ie.pauseRun : (why) => runPauseControl.pause({ run_id: parsed.runId, caller: opCaller }, why),
+    mode: parsed.levers.on_embedder_failure, stopRun, interactive: !!ce, // an interactive run is never ended by an embedder failure: it pauses (ADR 0034 amendment 2)
+    pauseRun: (why) => runPauseControl.pause({ run_id: parsed.runId, caller: opCaller }, why),
   });
   if (ce && ctx.interactiveDeps && ctx.interactiveDeps.onGuard) ctx.interactiveDeps.onGuard(guard); // test seam
   const attachHook = { attach: (h) => { stopControl.attach(h); Object.assign(hookBox, h); } };
@@ -423,8 +422,7 @@ async function run(ctx) {
     && RI.endedCleanly(mode, partial, closed)
     && partial.orchestrator.exit_code === 0
     && !partial.orchestrator.killed_after_close
-    && !guard.fatal()
-    && !RI.embedderUnsafe(mode, parsed.levers, guard.events()) ? 0 : 1; // ADR 0034: a run ended by an embedder failure it could not survive is never a clean exit
+    && !guard.fatal() ? 0 : 1; // ADR 0034: a run ended by an embedder failure it could not survive is never a clean exit
 
   // Index-query embeds that hit their bound (memory.embedQuery's `embed_bound` events): not failures of the model, so not in
   // embedder_failures, but a slow embedder the operator should see at run level.
@@ -437,7 +435,7 @@ async function run(ctx) {
     ended_by: endedBy, holds, polls, wakes, wakes_suppressed: wakesSuppressed, wakes_expired: wakesExpired,
     wakes_held: wakesHeld, pauses,
     stop: stopReceipt, ms: Date.now() - t0, receipt_path: null,
-    levers: parsed.levers, on_embedder_failure_final: guard.mode(), memory_off: guard.memoryOff(), embedder: warm, embedder_failures: ie ? ie.annotate(guard.events()) : guard.events(), ...(embedBounds && embedBounds.length ? { embedder_bounds: embedBounds } : {}),
+    levers: parsed.levers, on_embedder_failure_final: guard.mode(), memory_off: guard.memoryOff(), embedder: warm, embedder_failures: guard.events(), ...(embedBounds && embedBounds.length ? { embedder_bounds: embedBounds } : {}),
     review_rounds: reviewRounds.value, review_rounds_reason: reviewRounds.reason,
     workers_closed: closed ? workersClosedBlock(closed, endedRow ? (endedRow.workers_marked_dead || []) : null) : null,
     ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), // only with a run-end memory lever on

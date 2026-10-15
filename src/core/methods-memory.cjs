@@ -36,6 +36,13 @@ async function withEmbedding(E, args, field, textField, caller, call, workerId) 
       : { ...args, query_embedding: e.embedding, embedding_model: e.embedding_model };
   } catch (e) {
     notifyEmbedderFailure(E, caller, call || (field === 'embedding' ? 'memory.store' : 'memory.search'), e, workerId);
+    // Under `required` in a run (an owner with a guard) this failure pauses the run: the caller is told what to do next.
+    if (e && e.detail && e.detail.embedder === true && E.owner && E.owner.opts && typeof E.owner.opts.embedderMode === 'function' && E.embedderMode() === 'required' && !e.detail.advised) {
+      e.detail.advised = true;
+      const EMA = require('./embedder-mode.cjs'), o = E.owner.opts, worker = caller && caller.role === 'worker';
+      const ending = typeof o.runEnding === 'function' && o.runEnding(); // the guard is ENDING the run: read after it saw this failure
+      e.message = `${e.message} ${ending ? EMA.endingAdvice(e.code, worker) : worker ? EMA.workerPauseAdvice() : EMA.pauseAdvice(caller && caller.run_id)}`;
+    }
     throw e;
   }
 }
