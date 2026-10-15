@@ -179,14 +179,14 @@ class Core {
     if (!fs.existsSync(path.join(this.dataDir, 'memory.db'))) {
       const store = new Store(':memory:');
       try {
-        const engine = new Engine({ dataDir: this.dataDir, store, getEmbedder: null, owner: null, establishedBy: 'none', embedderFailure });
+        const engine = new Engine({ dataDir: this.dataDir, store, getEmbedder: null, owner: null, establishedBy: 'none', embedderFailure, memoryOffFn: this.ownerOpts.memoryOff });
         return await engine.handle(method, params);
       } finally { try { store.close(); } catch { /* throwaway */ } }
     }
     return withCopy(this.dataDir, async (dbPath, establishedBy) => {
       const store = new Store(dbPath);
       try {
-        const engine = new Engine({ dataDir: this.dataDir, store, getEmbedder: null, owner: null, establishedBy: note ? `${establishedBy}; ${note}` : establishedBy, embedderFailure });
+        const engine = new Engine({ dataDir: this.dataDir, store, getEmbedder: null, owner: null, establishedBy: note ? `${establishedBy}; ${note}` : establishedBy, embedderFailure, memoryOffFn: this.ownerOpts.memoryOff });
         return await engine.handle(method, params);
       } finally { try { store.close(); } catch { /* throwaway copy */ } }
     });
