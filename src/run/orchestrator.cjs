@@ -145,7 +145,8 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   async function killChild() {
     // ADR 0039: the handle first. A child whose exit was already observed is never killed by its pid.
     if (child.exitCode === null && child.signalCode === null && P.pidAlive(child.pid)) {
-      await P.killProcess(child).catch(() => null);
+      const r = await P.killProcess(child).catch(() => null);
+      state.kill = r ? { signalled_at: r.signalled_at || null, snapshot_ms: Number.isFinite(r.snapshot_ms) ? r.snapshot_ms : null } : null; // ADR 0048 decision 7: a test measures from the signal
     }
   }
 

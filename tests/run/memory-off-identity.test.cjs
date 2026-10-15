@@ -51,7 +51,7 @@ async function runScript(core, { handLevers = true, readDelayMs = null } = {}) {
   process.env.FAKE_RECV_FILE = recv;
   process.env.FAKE_TOOL_USES = '2';
   const createdOf = P.createdOf;
-  if (readDelayMs !== null) P.createdOf = () => new Promise((r) => { setTimeout(() => r({ created: 1 }), readDelayMs).unref(); });
+  if (readDelayMs !== null) P.createdOf = () => new Promise((r) => { setTimeout(() => r({ created: Date.now() }), readDelayMs).unref(); });
   try {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1', task_id: 't1' });
     await m._waitTurn('w1', 8000);

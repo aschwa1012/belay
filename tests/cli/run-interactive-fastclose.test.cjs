@@ -3,7 +3,7 @@ process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP =
 // run-interactive-fastclose.test.cjs — ADR 0039 review follow-up 2: the fast close's kills use the snapshot the
 // SIGHUP started (cmd-run.cjs passes `ce.snapshot` and `ce.snapshotPending` into the close), and a worker row
 // with a recorded creation time is checked against it. Both halves are counted: the console's snapshot (the
-// run side's processSnapshot) and every kill-time default snapshot (the core's). With the wiring removed the
+// run side's snapshotShared) and every kill-time default snapshot (the core's, through the gate). With the wiring removed the
 // kills take their own default snapshots and both tests fail.
 
 const { test } = require('node:test');
@@ -20,11 +20,11 @@ const { start, sleeper, withRun, fakeGate } = require('./run-interactive-helpers
 // just before the run, so the 3500 ms budget never depends on how long CIM takes on a loaded host; the identity
 // check against it is the real one. The core's default is the real query, only counted.
 function countSnapshots(pre) {
-  const realRun = RP.processSnapshot; const realCore = ID.processSnapshot;
+  const realRun = RP.snapshotShared; const realCore = ID.snapshotShared;
   const n = { hup: 0, killDefault: 0, on: false };
-  RP.processSnapshot = (...a) => { if (n.on) { n.hup++; return Promise.resolve(pre); } return realRun(...a); };
-  ID.processSnapshot = (...a) => { if (n.on) n.killDefault++; return realCore(...a); };
-  return { n, restore: () => { RP.processSnapshot = realRun; ID.processSnapshot = realCore; } };
+  RP.snapshotShared = (...a) => { if (n.on) { n.hup++; return Promise.resolve(pre); } return realRun(...a); };
+  ID.snapshotShared = (...a) => { if (n.on) n.killDefault++; return realCore(...a); };
+  return { n, restore: () => { RP.snapshotShared = realRun; ID.snapshotShared = realCore; } };
 }
 
 // `w` is the test's own sleeper, which it ends in its own finally whatever happens here.

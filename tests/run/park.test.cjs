@@ -144,7 +144,9 @@ test('park: a worker that ignores stdin close is killed by exact pid within the 
     const t0 = Date.now();
     const r = await m.pause({ worker_id: 'w1', by: 'operator:1', interrupt_timeout_ms: 300, exit_timeout_ms: 800 });
     const ms = Date.now() - t0;
-    assert.ok(ms < 15000, `pause took ${ms} ms, expected well under the bound`);
+    // ADR 0048 decision 8 (a): the park's three identity snapshots are not what this bound is about; its own receipt names them.
+    assert.ok(Number.isFinite(r.snapshot_ms) && r.snapshot_ms >= 0, 'the pause receipt must name the time spent on snapshots');
+    assert.ok(ms - r.snapshot_ms < 15000, `pause took ${ms} ms (${r.snapshot_ms} ms of it snapshots), expected well under the bound`);
     assert.strictEqual(r.paused, true);
     assert.strictEqual(r.exit.graceful, false);
     assert.strictEqual(r.exit.killed, true);

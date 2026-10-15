@@ -161,7 +161,11 @@ test('plugin: a change while claude runs is a leak: claude is killed by its pid 
   clearTimeout(timer);
   assert.ok(res, 'the run did not end within 20 s: the live re-hash never killed claude');
   const rec = r.record();
-  assert.ok(Date.now() - rec.started_at < 7000, 'claude ran to its fallback exit: the live re-hash did not kill it');
+  // ADR 0048 decision 8 (c): the run's end is later than claude's death by the creation-time reads the receipt waits for, so a
+  // time bound from the start would count a snapshot. The fact that tells a kill from the stub's own fallback exit (code 0)
+  // is how claude ended.
+  const oc = res.json.orchestrator;
+  assert.ok(oc.exit_signal === 'SIGKILL' || (oc.exit_code !== 0 && oc.exit_code !== null), `claude ran to its fallback exit (code ${oc.exit_code}, signal ${oc.exit_signal}): the live re-hash did not kill it`);
   assert.strictEqual(res.code, 1, res.text);
   assert.match(res.json.ended_by, /plugin copy changed after spawn \(hooks\/wake\/index\.ts\)/);
   assert.strictEqual(res.json.orchestrator.interactive.gate.status, 'failed');

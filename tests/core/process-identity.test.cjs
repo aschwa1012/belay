@@ -3,6 +3,7 @@
 // snapshot and the kill, so nothing real is signalled; the last group uses processes this test spawned
 // and stops through their own handles.
 
+const { readCreated } = require('../helpers/created.cjs');
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -215,7 +216,7 @@ test('real: the creation time read from the snapshot is the identity that kills 
   const bystander = sleeper();
   try {
     await new Promise((r) => setTimeout(r, 900));
-    const c = await P.createdOf(parent.pid);
+    const c = await readCreated(parent.pid);
     assert.ok(c && Number.isFinite(c.created), 'the snapshot must give the parent a creation time');
     const r = await P.killProcess({ pid: parent.pid, created: c.created, image: ['node.exe'] });
     assert.strictEqual(r.refused, null, JSON.stringify(r));

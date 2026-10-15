@@ -5,6 +5,7 @@ process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP =
 // sleeper this test spawned) holds the pid a worker row names, with a creation time that is not its own. The
 // kill must refuse, say so in the receipt, and the sleeper must survive.
 
+const { readCreated } = require('../helpers/created.cjs');
 const { test } = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
@@ -31,7 +32,8 @@ test('run close: a worker row whose pid another process holds is refused by iden
     assert.strictEqual(out.killed[0].refused, 'identity', JSON.stringify(out.killed));
     assert.strictEqual(out.killed[0].signalled, false);
     assert.strictEqual(out.killed[0].gone, false);
-    assert.deepStrictEqual(out.still_alive, [{ worker_id: 'w1', pid: s.pid }]);
+    assert.deepStrictEqual(out.still_alive.map((x) => ({ worker_id: x.worker_id, pid: x.pid, outcome: x.outcome })), [{ worker_id: 'w1', pid: s.pid, outcome: 'refused_mismatch' }]);
+    assert.strictEqual(out.still_alive[0].manual, undefined, 'another process provably holds the pid: no advice to kill it');
     await sleep(200);
     assert.strictEqual(running(s), true, 'the bystander must still be running');
   } finally { s.kill(); }
@@ -63,7 +65,7 @@ test('worker kill: the same row with the pid\'s true creation time is killed, wi
   const dataDir = `${dir}/.belay`;
   const s = sleeper();
   try {
-    const made = await P.createdOf(s.pid);
+    const made = await readCreated(s.pid);
     const plant = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: 'run-a', pid: process.pid } });
     try {
       await plant.worker.write({ id: 'w1', substrate: 'claude-code', pid: s.pid, pid_created: made.created, pid_image: 'node.exe', state: 'running', turns: 0, started_at: Date.now() });
