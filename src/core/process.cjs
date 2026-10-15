@@ -36,36 +36,52 @@ const isHandle = (t) => !!t && typeof t === 'object' && 'exitCode' in t && 'sign
 const isDescriptor = (t) => !!t && typeof t === 'object' && !isHandle(t) && 'pid' in t;
 const pidOf = (t) => (typeof t === 'number' ? t : t && t.pid);
 const refusals = []; // the last few refusals, for a diagnostic; bounded
-// A kill-time snapshot outside a caller's own (the fast close passes one) is taken once more if unreadable.
-const KILL_SNAPSHOT_ATTEMPTS = 2;
-const takeSnapshot = (opts) => (opts.snapshot ? opts.snapshot() : ID.snapshotRetry({ attempts: KILL_SNAPSHOT_ATTEMPTS }));
+// ADR 0048: one attempt, through the process's gate. `opts.snapshot()` (the fast close's) may return a gate result
+// ({ snap, startSeq, ... }) or a bare Map or null (a test's own: trusted, its ordering is the caller's).
+async function acquire(opts) {
+  const r = opts.snapshot ? await opts.snapshot() : await ID.snapshotShared({ kind: 'kill' });
+  return r && typeof r === 'object' && !(r instanceof Map) && 'snap' in r ? r : { snap: r || null, startSeq: Infinity, error: r ? null : 'unreadable' };
+}
+const usable = (r) => r.startSeq === Infinity || ID.gate.fresh(r.startSeq);
+// Run `fn(snap, meta)` on a snapshot that started after this process's last signal (ADR 0039's ordering rule,
+// ADR 0048 decision 2 rule 4). The check and `fn` run in one synchronous step, so no signal lands between them. A
+// snapshot that fails the check is taken again once; a second failure gives fn a null snap and meta.stale.
+async function withSnapshot(opts, fn) {
+  const t0 = Date.now();
+  for (let i = 0; i < 2; i++) {
+    const r = await acquire(opts);
+    if (!r.snap || usable(r)) return fn(r.snap, { snapshot_ms: Date.now() - t0, error: r.error, stale: false });
+  }
+  return fn(null, { snapshot_ms: Date.now() - t0, error: 'stale', stale: true });
+}
+const unreadable = (pid, m) => (m && m.stale ? `signals in this process kept landing after each snapshot started; cannot establish the identity of pid ${pid}`
+  : `process snapshot unreadable${m && m.error && m.error !== 'unreadable' ? ` (${m.error})` : ''}; cannot establish the identity of pid ${pid}`);
 
 // What the operator can do by hand about a process belay will not kill because nothing proves what it is: the
 // pid, the image belay expected, and the exact way to end it once they have confirmed that image themselves.
-function manualStopHint(pid, image) {
+function manualStopHint(pid, image, why = '') {
   const img = (Array.isArray(image) ? image : [image]).filter(Boolean).join(' or ') || 'the program you expect';
-  return `belay will not kill pid ${pid}: it cannot prove the process is the one it started. If pid ${pid} is still running and its image is ${img} (check Task Manager > Details, or Get-Process -Id ${pid}), end it by hand: Stop-Process -Id ${pid}`;
+  return `belay will not kill pid ${pid}: it cannot prove the process is the one it started. If pid ${pid} is still running and its image is ${img} (check Task Manager > Details, or Get-Process -Id ${pid}), end it by hand: Stop-Process -Id ${pid}${/retrying while the worker runs/.test(String(why)) ? '. The row may be verified shortly: its creation time is still being read, so try `belay worker kill` again in a minute' : ''}`;
 }
 // `target` is the kill's target: a row's identity that could not be proved gets the manual hint.
 function refusal(base, detail, kind = 'unverifiable', target = null) {
   refusals.push({ at: Date.now(), pid: base.pid, detail, kind });
   if (refusals.length > 50) refusals.shift();
-  const manual = kind === 'unverifiable' && isDescriptor(target) ? { manual: manualStopHint(base.pid, target.image) } : {};
+  const manual = kind === 'unverifiable' && isDescriptor(target) ? { manual: manualStopHint(base.pid, target.image, target.unverified) } : {};
   return { ...base, ok: false, refused: 'identity', kind, detail, identity: null, ...manual };
 }
 // The kill lock (ADR 0039 review): belay stop's worker phase and the run's worker close run in one process and may
 // overlap at a console close. Each takes the lock for its kill, so the second waits for the first; and any snapshot
-// that started before the last signal sent here (`lastSignalAt`) may show a process that has since died, so a
-// caller holding the lock re-takes it rather than kill a just-freed pid from it.
+// that started before the last signal sent here (the gate's `lastSignalSeq`) may show a process that has since died,
+// so a use of a snapshot that fails that check re-takes it rather than kill a just-freed pid from it.
 let killChain = Promise.resolve();
-let lastSignal = 0;
 function withKillLock(fn) {
   const run = killChain.then(() => fn());
   killChain = run.then(() => {}, () => {});
   return run;
 }
 const sendKill = (pid, signal, killer) => {
-  try { (killer || process.kill)(pid, signal); lastSignal = Date.now(); return { signalled: true, error: null }; }
+  try { (killer || process.kill)(pid, signal); ID.gate.signal(); return { signalled: true, error: null, signalled_at: Date.now() }; }
   catch (e) { return { signalled: false, error: e.code || String(e && e.message) }; }
 };
 const shape = (pid, signal) => ({ signalled: false, pid, signal, error: null });
@@ -92,19 +108,20 @@ function killPidRaw(target, signal, opts) {
   }
   if (!isDescriptor(target)) throw err('E_ARGS', 'kill takes a child handle or { pid, created }', { target: typeof target });
   if (target.unverified) return no(`pid ${pid} was never verified at spawn: ${target.unverified}`, 'unverifiable');
-  return (async () => {
-    const snap = await takeSnapshot(opts);
+  return withSnapshot(opts, (snap, m) => {
+    const sm = { snapshot_ms: m.snapshot_ms };
+    const nom = (detail, kind) => ({ ...no(detail, kind), ...sm });
     if (target.created == null) {
-      if (!snap) return no(`process snapshot unreadable; cannot establish the identity of pid ${pid}`, 'unverifiable');
+      if (!snap) return nom(unreadable(pid, m), 'unverifiable');
       const e = snap.get(pid);
-      if (!e) return no(`pid ${pid} is not running`, 'absent');
-      if (target.image == null || !ID.imageIn(e.image, target.image)) return no(`no recorded creation time for pid ${pid} and its image ${e.image} is not the expected one`, 'unverifiable');
-      return { ...base, ...sendKill(pid, signal, opts.kill), ok: true, identity: { via: 'image', image: e.image } };
+      if (!e) return nom(`pid ${pid} is not running`, 'absent');
+      if (target.image == null || !ID.imageIn(e.image, target.image)) return nom(`no recorded creation time for pid ${pid} and its image ${e.image} is not the expected one`, 'unverifiable');
+      return { ...base, ...sendKill(pid, signal, opts.kill), ...sm, ok: true, identity: { via: 'image', image: e.image } };
     }
-    const c = ID.checkIdentity(pid, { created: target.created, image: target.image }, snap);
-    if (!c.ok) return no(c.detail, c.kind);
-    return { ...base, ...sendKill(pid, signal, opts.kill), ok: true, identity: c.identity };
-  })();
+    const c = snap ? ID.checkIdentity(pid, { created: target.created, image: target.image }, snap) : { ok: false, kind: 'unverifiable', detail: unreadable(pid, m) };
+    if (!c.ok) return nom(c.detail, c.kind);
+    return { ...base, ...sendKill(pid, signal, opts.kill), ...sm, ok: true, identity: c.identity };
+  });
 }
 
 // Kill a process and its verified descendants. Always a Promise. See the header for what a target is.
@@ -117,7 +134,7 @@ function killTree(target, opts = {}) {
 function killTreeRaw(target, opts = {}) {
   const t0 = Date.now();
   const pid = assertPid(pidOf(target));
-  const done = (r) => ({ tool: 'process.kill', method: 'snapshot-tree', pid, exit_code: r.ok ? 0 : 1, terminated: 0, killed: [], skipped: [], ms: Date.now() - t0, output: '', stdout: '', stderr: '', ...r });
+  const done = (r) => ({ tool: 'process.kill', method: 'snapshot-tree', pid, exit_code: r.ok ? 0 : 1, terminated: 0, killed: [], skipped: [], ms: Date.now() - t0, output: '', stdout: '', stderr: '', snapshot_ms: 0, signalled_at: null, ...r });
   const fail = (detail, kind) => done(refusal({ pid }, detail, kind, target));
   return (async () => {
     if (typeof target === 'number') return fail(`refused a tree kill of pid ${pid}: ${BARE}`);
@@ -130,23 +147,25 @@ function killTreeRaw(target, opts = {}) {
       const k = sendKill(-pid, 'SIGKILL', opts.kill);
       return done({ method: 'process-group', ok: k.signalled, terminated: k.signalled ? 1 : 0, killed: k.signalled ? [pid] : [], output: k.error || '', identity: { via: 'handle' } });
     }
-    const snap = await takeSnapshot(opts);
-    let identity = { via: 'handle' }; let tree = { leavesFirst: [], skipped: [] }; let treeNote = null;
-    if (!snap) {
-      if (!handle) return fail(`process snapshot unreadable; cannot establish the identity of pid ${pid}`);
-      treeNote = 'process snapshot unreadable: descendants not killed'; // the handle still proves the root
-    } else if (!handle) {
-      const c = ID.checkIdentity(pid, { created: target.created, image: target.image }, snap);
-      if (!c.ok) return fail(c.detail, c.kind);
-      identity = c.identity;
-    }
-    if (snap) tree = ID.descendantsOf(pid, snap);
-    const killed = []; const errors = [];
-    const one = (p) => { const k = sendKill(p, 'SIGKILL', opts.kill); if (k.signalled) killed.push(p); else if (k.error !== 'ESRCH') errors.push(`${p}:${k.error}`); };
-    for (const d of tree.leavesFirst) one(d.pid);
-    if (handle && !ID.handleLive(target)) errors.push(`${pid}:exited meanwhile`); else one(pid);
-    const ok = errors.length === 0;
-    return done({ ok, terminated: killed.length, killed, skipped: tree.skipped, identity, output: [treeNote, ...errors].filter(Boolean).join('; ').slice(0, 400), ...(treeNote ? { tree_refused: treeNote } : {}) });
+    return withSnapshot(opts, (snap, m) => {
+      const sm = { snapshot_ms: m.snapshot_ms };
+      let identity = { via: 'handle' }; let tree = { leavesFirst: [], skipped: [] }; let treeNote = null;
+      if (!snap) {
+        if (!handle) return { ...fail(unreadable(pid, m)), ...sm };
+        treeNote = `process snapshot unreadable${m.stale ? ' (signals kept landing after each snapshot started)' : ''}: descendants not killed`; // the handle still proves the root
+      } else if (!handle) {
+        const c = ID.checkIdentity(pid, { created: target.created, image: target.image }, snap);
+        if (!c.ok) return { ...fail(c.detail, c.kind), ...sm };
+        identity = c.identity;
+      }
+      if (snap) tree = ID.descendantsOf(pid, snap);
+      const killed = []; const errors = []; let signalledAt = null;
+      const one = (p) => { const k = sendKill(p, 'SIGKILL', opts.kill); if (k.signalled) { killed.push(p); signalledAt = k.signalled_at; } else if (k.error !== 'ESRCH') errors.push(`${p}:${k.error}`); };
+      for (const d of tree.leavesFirst) one(d.pid);
+      if (handle && !ID.handleLive(target)) errors.push(`${pid}:exited meanwhile`); else one(pid);
+      const ok = errors.length === 0;
+      return done({ ok, terminated: killed.length, killed, skipped: tree.skipped, identity, ...sm, signalled_at: signalledAt, output: [treeNote, ...errors].filter(Boolean).join('; ').slice(0, 400), ...(treeNote ? { tree_refused: treeNote } : {}) });
+    });
   })();
 }
 
@@ -181,7 +200,7 @@ async function killProcessRaw(target, opts) {
   const tree = await killTreeRaw(target, opts);
   if (!tree.refused) {
     const pidKill = { signalled: false, pid: tree.pid, signal: 'SIGKILL', error: 'ESRCH', ok: true, identity: tree.identity, note: 'the root was ended by the tree kill' };
-    return { tree, pidKill, identity: tree.identity, refused: null, descendants_not_killed: tree.tree_refused || null };
+    return { tree, pidKill, identity: tree.identity, refused: null, descendants_not_killed: tree.tree_refused || null, signalled_at: tree.signalled_at, snapshot_ms: tree.snapshot_ms };
   }
   const single = isDescriptor(target) && target.created == null && !target.unverified ? await killPidRaw(target, 'SIGKILL', opts) : null;
   const pidKill = single || { signalled: false, pid: tree.pid, signal: 'SIGKILL', error: 'EIDENTITY', ok: false, refused: 'identity', kind: tree.kind, detail: tree.detail, identity: null, ...(tree.manual ? { manual: tree.manual } : {}) };
@@ -190,6 +209,7 @@ async function killProcessRaw(target, opts) {
     tree, pidKill, identity: pidKill.identity || null,
     refused: pidKill.refused ? { refused: 'identity', kind: pidKill.kind || tree.kind, detail: pidKill.detail || tree.detail, ...((pidKill.manual || tree.manual) ? { manual: pidKill.manual || tree.manual } : {}) } : null,
     descendants_not_killed: landed ? `descendants not killed: ${tree.detail}` : null,
+    signalled_at: single ? (single.signalled_at || null) : null, snapshot_ms: (tree.snapshot_ms || 0) + (single ? single.snapshot_ms || 0 : 0),
   };
 }
 
@@ -198,7 +218,7 @@ async function killProcessRaw(target, opts) {
 // first; [] when the snapshot is unreadable. For a caller that must kill them after something else ends the
 // parent (pause.cjs): the identity is taken before, and checked again by killMany after.
 async function descendantTargets(pid, opts = {}) {
-  const snap = await takeSnapshot(opts);
+  const { snap } = await acquire(opts);
   return snap ? ID.descendantsOf(assertPid(pid), snap).leavesFirst : [];
 }
 
@@ -211,16 +231,17 @@ async function killMany(targets, opts = {}) {
   const log = (t, r) => { const rec = recs.get(t); if (rec) rec(r); };
   const out = targets.filter((t) => !alive.includes(t)).map((t) => ({ pid: t.pid, killed: false, gone: true }));
   if (!alive.length) return out;
-  const snap = await takeSnapshot(opts);
+  return withSnapshot(opts, (snap, m) => {
   for (const t of alive) {
-    if (!snap) { log(t, { ok: false, kind: 'unverifiable', detail: 'process snapshot unreadable' }); out.push({ pid: t.pid, killed: false, refused: 'identity', kind: 'unverifiable', detail: 'process snapshot unreadable', manual: manualStopHint(t.pid, t.image) }); continue; }
+    if (!snap) { const detail = unreadable(t.pid, m); log(t, { ok: false, kind: 'unverifiable', detail, snapshot_ms: m.snapshot_ms }); out.push({ pid: t.pid, killed: false, refused: 'identity', kind: 'unverifiable', detail, snapshot_ms: m.snapshot_ms, manual: manualStopHint(t.pid, t.image) }); continue; }
     const c = ID.checkIdentity(t.pid, t, snap);
     if (!c.ok) { log(t, { ok: false, kind: c.kind, detail: c.detail }); refusals.push({ at: Date.now(), pid: t.pid, detail: c.detail }); out.push({ pid: t.pid, killed: false, refused: 'identity', kind: c.kind, detail: c.detail, ...(c.kind === 'unverifiable' ? { manual: manualStopHint(t.pid, t.image) } : {}) }); continue; }
     const k = sendKill(t.pid, 'SIGKILL', opts.kill);
-    log(t, { ok: true, identity: c.identity });
-    out.push({ pid: t.pid, killed: k.signalled, identity: c.identity, ...(k.signalled ? {} : { error: k.error }) });
+    log(t, { ok: true, identity: c.identity, signalled_at: k.signalled_at, snapshot_ms: m.snapshot_ms });
+    out.push({ pid: t.pid, killed: k.signalled, identity: c.identity, signalled_at: k.signalled_at || null, snapshot_ms: m.snapshot_ms, ...(k.signalled ? {} : { error: k.error }) });
   }
   return out;
+  });
 }
 
 // Descendant pids of a pid, from the OS, for measurement and for verifying a subtree is gone.
@@ -278,6 +299,6 @@ async function waitPidGone(pid, { timeoutMs = 15000, intervalMs = 25 } = {}) {
 }
 
 module.exports = {
-  IS_WINDOWS, assertPid, killPid, killTree, killProcess, rowTarget, manualStopHint, KILL_SNAPSHOT_ATTEMPTS, withKillLock, lastSignalAt: () => lastSignal, descendantTargets, killMany, childPids, waitPidGone, isHandle,
-  processSnapshot: ID.processSnapshot, createdOf: ID.createdOf, recentRefusals: () => refusals.slice(),
+  IS_WINDOWS, assertPid, killPid, killTree, killProcess, rowTarget, manualStopHint, withKillLock, descendantTargets, killMany, childPids, waitPidGone, isHandle,
+  processSnapshot: ID.processSnapshot, snapshotShared: ID.snapshotShared, gate: ID.gate, createdOf: ID.createdOf, recentRefusals: () => refusals.slice(),
 };

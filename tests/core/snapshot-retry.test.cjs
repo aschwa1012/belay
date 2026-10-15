@@ -1,7 +1,8 @@
 'use strict';
-// snapshot-retry.test.cjs — ADR 0039 review follow-up 3: an unreadable CIM snapshot is taken again before a
-// kill is refused (once) and before a spawned worker's row is left unverified (three attempts in all); a row
-// whose identity cannot be proved is refused with the exact way to end it by hand.
+// snapshot-retry.test.cjs — ADR 0048 decisions 1 and 3 (which amend ADR 0039 review follow-up 3): a kill-time
+// snapshot and the spawn-time creation-time read each take ONE attempt, never retried; an unreadable snapshot
+// refuses the kill at once with the exact way to end the process by hand; a spawn whose read failed is left
+// pending, not unverified for good. `snapshotRetry` remains for test helpers only.
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -15,15 +16,18 @@ const T = 1_800_000_000_000;
 const mapOf = (rows) => new Map(rows.map(([pid, ppid, created, image]) => [pid, { ppid, created, image }]));
 const noKill = () => {};
 
-// Stands in for the real snapshot: `answers` in order (null = unreadable), counting calls.
+// Stands in for the gate's snapshot: `answers` in order (null = unreadable), counting calls.
 function standIn(answers) {
-  const real = ID.processSnapshot;
+  const real = ID.snapshotShared;
   let calls = 0;
-  ID.processSnapshot = async () => { const a = answers[Math.min(calls, answers.length - 1)]; calls++; return a; };
-  return { calls: () => calls, restore: () => { ID.processSnapshot = real; } };
+  ID.snapshotShared = async () => {
+    const a = answers[Math.min(calls, answers.length - 1)]; calls++;
+    return { snap: a, error: a ? null : 'unreadable', startSeq: Infinity, reqSeq: 0, ms: 0 };
+  };
+  return { calls: () => calls, restore: () => { ID.snapshotShared = real; } };
 }
 
-test('snapshotRetry: an unreadable snapshot is taken again, up to `attempts`, with the wait doubling', async () => {
+test('snapshotRetry (for test helpers): an unreadable snapshot is taken again, up to `attempts`, with the wait doubling', async () => {
   let n = 0;
   const t0 = Date.now();
   const got = await ID.snapshotRetry({ attempts: 3, backoffMs: 50, snapshot: async () => (++n < 3 ? null : mapOf([[1, 0, T, 'x.exe']])) });
@@ -33,55 +37,61 @@ test('snapshotRetry: an unreadable snapshot is taken again, up to `attempts`, wi
   n = 0;
   assert.strictEqual(await ID.snapshotRetry({ attempts: 2, backoffMs: 1, snapshot: async () => { n++; return null; } }), null);
   assert.strictEqual(n, 2, 'never more than `attempts`');
-  n = 0;
-  await ID.snapshotRetry({ attempts: 3, backoffMs: 1, snapshot: async () => { n++; return new Map([[9, {}]]); } });
-  assert.strictEqual(n, 1, 'a readable snapshot is never retried');
 });
 
-test('kill: a default (kill-time) snapshot that is unreadable once is retried, and the kill proceeds on the second', async () => {
-  const s = standIn([null, mapOf([[4201, 1, T, 'node.exe']])]);
-  try {
-    const r = await P.killPid({ pid: 4201, created: T }, 'SIGKILL', { kill: noKill });
-    assert.strictEqual(r.ok, true, JSON.stringify(r));
-    assert.strictEqual(s.calls(), 2);
-  } finally { s.restore(); }
+test('the snapshot budget is one attempt of 8000 ms, and the retry constants are gone', () => {
+  assert.strictEqual(ID.SNAPSHOT_TIMEOUT_MS, 8000);
+  assert.strictEqual(P.KILL_SNAPSHOT_ATTEMPTS, undefined);
+  assert.strictEqual(PI.SPAWN_READ_ATTEMPTS, undefined);
 });
 
-test('kill: two unreadable kill-time snapshots refuse, after exactly one retry; a caller\'s own snapshot is never retried', async () => {
+test('kill: an unreadable kill-time snapshot refuses at once, after exactly one attempt, and says why', async () => {
   const s = standIn([null]);
   try {
     const r = await P.killPid({ pid: 4202, created: T }, 'SIGKILL', { kill: noKill });
     assert.strictEqual(r.ok, false);
     assert.strictEqual(r.kind, 'unverifiable');
-    assert.strictEqual(s.calls(), P.KILL_SNAPSHOT_ATTEMPTS);
-    assert.strictEqual(P.KILL_SNAPSHOT_ATTEMPTS, 2);
-    let own = 0;
-    const r2 = await P.killPid({ pid: 4202, created: T }, 'SIGKILL', { kill: noKill, snapshot: async () => { own++; return null; } });
-    assert.strictEqual(r2.ok, false);
-    assert.strictEqual(own, 1, 'the fast close passes its own snapshot and its own budget decides');
+    assert.strictEqual(s.calls(), 1, 'no retry');
+    assert.match(r.manual, /Stop-Process -Id 4202/);
+    assert.ok(Number.isFinite(r.snapshot_ms), 'the refusal reports how long the snapshot took');
   } finally { s.restore(); }
 });
 
-test('spawn: the creation-time read is tried three times before the row is left unverified', async () => {
-  const s = standIn([null, null, null, null]);
-  const live = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { windowsHide: true, stdio: 'ignore' });
+test('kill: a readable snapshot kills on the first attempt and the receipt carries signalled_at and snapshot_ms', async () => {
+  const s = standIn([mapOf([[4201, 1, T, 'node.exe']])]);
   try {
-    const w = { pid: live.pid };
-    await PI.noteSpawn(w, live);
-    assert.strictEqual(s.calls(), 3);
-    assert.strictEqual(PI.SPAWN_READ_ATTEMPTS, 3);
-    assert.strictEqual(w.pidCreated, null);
-    assert.match(w.pidCreatedError, /unreadable on all 3 attempts/);
-  } finally { s.restore(); live.kill(); }
+    const before = Date.now();
+    const r = await P.killPid({ pid: 4201, created: T }, 'SIGKILL', { kill: noKill });
+    assert.strictEqual(r.ok, true, JSON.stringify(r));
+    assert.strictEqual(s.calls(), 1);
+    assert.ok(r.signalled_at >= before && r.signalled_at <= Date.now(), 'signalled_at is the signal, in ms since the epoch');
+    assert.ok(Number.isFinite(r.snapshot_ms) && r.snapshot_ms >= 0);
+  } finally { s.restore(); }
 });
 
-test('spawn: a read that fails twice and lands on the third gives the row its creation time, never unverified', async () => {
+test('spawn: one read; a failure leaves the row pending (error names the retry), never final while the worker runs', async () => {
   const live = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { windowsHide: true, stdio: 'ignore' });
-  const s = standIn([null, null, mapOf([[live.pid, process.pid, T + 5, 'node.exe']])]);
+  let calls = 0;
   try {
     const w = { pid: live.pid };
-    await PI.noteSpawn(w, live);
-    assert.strictEqual(s.calls(), 3);
+    await PI.noteSpawn(w, live, { createdOf: async () => { calls++; return null; }, schedule: [1e9], every: 1e9 });
+    assert.strictEqual(calls, 1, 'one read, no retry');
+    assert.strictEqual(w.pidCreated, null);
+    assert.match(w.pidCreatedError, /retrying while the worker runs \(try 1\)/);
+    // Another process meeting this row refuses, and says it may be verified shortly.
+    const k = await P.killProcess(P.rowTarget({ pid: 4203, substrate: 'claude-code', pid_image: 'claude.exe', pid_created_error: w.pidCreatedError }), { kill: noKill, snapshot: async () => mapOf([[4203, 1, T, 'claude.exe']]) });
+    assert.strictEqual(k.refused.kind, 'unverifiable');
+    assert.match(k.refused.manual, /verified shortly/);
+  } finally { live.kill(); }
+});
+
+test('spawn: a read that lands gives the row its creation time on the first attempt', async () => {
+  const live = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { windowsHide: true, stdio: 'ignore' });
+  const s = standIn([mapOf([[live.pid, process.pid, T + 5, 'node.exe']])]);
+  try {
+    const w = { pid: live.pid };
+    await PI.noteSpawn(w, live, { createdOf: (pid) => ID.createdOf(pid, { snapshot: async () => (await ID.snapshotShared()).snap }) });
+    assert.strictEqual(s.calls(), 1);
     assert.strictEqual(w.pidCreated, T + 5);
     assert.strictEqual(w.pidCreatedError, null);
   } finally { s.restore(); live.kill(); }
