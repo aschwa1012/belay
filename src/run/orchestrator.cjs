@@ -118,6 +118,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   let pollHandle = null;
   let pollInFlight = false; // 5a-2: at most one store read at a time, guard not a queue
   const holdRecorder = createHoldRecorder(); // wake.cjs (design item 9): moved out of this file
+  const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId, enabled: !!spec.notes }); // wave 4: a refuted note wakes the orchestrator (notes runs only)
   let readyTimer = null;
   let sigintHandler = null;
 
@@ -229,7 +230,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     const rec = {
       at_ms: Date.now() - t0, worker_id: ev.worker_id, event: ev.event, turn: ev.turn,
       bytes: Buffer.byteLength(text, 'utf8'), orchestrator_idle_at_write: state.idle,
-      established_by: `worker.list row seq ${ev.seq} for the run`,
+      established_by: ev.event === 'note_refuted' ? `note_refuted receipt seq ${ev.seq}` : `worker.list row seq ${ev.seq} for the run`,
     };
     if (ev.event === 'death') {
       rec.exit_code = ev.exit_code; rec.exit_signal = ev.exit_signal; rec.death_established_by = ev.death_established_by;
@@ -280,7 +281,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       orphanGraceMs: ORPHAN_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid),
     });
     state.baseline = next;
-    for (const ev of events) writeWake(ev);
+    for (const ev of events.filter((e) => !String(e.worker_id).startsWith('notereview-')).concat(await noteWatcher.poll())) writeWake(ev);
     if (state.finishing) return; // a wake's own write may have found the child already gone
 
     if (state.idle) {

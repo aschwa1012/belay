@@ -8,6 +8,7 @@ const processDefaults = require('../core/process.cjs');
 const KL = require('../core/kill-log.cjs');
 const { pidAlive } = require('../core/lock.cjs');
 const { SNAPSHOT_TIMEOUT_MS } = require('../core/proc-identity.cjs');
+const { NOTE_REVIEW_DRAIN_MS } = require('../core/spawn-bounds.cjs');
 const { LIFE_CLAIMING_STATES } = require('../core/methods-run.cjs');
 
 const KILL_GONE_BOUND_MS = 5000;
@@ -28,8 +29,9 @@ function outcomeOf(e) {
   return e.signalled ? 'signalled_still_alive' : 'not_signalled_still_alive';
 }
 
-const adapterStopBoundMs = (n, snapMs = SNAPSHOT_TIMEOUT_MS) => n * (ADAPTER_STOP_PER_WORKER_MS + snapMs) + ADAPTER_STOP_SLACK_MS + snapMs;
-const adapterWaitBoundMs = (n, graceMs, snapMs = SNAPSHOT_TIMEOUT_MS) => Math.max(graceMs, adapterStopBoundMs(n, snapMs));
+// With note review on, the adapter first drains its review jobs (up to NOTE_REVIEW_DRAIN_MS) before it stops any worker.
+const adapterStopBoundMs = (n, snapMs = SNAPSHOT_TIMEOUT_MS, noteReview = false) => n * (ADAPTER_STOP_PER_WORKER_MS + snapMs) + ADAPTER_STOP_SLACK_MS + snapMs + (noteReview ? NOTE_REVIEW_DRAIN_MS : 0);
+const adapterWaitBoundMs = (n, graceMs, snapMs = SNAPSHOT_TIMEOUT_MS, noteReview = false) => Math.max(graceMs, adapterStopBoundMs(n, snapMs, noteReview));
 
 // A Codex `idle` row has no process by design (api.md §2): run.end closes it, belay run never kills it.
 const hasProcess = (w) => !(w.substrate === 'codex' && w.state === 'idle');
@@ -41,7 +43,7 @@ const claimsLiveProcess = (w) => LIFE_CLAIMING_STATES.has(w.state) && hasProcess
 // `deps` is a test seam for the kill mechanics. `fast` (ADR 0037 decision 6, the console closing) is
 // { requested(): bool, leftMs?(): ms the close has left, which cuts each kill wait } and is additive: absent, nothing changes. A fast close skips
 // the adapter wait (the adapter is already gone) or cuts it short when the request arrives during it.
-async function closeRunWorkers({ core, runId, graceMs, ownPid = process.pid, deps = {}, fast = null }) {
+async function closeRunWorkers({ core, runId, graceMs, ownPid = process.pid, deps = {}, fast = null, noteReview = false }) {
   const { killProcess, waitPidGone, withKillLock } = { ...processDefaults, ...deps };
   const { rowTarget } = processDefaults;
   const cut = { v: false }; // set when the budget's race timer fires or finalizeCut runs: a snapshot landing after it signals nothing
@@ -63,7 +65,7 @@ async function closeRunWorkers({ core, runId, graceMs, ownPid = process.pid, dep
   // A cut before the final listing still names the workers known now (finalizeCut).
   if (fast) { fast.progress = { out, unrecorded, cut }; for (const w of before || []) if (claimsLiveProcess(w)) unrecorded.set(w.id, { w, touched: () => false }); }
   const liveCount = before ? before.filter(claimsLiveProcess).length : 0;
-  out.adapter_wait_bound_ms = Math.max(graceMs, adapterWaitBoundMs(liveCount, graceMs));
+  out.adapter_wait_bound_ms = Math.max(graceMs, adapterWaitBoundMs(liveCount, graceMs, SNAPSHOT_TIMEOUT_MS, !!noteReview));
   if (out.adapter_pid != null && out.adapter_pid !== ownPid && pidAlive(out.adapter_pid)) {
     if (fast && fast.requested()) {
       out.adapter_gone = false; out.adapter_wait_ms = 0; out.fast_close = true;

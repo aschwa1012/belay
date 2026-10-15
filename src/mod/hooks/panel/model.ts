@@ -122,6 +122,7 @@ export const TONE: Record<BelayNotice['tone'], { glyph: string; color: string; r
   holds: { glyph: '✓', color: 'merged', rank: 5 },
   stopped: { glyph: '✓', color: 'inactive', rank: 6 },
   ended: { glyph: '✓', color: 'inactive', rank: 7 },
+  memory: { glyph: '◇', color: 'warning', rank: 8 },
 }
 
 export function normNotices(json: unknown): BelayNotice[] {
@@ -153,6 +154,11 @@ export function normNotices(json: unknown): BelayNotice[] {
       mk(holds ? 'holds' : 'refuted', t, `review ${t} ${holds ? 'holds' : 'refuted'}${str(e.judged_by) ? ` · ${str(e.judged_by)}` : ''}`, t, null, null, t)
     } else if (kind === 'run_paused') {
       mk('paused', str(e.run_id) ?? '?', `run paused${str(e.paused_by) ? ` by ${str(e.paused_by)}` : ''}`, str(e.run_id) ?? '', null, null)
+    } else if (kind === 'notes_unembedded') {
+      const n = num(e.count) ?? 0
+      if (n <= 0) continue
+      const names = Object.keys(obj(e.by_project) ?? {}).sort()
+      mk('memory', String(n), `${n} note${n === 1 ? '' : 's'} unembedded`, names.join(' '), `belay memory embed --project ${names.length === 1 ? names[0] : '<p>'}`, null)
     } else if (kind === 'run_ended') {
       mk('ended', str(e.run_id) ?? '?', `run ended · ${str(e.exit_reason) ?? 'reason not recorded'}`, str(e.run_id) ?? '', null, null)
     }

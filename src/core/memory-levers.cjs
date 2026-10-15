@@ -36,11 +36,15 @@ const DEFAULTS = Object.freeze({
   scrub_max_items: 40, // entries in one scrub hand-back
   scrub_alarm_holds: 20, // more holds than this from one scrub raise the alarm field (the call still succeeds)
   notes_trust_wording: false, // ADR 0047 decision 6: basis, evidence and review status instead of "unverified"; off until the harm arms have run
+  note_review: false, // wave 4: when a task that wrote notes ends with no reviewer, belay starts one short read-only review job for them; off until the planted-false-claim gate sets its model
+  note_review_model: 'claude-haiku-5-5', // the review job's model; a lever, set by the planted-false-claim gate
+  note_review_cost_cap_usd: 0.05, // the review job's cost cap in dollars: passed to the substrate as its budget, and a job that went over leaves its notes unreviewed
   notes_sink: 'off', // off | record | penalty: record writes a note_chance fact per delivered note at task end; penalty records the same, its rank shift is not built yet
 });
 
 const BOOLEAN_KEYS = ['redact', 'rules', 'capture', 'observations', 'project_writes', 'cost_ledger',
-  'first_message_index', 'bottle', 'wrapup', 'knowledge_agent', 'notes', 'notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording'];
+  'first_message_index', 'bottle', 'wrapup', 'knowledge_agent', 'notes', 'notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording', 'note_review'];
+const MODEL_RE = /^claude-(haiku|sonnet|opus)-5-5$/; // a Claude 5.5 model id: the only models the roster allows (ADR 0021 amendments 5 and 6)
 const SUMMARIES = ['off', 'mechanical'];
 const SCRUB_ACTIONS = ['off', 'propose', 'apply'];
 const SINKS = ['off', 'record', 'penalty'];
@@ -92,7 +96,9 @@ function parseMemoryBlock(block) {
   if (v.notes && v.project === null) return { error: 'memory.notes needs memory.project: notes live in the project namespace' };
   // Notes outlive the run in the project namespace, so they never take unredacted text.
   if (v.notes && v.redact === false) return { error: 'memory.redact false cannot be combined with memory.notes true: the project namespace outlives the run and must never hold unredacted text' };
-  for (const k of ['notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording']) if (v[k] && !v.notes) return { error: `memory.${k} needs memory.notes` };
+  if (typeof v.note_review_model !== 'string' || !MODEL_RE.test(v.note_review_model)) return { error: 'memory.note_review_model must be a Claude 5.5 model id (claude-haiku-5-5, claude-sonnet-5-5 or claude-opus-5-5)' };
+  if (typeof v.note_review_cost_cap_usd !== 'number' || !(v.note_review_cost_cap_usd > 0 && v.note_review_cost_cap_usd <= 5)) return { error: 'memory.note_review_cost_cap_usd must be a number above 0 and at most 5' };
+  for (const k of ['notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording', 'note_review']) if (v[k] && !v.notes) return { error: `memory.${k} needs memory.notes` };
   if (!SINKS.includes(v.notes_sink)) return { error: `memory.notes_sink must be one of ${SINKS.join(', ')}` };
   if (v.notes_sink !== 'off' && !v.notes) return { error: 'memory.notes_sink needs memory.notes' };
   if (v.summaries === 'mechanical' && !v.observations) return { error: 'memory.summaries "mechanical" needs memory.observations' };
@@ -119,6 +125,7 @@ const OVERRIDES = {
   bottle_bytes: { type: 'integer', min: 1, max: BOTTLE_BYTES_MAX },
   notes_match_threshold: { type: 'number', min: 0, max: 1, minExclusive: true },
   notes_match_n: { type: 'integer', min: 1, max: 10 },
+  note_review_cost_cap_usd: { type: 'number', min: 0, max: 5, minExclusive: true },
   scrub_action: { type: 'enum', values: SCRUB_ACTIONS },
   scrub_max_items: { type: 'integer', min: 1, max: 500 },
   scrub_alarm_holds: { type: 'integer', min: 1, max: 500 },

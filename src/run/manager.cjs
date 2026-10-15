@@ -20,6 +20,8 @@ const { fail } = require('./errors.cjs');
 const { validateSpawnArgs } = require('./spawn-args.cjs');
 const AD = require('./agent-defaults.cjs'); // the config's per-agent-type model and effort defaults
 const MP = require('./memory-preface.cjs'); // ADR 0042: the first-message preface and the memory hooks
+const { NOTE_REVIEW_DRAIN_MS } = require('../core/spawn-bounds.cjs');
+const NR = require('./note-review.cjs'); // wave 4: the notes' review (the reviewer's brief, the short review job)
 // build step 6c: `wait`, `decideBranch`, `restartFirstText` and the resume-window constants moved
 // verbatim into their own files (the 500-line rule); re-exported under the same names below.
 const { createWait } = require('./wait.cjs');
@@ -118,7 +120,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   function writeFilesFor(w) {
     // ADR 0047: one decision per worker, taken here with the adapter's argv and kept on the record, so the contract text
     // is only ever sent to an adapter that was launched with --notes (a levers read that failed means off, and is recorded).
-    w.notesOn = !!(ctx.memoryLevers && ctx.memoryLevers.notes);
+    w.notesOn = !!(ctx.memoryLevers && ctx.memoryLevers.notes) && !NR.isJob(w.id); // a review job gets no notes contract
     const adapterLog = L.wireLogPath(w.dir); // every worker adapter logs here (build 12 A1)
     const { mcpJsonPath, settingsPath, plugins } = L.writeWorkerFiles({
       dir: w.dir, workerId: w.id, runId, dataDir: root, mcpPath, settingsPath: settingsSource, logPath: adapterLog,
@@ -147,7 +149,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
         model: w.model || L.DEFAULT_CLAUDE_MODEL, allowedTools: w.allowedTools,
         permissionMode: w.permissionMode, resumeSessionId: resume,
         permissionPromptTool: w.permissionPrompt, appendSystemPromptFile: w.instructions && w.instructions.path,
-        effort: w.effort, tools: w.tools, // ADR 0028 decision 2: every launch, fresh or resumed; ADR 0024: a narrowed list too
+        effort: w.effort, tools: w.tools, maxBudgetUsd: w.maxBudgetUsd, // ADR 0028 decision 2: every launch, fresh or resumed; ADR 0024: a narrowed list too
       });
     } else if (resume) {
       args = L.codexResumeArgv({ threadId: resume, adapterArgs: w.adapterArgs, prompt, model: w.model });
@@ -208,7 +210,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const {
       substrate, worktree, prompt, task_id = null, model: modelArg = null, allowed_tools = null,
       permission_mode = null, startup_timeout_ms = 60000, worker_id = null, sandbox = null,
-      permission_prompt = false, permit_wait_ms = 600000, effort: effortArg = null, tools = null, agent_type = null,
+      permission_prompt = false, permit_wait_ms = 600000, effort: effortArg = null, tools = null, agent_type = null, max_budget_usd = null,
     } = opts || {};
     let model = modelArg;
     let effort = effortArg;
@@ -234,7 +236,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       w = W.newWorkerRecord({
         id, substrate, worktree, dataDir: root, taskId: task_id, model,
         allowedTools: allowed_tools, permissionMode: permission_mode, sandbox,
-        permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort, tools,
+        permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort, tools, maxBudgetUsd: max_budget_usd,
       });
       workers.set(id, w);
     } finally { pendingIds.delete(id); }
@@ -248,7 +250,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     await writeRow(w, 'starting');
     let first;
     try {
-      first = (await MP.preface(w, ctx, prompt)) + prompt + (await MP.contractTail(ctx, w)); // the resume line, then the memory index, against the `starting` row (ADR 0007 §2, 0042 §2)
+      first = NR.isJob(w.id) ? prompt : (await MP.preface(w, ctx, prompt)) + prompt + (await MP.contractTail(ctx, w)) + (await NR.reviewTail(ctx, w)); // the resume line, then the memory index, against the `starting` row (ADR 0007 §2, 0042 §2)
     } catch (e) {
       // The task refused the assignment (an open dependency, ADR 0013 §1; the operator's lease; no such
       // task). Nothing has launched, so the `starting` row is written `dead` before the refusal is handed
@@ -472,6 +474,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     stop, core, clearPoll: () => { if (poll) { clearInterval(poll); poll = null; } },
     markClosed: () => { shutdownFlags.closed = true; },
     markOwnerGone: () => { shutdownFlags.ownerGone = true; return shutdownFlags.paired; },
+    beforeStop: () => NR.drain(ctx, NOTE_REVIEW_DRAIN_MS),
     onDrained: () => MP.runEnd(ctx),
   });
 
@@ -486,6 +489,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     _closed: () => shutdownFlags.closed, // flipped by shutdown once every worker is stopped (lifecycle.cjs)
     _flags: () => shutdownFlags,
   };
+  ctx.manager = manager; // the memory jobs spawn the review job through it
   return manager;
 }
 
