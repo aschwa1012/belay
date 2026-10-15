@@ -11,6 +11,7 @@
 const { err } = require('./errors.cjs');
 const { ROLES } = require('./schema.cjs');
 const { pidAlive, readOwnerLock, pipeName } = require('./lock.cjs');
+const { isJobId } = require('./job-ids.cjs');
 const memory = require('./methods-memory.cjs');
 const run = require('./methods-run.cjs');
 const task = require('./methods-task.cjs');
@@ -45,6 +46,14 @@ const ORCH = ['orchestrator'];
 // task.assign too, named below; every other orchestrator-only method is unaffected.
 const ORCH_OR_OPERATOR = ['orchestrator', 'operator'];
 
+// An operator on the harness channel may write a worker row only for a job of its own run (see 'worker.write').
+function jobRowGuard(E, caller, args) {
+  if (caller.role !== 'operator' || caller.channel !== 'harness' || !isJobId(args.id)) return false;
+  if (args.run_id !== undefined && args.run_id !== null && args.run_id !== caller.run_id) return false;
+  const prev = require('./rows.cjs').current(E.store, 'worker', args.id);
+  return !prev || prev.run_id === caller.run_id;
+}
+
 const METHODS = {
   'memory.store': { roles: ALL, kind: 'write', fn: memory.store },
   // ADR 0040 §2: the read methods live in memory-search.cjs (layered, filtered, hybrid, with the honesty contract).
@@ -71,6 +80,8 @@ const METHODS = {
   'memory.reviewApply': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-review.cjs', 'reviewApply') },
   'memory.noteRestore': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-archive.cjs', 'noteRestore') },
   'memory.archivePurge': { roles: ['operator'], kind: 'write', fn: lazy('./methods-memory-archive.cjs', 'archivePurge') },
+  'memory.scrubScope': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-stages.cjs', 'scrubScope') },
+  'memory.reviewQueue': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-stages.cjs', 'reviewQueue') },
   // Promotion to an instruction file: nomination by code (harness channel); the operator's decision is `memory.notePromote { note_id, decision }`.
   'memory.notePromote': { roles: ['operator'], kind: 'write', fn: lazy('./methods-memory-promote-note.cjs', 'promoteNote') },
   'memory.nominate': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./memory-nominate.cjs', 'nominate') },
@@ -112,7 +123,10 @@ const METHODS = {
   // belay workers) has a way to find the current run at all.
   'run.list': { roles: ALL, kind: 'read', fn: run.listRuns },
 
-  'worker.write': { roles: ORCH, kind: 'write', fn: run.writeWorker },
+  // `harnessGuard(E, caller, args)`: the one write an operator on the harness channel (core.harness(), never a tool call) may make
+  // beyond its roles. The run process becomes the parent of the run-close stages' child and writes that child's rows, and only
+  // those: a reserved job id (scrub-, archreview-, notereview-) whose row, if one exists, belongs to the caller's own run.
+  'worker.write': { roles: ORCH, harnessGuard: jobRowGuard, kind: 'write', fn: run.writeWorker },
   'worker.get': { roles: ALL, kind: 'read', fn: run.getWorker },
   'worker.list': { roles: ALL, kind: 'read', fn: run.listWorkers },
   // build step 6b, ADR 0019 decision 6: operator only, the CLI's `worker rm` (mode W); no MCP tool.
@@ -277,7 +291,7 @@ class Engine {
     if (!spec) throw err('E_ARGS', `${method} is not a Core API method`, { method });
     const p = params || {};
     const caller = validateCaller(p.caller);
-    if (!spec.roles.includes(caller.role)) {
+    if (!spec.roles.includes(caller.role) && !(spec.harnessGuard && spec.harnessGuard(this, caller, p))) {
       throw err('E_ROLE', `${method} is available to ${spec.roles.join(', ')} and this call came from role ${caller.role}`, { method, role: caller.role, allowed: spec.roles });
     }
     const args = { ...p };

@@ -36,6 +36,21 @@ function createNoteWatcher({ core, runId, enabled = false }) {
       for (const ev of g.evs) seen.add(ev.id);
       out.push({ event: 'note_refuted', worker_id: `note:${g.rs[0].note.id}`, turn: 0, seq: g.evs[0].seq, id: w.id, text: w.text, note_id: g.rs[0].note.id, note_ids: g.rs.map((r) => r.note.id) });
     }
+    out.push(...(await alarms()));
+    return out;
+  }
+  // The run-close scrub's runaway alarm (memory.scrubApply's `alarm`): one wake per receipt, in belay's own words (the receipt's message
+  // holds counts and a command, no model text). At a normal run close the orchestrator is already gone and the receipt is read in
+  // `belay notices`; a scrub run by hand while the run is live wakes it.
+  async function alarms() {
+    let evs;
+    try { evs = ((await core.memory.events({ run_id: runId, kinds: ['scrub_alarm'] })) || {}).events || []; } catch { return []; }
+    const out = [];
+    for (const ev of evs) {
+      if (seen.has(ev.id) || !(ev.ok === 1 || ev.ok === true)) continue;
+      seen.add(ev.id);
+      out.push({ event: 'scrub_alarm', worker_id: `scrub:${runId}`, turn: 0, seq: ev.seq, id: `scrub-alarm:${ev.id}`, text: `belay: ${String(ev.message || 'a scrub made many hold marks')}`.slice(0, 600), note_ids: Array.isArray(ev.row_ids) ? ev.row_ids : [] });
+    }
     return out;
   }
   return { poll };
