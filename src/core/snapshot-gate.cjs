@@ -37,10 +37,11 @@ function createGate({ take, timeoutMs = 8000, now = Date.now } = {}) {
       const endedAt = now();
       const r = { snap: snap || null, error: snap ? null : (error || 'unreadable'), startSeq: b.startSeq, startedAt: b.startedAt, endedAt, ms: endedAt - b.startedAt, callers: b.callers, kinds: [...b.kinds] };
       inflight = null;
-      for (const h of [...harvesters]) { try { h(r); } catch { /* a harvester never changes a snapshot */ } }
       b.resolve(r);
       if (waiting) { const next = waiting; waiting = null; start(next); }
-      else for (const r of idleWaiters.splice(0)) r();
+      else for (const w of idleWaiters.splice(0)) w();
+      // After the next snapshot started, so a harvester that requests one sees `inflight` accurate.
+      for (const h of [...harvesters]) { try { h(r); } catch { /* a harvester never changes a snapshot */ } }
     };
     timer = setTimeout(() => done(null, 'timeout'), timeoutMs);
     if (timer.unref) timer.unref();
