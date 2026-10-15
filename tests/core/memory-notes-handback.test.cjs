@@ -258,3 +258,8 @@ test('a second call on a released lease adds notes and leaves the release as it 
 test('an operator release cannot carry notes', async () => {
   await assert.rejects(call('lease.release', callerFor('operator', { run_id: RUN }), { lease_id: 'x', notes: [] }), e => e.code === 'E_ARGS');
 });
+
+test('the ledger accepts the reflection receipt kind', async () => {
+  const ev = await call('memory.recordEvent', orch, { kind: 'reflection', worker_id: 'w1', task_id: 't', key: 'task:t', ok: true, message: 'asked again' });
+  assert.strictEqual(ev.kind, 'reflection');
+});

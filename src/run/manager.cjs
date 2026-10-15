@@ -67,6 +67,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   const ctx = { core, runId, dataDir: root, adapterPid: paths.adapterPid || process.pid, writeRow: null, shutdownFlags, compactAt: compactAtTokens, memoryLevers, worktree };
   const writeRow = createWriteRow(ctx, shutdownFlags);
   ctx.writeRow = writeRow;
+  ctx.message = (args) => message(args); // the memory jobs' reflection turn (ADR 0047); `message` is declared below
   const doStop = createDoStop({ ctx, writeRow });
 
   function get(workerId) {
@@ -117,6 +118,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const { mcpJsonPath, settingsPath, plugins } = L.writeWorkerFiles({
       dir: w.dir, workerId: w.id, runId, dataDir: root, mcpPath, settingsPath: settingsSource, logPath: adapterLog,
       permit: w.permissionPrompt, permitWaitMs: w.permitWaitMs, cwd: w.worktree, compactAt: ctx.compactAt, // ADR 0024; ADR 0007 decision 3
+      notes: !!(ctx.memoryLevers && ctx.memoryLevers.notes), // ADR 0047
     });
     // ADR 0007 §6 hygiene never degrades quietly: an unreadable/unparseable user settings file would
     // disable nothing, so the launch fails instead (a file that just does not exist is not a failure).
@@ -128,7 +130,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     // (ADR 0026 §3's keepalive lines) but its ready check does not.
     w.adapterLogPath = adapterLog;
     w.adapterArgs = L.workerAdapterArgs({
-      workerId: w.id, runId, dataDir: root, mcpPath, logPath: w.adapterLogPath,
+      workerId: w.id, runId, dataDir: root, mcpPath, logPath: w.adapterLogPath, notes: !!(ctx.memoryLevers && ctx.memoryLevers.notes),
     });
   }
 
@@ -212,6 +214,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     // The id is reserved synchronously: the await below must not let a second spawn with it pass the check above.
     pendingIds.add(id);
     let w;
+    await MP.levers(ctx, null); // ADR 0047: the worker adapter's argv carries the notes lever, so the levers are known before the files are written
     try {
       if (task_id) await core.task.assign({ task_id, check_only: true });
       w = W.newWorkerRecord({
@@ -230,7 +233,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     await writeRow(w, 'starting');
     let first;
     try {
-      first = (await MP.preface(w, ctx, prompt)) + prompt; // the resume line, then the memory index, against the `starting` row (ADR 0007 §2, 0042 §2)
+      first = (await MP.preface(w, ctx, prompt)) + prompt + (await MP.contractTail(ctx)); // the resume line, then the memory index, against the `starting` row (ADR 0007 §2, 0042 §2)
     } catch (e) {
       // The task refused the assignment (an open dependency, ADR 0013 §1; the operator's lease; no such
       // task). Nothing has launched, so the `starting` row is written `dead` before the refusal is handed

@@ -32,14 +32,14 @@ const sha = (s) => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
 const note = (w, where, e) => { if (w) w.lastError = { where, code: e && e.code, message: e && e.message }; };
 const closed = (ctx) => !!(ctx.shutdownFlags && ctx.shutdownFlags.closed);
 const ownerGone = (ctx) => !!(ctx.shutdownFlags && ctx.shutdownFlags.ownerGone);
-const anyJob = (lv) => lv.summaries !== 'off' || lv.project_writes || lv.cost_ledger || lv.wrapup;
+const anyJob = (lv) => lv.summaries !== 'off' || lv.project_writes || lv.cost_ledger || lv.wrapup || !!(lv.notes && lv.notes_reflection);
 
 // Per-manager bookkeeping: what this manager has already done, so a second trigger does no second write.
 const STATE = new WeakMap();
 function stateOf(ctx) {
   let s = STATE.get(ctx);
   if (!s) {
-    s = { summaryDone: new Set(), summaryFailed: new Set(), wrapDone: new Set(), wrapFailed: new Set(), inflight: new Map(), summaryIds: new Map(), promoteDone: new Set() };
+    s = { summaryDone: new Set(), summaryFailed: new Set(), wrapDone: new Set(), wrapFailed: new Set(), inflight: new Map(), summaryIds: new Map(), promoteDone: new Set(), reflectDone: new Set() };
     STATE.set(ctx, s);
   }
   return s;
@@ -360,18 +360,21 @@ function afterTurn(w, ctx, { turnEvents, checkpointId, snap: given = null } = {}
       if (lv.cost_ledger) await usageJob(J, snap);
       const wantSummary = lv.summaries !== 'off';
       const wantPromote = wantsProject(lv);
-      if (!snap.taskId || !(wantSummary || lv.wrapup || wantPromote)) return;
+      const wantReflect = !!(lv.notes && lv.notes_reflection); // ADR 0047 write ablation: the question again, as a turn of its own
+      if (!snap.taskId || !(wantSummary || lv.wrapup || wantPromote || wantReflect)) return;
       const s = J.s;
       const sKey = `${snap.taskId}|${snap.workerId}`;
       const needSummary = wantSummary && !s.summaryDone.has(sKey) && !s.summaryFailed.has(sKey);
       const needWrap = lv.wrapup && !s.wrapDone.has(`task:${snap.taskId}`) && !s.wrapFailed.has(`task:${snap.taskId}`);
       const needPromote = wantPromote && !s.promoteDone.has(sKey);
-      if (!needSummary && !needWrap && !needPromote) return;
+      const needReflect = wantReflect && !s.reflectDone.has(sKey);
+      if (!needSummary && !needWrap && !needPromote && !needReflect) return;
       const task = await call(J, () => J.core.task.get({ task_id: snap.taskId }));
       if (!task || !ENDED_TASK.has(task.state)) return;
       if (wantSummary) await ensureSummary(J, snap.taskId, snap.workerId, { taskRow: task });
       if (wantPromote) await ensurePromote(J, snap.taskId, snap.workerId);
       if (lv.wrapup) await ensureWrapup(J, snap.taskId, { taskRow: task });
+      if (needReflect) await require('./notes-reflection.cjs').reflect(J, { taskId: snap.taskId, workerId: snap.workerId }, event);
     } catch (e) {
       note(w, 'memory-jobs.afterTurn', e);
     }

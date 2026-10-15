@@ -98,11 +98,19 @@ async function memoryPreface(w, ctx, prompt) {
   return text ? `${text}\n\n` : '';
 }
 
+// ADR 0047 decision 3: with the run's notes lever on, the end-of-task question and the note rules close the opening
+// message (a worker reads what it must do last); '' with the lever off, so the message is the one it always was.
+async function contractTail(ctx) {
+  const lv = await levers(ctx, null);
+  return lv.notes ? `\n\n${require('./notes-contract.cjs').contract(lv)}` : '';
+}
+
 // A relaunch (replace or parked resume): the same index minus the rows already shown, after the relaunch's own text.
 async function relaunch(w, ctx, firstText) {
   const text = await indexBlock(w, ctx);
-  if (!text) return firstText;
-  return firstText ? `${firstText}\n\n${text}` : text;
+  const out = !text ? firstText : firstText ? `${firstText}\n\n${text}` : text;
+  const tail = await contractTail(ctx);
+  return tail ? (out ? `${out}${tail}` : tail.trimStart()) : out;
 }
 
 // The opening message's preface, moved verbatim out of manager.cjs (the 500-line rule): assign the task,
@@ -146,4 +154,4 @@ async function runEnd(ctx) {
   }
 }
 
-module.exports = { memoryPreface, relaunch, preface, parserOpts, levers, ask, runEnd };
+module.exports = { memoryPreface, relaunch, preface, contractTail, parserOpts, levers, ask, runEnd };
