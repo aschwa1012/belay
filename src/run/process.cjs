@@ -7,7 +7,7 @@
 const { spawn } = require('node:child_process');
 const coreProcess = require('../core/process.cjs');
 
-const { IS_WINDOWS, assertPid, killPid, killTree, killProcess, rowTarget, createdOf, processSnapshot, descendantTargets, killMany, childPids, waitPidGone } = coreProcess;
+const { IS_WINDOWS, assertPid, killPid, killTree, killProcess, rowTarget, createdOf, processSnapshot, snapshotShared, gate, descendantTargets, killMany, childPids, waitPidGone } = coreProcess;
 
 // A pid is alive if signal 0 lands. EPERM means the process exists and belongs to someone else, so
 // it counts as alive; ESRCH is the only "gone".
@@ -69,10 +69,11 @@ module.exports = {
   rowTarget,
   createdOf,
   processSnapshot,
+  snapshotShared,
+  gate,
   childPids,
   spawnWorker,
   gracefulStop,
   waitPidGone,
   withKillLock: coreProcess.withKillLock, // ADR 0039 review: belay stop's worker kills and the run's worker close share it
-  lastSignalAt: coreProcess.lastSignalAt,
 };

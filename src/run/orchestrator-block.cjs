@@ -16,7 +16,7 @@ function buildOrchestratorBlock({ child, state, model, argvHash, initFacts, usag
     externally_triggered_turns: state.externallyTriggeredTurns,
     exit_code: state.exitCode, exit_signal: state.exitSignal,
     usage: usage || null, argv_hash: argvHash, ready_ms: state.readyMs, later_inits: state.laterInits,
-    killed_after_close: state.killedAfterClose, surface: state.surface, instructions: state.instructions, // ADR 0024, S2 fix round F4; amendment 1
+    killed_after_close: state.killedAfterClose, kill: state.kill || null, surface: state.surface, instructions: state.instructions, // ADR 0024, S2 fix round F4; amendment 1
     ...(state.init || initFacts(null, null)),
   };
 }
