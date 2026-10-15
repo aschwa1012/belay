@@ -56,14 +56,15 @@ async function warmEmbedder(core, { retry = false, timeoutMs = WARM_TIMEOUT_MS }
 
 // `pauseRun(why)` is the run pause control's own pause (src/run/run-pause.cjs), never a second mechanism; `why`
 // becomes the caller's role there, so the run row and every worker park carry one `paused_by`.
-// onFailure is the owner's onEmbedderFailure hook: { caller, by, call, error }.
+// onFailure is the owner's onEmbedderFailure hook: { caller, by, call, error, worker_id? }; worker_id names the worker a
+// run-manager call (memory.embedQuery at a spawn) is for, so paused_by names the call and the worker that hit the failure.
 function createEmbedderGuard({ mode, pauseRun, stopRun }) {
   const events = [];
   let fatalReason = null;
   const pending = new Set();
-  function onFailure({ caller, by, call, error }) {
+  function onFailure({ caller, by, call, error, worker_id: workerId }) {
     if (!isEmbedderFailure(error)) return undefined;
-    const worker = (caller && caller.worker_id) || by || (caller && caller.role) || null;
+    const worker = workerId || (caller && caller.worker_id) || by || (caller && caller.role) || null;
     const ev = {
       at: Date.now(), worker, call, code: error.code || null, cause: error.detail.cause || null,
       message: error.message || String(error), action: mode === 'stop' ? 'pause' : 'continue', pause: null,
