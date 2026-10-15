@@ -49,13 +49,13 @@ before(() => {
 });
 after(() => { store.close(); cleanup(dir); });
 
-test('a task about dates and the TZ zone surfaces the dates row first', async () => {
+test('a task about dates and the TZ zone lists the report row, then the dates row', async () => {
   const { name, ids } = await g2Store();
   const [dates] = byMarker(ids, /process\.env\.TZ/);
+  const [report] = byMarker(ids, /dates[.]dayStart/);
   const r = await call('memory.index', { namespaces: [name], query: 'Report entries since a given date. Day boundaries depend on the TZ zone that src/dates.cjs reads at load.' });
-  // "Day" is a searchable three-letter term now and the report row (dates.dayStart, zone) also fits the task, so the dates row
-  // may be second; it must be in the first two.
-  assert.ok(r.row_ids.slice(0, 2).includes(dates), titleOf(r.row_ids[0]));
+  // "Day" is a searchable three-letter term now, and the report row (dates.dayStart, zone) fits the task too, so it comes first.
+  assert.deepStrictEqual(r.row_ids.slice(0, 2), [report, dates], r.row_ids.slice(0, 2).map(titleOf).join(' | '));
   assert.strictEqual(r.relevance.keyword, 'ran');
   assert.strictEqual(r.relevance.semantic, 'not_requested');
   assert.strictEqual(r.relevance.source, 'query');
