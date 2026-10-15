@@ -40,30 +40,53 @@ function checkShape(cites) {
 }
 
 // The strings a stream line carries as tool results (Claude Code stream-json: user messages holding tool_result blocks).
-function toolResultTexts(line) {
+// Each block is { id, text } for a tool result; a tool_use block is { use: id, name }.
+function blocksOf(line) {
   let j;
   try { j = JSON.parse(line); } catch { return []; }
   const content = j && j.message && j.message.content;
   if (!Array.isArray(content)) return [];
   const out = [];
   for (const b of content) {
-    if (!b || b.type !== 'tool_result') continue;
-    if (typeof b.content === 'string') out.push(b.content);
-    else if (Array.isArray(b.content)) for (const p of b.content) if (p && typeof p.text === 'string') out.push(p.text);
+    if (!b) continue;
+    if (b.type === 'tool_use' && typeof b.id === 'string') out.push({ use: b.id, name: String(b.name || '') });
+    if (b.type !== 'tool_result') continue;
+    const texts = typeof b.content === 'string' ? [b.content] : Array.isArray(b.content) ? b.content.filter((p) => p && typeof p.text === 'string').map((p) => p.text) : [];
+    for (const text of texts) out.push({ id: b.tool_use_id, text });
   }
   return out;
 }
+const toolResultTexts = (line) => blocksOf(line).filter((b) => b.text !== undefined).map((b) => b.text);
 
+// Evidence is what the world answered the worker, not what belay or the worker said back to itself: a result is searched only
+// when the stream shows the tool_use it answers and that tool is not one of belay's (`mcp__belay__*`: the hand-back echoes the
+// note's own title, a search echoes other notes). A result whose tool_use is not in the stream is not evidence either.
 function streamHas(file, quote) {
   let size;
   try { size = fs.statSync(file).size; } catch { return { found: false, reason: `no stream at ${file}` }; }
   if (size > STREAM_MAX_BYTES) return { found: false, reason: `the stream is ${size} bytes, over the ${STREAM_MAX_BYTES} bytes that are searched` };
   const q = norm(quote);
+  const uses = new Map();
+  const results = [];
   for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
-    if (!line.includes('tool_result')) continue;
-    for (const t of toolResultTexts(line)) if (norm(t).includes(q)) return { found: true };
+    if (!line.includes('tool_')) continue;
+    for (const b of blocksOf(line)) { if (b.use) uses.set(b.use, b.name); else results.push(b); }
   }
-  return { found: false, reason: 'the quote is in no tool result of that stream' };
+  for (const r of results) {
+    const name = uses.get(r.id);
+    if (name === undefined || name.startsWith('mcp__belay__')) continue;
+    if (norm(r.text).includes(q)) return { found: true };
+  }
+  return { found: false, reason: 'the quote is in no tool result of that stream (results of belay\'s own tools are not evidence)' };
+}
+
+// The note's own words are not evidence for it: a quote that holds, or is held by, its title or something it says it saw.
+const squash = (s) => norm(s).toLowerCase().replace(/\s+/g, ' ').trim();
+function selfQuote(note, quote) {
+  if (!note) return null;
+  const q = squash(quote);
+  const own = [note.title, ...((note.evidence || []).map((e) => e && e.saw))].filter((x) => typeof x === 'string' && x.trim()).map(squash);
+  return own.some((o) => o.includes(q) || q.includes(o)) ? 'the quote is the note\'s own title or evidence, which proves nothing about it' : null;
 }
 
 function gitShow(worktree, sha, rel) {
@@ -81,11 +104,13 @@ function workersOf(E, taskId) {
 }
 
 // cites: shaped by checkShape. Returns { ok, failures: [{ index, where, reason }] }.
-async function checkCites(E, taskId, cites) {
+async function checkCites(E, taskId, cites, note = null) {
   const workers = workersOf(E, taskId);
   const failures = [];
   const fail = (index, where, reason) => failures.push({ index, where, reason });
   for (const [i, c] of cites.entries()) {
+    const own = selfQuote(note, c.quote);
+    if (own) { fail(i, c.where, own); continue; }
     if (c.where === 'stream' || c.where.startsWith('stream:')) {
       const only = c.where === 'stream' ? null : c.where.slice(7);
       const pool = only ? workers.filter((w) => w.id === only) : workers;
@@ -101,7 +126,7 @@ async function checkCites(E, taskId, cites) {
       continue;
     }
     const rel = c.where.replace(/\\/g, '/').replace(/^\.\//, '');
-    if (path.isAbsolute(rel) || /^[A-Za-z]:/.test(rel) || rel.split('/').includes('..')) { fail(i, c.where, 'a file cite is a path inside the repository, relative to its root'); continue; }
+    if (!rel || rel.endsWith('/') || path.isAbsolute(rel) || /^[A-Za-z]:/.test(rel) || rel.split('/').includes('..')) { fail(i, c.where, 'a file cite is a path inside the repository, relative to its root'); continue; }
     const pool = workers.filter((w) => w.head_sha && w.worktree);
     if (!pool.length) { fail(i, c.where, `task ${taskId} has no worker row with a head commit and a worktree, so no file can be read at its head`); continue; }
     let hit = false;
@@ -114,7 +139,9 @@ async function checkCites(E, taskId, cites) {
     }
     if (!hit) fail(i, c.where, misses.join('; '));
   }
+  if (seam.afterCheck) await seam.afterCheck(); // tests only: lets a test land another review between the check and the write
   return { ok: failures.length === 0, failures };
 }
 
-module.exports = { checkShape, checkCites, toolResultTexts, QUOTE_MIN, CITES_MAX };
+const seam = { afterCheck: null };
+module.exports = { seam, checkShape, checkCites, toolResultTexts, QUOTE_MIN, CITES_MAX };

@@ -118,7 +118,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   let pollHandle = null;
   let pollInFlight = false; // 5a-2: at most one store read at a time, guard not a queue
   const holdRecorder = createHoldRecorder(); // wake.cjs (design item 9): moved out of this file
-  const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId }); // wave 4: a refuted note wakes the orchestrator
+  const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId, enabled: !!spec.notes }); // wave 4: a refuted note wakes the orchestrator (notes runs only)
   let readyTimer = null;
   let sigintHandler = null;
 

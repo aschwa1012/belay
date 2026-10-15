@@ -28,14 +28,14 @@ const DEFAULTS = Object.freeze({
   notes_lesson_question: false, // write ablation: the question aimed at lessons learned
   notes_overflow_line: false, // ADR 0047 decision 6: one neutral line counting the path and term notes the index could not hold; off until measured
   notes_trust_wording: false, // ADR 0047 decision 6: basis, evidence and review status instead of "unverified"; off until the harm arms have run
-  review_job: false, // wave 4: when a task that wrote notes ends with no reviewer, belay starts one short read-only review job for them; off until the planted-false-claim gate sets its model
-  review_job_model: 'claude-haiku-5-5', // the review job's model; a lever, set by the planted-false-claim gate
-  review_job_cost_cap_usd: 0.05, // the review job's cost cap in dollars: passed to the substrate as its budget, and a job that went over leaves its notes unreviewed
+  note_review: false, // wave 4: when a task that wrote notes ends with no reviewer, belay starts one short read-only review job for them; off until the planted-false-claim gate sets its model
+  note_review_model: 'claude-haiku-5-5', // the review job's model; a lever, set by the planted-false-claim gate
+  note_review_cost_cap_usd: 0.05, // the review job's cost cap in dollars: passed to the substrate as its budget, and a job that went over leaves its notes unreviewed
 });
 
 const BOOLEAN_KEYS = ['redact', 'rules', 'capture', 'observations', 'project_writes', 'cost_ledger',
-  'first_message_index', 'bottle', 'wrapup', 'knowledge_agent', 'notes', 'notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording', 'review_job'];
-const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+  'first_message_index', 'bottle', 'wrapup', 'knowledge_agent', 'notes', 'notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording', 'note_review'];
+const MODEL_RE = /^claude-(haiku|sonnet|opus)-5-5$/; // a Claude 5.5 model id: the only models the roster allows (ADR 0021 amendments 5 and 6)
 const SUMMARIES = ['off', 'mechanical'];
 const PROJECT_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const INDEX_BYTES_MAX = 4096; // ADR 0042 decision 2
@@ -79,9 +79,9 @@ function parseMemoryBlock(block) {
   if (v.notes && v.project === null) return { error: 'memory.notes needs memory.project: notes live in the project namespace' };
   // Notes outlive the run in the project namespace, so they never take unredacted text.
   if (v.notes && v.redact === false) return { error: 'memory.redact false cannot be combined with memory.notes true: the project namespace outlives the run and must never hold unredacted text' };
-  if (typeof v.review_job_model !== 'string' || !MODEL_RE.test(v.review_job_model)) return { error: 'memory.review_job_model must be a model name' };
-  if (typeof v.review_job_cost_cap_usd !== 'number' || !(v.review_job_cost_cap_usd > 0 && v.review_job_cost_cap_usd <= 5)) return { error: 'memory.review_job_cost_cap_usd must be a number above 0 and at most 5' };
-  for (const k of ['notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording', 'review_job']) if (v[k] && !v.notes) return { error: `memory.${k} needs memory.notes` };
+  if (typeof v.note_review_model !== 'string' || !MODEL_RE.test(v.note_review_model)) return { error: 'memory.note_review_model must be a Claude 5.5 model id (claude-haiku-5-5, claude-sonnet-5-5 or claude-opus-5-5)' };
+  if (typeof v.note_review_cost_cap_usd !== 'number' || !(v.note_review_cost_cap_usd > 0 && v.note_review_cost_cap_usd <= 5)) return { error: 'memory.note_review_cost_cap_usd must be a number above 0 and at most 5' };
+  for (const k of ['notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording', 'note_review']) if (v[k] && !v.notes) return { error: `memory.${k} needs memory.notes` };
   if (v.summaries === 'mechanical' && !v.observations) return { error: 'memory.summaries "mechanical" needs memory.observations' };
   return { value: v };
 }
@@ -104,7 +104,7 @@ const OVERRIDES = {
   bottle_bytes: { type: 'integer', min: 1, max: BOTTLE_BYTES_MAX },
   notes_match_threshold: { type: 'number', min: 0, max: 1, minExclusive: true },
   notes_match_n: { type: 'integer', min: 1, max: 10 },
-  review_job_cost_cap_usd: { type: 'number', min: 0, max: 5, minExclusive: true },
+  note_review_cost_cap_usd: { type: 'number', min: 0, max: 5, minExclusive: true },
 };
 
 function specOf(key) {

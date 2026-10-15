@@ -4,7 +4,7 @@
 // task recorded). Two routes, one apply:
 //   a task with a reviewer   the review task's brief gains the notes to judge (reviewTail); when the review task ends, its
 //                            hand-back's `memory_verdicts` are applied (applyHandback)
-//   a task without one       when it ends having written notes, with `memory.review_job` on, the run manager starts one short
+//   a task without one       when it ends having written notes, with `memory.note_review` on, the run manager starts one short
 //                            read-only job: a worker belay spawns (invariant 1) with Read, Glob and Grep, given the notes, the diff
 //                            and the stream path. It only confirms or refutes, with cites. Its model and cost cap are levers.
 // The job's last message is its answer; the run manager parses it and applies it. The worker's stream is the durable copy, so a
@@ -61,8 +61,9 @@ async function reviewTail(ctx, w) {
 // A review task's hand-back: its verdicts, once per task per manager (the store makes a second application a no-op).
 async function applyHandback(J, task) {
   const { core, s } = { core: J.core, s: stateOf(J.ctx) };
-  if (s.applied.has(task.id)) return null;
-  s.applied.add(task.id);
+  const once = `${task.id}@${task.handoff && task.handoff.at}`; // a reassigned review task hands back again
+  if (s.applied.has(once)) return null;
+  s.applied.add(once);
   try { return await core.memory.noteVerdicts({ review_task_id: task.id }); } catch (e) {
     await fail(core, { key: `route:${task.id}`, task_id: task.id, message: `the verdicts of review ${task.id} were not applied: ${e && e.message}` }, e);
     return null;
@@ -88,7 +89,8 @@ function lastTextOf(streamFile) {
 // Parse and apply a job's answer. `text` is its last message. Returns the receipt row.
 async function finishJob(core, { workerId, taskId, text, cost, cap }) {
   const base = { worker_id: workerId, task_id: taskId, key: `task:${taskId}` };
-  if (typeof cost === 'number' && cost > cap) return fail(core, base, Object.assign(new Error(`the review job cost $${cost.toFixed(4)}, over its cap of $${cap}; its verdicts were not used and the notes stay unreviewed`), { code: 'E_COST_CAP' }));
+  if (!(typeof cost === 'number' && cost > 0)) return fail(core, base, Object.assign(new Error('the review job recorded no cost, so its cap cannot be checked; its verdicts were not used and the notes stay unreviewed'), { code: 'E_COST_CAP' }));
+  if (cost > cap) return fail(core, base, Object.assign(new Error(`the review job cost $${cost.toFixed(4)}, over its cap of $${cap}; its verdicts were not used and the notes stay unreviewed`), { code: 'E_COST_CAP' }));
   const p = T.parseJobOutput(text);
   if (p.error) return fail(core, base, Object.assign(new Error(p.error), { code: 'E_ARGS' }));
   let out;
@@ -131,6 +133,7 @@ async function runJob(J, task) {
     if (((prior && prior.events) || []).some((e) => (e.ok === 1 || e.ok === true) && e.key === base.key)) return;
     const brief = await core.memory.reviewBrief({ reviewed_task_id: taskId });
     if (!brief.notes.length) return; // nothing unreviewed: nothing to spend on
+    if (ctx.manager && typeof ctx.manager._closed === 'function' && ctx.manager._closed()) throw Object.assign(new Error('the run manager is shutting down, so no review job was started'), { code: 'E_SHUTDOWN' });
     if (!ctx.manager || typeof ctx.manager.spawn !== 'function') throw Object.assign(new Error('the run manager has no way to spawn the review job here'), { code: 'E_INTERNAL' });
     const workers = ((await core.worker.list({})).workers || []).filter((x) => x.run_id === ctx.runId && x.task_id === taskId);
     const inputs = await writeInputs(ctx, taskId, wid, brief.notes, workers);
@@ -138,8 +141,8 @@ async function runJob(J, task) {
     const prompt = T.jobPrompt(T.jobTemplate(), { notesFile: inputs.notesFile, diffFile: inputs.diffFile, streams, taskId });
     const worktree = inputs.worktree || ctx.worktree || (workers.find((x) => x.worktree) || {}).worktree;
     if (!worktree) throw Object.assign(new Error('no worktree is known for the task, so the review job has nowhere to run'), { code: 'E_ARGS' });
-    const cap = lv.review_job_cost_cap_usd;
-    await ctx.manager.spawn({ substrate: 'claude-code', worktree, worker_id: wid, model: lv.review_job_model, allowed_tools: BUILTINS, tools: BUILTINS, max_budget_usd: cap, prompt });
+    const cap = lv.note_review_cost_cap_usd;
+    await ctx.manager.spawn({ substrate: 'claude-code', worktree, worker_id: wid, model: lv.note_review_model, allowed_tools: BUILTINS, tools: BUILTINS, max_budget_usd: cap, prompt });
     let text = '', cost = null, settled = null;
     try {
       const got = await ctx.manager.wait({ worker_ids: [wid], timeout_ms: JOB_WALL_MS });
@@ -158,7 +161,7 @@ async function onTaskEnded(J, task) {
   const { ctx, lv } = J;
   if (!lv.notes || !task || !ENDED.has(task.state)) return;
   if (isReview(task)) { await applyHandback(J, task); return; }
-  if (!lv.review_job) return;
+  if (!lv.note_review) return;
   const s = stateOf(ctx);
   if (s.jobs.has(task.id)) return;
   const all = ((await J.core.task.list({})).tasks) || [];
@@ -186,15 +189,15 @@ async function sweep(J, tasks, workers) {
   for (const t of tasks) if (isReview(t) && ENDED.has(t.state)) await applyHandback(J, t);
   const jobWorkers = workers.filter((w) => String(w.id).startsWith(JOB_PREFIX) && w.run_id === ctx.runId);
   const events = ((await core.memory.events({ run_id: ctx.runId || undefined, kinds: ['review_job'] })) || {}).events || [];
-  const done = (taskId) => events.some((e) => e.key === `task:${taskId}` && (e.ok === 1 || e.ok === true));
+  const done = (taskId) => events.some((e) => e.key === `task:${taskId}`); // a receipt of any kind: a job the live path refused is not applied here from its last draft
   for (const w of jobWorkers) {
     const taskId = taskOfJob(w.id);
     if (!taskId || done(taskId)) continue;
     const got = await core.worker.get({ worker_id: w.id }).catch(() => null);
     const text = got && got.stream_path ? lastTextOf(got.stream_path) : '';
-    await finishJob(core, { workerId: w.id, taskId, text, cost: typeof w.cost_usd === 'number' ? w.cost_usd : null, cap: lv.review_job_cost_cap_usd });
+    await finishJob(core, { workerId: w.id, taskId, text, cost: typeof w.cost_usd === 'number' ? w.cost_usd : null, cap: lv.note_review_cost_cap_usd });
   }
-  if (!lv.review_job) return;
+  if (!lv.note_review) return;
   const started = new Set(jobWorkers.map((w) => taskOfJob(w.id)));
   for (const t of tasks) {
     if (isReview(t) || !ENDED.has(t.state) || started.has(t.id) || events.some((e) => e.key === `task:${t.id}`)) continue; // a receipt of any kind is the record

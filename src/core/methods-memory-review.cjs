@@ -28,7 +28,7 @@ const VERDICTS = ['confirmed', 'refuted'];
 const REASON_MAX = 500;
 const VERDICTS_MAX = 50;
 const REF_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
-const ID_COLS = 'id, namespace, type, status, status_receipt, task_id, written_by, run_id, body';
+const ID_COLS = 'id, title, namespace, type, status, status_receipt, task_id, written_by, run_id, body';
 
 const bad = (message, detail) => err('E_ARGS', message, detail);
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -41,7 +41,7 @@ function guard(E, caller) {
 }
 
 // The route: who reviewed, under what reference, which tasks' notes it may judge, and the verdicts as stated.
-function routeOf(E, args) {
+function routeOf(E, args, caller) {
   if (args.review_task_id !== undefined) {
     if (args.job !== undefined || args.verdicts !== undefined) throw bad('memory.noteVerdicts takes review_task_id, or job and verdicts, not both');
     const t = rows.current(E.store, 'task', args.review_task_id);
@@ -54,13 +54,16 @@ function routeOf(E, args) {
     }
     const r = h.result && isObj(h.result) ? h.result : null;
     const list = r && r.memory_verdicts;
-    return { reviewer: h.by, ref: t.id, scope: Array.isArray(t.depends_on) ? t.depends_on : [], verdicts: list === undefined ? null : list, task_id: t.id };
+    return { reviewer: h.by, ref: t.id, keyBase: `review:${t.id}@${h.at}`, scope: Array.isArray(t.depends_on) ? t.depends_on : [], verdicts: list === undefined ? null : list, task_id: t.id };
   }
   const j = args.job;
   if (!isObj(j) || !validId(j.worker_id) || !validId(j.reviewed_task_id)) throw bad('memory.noteVerdicts needs review_task_id, or job { worker_id, reviewed_task_id } with verdicts');
   if (!j.worker_id.startsWith('notereview-')) throw bad(`job.worker_id ${j.worker_id} is not a review job (its id starts notereview-)`, { worker_id: j.worker_id });
-  if (!rows.current(E.store, 'worker', j.worker_id)) throw err('E_NOT_FOUND', `no worker row ${j.worker_id}: a review job is a worker belay spawned`, { worker_id: j.worker_id });
-  return { reviewer: j.worker_id, ref: j.worker_id, scope: [j.reviewed_task_id], verdicts: args.verdicts === undefined ? null : args.verdicts, task_id: j.reviewed_task_id };
+  if (j.worker_id !== `notereview-${j.reviewed_task_id}`) throw bad(`job.worker_id ${j.worker_id} is not the review job of task ${j.reviewed_task_id}`, { worker_id: j.worker_id });
+  const jw = rows.current(E.store, 'worker', j.worker_id);
+  if (!jw) throw err('E_NOT_FOUND', `no worker row ${j.worker_id}: a review job is a worker belay spawned`, { worker_id: j.worker_id });
+  if (caller && caller.run_id && jw.run_id && jw.run_id !== caller.run_id) throw bad(`worker ${j.worker_id} belongs to another run`, { worker_id: j.worker_id });
+  return { reviewer: j.worker_id, ref: j.worker_id, keyBase: `review:${j.worker_id}`, scope: [j.reviewed_task_id], verdicts: args.verdicts === undefined ? null : args.verdicts, task_id: j.reviewed_task_id };
 }
 
 function shapeOne(v) {
@@ -96,9 +99,14 @@ function applyOne(E, caller, route, v, n) {
   const at = Date.now();
   const receipt = `review:${route.ref}`;
   const status = v.verdict === 'confirmed' ? 'verified' : 'refuted';
-  const previous = n.status || 'unverified';
-  const common = { run_id: caller.run_id || n.run_id, worker_id: route.reviewer, task_id: n.task_id, key: `review:${route.ref}:${n.id}` };
+  const common = { run_id: caller.run_id || n.run_id, worker_id: route.reviewer, task_id: n.task_id, key: `${route.keyBase}:${n.id}` };
   return E.store.tx(() => {
+    // The status is read again inside the write: the citation check awaited a file, and another review may have landed since
+    // admit() looked. A refuted note is never confirmed back, and the answer's previous_status is what was really there.
+    const cur = E.store.p('SELECT status FROM memory_entries WHERE id = ?').get(n.id);
+    if (!cur) throw err('E_NOT_FOUND', `no note ${n.id}`, { id: n.id });
+    const previous = cur.status || 'unverified';
+    if (previous === 'refuted' && v.verdict === 'confirmed') throw bad(`note ${n.id} was refuted while this verdict was being checked; a refuted note is changed back only by the operator`, { id: n.id });
     E.store.p('UPDATE memory_entries SET status = ?, status_receipt = ?, status_by = ?, status_at = ? WHERE id = ?').run(status, receipt, E.memoryWriter(caller), at, n.id);
     E.store.patchBody(n.id, (b) => { b.review = { verdict: v.verdict, by: route.reviewer, ref: route.ref, at, reason: v.reason, cites: v.cites }; return b; });
     const ev = recordEventSync(E, caller, { kind: 'note_review', ok: true, ...common, row_ids: [n.id], newest_row_id: n.id, message: `${v.verdict}: ${v.reason}`.slice(0, 300) });
@@ -109,7 +117,7 @@ function applyOne(E, caller, route, v, n) {
 
 async function noteVerdicts(E, caller, args) {
   guard(E, caller);
-  const route = routeOf(E, args || {});
+  const route = routeOf(E, args || {}, caller);
   if (!REF_RE.test(route.ref)) throw bad(`review reference ${route.ref} is not a valid receipt reference`);
   const out = { reviewer: route.reviewer, ref: route.ref, applied: [], refused: [], already: [], unjudged: [] };
   if (route.verdicts === null) { out.no_verdicts = true; }
@@ -121,7 +129,7 @@ async function noteVerdicts(E, caller, args) {
       const message = String(e.message).slice(0, 300);
       out.refused.push({ index, id: idOf, code: codeOf(e), message, ...(e.detail ? { detail: e.detail } : {}) });
       try {
-        recordEventSync(E, caller, { kind: 'note_review', ok: false, code: codeOf(e), run_id: (n && n.run_id) || caller.run_id, worker_id: route.reviewer, task_id: (n && n.task_id) || undefined, key: `review:${route.ref}:${idOf || index}`, row_ids: idOf ? [idOf] : undefined, message });
+        recordEventSync(E, caller, { kind: 'note_review', ok: false, code: codeOf(e), run_id: (n && n.run_id) || caller.run_id, worker_id: route.reviewer, task_id: (n && n.task_id) || undefined, key: `${route.keyBase}:${idOf || index}`, row_ids: idOf ? [idOf] : undefined, message });
       } catch { /* the refusal itself is in the answer */ }
     };
     let n = null;
@@ -129,10 +137,10 @@ async function noteVerdicts(E, caller, args) {
       const v = shapeOne(raw);
       if (seen.has(v.id)) throw bad(`note ${v.id} has two verdicts in one review`, { id: v.id });
       seen.add(v.id);
-      const done = E.store.p("SELECT id FROM memory_event WHERE kind = 'note_review' AND ok = 1 AND key = ?").get(`review:${route.ref}:${v.id}`);
+      const done = E.store.p("SELECT id FROM memory_event WHERE kind = 'note_review' AND ok = 1 AND key = ?").get(`${route.keyBase}:${v.id}`);
       if (done) { out.already.push({ id: v.id, event_id: done.id }); continue; }
       n = admit(E, caller, route, v);
-      const chk = await CC.checkCites(E, n.task_id, v.cites);
+      const chk = await CC.checkCites(E, n.task_id, v.cites, { title: n.title, evidence: parse(n.body).evidence });
       if (!chk.ok) throw err('E_CITATION', `note ${n.id}: ${chk.failures.length} of ${v.cites.length} cites are not in the evidence task ${n.task_id} recorded; the verdict is dropped (${chk.failures.map((f) => `cites[${f.index}] ${f.where}: ${f.reason}`).join(' | ')})`.slice(0, 600), { id: n.id, failures: chk.failures });
       out.applied.push(applyOne(E, caller, route, v, n));
     } catch (e) { refuse(e, n); }

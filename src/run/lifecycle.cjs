@@ -97,7 +97,8 @@ async function killSurvivor(w, e) {
   const gone = await P.waitPidGone(pid, { timeoutMs: 5000 });
   return { worker_id: w.id, code: (e && e.code) || null, pid, pid_gone_ms: gone, tree_kill: w.treeKill || null };
 }
-async function shutdown(workers, { stop, core, clearPoll, markClosed, markOwnerGone, onDrained }) {
+async function shutdown(workers, { stop, core, clearPoll, markClosed, markOwnerGone, onDrained, beforeStop }) {
+  if (beforeStop) await Promise.resolve().then(beforeStop).catch(() => {}); // wave 4: a review job in flight finishes before any worker is stopped
   const t0 = now();
   const stopped = [];
   const left_parked = [];

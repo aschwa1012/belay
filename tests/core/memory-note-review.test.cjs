@@ -34,7 +34,12 @@ const note = (marker) => ({
   kind: 'lesson', title: `the ${marker} loader skips unlisted fixtures`, basis: 'observed',
   evidence: [{ where: `src/${marker}.js`, saw: 'the unlisted file was never read' }], applies_to: [`src/${marker}.js`], subjects: [marker],
 });
-const toolResultLine = (text) => `${JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text }] }] } })}\n`;
+let useSeq = 0;
+// A tool call and its result, as the stream records them: the result only counts as evidence when its tool_use is there and is not belay's.
+const toolResultLine = (text, name = 'Bash') => {
+  const id = `tu${++useSeq}`;
+  return `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input: {} }] } })}\n${JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text }] }] } })}\n`;
+};
 
 // A worker `w` that worked a fresh task and handed back one note; the worker row carries a worktree and head commit,
 // and its stream holds one tool result. Returns { task, note }.
@@ -87,7 +92,7 @@ test('R1: a confirmed verdict marks the note verified with a review: receipt, an
   const b = bodyOf(w.note);
   assert.deepStrictEqual([b.review.verdict, b.review.by, b.review.ref], ['confirmed', 'rev-a', rt]);
   assert.strictEqual(b.review.cites[0].quote, 'fixtures/unlisted.json was never opened');
-  const ev = events('note_review').find((e) => e.key === `review:${rt}:${w.note}`);
+  const ev = events('note_review').find((e) => e.key.startsWith(`review:${rt}@`) && e.key.endsWith(`:${w.note}`));
   assert.deepStrictEqual([ev.ok, ev.task_id, ev.worker_id, ev.written_by], [1, w.task, 'rev-a', 'harness']);
 });
 
@@ -112,7 +117,7 @@ test('R3: a cite whose quote is not in the recorded evidence is E_CITATION; noth
   assert.deepStrictEqual([out.applied.length, out.refused[0].code, out.refused[0].id], [0, 'E_CITATION', w.note]);
   assert.strictEqual(rowOf(w.note).status ?? 'unverified', 'unverified');
   assert.ok(!('review' in bodyOf(w.note)));
-  const ev = events('note_review').find((e) => e.key === `review:${rt}:${w.note}`);
+  const ev = events('note_review').find((e) => e.key.startsWith(`review:${rt}@`) && e.key.endsWith(`:${w.note}`));
   assert.deepStrictEqual([ev.ok, ev.code], [0, 'E_CITATION']);
 });
 
@@ -139,8 +144,8 @@ test('R5: a writer cannot review its own note, and neither can a worker that hel
   assert.deepStrictEqual([out.applied.length, out.refused[0].code, out.refused[0].detail.reason], [0, 'E_ROLE', 'independence']);
   assert.strictEqual(rowOf(w.note).status ?? 'unverified', 'unverified');
   // a job whose worker id equals the writer's lease holder is refused the same way
-  await call('worker.write', orch, { id: 'notereview-same', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's', last_event_at: Date.now() });
-  const j = await call('memory.noteVerdicts', harness, { job: { worker_id: 'notereview-same', reviewed_task_id: w.task }, verdicts: [verdict(w.note, 'confirmed', [cite('fixtures/unlisted.json was never opened')])] });
+  await call('worker.write', orch, { id: `notereview-${w.task}`, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's', last_event_at: Date.now() });
+  const j = await call('memory.noteVerdicts', harness, { job: { worker_id: `notereview-${w.task}`, reviewed_task_id: w.task }, verdicts: [verdict(w.note, 'confirmed', [cite('fixtures/unlisted.json was never opened')])] });
   assert.strictEqual(j.applied.length, 1, 'a different worker with no lease on the task may judge it');
 });
 
@@ -177,7 +182,7 @@ test('R9: applying the same review twice writes once', async () => {
   await apply(rt);
   const again = await apply(rt);
   assert.deepStrictEqual([again.applied.length, again.already.length], [0, 1]);
-  assert.strictEqual(events('note_review').filter((e) => e.key === `review:${rt}:${w.note}`).length, 1);
+  assert.strictEqual(events('note_review').filter((e) => e.key.startsWith(`review:${rt}@`) && e.key.endsWith(`:${w.note}`)).length, 1);
 });
 
 test('R10: a refuted note stays refuted: a later confirmed verdict is refused', async () => {
@@ -207,7 +212,7 @@ test('R12: reviewBrief names the notes a review task should judge, and nothing f
 test('R13: the job route needs a notereview- worker row belay spawned', async () => {
   const w = await written('w-m', 'K15');
   const v = [verdict(w.note, 'confirmed', [cite('fixtures/unlisted.json was never opened')])];
-  await assert.rejects(call('memory.noteVerdicts', harness, { job: { worker_id: 'notereview-ghost', reviewed_task_id: w.task }, verdicts: v }), (e) => e.code === 'E_NOT_FOUND');
+  await assert.rejects(call('memory.noteVerdicts', harness, { job: { worker_id: `notereview-${w.task}`, reviewed_task_id: w.task }, verdicts: v }), (e) => e.code === 'E_NOT_FOUND');
   await assert.rejects(call('memory.noteVerdicts', harness, { job: { worker_id: 'w-m', reviewed_task_id: w.task }, verdicts: v }), (e) => e.code === 'E_ARGS');
 });
 
@@ -246,4 +251,50 @@ test('R15: reviewBrief names a refuted note a reviewed task\'s worker was shown,
   const t = await call('task.create', orch, { spec: 'review of victim', depends_on: [victim.task], acceptance: { verdict: true } });
   const b = await call('memory.reviewBrief', orch, { task_id: t.id });
   assert.deepStrictEqual(b.refuted_shown.map((x) => [x.note_id, x.task_id, x.worker_id, x.reason]), [[bad.note, victim.task, 'w-o2', 'wrong about the loader']]);
+});
+
+test('R16 (review B-1): a note cannot be confirmed by quoting itself: belay tool results and the note\'s own title or evidence are not evidence', async () => {
+  const title = 'the K40 loader skips unlisted fixtures';
+  const w = await written('w-p', 'K40', 'loader.js read 3 files\n');
+  // what the adapter hands the worker as the lease_release result echoes the note's title; a search result echoes notes too
+  fs.appendFileSync(`${dir}/workers/w-p/stream.jsonl`, toolResultLine(JSON.stringify({ notes: [{ title }] }), 'mcp__belay__lease_release'));
+  fs.appendFileSync(`${dir}/workers/w-p/stream.jsonl`, toolResultLine(`grep hit: ${title} (from a file)`));
+  const only = async (quote, where = 'stream') => {
+    const rt = await review(`rev-p${++seq}`, w.task, [verdict(w.note, 'confirmed', [cite(quote, where)])]);
+    return apply(rt);
+  };
+  const viaBelay = await only(title);
+  assert.strictEqual(viaBelay.refused[0].code, 'E_CITATION');
+  const viaHit = await only('grep hit: the K40 loader skips unlisted fixtures (from a file)');
+  assert.strictEqual(viaHit.refused[0].code, 'E_CITATION', 'a quote that contains the note\'s title is the note quoting itself');
+  const sub = await only('loader skips unlisted');
+  assert.strictEqual(sub.refused[0].code, 'E_CITATION', 'a fragment of the title is too');
+  const saw = await only('the unlisted file was never read');
+  assert.strictEqual(saw.refused[0].code, 'E_CITATION', 'and so is what the note says it saw');
+  assert.strictEqual(rowOf(w.note).status ?? 'unverified', 'unverified');
+  const real = await only('loader.js read 3 files');
+  assert.strictEqual(real.applied.length, 1, 'a line the world answered is still evidence');
+});
+
+test('R17 (review B-2): a confirm whose check was in flight when a refute landed is refused; a refuted note is never verified again', async () => {
+  const w = await written('w-q', 'K41');
+  await call('worker.write', orch, { id: `notereview-${w.task}`, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's-job', last_event_at: Date.now() });
+  const CC = core('citation-check.cjs');
+  CC.seam.afterCheck = async () => {
+    CC.seam.afterCheck = null;
+    const rt = await review('rev-q', w.task, [verdict(w.note, 'refuted', [cite('fixtures/unlisted.json was never opened')])]);
+    assert.strictEqual((await apply(rt)).applied[0].status, 'refuted');
+  };
+  try {
+    const c = await call('memory.noteVerdicts', harness, { job: { worker_id: `notereview-${w.task}`, reviewed_task_id: w.task }, verdicts: [verdict(w.note, 'confirmed', [cite("return 'skips unlisted fixtures'", 'loader.js')])] });
+    assert.deepStrictEqual([c.applied.length, c.refused[0].code], [0, 'E_ARGS']);
+    assert.match(c.refused[0].message, /refuted while this verdict was being checked/);
+  } finally { CC.seam.afterCheck = null; }
+  assert.strictEqual(rowOf(w.note).status, 'refuted');
+  assert.match(rowOf(w.note).status_receipt, /^review:rev-q|^review:[0-9a-f-]{36}$/);
+});
+
+test('R18: the job route needs the review job\'s own id for the task', async () => {
+  const w = await written('w-r', 'K42');
+  await assert.rejects(call('memory.noteVerdicts', harness, { job: { worker_id: 'notereview-someone-else', reviewed_task_id: w.task }, verdicts: [] }), (e) => e.code === 'E_ARGS' && /not the review job of task/.test(e.message));
 });

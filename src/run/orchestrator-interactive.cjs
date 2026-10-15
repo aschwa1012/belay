@@ -232,7 +232,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
   if (core && core.worker && typeof core.worker.list === 'function') {
     try {
       const WP = require('./wake-pipe.cjs');
-      wakePub = WP.startWakePublisher({ core, runId, pipeName: deps.wakePipeName || WP.wakePipeName(dataDir, runId, wakeNonce), pollMs, isHeld: wakeHeld || deps.wakeHeld || (() => false), onRelease: wakeRelease || deps.wakeRelease || null });
+      wakePub = WP.startWakePublisher({ core, runId, notes: !!spec.notes, pipeName: deps.wakePipeName || WP.wakePipeName(dataDir, runId, wakeNonce), pollMs, isHeld: wakeHeld || deps.wakeHeld || (() => false), onRelease: wakeRelease || deps.wakeRelease || null });
       await wakePub.listening;
     } catch (e) {
       wakeFailure = `the wake pipe could not be opened (${(e && (e.code || e.message)) || e})`;

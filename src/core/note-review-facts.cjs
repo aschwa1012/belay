@@ -26,6 +26,17 @@ function citedBy(task, noteId) {
   return !!(r && Array.isArray(r.memory_ids) && r.memory_ids.includes(noteId));
 }
 
+// The review tasks over the shown tasks, running or finished: the orchestrator's flag for a review that is already under way.
+function reviewsOf(E, taskIds) {
+  if (!taskIds.length) return [];
+  const out = [];
+  for (const t of rows.currentAll(E.store, 'task')) {
+    if (!t.acceptance || t.acceptance.verdict !== true || !Array.isArray(t.depends_on)) continue;
+    for (const d of t.depends_on) if (taskIds.includes(d)) out.push({ review_task_id: t.id, task_id: d, state: FINISHED.has(t.state) ? 'finished' : 'running' });
+  }
+  return out.slice(0, NOTES_MAX);
+}
+
 function refutationOf(E, noteId) {
   const n = noteRow(E, noteId);
   if (!n) return null;
@@ -47,7 +58,7 @@ function refutationOf(E, noteId) {
   return {
     note: { id: n.id, title: n.title, namespace: n.namespace, status: n.status || 'unverified', task_id: n.task_id, written_by: n.written_by, run_id: n.run_id },
     review: review && { verdict: review.verdict, by: review.by, ref: review.ref, at: review.at, reason: review.reason, cites: review.cites },
-    shown, notes_written_by_shown: written,
+    shown, reviews_of_shown: reviewsOf(E, taskIds), notes_written_by_shown: written,
   };
 }
 
@@ -64,7 +75,7 @@ function notesUnderReview(E, taskIds, project) {
 // Refuted notes (anywhere) that a worker of one of these tasks was shown: [{ note_id, reason, task_id, worker_id }].
 function refutedShownTo(E, taskIds) {
   if (!taskIds.length) return [];
-  const refuted = E.store.p("SELECT id, body FROM memory_entries WHERE type = 'note' AND status = 'refuted' LIMIT 500").all();
+  const refuted = E.store.p("SELECT id, body FROM memory_entries WHERE type = 'note' AND status = 'refuted' ORDER BY status_at DESC LIMIT 200").all();
   const want = new Set(taskIds);
   const out = [];
   for (const r of refuted) {

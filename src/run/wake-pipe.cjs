@@ -36,7 +36,7 @@ function wakePipeName(dataDir, runId, nonce) {
 const wakeId = (runId, ev) => `${runId}:${ev.worker_id}:${ev.event}:${ev.turn}:${ev.seq}`;
 
 function startWakePublisher({
-  core, runId, pipeName, pollMs = 1000, isHeld = () => false, onRelease = null, heartbeatMs = HEARTBEAT_MS, now = () => Date.now(),
+  core, runId, notes = false, pipeName, pollMs = 1000, isHeld = () => false, onRelease = null, heartbeatMs = HEARTBEAT_MS, now = () => Date.now(),
 }) {
   if (!core || !core.worker || typeof core.worker.list !== 'function') throw new Error('startWakePublisher: core.worker.list is required');
   if (!runId) throw new Error('startWakePublisher: runId is required');
@@ -47,7 +47,7 @@ function startWakePublisher({
   const queue = []; // derived while held
   const stats = { polls: 0, errors: 0, published: 0, held_max: 0, last_error: null };
   let baseline = {};
-  const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId }); // wave 4: a refuted note
+  const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId, enabled: !!notes }); // wave 4: a refuted note
   let wasHeld = false;
   let stopped = false;
   let inFlight = false;

@@ -457,7 +457,8 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     stop, core, clearPoll: () => { if (poll) { clearInterval(poll); poll = null; } },
     markClosed: () => { shutdownFlags.closed = true; },
     markOwnerGone: () => { shutdownFlags.ownerGone = true; return shutdownFlags.paired; },
-    onDrained: async () => { await NR.drain(ctx, 120000); return MP.runEnd(ctx); },
+    beforeStop: () => NR.drain(ctx, 120000),
+    onDrained: () => MP.runEnd(ctx),
   });
 
   const manager = {
@@ -471,7 +472,6 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     _closed: () => shutdownFlags.closed, // flipped by shutdown once every worker is stopped (lifecycle.cjs)
     _flags: () => shutdownFlags,
   };
-  ctx.manager = manager; // the memory jobs spawn the review job through it
   ctx.manager = manager; // the memory jobs spawn the review job through it
   return manager;
 }

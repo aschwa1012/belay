@@ -8,12 +8,12 @@ const L = require('../../src/run/launch.cjs');
 const tools = require('../../src/mcp/tools.cjs');
 const { parseMemoryBlock, DEFAULTS, TYPES } = require('../../src/core/memory-levers.cjs');
 
-test('S1: the review levers have defaults, types and validation; review_job needs notes', () => {
-  assert.deepStrictEqual([DEFAULTS.review_job, DEFAULTS.review_job_model, DEFAULTS.review_job_cost_cap_usd], [false, 'claude-haiku-5-5', 0.05]);
-  assert.strictEqual(TYPES.review_job_cost_cap_usd.type, 'number');
-  assert.strictEqual(TYPES.review_job_model.type, 'string');
-  assert.ok(parseMemoryBlock({ project: 'p', notes: true, review_job: true, review_job_model: 'claude-sonnet-5-5', review_job_cost_cap_usd: 0.25 }).value);
-  for (const bad of [{ review_job: true }, { project: 'p', notes: true, review_job_cost_cap_usd: 0 }, { project: 'p', notes: true, review_job_cost_cap_usd: 9 }, { project: 'p', notes: true, review_job_model: 'bad model' }]) {
+test('S1: the review levers have defaults, types and validation; note_review needs notes', () => {
+  assert.deepStrictEqual([DEFAULTS.note_review, DEFAULTS.note_review_model, DEFAULTS.note_review_cost_cap_usd], [false, 'claude-haiku-5-5', 0.05]);
+  assert.strictEqual(TYPES.note_review_cost_cap_usd.type, 'number');
+  assert.strictEqual(TYPES.note_review_model.type, 'string');
+  assert.ok(parseMemoryBlock({ project: 'p', notes: true, note_review: true, note_review_model: 'claude-sonnet-5-5', note_review_cost_cap_usd: 0.25 }).value);
+  for (const bad of [{ note_review: true }, { project: 'p', notes: true, note_review_cost_cap_usd: 0 }, { project: 'p', notes: true, note_review_cost_cap_usd: 9 }, { project: 'p', notes: true, note_review_model: 'bad model' }]) {
     assert.ok(parseMemoryBlock(bad).error, JSON.stringify(bad));
   }
 });
