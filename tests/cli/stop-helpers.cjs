@@ -78,9 +78,9 @@ function makeSpec(dir, overrides = {}) {
   return { specPath, wt, promptFile, runId, orchestratorDir };
 }
 
-function runCli(specPath, dataDir, env) {
+function runCli(specPath, dataDir, env, cwd = ROOT) {
   const proc = spawn(process.execPath, [CLI, 'run', specPath, '--data', dataDir, '--json'], {
-    cwd: ROOT, env: { ...process.env, ...env }, windowsHide: true,
+    cwd, env: { ...process.env, ...env }, windowsHide: true,
   });
   let stdout = ''; proc.stdout.on('data', (d) => { stdout += d; });
   let stderr = ''; proc.stderr.on('data', (d) => { stderr += d; });

@@ -169,7 +169,7 @@ function embedderLines(receipt) {
 }
 
 // Interactive exit code: a failure under `stop` is never a clean exit, whether or not the stop landed.
-const embedderUnsafe = (mode, levers, events) => mode === 'interactive' && levers.on_embedder_failure === 'stop' && events.length > 0;
+const embedderUnsafe = (mode, levers, events) => mode === 'interactive' && levers.on_embedder_failure === 'required' && events.length > 0;
 
 module.exports = {
   INTERACTIVE_MARKER, INTERACTIVE_PROMPT, FAST_CLOSE_ENDED_BY, FAST_RESERVE_MS, END_RESERVE_MS, SHUTDOWN_RESERVE_MS, PAUSE_NOTE, endRun, emptyOrchestratorBlock, takeFlag, parseModeKeys,

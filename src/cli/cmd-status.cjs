@@ -44,7 +44,7 @@ function renderText(receipt) {
     lines.push(`run: ${r.id} epoch ${r.epoch} ${life}`);
     // ADR 0034: a run paused by an embedder failure says so, with the worker, the call and the cause.
     if (r.embed_bounds) lines.push(`embedder: ${r.embed_bounds} index-query embed${r.embed_bounds === 1 ? '' : 's'} hit the ${require('../core/spawn-bounds.cjs').SPAWN_EMBED_MS} ms spawn bound (E_EMBED_BOUND); those workers got a keyword-only index`);
-    if (r.paused_at != null && r.ended_at == null) lines.push(`run paused at ${new Date(r.paused_at).toISOString()} by ${r.paused_by}${/embedder-failure [(]/.test(r.paused_by || '') ? ' (an embedder failure; fix the embedder, then belay resume)' : ''}`);
+    if (r.paused_at != null && r.ended_at == null) lines.push(`run paused at ${new Date(r.paused_at).toISOString()} by ${r.paused_by}${/embedder-failure [(]/.test(r.paused_by || '') ? ` (an embedder failure, on_embedder_failure required: fix the embedder and belay resume, or choose: belay resume ${r.id} --embedder keyword | --embedder off, or leave it paused)` : ''}`);
   }
   if (receipt.store) {
     const st = receipt.store;

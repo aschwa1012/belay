@@ -72,6 +72,10 @@ async function prepare(E, caller, args) {
     if (given) throw err('E_ARGS', 'lease.release: an operator release hands nothing back; notes and reported_wrong belong to the worker holding the lease');
     return null;
   }
+  // ADR 0034 amendment 1: with the run's memory off, a hand-back drops its notes and marks and still releases the lease.
+  if (given && E.memoryOff('memory.store') === 'refuse') {
+    return { dropped: { reason: 'memory is off for this run (on_embedder_failure off, after an embedder failure), so the notes and reported_wrong were not written', notes: Array.isArray(args.notes) ? args.notes.length : 0, reported_wrong: Array.isArray(args.reported_wrong) ? args.reported_wrong.length : 0 } };
+  }
   const lv = notesLevers(E, caller);
   if (!lv) {
     if (given) throw err('E_LEVER_OFF', 'lease.release: notes and reported_wrong need the run\'s memory.notes lever, and this run has it off', { lever: 'notes' });
@@ -97,14 +101,24 @@ async function prepare(E, caller, args) {
   // The model the worker was launched on, as the substrate reported it for the process belay spawned. Never from a note.
   const model = (worker && worker.model) || null;
   const prepared = [];
+  // Under `keyword` an embedder failure never fails the hand-back: a note whose text cannot be embedded is stored without a
+  // vector (the schema allows it), so keyword search finds it; it has no semantic neighbours checked, and the result says so.
+  const keywordMode = E.embedderMode() === 'keyword';
+  let embedFailed = null;
   for (const [i, n] of notes.entries()) {
     // Project rows are always scrubbed (ADR 0040 section 3); a title made longer by redaction is refused like any long one.
     const s = M.scrub(true, { text: NT.noteText(n), title: n.title, body: { evidence: n.evidence, applies_to: n.applies_to, subjects: n.subjects } });
     const title = NT.checkNote({ ...n, title: s.title }, i).title;
     if (size(s.body) > NOTE_BODY_MAX) throw err('E_NOTE_SHAPE', `notes[${i}]: the evidence, applies_to and subjects come to ${size(s.body)} bytes and the limit is ${NOTE_BODY_MAX}`, { index: i, max: NOTE_BODY_MAX });
-    const emb = await M.withEmbedding(E, { text: s.text }, 'embedding', 'text', caller);
-    const matches = await findMatches(E, caller, project, emb, lv);
-    prepared.push({ index: i, kind: n.kind, basis: n.basis, title, text: s.text, body: s.body, redactions: s.redactions, emb, matches, model });
+    let emb = null;
+    if (!embedFailed) {
+      try { emb = await M.withEmbedding(E, { text: s.text }, 'embedding', 'text', caller); } catch (e) {
+        if (!keywordMode) throw e; // only the embedding step is in this try, so any error here is the embedder's
+        embedFailed = { code: e.code, message: e.message };
+      }
+    }
+    const matches = emb ? await findMatches(E, caller, project, emb, lv) : [];
+    prepared.push({ index: i, kind: n.kind, basis: n.basis, title, text: s.text, body: s.body, redactions: s.redactions, emb: emb || {}, unembedded: embedFailed, matches, model });
   }
   return { project, lv, notes: prepared, wrong };
 }
@@ -144,7 +158,7 @@ function commit(E, caller, prep, { task_id }) {
       embedding: p.emb.embedding, embedding_model: p.emb.embedding_model, embedding_revision: p.emb.embedding_revision, dim: p.emb.dim,
       run_id: caller.run_id, task_id, source: 'model', written_by: by,
     });
-    return { index: p.index, id: row.id, action: row.action, state: pending ? 'pending' : 'stored', namespace: ns, title: p.title, ...(pending ? { matches: p.matches } : {}) };
+    return { index: p.index, id: row.id, action: row.action, state: pending ? 'pending' : 'stored', namespace: ns, title: p.title, ...(pending ? { matches: p.matches } : {}), ...(p.unembedded ? { embedded: false, embedder_failure: p.unembedded, note: 'stored without a vector (on_embedder_failure keyword): found by keyword search, and not compared with the other notes of the project' } : {}) };
   });
   const marked = prep.wrong.map(w => {
     const m = NT.SELF_REF.exec(w.replaced_by || '');
