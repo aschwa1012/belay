@@ -7,11 +7,11 @@
 const RI = require('./run-interactive.cjs');
 
 // `levers` is the parsed spec's lever block (`memory_levers` present only when it differs from the defaults).
-async function runCloseStages({ core, runId, levers, dataDir, worktree = null, goal = null, summary = null, ce = null, late = () => {}, stages = null, deps = {} }) {
+async function runCloseStages({ core, runId, levers, dataDir, worktree = null, goal = null, summary = null, ce = null, late = () => {}, stages = null, deps = {}, log = null }) {
   const lv = levers && levers.memory_levers;
   if (!lv || !lv.notes) return null;
   const S = stages || require('../run/close-stages.cjs');
-  return RI.within(ce, S.closeStages({ core: core.harness ? core.harness() : core, runId, levers: lv, dataDir, worktree, goal, summary, ...deps }), 'the run-close stages', { cut: true }, late, RI.END_RESERVE_MS);
+  return RI.within(ce, S.closeStages({ core: core.harness ? core.harness() : core, runId, levers: lv, dataDir, worktree, goal, summary, fast: ce ? () => ce.hupSeen() : null, log, ...deps }), 'the run-close stages', { cut: true }, late, RI.END_RESERVE_MS);
 }
 
 module.exports = { runCloseStages };

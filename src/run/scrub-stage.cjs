@@ -60,9 +60,11 @@ async function owe(core, runId, ids, e, workerId) {
 }
 
 // One scrub for the caller's run. `core` is the harness view of the core as the run's caller. Never throws: every outcome is a receipt
-// and a returned fact. opts: { core, runId, lv, dataDir, getManager, worktree, goal, summary }. `getManager` is asked only when a child is
-// to be spawned.
-async function runScrub({ core, runId, lv, dataDir, getManager, worktree = null, goal = null, summary = null }) {
+// and a returned fact. opts: { core, runId, lv, dataDir, getManager, worktree, goal, summary, fast, log }. `getManager` is asked only when
+// a child is to be spawned. `fast()` true (a fast close): nothing is spawned, the scope is recorded as owed, and a child already running
+// is killed by its exact pid. The items are owed BEFORE the child starts and cleared by the ok scrub_job that follows a successful apply,
+// so a run process that dies mid-stage loses nothing.
+async function runScrub({ core, runId, lv, dataDir, getManager, worktree = null, goal = null, summary = null, fast = null, log = null }) {
   if (!lv || !lv.notes) return { ran: false, reason: 'notes off' };
   if (lv.scrub_action === 'off') return { ran: false, reason: 'scrub_action off' };
   // The promotion step writes this run's nominations first (a harness call), so the scope below can list them. A core without the
@@ -71,20 +73,33 @@ async function runScrub({ core, runId, lv, dataDir, getManager, worktree = null,
   let scope;
   try { scope = await core.memory.scrubScope({}); } catch (e) { return { ran: false, reason: 'scope unreadable', code: J.codeOf(e), message: String(e && e.message).slice(0, 200) }; }
   if (!scope.items.length) return { ran: false, reason: 'empty scope', counts: scope.counts };
-  const offered = scope.items.slice(0, lv.scrub_max_items), rest = scope.items.slice(lv.scrub_max_items);
-  const ids = offered.map((i) => i.id);
   const jobId = `${JOB_PREFIX}${runId}-${Date.now().toString(36)}`;
+  if (fast && fast()) {
+    const ids = scope.items.map((i) => i.id);
+    await owe(core, runId, ids, J.coded('E_ABORTED', 'a fast close was requested, so the scrub was not started'), jobId);
+    return { ran: false, reason: 'fast close', owed: ids, counts: scope.counts };
+  }
+  const limit = await J.attemptLimit(core, 'scrub', 'scrub_job', lv.scrub_max_items); // half of an overrun attempt, down to 1
+  const offered = scope.items.slice(0, limit), rest = scope.items.slice(limit);
+  const ids = offered.map((i) => i.id);
   const out = { ran: true, job: jobId, counts: scope.counts, offered: ids.length, owed: [], mode: lv.scrub_action };
   const base = { run_id: runId, worker_id: jobId, key: `run:${runId}` };
   if (rest.length) {
     out.owed.push(...rest.map((i) => i.id));
-    await owe(core, runId, out.owed, Object.assign(new Error(`${rest.length} item(s) were over scrub_max_items (${lv.scrub_max_items})`), { code: 'E_ARGS' }), jobId);
+    await owe(core, runId, out.owed, Object.assign(new Error(`${rest.length} item(s) were over the ${limit} this scrub takes (scrub_max_items ${lv.scrub_max_items}${limit < lv.scrub_max_items ? ', halved after a cost overrun' : ''})`), { code: 'E_ARGS' }), jobId);
   }
+  await owe(core, runId, ids, J.coded('E_INTERRUPTED', 'a scrub was started for these items and had not finished'), jobId); // cleared by the ok scrub_job below
+  // An overrun (the job spent its cap, or failed having spent nearly all of it) is recorded once; the next attempt takes half the items.
+  const noteOverrun = async (failedJob) => {
+    if (out.overrun || !J.overran(out.cost, lv.scrub_cost_cap_usd, failedJob)) return;
+    out.overrun = { cost: out.cost, cap: lv.scrub_cost_cap_usd, attempted: ids.length, next: Math.max(1, Math.floor(ids.length / 2)) };
+    await J.receipt(core, { kind: 'stage_overrun', ok: false, code: 'E_COST_CAP', run_id: runId, worker_id: jobId, key: 'scrub', row_ids: ids, message: `the scrub of ${ids.length} note(s) cost $${Number(out.cost).toFixed(4)} against a cap of $${lv.scrub_cost_cap_usd}; nothing was applied and the next attempt takes ${out.overrun.next}; raise memory.scrub_cost_cap_usd to take more` });
+  };
   try {
     const workers = ((await core.worker.list({})).workers) || [];
     const tasks = (((await core.task.list({})).tasks) || []).filter((t) => t.run_id === runId);
     const evidence = pickEvidence(workers, runId);
-    const cwd = worktree || evidence.worktree;
+    const cwd = evidence.worktree || worktree; // the child reads, and the cites are checked, in this one worktree at this one head
     if (!cwd) throw J.coded('E_ARGS', 'no worktree is known for the run, so the scrub child has nowhere to run');
     const dir = path.join(dataDir, 'workers', jobId, 'inputs');
     const diffs = new Map();
@@ -94,25 +109,33 @@ async function runScrub({ core, runId, lv, dataDir, getManager, worktree = null,
       diffs.set(w.id, J.writeFileIn(dir, `diff-${w.id}.patch`, await J.diffText(w.worktree, w.base_sha, w.head_sha)));
     }
     const shown = offered.map((i) => ({ ...i, streams: i.streams.map((s) => abs(s.path)), diffs: i.streams.filter((s) => diffs.has(s.worker_id)).map((s) => diffs.get(s.worker_id)) }));
-    const briefFile = J.writeFileIn(dir, 'brief.md', buildBrief({ runId, project: scope.project, goal, summary, tasks, evidence, items: shown }));
+    const briefFile = J.writeFileIn(dir, 'brief.md', buildBrief({ runId, project: scope.project, goal, summary, tasks, evidence: { ...evidence, worktree: cwd }, items: shown }));
     const files = [...new Set(shown.flatMap((i) => i.streams))].slice(0, STREAMS_MAX);
-    const got = await J.runChild({ manager: await getManager(), workerId: jobId, worktree: cwd, model: lv.scrub_model, capUsd: lv.scrub_cost_cap_usd, wallMs: lv.scrub_wall_s * 1000, prompt: promptFor(briefFile), label: 'scrub job' });
-    if (got.error) throw got.error;
+    if (log) log(`run close: scrubbing ${ids.length} note(s), at most ${lv.scrub_wall_s} s and $${lv.scrub_cost_cap_usd}`);
+    const got = await J.runChild({ manager: await getManager(), workerId: jobId, worktree: cwd, model: lv.scrub_model, capUsd: lv.scrub_cost_cap_usd, wallMs: lv.scrub_wall_s * 1000, prompt: promptFor(briefFile), label: 'scrub job', fast });
     out.cost = got.cost;
+    if (got.survivor) out.survivor = got.survivor;
+    await noteOverrun(!!got.error);
+    if (got.error) throw got.error;
     const bad = J.costError(got.cost, lv.scrub_cost_cap_usd, 'scrub job');
-    if (bad) throw bad;
+    if (bad) throw bad; // never a verdict from an over-cap job
     const parsed = J.parseList(got.text, 'scrub');
     if (parsed.error) throw J.coded('E_ARGS', parsed.error);
     const applied = await core.memory.scrubApply({ scrub: parsed.list, scope: ids, ...(evidence.head_sha ? { head_sha: evidence.head_sha } : {}), ...(evidence.worktree ? { worktree: abs(evidence.worktree) } : {}), evidence_files: files });
     out.result = { mode: applied.mode, counts: applied.counts, refused: applied.refused.map((r) => ({ id: r.id, code: r.code })) };
-    const handled = parsed.list.length;
-    await J.receipt(core, { kind: 'scrub_job', ok: true, ...base, row_ids: ids, message: `${applied.mode}: applied ${applied.counts.applied}, proposed ${applied.counts.proposed}, refused ${applied.counts.refused} of ${handled} entries for ${ids.length} items; cost $${got.cost.toFixed(4)}` });
+    out.evidence = { head_sha: evidence.head_sha, worktree: evidence.worktree ? abs(evidence.worktree) : null };
+    await J.receipt(core, { kind: 'scrub_job', ok: true, ...base, row_ids: ids, message: `${applied.mode}: applied ${applied.counts.applied}, proposed ${applied.counts.proposed}, refused ${applied.counts.refused} of ${parsed.list.length} entries for ${ids.length} items; cost $${got.cost.toFixed(4)}; head ${evidence.head_sha || 'none'} in ${evidence.worktree ? abs(evidence.worktree) : 'no worktree'}` });
+    // An item the child left out is owed once more (it may have run short), then let go: the same note is not offered a third time.
+    const named = new Set(parsed.list.map((e) => e && e.id));
+    const unnamed = offered.filter((i) => !named.has(i.id) && !(i.owed && i.owed.unjudged >= 1)).map((i) => i.id);
+    if (unnamed.length) { out.owed.push(...unnamed); await owe(core, runId, unnamed, J.coded('E_UNJUDGED', 'the scrub child gave no entry for these items'), jobId); }
     if (applied.alarm) {
       out.alarm = applied.alarm;
       const holdIds = [...applied.applied, ...applied.proposed].filter((r) => r.action === 'hold').map((r) => r.id);
       await J.receipt(core, { kind: 'scrub_alarm', ok: true, ...base, row_ids: holdIds, message: `a scrub of run ${runId} made ${applied.alarm.holds} hold marks, over the ${applied.alarm.limit} that is normal; look before the archive reviewer runs (belay memory proposals)` });
     }
   } catch (e) {
+    await noteOverrun(true);
     out.error = { code: J.codeOf(e), message: String((e && e.message) || e).slice(0, 300) };
     out.owed.push(...ids);
     await J.receipt(core, { kind: 'scrub_job', ...base, ...J.failFields(e) });

@@ -16,6 +16,7 @@
 //                       each because the store refuses a second (run, key)
 //   scrub_alarm         the run-close scrub made more hold marks than is normal (scrub_alarm_holds): look before the archive reviewer runs
 //   scrub_owed          items the run-close scrub did not reach (a crash, a timeout, a cost over the cap or the item cap); the next scrub takes them first
+//   stage_overrun       a run-close scrub or archive review that spent its cost cap: nothing was applied, the next attempt takes half the items, and the line names the lever to raise
 //   scrub_failed        a run-close scrub or archive review that failed, with its code
 //   notes_unembedded    notes stored without a vector (on_embedder_failure keyword), in any project namespace: a count from
 //                       the rows, whatever the run. Only `belay memory embed` embeds them. Its ts is the newest such note's
@@ -166,15 +167,23 @@ function wrapupEvents(events, runId) {
 
 // The run-close stages' receipts (the scrubber and the archive reviewer): the alarm, the owed items and a failed stage. A stage that
 // worked is a receipt in `belay memory proposals` and the store, not a notice.
-const STAGE_KINDS = ['scrub_alarm', 'scrub_owed', 'scrub_job', 'review_stage'];
+const STAGE_KINDS = ['scrub_alarm', 'scrub_owed', 'scrub_job', 'review_stage', 'stage_overrun'];
 function stageEvents(events, runId) {
+  // An owed receipt is shown only while an id it names is still owed: the last owed receipt for the id, with no later ok scrub_job.
+  const stillOwed = new Map();
+  events.forEach((e, i) => {
+    const ids = Array.isArray(e.row_ids) ? e.row_ids : [];
+    if (e.kind === 'scrub_owed') ids.forEach((id) => stillOwed.set(id, i));
+    else if (e.kind === 'scrub_job' && e.ok) ids.forEach((id) => stillOwed.delete(id));
+  });
   const out = [];
-  for (const e of events) {
+  events.forEach((e, i) => {
     const ok = !!e.ok;
-    const kind = e.kind === 'scrub_alarm' ? 'scrub_alarm' : e.kind === 'scrub_owed' ? 'scrub_owed' : !ok ? 'scrub_failed' : null;
-    if (!kind) continue;
+    if (e.kind === 'scrub_owed' && !(Array.isArray(e.row_ids) && e.row_ids.some((id) => stillOwed.get(id) === i))) return;
+    const kind = e.kind === 'scrub_alarm' ? 'scrub_alarm' : e.kind === 'scrub_owed' ? 'scrub_owed' : e.kind === 'stage_overrun' ? 'stage_overrun' : !ok ? 'scrub_failed' : null;
+    if (!kind) return;
     out.push({ kind, ts: num(e.written_at), run_id: runId, stage: e.kind, ok, code: e.code ?? null, text: e.message ?? null, row_ids: e.row_ids ?? null, source: `memory_event ${e.id}` });
-  }
+  });
   return out;
 }
 
@@ -214,6 +223,7 @@ function summaryOf(e) {
     case 'scrub_alarm':
     case 'scrub_owed':
     case 'scrub_failed':
+    case 'stage_overrun':
       return `${e.stage} ${e.code ? `failed ${P.v(e.code, 40)}: ` : ''}${P.v(e.text, 300)}${Array.isArray(e.row_ids) && e.row_ids.length ? ` (notes: ${e.row_ids.slice(0, 5).map((x) => P.v(x, 40)).join(', ')}${e.row_ids.length > 5 ? `, and ${e.row_ids.length - 5} more` : ''})` : ''}`;
     case 'notes_unembedded':
       return P.unembeddedText({ total: e.count, by_project: e.by_project });

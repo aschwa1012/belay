@@ -159,7 +159,7 @@ test('the built CLI with the fake executable: the real manager spawns the child,
       const w = s.p("SELECT id, state, pid FROM worker WHERE id LIKE 'scrub-%' ORDER BY seq DESC").all();
       assert.ok(w.length && w.every((x) => x.id.startsWith('scrub-lc-apply-')), 'the child was a worker the harness spawned');
       assert.ok(['stopped', 'dead'].includes(w[0].state), `the child's last row is ${w[0].state}`);
-      assert.strictEqual(s.p("SELECT COUNT(*) AS n FROM memory_event WHERE kind = 'scrub_owed'").get().n, 1);
+      assert.ok(s.p("SELECT COUNT(*) AS n FROM memory_event WHERE kind = 'scrub_owed' AND code = 'E_ARGS'").get().n >= 1, 'the failure owes the item with its cause');
     } finally { s.close(); }
   });
 });
@@ -167,4 +167,28 @@ test('the built CLI with the fake executable: the real manager spawns the child,
 test('DEFAULTS: the stage levers are present with the agreed values', () => {
   assert.deepStrictEqual([DEFAULTS.scrub_wall_s, DEFAULTS.scrub_cost_cap_usd, DEFAULTS.review_min_held, DEFAULTS.review_max_age_runs, DEFAULTS.review_wall_s, DEFAULTS.review_cost_cap_usd, DEFAULTS.scrub_model, DEFAULTS.archive_review_model],
     [300, 0.1, 3, 3, 600, 2, 'claude-haiku-5-5', 'claude-opus-5-5']);
+});
+
+test('without --run the newest ENDED run with notes on is used; a live run is refused unless named', async () => {
+  await planted(async (T) => {
+    const p = pending(T, 'pending in the live run');
+    T.store.close();
+    const never = () => assert.fail('no child');
+    // every sandbox run is live (this process is its adapter): no default exists
+    const live = await cmd(T, ['scrub'], { makeManager: async () => never() });
+    assert.strictEqual(live.code, 1);
+    assert.match(live.text, /only run with notes on is live/);
+    assert.ok(live.json.error.live_run);
+    const { Store } = require('../../src/core/store.cjs');
+    const { Engine } = require('../../src/core/engine.cjs');
+    const { callerFor } = require('../core/helpers.cjs');
+    const s2 = new Store(`${T.dir}/memory.db`, { stamp: true });
+    const E = new Engine({ dataDir: T.dir, store: s2, getEmbedder: null, owner: null, establishedBy: 'test' });
+    await E.handle('run.end', { caller: callerFor('operator', { run_id: 'lc-apply' }), exit_reason: 'done' });
+    s2.close();
+    const m = fakeManager(JSON.stringify({ scrub: [] }));
+    const ended = await cmd(T, ['scrub'], { makeManager: async () => m });
+    assert.strictEqual(ended.json.run_id, 'lc-apply', 'the ended run is the default');
+    assert.strictEqual(ended.code, 0, ended.text);
+  });
 });

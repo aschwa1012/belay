@@ -47,18 +47,24 @@ function noteFacts(note) {
 }
 
 // What the scrub receipts say about the ids: `owed` are ids an earlier scrub could not do and no later scrub has handled (the last event
-// naming the id decides); `handled` are ids a scrub of THIS run already handled, which the run's scope does not offer again (a second
-// scrub of the same run, by hand, does not spend a second model call on the same reports). An owed id is always offered.
+// naming the id decides; `unjudged` counts the times in a row a scrub's child gave the id no entry); `handled` maps an id a scrub of THIS
+// run already handled to when, so the run's scope does not offer it again unless a newer report came in after (a second scrub of the
+// same run, by hand, does not spend a second model call on the same reports, and never hides a later report). An owed id is always offered.
 function scrubHistory(E, runId) {
-  const owed = new Map(), handled = new Set();
+  const owed = new Map(), handled = new Map(), unjudged = new Map();
   let evs;
-  try { evs = E.store.p("SELECT kind, ok, row_ids, run_id, code, message FROM memory_event WHERE kind IN ('scrub_owed', 'scrub_job') ORDER BY seq").all(); } catch { return { owed, handled }; }
+  try { evs = E.store.p("SELECT kind, ok, row_ids, run_id, code, message, written_at FROM memory_event WHERE kind IN ('scrub_owed', 'scrub_job') ORDER BY seq").all(); } catch { return { owed, handled }; }
   for (const ev of evs) {
     if (ev.kind === 'scrub_job' && !(ev.ok === 1 || ev.ok === true)) continue;
     let ids = [];
     try { ids = JSON.parse(ev.row_ids) || []; } catch { ids = []; }
     for (const id of ids) {
-      if (ev.kind === 'scrub_owed') { owed.set(id, { run_id: ev.run_id, code: ev.code || null, message: cut(ev.message, 200) }); handled.delete(id); } else { owed.delete(id); if (ev.run_id === runId) handled.add(id); }
+      if (ev.kind === 'scrub_owed') {
+        const n = ev.code === 'E_UNJUDGED' ? (unjudged.get(id) || 0) + 1 : ev.code === 'E_INTERRUPTED' ? (unjudged.get(id) || 0) : 0;
+        unjudged.set(id, n);
+        owed.set(id, { run_id: ev.run_id, code: ev.code || null, message: cut(ev.message, 200), unjudged: n });
+        handled.delete(id);
+      } else { owed.delete(id); if (ev.run_id === runId) handled.set(id, ev.written_at || 0); }
     }
   }
   return { owed, handled };
@@ -104,7 +110,16 @@ async function scrubScope(E, caller, args) {
   };
   const history = scrubHistory(E, runId);
   for (const [id, o] of history.owed) add(load(E, id), 'owed', { owed: o });
-  const addNew = (id, why, extra) => { if (!history.handled.has(id)) add(load(E, id), why, extra); };
+  // A reported note a scrub of this run handled is offered again when a report from this run arrived after that scrub.
+  const addNew = (id, why, extra) => {
+    const at = history.handled.get(id);
+    if (at !== undefined) {
+      const note = load(E, id);
+      const newest = Math.max(0, ...((note && note.b.reported_wrong) || []).filter((w) => w && w.run_id === runId).map((w) => Number(w.at) || 0));
+      if (why !== 'reported_wrong' || newest <= at) return;
+    }
+    add(load(E, id), why, extra);
+  };
   const reported = E.store.p(`SELECT id FROM memory_entries WHERE type = 'note' AND namespace = ? AND EXISTS
     (SELECT 1 FROM json_each(memory_entries.body, '$.reported_wrong') WHERE json_extract(value, '$.run_id') = ?) ORDER BY created_at, id`).all(N.projectNs(project), runId);
   for (const r of reported) addNew(r.id, 'reported_wrong');
@@ -117,13 +132,12 @@ async function scrubScope(E, caller, args) {
   return { project, run_id: runId, items, counts };
 }
 
-const QUEUE_LIMIT = 500;
 async function reviewQueue(E, caller, args) {
   C.allowKeys(args || {}, [], 'memory.reviewQueue');
   const project = M.projectOf(E, caller);
   if (!project) throw err('E_ARGS', 'memory.reviewQueue: this run has no project, so there is no held queue', { field: 'project' });
   const rows = E.store.p(`SELECT id, run_id, created_at, body FROM memory_entries WHERE namespace = ? AND type = 'held' AND written_by = 'harness'
-    AND json_extract(body, '$.state') = 'held' ORDER BY created_at, id LIMIT ${QUEUE_LIMIT}`).all(L.nsOf('held', project));
+    AND json_extract(body, '$.state') = 'held' ORDER BY created_at, id`).all(L.nsOf('held', project));
   const held = [];
   for (const r of rows) {
     const b = parse(r.body);
@@ -140,7 +154,7 @@ async function reviewQueue(E, caller, args) {
     });
   }
   const counts = { count: held.length, max_runs_waited: held.reduce((m, h) => Math.max(m, h.runs_waited), 0), review_verified: held.filter(h => h.target_review_verified).length };
-  return { project, run_id: caller.run_id, held, counts, limit: QUEUE_LIMIT };
+  return { project, run_id: caller.run_id, held, counts };
 }
 
 module.exports = { scrubScope, reviewQueue, noteFacts, scrubHistory };

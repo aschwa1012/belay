@@ -16,7 +16,8 @@ before(async () => { X = await env(); T = X.T; await X.worker('apply', 'w-head')
 after(() => T.close());
 
 const stage = (kind, manager, extra = {}) => runScrub({ core: X.coreFor(kind), runId: RUN[kind], lv: LV[kind], dataDir: T.dir, getManager: async () => manager, worktree: T.repo, goal: 'ship the loader', summary: 'the orchestrator says it went fine', ...extra });
-const ownedIds = () => X.events('scrub_owed').flatMap((e) => JSON.parse(e.row_ids));
+// The ids the core now lists as owed (the last owed receipt for the id, with no ok scrub_job after it).
+const owedNow = async () => (await T.call(T.who.operator('apply'), 'memory.scrubScope', {})).items.filter((i) => i.why.includes('owed')).map((i) => i.id);
 
 test('an empty scope spawns nothing, writes nothing and never asks for a manager', async () => {
   let asked = 0;
@@ -73,7 +74,10 @@ test('a valid hand-back is applied through memory.scrubApply in apply mode, with
   const ev = X.events('scrub_job').pop();
   assert.deepStrictEqual([ev.ok, JSON.parse(ev.row_ids).includes(n), ev.worker_id === m.spawned[0].worker_id], [1, true, true]);
   assert.match(ev.message, /apply: applied 1/);
-  assert.ok(!ownedIds().includes(n), 'a handled item is not owed');
+  assert.ok(!(await owedNow()).includes(n), 'a handled item is not owed');
+  const pre = X.events('scrub_owed').find((e) => JSON.parse(e.row_ids).includes(n));
+  assert.deepStrictEqual([pre.code, pre.seq < ev.seq], ['E_INTERRUPTED', true], 'the item was owed BEFORE the child started, and the ok scrub_job cleared it');
+  assert.match(ev.message, new RegExp(`head ${T.head} in `), 'the receipt names the head and worktree the cites were checked against');
 });
 
 test('scrub_action propose writes proposals and applies nothing', async () => {
@@ -105,7 +109,7 @@ test('a cost over the cap, no recorded cost, a timeout, a failed turn or junk ap
     assert.strictEqual(o.error.code, code, label);
     assert.strictEqual(X.holds().length, heldBefore, `${label}: nothing applied`);
     assert.strictEqual(JSON.parse(T.row(n).body).held, undefined, label);
-    assert.ok(ownedIds().includes(n), `${label}: the item is owed`);
+    assert.ok((await owedNow()).includes(n), `${label}: the item is owed`);
     const bad = X.events('scrub_job').filter((e) => !e.ok).pop();
     assert.deepStrictEqual([bad.code, bad.key], [code, `run:${RUN.apply}`]);
     if (label !== 'spawn refused') assert.deepStrictEqual(m2.stopped, [m2.spawned[0].worker_id], `${label}: the child was stopped`);
@@ -122,15 +126,19 @@ test('more items than scrub_max_items: the first are offered, the rest are owed,
   const lv = { ...LV.apply, scrub_max_items: 2 };
   const m = fakeManager(T, 'apply', json('scrub', []));
   const o = await runScrub({ core: X.coreFor('apply'), runId: RUN.apply, lv, dataDir: T.dir, getManager: async () => m, worktree: T.repo });
-  assert.deepStrictEqual([o.offered, o.owed], [2, [ns[2]]]);
+  assert.deepStrictEqual([o.offered, o.owed.slice(0, 1)], [2, [ns[2]]]);
+  assert.deepStrictEqual(o.owed.slice(1).sort(), [ns[0], ns[1]].sort(), 'the two the child gave no entry for are owed once more');
   const brief = fs.readFileSync(/(\S+brief\.md)/.exec(m.spawned[0].prompt)[1], 'utf8');
   assert.ok(brief.includes(ns[0]) && brief.includes(ns[1]) && !brief.includes(ns[2]));
-  const owed = X.events('scrub_owed').pop();
-  assert.deepStrictEqual([JSON.parse(owed.row_ids), owed.ok, owed.code], [[ns[2]], 0, 'E_ARGS']);
+  const owed = X.events('scrub_owed').find((e) => e.code === 'E_ARGS' && JSON.parse(e.row_ids).includes(ns[2]));
+  assert.deepStrictEqual([JSON.parse(owed.row_ids), owed.ok], [[ns[2]], 0]);
   const m2 = fakeManager(T, 'apply', json('scrub', []));
-  await runScrub({ core: X.coreFor('apply'), runId: RUN.apply, lv, dataDir: T.dir, getManager: async () => m2, worktree: T.repo });
+  await runScrub({ core: X.coreFor('apply'), runId: RUN.apply, lv: { ...lv, scrub_max_items: 5 }, dataDir: T.dir, getManager: async () => m2, worktree: T.repo });
   const brief2 = fs.readFileSync(/(\S+brief\.md)/.exec(m2.spawned[0].prompt)[1], 'utf8');
-  assert.ok(brief2.includes(ns[2]) && !brief2.includes(ns[0]) && !brief2.includes(ns[1]), 'the owed item is taken, the two already handled are not offered again');
+  assert.ok(brief2.includes(ns[2]) && brief2.includes(ns[0]) && brief2.includes(ns[1]), 'every owed item is taken first');
+  const m3 = fakeManager(T, 'apply', json('scrub', []));
+  const third = await runScrub({ core: X.coreFor('apply'), runId: RUN.apply, lv: { ...lv, scrub_max_items: 5 }, dataDir: T.dir, getManager: async () => m3, worktree: T.repo });
+  assert.deepStrictEqual(third.owed, [], 'an item the child skipped twice is let go, not owed forever');
 });
 
 test('the alarm: more holds than scrub_alarm_holds still apply, and come back as a receipt, a wake in belay\'s words and a notice', async () => {
@@ -167,7 +175,7 @@ const attack = async (label, make, expect) => {
   else { assert.strictEqual(o.error, undefined, `${label}: ${JSON.stringify(o.error)}`); assert.deepStrictEqual(o.result.refused.map((r) => r.code), [expect.refused], label); }
   assert.strictEqual(X.holds().length, heldBefore, `${label}: nothing was held`);
   for (const id of [target, outside]) assert.strictEqual(JSON.parse(T.row(id).body).held, undefined, `${label}: ${id} carries no hold`);
-  if (expect.code) assert.ok(ownedIds().includes(target), `${label}: a refused hand-back owes its items`);
+  if (expect.code) assert.ok((await owedNow()).includes(target), `${label}: a refused hand-back owes its items`);
 };
 
 test('adversarial: an id outside the scope list refuses the whole call, the in-scope entry included', async () => {
@@ -217,4 +225,116 @@ test('nothing but the scope: a hold on a pending note is applied directly and a 
   const o = await stage('apply', m);
   assert.strictEqual(o.result.counts.applied, 1, JSON.stringify(o));
   assert.strictEqual(T.row(pend).namespace, 'project/lc');
+});
+
+test('fast close: nothing is spawned, the whole scope is owed, and the reviewer is skipped too', async () => {
+  const n = X.reported('fast close item');
+  const m = fakeManager(T, 'apply', json('scrub', []));
+  const o = await stage('apply', m, { fast: () => true });
+  assert.deepStrictEqual([o.ran, o.reason, m.spawned.length], [false, 'fast close', 0]);
+  assert.ok(o.owed.includes(n) && (await owedNow()).includes(n), 'the item is owed to the next scrub');
+  assert.strictEqual(X.events('scrub_owed').filter((e) => e.worker_id && e.worker_id.startsWith('scrub-')).pop().code, 'E_ABORTED');
+  const r = await require('../../src/run/review-stage.cjs').runReview({ core: X.coreFor('apply'), runId: RUN.apply, lv: LV.apply, dataDir: T.dir, getManager: async () => assert.fail('no manager'), fast: () => true, force: true });
+  assert.ok(r.ran === false);
+  // the owed item is taken by an ordinary scrub afterwards
+  const m2 = fakeManager(T, 'apply', json('scrub', [X.hold(n)]));
+  assert.strictEqual((await stage('apply', m2)).result.counts.applied, 1);
+});
+
+test('fast close while the child runs: it is killed by its exact pid (mode kill), nothing is applied, and the items stay owed', async () => {
+  const n = X.reported('child running when the console closes');
+  let flag = false;
+  const m = fakeManager(T, 'apply', json('scrub', [X.hold(n)]));
+  m.wait = async () => { setTimeout(() => { flag = true; }, 50); return new Promise(() => {}); }; // the child never answers
+  const stops = [];
+  m.stop = async (a) => { stops.push(a); };
+  const o = await stage('apply', m, { fast: () => flag });
+  assert.strictEqual(o.error.code, 'E_ABORTED');
+  assert.ok(stops.some((s) => s.mode === 'kill' && s.worker_id === m.spawned[0].worker_id), JSON.stringify(stops));
+  assert.strictEqual(JSON.parse(T.row(n).body).held, undefined, 'nothing applied');
+  assert.ok((await owedNow()).includes(n));
+  // a fast close that arrives while the child is still starting is killed once the spawn settles
+  const m2 = fakeManager(T, 'apply', '');
+  const real = m2.spawn; let f2 = false;
+  m2.spawn = async (a) => { setTimeout(() => { f2 = true; }, 30); await new Promise((r) => setTimeout(r, 400)); return real(a); };
+  const stops2 = []; m2.stop = async (a) => { stops2.push(a); };
+  const o2 = await stage('apply', m2, { fast: () => f2 });
+  assert.strictEqual(o2.error.code, 'E_ABORTED');
+  assert.ok(stops2.some((s) => s.mode === 'kill'));
+});
+
+test('a child that survives its stop is killed again and, if it is still alive, named for the run', async () => {
+  const n = X.reported('survivor');
+  const m = fakeManager(T, 'apply', json('scrub', []));
+  const kills = [];
+  m.stop = async (a) => { kills.push(a.mode || 'graceful'); };
+  const real = m.spawn;
+  m.spawn = async (a) => { const r = await real(a); m.recs.get(a.worker_id).pid = process.pid; return r; }; // a pid that stays alive
+  const o = await stage('apply', m);
+  assert.strictEqual(o.survivor, process.pid);
+  assert.deepStrictEqual(kills, ['graceful', 'kill']);
+  void n;
+});
+
+// Hands every item still in scope to a child that gives no entry, until the scope is empty (an item skipped twice is let go).
+async function settleAll() {
+  for (let i = 0; i < 6; i += 1) {
+    const o = await runScrub({ core: X.coreFor('apply'), runId: RUN.apply, lv: { ...LV.apply, scrub_max_items: 500 }, dataDir: T.dir, getManager: async () => fakeManager(T, 'apply', json('scrub', [])), worktree: T.repo });
+    if (!o.ran) return;
+  }
+  assert.fail('the scope never emptied');
+}
+
+test('a cost overrun halves the next attempt, oldest first, down to 1; a success ends it; nothing is applied from an over-cap job', async () => {
+  await settleAll();
+  const t0 = Date.now() + 500000;
+  const ns = [1, 2, 3, 4].map((i) => X.reported(`overrun item ${i}`, 'apply', { created_at: t0 + i }));
+  const lv = { ...LV.apply, scrub_max_items: 4 };
+  const go = (m) => runScrub({ core: X.coreFor('apply'), runId: RUN.apply, lv, dataDir: T.dir, getManager: async () => m, worktree: T.repo });
+  const briefOf = (m) => fs.readFileSync(/(\S+brief\.md)/.exec(m.spawned[0].prompt)[1], 'utf8');
+  const heldBefore = X.holds().length;
+  const over = fakeManager(T, 'apply', json('scrub', ns.map((n) => X.hold(n))), { cost: 0.5 });
+  const a1 = await go(over);
+  assert.deepStrictEqual([a1.offered, a1.overrun.attempted, a1.overrun.next, a1.error.code], [4, 4, 2, 'E_COST_CAP']);
+  assert.strictEqual(X.holds().length, heldBefore, 'nothing from an over-cap job is applied');
+  const ev = X.events('stage_overrun').pop();
+  assert.deepStrictEqual([ev.key, JSON.parse(ev.row_ids).length, ev.ok], ['scrub', 4, 0]);
+  assert.match(ev.message, /raise memory\.scrub_cost_cap_usd/);
+  const over2 = fakeManager(T, 'apply', '', { cost: 0.5 });
+  const a2 = await go(over2);
+  assert.deepStrictEqual([a2.offered, a2.overrun.next], [2, 1]);
+  const over3 = fakeManager(T, 'apply', '', { cost: 0.5 });
+  const a3 = await go(over3);
+  assert.deepStrictEqual([a3.offered, a3.overrun.next], [1, 1], 'down to 1, never 0');
+  const b3 = briefOf(over3), b2 = briefOf(over2);
+  assert.ok(b3.includes(ns[0]) && !b3.includes(ns[1]), 'oldest first');
+  assert.ok(b2.includes(ns[0]) && b2.includes(ns[1]) && !b2.includes(ns[2]));
+  const ok = fakeManager(T, 'apply', json('scrub', [X.hold(ns[0])]));
+  assert.strictEqual((await go(ok)).result.counts.applied, 1);
+  const after = fakeManager(T, 'apply', json('scrub', []));
+  assert.strictEqual((await go(after)).offered, 3, 'the success ended the halving: every remaining item is taken');
+});
+
+test('a failure that spent most of the cap counts as an overrun; a cheap failure does not', async () => {
+  X.reported('cheap failure');
+  const cheap = await stage('apply', fakeManager(T, 'apply', 'junk', { cost: 0.01 }));
+  assert.strictEqual(cheap.overrun, undefined);
+  const dear = await stage('apply', fakeManager(T, 'apply', 'junk', { cost: 0.095 }));
+  assert.ok(dear.overrun, 'junk after spending 95% of the cap');
+  await stage('apply', fakeManager(T, 'apply', json('scrub', [])));
+});
+
+test('the notices: an overrun is a line naming the lever; an owed receipt shows only while an item is still owed', async () => {
+  const N = require('../../src/cli/cmd-notices.cjs');
+  const ledger = (await T.call(T.who.operator('apply'), 'memory.events', { kinds: ['scrub_owed', 'scrub_job', 'stage_overrun', 'scrub_alarm', 'review_stage'] })).events;
+  const notes = N.stageEvents(ledger, RUN.apply);
+  assert.ok(notes.some((e) => e.kind === 'stage_overrun' && /raise memory\.scrub_cost_cap_usd/.test(e.text)));
+  const owed = notes.filter((e) => e.kind === 'scrub_owed');
+  for (const e of owed) assert.ok(e.row_ids.length > 0);
+  const synth = [
+    { id: 'a', kind: 'scrub_owed', ok: 0, row_ids: ['n1'], written_at: 1, code: 'E_INTERRUPTED', message: 'started' },
+    { id: 'b', kind: 'scrub_job', ok: 1, row_ids: ['n1'], written_at: 2 },
+    { id: 'c', kind: 'scrub_owed', ok: 0, row_ids: ['n2'], written_at: 3, code: 'E_TIMEOUT', message: 'late' },
+  ];
+  assert.deepStrictEqual(N.stageEvents(synth, 'r').map((e) => [e.kind, e.row_ids]), [['scrub_owed', ['n2']]], 'n1 was cleared by the ok job');
 });

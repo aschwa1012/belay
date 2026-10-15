@@ -363,7 +363,9 @@ async function run(ctx) {
         }
       } catch (e) { failClose((e && e.message) || String(e)); }
       RI.applyConsole(partial, ce); // a SIGHUP during the close
-      try { closeStages = await runCloseStages({ core, runId: parsed.runId, levers: parsed.levers, dataDir, worktree: parsed.worktree, goal: parsed.promptText, ce, late, stages: ctx.closeStagesModule, deps: ctx.closeStagesDeps }); } catch (e) { closeStages = { error: (e && e.message) || String(e) }; } // never the run's failure
+      try { closeStages = await runCloseStages({ core, runId: parsed.runId, levers: parsed.levers, dataDir, worktree: parsed.worktree, goal: parsed.promptText, ce, late, stages: ctx.closeStagesModule, deps: ctx.closeStagesDeps, log: (m) => RI.printer(ctx)(`${m}\n`) });
+        const survivors = ['scrub', 'review'].map((k) => closeStages && closeStages[k] && closeStages[k].survivor).filter(Boolean);
+        if (survivors.length) failClose(`a run-close stage child (pid ${survivors.join(', ')}) is still alive after its kill`); } catch (e) { closeStages = { error: (e && e.message) || String(e) }; } // never the run's failure
       const er = await RI.endRun({
         core, ce, runId: parsed.runId, exitReason: partial ? partial.ended_by : crashedBy, usage: partial ? partial.orchestrator.usage : null,
         reviewRounds, countReviewRounds, late,

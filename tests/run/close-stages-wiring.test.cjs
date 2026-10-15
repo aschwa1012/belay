@@ -44,17 +44,33 @@ test('levers: the stage levers parse, are typed, and refuse bad values and non-5
   for (const k of ['scrub_wall_s', 'scrub_cost_cap_usd', 'scrub_model', 'review_min_held', 'review_max_age_runs', 'review_wall_s', 'review_cost_cap_usd', 'archive_review_model']) assert.ok(TYPES[k] && k in DEFAULTS, k);
 });
 
-test('harness roles: the run process (operator) may write worker rows and checkpoints on the harness channel only', async () => {
+test('harness roles: the run process (operator) may write a job worker row on the harness channel only', async () => {
   const store = new Store(':memory:');
   const E = new Engine({ dataDir: '.', store, getEmbedder: null, owner: null, establishedBy: 'test' });
   try {
     const op = callerFor('operator', { run_id: 'r1' });
-    const row = { id: 'sj-1', substrate: 'claude-code', pid: process.pid, state: 'running', last_event_at: Date.now() };
+    const row = { id: 'scrub-r1-1', substrate: 'claude-code', pid: process.pid, state: 'running', last_event_at: Date.now() };
     await assert.rejects(E.handle('worker.write', { caller: op, ...row }), (e) => e.code === 'E_ROLE');
     await assert.rejects(E.handle('worker.write', { caller: callerFor('operator', { run_id: 'r1', channel: 'tool' }), ...row }), (e) => e.code === 'E_ROLE');
     await assert.rejects(E.handle('worker.write', { caller: callerFor('worker', { run_id: 'r1', worker_id: 'w1', channel: 'harness' }), ...row }), (e) => e.code === 'E_ARGS' || e.code === 'E_ROLE');
     await E.handle('run.attach', { caller: callerFor('operator', { run_id: 'r1' }), adapter_pid: process.pid });
     const w = await E.handle('worker.write', { caller: callerFor('operator', { run_id: 'r1', channel: 'harness' }), ...row });
-    assert.strictEqual(w.id, 'sj-1');
+    assert.strictEqual(w.id, 'scrub-r1-1');
+  } finally { store.close(); }
+});
+
+test('harness guard: an operator on the harness channel may write only job rows of its own run', async () => {
+  const store = new Store(':memory:');
+  const E = new Engine({ dataDir: '.', store, getEmbedder: null, owner: null, establishedBy: 'test' });
+  try {
+    const h = (run) => callerFor('operator', { run_id: run, channel: 'harness' });
+    const row = (id, extra = {}) => ({ id, substrate: 'claude-code', pid: process.pid, state: 'running', last_event_at: Date.now(), ...extra });
+    for (const r of ['r1', 'r2']) await E.handle('run.attach', { caller: callerFor('operator', { run_id: r }), adapter_pid: process.pid });
+    for (const id of ['scrub-r1-a', 'archreview-r1-a', 'notereview-t1']) assert.strictEqual((await E.handle('worker.write', { caller: h('r1'), ...row(id) })).id, id, id);
+    for (const id of ['w-ordinary', 'scrubber', 'knowledge-x']) await assert.rejects(E.handle('worker.write', { caller: h('r1'), ...row(id) }), (e) => e.code === 'E_ROLE', id);
+    await assert.rejects(E.handle('worker.write', { caller: h('r1'), ...row('scrub-r2-a', { run_id: 'r2' }) }), (e) => e.code === 'E_ROLE', 'another run named in the row');
+    await assert.rejects(E.handle('worker.write', { caller: h('r2'), ...row('scrub-r1-a') }), (e) => e.code === 'E_ROLE', 'a job row that belongs to another run');
+    await assert.rejects(E.handle('continuity.checkpoint', { caller: h('r1'), worker_id: 'scrub-r1-a', summary: 'x' }), (e) => e.code === 'E_ROLE', 'no checkpoint grant');
+    await assert.rejects(E.handle('worker.write', { caller: callerFor('operator', { run_id: 'r1' }), ...row('scrub-r1-b') }), (e) => e.code === 'E_ROLE', 'not on the tool channel');
   } finally { store.close(); }
 });

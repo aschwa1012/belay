@@ -17,17 +17,25 @@ const { DEFAULTS } = require('../core/memory-levers.cjs');
 
 const one = (s) => P.clean(s == null ? '' : s, 2000).replace(/\s+/g, ' ');
 
+// `--run <id>` names the run (a live one too, on the operator's word). Without it: the newest ENDED run that has the notes lever on. A
+// live run is never the default: its writers may still resolve their pending notes, and its own close scrub is still to come.
 async function chooseRun(core, wanted) {
-  if (wanted) return wanted;
+  if (wanted) return { runId: wanted };
   const { runs } = await core.run.list({});
-  if (!runs.length) return null;
-  return (runs.find((r) => r.alive) || runs[0]).id;
+  const notesOn = (r) => { try { const l = typeof r.memory_levers === 'string' ? JSON.parse(r.memory_levers) : r.memory_levers; return !!(l && l.notes); } catch { return false; } };
+  const ended = runs.find((r) => !r.alive && r.ended_at != null && notesOn(r));
+  if (ended) return { runId: ended.id };
+  const live = runs.find((r) => r.alive && notesOn(r));
+  return { runId: null, live: live ? live.id : null };
 }
 
 // The stage's own core: the operator, as the run it acts for. Returns { rc, lv, runId, dataDir } or { fail }.
 async function stageCore(core, parsed, ctx, found) {
-  const runId = await chooseRun(core, parsed.opts.run);
-  if (!runId) return { fail: { code: 1, text: `belay memory ${parsed.sub}: no run exists to act for; pass --run <id>\n`, json: { error: { code: 'E_NOT_FOUND', message: 'no run' } } } };
+  const { runId, live } = await chooseRun(core, parsed.opts.run);
+  if (!runId) {
+    const message = live ? `the only run with notes on is live (${live}); its own close scrub is still to come, so pass --run ${live} to act on it now` : 'no ended run with notes on exists to act for; pass --run <id>';
+    return { fail: { code: 1, text: `belay memory ${parsed.sub}: ${one(message)}\n`, json: { error: { code: 'E_NOT_FOUND', message, live_run: live || null } } } };
+  }
   const dataDir = C.dataDirOf(found, ctx);
   const open = process.env.BELAY_TEST_MODE === '1' && typeof ctx.openCore === 'function' ? ctx.openCore : openCore;
   const rc = await open({ dataDir, caller: { role: 'operator', run_id: runId, pid: process.pid } });

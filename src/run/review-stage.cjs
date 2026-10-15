@@ -62,27 +62,38 @@ async function withFiles(held, worktree, dir) {
 }
 
 // opts: { core, runId, lv, dataDir, getManager, worktree, force }. Never throws; every outcome is a receipt and a returned fact.
-async function runReview({ core, runId, lv, dataDir, getManager, worktree = null, force = false }) {
+async function runReview({ core, runId, lv, dataDir, getManager, worktree = null, force = false, fast = null, log = null }) {
   if (!lv || !lv.notes) return { ran: false, reason: 'notes off' };
   if (lv.scrub_action === 'off' && !force) return { ran: false, reason: 'scrub_action off' };
   let q;
   try { q = await core.memory.reviewQueue({}); } catch (e) { return { ran: false, reason: 'queue unreadable', code: J.codeOf(e), message: String(e && e.message).slice(0, 200) }; }
   if (!q.held.length) return { ran: false, reason: 'empty queue', counts: q.counts };
+  if (fast && fast()) return { ran: false, reason: 'fast close', counts: q.counts }; // the marks stay held; the next review takes them
   const why = force ? 'asked by hand' : triggerOf(q.counts, lv);
   if (!why) return { ran: false, reason: 'below the triggers', counts: q.counts };
+  const limit = await J.attemptLimit(core, 'review', 'review_stage', q.held.length); // half of an overrun attempt, oldest first, down to 1
+  const queued = q.held.slice(0, limit);
   const jobId = `${JOB_PREFIX}${runId}-${Date.now().toString(36)}`;
-  const out = { ran: true, job: jobId, trigger: why, counts: q.counts, queue: q.held.length };
+  const out = { ran: true, job: jobId, trigger: why, counts: q.counts, queue: q.held.length, offered: queued.length };
   const base = { run_id: runId, worker_id: jobId, key: `run:${runId}` };
+  const noteOverrun = async (failedJob) => {
+    if (out.overrun || !J.overran(out.cost, lv.review_cost_cap_usd, failedJob)) return;
+    out.overrun = { cost: out.cost, cap: lv.review_cost_cap_usd, attempted: queued.length, next: Math.max(1, Math.floor(queued.length / 2)) };
+    await J.receipt(core, { kind: 'stage_overrun', ok: false, code: 'E_COST_CAP', run_id: runId, worker_id: jobId, key: 'review', row_ids: queued.map((h) => h.id), message: `the review of ${queued.length} held mark(s) cost $${Number(out.cost).toFixed(4)} against a cap of $${lv.review_cost_cap_usd}; no verdict was applied and the next attempt takes ${out.overrun.next}, oldest first; raise memory.review_cost_cap_usd to take more` });
+  };
   try {
     const workers = ((await core.worker.list({})).workers) || [];
     const cwd = worktree || (workers.filter((w) => w.run_id === runId && w.worktree).pop() || {}).worktree;
     if (!cwd) throw J.coded('E_ARGS', 'no worktree is known for the run, so the review child has nowhere to run and no commit can be read');
     const dir = path.join(dataDir, 'workers', jobId, 'inputs');
-    const { held, streams } = await withFiles(q.held, cwd, dir);
+    const { held, streams } = await withFiles(queued, cwd, dir);
     const briefFile = J.writeFileIn(dir, 'brief.md', buildBrief({ runId, project: q.project, held }));
-    const got = await J.runChild({ manager: await getManager(), workerId: jobId, worktree: cwd, model: lv.archive_review_model, capUsd: lv.review_cost_cap_usd, wallMs: lv.review_wall_s * 1000, prompt: promptFor(briefFile), label: 'archive review' });
-    if (got.error) throw got.error;
+    if (log) log(`run close: reviewing ${queued.length} held mark(s), at most ${lv.review_wall_s} s and $${lv.review_cost_cap_usd}`);
+    const got = await J.runChild({ manager: await getManager(), workerId: jobId, worktree: cwd, model: lv.archive_review_model, capUsd: lv.review_cost_cap_usd, wallMs: lv.review_wall_s * 1000, prompt: promptFor(briefFile), label: 'archive review', fast });
     out.cost = got.cost;
+    if (got.survivor) out.survivor = got.survivor;
+    await noteOverrun(!!got.error);
+    if (got.error) throw got.error;
     const bad = J.costError(got.cost, lv.review_cost_cap_usd, 'archive review');
     if (bad) throw bad;
     const parsed = J.parseList(got.text, 'verdicts');
@@ -95,11 +106,12 @@ async function runReview({ core, runId, lv, dataDir, getManager, worktree = null
       applied.push(...r.applied.map((a) => ({ id: a.id, outcome: a.outcome, receipt: a.receipt }))); refused.push(...r.refused.map((a) => ({ id: a.id, code: a.code })));
     }
     out.result = { counts: tally, applied, refused };
-    out.left_held = q.held.length - applied.length;
-    await J.receipt(core, { kind: 'review_stage', ok: true, ...base, row_ids: applied.map((a) => a.id), message: `${why}: ${tally.verdicts} verdicts for ${q.held.length} held marks; applied ${tally.applied}, refused ${tally.refused}; cost $${got.cost.toFixed(4)}` });
+    out.left_held = q.held.length - applied.length; // every mark not decided stays held and carries over
+    await J.receipt(core, { kind: 'review_stage', ok: true, ...base, row_ids: applied.map((a) => a.id), message: `${why}: ${tally.verdicts} verdicts for ${queued.length} of ${q.held.length} held marks; applied ${tally.applied}, refused ${tally.refused}; cost $${got.cost.toFixed(4)}` });
   } catch (e) {
+    await noteOverrun(true);
     out.error = { code: J.codeOf(e), message: String((e && e.message) || e).slice(0, 300) };
-    await J.receipt(core, { kind: 'review_stage', row_ids: q.held.map((h) => h.id), ...base, ...J.failFields(e) });
+    await J.receipt(core, { kind: 'review_stage', row_ids: queued.map((h) => h.id), ...base, ...J.failFields(e) });
   }
   return out;
 }

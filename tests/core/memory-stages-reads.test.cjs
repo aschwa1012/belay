@@ -81,6 +81,14 @@ test('an item a scrub of this run already handled is not offered again; one hand
   assert.ok((await scope()).items.some((i) => i.id === other), 'a different run\'s scrub does not stand in for this run\'s');
 });
 
+test('a report that arrives after a scrub of this run handled the note is offered again', async () => {
+  const n = T.note('reported, scrubbed, then reported again', { reported_wrong: [{ ...T.report(), run_id: RUN, at: Date.now() - 10000 }] });
+  await event('scrub_job', [n], { ok: true, message: 'handled' });
+  assert.ok(!(await scope()).items.some((i) => i.id === n));
+  T.store.db.prepare("UPDATE memory_entries SET body = json_set(body, '$.reported_wrong[0].at', ?) WHERE id = ?").run(Date.now() + 5000, n);
+  assert.ok((await scope()).items.some((i) => i.id === n), 'the newer report is a new item for the run close scrub');
+});
+
 test('an owed item that is no longer live or pending is not in scope, and an item in two kinds is listed once with both', async () => {
   const gone = T.note('owed then archived', { ns: `archive/${PROJECT}` });
   await event('scrub_owed', [gone], { ok: false, code: 'E_TIMEOUT', message: 'x' });

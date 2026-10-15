@@ -127,11 +127,11 @@ test('a cost over the cap, no recorded cost, a timeout, a dead child or junk app
   for (let i = 0; i < 3; i += 1) ids.push(await held(`capped ${i}`));
   const verdicts = json('verdicts', ids.map((id) => archiveV(id)));
   for (const [label, m, code] of [
-    ['over the cap', fakeManager(T, 'apply', verdicts, { cost: 5 }), 'E_COST_CAP'],
     ['no recorded cost', fakeManager(T, 'apply', verdicts, { cost: 0 }), 'E_COST_CAP'],
     ['timeout', fakeManager(T, 'apply', '', { event: 'timeout' }), 'E_TIMEOUT'],
     ['died', fakeManager(T, 'apply', '', { event: 'death' }), 'E_WORKER_NOT_LIVE'],
     ['junk', fakeManager(T, 'apply', 'Everything looks archivable to me.'), 'E_ARGS'],
+    ['over the cap', fakeManager(T, 'apply', verdicts, { cost: 5 }), 'E_COST_CAP'],
   ]) {
     const o = await review(m);
     assert.strictEqual(o.error.code, code, label);
@@ -224,4 +224,29 @@ test('a stage that throws is a returned fact, never an exception out of run clos
   const bad = new Proxy({}, { get: () => { throw new Error('the core is gone'); } });
   const o = await closeStages({ core: bad, runId: RUN.apply, levers: lv(), dataDir: T.dir });
   assert.ok(o.scrub.ran === false && o.review.ran === false);
+});
+
+test('a review overrun halves the next attempt, oldest first, and no verdict from an over-cap job is applied', async () => {
+  await drain();
+  const ids = [];
+  for (let i = 0; i < 4; i += 1) { ids.push(await held(`review overrun ${i}`)); T.store.p('UPDATE memory_entries SET created_at = ? WHERE id = (SELECT id FROM memory_entries WHERE namespace = ? AND json_extract(body, \'$.note_id\') = ?)').run(Date.now() - 100000 + i * 1000, 'held/lc', ids[i]); }
+  const verdicts = json('verdicts', ids.map((id) => archiveV(id)));
+  const briefOf = (m) => fs.readFileSync(/(\S+brief\.md)/.exec(m.spawned[0].prompt)[1], 'utf8');
+  const m1 = fakeManager(T, 'apply', verdicts, { cost: 5 });
+  const o1 = await review(m1);
+  assert.deepStrictEqual([o1.offered, o1.overrun.next, o1.error.code], [4, 2, 'E_COST_CAP']);
+  for (const id of ids) assert.strictEqual(nsOf(id), 'project/lc');
+  const ev = X.events('stage_overrun').pop();
+  assert.deepStrictEqual([ev.key, JSON.parse(ev.row_ids).length], ['review', 4]);
+  assert.match(ev.message, /raise memory\.review_cost_cap_usd/);
+  const m2 = fakeManager(T, 'apply', verdicts, { cost: 5 });
+  const o2 = await review(m2);
+  assert.deepStrictEqual([o2.offered, o2.overrun.next], [2, 1]);
+  const b2 = briefOf(m2);
+  assert.ok(b2.includes(ids[0]) && b2.includes(ids[1]) && !b2.includes(ids[2]), 'oldest first');
+  const m3 = fakeManager(T, 'apply', json('verdicts', [archiveV(ids[0])]), { cost: 0.01 });
+  const o3 = await review(m3, {}, { force: true });
+  assert.deepStrictEqual([o3.offered, o3.result.counts.applied, o3.left_held], [1, 1, 3]);
+  const m4 = fakeManager(T, 'apply', json('verdicts', []), { cost: 0.01 });
+  assert.strictEqual((await review(m4)).offered, 3, 'a success ended the halving');
 });
