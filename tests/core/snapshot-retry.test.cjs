@@ -116,6 +116,20 @@ test('spawn: one read; a failure leaves the row pending (error names the retry),
   } finally { live.kill(); }
 });
 
+test('adoption: a pending read is final on an adopted record, so the hint no longer promises a later verification', async () => {
+  // The adapter that adopts a row writes its own adapter_pid on every row, yet it holds no child handle and never reads again.
+  const w = {};
+  PI.adoptFromRow(w, { pid: 4204, pid_created: null, pid_created_error: 'the process snapshot was unreadable; retrying while the worker runs (try 2)', pid_image: 'claude.exe' });
+  assert.doesNotMatch(w.pidCreatedError, /retrying while the worker runs/);
+  assert.match(w.pidCreatedError, /^never read: the process snapshot was unreadable/);
+  const row = { pid: 4204, substrate: 'claude-code', pid_image: 'claude.exe', pid_created_error: w.pidCreatedError, adapter_pid: process.pid };
+  const k = await P.killProcess(P.rowTarget(row), { kill: noKill, snapshot: async () => mapOf([[4204, 1, T, 'claude.exe']]) });
+  assert.strictEqual(k.refused.kind, 'unverifiable');
+  assert.doesNotMatch(k.refused.manual, /verified shortly/, 'the adapter that wrote the row is alive but holds no handle');
+  const own = {}; PI.adoptFromRow(own, { pid: 4205, pid_created: 123, pid_created_error: null });
+  assert.strictEqual(own.pidCreated, 123);
+});
+
 test('spawn: a read that lands gives the row its creation time on the first attempt', async () => {
   const live = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { windowsHide: true, stdio: 'ignore' });
   const s = standIn([mapOf([[live.pid, process.pid, T + 5, 'node.exe']])]);

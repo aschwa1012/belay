@@ -64,7 +64,11 @@ function noteSpawn(w, child, { createdOf = P.createdOf, gate = ID.gate, schedule
 // An adopted record keeps what its row said about the same pid.
 function adoptFromRow(w, row) {
   w.pidCreated = Number.isFinite(row.pid_created) ? row.pid_created : null;
-  w.pidCreatedError = row.pid_created_error || null;
+  // A pending read ("retrying while the worker runs") was kept alive by the adapter that held the child handle. Every row this
+  // adapter writes carries its own adapter_pid, and it holds no handle for this one, so nothing will read it again: the error
+  // becomes final here, and the manual-stop hint stops promising that the row may be verified shortly.
+  const err = row.pid_created_error || null;
+  w.pidCreatedError = err && /retrying while the worker runs/.test(err) ? `never read: ${err.replace(/; retrying while the worker runs.*$/, '')}; the adapter that held the worker's handle is gone, and the adapter that adopted it holds none` : err;
   w.pidImage = row.pid_image || null;
   w.pidCreatedPromise = null;
 }

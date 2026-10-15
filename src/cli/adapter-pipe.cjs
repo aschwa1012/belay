@@ -10,8 +10,9 @@ const { SNAPSHOT_TIMEOUT_MS } = require('../core/proc-identity.cjs');
 
 // ADR 0048: a kill that is not made through a live handle takes one process snapshot, and a caller that arrives while
 // one is in flight waits for it and then for its own, so a snapshot wait costs up to 2 x T (T, the snapshot timeout in
-// force). A re-take after a signal in the same process is a further wait; the ceiling for one kill is 3 x T, and these
-// bounds charge 2 x T per wait on the path, which is the bound of the wait itself. Each bound below names how many
+// force). A re-take after a signal in the same process is a further wait; the ceiling for one kill is 4 x T (2 x T for the
+// first wait, 2 x T for the re-take). By the operator's decision these bounds charge 2 x T once per wait on the path: a kill
+// that re-takes under a stall can outrun them, and the caller is then told the pipe did not answer in time. Each bound below names how many
 // waits its path has. `snapMs` is T; callers leave it out, and a test that runs the CLI with an override passes it.
 const snapWaitMs = (T) => 2 * T;
 

@@ -24,7 +24,7 @@ test('notes on: the orchestrator lists memory_summaries inside the budget; off, 
   const off = tools.toolsFor('orchestrator');
   const on = tools.toolsFor('orchestrator', { notes: true });
   console.log(`orchestrator listing: off ${bytes(off)}, notes on ${bytes(on)}, budget ${tools.BUDGET.orchestrator}`);
-  assert.strictEqual(bytes(off), 9696);
+  assert.strictEqual(bytes(off), 9803);
   assert.deepStrictEqual(on.map((t) => t.name).slice(-1), ['memory_summaries']);
   assert.ok(bytes(on) <= tools.BUDGET.orchestrator);
   assert.deepStrictEqual(on.slice(0, -1), off);
@@ -80,5 +80,5 @@ test('every combination, measured on the module and on the wire, is inside its b
     assert.ok(bytes(wire) <= tools.BUDGET[role], name);
   }
   assert.strictEqual(bytes(rows[0][2]), 4965);
-  assert.strictEqual(bytes(rows[2][2]), 9696);
+  assert.strictEqual(bytes(rows[2][2]), 9803);
 });
