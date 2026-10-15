@@ -4,7 +4,7 @@
 // `on_embedder_failure` lever). An embedder failure is an error whose detail.embedder is exactly true; the
 // message text is never read (the signature is agreed with src/core/embedder.cjs's owner).
 
-const ON_FAILURE = ['stop', 'continue'];
+const { MODES: ON_FAILURE, normalize: normalizeMode } = require('../core/embedder-mode.cjs'); // required | keyword | off (stop and continue are the old names)
 const WARM_TIMEOUT_MS = 600000; // a cold-cache warm-up at the start: nothing else waits yet
 
 const isEmbedderFailure = (e) => !!(e && e.detail && typeof e.detail === 'object' && e.detail.embedder === true);
@@ -58,7 +58,13 @@ async function warmEmbedder(core, { retry = false, timeoutMs = WARM_TIMEOUT_MS }
 // becomes the caller's role there, so the run row and every worker park carry one `paused_by`.
 // onFailure is the owner's onEmbedderFailure hook: { caller, by, call, error, worker_id? }; worker_id names the worker a
 // run-manager call (memory.embedQuery at a spawn) is for, so paused_by names the call and the worker that hit the failure.
-function createEmbedderGuard({ mode, pauseRun, stopRun }) {
+// ADR 0034 amendment 1: `mode` is required (pause loudly), keyword (record, rank by keywords) or off (record, memory off); the old
+// names stop and continue are accepted. The mode can change while the run is paused: `setMode` is the operator's choice at a resume
+// (`belay resume --embedder keyword|off`). Under `off` the first failure turns the run's memory off (`memoryOff()`), which the owner
+// enforces: no memory index and no memory writes.
+function createEmbedderGuard({ mode: initialMode, pauseRun, stopRun }) {
+  let mode = normalizeMode(initialMode) || 'required';
+  let off = false;
   const events = [];
   let fatalReason = null;
   const pending = new Set();
@@ -67,10 +73,11 @@ function createEmbedderGuard({ mode, pauseRun, stopRun }) {
     const worker = workerId || (caller && caller.worker_id) || by || (caller && caller.role) || null;
     const ev = {
       at: Date.now(), worker, call, code: error.code || null, cause: error.detail.cause || null,
-      message: error.message || String(error), action: mode === 'stop' ? 'pause' : 'continue', pause: null,
+      message: error.message || String(error), action: mode === 'required' ? 'pause' : mode === 'off' ? 'off' : 'continue', pause: null,
     };
     events.push(ev);
-    if (mode !== 'stop') return undefined;
+    if (mode === 'off') off = true;
+    if (mode !== 'required') return undefined;
     if (isFatal(error)) {
       // Resuming can never succeed, so under `stop` the run ends, with the error and why, through the existing stop.
       ev.action = 'stop';
@@ -96,7 +103,21 @@ function createEmbedderGuard({ mode, pauseRun, stopRun }) {
     p.then(() => pending.delete(p));
     return p;
   }
-  return { onFailure, fatal: () => fatalReason, events: () => events.map((e) => ({ ...e })), settled: () => Promise.all([...pending]).then(() => undefined) };
+  // A warm-up that failed under keyword or off: the run starts in that mode, and the failure is an event like any other.
+  function noteWarmFailure(warm) {
+    const ev = { at: Date.now(), worker: null, call: 'warm-up', code: warm.code || null, cause: warm.cause || null, message: warm.message || '', action: mode === 'off' ? 'off' : 'continue', pause: null };
+    events.push(ev);
+    if (mode === 'off') off = true;
+    return ev;
+  }
+  function setMode(m) {
+    const n = normalizeMode(m);
+    if (n === null) throw new Error(`on_embedder_failure must be one of ${ON_FAILURE.join(', ')}`);
+    mode = n;
+    if (n === 'off') off = true; // choosing off at a resume turns memory off at once
+    return n;
+  }
+  return { onFailure, noteWarmFailure, setMode, mode: () => mode, memoryOff: () => off, fatal: () => fatalReason, events: () => events.map((e) => ({ ...e })), settled: () => Promise.all([...pending]).then(() => undefined) };
 }
 
 module.exports = { ON_FAILURE, isFatal, isEmbedderFailure, warmEmbedder, createEmbedderGuard, fixFor };

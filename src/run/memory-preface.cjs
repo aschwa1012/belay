@@ -75,7 +75,7 @@ const queryOf = (prompt) => (typeof prompt === 'string' && prompt.trim() ? promp
 // The spawn's own bound for embedding the index queries (a slow embedder must not hold a spawn): past it the index is
 // built from keywords alone and the receipt names the failure. The core enforces it (memory.embedQuery timeout_ms).
 const { SPAWN_EMBED_MS } = require('../core/spawn-bounds.cjs');
-const NO_EMBED = Object.freeze({ attempted: false, embeddings: [], queries: [], failure: null, stop: false, ms: 0 });
+const NO_EMBED = Object.freeze({ attempted: false, embeddings: [], queries: [], failure: null, stop: false, off: false, ms: 0 });
 
 // The query vectors of this worker's index, made by the store owner's embedder (memory.embedQuery: the path memory.search
 // uses; this process never loads the model). The queries are the task's own text, which the core reads from the task row
@@ -83,7 +83,7 @@ const NO_EMBED = Object.freeze({ attempted: false, embeddings: [], queries: [], 
 // sets them yet). Only for a run with a project, and only when there is a task or an extra query. Resolves
 // { attempted, embeddings: [{ vector, model, label }], queries: [{ label, ms, ok, code?, message?, embedder?, timed_out? }],
 // failure: the first failed query's { code, message } or null, stop: whether a failure of the model itself must stop this
-// launch (the run's mode is `stop`), ms }. A core without memory.embedQuery is a test double and gets none. Never throws.
+// launch (the run's mode is `required`), off: whether the run's memory is off (mode `off` after a failure), ms }. A core without memory.embedQuery is a test double and gets none. Never throws.
 async function embedForIndex(ctx, w, lv) {
   const extra = Array.isArray(w.indexQueries) ? w.indexQueries : [];
   if (!lv.project || !ctx.core.memory || typeof ctx.core.memory.embedQuery !== 'function' || (!w.taskId && !extra.length)) return NO_EMBED;
@@ -100,10 +100,12 @@ async function embedForIndex(ctx, w, lv) {
   const queries = ((r && r.queries) || []).map((q) => ({ label: q.label, ms: q.ms, ok: !!q.ok, ...(q.ok ? {} : { code: q.code, message: q.message, cause: q.cause || null, embedder: !!q.embedder, timed_out: !!q.timed_out }) }));
   const embeddings = ((r && r.queries) || []).filter((q) => q.ok).map((q) => ({ vector: q.query_embedding, model: q.embedding_model, label: q.label }));
   const bad = queries.find((q) => !q.ok);
+  const failedModel = queries.some((q) => !q.ok && q.embedder);
   return {
     attempted: true, embeddings, queries, ms: Number.isInteger(r && r.embed_ms) ? r.embed_ms : Date.now() - t0,
     failure: bad ? { code: bad.code || 'E_INTERNAL', message: String(bad.message || '').slice(0, 200), cause: bad.cause || null } : null,
-    stop: !!(r && r.on_embedder_failure === 'stop' && queries.some((q) => !q.ok && q.embedder)),
+    stop: !!(r && r.on_embedder_failure === 'required' && failedModel),
+    off: !!(r && (r.memory_off || (r.on_embedder_failure === 'off' && failedModel))),
   };
 }
 
@@ -115,11 +117,16 @@ function receiptDetail(emb, hybrid, failure) {
   return JSON.stringify({ hybrid, queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), ...(f ? { failure: { code: f.code, message: String(f.message || '').slice(0, 160) } } : {}) });
 }
 
-// ADR 0034 decision 2 under `stop`: the owner's hook has paused the run, so this launch injects no index. The receipt is
+// ADR 0034 decision 2 under `required`: the owner's hook has paused the run, so this launch injects no index. The receipt is
 // ok 0 with the failure's code (a resume relaunches the worker, and its index is built again, since an ok 0 receipt shows no rows).
 async function stopReceipt(ctx, w, emb) {
   w.lastError = { where: 'memory.embedQuery', code: emb.failure.code, message: emb.failure.message };
   await record(ctx, w, { kind: 'index_injected', ok: 0, code: emb.failure.code, message: receiptDetail(emb, false) });
+}
+
+// on_embedder_failure `off`: the run's memory is off, so this launch gets no index. Recorded, never silent.
+async function offReceipt(ctx, w, emb) {
+  await record(ctx, w, { kind: 'index_injected', ok: 1, row_ids: [], bytes: 0, dropped: 0, over_budget: 0, message: JSON.stringify({ hybrid: false, memory: 'off', queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), ...(emb.failure ? { failure: { code: emb.failure.code, message: String(emb.failure.message || '').slice(0, 160) } } : {}) }) });
 }
 
 // The index text for this worker's launch, or '' (lever off, no rows, or a failed call). The event is the
@@ -134,6 +141,7 @@ async function indexBlock(w, ctx, prompt, given) {
   if (!lv.first_message_index) return '';
   const emb = given || await embedForIndex(ctx, w, lv);
   if (emb.stop) { await stopReceipt(ctx, w, emb); return ''; }
+  if (emb.off) { await offReceipt(ctx, w, emb); return ''; }
   let got;
   try {
     const exclude = await shownBefore(ctx, w);
@@ -185,13 +193,14 @@ async function relaunch(w, ctx, firstText) {
 // message is on stdin (measured, tests/run/receipts/init-timing.json). `prompt` (optional) is the text the
 // preface goes in front of; the index ranks rows by relevance to it.
 async function preface(w, ctx, prompt) {
-  // The index's vectors are made first, before the task is assigned: under `stop` a failure of the model refuses this spawn
+  // The index's vectors are made first, before the task is assigned: under `required` a failure of the model refuses this spawn
   // with nothing assigned and nothing sent (the caller writes the `starting` row dead), so the orchestrator spawns again after
   // the resume and the worker is never launched into a paused run without its index. The time spent is `w.indexEmbedMs`, which
   // the manager keeps out of the worker's readiness clock.
   const lv = await levers(ctx, w);
   const emb = lv.first_message_index ? await embedForIndex(ctx, w, lv) : NO_EMBED;
   w.indexEmbedMs = emb.ms;
+  if (emb.off) await offReceipt(ctx, w, emb);
   if (emb.stop) {
     await stopReceipt(ctx, w, emb);
     // The guard ENDS the run, instead of pausing it, for a failure no resume can fix (embedder-guard.cjs isFatal: the store's model is not
@@ -199,8 +208,8 @@ async function preface(w, ctx, prompt) {
     const fatal = emb.failure.code === 'E_MODEL_CHANGED' || emb.failure.cause === 'canary';
     const what = `${emb.failure.code}: ${emb.failure.message}`;
     fail('E_PAUSED', fatal
-      ? `worker ${w.id} was not launched: the embedder failed while embedding its index query (${what}), which no resume can fix, so on_embedder_failure stop is ENDING the run, not pausing it. Do not spawn again; end your work and report it.`
-      : `worker ${w.id} was not launched: the embedder failed while embedding its index query (${what}), and on_embedder_failure is stop, so the run is pausing. After the resume, spawn the task again with a NEW worker id (${w.id} is now a dead row).`,
+      ? `worker ${w.id} was not launched: the embedder failed while embedding its index query (${what}), which no resume can fix, so on_embedder_failure required is ENDING the run, not pausing it. Do not spawn again; end your work and report it.`
+      : `worker ${w.id} was not launched: the embedder failed while embedding its index query (${what}), and on_embedder_failure is required, so the run is pausing. After the resume, spawn the task again with a NEW worker id (${w.id} is now a dead row).`,
     { cause: 'embedder_failure', code: emb.failure.code, worker_id: w.id, run_ending: fatal });
   }
   let head = '';
@@ -213,7 +222,7 @@ async function preface(w, ctx, prompt) {
       w.lastError = { where: 'continuity.resumeLine', code: e && e.code, message: e && e.message };
     }
   }
-  return head + await memoryPreface(w, ctx, prompt, emb);
+  return head + (emb.off ? '' : await memoryPreface(w, ctx, prompt, emb));
 }
 
 // ADR 0043 decision 1: the knowledge agent, only with its lever on. The module is built apart.

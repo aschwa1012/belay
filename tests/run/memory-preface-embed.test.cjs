@@ -22,7 +22,7 @@ const PROMPT = 'implement the thing';
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/\\/g, '/');
 
 const okQuery = (label = 'task', ms = 37) => ({ label, ok: true, ms, query_embedding: [0, 1, 0], embedding_model: 'stub', dim: 3 });
-const okEmbed = async () => ({ queries: [okQuery()], on_embedder_failure: 'stop', embed_ms: 37 });
+const okEmbed = async () => ({ queries: [okQuery()], on_embedder_failure: 'required', embed_ms: 37 });
 const failEmbed = (mode, over = {}) => async () => ({ queries: [{ label: 'task', ok: false, ms: 12, code: 'E_MODEL_ABSENT', message: 'the model is gone', cause: 'dead', embedder: true, ...over }], on_embedder_failure: mode, embed_ms: 12 });
 
 function makeCore({ embed, index } = {}) {
@@ -73,7 +73,7 @@ test('a relaunch (no prompt) embeds the same task text, so a resumed worker gets
 
 test('the worker\'s own extra queries are sent along when it has them, and are none today', async () => {
   const w = { ...W(), indexQueries: ['release checklist', { label: 'dates', text: 'calendar bug' }] };
-  const { core, calls } = makeCore({ embed: async () => ({ queries: [okQuery(), okQuery('extra:1', 5), okQuery('dates', 6)], on_embedder_failure: 'stop', embed_ms: 48 }) });
+  const { core, calls } = makeCore({ embed: async () => ({ queries: [okQuery(), okQuery('extra:1', 5), okQuery('dates', 6)], on_embedder_failure: 'required', embed_ms: 48 }) });
   await MP.memoryPreface(w, ctxOf(core), PROMPT);
   assert.deepStrictEqual(calls.find((c) => c.method === 'embedQuery').args.extra_texts, w.indexQueries);
   assert.strictEqual(calls.find((c) => c.method === 'index').args.query_embeddings.length, 3);
@@ -90,8 +90,8 @@ test('the notes index is embedded the same way: the lever changes which index th
   assert.strictEqual(detail(events[0]).hybrid, true);
 });
 
-test('stop: preface refuses the spawn with E_PAUSED, assigns nothing, records ok 0 with the code, and builds no keyword index', async () => {
-  const { core, calls, events } = makeCore({ embed: failEmbed('stop') });
+test('required: preface refuses the spawn with E_PAUSED, assigns nothing, records ok 0 with the code, and builds no keyword index', async () => {
+  const { core, calls, events } = makeCore({ embed: failEmbed('required') });
   core.task = { assign: async () => { calls.push({ method: 'task.assign' }); } };
   const w = W();
   await assert.rejects(MP.preface(w, ctxOf(core), PROMPT), (e) => e.code === 'E_PAUSED' && e.detail.code === 'E_MODEL_ABSENT' && /spawn the task again with a NEW worker id/.test(e.message));
@@ -102,16 +102,16 @@ test('stop: preface refuses the spawn with E_PAUSED, assigns nothing, records ok
   assert.strictEqual(w.lastError.where, 'memory.embedQuery');
 });
 
-test('stop at a relaunch injects nothing and records ok 0 (the run is pausing; the resume relaunches)', async () => {
-  const { core, calls, events } = makeCore({ embed: failEmbed('stop') });
+test('required at a relaunch injects nothing and records ok 0 (the run is pausing; the resume relaunches)', async () => {
+  const { core, calls, events } = makeCore({ embed: failEmbed('required') });
   const out = await MP.relaunch(W(), ctxOf(core), 'resume line');
   assert.strictEqual(out, 'resume line');
   assert.ok(!names(calls).includes('index'));
   assert.strictEqual(events[0].ok, 0);
 });
 
-test('continue: the index is keyword-only and the receipt names the failure by code', async () => {
-  const { core, calls, events } = makeCore({ embed: failEmbed('continue') });
+test('keyword: the index is keyword-only and the receipt names the failure by code', async () => {
+  const { core, calls, events } = makeCore({ embed: failEmbed('keyword') });
   const text = await MP.memoryPreface(W(), ctxOf(core), PROMPT);
   assert.strictEqual(text, 'INDEX a b\n\n', 'the run goes on with a keyword index');
   assert.strictEqual('query_embeddings' in calls.find((c) => c.method === 'index').args, false);
@@ -119,15 +119,31 @@ test('continue: the index is keyword-only and the receipt names the failure by c
   assert.deepStrictEqual(detail(events[0]), { hybrid: false, queries: [{ label: 'task', ms: 12, ok: false }], failure: { code: 'E_MODEL_ABSENT', message: 'the model is gone' } });
 });
 
-test('past the spawn\'s own bound the index is keyword-only with the bound named, whatever the mode', async () => {
-  const bound = (mode) => failEmbed(mode, { code: 'E_EMBED_BOUND', message: 'the 12000 ms bound passed', cause: null, embedder: false, timed_out: true });
-  for (const mode of ['stop', 'continue']) {
-    const { core, events } = makeCore({ embed: bound(mode) });
-    const text = await MP.memoryPreface(W(), ctxOf(core), PROMPT);
-    assert.strictEqual(text, 'INDEX a b\n\n', mode);
-    assert.strictEqual(events[0].ok, 1, mode);
-    assert.strictEqual(detail(events[0]).failure.code, 'E_EMBED_BOUND', mode);
-    assert.strictEqual(detail(events[0]).hybrid, false, mode);
+test('the spawn\'s own bound is an embedder failure: required refuses the spawn, keyword goes keyword-only, off turns memory off', async () => {
+  const bound = (mode) => failEmbed(mode, { code: 'E_EMBED_BOUND', message: 'the 12000 ms bound passed', cause: 'timeout', embedder: true, timed_out: true });
+  // required: the owner's hook paused the run, so the spawn is refused with the bound named
+  const req = makeCore({ embed: bound('required') });
+  await assert.rejects(MP.preface(W(), ctxOf(req.core), PROMPT), (e) => e.code === 'E_PAUSED' && e.detail.code === 'E_EMBED_BOUND');
+  assert.strictEqual(req.events[0].ok, 0);
+  assert.strictEqual(req.events[0].code, 'E_EMBED_BOUND');
+  // keyword: the index is keyword-only and the receipt names the bound
+  const kw = makeCore({ embed: bound('keyword') });
+  assert.strictEqual(await MP.memoryPreface(W(), ctxOf(kw.core), PROMPT), 'INDEX a b\n\n');
+  assert.strictEqual(kw.events[0].ok, 1);
+  assert.strictEqual(detail(kw.events[0]).failure.code, 'E_EMBED_BOUND');
+  assert.strictEqual(detail(kw.events[0]).hybrid, false);
+});
+
+test('off: after an embedder failure the run\'s memory is off, so no index is built, and it is recorded', async () => {
+  for (const r of [failEmbed('off'), async () => ({ queries: [], on_embedder_failure: 'off', memory_off: true, embed_ms: 0 })]) {
+    const { core, calls, events } = makeCore({ embed: r });
+    const out = await MP.preface({ id: 'w1', taskId: 't1' }, { ...ctxOf(core), core: { ...core, task: { assign: async () => {} }, continuity: { resumeLine: async () => ({ text: '' }) } } }, PROMPT);
+    assert.strictEqual(out, '', 'no index text');
+    assert.ok(!names(calls).includes('index'), 'memory.index is not asked');
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].ok, 1);
+    assert.strictEqual(events[0].bytes, 0);
+    assert.strictEqual(detail(events[0]).memory, 'off');
   }
 });
 
@@ -204,8 +220,8 @@ async function withManager(embed, fn) {
   try { return await fn(m, sb, core, events); } finally { try { await m.shutdown(); } catch { /* best effort */ } cleanup(sb.data); }
 }
 
-test('through the manager under stop: the spawn is refused, the starting row is written dead, and no worker process is launched', async () => {
-  await withManager(failEmbed('stop'), async (m, sb, core, events) => {
+test('through the manager under required: the spawn is refused, the starting row is written dead, and no worker process is launched', async () => {
+  await withManager(failEmbed('required'), async (m, sb, core, events) => {
     await assert.rejects(m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w1', task_id: 't1' }), (e) => e.code === 'E_PAUSED');
     const states = core.calls.filter((c) => c.method === 'worker.write').map((c) => c.args.state);
     assert.deepStrictEqual(states, ['starting', 'dead']);
@@ -225,7 +241,7 @@ test('through the manager: the embedding time is the harness wait, not part of r
     embedStart = Date.now();
     await new Promise((r) => setTimeout(r, 400));
     embedEnd = Date.now();
-    return { queries: [okQuery()], on_embedder_failure: 'stop', embed_ms: embedEnd - embedStart };
+    return { queries: [okQuery()], on_embedder_failure: 'required', embed_ms: embedEnd - embedStart };
   };
   await withManager(slow, async (m, sb, core, events) => {
     const t0 = Date.now();
@@ -238,7 +254,7 @@ test('through the manager: the embedding time is the harness wait, not part of r
 });
 
 test('the message of a refused spawn names the cause plainly and says to spawn again with a NEW worker id after the resume', async () => {
-  const { core } = makeCore({ embed: failEmbed('stop') });
+  const { core } = makeCore({ embed: failEmbed('required') });
   const w = W();
   await assert.rejects(MP.preface(w, ctxOf(core), PROMPT), (e) => {
     assert.strictEqual(e.code, 'E_PAUSED');
@@ -253,7 +269,7 @@ test('the message of a refused spawn names the cause plainly and says to spawn a
 
 test('when the guard ENDS the run (a canary or E_MODEL_CHANGED), the refused spawn says so and not "pausing"', async () => {
   for (const over of [{ code: 'E_MODEL_CHANGED', cause: 'canary' }, { code: 'E_TIMEOUT', cause: 'canary' }]) {
-    const { core } = makeCore({ embed: failEmbed('stop', over) });
+    const { core } = makeCore({ embed: failEmbed('required', over) });
     await assert.rejects(MP.preface(W(), ctxOf(core), PROMPT), (e) => {
       assert.strictEqual(e.code, 'E_PAUSED');
       assert.match(e.message, /ENDING the run, not pausing it/);
