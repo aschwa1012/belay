@@ -29,6 +29,7 @@ function decodeWire(p) {
   let out = p;
   if (typeof out.embedding_b64 === 'string') { out = { ...out, embedding: floatsFromB64(out.embedding_b64) }; delete out.embedding_b64; }
   if (typeof out.query_embedding_b64 === 'string') { out = { ...out, query_embedding: floatsFromB64(out.query_embedding_b64) }; delete out.query_embedding_b64; }
+  if (Array.isArray(out.query_embeddings)) out = { ...out, query_embeddings: out.query_embeddings.map((q) => (q && typeof q.vector_b64 === 'string' ? { ...q, vector: floatsFromB64(q.vector_b64), vector_b64: undefined } : q)) };
   return out;
 }
 

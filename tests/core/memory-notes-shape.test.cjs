@@ -67,7 +67,7 @@ test('reported_wrong and resolutions are checked', () => {
 
 test('levers: notes defaults off with its tuning levers, and validates', () => {
   const d = L.parseMemoryBlock(undefined).value;
-  assert.deepStrictEqual([d.notes, d.notes_reflection, d.notes_lesson_question, d.notes_match_n, d.notes_match_threshold], [false, false, false, 3, 0.85]);
+  assert.deepStrictEqual([d.notes, d.notes_reflection, d.notes_lesson_question, d.notes_match_n, d.notes_match_threshold], [false, false, false, 3, 0.8]);
   assert.ok(L.isDefault(d));
   const on = L.parseMemoryBlock({ project: 'p', notes: true, notes_reflection: true, notes_lesson_question: true, notes_match_n: 5, notes_match_threshold: 0.9 });
   assert.ok(on.value && !L.isDefault(on.value));

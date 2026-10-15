@@ -1,0 +1,145 @@
+'use strict';
+// settings-keys.cjs — the keys `belay settings` answers for, beyond the panel's `mod.*` ones: the memory levers
+// (`memory.<lever>`, project defaults a run inherits) and the per-agent-type model and effort defaults
+// (`agents.<type>.model|effort`). The memory keys are derived from src/core/memory-levers.cjs, never listed here, so
+// a lever added there appears in `settings` with no edit. Both modules this requires are pure (they require nothing
+// of src/core's store), so listing the settings loads no embedder and starts no process.
+
+const C = require('./config.cjs');
+const ML = require('../core/memory-levers.cjs');
+const AD = require('../run/agent-defaults.cjs');
+
+const MOD_NAMES = C.KEY_NAMES.filter((k) => C.KEYS[k].allowed);
+const MEMORY_NAMES = Object.keys(ML.DEFAULTS).map((k) => `memory.${k}`);
+const AGENT_NAMES = AD.AGENT_KEYS.flatMap((t) => AD.FIELDS.map((f) => `agents.${t}.${f}`));
+const NAMES = [...MOD_NAMES, ...MEMORY_NAMES, ...AGENT_NAMES];
+
+const kindOf = (key) => (MOD_NAMES.includes(key) ? 'mod' : key.startsWith('memory.') ? 'memory' : 'agents');
+const leverOf = (key) => key.slice('memory.'.length);
+const fieldOf = (key) => key.slice(key.lastIndexOf('.') + 1);
+
+// What a key accepts: { type, allowed (array or null), text (for the listing) }.
+function shape(key) {
+  const kind = kindOf(key);
+  if (kind === 'mod') return { type: 'enum', allowed: C.KEYS[key].allowed, text: C.KEYS[key].allowed.join(' | ') };
+  if (kind === 'agents') {
+    return fieldOf(key) === 'effort'
+      ? { type: 'enum', allowed: [...AD.EFFORT_LEVELS, null], text: `${AD.EFFORT_LEVELS.join(' | ')} | null` }
+      : { type: 'model', allowed: null, text: 'a model name | null (no default)' };
+  }
+  const s = ML.TYPES[leverOf(key)];
+  if (s.type === 'boolean') return { type: 'boolean', allowed: [true, false], text: 'true | false' };
+  if (s.type === 'enum') return { type: 'enum', allowed: s.values, text: s.values.join(' | ') };
+  if (s.type === 'string') return { type: 'string', nullable: !!s.nullable, allowed: null, text: s.nullable ? 'a name | null' : 'a string' };
+  const range = s.min !== undefined ? ` ${s.minExclusive ? '>' : ''}${s.min}${s.minExclusive ? '' : '..'}${s.minExclusive ? ' to ' : ''}${s.max}` : '';
+  return { type: s.type, allowed: null, text: `${s.type}${range}` };
+}
+
+function defaultOf(key) {
+  const kind = kindOf(key);
+  if (kind === 'mod') return C.KEYS[key].default;
+  if (kind === 'memory') return ML.DEFAULTS[leverOf(key)];
+  if (key === 'agents.orchestrator.model') return AD.ORCHESTRATOR_MODEL;
+  const built = AD.BUILTIN[key.split('.')[1]]; // the built-in roster default, which a stored null falls back to
+  return built && built[fieldOf(key)] !== undefined ? built[fieldOf(key)] : null;
+}
+
+// Parses the CLI's text into the value its key takes. Returns { value } or { error }; parseMemoryBlock still judges
+// the whole block before anything is written.
+function parseValue(key, raw) {
+  const sh = shape(key);
+  if (typeof raw !== 'string') { // an already-typed value from a caller other than the command line
+    const ok = kindOf(key) === 'mod' ? sh.allowed.includes(raw) : checkStored(key, raw).ok;
+    return ok ? { value: raw } : { error: `${JSON.stringify(raw)} is not a value of ${key} (${sh.text})` };
+  }
+  const bad = (what) => ({ error: `${JSON.stringify(raw)} is not ${what} for ${key}` });
+  switch (sh.type) {
+    case 'boolean': return raw === 'true' || raw === 'false' ? { value: raw === 'true' } : bad('true or false');
+    case 'integer': return /^-?\d+$/.test(raw) ? { value: Number(raw) } : bad('an integer');
+    case 'number': return /^-?\d+(\.\d+)?$/.test(raw) ? { value: Number(raw) } : bad('a number');
+    case 'model': return raw === 'null' ? { value: null } : raw ? { value: raw } : bad('a model name or null');
+    case 'string': return { value: raw === 'null' && sh.nullable ? null : raw };
+    default: {
+      if (raw === 'null' && sh.allowed.includes(null)) return { value: null };
+      return sh.allowed.includes(raw) ? { value: raw }
+        : { error: `${JSON.stringify(raw)} is not a value of ${key}; the allowed values are ${sh.allowed.filter((a) => a !== null).join(', ')}` };
+    }
+  }
+}
+
+function storedAt(config, key) {
+  let cur = config;
+  for (const p of key.split('.')) {
+    if (!cur || typeof cur !== 'object' || !Object.prototype.hasOwnProperty.call(cur, p)) return { present: false };
+    cur = cur[p];
+  }
+  return { present: true, value: cur };
+}
+
+// A stored value as the key would accept it, or why not. A stored null on an agents key is "unset".
+function checkStored(key, value) {
+  if (kindOf(key) === 'agents') {
+    if (value === null) return { ok: true, unset: true };
+    if (fieldOf(key) === 'effort') return AD.EFFORT_LEVELS.includes(value) ? { ok: true } : { ok: false, reason: `${JSON.stringify(value)} is not one of ${AD.EFFORT_LEVELS.join(', ')}` };
+    return typeof value === 'string' && value ? { ok: true } : { ok: false, reason: `${JSON.stringify(value)} is not a model name` };
+  }
+  const block = { [leverOf(key)]: value };
+  const t = typeof value;
+  const s = ML.TYPES[leverOf(key)];
+  const typeOk = s.type === 'boolean' ? t === 'boolean' : s.type === 'string' ? (value === null ? !!s.nullable : t === 'string') : s.type === 'enum' ? s.values.includes(value) : t === 'number';
+  if (!typeOk) return { ok: false, reason: `${JSON.stringify(value)} is not ${shape(key).text}` };
+  // Ranges and patterns are parseMemoryBlock's to judge; a prerequisite on another key is not this key's fault.
+  const r = ML.parseMemoryBlock(block);
+  return r.error && !/ needs memory\./.test(r.error) && !/cannot be combined/.test(r.error) ? { ok: false, reason: r.error } : { ok: true };
+}
+
+// { key, value, source, default, allowed, describe, type, invalid? } for a memory or agents key; the mod keys go through config.cjs.
+function effective(found, key) {
+  if (kindOf(key) === 'mod') {
+    const e = C.effective(found, key);
+    return { key, value: e.value, source: e.source, default: C.KEYS[key].default, allowed: e.allowed, describe: e.describe, ...(e.invalid ? { invalid: e.invalid } : {}) };
+  }
+  const dflt = defaultOf(key);
+  const sh = shape(key);
+  const stored = found.found ? storedAt(found.config, key) : { present: false };
+  const out = {
+    key, value: dflt, source: 'default', default: dflt, allowed: sh.allowed, type: sh.text,
+    describe: kindOf(key) === 'memory' ? 'memory lever: the default every run inherits; the run spec\'s memory block overrides it key by key' : 'default for the agent type; an explicit model or effort always wins',
+  };
+  if (!stored.present) return out;
+  const chk = checkStored(key, stored.value);
+  if (!chk.ok) return { ...out, invalid: { stored: stored.value, reason: `${chk.reason}; the default ${JSON.stringify(dflt)} is used` } };
+  if (chk.unset) return out;
+  return { ...out, value: stored.value, source: found.path };
+}
+
+// The memory block as the config holds it, after setting `key` to `value`; `null` when it is not an object.
+function memoryBlockWith(config, key, value) {
+  const cur = config && config.memory;
+  if (cur !== undefined && (cur === null || typeof cur !== 'object' || Array.isArray(cur))) return null;
+  return { ...(cur || {}), [leverOf(key)]: value };
+}
+
+// Refuses a write the run would later refuse: the whole resulting memory block goes through parseMemoryBlock
+// (prerequisites included). Returns an error string or null. Agents values are checked by parseValue.
+function refusal(config, key, value) {
+  if (kindOf(key) !== 'memory') return null;
+  const block = memoryBlockWith(config, key, value);
+  if (block === null) return '"memory" in the config file is not an object';
+  const r = ML.parseMemoryBlock(block);
+  return r.error ? `${r.error}; nothing was written` : null;
+}
+
+// After a write, would a fresh read see this value from this file? A stored null on an agents key is "unset", read as the default.
+// A null written to an agents key is read back as that key's built-in default.
+const expectedValue = (key, value) => (kindOf(key) === 'agents' && value === null ? defaultOf(key) : value);
+const expectedSource = (key, value, file) => (kindOf(key) === 'agents' && value === null ? 'default' : file);
+
+// The memory block's own verdict, for a listing: an error string when the stored block would be refused by a run.
+function memoryBlockError(found) {
+  if (!found.found || found.config.memory === undefined) return null;
+  const r = ML.parseMemoryBlock(found.config.memory);
+  return r.error || null;
+}
+
+module.exports = { NAMES, MOD_NAMES, MEMORY_NAMES, AGENT_NAMES, kindOf, shape, parseValue, effective, refusal, expectedSource, expectedValue, memoryBlockError };

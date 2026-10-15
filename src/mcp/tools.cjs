@@ -14,6 +14,7 @@
 'use strict';
 
 const NOTES = require('./tools-notes.cjs'); // ADR 0047: the listing of a worker whose run has the notes lever on
+const { WORKER_TYPES } = require('../run/agent-defaults.cjs'); // pure; the agent_type enum
 const S = (properties, required) => {
   const s = { type: 'object', properties };
   if (required) s.required = required;
@@ -162,6 +163,7 @@ const ORCHESTRATOR = [
       prompt: str('First message'),
       task_id: str('Assign this task once ready and prepend its resume line'),
       model: str(),
+      agent_type: { type: 'string', enum: WORKER_TYPES, description: 'Configured model and effort default' },
       effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
       allowed_tools: strs(),
       permission_mode: str(),

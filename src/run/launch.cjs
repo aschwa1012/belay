@@ -23,7 +23,7 @@ const DEFAULT_ALLOWED_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash', 
 // the ready event's `permission_mode` says which one it got (decision 3).
 const DEFAULT_PERMISSION_MODE = 'auto';
 // ADR 0028 decision 1: the levels `--effort` takes; a worker's level is a spawn argument.
-const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
+const { EFFORT_LEVELS, ORCHESTRATOR_MODEL } = require('./agent-defaults.cjs');
 const DEFAULT_CODEX_SANDBOX = 'workspace-write';
 const WORKER_NAME_PREFIX = 'belay-';
 
@@ -290,9 +290,9 @@ function codexResumeArgv(opts) {
 // it. So the caller supplies a directory outside the data dir and this refuses one inside, rather
 // than inventing an `orchestrator/` entry the contract does not have.
 // ADR 0021 amendment 4: the orchestrator is Opus 5.5. Sonnet 5 is retired.
-const DEFAULT_ORCHESTRATOR_MODEL = 'claude-opus-5-5';
+const DEFAULT_ORCHESTRATOR_MODEL = ORCHESTRATOR_MODEL;
 
-function orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath = null, compactAt = null, worktree = null }) {
+function orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath = null, compactAt = null, worktree = null, agentDefaultsPath = null }) {
   const argv = [
     mcpPath || mcpServerPath(),
     '--role',
@@ -305,16 +305,17 @@ function orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath = null, comp
   if (logPath) argv.push('--log', fwd(logPath));
   if (compactAt != null) argv.push('--compact-at', String(compactAt)); // ADR 0007 decision 3: the workers' lever
   if (worktree) argv.push('--worktree', fwd(path.resolve(worktree))); // ADR 0043 decision 1: the knowledge agent's cwd
+  if (agentDefaultsPath) argv.push('--agent-defaults', fwd(agentDefaultsPath)); // the config's per-agent-type defaults; absent when none are set
   return argv;
 }
 
-function orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath = null, compactAt = null, worktree = null }) {
+function orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath = null, compactAt = null, worktree = null, agentDefaultsPath = null }) {
   return {
     mcpServers: {
       [MCP_SERVER_NAME]: {
         type: 'stdio',
         command: fwd(process.execPath),
-        args: orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath, compactAt, worktree }),
+        args: orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath, compactAt, worktree, agentDefaultsPath }),
       },
     },
   };
@@ -333,14 +334,15 @@ function assertOutsideDataDir(dir, dataDir) {
 
 // `knowledgeAgent`: the run's memory block turns the knowledge agent on, so the adapter is told the worktree (its
 // cwd). With the lever off the adapter's argv is the base one, byte for byte.
-function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, logPath = null, cwd = null, compactAt = null, knowledgeAgent = false }) {
+function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, logPath = null, cwd = null, compactAt = null, knowledgeAgent = false, agentDefaults = null }) {
   const outDir = assertOutsideDataDir(dir, dataDir);
   fs.mkdirSync(outDir, { recursive: true });
+  const agentDefaultsPath = require('./agent-defaults.cjs').writeFile(outDir, agentDefaults); // null unless the config sets a worker type's default
   const mcpJsonPath = fwd(path.join(outDir, 'mcp.json'));
   const orchSettingsPath = fwd(path.join(outDir, 'settings.json'));
   fs.writeFileSync(
     mcpJsonPath,
-    JSON.stringify(orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath, compactAt, worktree: knowledgeAgent ? cwd : null }), null, 2) + '\n'
+    JSON.stringify(orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath, compactAt, worktree: knowledgeAgent ? cwd : null, agentDefaultsPath }), null, 2) + '\n'
   );
   // Same hygiene as a worker (ADR 0007 §6): the operator's plugins and their hooks are disabled, so
   // the orchestrator's own context is not shaped by whatever is installed on the host. For the

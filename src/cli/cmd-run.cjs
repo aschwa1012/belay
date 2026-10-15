@@ -126,8 +126,10 @@ async function run(ctx) {
     return usageError(`belay run needs exactly one argument, a path to a spec JSON file; got ${fl.rest.length}`);
   }
   const specPath = fwd(path.resolve(ctx.cwd, fl.rest[0]));
-  const parsed = parseSpec(specPath, ctx.cwd);
+  const found = C.discover(ctx.cwd);
+  const parsed = parseSpec(specPath, ctx.cwd, { found, effort: eff.effort });
   if (parsed.error) return usageError(parsed.error);
+  eff.effort = parsed.effort; // --effort, else the config's agents.orchestrator.effort; parsed.agentSettings names which
   const mode = fl.interactive ? 'interactive' : parsed.mode; // ADR 0037 decision 1: the flag wins over the spec key
   const modeRefusal = RI.refusal(mode, parsed);
   if (modeRefusal) return usageError(modeRefusal);
@@ -139,7 +141,6 @@ async function run(ctx) {
   parsed.promptText = sub.text;
   parsed.levers.substituted = sub.substituted;
   const ce = mode === 'interactive' ? makeConsole() : null; // decision 6: the close can see a SIGHUP that arrives during it
-  const found = C.discover(ctx.cwd);
   require('../run/exe-discovery.cjs').exportConfigured(found, C.effective); // config claude_exe/codex_exe reach every child
   // The orchestrator is always Claude Code: a missing executable exits 1 (a host prerequisite, like the embedder) before any file is created.
   try { require('../run/exe-discovery.cjs').exeFor('claude'); } catch (e) { return { code: 1, text: `belay run: ${e.message}\n`, json: { error: e.message } }; }
@@ -171,6 +172,9 @@ async function run(ctx) {
         'run.pause': (params) => runPauseControl.pause(params), 'run.resume': (params) => runPauseControl.resume(params),
       },
       onEmbedderFailure: (ev) => guard.onFailure(ev),
+      // read by memory.embedQuery and the owner's engine at each call, so the run manager knows what a failure means, and an
+      // operator's choice at a resume (belay resume --embedder keyword|off) takes effect at once
+      embedderMode: () => guard.mode(), memoryOff: () => guard.memoryOff(), runEnding: () => !!guard.fatal(),
     },
   });
   stopControl = createStopControl({
@@ -180,8 +184,18 @@ async function run(ctx) {
   runPauseControl = createRunPauseControl({
     runId: parsed.runId, core, hook: hookBox, stopInFlight: () => stopControl.stopping(), interactive: !!ce,
     // ADR 0034 decision 2: resuming an embedder-failure pause re-attempts the load; a load that still fails keeps the run paused.
-    beforeResume: async (row) => {
+    // ADR 0034 amendment 1: the operator may choose at the resume (params.embedder): keyword or off. The choice sets the run's mode here
+    // and the resume goes ahead without re-loading the model; with no choice the model is re-loaded, and a load that still fails keeps
+    // the run paused.
+    beforeResume: async (row, params) => {
       if (!/embedder-failure [(]/.test(row.paused_by || '')) return;
+      const choice = params && params.embedder != null ? require('../core/embedder-mode.cjs').normalize(params.embedder) : null;
+      if (params && params.embedder != null && (choice === null || choice === 'required')) {
+        const e = new Error('run.resume embedder must be keyword or off (or leave it out to stay on required and re-load the model)');
+        e.code = 'E_ARGS';
+        throw e;
+      }
+      if (choice) { guard.setMode(choice); return; }
       const w = await warmEmbedder(core, { retry: true, timeoutMs: RESUME_WARM_MS });
       if (!w.ok) {
         const e = new Error(`the embedder still cannot load, so the run stays paused: ${w.code}: ${w.message}; fix: ${w.fix}`);
@@ -199,10 +213,9 @@ async function run(ctx) {
   });
   const opCaller = { role: 'operator', run_id: parsed.runId, pid: process.pid };
   const stopRun = (why) => stopControl.handle({ run_id: parsed.runId, caller: opCaller }, why);
-  const ie = ce ? RI.interactiveEmbedder(stopRun) : null; // ADR 0034 in an interactive run: no run pause exists, so it stops
   guard = createEmbedderGuard({
-    mode: parsed.levers.on_embedder_failure, stopRun,
-    pauseRun: ie ? ie.pauseRun : (why) => runPauseControl.pause({ run_id: parsed.runId, caller: opCaller }, why),
+    mode: parsed.levers.on_embedder_failure, stopRun, interactive: !!ce, // an interactive run is never ended by an embedder failure: it pauses (ADR 0034 amendment 2)
+    pauseRun: (why) => runPauseControl.pause({ run_id: parsed.runId, caller: opCaller }, why),
   });
   if (ce && ctx.interactiveDeps && ctx.interactiveDeps.onGuard) ctx.interactiveDeps.onGuard(guard); // test seam
   const attachHook = { attach: (h) => { stopControl.attach(h); Object.assign(hookBox, h); } };
@@ -229,7 +242,7 @@ async function run(ctx) {
     store: { owner_pid: ownerPid, attach: null, ended: null, shutdown: null, established_by: establishedBy },
     ended_by: endedBy, holds: [], polls: 0, wakes: [], wakes_suppressed: [], wakes_expired: [],
     wakes_held: [], pauses: [], stop: null, workers_closed: null,
-    levers: parsed.levers, embedder: null, embedder_failures: [], review_rounds: null, review_rounds_reason: 'the run never started', ms: Date.now() - t0, receipt_path: null,
+    levers: parsed.levers, agent_settings: parsed.agentSettings, embedder: null, embedder_failures: [], review_rounds: null, review_rounds_reason: 'the run never started', ms: Date.now() - t0, receipt_path: null,
   });
   if (electionError) {
     await core.close().catch(() => {});
@@ -248,7 +261,13 @@ async function run(ctx) {
   // so a run never starts on a host that cannot do what its memory tools promise. Nothing has been written.
   const skipped = warmupSkipped();
   const warm = skipped ? { ok: true, skipped } : await warmEmbedder(core);
-  if (!warm.ok) {
+  // ADR 0034 amendment 1: under required a warm-up that fails refuses the run (as before); under keyword or off the run starts in that
+  // mode and the failure is recorded as the run's first embedder event.
+  if (!warm.ok && guard.mode() !== 'required') {
+    guard.noteWarmFailure(warm);
+    warm.proceeded_as = guard.mode();
+  }
+  if (!warm.ok && guard.mode() === 'required') {
     let sd = null;
     try { sd = await core.shutdownOwner(); } catch (e) { sd = { error: (e && e.message) || String(e) }; }
     const endedBy = `the embedder could not be warmed, so the run did not start: ${warm.code}: ${warm.message}; fix: ${warm.fix}`;
@@ -265,7 +284,7 @@ async function run(ctx) {
   async function onAttached({ pid }) {
     try {
       RID.watchOrchestrator(pid); // ADR 0039: run-identity.cjs; the attach never waits on a snapshot
-      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, ...attachMemory(parsed.levers) });
+      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), ...attachMemory(parsed.levers) });
       return { ok: true, attach: attachRow };
     } catch (e) {
       return { ok: false, error: (e && e.message) || String(e) };
@@ -298,7 +317,7 @@ async function run(ctx) {
         core, runId: parsed.runId, dataDir,
         spec: {
           worktree: parsed.worktree, promptText: parsed.promptText, orchestratorDir,
-          model: parsed.model, allowedTools: parsed.allowedTools, effort: eff.effort,
+          model: parsed.model, allowedTools: parsed.allowedTools, effort: eff.effort, agentDefaults: parsed.agentDefaults,
           startupTimeoutMs: parsed.startup_timeout_ms, timeoutMs: parsed.timeout_ms,
           mcpToolTimeoutMs: parsed.mcp_tool_timeout_ms, pollMs: parsed.poll_ms,
           closeGraceMs: parsed.close_grace_ms, compactAtTokens: parsed.levers.compact_at_tokens, // ADR 0007 decision 3
@@ -405,17 +424,20 @@ async function run(ctx) {
     && RI.endedCleanly(mode, partial, closed)
     && partial.orchestrator.exit_code === 0
     && !partial.orchestrator.killed_after_close
-    && !guard.fatal()
-    && !RI.embedderUnsafe(mode, parsed.levers, guard.events()) ? 0 : 1; // ADR 0034: a run ended by an embedder failure it could not survive is never a clean exit
+    && !guard.fatal() ? 0 : 1; // ADR 0034: a run ended by an embedder failure it could not survive is never a clean exit
 
+  // Index-query embeds that hit their bound (memory.embedQuery's `embed_bound` events): not failures of the model, so not in
+  // embedder_failures, but a slow embedder the operator should see at run level.
+  let embedBounds = null;
+  try { embedBounds = ((await core.memory.events({ run_id: parsed.runId, kinds: ['embed_bound'], limit: 1000 })).events || []).map((e) => ({ at: e.written_at, worker_id: e.worker_id, task_id: e.task_id, detail: e.message })); } catch { /* the receipt still stands without it */ }
   const receiptPath = `${orchestratorDir}/run.json`;
   const receipt = {
     run_id: parsed.runId, mode, data_dir: dataDir, spec_path: specPath, orchestrator_dir: orchestratorDir,
-    orchestrator: { ...orchestratorBlock, ...(await RID.orchestratorFacts()) }, store: storeBlock, orch_effort_requested: eff.effort, // ADR 0028 (SF3); ADR 0039 pid_created
+    orchestrator: { ...orchestratorBlock, ...(await RID.orchestratorFacts()) }, store: storeBlock, orch_effort_requested: eff.effort, agent_settings: parsed.agentSettings, // ADR 0028 (SF3); ADR 0039 pid_created
     ended_by: endedBy, holds, polls, wakes, wakes_suppressed: wakesSuppressed, wakes_expired: wakesExpired,
     wakes_held: wakesHeld, pauses,
     stop: stopReceipt, ms: Date.now() - t0, receipt_path: null,
-    levers: parsed.levers, embedder: warm, embedder_failures: ie ? ie.annotate(guard.events()) : guard.events(),
+    levers: parsed.levers, on_embedder_failure_final: guard.mode(), memory_off: guard.memoryOff(), embedder: warm, embedder_failures: guard.events(), ...(embedBounds && embedBounds.length ? { embedder_bounds: embedBounds } : {}),
     review_rounds: reviewRounds.value, review_rounds_reason: reviewRounds.reason,
     workers_closed: closed ? workersClosedBlock(closed, endedRow ? (endedRow.workers_marked_dead || []) : null) : null,
     ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), // only with a run-end memory lever on

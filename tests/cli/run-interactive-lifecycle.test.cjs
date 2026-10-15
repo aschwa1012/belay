@@ -20,27 +20,51 @@ const { ROOT, sleep, waitUntil, currentRunRow } = H;
 
 const embedderError = () => Object.assign(new Error('the model did not load'), { code: 'E_TIMEOUT', detail: { embedder: true, cause: 'timeout' } });
 const failure = () => ({ caller: { role: 'orchestrator' }, by: 'orchestrator', call: 'memory.store', error: embedderError() });
-const NOTE = 'pause unavailable interactively; stopped instead';
 
 // ------------------------------------------------------------------ L1: an embedder failure is never silently degraded
 
-test('L1: under on_embedder_failure stop, a failure that would pause stops the run, says so, and exits 1', async (t) => withRun(t, async (dir) => {
+// ADR 0034 amendment 2 (operator, 2026-10-15): an interactive run is never ended by an embedder failure. Under required it
+// pauses (parks its workers, leaves the session alone), and the operator resumes with a choice.
+const cmdPause = require('../../src/cli/cmd-pause.cjs');
+const pausedRow = (r) => waitUntil(() => { const x = currentRunRow(r.dataDir, r.runId); return x && x.paused_at ? x : null; }, 30000, 100);
+
+test('L1: under required, an embedder failure pauses an interactive run (it does not end), and a resume with --embedder keyword goes on', async (t) => withRun(t, async (dir) => {
   let guard;
-  const r = start(dir, { env: { FAKE_NEVER_EXIT: '1' }, specOverrides: { on_embedder_failure: 'stop' }, deps: { onGuard: (g) => { guard = g; } } });
-  const rec = await waitUntil(() => r.record(), 15000);
+  const exitFile = `${dir}/quit.flag`;
+  fs.mkdirSync(`${dir}/proj/.git`, { recursive: true }); // the run's own project: the resume's config choice is written here, never in the repository
+  const home = process.cwd(); process.chdir(`${dir}/proj`); // claude starts in the run's project too, as a real one does
+  let r, rec;
+  try {
+    r = start(dir, { cwd: `${dir}/proj`, env: { FAKE_EXIT_FILE: exitFile }, specOverrides: { on_embedder_failure: 'stop' }, deps: { onGuard: (g) => { guard = g; } } });
+    rec = await waitUntil(() => r.record(), 15000);
+  } finally { process.chdir(home); }
   assert.ok(rec, 'the stub never started');
   assert.ok(await waitUntil(() => currentRunRow(r.dataDir, r.runId), 15000), 'no run row');
   await guard.onFailure(failure());
-  const res = await r.done;
-  assert.strictEqual(res.code, 1, res.text);
-  assert.ok(!P.pidAlive(rec.pid), 'claude outlived the stop');
-  const f = res.json.embedder_failures[0];
-  assert.strictEqual(f.stop.ok, true);
-  assert.strictEqual(f.note, NOTE);
-  assert.strictEqual(f.pause, null, 'the receipt claims a pause that never happened');
-  assert.match(res.text, new RegExp(`embedder failure: orchestrator, memory.store, E_TIMEOUT \\(timeout\\); ${NOTE}: run ended`));
-  assert.ok(!/no orchestrator to pause/.test(JSON.stringify(res.json)) && !/no orchestrator to pause/.test(res.text));
-  assert.match(res.json.ended_by, new RegExp(`^embedder-failure \\(orchestrator, memory.store, E_TIMEOUT, timeout\\): ${NOTE}; claude ended by its pid$`));
+  const row = await pausedRow(r);
+  assert.ok(row, 'the run never paused');
+  assert.match(row.paused_by, /embedder-failure \(orchestrator, memory.store, E_TIMEOUT, timeout\)/);
+  assert.strictEqual(row.ended_at, null, 'the run was ended');
+  assert.ok(P.pidAlive(rec.pid), 'claude was stopped');
+  assert.strictEqual(guard.fatal(), null);
+  assert.strictEqual(guard.events()[0].action, 'pause');
+  const res = await cmdPause.run({ command: 'resume', argv: [r.runId, '--embedder', 'keyword'], cwd: ROOT, dataDir: r.dataDir, json: true });
+  assert.strictEqual(res.code, 0, res.text);
+  assert.strictEqual(res.json.resumed, true);
+  assert.strictEqual(res.json.embedder_choice, 'keyword');
+  assert.strictEqual(res.json.embedder_setting.path, `${dir}/proj/belay.config.json`);
+  assert.strictEqual(guard.mode(), 'keyword');
+  assert.strictEqual(currentRunRow(r.dataDir, r.runId).paused_at, null);
+  assert.ok(P.pidAlive(rec.pid), 'claude died with the resume');
+  fs.writeFileSync(exitFile, 'x');
+  const done = await r.done;
+  // the stub's own exit code is not asserted: a fast quit can beat the fake surface gate's 300 ms sessionMs timer, which ends the run 'unsettled' and exit 1 (it does on main too)
+  assert.match(done.json.ended_by, /^claude exited \(code 0\)/, done.text);
+  assert.ok(!/embedder/.test(done.json.ended_by), 'the run was ended by the embedder failure');
+  assert.strictEqual(done.json.embedder_failures[0].pause.ok, true);
+  assert.strictEqual(done.json.on_embedder_failure_final, 'keyword');
+  assert.match(done.text, /embedder failure: orchestrator, memory.store, E_TIMEOUT \(timeout\); run paused/);
+  assert.ok(!/run ended/.test(done.text) && !/stopped instead/.test(done.text));
 }));
 
 test('L1: on_embedder_failure continue stays as chosen: the failure is recorded, the run goes on and exits 0', async (t) => withRun(t, async (dir) => {
@@ -55,15 +79,23 @@ test('L1: on_embedder_failure continue stays as chosen: the failure is recorded,
   assert.match(res.text, /embedder failure: orchestrator, memory.store, E_TIMEOUT \(timeout\); run continued/);
 }));
 
-test('L1: a failure whose stop could not run (nothing to stop yet) is neither stopped nor continued: exit 1, run NOT ended', async (t) => withRun(t, async (dir) => {
-  const r = start(dir, {
-    env: { FAKE_HOLD_MS: '300' }, specOverrides: { on_embedder_failure: 'stop' },
-    deps: { onGuard: (g) => { g.onFailure(failure()); } }, // before the spawn: stopControl has no orchestrator yet
-  });
-  const res = await r.done;
-  assert.strictEqual(res.code, 1, res.text);
-  assert.strictEqual(res.json.embedder_failures[0].stop.ok, false);
-  assert.match(res.text, /run NOT ended/);
+test('L1: a failure no resume can fix (E_MODEL_CHANGED) also pauses an interactive run instead of ending it', async (t) => withRun(t, async (dir) => {
+  let guard;
+  const exitFile = `${dir}/quit.flag`;
+  const r = start(dir, { env: { FAKE_EXIT_FILE: exitFile }, specOverrides: { on_embedder_failure: 'required' }, deps: { onGuard: (g) => { guard = g; } } });
+  const rec = await waitUntil(() => r.record(), 15000);
+  assert.ok(rec, 'the stub never started');
+  assert.ok(await waitUntil(() => currentRunRow(r.dataDir, r.runId), 15000), 'no run row');
+  const error = Object.assign(new Error('the store was built by another model'), { code: 'E_MODEL_CHANGED', detail: { embedder: true } });
+  await guard.onFailure({ caller: { role: 'orchestrator' }, by: 'orchestrator', call: 'memory.search', error });
+  assert.ok(await pausedRow(r), 'the run never paused');
+  assert.strictEqual(guard.fatal(), null, 'the guard marked the run to end');
+  assert.ok(P.pidAlive(rec.pid));
+  assert.strictEqual(currentRunRow(r.dataDir, r.runId).ended_at, null);
+  fs.writeFileSync(exitFile, 'x');
+  const done = await r.done;
+  assert.match(done.json.ended_by, /^claude exited \(code 0\)/, done.text); // the stub quit; the run was not ended by the embedder
+  assert.ok(!/embedder/.test(done.json.ended_by));
 }));
 
 // ------------------------------------------------------------------ L2: an unsettled gate is not clean
