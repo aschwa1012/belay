@@ -55,18 +55,7 @@ const SUBSTRATES = ['claude-code', 'codex'];
 
 const CF = require('./capture-fields.cjs');
 const SH = require('./shown-ids.cjs');
-function textOf(content) {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content.map((c) => (c && typeof c.text === 'string' ? c.text : JSON.stringify(c))).join('');
-  }
-  if (content == null) return '';
-  return JSON.stringify(content);
-}
-
-function byteLength(v) {
-  return Buffer.byteLength(typeof v === 'string' ? v : JSON.stringify(v == null ? null : v), 'utf8');
-}
+const { textOf, byteLength } = require('./parser-text.cjs');
 
 // Per-call context size from an assistant usage block. `result.usage` sums the assistant calls
 // inside one turn, so it cannot give the size of the last call, which is what the compaction budget
@@ -475,7 +464,7 @@ class Parser {
     if (it && j.type === 'item.completed') {
       if (it.type === 'mcp_tool_call' || it.type === 'command_execution' || it.tool) {
         const payload = it.result !== undefined ? it.result : it.output !== undefined ? it.output : it;
-        const f = SH.attach({ tool: it.tool || it.name || it.type, bytes: byteLength(payload), is_error: !!it.error }, payload);
+        const f = SH.attach({ tool: it.tool || it.name || it.type, bytes: byteLength(payload), is_error: !!it.error || (it.type === 'mcp_tool_call' && (it.status === 'failed' || !!(it.result && (it.result.is_error || it.result.isError)))) }, payload);
         if (this.capture) Object.assign(f, this.codexCapture(it, payload));
         // A failed command is an error whatever the item's error field says: nonzero exit or status failed.
         if (this.capture && it.type === 'command_execution') f.is_error = f.is_error || (Number.isInteger(it.exit_code) && it.exit_code !== 0) || it.status === 'failed';

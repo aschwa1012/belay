@@ -22,9 +22,9 @@ test('the parser names the ids a memory_search answered, in rank order, and a re
     use('t2', 'mcp__belay__memory_retrieve', { id: 'm-a' }), res('t2', { id: 'm-a', found: true }),
     use('t3', 'mcp__belay__memory_retrieve', { ids: ['m-b', 'm-z'] }), res('t3', { rows: [{ id: 'm-b', found: true }, { id: 'm-z', found: false }] }),
   ]);
-  assert.deepStrictEqual(s.shown, { route: 'search', ids: ['m-a', 'm-b'] });
-  assert.deepStrictEqual(r1.shown, { route: 'retrieve', ids: ['m-a'] });
-  assert.deepStrictEqual(r2.shown, { route: 'retrieve', ids: ['m-b'] }, 'a row that was not found was not shown');
+  assert.deepStrictEqual(s.shown, { route: 'search', ids: ['m-a', 'm-b'], full: [] });
+  assert.deepStrictEqual(r1.shown, { route: 'retrieve', ids: ['m-a'], full: [] });
+  assert.deepStrictEqual(r2.shown, { route: 'retrieve', ids: ['m-b'], full: [] }, 'a row that was not found was not shown');
 });
 
 test('no shown field for other tools, an error, an unreadable answer or an empty result', () => {
@@ -56,7 +56,7 @@ test('a successful lease_release hands the core what the stream showed and the f
   NC.onEvent(w, release(), ctx); // the reflection turn's second release
   await w.queue;
   assert.strictEqual(calls.length, 1);
-  assert.deepStrictEqual(calls[0], { task_id: 't-1', worker_id: 'w1', shown: [{ route: 'search', ids: ['m-a', 'm-b'], at: 5 }], changed_files: ['src/a.cjs'] });
+  assert.deepStrictEqual(calls[0], { task_id: 't-1', worker_id: 'w1', shown: [{ route: 'search', ids: ['m-a', 'm-b'], full: [], at: 5 }], changed_files: ['src/a.cjs'] });
 });
 
 test('nothing is kept or sent with the sink off, on an error release, or with no task; a core failure is named, not thrown', async () => {

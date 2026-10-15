@@ -47,25 +47,36 @@ function sinkOf(lv) { return lv && lv.notes === true && (lv.notes_sink === 'reco
 function recordApplied(E, caller, prep, taskId) {
   const ids = prep.memoryIds;
   if (sinkOf(prep.lv) === 'off') return { ids, recorded: false, reason: 'memory.notes_sink is off, so the ids were checked and not stored' };
-  const ev = recordEventSync(E, caller, { kind: 'notes_applied', worker_id: caller.worker_id, task_id: taskId, row_ids: ids, message: JSON.stringify({ count: ids.length }) });
+  // The facts a reader needs to exclude a citation (REPORT section 3): the notes this hand-back reported wrong, whether it
+  // carried a review verdict, and whether it came after the release (the reflection turn).
+  const message = JSON.stringify({ count: ids.length, reported_wrong: prep.wrong.map(w => w.id), verdict: prep.verdict || null, late: prep.late === true });
+  const ev = recordEventSync(E, caller, { kind: 'notes_applied', worker_id: caller.worker_id, task_id: taskId, row_ids: ids, message });
   return { ids, recorded: true, event_id: ev.id, seq: ev.seq };
 }
 
-function checkShown(list) {
+// A list longer than its cap is cut and the cut is counted (`dropped`, and `truncated` on every fact): one oversized
+// argument never loses a task's whole record. A malformed entry is still refused by name.
+function checkShown(list, dropped) {
   if (list === undefined || list === null) return [];
-  if (!Array.isArray(list) || list.length > SHOWN_MAX) throw err('E_ARGS', `memory.recordChances shown must be an array of at most ${SHOWN_MAX} { route, ids }`, { field: 'shown' });
+  if (!Array.isArray(list)) throw err('E_ARGS', 'memory.recordChances shown must be an array of { route, ids }', { field: 'shown' });
+  if (list.length > SHOWN_MAX) { dropped.shown = list.length - SHOWN_MAX; list = list.slice(0, SHOWN_MAX); }
   return list.map((s, i) => {
-    if (!s || typeof s !== 'object' || !SHOWN_ROUTES.includes(s.route) || !Array.isArray(s.ids) || s.ids.length > IDS_MAX || s.ids.some(x => !validId(x))) {
-      throw err('E_ARGS', `memory.recordChances shown[${i}] must be { route: ${SHOWN_ROUTES.join(' | ')}, ids: [memory ids], at? }`, { field: 'shown', index: i });
+    if (!s || typeof s !== 'object' || !SHOWN_ROUTES.includes(s.route) || !Array.isArray(s.ids) || s.ids.some(x => !validId(x))) {
+      throw err('E_ARGS', `memory.recordChances shown[${i}] must be { route: ${SHOWN_ROUTES.join(' | ')}, ids: [memory ids], at?, full? }`, { field: 'shown', index: i });
     }
     if (s.at !== undefined && !Number.isInteger(s.at)) throw err('E_ARGS', `memory.recordChances shown[${i}].at must be an integer time in ms`, { field: 'shown', index: i });
-    return { route: s.route, ids: s.ids, at: s.at };
+    if (s.full !== undefined && (!Array.isArray(s.full) || s.full.some(x => !validId(x)))) throw err('E_ARGS', `memory.recordChances shown[${i}].full must be an array of memory ids`, { field: 'shown', index: i });
+    let ids = s.ids;
+    if (ids.length > IDS_MAX) { dropped.ids = (dropped.ids || 0) + ids.length - IDS_MAX; ids = ids.slice(0, IDS_MAX); }
+    return { route: s.route, ids, at: s.at, full: s.full || [] };
   });
 }
-function checkFiles(list) {
+function checkFiles(list, dropped) {
   if (list === undefined || list === null) return [];
-  if (!Array.isArray(list) || list.length > FILES_MAX || list.some(x => !isStr(x))) throw err('E_ARGS', `memory.recordChances changed_files must be an array of at most ${FILES_MAX} paths`, { field: 'changed_files' });
-  return [...new Set(list.map(fold).filter(Boolean))];
+  if (!Array.isArray(list) || list.some(x => !isStr(x))) throw err('E_ARGS', 'memory.recordChances changed_files must be an array of paths', { field: 'changed_files' });
+  const all = [...new Set(list.map(fold).filter(Boolean))];
+  if (all.length > FILES_MAX) { dropped.changed_files = all.length - FILES_MAX; return all.slice(0, FILES_MAX); }
+  return all;
 }
 
 function chanceOut(r) {
@@ -75,48 +86,55 @@ function chanceOut(r) {
 }
 
 // The deliveries of one task, before the notes behind them are looked up: [{ id, route, slot, size, at, worker_id }].
-function deliveriesOf(E, task, shown) {
+function deliveriesOf(E, task, workerId, shown) {
   const out = [];
   const seen = new Set();
   const push = (d) => { const k = `${d.id}|${d.route}`; if (!seen.has(k)) { seen.add(k); out.push(d); } };
-  const evs = E.store.p("SELECT row_ids, worker_id, written_at FROM memory_event WHERE kind = 'index_injected' AND ok = 1 AND run_id = ? AND task_id = ? ORDER BY seq").all(task.run_id, task.id);
+  const evs = E.store.p("SELECT row_ids, worker_id, written_at FROM memory_event WHERE kind = 'index_injected' AND ok = 1 AND run_id = ? AND task_id = ? AND worker_id = ? ORDER BY seq").all(task.run_id, task.id, workerId);
   for (const ev of evs) {
     const ids = parse(ev.row_ids);
     if (Array.isArray(ids)) ids.forEach((id, i) => push({ id, route: 'index', slot: i + 1, size: ids.length, at: ev.written_at, worker_id: ev.worker_id }));
   }
-  for (const s of shown) s.ids.forEach((id, i) => push({ id, route: s.route, slot: i + 1, size: s.ids.length, at: s.at == null ? null : s.at, worker_id: null }));
+  for (const s of shown) s.ids.forEach((id, i) => push({ id, route: s.route, slot: i + 1, size: s.ids.length, at: s.at == null ? null : s.at, worker_id: workerId }));
   return out;
 }
 
 // memory.recordChances { task_id, shown?: [{ route: 'search'|'retrieve', ids, at? }], changed_files?: [paths], worker_id? }.
-// Harness only (the run manager, at task end). Once per task: a task that already has chance or changed-file events
-// answers them with `already: true` and writes nothing.
+// Harness only (the run manager, at task end). `worker_id` is required: the record is of one worker's life of the task
+// (index events, applied ids and chances are all scoped to it), so a retry by another worker is recorded on its own.
+// Once per (task, worker): a second call answers the first one's events with `already: true` and writes nothing.
 async function recordChances(E, caller, args) {
   if (!isStr(args.task_id)) throw err('E_ARGS', 'memory.recordChances needs a task_id');
+  if (!isStr(args.worker_id)) throw err('E_ARGS', 'memory.recordChances needs the worker_id whose hand-back ended the task', { field: 'worker_id' });
   const task = rows.current(E.store, 'task', args.task_id);
   if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.task_id}`, { task_id: args.task_id });
   if (caller.role === 'orchestrator' && caller.run_id !== task.run_id) throw err('E_ROLE', `task ${task.id} belongs to run ${task.run_id}, not this caller's run`, { task_id: task.id });
   const lv = leversOf(E, task.run_id);
   const sink = sinkOf(lv);
   if (sink === 'off') throw err('E_LEVER_OFF', 'memory.recordChances needs the run\'s memory.notes_sink lever on (record or penalty), and this run has it off', { lever: 'notes_sink' });
-  const shown = checkShown(args.shown);
-  const changed = checkFiles(args.changed_files);
+  const dropped = {};
+  const shown = checkShown(args.shown, dropped);
+  const changed = checkFiles(args.changed_files, dropped);
+  const truncated = Object.keys(dropped).length > 0;
   const out = E.store.tx(() => {
-    const prior = E.store.p("SELECT * FROM memory_event WHERE task_id = ? AND kind IN ('note_chance', 'note_changed') ORDER BY seq").all(task.id);
-    if (prior.length) return { task_id: task.id, run_id: task.run_id, already: true, written: 0, chances: prior.filter(r => r.kind === 'note_chance').map(chanceOut), changed: null };
+    const prior = E.store.p("SELECT * FROM memory_event WHERE task_id = ? AND worker_id = ? AND kind IN ('note_chance', 'note_changed') ORDER BY seq").all(task.id, args.worker_id);
+    if (prior.length) return { task_id: task.id, run_id: task.run_id, already: true, written: 0, chances: prior.filter(r => r.kind === 'note_chance').map(chanceOut), changed: null, dropped };
 
     const project = (E.store.p('SELECT project FROM run WHERE id = ? ORDER BY seq DESC LIMIT 1').get(task.run_id) || {}).project;
     const ns = project ? `project/${project}` : null;
-    const delivered = deliveriesOf(E, task, shown);
+    const delivered = deliveriesOf(E, task, args.worker_id, shown);
     const ids = [...new Set(delivered.map(d => d.id))];
     const noteRows = new Map();
     if (ns && ids.length) {
       for (const r of E.store.p(`SELECT id, body FROM memory_entries WHERE type = 'note' AND namespace = ? AND id IN (${marks(ids)})`).all(ns, ...ids)) noteRows.set(r.id, parse(r.body) || {});
     }
+    // opened: the worker saw the whole note, by a retrieve or by a search answer that carried the full row.
     const opened = new Set();
-    for (const s of shown) if (s.route === 'retrieve') for (const id of s.ids) opened.add(id);
-    const applied = E.store.p("SELECT row_ids FROM memory_event WHERE kind = 'notes_applied' AND task_id = ? ORDER BY seq").all(task.id);
+    for (const s of shown) { if (s.route === 'retrieve') for (const id of s.ids) opened.add(id); for (const id of s.full) opened.add(id); }
+    const applied = E.store.p("SELECT row_ids, message FROM memory_event WHERE kind = 'notes_applied' AND task_id = ? AND worker_id = ? ORDER BY seq").all(task.id, args.worker_id);
     const appliedIds = new Set(applied.flatMap(r => parse(r.row_ids) || []));
+    const wrongIds = new Set(applied.flatMap(r => (parse(r.message) || {}).reported_wrong || []));
+    const reviewHandback = applied.some(r => (parse(r.message) || {}).verdict != null);
 
     const { prepareText, subjectHits } = require('./memory-index-notes.cjs');
     const owned = (Array.isArray(task.files_owned) ? task.files_owned : []).filter(isStr).map(fold);
@@ -131,13 +149,14 @@ async function recordChances(E, caller, args) {
       if (paths.length && overlap(paths, changed)) by.push('diff');
       if (subjectHits(body.subjects, prep, fold) > 0) by.push('term');
       const facts = {
-        route: d.route, slot: d.slot, set_size: d.size, opened: opened.has(d.id) || (d.route === 'retrieve'),
+        route: d.route, slot: d.slot, set_size: d.size, opened: opened.has(d.id) || d.route === 'retrieve',
         area: by.length > 0, area_by: by, used: appliedIds.has(d.id), applied_reported: applied.length > 0,
+        reported_wrong: wrongIds.has(d.id), review_handback: reviewHandback, truncated,
         delivered_at: d.at, sink,
       };
       const ev = recordEventSync(E, caller, {
-        kind: 'note_chance', run_id: task.run_id, task_id: task.id, worker_id: d.worker_id || args.worker_id || undefined,
-        key: `${task.id}:${d.id}:${d.route}`, row_ids: [d.id], message: JSON.stringify(facts),
+        kind: 'note_chance', run_id: task.run_id, task_id: task.id, worker_id: args.worker_id,
+        key: `${task.id}:${args.worker_id}:${d.id}:${d.route}`, row_ids: [d.id], message: JSON.stringify(facts),
       });
       chances.push(chanceOut(E.store.p('SELECT * FROM memory_event WHERE seq = ?').get(ev.seq)));
     }
@@ -152,11 +171,11 @@ async function recordChances(E, caller, args) {
         if (hit.length >= CHANGED_MAX) break;
       }
       if (hit.length) {
-        const ev = recordEventSync(E, caller, { kind: 'note_changed', run_id: task.run_id, task_id: task.id, key: task.id, row_ids: hit, message: JSON.stringify({ changed_files: changed.length }) });
+        const ev = recordEventSync(E, caller, { kind: 'note_changed', run_id: task.run_id, task_id: task.id, worker_id: args.worker_id, key: `${task.id}:${args.worker_id}`, row_ids: hit, message: JSON.stringify({ changed_files: changed.length }) });
         changedEv = { id: ev.id, seq: ev.seq, note_ids: hit };
       }
     }
-    return { task_id: task.id, run_id: task.run_id, already: false, written: chances.length + (changedEv ? 1 : 0), chances, changed: changedEv };
+    return { task_id: task.id, run_id: task.run_id, already: false, written: chances.length + (changedEv ? 1 : 0), chances, changed: changedEv, dropped };
   });
   return out;
 }
@@ -174,6 +193,13 @@ async function noteDeliveries(E, caller, args) {
     throw e;
   }
   let list = found.map(chanceOut);
+  // A hand-back after the record (the reflection turn) can still cite the note: join those later ids on read.
+  const later = new Map();
+  for (const c of list) {
+    const k = `${c.task_id}|${c.worker_id}`;
+    if (!later.has(k)) later.set(k, E.store.p("SELECT seq, row_ids FROM memory_event WHERE kind = 'notes_applied' AND task_id = ? AND worker_id = ?").all(c.task_id, c.worker_id));
+    c.used_after_record = later.get(k).some(a => Number(a.seq) > c.seq && (parse(a.row_ids) || []).includes(c.note_id));
+  }
   if (args.before != null) list = list.filter(c => (c.delivered_at == null ? c.recorded_at : c.delivered_at) < args.before);
   return { note_id: args.note_id, deliveries: list };
 }

@@ -86,6 +86,12 @@ async function prepare(E, caller, args) {
   const notes = NT.checkNotes(args.notes);
   const wrong = NT.checkReportedWrong(args.reported_wrong);
   const memoryIds = NT.checkMemoryIds(args.memory_ids); // the note ids applied, or null when the field was not given
+  // With the notes sink on the field is required ([] when none applied), as notes is. A second call on an already
+  // released lease (the reflection turn) carries only notes and is exempt.
+  if (memoryIds === null && lv.notes_sink && lv.notes_sink !== 'off') {
+    const l = args.lease_id ? rows.current(E.store, 'lease', args.lease_id) : null;
+    if (!l || l.released_at == null) throw err('E_ARGS', 'lease.release: memory_ids is required in this run (the ids of the notes you applied, [] when none)', { field: 'memory_ids' });
+  }
   for (const [i, w] of wrong.entries()) {
     const r = E.store.p('SELECT id, namespace, type FROM memory_entries WHERE id = ?').get(w.id);
     if (!r || r.type !== 'note' || r.namespace !== projectNs(project)) {
@@ -107,12 +113,14 @@ async function prepare(E, caller, args) {
     const matches = await findMatches(E, caller, project, emb, lv);
     prepared.push({ index: i, kind: n.kind, basis: n.basis, title, text: s.text, body: s.body, redactions: s.redactions, emb, matches, model });
   }
-  return { project, lv, notes: prepared, wrong, memoryIds };
+  const verdict = args.result && typeof args.result === 'object' && typeof args.result.verdict === 'string' ? args.result.verdict : null;
+  return { project, lv, notes: prepared, wrong, memoryIds, verdict };
 }
 
 // A second `lease.release` on a released lease may add notes only in a run that asked for the reflection turn, and
 // once per lease: the claim is a receipt written in the same transaction as the notes.
 function claimAfterRelease(E, caller, prep, lease, taskId) {
+  prep.late = true; // memory_ids given now are recorded as late: the task's chances were written at the first release
   if (!prep.lv.notes_reflection) {
     throw err('E_ARGS', `lease.release: lease ${lease.id} was already released, and a released lease takes notes again only in a run with memory.notes_reflection`, { lease_id: lease.id });
   }

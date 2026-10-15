@@ -12,7 +12,7 @@ const { Engine } = core('engine.cjs');
 const L = core('memory-levers.cjs');
 
 let dir, store, E;
-const RUN = 'rc-rec', OFF = 'rc-off', PEN = 'rc-pen';
+const RUN = 'rc-rec', OFF = 'rc-off', PEN = 'rc-pen', RFL = 'rc-rfl';
 const orch = (run) => callerFor('orchestrator', { run_id: run });
 const worker = (id, run) => callerFor('worker', { run_id: run, worker_id: id });
 const call = (run, method, args = {}) => E.handle(method, { caller: orch(run), ...args });
@@ -22,9 +22,9 @@ before(async () => {
   dir = sandbox();
   store = new Store(`${dir}/memory.db`, { stamp: true });
   E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: null, establishedBy: 'test' });
-  const levers = { [RUN]: { ...base, notes_sink: 'record' }, [OFF]: base, [PEN]: { ...base, notes_sink: 'penalty' } };
+  const levers = { [RUN]: { ...base, notes_sink: 'record' }, [OFF]: base, [PEN]: { ...base, notes_sink: 'penalty' }, [RFL]: { ...base, notes_sink: 'record', notes_reflection: true } };
   for (const run of Object.keys(levers)) await call(run, 'run.attach', { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify(levers[run]) });
-  for (const [id, run] of [['w1', RUN], ['w2', RUN], ['woff', OFF], ['wpen', PEN]]) {
+  for (const [id, run] of [['w1', RUN], ['w2', RUN], ['woff', OFF], ['wpen', PEN], ['wrf', RFL], ['wa', RUN], ['wb', RUN]]) {
     await call(run, 'worker.write', { id, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${id}`, last_event_at: Date.now(), model: 'claude-test-1' });
   }
 });
@@ -126,7 +126,7 @@ test('recordChances: one note_chance per delivered note and route, with slot, si
 test('recordChances: a subject term in the task text is area, and an unreported hand-back is not "unused"', async () => {
   const z = note('zebra claim', { subjects: ['quokka'] });
   const t = await task(RUN, 'w2', { spec: 'the quokka cache is wrong' });
-  const out = await call(RUN, 'memory.recordChances', { task_id: t.task_id });
+  const out = await call(RUN, 'memory.recordChances', { task_id: t.task_id, worker_id: 'w2' });
   const c = out.chances.find((x) => x.note_id === z);
   assert.deepStrictEqual([c.area_by, c.used, c.applied_reported], [['term'], false, false]);
 });
@@ -134,39 +134,39 @@ test('recordChances: a subject term in the task text is area, and an unreported 
 test('recordChances: the changed-file fact lists notes whose applies_to changed, once, and writes nothing without a match', async () => {
   const f = note('gamma claim', { applies_to: ['lib/gamma'] });
   const t = await task(RUN, 'w1', { spec: 'edit gamma', index: false });
-  const out = await call(RUN, 'memory.recordChances', { task_id: t.task_id, changed_files: ['lib/gamma/x.cjs'] });
+  const out = await call(RUN, 'memory.recordChances', { task_id: t.task_id, worker_id: 'w1', changed_files: ['lib/gamma/x.cjs'] });
   assert.ok(out.changed.note_ids.includes(f));
   const ev = events('note_changed', t.task_id);
   assert.strictEqual(ev.length, 1);
   assert.deepStrictEqual(JSON.parse(ev[0].row_ids), out.changed.note_ids);
   const none = await task(RUN, 'w2', { spec: 'nothing', index: false });
-  const quiet = await call(RUN, 'memory.recordChances', { task_id: none.task_id, changed_files: ['unrelated/file.txt'] });
+  const quiet = await call(RUN, 'memory.recordChances', { task_id: none.task_id, worker_id: 'w2', changed_files: ['unrelated/file.txt'] });
   assert.strictEqual(quiet.written, 0);
   assert.strictEqual(quiet.changed, null);
 });
 
 test('recordChances: once per task (a second call writes nothing), and refused with the sink off or for another run', async () => {
   const t = await task(RUN, 'w1', { spec: 'once' });
-  const first = await call(RUN, 'memory.recordChances', { task_id: t.task_id });
+  const first = await call(RUN, 'memory.recordChances', { task_id: t.task_id, worker_id: 'w1' });
   assert.ok(first.written > 0);
   const before = store.p('SELECT COUNT(*) AS n FROM memory_event').get().n;
-  const again = await call(RUN, 'memory.recordChances', { task_id: t.task_id, shown: [{ route: 'search', ids: ['m-x'] }] });
+  const again = await call(RUN, 'memory.recordChances', { task_id: t.task_id, worker_id: 'w1', shown: [{ route: 'search', ids: ['m-x'] }] });
   assert.strictEqual(again.already, true);
   assert.strictEqual(again.written, 0);
   assert.deepStrictEqual(again.chances.map((c) => c.id).sort(), first.chances.map((c) => c.id).sort());
   assert.strictEqual(store.p('SELECT COUNT(*) AS n FROM memory_event').get().n, before);
 
   const off = await task(OFF, 'woff', { spec: 'off task' });
-  await assert.rejects(call(OFF, 'memory.recordChances', { task_id: off.task_id }), (e) => e.code === 'E_LEVER_OFF');
+  await assert.rejects(call(OFF, 'memory.recordChances', { task_id: off.task_id, worker_id: 'woff' }), (e) => e.code === 'E_LEVER_OFF');
   assert.strictEqual(events('note_chance', off.task_id).length, 0, 'off writes nothing');
-  await assert.rejects(call(OFF, 'memory.recordChances', { task_id: t.task_id }), (e) => e.code === 'E_ROLE');
-  await assert.rejects(call(RUN, 'memory.recordChances', { task_id: 'nope' }), (e) => e.code === 'E_NOT_FOUND');
-  await assert.rejects(call(RUN, 'memory.recordChances', { task_id: t.task_id, shown: [{ route: 'index', ids: [] }] }), (e) => e.code === 'E_ARGS');
+  await assert.rejects(call(OFF, 'memory.recordChances', { task_id: t.task_id, worker_id: 'w1' }), (e) => e.code === 'E_ROLE');
+  await assert.rejects(call(RUN, 'memory.recordChances', { task_id: 'nope', worker_id: 'w1' }), (e) => e.code === 'E_NOT_FOUND');
+  await assert.rejects(call(RUN, 'memory.recordChances', { task_id: t.task_id, worker_id: 'w1', shown: [{ route: 'index', ids: [] }] }), (e) => e.code === 'E_ARGS');
 });
 
 test('penalty records exactly what record records', async () => {
   const t = await task(PEN, 'wpen', { spec: 'penalty task' });
-  const out = await call(PEN, 'memory.recordChances', { task_id: t.task_id });
+  const out = await call(PEN, 'memory.recordChances', { task_id: t.task_id, worker_id: 'wpen' });
   assert.ok(out.written > 0);
   assert.strictEqual(out.chances[0].sink, 'penalty');
 });
@@ -174,9 +174,9 @@ test('penalty records exactly what record records', async () => {
 test('noteDeliveries: which tasks were shown a note, by route, before a time; a worker cannot ask', async () => {
   const n = note('delivered claim', { applies_to: ['src/delivered.cjs'] });
   const t1 = await task(RUN, 'w1', { spec: 'first' });
-  await call(RUN, 'memory.recordChances', { task_id: t1.task_id, shown: [{ route: 'search', ids: [n], at: 5000 }] });
+  await call(RUN, 'memory.recordChances', { task_id: t1.task_id, worker_id: 'w1', shown: [{ route: 'search', ids: [n], at: 5000 }] });
   const t2 = await task(RUN, 'w2', { spec: 'second', index: false });
-  await call(RUN, 'memory.recordChances', { task_id: t2.task_id, shown: [{ route: 'retrieve', ids: [n], at: 9000 }] });
+  await call(RUN, 'memory.recordChances', { task_id: t2.task_id, worker_id: 'w2', shown: [{ route: 'retrieve', ids: [n], at: 9000 }] });
   const all = await call(RUN, 'memory.noteDeliveries', { note_id: n });
   const routes = all.deliveries.map((d) => `${d.task_id}:${d.route}`);
   assert.ok(routes.includes(`${t1.task_id}:index`) && routes.includes(`${t1.task_id}:search`) && routes.includes(`${t2.task_id}:retrieve`), routes.join(' '));

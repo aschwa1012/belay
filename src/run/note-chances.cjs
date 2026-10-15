@@ -13,19 +13,25 @@ function onEvent(w, e, ctx) {
   if (e.kind !== 'tool_result') return;
   const lv = ctx.memoryLevers; // read at spawn; absent means the defaults, which are off
   if (!lv || lv.notes !== true || !lv.notes_sink || lv.notes_sink === 'off') return;
+  if (!w.taskId) return;
   if (e.shown) {
-    (w.noteShown || (w.noteShown = [])).push({ route: e.shown.route, ids: e.shown.ids, at: e.at });
-  } else if (isRelease(e.tool) && !e.is_error && w.taskId && w.noteChancesTask !== w.taskId) {
-    w.noteChancesTask = w.taskId;
-    w.queue = w.queue.then(() => send(w, ctx)).catch(() => {});
+    // Tagged with the task it was shown for; after that task's record was sent nothing more is kept for it.
+    if (w.noteChancesTask === w.taskId) return;
+    (w.noteShown || (w.noteShown = [])).push({ route: e.shown.route, ids: e.shown.ids, full: e.shown.full || [], at: e.at, task: w.taskId });
+  } else if (isRelease(e.tool) && !e.is_error && w.noteChancesTask !== w.taskId) {
+    const taskId = w.taskId; // captured now: the queued job may run after a reassignment
+    w.noteChancesTask = taskId;
+    w.queue = w.queue.then(() => send(w, ctx, taskId)).catch(() => {});
   }
 }
 
-async function send(w, ctx) {
-  const shown = (w.noteShown || []).splice(0);
+async function send(w, ctx, taskId) {
+  const all = w.noteShown || [];
+  const shown = all.filter((s) => s.task === taskId).map(({ route, ids, full, at }) => ({ route, ids, full, at }));
+  w.noteShown = all.filter((s) => s.task !== taskId);
   const changed = [...(w.filesTouched || [])].map((f) => relativeTo(f, w.worktree));
   try {
-    await ctx.core.memory.recordChances({ task_id: w.taskId, worker_id: w.id, shown, changed_files: changed });
+    await ctx.core.memory.recordChances({ task_id: taskId, worker_id: w.id, shown, changed_files: changed });
   } catch (err) {
     w.lastError = { where: 'memory.recordChances', code: err && err.code, message: err && err.message };
   }
