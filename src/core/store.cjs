@@ -224,6 +224,25 @@ class Store {
     this.cache.delete(to);
   }
 
+  // Gives a row that has no vector its vector (`belay memory embed`, ADR 0047 notes written under on_embedder_failure
+  // keyword), binding the row's namespace to the model on first use like a write does. Only a row still without a vector is
+  // touched: false says another writer got there first. Inside the caller's transaction; the keyword index is unaffected.
+  setEmbedding(id, e) {
+    const row = this.p('SELECT namespace, embedding IS NULL AS bare FROM memory_entries WHERE id = ?').get(id);
+    if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
+    if (!Number(row.bare)) return false;
+    const m = this.p('SELECT embedding_model, dim FROM namespace_models WHERE namespace = ?').get(row.namespace);
+    if (!m) this.p('INSERT INTO namespace_models(namespace, embedding_model, dim) VALUES (?, ?, ?)').run(row.namespace, e.embedding_model, e.dim);
+    else if (m.embedding_model !== e.embedding_model || m.dim !== e.dim) {
+      throw err('E_MODEL', `namespace ${row.namespace} is bound to ${m.embedding_model}/${m.dim} and this vector is ${e.embedding_model}/${e.dim}`, { namespace: row.namespace, bound: m });
+    }
+    const vec = toUnitF32(e.embedding, e.dim);
+    this.p('UPDATE memory_entries SET embedding = ?, embedding_model = ?, embedding_revision = ?, dim = ?, updated_at = ? WHERE id = ? AND embedding IS NULL')
+      .run(Buffer.from(vec.buffer), e.embedding_model, e.embedding_revision || null, e.dim, now(), id);
+    this.cache.delete(row.namespace);
+    return true;
+  }
+
   delete(id) {
     return this.tx(() => {
       const row = this.p('SELECT * FROM memory_entries WHERE id = ?').get(id);
