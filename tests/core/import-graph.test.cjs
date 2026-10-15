@@ -46,7 +46,7 @@ test('model-cache.cjs requires only node built-ins, and models.cjs only the erro
 });
 
 test('the memory read modules require nothing but the error module', () => {
-  const allowed = { 'fts-query.cjs': [], 'fusion.cjs': ['./errors.cjs'], 'memory-rows.cjs': ['./errors.cjs'], 'memory-schema.cjs': [], 'fit-budget.cjs': [], 'memory-index.cjs': ['./errors.cjs', './fit-budget.cjs', './memory-reach.cjs', './memory-relevance.cjs', './memory-rows.cjs', './rows.cjs'], 'memory-relevance.cjs': ['./errors.cjs', './fts-query.cjs', './fusion.cjs', './memory-schema.cjs'], 'memory-corpus.cjs': ['./errors.cjs', './fit-budget.cjs', './memory-reach.cjs', './memory-rows.cjs'], 'memory-reach.cjs': ['./errors.cjs'] };
+  const allowed = { 'fts-query.cjs': [], 'fusion.cjs': ['./errors.cjs'], 'memory-rows.cjs': ['./errors.cjs'], 'memory-schema.cjs': [], 'fit-budget.cjs': [], 'memory-index.cjs': ['./errors.cjs', './fit-budget.cjs', './memory-index-notes.cjs', './memory-reach.cjs', './memory-relevance.cjs', './memory-rows.cjs', './rows.cjs'], 'memory-relevance.cjs': ['./errors.cjs', './fts-query.cjs', './fusion.cjs', './memory-schema.cjs'], 'memory-corpus.cjs': ['./errors.cjs', './fit-budget.cjs', './memory-reach.cjs', './memory-rows.cjs'], 'memory-reach.cjs': ['./errors.cjs'], 'memory-index-notes.cjs': ['./fit-budget.cjs', './memory-notes.cjs', './memory-reach.cjs', './memory-relevance.cjs', './memory-rows.cjs', './rows.cjs'], 'memory-notes.cjs': ['./errors.cjs', './memory-rows.cjs'] };
   for (const [name, want] of Object.entries(allowed)) assert.deepStrictEqual(requiresOf(path.join(SRC, 'core', name)).filter(r => !r.startsWith('node:')).sort(), [...want].sort(), name);
 });
 
