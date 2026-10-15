@@ -2,9 +2,8 @@
 // tools-notes.cjs — ADR 0047 decisions 3 and 4: what a worker's tool listing says when its run has the `notes` lever
 // on. `lease_release` gains `notes` (required, `[]` valid) and `reported_wrong` in its schema, not in prose, and
 // `memory_note_resolve` joins the listing. With the lever off none of this is listed and the listing is the one it
-// always was. The 5,120 byte worker budget (ADR 0040 section 4) is not loosened: the schema above costs about 1,340
-// bytes, so the listing also drops the five tools a worker least needs while it is writing notes (their descriptions
-// would not fit otherwise). They stay callable; only the per-turn listing tax goes.
+// always was. The schema below costs about 1,340 bytes; ADR 0010 amendment 6 raised the worker budget to 7,168 so that
+// every tool is listed in every arm.
 
 const str = (description) => (description ? { type: 'string', description } : { type: 'string' });
 const strs = () => ({ type: 'array', items: { type: 'string' } });
@@ -48,20 +47,16 @@ const NOTE_RESOLVE = {
   }, ['resolutions']),
 };
 
-// ADR 0047 decision 1: run summaries found on demand. Listed for the orchestrator of a notes run. It does not fit the
-// worker listing (5,120 bytes, none left), so a worker does not see it; the briefing a worker is given reads the same lookup.
+// ADR 0047 decision 1: run summaries found on demand, role both. Listed for the orchestrator and the workers of a notes run.
 const SUMMARIES = {
   name: 'memory_summaries',
   description: 'Run summaries by task, run or files, newest first.',
   inputSchema: S({ task_id: str(), run_id: str(), files: strs() }),
 };
 
-// Listed in a notes run's worker listing no more; still routable.
-const DROPPED = new Set(['status', 'task_list', 'memory_list', 'memory_stats', 'memory_delete']);
-
-// The worker listing for a notes run, from the ordinary one.
+// The worker listing for a notes run, from the ordinary one: every ordinary tool stays listed (ADR 0010 amendment 6).
 function notesWorkerListing(ordinary) {
-  return ordinary.filter((t) => !DROPPED.has(t.name)).map((t) => (t.name === 'lease_release' ? LEASE_RELEASE : t)).concat([NOTE_RESOLVE]);
+  return ordinary.map((t) => (t.name === 'lease_release' ? LEASE_RELEASE : t)).concat([NOTE_RESOLVE, SUMMARIES]);
 }
 
-module.exports = { LEASE_RELEASE, NOTE_RESOLVE, SUMMARIES, DROPPED, notesWorkerListing };
+module.exports = { LEASE_RELEASE, NOTE_RESOLVE, SUMMARIES, notesWorkerListing };
