@@ -214,7 +214,6 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     // The id is reserved synchronously: the await below must not let a second spawn with it pass the check above.
     pendingIds.add(id);
     let w;
-    await MP.levers(ctx, null); // ADR 0047: the worker adapter's argv carries the notes lever, so the levers are known before the files are written
     try {
       if (task_id) await core.task.assign({ task_id, check_only: true });
       w = W.newWorkerRecord({
@@ -224,6 +223,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       });
       workers.set(id, w);
     } finally { pendingIds.delete(id); }
+    await MP.levers(ctx, null); // ADR 0047: the worker adapter's argv carries the notes lever, so the levers are known before the files are written
     writeFilesFor(w);
     if (substrate === 'claude-code') w.instructions = I.snapshotInstructions(w.worktree, w.dir); // spawn only
 
