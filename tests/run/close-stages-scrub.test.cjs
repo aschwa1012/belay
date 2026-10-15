@@ -399,11 +399,35 @@ test('runChild records the child pid on the sink as soon as the manager has one,
   X.reported('pid recorded during spawn');
   const m = fakeManager(T, 'apply', '');
   const real = m.spawn;
-  m.spawn = async (a) => { const r = await real(a); m.recs.get(a.worker_id).pid = 4242; await new Promise((res) => setTimeout(res, 400)); return r; };
-  let flag = false;
+  let flag = false, atKill = null, release;
   const sink = { survivors: [], pids: [] };
-  setTimeout(() => { flag = true; }, 250);
+  const gate = new Promise((res) => { release = res; });
+  // The order is forced, not timed: the double sets the pid, asks for the fast close, then waits for the first kill to release it.
+  m.spawn = async (a) => { const r = await real(a); m.recs.get(a.worker_id).pid = 4242; flag = true; await gate; return r; };
+  const stop = m.stop;
+  m.stop = async (a) => { if (atKill === null) atKill = sink.pids.map((p) => p.pid); release(); return stop(a); };
   const o = await stage('apply', m, { fast: () => flag, sink });
   assert.strictEqual(o.error.code, 'E_ABORTED');
-  assert.deepStrictEqual(sink.pids.map((p) => p.pid), [4242], 'recorded before the spawn settled');
+  assert.deepStrictEqual(atKill, [4242], 'recorded before the kill, while the spawn had not settled');
+});
+
+test('runChild records a pid that arrives after the fast close was seen, before the second kill', async () => {
+  await settleAll();
+  X.reported('pid arrives after the fast tick');
+  const m = fakeManager(T, 'apply', '');
+  const real = m.spawn;
+  let flag = false, release, atSecond = null, kills = 0;
+  const sink = { survivors: [], pids: [] };
+  const gate = new Promise((res) => { release = res; });
+  m.spawn = async (a) => { const r = await real(a); flag = true; await gate; return r; }; // no pid yet at the fast tick
+  const stop = m.stop;
+  m.stop = async (a) => {
+    kills += 1;
+    if (kills === 1) { m.recs.get(a.worker_id).pid = 4243; release(); } // the pid appears while the first kill runs
+    if (kills === 2) atSecond = sink.pids.map((p) => p.pid);
+    return stop(a);
+  };
+  const o = await stage('apply', m, { fast: () => flag, sink });
+  assert.strictEqual(o.error.code, 'E_ABORTED');
+  assert.deepStrictEqual(atSecond, [4243], 'noted after the settle, before the second kill');
 });

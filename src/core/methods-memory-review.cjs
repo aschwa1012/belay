@@ -53,7 +53,7 @@ function archive(E, ctx, held, v, sources) {
   };
   if (!note || note.namespace !== N.projectNs(ctx.project)) return refuse('E_NOT_FOUND', `note ${held.b.note_id} is no longer a live note of the project (${note ? note.namespace : 'gone'}), so there is nothing to archive`);
   let facts;
-  try { facts = checkHoldFacts(E, ctx.project, note, held.b.kind, held.b.of, held.b.ground); } catch (e) {
+  try { facts = checkHoldFacts(E, ctx.project, note, held.b.kind, held.b.of, held.b.ground, ctx.threshold); } catch (e) {
     if (e.code !== 'E_PRECONDITION') throw e;
     return refuse(e.code, `S4 no longer holds at apply time: ${e.message}`, e.detail);
   }
@@ -97,10 +97,10 @@ async function one(E, ctx, raw, index) {
 async function reviewApply(E, caller, args) {
   C.needHarness(caller, 'memory.reviewApply');
   C.allowKeys(args, KEYS, 'memory.reviewApply');
-  const { project, runId } = C.notesContext(E, caller, 'memory.reviewApply');
+  const { lv, project, runId } = C.notesContext(E, caller, 'memory.reviewApply');
   if (args.run_id !== undefined && args.run_id !== runId) throw err('E_ARGS', `memory.reviewApply acts for the caller's own run (${runId}), and this call named ${args.run_id}`, { field: 'run_id' });
   const verdicts = L.checkVerdicts(args.verdicts);
-  const ctx = { project, runId, evidence: evidenceOf(args) };
+  const ctx = { project, runId, evidence: evidenceOf(args), threshold: lv.notes_match_threshold };
   const applied = [], refused = [];
   for (const [i, v] of verdicts.entries()) {
     try {
