@@ -79,6 +79,45 @@ test('run close: with note review on, the adapter wait adds the review drain the
   } finally { for (const c of [adapter, a]) if (P.pidAlive(c.pid)) require('../crash.cjs').crash(c); }
 });
 
+// A fast-close stage kill (stage-job.cjs: manager.stop kill) sends a signal in this process. If it lands after the close's own
+// SIGHUP snapshot started, that snapshot is stale for the worker close: it must re-take, or refuse, and never signal on it.
+test('run close (fast): a signal that lands after the close snapshot started makes it re-take; one that keeps landing refuses, and nothing is signalled on a stale snapshot', async () => {
+  const ID = require('../../src/core/proc-identity.cjs');
+  const CP = require('../../src/core/process.cjs');
+  const w = sleeper();
+  try {
+    const snapOf = (pid) => new Map([[pid, { ppid: 1, created: 5, image: 'node.exe' }]]);
+    for (const keepLanding of [false, true]) {
+      const sent = []; let takes = 0;
+      const fast = {
+        requested: () => false, leftMs: () => 60000,
+        snapshot: async () => {
+          takes++;
+          const startSeq = ID.gate.stamp();
+          if (keepLanding || takes === 1) ID.gate.signal(); // the stage kill's signal, after this snapshot started
+          return { snap: snapOf(w.pid), startSeq, error: null };
+        },
+      };
+      const deps = { killProcess: (t, o) => CP.killProcess(t, { ...o, kill: (pid) => { sent.push(pid); } }), waitPidGone: async () => 0 };
+      const out = await closeRunWorkers({ core: stub(process.pid, [row('w1', w.pid, { pid_created: 5, pid_image: 'node.exe' })]), runId: 'r1', graceMs: 100, deps, fast });
+      const e = out.killed[0];
+      if (!keepLanding) {
+        assert.strictEqual(takes, 2, 'the first snapshot was stale, so the close took one more');
+        assert.deepStrictEqual(sent, [w.pid], 'signalled once, on the fresh snapshot');
+        assert.strictEqual(e.refused, undefined, JSON.stringify(e));
+      } else {
+        assert.strictEqual(takes, 2, 'one re-take, then it gives up');
+        assert.deepStrictEqual(sent, [], 'nothing signalled on a stale snapshot');
+        assert.strictEqual(e.signalled, false);
+        assert.strictEqual(e.kind, 'unverifiable', JSON.stringify(e));
+        assert.strictEqual(e.outcome, 'refused_unverifiable');
+        assert.match(e.detail, /signals in this process kept landing after each snapshot started/);
+        assert.match(e.manual, /belay worker kill w1/);
+      }
+    }
+  } finally { if (P.pidAlive(w.pid)) require('../crash.cjs').crash(w); }
+});
+
 test('run close: a Codex idle row with a live pid is never killed', async () => {
   const c = sleeper();
   try {
