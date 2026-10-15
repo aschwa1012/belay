@@ -48,6 +48,14 @@ const NOTE_RESOLVE = {
   }, ['resolutions']),
 };
 
+// ADR 0047 decision 1: run summaries found on demand. Listed for the orchestrator of a notes run. It does not fit the
+// worker listing (5,120 bytes, none left), so a worker does not see it; the briefing a worker is given reads the same lookup.
+const SUMMARIES = {
+  name: 'memory_summaries',
+  description: 'Run summaries by task, run or files, newest first.',
+  inputSchema: S({ task_id: str(), run_id: str(), files: strs() }),
+};
+
 // Listed in a notes run's worker listing no more; still routable.
 const DROPPED = new Set(['status', 'task_list', 'memory_list', 'memory_stats', 'memory_delete']);
 
@@ -56,4 +64,4 @@ function notesWorkerListing(ordinary) {
   return ordinary.filter((t) => !DROPPED.has(t.name)).map((t) => (t.name === 'lease_release' ? LEASE_RELEASE : t)).concat([NOTE_RESOLVE]);
 }
 
-module.exports = { LEASE_RELEASE, NOTE_RESOLVE, DROPPED, notesWorkerListing };
+module.exports = { LEASE_RELEASE, NOTE_RESOLVE, SUMMARIES, DROPPED, notesWorkerListing };

@@ -158,7 +158,7 @@ async function store(E, caller, args) {
   }
   // A project namespace outlives the run and every later run reads it, so a write into it is always scrubbed,
   // whatever the run's redact lever says (ADR 0040 §3).
-  const s = scrub(redactOn(E, caller) || namespace.startsWith('project/'), args);
+  const s = scrub(redactOn(E, caller) || namespace.startsWith('project/') || namespace.startsWith('summary/'), args);
   // One line of at most 160 bytes: control characters become spaces, whitespace runs collapse, and the bound is on
   // what is stored (after redaction). A title is rendered in the index, so it carries no escape sequence.
   const title = s.title === null ? null : (s.title.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim() || null);

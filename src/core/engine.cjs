@@ -60,6 +60,8 @@ const METHODS = {
   'memory.promote': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-promote.cjs', 'promote') },
   // ADR 0047 decision 4: settles the pending notes a hand-back returned; the writer's own, or the orchestrator's or operator's.
   'memory.noteResolve': { roles: ALL, kind: 'write', fn: lazy('./methods-memory-notes.cjs', 'resolve') },
+  // ADR 0047 decision 1: run summaries found on demand; with the notes lever on they live in summary/<project>.
+  'memory.summaries': { roles: ALL, kind: 'read', fn: lazy('./memory-summaries.cjs', 'summaries') },
   'memory.recordEvent': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-ledger.cjs', 'recordEvent') },
   'memory.events': { roles: ALL, kind: 'read', fn: lazy('./methods-ledger.cjs', 'events') },
   'usage.record': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-ledger.cjs', 'usageRecord') },

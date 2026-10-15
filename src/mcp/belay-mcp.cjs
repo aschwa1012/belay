@@ -333,7 +333,8 @@ async function handle(msg) {
   if (typeof method === 'string' && method.startsWith('notifications/')) return undefined;
   if (method === 'ping') return send({ jsonrpc: '2.0', id, result: {} });
   if (method === 'tools/list') {
-    const list = toolsFor(opts.role, { knowledge: await knowledgeListed(), workerId: opts.workerId, notes: opts.notes }).concat(opts.permit ? [PERMIT_TOOL] : []);
+    const knowledge = await knowledgeListed(); // the one read of the run row; the notes lever comes from it
+    const list = toolsFor(opts.role, { knowledge, workerId: opts.workerId, notes: opts.role === 'worker' ? opts.notes : knowledgeListed.notes() }).concat(opts.permit ? [PERMIT_TOOL] : []);
     return send({ jsonrpc: '2.0', id, result: { tools: list } });
   }
   if (method === 'tools/call') {

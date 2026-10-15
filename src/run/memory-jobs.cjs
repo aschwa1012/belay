@@ -250,9 +250,11 @@ function ensureSummary(J, taskId, workerId, { taskRow, retry } = {}) {
       const body = { v: 2, ...result.fields, generator: result.generator };
       const text = render(result.fields, result.generator, { taskId, workerId, runId: J.ctx.runId });
       // With project writes on the summary goes straight into the project: no run original and no copy (ADR 0044 decision 2).
-      const toProject = wantsProject(J.lv);
+      // With the notes lever on it goes to summary/<project> instead (ADR 0047 decision 1): never in the index or the default search.
+      const toSummary = !!(J.lv.notes && J.lv.project);
+      const toProject = !toSummary && wantsProject(J.lv);
       const stored = await call(J, () => { sent = true; return J.core.memory.store({
-        ...(toProject ? { namespace: `project/${J.lv.project}` } : {}),
+        ...(toSummary ? { namespace: `summary/${J.lv.project}` } : toProject ? { namespace: `project/${J.lv.project}` } : {}),
         type: 'summary', title, text, body,
         embed: false, source: 'summariser', task_id: taskId, worker_id: workerId || undefined, tags: [taskId, workerId],
       }); });

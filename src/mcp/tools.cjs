@@ -61,6 +61,8 @@ const ROUTES = {
   checkpoint_write: { role: 'worker', via: 'core', method: 'continuity.checkpoint' },
   // ADR 0047 decision 4: listed only for a worker whose run has the notes lever on (tools-notes.cjs); the core refuses E_LEVER_OFF otherwise.
   memory_note_resolve: { role: 'worker', via: 'core', method: 'memory.noteResolve' },
+  // ADR 0047 decision 1: listed for the orchestrator of a notes run only; callable by either role, the core refuses E_LEVER_OFF otherwise.
+  memory_summaries: { role: 'both', via: 'core', method: 'memory.summaries' },
   // build step 6d, ADR 0020 decisions 1 and 5: the worker adapter's own prompt tool (listed only for
   // an adapter launched with --permit, never through toolsFor, and hidden from the model — measured in
   // ADR 0020's evidence table) and the orchestrator's window and hand on the same channel.
@@ -309,7 +311,12 @@ const isKnowledgeAgent = (role, workerId) => role === 'worker' && typeof workerI
 // `knowledge` (orchestrator only) adds knowledge_ask; omitted or false, the listing is byte-for-byte what it was.
 // `workerId` (the adapter's argv) narrows the knowledge agent's listing to its read tools.
 function toolsFor(role, { knowledge = false, workerId = null, notes = false } = {}) {
-  if (role === 'orchestrator') return knowledge ? BOTH.concat(ORCHESTRATOR, [KNOWLEDGE_TOOL]) : BOTH.concat(ORCHESTRATOR);
+  if (role === 'orchestrator') {
+    const base = knowledge ? BOTH.concat(ORCHESTRATOR, [KNOWLEDGE_TOOL]) : BOTH.concat(ORCHESTRATOR);
+    // The tool joins only if the listing stays inside its budget: with knowledge_ask also listed it may not, and then it is left out (never the budget).
+    const withSummaries = notes ? base.concat([NOTES.SUMMARIES]) : base;
+    return Buffer.byteLength(JSON.stringify(withSummaries), 'utf8') <= BUDGET.orchestrator ? withSummaries : base;
+  }
   if (isKnowledgeAgent(role, workerId)) return BOTH.filter((t) => KNOWLEDGE_READ_TOOLS.includes(t.name));
   if (role === 'worker') return notes ? NOTES.notesWorkerListing(BOTH.concat(WORKER)) : BOTH.concat(WORKER);
   throw Object.assign(new Error(`unknown role ${role}`), { code: 'E_ROLE' });
@@ -331,7 +338,7 @@ const BUDGET = { orchestrator: 10240, worker: 5120, permit: 320 }; // ADR 0010 a
 const listingBytes = (role, opts) => Buffer.byteLength(JSON.stringify(toolsFor(role, opts)), 'utf8');
 
 const BY_NAME = new Map();
-for (const t of BOTH.concat(ORCHESTRATOR, WORKER, [KNOWLEDGE_TOOL, NOTES.NOTE_RESOLVE])) BY_NAME.set(t.name, t);
+for (const t of BOTH.concat(ORCHESTRATOR, WORKER, [KNOWLEDGE_TOOL, NOTES.NOTE_RESOLVE, NOTES.SUMMARIES])) BY_NAME.set(t.name, t);
 // `notes` (a notes run's worker adapter): lease_release is the schema that requires `notes`.
 const schemaOf = (name, notes = false) => (notes && name === 'lease_release' ? NOTES.LEASE_RELEASE : BY_NAME.get(name) || {}).inputSchema;
 
