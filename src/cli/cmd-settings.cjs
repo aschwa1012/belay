@@ -3,12 +3,17 @@
 // settings command planned in command table §8. The contract is in src/cli/belay.cjs:
 // run(ctx) -> { code, text, json }, never printing, never calling process.exit.
 //
+// Beyond the panel's `mod.*` keys it lists the memory levers (`memory.<lever>`) and the per-agent-type model and effort
+// defaults (`agents.<type>.model|effort`), both defined in settings-keys.cjs from the modules that own them.
+//
 // `settings` and `settings <key>` are mode R: discovery and one read, no file created, no process
 // started. `settings <key> <value>` writes the config file and nothing else — never the store — and
-// returns the old and new value as its receipt (invariant 5). Nothing here imports src/core.
+// returns the old and new value as its receipt (invariant 5). Nothing here imports src/core beyond the pure
+// src/core/memory-levers.cjs (it requires nothing), through settings-keys.cjs.
 
 const fs = require('node:fs');
 const C = require('./config.cjs');
+const K = require('./settings-keys.cjs');
 
 // Test seams: a test replaces these to make a rename fail, change the file mid-write, or make the read-back disagree.
 const seams = {
@@ -17,16 +22,19 @@ const seams = {
   discover: (cwd) => C.discover(cwd),
 };
 
-const SETTING_NAMES = C.KEY_NAMES.filter((k) => C.KEYS[k].allowed);
+const SETTING_NAMES = K.NAMES;
 
 const USAGE = [
   'usage: belay settings [<key> [<value>]]',
   '',
-  '  settings              every display setting: value, source and allowed values',
+  '  settings              every setting: value, source and allowed values',
   '  settings <key>        one setting',
   '  settings <key> <value>  write it to the config file; prints the old and new value',
   '',
-  `keys: ${SETTING_NAMES.join(', ')}`,
+  `keys: ${K.MOD_NAMES.join(', ')}`,
+  '      memory.<lever>   a memory lever, the default every run inherits (the run spec overrides it key by key)',
+  '      agents.<type>.model | agents.<type>.effort   a default for coder, tester, reviewer, researcher or orchestrator;',
+  '          null returns a key to the built-in roster default; it cannot select the substrate\'s own default',
   '',
 ].join('\n');
 
@@ -34,30 +42,21 @@ function usageError(message) {
   return { code: 2, text: `belay settings: ${message}\n\n${USAGE}`, json: { error: message, usage: USAGE.trim() } };
 }
 
-function row(found, key) {
-  const eff = C.effective(found, key);
-  return {
-    key,
-    value: eff.value,
-    source: eff.source,
-    default: C.KEYS[key].default,
-    allowed: eff.allowed,
-    describe: eff.describe,
-    ...(eff.invalid ? { invalid: eff.invalid } : {}),
-  };
-}
+const row = (found, key) => K.effective(found, key);
 
 function line(r, width) {
-  return `  ${r.key.padEnd(width)}  ${JSON.stringify(r.value)}  (from ${r.source})  [${r.allowed.join(' | ')}]`;
+  return `  ${r.key.padEnd(width)}  ${JSON.stringify(r.value)}  (from ${r.source})  [${r.type || r.allowed.join(' | ')}]`;
 }
 
 function listResult(found, json) {
   const rows = SETTING_NAMES.map((k) => row(found, k));
-  const payload = { found: found.found, path: found.path, parse_error: found.parse_error || null, settings: rows };
+  const memoryError = K.memoryBlockError(found);
+  const payload = { found: found.found, path: found.path, parse_error: found.parse_error || null, ...(memoryError ? { memory_error: memoryError } : {}), settings: rows };
   if (json) return { code: 0, text: '', json: payload };
   const width = Math.max(...SETTING_NAMES.map((k) => k.length));
   const lines = [found.found ? `config: ${found.path}` : 'config: none found (settings <key> <value> writes one)'];
   if (found.parse_error) lines.push(`warning: ${found.parse_error}`);
+  if (memoryError) lines.push(`warning: the memory block would be refused by a run: ${memoryError}`);
   lines.push('');
   for (const r of rows) {
     lines.push(line(r, width));
@@ -69,8 +68,10 @@ function listResult(found, json) {
 
 function oneResult(found, key, json) {
   const r = row(found, key);
-  if (json) return { code: 0, text: '', json: r };
-  const warn = r.invalid ? `warning: ${key}: ${r.invalid.reason}\n` : '';
+  const memoryError = key.startsWith('memory.') ? K.memoryBlockError(found) : null;
+  if (json) return { code: 0, text: '', json: memoryError ? { ...r, memory_error: memoryError } : r };
+  const warn = (r.invalid ? `warning: ${key}: ${r.invalid.reason}\n` : '')
+    + (memoryError ? `warning: the memory block would be refused by a run: ${memoryError}\n` : '');
   return { code: 0, text: `${warn}${line(r, key.length)}\n`, json: r };
 }
 
@@ -101,11 +102,15 @@ function writeAtomic(file, text, expectRaw) {
   }
 }
 
-function setResult(found, key, value, ctx) {
-  const spec = C.KEYS[key];
-  if (!spec.allowed.includes(value)) {
-    return usageError(`${JSON.stringify(value)} is not a value of ${key}; the allowed values are ${spec.allowed.join(', ')}`);
-  }
+// The one writer of a setting, for the command and for any caller that sets one from elsewhere (a run-pause prompt).
+// `found` is C.discover's answer, `value` the CLI's text or an already-typed value, `ctx` carries `cwd`. Validates (the whole
+// memory block included), writes the config file atomically and returns { code, text, json } with the old and new value;
+// a refusal writes nothing.
+function writeSetting(found, key, rawValue, ctx) {
+  if (!SETTING_NAMES.includes(key)) return usageError(`unknown key ${key}; the keys are ${SETTING_NAMES.join(', ')}`);
+  const parsed = K.parseValue(key, rawValue);
+  if (parsed.error) return usageError(parsed.error);
+  const { value } = parsed;
   if (found.found && found.parse_error) return fail(`refusing to write: ${found.parse_error}`, key);
 
   const old = row(found, key);
@@ -119,12 +124,19 @@ function setResult(found, key, value, ctx) {
   }
   const config = created ? {} : JSON.parse(JSON.stringify(found.config));
 
-  const [group, name] = key.split('.');
-  if (config[group] === undefined) config[group] = {};
-  if (!config[group] || typeof config[group] !== 'object' || Array.isArray(config[group])) {
-    return fail(`refusing to write: "${group}" in ${file} is not an object`, key);
+  // The whole memory block is checked before anything is written, so a lever that needs another (or a bad value) leaves the file as it was.
+  const refused = K.refusal(config, key, value);
+  if (refused) return usageError(refused);
+  const segs = key.split('.');
+  let at = config;
+  for (const seg of segs.slice(0, -1)) {
+    if (at[seg] === undefined) at[seg] = {};
+    if (!at[seg] || typeof at[seg] !== 'object' || Array.isArray(at[seg])) {
+      return fail(`refusing to write: "${seg}" in ${file} is not an object`, key);
+    }
+    at = at[seg];
   }
-  config[group][name] = value;
+  at[segs[segs.length - 1]] = value;
   try {
     writeAtomic(file, `${JSON.stringify(config, null, 2)}\n`, created ? null : found.raw);
   } catch (e) {
@@ -133,8 +145,8 @@ function setResult(found, key, value, ctx) {
 
   // The proof is a fresh read of the file just written, not the value we meant to write. From here the
   // file is on disk, so a failure says written: true.
-  const back = C.effective(seams.discover(ctx.cwd), key);
-  if (back.value !== value || back.source !== file) {
+  const back = K.effective(seams.discover(ctx.cwd), key);
+  if (back.value !== K.expectedValue(key, value) || back.source !== K.expectedSource(key, value, file)) {
     return fail(`wrote ${file} but reading it back gave ${JSON.stringify(back.value)} from ${back.source}`, key, { written: true, path: file });
   }
 
@@ -160,7 +172,7 @@ async function run(ctx) {
   const found = C.discover(ctx.cwd);
   if (key === undefined) return listResult(found, ctx.json);
   if (value === undefined) return oneResult(found, key, ctx.json);
-  return setResult(found, key, value, ctx);
+  return writeSetting(found, key, value, ctx);
 }
 
-module.exports = { run, USAGE, seams };
+module.exports = { run, writeSetting, USAGE, seams };
