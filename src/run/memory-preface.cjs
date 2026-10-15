@@ -24,6 +24,12 @@ async function levers(ctx, w) {
     ctx.memoryLevers = await leversFor(ctx.core, ctx.runId);
     return ctx.memoryLevers;
   } catch (e) {
+    // Never silence: a failed read is a receipt (ok 0, with the code) and is named on the worker. The receipt is also how the
+    // core knows this worker was launched without --notes and the contract (ADR 0047), so it is written for a worker only.
+    if (w && !w.leversUnreadRecorded) {
+      w.leversUnreadRecorded = true;
+      await record(ctx, w, { kind: 'levers_unread', ok: false, code: codeOf(e), message: String((e && e.message) || e).slice(0, 300) });
+    }
     if (w) noteError(w, 'memory.levers', e);
     return { ...DEFAULTS };
   }

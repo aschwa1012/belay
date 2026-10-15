@@ -60,6 +60,10 @@ async function findMatches(E, caller, project, emb, lv) {
     .sort((a, b) => b.similarity - a.similarity || (a.id < b.id ? -1 : 1)).slice(0, lv.notes_match_n);
 }
 
+function leversUnread(E, caller) {
+  try { return !!E.store.p("SELECT 1 AS x FROM memory_event WHERE kind = 'levers_unread' AND run_id = ? AND worker_id = ?").get(caller.run_id, caller.worker_id); } catch { return false; }
+}
+
 // Everything about a hand-back that can be checked and embedded before anything is written. Returns null when the
 // call carries no notes business (lever off, no notes, no marks), else the prepared hand-back.
 async function prepare(E, caller, args) {
@@ -73,6 +77,9 @@ async function prepare(E, caller, args) {
     if (given) throw err('E_LEVER_OFF', 'lease.release: notes and reported_wrong need the run\'s memory.notes lever, and this run has it off', { lever: 'notes' });
     return null;
   }
+  // A worker whose spawn could not read the levers was launched without --notes and without the contract (the manager
+  // recorded a levers_unread receipt for it): it never saw the field, so a release without it is the ordinary one.
+  if (args.notes === undefined && args.reported_wrong === undefined && leversUnread(E, caller)) return null;
   if (args.notes === undefined) throw err('E_ARGS', 'lease.release: notes is required in this run ([] when there is nothing to share)', { field: 'notes' });
   const project = M.projectOf(E, caller);
   if (!project) throw err('E_ARGS', 'lease.release: this run has no project, so there is nowhere to write a note', { field: 'notes' });
@@ -125,7 +132,7 @@ function commit(E, caller, prep, { task_id }) {
     const ns = pending ? pendingNs(prep.project) : projectNs(prep.project);
     const clash = E.store.p('SELECT id, type, written_by FROM memory_entries WHERE namespace = ? AND text_hash = ?').get(ns, hashText(p.text));
     if (clash) {
-      return { index: p.index, id: clash.id, action: 'duplicate', state: 'duplicate', namespace: ns, title: p.title, existing_type: clash.type, same_writer: clash.written_by === by, note: `${ns} already holds a ${clash.type} row with this text, so nothing was written` };
+      return { index: p.index, id: clash.id, action: 'duplicate', state: 'duplicate', namespace: ns, title: p.title, existing_type: clash.type, same_writer: clash.written_by === by, note: `${ns} already holds a ${clash.type} row with this text${clash.written_by === by ? '' : ' (another writer\'s)'}, so nothing was written and there is nothing for you to resolve` };
     }
     const body = {
       kind: p.kind, basis: p.basis, evidence: p.body.evidence, applies_to: p.body.applies_to, subjects: p.body.subjects,
@@ -141,7 +148,9 @@ function commit(E, caller, prep, { task_id }) {
   });
   const marked = prep.wrong.map(w => {
     const m = NT.SELF_REF.exec(w.replaced_by || '');
-    const replacedBy = m ? items[Number(m[1])].id : w.replaced_by;
+    // notes[i] names the row this call wrote; a duplicate is somebody else's row (or not a note), so it is never a replacement.
+    const mine = m ? items[Number(m[1])] : null;
+    const replacedBy = m ? (mine.state === 'stored' || mine.state === 'pending' ? mine.id : null) : w.replaced_by;
     // The fact of a report, not a verdict: the scrubber decides (ADR 0047 decision 3). One report per writer per
     // note, so a writer's repeat replaces its own and never pushes out another writer's.
     const next = E.store.patchBody(w.id, b => {
@@ -227,6 +236,8 @@ function release(E, r, project) {
 // resolve new with a changed title: the first line of the text and the title change together, and the hash with them.
 function retitle(E, r, title) {
   const s = M.scrub(true, { text: [title, ...r.text.split('\n').slice(1)].join('\n'), title });
+  const clash = E.store.p('SELECT id, type FROM memory_entries WHERE namespace = ? AND text_hash = ? AND id != ?').get(r.namespace, hashText(s.text), r.id);
+  if (clash) throw err('E_EXISTS', `the changed title makes note ${r.id} the same text as ${clash.id} (a ${clash.type} row) in ${r.namespace}; choose another title or resolve it as repeats`, { id: r.id, existing_id: clash.id, existing_type: clash.type });
   E.store.p('UPDATE memory_entries SET title = ?, text = ?, text_hash = ?, updated_at = ? WHERE id = ?').run(s.title, s.text, hashText(s.text), Date.now(), r.id);
   return { ...r, title: s.title, text: s.text, text_hash: hashText(s.text) };
 }
