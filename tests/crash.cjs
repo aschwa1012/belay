@@ -55,11 +55,13 @@ function crash(target, created) {
 // crash(pid, created) by the async snapshot. For a test whose own process hosts the worker's run manager: the
 // synchronous snapshot holds that loop for about a second, so the manager's pid poll is overdue when the loop
 // resumes and settles the death (with no exit code) before the child's 'exit' event is read.
+// Resolves the time the signal was sent (truthy), or false. The snapshot before it can take seconds on a loaded
+// host, so a caller timing what follows the kill measures from this, not from the call.
 async function crashAsync(pid, created) {
   if (!Number.isInteger(pid) || pid <= 0 || created == null) return false;
   const s = await ID.snapshotRetry({ attempts: SNAPSHOT_ATTEMPTS }); const e = s && s.get(pid);
   if (!e || e.created !== created) return false;
-  try { process.kill(pid, 'SIGKILL'); return true; } catch { return false; }
+  try { process.kill(pid, 'SIGKILL'); return Date.now(); } catch { return false; }
 }
 
 // One snapshot, leaves first: killing a parent first would hide its children (their recorded parent is gone).
