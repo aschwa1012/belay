@@ -125,6 +125,9 @@ const METHODS = {
   'permission.wait': { roles: ['worker'], kind: 'wait', fn: permission.wait },
 };
 
+// The methods that read or write memory rows and are refused when the run's memory is off.
+const MEMORY_OFF_REFUSED = new Set(['memory.store', 'memory.search', 'memory.get', 'memory.list', 'memory.timeline', 'memory.get_many', 'memory.setStatus', 'memory.promote', 'memory.noteResolve', 'memory.corpus', 'memory.summaries']);
+
 const METHOD_NAMES = Object.keys(METHODS);
 const READ_METHODS = new Set(METHOD_NAMES.filter(m => METHODS[m].kind === 'read'));
 const WRITE_METHODS = new Set(METHOD_NAMES.filter(m => METHODS[m].kind === 'write'));
@@ -162,6 +165,16 @@ class Engine {
     // build step 6d: in-process waiters for `permission.wait`, keyed by permission id — meaningful only
     // on the live owner's engine; a copy's engine has an empty map and nothing to resolve.
     this.waiters = new Map();
+  }
+
+  // ADR 0034 amendment 1: under on_embedder_failure `off`, once an embedder failure has turned the run's memory off (the owner's
+  // `memoryOff()`, set by belay run), the memory methods that read or write rows refuse, and memory.index answers an empty block.
+  // The run's own receipts (memory.recordEvent, memory.events) and the ordinary run, task and worker methods are not memory.
+  memoryOff(method) {
+    const o = this.owner && this.owner.opts;
+    if (!o || typeof o.memoryOff !== 'function' || !o.memoryOff()) return null;
+    if (method === 'memory.index') return 'empty';
+    return MEMORY_OFF_REFUSED.has(method) ? 'refuse' : null;
   }
 
   addWaiter(id, resolve) {
@@ -235,6 +248,9 @@ class Engine {
     }
     const args = { ...p };
     delete args.caller;
+    const off = this.memoryOff(method);
+    if (off === 'refuse') throw err('E_LEVER_OFF', `${method}: memory is off for this run (on_embedder_failure off, after an embedder failure), so nothing is read or written through it`, { lever: 'on_embedder_failure' });
+    if (off === 'empty') return { text: '', bytes: 0, row_ids: [], dropped: 0, over_budget: false, sha256: require('node:crypto').createHash('sha256').update('', 'utf8').digest('hex'), considered: 0, excluded_already_injected: 0, memory_off: true };
     return spec.fn(this, caller, args);
   }
 }

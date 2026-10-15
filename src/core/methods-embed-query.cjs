@@ -20,8 +20,10 @@
 // Output: { queries: [{ label, ok, ms, query_embedding?, embedding_model?, dim?, code?, message?, cause?, timed_out? }],
 //           on_embedder_failure, embed_ms }. A text that could not be embedded is its own entry with ok false and its code; an
 // embedder failure (detail.embedder true) also reaches the hook. A text still unembedded when the bound passes is ok false,
-// timed_out true, code E_EMBED_BOUND, and does NOT reach the hook (it is a late answer, not a failed model); the embed in
-// flight finishes on its own and a failure of it is reported to the hook then. The owner's embedder is serial, so abandoned embeds
+// timed_out true, code E_EMBED_BOUND, embedder true, and reaches the hook as a failure (cause timeout), once per call (ADR 0034
+// amendment 1: under `required` the run pauses, as for any embedder failure); the embed in flight finishes on its own and a
+// failure of it is reported to the hook then. The run's memory being off (on_embedder_failure off, after a failure) answers
+// { queries: [], memory_off: true } and embeds nothing. The owner's embedder is serial, so abandoned embeds
 // must not pile up: an embed in flight for the same text is joined, never started twice, and past INFLIGHT_MAX embeds in flight a
 // new text is not started at all (timed out at once, E_EMBED_BOUND, saying so). A call in which any text hit the bound writes one
 // `embed_bound` memory_event (ok 0, code E_EMBED_BOUND, the worker, the labels), which `belay status` counts for the run and the run
@@ -31,7 +33,8 @@
 
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
-const { withEmbedding } = require('./methods-memory.cjs');
+const { withEmbedding, notifyEmbedderFailure } = require('./methods-memory.cjs');
+const { normalize: normalizeMode } = require('./embedder-mode.cjs');
 const { recordEventSync } = require('./methods-ledger.cjs');
 
 const TEXT_CHARS = 2048;
@@ -71,7 +74,10 @@ async function embedQuery(E, caller, args = {}) {
   if (task && isStr(task.spec)) texts.push({ label: 'task', text: task.spec });
   texts.push(...extras);
 
-  const mode = E.owner && E.owner.opts ? E.owner.opts.embedderMode : null;
+  const opts = (E.owner && E.owner.opts) || {};
+  // The run's mode is read now (a function: an operator's choice at a resume changes it), as is whether its memory is off.
+  const mode = normalizeMode(typeof opts.embedderMode === 'function' ? opts.embedderMode() : opts.embedderMode);
+  if (typeof opts.memoryOff === 'function' && opts.memoryOff()) return { queries: [], on_embedder_failure: mode, memory_off: true, embed_ms: 0 };
   const inflight = E._embedInflight || (E._embedInflight = new Map()); // cut text -> the embed running for it (settles to { e } or { error })
   const t0 = Date.now();
   const deadline = t0 + timeout;
@@ -107,9 +113,13 @@ async function embedQuery(E, caller, args = {}) {
   }
   const bounded = queries.filter((q) => q.timed_out);
   if (bounded.length) {
+    // ADR 0034 amendment 1: hitting the bound is an embedder failure like any other, so under `required` it pauses the run (and the
+    // caller refuses the spawn), under `keyword` it is recorded and the index is keyword-only, under `off` memory goes off.
+    for (const q of bounded) q.embedder = true;
+    notifyEmbedderFailure(E, caller, CALL, err('E_EMBED_BOUND', bounded[0].message, { embedder: true, cause: 'timeout', op: 'embed' }), args.worker_id);
     try { recordEventSync(E, caller, { kind: 'embed_bound', ok: 0, code: 'E_EMBED_BOUND', worker_id: args.worker_id, task_id: args.task_id, message: JSON.stringify({ labels: bounded.map((q) => q.label), bound_ms: timeout }) }); } catch { /* the receipt is best effort; the result below still names the bound */ }
   }
-  return { queries, on_embedder_failure: mode === 'stop' || mode === 'continue' ? mode : null, embed_ms: Date.now() - t0 };
+  return { queries, on_embedder_failure: mode, embed_ms: Date.now() - t0 };
 }
 
 module.exports = { embedQuery, TEXT_CHARS, EXTRA_MAX, DEFAULT_TIMEOUT_MS };
