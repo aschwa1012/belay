@@ -62,7 +62,7 @@ async function withFiles(held, worktree, dir) {
 }
 
 // opts: { core, runId, lv, dataDir, getManager, worktree, force }. Never throws; every outcome is a receipt and a returned fact.
-async function runReview({ core, runId, lv, dataDir, getManager, worktree = null, force = false, fast = null, log = null }) {
+async function runReview({ core, runId, lv, dataDir, getManager, worktree = null, force = false, fast = null, log = null, sink = null }) {
   if (!lv || !lv.notes) return { ran: false, reason: 'notes off' };
   if (lv.scrub_action === 'off' && !force) return { ran: false, reason: 'scrub_action off' };
   let q;
@@ -89,7 +89,7 @@ async function runReview({ core, runId, lv, dataDir, getManager, worktree = null
     const { held, streams } = await withFiles(queued, cwd, dir);
     const briefFile = J.writeFileIn(dir, 'brief.md', buildBrief({ runId, project: q.project, held }));
     if (log) log(`run close: reviewing ${queued.length} held mark(s), at most ${lv.review_wall_s} s and $${lv.review_cost_cap_usd}`);
-    const got = await J.runChild({ manager: await getManager(), workerId: jobId, worktree: cwd, model: lv.archive_review_model, capUsd: lv.review_cost_cap_usd, wallMs: lv.review_wall_s * 1000, prompt: promptFor(briefFile), label: 'archive review', fast });
+    const got = await J.runChild({ manager: await getManager(), workerId: jobId, worktree: cwd, model: lv.archive_review_model, capUsd: lv.review_cost_cap_usd, wallMs: lv.review_wall_s * 1000, prompt: promptFor(briefFile), label: 'archive review', fast, sink });
     out.cost = got.cost;
     if (got.survivor) out.survivor = got.survivor;
     await noteOverrun(!!got.error);

@@ -15,6 +15,7 @@ const FILE_CUT = 16 * 1024;
 const GIT_BOUND_MS = 15000;
 const FAST_POLL_MS = 100;
 const KILL_BOUND_MS = 3000;
+const FAST_SETTLE_MS = 300; // how long a fast close waits for a spawn to settle before its second kill
 const OVERRUN_SHARE = 0.9; // a failed job that spent this much of its cap is an overrun: the budget flag stops a session at about the cap
 const fwd = (p) => String(p).replace(/\\/g, '/');
 const codeOf = (e) => (e && typeof e.code === 'string' && e.code.startsWith('E_') ? e.code : 'E_INTERNAL');
@@ -71,17 +72,34 @@ const raceFast = (p, fast) => {
   return Promise.race([p, flagged]).finally(() => clearInterval(timer));
 };
 
+// After a stop: is the child's pid still alive? Kill it again; if it still is, name it (in the result and on the `sink`, which the run keeps
+// even when a fast close cuts the stage off). Returns the pid or null.
+async function reportSurvivor(manager, workerId, kill, sink) {
+  const rec = manager._worker(workerId);
+  const P = require('./process.cjs');
+  if (!(rec && rec.pid && P.pidAlive(rec.pid))) return null;
+  await kill();
+  if (!P.pidAlive(rec.pid)) return null;
+  if (sink && Array.isArray(sink.survivors)) sink.survivors.push(rec.pid);
+  return rec.pid;
+}
+
 // Spawn the child, wait for its turn, read its last text and cost, stop it. Resolves to { text, cost, error, survivor } and throws only
 // for a spawn that never produced a worker or one a fast close cancelled. `manager` is a run manager (or a test double with spawn,
 // wait, stop and _worker). `fast()` true: do not start, or kill the running child by its exact pid and fail E_ABORTED.
-async function runChild({ manager, workerId, worktree, model, capUsd, wallMs, prompt, label, fast = null }) {
+async function runChild({ manager, workerId, worktree, model, capUsd, wallMs, prompt, label, fast = null, sink = null }) {
   if (!manager || typeof manager.spawn !== 'function') throw coded('E_INTERNAL', `the run has no manager to spawn the ${label} with`);
   if (typeof manager._closed === 'function' && manager._closed()) throw coded('E_SHUTDOWN', `the run manager is shutting down, so the ${label} was not started`);
   if (fast && fast()) throw coded('E_ABORTED', `a fast close was requested, so the ${label} was not started`);
   const kill = () => Promise.resolve(manager.stop({ worker_id: workerId, mode: 'kill', timeout_ms: KILL_BOUND_MS })).catch(() => {});
   const sp = Promise.resolve(manager.spawn({ substrate: 'claude-code', worktree, worker_id: workerId, model, allowed_tools: BUILTINS, tools: BUILTINS, max_budget_usd: capUsd, prompt })).then(() => null, (e) => ({ e }));
   const first = await raceFast(sp, fast);
-  if (first === 'fast') { await Promise.race([sp, sleep(KILL_BOUND_MS)]); await kill(); throw coded('E_ABORTED', `a fast close was requested while the ${label} was starting; it was killed`); }
+  if (first === 'fast') { // kill at once (the record exists from the start of spawn), again if the spawn settles meanwhile, and name a survivor
+    await kill();
+    await Promise.race([sp, sleep(FAST_SETTLE_MS)]);
+    await kill();
+    await reportSurvivor(manager, workerId, kill, sink);
+    throw coded('E_ABORTED', `a fast close was requested while the ${label} was starting; it was killed`); }
   if (first && first.e) throw first.e;
   let text = '', cost = null, error = null, survivor = null, aborted = false;
   try {
@@ -99,9 +117,7 @@ async function runChild({ manager, workerId, worktree, model, capUsd, wallMs, pr
     cost = rec && typeof rec.costUsd === 'number' ? rec.costUsd : null;
   } finally {
     if (aborted) await kill(); else await Promise.resolve(manager.stop({ worker_id: workerId })).catch(() => {});
-    const rec = manager._worker(workerId);
-    const P = require('./process.cjs');
-    if (rec && rec.pid && P.pidAlive(rec.pid)) { await kill(); if (P.pidAlive(rec.pid)) survivor = rec.pid; } // the child must be gone before run.end
+    survivor = await reportSurvivor(manager, workerId, kill, sink); // the child must be gone before run.end
   }
   return { text, cost, error, survivor };
 }

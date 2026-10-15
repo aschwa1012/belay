@@ -26,14 +26,14 @@ function lazyManager({ core, runId, dataDir, lv, worktree, paths, makeManager })
 // scrub's items are recorded as owed. `log(line)` tells the operator what a stage is about to spend, since a stage can take minutes.
 // opts: { core (the harness view), runId, levers (the memory lever block), dataDir, worktree, goal, summary, paths, makeManager, review }.
 // `review` is true (default) to run the archive reviewer after the scrub. Returns { scrub, review }, or null with notes off.
-async function closeStages({ core, runId, levers, dataDir, worktree = null, goal = null, summary = null, paths = null, makeManager = null, review = true, fast = null, log = null }) {
+async function closeStages({ core, runId, levers, dataDir, worktree = null, goal = null, summary = null, paths = null, makeManager = null, review = true, fast = null, log = null, sink = null }) {
   const lv = levers && levers.memory_levers ? levers.memory_levers : levers;
   if (!lv || !lv.notes) return null;
   const getManager = lazyManager({ core, runId, dataDir, lv, worktree, paths, makeManager });
   const out = { scrub: null, review: null };
-  try { out.scrub = await runScrub({ core, runId, lv, dataDir, getManager, worktree, goal, summary, fast, log }); } catch (e) { out.scrub = { ran: false, reason: 'stage crashed', message: String(e && e.message).slice(0, 200) }; }
+  try { out.scrub = await runScrub({ core, runId, lv, dataDir, getManager, worktree, goal, summary, fast, log, sink }); } catch (e) { out.scrub = { ran: false, reason: 'stage crashed', message: String(e && e.message).slice(0, 200) }; }
   if (review) {
-    try { out.review = await runReview({ core, runId, lv, dataDir, getManager, worktree, fast, log }); } catch (e) { out.review = { ran: false, reason: 'stage crashed', message: String(e && e.message).slice(0, 200) }; }
+    try { out.review = await runReview({ core, runId, lv, dataDir, getManager, worktree, fast, log, sink }); } catch (e) { out.review = { ran: false, reason: 'stage crashed', message: String(e && e.message).slice(0, 200) }; }
   }
   return out;
 }

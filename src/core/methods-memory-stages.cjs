@@ -6,7 +6,7 @@
 //   memory.scrubScope   the scrubber's scope for the caller's run, and ONLY these three kinds of item:
 //                         1. notes reported wrong in this run (a live note carrying a report whose run is this one);
 //                         2. pending notes this run left unresolved, plus any `scrub_owed` item (work an earlier scrub did not do);
-//                         3. notes nominated for promotion (memory-nominations.cjs; none until that step is built).
+//                         3. notes nominated for promotion (memory-nominate.cjs: nominated and not yet drafted).
 //                       Each item carries the evidence the scrubber is shown: the note, its reports, its stored matches, the notes
 //                       they name, and the reporting workers' stream files. Owed items come first.
 //   memory.reviewQueue  the project's held queue for the Opus reviewer: each open hold with both notes, the age in runs and whether
@@ -20,7 +20,7 @@ const C = require('./lifecycle-common.cjs');
 const M = require('./methods-memory.cjs');
 const N = require('./methods-memory-notes.cjs');
 const { parse } = require('./memory-facts.cjs');
-const { nominationsForScope } = require('./memory-nominations.cjs');
+const { nominationsForScope } = require('./memory-nominate.cjs');
 
 const fwd = p => String(p).split('\\').join('/');
 const TEXT_CUT = 1500;
@@ -51,15 +51,15 @@ function noteFacts(note) {
 // run already handled to when, so the run's scope does not offer it again unless a newer report came in after (a second scrub of the
 // same run, by hand, does not spend a second model call on the same reports, and never hides a later report). An owed id is always offered.
 function scrubHistory(E, runId) {
-  const owed = new Map(), handled = new Map(), unjudged = new Map();
+  const owed = new Map(), handled = new Map(), unjudged = new Map(), dropped = new Map();
   let evs;
-  try { evs = E.store.p("SELECT kind, ok, row_ids, run_id, code, message, written_at FROM memory_event WHERE kind IN ('scrub_owed', 'scrub_job') ORDER BY seq").all(); } catch { return { owed, handled }; }
+  try { evs = E.store.p("SELECT kind, ok, row_ids, run_id, code, message, written_at FROM memory_event WHERE kind IN ('scrub_owed', 'scrub_job') ORDER BY seq").all(); } catch { return { owed, handled, dropped }; }
   for (const ev of evs) {
     if (ev.kind === 'scrub_job' && !(ev.ok === 1 || ev.ok === true)) continue;
     let ids = [];
     try { ids = JSON.parse(ev.row_ids) || []; } catch { ids = []; }
     for (const id of ids) {
-      if (ev.kind === 'scrub_owed') {
+      if (ev.kind === 'scrub_owed' && ev.code === 'E_DROPPED') { dropped.set(id, ev.written_at || 0); owed.delete(id); unjudged.delete(id); } else if (ev.kind === 'scrub_owed') {
         const n = ev.code === 'E_UNJUDGED' ? (unjudged.get(id) || 0) + 1 : ev.code === 'E_INTERRUPTED' ? (unjudged.get(id) || 0) : 0;
         unjudged.set(id, n);
         owed.set(id, { run_id: ev.run_id, code: ev.code || null, message: cut(ev.message, 200), unjudged: n });
@@ -67,7 +67,7 @@ function scrubHistory(E, runId) {
       } else { owed.delete(id); if (ev.run_id === runId) handled.set(id, ev.written_at || 0); }
     }
   }
-  return { owed, handled };
+  return { owed, handled, dropped };
 }
 
 function streamsOf(E, ids) {
@@ -125,7 +125,13 @@ async function scrubScope(E, caller, args) {
   for (const r of reported) addNew(r.id, 'reported_wrong');
   const pending = E.store.p("SELECT id FROM memory_entries WHERE type = 'note' AND namespace = ? AND run_id = ? ORDER BY created_at, id").all(N.pendingNs(project), runId);
   for (const r of pending) addNew(r.id, 'pending');
-  for (const nom of nominationsForScope(E, project) || []) { const { id: nid, ...facts } = nom; addNew(nid, 'nominated', { nomination: facts }); }
+  for (const nom of nominationsForScope(E, project) || []) {
+    const { id: nid, ...facts } = nom;
+    // A nominated note the scrubber declined to draft in two scrubs stops being offered, in any run, until a newer nomination (a new independent sighting).
+    const droppedAt = history.dropped.get(nid);
+    if (droppedAt !== undefined && !(Number(nom.nominated_at) > droppedAt)) continue;
+    addNew(nid, 'nominated', { nomination: facts });
+  }
   const items = [...byId.values()].sort((a, b) => Math.min(...a.why.map(w => ORDER[w])) - Math.min(...b.why.map(w => ORDER[w])));
   const counts = { items: items.length, owed: 0, reported_wrong: 0, pending: 0, nominated: 0 };
   for (const it of items) for (const w of it.why) counts[w] += 1;

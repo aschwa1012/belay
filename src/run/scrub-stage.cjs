@@ -64,7 +64,7 @@ async function owe(core, runId, ids, e, workerId) {
 // a child is to be spawned. `fast()` true (a fast close): nothing is spawned, the scope is recorded as owed, and a child already running
 // is killed by its exact pid. The items are owed BEFORE the child starts and cleared by the ok scrub_job that follows a successful apply,
 // so a run process that dies mid-stage loses nothing.
-async function runScrub({ core, runId, lv, dataDir, getManager, worktree = null, goal = null, summary = null, fast = null, log = null }) {
+async function runScrub({ core, runId, lv, dataDir, getManager, worktree = null, goal = null, summary = null, fast = null, log = null, sink = null }) {
   if (!lv || !lv.notes) return { ran: false, reason: 'notes off' };
   if (lv.scrub_action === 'off') return { ran: false, reason: 'scrub_action off' };
   // The promotion step writes this run's nominations first (a harness call), so the scope below can list them. A core without the
@@ -112,7 +112,7 @@ async function runScrub({ core, runId, lv, dataDir, getManager, worktree = null,
     const briefFile = J.writeFileIn(dir, 'brief.md', buildBrief({ runId, project: scope.project, goal, summary, tasks, evidence: { ...evidence, worktree: cwd }, items: shown }));
     const files = [...new Set(shown.flatMap((i) => i.streams))].slice(0, STREAMS_MAX);
     if (log) log(`run close: scrubbing ${ids.length} note(s), at most ${lv.scrub_wall_s} s and $${lv.scrub_cost_cap_usd}`);
-    const got = await J.runChild({ manager: await getManager(), workerId: jobId, worktree: cwd, model: lv.scrub_model, capUsd: lv.scrub_cost_cap_usd, wallMs: lv.scrub_wall_s * 1000, prompt: promptFor(briefFile), label: 'scrub job', fast });
+    const got = await J.runChild({ manager: await getManager(), workerId: jobId, worktree: cwd, model: lv.scrub_model, capUsd: lv.scrub_cost_cap_usd, wallMs: lv.scrub_wall_s * 1000, prompt: promptFor(briefFile), label: 'scrub job', fast, sink });
     out.cost = got.cost;
     if (got.survivor) out.survivor = got.survivor;
     await noteOverrun(!!got.error);
@@ -127,8 +127,11 @@ async function runScrub({ core, runId, lv, dataDir, getManager, worktree = null,
     await J.receipt(core, { kind: 'scrub_job', ok: true, ...base, row_ids: ids, message: `${applied.mode}: applied ${applied.counts.applied}, proposed ${applied.counts.proposed}, refused ${applied.counts.refused} of ${parsed.list.length} entries for ${ids.length} items; cost $${got.cost.toFixed(4)}; head ${evidence.head_sha || 'none'} in ${evidence.worktree ? abs(evidence.worktree) : 'no worktree'}` });
     // An item the child left out is owed once more (it may have run short), then let go: the same note is not offered a third time.
     const named = new Set(parsed.list.map((e) => e && e.id));
-    const unnamed = offered.filter((i) => !named.has(i.id) && !(i.owed && i.owed.unjudged >= 1)).map((i) => i.id);
+    const skipped = offered.filter((i) => !named.has(i.id));
+    const unnamed = skipped.filter((i) => !(i.owed && i.owed.unjudged >= 1)).map((i) => i.id);
+    const dropped = skipped.filter((i) => i.owed && i.owed.unjudged >= 1).map((i) => i.id);
     if (unnamed.length) { out.owed.push(...unnamed); await owe(core, runId, unnamed, J.coded('E_UNJUDGED', 'the scrub child gave no entry for these items'), jobId); }
+    if (dropped.length) { out.dropped = dropped; await owe(core, runId, dropped, J.coded('E_DROPPED', `dropped: the scrub child gave no entry in two scrubs, so these are no longer offered until a new report, sighting or nomination: ${dropped.join(', ')}`), jobId); }
     if (applied.alarm) {
       out.alarm = applied.alarm;
       const holdIds = [...applied.applied, ...applied.proposed].filter((r) => r.action === 'hold').map((r) => r.id);

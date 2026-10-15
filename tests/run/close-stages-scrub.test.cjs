@@ -338,3 +338,54 @@ test('the notices: an overrun is a line naming the lever; an owed receipt shows 
   ];
   assert.deepStrictEqual(N.stageEvents(synth, 'r').map((e) => [e.kind, e.row_ids]), [['scrub_owed', ['n2']]], 'n1 was cleared by the ok job');
 });
+
+// A nomination as the promotion step writes it, planted for a live note (the rule under test is the scrubber's, not the counting).
+function nominate(noteId, at) {
+  return T.store.storeIn({ namespace: 'nomination/lc', worker_id: 'harness', type: 'nomination', text: `nomination of ${noteId} ${at}`, title: 'nomination', run_id: 'old-run', source: 'harness', written_by: 'harness',
+    body: { state: 'nominated', note_id: noteId, counts: { tasks: 3, runs: 2 } } }).id;
+}
+const stageFor = (kind, answer) => runScrub({ core: X.coreFor(kind), runId: RUN[kind], lv: LV[kind], dataDir: T.dir, getManager: async () => fakeManager(T, kind, answer), worktree: T.repo });
+
+test('a nominated note the scrubber declines to draft in two scrubs, in two runs, stops being offered until a newer nomination; the drop is named', async () => {
+  await settleAll();
+  const n = T.note('a nominee the scrubber will not draft');
+  const nom = nominate(n);
+  T.store.p('UPDATE memory_entries SET created_at = ? WHERE id = ?').run(Date.now() - 50000, nom);
+  const first = await stageFor('apply', json('scrub', []));
+  assert.ok(first.owed.includes(n), 'declined once: owed');
+  const second = await stageFor('propose', json('scrub', []));
+  assert.deepStrictEqual(second.dropped, [n], 'declined twice: dropped, and named');
+  const ev = X.events('scrub_owed').filter((e) => e.code === 'E_DROPPED').pop();
+  assert.ok(ev.message.includes(n) && JSON.parse(ev.row_ids).includes(n));
+  const third = await stageFor('alarm', json('scrub', []));
+  assert.deepStrictEqual([third.ran, third.reason], [false, 'empty scope'], 'a third run does not spend a spawn on it');
+  const N = require('../../src/cli/cmd-notices.cjs');
+  const ledger = (await T.call(T.who.operator('apply'), 'memory.events', { kinds: ['scrub_owed', 'scrub_job'] })).events;
+  assert.ok(N.stageEvents(ledger, RUN.apply).some((e) => e.kind === 'scrub_dropped' && e.text.includes(n)), 'the notice names the dropped note');
+  nominate(n, 2); // a new independent sighting makes a newer nomination
+  const fourth = await stageFor('alarm', json('scrub', []));
+  assert.strictEqual(fourth.ran, true, 'a newer nomination brings it back');
+});
+
+test('every dropped item is named on the receipt: a reported note the child skipped twice', async () => {
+  await settleAll();
+  const n = X.reported('skipped twice');
+  await stage('apply', fakeManager(T, 'apply', json('scrub', [])));
+  const o = await stage('apply', fakeManager(T, 'apply', json('scrub', [])));
+  assert.deepStrictEqual(o.dropped, [n]);
+});
+
+test('a fast close names a child that survives its kill, on the sink, even when the stage is cut off afterwards', async () => {
+  await settleAll();
+  X.reported('survivor on fast close');
+  let flag = false;
+  const m = fakeManager(T, 'apply', '');
+  const real = m.spawn;
+  m.spawn = async (a) => { const r = await real(a); m.recs.get(a.worker_id).pid = process.pid; return r; };
+  m.wait = async () => { setTimeout(() => { flag = true; }, 30); return new Promise(() => {}); };
+  const sink = { survivors: [] };
+  const o = await stage('apply', m, { fast: () => flag, sink });
+  assert.strictEqual(o.error.code, 'E_ABORTED');
+  assert.deepStrictEqual(sink.survivors, [process.pid]);
+  assert.strictEqual(o.survivor, process.pid);
+});

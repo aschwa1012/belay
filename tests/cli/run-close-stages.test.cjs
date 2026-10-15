@@ -30,13 +30,13 @@ async function headless(over, module) {
 
 test('headless: the stages get the harness core, the worktree, the goal and the notes levers, before run.end, and the receipt carries what they returned', async () => {
   const seen = [];
-  const mod = { closeStages: async (a) => { seen.push({ runId: a.runId, worktree: a.worktree, goal: a.goal, notes: a.levers.notes, fast: a.fast, log: typeof a.log, ended: (await a.core.run.get()).run.ended_at, who: a.core.caller }); return { scrub: { ran: false, reason: 'seam' }, review: null }; } };
+  const mod = { closeStages: async (a) => { seen.push({ runId: a.runId, worktree: a.worktree, goal: a.goal, notes: a.levers.notes, fast: a.fast(), log: typeof a.log, ended: (await a.core.run.get()).run.ended_at, who: a.core.caller }); return { scrub: { ran: false, reason: 'seam' }, review: null }; } };
   const { res, wt, dir } = await headless({ memory: NOTES }, mod);
   try {
     assert.strictEqual(res.code, 0, res.json.ended_by);
     assert.strictEqual(seen.length, 1);
     const s = seen[0];
-    assert.deepStrictEqual([s.runId, s.worktree, s.goal, s.notes, s.fast, s.log, s.ended], [res.json.run_id, wt, 'line one of the prompt\nline two of the prompt\n', true, null, 'function', null], 'the run row is still open when the stages run');
+    assert.deepStrictEqual([s.runId, s.worktree, s.goal, s.notes, s.fast, s.log, s.ended], [res.json.run_id, wt, 'line one of the prompt\nline two of the prompt\n', true, false, 'function', null], 'the run row is still open when the stages run');
     assert.strictEqual(s.who.channel, 'harness');
     assert.deepStrictEqual(res.json.close_stages, { scrub: { ran: false, reason: 'seam' }, review: null });
     assert.ok(res.json.store.ended, 'run.end followed');
@@ -93,3 +93,28 @@ test('interactive fast close: after a SIGHUP the stages are told so (fast() true
     assert.ok(!fs.existsSync(`${r.dataDir}/owner.lock`));
   } finally { await releaseCore(core); }
 }));
+
+test('Ctrl-C during the stages (SIGINT, SIGBREAK) is a console close: fast() turns true, the listeners go away afterwards, and the run still ends', async () => {
+  for (const sig of ['SIGINT', 'SIGBREAK']) {
+    const before = process.listenerCount(sig);
+    const seen = [];
+    const mod = { closeStages: async (a) => { seen.push(a.fast()); process.emit(sig); seen.push(a.fast()); return { scrub: null, review: null }; } };
+    const { res, dir } = await headless({ memory: NOTES }, mod);
+    try {
+      assert.deepStrictEqual(seen, [false, true], sig);
+      assert.strictEqual(res.code, 0, res.json.ended_by);
+      assert.ok(res.json.store.ended, 'run.end followed');
+      assert.strictEqual(process.listenerCount(sig), before, 'the listener is removed');
+    } finally { cleanup(dir); }
+  }
+});
+
+test('a stage cut off by the fast close deadline still names the children that survived', async () => {
+  const { runCloseStages } = require('../../src/cli/run-close-stages.cjs');
+  const { TIMED_OUT } = require('../../src/run/orchestrator-interactive.cjs');
+  const ce = { hupSeen: () => true, bound: async () => TIMED_OUT };
+  const late = [];
+  const out = await runCloseStages({ core: {}, runId: 'r', levers: { memory_levers: { notes: true } }, dataDir: 'd', ce, late: (m) => late.push(m), stages: { closeStages: (a) => { a.sink.survivors.push(4321); return new Promise(() => {}); } } });
+  assert.deepStrictEqual(out, { cut: true, survivors: [4321] });
+  assert.match(late[0], /run-close stages/);
+});
