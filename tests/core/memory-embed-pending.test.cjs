@@ -93,10 +93,16 @@ test('nothing but memory.embedNote embeds a bare note: warm-up, searches, the in
   await handBack([note('K3')]); // a new note is embedded by its own hand-back; the bare ones are not touched
   assert.strictEqual(bare(), 2);
   // and no source file but the command module that the operator starts calls it
-  const callers = [];
-  const walk = d => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else if (/\.(cjs|ts|tsx)$/.test(e.name) && /embedNote/.test(fs.readFileSync(p, 'utf8'))) callers.push(path.relative(path.join(__dirname, '..', '..', 'src'), p).replace(/\\/g, '/')); } };
-  walk(path.join(__dirname, '..', '..', 'src'));
-  assert.deepStrictEqual(callers.sort(), ['cli/cmd-memory-embed.cjs', 'core/engine.cjs', 'core/index.cjs', 'core/methods-memory-embed.cjs']);
+  const srcRoot = path.join(__dirname, '..', '..', 'src');
+  const filesWith = (needle) => {
+    const hits = [];
+    const walk = d => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else if (/[.](cjs|ts|tsx)$/.test(e.name) && fs.readFileSync(p, 'utf8').includes(needle)) hits.push(path.relative(srcRoot, p).split(path.sep).join('/')); } };
+    walk(srcRoot);
+    return hits.sort();
+  };
+  assert.deepStrictEqual(filesWith('embedNote'), ['cli/cmd-memory-embed.cjs', 'core/engine.cjs', 'core/index.cjs', 'core/methods-memory-embed.cjs']);
+  // Store.setEmbedding is reached from embedNote's core path only
+  assert.deepStrictEqual(filesWith('setEmbedding('), ['core/methods-memory-embed.cjs', 'core/store.cjs']);
 });
 
 test('memory.embedNote is the operator\'s alone', async () => {
@@ -115,32 +121,52 @@ test('with the embedder down it refuses, and the row is exactly as it was', asyn
   assert.deepStrictEqual(store.p('SELECT id, namespace, updated_at, body FROM memory_entries ORDER BY id').all(), rows);
 });
 
-test('embedding records the matches a hand-back would: a close note is held pending with them, a distinct one stays live; nothing is deleted', async () => {
+test('a verified note with a near-duplicate stays live: matches are recorded in its body and an event, and nothing moves, merges or is deleted', async () => {
   const k1 = store.p("SELECT id FROM memory_entries WHERE type = 'note' AND title LIKE '%K1 loader%'").get().id;
   const dup = store.p("SELECT id FROM memory_entries WHERE type = 'note' AND title LIKE '%K1x loader%'").get().id;
   const distinct = store.p("SELECT id FROM memory_entries WHERE type = 'note' AND title LIKE '%K2 loader%'").get().id;
+  store.setStatus(dup, { status: 'verified', receipt: 'test:verified', by: 'operator', at: Date.now() });
   const total = store.p('SELECT COUNT(*) AS n FROM memory_entries').get().n;
+  const namespaces = store.p('SELECT id, namespace FROM memory_entries ORDER BY id').all();
 
-  const r1 = await call('memory.embedNote', operator, { id: dup });
-  assert.deepStrictEqual([r1.embedded, r1.state, r1.namespace], [true, 'pending', 'pending/acme']);
-  assert.strictEqual(r1.matches.length, 1);
-  assert.strictEqual(r1.matches[0].id, k1);
+  const r1 = await call('memory.embedNote', operator, { id: dup, embed_run: 'embed-test' });
+  assert.deepStrictEqual([r1.embedded, r1.state, r1.namespace], [true, 'stored', 'project/acme']);
+  assert.deepStrictEqual(r1.matches.map(m => m.id), [k1]);
   assert.ok(r1.matches[0].similarity >= 0.8);
   const row = rowOf(dup);
   assert.ok(row.embedding, 'it has its vector');
-  assert.strictEqual(row.namespace, 'pending/acme');
+  assert.deepStrictEqual([row.namespace, row.status], ['project/acme', 'verified']);
   const b = bodyOf(dup);
-  assert.deepStrictEqual([b.state, b.matches.map(m => m.id)], ['pending', [k1]], 'the same shape a hand-back records');
+  assert.deepStrictEqual([b.state, b.matches.map(m => m.id)], ['live', [k1]], 'body.matches in the hand-back shape, the note still live');
+
+  const ev = (await call('memory.events', operator, { kinds: ['note_matches'] })).events;
+  assert.strictEqual(ev.length, 1);
+  assert.deepStrictEqual(ev[0].row_ids, [dup, k1]);
+  const msg = JSON.parse(ev[0].message);
+  assert.deepStrictEqual([msg.note_id, msg.matches.map(m => m.id), msg.embed_run, msg.notes_match_n], [dup, [k1], 'embed-test', 3]);
+
+  // still delivered: found by search and in the first-message index
+  const found = await call('memory.search', operator, { query: 'K1x loader', namespace: 'project/acme', mode: 'keyword' });
+  assert.ok(found.results.some(r => r.id === dup), 'search finds it');
+  const idx = await call('memory.index', orch, { namespaces: ['project/acme'], query: 'K1x loader' });
+  assert.ok(idx.row_ids.includes(dup), 'the index carries it');
 
   const r2 = await call('memory.embedNote', operator, { id: distinct });
   assert.deepStrictEqual([r2.embedded, r2.state, r2.namespace, r2.matches], [true, 'stored', 'project/acme', []]);
-  assert.ok(rowOf(distinct).embedding);
+  assert.strictEqual((await call('memory.events', operator, { kinds: ['note_matches'] })).events.length, 1, 'no event for a note with no match');
   assert.strictEqual(store.p('SELECT COUNT(*) AS n FROM memory_entries').get().n, total, 'nothing was added or deleted');
-
-  // the recorded pending note is settled by the ordinary resolve, which this change did not touch
-  const done = await call('memory.noteResolve', operator, { resolutions: [{ id: dup, resolve: 'new' }] });
-  assert.strictEqual(done.resolved[0].state, 'live');
+  assert.deepStrictEqual(store.p('SELECT id, namespace FROM memory_entries ORDER BY id').all(), namespaces, 'no row changed namespace');
   assert.strictEqual((await call('memory.unembedded', operator, {})).total, 0);
+});
+
+test("a worker's reported_wrong of an embedded note still releases the lease", async () => {
+  const dup = store.p("SELECT id FROM memory_entries WHERE type = 'note' AND title LIKE '%K1x loader%'").get().id;
+  const t = await call('task.create', orch, { spec: `job ${++seq}` });
+  const a = await call('task.assign', orch, { task_id: t.id, worker_id: 'w1' });
+  const out = await call('lease.release', worker, { lease_id: a.new_lease.id, notes: [], reported_wrong: [{ id: dup, why: 'the loader was fixed' }] });
+  assert.strictEqual(out.state, 'released');
+  assert.strictEqual(out.reported_wrong[0].id, dup);
+  assert.strictEqual(bodyOf(dup).reported_wrong.length, 1);
 });
 
 test('a second run embeds nothing new: the note answers already_embedded and no vector is made', async () => {

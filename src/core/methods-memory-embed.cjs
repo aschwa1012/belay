@@ -3,8 +3,9 @@
 // was stored without a vector (a hand-back under on_embedder_failure keyword) gets its vector, and the near-duplicate check
 // its hand-back skipped is run now, by the same code and the same lever values as a normal hand-back (findMatches).
 //
-// Nothing is merged or deleted. A note with close matches is recorded the way a hand-back records it: moved to
-// `pending/<project>` with `body.matches`, for memory.noteResolve to settle. Judging the matches is the model's work.
+// The note is live already, so it never moves: it stays in `project/<project>`, searchable and in the index. Close matches are
+// recorded in `body.matches` (the hand-back's shape) and in one `note_matches` memory_event, for a model to judge later (the
+// note review or the archive reviewer). Nothing is moved, merged, archived or deleted here.
 //
 // The operator starts this and nothing else does: no warm-up, run start or search calls it. The embedder is asked
 // directly, not through withEmbedding, so a failure here is reported to the operator and never reaches a run's
@@ -13,8 +14,7 @@
 const { err } = require('./errors.cjs');
 const { findMatches } = require('./methods-memory-notes.cjs');
 const { DEFAULTS } = require('./memory-levers.cjs');
-
-const pendingNs = project => `pending/${project}`;
+const { recordEventSync } = require('./methods-ledger.cjs');
 
 function levers(args) {
   const t = args.notes_match_threshold === undefined ? DEFAULTS.notes_match_threshold : args.notes_match_threshold;
@@ -46,23 +46,20 @@ async function embedNote(E, caller, args = {}) {
   // Compared before the row has a vector, so it cannot match itself.
   const matches = live ? await findMatches(E, caller, project, emb, lv) : [];
 
-  const pending = matches.length > 0;
+  const embedRun = typeof args.embed_run === 'string' && args.embed_run ? args.embed_run : null;
   const done = E.store.tx(() => {
     if (!E.store.setEmbedding(row.id, emb)) return false;
-    if (pending) {
-      const to = pendingNs(project);
-      const m = E.store.p('SELECT embedding_model, dim FROM namespace_models WHERE namespace = ?').get(to);
-      if (!m) E.store.p('INSERT INTO namespace_models(namespace, embedding_model, dim) VALUES (?, ?, ?)').run(to, emb.embedding_model, emb.dim);
-      else if (m.embedding_model !== emb.embedding_model || m.dim !== emb.dim) throw err('E_MODEL', `namespace ${to} is bound to ${m.embedding_model}/${m.dim} and this vector is ${emb.embedding_model}/${emb.dim}`, { namespace: to, bound: m });
-      E.store.moveRow(row.id, row.namespace, to);
-      E.store.patchBody(row.id, b => { b.state = 'pending'; b.matches = matches; return b; });
+    if (matches.length) {
+      E.store.patchBody(row.id, b => { b.matches = matches; return b; });
+      recordEventSync(E, caller, { kind: 'note_matches', key: `note:${row.id}`, row_ids: [row.id, ...matches.map(m => m.id)], ok: true,
+        message: JSON.stringify({ note_id: row.id, matches: matches.map(m => ({ id: m.id, similarity: m.similarity })), notes_match_threshold: lv.notes_match_threshold, notes_match_n: lv.notes_match_n, embed_run: embedRun }) });
     }
     return true;
   });
   if (!done) return { id: row.id, action: 'already_embedded', embedded: false, namespace: row.namespace };
   E.noteWrite();
   return {
-    id: row.id, action: 'embedded', embedded: true, state: pending ? 'pending' : 'stored', namespace: pending ? pendingNs(project) : row.namespace,
+    id: row.id, action: 'embedded', embedded: true, state: 'stored', namespace: row.namespace,
     title: row.title, compared: live, matches, embedding_model: emb.embedding_model, dim: emb.dim, ...lv,
   };
 }

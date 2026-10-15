@@ -149,13 +149,15 @@ test('a real embed writes the vectors, records the matches the hand-back would, 
   assert.deepStrictEqual([j.project, j.found, j.embedded.length, j.failed.length, j.already_embedded.length], ['acme', 2, 2, 0, 0]);
   assert.ok(j.elapsed_ms >= 0);
   const k1x = j.embedded.find(n => /K1x/.test(n.title)), k2 = j.embedded.find(n => /K2 /.test(n.title));
-  assert.deepStrictEqual([k1x.state, k1x.namespace, k1x.matches.length], ['pending', 'pending/acme', 1]);
+  assert.deepStrictEqual([k1x.state, k1x.namespace, k1x.matches.length], ['stored', 'project/acme', 1], 'it stays live where it was');
   assert.deepStrictEqual([k2.state, k2.namespace, k2.matches], ['stored', 'project/acme', []]);
-  assert.deepStrictEqual(j.pending, [k1x.id]);
+  assert.deepStrictEqual(j.with_matches, [k1x.id]);
+  assert.match(j.embed_run, /^embed-/);
   assert.strictEqual(j.matches_recorded, 1);
   assert.deepStrictEqual([j.levers.notes_match_threshold, j.levers.notes_match_n, j.levers.source], [0.8, 3, 'default']);
   assert.match(r.text, /embedded 2, failed 0/);
-  assert.match(r.text, /PENDING, 1 match recorded/);
+  assert.match(r.text, /1 match recorded/);
+  assert.match(r.text, /every note stays where it was/);
 
   assert.ok(!fs.existsSync(`${dataDir}/owner.lock`), 'the owner this command elected was shut down');
   withStore(s => {
@@ -165,7 +167,7 @@ test('a real embed writes the vectors, records the matches the hand-back would, 
       assert.strictEqual(row.namespace, n.namespace);
     }
     const body = JSON.parse(s.p('SELECT body FROM memory_entries WHERE id = ?').get(k1x.id).body);
-    assert.deepStrictEqual([body.state, body.matches.length], ['pending', 1]);
+    assert.deepStrictEqual([body.state, body.matches.length], ['live', 1]);
     assert.strictEqual(s.p("SELECT COUNT(*) AS n FROM memory_entries WHERE type = 'note'").get().n, 4, 'nothing was merged or deleted');
   });
   // the other project's bare note was not touched
@@ -202,4 +204,20 @@ test('a bad project name is a usage error', async () => {
   const r = await embed('--project', 'Bad Name');
   assert.strictEqual(r.code, 2);
   assert.match(r.text, /--project must be a project name/);
+});
+
+test('a malformed config memory block or lever is refused loudly, never replaced by a default', async () => {
+  const hash = sha();
+  for (const [memory, re] of [[{ notes_match_threshold: 'high' }, /notes_match_threshold must be a number/], [{ notes_match_n: 99 }, /notes_match_n must be an integer/], [{ nonsense: 1 }, /not a known memory lever/]]) {
+    fs.writeFileSync(`${dir}/belay.config.json`, JSON.stringify({ data_dir: '.belay', memory: { project: 'other', ...memory } }));
+    try {
+      const r = await embed();
+      assert.strictEqual(r.code, 2, r.text);
+      assert.match(r.json.error.message, re);
+      assert.match(r.json.error.message, /belay\.config\.json/);
+    } finally { fs.rmSync(`${dir}/belay.config.json`); }
+  }
+  fs.writeFileSync(`${dir}/belay.config.json`, '{ not json');
+  try { assert.strictEqual((await embed('--project', 'other')).code, 2); } finally { fs.rmSync(`${dir}/belay.config.json`); }
+  assert.strictEqual(sha(), hash);
 });

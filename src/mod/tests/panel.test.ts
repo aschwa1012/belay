@@ -141,13 +141,6 @@ describe('the band', () => {
     await openPane($, wd)
     expect((await pane($)).text).toMatch(/✓\s*\d\d:\d\d\s*coder-0 stopped/)
   })
-  test('notes stored without a vector are a notice that names the command that embeds them', async ($, on) => {
-    const unembedded = { kind: 'notes_unembedded', ts: T0, run_id: RUN, count: 3, by_project: { acme: 3 }, command: 'belay memory embed' }
-    const wd = await boot($, on, { notices: { run_id: RUN, events: [unembedded] } })
-    expect((await band($)).text).toContain('3 notes unembedded')
-    await openPane($, wd)
-    expect((await pane($)).text).toContain('belay memory embed')
-  })
   test('run state comes only from the current read: ended, dead, and stale after a failed read', async ($, on) => {
     const wd = await boot($, on)
     expect((await band($)).text).toContain('● running')
