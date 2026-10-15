@@ -15,6 +15,7 @@ const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
 const { Engine } = core('engine.cjs');
 const { Store } = core('store.cjs');
 const R = core('memory-relevance.cjs');
+const { BM25 } = core('fts-query.cjs');
 
 const SEEDS = path.join(__dirname, 'fixtures', 'memory-seed-relevant.jsonl');
 const seedRows = () => fs.readFileSync(SEEDS, 'utf8').split('\n').filter((l) => l.trim()).slice(1).map((l) => JSON.parse(l));
@@ -202,7 +203,7 @@ test('terms: function and framing words dropped, short plain words dropped, iden
   assert.strictEqual(R.termsOf('dates dates dates zones')[0], 'date', 'the more often the text repeats a term, the earlier');
 });
 
-test('the OR expression quotes every term, and unit weights give the OR query its own bm25', async () => {
+test('the OR expression quotes every term, and unit weights give the OR query its own weighted bm25', async () => {
   assert.strictEqual(R.orMatch(['alpha', 'beta"x', 'NOT']), '"alpha" OR "beta" OR "NOT"', 'an operator is a quoted phrase; a quote splits a term');
   assert.strictEqual(R.orMatch([]), null);
   const { name, ids } = await g2Store();
@@ -211,7 +212,7 @@ test('the OR expression quotes every term, and unit weights give the OR query it
   assert.ok(terms.length >= 2);
   for (let i = 1; i < terms.length; i++) assert.ok(terms[i - 1].rows.length <= terms[i].rows.length, 'rarest first');
   const summed = R.keywordScores(terms, new Set(ids));
-  const or = db.prepare(`SELECT e.id AS id, bm25(memory_fts) AS bm FROM memory_fts JOIN memory_entries e ON e.rowid = memory_fts.rowid
+  const or = db.prepare(`SELECT e.id AS id, ${BM25} AS bm FROM memory_fts JOIN memory_entries e ON e.rowid = memory_fts.rowid
     WHERE memory_fts MATCH ? AND e.namespace = ?`).all(R.orMatch(terms.map((x) => x.t)), name);
   assert.strictEqual(or.length, summed.size);
   for (const r of or) assert.ok(Math.abs(summed.get(r.id) + r.bm) < 1e-9, `${r.id}: ${summed.get(r.id)} vs ${-r.bm}`);

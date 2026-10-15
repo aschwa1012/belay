@@ -1,7 +1,8 @@
 'use strict';
 // fts-query.cjs — turns a free-text query into an FTS5 MATCH expression for the trigram index (ADR 0040 §2).
 // Every term becomes a quoted phrase, so the FTS operators and column filters in a query (" * : ^ ( ) -, AND,
-// OR, NOT, NEAR) are searched as text and never parsed. The trigram tokenizer matches nothing for a term under
+// OR, NOT, NEAR) are searched as text and never parsed. Phrases are joined by OR: a row needs only some of the
+// terms, and bm25() ranks the rows holding more of the rarer terms first. The trigram tokenizer matches nothing for a term under
 // three characters and says nothing about it, so such terms are dropped, and a query left with none is an
 // error by name (E_QUERY_SHORT) instead of an empty result that looks like no match.
 
@@ -25,8 +26,10 @@ function toMatch(query) {
     if (terms.length === MAX_TERMS) break;
   }
   if (!terms.length) return { error: 'E_QUERY_SHORT' };
-  // Space between phrases is FTS5's implicit AND: a row must contain every term.
-  return { match: terms.join(' ') };
+  return { match: terms.join(' OR ') };
 }
 
-module.exports = { toMatch, MIN_TERM, MAX_TERMS };
+// bm25() with the title column weighted above the body (columns: title, text). Lower is better.
+const BM25 = 'bm25(memory_fts, 3.0, 1.0)';
+
+module.exports = { toMatch, MIN_TERM, MAX_TERMS, BM25 };
