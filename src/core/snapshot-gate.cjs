@@ -14,6 +14,7 @@ function createGate({ take, timeoutMs = 8000, now = Date.now } = {}) {
   let inflight = null;
   let waiting = null;
   const harvesters = new Set();
+  const idleWaiters = [];
 
   const signal = () => { lastSignalSeq = ++seq; return lastSignalSeq; };
   const fresh = (startSeq) => Number.isInteger(startSeq) && startSeq > lastSignalSeq;
@@ -39,6 +40,7 @@ function createGate({ take, timeoutMs = 8000, now = Date.now } = {}) {
       for (const h of [...harvesters]) { try { h(r); } catch { /* a harvester never changes a snapshot */ } }
       b.resolve(r);
       if (waiting) { const next = waiting; waiting = null; start(next); }
+      else for (const r of idleWaiters.splice(0)) r();
     };
     timer = setTimeout(() => done(null, 'timeout'), timeoutMs);
     if (timer.unref) timer.unref();
@@ -63,9 +65,12 @@ function createGate({ take, timeoutMs = 8000, now = Date.now } = {}) {
 
   // Called with each finished snapshot (ok or not), for a caller that wants any snapshot taken after a point.
   function onSnapshot(fn) { harvesters.add(fn); return () => harvesters.delete(fn); }
+  // Resolves once no snapshot is in flight or waiting: a test that counts its own child processes waits for this first,
+  // because a snapshot's PowerShell is one of them.
+  const whenIdle = () => (!inflight && !waiting ? Promise.resolve() : new Promise((r) => idleWaiters.push(r)));
   const peek = () => ({ seq, lastSignalSeq, inflight: inflight ? inflight.startSeq : null, waiting: waiting ? waiting.callers : 0 });
   const stamp = () => ++seq; // a request-order stamp for a caller that needs "after now" (the spawn read)
-  return { request, signal, fresh, onSnapshot, peek, stamp };
+  return { request, signal, fresh, onSnapshot, peek, stamp, whenIdle };
 }
 
 module.exports = { createGate };
