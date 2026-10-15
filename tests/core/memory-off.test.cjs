@@ -125,6 +125,10 @@ test('under required a release whose notes cannot be embedded still fails whole 
   try { await assert.rejects(wcall('lease.release', { lease_id: l.lease_id, notes: [note('K6')] }), (e) => e.code === 'E_MODEL_ABSENT'); }
   finally { failEmbed = false; }
   assert.strictEqual((await E.handle('task.get', { caller: orch, task_id: l.task_id })).state, 'assigned');
+  // after the resume (the embedder works again) the same hand-back goes through: the work is not lost
+  const again = await wcall('lease.release', { lease_id: l.lease_id, notes: [note('K6')] });
+  assert.strictEqual(again.state, 'released');
+  assert.strictEqual(again.notes.length, 1);
 });
 
 test('a copy-fallback engine (no owner) enforces off through the run process test', async () => {
