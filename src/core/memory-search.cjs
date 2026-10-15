@@ -16,6 +16,7 @@ const { deriveTitle, indexRowOf, dupVeto, filterSql } = require('./memory-rows.c
 const { ftsReady } = require('./memory-schema.cjs');
 const { scanCeiling } = require('./schema.cjs');
 const { toUnitF32 } = require('./store.cjs');
+const gate = require('./memory-note-gate.cjs');
 const { nsFor, resolveNamespace, runAlpha, withEmbedding, reachOf, checkReach } = require('./methods-memory.cjs');
 
 const MODES = ['semantic', 'keyword', 'hybrid'];
@@ -121,8 +122,9 @@ async function semanticStage(E, caller, o, depth) {
     if (o.filterSql.where) {
       allowed = new Set(db.prepare(`SELECT e.id FROM memory_entries e WHERE e.namespace = ? AND ${o.filterSql.where}`).all(ns, ...o.filterSql.params).map(r => r.id));
     }
+    const hidden = o.hidden; // the notes the gate hides (a small set): one lookup per row
     for (const r of c.rows) {
-      if (!r.vec || (r.ttl_at && r.ttl_at < t) || (!o.includeSuperseded && c.superseded.has(r.id)) || (allowed && !allowed.has(r.id))) continue;
+      if (!r.vec || (r.ttl_at && r.ttl_at < t) || (!o.includeSuperseded && c.superseded.has(r.id)) || (allowed && !allowed.has(r.id)) || (hidden && hidden.has(r.id))) continue;
       scanned++;
       let s = 0;
       for (let d = 0; d < m.dim; d++) s += r.vec[d] * q[d];
@@ -169,6 +171,7 @@ function baseWhere(o) {
   // whole namespace per outer row, which is quadratic (minutes, not milliseconds, at ten thousand rows).
   if (!o.includeSuperseded) where.push('NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND +s.namespace = e.namespace)');
   if (o.filterSql.where) { where.push(o.filterSql.where); params.push(...o.filterSql.params); }
+  if (o.gate) { where.push(o.gate.where); params.push(...o.gate.params); }
   return { where: where.join(' AND '), params };
 }
 
@@ -189,8 +192,12 @@ function parseSearch(E, caller, args) {
   if (typeof alpha !== 'number' || !(alpha >= 0 && alpha <= 1)) throw bad('alpha must be a number from 0 to 1', 'alpha');
   const order = enumArg('order', args.order, ['score', 'newest', 'oldest'], 'score');
   const filter = args.filter == null ? {} : args.filter;
+  // The notes gate (memory-note-gate.cjs) is kept apart from the caller's filter: the keyword stage and the count add it to their WHERE,
+  // the semantic stage subtracts the few rows it hides. Superseded rows are handled below (baseWhere, the cache), so the gate leaves them.
   const fsql = filterSql(filter, 'e');
+  const gateSql = gate.sql(E, caller, { includeSuperseded: true });
   return {
+    gate: gateSql, hidden: gateSql ? new Set(JSON.parse(gateSql.params[0])) : null,
     mode, view: enumArg('view', args.view, VIEWS, 'full'), order, alpha, filter, filterSql: fsql,
     k: intArg('k', args.k, DEFAULT_PAGE, 1, K_MAX), offset: intArg('offset', args.offset, 0, 0, OFFSET_MAX),
     namespaces: namespacesOf(E, caller, args),
@@ -248,9 +255,14 @@ async function search(E, caller, args) {
   else if (kw) ranked = kw.hits.map(h => ({ id: h.id, score: h.score }));
   else ranked = [];
 
-  let pool = ranked, rows = null;
-  if (o.order !== 'score') {
+  let rows = null;
+  if (o.gate) { // the gate's body clauses (a promoted note, a pending state) on the rows the page is built from
     rows = rowsByIds(E, ranked.map(h => h.id));
+    ranked = ranked.filter(h => rows.has(h.id) && gate.bodyLive(rows.get(h.id)));
+  }
+  let pool = ranked;
+  if (o.order !== 'score') {
+    rows = rows || rowsByIds(E, ranked.map(h => h.id));
     const dir = o.order === 'newest' ? -1 : 1;
     pool = ranked.filter(h => rows.has(h.id)).sort((a, b) => dir * (rows.get(a.id).created_at - rows.get(b.id).created_at) || (a.id < b.id ? -1 : 1));
   }
@@ -360,7 +372,7 @@ async function list(E, caller, args) {
   const limit = Math.min(intArg('limit', args.limit, 50, 1, Number.MAX_SAFE_INTEGER), LIST_MAX);
   const offset = intArg('offset', args.offset, 0, 0, Number.MAX_SAFE_INTEGER);
   const f = args.filter == null ? {} : args.filter;
-  const fsql = filterSql(f, 'e');
+  const fsql = gate.and(filterSql(f, 'e'), E, caller);
   const where = [`e.namespace IN (${marks(namespaces)})`, ...(fsql.where ? [fsql.where] : [])].join(' AND ');
   const params = [...namespaces, ...fsql.params];
   const dir = order === 'newest' ? 'DESC' : 'ASC';

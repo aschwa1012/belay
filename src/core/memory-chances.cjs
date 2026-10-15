@@ -11,7 +11,7 @@
 // `memory.noteDeliveries` is the read: which tasks were shown note X, by route, before a time.
 //
 // Everything is gated by the run's `notes_sink` lever (`off` writes nothing; `record` and `penalty` write the same
-// events, the penalty being unbuilt). A read never writes and never loads the embedding library.
+// events; `penalty` also demotes a note in the first-message index, memory-index-rank.cjs). A read never writes and never loads the embedding library.
 
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
@@ -227,4 +227,31 @@ async function noteDeliveries(E, caller, args) {
   return { note_id: args.note_id, deliveries: list };
 }
 
-module.exports = { recordApplied, recordChances, noteDeliveries, sinkOf, ROUTES };
+// The misses recorded for a set of notes, for the index's sinking penalty (memory.notes_sink: penalty). A MISS is a recorded
+// `note_chance` whose fact says the note named a file or term of the task (`area`), the worker handed back a `memory_ids` list
+// (`applied_reported`, so an absent id is a statement and not silence) and the note was not in it (`used` false). One read of the
+// chance events; a chance recorded for a duplicate archived into a kept note counts for the kept note. notes: [{ id, b (parsed body) }].
+function missCounts(E, notes) {
+  const owner = new Map();
+  for (const n of notes) {
+    owner.set(n.id, n.id);
+    for (const m of Array.isArray(n.b && n.b.merged_from) ? n.b.merged_from : []) if (m && validId(m.id) && !owner.has(m.id)) owner.set(m.id, n.id);
+  }
+  const keys = [...owner.keys()].map(id => JSON.stringify([id]));
+  const out = new Map();
+  for (let i = 0; i < keys.length; i += 500) {
+    const chunk = keys.slice(i, i + 500);
+    let found;
+    try { found = E.store.p(`SELECT row_ids, message FROM memory_event WHERE kind = 'note_chance' AND row_ids IN (${marks(chunk)})`).all(...chunk); }
+    catch (e) { if (/no such table/i.test(String(e && e.message))) return out; throw e; }
+    for (const r of found) {
+      const f = parse(r.message) || {};
+      if (f.area !== true || f.applied_reported !== true || f.used !== false) continue;
+      const kept = owner.get((parse(r.row_ids) || [])[0]);
+      if (kept) out.set(kept, (out.get(kept) || 0) + 1);
+    }
+  }
+  return out;
+}
+
+module.exports = { recordApplied, recordChances, noteDeliveries, sinkOf, missCounts, ROUTES };

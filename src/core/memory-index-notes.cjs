@@ -3,7 +3,12 @@
 // live notes of the project and nothing else (run summaries live in summary/<project>). A read: every statement is a
 // SELECT, nothing is stamped, the embedding library is never loaded. Called by memory-index.cjs.
 //
-// Ranking, best first:
+// Candidates and order: memory-index-rank.cjs. The candidates are the union of a vector top-200 and a keyword top-200 over
+// every live note the caller may see (memory-note-gate.cjs), and the order is the hybrid relevance score, best first. The
+// three tiers below are TIEBREAKERS inside equal relevance (with no relevance signal every score is 0, and the order is the
+// tiers, then verified, then newest, as before). The receipt `candidates` names the source and the counts.
+//
+// The tiers:
 //   tier 1  path: a note's `applies_to` paths against the task's `files_owned` (lower-cased, one spelling). Score of a
 //           note = the largest idf(path) over its applies_to paths that match an owned entry, where
 //             idf(path) = ln(N / n(path)),  N = live notes + tasks of the project,
@@ -13,18 +18,19 @@
 //   tier 2  term: a note with a `subjects` entry in the task text (the query, then the task spec), case-insensitive, at
 //           word edges, by the rules above prepareText (4 characters at least unless path-like; s/es tails and
 //           singularisation keep a 4-letter stem; no ed rule). More distinct subjects hit ranks first.
-//   tier 3  the rest, in the order of the hybrid relevance scorer (memory-relevance.cjs), then verified, then newest.
+//   tier 3  the rest, then verified, then newest.
 // Ties break by id. A sighting count (`seen_in`, `seen_total`) is never read here.
 
 const { fit } = require('./fit-budget.cjs');
 const { deriveTitle, validId, FRAME } = require('./memory-rows.cjs');
 const { KINDS, BASES } = require('./memory-notes.cjs');
 const relevance = require('./memory-relevance.cjs');
+const rank = require('./memory-index-rank.cjs');
 const { checkReach } = require('./memory-reach.cjs');
+const gate = require('./memory-note-gate.cjs');
 const rows = require('./rows.cjs');
 
 const redactText = (s) => require('./redact.cjs').redact(String(s)).text; // the held line shows redacted text whatever a body holds
-const CANDIDATES_MAX = 1000;
 const WHERE_SHOWN = 80; // bytes of the evidence location shown (the location, not the claim, is cut)
 const HELD_WHY_SHOWN = 60; // bytes of a hold's reason shown
 const WHY_SHOWN = 120; // bytes of a reported_wrong reason shown
@@ -167,15 +173,15 @@ const overflowLine = (c) => (c === 1
   ? '1 more note names a file or term in this task'
   : `${c} more notes name files or terms in this task`);
 
-function candidates(E, namespaces) {
-  const sql = `SELECT e.id, e.namespace, e.type, e.status, e.title, substr(e.text, 1, 2000) AS title_src, e.body, e.tags,
-    e.task_id, e.created_at, e.status_receipt, e.written_by FROM memory_entries e
-    WHERE e.namespace IN (${marks(namespaces)}) AND e.type = 'note'
-      AND COALESCE(e.status, 'unverified') <> 'refuted'
-      AND (e.ttl_at IS NULL OR e.ttl_at >= ?)
-      AND NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND +s.namespace = e.namespace)
-    ORDER BY e.created_at DESC, e.id ASC LIMIT ${CANDIDATES_MAX}`;
-  return E.store.db.prepare(sql).all(...namespaces, Date.now());
+// The candidate rows (ranked by memory-index-rank.cjs), by id, with the body parsed.
+function rowsOf(E, ids) {
+  const out = [];
+  for (let i = 0; i < ids.length; i += 500) {
+    const chunk = ids.slice(i, i + 500);
+    out.push(...E.store.db.prepare(`SELECT e.id, e.namespace, e.type, e.status, e.title, substr(e.text, 1, 2000) AS title_src, e.body, e.tags,
+      e.task_id, e.created_at, e.status_receipt, e.written_by FROM memory_entries e WHERE e.id IN (${marks(chunk)})`).all(...chunk));
+  }
+  return out.filter((r) => validId(r.id)).map((r) => ({ ...r, b: parseJson(r.body) })).filter((r) => gate.bodyLive(r.b));
 }
 
 // c: { o (parsed args), task, owned, args, lv, norm, projectOf, sha256 }
@@ -189,18 +195,22 @@ async function index(E, caller, c) {
   });
   if (!namespaces.length) return empty(0, 0);
 
-  const found = candidates(E, namespaces).filter((r) => validId(r.id)).map((r) => ({ ...r, b: parseJson(r.body) }))
-    .filter((r) => !(r.b && r.b.state === 'pending'));
-  const live = found.filter((r) => !o.exclude.has(r.id));
-  const excluded = found.length - live.length;
-  if (!live.length) return empty(found.length, excluded);
+  const pool = rank.liveIds(E, caller, namespaces);
+  const fresh = pool.filter((id) => !o.exclude.has(id));
+  const excluded = pool.length - fresh.length;
+  if (!fresh.length) return empty(pool.length, excluded);
 
   const rq = relevance.parseArgs(args);
   const text = [rq.query, task && typeof task.spec === 'string' ? task.spec : null].filter(Boolean).join('\n');
   const source = [rq.query && 'query', task && task.spec && 'task.spec'].filter(Boolean).join('+') || null;
-  const rel = relevance.score(E, live, { text, source, queries: rq.queries, embeddingModel: rq.embeddingModel, namespaces, alpha: relevance.alphaOf(lv) });
+  const sel = rank.select(E, namespaces, fresh, { text, source, queries: rq.queries, embeddingModel: rq.embeddingModel, alpha: relevance.alphaOf(lv) });
+  const found = rowsOf(E, sel.ids);
+  const live = found;
+  let scores = sel.scores, sunk = null;
+  if (lv.notes_sink === 'penalty') { const p = rank.penalise(E, found, scores); scores = p.scores; sunk = p.demoted; }
+  const rel = { scores, info: sel.info };
 
-  // N is bounded: at most CANDIDATES_MAX notes plus the tasks of this project's runs (one read of the task table per call).
+  // N is bounded: at most the candidates (about 400) plus the tasks of this project's runs (one read of the task table per call).
   const project = (namespaces.find((n) => n.startsWith('project/')) || '').slice(8) || null;
   const runProject = new Map();
   const inProject = (t) => {
@@ -220,7 +230,7 @@ async function index(E, caller, c) {
     const fact = ps > 0 || hits > 0 || (paths.length > 0 && pathMatches(paths, ownedF));
     return { r, ps, hits, fact, tier: ps > 0 ? 1 : hits > 0 ? 2 : 3, rel: rel.scores.get(r.id) || 0 };
   }).sort((a, b) => (
-    (a.tier - b.tier) || (b.ps - a.ps) || (b.hits - a.hits) || (b.rel - a.rel)
+    (b.rel - a.rel) || (a.tier - b.tier) || (b.ps - a.ps) || (b.hits - a.hits)
     || ((b.r.status === 'verified') - (a.r.status === 'verified')) || (b.r.created_at - a.r.created_at)
     || (a.r.id < b.r.id ? -1 : a.r.id > b.r.id ? 1 : 0)
   ));
@@ -244,7 +254,7 @@ async function index(E, caller, c) {
     }
   }
   const info = {
-    considered: found.length, excluded_already_injected: excluded, ...(rel.info ? { relevance: rel.info } : {}),
+    considered: found.length, excluded_already_injected: excluded, candidates: sel.candidates, ...(sunk ? { sunk } : {}), ...(rel.info ? { relevance: rel.info } : {}),
     notes: { path: ranked.filter((x) => x.tier === 1).length, term: ranked.filter((x) => x.tier === 2).length, unlisted_path_or_term: Math.max(overflow, 0) },
   };
   if (!fitted.kept.length) return { ...empty(found.length, excluded, ranked.length, fitted.over_budget), ...info };
