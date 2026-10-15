@@ -23,8 +23,10 @@ const relevance = require('./memory-relevance.cjs');
 const { checkReach } = require('./memory-reach.cjs');
 const rows = require('./rows.cjs');
 
+const redactText = (s) => require('./redact.cjs').redact(String(s)).text; // the held line shows redacted text whatever a body holds
 const CANDIDATES_MAX = 1000;
 const WHERE_SHOWN = 80; // bytes of the evidence location shown (the location, not the claim, is cut)
+const HELD_WHY_SHOWN = 60; // bytes of a hold's reason shown
 const WHY_SHOWN = 120; // bytes of a reported_wrong reason shown
 const RECEIPT_KINDS = new Set(['commit', 'task', 'review', 'test', 'memory', 'checkpoint']);
 
@@ -153,6 +155,11 @@ function lineOf(r, body, trust, runId) {
     const why = cutBytes(oneLine(wrong[wrong.length - 1].why), WHY_SHOWN);
     out += wrong.length === 1 ? ` [a worker reported this wrong: ${why}]` : ` [${wrong.length} workers reported this wrong; latest: ${why}]`;
   }
+  // The notes lifecycle: a note held for archive carries a short warning in every later run until the reviewer settles it.
+  // Display only: it changes no rank and no order, and it is inside this line, so it is counted in the same budget.
+  if (body && body.held && typeof body.held.kind === 'string' && typeof body.held.reason === 'string' && oneLine(body.held.reason)) {
+    out += ` [held: ${oneLine(body.held.kind).slice(0, 12)}, ${cutBytes(oneLine(redactText(body.held.reason)), HELD_WHY_SHOWN)}]`;
+  }
   return out;
 }
 
@@ -191,7 +198,7 @@ async function index(E, caller, c) {
   const rq = relevance.parseArgs(args);
   const text = [rq.query, task && typeof task.spec === 'string' ? task.spec : null].filter(Boolean).join('\n');
   const source = [rq.query && 'query', task && task.spec && 'task.spec'].filter(Boolean).join('+') || null;
-  const rel = relevance.score(E, live, { text, source, queryEmbedding: rq.queryEmbedding, embeddingModel: rq.embeddingModel, namespaces });
+  const rel = relevance.score(E, live, { text, source, queries: rq.queries, embeddingModel: rq.embeddingModel, namespaces, alpha: relevance.alphaOf(lv) });
 
   // N is bounded: at most CANDIDATES_MAX notes plus the tasks of this project's runs (one read of the task table per call).
   const project = (namespaces.find((n) => n.startsWith('project/')) || '').slice(8) || null;

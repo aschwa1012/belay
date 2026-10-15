@@ -31,8 +31,8 @@ A task is made with `mcp__belay__task_create`:
 
 Prefer `mcp__belay__worker_spawn` with `task_id`: it assigns the task and puts a first line in front
 of your prompt, `task <id> state=assigned lease=<lease id>.`. Give it `substrate` (`claude-code`),
-`worktree` (absolute), `prompt`, your plan's `model`, and `effort` (`low|medium|high|xhigh|max`):
-reviewers `"high"`, coders and fixers omit it.
+`worktree` (absolute), `prompt`, and `agent_type`, always (`coder|tester|reviewer|researcher`; a fixer is a
+`coder`): belay applies its model and effort. Pass `model` or `effort` only when your plan needs another.
 
 `mcp__belay__task_assign` to a worker that is already running tells that worker nothing. After it,
 call `mcp__belay__worker_message` with the task id, the lease id from the assign result
@@ -50,6 +50,8 @@ The operator is present in this session. You may ask them a question when a deci
 Ending a turn does not end the run: the run ends when the operator quits the session.
 
 belay wakes you with a short message when a worker's turn ends or a worker dies. While workers are working, end your turn: the wake brings you back and names the worker. Do not hold a turn open to wait.
+
+If a memory call or a worker tool fails saying the run is paused for an embedder failure, stop and ask the operator which of the three they want: `keyword`, `off`, or stay paused. Then give them the exact `belay resume` command the message names for their choice; you have no shell to run it.
 
 So:
 
@@ -82,7 +84,7 @@ task. A `worker_message` refused `E_BUSY` `op: "compact"` was not sent (compacti
 
 1. `mcp__belay__task_create` with `acceptance: { "verdict": true }` and `depends_on: [<task under
    review>]`. It needs no commands. It can be assigned only once the work task is `done`.
-2. Give it to a different worker from the coder, spawned with `effort: "high"`. belay does not
+2. Give it to a different worker from the coder, spawned with `agent_type: "reviewer"`. belay does not
    check this at assign: if the coder's own worker judges, the verdict check at evaluate is not
    executable and the task is not done. Choose a different worker yourself.
 3. Put the Review standard section below, verbatim, in the reviewer's prompt. The prompt also names

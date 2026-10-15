@@ -7,6 +7,7 @@
 const { adapterPipeName, pidAlive } = require('../core/lock.cjs');
 const { Client } = require('../core/client.cjs');
 const { SNAPSHOT_TIMEOUT_MS } = require('../core/proc-identity.cjs');
+const { SPAWN_EMBED_MS } = require('../core/spawn-bounds.cjs');
 
 // ADR 0048: a kill that is not made through a live handle takes one process snapshot, and a caller that arrives while
 // one is in flight waits for it and then for its own, so a snapshot wait costs up to 2 x T (T, the snapshot timeout in
@@ -35,7 +36,8 @@ function stopBoundMs(timeout_ms, T = SNAPSHOT_TIMEOUT_MS) {
 }
 function restartBoundMs(first_turn_timeout_ms, T = SNAPSHOT_TIMEOUT_MS) {
   // + EXIT_CODE_WAIT_MS (15,000): failNoReady's bounded hold for a pid-established death's exit code
-  return doStopInternalBoundMs(10000, T) + 5000 + 60000 + 15000 + first_turn_timeout_ms;
+  // + SPAWN_EMBED_MS: the relaunch embeds the task's text for its index before the process starts (memory-preface.cjs)
+  return doStopInternalBoundMs(10000, T) + 5000 + 60000 + 15000 + first_turn_timeout_ms + SPAWN_EMBED_MS;
 }
 function messageBoundMs() {
   return 30000 + 5000;
@@ -52,7 +54,8 @@ function pauseBoundMs(interrupt_timeout_ms = 5000, exit_timeout_ms = 10000, T = 
 // ADR 0048: one snapshot wait for the kill a failed relaunch makes (failNoReady).
 function resumeBoundMs(T = SNAPSHOT_TIMEOUT_MS) {
   // + 15000: failNoReady's bounded hold for the exit code (worker.EXIT_CODE_WAIT_MS)
-  return 30000 + 5000 + 60000 + 15000 + 30000 + 5000 + snapWaitMs(T);
+  // + SPAWN_EMBED_MS: the relaunch embeds the task's text for its index before the process starts (memory-preface.cjs)
+  return 30000 + 5000 + 60000 + 15000 + 30000 + 5000 + snapWaitMs(T) + SPAWN_EMBED_MS;
 }
 
 function failure(workerId, ladder, last, reason, error) {

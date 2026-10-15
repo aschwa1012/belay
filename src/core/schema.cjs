@@ -176,6 +176,9 @@ const MIGRATIONS = [
   // ADR 0041 decision 1: the run's memory levers as JSON text, and its project name; written by run.attach, carried forward.
   'ALTER TABLE run ADD COLUMN memory_levers TEXT',
   'ALTER TABLE run ADD COLUMN project TEXT',
+  // ADR 0034 amendment 1: the directory the run's belay.config.json lives in (or is created in), so a resume writes the operator's
+  // choice of embedder mode into the run's own project and never into whatever folder the CLI was run from.
+  'ALTER TABLE run ADD COLUMN project_dir TEXT',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot

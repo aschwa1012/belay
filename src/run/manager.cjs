@@ -18,6 +18,7 @@ const S = require('./surface.cjs'); // ADR 0024, S2 fix round F4: the surface fi
 const I = require('./instructions.cjs'); // ADR 0024 amendment 1: the spawn-time CLAUDE.md copy
 const { fail } = require('./errors.cjs');
 const { validateSpawnArgs } = require('./spawn-args.cjs');
+const AD = require('./agent-defaults.cjs'); // the config's per-agent-type model and effort defaults
 const MP = require('./memory-preface.cjs'); // ADR 0042: the first-message preface and the memory hooks
 // build step 6c: `wait`, `decideBranch`, `restartFirstText` and the resume-window constants moved
 // verbatim into their own files (the 500-line rule); re-exported under the same names below.
@@ -40,7 +41,7 @@ const { POLL_MS } = require('./exit-hold.cjs');
 const now = () => Date.now();
 
 // `memoryLevers`: the run's levers when the caller holds the run row (ADR 0041); `worktree`: the run's (ADR 0043).
-function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = null, memoryLevers = null, worktree = null }) {
+function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = null, memoryLevers = null, worktree = null, agentDefaults = null }) {
   if (!core) fail('E_ARGS', 'createRunManager needs a core');
   if (!dataDir) fail('E_ARGS', 'createRunManager needs a dataDir');
   if (!runId) fail('E_ARGS', 'createRunManager needs a runId');
@@ -204,10 +205,20 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
   async function spawn(opts) {
     const {
-      substrate, worktree, prompt, task_id = null, model = null, allowed_tools = null,
+      substrate, worktree, prompt, task_id = null, model: modelArg = null, allowed_tools = null,
       permission_mode = null, startup_timeout_ms = 60000, worker_id = null, sandbox = null,
-      permission_prompt = false, permit_wait_ms = 600000, effort = null, tools = null,
+      permission_prompt = false, permit_wait_ms = 600000, effort: effortArg = null, tools = null, agent_type = null,
     } = opts || {};
+    let model = modelArg;
+    let effort = effortArg;
+    let agent = null;
+    if (agent_type !== null) {
+      if (!AD.WORKER_TYPES.includes(agent_type)) fail('E_ARGS', `spawn agent_type must be one of ${AD.WORKER_TYPES.join(', ')}`, { agent_type });
+      // The configured default fills only what the caller left out; an explicit model or effort always wins.
+      agent = AD.forWorker(agentDefaults, { agent_type, model: modelArg, effort: effortArg, substrate });
+      model = agent.model.value;
+      effort = agent.effort.value;
+    }
     validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id });
 
     const id = worker_id || crypto.randomUUID();
@@ -232,7 +243,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
     // The worker row comes first, with no pid yet: `task.assign` refuses a worker with no row, and the
     // resume line needs the lease it creates. Only `running` is pid-checked, so this is legitimate.
-    const t0 = now();
+    let t0 = now();
     await writeRow(w, 'starting');
     let first;
     try {
@@ -245,6 +256,9 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       await writeRow(w, 'dead');
       throw e;
     }
+    // The index's embedding is the harness's wait, not the worker's: it counts neither toward the startup window nor in ready_ms
+    // (Codex's verifyReady and the returned ready_ms run from here). Its own time is in the index_injected receipt.
+    t0 += w.indexEmbedMs || 0;
     w.firstMessage = first;
 
     launch(w, substrate === 'claude-code' ? {} : { prompt: first });
@@ -271,11 +285,11 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       // the row to return is the store's own (`worker.get`'s pid_alive/last_event_age_ms dropped here).
       if (w.state === 'idle') {
         const { pid_alive, last_event_age_ms, ...row } = await core.worker.get({ worker_id: id });
-        return { ...row, ready_ms, permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions) };
+        return { ...row, ready_ms, permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions), ...(agent ? { agent } : {}) };
       }
       await failNoReady(w, `the worker reached ready but its pid ${w.pid} was no longer alive when the running row would have been written`, { ready_ms });
     }
-    return { ...written, ready_ms, permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions) };
+    return { ...written, ready_ms, permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions), ...(agent ? { agent } : {}) }; // agent: the model and effort used, each with its source
   }
 
   async function message({ worker_id, text }) {

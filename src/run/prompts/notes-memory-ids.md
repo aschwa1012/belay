@@ -1,0 +1,1 @@
+- `lease_release` also takes `memory_ids`: the ids of the notes you were shown and actually applied in this task. It is required in this run; `[]` when you applied none.

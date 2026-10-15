@@ -79,7 +79,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   const mcpPath = L.mcpServerPath();
   const written = L.writeOrchestratorFiles({
     dir: orchestratorDir, runId, dataDir, mcpPath, settingsPath: L.userSettingsPath(), cwd: worktree, // ADR 0024
-    compactAt: compactAtTokens, knowledgeAgent: !!spec.knowledgeAgent, // ADR 0007 decision 3; ADR 0043 decision 1
+    compactAt: compactAtTokens, knowledgeAgent: !!spec.knowledgeAgent, agentDefaults: spec.agentDefaults || null, // ADR 0007 decision 3; ADR 0043 decision 1
   });
   fs.writeFileSync(path.join(written.dir, 'prompt.txt'), promptText);
 

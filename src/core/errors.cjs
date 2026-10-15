@@ -10,12 +10,14 @@ const CODES = new Set([
   'E_NO_OWNER', 'E_OWNER_LOST', 'E_LOCKED', 'E_NO_EMBEDDER', 'E_TOO_LONG', 'E_MODEL',
   'E_MODEL_ABSENT', 'E_MODEL_CHANGED', 'E_DIM', 'E_VEC', 'E_SUPERSEDES',
   'E_NAMESPACE_TOO_LARGE', 'E_TIMEOUT', 'E_INTERNAL', 'E_PAUSED', 'E_BUSY', 'E_FIX_ROUNDS', 'E_SCHEMA_NEWER',
-  'E_EMBEDDER_TIMEOUT',
+  'E_EMBEDDER_TIMEOUT', 'E_EMBED_BOUND',
   // ADR 0040 to 0043 (memory architecture)
   'E_NO_INDEX', 'E_QUERY_SHORT', 'E_RECEIPT', 'E_SUMMARISER_ABSENT', 'E_SUMMARY_EMPTY', 'E_SUMMARY_MALFORMED',
   'E_SUMMARY_REFUSED', 'E_SUMMARY_OVER_BUDGET', 'E_LEVER_OFF', 'E_EXISTS',
   // ADR 0047: a note whose shape is refused (never truncated)
   'E_NOTE_SHAPE',
+  // the notes lifecycle (scrub, review, archive): out of scope, an unverifiable citation, a failed fact precondition, a ground that is not allowed
+  'E_SCOPE', 'E_CITATION', 'E_PRECONDITION', 'E_GROUND',
 ]);
 
 class CoreError extends Error {

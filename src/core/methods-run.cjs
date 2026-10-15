@@ -32,7 +32,7 @@ const ATTACH_SUSPECT = LIFE_CLAIMING_STATES;
 // Fix round for 6f (diff-scope): `rows.cjs` (unowned) lacks paused_at/paused_by in COLUMNS.run, so
 // rows.append would drop both. This local insert (its own shape, via exported bind/parseRow) adds them.
 function appendRun(E, values, writtenBy, at = Date.now()) {
-  const cols = [...rows.COLUMNS.run, 'paused_at', 'paused_by', 'pause_parks', 'memory_levers', 'project']; // item 1: 6th local column; ADR 0041 decision 1: the memory levers and the project
+  const cols = [...rows.COLUMNS.run, 'paused_at', 'paused_by', 'pause_parks', 'memory_levers', 'project', 'project_dir']; // item 1: 6th local column; ADR 0041 decision 1: the memory levers and the project
   const all = [...cols, 'written_at', 'written_by'];
   const sql = `INSERT INTO run(${all.join(', ')}) VALUES (${all.map(() => '?').join(', ')})`;
   const params = cols.map(c => rows.bind(values[c]));
@@ -66,6 +66,10 @@ async function attach(E, caller, args) {
     }
     const checked = parseMemoryBlock(parsed);
     if (checked.error) throw err('E_ARGS', `run.attach memory_levers is not a valid memory block: ${checked.error}`, { memory_levers: args.memory_levers });
+  }
+  const dirGiven = args.project_dir !== undefined;
+  if (dirGiven && args.project_dir !== null && !(typeof args.project_dir === 'string' && args.project_dir.length > 0 && args.project_dir.length <= 1024)) {
+    throw err('E_ARGS', 'run.attach project_dir must be null or a directory path', { project_dir: args.project_dir });
   }
   const projectGiven = args.project !== undefined;
   if (projectGiven && args.project !== null && !(typeof args.project === 'string' && PROJECT_RE.test(args.project))) {
@@ -127,6 +131,7 @@ async function attach(E, caller, args) {
     max_fix_rounds: fixCapGiven ? args.max_fix_rounds : (carryPause ? prev.max_fix_rounds : null),
     memory_levers: leversGiven ? args.memory_levers : (carryPause ? prev.memory_levers : null), // same carry rule
     project: projectGiven ? args.project : (carryPause ? prev.project : null),
+    project_dir: dirGiven ? args.project_dir : (carryPause ? prev.project_dir : null),
   }, by, t);
   E.noteWrite();
   return { run, epoch, reattached: !!prev, previous: parseRunRow(prev), workers_marked_dead: marked }; // item c
