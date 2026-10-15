@@ -20,7 +20,18 @@ const norm = s => String(s).replace(/\s+/g, ' ').trim();
 const fwd = p => String(p).split('\\').join('/');
 const LINE_SUFFIX = /:\d+(?:-\d+)?$/;
 
-function gitShow(worktree, head, rel) {
+// A file cite reads a blob only: `git show` of a directory prints its tree listing, which would make file names citable.
+function gitType(worktree, head, rel) {
+  return new Promise(resolve => {
+    execFile('git', ['cat-file', '-t', `${head}:${rel}`], { cwd: worktree, timeout: GIT_BOUND_MS, windowsHide: true, encoding: 'utf8' }, (e, stdout) => resolve(e ? null : String(stdout).trim()));
+  });
+}
+async function gitShow(worktree, head, rel) {
+  const type = await gitType(worktree, head, rel);
+  if (type !== null && type !== 'blob') return { error: `a ${type}, not a file, at` };
+  return gitShowBlob(worktree, head, rel);
+}
+function gitShowBlob(worktree, head, rel) {
   return new Promise(resolve => {
     execFile('git', ['show', `${head}:${rel}`], { cwd: worktree, timeout: GIT_BOUND_MS, maxBuffer: FILE_MAX, windowsHide: true, encoding: 'utf8' },
       (e, stdout) => resolve(e ? { error: e.code === 128 || /exists on disk|does not exist|bad object|unknown revision/i.test(String(e.stderr || e.message)) ? 'not at that commit' : `git did not answer (${e.code || e.signal || 'error'})` } : { text: stdout }));

@@ -72,6 +72,8 @@ before(async () => {
   dir = sandbox();
   repo = sandbox();
   fs.writeFileSync(`${repo}/loader.js`, "module.exports = function load() { return 'skips unlisted fixtures'; };\n");
+  fs.mkdirSync(`${repo}/pkg`);
+  fs.writeFileSync(`${repo}/pkg/a-rather-long-file-name-for-listing.js`, 'x = 1;\n');
   const git = (...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8', windowsHide: true });
   git('init', '-q'); git('add', '.'); git('commit', '-q', '-m', 'init');
   head = git('rev-parse', 'HEAD').trim();
@@ -313,6 +315,35 @@ test('R20: a quote under 24 bytes, "./" and a directory are refused before anyth
     assert.ok(['E_ARGS', 'E_CITATION'].includes(out.refused[0].code), out.refused[0].code);
   }
   assert.strictEqual(rowOf(w.note).status ?? 'unverified', 'unverified');
+});
+
+test('R21 (review S-B, X5): a cite naming a directory is E_CITATION in both citation paths; a file name from a listing is not citable', async () => {
+  const name = 'a-rather-long-file-name-for-listing.js';
+  const w = await written('w-u', 'K45');
+  for (const where of ['pkg', 'pkg/']) {
+    const out = await apply(await review(`rev-u${++seq}`, w.task, [verdict(w.note, 'confirmed', [cite(name, where)])]));
+    assert.strictEqual(out.refused[0].code, 'E_CITATION', where);
+  }
+  const out = await apply(await review(`rev-u${++seq}`, w.task, [verdict(w.note, 'confirmed', [cite(name, 'pkg')])]));
+  assert.match(out.refused[0].message, /tree, not a file|path to a file/);
+  assert.strictEqual(rowOf(w.note).status ?? 'unverified', 'unverified');
+  // the scrub/review-apply path (checkCitations) refuses it too
+  const MC = core('memory-citations.cjs');
+  await assert.rejects(MC.checkCitations([{ where: 'pkg', quote: name }], { head_sha: head, worktree: repo }), (e) => e.code === 'E_CITATION' && /tree, not a file/.test(e.message));
+  const ok = await MC.checkCitations([{ where: 'pkg/' + name, quote: 'x = 1;' }], { head_sha: head, worktree: repo });
+  assert.strictEqual(ok[0].source.startsWith('pkg/'), true);
+});
+
+test('R22: a reported_wrong on a note that is no longer live is skipped and returned; the rest of the release goes ahead', async () => {
+  const w = await written('w-v', 'K46');
+  store.moveRow(w.note, 'project/acme', 'archive/acme');
+  await call('worker.write', orch, { id: 'w-v2', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's', last_event_at: Date.now() });
+  const t = await call('task.create', orch, { spec: `job ${++seq}` });
+  const a = await call('task.assign', orch, { task_id: t.id, worker_id: 'w-v2' });
+  const out = await call('lease.release', worker('w-v2'), { lease_id: a.new_lease.id, notes: [note('K47')], reported_wrong: [{ id: w.note, why: 'it is stale' }, { id: 'no-such-note', why: 'x' }] });
+  assert.strictEqual(out.notes[0].state, 'stored', 'the release and its note went through');
+  assert.deepStrictEqual(out.reported_wrong, [{ id: w.note, skipped: 'not_live', state: 'archive' }, { id: 'no-such-note', skipped: 'not_live', state: 'missing' }]);
+  assert.strictEqual((await call('task.get', orch, { task_id: t.id })).state, 'released');
 });
 
 test('R18: the job route needs the review job\'s own id for the task', async () => {
