@@ -26,10 +26,12 @@ const DEFAULTS = Object.freeze({
   notes_match_n: 3, // provisional: at most this many matches are returned for a pending note
   notes_reflection: false, // write ablation: a second end-of-task question as its own turn after the hand-back
   notes_lesson_question: false, // write ablation: the question aimed at lessons learned
+  notes_overflow_line: false, // ADR 0047 decision 6: one neutral line counting the path and term notes the index could not hold; off until measured
+  notes_trust_wording: false, // ADR 0047 decision 6: basis, evidence and review status instead of "unverified"; off until the harm arms have run
 });
 
 const BOOLEAN_KEYS = ['redact', 'rules', 'capture', 'observations', 'project_writes', 'cost_ledger',
-  'first_message_index', 'bottle', 'wrapup', 'knowledge_agent', 'notes', 'notes_reflection', 'notes_lesson_question'];
+  'first_message_index', 'bottle', 'wrapup', 'knowledge_agent', 'notes', 'notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording'];
 const SUMMARIES = ['off', 'mechanical'];
 const PROJECT_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const INDEX_BYTES_MAX = 4096; // ADR 0042 decision 2
@@ -73,7 +75,7 @@ function parseMemoryBlock(block) {
   if (v.notes && v.project === null) return { error: 'memory.notes needs memory.project: notes live in the project namespace' };
   // Notes outlive the run in the project namespace, so they never take unredacted text.
   if (v.notes && v.redact === false) return { error: 'memory.redact false cannot be combined with memory.notes true: the project namespace outlives the run and must never hold unredacted text' };
-  for (const k of ['notes_reflection', 'notes_lesson_question']) if (v[k] && !v.notes) return { error: `memory.${k} needs memory.notes` };
+  for (const k of ['notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording']) if (v[k] && !v.notes) return { error: `memory.${k} needs memory.notes` };
   if (v.summaries === 'mechanical' && !v.observations) return { error: 'memory.summaries "mechanical" needs memory.observations' };
   return { value: v };
 }

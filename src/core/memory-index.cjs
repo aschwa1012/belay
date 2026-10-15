@@ -134,10 +134,23 @@ const lineOf = (r) => `- ${r.id} [${safeType(r.type)}/${statusTag(r)}] ${deriveT
 // A row whose id predates id validation and would not render as one token is left out of the block.
 const renderable = (r) => validId(r.id);
 
+// The run's memory levers as the run row records them; null when there are none or they cannot be read.
+function runLevers(E, caller) {
+  try {
+    const run = rows.current(E.store, 'run', caller && caller.run_id);
+    const raw = run ? run.memory_levers : null;
+    const lv = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return lv && typeof lv === 'object' ? lv : null;
+  } catch { return null; }
+}
+
 async function index(E, caller, args = {}) {
   const o = parseArgs(args);
   const task = o.taskId ? rows.current(E.store, 'task', o.taskId) : null;
   const owned = task && Array.isArray(task.files_owned) ? task.files_owned.filter((f) => typeof f === 'string').map(norm).filter(Boolean) : [];
+  // ADR 0047 decision 6: a run with the notes lever on lists notes only, ranked for the task, in a one-line frame.
+  const lv = runLevers(E, caller);
+  if (lv && lv.notes === true) return require('./memory-index-notes.cjs').index(E, caller, { o, task, owned, args, lv, norm, projectOf, sha256 });
   let namespaces = o.namespaces;
   if (!namespaces) {
     const project = projectOf(E, caller.run_id);
