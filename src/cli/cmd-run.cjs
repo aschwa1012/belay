@@ -436,7 +436,7 @@ async function run(ctx) {
     ended_by: endedBy, holds, polls, wakes, wakes_suppressed: wakesSuppressed, wakes_expired: wakesExpired,
     wakes_held: wakesHeld, pauses,
     stop: stopReceipt, ms: Date.now() - t0, receipt_path: null,
-    levers: parsed.levers, embedder: warm, embedder_failures: ie ? ie.annotate(guard.events()) : guard.events(), ...(embedBounds && embedBounds.length ? { embedder_bounds: embedBounds } : {}),
+    levers: parsed.levers, on_embedder_failure_final: guard.mode(), memory_off: guard.memoryOff(), embedder: warm, embedder_failures: ie ? ie.annotate(guard.events()) : guard.events(), ...(embedBounds && embedBounds.length ? { embedder_bounds: embedBounds } : {}),
     review_rounds: reviewRounds.value, review_rounds_reason: reviewRounds.reason,
     workers_closed: closed ? workersClosedBlock(closed, endedRow ? (endedRow.workers_marked_dead || []) : null) : null,
     ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), // only with a run-end memory lever on
