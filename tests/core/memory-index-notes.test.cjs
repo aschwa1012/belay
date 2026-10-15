@@ -188,7 +188,7 @@ test('overflow line: off by default; on, it counts only path and term notes that
   const on = await index('over', args);
   const line = on.text.split('\n').at(-2);
   const c = 9 - on.row_ids.length; // 9 path and term notes; every kept note is one of them, since they rank first
-  assert.strictEqual(line, `${c} more notes name files or terms in this task (memory_search can find them)`);
+  assert.strictEqual(line, `${c} more notes name files or terms in this task`);
   assert.ok(!/offset/.test(line));
   assert.ok(c > 0 && on.bytes <= 1000);
   assert.ok(!/search for|you should|must|please/i.test(line), 'no imperative wording');
@@ -209,7 +209,8 @@ test('overflow line: hybrid overflow alone, or no overflow, gives no line; one m
   const all = await index('over', { namespaces: [s2], task_id: t });
   assert.ok(!/more note/.test(all.text));
   const cut = await index('over', { namespaces: [s2], task_id: t, max_bytes: all.bytes - 20 });
-  assert.match(cut.text, /\n1 more note names a file or term in this task \(memory_search can find it\)\nEND MEMORY$/);
+  assert.match(cut.text, /\n1 more note names a file or term in this task\nEND MEMORY$/);
+  assert.ok(!/\(|memory_search/.test(cut.text.split('\n').at(-2)), 'the line states the fact only');
   assert.ok(cut.bytes <= all.bytes - 20);
 });
 
@@ -293,7 +294,7 @@ test('a path match with idf 0 is counted by the overflow line', async () => {
   assert.strictEqual(w.idf(own), 0, 'every note and task names it');
   const r = await index('over', { namespaces: [space], task_id: t.id, max_bytes: 700 });
   assert.ok(r.dropped > 0);
-  assert.match(r.text, /\n\d+ more notes name files or terms in this task \(memory_search can find them\)\nEND MEMORY$/);
+  assert.match(r.text, /\n\d+ more notes name files or terms in this task\nEND MEMORY$/);
 });
 
 test('text from a note cannot start a line of its own: newlines and END MEMORY stay inside one line', async () => {
@@ -335,4 +336,48 @@ test('tasks of another project do not count in N', async () => {
   // N = 1 note + 1 task of this project and n = 2, so the path adds nothing; counting the 4 foreign tasks would score it.
   assert.strictEqual(r.notes.path, 0);
   assert.strictEqual(r.row_ids.length, 1);
+});
+
+test('a file does not inherit its parents: parent-folder notes and tasks leave the file note specific', async () => {
+  const space = fresh();
+  const file = note(space, 'file note', { applies_to: ['src/core/store2.cjs'], created_at: 10 });
+  note(space, 'src note', { applies_to: ['src'], created_at: 20 });
+  note(space, 'core note', { applies_to: ['src/core'], created_at: 30 });
+  const w = N.pathWeights([{ applies_to: ['src/core/store.cjs'] }, { applies_to: ['src'] }, { applies_to: ['src/core'] }], [['src/core/store.cjs']], (p) => p);
+  assert.strictEqual(w.total, 4);
+  assert.strictEqual(w.idf('src/core/store.cjs'), Math.log(4 / 2), 'the file and the task that owns it');
+  assert.strictEqual(w.idf('src/core'), Math.log(4 / 3), 'the folder, the file inside it and the task');
+  assert.strictEqual(w.idf('src'), 0, 'src holds everything');
+  const t = await task('store work', ['src/core/store2.cjs']);
+  const r = await index('on', { namespaces: [space], task_id: t });
+  assert.ok(r.notes.path >= 1 && r.row_ids[0] === file, 'the file note stays tier 1 and leads');
+});
+
+test('short subjects (2 or 3 characters) match exactly, with no plural or singular form', () => {
+  const m = (subject, text) => N.subjectHits([subject], text) === 1;
+  assert.ok(m('API', 'change the api surface'));
+  assert.ok(m('MCP', 'the mcp adapter'));
+  assert.ok(m('git', 'run git status'));
+  assert.ok(m('cli', 'the CLI is slow'));
+  assert.ok(!m('API', 'many apis here'), 'no plural');
+  assert.ok(!m('apis', 'one api only'), 'a 4-letter subject keeps only the stem rule: api is 3 letters');
+  assert.ok(!m('git', 'a gitlab runner'), 'word-bounded');
+  assert.ok(!m('git', 'digit'), 'word-bounded');
+  assert.ok(!m('a', 'a b'), 'one character never matches');
+});
+
+test('path-like subjects need 3 characters and are normalised like paths', () => {
+  const BS = String.fromCharCode(92);
+  const m = (subject, text) => N.subjectHits([subject], text, (p) => p.split(BS).join('/').replace(/^(\.\/)+/, '').replace(/\/+$/, '')) === 1;
+  assert.ok(!m('a.', 'a.b'), 'under 3 characters');
+  assert.ok(!m('./', 'x/y'), 'under 3 characters');
+  assert.ok(m('./src/Core/', 'see src/core/store.cjs'), 'leading ./, trailing slash and case');
+  assert.ok(m(`src${BS}core${BS}store.cjs`, 'edit src/core/store.cjs'), 'backslashes in the subject');
+  assert.ok(m('src/core/store.cjs', `edit src${BS}core${BS}store.cjs`), 'backslashes in the task text');
+  assert.ok(m('SRC/Core', 'src/core/x'), 'case');
+});
+
+test('the overflow line states the fact and claims nothing', () => {
+  assert.strictEqual(N.overflowLine(7), '7 more notes name files or terms in this task');
+  assert.strictEqual(N.overflowLine(1), '1 more note names a file or term in this task');
 });
