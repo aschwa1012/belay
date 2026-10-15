@@ -3,8 +3,8 @@
 // (1) A later turn_end lands while an earlier turn's memory store (an embed) is still in flight: each turn's
 // observation and usage row must carry that turn's own numbers, snapshotted when it ended, never the counters
 // the record holds by the time the queued work runs. (2) Shutdown closes the flag while a turn store is in
-// flight: nothing after it may reach the core (a write would elect a new owner once the old one is stopped), and
-// the drop is named on the record.
+// flight: the row already sent keeps its paired event until the owner is gone, nothing else reaches the core (a
+// write would elect a new owner once the old one is stopped), and the drop is named on the record.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -76,15 +76,27 @@ test('the observation text is the turn\'s own final text even when the record ha
   assert.ok(texts[1][1].includes('BRAVO'));
 });
 
-test('shutdown during the turn store: no observation, event or job reaches the core afterwards, and the drop is named', async () => {
+test('shutdown during the turn store: the in-flight observation keeps its paired event, no job reaches the core, and the drop is named', async () => {
   const { ctx, c, w } = setup({ capture: true, observations: true, cost_ledger: true, wrapup: true }, { turnStoreMs: 300 });
   w.turns = 1; w.lastTurnUsage = { output_tokens: 5 }; w.costUsd = 0.01;
   TR.queueMemory(w, { kind: 'turn_end', text: 'hello' }, ctx, 4000, null);
   await sleep(20);
-  ctx.shutdownFlags.closed = true; // markClosed; the drain gives up after MEMORY_DRAIN_MS and the owner stops
+  ctx.shutdownFlags.closed = true; // markClosed; the owner has not gone, so a row already sent still gets its event
+  await drain(w);
+  assert.deepStrictEqual(c.calls.map((x) => x.m), ['store', 'recordEvent'], 'the observation already in flight and its event, nothing else');
+  assert.strictEqual(c.calls[0].closed, false, 'the store was sent before the flag closed');
+  assert.strictEqual(w.lastError.where, 'after-shutdown');
+});
+
+test('shutdown during the turn store once the owner is gone: the paired event is dropped too, and named', async () => {
+  const { ctx, c, w } = setup({ capture: true, observations: true, cost_ledger: true, wrapup: true }, { turnStoreMs: 300 });
+  w.turns = 1; w.lastTurnUsage = { output_tokens: 5 }; w.costUsd = 0.01;
+  TR.queueMemory(w, { kind: 'turn_end', text: 'hello' }, ctx, 4000, null);
+  await sleep(20);
+  ctx.shutdownFlags.closed = true;
+  ctx.shutdownFlags.ownerGone = true; // a write now could elect a new owner
   await drain(w);
   assert.deepStrictEqual(c.calls.map((x) => x.m), ['store'], 'only the observation store already in flight');
-  assert.ok(c.calls.every((x) => x.closed === false), 'nothing was sent after the flag closed');
   assert.strictEqual(w.lastError.where, 'after-shutdown');
 });
 
