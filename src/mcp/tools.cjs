@@ -13,6 +13,7 @@
 //     method, `stop({ worker_id, mode, timeout_ms })`. The contract wins; `mode` is required.
 'use strict';
 
+const NOTES = require('./tools-notes.cjs'); // ADR 0047: the listing of a worker whose run has the notes lever on
 const S = (properties, required) => {
   const s = { type: 'object', properties };
   if (required) s.required = required;
@@ -58,6 +59,8 @@ const ROUTES = {
   lease_renew: { role: 'worker', via: 'core', method: 'lease.renew' },
   lease_release: { role: 'worker', via: 'core', method: 'lease.release' },
   checkpoint_write: { role: 'worker', via: 'core', method: 'continuity.checkpoint' },
+  // ADR 0047 decision 4: listed only for a worker whose run has the notes lever on (tools-notes.cjs); the core refuses E_LEVER_OFF otherwise.
+  memory_note_resolve: { role: 'worker', via: 'core', method: 'memory.noteResolve' },
   // build step 6d, ADR 0020 decisions 1 and 5: the worker adapter's own prompt tool (listed only for
   // an adapter launched with --permit, never through toolsFor, and hidden from the model — measured in
   // ADR 0020's evidence table) and the orchestrator's window and hand on the same channel.
@@ -305,10 +308,10 @@ const isKnowledgeAgent = (role, workerId) => role === 'worker' && typeof workerI
 
 // `knowledge` (orchestrator only) adds knowledge_ask; omitted or false, the listing is byte-for-byte what it was.
 // `workerId` (the adapter's argv) narrows the knowledge agent's listing to its read tools.
-function toolsFor(role, { knowledge = false, workerId = null } = {}) {
+function toolsFor(role, { knowledge = false, workerId = null, notes = false } = {}) {
   if (role === 'orchestrator') return knowledge ? BOTH.concat(ORCHESTRATOR, [KNOWLEDGE_TOOL]) : BOTH.concat(ORCHESTRATOR);
   if (isKnowledgeAgent(role, workerId)) return BOTH.filter((t) => KNOWLEDGE_READ_TOOLS.includes(t.name));
-  if (role === 'worker') return BOTH.concat(WORKER);
+  if (role === 'worker') return notes ? NOTES.notesWorkerListing(BOTH.concat(WORKER)) : BOTH.concat(WORKER);
   throw Object.assign(new Error(`unknown role ${role}`), { code: 'E_ROLE' });
 }
 
@@ -328,8 +331,9 @@ const BUDGET = { orchestrator: 10240, worker: 5120, permit: 320 }; // ADR 0010 a
 const listingBytes = (role, opts) => Buffer.byteLength(JSON.stringify(toolsFor(role, opts)), 'utf8');
 
 const BY_NAME = new Map();
-for (const t of BOTH.concat(ORCHESTRATOR, WORKER, [KNOWLEDGE_TOOL])) BY_NAME.set(t.name, t);
-const schemaOf = (name) => (BY_NAME.get(name) || {}).inputSchema;
+for (const t of BOTH.concat(ORCHESTRATOR, WORKER, [KNOWLEDGE_TOOL, NOTES.NOTE_RESOLVE])) BY_NAME.set(t.name, t);
+// `notes` (a notes run's worker adapter): lease_release is the schema that requires `notes`.
+const schemaOf = (name, notes = false) => (notes && name === 'lease_release' ? NOTES.LEASE_RELEASE : BY_NAME.get(name) || {}).inputSchema;
 
 // Optional arguments where an explicit null is refused, not read as absent: the core refuses it too
 // (ADR 0010 amendment 3), and the boundary must say the same thing before the call reaches it.
@@ -352,8 +356,8 @@ const MAX_IDS = 50;
 // property are checked here rather than left for the core to discover. Properties the schema does not
 // name are passed through untouched: the core owns what it accepts, and this is not a JSON Schema
 // implementation. Throws E_ARGS naming the field.
-function validateArgs(name, args) {
-  const schema = schemaOf(name);
+function validateArgs(name, args, { notes = false } = {}) {
+  const schema = schemaOf(name, notes);
   if (!schema) return args;
   const a = args || {};
   const bad = (message, detail) => { throw Object.assign(new Error(message), { code: 'E_ARGS', detail }); };

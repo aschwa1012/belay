@@ -243,7 +243,7 @@ async function callTool(name, args) {
   if (!allows(opts.role, name, opts.workerId)) {
     throw fail('E_ROLE', `${name} is not available in ${opts.role} role; it belongs to ${roleOf(name)}`, { tool: name, role: opts.role });
   }
-  validateArgs(name, args);
+  validateArgs(name, args, { notes: opts.notes });
   if (route.via === 'core') {
     const row = await callCore(route.method, args);
     // The one place the adapter adds to a row, and it is additive: every field of the core's
@@ -333,7 +333,7 @@ async function handle(msg) {
   if (typeof method === 'string' && method.startsWith('notifications/')) return undefined;
   if (method === 'ping') return send({ jsonrpc: '2.0', id, result: {} });
   if (method === 'tools/list') {
-    const list = toolsFor(opts.role, { knowledge: await knowledgeListed(), workerId: opts.workerId }).concat(opts.permit ? [PERMIT_TOOL] : []);
+    const list = toolsFor(opts.role, { knowledge: await knowledgeListed(), workerId: opts.workerId, notes: opts.notes }).concat(opts.permit ? [PERMIT_TOOL] : []);
     return send({ jsonrpc: '2.0', id, result: { tools: list } });
   }
   if (method === 'tools/call') {
