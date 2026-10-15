@@ -20,7 +20,9 @@ const question = (lv) => read(lv && lv.notes_lesson_question ? 'notes-question-l
 const fill = (template, lv) => template.split('{{question}}').join(question(lv));
 
 // Appended to a worker's opening message; '' with the lever off.
-const contract = (lv) => (lv && lv.notes ? fill(read('notes-contract.md'), lv) : '');
+// With the notes sink on, one more line asks for `memory_ids` (the core requires it then).
+const withIds = (lv) => (lv.notes_sink && lv.notes_sink !== 'off' ? '\n' + read('notes-memory-ids.md') : '');
+const contract = (lv) => (lv && lv.notes ? fill(read('notes-contract.md'), lv) + withIds(lv) : '');
 // The reflection turn's message; '' unless both levers are on.
 const reflection = (lv) => (lv && lv.notes && lv.notes_reflection ? fill(read('notes-reflection.md'), lv) : '');
 

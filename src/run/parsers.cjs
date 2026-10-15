@@ -13,7 +13,7 @@
 //                                                         uuid; `cancelled` build step 6f, ADR 0023
 //                                                         decision 8)
 //   tool_use      { tool, args }
-//   tool_result   { tool, bytes }
+//   tool_result   { tool, bytes, shown? }          shown: { route, ids } of a memory_search or memory_retrieve answer (shown-ids.cjs)
 //   assistant_text{ text, usage, context_tokens }   per-call usage, ADR 0007 §3
 //   turn_end      { usage, cost_usd, num_turns, is_error, subtype, externally_triggered, answers_write,
 //                   correlation, open_turns_after }  the last four are Claude Code only (`subtype`
@@ -54,19 +54,8 @@ const { StringDecoder } = require('node:string_decoder');
 const SUBSTRATES = ['claude-code', 'codex'];
 
 const CF = require('./capture-fields.cjs');
-
-function textOf(content) {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content.map((c) => (c && typeof c.text === 'string' ? c.text : JSON.stringify(c))).join('');
-  }
-  if (content == null) return '';
-  return JSON.stringify(content);
-}
-
-function byteLength(v) {
-  return Buffer.byteLength(typeof v === 'string' ? v : JSON.stringify(v == null ? null : v), 'utf8');
-}
+const SH = require('./shown-ids.cjs');
+const { textOf, byteLength } = require('./parser-text.cjs');
 
 // Per-call context size from an assistant usage block. `result.usage` sums the assistant calls
 // inside one turn, so it cannot give the size of the last call, which is what the compaction budget
@@ -315,7 +304,7 @@ class Parser {
       const nResults = j.message.content.filter((x) => x && x.type === 'tool_result').length;
       for (const b of j.message.content) {
         if (b.type !== 'tool_result') continue;
-        const f = { tool: this.toolNames.get(b.tool_use_id) || null, bytes: byteLength(textOf(b.content)), is_error: !!b.is_error };
+        const f = SH.attach({ tool: this.toolNames.get(b.tool_use_id) || null, bytes: byteLength(textOf(b.content)), is_error: !!b.is_error }, b.content);
         if (this.capture) Object.assign(f, this.claudeCapture(b, nResults === 1 ? j.tool_use_result : null, f));
         out.push(this.ev('tool_result', f, rawType));
       }
@@ -475,7 +464,7 @@ class Parser {
     if (it && j.type === 'item.completed') {
       if (it.type === 'mcp_tool_call' || it.type === 'command_execution' || it.tool) {
         const payload = it.result !== undefined ? it.result : it.output !== undefined ? it.output : it;
-        const f = { tool: it.tool || it.name || it.type, bytes: byteLength(payload), is_error: !!it.error };
+        const f = SH.attach({ tool: it.tool || it.name || it.type, bytes: byteLength(payload), is_error: !!it.error || (it.type === 'mcp_tool_call' && (it.status === 'failed' || !!(it.result && (it.result.is_error || it.result.isError)))) }, payload);
         if (this.capture) Object.assign(f, this.codexCapture(it, payload));
         // A failed command is an error whatever the item's error field says: nonzero exit or status failed.
         if (this.capture && it.type === 'command_execution') f.is_error = f.is_error || (Number.isInteger(it.exit_code) && it.exit_code !== 0) || it.status === 'failed';
