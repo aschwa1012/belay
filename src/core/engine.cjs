@@ -71,6 +71,8 @@ const METHODS = {
   'memory.reviewApply': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-review.cjs', 'reviewApply') },
   'memory.noteRestore': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-archive.cjs', 'noteRestore') },
   'memory.archivePurge': { roles: ['operator'], kind: 'write', fn: lazy('./methods-memory-archive.cjs', 'archivePurge') },
+  'memory.scrubScope': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-stages.cjs', 'scrubScope') },
+  'memory.reviewQueue': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-stages.cjs', 'reviewQueue') },
   'memory.proposals': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-archive.cjs', 'proposals') },
   'memory.archivedDuplicates': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-archive.cjs', 'archivedDuplicates') },
   // ADR 0047 decision 1: run summaries found on demand; with the notes lever on they live in summary/<project>.
