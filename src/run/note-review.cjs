@@ -22,7 +22,7 @@ const JOB_WALL_MS = 180000;
 const DIFF_MAX = 200 * 1024;
 const BUILTINS = ['Read', 'Glob', 'Grep'];
 const ENDED = new Set(['released', 'done']);
-const isJob = (id) => String(id).startsWith(JOB_PREFIX);
+const isJob = (id) => require('./job-prefixes.cjs').isJobId(String(id)); // any of belay's read-only jobs: no preface, no contract
 const jobIdFor = (taskId) => `${JOB_PREFIX}${taskId}`;
 const taskOfJob = (workerId) => (String(workerId).startsWith(JOB_PREFIX) ? String(workerId).slice(JOB_PREFIX.length) : null);
 const codeOf = (e) => (e && typeof e.code === 'string' && e.code.startsWith('E_') ? e.code : 'E_INTERNAL');

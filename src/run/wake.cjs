@@ -109,7 +109,7 @@ function diffWorkers({ prev, rows, runId, nowMs, graceMs, orphanGraceMs = graceM
 // No worker output, ever: the id, the turn and (for a death) the exit facts are the whole of it.
 // Both shapes stay comfortably under 400 bytes for any id this codebase generates.
 function wakeText(event) {
-  if (event.event === 'note_refuted') return event.text; // note-wake.cjs: belay's own record, built from the core's facts
+  if (event.event === 'note_refuted' || event.event === 'scrub_alarm') return event.text; // note-wake.cjs: belay's own record, built from the core's facts
   if (event.event === 'death') {
     return `belay: worker ${event.worker_id} died during turn ${event.turn} ` +
       `(exit code ${event.exit_code}, signal ${event.exit_signal}, established by ${event.death_established_by}). ` +
