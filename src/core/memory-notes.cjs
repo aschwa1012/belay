@@ -11,7 +11,7 @@ const { validId } = require('./memory-rows.cjs');
 
 const KINDS = Object.freeze(['lesson', 'flag', 'recurring', 'gotcha']);
 const BASES = Object.freeze(['observed', 'inferred', 'relayed']);
-const RESOLVES = Object.freeze(['new', 'repeats', 'supersedes']);
+const RESOLVES = Object.freeze(['new', 'repeats', 'supersedes', 'refines']);
 const TITLE_MAX = 160;
 const NOTES_MAX = 10; // notes in one hand-back
 const EVIDENCE_MAX = 8, WHERE_MAX = 300, SAW_MAX = 500;
@@ -117,7 +117,9 @@ function checkMemoryIds(list) {
   return [...new Set(list)];
 }
 
-// memory.noteResolve: [{ id, resolve: 'new' | 'repeats' | 'supersedes', of?, evidence? }].
+// memory.noteResolve: [{ id, resolve: 'new' | 'repeats' | 'supersedes' | 'refines', of?, evidence? }]. `supersedes` needs evidence
+// (it says the old note is out of date); `refines` (the same lesson plus a caveat) takes it as optional, because the new note
+// carries its own evidence and the old lesson is not called wrong.
 function checkResolutions(list) {
   if (!Array.isArray(list) || !list.length || list.length > RESOLUTIONS_MAX) throw err('E_ARGS', `resolutions must be an array of 1 to ${RESOLUTIONS_MAX} entries`, { field: 'resolutions' });
   const seen = new Set();
@@ -134,10 +136,14 @@ function checkResolutions(list) {
       // A changed title is how a note that clashes with a row of the same text is made distinct.
       return r.title === undefined ? { id: r.id, resolve: 'new' } : { id: r.id, resolve: 'new', title: checkTitle(r.title, `${at}.`) };
     }
-    if (!validId(r.of) || r.of === r.id) throw err('E_ARGS', `${at}.of must be the id of the live note this ${r.resolve === 'repeats' ? 'repeats' : 'supersedes'}`, { field: 'resolutions', index: i });
+    if (!validId(r.of) || r.of === r.id) throw err('E_ARGS', `${at}.of must be the id of the live note this ${r.resolve}`, { field: 'resolutions', index: i });
     if (r.resolve === 'repeats') {
       if (r.evidence !== undefined) throw err('E_ARGS', `${at}: resolve repeats takes no evidence`, { field: 'resolutions', index: i });
       return { id: r.id, resolve: 'repeats', of: r.of };
+    }
+    if (r.resolve === 'refines') {
+      if (r.evidence === undefined) return { id: r.id, resolve: 'refines', of: r.of };
+      try { return { id: r.id, resolve: 'refines', of: r.of, evidence: checkEvidence(r.evidence, `${at}: `, false) }; } catch (e) { throw err('E_ARGS', e.message, { field: 'resolutions', index: i }); }
     }
     let evidence;
     try { evidence = checkEvidence(r.evidence, `${at}: `, true); } catch (e) {

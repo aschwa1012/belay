@@ -238,8 +238,8 @@ function liveTarget(E, caller, pending, project, x, i) {
   if ((r.status || 'unverified') === 'refuted') throw err('E_ARGS', `${at}: note ${x.of} is refuted`, { id: x.of });
   const gone = E.store.p('SELECT id FROM memory_entries WHERE supersedes = ? AND namespace = ?').get(x.of, r.namespace);
   if (gone) throw err('E_ARGS', `${at}: note ${x.of} was superseded by ${gone.id}; resolve against ${gone.id}`, { id: x.of, superseded_by: gone.id });
-  if (x.resolve === 'supersedes' && caller.role === 'worker' && r.status === 'verified') {
-    throw err('E_ROLE', `${at}: note ${x.of} is verified, and a worker may not supersede a verified note (a repeat of it is fine)`, { id: x.of, role: caller.role });
+  if ((x.resolve === 'supersedes' || x.resolve === 'refines') && caller.role === 'worker' && r.status === 'verified') {
+    throw err('E_ROLE', `${at}: note ${x.of} is verified, and a worker may not ${x.resolve === 'refines' ? 'refine' : 'supersede'} a verified note (a repeat of it is fine)`, { id: x.of, role: caller.role });
   }
   return r;
 }
@@ -288,6 +288,17 @@ async function resolve(E, caller, args) {
         return { id: r.id, resolved: 'new', state: 'live', namespace: projectNs(project) };
       }
       const target = liveTarget(E, caller, r, project, x, i);
+      if (x.resolve === 'refines') {
+        // The same lesson plus a caveat: the new note goes live, the old one is archived as superseded (restorable), and the old
+        // note's sightings and delivery history move to the new one, as a duplicate's do, so the lesson is counted once.
+        release(E, r, project);
+        E.store.patchBody(r.id, b => { b.state = 'live'; b.resolved = { as: 'refines', of: target.id, ...(x.evidence ? { evidence: x.evidence } : {}), at: t, by }; delete b.matches; return b; });
+        const A = require('./memory-archive.cjs');
+        const done = A.archiveNote(E, project, require('./memory-facts.cjs').loadNote(E, target.id),
+          { kind: 'superseded', relation: 'refines', refines: true, via: 'refines', of: r.id, ground: 'replaced_by_newer', reason: 'resolved as refines', run_id: caller.run_id, direct: true },
+          require('./memory-facts.cjs').loadNote(E, r.id));
+        return { id: r.id, resolved: 'refines', of: target.id, state: 'live', namespace: projectNs(project), old_archived_as: done.to, history_moved: done.history_moved };
+      }
       if (x.resolve === 'supersedes') {
         release(E, r, project);
         E.store.setSupersedes(r.id, target.id);

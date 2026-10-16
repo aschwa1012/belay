@@ -66,7 +66,7 @@ function transferHistory(E, B, A, meta) {
     b.seen_total = (b.seen_total || 0) + total;
     b.delivery_history = [...(b.delivery_history || []), ...deliveries].slice(-HISTORY_KEEP);
     b.merged_from = [...(b.merged_from || []), {
-      id: B.id, at, seen_total: total, seen_in: moved.length + (sighting ? 1 : 0), deliveries: deliveries.length, own, run_id: meta.run_id || null, review: meta.receipt || null,
+      id: B.id, at, seen_total: total, seen_in: moved.length + (sighting ? 1 : 0), deliveries: deliveries.length, own, run_id: meta.run_id || null, review: meta.receipt || null, ...(meta.via ? { via: meta.via } : {}),
     }].slice(-MERGED_KEEP);
     return fitBody(b);
   });
@@ -103,7 +103,9 @@ function untransfer(E, B) {
 function archiveNote(E, project, note, meta, kept) {
   const to = `archive/${project}`;
   const from = note.namespace;
-  const transfer = meta.history_moved || (meta.kind === 'duplicate' && kept && !meta.no_transfer ? transferHistory(E, note, kept, meta) : null);
+  // A duplicate hands its history to the kept note; so does a note replaced by one that refines it (the same lesson, so its
+  // whole history belongs on the surviving note). A superseded note (a different lesson) keeps its history.
+  const transfer = meta.history_moved || ((meta.kind === 'duplicate' || meta.refines) && kept && !meta.no_transfer ? transferHistory(E, note, kept, meta) : null);
   bindNamespace(E, to, note);
   E.store.moveRow(note.id, from, to);
   const at = Date.now();
@@ -111,7 +113,7 @@ function archiveNote(E, project, note, meta, kept) {
     b.state = 'archived';
     b.archived = {
       at, from, kind: meta.kind, of: meta.of || null, ground: meta.ground || null, reason: meta.reason, cites: meta.cites || [], run_id: meta.run_id || null,
-      head_sha: meta.head_sha || null, held_row: meta.held_row || null, review: meta.receipt || null, direct: !!meta.direct, ...(transfer ? { history_moved: transfer } : {}),
+      head_sha: meta.head_sha || null, held_row: meta.held_row || null, review: meta.receipt || null, direct: !!meta.direct, ...(meta.relation ? { relation: meta.relation } : {}), ...(transfer ? { history_moved: transfer } : {}),
     };
     delete b.held;
     return fitBody(b);

@@ -39,11 +39,11 @@ const LEASE_RELEASE = {
 
 const NOTE_RESOLVE = {
   name: 'memory_note_resolve',
-  description: 'Settle pending notes: new, repeats or supersedes an id (with evidence). Returns what each became.',
+  description: 'Settle pending notes: new, repeats, refines (same lesson plus a caveat) or supersedes an id (supersedes needs evidence). Returns what each became.',
   inputSchema: S({
     resolutions: {
       type: 'array',
-      items: S({ id: str(), resolve: { type: 'string', enum: ['new', 'repeats', 'supersedes'] }, of: str(), title: str(), evidence }, ['id', 'resolve']),
+      items: S({ id: str(), resolve: { type: 'string', enum: ['new', 'repeats', 'supersedes', 'refines'] }, of: str(), title: str(), evidence }, ['id', 'resolve']),
     },
   }, ['resolutions']),
 };

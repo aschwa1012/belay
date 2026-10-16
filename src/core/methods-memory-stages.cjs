@@ -3,10 +3,12 @@
 // Both are SELECTs: they answer from a copy of the store and write nothing. The stages are the run manager's; the lists they work
 // from are the core's, so the scope of a scrub is never something a model or a stage decides.
 //
-//   memory.scrubScope   the scrubber's scope for the caller's run, and ONLY these three kinds of item:
-//                         1. notes reported wrong in this run (a live note carrying a report whose run is this one);
+//   memory.scrubScope   the scrubber's scope for the caller's run, and ONLY these kinds of item (how notes RELATE; whether a note is
+//                       wrong is a reviewer's call, so a bare "wrong" report is not here):
+//                         1. pairs a worker named this run: a live note carrying a report of this run whose `replaced_by` is another live note;
 //                         2. pending notes this run left unresolved, plus any `scrub_owed` item (work an earlier scrub did not do);
-//                         3. notes nominated for promotion (memory-nominate.cjs: nominated and not yet drafted).
+//                         3. live notes with `memory embed` matches (`body.matches`) not yet judged (no `new` verdict on the pair);
+//                         4. notes nominated for promotion (memory-nominate.cjs: nominated and not yet drafted).
 //                       Each item carries the evidence the scrubber is shown: the note, its reports, its stored matches, the notes
 //                       they name, and the reporting workers' stream files. Owed items come first.
 //   memory.reviewQueue  the project's held queue for the Opus reviewer: each open hold with both notes, the age in runs and whether
@@ -106,7 +108,7 @@ function item(E, note, why) {
   return { id: note.id, state: note.namespace.startsWith('pending/') ? 'pending' : 'live', why: [...why], note: noteFacts(note), reports, matches, related, streams: streamsOf(E, workers) };
 }
 
-const ORDER = { owed: 0, reported_wrong: 1, pending: 2, nominated: 3 };
+const ORDER = { owed: 0, replaced_by: 1, pending: 2, matched: 3, nominated: 4 };
 
 async function scrubScope(E, caller, args) {
   C.allowKeys(args || {}, [], 'memory.scrubScope');
@@ -119,25 +121,42 @@ async function scrubScope(E, caller, args) {
     if (note.namespace !== N.projectNs(project) && note.namespace !== N.pendingNs(project)) return;
     const have = byId.get(note.id);
     if (have) { if (!have.why.includes(why)) have.why.push(why); Object.assign(have, extra || {}); return; }
+    if (why === 'owed' && note.namespace === N.projectNs(project) && note.b.held) return; // a held note waits on a reviewer
     byId.set(note.id, { ...item(E, note, [why]), ...(extra || {}) });
   };
   const history = scrubHistory(E, runId);
   for (const [id, o] of history.owed) add(load(E, id), 'owed', { owed: o });
-  // A reported note a scrub of this run handled is offered again when a report from this run arrived after that scrub.
+  // A pair a scrub of this run handled is offered again when a report naming a partner arrived after that scrub.
   const addNew = (id, why, extra) => {
     const at = history.handled.get(id);
     if (at !== undefined) {
       const note = load(E, id);
-      const newest = Math.max(0, ...((note && note.b.reported_wrong) || []).filter((w) => w && w.run_id === runId).map((w) => Number(w.at) || 0));
-      if (why !== 'reported_wrong' || newest <= at) return;
+      const newest = Math.max(0, ...((note && note.b.reported_wrong) || []).filter((w) => w && w.run_id === runId && w.replaced_by).map((w) => Number(w.at) || 0));
+      if (why !== 'replaced_by' || newest <= at) return;
     }
     add(load(E, id), why, extra);
   };
+  const liveNote = (id) => { const n = load(E, id); return n && n.type === 'note' && n.namespace === N.projectNs(project) && (n.status || 'unverified') !== 'refuted' ? n : null; };
   const reported = E.store.p(`SELECT id FROM memory_entries WHERE type = 'note' AND namespace = ? AND EXISTS
-    (SELECT 1 FROM json_each(memory_entries.body, '$.reported_wrong') WHERE json_extract(value, '$.run_id') = ?) ORDER BY created_at, id`).all(N.projectNs(project), runId);
-  for (const r of reported) addNew(r.id, 'reported_wrong');
+    (SELECT 1 FROM json_each(memory_entries.body, '$.reported_wrong') WHERE json_extract(value, '$.run_id') = ? AND json_extract(value, '$.replaced_by') IS NOT NULL) ORDER BY created_at, id`).all(N.projectNs(project), runId);
+  for (const r of reported) {
+    const n = load(E, r.id);
+    const named = (n.b.reported_wrong || []).filter((w) => w && w.run_id === runId && w.replaced_by && w.replaced_by !== n.id).map((w) => w.replaced_by);
+    if (!n.b.held && named.some((id) => liveNote(id))) addNew(r.id, 'replaced_by');
+  }
   const pending = E.store.p("SELECT id FROM memory_entries WHERE type = 'note' AND namespace = ? AND run_id = ? ORDER BY created_at, id").all(N.pendingNs(project), runId);
   for (const r of pending) addNew(r.id, 'pending');
+  // Live notes whose stored embed matches have not been judged: a partner is a live note and neither side recorded a `new` verdict on the pair.
+  const threshold = (N.notesLevers(E, caller) || {}).notes_match_threshold;
+  const withMatches = E.store.p(`SELECT id FROM memory_entries WHERE type = 'note' AND namespace = ? AND json_array_length(COALESCE(json_extract(body, '$.matches'), '[]')) > 0 ORDER BY created_at, id`).all(N.projectNs(project));
+  for (const r of withMatches) {
+    const n = load(E, r.id);
+    if (n.b.held) continue;
+    const judged = new Set((n.b.pair_judged || []).map((j) => j && j.of));
+    const open = (n.b.matches || []).some((m) => m && m.id !== n.id && !(typeof threshold === 'number' && typeof m.similarity === 'number' && m.similarity < threshold)
+      && !judged.has(m.id) && liveNote(m.id) && !(liveNote(m.id).b.pair_judged || []).some((j) => j && j.of === n.id));
+    if (open) addNew(n.id, 'matched');
+  }
   for (const nom of nominationsForScope(E, project) || []) {
     const { id: nid, ...facts } = nom;
     // A nominated note the scrubber declined to draft in two scrubs stops being offered, in any run, until it has a new COUNTED independent
@@ -147,7 +166,7 @@ async function scrubScope(E, caller, args) {
     addNew(nid, 'nominated', { nomination: facts });
   }
   const items = [...byId.values()].sort((a, b) => Math.min(...a.why.map(w => ORDER[w])) - Math.min(...b.why.map(w => ORDER[w])));
-  const counts = { items: items.length, owed: 0, reported_wrong: 0, pending: 0, nominated: 0 };
+  const counts = { items: items.length, owed: 0, replaced_by: 0, pending: 0, matched: 0, nominated: 0 };
   for (const it of items) for (const w of it.why) counts[w] += 1;
   return { project, run_id: runId, items, counts };
 }

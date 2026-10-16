@@ -9,7 +9,8 @@ const { setup, PROJECT } = require('./lifecycle-env.cjs');
 const { callerFor } = require('./helpers.cjs');
 
 let T;
-before(async () => { T = await setup(); });
+let P;
+before(async () => { T = await setup(); P = T.note('partner for named reports'); });
 after(() => T.close());
 
 const RUN = 'lc-apply';
@@ -18,20 +19,20 @@ const queue = (kind = 'apply') => T.call(T.who.operator(kind), 'memory.reviewQue
 const mine = (over = {}) => T.report('worker:w2', null, over);
 const event = (kind, ids, extra = {}) => T.call(T.who.harness('apply'), 'memory.recordEvent', { kind, run_id: RUN, key: `run:${RUN}`, row_ids: ids, ...extra });
 
-test('scrubScope holds notes reported wrong IN THIS RUN, pending notes of this run, and nothing else', async () => {
-  const hit = T.note('reported this run', { reported_wrong: [{ ...T.report(), run_id: RUN, worker_id: 'w2' }] });
+test('scrubScope holds pairs a report named IN THIS RUN, pending notes of this run, and nothing else', async () => {
+  const hit = T.note('reported this run', { reported_wrong: [{ ...T.report('worker:w2', P), run_id: RUN, worker_id: 'w2' }] });
   const old = T.note('reported in an old run', { reported_wrong: [T.report()] });
   const plain = T.note('delivered, never reported');
   const pend = T.note('pending from this run', { ns: `pending/${PROJECT}`, state: 'pending', run_id: RUN });
   const pendOld = T.note('pending from another run', { ns: `pending/${PROJECT}`, state: 'pending', run_id: 'old-run' });
-  const archived = T.note('archived but reported', { ns: `archive/${PROJECT}`, reported_wrong: [{ ...T.report(), run_id: RUN }] });
-  const other = T.note('another project', { ns: 'project/elsewhere', reported_wrong: [{ ...T.report(), run_id: RUN }] });
+  const archived = T.note('archived but reported', { ns: `archive/${PROJECT}`, reported_wrong: [{ ...T.report('worker:w2', P), run_id: RUN }] });
+  const other = T.note('another project', { ns: 'project/elsewhere', reported_wrong: [{ ...T.report('worker:w2', P), run_id: RUN }] });
   const s = await scope();
   const ids = s.items.map((i) => i.id);
   assert.ok(ids.includes(hit) && ids.includes(pend));
   for (const n of [old, plain, pendOld, archived, other]) assert.ok(!ids.includes(n), `${n} is out of scope`);
   const it = s.items.find((i) => i.id === hit);
-  assert.deepStrictEqual([it.state, it.why], ['live', ['reported_wrong']]);
+  assert.deepStrictEqual([it.state, it.why], ['live', ['replaced_by']]);
   assert.strictEqual(it.reports[0].why, 'it is wrong');
   assert.strictEqual(s.items.find((i) => i.id === pend).state, 'pending');
   assert.deepStrictEqual([s.project, s.run_id], [PROJECT, RUN]);
@@ -49,7 +50,7 @@ test('scrubScope names the reporting workers\' streams that exist, the notes a r
   assert.ok(a.streams[0].path.endsWith('/workers/w2/stream.jsonl') && !a.streams[0].path.includes('\\'));
   assert.deepStrictEqual(a.related.map((r) => r.id), [better]);
   assert.deepStrictEqual(b.matches, [{ id: better, similarity: 0.9 }]);
-  const ghost = T.note('report by a worker with no stream', { reported_wrong: [{ ...T.report(), run_id: RUN, worker_id: 'w-nowhere' }] });
+  const ghost = T.note('report by a worker with no stream', { reported_wrong: [{ ...T.report('worker:w2', P), run_id: RUN, worker_id: 'w-nowhere' }] });
   assert.deepStrictEqual((await scope()).items.find((i) => i.id === ghost).streams, []);
 });
 
@@ -70,19 +71,19 @@ test('an owed item comes first, stays owed until a scrub handled it, and a faile
 });
 
 test('an item a scrub of this run already handled is not offered again; one handled for another run still is', async () => {
-  const mineN = T.note('handled this run', { reported_wrong: [{ ...T.report(), run_id: RUN }] });
+  const mineN = T.note('handled this run', { reported_wrong: [{ ...T.report('worker:w2', P), run_id: RUN }] });
   assert.ok((await scope()).items.some((i) => i.id === mineN));
   await event('scrub_job', [mineN], { ok: true, message: 'handled' });
   assert.ok(!(await scope()).items.some((i) => i.id === mineN), 'the same run is not scrubbed twice for it');
   await event('scrub_owed', [mineN], { ok: false, code: 'E_TIMEOUT', message: 'a later scrub could not' });
   assert.ok((await scope()).items.some((i) => i.id === mineN), 'owed again');
-  const other = T.note('handled by another run', { reported_wrong: [{ ...T.report(), run_id: RUN }] });
+  const other = T.note('handled by another run', { reported_wrong: [{ ...T.report('worker:w2', P), run_id: RUN }] });
   await T.call(T.who.harness('propose'), 'memory.recordEvent', { kind: 'scrub_job', run_id: 'lc-propose', key: 'other', row_ids: [other], ok: true, message: 'handled elsewhere' });
   assert.ok((await scope()).items.some((i) => i.id === other), 'a different run\'s scrub does not stand in for this run\'s');
 });
 
 test('a report that arrives after a scrub of this run handled the note is offered again', async () => {
-  const n = T.note('reported, scrubbed, then reported again', { reported_wrong: [{ ...T.report(), run_id: RUN, at: Date.now() - 10000 }] });
+  const n = T.note('reported, scrubbed, then reported again', { reported_wrong: [{ ...T.report('worker:w2', P), run_id: RUN, at: Date.now() - 10000 }] });
   await event('scrub_job', [n], { ok: true, message: 'handled' });
   assert.ok(!(await scope()).items.some((i) => i.id === n));
   T.store.db.prepare("UPDATE memory_entries SET body = json_set(body, '$.reported_wrong[0].at', ?) WHERE id = ?").run(Date.now() + 5000, n);
@@ -93,11 +94,11 @@ test('an owed item that is no longer live or pending is not in scope, and an ite
   const gone = T.note('owed then archived', { ns: `archive/${PROJECT}` });
   await event('scrub_owed', [gone], { ok: false, code: 'E_TIMEOUT', message: 'x' });
   assert.ok(!(await scope()).items.some((i) => i.id === gone));
-  const both = T.note('owed and reported', { reported_wrong: [{ ...T.report(), run_id: RUN }] });
+  const both = T.note('owed and reported', { reported_wrong: [{ ...T.report('worker:w2', P), run_id: RUN }] });
   await event('scrub_owed', [both], { ok: false, code: 'E_TIMEOUT', message: 'x' });
   const hits = (await scope()).items.filter((i) => i.id === both);
   assert.strictEqual(hits.length, 1);
-  assert.deepStrictEqual(hits[0].why.sort(), ['owed', 'reported_wrong']);
+  assert.deepStrictEqual(hits[0].why.sort(), ['owed', 'replaced_by']);
 });
 
 test('scrubScope and reviewQueue are reads: a worker is refused, a run with no project has none, and nothing is written', async () => {

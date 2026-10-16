@@ -85,7 +85,7 @@ const review = (...a) => runStage('review', ...a);
 
 async function resolve(core, parsed) {
   const [id, how, of] = parsed.positional;
-  const r = { id, resolve: how, ...(of ? { of } : {}), ...(how === 'supersedes' ? { evidence: [{ where: 'operator', saw: parsed.opts.evidence }] } : {}) };
+  const r = { id, resolve: how, ...(of ? { of } : {}), ...((how === 'supersedes' || (how === 'refines' && parsed.opts.evidence)) ? { evidence: [{ where: 'operator', saw: parsed.opts.evidence }] } : {}) };
   const res = await core.memory.noteResolve({ resolutions: [r] });
   const x = res.resolved[0];
   const text = x.resolved === 'repeats'
