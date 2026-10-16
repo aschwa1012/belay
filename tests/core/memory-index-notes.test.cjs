@@ -130,7 +130,7 @@ test('relevance orders the index; tiers 1 and 2 break ties; a spec and a query b
   const t2 = await task('ok', ['src/b.cjs']);
   const r2 = await index('on', { namespaces: [tied], task_id: t2 });
   assert.deepStrictEqual(r2.row_ids, [path2, sub2, plain], 'path, then term, then the rest');
-  assert.strictEqual(r2.candidates.source, 'newest');
+  assert.strictEqual(r2.candidates.source, 'path', 'the path-matched note is a candidate on its own');
 });
 
 test('sighting counts never affect the ranking', async () => {

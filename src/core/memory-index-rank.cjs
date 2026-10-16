@@ -1,16 +1,24 @@
 'use strict';
 // memory-index-rank.cjs — which notes the first-message index considers, and how relevant each is to the task.
 //
-// The candidates are the UNION of a vector top-200 over the whole live scope and a keyword top-200 over the same scope,
-// not the newest 1,000: the newest-N cap lost the target once a store held more than N notes (offline/scale/REPORT.md). Their
-// order is the hybrid relevance score, a reciprocal-rank fusion of the FULL vector list(s) and the FULL keyword list with the run's
-// `memory.alpha` (the fusion memory.search uses), so a note's score does not depend on how many candidates were cut.
-// The union is padded with the newest 200 notes (they rank after every note that matched, by the tiers). With no relevance signal (no task text and no query vector, or neither matched a note) the candidates are the newest 1,000
-// as before, and the source says so.
+// The candidates are the UNION of
+//   - a vector top-200 over the whole live scope (one list per query vector),
+//   - a keyword top-200 over the same scope,
+//   - a path top-200: the notes whose `applies_to` paths match the task's `files_owned`, ranked by path idf over the whole store
+//     (not over the candidates), and
+//   - the newest 200 notes (the pad: it keeps a small store whole, and a note no ranking matched can still be listed),
+// not the newest 1,000: the newest-N cap lost the target once a store held more than N notes (offline/scale/REPORT.md). The order is
+// the hybrid relevance score, a reciprocal-rank fusion of the FULL vector list(s) and the FULL keyword list with the run's
+// `memory.alpha` (the fusion memory.search uses), so a note's score does not depend on how many candidates were cut. Path match is
+// a tiebreaker after relevance (path_mode 'tiebreak', the default) or a third fused list (path_mode 'rrf': it adds (1 - alpha) /
+// (k + path rank), the keyword list's weight). With no relevance signal and no path match the candidates are the newest 1,000, as before.
 //
-// The scope is the live notes of the namespaces the caller may see: memory-note-gate.cjs decides that, once, for the
-// index, memory.search and memory.list. A read: every statement is a SELECT, the embedding library is never loaded (the
+// The scope is the live notes of the namespaces the caller may see: memory-note-gate.cjs decides that, once, for the index,
+// memory.search, memory.list and memory.timeline. A read: every statement is a SELECT, the embedding library is never loaded (the
 // vectors come from the store's own cache, the query vector from the caller).
+//
+// The vector pass is ONE sweep over the namespace's rows for all query vectors (each row is read once and dotted with every vector),
+// and it has a time bound: past it the vector lists are dropped, the receipt says so, and the keyword, path and newest candidates stand.
 
 const relevance = require('./memory-relevance.cjs');
 const { rrfMany, HYBRID_ALPHA, HYBRID_K } = require('./fusion.cjs');
@@ -20,14 +28,16 @@ const gate = require('./memory-note-gate.cjs');
 
 const TOP = 200; // candidates taken from each ranking
 const NEWEST = 1000; // the fallback when nothing ranks
-const PAD = 200; // the newest notes added to the union, so a small store is listed whole and path and term notes that match no text still compete
+const PAD = 200; // the newest notes added to the union
+const VECTOR_BOUND_MS = 1500; // the vector sweep stops past this and the receipt says why
+const PATH_MODES = ['tiebreak', 'rrf'];
 
 const marks = (list) => list.map(() => '?').join(', ');
 const desc = (m) => [...m.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).map(([id]) => id);
 
 // The ids of the live notes in `namespaces` the caller may see, newest first.
 function liveIds(E, caller, namespaces) {
-  const g = gate.sql(E, caller);
+  const g = gate.sql(E, caller, { namespaces, body: true });
   const sql = `SELECT e.id FROM memory_entries e WHERE e.namespace IN (${marks(namespaces)}) AND e.type = 'note'
       AND COALESCE(e.status, 'unverified') <> 'refuted' AND (e.ttl_at IS NULL OR e.ttl_at >= ?)
       AND NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND +s.namespace = e.namespace)${g ? ` AND ${g.where}` : ''}
@@ -35,40 +45,59 @@ function liveIds(E, caller, namespaces) {
   return E.store.db.prepare(sql).all(...namespaces, Date.now(), ...(g ? g.params : [])).map((r) => r.id);
 }
 
-// Cosine of one query vector against every allowed note of the namespaces, from the store's vector cache (unit vectors, so a dot
-// product). A namespace that cannot be compared is named in `failed`, never skipped silently.
-function cosines(E, namespaces, allowed, q, model) {
-  const out = new Map(), failed = [];
+// Cosines of every query vector against every allowed note of the namespaces, in ONE sweep of each namespace's rows (the store's vector
+// cache holds unit vectors, so a dot product). Returns { lists: [Map id -> cosine | null per query], failed: [{ index, code, message }],
+// bounded }. A query that cannot be compared with a namespace is named in `failed`, never skipped silently. `bounded` is
+// { reason, ms } when the sweep ran out of time (every list is then null).
+function cosinesMany(E, namespaces, allowed, queries, defaultModel, boundMs) {
+  const lists = queries.map(() => new Map());
+  const failed = [];
+  const t0 = Date.now();
+  let bounded = null;
   for (const ns of [...namespaces].sort()) {
     const m = E.store.db.prepare('SELECT embedding_model, dim FROM namespace_models WHERE namespace = ?').get(ns);
     if (!m) continue;
-    if (model && model !== m.embedding_model) { failed.push({ code: 'E_MODEL', message: `the query was embedded with ${model} but namespace ${ns} is bound to ${m.embedding_model}` }); continue; }
-    if (m.dim !== q.length) { failed.push({ code: 'E_MODEL', message: `the query has ${q.length} dimensions but namespace ${ns} holds ${m.dim}` }); continue; }
-    let u;
-    try { u = toUnitF32(q, m.dim); } catch (e) { failed.push({ code: e.code || 'E_ARGS', message: `the query embedding is unusable: ${e.message}` }); continue; }
+    const use = []; // { j, u }
+    queries.forEach((q, j) => {
+      const model = q.model || defaultModel || null;
+      if (model && model !== m.embedding_model) { failed.push({ index: j, code: 'E_MODEL', message: `the query was embedded with ${model} but namespace ${ns} is bound to ${m.embedding_model}` }); return; }
+      if (m.dim !== q.vector.length) { failed.push({ index: j, code: 'E_MODEL', message: `the query has ${q.vector.length} dimensions but namespace ${ns} holds ${m.dim}` }); return; }
+      try { use.push({ j, u: toUnitF32(q.vector, m.dim) }); } catch (e) { failed.push({ index: j, code: e.code || 'E_ARGS', message: `the query embedding is unusable: ${e.message}` }); }
+    });
+    if (!use.length) continue;
+    const dim = m.dim, body = dim - (dim % 4), nq = use.length;
+    const us = use.map((x) => x.u), outs = use.map((x) => lists[x.j]);
+    let n = 0;
     for (const r of E.store._loadNs(ns).rows) {
-      if (!r.vec || !allowed.has(r.id) || r.vec.length !== m.dim) continue;
-      let s = 0;
-      for (let d = 0; d < m.dim; d++) s += r.vec[d] * u[d];
-      if (s > 0) out.set(r.id, s);
+      const v = r.vec;
+      if (!v || v.length !== dim || !allowed.has(r.id)) continue;
+      if ((n++ & 255) === 0 && Date.now() - t0 > boundMs) { bounded = { reason: `the vector sweep passed its ${boundMs} ms bound in ${ns}; semantic relevance was dropped`, ms: Date.now() - t0 }; break; }
+      for (let j = 0; j < nq; j++) {
+        const q = us[j];
+        let s0 = 0, s1 = 0, s2 = 0, s3 = 0, d = 0;
+        for (; d < body; d += 4) { s0 += v[d] * q[d]; s1 += v[d + 1] * q[d + 1]; s2 += v[d + 2] * q[d + 2]; s3 += v[d + 3] * q[d + 3]; }
+        for (; d < dim; d++) s0 += v[d] * q[d];
+        const s = s0 + s1 + s2 + s3;
+        if (s > 0) outs[j].set(r.id, s);
+      }
     }
+    if (bounded) break;
   }
-  return { out, failed };
+  return { lists, failed, bounded };
 }
 
-// pool: ids newest first. o: { text, source, queries, embeddingModel, alpha }.
-// Returns { ids, scores: Map id -> fused relevance, info, candidates: { source, scope, vector, keyword, union, padding, total } }.
+// pool: ids newest first. o: { text, source, queries, embeddingModel, alpha, pathIds (ids whose paths match the task, best first),
+// pathMode, boundMs }. Returns { ids, scores: Map id -> fused relevance, info, candidates }.
 function select(E, namespaces, pool, o) {
   const allowed = new Set(pool);
   const queries = o.queries || [];
+  const pathIds = (o.pathIds || []).filter((id) => allowed.has(id));
+  const pathMode = o.pathMode || 'tiebreak';
   const scores = new Map();
   const info = { source: o.source, terms: [], keyword: 'ran', semantic: queries.length ? 'ran' : 'not_requested', matched: 0 };
-  const cand = { source: 'newest', scope: pool.length, vector: 0, keyword: 0, union: 0, padding: 0, total: 0 };
-  if (!o.text && !queries.length) {
-    cand.total = Math.min(pool.length, NEWEST);
-    return { ids: pool.slice(0, NEWEST), scores, info: null, candidates: cand };
-  }
+  const cand = { source: 'newest', scope: pool.length, vector: 0, keyword: 0, path: 0, union: 0, padding: 0, total: 0, path_mode: pathMode };
   const db = E.store.db;
+  const alpha = o.alpha === undefined || o.alpha === null ? HYBRID_ALPHA : o.alpha;
 
   let kw = new Map();
   const terms = o.text ? relevance.termStats(o.text) : [];
@@ -88,34 +117,52 @@ function select(E, namespaces, pool, o) {
   const sems = [], failed = [];
   if (queries.length) {
     info.semantic_lists = [];
-    for (const q of queries) {
-      const s = cosines(E, namespaces, allowed, q.vector, q.model || o.embeddingModel || null);
-      if (s.failed.length) failed.push(...s.failed.map((f) => ({ label: q.label, code: f.code, message: f.message })));
-      info.semantic_lists.push({ label: q.label, matched: s.out.size });
-      if (s.out.size) sems.push(s.out);
+    const sweep = cosinesMany(E, namespaces, allowed, queries, o.embeddingModel, o.boundMs || VECTOR_BOUND_MS);
+    for (const f of sweep.failed) failed.push({ label: queries[f.index].label, code: f.code, message: f.message });
+    if (sweep.bounded) {
+      info.semantic = { code: 'E_INDEX_BOUND', message: sweep.bounded.reason };
+      cand.bounded = sweep.bounded;
+      info.semantic_lists = queries.map((q) => ({ label: q.label, matched: 0 }));
+    } else {
+      sweep.lists.forEach((out, j) => {
+        info.semantic_lists.push({ label: queries[j].label, matched: out.size });
+        if (out.size) sems.push(out);
+      });
+      if (failed.length === queries.length) info.semantic = { code: failed[0].code, message: failed.map((f) => f.message).join('; ') };
+      else if (failed.length) info.semantic_failed = failed;
     }
-    if (failed.length === queries.length) info.semantic = { code: failed[0].code, message: failed.map((f) => f.message).join('; ') };
-    else if (failed.length) info.semantic_failed = failed;
   }
   info.semantic_contributed = sems.length > 0;
 
-  const alpha = o.alpha === undefined || o.alpha === null ? HYBRID_ALPHA : o.alpha;
   if (sems.length && (kw.size || sems.length > 1)) {
     for (const h of rrfMany(sems.map(desc), desc(kw), { alpha, k: HYBRID_K })) scores.set(h.id, h.score);
     info.fusion = { method: 'rrf', alpha, k: HYBRID_K, lists: sems.length };
   } else for (const [id, s] of (kw.size ? kw : (sems[0] || new Map()))) scores.set(id, s);
   info.matched = scores.size;
-
-  if (!scores.size) { // nothing ranked: the newest notes, as when there is no signal
-    cand.total = Math.min(pool.length, NEWEST);
-    return { ids: pool.slice(0, NEWEST), scores, info, candidates: cand };
-  }
   const vec = new Set(sems.flatMap((m) => desc(m).slice(0, TOP)));
   const key = new Set(desc(kw).slice(0, TOP));
-  const ranked = new Set([...vec, ...key]);
+  if (pathMode === 'rrf' && pathIds.length) { // the path list as a third fused list, at the keyword list's weight
+    if (!info.fusion) { // one list alone carries a raw score (bm25 or cosine): put it on the rank scale the fusion uses
+      scores.clear();
+      if (kw.size) desc(kw).forEach((id, i) => scores.set(id, (1 - alpha) / (HYBRID_K + i + 1)));
+      else if (sems[0]) desc(sems[0]).forEach((id, i) => scores.set(id, alpha / (HYBRID_K + i + 1)));
+    }
+    pathIds.forEach((id, i) => scores.set(id, (scores.get(id) || 0) + (1 - alpha) / (HYBRID_K + i + 1)));
+    info.path_fusion = { method: 'rrf', weight: 1 - alpha, k: HYBRID_K, matched: pathIds.length };
+  }
+  const path = new Set(pathIds.slice(0, TOP));
+
+  if (!vec.size && !key.size && !path.size) { // nothing ranked: the newest notes
+    cand.total = Math.min(pool.length, NEWEST);
+    return { ids: pool.slice(0, NEWEST), scores, info: o.text || queries.length ? info : null, candidates: cand };
+  }
+  const ranked = new Set([...vec, ...key, ...path]);
   const ids = [...new Set([...ranked, ...pool.slice(0, PAD)])];
-  Object.assign(cand, { source: sems.length && kw.size ? 'hybrid' : sems.length ? 'vector' : 'keyword', vector: vec.size, keyword: key.size, union: ranked.size, padding: ids.length - ranked.size, total: ids.length });
-  return { ids, scores, info, candidates: cand };
+  Object.assign(cand, {
+    source: [sems.length && kw.size ? 'hybrid' : sems.length ? 'vector' : kw.size ? 'keyword' : '', path.size ? 'path' : ''].filter(Boolean).join('+'),
+    vector: vec.size, keyword: key.size, path: path.size, union: ranked.size, padding: ids.length - ranked.size, total: ids.length,
+  });
+  return { ids, scores, info: o.text || queries.length ? info : null, candidates: cand };
 }
 
 // The sinking seam. A note's relevance is multiplied by sinkFactor(note, ctx) in the index ranking. It returns 1 for every note and
@@ -134,4 +181,4 @@ function sunk(notes, scores, ctx) {
   return out;
 }
 
-module.exports = { liveIds, select, sinkFactor, sunk, TOP, NEWEST };
+module.exports = { liveIds, select, sinkFactor, sunk, cosinesMany, TOP, NEWEST, PAD, PATH_MODES, VECTOR_BOUND_MS };

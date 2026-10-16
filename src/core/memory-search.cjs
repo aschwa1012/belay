@@ -195,12 +195,13 @@ function parseSearch(E, caller, args) {
   // The notes gate (memory-note-gate.cjs) is kept apart from the caller's filter: the keyword stage and the count add it to their WHERE,
   // the semantic stage subtracts the few rows it hides. Superseded rows are handled below (baseWhere, the cache), so the gate leaves them.
   const fsql = filterSql(filter, 'e');
-  const gateSql = gate.sql(E, caller, { includeSuperseded: true });
+  const namespaces = namespacesOf(E, caller, args);
+  const gateSql = gate.sql(E, caller, { includeSuperseded: true, body: true, namespaces });
   return {
     gate: gateSql, hidden: gateSql ? new Set(JSON.parse(gateSql.params[0])) : null,
     mode, view: enumArg('view', args.view, VIEWS, 'full'), order, alpha, filter, filterSql: fsql,
     k: intArg('k', args.k, DEFAULT_PAGE, 1, K_MAX), offset: intArg('offset', args.offset, 0, 0, OFFSET_MAX),
-    namespaces: namespacesOf(E, caller, args),
+    namespaces,
     query: typeof args.query === 'string' ? args.query : null,
     queryEmbedding: args.query_embedding || null, embeddingModel: args.embedding_model || null,
     minScore: numArg('min_score', args.min_score, -1), dupThreshold: numArg('dup_threshold', args.dup_threshold, DUP_THRESHOLD),
@@ -256,10 +257,6 @@ async function search(E, caller, args) {
   else ranked = [];
 
   let rows = null;
-  if (o.gate) { // the gate's body clauses (a promoted note, a pending state) on the rows the page is built from
-    rows = rowsByIds(E, ranked.map(h => h.id));
-    ranked = ranked.filter(h => rows.has(h.id) && gate.bodyLive(rows.get(h.id)));
-  }
   let pool = ranked;
   if (o.order !== 'score') {
     rows = rows || rowsByIds(E, ranked.map(h => h.id));
@@ -317,19 +314,23 @@ async function timeline(E, caller, args) {
   const scope = enumArg('scope', args.scope, SCOPES, undefined);
   const reach = reachOf(E, caller);
   const anchor = E.store.db.prepare('SELECT * FROM memory_entries WHERE id = ?').get(args.anchor_id);
-  const a = anchor && visible(reach, anchor) ? anchor : null;
+  const a = anchor && visible(reach, anchor) && gate.visible(E, caller, anchor.id) ? anchor : null;
   if (!a) throw err('E_NOT_FOUND', `memory.timeline: there is no row ${args.anchor_id}`, { anchor_id: args.anchor_id });
+  checkReach(E, caller, [a.namespace], 'read'); // a lifecycle namespace is not for a tool-channel caller
   const use = scope || (a.task_id ? 'task' : 'namespace');
   const col = SCOPE_COLUMN[use];
   if (a[col] == null || a[col] === '') {
     throw bad(`the anchor has no ${col}, so scope ${use} names no rows; use scope namespace or another scope`, 'scope');
   }
   const key = a[col];
-  const live = '(ttl_at IS NULL OR ttl_at >= ?)';
   const within = reach ? ` AND namespace IN (${marks([...reach])})` : '';
+  // The notes gate, for the rows of this scope; and no lifecycle namespace for a tool-channel caller.
+  const g = gate.and({ where: '', params: [] }, E, caller, { scope: { col, val: key } });
+  const lc = gate.lifecycleSql(caller, 'e');
+  const extra = [g.where, lc].filter(Boolean).map(x => ` AND ${x}`).join('');
   const side = (cmp, dir, n) => (n === 0 ? [] : E.store.db.prepare(
-    `SELECT * FROM memory_entries WHERE ${col} = ? AND ${live}${within} AND (created_at ${cmp} ? OR (created_at = ? AND id ${cmp} ?)) ORDER BY created_at ${dir}, id ${dir} LIMIT ?`,
-  ).all(key, Date.now(), ...(reach ? [...reach] : []), a.created_at, a.created_at, a.id, n));
+    `SELECT e.* FROM memory_entries e WHERE e.${col} = ? AND (e.ttl_at IS NULL OR e.ttl_at >= ?)${within.replace('namespace', 'e.namespace')} AND (e.created_at ${cmp} ? OR (e.created_at = ? AND e.id ${cmp} ?))${extra} ORDER BY e.created_at ${dir}, e.id ${dir} LIMIT ?`,
+  ).all(key, Date.now(), ...(reach ? [...reach] : []), a.created_at, a.created_at, a.id, ...g.params, n));
   return {
     anchor: viewRow(a, view),
     before: side('<', 'DESC', before).reverse().map(r => viewRow(r, view)),
@@ -372,7 +373,7 @@ async function list(E, caller, args) {
   const limit = Math.min(intArg('limit', args.limit, 50, 1, Number.MAX_SAFE_INTEGER), LIST_MAX);
   const offset = intArg('offset', args.offset, 0, 0, Number.MAX_SAFE_INTEGER);
   const f = args.filter == null ? {} : args.filter;
-  const fsql = gate.and(filterSql(f, 'e'), E, caller);
+  const fsql = gate.and(filterSql(f, 'e'), E, caller, { namespaces });
   const where = [`e.namespace IN (${marks(namespaces)})`, ...(fsql.where ? [fsql.where] : [])].join(' AND ');
   const params = [...namespaces, ...fsql.params];
   const dir = order === 'newest' ? 'DESC' : 'ASC';

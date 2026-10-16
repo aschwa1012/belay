@@ -203,12 +203,7 @@ async function index(E, caller, c) {
   const rq = relevance.parseArgs(args);
   const text = [rq.query, task && typeof task.spec === 'string' ? task.spec : null].filter(Boolean).join('\n');
   const source = [rq.query && 'query', task && task.spec && 'task.spec'].filter(Boolean).join('+') || null;
-  const sel = rank.select(E, namespaces, fresh, { text, source, queries: rq.queries, embeddingModel: rq.embeddingModel, alpha: relevance.alphaOf(lv) });
-  const found = rowsOf(E, sel.ids);
-  const live = found;
-  const rel = { scores: rank.sunk(found, sel.scores, { lv, runId: caller.run_id }), info: sel.info }; // the sinking seam (a no-op today)
-
-  // N is bounded: at most the candidates (about 400) plus the tasks of this project's runs (one read of the task table per call).
+  // N is bounded: the live notes of the project plus the tasks of this project's runs (one read of the task table per call).
   const project = (namespaces.find((n) => n.startsWith('project/')) || '').slice(8) || null;
   const runProject = new Map();
   const inProject = (t) => {
@@ -218,8 +213,25 @@ async function index(E, caller, c) {
   };
   const taskOwned = rows.currentAll(E.store, 'task').filter(inProject).map((t) => (Array.isArray(t.files_owned) ? t.files_owned.filter((f) => typeof f === 'string') : []));
   const ownedF = owned.map((x) => x.toLowerCase());
+  // The path ranking, over the WHOLE live scope: every note's applies_to against the task's files, scored by path idf over the store (the
+  // notes of the scope and the tasks), not over the candidates. Its best 200 are candidates; the order is rank.select's.
+  let w = { total: 0, idf: () => 0 }, pathIds = [];
+  if (ownedF.length) {
+    const inPool = new Set(pool), inFresh = new Set(fresh);
+    const bodies = E.store.db.prepare(`SELECT e.id, json_extract(e.body, '$.applies_to') AS ap FROM memory_entries e WHERE e.namespace IN (${marks(namespaces)}) AND e.type = 'note'`).all(...namespaces)
+      .filter((r) => inPool.has(r.id)).map((r) => ({ id: r.id, applies_to: parseJson(r.ap) }));
+    w = pathWeights(bodies, taskOwned, norm);
+    pathIds = bodies.filter((b) => inFresh.has(b.id)).map((b) => ({ id: b.id, ps: pathScore(pathsOf(b, norm), ownedF, w.idf) }))
+      .filter((x) => x.ps > 0).sort((a, b) => (b.ps - a.ps) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)).map((x) => x.id);
+  }
+  const pathMode = args.path_mode === undefined ? 'tiebreak' : args.path_mode;
+  if (!rank.PATH_MODES.includes(pathMode)) throw new Error(`memory.index path_mode must be one of ${rank.PATH_MODES.join(', ')}`);
+  const sel = rank.select(E, namespaces, fresh, { text, source, queries: rq.queries, embeddingModel: rq.embeddingModel, alpha: relevance.alphaOf(lv), pathIds, pathMode, boundMs: args.vector_bound_ms });
+  const found = rowsOf(E, sel.ids);
+  const live = found;
+  const rel = { scores: rank.sunk(found, sel.scores, { lv, runId: caller.run_id }), info: sel.info }; // the sinking seam (a no-op today)
+
   const prep = prepareText(text);
-  const w = pathWeights(found.map((r) => r.b), taskOwned, norm);
   const ranked = live.map((r) => {
     const paths = ownedF.length ? pathsOf(r.b, norm) : [];
     const ps = paths.length ? pathScore(paths, ownedF, w.idf) : 0;

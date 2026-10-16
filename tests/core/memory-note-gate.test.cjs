@@ -29,7 +29,8 @@ before(async () => {
 after(() => { store.close(); cleanup(dir); });
 
 function task(id, run, state) { return rows.append(store, 'task', { id, run_id: run, spec: 'x', state }, 'test'); }
-function lease(taskId, run, holder, released) { return rows.append(store, 'lease', { id: `l-${taskId}`, task_id: taskId, run_id: run, holder, holder_role: 'worker', granted_at: 1, expires_at: Date.now() + 1e6, released_at: released ? Date.now() : null }, 'test'); }
+// A lease row; `by` is who wrote the row (a hand-back is written by the holder, a take-control by the operator).
+function lease(taskId, run, holder, released, { id = `l-${taskId}`, granted_at = 1, by = holder } = {}) { return rows.append(store, 'lease', { id, task_id: taskId, run_id: run, holder, holder_role: 'worker', granted_at, expires_at: Date.now() + 1e6, released_at: released ? Date.now() : null }, by); }
 function endRun(id) { rows.append(store, 'run', { ...rows.current(store, 'run', id), ended_at: Date.now(), exit_reason: 'test' }, 'test'); }
 
 // A note of the writer's, on a task of the writer's run (or none).
@@ -77,6 +78,26 @@ test('clause a: the writer\'s lease is released, a failed acceptance included', 
   // Another worker's released lease on the same task does not end THIS writer's notes.
   task('t-other', WRITER, 'assigned'); lease('t-other', WRITER, 'w9', true);
   assert.deepStrictEqual(await everywhere(orch(READER), space, note(space, 'not the writer\'s lease', { task_id: 't-other' })), NONE);
+});
+
+test('clause a: a reassigned writer\'s new lease is open, and a take-control is not a hand-back', async () => {
+  const space = fresh();
+  // w1 hands back L1, is granted the task again as L2 (still working) and writes a note under L2.
+  task('t-re', WRITER, 'assigned');
+  lease('t-re', WRITER, 'w1', true, { id: 'l-re-1', granted_at: 1 });
+  lease('t-re', WRITER, 'w1', false, { id: 'l-re-2', granted_at: 2 });
+  const reassigned = note(space, 'written under the second lease', { task_id: 't-re' });
+  assert.deepStrictEqual(await everywhere(orch(READER), space, reassigned), NONE, 'L1 was handed back but L2 is open');
+  lease('t-re', WRITER, 'w1', true, { id: 'l-re-2', granted_at: 2 });
+  assert.deepStrictEqual(await everywhere(orch(READER), space, reassigned), ALL, 'L2 handed back');
+  // The operator takes the lease over: the row is released, by the operator, and the worker never handed back.
+  task('t-tc', WRITER, 'assigned');
+  lease('t-tc', WRITER, 'w1', false, { id: 'l-tc' });
+  const taken = note(space, 'worker whose lease was taken', { task_id: 't-tc' });
+  lease('t-tc', WRITER, 'w1', true, { id: 'l-tc', by: 'operator' });
+  assert.deepStrictEqual(await everywhere(orch(READER), space, taken), NONE, 'take-control is not a hand-back');
+  task('t-tc', WRITER, 'done');
+  assert.deepStrictEqual(await everywhere(orch(READER), space, taken), ALL, 'visible once the task is done');
 });
 
 test('clause a: the note\'s run is closed', async () => {
@@ -180,4 +201,51 @@ test('retrieve by explicit id is not filtered: it returns a hidden row with its 
   assert.strictEqual(got.found, true);
   assert.strictEqual(got.status, 'refuted');
   assert.strictEqual(G.visible(E, orch(READER), id), false, 'the gate itself says hidden');
+});
+
+test('memory.timeline goes through the gate: a hidden anchor is not found, and the sides leave hidden notes out', async () => {
+  const space = fresh();
+  task('t-tl', WRITER, 'done');
+  task('t-tl-open', WRITER, 'assigned');
+  const first = note(space, 'visible first', { task_id: 't-tl' });
+  const refuted = note(space, 'refuted between', { task_id: 't-tl', status: 'refuted' });
+  const promoted = note(space, 'promoted between', { task_id: 't-tl', body: { promoted_to: { file: 'CLAUDE.md' } } });
+  const openRun = note(space, 'another run still working', { task_id: 't-tl-open' });
+  const last = note(space, 'visible last', { task_id: 't-tl' });
+  const tl = await call(orch(READER), 'memory.timeline', { anchor_id: first, scope: 'namespace', before: 10, after: 10, view: 'index' });
+  const ids = [...tl.before, tl.anchor, ...tl.after].map((r) => r.id);
+  assert.ok(ids.includes(first) && ids.includes(last));
+  for (const hidden of [refuted, promoted, openRun]) assert.ok(!ids.includes(hidden), 'a hidden note is not in the timeline');
+  await assert.rejects(call(orch(READER), 'memory.timeline', { anchor_id: refuted }), (e) => e.code === 'E_NOT_FOUND');
+  const own = await call(orch(WRITER), 'memory.timeline', { anchor_id: first, scope: 'namespace', before: 10, after: 10, view: 'index' });
+  assert.ok([...own.before, own.anchor, ...own.after].some((r) => r.id === openRun), 'the writer\'s own run still sees its open note');
+  const archive = fresh().replace('project/', 'archive/');
+  const archived = note(archive, 'archived anchor', { task_id: 't-tl' });
+  await assert.rejects(call(orch(READER), 'memory.timeline', { anchor_id: archived }), (e) => e.code === 'E_ROLE', 'a lifecycle namespace is refused on the timeline too');
+});
+
+test('the search count leaves out promoted and pending notes', async () => {
+  const space = fresh();
+  task('t-cnt', WRITER, 'done');
+  note(space, 'counted', { task_id: 't-cnt' });
+  note(space, 'promoted', { task_id: 't-cnt', body: { promoted_to: { file: 'CLAUDE.md' } } });
+  note(space, 'pending', { task_id: 't-cnt', body: { state: 'pending' } });
+  const r = await call(orch(READER), 'memory.search', { namespaces: [space], query: 'gatecase', mode: 'keyword' });
+  assert.strictEqual(r.results.length, 1);
+  assert.strictEqual(r.searched.rows_considered, 1);
+});
+
+test('bodySql and bodyLive agree, an invalid-JSON body that mentions pending included', async () => {
+  const space = fresh();
+  task('t-bd', WRITER, 'done');
+  const bodies = [{ ok: 1 }, { promoted_to: { file: 'x' } }, { state: 'pending' }, { note: 'pending review is a word here' }, { state: 'live' }];
+  const ids = bodies.map((b, i) => note(space, `body ${i}`, { task_id: 't-bd', body: b }));
+  const bad = note(space, 'invalid body', { task_id: 't-bd' });
+  store.db.prepare('UPDATE memory_entries SET body = ? WHERE id = ?').run('{ not json, pending and promoted_to', bad);
+  for (const id of [...ids, bad]) {
+    const row = store.db.prepare('SELECT type, body FROM memory_entries WHERE id = ?').get(id);
+    const viaSql = !!store.db.prepare(`SELECT 1 AS x FROM memory_entries e WHERE e.id = ? AND ${G.bodySql('e')}`).get(id);
+    assert.strictEqual(viaSql, G.bodyLive(row), `row ${id}: ${row.body}`);
+  }
+  assert.strictEqual(G.bodyLive({ type: 'note', body: '{ not json, pending' }), true);
 });

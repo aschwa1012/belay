@@ -71,10 +71,81 @@ test('hybrid: the receipt names the source and the counts; relevance orders, the
   const hit = note(space, 'quokkas and the widget loader', [0, 1, 0], { created_at: 5 });
   crowd(space, 30);
   const r = await index('on', { namespaces: [space], query: 'quokkas', query_embedding: [0, 1, 0], embedding_model: 'm' });
-  assert.deepStrictEqual(Object.keys(r.candidates), ['source', 'scope', 'vector', 'keyword', 'union', 'padding', 'total']);
+  assert.deepStrictEqual(Object.keys(r.candidates), ['source', 'scope', 'vector', 'keyword', 'path', 'union', 'padding', 'total', 'path_mode']);
   assert.strictEqual(r.candidates.source, 'hybrid');
   assert.strictEqual(r.row_ids[0], hit);
   assert.strictEqual(r.relevance.fusion.method, 'rrf');
+});
+
+// ---- path candidates ----
+
+const task = async (k, spec, owned) => (await E.handle('task.create', { caller: orch(k), spec, files_owned: owned })).id;
+function anchored(space, title, paths, over = {}) {
+  const r = store.storeIn({
+    namespace: space, worker_id: 'w1', type: 'note', text: title, title,
+    body: { kind: 'lesson', basis: 'inferred', evidence: [], applies_to: paths, subjects: [], model: 'm', state: 'live', seen_in: [], seen_total: 0, reported_wrong: [] },
+    embedding: [1, 0, 0], embedding_model: 'm', embedding_revision: 'r', dim: 3, run_id: 'old-run', task_id: null, source: 'model', written_by: 'worker:w1',
+  });
+  store.db.prepare('UPDATE memory_entries SET created_at = ? WHERE id = ?').run(over.created_at || 1000 + n++, r.id);
+  return r.id;
+}
+
+test('a note anchored to the task files is a candidate although no text of the task matches it, and leads under no relevance signal', async () => {
+  const space = fresh();
+  const target = anchored(space, 'zzqx unrelated words', ['src/special/thing.cjs'], { created_at: 5 });
+  crowd(space, 900);
+  const t = await task('on', 'ok', ['src/special/thing.cjs']);
+  const r = await index('on', { namespaces: [space], task_id: t });
+  assert.strictEqual(r.row_ids[0], target);
+  assert.strictEqual(r.candidates.source, 'path');
+  assert.strictEqual(r.candidates.path, 1);
+  assert.strictEqual(r.candidates.scope, 901);
+});
+
+test('path idf is taken over the store, not over the candidates', async () => {
+  const space = fresh();
+  const common = 'src/common/x.cjs';
+  anchored(space, 'target by a rare path', ['src/rare/y.cjs'], { created_at: 5 });
+  for (let i = 0; i < 300; i++) anchored(space, `hub note ${i}`, [common], { created_at: 100 + i });
+  const t = await task('on', 'ok', ['src/rare/y.cjs', common]);
+  const r = await index('on', { namespaces: [space], task_id: t });
+
+  assert.ok(r.candidates.path <= 200, 'the path list is cut to 200');
+
+  const first = r.text.split('\n')[1];
+  assert.match(first, /target by a rare path/, 'the rare path outranks 300 notes on a common one');
+});
+
+test('path_mode rrf fuses the path list with relevance; tiebreak leaves relevance first; a bad mode is refused', async () => {
+  const space = fresh();
+  const text = note(space, 'quokkas loader text match', [1, 0, 0], { created_at: 10 });
+  const pathNote = anchored(space, 'other claim', ['src/q.cjs'], { created_at: 20 });
+  const t = await task('on', 'quokkas loader', ['src/q.cjs']);
+  const a = await index('on', { namespaces: [space], task_id: t, path_mode: 'tiebreak' });
+  const b = await index('on', { namespaces: [space], task_id: t, path_mode: 'rrf' });
+  assert.deepStrictEqual(a.row_ids, [text, pathNote], 'relevance first');
+  assert.deepStrictEqual(b.row_ids, [pathNote, text], 'the path list adds to the score');
+  assert.strictEqual(b.relevance.path_fusion.method, 'rrf');
+  assert.strictEqual(b.candidates.path_mode, 'rrf');
+  await assert.rejects(index('on', { namespaces: [space], task_id: t, path_mode: 'nope' }), /path_mode/);
+});
+
+// ---- the vector sweep ----
+
+test('several query vectors rank in one sweep: the same lists as one vector at a time, and a bound drops the vector lists with the reason', async () => {
+  const space = fresh();
+  const a = note(space, 'alpha claim', [0, 1, 0], { created_at: 10 });
+  const b = note(space, 'beta claim', [0, 0, 1], { created_at: 20 });
+  assert.ok(a && b);
+  const allowed = new Set(R.liveIds === undefined ? [] : R.liveIds(E, orch('on'), [space]));
+  const qs = [{ vector: [0, 1, 0], model: null, label: 'one' }, { vector: [0, 0, 1], model: null, label: 'two' }];
+  const many = R.cosinesMany(E, [space], allowed, qs, null, 5000);
+  const solo = qs.map((q) => R.cosinesMany(E, [space], allowed, [q], null, 5000).lists[0]);
+  assert.deepStrictEqual(many.lists.map((m) => [...m.entries()]), solo.map((m) => [...m.entries()]));
+  const out = R.select(E, [space], [...allowed], { text: 'claim', source: 'query', queries: qs, boundMs: -1 });
+  assert.ok(out.candidates.bounded && /bound/.test(out.candidates.bounded.reason));
+  assert.strictEqual(out.info.semantic.code, 'E_INDEX_BOUND');
+  assert.ok(out.ids.length > 0, 'the keyword and newest candidates stand');
 });
 
 test('no signal: the newest notes, source newest', async () => {
