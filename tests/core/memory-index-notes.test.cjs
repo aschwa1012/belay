@@ -111,17 +111,26 @@ test('tier 2: subjects match case-insensitively on word edges, with the plural a
   assert.strictEqual(N.subjectHits(['cache', 'lock', 'zzz'], 'cache and lock'), 2);
 });
 
-test('tier 2 outranks the hybrid scorer; tier 1 outranks tier 2; a spec and a query both count', async () => {
+test('relevance orders the index; tiers 1 and 2 break ties; a spec and a query both count', async () => {
   const space = fresh();
   const hybridWinner = note(space, 'tokenizer keyword soup lookup', { created_at: 9000 });
   const subj = note(space, 'quirk of the frobnicator', { subjects: ['frobnicator'], created_at: 100 });
   const path = note(space, 'path note', { applies_to: ['src/a.cjs'], created_at: 50 });
   const t = await task('fix the tokenizer keyword soup lookup in src/a.cjs, mind the Frobnicators', ['src/a.cjs']);
   const r = await index('on', { namespaces: [space], task_id: t });
-  assert.deepStrictEqual(r.row_ids, [path, subj, hybridWinner]);
+  assert.strictEqual(r.row_ids[0], hybridWinner, 'the note most relevant to the task text leads, whatever its tier');
   assert.deepStrictEqual(r.notes, { path: 1, term: 1, unlisted_path_or_term: 0 });
   const q = await index('on', { namespaces: [space], query: 'something about the frobnicator' });
   assert.strictEqual(q.row_ids[0], subj, 'the query text counts without a task');
+  // No relevance signal (the task text has no term the keyword index takes): every score is 0 and the tiers order the notes.
+  const tied = fresh();
+  const plain = note(tied, 'plain claim', { created_at: 9000 });
+  const sub2 = note(tied, 'subject claim', { subjects: ['ok'], created_at: 100 });
+  const path2 = note(tied, 'anchored claim', { applies_to: ['src/b.cjs'], created_at: 50 });
+  const t2 = await task('ok', ['src/b.cjs']);
+  const r2 = await index('on', { namespaces: [tied], task_id: t2 });
+  assert.deepStrictEqual(r2.row_ids, [path2, sub2, plain], 'path, then term, then the rest');
+  assert.strictEqual(r2.candidates.source, 'path', 'the path-matched note is a candidate on its own');
 });
 
 test('sighting counts never affect the ranking', async () => {
@@ -276,8 +285,8 @@ test('a broad directory is not the most specific: a src note ranks below notes n
 test('paths are compared case-insensitively and in one spelling', async () => {
   const space = fresh();
   const id = note(space, 'mixed case', { applies_to: ['Src\\Core\\X.cjs'] });
-  note(space, 'elsewhere', { applies_to: ['docs/other.md'], created_at: 1 });
-  note(space, 'elsewhere two', { applies_to: ['docs/third.md'], created_at: 2 });
+  note(space, 'elsewhere', { applies_to: ['lib/other.md'], created_at: 1 });
+  note(space, 'elsewhere two', { applies_to: ['lib/third.md'], created_at: 2 });
   const t = await task('x', ['src/core/x.cjs']);
   const r = await index('on', { namespaces: [space], task_id: t });
   assert.strictEqual(r.notes.path, 1);

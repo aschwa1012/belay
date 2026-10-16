@@ -19,7 +19,8 @@ const { Client } = require('./client.cjs');
 const { withCopy } = require('./copy-read.cjs');
 const { ping } = require('./ping.cjs');
 const unresponsive = require('./unresponsive.cjs');
-const { withSemanticFailure } = require('./memory-search.cjs');
+const { withSemanticFailure, onSemanticFailure } = require('./memory-search.cjs');
+const { notifyEmbedderFailure, adviseEmbedderFailure } = require('./methods-memory.cjs');
 
 const ELECTION_PING_TIMEOUT_MS = 300; // 5a-3: becomeOwner()'s refusal ping
 const READ_TIMEOUT_MS = 300;       // api.md §1: the bounded round trip before falling back to a copy
@@ -148,9 +149,16 @@ class Core {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         const e = err('E_TIMEOUT', method + ' did not finish within ' + limit + ' ms in this process (the owner); its embedder is still loading or embedding and the load continues, so ' + (writes ? 'RE-READ before retrying: the row is written when the load finishes' : 'a retry waits on the same load'), { method, timeout_ms: limit, in_process: true, ...(writes ? { may_have_committed: true } : {}) });
-        // A hybrid search still has its keyword half: answer from it, naming the timeout in modes_failed.
         if (method === 'memory.search' && params.mode === 'hybrid') {
-          this.owner.engine.handle(method, { ...params, mode: 'keyword' }).then(r => resolve(withSemanticFailure(r, e)), () => reject(e));
+          const engine = this.owner.engine;
+          // In a run the timeout is an embedder failure like any other (ADR 0034). With the run's guard it hears of it, and under `required` the
+          // search is REFUSED, not answered from its keyword half (the run pauses); under `off` memory is off. An owner with no guard that serves a
+          // LIVE run (its row says required, the default) refuses too. Keyword mode, or no run at all (a standalone owner), answers from the
+          // keyword half, naming the timeout in modes_failed.
+          const bound = err('E_EMBED_BOUND', 'memory.search hybrid: its semantic half did not finish within ' + limit + ' ms (the embedder of the owner is still loading or embedding and the load continues)', { embedder: true, cause: 'timeout', op: 'embed', method, timeout_ms: limit, in_process: true });
+          if (this.owner.opts && typeof this.owner.opts.embedderMode === 'function') notifyEmbedderFailure(engine, params.caller, 'memory.search', bound);
+          try { adviseEmbedderFailure(engine, params.caller, bound); onSemanticFailure(engine, params.caller, bound); } catch (refusal) { return reject(refusal); }
+          engine.handle(method, { ...params, mode: 'keyword' }).then(r => resolve(withSemanticFailure(r, e)), () => reject(e));
         } else reject(e);
       }, limit);
       run.then(v => { clearTimeout(timer); resolve(v); }, e => { clearTimeout(timer); reject(e); });
