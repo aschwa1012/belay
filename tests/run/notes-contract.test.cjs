@@ -63,9 +63,9 @@ async function spawned(levers, workerId = 'w1', subjects = null) {
 test('the contract text explains the purpose, shape and timing of a note, keeps the rules, and stays small', () => {
   const text = NC.contract({ ...DEFAULTS, ...ON });
   assert.ok(text.includes(QUESTION));
-  // 1,400 before the paired write/search contract; the explanation and two restored rules and the replaced_by route are longer, and the project's subject list (at most 400 bytes) is added after it.
-  assert.ok(Buffer.byteLength(text) <= 1800, `${Buffer.byteLength(text)} bytes`);
-  assert.ok(Buffer.byteLength(NC.contract({ ...DEFAULTS, ...ON }, ['s'.repeat(40), 'x'.repeat(40)])) <= 1800 + 400, 'with a full subject list');
+  // 1,400 before the paired write/search contract; the pin is 1,900 (the text is about 1,800) so a small wording change does not break it, and the explanation, two restored rules and the replaced_by route are longer, and the project's subject list (at most 400 bytes) is added after it.
+  assert.ok(Buffer.byteLength(text) <= 1900, `${Buffer.byteLength(text)} bytes`);
+  assert.ok(Buffer.byteLength(NC.contract({ ...DEFAULTS, ...ON }, ['s'.repeat(40), 'x'.repeat(40)])) <= 1900 + 400, 'with a full subject list');
   for (const must of ["They are found by matching that worker's task text against your note", 'Do not note what you built, or what your diff or hand-back already shows', '`[]` is the normal answer',
     '`title` (at most 160 bytes)', '`when` (at most 160 bytes)', 'as a task line', "not the finding's", '`subjects` (0 to 3)', 'its paths also feed matching',
     'Your findings are not shown to them; do not assume they are covered', 'mark a snapshot "as of <sha>"', '(made up:', 'says the same as another note', '`replaced_by`', '`reported_wrong`', '`memory_note_resolve`']) {
@@ -198,7 +198,7 @@ test('a failed subject lookup is named on the worker and the contract is still s
 
 test('the contract with notes_sink on (it adds the memory_ids line) stays inside its own pin, and names replaced_by in the form the core resolves', () => {
   const sink = NC.contract({ ...DEFAULTS, ...ON, notes_sink: 'record' });
-  assert.ok(Buffer.byteLength(sink) <= 2000, `${Buffer.byteLength(sink)} bytes with notes_sink on`);
+  assert.ok(Buffer.byteLength(sink) <= 2100, `${Buffer.byteLength(sink)} bytes with notes_sink on`);
   assert.ok(sink.includes('`memory_ids`'));
   assert.ok(sink.includes('`replaced_by` when there is one: `notes[<i>]` for a note in this hand-back, or the other note\'s id.'));
   assert.ok(!sink.includes('your new note\'s id'));

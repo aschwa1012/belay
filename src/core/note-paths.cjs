@@ -64,14 +64,17 @@ function evidencePaths(evidence, worktree) {
 const TASK_FILES_BYTES = 1800;
 const APPLIES_BYTES = 1400;
 const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-function haystack(note) {
-  return [note.title, ...(note.evidence || []).flatMap((e) => [e && e.where, e && e.saw])].filter((t) => typeof t === 'string').join(' ').split('\\').join('/').toLowerCase();
+function haystack(note, worktree) {
+  const hay = [note.title, ...(note.evidence || []).flatMap((e) => [e && e.where, e && e.saw])].filter((t) => typeof t === 'string').join(' ').split('\\').join('/').toLowerCase();
+  // An absolute path names the same file as the relative one: the worktree root is taken off, as evidence paths already do.
+  const root = worktree ? norm(worktree).replace(/\/+$/, '').toLowerCase() + '/' : null;
+  return root ? hay.split(root).join('') : hay;
 }
 function tokensOf(hay) {
   return new Set(hay.split(/[\s,;()[\]`'"<>]+/).map((t) => t.replace(/(:\d+){1,2}$/, '').replace(/[.:]+$/, '')).filter(Boolean));
 }
-function namedFiles(note, paths) {
-  const hay = haystack(note), tokens = tokensOf(hay);
+function namedFiles(note, paths, worktree) {
+  const hay = haystack(note, worktree), tokens = tokensOf(hay);
   const named = [], ambiguous = [];
   const baseOf = (p) => p.slice(p.lastIndexOf('/') + 1).toLowerCase();
   const counts = new Map();
@@ -97,7 +100,7 @@ function merge(note, diff, worktree) {
   for (const p of note.applies_to || []) add(p, 'worker');
   for (const p of evidencePaths(note.evidence, worktree)) add(p, 'evidence');
   const taskFiles = (diff && diff.paths) || [];
-  const { named, ambiguous } = namedFiles(note, taskFiles);
+  const { named, ambiguous } = namedFiles(note, taskFiles, worktree);
   for (const p of named) add(p, 'diff');
   const all = [...seen.entries()];
   const kept = [];

@@ -280,6 +280,10 @@ function retitle(E, r, title, fresh) {
   if (clash) throw err('E_EXISTS', `the changed title makes note ${r.id} the same text as ${clash.id} (a ${clash.type} row) in ${r.namespace}; choose another title or resolve it as repeats`, { id: r.id, existing_id: clash.id, existing_type: clash.type });
   E.store.p('UPDATE memory_entries SET title = ?, text = ?, text_hash = ?, updated_at = ? WHERE id = ?').run(s.title, s.text, hashText(s.text), Date.now(), r.id);
   // The vector was made from the old title, so it is replaced by one made from the new, under the row's own template.
+  if (fresh && fresh.unembedded) {
+    E.store.clearEmbedding(r.id);
+    return { ...r, title: s.title, text: s.text, text_hash: hashText(s.text), embedding_model: null, dim: null, text_template: null };
+  }
   if (fresh) E.store.replaceEmbedding(r.id, fresh);
   return { ...r, title: s.title, text: s.text, text_hash: hashText(s.text) };
 }
@@ -294,7 +298,14 @@ async function freshVectors(E, caller, list) {
     const s = M.scrub(true, { text: [x.title, ...r.text.split('\n').slice(1)].join('\n'), title: x.title });
     const template = r.text_template || 'v1';
     const text = template === 'v2' ? NT.embedText({ title: s.title, when: bodyOf(r).when }, 'v2') : s.text;
-    const e = await M.withEmbedding(E, { text }, 'embedding', 'text', caller);
+    let e;
+    try { e = await M.withEmbedding(E, { text }, 'embedding', 'text', caller); } catch (failure) {
+      // required: the failure stands (withEmbedding has told the run's guard, which pauses it). keyword: the retitle goes on and the
+      // note is left without a vector; a stale one is never kept under the new title.
+      if (E.embedderMode() !== 'keyword') throw failure;
+      out.set(r.id, { unembedded: { code: failure.code, message: failure.message } });
+      continue;
+    }
     out.set(r.id, { embedding: e.embedding, embedding_model: e.embedding_model, embedding_revision: e.embedding_revision, dim: e.dim, text_template: template });
   }
   return out;
@@ -313,10 +324,11 @@ async function resolve(E, caller, args) {
       const project = r.namespace.slice('pending/'.length);
       projects.add(project);
       if (x.resolve === 'new') {
-        if (x.title) r = retitle(E, r, x.title, fresh.get(r.id));
+        const vector = x.title ? fresh.get(r.id) : null;
+        if (x.title) r = retitle(E, r, x.title, vector);
         release(E, r, project);
         E.store.patchBody(r.id, b => { b.state = 'live'; b.resolved = { as: 'new', at: t, by }; delete b.matches; return b; });
-        return { id: r.id, resolved: 'new', state: 'live', namespace: projectNs(project) };
+        return { id: r.id, resolved: 'new', state: 'live', namespace: projectNs(project), ...(vector && vector.unembedded ? { embedded: false, embedder_failure: vector.unembedded, note: 'the title changed and the embedder failed (on_embedder_failure keyword), so the old vector was dropped and the note has none: it is found by keyword search, and belay memory embed will embed it from its new title' } : {}) };
       }
       const target = liveTarget(E, caller, r, project, x, i);
       if (x.resolve === 'supersedes') {

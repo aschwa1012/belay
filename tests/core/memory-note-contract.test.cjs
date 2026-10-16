@@ -19,6 +19,8 @@ const NT = core('memory-notes.cjs');
 const NP = core('note-paths.cjs');
 
 let dir, store, E, repo, baseSha;
+let mode = 'required', embedderDown = false; // the run's on_embedder_failure, and whether the embedder is failing now
+const hookCalls = [];
 const RUN = 'r-contract';
 const orch = callerFor('orchestrator', { run_id: RUN });
 const operator = callerFor('operator', { run_id: 'cli' });
@@ -38,7 +40,7 @@ const vecOf = (text) => {
   if (text.includes('When:')) v[DIM - 2] = 0.5; // a v2 text sits a little off the axis its words name, so a rebuilt vector differs from the whole-text one
   return v;
 };
-const embedder = { embed: async (text, o) => { asked.push({ text, as: o && o.as }); return { embedding: vecOf(text), embedding_model: 'fake', embedding_revision: 'r', dim: DIM }; } };
+const embedder = { embed: async (text, o) => { asked.push({ text, as: o && o.as }); if (embedderDown) throw Object.assign(new Error('the embedder is down'), { code: 'E_MODEL_ABSENT', detail: { embedder: true, cause: 'absent' } }); return { embedding: vecOf(text), embedding_model: 'fake', embedding_revision: 'r', dim: DIM }; } };
 
 const git = (...a) => execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...a], { cwd: repo, encoding: 'utf8' }).trim();
 const put = (rel, text) => { fs.mkdirSync(path.dirname(path.join(repo, rel)), { recursive: true }); fs.writeFileSync(path.join(repo, rel), text); };
@@ -67,7 +69,7 @@ before(async () => {
   put('docs/u.md', 'untracked\n');
 
   store = new Store(`${dir}/memory.db`, { stamp: true });
-  E = new Engine({ dataDir: dir, store, getEmbedder: async () => embedder, owner: null, establishedBy: 'test' });
+  E = new Engine({ dataDir: dir, store, getEmbedder: async () => embedder, owner: { opts: { embedderMode: () => mode, onEmbedderFailure: (ev) => { hookCalls.push(ev); } } }, establishedBy: 'test' });
   await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true }) });
   const row = (id, extra) => call('worker.write', orch, { id, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${id}`, last_event_at: Date.now(), model: 'claude-test-1', ...extra });
   await row('w1', { worktree: repo.replace(/\\/g, '/'), base_sha: baseSha });
@@ -341,4 +343,82 @@ test('resolving a pending note as new with a changed title re-embeds it under it
 test('git status is read without optional locks, so reading a worktree cannot make a lock under a worker', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'core', 'note-paths.cjs'), 'utf8');
   assert.match(src, /'git', '--no-optional-locks', 'status'/);
+});
+
+// ---- a retitle needs the embedder ---------------------------------------------------------------------------------------------
+
+// A pending note: a v2 near-duplicate of the first note of the same marker (the fake vectors make equal markers identical).
+async function pendingNote(marker, title) {
+  await handBack('w1', [note(marker)]);
+  const out = await handBack('w1', [note(marker, { title })]);
+  assert.strictEqual(out.notes[0].state, 'pending');
+  return out.notes[0].id;
+}
+const resolveNew = (id, title) => call('memory.noteResolve', worker('w1'), { resolutions: [{ id, resolve: 'new', title }] });
+
+test('retitle under required: the embedder failing fails the resolve loudly, tells the run\'s guard, and changes nothing', async () => {
+  const id = await pendingNote('K1', 'the K1 loader also skips unlisted fixtures, again');
+  const before = { ...rowOf(id) };
+  mode = 'required'; embedderDown = true; hookCalls.length = 0;
+  try {
+    await assert.rejects(resolveNew(id, 'the K6 loader reads fixtures from the index'), (e) => e.code === 'E_MODEL_ABSENT');
+  } finally { embedderDown = false; }
+  assert.ok(hookCalls.length >= 1, 'the failure reached the run\'s embedder-failure hook');
+  const after = rowOf(id);
+  assert.deepStrictEqual([after.title, after.text_template, after.namespace, Buffer.from(after.embedding).toString('hex')], [before.title, 'v2', 'pending/acme', Buffer.from(before.embedding).toString('hex')]);
+});
+
+test('retitle under keyword: it succeeds, the old vector is dropped (no stale v2 vector), the row records no template, and the result says so', async () => {
+  const id = await pendingNote('K2', 'the K2 loader also skips unlisted fixtures, again');
+  mode = 'keyword'; embedderDown = true;
+  let out;
+  try { out = await resolveNew(id, 'the K7 loader reads fixtures from the index'); } finally { embedderDown = false; mode = 'required'; }
+  assert.strictEqual(out.resolved[0].state, 'live');
+  assert.strictEqual(out.resolved[0].embedded, false);
+  assert.strictEqual(out.resolved[0].embedder_failure.code, 'E_MODEL_ABSENT');
+  assert.match(out.resolved[0].note, /belay memory embed/);
+  const row = rowOf(id);
+  assert.deepStrictEqual([row.embedding, row.embedding_model, row.dim, row.text_template, row.namespace, row.title], [null, null, null, null, 'project/acme', 'the K7 loader reads fixtures from the index']);
+  // it now shows as unembedded, and the operator's embed picks it up and embeds it as v2 from the new title and its when
+  assert.ok((await call('memory.unembedded', operator, { project: 'acme', list: true })).notes.some((n) => n.id === id));
+  asked.length = 0;
+  const done = await call('memory.embedNote', operator, { id });
+  assert.strictEqual(done.embedded, true);
+  assert.deepStrictEqual(asked.map((a) => a.text), ['the K7 loader reads fixtures from the index\nWhen: load a K2 test fixture']);
+  assert.strictEqual(rowOf(id).text_template, 'v2');
+});
+
+test('retitle under keyword with the embedder up re-embeds as under required', async () => {
+  const id = await pendingNote('K3', 'the K3 loader also skips unlisted fixtures, again');
+  mode = 'keyword';
+  try { const out = await resolveNew(id, 'the K8 loader reads fixtures from the index'); assert.ok(!('embedded' in out.resolved[0])); } finally { mode = 'required'; }
+  assert.strictEqual(rowOf(id).text_template, 'v2');
+  assert.ok(rowOf(id).embedding);
+});
+
+test('retitle under off: the resolve is refused by the memory-off gate, as every memory write is', async () => {
+  const id = await pendingNote('K4', 'the K4 loader also skips unlisted fixtures, again');
+  const was = E._memoryOffFn;
+  E._memoryOffFn = () => 'refuse';
+  try { await assert.rejects(resolveNew(id, 'the K9 loader reads fixtures from the index'), (e) => e.code === 'E_LEVER_OFF' || /memory is off/i.test(e.message)); } finally { E._memoryOffFn = was; }
+  assert.strictEqual(rowOf(id).namespace, 'pending/acme');
+});
+
+test('a retitle that fails inside the transaction (a text clash) leaves the old vector and template untouched', async () => {
+  const id = await pendingNote('K5', 'the K5 loader also skips unlisted fixtures, again');
+  // a live row with exactly the text the retitle would make
+  const target = 'the K10 loader reads fixtures from the index';
+  const pending = rowOf(id);
+  const text = [target, ...pending.text.split('\n').slice(1)].join('\n');
+  E.store.store({ namespace: 'pending/acme', worker_id: 'harness', type: 'note', text, title: target, body: { kind: 'lesson', state: 'pending' }, written_by: 'harness' });
+  const before = { hex: Buffer.from(pending.embedding).toString('hex'), tpl: pending.text_template, title: pending.title, text: pending.text };
+  await assert.rejects(resolveNew(id, target), (e) => e.code === 'E_EXISTS');
+  const after = rowOf(id);
+  assert.deepStrictEqual([Buffer.from(after.embedding).toString('hex'), after.text_template, after.title, after.text], [before.hex, before.tpl, before.title, before.text]);
+});
+
+test('an absolute path in a title names the changed file once the worktree root is taken off', () => {
+  assert.deepStrictEqual(NP.namedFiles({ title: 'C:/wt/src/a.js is slow', evidence: [] }, ['src/a.js'], 'C:/wt').named, ['src/a.js']);
+  assert.deepStrictEqual(NP.namedFiles({ title: 'c:/WT/src/a.js is slow', evidence: [] }, ['src/a.js'], 'C:/wt/').named, ['src/a.js'], 'case and a trailing slash do not matter');
+  assert.deepStrictEqual(NP.namedFiles({ title: 'D:/other/src/a.js is slow', evidence: [] }, ['src/a.js'], 'C:/wt').named, [], 'another root is not this worktree');
 });

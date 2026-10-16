@@ -243,6 +243,15 @@ class Store {
     return true;
   }
 
+  // A row whose text changed under a keyword-mode run: its vector was made from the old text, so it is dropped rather than kept stale, and
+  // the row records no template (belay memory embed later embeds it from its new text, as v2 where it has a when). Inside the caller's transaction.
+  clearEmbedding(id) {
+    const row = this.p('SELECT namespace FROM memory_entries WHERE id = ?').get(id);
+    if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
+    this.p('UPDATE memory_entries SET embedding = NULL, embedding_model = NULL, embedding_revision = NULL, dim = NULL, text_template = NULL WHERE id = ?').run(id);
+    this.cache.delete(row.namespace);
+  }
+
   // `belay memory embed --reembed`: a row that has a vector gets a new one, made from another template of its text. The
   // namespace's model binding is checked as setEmbedding does, so a vector of another model or dimension is refused. updated_at is left alone (a re-embed is not an edit). Inside
   // the caller's transaction. Returns { template } (the template the row had), or false when the row has no vector.
