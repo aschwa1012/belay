@@ -48,7 +48,7 @@ test('lever off: the orchestrator listing is byte-identical to the listing witho
     assert.strictEqual(JSON.stringify(r.list), baseline, `levers ${levers}`);
     assert.ok(!r.list.some((t) => t.name === 'knowledge_ask'));
   }
-  assert.strictEqual(bytes(tools.toolsFor('orchestrator')), 10138, 'the off listing is the 10,138 bytes the budget was last measured at (9,829 before the paired write/search contract)');
+  assert.strictEqual(bytes(tools.toolsFor('orchestrator')), 9981, 'the off listing is the 9,981 bytes the budget was last measured at (9,829 before the paired write/search contract)');
 });
 
 test('lever on: knowledge_ask is listed, last, and the listing is under the orchestrator budget', async () => {

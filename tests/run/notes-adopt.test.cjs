@@ -109,3 +109,31 @@ test('contractTail follows the worker\'s own decision, whatever the levers say n
   assert.strictEqual(await MP.contractTail(ctx, null), '');
   assert.ok((await MP.contractTail(ctx, { notesOn: true })).includes(NC.question(ctx.memoryLevers)));
 });
+
+test('memory_queries are kept on the worker row, so a relaunch by another adapter embeds the same index queries', async () => {
+  const sb = sandbox();
+  const seen = [];
+  const core = createFakeCore({ runId: 'run-fake' });
+  core.run = { get: async () => ({ run: { memory_levers: JSON.stringify({ first_message_index: true, project: 'demo' }) } }) };
+  core.memory.index = async () => ({ text: 'INDEX a', bytes: 7, row_ids: ['a'], dropped: 0, over_budget: false, sha256: 'f'.repeat(64), relevance: { semantic: 'ran', keyword: 'ran', semantic_contributed: true } });
+  core.memory.events = async () => ({ events: [] });
+  core.memory.recordEvent = async (a) => a;
+  core.memory.embedQuery = async (a) => { seen.push(a); return { queries: [{ label: 'task', ok: true, ms: 1, query_embedding: [0, 1, 0], embedding_model: 'stub', dim: 3 }], on_embedder_failure: 'required', embed_ms: 1 }; };
+  const first = mgr(sb, core);
+  let second = null;
+  try {
+    await first.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'wq', task_id: 't1', memory_queries: ['add a migration', 'dedupe emails'] });
+    await first._waitTurn('wq', SLOW);
+    await sleep(120);
+    await waitCreated(core, 'wq');
+    assert.deepStrictEqual(core.currentWorker('wq').memory_queries, ['add a migration', 'dedupe emails'], 'the row carries them');
+    await first.stop({ worker_id: 'wq', mode: 'kill', timeout_ms: 8000 });
+    second = mgr(sb, core); // a new adapter: nothing in memory but the store
+    seen.length = 0;
+    await second.restart({ worker_id: 'wq', first_turn_timeout_ms: SLOW });
+    assert.deepStrictEqual(second._worker('wq').indexQueries, ['add a migration', 'dedupe emails']);
+    assert.ok(seen.length >= 1 && seen.every((a) => JSON.stringify(a.extra_texts) === JSON.stringify(['add a migration', 'dedupe emails'])), `the relaunch embedded the same queries: ${JSON.stringify(seen)}`);
+  } finally {
+    for (const m of [first, second]) { if (m) { try { await m.shutdown(); } catch { /* best effort */ } } }
+  }
+});

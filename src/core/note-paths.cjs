@@ -52,18 +52,31 @@ function evidencePaths(evidence, worktree) {
   return out;
 }
 
-// { applies_to, applies_to_from, counts }: the merged list and, aligned with it, where each entry came from.
+// The task's whole diff is not the note's: a task writes several unrelated notes, and giving each every file would make them look
+// alike to the path facts. A diff file belongs to a note only when the note's own title or evidence names it (its full path, or its
+// file name when that is at least 4 characters). The whole list is kept apart, as `task_files`.
+const TASK_FILES_MAX = 30;
+function namedBy(note, p) {
+  const hay = [note.title, ...(note.evidence || []).flatMap((e) => [e && e.where, e && e.saw])].filter((t) => typeof t === 'string').join(' ').split('\\').join('/').toLowerCase();
+  const full = p.toLowerCase();
+  const base = full.slice(full.lastIndexOf('/') + 1);
+  return hay.includes(full) || (base.length >= 4 && hay.includes(base));
+}
+
+// { applies_to, applies_to_from, task_files, counts }: the note's own paths and, aligned with them, where each came from
+// (worker, evidence, or diff for a diff file the note names); and the task's whole diff list, apart.
 function merge(note, diff, worktree) {
   const seen = new Map();
   const add = (p, from) => { const k = norm(p); if (k && !seen.has(k)) seen.set(k, from); };
   for (const p of note.applies_to || []) add(p, 'worker');
   for (const p of evidencePaths(note.evidence, worktree)) add(p, 'evidence');
-  for (const p of (diff && diff.paths) || []) add(p, 'diff');
+  const taskFiles = (diff && diff.paths) || [];
+  for (const p of taskFiles) if (namedBy(note, p)) add(p, 'diff');
   const all = [...seen.entries()];
   const kept = all.slice(0, APPLIES_MAX);
-  const counts = { total: kept.length, worker: 0, evidence: 0, diff: 0, dropped: all.length - kept.length };
+  const counts = { total: kept.length, worker: 0, evidence: 0, diff: 0, dropped: all.length - kept.length, task_files: taskFiles.length };
   for (const [, from] of kept) counts[from]++;
-  return { applies_to: kept.map(([p]) => p), applies_to_from: kept.map(([, from]) => from), counts };
+  return { applies_to: kept.map(([p]) => p), applies_to_from: kept.map(([, from]) => from), task_files: taskFiles.slice(0, TASK_FILES_MAX), counts };
 }
 
-module.exports = { workerDiff, evidencePaths, merge, APPLIES_MAX };
+module.exports = { workerDiff, evidencePaths, merge, APPLIES_MAX, TASK_FILES_MAX };

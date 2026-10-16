@@ -182,6 +182,9 @@ const MIGRATIONS = [
   // The template version of the text a row's vector was made from: v1 is the text as stored, v2 a note's title and When: line
   // (memory-notes.cjs embedText). Null on a row embedded before the column, and read as v1. Set on every embedded row.
   'ALTER TABLE memory_entries ADD COLUMN text_template TEXT',
+  // The orchestrator's memory_queries for a worker (JSON text, nullable), kept on its row so a relaunch or a resume in another
+  // process embeds the same index queries the spawn did.
+  'ALTER TABLE worker ADD COLUMN memory_queries TEXT',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot

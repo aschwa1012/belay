@@ -85,22 +85,31 @@ test('a new note is embedded from exactly "{title}\\nWhen: {when}", keyword-inde
   assert.ok(!asked[0].text.includes('src/K1.js'), 'evidence is not embedded');
   assert.ok(!asked[0].text.includes('subjects'), 'subjects are not embedded');
   assert.strictEqual(r.text_template, 'v2');
-  assert.strictEqual(r.text, 'the K1 loader skips unlisted fixtures\nWhen: load a K1 test fixture\nsubjects: loader; fixtures\napplies to: src/K1.js; a.txt; docs/u.md; src/new.js');
+  assert.strictEqual(r.text, 'the K1 loader skips unlisted fixtures\nWhen: load a K1 test fixture\nsubjects: loader; fixtures\napplies to: src/K1.js');
   assert.strictEqual(r.text, NT.keywordText({ ...note('K1', { subjects: ['loader', 'fixtures'] }), applies_to: bodyOf(r.id).applies_to }));
   assert.strictEqual(bodyOf(r.id).when, 'load a K1 test fixture');
   assert.ok(r.embedding, 'embedded');
 });
 
-test('applies_to is derived from the worktree diff and the evidence, merged with what the worker stated, and says where each came from', async () => {
-  const out = await handBack('w1', [note('K2', { applies_to: ['worker/chosen.js'] })]);
+test('applies_to is the worker\'s paths, the evidence paths and only the diff files the note names; the whole diff is kept apart as task_files', async () => {
+  const out = await handBack('w1', [note('K2', { applies_to: ['worker/chosen.js'], title: 'src/new.js is numbered by filename' })]);
   const b = bodyOf(out.notes[0].id);
-  // worker first, then evidence (src/K2.js, the :12 stripped), then the diff sorted: committed since the base, edited, untracked.
-  assert.deepStrictEqual(b.applies_to, ['worker/chosen.js', 'src/K2.js', 'a.txt', 'docs/u.md', 'src/new.js']);
-  assert.deepStrictEqual(b.applies_to_from, ['worker', 'evidence', 'diff', 'diff', 'diff']);
-  assert.deepStrictEqual(out.notes[0].applies_to, { total: 5, worker: 1, evidence: 1, diff: 3, dropped: 0 });
-  // the worker never has to type a path
-  const bare = await handBack('w3', [note('K3', { applies_to: undefined })]);
-  assert.deepStrictEqual(bodyOf(bare.notes[0].id).applies_to, ['src/K3.js', 'a.txt', 'docs/u.md', 'src/new.js']);
+  // worker first, then evidence (src/K2.js, the :12 stripped), then the one diff file the title names.
+  assert.deepStrictEqual(b.applies_to, ['worker/chosen.js', 'src/K2.js', 'src/new.js']);
+  assert.deepStrictEqual(b.applies_to_from, ['worker', 'evidence', 'diff']);
+  assert.deepStrictEqual(out.notes[0].applies_to, { total: 3, worker: 1, evidence: 1, diff: 1, dropped: 0, task_files: 3 });
+  // the whole diff (committed since the base, edited, untracked), sorted, with its source
+  assert.deepStrictEqual(b.task_files, ['a.txt', 'docs/u.md', 'src/new.js']);
+  assert.strictEqual(b.task_files_from, 'diff');
+  // the worker never has to type a path; and two unrelated notes of one task do not share applies_to through the diff
+  const t = await call('task.create', orch, { spec: `job ${++seq}` });
+  const a = await call('task.assign', orch, { task_id: t.id, worker_id: 'w3' });
+  const two = await call('lease.release', worker('w3'), { lease_id: a.new_lease.id, notes: [note('K3', { applies_to: undefined }), note('K13', { applies_to: undefined })] });
+  const [x, y] = two.notes.map((n) => bodyOf(n.id));
+  assert.deepStrictEqual(x.applies_to, ['src/K3.js']);
+  assert.deepStrictEqual(y.applies_to, ['src/K13.js']);
+  assert.deepStrictEqual(x.task_files, y.task_files, 'both know the task\'s files');
+  assert.ok(!x.applies_to.some((p) => y.applies_to.includes(p)), 'but share no applies_to path');
 });
 
 test('a worktree that cannot be read is named in the result and the note is stored with its evidence paths only', async () => {
@@ -119,12 +128,16 @@ test('a worktree that cannot be read is named in the result and the note is stor
   assert.ok(e.error, 'git said it is not a repository');
 });
 
-test('merge: worker paths first, the cap keeps what a person wrote, and evidence paths are read as paths', () => {
-  const diff = { paths: Array.from({ length: 30 }, (_, i) => `d/${String(i).padStart(2, '0')}.js`) };
-  const m = NP.merge({ applies_to: ['w/one.js'], evidence: [{ where: 'see `src/a.js:3:9`, docs/x.md#L4 and https://example.com/p.html', saw: 'x' }] }, diff);
-  assert.strictEqual(m.applies_to.length, NP.APPLIES_MAX);
-  assert.deepStrictEqual(m.applies_to.slice(0, 3), ['w/one.js', 'src/a.js', 'docs/x.md']);
-  assert.deepStrictEqual(m.counts, { total: 16, worker: 1, evidence: 2, diff: 13, dropped: 17 });
+test('merge: worker paths first, only diff files the note names join them, the whole diff is kept apart, and evidence paths are read as paths', () => {
+  const diff = { paths: Array.from({ length: 40 }, (_, i) => `d/${String(i).padStart(2, '0')}.js`) };
+  const note = { title: 'd/05.js and 07.js disagree', applies_to: ['w/one.js'], evidence: [{ where: 'see `src/a.js:3:9`, docs/x.md#L4 and https://example.com/p.html', saw: 'x' }] };
+  const m = NP.merge(note, diff);
+  assert.deepStrictEqual(m.applies_to, ['w/one.js', 'src/a.js', 'docs/x.md', 'd/05.js', 'd/07.js']);
+  assert.deepStrictEqual(m.applies_to_from, ['worker', 'evidence', 'evidence', 'diff', 'diff']);
+  assert.deepStrictEqual(m.counts, { total: 5, worker: 1, evidence: 2, diff: 2, dropped: 0, task_files: 40 });
+  assert.strictEqual(m.task_files.length, NP.TASK_FILES_MAX, 'the whole diff list is kept, bounded, apart from applies_to');
+  const none = NP.merge({ title: 'nothing about the diff', evidence: [] }, diff);
+  assert.deepStrictEqual(none.applies_to, [], 'a note that names no diff file gets none of them');
   assert.deepStrictEqual(NP.evidencePaths([{ where: 'C:/elsewhere/x.js', saw: '' }, { where: 'the loader', saw: '' }, { where: '../up.js', saw: '' }]), [], 'no absolute, outside or wordy path');
   assert.deepStrictEqual(NP.evidencePaths([{ where: 'D:/proj/wt/src/in.js:4', saw: '' }], 'D:/proj/wt'), ['src/in.js'], 'a worktree-absolute path is made relative');
 });
@@ -135,7 +148,7 @@ test('the keyword text is searched: the When: line, a subject and a derived path
   const find = async (q) => (await call('memory.search', orch, { query: q, namespace: 'project/acme', mode: 'keyword', view: 'index' })).results.map((r) => r.id);
   assert.ok((await find('quarantined widgets')).includes(id), 'by When');
   assert.ok((await find('zebrafish')).includes(id), 'by subject');
-  assert.ok((await find('docs/u.md')).includes(id), 'by a derived path');
+  assert.ok((await find('src/K5.js')).includes(id), 'by a derived path');
 });
 
 test('every embedded row records its template: v1 for plain text, v2 for a new note; an unembedded row records none', async () => {

@@ -126,7 +126,7 @@ async function prepare(E, caller, args) {
   for (const [i, n] of notes.entries()) {
     // Project rows are always scrubbed (ADR 0040 section 3); a title made longer by redaction is refused like any long one.
     const ap = NP.merge(n, diff, worker && worker.worktree);
-    const s = M.scrub(true, { text: NT.keywordText({ ...n, applies_to: ap.applies_to }), title: n.title, body: { when: n.when, evidence: n.evidence, applies_to: ap.applies_to, applies_to_from: ap.applies_to_from, subjects: n.subjects } });
+    const s = M.scrub(true, { text: NT.keywordText({ ...n, applies_to: ap.applies_to }), title: n.title, body: { when: n.when, evidence: n.evidence, applies_to: ap.applies_to, applies_to_from: ap.applies_to_from, task_files: ap.task_files, task_files_from: 'diff', subjects: n.subjects } });
     const checked = NT.checkNote({ ...n, title: s.title, when: s.body.when }, i);
     const title = checked.title;
     const embedTxt = NT.embedText({ title, when: checked.when }, NT.TEMPLATE_NEW); // what the vector is made from; the keyword text is s.text
@@ -172,7 +172,7 @@ function commit(E, caller, prep, { task_id }) {
       return { index: p.index, id: clash.id, action: 'duplicate', state: 'duplicate', namespace: ns, title: p.title, existing_type: clash.type, same_writer: clash.written_by === by, note: `${ns} already holds a ${clash.type} row with this text${clash.written_by === by ? '' : ' (another writer\'s)'}, so nothing was written and there is nothing for you to resolve` };
     }
     const body = {
-      kind: p.kind, basis: p.basis, when: p.body.when, evidence: p.body.evidence, applies_to: p.body.applies_to, applies_to_from: p.body.applies_to_from, subjects: p.body.subjects,
+      kind: p.kind, basis: p.basis, when: p.body.when, evidence: p.body.evidence, applies_to: p.body.applies_to, applies_to_from: p.body.applies_to_from, task_files: p.body.task_files, task_files_from: p.body.task_files_from, subjects: p.body.subjects,
       model: p.model, state: pending ? 'pending' : 'live', seen_in: [], seen_total: 0, reported_wrong: [],
       ...(pending ? { matches: p.matches } : {}),
     };
