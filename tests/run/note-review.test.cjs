@@ -33,7 +33,7 @@ const embed = async (text) => {
   v[m ? Number(m[1]) : DIM - 1] = 1;
   return { embedding: v, embedding_model: 'fake', embedding_revision: 'r', dim: DIM };
 };
-const note = (marker) => ({ kind: 'lesson', title: `the ${marker} loader skips unlisted fixtures`, basis: 'observed', evidence: [{ where: `src/${marker}.js`, saw: 'never read' }], applies_to: [`src/${marker}.js`], subjects: [marker] });
+const note = (marker) => ({ kind: 'lesson', title: `the ${marker} loader skips unlisted fixtures`, when: `add a ${marker} test fixture`, basis: 'observed', evidence: [{ where: `src/${marker}.js`, saw: 'never read' }], applies_to: [`src/${marker}.js`], subjects: [marker] });
 const toolResult = (text) => `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu', name: 'Bash', input: {} }] } })}\n${JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu', content: text }] } })}\n`;
 const STREAM_LINE = 'fixtures/unlisted.json was never opened';
 

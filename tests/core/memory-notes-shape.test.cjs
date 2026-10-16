@@ -10,7 +10,7 @@ const N = core('memory-notes.cjs');
 const L = core('memory-levers.cjs');
 
 const good = (over = {}) => ({
-  kind: 'lesson', title: 'the loader skips fixtures not listed in the index file', basis: 'observed',
+  kind: 'lesson', title: 'the loader skips fixtures not listed in the index file', when: 'add a test fixture', basis: 'observed',
   evidence: [{ where: 'test/loader.js', saw: 'an unlisted fixture was never loaded' }], applies_to: ['test/fixtures/index.json'], subjects: ['fixture loader'], ...over,
 });
 const refused = (fn, re) => assert.throws(fn, e => e.code === 'E_NOTE_SHAPE' && re.test(e.message), String(re));
@@ -34,6 +34,41 @@ test('a missing title, kind or basis is refused', () => {
   refused(() => N.checkNote(good({ kind: 'fact' })), /kind/);
   refused(() => N.checkNote(good({ basis: undefined })), /basis is required/);
   refused(() => N.checkNote(good({ basis: 'guessed' })), /basis/);
+});
+
+test('when is required, one line, and at most 160 bytes: refused by name, never truncated', () => {
+  assert.strictEqual(N.checkNote(good({ when: '  add or number\n a migration ' })).when, 'add or number a migration');
+  assert.strictEqual(N.checkNote(good({ when: 'a'.repeat(160) })).when.length, 160);
+  refused(() => N.checkNote(good({ when: 'a'.repeat(161) })), /when is 161 bytes.*never truncated/);
+  refused(() => N.checkNote(good({ when: 'é'.repeat(81) })), /162 bytes/);
+  refused(() => N.checkNote(good({ when: undefined })), /when is required/);
+  refused(() => N.checkNote(good({ when: '   ' })), /when is empty/);
+  refused(() => N.checkNote(good({ when: 4 })), /when is required/);
+});
+
+test('a note carries at most three subjects', () => {
+  assert.strictEqual(N.checkNote(good({ subjects: ['a', 'b', 'c'] })).subjects.length, 3);
+  refused(() => N.checkNote(good({ subjects: ['a', 'b', 'c', 'd'] })), /at most 3/);
+  assert.deepStrictEqual(N.checkNote(good({ subjects: undefined })).subjects, []);
+});
+
+test('the v2 embedding text and the v2 keyword text are exact, and kept apart', () => {
+  const n = N.checkNote(good({ title: 'migrations are numbered by filename', when: 'add or number a migration', subjects: ['migrations', 'db'], applies_to: ['db/migrate', 'db/schema.sql'] }));
+  assert.strictEqual(N.embedText(n), 'migrations are numbered by filename\nWhen: add or number a migration');
+  assert.strictEqual(N.embedText(n, 'v2'), N.embedText(n));
+  assert.strictEqual(N.keywordText(n), 'migrations are numbered by filename\nWhen: add or number a migration\nsubjects: migrations; db\napplies to: db/migrate; db/schema.sql');
+  assert.strictEqual(N.noteText(n), N.keywordText(n), 'the stored text of a note row is its keyword text');
+  assert.ok(!N.embedText(n).includes('test/loader.js'), 'evidence is not embedded');
+  const bare = N.checkNote(good({ subjects: undefined, applies_to: undefined }));
+  assert.strictEqual(N.keywordText(bare), 'the loader skips fixtures not listed in the index file\nWhen: add a test fixture');
+});
+
+test('a note stored before when existed keeps its one legacy text for both uses', () => {
+  const old = { kind: 'lesson', title: 'T', basis: 'observed', evidence: [{ where: 'a.js', saw: 'b' }], applies_to: ['a.js'], subjects: ['s'] };
+  const legacy = 'T\napplies to: a.js\nsubjects: s\nevidence: a.js - b';
+  assert.strictEqual(N.keywordText(old), legacy);
+  assert.strictEqual(N.embedText(old), legacy);
+  assert.throws(() => N.embedText(old, 'v2'), e => e.code === 'E_NOTE_SHAPE');
 });
 
 test('observed needs evidence; inferred and relayed do not', () => {

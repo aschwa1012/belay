@@ -31,7 +31,7 @@ const embed = async (text) => {
   return { embedding: v, embedding_model: 'fake', embedding_revision: 'r', dim: DIM };
 };
 const note = (marker) => ({
-  kind: 'lesson', title: `the ${marker} loader skips unlisted fixtures`, basis: 'observed',
+  kind: 'lesson', title: `the ${marker} loader skips unlisted fixtures`, when: `add a ${marker} test fixture`, basis: 'observed',
   evidence: [{ where: `src/${marker}.js`, saw: 'the unlisted file was never read' }], applies_to: [`src/${marker}.js`], subjects: [marker],
 });
 let useSeq = 0;

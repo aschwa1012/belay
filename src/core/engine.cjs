@@ -101,6 +101,10 @@ const METHODS = {
   'memory.stats': { roles: ALL, kind: 'read', fn: memory.stats },
   // The notes stored without a vector, counted (and listed on request) by a plain read; status, notices and the panel show the count.
   'memory.unembedded': { roles: ALL, kind: 'read', fn: lazy('./notes-unembedded.cjs', 'unembedded') },
+  // `belay memory embed --reembed`: which notes have a vector made from another template, and which of those can be rebuilt (a read).
+  'memory.retemplate': { roles: ['operator'], kind: 'read', fn: lazy('./notes-unembedded.cjs', 'retemplate') },
+  // The project's most used note subjects, for the hand-back question to offer a worker (a read; the run manager asks at spawn).
+  'memory.noteSubjects': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./memory-subjects.cjs', 'noteSubjects') },
   // `belay memory embed`: one such note gets its vector and the near-duplicate check its hand-back skipped. The operator starts it; nothing else calls it.
   'memory.embedNote': { roles: ['operator'], kind: 'write', fn: lazy('./methods-memory-embed.cjs', 'embedNote') },
   // build 12b E2: start the embedder child and its load ahead of first use (the run's warm-up), so the

@@ -179,6 +179,12 @@ const MIGRATIONS = [
   // ADR 0034 amendment 1: the directory the run's belay.config.json lives in (or is created in), so a resume writes the operator's
   // choice of embedder mode into the run's own project and never into whatever folder the CLI was run from.
   'ALTER TABLE run ADD COLUMN project_dir TEXT',
+  // The template version of the text a row's vector was made from: v1 is the text as stored, v2 a note's title and When: line
+  // (memory-notes.cjs embedText). Null on a row embedded before the column, and read as v1. Set on every embedded row.
+  'ALTER TABLE memory_entries ADD COLUMN text_template TEXT',
+  // The orchestrator's memory_queries for a worker (JSON text, nullable), kept on its row so a relaunch or a resume in another
+  // process embeds the same index queries the spawn did.
+  'ALTER TABLE worker ADD COLUMN memory_queries TEXT',
   // The run's CURRENT on_embedder_failure mode (required, keyword or off): written by run.attach at launch and by run.setEmbedderMode when a
   // resume switches it, so a reader without the owner's guard (a copy fallback) sees the live mode. Null reads as the default, required.
   'ALTER TABLE run ADD COLUMN embedder_mode TEXT',

@@ -37,7 +37,7 @@ function load(E, id) {
 function noteFacts(note) {
   const b = note.b;
   return {
-    id: note.id, namespace: note.namespace, kind: b.kind || null, basis: b.basis || null, title: cut(note.title, 200), text: cut(note.text, TEXT_CUT),
+    id: note.id, namespace: note.namespace, kind: b.kind || null, basis: b.basis || null, title: cut(note.title, 200), when: typeof b.when === 'string' ? cut(b.when, 200) : null, text: cut(note.text, TEXT_CUT),
     evidence: (b.evidence || []).slice(0, 5), applies_to: b.applies_to || [], subjects: b.subjects || [],
     written_by: note.written_by, worker_id: note.worker_id || null, task_id: note.task_id || null, run_id: note.run_id || null,
     status: note.status || 'unverified', status_receipt: note.status_receipt || null, created_at: note.created_at,
