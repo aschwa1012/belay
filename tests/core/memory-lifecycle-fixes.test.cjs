@@ -18,7 +18,7 @@ const review = (verdicts) => T.call(T.who.harness('apply'), 'memory.reviewApply'
 const hold = async (e) => (await scrub([e])).applied[0].held;
 const wrong = (id, over = {}) => ({ id, action: 'hold', kind: 'wrong', ground: 'report_confirmed', reason: 'the loader does throw', cites: [T.cite], ...over });
 const dup = (id, of) => ({ id, action: 'hold', kind: 'duplicate', of, ground: 'same_claim', reason: 'same claim', cites: [T.cite] });
-const archiveV = (id) => ({ id, verdict: 'archive', reason: 'confirmed', cites: [T.cite] });
+const archiveV = (id) => ({ id, verdict: 'archive', reason: 'confirmed', cites: [T.cite], same_claim: true });
 const count = () => T.store.p('SELECT COUNT(*) AS n FROM memory_entries').get().n;
 const tool = () => T.who.tool('apply');
 
