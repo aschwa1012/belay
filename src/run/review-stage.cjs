@@ -31,7 +31,8 @@ function buildBrief({ runId, project, held }) {
     '# Archive review brief', '',
     `Run: ${runId}   Project: ${project}   Held marks: ${held.length}`,
     'Each entry is one held note. "files" are the repository files the mark cites, saved as they were at the mark\'s head commit.',
-    'target_review_verified = a review confirmed this note earlier: weigh a mark against it with care.', '',
+    'target_review_verified = a review confirmed this note earlier: weigh a mark against it with care.',
+    'For a duplicate mark, "note" and "of_note" are both given in full: archive only if they make the same claim and do not contradict (same_claim: true), else release.', '',
     '```json', JSON.stringify(held, null, 1), '```', '',
   ].join('\n');
 }
