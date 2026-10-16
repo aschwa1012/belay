@@ -67,7 +67,7 @@ test('archive moves the note to archive/ keeping its id, out of the index and ou
   assert.ok(!after.row_ids.includes(n) && after.row_ids.includes(keep), 'archived notes leave the index candidate set');
   const hits = await T.call(T.who.tool('apply'), 'memory.search', { query: 'turnstile gating', mode: 'keyword', namespace: `project/${PROJECT}` });
   assert.ok(!hits.results.some(x => x.id === n) && hits.results.some(x => x.id === keep), 'and out of search');
-  const inArchive = await T.call(T.who.tool('apply'), 'memory.search', { query: 'turnstile gating', mode: 'keyword', namespace: `archive/${PROJECT}` });
+  const inArchive = await T.call({ ...T.who.tool('apply'), channel: 'harness' }, 'memory.search', { query: 'turnstile gating', mode: 'keyword', namespace: `archive/${PROJECT}` });
   assert.ok(inArchive.results.some(x => x.id === n), 'it is kept and can still be read by naming the archive');
 });
 

@@ -130,6 +130,11 @@ async function offReceipt(ctx, w, emb) {
   await record(ctx, w, { kind: 'index_injected', ok: 1, row_ids: [], bytes: 0, dropped: 0, over_budget: 0, message: JSON.stringify({ hybrid: false, memory: 'off', queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), ...(emb.failure ? { failure: { code: emb.failure.code, message: String(emb.failure.message || '').slice(0, 160) } } : {}) }) });
 }
 
+// What a worker is told when its first-message index was refused (E_INDEX_BOUND, E_SEMANTIC_REQUIRED): belay's own words, no note text.
+function noIndexNotice(e) {
+  return `NO MEMORY INDEX WAS INJECTED into this message: the index was refused (${codeOf(e)}: ${String((e && e.message) || e).slice(0, 240)}). This is not a pause and your task is unchanged. Use the memory_search tool to look for what the task may touch before you start, and do not assume that the project has no memory on it.`;
+}
+
 // The index text for this worker's launch, or '' (lever off, no rows, or a failed call). The event is the
 // receipt either way once the lever is on. `prompt`, when the caller has it, is the keyword query (the core adds the task's
 // spec on its own); the vectors come from the task's text (embedForIndex), the same at a spawn and at a relaunch.
@@ -154,9 +159,13 @@ async function indexBlock(w, ctx, prompt, given) {
     });
   } catch (e) {
     noteError(w, 'memory.index', e);
+    const refusal = codeOf(e) === 'E_INDEX_BOUND' || codeOf(e) === 'E_SEMANTIC_REQUIRED';
+    if (refusal) await record(ctx, w, { kind: 'index_bound', ok: 0, code: codeOf(e), message: JSON.stringify({ refused: true, message: String((e && e.message) || e).slice(0, 300) }) });
     await record(ctx, w, { kind: 'index_injected', ok: 0, code: codeOf(e), message: JSON.stringify({ hybrid: false, queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), failure: { code: codeOf(e), message: String((e && e.message) || e).slice(0, 160) } }) });
-    return '';
+    // A refusal under `required` is not fixed by a pause, so the worker still starts. It is told plainly that it has no index and why.
+    return refusal ? noIndexNotice(e) : '';
   }
+  if (got.candidates && got.candidates.degraded) await record(ctx, w, { kind: 'index_bound', ok: 0, code: 'E_INDEX_BOUND', message: JSON.stringify({ refused: false, ...got.candidates.degraded }) });
   const rel = got.relevance || {};
   const hybrid = rel.semantic_contributed === true;
   const semFailure = emb.embeddings.length && !hybrid && rel.semantic && typeof rel.semantic === 'object' ? rel.semantic : null;
