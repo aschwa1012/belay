@@ -281,3 +281,31 @@ test('when the guard ENDS the run (a canary or E_MODEL_CHANGED), the refused spa
   }
 });
 
+
+// ---- the orchestrator's situation lines: worker_spawn memory_queries ---------------------------------------------------
+
+test('through the manager: memory_queries reach memory.embedQuery as extra_texts, beside the task', async () => {
+  const seen = [];
+  const embed = async (a) => { seen.push(a); return { queries: [okQuery(), okQuery('extra:1', 5), okQuery('extra:2', 5)], on_embedder_failure: 'required', embed_ms: 20 }; };
+  await withManager(embed, async (m, sb, core) => {
+    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w1', task_id: 't1', memory_queries: ['add or number a migration', '  dedupe   email addresses '] });
+    assert.deepStrictEqual(seen[0].extra_texts, ['add or number a migration', 'dedupe email addresses'], 'trimmed task lines, in order');
+    assert.strictEqual(seen[0].task_id, 't1');
+    assert.deepStrictEqual(m._worker('w1').indexQueries, seen[0].extra_texts);
+    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w2', task_id: 't1' });
+    assert.ok(!('extra_texts' in seen[1]), 'none given, none sent');
+  });
+});
+
+test('memory_queries are refused before anything is written: more than 4, a blank line, a line over 160 bytes', async () => {
+  await withManager(okEmbed, async (m, sb, core) => {
+    const spawn = (memory_queries, id) => m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: id, task_id: 't1', memory_queries });
+    await assert.rejects(spawn(['a', 'b', 'c', 'd', 'e'], 'q1'), (e) => e.code === 'E_ARGS' && /at most 4/.test(e.message));
+    await assert.rejects(spawn(['ok', '   '], 'q2'), (e) => e.code === 'E_ARGS' && /memory_queries\[1\]/.test(e.message));
+    await assert.rejects(spawn(['x'.repeat(161)], 'q3'), (e) => e.code === 'E_ARGS' && /161 bytes/.test(e.message));
+    await assert.rejects(spawn('not a list', 'q4'), (e) => e.code === 'E_ARGS');
+    assert.ok(!core.calls.some((c) => c.method === 'worker.write'), 'no row was written for a refused spawn');
+    const T = require('../../src/mcp/tools.cjs');
+    assert.doesNotThrow(() => T.validateArgs('worker_spawn', { substrate: 'claude-code', worktree: '/w', prompt: 'p', memory_queries: ['a'] }));
+  });
+});

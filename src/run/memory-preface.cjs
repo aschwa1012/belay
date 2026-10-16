@@ -177,7 +177,19 @@ async function memoryPreface(w, ctx, prompt, emb) {
 // message (a worker reads what it must do last); '' with the lever off, so the message is the one it always was.
 async function contractTail(ctx, w) {
   if (!w || !w.notesOn) return ''; // decided with the adapter's argv (manager writeFilesFor), never re-read here
-  return `\n\n${require('./notes-contract.cjs').contract(ctx.memoryLevers)}`;
+  return `\n\n${require('./notes-contract.cjs').contract(ctx.memoryLevers, await projectSubjects(ctx))}`;
+}
+
+// The project's most used note subjects, for the hand-back question to offer (memory.noteSubjects: at most about 20, inside a
+// byte cap, chosen by the core). Best effort: a core without the call, or one that fails, offers none and the worker states its own.
+async function projectSubjects(ctx) {
+  const project = ctx.memoryLevers && ctx.memoryLevers.project;
+  const memory = ctx.core && ctx.core.memory;
+  if (!project || !memory || typeof memory.noteSubjects !== 'function') return [];
+  try {
+    const r = await memory.noteSubjects({ project });
+    return Array.isArray(r && r.subjects) ? r.subjects.map((s) => s.subject) : [];
+  } catch { return []; }
 }
 
 // A relaunch (replace or parked resume): the same index minus the rows already shown, after the relaunch's own text.

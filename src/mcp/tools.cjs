@@ -100,7 +100,7 @@ const BOTH = [
   },
   {
     name: 'memory_search',
-    description: 'Search memory; view index returns ids and titles only. Result names modes_run, modes_failed and absence_established; absence_established false means not searched fully.',
+    description: 'Search memory. Describe what you are about to do as one short task line, not what you expect to find; name files or symbols. Several short queries beat one long one. View index returns ids and titles only. Result names modes_run, modes_failed and absence_established; absence_established false means not searched fully.',
     inputSchema: S({
       query: str('Natural language'),
       namespace: str(),
@@ -168,6 +168,7 @@ const ORCHESTRATOR = [
       model: str(),
       agent_type: { type: 'string', enum: WORKER_TYPES, description: 'Configured model and effort default' },
       effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      memory_queries: strs('1 to 3 task lines naming the situations the worker will be in, each max 160 bytes'),
       allowed_tools: strs(),
       permission_mode: str(),
       startup_timeout_ms: int('default 60000'),

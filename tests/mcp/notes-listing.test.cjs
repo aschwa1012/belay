@@ -11,9 +11,10 @@ const { launch, sandboxDir, runArgv, BIN } = require('./rpc.cjs');
 
 const bytes = (list) => Buffer.byteLength(JSON.stringify(list), 'utf8');
 
-test('without the flag the worker and orchestrator listings are byte-identical to what they were', () => {
-  assert.strictEqual(tools.listingBytes('worker'), 4965);
-  assert.strictEqual(tools.listingBytes('orchestrator'), 9829);
+test('without the flag the worker and orchestrator listings are what the notes contract left them', () => {
+  // 4,965 and 9,829 before the paired write/search contract added the search guidance to memory_search (both roles) and memory_queries to worker_spawn (orchestrator).
+  assert.strictEqual(tools.listingBytes('worker'), 5116);
+  assert.strictEqual(tools.listingBytes('orchestrator'), 10138);
   assert.deepStrictEqual(tools.toolsFor('worker', { notes: false }), tools.toolsFor('worker'));
   assert.deepStrictEqual(tools.toolsFor('orchestrator', { notes: true }).slice(0, -2), tools.toolsFor('orchestrator'), 'the orchestrator is given memory_summaries and memory_note_refutation only (summaries-listing.test.cjs)');
 });
@@ -28,7 +29,8 @@ test('with notes on the worker listing fits its 7,168 byte budget, every ordinar
   assert.strictEqual(lr.inputSchema.properties.notes.type, 'array');
   assert.deepStrictEqual(lr.inputSchema.properties.notes.items.properties.basis.enum, ['observed', 'inferred', 'relayed']);
   assert.deepStrictEqual(lr.inputSchema.properties.notes.items.properties.kind.enum, ['lesson', 'flag', 'recurring', 'gotcha']);
-  assert.deepStrictEqual(lr.inputSchema.properties.notes.items.required, ['kind', 'title', 'basis']);
+  assert.deepStrictEqual(lr.inputSchema.properties.notes.items.required, ['kind', 'title', 'when', 'basis']);
+  assert.ok(lr.inputSchema.properties.notes.items.properties.when, 'when is in the schema');
   assert.ok(lr.inputSchema.properties.reported_wrong, 'reported_wrong is in the schema');
   assert.deepStrictEqual(lr.inputSchema.properties.reported_wrong.items.properties.replaced_by.type, ['string', 'null'], 'replaced_by is nullable');
   assert.ok(list.find((t) => t.name === 'memory_note_resolve').inputSchema.properties.resolutions.items.properties.title, 'resolve new takes a changed title');
