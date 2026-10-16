@@ -20,6 +20,7 @@ const { fail } = require('./errors.cjs');
 const { validateSpawnArgs } = require('./spawn-args.cjs');
 const AD = require('./agent-defaults.cjs'); // the config's per-agent-type model and effort defaults
 const MP = require('./memory-preface.cjs'); // ADR 0042: the first-message preface and the memory hooks
+const { NOTE_REVIEW_DRAIN_MS } = require('../core/spawn-bounds.cjs');
 const NR = require('./note-review.cjs'); // wave 4: the notes' review (the reviewer's brief, the short review job)
 // build step 6c: `wait`, `decideBranch`, `restartFirstText` and the resume-window constants moved
 // verbatim into their own files (the 500-line rule); re-exported under the same names below.
@@ -36,6 +37,7 @@ const { createWriteRow } = require('./write-row.cjs');
 // A park's own worst case, the longest one started during a restart's first turn takes to settle (`restart`).
 const PARK_SETTLE_WAIT_MS = INTERRUPT_TIMEOUT_MS + EXIT_TIMEOUT_MS;
 const LIST = require('./list.cjs');
+const { EARLY, createBudget } = require('./restart-budget.cjs');
 const { waitTurnOrLanded } = require('./turn-wait.cjs'); // a turn that ended before the wait began is answered
 
 const { POLL_MS } = require('./exit-hold.cjs');
@@ -415,35 +417,47 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   // arriving during it shares that promise; one after starts its own, so a `stop` during the first turn,
   // then a fresh `restart`, relaunches again rather than returning the first's receipt. Once the relaunch
   // has settled, each caller waits for its own first turn.
-  async function restart({ worker_id, first_turn_timeout_ms = 180000 }) {
+  // ADR 0048: over MCP the call must answer inside MCP_TOOL_TIMEOUT (120 s). `mcp_budget_ms` (set only by the MCP adapter, about
+  // 100 s) is the total this call may spend, the stop, the relaunch and the first turn together. When the relaunch or the first
+  // turn is not done by then the call is not held: it returns `first_turn_awaited: false`, status `not ready yet`, and the
+  // relaunch carries on (the slot is released when it ends, and a failed one writes its own dead row), so the caller waits with
+  // worker_wait as after a spawn. The CLI passes no budget and is unchanged.
+  async function restart({ worker_id, first_turn_timeout_ms = 180000, mcp_budget_ms = null }) {
+    const bud = createBudget(mcp_budget_ms);
+    const { budgeted, left, within } = bud;
     const w = await forWorker(worker_id);
-    let relaunched;
-    if (w.restartInFlight) {
-      relaunched = await w.restartInFlight;
-    } else {
-      const p = LC.runOp(w, 'restart', () => {
+    const oldPid = w.pid;
+    const earlyReceipt = () => ({
+      worker_id, branch: null, reason: null, old_pid: oldPid, new_pid: w.pid === oldPid ? null : w.pid, session_id: w.sessionId, checkpoint_id: w.lastCheckpointId,
+      first_turn_usage: null, first_turn_timed_out: null, first_turn_ended_by: null, worker: W.rowOf(w, w.state, ctx), first_turn_awaited: false,
+      status: 'not ready yet', relaunch_in_flight: true, restart_path: 'early_return', elapsed_ms: bud.elapsed(),
+    });
+    let p = w.restartInFlight;
+    if (!p) {
+      p = LC.runOp(w, 'restart', () => {
         PZ.refuseIfPaused(w);
         return doRestart(w, { first_turn_timeout_ms, awaitFirstTurn: false });
       }, {});
       w.restartInFlight = p;
-      try {
-        relaunched = await p;
-      } finally {
-        if (w.restartInFlight === p) w.restartInFlight = null;
-      }
+      const clear = () => { if (w.restartInFlight === p) w.restartInFlight = null; };
+      p.then(clear, clear);
     }
+    const relaunched = await within(p);
+    if (relaunched === EARLY) { p.catch(() => {}); return earlyReceipt(); }
     // 6e-6 item 2 (carried items 1 and 5): the wait also ends on the worker's own exit (`turn.exited`),
     // never the rest of `first_turn_timeout_ms`. A pause's own interrupt (`turn.paused`) lands well
     // before the park's exit and row write, waited out here too, so `worker` reads `paused`, not `running`.
     // A fast first turn can end while the relaunch still writes its `running` row: read, never waited out.
-    const turn = await waitTurnOrLanded(w, first_turn_timeout_ms);
+    const waitMs = budgeted ? Math.max(1, Math.min(first_turn_timeout_ms, left())) : first_turn_timeout_ms;
+    const turn = await waitTurnOrLanded(w, waitMs);
     if (turn && turn.paused) await W.waitExit(w, PARK_SETTLE_WAIT_MS);
     await w.queue;
+    const base = { ...relaunched, worker: W.rowOf(w, w.state, ctx), checkpoint_id: (turn && turn.checkpoint_id) || w.lastCheckpointId };
+    if (turn === null && budgeted && waitMs < first_turn_timeout_ms) return { ...earlyReceipt(), ...{ relaunch_in_flight: false, branch: relaunched.branch, reason: relaunched.reason, new_pid: relaunched.new_pid, session_id: relaunched.session_id, checkpoint_id: base.checkpoint_id, worker: base.worker } };
     return {
-      ...relaunched, worker: W.rowOf(w, w.state, ctx),
-      checkpoint_id: (turn && turn.checkpoint_id) || w.lastCheckpointId,
+      ...base,
       first_turn_usage: turn && !turn.exited ? turn.usage : null, first_turn_timed_out: turn === null,
-      first_turn_ended_by: turn === null ? 'timeout' : (turn.exited ? 'exit' : 'turn'), first_turn_awaited: true,
+      first_turn_ended_by: turn === null ? 'timeout' : (turn.exited ? 'exit' : 'turn'), first_turn_awaited: true, restart_path: 'awaited', elapsed_ms: bud.elapsed(),
     };
   }
 
@@ -460,7 +474,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     stop, core, clearPoll: () => { if (poll) { clearInterval(poll); poll = null; } },
     markClosed: () => { shutdownFlags.closed = true; },
     markOwnerGone: () => { shutdownFlags.ownerGone = true; return shutdownFlags.paired; },
-    beforeStop: () => NR.drain(ctx, 120000),
+    beforeStop: () => NR.drain(ctx, NOTE_REVIEW_DRAIN_MS),
     onDrained: () => MP.runEnd(ctx),
   });
 

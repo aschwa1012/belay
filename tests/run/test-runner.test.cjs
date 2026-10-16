@@ -129,9 +129,10 @@ test('stopFixturePids really stops a live fixture and its detached grandchild (A
   const env = { ...process.env, H1_PIDS_FILE: pidsFile }; delete env.NODE_TEST_CONTEXT;
   const holder = spawn(process.execPath, [HANG], { env, stdio: 'ignore', windowsHide: true });
   try {
-    for (let i = 0; i < 100 && !fs.existsSync(pidsFile); i++) await sleep(50);
-    assert.ok(fs.existsSync(pidsFile), 'the fixture never wrote its pids');
-    const pids = JSON.parse(fs.readFileSync(pidsFile, 'utf8'));
+    // The fixture writes the file in place, so it can exist before its content does: wait for a parseable file.
+    let pids = null;
+    for (let i = 0; i < 200 && !pids; i++) { try { pids = JSON.parse(fs.readFileSync(pidsFile, 'utf8')); } catch { await sleep(50); } }
+    assert.ok(pids, 'the fixture never wrote its pids');
     await sleep(300);
     assert.ok(P.pidAlive(pids.child) && P.pidAlive(pids.grandchild), 'both fixture pids start alive');
     stopFixturePids(pidsFile);

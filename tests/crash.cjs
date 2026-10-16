@@ -24,15 +24,17 @@ function snapshotSync() {
 }
 
 const noted = new Map(); // pid -> creation time, kept only while its handle was live when the read landed
+const reads = new Map(); // pid -> the read in flight, so a test waits on the real event, never a fixed sleep
+const noteSettled = (handle) => reads.get(handle && handle.pid) || Promise.resolve();
 
 function note(handle, { snapshot = ID.processSnapshot } = {}) { // `snapshot` is a test seam
   if (!handle || typeof handle !== 'object' || !Number.isInteger(handle.pid)) throw new TypeError('note() takes a live child handle, never a bare pid');
   if (!ID.handleLive(handle)) return handle;
   const pid = handle.pid;
-  snapshot().then((s) => {
+  reads.set(pid, snapshot().then((s) => {
     const e = s && s.get(pid);
     if (e && e.created != null && ID.handleLive(handle)) noted.set(pid, e.created); // discarded if the child exited meanwhile
-  }).catch(() => {});
+  }).catch(() => {}));
   return handle;
 }
 
@@ -88,4 +90,4 @@ function noteDescendant(pid) {
   return true;
 }
 
-module.exports = { crash, crashAsync, note, crashDescendant, crashDescendants, noteDescendant, noted };
+module.exports = { crash, crashAsync, note, crashDescendant, crashDescendants, noteDescendant, noted, noteSettled };
