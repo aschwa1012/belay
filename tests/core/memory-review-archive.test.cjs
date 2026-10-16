@@ -18,7 +18,7 @@ const review = (verdicts, extra = {}) => T.call(T.who.harness('apply'), 'memory.
 const hold = async (e) => (await scrub([e])).applied[0].held;
 const wrong = (id, over = {}) => ({ id, action: 'hold', kind: 'wrong', ground: 'report_confirmed', reason: 'contradicted by the code', cites: [T.cite], ...over });
 const dup = (id, of) => ({ id, action: 'hold', kind: 'duplicate', of, ground: 'same_claim', reason: 'same claim', cites: [T.cite] });
-const archiveV = (id, over = {}) => ({ id, verdict: 'archive', reason: 'the code confirms the hold', cites: [T.cite], ...over });
+const archiveV = (id, over = {}) => ({ id, verdict: 'archive', reason: 'the code confirms the hold', cites: [T.cite], same_claim: true, ...over });
 const releaseV = (id) => ({ id, verdict: 'release', reason: 'the code supports the note' });
 const event = (ids, extra = {}) => T.call(T.who.tool('apply'), 'memory.recordEvent', { kind: 'index_injected', worker_id: 'w9', task_id: 'tz', row_ids: ids, ...extra });
 
@@ -27,7 +27,7 @@ test('reviewApply is a harness call, and a verdict needs an active hold', async 
   await assert.rejects(T.call(T.who.tool('apply'), 'memory.reviewApply', { verdicts: [releaseV(n)] }), x => x.code === 'E_ROLE');
   const r = await review([releaseV(n)]);
   assert.strictEqual(r.refused[0].code, 'E_NOT_FOUND');
-  await assert.rejects(review([{ id: n, verdict: 'archive', reason: 'x' }]), x => x.code === 'E_ARGS' && /cites needs/.test(x.message));
+  assert.strictEqual((await review([{ id: n, verdict: 'archive', reason: 'x' }])).refused[0].code, 'E_NOT_FOUND', 'no hold, so nothing to archive, cites or not');
 });
 
 test('release drops the hold and clears the warning; the note was never out of the index set', async () => {
@@ -232,4 +232,75 @@ test('reviewApply re-checks a duplicate against the run\'s notes_match_threshold
   assert.match(r.refused[0].message, /needs 0\.995/);
   const ok = await review([archiveV(near)]);
   assert.strictEqual(ok.applied[0].outcome, 'archived');
+});
+
+const dupNoCites = (id, of, over = {}) => ({ id, action: 'hold', kind: 'duplicate', of, ground: 'same_claim', reason: 'both say the loader must cache by name', ...over });
+
+test('a duplicate hold needs no cites when S4 holds, ignores any given, and is refused when S4 does not hold', async () => {
+  const kept = T.note('nocite kept', { vec: A, created_at: 1000 });
+  const near = T.note('nocite near', { vec: A_NEAR, created_at: 2000 });
+  const r = await scrub([dupNoCites(near, kept)]);
+  assert.strictEqual(r.applied[0].outcome, 'held');
+  assert.deepStrictEqual(JSON.parse(T.row(r.applied[0].held.id).body).cites, [], 'no cites stored');
+  // Cites that are given are ignored: a quote that is in no file does not refuse a duplicate.
+  const kept2 = T.note('nocite kept 2', { vec: A, created_at: 1000 });
+  const near2 = T.note('nocite near 2', { vec: A_NEAR, created_at: 2000 });
+  const r2 = await scrub([dupNoCites(near2, kept2, { cites: [{ where: 'loader.js', quote: 'a line that the file does not contain anywhere' }] })]);
+  assert.strictEqual(r2.applied[0].outcome, 'held');
+  // S4 not shown: dissimilar vectors and no worker report.
+  const far = T.note('nocite far', { vec: B, created_at: 3000 });
+  const rr = await scrub([dupNoCites(far, kept)]);
+  assert.strictEqual(rr.refused[0].code, 'E_PRECONDITION');
+  assert.strictEqual(T.body(far).held, undefined);
+  // A worker report naming the kept note is S4 too.
+  const rep = T.note('nocite reported', { vec: B, created_at: 3000, reported_wrong: [T.report('worker:w2', kept)] });
+  assert.strictEqual((await scrub([dupNoCites(rep, kept)])).applied[0].outcome, 'held');
+  // A reason is required.
+  await assert.rejects(scrub([dupNoCites(T.note('nocite noreason', { vec: A_NEAR }), kept, { reason: ' ' })]), x => x.code === 'E_ARGS');
+});
+
+test('wrong and superseded holds still need cites at the scrub and at the review', async () => {
+  const w = T.note('cites needed wrong', { reported_wrong: [T.report()] });
+  await assert.rejects(scrub([wrong(w, { cites: [] })]), x => x.code === 'E_ARGS' && /cites needs/.test(x.message));
+  const old = T.note('cites needed old', { vec: A, created_at: 1000 }), neu = T.note('cites needed new', { vec: A, created_at: 2000 });
+  await assert.rejects(scrub([{ id: old, action: 'hold', kind: 'superseded', of: neu, ground: 'replaced_by_newer', reason: 'newer', cites: [] }]), x => x.code === 'E_ARGS');
+  await hold(wrong(w));
+  const r = await review([archiveV(w, { cites: [] })]);
+  assert.strictEqual(r.refused[0].code, 'E_CITATION');
+  assert.strictEqual(T.row(w).namespace, `project/${PROJECT}`);
+  assert.strictEqual((await review([archiveV(w)])).applied[0].outcome, 'archived', 'with a cite it archives');
+});
+
+test('reviewApply archives a duplicate only on same_claim true, with no cites, and rechecks S4', async () => {
+  const kept = T.note('same claim kept', { vec: A, created_at: 1000 });
+  const near = T.note('same claim near', { vec: A_NEAR, created_at: 2000 });
+  const h = await hold(dupNoCites(near, kept));
+  for (const over of [{ same_claim: undefined }, { same_claim: false }]) {
+    const r = await review([archiveV(near, { cites: [], ...over })]);
+    assert.strictEqual(r.refused[0].code, 'E_PRECONDITION', JSON.stringify(over));
+    assert.match(r.refused[0].message, /same_claim: true/);
+    assert.strictEqual(T.row(near).namespace, `project/${PROJECT}`);
+  }
+  assert.strictEqual(JSON.parse(T.row(h.id).body).reviews.pop().outcome, 'refused', 'the refusal is a fact on the held row');
+  await assert.rejects(review([archiveV(near, { cites: [], same_claim: 'yes' })]), x => x.code === 'E_ARGS');
+  const ok = await review([archiveV(near, { cites: [] })]);
+  assert.strictEqual(ok.applied[0].outcome, 'archived');
+  assert.strictEqual(T.row(near).namespace, `archive/${PROJECT}`);
+  assert.strictEqual(JSON.parse(T.row(h.id).body).reviews.pop().same_claim, true, 'the verdict records same_claim');
+  // S4 is rechecked at review time: the kept note left the project, so the archive is refused even with same_claim.
+  const kept2 = T.note('same claim kept 2', { vec: A, created_at: 1000 });
+  const near2 = T.note('same claim near 2', { vec: A_NEAR, created_at: 2000 });
+  await hold(dupNoCites(near2, kept2));
+  T.store.p('UPDATE memory_entries SET namespace = ? WHERE id = ?').run(`archive/${PROJECT}`, kept2);
+  const gone = await review([archiveV(near2, { cites: [] })]);
+  assert.strictEqual(gone.refused[0].code, 'E_PRECONDITION');
+});
+
+test('reviewQueue gives a duplicate hold both notes in full', async () => {
+  const kept = T.note(`queue full kept ${'k'.repeat(1900)} KEPT-END`, { vec: A, created_at: 1000 });
+  const near = T.note(`queue full near ${'n'.repeat(1900)} NEAR-END`, { vec: A_NEAR, created_at: 2000 });
+  await hold(dupNoCites(near, kept));
+  const q = await T.call(T.who.harness('apply'), 'memory.reviewQueue', {});
+  const h = q.held.find(x => x.id === near);
+  assert.ok(h.note.text.includes('NEAR-END') && h.of_note.text.includes('KEPT-END'));
 });

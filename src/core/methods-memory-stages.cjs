@@ -170,7 +170,9 @@ async function reviewQueue(E, caller, args) {
       held_row: r.id, id: note.id, kind: b.kind, of: b.of || null, ground: b.ground, reason: cut(b.reason, 500), cites: b.cites || [], facts: b.facts || null,
       run_id: b.run_id || r.run_id, head_sha: b.head_sha || null, marked_at: r.created_at, runs_waited: waited,
       target_review_verified: (note.status || 'unverified') === 'verified' && String(note.status_receipt || '').startsWith('review:'),
-      note: noteFacts(note), of_note: of ? noteFacts(of) : null,
+      // A duplicate is judged on both notes in full, so their text is not cut.
+      note: b.kind === 'duplicate' ? { ...noteFacts(note), text: note.text } : noteFacts(note),
+      of_note: of ? (b.kind === 'duplicate' ? { ...noteFacts(of), text: of.text } : noteFacts(of)) : null,
     });
   }
   const counts = { count: held.length, max_runs_waited: held.reduce((m, h) => Math.max(m, h.runs_waited), 0), review_verified: held.filter(h => h.target_review_verified).length };
