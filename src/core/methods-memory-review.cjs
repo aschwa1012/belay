@@ -34,7 +34,7 @@ function record(E, heldId, entry, patch) {
   });
 }
 
-const review = (ctx, held, v, outcome, extra) => ({ receipt: `review:${ctx.runId}:${held.id}`, run_id: ctx.runId, at: Date.now(), verdict: v.verdict, outcome, reason: v.reason, cites: v.cites, ...extra });
+const review = (ctx, held, v, outcome, extra) => ({ receipt: `review:${ctx.runId}:${held.id}`, run_id: ctx.runId, at: Date.now(), verdict: v.verdict, outcome, reason: v.reason, cites: v.cites, ...(v.same_claim === undefined ? {} : { same_claim: v.same_claim }), ...extra });
 
 function release(E, ctx, held, v) {
   const entry = review(ctx, held, v, 'released');
@@ -74,11 +74,18 @@ async function one(E, ctx, raw, index) {
   if (v.verdict === 'release') { v = { ...v, ...pick(C.redactEntry(v)) }; return E.store.tx(() => release(E, ctx, held, v)); }
   let sources = [];
   try {
-    const own = loadNote(E, v.id);
-    sources = await checkCitations(v.cites, { ...ctx.evidence, head_sha: ctx.evidence.head_sha || held.b.head_sha, own: own ? ownTexts(own) : [] });
-    if (held.b.ground === 'code_contradicts' && !sources.some(s => s.source !== 'stream')) throw err('E_CITATION', 'a hold on the ground code_contradicts is archived on a citation of a file at the head commit', { id: v.id });
+    if (held.b.kind === 'duplicate') {
+      // A duplicate is archived on the reviewer's explicit "same claim, not contradicting" and S4's facts (rechecked in archive()); no cites.
+      if (v.same_claim !== true) throw err('E_PRECONDITION', 'archiving a duplicate needs same_claim: true, the reviewer\'s statement that both notes make the same claim and do not contradict; release it if they differ', { id: v.id });
+      v = { ...v, cites: [] };
+    } else {
+      if (!v.cites.length) throw err('E_CITATION', `archiving a ${held.b.kind} note needs at least one cite { where, quote }, verbatim`, { id: v.id });
+      const own = loadNote(E, v.id);
+      sources = await checkCitations(v.cites, { ...ctx.evidence, head_sha: ctx.evidence.head_sha || held.b.head_sha, own: own ? ownTexts(own) : [] });
+      if (held.b.ground === 'code_contradicts' && !sources.some(s => s.source !== 'stream')) throw err('E_CITATION', 'a hold on the ground code_contradicts is archived on a citation of a file at the head commit', { id: v.id });
+    }
   } catch (e) {
-    if (e.code !== 'E_CITATION') throw e;
+    if (e.code !== 'E_CITATION' && e.code !== 'E_PRECONDITION') throw e;
     v = { ...v, ...pick(C.redactEntry(v)) };
     return E.store.tx(() => {
       const entry = review(ctx, held, v, 'refused', { code: e.code, message: e.message });

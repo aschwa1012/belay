@@ -170,7 +170,7 @@ test('a real duplicate archive hands its sightings over and they count toward th
   const ev = { head_sha: T.head, worktree: T.repo };
   const sc = await T.call(T.who.harness('apply'), 'memory.scrubApply', { scrub: [{ id: dupe, action: 'hold', kind: 'duplicate', of: kept, ground: 'same_claim', reason: 'same claim', cites: [T.cite] }], scope: [dupe, kept], ...ev });
   assert.strictEqual(sc.applied[0].outcome, 'held');
-  const rv = await T.call(T.who.harness('apply'), 'memory.reviewApply', { verdicts: [{ id: dupe, verdict: 'archive', reason: 'confirmed', cites: [T.cite] }], ...ev });
+  const rv = await T.call(T.who.harness('apply'), 'memory.reviewApply', { verdicts: [{ id: dupe, verdict: 'archive', reason: 'confirmed', cites: [T.cite], same_claim: true }], ...ev });
   assert.strictEqual(rv.applied[0].outcome, 'archived');
   const c = await NM.countFor(T.E, T.row(kept));
   assert.deepStrictEqual([c.tasks, c.runs], [3, 2], 'the duplicate\'s author is a sighting of the kept note');
