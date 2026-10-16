@@ -2,6 +2,7 @@
 // safe-kill-sites-2.test.cjs — ADR 0039 review round: the orchestrator's killChild guard (mutation M11), and
 // what a refused stop reports. A sleeper this test spawned stands for "the process that took over the pid".
 
+const { readCreated } = require('../helpers/created.cjs');
 const test = require('node:test');
 const assert = require('node:assert');
 const { EventEmitter } = require('node:events');
@@ -118,7 +119,7 @@ test('manager.stop: a live worker whose pid_image differs from CIM\'s name (righ
   const s = sleeper();
   try {
     await sleep(300);
-    const made = await P.createdOf(s.pid);
+    const made = await readCreated(s.pid);
     await core.worker.write({ id: 'w-i', run_id: 'run-sk', substrate: 'claude-code', pid: s.pid, pid_created: made.created, pid_image: 'not-the-name.exe', state: 'running', session_id: 's', worktree: fwd(path.join(d, 'wt')), started_at: Date.now(), turns: 1 });
     const r = await m.stop({ worker_id: 'w-i', mode: 'kill', timeout_ms: 3000 });
     assert.strictEqual(r.killed, false);
