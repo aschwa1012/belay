@@ -15,7 +15,7 @@ after(() => T.close());
 
 const lv = (over = {}) => ({ ...LV.apply, ...over });
 const review = (manager, over = {}, extra = {}) => runReview({ core: X.coreFor('apply'), runId: RUN.apply, lv: lv(over), dataDir: T.dir, getManager: async () => manager, worktree: T.repo, ...extra });
-const archiveV = (id, over = {}) => ({ id, verdict: 'archive', reason: 'the code confirms the hold', cites: [T.cite], ...over });
+const archiveV = (id, over = {}) => ({ id, verdict: 'archive', reason: 'the code confirms the hold', cites: [T.cite], same_claim: true, ...over });
 const releaseV = (id) => ({ id, verdict: 'release', reason: 'the code supports the note' });
 const queue = async () => (await T.call(T.who.operator('apply'), 'memory.reviewQueue', {})).held;
 const nsOf = (id) => T.row(id).namespace;
@@ -86,9 +86,10 @@ test('the whole queue is cleared in ONE spawn, no item cap, with both notes, the
   await drain();
   const ids = [];
   for (let i = 0; i < 7; i += 1) ids.push(await held(`queue member ${i}`));
-  const keep = T.note('the kept note for a duplicate');
-  const dupe = T.note('duplicate of the kept note', { reported_wrong: [T.report('worker:w2', keep)] });
-  await T.call(T.who.harness('apply'), 'memory.scrubApply', { scrub: [{ id: dupe, action: 'hold', kind: 'duplicate', of: keep, ground: 'same_claim', reason: 'same claim', cites: [T.cite] }], scope: [dupe, keep], ...T.evidence });
+  // Both notes of a duplicate hold are longer than the usual cut, and the brief carries each in full (their tails are what is checked).
+  const keep = T.note(`the kept note for a duplicate ${'k'.repeat(1900)} KEPT-TAIL`);
+  const dupe = T.note(`duplicate of the kept note ${'d'.repeat(1900)} DUPE-TAIL`, { reported_wrong: [T.report('worker:w2', keep)] });
+  await T.call(T.who.harness('apply'), 'memory.scrubApply', { scrub: [{ id: dupe, action: 'hold', kind: 'duplicate', of: keep, ground: 'same_claim', reason: 'same claim' }], scope: [dupe, keep], ...T.evidence });
   const all = [...ids, dupe];
   const m = fakeManager(T, 'apply', json('verdicts', all.map((id) => archiveV(id))));
   const o = await review(m);
@@ -99,6 +100,8 @@ test('the whole queue is cleared in ONE spawn, no item cap, with both notes, the
   const brief = fs.readFileSync(/(\S+brief\.md)/.exec(a.prompt)[1], 'utf8');
   for (const id of all) assert.ok(brief.includes(id), `the brief holds ${id}`);
   assert.ok(brief.includes(keep), 'the note a duplicate stands against is in the brief');
+  assert.ok(brief.includes('KEPT-TAIL') && brief.includes('DUPE-TAIL'), 'a duplicate hold carries both notes\' full text, not a cut');
+  assert.match(brief, /same claim and do not contradict/, 'the brief names the same_claim question');
   assert.ok(brief.includes(T.head) && brief.includes('loader.js'));
   const saved = brief.match(/"saved_at": "([^"]+)"/)[1];
   assert.ok(fs.readFileSync(saved, 'utf8').includes('return fixtures.get(name);'), 'the file at the held row\'s head sha is saved for the reviewer');
@@ -156,7 +159,7 @@ test('adversarial verdicts: an id with no hold, an archive without a cite, a cit
   assert.strictEqual(nsOf(unheld), 'project/lc');
 
   const nocite = await review(fakeManager(T, 'apply', json('verdicts', [archiveV(a, { cites: [] })])));
-  assert.strictEqual(nocite.error.code, 'E_ARGS');
+  assert.deepStrictEqual(nocite.result.refused.map((r) => r.code), ['E_CITATION'], 'a wrong or superseded archive still needs a cite');
   const badcite = await review(fakeManager(T, 'apply', json('verdicts', [archiveV(a, { cites: [{ where: 'loader.js', quote: 'a line that the file does not contain anywhere' }] })])));
   assert.deepStrictEqual(badcite.result.refused.map((r) => r.code), ['E_CITATION']);
   const body = JSON.parse(T.row((await queue()).find((h) => h.id === a).held_row).body);

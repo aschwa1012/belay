@@ -101,7 +101,10 @@ function checkScrub(list, maxItems) {
       if (e.kind !== 'wrong' && !out.of) throw bad(`${at}a ${e.kind} hold names the note it stands against in of`, { field: 'of', index: i });
       out.kind = e.kind;
       out.ground = checkGround(e.ground, HOLD_GROUNDS[e.kind], at, true);
-      out.cites = checkCites(e.cites, at, true);
+      // A duplicate needs no verbatim cites: its facts are S4's (a stored similarity or a worker report, both notes live) and a
+      // reason stating the shared claim. Any cites given are ignored, not stored and not checked.
+      // Same at the review: the shape of any cites given is checked (as checkVerdicts does), then they are dropped.
+      out.cites = e.kind === 'duplicate' ? (checkCites(e.cites, at, false), []) : checkCites(e.cites, at, true);
     } else if (e.action === 'resolve') {
       if (!RESOLVES.includes(e.resolve)) throw bad(`${at}resolve must be one of ${RESOLVES.join(', ')}`, { field: 'resolve', index: i });
       if (e.resolve === 'new' && out.of) throw bad(`${at}resolve new names no other note`, { field: 'of', index: i });
@@ -121,19 +124,23 @@ function checkScrub(list, maxItems) {
 }
 
 // The reviewer's verdicts on held notes: `verdicts: [{ id, verdict: archive | release, reason, cites? }]` where `id`
-// is the held note. An archive cites what it read (S3); a release needs no citation.
+// is the held note. An archive of a wrong or superseded note cites what it read (S3); an archive of a duplicate states `same_claim: true`
+// instead; a release needs neither.
 function checkVerdicts(list) {
   if (!Array.isArray(list) || !list.length || list.length > VERDICTS_MAX) throw bad(`verdicts must be an array of 1 to ${VERDICTS_MAX} entries`, { field: 'verdicts' });
   const seen = new Set();
   return list.map((v, i) => {
     const at = `verdicts[${i}]: `;
     if (!isObj(v)) throw bad(`${at}a verdict must be an object { id, verdict, reason, cites }`, { index: i });
-    for (const k of Object.keys(v)) if (!['id', 'verdict', 'reason', 'cites'].includes(k)) throw bad(`${at}${k} is not a field; use id, verdict, reason, cites`, { field: k, index: i });
+    for (const k of Object.keys(v)) if (!['id', 'verdict', 'reason', 'cites', 'same_claim'].includes(k)) throw bad(`${at}${k} is not a field; use id, verdict, reason, cites, same_claim`, { field: k, index: i });
     if (!validId(v.id)) throw bad(`${at}id must be the id of a held note`, { field: 'id', index: i });
     if (seen.has(v.id)) throw bad(`${at}id ${v.id} appears twice in one call`, { field: 'id', index: i });
     seen.add(v.id);
     if (!VERDICTS.includes(v.verdict)) throw bad(`${at}verdict must be one of ${VERDICTS.join(', ')}`, { field: 'verdict', index: i });
-    return { id: v.id, verdict: v.verdict, reason: checkText(v.reason, 'reason', REASON_MAX, at), cites: checkCites(v.cites, at, v.verdict === 'archive') };
+    if (v.same_claim !== undefined && typeof v.same_claim !== 'boolean') throw bad(`${at}same_claim must be true or false`, { field: 'same_claim', index: i });
+    // Whether an archive needs cites depends on the hold's kind, which only reviewApply knows: a duplicate needs same_claim true and no cites,
+    // wrong and superseded need cites. reviewApply enforces both.
+    return { id: v.id, verdict: v.verdict, reason: checkText(v.reason, 'reason', REASON_MAX, at), cites: checkCites(v.cites, at, false), ...(v.same_claim === undefined ? {} : { same_claim: v.same_claim }) };
   });
 }
 
