@@ -185,6 +185,9 @@ const MIGRATIONS = [
   // The orchestrator's memory_queries for a worker (JSON text, nullable), kept on its row so a relaunch or a resume in another
   // process embeds the same index queries the spawn did.
   'ALTER TABLE worker ADD COLUMN memory_queries TEXT',
+  // The run's CURRENT on_embedder_failure mode (required, keyword or off): written by run.attach at launch and by run.setEmbedderMode when a
+  // resume switches it, so a reader without the owner's guard (a copy fallback) sees the live mode. Null reads as the default, required.
+  'ALTER TABLE run ADD COLUMN embedder_mode TEXT',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot
@@ -209,7 +212,9 @@ const DEFAULT_LEASE_TTL_MS = 600000;
 // ADR 0003 §2: exact cosine is 108 ms p95 at 100k rows, so the owner refuses above this without opt-in.
 const NAMESPACE_SCAN_CEILING = 50000;
 // ADR 0027 decision 7: the same scan cost at any width, so the row ceiling falls as dims rise (18,750 at 1024).
-const scanCeiling = dim => Math.floor(NAMESPACE_SCAN_CEILING * 384 / Math.max(1, dim));
+let ceilingOverride = null; // tests only: a lower row ceiling, so E_NAMESPACE_TOO_LARGE needs no 18,750 rows
+const scanCeiling = dim => (ceilingOverride !== null ? ceilingOverride : Math.floor(NAMESPACE_SCAN_CEILING * 384 / Math.max(1, dim)));
+const setScanCeilingForTest = n => { ceilingOverride = n; };
 
 function ensureSchema(db) {
   db.exec(MEMORY_SCHEMA);
@@ -222,5 +227,5 @@ function ensureSchema(db) {
 
 module.exports = {
   ensureSchema, MEMORY_SCHEMA, ORCHESTRATION_SCHEMA, MIGRATIONS, MEMORY_INDEXES,
-  WORKER_STATES, TASK_STATES, SUBSTRATES, ROLES, PERMISSION_STATES, DEFAULT_LEASE_TTL_MS, NAMESPACE_SCAN_CEILING, scanCeiling,
+  WORKER_STATES, TASK_STATES, SUBSTRATES, ROLES, PERMISSION_STATES, DEFAULT_LEASE_TTL_MS, NAMESPACE_SCAN_CEILING, scanCeiling, setScanCeilingForTest,
 };
