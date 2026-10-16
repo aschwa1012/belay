@@ -9,6 +9,7 @@
 // and the CLI is the operator's window onto every namespace).
 
 const { err } = require('./errors.cjs');
+const { checkNamespaces } = require('./memory-note-gate.cjs');
 
 // The run's project name is the `project` column of its run row, which run.attach set from the spec's
 // `memory.project`. It is never derived from a folder, a cwd or a git remote. A store copy that predates the column,
@@ -38,6 +39,7 @@ function reachOf(E, caller) {
 
 // E_ROLE naming the first namespace outside the caller's reach; `verb` says what was attempted.
 function checkReach(E, caller, namespaces, verb) {
+  if (verb === 'read') checkNamespaces(caller, namespaces); // the lifecycle namespaces are not for a tool-channel caller (memory-note-gate.cjs)
   const reach = reachOf(E, caller);
   if (!reach) return;
   for (const ns of namespaces) {
