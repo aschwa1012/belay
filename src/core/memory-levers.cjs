@@ -43,6 +43,7 @@ const DEFAULTS = Object.freeze({
   scrub_wall_s: 300, // the scrubber's wall cap in seconds
   scrub_cost_cap_usd: 0.1, // the scrubber's cost cap in dollars: passed to the substrate as its budget; a scrub that recorded more applies nothing and its items are owed
   scrub_model: 'claude-haiku-5-5', // the scrubber's model: a Claude 5.5 id
+  archive_review_auto: false, // the Opus archive reviewer runs at run close only when this is true; otherwise only `belay memory review` (or the panel button) dispatches it
   review_min_held: 3, // the archive reviewer runs at run close when the held queue has at least this many marks
   review_max_age_runs: 3, // ... or the oldest mark has waited this many runs
   review_wall_s: 600, // the reviewer's wall cap in seconds
@@ -52,7 +53,7 @@ const DEFAULTS = Object.freeze({
 });
 
 const BOOLEAN_KEYS = ['redact', 'rules', 'capture', 'observations', 'project_writes', 'cost_ledger',
-  'first_message_index', 'bottle', 'wrapup', 'knowledge_agent', 'notes', 'notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording', 'note_review'];
+  'first_message_index', 'bottle', 'wrapup', 'knowledge_agent', 'notes', 'notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording', 'note_review', 'archive_review_auto'];
 const MODEL_RE = /^claude-(haiku|sonnet|opus)-5-5$/; // a Claude 5.5 model id: the only models the roster allows (ADR 0021 amendments 5 and 6)
 const SUMMARIES = ['off', 'mechanical'];
 const SCRUB_ACTIONS = ['off', 'propose', 'apply'];
@@ -107,7 +108,7 @@ function parseMemoryBlock(block) {
   if (v.notes && v.redact === false) return { error: 'memory.redact false cannot be combined with memory.notes true: the project namespace outlives the run and must never hold unredacted text' };
   if (typeof v.note_review_model !== 'string' || !MODEL_RE.test(v.note_review_model)) return { error: 'memory.note_review_model must be a Claude 5.5 model id (claude-haiku-5-5, claude-sonnet-5-5 or claude-opus-5-5)' };
   if (typeof v.note_review_cost_cap_usd !== 'number' || !(v.note_review_cost_cap_usd > 0 && v.note_review_cost_cap_usd <= 5)) return { error: 'memory.note_review_cost_cap_usd must be a number above 0 and at most 5' };
-  for (const k of ['notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording', 'note_review']) if (v[k] && !v.notes) return { error: `memory.${k} needs memory.notes` };
+  for (const k of ['notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording', 'note_review', 'archive_review_auto']) if (v[k] && !v.notes) return { error: `memory.${k} needs memory.notes` };
   for (const [k, max] of [['scrub_wall_s', 3600], ['review_wall_s', 7200], ['review_min_held', 500], ['review_max_age_runs', 1000]]) if (!boundedInt(v[k], max)) return { error: `memory.${k} must be an integer from 1 to ${max}` };
   for (const [k, max] of [['scrub_cost_cap_usd', 5], ['review_cost_cap_usd', 20]]) if (typeof v[k] !== 'number' || !(v[k] > 0 && v[k] <= max)) return { error: `memory.${k} must be a number above 0 and at most ${max}` };
   for (const k of ['scrub_model', 'archive_review_model']) if (typeof v[k] !== 'string' || !MODEL_RE.test(v[k])) return { error: `memory.${k} must be a Claude 5.5 model id (claude-haiku-5-5, claude-sonnet-5-5 or claude-opus-5-5)` };

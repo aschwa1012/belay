@@ -65,6 +65,9 @@ export type BelayPanelFooter = {
   highestCtxPct: number | null
 }
 
+/** Notes held for the on-demand Opus archive reviewer, from belay's `notes_held` notice. */
+export type BelayHeld = { count: number; byProject: Record<string, number>; oldestAgeRuns: number }
+
 export type BelayPanelSnap = {
   fetchedAt: number
   runId: string | null
@@ -90,6 +93,8 @@ export type BelayPanelSnap = {
   agents: BelayAgent[]
   footer: BelayPanelFooter | null
   notices: BelayNotice[]
+  /** null: belay reported no `notes_held` notice (nothing held, or not read yet). */
+  held: BelayHeld | null
   transcript: BelayEntry[] | null
   settings: BelaySettings
   /** One line per failing command: the command and its exit code. */
@@ -117,6 +122,8 @@ export type BelayPanelUi = {
   /** A docked Pane is actually seated; the inline panel is drawn while it is not. */
   placed: boolean
   seen: string[]
+  /** The archive review button was pressed once: the project it would review and when. A second press inside CONFIRM_MS dispatches. */
+  confirm: { project: string; at: number } | null
 }
 
 declare module 'claude-code' {

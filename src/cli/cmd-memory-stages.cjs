@@ -2,7 +2,8 @@
 // cmd-memory-stages.cjs — `belay memory scrub|review|resolve`, the run-close stages by hand and the operator's way out of pending/.
 //   scrub [--run <id>]    the scrubber on the run's scope, as at run close. Spawns one short read-only child (the run's lever model),
 //                         so it is a write: it elects an owner on demand and shuts it down again.
-//   review [--all]        the Opus archive reviewer on the project's whole held queue, ignoring the triggers.
+//   review [--project p] the Opus archive reviewer, ON DEMAND (the run-close trigger is off unless `archive_review_auto`), on the project's `wrong`
+//                         holds, ignoring the triggers. `--project` picks the newest ended run whose notes project it is.
 //   resolve <id> new | repeats <id> | supersedes <id> --evidence <text>
 //                         settle a pending note as the operator: memory.noteResolve's own logic (a repeat archives the pending row,
 //                         nothing is deleted). For a note whose run has ended and whose writer is gone.
@@ -19,10 +20,10 @@ const one = (s) => P.clean(s == null ? '' : s, 2000).replace(/\s+/g, ' ');
 
 // `--run <id>` names the run (a live one too, on the operator's word). Without it: the newest ENDED run that has the notes lever on. A
 // live run is never the default: its writers may still resolve their pending notes, and its own close scrub is still to come.
-async function chooseRun(core, wanted) {
+async function chooseRun(core, wanted, project = null) {
   if (wanted) return { runId: wanted };
   const { runs } = await core.run.list({});
-  const notesOn = (r) => { try { const l = typeof r.memory_levers === 'string' ? JSON.parse(r.memory_levers) : r.memory_levers; return !!(l && l.notes); } catch { return false; } };
+  const notesOn = (r) => { try { const l = typeof r.memory_levers === 'string' ? JSON.parse(r.memory_levers) : r.memory_levers; return !!(l && l.notes && (!project || l.project === project)); } catch { return false; } };
   const ended = runs.find((r) => !r.alive && r.ended_at != null && notesOn(r));
   if (ended) return { runId: ended.id };
   const live = runs.find((r) => r.alive && notesOn(r));
@@ -31,7 +32,7 @@ async function chooseRun(core, wanted) {
 
 // The stage's own core: the operator, as the run it acts for. Returns { rc, lv, runId, dataDir } or { fail }.
 async function stageCore(core, parsed, ctx, found) {
-  const { runId, live } = await chooseRun(core, parsed.opts.run);
+  const { runId, live } = await chooseRun(core, parsed.opts.run, parsed.opts.project || null);
   if (!runId) {
     const message = live ? `the only run with notes on is live (${live}); its own close scrub is still to come, so pass --run ${live} to act on it now` : 'no ended run with notes on exists to act for; pass --run <id>';
     return { fail: { code: 1, text: `belay memory ${parsed.sub}: ${one(message)}\n`, json: { error: { code: 'E_NOT_FOUND', message, live_run: live || null } } } };

@@ -42,6 +42,10 @@ test('levers: the stage levers parse, are typed, and refuse bad values and non-5
   }
   assert.strictEqual(parseMemoryBlock({ scrub_model: 'claude-sonnet-5-5', archive_review_model: 'claude-opus-5-5' }).error, undefined);
   for (const k of ['scrub_wall_s', 'scrub_cost_cap_usd', 'scrub_model', 'review_min_held', 'review_max_age_runs', 'review_wall_s', 'review_cost_cap_usd', 'archive_review_model']) assert.ok(TYPES[k] && k in DEFAULTS, k);
+  assert.deepStrictEqual([DEFAULTS.archive_review_auto, TYPES.archive_review_auto.type], [false, 'boolean']);
+  assert.match(parseMemoryBlock({ archive_review_auto: 'yes' }).error, /archive_review_auto must be true or false/);
+  assert.match(parseMemoryBlock({ archive_review_auto: true }).error, /needs memory.notes/);
+  assert.strictEqual(parseMemoryBlock({ project: 'p', notes: true, archive_review_auto: true }).value.archive_review_auto, true);
 });
 
 test('harness roles: the run process (operator) may write a job worker row on the harness channel only', async () => {

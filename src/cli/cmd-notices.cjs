@@ -19,6 +19,8 @@
 //   stage_overrun       a run-close scrub or archive review that spent its cost cap: nothing was applied, the next attempt takes half the items, and the line names the lever to raise
 //   scrub_dropped       items a scrub child gave no entry in two scrubs: named here, and not offered again until a new report, sighting or nomination
 //   scrub_failed        a run-close scrub or archive review that failed, with its code
+//   notes_held          notes held for the on-demand Opus archive reviewer (a `wrong` hold): `count`, `by_project`, `oldest_age_runs`, the command that dispatches it
+//   reports_unjudged    reports that a note is wrong whose task ended with no review at all: listed for the operator
 //   notes_unembedded    notes stored without a vector (on_embedder_failure keyword), in any project namespace: a count from
 //                       the rows, whatever the run. Only `belay memory embed` embeds them. Its ts is the newest such note's
 //                       creation time.
@@ -195,6 +197,18 @@ function unembeddedEvents(u, runId) {
   return [{ kind: 'notes_unembedded', ts: num(u.newest_at), run_id: runId, count: u.total, by_project: u.by_project || {}, command: 'belay memory embed', source: 'memory_entries rows of type note with no vector' }];
 }
 
+// The standing count of notes held for the on-demand Opus archive reviewer (memory.held, a plain read), modelled on notes_unembedded.
+function heldEvents(h, runId) {
+  if (!h || !(h.total > 0)) return [];
+  return [{ kind: 'notes_held', ts: num(h.newest_at), run_id: runId, count: h.total, by_project: h.by_project || {}, oldest_age_runs: h.oldest_age_runs || 0, command: 'belay memory review', source: 'memory_entries rows of type held, kind wrong, state held' }];
+}
+
+// Reports of "wrong" that no review will judge, one standing event while any exist (the operator looks: belay memory proposals).
+function unjudgedEvents(list, runId) {
+  if (!list || !list.length) return [];
+  return [{ kind: 'reports_unjudged', ts: Math.max(0, ...list.map((r) => num(r.at) || 0)) || null, run_id: runId, count: list.length, note_ids: list.slice(0, 20).map((r) => r.id), command: 'belay memory proposals', source: 'reported_wrong entries of tasks that ended with no review' }];
+}
+
 // Oldest first; an event with no timestamp sorts last, and `--since` keeps it, since nothing proves it is old.
 function ordered(events, since) {
   const kept = since == null ? events : events.filter((e) => e.ts == null || e.ts >= since);
@@ -230,6 +244,10 @@ function summaryOf(e) {
       return `${e.stage} ${e.code ? `failed ${P.v(e.code, 40)}: ` : ''}${P.v(e.text, 300)}${Array.isArray(e.row_ids) && e.row_ids.length ? ` (notes: ${e.row_ids.slice(0, 5).map((x) => P.v(x, 40)).join(', ')}${e.row_ids.length > 5 ? `, and ${e.row_ids.length - 5} more` : ''})` : ''}`;
     case 'notes_unembedded':
       return P.unembeddedText({ total: e.count, by_project: e.by_project });
+    case 'notes_held':
+      return P.heldText({ total: e.count, by_project: e.by_project, oldest_age_runs: e.oldest_age_runs });
+    case 'reports_unjudged':
+      return `${e.count} report${e.count === 1 ? '' : 's'} that a note is wrong no review judged (${(e.note_ids || []).slice(0, 5).map((x) => P.v(x, 40)).join(', ')}): see belay memory proposals`;
     case 'run_paused':
       return `${id('run', e.run_id)} paused by ${P.v(e.paused_by, e.embedder_failure ? 160 : 60)}${e.embedder_failure ? ` (an embedder failure, on_embedder_failure required: belay settings memory.on_embedder_failure keyword|off saves a choice for later runs, belay resume ${e.run_id} --embedder keyword|off resumes with one, or leave it paused)` : ''}`;
     default:
@@ -257,9 +275,10 @@ async function run(ctx) {
   try {
     const { chosen, source } = await P.chooseRun(core, parsed.runId);
     const unembedded = await core.memory.unembedded({});
+    const heldNotes = await core.memory.held({ reports: true }).catch(() => null);
     if (!chosen) {
       if (!parsed.runId) {
-        const events = ordered(unembeddedEvents(unembedded, null), parsed.since);
+        const events = ordered([...unembeddedEvents(unembedded, null), ...heldEvents(heldNotes, null), ...unjudgedEvents(heldNotes && heldNotes.unjudged_reports, null)], parsed.since);
         const empty = { run_id: null, run_id_source: source, since: parsed.since, stall_ms: parsed.stallMs, events, count: events.length };
         return { code: 0, text: renderText(events), json: empty };
       }
@@ -277,6 +296,8 @@ async function run(ctx) {
       ...wrapupEvents(ledger, chosen.id),
       ...stageEvents(ledger, chosen.id),
       ...unembeddedEvents(unembedded, chosen.id),
+      ...heldEvents(heldNotes, chosen.id),
+      ...unjudgedEvents(heldNotes && heldNotes.unjudged_reports, chosen.id),
       ...runEvents(chosen),
     ], parsed.since);
     const receipt = {
@@ -291,4 +312,4 @@ async function run(ctx) {
   }
 }
 
-module.exports = { run, stageEvents, wrapupEvents, verdictEvents, runEvents, ordered, workerEvents, stallAge, renderText };
+module.exports = { run, heldEvents, unjudgedEvents, stageEvents, wrapupEvents, verdictEvents, runEvents, ordered, workerEvents, stallAge, renderText };

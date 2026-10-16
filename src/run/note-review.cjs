@@ -48,7 +48,7 @@ async function reviewTail(ctx, w) {
   if (!lv || !lv.notes || !w || !w.taskId || String(w.id).startsWith(JOB_PREFIX)) return '';
   let brief;
   try { brief = await ctx.core.memory.reviewBrief({ task_id: w.taskId }); } catch (e) { w.lastError = { where: 'memory.reviewBrief', code: codeOf(e), message: e && e.message }; return ''; }
-  if (!brief.review || (!brief.notes.length && !brief.refuted_shown.length)) return '';
+  if (!brief.review || (!brief.notes.length && !brief.refuted_shown.length && !(brief.reports || []).length)) return '';
   let streams = [];
   try {
     const list = ((await ctx.core.worker.list({})).workers || []).filter((x) => x.run_id === ctx.runId && brief.reviewed_tasks.includes(x.task_id));
@@ -94,9 +94,11 @@ async function finishJob(core, { workerId, taskId, text, cost, cap }) {
   const p = T.parseJobOutput(text);
   if (p.error) return fail(core, base, Object.assign(new Error(p.error), { code: 'E_ARGS' }));
   let out;
-  try { out = await core.memory.noteVerdicts({ job: { worker_id: workerId, reviewed_task_id: taskId }, verdicts: p.verdicts }); } catch (e) { return fail(core, base, e); }
+  try { out = await core.memory.noteVerdicts({ job: { worker_id: workerId, reviewed_task_id: taskId }, verdicts: p.verdicts, ...(p.report_verdicts ? { report_verdicts: p.report_verdicts } : {}) }); } catch (e) { return fail(core, base, e); }
   const ids = out.applied.map((a) => a.id);
-  return receipt(core, { ok: true, ...base, row_ids: ids.length ? ids : undefined, message: `applied ${out.applied.length}, refused ${out.refused.length}, already ${out.already.length}, unjudged ${out.unjudged.length}${typeof cost === 'number' ? `; cost $${cost.toFixed(4)}` : ''}` });
+  const rv = out.report_verdicts;
+  const rids = rv ? rv.applied.map((a) => a.id) : [];
+  return receipt(core, { ok: true, ...base, row_ids: ids.length || rids.length ? [...ids, ...rids] : undefined, message: `applied ${out.applied.length}, refused ${out.refused.length}, already ${out.already.length}, unjudged ${out.unjudged.length}${rv && !rv.none ? `; reports applied ${rv.applied.length}, refused ${rv.refused.length}, unjudged ${rv.unjudged.length}` : ''}${typeof cost === 'number' ? `; cost $${cost.toFixed(4)}` : ''}` });
 }
 
 // ---- the job ----------------------------------------------------------------------------------------------------
@@ -132,13 +134,13 @@ async function runJob(J, task) {
     const prior = await core.memory.events({ run_id: ctx.runId || undefined, task_id: taskId, kinds: ['review_job'] });
     if (((prior && prior.events) || []).some((e) => (e.ok === 1 || e.ok === true) && e.key === base.key)) return;
     const brief = await core.memory.reviewBrief({ reviewed_task_id: taskId });
-    if (!brief.notes.length) return; // nothing unreviewed: nothing to spend on
+    if (!brief.notes.length && !(brief.reports || []).length) return; // nothing unreviewed and no report to judge: nothing to spend on
     if (ctx.manager && typeof ctx.manager._closed === 'function' && ctx.manager._closed()) throw Object.assign(new Error('the run manager is shutting down, so no review job was started'), { code: 'E_SHUTDOWN' });
     if (!ctx.manager || typeof ctx.manager.spawn !== 'function') throw Object.assign(new Error('the run manager has no way to spawn the review job here'), { code: 'E_INTERNAL' });
     const workers = ((await core.worker.list({})).workers || []).filter((x) => x.run_id === ctx.runId && x.task_id === taskId);
-    const inputs = await writeInputs(ctx, taskId, wid, brief.notes, workers);
+    const inputs = await writeInputs(ctx, taskId, wid, brief.reports && brief.reports.length ? { notes: brief.notes, reports: brief.reports } : brief.notes, workers);
     const streams = workers.map((x) => ({ worker_id: x.id, stream_path: fwd(path.join(ctx.dataDir, 'workers', x.id, 'stream.jsonl')) }));
-    const prompt = T.jobPrompt(T.jobTemplate(), { notesFile: inputs.notesFile, diffFile: inputs.diffFile, streams, taskId });
+    const prompt = T.jobPrompt(T.jobTemplate(), { notesFile: inputs.notesFile, diffFile: inputs.diffFile, streams, taskId, reports: brief.reports || [] });
     const worktree = inputs.worktree || ctx.worktree || (workers.find((x) => x.worktree) || {}).worktree;
     if (!worktree) throw Object.assign(new Error('no worktree is known for the task, so the review job has nowhere to run'), { code: 'E_ARGS' });
     const cap = lv.note_review_cost_cap_usd;
@@ -204,7 +206,7 @@ async function sweep(J, tasks, workers) {
     if (tasks.some((r) => isReview(r) && Array.isArray(r.depends_on) && r.depends_on.includes(t.id))) continue;
     let brief;
     try { brief = await core.memory.reviewBrief({ reviewed_task_id: t.id }); } catch { continue; }
-    if (!brief.notes.length) continue;
+    if (!brief.notes.length && !(brief.reports || []).length) continue;
     await fail(core, { worker_id: undefined, task_id: t.id, key: `task:${t.id}`, row_ids: brief.notes.map((n) => n.id), message: `task ${t.id} wrote ${brief.notes.length} note(s) and the run ended before a review job ran; they stay unreviewed` }, Object.assign(new Error('owed'), { code: 'E_TIMEOUT' }));
   }
   void byId;

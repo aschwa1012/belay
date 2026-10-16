@@ -23,6 +23,7 @@ const { recordEventSync } = require('./methods-ledger.cjs');
 const CC = require('./memory-citations.cjs');
 const F = require('./note-review-facts.cjs');
 const { heldLeaseOn } = require('./verdict.cjs');
+const RV = require('./note-report-verdicts.cjs');
 
 const VERDICTS = ['confirmed', 'refuted'];
 const REASON_MAX = 500;
@@ -54,7 +55,7 @@ function routeOf(E, args, caller) {
     }
     const r = h.result && isObj(h.result) ? h.result : null;
     const list = r && r.memory_verdicts;
-    return { reviewer: h.by, ref: t.id, keyBase: `review:${t.id}@${h.at}`, scope: Array.isArray(t.depends_on) ? t.depends_on : [], verdicts: list === undefined ? null : list, task_id: t.id };
+    return { reviewer: h.by, ref: t.id, keyBase: `review:${t.id}@${h.at}`, scope: Array.isArray(t.depends_on) ? t.depends_on : [], verdicts: list === undefined ? null : list, reportVerdicts: r && r.report_verdicts !== undefined ? r.report_verdicts : null, task_id: t.id };
   }
   const j = args.job;
   if (!isObj(j) || !validId(j.worker_id) || !validId(j.reviewed_task_id)) throw bad('memory.noteVerdicts needs review_task_id, or job { worker_id, reviewed_task_id } with verdicts');
@@ -63,7 +64,7 @@ function routeOf(E, args, caller) {
   const jw = rows.current(E.store, 'worker', j.worker_id);
   if (!jw) throw err('E_NOT_FOUND', `no worker row ${j.worker_id}: a review job is a worker belay spawned`, { worker_id: j.worker_id });
   if (caller && caller.run_id && jw.run_id && jw.run_id !== caller.run_id) throw bad(`worker ${j.worker_id} belongs to another run`, { worker_id: j.worker_id });
-  return { reviewer: j.worker_id, ref: j.worker_id, keyBase: `review:${j.worker_id}`, scope: [j.reviewed_task_id], verdicts: args.verdicts === undefined ? null : args.verdicts, task_id: j.reviewed_task_id };
+  return { reviewer: j.worker_id, ref: j.worker_id, keyBase: `review:${j.worker_id}`, scope: [j.reviewed_task_id], verdicts: args.verdicts === undefined ? null : args.verdicts, reportVerdicts: args.report_verdicts === undefined ? null : args.report_verdicts, task_id: j.reviewed_task_id };
 }
 
 function shapeOne(v) {
@@ -149,6 +150,7 @@ async function noteVerdicts(E, caller, args) {
   const judged = new Set([...seen]);
   const proj = caller.run_id ? projectOf(E, caller) : null;
   out.unjudged = F.notesUnderReview(E, route.scope, proj).map((x) => x.id).filter((id) => !judged.has(id));
+  await RV.applyReportVerdicts(E, caller, route, route.reportVerdicts, proj, out); // reports of "wrong" about other notes: upheld holds, rejected leaves a receipt
   return out;
 }
 
@@ -166,13 +168,13 @@ async function reviewBrief(E, caller, args) {
   const proj = caller.run_id ? projectOf(E, caller) : null;
   if (args && args.reviewed_task_id !== undefined) { // the review job's form: the task whose notes are judged, which has no review task
     if (!validId(args.reviewed_task_id) || !rows.current(E.store, 'task', args.reviewed_task_id)) throw err('E_NOT_FOUND', `no task ${args.reviewed_task_id}`, { task_id: args.reviewed_task_id });
-    return { reviewed_tasks: [args.reviewed_task_id], notes: F.notesUnderReview(E, [args.reviewed_task_id], proj), refuted_shown: F.refutedShownTo(E, [args.reviewed_task_id]) };
+    return { reviewed_tasks: [args.reviewed_task_id], notes: F.notesUnderReview(E, [args.reviewed_task_id], proj), refuted_shown: F.refutedShownTo(E, [args.reviewed_task_id]), reports: RV.reportsAbout(E, [args.reviewed_task_id], proj) };
   }
   const t = rows.current(E.store, 'task', args && args.task_id);
   if (!t) throw err('E_NOT_FOUND', `no task ${args && args.task_id}`, { task_id: args && args.task_id });
-  if (!t.acceptance || t.acceptance.verdict !== true) return { task_id: t.id, review: false, notes: [], refuted_shown: [] };
+  if (!t.acceptance || t.acceptance.verdict !== true) return { task_id: t.id, review: false, notes: [], refuted_shown: [], reports: [] };
   const deps = Array.isArray(t.depends_on) ? t.depends_on : [];
-  return { task_id: t.id, review: true, reviewed_tasks: deps, notes: F.notesUnderReview(E, deps, proj), refuted_shown: F.refutedShownTo(E, deps) };
+  return { task_id: t.id, review: true, reviewed_tasks: deps, notes: F.notesUnderReview(E, deps, proj), refuted_shown: F.refutedShownTo(E, deps), reports: RV.reportsAbout(E, deps, proj) };
 }
 
 module.exports = { noteVerdicts, noteRefutation, reviewBrief };
