@@ -49,15 +49,19 @@ function fitBody(b) {
 // Live notes of the project that are close to this text, best first, at most `notes_match_n`. The semantic cosine
 // is the similarity (a hybrid score is a rank fusion and says nothing about how alike two notes are). A semantic
 // search that cannot run is refused by name, so there is no silent fallback.
-async function findMatches(E, caller, project, emb, lv) {
+// Only rows whose vector was made from the same template as `emb` are compared: the threshold was measured on v1 text and is
+// unvalidated on v2, and a v2 vector against a v1 one is not a like comparison. (`template` defaults to v2, the template of a new note.)
+async function findMatches(E, caller, project, emb, lv, template = NT.TEMPLATE_NEW) {
   const out = await search(E, caller, {
-    namespace: projectNs(project), mode: 'semantic', view: 'full', k: lv.notes_match_n, min_score: lv.notes_match_threshold,
+    namespace: projectNs(project), mode: 'semantic', view: 'full', k: Math.min(50, lv.notes_match_n * 5), min_score: lv.notes_match_threshold,
     query_embedding: emb.embedding, embedding_model: emb.embedding_model,
     filter: { types: ['note'], statuses: ['unverified', 'verified'] },
   });
+  const ids = out.results.map(r => r.id);
+  const tpl = new Map(ids.length ? E.store.p(`SELECT id, COALESCE(text_template, 'v1') AS t FROM memory_entries WHERE id IN (${ids.map(() => '?').join(', ')})`).all(...ids).map(r => [r.id, r.t]) : []);
   return out.results
-    .filter(r => typeof r.score === 'number' && r.score >= lv.notes_match_threshold)
-    .map(r => ({ id: r.id, title: r.title, kind: r.body && r.body.kind, basis: r.body && r.body.basis, similarity: round3(r.score) }))
+    .filter(r => typeof r.score === 'number' && r.score >= lv.notes_match_threshold && tpl.get(r.id) === template)
+    .map(r => ({ id: r.id, title: r.title, kind: r.body && r.body.kind, basis: r.body && r.body.basis, similarity: round3(r.score), template }))
     .sort((a, b) => b.similarity - a.similarity || (a.id < b.id ? -1 : 1)).slice(0, lv.notes_match_n);
 }
 

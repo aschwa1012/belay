@@ -11,7 +11,7 @@
 const { err } = require('./errors.cjs');
 const { DUP_SIMILARITY } = require('./memory-lifecycle.cjs');
 
-const COLS = 'id, namespace, type, written_by, run_id, task_id, title, text, text_hash, embedding, embedding_model, dim, body, status, status_receipt, created_at, supersedes';
+const COLS = 'id, namespace, type, written_by, run_id, task_id, title, text, text_hash, embedding, embedding_model, dim, body, status, status_receipt, created_at, supersedes, text_template';
 const parse = s => { try { return s ? JSON.parse(s) : {}; } catch { return {}; } };
 const refuse = (message, detail) => err('E_PRECONDITION', message, detail);
 const round3 = x => Math.round(x * 1000) / 1000;
@@ -22,8 +22,11 @@ function loadNote(E, id) {
   return { ...r, b: parse(r.body) };
 }
 
-// The cosine of two stored vectors, or null when either has none or they were not made by the same model.
+// The cosine of two stored vectors, or null when either has none or they were not made by the same model or from the same text
+// template (the 0.80 threshold was measured on v1 text; a v1 vector against a v2 one is never compared).
+const templateOf = r => r.text_template || 'v1';
 function storedCosine(a, b) {
+  if (templateOf(a) !== templateOf(b)) return null;
   if (!a.embedding || !b.embedding || !a.dim || a.dim !== b.dim || a.embedding_model !== b.embedding_model) return null;
   const va = new Float32Array(a.embedding.buffer.slice(a.embedding.byteOffset, a.embedding.byteOffset + a.dim * 4));
   const vb = new Float32Array(b.embedding.buffer.slice(b.embedding.byteOffset, b.embedding.byteOffset + b.dim * 4));
@@ -46,7 +49,7 @@ function liveKept(E, project, id, what) {
 
 // The note's own words: a quote of these is no evidence about the note.
 function ownTexts(note) {
-  return [note.title, note.text, ...((note.b.evidence || []).flatMap(e => [e && e.saw, e && e.where]))].filter(t => typeof t === 'string' && t.trim());
+  return [note.title, note.when !== undefined ? note.when : note.b.when, note.text, ...((note.b.evidence || []).flatMap(e => [e && e.saw, e && e.where]))].filter(t => typeof t === 'string' && t.trim());
 }
 
 const lower = list => new Set((Array.isArray(list) ? list : []).filter(x => typeof x === 'string').map(x => x.trim().toLowerCase()).filter(Boolean));
@@ -75,14 +78,15 @@ function checkHoldFacts(E, project, note, kind, ofId, ground, threshold = DUP_SI
     const sim = storedCosine(note, target);
     const path = shares(lower(note.b.applies_to), lower(target.b.applies_to)), subject = shares(lower(note.b.subjects), lower(target.b.subjects));
     if (!path && !subject && !(sim !== null && sim >= threshold)) throw refuse(`${target.id} shares no path or subject with ${note.id} and its stored similarity is ${sim === null ? 'unavailable' : round3(sim)} (needs ${threshold}), so it is not shown to replace it`, { id: note.id, of: target.id });
-    return { replacement: target.id, replacement_created_at: target.created_at, note_created_at: note.created_at, shared: path ? 'path' : subject ? 'subject' : 'similarity', similarity: sim === null ? null : round3(sim) };
+    return { replacement: target.id, replacement_created_at: target.created_at, note_created_at: note.created_at, shared: path ? 'path' : subject ? 'subject' : 'similarity', similarity: sim === null ? null : round3(sim), template: templateOf(note), replacement_template: templateOf(target) };
   }
   const sim = storedCosine(note, target);
   const matched = (note.b.matches || []).find(m => m && m.id === target.id);
   const best = Math.max(sim === null ? -1 : sim, matched && typeof matched.similarity === 'number' ? matched.similarity : -1);
   const reported = (note.b.reported_wrong || []).some(w => w && w.replaced_by === target.id);
-  if (best >= threshold) return { via: 'similarity', similarity: round3(best), kept: target.id };
-  if (reported) return { via: 'report', similarity: best < 0 ? null : round3(best), kept: target.id };
+  const template = templateOf(note);
+  if (best >= threshold) return { via: 'similarity', similarity: round3(best), kept: target.id, template };
+  if (reported) return { via: 'report', similarity: best < 0 ? null : round3(best), kept: target.id, template };
   throw refuse(`note ${note.id} is not shown to duplicate ${target.id}: the stored similarity is ${best < 0 ? 'unavailable' : round3(best)} (needs ${threshold}) and no worker report names ${target.id} as the replacement`, { id: note.id, of: target.id, similarity: best < 0 ? null : round3(best) });
 }
 

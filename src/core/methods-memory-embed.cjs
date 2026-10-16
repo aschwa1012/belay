@@ -80,7 +80,7 @@ async function embedNote(E, caller, args = {}) {
   const e = await embedder.embed(src.text, { as: 'document' });
   const emb = { embedding: e.embedding, embedding_model: e.embedding_model, embedding_revision: e.embedding_revision, dim: e.dim, text_template: src.template };
   // Compared before the row has a vector, so it cannot match itself.
-  const matches = live ? await findMatches(E, caller, project, emb, lv) : [];
+  const matches = live ? await findMatches(E, caller, project, emb, lv, src.template) : [];
 
   const embedRun = typeof args.embed_run === 'string' && args.embed_run ? args.embed_run : null;
   const done = E.store.tx(() => {
