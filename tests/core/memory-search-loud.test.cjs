@@ -170,6 +170,43 @@ test('path 2, no run attached: the operator\'s CLI search keeps the keyword fall
   });
 });
 
+test('path 2 reads the CURRENT mode of the run row: attach records the launch mode, a resume that switches it is written by run.setEmbedderMode', async () => {
+  const dir = sandbox();
+  let c;
+  try {
+    const store = seedStore(dir);
+    const E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: null, establishedBy: 'test' });
+    await assert.rejects(E.handle('run.attach', { caller: orchestrator, adapter_pid: process.pid, embedder_mode: 'sometimes' }), (e) => e.code === 'E_ARGS');
+    const attached = await E.handle('run.attach', { caller: orchestrator, adapter_pid: process.pid, project: 'acme' });
+    assert.strictEqual(attached.run.embedder_mode, null, 'an empty row reads as required');
+    store.close();
+    c = await openCore({ dataDir: dir, caller: orchestrator, embed: false });
+    c._tryOwner = async () => { throw err('E_OWNER_LOST', 'seam'); };
+    await assert.rejects(hybrid(c, orchestrator), (e) => e.code === 'E_SEMANTIC_REQUIRED', 'the default');
+    await c.close(); c = null;
+
+    const again = new Store(path.join(dir, 'memory.db'), { stamp: true });
+    const E2 = new Engine({ dataDir: dir, store: again, getEmbedder: null, owner: null, establishedBy: 'test' });
+    await assert.rejects(E2.handle('run.setEmbedderMode', { caller: orchestrator, mode: 'sometimes' }), (e) => e.code === 'E_ARGS');
+    const switched = await E2.handle('run.setEmbedderMode', { caller: orchestrator, mode: 'keyword' });
+    assert.strictEqual(switched.embedder_mode, 'keyword');
+    assert.strictEqual(core('rows.cjs').current(again, 'run', 'r').embedder_mode, 'keyword');
+    again.close();
+    c = await openCore({ dataDir: dir, caller: orchestrator, embed: false });
+    c._tryOwner = async () => { throw err('E_OWNER_LOST', 'seam'); };
+    const r = await hybrid(c, orchestrator);
+    assert.deepStrictEqual(r.modes_failed.map((f) => f.code), ['E_OWNER_LOST'], 'keyword: the fallback');
+    await c.close(); c = null;
+
+    const third = new Store(path.join(dir, 'memory.db'), { stamp: true });
+    await new Engine({ dataDir: dir, store: third, getEmbedder: null, owner: null, establishedBy: 'test' }).handle('run.setEmbedderMode', { caller: orchestrator, mode: 'off' });
+    third.close();
+    c = await openCore({ dataDir: dir, caller: orchestrator, embed: false });
+    c._tryOwner = async () => { throw err('E_OWNER_LOST', 'seam'); };
+    await assert.rejects(hybrid(c, orchestrator), (e) => e.code === 'E_LEVER_OFF', 'off');
+  } finally { if (c) await c.close(); cleanup(dir); }
+});
+
 test('path 2, an ended run is not a live run: the keyword fallback stays', async () => {
   const dir = sandbox();
   let c;

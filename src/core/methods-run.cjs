@@ -32,7 +32,7 @@ const ATTACH_SUSPECT = LIFE_CLAIMING_STATES;
 // Fix round for 6f (diff-scope): `rows.cjs` (unowned) lacks paused_at/paused_by in COLUMNS.run, so
 // rows.append would drop both. This local insert (its own shape, via exported bind/parseRow) adds them.
 function appendRun(E, values, writtenBy, at = Date.now()) {
-  const cols = [...rows.COLUMNS.run, 'paused_at', 'paused_by', 'pause_parks', 'memory_levers', 'project', 'project_dir']; // item 1: 6th local column; ADR 0041 decision 1: the memory levers and the project
+  const cols = [...rows.COLUMNS.run, 'paused_at', 'paused_by', 'pause_parks', 'memory_levers', 'project', 'project_dir', 'embedder_mode']; // item 1: 6th local column; ADR 0041 decision 1: the memory levers and the project
   const all = [...cols, 'written_at', 'written_by'];
   const sql = `INSERT INTO run(${all.join(', ')}) VALUES (${all.map(() => '?').join(', ')})`;
   const params = cols.map(c => rows.bind(values[c]));
@@ -67,6 +67,8 @@ async function attach(E, caller, args) {
     const checked = parseMemoryBlock(parsed);
     if (checked.error) throw err('E_ARGS', `run.attach memory_levers is not a valid memory block: ${checked.error}`, { memory_levers: args.memory_levers });
   }
+  const modeGiven = args.embedder_mode !== undefined;
+  if (modeGiven && args.embedder_mode !== null && !require('./embedder-mode.cjs').normalize(args.embedder_mode)) throw err('E_ARGS', 'run.attach embedder_mode must be null, required, keyword or off', { embedder_mode: args.embedder_mode });
   const dirGiven = args.project_dir !== undefined;
   if (dirGiven && args.project_dir !== null && !(typeof args.project_dir === 'string' && args.project_dir.length > 0 && args.project_dir.length <= 1024)) {
     throw err('E_ARGS', 'run.attach project_dir must be null or a directory path', { project_dir: args.project_dir });
@@ -132,6 +134,7 @@ async function attach(E, caller, args) {
     memory_levers: leversGiven ? args.memory_levers : (carryPause ? prev.memory_levers : null), // same carry rule
     project: projectGiven ? args.project : (carryPause ? prev.project : null),
     project_dir: dirGiven ? args.project_dir : (carryPause ? prev.project_dir : null),
+    embedder_mode: modeGiven ? (args.embedder_mode === null ? null : require('./embedder-mode.cjs').normalize(args.embedder_mode)) : (carryPause ? prev.embedder_mode : null),
   }, by, t);
   E.noteWrite();
   return { run, epoch, reattached: !!prev, previous: parseRunRow(prev), workers_marked_dead: marked }; // item c
@@ -151,6 +154,19 @@ async function setPaused(E, caller, args) {
   const pausedAt = Number.isInteger(args.at) ? args.at : t;
   const pausedBy = typeof args.by === 'string' && args.by ? args.by : E.writtenBy(caller);
   const row = appendRun(E, { ...prev, ...pauseFields(args.paused, pausedAt, pausedBy, parks) }, E.writtenBy(caller), t); // item e
+  E.noteWrite();
+  return row;
+}
+
+// The run's current on_embedder_failure mode, written to its row when a resume switches it (belay resume --embedder keyword|off), so a reader
+// with no owner guard (a copy fallback) sees the live mode. The guard in the run process stays the authority; this is its record.
+async function setEmbedderMode(E, caller, args) {
+  const mode = require('./embedder-mode.cjs').normalize(args.mode);
+  if (mode === null) throw err('E_ARGS', 'run.setEmbedderMode needs mode: required, keyword or off', { mode: args.mode });
+  const prev = rows.current(E.store, 'run', caller.run_id);
+  if (!prev) throw err('E_NOT_FOUND', `no run row exists for ${caller.run_id}`, { run_id: caller.run_id });
+  if (prev.ended_at != null) throw err('E_ARGS', `run ${caller.run_id} has already ended`, { run_id: caller.run_id, ended_at: prev.ended_at });
+  const row = appendRun(E, { ...prev, embedder_mode: mode }, E.writtenBy(caller));
   E.noteWrite();
   return row;
 }
@@ -406,4 +422,4 @@ async function forgetWorker(E, caller, args) {
   };
 }
 
-module.exports = { LIFE_CLAIMING_STATES, attach, end, getRun, listRuns, writeWorker, getWorker, listWorkers, forgetWorker, decorate, setPaused };
+module.exports = { LIFE_CLAIMING_STATES, attach, end, getRun, listRuns, writeWorker, getWorker, listWorkers, forgetWorker, decorate, setPaused, setEmbedderMode };

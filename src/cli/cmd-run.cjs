@@ -196,7 +196,7 @@ async function run(ctx) {
         e.code = 'E_ARGS';
         throw e;
       }
-      if (choice) { guard.setMode(choice); return; }
+      if (choice) { guard.setMode(choice); await core.run.setEmbedderMode({ mode: choice }); return; } // the row records the live mode, for readers without the guard
       const w = await warmEmbedder(core, { retry: true, timeoutMs: RESUME_WARM_MS });
       if (!w.ok) {
         const e = new Error(`the embedder still cannot load, so the run stays paused: ${w.code}: ${w.message}; fix: ${w.fix}`);
@@ -285,7 +285,7 @@ async function run(ctx) {
   async function onAttached({ pid }) {
     try {
       RID.watchOrchestrator(pid); // ADR 0039: run-identity.cjs; the attach never waits on a snapshot
-      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), ...attachMemory(parsed.levers) });
+      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
       return { ok: true, attach: attachRow };
     } catch (e) {
       return { ok: false, error: (e && e.message) || String(e) };

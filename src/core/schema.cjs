@@ -179,6 +179,9 @@ const MIGRATIONS = [
   // ADR 0034 amendment 1: the directory the run's belay.config.json lives in (or is created in), so a resume writes the operator's
   // choice of embedder mode into the run's own project and never into whatever folder the CLI was run from.
   'ALTER TABLE run ADD COLUMN project_dir TEXT',
+  // The run's CURRENT on_embedder_failure mode (required, keyword or off): written by run.attach at launch and by run.setEmbedderMode when a
+  // resume switches it, so a reader without the owner's guard (a copy fallback) sees the live mode. Null reads as the default, required.
+  'ALTER TABLE run ADD COLUMN embedder_mode TEXT',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot

@@ -228,17 +228,18 @@ function warningFor(o, ran, failed, results, absence, unembedded) {
 
 // A hybrid search that fell back to a copy because its owner could not be reached has no embedder, and the copy's process has no
 // guard to pause the run. If the caller is a worker or the orchestrator of a LIVE run whose embedder mode is required (the default; a
-// run row records on_embedder_failure only when a spec set it, so a switch made at a resume is not visible here), the search is refused
+// run row records the CURRENT on_embedder_failure in embedder_mode: run.attach at launch, run.setEmbedderMode at a resume that switches it; an empty
+// column reads as required), the search is refused
 // instead of answering from keywords alone. A caller with no live run (the operator's CLI) keeps the keyword fallback.
 function refuseDegradedHybrid(E, caller) {
   if (!E.embedderFailure || E.owner || !caller || (caller.role !== 'worker' && caller.role !== 'orchestrator') || !caller.run_id) return;
   let row;
-  try { row = E.store.p('SELECT memory_levers, ended_at FROM run WHERE id = ? ORDER BY seq DESC LIMIT 1').get(caller.run_id); } catch { return; }
+  try { row = E.store.p('SELECT memory_levers, embedder_mode, ended_at FROM run WHERE id = ? ORDER BY seq DESC LIMIT 1').get(caller.run_id); } catch { return; }
   if (!row || row.ended_at != null) return;
   let lv = null;
   try { lv = typeof row.memory_levers === 'string' ? JSON.parse(row.memory_levers) : row.memory_levers; } catch { lv = null; }
   const EM = require('./embedder-mode.cjs');
-  const mode = EM.normalize(lv && lv.on_embedder_failure) || EM.DEFAULT_MODE;
+  const mode = EM.normalize(row.embedder_mode) || EM.normalize(lv && lv.on_embedder_failure) || EM.DEFAULT_MODE; // the row's current mode, else the default
   if (mode === 'keyword') return;
   if (mode === 'off') throw err('E_LEVER_OFF', 'memory.search: memory is off for this run (on_embedder_failure off) and the store owner could not be asked, so nothing is read through it', { lever: 'on_embedder_failure', cause: E.embedderFailure.code });
   const next = caller.role === 'worker'
