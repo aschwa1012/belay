@@ -241,7 +241,8 @@ function rowCols(view, scored) {
 // The warning, when there is one, is the first line of the text, as it is the first key of the JSON.
 function renderSearchText(r, view) {
   const out = [];
-  if (r.warning) out.push(r.warning);
+  if (r.warning) out.push(r.warning); // the warning stays the first line
+  if ((r.modes_failed || []).some(f => f.mode === 'semantic')) out.push('*** SEMANTIC SEARCH DID NOT RUN: these are keyword matches only, and an empty list does not mean there is no such memory ***');
   const results = r.results || [];
   if (!results.length) out.push(r.note ? r.note : '(no results)');
   else out.push(...table(rowCols(view, true), results), '');

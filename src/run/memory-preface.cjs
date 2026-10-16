@@ -154,9 +154,11 @@ async function indexBlock(w, ctx, prompt, given) {
     });
   } catch (e) {
     noteError(w, 'memory.index', e);
+    if (codeOf(e) === 'E_INDEX_BOUND') await record(ctx, w, { kind: 'index_bound', ok: 0, code: 'E_INDEX_BOUND', message: JSON.stringify({ refused: true, message: String((e && e.message) || e).slice(0, 300) }) });
     await record(ctx, w, { kind: 'index_injected', ok: 0, code: codeOf(e), message: JSON.stringify({ hybrid: false, queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), failure: { code: codeOf(e), message: String((e && e.message) || e).slice(0, 160) } }) });
     return '';
   }
+  if (got.candidates && got.candidates.degraded) await record(ctx, w, { kind: 'index_bound', ok: 0, code: 'E_INDEX_BOUND', message: JSON.stringify({ refused: false, ...got.candidates.degraded }) });
   const rel = got.relevance || {};
   const hybrid = rel.semantic_contributed === true;
   const semFailure = emb.embeddings.length && !hybrid && rel.semantic && typeof rel.semantic === 'object' ? rel.semantic : null;

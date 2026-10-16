@@ -11,9 +11,9 @@ const { Engine } = core('engine.cjs');
 const R = core('memory-index-rank.cjs');
 
 let dir, store, E;
-const RUNS = { on: 'rn-rank', record: 'rn-record', penalty: 'rn-penalty', off: 'rn-sink-off' };
+const RUNS = { kw: 'rn-kw', on: 'rn-rank', record: 'rn-record', penalty: 'rn-penalty', off: 'rn-sink-off' };
 const LEVERS = {
-  on: { project: 'acme', notes: true }, off: { project: 'acme', notes: true, notes_sink: 'off' },
+  kw: { project: 'acme', notes: true }, on: { project: 'acme', notes: true }, off: { project: 'acme', notes: true, notes_sink: 'off' },
   record: { project: 'acme', notes: true, notes_sink: 'record' }, penalty: { project: 'acme', notes: true, notes_sink: 'penalty' },
 };
 const orch = (k) => callerFor('orchestrator', { run_id: RUNS[k] });
@@ -25,7 +25,7 @@ before(async () => {
   dir = sandbox();
   store = new Store(`${dir}/memory.db`, { stamp: true });
   E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: null, establishedBy: 'test' });
-  for (const k of Object.keys(RUNS)) await E.handle('run.attach', { caller: orch(k), adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify(LEVERS[k]) });
+  for (const k of Object.keys(RUNS)) await E.handle('run.attach', { caller: orch(k), adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify(LEVERS[k]), ...(k === 'kw' ? { embedder_mode: 'keyword' } : {}) });
 });
 after(() => { store.close(); cleanup(dir); });
 
@@ -178,10 +178,27 @@ test('memory.index takes index_bound_ms and path_mode as E_ARGS when they are wr
   await assert.rejects(index('on', { namespaces: [space], path_mode: 'nope' }), (e) => e.code === 'E_ARGS' && e.detail.field === 'path_mode');
   await assert.rejects(index('on', { namespaces: [space], index_bound_ms: -1 }), (e) => e.code === 'E_ARGS');
   await assert.rejects(index('on', { namespaces: [space], index_bound_ms: 'soon' }), (e) => e.code === 'E_ARGS');
-  const r = await index('on', { namespaces: [space], query: 'quokkas', query_embedding: [0, 1, 0], embedding_model: 'm', index_bound_ms: 0 });
+  const r = await index('kw', { namespaces: [space], query: 'quokkas', query_embedding: [0, 1, 0], embedding_model: 'm', index_bound_ms: 0 });
   assert.strictEqual(r.candidates.degraded.dropped[0], 'vector lists');
   assert.strictEqual(r.candidates.source, 'keyword');
   assert.strictEqual(r.row_ids.length, 1);
+  // Under required (the default of a run whose row says nothing) the wall clock is not used: a bound of 0 changes nothing.
+  const req = await index('on', { namespaces: [space], query: 'quokkas', query_embedding: [0, 1, 0], embedding_model: 'm', index_bound_ms: 0 });
+  assert.strictEqual(req.candidates.degraded, undefined);
+  assert.strictEqual(req.candidates.source, 'hybrid');
+});
+
+test('the index bound by work: required refuses past the cap whatever the clock says; keyword never refuses on work', async () => {
+  const space = fresh();
+  for (let i = 0; i < 5; i++) note(space, `claim ${i} quokkas`, [0, 1, 0]);
+  const args = { namespaces: [space], query: 'quokkas', query_embeddings: [{ vector: [0, 1, 0], label: 'a' }, { vector: [0, 0, 1], label: 'b' }], embedding_model: 'm' };
+  const ok = await index('on', { ...args, index_work_cap: 10 }); // 5 rows x 2 vectors = 10: at the cap
+  assert.strictEqual(ok.candidates.degraded, undefined);
+  await assert.rejects(index('on', { ...args, index_work_cap: 9 }), (e) => e.code === 'E_INDEX_BOUND' && e.detail.work === 10 && e.detail.cap === 9);
+  const kw = await index('kw', { ...args, index_work_cap: 9 });
+  assert.strictEqual(kw.candidates.degraded, undefined, 'under keyword only the clock bounds the sweep');
+  await assert.rejects(index('on', { ...args, index_work_cap: 0 }), (e) => e.code === 'E_ARGS');
+  assert.ok(R.QUERIES_MAX === undefined || R.QUERIES_MAX === 8);
 });
 
 test('no signal: the newest notes, source newest', async () => {

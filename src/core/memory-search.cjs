@@ -17,7 +17,7 @@ const { ftsReady } = require('./memory-schema.cjs');
 const { scanCeiling } = require('./schema.cjs');
 const { toUnitF32 } = require('./store.cjs');
 const gate = require('./memory-note-gate.cjs');
-const { nsFor, resolveNamespace, runAlpha, withEmbedding, reachOf, checkReach } = require('./methods-memory.cjs');
+const { nsFor, resolveNamespace, runAlpha, withEmbedding, reachOf, checkReach, runEmbedderMode } = require('./methods-memory.cjs');
 
 const MODES = ['semantic', 'keyword', 'hybrid'];
 const VIEWS = ['full', 'index'];
@@ -226,6 +226,39 @@ function warningFor(o, ran, failed, results, absence, unembedded) {
   return null;
 }
 
+// What a hybrid search does when its semantic half fails, by where it runs and what failed. In a run (a worker or the orchestrator of a
+// LIVE run) under `required` it does not answer from keywords alone:
+//   - the copy fallback (no owner, no embedder: the owner was unreachable, not listening, backed off or timed out, quietly or with an
+//     error): refused E_SEMANTIC_REQUIRED naming the cause. This process has no guard, so nothing here can pause the run;
+//   - the owner's embedder failed (not found, load error, timeout): the guard heard of it in withEmbedding and paused the run, and the
+//     error it advised is rethrown;
+//   - anything else (a model mismatch, a dimension mismatch, a namespace over the scan ceiling): refused E_SEMANTIC_REQUIRED naming the
+//     cause, and the guard is NOT told, since a resume fixes none of them.
+// Under `keyword` the keyword answer stands and modes_failed names the cause; under `off` an embedder failure turned memory off and the call
+// is refused (E_LEVER_OFF). With no live run (the operator's CLI, a standalone owner) the keyword fallback stays.
+function onSemanticFailure(E, caller, e) {
+  const run = runEmbedderMode(E, caller);
+  if (!run.live) return;
+  const guarded = run.source === 'guard';
+  const embedderFailure = !!(e && e.detail && e.detail.embedder === true);
+  if (guarded && embedderFailure && E.memoryOff('memory.search') === 'refuse') {
+    throw err('E_LEVER_OFF', 'memory.search: memory is off for this run (on_embedder_failure off, after an embedder failure), so nothing is read or written through it', { lever: 'on_embedder_failure' });
+  }
+  if (run.mode === 'keyword') return;
+  if (run.mode === 'off') {
+    if (guarded) return; // memory goes off at an embedder failure (above); a failure that is not the embedder's falls back
+    throw err('E_LEVER_OFF', 'memory.search: memory is off for this run (on_embedder_failure off) and its semantic half cannot run (' + (E.embedderFailure ? E.embedderFailure.code : e.code) + '), so nothing is read through it', { lever: 'on_embedder_failure', cause: E.embedderFailure ? E.embedderFailure.code : e.code });
+  }
+  // required
+  if (guarded && embedderFailure) throw e; // already told to the guard and advised (withEmbedding)
+  const cause = guarded ? e : (E.embedderFailure ? E.embedderFailure : e);
+  const why = guarded ? 'the semantic half failed for a reason a resume does not fix' : 'the store owner could not be asked for a vector (it was unreachable, not listening, backed off or too slow)';
+  const next = caller.role === 'worker'
+    ? 'Stop and wait: do not run belay commands; the operator will resume the run.'
+    : 'Tell the operator (belay status shows the run); fix the cause or switch the run with belay resume ' + caller.run_id + ' --embedder keyword|off.';
+  throw err('E_SEMANTIC_REQUIRED', 'memory.search hybrid could not run its semantic half: ' + why + ' (' + cause.code + ': ' + cause.message + '), and the run embedder mode is required, so no keyword-only answer is given. ' + next, { cause: cause.code, mode: run.mode, run_id: caller.run_id, guarded });
+}
+
 async function search(E, caller, args) {
   const o = parseSearch(E, caller, args);
   const depth = o.order === 'score' ? Math.min(Math.max((o.offset + o.k) * 3, 60), DEPTH_MAX) : DEPTH_MAX;
@@ -239,6 +272,7 @@ async function search(E, caller, args) {
     try { sem = await semanticStage(E, caller, o, depth); ran.push('semantic'); }
     catch (e) {
       if (o.mode === 'semantic') throw e; // unchanged: a semantic search that cannot run is refused by name
+      onSemanticFailure(E, caller, e);
       failed.push({ mode: 'semantic', code: asCode(e), message: e.message });
     }
   }
