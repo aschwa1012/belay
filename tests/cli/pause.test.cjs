@@ -56,7 +56,7 @@ function cliTextAsync(args, dataDir) {
 }
 
 // A snapshot's PowerShell is one of this process's children, so the count waits for the gate to be idle first (ADR 0048).
-async function ownChildCount() { await require('../../src/core/proc-identity.cjs').gate.whenIdle(); return (await P.childPids(process.pid)).length; }
+const { ownChildCount } = require('../helpers/own-children.cjs'); // children created at or after this process (a reused pid's orphans are not its own)
 
 function workerWorktree(dir, id) {
   const wt = `${dir}/${id}-wt`;
