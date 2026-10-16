@@ -226,6 +226,27 @@ function warningFor(o, ran, failed, results, absence, unembedded) {
   return null;
 }
 
+// A hybrid search that fell back to a copy because its owner could not be reached has no embedder, and the copy's process has no
+// guard to pause the run. If the caller is a worker or the orchestrator of a LIVE run whose embedder mode is required (the default; a
+// run row records on_embedder_failure only when a spec set it, so a switch made at a resume is not visible here), the search is refused
+// instead of answering from keywords alone. A caller with no live run (the operator's CLI) keeps the keyword fallback.
+function refuseDegradedHybrid(E, caller) {
+  if (!E.embedderFailure || E.owner || !caller || (caller.role !== 'worker' && caller.role !== 'orchestrator') || !caller.run_id) return;
+  let row;
+  try { row = E.store.p('SELECT memory_levers, ended_at FROM run WHERE id = ? ORDER BY seq DESC LIMIT 1').get(caller.run_id); } catch { return; }
+  if (!row || row.ended_at != null) return;
+  let lv = null;
+  try { lv = typeof row.memory_levers === 'string' ? JSON.parse(row.memory_levers) : row.memory_levers; } catch { lv = null; }
+  const EM = require('./embedder-mode.cjs');
+  const mode = EM.normalize(lv && lv.on_embedder_failure) || EM.DEFAULT_MODE;
+  if (mode === 'keyword') return;
+  if (mode === 'off') throw err('E_LEVER_OFF', 'memory.search: memory is off for this run (on_embedder_failure off) and the store owner could not be asked, so nothing is read through it', { lever: 'on_embedder_failure', cause: E.embedderFailure.code });
+  const next = caller.role === 'worker'
+    ? 'Stop and wait: do not run belay commands; the operator will resume the run.'
+    : 'Tell the operator the owner is unreachable (check belay status); the run may need belay resume ' + caller.run_id + '.';
+  throw err('E_SEMANTIC_REQUIRED', 'memory.search hybrid could not run its semantic half: the store owner could not be asked (' + E.embedderFailure.code + ': ' + E.embedderFailure.message + '), and the run embedder mode is required, so no keyword-only answer is given. ' + next, { cause: E.embedderFailure.code, mode, run_id: caller.run_id });
+}
+
 async function search(E, caller, args) {
   const o = parseSearch(E, caller, args);
   const depth = o.order === 'score' ? Math.min(Math.max((o.offset + o.k) * 3, 60), DEPTH_MAX) : DEPTH_MAX;
@@ -239,6 +260,7 @@ async function search(E, caller, args) {
     try { sem = await semanticStage(E, caller, o, depth); ran.push('semantic'); }
     catch (e) {
       if (o.mode === 'semantic') throw e; // unchanged: a semantic search that cannot run is refused by name
+      refuseDegradedHybrid(E, caller);
       failed.push({ mode: 'semantic', code: asCode(e), message: e.message });
     }
   }

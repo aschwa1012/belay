@@ -20,6 +20,7 @@ const { withCopy } = require('./copy-read.cjs');
 const { ping } = require('./ping.cjs');
 const unresponsive = require('./unresponsive.cjs');
 const { withSemanticFailure } = require('./memory-search.cjs');
+const { notifyEmbedderFailure, adviseEmbedderFailure } = require('./methods-memory.cjs');
 
 const ELECTION_PING_TIMEOUT_MS = 300; // 5a-3: becomeOwner()'s refusal ping
 const READ_TIMEOUT_MS = 300;       // api.md §1: the bounded round trip before falling back to a copy
@@ -148,9 +149,18 @@ class Core {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         const e = err('E_TIMEOUT', method + ' did not finish within ' + limit + ' ms in this process (the owner); its embedder is still loading or embedding and the load continues, so ' + (writes ? 'RE-READ before retrying: the row is written when the load finishes' : 'a retry waits on the same load'), { method, timeout_ms: limit, in_process: true, ...(writes ? { may_have_committed: true } : {}) });
-        // A hybrid search still has its keyword half: answer from it, naming the timeout in modes_failed.
         if (method === 'memory.search' && params.mode === 'hybrid') {
-          this.owner.engine.handle(method, { ...params, mode: 'keyword' }).then(r => resolve(withSemanticFailure(r, e)), () => reject(e));
+          const engine = this.owner.engine;
+          // In a run (an owner with a guard) the timeout is an embedder failure like any other (ADR 0034): the guard hears of it, and under
+          // `required` the search is REFUSED, not answered from its keyword half (the run pauses); under `off` memory is off and it is refused.
+          if (this.owner.opts && typeof this.owner.opts.embedderMode === 'function') {
+            const bound = err('E_EMBED_BOUND', 'memory.search hybrid: its semantic half did not finish within ' + limit + ' ms (the embedder of the owner is still loading or embedding and the load continues)', { embedder: true, cause: 'timeout', op: 'embed', method, timeout_ms: limit, in_process: true });
+            notifyEmbedderFailure(engine, params.caller, 'memory.search', bound);
+            if (engine.memoryOff(method) === 'refuse') return reject(err('E_LEVER_OFF', method + ': memory is off for this run (on_embedder_failure off, after an embedder failure), so nothing is read or written through it', { lever: 'on_embedder_failure' }));
+            if (engine.embedderMode() === 'required') return reject(adviseEmbedderFailure(engine, params.caller, bound));
+          }
+          // keyword mode, or no run at all (a standalone owner): answer from the keyword half, naming the timeout in modes_failed.
+          engine.handle(method, { ...params, mode: 'keyword' }).then(r => resolve(withSemanticFailure(r, e)), () => reject(e));
         } else reject(e);
       }, limit);
       run.then(v => { clearTimeout(timer); resolve(v); }, e => { clearTimeout(timer); reject(e); });
