@@ -136,12 +136,20 @@ async function scrubScope(E, caller, args) {
     }
     add(load(E, id), why, extra);
   };
-  const liveNote = (id) => { const n = load(E, id); return n && n.type === 'note' && n.namespace === N.projectNs(project) && (n.status || 'unverified') !== 'refuted' ? n : null; };
+  // A live partner: in the project, not refuted, not superseded by another row (the relation gate refuses those, so they are not offered).
+  const liveNote = (id) => {
+    const n = load(E, id);
+    if (!n || n.type !== 'note' || n.namespace !== N.projectNs(project) || (n.status || 'unverified') === 'refuted') return null;
+    return E.store.p('SELECT 1 AS x FROM memory_entries WHERE supersedes = ? AND namespace = ?').get(id, n.namespace) ? null : n;
+  };
+  // A `new` verdict holds only while both notes still have the text, vector model, dimension and template it was made on.
+  const keyOf = (n) => `${n.text_hash}|${n.embedding_model || ''}|${n.dim || ''}|${n.text_template || 'v1'}`;
+  const judged = (n, other) => (n.b.pair_judged || []).some((j) => j && j.of === other.id && j.own_key === keyOf(n) && j.of_key === keyOf(other));
   const reported = E.store.p(`SELECT id FROM memory_entries WHERE type = 'note' AND namespace = ? AND EXISTS
     (SELECT 1 FROM json_each(memory_entries.body, '$.reported_wrong') WHERE json_extract(value, '$.run_id') = ? AND json_extract(value, '$.replaced_by') IS NOT NULL) ORDER BY created_at, id`).all(N.projectNs(project), runId);
   for (const r of reported) {
     const n = load(E, r.id);
-    const named = (n.b.reported_wrong || []).filter((w) => w && w.run_id === runId && w.replaced_by && w.replaced_by !== n.id).map((w) => w.replaced_by);
+    const named = (n.b.reported_wrong || []).filter((w) => w && w.run_id === runId && w.replaced_by && w.replaced_by !== n.id && w.by !== n.written_by).map((w) => w.replaced_by);
     if (!n.b.held && named.some((id) => liveNote(id))) addNew(r.id, 'replaced_by');
   }
   const pending = E.store.p("SELECT id FROM memory_entries WHERE type = 'note' AND namespace = ? AND run_id = ? ORDER BY created_at, id").all(N.pendingNs(project), runId);
@@ -152,9 +160,8 @@ async function scrubScope(E, caller, args) {
   for (const r of withMatches) {
     const n = load(E, r.id);
     if (n.b.held) continue;
-    const judged = new Set((n.b.pair_judged || []).map((j) => j && j.of));
     const open = (n.b.matches || []).some((m) => m && m.id !== n.id && !(typeof threshold === 'number' && typeof m.similarity === 'number' && m.similarity < threshold)
-      && !judged.has(m.id) && liveNote(m.id) && !(liveNote(m.id).b.pair_judged || []).some((j) => j && j.of === n.id));
+      && liveNote(m.id) && !judged(n, liveNote(m.id)) && !judged(liveNote(m.id), n));
     if (open) addNew(n.id, 'matched');
   }
   for (const nom of nominationsForScope(E, project) || []) {

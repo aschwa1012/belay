@@ -131,7 +131,7 @@ async function runScrub({ core, runId, lv, dataDir, getManager, worktree = null,
     if (dropped.length) { out.dropped = dropped; await owe(core, runId, dropped, J.coded('E_DROPPED', `dropped: the scrub child gave no entry in two scrubs, so these are no longer offered until a new report, sighting or nomination: ${dropped.join(', ')}`), jobId); }
     if (applied.alarm) {
       out.alarm = applied.alarm;
-      const holdIds = [...applied.applied, ...applied.proposed].filter((r) => r.action === 'hold' || (r.action === 'relate' && r.relation !== 'new')).map((r) => r.id);
+      const holdIds = [...applied.applied, ...applied.proposed].filter((r) => r.action === 'hold' || (r.action === 'relate' && r.relation !== 'new') || (r.action === 'resolve' && ['supersedes', 'refines'].includes(r.resolved ? r.resolved.resolved : r.resolve))).map((r) => r.id);
       await J.receipt(core, { kind: 'scrub_alarm', ok: true, ...base, row_ids: holdIds, message: `a scrub of run ${runId} took ${applied.alarm.holds} notes out of sight (holds and archiving relations), over the ${applied.alarm.limit} that is normal; look at them (belay memory proposals, belay memory archive)` });
     }
   } catch (e) {

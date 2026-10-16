@@ -7,7 +7,8 @@
 //   draft    store a promotion draft for a nominated note in draft/<project>; nothing is promoted here.
 // `hold` and `dismiss` are NOT scrubber actions: whether a note is wrong about the world is a reviewer's call, not a text
 // comparison, so the scrubber's hand-back may carry neither (E_ARGS, per entry). Their machinery stays: `holdApply` below is the
-// same call with them allowed, for the code that turns an upheld report into a hold.
+// same call with them allowed. It has no production caller yet: the report-to-hold path (memory-report-hold.cjs, another branch) is to call it or
+// replace it. Until then it is reached only by tests.
 // Safeguards: S2 every id in the scope list (E_SCOPE, the whole call; a relate also needs its other note named by scope, a match or
 // a report); S4 the relation gates (E_PRECONDITION); S3 and the grounds still guard a hold. Mode (lever scrub_action): off refuses,
 // propose writes proposal/<project> rows and applies nothing, apply writes. More archives (relations and holds) than
@@ -19,7 +20,7 @@ const C = require('./lifecycle-common.cjs');
 const { loadNote, checkHoldFacts, ownTexts } = require('./memory-facts.cjs');
 const { checkCitations, evidenceOf } = require('./memory-citations.cjs');
 const { archiveNote } = require('./memory-archive.cjs');
-const { applyRelation, relationFacts } = require('./memory-relate.cjs');
+const { plan, applyPlan } = require('./memory-relate.cjs');
 const N = require('./methods-memory-notes.cjs');
 const { validId } = require('./memory-rows.cjs');
 
@@ -80,7 +81,7 @@ function hold(E, caller, ctx, ent, index, sources, state) {
     ns: L.nsOf('held', ctx.project), type: 'held', runId: ctx.runId,
     text: `held ${ent.kind}: ${note.id}${ent.of ? ` against ${ent.of}` : ''} (run ${ctx.runId})`,
     title: `held ${ent.kind}: ${note.title || note.id}`,
-    body: { state: 'held', note_id: note.id, kind: ent.kind, of: ent.of, ground: ent.ground, reason: ent.reason, run_id: ctx.runId, head_sha: ctx.evidence.head_sha, cites: ent.cites, facts, scrub: receipt, reviews: [] },
+    body: { state: 'held', note_id: note.id, kind: ent.kind, ...(ent.relation ? { relation: ent.relation } : {}), of: ent.of, ground: ent.ground, reason: ent.reason, run_id: ctx.runId, head_sha: ctx.evidence.head_sha, cites: ent.cites, facts, scrub: receipt, reviews: [] },
   });
   // The note itself carries a pointer, so the warning follows it into later runs without a second lookup.
   E.store.patchBody(note.id, b => { b.held = { row: held.id, kind: ent.kind, of: ent.of, reason: ent.reason, run_id: ctx.runId, at: Date.now() }; return N.fitBody(b); });
@@ -97,6 +98,10 @@ function draft(E, caller, ctx, ent, index, sources, note) {
 }
 
 async function settle(E, caller, ctx, ent, index, sources, pending) {
+  if (ent.of && (ent.resolve === 'supersedes' || ent.resolve === 'refines')) {
+    const t = loadNote(E, ent.of);
+    if (t && (t.status || 'unverified') === 'verified') throw err('E_PRECONDITION', `note ${ent.of} is review-verified, and a verified note is never hidden without the reviewer: resolve ${ent.id} as new, then relate the two (that becomes a hold for the reviewer)`, { id: ent.id, of: ent.of });
+  }
   const r = { id: ent.id, resolve: ent.resolve };
   if (ent.of) r.of = ent.of;
   // A supersedes needs evidence in the write-time shape; the scrubber gives a reason (no quotes), which is stated as what it saw.
@@ -117,11 +122,20 @@ function relate(E, caller, ctx, ent, index) {
   if (!reachable(E, ctx, target(E, ctx.project, ent.id), ent)) throw err('E_SCOPE', `note ${ent.of} is neither in the scope list nor named by a stored match or a report on ${ent.id}, so a relation may not reach it`, { id: ent.id, of: ent.of });
   const receipt = scrubReceipt(ctx, ent, index, []);
   if (ctx.mode === 'propose') {
-    const { x, y, ...facts } = relationFacts(E, ctx.project, ent.id, ent.of, ctx.threshold); // the gates are checked now, so a refused pair is never proposed
+    const { f } = plan(E, ctx, ent); // the gates are checked now, so a refused pair is never proposed
+    const { x, y, ...facts } = f;
     return E.store.tx(() => propose(E, caller, ctx, ent, index, [], facts));
   }
   return E.store.tx(() => {
-    const done = applyRelation(E, { ...ctx, receipt: `scrub:${ctx.runId}#${index}` }, ent);
+    const p = plan(E, ctx, ent); // the state at the write, inside the transaction
+    if (p.needsHold) {
+      // A review-verified note is never hidden without the reviewer: the verdict becomes a hold for the on-demand Opus reviewer.
+      const kind = ent.relation === 'repeats' ? 'duplicate' : 'superseded';
+      const h = { id: p.gone.id, action: 'hold', kind, of: p.kept.id, relation: ent.relation, ground: kind === 'duplicate' ? 'same_claim' : 'replaced_by_newer', reason: ent.reason, cites: [] };
+      const r = hold(E, caller, ctx, h, index, [], target(E, ctx.project, p.gone.id));
+      return { ...r, action: 'relate', relation: ent.relation, outcome: 'held', archived: null, kept: p.kept.id, held_for_review: true, note: 'the note is review-verified, so the relation became a hold for the reviewer' };
+    }
+    const done = applyPlan(E, { ...ctx, receipt: `scrub:${ctx.runId}#${index}` }, ent, p);
     return { index, id: ent.id, action: 'relate', outcome: 'applied', ...done, scrub: receipt, row: C.rowOut(E, ent.id), other_row: C.rowOut(E, ent.of) };
   });
 }
@@ -187,7 +201,7 @@ async function scrubApply(E, caller, args, opts = {}) {
   const holds = [...applied, ...proposed].filter(r => r.action === 'hold').length;
   // The runaway alarm counts every note taken out of sight in one scrub: a hold, or a relation that archives a note.
   const archives = [...applied, ...proposed].filter(r => r.action === 'hold' || (r.action === 'relate' && r.relation !== 'new')
-    || (r.action === 'resolve' && ['repeats', 'supersedes', 'refines'].includes(r.resolved ? r.resolved.resolved : r.resolve))).length;
+    || (r.action === 'resolve' && ['supersedes', 'refines'].includes(r.resolved ? r.resolved.resolved : r.resolve))).length; // a pending repeat takes nothing out of sight
   const out = { mode, run_id: runId, project, counts: { entries: entries.length, applied: applied.length, proposed: proposed.length, refused: refused.length, holds, archives }, applied, proposed, refused };
   if (archives > lv.scrub_alarm_holds) out.alarm = { kind: 'many_holds', holds: archives, limit: lv.scrub_alarm_holds, message: `${archives} notes taken out of sight by one scrub (holds and archiving relations) is more than the ${lv.scrub_alarm_holds} that is normal: the orchestrator and the operator should look (belay memory proposals, belay memory archive)` };
   return out;
