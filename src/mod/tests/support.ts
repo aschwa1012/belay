@@ -68,6 +68,7 @@ export function world(on: any, w: World) {
   const opened: string[] = []
   const commands: string[] = []
   const toasts: string[] = []
+  const spawned: string[][] = [] // every `$.process.spawn` the panel makes: only the review button may make one
   const attempts: { verb: string; t: number; timeoutMs: number; cwd?: string; argv: string[] }[] = []
   const stat = { active: 0, maxActive: 0 }
   on('session.start', ($: any, e: any) => ({ cwd: e.cwd }))
@@ -79,6 +80,10 @@ export function world(on: any, w: World) {
   on('ui.open', ($: any, e: any) => { opened.push(e.id); return { value: { isPlaced: !w.noPlace } } })
   on('ui.close', () => ({ value: undefined }))
   on('ui.toast', ($: any, e: any) => { toasts.push(e.text); return { value: undefined } })
+  on('process.spawn', async function* ($: any, e: any) {
+    spawned.push([...e.argv])
+    return { value: { code: 0, signal: null } }
+  })
   on('process.run', async ($: any, e: any) => {
     ran.push([...e.argv])
     const verb = e.argv.find((a: string) => ['agents', 'notices', 'transcript', 'settings'].includes(a))
@@ -116,7 +121,7 @@ export function world(on: any, w: World) {
     if ((verb === 'agents' && w.failAgents) || (verb === 'transcript' && w.transcriptFail)) return { value: { exitCode: verb === 'agents' ? 3 : 4, stdout: '', stderr: 'boom' } }
     return { value: { exitCode: 0, stdout: JSON.stringify(body[verb]), stderr: '' } }
   })
-  return { clock, ran, writes, opened, commands, toasts, attempts, stat, w }
+  return { clock, ran, writes, opened, commands, toasts, spawned, attempts, stat, w }
 }
 
 export const START = { cwd: '/x', surface: 'terminal', isInteractive: true } as const

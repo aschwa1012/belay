@@ -1,16 +1,22 @@
-// The panel: a band above the prompt and a side pane over a belay run. Read-only. It runs belay's own
+// The panel: a band above the prompt and a side pane over a belay run. Read-only, with ONE exception below. It runs belay's own
 // read commands by argv, keeps what it read in `$.state`, and draws it. It never writes the store or a
 // stream, and it submits nothing to the model: its commands answer with a toast, never with text the
 // model would read.
+//
+// The one exception, at the operator's request (2026-10-15): the memory line's button dispatches `belay memory review --project <p>`,
+// the Opus archive reviewer, which writes the store and spends money. It is narrowly scoped: exactly that one command; reachable ONLY
+// from the button's onPress (view.tsx Held -> act.review -> reviewPress -> dispatchReview), never from a command, a hook, a notice, a
+// tool call, a model or a message; and it needs two presses (the first only asks). The CLI process runs as the operator would run it by
+// hand, and stays the parent of the Opus child (invariant 1).
 //
 // The engine follows `$` only into functions declared at the top of this file, so every helper that
 // takes `$` lives here; the pure parts (parsing, drawing) live in model.ts, fetch.ts and view.tsx.
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On, Timer } from 'claude-code'
-import type { BelayPanelSnap, BelayPanelWatch } from '../../types/index'
+import type { BelayPanelSnap, BelayPanelUi, BelayPanelWatch } from '../../types/index'
 import { argvFor, buildSnapshot, fatalSnapshot, fwd, isWindowsPath, parseRan, parseRunFile, projectRootOf, repoCliGuess, type Ran, type RunFileRead } from './fetch'
-import { DEFAULT_SETTINGS, DEFAULT_UI } from './model'
+import { CONFIRM_MS, DEFAULT_SETTINGS, DEFAULT_UI, reviewProject } from './model'
 import { Band, BandWaiting, Fallback, Pane, type Act, type Els } from './view'
 
 const PANE = 'belay'
@@ -28,6 +34,7 @@ const TRANSCRIPT_TAIL: { band: number | null; pane: number | null } = { band: 10
 const BACKOFF_FIRST_MS = 10000
 const BACKOFF_MAX_MS = 60000
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/
+const REVIEW_ARGS = ['memory', 'review', '--project'] // the one write the panel makes; the project follows
 const NO_CLI_WINDOWS = 'belay CLI not found: on Windows set belay_cli and node in belay-run.json, or load this plugin from <repo>/src/mod'
 
 type Host = EngineInterface
@@ -41,6 +48,7 @@ let lastFetchAt = 0
 let lastSettingsAt = 0
 let timeoutStreak = 0
 let backoffUntil = 0
+const reviewing = new Set<string>() // projects whose dispatched review has not ended: a second dispatch is not started
 
 // null: there is no run file. Anything else that goes wrong with an existing file is an error state.
 async function readRunFile($: Host): Promise<RunFileRead | null> {
@@ -186,15 +194,54 @@ async function watchRun($: Host, next: BelayPanelWatch): Promise<void> {
   ensureTicker($)
 }
 
+// Start `belay memory review --project <p>` and do not wait for it. The belay CLI is the parent of the Opus child; the panel only keeps the
+// CLI's output read so the child is not blocked on a full pipe. The result arrives through belay's notices (the review_stage receipts).
+// Called from reviewPress below and from nowhere else.
+async function dispatchReview($: Host, project: string): Promise<void> {
+  const watch = await read($, watchA)
+  if (!watch || watch.error) { $.ui.toast('belay: no run is watched, so the review was not started.'); return }
+  const r = await resolveCli($, watch)
+  if ('error' in r) { $.ui.toast(`belay: the review was not started: ${r.error}`); return }
+  if (reviewing.has(project)) { $.ui.toast(`belay: an archive review of ${project} is already running.`); return }
+  reviewing.add(project)
+  const cwd = watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null
+  void (async () => {
+    try {
+      for await (const _ of $.process.spawn({ argv: argvFor(r.cli, [...REVIEW_ARGS, project], watch.dataDir), ...(cwd ? { cwd } : {}) })) void _
+    } catch { /* the review's own receipts say how it ended */ } finally { reviewing.delete(project) }
+  })()
+  $.ui.toast('archive review started')
+}
+
+// The review button. First press: ask (the memory line turns into a confirm). Second press inside CONFIRM_MS, for the same project:
+// dispatch. The confirm is cleared either way. Any other press clears it too (calm below), and a timeout ends it (the line checks the age).
+async function reviewPress($: Host): Promise<void> {
+  const ui = await read($, uiA)
+  const snap = await read($, snapA)
+  const project = reviewProject(snap?.held ?? null)
+  if (!project) return
+  const now = await $.clock.now()
+  if (ui.confirm && ui.confirm.project === project && now - ui.confirm.at <= CONFIRM_MS) {
+    await update($, uiA, u => ({ ...u, confirm: null }))
+    await dispatchReview($, project)
+    return
+  }
+  await update($, uiA, u => ({ ...u, confirm: { project, at: now } }))
+}
+
+// Every press that is not the review button cancels a pending confirm.
+const calm = (u: BelayPanelUi): BelayPanelUi => (u.confirm ? { ...u, confirm: null } : u)
+
 function acts($: Host): Act {
   return {
-    select: id => { void update($, uiA, u => ({ ...u, selected: u.selected === id ? null : id })) },
-    legend: () => { void update($, uiA, u => ({ ...u, legend: !u.legend })) },
-    fold: () => { void update($, uiA, u => ({ ...u, foldOpen: !u.foldOpen })) },
-    group: key => { void update($, uiA, u => ({ ...u, groups: u.groups.includes(key) ? u.groups.filter(g => g !== key) : [...u.groups, key].slice(-50) })) },
-    seen: key => { void update($, uiA, u => (u.seen.includes(key) ? u : { ...u, seen: [...u.seen, key].slice(-200) })) },
-    close: () => { void setOpen($, false) },
-    toggle: () => { void read($, uiA).then(u => setOpen($, !u.open)) },
+    select: id => { void update($, uiA, u => ({ ...calm(u), selected: u.selected === id ? null : id })) },
+    legend: () => { void update($, uiA, u => ({ ...calm(u), legend: !u.legend })) },
+    fold: () => { void update($, uiA, u => ({ ...calm(u), foldOpen: !u.foldOpen })) },
+    group: key => { void update($, uiA, u => ({ ...calm(u), groups: u.groups.includes(key) ? u.groups.filter(g => g !== key) : [...u.groups, key].slice(-50) })) },
+    seen: key => { void update($, uiA, u => (u.seen.includes(key) && !u.confirm ? u : { ...calm(u), seen: u.seen.includes(key) ? u.seen : [...u.seen, key].slice(-200) })) },
+    close: () => { void update($, uiA, calm).then(() => setOpen($, false)) },
+    toggle: () => { void update($, uiA, calm).then(() => read($, uiA)).then(u => setOpen($, !u.open)) },
+    review: () => { void reviewPress($) },
   }
 }
 

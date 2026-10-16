@@ -14,6 +14,7 @@ const { ping } = require('./ping.cjs');
 const unresponsive = require('./unresponsive.cjs');
 const { metaGet } = require('./schema-stamp.cjs');
 const { count: unembeddedCount } = require('./notes-unembedded.cjs');
+const { count: heldCount } = require('./notes-held.cjs');
 
 const RESPONSIVE_WINDOW_MS = 30000;
 const OWNER_PING_TIMEOUT_MS = 300;
@@ -137,11 +138,15 @@ async function get(E, caller, args = {}) {
   // of the rows already open, none when the store is absent.
   const notesUnembedded = storePresent ? unembeddedCount(E.store) : { total: 0, by_project: {}, newest_at: null };
 
+  // Notes held for the on-demand Opus archive reviewer (a `wrong` hold): a plain read, none when the store is absent.
+  const notesHeld = storePresent ? heldCount(E.store) : { total: 0, by_project: {}, oldest_age_runs: 0 };
+
   return {
     verdict,
     data_dir: dataDir,
     store,
     notes_unembedded: notesUnembedded,
+    notes_held: notesHeld,
     established_by: E.owner ? 'owner' : E.establishedBy,
     ms: Date.now() - t0,
     rungs,

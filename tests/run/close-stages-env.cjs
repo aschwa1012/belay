@@ -8,10 +8,10 @@ const { setup } = require('../core/lifecycle-env.cjs');
 const { DEFAULTS } = require('../../src/core/memory-levers.cjs');
 
 const LV = {
-  apply: { ...DEFAULTS, project: 'lc', notes: true, scrub_action: 'apply' },
-  propose: { ...DEFAULTS, project: 'lc', notes: true },
-  off: { ...DEFAULTS, project: 'lc', notes: true, scrub_action: 'off' },
-  alarm: { ...DEFAULTS, project: 'lc', notes: true, scrub_action: 'apply', scrub_alarm_holds: 2 },
+  apply: { ...DEFAULTS, project: 'lc', notes: true, scrub_action: 'apply', archive_review_auto: true },
+  propose: { ...DEFAULTS, project: 'lc', notes: true, archive_review_auto: true },
+  off: { ...DEFAULTS, project: 'lc', notes: true, scrub_action: 'off', archive_review_auto: true },
+  alarm: { ...DEFAULTS, project: 'lc', notes: true, scrub_action: 'apply', scrub_alarm_holds: 2, archive_review_auto: true },
   plain: { ...DEFAULTS, project: 'lc' },
 };
 const RUN = { apply: 'lc-apply', propose: 'lc-propose', off: 'lc-off', alarm: 'lc-alarm', plain: 'lc-plain' };

@@ -65,7 +65,7 @@ const VERBS = {
   proposals: { flags: ['--project', '--all'], positional: [0, 0], usage: 'belay memory proposals [--project p] [--all]' },
   restore: { flags: ['--reason', '--candidates'], positional: [1, 1], usage: 'belay memory restore <id> --reason <text>   |   belay memory restore <id> --candidates' },
   scrub: { flags: ['--run', '--worktree', '--goal', '--summary'], positional: [0, 0], usage: 'belay memory scrub [--run <id>] [--worktree <dir>] [--goal <text>] [--summary <text>]' },
-  review: { flags: ['--run', '--worktree', '--all'], positional: [0, 0], usage: 'belay memory review [--all] [--run <id>] [--worktree <dir>]' },
+  review: { flags: ['--run', '--project', '--worktree', '--all'], positional: [0, 0], usage: 'belay memory review [--project <p>] [--all] [--run <id>] [--worktree <dir>]' },
   resolve: { flags: ['--evidence'], positional: [2, 3], usage: 'belay memory resolve <id> new   |   belay memory resolve <id> repeats <of>   |   belay memory resolve <id> supersedes <of> --evidence <text>' },
   promote: { flags: ['--approve', '--reject', '--reason'], positional: [1, 1], usage: 'belay memory promote <note-id> (--approve | --reject) [--reason <text>]' },
   archive: { flags: ['--ids', '--older-than', '--confirm', '--project'], positional: [1, 1], usage: 'belay memory archive purge (--ids a,b | --older-than <days>) --confirm [--project p]' },

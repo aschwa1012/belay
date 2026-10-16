@@ -135,6 +135,10 @@ test('review --all: runs on a queue below every trigger, applies the verdicts th
     const plain = await cmd(T, ['review', '--run', 'lc-plain']);
     assert.strictEqual(plain.code, 1);
     assert.match(plain.text, /memory\.notes off/);
+    const noProject = await cmd(T, ['review', '--project', 'no-such-project'], { makeManager: async () => assert.fail('no run belongs to that project') });
+    assert.strictEqual(noProject.code, 1, noProject.text);
+    assert.match(noProject.text, /no ended run with notes on exists/);
+    assert.deepStrictEqual(R.parseArgs(['review', '--project', 'acme']).opts, { project: 'acme' });
     const none = await cmd(T, ['scrub', '--run', 'no-such-run']);
     assert.strictEqual(none.code, 1);
   });

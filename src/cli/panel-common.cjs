@@ -94,4 +94,12 @@ function unembeddedText(u) {
   return `${u.total} note${u.total === 1 ? '' : 's'} unembedded${per}: embed with belay memory embed${where}`;
 }
 
-module.exports = { unembeddedText, WIDTH, STREAM_NAME, fwd, orchestratorStreamPath, chooseRun, clean, v, iso, money, wrapLine, contentText };
+// Notes held for the Opus archive reviewer: a count, the oldest wait in runs, the projects, and the command that dispatches it.
+function heldText(h) {
+  const names = Object.keys(h.by_project || {}).sort();
+  const per = names.length > 1 ? ` (${names.map((p) => `${clean(p, 64)} ${h.by_project[p]}`).join(', ')})` : '';
+  const where = names.length === 1 ? ` --project ${clean(names[0], 64)}` : ' --project <p>';
+  return `${h.total} note${h.total === 1 ? '' : 's'} held for review${per}, oldest ${h.oldest_age_runs || 0} run${h.oldest_age_runs === 1 ? '' : 's'}: review with belay memory review${where}`;
+}
+
+module.exports = { unembeddedText, heldText, WIDTH, STREAM_NAME, fwd, orchestratorStreamPath, chooseRun, clean, v, iso, money, wrapLine, contentText };

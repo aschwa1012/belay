@@ -3,7 +3,7 @@
 // back, and nothing here invents a value (belay invariant 4: every fact names what established it).
 
 import type {
-  BelayAgent, BelayCache, BelayDisplayState, BelayEntry, BelayNotice, BelayPanelFooter, BelayPanelSnap,
+  BelayAgent, BelayCache, BelayDisplayState, BelayEntry, BelayHeld, BelayNotice, BelayPanelFooter, BelayPanelSnap,
   BelayPanelUi, BelaySettings,
 } from '../../types/index'
 import { cells, clipCells } from './wrap'
@@ -14,7 +14,7 @@ export type Seg = { t: string; c?: string; dim?: boolean; bold?: boolean; brk?: 
 export const DEFAULT_SETTINGS: BelaySettings = {
   pane: 'docked', marks: 'shapes', cache: 'both', context: 'both', band: 'two-lines', task: 'kind',
 }
-export const DEFAULT_UI: BelayPanelUi = { open: false, selected: null, legend: false, foldOpen: false, groups: [], placed: false, seen: [] }
+export const DEFAULT_UI: BelayPanelUi = { open: false, selected: null, legend: false, foldOpen: false, groups: [], placed: false, seen: [], confirm: null }
 
 const num = (x: unknown): number | null => (typeof x === 'number' && Number.isFinite(x) ? x : null)
 const str = (x: unknown): string | null => (typeof x === 'string' && x !== '' ? x : null)
@@ -164,6 +164,45 @@ export function normNotices(json: unknown): BelayNotice[] {
     }
   }
   return out
+}
+
+// ---- notes held for the archive reviewer --------------------------------------------------------
+
+// The estimated cost of one archive review, once the batch study has produced one. Null until then: the confirm says so.
+export const REVIEW_COST_ESTIMATE_USD: number | null = null
+// A first press waits this long for the second; after it, or after any other press, the confirm is gone.
+export const CONFIRM_MS = 8000
+
+// belay's `notes_held` notice (a standing count while any `wrong` hold waits), read defensively. Not a notice of the panel's own list:
+// it is the memory line, with the review button.
+export function normHeld(json: unknown): BelayHeld | null {
+  for (const raw of arr(obj(json)?.events)) {
+    const e = obj(raw)
+    if (!e || e.kind !== 'notes_held') continue
+    const count = num(e.count) ?? 0
+    if (count <= 0) return null
+    const byProject: Record<string, number> = {}
+    for (const [k, v] of Object.entries(obj(e.by_project) ?? {})) if (num(v) !== null && k !== '') byProject[clean(k, 64)] = v as number
+    return { count, byProject, oldestAgeRuns: num(e.oldest_age_runs) ?? 0 }
+  }
+  return null
+}
+
+// The project one press would review: the one with the most held notes, ties by name. null when belay named none.
+export function reviewProject(h: BelayHeld | null): string | null {
+  if (!h) return null
+  const names = Object.keys(h.byProject).sort((a, b) => h.byProject[b]! - h.byProject[a]! || (a < b ? -1 : 1))
+  return names[0] ?? null
+}
+
+export function heldLine(h: BelayHeld): string {
+  const names = Object.keys(h.byProject).sort()
+  return `${h.count} note${h.count === 1 ? '' : 's'} held for review · oldest ${h.oldestAgeRuns} run${h.oldestAgeRuns === 1 ? '' : 's'}${names.length ? ` · ${names.join(', ')}` : ''}`
+}
+
+export function confirmLine(h: BelayHeld, project: string): string {
+  const cost = REVIEW_COST_ESTIMATE_USD === null ? 'cost: measured after first run' : `estimated cost $${REVIEW_COST_ESTIMATE_USD.toFixed(2)}`
+  return `${h.byProject[project] ?? h.count} note${(h.byProject[project] ?? h.count) === 1 ? '' : 's'} held in ${project} · dispatch the Opus archive reviewer? ${cost}`
 }
 
 // A stopped worker is not one of decision 5's notices: it is listed in the pane, never in the band or the count.

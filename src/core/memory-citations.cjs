@@ -210,4 +210,4 @@ function evidenceOf(args) {
   return { head_sha: head || null, worktree: wt || null, evidence_files: ev || [] };
 }
 
-module.exports = { checkCitations, evidenceOf, checkTaskCites, checkShape, selfQuoted, withoutBelayResults, seam, QUOTE_MIN_BYTES };
+module.exports = { checkCitations, evidenceOf, checkTaskCites, checkShape, streamResultHas, selfQuoted, withoutBelayResults, seam, QUOTE_MIN_BYTES };

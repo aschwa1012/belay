@@ -53,6 +53,7 @@ function renderText(receipt) {
       : `store: schema ${st.schema_version}, last written by ${st.written_by || 'unknown'}`);
   }
   if (receipt.notes_unembedded && receipt.notes_unembedded.total > 0) lines.push(require('./panel-common.cjs').unembeddedText(receipt.notes_unembedded));
+  if (receipt.notes_held && receipt.notes_held.total > 0) lines.push(require('./panel-common.cjs').heldText(receipt.notes_held));
   lines.push('');
   return lines.join('\n');
 }

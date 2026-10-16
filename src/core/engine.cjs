@@ -101,6 +101,8 @@ const METHODS = {
   'memory.stats': { roles: ALL, kind: 'read', fn: memory.stats },
   // The notes stored without a vector, counted (and listed on request) by a plain read; status, notices and the panel show the count.
   'memory.unembedded': { roles: ALL, kind: 'read', fn: lazy('./notes-unembedded.cjs', 'unembedded') },
+  // The notes held for the Opus archive reviewer (a `wrong` hold), counted by a plain read; status, notices and the panel show the count.
+  'memory.held': { roles: ALL, kind: 'read', fn: lazy('./notes-held.cjs', 'held') },
   // `belay memory embed`: one such note gets its vector and the near-duplicate check its hand-back skipped. The operator starts it; nothing else calls it.
   'memory.embedNote': { roles: ['operator'], kind: 'write', fn: lazy('./methods-memory-embed.cjs', 'embedNote') },
   // build 12b E2: start the embedder child and its load ahead of first use (the run's warm-up), so the
