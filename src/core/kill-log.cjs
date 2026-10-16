@@ -46,7 +46,7 @@ function begin(fn, target) {
       time: new Date().toISOString(), pid: Number.isInteger(pid) ? pid : null,
       via: (r && r.identity && r.identity.via) || viaOf(target), ok,
       kind: ok ? null : ((r && r.kind) || (r && r.error ? 'error' : 'unverifiable')),
-      detail: ok ? null : ((r && (r.detail || r.error)) || null), caller, fn,
+      detail: ok ? null : ((r && (r.detail || r.error)) || null), signalled_at: (r && r.signalled_at) || null, snapshot_ms: r && Number.isFinite(r.snapshot_ms) ? r.snapshot_ms : null, caller, fn,
     };
     try { fs.appendFileSync(file, `${JSON.stringify(line)}\n`); } catch { /* the log never changes a kill */ }
     return r;

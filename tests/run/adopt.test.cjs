@@ -19,7 +19,7 @@ const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/\\/g, '/'
 const USER_SETTINGS = path.join(__dirname, 'fixtures', 'user-settings.json').replace(/\\/g, '/');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ADR 0039: a kill needs the creation time the manager restates about a second after spawn; an adopter acts long after that.
-const waitCreated = async (core, id) => { for (let i = 0; i < 100; i++) { const c = core.currentWorker(id); if (c && c.pid_created) return; await sleep(100); } throw new Error('pid_created never landed for ' + id); };
+const { waitCreated } = require('../helpers/created.cjs');
 
 function sandbox() {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-run-adopt-'));

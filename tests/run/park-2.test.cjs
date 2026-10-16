@@ -19,6 +19,7 @@ const { createRunManager } = require('../../src/run/index.cjs');
 const { createFakeCore, FakeCoreError } = require('./fake-core.cjs');
 const { cleanup } = require('../core/helpers.cjs');
 const P = require('../../src/run/process.cjs');
+const { SNAPSHOT_TIMEOUT_MS } = require('../../src/core/proc-identity.cjs');
 
 // A real, harmless process standing in for a pid Windows reused after the park's own process exited —
 // the same method the reviewer's own pid-reuse probe used (a live bystander at the recorded dead pid).
@@ -160,8 +161,12 @@ test('restart: the slot is released at the running row, so a stop during the fir
     const t0 = Date.now();
     const stopped = await m.stop({ worker_id: 'w1', mode: 'kill', timeout_ms: 5000 });
     const stopMs = Date.now() - t0;
-    // Waiting behind the first turn takes 20,000 ms (its timeout); 10,000 leaves a slow runner room.
-    assert.ok(stopMs < 10000, `stop took ${stopMs} ms, which suggests it waited behind restart's first turn`);
+    // Waiting behind the first turn takes 20,000 ms (its timeout); 10,000 leaves a slow runner room. The kill's own
+    // identity snapshot (ADR 0048, rule a) is not what this test is about: it is subtracted, and itself bounded by
+    // the most one caller can wait for a snapshot, one in flight and then its own.
+    const snapMs = (stopped.tree_kill && stopped.tree_kill.snapshot_ms) || 0;
+    assert.ok(snapMs <= 2 * SNAPSHOT_TIMEOUT_MS, `the kill's snapshot took ${snapMs} ms`);
+    assert.ok(stopMs - snapMs < 10000, `stop took ${stopMs} ms (${snapMs} ms of it the kill's snapshot), which suggests it waited behind restart's first turn`);
     assert.strictEqual(stopped.pid, m._worker('w1').pid);
     delete process.env.FAKE_ANSWER_DELAY_MS;
     const restarted = await restartP;

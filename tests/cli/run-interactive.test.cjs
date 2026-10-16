@@ -19,6 +19,7 @@ const { spawn } = require('node:child_process');
 const H = require('./stop-helpers.cjs');
 const { openCore } = require('../../src/core/index.cjs');
 const P = require('../../src/run/process.cjs');
+const ID = require('../../src/core/proc-identity.cjs');
 const cmdRun = require('../../src/cli/cmd-run.cjs');
 const cmdStop = require('../../src/cli/cmd-stop.cjs');
 const cmdPause = require('../../src/cli/cmd-pause.cjs');
@@ -189,13 +190,21 @@ test('SIGINT and SIGBREAK are recorded, never acted on: the launcher stays, and 
 }));
 
 test('SIGHUP: the fast close kills workers by pid, closes the row, and ends with the console-closed cause', async (t) => withRun(t, async (dir) => {
-  const r = start(dir, { env: { FAKE_HOLD_MS: '800' } });
   const w = sleeper();
   let core;
+  let r = null;
+  // ADR 0048 decision 8 (b): the 3500 ms fast close is a product budget that includes its snapshot, so this test supplies
+  // the SIGHUP's snapshot (a real one, taken now) through the same seam the fast-close test uses, and never depends on
+  // how long CIM takes. The no-fit path has its own test (run-interactive-nofit.test.cjs).
+  const realShared = P.snapshotShared;
   try {
+    const pre = await ID.processSnapshot(); // before the run starts, so its time is nobody's bound
+    assert.ok(pre && pre.get(w.pid), 'precondition: the snapshot could not read the sleeper');
+    r = start(dir, { env: { FAKE_HOLD_MS: '800' } });
     assert.ok(await waitUntil(() => r.record(), 15000));
     core = await openCore({ dataDir: r.dataDir, caller: { role: 'orchestrator', run_id: r.runId, pid: process.pid } });
     assert.ok(await waitUntil(async () => (await core.run.get()).run, 15000));
+    P.snapshotShared = () => Promise.resolve(pre);
     await core.worker.write({ id: 'w-hup', run_id: r.runId, substrate: 'claude-code', pid: w.pid, pid_image: 'node.exe', state: 'running', turns: 0, started_at: Date.now() });
     process.emit('SIGHUP');
     const res = await r.done;
@@ -207,7 +216,7 @@ test('SIGHUP: the fast close kills workers by pid, closes the row, and ends with
     const row = currentRunRow(r.dataDir, r.runId);
     assert.ok(row.ended_at != null && row.exit_reason === 'console closed (fast close)');
     assert.ok(!fs.existsSync(`${r.dataDir}/owner.lock`));
-  } finally { require('../crash.cjs').crash(w); await releaseCore(core); }
+  } finally { P.snapshotShared = realShared; require('../crash.cjs').crash(w); await releaseCore(core); }
 }));
 
 test('closeRunWorkers: with `fast`, the adapter wait is skipped, or cut short when the request arrives during it', async () => {
@@ -314,20 +323,22 @@ test('SIGHUP fast close: a claude that does not follow is killed and gets the te
   } finally { P.killPid(rec.pid, 'SIGKILL'); await r.done.catch(() => {}); }
 }));
 
-test('fullscreen: the orchestrator env carries CLAUDE_CODE_NO_FLICKER=1 by default, 0 when the spec says false, and an explicit belay env wins', async (t) => {
-  const saved = process.env.CLAUDE_CODE_NO_FLICKER;
-  delete process.env.CLAUDE_CODE_NO_FLICKER;
-  try {
-    for (const [over, env, want] of [[{}, {}, '1'], [{ fullscreen: true }, {}, '1'], [{ fullscreen: false }, {}, '0'], [{ fullscreen: true }, { CLAUDE_CODE_NO_FLICKER: '0' }, '0'], [{ fullscreen: false }, { CLAUDE_CODE_NO_FLICKER: '1' }, '1']]) {
+// One test per case: each run ends after the creation-time reads its receipt waits for, so five runs in one test count five
+// snapshots against the one test's 60 s timeout (ADR 0048 decision 8, c).
+for (const [over, env, want] of [[{}, {}, '1'], [{ fullscreen: true }, {}, '1'], [{ fullscreen: false }, {}, '0'], [{ fullscreen: true }, { CLAUDE_CODE_NO_FLICKER: '0' }, '0'], [{ fullscreen: false }, { CLAUDE_CODE_NO_FLICKER: '1' }, '1']]) {
+  test(`fullscreen: the orchestrator env carries CLAUDE_CODE_NO_FLICKER=${want} for ${JSON.stringify([over, env])} (1 by default, 0 when the spec says false, an explicit belay env wins)`, async (t) => {
+    const saved = process.env.CLAUDE_CODE_NO_FLICKER;
+    delete process.env.CLAUDE_CODE_NO_FLICKER;
+    try {
       await withRun(t, async (dir) => {
         const r = start(dir, { env, specOverrides: over });
         const res = await r.done;
         assert.strictEqual(res.code, 0);
         assert.strictEqual(r.record().env.CLAUDE_CODE_NO_FLICKER, want, JSON.stringify([over, env]));
       });
-    }
-  } finally { if (saved === undefined) delete process.env.CLAUDE_CODE_NO_FLICKER; else process.env.CLAUDE_CODE_NO_FLICKER = saved; }
-});
+    } finally { if (saved === undefined) delete process.env.CLAUDE_CODE_NO_FLICKER; else process.env.CLAUDE_CODE_NO_FLICKER = saved; }
+  });
+}
 
 test('fullscreen: a non-boolean is a usage error, and the key is refused on a headless run, both before anything is created', async (t) => withRun(t, async (dir) => {
   for (const [over, argv, re] of [[{ fullscreen: 'yes' }, [], /fullscreen must be true or false/], [{ fullscreen: 1 }, [], /fullscreen must be true or false/], [{ mode: 'headless', fullscreen: true }, [], /fullscreen is an interactive key/]]) {
@@ -365,9 +376,10 @@ test('belay stop against an interactive run ends claude by its pid, runs the clo
       assert.strictEqual(stopped.json.stopped, true);
       assert.strictEqual(stopped.json.orchestrator.pid, rec.pid);
       const res = await r.done;
-      assert.ok(!P.pidAlive(rec.pid), 'claude is still alive after belay stop');
+      // The kill lands before the run returns, but the process's end is the host's: wait for it, never assume it was instant.
+      assert.ok(await P.waitPidGone(rec.pid, { timeoutMs: 10000 }) !== null, 'claude is still alive after belay stop');
       // (whether claude's descendant survives is the host's job-object behaviour, not belay's: L4 asserts the kill calls instead)
-      assert.ok(!P.pidAlive(w.pid), "the run's worker outlived the stop");
+      assert.ok(await P.waitPidGone(w.pid, { timeoutMs: 10000 }) !== null, "the run's worker outlived the stop");
       assert.strictEqual(res.json.stop.caller_pid, process.pid);
       assert.match(res.json.ended_by, /^stopped by belay stop \(caller pid \d+\); claude ended by its pid$/);
       assert.match(res.text, /stopped by: pid /);

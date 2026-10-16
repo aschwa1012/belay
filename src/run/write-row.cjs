@@ -107,11 +107,11 @@ function restateBase(w, ctx) {
 // ADR 0039: the creation-time read (about a second) lands after the first rows. When it does and the last row
 // went out without it, restate the current state once, guarded exactly as restateBase; a row someone else wrote
 // since is never written over. Called by pid-identity.cjs when the read resolves.
-function restatePidCreated(w, ctx) {
-  if (w.lastRowHadPidCreated !== false || !w.state || w.state === 'forgotten' || (w.pidCreated == null && !w.pidCreatedError)) return;
+function restatePidCreated(w, ctx, force = false) {
+  if ((!force && w.lastRowHadPidCreated !== false) || !w.state || w.state === 'forgotten' || (w.pidCreated == null && !w.pidCreatedError)) return;
   const launches = w.launches;
   w.queue = w.queue.then(() => {
-    if (w.launches !== launches || w.lastRowHadPidCreated) return null;
+    if (w.launches !== launches || (!force && w.lastRowHadPidCreated)) return null;
     return ctx.writeRow(w, w.settledState || w.state, { guard: true, refresh: true });
   }).catch((e) => {
     w.lastError = { where: 'worker.write/pid-created', code: e && e.code, message: e && e.message };
