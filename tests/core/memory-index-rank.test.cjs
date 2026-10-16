@@ -188,6 +188,17 @@ test('memory.index takes index_bound_ms and path_mode as E_ARGS when they are wr
   assert.strictEqual(req.candidates.source, 'hybrid');
 });
 
+test('memory.index under required refuses a query vector it cannot compare (no pause); other modes build the index without that list', async () => {
+  const space = fresh();
+  note(space, 'quokkas claim', [0, 1, 0]);
+  const bad = { namespaces: [space], query: 'quokkas', query_embedding: [0, 1, 0], embedding_model: 'other-model' };
+  await assert.rejects(index('on', bad), (e) => e.code === 'E_SEMANTIC_REQUIRED' && e.detail.cause === 'E_MODEL' && e.detail.guarded === false);
+  await assert.rejects(index('on', { ...bad, embedding_model: 'm', query_embedding: [0, 1, 0, 0] }), (e) => e.code === 'E_SEMANTIC_REQUIRED' && e.detail.cause === 'E_MODEL');
+  const kw = await index('kw', bad);
+  assert.strictEqual(kw.row_ids.length, 1);
+  assert.strictEqual(kw.relevance.semantic.code, 'E_MODEL');
+});
+
 test('the index bound by work: required refuses past the cap whatever the clock says; keyword never refuses on work', async () => {
   const space = fresh();
   for (let i = 0; i < 5; i++) note(space, `claim ${i} quokkas`, [0, 1, 0]);

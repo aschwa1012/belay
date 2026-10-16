@@ -245,14 +245,15 @@ function onSemanticFailure(E, caller, e) {
     throw err('E_LEVER_OFF', 'memory.search: memory is off for this run (on_embedder_failure off, after an embedder failure), so nothing is read or written through it', { lever: 'on_embedder_failure' });
   }
   if (run.mode === 'keyword') return;
-  if (run.mode === 'off') {
-    if (guarded) return; // memory goes off at an embedder failure (above); a failure that is not the embedder's falls back
+  if (run.mode === 'off') { // memory is off for a run in this mode once its semantic half fails, whatever failed: refused
     throw err('E_LEVER_OFF', 'memory.search: memory is off for this run (on_embedder_failure off) and its semantic half cannot run (' + (E.embedderFailure ? E.embedderFailure.code : e.code) + '), so nothing is read through it', { lever: 'on_embedder_failure', cause: E.embedderFailure ? E.embedderFailure.code : e.code });
   }
   // required
   if (guarded && embedderFailure) throw e; // already told to the guard and advised (withEmbedding)
   const cause = guarded ? e : (E.embedderFailure ? E.embedderFailure : e);
-  const why = guarded ? 'the semantic half failed for a reason a resume does not fix' : 'the store owner could not be asked for a vector (it was unreachable, not listening, backed off or too slow)';
+  const why = guarded && !embedderFailure ? 'the semantic half failed for a reason a resume does not fix'
+    : !guarded && !E.embedderFailure && e.code === 'E_EMBED_BOUND' ? 'the embedder of the owner did not answer in time'
+      : 'the store owner could not be asked for a vector (it was unreachable, not listening, backed off or too slow)';
   const next = caller.role === 'worker'
     ? 'Stop and wait: do not run belay commands; the operator will resume the run.'
     : 'Tell the operator (belay status shows the run); fix the cause or switch the run with belay resume ' + caller.run_id + ' --embedder keyword|off.';
@@ -443,4 +444,4 @@ function withSemanticFailure(result, failure) {
   };
 }
 
-module.exports = { search, timeline, getMany, get, list, withSemanticFailure };
+module.exports = { onSemanticFailure, search, timeline, getMany, get, list, withSemanticFailure };

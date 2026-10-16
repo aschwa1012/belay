@@ -137,6 +137,12 @@ function select(E, namespaces, pool, o) {
     const sweep = clock() >= deadline
       ? { lists: [], failed: [], bounded: { reason: 'the index had already passed its time bound before the vector sweep started' } }
       : cosinesMany(E, namespaces, allowed, queries, o.embeddingModel, deadline, clock, o.strict ? (o.workCap === undefined ? null : o.workCap) : false);
+    // Under required (a live run) a query vector that cannot be compared (a model or dimension mismatch) is refused, as in memory.search; a resume
+    // fixes none of those, so the guard is not told. Any other mode records it in the receipt and builds the index without that list.
+    if (o.strict && sweep.failed.length) {
+      const f = sweep.failed[0];
+      throw err('E_SEMANTIC_REQUIRED', 'memory.index: a query vector could not be compared (' + f.code + ': ' + f.message + '), and the run embedder mode is required, so no keyword-only index is built', { cause: f.code, mode: 'required', guarded: false });
+    }
     for (const f of sweep.failed) failed.push({ label: queries[f.index].label, code: f.code, message: f.message });
     if (sweep.bounded) {
       info.semantic = { code: 'E_INDEX_BOUND', message: sweep.bounded.reason };
