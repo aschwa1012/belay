@@ -61,8 +61,8 @@ function archive(E, ctx, held, v, sources) {
   const kept = held.b.kind === 'duplicate' ? loadNote(E, held.b.of) : null;
   const done = archiveNote(E, ctx.project, note, {
     kind: held.b.kind, of: held.b.of, ground: held.b.ground, reason: held.b.reason, cites: held.b.cites, run_id: held.b.run_id, head_sha: held.b.head_sha,
-    held_row: held.id, receipt: entry.receipt,
-  }, kept);
+    held_row: held.id, receipt: entry.receipt, ...(held.b.relation ? { relation: held.b.relation, refines: held.b.relation === 'refines', via: held.b.relation } : {}),
+  }, kept || (held.b.relation === 'refines' ? loadNote(E, held.b.of) : null));
   record(E, held.id, entry, { state: 'archived', archived_at: done.at });
   return { id: note.id, verdict: 'archive', outcome: 'archived', receipt: entry.receipt, facts, history_moved: done.history_moved, held: C.rowOut(E, held.id), row: C.rowOut(E, note.id) };
 }

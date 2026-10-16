@@ -10,7 +10,9 @@ const { err } = require('./errors.cjs');
 const { validId } = require('./memory-rows.cjs');
 const { RESOLVES } = require('./memory-notes.cjs');
 
-const ACTIONS = Object.freeze(['dismiss', 'hold', 'resolve', 'draft']);
+// `hold` and `dismiss` are shaped here because the held machinery and the reports' dismissal still use them, but the scrubber's
+// hand-back may not carry them (memory.scrubApply refuses both by name): a wrong report is judged by a reviewer, not the scrubber.
+const ACTIONS = Object.freeze(['dismiss', 'hold', 'resolve', 'draft', 'relate']);
 const HOLD_KINDS = Object.freeze(['wrong', 'superseded', 'duplicate']);
 const VERDICTS = Object.freeze(['archive', 'release']);
 const SCRUB_MODES = Object.freeze(['off', 'propose', 'apply']);
@@ -67,12 +69,13 @@ function checkGround(ground, allowed, at, required) {
   return ground;
 }
 
-const ENTRY_KEYS = ['id', 'action', 'kind', 'of', 'resolve', 'ground', 'reason', 'cites', 'draft'];
+const ENTRY_KEYS = ['id', 'action', 'kind', 'of', 'resolve', 'relation', 'keep', 'ground', 'reason', 'cites', 'draft'];
 
 // The scrubber's hand-back: `scrub: [{ id, action, kind?, of?, resolve?, ground, reason, cites, draft? }]`.
 //   dismiss  { ground in DISMISS_GROUNDS, cites? }
 //   hold     { kind: wrong | superseded | duplicate, of? (required for superseded and duplicate), ground, cites }
-//   resolve  { resolve: new | repeats | supersedes, of (repeats, supersedes), cites (supersedes) }
+//   resolve  { resolve: new | repeats | supersedes | refines, of (all but new), reason }: a pending note; cites are shape-checked, then dropped
+//   relate   { relation: new | repeats | supersedes | refines, of, keep? (repeats: id | of), reason }: two live notes; cites likewise
 //   draft    { draft: { rule, target } }
 // A whole-call shape refusal: nothing is written for a list with one malformed entry.
 function checkScrub(list, maxItems) {
@@ -88,7 +91,7 @@ function checkScrub(list, maxItems) {
     seen.add(e.id);
     if (!ACTIONS.includes(e.action)) throw bad(`${at}action must be one of ${ACTIONS.join(', ')}`, { field: 'action', index: i });
     if (e.of !== undefined && e.of !== null && (!validId(e.of) || e.of === e.id)) throw bad(`${at}of must be the id of another note`, { field: 'of', index: i });
-    for (const [k, owner] of [['kind', 'hold'], ['resolve', 'resolve'], ['draft', 'draft']]) {
+    for (const [k, owner] of [['kind', 'hold'], ['resolve', 'resolve'], ['relation', 'relate'], ['keep', 'relate'], ['draft', 'draft']]) {
       if (e[k] !== undefined && e.action !== owner) throw bad(`${at}${k} belongs to action ${owner}`, { field: k, index: i });
     }
     const out = { id: e.id, action: e.action, reason: checkText(e.reason, 'reason', REASON_MAX, at), of: e.of || null };
@@ -111,7 +114,17 @@ function checkScrub(list, maxItems) {
       if (e.resolve !== 'new' && !out.of) throw bad(`${at}resolve ${e.resolve} names the live note in of`, { field: 'of', index: i });
       out.resolve = e.resolve;
       out.ground = checkGround(e.ground, [...DISMISS_GROUNDS, ...Object.values(HOLD_GROUNDS).flat()], at, false);
-      out.cites = checkCites(e.cites, at, e.resolve === 'supersedes');
+      // Supersedes and refines are note-to-note text judgements: the reason states the new information or the caveat, and any cites given are
+      // shape-checked and dropped, as a duplicate's are.
+      out.cites = (checkCites(e.cites, at, false), []);
+    } else if (e.action === 'relate') {
+      if (!RESOLVES.includes(e.relation)) throw bad(`${at}relation must be one of ${RESOLVES.join(', ')}`, { field: 'relation', index: i });
+      if (!out.of) throw bad(`${at}relate names the other live note in of`, { field: 'of', index: i });
+      if (e.keep !== undefined && (e.relation !== 'repeats' || !['id', 'of'].includes(e.keep))) throw bad(`${at}keep is id or of, and only for repeats`, { field: 'keep', index: i });
+      out.relation = e.relation;
+      out.ground = null;
+      out.cites = (checkCites(e.cites, at, false), []);
+      if (e.keep) out.keep = e.keep;
     } else {
       if (out.of) throw bad(`${at}a draft names no other note`, { field: 'of', index: i });
       if (!isObj(e.draft)) throw bad(`${at}draft must be { rule, target }`, { field: 'draft', index: i });

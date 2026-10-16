@@ -21,7 +21,7 @@ async function env() {
   // The harness view of the core as the run's caller, as the run process holds it.
   const coreFor = (kind) => {
     const caller = T.who.harness(kind);
-    return new Proxy({}, { get: (_, g) => (g === 'caller' ? caller : new Proxy({}, { get: (__, n) => (args) => T.call(caller, `${g}.${n}`, args || {}) })) });
+    return new Proxy({}, { get: (_, g) => (g === 'caller' ? caller : new Proxy({}, { get: (__, n) => (args) => T.E.handle(`${g}.${n}`, { caller, ...(args || {}) }) })) }); // the plain engine call: the stage sees what the scrubber sees
   };
   const calls = (core) => { const log = []; return { log, core: new Proxy({}, { get: (_, g) => (g === 'caller' ? core.caller : new Proxy({}, { get: (__, n) => (args) => { log.push(`${g}.${n}`); return core[g][n](args); } })) }) }; };
   // A worker of the run with a head commit in the sandbox repository, and its stream file.
@@ -30,13 +30,17 @@ async function env() {
     fs.mkdirSync(`${T.dir}/workers/${id}`, { recursive: true });
     fs.writeFileSync(`${T.dir}/workers/${id}/stream.jsonl`, '{"type":"system"}\n');
   }
-  const reported = (title, kind = 'apply', over = {}) => T.note(title, { reported_wrong: [{ ...T.report(), run_id: RUN[kind], worker_id: 'w2' }], ...over });
+  // A live note every reported note names as its replacement: a report with no replacement is no longer in the scrub's scope.
+  const partner = T.note('the shared live partner the reports name');
+  const reported = (title, kind = 'apply', over = {}) => T.note(title, { reported_wrong: [{ ...T.report('worker:w2', partner), run_id: RUN[kind], worker_id: 'w2' }], ...over });
   const pending = (title, kind = 'apply', over = {}) => T.note(title, { ns: 'pending/lc', state: 'pending', run_id: RUN[kind], ...over });
   const events = (kind) => T.store.p('SELECT * FROM memory_event WHERE kind = ? ORDER BY seq').all(kind);
+  const archived = () => T.store.p("SELECT id FROM memory_entries WHERE namespace = 'archive/lc'").all().map((r) => r.id);
+  const rel = (id, over = {}) => ({ id, action: 'relate', relation: 'repeats', of: partner, reason: 'the same lesson as the shared partner', ...over });
   const holds = () => T.store.p("SELECT id FROM memory_entries WHERE namespace = 'held/lc'").all().map((r) => r.id);
   const proposals = () => T.store.p("SELECT id FROM memory_entries WHERE namespace = 'proposal/lc'").all().map((r) => r.id);
   const hold = (id, over = {}) => ({ id, action: 'hold', kind: 'wrong', ground: 'report_confirmed', reason: 'the loader throws for an unlisted name', cites: [T.cite], ...over });
-  return { T, hold, coreFor, calls, worker, reported, pending, events, holds, proposals };
+  return { T, hold, rel, archived, partner, coreFor, calls, worker, reported, pending, events, holds, proposals };
 }
 
 // A fake run manager. `answer` is the child's last text (a string, or a function of the spawn arguments); it records what it was asked.

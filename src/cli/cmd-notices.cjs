@@ -14,7 +14,7 @@
 //   run_ended           the run row's ended_at
 //   memory_wrapup       a wrap-up memory_event of the run (ADR 0043 decision 2): one per task and one per run, once
 //                       each because the store refuses a second (run, key)
-//   scrub_alarm         the run-close scrub made more hold marks than is normal (scrub_alarm_holds): look before the archive reviewer runs
+//   scrub_alarm         the run-close scrub took more notes out of sight (holds and archiving relations) than is normal (scrub_alarm_holds): look before the archive reviewer runs
 //   scrub_owed          items the run-close scrub did not reach (a crash, a timeout, a cost over the cap or the item cap); the next scrub takes them first
 //   stage_overrun       a run-close scrub or archive review that spent its cost cap: nothing was applied, the next attempt takes half the items, and the line names the lever to raise
 //   scrub_dropped       items a scrub child gave no entry in two scrubs: named here, and not offered again until a new report, sighting or nomination
