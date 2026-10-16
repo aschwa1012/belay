@@ -224,7 +224,7 @@ test('memory.timeline goes through the gate: a hidden anchor is not found, and t
   await assert.rejects(call(orch(READER), 'memory.timeline', { anchor_id: archived }), (e) => e.code === 'E_ROLE', 'a lifecycle namespace is refused on the timeline too');
 });
 
-test('the search count leaves out promoted and pending notes', async () => {
+test('the search results leave out promoted and pending notes (the body clauses run on the returned rows)', async () => {
   const space = fresh();
   task('t-cnt', WRITER, 'done');
   note(space, 'counted', { task_id: 't-cnt' });
@@ -232,7 +232,7 @@ test('the search count leaves out promoted and pending notes', async () => {
   note(space, 'pending', { task_id: 't-cnt', body: { state: 'pending' } });
   const r = await call(orch(READER), 'memory.search', { namespaces: [space], query: 'gatecase', mode: 'keyword' });
   assert.strictEqual(r.results.length, 1);
-  assert.strictEqual(r.searched.rows_considered, 1);
+  assert.strictEqual(r.searched.rows_considered, 3, 'the count is not a body scan: it still counts them');
 });
 
 test('bodySql and bodyLive agree, an invalid-JSON body that mentions pending included', async () => {

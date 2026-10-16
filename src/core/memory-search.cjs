@@ -196,7 +196,9 @@ function parseSearch(E, caller, args) {
   // the semantic stage subtracts the few rows it hides. Superseded rows are handled below (baseWhere, the cache), so the gate leaves them.
   const fsql = filterSql(filter, 'e');
   const namespaces = namespacesOf(E, caller, args);
-  const gateSql = gate.sql(E, caller, { includeSuperseded: true, body: true, namespaces });
+  // Without the body clauses: they would scan every body of the namespace (about 55 ms at 10,000 notes). They are tested on the rows the
+  // route returns instead (bodyLive, below), so rows_considered still counts a promoted or pending note.
+  const gateSql = gate.sql(E, caller, { includeSuperseded: true, namespaces });
   return {
     gate: gateSql, hidden: gateSql ? new Set(JSON.parse(gateSql.params[0])) : null,
     mode, view: enumArg('view', args.view, VIEWS, 'full'), order, alpha, filter, filterSql: fsql,
@@ -257,6 +259,10 @@ async function search(E, caller, args) {
   else ranked = [];
 
   let rows = null;
+  if (o.gate) { // the gate's body clauses (a promoted note, a pending state) on the rows the page is built from
+    rows = rowsByIds(E, ranked.map(h => h.id));
+    ranked = ranked.filter(h => rows.has(h.id) && gate.bodyLive(rows.get(h.id)));
+  }
   let pool = ranked;
   if (o.order !== 'score') {
     rows = rows || rowsByIds(E, ranked.map(h => h.id));

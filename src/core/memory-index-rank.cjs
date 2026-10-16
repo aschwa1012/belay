@@ -17,8 +17,12 @@
 // memory.search, memory.list and memory.timeline. A read: every statement is a SELECT, the embedding library is never loaded (the
 // vectors come from the store's own cache, the query vector from the caller).
 //
-// The vector pass is ONE sweep over the namespace's rows for all query vectors (each row is read once and dotted with every vector),
-// and it has a time bound: past it the vector lists are dropped, the receipt says so, and the keyword, path and newest candidates stand.
+// The vector pass is ONE sweep over the namespace's rows for all query vectors (each row is read once and dotted with every vector).
+// The WHOLE index build has a time bound (index_bound_ms, 1,500 ms by default, counted from the start of memory.index). The vector
+// sweep is the last and the largest step, so it is the one that degrades: when the bound is passed before it starts or while it runs,
+// the vector lists are dropped, and the keyword, path and newest candidates stand. The receipt (candidates.degraded) says what was
+// dropped, why and after how long. A bounded result can therefore depend on load: the same call may keep its vector lists on an idle
+// machine and drop them on a busy one, and that is what the receipt is for.
 
 const relevance = require('./memory-relevance.cjs');
 const { rrfMany, HYBRID_ALPHA, HYBRID_K } = require('./fusion.cjs');
@@ -29,7 +33,7 @@ const gate = require('./memory-note-gate.cjs');
 const TOP = 200; // candidates taken from each ranking
 const NEWEST = 1000; // the fallback when nothing ranks
 const PAD = 200; // the newest notes added to the union
-const VECTOR_BOUND_MS = 1500; // the vector sweep stops past this and the receipt says why
+const INDEX_BOUND_MS = 1500; // the whole index build; past it the vector lists are dropped and the receipt says why
 const PATH_MODES = ['tiebreak', 'rrf'];
 
 const marks = (list) => list.map(() => '?').join(', ');
@@ -37,7 +41,7 @@ const desc = (m) => [...m.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] 
 
 // The ids of the live notes in `namespaces` the caller may see, newest first.
 function liveIds(E, caller, namespaces) {
-  const g = gate.sql(E, caller, { namespaces, body: true });
+  const g = gate.sql(E, caller, { namespaces }); // the body clauses are tested on the candidate rows (bodyLive in memory-index-notes.cjs)
   const sql = `SELECT e.id FROM memory_entries e WHERE e.namespace IN (${marks(namespaces)}) AND e.type = 'note'
       AND COALESCE(e.status, 'unverified') <> 'refuted' AND (e.ttl_at IS NULL OR e.ttl_at >= ?)
       AND NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND +s.namespace = e.namespace)${g ? ` AND ${g.where}` : ''}
@@ -46,13 +50,12 @@ function liveIds(E, caller, namespaces) {
 }
 
 // Cosines of every query vector against every allowed note of the namespaces, in ONE sweep of each namespace's rows (the store's vector
-// cache holds unit vectors, so a dot product). Returns { lists: [Map id -> cosine | null per query], failed: [{ index, code, message }],
-// bounded }. A query that cannot be compared with a namespace is named in `failed`, never skipped silently. `bounded` is
-// { reason, ms } when the sweep ran out of time (every list is then null).
-function cosinesMany(E, namespaces, allowed, queries, defaultModel, boundMs) {
+// cache holds unit vectors, so a dot product). Returns { lists: [Map id -> cosine per query], failed: [{ index, code, message }],
+// bounded }. A query that cannot be compared with a namespace is named in `failed`, never skipped silently. `deadline` is an absolute
+// time on `clock` (default Date.now); `bounded` is { reason } when the sweep was past it (the lists are then to be dropped).
+function cosinesMany(E, namespaces, allowed, queries, defaultModel, deadline = Infinity, clock = Date.now) {
   const lists = queries.map(() => new Map());
   const failed = [];
-  const t0 = Date.now();
   let bounded = null;
   for (const ns of [...namespaces].sort()) {
     const m = E.store.db.prepare('SELECT embedding_model, dim FROM namespace_models WHERE namespace = ?').get(ns);
@@ -71,7 +74,7 @@ function cosinesMany(E, namespaces, allowed, queries, defaultModel, boundMs) {
     for (const r of E.store._loadNs(ns).rows) {
       const v = r.vec;
       if (!v || v.length !== dim || !allowed.has(r.id)) continue;
-      if ((n++ & 255) === 0 && Date.now() - t0 > boundMs) { bounded = { reason: `the vector sweep passed its ${boundMs} ms bound in ${ns}; semantic relevance was dropped`, ms: Date.now() - t0 }; break; }
+      if ((n++ & 255) === 0 && clock() >= deadline) { bounded = { reason: `the index passed its time bound during the vector sweep of ${ns}` }; break; }
       for (let j = 0; j < nq; j++) {
         const q = us[j];
         let s0 = 0, s1 = 0, s2 = 0, s3 = 0, d = 0;
@@ -87,7 +90,7 @@ function cosinesMany(E, namespaces, allowed, queries, defaultModel, boundMs) {
 }
 
 // pool: ids newest first. o: { text, source, queries, embeddingModel, alpha, pathIds (ids whose paths match the task, best first),
-// pathMode, boundMs }. Returns { ids, scores: Map id -> fused relevance, info, candidates }.
+// pathMode, deadline (absolute, on `clock`), boundMs (for the receipt), clock }. Returns { ids, scores: Map id -> fused relevance, info, candidates }.
 function select(E, namespaces, pool, o) {
   const allowed = new Set(pool);
   const queries = o.queries || [];
@@ -117,11 +120,15 @@ function select(E, namespaces, pool, o) {
   const sems = [], failed = [];
   if (queries.length) {
     info.semantic_lists = [];
-    const sweep = cosinesMany(E, namespaces, allowed, queries, o.embeddingModel, o.boundMs || VECTOR_BOUND_MS);
+    const clock = o.clock || Date.now;
+    const deadline = o.deadline === undefined ? Infinity : o.deadline;
+    const sweep = clock() >= deadline
+      ? { lists: [], failed: [], bounded: { reason: 'the index had already passed its time bound before the vector sweep started' } }
+      : cosinesMany(E, namespaces, allowed, queries, o.embeddingModel, deadline, clock);
     for (const f of sweep.failed) failed.push({ label: queries[f.index].label, code: f.code, message: f.message });
     if (sweep.bounded) {
       info.semantic = { code: 'E_INDEX_BOUND', message: sweep.bounded.reason };
-      cand.bounded = sweep.bounded;
+      cand.degraded = { dropped: ['vector lists'], kept: ['keyword', 'path', 'newest'], reason: sweep.bounded.reason, bound_ms: o.boundMs === undefined ? null : o.boundMs, elapsed_ms: o.started === undefined ? null : clock() - o.started };
       info.semantic_lists = queries.map((q) => ({ label: q.label, matched: 0 }));
     } else {
       sweep.lists.forEach((out, j) => {
@@ -181,4 +188,4 @@ function sunk(notes, scores, ctx) {
   return out;
 }
 
-module.exports = { liveIds, select, sinkFactor, sunk, cosinesMany, TOP, NEWEST, PAD, PATH_MODES, VECTOR_BOUND_MS };
+module.exports = { liveIds, select, sinkFactor, sunk, cosinesMany, TOP, NEWEST, PAD, PATH_MODES, INDEX_BOUND_MS };

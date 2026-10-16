@@ -127,25 +127,61 @@ test('path_mode rrf fuses the path list with relevance; tiebreak leaves relevanc
   assert.deepStrictEqual(b.row_ids, [pathNote, text], 'the path list adds to the score');
   assert.strictEqual(b.relevance.path_fusion.method, 'rrf');
   assert.strictEqual(b.candidates.path_mode, 'rrf');
-  await assert.rejects(index('on', { namespaces: [space], task_id: t, path_mode: 'nope' }), /path_mode/);
+  await assert.rejects(index('on', { namespaces: [space], task_id: t, path_mode: 'nope' }), (e) => e.code === 'E_ARGS');
 });
 
 // ---- the vector sweep ----
 
-test('several query vectors rank in one sweep: the same lists as one vector at a time, and a bound drops the vector lists with the reason', async () => {
+test('several query vectors rank in one sweep: the same lists as one vector at a time', async () => {
   const space = fresh();
-  const a = note(space, 'alpha claim', [0, 1, 0], { created_at: 10 });
-  const b = note(space, 'beta claim', [0, 0, 1], { created_at: 20 });
-  assert.ok(a && b);
-  const allowed = new Set(R.liveIds === undefined ? [] : R.liveIds(E, orch('on'), [space]));
+  note(space, 'alpha claim', [0, 1, 0], { created_at: 10 });
+  note(space, 'beta claim', [0, 0, 1], { created_at: 20 });
+  const allowed = new Set(R.liveIds(E, orch('on'), [space]));
   const qs = [{ vector: [0, 1, 0], model: null, label: 'one' }, { vector: [0, 0, 1], model: null, label: 'two' }];
-  const many = R.cosinesMany(E, [space], allowed, qs, null, 5000);
-  const solo = qs.map((q) => R.cosinesMany(E, [space], allowed, [q], null, 5000).lists[0]);
+  const many = R.cosinesMany(E, [space], allowed, qs, null);
+  const solo = qs.map((q) => R.cosinesMany(E, [space], allowed, [q], null).lists[0]);
   assert.deepStrictEqual(many.lists.map((m) => [...m.entries()]), solo.map((m) => [...m.entries()]));
-  const out = R.select(E, [space], [...allowed], { text: 'claim', source: 'query', queries: qs, boundMs: -1 });
-  assert.ok(out.candidates.bounded && /bound/.test(out.candidates.bounded.reason));
-  assert.strictEqual(out.info.semantic.code, 'E_INDEX_BOUND');
-  assert.ok(out.ids.length > 0, 'the keyword and newest candidates stand');
+});
+
+test('the time bound covers the whole build and degrades in order: vector lists dropped, keyword, path and newest kept, the receipt says what and why', async () => {
+  const space = fresh();
+  const hit = note(space, 'quokkas loader claim', [0, 1, 0], { created_at: 10 });
+  crowd(space, 300); // more rows than one clock check (every 256) covers
+  const allowed = new Set(R.liveIds(E, orch('on'), [space]));
+  const qs = [{ vector: [0, 1, 0], model: null, label: 'one' }];
+  const base = { text: 'quokkas', source: 'query', queries: qs, boundMs: 5, started: 0 };
+  // already past the bound before the sweep starts (a seam clock, no real load)
+  const before = R.select(E, [space], [...allowed], { ...base, deadline: 5, clock: () => 10 });
+  assert.deepStrictEqual(before.candidates.degraded.dropped, ['vector lists']);
+  assert.deepStrictEqual(before.candidates.degraded.kept, ['keyword', 'path', 'newest']);
+  assert.match(before.candidates.degraded.reason, /before the vector sweep/);
+  assert.strictEqual(before.candidates.degraded.bound_ms, 5);
+  assert.strictEqual(before.candidates.degraded.elapsed_ms, 10);
+  assert.strictEqual(before.info.semantic.code, 'E_INDEX_BOUND');
+  assert.strictEqual(before.candidates.vector, 0);
+  assert.ok(before.ids.includes(hit), 'the keyword candidate stands');
+  assert.ok(before.candidates.keyword > 0 && before.candidates.padding > 0);
+  // passed while the sweep runs: the clock reads 0 for the first checks and 10 at the second row check
+  let calls = 0;
+  const mid = R.select(E, [space], [...allowed], { ...base, deadline: 5, clock: () => (++calls <= 2 ? 0 : 10) });
+  assert.match(mid.candidates.degraded.reason, /during the vector sweep/);
+  assert.strictEqual(mid.candidates.vector, 0, 'the half-finished vector lists are not used');
+  // inside the bound: nothing is dropped
+  const ok = R.select(E, [space], [...allowed], { ...base, deadline: 1000, clock: () => 0 });
+  assert.strictEqual(ok.candidates.degraded, undefined);
+  assert.ok(ok.candidates.vector > 0);
+});
+
+test('memory.index takes index_bound_ms and path_mode as E_ARGS when they are wrong, and a bound of 0 degrades the whole call', async () => {
+  const space = fresh();
+  note(space, 'quokkas claim', [0, 1, 0]);
+  await assert.rejects(index('on', { namespaces: [space], path_mode: 'nope' }), (e) => e.code === 'E_ARGS' && e.detail.field === 'path_mode');
+  await assert.rejects(index('on', { namespaces: [space], index_bound_ms: -1 }), (e) => e.code === 'E_ARGS');
+  await assert.rejects(index('on', { namespaces: [space], index_bound_ms: 'soon' }), (e) => e.code === 'E_ARGS');
+  const r = await index('on', { namespaces: [space], query: 'quokkas', query_embedding: [0, 1, 0], embedding_model: 'm', index_bound_ms: 0 });
+  assert.strictEqual(r.candidates.degraded.dropped[0], 'vector lists');
+  assert.strictEqual(r.candidates.source, 'keyword');
+  assert.strictEqual(r.row_ids.length, 1);
 });
 
 test('no signal: the newest notes, source newest', async () => {

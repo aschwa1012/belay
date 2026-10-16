@@ -28,6 +28,7 @@ const relevance = require('./memory-relevance.cjs');
 const rank = require('./memory-index-rank.cjs');
 const { checkReach } = require('./memory-reach.cjs');
 const gate = require('./memory-note-gate.cjs');
+const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 
 const redactText = (s) => require('./redact.cjs').redact(String(s)).text; // the held line shows redacted text whatever a body holds
@@ -186,6 +187,7 @@ function rowsOf(E, ids) {
 
 // c: { o (parsed args), task, owned, args, lv, norm, projectOf, sha256 }
 async function index(E, caller, c) {
+  const started = Date.now();
   const { o, task, owned, args, lv, norm } = c;
   let namespaces = o.namespaces;
   if (!namespaces) { const project = c.projectOf(E, caller.run_id); namespaces = project ? [`project/${project}`] : []; }
@@ -225,8 +227,10 @@ async function index(E, caller, c) {
       .filter((x) => x.ps > 0).sort((a, b) => (b.ps - a.ps) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)).map((x) => x.id);
   }
   const pathMode = args.path_mode === undefined ? 'tiebreak' : args.path_mode;
-  if (!rank.PATH_MODES.includes(pathMode)) throw new Error(`memory.index path_mode must be one of ${rank.PATH_MODES.join(', ')}`);
-  const sel = rank.select(E, namespaces, fresh, { text, source, queries: rq.queries, embeddingModel: rq.embeddingModel, alpha: relevance.alphaOf(lv), pathIds, pathMode, boundMs: args.vector_bound_ms });
+  if (!rank.PATH_MODES.includes(pathMode)) throw err('E_ARGS', `memory.index path_mode must be one of ${rank.PATH_MODES.join(', ')}`, { field: 'path_mode' });
+  const boundMs = args.index_bound_ms === undefined ? rank.INDEX_BOUND_MS : args.index_bound_ms;
+  if (!Number.isInteger(boundMs) || boundMs < 0 || boundMs > 600000) throw err('E_ARGS', 'memory.index index_bound_ms must be an integer from 0 to 600000', { field: 'index_bound_ms' });
+  const sel = rank.select(E, namespaces, fresh, { text, source, queries: rq.queries, embeddingModel: rq.embeddingModel, alpha: relevance.alphaOf(lv), pathIds, pathMode, boundMs, started, deadline: started + boundMs, clock: c.clock });
   const found = rowsOf(E, sel.ids);
   const live = found;
   const rel = { scores: rank.sunk(found, sel.scores, { lv, runId: caller.run_id }), info: sel.info }; // the sinking seam (a no-op today)
