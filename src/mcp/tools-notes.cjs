@@ -33,14 +33,14 @@ const LEASE_RELEASE = {
         subjects: strs(),
       }, ['kind', 'title', 'when', 'basis']),
     },
-    reported_wrong: { type: 'array', items: S({ id: str(), why: str(), replaced_by: { type: ['string', 'null'] } }, ['id', 'why']) },
+    reported_wrong: { type: 'array', items: S({ id: str(), why: str(), replaced_by: { type: ['string', 'null'], description: 'notes[i] or id' } }, ['id', 'why']) },
     memory_ids: { type: 'array', items: { type: 'string' }, description: 'Ids of notes you applied; required when the run records note use, [] if none' },
   }, ['lease_id', 'notes']),
 };
 
 const NOTE_RESOLVE = {
   name: 'memory_note_resolve',
-  description: 'Settle pending notes: new, repeats or supersedes an id (with evidence). Returns what each became.',
+  description: 'Settle pending notes: new, repeats or supersedes an id (with evidence).',
   inputSchema: S({
     resolutions: {
       type: 'array',

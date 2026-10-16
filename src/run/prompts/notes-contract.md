@@ -7,5 +7,5 @@ Each note has a `kind` (lesson, flag, recurring or gotcha), a `basis` (observed,
 - `when` (at most 160 bytes): the task that would trip on it, as a task line ("add a migration"). Use the words someone assigning that work would use, not the finding's.
 - `subjects` (0 to 3): reuse a listed subject if one fits.
 {{subjects}}
-- If a note you were shown is wrong, out of date, or says the same as another note, name it in `reported_wrong` with its id, why, and `replaced_by` (your new note's id or the other note's id) when there is one.
+- If a note you were shown is wrong, out of date, or says the same as another note, name it in `reported_wrong` with its id, why, and `replaced_by` when there is one: `notes[<i>]` for a note in this hand-back, or the other note's id.
 - If the answer lists pending notes, settle each with `memory_note_resolve`: new, repeats an id, or supersedes an id with evidence.

@@ -195,3 +195,11 @@ test('a failed subject lookup is named on the worker and the contract is still s
   assert.ok(!tail.includes('Subjects already used'));
   assert.deepStrictEqual([w.lastError.where, w.lastError.code, w.lastError.message], ['memory.noteSubjects', 'E_BUSY', 'the store was busy']);
 });
+
+test('the contract with notes_sink on (it adds the memory_ids line) stays inside its own pin, and names replaced_by in the form the core resolves', () => {
+  const sink = NC.contract({ ...DEFAULTS, ...ON, notes_sink: 'record' });
+  assert.ok(Buffer.byteLength(sink) <= 2000, `${Buffer.byteLength(sink)} bytes with notes_sink on`);
+  assert.ok(sink.includes('`memory_ids`'));
+  assert.ok(sink.includes('`replaced_by` when there is one: `notes[<i>]` for a note in this hand-back, or the other note\'s id.'));
+  assert.ok(!sink.includes('your new note\'s id'));
+});
