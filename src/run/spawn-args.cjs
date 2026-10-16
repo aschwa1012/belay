@@ -5,6 +5,20 @@
 const L = require('./launch.cjs');
 const { fail } = require('./errors.cjs');
 
+// memory_queries: up to 4 situation lines the orchestrator writes for the worker's memory index (each a `when`-shaped task line, at
+// most 160 bytes). Returns them trimmed, or [] when none were given.
+const QUERIES_MAX = 4, QUERY_BYTES_MAX = 160;
+function checkMemoryQueries(list) {
+  if (list === null || list === undefined) return [];
+  if (!Array.isArray(list) || list.length > QUERIES_MAX) fail('E_ARGS', `spawn memory_queries must be an array of at most ${QUERIES_MAX} task lines`, { field: 'memory_queries' });
+  return list.map((q, i) => {
+    const t = typeof q === 'string' ? q.replace(/\s+/g, ' ').trim() : '';
+    if (!t) fail('E_ARGS', `spawn memory_queries[${i}] must be a non-empty string`, { field: 'memory_queries', index: i });
+    if (Buffer.byteLength(t) > QUERY_BYTES_MAX) fail('E_ARGS', `spawn memory_queries[${i}] is ${Buffer.byteLength(t)} bytes and the limit is ${QUERY_BYTES_MAX}; word the task line shorter`, { field: 'memory_queries', index: i, max: QUERY_BYTES_MAX });
+    return t;
+  });
+}
+
 function validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id }) {
   if (substrate !== 'claude-code' && substrate !== 'codex') fail('E_ARGS', 'substrate must be claude-code or codex', { substrate });
   if (!worktree) fail('E_ARGS', 'spawn needs a worktree');
@@ -20,4 +34,4 @@ function validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, per
   }
 }
 
-module.exports = { validateSpawnArgs };
+module.exports = { validateSpawnArgs, checkMemoryQueries, QUERIES_MAX, QUERY_BYTES_MAX };

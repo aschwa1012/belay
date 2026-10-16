@@ -140,7 +140,7 @@ async function noteVerdicts(E, caller, args) {
       const done = E.store.p("SELECT id FROM memory_event WHERE kind = 'note_review' AND ok = 1 AND key = ?").get(`${route.keyBase}:${v.id}`);
       if (done) { out.already.push({ id: v.id, event_id: done.id }); continue; }
       n = admit(E, caller, route, v);
-      const chk = await CC.checkTaskCites(E, n.task_id, v.cites, { title: n.title, text: n.text, evidence: parse(n.body).evidence });
+      const chk = await CC.checkTaskCites(E, n.task_id, v.cites, { title: n.title, when: parse(n.body).when, text: n.text, evidence: parse(n.body).evidence });
       if (!chk.ok) throw err('E_CITATION', `note ${n.id}: ${chk.failures.length} of ${v.cites.length} cites are not in the evidence task ${n.task_id} recorded; the verdict is dropped (${chk.failures.map((f) => `cites[${f.index}] ${f.where}: ${f.reason}`).join(' | ')})`.slice(0, 600), { id: n.id, failures: chk.failures });
       out.applied.push(applyOne(E, caller, route, v, n));
     } catch (e) { refuse(e, n); }

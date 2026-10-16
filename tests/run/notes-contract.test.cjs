@@ -36,15 +36,16 @@ async function withEnv(vars, fn) {
   }
 }
 const received = (f) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l).text) : []);
-const coreWith = (levers) => {
+const coreWith = (levers, subjects = null) => {
   const core = createFakeCore({ runId: 'run-fake', resumeLineText: RL });
+  if (subjects) core.memory.noteSubjects = async ({ project }) => ({ project, subjects: subjects.map((subject) => ({ subject, notes: 1 })) });
   core.run = { get: async () => ({ run: { memory_levers: levers === null ? null : JSON.stringify(levers) } }) };
   return core;
 };
 
-async function spawned(levers, workerId = 'w1') {
+async function spawned(levers, workerId = 'w1', subjects = null) {
   const sb = sandbox();
-  const m = createRunManager({ core: coreWith(levers), dataDir: sb.data, runId: 'run-fake', paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
+  const m = createRunManager({ core: coreWith(levers, subjects), dataDir: sb.data, runId: 'run-fake', paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
   try {
     const recv = path.join(sb.data, 'recv.jsonl');
     await withEnv({ FAKE_RECV_FILE: recv }, async () => {
@@ -59,14 +60,20 @@ async function spawned(levers, workerId = 'w1') {
   }
 }
 
-test('the contract text carries the ADR question, the rules and the made-up example, and stays small', () => {
+test('the contract text explains the purpose, shape and timing of a note, keeps the rules, and stays small', () => {
   const text = NC.contract({ ...DEFAULTS, ...ON });
   assert.ok(text.includes(QUESTION));
-  assert.ok(Buffer.byteLength(text) <= 1400, `${Buffer.byteLength(text)} bytes`);
-  for (const must of ['`[]` is the normal answer', 'Your findings are not shown to the next worker', 'Do not note what the diff or your hand-back already shows',
-    'State the rule and where you saw it, not the next value; mark a snapshot "as of"', 'test/fixtures/index.json', '`reported_wrong`', '`memory_note_resolve`']) {
+  // 1,400 before the paired write/search contract; the pin is 1,900 (the text is about 1,800) so a small wording change does not break it, and the explanation, two restored rules and the replaced_by route are longer, and the project's subject list (at most 400 bytes) is added after it.
+  assert.ok(Buffer.byteLength(text) <= 1900, `${Buffer.byteLength(text)} bytes`);
+  assert.ok(Buffer.byteLength(NC.contract({ ...DEFAULTS, ...ON }, ['s'.repeat(40), 'x'.repeat(40)])) <= 1900 + 400, 'with a full subject list');
+  for (const must of ["They are found by matching that worker's task text against your note", 'Do not note what you built, or what your diff or hand-back already shows', '`[]` is the normal answer',
+    '`title` (at most 160 bytes)', '`when` (at most 160 bytes)', 'as a task line', "not the finding's", '`subjects` (0 to 3)', 'its paths also feed matching',
+    'Your findings are not shown to them; do not assume they are covered', 'mark a snapshot "as of <sha>"', '(made up:', 'says the same as another note', '`replaced_by`', '`reported_wrong`', '`memory_note_resolve`']) {
     assert.ok(text.includes(must), must);
   }
+  assert.ok(!text.includes('Subjects already used'), 'no subject line when the project has none');
+  assert.ok(!text.includes('\n\n'), 'and no empty line in its place');
+  assert.ok(NC.contract({ ...DEFAULTS, ...ON }, ['migrations', 'email']).includes('Subjects already used in this project: migrations, email.'), 'the project\'s subjects, when it has some');
   assert.ok(!text.includes('{{'), 'no placeholder is left');
   assert.strictEqual(NC.contract({ ...DEFAULTS }), '', 'lever off: no text');
   assert.strictEqual(NC.reflection({ ...DEFAULTS, ...ON }), '', 'reflection off: no text');
@@ -88,6 +95,12 @@ test('notes on: the opening message ends with the contract, and the worker adapt
   assert.deepStrictEqual(r.stdin, [expected], 'the bytes on stdin');
   assert.ok(r.argv.includes('--notes'));
   assert.ok(r.mcp.mcpServers.belay.args.includes('--notes'), 'in the worker\'s mcp.json');
+});
+
+test('notes on: the most used subjects of the project are offered in the opening message', async () => {
+  const r = await spawned(ON, 'w4', ['migrations', 'email']);
+  assert.strictEqual(r.first, `${RL}\n\n${PROMPT}\n\n${NC.contract({ ...DEFAULTS, ...ON }, ['migrations', 'email'])}`);
+  assert.ok(r.first.includes('Subjects already used in this project: migrations, email.'));
 });
 
 test('notes on with the lesson lever: the lesson question is in the opening message', async () => {
@@ -172,4 +185,21 @@ test('reflection off (lever, or notes off): no message, no receipt, no call', as
     assert.deepStrictEqual(s.sent, []);
     assert.deepStrictEqual(s.events, []);
   }
+});
+
+test('a failed subject lookup is named on the worker and the contract is still sent without a subject line', async () => {
+  const core = { memory: { noteSubjects: async () => { throw Object.assign(new Error('the store was busy'), { code: 'E_BUSY' }); } } };
+  const w = { notesOn: true };
+  const tail = await require('../../src/run/memory-preface.cjs').contractTail({ core, memoryLevers: { ...DEFAULTS, ...ON } }, w);
+  assert.ok(tail.includes(NC.question({ ...DEFAULTS })));
+  assert.ok(!tail.includes('Subjects already used'));
+  assert.deepStrictEqual([w.lastError.where, w.lastError.code, w.lastError.message], ['memory.noteSubjects', 'E_BUSY', 'the store was busy']);
+});
+
+test('the contract with notes_sink on (it adds the memory_ids line) stays inside its own pin, and names replaced_by in the form the core resolves', () => {
+  const sink = NC.contract({ ...DEFAULTS, ...ON, notes_sink: 'record' });
+  assert.ok(Buffer.byteLength(sink) <= 2100, `${Buffer.byteLength(sink)} bytes with notes_sink on`);
+  assert.ok(sink.includes('`memory_ids`'));
+  assert.ok(sink.includes('`replaced_by` when there is one: `notes[<i>]` for a note in this hand-back, or the other note\'s id.'));
+  assert.ok(!sink.includes('your new note\'s id'));
 });

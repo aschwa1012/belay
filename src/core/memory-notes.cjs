@@ -2,7 +2,7 @@
 // memory-notes.cjs — ADR 0047 decision 2: the shape of a note, checked by the core and refused by name, never
 // truncated. Pure: no I/O, no store, nothing from the embedder, so any path may load it.
 //
-// A note is stored as a memory row of type `note`. `checkNote` returns the fields a caller may state (kind, title,
+// A note is stored as a memory row of type `note`. `checkNote` returns the fields a caller may state (kind, title, when,
 // basis, evidence, applies_to, subjects). The writer, its model and the run come from the harness, never from here:
 // an unknown key (`model`, `written_by`, `id`) is refused, because invariant 3 says a model cannot name itself.
 
@@ -13,12 +13,14 @@ const KINDS = Object.freeze(['lesson', 'flag', 'recurring', 'gotcha']);
 const BASES = Object.freeze(['observed', 'inferred', 'relayed']);
 const RESOLVES = Object.freeze(['new', 'repeats', 'supersedes', 'refines']);
 const TITLE_MAX = 160;
+const WHEN_MAX = 160;
+const SUBJECTS_MAX = 3; // subjects a note carries (the hand-back question lists the project's most used ones to pick from)
 const NOTES_MAX = 10; // notes in one hand-back
 const EVIDENCE_MAX = 8, WHERE_MAX = 300, SAW_MAX = 500;
 const LIST_MAX = 8, ITEM_MAX = 300;
 const WRONG_MAX = 20, WHY_MAX = 500;
 const RESOLUTIONS_MAX = 20;
-const NOTE_KEYS = ['kind', 'title', 'basis', 'evidence', 'applies_to', 'subjects'];
+const NOTE_KEYS = ['kind', 'title', 'when', 'basis', 'evidence', 'applies_to', 'subjects'];
 
 const bad = (message, detail) => err('E_NOTE_SHAPE', message, detail);
 const isObj = v => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -31,6 +33,15 @@ function checkTitle(title, at) {
   const t = oneLine(title);
   if (!t) throw bad(`${at}title is empty: it must be the claim itself`, { field: 'title' });
   if (bytes(t) > TITLE_MAX) throw bad(`${at}title is ${bytes(t)} bytes and the limit is ${TITLE_MAX}; it is never truncated, so state the claim shorter`, { field: 'title', bytes: bytes(t), max: TITLE_MAX });
+  return t;
+}
+
+// `when`: the task that would run into the claim, as a task line. Required; never truncated.
+function checkWhen(when, at) {
+  if (typeof when !== 'string') throw bad(`${at}when is required and must be a string: the task that would run into this claim, as a task line`, { field: 'when' });
+  const t = oneLine(when);
+  if (!t) throw bad(`${at}when is empty: name the task that would run into this claim, as a task line (for example "add a migration")`, { field: 'when' });
+  if (bytes(t) > WHEN_MAX) throw bad(`${at}when is ${bytes(t)} bytes and the limit is ${WHEN_MAX}; it is never truncated, so word the task shorter`, { field: 'when', bytes: bytes(t), max: WHEN_MAX });
   return t;
 }
 
@@ -69,9 +80,12 @@ function checkNote(raw, index) {
   }
   if (!KINDS.includes(raw.kind)) throw bad(`${at}kind must be one of ${KINDS.join(', ')}`, { field: 'kind', index });
   const title = checkTitle(raw.title, at);
+  const when = checkWhen(raw.when, at);
   if (!BASES.includes(raw.basis)) throw bad(`${at}basis is required and must be one of ${BASES.join(', ')}`, { field: 'basis', index });
   const evidence = checkEvidence(raw.evidence, at, raw.basis === 'observed');
-  return { kind: raw.kind, title, basis: raw.basis, evidence, applies_to: checkList(raw.applies_to, 'applies_to', at), subjects: checkList(raw.subjects, 'subjects', at) };
+  const subjects = checkList(raw.subjects, 'subjects', at);
+  if (subjects.length > SUBJECTS_MAX) throw bad(`${at}subjects holds ${subjects.length} entries and a note carries at most ${SUBJECTS_MAX}`, { field: 'subjects', max: SUBJECTS_MAX });
+  return { kind: raw.kind, title, when, basis: raw.basis, evidence, applies_to: checkList(raw.applies_to, 'applies_to', at), subjects };
 }
 
 function checkNotes(list) {
@@ -80,14 +94,37 @@ function checkNotes(list) {
   return list.map((n, i) => checkNote(n, i));
 }
 
-// The text a note is embedded and keyword-indexed by: the claim first, then what it applies to and what was seen.
-function noteText(n) {
+// Two texts, kept apart.
+//   embedText   what is embedded. Template v2 is exactly the title, a line break and
+//               "When: " plus the when. A note is found by the task that would run into it, so the claim and the situation
+//               are the whole of its meaning to the model. Evidence, subjects and applies_to are not embedded; they are kept
+//               for checking and for exact matching.
+//   keywordText what the keyword index (memory_entries.text) holds and what the row is hashed by: title, When:, subjects and
+//               applies_to, so they are matched exactly.
+// A note stored before `when` existed has neither: its one text is the legacy (v1) text, which is embedded and indexed alike.
+const TEMPLATES = Object.freeze(['v1', 'v2']);
+const TEMPLATE_NEW = 'v2';
+
+function legacyText(n) {
   const lines = [n.title];
-  if (n.applies_to.length) lines.push(`applies to: ${n.applies_to.join('; ')}`);
-  if (n.subjects.length) lines.push(`subjects: ${n.subjects.join('; ')}`);
-  for (const e of n.evidence) lines.push(`evidence: ${e.where} - ${e.saw}`);
+  if (n.applies_to && n.applies_to.length) lines.push(`applies to: ${n.applies_to.join('; ')}`);
+  if (n.subjects && n.subjects.length) lines.push(`subjects: ${n.subjects.join('; ')}`);
+  for (const e of n.evidence || []) lines.push(`evidence: ${e.where} - ${e.saw}`);
   return lines.join('\n');
 }
+function embedText(n, template) {
+  if ((template || (n.when ? 'v2' : 'v1')) === 'v1') return legacyText(n);
+  if (!n.when) throw bad('template v2 needs a when, and this note has none', { field: 'when' });
+  return `${n.title}\nWhen: ${n.when}`;
+}
+function keywordText(n) {
+  if (!n.when) return legacyText(n);
+  const lines = [n.title, `When: ${n.when}`];
+  if (n.subjects && n.subjects.length) lines.push(`subjects: ${n.subjects.join('; ')}`);
+  if (n.applies_to && n.applies_to.length) lines.push(`applies to: ${n.applies_to.join('; ')}`);
+  return lines.join('\n');
+}
+const noteText = keywordText; // the stored `text` of a note row
 
 // reported_wrong: [{ id, why, replaced_by? }]. `replaced_by` is a note id, `notes[<i>]` (the i-th note of the same
 // call, resolved after it is stored) or null.
@@ -153,4 +190,4 @@ function checkResolutions(list) {
   });
 }
 
-module.exports = { checkTitle, KINDS, BASES, RESOLVES, TITLE_MAX, NOTES_MAX, checkNote, checkNotes, noteText, checkReportedWrong, checkMemoryIds, checkResolutions, oneLine, SELF_REF };
+module.exports = { checkTitle, KINDS, BASES, RESOLVES, TITLE_MAX, NOTES_MAX, checkNote, checkNotes, noteText, keywordText, embedText, TEMPLATES, TEMPLATE_NEW, WHEN_MAX, SUBJECTS_MAX, checkReportedWrong, checkMemoryIds, checkResolutions, oneLine, SELF_REF };

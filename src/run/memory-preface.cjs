@@ -79,13 +79,13 @@ const NO_EMBED = Object.freeze({ attempted: false, embeddings: [], queries: [], 
 
 // The query vectors of this worker's index, made by the store owner's embedder (memory.embedQuery: the path memory.search
 // uses; this process never loads the model). The queries are the task's own text, which the core reads from the task row
-// (so a relaunch embeds the same text a spawn did), plus the worker's `indexQueries` (orchestrator-written short queries; nothing
-// sets them yet). Only for a run with a project, and only when there is a task or an extra query. Resolves
+// (so a relaunch embeds the same text a spawn did), plus the worker's `indexQueries` (the orchestrator's memory_queries from worker_spawn, kept on the worker row; each is sent as
+// "Task: <line>", the shape the task query has). Only for a run with a project, and only when there is a task or an extra query. Resolves
 // { attempted, embeddings: [{ vector, model, label }], queries: [{ label, ms, ok, code?, message?, embedder?, timed_out? }],
 // failure: the first failed query's { code, message } or null, stop: whether a failure of the model itself must stop this
 // launch (the run's mode is `required`), off: whether the run's memory is off (mode `off` after a failure), ms }. A core without memory.embedQuery is a test double and gets none. Never throws.
 async function embedForIndex(ctx, w, lv) {
-  const extra = Array.isArray(w.indexQueries) ? w.indexQueries : [];
+  const extra = (Array.isArray(w.indexQueries) ? w.indexQueries : []).map((q) => (typeof q === 'string' ? `Task: ${q}` : { ...q, text: `Task: ${q.text}` }));
   if (!lv.project || !ctx.core.memory || typeof ctx.core.memory.embedQuery !== 'function' || (!w.taskId && !extra.length)) return NO_EMBED;
   const t0 = Date.now();
   let r;
@@ -186,7 +186,23 @@ async function memoryPreface(w, ctx, prompt, emb) {
 // message (a worker reads what it must do last); '' with the lever off, so the message is the one it always was.
 async function contractTail(ctx, w) {
   if (!w || !w.notesOn) return ''; // decided with the adapter's argv (manager writeFilesFor), never re-read here
-  return `\n\n${require('./notes-contract.cjs').contract(ctx.memoryLevers)}`;
+  return `\n\n${require('./notes-contract.cjs').contract(ctx.memoryLevers, await projectSubjects(ctx, w))}`;
+}
+
+// The project's most used note subjects, for the hand-back question to offer (memory.noteSubjects: at most about 20, inside a
+// byte cap, chosen by the core). Best effort: a core without the call, or one that fails, offers none and the worker states its own.
+async function projectSubjects(ctx, w) {
+  const project = ctx.memoryLevers && ctx.memoryLevers.project;
+  const memory = ctx.core && ctx.core.memory;
+  if (!project || !memory || typeof memory.noteSubjects !== 'function') return [];
+  try {
+    const r = await memory.noteSubjects({ project });
+    return Array.isArray(r && r.subjects) ? r.subjects.map((s) => s.subject) : [];
+  } catch (e) {
+    // Named on the worker, as the other best-effort calls are: the worker then states its own subjects, and the receipt says why.
+    if (w) w.lastError = { where: 'memory.noteSubjects', code: e && e.code, message: String((e && e.message) || e).slice(0, 200) };
+    return [];
+  }
 }
 
 // A relaunch (replace or parked resume): the same index minus the rows already shown, after the relaunch's own text.

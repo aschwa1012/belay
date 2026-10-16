@@ -15,6 +15,7 @@
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 const NT = require('./memory-notes.cjs');
+const NP = require('./note-paths.cjs');
 const M = require('./methods-memory.cjs');
 const { search } = require('./memory-search.cjs');
 const { hashText } = require('./store.cjs');
@@ -48,15 +49,19 @@ function fitBody(b) {
 // Live notes of the project that are close to this text, best first, at most `notes_match_n`. The semantic cosine
 // is the similarity (a hybrid score is a rank fusion and says nothing about how alike two notes are). A semantic
 // search that cannot run is refused by name, so there is no silent fallback.
-async function findMatches(E, caller, project, emb, lv) {
+// Only rows whose vector was made from the same template as `emb` are compared: the threshold was measured on v1 text and is
+// unvalidated on v2, and a v2 vector against a v1 one is not a like comparison. (`template` defaults to v2, the template of a new note.)
+async function findMatches(E, caller, project, emb, lv, template = NT.TEMPLATE_NEW) {
   const out = await search(E, caller, {
-    namespace: projectNs(project), mode: 'semantic', view: 'full', k: lv.notes_match_n, min_score: lv.notes_match_threshold,
+    namespace: projectNs(project), mode: 'semantic', view: 'full', k: Math.min(50, lv.notes_match_n * 5), min_score: lv.notes_match_threshold,
     query_embedding: emb.embedding, embedding_model: emb.embedding_model,
     filter: { types: ['note'], statuses: ['unverified', 'verified'] },
   });
+  const ids = out.results.map(r => r.id);
+  const tpl = new Map(ids.length ? E.store.p(`SELECT id, COALESCE(text_template, 'v1') AS t FROM memory_entries WHERE id IN (${ids.map(() => '?').join(', ')})`).all(...ids).map(r => [r.id, r.t]) : []);
   return out.results
-    .filter(r => typeof r.score === 'number' && r.score >= lv.notes_match_threshold)
-    .map(r => ({ id: r.id, title: r.title, kind: r.body && r.body.kind, basis: r.body && r.body.basis, similarity: round3(r.score) }))
+    .filter(r => typeof r.score === 'number' && r.score >= lv.notes_match_threshold && tpl.get(r.id) === template)
+    .map(r => ({ id: r.id, title: r.title, kind: r.body && r.body.kind, basis: r.body && r.body.basis, similarity: round3(r.score), template }))
     .sort((a, b) => b.similarity - a.similarity || (a.id < b.id ? -1 : 1)).slice(0, lv.notes_match_n);
 }
 
@@ -114,22 +119,29 @@ async function prepare(E, caller, args) {
   const prepared = [];
   // Under `keyword` an embedder failure never fails the hand-back: a note whose text cannot be embedded is stored without a
   // vector (the schema allows it), so keyword search finds it; it has no semantic neighbours checked, and the result says so.
+  // applies_to is derived here from the worktree's diff and the evidence, merged with what the worker stated (note-paths.cjs).
+  const diff = notes.length ? await NP.workerDiff(worker && worker.worktree, worker && worker.base_sha) : null;
   const keywordMode = E.embedderMode() === 'keyword';
   let embedFailed = null;
   for (const [i, n] of notes.entries()) {
     // Project rows are always scrubbed (ADR 0040 section 3); a title made longer by redaction is refused like any long one.
-    const s = M.scrub(true, { text: NT.noteText(n), title: n.title, body: { evidence: n.evidence, applies_to: n.applies_to, subjects: n.subjects } });
-    const title = NT.checkNote({ ...n, title: s.title }, i).title;
-    if (size(s.body) > NOTE_BODY_MAX) throw err('E_NOTE_SHAPE', `notes[${i}]: the evidence, applies_to and subjects come to ${size(s.body)} bytes and the limit is ${NOTE_BODY_MAX}`, { index: i, max: NOTE_BODY_MAX });
+    const ap = NP.merge(n, diff, worker && worker.worktree);
+    const s = M.scrub(true, { text: NT.keywordText({ ...n, applies_to: ap.applies_to }), title: n.title, body: { when: n.when, evidence: n.evidence, applies_to: ap.applies_to, applies_to_from: ap.applies_to_from, task_files: ap.task_files, task_files_from: 'diff', task_files_truncated: ap.task_files_truncated, ...(ap.ambiguous.length ? { applies_to_ambiguous: ap.ambiguous } : {}), subjects: n.subjects } });
+    const checked = NT.checkNote({ ...n, title: s.title, when: s.body.when }, i);
+    const title = checked.title;
+    const embedTxt = NT.embedText({ title, when: checked.when }, NT.TEMPLATE_NEW); // what the vector is made from; the keyword text is s.text
+    // Only what the worker wrote counts toward the limit; belay's derived fields (applies_to from the diff, task_files) are bounded by bytes in note-paths.cjs.
+    const written = { when: s.body.when, evidence: s.body.evidence, applies_to: s.body.applies_to.filter((_, k) => s.body.applies_to_from[k] === 'worker'), subjects: s.body.subjects };
+    if (size(written) > NOTE_BODY_MAX) throw err('E_NOTE_SHAPE', `notes[${i}]: the when, evidence, applies_to and subjects you wrote come to ${size(written)} bytes and the limit is ${NOTE_BODY_MAX}`, { index: i, max: NOTE_BODY_MAX });
     let emb = null;
     if (!embedFailed) {
-      try { emb = await M.withEmbedding(E, { text: s.text }, 'embedding', 'text', caller); } catch (e) {
+      try { emb = await M.withEmbedding(E, { text: embedTxt }, 'embedding', 'text', caller); } catch (e) {
         if (!keywordMode) throw e; // only the embedding step is in this try, so any error here is the embedder's
         embedFailed = { code: e.code, message: e.message };
       }
     }
     const matches = emb ? await findMatches(E, caller, project, emb, lv) : [];
-    prepared.push({ index: i, kind: n.kind, basis: n.basis, title, text: s.text, body: s.body, redactions: s.redactions, emb: emb || {}, unembedded: embedFailed, matches, model });
+    prepared.push({ index: i, kind: n.kind, basis: n.basis, title, text: s.text, body: s.body, redactions: s.redactions, emb: emb || {}, template: NT.TEMPLATE_NEW, applies: { ...ap.counts, ...(diff && diff.error ? { diff_error: diff.error } : {}) }, unembedded: embedFailed, matches, model });
   }
   const verdict = args.result && typeof args.result === 'object' && typeof args.result.verdict === 'string' ? args.result.verdict : null;
   return { project, lv, notes: prepared, wrong, skipped, memoryIds, verdict };
@@ -162,16 +174,16 @@ function commit(E, caller, prep, { task_id }) {
       return { index: p.index, id: clash.id, action: 'duplicate', state: 'duplicate', namespace: ns, title: p.title, existing_type: clash.type, same_writer: clash.written_by === by, note: `${ns} already holds a ${clash.type} row with this text${clash.written_by === by ? '' : ' (another writer\'s)'}, so nothing was written and there is nothing for you to resolve` };
     }
     const body = {
-      kind: p.kind, basis: p.basis, evidence: p.body.evidence, applies_to: p.body.applies_to, subjects: p.body.subjects,
+      kind: p.kind, basis: p.basis, when: p.body.when, evidence: p.body.evidence, applies_to: p.body.applies_to, applies_to_from: p.body.applies_to_from, task_files: p.body.task_files, task_files_from: p.body.task_files_from, task_files_truncated: p.body.task_files_truncated, ...(p.body.applies_to_ambiguous ? { applies_to_ambiguous: p.body.applies_to_ambiguous } : {}), subjects: p.body.subjects,
       model: p.model, state: pending ? 'pending' : 'live', seen_in: [], seen_total: 0, reported_wrong: [],
       ...(pending ? { matches: p.matches } : {}),
     };
     const row = E.store.storeIn({
       namespace: ns, worker_id: E.writtenBy(caller), type: 'note', text: p.text, title: p.title, body, redactions: p.redactions,
-      embedding: p.emb.embedding, embedding_model: p.emb.embedding_model, embedding_revision: p.emb.embedding_revision, dim: p.emb.dim,
+      embedding: p.emb.embedding, embedding_model: p.emb.embedding_model, embedding_revision: p.emb.embedding_revision, dim: p.emb.dim, text_template: p.template,
       run_id: caller.run_id, task_id, source: 'model', written_by: by,
     });
-    return { index: p.index, id: row.id, action: row.action, state: pending ? 'pending' : 'stored', namespace: ns, title: p.title, ...(pending ? { matches: p.matches } : {}), ...(p.unembedded ? { embedded: false, embedder_failure: p.unembedded, note: 'stored without a vector (on_embedder_failure keyword): found by keyword search, and not compared with the other notes of the project' } : {}) };
+    return { index: p.index, id: row.id, action: row.action, state: pending ? 'pending' : 'stored', namespace: ns, title: p.title, applies_to: p.applies, ...(pending ? { matches: p.matches } : {}), ...(p.unembedded ? { embedded: false, embedder_failure: p.unembedded, note: 'stored without a vector (on_embedder_failure keyword): found by keyword search, and not compared with the other notes of the project' } : {}) };
   });
   const marked = prep.wrong.map(w => {
     const m = NT.SELF_REF.exec(w.replaced_by || '');
@@ -209,7 +221,7 @@ function inIndexBeforehand(E, pending, targetId) {
   return events.some(ev => { try { return JSON.parse(ev.row_ids).includes(targetId); } catch { return false; } });
 }
 
-const COLS = 'id, namespace, type, worker_id, written_by, run_id, task_id, text, text_hash, embedding_model, dim, body, status, created_at';
+const COLS = 'id, namespace, type, worker_id, written_by, run_id, task_id, text, text_hash, embedding_model, dim, text_template, body, status, created_at';
 const bodyOf = r => { try { return r.body ? JSON.parse(r.body) : {}; } catch { return {}; } };
 
 function loadPending(E, caller, id, i) {
@@ -262,12 +274,41 @@ function release(E, r, project) {
 }
 
 // resolve new with a changed title: the first line of the text and the title change together, and the hash with them.
-function retitle(E, r, title) {
+function retitle(E, r, title, fresh) {
   const s = M.scrub(true, { text: [title, ...r.text.split('\n').slice(1)].join('\n'), title });
   const clash = E.store.p('SELECT id, type FROM memory_entries WHERE namespace = ? AND text_hash = ? AND id != ?').get(r.namespace, hashText(s.text), r.id);
   if (clash) throw err('E_EXISTS', `the changed title makes note ${r.id} the same text as ${clash.id} (a ${clash.type} row) in ${r.namespace}; choose another title or resolve it as repeats`, { id: r.id, existing_id: clash.id, existing_type: clash.type });
   E.store.p('UPDATE memory_entries SET title = ?, text = ?, text_hash = ?, updated_at = ? WHERE id = ?').run(s.title, s.text, hashText(s.text), Date.now(), r.id);
+  // The vector was made from the old title, so it is replaced by one made from the new, under the row's own template.
+  if (fresh && fresh.unembedded) {
+    E.store.clearEmbedding(r.id);
+    return { ...r, title: s.title, text: s.text, text_hash: hashText(s.text), embedding_model: null, dim: null, text_template: null };
+  }
+  if (fresh) E.store.replaceEmbedding(r.id, fresh);
   return { ...r, title: s.title, text: s.text, text_hash: hashText(s.text) };
+}
+
+// Before the transaction (embedding is async): the new vector of each note a resolve retitles. A note with no vector has none to replace.
+async function freshVectors(E, caller, list) {
+  const out = new Map();
+  for (const [i, x] of list.entries()) {
+    if (x.resolve !== 'new' || !x.title) continue;
+    const r = loadPending(E, caller, x.id, i);
+    if (r.embedding_model == null) continue;
+    const s = M.scrub(true, { text: [x.title, ...r.text.split('\n').slice(1)].join('\n'), title: x.title });
+    const template = r.text_template || 'v1';
+    const text = template === 'v2' ? NT.embedText({ title: s.title, when: bodyOf(r).when }, 'v2') : s.text;
+    let e;
+    try { e = await M.withEmbedding(E, { text }, 'embedding', 'text', caller); } catch (failure) {
+      // required: the failure stands (withEmbedding has told the run's guard, which pauses it). keyword: the retitle goes on and the
+      // note is left without a vector; a stale one is never kept under the new title.
+      if (E.embedderMode() !== 'keyword') throw failure;
+      out.set(r.id, { unembedded: { code: failure.code, message: failure.message } });
+      continue;
+    }
+    out.set(r.id, { embedding: e.embedding, embedding_model: e.embedding_model, embedding_revision: e.embedding_revision, dim: e.dim, text_template: template });
+  }
+  return out;
 }
 
 async function resolve(E, caller, args) {
@@ -275,6 +316,7 @@ async function resolve(E, caller, args) {
   if (caller.role !== 'operator' && !notesLevers(E, caller)) throw err('E_LEVER_OFF', 'memory.noteResolve needs the run\'s memory.notes lever, and this run has it off', { lever: 'notes' });
   const t = Date.now();
   const by = E.memoryWriter(caller);
+  const fresh = await freshVectors(E, caller, list);
   const out = E.store.tx(() => {
     const projects = new Set();
     const done = list.map((x, i) => {
@@ -282,10 +324,11 @@ async function resolve(E, caller, args) {
       const project = r.namespace.slice('pending/'.length);
       projects.add(project);
       if (x.resolve === 'new') {
-        if (x.title) r = retitle(E, r, x.title);
+        const vector = x.title ? fresh.get(r.id) : null;
+        if (x.title) r = retitle(E, r, x.title, vector);
         release(E, r, project);
         E.store.patchBody(r.id, b => { b.state = 'live'; b.resolved = { as: 'new', at: t, by }; delete b.matches; return b; });
-        return { id: r.id, resolved: 'new', state: 'live', namespace: projectNs(project) };
+        return { id: r.id, resolved: 'new', state: 'live', namespace: projectNs(project), ...(vector && vector.unembedded ? { embedded: false, embedder_failure: vector.unembedded, note: 'the title changed and the embedder failed (on_embedder_failure keyword), so the old vector was dropped and the note has none: it is found by keyword search, and belay memory embed will embed it from its new title' } : {}) };
       }
       const target = liveTarget(E, caller, r, project, x, i);
       if (x.resolve === 'refines') {

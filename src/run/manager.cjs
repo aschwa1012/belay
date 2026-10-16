@@ -17,7 +17,7 @@ const { rotateWireLog } = require('./wire-log.cjs');
 const S = require('./surface.cjs'); // ADR 0024, S2 fix round F4: the surface fields spawn/restart/resume return
 const I = require('./instructions.cjs'); // ADR 0024 amendment 1: the spawn-time CLAUDE.md copy
 const { fail } = require('./errors.cjs');
-const { validateSpawnArgs } = require('./spawn-args.cjs');
+const { validateSpawnArgs, checkMemoryQueries } = require('./spawn-args.cjs');
 const AD = require('./agent-defaults.cjs'); // the config's per-agent-type model and effort defaults
 const MP = require('./memory-preface.cjs'); // ADR 0042: the first-message preface and the memory hooks
 const { NOTE_REVIEW_DRAIN_MS } = require('../core/spawn-bounds.cjs');
@@ -210,7 +210,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const {
       substrate, worktree, prompt, task_id = null, model: modelArg = null, allowed_tools = null,
       permission_mode = null, startup_timeout_ms = 60000, worker_id = null, sandbox = null,
-      permission_prompt = false, permit_wait_ms = 600000, effort: effortArg = null, tools = null, agent_type = null, max_budget_usd = null,
+      permission_prompt = false, permit_wait_ms = 600000, effort: effortArg = null, tools = null, agent_type = null, max_budget_usd = null, memory_queries = null,
     } = opts || {};
     let model = modelArg;
     let effort = effortArg;
@@ -223,6 +223,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       effort = agent.effort.value;
     }
     validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id });
+    const indexQueries = checkMemoryQueries(memory_queries);
 
     const id = worker_id || crypto.randomUUID();
     if (workers.has(id) || pendingIds.has(id)) fail('E_ARGS', 'a worker with that id already exists in this run', { worker_id: id });
@@ -238,6 +239,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
         allowedTools: allowed_tools, permissionMode: permission_mode, sandbox,
         permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort, tools, maxBudgetUsd: max_budget_usd,
       });
+      w.indexQueries = indexQueries; // the orchestrator's situation lines for this worker's memory index (memory.embedQuery extra_texts)
       workers.set(id, w);
     } finally { pendingIds.delete(id); }
     await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the worker adapter's argv carries the notes lever, so the levers are known before the files are written

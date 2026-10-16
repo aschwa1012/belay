@@ -75,7 +75,7 @@ test('the worker\'s own extra queries are sent along when it has them, and are n
   const w = { ...W(), indexQueries: ['release checklist', { label: 'dates', text: 'calendar bug' }] };
   const { core, calls } = makeCore({ embed: async () => ({ queries: [okQuery(), okQuery('extra:1', 5), okQuery('dates', 6)], on_embedder_failure: 'required', embed_ms: 48 }) });
   await MP.memoryPreface(w, ctxOf(core), PROMPT);
-  assert.deepStrictEqual(calls.find((c) => c.method === 'embedQuery').args.extra_texts, w.indexQueries);
+  assert.deepStrictEqual(calls.find((c) => c.method === 'embedQuery').args.extra_texts, ['Task: release checklist', { label: 'dates', text: 'Task: calendar bug' }], 'each sent as a Task: line');
   assert.strictEqual(calls.find((c) => c.method === 'index').args.query_embeddings.length, 3);
   assert.strictEqual(calls.find((c) => c.method === 'recordEvent').args.message.includes('"extra:1"'), true);
   const none = makeCore({ embed: okEmbed });
@@ -281,6 +281,34 @@ test('when the guard ENDS the run (a canary or E_MODEL_CHANGED), the refused spa
   }
 });
 
+
+// ---- the orchestrator's situation lines: worker_spawn memory_queries ---------------------------------------------------
+
+test('through the manager: memory_queries reach memory.embedQuery as extra_texts, beside the task', async () => {
+  const seen = [];
+  const embed = async (a) => { seen.push(a); return { queries: [okQuery(), okQuery('extra:1', 5), okQuery('extra:2', 5)], on_embedder_failure: 'required', embed_ms: 20 }; };
+  await withManager(embed, async (m, sb, core) => {
+    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w1', task_id: 't1', memory_queries: ['add or number a migration', '  dedupe   email addresses '] });
+    assert.deepStrictEqual(seen[0].extra_texts, ['Task: add or number a migration', 'Task: dedupe email addresses'], 'trimmed task lines, in order, as Task: lines');
+    assert.strictEqual(seen[0].task_id, 't1');
+    assert.deepStrictEqual(m._worker('w1').indexQueries, ['add or number a migration', 'dedupe email addresses'], 'kept as written');
+    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w2', task_id: 't1' });
+    assert.ok(!('extra_texts' in seen[1]), 'none given, none sent');
+  });
+});
+
+test('memory_queries are refused before anything is written: more than 4, a blank line, a line over 160 bytes', async () => {
+  await withManager(okEmbed, async (m, sb, core) => {
+    const spawn = (memory_queries, id) => m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: id, task_id: 't1', memory_queries });
+    await assert.rejects(spawn(['a', 'b', 'c', 'd', 'e'], 'q1'), (e) => e.code === 'E_ARGS' && /at most 4/.test(e.message));
+    await assert.rejects(spawn(['ok', '   '], 'q2'), (e) => e.code === 'E_ARGS' && /memory_queries\[1\]/.test(e.message));
+    await assert.rejects(spawn(['x'.repeat(161)], 'q3'), (e) => e.code === 'E_ARGS' && /161 bytes/.test(e.message));
+    await assert.rejects(spawn('not a list', 'q4'), (e) => e.code === 'E_ARGS');
+    assert.ok(!core.calls.some((c) => c.method === 'worker.write'), 'no row was written for a refused spawn');
+    const T = require('../../src/mcp/tools.cjs');
+    assert.doesNotThrow(() => T.validateArgs('worker_spawn', { substrate: 'claude-code', worktree: '/w', prompt: 'p', memory_queries: ['a'] }));
+  });
+});
 
 test('an index that dropped its vector lists, or was refused for its work, writes an index_bound event that status counts', async () => {
   const dropped = makeCore({ embed: okEmbed, index: async () => ({ text: 'INDEX a', bytes: 7, row_ids: ['a'], dropped: 0, over_budget: false, sha256: 'f'.repeat(64), candidates: { degraded: { dropped: ['vector lists'], reason: 'the index passed its time bound during the vector sweep of project/p', bound_ms: 1500, elapsed_ms: 1600 } }, relevance: { semantic_contributed: false } }) });

@@ -6,10 +6,13 @@
 // pauses (the hook is told the call name `memory.embedQuery` and the worker the call is for).
 //
 // Input: { task_id?, extra_texts?, worker_id?, timeout_ms? }.
-//   task_id     the task's own text, its `spec` (a task has no separate title; the spec's opening line is it), read here from
-//               the task row, so the caller never sends it and a relaunch embeds the same text a spawn did. Label `task`.
-//   extra_texts up to 4 further short queries (strings, or { label, text }), written by the orchestrator in time; labelled
-//               `extra:1`, `extra:2`, ... unless they carry a label. Nothing in the run manager sends them yet.
+//   task_id     the task's own text: the opening paragraph of its `spec` (up to the first blank line, still cut to TEXT_CHARS), read
+//               here from the task row, so the caller never sends it and a relaunch embeds the same text a spawn did. The whole
+//               spec is not the query: its later paragraphs (constraints, files, acceptance) share little with a note's situation.
+//               Label `task`.
+//   extra_texts up to 4 further short queries (strings, or { label, text }), written by the orchestrator in time (worker_spawn's
+//               memory_queries: task lines naming the situations the worker will be in); labelled `extra:1`, `extra:2`, ... unless they
+//               carry a label. The index fuses them with the task's by RRF.
 //   worker_id   the worker the call is for, for the hook's label.
 //   timeout_ms  the whole call's bound, 12,000 ms by default (500 to 100,000): a spawn must not wait on a slow embedder. The task's
 //               text gets half of it when there are extras (the rest is shared evenly among them, time a text does not use
@@ -46,6 +49,23 @@ const CALL = 'memory.embedQuery';
 
 const isStr = (v) => typeof v === 'string' && v.trim().length > 0;
 
+// The spec's opening paragraph: from its first line that is neither blank nor a markdown heading to the first blank line (CRLF read as
+// LF). A spec with no blank line is itself. Leading headings are skipped so a spec that opens with "# Title" is not embedded as only
+// its title; a spec that is nothing but headings falls back to the first heading's words.
+const HEADING = /^\s{0,3}#{1,6}(\s|$)/;
+function openingParagraph(spec) {
+  const lines = String(spec).split(/\r?\n/);
+  let i = 0;
+  while (i < lines.length && (!lines[i].trim() || HEADING.test(lines[i]))) i++;
+  if (i >= lines.length) {
+    const h = lines.find((l) => HEADING.test(l));
+    return h ? h.replace(/^\s{0,3}#{1,6}\s*/, '').trim() : '';
+  }
+  const out = [];
+  for (; i < lines.length && lines[i].trim(); i++) out.push(lines[i]);
+  return out.join(' ').trim();
+}
+
 function parseExtras(list) {
   if (list === undefined || list === null) return [];
   if (!Array.isArray(list) || list.length > EXTRA_MAX) throw err('E_ARGS', `memory.embedQuery extra_texts must be an array of at most ${EXTRA_MAX}`, { field: 'extra_texts' });
@@ -71,7 +91,7 @@ async function embedQuery(E, caller, args = {}) {
 
   const texts = [];
   const task = args.task_id ? rows.current(E.store, 'task', args.task_id) : null;
-  if (task && isStr(task.spec)) texts.push({ label: 'task', text: task.spec });
+  if (task && isStr(task.spec)) texts.push({ label: 'task', text: openingParagraph(task.spec) });
   texts.push(...extras);
 
   const opts = (E.owner && E.owner.opts) || {};
@@ -122,4 +142,4 @@ async function embedQuery(E, caller, args = {}) {
   return { queries, on_embedder_failure: mode, ...(typeof opts.runEnding === 'function' ? { run_ending: !!opts.runEnding() } : {}), embed_ms: Date.now() - t0 };
 }
 
-module.exports = { embedQuery, TEXT_CHARS, EXTRA_MAX, DEFAULT_TIMEOUT_MS };
+module.exports = { embedQuery, openingParagraph, TEXT_CHARS, EXTRA_MAX, DEFAULT_TIMEOUT_MS };

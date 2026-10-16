@@ -33,7 +33,7 @@ const embed = async text => {
 };
 
 const note = (marker, over = {}) => ({
-  kind: 'lesson', title: `the ${marker} loader skips unlisted fixtures`, basis: 'observed',
+  kind: 'lesson', title: `the ${marker} loader skips unlisted fixtures`, when: `add a ${marker} test fixture`, basis: 'observed',
   evidence: [{ where: `src/${marker}.js`, saw: 'the unlisted file was never read' }], applies_to: [`src/${marker}.js`], subjects: [marker], ...over,
 });
 

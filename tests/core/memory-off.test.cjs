@@ -61,7 +61,7 @@ const RUN = 'r-hand';
 const orch = callerFor('orchestrator', { run_id: RUN });
 const worker = callerFor('worker', { run_id: RUN, worker_id: 'wh' });
 const wcall = (method, args) => E.handle(method, { ...args, caller: worker });
-const note = (marker) => ({ kind: 'lesson', title: `the ${marker} loader skips unlisted fixtures`, basis: 'observed', evidence: [{ where: `src/${marker}.js`, saw: 'never read' }], applies_to: [`src/${marker}.js`], subjects: [marker] });
+const note = (marker) => ({ kind: 'lesson', title: `the ${marker} loader skips unlisted fixtures`, when: `add a ${marker} test fixture`, basis: 'observed', evidence: [{ where: `src/${marker}.js`, saw: 'never read' }], applies_to: [`src/${marker}.js`], subjects: [marker] });
 const noteRows = () => store.p("SELECT COUNT(*) AS n FROM memory_entries WHERE type = 'note'").get().n;
 let seq = 0;
 async function newLease() {
