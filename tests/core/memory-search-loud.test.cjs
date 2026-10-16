@@ -277,16 +277,18 @@ for (const [name, call, code] of [['E_MODEL mismatch', mismatch, 'E_MODEL'], ['d
     }, { getEmbedder: stubEmbedder, embedded: true });
   });
 
-  test('C ' + name + ', keyword and off: the keyword answer stands and modes_failed names the cause', async () => {
-    for (const mode of ['keyword', 'off']) {
-      await owned(mode, async ({ c, guard }) => {
-        const r = await call(c, orchestrator);
-        assert.deepStrictEqual(r.modes_failed.map((f) => [f.mode, f.code]), [['semantic', code]], mode);
-        assert.strictEqual(r.absence_established, false);
-        assert.strictEqual(r.results.length, 1);
-        assert.strictEqual(guard.events().length, 0);
-      }, { getEmbedder: stubEmbedder, embedded: true });
-    }
+  test('C ' + name + ', keyword: the keyword answer stands and modes_failed names the cause; off: memory is off and the search is refused', async () => {
+    await owned('keyword', async ({ c, guard }) => {
+      const r = await call(c, orchestrator);
+      assert.deepStrictEqual(r.modes_failed.map((f) => [f.mode, f.code]), [['semantic', code]]);
+      assert.strictEqual(r.absence_established, false);
+      assert.strictEqual(r.results.length, 1);
+      assert.strictEqual(guard.events().length, 0);
+    }, { getEmbedder: stubEmbedder, embedded: true });
+    await owned('off', async ({ c, guard }) => {
+      await assert.rejects(call(c, orchestrator), (e) => e.code === 'E_LEVER_OFF');
+      assert.strictEqual(guard.events().length, 0, 'not an embedder failure: the guard is not told');
+    }, { getEmbedder: stubEmbedder, embedded: true });
   });
 }
 
@@ -339,4 +341,53 @@ test('status.get counts the run\'s index_bound events, and belay status prints a
     assert.strictEqual(st.run.index_bounds, 2);
     store.close();
   } finally { cleanup(dir); }
+});
+
+// ---- E_NAMESPACE_TOO_LARGE (the scan ceiling lowered through a seam) ----
+
+test('C E_NAMESPACE_TOO_LARGE, required: refused naming the cause, no pause; keyword: the fallback; off: refused', async () => {
+  const schema = core('schema.cjs');
+  const okEmbedder = async () => ({ embed: async () => ({ embedding: [1, 0, 0], embedding_model: 'm', dim: 3 }) });
+  schema.setScanCeilingForTest(0); // every namespace with a row is over the ceiling
+  try {
+    await owned('required', async ({ c, guard, failures, pauses }) => {
+      const e = await hybrid(c, orchestrator).then(() => null, (x) => x);
+      assert.ok(e);
+      assert.strictEqual(e.code, 'E_SEMANTIC_REQUIRED');
+      assert.strictEqual(e.detail.cause, 'E_NAMESPACE_TOO_LARGE');
+      await guard.settled();
+      assert.deepStrictEqual([failures.length, pauses.length], [0, 0]);
+    }, { getEmbedder: okEmbedder, embedded: true });
+    await owned('keyword', async ({ c }) => {
+      const r = await hybrid(c, orchestrator);
+      assert.deepStrictEqual(r.modes_failed.map((f) => f.code), ['E_NAMESPACE_TOO_LARGE']);
+      assert.strictEqual(r.absence_established, false);
+    }, { getEmbedder: okEmbedder, embedded: true });
+    await owned('off', async ({ c }) => {
+      await assert.rejects(hybrid(c, orchestrator), (e) => e.code === 'E_LEVER_OFF');
+    }, { getEmbedder: okEmbedder, embedded: true });
+  } finally { schema.setScanCeilingForTest(null); }
+});
+
+// ---- an owner with no guard that serves a live run ----
+
+test('the in-process timeout of an owner with no guard refuses for a live required run, and falls back for keyword or no run', async () => {
+  for (const [levers, expect] of [[undefined, 'refused'], [{ project: 'acme', on_embedder_failure: 'keyword' }, 'fallback'], [{ project: 'acme', on_embedder_failure: 'off' }, 'off'], [null, 'fallback']]) {
+    const dir = sandbox();
+    let c, store;
+    try {
+      store = seedStore(dir);
+      const hung = async () => ({ embed: () => new Promise(() => {}) });
+      const owner = { stopped: false, opts: {} }; // no embedderMode: no guard
+      owner.engine = new Engine({ dataDir: dir, store, getEmbedder: hung, owner, establishedBy: 'owner' });
+      if (levers !== null) await owner.engine.handle('run.attach', { caller: orchestrator, adapter_pid: process.pid, project: 'acme', ...(levers ? { memory_levers: JSON.stringify(levers) } : {}) });
+      c = await openCore({ dataDir: dir, caller: orchestrator, embed: false });
+      c.owner = owner;
+      c.vectorLimitMs = 20;
+      const r = await hybrid(c, orchestrator).then((v) => v, (e) => e);
+      if (expect === 'fallback') assert.deepStrictEqual(r.modes_failed.map((f) => f.code), ['E_TIMEOUT']);
+      else if (expect === 'off') assert.strictEqual(r.code, 'E_LEVER_OFF');
+      else { assert.strictEqual(r.code, 'E_SEMANTIC_REQUIRED'); assert.match(r.message, /did not answer in time/); }
+    } finally { if (c) { c.owner = null; await c.close(); } if (store) store.close(); cleanup(dir); }
+  }
 });

@@ -206,7 +206,9 @@ const DEFAULT_LEASE_TTL_MS = 600000;
 // ADR 0003 §2: exact cosine is 108 ms p95 at 100k rows, so the owner refuses above this without opt-in.
 const NAMESPACE_SCAN_CEILING = 50000;
 // ADR 0027 decision 7: the same scan cost at any width, so the row ceiling falls as dims rise (18,750 at 1024).
-const scanCeiling = dim => Math.floor(NAMESPACE_SCAN_CEILING * 384 / Math.max(1, dim));
+let ceilingOverride = null; // tests only: a lower row ceiling, so E_NAMESPACE_TOO_LARGE needs no 18,750 rows
+const scanCeiling = dim => (ceilingOverride !== null ? ceilingOverride : Math.floor(NAMESPACE_SCAN_CEILING * 384 / Math.max(1, dim)));
+const setScanCeilingForTest = n => { ceilingOverride = n; };
 
 function ensureSchema(db) {
   db.exec(MEMORY_SCHEMA);
@@ -219,5 +221,5 @@ function ensureSchema(db) {
 
 module.exports = {
   ensureSchema, MEMORY_SCHEMA, ORCHESTRATION_SCHEMA, MIGRATIONS, MEMORY_INDEXES,
-  WORKER_STATES, TASK_STATES, SUBSTRATES, ROLES, PERMISSION_STATES, DEFAULT_LEASE_TTL_MS, NAMESPACE_SCAN_CEILING, scanCeiling,
+  WORKER_STATES, TASK_STATES, SUBSTRATES, ROLES, PERMISSION_STATES, DEFAULT_LEASE_TTL_MS, NAMESPACE_SCAN_CEILING, scanCeiling, setScanCeilingForTest,
 };
