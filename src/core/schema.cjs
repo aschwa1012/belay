@@ -179,6 +179,9 @@ const MIGRATIONS = [
   // ADR 0034 amendment 1: the directory the run's belay.config.json lives in (or is created in), so a resume writes the operator's
   // choice of embedder mode into the run's own project and never into whatever folder the CLI was run from.
   'ALTER TABLE run ADD COLUMN project_dir TEXT',
+  // The template version of the text a row's vector was made from: v1 is the text as stored, v2 a note's title and When: line
+  // (memory-notes.cjs embedText). Null on a row embedded before the column, and read as v1. Set on every embedded row.
+  'ALTER TABLE memory_entries ADD COLUMN text_template TEXT',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot

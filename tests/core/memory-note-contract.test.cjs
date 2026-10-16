@@ -1,0 +1,252 @@
+'use strict';
+// memory-note-contract.test.cjs — the paired write/search contract for notes. A note is written with a `when` (the task that
+// would run into it); its vector is made from "{title}\nWhen: {when}" only (template v2), its keyword text carries the title,
+// the When: line, subjects and applies_to; applies_to is derived from the worker's worktree diff and the evidence, never typed;
+// every embedded row records the template its vector came from; `memory.embedNote { reembed: 'v2' }` rebuilds a v1 vector
+// only where a `when` exists; the project's most used subjects are offered by `memory.noteSubjects`. A fake embedder gives
+// vectors we choose and records the exact text it was asked to embed. The worktree is a real temporary git repository.
+
+const { test, before, after } = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
+
+const { Store } = core('store.cjs');
+const { Engine } = core('engine.cjs');
+const NT = core('memory-notes.cjs');
+const NP = core('note-paths.cjs');
+
+let dir, store, E, repo, baseSha;
+const RUN = 'r-contract';
+const orch = callerFor('orchestrator', { run_id: RUN });
+const operator = callerFor('operator', { run_id: 'cli' });
+const worker = (id) => callerFor('worker', { run_id: RUN, worker_id: id });
+const call = (method, caller, args = {}) => E.handle(method, { caller, ...args });
+const rowOf = (id) => store.p('SELECT * FROM memory_entries WHERE id = ?').get(id);
+const bodyOf = (id) => JSON.parse(rowOf(id).body);
+let seq = 0;
+
+// Axis by marker word, as in the hand-back tests: K<n> is the n-th axis, anything else the last.
+const DIM = 16;
+const asked = []; // every text the embedder was asked for, with its role
+const vecOf = (text) => {
+  const m = /\bK(\d+)\b/.exec(text);
+  const v = new Array(DIM).fill(0);
+  v[m ? Number(m[1]) : DIM - 1] = 1;
+  if (text.includes('When:')) v[DIM - 2] = 0.5; // a v2 text sits a little off the axis its words name, so a rebuilt vector differs from the whole-text one
+  return v;
+};
+const embedder = { embed: async (text, o) => { asked.push({ text, as: o && o.as }); return { embedding: vecOf(text), embedding_model: 'fake', embedding_revision: 'r', dim: DIM }; } };
+
+const git = (...a) => execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...a], { cwd: repo, encoding: 'utf8' }).trim();
+const put = (rel, text) => { fs.mkdirSync(path.dirname(path.join(repo, rel)), { recursive: true }); fs.writeFileSync(path.join(repo, rel), text); };
+
+const note = (marker, over = {}) => ({
+  kind: 'lesson', title: `the ${marker} loader skips unlisted fixtures`, when: `load a ${marker} test fixture`, basis: 'observed',
+  evidence: [{ where: `src/${marker}.js:12`, saw: 'the unlisted file was never read' }], subjects: [marker], ...over,
+});
+async function handBack(workerId, notes) {
+  const t = await call('task.create', orch, { spec: `job ${++seq}` });
+  const a = await call('task.assign', orch, { task_id: t.id, worker_id: workerId });
+  return call('lease.release', worker(workerId), { lease_id: a.new_lease.id, notes });
+}
+
+before(async () => {
+  dir = sandbox();
+  repo = path.join(dir, 'wt');
+  fs.mkdirSync(repo, { recursive: true });
+  git('init', '-q');
+  put('a.txt', 'base\n');
+  git('add', '-A'); git('commit', '-qm', 'base');
+  baseSha = git('rev-parse', 'HEAD');
+  put('src/new.js', 'committed\n');
+  git('add', '-A'); git('commit', '-qm', 'work');
+  put('a.txt', 'edited, not committed\n');
+  put('docs/u.md', 'untracked\n');
+
+  store = new Store(`${dir}/memory.db`, { stamp: true });
+  E = new Engine({ dataDir: dir, store, getEmbedder: async () => embedder, owner: null, establishedBy: 'test' });
+  await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true }) });
+  const row = (id, extra) => call('worker.write', orch, { id, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${id}`, last_event_at: Date.now(), model: 'claude-test-1', ...extra });
+  await row('w1', { worktree: repo.replace(/\\/g, '/'), base_sha: baseSha });
+  await row('w2', {}); // no worktree on its row
+  await row('w3', { worktree: repo.replace(/\\/g, '/'), base_sha: baseSha });
+});
+after(() => { store.close(); cleanup(dir); });
+
+test('a new note is embedded from exactly "{title}\\nWhen: {when}", keyword-indexed by the longer text, and records template v2', async () => {
+  asked.length = 0;
+  const out = await handBack('w1', [note('K1', { subjects: ['loader', 'fixtures'] })]);
+  assert.strictEqual(out.notes[0].state, 'stored');
+  const r = rowOf(out.notes[0].id);
+  assert.deepStrictEqual(asked.map((a) => [a.text, a.as]), [['the K1 loader skips unlisted fixtures\nWhen: load a K1 test fixture', 'document']]);
+  assert.ok(!asked[0].text.includes('src/K1.js'), 'evidence is not embedded');
+  assert.ok(!asked[0].text.includes('subjects'), 'subjects are not embedded');
+  assert.strictEqual(r.text_template, 'v2');
+  assert.strictEqual(r.text, 'the K1 loader skips unlisted fixtures\nWhen: load a K1 test fixture\nsubjects: loader; fixtures\napplies to: src/K1.js; a.txt; docs/u.md; src/new.js');
+  assert.strictEqual(r.text, NT.keywordText({ ...note('K1', { subjects: ['loader', 'fixtures'] }), applies_to: bodyOf(r.id).applies_to }));
+  assert.strictEqual(bodyOf(r.id).when, 'load a K1 test fixture');
+  assert.ok(r.embedding, 'embedded');
+});
+
+test('applies_to is derived from the worktree diff and the evidence, merged with what the worker stated, and says where each came from', async () => {
+  const out = await handBack('w1', [note('K2', { applies_to: ['worker/chosen.js'] })]);
+  const b = bodyOf(out.notes[0].id);
+  // worker first, then evidence (src/K2.js, the :12 stripped), then the diff sorted: committed since the base, edited, untracked.
+  assert.deepStrictEqual(b.applies_to, ['worker/chosen.js', 'src/K2.js', 'a.txt', 'docs/u.md', 'src/new.js']);
+  assert.deepStrictEqual(b.applies_to_from, ['worker', 'evidence', 'diff', 'diff', 'diff']);
+  assert.deepStrictEqual(out.notes[0].applies_to, { total: 5, worker: 1, evidence: 1, diff: 3, dropped: 0 });
+  // the worker never has to type a path
+  const bare = await handBack('w3', [note('K3', { applies_to: undefined })]);
+  assert.deepStrictEqual(bodyOf(bare.notes[0].id).applies_to, ['src/K3.js', 'a.txt', 'docs/u.md', 'src/new.js']);
+});
+
+test('a worktree that cannot be read is named in the result and the note is stored with its evidence paths only', async () => {
+  const out = await handBack('w2', [note('K4')]);
+  assert.strictEqual(out.notes[0].state, 'stored');
+  assert.match(out.notes[0].applies_to.diff_error, /no worktree/);
+  assert.deepStrictEqual(bodyOf(out.notes[0].id).applies_to, ['src/K4.js']);
+  // a path that is not a repository
+  const d = await NP.workerDiff(path.join(dir, 'nowhere'), baseSha);
+  assert.deepStrictEqual(d.paths, []);
+  assert.match(d.error, /does not exist/);
+  const bare = path.join(dir, 'notarepo');
+  fs.mkdirSync(bare);
+  const e = await NP.workerDiff(bare, baseSha);
+  assert.deepStrictEqual(e.paths, []);
+  assert.ok(e.error, 'git said it is not a repository');
+});
+
+test('merge: worker paths first, the cap keeps what a person wrote, and evidence paths are read as paths', () => {
+  const diff = { paths: Array.from({ length: 30 }, (_, i) => `d/${String(i).padStart(2, '0')}.js`) };
+  const m = NP.merge({ applies_to: ['w/one.js'], evidence: [{ where: 'see `src/a.js:3:9`, docs/x.md#L4 and https://example.com/p.html', saw: 'x' }] }, diff);
+  assert.strictEqual(m.applies_to.length, NP.APPLIES_MAX);
+  assert.deepStrictEqual(m.applies_to.slice(0, 3), ['w/one.js', 'src/a.js', 'docs/x.md']);
+  assert.deepStrictEqual(m.counts, { total: 16, worker: 1, evidence: 2, diff: 13, dropped: 17 });
+  assert.deepStrictEqual(NP.evidencePaths([{ where: 'C:/elsewhere/x.js', saw: '' }, { where: 'the loader', saw: '' }, { where: '../up.js', saw: '' }]), [], 'no absolute, outside or wordy path');
+  assert.deepStrictEqual(NP.evidencePaths([{ where: 'D:/proj/wt/src/in.js:4', saw: '' }], 'D:/proj/wt'), ['src/in.js'], 'a worktree-absolute path is made relative');
+});
+
+test('the keyword text is searched: the When: line, a subject and a derived path all find the note', async () => {
+  const out = await handBack('w1', [note('K5', { title: 'numbering is by filename', when: 'renumber the quarantined widgets', subjects: ['zebrafish'] })]);
+  const id = out.notes[0].id;
+  const find = async (q) => (await call('memory.search', orch, { query: q, namespace: 'project/acme', mode: 'keyword', view: 'index' })).results.map((r) => r.id);
+  assert.ok((await find('quarantined widgets')).includes(id), 'by When');
+  assert.ok((await find('zebrafish')).includes(id), 'by subject');
+  assert.ok((await find('docs/u.md')).includes(id), 'by a derived path');
+});
+
+test('every embedded row records its template: v1 for plain text, v2 for a new note; an unembedded row records none', async () => {
+  const stored = await call('memory.store', orch, { text: 'a plain fact about releases K9', namespace: 'project/acme', type: 'fact' });
+  assert.strictEqual(rowOf(stored.id).text_template, 'v1');
+  const bare = await call('memory.store', orch, { text: 'a fact stored without a vector', namespace: 'project/acme', type: 'fact', embed: false });
+  assert.strictEqual(rowOf(bare.id).embedding, null);
+  assert.strictEqual(rowOf(bare.id).text_template, null);
+  const all = store.p("SELECT id, text_template FROM memory_entries WHERE embedding IS NOT NULL").all();
+  assert.ok(all.length >= 5 && all.every((r) => r.text_template === 'v1' || r.text_template === 'v2'), 'no embedded row lacks a template');
+});
+
+// ---- search over a store that holds both templates; --reembed ------------------------------------------------------------
+
+let v1Plain, v1WithWhen, v2Id;
+const legacy = (marker) => `the ${marker} legacy note\napplies to: src/${marker}.js\nevidence: src/${marker}.js - saw it`;
+
+test('a store holding v1 and v2 rows is searched as one; mixing is allowed', async () => {
+  const mk = async (marker, body, template) => {
+    const text = legacy(marker);
+    const e = await embedder.embed(text, { as: 'document' });
+    return E.store.store({ namespace: 'project/acme', worker_id: 'harness', type: 'note', text, title: `the ${marker} legacy note`, body, embedding: e.embedding, embedding_model: e.embedding_model, embedding_revision: e.embedding_revision, dim: e.dim, text_template: template, written_by: 'harness' }).id;
+  };
+  // an old note: no `when`; and one with a `when` whose vector is still the whole-text one
+  v1Plain = await mk('K6', { kind: 'lesson', basis: 'observed', state: 'live', evidence: [], applies_to: ['src/K6.js'], subjects: [] }, undefined);
+  v1WithWhen = await mk('K7', { kind: 'lesson', basis: 'observed', state: 'live', when: 'rebuild the K7 index', evidence: [], applies_to: [], subjects: [] }, 'v1');
+  v2Id = (await handBack('w1', [note('K8')])).notes[0].id;
+  assert.deepStrictEqual([rowOf(v1Plain).text_template, rowOf(v1WithWhen).text_template, rowOf(v2Id).text_template], ['v1', 'v1', 'v2']);
+  const hits = async (marker) => (await call('memory.search', orch, { query: `K${marker}`, query_embedding: vecOf(`K${marker}`), embedding_model: 'fake', namespace: 'project/acme', mode: 'semantic', view: 'index', k: 20 })).results.map((r) => r.id);
+  assert.ok((await hits(6)).includes(v1Plain) && (await hits(7)).includes(v1WithWhen) && (await hits(8)).includes(v2Id));
+});
+
+test('memory.retemplate names what can be rebuilt and what cannot, and is a read', async () => {
+  const before = store.p('SELECT COUNT(*) AS n, MAX(updated_at) AS u FROM memory_entries').get();
+  const r = await call('memory.retemplate', operator, { project: 'acme', template: 'v2' });
+  assert.deepStrictEqual(r.eligible.map((x) => x.id), [v1WithWhen]);
+  assert.deepStrictEqual(r.stays.map((x) => [x.id, x.reason]), [[v1Plain, 'no_when']]);
+  assert.ok(r.already >= 4, 'the v2 notes are counted as already v2');
+  assert.deepStrictEqual(store.p('SELECT COUNT(*) AS n, MAX(updated_at) AS u FROM memory_entries').get(), before, 'a read writes nothing');
+  assert.ok(!r.eligible.concat(r.stays).some((x) => x.id === v2Id));
+  await assert.rejects(call('memory.retemplate', operator, { project: 'acme', template: 'v1' }), (e) => e.code === 'E_ARGS');
+  await assert.rejects(call('memory.retemplate', orch, { project: 'acme', template: 'v2' }), (e) => e.code === 'E_ROLE');
+});
+
+test('--reembed rebuilds a v1 vector from title and When: only where a when exists; a v1 note without one is untouched', async () => {
+  const snap = (id) => { const r = rowOf(id); return { embedding: Buffer.from(r.embedding).toString('hex'), tpl: r.text_template, text: r.text, updated_at: r.updated_at }; };
+  const plainBefore = snap(v1Plain);
+  const whenBefore = snap(v1WithWhen);
+  asked.length = 0;
+  const skip = await call('memory.embedNote', operator, { id: v1Plain, reembed: 'v2' });
+  assert.deepStrictEqual([skip.action, skip.reason, skip.from, skip.reembedded], ['skipped', 'no_when', 'v1', false]);
+  assert.deepStrictEqual(snap(v1Plain), plainBefore, 'the v1 note without a when is byte for byte what it was');
+  assert.deepStrictEqual(asked, [], 'and the embedder was not asked');
+
+  const done = await call('memory.embedNote', operator, { id: v1WithWhen, reembed: 'v2' });
+  assert.deepStrictEqual([done.action, done.from, done.to, done.reembedded], ['reembedded', 'v1', 'v2', true]);
+  assert.deepStrictEqual(asked.map((a) => a.text), ['the K7 legacy note\nWhen: rebuild the K7 index'], 'built from the stored title and when, not the stored text');
+  const after = snap(v1WithWhen);
+  assert.strictEqual(after.tpl, 'v2');
+  assert.notStrictEqual(after.embedding, whenBefore.embedding, 'the vector changed');
+  assert.strictEqual(after.text, whenBefore.text, 'the keyword text is as it was');
+  assert.strictEqual(after.updated_at, whenBefore.updated_at, 'a re-embed is not an edit');
+
+  const again = await call('memory.embedNote', operator, { id: v1WithWhen, reembed: 'v2' });
+  assert.deepStrictEqual([again.action, again.reason], ['skipped', 'already_v2']);
+  const bareV2 = await call('memory.embedNote', operator, { id: v2Id, reembed: 'v2' });
+  assert.strictEqual(bareV2.reason, 'already_v2');
+  await assert.rejects(call('memory.embedNote', operator, { id: v1WithWhen, reembed: 'v1' }), (e) => e.code === 'E_ARGS');
+  await assert.rejects(call('memory.embedNote', orch, { id: v1WithWhen, reembed: 'v2' }), (e) => e.code === 'E_ROLE');
+  assert.deepStrictEqual((await call('memory.retemplate', operator, { project: 'acme', template: 'v2' })).eligible, [], 'nothing is left to rebuild');
+});
+
+test('embedding a note stored without a vector uses its own template: v2 from title and When:, an old note from its text', async () => {
+  const mk = (marker, body) => E.store.store({ namespace: 'project/acme', worker_id: 'harness', type: 'note', text: legacy(marker), title: `the ${marker} legacy note`, body, written_by: 'harness' }).id;
+  const withWhen = mk('K10', { kind: 'lesson', basis: 'observed', state: 'live', when: 'rotate the K10 keys', evidence: [], applies_to: [], subjects: [] });
+  const without = mk('K11', { kind: 'lesson', basis: 'observed', state: 'live', evidence: [], applies_to: [], subjects: [] });
+  asked.length = 0;
+  await call('memory.embedNote', operator, { id: withWhen });
+  await call('memory.embedNote', operator, { id: without });
+  assert.deepStrictEqual(asked.map((a) => a.text), ['the K10 legacy note\nWhen: rotate the K10 keys', legacy('K11')]);
+  assert.deepStrictEqual([rowOf(withWhen).text_template, rowOf(without).text_template], ['v2', 'v1']);
+});
+
+// ---- the subject list ---------------------------------------------------------------------------------------------------
+
+test('memory.noteSubjects: the most used first, case folded, long and refuted ones left out, inside the number and byte caps', async () => {
+  const mk = (subjects, status) => {
+    const id = E.store.store({ namespace: 'project/subj', worker_id: 'harness', type: 'note', text: `note ${++seq} ${subjects.join(' ')}`, title: `n${seq}`, body: { kind: 'lesson', subjects }, written_by: 'harness' }).id;
+    if (status) store.p('UPDATE memory_entries SET status = ? WHERE id = ?').run(status, id);
+    return id;
+  };
+  mk(['migrations', 'db']); mk(['Migrations']); mk(['migrations', 'email']); mk(['email']); mk(['zeta']);
+  mk(['ghost', 'ghost'], 'refuted'); mk(['x'.repeat(41)]);
+  const r = await call('memory.noteSubjects', orch, { project: 'subj' });
+  assert.deepStrictEqual(r.subjects, [{ subject: 'migrations', notes: 3 }, { subject: 'email', notes: 2 }, { subject: 'db', notes: 1 }, { subject: 'zeta', notes: 1 }]);
+  assert.strictEqual(r.considered, 6, 'the refuted note is not counted');
+  assert.strictEqual((await call('memory.noteSubjects', orch, { project: 'subj', limit: 2 })).subjects.length, 2);
+  // twenty-five distinct subjects: at most 20 come back, and never more than 400 bytes of them
+  for (let i = 0; i < 25; i++) mk([`topic-${String(i).padStart(2, '0')}-${'q'.repeat(30)}`]);
+  const big = await call('memory.noteSubjects', orch, { project: 'subj' });
+  assert.ok(big.subjects.length <= 20 && big.bytes <= 400, `${big.subjects.length} subjects, ${big.bytes} bytes`);
+  assert.deepStrictEqual((await call('memory.noteSubjects', orch, { project: 'nothing-here' })).subjects, []);
+  await assert.rejects(call('memory.noteSubjects', worker('w1'), { project: 'subj' }), (e) => e.code === 'E_ROLE');
+  await assert.rejects(call('memory.noteSubjects', orch, {}), (e) => e.code === 'E_ARGS');
+});
+
+test('a hand-back with a note that has no when is refused by name and writes nothing', async () => {
+  const before = store.count();
+  const n = note('K12'); delete n.when;
+  await assert.rejects(handBack('w1', [n]), (e) => e.code === 'E_NOTE_SHAPE' && /when is required/.test(e.message));
+  await assert.rejects(handBack('w1', [note('K12', { when: 'w'.repeat(161) })]), (e) => e.code === 'E_NOTE_SHAPE' && /161 bytes/.test(e.message));
+  await assert.rejects(handBack('w1', [note('K12', { subjects: ['a', 'b', 'c', 'd'] })]), (e) => e.code === 'E_NOTE_SHAPE' && /at most 3/.test(e.message));
+  assert.strictEqual(store.count(), before);
+});

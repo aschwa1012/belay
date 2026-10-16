@@ -135,20 +135,20 @@ class Store {
       let id, action;
       if (dup) {
         id = dup.id; action = 'updated';
-        this.p(`UPDATE memory_entries SET last_writer_id = ?, embedding = COALESCE(?, embedding),
+        this.p(`UPDATE memory_entries SET last_writer_id = ?, embedding = COALESCE(?, embedding), text_template = COALESCE(?, text_template),
                 tags = COALESCE(?, tags), provenance = COALESCE(?, provenance), supersedes = COALESCE(?, supersedes),
                 title = COALESCE(title, ?), body = COALESCE(?, body), redactions = COALESCE(?, redactions),
                 updated_at = ?, ttl_at = ? WHERE id = ?`)
-          .run(wid, blob, tags, prov, a.supersedes || null, title, body, redactions, t, ttl, id);
+          .run(wid, blob, blob ? (a.text_template || 'v1') : null, tags, prov, a.supersedes || null, title, body, redactions, t, ttl, id);
       } else {
         id = a.id || crypto.randomUUID(); action = 'inserted';
         this.p(`INSERT INTO memory_entries(id, namespace, worker_id, last_writer_id, type, text, text_hash, embedding,
                 embedding_model, embedding_revision, dim, tags, provenance, supersedes, created_at, updated_at, ttl_at,
-                title, body, redactions, run_id, task_id, turn, source, written_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                title, body, redactions, run_id, task_id, turn, source, written_by, text_template)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
           .run(id, ns, wid, wid, a.type || 'fact', a.text, th, blob, a.embedding_model || null,
             a.embedding_revision || null, a.dim || null, tags, prov, a.supersedes || null, createdAt, createdAt, ttl,
-            title, body, redactions, a.run_id ?? null, a.task_id ?? null, a.turn ?? null, a.source ?? null, a.written_by ?? null);
+            title, body, redactions, a.run_id ?? null, a.task_id ?? null, a.turn ?? null, a.source ?? null, a.written_by ?? null, blob ? (a.text_template || 'v1') : null);
       }
       const c = this.cache.get(ns);
       if (c) {
@@ -237,10 +237,28 @@ class Store {
       throw err('E_MODEL', `namespace ${row.namespace} is bound to ${m.embedding_model}/${m.dim} and this vector is ${e.embedding_model}/${e.dim}`, { namespace: row.namespace, bound: m });
     }
     const vec = toUnitF32(e.embedding, e.dim);
-    this.p('UPDATE memory_entries SET embedding = ?, embedding_model = ?, embedding_revision = ?, dim = ?, updated_at = ? WHERE id = ? AND embedding IS NULL')
-      .run(Buffer.from(vec.buffer), e.embedding_model, e.embedding_revision || null, e.dim, now(), id);
+    this.p('UPDATE memory_entries SET embedding = ?, embedding_model = ?, embedding_revision = ?, dim = ?, text_template = ?, updated_at = ? WHERE id = ? AND embedding IS NULL')
+      .run(Buffer.from(vec.buffer), e.embedding_model, e.embedding_revision || null, e.dim, e.text_template || 'v1', now(), id);
     this.cache.delete(row.namespace);
     return true;
+  }
+
+  // `belay memory embed --reembed`: a row that has a vector gets a new one, made from another template of its text. The
+  // namespace's model binding is checked as setEmbedding does, so a vector of another model or dimension is refused. updated_at is left alone (a re-embed is not an edit). Inside
+  // the caller's transaction. Returns { template } (the template the row had), or false when the row has no vector.
+  replaceEmbedding(id, e) {
+    const row = this.p('SELECT namespace, embedding IS NOT NULL AS has, text_template FROM memory_entries WHERE id = ?').get(id);
+    if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
+    if (!Number(row.has)) return false;
+    const m = this.p('SELECT embedding_model, dim FROM namespace_models WHERE namespace = ?').get(row.namespace);
+    if (!m || m.embedding_model !== e.embedding_model || m.dim !== e.dim) {
+      throw err('E_MODEL', `namespace ${row.namespace} is bound to ${m ? `${m.embedding_model}/${m.dim}` : 'no model'} and this vector is ${e.embedding_model}/${e.dim}`, { namespace: row.namespace, bound: m || null });
+    }
+    const vec = toUnitF32(e.embedding, e.dim);
+    this.p('UPDATE memory_entries SET embedding = ?, embedding_revision = ?, text_template = ? WHERE id = ?')
+      .run(Buffer.from(vec.buffer), e.embedding_revision || null, e.text_template, id);
+    this.cache.delete(row.namespace);
+    return { template: row.text_template || 'v1' };
   }
 
   delete(id) {

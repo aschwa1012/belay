@@ -10,11 +10,45 @@
 // The operator starts this and nothing else does: no warm-up, run start or search calls it. The embedder is asked
 // directly, not through withEmbedding, so a failure here is reported to the operator and never reaches a run's
 // embedder-failure guard (which would pause an unrelated live run).
+//
+// Two things embed here. A note with no vector is embedded from the text of its own template: a note that has a `when` from its
+// title and When: line (template v2), an older one from its stored text (v1). And `reembed: 'v2'` (belay memory embed --reembed
+// --template v2) replaces the vector of a note that already has one with a v2 vector, only when the note has a `when` to build
+// it from; a v1 note without one stays v1 and the answer says so. Neither moves, merges or deletes anything.
 
 const { err } = require('./errors.cjs');
 const { findMatches } = require('./methods-memory-notes.cjs');
 const { DEFAULTS } = require('./memory-levers.cjs');
 const { recordEventSync } = require('./methods-ledger.cjs');
+const NT = require('./memory-notes.cjs');
+
+const bodyOf = (row) => { try { return row.body ? JSON.parse(row.body) : {}; } catch { return {}; } };
+
+// The text a stored note is embedded from, and the template it is: from the fields, never from the keyword text.
+function embedSource(row, want) {
+  const b = bodyOf(row);
+  if (want === 'v2' || (want === undefined && typeof b.when === 'string' && b.when)) {
+    if (typeof b.when !== 'string' || !b.when) return null;
+    return { template: 'v2', text: NT.embedText({ title: row.title, when: b.when }, 'v2') };
+  }
+  return { template: 'v1', text: row.text };
+}
+
+// One note's vector replaced by a v2 one. Skipped, with the reason, when it cannot be: no vector yet, already v2, or no when.
+async function reembedNote(E, row, args) {
+  if (args.reembed !== 'v2') throw err('E_ARGS', 'memory.embedNote reembed must be v2: it is the only template a stored note can be rebuilt as', { field: 'reembed' });
+  const skip = (reason) => ({ id: row.id, action: 'skipped', embedded: false, reembedded: false, reason, from: row.text_template || 'v1', namespace: row.namespace, title: row.title });
+  if (row.embedding == null) return skip('no_vector');
+  if ((row.text_template || 'v1') === 'v2') return skip('already_v2');
+  const src = embedSource(row, 'v2');
+  if (!src) return skip('no_when');
+  const embedder = await E.getEmbedder();
+  const e = await embedder.embed(src.text, { as: 'document' });
+  const done = E.store.tx(() => E.store.replaceEmbedding(row.id, { embedding: e.embedding, embedding_model: e.embedding_model, embedding_revision: e.embedding_revision, dim: e.dim, text_template: 'v2' }));
+  if (!done) return skip('no_vector');
+  E.noteWrite();
+  return { id: row.id, action: 'reembedded', embedded: true, reembedded: true, from: done.template, to: 'v2', namespace: row.namespace, title: row.title, embedding_model: e.embedding_model, dim: e.dim };
+}
 
 function levers(args) {
   const t = args.notes_match_threshold === undefined ? DEFAULTS.notes_match_threshold : args.notes_match_threshold;
@@ -36,13 +70,15 @@ async function embedNote(E, caller, args = {}) {
   const row = E.store.p('SELECT * FROM memory_entries WHERE id = ?').get(args.id);
   if (!row) throw err('E_NOT_FOUND', `no memory row ${args.id}`, { id: args.id });
   if (row.type !== 'note' || !row.namespace.startsWith('project/')) throw err('E_ARGS', `${args.id} is not a note of a project namespace (it is a ${row.type} row in ${row.namespace}), and memory.embedNote embeds only those`, { id: args.id });
+  if (args.reembed !== undefined) return reembedNote(E, row, args);
   if (row.embedding != null) return { id: row.id, action: 'already_embedded', embedded: false, namespace: row.namespace };
   const project = row.namespace.slice('project/'.length);
   const live = isLive(E, row);
 
   const embedder = await E.getEmbedder();
-  const e = await embedder.embed(row.text, { as: 'document' });
-  const emb = { embedding: e.embedding, embedding_model: e.embedding_model, embedding_revision: e.embedding_revision, dim: e.dim };
+  const src = embedSource(row);
+  const e = await embedder.embed(src.text, { as: 'document' });
+  const emb = { embedding: e.embedding, embedding_model: e.embedding_model, embedding_revision: e.embedding_revision, dim: e.dim, text_template: src.template };
   // Compared before the row has a vector, so it cannot match itself.
   const matches = live ? await findMatches(E, caller, project, emb, lv) : [];
 

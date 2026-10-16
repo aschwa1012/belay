@@ -15,6 +15,7 @@
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 const NT = require('./memory-notes.cjs');
+const NP = require('./note-paths.cjs');
 const M = require('./methods-memory.cjs');
 const { search } = require('./memory-search.cjs');
 const { hashText } = require('./store.cjs');
@@ -114,22 +115,27 @@ async function prepare(E, caller, args) {
   const prepared = [];
   // Under `keyword` an embedder failure never fails the hand-back: a note whose text cannot be embedded is stored without a
   // vector (the schema allows it), so keyword search finds it; it has no semantic neighbours checked, and the result says so.
+  // applies_to is derived here from the worktree's diff and the evidence, merged with what the worker stated (note-paths.cjs).
+  const diff = notes.length ? await NP.workerDiff(worker && worker.worktree, worker && worker.base_sha) : null;
   const keywordMode = E.embedderMode() === 'keyword';
   let embedFailed = null;
   for (const [i, n] of notes.entries()) {
     // Project rows are always scrubbed (ADR 0040 section 3); a title made longer by redaction is refused like any long one.
-    const s = M.scrub(true, { text: NT.noteText(n), title: n.title, body: { evidence: n.evidence, applies_to: n.applies_to, subjects: n.subjects } });
-    const title = NT.checkNote({ ...n, title: s.title }, i).title;
-    if (size(s.body) > NOTE_BODY_MAX) throw err('E_NOTE_SHAPE', `notes[${i}]: the evidence, applies_to and subjects come to ${size(s.body)} bytes and the limit is ${NOTE_BODY_MAX}`, { index: i, max: NOTE_BODY_MAX });
+    const ap = NP.merge(n, diff, worker && worker.worktree);
+    const s = M.scrub(true, { text: NT.keywordText({ ...n, applies_to: ap.applies_to }), title: n.title, body: { when: n.when, evidence: n.evidence, applies_to: ap.applies_to, applies_to_from: ap.applies_to_from, subjects: n.subjects } });
+    const checked = NT.checkNote({ ...n, title: s.title, when: s.body.when }, i);
+    const title = checked.title;
+    const embedTxt = NT.embedText({ title, when: checked.when }, NT.TEMPLATE_NEW); // what the vector is made from; the keyword text is s.text
+    if (size(s.body) > NOTE_BODY_MAX) throw err('E_NOTE_SHAPE', `notes[${i}]: the when, evidence, applies_to and subjects come to ${size(s.body)} bytes and the limit is ${NOTE_BODY_MAX}`, { index: i, max: NOTE_BODY_MAX });
     let emb = null;
     if (!embedFailed) {
-      try { emb = await M.withEmbedding(E, { text: s.text }, 'embedding', 'text', caller); } catch (e) {
+      try { emb = await M.withEmbedding(E, { text: embedTxt }, 'embedding', 'text', caller); } catch (e) {
         if (!keywordMode) throw e; // only the embedding step is in this try, so any error here is the embedder's
         embedFailed = { code: e.code, message: e.message };
       }
     }
     const matches = emb ? await findMatches(E, caller, project, emb, lv) : [];
-    prepared.push({ index: i, kind: n.kind, basis: n.basis, title, text: s.text, body: s.body, redactions: s.redactions, emb: emb || {}, unembedded: embedFailed, matches, model });
+    prepared.push({ index: i, kind: n.kind, basis: n.basis, title, text: s.text, body: s.body, redactions: s.redactions, emb: emb || {}, template: NT.TEMPLATE_NEW, applies: { ...ap.counts, ...(diff && diff.error ? { diff_error: diff.error } : {}) }, unembedded: embedFailed, matches, model });
   }
   const verdict = args.result && typeof args.result === 'object' && typeof args.result.verdict === 'string' ? args.result.verdict : null;
   return { project, lv, notes: prepared, wrong, skipped, memoryIds, verdict };
@@ -162,16 +168,16 @@ function commit(E, caller, prep, { task_id }) {
       return { index: p.index, id: clash.id, action: 'duplicate', state: 'duplicate', namespace: ns, title: p.title, existing_type: clash.type, same_writer: clash.written_by === by, note: `${ns} already holds a ${clash.type} row with this text${clash.written_by === by ? '' : ' (another writer\'s)'}, so nothing was written and there is nothing for you to resolve` };
     }
     const body = {
-      kind: p.kind, basis: p.basis, evidence: p.body.evidence, applies_to: p.body.applies_to, subjects: p.body.subjects,
+      kind: p.kind, basis: p.basis, when: p.body.when, evidence: p.body.evidence, applies_to: p.body.applies_to, applies_to_from: p.body.applies_to_from, subjects: p.body.subjects,
       model: p.model, state: pending ? 'pending' : 'live', seen_in: [], seen_total: 0, reported_wrong: [],
       ...(pending ? { matches: p.matches } : {}),
     };
     const row = E.store.storeIn({
       namespace: ns, worker_id: E.writtenBy(caller), type: 'note', text: p.text, title: p.title, body, redactions: p.redactions,
-      embedding: p.emb.embedding, embedding_model: p.emb.embedding_model, embedding_revision: p.emb.embedding_revision, dim: p.emb.dim,
+      embedding: p.emb.embedding, embedding_model: p.emb.embedding_model, embedding_revision: p.emb.embedding_revision, dim: p.emb.dim, text_template: p.template,
       run_id: caller.run_id, task_id, source: 'model', written_by: by,
     });
-    return { index: p.index, id: row.id, action: row.action, state: pending ? 'pending' : 'stored', namespace: ns, title: p.title, ...(pending ? { matches: p.matches } : {}), ...(p.unembedded ? { embedded: false, embedder_failure: p.unembedded, note: 'stored without a vector (on_embedder_failure keyword): found by keyword search, and not compared with the other notes of the project' } : {}) };
+    return { index: p.index, id: row.id, action: row.action, state: pending ? 'pending' : 'stored', namespace: ns, title: p.title, applies_to: p.applies, ...(pending ? { matches: p.matches } : {}), ...(p.unembedded ? { embedded: false, embedder_failure: p.unembedded, note: 'stored without a vector (on_embedder_failure keyword): found by keyword search, and not compared with the other notes of the project' } : {}) };
   });
   const marked = prep.wrong.map(w => {
     const m = NT.SELF_REF.exec(w.replaced_by || '');
