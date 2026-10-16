@@ -79,10 +79,10 @@ async function one(E, ctx, raw, index) {
       if (v.same_claim !== true) throw err('E_PRECONDITION', 'archiving a duplicate needs same_claim: true, the reviewer\'s statement that both notes make the same claim and do not contradict; release it if they differ', { id: v.id });
       v = { ...v, cites: [] };
     } else {
-    if (!v.cites.length) throw err('E_CITATION', `archiving a ${held.b.kind} note needs at least one cite { where, quote }, verbatim`, { id: v.id });
-    const own = loadNote(E, v.id);
-    sources = await checkCitations(v.cites, { ...ctx.evidence, head_sha: ctx.evidence.head_sha || held.b.head_sha, own: own ? ownTexts(own) : [] });
-    if (held.b.ground === 'code_contradicts' && !sources.some(s => s.source !== 'stream')) throw err('E_CITATION', 'a hold on the ground code_contradicts is archived on a citation of a file at the head commit', { id: v.id });
+      if (!v.cites.length) throw err('E_CITATION', `archiving a ${held.b.kind} note needs at least one cite { where, quote }, verbatim`, { id: v.id });
+      const own = loadNote(E, v.id);
+      sources = await checkCitations(v.cites, { ...ctx.evidence, head_sha: ctx.evidence.head_sha || held.b.head_sha, own: own ? ownTexts(own) : [] });
+      if (held.b.ground === 'code_contradicts' && !sources.some(s => s.source !== 'stream')) throw err('E_CITATION', 'a hold on the ground code_contradicts is archived on a citation of a file at the head commit', { id: v.id });
     }
   } catch (e) {
     if (e.code !== 'E_CITATION' && e.code !== 'E_PRECONDITION') throw e;

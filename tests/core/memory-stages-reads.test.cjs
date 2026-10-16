@@ -126,6 +126,8 @@ test('reviewQueue lists open holds with both notes, the age in runs and whether 
   assert.strictEqual(q.counts.count, 3);
   assert.strictEqual(q.counts.review_verified, 1);
   assert.deepStrictEqual(h.cites, [], 'a duplicate hold carries no cites');
+  assert.deepStrictEqual(h.duplicate_reports, [{ by: 'worker:w2', why: 'it is wrong', replaced_by: keep }], 'the worker report behind a duplicate hold is in the brief');
+  assert.strictEqual(q.held.find((x) => x.id === a).duplicate_reports, undefined);
   assert.ok(q.held.find((x) => x.id === a).cites[0].quote && h.head_sha === T.head);
   // age in runs: a run of the project started after the mark counts
   assert.ok(q.counts.max_runs_waited >= 0);

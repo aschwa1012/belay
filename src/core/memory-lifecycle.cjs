@@ -103,7 +103,8 @@ function checkScrub(list, maxItems) {
       out.ground = checkGround(e.ground, HOLD_GROUNDS[e.kind], at, true);
       // A duplicate needs no verbatim cites: its facts are S4's (a stored similarity or a worker report, both notes live) and a
       // reason stating the shared claim. Any cites given are ignored, not stored and not checked.
-      out.cites = e.kind === 'duplicate' ? [] : checkCites(e.cites, at, true);
+      // Same at the review: the shape of any cites given is checked (as checkVerdicts does), then they are dropped.
+      out.cites = e.kind === 'duplicate' ? (checkCites(e.cites, at, false), []) : checkCites(e.cites, at, true);
     } else if (e.action === 'resolve') {
       if (!RESOLVES.includes(e.resolve)) throw bad(`${at}resolve must be one of ${RESOLVES.join(', ')}`, { field: 'resolve', index: i });
       if (e.resolve === 'new' && out.of) throw bad(`${at}resolve new names no other note`, { field: 'of', index: i });
