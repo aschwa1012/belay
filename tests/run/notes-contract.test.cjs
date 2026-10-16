@@ -67,7 +67,7 @@ test('the contract text explains the purpose, shape and timing of a note, keeps 
   assert.ok(Buffer.byteLength(text) <= 1800, `${Buffer.byteLength(text)} bytes`);
   assert.ok(Buffer.byteLength(NC.contract({ ...DEFAULTS, ...ON }, ['s'.repeat(40), 'x'.repeat(40)])) <= 1800 + 400, 'with a full subject list');
   for (const must of ["They are found by matching that worker's task text against your note", 'Do not note what you built, or what your diff or hand-back already shows', '`[]` is the normal answer',
-    '`title` (at most 160 bytes)', '`when` (at most 160 bytes)', 'as a task line', "not the finding's", '`subjects` (0 to 3)', 'kept for checking, not for finding',
+    '`title` (at most 160 bytes)', '`when` (at most 160 bytes)', 'as a task line', "not the finding's", '`subjects` (0 to 3)', 'its paths also feed matching',
     'Your findings are not shown to them; do not assume they are covered', 'mark a snapshot "as of <sha>"', '(made up:', 'says the same as another note', '`replaced_by`', '`reported_wrong`', '`memory_note_resolve`']) {
     assert.ok(text.includes(must), must);
   }
@@ -185,4 +185,13 @@ test('reflection off (lever, or notes off): no message, no receipt, no call', as
     assert.deepStrictEqual(s.sent, []);
     assert.deepStrictEqual(s.events, []);
   }
+});
+
+test('a failed subject lookup is named on the worker and the contract is still sent without a subject line', async () => {
+  const core = { memory: { noteSubjects: async () => { throw Object.assign(new Error('the store was busy'), { code: 'E_BUSY' }); } } };
+  const w = { notesOn: true };
+  const tail = await require('../../src/run/memory-preface.cjs').contractTail({ core, memoryLevers: { ...DEFAULTS, ...ON } }, w);
+  assert.ok(tail.includes(NC.question({ ...DEFAULTS })));
+  assert.ok(!tail.includes('Subjects already used'));
+  assert.deepStrictEqual([w.lastError.where, w.lastError.code, w.lastError.message], ['memory.noteSubjects', 'E_BUSY', 'the store was busy']);
 });

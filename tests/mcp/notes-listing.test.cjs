@@ -13,8 +13,8 @@ const bytes = (list) => Buffer.byteLength(JSON.stringify(list), 'utf8');
 
 test('without the flag the worker and orchestrator listings are what the notes contract left them', () => {
   // 4,965 and 9,829 before the paired write/search contract: its search guidance and memory_queries were added, and other descriptions trimmed to keep the notes-on worker listing 500 bytes inside its budget.
-  assert.strictEqual(tools.listingBytes('worker'), 4875);
-  assert.strictEqual(tools.listingBytes('orchestrator'), 9981);
+  assert.strictEqual(tools.listingBytes('worker'), 4816);
+  assert.strictEqual(tools.listingBytes('orchestrator'), 9923);
   assert.deepStrictEqual(tools.toolsFor('worker', { notes: false }), tools.toolsFor('worker'));
   assert.deepStrictEqual(tools.toolsFor('orchestrator', { notes: true }).slice(0, -2), tools.toolsFor('orchestrator'), 'the orchestrator is given memory_summaries and memory_note_refutation only (summaries-listing.test.cjs)');
 });
@@ -77,4 +77,13 @@ test('over the wire: --notes lists the notes schema, no flag does not, and the o
   assert.strictEqual(r.code, 2);
   assert.match(r.err, /--notes is a worker adapter/);
   assert.ok(BIN);
+});
+
+test('the notes schema lists applies_to as an optional field (the worker\'s route to an unchanged file the note is about), and the notes-on worker listing keeps about 500 bytes of headroom', () => {
+  const list = tools.toolsFor('worker', { notes: true });
+  const items = list.find((t) => t.name === 'lease_release').inputSchema.properties.notes.items;
+  assert.strictEqual(items.properties.applies_to.type, 'array');
+  assert.ok(!items.required.includes('applies_to'));
+  assert.ok(tools.BUDGET.worker - bytes(list) >= 500, `${tools.BUDGET.worker - bytes(list)} bytes of headroom`);
+  assert.match(tools.toolsFor('orchestrator').find((t) => t.name === 'worker_spawn').inputSchema.properties.memory_queries.description, /^Up to 4 task lines/);
 });

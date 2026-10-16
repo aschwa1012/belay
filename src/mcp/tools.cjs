@@ -102,7 +102,7 @@ const BOTH = [
     name: 'memory_search',
     description: 'Search memory. Query with one short task line for what you are about to do, naming files or symbols; several short queries beat one long one. view index returns ids and titles only. Result names modes_run, modes_failed, absence_established (false: not searched fully).',
     inputSchema: S({
-      query: str('Natural language'),
+      query: str(),
       namespace: str(),
       k: int('default 10'),
       min_score: num(),
@@ -126,7 +126,7 @@ const BOTH = [
   },
   {
     name: 'memory_list',
-    description: 'List recent entries in a namespace. Returns the rows.',
+    description: 'List recent entries in a namespace.',
     inputSchema: S({ namespace: str(), limit: int(), offset: int() }),
   },
   {
@@ -136,7 +136,7 @@ const BOTH = [
   },
   {
     name: 'memory_stats',
-    description: 'Row-derived counts plus the owner pid, pipe and whether it answered.',
+    description: 'Row counts plus the owner pid, pipe and whether it answered.',
     inputSchema: S({}),
   },
   {
@@ -168,7 +168,7 @@ const ORCHESTRATOR = [
       model: str(),
       agent_type: { type: 'string', enum: WORKER_TYPES, description: 'Configured model and effort default' },
       effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
-      memory_queries: strs('1 to 3 task lines naming the situations the worker will be in, each max 160 bytes'),
+      memory_queries: strs('Up to 4 task lines naming the situations the worker will be in, each max 160 bytes'),
       allowed_tools: strs(),
       permission_mode: str(),
       startup_timeout_ms: int('default 60000'),

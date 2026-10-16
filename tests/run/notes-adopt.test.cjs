@@ -132,7 +132,7 @@ test('memory_queries are kept on the worker row, so a relaunch by another adapte
     seen.length = 0;
     await second.restart({ worker_id: 'wq', first_turn_timeout_ms: SLOW });
     assert.deepStrictEqual(second._worker('wq').indexQueries, ['add a migration', 'dedupe emails']);
-    assert.ok(seen.length >= 1 && seen.every((a) => JSON.stringify(a.extra_texts) === JSON.stringify(['add a migration', 'dedupe emails'])), `the relaunch embedded the same queries: ${JSON.stringify(seen)}`);
+    assert.ok(seen.length >= 1 && seen.every((a) => JSON.stringify(a.extra_texts) === JSON.stringify(['Task: add a migration', 'Task: dedupe emails'])), `the relaunch embedded the same queries: ${JSON.stringify(seen)}`);
   } finally {
     for (const m of [first, second]) { if (m) { try { await m.shutdown(); } catch { /* best effort */ } } }
   }

@@ -135,7 +135,7 @@ test('merge: worker paths first, only diff files the note names join them, the w
   assert.deepStrictEqual(m.applies_to, ['w/one.js', 'src/a.js', 'docs/x.md', 'd/05.js', 'd/07.js']);
   assert.deepStrictEqual(m.applies_to_from, ['worker', 'evidence', 'evidence', 'diff', 'diff']);
   assert.deepStrictEqual(m.counts, { total: 5, worker: 1, evidence: 2, diff: 2, dropped: 0, task_files: 40 });
-  assert.strictEqual(m.task_files.length, NP.TASK_FILES_MAX, 'the whole diff list is kept, bounded, apart from applies_to');
+  assert.strictEqual(m.task_files.length, 40); assert.strictEqual(m.task_files_truncated, 0);
   const none = NP.merge({ title: 'nothing about the diff', evidence: [] }, diff);
   assert.deepStrictEqual(none.applies_to, [], 'a note that names no diff file gets none of them');
   assert.deepStrictEqual(NP.evidencePaths([{ where: 'C:/elsewhere/x.js', saw: '' }, { where: 'the loader', saw: '' }, { where: '../up.js', saw: '' }]), [], 'no absolute, outside or wordy path');
@@ -262,4 +262,83 @@ test('a hand-back with a note that has no when is refused by name and writes not
   await assert.rejects(handBack('w1', [note('K12', { when: 'w'.repeat(161) })]), (e) => e.code === 'E_NOTE_SHAPE' && /161 bytes/.test(e.message));
   await assert.rejects(handBack('w1', [note('K12', { subjects: ['a', 'b', 'c', 'd'] })]), (e) => e.code === 'E_NOTE_SHAPE' && /at most 3/.test(e.message));
   assert.strictEqual(store.count(), before);
+});
+
+// ---- review fixes: size check, path matching, evidence tokens, opening paragraph, retitle, no-optional-locks ----------------
+
+test('belay\'s derived fields are bounded by bytes and never count against the hand-back size limit: 30 changed files of long paths still hand back', async () => {
+  const long = Array.from({ length: 30 }, (_, i) => `packages/${'deep-directory-name/'.repeat(4)}file-${String(i).padStart(2, '0')}.js`);
+  assert.ok(long[0].length > 90);
+  const m = NP.merge({ title: 'x', evidence: [] }, { paths: long });
+  assert.ok(m.task_files.length < 30 && m.task_files.length > 0, `${m.task_files.length} kept`);
+  assert.strictEqual(m.task_files_truncated, 30 - m.task_files.length);
+  assert.deepStrictEqual(m.task_files, long.slice(0, m.task_files.length), 'the first files in their stable order');
+  assert.ok(Buffer.byteLength(JSON.stringify(m.task_files)) <= NP.TASK_FILES_BYTES + 100);
+  const keep = NP.workerDiff;
+  NP.workerDiff = async () => ({ paths: long, error: null });
+  try {
+    const out = await handBack('w1', [note('K14', { title: `${long[3]} is generated`, evidence: [{ where: long[4], saw: 'generated' }] })]);
+    assert.strictEqual(out.notes[0].state, 'stored', 'the release was not refused for the size of the diff');
+    const b = bodyOf(out.notes[0].id);
+    assert.deepStrictEqual(b.applies_to.filter((_, k) => b.applies_to_from[k] === 'diff'), [long[3]]);
+    assert.ok(b.applies_to.includes(long[4]), 'and the evidence path is there');
+    assert.strictEqual(b.task_files_truncated, 30 - b.task_files.length);
+    // what the worker wrote still counts: evidence over the limit is refused
+    const big = note('K15', { evidence: Array.from({ length: 8 }, () => ({ where: 'w'.repeat(300), saw: 's'.repeat(500) })) });
+    await assert.rejects(handBack('w1', [big]), (e) => e.code === 'E_NOTE_SHAPE' && /you wrote/.test(e.message));
+  } finally { NP.workerDiff = keep; }
+});
+
+test('a diff file joins a note only on a path-segment or whole-token boundary; an ambiguous bare name attaches none and says so', () => {
+  const named = (title, paths, evidence = []) => NP.namedFiles({ title, evidence }, paths);
+  assert.deepStrictEqual(named('data.js is generated', ['a.js']).named, [], 'data.js does not name a.js');
+  assert.deepStrictEqual(named('see a.json', ['a.js']).named, [], 'a.json does not name a.js');
+  assert.deepStrictEqual(named('see a.js', ['a.json']).named, [], 'nor a.js a.json');
+  assert.deepStrictEqual(named('data/src/a.js moved', ['src/a.js']).named, [], 'a longer path is not the repo path');
+  assert.deepStrictEqual(named('look at src/a.js:12, then stop', ['src/a.js']).named, ['src/a.js'], 'a full repo path, with a line suffix and punctuation');
+  assert.deepStrictEqual(named('the lib.js file', ['src/lib.js']).named, ['src/lib.js'], 'a bare name equal to a whole token, when it is the only such file');
+  const amb = named('index.cjs is slow', ['x/index.cjs', 'y/index.cjs', 'z/other.cjs']);
+  assert.deepStrictEqual(amb.named, [], 'two changed index.cjs: none attached');
+  assert.deepStrictEqual(amb.ambiguous, ['index.cjs'], 'and the ambiguity is recorded');
+  assert.deepStrictEqual(named('x/index.cjs is slow', ['x/index.cjs', 'y/index.cjs']).named, ['x/index.cjs'], 'a full path settles it');
+  const m = NP.merge({ title: 'index.cjs is slow', evidence: [] }, { paths: ['x/index.cjs', 'y/index.cjs'] });
+  assert.deepStrictEqual([m.applies_to, m.counts.ambiguous], [[], ['index.cjs']]);
+});
+
+test('only path-shaped tokens are evidence paths: words, numbers, versions and abbreviations are not', () => {
+  const where = (w) => NP.evidencePaths([{ where: w, saw: '' }]);
+  assert.deepStrictEqual(where('e.g the loader, i.e. the cache'), []);
+  assert.deepStrictEqual(where('22.1 and v1.2.3 and 3.14'), []);
+  assert.deepStrictEqual(where('see src/a.js:3, README.md and lib/x'), ['src/a.js', 'README.md', 'lib/x']);
+  assert.deepStrictEqual(where('Makefile'), [], 'a bare word without an extension is not a path');
+});
+
+test('the spawn query skips leading markdown headings, so a spec opening with a title still embeds its first paragraph', () => {
+  const { openingParagraph } = core('methods-embed-query.cjs');
+  assert.strictEqual(openingParagraph('# Title\n\n## Part\nAdd a migration\nfor users\n\nConstraints'), 'Add a migration for users');
+  assert.strictEqual(openingParagraph('# Only a title'), 'Only a title', 'headings and nothing else: the heading\'s words');
+  assert.strictEqual(openingParagraph('#hashtag is not a heading\n\nx'), '#hashtag is not a heading');
+});
+
+test('resolving a pending note as new with a changed title re-embeds it under its own template, so a v2 vector never goes stale', async () => {
+  const first = await handBack('w1', [note('K0')]);
+  const second = await handBack('w1', [note('K0', { title: 'the K0 loader also skips unlisted fixtures' })]);
+  const pid = second.notes[0].id;
+  assert.strictEqual(second.notes[0].state, 'pending');
+  const before = Buffer.from(rowOf(pid).embedding).toString('hex');
+  asked.length = 0;
+  const out = await call('memory.noteResolve', worker('w1'), { resolutions: [{ id: pid, resolve: 'new', title: 'the K12 loader reads fixtures from the index' }] });
+  assert.strictEqual(out.resolved[0].state, 'live');
+  assert.deepStrictEqual(asked.map((a) => a.text), ['the K12 loader reads fixtures from the index\nWhen: load a K0 test fixture'], 'embedded from the new title and the stored when');
+  const row = rowOf(pid);
+  assert.strictEqual(row.text_template, 'v2');
+  assert.notStrictEqual(Buffer.from(row.embedding).toString('hex'), before, 'the vector changed with the title');
+  assert.strictEqual(row.title, 'the K12 loader reads fixtures from the index');
+  assert.ok(row.text.startsWith('the K12 loader reads fixtures from the index\nWhen: load a K0 test fixture'));
+  assert.ok(first.notes[0].id !== pid);
+});
+
+test('git status is read without optional locks, so reading a worktree cannot make a lock under a worker', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'core', 'note-paths.cjs'), 'utf8');
+  assert.match(src, /'git', '--no-optional-locks', 'status'/);
 });

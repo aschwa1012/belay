@@ -29,6 +29,7 @@ const LEASE_RELEASE = {
         when: str('Task that would trip on it, as a task line, max 160 bytes'),
         basis: { type: 'string', enum: ['observed', 'inferred', 'relayed'] },
         evidence,
+        applies_to: strs(),
         subjects: strs(),
       }, ['kind', 'title', 'when', 'basis']),
     },

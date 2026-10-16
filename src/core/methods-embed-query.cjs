@@ -49,11 +49,18 @@ const CALL = 'memory.embedQuery';
 
 const isStr = (v) => typeof v === 'string' && v.trim().length > 0;
 
-// The spec's opening paragraph: from its first non-blank line to the first blank line (CRLF read as LF). A spec with no blank line is itself.
+// The spec's opening paragraph: from its first line that is neither blank nor a markdown heading to the first blank line (CRLF read as
+// LF). A spec with no blank line is itself. Leading headings are skipped so a spec that opens with "# Title" is not embedded as only
+// its title; a spec that is nothing but headings falls back to the first heading's words.
+const HEADING = /^\s{0,3}#{1,6}(\s|$)/;
 function openingParagraph(spec) {
   const lines = String(spec).split(/\r?\n/);
   let i = 0;
-  while (i < lines.length && !lines[i].trim()) i++;
+  while (i < lines.length && (!lines[i].trim() || HEADING.test(lines[i]))) i++;
+  if (i >= lines.length) {
+    const h = lines.find((l) => HEADING.test(l));
+    return h ? h.replace(/^\s{0,3}#{1,6}\s*/, '').trim() : '';
+  }
   const out = [];
   for (; i < lines.length && lines[i].trim(); i++) out.push(lines[i]);
   return out.join(' ').trim();

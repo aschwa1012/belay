@@ -75,7 +75,7 @@ test('the worker\'s own extra queries are sent along when it has them, and are n
   const w = { ...W(), indexQueries: ['release checklist', { label: 'dates', text: 'calendar bug' }] };
   const { core, calls } = makeCore({ embed: async () => ({ queries: [okQuery(), okQuery('extra:1', 5), okQuery('dates', 6)], on_embedder_failure: 'required', embed_ms: 48 }) });
   await MP.memoryPreface(w, ctxOf(core), PROMPT);
-  assert.deepStrictEqual(calls.find((c) => c.method === 'embedQuery').args.extra_texts, w.indexQueries);
+  assert.deepStrictEqual(calls.find((c) => c.method === 'embedQuery').args.extra_texts, ['Task: release checklist', { label: 'dates', text: 'Task: calendar bug' }], 'each sent as a Task: line');
   assert.strictEqual(calls.find((c) => c.method === 'index').args.query_embeddings.length, 3);
   assert.strictEqual(calls.find((c) => c.method === 'recordEvent').args.message.includes('"extra:1"'), true);
   const none = makeCore({ embed: okEmbed });
@@ -289,9 +289,9 @@ test('through the manager: memory_queries reach memory.embedQuery as extra_texts
   const embed = async (a) => { seen.push(a); return { queries: [okQuery(), okQuery('extra:1', 5), okQuery('extra:2', 5)], on_embedder_failure: 'required', embed_ms: 20 }; };
   await withManager(embed, async (m, sb, core) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w1', task_id: 't1', memory_queries: ['add or number a migration', '  dedupe   email addresses '] });
-    assert.deepStrictEqual(seen[0].extra_texts, ['add or number a migration', 'dedupe email addresses'], 'trimmed task lines, in order');
+    assert.deepStrictEqual(seen[0].extra_texts, ['Task: add or number a migration', 'Task: dedupe email addresses'], 'trimmed task lines, in order, as Task: lines');
     assert.strictEqual(seen[0].task_id, 't1');
-    assert.deepStrictEqual(m._worker('w1').indexQueries, seen[0].extra_texts);
+    assert.deepStrictEqual(m._worker('w1').indexQueries, ['add or number a migration', 'dedupe email addresses'], 'kept as written');
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w2', task_id: 't1' });
     assert.ok(!('extra_texts' in seen[1]), 'none given, none sent');
   });
