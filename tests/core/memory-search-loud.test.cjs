@@ -22,24 +22,24 @@ const worker = callerFor('worker', { run_id: 'r', worker_id: 'w1' });
 const orchestrator = callerFor('orchestrator', { run_id: 'r' });
 const operator = callerFor('operator');
 
-function seedStore(dir, levers) {
+function seedStore(dir, embedded) {
   const store = new Store(path.join(dir, 'memory.db'), { stamp: true });
-  store.store({ namespace: 'run/r', worker_id: 'w', text: TEXT });
+  store.store({ namespace: 'run/r', worker_id: 'w', text: TEXT, ...(embedded ? { embedding: [1, 0, 0], embedding_model: 'm', embedding_revision: 'r', dim: 3 } : {}) });
   return store;
 }
 
 // ---- path 1: the owner's own search times out ----
 
-async function owned(mode, fn) {
+async function owned(mode, fn, { getEmbedder, embedded } = {}) {
   const dir = sandbox();
   let c, store;
   try {
-    store = seedStore(dir);
+    store = seedStore(dir, embedded);
     const failures = [], pauses = [];
     const guard = createEmbedderGuard({ mode, pauseRun: async (why) => { pauses.push(why); return {}; }, stopRun: async () => {} });
     const owner = { stopped: false, opts: { embedderMode: () => guard.mode(), memoryOff: () => guard.memoryOff(), onEmbedderFailure: (ev) => { failures.push(ev); return guard.onFailure(ev); } } };
     const hung = async () => ({ embed: () => new Promise(() => {}) }); // a load that never finishes
-    owner.engine = new Engine({ dataDir: dir, store, getEmbedder: hung, owner, establishedBy: 'owner' });
+    owner.engine = new Engine({ dataDir: dir, store, getEmbedder: getEmbedder || hung, owner, establishedBy: 'owner' });
     c = await openCore({ dataDir: dir, caller: orchestrator, embed: false });
     c.owner = owner;
     c.vectorLimitMs = 20; // the in-process limit; production sets it under BELAY_TEST_MODE only
@@ -221,4 +221,122 @@ test('path 2, an ended run is not a live run: the keyword fallback stays', async
     const r = await hybrid(c, orchestrator);
     assert.deepStrictEqual(r.modes_failed.map((f) => f.code), ['E_OWNER_LOST']);
   } finally { if (c) await c.close(); cleanup(dir); }
+});
+
+// ---- B: the owner's embedder FAILS (no timeout) ----
+
+const broken = async () => { throw err('E_MODEL_ABSENT', 'the model files are gone', { embedder: true, cause: 'absent' }); };
+
+test('B, required: the guard pauses the run and the search rethrows the advised error, not a keyword answer', async () => {
+  await owned('required', async ({ c, guard, failures, pauses }) => {
+    const e = await hybrid(c, orchestrator).then(() => null, (x) => x);
+    assert.ok(e, 'refused');
+    assert.strictEqual(e.code, 'E_MODEL_ABSENT');
+    assert.match(e.message, /belay resume r --embedder keyword\|off/);
+    await guard.settled();
+    assert.strictEqual(failures.length, 1);
+    assert.ok(pauses.length >= 1);
+  }, { getEmbedder: broken });
+});
+
+test('B, keyword: recorded by the guard, keyword answer with the cause in modes_failed, no absence claim', async () => {
+  await owned('keyword', async ({ c, guard, pauses }) => {
+    const r = await hybrid(c, orchestrator);
+    assert.deepStrictEqual(r.modes_failed.map((f) => [f.mode, f.code]), [['semantic', 'E_MODEL_ABSENT']]);
+    assert.strictEqual(r.absence_established, false);
+    await guard.settled();
+    assert.strictEqual(guard.events()[0].action, 'continue');
+    assert.deepStrictEqual(pauses, []);
+  }, { getEmbedder: broken });
+});
+
+test('B, off: the failure turns memory off and the search is refused', async () => {
+  await owned('off', async ({ c, guard }) => {
+    await assert.rejects(hybrid(c, orchestrator), (e) => e.code === 'E_LEVER_OFF');
+    assert.strictEqual(guard.memoryOff(), true);
+  }, { getEmbedder: broken });
+});
+
+// ---- C: a semantic failure that is not the embedder's ----
+
+const stubEmbedder = async () => ({ embed: async () => ({ embedding: [1, 0, 0], embedding_model: 'other', dim: 3 }) });
+const mismatch = (c, caller) => c.handle('memory.search', { caller, namespace: 'run/r', query: 'owner pipe', mode: 'hybrid', query_embedding: [1, 0, 0], embedding_model: 'other' });
+const wrongDim = (c, caller) => c.handle('memory.search', { caller, namespace: 'run/r', query: 'owner pipe', mode: 'hybrid', query_embedding: [1, 0, 0, 0, 0], embedding_model: 'm' });
+
+for (const [name, call, code] of [['E_MODEL mismatch', mismatch, 'E_MODEL'], ['dimension mismatch', wrongDim, 'E_DIM']]) {
+  test('C ' + name + ', required: refused E_SEMANTIC_REQUIRED naming the cause, and the guard is NOT told', async () => {
+    await owned('required', async ({ c, guard, failures, pauses }) => {
+      const e = await call(c, orchestrator).then(() => null, (x) => x);
+      assert.ok(e, 'refused');
+      assert.strictEqual(e.code, 'E_SEMANTIC_REQUIRED');
+      assert.strictEqual(e.detail.cause, code);
+      assert.strictEqual(e.detail.guarded, true);
+      assert.match(e.message, /a resume does not fix/);
+      await guard.settled();
+      assert.deepStrictEqual([failures.length, pauses.length, guard.events().length], [0, 0, 0], 'a resume fixes none of them, so the run is not paused');
+    }, { getEmbedder: stubEmbedder, embedded: true });
+  });
+
+  test('C ' + name + ', keyword and off: the keyword answer stands and modes_failed names the cause', async () => {
+    for (const mode of ['keyword', 'off']) {
+      await owned(mode, async ({ c, guard }) => {
+        const r = await call(c, orchestrator);
+        assert.deepStrictEqual(r.modes_failed.map((f) => [f.mode, f.code]), [['semantic', code]], mode);
+        assert.strictEqual(r.absence_established, false);
+        assert.strictEqual(r.results.length, 1);
+        assert.strictEqual(guard.events().length, 0);
+      }, { getEmbedder: stubEmbedder, embedded: true });
+    }
+  });
+}
+
+// ---- A: the copy fallback with no exception ----
+
+const unresponsive = core('unresponsive.cjs');
+const QUIET = [
+  ['no lock, not listening or a failed dial', async () => ({ ok: false })],
+  ['an answer that timed out and backed the owner off', async () => ({ ok: false, unresponsive: unresponsive.mark('pipe-x', 1, { what: 'answer', timeout_ms: 300 }) })],
+];
+for (const [cause, seam] of QUIET) {
+  test('A (' + cause + '), required: refused, never keyword-only; keyword: the fallback names E_NO_EMBEDDER; off: refused', async () => {
+    await copied(undefined, async (c) => {
+      c._tryOwner = seam;
+      const e = await hybrid(c, orchestrator).then(() => null, (x) => x);
+      assert.ok(e, 'refused');
+      assert.strictEqual(e.code, 'E_SEMANTIC_REQUIRED');
+      assert.match(e.message, /E_NO_EMBEDDER/);
+    });
+    await copied({ project: 'acme', on_embedder_failure: 'keyword' }, async (c) => {
+      c._tryOwner = seam;
+      const r = await hybrid(c, orchestrator);
+      assert.deepStrictEqual(r.modes_failed.map((f) => f.code), ['E_NO_EMBEDDER']);
+      assert.strictEqual(r.absence_established, false);
+    });
+    await copied({ project: 'acme', on_embedder_failure: 'off' }, async (c) => {
+      c._tryOwner = seam;
+      await assert.rejects(hybrid(c, orchestrator), (e) => e.code === 'E_LEVER_OFF');
+    });
+    await copied(null, async (c) => { // no run attached: the operator's search keeps its fallback
+      c._tryOwner = seam;
+      const r = await hybrid(c, operator);
+      assert.deepStrictEqual(r.modes_failed.map((f) => f.code), ['E_NO_EMBEDDER']);
+    });
+  });
+}
+
+// ---- status shows an index drop or refusal ----
+
+test('status.get counts the run\'s index_bound events, and belay status prints a line for them', async () => {
+  const dir = sandbox();
+  try {
+    const store = seedStore(dir);
+    const E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: null, establishedBy: 'test' });
+    await E.handle('run.attach', { caller: orchestrator, adapter_pid: process.pid, project: 'acme' });
+    assert.strictEqual((await E.handle('status.get', { caller: orchestrator })).run.index_bounds, undefined);
+    await E.handle('memory.recordEvent', { caller: orchestrator, kind: 'index_bound', ok: false, code: 'E_INDEX_BOUND', worker_id: 'w1', message: JSON.stringify({ refused: true }) });
+    await E.handle('memory.recordEvent', { caller: orchestrator, kind: 'index_bound', ok: false, code: 'E_INDEX_BOUND', worker_id: 'w2', message: JSON.stringify({ refused: false }) });
+    const st = await E.handle('status.get', { caller: orchestrator });
+    assert.strictEqual(st.run.index_bounds, 2);
+    store.close();
+  } finally { cleanup(dir); }
 });

@@ -10,7 +10,7 @@ const { SOURCES, TYPE_RE, validId } = require('./memory-rows.cjs');
 const { redact, redactDeep } = require('./redact.cjs');
 
 // ADR 0041 §5 and ADR 0040 §2: the project alias and a caller's reach live in memory-reach.cjs, a read module.
-const { projectOf, resolveNamespace, reachOf, checkReach } = require('./memory-reach.cjs');
+const { projectOf, resolveNamespace, reachOf, checkReach, runEmbedderMode } = require('./memory-reach.cjs');
 
 const nsFor = (E, caller, args) => resolveNamespace(E, caller, args.namespace) || `run/${caller.run_id}`;
 
@@ -234,4 +234,4 @@ async function warm(E, caller, args = {}) {
   return { state, pid: o && o.embedInfo ? o.embedInfo.pid : null, error: o && o.embedError ? o.embedError : null };
 }
 
-module.exports = { leversOf, runAlpha, store, delete: del, stats, warm, nsFor, resolveNamespace, projectOf, withEmbedding, notifyEmbedderFailure, adviseEmbedderFailure, reachOf, checkReach, scrub };
+module.exports = { leversOf, runAlpha, store, delete: del, stats, warm, nsFor, resolveNamespace, projectOf, withEmbedding, notifyEmbedderFailure, adviseEmbedderFailure, reachOf, checkReach, runEmbedderMode, scrub };

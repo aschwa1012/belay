@@ -18,7 +18,9 @@
 // vectors come from the store's own cache, the query vector from the caller).
 //
 // The vector pass is ONE sweep over the namespace's rows for all query vectors (each row is read once and dotted with every vector).
-// The WHOLE index build has a time bound (index_bound_ms, 1,500 ms by default, counted from the start of memory.index). The vector
+// Under on_embedder_failure `required` (a live run) the vector sweep is bounded by WORK only: rows x query vectors over a fixed cap, past which
+// memory.index is refused (E_INDEX_BOUND); so the result never depends on machine load. Under any other mode the WHOLE index build has a time
+// bound (index_bound_ms, 1,500 ms by default, counted from the start of memory.index). The vector
 // sweep is the last and the largest step, so it is the one that degrades: when the bound is passed before it starts or while it runs,
 // the vector lists are dropped, and the keyword, path and newest candidates stand. The receipt (candidates.degraded) says what was
 // dropped, why and after how long. A bounded result can therefore depend on load: the same call may keep its vector lists on an idle
@@ -29,6 +31,9 @@ const { rrfMany, HYBRID_ALPHA, HYBRID_K } = require('./fusion.cjs');
 const { ftsReady } = require('./memory-schema.cjs');
 const { toUnitF32 } = require('./store.cjs');
 const gate = require('./memory-note-gate.cjs');
+const { scanCeiling } = require('./schema.cjs');
+const { err } = require('./errors.cjs');
+const QUERIES_MAX = 8; // memory-relevance QUERIES_MAX: the most query vectors one call carries
 
 const TOP = 200; // candidates taken from each ranking
 const NEWEST = 1000; // the fallback when nothing ranks
@@ -53,7 +58,7 @@ function liveIds(E, caller, namespaces) {
 // cache holds unit vectors, so a dot product). Returns { lists: [Map id -> cosine per query], failed: [{ index, code, message }],
 // bounded }. A query that cannot be compared with a namespace is named in `failed`, never skipped silently. `deadline` is an absolute
 // time on `clock` (default Date.now); `bounded` is { reason } when the sweep was past it (the lists are then to be dropped).
-function cosinesMany(E, namespaces, allowed, queries, defaultModel, deadline = Infinity, clock = Date.now) {
+function cosinesMany(E, namespaces, allowed, queries, defaultModel, deadline = Infinity, clock = Date.now, workCap = null) {
   const lists = queries.map(() => new Map());
   const failed = [];
   let bounded = null;
@@ -70,8 +75,15 @@ function cosinesMany(E, namespaces, allowed, queries, defaultModel, deadline = I
     if (!use.length) continue;
     const dim = m.dim, body = dim - (dim % 4), nq = use.length;
     const us = use.map((x) => x.u), outs = use.map((x) => lists[x.j]);
+    const nsRows = E.store._loadNs(ns).rows;
+    // A bound by WORK (rows x query vectors), not by the clock: the same call is refused or run on any machine under any load. The cap
+    // is QUERIES_MAX x scanCeiling(dim) (8 x 18,750 rows at 1,024 dimensions), or a lower one the caller states.
+    const cap = workCap === null ? QUERIES_MAX * scanCeiling(dim) : workCap;
+    if (workCap !== undefined && workCap !== false && nsRows.length * nq > cap) {
+      throw err('E_INDEX_BOUND', `memory.index would compare ${nq} query vector${nq === 1 ? '' : 's'} with ${nsRows.length} rows of ${ns} (${nsRows.length * nq} comparisons), over the fixed work cap of ${cap}, so it is refused rather than answered from keywords alone`, { namespace: ns, rows: nsRows.length, vectors: nq, work: nsRows.length * nq, cap });
+    }
     let n = 0;
-    for (const r of E.store._loadNs(ns).rows) {
+    for (const r of nsRows) {
       const v = r.vec;
       if (!v || v.length !== dim || !allowed.has(r.id)) continue;
       if ((n++ & 255) === 0 && clock() >= deadline) { bounded = { reason: `the index passed its time bound during the vector sweep of ${ns}` }; break; }
@@ -121,10 +133,10 @@ function select(E, namespaces, pool, o) {
   if (queries.length) {
     info.semantic_lists = [];
     const clock = o.clock || Date.now;
-    const deadline = o.deadline === undefined ? Infinity : o.deadline;
+    const deadline = o.strict || o.deadline === undefined ? Infinity : o.deadline; // required: no wall clock, only the work bound
     const sweep = clock() >= deadline
       ? { lists: [], failed: [], bounded: { reason: 'the index had already passed its time bound before the vector sweep started' } }
-      : cosinesMany(E, namespaces, allowed, queries, o.embeddingModel, deadline, clock);
+      : cosinesMany(E, namespaces, allowed, queries, o.embeddingModel, deadline, clock, o.strict ? (o.workCap === undefined ? null : o.workCap) : false);
     for (const f of sweep.failed) failed.push({ label: queries[f.index].label, code: f.code, message: f.message });
     if (sweep.bounded) {
       info.semantic = { code: 'E_INDEX_BOUND', message: sweep.bounded.reason };

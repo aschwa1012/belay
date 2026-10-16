@@ -281,3 +281,18 @@ test('when the guard ENDS the run (a canary or E_MODEL_CHANGED), the refused spa
   }
 });
 
+
+test('an index that dropped its vector lists, or was refused for its work, writes an index_bound event that status counts', async () => {
+  const dropped = makeCore({ embed: okEmbed, index: async () => ({ text: 'INDEX a', bytes: 7, row_ids: ['a'], dropped: 0, over_budget: false, sha256: 'f'.repeat(64), candidates: { degraded: { dropped: ['vector lists'], reason: 'the index passed its time bound during the vector sweep of project/p', bound_ms: 1500, elapsed_ms: 1600 } }, relevance: { semantic_contributed: false } }) });
+  await MP.memoryPreface(W(), ctxOf(dropped.core), PROMPT);
+  const ev = dropped.events.find((e) => e.kind === 'index_bound');
+  assert.ok(ev, 'recorded');
+  assert.deepStrictEqual([ev.ok, ev.code], [0, 'E_INDEX_BOUND']);
+  assert.strictEqual(detail(ev).refused, false);
+  assert.deepStrictEqual(detail(ev).dropped, ['vector lists']);
+  const refused = makeCore({ embed: okEmbed, index: async () => { const e = new Error('over the fixed work cap'); e.code = 'E_INDEX_BOUND'; throw e; } });
+  assert.strictEqual(await MP.memoryPreface(W(), ctxOf(refused.core), PROMPT), '');
+  const rev = refused.events.find((e) => e.kind === 'index_bound');
+  assert.ok(rev && detail(rev).refused === true, 'a refusal is recorded as such');
+  assert.ok(refused.events.some((e) => e.kind === 'index_injected' && e.ok === 0), 'and the usual failed receipt stands');
+});

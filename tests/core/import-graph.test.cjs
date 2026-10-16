@@ -46,7 +46,7 @@ test('model-cache.cjs requires only node built-ins, and models.cjs only the erro
 });
 
 test('the memory read modules require nothing but the error module', () => {
-  const allowed = { 'fts-query.cjs': [], 'fusion.cjs': ['./errors.cjs'], 'memory-rows.cjs': ['./errors.cjs'], 'memory-schema.cjs': [], 'fit-budget.cjs': [], 'memory-index.cjs': ['./errors.cjs', './fit-budget.cjs', './memory-index-notes.cjs', './memory-reach.cjs', './memory-relevance.cjs', './memory-rows.cjs', './rows.cjs'], 'memory-relevance.cjs': ['./errors.cjs', './fts-query.cjs', './fusion.cjs', './memory-schema.cjs', './stopwords-en.cjs'], 'stopwords-en.cjs': [], 'memory-corpus.cjs': ['./errors.cjs', './fit-budget.cjs', './memory-reach.cjs', './memory-rows.cjs'], 'memory-reach.cjs': ['./errors.cjs', './memory-note-gate.cjs'], 'memory-index-notes.cjs': ['./errors.cjs', './fit-budget.cjs', './memory-index-rank.cjs', './memory-note-gate.cjs', './memory-notes.cjs', './memory-reach.cjs', './memory-relevance.cjs', './memory-rows.cjs', './redact.cjs', './rows.cjs'], 'memory-notes.cjs': ['./errors.cjs', './memory-rows.cjs'], 'memory-index-rank.cjs': ['./fusion.cjs', './memory-note-gate.cjs', './memory-relevance.cjs', './memory-schema.cjs', './store.cjs'], 'memory-note-gate.cjs': ['./errors.cjs'] };
+  const allowed = { 'fts-query.cjs': [], 'fusion.cjs': ['./errors.cjs'], 'memory-rows.cjs': ['./errors.cjs'], 'memory-schema.cjs': [], 'fit-budget.cjs': [], 'memory-index.cjs': ['./errors.cjs', './fit-budget.cjs', './memory-index-notes.cjs', './memory-reach.cjs', './memory-relevance.cjs', './memory-rows.cjs', './rows.cjs'], 'memory-relevance.cjs': ['./errors.cjs', './fts-query.cjs', './fusion.cjs', './memory-schema.cjs', './stopwords-en.cjs'], 'stopwords-en.cjs': [], 'memory-corpus.cjs': ['./errors.cjs', './fit-budget.cjs', './memory-reach.cjs', './memory-rows.cjs'], 'memory-reach.cjs': ['./embedder-mode.cjs', './errors.cjs', './memory-note-gate.cjs'], 'memory-index-notes.cjs': ['./errors.cjs', './fit-budget.cjs', './memory-index-rank.cjs', './memory-note-gate.cjs', './memory-notes.cjs', './memory-reach.cjs', './memory-relevance.cjs', './memory-rows.cjs', './redact.cjs', './rows.cjs'], 'memory-notes.cjs': ['./errors.cjs', './memory-rows.cjs'], 'memory-index-rank.cjs': ['./errors.cjs', './fusion.cjs', './memory-note-gate.cjs', './memory-relevance.cjs', './memory-schema.cjs', './schema.cjs', './store.cjs'], 'memory-note-gate.cjs': ['./errors.cjs'] };
   for (const [name, want] of Object.entries(allowed)) assert.deepStrictEqual(requiresOf(path.join(SRC, 'core', name)).filter(r => !r.startsWith('node:')).sort(), [...want].sort(), name);
 });
 
@@ -96,7 +96,7 @@ test('the embedder is reachable, so the assertion above is about laziness and no
 });
 
 test('memory-search.cjs, the read path of the memory methods, requires no embedder', () => {
-  const want = ['./embedder-mode.cjs', './errors.cjs', './fts-query.cjs', './fusion.cjs', './memory-note-gate.cjs', './memory-relevance.cjs', './memory-rows.cjs', './memory-schema.cjs', './methods-memory.cjs', './schema.cjs', './store.cjs'];
+  const want = ['./errors.cjs', './fts-query.cjs', './fusion.cjs', './memory-note-gate.cjs', './memory-relevance.cjs', './memory-rows.cjs', './memory-schema.cjs', './methods-memory.cjs', './schema.cjs', './store.cjs'];
   assert.deepStrictEqual(requiresOf(path.join(SRC, 'core', 'memory-search.cjs')).filter(r => !r.startsWith('node:')).sort(), want);
   const engine = requiresOf(path.join(SRC, 'core', 'engine.cjs'));
   assert.ok(engine.includes('./memory-search.cjs'));

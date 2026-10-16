@@ -26,7 +26,7 @@ const { deriveTitle, validId, FRAME } = require('./memory-rows.cjs');
 const { KINDS, BASES } = require('./memory-notes.cjs');
 const relevance = require('./memory-relevance.cjs');
 const rank = require('./memory-index-rank.cjs');
-const { checkReach } = require('./memory-reach.cjs');
+const { checkReach, runEmbedderMode } = require('./memory-reach.cjs');
 const gate = require('./memory-note-gate.cjs');
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
@@ -228,9 +228,16 @@ async function index(E, caller, c) {
   }
   const pathMode = args.path_mode === undefined ? 'tiebreak' : args.path_mode;
   if (!rank.PATH_MODES.includes(pathMode)) throw err('E_ARGS', `memory.index path_mode must be one of ${rank.PATH_MODES.join(', ')}`, { field: 'path_mode' });
+  const runMode = runEmbedderMode(E, caller);
+  const strict = runMode.live && runMode.mode === 'required'; // required: bounded by work, never by the clock
+  let workCap;
+  if (args.index_work_cap !== undefined) {
+    if (!Number.isInteger(args.index_work_cap) || args.index_work_cap < 1) throw err('E_ARGS', 'memory.index index_work_cap must be a positive integer (it can only lower the fixed cap)', { field: 'index_work_cap' });
+    workCap = args.index_work_cap;
+  }
   const boundMs = args.index_bound_ms === undefined ? rank.INDEX_BOUND_MS : args.index_bound_ms;
   if (!Number.isInteger(boundMs) || boundMs < 0 || boundMs > 600000) throw err('E_ARGS', 'memory.index index_bound_ms must be an integer from 0 to 600000', { field: 'index_bound_ms' });
-  const sel = rank.select(E, namespaces, fresh, { text, source, queries: rq.queries, embeddingModel: rq.embeddingModel, alpha: relevance.alphaOf(lv), pathIds, pathMode, boundMs, started, deadline: started + boundMs, clock: c.clock });
+  const sel = rank.select(E, namespaces, fresh, { text, source, queries: rq.queries, embeddingModel: rq.embeddingModel, alpha: relevance.alphaOf(lv), pathIds, pathMode, boundMs, started, deadline: started + boundMs, clock: c.clock, strict, workCap });
   const found = rowsOf(E, sel.ids);
   const live = found;
   const rel = { scores: rank.sunk(found, sel.scores, { lv, runId: caller.run_id }), info: sel.info }; // the sinking seam (a no-op today)
