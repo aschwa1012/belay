@@ -39,16 +39,19 @@ function count(store) {
 function unjudged(store) {
   let projects;
   try { projects = store.p("SELECT DISTINCT substr(namespace, 9) AS p FROM memory_entries WHERE type = 'note' AND namespace LIKE 'project/%' AND body LIKE '%reported_wrong%'").all().map((r) => r.p); } catch { return []; }
+  if (!projects.length) return []; // the report code is loaded only when some note carries a report
   const RV = require('./note-report-verdicts.cjs');
   return projects.flatMap((p) => [...RV.unjudgedReports({ store }, p), ...RV.recommendedReports({ store }, p)].map((r) => ({ project: p, ...r })));
 }
 
-// memory.held, a read: { project?, list? } -> the count, and the unjudged reports when asked for.
+// memory.held, a read: { project?, reports?, reviews? } -> the count, and the unjudged reports when asked for.
 async function held(E, caller, args = {}) {
   const c = count(E.store);
   const project = typeof args.project === 'string' && args.project ? args.project : null;
   const scoped = project ? { total: c.by_project[project] || 0, unsupported: c.unsupported_by_project[project] || 0, unsupported_by_project: c.unsupported_by_project[project] ? { [project]: c.unsupported_by_project[project] } : {}, by_project: c.by_project[project] ? { [project]: c.by_project[project] } : {}, oldest_age_runs: c.age_by_project[project] || 0, oldest_at: c.oldest_at, newest_at: c.newest_at } : c;
-  return { ...scoped, ...(args.reports ? { unjudged_reports: unjudged(E.store).filter((r) => !project || r.project === project) } : {}) };
+  // One call (one copy of the store) answers notices: the counts, the unjudged reports and the archive reviews' claims.
+  const reviews = args.reviews ? (await require('./review-claim.cjs').reviewState(E, caller, project ? { project } : {})).reviews : undefined;
+  return { ...scoped, ...(reviews ? { reviews } : {}), ...(args.reports ? { unjudged_reports: unjudged(E.store).filter((r) => !project || r.project === project) } : {}) };
 }
 
 module.exports = { count, unjudged, held };
