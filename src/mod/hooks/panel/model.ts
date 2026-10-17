@@ -178,6 +178,7 @@ export const CONFIRM_MS = 8000
 // memory line, with the review button. null when there is neither a count nor a review to show.
 export function normHeld(json: unknown): BelayHeld | null {
   let count = 0
+  let unsupported = 0
   let oldestAgeRuns = 0
   const byProject: Record<string, number> = {}
   const reviews: BelayReview[] = []
@@ -186,6 +187,7 @@ export function normHeld(json: unknown): BelayHeld | null {
     if (!e) continue
     if (e.kind === 'notes_held') {
       count = num(e.count) ?? 0
+      unsupported = Math.min(count, num(e.unsupported) ?? 0)
       oldestAgeRuns = num(e.oldest_age_runs) ?? 0
       for (const [k, v] of Object.entries(obj(e.by_project) ?? {})) if (num(v) !== null && k !== '') byProject[clean(k, 64)] = v as number
     } else if (e.kind === 'review_running' || e.kind === 'review_ended') {
@@ -196,7 +198,7 @@ export function normHeld(json: unknown): BelayHeld | null {
     }
   }
   if (count <= 0 && !reviews.length) return null
-  return { count: Math.max(0, count), byProject, oldestAgeRuns, reviews }
+  return { count: Math.max(0, count), unsupported, byProject, oldestAgeRuns, reviews }
 }
 
 // The review of a project that is in flight: the panel offers no button over it.
@@ -220,6 +222,8 @@ export function reviewProject(h: BelayHeld | null): string | null {
 export function heldLine(h: BelayHeld): string {
   if (h.count <= 0) return ''
   const names = Object.keys(h.byProject).sort()
+  const warned = h.count - h.unsupported
+  if (h.unsupported > 0) return `${warned > 0 ? `${warned} held as wrong or duplicate · ` : ''}${h.unsupported} unsupported awaiting review · oldest ${h.oldestAgeRuns} run${h.oldestAgeRuns === 1 ? '' : 's'}${names.length ? ` · ${names.join(', ')}` : ''}`
   return `${h.count} note${h.count === 1 ? '' : 's'} held for review · oldest ${h.oldestAgeRuns} run${h.oldestAgeRuns === 1 ? '' : 's'}${names.length ? ` · ${names.join(', ')}` : ''}`
 }
 

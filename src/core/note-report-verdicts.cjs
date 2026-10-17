@@ -227,4 +227,4 @@ async function applyReportVerdicts(E, caller, route, list, project, out) {
   return res;
 }
 
-module.exports = { reportsAbout, unjudgedReports, recommendedReports, applyReportVerdicts, validateReportVerdicts, openReports, REPORTS_MAX };
+module.exports = { headOf, reportsAbout, unjudgedReports, recommendedReports, applyReportVerdicts, validateReportVerdicts, openReports, REPORTS_MAX };

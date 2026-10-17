@@ -4,6 +4,9 @@
 //   archive  S4's facts are checked again at this moment, then the note moves to archive/<project> keeping its id
 //            (a duplicate hands its sightings and delivery history to the note it duplicates); or
 //   release  the hold is dropped and the warning with it.
+// A queue row of kind `unsupported` (a note a reviewer could not prove or disprove; it carries no warning) is judged with its own three answers:
+//   verify | refute  the note's status is set, as a note review sets it (refute also writes the receipt the orchestrator's wake comes from), on cites;
+//   still_unsupported  the note leaves the queue and stays unverified.
 // Every verdict, applied or refused, is written on the held row and returned with a `review:` receipt, so a refusal
 // is a fact on the row and not a silence. Nothing is deleted.
 
@@ -14,6 +17,7 @@ const { loadNote, checkHoldFacts, ownTexts } = require('./memory-facts.cjs');
 const { checkCitations, evidenceOf } = require('./memory-citations.cjs');
 const { archiveNote } = require('./memory-archive.cjs');
 const N = require('./methods-memory-notes.cjs');
+const { applyOneIn } = require('./methods-memory-note-review.cjs');
 
 const KEYS = ['verdicts', 'run_id', 'head_sha', 'worktree', 'evidence_files'];
 const REVIEWS_KEEP = 20;
@@ -67,10 +71,62 @@ function archive(E, ctx, held, v, sources) {
   return { id: note.id, verdict: 'archive', outcome: 'archived', receipt: entry.receipt, facts, history_moved: done.history_moved, held: C.rowOut(E, held.id), row: C.rowOut(E, note.id) };
 }
 
+// The three answers on an unsupported note. A failed precondition is written on the row and returned, as an archive's is.
+async function unsupported(E, ctx, held, v) {
+  const id = held.b.note_id;
+  v = { ...v, ...pick(C.redactEntry(v)) };
+  const refuse = (code, message) => E.store.tx(() => {
+    const entry = review(ctx, held, v, 'refused', { code, message });
+    record(E, held.id, entry);
+    return { id, verdict: v.verdict, outcome: 'refused', receipt: entry.receipt, code, message, held: C.rowOut(E, held.id), row: C.rowOut(E, id) };
+  });
+  const settle = (state, extra) => {
+    const entry = review(ctx, held, v, state, extra);
+    record(E, held.id, entry, { state, settled_at: entry.at });
+    E.store.patchBody(id, b => { b.unsupported = { ...(b.unsupported || {}), state, settled_at: entry.at, receipt: entry.receipt }; return N.fitBody(b); });
+    return entry;
+  };
+  if (v.verdict === 'still_unsupported') {
+    return E.store.tx(() => {
+      const entry = settle('still_unsupported');
+      return { id, verdict: v.verdict, outcome: 'still_unsupported', receipt: entry.receipt, held: C.rowOut(E, held.id), row: C.rowOut(E, id) };
+    });
+  }
+  let sources = [];
+  try {
+    if (!v.cites.length) throw err('E_CITATION', `a ${v.verdict} of an unsupported note needs at least one cite { where, quote }, verbatim, from the evidence paths in the brief`, { id });
+    const own = loadNote(E, id);
+    sources = await checkCitations(v.cites, { ...ctx.evidence, head_sha: ctx.evidence.head_sha || held.b.head_sha, own: own ? ownTexts(own) : [] });
+  } catch (e) {
+    if (e.code !== 'E_CITATION') throw e;
+    return refuse(e.code, e.message);
+  }
+  return E.store.tx(() => {
+    const fresh = activeHold(E, ctx.project, id); // the state at the write
+    const note = loadNote(E, id);
+    if (!fresh || !note || note.namespace !== N.projectNs(ctx.project)) throw err('E_NOT_FOUND', `the queue row of note ${id} was settled, or the note left the project, while the verdict was being checked`, { id });
+    if ((note.status || 'unverified') !== 'unverified') {
+      const message = `note ${id} is now ${note.status}; an unsupported note is judged only while it is unverified`;
+      const entry = review(ctx, held, v, 'refused', { code: 'E_PRECONDITION', message });
+      record(E, held.id, entry);
+      return { id, verdict: v.verdict, outcome: 'refused', receipt: entry.receipt, code: 'E_PRECONDITION', message, held: C.rowOut(E, held.id), row: C.rowOut(E, id) };
+    }
+    const route = { reviewer: `archreview-${ctx.runId}`, ref: `${ctx.runId}:${held.id}`, keyBase: `archreview:${held.id}` };
+    const status = applyOneIn(E, ctx.caller, route, { id, verdict: v.verdict === 'verify' ? 'confirmed' : 'refuted', reason: v.reason, cites: v.cites }, note);
+    const entry = settle(v.verdict === 'verify' ? 'verified' : 'refuted', { verified: sources });
+    return { id, verdict: v.verdict, outcome: entry.outcome, receipt: entry.receipt, status: status.status, event_id: status.event_id, held: C.rowOut(E, held.id), row: C.rowOut(E, id) };
+  });
+}
+
 async function one(E, ctx, raw, index) {
   let v = raw;
   const held = activeHold(E, ctx.project, v.id);
   if (!held) throw err('E_NOT_FOUND', `note ${v.id} has no active hold in held/${ctx.project}`, { id: v.id });
+  const isUns = held.b.kind === 'unsupported';
+  if (isUns !== ['verify', 'refute', 'still_unsupported'].includes(v.verdict)) {
+    throw err('E_PRECONDITION', isUns ? `note ${v.id} is queued as unsupported: answer verify, refute or still_unsupported, not ${v.verdict}` : `note ${v.id} is held with a warning (${held.b.kind}): answer archive or release, not ${v.verdict}`, { id: v.id });
+  }
+  if (isUns) return unsupported(E, ctx, held, v);
   if (v.verdict === 'release') { v = { ...v, ...pick(C.redactEntry(v)) }; return E.store.tx(() => release(E, ctx, held, v)); }
   let sources = [];
   try {
@@ -107,7 +163,7 @@ async function reviewApply(E, caller, args) {
   const { lv, project, runId } = C.notesContext(E, caller, 'memory.reviewApply');
   if (args.run_id !== undefined && args.run_id !== runId) throw err('E_ARGS', `memory.reviewApply acts for the caller's own run (${runId}), and this call named ${args.run_id}`, { field: 'run_id' });
   const verdicts = L.checkVerdicts(args.verdicts);
-  const ctx = { project, runId, evidence: evidenceOf(args), threshold: lv.notes_match_threshold };
+  const ctx = { project, runId, caller, evidence: evidenceOf(args), threshold: lv.notes_match_threshold };
   const applied = [], refused = [];
   for (const [i, v] of verdicts.entries()) {
     try {

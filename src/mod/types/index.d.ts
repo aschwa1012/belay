@@ -69,7 +69,7 @@ export type BelayPanelFooter = {
 export type BelayReview = { project: string; state: 'running' | 'interrupted' | 'ok' | 'failed'; pid: number | null; text: string | null; ts: number | null }
 
 /** Notes held for the on-demand Opus archive reviewer, from belay's `notes_held` notice, and the state of the project's review. */
-export type BelayHeld = { count: number; byProject: Record<string, number>; oldestAgeRuns: number; reviews: BelayReview[] }
+export type BelayHeld = { count: number; unsupported: number; byProject: Record<string, number>; oldestAgeRuns: number; reviews: BelayReview[] }
 
 export type BelayPanelSnap = {
   fetchedAt: number

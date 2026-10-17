@@ -34,7 +34,8 @@ function buildBrief({ runId, project, held }) {
     `Run: ${runId}   Project: ${project}   Held marks: ${held.length}`,
     'Each entry is one held note. "files" are the repository files the mark cites, saved as they were at the mark\'s head commit.',
     'target_review_verified = a review confirmed this note earlier: weigh a mark against it with care.',
-    'For a duplicate mark, "note" and "of_note" are both given in full: archive only if they make the same claim and do not contradict (same_claim: true), else release.', '',
+    'For a duplicate mark, "note" and "of_note" are both given in full: archive only if they make the same claim and do not contradict (same_claim: true), else release.',
+    'An entry of kind "unsupported" is a note a reviewer could not prove or disprove from one place. It carries no warning. Its "evidence" lists PATHS: the streams of the task that wrote it, the streams of the run\'s other workers, and the task\'s diff. Read them selectively with Read, Glob and Grep; do not read them whole.', '',
     '```json', JSON.stringify(held, null, 1), '```', '',
   ].join('\n');
 }
@@ -43,13 +44,32 @@ function promptFor(briefFile) {
   return J.fill(J.readTemplate('archive-review-job.md'), { brief_file: briefFile });
 }
 
+// For an unsupported note: the stream files of the task that wrote it and of the run's other workers (all become citable), and the task's diff
+// saved beside the brief. Paths only; the reviewer reads what it needs.
+async function wideEvidence(h, ctx, dir, streams) {
+  const workers = (ctx.workers || []).filter((w) => w && w.run_id === (h.note && h.note.run_id));
+  const stream = (w) => abs(path.join(ctx.dataDir || '.', 'workers', w.id, 'stream.jsonl'));
+  const mine = workers.filter((w) => w.task_id === (h.note && h.note.task_id));
+  const others = workers.filter((w) => w.task_id !== (h.note && h.note.task_id));
+  for (const w of [...mine, ...others].slice(0, STREAMS_MAX)) streams.add(stream(w));
+  const w = mine.find((x) => x.base_sha && x.head_sha && x.worktree);
+  const diff = w ? await J.diffText(w.worktree, w.base_sha, w.head_sha) : '(no worker of the task has a base and head commit recorded, so there is no diff)\n';
+  return {
+    task_streams: mine.map((x) => ({ worker: x.id, path: stream(x) })),
+    other_streams: others.slice(0, 20).map((x) => ({ worker: x.id, task: x.task_id || null, path: stream(x) })),
+    diff_file: J.writeFileIn(path.join(dir, 'diffs'), `${h.held_row}.patch`, diff),
+  };
+}
+
 // The files each mark cites, at its head commit, saved under `dir`. Returns the entries with a `files` list and the stream paths named.
-async function withFiles(held, worktree, dir) {
+async function withFiles(held, worktree, dir, ctx = {}) {
   const streams = new Set();
   let n = 0;
   const out = [];
   for (const h of held) {
     const files = [];
+    let evidence = null;
+    if (h.kind === 'unsupported') evidence = await wideEvidence(h, ctx, dir, streams);
     for (const c of h.cites || []) {
       if (String(c.where).startsWith('stream:')) { streams.add(abs(String(c.where).slice(7))); continue; }
       if (!h.head_sha || !worktree || n >= FILES_MAX) { files.push({ where: c.where, saved_at: null }); continue; }
@@ -59,7 +79,7 @@ async function withFiles(held, worktree, dir) {
       n += 1;
       files.push({ where: c.where, path: rel, saved_at: J.writeFileIn(path.join(dir, 'files'), `${h.held_row}-${files.length}.txt`, text) });
     }
-    out.push({ ...h, files });
+    out.push({ ...h, files, ...(evidence ? { evidence } : {}) });
   }
   return { held: out, streams: [...streams] };
 }
@@ -90,7 +110,7 @@ async function runReview({ core, runId, lv, dataDir, getManager, worktree = null
     const cwd = worktree || (workers.filter((w) => w.run_id === runId && w.worktree).pop() || {}).worktree;
     if (!cwd) throw J.coded('E_ARGS', 'no worktree is known for the run, so the review child has nowhere to run and no commit can be read');
     const dir = path.join(dataDir, 'workers', jobId, 'inputs');
-    const { held, streams } = await withFiles(queued, cwd, dir);
+    const { held, streams } = await withFiles(queued, cwd, dir, { workers, dataDir });
     const briefFile = J.writeFileIn(dir, 'brief.md', buildBrief({ runId, project: q.project, held }));
     if (log) log(`run close: reviewing ${queued.length} held mark(s), at most ${lv.review_wall_s} s and $${lv.review_cost_cap_usd}`);
     const got = await J.runChild({ manager: await getManager(), workerId: jobId, worktree: cwd, model: lv.archive_review_model, capUsd: lv.review_cost_cap_usd, wallMs: lv.review_wall_s * 1000, prompt: promptFor(briefFile), label: 'archive review', fast, sink });

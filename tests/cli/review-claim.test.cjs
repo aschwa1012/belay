@@ -228,3 +228,11 @@ test('belay notices reads the claim back: a running review, an interrupted one (
     assert.match(r.text, /INTERRUPTED/);
   });
 });
+
+test('notices and status count unsupported notes apart from the holds that carry a warning', () => {
+  const N = require('../../src/cli/cmd-notices.cjs');
+  const ev = N.heldEvents({ total: 8, unsupported: 3, by_project: { acme: 8 }, oldest_age_runs: 2, newest_at: 1 }, 'r-1');
+  assert.deepStrictEqual([ev[0].count, ev[0].unsupported], [8, 3]);
+  assert.match(N.renderText(ev).split(/\s+/).join(' '), /5 held as wrong or duplicate · 3 unsupported awaiting review, oldest 2 runs/);
+  assert.match(require('../../src/cli/panel-common.cjs').heldText({ total: 3, unsupported: 3, by_project: { acme: 3 }, oldest_age_runs: 1 }), /^3 unsupported awaiting review, oldest 1 run:/);
+});

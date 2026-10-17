@@ -6,30 +6,32 @@
 
 const HELD_PREFIX = 'held/';
 
-// { total, by_project: { <project>: n }, oldest_age_runs, oldest_at, newest_at }. A hold counts while its row is `held` and its note is
+// { total, unsupported, by_project: { <project>: n }, unsupported_by_project, oldest_age_runs, oldest_at, newest_at }. `total` counts every queued
+// note; `unsupported` is the part of it that carries no warning (a note a reviewer could not prove or disprove). A hold counts while its row is `held` and its note is
 // still live in the project. A store whose table is absent has none. `oldest_age_runs` is the most runs of one project that started
 // after its oldest hold (what the review's `runs_waited` says).
 function count(store) {
   let rows;
   try {
-    rows = store.p(`SELECT h.namespace AS namespace, COUNT(*) AS n, MIN(h.created_at) AS oldest, MAX(h.created_at) AS newest FROM memory_entries h
+    rows = store.p(`SELECT h.namespace AS namespace, COUNT(*) AS n, SUM(CASE WHEN json_extract(h.body, '$.kind') = 'unsupported' THEN 1 ELSE 0 END) AS u, MIN(h.created_at) AS oldest, MAX(h.created_at) AS newest FROM memory_entries h
       WHERE h.type = 'held' AND h.namespace LIKE 'held/%' AND h.written_by = 'harness' AND json_extract(h.body, '$.state') = 'held'
       AND EXISTS (SELECT 1 FROM memory_entries n WHERE n.id = json_extract(h.body, '$.note_id') AND n.type = 'note' AND n.namespace = 'project/' || substr(h.namespace, 6))
       GROUP BY h.namespace`).all();
   } catch { rows = []; }
-  const by_project = {}, age_by_project = {};
-  let total = 0, oldest = null, newest = null, age = 0;
+  const by_project = {}, age_by_project = {}, unsupported_by_project = {};
+  let total = 0, unsupported = 0, oldest = null, newest = null, age = 0;
   for (const r of rows) {
     const project = r.namespace.slice(HELD_PREFIX.length);
     by_project[project] = Number(r.n);
     total += Number(r.n);
+    if (Number(r.u) > 0) { unsupported_by_project[project] = Number(r.u); unsupported += Number(r.u); }
     if (r.oldest != null && (oldest === null || Number(r.oldest) < oldest)) oldest = Number(r.oldest);
     if (r.newest != null && (newest === null || Number(r.newest) > newest)) newest = Number(r.newest);
     age_by_project[project] = 0;
     try { age_by_project[project] = Number(store.p('SELECT COUNT(DISTINCT id) AS n FROM run WHERE project = ? AND COALESCE(started_at, written_at) > ?').get(project, r.oldest).n); } catch { /* no run table */ }
     age = Math.max(age, age_by_project[project]);
   }
-  return { total, by_project, age_by_project, oldest_age_runs: age, oldest_at: oldest, newest_at: newest };
+  return { total, unsupported, by_project, unsupported_by_project, age_by_project, oldest_age_runs: age, oldest_at: oldest, newest_at: newest };
 }
 
 // Reports of "wrong" that no review will judge (the reporter's task ended with no reviewer and no review job), every project, and the
@@ -45,7 +47,7 @@ function unjudged(store) {
 async function held(E, caller, args = {}) {
   const c = count(E.store);
   const project = typeof args.project === 'string' && args.project ? args.project : null;
-  const scoped = project ? { total: c.by_project[project] || 0, by_project: c.by_project[project] ? { [project]: c.by_project[project] } : {}, oldest_age_runs: c.age_by_project[project] || 0, oldest_at: c.oldest_at, newest_at: c.newest_at } : c;
+  const scoped = project ? { total: c.by_project[project] || 0, unsupported: c.unsupported_by_project[project] || 0, unsupported_by_project: c.unsupported_by_project[project] ? { [project]: c.unsupported_by_project[project] } : {}, by_project: c.by_project[project] ? { [project]: c.by_project[project] } : {}, oldest_age_runs: c.age_by_project[project] || 0, oldest_at: c.oldest_at, newest_at: c.newest_at } : c;
   return { ...scoped, ...(args.reports ? { unjudged_reports: unjudged(E.store).filter((r) => !project || r.project === project) } : {}) };
 }
 

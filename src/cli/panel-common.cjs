@@ -99,6 +99,8 @@ function heldText(h) {
   const names = Object.keys(h.by_project || {}).sort();
   const per = names.length > 1 ? ` (${names.map((p) => `${clean(p, 64)} ${h.by_project[p]}`).join(', ')})` : '';
   const where = names.length === 1 ? ` --project ${clean(names[0], 64)}` : ' --project <p>';
+  const u = h.unsupported || 0;
+  if (u > 0) return `${h.total - u > 0 ? `${h.total - u} held as wrong or duplicate · ` : ''}${u} unsupported awaiting review${per}, oldest ${h.oldest_age_runs || 0} run${h.oldest_age_runs === 1 ? '' : 's'}: review with belay memory review${where}`;
   return `${h.total} note${h.total === 1 ? '' : 's'} held for review${per}, oldest ${h.oldest_age_runs || 0} run${h.oldest_age_runs === 1 ? '' : 's'}: review with belay memory review${where}`;
 }
 

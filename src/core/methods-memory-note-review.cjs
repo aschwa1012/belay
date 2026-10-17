@@ -25,7 +25,7 @@ const F = require('./note-review-facts.cjs');
 const { heldLeaseOn } = require('./verdict.cjs');
 const RV = require('./note-report-verdicts.cjs');
 
-const VERDICTS = ['confirmed', 'refuted'];
+const VERDICTS = ['confirmed', 'refuted', 'unsupported'];
 const REASON_MAX = 500;
 const VERDICTS_MAX = 50;
 const REF_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
@@ -73,7 +73,9 @@ function shapeOne(v) {
   if (!validId(v.id)) throw bad('verdict.id must be a note id');
   if (!VERDICTS.includes(v.verdict)) throw bad(`verdict.verdict must be one of ${VERDICTS.join(', ')}`);
   if (typeof v.reason !== 'string' || !v.reason.trim() || Buffer.byteLength(v.reason) > REASON_MAX) throw bad(`verdict.reason must be a non-empty string of at most ${REASON_MAX} bytes`);
-  const c = CC.checkShape(v.cites);
+  // `unsupported` means no single place proves or disproves the note, so it needs a reason and takes cites only if there are some.
+  const none = v.verdict === 'unsupported' && (v.cites === undefined || (Array.isArray(v.cites) && !v.cites.length));
+  const c = none ? { cites: [] } : CC.checkShape(v.cites);
   if (c.error) throw bad(`verdict.${c.error}`);
   return { id: v.id, verdict: v.verdict, reason: v.reason.replace(/\s+/g, ' ').trim(), cites: c.cites };
 }
@@ -96,12 +98,13 @@ function admit(E, caller, route, v) {
   return n;
 }
 
-function applyOne(E, caller, route, v, n) {
+// Inside a transaction (the caller's): sets the status of a note on a confirmed or refuted verdict. The archive reviewer's verify and refute use it too.
+function applyOneIn(E, caller, route, v, n) {
   const at = Date.now();
   const receipt = `review:${route.ref}`;
   const status = v.verdict === 'confirmed' ? 'verified' : 'refuted';
   const common = { run_id: caller.run_id || n.run_id, worker_id: route.reviewer, task_id: n.task_id, key: `${route.keyBase}:${n.id}` };
-  return E.store.tx(() => {
+  {
     // The status is read again inside the write: the citation check awaited a file, and another review may have landed since
     // admit() looked. A refuted note is never confirmed back, and the answer's previous_status is what was really there.
     const cur = E.store.p('SELECT status FROM memory_entries WHERE id = ?').get(n.id);
@@ -113,8 +116,9 @@ function applyOne(E, caller, route, v, n) {
     const ev = recordEventSync(E, caller, { kind: 'note_review', ok: true, ...common, row_ids: [n.id], newest_row_id: n.id, message: `${v.verdict}: ${v.reason}`.slice(0, 300) });
     if (v.verdict === 'refuted') recordEventSync(E, caller, { kind: 'note_refuted', ok: true, ...common, key: `refuted:${n.id}`, row_ids: [n.id], newest_row_id: n.id, message: `note ${n.id} refuted by review ${route.ref}` });
     return { id: n.id, verdict: v.verdict, applied: true, status, previous_status: previous, status_receipt: receipt, status_by: E.memoryWriter(caller), status_at: at, event_id: ev.id };
-  });
+  }
 }
+const applyOne = (E, caller, route, v, n) => E.store.tx(() => applyOneIn(E, caller, route, v, n));
 
 async function noteVerdicts(E, caller, args) {
   guard(E, caller);
@@ -142,9 +146,9 @@ async function noteVerdicts(E, caller, args) {
       const done = E.store.p("SELECT id FROM memory_event WHERE kind = 'note_review' AND ok = 1 AND key = ?").get(`${route.keyBase}:${v.id}`);
       if (done) { out.already.push({ id: v.id, event_id: done.id }); continue; }
       n = admit(E, caller, route, v);
-      const chk = await CC.checkTaskCites(E, n.task_id, v.cites, { title: n.title, when: parse(n.body).when, text: n.text, evidence: parse(n.body).evidence });
+      const chk = v.cites.length === 0 ? { ok: true } : await CC.checkTaskCites(E, n.task_id, v.cites, { title: n.title, when: parse(n.body).when, text: n.text, evidence: parse(n.body).evidence });
       if (!chk.ok) throw err('E_CITATION', `note ${n.id}: ${chk.failures.length} of ${v.cites.length} cites are not in the evidence task ${n.task_id} recorded; the verdict is dropped (${chk.failures.map((f) => `cites[${f.index}] ${f.where}: ${f.reason}`).join(' | ')})`.slice(0, 600), { id: n.id, failures: chk.failures });
-      out.applied.push(applyOne(E, caller, route, v, n));
+      out.applied.push(v.verdict === 'unsupported' ? require('./note-unsupported.cjs').queueUnsupported(E, caller, route, v, n) : applyOne(E, caller, route, v, n));
     } catch (e) { refuse(e, n); }
   }
   if (out.applied.length) E.noteWrite();
@@ -178,4 +182,4 @@ async function reviewBrief(E, caller, args) {
   return { task_id: t.id, review: true, reviewed_tasks: deps, notes: F.notesUnderReview(E, deps, proj), refuted_shown: F.refutedShownTo(E, deps), reports: RV.reportsAbout(E, deps, proj) };
 }
 
-module.exports = { noteVerdicts, noteRefutation, reviewBrief };
+module.exports = { noteVerdicts, noteRefutation, reviewBrief, applyOneIn };

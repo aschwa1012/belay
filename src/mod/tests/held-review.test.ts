@@ -4,7 +4,7 @@ import { T0, RUN, boot, cmd, later, pane, openPane, words } from './support'
 // The memory line and its one write action (ADR 0036 amendment, proposed): the Opus archive review, started only by two presses of the
 // button, through a short launcher that detaches the review so a reload of the panel cannot orphan it. These tests prove the line, the
 // confirm, the launch, the cancels, the review's state read back from belay (it survives a reload), and that nothing else can reach it.
-const held = (n = 3, by: Record<string, number> = { acme: n }) => ({ kind: 'notes_held', ts: T0, run_id: RUN, count: n, by_project: by, oldest_age_runs: 2, command: 'belay memory review' })
+const held = (n = 3, by: Record<string, number> = { acme: n }, unsupported = 0) => ({ kind: 'notes_held', ts: T0, run_id: RUN, count: n, unsupported, by_project: by, oldest_age_runs: 2, command: 'belay memory review' })
 const running = (pid_alive = true) => ({ kind: 'review_running', ts: T0, run_id: RUN, project: 'acme', pid: 77, job: 'archreview-r-1', claim_id: 'me-1', pid_alive })
 const ended = (ok: boolean, text: string) => ({ kind: 'review_ended', ts: T0, run_id: RUN, project: 'acme', ok, code: ok ? null : 'E_ARGS', text, job: 'archreview-r-1', claim_id: 'me-1' })
 const notices = (...events: unknown[]) => ({ run_id: RUN, events })
@@ -16,6 +16,22 @@ describe('notes held for the archive reviewer', () => {
     const { text } = await pane($)
     expect(text).toContain('3 notes held for review · oldest 2 runs · acme')
     expect(text).toContain('review the held notes')
+  })
+
+  test('unsupported notes are counted apart from the holds that carry a warning, and the same button reviews both', async ($, on) => {
+    const wd = await boot($, on, { notices: notices(held(8, { acme: 8 }, 3)) })
+    await openPane($, wd)
+    const { text } = await pane($)
+    expect(text).toContain('5 held as wrong or duplicate · 3 unsupported awaiting review · oldest 2 runs · acme')
+    expect(text).toContain('review the held notes')
+  })
+
+  test('only unsupported notes: the line says so alone', async ($, on) => {
+    const wd = await boot($, on, { notices: notices(held(3, { acme: 3 }, 3)) })
+    await openPane($, wd)
+    const { text } = await pane($)
+    expect(text).toContain('3 unsupported awaiting review · oldest 2 runs')
+    expect(text).not.toContain('held as wrong')
   })
 
   test('with nothing held the pane has no memory line and no button', async ($, on) => {
