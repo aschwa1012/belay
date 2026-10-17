@@ -97,38 +97,49 @@ async function killSurvivor(w, e) {
   const gone = await P.waitPidGone(pid, { timeoutMs: 5000 });
   return { worker_id: w.id, code: (e && e.code) || null, pid, pid_gone_ms: gone, tree_kill: w.treeKill || null };
 }
-// Each worker's memory queue, bounded by one MEMORY_DRAIN_MS for them all. Returns the ids that had not finished.
-async function drainMemoryQueues(workers) {
+// Each worker's memory queue, bounded by one MEMORY_DRAIN_MS per worker. Returns the ids that had not finished. The queue is
+// re-read until it stops changing, because a job on it appends the next link from inside the first. With `turns` the worker's own
+// `queue` is awaited first: a turn_end is queued there at the moment it is parsed (worker.cjs), and onTurnEnd creates the memory
+// queue only after its waiters and its row, so a close that follows the turn at once would otherwise find no memory queue yet.
+async function settleQueues(w, turns) {
+  if (turns) await w.queue.catch(() => {});
+  for (let q; q !== w.memoryQueue;) { q = w.memoryQueue; if (q) await q.catch(() => {}); }
+  return true;
+}
+async function drainMemoryQueues(workers, turns = false) {
   const gaveUp = [];
-  await Promise.all([...workers.values()].filter((w) => w.memoryQueue).map(async (w) => {
+  await Promise.all([...workers.values()].filter((w) => turns || w.memoryQueue).map(async (w) => {
     let timer = null;
-    const done = await Promise.race([w.memoryQueue.then(() => true, () => true), new Promise((res) => { timer = setTimeout(() => res(false), MEMORY_DRAIN_MS); })]);
+    const done = await Promise.race([settleQueues(w, turns), new Promise((res) => { timer = setTimeout(() => res(false), MEMORY_DRAIN_MS); })]);
     clearTimeout(timer);
     if (!done) { gaveUp.push(w.id); w.lastError = { where: 'shutdown', state: 'memory-queue-gave-up', bound_ms: MEMORY_DRAIN_MS }; }
   }));
   return gaveUp;
 }
-async function shutdown(workers, { stop, core, clearPoll, markClosed, markOwnerGone, onDrained, beforeStop, queuesFirst }) {
+async function shutdown(workers, { stop, core, clearPoll, markClosed, markOwnerGone, onDrained, beforeStop, queuesFirst, markClosing }) {
   // Wave 4: a review job in flight finishes before any worker is stopped. A turn's memory queue is awaited first (bounded), because
   // the queue is what creates the review job: draining jobs before it would find none and let the job spawn after the stop loop.
   let queuesGaveUp = null;
   // Only when the run expects review jobs (queuesFirst): any other run keeps its queues' one wait, after the flag flips.
   if (beforeStop) {
-    if (queuesFirst && queuesFirst()) queuesGaveUp = await drainMemoryQueues(workers).catch(() => []);
+    if (queuesFirst && queuesFirst()) queuesGaveUp = await drainMemoryQueues(workers, true).catch(() => []);
     await Promise.resolve().then(beforeStop).catch(() => {});
+    if (markClosing) markClosing(); // no review job starts past here; one already spawning is stopped below
   }
   const t0 = now();
   const stopped = [];
   const left_parked = [];
   const left_stale = [];
   const stop_failed = [];
-  for (const w of [...workers.values()]) {
-    if (w.staleSince) { left_stale.push(w.id); continue; }
-    if (parked(w)) { left_parked.push(w.id); continue; }
+  const seen = new Set();
+  const stopOne = async (w) => {
+    seen.add(w.id);
+    if (w.staleSince) { left_stale.push(w.id); return; }
+    if (parked(w)) { left_parked.push(w.id); return; }
     if (w.op && w.op.name === 'pause') {
       await w.op.promise.catch(() => {});
-      if (w.staleSince) { left_stale.push(w.id); continue; }
-      if (parked(w)) { left_parked.push(w.id); continue; }
+      if (w.staleSince) { left_stale.push(w.id); return; }
+      if (parked(w)) { left_parked.push(w.id); return; }
     }
     try {
       await stop({ worker_id: w.id, mode: 'graceful', timeout_ms: 10000 });
@@ -137,7 +148,12 @@ async function shutdown(workers, { stop, core, clearPoll, markClosed, markOwnerG
       w.lastError = { where: 'shutdown', code: e && e.code, message: e && e.message };
       const k = await killSurvivor(w, e); if (k) stop_failed.push(k); // build 12 A10: a failed stop (its row write threw) must not leave the child alive
     }
-  }
+  };
+  for (const w of [...workers.values()]) await stopOne(w);
+  // A worker that joined the map while the loop ran (a review job whose spawn was already under way) is stopped too, until none is new.
+  for (let extra = [...workers.values()].filter((w) => !seen.has(w.id)); extra.length; extra = [...workers.values()].filter((w) => !seen.has(w.id))) for (const w of extra) await stopOne(w);
+  // Jobs stopped above write their receipts now, while the store is still open (and before the owner is marked gone).
+  if (beforeStop) await Promise.resolve().then(beforeStop).catch(() => {});
   // ADR 0029 amendment 2 item 4: a head follow-up is queued only once git answers, and markClosed turns every
   // later write away. Each worker's own queue is drained, its pending head request awaited, and its queue
   // drained again (the follow-up is on it by then), all inside one HEAD_DRAIN_MS bound, before the flag flips.

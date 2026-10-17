@@ -43,7 +43,7 @@ const fail = (core, fields, e) => receipt(core, { ok: false, code: codeOf(e), me
 // Past this flag the owner is going or gone and a write would elect a new one in this process (invariant 2): the run's own
 // store-only sweep names what was never reviewed instead.
 const ownerGone = (ctx) => !!(ctx.shutdownFlags && ctx.shutdownFlags.ownerGone);
-const isClosed = (ctx) => !!(ctx.manager && typeof ctx.manager._closed === 'function' && ctx.manager._closed());
+const isClosed = (ctx) => !!(ctx.manager && ((typeof ctx.manager._closed === 'function' && ctx.manager._closed()) || (typeof ctx.manager._closing === 'function' && ctx.manager._closing())));
 const shutErr = (msg) => Object.assign(new Error(msg), { code: 'E_SHUTDOWN' });
 // Stop a job's worker; if the stop threw (it writes a row, and rows are refused once the run is closed) the child is killed by its
 // exact handle and pid (ADR 0039), never matched by a command line.
@@ -207,7 +207,13 @@ async function drain(ctx, ms) {
   const s = STATE.get(ctx);
   if (!s || !s.jobs.size) return;
   let timer;
-  await Promise.race([Promise.allSettled([...s.jobs.values()]), new Promise((r) => { timer = setTimeout(r, ms); })]);
+  const deadline = new Promise((r) => { timer = setTimeout(() => r(false), ms); });
+  // A job registered while the others finish (a turn that ended during the close) is waited for too, until none is new.
+  for (;;) {
+    const known = s.jobs.size;
+    const all = await Promise.race([Promise.allSettled([...s.jobs.values()]).then(() => true), deadline]);
+    if (!all || s.jobs.size === known) break;
+  }
   clearTimeout(timer);
 }
 
@@ -224,6 +230,10 @@ async function sweep(J, tasks, workers) {
   for (const w of jobWorkers) {
     const taskId = taskOfJob(w.id);
     if (!taskId || done(taskId)) continue;
+    if (!['stopped', 'dead'].includes(w.state)) { // still starting or running: it has no answer to apply, and a missing cost is not a cost-cap failure
+      await fail(core, { worker_id: w.id, task_id: taskId, key: `task:${taskId}` }, shutErr(`the run ended while the review job was ${w.state}; its notes stay unreviewed`));
+      continue;
+    }
     const got = await core.worker.get({ worker_id: w.id }).catch(() => null);
     const text = got && got.stream_path ? lastTextOf(got.stream_path) : '';
     await finishJob(core, { workerId: w.id, taskId, text, cost: typeof w.cost_usd === 'number' ? w.cost_usd : null, cap: lv.note_review_cost_cap_usd });

@@ -242,3 +242,13 @@ test('C5: a close with no notes written adds no wait and awaits no queue twice',
     assert.strictEqual(seen.filter((x) => x === 5000).length, 1, 'the memory bound was started once, not once before the review drain and once after');
   } finally { global.setTimeout = orig; }
 });
+
+test('C6: the sweep names a job still starting as shutdown, never as a missing cost', async () => {
+  const w = await written('wr-c6');
+  await call('worker.write', orch, { id: `notereview-${w.task.id}`, substrate: 'claude-code', pid: process.pid, state: 'starting', session_id: 's', last_event_at: Date.now() });
+  const tasks = (await call('task.list', orch, {})).tasks;
+  const workers = (await call('worker.list', orch, {})).workers;
+  await NR.sweep(J(ctxFor(null)), tasks, workers);
+  assert.deepStrictEqual(receipts(w.task.id).map((r) => [r.ok, r.code]), [[0, 'E_SHUTDOWN']]);
+  assert.match(receipts(w.task.id)[0].message, /while the review job was starting/);
+});

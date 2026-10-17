@@ -474,7 +474,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   // been asked to stop and its queue drained (lifecycle.cjs's own ordering), never before.
   const shutdown = () => LC.shutdown(workers, {
     stop, core, clearPoll: () => { if (poll) { clearInterval(poll); poll = null; } },
-    markClosed: () => { shutdownFlags.closed = true; },
+    markClosed: () => { shutdownFlags.closed = true; }, markClosing: () => { shutdownFlags.closing = true; },
     markOwnerGone: () => { shutdownFlags.ownerGone = true; return shutdownFlags.paired; },
     beforeStop: () => NR.drain(ctx, NOTE_REVIEW_DRAIN_MS), queuesFirst: () => NR.expectsJobs(ctx),
     onDrained: () => MP.runEnd(ctx),
@@ -489,7 +489,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     _waitTurn: (id, ms) => waitTurnOrLanded(get(id), ms),
     _waitExit: (id, ms) => W.waitExit(get(id), ms),
     _killSurvivor: (id) => (workers.has(id) ? LC.killSurvivor(workers.get(id), null) : null), // a child by its live handle and exact pid (lifecycle.cjs)
-    _closed: () => shutdownFlags.closed, // flipped by shutdown once every worker is stopped (lifecycle.cjs)
+    _closing: () => shutdownFlags.closing, _closed: () => shutdownFlags.closed, // flipped by shutdown once every worker is stopped (lifecycle.cjs)
     _flags: () => shutdownFlags,
   };
   ctx.manager = manager; // the memory jobs spawn the review job through it
