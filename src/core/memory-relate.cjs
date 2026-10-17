@@ -67,19 +67,22 @@ function relationFacts(E, project, a, b, threshold, runId) {
   const cos = storedCosine(x, y);
   const best = cos !== null ? cos : Math.max(-1, ...bindingMatches(x, y));
   const facts = { notes: [x.id, y.id], similarity: best < 0 ? null : round3(best), threshold, source: cos !== null ? 'stored_cosine' : best >= 0 ? 'recorded_match' : null, template: templateOf(x) };
-  if (best >= threshold) return { ...facts, via: 'similarity', x, y };
+  // A report of this run that names the pair gives the direction whatever the score says: the reported note is the one archived, so a
+  // note the worker vouched for is never the one hidden. (Two opposing reports give no direction: age decides.)
   const xy = reportOn(x, y, runId), yx = reportOn(y, x, runId);
-  if (xy || yx) return { ...facts, via: 'report', reported: xy ? x.id : y.id, x, y };
+  const reported = xy !== yx ? (xy ? x.id : y.id) : undefined;
+  if (best >= threshold) return { ...facts, via: 'similarity', ...(reported ? { reported } : {}), x, y };
+  if (xy || yx) return { ...facts, via: 'report', ...(reported ? { reported } : {}), x, y };
   throw refuse(`notes ${x.id} and ${y.id} are not shown to be related: the stored similarity is ${best < 0 ? 'unavailable' : round3(best)} (needs ${threshold}) and no worker report of this run, by another writer, names one as the replacement of the other`, facts);
 }
 
 const older = (x, y) => x.created_at < y.created_at || (x.created_at === y.created_at && x.rid < y.rid);
 
-// Which of the pair a relation archives and which it keeps. Through a report the reported note is archived; through a score the
-// direction is the notes' own: the older of a repeat is kept (or the one `keep` names), and the newer of supersedes and refines stays.
+// Which of the pair a relation archives and which it keeps. When a report of this run names the pair, the reported note is archived,
+// whatever the score; with none, the direction is the notes' own: the older of a repeat is kept (or the one `keep` names), and the newer of supersedes and refines stays.
 function sides(relation, f, keep) {
   const { x, y } = f;
-  if (f.via === 'report') { const gone = f.reported === x.id ? x : y; return { gone, kept: gone === x ? y : x }; }
+  if (f.reported) { const gone = f.reported === x.id ? x : y; return { gone, kept: gone === x ? y : x }; }
   if (relation === 'repeats') {
     const kept = keep === 'id' ? x : keep === 'of' ? y : (older(x, y) ? x : y);
     return { kept, gone: kept === x ? y : x };

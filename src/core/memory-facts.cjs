@@ -73,12 +73,14 @@ function checkHoldFacts(E, project, note, kind, ofId, ground, threshold = DUP_SI
   const target = liveKept(E, project, ofId, kind === 'duplicate' ? 'the kept note' : 'the replacement');
   if (target.id === note.id) throw refuse('a note cannot stand against itself', { id: note.id });
   if (kind === 'superseded') {
-    if (!(target.created_at > note.created_at)) throw refuse(`${target.id} is not newer than ${note.id}, so it cannot replace it`, { id: note.id, of: target.id });
+    // A worker's report naming the replacement stands for the direction (a verified note a worker reported may be the newer one).
+    const reportedBy = (note.b.reported_wrong || []).some(w => w && w.replaced_by === target.id && w.by !== note.written_by);
+    if (!(target.created_at > note.created_at) && !reportedBy) throw refuse(`${target.id} is not newer than ${note.id}, so it cannot replace it`, { id: note.id, of: target.id });
     // REPORT S4: the replacement must also be about the same thing: a shared path or subject, or a stored cosine at the threshold.
     const sim = storedCosine(note, target);
     const path = shares(lower(note.b.applies_to), lower(target.b.applies_to)), subject = shares(lower(note.b.subjects), lower(target.b.subjects));
-    if (!path && !subject && !(sim !== null && sim >= threshold)) throw refuse(`${target.id} shares no path or subject with ${note.id} and its stored similarity is ${sim === null ? 'unavailable' : round3(sim)} (needs ${threshold}), so it is not shown to replace it`, { id: note.id, of: target.id });
-    return { replacement: target.id, replacement_created_at: target.created_at, note_created_at: note.created_at, shared: path ? 'path' : subject ? 'subject' : 'similarity', similarity: sim === null ? null : round3(sim), template: templateOf(note), replacement_template: templateOf(target) };
+    if (!path && !subject && !reportedBy && !(sim !== null && sim >= threshold)) throw refuse(`${target.id} shares no path or subject with ${note.id} and its stored similarity is ${sim === null ? 'unavailable' : round3(sim)} (needs ${threshold}), so it is not shown to replace it`, { id: note.id, of: target.id });
+    return { replacement: target.id, replacement_created_at: target.created_at, note_created_at: note.created_at, shared: path ? 'path' : subject ? 'subject' : reportedBy ? 'report' : 'similarity', similarity: sim === null ? null : round3(sim), template: templateOf(note), replacement_template: templateOf(target) };
   }
   const sim = storedCosine(note, target);
   const matched = (note.b.matches || []).find(m => m && m.id === target.id);
