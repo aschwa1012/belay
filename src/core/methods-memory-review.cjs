@@ -53,7 +53,7 @@ function archive(E, ctx, held, v, sources) {
   };
   if (!note || note.namespace !== N.projectNs(ctx.project)) return refuse('E_NOT_FOUND', `note ${held.b.note_id} is no longer a live note of the project (${note ? note.namespace : 'gone'}), so there is nothing to archive`);
   let facts;
-  try { facts = checkHoldFacts(E, ctx.project, note, held.b.kind, held.b.of, held.b.ground, ctx.threshold); } catch (e) {
+  try { facts = checkHoldFacts(E, ctx.project, note, held.b.kind, held.b.of, held.b.ground, ctx.threshold, held.b.run_id); } catch (e) {
     if (e.code !== 'E_PRECONDITION') throw e;
     return refuse(e.code, `S4 no longer holds at apply time: ${e.message}`, e.detail);
   }

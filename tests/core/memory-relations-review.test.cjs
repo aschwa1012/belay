@@ -93,11 +93,11 @@ test('should-fix 4: the second hop of a chain carries the first hop\'s delivery 
   const b = T.note('d b', { vec: A, created_at: 100 });
   const a = T.note('d a', { vec: A_NEAR, created_at: 200 });
   const c = T.note('d c', { vec: A, created_at: 300 });
-  T.store.patchBody(b, x => { x.delivery_history = [{ from: b, hops: [b], kind: 'index_injected', route: 'index', task_id: 't9', worker_id: 'w9', at: 1 }]; return x; });
+  T.store.patchBody(b, x => { x.delivery_history = [{ from: 'z0', hops: ['z0'], kind: 'index_injected', route: 'index', task_id: 't9', worker_id: 'w9', at: 1 }]; return x; });
   await scrub('apply', [relate(a, 'refines', b)]);
   assert.strictEqual(T.body(a).delivery_history.length, 1);
   await scrub('apply', [relate(c, 'refines', a)]);
-  assert.deepStrictEqual(T.body(c).delivery_history.map(d => d.hops), [[b, a]]);
+  assert.deepStrictEqual(T.body(c).delivery_history.map(d => d.hops), [['z0', b, a]]);
   assert.deepStrictEqual([T.body(a).delivery_history.length, T.body(b).delivery_history.length], [0, 0]);
   await restore(b);
   assert.strictEqual(T.body(c).delivery_history.length, 0);

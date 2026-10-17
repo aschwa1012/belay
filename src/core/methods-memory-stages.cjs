@@ -22,6 +22,7 @@ const C = require('./lifecycle-common.cjs');
 const M = require('./methods-memory.cjs');
 const N = require('./methods-memory-notes.cjs');
 const { parse } = require('./memory-facts.cjs');
+const { keyOf, relationFacts } = require('./memory-relate.cjs');
 const { nominationsForScope, countFor } = require('./memory-nominate.cjs');
 
 const fwd = p => String(p).split('\\').join('/');
@@ -29,7 +30,7 @@ const TEXT_CUT = 1500;
 const REPORTS_SHOWN = 5;
 const cut = (s, n) => { const t = String(s == null ? '' : s); return t.length > n ? `${t.slice(0, n - 3)}...` : t; };
 
-const COLS = 'id, namespace, type, worker_id, written_by, run_id, task_id, title, text, text_hash, embedding_model, dim, body, status, status_receipt, created_at';
+const COLS = 'id, namespace, type, worker_id, written_by, run_id, task_id, title, text, text_hash, embedding_model, dim, text_template, body, status, status_receipt, created_at';
 function load(E, id) {
   const r = E.store.p(`SELECT ${COLS} FROM memory_entries WHERE id = ?`).get(id);
   return r ? { ...r, b: parse(r.body) } : null;
@@ -143,7 +144,6 @@ async function scrubScope(E, caller, args) {
     return E.store.p('SELECT 1 AS x FROM memory_entries WHERE supersedes = ? AND namespace = ?').get(id, n.namespace) ? null : n;
   };
   // A `new` verdict holds only while both notes still have the text, vector model, dimension and template it was made on.
-  const keyOf = (n) => `${n.text_hash}|${n.embedding_model || ''}|${n.dim || ''}|${n.text_template || 'v1'}`;
   const judged = (n, other) => (n.b.pair_judged || []).some((j) => j && j.of === other.id && j.own_key === keyOf(n) && j.of_key === keyOf(other));
   const reported = E.store.p(`SELECT id FROM memory_entries WHERE type = 'note' AND namespace = ? AND EXISTS
     (SELECT 1 FROM json_each(memory_entries.body, '$.reported_wrong') WHERE json_extract(value, '$.run_id') = ? AND json_extract(value, '$.replaced_by') IS NOT NULL) ORDER BY created_at, id`).all(N.projectNs(project), runId);
@@ -160,8 +160,9 @@ async function scrubScope(E, caller, args) {
   for (const r of withMatches) {
     const n = load(E, r.id);
     if (n.b.held) continue;
-    const open = (n.b.matches || []).some((m) => m && m.id !== n.id && !(typeof threshold === 'number' && typeof m.similarity === 'number' && m.similarity < threshold)
-      && liveNote(m.id) && !judged(n, liveNote(m.id)) && !judged(liveNote(m.id), n));
+    // Offered only when the relation gate would pass the pair (the same function): a pair every verdict would be refused is not offered.
+    const passes = (id) => { try { relationFacts(E, project, n.id, id, threshold, runId); return true; } catch { return false; } };
+    const open = (n.b.matches || []).some((m) => m && m.id !== n.id && liveNote(m.id) && !judged(n, liveNote(m.id)) && !judged(liveNote(m.id), n) && passes(m.id));
     if (open) addNew(n.id, 'matched');
   }
   for (const nom of nominationsForScope(E, project) || []) {

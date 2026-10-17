@@ -10,14 +10,14 @@ Ask, for each pair:
 1. Are these the same lesson? (`repeats`) One note is kept, the older unless the other is clearly better, and the other is archived; its history moves to the kept note.
 2. Does the newer one add information the older one lacked, as a different lesson? (`supersedes`) The older note is archived and keeps its own history.
 3. Is it the same lesson plus a caveat? (`refines`) The older note is archived and its history moves to the newer one.
-4. Are they distinct? (`new`) Nothing changes; the pair is marked judged so it is not offered again.
+4. Are they distinct? (`new`) Nothing changes; the pair is marked judged and is not offered again unless a note's text, vector model or template changes.
 
 Nothing is deleted: an archived note can be restored. belay applies your answer directly when the pair is close enough (a stored similarity or a worker's report naming the pair) and both notes are live; otherwise it refuses the entry. Do not quote evidence: state the shared claim, the new information or the caveat in the reason.
 
 Entry shapes. Relations are one of {{relations}}.
 
 - a pending note (an item with state pending): { "id", "action": "resolve", "resolve": "new" | "repeats" | "supersedes" | "refines", "of": "<live note id; required unless new>", "reason" }. `id` is the pending note. repeats archives `id` and keeps `of`. supersedes puts `id` live in place of `of`; refines puts `id` live and archives `of`.
-- two live notes (an item with state live): { "id", "action": "relate", "relation": "new" | "repeats" | "supersedes" | "refines", "of": "<the other live note>", "keep": "id" | "of" (optional, repeats only: which note survives), "reason" }. For supersedes and refines belay takes the newer note as the one that stays and archives the older, by their creation times.
+- two live notes (an item with state live): { "id", "action": "relate", "relation": "new" | "repeats" | "supersedes" | "refines", "of": "<the other live note>", "keep": "id" | "of" (optional, repeats only: which note survives), "reason" }. For supersedes and refines belay takes the newer note as the one that stays and archives the older, by their creation times, unless a worker's report in this run names the pair: then the note the worker reported wrong is the one archived, whichever is older. A note that is review-verified is never archived by your answer; it goes to a reviewer instead.
 - a nominated note (an item with why nominated): { "id", "action": "draft", "draft": { "rule": "<the rule text>", "target": "<the file it would go in>" }, "reason" }
 
 Rules:

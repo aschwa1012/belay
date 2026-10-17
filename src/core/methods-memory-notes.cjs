@@ -331,6 +331,16 @@ async function resolve(E, caller, args) {
         return { id: r.id, resolved: 'new', state: 'live', namespace: projectNs(project), ...(vector && vector.unembedded ? { embedded: false, embedder_failure: vector.unembedded, note: 'the title changed and the embedder failed (on_embedder_failure keyword), so the old vector was dropped and the note has none: it is found by keyword search, and belay memory embed will embed it from its new title' } : {}) };
       }
       const target = liveTarget(E, caller, r, project, x, i);
+      const VH = require('./memory-verified-hold.cjs');
+      const tnote = require('./memory-facts.cjs').loadNote(E, target.id);
+      if (VH.mustHold(caller, tnote, x.resolve)) {
+        // A verified note is never hidden without the reviewer: the new note goes live and the old one is held for the on-demand reviewer.
+        if (tnote.b.held) throw err('E_EXISTS', `resolutions[${i}]: note ${target.id} is already held (${tnote.b.held.row}); the reviewer settles it first`, { id: target.id, held_row: tnote.b.held.row });
+        release(E, r, project);
+        E.store.patchBody(r.id, b => { b.state = 'live'; b.resolved = { as: x.resolve, of: target.id, ...(x.evidence ? { evidence: x.evidence } : {}), at: t, by, held_for_review: true }; delete b.matches; return b; });
+        const held = VH.holdVerified(E, caller, project, tnote, r.id, x.resolve, `resolved as ${x.resolve}`);
+        return { id: r.id, resolved: x.resolve, of: target.id, state: 'live', namespace: projectNs(project), held_for_review: held.id, note: 'the old note is review-verified, so it is held for the reviewer and not archived' };
+      }
       if (x.resolve === 'refines') {
         // The same lesson plus a caveat: the new note goes live, the old one is archived as superseded (restorable), and the old
         // note's sightings and delivery history move to the new one, as a duplicate's do, so the lesson is counted once.
