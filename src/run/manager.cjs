@@ -20,7 +20,6 @@ const { fail } = require('./errors.cjs');
 const { validateSpawnArgs, checkMemoryQueries } = require('./spawn-args.cjs');
 const AD = require('./agent-defaults.cjs'); // the config's per-agent-type model and effort defaults
 const MP = require('./memory-preface.cjs'); // ADR 0042: the first-message preface and the memory hooks
-const { NOTE_REVIEW_DRAIN_MS } = require('../core/spawn-bounds.cjs');
 const NR = require('./note-review.cjs'); // wave 4: the notes' review (the reviewer's brief, the short review job)
 // build step 6c: `wait`, `decideBranch`, `restartFirstText` and the resume-window constants moved
 // verbatim into their own files (the 500-line rule); re-exported under the same names below.
@@ -474,9 +473,9 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   // been asked to stop and its queue drained (lifecycle.cjs's own ordering), never before.
   const shutdown = () => LC.shutdown(workers, {
     stop, core, clearPoll: () => { if (poll) { clearInterval(poll); poll = null; } },
-    markClosed: () => { shutdownFlags.closed = true; },
+    markClosed: () => { shutdownFlags.closed = true; }, markClosing: () => { shutdownFlags.closing = true; },
     markOwnerGone: () => { shutdownFlags.ownerGone = true; return shutdownFlags.paired; },
-    beforeStop: () => NR.drain(ctx, NOTE_REVIEW_DRAIN_MS),
+    beforeStop: (ms) => NR.drain(ctx, ms), queuesFirst: () => NR.expectsJobs(ctx),
     onDrained: () => MP.runEnd(ctx),
   });
 
@@ -488,7 +487,8 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     _worker: (id) => workers.get(id),
     _waitTurn: (id, ms) => waitTurnOrLanded(get(id), ms),
     _waitExit: (id, ms) => W.waitExit(get(id), ms),
-    _closed: () => shutdownFlags.closed, // flipped by shutdown once every worker is stopped (lifecycle.cjs)
+    _killSurvivor: (id) => (workers.has(id) ? LC.killSurvivor(workers.get(id), null) : null), // a child by its live handle and exact pid (lifecycle.cjs)
+    _closing: () => shutdownFlags.closing, _closed: () => shutdownFlags.closed, // flipped by shutdown once every worker is stopped (lifecycle.cjs)
     _flags: () => shutdownFlags,
   };
   ctx.manager = manager; // the memory jobs spawn the review job through it

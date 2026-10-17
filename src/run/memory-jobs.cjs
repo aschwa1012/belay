@@ -378,7 +378,12 @@ function afterTurn(w, ctx, { turnEvents, checkpointId, snap: given = null } = {}
       if (wantSummary) await ensureSummary(J, snap.taskId, snap.workerId, { taskRow: task });
       if (wantPromote) await ensurePromote(J, snap.taskId, snap.workerId);
       if (lv.wrapup) await ensureWrapup(J, snap.taskId, { taskRow: task });
-      if (needReview) { s.reviewSeen.add(snap.taskId); void require('./note-review.cjs').onTaskEnded(J, task).catch((e) => note(w, 'note-review', e)); }
+      if (needReview) {
+        s.reviewSeen.add(snap.taskId);
+        // onTaskEnded registers its job synchronously, so the run's close drain sees it (note-review.cjs). A turn that reaches here after the close drops it; the run's sweep names the owed notes.
+        if (closed(ctx)) note(w, 'after-shutdown', { code: SHUT, message: 'the run closed before the note review was decided on' });
+        else void require('./note-review.cjs').onTaskEnded(J, task).catch((e) => note(w, 'note-review', e));
+      }
       if (needReflect) await require('./notes-reflection.cjs').reflect(J, { taskId: snap.taskId, workerId: snap.workerId }, event);
     } catch (e) {
       note(w, 'memory-jobs.afterTurn', e);
