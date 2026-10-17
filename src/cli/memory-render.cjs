@@ -112,11 +112,11 @@ function checkPurge(opts) {
 // resolve <id> new | repeats <of> | supersedes <of> --evidence <text>: the shape memory.noteResolve takes, checked before any store is opened.
 function checkResolve(opts, positional) {
   const [, how, of] = positional;
-  if (!['new', 'repeats', 'supersedes'].includes(how)) return { error: `belay memory resolve takes new, repeats <of> or supersedes <of>; got ${how}` };
+  if (!['new', 'repeats', 'supersedes', 'refines'].includes(how)) return { error: `belay memory resolve takes new, repeats <of>, refines <of> or supersedes <of>; got ${how}` };
   if (how === 'new' && of !== undefined) return { error: 'belay memory resolve <id> new takes no other note id' };
-  if (how !== 'new' && of === undefined) return { error: `belay memory resolve <id> ${how} needs the id of the live note it ${how === 'repeats' ? 'repeats' : 'supersedes'}` };
+  if (how !== 'new' && of === undefined) return { error: `belay memory resolve <id> ${how} needs the id of the live note it ${how}` };
   if (how === 'supersedes' && !(typeof opts.evidence === 'string' && opts.evidence.trim())) return { error: 'belay memory resolve <id> supersedes needs --evidence <text>: what you saw that makes the older note wrong' };
-  if (how !== 'supersedes' && opts.evidence !== undefined) return { error: `belay memory resolve <id> ${how} takes no --evidence (only supersedes does)` };
+  if (how !== 'supersedes' && how !== 'refines' && opts.evidence !== undefined) return { error: `belay memory resolve <id> ${how} takes no --evidence (only supersedes and refines do)` };
   return {};
 }
 

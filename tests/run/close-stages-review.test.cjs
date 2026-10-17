@@ -222,13 +222,16 @@ test('closeStages: the scrub then the review, one manager built only when a chil
   assert.strictEqual(T.store.p('SELECT COUNT(*) AS n FROM memory_event').get().n, evBefore);
   assert.strictEqual(T.store.p('SELECT COUNT(*) AS n FROM memory_entries').get().n, rows);
 
+  // The scrubber no longer holds notes: a hold comes from an upheld report (the seam in lifecycle-env stands in for that path), and the scrub in scope is a pair.
   const rep = X.reported('close: reported wrong');
+  await T.call(T.who.harness('apply'), 'memory.scrubApply', { scrub: [X.hold(rep)], scope: [rep], ...T.evidence });
+  const pair = X.reported('close: a pair the scrubber looks at');
   const mk = [];
-  const m = fakeManager(T, 'apply', (a) => (a.worker_id.startsWith('scrub-') ? json('scrub', [X.hold(rep)]) : json('verdicts', [archiveV(rep)])));
+  const m = fakeManager(T, 'apply', (a) => (a.worker_id.startsWith('scrub-') ? json('scrub', []) : json('verdicts', [archiveV(rep)])));
   const both = await closeStages({ core: X.coreFor('apply'), runId: RUN.apply, levers: lv({ review_min_held: 1 }), dataDir: T.dir, worktree: T.repo, makeManager: async () => { mk.push(1); return m; } });
   assert.strictEqual(mk.length, 1, 'one manager for both stages');
   assert.deepStrictEqual(m.spawned.map((s) => s.worker_id.split('-')[0]), ['scrub', 'archreview'], 'the scrub, then the review');
-  assert.deepStrictEqual([both.scrub.result.counts.applied, both.review.result.counts.applied, nsOf(rep)], [1, 1, 'archive/lc']);
+  assert.deepStrictEqual([both.scrub.result.counts.applied, both.review.result.counts.applied, nsOf(rep)], [0, 1, 'archive/lc']);
   const skipped = await closeStages({ core: X.coreFor('apply'), runId: RUN.apply, levers: lv(), dataDir: T.dir, worktree: T.repo, review: false, makeManager: async () => m });
   assert.strictEqual(skipped.review, null);
 });

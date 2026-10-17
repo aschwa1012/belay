@@ -32,7 +32,12 @@ async function setup() {
     tool: k => callerFor('orchestrator', { run_id: RUNS[k] }),
     operator: k => callerFor('operator', { run_id: RUNS[k] }),
   };
-  const call = (caller, method, args = {}) => E.handle(method, { caller, ...args });
+  // The scrubber may no longer hand back a hold or a dismissal (memory.scrubApply refuses both), but the held queue and the reviewer
+  // are still tested through them: a hand-back that carries one goes to holdApply, the same call with them allowed (the seam the
+  // report-to-hold path uses). `scrubber` below is the plain engine call, which refuses them.
+  const heldShape = args => Array.isArray(args.scrub) && args.scrub.some(e => e && (e.action === 'hold' || e.action === 'dismiss'));
+  const call = (caller, method, args = {}) => (method === 'memory.scrubApply' && heldShape(args)
+    ? require('../../src/core/methods-memory-scrub.cjs').holdApply(E, caller, args) : E.handle(method, { caller, ...args }));
   for (const k of Object.keys(RUNS)) await call(who.tool(k), 'run.attach', { adapter_pid: process.pid, project: PROJECT, memory_levers: JSON.stringify(LEVERS[k]) });
   let n = 0;
   // A note as the hand-back would have stored it: type note, body state, stored vector. created_at orders them.

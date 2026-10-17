@@ -46,56 +46,98 @@ function deliveriesOf(E, id) {
   return out.sort((a, b) => a.at - b.at);
 }
 
+// Every moved row (a sighting, a delivery) records the notes that handed it on, oldest first, in `hops`; `transferred_from` (sightings)
+// and `from` (deliveries) stay the LAST hop. A row that passes B -> A -> C is [B, A] on C, so a restore of any note on the path can find
+// exactly the rows it handed over, wherever they now sit, and give back only those.
+const hopsOf = (r, key) => (Array.isArray(r.hops) ? r.hops : (r[key] ? [r[key]] : []));
+const hop = (r, id, key) => ({ ...r, hops: [...hopsOf(r, key), id], [key]: id });
+const through = (r, id, key) => hopsOf(r, key).includes(id);
+
 // B's sightings and delivery history go to A. B keeps nothing of them (they are not counted twice), and A records
 // where they came from. A note already listed in A's merged_from has been handed over once and is not handed over
-// again (a restored duplicate that is archived a second time). Returns what moved.
+// again (a restored duplicate that is archived a second time). B's own delivery_history (what it took from notes archived into it)
+// moves with it. Returns what moved.
 function transferHistory(E, B, A, meta) {
   if ((A.b.merged_from || []).some(m => m && m.id === B.id)) return { to: A.id, seen_total: 0, seen_in: 0, deliveries: 0, already: true };
   const bb = B.b;
   const at = Date.now();
-  const moved = (Array.isArray(bb.seen_in) ? bb.seen_in : []).map(s => ({ ...s, transferred_from: B.id }));
+  const moved = (Array.isArray(bb.seen_in) ? bb.seen_in : []).map(s => hop(s, B.id, 'transferred_from'));
   // As with `repeats`: the same writer in the same task as A is one observation, not a second sighting; and a
   // sighting A already holds from this task and writer is not added again.
   const dupeOfA = (A.b.seen_in || []).some(s => s && s.task_id === B.task_id && s.written_by === B.written_by);
   const own = !(A.task_id === B.task_id && A.written_by === B.written_by) && !dupeOfA;
-  const sighting = own ? { task_id: B.task_id, written_by: B.written_by, run_id: B.run_id, in_index_beforehand: null, at, evidence: (bb.evidence || []).slice(0, 3), transferred_from: B.id } : null;
+  const sighting = own ? { task_id: B.task_id, written_by: B.written_by, run_id: B.run_id, in_index_beforehand: null, at, evidence: (bb.evidence || []).slice(0, 3), transferred_from: B.id, hops: [B.id] } : null;
   const total = (Number.isInteger(bb.seen_total) ? bb.seen_total : moved.length) + (own ? 1 : 0);
-  const deliveries = deliveriesOf(E, B.id);
+  const deliveries = [...(bb.delivery_history || []).map(d => hop(d, B.id, 'from')), ...deliveriesOf(E, B.id).map(d => ({ ...d, hops: [B.id] }))];
   E.store.patchBody(A.id, b => {
     b.seen_in = [...(b.seen_in || []), ...moved, ...(sighting ? [sighting] : [])].slice(-SEEN_MAX);
     b.seen_total = (b.seen_total || 0) + total;
     b.delivery_history = [...(b.delivery_history || []), ...deliveries].slice(-HISTORY_KEEP);
     b.merged_from = [...(b.merged_from || []), {
-      id: B.id, at, seen_total: total, seen_in: moved.length + (sighting ? 1 : 0), deliveries: deliveries.length, own, run_id: meta.run_id || null, review: meta.receipt || null,
+      id: B.id, at, seen_total: total, seen_in: moved.length + (sighting ? 1 : 0), deliveries: deliveries.length, own, run_id: meta.run_id || null, review: meta.receipt || null, ...(meta.via ? { via: meta.via } : {}),
     }].slice(-MERGED_KEEP);
     return fitBody(b);
   });
-  E.store.patchBody(B.id, b => { b.seen_in = []; b.seen_total = 0; return b; });
+  E.store.patchBody(B.id, b => { b.seen_in = []; b.seen_total = 0; b.delivery_history = []; return b; });
   return { to: A.id, seen_total: total, seen_in: moved.length + (sighting ? 1 : 0), deliveries: deliveries.length };
 }
 
-// The reverse, for a restore: whatever A took from B comes back to B, so the lesson is not counted twice if B is
-// resolved or archived again, and not stranded on an A that is itself archived or refuted. A purged or absent A has
-// nothing to give back.
+const load = (E, id) => { const r = E.store.p('SELECT id, body FROM memory_entries WHERE id = ?').get(id); return r ? { id: r.id, b: JSON.parse(r.body || '{}') } : null; };
+
+// The reverse, for a restore: exactly the rows B handed over (those whose hops pass through B) come back to B, wherever they now
+// are. The holder is found by following the chain of archives: A took B's rows; if A was archived and handed its history to C, the
+// rows are on C, and C's record of A is reduced by what leaves, so a later restore of A gives back exactly the rest. The count that
+// leaves is B's own record of it (merged_from.seen_total), so a chain restored in any order ends at the same counts. A purged or
+// absent holder has nothing to give back.
 function untransfer(E, B) {
   const to = B.b.archived && B.b.archived.history_moved && B.b.archived.history_moved.to;
   if (!to) return null;
-  const A = E.store.p('SELECT id, body FROM memory_entries WHERE id = ?').get(to);
-  if (!A) return null;
+  const first = load(E, to);
+  const entry = first && (first.b.merged_from || []).find(m => m && m.id === B.id);
+  if (!entry) return null;
+  const path = [first];
+  for (let cur = first, n = 0; n < 50; n += 1) {
+    const next = cur.b.archived && cur.b.archived.history_moved && cur.b.archived.history_moved.to;
+    const nn = next && next !== cur.id ? load(E, next) : null;
+    if (!nn || !(nn.b.merged_from || []).some(m => m && m.id === cur.id)) break;
+    path.push(nn); cur = nn;
+  }
+  const holder = path[path.length - 1];
   let back = null;
-  E.store.patchBody(A.id, b => {
-    const entry = (b.merged_from || []).find(m => m && m.id === B.id);
-    if (!entry) return b;
-    const mine = (b.seen_in || []).filter(s => s && s.transferred_from === B.id);
-    back = { seen_total: Math.max(0, entry.seen_total - (entry.own ? 1 : 0)), seen_in: mine.filter(s => !(entry.own && s.task_id === B.task_id && s.written_by === B.written_by)).map(({ transferred_from, ...s }) => s) };
-    b.seen_in = (b.seen_in || []).filter(s => !(s && s.transferred_from === B.id));
-    b.seen_total = Math.max(0, (b.seen_total || 0) - entry.seen_total);
-    b.delivery_history = (b.delivery_history || []).filter(d => !(d && d.from === B.id));
-    b.merged_from = b.merged_from.filter(m => m !== entry);
-    return b;
-  });
-  if (back) E.store.patchBody(B.id, b => { b.seen_in = back.seen_in; b.seen_total = back.seen_total; return b; });
-  return back && { from: A.id, ...back };
+  for (const n of path) {
+    E.store.patchBody(n.id, b => {
+      if (n === first) b.merged_from = (b.merged_from || []).filter(m => !(m && m.id === B.id));
+      if (n !== first) { // the record of the previous note's handover shrinks by what leaves
+        const prev = path[path.indexOf(n) - 1];
+        const rec = (b.merged_from || []).find(m => m && m.id === prev.id);
+        if (rec) rec.seen_total = Math.max(0, rec.seen_total - entry.seen_total);
+      }
+      if (n === holder) {
+        const mine = (b.seen_in || []).filter(s => s && through(s, B.id, 'transferred_from'));
+        back = { seen_total: Math.max(0, entry.seen_total - (entry.own ? 1 : 0)), seen_in: mine.filter(s => !(entry.own && s.task_id === B.task_id && s.written_by === B.written_by && hopsOf(s, 'transferred_from')[0] === B.id)).map(s => {
+          const h = hopsOf(s, 'transferred_from'); const keep = h.slice(0, h.indexOf(B.id));
+          const { transferred_from, hops, ...rest } = s;
+          return keep.length ? { ...rest, transferred_from: keep[keep.length - 1], hops: keep } : rest;
+        }) };
+        b.seen_in = (b.seen_in || []).filter(s => !(s && through(s, B.id, 'transferred_from')));
+        b.seen_total = Math.max(0, (b.seen_total || 0) - entry.seen_total);
+        b.delivery_history = (b.delivery_history || []).filter(d => !(d && through(d, B.id, 'from')));
+      }
+      return b;
+    });
+  }
+  E.store.patchBody(B.id, b => { b.seen_in = back.seen_in; b.seen_total = back.seen_total; return b; });
+  return { from: first.id, ...(holder !== first ? { held_by: holder.id } : {}), ...back };
+}
+
+// A note archived while it carries an open hold ends that hold in the same transaction: the held row is closed with a receipt, so the
+// count of open holds stays right and the reviewer is not asked about a note that is gone. The reviewer's own archive passes held_row.
+function closeHold(E, note, meta) {
+  const h = note.b && note.b.held;
+  if (!h || !h.row || meta.held_row === h.row) return null;
+  const entry = { receipt: meta.receipt || `relation:${meta.run_id || 'none'}:${note.id}`, at: Date.now(), outcome: 'closed', reason: `the note was archived by a ${meta.relation || meta.kind} (${meta.reason || 'no reason'}) while this hold was open` };
+  E.store.patchBody(h.row, b => { b.reviews = [...(b.reviews || []), entry].slice(-20); b.state = 'closed'; b.closed_at = entry.at; return b; });
+  return h.row;
 }
 
 // Moves the note to archive/<project>. `meta` is what the archive records: { kind, of, ground, reason, cites, run_id,
@@ -103,7 +145,10 @@ function untransfer(E, B) {
 function archiveNote(E, project, note, meta, kept) {
   const to = `archive/${project}`;
   const from = note.namespace;
-  const transfer = meta.history_moved || (meta.kind === 'duplicate' && kept && !meta.no_transfer ? transferHistory(E, note, kept, meta) : null);
+  // A duplicate hands its history to the kept note; so does a note replaced by one that refines it (the same lesson, so its
+  // whole history belongs on the surviving note). A superseded note (a different lesson) keeps its history.
+  const transfer = meta.history_moved || ((meta.kind === 'duplicate' || meta.refines) && kept && !meta.no_transfer ? transferHistory(E, note, kept, meta) : null);
+  const closed = closeHold(E, note, meta);
   bindNamespace(E, to, note);
   E.store.moveRow(note.id, from, to);
   const at = Date.now();
@@ -111,7 +156,7 @@ function archiveNote(E, project, note, meta, kept) {
     b.state = 'archived';
     b.archived = {
       at, from, kind: meta.kind, of: meta.of || null, ground: meta.ground || null, reason: meta.reason, cites: meta.cites || [], run_id: meta.run_id || null,
-      head_sha: meta.head_sha || null, held_row: meta.held_row || null, review: meta.receipt || null, direct: !!meta.direct, ...(transfer ? { history_moved: transfer } : {}),
+      head_sha: meta.head_sha || null, held_row: meta.held_row || null, review: meta.receipt || null, direct: !!meta.direct, ...(closed ? { held_row_closed: closed } : {}), ...(meta.relation ? { relation: meta.relation } : {}), ...(transfer ? { history_moved: transfer } : {}),
     };
     delete b.held;
     return fitBody(b);
