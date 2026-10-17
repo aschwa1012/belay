@@ -35,8 +35,13 @@ for (const prefix of PREFIXES) {
     const sb = sandbox();
     const m = mgr(sb, createFakeCore());
     try {
-      const r = await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: `${prefix}t1`, allowed_tools: JOB_TOOLS, tools: JOB_TOOLS });
-      assert.ok(r, 'the spawn returned');
+      if (prefix === 'notereview-') {
+        const r = await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: `${prefix}t1`, allowed_tools: JOB_TOOLS, tools: JOB_TOOLS });
+        assert.ok(r, 'the spawn returned');
+      } else { // the scrubber and the archive reviewer spawn through the stage helper, with its own arguments
+        const got = await require('../../src/run/stage-job.cjs').runChild({ manager: m, workerId: `${prefix}t1`, worktree: sb.worktree, model: 'claude-haiku-5-5', capUsd: 0.05, wallMs: 30000, prompt: 'hi', label: prefix });
+        assert.strictEqual(got.error, null, String(got.error && got.error.message));
+      }
       const rec = m._worker(`${prefix}t1`);
       assert.deepStrictEqual(rec.readyEvidence.builtins, [...JOB_TOOLS].sort());
       assert.deepStrictEqual(rec.readyEvidence.belay_tools, []);
@@ -71,4 +76,17 @@ test('checkSurface: a job expects zero belay tools and exactly its built-ins; an
   assert.ok(!memory.ok);
   const ordinary = S.checkSurface(ready(JOB_TOOLS), { tools: JOB_TOOLS });
   assert.ok(!ordinary.ok && /no mcp__belay__\* tool is listed/.test(ordinary.reason), ordinary.reason);
+});
+
+test('replay: the init a real Claude Code 2.1.293 note-review job emitted passes the gate, and the old rule refused it', () => {
+  const { createParser } = require('../../src/run/parsers.cjs');
+  const R = require('../../src/run/ready.cjs');
+  const raw = fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'real-job-init.json'), 'utf8');
+  const ev = createParser('claude-code').pushChunk(raw).events.find((e) => e.kind === 'ready');
+  assert.ok(ev, 'the parser reads the real init as a ready event');
+  const gate = R.verifyClaudeReady({ substrate: 'claude-code', id: 'notereview-real', tools: JOB_TOOLS }, ev);
+  assert.ok(gate.ok, gate.reason);
+  // the rule before the fix: no job flag, at least one belay tool
+  const old = S.checkSurface(ev, { tools: JOB_TOOLS });
+  assert.ok(!old.ok && /no mcp__belay__\* tool is listed/.test(old.reason), old.reason);
 });
