@@ -2,8 +2,10 @@
 // cmd-memory-stages.cjs — `belay memory scrub|review|resolve`, the run-close stages by hand and the operator's way out of pending/.
 //   scrub [--run <id>]    the scrubber on the run's scope, as at run close. Spawns one short read-only child (the run's lever model),
 //                         so it is a write: it elects an owner on demand and shuts it down again.
-//   review [--project p] the Opus archive reviewer, ON DEMAND (the run-close trigger is off unless `archive_review_auto`), on the project's `wrong`
-//                         holds, ignoring the triggers. `--project` picks the newest ended run whose notes project it is.
+//   review [--project p] the Opus archive reviewer, ON DEMAND (the run-close trigger is off unless `archive_review_auto`), on the project's
+//                         held queue (every kind), ignoring the triggers. `--project` picks the newest ended run whose notes project it is.
+//                         It runs under a store-level claim (review-run.cjs): a second review of the project refuses while the first is
+//                         alive. `--start` launches it DETACHED and returns once the claim shows (the panel's button runs this).
 //   resolve <id> new | repeats <id> | supersedes <id> --evidence <text>
 //                         settle a pending note as the operator: memory.noteResolve's own logic (a repeat archives the pending row,
 //                         nothing is deleted). For a note whose run has ended and whose writer is gone.
@@ -45,10 +47,12 @@ async function stageCore(core, parsed, ctx, found) {
   let lv = null;
   try { lv = row && row.memory_levers ? { ...DEFAULTS, ...(typeof row.memory_levers === 'string' ? JSON.parse(row.memory_levers) : row.memory_levers) } : null; } catch { lv = null; }
   if (!lv || !lv.notes) { await rc.close(); return { fail: { code: 1, text: `belay memory ${parsed.sub}: run ${one(runId)} has memory.notes off, so it has no notes lifecycle\n`, json: { error: { code: 'E_LEVER_OFF', message: 'notes off', run_id: runId } } } }; }
-  return { rc, lv, runId, dataDir, worktree: parsed.opts.worktree || (found.found ? found.dir : ctx.cwd) };
+  return { rc, lv, runId, dataDir, project: parsed.opts.project || row.project || lv.project || null, worktree: parsed.opts.worktree || (found.found ? found.dir : ctx.cwd) };
 }
 
 async function release(rc) {
+  if (rc.belayReleased) return;
+  rc.belayReleased = true;
   try { if (typeof rc.isOwner === 'function' && rc.isOwner()) await rc.shutdownOwner(); } catch { /* best effort */ }
   await rc.close();
 }
@@ -68,15 +72,16 @@ function renderStage(name, o) {
 async function runStage(which, core, parsed, ctx, found) {
   const s = await stageCore(core, parsed, ctx, found);
   if (s.fail) return s.fail;
+  if (which === 'review' && !s.project) { await release(s.rc); return { code: 1, text: 'belay memory review: the run has no project, so there is no held queue to review; pass --project <p>\n', json: { error: { code: 'E_ARGS', message: 'no project' } } }; }
   try {
+    if (which === 'review' && parsed.opts.start) return await require('./review-run.cjs').launch({ core, s, project: s.project, parsed, ctx, release });
     const deps = (process.env.BELAY_TEST_MODE === '1' && ctx.stageDeps) || {};
     const CS = require('../run/close-stages.cjs');
     const h = s.rc.harness();
     const getManager = CS.lazyManager({ core: h, runId: s.runId, dataDir: s.dataDir, lv: s.lv, worktree: s.worktree, paths: deps.paths, makeManager: deps.makeManager });
     const common = { core: h, runId: s.runId, lv: s.lv, dataDir: s.dataDir, getManager, worktree: s.worktree };
-    const out = which === 'scrub'
-      ? await require('../run/scrub-stage.cjs').runScrub({ ...common, goal: parsed.opts.goal || null, summary: parsed.opts.summary || null })
-      : await require('../run/review-stage.cjs').runReview({ ...common, force: true });
+    if (which === 'review') return await require('./review-run.cjs').claimedReview({ s, project: s.project, ctx, common, runReview: require('../run/review-stage.cjs').runReview, renderStage });
+    const out = await require('../run/scrub-stage.cjs').runScrub({ ...common, goal: parsed.opts.goal || null, summary: parsed.opts.summary || null });
     return { code: out.error ? 1 : 0, text: renderStage(which, out), json: { run_id: s.runId, ...out } };
   } finally { await release(s.rc); }
 }

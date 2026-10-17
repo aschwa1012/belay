@@ -21,6 +21,9 @@
 //   scrub_failed        a run-close scrub or archive review that failed, with its code
 //   notes_held          notes held for the on-demand Opus archive reviewer (a hold of any kind): `count`, `by_project`, `oldest_age_runs`, the command that dispatches it
 //   reports_unjudged    reports that a note is wrong whose task ended with no review at all: listed for the operator
+//   review_running     an archive review of a project holds its claim (memory.reviewState): the pid, the job, the claim, and whether a pid check
+//                       answers; a claim whose process is gone says so (the next review takes it over)
+//   review_ended        the newest archive review of a project ended in the last 24 hours: ok, or the code that failed it, and its summary
 //   notes_unembedded    notes stored without a vector (on_embedder_failure keyword), in any project namespace: a count from
 //                       the rows, whatever the run. Only `belay memory embed` embeds them. Its ts is the newest such note's
 //                       creation time.
@@ -203,6 +206,18 @@ function heldEvents(h, runId) {
   return [{ kind: 'notes_held', ts: num(h.newest_at), run_id: runId, count: h.total, by_project: h.by_project || {}, oldest_age_runs: h.oldest_age_runs || 0, command: 'belay memory review', source: 'memory_entries rows of type held, state held' }];
 }
 
+// The archive reviews (memory.reviewState, a plain read of the claim receipts): one event per project while its newest review runs, and
+// for REVIEW_SHOWN_MS after one ended. `pid_alive` is a pid check (not an identity proof); the launcher and the next review prove identity.
+const REVIEW_SHOWN_MS = 24 * 3600 * 1000;
+function reviewEvents(reviews, runId, now = Date.now()) {
+  const out = [];
+  for (const [project, st] of Object.entries((reviews && reviews.reviews) || {})) {
+    if (st.state === 'running' && st.claim) out.push({ kind: 'review_running', ts: num(st.claim.at), run_id: runId, project, pid: st.claim.pid, job: st.claim.job, claim_id: st.claim.id, pid_alive: !!st.pid_alive, source: st.established_by });
+    else if (st.state === 'ended' && st.release && now - (num(st.release.at) || 0) < REVIEW_SHOWN_MS) out.push({ kind: 'review_ended', ts: num(st.release.at), run_id: runId, project, ok: !!st.release.ok, code: st.release.code || null, text: st.release.summary || null, job: st.release.job, claim_id: st.claim ? st.claim.id : null, source: st.established_by });
+  }
+  return out;
+}
+
 // Reports of "wrong" that no review will judge, one standing event while any exist (the operator looks: belay memory proposals).
 function unjudgedEvents(list, runId) {
   if (!list || !list.length) return [];
@@ -246,6 +261,10 @@ function summaryOf(e) {
       return P.unembeddedText({ total: e.count, by_project: e.by_project });
     case 'notes_held':
       return P.heldText({ total: e.count, by_project: e.by_project, oldest_age_runs: e.oldest_age_runs });
+    case 'review_running':
+      return `archive review of ${P.v(e.project, 64)} ${e.pid_alive ? 'running' : 'INTERRUPTED (its process is gone; the next review takes the claim over)'}: pid ${e.pid}, job ${P.v(e.job, 80)}`;
+    case 'review_ended':
+      return `archive review of ${P.v(e.project, 64)} ${e.ok ? 'ended ok' : `FAILED ${P.v(e.code, 40)}`}${e.text ? `: ${P.v(e.text, 240)}` : ''}`;
     case 'reports_unjudged':
       return `${e.count} report${e.count === 1 ? '' : 's'} that a note is wrong no review judged (${(e.note_ids || []).slice(0, 5).map((x) => P.v(x, 40)).join(', ')}): see belay memory proposals`;
     case 'run_paused':
@@ -276,9 +295,10 @@ async function run(ctx) {
     const { chosen, source } = await P.chooseRun(core, parsed.runId);
     const unembedded = await core.memory.unembedded({});
     const heldNotes = await core.memory.held({ reports: true }).catch(() => null);
+    const reviews = await core.memory.reviewState({}).catch(() => null);
     if (!chosen) {
       if (!parsed.runId) {
-        const events = ordered([...unembeddedEvents(unembedded, null), ...heldEvents(heldNotes, null), ...unjudgedEvents(heldNotes && heldNotes.unjudged_reports, null)], parsed.since);
+        const events = ordered([...unembeddedEvents(unembedded, null), ...heldEvents(heldNotes, null), ...reviewEvents(reviews, null), ...unjudgedEvents(heldNotes && heldNotes.unjudged_reports, null)], parsed.since);
         const empty = { run_id: null, run_id_source: source, since: parsed.since, stall_ms: parsed.stallMs, events, count: events.length };
         return { code: 0, text: renderText(events), json: empty };
       }
@@ -297,6 +317,7 @@ async function run(ctx) {
       ...stageEvents(ledger, chosen.id),
       ...unembeddedEvents(unembedded, chosen.id),
       ...heldEvents(heldNotes, chosen.id),
+      ...reviewEvents(reviews, chosen.id),
       ...unjudgedEvents(heldNotes && heldNotes.unjudged_reports, chosen.id),
       ...runEvents(chosen),
     ], parsed.since);
@@ -312,4 +333,4 @@ async function run(ctx) {
   }
 }
 
-module.exports = { run, heldEvents, unjudgedEvents, stageEvents, wrapupEvents, verdictEvents, runEvents, ordered, workerEvents, stallAge, renderText };
+module.exports = { run, heldEvents, reviewEvents, unjudgedEvents, stageEvents, wrapupEvents, verdictEvents, runEvents, ordered, workerEvents, stallAge, renderText };

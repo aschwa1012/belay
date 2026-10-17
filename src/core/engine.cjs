@@ -101,6 +101,10 @@ const METHODS = {
   'memory.stats': { roles: ALL, kind: 'read', fn: memory.stats },
   // The notes stored without a vector, counted (and listed on request) by a plain read; status, notices and the panel show the count.
   'memory.unembedded': { roles: ALL, kind: 'read', fn: lazy('./notes-unembedded.cjs', 'unembedded') },
+  // The in-flight claim of an archive review (the panel's button, the hand command): one review of a project at a time, by process identity.
+  'memory.reviewClaim': { roles: ['operator'], kind: 'write', fn: lazy('./review-claim.cjs', 'reviewClaim') },
+  'memory.reviewRelease': { roles: ['operator'], kind: 'write', fn: lazy('./review-claim.cjs', 'reviewRelease') },
+  'memory.reviewState': { roles: ALL, kind: 'read', fn: lazy('./review-claim.cjs', 'reviewState') },
   // The notes held for the Opus archive reviewer (a hold of any kind), counted by a plain read; status, notices and the panel show the count.
   'memory.held': { roles: ALL, kind: 'read', fn: lazy('./notes-held.cjs', 'held') },
   // `belay memory embed --reembed`: which notes have a vector made from another template, and which of those can be rebuilt (a read).

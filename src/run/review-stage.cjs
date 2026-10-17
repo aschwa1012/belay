@@ -64,8 +64,8 @@ async function withFiles(held, worktree, dir) {
   return { held: out, streams: [...streams] };
 }
 
-// opts: { core, runId, lv, dataDir, getManager, worktree, force }. Never throws; every outcome is a receipt and a returned fact.
-async function runReview({ core, runId, lv, dataDir, getManager, worktree = null, force = false, fast = null, log = null, sink = null }) {
+// opts: { core, runId, lv, dataDir, getManager, worktree, force, jobId }. Never throws; every outcome is a receipt and a returned fact.
+async function runReview({ core, runId, lv, dataDir, getManager, worktree = null, force = false, fast = null, log = null, sink = null, jobId: given = null }) {
   if (!lv || !lv.notes) return { ran: false, reason: 'notes off' };
   if (!force && !lv.archive_review_auto) return { ran: false, reason: 'archive_review_auto off' }; // on demand only: `belay memory review`, or the panel's button
   if (lv.scrub_action === 'off' && !force) return { ran: false, reason: 'scrub_action off' };
@@ -77,7 +77,7 @@ async function runReview({ core, runId, lv, dataDir, getManager, worktree = null
   if (!why) return { ran: false, reason: 'below the triggers', counts: q.counts };
   const limit = await J.attemptLimit(core, 'review', 'review_stage', q.held.length); // half of an overrun attempt, oldest first, down to 1
   const queued = q.held.slice(0, limit);
-  const jobId = `${JOB_PREFIX}${runId}-${Date.now().toString(36)}`;
+  const jobId = given || `${JOB_PREFIX}${runId}-${Date.now().toString(36)}`; // a caller that holds a claim names the job in it
   const out = { ran: true, job: jobId, trigger: why, counts: q.counts, queue: q.held.length, offered: queued.length };
   const base = { run_id: runId, worker_id: jobId, key: `run:${runId}` };
   const noteOverrun = async (failedJob) => {
