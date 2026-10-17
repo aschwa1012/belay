@@ -81,3 +81,18 @@ test('R6: a write-time refines or supersedes of a verified note by an orchestrat
   assert.strictEqual(out.resolved[0].held_for_review, undefined);
   assert.strictEqual(ns(v), `archive/${PROJECT}`);
 });
+
+test('Q1: only a report of the hold\'s own run, by another writer, waives the newer-than and same-subject checks of a superseded hold', async () => {
+  const hold = (n, older) => T.call(T.who.harness('apply'), 'memory.scrubApply', { scrub: [{ id: n, action: 'hold', kind: 'superseded', of: older, ground: 'replaced_by_newer', reason: 'x', cites: [T.cite] }], scope: [n, older], ...T.evidence });
+  const older = T.note('q1 unrelated older note', { vec: B, created_at: 50 });
+  const stale = T.note('q1 stale', { vec: A, created_at: 200, reported_wrong: [T.report('worker:w2', older)] }); // run old-run
+  const r1 = await hold(stale, older);
+  assert.deepStrictEqual([r1.applied.length, r1.refused[0].code], [0, 'E_PRECONDITION'], 'an old run\'s report waives nothing');
+  const own = T.note('q1 own writer', { vec: A, created_at: 200, reported_wrong: [{ ...report('w2', older), by: 'worker:w1', run_id: 'lc-apply' }] });
+  T.store.p('UPDATE memory_entries SET written_by = ? WHERE id = ?').run('worker:w1', own);
+  const r2 = await hold(own, older);
+  assert.deepStrictEqual([r2.applied.length, r2.refused[0].code], [0, 'E_PRECONDITION'], 'the note\'s own writer\'s report waives nothing');
+  const fresh = T.note('q1 fresh', { vec: A, created_at: 200, reported_wrong: [report('w2', older)] });
+  const r3 = await hold(fresh, older);
+  assert.deepStrictEqual([r3.refused.length, r3.applied[0].outcome], [0, 'held'], 'this run\'s report from another writer does');
+});
