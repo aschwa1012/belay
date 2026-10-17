@@ -74,7 +74,9 @@ function narrowTools(tools) {
 // already built (parsers.cjs), never the raw system/init line.
 // `tools`: the narrowed built-in list this launch was given (launch.cjs narrowTools), checked exactly as the full
 // list is; null for the full list.
-function checkSurface(ready, { permissionPrompt = false, tools: wanted = null } = {}) {
+// `job`: the worker carries a reserved job id prefix (src/core/job-ids.cjs). Its adapter lists no belay tool by design, so the gate
+// expects none (ADR 0024 decision 6, amendment 2); the built-in check is unchanged and exact.
+function checkSurface(ready, { permissionPrompt = false, tools: wanted = null, job = false } = {}) {
   const tools = ready && ready.tools;
   if (!Array.isArray(tools)) {
     return {
@@ -102,7 +104,9 @@ function checkSurface(ready, { permissionPrompt = false, tools: wanted = null } 
   // mcp__belay__*, and at least one" — the adapter's own tool list is its business, and mcp_servers
   // (ready.cjs) already proves the connection, but an init naming none at all names no adapter.
   const belayTools = mcpTools.filter((t) => t.startsWith('mcp__belay__'));
-  if (belayTools.length === 0) reasons.push('no mcp__belay__* tool is listed (ADR 0024 decision 6 expects at least one)');
+  if (job) {
+    if (belayTools.length) reasons.push(`a job worker lists no belay tool, and this one lists: ${belayTools.join(', ')} (ADR 0024 decision 6, amendment 2)`);
+  } else if (belayTools.length === 0) reasons.push('no mcp__belay__* tool is listed (ADR 0024 decision 6 expects at least one)');
 
   if (permissionPrompt && mcpTools.includes('mcp__belay__permit')) {
     reasons.push('mcp__belay__permit is listed even though a permission-prompt tool was configured for this launch (ADR 0024 decision 7)');
