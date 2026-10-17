@@ -55,19 +55,21 @@ describe('notes held for the archive reviewer', () => {
     expect(wd.spawned.length).toBe(1)
     const argv = wd.spawned[0]!
     expect(argv.slice(argv.indexOf('memory'), argv.indexOf('memory') + 5)).toEqual(['memory', 'review', '--project', 'acme', '--start'])
-    expect(wd.toasts).toContain('belay: archive review of acme started: pid 4242, job archreview-r-1, claim me-1')
+    expect(wd.spawned[0]).toContain('--json') // the real argv path: belay prints JSON, and the toast is the parsed line
+    expect(wd.toasts).toContain('belay: archive review of acme started: pid 4242, job archreview-r-1')
+    expect(wd.toasts.some(t => t.includes('{'))).toBe(false)
     expect(wd.ran.some(a => a.includes('review'))).toBe(false) // never through the read rounds
   })
 
   test('a launcher that refuses or fails is toasted with its exit code and first line, so the press never ends in silence', async ($, on) => {
-    const launcher = { exitCode: 1, stdout: 'belay memory review: an archive review of acme is already running (pid 77, job archreview-r-1)\nmore\n', stderr: '' }
+    const launcher = { exitCode: 1, stdout: JSON.stringify({ error: { code: 'E_BUSY', message: 'an archive review of acme is already running (pid 77, job archreview-r-1)', project: 'acme' } }), stderr: '' }
     const wd = await boot($, on, { notices: notices(held(3)), launcher })
     await openPane($, wd)
     const { ui } = await pane($)
     await ui.press({ key: 'review' })
     await ui.press({ key: 'review' })
     await later(wd, 10)
-    expect(wd.toasts).toContain('belay: the review was not started (exit 1): belay memory review: an archive review of acme is already running (pid 77, job archreview-r-1)')
+    expect(wd.toasts).toContain('belay: the review was not started (exit 1): E_BUSY: an archive review of acme is already running (pid 77, job archreview-r-1)')
   })
 
   test('a review in flight is read back from belay: the line says running, and there is no button to press over it', async ($, on) => {

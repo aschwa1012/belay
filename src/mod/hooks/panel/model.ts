@@ -206,8 +206,10 @@ export const runningReview = (h: BelayHeld, project: string | null): BelayReview
   h.reviews.find(r => r.state === 'running' && (project === null || r.project === project)) ?? null
 
 // The one line a review's state is shown as.
-export function reviewLine(r: BelayReview): string {
-  if (r.state === 'running') return `archive review of ${r.project} running${r.pid ? ` · pid ${r.pid}` : ''}`
+// A running review is shown from a pid check; belay proves identity (pid and creation time) only where it takes the claim. An old claim says so.
+export const STALE_CLAIM_MS = 15 * 60 * 1000
+export function reviewLine(r: BelayReview, now: number | null = null): string {
+  if (r.state === 'running') return `archive review of ${r.project} running${r.pid ? ` · pid ${r.pid}` : ''}${now !== null && r.ts !== null && now - r.ts > STALE_CLAIM_MS ? ' · pid check only, may be stale: a new review checks the process' : ''}`
   if (r.state === 'interrupted') return `archive review of ${r.project} INTERRUPTED · its process is gone; the next review takes over`
   return `archive review of ${r.project} ${r.state === 'ok' ? 'ended ok' : 'FAILED'}${r.text ? ` · ${r.text}` : ''}`
 }

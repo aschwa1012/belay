@@ -44,6 +44,7 @@ async function claimIsDead(claim, D) {
   try { got = await D.createdOf(claim.pid); } catch { got = null; }
   if (!got || got.created == null) return { dead: false, via: `pid ${claim.pid} answers a pid check and the process snapshot could not read its creation time` };
   if (got.created !== claim.created) return { dead: true, via: `pid ${claim.pid} was created at ${got.created} and the claim says ${claim.created}: another process holds the pid` };
+  if (claim.image && got.image && String(claim.image).toLowerCase() !== String(got.image).toLowerCase()) return { dead: false, via: `pid ${claim.pid} was created at ${claim.created} as the claim says, but its image is ${got.image}, not ${claim.image}; that proves nothing, so it is treated as alive` };
   return { dead: false, via: `pid ${claim.pid} is the claimed process (created ${claim.created})` };
 }
 
@@ -126,7 +127,10 @@ async function launch({ core, s, project, parsed, ctx, release }) {
   const D = depsOf(ctx);
   await release(s.rc); // the launcher holds no store: the detached CLI elects its own owner
   const before = ((await core.memory.reviewState({ project })).reviews || {})[project];
-  if (before && before.state === 'running' && before.pid_alive) return busy(project, before, '; a pid check says it is alive');
+  if (before && before.state === 'running') { // the launcher is a write path: liveness is pid AND creation time, never a pid alone
+    const dead = await claimIsDead(before.claim, D);
+    if (!dead.dead) return busy(project, before, `; ${dead.via}`);
+  }
   const args = [process.argv[1], 'memory', 'review', '--project', project, '--run', s.runId, '--data', s.dataDir, ...(s.worktree ? ['--worktree', s.worktree] : []), ...(parsed.opts.all ? ['--all'] : [])];
   const startedAt = Date.now();
   const child = D.spawnDetached({ args, cwd: s.worktree });

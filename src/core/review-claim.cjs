@@ -14,7 +14,7 @@
 // Imports nothing that can reach the embedder; the read answers from the rows and a pid check, and starts no process (invariant 9).
 
 const { err } = require('./errors.cjs');
-const { recordEventSync } = require('./methods-ledger.cjs');
+const recordEventSync = (...a) => require('./methods-ledger.cjs').recordEventSync(...a); // loaded by the two writes only; a read never needs the ledger code
 const { pidAlive } = require('./lock.cjs');
 
 const KIND = 'review_claim';

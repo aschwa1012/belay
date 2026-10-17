@@ -317,7 +317,7 @@ function Held({ E, snap, ui, now, act, cols }: Ctx) {
   const asking = !busy && !!ui.confirm && project !== null && ui.confirm.project === project && now - ui.confirm.at <= CONFIRM_MS
   return (
     <Box flexDirection="column">
-      {hd.reviews.map((r, i) => <Line E={E} w={cols} k={`hr${i}`} segs={[{ t: '◇ ', c: r.state === 'failed' || r.state === 'interrupted' ? 'error' : 'warning' }, { t: reviewLine(r), c: r.state === 'failed' || r.state === 'interrupted' ? 'error' : undefined }]} />)}
+      {hd.reviews.map((r, i) => <Line E={E} w={cols} k={`hr${i}`} segs={[{ t: '◇ ', c: r.state === 'failed' || r.state === 'interrupted' ? 'error' : 'warning' }, { t: reviewLine(r, now), c: r.state === 'failed' || r.state === 'interrupted' ? 'error' : undefined }]} />)}
       {hd.count > 0 && <Line E={E} w={cols} k="hl" segs={[{ t: '◇ ', c: 'warning' }, { t: asking && project ? confirmLine(hd, project) : heldLine(hd), c: asking ? 'warning' : undefined }]} />}
       {project !== null && !busy && <Button key="review" plain label={asking ? '  ▸ press again to dispatch · any other press cancels' : `  ▸ review the held notes${Object.keys(hd.byProject).length > 1 ? ` (${project} first)` : ''}`} onPress={act.review} />}
     </Box>

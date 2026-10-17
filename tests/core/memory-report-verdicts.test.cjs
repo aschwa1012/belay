@@ -377,3 +377,30 @@ test('U6: a hold with a warning takes archive or release only', async () => {
   const r = await applyReview([{ id: a.note, verdict: 'verify', reason: 'x', cites: [cite('the loader worked as the note says')] }], []);
   assert.deepStrictEqual([r.applied.length, r.refused[0].code], [0, 'E_PRECONDITION']);
 });
+
+test('U7: verify or refute cites only TOOL RESULTS of non-belay tools: the note itself, belay tool inputs, assistant prose and the task brief are refused', async () => {
+  const u = await unsupportedNote('w-u7', 'K27');
+  const note = rowOf(u.note);
+  const BRIEF = 'The loader is known to be fine with empty input per the maintainer';
+  const PROSE = 'loadConfig handles empty files by returning defaults, I checked it';
+  const INPUT = 'belay-input-only-phrase-for-the-lease-release';
+  const REAL = 'REAL-TOOL-OUTPUT: the loader returned defaults for the empty file';
+  const line = (o) => `${JSON.stringify(o)}\n`;
+  fs.writeFileSync(streamOf('w-u7'),
+    line({ type: 'user', message: { role: 'user', content: BRIEF } })
+    + line({ type: 'assistant', message: { content: [{ type: 'text', text: PROSE }] } })
+    + line({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tb1', name: 'mcp__belay__lease_release', input: { notes: [{ title: note.title, text: INPUT }] } }] } })
+    + line({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tr1', name: 'Bash', input: { command: 'run-it' } }] } })
+    + line({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tr1', content: [{ type: 'text', text: REAL }] }] } }));
+  const forbidden = [['the note itself', note.title], ['the task brief', BRIEF], ['assistant prose', PROSE], ['a belay tool input', INPUT]];
+  for (const [what, quote] of forbidden) {
+    for (const verdict of ['verify', 'refute']) {
+      const r = await applyReview([{ id: u.note, verdict, reason: 'x', cites: [{ where: `stream:${streamOf('w-u7')}`, quote }] }], [streamOf('w-u7')]);
+      assert.deepStrictEqual([r.applied.length, r.refused[0] && r.refused[0].code], [0, 'E_CITATION'], `${what} / ${verdict}: ${JSON.stringify(r.refused)}`);
+    }
+  }
+  assert.strictEqual(rowOf(u.note).status ?? 'unverified', 'unverified');
+  assert.strictEqual(events('note_refuted').filter((e) => e.key === `refuted:${u.note}`).length, 0, 'no wake from a refused refute');
+  const ok = await applyReview([{ id: u.note, verdict: 'refute', reason: 'the tool output shows defaults', cites: [{ where: `stream:${streamOf('w-u7')}`, quote: REAL }] }], [streamOf('w-u7')]);
+  assert.deepStrictEqual([ok.applied.length, rowOf(u.note).status], [1, 'refuted'], 'a real tool result is evidence');
+});

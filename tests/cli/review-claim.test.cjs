@@ -162,7 +162,7 @@ test('--start: a launch that exits before claiming, or never claims in time, or 
     const slow = await cmd(T, ['review', '--project', 'lc', '--run', RUN, '--worktree', T.repo, '--start'], { spawnDetached: () => ({ pid: 424321, exited: () => undefined }), startWaitMs: 300 });
     assert.deepStrictEqual([slow.code, slow.json.error.code], [1, 'E_TIMEOUT']);
     const live = (await plantClaim(T, { pid: process.pid, created: 1, job: 'archreview-running' })).claim;
-    const busy = await cmd(T, ['review', '--project', 'lc', '--run', RUN, '--worktree', T.repo, '--start'], { spawnDetached: () => assert.fail('a live review is never started over') });
+    const busy = await cmd(T, ['review', '--project', 'lc', '--run', RUN, '--worktree', T.repo, '--start'], { createdOf: async () => ({ created: 1 }), spawnDetached: () => assert.fail('a live review is never started over') });
     assert.deepStrictEqual([busy.code, busy.json.error.code, busy.json.error.claim.id], [1, 'E_BUSY', live.id]);
     const none = await cmd(T, ['review', '--project', 'no-such', '--start'], { spawnDetached: () => assert.fail('no run') });
     assert.strictEqual(none.code, 1);
@@ -235,4 +235,24 @@ test('notices and status count unsupported notes apart from the holds that carry
   assert.deepStrictEqual([ev[0].count, ev[0].unsupported], [8, 3]);
   assert.match(N.renderText(ev).split(/\s+/).join(' '), /5 held as wrong or duplicate · 3 unsupported awaiting review, oldest 2 runs/);
   assert.match(require('../../src/cli/panel-common.cjs').heldText({ total: 3, unsupported: 3, by_project: { acme: 3 }, oldest_age_runs: 1 }), /^3 unsupported awaiting review, oldest 1 run:/);
+});
+
+test('--start judges a running claim by pid AND creation time: a reused pid does not block the launcher, an unprovable one does', async () => {
+  await planted(async (T) => {
+    await holdOne(T);
+    T.store.close();
+    const old = (await plantClaim(T, { pid: process.pid, created: 100, job: 'archreview-reused' })).claim; // the pid answers, but it is another process now
+    const args = ['review', '--project', 'lc', '--run', RUN, '--worktree', T.repo, '--start'];
+    const unprovable = await cmd(T, args, { createdOf: async () => null, spawnDetached: () => assert.fail('an unprovable claim is never taken over') });
+    assert.deepStrictEqual([unprovable.code, unprovable.json.error.code], [1, 'E_BUSY']);
+    const sameImageOther = await cmd(T, args, { createdOf: async () => ({ created: 100, image: 'other.exe' }), spawnDetached: () => assert.fail('same creation time, another image: not proven dead') });
+    assert.strictEqual(sameImageOther.code, 1);
+    assert.match(sameImageOther.text, /its image is other\.exe/);
+    const reused = await cmd(T, args, {
+      createdOf: async () => ({ created: 999, image: 'node.exe' }),
+      spawnDetached: () => { setTimeout(() => { void plantClaim(T, { pid: 424330, created: 1, job: 'archreview-new', replaces: old.id }); }, 30); return { pid: 424330, exited: () => undefined }; },
+    });
+    assert.strictEqual(reused.code, 0, reused.text);
+    assert.strictEqual(reused.json.pid, 424330);
+  });
 });

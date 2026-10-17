@@ -294,8 +294,8 @@ async function run(ctx) {
   try {
     const { chosen, source } = await P.chooseRun(core, parsed.runId);
     const unembedded = await core.memory.unembedded({});
-    const heldNotes = await core.memory.held({ reports: true }).catch(() => null);
-    const reviews = await core.memory.reviewState({}).catch(() => null);
+    const heldNotes = await core.memory.held({ reports: true, reviews: true }).catch(() => null); // one read: counts, unjudged reports and review claims
+    const reviews = heldNotes && heldNotes.reviews ? { reviews: heldNotes.reviews } : null;
     if (!chosen) {
       if (!parsed.runId) {
         const events = ordered([...unembeddedEvents(unembedded, null), ...heldEvents(heldNotes, null), ...reviewEvents(reviews, null), ...unjudgedEvents(heldNotes && heldNotes.unjudged_reports, null)], parsed.since);
