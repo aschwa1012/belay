@@ -123,6 +123,7 @@ async function noteVerdicts(E, caller, args) {
   const out = { reviewer: route.reviewer, ref: route.ref, applied: [], refused: [], already: [], unjudged: [] };
   if (route.verdicts === null) { out.no_verdicts = true; }
   else if (!Array.isArray(route.verdicts) || route.verdicts.length > VERDICTS_MAX) throw bad(`memory_verdicts must be an array of at most ${VERDICTS_MAX} verdicts`);
+  RV.validateReportVerdicts(route.reportVerdicts); // all or nothing: a malformed report list is refused before any note verdict is written
   const seen = new Set();
   for (const [index, raw] of (route.verdicts || []).entries()) {
     const idOf = isObj(raw) && typeof raw.id === 'string' ? raw.id : null;

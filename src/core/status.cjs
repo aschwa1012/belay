@@ -138,7 +138,7 @@ async function get(E, caller, args = {}) {
   // of the rows already open, none when the store is absent.
   const notesUnembedded = storePresent ? unembeddedCount(E.store) : { total: 0, by_project: {}, newest_at: null };
 
-  // Notes held for the on-demand Opus archive reviewer (a `wrong` hold): a plain read, none when the store is absent.
+  // Notes held for the on-demand Opus archive reviewer (a hold of any kind): a plain read, none when the store is absent.
   const notesHeld = storePresent ? heldCount(E.store) : { total: 0, by_project: {}, oldest_age_runs: 0 };
 
   return {

@@ -19,7 +19,7 @@
 //   stage_overrun       a run-close scrub or archive review that spent its cost cap: nothing was applied, the next attempt takes half the items, and the line names the lever to raise
 //   scrub_dropped       items a scrub child gave no entry in two scrubs: named here, and not offered again until a new report, sighting or nomination
 //   scrub_failed        a run-close scrub or archive review that failed, with its code
-//   notes_held          notes held for the on-demand Opus archive reviewer (a `wrong` hold): `count`, `by_project`, `oldest_age_runs`, the command that dispatches it
+//   notes_held          notes held for the on-demand Opus archive reviewer (a hold of any kind): `count`, `by_project`, `oldest_age_runs`, the command that dispatches it
 //   reports_unjudged    reports that a note is wrong whose task ended with no review at all: listed for the operator
 //   notes_unembedded    notes stored without a vector (on_embedder_failure keyword), in any project namespace: a count from
 //                       the rows, whatever the run. Only `belay memory embed` embeds them. Its ts is the newest such note's
@@ -200,7 +200,7 @@ function unembeddedEvents(u, runId) {
 // The standing count of notes held for the on-demand Opus archive reviewer (memory.held, a plain read), modelled on notes_unembedded.
 function heldEvents(h, runId) {
   if (!h || !(h.total > 0)) return [];
-  return [{ kind: 'notes_held', ts: num(h.newest_at), run_id: runId, count: h.total, by_project: h.by_project || {}, oldest_age_runs: h.oldest_age_runs || 0, command: 'belay memory review', source: 'memory_entries rows of type held, kind wrong, state held' }];
+  return [{ kind: 'notes_held', ts: num(h.newest_at), run_id: runId, count: h.total, by_project: h.by_project || {}, oldest_age_runs: h.oldest_age_runs || 0, command: 'belay memory review', source: 'memory_entries rows of type held, state held' }];
 }
 
 // Reports of "wrong" that no review will judge, one standing event while any exist (the operator looks: belay memory proposals).

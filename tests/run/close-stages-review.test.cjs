@@ -86,12 +86,12 @@ test('the whole queue is cleared in ONE spawn, no item cap, with both notes, the
   await drain();
   const ids = [];
   for (let i = 0; i < 7; i += 1) ids.push(await held(`queue member ${i}`));
-  // The archive reviewer judges `wrong` holds only: a duplicate hold in the queue is left out of the brief and stays held.
+  // The archive reviewer judges every held kind: a duplicate hold is in the brief with both notes in full.
   const keep = T.note(`the kept note for a duplicate ${'k'.repeat(1900)} KEPT-TAIL`);
   const dupe = T.note(`duplicate of the kept note ${'d'.repeat(1900)} DUPE-TAIL`, { reported_wrong: [T.report('worker:w2', keep)] });
   await T.call(T.who.harness('apply'), 'memory.scrubApply', { scrub: [{ id: dupe, action: 'hold', kind: 'duplicate', of: keep, ground: 'same_claim', reason: 'same claim' }], scope: [dupe, keep], ...T.evidence });
   const all = ids;
-  const m = fakeManager(T, 'apply', json('verdicts', all.map((id) => archiveV(id))));
+  const m = fakeManager(T, 'apply', json('verdicts', [...all.map((id) => archiveV(id)), releaseV(dupe)]));
   const o = await review(m);
   assert.strictEqual(m.spawned.length, 1, 'one spawn for the whole queue');
   const a = m.spawned[0];
@@ -99,18 +99,17 @@ test('the whole queue is cleared in ONE spawn, no item cap, with both notes, the
   assert.ok(a.worker_id.startsWith('archreview-lc-apply-') && !('task_id' in a));
   const brief = fs.readFileSync(/(\S+brief\.md)/.exec(a.prompt)[1], 'utf8');
   for (const id of all) assert.ok(brief.includes(id), `the brief holds ${id}`);
-  assert.ok(!brief.includes(dupe) && !brief.includes('DUPE-TAIL'), "a duplicate hold is not the archive reviewer's");
+  assert.ok(brief.includes(dupe) && brief.includes('DUPE-TAIL') && brief.includes('KEPT-TAIL'), 'a duplicate hold is reviewed too, both notes in full');
   assert.ok(brief.includes(T.head) && brief.includes('loader.js'));
   const saved = brief.match(/"saved_at": "([^"]+)"/)[1];
   assert.ok(fs.readFileSync(saved, 'utf8').includes('return fixtures.get(name);'), "the file at the held row's head sha is saved for the reviewer");
-  assert.deepStrictEqual([o.result.counts.verdicts, o.result.counts.applied, o.result.counts.refused, o.left_held], [7, 7, 0, 0]);
+  assert.deepStrictEqual([o.result.counts.verdicts, o.result.counts.applied, o.result.counts.refused, o.left_held], [8, 8, 0, 0]);
   for (const id of all) assert.strictEqual(nsOf(id), 'archive/lc', id);
-  assert.deepStrictEqual((await queue()).map((h) => h.id), [dupe], "the duplicate hold waits for the scrubber's own path");
+  assert.deepStrictEqual((await queue()).map((h) => h.id), [], 'the duplicate hold was settled by the same review');
   assert.match(o.result.applied[0].receipt, /^review:lc-apply:/);
   const ev = X.events('review_stage').pop();
-  assert.deepStrictEqual([ev.ok, JSON.parse(ev.row_ids).length], [1, 7]);
+  assert.deepStrictEqual([ev.ok, JSON.parse(ev.row_ids).length], [1, 8]);
   assert.deepStrictEqual(m.stopped, [a.worker_id]);
-  await T.call(T.who.harness('apply'), 'memory.reviewApply', { verdicts: [releaseV(dupe)], ...T.evidence });
 });
 
 test('the run-close trigger runs only with archive_review_auto; the default is off and the on-demand path (force) ignores it', async () => {

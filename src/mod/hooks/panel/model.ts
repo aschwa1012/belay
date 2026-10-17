@@ -173,7 +173,7 @@ export const REVIEW_COST_ESTIMATE_USD: number | null = null
 // A first press waits this long for the second; after it, or after any other press, the confirm is gone.
 export const CONFIRM_MS = 8000
 
-// belay's `notes_held` notice (a standing count while any `wrong` hold waits), read defensively. Not a notice of the panel's own list:
+// belay's `notes_held` notice (a standing count while any hold waits), read defensively. Not a notice of the panel's own list:
 // it is the memory line, with the review button.
 export function normHeld(json: unknown): BelayHeld | null {
   for (const raw of arr(obj(json)?.events)) {

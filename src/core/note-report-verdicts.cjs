@@ -6,7 +6,9 @@
 //   applyReportVerdicts(...)            the write: `report_verdicts: [{ id, verdict: upheld|rejected, cites, reason }]`
 // An upheld report creates a `wrong` hold on the reported note (the note stays visible with its warning; only the Opus archive
 // reviewer archives it). A rejected report is a `report_rejected` receipt on the note. Same citation check and same independence rule
-// as a note verdict; a reviewer never judges a report about a note it wrote. Each outcome is a `note_review` receipt keyed
+// as a note verdict; a reviewer never judges a report about a note it wrote, and never one it made or whose task it worked. An upheld
+// report against a note a review VERIFIED needs the task's reviewer: the Haiku job's upheld verdict there is a recommendation only,
+// recorded on the note and listed for the operator, and creates no hold. Each outcome is a `note_review` receipt keyed
 // `<review>:report:<note id>`, so a second application is a no-op.
 
 const path = require('node:path');
@@ -26,6 +28,8 @@ const REASON_MAX = 500;
 const REPORTS_MAX = 8;          // reports shown to one reviewer (the hand-back is 4,096 bytes)
 const JUDGMENTS_KEEP = 20;
 const REJECTED_KEEP = 10;
+const RECOMMENDED_KEEP = 10;
+const JOB_PREFIX = 'notereview-';
 const bad = (message, detail) => err('E_ARGS', message, detail);
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const parse = (t) => { try { return t ? JSON.parse(t) : {}; } catch { return {}; } };
@@ -94,6 +98,24 @@ function unjudgedReports(E, project) {
   return out;
 }
 
+// Upheld reports the Haiku job could only recommend (the note is review-verified): listed for the operator while the note stays live
+// and unheld. A read.
+function recommendedReports(E, project) {
+  if (!project) return [];
+  let found;
+  try {
+    found = E.store.p(`SELECT id, title, status, body FROM memory_entries WHERE type = 'note' AND namespace = ?
+      AND json_array_length(COALESCE(json_extract(body, '$.report_recommended'), '[]')) > 0 ORDER BY created_at, id LIMIT 200`).all(`project/${project}`);
+  } catch { return []; }
+  const out = [];
+  for (const n of found) {
+    const b = parse(n.body);
+    if (b.held || (n.status || 'unverified') === 'refuted') continue;
+    for (const r of b.report_recommended || []) if (r) out.push({ id: n.id, title: n.title, task_id: r.task_id, by: r.by, why: r.why, reason: r.reason, at: r.at, recommended: true });
+  }
+  return out;
+}
+
 function shapeOne(v) {
   if (!isObj(v)) throw bad('a report verdict must be an object { id, verdict, cites, reason }');
   for (const k of Object.keys(v)) if (!['id', 'verdict', 'cites', 'reason'].includes(k)) throw bad(`report verdict.${k} is not a field; use id, verdict, cites, reason`);
@@ -119,12 +141,27 @@ function heldCites(E, taskId, cites) {
   });
 }
 
+// The whole list, checked before anything is written (all or nothing): an array of at most REPORTS_MAX * 2, each a well-formed verdict,
+// no note twice. Returns the shaped verdicts, or [] when there are none. noteVerdicts calls it before it applies a single note verdict.
+function validateReportVerdicts(list) {
+  if (list === null || list === undefined) return [];
+  if (!Array.isArray(list) || list.length > REPORTS_MAX * 2) throw bad(`report_verdicts must be an array of at most ${REPORTS_MAX * 2} verdicts`);
+  const seen = new Set();
+  return list.map((raw, i) => {
+    let v;
+    try { v = shapeOne(raw); } catch (e) { throw bad(`report_verdicts[${i}]: ${e.message}`, { field: 'report_verdicts', index: i }); }
+    if (seen.has(v.id)) throw bad(`report_verdicts[${i}]: note ${v.id} has two report verdicts in one review`, { field: 'report_verdicts', index: i, id: v.id });
+    seen.add(v.id);
+    return v;
+  });
+}
+
 // `route`: { reviewer, ref, keyBase, scope }. Fills `out.report_verdicts` = { applied, refused, already, unjudged }. One bad verdict is
 // a refusal of its own and a receipt, never a throw.
 async function applyReportVerdicts(E, caller, route, list, project, out) {
   const res = out.report_verdicts = { applied: [], refused: [], already: [], unjudged: [] };
   if (list === null || list === undefined) res.none = true;
-  else if (!Array.isArray(list) || list.length > REPORTS_MAX * 2) throw bad(`report_verdicts must be an array of at most ${REPORTS_MAX * 2} verdicts`);
+  else validateReportVerdicts(list); // a caller that skipped the early check still never writes from a malformed list
   const seen = new Set();
   for (const [index, raw] of (list || []).entries()) {
     const idOf = isObj(raw) && typeof raw.id === 'string' ? raw.id : null;
@@ -147,18 +184,27 @@ async function applyReportVerdicts(E, caller, route, list, project, out) {
       const report = (note.b.reported_wrong || []).filter((w) => w && route.scope.includes(w.task_id) && w.by !== note.written_by && !judged(note.b, w)).pop();
       if (!report) throw bad(`note ${v.id} has no open report from a task this review covers (${route.scope.join(', ') || 'no tasks'})`, { id: v.id });
       if (note.written_by === `worker:${route.reviewer}`) throw err('E_ROLE', `worker ${route.reviewer} wrote note ${v.id} and cannot judge a report about it`, { id: v.id, reason: 'independence' });
+      if (report.worker_id === route.reviewer || report.by === route.reviewer || report.by === `worker:${route.reviewer}`) throw err('E_ROLE', `worker ${route.reviewer} made the report on note ${v.id} and cannot judge it`, { id: v.id, reason: 'independence' });
+      const repLease = heldLeaseOn(E.store, route.reviewer, [report.task_id].filter(Boolean));
+      if (repLease) throw err('E_ROLE', `worker ${route.reviewer} held lease ${repLease.id} on task ${report.task_id}, which made the report on note ${v.id}; it cannot judge it`, { id: v.id, reason: 'independence', lease_id: repLease.id });
       const lease = heldLeaseOn(E.store, route.reviewer, [note.task_id].filter(Boolean));
       if (lease) throw err('E_ROLE', `worker ${route.reviewer} held lease ${lease.id} on task ${note.task_id}, which wrote note ${v.id}; it cannot judge a report about it`, { id: v.id, reason: 'independence' });
       const chk = await CC.checkTaskCites(E, report.task_id, v.cites, { title: note.title, text: note.text, evidence: note.b.evidence });
       if (!chk.ok) throw err('E_CITATION', `report on note ${v.id}: ${chk.failures.length} of ${v.cites.length} cites are not in the evidence task ${report.task_id} recorded; the verdict is dropped (${chk.failures.map((f) => `cites[${f.index}] ${f.where}: ${f.reason}`).join(' | ')})`.slice(0, 600), { id: v.id, failures: chk.failures });
       const red = C.redactEntry({ reason: v.reason, cites: heldCites(E, report.task_id, v.cites) });
-      res.applied.push(E.store.tx(() => {
+      const outcome = E.store.tx(() => {
+        // Everything that decides is read again here, in the transaction: a second application of the same review answers "already".
+        const done2 = E.store.p("SELECT id FROM memory_event WHERE kind = 'note_review' AND ok = 1 AND key = ?").get(key);
+        if (done2) return { already: true, event_id: done2.id };
         const fresh = loadNote(E, v.id);
         if (!fresh || fresh.namespace !== `project/${project}`) throw err('E_NOT_FOUND', `note ${v.id} left the project while the cites were checked`, { id: v.id });
+        if (judged(fresh.b, report)) return { already: true, event_id: null };
         const at = Date.now();
-        const mark = { task_id: report.task_id, report_at: report.at, verdict: v.verdict, ref: route.ref, by: route.reviewer, at };
+        // An upheld report against a note a review verified needs that review's task reviewer; the Haiku job only recommends.
+        const recommend = v.verdict === 'upheld' && route.reviewer.startsWith(JOB_PREFIX) && (fresh.status || 'unverified') === 'verified';
+        const mark = { task_id: report.task_id, report_at: report.at, verdict: recommend ? 'recommended' : v.verdict, ref: route.ref, by: route.reviewer, at };
         let heldRow = null;
-        if (v.verdict === 'upheld') {
+        if (v.verdict === 'upheld' && !recommend) {
           heldRow = holdWrongFromReport(E, caller, {
             project, runId: caller.run_id, headSha: headOf(E, report.task_id), reviewer: route.reviewer, ref: route.ref,
             report: { by: report.by, task_id: report.task_id, why: report.why, replaced_by: report.replaced_by || null, at: report.at },
@@ -167,11 +213,13 @@ async function applyReportVerdicts(E, caller, route, list, project, out) {
         E.store.patchBody(v.id, (b) => {
           b.report_judgments = [...(b.report_judgments || []), mark].slice(-JUDGMENTS_KEEP);
           if (v.verdict === 'rejected') b.report_rejected = [...(b.report_rejected || []), { ...mark, reason: red.reason, cites: red.cites, why: report.why }].slice(-REJECTED_KEEP);
+          if (recommend) b.report_recommended = [...(b.report_recommended || []), { ...mark, reason: red.reason, cites: red.cites, why: report.why }].slice(-RECOMMENDED_KEEP);
           return N.fitBody(b);
         });
-        const ev = recordEventSync(E, caller, { kind: 'note_review', ok: true, run_id: caller.run_id, worker_id: route.reviewer, task_id: report.task_id, key, row_ids: [v.id], newest_row_id: heldRow ? heldRow.id : v.id, message: `report ${v.verdict}: ${red.reason}`.slice(0, 300) });
-        return { id: v.id, verdict: v.verdict, applied: true, ...(heldRow ? { held: C.rowOut(E, heldRow.id) } : { receipt: 'report_rejected' }), event_id: ev.id };
-      }));
+        const ev = recordEventSync(E, caller, { kind: 'note_review', ok: true, run_id: caller.run_id, worker_id: route.reviewer, task_id: report.task_id, key, row_ids: [v.id], newest_row_id: heldRow ? heldRow.id : v.id, message: `report ${recommend ? 'upheld (a recommendation only: a review verified this note)' : v.verdict}: ${red.reason}`.slice(0, 300) });
+        return { id: v.id, verdict: v.verdict, applied: true, ...(heldRow ? { held: C.rowOut(E, heldRow.id) } : { receipt: recommend ? 'report_recommended' : 'report_rejected' }), ...(recommend ? { recommended_only: true } : {}), event_id: ev.id };
+      });
+      if (outcome.already) res.already.push({ id: v.id, event_id: outcome.event_id }); else res.applied.push(outcome);
     } catch (e) { refuse(e); }
   }
   if (res.applied.length) E.noteWrite();
@@ -179,4 +227,4 @@ async function applyReportVerdicts(E, caller, route, list, project, out) {
   return res;
 }
 
-module.exports = { reportsAbout, unjudgedReports, applyReportVerdicts, openReports, REPORTS_MAX };
+module.exports = { reportsAbout, unjudgedReports, recommendedReports, applyReportVerdicts, validateReportVerdicts, openReports, REPORTS_MAX };

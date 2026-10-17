@@ -3,7 +3,8 @@
 // one read-only child that clears the WHOLE held queue of the project in one spawn, with no item cap, under its wall cap and its cost
 // cap (the recorded cost is the binding check). It runs when the queue has at least `review_min_held` marks, or the oldest has waited
 // `review_max_age_runs` runs, or a mark targets a note a review verified, and ONLY when the lever `archive_review_auto` is true (default
-// false); `belay memory review` runs it on demand with no trigger at all, over `wrong` holds only.
+// false); `belay memory review` runs it on demand with no trigger at all. It reviews EVERY held kind: `wrong`, `duplicate` (archived only
+// on `same_claim: true`) and `superseded`, so a hold of an older store or of the scrubber is never stranded.
 //
 // The child is given each held row with both notes, the cites, and the files the cites name as they were at the mark's head commit
 // (read with git, saved beside the brief). It hands back `{ "verdicts": [ ... ] }`, which memory.reviewApply checks and applies; a note
@@ -25,12 +26,6 @@ function triggerOf(counts, lv) {
   if (counts.max_runs_waited >= lv.review_max_age_runs && counts.count > 0) return `the oldest mark has waited ${counts.max_runs_waited} runs (review_max_age_runs ${lv.review_max_age_runs})`;
   if (counts.review_verified > 0) return `${counts.review_verified} mark(s) target a note a review verified`;
   return null;
-}
-
-// The archive reviewer judges `wrong` holds only: a relation between two notes is settled by the scrubber (and the writer) and applies directly.
-function onlyWrong(q) {
-  const held = (q.held || []).filter((h) => h.kind === 'wrong');
-  return { ...q, held, counts: { count: held.length, max_runs_waited: held.reduce((m, h) => Math.max(m, h.runs_waited || 0), 0), review_verified: held.filter((h) => h.target_review_verified).length } };
 }
 
 function buildBrief({ runId, project, held }) {
@@ -75,7 +70,7 @@ async function runReview({ core, runId, lv, dataDir, getManager, worktree = null
   if (!force && !lv.archive_review_auto) return { ran: false, reason: 'archive_review_auto off' }; // on demand only: `belay memory review`, or the panel's button
   if (lv.scrub_action === 'off' && !force) return { ran: false, reason: 'scrub_action off' };
   let q;
-  try { q = onlyWrong(await core.memory.reviewQueue({})); } catch (e) { return { ran: false, reason: 'queue unreadable', code: J.codeOf(e), message: String(e && e.message).slice(0, 200) }; }
+  try { q = await core.memory.reviewQueue({}); } catch (e) { return { ran: false, reason: 'queue unreadable', code: J.codeOf(e), message: String(e && e.message).slice(0, 200) }; }
   if (!q.held.length) return { ran: false, reason: 'empty queue', counts: q.counts };
   if (fast && fast()) return { ran: false, reason: 'fast close', counts: q.counts }; // the marks stay held; the next review takes them
   const why = force ? 'asked by hand' : triggerOf(q.counts, lv);
@@ -125,4 +120,4 @@ async function runReview({ core, runId, lv, dataDir, getManager, worktree = null
   return out;
 }
 
-module.exports = { runReview, triggerOf, onlyWrong, buildBrief, promptFor, JOB_PREFIX };
+module.exports = { runReview, triggerOf, buildBrief, promptFor, JOB_PREFIX };

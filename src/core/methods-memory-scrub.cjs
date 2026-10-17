@@ -77,7 +77,7 @@ function hold(E, caller, ctx, ent, index, sources, state) {
     ns: L.nsOf('held', ctx.project), type: 'held', runId: ctx.runId,
     text: `held ${ent.kind}: ${note.id}${ent.of ? ` against ${ent.of}` : ''} (run ${ctx.runId})`,
     title: `held ${ent.kind}: ${note.title || note.id}`,
-    body: { state: 'held', note_id: note.id, kind: ent.kind, of: ent.of, ground: ent.ground, reason: ent.reason, run_id: ctx.runId, head_sha: ctx.evidence.head_sha, cites: ent.cites, facts, scrub: receipt, reviews: [] },
+    body: { state: 'held', note_id: note.id, kind: ent.kind, of: ent.of, ground: ent.ground, reason: ent.reason, run_id: ctx.runId, head_sha: ctx.evidence.head_sha, cites: ent.cites, facts, scrub: receipt, ...(ctx.heldExtra || {}), reviews: [] },
   });
   // The note itself carries a pointer, so the warning follows it into later runs without a second lookup.
   E.store.patchBody(note.id, b => { b.held = { row: held.id, kind: ent.kind, of: ent.of, reason: ent.reason, run_id: ctx.runId, at: Date.now() }; return N.fitBody(b); });
@@ -157,4 +157,4 @@ async function scrubApply(E, caller, args) {
   return out;
 }
 
-module.exports = { scrubApply, target };
+module.exports = { scrubApply, target, hold };
