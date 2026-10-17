@@ -476,7 +476,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     stop, core, clearPoll: () => { if (poll) { clearInterval(poll); poll = null; } },
     markClosed: () => { shutdownFlags.closed = true; },
     markOwnerGone: () => { shutdownFlags.ownerGone = true; return shutdownFlags.paired; },
-    beforeStop: () => NR.drain(ctx, NOTE_REVIEW_DRAIN_MS),
+    beforeStop: () => NR.drain(ctx, NOTE_REVIEW_DRAIN_MS), queuesFirst: () => NR.expectsJobs(ctx),
     onDrained: () => MP.runEnd(ctx),
   });
 
@@ -488,6 +488,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     _worker: (id) => workers.get(id),
     _waitTurn: (id, ms) => waitTurnOrLanded(get(id), ms),
     _waitExit: (id, ms) => W.waitExit(get(id), ms),
+    _killSurvivor: (id) => (workers.has(id) ? LC.killSurvivor(workers.get(id), null) : null), // a child by its live handle and exact pid (lifecycle.cjs)
     _closed: () => shutdownFlags.closed, // flipped by shutdown once every worker is stopped (lifecycle.cjs)
     _flags: () => shutdownFlags,
   };

@@ -40,6 +40,18 @@ async function receipt(core, fields) {
   try { return await core.memory.recordEvent({ kind: 'review_job', ...fields }); } catch { return null; }
 }
 const fail = (core, fields, e) => receipt(core, { ok: false, code: codeOf(e), message: String((e && e.message) || e).slice(0, 300), ...fields });
+// Past this flag the owner is going or gone and a write would elect a new one in this process (invariant 2): the run's own
+// store-only sweep names what was never reviewed instead.
+const ownerGone = (ctx) => !!(ctx.shutdownFlags && ctx.shutdownFlags.ownerGone);
+const isClosed = (ctx) => !!(ctx.manager && typeof ctx.manager._closed === 'function' && ctx.manager._closed());
+const shutErr = (msg) => Object.assign(new Error(msg), { code: 'E_SHUTDOWN' });
+// Stop a job's worker; if the stop threw (it writes a row, and rows are refused once the run is closed) the child is killed by its
+// exact handle and pid (ADR 0039), never matched by a command line.
+async function stopJob(ctx, wid) {
+  const m = ctx.manager;
+  await Promise.resolve().then(() => m.stop({ worker_id: wid })).catch(() => {});
+  if (typeof m._killSurvivor === 'function') await Promise.resolve().then(() => m._killSurvivor(wid)).catch(() => {});
+}
 
 // ---- the reviewer's brief ----------------------------------------------------------------------------------------
 // Appended to a review task's opening message. '' unless the notes switch is on and there is something to say.
@@ -135,7 +147,7 @@ async function runJob(J, task) {
     if (((prior && prior.events) || []).some((e) => (e.ok === 1 || e.ok === true) && e.key === base.key)) return;
     const brief = await core.memory.reviewBrief({ reviewed_task_id: taskId });
     if (!brief.notes.length && !(brief.reports || []).length) return; // nothing unreviewed and no report to judge: nothing to spend on
-    if (ctx.manager && typeof ctx.manager._closed === 'function' && ctx.manager._closed()) throw Object.assign(new Error('the run manager is shutting down, so no review job was started'), { code: 'E_SHUTDOWN' });
+    if (isClosed(ctx)) throw shutErr('the run manager is shutting down, so no review job was started');
     if (!ctx.manager || typeof ctx.manager.spawn !== 'function') throw Object.assign(new Error('the run manager has no way to spawn the review job here'), { code: 'E_INTERNAL' });
     const workers = ((await core.worker.list({})).workers || []).filter((x) => x.run_id === ctx.runId && x.task_id === taskId);
     const inputs = await writeInputs(ctx, taskId, wid, brief.reports && brief.reports.length ? { notes: brief.notes, reports: brief.reports } : brief.notes, workers);
@@ -145,6 +157,10 @@ async function runJob(J, task) {
     if (!worktree) throw Object.assign(new Error('no worktree is known for the task, so the review job has nowhere to run'), { code: 'E_ARGS' });
     const cap = lv.note_review_cost_cap_usd;
     await ctx.manager.spawn({ substrate: 'claude-code', worktree, worker_id: wid, model: lv.note_review_model, allowed_tools: BUILTINS, tools: BUILTINS, max_budget_usd: cap, prompt });
+    if (isClosed(ctx)) { // the run closed while the child was starting: the shutdown loop never saw it, so it is stopped here
+      await stopJob(ctx, wid);
+      throw shutErr('the run manager shut down while the review job was starting; the job was stopped and its notes stay unreviewed');
+    }
     let text = '', cost = null, settled = null;
     try {
       const got = await ctx.manager.wait({ worker_ids: [wid], timeout_ms: JOB_WALL_MS });
@@ -153,25 +169,38 @@ async function runJob(J, task) {
       else if (got.event !== 'turn_end' || got.is_error) settled = Object.assign(new Error(`the review job ${got.event === 'turn_end' ? 'ended its turn in error' : `is ${got.event}`}`), { code: 'E_WORKER_NOT_LIVE' });
       text = rec && typeof rec.lastAssistantText === 'string' ? rec.lastAssistantText : '';
       cost = rec && typeof rec.costUsd === 'number' ? rec.costUsd : null;
-    } finally { await Promise.resolve(ctx.manager.stop({ worker_id: wid })).catch(() => {}); }
+    } finally { await stopJob(ctx, wid); }
     if (settled) await fail(core, base, settled); else await finishJob(core, { workerId: wid, taskId, text, cost, cap });
-  } catch (e) { await fail(core, base, e); }
+  } catch (e) { if (!ownerGone(ctx)) await fail(core, base, e); }
 }
 
 // A task has ended. Reviewer route for a review task, the job for any other task that wrote notes. Not awaited by the caller.
-async function onTaskEnded(J, task) {
+// The returned promise is registered in s.jobs SYNCHRONOUSLY, before any await, so the adapter's shutdown drain sees a job that has
+// been decided on but has not yet listed tasks or spawned. Every refusal that leaves notes unreviewed is a receipt.
+function onTaskEnded(J, task) {
   const { ctx, lv } = J;
-  if (!lv.notes || !task || !ENDED.has(task.state)) return;
-  if (isReview(task)) { await applyHandback(J, task); return; }
-  if (!lv.note_review) return;
+  if (!lv.notes || !task || !ENDED.has(task.state)) return Promise.resolve();
+  const review = isReview(task);
+  if (!review && !lv.note_review) return Promise.resolve();
   const s = stateOf(ctx);
-  if (s.jobs.has(task.id)) return;
-  const all = ((await J.core.task.list({})).tasks) || [];
-  if (all.some((t) => isReview(t) && Array.isArray(t.depends_on) && t.depends_on.includes(task.id))) return; // it has a reviewer
-  const p = runJob(J, task).finally(() => {});
-  s.jobs.set(task.id, p);
+  const key = review ? `apply:${task.id}` : task.id;
+  if (s.jobs.has(key)) return Promise.resolve();
+  const base = { worker_id: jobIdFor(task.id), task_id: task.id, key: `task:${task.id}` };
+  const p = (async () => {
+    try {
+      if (review) { await applyHandback(J, task); return; }
+      if (isClosed(ctx)) throw shutErr('the run manager is shutting down, so no review was started');
+      const all = ((await J.core.task.list({})).tasks) || [];
+      if (all.some((t) => isReview(t) && Array.isArray(t.depends_on) && t.depends_on.includes(task.id))) return; // it has a reviewer
+      await runJob(J, task);
+    } catch (e) { if (!review && !ownerGone(ctx)) await fail(J.core, base, e); }
+  })();
+  s.jobs.set(key, p);
   return p;
 }
+
+// True when this run's levers can start a review job: the close then awaits the turns' memory queues before the job drain.
+const expectsJobs = (ctx) => !!(ctx.memoryLevers && ctx.memoryLevers.notes && ctx.memoryLevers.note_review);
 
 // The adapter's shutdown waits for jobs it started, up to `ms`.
 async function drain(ctx, ms) {
@@ -212,4 +241,4 @@ async function sweep(J, tasks, workers) {
   void byId;
 }
 
-module.exports = { reviewTail, onTaskEnded, applyHandback, sweep, drain, runJob, lastTextOf, jobIdFor, taskOfJob, isJob, JOB_PREFIX, JOB_WALL_MS };
+module.exports = { reviewTail, onTaskEnded, applyHandback, sweep, drain, expectsJobs, runJob, lastTextOf, jobIdFor, taskOfJob, isJob, JOB_PREFIX, JOB_WALL_MS };

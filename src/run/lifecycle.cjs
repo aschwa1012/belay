@@ -97,8 +97,26 @@ async function killSurvivor(w, e) {
   const gone = await P.waitPidGone(pid, { timeoutMs: 5000 });
   return { worker_id: w.id, code: (e && e.code) || null, pid, pid_gone_ms: gone, tree_kill: w.treeKill || null };
 }
-async function shutdown(workers, { stop, core, clearPoll, markClosed, markOwnerGone, onDrained, beforeStop }) {
-  if (beforeStop) await Promise.resolve().then(beforeStop).catch(() => {}); // wave 4: a review job in flight finishes before any worker is stopped
+// Each worker's memory queue, bounded by one MEMORY_DRAIN_MS for them all. Returns the ids that had not finished.
+async function drainMemoryQueues(workers) {
+  const gaveUp = [];
+  await Promise.all([...workers.values()].filter((w) => w.memoryQueue).map(async (w) => {
+    let timer = null;
+    const done = await Promise.race([w.memoryQueue.then(() => true, () => true), new Promise((res) => { timer = setTimeout(() => res(false), MEMORY_DRAIN_MS); })]);
+    clearTimeout(timer);
+    if (!done) { gaveUp.push(w.id); w.lastError = { where: 'shutdown', state: 'memory-queue-gave-up', bound_ms: MEMORY_DRAIN_MS }; }
+  }));
+  return gaveUp;
+}
+async function shutdown(workers, { stop, core, clearPoll, markClosed, markOwnerGone, onDrained, beforeStop, queuesFirst }) {
+  // Wave 4: a review job in flight finishes before any worker is stopped. A turn's memory queue is awaited first (bounded), because
+  // the queue is what creates the review job: draining jobs before it would find none and let the job spawn after the stop loop.
+  let queuesGaveUp = null;
+  // Only when the run expects review jobs (queuesFirst): any other run keeps its queues' one wait, after the flag flips.
+  if (beforeStop) {
+    if (queuesFirst && queuesFirst()) queuesGaveUp = await drainMemoryQueues(workers).catch(() => []);
+    await Promise.resolve().then(beforeStop).catch(() => {});
+  }
   const t0 = now();
   const stopped = [];
   const left_parked = [];
@@ -130,13 +148,9 @@ async function shutdown(workers, { stop, core, clearPoll, markClosed, markOwnerG
   // write already in flight is given at most 5,000 ms to land before the core goes, and any queue still
   // busy after that is named on the record. A write not yet started sees the closed flag and drops itself;
   // the event for a write already sent is kept until the owner goes (below).
-  const gaveUp = [];
-  await Promise.all([...workers.values()].filter((w) => w.memoryQueue).map(async (w) => {
-    let timer = null;
-    const done = await Promise.race([w.memoryQueue.then(() => true, () => true), new Promise((res) => { timer = setTimeout(() => res(false), MEMORY_DRAIN_MS); })]);
-    clearTimeout(timer);
-    if (!done) { gaveUp.push(w.id); w.lastError = { where: 'shutdown', state: 'memory-queue-gave-up', bound_ms: MEMORY_DRAIN_MS }; }
-  }));
+  // A queue that already used its bound before the review drain is named, not waited on a second time.
+  const gaveUp = queuesGaveUp ? [...queuesGaveUp] : [];
+  gaveUp.push(...await drainMemoryQueues(new Map([...workers].filter(([, w]) => !gaveUp.includes(w.id)))));
   // ADR 0041/0043: the run's end-of-run memory jobs run once every queue has drained and before the owner goes, so
   // their writes cannot re-elect one. They catch their own failures; this await never blocks the shutdown on one.
   if (onDrained) await onDrained().catch(() => {});
@@ -195,4 +209,4 @@ function readLaunchOptions(dir) {
   return out;
 }
 
-module.exports = { runOp, shutdown, readLaunchOptions };
+module.exports = { runOp, shutdown, readLaunchOptions, killSurvivor };
