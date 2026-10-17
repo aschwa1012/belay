@@ -49,6 +49,19 @@ export function projectRootOf(dataDir: string): string {
   return /\/\.belay$/.test(d) ? d.slice(0, d.length - '/.belay'.length) || '/' : d
 }
 
+// What the review launcher printed (`--json` is always on the argv, so the real output is a JSON receipt or error), as one short toast line.
+// Falls back to the first line of plain text. Never raw JSON.
+export function launcherLine(exitCode: number, stdout: string, stderr: string, project: string): string {
+  const first = (s: string): string => (s.split('\n').map(l => l.trim()).find(l => l !== '') ?? '').slice(0, 160)
+  let j: Record<string, unknown> | null = null
+  try { const p: unknown = JSON.parse(stdout); if (p !== null && typeof p === 'object' && !Array.isArray(p)) j = p as Record<string, unknown> } catch { /* plain text */ }
+  const err = j && j.error !== null && typeof j.error === 'object' ? (j.error as Record<string, unknown>) : null
+  if (exitCode === 0 && j && j.started === true) return `belay: archive review of ${project} started: pid ${String(j.pid ?? '?')}, job ${String(j.job ?? '?')}`
+  if (exitCode === 0 && j && j.ended !== undefined) return `belay: archive review of ${project} ended at once: ${first(JSON.stringify(j.ended))}`
+  const said = err ? `${typeof err.code === 'string' ? `${err.code}: ` : ''}${typeof err.message === 'string' ? err.message.slice(0, 160) : ''}` : first(stdout.trim() ? stdout : stderr)
+  return exitCode === 0 ? `belay: ${said || 'archive review started'}` : `belay: the review was not started (exit ${exitCode})${said ? `: ${said}` : ''}`
+}
+
 export const argvFor = (cli: string[], args: string[], dataDir: string | null): string[] =>
   [...cli, ...args, '--json', ...(dataDir ? ['--data', dataDir] : [])]
 

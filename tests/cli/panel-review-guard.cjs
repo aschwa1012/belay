@@ -131,6 +131,24 @@ function analyze(files) {
 
   // 5. The panel (everything but the wake, whose job is to inject text) writes no file and reaches no model, tool or session.
   for (const r of refs(/\$\s*\.\s*(?:prompt\s*\.\s*submit|agent\s*\.\s*spawn|tool\s*\.\s*call|session\s*\.\s*append|fs\s*\.\s*(?:write|append|remove|rename|mkdir)\w*)\b/g).filter((r) => !r.f.startsWith('hooks/wake/'))) bad.push(`${r.f}:${r.owner}: a write or a model-facing call: ${r.line.trim().slice(0, 80)}`);
+
+  // 6. The generic read helper runs reads only, and no spelling reaches the launcher's words or the host object by a computed name.
+  const READS = /^runJson\(\$,\s*cli,\s*\['(agents|notices|transcript|settings)'/;
+  for (const [f, o] of Object.entries(info)) {
+    for (const m of o.code.matchAll(/\brunJson\s*\(/g)) {
+      if (/function\s+$/.test(o.code.slice(Math.max(0, m.index - 12), m.index))) continue;
+      if (!READS.test(o.text.slice(m.index, m.index + 80))) bad.push(`${f}:${ownerOf(o.its, m.index)}: runJson is called other than with a literal read verb (agents, notices, transcript, settings)`);
+    }
+    if (f.startsWith('hooks/wake/')) continue;
+    for (const m of o.code.matchAll(/\$\s*\[|\(\s*\$\s+as\b|=\s*\$\s*(?:as\b[^;\n]*)?(?:[;\n]|$)/g)) bad.push(`${f}:${ownerOf(o.its, m.index)}: the host object is reached by a computed member, a cast or an alias: ${o.text.slice(m.index, m.index + 30).trim()}`);
+    for (const l of o.lits) {
+      if (!['review', '--start'].includes(l.text)) continue;
+      const owner = ownerOf(o.its, l.at), before = o.text.slice(Math.max(0, l.at - 14), l.at);
+      if (owner === 'REVIEW_ARGS' || owner === 'START_FLAG') continue;
+      if (/key=\s*$/.test(before) || /startsWith\(\s*$/.test(before)) continue; // the Button's key, and a role-name test
+      bad.push(`${f}:${owner}: the string ${JSON.stringify(l.text)} appears outside the launcher's declarations`);
+    }
+  }
   return bad;
 }
 

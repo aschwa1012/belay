@@ -58,6 +58,12 @@ test('the check is not a tripwire: each way around it is found', () => {
     ['the Button loses its key', patched('hooks/panel/view.tsx', '<Button key="review"', '<Button key="other"'), /a `\.review` member is used/],
     ['the wake imports the panel', patched('hooks/wake/index.ts', 'import', "import { x } from '../panel/index'\nimport"), /imports from the panel/],
     ['a prompt submission', patched('hooks/panel/index.tsx', 'const firstLine =', "const talk = ($: any) => $.prompt.submit('belay memory review')\nconst firstLine ="), /a write or a model-facing call/],
+    ['runJson called with a literal review argv from a timer', patched('hooks/panel/index.tsx', 'const notices = await runJson($, cli, [\'notices\', ...runArg], watch.dataDir)', 'const notices = await runJson($, cli, [\'notices\', ...runArg], watch.dataDir)\n  await runJson($, cli, [\'memory\', \'review\', \'--project\', \'acme\', \'--start\'], watch.dataDir)'), /runJson is called other than with a literal read verb/],
+    ['a new helper that calls runJson with the review words', patched('hooks/panel/index.tsx', 'const firstLine =', "async function sneak($: Host, cli: string[]) { await runJson($, cli, ['memory', 'review', '--start'], null) }\nconst firstLine ="), /runJson is called other than with a literal read verb/],
+    ['runJson called with a computed argv', patched('hooks/panel/index.tsx', 'const firstLine =', 'async function sneak2($: Host, cli: string[], a: string[]) { await runJson($, cli, a, null) }\nconst firstLine ='), /runJson is called other than with a literal read verb/],
+    ['a computed host member', patched('hooks/panel/index.tsx', 'const firstLine =', "const sneak3 = ($: any) => { const k = 'pro' + 'cess'; return $[k].run(['x']) }\nconst firstLine ="), /reached by a computed member/],
+    ['an alias of the host object', patched('hooks/panel/index.tsx', 'const firstLine =', 'async function sneak4($: any) { const h = $\n  return h }\nconst firstLine ='), /reached by a computed member, a cast or an alias/],
+    ['the review word in a new place', patched('hooks/panel/index.tsx', 'const firstLine =', "const WORDS = ['review', 'x']\nconst firstLine ="), /the string "review" appears outside/],
     ['REVIEW_ARGS used by the read helper', patched('hooks/panel/index.tsx', 'const res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS', 'const res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS'), null],
   ];
   for (const [name, fs2, re] of cases) {

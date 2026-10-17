@@ -56,3 +56,34 @@ test('the brief of an unsupported entry names the task streams, the other worker
     assert.match(fs.readFileSync(/(\S+brief\.md)/.exec(prompt)[1], 'utf8'), /kind "unsupported" is a note a reviewer could not prove or disprove/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('the wide evidence of an unsupported entry never pushes a cited stream of a later mark out of the evidence files', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-uns2-'));
+  try {
+    const repo = path.join(root, 'repo'), dataDir = path.join(root, 'data');
+    fs.mkdirSync(repo); fs.mkdirSync(dataDir);
+    const cited = path.join(root, 'cited-stream.jsonl').split(path.sep).join('/');
+    const base = { of: null, ground: 'x', reason: 'r', facts: null, run_id: 'r1', head_sha: null, marked_at: 1, runs_waited: 0, target_review_verified: false, of_note: null };
+    const uns = { ...base, held_row: 'h1', id: 'n1', kind: 'unsupported', cites: [], note: { id: 'n1', run_id: 'r1', task_id: 't1', title: 'a' } };
+    const wrong = { ...base, held_row: 'h2', id: 'n2', kind: 'wrong', cites: [{ where: `stream:${cited}`, quote: 'a verbatim line of the stream' }], note: { id: 'n2', run_id: 'r1', task_id: 't3', title: 'b' } };
+    const workers = [{ id: 'w-mine', run_id: 'r1', task_id: 't1' }, ...Array.from({ length: 80 }, (_, i) => ({ id: `w-o${i}`, run_id: 'r1', task_id: 't2' }))];
+    let applied = null;
+    const core = {
+      memory: {
+        reviewQueue: async () => ({ project: 'p', held: [uns, wrong], counts: { count: 2, max_runs_waited: 0, review_verified: 0 } }),
+        events: async () => ({ events: [] }), recordEvent: async (f) => f,
+        reviewApply: async (a) => { applied = a; return { counts: { applied: 0, refused: 0 }, applied: [], refused: [] }; },
+      },
+      worker: { list: async () => ({ workers }) },
+    };
+    const manager = {
+      spawn: async () => {}, wait: async () => ({ event: 'turn_end', is_error: false, timed_out: false }), stop: async () => {},
+      _worker: () => ({ lastAssistantText: JSON.stringify({ verdicts: [{ id: 'n2', verdict: 'release', reason: 'fine' }] }), costUsd: 0.01 }),
+    };
+    const lv = { notes: true, archive_review_auto: false, scrub_action: 'propose', review_cost_cap_usd: 2, review_wall_s: 60, archive_review_model: 'm' };
+    const out = await runReview({ core, runId: 'r1', lv, dataDir, getManager: async () => manager, worktree: repo, force: true });
+    assert.strictEqual(out.ran, true, JSON.stringify(out));
+    assert.ok(applied.evidence_files.length <= 50);
+    assert.strictEqual(applied.evidence_files[0], cited, 'the stream a mark cites comes first');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

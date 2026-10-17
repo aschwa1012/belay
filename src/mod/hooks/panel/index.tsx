@@ -17,7 +17,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On, Timer } from 'claude-code'
 import type { BelayPanelSnap, BelayPanelUi, BelayPanelWatch } from '../../types/index'
-import { argvFor, buildSnapshot, fatalSnapshot, fwd, isWindowsPath, parseRan, parseRunFile, projectRootOf, repoCliGuess, type Ran, type RunFileRead } from './fetch'
+import { argvFor, buildSnapshot, fatalSnapshot, fwd, launcherLine, isWindowsPath, parseRan, parseRunFile, projectRootOf, repoCliGuess, type Ran, type RunFileRead } from './fetch'
 import { CONFIRM_MS, DEFAULT_SETTINGS, DEFAULT_UI, reviewProject } from './model'
 import { Band, BandWaiting, Fallback, Pane, type Act, type Els } from './view'
 
@@ -38,6 +38,7 @@ const BACKOFF_MAX_MS = 60000
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/
 const REVIEW_ARGS = ['memory', 'review', '--project'] // the one write the panel makes; the project follows, then START_FLAG
 const START_FLAG = '--start'
+const READ_VERBS = ['agents', 'notices', 'transcript', 'settings'] // the only commands runJson runs
 const START_TIMEOUT_MS = 40000 // the launcher waits up to 20 s for the claim
 const NO_CLI_WINDOWS = 'belay CLI not found: on Windows set belay_cli and node in belay-run.json, or load this plugin from <repo>/src/mod'
 
@@ -79,6 +80,7 @@ async function resolveCli($: Host, watch: BelayPanelWatch): Promise<Resolved> {
 // timeout, which the caller turns into a skipped round and a back-off; any other rejection is a command
 // that did not run.
 async function runJson($: Host, cli: string[], args: string[], dataDir: string | null, cwd: string | null = null): Promise<Ran> {
+  if (!READ_VERBS.includes(args[0] ?? '')) return { error: `belay ${args[0] ?? ''}: the read helper runs only ${READ_VERBS.join(', ')}` } // never a write, whatever called it
   const t0 = await $.clock.now()
   try {
     const r = await $.process.run(argvFor(cli, args, dataDir), { timeoutMs: COMMAND_TIMEOUT_MS, ...(cwd ? { cwd } : {}) })
@@ -211,8 +213,7 @@ async function dispatchReview($: Host, project: string): Promise<void> {
   const cwd = watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null
   try {
     const res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS, project, START_FLAG], watch.dataDir), { timeoutMs: START_TIMEOUT_MS, ...(cwd ? { cwd } : {}) })
-    const said = firstLine(res.exitCode === 0 ? res.stdout : (res.stdout.trim() ? res.stdout : res.stderr))
-    $.ui.toast(res.exitCode === 0 ? `belay: ${said || 'archive review started'}` : `belay: the review was not started (exit ${res.exitCode})${said ? `: ${said}` : ''}`)
+    $.ui.toast(launcherLine(res.exitCode, res.stdout, res.stderr, project))
   } catch (err) {
     $.ui.toast(`belay: the review was not started: ${firstLine(err instanceof Error ? err.message : String(err)) || 'the launcher did not answer'}`)
   } finally { starting.delete(project) }

@@ -14,7 +14,7 @@ const { err } = require('./errors.cjs');
 const L = require('./memory-lifecycle.cjs');
 const C = require('./lifecycle-common.cjs');
 const { loadNote, checkHoldFacts, ownTexts } = require('./memory-facts.cjs');
-const { checkCitations, evidenceOf } = require('./memory-citations.cjs');
+const { checkCitations, evidenceOf, streamResultHas, selfQuoted } = require('./memory-citations.cjs');
 const { archiveNote } = require('./memory-archive.cjs');
 const N = require('./methods-memory-notes.cjs');
 const { applyOneIn } = require('./methods-memory-note-review.cjs');
@@ -71,6 +71,27 @@ function archive(E, ctx, held, v, sources) {
   return { id: note.id, verdict: 'archive', outcome: 'archived', receipt: entry.receipt, facts, history_moved: done.history_moved, held: C.rowOut(E, held.id), row: C.rowOut(E, note.id) };
 }
 
+// The cites of a verify or a refute. A stream cite is a TOOL RESULT of a non-belay tool in a stream among the evidence files (the task-cite rule:
+// never belay's own tool inputs or results, the assistant's or the user's prose, or the task brief), and it may not be the note's own words (title,
+// when, text, evidence). A file cite is read at the head commit as for any hold.
+async function unsupportedCites(E, ctx, held, note, cites) {
+  const own = [note.title, note.b.when, note.text, ...((note.b.evidence || []).flatMap(e => [e && e.saw, e && e.where]))].filter(t => typeof t === 'string' && t.trim());
+  const files = (ctx.evidence.evidence_files || []).map(f => String(f).split('\\').join('/'));
+  const out = [], fileCites = [];
+  for (const [i, c] of cites.entries()) {
+    const fail = reason => err('E_CITATION', `cites[${i}] (${c.where}) refused: ${reason}`, { index: i, where: c.where, reason });
+    if (!c.where.startsWith('stream:')) { fileCites.push(c); continue; }
+    const file = c.where.slice('stream:'.length).split('\\').join('/');
+    if (!files.includes(file)) throw fail('that stream file is not among the evidence files named for this call');
+    if (selfQuoted(own, note.title, c.quote)) throw fail('the quote is the note\'s own text, which cannot be evidence about the note');
+    const r = streamResultHas(file, c.quote);
+    if (!r.found) throw fail(r.reason);
+    out.push({ where: c.where, source: 'stream result' });
+  }
+  if (fileCites.length) out.push(...await checkCitations(fileCites, { ...ctx.evidence, head_sha: ctx.evidence.head_sha || held.b.head_sha, own: ownTexts(note), title: note.title }));
+  return out;
+}
+
 // The three answers on an unsupported note. A failed precondition is written on the row and returned, as an archive's is.
 async function unsupported(E, ctx, held, v) {
   const id = held.b.note_id;
@@ -96,7 +117,8 @@ async function unsupported(E, ctx, held, v) {
   try {
     if (!v.cites.length) throw err('E_CITATION', `a ${v.verdict} of an unsupported note needs at least one cite { where, quote }, verbatim, from the evidence paths in the brief`, { id });
     const own = loadNote(E, id);
-    sources = await checkCitations(v.cites, { ...ctx.evidence, head_sha: ctx.evidence.head_sha || held.b.head_sha, own: own ? ownTexts(own) : [] });
+    if (!own) throw err('E_NOT_FOUND', `no note ${id}`, { id });
+    sources = await unsupportedCites(E, ctx, held, own, v.cites);
   } catch (e) {
     if (e.code !== 'E_CITATION') throw e;
     return refuse(e.code, e.message);

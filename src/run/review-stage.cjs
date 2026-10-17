@@ -17,6 +17,8 @@ const JOB_PREFIX = 'archreview-';
 const VERDICTS_PER_APPLY = 500; // checkVerdicts takes 1 to 500
 const STREAMS_MAX = 50;
 const FILES_MAX = 60;
+const WIDE_OTHERS = 20; // other workers' streams offered per unsupported entry
+const WIDE_PER_ENTRY = 25; // streams one unsupported entry may add to the evidence files
 const LINE_SUFFIX = /:\d+(?:-\d+)?$/;
 const abs = (p) => J.fwd(path.resolve(p));
 
@@ -51,25 +53,26 @@ async function wideEvidence(h, ctx, dir, streams) {
   const stream = (w) => abs(path.join(ctx.dataDir || '.', 'workers', w.id, 'stream.jsonl'));
   const mine = workers.filter((w) => w.task_id === (h.note && h.note.task_id));
   const others = workers.filter((w) => w.task_id !== (h.note && h.note.task_id));
-  for (const w of [...mine, ...others].slice(0, STREAMS_MAX)) streams.add(stream(w));
+  for (const w of [...mine, ...others.slice(0, WIDE_OTHERS)].slice(0, WIDE_PER_ENTRY)) streams.add(stream(w));
   const w = mine.find((x) => x.base_sha && x.head_sha && x.worktree);
   const diff = w ? await J.diffText(w.worktree, w.base_sha, w.head_sha) : '(no worker of the task has a base and head commit recorded, so there is no diff)\n';
   return {
     task_streams: mine.map((x) => ({ worker: x.id, path: stream(x) })),
-    other_streams: others.slice(0, 20).map((x) => ({ worker: x.id, task: x.task_id || null, path: stream(x) })),
+    other_streams: others.slice(0, WIDE_OTHERS).map((x) => ({ worker: x.id, task: x.task_id || null, path: stream(x) })),
     diff_file: J.writeFileIn(path.join(dir, 'diffs'), `${h.held_row}.patch`, diff),
   };
 }
 
 // The files each mark cites, at its head commit, saved under `dir`. Returns the entries with a `files` list and the stream paths named.
 async function withFiles(held, worktree, dir, ctx = {}) {
-  const streams = new Set();
+  const streams = new Set(); // streams that marks CITE come first; the wide evidence of unsupported entries follows, so it never crowds a cited one out
+  const wide = new Set();
   let n = 0;
   const out = [];
   for (const h of held) {
     const files = [];
     let evidence = null;
-    if (h.kind === 'unsupported') evidence = await wideEvidence(h, ctx, dir, streams);
+    if (h.kind === 'unsupported') evidence = await wideEvidence(h, ctx, dir, wide);
     for (const c of h.cites || []) {
       if (String(c.where).startsWith('stream:')) { streams.add(abs(String(c.where).slice(7))); continue; }
       if (!h.head_sha || !worktree || n >= FILES_MAX) { files.push({ where: c.where, saved_at: null }); continue; }
@@ -81,7 +84,7 @@ async function withFiles(held, worktree, dir, ctx = {}) {
     }
     out.push({ ...h, files, ...(evidence ? { evidence } : {}) });
   }
-  return { held: out, streams: [...streams] };
+  return { held: out, streams: [...streams, ...[...wide].filter((s) => !streams.has(s))] };
 }
 
 // opts: { core, runId, lv, dataDir, getManager, worktree, force, jobId }. Never throws; every outcome is a receipt and a returned fact.

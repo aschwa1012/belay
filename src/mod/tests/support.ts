@@ -83,7 +83,7 @@ export function world(on: any, w: World) {
   on('process.run', async ($: any, e: any) => {
     if (e.argv.includes('--start')) {
       spawned.push([...e.argv])
-      return { value: w.launcher ?? { exitCode: 0, stdout: 'archive review of acme started: pid 4242, job archreview-r-1, claim me-1\n', stderr: '' } }
+      return { value: w.launcher ?? { exitCode: 0, stdout: JSON.stringify({ started: true, project: 'acme', run_id: 'r-1', pid: 4242, job: 'archreview-r-1', claim_id: 'me-1' }), stderr: '' } }
     }
     ran.push([...e.argv])
     const verb = e.argv.find((a: string) => ['agents', 'notices', 'transcript', 'settings'].includes(a))
