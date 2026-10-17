@@ -3,11 +3,13 @@
 // stream, and it submits nothing to the model: its commands answer with a toast, never with text the
 // model would read.
 //
-// The one exception, at the operator's request (2026-10-15): the memory line's button dispatches `belay memory review --project <p>`,
-// the Opus archive reviewer, which writes the store and spends money. It is narrowly scoped: exactly that one command; reachable ONLY
-// from the button's onPress (view.tsx Held -> act.review -> reviewPress -> dispatchReview), never from a command, a hook, a notice, a
-// tool call, a model or a message; and it needs two presses (the first only asks). The CLI process runs as the operator would run it by
-// hand, and stays the parent of the Opus child (invariant 1).
+// The one exception, at the operator's request (2026-10-15): the memory line's button runs `belay memory review --project <p> --start`,
+// which launches the Opus archive reviewer DETACHED and returns once the review's claim shows in the store. The review writes the store and
+// spends money. It is narrowly scoped: exactly that one command; reachable ONLY from the button's onPress (view.tsx Held -> act.review ->
+// reviewPress -> dispatchReview), never from a command, a hook, a notice, a tool call, a model or a message; and it needs two presses (the
+// first only asks). The launcher is short, so a hot reload of this panel (which ends what the panel spawned) cannot end the review: the
+// detached belay CLI is the parent of the Opus child (invariant 1), holds the review's claim in the store, and is read back through belay's
+// notices (review_running, review_ended), so a reloaded panel still shows it and offers no second dispatch.
 //
 // The engine follows `$` only into functions declared at the top of this file, so every helper that
 // takes `$` lives here; the pure parts (parsing, drawing) live in model.ts, fetch.ts and view.tsx.
@@ -34,7 +36,9 @@ const TRANSCRIPT_TAIL: { band: number | null; pane: number | null } = { band: 10
 const BACKOFF_FIRST_MS = 10000
 const BACKOFF_MAX_MS = 60000
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/
-const REVIEW_ARGS = ['memory', 'review', '--project'] // the one write the panel makes; the project follows
+const REVIEW_ARGS = ['memory', 'review', '--project'] // the one write the panel makes; the project follows, then START_FLAG
+const START_FLAG = '--start'
+const START_TIMEOUT_MS = 40000 // the launcher waits up to 20 s for the claim
 const NO_CLI_WINDOWS = 'belay CLI not found: on Windows set belay_cli and node in belay-run.json, or load this plugin from <repo>/src/mod'
 
 type Host = EngineInterface
@@ -48,7 +52,7 @@ let lastFetchAt = 0
 let lastSettingsAt = 0
 let timeoutStreak = 0
 let backoffUntil = 0
-const reviewing = new Set<string>() // projects whose dispatched review has not ended: a second dispatch is not started
+const starting = new Set<string>() // projects whose launcher is running now (up to START_TIMEOUT_MS); the store's claim is the authority past that
 
 // null: there is no run file. Anything else that goes wrong with an existing file is an error state.
 async function readRunFile($: Host): Promise<RunFileRead | null> {
@@ -194,24 +198,27 @@ async function watchRun($: Host, next: BelayPanelWatch): Promise<void> {
   ensureTicker($)
 }
 
-// Start `belay memory review --project <p>` and do not wait for it. The belay CLI is the parent of the Opus child; the panel only keeps the
-// CLI's output read so the child is not blocked on a full pipe. The result arrives through belay's notices (the review_stage receipts).
+// Run the launcher `belay memory review --project <p> --start`: it starts the review detached, waits for its claim, prints it and exits. The
+// panel toasts what it printed (the proof) or why it refused or failed. The review itself is read back through belay's notices.
 // Called from reviewPress below and from nowhere else.
 async function dispatchReview($: Host, project: string): Promise<void> {
   const watch = await read($, watchA)
   if (!watch || watch.error) { $.ui.toast('belay: no run is watched, so the review was not started.'); return }
   const r = await resolveCli($, watch)
   if ('error' in r) { $.ui.toast(`belay: the review was not started: ${r.error}`); return }
-  if (reviewing.has(project)) { $.ui.toast(`belay: an archive review of ${project} is already running.`); return }
-  reviewing.add(project)
+  if (starting.has(project)) { $.ui.toast(`belay: an archive review of ${project} is being started.`); return }
+  starting.add(project)
   const cwd = watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null
-  void (async () => {
-    try {
-      for await (const _ of $.process.spawn({ argv: argvFor(r.cli, [...REVIEW_ARGS, project], watch.dataDir), ...(cwd ? { cwd } : {}) })) void _
-    } catch { /* the review's own receipts say how it ended */ } finally { reviewing.delete(project) }
-  })()
-  $.ui.toast('archive review started')
+  try {
+    const res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS, project, START_FLAG], watch.dataDir), { timeoutMs: START_TIMEOUT_MS, ...(cwd ? { cwd } : {}) })
+    const said = firstLine(res.exitCode === 0 ? res.stdout : (res.stdout.trim() ? res.stdout : res.stderr))
+    $.ui.toast(res.exitCode === 0 ? `belay: ${said || 'archive review started'}` : `belay: the review was not started (exit ${res.exitCode})${said ? `: ${said}` : ''}`)
+  } catch (err) {
+    $.ui.toast(`belay: the review was not started: ${firstLine(err instanceof Error ? err.message : String(err)) || 'the launcher did not answer'}`)
+  } finally { starting.delete(project) }
 }
+
+const firstLine = (s: string): string => (s.split('\n').map(l => l.trim()).find(l => l !== '') ?? '').slice(0, 200)
 
 // The review button. First press: ask (the memory line turns into a confirm). Second press inside CONFIRM_MS, for the same project:
 // dispatch. The confirm is cleared either way. Any other press clears it too (calm below), and a timeout ends it (the line checks the age).

@@ -12,7 +12,7 @@ const { RESOLVES } = require('./memory-notes.cjs');
 
 const ACTIONS = Object.freeze(['dismiss', 'hold', 'resolve', 'draft']);
 const HOLD_KINDS = Object.freeze(['wrong', 'superseded', 'duplicate']);
-const VERDICTS = Object.freeze(['archive', 'release']);
+const VERDICTS = Object.freeze(['archive', 'release', 'verify', 'refute', 'still_unsupported']); // archive and release judge a hold with a warning; the other three judge an unsupported note
 const SCRUB_MODES = Object.freeze(['off', 'propose', 'apply']);
 
 // A ground is a fact class, never a count of how a note was used. Anything else, use and miss facts included, is

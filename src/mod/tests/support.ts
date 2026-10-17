@@ -56,7 +56,7 @@ export type World = {
   file?: boolean; runFile?: unknown; repoCli?: boolean; watchId?: string
   mode?: string | null; mod?: Record<string, string>; notices?: unknown
   failAgents?: boolean; transcriptFail?: boolean; orchDisplay?: string; noDisplay?: boolean; noRun?: boolean
-  extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; longNotices?: boolean; noPlace?: boolean; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number
+  extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number
 }
 
 // The host beneath the plugin: a run file (or none), belay's read commands as fixtures, and a recorder
@@ -68,7 +68,7 @@ export function world(on: any, w: World) {
   const opened: string[] = []
   const commands: string[] = []
   const toasts: string[] = []
-  const spawned: string[][] = [] // every `$.process.spawn` the panel makes: only the review button may make one
+  const spawned: string[][] = [] // every review launcher (`... memory review --project p --start`) the panel runs: only the review button may run one
   const attempts: { verb: string; t: number; timeoutMs: number; cwd?: string; argv: string[] }[] = []
   const stat = { active: 0, maxActive: 0 }
   on('session.start', ($: any, e: any) => ({ cwd: e.cwd }))
@@ -80,11 +80,11 @@ export function world(on: any, w: World) {
   on('ui.open', ($: any, e: any) => { opened.push(e.id); return { value: { isPlaced: !w.noPlace } } })
   on('ui.close', () => ({ value: undefined }))
   on('ui.toast', ($: any, e: any) => { toasts.push(e.text); return { value: undefined } })
-  on('process.spawn', async function* ($: any, e: any) {
-    spawned.push([...e.argv])
-    return { value: { code: 0, signal: null } }
-  })
   on('process.run', async ($: any, e: any) => {
+    if (e.argv.includes('--start')) {
+      spawned.push([...e.argv])
+      return { value: w.launcher ?? { exitCode: 0, stdout: 'archive review of acme started: pid 4242, job archreview-r-1, claim me-1\n', stderr: '' } }
+    }
     ran.push([...e.argv])
     const verb = e.argv.find((a: string) => ['agents', 'notices', 'transcript', 'settings'].includes(a))
     attempts.push({ verb, t: clock.now(), timeoutMs: e.init?.timeoutMs, cwd: e.init?.cwd, argv: [...e.argv] })

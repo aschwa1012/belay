@@ -3,7 +3,8 @@
 // one read-only child that clears the WHOLE held queue of the project in one spawn, with no item cap, under its wall cap and its cost
 // cap (the recorded cost is the binding check). It runs when the queue has at least `review_min_held` marks, or the oldest has waited
 // `review_max_age_runs` runs, or a mark targets a note a review verified, and ONLY when the lever `archive_review_auto` is true (default
-// false); `belay memory review` runs it on demand with no trigger at all, over `wrong` holds only.
+// false); `belay memory review` runs it on demand with no trigger at all. It reviews EVERY held kind: `wrong`, `duplicate` (archived only
+// on `same_claim: true`) and `superseded`, so a hold of an older store or of the scrubber is never stranded.
 //
 // The child is given each held row with both notes, the cites, and the files the cites name as they were at the mark's head commit
 // (read with git, saved beside the brief). It hands back `{ "verdicts": [ ... ] }`, which memory.reviewApply checks and applies; a note
@@ -27,19 +28,14 @@ function triggerOf(counts, lv) {
   return null;
 }
 
-// The archive reviewer judges `wrong` holds only: a relation between two notes is settled by the scrubber (and the writer) and applies directly.
-function onlyWrong(q) {
-  const held = (q.held || []).filter((h) => h.kind === 'wrong');
-  return { ...q, held, counts: { count: held.length, max_runs_waited: held.reduce((m, h) => Math.max(m, h.runs_waited || 0), 0), review_verified: held.filter((h) => h.target_review_verified).length } };
-}
-
 function buildBrief({ runId, project, held }) {
   return [
     '# Archive review brief', '',
     `Run: ${runId}   Project: ${project}   Held marks: ${held.length}`,
     'Each entry is one held note. "files" are the repository files the mark cites, saved as they were at the mark\'s head commit.',
     'target_review_verified = a review confirmed this note earlier: weigh a mark against it with care.',
-    'For a duplicate mark, "note" and "of_note" are both given in full: archive only if they make the same claim and do not contradict (same_claim: true), else release.', '',
+    'For a duplicate mark, "note" and "of_note" are both given in full: archive only if they make the same claim and do not contradict (same_claim: true), else release.',
+    'An entry of kind "unsupported" is a note a reviewer could not prove or disprove from one place. It carries no warning. Its "evidence" lists PATHS: the streams of the task that wrote it, the streams of the run\'s other workers, and the task\'s diff. Read them selectively with Read, Glob and Grep; do not read them whole.', '',
     '```json', JSON.stringify(held, null, 1), '```', '',
   ].join('\n');
 }
@@ -48,13 +44,32 @@ function promptFor(briefFile) {
   return J.fill(J.readTemplate('archive-review-job.md'), { brief_file: briefFile });
 }
 
+// For an unsupported note: the stream files of the task that wrote it and of the run's other workers (all become citable), and the task's diff
+// saved beside the brief. Paths only; the reviewer reads what it needs.
+async function wideEvidence(h, ctx, dir, streams) {
+  const workers = (ctx.workers || []).filter((w) => w && w.run_id === (h.note && h.note.run_id));
+  const stream = (w) => abs(path.join(ctx.dataDir || '.', 'workers', w.id, 'stream.jsonl'));
+  const mine = workers.filter((w) => w.task_id === (h.note && h.note.task_id));
+  const others = workers.filter((w) => w.task_id !== (h.note && h.note.task_id));
+  for (const w of [...mine, ...others].slice(0, STREAMS_MAX)) streams.add(stream(w));
+  const w = mine.find((x) => x.base_sha && x.head_sha && x.worktree);
+  const diff = w ? await J.diffText(w.worktree, w.base_sha, w.head_sha) : '(no worker of the task has a base and head commit recorded, so there is no diff)\n';
+  return {
+    task_streams: mine.map((x) => ({ worker: x.id, path: stream(x) })),
+    other_streams: others.slice(0, 20).map((x) => ({ worker: x.id, task: x.task_id || null, path: stream(x) })),
+    diff_file: J.writeFileIn(path.join(dir, 'diffs'), `${h.held_row}.patch`, diff),
+  };
+}
+
 // The files each mark cites, at its head commit, saved under `dir`. Returns the entries with a `files` list and the stream paths named.
-async function withFiles(held, worktree, dir) {
+async function withFiles(held, worktree, dir, ctx = {}) {
   const streams = new Set();
   let n = 0;
   const out = [];
   for (const h of held) {
     const files = [];
+    let evidence = null;
+    if (h.kind === 'unsupported') evidence = await wideEvidence(h, ctx, dir, streams);
     for (const c of h.cites || []) {
       if (String(c.where).startsWith('stream:')) { streams.add(abs(String(c.where).slice(7))); continue; }
       if (!h.head_sha || !worktree || n >= FILES_MAX) { files.push({ where: c.where, saved_at: null }); continue; }
@@ -64,25 +79,25 @@ async function withFiles(held, worktree, dir) {
       n += 1;
       files.push({ where: c.where, path: rel, saved_at: J.writeFileIn(path.join(dir, 'files'), `${h.held_row}-${files.length}.txt`, text) });
     }
-    out.push({ ...h, files });
+    out.push({ ...h, files, ...(evidence ? { evidence } : {}) });
   }
   return { held: out, streams: [...streams] };
 }
 
-// opts: { core, runId, lv, dataDir, getManager, worktree, force }. Never throws; every outcome is a receipt and a returned fact.
-async function runReview({ core, runId, lv, dataDir, getManager, worktree = null, force = false, fast = null, log = null, sink = null }) {
+// opts: { core, runId, lv, dataDir, getManager, worktree, force, jobId }. Never throws; every outcome is a receipt and a returned fact.
+async function runReview({ core, runId, lv, dataDir, getManager, worktree = null, force = false, fast = null, log = null, sink = null, jobId: given = null }) {
   if (!lv || !lv.notes) return { ran: false, reason: 'notes off' };
   if (!force && !lv.archive_review_auto) return { ran: false, reason: 'archive_review_auto off' }; // on demand only: `belay memory review`, or the panel's button
   if (lv.scrub_action === 'off' && !force) return { ran: false, reason: 'scrub_action off' };
   let q;
-  try { q = onlyWrong(await core.memory.reviewQueue({})); } catch (e) { return { ran: false, reason: 'queue unreadable', code: J.codeOf(e), message: String(e && e.message).slice(0, 200) }; }
+  try { q = await core.memory.reviewQueue({}); } catch (e) { return { ran: false, reason: 'queue unreadable', code: J.codeOf(e), message: String(e && e.message).slice(0, 200) }; }
   if (!q.held.length) return { ran: false, reason: 'empty queue', counts: q.counts };
   if (fast && fast()) return { ran: false, reason: 'fast close', counts: q.counts }; // the marks stay held; the next review takes them
   const why = force ? 'asked by hand' : triggerOf(q.counts, lv);
   if (!why) return { ran: false, reason: 'below the triggers', counts: q.counts };
   const limit = await J.attemptLimit(core, 'review', 'review_stage', q.held.length); // half of an overrun attempt, oldest first, down to 1
   const queued = q.held.slice(0, limit);
-  const jobId = `${JOB_PREFIX}${runId}-${Date.now().toString(36)}`;
+  const jobId = given || `${JOB_PREFIX}${runId}-${Date.now().toString(36)}`; // a caller that holds a claim names the job in it
   const out = { ran: true, job: jobId, trigger: why, counts: q.counts, queue: q.held.length, offered: queued.length };
   const base = { run_id: runId, worker_id: jobId, key: `run:${runId}` };
   const noteOverrun = async (failedJob) => {
@@ -95,7 +110,7 @@ async function runReview({ core, runId, lv, dataDir, getManager, worktree = null
     const cwd = worktree || (workers.filter((w) => w.run_id === runId && w.worktree).pop() || {}).worktree;
     if (!cwd) throw J.coded('E_ARGS', 'no worktree is known for the run, so the review child has nowhere to run and no commit can be read');
     const dir = path.join(dataDir, 'workers', jobId, 'inputs');
-    const { held, streams } = await withFiles(queued, cwd, dir);
+    const { held, streams } = await withFiles(queued, cwd, dir, { workers, dataDir });
     const briefFile = J.writeFileIn(dir, 'brief.md', buildBrief({ runId, project: q.project, held }));
     if (log) log(`run close: reviewing ${queued.length} held mark(s), at most ${lv.review_wall_s} s and $${lv.review_cost_cap_usd}`);
     const got = await J.runChild({ manager: await getManager(), workerId: jobId, worktree: cwd, model: lv.archive_review_model, capUsd: lv.review_cost_cap_usd, wallMs: lv.review_wall_s * 1000, prompt: promptFor(briefFile), label: 'archive review', fast, sink });
@@ -125,4 +140,4 @@ async function runReview({ core, runId, lv, dataDir, getManager, worktree = null
   return out;
 }
 
-module.exports = { runReview, triggerOf, onlyWrong, buildBrief, promptFor, JOB_PREFIX };
+module.exports = { runReview, triggerOf, buildBrief, promptFor, JOB_PREFIX };

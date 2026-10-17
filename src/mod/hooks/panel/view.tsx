@@ -4,7 +4,7 @@
 import type { Elements } from 'claude-code'
 import type { BelayAgent, BelayEntry, BelayNotice, BelayPanelSnap, BelayPanelUi } from '../../types/index'
 import {
-  bandLines, cacheSegs, CONFIRM_MS, confirmLine, heldLine, reviewProject, ctxSegs, dur, fitSegs, isLive, markSeg, markWidth, money, runLine, STATE_NAME, TONE, unseenNotices, bar,
+  bandLines, cacheSegs, CONFIRM_MS, confirmLine, heldLine, reviewLine, reviewProject, runningReview, ctxSegs, dur, fitSegs, isLive, markSeg, markWidth, money, runLine, STATE_NAME, TONE, unseenNotices, bar,
   type Seg,
 } from './model'
 import { cells, clipCells, cmdLines, wordWrap, wrapParts } from './wrap'
@@ -313,11 +313,13 @@ function Held({ E, snap, ui, now, act, cols }: Ctx) {
   const hd = snap.held
   if (!hd) return null
   const project = reviewProject(hd)
-  const asking = !!ui.confirm && project !== null && ui.confirm.project === project && now - ui.confirm.at <= CONFIRM_MS
+  const busy = project !== null && runningReview(hd, project) !== null // a review of that project holds its claim: no second dispatch
+  const asking = !busy && !!ui.confirm && project !== null && ui.confirm.project === project && now - ui.confirm.at <= CONFIRM_MS
   return (
     <Box flexDirection="column">
-      <Line E={E} w={cols} k="hl" segs={[{ t: '◇ ', c: 'warning' }, { t: asking && project ? confirmLine(hd, project) : heldLine(hd), c: asking ? 'warning' : undefined }]} />
-      {project !== null && <Button key="review" plain label={asking ? '  ▸ press again to dispatch · any other press cancels' : `  ▸ review the held notes${Object.keys(hd.byProject).length > 1 ? ` (${project} first)` : ''}`} onPress={act.review} />}
+      {hd.reviews.map((r, i) => <Line E={E} w={cols} k={`hr${i}`} segs={[{ t: '◇ ', c: r.state === 'failed' || r.state === 'interrupted' ? 'error' : 'warning' }, { t: reviewLine(r), c: r.state === 'failed' || r.state === 'interrupted' ? 'error' : undefined }]} />)}
+      {hd.count > 0 && <Line E={E} w={cols} k="hl" segs={[{ t: '◇ ', c: 'warning' }, { t: asking && project ? confirmLine(hd, project) : heldLine(hd), c: asking ? 'warning' : undefined }]} />}
+      {project !== null && !busy && <Button key="review" plain label={asking ? '  ▸ press again to dispatch · any other press cancels' : `  ▸ review the held notes${Object.keys(hd.byProject).length > 1 ? ` (${project} first)` : ''}`} onPress={act.review} />}
     </Box>
   )
 }
@@ -419,7 +421,7 @@ export function Pane(c: Ctx) {
       {snap.held && <Held {...c} />}
       <Orchestrator {...c} />
       {snap.errors.map((e, i) => <Line E={E} w={cols} k={`pe${i}`} segs={[{ t: e, dim: true }]} />)}
-      <Line E={E} w={cols} k="pf" segs={[{ t: snap.held ? 'read-only except the review button · /orch toggles' : 'read-only · /orch toggles', dim: true }]} />
+      <Line E={E} w={cols} k="pf" segs={[{ t: snap.held && snap.held.count > 0 ? 'read-only except the review button · /orch toggles' : 'read-only · /orch toggles', dim: true }]} />
     </Box>
   )
 }
@@ -434,7 +436,10 @@ export function Fallback(c: Ctx) {
     lines.push([markSeg(a.state, snap.settings.marks), { t: ` ${a.id} ${shortModel(a.model)} · ` }, ...ctxSegs(a, snap.settings), { t: ' · ' },
       ...cacheSegs(a, snap.settings, snap.fetchedAt, now), { t: ` · ${money(a.costUsd)}` }, { t: a.task ? ` · ${a.task.id}` : '', dim: true }])
   }
-  if (snap.held) lines.push([{ t: `◇ ${heldLine(snap.held)}`, c: 'warning' }]) // plain text: the review button is the terminal pane's alone
+  if (snap.held) { // plain text: the review button is the terminal pane's alone
+    for (const r of snap.held.reviews) lines.push([{ t: `◇ ${reviewLine(r)}`, c: 'warning' }])
+    if (snap.held.count > 0) lines.push([{ t: `◇ ${heldLine(snap.held)}`, c: 'warning' }])
+  }
   for (const n of snap.notices) lines.push([{ t: `${TONE[n.tone].glyph} ${n.text}`, c: TONE[n.tone].color, dim: ui.seen.includes(n.key) }])
   if (snap.mode === 'headless') for (const e of (snap.transcript ?? []).slice(-5)) lines.push([{ t: e.text, dim: e.kind !== 'text' }])
   for (const e of snap.errors) lines.push([{ t: e, dim: true }])

@@ -15,7 +15,7 @@ Judge each note on its own against that evidence. For each note you can judge, g
 {{cite_rules}}
 
 Rules:
-- You only confirm or refute. You do not rewrite a note, fix code or suggest work.
+- You only confirm, refute or answer unsupported. You do not rewrite a note, fix code or suggest work.
 - Judge the claim the note makes, not whether it is useful. A claim you cannot check from this evidence is left out.
 - Do not use anything you were not given, and do not trust a note's own wording about what it saw: read the evidence.
 - End with one message that is only this JSON object and nothing else: { "memory_verdicts": [ ... ] }. An empty list is a fine answer.

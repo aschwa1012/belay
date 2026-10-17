@@ -31,7 +31,7 @@ const embed = async (text) => {
   return { embedding: v, embedding_model: 'fake', embedding_revision: 'r', dim: DIM };
 };
 const note = (marker) => ({
-  kind: 'lesson', title: `the ${marker} loader skips unlisted fixtures`, basis: 'observed',
+  kind: 'lesson', title: `the ${marker} loader skips unlisted fixtures`, when: `add a ${marker} test fixture`, basis: 'observed',
   evidence: [{ where: `src/${marker}.js`, saw: 'the unlisted file was never read' }], applies_to: [`src/${marker}.js`], subjects: [marker],
 });
 const toolResultLine = (text) => {
@@ -187,4 +187,193 @@ test('P7: held notes and reports no review will judge are counted by memory.held
   const rt = await review('rev-8', tb, { report_verdicts: [rv(a.note, 'rejected', [cite('fixtures/unlisted.json was opened by the loader')])] });
   await apply(rt);
   assert.ok(!(await call('memory.held', orch, { reports: true })).unjudged_reports.some((r) => r.id === a.note));
+});
+
+const mark = (id, status) => store.p('UPDATE memory_entries SET status = ? WHERE id = ?').run(status, id);
+const heldFor = (id) => store.p("SELECT COUNT(*) AS n FROM memory_entries WHERE type = 'held' AND json_extract(body, '$.note_id') = ?").get(id).n;
+const UPHELD = (id) => [rv(id, 'upheld', [cite('fixtures/unlisted.json was opened by the loader')], 'the stream shows the file was opened')];
+const keyed = (rt, id) => events('note_review').filter((e) => e.key.endsWith(`:report:${id}`) && e.key.includes(rt));
+
+test('P8: a second application of a rejected report answers already and adds no second entry or receipt', async () => {
+  const a = await written('w-a9', 'K9');
+  const tb = await reported('w-b9', a.note);
+  const rt = await review('rev-9', tb, { report_verdicts: [rv(a.note, 'rejected', [cite('fixtures/unlisted.json was opened by the loader')], 'only in a test')] });
+  const first = await apply(rt);
+  assert.strictEqual(first.report_verdicts.applied.length, 1);
+  const second = await apply(rt);
+  assert.deepStrictEqual([second.report_verdicts.applied.length, second.report_verdicts.already.length], [0, 1]);
+  assert.strictEqual(bodyOf(a.note).report_rejected.length, 1);
+  assert.strictEqual(keyed(rt, a.note).length, 1);
+});
+
+test('P9: two applications of one review in flight write one entry and one receipt (the check is inside the transaction)', async () => {
+  const a = await written('w-a10', 'K10');
+  const tb = await reported('w-b10', a.note);
+  const rt = await review('rev-10', tb, { report_verdicts: [rv(a.note, 'rejected', [cite('fixtures/unlisted.json was opened by the loader')], 'only in a test')] });
+  const [x, y] = await Promise.all([apply(rt), apply(rt)]);
+  assert.strictEqual(x.report_verdicts.applied.length + y.report_verdicts.applied.length, 1, JSON.stringify([x.report_verdicts, y.report_verdicts]));
+  assert.strictEqual(x.report_verdicts.already.length + y.report_verdicts.already.length, 1);
+  assert.strictEqual(bodyOf(a.note).report_rejected.length, 1);
+  assert.strictEqual(keyed(rt, a.note).length, 1);
+});
+
+test('P10: a reviewer that made the report, or held a lease on the reporting task, cannot judge it (E_ROLE independence)', async () => {
+  const a = await written('w-a11', 'K11');
+  const tb = await reported('w-b11', a.note);
+  const rt = await review('w-b11', tb, { report_verdicts: UPHELD(a.note) }); // the reporter itself reviews
+  const out = await apply(rt);
+  assert.deepStrictEqual([out.report_verdicts.applied.length, out.report_verdicts.refused[0].code], [0, 'E_ROLE']);
+  assert.match(out.report_verdicts.refused[0].message, /made the report|held lease/);
+  assert.strictEqual(heldFor(a.note), 0);
+  // A worker that held a lease on the reporting task but did not make the report is refused the same way.
+  const a2 = await written('w-a12', 'K12');
+  const tb2 = await reported('w-b12', a2.note);
+  const lease = store.p("SELECT id FROM lease WHERE task_id = ? AND holder = 'w-b12'").get(tb2);
+  assert.ok(lease);
+  store.p("UPDATE lease SET holder = 'w-b12x' WHERE id = ?").run(lease.id);
+  const rt2 = await review('w-b12x', tb2, { report_verdicts: UPHELD(a2.note) });
+  const out2 = await apply(rt2);
+  assert.deepStrictEqual([out2.report_verdicts.applied.length, out2.report_verdicts.refused[0].code], [0, 'E_ROLE']);
+  assert.match(out2.report_verdicts.refused[0].message, /held lease/);
+  assert.strictEqual(heldFor(a2.note), 0);
+});
+
+test('P11: an upheld report against a review-verified note: the task reviewer holds it, the Haiku job only recommends', async () => {
+  const a = await written('w-a13', 'K13');
+  const tb = await reported('w-b13', a.note);
+  mark(a.note, 'verified');
+  const job = `notereview-${tb}`;
+  await call('worker.write', orch, { id: job, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${job}`, last_event_at: Date.now() });
+  const via = () => call('memory.noteVerdicts', harness, { job: { worker_id: job, reviewed_task_id: tb }, verdicts: [], report_verdicts: UPHELD(a.note) });
+  const r = (await via()).report_verdicts;
+  assert.deepStrictEqual([r.applied.length, r.applied[0].recommended_only, r.applied[0].receipt, heldFor(a.note)], [1, true, 'report_recommended', 0], JSON.stringify(r));
+  const b = bodyOf(a.note);
+  assert.deepStrictEqual([b.held, b.report_recommended.length, b.report_judgments[0].verdict], [undefined, 1, 'recommended']);
+  const listed = (await call('memory.held', orch, { reports: true })).unjudged_reports.filter((x) => x.id === a.note);
+  assert.deepStrictEqual(listed.map((x) => x.recommended), [true]);
+  assert.strictEqual((await via()).report_verdicts.already.length, 1);
+  // The same situation with a task's reviewer: the hold is made.
+  const c = await written('w-a14', 'K14');
+  const tc = await reported('w-b14', c.note);
+  mark(c.note, 'verified');
+  const o2 = await apply(await review('rev-14', tc, { report_verdicts: UPHELD(c.note) }));
+  assert.deepStrictEqual([o2.report_verdicts.applied.length, heldFor(c.note), o2.report_verdicts.applied[0].recommended_only], [1, 1, undefined]);
+});
+
+test('P12: a malformed report_verdicts list is refused whole, before any note verdict is written', async () => {
+  const a = await written('w-a15', 'K15');
+  const good = { id: a.note, verdict: 'confirmed', cites: [cite('the loader worked as the note says')], reason: 'the stream shows it' };
+  const rt = await review('rev-15', a.task, { memory_verdicts: [good], report_verdicts: {} });
+  await assert.rejects(apply(rt), (e) => e.code === 'E_ARGS' && /report_verdicts/.test(e.message));
+  assert.strictEqual(rowOf(a.note).status ?? 'unverified', 'unverified');
+  assert.strictEqual(events('note_review').filter((e) => e.key.includes(rt)).length, 0);
+  const lists = [
+    new Array(17).fill(0).map((_, i) => rv(`m-${i}`, 'upheld', [cite('x')])),
+    [{ id: a.note, verdict: 'maybe', cites: [], reason: 'r' }],
+    [rv(a.note, 'rejected', [cite('x')]), rv(a.note, 'rejected', [cite('x')])],
+  ];
+  for (const [i, list] of lists.entries()) {
+    const r2 = await review(`rev-15-${i}`, a.task, { memory_verdicts: [good], report_verdicts: list });
+    await assert.rejects(apply(r2), (e) => e.code === 'E_ARGS', `list ${i}`);
+    assert.strictEqual(rowOf(a.note).status ?? 'unverified', 'unverified');
+  }
+});
+
+test('P13: two tasks reporting one note: only the newest report is judged by the review of its task', async () => {
+  const a = await written('w-a16', 'K16');
+  await reported('w-b16', a.note, 'first report');
+  const t2 = await reported('w-c16', a.note, 'second report');
+  const rt = await review('rev-16', t2, { report_verdicts: [rv(a.note, 'rejected', [cite('fixtures/unlisted.json was opened by the loader')], 'only in a test')] });
+  const out = await apply(rt);
+  assert.strictEqual(out.report_verdicts.applied.length, 1, JSON.stringify(out.report_verdicts));
+  assert.strictEqual(bodyOf(a.note).report_rejected[0].why, 'second report');
+  assert.strictEqual(bodyOf(a.note).report_judgments.length, 1);
+});
+
+// ---- the `unsupported` verdict (operator, 2026-10-17): a normal unverified note in its own on-demand queue kind -------------------------
+const UNS = (id, over = {}) => ({ id, verdict: 'unsupported', reason: 'no single place proves or disproves it', ...over });
+const queued = (id) => store.p("SELECT id, body FROM memory_entries WHERE type = 'held' AND json_extract(body, '$.note_id') = ?").all(id).map((r) => ({ id: r.id, b: JSON.parse(r.body) }));
+const streamOf = (w) => `${dir}/workers/${w}/stream.jsonl`.replace(/\\/g, '/');
+const applyReview = (verdicts, files) => call('memory.reviewApply', harness, { verdicts, evidence_files: files, worktree: repo });
+async function unsupportedNote(w, marker) {
+  const a = await written(w, marker);
+  const rt = await review(`rev-${w}`, a.task, { memory_verdicts: [UNS(a.note)] });
+  const out = await apply(rt);
+  return { ...a, rt, out };
+}
+
+test('U1: a reviewer answers unsupported with a reason and no cites: the note stays unverified with no warning, and is queued as its own kind', async () => {
+  const u = await unsupportedNote('w-u1', 'K20');
+  assert.deepStrictEqual([u.out.applied.length, u.out.applied[0].verdict, u.out.applied[0].status, u.out.refused.length], [1, 'unsupported', 'unverified', 0], JSON.stringify(u.out));
+  const n = rowOf(u.note), b = bodyOf(u.note);
+  assert.deepStrictEqual([n.status ?? 'unverified', n.namespace, b.held, b.unsupported.state], ['unverified', 'project/acme', undefined, 'open']);
+  const q = queued(u.note);
+  assert.deepStrictEqual([q.length, q[0].b.kind, q[0].b.state, q[0].b.ground, q[0].b.cites], [1, 'unsupported', 'held', 'unsupported', []]);
+  assert.strictEqual(events('note_refuted').filter((e) => e.key === `refuted:${u.note}`).length, 0, 'no wake');
+  const queue = await call('memory.reviewQueue', harness, {});
+  assert.ok(queue.held.some((h) => h.id === u.note && h.kind === 'unsupported' && h.note.run_id));
+  const held = await call('memory.held', orch, {});
+  assert.ok(held.unsupported >= 1 && held.unsupported_by_project.acme >= 1 && held.total >= held.unsupported);
+  const again = await apply(u.rt);
+  assert.strictEqual(again.already.length, 1);
+  assert.strictEqual(queued(u.note).length, 1, 'a second application queues nothing more');
+  const brief = await call('memory.reviewBrief', orch, { reviewed_task_id: u.task });
+  assert.ok(!brief.notes.some((x) => x.id === u.note), 'an unsupported note is not offered to a note review again');
+});
+
+test('U2: the Haiku job route takes unsupported too; cites are optional but checked when given; a bad cite drops the verdict', async () => {
+  const a = await written('w-u2', 'K21');
+  const job = `notereview-${a.task}`;
+  await call('worker.write', orch, { id: job, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${job}`, last_event_at: Date.now() });
+  const via = (verdicts) => call('memory.noteVerdicts', harness, { job: { worker_id: job, reviewed_task_id: a.task }, verdicts });
+  const bad = await via([UNS(a.note, { cites: [cite('a line nobody ever saw in any stream')] })]);
+  assert.deepStrictEqual([bad.applied.length, bad.refused[0].code], [0, 'E_CITATION']);
+  const ok = await via([UNS(a.note, { cites: [cite('the loader worked as the note says')] })]);
+  assert.deepStrictEqual([ok.applied.length, ok.applied[0].status], [1, 'unverified']);
+  assert.strictEqual(queued(a.note)[0].b.cites.length, 1);
+});
+
+test('U3: the Opus reviewer verifies an unsupported note on cites: verified, receipt returned, off the queue', async () => {
+  const u = await unsupportedNote('w-u3', 'K22');
+  const r = await applyReview([{ id: u.note, verdict: 'verify', reason: 'the stream shows the loader works as stated', cites: [{ where: `stream:${streamOf('w-u3')}`, quote: 'the loader worked as the note says' }] }], [streamOf('w-u3')]);
+  assert.deepStrictEqual([r.applied.length, r.refused.length, r.applied[0].outcome, r.applied[0].status], [1, 0, 'verified', 'verified'], JSON.stringify(r));
+  assert.match(r.applied[0].receipt, /^review:r-rep:/);
+  const n = rowOf(u.note);
+  assert.deepStrictEqual([n.status, n.status_receipt, bodyOf(u.note).unsupported.state, queued(u.note)[0].b.state], ['verified', r.applied[0].receipt, 'verified', 'verified']);
+  assert.ok(!(await call('memory.reviewQueue', harness, {})).held.some((h) => h.id === u.note));
+});
+
+test('U4: refute marks the note refuted with the wake receipt; still_unsupported leaves the queue and the note unverified', async () => {
+  const u = await unsupportedNote('w-u4', 'K23');
+  const r = await applyReview([{ id: u.note, verdict: 'refute', reason: 'the stream shows the opposite', cites: [{ where: `stream:${streamOf('w-u4')}`, quote: 'the loader worked as the note says' }] }], [streamOf('w-u4')]);
+  assert.deepStrictEqual([r.applied[0].outcome, rowOf(u.note).status, bodyOf(u.note).unsupported.state], ['refuted', 'refuted', 'refuted']);
+  assert.strictEqual(events('note_refuted').filter((e) => e.key === `refuted:${u.note}`).length, 1, 'the orchestrator wake source');
+  const s = await unsupportedNote('w-u5', 'K24');
+  const r2 = await applyReview([{ id: s.note, verdict: 'still_unsupported', reason: 'the evidence does not settle it' }], []);
+  assert.deepStrictEqual([r2.applied[0].outcome, r2.applied[0].receipt.startsWith('review:r-rep:')], ['still_unsupported', true]);
+  assert.deepStrictEqual([rowOf(s.note).status ?? 'unverified', bodyOf(s.note).unsupported.state, bodyOf(s.note).held], ['unverified', 'still_unsupported', undefined]);
+  assert.ok(!(await call('memory.reviewQueue', harness, {})).held.some((h) => h.id === s.note));
+  const brief = await call('memory.reviewBrief', orch, { reviewed_task_id: s.task });
+  assert.ok(!brief.notes.some((x) => x.id === s.note), 'it is not offered to a note review again');
+});
+
+test('U5: wrong answers for the kind are refused with a reason; a verify without a real cite is refused and written on the row', async () => {
+  const u = await unsupportedNote('w-u6', 'K25');
+  const wrongKind = await applyReview([{ id: u.note, verdict: 'archive', reason: 'x', cites: [] }], []);
+  assert.deepStrictEqual([wrongKind.applied.length, wrongKind.refused[0].code], [0, 'E_PRECONDITION']);
+  const noCite = await applyReview([{ id: u.note, verdict: 'verify', reason: 'looks right' }], []);
+  assert.deepStrictEqual([noCite.refused[0].code, noCite.refused[0].outcome], ['E_CITATION', 'refused']);
+  const fake = await applyReview([{ id: u.note, verdict: 'refute', reason: 'wrong', cites: [{ where: `stream:${streamOf('w-u6')}`, quote: 'a line that was never in the stream' }] }], [streamOf('w-u6')]);
+  assert.strictEqual(fake.refused[0].code, 'E_CITATION');
+  assert.strictEqual(rowOf(u.note).status ?? 'unverified', 'unverified');
+  assert.strictEqual(queued(u.note)[0].b.reviews.length, 2, 'both refusals are on the row');
+  assert.strictEqual(queued(u.note)[0].b.state, 'held', 'still in the queue');
+});
+
+test('U6: a hold with a warning takes archive or release only', async () => {
+  const a = await written('w-a30', 'K26');
+  const tb = await reported('w-b30', a.note);
+  await apply(await review('rev-30', tb, { report_verdicts: UPHELD(a.note) }));
+  const r = await applyReview([{ id: a.note, verdict: 'verify', reason: 'x', cites: [cite('the loader worked as the note says')] }], []);
+  assert.deepStrictEqual([r.applied.length, r.refused[0].code], [0, 'E_PRECONDITION']);
 });

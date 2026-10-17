@@ -22,7 +22,7 @@ const one = (s, n) => {
 };
 const bytes = (s) => Buffer.byteLength(s, 'utf8');
 
-const VERDICT_SHAPE = '{ "id": "<note id>", "verdict": "confirmed" | "refuted", "cites": [{ "where": "<see below>", "quote": "<one verbatim line>" }], "reason": "<one sentence>" }';
+const VERDICT_SHAPE = '{ "id": "<note id>", "verdict": "confirmed" | "refuted" | "unsupported", "cites": [{ "where": "<see below>", "quote": "<one verbatim line>" }], "reason": "<one sentence>" }';
 
 const REPORT_SHAPE = '{ "id": "<reported note id>", "verdict": "upheld" | "rejected", "cites": [{ "where": "<see below>", "quote": "<one verbatim line>" }], "reason": "<one sentence>" }';
 
@@ -31,7 +31,7 @@ const CITE_RULES = [
   '- a tool result in the reviewed worker\'s stream: where is "stream" (any worker of the task) or "stream:<worker id>"; or',
   '- a file of the repository as the reviewed worker left it at its head commit: where is the path from the repository root.',
   'belay checks that each quote is really there. A verdict with a quote that is not is dropped, whatever it says.',
-  '"confirmed" means the evidence you cite is consistent with the note\'s claim; "refuted" means the evidence you cite contradicts it. Leave out a note you cannot judge: it stays unreviewed.',
+  '"confirmed" means the evidence you cite is consistent with the note\'s claim; "refuted" means the evidence you cite contradicts it. "unsupported" means no single place proves or disproves the note (cites are optional, a reason is required): the note stays as it is, with no warning, and waits for a deeper on-demand review. Leave out a note you have not looked at: it stays unreviewed.',
 ].join('\n');
 
 // Reports that a note is wrong, made by the reviewed task: each is a claim by the reporter, shown as data. `bare` adds the cite rules when there
