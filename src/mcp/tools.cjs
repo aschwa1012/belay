@@ -81,7 +81,7 @@ const ROUTES = {
 const BOTH = [
   {
     name: 'memory_store',
-    description: 'Store one entry. Returns the row written: id, action inserted or updated, namespace, worker id. Refuses text past the embedder\'s window.',
+    description: 'Store one entry. Returns the row written: id, action, namespace, worker id. Refuses text past the embedder\'s window.',
     inputSchema: S({
       text: str('One self-contained statement'),
       namespace: str('Defaults to this run; moved to the project when your task ends'),
@@ -95,14 +95,14 @@ const BOTH = [
   },
   {
     name: 'memory_retrieve',
-    description: 'Fetch entries by id, or by ids (at most 50). Returns the row without its vector, or found false; ids returns rows in the order asked and names the missing.',
+    description: 'Fetch entries by id, or by ids (max 50). Returns rows without vectors, or found false; ids keeps the order asked and names the missing.',
     inputSchema: S({ id: str(), ids: strs() }),
   },
   {
     name: 'memory_search',
-    description: 'Search memory; view index returns ids and titles only. Result names modes_run, modes_failed and absence_established; absence_established false means not searched fully.',
+    description: 'Search memory. Query with one short task line for what you are about to do, naming files or symbols; several short queries beat one long one. view index returns ids and titles only. Result names modes_run, modes_failed, absence_established (false: not searched fully).',
     inputSchema: S({
-      query: str('Natural language'),
+      query: str(),
       namespace: str(),
       k: int('default 10'),
       min_score: num(),
@@ -116,7 +116,7 @@ const BOTH = [
   },
   {
     name: 'memory_timeline',
-    description: 'Entries around one entry, oldest first. Returns anchor, before, after, scope. Refuses an unknown anchor.',
+    description: 'Entries around one entry, oldest first: anchor, before, after, scope. Refuses an unknown anchor.',
     inputSchema: S({
       anchor_id: str(),
       before: int('default 5'),
@@ -126,7 +126,7 @@ const BOTH = [
   },
   {
     name: 'memory_list',
-    description: 'List recent entries in a namespace. Returns the rows.',
+    description: 'List recent entries in a namespace.',
     inputSchema: S({ namespace: str(), limit: int(), offset: int() }),
   },
   {
@@ -136,12 +136,12 @@ const BOTH = [
   },
   {
     name: 'memory_stats',
-    description: 'Row-derived counts plus the owner pid, pipe and whether it answered.',
+    description: 'Row counts plus the owner pid, pipe and whether it answered.',
     inputSchema: S({}),
   },
   {
     name: 'status',
-    description: 'The liveness ladder: every rung with whether it held and what established it, the run, and per worker pid_alive, last-event age, turns, tokens and cost. Never refuses; a dead system is a valid answer.',
+    description: 'The liveness ladder: each rung, whether it held and what established it, the run, and per worker pid_alive, last-event age, turns, tokens and cost. Never refuses.',
     inputSchema: S({ deep: bool('Also query the substrate registry; slower') }),
   },
   {
@@ -151,7 +151,7 @@ const BOTH = [
   },
   {
     name: 'briefing',
-    description: 'Resume material rebuilt from the store. Returns line, at most 400 bytes, and doc, at most 4096, with anything a worker said labelled unverified. Give worker_id or task_id.',
+    description: 'Resume material rebuilt from the store: line (max 400 bytes) and doc (max 4096), anything a worker said labelled unverified. Give worker_id or task_id.',
     inputSchema: S({ worker_id: str(), task_id: str() }),
   },
 ];
@@ -168,6 +168,7 @@ const ORCHESTRATOR = [
       model: str(),
       agent_type: { type: 'string', enum: WORKER_TYPES, description: 'Configured model and effort default' },
       effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      memory_queries: strs('Up to 4 task lines naming the situations the worker will be in, each max 160 bytes'),
       allowed_tools: strs(),
       permission_mode: str(),
       startup_timeout_ms: int('default 60000'),
@@ -264,7 +265,7 @@ const ORCHESTRATOR = [
 const WORKER = [
   {
     name: 'lease_renew',
-    description: 'Extend the lease you hold. Returns the lease row with its new expiry. Refuses if you are not the holder or it already expired.',
+    description: 'Extend your lease. Returns the lease row with its new expiry. Refuses if you are not the holder or it expired.',
     inputSchema: S({ lease_id: str() }, ['lease_id']),
   },
   {
@@ -274,7 +275,7 @@ const WORKER = [
   },
   {
     name: 'checkpoint_write',
-    description: 'Record what you did and what is next. Stored as your claim, not as fact. Returns the checkpoint row: turn, files touched, next step, open questions. Refuses unless you hold the task\'s current lease.',
+    description: 'Record what you did and what is next, as your claim. Returns the checkpoint row. Refuses unless you hold the task\'s current lease.',
     inputSchema: S({
       task_id: str(),
       turn: int(),

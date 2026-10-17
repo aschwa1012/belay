@@ -10,7 +10,7 @@ const { SOURCES, TYPE_RE, validId } = require('./memory-rows.cjs');
 const { redact, redactDeep } = require('./redact.cjs');
 
 // ADR 0041 §5 and ADR 0040 §2: the project alias and a caller's reach live in memory-reach.cjs, a read module.
-const { projectOf, resolveNamespace, reachOf, checkReach } = require('./memory-reach.cjs');
+const { projectOf, resolveNamespace, reachOf, checkReach, runEmbedderMode } = require('./memory-reach.cjs');
 
 const nsFor = (E, caller, args) => resolveNamespace(E, caller, args.namespace) || `run/${caller.run_id}`;
 
@@ -20,6 +20,17 @@ function notifyEmbedderFailure(E, caller, call, error, workerId) {
   const h = E.owner && E.owner.opts && E.owner.opts.onEmbedderFailure;
   if (typeof h !== 'function') return;
   try { Promise.resolve(h({ caller, by: E.writtenBy(caller), call, error, ...(workerId ? { worker_id: workerId } : {}) })).catch(() => {}); } catch { /* the hook is the run's, never the caller's */ }
+}
+
+// Under `required` in a run (an owner with a guard) an embedder failure pauses the run: the error is told what to do next, once.
+function adviseEmbedderFailure(E, caller, e) {
+  if (e && e.detail && e.detail.embedder === true && E.owner && E.owner.opts && typeof E.owner.opts.embedderMode === 'function' && E.embedderMode() === 'required' && !e.detail.advised) {
+    e.detail.advised = true;
+    const EMA = require('./embedder-mode.cjs'), o = E.owner.opts, worker = caller && caller.role === 'worker';
+    const ending = typeof o.runEnding === 'function' && o.runEnding(); // the guard is ENDING the run: read after it saw this failure
+    e.message = `${e.message} ${ending ? EMA.endingAdvice(e.code, worker) : worker ? EMA.workerPauseAdvice() : EMA.pauseAdvice(caller && caller.run_id)}`;
+  }
+  return e;
 }
 
 // `call` names the Core call for the hook (default: memory.store or memory.search by the field); `workerId` is the worker the
@@ -36,13 +47,7 @@ async function withEmbedding(E, args, field, textField, caller, call, workerId) 
       : { ...args, query_embedding: e.embedding, embedding_model: e.embedding_model };
   } catch (e) {
     notifyEmbedderFailure(E, caller, call || (field === 'embedding' ? 'memory.store' : 'memory.search'), e, workerId);
-    // Under `required` in a run (an owner with a guard) this failure pauses the run: the caller is told what to do next.
-    if (e && e.detail && e.detail.embedder === true && E.owner && E.owner.opts && typeof E.owner.opts.embedderMode === 'function' && E.embedderMode() === 'required' && !e.detail.advised) {
-      e.detail.advised = true;
-      const EMA = require('./embedder-mode.cjs'), o = E.owner.opts, worker = caller && caller.role === 'worker';
-      const ending = typeof o.runEnding === 'function' && o.runEnding(); // the guard is ENDING the run: read after it saw this failure
-      e.message = `${e.message} ${ending ? EMA.endingAdvice(e.code, worker) : worker ? EMA.workerPauseAdvice() : EMA.pauseAdvice(caller && caller.run_id)}`;
-    }
+    adviseEmbedderFailure(E, caller, e);
     throw e;
   }
 }
@@ -229,4 +234,4 @@ async function warm(E, caller, args = {}) {
   return { state, pid: o && o.embedInfo ? o.embedInfo.pid : null, error: o && o.embedError ? o.embedError : null };
 }
 
-module.exports = { leversOf, runAlpha, store, delete: del, stats, warm, nsFor, resolveNamespace, projectOf, withEmbedding, notifyEmbedderFailure, reachOf, checkReach, scrub };
+module.exports = { leversOf, runAlpha, store, delete: del, stats, warm, nsFor, resolveNamespace, projectOf, withEmbedding, notifyEmbedderFailure, adviseEmbedderFailure, reachOf, checkReach, runEmbedderMode, scrub };

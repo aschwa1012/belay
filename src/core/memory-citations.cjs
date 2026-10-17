@@ -113,7 +113,7 @@ function streamResultHas(file, quote) {
 }
 async function checkTaskCites(E, taskId, cites, note = null) {
   const workers = rows.currentAll(E.store, 'worker').filter(w => w.task_id === taskId);
-  const own = note ? [note.title, note.text, ...((note.evidence || []).flatMap(e => [e && e.saw, e && e.where]))].filter(t => typeof t === 'string' && t.trim()) : [];
+  const own = note ? [note.title, note.when, note.text, ...((note.evidence || []).flatMap(e => [e && e.saw, e && e.where]))].filter(t => typeof t === 'string' && t.trim()) : [];
   const failures = [];
   const fail = (index, where, reason) => failures.push({ index, where, reason });
   for (const [i, c] of cites.entries()) {

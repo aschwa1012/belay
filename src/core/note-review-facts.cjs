@@ -68,7 +68,7 @@ function notesUnderReview(E, taskIds, project) {
   return E.store.p(`SELECT ${COLS} FROM memory_entries WHERE type = 'note' AND namespace = ? AND COALESCE(status, 'unverified') = 'unverified' AND task_id IN (${taskIds.map(() => '?').join(', ')}) ORDER BY created_at, id LIMIT ${NOTES_MAX}`)
     .all(`project/${project}`, ...taskIds).map((r) => {
       const b = parse(r.body);
-      return { id: r.id, title: r.title, task_id: r.task_id, written_by: r.written_by, kind: b.kind || null, basis: b.basis || null, evidence: Array.isArray(b.evidence) ? b.evidence : [], applies_to: Array.isArray(b.applies_to) ? b.applies_to : [] };
+      return { id: r.id, title: r.title, when: typeof b.when === 'string' ? b.when : null, task_id: r.task_id, written_by: r.written_by, kind: b.kind || null, basis: b.basis || null, evidence: Array.isArray(b.evidence) ? b.evidence : [], applies_to: Array.isArray(b.applies_to) ? b.applies_to : [] };
     });
 }
 

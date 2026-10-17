@@ -96,6 +96,7 @@ async function adopt({ core, workerId, dataDir }) {
     captureBase: false, // W2-3: an adopted worker keeps the base_sha of its row
   });
   // W2-3: every receipt column comes from the row; head_sha is asked of git again if the adopted worker later settles (SF1).
+  w.indexQueries = Array.isArray(row.memory_queries) ? row.memory_queries : [];
   w.initModel = row.model || null;
   w.cacheReadTokens = row.cache_read_tokens || 0;
   w.cacheCreationTokens = row.cache_creation_tokens || 0;
@@ -167,6 +168,7 @@ function rowOf(w, state, { runId, adapterPid }) {
     permission_mode_requested: w.permissionModeEffective ? w.permissionMode : null,
     permission_mode_effective: w.permissionModeEffective, claude_code_version: w.claudeCodeVersion,
     effort_requested: w.effort || null, // ADR 0028 decision 3: the request, not the level the substrate used
+    memory_queries: Array.isArray(w.indexQueries) && w.indexQueries.length ? w.indexQueries : null, // the orchestrator's index queries, kept for a relaunch
     // 6e-5 item 3: `paused` dropped — a parked worker has no process, so it is never mid-turn.
     mid_turn: (state === 'starting' || state === 'running') && !w.turnEnded ? 1 : 0,
     death_established_by: (state === 'stopped' || state === 'dead') ? w.deathEstablishedBy : null,

@@ -12,7 +12,7 @@ const rows = require('./rows.cjs');
 const { redact } = require('./redact.cjs');
 
 const EVENT_KINDS = ['observation', 'summary', 'project_write', 'usage', 'index_injected', 'bottle', 'wrapup',
-  'corpus_primed', 'knowledge_ask', 'reflection', 'levers_unread', 'embed_bound', 'notes_applied', 'note_chance', 'note_changed', 'archive_purge', 'note_matches', 'note_review', 'note_refuted', 'review_job', 'scrub_job', 'scrub_owed', 'scrub_alarm', 'review_stage', 'stage_overrun'];
+  'corpus_primed', 'knowledge_ask', 'reflection', 'levers_unread', 'embed_bound', 'index_bound', 'notes_applied', 'note_chance', 'note_changed', 'archive_purge', 'note_matches', 'note_review', 'note_refuted', 'review_job', 'scrub_job', 'scrub_owed', 'scrub_alarm', 'review_stage', 'stage_overrun'];
 const SUBSTRATES = ['claude-code', 'codex'];
 const COST_BASES = ['delta-of-cumulative', 'delta-of-cumulative (new process)', 'none'];
 const GROUPS = ['task', 'worker', 'model', 'turn'];
