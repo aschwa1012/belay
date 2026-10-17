@@ -40,7 +40,7 @@ const LEASE_RELEASE = {
 
 const NOTE_RESOLVE = {
   name: 'memory_note_resolve',
-  description: 'Settle pending notes: new, repeats, refines or supersedes an id.',
+  description: 'Settle pending notes: new, or repeats/refines/supersedes an id.',
   inputSchema: S({
     resolutions: {
       type: 'array',
