@@ -298,3 +298,26 @@ test('query_embeddings cross the pipe as base64 and arrive as the same vectors',
   assert.deepStrictEqual(JSON.parse(JSON.stringify(decodeWire(JSON.parse(JSON.stringify(wire))))).query_embeddings.map((q) => [q.label, q.model || null, q.vector]),
     [['task', 'stub', [0.25, -1, 3.5]], ['extra:1', null, [1, 2, 3]]]);
 });
+
+test('the task query is the spec\'s opening paragraph, up to the first blank line, and not the whole spec', async () => {
+  mode = 'ok'; embedded.length = 0;
+  const spec = `
+
+Add a migration that numbers the users table
+by its filename, and ship it
+
+Constraints: do not touch the deploy scripts.
+Files: db/migrate/, db/schema.sql
+Acceptance: npm test exits 0`;
+  rows.append(store, 'task', { id: 't-multi', run_id: 'test-run', spec, state: 'open' }, 'orchestrator');
+  const r = await call('memory.embedQuery', { task_id: 't-multi', extra_texts: ['dedupe email addresses'] });
+  assert.deepStrictEqual(embedded, ['Add a migration that numbers the users table by its filename, and ship it', 'dedupe email addresses']);
+  assert.deepStrictEqual(r.queries.map((q) => q.label), ['task', 'extra:1']);
+  // one paragraph with no blank line is itself, still cut to the cap
+  rows.append(store, 'task', { id: 't-one', run_id: 'test-run', spec: `ship ${'y'.repeat(5000)}`, state: 'open' }, 'orchestrator');
+  embedded.length = 0;
+  await call('memory.embedQuery', { task_id: 't-one' });
+  assert.strictEqual(embedded[0].length, 2048);
+  const { openingParagraph } = core('methods-embed-query.cjs');
+  assert.strictEqual(openingParagraph('a\r\nb\r\n\r\nc'), 'a b', 'CRLF is a line break too');
+});

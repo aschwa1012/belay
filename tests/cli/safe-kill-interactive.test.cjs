@@ -26,9 +26,9 @@ test('interactive: an attach that fails after claude already exited kills nothin
   assert.deepStrictEqual(killed, [], 'claude had exited before the attach failure; its pid is not ours to signal');
 }));
 
-test('console snapshot: the SIGHUP-time snapshot is reused while under 250 ms old and replaced by a fresh one after', async () => {
-  const saved = P.processSnapshot; let calls = 0;
-  P.processSnapshot = async () => { calls += 1; return new Map([[1, { ppid: 0, created: calls, image: 'x' }]]); };
+test('console snapshot: the SIGHUP-time snapshot is reused until a signal is sent in this process, and replaced by a fresh one after (ADR 0048)', async () => {
+  const saved = P.snapshotShared; let calls = 0;
+  P.snapshotShared = async () => { calls += 1; return { snap: new Map([[1, { ppid: 0, created: calls, image: 'x' }]]), startSeq: P.gate.stamp(), error: null }; };
   const ce = makeConsole();
   try {
     ce.install();
@@ -36,15 +36,14 @@ test('console snapshot: the SIGHUP-time snapshot is reused while under 250 ms ol
     await sleep(20);
     assert.strictEqual(calls, 1, 'the snapshot starts at the SIGHUP');
     const young = await ce.snapshot();
-    assert.strictEqual(young.get(1).created, 1);
+    assert.strictEqual(young.snap.get(1).created, 1);
     assert.strictEqual(calls, 1, 'a young snapshot is reused');
-    await sleep(300);
-    const old = await ce.snapshot();
-    assert.strictEqual(calls, 2, 'a snapshot older than 250 ms is not reused');
-    assert.strictEqual(old.get(1).created, 2);
-    // Usable for a kill with little budget left: in flight, or done and young. Stale is not.
-    assert.strictEqual(ce.snapshotPending(), true, 'a snapshot done under 250 ms ago is usable');
-    await sleep(300);
-    assert.strictEqual(ce.snapshotPending(), false, 'a stale, finished snapshot is not');
-  } finally { P.processSnapshot = saved; ce.dispose(); }
+    assert.strictEqual(ce.snapshotPending(), true, 'a snapshot that started after the last signal is usable');
+    P.gate.signal(); // a signal sent here after the snapshot started: it may show a process that has died since
+    assert.strictEqual(ce.snapshotPending(), false, 'a finished snapshot that a signal overtook is not usable');
+    const fresh = await ce.snapshot();
+    assert.strictEqual(calls, 2, 'a snapshot a signal overtook is not reused');
+    assert.strictEqual(fresh.snap.get(1).created, 2);
+    assert.strictEqual(ce.snapshotPending(), true);
+  } finally { P.snapshotShared = saved; ce.dispose(); }
 });

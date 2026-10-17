@@ -170,8 +170,9 @@ async function get(E, caller, args = {}) {
 // one did), so a slow embedder shows at run level. Present only when there are any; a store with no such table says nothing.
 function embedBoundsOf(E, runId) {
   try {
-    const n = E.store.p("SELECT COUNT(*) AS n FROM memory_event WHERE run_id = ? AND kind = 'embed_bound'").get(runId).n;
-    return n > 0 ? { embed_bounds: n } : {};
+    const count = (kind) => E.store.p("SELECT COUNT(*) AS n FROM memory_event WHERE run_id = ? AND kind = ?").get(runId, kind).n;
+    const n = count('embed_bound'), i = count('index_bound');
+    return { ...(n > 0 ? { embed_bounds: n } : {}), ...(i > 0 ? { index_bounds: i } : {}) };
   } catch { return {}; }
 }
 

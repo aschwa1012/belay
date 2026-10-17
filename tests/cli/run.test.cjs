@@ -19,6 +19,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const { openCore } = require('../../src/core/index.cjs');
 const { releaseCore } = require('./stop-helpers.cjs');
 const P = require('../../src/run/process.cjs');
+const { SNAPSHOT_TIMEOUT_MS } = require('../../src/core/proc-identity.cjs');
 
 const ROOT = path.resolve(__dirname, '..', '..').split(path.sep).join('/');
 const CLI = `${ROOT}/src/cli/belay.cjs`;
@@ -187,7 +188,9 @@ test('run: the orchestrator is a child of the CLI, the run row is written, stdin
 
     require('../crash.cjs').crash(fakeWorker);
 
-    const exited = await waitForExit(cliProc, 4 * 500 + 5000);
+    // A hang guard, not a product bound: the receipt waits for the orchestrator's creation-time read, so the guard allows what one
+    // caller can wait for a snapshot (ADR 0048 decision 8, c) on top of the 4 holds and the close.
+    const exited = await waitForExit(cliProc, 4 * 500 + 5000 + 2 * SNAPSHOT_TIMEOUT_MS);
     assert.ok(exited, 'the CLI did not exit in time after the fake worker was killed');
     assert.strictEqual(exited.code, 0, `the CLI exited ${exited.code}, stderr: ${cliStderr.slice(-2000)}`);
 

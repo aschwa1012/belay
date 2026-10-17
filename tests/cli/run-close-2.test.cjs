@@ -29,17 +29,20 @@ test('run close: a pid still alive after its kill is named in still_alive (kill 
   try {
     const calls = [];
     const deps = {
-      killProcess: async (target) => { calls.push(['proc', target.pid, target.created, target.image]); return { tree: null, pidKill: { signalled: false }, identity: null, refused: null }; },
+      killProcess: async (target) => { calls.push(['proc', target.pid, target.created, target.image]); return { tree: { killed: [w.pid], terminated: 1 }, pidKill: { signalled: false, error: 'ESRCH' }, identity: null, refused: null }; }, // a tree kill ends the root, so the root's own pidKill is ESRCH
       waitPidGone: async () => null,
     };
     const out = await closeRunWorkers({ core: stub(process.pid, [row('w1', w.pid)]), runId: 'r1', graceMs: 100, deps });
-    assert.deepStrictEqual(out.still_alive, [{ worker_id: 'w1', pid: w.pid }]);
+    assert.strictEqual(out.killed[0].signalled, true, 'the tree kill signalled the root');
+    assert.deepStrictEqual(out.still_alive.map((x) => ({ worker_id: x.worker_id, pid: x.pid, outcome: x.outcome })), [{ worker_id: 'w1', pid: w.pid, outcome: 'signalled_still_alive' }]);
+    assert.match(out.still_alive[0].manual, /belay worker kill w1/);
     assert.strictEqual(out.killed[0].gone, false);
     assert.deepStrictEqual(calls, [['proc', w.pid, null, ['claude.exe']]], 'killed through the row identity (ADR 0039): its pid, no creation time recorded, the substrate images');
   } finally { if (P.pidAlive(w.pid)) require('../crash.cjs').crash(w); }
 });
 
-test('run close: the adapter wait bound is the larger of close_grace_ms and live workers x 10,000 + 5,000, and is recorded', async () => {
+test('run close: the adapter wait bound is the larger of close_grace_ms and N x (10 s + T) + (5 s + T), T the snapshot timeout, and is recorded', async () => {
+  const T = require('../../src/core/proc-identity.cjs').SNAPSHOT_TIMEOUT_MS;
   const adapter = sleeper();
   const a = sleeper();
   const b = sleeper();
@@ -49,14 +52,70 @@ test('run close: the adapter wait bound is the larger of close_grace_ms and live
     const deps = { waitPidGone: async (pid, o) => { if (pid === adapter.pid) { seen.push(o.timeoutMs); return null; } return 1; }, killProcess: async () => ({ tree: null, pidKill: { signalled: false } }) };
     const workers = [row('w1', a.pid), row('w2', b.pid), row('cx', idleCodex.pid, { substrate: 'codex', state: 'idle' }), row('w-dead', 999999999), row('w-stopped', a.pid, { state: 'stopped' })];
     let out = await closeRunWorkers({ core: stub(adapter.pid, workers), runId: 'r1', graceMs: 10000, deps });
-    assert.strictEqual(out.adapter_wait_bound_ms, 25000, 'two live Claude Code rows; the Codex idle row and the stopped row do not count');
+    assert.strictEqual(out.adapter_wait_bound_ms, Math.max(10000, 2 * (10000 + T) + 5000 + T), 'two live Claude Code rows; the Codex idle row and the stopped row do not count');
     assert.strictEqual(out.adapter_gone, false);
     out = await closeRunWorkers({ core: stub(adapter.pid, workers), runId: 'r1', graceMs: 60000, deps });
-    assert.strictEqual(out.adapter_wait_bound_ms, 60000);
+    assert.strictEqual(out.adapter_wait_bound_ms, Math.max(60000, 2 * (10000 + T) + 5000 + T));
     out = await closeRunWorkers({ core: stub(adapter.pid, []), runId: 'r1', graceMs: 1000, deps });
-    assert.strictEqual(out.adapter_wait_bound_ms, 5000, 'no live worker: the 5,000 ms slack');
-    assert.deepStrictEqual(seen, [25000, 60000, 5000], 'the wait itself used the recorded bound');
+    assert.strictEqual(out.adapter_wait_bound_ms, Math.max(1000, 5000 + T), 'no live worker: the 5,000 ms slack plus one snapshot');
+    assert.deepStrictEqual(seen, [Math.max(10000, 2 * (10000 + T) + 5000 + T), Math.max(60000, 2 * (10000 + T) + 5000 + T), Math.max(1000, 5000 + T)], 'the wait itself used the recorded bound');
   } finally { for (const c of [adapter, a, b, idleCodex]) if (P.pidAlive(c.pid)) require('../crash.cjs').crash(c); }
+});
+
+test('run close: with note review on, the adapter wait adds the review drain the adapter does before it stops any worker', async () => {
+  const T = require('../../src/core/proc-identity.cjs').SNAPSHOT_TIMEOUT_MS;
+  const { NOTE_REVIEW_DRAIN_MS } = require('../../src/core/spawn-bounds.cjs');
+  const adapter = sleeper();
+  const a = sleeper();
+  try {
+    const seen = [];
+    const deps = { waitPidGone: async (pid, o) => { if (pid === adapter.pid) { seen.push(o.timeoutMs); return null; } return 1; }, killProcess: async () => ({ tree: null, pidKill: { signalled: false } }) };
+    const workers = [row('w1', a.pid)];
+    const off = await closeRunWorkers({ core: stub(adapter.pid, workers), runId: 'r1', graceMs: 1000, deps });
+    const on = await closeRunWorkers({ core: stub(adapter.pid, workers), runId: 'r1', graceMs: 1000, deps, noteReview: true });
+    assert.strictEqual(off.adapter_wait_bound_ms, 1 * (10000 + T) + 5000 + T);
+    assert.strictEqual(on.adapter_wait_bound_ms, off.adapter_wait_bound_ms + NOTE_REVIEW_DRAIN_MS, 'the drain comes before the worker stops, so it is added');
+    assert.deepStrictEqual(seen, [off.adapter_wait_bound_ms, on.adapter_wait_bound_ms], 'the close waited for the adapter for the longer bound');
+  } finally { for (const c of [adapter, a]) if (P.pidAlive(c.pid)) require('../crash.cjs').crash(c); }
+});
+
+// A fast-close stage kill (stage-job.cjs: manager.stop kill) sends a signal in this process. If it lands after the close's own
+// SIGHUP snapshot started, that snapshot is stale for the worker close: it must re-take, or refuse, and never signal on it.
+test('run close (fast): a signal that lands after the close snapshot started makes it re-take; one that keeps landing refuses, and nothing is signalled on a stale snapshot', async () => {
+  const ID = require('../../src/core/proc-identity.cjs');
+  const CP = require('../../src/core/process.cjs');
+  const w = sleeper();
+  try {
+    const snapOf = (pid) => new Map([[pid, { ppid: 1, created: 5, image: 'node.exe' }]]);
+    for (const keepLanding of [false, true]) {
+      const sent = []; let takes = 0;
+      const fast = {
+        requested: () => false, leftMs: () => 60000,
+        snapshot: async () => {
+          takes++;
+          const startSeq = ID.gate.stamp();
+          if (keepLanding || takes === 1) ID.gate.signal(); // the stage kill's signal, after this snapshot started
+          return { snap: snapOf(w.pid), startSeq, error: null };
+        },
+      };
+      const deps = { killProcess: (t, o) => CP.killProcess(t, { ...o, kill: (pid) => { sent.push(pid); } }), waitPidGone: async () => 0 };
+      const out = await closeRunWorkers({ core: stub(process.pid, [row('w1', w.pid, { pid_created: 5, pid_image: 'node.exe' })]), runId: 'r1', graceMs: 100, deps, fast });
+      const e = out.killed[0];
+      if (!keepLanding) {
+        assert.strictEqual(takes, 2, 'the first snapshot was stale, so the close took one more');
+        assert.deepStrictEqual(sent, [w.pid], 'signalled once, on the fresh snapshot');
+        assert.strictEqual(e.refused, undefined, JSON.stringify(e));
+      } else {
+        assert.strictEqual(takes, 2, 'one re-take, then it gives up');
+        assert.deepStrictEqual(sent, [], 'nothing signalled on a stale snapshot');
+        assert.strictEqual(e.signalled, false);
+        assert.strictEqual(e.kind, 'unverifiable', JSON.stringify(e));
+        assert.strictEqual(e.outcome, 'refused_unverifiable');
+        assert.match(e.detail, /signals in this process kept landing after each snapshot started/);
+        assert.match(e.manual, /belay worker kill w1/);
+      }
+    }
+  } finally { if (P.pidAlive(w.pid)) require('../crash.cjs').crash(w); }
 });
 
 test('run close: a Codex idle row with a live pid is never killed', async () => {

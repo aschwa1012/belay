@@ -16,7 +16,7 @@ const evidence = { type: 'array', items: S({ where: str(), saw: str() }) };
 
 const LEASE_RELEASE = {
   name: 'lease_release',
-  description: 'Release your lease. Returns the released task row; refuses if not the holder. result (max 4KB) hands back branch, head, tests, findings; a review sets verdict holds|refuted and summary. notes is required, [] for most tasks. Pending notes: call memory_note_resolve.',
+  description: 'Release your lease; returns the released task row, refuses if not the holder. result (max 4KB): branch, head, tests, findings; a review sets verdict holds|refuted and summary. notes is required, [] for most tasks; settle pending notes with memory_note_resolve.',
   inputSchema: S({
     lease_id: str(),
     reason: str(),
@@ -25,21 +25,22 @@ const LEASE_RELEASE = {
       type: 'array',
       items: S({
         kind: { type: 'string', enum: ['lesson', 'flag', 'recurring', 'gotcha'] },
-        title: str('The claim, max 160 bytes'),
+        title: str('Claim, max 160 bytes'),
+        when: str('Task that would trip on it, as a task line, max 160 bytes'),
         basis: { type: 'string', enum: ['observed', 'inferred', 'relayed'] },
         evidence,
         applies_to: strs(),
         subjects: strs(),
-      }, ['kind', 'title', 'basis']),
+      }, ['kind', 'title', 'when', 'basis']),
     },
-    reported_wrong: { type: 'array', items: S({ id: str(), why: str(), replaced_by: { type: ['string', 'null'] } }, ['id', 'why']) },
+    reported_wrong: { type: 'array', items: S({ id: str(), why: str(), replaced_by: { type: ['string', 'null'], description: 'notes[i] or id' } }, ['id', 'why']) },
     memory_ids: { type: 'array', items: { type: 'string' }, description: 'Ids of notes you applied; required when the run records note use, [] if none' },
   }, ['lease_id', 'notes']),
 };
 
 const NOTE_RESOLVE = {
   name: 'memory_note_resolve',
-  description: 'Settle pending notes: new, repeats or supersedes an id (with evidence). Returns what each became.',
+  description: 'Settle pending notes: new, repeats or supersedes an id (with evidence).',
   inputSchema: S({
     resolutions: {
       type: 'array',

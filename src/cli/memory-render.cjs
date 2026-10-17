@@ -44,6 +44,8 @@ const FLAGS = {
   '--summary': { key: 'summary', type: 'one' },
   '--evidence': { key: 'evidence', type: 'one' },
   '--dry-run': { key: 'dryRun', type: 'bool' },
+  '--reembed': { key: 'reembed', type: 'bool' },
+  '--template': { key: 'template', type: 'one' },
   '--candidates': { key: 'candidates', type: 'bool' },
   '--approve': { key: 'approve', type: 'bool' },
   '--reject': { key: 'reject', type: 'bool' },
@@ -60,7 +62,7 @@ const VERBS = {
   verify: { flags: ['--status', '--receipt'], positional: [1, 1], usage: 'belay memory verify <id> --status verified|refuted|unverified --receipt <r>' },
   stats: { flags: [], positional: [0, 1], usage: 'belay memory stats [run-id]' },
   export: { flags: ['--namespace', '--since', '--out', '--all'], positional: [0, 1], usage: 'belay memory export [run-id] [--namespace ns]... [--since <ms|iso>] [--out <file>] [--all]' },
-  embed: { flags: ['--project', '--dry-run'], positional: [0, 0], usage: 'belay memory embed [--project <p>] [--dry-run]' },
+  embed: { flags: ['--project', '--dry-run', '--reembed', '--template'], positional: [0, 0], usage: 'belay memory embed [--project <p>] [--dry-run] | belay memory embed --reembed --template v2 [--project <p>] [--dry-run]' },
   import: { flags: ['--namespace-map', '--namespace', '--no-embed'], positional: [1, 1], usage: 'belay memory import <file> [--namespace-map from=to]... [--namespace ns] [--no-embed]' },
   proposals: { flags: ['--project', '--all'], positional: [0, 0], usage: 'belay memory proposals [--project p] [--all]' },
   restore: { flags: ['--reason', '--candidates'], positional: [1, 1], usage: 'belay memory restore <id> --reason <text>   |   belay memory restore <id> --candidates' },
@@ -241,7 +243,8 @@ function rowCols(view, scored) {
 // The warning, when there is one, is the first line of the text, as it is the first key of the JSON.
 function renderSearchText(r, view) {
   const out = [];
-  if (r.warning) out.push(r.warning);
+  if (r.warning) out.push(r.warning); // the warning stays the first line
+  if ((r.modes_failed || []).some(f => f.mode === 'semantic')) out.push('*** SEMANTIC SEARCH DID NOT RUN: these are keyword matches only, and an empty list does not mean there is no such memory ***');
   const results = r.results || [];
   if (!results.length) out.push(r.note ? r.note : '(no results)');
   else out.push(...table(rowCols(view, true), results), '');

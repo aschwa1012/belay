@@ -6,7 +6,16 @@
 
 const { adapterPipeName, pidAlive } = require('../core/lock.cjs');
 const { Client } = require('../core/client.cjs');
+const { SNAPSHOT_TIMEOUT_MS } = require('../core/proc-identity.cjs');
 const { SPAWN_EMBED_MS } = require('../core/spawn-bounds.cjs');
+
+// ADR 0048: a kill that is not made through a live handle takes one process snapshot, and a caller that arrives while
+// one is in flight waits for it and then for its own, so a snapshot wait costs up to 2 x T (T, the snapshot timeout in
+// force). A re-take after a signal in the same process is a further wait; the ceiling for one kill is 4 x T (2 x T for the
+// first wait, 2 x T for the re-take). By the operator's decision these bounds charge 2 x T once per wait on the path: a kill
+// that re-takes under a stall can outrun them, and the caller is then told the pipe did not answer in time. Each bound below names how many
+// waits its path has. `snapMs` is T; callers leave it out, and a test that runs the CLI with an override passes it.
+const snapWaitMs = (T) => 2 * T;
 
 // Amendment 1 item 2: the bound a verb waits is the sum of the manager method's own nested waits, read
 // from src/run/manager.cjs (stop's three waits; restart's own stop plus its 60,000 ms ready window
@@ -15,35 +24,38 @@ const { SPAWN_EMBED_MS } = require('../core/spawn-bounds.cjs');
 // build step 6e-5 design item 4 (review 2, adapter-pipe.cjs:14): doStop's own worst case, kept apart from
 // `stopBoundMs` below (which now also covers a pause or resume `stop` might wait out) so `restartBoundMs`
 // does not inherit that addition — 6e-5 already releases restart's own slot at the running row.
-function doStopInternalBoundMs(timeout_ms) {
-  return timeout_ms + Math.max(2000, Math.min(timeout_ms, 10000)) + 5000 + 5000;
+// One snapshot wait: the kill fallback of a graceful stop that did not end in time.
+function doStopInternalBoundMs(timeout_ms, T = SNAPSHOT_TIMEOUT_MS) {
+  return timeout_ms + Math.max(2000, Math.min(timeout_ms, 10000)) + 5000 + 5000 + snapWaitMs(T);
 }
 // 6e-5 design item 4 (review 2, adapter-pipe.cjs:14): `stop`'s own operation slot can now wait out a
 // pause or a resume in flight before it even starts (lifecycle.cjs `waitFor`); the CLI's bound must cover
 // whichever of those two is the longer, on top of doStop's own worst case above.
-function stopBoundMs(timeout_ms) {
-  return doStopInternalBoundMs(timeout_ms) + Math.max(pauseBoundMs(), resumeBoundMs());
+function stopBoundMs(timeout_ms, T = SNAPSHOT_TIMEOUT_MS) {
+  return doStopInternalBoundMs(timeout_ms, T) + Math.max(pauseBoundMs(undefined, undefined, T), resumeBoundMs(T));
 }
-function restartBoundMs(first_turn_timeout_ms) {
+function restartBoundMs(first_turn_timeout_ms, T = SNAPSHOT_TIMEOUT_MS) {
   // + EXIT_CODE_WAIT_MS (15,000): failNoReady's bounded hold for a pid-established death's exit code
   // + SPAWN_EMBED_MS: the relaunch embeds the task's text for its index before the process starts (memory-preface.cjs)
-  return doStopInternalBoundMs(10000) + 5000 + 60000 + 15000 + first_turn_timeout_ms + SPAWN_EMBED_MS;
+  return doStopInternalBoundMs(10000, T) + 5000 + 60000 + 15000 + first_turn_timeout_ms + SPAWN_EMBED_MS;
 }
 function messageBoundMs() {
   return 30000 + 5000;
 }
 // build step 6e-4 (ADR 0023 amendment 2): a park's own nested waits — the interrupt bound; the descendant
 // snapshot; the graceful close; the kill fallback's own wait; the stop's own three internal waits; the
-// paused row's write; the receipt's own read; the CLI's margin.
-function pauseBoundMs(interrupt_timeout_ms = 5000, exit_timeout_ms = 10000) {
-  return interrupt_timeout_ms + 2000 + exit_timeout_ms + Math.max(2000, Math.min(exit_timeout_ms, 10000)) + 5000 + 30000 + 30000 + 5000;
+// paused row's write; the receipt's own read; the CLI's margin. ADR 0048: three snapshot waits (pause.cjs: the
+// descendants before the close, the stop's kill fallback, and killMany after the exit), 2 x T each.
+function pauseBoundMs(interrupt_timeout_ms = 5000, exit_timeout_ms = 10000, T = SNAPSHOT_TIMEOUT_MS) {
+  return interrupt_timeout_ms + exit_timeout_ms + Math.max(2000, Math.min(exit_timeout_ms, 10000)) + 5000 + 30000 + 30000 + 5000 + 3 * snapWaitMs(T);
 }
 // a resume's own nested waits — the resume line's read; the old pid's wait; the ready window; the running
 // row's write; the CLI's margin.
-function resumeBoundMs() {
+// ADR 0048: one snapshot wait for the kill a failed relaunch makes (failNoReady).
+function resumeBoundMs(T = SNAPSHOT_TIMEOUT_MS) {
   // + 15000: failNoReady's bounded hold for the exit code (worker.EXIT_CODE_WAIT_MS)
   // + SPAWN_EMBED_MS: the relaunch embeds the task's text for its index before the process starts (memory-preface.cjs)
-  return 30000 + 5000 + 60000 + 15000 + 30000 + 5000 + SPAWN_EMBED_MS;
+  return 30000 + 5000 + 60000 + 15000 + 30000 + 5000 + snapWaitMs(T) + SPAWN_EMBED_MS;
 }
 
 function failure(workerId, ladder, last, reason, error) {

@@ -19,6 +19,9 @@ const { ROOT, sandbox, cleanup, makeSpec, runCli, receiptOf, waitForExit, readSt
 const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
 const FAKE_ORCH = `${ROOT}/tests/cli/fakes/fake-orch-adapter.cjs`;
 
+// ADR 0048: N x (10 s + T) + (5 s + T), T the snapshot timeout in force (the child inherits this process's environment).
+const snapBound = (n) => require('../../src/cli/run-close.cjs').adapterStopBoundMs(n);
+
 async function driveReal(mode, closeGraceMs) {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
@@ -31,6 +34,10 @@ async function driveReal(mode, closeGraceMs) {
   const run = runCli(specPath, dataDir, {
     BELAY_CLAUDE_EXE: FAKE_ORCH, E2E_FAKE_CLAUDE: FAKE_CLAUDE, E2E_OUT: out, E2E_WT: wt,
     E2E_KILL_ADAPTER: mode === 'kill' ? '1' : '', E2E_WORKER_IGNORE_END: '1', FAKE_ANSWER_DELAY_MS: '4000',
+    // ADR 0048 decision 8 (b): this test asserts a product budget that includes a kill snapshot by definition (the adapter's
+    // stop: 10,000 ms of grace for the worker, then the kill, inside the 15,000 ms the run waits). An injected stall would
+    // test the stall, so these processes run with the seam off even when the suite runs with it on.
+    BELAY_TEST_SNAPSHOT_STALL_MS: '',
   });
   const pids = new Set([run.proc.pid]);
   const created = new Map(); // pid -> the creation time its own store row recorded (ADR 0039); none, no signal
@@ -80,7 +87,7 @@ test('run close e2e: the real adapter terminated 350 ms after the orchestrator e
     const wc = receipt.workers_closed;
     assert.strictEqual(wc.adapter_pid, adapterPid);
     assert.strictEqual(wc.adapter_gone, true);
-    assert.strictEqual(wc.adapter_wait_bound_ms, 15000);
+    assert.strictEqual(wc.adapter_wait_bound_ms, Math.max(15000, snapBound(1)));
     // The worker dies with the adapter through the host's ambient job binding when the machine is quiet
     // (killed: []), and survives it under load, in which case decision 4 kills it by its exact pid. Both
     // happened in review runs; either way the row ends marked by run.end.
@@ -106,7 +113,7 @@ test('run close e2e: a graceful adapter at the default close_grace_ms is waited 
     assert.strictEqual(exited.code, 0, `exit ${exited.code}; ended_by: ${receipt.ended_by}`);
     const wc = receipt.workers_closed;
     assert.strictEqual(wc.adapter_gone, true, 'the adapter finished its own shutdown inside the bound');
-    assert.strictEqual(wc.adapter_wait_bound_ms, 15000, 'one live worker: 1 x 10,000 + 5,000 beats the 10,000 default');
+    assert.strictEqual(wc.adapter_wait_bound_ms, snapBound(1), 'one live worker: 1 x (10 s + T) + (5 s + T) beats the 10,000 default');
     assert.deepStrictEqual(wc.killed, []);
     assert.deepStrictEqual(wc.marked_dead, []);
     const rows = workerRows(ctx.dataDir);

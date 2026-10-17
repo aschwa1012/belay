@@ -7,7 +7,7 @@
 const { spawn } = require('node:child_process');
 const coreProcess = require('../core/process.cjs');
 
-const { IS_WINDOWS, assertPid, killPid, killTree, killProcess, rowTarget, createdOf, processSnapshot, descendantTargets, killMany, childPids, waitPidGone } = coreProcess;
+const { IS_WINDOWS, assertPid, killPid, killTree, killProcess, rowTarget, createdOf, processSnapshot, snapshotShared, gate, descendantTargets, killMany, childPids, waitPidGone } = coreProcess;
 
 // A pid is alive if signal 0 lands. EPERM means the process exists and belongs to someone else, so
 // it counts as alive; ESRCH is the only "gone".
@@ -24,12 +24,15 @@ function pidAlive(pid) {
 // Spawn a worker. stdin is a pipe for Claude Code (the control channel, ADR 0008 §1) and ignored
 // for Codex (one process per turn, prompt in argv).
 function spawnWorker({ exe, args, cwd, env, stdin = 'pipe' }) {
+  // Taken before the call: Windows stamps the creation time when CreateProcess starts, and the call can return late (antivirus), ADR 0048.
+  const startedAt = Date.now();
   const child = spawn(exe, args, {
     cwd,
     env,
     stdio: [stdin, 'pipe', 'pipe'],
     windowsHide: true,
   });
+  child.belaySpawnStartedAt = startedAt;
   return child;
 }
 
@@ -69,10 +72,11 @@ module.exports = {
   rowTarget,
   createdOf,
   processSnapshot,
+  snapshotShared,
+  gate,
   childPids,
   spawnWorker,
   gracefulStop,
   waitPidGone,
   withKillLock: coreProcess.withKillLock, // ADR 0039 review: belay stop's worker kills and the run's worker close share it
-  lastSignalAt: coreProcess.lastSignalAt,
 };

@@ -97,3 +97,17 @@ test('memory rules: the text stays within 1,200 bytes and carries each rule the 
   for (const n of named) assert.ok(orch.has(n), `mcp__belay__${n} is not an orchestrator tool`);
   assert.ok(!/\r/.test(text), 'LF only');
 });
+
+// The paired write/search contract: the orchestrator names the situations a worker will be in as task lines, so the worker's
+// first-message index is searched by situation and not only by the spec's own words.
+test('both orchestrator prompts ask for 1 to 3 memory_queries, and worker_spawn lists the field', () => {
+  for (const f of ['orchestrator.md', 'orchestrator-interactive.md']) {
+    const text = fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8');
+    assert.match(text, /give 1 to 3 `memory_queries`: task lines/, `${f} asks for memory_queries`);
+    assert.match(text, /not the finding you expect it to make/, `${f}: situations, not findings`);
+  }
+  const T = require(path.join(ROOT, 'src/mcp/tools.cjs'));
+  const spawn = T.toolsFor('orchestrator').find((t) => t.name === 'worker_spawn');
+  assert.ok(spawn.inputSchema.properties.memory_queries, 'worker_spawn lists memory_queries');
+  assert.strictEqual(spawn.inputSchema.properties.memory_queries.type, 'array');
+});

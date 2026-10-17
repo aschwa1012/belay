@@ -130,12 +130,12 @@ test('store.diff: expired is judged since the mark, and a row created after the 
     const ns = 'run/run-mark';
     const rowX = await orch.memory.store({ namespace: ns, text: 'row X expires long before the mark', embedding: vec(0), embedding_model: 'fixture', dim: 384, ttl_seconds: 0.001 });
     await sleep(30);
-    const rowY = await orch.memory.store({ namespace: ns, text: 'row Y created before the mark, expires after it', embedding: vec(1), embedding_model: 'fixture', dim: 384, ttl_seconds: 0.08 });
+    const rowY = await orch.memory.store({ namespace: ns, text: 'row Y created before the mark, expires after it', embedding: vec(1), embedding_model: 'fixture', dim: 384, ttl_seconds: 0.4 }); // long enough that a stalled machine cannot expire it before the mark (the test's own wall clock, not the store's)
     await sleep(30);
     const sinceMs = Date.now();
     await sleep(30);
     const rowZ = await orch.memory.store({ namespace: ns, text: 'row Z created and expired after the mark', embedding: vec(2), embedding_model: 'fixture', dim: 384, ttl_seconds: 0.001 });
-    await sleep(80);
+    await sleep(450);
 
     const d = await orch.store.diff({ since_ms: sinceMs, run_id: 'run-mark' });
     const m = d.tables.memory;

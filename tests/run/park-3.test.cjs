@@ -55,8 +55,10 @@ test('restart: a restart after a stop that landed during the previous restart\'s
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
     await m._waitTurn('w1', 8000);
     const launchesBefore = m._worker('w1').launches;
-    process.env.FAKE_ANSWER_DELAY_MS = '8000';
-    const p1 = m.restart({ worker_id: 'w1', first_turn_timeout_ms: 5000 });
+    // The stop's kill takes an identity snapshot first, so when it lands depends on the machine (ADR 0048 decision 8, c). The
+    // first turn is held open far past it, so the exit that ends the wait is the stop's kill, never the turn's end or its timeout.
+    process.env.FAKE_ANSWER_DELAY_MS = '40000';
+    const p1 = m.restart({ worker_id: 'w1', first_turn_timeout_ms: 30000 });
     assert.ok(await pollUntil(() => m._worker('w1').launches > launchesBefore && m._worker('w1').readyAt !== null
       && m._worker('w1').op === null, 5000), 'the relaunch never completed and released the operation slot');
     assert.strictEqual(m._worker('w1').restartInFlight, null, 'restartInFlight must be cleared once the relaunch settles, before the first turn ends');

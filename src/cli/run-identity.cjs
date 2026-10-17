@@ -6,17 +6,15 @@
 // the attach and lands in the receipt (`orchestrator.pid_created`, or null with `pid_created_error`).
 
 const P = require('../core/process.cjs');
+const ID = require('../core/proc-identity.cjs');
 
 function createRunIdentity(ownPid) {
-  const own = P.createdOf(ownPid).catch(() => null);
+  const own = ID.ownCreatedProbe(ownPid); // a failed read is requested again, never awaited (ADR 0048 decision 3)
   let orch = null; let orchPid = null;
   return {
     // This process's creation time for run.attach, never waiting on the snapshot.
-    async ownNow() {
-      const r = await Promise.race([own, new Promise((res) => setImmediate(() => res(null)))]);
-      return r && r.created != null ? r.created : null;
-    },
-    watchOrchestrator(pid) { orchPid = pid; orch = P.createdOf(pid).catch(() => null); },
+    ownNow() { return own(); },
+    watchOrchestrator(pid) { orchPid = pid; orch = P.createdOf(pid, { kind: 'spawn-read' }).catch(() => null); },
     async orchestratorFacts() {
       if (!orch) return { pid_created: null, pid_created_error: 'the orchestrator was never started' };
       const r = await orch;

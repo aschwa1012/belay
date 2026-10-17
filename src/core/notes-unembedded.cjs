@@ -40,4 +40,23 @@ async function unembedded(E, caller, args = {}) {
   return { ...scoped, ...(args.list ? { notes: list(E.store, project) } : {}) };
 }
 
-module.exports = { count, list, unembedded };
+// memory.retemplate, a read: { project, template: 'v2' } -> the project's embedded notes whose vector was made from another
+// template, split into those that can be rebuilt (they carry a `when`) and those that cannot and so stay as they are.
+async function retemplate(E, caller, args = {}) {
+  if (args.template !== 'v2') throw require('./errors.cjs').err('E_ARGS', 'memory.retemplate template must be v2', { field: 'template' });
+  const ns = `${PROJECT_PREFIX}${args.project}`;
+  let rows = [];
+  try { rows = E.store.p("SELECT id, title, body, text_template FROM memory_entries WHERE type = 'note' AND embedding IS NOT NULL AND namespace = ? ORDER BY created_at, id").all(ns); } catch { rows = []; }
+  const out = { project: args.project, template: 'v2', total: rows.length, already: 0, eligible: [], stays: [] };
+  for (const r of rows) {
+    const from = r.text_template || 'v1';
+    if (from === 'v2') { out.already++; continue; }
+    let when = null;
+    try { when = (JSON.parse(r.body) || {}).when; } catch { when = null; }
+    if (typeof when === 'string' && when) out.eligible.push({ id: r.id, title: r.title, from });
+    else out.stays.push({ id: r.id, title: r.title, from, reason: 'no_when' });
+  }
+  return out;
+}
+
+module.exports = { count, list, unembedded, retemplate };

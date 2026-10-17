@@ -17,13 +17,19 @@ const read = (name) => {
 };
 
 const question = (lv) => read(lv && lv.notes_lesson_question ? 'notes-question-lesson.md' : 'notes-question.md');
-const fill = (template, lv) => template.split('{{question}}').join(question(lv));
+// The project's most used subjects, as one line (memory.noteSubjects, chosen by the core): '' when it has none, and then the
+// placeholder's whole line goes, so a project with no subjects yet sees no empty line.
+const subjectsLine = (subjects) => (Array.isArray(subjects) && subjects.length ? `Subjects already used in this project: ${subjects.join(', ')}.` : '');
+const fill = (template, lv, subjects) => {
+  const line = subjectsLine(subjects);
+  return template.split('{{question}}').join(question(lv)).split(line ? '{{subjects}}' : '\n{{subjects}}').join(line);
+};
 
 // Appended to a worker's opening message; '' with the lever off.
 // With the notes sink on, one more line asks for `memory_ids` (the core requires it then).
 const withIds = (lv) => (lv.notes_sink && lv.notes_sink !== 'off' ? '\n' + read('notes-memory-ids.md') : '');
-const contract = (lv) => (lv && lv.notes ? fill(read('notes-contract.md'), lv) + withIds(lv) : '');
+const contract = (lv, subjects) => (lv && lv.notes ? fill(read('notes-contract.md'), lv, subjects) + withIds(lv) : '');
 // The reflection turn's message; '' unless both levers are on.
-const reflection = (lv) => (lv && lv.notes && lv.notes_reflection ? fill(read('notes-reflection.md'), lv) : '');
+const reflection = (lv) => (lv && lv.notes && lv.notes_reflection ? fill(read('notes-reflection.md'), lv, null) : '');
 
 module.exports = { contract, reflection, question };

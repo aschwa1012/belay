@@ -79,13 +79,13 @@ const NO_EMBED = Object.freeze({ attempted: false, embeddings: [], queries: [], 
 
 // The query vectors of this worker's index, made by the store owner's embedder (memory.embedQuery: the path memory.search
 // uses; this process never loads the model). The queries are the task's own text, which the core reads from the task row
-// (so a relaunch embeds the same text a spawn did), plus the worker's `indexQueries` (orchestrator-written short queries; nothing
-// sets them yet). Only for a run with a project, and only when there is a task or an extra query. Resolves
+// (so a relaunch embeds the same text a spawn did), plus the worker's `indexQueries` (the orchestrator's memory_queries from worker_spawn, kept on the worker row; each is sent as
+// "Task: <line>", the shape the task query has). Only for a run with a project, and only when there is a task or an extra query. Resolves
 // { attempted, embeddings: [{ vector, model, label }], queries: [{ label, ms, ok, code?, message?, embedder?, timed_out? }],
 // failure: the first failed query's { code, message } or null, stop: whether a failure of the model itself must stop this
 // launch (the run's mode is `required`), off: whether the run's memory is off (mode `off` after a failure), ms }. A core without memory.embedQuery is a test double and gets none. Never throws.
 async function embedForIndex(ctx, w, lv) {
-  const extra = Array.isArray(w.indexQueries) ? w.indexQueries : [];
+  const extra = (Array.isArray(w.indexQueries) ? w.indexQueries : []).map((q) => (typeof q === 'string' ? `Task: ${q}` : { ...q, text: `Task: ${q.text}` }));
   if (!lv.project || !ctx.core.memory || typeof ctx.core.memory.embedQuery !== 'function' || (!w.taskId && !extra.length)) return NO_EMBED;
   const t0 = Date.now();
   let r;
@@ -130,6 +130,11 @@ async function offReceipt(ctx, w, emb) {
   await record(ctx, w, { kind: 'index_injected', ok: 1, row_ids: [], bytes: 0, dropped: 0, over_budget: 0, message: JSON.stringify({ hybrid: false, memory: 'off', queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), ...(emb.failure ? { failure: { code: emb.failure.code, message: String(emb.failure.message || '').slice(0, 160) } } : {}) }) });
 }
 
+// What a worker is told when its first-message index was refused (E_INDEX_BOUND, E_SEMANTIC_REQUIRED): belay's own words, no note text.
+function noIndexNotice(e) {
+  return `NO MEMORY INDEX WAS INJECTED into this message: the index was refused (${codeOf(e)}: ${String((e && e.message) || e).slice(0, 240)}). This is not a pause and your task is unchanged. Use the memory_search tool to look for what the task may touch before you start, and do not assume that the project has no memory on it.`;
+}
+
 // The index text for this worker's launch, or '' (lever off, no rows, or a failed call). The event is the
 // receipt either way once the lever is on. `prompt`, when the caller has it, is the keyword query (the core adds the task's
 // spec on its own); the vectors come from the task's text (embedForIndex), the same at a spawn and at a relaunch.
@@ -154,9 +159,13 @@ async function indexBlock(w, ctx, prompt, given) {
     });
   } catch (e) {
     noteError(w, 'memory.index', e);
+    const refusal = codeOf(e) === 'E_INDEX_BOUND' || codeOf(e) === 'E_SEMANTIC_REQUIRED';
+    if (refusal) await record(ctx, w, { kind: 'index_bound', ok: 0, code: codeOf(e), message: JSON.stringify({ refused: true, message: String((e && e.message) || e).slice(0, 300) }) });
     await record(ctx, w, { kind: 'index_injected', ok: 0, code: codeOf(e), message: JSON.stringify({ hybrid: false, queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), failure: { code: codeOf(e), message: String((e && e.message) || e).slice(0, 160) } }) });
-    return '';
+    // A refusal under `required` is not fixed by a pause, so the worker still starts. It is told plainly that it has no index and why.
+    return refusal ? noIndexNotice(e) : '';
   }
+  if (got.candidates && got.candidates.degraded) await record(ctx, w, { kind: 'index_bound', ok: 0, code: 'E_INDEX_BOUND', message: JSON.stringify({ refused: false, ...got.candidates.degraded }) });
   const rel = got.relevance || {};
   const hybrid = rel.semantic_contributed === true;
   const semFailure = emb.embeddings.length && !hybrid && rel.semantic && typeof rel.semantic === 'object' ? rel.semantic : null;
@@ -177,7 +186,23 @@ async function memoryPreface(w, ctx, prompt, emb) {
 // message (a worker reads what it must do last); '' with the lever off, so the message is the one it always was.
 async function contractTail(ctx, w) {
   if (!w || !w.notesOn) return ''; // decided with the adapter's argv (manager writeFilesFor), never re-read here
-  return `\n\n${require('./notes-contract.cjs').contract(ctx.memoryLevers)}`;
+  return `\n\n${require('./notes-contract.cjs').contract(ctx.memoryLevers, await projectSubjects(ctx, w))}`;
+}
+
+// The project's most used note subjects, for the hand-back question to offer (memory.noteSubjects: at most about 20, inside a
+// byte cap, chosen by the core). Best effort: a core without the call, or one that fails, offers none and the worker states its own.
+async function projectSubjects(ctx, w) {
+  const project = ctx.memoryLevers && ctx.memoryLevers.project;
+  const memory = ctx.core && ctx.core.memory;
+  if (!project || !memory || typeof memory.noteSubjects !== 'function') return [];
+  try {
+    const r = await memory.noteSubjects({ project });
+    return Array.isArray(r && r.subjects) ? r.subjects.map((s) => s.subject) : [];
+  } catch (e) {
+    // Named on the worker, as the other best-effort calls are: the worker then states its own subjects, and the receipt says why.
+    if (w) w.lastError = { where: 'memory.noteSubjects', code: e && e.code, message: String((e && e.message) || e).slice(0, 200) };
+    return [];
+  }
 }
 
 // A relaunch (replace or parked resume): the same index minus the rows already shown, after the relaunch's own text.

@@ -47,9 +47,8 @@ async function killHung(child) {
 // a child would still be this process's own descendant when the count is taken right after the call
 // returns. Scoped to this process's own subtree, unlike a system-wide node.exe count, so it stays
 // truthful when other test files are spawning and killing node processes of their own at the same time.
-async function ownChildCount() {
-  return (await P.childPids(process.pid)).length;
-}
+// A snapshot's PowerShell is one of this process's children, so the count waits for the gate to be idle first (ADR 0048).
+const { ownChildCount } = require('../helpers/own-children.cjs'); // children created at or after this process (a reused pid's orphans are not its own)
 
 function cliSync(args, dataDir, extraEnv) {
   const r = spawnSync(process.execPath, [CLI, ...args, '--data', dataDir, '--json'], {

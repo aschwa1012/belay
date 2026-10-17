@@ -103,6 +103,10 @@ const METHODS = {
   'memory.unembedded': { roles: ALL, kind: 'read', fn: lazy('./notes-unembedded.cjs', 'unembedded') },
   // The notes held for the Opus archive reviewer (a `wrong` hold), counted by a plain read; status, notices and the panel show the count.
   'memory.held': { roles: ALL, kind: 'read', fn: lazy('./notes-held.cjs', 'held') },
+  // `belay memory embed --reembed`: which notes have a vector made from another template, and which of those can be rebuilt (a read).
+  'memory.retemplate': { roles: ['operator'], kind: 'read', fn: lazy('./notes-unembedded.cjs', 'retemplate') },
+  // The project's most used note subjects, for the hand-back question to offer a worker (a read; the run manager asks at spawn).
+  'memory.noteSubjects': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./memory-subjects.cjs', 'noteSubjects') },
   // `belay memory embed`: one such note gets its vector and the near-duplicate check its hand-back skipped. The operator starts it; nothing else calls it.
   'memory.embedNote': { roles: ['operator'], kind: 'write', fn: lazy('./methods-memory-embed.cjs', 'embedNote') },
   // build 12b E2: start the embedder child and its load ahead of first use (the run's warm-up), so the
@@ -120,6 +124,7 @@ const METHODS = {
   // run.attach/run.end above — the run process itself writes it (role operator, belay run's own
   // identity), and it is read back through the ordinary run row.
   'run.setPaused': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.setPaused },
+  'run.setEmbedderMode': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.setEmbedderMode },
   'run.get': { roles: ALL, kind: 'read', fn: run.getRun },
   // build step 4a: every run's current row, so a CLI with no run id argument (belay status,
   // belay workers) has a way to find the current run at all.

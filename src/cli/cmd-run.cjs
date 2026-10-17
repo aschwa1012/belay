@@ -22,7 +22,7 @@ const RI = require('./run-interactive.cjs'); // ADR 0037: interactive mode's CLI
 const { createStopControl } = require('../run/stop.cjs');
 const { createRunPauseControl } = require('../run/run-pause.cjs');
 const { callWorkerAdapter, pauseBoundMs, resumeBoundMs } = require('./adapter-pipe.cjs');
-const { closeRunWorkers, workersClosedBlock } = require('./run-close.cjs');
+const { closeRunWorkers, workersClosedBlock, finalizeCut } = require('./run-close.cjs');
 const { warmEmbedder, createEmbedderGuard } = require('../run/embedder-guard.cjs');
 const { RESUME_WARM_MS } = require('./embedder-bounds.cjs');
 const { attachMemory, memoryText, substituteLevers, countReviewRounds } = require('./run-levers.cjs');
@@ -196,7 +196,7 @@ async function run(ctx) {
         e.code = 'E_ARGS';
         throw e;
       }
-      if (choice) { guard.setMode(choice); return; }
+      if (choice) { guard.setMode(choice); await core.run.setEmbedderMode({ mode: choice }); return; } // the row records the live mode, for readers without the guard
       const w = await warmEmbedder(core, { retry: true, timeoutMs: RESUME_WARM_MS });
       if (!w.ok) {
         const e = new Error(`the embedder still cannot load, so the run stays paused: ${w.code}: ${w.message}; fix: ${w.fix}`);
@@ -285,7 +285,7 @@ async function run(ctx) {
   async function onAttached({ pid }) {
     try {
       RID.watchOrchestrator(pid); // ADR 0039: run-identity.cjs; the attach never waits on a snapshot
-      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), ...attachMemory(parsed.levers) });
+      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
       return { ok: true, attach: attachRow };
     } catch (e) {
       return { ok: false, error: (e && e.message) || String(e) };
@@ -311,7 +311,8 @@ async function run(ctx) {
   let closeStages = null;
   let reviewRounds = { value: null, reason: 'the run was never attached, so no tasks were read' };
   // ADR 0039 follow-up: one worker close (ADR 0029); a fast close runs it inside the loop, before the gate collect.
-  const workerClose = RI.onceClose(ce, () => ((ctx.interactiveDeps && ctx.interactiveDeps.closeRunWorkers) || closeRunWorkers)({ core, runId: parsed.runId, graceMs: parsed.close_grace_ms, fast: RI.fastOf(ce) }), () => !!attachRow);
+  const fastClose = RI.fastOf(ce);
+  const workerClose = RI.onceClose(ce, () => ((ctx.interactiveDeps && ctx.interactiveDeps.closeRunWorkers) || closeRunWorkers)({ core, runId: parsed.runId, graceMs: parsed.close_grace_ms, fast: fastClose, noteReview: !!(parsed.levers.memory_levers && parsed.levers.memory_levers.note_review) }), () => !!attachRow);
   try {
     try {
       partial = await (ce ? runInteractiveOrchestrator : runOrchestrator)({
@@ -355,6 +356,7 @@ async function run(ctx) {
       };
       try {
         closed = await RI.within(ce, workerClose(), "the run's worker close", null, failClose); // interactiveDeps.closeRunWorkers: the test seam
+        if (!closed && fastClose) closed = finalizeCut(fastClose.progress); // a cut close still names every worker it did not stop (ADR 0048 decision 4)
         if (closed && closed.errors.length) {
           failClose(`could not look at the run's workers, so none was waited for or stopped: ${closed.errors.join('; ')}`);
         }

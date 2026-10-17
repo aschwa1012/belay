@@ -17,8 +17,8 @@ const DEFAULT_EXIT_TIMEOUT_MS = 10000;
 
 // build step 6f design item 7: the run form's own bound, computed from `n`, the run's live workers
 // read from `worker.list` before the call.
-function runPauseBoundMs(n) { return 5000 + 2 * n * pauseBoundMs() + 30000 + 5000; }
-function runResumeBoundMs(n) { return 2 * n * resumeBoundMs() + 30000 + 5000; }
+function runPauseBoundMs(n, T) { return 5000 + 2 * n * pauseBoundMs(undefined, undefined, T) + 30000 + 5000; }
+function runResumeBoundMs(n, T) { return 2 * n * resumeBoundMs(T) + 30000 + 5000; }
 
 function usageError(command, message) {
   const usage = command === 'pause'

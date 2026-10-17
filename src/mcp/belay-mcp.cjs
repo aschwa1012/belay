@@ -264,6 +264,8 @@ async function callTool(name, args) {
   if (route.via === 'run') {
     const r = await openRunManagerOnce();
     if (typeof r[route.method] !== 'function') throw fail('E_INTERNAL', `the run manager exposes no method ${route.method}`, { method: route.method });
+    // ADR 0048: a restart must answer inside MCP_TOOL_TIMEOUT (120 s); it may spend 100 s, then returns early (manager.restart).
+    if (name === 'worker_restart') return r[route.method]({ ...args, mcp_budget_ms: RESTART_MCP_BUDGET_MS });
     return r[route.method](args);
   }
   throw fail('E_INTERNAL', `tool ${name} has no route`, { tool: name });
@@ -384,6 +386,8 @@ process.stdin.on('data', (d) => {
 });
 
 let closing = false;
+const RESTART_MCP_BUDGET_MS = 100000;
+
 async function shutdown() {
   if (closing) return;
   closing = true;

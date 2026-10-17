@@ -6,6 +6,7 @@ process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP =
 // live at all), and a `belay run` with a FAKE_HANG=1 orchestrator plus a real RunManager in this
 // process stands in for a live adapter when the detector's own dead row matters.
 
+const { readCreated } = require('../helpers/created.cjs');
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -43,9 +44,8 @@ async function killHung(child) {
   try { await P.killTree(child); } catch { /* best effort: the test's own kill may already have reaped it */ }
 }
 
-async function ownChildCount() {
-  return (await P.childPids(process.pid)).length;
-}
+// A snapshot's PowerShell is one of this process's children, so the count waits for the gate to be idle first (ADR 0048).
+const { ownChildCount } = require('../helpers/own-children.cjs'); // children created at or after this process (a reused pid's orphans are not its own)
 
 function cliSync(args, dataDir, extraEnv) {
   const r = spawnSync(process.execPath, [CLI, ...args, '--data', dataDir, '--json'], {
@@ -110,7 +110,7 @@ test('worker kill: kills the exact pid a planted starting row names, writes noth
     const plantCore = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: 'run-a', pid: process.pid } });
     let planted;
     try {
-      const made = await P.createdOf(hung.pid); // ADR 0039: the identity a real spawn records
+      const made = await readCreated(hung.pid); // ADR 0039: the identity a real spawn records
       planted = await plantCore.worker.write({ id: 'w1', substrate: 'claude-code', pid: hung.pid, pid_created: made.created, pid_image: 'node.exe', state: 'starting', turns: 0, started_at: Date.now() });
     } finally {
       await plantCore.shutdownOwner();

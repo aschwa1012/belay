@@ -53,6 +53,8 @@ async function doEmbed(core, parsed, ctx, found) {
   const { opts } = parsed;
   const t0 = Date.now();
   const project = opts.project || (found && found.config && found.config.memory && found.config.memory.project) || null;
+  if (opts.template !== undefined && !opts.reembed) return fail(2, 'E_ARGS', '--template goes with --reembed: belay memory embed --reembed --template v2');
+  if (opts.reembed) return require('./cmd-memory-reembed.cjs').doReembed(core, opts, project, t0, fail);
   const lv = leversOf(found);
   if (lv.error) return fail(2, 'E_ARGS', `the config's memory levers are invalid, so nothing was embedded: ${lv.error}`);
   if (!project) {
