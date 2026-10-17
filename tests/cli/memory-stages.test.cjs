@@ -39,7 +39,7 @@ const nsOf = (T, id) => T.row(id).namespace;
 test('usage: the three verbs check their shape before any store is opened', () => {
   for (const [argv, re] of [
     [['resolve', 'n1'], /takes 2 to 3 positional/],
-    [['resolve', 'n1', 'maybe'], /takes new, repeats <of> or supersedes <of>/],
+    [['resolve', 'n1', 'maybe'], /takes new, repeats <of>, refines <of> or supersedes <of>/],
     [['resolve', 'n1', 'new', 'n2'], /new takes no other note id/],
     [['resolve', 'n1', 'repeats'], /needs the id of the live note/],
     [['resolve', 'n1', 'supersedes', 'n2'], /needs --evidence/],

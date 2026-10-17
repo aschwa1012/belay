@@ -38,7 +38,7 @@ function buildBrief({ runId, project, goal, summary, tasks, evidence, items }) {
     '## Tasks (belay\'s records)',
     ...(tasks.length ? tasks.map((t) => `- ${t.id} [${t.state}] ${cut(t.spec, TASK_SPEC_CUT)}`) : ['(none)']), '',
     `## Items in your scope (${items.length}). Act on these ids and no others.`,
-    'why: reported_wrong = a worker reported the note wrong this run; pending = the run left the note unresolved; owed = an earlier scrub did not reach it; nominated = proposed for promotion to CLAUDE.md.',
+    'why: replaced_by = a worker named another live note as this one\'s replacement this run; matched = an embed comparison found a close live note; pending = the run left the note unresolved; owed = an earlier scrub did not reach it; nominated = proposed for promotion to CLAUDE.md.',
     '```json', JSON.stringify(items, null, 1), '```', '',
   ];
   return lines.join('\n');
@@ -47,10 +47,7 @@ function buildBrief({ runId, project, goal, summary, tasks, evidence, items }) {
 function promptFor(briefFile) {
   return J.fill(J.readTemplate('scrub-job.md'), {
     brief_file: briefFile,
-    dismiss_grounds: L.DISMISS_GROUNDS.join(', '),
-    wrong_grounds: L.HOLD_GROUNDS.wrong.join(', '),
-    superseded_grounds: L.HOLD_GROUNDS.superseded.join(', '),
-    duplicate_grounds: L.HOLD_GROUNDS.duplicate.join(', '),
+    relations: L.RESOLVES.join(', '),
   });
 }
 
@@ -134,8 +131,8 @@ async function runScrub({ core, runId, lv, dataDir, getManager, worktree = null,
     if (dropped.length) { out.dropped = dropped; await owe(core, runId, dropped, J.coded('E_DROPPED', `dropped: the scrub child gave no entry in two scrubs, so these are no longer offered until a new report, sighting or nomination: ${dropped.join(', ')}`), jobId); }
     if (applied.alarm) {
       out.alarm = applied.alarm;
-      const holdIds = [...applied.applied, ...applied.proposed].filter((r) => r.action === 'hold').map((r) => r.id);
-      await J.receipt(core, { kind: 'scrub_alarm', ok: true, ...base, row_ids: holdIds, message: `a scrub of run ${runId} made ${applied.alarm.holds} hold marks, over the ${applied.alarm.limit} that is normal; look before the archive reviewer runs (belay memory proposals)` });
+      const holdIds = [...applied.applied, ...applied.proposed].filter((r) => r.action === 'hold' || (r.action === 'relate' && r.relation !== 'new') || (r.action === 'resolve' && ['supersedes', 'refines'].includes(r.resolved ? r.resolved.resolved : r.resolve))).map((r) => r.id);
+      await J.receipt(core, { kind: 'scrub_alarm', ok: true, ...base, row_ids: holdIds, message: `a scrub of run ${runId} took ${applied.alarm.holds} notes out of sight (holds and archiving relations), over the ${applied.alarm.limit} that is normal; look at them (belay memory proposals, belay memory archive)` });
     }
   } catch (e) {
     await noteOverrun(true);

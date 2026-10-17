@@ -61,7 +61,7 @@ async function findMatches(E, caller, project, emb, lv, template = NT.TEMPLATE_N
   const tpl = new Map(ids.length ? E.store.p(`SELECT id, COALESCE(text_template, 'v1') AS t FROM memory_entries WHERE id IN (${ids.map(() => '?').join(', ')})`).all(...ids).map(r => [r.id, r.t]) : []);
   return out.results
     .filter(r => typeof r.score === 'number' && r.score >= lv.notes_match_threshold && tpl.get(r.id) === template)
-    .map(r => ({ id: r.id, title: r.title, kind: r.body && r.body.kind, basis: r.body && r.body.basis, similarity: round3(r.score), template }))
+    .map(r => ({ id: r.id, title: r.title, kind: r.body && r.body.kind, basis: r.body && r.body.basis, similarity: round3(r.score), template, embedding_model: emb.embedding_model, dim: emb.dim }))
     .sort((a, b) => b.similarity - a.similarity || (a.id < b.id ? -1 : 1)).slice(0, lv.notes_match_n);
 }
 
@@ -250,8 +250,8 @@ function liveTarget(E, caller, pending, project, x, i) {
   if ((r.status || 'unverified') === 'refuted') throw err('E_ARGS', `${at}: note ${x.of} is refuted`, { id: x.of });
   const gone = E.store.p('SELECT id FROM memory_entries WHERE supersedes = ? AND namespace = ?').get(x.of, r.namespace);
   if (gone) throw err('E_ARGS', `${at}: note ${x.of} was superseded by ${gone.id}; resolve against ${gone.id}`, { id: x.of, superseded_by: gone.id });
-  if (x.resolve === 'supersedes' && caller.role === 'worker' && r.status === 'verified') {
-    throw err('E_ROLE', `${at}: note ${x.of} is verified, and a worker may not supersede a verified note (a repeat of it is fine)`, { id: x.of, role: caller.role });
+  if ((x.resolve === 'supersedes' || x.resolve === 'refines') && caller.role === 'worker' && r.status === 'verified') {
+    throw err('E_ROLE', `${at}: note ${x.of} is verified, and a worker may not ${x.resolve === 'refines' ? 'refine' : 'supersede'} a verified note (a repeat of it is fine)`, { id: x.of, role: caller.role });
   }
   return r;
 }
@@ -331,6 +331,27 @@ async function resolve(E, caller, args) {
         return { id: r.id, resolved: 'new', state: 'live', namespace: projectNs(project), ...(vector && vector.unembedded ? { embedded: false, embedder_failure: vector.unembedded, note: 'the title changed and the embedder failed (on_embedder_failure keyword), so the old vector was dropped and the note has none: it is found by keyword search, and belay memory embed will embed it from its new title' } : {}) };
       }
       const target = liveTarget(E, caller, r, project, x, i);
+      const VH = require('./memory-verified-hold.cjs');
+      const tnote = require('./memory-facts.cjs').loadNote(E, target.id);
+      if (VH.mustHold(caller, tnote, x.resolve)) {
+        // A verified note is never hidden without the reviewer: the new note goes live and the old one is held for the on-demand reviewer.
+        if (tnote.b.held) throw err('E_EXISTS', `resolutions[${i}]: note ${target.id} is already held (${tnote.b.held.row}); the reviewer settles it first`, { id: target.id, held_row: tnote.b.held.row });
+        release(E, r, project);
+        E.store.patchBody(r.id, b => { b.state = 'live'; b.resolved = { as: x.resolve, of: target.id, ...(x.evidence ? { evidence: x.evidence } : {}), at: t, by, held_for_review: true }; delete b.matches; return b; });
+        const held = VH.holdVerified(E, caller, project, tnote, r.id, x.resolve, `resolved as ${x.resolve}`);
+        return { id: r.id, resolved: x.resolve, of: target.id, state: 'live', namespace: projectNs(project), held_for_review: held.id, note: 'the old note is review-verified, so it is held for the reviewer and not archived' };
+      }
+      if (x.resolve === 'refines') {
+        // The same lesson plus a caveat: the new note goes live, the old one is archived as superseded (restorable), and the old
+        // note's sightings and delivery history move to the new one, as a duplicate's do, so the lesson is counted once.
+        release(E, r, project);
+        E.store.patchBody(r.id, b => { b.state = 'live'; b.resolved = { as: 'refines', of: target.id, ...(x.evidence ? { evidence: x.evidence } : {}), at: t, by }; delete b.matches; return b; });
+        const A = require('./memory-archive.cjs');
+        const done = A.archiveNote(E, project, require('./memory-facts.cjs').loadNote(E, target.id),
+          { kind: 'superseded', relation: 'refines', refines: true, via: 'refines', of: r.id, ground: 'replaced_by_newer', reason: 'resolved as refines', run_id: caller.run_id, direct: true },
+          require('./memory-facts.cjs').loadNote(E, r.id));
+        return { id: r.id, resolved: 'refines', of: target.id, state: 'live', namespace: projectNs(project), old_archived_as: done.to, history_moved: done.history_moved };
+      }
       if (x.resolve === 'supersedes') {
         release(E, r, project);
         E.store.setSupersedes(r.id, target.id);
