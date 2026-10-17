@@ -65,8 +65,11 @@ export type BelayPanelFooter = {
   highestCtxPct: number | null
 }
 
-/** Notes held for the on-demand Opus archive reviewer, from belay's `notes_held` notice. */
-export type BelayHeld = { count: number; byProject: Record<string, number>; oldestAgeRuns: number }
+/** The newest archive review of a project, from belay's `review_running` / `review_ended` notices (the review's store-level claim). */
+export type BelayReview = { project: string; state: 'running' | 'interrupted' | 'ok' | 'failed'; pid: number | null; text: string | null; ts: number | null }
+
+/** Notes held for the on-demand Opus archive reviewer, from belay's `notes_held` notice, and the state of the project's review. */
+export type BelayHeld = { count: number; byProject: Record<string, number>; oldestAgeRuns: number; reviews: BelayReview[] }
 
 export type BelayPanelSnap = {
   fetchedAt: number

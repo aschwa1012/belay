@@ -3,7 +3,7 @@
 // back, and nothing here invents a value (belay invariant 4: every fact names what established it).
 
 import type {
-  BelayAgent, BelayCache, BelayDisplayState, BelayEntry, BelayHeld, BelayNotice, BelayPanelFooter, BelayPanelSnap,
+  BelayAgent, BelayCache, BelayDisplayState, BelayEntry, BelayHeld, BelayNotice, BelayReview, BelayPanelFooter, BelayPanelSnap,
   BelayPanelUi, BelaySettings,
 } from '../../types/index'
 import { cells, clipCells } from './wrap'
@@ -173,29 +173,52 @@ export const REVIEW_COST_ESTIMATE_USD: number | null = null
 // A first press waits this long for the second; after it, or after any other press, the confirm is gone.
 export const CONFIRM_MS = 8000
 
-// belay's `notes_held` notice (a standing count while any hold waits), read defensively. Not a notice of the panel's own list:
-// it is the memory line, with the review button.
+// belay's `notes_held` notice (a standing count while any hold waits) and its `review_running` / `review_ended` notices (the store-level
+// claim of an archive review, which survives a reload of this panel), read defensively. Not notices of the panel's own list: they are the
+// memory line, with the review button. null when there is neither a count nor a review to show.
 export function normHeld(json: unknown): BelayHeld | null {
+  let count = 0
+  let oldestAgeRuns = 0
+  const byProject: Record<string, number> = {}
+  const reviews: BelayReview[] = []
   for (const raw of arr(obj(json)?.events)) {
     const e = obj(raw)
-    if (!e || e.kind !== 'notes_held') continue
-    const count = num(e.count) ?? 0
-    if (count <= 0) return null
-    const byProject: Record<string, number> = {}
-    for (const [k, v] of Object.entries(obj(e.by_project) ?? {})) if (num(v) !== null && k !== '') byProject[clean(k, 64)] = v as number
-    return { count, byProject, oldestAgeRuns: num(e.oldest_age_runs) ?? 0 }
+    if (!e) continue
+    if (e.kind === 'notes_held') {
+      count = num(e.count) ?? 0
+      oldestAgeRuns = num(e.oldest_age_runs) ?? 0
+      for (const [k, v] of Object.entries(obj(e.by_project) ?? {})) if (num(v) !== null && k !== '') byProject[clean(k, 64)] = v as number
+    } else if (e.kind === 'review_running' || e.kind === 'review_ended') {
+      const project = str(e.project)
+      if (!project) continue
+      const state: BelayReview['state'] = e.kind === 'review_running' ? (e.pid_alive === true ? 'running' : 'interrupted') : (e.ok === true ? 'ok' : 'failed')
+      reviews.push({ project: clean(project, 64), state, pid: num(e.pid), text: str(e.text) === null ? (str(e.code) === null ? null : clean(str(e.code)!, 40)) : clean(str(e.text)!, 240), ts: num(e.ts) })
+    }
   }
-  return null
+  if (count <= 0 && !reviews.length) return null
+  return { count: Math.max(0, count), byProject, oldestAgeRuns, reviews }
+}
+
+// The review of a project that is in flight: the panel offers no button over it.
+export const runningReview = (h: BelayHeld, project: string | null): BelayReview | null =>
+  h.reviews.find(r => r.state === 'running' && (project === null || r.project === project)) ?? null
+
+// The one line a review's state is shown as.
+export function reviewLine(r: BelayReview): string {
+  if (r.state === 'running') return `archive review of ${r.project} running${r.pid ? ` · pid ${r.pid}` : ''}`
+  if (r.state === 'interrupted') return `archive review of ${r.project} INTERRUPTED · its process is gone; the next review takes over`
+  return `archive review of ${r.project} ${r.state === 'ok' ? 'ended ok' : 'FAILED'}${r.text ? ` · ${r.text}` : ''}`
 }
 
 // The project one press would review: the one with the most held notes, ties by name. null when belay named none.
 export function reviewProject(h: BelayHeld | null): string | null {
-  if (!h) return null
+  if (!h || h.count <= 0) return null
   const names = Object.keys(h.byProject).sort((a, b) => h.byProject[b]! - h.byProject[a]! || (a < b ? -1 : 1))
   return names[0] ?? null
 }
 
 export function heldLine(h: BelayHeld): string {
+  if (h.count <= 0) return ''
   const names = Object.keys(h.byProject).sort()
   return `${h.count} note${h.count === 1 ? '' : 's'} held for review · oldest ${h.oldestAgeRuns} run${h.oldestAgeRuns === 1 ? '' : 's'}${names.length ? ` · ${names.join(', ')}` : ''}`
 }

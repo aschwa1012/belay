@@ -1,9 +1,12 @@
 import { describe, expect, test } from 'claude-code/testing'
 import { T0, RUN, boot, cmd, later, pane, openPane, words } from './support'
 
-// The memory line and its one write action (ADR 0036 amendment, proposed): the Opus archive review, dispatched only by two presses
-// of the button. These tests prove the line, the confirm, the dispatch, the cancels, and that nothing else can reach the dispatch.
+// The memory line and its one write action (ADR 0036 amendment, proposed): the Opus archive review, started only by two presses of the
+// button, through a short launcher that detaches the review so a reload of the panel cannot orphan it. These tests prove the line, the
+// confirm, the launch, the cancels, the review's state read back from belay (it survives a reload), and that nothing else can reach it.
 const held = (n = 3, by: Record<string, number> = { acme: n }) => ({ kind: 'notes_held', ts: T0, run_id: RUN, count: n, by_project: by, oldest_age_runs: 2, command: 'belay memory review' })
+const running = (pid_alive = true) => ({ kind: 'review_running', ts: T0, run_id: RUN, project: 'acme', pid: 77, job: 'archreview-r-1', claim_id: 'me-1', pid_alive })
+const ended = (ok: boolean, text: string) => ({ kind: 'review_ended', ts: T0, run_id: RUN, project: 'acme', ok, code: ok ? null : 'E_ARGS', text, job: 'archreview-r-1', claim_id: 'me-1' })
 const notices = (...events: unknown[]) => ({ run_id: RUN, events })
 
 describe('notes held for the archive reviewer', () => {
@@ -21,7 +24,7 @@ describe('notes held for the archive reviewer', () => {
     expect((await pane($)).text).not.toContain('held for review')
   })
 
-  test('the first press asks (count, the question, cost unknown) and starts nothing; the second dispatches one detached command', async ($, on) => {
+  test('the first press asks (count, the question, cost unknown) and starts nothing; the second runs the one launcher', async ($, on) => {
     const wd = await boot($, on, { notices: notices(held(3)) })
     await openPane($, wd)
     const { ui } = await pane($)
@@ -35,9 +38,52 @@ describe('notes held for the archive reviewer', () => {
     await later(wd, 10)
     expect(wd.spawned.length).toBe(1)
     const argv = wd.spawned[0]!
-    expect(argv.slice(argv.indexOf('memory'), argv.indexOf('memory') + 4)).toEqual(['memory', 'review', '--project', 'acme'])
-    expect(wd.toasts).toContain('archive review started')
-    expect(wd.ran.some(a => a.includes('review'))).toBe(false) // never through the one-shot read path
+    expect(argv.slice(argv.indexOf('memory'), argv.indexOf('memory') + 5)).toEqual(['memory', 'review', '--project', 'acme', '--start'])
+    expect(wd.toasts).toContain('belay: archive review of acme started: pid 4242, job archreview-r-1, claim me-1')
+    expect(wd.ran.some(a => a.includes('review'))).toBe(false) // never through the read rounds
+  })
+
+  test('a launcher that refuses or fails is toasted with its exit code and first line, so the press never ends in silence', async ($, on) => {
+    const launcher = { exitCode: 1, stdout: 'belay memory review: an archive review of acme is already running (pid 77, job archreview-r-1)\nmore\n', stderr: '' }
+    const wd = await boot($, on, { notices: notices(held(3)), launcher })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await ui.press({ key: 'review' })
+    await ui.press({ key: 'review' })
+    await later(wd, 10)
+    expect(wd.toasts).toContain('belay: the review was not started (exit 1): belay memory review: an archive review of acme is already running (pid 77, job archreview-r-1)')
+  })
+
+  test('a review in flight is read back from belay: the line says running, and there is no button to press over it', async ($, on) => {
+    const wd = await boot($, on, { notices: notices(held(3), running()) })
+    await openPane($, wd)
+    const { text } = await pane($)
+    expect(text).toContain('archive review of acme running · pid 77')
+    expect(text).toContain('3 notes held for review')
+    expect(text).not.toContain('review the held notes')
+  })
+
+  test('an interrupted review (its process gone) says so and the button is back', async ($, on) => {
+    const wd = await boot($, on, { notices: notices(held(2), running(false)) })
+    await openPane($, wd)
+    const a = await pane($)
+    expect(a.text).toContain('INTERRUPTED')
+    expect(a.text).toContain('review the held notes')
+  })
+
+  test('a review that failed shows its code and reason, with the held notes still counted', async ($, on) => {
+    const wd = await boot($, on, { notices: notices(held(2), ended(false, 'the archive review did not finish inside 600 s')) })
+    await openPane($, wd)
+    expect((await pane($)).text).toContain('archive review of acme FAILED · the archive review did not finish inside 600 s')
+  })
+
+  test('a finished review with nothing left held shows its outcome and no count line or button', async ($, on) => {
+    const wd = await boot($, on, { notices: notices(ended(true, 'ran as archreview-r-1: {"applied":3}')) })
+    await openPane($, wd)
+    const { text } = await pane($)
+    expect(text).toContain('archive review of acme ended ok · ran as archreview-r-1')
+    expect(text).not.toContain('held for review')
+    expect(text).not.toContain('review the held notes')
   })
 
   test('another press cancels the confirm, so the next press of the button asks again', async ($, on) => {
