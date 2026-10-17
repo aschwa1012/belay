@@ -45,6 +45,21 @@ const VERSION = process.env.FAKE_CLAUDE_CODE_VERSION || '2.1.280-fake';
 // built-ins are exactly the comma-split `--tools` value (none if absent); its belay tools are the ones
 // it lists today, less `permit` when `--permission-prompt-tool` is on this launch (decision 7).
 const BELAY_TOOLS_TODAY = ['mcp__belay__memory_store'];
+// The MCP servers this launch was actually given (--mcp-config, a file; --strict-mcp-config means nothing else): the real binary
+// lists a server's tools only if the server is in that file, and the belay adapter lists none for a job worker (a reserved id prefix).
+function launchedBelay() {
+  const at = process.argv.indexOf('--mcp-config');
+  if (at < 0) return { present: true, job: false }; // a launch without a config file: the old behaviour
+  try {
+    const cfg = JSON.parse(require('node:fs').readFileSync(process.argv[at + 1], 'utf8'));
+    const srv = cfg && cfg.mcpServers && cfg.mcpServers.belay;
+    if (!srv) return { present: false, job: false };
+    const a = Array.isArray(srv.args) ? srv.args : [];
+    const wid = a.indexOf('--worker-id');
+    const id = wid >= 0 ? a[wid + 1] : null;
+    return { present: true, job: a[a.indexOf('--role') + 1] === 'worker' && typeof id === 'string' && require('../../../src/core/job-ids.cjs').isJobId(id) };
+  } catch { return { present: true, job: false }; }
+}
 function surfaceTools() {
   const idx = process.argv.indexOf('--tools');
   const builtins = idx >= 0 ? process.argv[idx + 1].split(',').filter(Boolean) : [];
@@ -53,6 +68,8 @@ function surfaceTools() {
   // follow that, never the reverse — before this it kept listing BELAY_TOOLS_TODAY even on FAKE_MCP
   // values other than 'connected', which masked the connection-vs-surface ordering defect.
   if (MCP !== 'connected') return builtins;
+  const lb = launchedBelay();
+  if (!lb.present || lb.job) return builtins;
   const permit = process.argv.includes('--permission-prompt-tool');
   const belay = permit ? BELAY_TOOLS_TODAY.filter((t) => t !== 'mcp__belay__permit') : BELAY_TOOLS_TODAY;
   return [...builtins, ...belay];
@@ -67,7 +84,7 @@ function initEvent() {
   const ev = { type: 'system', subtype: 'init', session_id: SESSION, tools: surfaceTools(),
     permissionMode: PERMISSION_MODE, claude_code_version: VERSION, plugins: PLUGINS, model: MODEL };
   if (MCP === 'absent') return ev;
-  ev.mcp_servers = MCP === 'none' ? [] : [{ name: 'belay', status: MCP }];
+  ev.mcp_servers = MCP === 'none' || !launchedBelay().present ? [] : [{ name: 'belay', status: MCP }];
   if (FAKE_SURFACE && (!FAKE_SURFACE_ON_RESUME || isResume)) {
     if (FAKE_SURFACE === 'extra-tool') ev.tools = [...ev.tools, 'Task'];
     else if (FAKE_SURFACE === 'user-plugin') ev.plugins = [...ev.plugins, { name: 'example-plugin', path: 'user', source: 'example-plugin@example' }];
