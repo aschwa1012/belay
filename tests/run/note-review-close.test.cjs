@@ -252,3 +252,12 @@ test('C6: the sweep names a job still starting as shutdown, never as a missing c
   assert.deepStrictEqual(receipts(w.task.id).map((r) => [r.ok, r.code]), [[0, 'E_SHUTDOWN']]);
   assert.match(receipts(w.task.id)[0].message, /while the review job was starting/);
 });
+
+test('C7: the close that begins while the job reads the worker list and the diff stops it before any child is launched', async () => {
+  const w = await written('wr-c7');
+  const m = fakeManager(verdictsFor([w.notes[0]]));
+  const flipping = { ...core, worker: { list: async (a) => { const r = await core.worker.list(a); m.flags.closed = true; return r; } }, memory: core.memory, task: core.task };
+  await NR.runJob(J(ctxFor(m, { core: flipping })), w.task);
+  assert.strictEqual(m.spawned.length, 0, 'nothing was launched');
+  assert.deepStrictEqual(receipts(w.task.id).map((r) => [r.ok, r.code]), [[0, 'E_SHUTDOWN']]);
+});

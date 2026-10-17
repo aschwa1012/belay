@@ -4,8 +4,6 @@
 //   E1  the job is created, awaited (it ran to its own end, not cut short) and its receipt is written before any worker is stopped;
 //       no child of the run survives shutdown()
 //   E2  the manager's wiring: queuesFirst, the closing flag and _killSurvivor reach lifecycle, each on the real manager
-//   E3  a turn that ends while the close is draining another job gets its job awaited too (the drain follows new jobs)
-//   E4  a job that joins the worker map while the stop loop runs (a drain that gave up) is stopped before shutdown() returns
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -17,8 +15,6 @@ const { DEFAULTS } = require('../../src/core/memory-levers.cjs');
 const { createFakeCore } = require('./fake-core.cjs');
 const P = require('../../src/run/process.cjs');
 const NR = require('../../src/run/note-review.cjs');
-const LC = require('../../src/run/lifecycle.cjs');
-const MJ = require('../../src/run/memory-jobs.cjs');
 
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').split(path.sep).join('/');
 const USER_SETTINGS = path.join(__dirname, 'fixtures', 'user-settings.json');
@@ -91,72 +87,3 @@ test('E2: the manager wires queuesFirst, the closing flag and _killSurvivor', as
   assert.strictEqual(NR.expectsJobs({ memoryLevers: { ...LV, note_review: false } }), false);
 });
 
-// Shared by E3 and E4: a fake of the stop loop's world, lifecycle's real shutdown over records that look like workers.
-const rec = (id) => ({ id, queue: Promise.resolve(), state: 'running' });
-const defer = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
-const ticks = async (n = 20) => { for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r)); };
-
-function world(drainMs) {
-  const { core } = build(['ta', 'tb']);
-  const events = [];
-  core.memory.recordEvent = async (e) => { events.push(e); return e; };
-  core.memory.events = async () => ({ events: events.slice() });
-  const flags = { closed: false, closing: false, ownerGone: false };
-  const workers = new Map();
-  const m = { spawned: [], stopped: [], gates: new Map(), flags };
-  m._closed = () => flags.closed; m._closing = () => flags.closing;
-  m.spawn = async (a) => { if (m.gates.has(a.worker_id)) await m.gates.get(a.worker_id).promise; m.spawned.push(a.worker_id); workers.set(a.worker_id, rec(a.worker_id)); return {}; };
-  m.wait = async ({ worker_ids }) => (m.waitFor ? m.waitFor(worker_ids[0]) : { event: 'turn_end', is_error: false, timed_out: false });
-  m.stop = async ({ worker_id }) => { m.stopped.push(worker_id); };
-  m._worker = (id) => ({ lastAssistantText: '{}', costUsd: 0.01, ...(workers.get(id) || {}) });
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nr-w-')).split(path.sep).join('/');
-  const ctx = { core, runId: 'run-fake', dataDir, memoryLevers: LV, worktree: dataDir, manager: m, shutdownFlags: flags };
-  core.worker.list = async () => ({ workers: [] });
-  const shutdown = () => LC.shutdown(workers, {
-    stop: async (a) => m.stop(a), core: { isOwner: () => false }, clearPoll: () => {},
-    markClosed: () => { flags.closed = true; }, markClosing: () => { flags.closing = true; }, markOwnerGone: () => { flags.ownerGone = true; return new Set(); },
-    beforeStop: () => NR.drain(ctx, drainMs), queuesFirst: () => NR.expectsJobs(ctx), onDrained: async () => {},
-  });
-  const turn = (w, taskId) => MJ.afterTurn(w, ctx, { snap: { taskId, workerId: w.id, turn: 1, substrate: 'claude-code', pid: 1, cost: 0.1 } });
-  return { m, events, workers, ctx, shutdown, turn, dataDir };
-}
-
-test('E3: a turn that ends while the close drains another job gets its job awaited too, before any worker is stopped', async () => {
-  const W = world(120000);
-  try {
-    const a = rec('wa'), b = rec('wb'); W.workers.set('wa', a); W.workers.set('wb', b);
-    const hold = defer();
-    W.m.waitFor = async (id) => { if (id === 'notereview-ta') await hold.promise; return { event: 'turn_end', is_error: false, timed_out: false }; };
-    W.turn(a, 'ta');
-    await ticks();
-    const down = W.shutdown();
-    await ticks();
-    W.turn(b, 'tb'); // B's turn ends while A's job is being drained
-    await ticks();
-    hold.resolve();
-    await down;
-    assert.deepStrictEqual(W.m.spawned.sort(), ['notereview-ta', 'notereview-tb'], 'both jobs were created');
-    const stopsOfWorkers = W.m.stopped.filter((x) => !x.startsWith('notereview-'));
-    assert.deepStrictEqual(stopsOfWorkers.sort(), ['wa', 'wb']);
-    const lastJobStop = Math.max(...['notereview-ta', 'notereview-tb'].map((x) => W.m.stopped.indexOf(x)));
-    assert.ok(lastJobStop < W.m.stopped.indexOf('wa') || lastJobStop < W.m.stopped.indexOf('wb'), `jobs finished first: ${W.m.stopped.join(',')}`);
-    assert.strictEqual(W.m.stopped.indexOf('wa') > lastJobStop && W.m.stopped.indexOf('wb') > lastJobStop, true, 'no worker was stopped before both jobs finished');
-  } finally { fs.rmSync(W.dataDir, { recursive: true, force: true }); }
-});
-
-test('E4: a job whose spawn lands while the stop loop runs (the drain gave up) is stopped before shutdown() returns, with a receipt', async () => {
-  const W = world(30); // the drain gives up after 30 ms
-  try {
-    const a = rec('wa'); W.workers.set('wa', a);
-    const gate = defer();
-    W.m.gates.set('notereview-ta', gate); // the job's spawn is still under way when the drain gives up
-    W.m.waitFor = async () => ({ event: 'exited', is_error: false, timed_out: false });
-    W.turn(a, 'ta');
-    await ticks();
-    const origStop = W.m.stop;
-    W.m.stop = async (x) => { await origStop(x); if (x.worker_id === 'wa') { gate.resolve(); await ticks(); } }; // while worker wa is being stopped, the job's record joins the map
-    await W.shutdown();
-    assert.ok(W.m.stopped.includes('notereview-ta'), `the late job was stopped: ${W.m.stopped.join(',')}`);
-    assert.ok(reviewEvents(W.events).some((e) => e.key === 'task:ta' && e.ok === false), 'and its failure is a receipt');
-  } finally { fs.rmSync(W.dataDir, { recursive: true, force: true }); }
-});

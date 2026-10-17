@@ -156,6 +156,7 @@ async function runJob(J, task) {
     const worktree = inputs.worktree || ctx.worktree || (workers.find((x) => x.worktree) || {}).worktree;
     if (!worktree) throw Object.assign(new Error('no worktree is known for the task, so the review job has nowhere to run'), { code: 'E_ARGS' });
     const cap = lv.note_review_cost_cap_usd;
+    if (isClosed(ctx)) throw shutErr('the run manager is shutting down, so no review job was started'); // after the git diff and the worker list, immediately before the launch
     await ctx.manager.spawn({ substrate: 'claude-code', worktree, worker_id: wid, model: lv.note_review_model, allowed_tools: BUILTINS, tools: BUILTINS, max_budget_usd: cap, prompt });
     if (isClosed(ctx)) { // the run closed while the child was starting: the shutdown loop never saw it, so it is stopped here
       await stopJob(ctx, wid);
@@ -170,6 +171,7 @@ async function runJob(J, task) {
       text = rec && typeof rec.lastAssistantText === 'string' ? rec.lastAssistantText : '';
       cost = rec && typeof rec.costUsd === 'number' ? rec.costUsd : null;
     } finally { await stopJob(ctx, wid); }
+    if (ownerGone(ctx)) return; // the owner is going: a write now would elect another; the run's sweep names the task
     if (settled) await fail(core, base, settled); else await finishJob(core, { workerId: wid, taskId, text, cost, cap });
   } catch (e) { if (!ownerGone(ctx)) await fail(core, base, e); }
 }
