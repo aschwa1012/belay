@@ -219,6 +219,18 @@ test('belay memory verify, run as a command over an owner it elected, defers to 
   } finally { process.stderr.write = stderr; await finish(dir, rc, y); }
 });
 
+test('a write after an immediate-stop release fails E_SHUTDOWN: it neither elects nor holds an owner', async () => {
+  const { dir, rc } = await elected();
+  try {
+    const r = await rc.releaseOwner();
+    assert.strictEqual(r.stopped, 'in-process');
+    await assert.rejects(() => rc.memory.recordEvent({ kind: 'wrapup', key: 'late', ok: true, message: 'x' }), (e) => e.code === 'E_SHUTDOWN' && /memory\.recordEvent was refused/.test(e.message));
+    assert.strictEqual(rc.isOwner(), false);
+    assert.ok(!fs.existsSync(lockOf(dir)), 'no owner was elected');
+    assert.strictEqual(retire.pending(), 0);
+  } finally { await finish(dir, rc); }
+});
+
 test('the other elect-then-shutdown commands release through releaseOwner', () => {
   for (const f of ['cmd-memory.cjs', 'cmd-message.cjs', 'cmd-pause.cjs', 'cmd-worker.cjs', 'cmd-memory-stages.cjs']) {
     const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'cli', f), 'utf8');

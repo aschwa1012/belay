@@ -423,7 +423,7 @@ class Core {
     const o = this.owner;
     const r = await o.retire();
     if (r.deferred) { this.owner = null; await this._dropClient(); return { ...r, stopped: 'deferred' }; }
-    this.owner = null;
+    this.owner = null; this.shutDown = true; // stopped now: like shutdownOwner(), a later write here must not elect another
     await this._dropClient();
     return { ...r, stopped: 'in-process' };
   }
