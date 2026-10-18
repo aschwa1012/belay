@@ -15,6 +15,9 @@
 //   - npm wrote its installed-package record (node_modules/.package-lock.json), and every entry in it is in the
 //     shipped lockfile with the same version, resolved URL and integrity hash, and its package.json agrees;
 //   - the lockfile was not rewritten, and no optional package of the lockfile (a CUDA build) was installed.
+// The install then records every file (path, size, sha256) in runtime.json. Every use of the runtime compares the
+// set of files and their sizes (a stat each); `belay embedder verify --gpu` and an install over an existing tree
+// also compare the hashes. A removed, replaced or added file makes the runtime wrong.
 // Any mismatch removes the temporary directory and refuses, E_MODEL_ABSENT with cause 'mismatch'; nothing is
 // kept. A missing or wrong runtime is refused the same way by requireRuntime(), naming the installing command.
 //
@@ -87,6 +90,7 @@ function treeProblems(dir, manifest, { deep = false } = {}) {
   let rec = null;
   try { rec = readJson(path.join(dir, RECORD)); } catch { /* absent */ }
   if (rec && rec.lock_sha256 !== manifest.lock_sha256) bad.push(`the install record names lockfile ${String(rec.lock_sha256).slice(0, 12)}, the manifest's is ${manifest.lock_sha256.slice(0, 12)}`);
+  if (rec) bad.push(...fileProblems(dir, rec, deep)); // once installed, every file is held to the record: sizes and the file set always, hashes when deep
   if (!deep) return bad;
   let hidden = null;
   try { hidden = readJson(path.join(dir, HIDDEN_LOCK)).packages || null; } catch { /* absent */ }
@@ -108,11 +112,49 @@ function treeProblems(dir, manifest, { deep = false } = {}) {
   return bad;
 }
 
-function sizeOf(dir) {
-  let n = 0;
-  const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else if (e.isFile()) n += fs.statSync(p).size; } };
-  walk(dir);
-  return n;
+
+// ---- the file manifest (runtime.json `files`): what makes a replaced, removed or added file visible ----
+
+// Every file and directory under `dir` except the record itself: { files: Map(rel -> size), dirs: Set(rel), odd: [rel] }.
+function walkTree(dir) {
+  const files = new Map(), dirs = new Set(), odd = [];
+  const walk = (d, rel) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const r = rel ? `${rel}/${e.name}` : e.name, p = path.join(d, e.name);
+      if (!rel && e.name === RECORD) continue;
+      if (e.isDirectory()) { dirs.add(r); walk(p, r); } else if (e.isFile()) files.set(r, fs.statSync(p).size); else odd.push(r);
+    }
+  };
+  walk(dir, '');
+  return { files, dirs, odd };
+}
+
+const sha256File = (p) => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+
+// The manifest written at install, after the tree verified: { "<rel path>": [size, sha256] } and the directory list.
+function fileManifest(dir) {
+  const t = walkTree(dir), files = {};
+  for (const [rel, size] of [...t.files].sort(([a], [b]) => (a < b ? -1 : 1))) files[rel] = [size, sha256File(path.join(dir, rel))];
+  return { files, dirs: [...t.dirs].sort() };
+}
+
+// What differs between the tree and its install record. The light check (every use of the runtime) compares the
+// set of files and directories and every size, which a stat per file answers; the deep check also hashes every
+// file. A quarantined llama.node or Vulkan DLL, a replaced dist file and an extra file or directory all show.
+function fileProblems(dir, rec, deep) {
+  if (!rec.files || !rec.dirs) return ['the install record has no file manifest'];
+  const bad = [], t = walkTree(dir), want = rec.files;
+  for (const o of t.odd) bad.push(`${o} is not a plain file or directory`);
+  for (const rel of Object.keys(want)) {
+    if (!t.files.has(rel)) bad.push(`${rel} is missing`);
+    else if (t.files.get(rel) !== want[rel][0]) bad.push(`${rel} is ${t.files.get(rel)} bytes, the install recorded ${want[rel][0]}`);
+    else if (deep && sha256File(path.join(dir, rel)) !== want[rel][1]) bad.push(`${rel} has changed (sha256 differs from the install record)`);
+  }
+  for (const rel of t.files.keys()) if (!(rel in want)) bad.push(`${rel} was added after the install`);
+  const wantDirs = new Set(rec.dirs);
+  for (const d of t.dirs) if (!wantDirs.has(d)) bad.push(`directory ${d} was added after the install`);
+  for (const d of wantDirs) if (!t.dirs.has(d)) bad.push(`directory ${d} is missing`);
+  return bad;
 }
 
 // { ok, dir, versions, problems, command }. Reads only; no process, no network.
@@ -128,26 +170,58 @@ function check({ env = process.env, manifestDir, deep = false } = {}) {
 function requireRuntime(opts = {}) {
   const c = check(opts);
   if (c.ok) return c.dir;
-  throw err('E_MODEL_ABSENT', `the GPU runtime is missing or wrong (${c.problems.join('; ')}); install it with \`${INSTALL_COMMAND}\``, { gpu: true, cause: 'absent', command: INSTALL_COMMAND, dir: c.dir, problems: c.problems });
+  const shown = `${c.problems.slice(0, 5).join('; ')}${c.problems.length > 5 ? ` (and ${c.problems.length - 5} more)` : ''}`;
+  throw err('E_MODEL_ABSENT', `the GPU runtime is missing or wrong (${shown}); install it with \`${INSTALL_COMMAND}\``, { gpu: true, cause: 'absent', command: INSTALL_COMMAND, dir: c.dir, problems: c.problems.slice(0, 50) });
 }
 
-// An exclusive lock file holding our pid; a lock whose pid is dead is stolen.
-function takeLock(lock) {
-  for (let i = 0; i < 3; i += 1) {
-    try { fs.writeFileSync(lock, String(process.pid), { flag: 'wx' }); return true; }
+// ---- the install lock (a stale one is taken over by an atomic rename, never by a delete) ----
+
+const readText = (p) => { try { return fs.readFileSync(p, 'utf8').trim(); } catch { return null; } };
+
+// An exclusive lock file holding our pid. A lock whose holder is dead is stolen by RENAMING it to a name only we
+// know, then reading what we moved: if it is the dead holder's, it is ours to delete; if another installer took
+// the lock in between, we moved a live lock, so it is linked back and the steal fails. The deleting of a lock is
+// never a path-name delete of whatever sits at the path. `seam.beforeSteal(deadText)` runs between the judgement
+// and the rename, and a test uses it to force the interleaving. Residual: if a third installer creates the lock in
+// the instant between our move and our link-back, two installers can hold it; the holder's release still deletes
+// only a lock that names its own pid.
+function takeLock(lock, { pid = process.pid, seam = {} } = {}) {
+  for (let i = 0; i < 4; i += 1) {
+    try { fs.writeFileSync(lock, String(pid), { flag: 'wx' }); return true; }
     catch (e) {
       if (e.code !== 'EEXIST') throw e;
-      let text = '';
-      try { text = fs.readFileSync(lock, 'utf8').trim(); } catch { continue; }
-      const pid = Number(text);
-      if (!Number.isInteger(pid) || pid <= 0 || pidAlive(pid)) return false; // held, or empty: its holder is between create and write
-      let again = null;
-      try { again = fs.readFileSync(lock, 'utf8').trim(); } catch { continue; }
-      if (again === text) rmrf(lock); // still the dead holder's: another install may have stolen it first
+      const text = readText(lock), holder = Number(text);
+      if (!Number.isInteger(holder) || holder <= 0 || pidAlive(holder)) return false; // held, or empty: its holder is between create and write
+      if (seam.beforeSteal) seam.beforeSteal(text);
+      const moved = `${lock}.stale-${pid}-${crypto.randomBytes(4).toString('hex')}`;
+      try { fs.renameSync(lock, moved); } catch (r) { if (r.code === 'ENOENT') continue; throw r; } // another installer stole it first
+      if (readText(moved) === text) { rmrf(moved); continue; } // the dead holder's, and now gone: take it with a fresh exclusive create
+      try { fs.linkSync(moved, lock); } catch { /* a third installer holds the path now */ }
+      rmrf(moved);
+      return false;
     }
   }
   return false;
 }
+
+// Releases the lock only if it still names `pid`.
+function releaseLock(lock, pid = process.pid) {
+  if (readText(lock) === String(pid)) rmrf(lock);
+}
+
+// Leftovers of an interrupted install: `.tmp-*` and `.old-*` directories whose NAMED pid is dead. The pid is the
+// last-but-one number in the name (`.tmp-<target>-<pid>-<ms>`, `.old-<pid>-<ms>`), so a live installer's tree is
+// never swept by another.
+function sweepLeftovers(base) {
+  const swept = [];
+  for (const n of fs.readdirSync(base)) {
+    const m = /^\.(?:tmp|old)-(?:.*-)?(\d+)-\d+$/.exec(n);
+    if (m && !pidAlive(Number(m[1]))) { rmrf(path.join(base, n)); swept.push(n); }
+  }
+  return swept;
+}
+
+// ---- running npm ----
 
 // The npm that ships beside this node, run through node itself (a .cmd cannot be spawned without a shell).
 function npmCli(env = process.env) {
@@ -156,18 +230,26 @@ function npmCli(env = process.env) {
   return null;
 }
 
+// What npm sees: the allow-list, plus the npm_config_ settings that name a proxy or a CA file (a network that needs
+// them needs them for this install too). The registry is NOT passed: the lockfile's `resolved` URLs decide where
+// packages come from. Nothing else, so npm_config_include=optional cannot pull the CUDA packages back in.
+const NPM_CONFIG_KEPT = new Set(['npm_config_proxy', 'npm_config_https_proxy', 'npm_config_http_proxy', 'npm_config_noproxy', 'npm_config_cafile']);
+function npmEnv(env = process.env) {
+  const e = {};
+  for (const k of NPM_ENV) if (env[k] !== undefined) e[k] = env[k];
+  for (const k of Object.keys(env)) if (NPM_CONFIG_KEPT.has(k.toLowerCase())) e[k] = env[k];
+  return e;
+}
+
 // The default installer: `npm ci` in `dir`, under a bound, killed by its exact child handle. Resolves
 // { code, ms, tail }; rejects only when npm cannot be started.
 function defaultInstaller(dir, { env = process.env, boundMs = INSTALL_BOUND_MS } = {}) {
   const cli = npmCli(env);
   if (!cli) return Promise.reject(err('E_MODEL_ABSENT', 'npm was not found beside node; install Node.js with npm to install the GPU runtime', { gpu: true, cause: 'absent' }));
-  const e = {};
-  for (const k of NPM_ENV) if (env[k] !== undefined) e[k] = env[k];
-  for (const k of Object.keys(env)) if (k.startsWith('npm_config_')) e[k] = env[k];
   return new Promise((resolve, reject) => {
     const t0 = Date.now();
     let out = '';
-    const c = spawn(process.execPath, [cli, ...INSTALL_ARGS], { cwd: dir, env: e, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const c = spawn(process.execPath, [cli, ...INSTALL_ARGS], { cwd: dir, env: npmEnv(env), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     const take = d => { out = (out + d).slice(-4000); };
     c.stdout.on('data', take); c.stderr.on('data', take);
     const timer = setTimeout(() => { killPid(c); out += `\nnpm ci did not finish within ${boundMs} ms and was stopped`; }, boundMs);
@@ -176,10 +258,13 @@ function defaultInstaller(dir, { env = process.env, boundMs = INSTALL_BOUND_MS }
   });
 }
 
-function renameInto(from, to) {
+// A rename onto a directory whose files a live GPU child has loaded (its DLLs) fails with EPERM or EBUSY. After a
+// few tries that is a coded E_BUSY naming the directory, never a raw errno. `rename` is a test seam.
+function renameInto(from, to, rename = fs.renameSync) {
   for (let i = 0; ; i += 1) {
-    try { fs.renameSync(from, to); return; } catch (e) {
-      if (i >= 5 || !['EPERM', 'EBUSY', 'EACCES'].includes(e.code)) throw e;
+    try { rename(from, to); return; } catch (e) {
+      if (!['EPERM', 'EBUSY', 'EACCES'].includes(e.code)) throw e;
+      if (i >= 4) throw err('E_BUSY', `${fwd(to)} is in use (${e.code}); a GPU process may hold its files. Stop the run that owns it and try again`, { gpu: true, dir: fwd(to), errno: e.code });
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); // a scanner may hold a fresh tree for a moment
     }
   }
@@ -187,7 +272,8 @@ function renameInto(from, to) {
 
 // Installs the runtime, or reports it already sound. Resolves the receipt { dir, already_present, versions,
 // bytes, mb, npm_ms, total_ms }. `installer(dir, { env })` resolves { code, ms, tail } after filling dir/node_modules.
-async function installRuntime({ env = process.env, manifestDir, installer = defaultInstaller, emit } = {}) {
+// Seams: `rename`, and `lockSeam` (takeLock's).
+async function installRuntime({ env = process.env, manifestDir, installer = defaultInstaller, emit, rename, lockSeam } = {}) {
   const t0 = Date.now();
   const manifest = readManifest(manifestDir);
   const target = installDir(manifest, env);
@@ -196,10 +282,10 @@ async function installRuntime({ env = process.env, manifestDir, installer = defa
   const base = path.dirname(target);
   fs.mkdirSync(base, { recursive: true });
   const lock = path.join(base, '.install.lock');
-  if (!takeLock(lock)) throw err('E_BUSY', `another GPU runtime install holds ${fwd(lock)}; nothing was touched`, { gpu: true, lock: fwd(lock) });
+  if (!takeLock(lock, { seam: lockSeam })) throw err('E_BUSY', `another GPU runtime install holds ${fwd(lock)}; nothing was touched`, { gpu: true, lock: fwd(lock) });
   const tmp = path.join(base, `.tmp-${path.basename(target)}-${process.pid}-${Date.now()}`);
   try {
-    for (const n of fs.readdirSync(base)) if (n.startsWith('.tmp-') || n.startsWith('.old-')) rmrf(path.join(base, n)); // an interrupted install's leftovers
+    sweepLeftovers(base);
     fs.mkdirSync(tmp, { recursive: true });
     for (const f of ['package.json', 'package-lock.json']) fs.copyFileSync(path.join(manifest.dir, f), path.join(tmp, f));
     if (emit) emit(`  npm ci --omit=optional --ignore-scripts in ${fwd(tmp)}\n`);
@@ -208,12 +294,13 @@ async function installRuntime({ env = process.env, manifestDir, installer = defa
     const problems = treeProblems(tmp, manifest, { deep: true });
     if (problems.length) throw err('E_MODEL_ABSENT', `the installed GPU runtime does not match the manifest and was refused: ${problems.slice(0, 5).join('; ')}${problems.length > 5 ? ` (and ${problems.length - 5} more)` : ''}`, { gpu: true, cause: 'mismatch', problems });
     const versions = Object.fromEntries(Object.keys(manifest.dependencies).map(n => [n, installedVersion(tmp, n)]));
-    const bytes = sizeOf(tmp);
-    fs.writeFileSync(path.join(tmp, RECORD), `${JSON.stringify({ runtime: 'node-llama-cpp', versions, lock_sha256: manifest.lock_sha256, omit_optional: true, ignore_scripts: true, bytes, installed_at: new Date().toISOString() }, null, 2)}\n`);
-    if (fs.existsSync(target)) { const old = path.join(base, `.old-${process.pid}-${Date.now()}`); renameInto(target, old); rmrf(old); } // an incomplete or wrong earlier tree is not a runtime
-    renameInto(tmp, target);
-    return { dir: target, already_present: false, versions, bytes, mb: Math.round(bytes / 1048576), npm_ms: r.ms, total_ms: Date.now() - t0 };
-  } finally { rmrf(tmp); rmrf(lock); }
+    const fm = fileManifest(tmp);
+    const bytes = Object.values(fm.files).reduce((n, f) => n + f[0], 0);
+    fs.writeFileSync(path.join(tmp, RECORD), `${JSON.stringify({ runtime: 'node-llama-cpp', versions, lock_sha256: manifest.lock_sha256, omit_optional: true, ignore_scripts: true, bytes, installed_at: new Date().toISOString(), ...fm }, null, 1)}\n`);
+    if (fs.existsSync(target)) { const old = path.join(base, `.old-${process.pid}-${Date.now()}`); renameInto(target, old, rename); rmrf(old); } // an incomplete or wrong earlier tree is not a runtime
+    renameInto(tmp, target, rename);
+    return { dir: target, already_present: false, versions, bytes, mb: Math.round(bytes / 1048576), files: Object.keys(fm.files).length, npm_ms: r.ms, total_ms: Date.now() - t0 };
+  } finally { rmrf(tmp); releaseLock(lock); }
 }
 
-module.exports = { MANIFEST_DIR, INSTALL_COMMAND, INSTALL_ARGS, readManifest, baseDir, installDir, treeProblems, check, requireRuntime, installRuntime, defaultInstaller, npmCli };
+module.exports = { MANIFEST_DIR, INSTALL_COMMAND, INSTALL_ARGS, readManifest, baseDir, installDir, treeProblems, check, requireRuntime, installRuntime, defaultInstaller, npmCli, npmEnv, takeLock, releaseLock, sweepLeftovers, fileManifest };

@@ -160,3 +160,104 @@ test('belay embedder verify --gpu reports a missing runtime and exits 1 without 
     assert.match(m.text, /unknown embedding model/);
   } finally { if (saved === undefined) delete process.env.BELAY_GPU_RUNTIME; else process.env.BELAY_GPU_RUNTIME = saved; cleanup(dir); }
 });
+
+// ---- the install record's file manifest: a changed runtime is wrong ----
+
+const MODS = {
+  'a removed file (a quarantined DLL)': { light: true, mutate: (d) => fs.rmSync(path.join(d, 'node_modules/@node-llama-cpp/win-x64-vulkan/package.json')) },
+  'a file of another size': { light: true, mutate: (d) => fs.appendFileSync(path.join(d, 'node_modules/node-llama-cpp/package.json'), ' ') },
+  'an extra file': { light: true, mutate: (d) => fs.writeFileSync(path.join(d, 'node_modules/node-llama-cpp/implant.node'), 'x') },
+  'an extra directory': { light: true, mutate: (d) => fs.mkdirSync(path.join(d, 'node_modules/implant')) },
+  'a replaced file of the same size': { light: false, mutate: (d) => { const p = path.join(d, 'node_modules/node-llama-cpp/package.json'); fs.writeFileSync(p, fs.readFileSync(p, 'utf8').replace('"name":"node_', '"name":"nodX_')); } },
+};
+for (const [name, mod] of Object.entries(MODS)) {
+  test(`the file manifest catches ${name}: ${mod.light ? 'the light check and the deep check' : 'the deep check (a hash)'} refuse it, naming the install command`, async () => {
+    const dir = sandbox();
+    try {
+      const r = await R.installRuntime({ env: envFor(dir), installer: treeInstaller() });
+      assert.ok(r.files > 100, 'the record lists every file');
+      assert.strictEqual(R.check({ env: envFor(dir) }).ok, true);
+      mod.mutate(r.dir);
+      assert.strictEqual(R.check({ env: envFor(dir) }).ok, !mod.light, 'the light check compares file set and sizes');
+      const deep = R.check({ env: envFor(dir), deep: true });
+      assert.strictEqual(deep.ok, false);
+      if (mod.light) assert.throws(() => R.requireRuntime({ env: envFor(dir) }), (e) => e.code === 'E_MODEL_ABSENT' && /belay embedder fetch --gpu/.test(e.message));
+      else assert.match(deep.problems.join(' '), /sha256 differs/);
+      // an install over the damaged tree replaces it with a verified one
+      const again = await R.installRuntime({ env: envFor(dir), installer: treeInstaller() });
+      assert.strictEqual(again.already_present, false);
+      assert.strictEqual(R.check({ env: envFor(dir), deep: true }).ok, true);
+    } finally { cleanup(dir); }
+  });
+}
+
+// ---- the install lock and the sweep: deterministic interleavings, no timing ----
+
+const lockPath = (d) => path.join(d, '.install.lock');
+
+test('lock: two installers read one stale lock; the one that moved a LIVE lock puts it back and fails', () => {
+  const dir = sandbox(), dead = require('./helpers.cjs').deadPid(), other = process.ppid;
+  try {
+    fs.writeFileSync(lockPath(dir), String(dead));
+    let nested = null;
+    const got = R.takeLock(lockPath(dir), { pid: process.pid, seam: { beforeSteal: (text) => {
+      assert.strictEqual(text, String(dead));
+      nested = R.takeLock(lockPath(dir), { pid: other }); // the other installer runs its whole steal in the gap
+    } } });
+    assert.strictEqual(nested, true, 'the other installer got the lock');
+    assert.strictEqual(got, false, 'this one must not also hold it');
+    assert.strictEqual(fs.readFileSync(lockPath(dir), 'utf8'), String(other), 'the live lock is back in place');
+    assert.deepStrictEqual(fs.readdirSync(dir), ['.install.lock'], 'no stale-lock file is left');
+  } finally { cleanup(dir); }
+});
+
+test('lock: the stale lock is released by another installer before our rename; we take it with a fresh create', () => {
+  const dir = sandbox();
+  try {
+    fs.writeFileSync(lockPath(dir), String(require('./helpers.cjs').deadPid()));
+    const got = R.takeLock(lockPath(dir), { pid: process.pid, seam: { beforeSteal: () => fs.rmSync(lockPath(dir)) } });
+    assert.strictEqual(got, true);
+    assert.strictEqual(fs.readFileSync(lockPath(dir), 'utf8'), String(process.pid));
+  } finally { cleanup(dir); }
+});
+
+test('lock: a release deletes only a lock that still names the releaser', () => {
+  const dir = sandbox();
+  try {
+    fs.writeFileSync(lockPath(dir), String(process.ppid));
+    R.releaseLock(lockPath(dir), process.pid);
+    assert.ok(fs.existsSync(lockPath(dir)), 'someone else\'s lock stays');
+    R.releaseLock(lockPath(dir), process.ppid);
+    assert.ok(!fs.existsSync(lockPath(dir)));
+  } finally { cleanup(dir); }
+});
+
+test('sweep: only leftovers whose named pid is dead are removed; a live installer\'s tree survives an install', async () => {
+  const dir = sandbox(), dead = require('./helpers.cjs').deadPid();
+  try {
+    const base = R.baseDir(envFor(dir));
+    const mk = (n) => { fs.mkdirSync(path.join(base, n, 'node_modules'), { recursive: true }); };
+    mk(`.tmp-llama-3.22.2-49276d8b5612-${dead}-111`); mk(`.old-${dead}-222`);
+    mk(`.tmp-llama-3.22.2-49276d8b5612-${process.ppid}-333`); mk('unrelated');
+    await R.installRuntime({ env: envFor(dir), installer: treeInstaller() });
+    assert.deepStrictEqual(fs.readdirSync(base).filter(n => n.startsWith('.')).sort(), [`.tmp-llama-3.22.2-49276d8b5612-${process.ppid}-333`, ], 'only the live installer\'s tree stays');
+    assert.ok(fs.existsSync(path.join(base, 'unrelated')));
+  } finally { cleanup(dir); }
+});
+
+// ---- N4, N7 ----
+
+test('a rename blocked by a process holding the runtime\'s files is a coded E_BUSY, and nothing is kept', async () => {
+  const dir = sandbox();
+  try {
+    const rename = () => { throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' }); };
+    await assert.rejects(R.installRuntime({ env: envFor(dir), installer: treeInstaller(), rename }), (e) => e.code === 'E_BUSY' && e.detail.errno === 'EPERM' && e.detail.gpu === true && /in use/.test(e.message));
+    assert.deepStrictEqual(leftovers(dir), []);
+    assert.strictEqual(R.check({ env: envFor(dir) }).ok, false);
+  } finally { cleanup(dir); }
+});
+
+test('npm gets the allow-list and only proxy and CA settings of npm_config_*; npm_config_include=optional is dropped', () => {
+  const e = R.npmEnv({ PATH: 'p', ANTHROPIC_API_KEY: 'sk', npm_config_include: 'optional', npm_config_omit: '', NPM_CONFIG_INCLUDE: 'optional', npm_config_registry: 'https://mirror.example', npm_config_https_proxy: 'http://proxy:8080', npm_config_cafile: 'C:/ca.pem', HTTPS_PROXY: 'http://proxy:8080' });
+  assert.deepStrictEqual(Object.keys(e).sort(), ['HTTPS_PROXY', 'PATH', 'npm_config_cafile', 'npm_config_https_proxy']);
+});
