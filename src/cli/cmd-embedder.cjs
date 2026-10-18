@@ -18,6 +18,11 @@
 // sha is 40 hex and a file path is relative, forward-slash, without .. or a drive letter.
 // The cache root is BELAY_MODEL_CACHE or the default (model-cache.cjs).
 //
+// --gpu (ADR 0049): `fetch --gpu` installs the pinned GPU runtime into belay's cache (gpu-runtime.cjs: npm ci of
+// the shipped lockfile, verified, then renamed into place), `verify --gpu` checks it, and `--gpu --model <id>`
+// fetches or verifies a model of the GPU table (gguf-models.cjs) through the same pinned download as above. The
+// GPU modules are required only inside the --gpu branches.
+//
 // Hygiene: a fetch holds an exclusive lock file <root>/.fetch-<org>__<name>@<sha>.lock (wx, removed in
 // finally; a lock whose pid is dead is stolen), and removes stale .tmp-* directories of the same model
 // left by an interrupted fetch.
@@ -36,27 +41,28 @@ const K = require('../core/model-cache.cjs');
 const READ_TIMEOUT_MS = 60000;
 const MAX_REDIRECTS = 5;
 
-const USAGE = 'usage: belay embedder fetch|verify [--model <id>] [--json]\n';
+const USAGE = 'usage: belay embedder fetch|verify [--model <id>] [--gpu] [--json]\n  --gpu  with no --model, the GPU runtime; with --model, a model of the GPU table\n';
 
 const testMode = () => process.env.BELAY_TEST_MODE === '1';
 const idleMs = () => (testMode() && Number(process.env.BELAY_FETCH_IDLE_MS) > 0 ? Number(process.env.BELAY_FETCH_IDLE_MS) : READ_TIMEOUT_MS);
 
-function table() {
+function table(gpu = false) {
   const f = testMode() ? process.env.BELAY_EMBEDDER_TABLE : null;
-  if (!f) return { models: M.MODELS, def: M.DEFAULT_MODEL };
+  if (!f) return gpu ? { models: require('../core/gguf-models.cjs').GGUF_MODELS, def: null } : { models: M.MODELS, def: M.DEFAULT_MODEL };
   const models = JSON.parse(fs.readFileSync(f, 'utf8'));
   return { models, def: Object.keys(models)[0] };
 }
 
 function parseArgs(argv) {
-  const out = { verb: null, model: null };
+  const out = { verb: null, model: null, gpu: false };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--model') {
       const v = argv[i + 1];
       if (!v || v.startsWith('-')) return { error: '--model needs an id' };
       out.model = v; i += 1;
-    } else if (a.startsWith('-')) return { error: `unknown option ${a}` };
+    } else if (a === '--gpu') out.gpu = true;
+    else if (a.startsWith('-')) return { error: `unknown option ${a}` };
     else if (!out.verb) out.verb = a;
     else return { error: `unexpected argument ${a}` };
   }
@@ -234,17 +240,39 @@ function render(r) {
   return `${lines.join('\n')}\n`;
 }
 
+function renderRuntime(r) {
+  if (r.error) return `belay embedder ${r.verb} --gpu: FAILED ${r.error}\n`;
+  if (r.verb === 'verify') return `${r.verified ? 'verified' : 'verify FAILED for'} the GPU runtime at ${r.dir}${r.problems.map(p => `\n  ${p}`).join('')}\n`;
+  if (r.already_present) return `the GPU runtime is already present at ${r.dir}; nothing was installed\n`;
+  return `installed the GPU runtime into ${r.dir}: ${Object.entries(r.versions).map(([k, v]) => `${k}@${v}`).join(', ')}, ${r.mb} MiB, npm ${r.npm_ms} ms, ${r.total_ms} ms\n`;
+}
+
+// `--gpu` with no model: install (the one npm ci of the pinned manifest) or deep-verify the GPU runtime.
+async function runRuntime(a, ctx) {
+  const R = require('../core/gpu-runtime.cjs');
+  let r;
+  if (a.verb === 'verify') {
+    const c = R.check({ deep: true });
+    r = { code: c.ok ? 0 : 1, verb: 'verify', dir: c.dir, verified: c.ok, versions: c.versions, problems: c.problems };
+  } else {
+    try { r = { code: 0, verb: 'fetch', ...await R.installRuntime({ emit: ctx.emit }) }; }
+    catch (e) { r = { code: 1, verb: 'fetch', error: e.message, detail: e.detail }; }
+  }
+  return { code: r.code, text: renderRuntime(r), json: r };
+}
+
 async function run(ctx) {
   const a = parseArgs(ctx.argv);
   if (a.error) return { code: 2, text: `belay embedder: ${a.error}\n\n${USAGE}`, json: { error: a.error } };
-  const t = table();
+  if (a.gpu && !a.model) return runRuntime(a, ctx);
+  const t = table(a.gpu);
   const id = a.model || t.def;
   if (!Object.prototype.hasOwnProperty.call(t.models, id)) {
     const message = `unknown embedding model ${JSON.stringify(id)}; the known ids are ${Object.keys(t.models).join(', ')}`;
     return { code: 2, text: `belay embedder: ${message}\n`, json: { error: message } };
   }
   const entry = t.models[id];
-  const problems = M.entryProblems(entry);
+  const problems = a.gpu ? require('../core/gguf-models.cjs').ggufProblems(entry) : M.entryProblems(entry);
   if (!problems.length && entry.id !== id) problems.push(`the entry's id ${JSON.stringify(entry.id)} is not its key ${JSON.stringify(id)}`);
   if (problems.length) {
     const message = `the model table entry ${JSON.stringify(id)} is unusable: ${problems.join('; ')}; nothing was written`;
