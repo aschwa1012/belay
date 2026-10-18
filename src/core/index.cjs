@@ -406,6 +406,20 @@ class Core {
 
   async close() { await this._dropClient(); }
 
+  // ADR 0050: a command that is done with the owner it elected, and is not the run that owns the store. With no other
+  // client attached it is shutdownOwner() exactly. With one attached it keeps the owner serving and stops it when the last
+  // client is gone (owner.cjs retire), so a client is never left with its store pulled out from under it. The result names
+  // which: `deferred: true` and the attached clients, or the stop's own receipt. A Core that holds no owner stops nothing.
+  async releaseOwner() {
+    if (!this.owner || this.owner.stopped) return { stopped: 'none', reason: 'this process holds no owner' };
+    const o = this.owner;
+    const r = await o.retire();
+    if (r.deferred) { this.owner = null; await this._dropClient(); return { ...r, stopped: 'deferred' }; }
+    this.owner = null;
+    await this._dropClient();
+    return { ...r, stopped: 'in-process' };
+  }
+
   // The only way to stop an owner (ADR 0002 §5): in-process stop() or the pipe's shutdown method.
   // Never a signal, because a Windows terminate skips the owner's handlers.
   async shutdownOwner() {
