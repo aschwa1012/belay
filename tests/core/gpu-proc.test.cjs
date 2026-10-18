@@ -105,7 +105,6 @@ test('rank goes out in chunks: one progress line and one chunk per submission, s
     const docs = Array.from({ length: 23 }, (_, i) => (i === 17 ? 'stop the worker by pid' : `filler note number ${i}`));
     const r = await c.rank('m', 'stop worker pid', docs, { chunk: 10 });
     assert.deepStrictEqual(r.chunks.map(x => x.n), [10, 10, 3]);
-    assert.strictEqual(r.chunk, 10);
     assert.strictEqual(r.scores.length, 23);
     assert.strictEqual(r.scores.indexOf(Math.max(...r.scores)), 17);
     const whole = await c.rank('m', 'stop worker pid', docs);
@@ -156,4 +155,50 @@ test('a request queued behind a long rank is credited by that rank\'s progress, 
     const [a, b] = await Promise.all([c.rank('m', 'q', docs, { chunk: 2 }), c.rank('m', 'q', docs, { chunk: 2 })]);
     assert.ok(a.ms > 900 && b.scores.length === 20);
   } finally { await c.close(); }
+});
+
+test('killing the owner by its exact pid takes the REAL gpu-worker with it, even with native handles keeping its loop alive', async () => {
+  const { writeStubRuntime, writeCache } = require('./fixtures/gpu-stub-runtime.cjs');
+  const fs = require('node:fs');
+  const rt = sandbox(), cache = sandbox();
+  let owner = null;
+  try {
+    writeStubRuntime(rt, { keepAlive: true }); // the stub's model holds an interval, as a real context's threads hold the loop
+    const e = { id: 'org/emb', sha: 'a'.repeat(40), runtime: 'gguf', kind: 'embedder', pooling: 'last', files: [{ path: 'm.gguf', bytes: 10, sha256: 'b'.repeat(64) }], query_prompt: '', document_prompt: '', native_dims: 4, dims: 4, context_size: 64, vram_mb_ref: 1 };
+    writeCache(cache, { [e.id]: e });
+    const tableFile = path.join(cache, 'table.json');
+    fs.writeFileSync(tableFile, JSON.stringify({ [e.id]: e }));
+    owner = spawn(process.execPath, [OWNER, 'real', rt, cache, tableFile], { windowsHide: true, stdio: ['ignore', 'pipe', 'inherit'], env: { ...process.env, BELAY_TEST_MODE: '1' } });
+    let out = '', info = null;
+    owner.stdout.on('data', (d) => { out += d; for (const l of out.split('\n')) if (l.includes('gpu_pid') && !info) info = JSON.parse(l); });
+    for (let i = 0; i < 400 && !info; i += 1) await new Promise(r => setTimeout(r, 25));
+    assert.ok(info, `the owner never had a GPU op in flight: ${out}`);
+    assert.ok(pidAlive(info.gpu_pid), 'the real worker is up with its model loaded');
+    process.kill(info.owner_pid); // the exact pid of the owner this test spawned
+    assert.ok(await waitGone(info.gpu_pid, 5000), 'the real worker outlived its owner');
+  } finally {
+    if (owner && owner.exitCode === null) { try { process.kill(owner.pid); } catch { /* gone */ } }
+    cleanup(rt); cleanup(cache);
+  }
+});
+
+// On Windows libuv puts every child it spawns in a job object that dies with the parent, so the owner-death tests
+// above pass whatever the worker does. This one takes that out of the picture: the real worker is forked DETACHED
+// (outside the job) with a stub model whose handle keeps its loop alive, and the owner's channel is closed. Only the
+// worker's own disconnect handler can end it; deleting that handler fails this test.
+test('the real gpu-worker ends itself when its owner\'s channel closes, though a loaded model keeps its loop alive', async () => {
+  const { writeStubRuntime } = require('./fixtures/gpu-stub-runtime.cjs');
+  const { fork } = require('node:child_process');
+  const rt = sandbox();
+  let kid = null;
+  try {
+    writeStubRuntime(rt, { keepAlive: true });
+    kid = fork(path.join(__dirname, '..', '..', 'src', 'core', 'gpu-worker.cjs'), [JSON.stringify({ runtimeDir: rt })], { detached: true, execArgv: [], windowsHide: true, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
+    const answered = new Promise((res) => kid.on('message', (m) => { if (m.id === 1) res(m); }));
+    kid.send({ id: 1, op: 'load', model: 'm', kind: 'embedder', path: 'unused', gpu: 'vulkan', contextSize: 8 });
+    assert.strictEqual((await answered).ok, true, 'the stub model is loaded and holds a handle');
+    const pid = kid.pid;
+    kid.disconnect();
+    assert.ok(await waitGone(pid, 5000), 'the worker stayed alive after its owner\'s channel closed');
+  } finally { if (kid && kid.exitCode === null) { try { process.kill(kid.pid); } catch { /* gone */ } } cleanup(rt); }
 });

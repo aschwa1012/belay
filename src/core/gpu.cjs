@@ -21,7 +21,8 @@
 //              Nothing waits forever and nothing is restarted by itself: a dead child stays dead.
 //
 // Contract: new GpuClient({ runtimeDir?, cacheDir?, opBoundMs?, loadBoundMs?, pingBoundMs? }); start();
-// load(modelId, { gpu, contextSize?, chunk? }); embed(modelId, text, { as }); rank(modelId, query, docs, { chunk });
+// load(modelId, { gpu, contextSize?, batchSize?, chunk?, chunkTokens? }); embed(modelId, text, { as });
+// rank(modelId, query, docs, { chunk?, chunkTokens? });
 // vram(); ping(); close(). `pid` is the child's pid. Test seams (BELAY_TEST_MODE=1 alone): `workerPath` forks that
 // script instead (a fake with no GPU), `workerOpts` is merged into the child's argv JSON, `table` replaces the model table.
 
@@ -158,13 +159,13 @@ class GpuClient {
   vram(opts = {}) { return this._call({ op: 'vram', gpu: opts.gpu }, this.opBoundMs); }
 
   // Loads one table model into the child. The model's file must be in the cache (a stat, never a hash).
-  async load(modelId, { gpu: device = 'vulkan', contextSize, chunk } = {}) {
+  async load(modelId, { gpu: device = 'vulkan', contextSize, batchSize, chunk, chunkTokens } = {}) {
     const entry = ggufFor(modelId, this.table);
     const chk = K.checkPresent(entry, this.cacheDir);
     if (!chk.present) throw err('E_MODEL_ABSENT', `the GPU model ${entry.id} is not fetched or is wrong (${[...chk.missing, ...chk.wrong_size].join(', ')}); fetch it with \`belay embedder fetch --gpu --model ${entry.id}\``, gpu('absent', { model: entry.id, command: `belay embedder fetch --gpu --model ${entry.id}` }));
     const info = await this._call({
       op: 'load', model: entry.id, kind: entry.kind, path: path.join(chk.dir, entry.files[0].path).split('\\').join('/'), gpu: device,
-      contextSize: contextSize || entry.context_size, dims: entry.dims || undefined, queryPrompt: entry.query_prompt || undefined, chunk,
+      contextSize: contextSize || entry.context_size, batchSize, dims: entry.dims || undefined, queryPrompt: entry.query_prompt || undefined, chunk, chunkTokens,
     }, this.loadBoundMs);
     this.models.set(entry.id, { kind: entry.kind, gpu: device });
     return info;
@@ -175,9 +176,9 @@ class GpuClient {
     return this._call({ op: 'embed', model: modelId, text, as }, this.opBoundMs);
   }
 
-  rank(modelId, query, docs, { chunk } = {}) {
+  rank(modelId, query, docs, { chunk, chunkTokens } = {}) {
     if (!Array.isArray(docs) || !docs.length) throw err('E_ARGS', 'rank needs a non-empty list of docs', { docs: Array.isArray(docs) ? 0 : typeof docs });
-    return this._call({ op: 'rank', model: modelId, query, docs, chunk }, this.opBoundMs);
+    return this._call({ op: 'rank', model: modelId, query, docs, chunk, chunkTokens }, this.opBoundMs);
   }
 
   // Ends the child: `close` over IPC, at most 2,000 ms of grace, then a kill by its exact child handle. Safe to

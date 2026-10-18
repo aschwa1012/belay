@@ -2,14 +2,17 @@
 // gpu-probe.cjs — the probe before any GPU model loads (ADR 0049 decision 6). It runs at setup, on a settings
 // change and at run start, never on a search, and only from the store owner or a CLI verb that writes (it calls
 // nvidia-smi, which no read path may do; invariant 9, tests/core/gpu-import-graph.test.cjs). It
-//   1. finds a discrete GPU through the Vulkan device list the GPU child reports;
-//   2. counts DEDICATED memory only;
-//   3. loads the requested models into one child, runs a test batch on each, and measures each one's peak;
+//   1. starts the GPU child and lets it initialise Vulkan, then finds a discrete GPU in the device list it reports;
+//   2. counts DEDICATED memory only, and reads free memory AFTER the child is up, so the child's own overhead is
+//      not counted as room the models can use;
+//   3. loads the requested models into that child, runs a test batch on each, and measures each one's peak by
+//      SAMPLING the meters while the load and the batch run;
 //   4. compares the SUM of the peaks plus headroom against free dedicated memory;
-//   5. derives the rerank chunk size from the measured cost per pair;
+//   5. sizes a rerank's chunks from the measured cost per token, and bounds one submission with the context's
+//      batch size, whose full-batch time it measures (gpu-chunk.cjs says what each bound does and does not give);
 //   6. records each peak keyed by model, settings and driver version.
 // It returns a structured result and never throws: no runtime, a missing model file, no GPU, a dead child, a
-// failed sanity check or too little memory is { ok: false, refusal: { reason, message, options } }.
+// failed sanity check, an allocation failure or too little memory is { ok: false, refusal: { reason, message, options } }.
 //
 // Dedicated memory. node-llama-cpp's getVramState sums every Vulkan device's memory heap, and an integrated GPU's
 // heap is a slice of system RAM. On the reference laptop (RTX 5060 8 GB beside an AMD iGPU) it reports total
@@ -18,30 +21,33 @@
 // which is what nvidia-smi reports as the card's free memory (memory.total is 8,151 MiB; the difference is the
 // driver's own reservation). `used` is the same aggregate, and an iGPU's use is in it, so free dedicated memory
 // is NOT total - unifiedSize - used. With nvidia-smi present (C:/Windows/System32, called here and nowhere on a
-// read path) free is its memory.free for the card with the most memory, cross-checked against the Vulkan figure.
-// Without it, free is the Vulkan dedicated total minus the aggregate used, which can only under-count.
-// A model's peak is its own growth: the aggregate `used` after its load and test batch minus before (the larger
-// of that and nvidia-smi's growth when present). The set's measured growth is also reported beside the sum.
+// read path, asynchronously so the owner's loop is never blocked) free is its memory.free for the card with the
+// most memory, cross-checked against the Vulkan figure. Without it, free is the Vulkan dedicated total minus the
+// aggregate used, which can only under-count.
 //
-// Chunk size. A rerank is sent in chunks sized so one submission stays well under the Windows TDR limit (about
-// 2 s): chunk = floor(target / (ms per pair x margin)), the pair cost measured warm on 16 notes of ordinary length,
-// the margin covering notes twice as long, clamped to 1..50 (the rerank depth).
+// Peak. A model's peak is the most its load and test batch took above the level just before it, from samples of
+// the Vulkan meter and nvidia-smi taken every ~100 ms while they ran (a sample takes as long as the meter's
+// call, so nvidia-smi's cadence is slower), and never less than the steady growth afterwards. It is the highest
+// SAMPLED value, so a spike shorter than a sample can be missed; the headroom is there for that.
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { execFile } = require('node:child_process');
 const { ggufFor, GGUF_MODELS } = require('./gguf-models.cjs');
 const { GpuClient } = require('./gpu.cjs');
+const C = require('./gpu-chunk.cjs');
 const K = require('./model-cache.cjs');
 const R = require('./gpu-runtime.cjs');
 
 const MIB = 1048576;
 const HEADROOM_MB = 768; // 0.75 GB (the vram_headroom_gb lever's default)
 const CHUNK_TARGET_MS = 1000;
-const CHUNK_MARGIN = 2;
-const CHUNK_MAX = 50;
+const BATCH_TOKENS = 512; // tokens in one decode of a reranker (its context's batchSize)
+const SAMPLE_MS = 100;
+const SMI_BOUND_MS = 5000;
 const NVIDIA_SMI = 'C:/Windows/System32/nvidia-smi.exe';
 const PEAKS_FILE = 'probe-peaks.json';
+const OOM = /out of (device |gpu )?memory|failed to allocate|unable to allocate|cannot allocate|VK_ERROR_OUT_OF|not enough (gpu |device )?memory|insufficient (gpu |device )?memory/i;
 
 const QUERY = 'how do I stop a worker by its pid';
 const SANITY_DOCS = [
@@ -63,7 +69,9 @@ const FILLER = [
 ];
 
 const mb = (bytes) => Math.round((bytes / MIB) * 10) / 10;
+const r1 = (x) => Math.round(x * 10) / 10;
 const fwd = (p) => String(p).split('\\').join('/');
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // ---- pure arithmetic (unit-tested without a GPU) ----
 
@@ -81,31 +89,44 @@ function freeDedicated(ded, smi) {
   if (!smi) return { free_mb: ded.estimate_free_mb, source: 'vulkan-estimate', cross_check: null };
   const agree = ded.total_mb <= smi.total_mb && ded.total_mb >= smi.total_mb * 0.85;
   const free = agree ? Math.min(smi.free_mb, ded.total_mb) : Math.min(smi.free_mb, ded.total_mb, ded.estimate_free_mb);
-  return { free_mb: free, source: 'nvidia-smi', cross_check: { smi_total_mb: smi.total_mb, smi_free_mb: smi.free_mb, vulkan_dedicated_mb: ded.total_mb, reserved_mb: Math.round((smi.total_mb - ded.total_mb) * 10) / 10, agree } };
+  return { free_mb: free, source: 'nvidia-smi', cross_check: { smi_total_mb: smi.total_mb, smi_free_mb: smi.free_mb, vulkan_dedicated_mb: ded.total_mb, reserved_mb: r1(smi.total_mb - ded.total_mb), agree } };
 }
 
-// ms per pair -> pairs per submission.
-function deriveChunk(msPerPair, { targetMs = CHUNK_TARGET_MS, margin = CHUNK_MARGIN, max = CHUNK_MAX } = {}) {
-  if (!(msPerPair > 0)) return max;
-  return Math.max(1, Math.min(max, Math.floor(targetMs / (msPerPair * margin))));
-}
-
-// A model's peak: the larger growth of the two meters, never negative; the hint when neither moved.
+// A model's peak: the largest growth any meter showed (a sampled maximum above the level before the model, or the
+// steady growth after it), never negative; the table's hint when no meter moved.
 function peakFrom({ vulkanDelta, smiDelta, hint }) {
   const d = [vulkanDelta, smiDelta].filter(x => Number.isFinite(x) && x > 0);
-  if (d.length) return { peak_mb: Math.round(Math.max(...d) * 10) / 10, source: d.length === 2 && smiDelta > vulkanDelta ? 'nvidia-smi' : 'vulkan' };
+  if (d.length) return { peak_mb: r1(Math.max(...d)), source: d.length === 2 && smiDelta > vulkanDelta ? 'nvidia-smi' : 'vulkan' };
   return { peak_mb: hint, source: 'hint' };
 }
 
 function needed(peaks, headroomMb) {
   const sum = Object.values(peaks).reduce((n, p) => n + p.peak_mb, 0);
-  return { sum_mb: Math.round(sum * 10) / 10, headroom_mb: headroomMb, needed_mb: Math.round((sum + headroomMb) * 10) / 10 };
+  return { sum_mb: r1(sum), headroom_mb: headroomMb, needed_mb: r1(sum + headroomMb) };
 }
 
 // The recorded key: model, the settings the peak was measured at, and the driver.
 function peakKey(model, settings, driver) {
   const s = Object.keys(settings).sort().map(k => `${k}=${settings[k]}`).join(',');
   return `${model}|${s}|driver=${driver || 'unknown'}`;
+}
+
+// ---- sampling ----
+
+// Calls `fn` (async, returns a number) back to back with `intervalMs` between calls until stop(), which resolves
+// { max, n }. A call that does not answer in 2 s is dropped so a wedged meter cannot hold the probe.
+function sampler(fn, intervalMs = SAMPLE_MS) {
+  let stopped = false, max = null, n = 0;
+  const loop = (async () => {
+    while (!stopped) {
+      try {
+        const v = await Promise.race([fn(), sleep(2000).then(() => NaN)]);
+        if (Number.isFinite(v)) { max = max === null ? v : Math.max(max, v); n += 1; }
+      } catch { /* a failed sample is a missing sample */ }
+      if (!stopped) await sleep(intervalMs);
+    }
+  })();
+  return { stop: async () => { stopped = true; await loop; return { max, n }; } };
 }
 
 // ---- recording ----
@@ -132,18 +153,20 @@ function recordedPeak(model, settings, driver, file = peaksFile()) {
   return e || null;
 }
 
-// ---- nvidia-smi (the probe only) ----
+// ---- nvidia-smi (the probe only; async, so the owner's loop is never blocked) ----
 
 function defaultSmi() {
-  if (!fs.existsSync(NVIDIA_SMI)) return null;
-  try {
-    const out = execFileSync(NVIDIA_SMI, ['--query-gpu=name,driver_version,memory.total,memory.used,memory.free', '--format=csv,noheader,nounits'], { timeout: 5000, windowsHide: true, encoding: 'utf8' });
-    const rows = out.split(/\r?\n/).map(l => l.trim()).filter(Boolean).map((l) => {
-      const [name, driver, total, used, free] = l.split(',').map(x => x.trim());
-      return { name, driver, total_mb: Number(total), used_mb: Number(used), free_mb: Number(free) };
-    }).filter(r => Number.isFinite(r.total_mb) && Number.isFinite(r.free_mb));
-    return rows.length ? rows.sort((a, b) => b.total_mb - a.total_mb)[0] : null;
-  } catch { return null; }
+  if (!fs.existsSync(NVIDIA_SMI)) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    execFile(NVIDIA_SMI, ['--query-gpu=name,driver_version,memory.total,memory.used,memory.free', '--format=csv,noheader,nounits'], { timeout: SMI_BOUND_MS, windowsHide: true, encoding: 'utf8' }, (e, out) => {
+      if (e) return resolve(null);
+      const rows = String(out).split(/\r?\n/).map(l => l.trim()).filter(Boolean).map((l) => {
+        const [name, driver, total, used, free] = l.split(',').map(x => x.trim());
+        return { name, driver, total_mb: Number(total), used_mb: Number(used), free_mb: Number(free) };
+      }).filter(r => Number.isFinite(r.total_mb) && Number.isFinite(r.free_mb));
+      resolve(rows.length ? rows.sort((a, b) => b.total_mb - a.total_mb)[0] : null);
+    });
+  });
 }
 
 // ---- the probe ----
@@ -164,27 +187,38 @@ async function batchEmbedder(client, entry) {
   return { ok: true, batch_ms: ms };
 }
 
-async function batchReranker(client, entry, targetMs) {
+// A reranker's batch: a sanity rank (relevant above filler; it also warms the model), a timed rank of 16 notes for
+// the cost per token, and one document that fills the context's batch, whose rank time is the longest single
+// submission the probe observes.
+async function batchReranker(client, entry, { targetMs, batchTokens }) {
   const t0 = Date.now();
   const s = await client.rank(entry.id, QUERY, SANITY_DOCS);
-  const warm = Date.now() - t0;
   if (!finite(s.scores) || s.scores.length !== SANITY_DOCS.length) return { ok: false, why: 'the sanity rank returned no usable scores' };
   const rel = SANITY_RELEVANT.map(i => s.scores[i]), fill = s.scores.filter((_, i) => !SANITY_RELEVANT.includes(i));
   if (!(Math.min(...rel) > Math.max(...fill))) return { ok: false, why: `relevant notes did not outrank filler (relevant ${rel.map(x => x.toFixed(4))}, filler ${fill.map(x => x.toFixed(4))})` };
   const docs = [SANITY_DOCS[0], SANITY_DOCS[2], ...FILLER, ...FILLER.slice(0, 6)]; // 16 notes
-  const r = await client.rank(entry.id, QUERY, docs); // warm: the sanity rank paid the first-use cost
-  const msPerPair = r.ms / docs.length;
-  return { ok: true, batch_ms: warm + r.ms, sanity_scores: s.scores, ms_per_pair: Math.round(msPerPair * 100) / 100, chunk: deriveChunk(msPerPair, { targetMs }) };
+  const r = await client.rank(entry.id, QUERY, docs);
+  const tokens = r.pair_tokens.reduce((x, y) => x + y, 0);
+  const msPerToken = Math.round((r.ms / tokens) * 1000) / 1000; // rounded once, so the recorded cost and the chunk bound agree
+  let big = FILLER.join(' ');
+  while (big.length < batchTokens * 5) big += ` ${FILLER.join(' ')}`; // ~4 characters a token: enough to fill the batch, the child caps it to the context
+  const u = await client.rank(entry.id, QUERY, [big.slice(0, batchTokens * 4)]);
+  return {
+    ok: true, batch_ms: Date.now() - t0, sanity_scores: s.scores,
+    rerank: { ms_per_token: msPerToken, chunk_tokens: C.deriveChunkTokens(msPerToken, { targetMs }), max_pairs: C.CHUNK_MAX_PAIRS, batch_size: batchTokens, ubatch_tokens: u.pair_tokens[0], ubatch_ms: u.ms, target_ms: targetMs, margin: C.CHUNK_MARGIN },
+  };
 }
 
-// probe({ models: [ids], headroomMb?, chunkTargetMs?, contextSizes?, cacheDir?, runtimeDir?, record?, smi?, table?, clientOpts? })
-// `smi` is a function returning the nvidia-smi row (tests), or false to skip it. `table`, `clientOpts` and
+// probe({ models: [ids], headroomMb?, chunkTargetMs?, batchTokens?, contextSizes?, cacheDir?, runtimeDir?, record?, smi?, table?, clientOpts? })
+// `smi` is an (async) function returning the nvidia-smi row (tests), or false to skip it. `table`, `clientOpts` and
 // `runtimeDir` are the test seams (a fake child, a fake table); `record` is the peaks file or false.
 async function probe(opts = {}) {
   const ids = opts.models || [];
   const headroomMb = opts.headroomMb === undefined ? HEADROOM_MB : opts.headroomMb;
+  const targetMs = opts.chunkTargetMs || CHUNK_TARGET_MS, batchTokens = opts.batchTokens || BATCH_TOKENS;
   const table = opts.table || GGUF_MODELS;
   const cacheDir = opts.cacheDir || K.cacheRoot();
+  const smiFn = opts.smi === false ? null : (opts.smi || defaultSmi);
   const t0 = Date.now();
   let client = null;
   try {
@@ -198,20 +232,20 @@ async function probe(opts = {}) {
     let runtimeDir = opts.runtimeDir || null;
     if (!runtimeDir && !fake) {
       const c = R.check({ env: opts.env || process.env });
-      if (!c.ok) return refuse('no_runtime', `the GPU runtime is missing or wrong (${c.problems.join('; ')})`, [`install it: ${R.INSTALL_COMMAND}`, 'or keep the CPU profiles, which need no runtime']);
+      if (!c.ok) return refuse('no_runtime', `the GPU runtime is missing or wrong (${c.problems.slice(0, 3).join('; ')})`, [`install it: ${R.INSTALL_COMMAND}`, 'or keep the CPU profiles, which need no runtime']);
       runtimeDir = c.dir;
     }
     for (const e of entries) {
       const chk = K.checkPresent(e, cacheDir);
       if (!chk.present) return refuse('model_absent', `${e.id} is not fetched or is wrong (${[...chk.missing, ...chk.wrong_size].join(', ')})`, [`fetch it: belay embedder fetch --gpu --model ${e.id}`]);
     }
-    const smiRow = opts.smi === false ? null : (opts.smi || defaultSmi)();
-    const driver = smiRow ? smiRow.driver : null;
     client = new GpuClient({ ...(opts.clientOpts || {}), runtimeDir, cacheDir, table });
     client.start();
     let base;
-    try { base = await client.vram({ gpu: 'vulkan' }); }
+    try { base = await client.vram({ gpu: 'vulkan' }); } // initialises Vulkan in the child: its own overhead is now in every meter
     catch (e) { return refuse('no_gpu', `no usable Vulkan GPU: ${e.message}`, ['update the display driver (Vulkan comes with it)', 'use a CPU profile']); }
+    const smiRow = smiFn ? await smiFn() : null; // after the child is up, so free memory excludes what the child itself holds
+    const driver = smiRow ? smiRow.driver : null;
     const names = base.devices || [];
     const ded = dedicatedFrom(base);
     if (base.gpu !== 'vulkan' || !names.length || ded.total_mb < 1024) {
@@ -220,27 +254,41 @@ async function probe(opts = {}) {
     const fd = freeDedicated(ded, smiRow);
     const device = { name: smiRow ? smiRow.name : names[names.length - 1], names, source: smiRow ? 'nvidia-smi' : 'vulkan' };
     const dedicated = { total_mb: ded.total_mb, free_mb: fd.free_mb, shared_mb: ded.shared_mb, source: fd.source, cross_check: fd.cross_check };
-    const settings = { gpu: 'vulkan' };
     const peaks = {}, rerank = {};
     let before = base, beforeSmi = smiRow;
     for (const e of entries) {
       const ctxSize = (opts.contextSizes && opts.contextSizes[e.id]) || e.context_size;
-      const loaded = await client.load(e.id, { gpu: 'vulkan', contextSize: ctxSize });
-      const batch = e.kind === 'embedder' ? await batchEmbedder(client, e) : await batchReranker(client, e, opts.chunkTargetMs);
-      if (!batch.ok) return refuse('sanity_failed', `${e.id} failed its test batch: ${batch.why}`, ['re-fetch the model with belay embedder fetch --gpu --model ' + e.id, 'choose another model'], { device, dedicated });
+      const vs = sampler(async () => (await client.vram({ gpu: 'vulkan' })).used / MIB);
+      const ss = smiFn && smiRow ? sampler(async () => { const r = await smiFn(); return r ? r.used_mb : NaN; }) : null;
+      let loaded, batch;
+      const sampled = { vulkan: null, smi: null };
+      try {
+        loaded = await client.load(e.id, { gpu: 'vulkan', contextSize: ctxSize, ...(e.kind === 'reranker' ? { batchSize: batchTokens } : {}) });
+        batch = e.kind === 'embedder' ? await batchEmbedder(client, e) : await batchReranker(client, e, { targetMs, batchTokens });
+      } catch (x) {
+        sampled.vulkan = await vs.stop(); if (ss) sampled.smi = await ss.stop();
+        if (!OOM.test(String(x && x.message))) throw x;
+        const n = needed({ ...peaks, [e.id]: { peak_mb: e.vram_mb_ref } }, headroomMb);
+        return refuse('insufficient_vram', `the GPU ran out of memory loading ${e.id}: ${x.message}. The set needs about ${n.needed_mb} MiB (the table's hint for this model, plus headroom) and ${fd.free_mb} MiB of dedicated memory is free on ${device.name}`,
+          ['choose smaller models', 'close other programs that use the GPU', 'lower the vram_headroom_gb lever'], { device, dedicated, peaks, needed_mb: n.needed_mb, free_mb: fd.free_mb, cause: 'allocation_failed' });
+      }
+      sampled.vulkan = await vs.stop(); if (ss) sampled.smi = await ss.stop();
+      if (!batch.ok) return refuse('sanity_failed', `${e.id} failed its test batch: ${batch.why}`, [`re-fetch the model with belay embedder fetch --gpu --model ${e.id}`, 'choose another model'], { device, dedicated });
+      if (batch.rerank && batch.rerank.ubatch_ms > targetMs) return refuse('submission_too_long', `${e.id} took ${batch.rerank.ubatch_ms} ms for one full batch of ${batch.rerank.ubatch_tokens} tokens, over the ${targetMs} ms target; one GPU submission could approach the Windows TDR limit`, ['choose a smaller reranker', 'use the CPU reranker'], { device, dedicated });
       const after = await client.vram({ gpu: 'vulkan' });
-      const afterSmi = opts.smi === false ? null : (opts.smi || defaultSmi)();
-      const p = peakFrom({ vulkanDelta: (after.used - before.used) / MIB, smiDelta: smiRow && afterSmi && beforeSmi ? afterSmi.used_mb - beforeSmi.used_mb : NaN, hint: e.vram_mb_ref });
-      peaks[e.id] = { kind: e.kind, peak_mb: p.peak_mb, peak_source: p.source, hint_mb: e.vram_mb_ref, load_ms: loaded.load_ms, batch_ms: batch.batch_ms, context_size: ctxSize };
-      if (e.kind === 'reranker') { rerank[e.id] = { ms_per_pair: batch.ms_per_pair, chunk: batch.chunk, target_ms: opts.chunkTargetMs || CHUNK_TARGET_MS }; peaks[e.id].sanity_scores = batch.sanity_scores; }
-      before = after; beforeSmi = afterSmi;
-      const running = needed(peaks, headroomMb);
-      if (running.needed_mb > fd.free_mb) break; // no point loading the rest: the set cannot fit
+      const afterSmi = smiFn && smiRow ? await smiFn() : null;
+      const steadyVulkan = (after.used - before.used) / MIB, steadySmi = smiRow && afterSmi && beforeSmi ? afterSmi.used_mb - beforeSmi.used_mb : NaN;
+      const sampledVulkan = sampled.vulkan && sampled.vulkan.max !== null ? sampled.vulkan.max - before.used / MIB : NaN;
+      const sampledSmi = sampled.smi && sampled.smi.max !== null && beforeSmi ? sampled.smi.max - beforeSmi.used_mb : NaN;
+      const top = (...xs) => Math.max(...xs.filter(Number.isFinite), -Infinity);
+      const p = peakFrom({ vulkanDelta: top(steadyVulkan, sampledVulkan), smiDelta: top(steadySmi, sampledSmi), hint: e.vram_mb_ref });
+      peaks[e.id] = { kind: e.kind, peak_mb: p.peak_mb, peak_source: p.source, steady_mb: r1(top(steadyVulkan, steadySmi)), samples: { vulkan: sampled.vulkan && sampled.vulkan.n, smi: sampled.smi && sampled.smi.n }, hint_mb: e.vram_mb_ref, load_ms: loaded.load_ms, batch_ms: batch.batch_ms, context_size: ctxSize };
+      if (batch.rerank) { rerank[e.id] = batch.rerank; peaks[e.id].sanity_scores = batch.sanity_scores; }
+      before = after; beforeSmi = afterSmi || beforeSmi;
+      if (needed(peaks, headroomMb).needed_mb > fd.free_mb) break; // no point loading the rest: the set cannot fit
     }
     const n = needed(peaks, headroomMb);
-    const grown = before.used - base.used;
-    const measured_set_mb = Math.round((grown / MIB) * 10) / 10;
-    const result = { device, dedicated, driver, headroom_mb: headroomMb, peaks, sum_mb: n.sum_mb, needed_mb: n.needed_mb, free_mb: fd.free_mb, measured_set_mb, rerank, models: ids, ms: Date.now() - t0 };
+    const result = { device, dedicated, driver, headroom_mb: headroomMb, peaks, sum_mb: n.sum_mb, needed_mb: n.needed_mb, free_mb: fd.free_mb, measured_set_mb: mb(before.used - base.used), rerank, models: ids, ms: Date.now() - t0 };
     if (Object.keys(peaks).length < entries.length || n.needed_mb > fd.free_mb) {
       const detail = Object.entries(peaks).map(([id, p]) => `${id} ${p.peak_mb} MiB`).join(' + ');
       return refuse('insufficient_vram', `the set needs ${n.needed_mb} MiB (${detail}${Object.keys(peaks).length < entries.length ? ' and more not loaded' : ''}, plus ${headroomMb} MiB headroom) and ${fd.free_mb} MiB of dedicated memory is free on ${device.name}`,
@@ -249,7 +297,10 @@ async function probe(opts = {}) {
     if (opts.record !== false) {
       const file = opts.record || peaksFile(opts.env || process.env);
       const rows = {};
-      for (const [id, p] of Object.entries(peaks)) rows[peakKey(id, { ...settings, context: p.context_size }, driver)] = { model: id, settings: { ...settings, context: p.context_size }, driver, peak_mb: p.peak_mb, peak_source: p.peak_source, chunk: rerank[id] ? rerank[id].chunk : null, device: device.name, measured_at: new Date().toISOString() };
+      for (const [id, p] of Object.entries(peaks)) {
+        const settings = { gpu: 'vulkan', context: p.context_size, ...(rerank[id] ? { batch: rerank[id].batch_size } : {}) };
+        rows[peakKey(id, settings, driver)] = { model: id, settings, driver, peak_mb: p.peak_mb, peak_source: p.peak_source, chunk_tokens: rerank[id] ? rerank[id].chunk_tokens : null, device: device.name, measured_at: new Date().toISOString() };
+      }
       try { result.recorded = { file: fwd(file), rows: recordPeaks(file, rows) }; } catch (e) { result.recorded = { file: fwd(file), error: e.message }; }
     }
     return { ok: true, ...result };
@@ -259,4 +310,7 @@ async function probe(opts = {}) {
   } finally { if (client) await client.close(); }
 }
 
-module.exports = { probe, dedicatedFrom, freeDedicated, deriveChunk, peakFrom, needed, peakKey, recordedPeak, recordPeaks, readPeaks, peaksFile, defaultSmi, HEADROOM_MB, CHUNK_TARGET_MS, CHUNK_MAX, SANITY_DOCS, QUERY };
+module.exports = {
+  probe, dedicatedFrom, freeDedicated, peakFrom, needed, peakKey, sampler, recordedPeak, recordPeaks, readPeaks, peaksFile, defaultSmi,
+  deriveChunkTokens: C.deriveChunkTokens, HEADROOM_MB, CHUNK_TARGET_MS, BATCH_TOKENS, SANITY_DOCS, QUERY,
+};

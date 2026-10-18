@@ -25,7 +25,13 @@
 const { err } = require('./errors.cjs');
 const { entryProblems } = require('./models.cjs');
 
-const QUERY_INSTRUCTION = 'Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: ';
+// The query format of Qwen's model card (its get_detailed_instruct: `Instruct: {task}` newline `Query:{query}`), with
+// no space after `Query:`; the card's vLLM example has one, and the two vectors agree at cosine 0.9994. The
+// end-of-text token is NOT written into the text: the GGUF says add_eos_token=true (eos 151643, `<|endoftext|>`) and
+// node-llama-cpp appends it itself (30 tokens for a 29-token query), while a literal `<|endoftext|>` in the text is
+// read as plain words. tests/core/fixtures/qwen3-query-ref.json pins the formatted text, its token count and a
+// reference vector.
+const QUERY_INSTRUCTION = 'Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:';
 
 const embedder = (e) => ({ runtime: 'gguf', kind: 'embedder', pooling: 'last', query_prompt: QUERY_INSTRUCTION, document_prompt: '', license: 'apache-2.0', context_size: 1024, ...e });
 const reranker = (e) => ({ runtime: 'gguf', kind: 'reranker', pooling: null, query_prompt: '', document_prompt: '', native_dims: null, dims: null, license: 'apache-2.0', context_size: 2048, ...e });

@@ -11,6 +11,9 @@ const { core, sandbox, cleanup, FIXTURES } = require('./helpers.cjs');
 
 const P = core('gpu-probe.cjs');
 const { GpuClient } = core('gpu.cjs');
+const { writeStubRuntime, writeCache } = require('./fixtures/gpu-stub-runtime.cjs');
+const REF = require('./fixtures/qwen3-query-ref.json');
+const GGUF = core('gguf-models.cjs');
 const FAKE = path.join(FIXTURES, 'gpu-worker-fake.cjs');
 const MIB = 1048576;
 const SHA = 'a'.repeat(40), H = 'b'.repeat(64);
@@ -23,12 +26,7 @@ const smi = (over) => () => ({ name: 'NVIDIA GeForce RTX 5060 Laptop GPU', drive
 
 function rig(fake = {}) {
   const cache = sandbox();
-  for (const e of Object.values(TABLE)) {
-    const dir = path.join(cache, `${e.id}@${e.sha}`);
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'm.gguf'), '0123456789');
-    fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ sha: e.sha }));
-  }
+  writeCache(cache, TABLE);
   return { cache, base: (o = {}) => ({ cacheDir: cache, table: TABLE, runtimeDir: 'unused', record: path.join(cache, 'peaks.json'), smi: smi(), clientOpts: { workerPath: FAKE, workerOpts: { fake } }, ...o }) };
 }
 
@@ -59,13 +57,12 @@ test('the needed memory is the SUM of peaks plus headroom, and a peak is the lar
   assert.strictEqual(P.peakKey('m', { gpu: 'vulkan', context: 1024 }, '617.42'), 'm|context=1024,gpu=vulkan|driver=617.42');
 });
 
-test('the rerank chunk keeps one submission well under 2 s, from the measured cost per pair', () => {
-  assert.strictEqual(P.deriveChunk(14.5), 34, '0.6B reranker: 14.5 ms/pair, margin 2');
-  assert.strictEqual(P.deriveChunk(54.3), 9, '4B reranker: 54.3 ms/pair');
-  assert.strictEqual(P.deriveChunk(0.5), 50, 'never above the rerank depth');
-  assert.strictEqual(P.deriveChunk(5000), 1, 'never below one pair');
-  assert.strictEqual(P.deriveChunk(0), 50);
-  for (const ms of [5, 14.5, 54.3, 120, 400]) assert.ok(P.deriveChunk(ms) * ms * 2 <= 1000 || P.deriveChunk(ms) === 1, `${ms} ms/pair`);
+test('the rerank chunk is sized in tokens from the measured cost per token', () => {
+  assert.strictEqual(P.deriveChunkTokens(0.1), 6666, '0.1 ms a token, 1000 ms target, margin 1.5');
+  assert.strictEqual(P.deriveChunkTokens(0.4, { targetMs: 2000 }), 3333);
+  assert.strictEqual(P.deriveChunkTokens(5000), 1, 'never below one token');
+  assert.strictEqual(P.deriveChunkTokens(0), Infinity, 'no measurable cost, no token bound');
+  for (const ms of [0.05, 0.1, 0.4, 2]) assert.ok(P.deriveChunkTokens(ms) * ms * 1.5 <= 1000 + 1e-6, `${ms} ms a token`);
 });
 
 test('probe: a set that fits returns the peaks, the sum against free, the chunk, and records the peaks by driver', async () => {
@@ -81,7 +78,11 @@ test('probe: a set that fits returns the peaks, the sum against free, the chunk,
     assert.strictEqual(r.needed_mb, 1640 + 768);
     assert.ok(r.needed_mb <= r.free_mb);
     assert.strictEqual(r.measured_set_mb, 1640, 'the set grew by what the sum says');
-    assert.strictEqual(r.rerank['org/rr'].chunk, P.deriveChunk(r.rerank['org/rr'].ms_per_pair));
+    const rr = r.rerank['org/rr'];
+    assert.strictEqual(rr.chunk_tokens, P.deriveChunkTokens(rr.ms_per_token));
+    assert.strictEqual(rr.batch_size, 512);
+    assert.ok(rr.ubatch_tokens > 100 && rr.ubatch_ms >= 0, 'the full-batch submission was timed');
+    assert.ok(r.peaks['org/emb'].samples.vulkan > 0, 'the peak came from samples taken while the load ran');
     assert.strictEqual(r.driver, '617.42');
     const rec = P.recordedPeak('org/emb', { gpu: 'vulkan', context: 1024 }, '617.42', path.join(cache, 'peaks.json'));
     assert.strictEqual(rec.peak_mb, 760);
@@ -142,8 +143,10 @@ test('probe: refusals for no runtime, a model not fetched, no GPU, no discrete G
     assert.strictEqual(flat.refusal.reason, 'sanity_failed');
     assert.match(flat.refusal.message, /did not outrank filler/);
     const loadFail = await P.probe(base({ models: ['org/rr'], clientOpts: { workerPath: FAKE, workerOpts: { fake: { load_fail: true } } } }));
-    assert.strictEqual(loadFail.refusal.reason, 'probe_failed');
-    assert.match(loadFail.refusal.message, /allocate device memory/);
+    assert.strictEqual(loadFail.refusal.reason, 'insufficient_vram', 'an allocation failure is a memory refusal, not a probe failure');
+    assert.match(loadFail.refusal.message, /ran out of memory loading org\/rr/);
+    const other = await P.probe(base({ models: ['org/rr'], clientOpts: { workerPath: FAKE, workerOpts: { fake: { load_fail: true, load_fail_msg: 'the GGUF file is corrupt' } } } }));
+    assert.strictEqual(other.refusal.reason, 'probe_failed');
   } finally { cleanup(cache); }
 });
 
@@ -158,43 +161,3 @@ test('probe: without nvidia-smi the Vulkan estimate is used and said so', async 
   } finally { cleanup(cache); }
 });
 
-test('the real GPU worker, on a stub node-llama-cpp: load, embed with the query prompt, chunked rank, vram, close', async () => {
-  const rt = sandbox(), cache = sandbox();
-  try {
-    const lib = path.join(rt, 'node_modules', 'node-llama-cpp', 'dist');
-    fs.mkdirSync(lib, { recursive: true });
-    fs.writeFileSync(path.join(lib, 'index.js'), `
-      const calls = []; globalThis.__calls = calls;
-      exports.getLlama = async (o) => ({ gpu: o.gpu, getGpuDeviceNames: async () => ['stub'], getVramState: async () => ({ total: 100, used: 10, free: 90, unifiedSize: 0 }),
-        loadModel: async (m) => ({ gpuLayers: m.gpuLayers === 'max' ? 9 : 0, size: 2097152, embeddingVectorSize: 4,
-          createEmbeddingContext: async () => ({ calculateInputLength: (t) => t.length, getEmbeddingFor: async (t) => ({ vector: [3, 4, t.length, 0] }), dispose: async () => {} }),
-          createRankingContext: async () => ({ rankAll: async (q, d) => { calls.push(d.length); return d.map((x) => (x.includes(q) ? 1 : 0)); }, dispose: async () => {} }), dispose: async () => {} }), dispose: async () => {} });
-    `);
-    fs.writeFileSync(path.join(lib, 'package.json'), '{"type":"commonjs"}');
-    const table = { 'org/emb': entry('org/emb', 'embedder', { query_prompt: 'Q: ', dims: 2, native_dims: 4 }), 'org/rr': entry('org/rr', 'reranker') };
-    for (const e of Object.values(table)) {
-      const dir = path.join(cache, `${e.id}@${e.sha}`);
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, 'm.gguf'), '0123456789');
-      fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ sha: e.sha }));
-    }
-    const c = new GpuClient({ runtimeDir: rt, cacheDir: cache, table }).start();
-    try {
-      const v = await c.vram();
-      assert.deepStrictEqual([v.gpu, v.devices, v.total, v.used, v.unified], ['vulkan', ['stub'], 100, 10, 0]);
-      const li = await c.load('org/emb');
-      assert.strictEqual(li.native_dims, 4);
-      await c.load('org/rr');
-      const q = await c.embed('org/emb', 'hi', { as: 'query' }), d = await c.embed('org/emb', 'hi', { as: 'document' });
-      assert.strictEqual(q.dim, 2, 'truncated to the table dims and renormalised');
-      assert.ok(Math.abs(Math.hypot(...q.embedding) - 1) < 1e-6);
-      assert.strictEqual(q.tokens, 'Q: hi'.length, 'the query prompt is applied to queries only');
-      assert.strictEqual(d.tokens, 2);
-      const r = await c.rank('org/rr', 'needle', ['a needle b', 'x', 'y', 'needle', 'z'], { chunk: 2 });
-      assert.deepStrictEqual(r.chunks.map(x => x.n), [2, 2, 1]);
-      assert.deepStrictEqual(r.scores, [1, 0, 0, 1, 0]);
-      await assert.rejects(c.rank('org/emb', 'q', ['a']), (e) => e.code === 'E_ARGS');
-      assert.strictEqual((await c.ping()).ok, true);
-    } finally { await c.close(); }
-  } finally { cleanup(rt); cleanup(cache); }
-});

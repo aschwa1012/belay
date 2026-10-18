@@ -20,12 +20,13 @@ const walk = (d, out = []) => { for (const e of fs.readdirSync(d, { withFileType
 test('who requires which GPU module', () => {
   const by = {};
   for (const f of walk(SRC)) for (const r of requiresOf(f)) {
-    const m = /(gpu(?:-probe|-worker|-runtime)?|gguf-models)\.cjs$/.exec(r);
+    const m = /(gpu(?:-probe|-worker|-runtime|-chunk)?|gguf-models)\.cjs$/.exec(r);
     if (m && /^\.\.?\//.test(r)) (by[m[1]] = by[m[1]] || []).push(rel(f));
   }
   for (const k of Object.keys(by)) by[k] = [...new Set(by[k])].sort();
   assert.deepStrictEqual(by, {
     gpu: ['core/gpu-probe.cjs'],
+    'gpu-chunk': ['core/gpu-probe.cjs', 'core/gpu-worker.cjs'],
     'gpu-runtime': ['cli/cmd-embedder.cjs', 'core/gpu-probe.cjs', 'core/gpu.cjs'],
     'gguf-models': ['cli/cmd-embedder.cjs', 'core/gpu-probe.cjs', 'core/gpu.cjs'],
   }, 'gpu-worker.cjs is forked by path from gpu.cjs and required by nothing; the probe and the client are required by nothing outside the GPU modules');
@@ -40,6 +41,7 @@ test('cmd-embedder.cjs requires the GPU modules only inside functions, never at 
 test('the pure GPU modules need no native code and no embedding library', () => {
   const nonBuiltin = (f) => requiresOf(path.join(SRC, 'core', f)).filter(r => !r.startsWith('node:')).sort();
   assert.deepStrictEqual(nonBuiltin('gguf-models.cjs'), ['./errors.cjs', './models.cjs']);
+  assert.deepStrictEqual(nonBuiltin('gpu-chunk.cjs'), []);
   assert.deepStrictEqual(nonBuiltin('gpu-runtime.cjs'), ['./errors.cjs', './lock.cjs', './model-cache.cjs', './process.cjs']);
   for (const f of ['gpu.cjs', 'gpu-probe.cjs', 'gpu-runtime.cjs', 'gpu-worker.cjs', 'gguf-models.cjs']) {
     const text = fs.readFileSync(path.join(SRC, 'core', f), 'utf8');

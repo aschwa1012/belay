@@ -5,17 +5,18 @@
 // nothing else, and the VRAM goes back when it exits. Only gpu.cjs requires or forks this file.
 //
 // Messages in: { id, op, ... } with op one of
-//   load   { model, kind: 'embedder'|'reranker', path, gpu: 'vulkan'|false, contextSize, dims?, queryPrompt?, chunk? }
+//   load   { model, kind: 'embedder'|'reranker', path, gpu: 'vulkan'|false, contextSize, batchSize?, dims?, queryPrompt?, chunk? }
 //   embed  { model, text, as: 'query'|'document' }          -> { embedding, dim, tokens, ms }
-//   rank   { model, query, docs, chunk? }                   -> { scores, chunks: [{ n, ms }], chunk, ms }
+//   rank   { model, query, docs, chunk?, chunkTokens? }     -> { scores, chunks: [{ n, tokens, ms }], pair_tokens, truncated, ms }
 //   vram   { gpu? }                                         -> { gpu, devices, total, used, free, unified } in bytes
 //   ping                                                    -> { pong, pid, models }
 //   close
 // Out: { id, ok: true, result }, { id, ok: false, error: { code, message, detail } }, and during a rank one
 // { id, progress } per chunk, which the owner counts as proof of life. Work is served one op at a time.
 //
-// A rank goes to the GPU in chunks of `chunk` pairs (ADR 0049 decision 7): one chunk is one submission, and the
-// probe sizes it so a single submission stays well under the Windows TDR limit (about 2 s).
+// A rank goes out in chunks (ADR 0049 decision 7, gpu-chunk.cjs): at most `chunk` pairs and `chunkTokens` tokens
+// each, one rankAll per chunk and one progress line after it. A chunk is many GPU submissions (decodes); what
+// bounds one submission is the context's `batchSize` (tokens per decode), set at load from the probe.
 //
 // The child ends when the owner dies: the IPC channel is the only handle that keeps its event loop alive, and a
 // 'disconnect' handler ends it at once even while a native context is loaded. `close` disposes the models
@@ -23,6 +24,7 @@
 
 const { pathToFileURL } = require('node:url');
 const path = require('node:path');
+const { RANK_TEMPLATE_TOKENS, docCap, planChunks } = require('./gpu-chunk.cjs');
 
 const opts = JSON.parse(process.argv[2] || '{}');
 const DISPOSE_BOUND_MS = 1500;
@@ -69,9 +71,9 @@ async function load(m) {
   const l = await runtime(m.gpu);
   const t0 = Date.now();
   const model = await l.loadModel({ modelPath: m.path, gpuLayers: m.gpu ? 'max' : 0 });
-  const ctx = m.kind === 'reranker' ? await model.createRankingContext({ contextSize: m.contextSize }) : await model.createEmbeddingContext({ contextSize: m.contextSize });
+  const ctx = m.kind === 'reranker' ? await model.createRankingContext({ contextSize: m.contextSize, ...(m.batchSize ? { batchSize: m.batchSize } : {}) }) : await model.createEmbeddingContext({ contextSize: m.contextSize });
   models.set(m.model, { ...m, model, ctx });
-  return { model: m.model, load_ms: Date.now() - t0, gpu_layers: model.gpuLayers, native_dims: m.kind === 'embedder' ? model.embeddingVectorSize : null, size_mb: Math.round(model.size / 1048576) };
+  return { model: m.model, load_ms: Date.now() - t0, batch_size: m.batchSize || null, gpu_layers: model.gpuLayers, native_dims: m.kind === 'embedder' ? model.embeddingVectorSize : null, size_mb: Math.round(model.size / 1048576) };
 }
 
 function unit(v, dims) {
@@ -97,16 +99,25 @@ async function rank(m, id) {
   const e = need(m.model);
   if (e.kind !== 'reranker') throw bad(`${m.model} is an embedder`);
   if (!Array.isArray(m.docs) || !m.docs.length) throw bad('rank needs a non-empty list of docs');
-  const chunk = Math.max(1, Math.floor(m.chunk || e.chunk || m.docs.length));
+  const queryTokens = e.model.tokenize(m.query).length, cap = docCap(e.contextSize, queryTokens);
+  let truncated = 0;
+  const docs = m.docs.map((d) => { // a document the context cannot hold is cut: rankAll throws on one
+    const t = e.model.tokenize(d);
+    if (t.length <= cap) return { text: d, tokens: t.length };
+    truncated += 1;
+    return { text: e.model.detokenize(t.slice(0, cap)), tokens: cap };
+  });
+  const cost = docs.map(d => d.tokens + queryTokens + RANK_TEMPLATE_TOKENS);
+  const plan = planChunks(cost, { maxPairs: Math.max(1, Math.floor(m.chunk || e.chunk || docs.length)), maxTokens: m.chunkTokens || e.chunkTokens || Infinity });
   const scores = [], chunks = [];
   const t0 = Date.now();
-  for (let i = 0; i < m.docs.length; i += chunk) {
-    const part = m.docs.slice(i, i + chunk), c0 = Date.now();
-    scores.push(...await e.ctx.rankAll(m.query, part));
-    chunks.push({ n: part.length, ms: Date.now() - c0 });
-    process.send({ id, progress: { done: scores.length, total: m.docs.length } });
+  for (const [from, to] of plan) {
+    const c0 = Date.now();
+    scores.push(...await e.ctx.rankAll(m.query, docs.slice(from, to).map(d => d.text)));
+    chunks.push({ n: to - from, tokens: cost.slice(from, to).reduce((x, y) => x + y, 0), ms: Date.now() - c0 });
+    process.send({ id, progress: { done: scores.length, total: docs.length } });
   }
-  return { scores, chunks, chunk, ms: Date.now() - t0 };
+  return { scores, chunks, pair_tokens: cost, truncated, ms: Date.now() - t0 };
 }
 
 async function close() {

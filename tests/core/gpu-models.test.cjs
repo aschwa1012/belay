@@ -30,7 +30,7 @@ test('the GPU table is not the embedder table: MODELS holds none of them', () =>
 test('the embedders carry dims, last-token pooling and a query instruction; the rerankers score through the ranking head', () => {
   const emb = Object.values(G.GGUF_MODELS).filter(e => e.kind === 'embedder');
   assert.deepStrictEqual(emb.map(e => e.dims), [1024, 2560, 4096]);
-  for (const e of emb) { assert.strictEqual(e.pooling, 'last'); assert.match(e.query_prompt, /^Instruct: .*\nQuery: $/); assert.strictEqual(e.document_prompt, ''); }
+  for (const e of emb) { assert.strictEqual(e.pooling, 'last'); assert.match(e.query_prompt, /^Instruct: .*\nQuery:$/); assert.strictEqual(e.document_prompt, ''); }
   const rr = Object.values(G.GGUF_MODELS).filter(e => e.kind === 'reranker');
   assert.deepStrictEqual(rr.map(e => e.id), ['ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF', 'giladgd/Qwen3-Reranker-4B-GGUF']);
   assert.ok(rr.every(e => e.dims === null));
