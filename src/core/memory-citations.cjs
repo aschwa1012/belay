@@ -42,7 +42,6 @@ function gitShowBlob(worktree, head, rel) {
 // Evidence is what the world answered, not what belay said back: a tool result whose tool_use is one of belay's own tools
 // (`mcp__belay__*`: a hand-back echoes the note's title, a search echoes other notes) never counts. A stream is JSON lines of
 // either shape; lines that are not a tool-call record are kept as they are.
-const QUOTE_MIN_BYTES = 24; // a shorter quote proves nothing about a claim
 const BELAY_TOOL = /^mcp__belay__/;
 function blocksOf(line) {
   let j;
@@ -87,7 +86,7 @@ function checkShape(cites) {
     if (c === null || typeof c !== 'object' || Array.isArray(c)) return { error: `cites[${i}] must be an object { where, quote }` };
     for (const k of Object.keys(c)) if (k !== 'where' && k !== 'quote') return { error: `cites[${i}].${k} is not a field; use where and quote` };
     if (typeof c.where !== 'string' || !c.where.trim() || Buffer.byteLength(c.where) > 300) return { error: 'cites[' + i + '].where must be a non-empty string of at most 300 bytes' };
-    if (typeof c.quote !== 'string' || Buffer.byteLength(c.quote.trim()) < QUOTE_MIN_BYTES || Buffer.byteLength(c.quote) > 2000) return { error: `cites[${i}].quote must be a string of ${QUOTE_MIN_BYTES} to 2000 bytes: a verbatim line` };
+    if (typeof c.quote !== 'string' || !c.quote.trim() || Buffer.byteLength(c.quote) > 2000) return { error: `cites[${i}].quote must be a non-empty string of at most 2000 bytes: a verbatim line` };
     out.push({ where: c.where.trim(), quote: c.quote });
   }
   return { cites: out };
@@ -210,4 +209,4 @@ function evidenceOf(args) {
   return { head_sha: head || null, worktree: wt || null, evidence_files: ev || [] };
 }
 
-module.exports = { checkCitations, evidenceOf, checkTaskCites, checkShape, streamResultHas, selfQuoted, withoutBelayResults, seam, QUOTE_MIN_BYTES };
+module.exports = { checkCitations, evidenceOf, checkTaskCites, checkShape, streamResultHas, selfQuoted, withoutBelayResults, seam };

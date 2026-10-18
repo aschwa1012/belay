@@ -103,7 +103,7 @@ test('#6 a quote of the note itself is refused, a short quote is refused, and co
   const only = await scrub([wrong(n2, { ground: 'code_contradicts', cites: [{ where: `stream:${stream}`, quote: 'error: fixture alpha is not listed in the manifest' }] })], { evidence_files: [stream] });
   assert.strictEqual(only.refused[0].code, 'E_CITATION');
   assert.match(only.refused[0].message, /file at the head commit/);
-  await assert.rejects(scrub([wrong(n2, { cites: [{ where: 'loader.js', quote: 'function' }] })]), x => x.code === 'E_ARGS' && /too short/.test(x.message));
+  await assert.rejects(scrub([wrong(n2, { cites: [{ where: 'loader.js', quote: '  ' }] })]), x => x.code === 'E_ARGS' && /non-empty/.test(x.message));
 });
 
 test('#7 a superseding note must share a path or subject, or a stored similarity', async () => {

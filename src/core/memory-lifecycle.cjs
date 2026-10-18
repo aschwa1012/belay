@@ -29,7 +29,7 @@ const USE_OR_MISS = /use|miss|unused|sink|deliver|cite|stale|inert|ignor|apply|a
 
 const DUP_SIMILARITY = 0.8; // S4: a stored similarity at least this, or a worker report naming the kept note
 const SCOPE_MAX = 500, VERDICTS_MAX = 500, CITES_MAX = 6;
-const REASON_MAX = 500, WHERE_MAX = 300, QUOTE_MAX = 1000, QUOTE_MIN = 24, RULE_MAX = 1000, TARGET_MAX = 200;
+const REASON_MAX = 500, WHERE_MAX = 300, QUOTE_MAX = 1000, RULE_MAX = 1000, TARGET_MAX = 200;
 
 const nsOf = (kind, project) => `${kind}/${project}`;
 const isObj = v => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -50,7 +50,7 @@ function checkCites(list, at, required) {
     if (!isObj(c)) throw bad(`${at}cites[${i}] must be an object { where, quote }`, { field: 'cites', index: i });
     for (const k of Object.keys(c)) if (k !== 'where' && k !== 'quote') throw bad(`${at}cites[${i}].${k} is not a field; use where and quote`, { field: 'cites', index: i });
     const where = checkText(c.where, `cites[${i}].where`, WHERE_MAX, at);
-    if (typeof c.quote !== 'string' || bytes(c.quote.trim()) < QUOTE_MIN) throw bad(`${at}cites[${i}].quote must be at least ${QUOTE_MIN} bytes: a quote too short to identify anything proves nothing`, { field: 'cites', index: i });
+    if (typeof c.quote !== 'string' || !c.quote.trim()) throw bad(`${at}cites[${i}].quote must be a non-empty string: a verbatim line`, { field: 'cites', index: i });
     if (bytes(c.quote) > QUOTE_MAX) throw bad(`${at}cites[${i}].quote is over ${QUOTE_MAX} bytes`, { field: 'cites', index: i });
     return { where, quote: c.quote };
   });

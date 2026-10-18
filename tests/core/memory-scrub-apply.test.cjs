@@ -63,8 +63,8 @@ test('S3: a quote that is not in the file at the head commit is refused, and so 
   assert.strictEqual(gone.refused[0].code, 'E_CITATION');
   const escape = await scrub('apply', [holdWrong(n, { cites: [{ where: '../outside.txt', quote: 'return fixtures.get(name);' }] })]);
   assert.strictEqual(escape.refused[0].code, 'E_CITATION');
-  const short = scrub('apply', [holdWrong(n, { cites: [{ where: 'loader.js', quote: 'load' }] })]);
-  await assert.rejects(short, x => x.code === 'E_ARGS' && /too short/.test(x.message));
+  const short = scrub('apply', [holdWrong(n, { cites: [{ where: 'loader.js', quote: ' ' }] })]);
+  await assert.rejects(short, x => x.code === 'E_ARGS' && /non-empty/.test(x.message));
   const noTree = await T.call(T.who.harness('apply'), 'memory.scrubApply', { scrub: [holdWrong(n)], scope: [n] });
   assert.strictEqual(noTree.refused[0].code, 'E_CITATION');
   assert.match(noTree.refused[0].message, /no head commit and worktree/);
@@ -232,4 +232,16 @@ test('the duplicate and supersede cosine is the notes_match_threshold lever: a s
   const s = await scrub('strict', [sup]);
   assert.strictEqual(s.refused[0].code, 'E_PRECONDITION');
   assert.match(s.refused[0].message, /needs 0\.995/);
+});
+
+test('a short real quote is accepted by the scrub cite check; empty, whitespace, over-long and absent quotes are refused', async () => {
+  const n = T.note('short scrub target', { reported_wrong: [T.report()] });
+  for (const quote of ['', '   ', 'x'.repeat(2001)]) {
+    await assert.rejects(scrub('apply', [holdWrong(n, { cites: [{ where: 'loader.js', quote }] })]), x => x.code === 'E_ARGS', JSON.stringify(quote.slice(0, 5)));
+  }
+  const absent = await scrub('apply', [holdWrong(n, { cites: [{ where: 'loader.js', quote: 'nope()' }] })]);
+  assert.strictEqual(absent.refused[0].code, 'E_CITATION');
+  const ok = await scrub('apply', [holdWrong(n, { cites: [{ where: 'loader.js', quote: 'function load(name) {' }, { where: 'loader.js', quote: '}' }] })]);
+  assert.strictEqual(ok.refused.length, 0, JSON.stringify(ok.refused));
+  assert.strictEqual(ok.applied[0].outcome, 'held');
 });

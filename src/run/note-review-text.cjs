@@ -27,7 +27,7 @@ const VERDICT_SHAPE = '{ "id": "<note id>", "verdict": "confirmed" | "refuted" |
 const REPORT_SHAPE = '{ "id": "<reported note id>", "verdict": "upheld" | "rejected", "cites": [{ "where": "<see below>", "quote": "<one verbatim line>" }], "reason": "<one sentence>" }';
 
 const CITE_RULES = [
-  'A cite is { where, quote }. The quote must be a verbatim line, at least 8 characters, that appears in:',
+  'A cite is { where, quote }. The quote is one verbatim line or span copied exactly from the evidence, at most 2,000 bytes, that appears in:',
   '- a tool result in the reviewed worker\'s stream: where is "stream" (any worker of the task) or "stream:<worker id>"; or',
   '- a file of the repository as the reviewed worker left it at its head commit: where is the path from the repository root.',
   'belay checks that each quote is really there. A verdict with a quote that is not is dropped, whatever it says.',

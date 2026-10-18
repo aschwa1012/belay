@@ -304,3 +304,17 @@ test('reviewQueue gives a duplicate hold both notes in full', async () => {
   const h = q.held.find(x => x.id === near);
   assert.ok(h.note.text.includes('NEAR-END') && h.of_note.text.includes('KEPT-END'));
 });
+
+test('a short real quote is accepted in an archive review; empty, whitespace, too long and absent quotes are refused', async () => {
+  const n = T.note('short quote target', { reported_wrong: [T.report()] });
+  await hold(wrong(n));
+  for (const quote of ['', '   ', 'x'.repeat(2001)]) {
+    await assert.rejects(review([archiveV(n, { cites: [{ where: 'loader.js', quote }] })]), x => x.code === 'E_ARGS', JSON.stringify(quote.slice(0, 5)));
+    assert.strictEqual(T.row(n).namespace, `project/${PROJECT}`);
+  }
+  const absent = await review([archiveV(n, { cites: [{ where: 'loader.js', quote: 'nope()' }] })]);
+  assert.strictEqual(absent.refused[0].code, 'E_CITATION', 'a short quote that is not in the file is still refused');
+  const ok = await review([archiveV(n, { cites: [{ where: 'loader.js', quote: 'function load(name) {' }] })]);
+  assert.strictEqual(ok.refused.length, 0, JSON.stringify(ok.refused));
+  assert.strictEqual(ok.applied.length, 1);
+});
