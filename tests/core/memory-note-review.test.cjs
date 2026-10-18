@@ -307,7 +307,7 @@ test('R19 (review S-A, X4): an observed note is confirmed by the file line that 
   assert.deepStrictEqual([out.applied.length, rowOf(w.note).status], [1, 'verified'], JSON.stringify(out.refused));
 });
 
-test('R20: a quote under 24 bytes, "./" and a directory are refused before anything is read', async () => {
+test('R20: a quote not in the evidence, "./" and a directory are refused before anything is read', async () => {
   const w = await written('w-t', 'K44');
   for (const c of [cite('too short a quote'), cite('fixtures/unlisted.json was never opened', './'), cite('fixtures/unlisted.json was never opened', 'src/')]) {
     const out = await apply(await review(`rev-t${++seq}`, w.task, [verdict(w.note, 'confirmed', [c])]));
@@ -349,4 +349,18 @@ test('R22: a reported_wrong on a note that is no longer live is skipped and retu
 test('R18: the job route needs the review job\'s own id for the task', async () => {
   const w = await written('w-r', 'K42');
   await assert.rejects(call('memory.noteVerdicts', harness, { job: { worker_id: 'notereview-someone-else', reviewed_task_id: w.task }, verdicts: [] }), (e) => e.code === 'E_ARGS' && /not the review job of task/.test(e.message));
+});
+
+test('R20b: a short whole-line quote that is really there is accepted; empty, whitespace and over-long quotes are refused', async () => {
+  const w = await written('w-sq', 'K46', 'done.\nbackup        59m59s\nloader.js read 3 files\n');
+  for (const c of [cite(''), cite('   '), cite('x'.repeat(2001))]) {
+    const out = await apply(await review(`rev-sq${++seq}`, w.task, [verdict(w.note, 'confirmed', [c])]));
+    assert.strictEqual(out.applied.length, 0);
+    assert.strictEqual(out.refused[0].code, 'E_ARGS', JSON.stringify(c.quote.slice(0, 5)));
+  }
+  const absent = await apply(await review(`rev-sq${++seq}`, w.task, [verdict(w.note, 'confirmed', [cite('nope()')])]));
+  assert.strictEqual(absent.refused[0].code, 'E_CITATION');
+  assert.strictEqual(rowOf(w.note).status ?? 'unverified', 'unverified');
+  const ok = await apply(await review(`rev-sq${++seq}`, w.task, [verdict(w.note, 'confirmed', [cite('backup        59m59s'), cite('done.')])]));
+  assert.deepStrictEqual([ok.applied.length, rowOf(w.note).status], [1, 'verified'], JSON.stringify(ok.refused));
 });

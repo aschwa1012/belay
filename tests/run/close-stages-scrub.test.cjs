@@ -185,7 +185,7 @@ test('adversarial: an id outside the scope list refuses the whole call, the in-s
 
 test('adversarial: a relation needs no quote: cites are shape-checked, then ignored', async () => {
   await attack('a quote that is nowhere', (t) => [X.rel(t, { cites: [{ where: 'loader.js', quote: 'this line is not anywhere in the file at all' }] })], { applied: true });
-  await attack('a quote too short to mean anything', (t) => [X.rel(t, { cites: [{ where: 'loader.js', quote: 'load' }] })], { code: 'E_ARGS' });
+  await attack('an all-whitespace quote', (t) => [X.rel(t, { cites: [{ where: 'loader.js', quote: '   ' }] })], { code: 'E_ARGS' });
 });
 
 test('adversarial: wrong is not a scrubber action: a hold or a dismissal is refused entry by entry, whatever its kind and ground', async () => {

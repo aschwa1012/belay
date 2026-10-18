@@ -304,3 +304,30 @@ test('reviewQueue gives a duplicate hold both notes in full', async () => {
   const h = q.held.find(x => x.id === near);
   assert.ok(h.note.text.includes('NEAR-END') && h.of_note.text.includes('KEPT-END'));
 });
+
+test('a short real quote is accepted in an archive review; empty, whitespace, too long and absent quotes are refused', async () => {
+  const n = T.note('short quote target', { reported_wrong: [T.report()] });
+  await hold(wrong(n));
+  for (const quote of ['', '   ', 'x'.repeat(2001)]) {
+    await assert.rejects(review([archiveV(n, { cites: [{ where: 'loader.js', quote }] })]), x => x.code === 'E_ARGS', JSON.stringify(quote.slice(0, 5)));
+    assert.strictEqual(T.row(n).namespace, `project/${PROJECT}`);
+  }
+  const absent = await review([archiveV(n, { cites: [{ where: 'loader.js', quote: 'nope()' }] })]);
+  assert.strictEqual(absent.refused[0].code, 'E_CITATION', 'a short quote that is not in the file is still refused');
+  const ok = await review([archiveV(n, { cites: [{ where: 'loader.js', quote: 'function load(name) {' }] })]);
+  assert.strictEqual(ok.refused.length, 0, JSON.stringify(ok.refused));
+  assert.strictEqual(ok.applied.length, 1);
+});
+
+test('a 1500-byte verbatim quote is accepted by the archive review apply path', async () => {
+  const fs = require('node:fs');
+  const n = T.note('long quote review target', { reported_wrong: [T.report()] });
+  await hold(wrong(n));
+  const long = 'long line ' + 'abcdefghij'.repeat(149) + 'END';
+  const stream = `${T.dir}/long-review.jsonl`;
+  fs.writeFileSync(stream, `${JSON.stringify({ type: 'tool_result', content: long })}\n`);
+  assert.strictEqual(Buffer.byteLength(long), 1503);
+  const ok = await review([archiveV(n, { cites: [{ where: `stream:${stream}`, quote: long }] })], { evidence_files: [stream] });
+  assert.strictEqual(ok.refused.length, 0, JSON.stringify(ok.refused));
+  assert.strictEqual(ok.applied.length, 1);
+});
