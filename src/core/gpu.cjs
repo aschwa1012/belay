@@ -56,7 +56,7 @@ class GpuClient {
     this.workerOpts = (test && opts.workerOpts) || {};
     this.table = (test && opts.table) || undefined; // a test's own model table
     this.child = null; this.pid = null; this.exit = null; this.closed = false; this.hung = null;
-    this.onExit = null; this.pending = new Map(); this.seq = 0; this.lastHeard = 0; this.models = new Map();
+    this.onExit = null; this.pending = new Map(); this.seq = 0; this.models = new Map();
   }
 
   // Forks the child. The runtime is checked first: a missing or wrong one is E_MODEL_ABSENT naming the command.
@@ -70,11 +70,14 @@ class GpuClient {
     });
     this.child = c; this.pid = c.pid; this.exit = null; this.closed = false; this.hung = null; this.models.clear();
     c.unref(); if (c.channel) c.channel.unref();
-    this.lastHeard = Date.now();
     c.on('message', (m) => {
-      this.lastHeard = Date.now(); // any word from the child, a progress line included, proves it is alive and working
       const p = this.pending.get(m.id);
-      if (!p || m.progress) return;
+      if (m.progress) { // proof of life for THIS request, and for those queued behind it (the child serves one at a time)
+        const now = Date.now();
+        for (const [id, q] of this.pending) if (id >= m.id) q.heard = now;
+        return;
+      }
+      if (!p) return; // a ping or vram answer, or a request already settled, proves nothing about any other request
       this._settle(m.id);
       if (m.ok) return p.resolve(m.result);
       const known = CODES.has(m.error.code);
@@ -111,20 +114,22 @@ class GpuClient {
     if (this.hung) return Promise.reject(this.hung);
     return new Promise((resolve, reject) => {
       const id = ++this.seq;
-      // Hung means SILENT: nothing at all from the child for the whole bound, counted from this call or the
-      // child's last message, whichever is later. A rank sends a line per chunk, so a long rank never trips it.
+      // Hung means SILENT: nothing about THIS request for the whole bound, counted from the call or from the last
+      // progress line for it (or for a request ahead of it in the child's queue). Answers to a ping or to vram
+      // do not count: a wedged rank must still reject while the owner pings for liveness. A rank sends a line
+      // per chunk, so a long rank never trips it.
       const sentAt = Date.now();
       const arm = (ms) => setTimeout(() => {
         const p = this.pending.get(id);
         if (!p) return;
-        const silent = Date.now() - Math.max(this.lastHeard || 0, sentAt);
+        const silent = Date.now() - Math.max(p.heard, sentAt);
         if (silent < boundMs) { p.timer = arm(boundMs - silent); return; }
         this._settle(id);
         const e = err('E_EMBEDDER_TIMEOUT', `the GPU process (pid ${this.pid}) did not answer ${msg.op} within ${boundMs} ms and is treated as hung`, gpu('timeout', { op: msg.op, timeout_ms: boundMs, pid: this.pid }));
         this.hung = e;
         reject(e);
       }, ms);
-      this.pending.set(id, { resolve, reject, timer: arm(boundMs), op: msg.op });
+      this.pending.set(id, { resolve, reject, timer: arm(boundMs), op: msg.op, heard: sentAt });
       if (this.child.channel) this.child.channel.ref();
       try { this.child.send({ id, ...msg }); }
       catch (e) { this._settle(id); reject(err('E_MODEL_ABSENT', `the GPU process (pid ${this.pid}) could not be reached: ${e.message}`, gpu('dead', { pid: this.pid }))); }

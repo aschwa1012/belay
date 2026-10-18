@@ -136,3 +136,24 @@ test('killing the owner by its exact pid takes the GPU child with it promptly', 
     assert.ok(await waitGone(info.gpu_pid, 5000), 'the child outlived its owner');
   } finally { if (owner && owner.exitCode === null) { try { process.kill(owner.pid); } catch { /* gone */ } } }
 });
+
+test('a hung op still rejects at its bound while the owner pings for liveness (pings are not proof of progress)', async () => {
+  const c = mk({ opBoundMs: 500 });
+  const pinger = setInterval(() => { c.ping(300).catch(() => {}); c.vram().catch(() => {}); }, 100);
+  try {
+    const t0 = Date.now();
+    await assert.rejects(c._call({ op: 'hang' }, 500), (e) => e.code === 'E_EMBEDDER_TIMEOUT' && e.detail.cause === 'timeout');
+    const ms = Date.now() - t0;
+    assert.ok(ms >= 450 && ms < 2500, `rejected after ${ms} ms`);
+  } finally { clearInterval(pinger); await c.close(); }
+});
+
+test('a request queued behind a long rank is credited by that rank\'s progress, not timed out for the wait', async () => {
+  const c = mk({ opBoundMs: 300, workerOpts: { fake: { rank_ms_per_pair: 60 } } });
+  try {
+    await c._call({ op: 'load', model: 'm', kind: 'reranker', gpu: 'vulkan' }, 5000);
+    const docs = Array.from({ length: 20 }, (_, i) => `note ${i}`);
+    const [a, b] = await Promise.all([c.rank('m', 'q', docs, { chunk: 2 }), c.rank('m', 'q', docs, { chunk: 2 })]);
+    assert.ok(a.ms > 900 && b.scores.length === 20);
+  } finally { await c.close(); }
+});
