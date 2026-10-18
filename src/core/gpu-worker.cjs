@@ -11,8 +11,9 @@
 //   vram   { gpu? }                                         -> { gpu, devices, total, used, free, unified } in bytes
 //   ping                                                    -> { pong, pid, models }
 //   close
-// Out: { id, ok: true, result }, { id, ok: false, error: { code, message, detail } }, and during a rank one
-// { id, progress } per chunk, which the owner counts as proof of life. Work is served one op at a time.
+// Out: { id, ok: true, result }, { id, ok: false, error: { code, message, detail } }, and { id, progress } lines,
+// which the owner counts as proof of life for that request and for those queued behind it: one per rank chunk, and
+// a heartbeat every 5 s while a load runs (a cold load of a big model, with a shader build, sends nothing else). Work is served one op at a time.
 //
 // A rank goes out in chunks (ADR 0049 decision 7, gpu-chunk.cjs): at most `chunk` pairs and `chunkTokens` tokens
 // each, one rankAll per chunk and one progress line after it. A chunk is many GPU submissions (decodes); what
@@ -28,6 +29,8 @@ const { RANK_TEMPLATE_TOKENS, docCap, planChunks } = require('./gpu-chunk.cjs');
 
 const opts = JSON.parse(process.argv[2] || '{}');
 const DISPOSE_BOUND_MS = 1500;
+const HEARTBEAT_MS = opts.heartbeatMs || 5000;
+const SLOW_CHUNK_MS = opts.slowChunkMs || 1500; // a rank chunk slower than this is reported in the rank result
 let llama = null, gpuMode = null, getLlama = null;
 const models = new Map();
 let chain = Promise.resolve();
@@ -117,7 +120,8 @@ async function rank(m, id) {
     chunks.push({ n: to - from, tokens: cost.slice(from, to).reduce((x, y) => x + y, 0), ms: Date.now() - c0 });
     process.send({ id, progress: { done: scores.length, total: docs.length } });
   }
-  return { scores, chunks, pair_tokens: cost, truncated, ms: Date.now() - t0 };
+  const slow = chunks.map((c, index) => ({ index, ms: c.ms })).filter(c => c.ms > SLOW_CHUNK_MS);
+  return { scores, chunks, pair_tokens: cost, truncated, slow_chunks: slow, slow_chunk_ms: SLOW_CHUNK_MS, ms: Date.now() - t0 };
 }
 
 async function close() {
@@ -138,7 +142,10 @@ process.on('message', async (m) => {
     if (test && m.op === 'crash') return process.exit(m.code === undefined ? 3 : m.code);
     if (test && m.op === 'fail') throw Object.assign(new Error('injected child failure'), m.code === undefined ? {} : { code: m.code });
     if (m.op === 'vram') return reply(m.id, await vram(m.gpu));
-    if (m.op === 'load') return reply(m.id, await serial(() => load(m)));
+    if (m.op === 'load') {
+      const hb = setInterval(() => process.send({ id: m.id, progress: { heartbeat: true } }), HEARTBEAT_MS);
+      try { return reply(m.id, await serial(() => load(m))); } finally { clearInterval(hb); }
+    }
     if (m.op === 'embed') return reply(m.id, await serial(() => embed(m)));
     if (m.op === 'rank') return reply(m.id, await serial(() => rank(m, m.id)));
     throw bad(`unknown GPU op ${m.op}`, 'E_INTERNAL');

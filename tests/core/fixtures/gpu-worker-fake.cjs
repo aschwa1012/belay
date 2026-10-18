@@ -5,7 +5,7 @@
 // load_fail, vram_fail }. Memory is in bytes. Vectors are deterministic; rank scores count words in common with
 // the query (so the probe's sanity check passes) unless `flat_scores` is set. A document costs ceil(chars / 4) tokens
 // and a rank takes rank_ms_per_token per token when that is set, else rank_ms_per_pair per pair. Also: load_ms,
-// transient_mb (extra memory held only while a load runs), load_fail_msg, and marker (a file written when vram is
+// call_ms (an array: the time, in ms, of the 1st, 2nd... rank call, whatever its size), transient_mb (extra memory held only while a load runs), load_fail_msg, and marker (a file written when vram is
 // first asked, so a test can tell what happened before it). Test ops as in gpu-worker.cjs.
 
 const fs = require('node:fs');
@@ -15,6 +15,7 @@ const opts = JSON.parse(process.argv[2] || '{}');
 const F = { total: 25526403072, unified: 17243701248, base_used: 1667490816, devices: ['AMD Radeon(TM) Graphics', 'NVIDIA GeForce RTX 5060 Laptop GPU'], gpu: 'vulkan', per_model: {}, rank_ms_per_pair: 5, ...(opts.fake || {}) };
 const models = new Map();
 let used = F.base_used;
+let rankCalls = 0;
 let chain = Promise.resolve();
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const serial = (fn) => { const r = chain.then(fn); chain = r.catch(() => {}); return r; };
@@ -66,9 +67,11 @@ process.on('message', async (m) => {
         const cost = m.docs.map((d) => { const t = Math.ceil(d.length / 4); if (t > cap) truncated += 1; return Math.min(t, cap) + qt + RANK_TEMPLATE_TOKENS; });
         const plan = planChunks(cost, { maxPairs: Math.max(1, Math.floor(m.chunk || m.docs.length)), maxTokens: m.chunkTokens || Infinity });
         const t0 = Date.now();
+        const callNo = rankCalls++;
         for (const [from, to] of plan) {
           const part = m.docs.slice(from, to), tokens = cost.slice(from, to).reduce((x, y) => x + y, 0);
-          const ms = F.rank_ms_per_token ? F.rank_ms_per_token * tokens : F.rank_ms_per_pair * part.length;
+          const scripted = F.call_ms && plan.length === 1 ? F.call_ms[callNo] : undefined;
+          const ms = scripted !== undefined ? scripted : F.rank_ms_per_token ? F.rank_ms_per_token * tokens : F.rank_ms_per_pair * part.length;
           await sleep(ms);
           for (const d of part) scores.push(F.flat_scores ? 0.5 : [...words(d)].filter(w => q.has(w)).length / 10);
           chunks.push({ n: part.length, tokens, ms });

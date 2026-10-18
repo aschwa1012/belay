@@ -57,7 +57,7 @@ class GpuClient {
     this.workerOpts = (test && opts.workerOpts) || {};
     this.table = (test && opts.table) || undefined; // a test's own model table
     this.child = null; this.pid = null; this.exit = null; this.closed = false; this.hung = null;
-    this.onExit = null; this.pending = new Map(); this.seq = 0; this.models = new Map();
+    this.onExit = null; this.onWarning = null; this.pending = new Map(); this.seq = 0; this.models = new Map();
   }
 
   // Forks the child. The runtime is checked first: a missing or wrong one is E_MODEL_ABSENT naming the command.
@@ -137,23 +137,38 @@ class GpuClient {
     });
   }
 
-  // A bounded request and response (invariant 7): { ok:true, ms, pid, models } when the child answered within
-  // `timeoutMs`, else { ok:false, ms, reason }. A ping that goes unanswered does not mark the child hung; the
-  // caller decides what an unanswered ping means.
-  ping(timeoutMs = this.pingBoundMs) {
+  // A request with its own short bound that never marks the child hung and leaves nothing pending when the bound
+  // passes (a late answer is dropped): { ok:true, ms, result } or { ok:false, ms, reason }. ping and the probe's
+  // samples use it; the caller decides what a miss means.
+  _quick(msg, timeoutMs) {
     const t0 = Date.now();
     if (!this.child || this.exit) return Promise.resolve({ ok: false, ms: 0, reason: this._deadReason() });
     return new Promise((resolve) => {
       const id = ++this.seq;
-      const timer = setTimeout(() => { this.pending.delete(id); if (!this.pending.size && this.child && this.child.channel) this.child.channel.unref(); resolve({ ok: false, ms: Date.now() - t0, reason: `the GPU process (pid ${this.pid}) did not answer a ${timeoutMs} ms ping` }); }, timeoutMs);
+      const timer = setTimeout(() => { this._settle(id); resolve({ ok: false, ms: Date.now() - t0, reason: `the GPU process (pid ${this.pid}) did not answer ${msg.op === 'ping' ? `a ${timeoutMs} ms ping` : `${msg.op} within ${timeoutMs} ms`}` }); }, timeoutMs);
       this.pending.set(id, {
-        timer, op: 'ping',
-        resolve: (r) => resolve({ ok: true, ms: Date.now() - t0, pid: r.pid, models: r.models }),
+        timer, op: msg.op, heard: t0,
+        resolve: (result) => resolve({ ok: true, ms: Date.now() - t0, result }),
         reject: (e) => resolve({ ok: false, ms: Date.now() - t0, reason: e.message }),
       });
       if (this.child.channel) this.child.channel.ref();
-      try { this.child.send({ id, op: 'ping' }); } catch (e) { this._settle(id); resolve({ ok: false, ms: Date.now() - t0, reason: `the GPU process could not be reached: ${e.message}` }); }
+      try { this.child.send({ id, ...msg }); } catch (e) { this._settle(id); resolve({ ok: false, ms: Date.now() - t0, reason: `the GPU process could not be reached: ${e.message}` }); }
     });
+  }
+
+  // A bounded request and response (invariant 7): { ok:true, ms, pid, models } when the child answered within
+  // `timeoutMs`, else { ok:false, ms, reason }. A ping that goes unanswered does not mark the child hung; the
+  // caller decides what an unanswered ping means.
+  async ping(timeoutMs = this.pingBoundMs) {
+    const r = await this._quick({ op: 'ping' }, timeoutMs);
+    return r.ok ? { ok: true, ms: r.ms, pid: r.result.pid, models: r.result.models } : { ok: false, ms: r.ms, reason: r.reason };
+  }
+
+  // One memory sample for the probe: vram under its own short bound, never setting hung, never left pending.
+  async vramSample(timeoutMs = 1500) {
+    const r = await this._quick({ op: 'vram', gpu: 'vulkan' }, timeoutMs);
+    if (!r.ok) throw new Error(r.reason);
+    return r.result;
   }
 
   vram(opts = {}) { return this._call({ op: 'vram', gpu: opts.gpu }, this.opBoundMs); }
@@ -176,9 +191,20 @@ class GpuClient {
     return this._call({ op: 'embed', model: modelId, text, as }, this.opBoundMs);
   }
 
+  // Resolves the child's result. A chunk that took longer than the child's slow-chunk bound (1.5 s) is also reported
+  // as result.warnings = [{ code: 'GPU_SLOW_CHUNK', message, slow_chunks: [{ index, ms }] }] and to `onWarning`.
   rank(modelId, query, docs, { chunk, chunkTokens } = {}) {
     if (!Array.isArray(docs) || !docs.length) throw err('E_ARGS', 'rank needs a non-empty list of docs', { docs: Array.isArray(docs) ? 0 : typeof docs });
-    return this._call({ op: 'rank', model: modelId, query, docs, chunk, chunkTokens }, this.opBoundMs);
+    return this._call({ op: 'rank', model: modelId, query, docs, chunk, chunkTokens }, this.opBoundMs).then(r => this._warnSlow(r));
+  }
+
+  _warnSlow(r) {
+    if (r.slow_chunks && r.slow_chunks.length) {
+      const w = { code: 'GPU_SLOW_CHUNK', message: `${r.slow_chunks.length} rerank chunk(s) took over ${r.slow_chunk_ms} ms (the slowest ${Math.max(...r.slow_chunks.map(x => x.ms))} ms); one GPU submission may be near the Windows TDR limit`, slow_chunks: r.slow_chunks };
+      r.warnings = [w];
+      if (this.onWarning) { try { this.onWarning(w); } catch { /* the owner records it */ } }
+    }
+    return r;
   }
 
   // Ends the child: `close` over IPC, at most 2,000 ms of grace, then a kill by its exact child handle. Safe to

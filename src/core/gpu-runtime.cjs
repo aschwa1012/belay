@@ -194,7 +194,7 @@ function takeLock(lock, { pid = process.pid, seam = {} } = {}) {
       if (!Number.isInteger(holder) || holder <= 0 || pidAlive(holder)) return false; // held, or empty: its holder is between create and write
       if (seam.beforeSteal) seam.beforeSteal(text);
       const moved = `${lock}.stale-${pid}-${crypto.randomBytes(4).toString('hex')}`;
-      try { fs.renameSync(lock, moved); } catch (r) { if (r.code === 'ENOENT') continue; throw r; } // another installer stole it first
+      try { renameInto(lock, moved, seam.rename); } catch (r) { if (r.code === 'ENOENT') continue; throw r; } // ENOENT: another installer stole it first; EPERM or EBUSY: retried, then a coded E_BUSY
       if (readText(moved) === text) { rmrf(moved); continue; } // the dead holder's, and now gone: take it with a fresh exclusive create
       try { fs.linkSync(moved, lock); } catch { /* a third installer holds the path now */ }
       rmrf(moved);

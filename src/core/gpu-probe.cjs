@@ -188,10 +188,11 @@ async function batchEmbedder(client, entry) {
 }
 
 // A reranker's batch: a sanity rank (relevant above filler; it also warms the model), a timed rank of 16 notes for
-// the cost per token, and one document that fills the context's batch, ranked four times: the first run pays the
-// first-use cost of that shape (measured at 2 s on the 4B reranker), the median of three warm runs is the time the
-// target is judged on, the slowest warm run and the first are recorded beside it. The median is the longest
-// single submission the probe observes.
+// the cost per token, and one document that fills the context's batch. That document is ranked once cold (a shape
+// the GPU has not run yet pays a first-use cost; recorded, not judged) and three times warm. The model is judged on
+// the SLOWEST warm run: a run over the target is confirmed by one more run, and only a second run over the target
+// refuses (a single 2.05 s run was seen once on the 4B reranker, against 0.2 s in all the others). Every run is
+// recorded. The slowest warm run is the longest single submission the probe observes.
 async function batchReranker(client, entry, { targetMs, batchTokens }) {
   const t0 = Date.now();
   const s = await client.rank(entry.id, QUERY, SANITY_DOCS);
@@ -205,13 +206,14 @@ async function batchReranker(client, entry, { targetMs, batchTokens }) {
   let big = FILLER.join(' ');
   while (big.length < batchTokens * 5) big += ` ${FILLER.join(' ')}`; // ~4 characters a token: enough to fill the batch, the child caps it to the context
   const full = [big.slice(0, batchTokens * 4)];
-  const cold = await client.rank(entry.id, QUERY, full); // a shape the GPU has not run yet pays its first-use cost (Vulkan pipelines): recorded, not judged
+  const cold = await client.rank(entry.id, QUERY, full);
   const warm = [];
-  for (let i = 0; i < 3; i += 1) warm.push(await client.rank(entry.id, QUERY, full)); // three warm runs: one slow sample (2.05 s once, against 0.2 s in the others) must not decide
-  const ms = warm.map(w => w.ms).sort((a, b) => a - b), u = { pair_tokens: warm[0].pair_tokens, ms: ms[1] };
+  for (let i = 0; i < 3; i += 1) warm.push(await client.rank(entry.id, QUERY, full));
+  const runs = warm.map(w => w.ms), slowest = Math.max(...runs);
+  const rerun = slowest > targetMs ? (await client.rank(entry.id, QUERY, full)).ms : null;
   return {
     ok: true, batch_ms: Date.now() - t0, sanity_scores: s.scores,
-    rerank: { ms_per_token: msPerToken, chunk_tokens: C.deriveChunkTokens(msPerToken, { targetMs }), max_pairs: C.CHUNK_MAX_PAIRS, batch_size: batchTokens, ubatch_tokens: u.pair_tokens[0], ubatch_ms: u.ms, ubatch_max_ms: ms[2], ubatch_first_ms: cold.ms, target_ms: targetMs, margin: C.CHUNK_MARGIN },
+    rerank: { ms_per_token: msPerToken, chunk_tokens: C.deriveChunkTokens(msPerToken, { targetMs }), max_pairs: C.CHUNK_MAX_PAIRS, batch_size: batchTokens, ubatch_tokens: warm[0].pair_tokens[0], ubatch_ms: slowest, ubatch_runs: runs, ubatch_rerun_ms: rerun, ubatch_first_ms: cold.ms, ubatch_refused: rerun !== null && rerun > targetMs, target_ms: targetMs, margin: C.CHUNK_MARGIN },
   };
 }
 
@@ -264,7 +266,7 @@ async function probe(opts = {}) {
     let before = base, beforeSmi = smiRow;
     for (const e of entries) {
       const ctxSize = (opts.contextSizes && opts.contextSizes[e.id]) || e.context_size;
-      const vs = sampler(async () => (await client.vram({ gpu: 'vulkan' })).used / MIB);
+      const vs = sampler(async () => (await client.vramSample()).used / MIB); // its own short bound: a missed sample never marks the child hung
       const ss = smiFn && smiRow ? sampler(async () => { const r = await smiFn(); return r ? r.used_mb : NaN; }) : null;
       let loaded, batch;
       const sampled = { vulkan: null, smi: null };
@@ -280,7 +282,7 @@ async function probe(opts = {}) {
       }
       sampled.vulkan = await vs.stop(); if (ss) sampled.smi = await ss.stop();
       if (!batch.ok) return refuse('sanity_failed', `${e.id} failed its test batch: ${batch.why}`, [`re-fetch the model with belay embedder fetch --gpu --model ${e.id}`, 'choose another model'], { device, dedicated });
-      if (batch.rerank && batch.rerank.ubatch_ms > targetMs) return refuse('submission_too_long', `${e.id} took ${batch.rerank.ubatch_ms} ms for one full batch of ${batch.rerank.ubatch_tokens} tokens, over the ${targetMs} ms target; one GPU submission could approach the Windows TDR limit`, ['choose a smaller reranker', 'use the CPU reranker'], { device, dedicated });
+      if (batch.rerank && batch.rerank.ubatch_refused) return refuse('submission_too_long', `${e.id} took ${batch.rerank.ubatch_ms} ms and then ${batch.rerank.ubatch_rerun_ms} ms for one full batch of ${batch.rerank.ubatch_tokens} tokens, over the ${targetMs} ms target; one GPU submission could approach the Windows TDR limit`, ['choose a smaller reranker', 'use the CPU reranker'], { device, dedicated });
       const after = await client.vram({ gpu: 'vulkan' });
       const afterSmi = smiFn && smiRow ? await smiFn() : null;
       const steadyVulkan = (after.used - before.used) / MIB, steadySmi = smiRow && afterSmi && beforeSmi ? afterSmi.used_mb - beforeSmi.used_mb : NaN;
