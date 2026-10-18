@@ -36,6 +36,13 @@ function stateOf(ctx) {
   return s;
 }
 
+// The store as the run-end sweep may use it: every call checks the run-end gate first, so a sweep that a fast close cut off sends
+// nothing more (a write begun after the owner's shutdown would elect a stray one, invariant 2). A refusal is E_TIMEOUT, as in
+// memory-jobs call().
+function gated(J) {
+  return require('./gated-core.cjs').gatedCore(J.core, J.gate, 'the run-end memory jobs');
+}
+
 async function receipt(core, fields) {
   try { return await core.memory.recordEvent({ kind: 'review_job', ...fields }); } catch { return null; }
 }
@@ -72,7 +79,7 @@ async function reviewTail(ctx, w) {
 // ---- applying ---------------------------------------------------------------------------------------------------
 // A review task's hand-back: its verdicts, once per task per manager (the store makes a second application a no-op).
 async function applyHandback(J, task) {
-  const { core, s } = { core: J.core, s: stateOf(J.ctx) };
+  const { core, s } = { core: gated(J), s: stateOf(J.ctx) };
   const once = `${task.id}@${task.handoff && task.handoff.at}`; // a reassigned review task hands back again
   if (s.applied.has(once)) return null;
   s.applied.add(once);
@@ -222,7 +229,8 @@ async function drain(ctx, ms) {
 // The run's end, store-only (also runs in `belay run`, which holds no manager): apply the hand-back of every ended review task,
 // apply the answer of every review job that finished but was not applied, and name what was never reviewed. Idempotent.
 async function sweep(J, tasks, workers) {
-  const { core, lv, ctx } = J;
+  const { lv, ctx } = J;
+  const core = gated(J);
   if (!lv.notes) return;
   const byId = new Map(tasks.map((t) => [t.id, t]));
   for (const t of tasks) if (isReview(t) && ENDED.has(t.state)) await applyHandback(J, t);

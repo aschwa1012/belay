@@ -17,6 +17,8 @@ const { err } = require('./errors.cjs');
 const lockApi = require('./lock.cjs'); // markListening is called through it, so a test can make it fail
 const { pipeName, acquireLock, releaseLock, resolveDataDir } = lockApi;
 
+const RETIRE_POLL_MS = 500; // a retired owner re-checks its clients' pids this often
+const UNIDENTIFIED_GRACE_MS = 5000; // a connection that has sent nothing counts as attached for this long
 const MAX_LINE_BYTES = 1024 * 1024; // a peer that never sends a newline must not grow this buffer forever
 
 function floatsFromB64(b64) {
@@ -195,8 +197,52 @@ class Owner {
     this.idleTruncated = true;
   }
 
+  // ---- retiring (ADR 0051) ------------------------------------------------------------------------------------------------
+  // The clients attached to this owner right now, each named by what establishes it: an open connection (the operating system
+  // closes it when its process dies) whose last caller either named no pid or named one that answers a pid check. A connection
+  // that has never sent a request counts only while it is young: a ping or a client about to call, not a socket that connected
+  // and said nothing. In-process users of this owner (the Core that elected it) hold no connection and are not listed.
+  attached() {
+    const out = [];
+    const t = Date.now();
+    for (const c of this.conns) {
+      if (c.destroyed) continue;
+      const pid = c.belayCaller && Number.isInteger(c.belayCaller.pid) ? c.belayCaller.pid : null;
+      if (!c.belayCaller) { if (t - c.belayOpenedAt < UNIDENTIFIED_GRACE_MS) out.push({ pid: null, via: 'open connection, no request yet' }); continue; }
+      if (pid === null) out.push({ pid: null, role: c.belayCaller.role || null, via: 'open connection, caller named no pid' });
+      else if (lockApi.pidAlive(pid)) out.push({ pid, role: c.belayCaller.role || null, via: 'open connection, pid check answers' });
+    }
+    return out;
+  }
+
+  // Release this owner for its own process: stop now when no other client is attached (the same stop() as ever), else keep
+  // serving and stop when the last one is gone. Resolves at once with what was done; the stop that follows a deferral is
+  // registered in retire.cjs so the process stays alive for it. Never a signal: the stop is stop().
+  async retire() {
+    if (this.stopped) return { pid: process.pid, pipe: this.pipe, already: true, deferred: false };
+    const now = this.attached();
+    if (!now.length) return { ...(await this.stop()), deferred: false };
+    if (!this.retiring) {
+      this.retiring = true;
+      const retire = require('./retire.cjs');
+      retire.register(new Promise((resolve) => {
+        const check = () => {
+          if (this.stopped) { clearInterval(timer); return resolve(); }
+          if (this.attached().length) return;
+          clearInterval(timer);
+          this.stop().then(resolve, resolve);
+        };
+        // The interval catches a client whose process died without its connection closing; a close wakes the check at once.
+        const timer = setInterval(check, RETIRE_POLL_MS);
+        this._retireCheck = check;
+      }));
+    }
+    return { pid: process.pid, pipe: this.pipe, already: false, deferred: true, attached: now };
+  }
+
   _conn(c) {
     this.conns.add(c);
+    c.belayOpenedAt = Date.now();
     let buf = '';
     c.on('data', d => {
       buf += d.toString('utf8');
@@ -208,8 +254,9 @@ class Owner {
         if (line.trim()) this._dispatch(c, line);
       }
     });
-    c.on('close', () => this.conns.delete(c));
-    c.on('error', () => this.conns.delete(c));
+    const gone = () => { this.conns.delete(c); if (this._retireCheck) this._retireCheck(); };
+    c.on('close', gone);
+    c.on('error', gone);
   }
 
   _dispatch(c, line) {
@@ -217,6 +264,9 @@ class Owner {
     try { req = JSON.parse(line); }
     catch { if (!c.destroyed) c.write(JSON.stringify({ id: null, error: { code: 'E_ARGS', message: 'the request line was not valid JSON' } }) + '\n'); return; }
     this.counters.calls++;
+    // What the retirement check needs about this client; liveness is then a pid check, never the client's word (ADR 0051).
+    const who = req.params && req.params.caller;
+    if (who && typeof who === 'object') c.belayCaller = { pid: Number.isInteger(who.pid) ? who.pid : null, role: typeof who.role === 'string' ? who.role : null };
 
     if (req.method === 'ping') {
       const result = { pid: process.pid, pipe: this.pipe, uptime_ms: Date.now() - this.startedAt, calls: this.counters.calls, embedder: this.embedInfo || null };

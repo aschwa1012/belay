@@ -24,7 +24,11 @@ async function memoryRunEnd({ core, runId, levers, ce = null, late = () => {}, j
   if (!anyJob(lv)) return null;
   // ADR 0044 decision 6: these rows are belay's, not the operator's; the run process writes them on the harness channel.
   const MJ = jobs || require('../run/memory-jobs.cjs');
-  return RI.within(ce, MJ.runEndJobs({ core: core.harness ? core.harness() : core, runId, levers: lv }), 'the run-end memory jobs', { outcome: 'cut' }, late, RI.END_RESERVE_MS);
+  // A cut leaves the jobs running behind it. The gate is how they are told to stop: set before this returns, so nothing they
+  // have not yet started is sent, and no write can reach the store after the shutdown that follows (it would elect a new owner).
+  const gate = { aborted: false, cut: false };
+  const cutLate = (m) => { gate.aborted = true; gate.cut = true; late(m); };
+  return RI.within(ce, MJ.runEndJobs({ core: core.harness ? core.harness() : core, runId, levers: lv, gate }), 'the run-end memory jobs', { outcome: 'cut' }, cutLate, RI.END_RESERVE_MS);
 }
 
 module.exports = { memoryRunEnd };
