@@ -1,0 +1,12 @@
+{
+  "name": "belay-gpu-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "description": "belay's pinned GPU retrieval runtime (llama.cpp through node-llama-cpp), installed on demand into belay's cache",
+  "license": "MIT",
+  "dependencies": {
+    "@node-llama-cpp/win-x64": "3.22.2",
+    "@node-llama-cpp/win-x64-vulkan": "3.22.2",
+    "node-llama-cpp": "3.22.2"
+  }
+}
