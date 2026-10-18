@@ -31,7 +31,7 @@ const LOCAL = { // bench file name per table id
   'ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF': 'qwen3-reranker-0.6b-q8_0.gguf',
   'giladgd/Qwen3-Reranker-4B-GGUF': 'Qwen3-Reranker-4B-giladgd-Q4_K_M.gguf',
 };
-const receipt = { invocation: `node ${process.argv.slice(1).join(' ')}`, started: new Date().toISOString(), node: process.version, steps: [] };
+const receipt = { invocation: `node ${process.argv.slice(1).join(' ')}`, started: new Date().toISOString(), node: process.version, observations: [], steps: [] };
 const step = async (name, fn) => { const t0 = Date.now(); try { const r = await fn(); receipt.steps.push({ name, ok: true, ms: Date.now() - t0, ...r }); return r; } catch (e) { receipt.steps.push({ name, ok: false, ms: Date.now() - t0, error: e.message }); throw e; } };
 const cosine = (a, b) => a.reduce((s, x, i) => s + x * b[i], 0) / (Math.hypot(...a) * Math.hypot(...b));
 
@@ -82,8 +82,12 @@ function scrub(text) {
   notes = notes.slice(0, 50).map(t => String(t).slice(0, 600));
   const sets = { 'sets 0.6B + 0.6B': ['Qwen/Qwen3-Embedding-0.6B-GGUF', 'ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF'], 'sets 4B + 4B': ['Qwen/Qwen3-Embedding-4B-GGUF', 'giladgd/Qwen3-Reranker-4B-GGUF'] };
   for (const [name, models] of Object.entries(sets)) {
+    const smiBefore = await P.defaultSmi(); // before any GPU child exists
     const probe = await step(`probe ${name}`, async () => { const r = await P.probe({ models }); return { result: r }; });
     if (!probe.result.ok) throw new Error(`probe refused: ${JSON.stringify(probe.result.refusal)}`);
+    const over = Math.max(...Object.values(probe.result.peaks).map(p => p.peak_mb - p.steady_mb));
+    receipt.observations.push(`${name}: ${over > 1 ? `a transient peak ${over} MiB above steady growth was seen` : 'no transient peak above steady-state growth was observed while the loads and batches ran'} (largest peak minus steady, ${Math.round(over * 10) / 10} MiB)`);
+    receipt.observations.push(`${name}: free dedicated memory read before the child started was ${smiBefore && smiBefore.free_mb} MiB and the probe's, read after the child initialised Vulkan, was ${probe.result.free_mb} MiB (${smiBefore && smiBefore.free_mb === probe.result.free_mb ? 'equal: on this host nvidia-smi under WDDM shows no overhead from an idle Vulkan device' : 'different'})`);
     await step(`use ${name}: embed one query, rank 50 notes`, async () => {
       const c = new GpuClient().start();
       try {
@@ -103,6 +107,22 @@ function scrub(text) {
         if (emb === 'Qwen/Qwen3-Embedding-0.6B-GGUF') { out.cosine_to_cpu_reference = +cosine(q.embedding, REF.vector).toFixed(6); if (!(out.cosine_to_cpu_reference >= 0.999)) throw new Error(`the GPU query vector disagrees with the CPU reference: cosine ${out.cosine_to_cpu_reference}`); }
         return out;
       } finally { await c.close(); }
+    });
+  }
+  // A document of about 1,500 tokens against a context of 2,048: does llama.cpp split one rank sequence across decodes when
+  // the batch is 512? Ranked at batchSize 512 and at batchSize equal to the context, the scores must agree.
+  for (const rr of ['ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF', 'giladgd/Qwen3-Reranker-4B-GGUF']) {
+    await step(`long document at batchSize 512 against 2048: ${rr}`, async () => {
+      const long1 = notes.join(' ').slice(0, 6200), long2 = notes.slice(25).join(' ').slice(0, 6000);
+      const docs = [long1, long2, 'The owner is elected on demand by whoever needs the store and dies with them.'];
+      const run = async (batchSize) => {
+        const c = new GpuClient().start();
+        try { await c.load(rr, { batchSize }); const t = Date.now(); const r = await c.rank(rr, REF.query, docs); return { scores: r.scores, pair_tokens: r.pair_tokens, truncated: r.truncated, chunks: r.chunks.length, ms: Date.now() - t }; } finally { await c.close(); }
+      };
+      const small = await run(512), big = await run(2048);
+      const maxdiff = Math.max(...small.scores.map((x, i) => Math.abs(x - big.scores[i])));
+      if (!(maxdiff < 0.01)) throw new Error(`scores differ by ${maxdiff} between batchSize 512 and 2048: cap documents at batchSize minus the query and template tokens`);
+      return { doc_tokens: small.pair_tokens, truncated: small.truncated, scores_512: small.scores.map(x => +x.toFixed(5)), scores_2048: big.scores.map(x => +x.toFixed(5)), max_abs_difference: +maxdiff.toFixed(5), tolerance: 0.01, ms_512: small.ms, ms_2048: big.ms, verdict: 'equal within tolerance: llama.cpp splits a long rank sequence across decodes; the context-sized document cap stands' };
     });
   }
   receipt.runtime_dir_bytes = receipt.steps.find(s => s.name === 'belay embedder fetch --gpu').bytes;
