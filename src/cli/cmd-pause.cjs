@@ -254,7 +254,7 @@ async function run(ctx) {
     wr.text = renderWorker(wr.json);
     return wr;
   } finally {
-    if (core.isOwner()) { try { await core.shutdownOwner(); } catch { /* best effort */ } }
+    if (core.isOwner()) { try { await require('./release-owner.cjs').releaseOwnerOf(core); } catch { /* best effort */ } }
     await core.close();
   }
 }

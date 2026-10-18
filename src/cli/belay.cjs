@@ -194,6 +194,9 @@ async function finish(argv, code, io = { stdout: process.stdout, stderr: process
   const spec = g.error ? null : COMMANDS[g.argv[0]];
   if (!spec || spec.mode !== 'R') return;
   await Promise.all([drained(io.stdout), drained(io.stderr)]);
+  // An owner this command released while another client was still attached keeps serving until the last one is gone (ADR 0051);
+  // exiting here would pull the store from under that client. Nothing is waited on when no owner was retired.
+  await require('../core/retire.cjs').idle();
   io.exit(code);
 }
 

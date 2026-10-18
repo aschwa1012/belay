@@ -351,7 +351,7 @@ async function run(ctx) {
     // verify, import and embed may have won the election; the owner is shut down here so no owner.lock and no node
     // process outlives the command. A read verb never elects, so this is a no-op on their paths.
     if ((parsed.sub === 'verify' || parsed.sub === 'import' || parsed.sub === 'embed' || LC.writes(parsed)) && typeof core.isOwner === 'function' && core.isOwner()) {
-      try { await core.shutdownOwner(); } catch { /* best effort */ }
+      try { await require('./release-owner.cjs').releaseOwnerOf(core); } catch { /* best effort */ }
     }
     await core.close();
   }

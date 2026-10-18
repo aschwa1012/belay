@@ -460,7 +460,10 @@ async function atRunEnd(ctx) {
     if (!anyJob(lv)) return { outcome: 'off' };
     const total = Number.isInteger(ctx.runEndBoundMs) && ctx.runEndBoundMs > 0 ? ctx.runEndBoundMs : RUN_END_BOUND_MS; // the override is for tests
     const giveUpMs = Math.min(GIVE_UP_MS, Math.floor(total / 4));
-    const gate = { aborted: false };
+    // `ctx.runEndGate` is the caller's: `belay run` sets `cut` on it when a fast close stops waiting for these jobs, which is
+    // before it shuts the owner down. From then on no step starts and the give-up record is not written either, because a
+    // write begun after the shutdown would elect a stray owner (invariant 2).
+    const gate = ctx.runEndGate || { aborted: false };
     const J = jobCtx(ctx, lv, null, gate);
     const progress = { stage: 'start', planned: null, done: new Set() };
     const box = {};
@@ -472,7 +475,7 @@ async function atRunEnd(ctx) {
     const code = outcome === 'timeout' ? 'E_TIMEOUT' : codeOf(box.error);
     const why = outcome === 'timeout' ? `stopped after ${total - giveUpMs} ms` : `failed at ${progress.stage}: ${(box.error && box.error.message) || box.error}`;
     const record = jobCtx(ctx, lv, null, { aborted: false });
-    await afterBound(giveUpMs, () => event(record, { kind: 'wrapup', key: 'run:gave-up', ok: false, code, message: `run-end memory jobs ${why}; not done: ${unfinished.join(', ')}`.slice(0, 600) }));
+    if (!gate.cut) await afterBound(giveUpMs, () => event(record, { kind: 'wrapup', key: 'run:gave-up', ok: false, code, message: `run-end memory jobs ${why}; not done: ${unfinished.join(', ')}`.slice(0, 600) }));
     ctx.runEndError = { where: 'memory-jobs.atRunEnd', code, message: outcome === 'timeout' ? 'gave up' : why, unfinished };
     return { outcome, unfinished };
   } catch (e) {
@@ -486,8 +489,8 @@ async function atRunEnd(ctx) {
 // its stdin (measured at about 300 to 400 ms), so with any live worker that run is cut short. This one needs nothing but
 // the store: it reads the run's task and worker rows, and `core` is the store `belay run` owns. Idempotent with a
 // partial adapter-side run (see atRunEnd). Never throws; returns { outcome, unfinished?, error? }.
-async function runEndJobs({ core, runId, levers, boundMs = null, modules = null }) {
-  const ctx = { core, runId, memoryLevers: levers || { ...DEFAULTS }, runEndBoundMs: boundMs, modules };
+async function runEndJobs({ core, runId, levers, boundMs = null, modules = null, gate = null }) {
+  const ctx = { core, runId, memoryLevers: levers || { ...DEFAULTS }, runEndBoundMs: boundMs, modules, runEndGate: gate };
   const got = await atRunEnd(ctx);
   return ctx.runEndError ? { ...got, error: ctx.runEndError } : got;
 }

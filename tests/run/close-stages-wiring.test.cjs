@@ -20,7 +20,7 @@ test('runCloseStages: notes off loads nothing; notes on hands the stages the har
   let seen;
   const out = await runCloseStages({ core: { harness: () => harness }, runId: 'r1', levers: { memory_levers: { notes: true } }, dataDir: 'd', worktree: 'w', goal: 'g', stages: { closeStages: async (a) => { seen = a; return { ok: 1 }; } } });
   assert.deepStrictEqual(out, { ok: 1 });
-  assert.deepStrictEqual([seen.core, seen.runId, seen.worktree, seen.goal, seen.levers.notes], [harness, 'r1', 'w', 'g', true]);
+  assert.deepStrictEqual([seen.core.harness, seen.runId, seen.worktree, seen.goal, seen.levers.notes], [true, 'r1', 'w', 'g', true]); // the stages' core is a gated view of the harness core (it reads through to it)
 });
 
 test('job ids: the scrubber and the reviewer are reserved, get no belay tool, and cannot be spawned by a model', () => {

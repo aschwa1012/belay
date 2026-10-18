@@ -53,7 +53,8 @@ async function stageCore(core, parsed, ctx, found) {
 async function release(rc) {
   if (rc.belayReleased) return;
   rc.belayReleased = true;
-  try { if (typeof rc.isOwner === 'function' && rc.isOwner()) await rc.shutdownOwner(); } catch { /* best effort */ }
+  // The owner this command elected stays up while another client is attached and stops with the last (ADR 0051).
+  try { if (typeof rc.isOwner === 'function' && rc.isOwner()) await require('./release-owner.cjs').releaseOwnerOf(rc); } catch { /* best effort */ }
   await rc.close();
 }
 
@@ -100,4 +101,4 @@ async function resolve(core, parsed) {
   return { code: 0, text: `${text}still pending in the project: ${res.still_pending}\n`, json: res };
 }
 
-module.exports = { VERB_FN: { scrub, review, resolve }, renderStage };
+module.exports = { VERB_FN: { scrub, review, resolve }, renderStage, release };
