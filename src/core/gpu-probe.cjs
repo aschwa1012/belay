@@ -188,8 +188,10 @@ async function batchEmbedder(client, entry) {
 }
 
 // A reranker's batch: a sanity rank (relevant above filler; it also warms the model), a timed rank of 16 notes for
-// the cost per token, and one document that fills the context's batch, whose rank time is the longest single
-// submission the probe observes.
+// the cost per token, and one document that fills the context's batch, ranked four times: the first run pays the
+// first-use cost of that shape (measured at 2 s on the 4B reranker), the median of three warm runs is the time the
+// target is judged on, the slowest warm run and the first are recorded beside it. The median is the longest
+// single submission the probe observes.
 async function batchReranker(client, entry, { targetMs, batchTokens }) {
   const t0 = Date.now();
   const s = await client.rank(entry.id, QUERY, SANITY_DOCS);
@@ -202,10 +204,14 @@ async function batchReranker(client, entry, { targetMs, batchTokens }) {
   const msPerToken = Math.round((r.ms / tokens) * 1000) / 1000; // rounded once, so the recorded cost and the chunk bound agree
   let big = FILLER.join(' ');
   while (big.length < batchTokens * 5) big += ` ${FILLER.join(' ')}`; // ~4 characters a token: enough to fill the batch, the child caps it to the context
-  const u = await client.rank(entry.id, QUERY, [big.slice(0, batchTokens * 4)]);
+  const full = [big.slice(0, batchTokens * 4)];
+  const cold = await client.rank(entry.id, QUERY, full); // a shape the GPU has not run yet pays its first-use cost (Vulkan pipelines): recorded, not judged
+  const warm = [];
+  for (let i = 0; i < 3; i += 1) warm.push(await client.rank(entry.id, QUERY, full)); // three warm runs: one slow sample (2.05 s once, against 0.2 s in the others) must not decide
+  const ms = warm.map(w => w.ms).sort((a, b) => a - b), u = { pair_tokens: warm[0].pair_tokens, ms: ms[1] };
   return {
     ok: true, batch_ms: Date.now() - t0, sanity_scores: s.scores,
-    rerank: { ms_per_token: msPerToken, chunk_tokens: C.deriveChunkTokens(msPerToken, { targetMs }), max_pairs: C.CHUNK_MAX_PAIRS, batch_size: batchTokens, ubatch_tokens: u.pair_tokens[0], ubatch_ms: u.ms, target_ms: targetMs, margin: C.CHUNK_MARGIN },
+    rerank: { ms_per_token: msPerToken, chunk_tokens: C.deriveChunkTokens(msPerToken, { targetMs }), max_pairs: C.CHUNK_MAX_PAIRS, batch_size: batchTokens, ubatch_tokens: u.pair_tokens[0], ubatch_ms: u.ms, ubatch_max_ms: ms[2], ubatch_first_ms: cold.ms, target_ms: targetMs, margin: C.CHUNK_MARGIN },
   };
 }
 
