@@ -145,3 +145,18 @@ test('install: a live holder of the lock refuses with E_BUSY, a dead holder is s
     assert.strictEqual(r.already_present, false);
   } finally { cleanup(dir); }
 });
+
+test('belay embedder verify --gpu reports a missing runtime and exits 1 without creating anything; --gpu --model needs a GPU table id', async () => {
+  const dir = sandbox(), saved = process.env.BELAY_GPU_RUNTIME;
+  process.env.BELAY_GPU_RUNTIME = dir;
+  try {
+    const cmd = require(path.join(__dirname, '..', '..', 'src', 'cli', 'cmd-embedder.cjs'));
+    const r = await cmd.run({ argv: ['verify', '--gpu'] });
+    assert.strictEqual(r.code, 1);
+    assert.match(r.text, /verify FAILED for the GPU runtime/);
+    assert.deepStrictEqual(fs.readdirSync(dir), []);
+    const m = await cmd.run({ argv: ['fetch', '--gpu', '--model', 'onnx-community/voyage-4-nano-ONNX'] });
+    assert.strictEqual(m.code, 2);
+    assert.match(m.text, /unknown embedding model/);
+  } finally { if (saved === undefined) delete process.env.BELAY_GPU_RUNTIME; else process.env.BELAY_GPU_RUNTIME = saved; cleanup(dir); }
+});
