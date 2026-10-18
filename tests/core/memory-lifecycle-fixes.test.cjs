@@ -89,7 +89,7 @@ test('#5 a note archived while pending is restored to pending, not live', async 
   assert.ok(!idx.row_ids.includes(pend), 'a pending note stays out of the index');
 });
 
-test('#6 a quote of the note itself is refused, a short quote is refused, and code_contradicts needs a file', async () => {
+test('#6 a quote of the note itself is refused, an empty quote is refused, and code_contradicts needs a file', async () => {
   const n = T.note('the loader skips every unlisted fixture silently', { reported_wrong: [T.report()] });
   const stream = `${T.dir}/own-stream.jsonl`;
   fs.writeFileSync(stream, `${JSON.stringify({ index: '- note [lesson] the loader skips every unlisted fixture silently' })}\n`);

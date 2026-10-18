@@ -318,3 +318,16 @@ test('a short real quote is accepted in an archive review; empty, whitespace, to
   assert.strictEqual(ok.refused.length, 0, JSON.stringify(ok.refused));
   assert.strictEqual(ok.applied.length, 1);
 });
+
+test('a 1500-byte verbatim quote is accepted by the archive review apply path', async () => {
+  const fs = require('node:fs');
+  const n = T.note('long quote review target', { reported_wrong: [T.report()] });
+  await hold(wrong(n));
+  const long = 'long line ' + 'abcdefghij'.repeat(149) + 'END';
+  const stream = `${T.dir}/long-review.jsonl`;
+  fs.writeFileSync(stream, `${JSON.stringify({ type: 'tool_result', content: long })}\n`);
+  assert.strictEqual(Buffer.byteLength(long), 1503);
+  const ok = await review([archiveV(n, { cites: [{ where: `stream:${stream}`, quote: long }] })], { evidence_files: [stream] });
+  assert.strictEqual(ok.refused.length, 0, JSON.stringify(ok.refused));
+  assert.strictEqual(ok.applied.length, 1);
+});

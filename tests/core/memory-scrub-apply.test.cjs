@@ -245,3 +245,14 @@ test('a short real quote is accepted by the scrub cite check; empty, whitespace,
   assert.strictEqual(ok.refused.length, 0, JSON.stringify(ok.refused));
   assert.strictEqual(ok.applied[0].outcome, 'held');
 });
+
+test('a 1500-byte verbatim quote is accepted by the scrub apply path', async () => {
+  const fs = require('node:fs');
+  const n = T.note('long quote scrub target', { reported_wrong: [T.report()] });
+  const long = 'long line ' + 'abcdefghij'.repeat(149) + 'END';
+  const stream = `${T.dir}/long-scrub.jsonl`;
+  fs.writeFileSync(stream, `${JSON.stringify({ type: 'tool_result', content: long })}\n`);
+  const ok = await scrub('apply', [holdWrong(n, { cites: [{ where: `stream:${stream}`, quote: long }, { where: 'loader.js', quote: 'function load(name) {' }] })], null, { evidence_files: [stream] });
+  assert.strictEqual(ok.refused.length, 0, JSON.stringify(ok.refused));
+  assert.strictEqual(ok.applied[0].outcome, 'held');
+});
