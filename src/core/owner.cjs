@@ -197,7 +197,7 @@ class Owner {
     this.idleTruncated = true;
   }
 
-  // ---- retiring (ADR 0050) ------------------------------------------------------------------------------------------------
+  // ---- retiring (ADR 0051) ------------------------------------------------------------------------------------------------
   // The clients attached to this owner right now, each named by what establishes it: an open connection (the operating system
   // closes it when its process dies) whose last caller either named no pid or named one that answers a pid check. A connection
   // that has never sent a request counts only while it is young: a ping or a client about to call, not a socket that connected
@@ -264,7 +264,7 @@ class Owner {
     try { req = JSON.parse(line); }
     catch { if (!c.destroyed) c.write(JSON.stringify({ id: null, error: { code: 'E_ARGS', message: 'the request line was not valid JSON' } }) + '\n'); return; }
     this.counters.calls++;
-    // What the retirement check needs about this client; liveness is then a pid check, never the client's word (ADR 0050).
+    // What the retirement check needs about this client; liveness is then a pid check, never the client's word (ADR 0051).
     const who = req.params && req.params.caller;
     if (who && typeof who === 'object') c.belayCaller = { pid: Number.isInteger(who.pid) ? who.pid : null, role: typeof who.role === 'string' ? who.role : null };
 

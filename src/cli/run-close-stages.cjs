@@ -46,7 +46,13 @@ async function runCloseStages({ core, runId, levers, dataDir, worktree = null, g
   // running child is killed by its exact pid. `sink` keeps the pids of children that survived their kill, even when the stage is cut off.
   const sink = { survivors: [], pids: [] };
   const fast = () => !!((ce && ce.hupSeen()) || (interrupted && interrupted()));
-  const out = await RI.within(ce, S.closeStages({ core: core.harness ? core.harness() : core, runId, levers: lv, dataDir, worktree, goal, summary, fast, log, sink, ...deps }), 'the run-close stages', { cut: true }, late, RI.END_RESERVE_MS);
+  // A cut leaves the stage running behind it. Its core is gated: once the cut is declared, nothing the stage has not yet sent reaches
+  // the store, so no receipt or apply can be written after the owner's shutdown (it would elect a stray owner). A child's exit
+  // fill-in and the stage's own receipts are among the refused.
+  const gate = { aborted: false };
+  const gated = require('../run/gated-core.cjs').gatedCore(core.harness ? core.harness() : core, gate, 'the run-close stage');
+  const cutLate = (m) => { gate.aborted = true; late(m); };
+  const out = await RI.within(ce, S.closeStages({ core: gated, runId, levers: lv, dataDir, worktree, goal, summary, fast, log, sink, ...deps }), 'the run-close stages', { cut: true }, cutLate, RI.END_RESERVE_MS);
   if (out && out.cut) await reap(core, sink, killPid || defaultKill, ce); // a cut stage's children are found by the pids recorded at spawn
   return sink.survivors.length && out && out.cut ? { ...out, survivors: sink.survivors } : out;
 }

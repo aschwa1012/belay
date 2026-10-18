@@ -197,3 +197,32 @@ test('a read-mode command waits for a retired owner before it ends the process, 
   await ending;
   assert.deepStrictEqual(exits, [0, 0], 'the owner stopped, so the process ends');
 });
+
+test('belay memory verify, run as a command over an owner it elected, defers to an attached client and says so on stderr', async () => {
+  process.env.BELAY_TEST_MODE = '1';
+  const { run } = require('../../src/cli/cmd-memory.cjs');
+  const { dir, rc } = await elected();
+  const y = await inProcessClient(dir, process.pid);
+  const written = [];
+  const stderr = process.stderr.write;
+  process.stderr.write = (s) => { written.push(String(s)); return true; };
+  try {
+    try {
+      await run({ argv: ['verify', 'no-such-note', '--status', 'verified', '--receipt', 'commit:abcdef1'], cwd: dir, dataDir: dir, dataDirGiven: true, openCore: async () => rc });
+    } finally { process.stderr.write = stderr; }
+    assert.ok(fs.existsSync(lockOf(dir)), 'the owner was not shut down under the attached client');
+    assert.strictEqual(retire.pending(), 1, written.join('').slice(0, 600));
+    assert.match(written.join(''), new RegExp(`stays up for the other client\\(s\\) attached to it: pid ${process.pid} \\(operator\\).*Ctrl-C`));
+    await y.close();
+    await within(retire.idle(), 15000, 'the retired owner to stop');
+    assert.ok(!fs.existsSync(lockOf(dir)));
+  } finally { process.stderr.write = stderr; await finish(dir, rc, y); }
+});
+
+test('the other elect-then-shutdown commands release through releaseOwner', () => {
+  for (const f of ['cmd-memory.cjs', 'cmd-message.cjs', 'cmd-pause.cjs', 'cmd-worker.cjs', 'cmd-memory-stages.cjs']) {
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'cli', f), 'utf8');
+    assert.ok(!/core\.shutdownOwner\(\)|rc\.shutdownOwner\(\)/.test(src), `${f} no longer shuts its owner down unconditionally`);
+    assert.match(src, /releaseOwnerOf/, f);
+  }
+});

@@ -275,7 +275,7 @@ class Core {
 
   // ---- write: connect or elect -------------------------------------------
   async _write(method, params) {
-    await this._ensureWriter();
+    await this._ensureWriter(method);
     if (this.owner) return this._local(method, params);
     const timeoutMs = writeTimeoutFor(method, params);
     await this._pingBeforeVector(method, params);
@@ -301,7 +301,7 @@ class Core {
           throw err('E_OWNER_LOST', `the owner was lost after ${method} was sent; too little of its limit was left to re-run it, so re-read before retrying`, { method, sent: true, may_have_committed: true, outcome: 'unknown', rerun: 'skipped', left_ms: left });
         }
       }
-      await this._ensureWriter();
+      await this._ensureWriter(method);
       let result;
       try {
         result = this.owner ? await this._local(method, params, left) : await this.client.call(method, params, { timeoutMs: left === undefined ? timeoutMs : left });
@@ -319,19 +319,26 @@ class Core {
     }
   }
 
-  async _ensureWriter() {
+  async _ensureWriter(method = null) {
     if (this.owner && !this.owner.stopped) return;
     if (this.owner) this.owner = null;
     if (this.client && this.client.connected) return;
     await this._dropClient();
-    const elect = this.caller.role !== 'worker';
+    // ADR 0051: once this Core has shut its owner down it never elects another by itself. A write that gets here after that is a
+    // path that missed its close gate, and it fails naming the call instead of creating a stray owner. It may still dial an owner
+    // somebody else holds, and becomeOwner() is the explicit way to elect again.
+    const elect = this.caller.role !== 'worker' && !this.shutDown;
     const c = new Client(this.dataDir, {
       caller: this.caller,
       elect,
       ownerOpts: { embed: this.embed, ...this.ownerOpts },
       callTimeoutMs: WRITE_TIMEOUT_MS,
     });
-    await c.connect(); // a worker with no owner lands here as E_NO_OWNER, having created nothing
+    try { await c.connect(); } // a worker with no owner lands here as E_NO_OWNER, having created nothing
+    catch (e) {
+      if (this.shutDown && e && e.code === 'E_NO_OWNER') throw err('E_SHUTDOWN', `${method || 'a write'} was refused: this process already shut the store owner down, and a write after that would elect a stray owner`, { method, data_dir: this.dataDir });
+      throw e;
+    }
     this.client = c;
     if (c.owner) this.owner = c.owner;
   }
@@ -346,7 +353,8 @@ class Core {
   // calls this instead of letting the first ordinary write elect on its behalf.
   async becomeOwner() {
     if (this.caller.role === 'worker') throw err('E_ROLE', 'a worker never elects the store owner', { role: this.caller.role });
-    await this._ensureWriter();
+    this.shutDown = false; // an explicit election
+    await this._ensureWriter('becomeOwner');
     if (this.isOwner()) return { owner: true, pid: process.pid, established_by: 'won the lock' };
     // 5a-3: a bare connect succeeds on Windows even against a wedged owner, so ownerInfo() alone is
     // not the bounded fact invariant 7 requires — ping it instead.
@@ -406,7 +414,7 @@ class Core {
 
   async close() { await this._dropClient(); }
 
-  // ADR 0050: a command that is done with the owner it elected, and is not the run that owns the store. With no other
+  // ADR 0051: a command that is done with the owner it elected, and is not the run that owns the store. With no other
   // client attached it is shutdownOwner() exactly. With one attached it keeps the owner serving and stops it when the last
   // client is gone (owner.cjs retire), so a client is never left with its store pulled out from under it. The result names
   // which: `deferred: true` and the attached clients, or the stop's own receipt. A Core that holds no owner stops nothing.
@@ -423,7 +431,7 @@ class Core {
   // The only way to stop an owner (ADR 0002 §5): in-process stop() or the pipe's shutdown method.
   // Never a signal, because a Windows terminate skips the owner's handlers.
   async shutdownOwner() {
-    if (this.owner) { const o = this.owner; this.owner = null; const r = await o.stop(); await this._dropClient(); return { ...r, stopped: 'in-process' }; }
+    if (this.owner) { const o = this.owner; this.owner = null; this.shutDown = true; const r = await o.stop(); await this._dropClient(); return { ...r, stopped: 'in-process' }; }
     const lock = readOwnerLock(this.dataDir);
     if (!lock || !pidAlive(lock.pid)) { await this._dropClient(); return { stopped: 'none', reason: 'no live owner holds the lock' }; }
     if (!this.client || !this.client.connected) {
@@ -433,6 +441,7 @@ class Core {
     }
     const r = await this.client.shutdown();
     this.client = null;
+    this.shutDown = true;
     return r;
   }
 }

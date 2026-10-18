@@ -53,8 +53,8 @@ async function stageCore(core, parsed, ctx, found) {
 async function release(rc) {
   if (rc.belayReleased) return;
   rc.belayReleased = true;
-  // The owner this command elected stays up while another client is attached and stops with the last (ADR 0050).
-  try { if (typeof rc.isOwner === 'function' && rc.isOwner()) await (typeof rc.releaseOwner === 'function' ? rc.releaseOwner() : rc.shutdownOwner()); } catch { /* best effort */ }
+  // The owner this command elected stays up while another client is attached and stops with the last (ADR 0051).
+  try { if (typeof rc.isOwner === 'function' && rc.isOwner()) await require('./release-owner.cjs').releaseOwnerOf(rc); } catch { /* best effort */ }
   await rc.close();
 }
 
