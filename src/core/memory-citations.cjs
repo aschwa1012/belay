@@ -63,12 +63,6 @@ function belayUseIds(lines) {
   for (const line of lines) if (line.includes('tool_use')) for (const b of blocksOf(line)) if (b.use && BELAY_TOOL.test(b.name)) ids.add(b.use);
   return ids;
 }
-function withoutBelayResults(raw) {
-  const lines = raw.split('\n');
-  const ids = belayUseIds(lines);
-  if (!ids.size) return raw;
-  return lines.filter(line => !(line.includes('tool_result') && blocksOf(line).some(b => b.id !== undefined && ids.has(b.id)))).join('\n');
-}
 // A reviewer reads a stream as raw JSON lines, where a quote mark, backslash, newline or tab is escaped, and may copy the line as it
 // saw it. A quote is therefore compared as written and with the JSON string escapes decoded (\" \\ \/ \b \f \n \r \t \uXXXX);
 // both forms are checked against the decoded tool-result text, so nothing is accepted that is not there.
@@ -227,4 +221,4 @@ function evidenceOf(args) {
   return { head_sha: head || null, worktree: wt || null, evidence_files: ev || [] };
 }
 
-module.exports = { checkCitations, evidenceOf, checkTaskCites, checkShape, streamResultHas, selfQuoted, withoutBelayResults, seam };
+module.exports = { checkCitations, evidenceOf, checkTaskCites, checkShape, streamResultHas, selfQuoted, seam };
