@@ -187,18 +187,18 @@ async function checkCitations(cites, ctx) {
       if (!cache.has(c.where)) {
         try {
           const st = fs.statSync(want);
-          if (st.size > FILE_MAX) cache.set(c.where, { error: `the stream file is over ${FILE_MAX} bytes` });
-          else cache.set(c.where, { text: withoutBelayResults(fs.readFileSync(want, 'utf8')) });
+          cache.set(c.where, st.size > FILE_MAX ? { error: `the stream file is over ${FILE_MAX} bytes` } : {});
         } catch (e) { cache.set(c.where, { error: `cannot read it (${e.code || e.message})` }); }
       }
       const got = cache.get(c.where);
       if (got.error) throw fail(got.error);
       // A stream carries the note's own index line, and quoting that back proves nothing. A file read at the head commit
       // is evidence even when the note quoted the same line, so this applies to streams only.
-      if (selfQuoted(ctx.own, ctx.title, quote)) throw fail('the quote is the note\'s own text, which cannot be evidence about the note');
-      // A stream is JSON lines: a quote with a quote mark or a newline in it is stored escaped.
-      const escaped = JSON.stringify(c.quote.trim()).slice(1, -1);
-      if (!norm(got.text).includes(quote) && !got.text.includes(escaped)) throw fail('the quote does not appear in that stream');
+      if (selfQuoted(ctx.own, ctx.title, c.quote)) throw fail('the quote is the note\'s own text, which cannot be evidence about the note');
+      // The same search as a note review: decoded tool results only, JSON escapes tolerated, belay's own tools excluded. The JSON
+      // structure of the stream (braces, field names, ids) is not something a tool printed, so it is no evidence.
+      const r = streamResultHas(want, c.quote);
+      if (!r.found) throw fail(r.reason);
       out.push({ where: c.where, source: 'stream' });
       continue;
     }

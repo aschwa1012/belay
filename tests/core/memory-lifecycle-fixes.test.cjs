@@ -92,14 +92,14 @@ test('#5 a note archived while pending is restored to pending, not live', async 
 test('#6 a quote of the note itself is refused, an empty quote is refused, and code_contradicts needs a file', async () => {
   const n = T.note('the loader skips every unlisted fixture silently', { reported_wrong: [T.report()] });
   const stream = `${T.dir}/own-stream.jsonl`;
-  fs.writeFileSync(stream, `${JSON.stringify({ index: '- note [lesson] the loader skips every unlisted fixture silently' })}\n`);
+  fs.writeFileSync(stream, `${JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: '- note [lesson] the loader skips every unlisted fixture silently' }] }] } })}\n`);
   const own = await scrub([wrong(n, { cites: [{ where: `stream:${stream}`, quote: 'the loader skips every unlisted fixture silently' }] })], { evidence_files: [stream] });
   assert.strictEqual(own.refused[0].code, 'E_CITATION');
   assert.match(own.refused[0].message, /own text/);
   const filed = await scrub([wrong(n, { cites: [{ where: 'loader.js', quote: 'function load(name) {\n  return fixtures.get(name);' }, { where: 'loader.js', quote: 'return fixtures.get(name); // unlisted names throw' }] })]);
   assert.strictEqual(filed.applied[0].outcome, 'held');
   const n2 = T.note('another stream-only target', { reported_wrong: [T.report()] });
-  fs.writeFileSync(stream, `${JSON.stringify({ out: 'error: fixture alpha is not listed in the manifest' })}\n`);
+  fs.writeFileSync(stream, `${JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'error: fixture alpha is not listed in the manifest' }] }] } })}\n`);
   const only = await scrub([wrong(n2, { ground: 'code_contradicts', cites: [{ where: `stream:${stream}`, quote: 'error: fixture alpha is not listed in the manifest' }] })], { evidence_files: [stream] });
   assert.strictEqual(only.refused[0].code, 'E_CITATION');
   assert.match(only.refused[0].message, /file at the head commit/);
@@ -219,7 +219,7 @@ test('R2-1 lifecycle text is redacted before it is stored: a token in a reason, 
   // dismiss: reason and a cited stream line
   const d = T.note('token dismiss target', { reported_wrong: [T.report()] });
   const stream = `${T.dir}/token-stream.jsonl`;
-  fs.writeFileSync(stream, `${JSON.stringify({ env: `GITHUB_TOKEN=${TOKEN} printed by the failing job` })}\n`);
+  fs.writeFileSync(stream, `${JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: `GITHUB_TOKEN=${TOKEN} printed by the failing job` }] }] } })}\n`);
   const dis = await scrub([{ id: d, action: 'dismiss', ground: 'report_unfounded', reason: `saw ${TOKEN}`, cites: [{ where: `stream:${stream}`, quote: `GITHUB_TOKEN=${TOKEN} printed by the failing job` }] }], { evidence_files: [stream] });
   assert.strictEqual(dis.applied[0].outcome, 'applied', JSON.stringify(dis.refused));
   assert.ok(!everywhere(d).includes(TOKEN) && !JSON.stringify(dis).includes(TOKEN));
