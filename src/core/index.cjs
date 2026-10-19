@@ -192,13 +192,33 @@ class Core {
         return await engine.handle(method, params);
       } finally { try { store.close(); } catch { /* throwaway */ } }
     }
+    const build = (dbPath, establishedBy, store) => new Engine({ dataDir: this.dataDir, store, getEmbedder: null, owner: null, establishedBy: note ? `${establishedBy}; ${note}` : establishedBy, embedderFailure, memoryOffFn: this.ownerOpts.memoryOff });
+    const batch = this._batch;
+    if (batch) { // readBatch: the first read that has no owner makes the one copy; later reads of the batch use it
+      if (!batch.engine) batch.engine = new Promise((resolve, reject) => {
+        batch.copy = withCopy(this.dataDir, async (dbPath, establishedBy) => {
+          const store = new Store(dbPath);
+          try { resolve(build(dbPath, establishedBy, store)); await batch.done; } finally { try { store.close(); } catch { /* throwaway copy */ } }
+        }).catch(reject);
+      });
+      return (await batch.engine).handle(method, params);
+    }
     return withCopy(this.dataDir, async (dbPath, establishedBy) => {
       const store = new Store(dbPath);
       try {
-        const engine = new Engine({ dataDir: this.dataDir, store, getEmbedder: null, owner: null, establishedBy: note ? `${establishedBy}; ${note}` : establishedBy, embedderFailure, memoryOffFn: this.ownerOpts.memoryOff });
-        return await engine.handle(method, params);
+        return await build(dbPath, establishedBy, store).handle(method, params);
       } finally { try { store.close(); } catch { /* throwaway copy */ } }
     });
+  }
+
+  // Run `fn()` with every read that has no owner to answer it served from ONE copy of the store (taken at the first such read, deleted
+  // when `fn` settles), not one copy per call. Reads an owner answers are unchanged. For read calls only; a write is not part of it.
+  async readBatch(fn) {
+    if (this._batch) return fn();
+    let finish;
+    const batch = this._batch = { engine: null, copy: null, done: new Promise((r) => { finish = r; }) };
+    try { return await fn(); }
+    finally { this._batch = null; finish(); if (batch.copy) await batch.copy.catch(() => {}); }
   }
 
   // MF3-1 (invariants 4 and 7): liveness for the long vector bound comes from an ANSWER, never from a

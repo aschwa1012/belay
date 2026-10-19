@@ -292,6 +292,7 @@ async function run(ctx) {
 
   const core = await openCore({ dataDir, caller: { role: 'operator', run_id: parsed.runId || 'cli', pid: process.pid } });
   try {
+    return await core.readBatch(async () => { // one store copy for every read below
     const { chosen, source } = await P.chooseRun(core, parsed.runId);
     const unembedded = await core.memory.unembedded({});
     const heldNotes = await core.memory.held({ reports: true, reviews: true }).catch(() => null); // one read: counts, unjudged reports and review claims
@@ -326,6 +327,7 @@ async function run(ctx) {
       events, count: events.length, owner: core.ownerInfo(),
     };
     return { code: 0, text: renderText(events), json: receipt };
+    });
   } catch (e) {
     return { code: 1, text: `belay notices: ${P.clean(e.message, 200)}\n`, json: { error: { code: e.code || 'E_INTERNAL', message: e.message } } };
   } finally {
