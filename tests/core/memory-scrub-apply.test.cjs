@@ -76,7 +76,7 @@ test('S3: a whitespace-reflowed quote still matches, and a stream file named in 
   const fs = require('node:fs');
   const n = T.note('stream target', { reported_wrong: [T.report()] });
   const stream = `${T.dir}/stream.jsonl`;
-  fs.writeFileSync(stream, `${JSON.stringify({ type: 'tool_result', content: 'error: fixture "alpha" is not listed\nin manifest.json' })}\n`);
+  fs.writeFileSync(stream, `${JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'error: fixture "alpha" is not listed\nin manifest.json' }] }] } })}\n`);
   const r = await scrub('apply', [holdWrong(n, { cites: [{ where: 'loader.js', quote: 'return fixtures.get(name);   // unlisted\n names throw' }, { where: `stream:${stream}`, quote: 'fixture "alpha" is not listed\nin manifest.json' }] })], null, { evidence_files: [stream] });
   assert.strictEqual(r.refused.length, 0, JSON.stringify(r.refused));
   assert.strictEqual(r.applied[0].outcome, 'held');
@@ -251,7 +251,7 @@ test('a 1500-byte verbatim quote is accepted by the scrub apply path', async () 
   const n = T.note('long quote scrub target', { reported_wrong: [T.report()] });
   const long = 'long line ' + 'abcdefghij'.repeat(149) + 'END';
   const stream = `${T.dir}/long-scrub.jsonl`;
-  fs.writeFileSync(stream, `${JSON.stringify({ type: 'tool_result', content: long })}\n`);
+  fs.writeFileSync(stream, `${JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: long }] }] } })}\n`);
   const ok = await scrub('apply', [holdWrong(n, { cites: [{ where: `stream:${stream}`, quote: long }, { where: 'loader.js', quote: 'function load(name) {' }] })], null, { evidence_files: [stream] });
   assert.strictEqual(ok.refused.length, 0, JSON.stringify(ok.refused));
   assert.strictEqual(ok.applied[0].outcome, 'held');

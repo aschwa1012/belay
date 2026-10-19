@@ -63,12 +63,6 @@ function belayUseIds(lines) {
   for (const line of lines) if (line.includes('tool_use')) for (const b of blocksOf(line)) if (b.use && BELAY_TOOL.test(b.name)) ids.add(b.use);
   return ids;
 }
-function withoutBelayResults(raw) {
-  const lines = raw.split('\n');
-  const ids = belayUseIds(lines);
-  if (!ids.size) return raw;
-  return lines.filter(line => !(line.includes('tool_result') && blocksOf(line).some(b => b.id !== undefined && ids.has(b.id)))).join('\n');
-}
 // A reviewer reads a stream as raw JSON lines, where a quote mark, backslash, newline or tab is escaped, and may copy the line as it
 // saw it. A quote is therefore compared as written and with the JSON string escapes decoded (\" \\ \/ \b \f \n \r \t \uXXXX);
 // both forms are checked against the decoded tool-result text, so nothing is accepted that is not there.
@@ -187,18 +181,18 @@ async function checkCitations(cites, ctx) {
       if (!cache.has(c.where)) {
         try {
           const st = fs.statSync(want);
-          if (st.size > FILE_MAX) cache.set(c.where, { error: `the stream file is over ${FILE_MAX} bytes` });
-          else cache.set(c.where, { text: withoutBelayResults(fs.readFileSync(want, 'utf8')) });
+          cache.set(c.where, st.size > FILE_MAX ? { error: `the stream file is over ${FILE_MAX} bytes` } : {});
         } catch (e) { cache.set(c.where, { error: `cannot read it (${e.code || e.message})` }); }
       }
       const got = cache.get(c.where);
       if (got.error) throw fail(got.error);
       // A stream carries the note's own index line, and quoting that back proves nothing. A file read at the head commit
       // is evidence even when the note quoted the same line, so this applies to streams only.
-      if (selfQuoted(ctx.own, ctx.title, quote)) throw fail('the quote is the note\'s own text, which cannot be evidence about the note');
-      // A stream is JSON lines: a quote with a quote mark or a newline in it is stored escaped.
-      const escaped = JSON.stringify(c.quote.trim()).slice(1, -1);
-      if (!norm(got.text).includes(quote) && !got.text.includes(escaped)) throw fail('the quote does not appear in that stream');
+      if (selfQuoted(ctx.own, ctx.title, c.quote)) throw fail('the quote is the note\'s own text, which cannot be evidence about the note');
+      // The same search as a note review: decoded tool results only, JSON escapes tolerated, belay's own tools excluded. The JSON
+      // structure of the stream (braces, field names, ids) is not something a tool printed, so it is no evidence.
+      const r = streamResultHas(want, c.quote);
+      if (!r.found) throw fail(r.reason);
       out.push({ where: c.where, source: 'stream' });
       continue;
     }
@@ -227,4 +221,4 @@ function evidenceOf(args) {
   return { head_sha: head || null, worktree: wt || null, evidence_files: ev || [] };
 }
 
-module.exports = { checkCitations, evidenceOf, checkTaskCites, checkShape, streamResultHas, selfQuoted, withoutBelayResults, seam };
+module.exports = { checkCitations, evidenceOf, checkTaskCites, checkShape, streamResultHas, selfQuoted, seam };
