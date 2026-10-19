@@ -124,15 +124,16 @@ async function noteVerdicts(E, caller, args) {
   guard(E, caller);
   const route = routeOf(E, args || {}, caller);
   if (!REF_RE.test(route.ref)) throw bad(`review reference ${route.ref} is not a valid receipt reference`);
-  const out = { reviewer: route.reviewer, ref: route.ref, applied: [], refused: [], already: [], unjudged: [] };
+  const out = { reviewer: route.reviewer, ref: route.ref, applied: [], refused: [], already: [], unjudged: [], refused_open: [] };
   if (route.verdicts === null) { out.no_verdicts = true; }
   else if (!Array.isArray(route.verdicts) || route.verdicts.length > VERDICTS_MAX) throw bad(`memory_verdicts must be an array of at most ${VERDICTS_MAX} verdicts`);
   RV.validateReportVerdicts(route.reportVerdicts); // all or nothing: a malformed report list is refused before any note verdict is written
-  const seen = new Set();
+  const seen = new Set(), refusedIds = new Set();
   for (const [index, raw] of (route.verdicts || []).entries()) {
     const idOf = isObj(raw) && typeof raw.id === 'string' ? raw.id : null;
     const refuse = (e, n) => {
       const message = String(e.message).slice(0, 300);
+      if (idOf) refusedIds.add(idOf);
       out.refused.push({ index, id: idOf, code: codeOf(e), message, ...(e.detail ? { detail: e.detail } : {}) });
       try {
         recordEventSync(E, caller, { kind: 'note_review', ok: false, code: codeOf(e), run_id: (n && n.run_id) || caller.run_id, worker_id: route.reviewer, task_id: (n && n.task_id) || undefined, key: `${route.keyBase}:${idOf || index}`, row_ids: idOf ? [idOf] : undefined, message });
@@ -154,7 +155,11 @@ async function noteVerdicts(E, caller, args) {
   if (out.applied.length) E.noteWrite();
   const judged = new Set([...seen]);
   const proj = caller.run_id ? projectOf(E, caller) : null;
-  out.unjudged = F.notesUnderReview(E, route.scope, proj).map((x) => x.id).filter((id) => !judged.has(id));
+  // A note whose verdict was refused is counted once, in `refused`, never also in `unjudged`. It has no status change, so it stays under
+  // review and the next review is offered it again; `refused_open` names those ids so that does not depend on `unjudged`.
+  const under = F.notesUnderReview(E, route.scope, proj).map((x) => x.id);
+  out.refused_open = under.filter((id) => refusedIds.has(id));
+  out.unjudged = under.filter((id) => !judged.has(id) && !refusedIds.has(id));
   await RV.applyReportVerdicts(E, caller, route, route.reportVerdicts, proj, out); // reports of "wrong" about other notes: upheld holds, rejected leaves a receipt
   return out;
 }
