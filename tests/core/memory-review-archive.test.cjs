@@ -325,7 +325,7 @@ test('a 1500-byte verbatim quote is accepted by the archive review apply path', 
   await hold(wrong(n));
   const long = 'long line ' + 'abcdefghij'.repeat(149) + 'END';
   const stream = `${T.dir}/long-review.jsonl`;
-  fs.writeFileSync(stream, `${JSON.stringify({ type: 'tool_result', content: long })}\n`);
+  fs.writeFileSync(stream, `${JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: long }] }] } })}\n`);
   assert.strictEqual(Buffer.byteLength(long), 1503);
   const ok = await review([archiveV(n, { cites: [{ where: `stream:${stream}`, quote: long }] })], { evidence_files: [stream] });
   assert.strictEqual(ok.refused.length, 0, JSON.stringify(ok.refused));
