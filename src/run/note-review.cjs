@@ -117,7 +117,7 @@ async function finishJob(core, { workerId, taskId, text, cost, cap }) {
   const ids = out.applied.map((a) => a.id);
   const rv = out.report_verdicts;
   const rids = rv ? rv.applied.map((a) => a.id) : [];
-  return receipt(core, { ok: true, ...base, row_ids: ids.length || rids.length ? [...ids, ...rids] : undefined, message: `applied ${out.applied.length}, refused ${out.refused.length}, already ${out.already.length}, unjudged ${out.unjudged.length}${rv && !rv.none ? `; reports applied ${rv.applied.length}, refused ${rv.refused.length}, unjudged ${rv.unjudged.length}` : ''}${typeof cost === 'number' ? `; cost $${cost.toFixed(4)}` : ''}` });
+  return receipt(core, { ok: true, ...base, row_ids: ids.length || rids.length ? [...ids, ...rids] : undefined, message: `applied ${out.applied.length}, refused ${out.refused.length}, already ${out.already.length}, unjudged ${out.unjudged.length}, refused_open ${(out.refused_open || []).length}${rv && !rv.none ? `; reports applied ${rv.applied.length}, refused ${rv.refused.length}, unjudged ${rv.unjudged.length}, refused_open ${(rv.refused_open || []).length}` : ''}${typeof cost === 'number' ? `; cost $${cost.toFixed(4)}` : ''}` });
 }
 
 // ---- the job ----------------------------------------------------------------------------------------------------

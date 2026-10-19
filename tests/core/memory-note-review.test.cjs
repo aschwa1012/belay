@@ -175,7 +175,17 @@ test('R8: scope and liveness: a note of another task, a pending note and an unkn
   const out = await apply(rt);
   assert.deepStrictEqual(out.refused.map((r) => r.code), ['E_ARGS', 'E_NOT_FOUND', 'E_ARGS']);
   assert.match(out.refused[0].message, /does not cover/);
-  assert.deepStrictEqual(out.unjudged, [w.note], 'the note the reviewer did not judge is named, and nothing about it changed');
+  assert.deepStrictEqual(out.unjudged, [], 'a refused verdict is counted once, in refused, never also in unjudged');
+  assert.deepStrictEqual(out.refused_open, [w.note], 'the refused note stays under review and is named for the next review');
+  assert.ok(!rowOf(w.note).status || rowOf(w.note).status === 'unverified');
+});
+
+test('R8b: one note with a shape-refused verdict is refused 1 and unjudged 0, and a note given no verdict is still unjudged', async () => {
+  const w = await written('w-h3', 'K9b');
+  const bare = await apply(await review('rev-h3', w.task, [{ id: w.note, verdict: 'maybe', cites: [], reason: 'x' }]));
+  assert.deepStrictEqual([bare.applied.length, bare.refused.length, bare.already.length, bare.unjudged.length], [0, 1, 0, 0]);
+  const none = await apply(await review('rev-h4', w.task, []));
+  assert.deepStrictEqual([none.refused.length, none.unjudged, none.refused_open], [0, [w.note], []]);
 });
 
 test('R9: applying the same review twice writes once', async () => {
