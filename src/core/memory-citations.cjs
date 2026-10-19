@@ -69,13 +69,27 @@ function withoutBelayResults(raw) {
   if (!ids.size) return raw;
   return lines.filter(line => !(line.includes('tool_result') && blocksOf(line).some(b => b.id !== undefined && ids.has(b.id)))).join('\n');
 }
+// A reviewer reads a stream as raw JSON lines, where a quote mark, backslash, newline or tab is escaped, and may copy the line as it
+// saw it. A quote is therefore compared as written and with the JSON string escapes decoded (\" \\ \/ \b \f \n \r \t \uXXXX);
+// both forms are checked against the decoded tool-result text, so nothing is accepted that is not there.
+const JSON_ESCAPE = /\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))/g;
+const SIMPLE = { b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
+function unescapeJson(s) {
+  return String(s).replace(JSON_ESCAPE, (m, hex, c) => (hex ? String.fromCharCode(parseInt(hex, 16)) : SIMPLE[c] || c));
+}
+function quoteForms(quote) {
+  const a = norm(quote);
+  const b = norm(unescapeJson(quote));
+  return b && b !== a ? [a, b] : [a];
+}
 // The note's own words are no evidence about it, in a stream: a quote held by its title, text or evidence, or one that holds its
 // title. (A file at the head commit is evidence even when it contains the same words, so files never come here.)
 function selfQuoted(own, title, quote) {
-  const q = norm(quote).toLowerCase();
-  if ((own || []).some(t => norm(t).toLowerCase().includes(q))) return true;
   const t = title ? norm(title).toLowerCase() : '';
-  return t.length >= 12 && q.includes(t);
+  return quoteForms(quote).some(form => {
+    const q = form.toLowerCase();
+    return (own || []).some(o => norm(o).toLowerCase().includes(q)) || (t.length >= 12 && q.includes(t));
+  });
 }
 // The shape of a cites array, checked before any read. Returns { cites } or { error }.
 function checkShape(cites) {
@@ -103,10 +117,14 @@ function streamResultHas(file, quote) {
   if (raw.length > FILE_MAX * 8) return { found: false, reason: 'the stream is too large to search' };
   const lines = raw.split('\n');
   const belay = belayUseIds(lines);
-  const q = norm(quote);
+  const forms = quoteForms(quote);
   for (const line of lines) {
     if (!line.includes('tool_result')) continue;
-    for (const b of blocksOf(line)) if (b.text !== undefined && !(b.id !== undefined && belay.has(b.id)) && norm(b.text).includes(q)) return { found: true };
+    for (const b of blocksOf(line)) {
+      if (b.text === undefined || (b.id !== undefined && belay.has(b.id))) continue;
+      const t = norm(b.text);
+      if (forms.some(q => t.includes(q))) return { found: true };
+    }
   }
   return { found: false, reason: 'the quote is in no tool result of that stream (results of belay\'s own tools are not evidence)' };
 }
