@@ -44,17 +44,21 @@ function workerRowCount(dataDir, id) {
 
 const killIfAlive = (handle) => { if (handle) require('../crash.cjs').crash(handle); }; // ADR 0039: the live handle, never a bare pid
 
-test('run close: a worker row left stopping over a dead pid, its adapter gone, is closed by the run (S8 shape)', async () => {
+async function s8Scenario({ stallSetupMs = 0 }) { // checks run before the sandbox goes
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, wt, runId, orchestratorDir } = makeSpec(dir, { close_grace_ms: 60000 }); // never the factor: the adapter's death is what the run waits for
   const head = gitInit(wt);
-  const run = runCli(specPath, dataDir, { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '5000' });
+  // The orchestrator's turn ends when the test says so (the gate file), never when a timer happens to fire: the
+  // adapter must be attached and the rows written before the turn ends, and a slow setup must not change that.
+  const gate = `${dir}/answer.gate`;
+  const run = runCli(specPath, dataDir, { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_GATE_FILE: gate });
   let core = null;
   let adapter = null;
   let worker = null;
   try {
     core = await connectOrchestratorCore(dataDir, runId);
+    if (stallSetupMs) await sleep(stallSetupMs); // fault injection: the setup calls arrive late, as on a saturated host
     // The orchestrator's adapter: a process whose pid is the run row's adapter_pid, alive for a while yet.
     adapter = sleeper(30000);
     await core.run.attach({ adapter_pid: adapter.pid });
@@ -63,6 +67,7 @@ test('run close: a worker row left stopping over a dead pid, its adapter gone, i
     await core.worker.write({ id: 'w-s8', run_id: runId, substrate: 'claude-code', pid: worker.pid, pid_image: 'node.exe', state: 'running', worktree: wt, turns: 0, started_at: t });
     await core.worker.write({ id: 'w-s8', state: 'stopping' });
     const seqBefore = workerRowCount(dataDir, 'w-s8');
+    fs.writeFileSync(gate, 'go'); // setup is complete: now the orchestrator's turn may end
 
     assert.ok(await waitForFileLine(`${orchestratorDir}/stream.jsonl`, '"type":"result"', 120000), 'the orchestrator turn never ended');
     // The shutdown is cut off: the worker is gone, and no final row will be written.
@@ -79,32 +84,77 @@ test('run close: a worker row left stopping over a dead pid, its adapter gone, i
     assert.ok(adapterExitAt && adapterKilledAt, 'the stand-in adapter was never killed');
     const receipt = receiptOf(run, exited.code);
 
-    assert.strictEqual(exited.code, 0, `exit ${exited.code}; ended_by: ${receipt.ended_by}`);
-    const wc = receipt.workers_closed;
-    assert.ok(wc, 'the receipt carries workers_closed');
-    assert.strictEqual(wc.adapter_pid, adapter.pid);
-    assert.strictEqual(wc.adapter_gone, true);
-    assert.deepStrictEqual(wc.killed, []);
-    assert.strictEqual(wc.marked_dead.length, 1);
-    assert.strictEqual(wc.marked_dead[0].worker_id, 'w-s8');
-    assert.strictEqual(wc.marked_dead[0].from_state, 'stopping');
-    assert.strictEqual(wc.marked_dead[0].head_sha, head);
-    // run.end waited for the adapter: the run closed no earlier than the kill that ended it was issued
-    // (clocks of two processes, so a quarter second of slack). A run that did not wait ends before it.
-    assert.ok(receipt.store.ended.ended_at >= adapterKilledAt - 250, `run.end ran ${adapterKilledAt - receipt.store.ended.ended_at} ms before the adapter was killed`);
-
-    const w = workerRow(dataDir, 'w-s8');
-    assert.strictEqual(w.state, 'dead');
-    assert.strictEqual(w.death_established_by, `run.end: pid ${worker.pid} not alive when the run ended; no adapter wrote its exit (ADR 0029)`);
-    assert.strictEqual(w.head_sha, head);
-    assert.ok(Number.isInteger(w.exited_at));
-    assert.strictEqual(w.exit_code, null);
-    assert.strictEqual(workerRowCount(dataDir, 'w-s8'), seqBefore + 1, 'exactly one row was appended');
-    assert.ok(!fs.existsSync(`${dataDir}/owner.lock`));
-    assert.match(fs.readFileSync(`${orchestratorDir}/run.json`, 'utf8'), /"workers_closed"/);
+    checkS8({ exited, receipt, adapter, worker, adapterKilledAt, head, seqBefore, dataDir, orchestratorDir });
   } finally {
     await releaseCore(core);
     killIfAlive(worker && worker.child); killIfAlive(adapter && adapter.child);
+    if (run.proc.exitCode === null) { try { await P.killTree(run.proc); } catch { /* best effort */ } }
+    cleanup(dir);
+  }
+}
+
+function checkS8(r) {
+  const { exited, receipt, adapter, worker, adapterKilledAt, head, seqBefore, dataDir, orchestratorDir } = r;
+  assert.strictEqual(exited.code, 0, `exit ${exited.code}; ended_by: ${receipt.ended_by}`);
+  const wc = receipt.workers_closed;
+  assert.ok(wc, 'the receipt carries workers_closed');
+  assert.strictEqual(wc.adapter_pid, adapter.pid);
+  assert.strictEqual(wc.adapter_gone, true);
+  assert.deepStrictEqual(wc.killed, []);
+  assert.strictEqual(wc.marked_dead.length, 1);
+  assert.strictEqual(wc.marked_dead[0].worker_id, 'w-s8');
+  assert.strictEqual(wc.marked_dead[0].from_state, 'stopping');
+  assert.strictEqual(wc.marked_dead[0].head_sha, head);
+  // run.end waited for the adapter: the run closed no earlier than the kill that ended it was issued
+  // (clocks of two processes, so a quarter second of slack). A run that did not wait ends before it.
+  assert.ok(receipt.store.ended.ended_at >= adapterKilledAt - 250, `run.end ran ${adapterKilledAt - receipt.store.ended.ended_at} ms before the adapter was killed`);
+
+  const w = workerRow(dataDir, 'w-s8');
+  assert.strictEqual(w.state, 'dead');
+  assert.strictEqual(w.death_established_by, `run.end: pid ${worker.pid} not alive when the run ended; no adapter wrote its exit (ADR 0029)`);
+  assert.strictEqual(w.head_sha, head);
+  assert.ok(Number.isInteger(w.exited_at));
+  assert.strictEqual(w.exit_code, null);
+  assert.strictEqual(workerRowCount(dataDir, 'w-s8'), seqBefore + 1, 'exactly one row was appended');
+  assert.ok(!fs.existsSync(`${dataDir}/owner.lock`));
+  assert.match(fs.readFileSync(`${orchestratorDir}/run.json`, 'utf8'), /"workers_closed"/);
+}
+
+test('run close: a worker row left stopping over a dead pid, its adapter gone, is closed by the run (S8 shape)', async () => {
+  await s8Scenario({});
+});
+
+// The suspected race (ADR 0051): the S8 shape failed once under load. The cause is the test's setup racing the
+// orchestrator's turn, not the product: a timer ended the turn 5 s after spawn, and a setup slower than that
+// attached the adapter after the run had already read its row. Gated, the same stalled setup gives the S8 result.
+test('run close: a setup stalled past any timer still gives the S8 result when the test gates the turn end', async () => {
+  await s8Scenario({ stallSetupMs: 4000 });
+});
+
+// The interleaving itself, forced: the setup is slower than the orchestrator's turn (a timer of 300 ms against a 4 s
+// stall). The run closes at once, with no adapter registered, before the late attach: the
+// product promises a wait only for the adapter the run row names when the close reads it. This is what the old
+// 5 s timer made possible on a saturated host, and why the turn end is gated above.
+test('run close: a setup slower than the orchestrator turn finds the run closed, the adapter never waited for', async () => {
+  const dir = sandbox();
+  const dataDir = `${dir}/.belay`;
+  const { specPath, runId } = makeSpec(dir, { close_grace_ms: 60000 });
+  const run = runCli(specPath, dataDir, { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '300' });
+  let core = null;
+  let adapter = null;
+  try {
+    core = await connectOrchestratorCore(dataDir, runId);
+    adapter = sleeper(30000);
+    const exited = await waitForExit(run.proc, 120000); // the stall: the run runs to its end before the setup's first call
+    assert.ok(exited, `belay run did not exit; stderr: ${run.stderr.slice(-1500)}`);
+    await core.run.attach({ adapter_pid: adapter.pid }).catch(() => null); // lands on a store the run has already ended, or on none
+    const receipt = receiptOf(run, exited.code);
+    assert.strictEqual(exited.code, 0);
+    assert.notStrictEqual(receipt.workers_closed.adapter_pid, adapter.pid);
+    assert.ok(P.pidAlive(adapter.pid), 'the run touched a process it never owned');
+  } finally {
+    await releaseCore(core);
+    killIfAlive(adapter && adapter.child);
     if (run.proc.exitCode === null) { try { await P.killTree(run.proc); } catch { /* best effort */ } }
     cleanup(dir);
   }
