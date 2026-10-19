@@ -35,7 +35,7 @@ test('closeRunWorkers: the worker rows are listed again after the adapter wait, 
   assert.deepStrictEqual(core.calls, ['run.get', 'worker.list'], 'the close is parked in the adapter wait, before the second listing');
   gate.resolve(); // the adapter wrote the worker final row while it was waited for
   const out = await p;
-  assert.deepStrictEqual(core.calls, ['run.get', 'worker.list', 'worker.list']);
+  assert.deepStrictEqual(core.calls, ['run.get', 'worker.list', 'worker.list', 'run.get'], 'the last run.get is the late-adapter check');
   assert.deepStrictEqual(killed, [], 'a worker the adapter closed during the wait is not killed');
   assert.deepStrictEqual(out.killed, []);
   assert.strictEqual(out.adapter_gone, true);
@@ -43,7 +43,9 @@ test('closeRunWorkers: the worker rows are listed again after the adapter wait, 
 
 test('closeRunWorkers: a worker whose pid is dead when a slow second listing lands is not killed', async () => {
   const gate = deferred();
-  const core = fakeCore({ adapterPid: null, lists: [[row()], async () => { await gate.promise; return [row()]; }] });
+  // The first listing shows the row with a live pid (this process), the slow second one the same worker with a dead pid. A close
+  // that reused its first listing would kill the live pid; the one that lists again acts on the second.
+  const core = fakeCore({ adapterPid: null, lists: [[row({ state: 'running', pid: process.pid })], async () => { await gate.promise; return [row({ state: 'running' })]; }] });
   let killCalls = 0;
   const p = closeRunWorkers({ core, runId: 'r1', graceMs: 1000, deps: { killProcess: async () => { killCalls += 1; return {}; } } });
   await tick(); await tick();
@@ -52,4 +54,29 @@ test('closeRunWorkers: a worker whose pid is dead when a slow second listing lan
   assert.strictEqual(killCalls, 0);
   assert.deepStrictEqual(out.killed, []);
   assert.deepStrictEqual(out.errors, []);
+});
+
+// ADR 0029 amendment 4 (proposed): an adapter whose attach landed while the close ran is not the one the close first read.
+// The row is read again before run.end; the late adapter is waited for, and its workers listed and closed after it.
+test('closeRunWorkers: an adapter that registers while the close runs is waited for before the close returns', async () => {
+  const gets = [null, process.pid, process.pid]; // the run row names no adapter, then (attach landed) a live one
+  const calls = [];
+  const core = {
+    run: { get: async () => { calls.push('run.get'); return { run: { adapter_pid: gets.shift() } }; } },
+    worker: { list: async () => { calls.push('worker.list'); return { workers: [] }; } },
+  };
+  const waited = [];
+  const out = await closeRunWorkers({ core, runId: 'r1', graceMs: 1000, ownPid: -1, deps: { waitPidGone: async (pid) => { waited.push(pid); return 7; }, killProcess: async () => ({}) } });
+  assert.deepStrictEqual(waited, [process.pid], 'the late adapter was waited for');
+  assert.strictEqual(out.adapter_pid, process.pid);
+  assert.strictEqual(out.late_adapter_pid, process.pid);
+  assert.strictEqual(out.adapter_gone, true);
+  assert.ok(calls.filter((c) => c === 'worker.list').length >= 4, 'the workers were listed again after the late adapter');
+});
+
+test('closeRunWorkers: a run row that still names the handled adapter is not waited for twice', async () => {
+  const core = fakeCore({ adapterPid: process.pid, lists: [[], [], [], []] });
+  const waited = [];
+  await closeRunWorkers({ core, runId: 'r1', graceMs: 1000, ownPid: -1, deps: { waitPidGone: async (pid) => { waited.push(pid); return 3; }, killProcess: async () => ({}) } });
+  assert.deepStrictEqual(waited, [process.pid]);
 });

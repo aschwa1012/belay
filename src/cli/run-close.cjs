@@ -43,7 +43,29 @@ const claimsLiveProcess = (w) => LIFE_CLAIMING_STATES.has(w.state) && hasProcess
 // `deps` is a test seam for the kill mechanics. `fast` (ADR 0037 decision 6, the console closing) is
 // { requested(): bool, leftMs?(): ms the close has left, which cuts each kill wait } and is additive: absent, nothing changes. A fast close skips
 // the adapter wait (the adapter is already gone) or cuts it short when the request arrives during it.
-async function closeRunWorkers({ core, runId, graceMs, ownPid = process.pid, deps = {}, fast = null, noteReview = false }) {
+async function closeRunWorkers(opts) {
+  // ADR 0029 amendment 4 (proposed): an adapter that attached while this close ran (its first core call was in flight when
+  // the orchestrator ended) is not the one the close read. The row is read once more before run.end: an adapter that
+  // registered since, alive and not this process, is waited for and its workers closed by the same rule, at most twice.
+  let out = await closeRunWorkersOnce(opts);
+  for (let round = 0; round < 2 && !(opts.fast && opts.fast.requested()); round += 1) {
+    const late = await lateAdapterPid(opts.core, out.adapter_pid, opts.ownPid === undefined ? process.pid : opts.ownPid);
+    if (late == null) break;
+    const more = await closeRunWorkersOnce(opts);
+    out = { ...more, adapter_wait_ms: out.adapter_wait_ms + more.adapter_wait_ms, killed: [...out.killed, ...more.killed], still_alive: [...out.still_alive, ...more.still_alive], errors: [...out.errors, ...more.errors], late_adapter_pid: late };
+  }
+  return out;
+}
+
+async function lateAdapterPid(core, handledPid, ownPid) {
+  try {
+    const got = await core.run.get();
+    const pid = got && got.run ? got.run.adapter_pid : null;
+    return Number.isInteger(pid) && pid !== handledPid && pid !== ownPid && pidAlive(pid) ? pid : null;
+  } catch { return null; } // run.end follows and reports its own failure
+}
+
+async function closeRunWorkersOnce({ core, runId, graceMs, ownPid = process.pid, deps = {}, fast = null, noteReview = false }) {
   const { killProcess, waitPidGone, withKillLock } = { ...processDefaults, ...deps };
   const { rowTarget } = processDefaults;
   const cut = { v: false }; // set when the budget's race timer fires or finalizeCut runs: a snapshot landing after it signals nothing

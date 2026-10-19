@@ -15,7 +15,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const H = require('./stop-helpers.cjs');
 const P = require('../../src/run/process.cjs');
 
-const { ROOT, sleep, sandbox, cleanup, waitUntil, waitForFileLine, waitForExit, makeSpec, runCli, receiptOf, connectOrchestratorCore, readStoreCopy, releaseCore } = H;
+const { ROOT, sleep, sandbox, cleanup, waitUntil, waitForFileLine, waitForExit, makeSpec, runCli, receiptOf, connectOrchestratorCore, readStoreCopy, releaseCore, currentRunRow } = H;
 const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
 const SHA_RE = /^[0-9a-f]{40,64}$/;
 
@@ -36,6 +36,10 @@ function sleeper(ms) {
 
 function workerRow(dataDir, id) {
   return readStoreCopy(dataDir, (db) => db.prepare('SELECT * FROM worker WHERE id = ? ORDER BY seq DESC LIMIT 1').get(id) || null);
+}
+
+function runRowCount(dataDir, runId) {
+  return readStoreCopy(dataDir, (db) => db.prepare('SELECT COUNT(*) AS n FROM run WHERE id = ?').get(runId).n);
 }
 
 function workerRowCount(dataDir, id) {
@@ -80,7 +84,9 @@ async function s8Scenario({ stallSetupMs = 0 }) { // checks run before the sandb
 
     const exited = await waitForExit(run.proc, 120000);
     assert.ok(exited, `belay run did not exit; stderr: ${run.stderr.slice(-1500)}`);
-    const adapterExitAt = await Promise.race([adapter.exitAt, sleep(60000).then(() => null)]);
+    let giveUp = null; // the losing timer of the race is cleared, or it keeps the test process alive 60 s past the scenario
+    const adapterExitAt = await Promise.race([adapter.exitAt, new Promise((r) => { giveUp = setTimeout(() => r(null), 60000); })]);
+    clearTimeout(giveUp);
     assert.ok(adapterExitAt && adapterKilledAt, 'the stand-in adapter was never killed');
     const receipt = receiptOf(run, exited.code);
 
@@ -131,10 +137,12 @@ test('run close: a setup stalled past any timer still gives the S8 result when t
   await s8Scenario({ stallSetupMs: 4000 });
 });
 
-// The interleaving itself, forced: the setup is slower than the orchestrator's turn (a timer of 300 ms against a 4 s
-// stall). The run closes at once, with no adapter registered, before the late attach: the
-// product promises a wait only for the adapter the run row names when the close reads it. This is what the old
-// 5 s timer made possible on a saturated host, and why the turn end is gated above.
+// The interleaving itself, forced: the adapter's first core call (its attach) is in flight while the orchestrator's turn
+// ends. The run closes at once, with no adapter registered: the product promises a wait only for the adapter the run row
+// names when the close reads it. The late attach must then be refused (ADR 0029 amendment 4, proposed): before, it
+// reopened the run as epoch 2 with ended_at null and made the late caller the store owner, so `status` reported a run
+// that had ended as never ended. This is also what the old 5 s timer made possible on a saturated host, and why the
+// turn end is gated above.
 test('run close: a setup slower than the orchestrator turn finds the run closed, the adapter never waited for', async () => {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
@@ -147,7 +155,15 @@ test('run close: a setup slower than the orchestrator turn finds the run closed,
     adapter = sleeper(30000);
     const exited = await waitForExit(run.proc, 120000); // the stall: the run runs to its end before the setup's first call
     assert.ok(exited, `belay run did not exit; stderr: ${run.stderr.slice(-1500)}`);
-    await core.run.attach({ adapter_pid: adapter.pid }).catch(() => null); // lands on a store the run has already ended, or on none
+    const endedBefore = currentRunRow(dataDir, runId);
+    assert.ok(endedBefore && endedBefore.ended_at != null, 'the run row is ended before the late attach');
+    const rowsBefore = runRowCount(dataDir, runId);
+    await assert.rejects(core.run.attach({ adapter_pid: adapter.pid }), (e) => e.code === 'E_ARGS' && /already ended/.test(e.message), 'a late attach after run.end is refused');
+    const after = currentRunRow(dataDir, runId);
+    assert.strictEqual(after.seq, endedBefore.seq, 'the refused attach wrote no row');
+    assert.strictEqual(runRowCount(dataDir, runId), rowsBefore);
+    assert.notStrictEqual(after.ended_at, null, 'the run is still ended');
+    assert.notStrictEqual(after.adapter_pid, adapter.pid);
     const receipt = receiptOf(run, exited.code);
     assert.strictEqual(exited.code, 0);
     assert.notStrictEqual(receipt.workers_closed.adapter_pid, adapter.pid);

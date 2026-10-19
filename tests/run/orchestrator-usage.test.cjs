@@ -100,7 +100,7 @@ test('orchestrator usage: a fake belay run ends with the orch_* columns on its r
 // ---------------------------------------------------------------- (r9)
 test('run.end: a non-numeric usage field is dropped and named in invalid_usage, and the run is still ended', async () => {
   const dir = sandbox();
-  const core = await openCore({ dataDir: `${dir}/.belay`, caller: { role: 'orchestrator', run_id: 'run-r9', pid: process.pid } });
+  const core = await openCore({ dataDir: `${dir}/.belay`, caller: { role: 'operator', run_id: 'run-r9', pid: process.pid } });
   try {
     // A usage problem never stops a run ending (amendment 1, SF2): each bad case ends its own epoch.
     const endWith = async (usage, field) => {

@@ -80,6 +80,12 @@ async function attach(E, caller, args) {
   const runId = caller.run_id;
   const t = Date.now();
   const prev = rows.current(E.store, 'run', runId);
+  // ADR 0029 amendment 4 (proposed): an ended run stays ended. Only the run process (role operator, the launching attach of
+  // a re-run) opens a new epoch over an ended one; the orchestrator's adapter, whose first core call can land after the
+  // run closed, is refused. A refusal writes nothing, so the late caller reopens nothing and the run reads as ended.
+  if (prev && prev.ended_at != null && caller.role === 'orchestrator') {
+    throw err('E_ARGS', `run ${runId} has already ended; an orchestrator adapter cannot reopen it`, { run_id: runId, ended_at: prev.ended_at, epoch: prev.epoch });
+  }
   const epoch = prev ? Number(prev.epoch || 0) + 1 : 1;
   const by = E.writtenBy(caller);
 

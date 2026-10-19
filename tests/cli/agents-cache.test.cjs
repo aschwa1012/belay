@@ -407,7 +407,8 @@ test('mode: with epochs from the real core, epoch 2 reading epoch 1\'s appended 
     const row = async () => (await orch.run.list({})).runs.find((r) => r.id === RUN);
     const e1 = await row();
     await orch.run.end({ exit_reason: 'idle' });
-    await orch.run.attach({ adapter_pid: process.pid });
+    const runProc = await openCore({ dataDir, caller: { role: 'operator', run_id: RUN, pid: process.pid }, embed: false }); // only the run process reopens an ended run
+    try { await runProc.run.attach({ adapter_pid: process.pid }); } finally { await runProc.close(); }
     const e2 = await row();
     assert.strictEqual(e1.epoch, 1);
     assert.strictEqual(e2.epoch, 2);

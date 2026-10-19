@@ -250,7 +250,7 @@ test('receipts: reading creates no file and changes no byte in the data dir', gu
   // SF1: the same check while an owner is alive for the data dir. The owner's own checkpoint changes
   // memory.db bytes, so the comparison is the sorted file NAMES (as observe.test.cjs's checked()), and
   // the CLI is spawned asynchronously so this process's owner can answer it.
-  const orch = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: 'run-f', pid: process.pid } });
+  const orch = await openCore({ dataDir, caller: { role: 'operator', run_id: 'run-f', pid: process.pid } }); // the run process: only it reopens an ended run
   try {
     await orch.run.attach({ adapter_pid: process.pid });
     const names = () => listRecursive(dataDir);
