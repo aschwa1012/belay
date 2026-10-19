@@ -88,7 +88,7 @@ function selfQuoted(own, title, quote) {
   const t = title ? norm(title).toLowerCase() : '';
   return quoteForms(quote).some(form => {
     const q = form.toLowerCase();
-    return (own || []).some(o => norm(o).toLowerCase().includes(q)) || (t.length >= 12 && q.includes(t));
+    return (own || []).some(o => quoteForms(o).some(of => of.toLowerCase().includes(q))) || (t.length >= 12 && q.includes(t));
   });
 }
 // The shape of a cites array, checked before any read. Returns { cites } or { error }.
