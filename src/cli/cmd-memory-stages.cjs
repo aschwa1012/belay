@@ -65,6 +65,7 @@ function renderStage(name, o) {
   if (o.result) lines.push(`  ${o.mode || ''} ${JSON.stringify(o.result.counts)}${o.result.refused && o.result.refused.length ? `  refused: ${o.result.refused.map((r) => `${r.id} ${r.code}`).join(', ')}` : ''}`.replace(/^ {2} /, '  '));
   if (typeof o.cost === 'number') lines.push(`  cost: $${o.cost.toFixed(4)}`);
   if (o.alarm) lines.push(`  ALARM: ${one(o.alarm.message)}`);
+  if (o.survivor) lines.push(`  child pid ${o.survivor} is still alive after its kill (stop it by that pid)`);
   if (o.error) lines.push(`  failed: ${o.error.code}: ${one(o.error.message)}${o.owed && o.owed.length ? `; ${o.owed.length} item(s) owed to the next scrub` : ''}`);
   else if (o.owed && o.owed.length) lines.push(`  ${o.owed.length} item(s) over the cap are owed to the next scrub`);
   return `${lines.join('\n')}\n`;
@@ -83,7 +84,7 @@ async function runStage(which, core, parsed, ctx, found) {
     const common = { core: h, runId: s.runId, lv: s.lv, dataDir: s.dataDir, getManager, worktree: s.worktree };
     if (which === 'review') return await require('./review-run.cjs').claimedReview({ s, project: s.project, ctx, common, runReview: require('../run/review-stage.cjs').runReview, renderStage });
     const out = await require('../run/scrub-stage.cjs').runScrub({ ...common, goal: parsed.opts.goal || null, summary: parsed.opts.summary || null });
-    return { code: out.error ? 1 : 0, text: renderStage(which, out), json: { run_id: s.runId, ...out } };
+    return { code: out.error || out.survivor ? 1 : 0, text: renderStage(which, out), json: { run_id: s.runId, ...out } };
   } finally { await release(s.rc); }
 }
 

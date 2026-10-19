@@ -196,3 +196,22 @@ test('without --run the newest ENDED run with notes on is used; a live run is re
     assert.strictEqual(ended.code, 0, ended.text);
   });
 });
+
+// A stage whose only problem is a child that survived its kill is exit 1 (invariant 5), with the pid named.
+test('scrub by hand: a child that survives its kill is the only failure, and the exit is 1 with the pid', async () => {
+  const { spawn } = require('node:child_process');
+  await planted(async (T) => {
+    pending(T, 'pending whose child will not die');
+    T.store.close();
+    const kid = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
+    try {
+      const m = fakeManager('');
+      m.spawn = async (a) => { m.spawned.push(a); m.rec = { lastAssistantText: JSON.stringify({ scrub: [] }), costUsd: 0.01, pid: kid.pid }; return {}; };
+      const r = await cmd(T, ['scrub', '--run', 'lc-apply'], { makeManager: async () => m });
+      assert.strictEqual(r.json.error, undefined, 'the stage itself succeeded');
+      assert.strictEqual(r.json.survivor, kid.pid);
+      assert.strictEqual(r.code, 1, r.text);
+      assert.match(r.text, new RegExp(`child pid ${kid.pid} is still alive`));
+    } finally { kid.kill(); }
+  });
+});
