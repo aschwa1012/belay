@@ -107,7 +107,7 @@ async function claimedReview({ s, project, ctx, common, runReview, renderStage }
     release = (await s.rc.memory.reviewRelease({ project, claim_id: claim.id, ok: !failed, ...(failed ? { code: out.error ? out.error.code : 'E_SURVIVOR' } : {}), message: summary })).release;
   } catch (e) { notes.push(`the claim ${claim.id} could not be released: ${codeOf(e)}: ${one(e.message)}`); }
   const text = `${renderStage('review', out)}${notes.map((n) => `  ${one(n)}\n`).join('')}  claim: ${claim.id} (pid ${claim.pid}, job ${jobId})${release ? ' released' : ' NOT released'}\n`;
-  return { code: out.error ? 1 : 0, text, json: { run_id: s.runId, ...out, claim: { id: claim.id, project, pid: claim.pid, job: jobId, released: !!release, took_over: replaces }, ...(notes.length ? { notes } : {}) } };
+  return { code: failed ? 1 : 0, text, json: { run_id: s.runId, ...out, claim: { id: claim.id, project, pid: claim.pid, job: jobId, released: !!release, took_over: replaces }, ...(notes.length ? { notes } : {}) } };
 }
 
 // ---- the detached launcher -----------------------------------------------------------------------------------------------
