@@ -182,3 +182,50 @@ test('notices: the stall age is the newer of the row and the stream mtime; a row
     assert.ok(cli([RUN], dataDir, { json: false }).stdout.includes('by stream mtime'));
   } finally { cleanup(dir); }
 });
+
+test('notices: every read of one command is served from a single copy of the store', async () => {
+  const dir = sandbox();
+  const dataDir = `${dir}/.belay`;
+  try {
+    await plant(dataDir);
+    const copies = [];
+    const real = fs.copyFileSync;
+    fs.copyFileSync = (src, ...rest) => { if (/memory\.db$/.test(String(src))) copies.push(String(src)); return real.call(fs, src, ...rest); };
+    let r;
+    try { r = await N.run({ argv: [RUN], cwd: ROOT, dataDir, dataDirGiven: true }); } finally { fs.copyFileSync = real; }
+    assert.strictEqual(r.code, 0, r.text);
+    assert.ok(r.json.events.length > 0);
+    assert.strictEqual(copies.length, 1, `one copy of memory.db, saw ${copies.length}`);
+  } finally { cleanup(dir); }
+});
+
+test('readBatch commits to one source: the owner that answered first is never swapped for an older copy, and a batch on the copy never asks the owner', async () => {
+  const dir = sandbox();
+  const dataDir = `${dir}/.belay`;
+  try {
+    await plant(dataDir);
+    const copies = [];
+    const real = fs.copyFileSync;
+    fs.copyFileSync = (src, ...rest) => { if (/memory\.db$/.test(String(src))) copies.push(String(src)); return real.call(fs, src, ...rest); };
+    try {
+      // Owner first: the second read finds no owner. It fails loudly, and no copy is made.
+      const a = await openCore({ dataDir, caller: { role: 'operator', run_id: RUN, pid: process.pid }, embed: false });
+      let n = 0;
+      a._tryOwner = async () => (++n === 1 ? { ok: true, value: { runs: [] } } : { ok: false });
+      try {
+        await assert.rejects(a.readBatch(async () => { await a.run.list({}); await a.worker.list({}); }), (e) => e.code === 'E_OWNER_LOST');
+        assert.strictEqual(copies.length, 0, 'no fallback copy');
+      } finally { await a.close(); }
+      // Copy first: the owner is asked once, then never, though it would now answer with a newer row.
+      const b = await openCore({ dataDir, caller: { role: 'operator', run_id: RUN, pid: process.pid }, embed: false });
+      let asked = 0;
+      b._tryOwner = async () => { asked += 1; return asked === 1 ? { ok: false } : { ok: true, value: { workers: ['newer'] } }; };
+      try {
+        const got = await b.readBatch(async () => [await b.run.list({}), await b.worker.list({}), await b.task.list({})]);
+        assert.strictEqual(asked, 1, 'the owner was asked only by the first read');
+        assert.ok(got[1].workers.length > 0 && got[1].workers.every((w) => w !== 'newer'), 'served from the copy');
+        assert.strictEqual(copies.length, 1);
+      } finally { await b.close(); }
+    } finally { fs.copyFileSync = real; }
+  } finally { cleanup(dir); }
+});
