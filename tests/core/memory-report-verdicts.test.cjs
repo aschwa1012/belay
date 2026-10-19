@@ -148,7 +148,7 @@ test('P4: a cite that is not in the reporter task\'s evidence is E_CITATION and 
   assert.deepStrictEqual([out.report_verdicts.applied.length, out.report_verdicts.refused[0].code], [0, 'E_CITATION']);
   assert.strictEqual(bodyOf(a.note).held, undefined);
   assert.deepStrictEqual(out.report_verdicts.unjudged, [], 'refused once, not also unjudged');
-  assert.deepStrictEqual(out.report_verdicts.reoffer, [a.note], 'the report stays open and is named for the next review');
+  assert.deepStrictEqual(out.report_verdicts.refused_open, [a.note], 'the report stays open and is named for the next review');
   assert.strictEqual((await call('memory.held', orch, { reports: true })).unjudged_reports.length, 0);
 });
 

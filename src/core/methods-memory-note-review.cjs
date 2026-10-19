@@ -124,7 +124,7 @@ async function noteVerdicts(E, caller, args) {
   guard(E, caller);
   const route = routeOf(E, args || {}, caller);
   if (!REF_RE.test(route.ref)) throw bad(`review reference ${route.ref} is not a valid receipt reference`);
-  const out = { reviewer: route.reviewer, ref: route.ref, applied: [], refused: [], already: [], unjudged: [], reoffer: [] };
+  const out = { reviewer: route.reviewer, ref: route.ref, applied: [], refused: [], already: [], unjudged: [], refused_open: [] };
   if (route.verdicts === null) { out.no_verdicts = true; }
   else if (!Array.isArray(route.verdicts) || route.verdicts.length > VERDICTS_MAX) throw bad(`memory_verdicts must be an array of at most ${VERDICTS_MAX} verdicts`);
   RV.validateReportVerdicts(route.reportVerdicts); // all or nothing: a malformed report list is refused before any note verdict is written
@@ -156,9 +156,9 @@ async function noteVerdicts(E, caller, args) {
   const judged = new Set([...seen]);
   const proj = caller.run_id ? projectOf(E, caller) : null;
   // A note whose verdict was refused is counted once, in `refused`, never also in `unjudged`. It has no status change, so it stays under
-  // review and the next review is offered it again; `reoffer` names those ids so that does not depend on `unjudged`.
+  // review and the next review is offered it again; `refused_open` names those ids so that does not depend on `unjudged`.
   const under = F.notesUnderReview(E, route.scope, proj).map((x) => x.id);
-  out.reoffer = under.filter((id) => refusedIds.has(id));
+  out.refused_open = under.filter((id) => refusedIds.has(id));
   out.unjudged = under.filter((id) => !judged.has(id) && !refusedIds.has(id));
   await RV.applyReportVerdicts(E, caller, route, route.reportVerdicts, proj, out); // reports of "wrong" about other notes: upheld holds, rejected leaves a receipt
   return out;

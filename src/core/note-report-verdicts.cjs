@@ -156,10 +156,10 @@ function validateReportVerdicts(list) {
   });
 }
 
-// `route`: { reviewer, ref, keyBase, scope }. Fills `out.report_verdicts` = { applied, refused, already, unjudged }. One bad verdict is
+// `route`: { reviewer, ref, keyBase, scope }. Fills `out.report_verdicts` = { applied, refused, already, unjudged, refused_open }; `unjudged` leaves out refused ids, `refused_open` names the refused reports still open. One bad verdict is
 // a refusal of its own and a receipt, never a throw.
 async function applyReportVerdicts(E, caller, route, list, project, out) {
-  const res = out.report_verdicts = { applied: [], refused: [], already: [], unjudged: [], reoffer: [] };
+  const res = out.report_verdicts = { applied: [], refused: [], already: [], unjudged: [], refused_open: [] };
   if (list === null || list === undefined) res.none = true;
   else validateReportVerdicts(list); // a caller that skipped the early check still never writes from a malformed list
   const seen = new Set(), refusedIds = new Set();
@@ -224,9 +224,9 @@ async function applyReportVerdicts(E, caller, route, list, project, out) {
     } catch (e) { refuse(e); }
   }
   if (res.applied.length) E.noteWrite();
-  // A refused report is counted once, in `refused`; it stays open (no judgment was marked), so `reoffer` names it for the next review.
+  // A refused report is counted once, in `refused`; it stays open (no judgment was marked), so `refused_open` names it for the next review.
   const open = [...new Set(openReports(E, route.scope, project).map((r) => r.n.id))].filter((id) => !res.applied.some((a) => a.id === id) && !res.already.some((a) => a.id === id));
-  res.reoffer = open.filter((id) => refusedIds.has(id));
+  res.refused_open = open.filter((id) => refusedIds.has(id));
   res.unjudged = open.filter((id) => !refusedIds.has(id));
   return res;
 }
