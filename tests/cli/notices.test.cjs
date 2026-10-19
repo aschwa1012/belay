@@ -182,3 +182,19 @@ test('notices: the stall age is the newer of the row and the stream mtime; a row
     assert.ok(cli([RUN], dataDir, { json: false }).stdout.includes('by stream mtime'));
   } finally { cleanup(dir); }
 });
+
+test('notices: every read of one command is served from a single copy of the store', async () => {
+  const dir = sandbox();
+  const dataDir = `${dir}/.belay`;
+  try {
+    await plant(dataDir);
+    const copies = [];
+    const real = fs.copyFileSync;
+    fs.copyFileSync = (src, ...rest) => { if (/memory\.db$/.test(String(src))) copies.push(String(src)); return real.call(fs, src, ...rest); };
+    let r;
+    try { r = await N.run({ argv: [RUN], cwd: ROOT, dataDir, dataDirGiven: true }); } finally { fs.copyFileSync = real; }
+    assert.strictEqual(r.code, 0, r.text);
+    assert.ok(r.json.events.length > 0);
+    assert.strictEqual(copies.length, 1, `one copy of memory.db, saw ${copies.length}`);
+  } finally { cleanup(dir); }
+});
