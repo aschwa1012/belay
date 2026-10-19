@@ -167,6 +167,10 @@ class Core {
 
   // ---- read: owner first, then copy-then-read ----------------------------
   async _read(method, params) {
+    const batch = this._batch;
+    // readBatch commits to ONE source at its first read. A batch on the copy never asks the owner again (it could show a newer row than
+    // the copy holds, and the next read would go back in time); a batch on the owner fails loudly if the owner stops answering.
+    if (batch && batch.source === 'copy') return this._readCopy(method, params, batch.fallback.note, batch.fallback.embedderFailure, batch);
     let viaOwner, embedderFailure = null;
     try { viaOwner = await this._tryOwner(method, params); }
     catch (e) {
@@ -176,8 +180,16 @@ class Core {
       embedderFailure = { code: e.code, message: e.message };
       viaOwner = { ok: false };
     }
-    if (viaOwner.ok) return viaOwner.value;
+    if (viaOwner.ok) { if (batch) batch.source = 'owner'; return viaOwner.value; }
+    if (batch && batch.source === 'owner') {
+      throw err('E_OWNER_LOST', `the owner answered an earlier read of this command and did not answer ${method}; the command's reads are not served from an older copy of the store, so run it again`, { method, ...(viaOwner.unresponsive ? { unresponsive: true } : {}) });
+    }
     const note = viaOwner.unresponsive ? unresponsive.describe(viaOwner.unresponsive) : null;
+    if (batch) { batch.source = 'copy'; batch.fallback = { note, embedderFailure }; }
+    return this._readCopy(method, params, note, embedderFailure, batch);
+  }
+
+  async _readCopy(method, params, note, embedderFailure, batch) {
     const { Store } = require('./store.cjs');
     // build step 6h design item 6: a data dir with no memory.db has nothing to copy, so `withCopy`'s
     // mkdtemp-then-copy-then-rm is pure overhead (and the throwaway file it built the engine over was
@@ -193,15 +205,15 @@ class Core {
       } finally { try { store.close(); } catch { /* throwaway */ } }
     }
     const build = (dbPath, establishedBy, store) => new Engine({ dataDir: this.dataDir, store, getEmbedder: null, owner: null, establishedBy: note ? `${establishedBy}; ${note}` : establishedBy, embedderFailure, memoryOffFn: this.ownerOpts.memoryOff });
-    const batch = this._batch;
-    if (batch) { // readBatch: the first read that has no owner makes the one copy; later reads of the batch use it
-      if (!batch.engine) batch.engine = new Promise((resolve, reject) => {
+    if (batch) { // the first read of the batch makes the one copy (one Store); each read gets its own Engine, so its note and embedderFailure are its own
+      if (!batch.store) batch.store = new Promise((resolve, reject) => {
         batch.copy = withCopy(this.dataDir, async (dbPath, establishedBy) => {
           const store = new Store(dbPath);
-          try { resolve(build(dbPath, establishedBy, store)); await batch.done; } finally { try { store.close(); } catch { /* throwaway copy */ } }
+          try { resolve({ store, establishedBy }); await batch.done; } finally { try { store.close(); } catch { /* throwaway copy */ } }
         }).catch(reject);
       });
-      return (await batch.engine).handle(method, params);
+      const { store, establishedBy } = await batch.store;
+      return build(null, establishedBy, store).handle(method, params);
     }
     return withCopy(this.dataDir, async (dbPath, establishedBy) => {
       const store = new Store(dbPath);
@@ -216,7 +228,7 @@ class Core {
   async readBatch(fn) {
     if (this._batch) return fn();
     let finish;
-    const batch = this._batch = { engine: null, copy: null, done: new Promise((r) => { finish = r; }) };
+    const batch = this._batch = { source: null, fallback: null, store: null, copy: null, done: new Promise((r) => { finish = r; }) };
     try { return await fn(); }
     finally { this._batch = null; finish(); if (batch.copy) await batch.copy.catch(() => {}); }
   }
