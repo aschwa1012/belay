@@ -93,7 +93,7 @@ test('belay run with no claude executable exits 1 with no usage block before any
   const env = { ...process.env, PATH: sandbox() };
   delete env.BELAY_CLAUDE_EXE;
   const cli = path.join(__dirname, '..', '..', 'src', 'cli', 'belay.cjs');
-  const r = spawnSync(process.execPath, [cli, 'run', path.join(d, 'spec.json'), '--data', path.join(d, 'data')], { cwd: d, env, encoding: 'utf8', windowsHide: true });
+  const r = spawnSync(process.execPath, [cli, 'run', path.join(d, 'spec.json'), '--data', path.join(d, 'data')], { cwd: d, env, encoding: 'utf8', windowsHide: true, timeout: 90000 });
   assert.equal(r.status, 1, r.stdout + r.stderr);
   assert.doesNotMatch(r.stderr + r.stdout, /usage: belay run/);
   assert.match(r.stderr + r.stdout, /BELAY_CLAUDE_EXE/);
