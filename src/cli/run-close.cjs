@@ -10,6 +10,7 @@ const { pidAlive } = require('../core/lock.cjs');
 const { SNAPSHOT_TIMEOUT_MS } = require('../core/proc-identity.cjs');
 const { NOTE_REVIEW_DRAIN_MS } = require('../core/spawn-bounds.cjs');
 const { LIFE_CLAIMING_STATES } = require('../core/methods-run.cjs');
+const ID = require('../core/proc-identity.cjs');
 
 const KILL_GONE_BOUND_MS = 5000;
 const FRESH_SNAPSHOT_NEEDS_MS = 1200; // a CIM snapshot takes about a second
@@ -44,28 +45,45 @@ const claimsLiveProcess = (w) => LIFE_CLAIMING_STATES.has(w.state) && hasProcess
 // { requested(): bool, leftMs?(): ms the close has left, which cuts each kill wait } and is additive: absent, nothing changes. A fast close skips
 // the adapter wait (the adapter is already gone) or cuts it short when the request arrives during it.
 async function closeRunWorkers(opts) {
-  // ADR 0029 amendment 4 (proposed): an adapter that attached while this close ran (its first core call was in flight when
-  // the orchestrator ended) is not the one the close read. The row is read once more before run.end: an adapter that
-  // registered since, alive and not this process, is waited for and its workers closed by the same rule, at most twice.
-  let out = await closeRunWorkersOnce(opts);
+  // ADR 0029 amendment 4 (proposed). Two ways the adapter can be missed by the run row the close reads: its attach has not
+  // landed yet (candidates: this process's own orchestrator's children, found by one snapshot with the creation time
+  // recorded at spawn), or it lands while the close runs (the row is read once more, one read per round).
+  const candidatesP = opts.fast ? Promise.resolve([]) : adapterCandidates(opts); // started now, awaited where the wait needs it: the close reads its rows meanwhile
+  let out = await closeRunWorkersOnce({ ...opts, candidatesP });
+  const candidates = await candidatesP;
+  const handled = new Set([out.adapter_pid, ...candidates]);
+  const lates = [];
   for (let round = 0; round < 2 && !(opts.fast && opts.fast.requested()); round += 1) {
-    const late = await lateAdapterPid(opts.core, out.adapter_pid, opts.ownPid === undefined ? process.pid : opts.ownPid);
+    const late = await lateAdapterPid(opts.core, handled, opts.ownPid === undefined ? process.pid : opts.ownPid);
     if (late == null) break;
-    const more = await closeRunWorkersOnce(opts);
-    out = { ...more, adapter_wait_ms: out.adapter_wait_ms + more.adapter_wait_ms, killed: [...out.killed, ...more.killed], still_alive: [...out.still_alive, ...more.still_alive], errors: [...out.errors, ...more.errors], late_adapter_pid: late };
+    handled.add(late); lates.push(late);
+    const more = await closeRunWorkersOnce({ ...opts, adapterPid: late }); // the pid the read named, not a second read
+    out = { ...more, adapter_pid: out.adapter_pid, adapter_gone: out.adapter_gone && more.adapter_gone, adapter_wait_ms: out.adapter_wait_ms + more.adapter_wait_ms, adapter_wait_bound_ms: Math.max(out.adapter_wait_bound_ms, more.adapter_wait_bound_ms), killed: [...out.killed, ...more.killed], still_alive: [...out.still_alive, ...more.still_alive], errors: [...out.errors, ...more.errors], unregistered_adapter_pids: out.unregistered_adapter_pids, late_adapter_pids: [...lates] };
   }
   return out;
 }
 
-async function lateAdapterPid(core, handledPid, ownPid) {
+// The orchestrator's direct children that could be its MCP adapter (image of this node, created at or after the orchestrator,
+// ADR 0039 identity rules), from ONE snapshot. An orphan keeps its recorded parent, so the orchestrator having exited does not
+// hide them. A direct child, not a descendant: a worker or a tool the adapter or the shell started is not the adapter.
+async function adapterCandidates({ orchestrator, ownPid = process.pid, deps = {} }) {
+  try {
+    const ref = typeof orchestrator === 'function' ? await orchestrator() : orchestrator;
+    if (!ref || !Number.isInteger(ref.pid) || ref.created == null) return [];
+    const snap = await (deps.snapshot || ID.processSnapshot)({ kind: 'adapter-scan' });
+    return ID.childrenOf(ref.pid, ref.created, snap, ID.ownImage()).filter((p) => p !== ownPid && pidAlive(p));
+  } catch { return []; } // the scan is best effort; the run row and the second read still cover an adapter that registered
+}
+
+async function lateAdapterPid(core, handled, ownPid) {
   try {
     const got = await core.run.get();
     const pid = got && got.run ? got.run.adapter_pid : null;
-    return Number.isInteger(pid) && pid !== handledPid && pid !== ownPid && pidAlive(pid) ? pid : null;
+    return Number.isInteger(pid) && !handled.has(pid) && pid !== ownPid && pidAlive(pid) ? pid : null;
   } catch { return null; } // run.end follows and reports its own failure
 }
 
-async function closeRunWorkersOnce({ core, runId, graceMs, ownPid = process.pid, deps = {}, fast = null, noteReview = false }) {
+async function closeRunWorkersOnce({ core, runId, graceMs, ownPid = process.pid, deps = {}, fast = null, noteReview = false, candidatesP = Promise.resolve([]), adapterPid }) {
   const { killProcess, waitPidGone, withKillLock } = { ...processDefaults, ...deps };
   const { rowTarget } = processDefaults;
   const cut = { v: false }; // set when the budget's race timer fires or finalizeCut runs: a snapshot landing after it signals nothing
@@ -79,8 +97,7 @@ async function closeRunWorkersOnce({ core, runId, graceMs, ownPid = process.pid,
   // (a) The run row's adapter is the orchestrator's adapter once it attached, else this process itself
   // (belay run's own attach), which is alive by definition and must not be waited on.
   try {
-    const got = await core.run.get();
-    const pid = got && got.run ? got.run.adapter_pid : null;
+    const pid = adapterPid !== undefined ? adapterPid : (((await core.run.get()) || {}).run || {}).adapter_pid;
     out.adapter_pid = Number.isInteger(pid) ? pid : null;
   } catch (e) { out.errors.push(`run.get: ${(e && e.message) || String(e)}`); }
   const before = await listRun();
@@ -110,6 +127,19 @@ async function closeRunWorkersOnce({ core, runId, graceMs, ownPid = process.pid,
       if (cut) { out.adapter_gone = false; out.adapter_wait_ms = Date.now() - t; out.fast_close = true; }
       else { out.adapter_gone = ms !== null; out.adapter_wait_ms = ms !== null ? ms : out.adapter_wait_bound_ms; }
     }
+  }
+
+  // Candidates the run row does not name (their attach has not landed): waited for by exact pid inside the same bound.
+  const extras = (await candidatesP).filter((p) => p !== out.adapter_pid && p !== ownPid && pidAlive(p));
+  if (extras.length) {
+    out.unregistered_adapter_pids = [...extras];
+    const t0 = Date.now();
+    for (const p of extras) {
+      const left = out.adapter_wait_bound_ms - (Date.now() - t0);
+      const ms = left > 0 ? await waitPidGone(p, { timeoutMs: left }) : null;
+      if (ms === null) out.adapter_gone = false;
+    }
+    out.adapter_wait_ms += Date.now() - t0;
   }
 
   // (b) Whatever is still claiming a life with a live pid is this run's to stop. Listed again: the adapter
@@ -188,6 +218,7 @@ function workersClosedBlock(closed, markedDead) {
   return {
     adapter_gone: closed.adapter_gone, adapter_wait_ms: closed.adapter_wait_ms,
     adapter_wait_bound_ms: closed.adapter_wait_bound_ms, adapter_pid: closed.adapter_pid,
+    ...(closed.unregistered_adapter_pids ? { unregistered_adapter_pids: closed.unregistered_adapter_pids } : {}), ...(closed.late_adapter_pids ? { late_adapter_pids: closed.late_adapter_pids } : {}),
     killed: closed.killed.map((k) => ({ worker_id: k.worker_id, pid: k.pid, gone: k.gone, outcome: k.outcome || null, signalled: !!k.signalled, ...(k.signalled_at ? { signalled_at: k.signalled_at } : {}), ...(Number.isFinite(k.snapshot_ms) ? { snapshot_ms: k.snapshot_ms } : {}), identity: k.identity || null, ...(k.refused ? { refused: k.refused, kind: k.kind || null, detail: k.detail, ...(k.manual ? { manual: k.manual } : {}) } : {}) })),
     marked_dead: markedDead, left_parked: closed.left_parked || [], errors: closed.errors,
   };

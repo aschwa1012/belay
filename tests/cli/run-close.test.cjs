@@ -158,7 +158,7 @@ test('run close: a setup slower than the orchestrator turn finds the run closed,
     const endedBefore = currentRunRow(dataDir, runId);
     assert.ok(endedBefore && endedBefore.ended_at != null, 'the run row is ended before the late attach');
     const rowsBefore = runRowCount(dataDir, runId);
-    await assert.rejects(core.run.attach({ adapter_pid: adapter.pid }), (e) => e.code === 'E_ARGS' && /already ended/.test(e.message), 'a late attach after run.end is refused');
+    await assert.rejects(core.run.attach({ adapter_pid: adapter.pid }), (e) => (e.code === 'E_ARGS' || e.code === 'E_SHUTDOWN') && /already ended/.test(e.message), 'a late attach after run.end is refused');
     const after = currentRunRow(dataDir, runId);
     assert.strictEqual(after.seq, endedBefore.seq, 'the refused attach wrote no row');
     assert.strictEqual(runRowCount(dataDir, runId), rowsBefore);

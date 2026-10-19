@@ -60,12 +60,29 @@ class Client {
       if (this.opts.elect) {
         const { Owner } = require('./owner.cjs');
         const o = new Owner(this.dataDir, this.opts.ownerOpts);
-        try { await o.start(); this.owner = o; this.becameOwner = true; return this; }
+        try {
+          await o.start();
+          // ADR 0029 amendment 4 (proposed): a process in the orchestrator role that wins the election over a run that has
+          // already ended is a late adapter. It would be a stray owner that writes into the ended run, and the per-Core
+          // E_SHUTDOWN guard cannot see it (another process shut the owner down). It gives the lock back and fails.
+          const ended = this._endedRun(o);
+          if (ended) { await o.stop(); throw err('E_SHUTDOWN', `run ${ended.id} has already ended; this orchestrator-role process was not made the store owner`, { run_id: ended.id, ended_at: ended.ended_at, data_dir: this.dataDir }); }
+          this.owner = o; this.becameOwner = true; return this;
+        }
         catch (e) { if (e.code !== 'E_LOCKED') throw e; } // someone else is the owner; dial again
       }
       if (i < this.opts.connectRetries - 1) await sleep(this.opts.retryMs);
     }
     throw err('E_NO_OWNER', `no owner answered at ${this.pipe} and this caller may not elect one`, { data_dir: this.dataDir, pipe: this.pipe, elect: !!this.opts.elect });
+  }
+
+  _endedRun(owner) {
+    const caller = this.opts.caller;
+    if (!caller || caller.role !== 'orchestrator' || !caller.run_id) return null;
+    try {
+      const row = require('./rows.cjs').current(owner.store, 'run', caller.run_id);
+      return row && row.ended_at != null ? { id: caller.run_id, ended_at: row.ended_at } : null;
+    } catch { return null; }
   }
 
   _dial(timeoutMs) {

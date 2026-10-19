@@ -279,7 +279,8 @@ test("workers: lists the run's worker rows with the two columns, filters to the 
     const dir = sandbox();
     const dataDir = `${dir}/.belay`;
     const { specPath, runId, orchestratorDir } = makeSpec(dir, { poll_ms: 300, close_grace_ms: 2000 });
-    const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '500' };
+    const gate = `${dir}/answer.gate`; // the turn ends when the planted worker is written, not after a timer
+    const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_GATE_FILE: gate };
     const runCliProc = runCli(specPath, dataDir, env);
     let core = null;
     let plantedProc = null;
@@ -295,6 +296,7 @@ test("workers: lists the run's worker rows with the two columns, filters to the 
         id: 'w1', substrate: 'claude-code', pid: plantedPid, pid_image: 'node.exe', state: 'running',
         turns: 0, mid_turn: 1, started_at: Date.now(), worktree: workerWt,
       });
+      fs.writeFileSync(gate, 'go');
 
       const streamPath = `${orchestratorDir}/stream.jsonl`;
       const gotResult = await waitForFileLine(streamPath, '"type":"result"', 15000);
@@ -329,12 +331,18 @@ test("workers: lists the run's worker rows with the two columns, filters to the 
     const { openCore } = require('../../src/core/index.cjs');
 
     async function plantFinishedWorker(runId, idSuffix) {
+      // A fixture over a finished run: an ended run takes no orchestrator write, so the run process (operator) reopens it for the
+      // write and ends it again.
+      const op = await openCore({ dataDir, caller: { role: 'operator', run_id: runId, pid: process.pid } });
       const c = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
       try {
+        await op.run.attach({ adapter_pid: process.pid });
         await c.worker.write({ id: `w-${idSuffix}`, substrate: 'claude-code', pid: process.pid, pid_image: 'node.exe', state: 'stopped', turns: 1 });
+        await op.run.end({ exit_reason: 'fixture' });
       } finally {
-        await c.shutdownOwner();
         await c.close();
+        await op.shutdownOwner();
+        await op.close();
       }
     }
 

@@ -313,6 +313,12 @@ async function writeWorker(E, caller, args) {
   if (args.started_at != null && !Number.isSafeInteger(args.started_at)) {
     throw err('E_ARGS', `worker.write needs started_at for worker ${args.id} as a safe integer of epoch milliseconds, and this write carried ${typeof args.started_at === 'object' ? 'an object' : String(args.started_at).slice(0, 80)}`, { worker_id: args.id });
   }
+  // ADR 0029 amendment 4 (proposed): an ended run takes no worker write from its orchestrator adapter. Whatever the adapter was
+  // doing when the run closed (a worker_spawn in flight) writes nothing into it; run.end and the operator are not affected.
+  if (caller.role === 'orchestrator') {
+    const run = rows.current(E.store, 'run', caller.run_id);
+    if (run && run.ended_at != null) throw err('E_ARGS', `run ${caller.run_id} has already ended; worker ${args.id} was not written`, { run_id: caller.run_id, ended_at: run.ended_at, worker_id: args.id });
+  }
   const prev = rows.current(E.store, 'worker', args.id);
   // W2-3 amendment 2 (B2): a restating write names the row it restates. This method has no await between this read
   // and the append below, so the check and the append are one step; a mismatch appends nothing and is not an error.

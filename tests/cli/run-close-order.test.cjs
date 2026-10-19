@@ -68,10 +68,37 @@ test('closeRunWorkers: an adapter that registers while the close runs is waited 
   const waited = [];
   const out = await closeRunWorkers({ core, runId: 'r1', graceMs: 1000, ownPid: -1, deps: { waitPidGone: async (pid) => { waited.push(pid); return 7; }, killProcess: async () => ({}) } });
   assert.deepStrictEqual(waited, [process.pid], 'the late adapter was waited for');
-  assert.strictEqual(out.adapter_pid, process.pid);
-  assert.strictEqual(out.late_adapter_pid, process.pid);
+  assert.strictEqual(out.adapter_pid, null, 'the receipt keeps the adapter the first read named (none)');
+  assert.deepStrictEqual(out.late_adapter_pids, [process.pid]);
+  assert.strictEqual(calls.filter((c) => c === 'run.get').length, 3, 'one read per round: the pid waited for is the pid that read named');
   assert.strictEqual(out.adapter_gone, true);
   assert.ok(calls.filter((c) => c === 'worker.list').length >= 4, 'the workers were listed again after the late adapter');
+});
+
+// ADR 0029 amendment 4 (proposed): the orchestrator's children are found from ONE snapshot with the creation time recorded at spawn, so
+// an adapter whose attach has not landed is still waited for, by exact pid. A stale parent pid (a child created before the orchestrator)
+// and another image are not.
+test('closeRunWorkers: a child of the orchestrator that has not attached is waited for by pid; an older or other-image process is not', async () => {
+  const ID = require('../../src/core/proc-identity.cjs');
+  const ORCH = { pid: 9000, created: 1000 };
+  const snap = new Map(); // the orchestrator itself is gone: an orphan keeps its recorded parent
+  snap.set(process.pid, { ppid: ORCH.pid, created: 2000, image: ID.ownImage() }); // the unregistered adapter (alive: this process stands in)
+  snap.set(process.pid + 1, { ppid: ORCH.pid, created: 500, image: ID.ownImage() }); // created before the orchestrator: a recycled parent pid
+  snap.set(process.pid + 2, { ppid: ORCH.pid, created: 2000, image: 'bash.exe' }); // another image
+  const core = fakeCore({ adapterPid: null, lists: [[], []] });
+  const waited = [];
+  const out = await closeRunWorkers({ core, runId: 'r1', graceMs: 1000, ownPid: -1, orchestrator: async () => ORCH, deps: { snapshot: async () => snap, waitPidGone: async (pid) => { waited.push(pid); return 4; }, killProcess: async () => ({}) } });
+  assert.deepStrictEqual(waited, [process.pid]);
+  assert.deepStrictEqual(out.unregistered_adapter_pids, [process.pid]);
+  assert.strictEqual(out.adapter_gone, true);
+});
+
+test('closeRunWorkers: an unreadable snapshot or no recorded orchestrator waits for no one it cannot name', async () => {
+  const waited = [];
+  const deps = { waitPidGone: async (pid) => { waited.push(pid); return 1; }, killProcess: async () => ({}) };
+  await closeRunWorkers({ core: fakeCore({ adapterPid: null, lists: [[], []] }), runId: 'r1', graceMs: 1000, ownPid: -1, orchestrator: async () => ({ pid: 9000, created: 1000 }), deps: { ...deps, snapshot: async () => null } });
+  await closeRunWorkers({ core: fakeCore({ adapterPid: null, lists: [[], []] }), runId: 'r1', graceMs: 1000, ownPid: -1, orchestrator: async () => null, deps: { ...deps, snapshot: async () => { throw new Error('not called'); } } });
+  assert.deepStrictEqual(waited, []);
 });
 
 test('closeRunWorkers: a run row that still names the handled adapter is not waited for twice', async () => {

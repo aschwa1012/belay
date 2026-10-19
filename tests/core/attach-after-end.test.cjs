@@ -39,3 +39,57 @@ test('run.attach: an orchestrator attach over an ended run is refused with E_ARG
   assert.strictEqual(next.run.ended_at, null);
   await operator.run.end({ exit_reason: 'test' });
 });
+
+// The adapter is another process, so the per-Core E_SHUTDOWN guard (ADR 0051) cannot see that the owner was shut down. After run.end
+// a late orchestrator-role process must neither write into the run nor be elected the store owner. The child process is the late adapter.
+const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+const CHILD = require('node:path').join(__dirname, 'attach-after-end-child.cjs');
+const { readStoreCopy } = require('../cli/stop-helpers.cjs');
+
+function lateAdapter(dataDir) { // async: the owner may live in this process, and a blocking spawn would stop it answering
+  return new Promise((resolve, reject) => {
+    const c = spawn(process.execPath, [CHILD, dataDir, 'test-run'], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = ''; let err = '';
+    c.stdout.on('data', (d) => { out += d; }); c.stderr.on('data', (d) => { err += d; });
+    c.once('exit', (code) => {
+      if (code !== 0) return reject(new Error(`child failed: ${out} ${err}`));
+      resolve(JSON.parse(out.trim().split('\n').pop()));
+    });
+  });
+}
+const counts = (dataDir) => readStoreCopy(dataDir, (db) => ({ runs: db.prepare('SELECT COUNT(*) AS n FROM run').get().n, workers: db.prepare('SELECT COUNT(*) AS n FROM worker').get().n }));
+
+test('a late orchestrator process after the owner shut down is not elected owner and writes nothing into the ended run', async () => {
+  const d = sandbox();
+  const op = await openCore({ dataDir: d, caller: callerFor('operator'), embed: false });
+  try {
+    await op.run.attach({ adapter_pid: process.pid });
+    await op.run.end({ exit_reason: 'test' });
+    const before = counts(d);
+    await op.shutdownOwner();
+    await op.close();
+    assert.ok(!fs.existsSync(`${d}/owner.lock`), 'the owner is gone before the late adapter arrives');
+    const out = await lateAdapter(d);
+    assert.strictEqual(out.worker, 'E_SHUTDOWN');
+    assert.strictEqual(out.attach, 'E_SHUTDOWN');
+    assert.strictEqual(out.isOwner, false);
+    assert.ok(!fs.existsSync(`${d}/owner.lock`), 'no stray owner was left behind');
+    assert.deepStrictEqual(counts(d), before, 'nothing was written into the ended run');
+  } finally { try { await op.close(); } catch { /* closed */ } cleanup(d); }
+});
+
+test('a late orchestrator process that reaches a live owner is refused a worker write and an attach on the ended run', async () => {
+  const d = sandbox();
+  const op = await openCore({ dataDir: d, caller: callerFor('operator'), embed: false });
+  try {
+    await op.run.attach({ adapter_pid: process.pid });
+    await op.run.end({ exit_reason: 'test' });
+    const before = counts(d);
+    const out = await lateAdapter(d);
+    assert.strictEqual(out.worker, 'E_ARGS');
+    assert.strictEqual(out.attach, 'E_ARGS');
+    assert.strictEqual(out.isOwner, false);
+    assert.deepStrictEqual(counts(d), before);
+  } finally { try { if (op.isOwner()) await op.shutdownOwner(); } finally { await op.close(); cleanup(d); } }
+});

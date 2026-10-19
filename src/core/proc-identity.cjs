@@ -215,6 +215,21 @@ function descendantsOf(rootPid, snap) {
   return { leavesFirst: out, skipped };
 }
 
+// The pids of `rootPid`'s DIRECT children in a snapshot whose image is `image`, kept only when created at or after the root's
+// recorded creation time (a stale parent pid, recycled, names a process born earlier). The root need not be alive. [] without a snapshot.
+function childrenOf(rootPid, rootCreated, snap, image = null) {
+  const out = [];
+  if (!snap || rootCreated == null) return out;
+  for (const [pid, e] of snap) {
+    if (e.ppid !== rootPid || pid === rootPid) continue;
+    if (e.created == null || e.created < rootCreated) continue;
+    if (image != null && !imageIn(e.image, image)) continue;
+    out.push(pid);
+  }
+  return out;
+}
+const ownImage = () => path.basename(process.execPath);
+
 module.exports = {
-  IS_WINDOWS, SNAPSHOT_TIMEOUT_MS, SNAPSHOT_TIMEOUT_IGNORED, readSnapshotTimeout, gate, snapshotShared, stallMs, psArgs, processSnapshot, processSnapshotSync, snapshotRetry, createdOf, ownCreatedProbe, handleLive, checkIdentity, descendantsOf, imageIn,
+  childrenOf, ownImage, IS_WINDOWS, SNAPSHOT_TIMEOUT_MS, SNAPSHOT_TIMEOUT_IGNORED, readSnapshotTimeout, gate, snapshotShared, stallMs, psArgs, processSnapshot, processSnapshotSync, snapshotRetry, createdOf, ownCreatedProbe, handleLive, checkIdentity, descendantsOf, imageIn,
 };
