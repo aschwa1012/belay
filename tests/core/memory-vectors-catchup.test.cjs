@@ -34,6 +34,13 @@ test('a second owner start rewrites nothing, inserts only what is missing and sw
     const lost = rows(s.db)[0];
     s.db.prepare('DELETE FROM memory_vectors WHERE embed_hash = ?').run(lost.embed_hash);
     MV.putVector(s.db, { ...HEAVY, template: 'v2' }, 'e'.repeat(64), blobOf(), 7);
+    // the previous writer was a vector-aware owner: the next start skips the pass and leaves both as they are
+    s.close();
+    s = new Store(f, { stamp: true });
+    assert.strictEqual(rows(s.db).length, 3 - 1 + 1);
+    assert.ok(rows(s.db).some(r => r.model === 'heavy') && !rows(s.db).some(r => r.embed_hash === lost.embed_hash), 'skipped: nothing restored, nothing swept');
+    // an older core writes: its stamp replaces written_by, the marker no longer matches, and the pass runs
+    s.db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES ('written_by', 'belay@0.0.1+older')").run();
     s.close();
     s = new Store(f, { stamp: true });
     const after = rows(s.db);
@@ -117,5 +124,55 @@ test('a ttl_at of 0 is no expiry, as the semantic scan of search reads it', () =
     const a = note(s, 'one', 'when one', emb('v2'));
     s.p('UPDATE memory_entries SET ttl_at = 0 WHERE id = ?').run(a.id);
     assert.deepStrictEqual(MV.selectSearchable(s.db, NANO, { namespaces: ['project/a'] }).rows.map(r => r.id), [a.id]);
+  } finally { s.close(); }
+}));
+
+test('catchUp holds its write lock from the scan to the deletes, so a writer cannot slip in between and be judged stale', () => withDir((dir, f) => {
+  const s = new Store(f, { stamp: true });
+  const other = new (require('node:sqlite').DatabaseSync)(f);
+  other.exec('PRAGMA busy_timeout=0');
+  try {
+    note(s, 'one', 'when one', emb('v2'));
+    let blocked = null;
+    MV.catchUp(s.db, { afterScan: () => {
+      // under the old order (scan outside the transaction) this write would succeed here and its vector would be swept as stale
+      try { other.exec("INSERT INTO memory_entries(id, namespace, worker_id, type, text, text_hash, created_at, updated_at) VALUES ('late', 'project/a', 'w', 'fact', 'late', 'h', 1, 1)"); } catch (e) { blocked = e; }
+    } });
+    assert.ok(blocked && /locked|busy/i.test(blocked.message), 'the other connection could not write between the scan and the apply');
+    other.exec("INSERT INTO memory_entries(id, namespace, worker_id, type, text, text_hash, created_at, updated_at) VALUES ('late', 'project/a', 'w', 'fact', 'late', 'h', 1, 1)");
+  } finally { other.close(); s.close(); }
+}));
+
+test('a start after a vector-aware owner skips the pass; a start after an older core runs it; the marker follows the build', () => withDir((dir, f) => {
+  let s = new Store(f, { stamp: true });
+  const marker = () => (s.db.prepare("SELECT value FROM meta WHERE key = 'vector_cache_by'").get() || {}).value;
+  try {
+    note(s, 'one', 'when one', emb('v2'));
+    const by = s.db.prepare("SELECT value FROM meta WHERE key = 'written_by'").get().value;
+    assert.strictEqual(marker(), by);
+    assert.strictEqual(MV.lastWriterMaintainedCache(s.db), true);
+    s.db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES ('written_by', 'belay@0.0.1+older')").run();
+    assert.strictEqual(MV.lastWriterMaintainedCache(s.db), false, 'an older core stamp breaks the match');
+    // the older core also leaves a row without a vector behind
+    s.db.exec('DELETE FROM memory_vectors');
+    s.close();
+    s = new Store(f, { stamp: true });
+    assert.strictEqual(rows(s.db).length, 1, 'the pass ran and restored it');
+    assert.strictEqual(marker(), by);
+  } finally { s.close(); }
+}));
+
+test('a row is served from its own inline vector first, with content-keyed reuse as the fallback', () => withDir((dir, f) => {
+  const s = new Store(f, { stamp: true });
+  try {
+    // a legacy v1 vector on a row that renders v2 now, and a different nano vector cached under v2 for the same content
+    const a = note(s, 'legacy', 'when legacy', { ...emb('v1'), text: 'legacy stored text' });
+    const row = s.p('SELECT * FROM memory_entries WHERE id = ?').get(a.id);
+    MV.putVector(s.db, { ...NANO, template: 'v2' }, MV.embedHashOf(row, 'v2'), blobOf());
+    const got = MV.selectSearchable(s.db, NANO, { namespaces: ['project/a'] }).rows[0];
+    assert.strictEqual(got.template, 'v1', 'the light tier reads its own vector');
+    // a tier that is not the row's own model takes the render template
+    MV.putVector(s.db, { ...HEAVY, template: 'v2' }, MV.embedHashOf(row, 'v2'), blobOf());
+    assert.strictEqual(MV.selectSearchable(s.db, HEAVY, { namespaces: ['project/a'] }).rows[0].template, 'v2');
   } finally { s.close(); }
 }));
