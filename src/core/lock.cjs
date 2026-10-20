@@ -40,6 +40,13 @@ function adapterPipeName(dataDir, pid) {
   return process.platform === 'win32' ? `${base}-${pid}` : base.replace(/\.sock$/, `-${pid}.sock`);
 }
 
+// ADR 0045 decision 2: the one-shot pipe an owner opens for a bind. The random part is the bind's own, so the name is public
+// (it goes on the adapter's command line) and guessing it opens nothing: the owner accepts exactly one connection on it.
+function bindPipeName(dataDir, nonce) {
+  const base = pipeName(dataDir);
+  return process.platform === 'win32' ? `${base}-bind-${nonce}` : base.replace(/\.sock$/, `-bind-${nonce}.sock`);
+}
+
 // The data dir is echoed back to callers in status.get, so it needs one canonical spelling: a caller
 // that passes forward slashes must read back what it sent, not the same directory spelled differently.
 // Forward slashes everywhere on Windows; on POSIX a backslash is a legal filename character, so
@@ -244,4 +251,4 @@ function releaseLock(lockDir) {
   return removeDir(lockDir);
 }
 
-module.exports = { pipeName, adapterPipeName, pidAlive, resolveDataDir, acquireLock, releaseLock, markListening, readOwnerLock, lockPath, metaPath };
+module.exports = { pipeName, adapterPipeName, bindPipeName, pidAlive, resolveDataDir, acquireLock, releaseLock, markListening, readOwnerLock, lockPath, metaPath };
