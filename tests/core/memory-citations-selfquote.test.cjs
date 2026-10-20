@@ -51,11 +51,18 @@ test('echoes of the note by other routes are refused: its saw text, a cut title,
   const T = 'The pager retries a failed send exactly 3 times before it gives up and logs the receipt to data/pager/receipts.jsonl';
   const SAW = 'pager.cjs: const RETRIES = 3';
   const refusedIn = (name, lines, quote, o, t) => assert.strictEqual(streamCite(stream(name, lines), quote, o, t).found, false, name);
-  refusedIn('ea', [use('1', 'Bash'), result('1', SAW)], SAW, [T, SAW], T);
   refusedIn('eb', [use('1', 'Bash'), result('1', `id status title\nn-1 unverified ${T.slice(0, 80)}`)], T.slice(0, 60), [T, SAW], T);
   const T2 = 'The config key is "retry_limit" and its default is 3 in src/config.cjs';
   refusedIn('ec', [use('1', 'Bash'), result('1', JSON.stringify({ title: T2, saw: 'src/config.cjs: retry_limit: 3' }))], 'src/config.cjs: retry_limit: 3', [T2, 'src/config.cjs: retry_limit: 3'], T2);
   refusedIn('ed', [use('1', 'Bash'), result('1', `note: RETRIES=3; ${SAW}`)], SAW, ['RETRIES=3', SAW], 'RETRIES=3');
+});
+
+test('a short saw a tool printed, and a short phrase title in a heading or log, are genuine evidence', () => {
+  const ok = (name, lines, quote, o, t) => assert.strictEqual(streamCite(stream(name, lines), quote, o, t).found, true, name);
+  ok('g', [use('1', 'Bash'), result('1', 'node dispatch.cjs import\nError: row 4: 1 field, 3 expected\nexit 1')], '1 field, 3 expected', ['Importer rejects a row with the wrong field count', 'Error: row 4: 1 field, 3 expected'], 'Importer rejects a row with the wrong field count');
+  ok('g2', [use('1', 'Bash'), result('1', 'ok 3 - receipts mismatch when text exceeds 96 chars\n# pass 12')], 'receipts mismatch when text exceeds 96 chars', ['Pager cuts text at 96 characters', 'ok 3 - receipts mismatch when text exceeds 96 chars'], 'Pager cuts text at 96 characters');
+  ok('h', [use('1', 'Read'), result('1', '## Ledger format\nDD.MM.YYYY;amount;note')], 'DD.MM.YYYY;amount;note', ['Ledger format', 'DD.MM.YYYY;amount;note'], 'Ledger format');
+  ok('h2', [use('1', 'Bash'), result('1', 'warning: npm test hangs when the watcher is on\nnode --test exits 0 without --watch')], 'node --test exits 0 without --watch', ['npm test hangs', 'node --test exits 0 without --watch'], 'npm test hangs');
 });
 
 test('genuine evidence that shares words with the note stays accepted', () => {

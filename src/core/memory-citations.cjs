@@ -117,7 +117,7 @@ function streamResultHas(file, quote, skip = null) {
     for (const b of blocksOf(line)) {
       if (b.text === undefined || (b.id !== undefined && belay.has(b.id))) continue;
       const t = norm(b.text);
-      if (skip && skip(t)) continue;
+      if (skip && skip(t, b.text)) continue;
       if (forms.some(q => t.includes(q))) return { found: true };
     }
   }
@@ -133,20 +133,28 @@ function streamCite(file, quote, own, title) {
   return r.found ? r : { found: false, reason: SELF };
 }
 // Echo rule. A tool result is an echo of the note, and no evidence about it, when its text (JSON string escapes decoded, whitespace
-// collapsed, case folded; also checked as printed) holds, in full, any of the note's own anchors: its title (any length from 4
-// characters), a sentence of its own text (an own field of 16 or more characters with a space in it: title, when, text, a `saw`;
-// not a path or a name), or the first 32 characters of its title, which a listing that cuts titles still prints.
-// A result that only shares some words with the note (a file, a test run, a log) holds none of these and stays evidence.
-const PREFIX_LEN = 32, ANCHOR_MIN = 16, TITLE_MIN = 4;
+// collapsed, case folded; also checked as printed) shows the note rather than independent output:
+//   - it holds a title of 20 or more characters, or the first 32 characters of a longer title (a listing that cuts titles);
+//   - a line of it IS the title (a shorter title, 4 or more characters, counts only as a whole line);
+//   - it holds a sentence of the note's own fields (16 or more characters with a space: when, text, a saw) of 60 or more characters, or any
+//     such sentence when the title is a single token with no space (an identifier such as RETRIES=3) that the result also holds.
+// A short saw that a tool really printed, or a short phrase title that a heading or log line holds, is not an echo: the result that proves the
+// saw is not its echo. What this leaves open: a worker that prints its own short saw with a tool.
+const PREFIX_LEN = 32, ANCHOR_MIN = 16, SENTENCE_LONG = 60, TITLE_LONG = 20, TITLE_MIN = 4;
 function echoOf(own, title) {
   const low = s => norm(s).toLowerCase();
-  const anchors = new Set();
   const t = title ? low(title) : '';
-  if (t.length >= TITLE_MIN) anchors.add(t);
-  if (t.length > PREFIX_LEN) anchors.add(t.slice(0, PREFIX_LEN));
-  for (const o of own || []) { const a = low(o); if (a.length >= ANCHOR_MIN && a.includes(' ')) anchors.add(a); }
-  const list = [...anchors];
-  return text => { const forms = [text.toLowerCase(), norm(unescapeJson(text)).toLowerCase()]; return list.some(a => forms.some(f => f.includes(a))); };
+  const sentences = (own || []).map(low).filter(a => a.length >= ANCHOR_MIN && a.includes(' ') && a !== t);
+  const idLike = t.length >= TITLE_MIN && !t.includes(' ');
+  return (text, raw) => {
+    const forms = [text.toLowerCase(), norm(unescapeJson(text)).toLowerCase()];
+    const has = a => forms.some(f => f.includes(a));
+    const lines = String(raw || '').split(/\r?\n/).flatMap(l => [low(l), low(unescapeJson(l))]);
+    const titleHeld = t.length >= TITLE_LONG ? has(t) : t.length >= TITLE_MIN && lines.includes(t);
+    if (titleHeld || (t.length > PREFIX_LEN && has(t.slice(0, PREFIX_LEN)))) return true;
+    const idHeld = idLike && has(t);
+    return sentences.some(a => (a.length >= SENTENCE_LONG || idHeld) && has(a));
+  };
 }
 async function checkTaskCites(E, taskId, cites, note = null) {
   const workers = rows.currentAll(E.store, 'worker').filter(w => w.task_id === taskId);
