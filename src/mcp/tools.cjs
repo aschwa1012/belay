@@ -100,7 +100,7 @@ const BOTH = [
   },
   {
     name: 'memory_search',
-    description: 'Search memory. Query with one short task line for what you are about to do, naming files or symbols; several short queries beat one long one. view index returns ids and titles only. Result names modes_run, modes_failed, absence_established (false: not searched fully).',
+    description: 'Search memory. Query with one short task line for what you will do, naming files or symbols; several short queries beat one long one. view index: ids and titles only. Result names modes_run, modes_failed, absence_established (true only if both ran and found nothing).',
     inputSchema: S({
       query: str(),
       namespace: str(),
@@ -317,9 +317,18 @@ const isReviewJob = (role, workerId) => role === 'worker' && typeof workerId ===
 
 // `knowledge` (orchestrator only) adds knowledge_ask; omitted or false, the listing is byte-for-byte what it was.
 // `workerId` (the adapter's argv) narrows the knowledge agent's listing to its read tools.
-function toolsFor(role, { knowledge = false, workerId = null, notes = false } = {}) {
+// `queries` (orchestrator): whether worker_spawn lists `memory_queries`. They feed the first-message index only, so a run with that lever
+// off (the default) is not shown the field; a call that carries it is still accepted (the schema of validateArgs is the full one).
+const withoutQueries = (list) => list.map((t) => {
+  if (t.name !== 'worker_spawn') return t;
+  const { memory_queries, ...properties } = t.inputSchema.properties;
+  return { ...t, inputSchema: { ...t.inputSchema, properties } };
+});
+
+function toolsFor(role, { knowledge = false, workerId = null, notes = false, queries = false } = {}) {
   if (role === 'orchestrator') {
-    const base = knowledge ? BOTH.concat(ORCHESTRATOR, [KNOWLEDGE_TOOL]) : BOTH.concat(ORCHESTRATOR);
+    const all = knowledge ? BOTH.concat(ORCHESTRATOR, [KNOWLEDGE_TOOL]) : BOTH.concat(ORCHESTRATOR);
+    const base = queries ? all : withoutQueries(all);
     return notes ? base.concat([NOTES.SUMMARIES, NOTES.NOTE_REFUTATION]) : base;
   }
   if (isReviewJob(role, workerId)) return [];
