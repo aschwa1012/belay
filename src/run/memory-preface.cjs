@@ -45,15 +45,29 @@ const parserOpts = (ctx) => {
   return lv.redact === false ? { capture: true, redact: (t) => ({ text: t, redactions: {} }) } : { capture: true, redact: require('../core/redact.cjs').redact };
 };
 
-async function record(ctx, w, fields) {
-  try {
-    await ctx.core.memory.recordEvent({ worker_id: w.id, task_id: w.taskId || undefined, ...fields });
-    return true;
-  } catch (e) {
-    noteError(w, 'memory.recordEvent', e);
-    return false;
+async function record(ctx, w, fields, attempts = 1) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await ctx.core.memory.recordEvent({ worker_id: w.id, task_id: w.taskId || undefined, ...fields });
+      return true;
+    } catch (e) {
+      noteError(w, 'memory.recordEvent', e);
+    }
   }
+  return false;
 }
+
+// An index receipt. One that begins a conversation (`convo` set: a replacement's first, or the repair after a lost one) is the only
+// record of where that conversation begins, so its write is tried three times, and a write that still fails leaves `w.convoLost`: the
+// next launch cannot find the boundary in the store, so it shows every row (excludes none) and writes the boundary itself. That clears
+// the flag once a receipt carrying it is stored. A launch that begins no conversation is a plain best-effort receipt.
+async function recordIndex(ctx, w, convo, fields) {
+  if (!convo) return record(ctx, w, { kind: 'index_injected', ...fields });
+  const ok = await record(ctx, w, { kind: 'index_injected', key: convoKey(convo), ...fields }, BOUNDARY_TRIES);
+  w.convoLost = !ok;
+  return ok;
+}
+const BOUNDARY_TRIES = 3;
 
 // This worker's index receipts in write order, every one, failed ones too (ADR 0042 decision 3). Scoped to this run: a worker id is
 // unique only within its run, so coder-1 of an earlier run is another worker.
@@ -63,16 +77,22 @@ async function receiptsOf(ctx, w) {
 }
 const showed = (ev) => !(ev.ok === 0 || ev.ok === false) && Array.isArray(ev.row_ids);
 
-// A replacement starts a new conversation, and its first receipt says so: the receipt's detail carries `convo: { carried }`, the ids of
+// A replacement starts a new conversation, and its first receipt says so: the receipt's `key` carries `convo:{"carried":[ids]}`, the ids of
 // the earlier rows that the replacement's bottle still holds. The boundary is therefore read from the store with the receipts it
 // divides, in one read, so a failed read leaves no boundary half set, and any process that adopts the worker finds the same one.
 // A replacement whose receipts could not be read records `carried: []`: nothing is then taken as held, which shows rows again and never
 // withholds one.
+// The boundary is in the receipt's `key`, a column the ledger stores as written. It is not in the `message`: the ledger redacts the
+// message as text (a pattern can cut the JSON, an id can look like a secret), so control state there can be lost or altered.
+// A key that names a boundary and cannot be read is a boundary with nothing carried, so the rows are shown again, never withheld.
+const CONVO_PREFIX = 'convo:';
+const convoKey = (convo) => CONVO_PREFIX + JSON.stringify({ carried: convo.carried });
 function convoOf(ev) {
+  if (typeof ev.key !== 'string' || !ev.key.startsWith(CONVO_PREFIX)) return null;
   try {
-    const m = JSON.parse(ev.message);
-    return m && m.convo && Array.isArray(m.convo.carried) ? m.convo : null;
-  } catch { return null; }
+    const m = JSON.parse(ev.key.slice(CONVO_PREFIX.length));
+    return m && Array.isArray(m.carried) && m.carried.every((id) => typeof id === 'string') ? { carried: m.carried } : { carried: [] };
+  } catch { return { carried: [] }; }
 }
 
 // The ids this worker's current conversation was already shown: those the last replacement carried, and every row any receipt
@@ -149,23 +169,23 @@ async function embedForIndex(ctx, w, lv) {
 }
 
 // The receipt's detail, one JSON text in the event's `message` (the store has no scalar columns for it):
-// { hybrid, queries: [{ label, ms, ok }], failure?: { code, message }, convo?: { carried } } (convo: a replacement's first receipt, see convoOf). `hybrid` is true only when a semantic ranking
+// { hybrid, queries: [{ label, ms, ok }], failure?: { code, message } }. `hybrid` is true only when a semantic ranking
 // contributed to the index's order; `failure` is why a query or the semantic signal did not.
-function receiptDetail(emb, hybrid, failure, convo) {
+function receiptDetail(emb, hybrid, failure) {
   const f = failure || emb.failure;
-  return JSON.stringify({ hybrid, queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), ...(f ? { failure: { code: f.code, message: String(f.message || '').slice(0, 160) } } : {}), ...(convo ? { convo } : {}) });
+  return JSON.stringify({ hybrid, queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), ...(f ? { failure: { code: f.code, message: String(f.message || '').slice(0, 160) } } : {}) });
 }
 
 // ADR 0034 decision 2 under `required`: the owner's hook has paused the run, so this launch injects no index. The receipt is
 // ok 0 with the failure's code (a resume relaunches the worker, and its index is built again, since an ok 0 receipt shows no rows).
 async function stopReceipt(ctx, w, emb, convo) {
   w.lastError = { where: 'memory.embedQuery', code: emb.failure.code, message: emb.failure.message };
-  await record(ctx, w, { kind: 'index_injected', ok: 0, code: emb.failure.code, message: receiptDetail(emb, false, null, convo) });
+  return recordIndex(ctx, w, convo, { ok: 0, code: emb.failure.code, message: receiptDetail(emb, false, null) });
 }
 
 // on_embedder_failure `off`: the run's memory is off, so this launch gets no index. Recorded, never silent.
 async function offReceipt(ctx, w, emb, convo) {
-  await record(ctx, w, { kind: 'index_injected', ok: 1, row_ids: [], bytes: 0, dropped: 0, over_budget: 0, message: JSON.stringify({ hybrid: false, ...(convo ? { convo } : {}), memory: 'off', queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), ...(emb.failure ? { failure: { code: emb.failure.code, message: String(emb.failure.message || '').slice(0, 160) } } : {}) }) });
+  return recordIndex(ctx, w, convo, { ok: 1, row_ids: [], bytes: 0, dropped: 0, over_budget: 0, message: JSON.stringify({ hybrid: false, memory: 'off', queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), ...(emb.failure ? { failure: { code: emb.failure.code, message: String(emb.failure.message || '').slice(0, 160) } } : {}) }) });
 }
 
 // What a worker is told when its first-message index was refused (E_INDEX_BOUND, E_SEMANTIC_REQUIRED): belay's own words, no note text.
@@ -185,7 +205,9 @@ async function indexBlock(w, ctx, prompt, given, replacing = null) {
   const lv = await levers(ctx, w);
   if (!lv.first_message_index) return '';
   const emb = given || await embedForIndex(ctx, w, lv);
-  let convo = replacing ? { carried: [] } : null; // until the receipts are read, nothing is known to be held
+  // Until the receipts are read, nothing is known to be held. After a boundary write was lost, nothing is known of the conversation
+  // either: this launch is shown every row and writes the boundary.
+  let convo = replacing || w.convoLost ? { carried: [] } : null;
   if (emb.stop) { await stopReceipt(ctx, w, emb, convo); return ''; }
   if (emb.off) { await offReceipt(ctx, w, emb, convo); return ''; }
   let got;
@@ -196,7 +218,7 @@ async function indexBlock(w, ctx, prompt, given, replacing = null) {
       const rows = bottleRowIds(replacing.bottle);
       convo = { carried: [...new Set(list.filter(showed).flatMap((ev) => ev.row_ids))].filter((id) => rows.has(id)) };
       exclude = convo.carried;
-    } else exclude = [...heldIds(list)];
+    } else exclude = w.convoLost ? [] : [...heldIds(list)];
     const query = queryOf(prompt);
     got = await ctx.core.memory.index({
       task_id: w.taskId || undefined, worker_id: w.id, max_bytes: lv.index_bytes, exclude_ids: exclude,
@@ -207,7 +229,7 @@ async function indexBlock(w, ctx, prompt, given, replacing = null) {
     noteError(w, 'memory.index', e);
     const refusal = codeOf(e) === 'E_INDEX_BOUND' || codeOf(e) === 'E_SEMANTIC_REQUIRED';
     if (refusal) await record(ctx, w, { kind: 'index_bound', ok: 0, code: codeOf(e), message: JSON.stringify({ refused: true, message: String((e && e.message) || e).slice(0, 300) }) });
-    await record(ctx, w, { kind: 'index_injected', ok: 0, code: codeOf(e), message: JSON.stringify({ hybrid: false, queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), failure: { code: codeOf(e), message: String((e && e.message) || e).slice(0, 160) }, ...(convo ? { convo } : {}) }) });
+    await recordIndex(ctx, w, convo, { ok: 0, code: codeOf(e), message: JSON.stringify({ hybrid: false, queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), failure: { code: codeOf(e), message: String((e && e.message) || e).slice(0, 160) } }) });
     // A refusal under `required` is not fixed by a pause, so the worker still starts. It is told plainly that it has no index and why.
     return refusal ? noIndexNotice(e) : '';
   }
@@ -215,9 +237,9 @@ async function indexBlock(w, ctx, prompt, given, replacing = null) {
   const rel = got.relevance || {};
   const hybrid = rel.semantic_contributed === true;
   const semFailure = emb.embeddings.length && !hybrid && rel.semantic && typeof rel.semantic === 'object' ? rel.semantic : null;
-  await record(ctx, w, {
-    kind: 'index_injected', ok: 1, row_ids: got.row_ids, bytes: got.bytes, sha256: got.sha256,
-    dropped: got.dropped > 0 ? 1 : 0, over_budget: got.over_budget ? 1 : 0, message: receiptDetail(emb, hybrid, semFailure, convo),
+  await recordIndex(ctx, w, convo, {
+    ok: 1, row_ids: got.row_ids, bytes: got.bytes, sha256: got.sha256,
+    dropped: got.dropped > 0 ? 1 : 0, over_budget: got.over_budget ? 1 : 0, message: receiptDetail(emb, hybrid, semFailure),
   });
   return got.bytes > 0 ? got.text : '';
 }

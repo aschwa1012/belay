@@ -1,6 +1,6 @@
 'use strict';
 // memory-preface-boundary.test.cjs — where a replacement's conversation begins is read from the store, not held on the worker object:
-// the replacement's first receipt carries `convo: { carried }`, the earlier row ids its bottle still holds. So a failed read, a row whose
+// the replacement's first receipt carries `convo:{"carried":[...]}` in its `key`, the earlier row ids its bottle still holds. So a failed read, a row whose
 // syntax is quoted in retained prose, and a process that adopts the worker are all judged from the receipts alone.
 
 const test = require('node:test');
@@ -134,7 +134,7 @@ test('a replace whose receipts could not be read for once holds nothing of the o
     assert.ok(received(recv)[2].includes('- mem-a [') && received(recv)[2].includes('- mem-b ['), received(recv)[2]);
     const failed = core.events.filter((e) => e.kind === 'index_injected' && e.ok === 0);
     assert.strictEqual(failed.length, 1);
-    assert.deepStrictEqual(JSON.parse(failed[0].message).convo, { carried: [] });
+    assert.deepStrictEqual(JSON.parse(failed[0].key.slice('convo:'.length)), { carried: [] });
   });
 });
 
@@ -156,7 +156,86 @@ test('a process that adopts the worker after a replace finds the same boundary i
     assert.deepStrictEqual(idx[2].args.exclude_ids, ['mem-a'], 'the replace carried only mem-a');
     assert.deepStrictEqual([...idx[3].args.exclude_ids].sort(), ['mem-a', 'mem-b'], 'the resume holds what the bottle carried and what the replacement was shown');
     const replaceReceipt = core.events.filter((e) => e.kind === 'index_injected')[2];
-    assert.deepStrictEqual(JSON.parse(replaceReceipt.message).convo, { carried: ['mem-a'] });
+    assert.deepStrictEqual(JSON.parse(replaceReceipt.key.slice('convo:'.length)), { carried: ['mem-a'] });
     assert.deepStrictEqual(replaceReceipt.row_ids, ['mem-b']);
+  });
+});
+
+// The boundary is control state, so a lost or damaged receipt must show rows again and never withhold one.
+const indexCalls = (core) => core.calls.filter((c) => c.method === 'memory.index');
+
+test('a replacement whose boundary receipt could not be written makes the next resume show every row, and the resume writes the boundary', async () => {
+  const rows = ['mem-a'];
+  const core = memoryCore({ first_message_index: true, bottle: true, bottle_bytes: 12000 }, rows);
+  await scenario(core, rows, async (m, recv) => {
+    await throughResume(m, rows);
+    const write = core.memory.recordEvent;
+    let lose = true;
+    core.memory.recordEvent = async (a) => { if (lose && a.kind === 'index_injected') throw Object.assign(new Error('busy'), { code: 'E_BUSY' }); return write(a); };
+    await replace(m);
+    lose = false;
+    const lost = core.events.filter((e) => e.kind === 'index_injected').length;
+    assert.strictEqual(lost, 2, 'the replacement left no receipt: the spawn and the resume wrote theirs');
+    await m._waitTurn('w1', 8000);
+    assert.strictEqual((await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 })).branch, 'resume');
+    const idx = indexCalls(core);
+    assert.deepStrictEqual(idx[3].args.exclude_ids, [], 'the old conversation\'s boundary is no boundary of this one: nothing is left out');
+    const text = received(recv)[3];
+    assert.ok(text.includes('- mem-a [') && text.includes('- mem-b ['), text);
+    const repair = core.events.filter((e) => e.kind === 'index_injected').pop();
+    assert.strictEqual(repair.key, 'convo:{"carried":[]}', 'the resume wrote the boundary the replace could not');
+    // And the boundary now holds: the next resume leaves out what the repaired conversation was shown, and no more.
+    assert.strictEqual((await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 })).branch, 'resume');
+    assert.deepStrictEqual([...indexCalls(core)[4].args.exclude_ids].sort(), ['mem-a', 'mem-b']);
+  });
+});
+
+test('a boundary write that fails once is tried again, so the next resume still reads the store', async () => {
+  const rows = ['mem-a'];
+  const core = memoryCore({ first_message_index: true, bottle: true, bottle_bytes: 12000 }, rows);
+  await scenario(core, rows, async (m) => {
+    await throughResume(m, rows);
+    const write = core.memory.recordEvent;
+    let failed = 0;
+    core.memory.recordEvent = async (a) => { if (a.kind === 'index_injected' && failed < 1) { failed += 1; throw Object.assign(new Error('busy once'), { code: 'E_BUSY' }); } return write(a); };
+    await replace(m);
+    assert.strictEqual(failed, 1);
+    await m._waitTurn('w1', 8000);
+    assert.strictEqual((await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 })).branch, 'resume');
+    assert.deepStrictEqual([...indexCalls(core)[3].args.exclude_ids].sort(), ['mem-a', 'mem-b'], 'the boundary was stored, so the resume used it');
+  });
+});
+
+test('redaction of a receipt\'s message cannot alter the boundary', async () => {
+  const { redact } = require('../../src/core/redact.cjs');
+  const rows = ['mem-a'];
+  const core = memoryCore({ first_message_index: true, bottle: true, bottle_bytes: 12000 }, rows);
+  await scenario(core, rows, async (m) => {
+    await throughResume(m, rows);
+    const write = core.memory.recordEvent;
+    core.memory.recordEvent = async (a) => write({ ...a, message: a.message == null ? a.message : redact(a.message).text }); // as the ledger does
+    const index = core.memory.index;
+    let boom = true;
+    core.memory.index = async (a) => { if (boom) throw Object.assign(new Error('index failed <private> and the rest'), { code: 'E_BUSY' }); return index(a); };
+    await replace(m);
+    boom = false;
+    const failed = core.events.filter((e) => e.kind === 'index_injected' && e.ok === 0).pop();
+    assert.throws(() => JSON.parse(failed.message), 'the redaction cut the message JSON, as the ledger would');
+    await m._waitTurn('w1', 8000);
+    assert.strictEqual((await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 })).branch, 'resume');
+    assert.deepStrictEqual(indexCalls(core).pop().args.exclude_ids, ['mem-a'], 'the replacement was shown nothing but its bottle holds mem-a');
+  });
+});
+
+test('a boundary key that cannot be read is a boundary with nothing carried', async () => {
+  const rows = ['mem-a'];
+  const core = memoryCore({ first_message_index: true, bottle: true, bottle_bytes: 12000 }, rows);
+  await scenario(core, rows, async (m) => {
+    await throughResume(m, rows);
+    core.events.push({ kind: 'index_injected', worker_id: 'w1', ok: 1, row_ids: [], key: 'convo:{"carri' });
+    m._worker('w1').lastEventAt = Date.now();
+    await m._waitTurn('w1', 8000);
+    assert.strictEqual((await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 })).branch, 'resume');
+    assert.deepStrictEqual(indexCalls(core).pop().args.exclude_ids, [], 'rows before the unreadable boundary are not taken as held');
   });
 });
