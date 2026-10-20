@@ -108,7 +108,7 @@ test('both orchestrator prompts ask for 1 to 3 memory_queries, and worker_spawn 
     assert.match(text, /not the finding you expect it to make/, `${f}: situations, not findings`);
   }
   const T = require(path.join(ROOT, 'src/mcp/tools.cjs'));
-  const spawn = T.toolsFor('orchestrator').find((t) => t.name === 'worker_spawn');
+  const spawn = T.toolsFor('orchestrator', { queries: true }).find((t) => t.name === 'worker_spawn');
   assert.ok(spawn.inputSchema.properties.memory_queries, 'worker_spawn lists memory_queries');
   assert.strictEqual(spawn.inputSchema.properties.memory_queries.type, 'array');
 });
