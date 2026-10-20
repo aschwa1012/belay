@@ -141,6 +141,9 @@ class Core {
   // adapter, belay run's warm-up) for the 600 s backstop. The limit ends the CALL; the load continues and
   // a retry joins it. Only a vector call has a limit; every other method returns as before.
   _local(method, params, capMs) {
+    // A search this timeout abandons must not reach the search log when it finishes: the keyword re-run below is the one that answers.
+    const abandon = { abandoned: false };
+    if (method === 'memory.search') params = { ...params, [Symbol.for('belay.search.abandoned')]: abandon };
     const run = this.owner.engine.handle(method, params);
     let limit = method === 'memory.warm' ? vectorLimit(method, params) : (vectorLimit(method, params) && this.vectorLimitMs) || vectorLimit(method, params);
     if (!limit) return run;
@@ -148,6 +151,7 @@ class Core {
     const writes = method === 'memory.store' || method === 'lease.release';
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
+        abandon.abandoned = true;
         const e = err('E_TIMEOUT', method + ' did not finish within ' + limit + ' ms in this process (the owner); its embedder is still loading or embedding and the load continues, so ' + (writes ? 'RE-READ before retrying: the row is written when the load finishes' : 'a retry waits on the same load'), { method, timeout_ms: limit, in_process: true, ...(writes ? { may_have_committed: true } : {}) });
         if (method === 'memory.search' && params.mode === 'hybrid') {
           const engine = this.owner.engine;
@@ -158,7 +162,9 @@ class Core {
           const bound = err('E_EMBED_BOUND', 'memory.search hybrid: its semantic half did not finish within ' + limit + ' ms (the embedder of the owner is still loading or embedding and the load continues)', { embedder: true, cause: 'timeout', op: 'embed', method, timeout_ms: limit, in_process: true });
           if (this.owner.opts && typeof this.owner.opts.embedderMode === 'function') notifyEmbedderFailure(engine, params.caller, 'memory.search', bound);
           try { adviseEmbedderFailure(engine, params.caller, bound); onSemanticFailure(engine, params.caller, bound); } catch (refusal) { return reject(refusal); }
-          engine.handle(method, { ...params, mode: 'keyword' }).then(r => resolve(withSemanticFailure(r, e)), () => reject(e));
+          const rerun = { ...params, mode: 'keyword' };
+          delete rerun[Symbol.for('belay.search.abandoned')];
+          engine.handle(method, rerun).then(r => resolve(withSemanticFailure(r, e)), () => reject(e));
         } else reject(e);
       }, limit);
       run.then(v => { clearTimeout(timer); resolve(v); }, e => { clearTimeout(timer); reject(e); });

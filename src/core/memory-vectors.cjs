@@ -31,6 +31,12 @@ const MARKER = 'vector_cache_by';
 const INSERT_IGNORE = `INSERT OR IGNORE INTO memory_vectors(model, model_revision, dims, template, embed_hash, vector, created_at)
   VALUES (?, ?, ?, ?, ?, ?, ?)`;
 
+// A per-store write generation (a WeakMap keyed by the database handle): every write or delete on memory_vectors bumps it, so a reader that
+// keeps vectors in memory (search-tier.cjs, a heavy tier's map) keeps them only alongside the generation they were built at.
+const generations = new WeakMap();
+const generation = db => generations.get(db) || 0;
+const bump = db => { generations.set(db, generation(db) + 1); };
+
 const sha256 = t => crypto.createHash('sha256').update(String(t)).digest('hex');
 const inlineTemplateOf = r => r.text_template || 'v1';
 const revisionOf = r => r.embedding_revision || '';
@@ -80,6 +86,7 @@ const f32 = blob => new Float32Array(Uint8Array.from(blob).buffer);
 
 // Upserts one vector under its key. `vector` is a Buffer/Uint8Array of the unit float32 components.
 function putVector(db, key, embedHash, vector, at = Date.now()) {
+  bump(db);
   db.prepare(`INSERT OR REPLACE INTO memory_vectors(model, model_revision, dims, template, embed_hash, vector, created_at)
               VALUES (?, ?, ?, ?, ?, ?, ?)`).run(key.model, key.revision || '', key.dims, key.template, embedHash, Buffer.from(vector), at);
 }
@@ -112,6 +119,7 @@ function putRowVector(db, row) {
 // A crash between putStamp and the marker, or an older core, makes them differ, and the pass runs. (An older build with the very same
 // written_by string as the vector-aware one would be missed; the string names version and commit, so that needs the same commit.)
 function migrateVectors(db, opts = {}) {
+  bump(db);
   let backfilled = 0;
   if (!hasTable(db)) {
     db.exec('BEGIN IMMEDIATE');
@@ -147,6 +155,7 @@ function lastWriterMaintainedCache(db) {
 // IGNORE; nothing present is rewritten). The same pass builds the set of referenced (template, hash) pairs, and every cached vector
 // outside it is deleted. A pass that finds nothing to do writes nothing. `opts.afterScan` is a test seam called between scan and apply.
 function catchUp(db, opts = {}) {
+  bump(db);
   db.exec('BEGIN IMMEDIATE');
   try {
     const exists = db.prepare(VEC_BY_KEY);
@@ -268,6 +277,7 @@ function backlog(db, tier, { namespaces, includeSuperseded = true, ...rest } = {
 // of both its templates. Returns the number removed. (The owner's start runs the same sweep inside catchUp.)
 function sweep(db) {
   needTable(db);
+  bump(db);
   const live = new Map();
   for (const r of db.prepare(`SELECT ${COLS} FROM memory_entries`).iterate()) {
     for (const t of templatesOf(r)) {
@@ -291,6 +301,7 @@ function sweep(db) {
 // any of their texts or titles (a v1 hash needs the same text, a v2 hash the same title), and a pair no such row renders is deleted.
 function sweepRows(db, gone) {
   if (!hasTable(db)) return 0;
+  bump(db);
   const cand = new Map(), texts = new Set(), titles = new Set();
   for (const r of gone) {
     if (!r || typeof r.text !== 'string') continue;
@@ -318,5 +329,5 @@ function sweepRows(db, gone) {
 
 module.exports = {
   TABLE_SQL, embedTextOf, embedHashOf, renderTemplateOf, templatesOf, hasTable, migrateVectors, lastWriterMaintainedCache, catchUp, putVector, putRowVector,
-  vectorsFor, visibleRowFilter, selectSearchable, backlog, sweep, sweepRows,
+  generation, bump, vectorsFor, visibleRowFilter, selectSearchable, backlog, sweep, sweepRows,
 };

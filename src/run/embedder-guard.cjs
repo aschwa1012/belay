@@ -71,13 +71,14 @@ function createEmbedderGuard({ mode: initialMode, pauseRun, stopRun, interactive
   function onFailure({ caller, by, call, error, worker_id: workerId }) {
     if (!isEmbedderFailure(error)) return undefined;
     const worker = workerId || (caller && caller.worker_id) || by || (caller && caller.role) || null;
+    const eff = error.detail.stage === 'rerank' ? 'required' : mode; // ADR 0050: a reranker failure pauses whatever the embedder mode is
     const ev = {
       at: Date.now(), worker, call, code: error.code || null, cause: error.detail.cause || null,
-      message: error.message || String(error), action: mode === 'required' ? 'pause' : mode === 'off' ? 'off' : 'continue', pause: null,
+      message: error.message || String(error), action: eff === 'required' ? 'pause' : eff === 'off' ? 'off' : 'continue', pause: null,
     };
     events.push(ev);
-    if (mode === 'off') off = true;
-    if (mode !== 'required') return undefined;
+    if (eff === 'off') off = true;
+    if (eff !== 'required') return undefined;
     // An interactive run is never ended by an embedder failure (operator, 2026-10-15): even one no re-load can fix pauses it, and
     // the operator resumes with `--embedder keyword|off`.
     if (isFatal(error) && !interactive) {

@@ -184,6 +184,7 @@ class Store {
         const row = { id, vec, ttl_at: ttl };
         if (i >= 0) c.rows[i] = row; else c.rows.push(row);
         if (a.supersedes) c.superseded.add(a.supersedes);
+        c.heavy = null; // search-tier.cjs keeps a heavy tier's vectors on this object
       }
       const stored = this.p('SELECT written_by, status, title, run_id, task_id, turn, source, redactions, embedding IS NOT NULL AS has_vec FROM memory_entries WHERE id = ?').get(id);
       return {
@@ -207,6 +208,7 @@ class Store {
     try { cur = row.body ? JSON.parse(row.body) : {}; } catch { cur = {}; }
     const next = fn(cur) || cur;
     this.p('UPDATE memory_entries SET body = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(next), now(), id);
+    MV.bump(this.db); // a changed `when` changes the template a row is embedded under, so a vector map built from it is stale
     return next;
   }
 
@@ -313,7 +315,7 @@ class Store {
       this.p('DELETE FROM memory_entries WHERE id = ?').run(id);
       this.sweepVectors([row]);
       const c = this.cache.get(row.namespace);
-      if (c) c.rows = c.rows.filter(r => r.id !== id);
+      if (c) { c.rows = c.rows.filter(r => r.id !== id); c.heavy = null; }
       return { id, deleted: true, namespace: row.namespace };
     });
   }
