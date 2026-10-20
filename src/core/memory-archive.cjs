@@ -5,7 +5,7 @@
 // Nothing here deletes a row; only the operator's purge does, and it covers archive/ alone.
 
 const { fitBody, SEEN_MAX } = require('./methods-memory-notes.cjs');
-const { parse } = require('./memory-facts.cjs');
+const { parse, loadNote } = require('./memory-facts.cjs');
 
 const HISTORY_KEEP = 50; // delivery entries kept on the kept note, newest; the full count is in merged_from
 const MERGED_KEEP = 20;
@@ -68,7 +68,11 @@ function transferHistory(E, B, A, meta) {
   const own = !(A.task_id === B.task_id && A.written_by === B.written_by) && !dupeOfA;
   const sighting = own ? { task_id: B.task_id, written_by: B.written_by, run_id: B.run_id, in_index_beforehand: null, at, evidence: (bb.evidence || []).slice(0, 3), transferred_from: B.id, hops: [B.id] } : null;
   const total = (Number.isInteger(bb.seen_total) ? bb.seen_total : moved.length) + (own ? 1 : 0);
-  const deliveries = [...(bb.delivery_history || []).map(d => hop(d, B.id, 'from')), ...deliveriesOf(E, B.id).map(d => ({ ...d, hops: [B.id] }))];
+  // A delivery B already carries in its history (a restore gives B its own back) is not read from the ledger a second time.
+  const dKey = d => `${d.task_id}|${d.worker_id}|${d.route || 'index'}`;
+  const carried = (bb.delivery_history || []).map(d => hop(d, B.id, 'from'));
+  const have = new Set(carried.map(dKey));
+  const deliveries = [...carried, ...deliveriesOf(E, B.id).filter(d => !have.has(dKey(d))).map(d => ({ ...d, hops: [B.id] }))];
   E.store.patchBody(A.id, b => {
     b.seen_in = [...(b.seen_in || []), ...moved, ...(sighting ? [sighting] : [])].slice(-SEEN_MAX);
     b.seen_total = (b.seen_total || 0) + total;
@@ -121,13 +125,20 @@ function untransfer(E, B) {
         }) };
         b.seen_in = (b.seen_in || []).filter(s => !(s && through(s, B.id, 'transferred_from')));
         b.seen_total = Math.max(0, (b.seen_total || 0) - entry.seen_total);
+        // The deliveries B handed over come back to B, each with its hops cut at B (an own delivery has no earlier hop and keeps from = B).
+        back.delivery_history = (b.delivery_history || []).filter(d => d && through(d, B.id, 'from')).map(d => {
+          const h = hopsOf(d, 'from'); const keep = h.slice(0, h.indexOf(B.id));
+          const { hops, ...rest } = d;
+          return keep.length ? { ...rest, from: keep[keep.length - 1], hops: keep } : rest;
+        });
         b.delivery_history = (b.delivery_history || []).filter(d => !(d && through(d, B.id, 'from')));
       }
       return b;
     });
   }
-  E.store.patchBody(B.id, b => { b.seen_in = back.seen_in; b.seen_total = back.seen_total; return b; });
-  return { from: first.id, ...(holder !== first ? { held_by: holder.id } : {}), ...back };
+  E.store.patchBody(B.id, b => { b.seen_in = back.seen_in; b.seen_total = back.seen_total; b.delivery_history = [...(b.delivery_history || []), ...back.delivery_history].slice(-HISTORY_KEEP); return b; });
+  const { delivery_history: givenBack, ...counts } = back;
+  return { from: first.id, ...(holder !== first ? { held_by: holder.id } : {}), ...counts, deliveries: givenBack.length };
 }
 
 // A note archived while it carries an open hold ends that hold in the same transaction: the held row is closed with a receipt, so the
@@ -140,15 +151,34 @@ function closeHold(E, note, meta) {
   return h.row;
 }
 
+// A note that replaced another (its `supersedes` column) hides it only while it sits in project/<p>: the gate, the index and search
+// look for a superseding row in the same namespace. So when such a note leaves for archive/ and its claim lives on in another note (a
+// duplicate or a refinement of the kept note, or a note replaced by a newer one), the note it replaced would come back beside the claim
+// that displaced it. It is archived instead, as replaced by the kept note, and a restore can bring it back. A note archived as wrong
+// (no kept note) leaves the old one visible again: its replacement was not true. Returns the id archived, or null.
+function carryReplaced(E, project, note, meta, kept, depth) {
+  if (meta.kind === 'wrong' || note.namespace !== `project/${project}` || depth > 20) return null;
+  const target = kept || (meta.of ? loadNote(E, meta.of) : null);
+  const col = E.store.p('SELECT supersedes FROM memory_entries WHERE id = ?').get(note.id);
+  const old = col && col.supersedes && target && col.supersedes !== target.id ? loadNote(E, col.supersedes) : null;
+  if (!old || old.type !== 'note' || old.namespace !== `project/${project}`) return null;
+  archiveNote(E, project, old, {
+    kind: 'superseded', of: target.id, ground: 'replaced_by_newer', direct: true, run_id: meta.run_id || null, via: 'replacement_archived', replaced_by_archived: note.id,
+    reason: `the note that replaced it (${note.id}) was archived as ${meta.kind} of ${target.id}, so ${target.id} stands in its place`,
+  }, target, depth + 1);
+  return old.id;
+}
+
 // Moves the note to archive/<project>. `meta` is what the archive records: { kind, of, ground, reason, cites, run_id,
 // head_sha, held_row, receipt, direct }. For a duplicate with `of`, the history moves to `of` first.
-function archiveNote(E, project, note, meta, kept) {
+function archiveNote(E, project, note, meta, kept, depth = 0) {
   const to = `archive/${project}`;
   const from = note.namespace;
   // A duplicate hands its history to the kept note; so does a note replaced by one that refines it (the same lesson, so its
   // whole history belongs on the surviving note). A superseded note (a different lesson) keeps its history.
   const transfer = meta.history_moved || ((meta.kind === 'duplicate' || meta.refines) && kept && !meta.no_transfer ? transferHistory(E, note, kept, meta) : null);
   const closed = closeHold(E, note, meta);
+  const carried = carryReplaced(E, project, note, meta, kept, depth);
   bindNamespace(E, to, note);
   E.store.moveRow(note.id, from, to);
   const at = Date.now();
@@ -156,7 +186,7 @@ function archiveNote(E, project, note, meta, kept) {
     b.state = 'archived';
     b.archived = {
       at, from, kind: meta.kind, of: meta.of || null, ground: meta.ground || null, reason: meta.reason, cites: meta.cites || [], run_id: meta.run_id || null,
-      head_sha: meta.head_sha || null, held_row: meta.held_row || null, review: meta.receipt || null, direct: !!meta.direct, ...(closed ? { held_row_closed: closed } : {}), ...(meta.relation ? { relation: meta.relation } : {}), ...(transfer ? { history_moved: transfer } : {}),
+      head_sha: meta.head_sha || null, held_row: meta.held_row || null, review: meta.receipt || null, direct: !!meta.direct, ...(closed ? { held_row_closed: closed } : {}), ...(carried ? { replaced_also_archived: carried } : {}), ...(meta.replaced_by_archived ? { replaced_by_archived: meta.replaced_by_archived } : {}), ...(meta.relation ? { relation: meta.relation } : {}), ...(transfer ? { history_moved: transfer } : {}),
     };
     delete b.held;
     return fitBody(b);
