@@ -306,9 +306,9 @@ test('R17 (review B-2): a confirm whose check was in flight when a refute landed
   assert.match(rowOf(w.note).status_receipt, /^review:rev-q|^review:[0-9a-f-]{36}$/);
 });
 
-test('R19 (review S-A, X4): an observed note is confirmed by the file line that holds its own evidence text; the same words are refused from a stream', async () => {
+test('R19 (review S-A, X4): an observed note is confirmed by the file line that holds its own evidence text; the same words are refused from a stream no tool printed them in', async () => {
   const line = "return 'skips unlisted fixtures'";
-  const w = await written('w-s', 'K43', `${line}\n`);
+  const w = await written('w-s', 'K43', 'a tool printed something else\n');
   store.patchBody(w.note, (b) => { b.evidence = [{ where: 'loader.js', saw: line }]; return b; });
   const stream = await review('rev-s1', w.task, [verdict(w.note, 'confirmed', [cite(line)])]);
   assert.strictEqual((await apply(stream)).refused[0].code, 'E_CITATION', 'a stream cite of the note\'s own evidence text proves nothing');

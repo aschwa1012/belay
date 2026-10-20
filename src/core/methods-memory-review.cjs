@@ -14,7 +14,7 @@ const { err } = require('./errors.cjs');
 const L = require('./memory-lifecycle.cjs');
 const C = require('./lifecycle-common.cjs');
 const { loadNote, checkHoldFacts, ownTexts } = require('./memory-facts.cjs');
-const { checkCitations, evidenceOf, streamResultHas, selfQuoted } = require('./memory-citations.cjs');
+const { checkCitations, evidenceOf, streamCite } = require('./memory-citations.cjs');
 const { archiveNote } = require('./memory-archive.cjs');
 const N = require('./methods-memory-notes.cjs');
 const { applyOneIn } = require('./methods-memory-note-review.cjs');
@@ -83,8 +83,7 @@ async function unsupportedCites(E, ctx, held, note, cites) {
     if (!c.where.startsWith('stream:')) { fileCites.push(c); continue; }
     const file = c.where.slice('stream:'.length).split('\\').join('/');
     if (!files.includes(file)) throw fail('that stream file is not among the evidence files named for this call');
-    if (selfQuoted(own, note.title, c.quote)) throw fail('the quote is the note\'s own text, which cannot be evidence about the note');
-    const r = streamResultHas(file, c.quote);
+    const r = streamCite(file, c.quote, own, note.title);
     if (!r.found) throw fail(r.reason);
     out.push({ where: c.where, source: 'stream result' });
   }
