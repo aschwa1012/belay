@@ -17,7 +17,7 @@ const { rotateWireLog } = require('./wire-log.cjs');
 const S = require('./surface.cjs'); // ADR 0024, S2 fix round F4: the surface fields spawn/restart/resume return
 const I = require('./instructions.cjs'); // ADR 0024 amendment 1: the spawn-time CLAUDE.md copy
 const { fail } = require('./errors.cjs');
-const { validateSpawnArgs, checkMemoryQueries } = require('./spawn-args.cjs');
+const { validateSpawnArgs, checkMemoryQueries, discardUnstarted } = require('./spawn-args.cjs');
 const AD = require('./agent-defaults.cjs'); // the config's per-agent-type model and effort defaults
 const MP = require('./memory-preface.cjs'); // ADR 0042: the first-message preface and the memory hooks
 const NM = require('./native-memory.cjs'); const NR = require('./note-review.cjs'); // NM: ADR 0024 amendment 3, the native_memory guards // wave 4: the notes' review (the reviewer's brief, the short review job)
@@ -231,7 +231,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     // refusal leaves no directory, no row, and the id free. Later refusals still take the write-dead path.
     // The id is reserved synchronously: the await below must not let a second spawn with it pass the check above.
     pendingIds.add(id);
-    let w;
+    let w; const dirExisted = fs.existsSync(L.workerDir(root, id)); // a directory this spawn creates is its own to remove if it fails before any row exists
     try {
       if (task_id) await core.task.assign({ task_id, check_only: true });
       w = W.newWorkerRecord({
@@ -244,7 +244,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     } finally { pendingIds.delete(id); }
     const spawnLevers = await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the worker adapter's argv carries the notes lever, so the levers are known before the files are written
     if (!spawnLevers.first_message_index) w.indexQueries = []; // the first-message index is their only reader: with it off the row keeps none (null)
-    writeFilesFor(w);
+    try { writeFilesFor(w); } catch (e) { discardUnstarted(workers, w, dirExisted); throw e; } // no row, nothing launched: leave no record and no directory, so a corrected retry with the same id is free
     if (substrate === 'claude-code') w.instructions = I.snapshotInstructions(w.worktree, w.dir); // spawn only
 
     // The worker row comes first, with no pid yet: `task.assign` refuses a worker with no row, and the
