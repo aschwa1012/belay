@@ -30,6 +30,7 @@ function shape(key) {
   const s = ML.TYPES[leverOf(key)];
   if (s.type === 'boolean') return { type: 'boolean', allowed: [true, false], text: 'true | false' };
   if (s.type === 'enum') return { type: 'enum', allowed: s.values, text: s.values.join(' | ') };
+  if (s.type === 'json') return { type: 'json', nullable: !!s.nullable, allowed: null, text: 'a JSON object from agent type to profile, e.g. {"reviewer":"gpu-rerank"} | null' };
   if (s.type === 'string') return { type: 'string', nullable: !!s.nullable, allowed: null, text: s.nullable ? 'a name | null' : 'a string' };
   const range = s.min !== undefined ? ` ${s.minExclusive ? '>' : ''}${s.min}${s.minExclusive ? '' : '..'}${s.minExclusive ? ' to ' : ''}${s.max}` : '';
   return { type: s.type, allowed: null, text: `${s.type}${range}` };
@@ -58,6 +59,10 @@ function parseValue(key, raw) {
     case 'integer': return /^-?\d+$/.test(raw) ? { value: Number(raw) } : bad('an integer');
     case 'number': return /^-?\d+(\.\d+)?$/.test(raw) ? { value: Number(raw) } : bad('a number');
     case 'model': return raw === 'null' ? { value: null } : raw ? { value: raw } : bad('a model name or null');
+    case 'json': {
+      if (raw === 'null') return { value: null };
+      try { return { value: JSON.parse(raw) }; } catch { return bad('JSON'); }
+    }
     case 'string': return { value: raw === 'null' && sh.nullable ? null : raw };
     default: {
       if (raw === 'null' && sh.allowed.includes(null)) return { value: null };
@@ -86,7 +91,7 @@ function checkStored(key, value) {
   const block = { [leverOf(key)]: value };
   const t = typeof value;
   const s = ML.TYPES[leverOf(key)];
-  const typeOk = s.type === 'boolean' ? t === 'boolean' : s.type === 'string' ? (value === null ? !!s.nullable : t === 'string') : s.type === 'enum' ? s.values.includes(value) : t === 'number';
+  const typeOk = s.type === 'boolean' ? t === 'boolean' : s.type === 'string' ? (value === null ? !!s.nullable : t === 'string') : s.type === 'enum' ? s.values.includes(value) : s.type === 'json' ? (value === null ? !!s.nullable : t === 'object') : t === 'number';
   if (!typeOk) return { ok: false, reason: `${JSON.stringify(value)} is not ${shape(key).text}` };
   // Ranges and patterns are parseMemoryBlock's to judge; a prerequisite on another key is not this key's fault.
   const r = ML.parseMemoryBlock(block);
@@ -111,6 +116,13 @@ function effective(found, key) {
   if (!chk.ok) return { ...out, invalid: { stored: stored.value, reason: `${chk.reason}; the default ${JSON.stringify(dflt)} is used` } };
   if (chk.unset) return out;
   return { ...out, value: stored.value, source: found.path };
+}
+
+// A routing map as one readable line per agent type, for the listing: "orchestrator=gpu-balanced, reviewer=nano+Qwen3-Reranker-4B".
+function routingText(routing) {
+  if (!routing || typeof routing !== 'object' || !Object.keys(routing).length) return "none (every agent type uses the run's profile)";
+  const short = (id) => String(id).split('/').pop();
+  return Object.entries(routing).map(([type, p]) => `${type}=${typeof p === 'string' ? p : `${short(p && p.embedder)}+${p && p.reranker && p.reranker !== 'none' ? short(p.reranker) : 'none'}`}`).join(', ');
 }
 
 // The memory block as the config holds it, after setting `key` to `value`; `null` when it is not an object.
@@ -142,4 +154,4 @@ function memoryBlockError(found) {
   return r.error || null;
 }
 
-module.exports = { NAMES, MOD_NAMES, MEMORY_NAMES, AGENT_NAMES, kindOf, shape, parseValue, effective, refusal, expectedSource, expectedValue, memoryBlockError };
+module.exports = { routingText, NAMES, MOD_NAMES, MEMORY_NAMES, AGENT_NAMES, kindOf, shape, parseValue, effective, refusal, expectedSource, expectedValue, memoryBlockError };
