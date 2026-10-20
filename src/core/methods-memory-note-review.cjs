@@ -24,6 +24,7 @@ const CC = require('./memory-citations.cjs');
 const F = require('./note-review-facts.cjs');
 const { heldLeaseOn } = require('./verdict.cjs');
 const RV = require('./note-report-verdicts.cjs');
+const { hiddenParts } = require('./note-shown.cjs');
 
 const VERDICTS = ['confirmed', 'refuted', 'unsupported'];
 const REASON_MAX = 500;
@@ -55,7 +56,7 @@ function routeOf(E, args, caller) {
     }
     const r = h.result && isObj(h.result) ? h.result : null;
     const list = r && r.memory_verdicts;
-    return { reviewer: h.by, ref: t.id, keyBase: `review:${t.id}@${h.at}`, scope: Array.isArray(t.depends_on) ? t.depends_on : [], verdicts: list === undefined ? null : list, reportVerdicts: r && r.report_verdicts !== undefined ? r.report_verdicts : null, task_id: t.id };
+    return { reviewer: h.by, ref: t.id, keyBase: `review:${t.id}@${h.at}`, scope: Array.isArray(t.depends_on) ? t.depends_on : [], capped: true, verdicts: list === undefined ? null : list, reportVerdicts: r && r.report_verdicts !== undefined ? r.report_verdicts : null, task_id: t.id };
   }
   const j = args.job;
   if (!isObj(j) || !validId(j.worker_id) || !validId(j.reviewed_task_id)) throw bad('memory.noteVerdicts needs review_task_id, or job { worker_id, reviewed_task_id } with verdicts');
@@ -95,6 +96,12 @@ function admit(E, caller, route, v) {
   if (held) throw err('E_ROLE', `worker ${route.reviewer} held lease ${held.id} on task ${n.task_id}, which wrote note ${n.id}; a worker that did the work cannot review its notes`, { id: n.id, reason: 'independence', lease_id: held.id });
   const status = n.status || 'unverified';
   if (status === 'refuted' && v.verdict === 'confirmed') throw bad(`note ${n.id} is refuted; a refuted note is changed back only by the operator`, { id: n.id });
+  // A confirmed note is shown to later workers as reviewed, so it is confirmed only on what the reviewer saw. A review task's brief caps a note
+  // (note-shown.cjs); the review job reads every field from its notes file.
+  if (v.verdict === 'confirmed' && route.capped) {
+    const hidden = hiddenParts({ text: n.text, evidence: parse(n.body).evidence });
+    if (hidden.length) throw bad(`note ${n.id} was shown to the reviewer in part (${hidden.join('; ')}), so it cannot be confirmed; refute it on a value that was shown, or leave it unreviewed`, { id: n.id, reason: 'hidden_fields', hidden });
+  }
   return n;
 }
 
