@@ -43,15 +43,34 @@ function cutoffRule(fixCutoff, timeoutMs, mode = 'headless') {
 // The memory block a run uses: the config file's `memory` block as project defaults, the run spec's own block over it
 // key by key. `config` is { path, memory } or null. Returns { block, sources } or { error }; `sources` names, for every
 // lever, 'default', the config path or 'spec'. The merged block is validated once, by parseMemoryBlock, in parseLevers.
+//
+// Two settings traps (audit L23). A spec whose `memory` is an explicit null says "no memory block": every lever at its
+// default, the config's block not inherited (an absent `memory` inherits it; `{}` is an empty override and inherits too). And a spec that
+// turns `notes` off drops the levers it would inherit from the config that need notes (note_review, notes_reflection and the
+// rest), rather than being refused for levers it never wrote; `dropped` names them. A dependent the spec itself sets is still refused.
 function mergeMemory(specBlock, config) {
+  if (specBlock === null) {
+    const sources = {};
+    for (const k of Object.keys(ML.DEFAULTS)) sources[k] = 'default';
+    return { block: undefined, sources, fromConfig: false, defaultsOnly: true };
+  }
   const cfg = config && config.memory !== undefined && config.memory !== null ? config.memory : null;
   if (cfg !== null && (typeof cfg !== 'object' || Array.isArray(cfg))) return { error: `${config.path}: memory must be an object` };
   const own = specBlock !== undefined && specBlock !== null && typeof specBlock === 'object' && !Array.isArray(specBlock) ? specBlock : null;
   if (own === null && specBlock !== undefined && specBlock !== null) return { block: specBlock, sources: null }; // not an object: parseMemoryBlock says so
   const block = { ...(cfg || {}), ...(own || {}) };
+  const has = (o, k) => !!o && Object.prototype.hasOwnProperty.call(o, k);
+  const dropped = [];
+  if (cfg !== null && own !== null && own.notes === false) {
+    for (;;) { // one dependent at a time: parseMemoryBlock names the first lever that needs notes
+      const bad = /^memory[.]([a-z_]+) needs memory[.]notes$/.exec((ML.parseMemoryBlock(block).error) || '');
+      if (!bad || has(own, bad[1]) || !has(cfg, bad[1])) break;
+      delete block[bad[1]]; dropped.push(bad[1]);
+    }
+  }
   const sources = {};
-  for (const k of Object.keys(ML.DEFAULTS)) sources[k] = own && Object.prototype.hasOwnProperty.call(own, k) ? 'spec' : cfg && Object.prototype.hasOwnProperty.call(cfg, k) ? config.path : 'default';
-  return { block: cfg === null && own === null ? undefined : block, sources, fromConfig: cfg !== null && Object.keys(cfg).length > 0 };
+  for (const k of Object.keys(ML.DEFAULTS)) sources[k] = has(own, k) ? 'spec' : has(cfg, k) && !dropped.includes(k) ? config.path : 'default';
+  return { block: cfg === null && own === null ? undefined : block, sources, fromConfig: cfg !== null && Object.keys(cfg).length > 0, ...(dropped.length ? { dropped } : {}) };
 }
 
 // Returns { max_fix_rounds, fix_cutoff, on_embedder_failure[, compact_at_tokens] } or { error }. `compact_at_tokens` (ADR 0007 decision 3,
@@ -82,7 +101,7 @@ function parseLevers(spec, opts = {}) {
     const m = EM.normalize(given[1]);
     if (m === null) return { error: `${given[0]} must be one of ${EM.describe()}` };
     onEmbedderFailure = m;
-  } else if (opts.config && opts.config.memory && opts.config.memory.on_embedder_failure !== undefined) {
+  } else if (spec.memory !== null && opts.config && opts.config.memory && opts.config.memory.on_embedder_failure !== undefined) { // an explicit `memory: null` inherits nothing from the config
     onEmbedderFailure = EM.normalize(opts.config.memory.on_embedder_failure) || DEFAULT_ON_EMBEDDER_FAILURE; // a bad config value is refused by parseMemoryBlock below
   }
   const out = { max_fix_rounds: maxFixRounds, fix_cutoff: fixCutoff, on_embedder_failure: onEmbedderFailure };
@@ -100,7 +119,7 @@ function parseLevers(spec, opts = {}) {
   // run's memory_levers never carries it, so the row cannot contradict the receipt, a config that sets only this lever does not
   // make every run row carry memory_levers, and an older core (which refuses the unknown key) still reads the block.
   const recorded = { ...mem.value }; delete recorded.on_embedder_failure;
-  if (merged.sources) merged.sources.on_embedder_failure = given ? 'spec' : (opts.config && opts.config.memory && opts.config.memory.on_embedder_failure !== undefined ? opts.config.path : 'default');
+  if (merged.sources) merged.sources.on_embedder_failure = given ? 'spec' : (spec.memory !== null && opts.config && opts.config.memory && opts.config.memory.on_embedder_failure !== undefined ? opts.config.path : 'default');
   if (!ML.isDefault({ ...recorded, on_embedder_failure: ML.DEFAULTS.on_embedder_failure })) {
     out.memory_levers = recorded;
     if (merged.sources) out.memory_sources = merged.sources; // each lever's origin; absent for a default block, like memory_levers
@@ -114,6 +133,7 @@ function parseLevers(spec, opts = {}) {
       Object.defineProperty(out, 'rules_text', { value: text, enumerable: false }); // not part of the receipt
     }
   }
+  if (merged.dropped) out.memory_dropped = merged.dropped; // config levers a spec's `notes: false` left out, so the receipt says what did not apply
   return out;
 }
 
@@ -125,7 +145,7 @@ function attachMemory(levers) {
 
 // The receipt line's suffix, empty for a default block.
 function memoryText(levers) {
-  return levers && levers.memory_levers ? `; memory_levers: ${JSON.stringify(levers.memory_levers)}` : '';
+  return (levers && levers.memory_levers ? `; memory_levers: ${JSON.stringify(levers.memory_levers)}` : '') + (levers && levers.memory_dropped ? `; config levers dropped by notes false: ${levers.memory_dropped.join(', ')}` : '');
 }
 
 const TRAILING_EOL = /\r?\n$/;
