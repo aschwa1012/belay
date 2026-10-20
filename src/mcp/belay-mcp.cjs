@@ -397,7 +397,7 @@ if (!opts.bind) startServing();
 else {
   require('../core/bind.cjs').claimBind(opts.bind).then((b) => {
     const c = b.caller || {};
-    if (c.role !== opts.role || c.run_id !== opts.runId || (c.worker_id || null) !== (opts.workerId || null)) {
+    if (!require('../core/bind.cjs').identityMatchesArgv(c, opts)) {
       throw Object.assign(new Error(`the bind names ${JSON.stringify(c)}, which is not this adapter's argv identity`), { code: 'E_BIND' });
     }
     BIND_KEY = b.key;

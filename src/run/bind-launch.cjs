@@ -11,8 +11,8 @@ const L = require('./launch.cjs');
 
 function hasBinds(core) { return !!core && typeof core.bindOpen === 'function'; }
 
-async function open(core, identity, what) {
-  try { return await core.bindOpen(identity); }
+async function open(core, identity, what, opts) {
+  try { return await core.bindOpen(identity, opts); }
   catch (e) { throw err('E_BIND', `${what}: the owner would not open a bind (${e.code || 'error'}: ${e.message}); an adapter is launched only with its identity bound`, { identity, cause: e.code || null }); }
 }
 
@@ -61,9 +61,11 @@ async function launchBound(env, w, doLaunch) {
 }
 
 // The orchestrator's bind, opened by the run process (the owner's own) before the orchestrator is spawned. Returns the pipe name or null.
-async function bindOrchestrator(core, runId) {
+// `interactive`: Claude Code starts the MCP server only once the human has answered the trust dialog (measured: ide-leak/receipts/trust,
+// no "MCP server connected" line 12 s into an unanswered dialog), so that bind does not expire; the owner revokes it when it stops.
+async function bindOrchestrator(core, runId, { interactive = false } = {}) {
   if (!hasBinds(core)) return null;
-  return (await open(core, { role: 'orchestrator', run_id: runId }, 'the orchestrator')).pipe;
+  return (await open(core, { role: 'orchestrator', run_id: runId }, 'the orchestrator', interactive ? { noExpiry: true } : {})).pipe;
 }
 
 module.exports = { bindWorker, bindOrchestrator, launchBound };

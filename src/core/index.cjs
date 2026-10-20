@@ -450,7 +450,7 @@ class Core {
 
   // ADR 0045 decision 2: ask the owner for a bind for a process about to be spawned (in the owner's own process: a direct call, the
   // root of trust; over the pipe: gated on the caller's bound role, an orchestrator binding only a worker of its own run).
-  async bindOpen(identity) { return this._bind('bind.open', { identity }); }
+  async bindOpen(identity, { noExpiry = false } = {}) { return this._bind('bind.open', { identity, ...(noExpiry ? { no_expiry: true } : {}) }); }
   async bindStatus(bindId) { return this._bind('bind.status', { bind_id: bindId }); }
   async bindRevoke(bindId) { return this._bind('bind.revoke', { bind_id: bindId }); }
   async _bind(method, params) {

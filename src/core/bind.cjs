@@ -34,7 +34,9 @@ class BindRegistry {
   }
 
   // Resolves once the one-shot pipe is listening, so the name handed back can be dialled at once.
-  open(rawIdentity, { openedBy = null } = {}) {
+  // `noExpiry`: the bind waits for its claimant as long as the owner lives (an interactive orchestrator, whose MCP server Claude Code
+  // starts only after the human answers the trust dialog). It is still single use, and the owner revokes it on stop.
+  open(rawIdentity, { openedBy = null, noExpiry = false } = {}) {
     const identity = identityOf(rawIdentity);
     const id = crypto.randomBytes(8).toString('hex');
     const name = bindPipeName(this.dataDir, crypto.randomBytes(16).toString('hex'));
@@ -57,10 +59,12 @@ class BindRegistry {
         server.removeListener('error', reject);
         server.on('error', () => { /* a listener that fails after listening cannot be repaired; the spawner sees an unclaimed bind */ });
         if (server.unref) server.unref(); // an unclaimed bind never keeps a process alive; its owner's own server does that
-        entry.timer = setTimeout(() => { if (entry.state === 'open') this._end(entry, 'expired'); }, this.ttlMs);
-        if (entry.timer.unref) entry.timer.unref();
+        if (!noExpiry) {
+          entry.timer = setTimeout(() => { if (entry.state === 'open') this._end(entry, 'expired'); }, this.ttlMs);
+          if (entry.timer.unref) entry.timer.unref();
+        }
         this.byId.set(id, entry);
-        resolve({ id, name, caller: identity, expires_in_ms: this.ttlMs });
+        resolve({ id, name, caller: identity, expires_in_ms: noExpiry ? null : this.ttlMs });
       });
     });
   }
@@ -125,4 +129,12 @@ function claimBind(name, { timeoutMs = 5000 } = {}) {
   });
 }
 
-module.exports = { BindRegistry, claimBind, identityOf, BIND_TTL_MS };
+// The adapter's cross-check: the identity the owner handed back must be the one its own argv names, on all three fields. Argv alone
+// keeps role and worker id together (an orchestrator takes no worker id), so a role mismatch implies a worker-id mismatch there; the
+// clauses are still each checked, so a change to argv cannot loosen this one.
+function identityMatchesArgv(caller, { role, runId, workerId }) {
+  const c = caller || {};
+  return c.role === role && c.run_id === runId && (c.worker_id || null) === (workerId || null);
+}
+
+module.exports = { BindRegistry, claimBind, identityOf, identityMatchesArgv, BIND_TTL_MS };

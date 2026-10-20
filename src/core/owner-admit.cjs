@@ -62,7 +62,9 @@ async function bindCall(owner, method, params, caller) {
     if (role === 'orchestrator' && !(want.role === 'worker' && want.run_id === caller.run_id)) {
       throw err('E_ROLE', 'an orchestrator may open a bind only for a worker of its own run', { method, requested: { role: want.role === undefined ? null : want.role, run_id: want.run_id === undefined ? null : want.run_id }, run_id: caller.run_id });
     }
-    const r = await owner.binds.open(want, { openedBy: role === 'operator' ? 'operator' : `orchestrator:${caller.run_id}` });
+    if (params.no_expiry !== undefined && params.no_expiry !== true) throw err('E_ARGS', 'bind.open no_expiry is true or absent', { field: 'no_expiry' });
+    if (params.no_expiry === true && role !== 'operator') throw err('E_ROLE', 'a bind that does not expire is opened by the operator (the run process) only', { method, role });
+    const r = await owner.binds.open(want, { openedBy: role === 'operator' ? 'operator' : `orchestrator:${caller.run_id}`, noExpiry: params.no_expiry === true });
     return { bind_id: r.id, pipe: r.name, caller: r.caller, expires_in_ms: r.expires_in_ms };
   }
   const bindId = params.bind_id;

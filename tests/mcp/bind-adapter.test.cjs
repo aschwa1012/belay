@@ -73,3 +73,21 @@ test('a bind for another identity, a spent bind and a missing bind each end the 
     assert.ok(!asOther._buf && !second._buf, 'neither refused adapter wrote any MCP');
   });
 });
+
+test('a worker bind handed to an orchestrator adapter, and a bind for another run, each end the adapter with exit 3 and no MCP written', { timeout: 90000 }, async (t) => {
+  await withBoundOwner(t, async ({ owner, adapter }) => {
+    const workerBind = await bindFor(owner, { role: 'worker', run_id: RUN, worker_id: 'w1' });
+    const asOrchestrator = adapter({ role: 'orchestrator', extra: ['--bind', workerBind.pipe] });
+    const exit1 = await asOrchestrator.exited;
+    assert.strictEqual(exit1.code, 3);
+    assert.match(asOrchestrator.stderr, /not this adapter's argv identity/);
+    assert.ok(!asOrchestrator._buf, 'no MCP written');
+
+    const otherRun = await bindFor(owner, { role: 'worker', run_id: 'run-someone-else', worker_id: 'w5' });
+    const asWrongRun = adapter({ role: 'worker', workerId: 'w5', extra: ['--bind', otherRun.pipe] });
+    const exit2 = await asWrongRun.exited;
+    assert.strictEqual(exit2.code, 3);
+    assert.match(asWrongRun.stderr, /not this adapter's argv identity/);
+    assert.ok(!asWrongRun._buf, 'no MCP written');
+  });
+});

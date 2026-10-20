@@ -157,7 +157,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
   const killPid = deps.killPid || P.killPid;
   const pidAlive = deps.pidAlive || P.pidAlive;
 
-  const bind = await require('./bind-launch.cjs').bindOrchestrator(core, runId); // ADR 0045 decision 2
+  const bind = await require('./bind-launch.cjs').bindOrchestrator(core, runId, { interactive: true }); // ADR 0045 decision 2; no expiry, the trust dialog comes first
   const written = L.writeOrchestratorFiles({
     dir: orchestratorDir, runId, dataDir, mcpPath: L.mcpServerPath(), settingsPath: L.userSettingsPath(), cwd: worktree, compactAt: compactAtTokens,
     knowledgeAgent: !!spec.knowledgeAgent, // ADR 0043 decision 1: --worktree only with the knowledge agent on

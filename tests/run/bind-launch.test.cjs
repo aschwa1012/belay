@@ -109,7 +109,9 @@ test('launchBound: a second launch of a worker while the first awaits its bind i
   let launches = 0;
   const env = { core, runId: 'run-bl', root: 'C:/x/data', mcpPath: 'C:/x/belay-mcp.cjs' };
   const first = BL.launchBound(env, w, async () => { launches += 1; return 'launched'; });
-  await assert.rejects(BL.launchBound(env, w, async () => { launches += 1; }), (e) => e.code === 'E_SUBSTRATE' && /already in progress/.test(e.message));
+  // Bounded: with the slot gone the second launch would wait on the same gate, and the test would hang to its timeout instead of failing.
+  let hung; const bound = new Promise((_, rej) => { hung = setTimeout(() => rej(new Error('the second launch was not refused: it is waiting on the bind')), 2000); });
+  try { await assert.rejects(Promise.race([BL.launchBound(env, w, async () => { launches += 1; }), bound]), (e) => e.code === 'E_SUBSTRATE' && /already in progress/.test(e.message)); } finally { clearTimeout(hung); }
   release();
   assert.strictEqual(await first, 'launched');
   assert.strictEqual(launches, 1, 'exactly one launch ran');
@@ -120,6 +122,8 @@ test('launchBound: a second launch of a worker while the first awaits its bind i
 });
 
 const CODEX = path.join(__dirname, 'fakes', 'fake-codex.cjs').split(path.sep).join('/');
+// A wait that fails by name instead of hanging to the runner's timeout.
+const within = (p, ms, what) => { let h; return Promise.race([p, new Promise((_, rej) => { h = setTimeout(() => rej(new Error(`timed out after ${ms} ms waiting for ${what}`)), ms); })]).finally(() => clearTimeout(h)); };
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 
 test('a stop that lands while a Codex message awaits its bind wins: the launch is abandoned, its bind revoked, no process starts', async () => {
@@ -137,11 +141,11 @@ test('a stop that lands while a Codex message awaits its bind wins: the launch i
     let release; gate = new Promise((r) => { release = r; });
     const atGate = new Promise((r) => { opening = r; });
     const msg = m.message({ worker_id: 'w-race', text: 'again' }).then((v) => ({ ok: v }), (e) => ({ err: e }));
-    await atGate; // the message holds the launch slot and waits on its bind
+    await within(atGate, 5000, 'the message to reach its bind'); // it holds the launch slot and waits on its bind
     const stopped = await m.stop({ worker_id: 'w-race' }); // sees the previous turn's dead pid, kills nothing
     assert.strictEqual(stopped.killed, false);
     release();
-    const r = await msg;
+    const r = await within(msg, 5000, 'the abandoned message to settle');
     assert.ok(r.err, `the message must be refused, got ${JSON.stringify(r)}`);
     assert.strictEqual(r.err.code, 'E_SUBSTRATE');
     assert.strictEqual(r.err.detail.reason, 'stopped_during_launch');
