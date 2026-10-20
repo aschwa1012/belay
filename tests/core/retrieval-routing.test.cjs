@@ -18,6 +18,9 @@ function lv(settings, spec) {
 }
 // `settings` / `spec` go through the real merge; `raw` goes straight in (for models the lever parse refuses).
 const run = ({ settings, spec, raw, ...o } = {}) => resolveRouting({ agentTypes: TYPES, gpu: true, levers: raw || lv(settings, spec), ...o });
+// The pending mechanism is kept for a future model; no shipped entry is pending, so a test marks a pinned one and restores it.
+const pend = (fn, ...ids) => { const es = ids.map((i) => RP.ONNX_RERANKERS[i]); es.forEach((e) => { e.pending_pin = true; }); try { return fn(); } finally { es.forEach((e) => { e.pending_pin = false; }); } };
+const JINA = 'jinaai/jina-reranker-v1-tiny-en', GTE = 'Alibaba-NLP/gte-reranker-modernbert-base';
 const Q = { e4: 'Qwen/Qwen3-Embedding-4B-GGUF', e8: 'Qwen/Qwen3-Embedding-8B-GGUF', r06: 'ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF', r4: 'giladgd/Qwen3-Reranker-4B-GGUF' };
 
 test('defaults: nano with no reranker for every type, no GPU model, no notice, and the result is plain JSON', () => {
@@ -30,10 +33,10 @@ test('defaults: nano with no reranker for every type, no GPU model, no notice, a
   assert.deepStrictEqual(Object.keys(r), ['run', 'tiers', 'gpu', 'gpu_models', 'notices', 'levers']);
 });
 
-test('every profile resolves with a GPU (CPU rerankers refused as pending), at depth 50', () => {
+test('every profile resolves with a GPU, at depth 50; the CPU rerankers are refused only while marked pending', () => {
+  for (const name of ['cpu-rerank', 'cpu-rerank-light']) pend(() => assert.throws(() => run({ raw: { profile: name } }), (e) => e.code === 'E_MODEL' && /not yet available/.test(e.message), name), JINA, GTE);
   for (const [name, p] of Object.entries(RP.PROFILES)) {
     const call = () => run({ raw: { profile: name } });
-    if (name === 'cpu-rerank' || name === 'cpu-rerank-light') { assert.throws(call, (e) => e.code === 'E_MODEL' && /not yet available/.test(e.message), name); continue; }
     const r = call();
     assert.deepStrictEqual([r.run.embedder, r.run.reranker, r.run.profile], [p.embedder, p.reranker, name], name);
     assert.strictEqual(r.run.device, name.startsWith('gpu-') ? 'gpu' : 'cpu', name);
@@ -98,14 +101,17 @@ test('no GPU: a heavy embedder is never placed on the CPU, and the fallback is i
   for (const t of Object.values(r.tiers)) assert.strictEqual(RP.describeModel(t.embedder).device, 'cpu');
   const lone = run({ gpu: false, settings: { routing: { coder: { embedder: Q.e8, reranker: 'none' } } } });
   assert.strictEqual(lone.tiers.coder.embedder, RP.NANO);
-  assert.throws(() => run({ gpu: false, raw: { profile: 'gpu-rerank', profile_cpu: 'cpu-rerank' } }), (e) => e.code === 'E_MODEL');
+  pend(() => assert.throws(() => run({ gpu: false, raw: { profile: 'gpu-rerank', profile_cpu: 'cpu-rerank' } }), (e) => e.code === 'E_MODEL'), GTE);
+  assert.strictEqual(run({ gpu: false, raw: { profile: 'gpu-rerank', profile_cpu: 'cpu-rerank' } }).run.reranker, GTE, 'a pinned CPU reranker is the fallback');
 });
 
-test('the pending pin is refused in a custom reranker and a routed pair, with a coded error naming the model', () => {
-  const jina = 'jinaai/jina-reranker-v1-tiny-en';
-  for (const raw of [{ profile: 'custom', reranker: jina }, { routing: { coder: { embedder: RP.NANO, reranker: jina } } }, { routing: { coder: 'cpu-rerank' } }]) {
-    assert.throws(() => run({ raw }), (e) => e.code === 'E_MODEL' && /not yet available/.test(e.message), JSON.stringify(raw));
-    assert.strictEqual(require('../../src/core/memory-levers.cjs').parseMemoryBlock(raw).code, 'E_MODEL', 'and the lever parse refuses it first');
+test('a pending pin is refused in a custom reranker and a routed pair, with a coded error naming the model', () => {
+  for (const raw of [{ profile: 'custom', reranker: JINA }, { routing: { coder: { embedder: RP.NANO, reranker: JINA } } }, { routing: { coder: 'cpu-rerank' } }]) {
+    assert.doesNotThrow(() => run({ raw }), 'pinned: ' + JSON.stringify(raw));
+    pend(() => {
+      assert.throws(() => run({ raw }), (e) => e.code === 'E_MODEL' && /not yet available/.test(e.message), JSON.stringify(raw));
+      assert.strictEqual(require('../../src/core/memory-levers.cjs').parseMemoryBlock(raw).code, 'E_MODEL', 'and the lever parse refuses it first');
+    }, JINA, GTE);
   }
 });
 

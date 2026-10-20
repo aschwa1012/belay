@@ -51,7 +51,7 @@ test('the pure GPU modules need no native code and no embedding library', () => 
 });
 
 test('openCore, status.get and belay doctor load no GPU module', async () => {
-  const loaded = () => Object.keys(require.cache).filter(k => /[\/]src[\/](core|cli)[\/](gpu[^\/]*|gguf-models)\.cjs$/i.test(k));
+  const loaded = () => Object.keys(require.cache).filter(k => /[\\/]src[\\/](core|cli)[\\/](gpu[^\\/]*|gguf-models)\.cjs$/i.test(k)); // the class takes either slash: Windows cache keys use backslashes
   assert.deepStrictEqual(loaded(), []);
   const { openCore } = core('index.cjs');
   const dir = sandbox();

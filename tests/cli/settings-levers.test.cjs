@@ -326,18 +326,20 @@ test('run spec: the retrieval levers layer config then spec, and the resolver ta
   } finally { cleanup(sb.dir); }
 });
 
-test('a pending-pin model is refused by the settings write and by the run spec, naming it as not yet available', () => {
+test('the pinned CPU rerankers are accepted by the settings write and the run spec (the pending refusal is tested in process, retrieval-levers.test.cjs)', () => {
   const dir = project();
   try {
     for (const [k, v] of [['memory.reranker', 'jinaai/jina-reranker-v1-tiny-en'], ['memory.profile', 'cpu-rerank'], ['memory.routing', '{"coder":"cpu-rerank-light"}']]) {
       const r = cli(dir, ['settings', k, v]);
-      assert.strictEqual(r.code, 2, `${k} ${v}`);
-      assert.match(r.out.error, /not yet available in this build/);
+      assert.strictEqual(r.code, 0, k + ' ' + v + ' ' + JSON.stringify(r.out));
     }
-    assert.ok(!fs.existsSync(`${dir}/belay.config.json`), 'nothing written');
+    const m = readConfig(dir).memory; // the writes landed in belay.config.json, not only an exit code
+    assert.strictEqual(m.reranker, 'jinaai/jina-reranker-v1-tiny-en');
+    assert.strictEqual(m.profile, 'cpu-rerank');
+    assert.deepStrictEqual(m.routing, { coder: 'cpu-rerank-light' });
   } finally { cleanup(dir); }
   const sb = runSandbox(null, { memory: { profile: 'cpu-rerank' } });
   try {
-    assert.match(parseSpec(sb.specPath, sb.dir).error, /not yet available in this build/);
+    assert.ifError(parseSpec(sb.specPath, sb.dir).error);
   } finally { cleanup(sb.dir); }
 });

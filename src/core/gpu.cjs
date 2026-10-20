@@ -35,6 +35,7 @@ const R = require('./gpu-runtime.cjs');
 const { killPid } = require('./process.cjs');
 
 const OP_BOUND_MS = 60000;
+const LOAD_WALL_MS = 300000; // a load's WALL-CLOCK limit, which the child's heartbeats do not reset: a load stuck in native code heartbeats forever (a cold 8B load with a first Vulkan shader build can be long)
 const LOAD_BACKSTOP_MS = 600000; // a hung load only: a cold 8B load has been measured at 5 s, a first Vulkan shader build longer
 const PING_BOUND_MS = 1000;
 const CLOSE_GRACE_MS = 2000;
@@ -50,6 +51,7 @@ class GpuClient {
     this.cacheDir = opts.cacheDir || K.cacheRoot();
     this.opBoundMs = opts.opBoundMs || OP_BOUND_MS;
     this.loadBoundMs = opts.loadBoundMs || LOAD_BACKSTOP_MS;
+    this.loadWallMs = opts.loadWallMs || LOAD_WALL_MS;
     this.pingBoundMs = opts.pingBoundMs || PING_BOUND_MS;
     const test = process.env.BELAY_TEST_MODE === '1';
     this.fake = test && !!opts.workerPath; // a fake child needs no installed runtime
@@ -100,7 +102,7 @@ class GpuClient {
 
   _settle(id) {
     const p = this.pending.get(id);
-    if (p) clearTimeout(p.timer);
+    if (p) { clearTimeout(p.timer); clearTimeout(p.wall); }
     this.pending.delete(id);
     if (!this.pending.size && this.child && this.child.channel) this.child.channel.unref();
   }
@@ -110,7 +112,7 @@ class GpuClient {
     return 'the GPU process is not running; start() has not been called or close() was called';
   }
 
-  _call(msg, boundMs) {
+  _call(msg, boundMs, wallMs) {
     if (!this.child || this.exit) return Promise.reject(err('E_MODEL_ABSENT', this._deadReason(), gpu('dead', { pid: this.pid })));
     if (this.hung) return Promise.reject(this.hung);
     return new Promise((resolve, reject) => {
@@ -131,6 +133,18 @@ class GpuClient {
         reject(e);
       }, ms);
       this.pending.set(id, { resolve, reject, timer: arm(boundMs), op: msg.op, heard: sentAt });
+      if (wallMs) { // a wall clock no progress line resets: past it the child is treated as hung, like a silent one
+        this.pending.get(id).wall = setTimeout(() => {
+          if (!this.pending.has(id)) return;
+          this._settle(id);
+          const e = err('E_EMBEDDER_TIMEOUT', `the GPU process (pid ${this.pid}) did not finish ${msg.op} within ${wallMs} ms of wall-clock time (it kept sending progress) and is treated as hung`, gpu('timeout', { op: msg.op, timeout_ms: wallMs, wall_clock: true, pid: this.pid }));
+          this.hung = e;
+          reject(e);
+          // A load stuck in native code never recovers, so the child is closed here (by handle, then killed): nothing
+          // is lost, and a stuck load cannot go on holding its memory.
+          this.close().catch(() => {});
+        }, wallMs);
+      }
       if (this.child.channel) this.child.channel.ref();
       try { this.child.send({ id, ...msg }); }
       catch (e) { this._settle(id); reject(err('E_MODEL_ABSENT', `the GPU process (pid ${this.pid}) could not be reached: ${e.message}`, gpu('dead', { pid: this.pid }))); }
@@ -181,7 +195,7 @@ class GpuClient {
     const info = await this._call({
       op: 'load', model: entry.id, kind: entry.kind, path: path.join(chk.dir, entry.files[0].path).split('\\').join('/'), gpu: device,
       contextSize: contextSize || entry.context_size, batchSize, dims: entry.dims || undefined, queryPrompt: entry.query_prompt || undefined, chunk, chunkTokens,
-    }, this.loadBoundMs);
+    }, this.loadBoundMs, this.loadWallMs);
     this.models.set(entry.id, { kind: entry.kind, gpu: device });
     return info;
   }
@@ -212,7 +226,7 @@ class GpuClient {
   async close() {
     const c = this.child;
     this.closed = true; this.models.clear();
-    for (const id of [...this.pending.keys()]) { const p = this.pending.get(id); clearTimeout(p.timer); this.pending.delete(id); p.reject(err('E_INTERNAL', 'the GPU process was closed', gpu('dead'))); }
+    for (const id of [...this.pending.keys()]) { const p = this.pending.get(id); clearTimeout(p.timer); clearTimeout(p.wall); this.pending.delete(id); p.reject(err('E_INTERNAL', 'the GPU process was closed', gpu('dead'))); }
     if (!c) return;
     this.child = null;
     if (c.exitCode !== null || c.signalCode !== null) return;

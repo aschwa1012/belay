@@ -202,3 +202,23 @@ test('the real gpu-worker ends itself when its owner\'s channel closes, though a
     assert.ok(await waitGone(pid, 5000), 'the worker stayed alive after its owner\'s channel closed');
   } finally { if (kid && kid.exitCode === null) { try { process.kill(kid.pid); } catch { /* gone */ } } cleanup(rt); }
 });
+
+// A load stuck in native code heartbeats forever, so the silence clock never fires: the wall clock must (300 s by
+// default). The REAL gpu-worker on a stub runtime whose load takes 4 s and heartbeats every 50 ms.
+test('a load has a wall-clock limit that the child\'s heartbeats do not reset', async () => {
+  const { writeStubRuntime, writeCache } = require('./fixtures/gpu-stub-runtime.cjs');
+  const rt = sandbox(), cache = sandbox();
+  try {
+    writeStubRuntime(rt, { loadDelayMs: 4000 });
+    const e = { id: 'org/emb', sha: 'a'.repeat(40), runtime: 'gguf', kind: 'embedder', pooling: 'last', files: [{ path: 'm.gguf', bytes: 10, sha256: 'b'.repeat(64) }], query_prompt: '', document_prompt: '', native_dims: 4, dims: 4, context_size: 64, vram_mb_ref: 1 };
+    writeCache(cache, { [e.id]: e });
+    const c = new GpuClient({ runtimeDir: rt, cacheDir: cache, table: { [e.id]: e }, workerOpts: { heartbeatMs: 50 }, loadBoundMs: 2000, loadWallMs: 500 }).start();
+    try {
+      const t0 = Date.now();
+      await assert.rejects(c.load(e.id), (x) => x.code === 'E_EMBEDDER_TIMEOUT' && x.detail.cause === 'timeout' && x.detail.gpu === true && x.detail.wall_clock === true && x.detail.timeout_ms === 500);
+      const ms = Date.now() - t0;
+      assert.ok(ms >= 450 && ms < 3500, `rejected after ${ms} ms, before the 4 s load ended`);
+      assert.ok(await waitGone(c.pid, 5000), 'the wall-clock branch closed the stuck child itself, so it holds no memory');
+    } finally { await c.close(); }
+  } finally { cleanup(rt); cleanup(cache); }
+});
