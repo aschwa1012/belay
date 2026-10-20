@@ -10,6 +10,8 @@ const RP = require('../../src/core/retrieval-profiles.cjs');
 const provider = require('../../src/core/rerank-provider.cjs');
 const { search } = require('../../src/core/memory-search.cjs');
 const { Engine } = require('../../src/core/engine.cjs');
+const rows = require('../../src/core/rows.cjs');
+const ST = require('../../src/core/search-tier.cjs');
 
 const NS = `project/${PROJECT}`;
 const RR = 'fake/reranker';
@@ -184,4 +186,67 @@ test('the reranker reads a v2 note as its title and its text (cut at 2,000 chara
     assert.strictEqual(doc.text.length, 2000);
     assert.ok(seen[0].docs.find(d => d.id === notes[0]).text.startsWith('rerank fixture 0'), 'a v1 row is its text');
   } finally { T.store.delete(id); }
+});
+
+// ---- the sticky fallback's scope (S9) ------------------------------------------------------------------------------
+const failing = () => provider.register(RR, { rerank: async () => { throw new Error('boom'); } });
+const asRun = (key, E = T.E, over = {}) => search(E, T.who.operator(key), { namespaces: [NS], query: 'rerank me', query_embedding: [1, 0, 0], embedding_model: 'm', mode: 'semantic', k: 20 }, { tier: tier(over) });
+const runRow = (key) => rows.current(T.store, 'run', RUNS_[key]);
+const RUNS_ = { propose: 'lc-propose', apply: 'lc-apply' };
+
+test('the sticky fallback is per reranker: another reranker in the same run is tried', async () => {
+  failing();
+  assert.strictEqual((await asRun('propose')).rerank.cause.reason, 'error');
+  assert.strictEqual((await asRun('propose')).rerank.cause.reason, 'fallback_sticky');
+  const OTHER = 'fake/other-reranker';
+  const seen = [];
+  provider.register(OTHER, { rerank: async (req) => { seen.push(1); return { scores: req.docs.map((d, i) => ({ id: d.id, score: i })) }; } });
+  try {
+    const r = await asRun('propose', T.E, { reranker: OTHER });
+    assert.strictEqual(r.rerank.ran, true);
+    assert.strictEqual(seen.length, 1);
+  } finally { provider.unregister(OTHER); }
+});
+
+test('a search with no run is never sticky: each retries the provider and reports its own failure, without saying "run"', async () => {
+  let calls = 0;
+  provider.register(RR, { rerank: async () => { calls++; throw new Error('provider unavailable'); } });
+  const noRun = { role: 'operator', run_id: null, pid: process.pid };
+  const call = () => search(T.E, noRun, { namespaces: [NS], query: 'rerank me', query_embedding: [1, 0, 0], embedding_model: 'm', mode: 'semantic' }, { tier: tier() });
+  const a = await call(), b = await call();
+  assert.deepStrictEqual([a.rerank.cause.reason, b.rerank.cause.reason, calls], ['error', 'error', 2]);
+  assert.doesNotMatch(b.rerank.cause.message, /\brun\b/i);
+  // a caller whose run has no run row is the same
+  const ghost = { role: 'operator', run_id: 'no-such-run', pid: process.pid };
+  await search(T.E, ghost, { namespaces: [NS], query: 'x', query_embedding: [1, 0, 0], embedding_model: 'm', mode: 'semantic' }, { tier: tier() });
+  await search(T.E, ghost, { namespaces: [NS], query: 'x', query_embedding: [1, 0, 0], embedding_model: 'm', mode: 'semantic' }, { tier: tier() });
+  assert.strictEqual(calls, 4);
+});
+
+test('a run that has ended, or been resumed since, is no longer on the fallback', async () => {
+  failing();
+  assert.strictEqual((await asRun('apply')).rerank.cause.reason, 'error');
+  assert.strictEqual((await asRun('apply')).rerank.cause.reason, 'fallback_sticky');
+  const cur = runRow('apply');
+  // resumed: the run re-attaches under a new epoch
+  rows.append(T.store, 'run', { ...cur, epoch: cur.epoch + 1 }, 'test', Date.now());
+  assert.strictEqual((await asRun('apply')).rerank.cause.reason, 'error', 'a fresh failure of its own, not the old one');
+  assert.strictEqual((await asRun('apply')).rerank.cause.reason, 'fallback_sticky');
+  // ended
+  rows.append(T.store, 'run', { ...runRow('apply'), ended_at: Date.now() }, 'test', Date.now());
+  assert.strictEqual((await asRun('apply')).rerank.cause.reason, 'error');
+  assert.strictEqual((await asRun('apply')).rerank.cause.reason, 'error', 'an ended run keeps no entry: each search retries');
+});
+
+test('the rerank bound is the lever clamped to what is left of the call budget', () => {
+  assert.strictEqual(ST.boundFor(10000, 1000, 1500), 10000);
+  assert.strictEqual(ST.boundFor(100000, 0, 30000), 80000, '110 s less the 30 s already spent');
+  assert.strictEqual(ST.boundFor(600000, 0, 0), 110000);
+  assert.strictEqual(ST.boundFor(5000, 0, 200000), 1, 'nothing left: fail at once');
+});
+
+test('the provider is handed the clamped bound', async () => {
+  const seen = fake((i) => i);
+  await ask(T.E, {}, { levers: { rerank_bound_ms: 600000 } });
+  assert.ok(seen[0].boundMs <= 110000 && seen[0].boundMs > 100000);
 });

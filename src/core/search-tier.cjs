@@ -17,9 +17,13 @@ const { DEFAULTS } = require('./memory-levers.cjs');
 const { leversOf, notifyEmbedderFailure } = require('./methods-memory.cjs');
 const { rerank } = require('./rerank-stage.cjs');
 const SL = require('./search-log.cjs');
+const rows = require('./rows.cjs');
 
 const NANO_TIER = Object.freeze({ profile: RP.FALLBACK_PROFILE, embedder: RP.NANO, reranker: null, device: 'cpu', depth: 0, source: 'default' });
-const BOUND_MAX_MS = 110000;
+const BOUND_MAX_MS = 110000; // the MCP tool timeout is 120 s; 10 s is kept for the answer
+// The rerank stage's bound: its lever, but never more than what is left of the call's budget (time already spent, for example on the
+// vector stage, comes off), and at least 1 ms.
+const boundFor = (leverMs, startedAt, now = Date.now()) => Math.max(1, Math.min(leverMs, BOUND_MAX_MS - (now - startedAt)));
 const isNano = (tier) => !!tier && tier.embedder === RP.NANO;
 
 // The tier this caller's searches run on. The seam: the default today, the tier pinned at spawn later.
@@ -59,16 +63,19 @@ function nanoKey(E, ns, m) {
 
 // A heavy tier's vectors for the rows of `ns`: id -> Float32Array. Loaded once per (tier key, namespace) and kept on the namespace cache
 // object the Store keeps (store.cjs _loadNs), so every hook that drops or edits that cache drops this one too; each row's embed hash is
-// computed once per load. A load that finds a row without a vector is NOT kept (the backlog may be drained by a writer that does not go
-// through the Store), so a kept cache is always complete.
+// computed once per load. A load that finds a live row without a vector is NOT kept, so a kept cache is always complete; a kept cache is
+// tied to the vector table's write generation (memory-vectors.cjs generation: any write or delete of a vector, by the Store or not, bumps
+// it, and patchBody does too), and is rebuilt when that has moved.
 function heavyVectors(E, tier, ns, c) {
   const db = E.store.db;
   if (!VT.hasTable(db)) throw err('E_NO_INDEX', 'this store has no vector cache (memory_vectors), so a heavy tier has nothing to read');
-  const key = `${tier.embedder}\u0000${tier.revision || ''}\u0000${tier.dims}`;
-  if (c.heavy && c.heavy.has(key)) return c.heavy.get(key);
-  const h = new Map();
+  const key = `${tier.embedder}\u0000${tier.revision || ''}\u0000${tier.dims}`, gen = VT.generation(db);
+  const kept = c.heavy && c.heavy.get(key);
+  if (kept && kept.gen === gen) return kept.h;
+  const h = new Map(), t = Date.now();
   for (const [id, f] of VT.vectorsFor(db, { model: tier.embedder, revision: tier.revision || '', dims: tier.dims }, c.rows.map(r => r.id))) h.set(id, f.vector);
-  if (c.rows.every(r => h.has(r.id))) (c.heavy || (c.heavy = new Map())).set(key, h);
+  // An expired row that has not been swept yet is not in the backlog, so it does not keep the map from being kept.
+  if (c.rows.every(r => h.has(r.id) || (r.ttl_at && r.ttl_at < t))) (c.heavy || (c.heavy = new Map())).set(key, { gen, h });
   return h;
 }
 
@@ -126,8 +133,16 @@ const rerankText = (row) => {
 
 // A provider failure is sticky for the rest of the run (ADR 0050 decision 6): the first one is kept per run id on the engine, in memory,
 // and later searches of that run skip the provider and say so. A search with no query text is not a provider failure and is not sticky.
+// Keyed by (run id, reranker). A search with no run (no run id, or no run row) is never sticky: each retries the provider. An entry is
+// dropped on lookup when the run row shows the run has ended, a new epoch (a resume re-attaches the run), or a different pause state.
 const STICKY = new Set(['timeout', 'error', 'absent', 'malformed']);
 const stickyOf = (E) => E._rerankFallback || (E._rerankFallback = new Map());
+function runRowOf(E, caller) {
+  if (!caller || !caller.run_id) return null;
+  try { return rows.current(E.store, 'run', caller.run_id) || null; } catch { return null; }
+}
+const stateOf = (row) => `${row.epoch}|${row.ended_at == null ? '' : 'ended'}|${row.paused_at == null ? '' : row.paused_at}|${row.pause_parks == null ? '' : row.pause_parks}`;
+const stickyKey = (caller, tier) => `${caller.run_id}\u0000${tier.reranker}`;
 
 const pauseAdvice = (caller) => (caller.role === 'worker'
   ? 'Stop and wait: do not run belay commands; the operator will resume the run.'
@@ -142,16 +157,17 @@ async function rerankHead(E, caller, o, ranked, rowsOf, lv) {
   if (!tier.reranker) return { ranked, info: null, failed: null };
   if (o.order !== 'score') return { ranked, info: { ran: false, reason: 'the order is not score, so there is no relevance order to refine' }, failed: null };
   if (!ranked.length) return { ranked, info: { ran: false, reason: 'no candidates' }, failed: null };
-  const sticky = stickyOf(E), run = String(caller.run_id ?? '');
-  if (sticky.has(run)) {
-    const first = sticky.get(run);
+  const sticky = stickyOf(E), runRow = runRowOf(E, caller), key = runRow ? stickyKey(caller, tier) : null;
+  if (key && sticky.has(key) && (runRow.ended_at != null || sticky.get(key).state !== stateOf(runRow))) sticky.delete(key); // the run ended, or was resumed since
+  if (key && sticky.has(key)) {
+    const first = sticky.get(key).cause;
     const cause = { code: 'E_RERANK', reason: 'fallback_sticky', first_cause: first, message: `the reranker failed earlier in this run (${first.reason}: ${first.message}), so reranking stays off for the rest of it` };
     return { ranked, info: { ran: false, skipped: true, cause }, failed: { mode: 'rerank', code: cause.code, message: cause.message } };
   }
   const depth = Math.min(tier.depth > 0 ? tier.depth : lv.rerank_depth, ranked.length);
   const rows = rowsOf(ranked.slice(0, depth).map(h => h.id));
   try {
-    const r = await rerank({ tier, query: o.query, ranked, textOf: (id) => (rows.has(id) ? rerankText(rows.get(id)) : null), depth, boundMs: lv.rerank_bound_ms });
+    const r = await rerank({ tier, query: o.query, ranked, textOf: (id) => (rows.has(id) ? rerankText(rows.get(id)) : null), depth, boundMs: boundFor(lv.rerank_bound_ms, o.t0 || Date.now()) });
     return { ranked: r.ranked, info: r.info, failed: null };
   } catch (e) {
     if (lv.on_heavy_failure === 'pause') {
@@ -161,7 +177,7 @@ async function rerankHead(E, caller, o, ranked, rowsOf, lv) {
       throw e;
     }
     const cause = { code: e.code || 'E_INTERNAL', reason: e.detail && e.detail.reason ? e.detail.reason : null, message: e.message };
-    if (STICKY.has(cause.reason)) sticky.set(run, cause);
+    if (key && STICKY.has(cause.reason)) sticky.set(key, { cause, state: stateOf(runRow) });
     return { ranked, info: { ran: false, skipped: true, cause }, failed: { mode: 'rerank', code: cause.code, message: cause.message } };
   }
 }
@@ -176,7 +192,7 @@ function rankRecord(before, after, cap, order = 'score') {
 }
 
 module.exports = {
-  NANO_TIER, isNano, tierFor, leversOfSearch, binding, countRows, nanoKey, candidates, assertServable, rerankHead, rankRecord,
+  NANO_TIER, isNano, tierFor, leversOfSearch, binding, countRows, nanoKey, boundFor, candidates, assertServable, rerankHead, rankRecord,
   visibleRowFilter: VT.visibleRowFilter, logSearch: SL.record,
   logIndex: (E, caller, o) => SL.record(E, caller, { kind: 'index', tier: tierFor(E, caller), ...o, capMb: leversOfSearch(E, caller).search_log_cap_mb }),
 };

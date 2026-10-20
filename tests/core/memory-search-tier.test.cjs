@@ -155,3 +155,56 @@ test('the nano tier is the default and the seam returns it', () => {
   assert.strictEqual(tier.embedder, RP.NANO);
   assert.strictEqual(tier.reranker, null);
 });
+
+test('a vector written outside the Store after the heavy map was built is seen by the next search (write generation)', async () => {
+  drain([0, 0, 1]);
+  const q = { embedding_model: 'heavy/x', query_embedding: [1, 0, 0] };
+  try {
+    const before = await ask(q, { tier: HEAVY });
+    assert.ok(before.results.every(r => r.score === 0), 'every heavy vector is orthogonal to the query');
+    const row = T.row(notes[2]), t = MV.renderTemplateOf(row);
+    MV.putVector(T.store.db, { model: 'heavy/x', revision: '', dims: 3, template: t }, MV.embedHashOf(row, t), blob([1, 0, 0])); // not through the Store
+    const after = await ask(q, { tier: HEAVY });
+    assert.strictEqual(after.results[0].id, notes[2]);
+    assert.strictEqual(after.results[0].score, 1);
+    // a sweep that removes a vector also drops the map: a note that lost its vector is behind again
+    T.store.db.prepare("DELETE FROM memory_vectors WHERE model = 'heavy/x' AND embed_hash = ?").run(MV.embedHashOf(row, t));
+    MV.bump(T.store.db); // a raw DELETE is outside the module; MV.sweep/sweepRows/catchUp bump on their own
+    await assert.rejects(() => ask(q, { tier: HEAVY }), (e) => e.code === 'E_TIER_BEHIND');
+  } finally { undrain(); }
+});
+
+test('patchBody drops a kept heavy map: a changed when re-hashes the rows', async () => {
+  drain();
+  const q = { embedding_model: 'heavy/x', query_embedding: [0, 0, 1] };
+  try {
+    await ask(q, { tier: HEAVY });
+    const s = spy();
+    try {
+      await ask(q, { tier: HEAVY });
+      assert.strictEqual(s.n.hashes, 0, 'kept');
+      T.store.patchBody(notes[0], (b) => ({ ...b, when: 'when a patch changes the template' }));
+      await ask(q, { tier: HEAVY });
+      assert.ok(s.n.hashes >= FIX.length, 'rebuilt after the patch');
+    } finally { s.stop(); }
+    T.store.patchBody(notes[0], (b) => { const { when, ...rest } = b; return rest; });
+  } finally { undrain(); }
+});
+
+test('an expired row that is not swept yet does not keep the heavy map from being kept', async () => {
+  drain();
+  const q = { embedding_model: 'heavy/x', query_embedding: [0, 0, 1] };
+  let id;
+  try {
+    id = T.note('tier expired unswept', { vec: [1, 0, 0] });
+    T.store.db.prepare('UPDATE memory_entries SET ttl_at = 1 WHERE id = ?').run(id);
+    T.store.cache.clear();
+    await ask(q, { tier: HEAVY }); // loads the map: the expired row has no heavy vector and is not in the backlog
+    const s = spy();
+    try {
+      const r = await ask(q, { tier: HEAVY });
+      assert.ok(!ids(r).includes(id));
+      assert.deepStrictEqual(s.n, { hashes: 0, vectorCalls: 0 }, 'the second search reloads nothing');
+    } finally { s.stop(); }
+  } finally { if (id) T.store.delete(id); undrain(); }
+});

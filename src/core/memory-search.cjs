@@ -263,6 +263,7 @@ async function search(E, caller, args, internal = {}) {
   const t0 = Date.now(), ms = {};
   const o = parseSearch(E, caller, args);
   o.tier = internal.tier || ST.tierFor(E, caller);
+  o.t0 = t0;
   const lv = ST.leversOfSearch(E, caller, internal.levers);
   if (o.mode !== 'keyword') ST.assertServable(E, o.tier, o.namespaces); // a heavy tier never serves a partial index
   const depth = o.order === 'score' ? Math.min(Math.max((o.offset + o.k) * 3, 60), DEPTH_MAX) : DEPTH_MAX;

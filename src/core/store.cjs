@@ -208,6 +208,7 @@ class Store {
     try { cur = row.body ? JSON.parse(row.body) : {}; } catch { cur = {}; }
     const next = fn(cur) || cur;
     this.p('UPDATE memory_entries SET body = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(next), now(), id);
+    MV.bump(this.db); // a changed `when` changes the template a row is embedded under, so a vector map built from it is stale
     return next;
   }
 
