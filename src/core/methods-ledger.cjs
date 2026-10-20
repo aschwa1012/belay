@@ -12,7 +12,7 @@ const rows = require('./rows.cjs');
 const { redact } = require('./redact.cjs');
 
 const EVENT_KINDS = ['observation', 'summary', 'project_write', 'usage', 'index_injected', 'bottle', 'wrapup',
-  'corpus_primed', 'knowledge_ask', 'reflection', 'levers_unread', 'embed_bound', 'index_bound', 'notes_applied', 'note_chance', 'note_changed', 'archive_purge', 'note_matches', 'note_review', 'note_refuted', 'review_job', 'scrub_job', 'scrub_owed', 'scrub_alarm', 'review_stage', 'stage_overrun', 'review_claim'];
+  'corpus_primed', 'knowledge_ask', 'reflection', 'levers_unread', 'embed_bound', 'index_bound', 'notes_applied', 'note_chance', 'note_changed', 'archive_purge', 'note_matches', 'note_review', 'note_refuted', 'review_job', 'scrub_job', 'scrub_owed', 'scrub_alarm', 'review_stage', 'stage_overrun', 'review_claim', 'search', 'index'];
 const SUBSTRATES = ['claude-code', 'codex'];
 const COST_BASES = ['delta-of-cumulative', 'delta-of-cumulative (new process)', 'none'];
 const GROUPS = ['task', 'worker', 'model', 'turn'];
@@ -64,7 +64,9 @@ async function recordEvent(E, caller, args) { return recordEventSync(E, caller, 
 
 // The same write with no await in it, so a caller already inside a store transaction (memory.promote) records its
 // event in that transaction: the move and its receipt commit together or not at all.
-function recordEventSync(E, caller, args) {
+// `opts.prescrubbed` (never reachable from a request: only a caller in this process passes it) skips the message scrub, for a message
+// that is structured JSON whose free text the caller already scrubbed (the search log): a scrub over the whole string would break it.
+function recordEventSync(E, caller, args, opts = {}) {
   if (!EVENT_KINDS.includes(args.kind)) {
     throw err('E_ARGS', `memory.recordEvent kind must be one of ${EVENT_KINDS.join(', ')}, and this call carried ${JSON.stringify(args.kind)}`);
   }
@@ -85,7 +87,7 @@ function recordEventSync(E, caller, args) {
   const vals = [
     `me-${crypto.randomUUID()}`, runId, optStr(args.worker_id, 'worker_id'), optStr(args.task_id, 'task_id'),
     args.kind, key, rowIds, optStr(args.newest_row_id, 'newest_row_id'), optCount(args.bytes, 'bytes'),
-    optStr(args.sha256, 'sha256'), ok, code, scrubMessage(E, caller, optStr(args.message, 'message')),
+    optStr(args.sha256, 'sha256'), ok, code, opts.prescrubbed ? optStr(args.message, 'message') : scrubMessage(E, caller, optStr(args.message, 'message')),
     args.dropped === undefined || args.dropped === null ? null : flag(args.dropped, 'dropped'),
     args.over_budget === undefined || args.over_budget === null ? null : flag(args.over_budget, 'over_budget'),
     Date.now(), caller.channel === 'harness' ? 'harness' : E.writtenBy(caller), // ADR 0044: the run manager's events say harness
