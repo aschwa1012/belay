@@ -58,7 +58,9 @@ test('the tool description says what the flag is, not that false means not searc
 
 test('the rules text and the index footer say the same', () => {
   const rules = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'run', 'prompts', 'memory-rules.md'), 'utf8');
-  for (const text of [rules, FOOTER]) {
+  const knowledge = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'run', 'prompts', 'knowledge.md'), 'utf8');
+  assert.doesNotMatch(knowledge, /means the search did not fully run/);
+  for (const text of [rules, FOOTER, knowledge]) {
     assert.doesNotMatch(text, /not (yet|properly) searched|not searched properly/);
     assert.match(text, /absence_established/);
     assert.match(text, /modes_failed/);

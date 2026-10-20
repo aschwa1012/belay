@@ -126,3 +126,33 @@ test('replace with a bottle that holds no recorded first message: the bottle is 
   assert.deepStrictEqual(r.second.exclude_ids, []);
   assert.ok(r.texts[1].includes('INDEX mem-a mem-b'), r.texts[1]);
 });
+
+test('the carry flag is reset on every replace: a second replace whose bottle falls back excludes nothing', async () => {
+  const core = memoryCore({ first_message_index: true, bottle: true }, ['mem-a', 'mem-b']);
+  const sb = sandbox();
+  const m = mgr(sb, core);
+  try {
+    const recv = path.join(sb.data, 'recv.jsonl');
+    await withEnv({ FAKE_RECV_FILE: recv }, async () => {
+      await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w1', task_id: 't1' });
+      await m._waitTurn('w1', 8000);
+      m._worker('w1').lastEventAt = 1;
+      assert.strictEqual((await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 })).branch, 'replace');
+      assert.strictEqual(m._worker('w1').bottleCarriesFirst, true);
+      await m._waitTurn('w1', 8000);
+      m._worker('w1').lastEventAt = 1;
+      fs.unlinkSync(m._worker('w1').streamPath); // the second bottle cannot be built
+      assert.strictEqual((await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 })).branch, 'replace');
+    });
+    const bottles = core.events.filter((e) => e.kind === 'bottle');
+    assert.deepStrictEqual(bottles.map((b) => b.ok), [1, 0], JSON.stringify(bottles));
+    const idx = core.calls.filter((c) => c.method === 'memory.index');
+    assert.strictEqual(idx.length, 3);
+    assert.deepStrictEqual(idx[1].args.exclude_ids.sort(), ['mem-a', 'mem-b']);
+    assert.deepStrictEqual(idx[2].args.exclude_ids, []);
+    assert.strictEqual(m._worker('w1').bottleCarriesFirst, false);
+  } finally {
+    try { await m.shutdown(); } catch { /* best effort */ }
+    cleanup(sb.data);
+  }
+});
