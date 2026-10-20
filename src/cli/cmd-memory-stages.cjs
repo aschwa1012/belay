@@ -17,6 +17,7 @@
 const C = require('./config.cjs');
 const P = require('./panel-common.cjs');
 const { openCore } = require('../core/index.cjs');
+const { readOwnerLock, pidAlive } = require('../core/lock.cjs');
 const { DEFAULTS } = require('../core/memory-levers.cjs');
 
 const one = (s) => P.clean(s == null ? '' : s, 2000).replace(/\s+/g, ' ');
@@ -35,15 +36,30 @@ async function chooseRun(core, wanted, project = null) {
 
 // Audit D35: another run's close shuts the store owner down and destroys every connection, so a review (minutes long, and paid for)
 // started while a run other than the one it acts for is live can lose its calls (E_OWNER_LOST, outcome unknown) and leave a stray
-// owner behind that refuses the next `belay run`. It waits for that run to end. The run it acts for is the operator's own word
-// (`--run`). A listing that cannot be read blocks nothing: this guard adds no new failure. `resolve` is not gated: it is one
-// call of milliseconds, and a loss there is an explicit E_OWNER_LOST with the outcome named unknown, never a silent one.
-async function otherLiveRun(core, runId) {
+// owner behind that refuses the next `belay run`. It waits for that run to end. A run is live here by two facts, not one. Its
+// adapter answers a pid check (`alive`), or it has no `ended_at` and the store owner is held by another live process: the
+// orchestrator's attach overwrites `adapter_pid` with the adapter's pid and the adapter exits before the close, so for the
+// whole close (stages, run.end, memory run end) the run reads as not alive while `belay run` still owns the store. An unended
+// run whose adapter is gone and whose owner is gone too is a crashed run and blocks nothing. The run it acts for is the
+// operator's own word (`--run`), live or not: it is how the operator acts on a live run's notes now, and the error that
+// suggests it says its close is still to come. A listing that cannot be read blocks nothing: this guard adds no new failure.
+// `resolve` is not gated: it is one call of milliseconds, and a loss there is an explicit E_OWNER_LOST with the outcome named
+// unknown, never a silent one.
+function ownerHeldElsewhere(dataDir, deps) {
+  try {
+    const lock = deps && deps.ownerLock ? deps.ownerLock(dataDir) : readOwnerLock(dataDir);
+    return !!(lock && lock.pid && lock.pid !== process.pid && pidAlive(lock.pid));
+  } catch { return false; }
+}
+async function otherLiveRun(core, runId, dataDir, deps) {
   let live = [];
-  try { live = ((await core.run.list({})).runs || []).filter((r) => r.alive && r.id !== runId); } catch { return null; }
+  try {
+    const held = ownerHeldElsewhere(dataDir, deps);
+    live = ((await core.run.list({})).runs || []).filter((r) => r.id !== runId && (r.alive || (r.ended_at == null && held)));
+  } catch { return null; }
   if (!live.length) return null;
   const ids = live.map((r) => r.id).join(', ');
-  const message = `run ${ids} is live in this data dir; its close would shut the store owner under this review, so wait for it to end (or stop it) and try again`;
+  const message = `run ${ids} is live in this data dir; wait for it to end (or stop it) and try again, because its close would shut the store owner under this review`;
   return { code: 1, text: `belay memory review: ${one(message)}
 `, json: { error: { code: 'E_BUSY', message, live_runs: live.map((r) => r.id) } } };
 }
@@ -92,7 +108,7 @@ async function runStage(which, core, parsed, ctx, found) {
   if (s.fail) return s.fail;
   if (which === 'review' && !s.project) { await release(s.rc); return { code: 1, text: 'belay memory review: the run has no project, so there is no held queue to review; pass --project <p>\n', json: { error: { code: 'E_ARGS', message: 'no project' } } }; }
   if (which === 'review') {
-    const busy = await otherLiveRun(core, s.runId);
+    const busy = await otherLiveRun(core, s.runId, s.dataDir, (process.env.BELAY_TEST_MODE === '1' && ctx.stageDeps) || {});
     if (busy) { await release(s.rc); return busy; }
   }
   try {

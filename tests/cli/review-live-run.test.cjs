@@ -7,7 +7,7 @@ process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP =
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { setup } = require('../core/lifecycle-env.cjs');
-const { cleanup } = require('../core/helpers.cjs');
+const { cleanup, deadPid } = require('../core/helpers.cjs');
 const { run } = require('../../src/cli/cmd-memory.cjs');
 
 const cmd = (T, argv, stageDeps) => run({ argv, cwd: T.dir, dataDir: T.dir, dataDirGiven: true, stageDeps });
@@ -25,6 +25,7 @@ test('a review with --project, which picks an ended run, is refused while anothe
     assert.strictEqual(r.code, 1, r.text);
     assert.strictEqual(r.json.error.code, 'E_BUSY');
     assert.match(r.text, /is live in this data dir/);
+    assert.ok(r.json.error.message.slice(0, 160).includes('try again'), 'the panel toast cuts the message at 160 characters, so the instruction comes first');
     assert.ok(r.json.error.live_runs.includes('lc-propose') && !r.json.error.live_runs.includes('lc-apply'), 'it names the live runs, not the one acted for');
   });
 });
@@ -48,5 +49,34 @@ test('with no other live run the review proceeds (the acted-for run itself may b
     const r = await cmd(T, ['review', '--run', 'lc-apply', '--all', '--worktree', T.repo], { makeManager: never });
     assert.notStrictEqual(r.json && r.json.error && r.json.error.code, 'E_BUSY');
     assert.strictEqual(r.code, 0, r.text); // an empty queue: nothing to do, nothing spawned
+  });
+});
+
+// The close window: the orchestrator's attach left adapter_pid on a process that has exited, the run has no ended_at, and
+// `belay run` still owns the store. The run reads as not alive, and only the owner lock says it is closing.
+async function closing(T) {
+  await T.endOthers('apply');
+  await T.call(T.who.operator('propose'), 'run.attach', { adapter_pid: deadPid() }); // an unended epoch over a dead adapter
+  T.store.close();
+}
+
+test('an unended run whose adapter is gone is live while another process holds the store owner (the close window)', async () => {
+  await planted(async (T) => {
+    await closing(T);
+    const deps = { makeManager: never, spawnDetached: never, ownerLock: () => ({ pid: process.ppid }) };
+    const r = await cmd(T, ['review', '--run', 'lc-apply', '--all', '--worktree', T.repo], deps);
+    assert.strictEqual(r.json.error.code, 'E_BUSY', r.text);
+    assert.deepStrictEqual(r.json.error.live_runs, ['lc-propose']);
+  });
+});
+
+test('an unended run with a dead adapter and no owner is a crashed run and blocks nothing', async () => {
+  await planted(async (T) => {
+    await closing(T);
+    for (const ownerLock of [() => null, () => ({ pid: process.pid }), () => ({ pid: deadPid() })]) {
+      const r = await cmd(T, ['review', '--run', 'lc-apply', '--all', '--worktree', T.repo], { makeManager: never, ownerLock });
+      assert.notStrictEqual(r.json && r.json.error && r.json.error.code, 'E_BUSY', r.text);
+      assert.strictEqual(r.code, 0, r.text);
+    }
   });
 });
