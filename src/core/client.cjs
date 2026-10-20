@@ -39,6 +39,7 @@ class Client {
       elect: true, retryMs: 200, dialTimeoutMs: 1000, callTimeoutMs: 30000,
       connectRetries: opts.elect === false ? 1 : 25, ...opts,
     };
+    if (opts.key && this.opts.elect) throw err('E_ARGS', 'a client holding a bind key never elects: it talks only to the owner that issued the key', { pipe: opts.pipe || null });
     // build step 6c: opts.pipe overrides the pipe name (the worker adapter's own, never the owner's);
     // election belongs to the owner's pipe alone, so a caller that names both is refused.
     if (opts.pipe && this.opts.elect) throw err('E_ARGS', 'a client built with an explicit pipe may not also elect', { pipe: opts.pipe });
@@ -138,7 +139,8 @@ class Client {
     if (!this.connected) return Promise.reject(err('E_OWNER_LOST', 'this client holds no connection to an owner', { method, sent: false }));
     const id = this.nextId++;
     const timeoutMs = opts.timeoutMs == null ? this.opts.callTimeoutMs : opts.timeoutMs;
-    const wire = JSON.stringify({ id, method, params: encodeWire(params) }) + '\n';
+    // ADR 0045 decision 2: a bound adapter's session key rides every request; the owner takes the caller from the bind it names.
+    const wire = JSON.stringify({ id, method, params: encodeWire(params), ...(this.opts.key ? { key: this.opts.key } : {}) }) + '\n';
     return new Promise((resolve, reject) => {
       // api.md §6: a deadline that fires says nothing about whether the owner ran the call. On a write
       // the owner may already have committed the row, and these tables are append-only, so a blind

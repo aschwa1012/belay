@@ -13,6 +13,7 @@ const net = require('node:net');
 const path = require('node:path');
 const { Store } = require('./store.cjs');
 const { Engine } = require('./engine.cjs');
+const { BindRegistry } = require('./bind.cjs');
 const { err } = require('./errors.cjs');
 const lockApi = require('./lock.cjs'); // markListening is called through it, so a test can make it fail
 const { pipeName, acquireLock, releaseLock, resolveDataDir } = lockApi;
@@ -43,6 +44,11 @@ class Owner {
     this.dataDir = resolveDataDir(dataDir);
     this.opts = { synchronous: 'NORMAL', sweepMs: 5000, heartbeatMs: 1000, checkpointMs: 10000, idleMs: 3000, idleCheckMs: 1000, embed: true, exitOnShutdown: false, ...opts };
     this.pipe = pipeName(this.dataDir);
+    // ADR 0045 decision 7: `claimed` (the default) believes an unkeyed request's caller, as ADR 0012 decision 3 always did;
+    // `bound` serves an unkeyed request only as `anonymous` (the reads open to every role) and refuses its writes E_UNBOUND
+    // unless opts.operatorCheck vouches for the connection. A keyed request is bound in either mode: its caller is the bind's.
+    this.mode = this.opts.mode === 'bound' ? 'bound' : 'claimed';
+    this.binds = new BindRegistry(this.dataDir, { ttlMs: this.opts.bindTtlMs });
     this.startedAt = Date.now();
     this.conns = new Set();
     this.counters = { calls: 0, errors: 0 };
@@ -264,6 +270,26 @@ class Owner {
     try { req = JSON.parse(line); }
     catch { if (!c.destroyed) c.write(JSON.stringify({ id: null, error: { code: 'E_ARGS', message: 'the request line was not valid JSON' } }) + '\n'); return; }
     this.counters.calls++;
+    // A claimed owner with an unkeyed request is the path every existing client takes: it stays synchronous and unchanged.
+    if (req.key === undefined && this.mode !== 'bound') return this._serve(c, req);
+    let admitted;
+    try { admitted = this._admit(c, req); } catch (e) { admitted = { code: e.code || 'E_INTERNAL', message: e.message, detail: e.detail }; }
+    Promise.resolve(admitted)
+      .then((refusal) => (refusal ? this._refuse(c, req, refusal) : this._serve(c, req)))
+      .catch((e) => this._refuse(c, req, { code: e.code || 'E_INTERNAL', message: e.message, detail: e.detail }));
+  }
+
+  _refuse(c, req, { code, message, detail }) {
+    this.counters.errors++;
+    if (!c.destroyed) c.write(JSON.stringify({ id: req.id, error: { code, message, detail } }) + '\n');
+  }
+
+  _admit(c, req) { return require('./owner-admit.cjs').admit(this, c, req); } // ADR 0045 decisions 2 and 3
+
+  // ADR 0045 decision 2: open, read or revoke a bind (owner-admit.cjs).
+  bindCall(method, params, caller) { return require('./owner-admit.cjs').bindCall(this, method, params, caller); }
+
+  _serve(c, req) {
     // What the retirement check needs about this client; liveness is then a pid check, never the client's word (ADR 0051).
     const who = req.params && req.params.caller;
     if (who && typeof who === 'object') c.belayCaller = { pid: Number.isInteger(who.pid) ? who.pid : null, role: typeof who.role === 'string' ? who.role : null };
@@ -298,6 +324,14 @@ class Owner {
       const payload = JSON.stringify({ id: req.id, result: { stopping: true, pid: process.pid, pipe: this.pipe } }) + '\n';
       const go = () => this.stop().then(() => { if (this.opts.exitOnShutdown) process.exit(0); }, () => { });
       if (c.destroyed) go(); else c.write(payload, go);
+      return;
+    }
+    // ADR 0045 decision 2: the bind verbs are the owner's own, never the engine's (api.md §1).
+    if (req.method === 'bind.open' || req.method === 'bind.status' || req.method === 'bind.revoke') {
+      const params = req.params || {};
+      Promise.resolve().then(() => this.bindCall(req.method, params, params.caller)).then(
+        (result) => { if (!c.destroyed) c.write(JSON.stringify({ id: req.id, result }) + '\n'); },
+        (e) => this._refuse(c, req, { code: e.code || 'E_INTERNAL', message: e.message, detail: e.detail }));
       return;
     }
     // build step 6f, ADR 0023 amendment 3 decision 4: run.pause and run.resume join run.stop as the
@@ -391,6 +425,7 @@ class Owner {
     // before the timers are cleared and the connections destroyed, so every registered waiter resolves
     // (a settle marker, never a verdict) before the socket it would have answered over is torn down.
     try { if (this.engine) this.engine.settleWaiters(); } catch (e) { record(e); }
+    try { this.binds.close(); } catch (e) { record(e); } // ADR 0045: an owner takes its keys with it
     try { for (const t of this.timers || []) clearInterval(t); } catch (e) { record(e); }
     // MF1: the embedder child process ends with the owner, even mid-load or mid-embed: `close` over IPC,
     // at most 2,000 ms of grace, then a kill by its exact pid (embedder.cjs close()).
