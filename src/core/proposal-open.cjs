@@ -14,8 +14,15 @@ function keysFor(E, ids) {
 }
 
 // A proposal is about the notes as they were: once either note's text, vector or template has changed, it says nothing about them now
-// (a re-embedded pair is a new question, and a verdict made on the old vectors does not close it).
-const fresh = (E, keys) => Object.entries(keys || {}).every(([id, key]) => { const n = loadNote(E, id); return !!n && keyOf(n) === key; });
+// (a re-embedded pair is a new question, and a verdict made on the old vectors does not close it). Every note the mark names must have a
+// stored key that still matches; a row without keys (one proposed before they were recorded) or missing one is stale, never fresh.
+const named = (b) => [b.note_id, b.entry && b.entry.of].filter(Boolean);
+const fresh = (E, b) => {
+  const keys = b.keys && typeof b.keys === 'object' ? b.keys : null;
+  const ids = named(b);
+  if (!keys || !ids.length) return false;
+  return ids.every((id) => { const n = keys[id] !== undefined ? loadNote(E, id) : null; return !!n && keyOf(n) === keys[id]; });
+};
 
 // [{ id, note_id, of, at, entry }] oldest first, the proposals whose notes are unchanged since.
 function openProposals(E, project) {
@@ -23,7 +30,7 @@ function openProposals(E, project) {
   try {
     rows = E.store.p("SELECT id, created_at, body FROM memory_entries WHERE namespace = ? AND type = 'proposal' AND json_extract(body, '$.state') = 'open' ORDER BY created_at, id").all(`proposal/${project}`);
   } catch { return []; }
-  return rows.map((r) => ({ r, b: parse(r.body) })).filter(({ b }) => fresh(E, b.keys))
+  return rows.map((r) => ({ r, b: parse(r.body) })).filter(({ b }) => fresh(E, b))
     .map(({ r, b }) => ({ id: r.id, note_id: b.note_id, of: (b.entry && b.entry.of) || null, at: r.created_at, entry: b.entry || {} }));
 }
 

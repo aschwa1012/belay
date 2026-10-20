@@ -100,6 +100,38 @@ test('D11: a proposal made on the old vectors does not hide a pair that was re-e
   assert.strictEqual(why(await scope('propose'), n), undefined, 'the new proposal hides it again');
 });
 
+// A proposal row as the store holds it before keys were recorded is stale: it must not hide a pair re-embedded since, nor be handed back
+// as the open row.
+test('D11: a proposal row written without keys (the earlier row format) is stale, so the re-embedded pair is a new question', async () => {
+  const o = T.note('dead end legacy old', { vec: A, created_at: 100 });
+  const n = T.note('dead end legacy new', { vec: A_NEAR, created_at: 200, matches: [match(o)] });
+  const first = await mark('propose', [{ id: n, action: 'relate', relation: 'repeats', of: o, reason: 'the same claim' }]);
+  assert.strictEqual(first.counts.proposed, 1, JSON.stringify(first.refused));
+  const rid = first.proposed[0].row.id;
+  const body = JSON.parse(T.store.p('SELECT body FROM memory_entries WHERE id = ?').get(rid).body);
+  delete body.keys; // what the store holds from before keys were recorded
+  T.store.p('UPDATE memory_entries SET body = ? WHERE id = ?').run(JSON.stringify(body), rid);
+  const settled = await mark('apply', [{ id: n, action: 'relate', relation: 'new', of: o, reason: 'distinct after all' }]);
+  assert.strictEqual(settled.counts.applied, 1, JSON.stringify(settled.refused));
+  for (const id of [o, n]) T.store.p("UPDATE memory_entries SET embedding_model = 'm3' WHERE id = ?").run(id);
+  assert.deepStrictEqual(why(await scope('propose'), n), ['matched'], 'a keyless proposal does not hide the pair');
+  const again = await mark('propose', [{ id: n, action: 'relate', relation: 'repeats', of: o, reason: 'the same claim, new vectors' }]);
+  assert.strictEqual(again.proposed[0].already_open, undefined, 'the keyless row is not handed back as the open one');
+  assert.notStrictEqual(again.proposed[0].row.id, rid);
+});
+
+test('D11: a proposal row that holds a key for only one of the two notes it names is stale', async () => {
+  const o = T.note('dead end partial old', { vec: A, created_at: 100 });
+  const n = T.note('dead end partial new', { vec: A_NEAR, created_at: 200, matches: [match(o)] });
+  const first = await mark('propose', [{ id: n, action: 'relate', relation: 'repeats', of: o, reason: 'the same claim' }]);
+  const rid = first.proposed[0].row.id;
+  assert.strictEqual(why(await scope('propose'), n), undefined, 'a complete proposal hides the pair');
+  const body = JSON.parse(T.store.p('SELECT body FROM memory_entries WHERE id = ?').get(rid).body);
+  delete body.keys[o];
+  T.store.p('UPDATE memory_entries SET body = ? WHERE id = ?').run(JSON.stringify(body), rid);
+  assert.deepStrictEqual(why(await scope('propose'), n), ['matched'], 'an incomplete proposal does not hide the pair');
+});
+
 test('D11: a report that arrives after the proposal brings the note back into the propose scope', async () => {
   const keep = T.note('dead end late keep', { vec: A, created_at: 10 });
   const x = T.note('dead end late report', { vec: A_NEAR, created_at: 20, reported_wrong: [{ ...T.report('worker:w2', keep), run_id: 'lc-propose', at: 1 }] });
