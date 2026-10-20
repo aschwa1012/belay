@@ -167,6 +167,7 @@ async function applyReportVerdicts(E, caller, route, list, project, out) {
     const idOf = isObj(raw) && typeof raw.id === 'string' ? raw.id : null;
     const key = `${route.keyBase}:report:${idOf || index}`;
     const refuse = (e) => {
+      E.assertRunOpen(caller, 'memory.noteVerdicts'); // a refusal receipt is a write: none after the run ended (audit D42)
       const message = String(e.message).slice(0, 300), code = e && typeof e.code === 'string' && e.code.startsWith('E_') ? e.code : 'E_INTERNAL';
       if (idOf) refusedIds.add(idOf);
       res.refused.push({ index, id: idOf, code, message });
@@ -192,7 +193,7 @@ async function applyReportVerdicts(E, caller, route, list, project, out) {
       if (lease) throw err('E_ROLE', `worker ${route.reviewer} held lease ${lease.id} on task ${note.task_id}, which wrote note ${v.id}; it cannot judge a report about it`, { id: v.id, reason: 'independence' });
       const chk = await CC.checkTaskCites(E, report.task_id, v.cites, { title: note.title, text: note.text, evidence: note.b.evidence });
       if (!chk.ok) throw err('E_CITATION', `report on note ${v.id}: ${chk.failures.length} of ${v.cites.length} cites are not in the evidence task ${report.task_id} recorded; the verdict is dropped (${chk.failures.map((f) => `cites[${f.index}] ${f.where}: ${f.reason}`).join(' | ')})`.slice(0, 600), { id: v.id, failures: chk.failures });
-      E.assertRunOpen(caller, 'memory.noteVerdicts'); // the citation check awaited a file (audit D42)
+      E.assertRunOpen(caller, 'memory.noteVerdicts'); // the citation check awaited a file; a run that ended meanwhile takes no verdict (audit D42)
       const red = C.redactEntry({ reason: v.reason, cites: heldCites(E, report.task_id, v.cites) });
       const outcome = E.store.tx(() => {
         // Everything that decides is read again here, in the transaction: a second application of the same review answers "already".

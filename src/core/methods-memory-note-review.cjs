@@ -132,6 +132,7 @@ async function noteVerdicts(E, caller, args) {
   for (const [index, raw] of (route.verdicts || []).entries()) {
     const idOf = isObj(raw) && typeof raw.id === 'string' ? raw.id : null;
     const refuse = (e, n) => {
+      E.assertRunOpen(caller, 'memory.noteVerdicts'); // a refusal receipt is a write: none after the run ended (audit D42)
       const message = String(e.message).slice(0, 300);
       if (idOf) refusedIds.add(idOf);
       out.refused.push({ index, id: idOf, code: codeOf(e), message, ...(e.detail ? { detail: e.detail } : {}) });

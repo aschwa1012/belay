@@ -172,3 +172,32 @@ test('a pending note resolved with a new title, whose re-embedding outlasts run.
   assert.strictEqual(after.text, before.text);
   assert.strictEqual(JSON.parse(after.body).state, 'pending');
 });
+
+test('a note verdict whose citation check fails while the run ends in it is an ended run, and writes no refusal receipt', async () => {
+  const c = await world('nvf');
+  const w = await work(c, c.w, 'fixtures/unlisted.json was never opened\n', { notes: [note('nvf')] });
+  const id = w.out.notes[0].id;
+  const rt = await reviewTask(c, w.task, { memory_verdicts: [{ id, verdict: 'confirmed', cites: [cite('a line the stream never printed')], reason: 'invented' }] });
+  const reviewEvents = events('note_review').length;
+  endDuringCheck(c);
+  try {
+    await ended(call('memory.noteVerdicts', c.harness, { review_task_id: rt }));
+  } finally { CC.seam.afterCheck = null; }
+  assert.strictEqual(events('note_review').length, reviewEvents, 'no note_review receipt, not even an ok:false refusal, was written into the ended run');
+});
+
+test('a report verdict whose citation check fails while the run ends in it is an ended run, and writes no refusal receipt', async () => {
+  const c = await world('rvf');
+  const a = await work(c, c.w, 'the loader worked as the note says\n', { notes: [note('rvf')] });
+  const id = a.out.notes[0].id;
+  const w2 = 'w-rvf-b';
+  await call('worker.write', c.orch, { id: w2, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's-b', last_event_at: Date.now(), worktree: repo, head_sha: head });
+  const b = await work(c, w2, 'fixtures/unlisted.json was opened by the loader\n', { reported_wrong: [{ id, why: 'the loader reads unlisted fixtures' }] });
+  const rt = await reviewTask(c, b.task, { report_verdicts: [{ id, verdict: 'upheld', cites: [cite('a line the stream never printed')], reason: 'invented' }] });
+  const reviewEvents = events('note_review').length;
+  endDuringCheck(c);
+  try {
+    await ended(call('memory.noteVerdicts', c.harness, { review_task_id: rt }));
+  } finally { CC.seam.afterCheck = null; }
+  assert.strictEqual(events('note_review').length, reviewEvents, 'no receipt, applied or refused, was written');
+});

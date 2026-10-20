@@ -95,7 +95,8 @@ async function unsupportedCites(E, ctx, held, note, cites) {
 async function unsupported(E, ctx, held, v) {
   const id = held.b.note_id;
   v = { ...v, ...pick(C.redactEntry(v)) };
-  const refuse = (code, message) => E.store.tx(() => {
+  const tx = fn => C.openTx(E, ctx.caller, 'memory.reviewApply', fn);
+  const refuse = (code, message) => tx(() => {
     const entry = review(ctx, held, v, 'refused', { code, message });
     record(E, held.id, entry);
     return { id, verdict: v.verdict, outcome: 'refused', receipt: entry.receipt, code, message, held: C.rowOut(E, held.id), row: C.rowOut(E, id) };
@@ -107,7 +108,7 @@ async function unsupported(E, ctx, held, v) {
     return entry;
   };
   if (v.verdict === 'still_unsupported') {
-    return E.store.tx(() => {
+    return tx(() => {
       const entry = settle('still_unsupported');
       return { id, verdict: v.verdict, outcome: 'still_unsupported', receipt: entry.receipt, held: C.rowOut(E, held.id), row: C.rowOut(E, id) };
     });
@@ -122,7 +123,7 @@ async function unsupported(E, ctx, held, v) {
     if (e.code !== 'E_CITATION') throw e;
     return refuse(e.code, e.message);
   }
-  return E.store.tx(() => {
+  return tx(() => {
     const fresh = activeHold(E, ctx.project, id); // the state at the write
     const note = loadNote(E, id);
     if (!fresh || !note || note.namespace !== N.projectNs(ctx.project)) throw err('E_NOT_FOUND', `the queue row of note ${id} was settled, or the note left the project, while the verdict was being checked`, { id });
@@ -147,8 +148,9 @@ async function one(E, ctx, raw, index) {
   if (isUns !== ['verify', 'refute', 'still_unsupported'].includes(v.verdict)) {
     throw err('E_PRECONDITION', isUns ? `note ${v.id} is queued as unsupported: answer verify, refute or still_unsupported, not ${v.verdict}` : `note ${v.id} is held with a warning (${held.b.kind}): answer archive or release, not ${v.verdict}`, { id: v.id });
   }
+  const tx = fn => C.openTx(E, ctx.caller, 'memory.reviewApply', fn);
   if (isUns) return unsupported(E, ctx, held, v);
-  if (v.verdict === 'release') { v = { ...v, ...pick(C.redactEntry(v)) }; return E.store.tx(() => release(E, ctx, held, v)); }
+  if (v.verdict === 'release') { v = { ...v, ...pick(C.redactEntry(v)) }; return tx(() => release(E, ctx, held, v)); }
   let sources = [];
   try {
     if (held.b.kind === 'duplicate') {
@@ -164,14 +166,14 @@ async function one(E, ctx, raw, index) {
   } catch (e) {
     if (e.code !== 'E_CITATION' && e.code !== 'E_PRECONDITION') throw e;
     v = { ...v, ...pick(C.redactEntry(v)) };
-    return E.store.tx(() => {
+    return tx(() => {
       const entry = review(ctx, held, v, 'refused', { code: e.code, message: e.message });
       record(E, held.id, entry);
       return { id: v.id, verdict: 'archive', outcome: 'refused', receipt: entry.receipt, code: e.code, message: e.message, held: C.rowOut(E, held.id), row: C.rowOut(E, v.id) };
     });
   }
   v = { ...v, ...pick(C.redactEntry(v)) };
-  return E.store.tx(() => {
+  return tx(() => {
     const fresh = activeHold(E, ctx.project, v.id); // the state at the write
     if (!fresh) throw err('E_NOT_FOUND', `the hold on note ${v.id} was settled while the verdict was being checked`, { id: v.id });
     return archive(E, ctx, fresh, v, sources);

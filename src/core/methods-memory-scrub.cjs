@@ -124,9 +124,9 @@ function relate(E, caller, ctx, ent, index) {
   if (ctx.mode === 'propose') {
     const { f } = plan(E, ctx, ent); // the gates are checked now, so a refused pair is never proposed
     const { x, y, ...facts } = f;
-    return E.store.tx(() => propose(E, caller, ctx, ent, index, [], facts));
+    return C.openTx(E, caller, 'memory.scrubApply', () => propose(E, caller, ctx, ent, index, [], facts));
   }
-  return E.store.tx(() => {
+  return C.openTx(E, caller, 'memory.scrubApply', () => {
     const p = plan(E, ctx, ent); // the state at the write, inside the transaction
     if (p.needsHold) {
       // A review-verified note is never hidden without the reviewer: the verdict becomes a hold for the on-demand Opus reviewer.
@@ -164,10 +164,10 @@ async function one(E, caller, ctx, raw, index) {
   if (ent.ground === 'code_contradicts' && !sources.some(s => s.source !== 'stream')) throw err('E_CITATION', 'ground code_contradicts needs at least one citation of a file at the head commit: a stream quotes what was said, not what the code is', { id: ent.id });
   if (ctx.mode === 'propose') {
     const facts = ent.action === 'hold' ? checkHoldFacts(E, ctx.project, st.note, ent.kind, ent.of, ent.ground, ctx.threshold, ctx.runId) : null;
-    return E.store.tx(() => propose(E, caller, ctx, ent, index, sources, facts));
+    return C.openTx(E, caller, 'memory.scrubApply', () => propose(E, caller, ctx, ent, index, sources, facts));
   }
   if (ent.action === 'resolve') return settle(E, caller, ctx, ent, index, sources, st.note.id);
-  return E.store.tx(() => {
+  return C.openTx(E, caller, 'memory.scrubApply', () => {
     const fresh = target(E, ctx.project, ent.id); // the state at the write, inside the transaction
     if (ent.action === 'dismiss') return dismiss(E, ctx, ent, index, sources, fresh.note);
     if (ent.action === 'hold') return hold(E, caller, ctx, ent, index, sources, fresh);
@@ -193,7 +193,7 @@ async function scrubApply(E, caller, args, opts = {}) {
       const r = await one(E, caller, ctx, ent, i);
       (r.outcome === 'proposed' ? proposed : applied).push(r);
     } catch (e) {
-      if (!e || !REFUSALS.has(e.code)) throw e;
+      if (!e || !REFUSALS.has(e.code) || (e.detail && e.detail.run_ended)) throw e; // a run that ended mid-call is not a per-entry refusal
       refused.push({ index: i, id: ent.id, action: ent.action, code: e.code, message: e.message, ...(e.detail ? { detail: e.detail } : {}) });
     }
   }
