@@ -86,7 +86,8 @@ test('memory rules: the text stays within 1,200 bytes and carries each rule the 
   assert.match(text, /memory_timeline/, 'a timeline');
   assert.match(text, /memory_retrieve[^\n]*`ids`[^\n]*only/, 'full rows only for what matters');
   assert.match(text, /memory_ids/, 'cite ids');
-  assert.match(text, /absence_established: false[^\n]*not searched properly yet/, 'absence is not established');
+  assert.match(text, /`absence_established` is true only when both modes ran and found nothing[^\n]*`false` is normal on a populated scope[^\n]*modes_failed/, 'false is not read as not searched');
+  assert.doesNotMatch(text, /not searched properly yet/, 'the old, untrue reading is gone');
   assert.match(text, /`unverified` row as a claim/, 'an unverified row is never presented as fact');
   assert.match(text, /`refuted`/, 'refuted rows');
   const named = [...text.matchAll(/mcp__belay__([a-z_]+)/g)].map((m) => m[1]);
@@ -100,14 +101,25 @@ test('memory rules: the text stays within 1,200 bytes and carries each rule the 
 
 // The paired write/search contract: the orchestrator names the situations a worker will be in as task lines, so the worker's
 // first-message index is searched by situation and not only by the spec's own words.
-test('both orchestrator prompts ask for 1 to 3 memory_queries, and worker_spawn lists the field', () => {
+test('both orchestrator prompts ask for 1 to 3 memory_queries only when the first-message index is on, and worker_spawn lists the field', () => {
+  const { substituteLevers, parseLevers } = require(path.join(ROOT, 'src/cli/run-levers.cjs'));
   for (const f of ['orchestrator.md', 'orchestrator-interactive.md']) {
     const text = fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8');
-    assert.match(text, /give 1 to 3 `memory_queries`: task lines/, `${f} asks for memory_queries`);
-    assert.match(text, /not the finding you expect it to make/, `${f}: situations, not findings`);
+    assert.strictEqual(text.split('{{memory_queries_line}}').length, 2, `${f} carries the placeholder once`);
+    assert.ok(!/memory_queries/.test(text.replace('{{memory_queries_line}}', '')), `${f}: the sentence lives only behind the placeholder`);
+    const on = substituteLevers(text, parseLevers({ memory: { first_message_index: true } }), 0);
+    assert.match(on.text, /give 1 to 3 `memory_queries`: task lines/, `${f} asks for memory_queries with the index on`);
+    assert.match(on.text, /not the finding you expect it to make/, `${f}: situations, not findings`);
+    assert.strictEqual(on.substituted.memory_queries_line, 1);
+    // D58: with every lever off the prompt asks for nothing the run never reads.
+    for (const lv of [parseLevers({}), parseLevers({ memory: { capture: true, rules: true } })]) {
+      const off = substituteLevers(text, lv, 0);
+      assert.ok(!/memory_queries/.test(off.text) && !off.text.includes('{{'), `${f}: off asks for no memory_queries`);
+      assert.ok(!('memory_queries_line' in off.substituted));
+    }
   }
   const T = require(path.join(ROOT, 'src/mcp/tools.cjs'));
-  const spawn = T.toolsFor('orchestrator').find((t) => t.name === 'worker_spawn');
+  const spawn = T.toolsFor('orchestrator', { queries: true }).find((t) => t.name === 'worker_spawn');
   assert.ok(spawn.inputSchema.properties.memory_queries, 'worker_spawn lists memory_queries');
   assert.strictEqual(spawn.inputSchema.properties.memory_queries.type, 'array');
 });

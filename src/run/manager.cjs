@@ -242,7 +242,8 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       w.indexQueries = indexQueries; // the orchestrator's situation lines for this worker's memory index (memory.embedQuery extra_texts)
       workers.set(id, w);
     } finally { pendingIds.delete(id); }
-    await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the worker adapter's argv carries the notes lever, so the levers are known before the files are written
+    const spawnLevers = await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the worker adapter's argv carries the notes lever, so the levers are known before the files are written
+    if (!spawnLevers.first_message_index) w.indexQueries = []; // the first-message index is their only reader: with it off the row keeps none (null)
     writeFilesFor(w);
     if (substrate === 'claude-code') w.instructions = I.snapshotInstructions(w.worktree, w.dir); // spawn only
 
@@ -376,7 +377,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
     const overridden = firstTextOverride ? await firstTextOverride(d.branch) : undefined;
     let firstText = overridden !== undefined ? overridden : await restartFirstText(w, d.branch, { core, ctx });
-    firstText = await MP.relaunch(w, ctx, firstText); // ADR 0042 decision 3: the index minus the rows already shown
+    firstText = await MP.relaunch(w, ctx, firstText, { excludeShown: d.branch === 'resume' || w.bottleCarriesFirst === true }); // ADR 0042 decision 3: minus the rows already shown, only where that conversation still holds them
     if (d.branch === 'replace') {
       w.sessionId = null;
       w.parser = createParser(w.substrate, MP.parserOpts(ctx));

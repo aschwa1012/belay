@@ -140,3 +140,15 @@ test('stopFixturePids really stops a live fixture and its detached grandchild (A
     assert.ok(await waitDead(pids.grandchild, 5000), 'the fixture grandchild is still alive');
   } finally { if (holder.exitCode === null) holder.kill(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// A test directory that no phase glob names is a suite that never runs (the panel's tests were in none for a time).
+test('every tests/<dir> that holds a *.test.cjs file is named by a phase glob', () => {
+  const { PHASE1_GLOBS, PHASE2_GLOB } = require('../../scripts/test.cjs');
+  const named = new Set([...PHASE1_GLOBS, PHASE2_GLOB].map((g) => g.split('/')[1]));
+  const root = path.resolve(__dirname, '..');
+  const holds = (dir) => fs.readdirSync(dir, { withFileTypes: true }).some((e) => (e.isFile() && /\.test\.cjs$/.test(e.name)) || (e.isDirectory() && e.name !== 'fixtures' && holds(path.join(dir, e.name))));
+  const dirs = fs.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory() && holds(path.join(root, e.name))).map((e) => e.name);
+  assert.ok(dirs.includes('mod') && dirs.includes('core'), 'the scan sees the directories');
+  // acceptance rows run by `npm run test:acceptance`, not by a glob
+  assert.deepStrictEqual(dirs.filter((d) => !named.has(d) && d !== 'acceptance'), []);
+});

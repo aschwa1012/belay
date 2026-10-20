@@ -23,6 +23,7 @@ const { createLogWriter } = require('./log-writer.cjs');
 // path either.
 const { createWorkerControl } = require('../run/control.cjs');
 const { createKnowledgeGate } = require('./knowledge-gate.cjs');
+const { withDataNotice } = require('./data-notice.cjs'); // invariant 8: a result that holds a note names itself data
 const { parseArgv, die } = require('./argv.cjs'); // identity from argv only; moved out to keep this file short
 
 const SERVER_NAME = 'belay';
@@ -249,7 +250,7 @@ async function callTool(name, args) {
   }
   validateArgs(name, args, { notes: opts.notes });
   if (route.via === 'core') {
-    const row = await callCore(route.method, args);
+    const row = withDataNotice(route.method, await callCore(route.method, args));
     // The one place the adapter adds to a row, and it is additive: every field of the core's
     // status.get row (api.md §4) passes through untouched. run.attach happens inside the adapter, so
     // its result reaches no tool of its own, and a reattach that declared workers dead would
@@ -340,7 +341,7 @@ async function handle(msg) {
   if (method === 'ping') return send({ jsonrpc: '2.0', id, result: {} });
   if (method === 'tools/list') {
     const knowledge = await knowledgeListed(); // the one read of the run row; the notes lever comes from it
-    const list = toolsFor(opts.role, { knowledge, workerId: opts.workerId, notes: opts.role === 'worker' ? opts.notes : knowledgeListed.notes() }).concat(opts.permit ? [PERMIT_TOOL] : []);
+    const list = toolsFor(opts.role, { knowledge, workerId: opts.workerId, notes: opts.role === 'worker' ? opts.notes : knowledgeListed.notes(), queries: knowledgeListed.queries() }).concat(opts.permit ? [PERMIT_TOOL] : []);
     return send({ jsonrpc: '2.0', id, result: { tools: list } });
   }
   if (method === 'tools/call') {
