@@ -1,5 +1,5 @@
 'use strict';
-// shown-ids.cjs — the memory ids a worker's memory_search or memory_retrieve call returned, read from the tool result
+// shown-ids.cjs — the memory ids a worker's memory_search, memory_retrieve, memory_list or memory_timeline call returned, read from the tool result
 // the stream carried. The parser adds them to the tool_result event as `shown: { route, ids }` (nothing else changes), so
 // the run manager can tell the core at task end which notes this worker was shown. Pure: no I/O, never throws, and an
 // answer it cannot read is no `shown` field at all (a missing fact, not a guess).
@@ -10,6 +10,8 @@ const toolOf = (name) => {
   const n = String(name || '');
   if (/(^|__)memory_search$/.test(n)) return 'search';
   if (/(^|__)memory_retrieve$/.test(n)) return 'retrieve';
+  if (/(^|__)memory_list$/.test(n)) return 'list';
+  if (/(^|__)memory_timeline$/.test(n)) return 'timeline';
   return null;
 };
 
@@ -25,12 +27,16 @@ function bodyOf(content) {
 }
 
 // memory_search answers { results: [{ id }] } in rank order; memory_retrieve answers one row { id, found } or
-// { rows: [{ id, found }] } in the order asked. A row with found false was not shown.
+// { rows: [{ id, found }] } in the order asked; memory_list answers { rows } and memory_timeline { anchor, before, after }: a worker that
+// lists or walks a timeline has been shown those notes as much as one that searched, so they are recorded too (an independent sighting is
+// one the writer was not shown). A row with found false was not shown.
 // `full` lists the ids whose row came back whole (a search with view full, or any retrieve): a row with a `text` field.
 function idsOf(route, b) {
   if (!b || typeof b !== 'object') return null;
   let list;
   if (route === 'search') list = b.results;
+  else if (route === 'list') list = b.rows;
+  else if (route === 'timeline') list = [b.anchor, ...(Array.isArray(b.before) ? b.before : []), ...(Array.isArray(b.after) ? b.after : [])];
   else list = Array.isArray(b.rows) ? b.rows : [b];
   if (!Array.isArray(list)) return null;
   const rows = list.filter((r) => r && typeof r.id === 'string' && r.found !== false).slice(0, ID_MAX);
