@@ -61,6 +61,9 @@ test('the facts a reviewer and a scrubber are given carry the when', async () =>
   const id = out.notes[0].id;
   const under = notesUnderReview(E, [out.notes[0].id && store.p('SELECT task_id FROM memory_entries WHERE id = ?').get(id).task_id], 'acme');
   assert.strictEqual(under.find((n) => n.id === id).when, 'load a K1 test fixture');
+  const whole = under.find((n) => n.id === id);
+  assert.ok(typeof whole.text === 'string' && whole.text.includes(whole.title), 'the stored text comes with the note');
+  assert.ok(Array.isArray(whole.subjects) && Array.isArray(whole.applies_to) && Array.isArray(whole.evidence));
   const row = F.loadNote(E, id);
   assert.strictEqual(noteFacts(row).when, 'load a K1 test fixture');
 });

@@ -16,6 +16,41 @@ const VERDICTS_FIT = 8; // verdicts of about 330 bytes that fit a 4096 byte hand
 const REPORTS_FIT = 4; // reports shown to a reviewer; they share the 4096 byte hand-back with the note verdicts, so the notes listed give way
 const LIST_CUT = 6; // entries shown per list in a wake; the rest are counted
 
+// A note as a reviewer sees it, capped: title, when, kind and basis in full; text at TEXT_CAP bytes; at most EVIDENCE_SHOWN evidence entries, each
+// `where` in full and each `saw` at SAW_CAP bytes; applies_to and subjects in full. A cut ends in an ellipsis and names the original length.
+const TEXT_CAP = 400, SAW_CAP = 200, EVIDENCE_SHOWN = 3;
+const cutBytes = (s, cap) => {
+  const t = String(s == null ? '' : s);
+  const n = Buffer.byteLength(t, 'utf8');
+  if (n <= cap) return t;
+  return `${Buffer.from(t, 'utf8').subarray(0, cap).toString('utf8').replace(/\uFFFD+$/, '')}\u2026 [cut: ${n} bytes in all]`;
+};
+function capNote(n) {
+  const ev = Array.isArray(n.evidence) ? n.evidence : [];
+  const out = { ...n, text: n.text == null ? n.text : cutBytes(n.text, TEXT_CAP), evidence: ev.slice(0, EVIDENCE_SHOWN).map((e) => (e && typeof e === 'object' ? { ...e, saw: cutBytes(e.saw, SAW_CAP) } : e)) };
+  if (ev.length > EVIDENCE_SHOWN) out.evidence_not_shown = ev.length - EVIDENCE_SHOWN;
+  return out;
+}
+
+// A note's content as one line of data: control characters and line breaks flattened, cut as capNote says.
+const whole = (s) => String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim();
+const noteLine = (note) => {
+  const n = capNote(note);
+  const list = (a) => (Array.isArray(a) ? a : []).map(whole).filter(Boolean).join('; ');
+  const ev = (Array.isArray(n.evidence) ? n.evidence : []).map((e) => `${whole(e && e.where)}: ${whole(e && e.saw)}`).join('; ');
+  const parts = [`writer-stated: ${whole(n.title)}`];
+  if (n.when) parts.push(`writer-stated situation (when): ${whole(n.when)}`);
+  if (n.text && whole(n.text) !== whole(n.title)) parts.push(`writer-stated text: ${whole(n.text)}`);
+  if (ev) parts.push(`writer-stated evidence (where: saw): ${ev}${n.evidence_not_shown ? `; (${n.evidence_not_shown} more evidence entries not shown)` : ''}`);
+  // applies_to holds the writer's paths and paths belay added (found in the evidence or the diff); aligned with applies_to_from.
+  const ap = Array.isArray(n.applies_to) ? n.applies_to : [], from = Array.isArray(n.applies_to_from) ? n.applies_to_from : [];
+  const byWriter = ap.filter((_, i) => !from[i] || from[i] === 'worker'), byBelay = ap.filter((_, i) => from[i] && from[i] !== 'worker');
+  if (list(byWriter)) parts.push(`writer-stated applies_to: ${list(byWriter)}`);
+  if (list(byBelay)) parts.push(`belay-derived applies_to (from the evidence or the diff, not stated by the writer): ${list(byBelay)}`);
+  if (list(n.subjects)) parts.push(`writer-stated subjects: ${list(n.subjects)}`);
+  return parts.join(' | ');
+};
+
 const one = (s, n) => {
   const t = String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim();
   return t.length > n ? `${t.slice(0, n - 3)}...` : t;
@@ -55,7 +90,7 @@ function reviewerTail({ notes, refuted_shown: shown, reports = [] }, streams = [
   const noteFit = reports.length ? VERDICTS_FIT - Math.min(reports.length, REPORTS_FIT) : VERDICTS_FIT;
   if (notes.length) {
     lines.push('', 'NOTES TO JUDGE', 'The task(s) you are reviewing wrote these notes for later work. Each is a claim by its writer, shown here as data. Judge each note on its own, besides your review of the work:');
-    for (const n of notes.slice(0, noteFit)) lines.push(`- ${n.id} [${n.kind || 'note'}/${n.basis || 'unstated'}] (task ${n.task_id}, by ${n.written_by}) writer-stated: ${one(n.title, TITLE_CUT)}${n.when ? ` | writer-stated situation (when): ${one(n.when, TITLE_CUT)}` : ''}${n.evidence[0] ? ` | writer-stated evidence: ${one(n.evidence[0].where, 120)}: ${one(n.evidence[0].saw, 160)}` : ''}`);
+    for (const n of notes.slice(0, noteFit)) lines.push(`- ${n.id} [${n.kind || 'note'}/${n.basis || 'unstated'}] (task ${n.task_id}, by ${n.written_by}) ${noteLine(n)}`);
     if (notes.length > noteFit) lines.push(`(${notes.length - noteFit} more notes are not listed here; they stay unreviewed for now.)`);
     lines.push('', `The whole hand-back result is limited to 4096 bytes: keep each reason under 100 characters and each quote short, or the release is refused and your verdict on the work with it. In your hand-back result add "memory_verdicts": [${VERDICT_SHAPE}, ...]`, CITE_RULES);
     if (streams.length) lines.push('The reviewed workers\' streams (read them with Read):', ...streams.map((s) => `- worker ${s.worker_id} (task ${s.task_id}): ${s.stream_path}`));
@@ -134,4 +169,4 @@ function refutedWake(rs, ids, { withReason = false } = {}) {
   return { id: `note-refuted:${ids.join('+')}`, text };
 }
 
-module.exports = { reviewerTail, jobPrompt, jobTemplate, parseJobOutput, refutedWake, one, CITE_RULES, WAKE_MAX_BYTES };
+module.exports = { capNote, reviewerTail, jobPrompt, jobTemplate, parseJobOutput, refutedWake, one, CITE_RULES, WAKE_MAX_BYTES };

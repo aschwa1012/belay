@@ -105,7 +105,7 @@ function checkShape(cites) {
 // note: { title, text, evidence } of the note judged; its own words are refused for stream cites only.
 // Returns { ok, failures: [{ index, where, reason }] }.
 const seam = { afterCheck: null }; // tests only: lets a test land another review between the check and the write
-function streamResultHas(file, quote) {
+function streamResultHas(file, quote, skip = null) {
   let raw;
   try { raw = fs.readFileSync(file, 'utf8'); } catch { return { found: false, reason: `no stream at ${file}` }; }
   if (raw.length > FILE_MAX * 8) return { found: false, reason: 'the stream is too large to search' };
@@ -117,10 +117,44 @@ function streamResultHas(file, quote) {
     for (const b of blocksOf(line)) {
       if (b.text === undefined || (b.id !== undefined && belay.has(b.id))) continue;
       const t = norm(b.text);
+      if (skip && skip(t, b.text)) continue;
       if (forms.some(q => t.includes(q))) return { found: true };
     }
   }
   return { found: false, reason: 'the quote is in no tool result of that stream (results of belay\'s own tools are not evidence)' };
+}
+// A stream cite for a note. A quote that the note's own words also hold is accepted only when a non-belay tool result holds it and
+// that result is not an echo of the note (echoOf below). A quote found only in the note, in belay's own calls,
+// or in the worker's hand-back or prose is in no such result, and is refused as before.
+const SELF = 'the quote is the note\'s own text, which cannot be evidence about the note';
+function streamCite(file, quote, own, title) {
+  if (!selfQuoted(own, title, quote)) return streamResultHas(file, quote);
+  const r = streamResultHas(file, quote, echoOf(own, title));
+  return r.found ? r : { found: false, reason: SELF };
+}
+// Echo rule. A tool result is an echo of the note, and no evidence about it, when its text (JSON string escapes decoded, whitespace
+// collapsed, case folded; also checked as printed) shows the note rather than independent output:
+//   - it holds a title of 20 or more characters, or the first 32 characters of a longer title (a listing that cuts titles);
+//   - a line of it IS the title (a shorter title, 4 or more characters, counts only as a whole line);
+//   - it holds a sentence of the note's own fields (16 or more characters with a space: when, text, a saw) of 60 or more characters, or any
+//     such sentence when the title is a single token with no space (an identifier such as RETRIES=3) that the result also holds.
+// A short saw that a tool really printed, or a short phrase title that a heading or log line holds, is not an echo: the result that proves the
+// saw is not its echo. What this leaves open: a worker that prints its own short saw with a tool.
+const PREFIX_LEN = 32, ANCHOR_MIN = 16, SENTENCE_LONG = 60, TITLE_LONG = 20, TITLE_MIN = 4;
+function echoOf(own, title) {
+  const low = s => norm(s).toLowerCase();
+  const t = title ? low(title) : '';
+  const sentences = (own || []).map(low).filter(a => a.length >= ANCHOR_MIN && a.includes(' ') && a !== t);
+  const idLike = t.length >= TITLE_MIN && !t.includes(' ');
+  return (text, raw) => {
+    const forms = [text.toLowerCase(), norm(unescapeJson(text)).toLowerCase()];
+    const has = a => forms.some(f => f.includes(a));
+    const lines = String(raw || '').split(/\r?\n/).flatMap(l => [low(l), low(unescapeJson(l))]);
+    const titleHeld = t.length >= TITLE_LONG ? has(t) : t.length >= TITLE_MIN && lines.includes(t);
+    if (titleHeld || (t.length > PREFIX_LEN && has(t.slice(0, PREFIX_LEN)))) return true;
+    const idHeld = idLike && has(t);
+    return sentences.some(a => (a.length >= SENTENCE_LONG || idHeld) && has(a));
+  };
 }
 async function checkTaskCites(E, taskId, cites, note = null) {
   const workers = rows.currentAll(E.store, 'worker').filter(w => w.task_id === taskId);
@@ -129,14 +163,13 @@ async function checkTaskCites(E, taskId, cites, note = null) {
   const fail = (index, where, reason) => failures.push({ index, where, reason });
   for (const [i, c] of cites.entries()) {
     if (c.where === 'stream' || c.where.startsWith('stream:')) {
-      if (selfQuoted(own, note && note.title, c.quote)) { fail(i, c.where, 'the quote is the note\'s own text, which cannot be evidence about the note'); continue; }
       const only = c.where === 'stream' ? null : c.where.slice(7);
       const pool = only ? workers.filter(w => w.id === only) : workers;
       if (!pool.length) { fail(i, c.where, only ? `worker ${only} did not work task ${taskId}` : `task ${taskId} has no worker row`); continue; }
       const misses = [];
       let hit = false;
       for (const w of pool) {
-        const r = streamResultHas(path.join(E.dataDir, 'workers', w.id, 'stream.jsonl'), c.quote);
+        const r = streamCite(path.join(E.dataDir, 'workers', w.id, 'stream.jsonl'), c.quote, own, note && note.title);
         if (r.found) { hit = true; break; }
         misses.push(`${w.id}: ${r.reason}`);
       }
@@ -188,10 +221,9 @@ async function checkCitations(cites, ctx) {
       if (got.error) throw fail(got.error);
       // A stream carries the note's own index line, and quoting that back proves nothing. A file read at the head commit
       // is evidence even when the note quoted the same line, so this applies to streams only.
-      if (selfQuoted(ctx.own, ctx.title, c.quote)) throw fail('the quote is the note\'s own text, which cannot be evidence about the note');
       // The same search as a note review: decoded tool results only, JSON escapes tolerated, belay's own tools excluded. The JSON
       // structure of the stream (braces, field names, ids) is not something a tool printed, so it is no evidence.
-      const r = streamResultHas(want, c.quote);
+      const r = streamCite(want, c.quote, ctx.own, ctx.title);
       if (!r.found) throw fail(r.reason);
       out.push({ where: c.where, source: 'stream' });
       continue;
@@ -221,4 +253,4 @@ function evidenceOf(args) {
   return { head_sha: head || null, worktree: wt || null, evidence_files: ev || [] };
 }
 
-module.exports = { checkCitations, evidenceOf, checkTaskCites, checkShape, streamResultHas, selfQuoted, seam };
+module.exports = { checkCitations, evidenceOf, checkTaskCites, checkShape, streamResultHas, streamCite, selfQuoted, seam };

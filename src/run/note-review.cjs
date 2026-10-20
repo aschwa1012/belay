@@ -157,7 +157,8 @@ async function runJob(J, task) {
     if (isClosed(ctx)) throw shutErr('the run manager is shutting down, so no review job was started');
     if (!ctx.manager || typeof ctx.manager.spawn !== 'function') throw Object.assign(new Error('the run manager has no way to spawn the review job here'), { code: 'E_INTERNAL' });
     const workers = ((await core.worker.list({})).workers || []).filter((x) => x.run_id === ctx.runId && x.task_id === taskId);
-    const inputs = await writeInputs(ctx, taskId, wid, brief.reports && brief.reports.length ? { notes: brief.notes, reports: brief.reports } : brief.notes, workers);
+    const capped = brief.notes.map(T.capNote);
+    const inputs = await writeInputs(ctx, taskId, wid, brief.reports && brief.reports.length ? { notes: capped, reports: brief.reports } : capped, workers);
     const streams = workers.map((x) => ({ worker_id: x.id, stream_path: fwd(path.join(ctx.dataDir, 'workers', x.id, 'stream.jsonl')) }));
     const prompt = T.jobPrompt(T.jobTemplate(), { notesFile: inputs.notesFile, diffFile: inputs.diffFile, streams, taskId, reports: brief.reports || [] });
     const worktree = inputs.worktree || ctx.worktree || (workers.find((x) => x.worktree) || {}).worktree;

@@ -37,6 +37,8 @@ test('the writer\'s own assistant text is refused', async () => {
 test('a belay tool result is refused', async () => {
   await refused('belay result only');
 });
-test('the note\'s own words are refused', async () => {
-  await refused('build ok', { own: ['build ok: it passed'] });
+test('the note\'s own words are refused when no tool result holds them, accepted when one does', async () => {
+  await refused('widgets are fine', { own: ['widgets are fine'] });
+  await refused('belay result only', { own: ['belay result only'] });
+  assert.deepStrictEqual(await run('build ok', { own: ['build ok: it passed'], title: 'build passes cleanly here' }), [{ where: `stream:${file}`, source: 'stream' }]);
 });
