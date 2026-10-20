@@ -208,14 +208,7 @@ test("stop: a stop after the run's stop completed is refused as ended, naming wh
 
     const r2 = runStopSync(dataDir, runId);
     let branch;
-    if (r2.status === 1 && r2.receipt && r2.receipt.error && r2.receipt.error.code === 'E_OWNER_LOST') {
-      // The owner vouches for a stop caller by its process before it serves it (about a second, ADR 0045 decision 4), and the first
-      // stop's teardown can land inside that window: the connection is closed with nothing served, and the run row says why.
-      branch = 'the owner tore itself down while the second call was being vouched for';
-      assert.strictEqual(typeof r2.receipt.error.detail.sent, 'boolean'); // sent or not, depending on whether the owner went away during the check or just before the call
-      assert.ok(r2.receipt.last, 'the lost-owner branch carried no last row');
-      assert.match(r2.receipt.last.exit_reason, /stopped by belay stop/);
-    } else if (r2.status === 1 && r2.receipt && r2.receipt.error && r2.receipt.error.code === 'E_NOT_FOUND') {
+    if (r2.status === 1 && r2.receipt && r2.receipt.error && r2.receipt.error.code === 'E_NOT_FOUND') {
       branch = 'the owner was still up: refused over the pipe';
       assert.strictEqual(r2.receipt.error.detail.phase, 'ended');
       assert.strictEqual(r2.receipt.error.detail.stopped_by.caller_pid, r1.pid);

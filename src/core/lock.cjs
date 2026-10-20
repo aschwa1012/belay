@@ -40,13 +40,6 @@ function adapterPipeName(dataDir, pid) {
   return process.platform === 'win32' ? `${base}-${pid}` : base.replace(/\.sock$/, `-${pid}.sock`);
 }
 
-// ADR 0045 decision 2: the one-shot pipe an owner opens for a bind. The random part is the bind's own, so the name is public
-// (it goes on the adapter's command line) and guessing it opens nothing: the owner accepts exactly one connection on it.
-function bindPipeName(dataDir, nonce) {
-  const base = pipeName(dataDir);
-  return process.platform === 'win32' ? `${base}-bind-${nonce}` : base.replace(/\.sock$/, `-bind-${nonce}.sock`);
-}
-
 // The data dir is echoed back to callers in status.get, so it needs one canonical spelling: a caller
 // that passes forward slashes must read back what it sent, not the same directory spelled differently.
 // Forward slashes everywhere on Windows; on POSIX a backslash is a legal filename character, so
@@ -71,7 +64,7 @@ function readOwnerLock(dataDir) {
   if (meta && meta.listening === false && meta.token) {
     try {
       const m = JSON.parse(fs.readFileSync(path.join(lockPath(dataDir), listeningName(meta)), 'utf8'));
-      if (m && m.pid === meta.pid && m.token === meta.token) return { ...meta, listening: true, listening_at: m.listening_at, ...(Number.isInteger(m.tcp_port) ? { tcp_port: m.tcp_port } : {}) };
+      if (m && m.pid === meta.pid && m.token === meta.token) return { ...meta, listening: true, listening_at: m.listening_at };
     } catch { /* no marker yet: the owner is starting */ }
   }
   return meta;
@@ -219,17 +212,16 @@ function acquireLock(dataDir, info, opts = {}) {
 // a loop starved it for a whole second. The name carries the token, so a takeover's new lock never
 // inherits its predecessor's marker. owner.json is then also rewritten with `listening: true` for
 // readers that look only there, best effort and briefly, since the marker is what readOwnerLock reads.
-// `extra` rides in both files (ADR 0045 decision 4: the loopback port a `bound` owner serves its operator on).
 // Returns true once the marker is in place (or was already); false means no reader will ever see this
 // owner as listening, and the caller must not serve as if it were.
-function markListening(lockDir, at = Date.now(), extra = {}) {
+function markListening(lockDir, at = Date.now()) {
   const meta = path.join(lockDir, 'owner.json');
   const cur = readSettled(meta);
   if (cur.state !== 'ok' || cur.meta.pid !== process.pid) return false;
   const marker = path.join(lockDir, listeningName(cur.meta));
   if (!fs.existsSync(marker)) {
     const tmp = aside(marker, 'tmp');
-    try { fs.writeFileSync(tmp, JSON.stringify({ pid: process.pid, token: cur.meta.token || null, listening_at: at, ...extra })); }
+    try { fs.writeFileSync(tmp, JSON.stringify({ pid: process.pid, token: cur.meta.token || null, listening_at: at })); }
     catch { try { fs.unlinkSync(tmp); } catch { /* never made */ } return false; }
     let placed = false;
     for (let i = 0; i < 50 && !placed; i++) {
@@ -240,7 +232,7 @@ function markListening(lockDir, at = Date.now(), extra = {}) {
     }
     if (!placed) { try { fs.unlinkSync(tmp); } catch { /* gone */ } return false; }
   }
-  try { replaceFile(meta, JSON.stringify({ ...cur.meta, listening: true, listening_at: at, ...extra }), 5); } catch { /* best effort */ }
+  try { replaceFile(meta, JSON.stringify({ ...cur.meta, listening: true, listening_at: at }), 5); } catch { /* best effort */ }
   return true;
 }
 
@@ -252,4 +244,4 @@ function releaseLock(lockDir) {
   return removeDir(lockDir);
 }
 
-module.exports = { pipeName, adapterPipeName, bindPipeName, pidAlive, resolveDataDir, acquireLock, releaseLock, markListening, readOwnerLock, lockPath, metaPath };
+module.exports = { pipeName, adapterPipeName, pidAlive, resolveDataDir, acquireLock, releaseLock, markListening, readOwnerLock, lockPath, metaPath };

@@ -53,7 +53,6 @@ test('memory: search against a store with no live owner is refused E_NO_EMBEDDER
   try {
     await core.run.attach({ adapter_pid: process.pid });
     await core.task.create({ spec: 'planted per B5, so this file is sensitive to a task.create regression too' });
-    fs.writeFileSync(`${dir}/orch.gate`, '');
     await core.memory.store({ namespace: 'run/run-x', text: 'a stored row with a supplied vector', embedding: vec(1), embedding_model: 'fixture', dim: 384 });
   } finally {
     await core.shutdownOwner();
@@ -100,7 +99,7 @@ async function withLiveOwner(envExtra, body) {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, runId } = makeSpec(dir, { poll_ms: 300, close_grace_ms: 2000 });
-  const runCliProc = runCli(specPath, dataDir, { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '500', FAKE_ANSWER_GATE_FILE: `${dir}/orch.gate`, ...envExtra(dir) }); // the first answer waits for the gate: the owner vouches for this test by its process, then binds it (ADR 0045)
+  const runCliProc = runCli(specPath, dataDir, { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '500', ...envExtra(dir) });
   let core = null;
   let plantedProc = null;
   try {

@@ -101,7 +101,7 @@ test('run: a second run on a data dir another run owns is refused before any wri
   let testCore = null;
   let runB = null;
   try {
-    testCore = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 15000 });
+    testCore = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
     const row = await waitUntil(async () => {
       const got = await testCore.run.get();
       return got.run || null;
@@ -157,7 +157,7 @@ test('run: two turn ends in one chunk start one poll chain, holds are moments, a
   let testCore = null;
   let fakeWorker = null;
   try {
-    testCore = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 15000 });
+    testCore = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
     await waitUntil(async () => (await testCore.run.get()).run || null, 10000, 100);
 
     fakeWorker = spawn(process.execPath, [FAKE_CLAUDE], {
@@ -393,7 +393,7 @@ test("run: a starting row whose pid dies while the orchestrator is idle holds st
   let testCore = null;
   let planted = null;
   try {
-    testCore = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 15000 });
+    testCore = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
     await waitUntil(async () => (await testCore.run.get()).run || null, 10000, 100);
 
     planted = await plantHungWorker(testCore, wt, runId, 'w-dead-start');
@@ -440,7 +440,7 @@ test('run: a dead row landing inside the grace produces the death wake with the 
   let testCore = null;
   let planted = null;
   try {
-    testCore = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 15000 });
+    testCore = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
     await waitUntil(async () => (await testCore.run.get()).run || null, 10000, 100);
 
     planted = await plantHungWorker(testCore, wt, runId, 'w-dead-detected');

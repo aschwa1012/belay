@@ -92,10 +92,12 @@ function receiptOf(run, exitCode) {
   return JSON.parse(exitCode === 0 ? run.stdout : run.stderr);
 }
 
-// The run's owner serves bound callers (ADR 0045), so this test is the orchestrator the way a run's is: through a bind the operator asks for.
-// A hang guard: a node CLI's start-up took several seconds on a saturated host (w2-flakes), so 10 s was a speed claim.
 async function connectOrchestratorCore(dataDir, runId) {
-  return require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 60000 });
+  const core = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
+  // A hang guard: a node CLI's start-up took several seconds on a saturated host (w2-flakes), so 10 s was a speed claim.
+  const row = await waitUntil(async () => (await core.run.get()).run || null, 60000, 100);
+  assert.ok(row, "the CLI's run row never appeared within 60,000 ms");
+  return core;
 }
 
 // A test core that won the election owns the store: close() only drops the client, so shut the owner down

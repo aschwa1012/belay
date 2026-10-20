@@ -384,11 +384,9 @@ test('run pause and resume: an ended run, no owner, an owner with no run control
   let ctx;
   try {
     // an ended run: no workers at all, so the ordinary idle rule closes it almost at once.
-    // the run's owner vouches for this test by its process before it binds it (ADR 0045): the first answer waits for the gate, written once the setup is done
-    ctx = await startRun(dir, {}, { FAKE_ANSWER_DELAY_MS: '200', FAKE_ANSWER_GATE_FILE: `${dir}/orch.gate` });
-    fs.writeFileSync(`${dir}/orch.gate`, '');
+    ctx = await startRun(dir, {}, { FAKE_ANSWER_DELAY_MS: '200' });
     const asWorker = await openCore({ dataDir: ctx.dataDir, caller: { role: 'worker', worker_id: 'w1', run_id: ctx.runId, pid: process.pid } }); // plant (ix): worker refused
-    try { for (const m of ['run.pause', 'run.resume']) await assert.rejects(asWorker.control(m, { run_id: ctx.runId }), (e) => { assert.ok(['E_ROLE', 'E_UNBOUND'].includes(e.code), e.code); return true; }); } finally { await asWorker.close(); }
+    try { for (const m of ['run.pause', 'run.resume']) await assert.rejects(asWorker.control(m, { run_id: ctx.runId }), (e) => { assert.strictEqual(e.code, 'E_ROLE'); return true; }); } finally { await asWorker.close(); }
     const exited = await waitForExit(ctx.cliProc.proc, 15000);
     assert.ok(exited, 'the run never ended on its own');
     await ctx.control.close(); await ctx.m.shutdown(); ctx.control = null; ctx.m = null;

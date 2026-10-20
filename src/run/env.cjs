@@ -17,12 +17,7 @@ const SCRUB_EXACT = [
   'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS',
   'CLAUDE_CODE_NO_FLICKER', // fullscreen is the interactive orchestrator's own (orchestrator-interactive.cjs sets it after buildEnv); its adapter inherits claude's env, so a worker would otherwise get it
   'CLAUDE_CODE_EFFORT_LEVEL', // ADR 0028 decision 4, probe case E6: the environment outranks --effort
-  'BELAY_WORKER_ID', // the worker marker below: a launch never inherits one from up-tree, only buildEnv({ workerId }) sets it
 ];
-// Identity-bind stopgap (ADR 0045 amendment, proposed): every worker's environment names the worker, and the CLI refuses its
-// write verbs when it finds the name (src/cli/worker-guard.cjs). It is a marker, not a boundary: a worker can unset it.
-// It stops the accident and the casual act of a worker's Bash running `belay memory verify` as the operator.
-const WORKER_MARKER = 'BELAY_WORKER_ID';
 // `BELAY_FAKE_` is scrubbed too: those variables point a process at a fake core or fake paths, and
 // a worker adapter that inherited one from up-tree would load the fake in production. The binary
 // overrides (BELAY_CLAUDE_EXE, BELAY_CODEX_EXE) deliberately do inherit — they name a real binary.
@@ -49,7 +44,7 @@ const CODEX_RUST_LOG = 'codex_core=debug,codex_rmcp_client=debug,rmcp=info';
 // the two variables that trail it are dropped. Called without a `cwd` the three are scrubbed, which
 // is wrong for a spawn and right for everything else: better a worker with no `PWD` than one holding
 // the parent's.
-function buildEnv(base, { substrate = 'claude-code', cwd = null, mcpToolTimeoutMs = null, workerId = null } = {}) {
+function buildEnv(base, { substrate = 'claude-code', cwd = null, mcpToolTimeoutMs = null } = {}) {
   const src = base || process.env;
   const out = {};
   for (const [k, v] of Object.entries(src)) {
@@ -60,7 +55,6 @@ function buildEnv(base, { substrate = 'claude-code', cwd = null, mcpToolTimeoutM
     out[k] = v;
   }
   if (cwd) out.PWD = fwd(path.resolve(cwd));
-  if (typeof workerId === 'string' && workerId) out[WORKER_MARKER] = workerId;
   out.CLAUDE_CODE_PROMPT_CACHE_TTL = '1h';
   // Probe ide-leak: run from a VS Code terminal inside a workspace a
   // ~/.claude/ide lock lists, an interactive claude auto-connects its "ide" MCP server, which the surface gate refuses.
@@ -81,4 +75,4 @@ function buildEnv(base, { substrate = 'claude-code', cwd = null, mcpToolTimeoutM
   return out;
 }
 
-module.exports = { WORKER_MARKER, SCRUB_EXACT, SCRUB_PREFIXES, SCRUB_CWD, SCRUB_ENV_EXTRA, CODEX_RUST_LOG, buildEnv, fwd };
+module.exports = { SCRUB_EXACT, SCRUB_PREFIXES, SCRUB_CWD, SCRUB_ENV_EXTRA, CODEX_RUST_LOG, buildEnv, fwd };

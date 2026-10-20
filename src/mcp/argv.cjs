@@ -10,7 +10,7 @@ const path = require('node:path');
 const CP = require('../run/compaction.cjs'); // fs and path only; parses --compact-at
 const AD = require('../run/agent-defaults.cjs'); // pure; checks the --agent-defaults file
 
-const VALUE_FLAGS = new Set(['--role', '--run', '--data', '--worker-id', '--log', '--permit-wait-ms', '--compact-at', '--worktree', '--agent-defaults', '--bind']);
+const VALUE_FLAGS = new Set(['--role', '--run', '--data', '--worker-id', '--log', '--permit-wait-ms', '--compact-at', '--worktree', '--agent-defaults']);
 const BOOL_FLAGS = new Set(['--no-embed', '--experimental-worker-wait', '--permit', '--notes']);
 
 function die(reason) {
@@ -60,7 +60,6 @@ function parseArgv(argv) {
     else if (a === '--data') out.dataDir = v;
     else if (a === '--worker-id') out.workerId = v;
     else if (a === '--log') out.logFile = v;
-    else if (a === '--bind') out.bind = v; // ADR 0045: the one-shot pipe this adapter claims its identity from, before it answers `initialize`
     else if (a === '--agent-defaults') out.agentDefaults = readAgentDefaults(v); // the run's resolved config `agents` block, for worker_spawn's agent_type
     else if (a === '--worktree') out.worktree = path.resolve(v).split('\\').join('/'); // ADR 0043 decision 1: the run's worktree
     else if (a === '--compact-at') { // ADR 0007 decision 3: the run's compact_at_tokens, for the workers this manager spawns

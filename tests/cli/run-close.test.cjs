@@ -147,22 +147,18 @@ test('run close: a setup slower than the orchestrator turn finds the run closed,
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, runId } = makeSpec(dir, { close_grace_ms: 60000 });
-  // The run's owner vouches for this test as the operator by its process, then binds it as an orchestrator (about a second): the turn is
-  // held until the bind is made, and the stall that follows it is the one this test is about.
-  const gate = `${dir}/answer.gate`;
-  const run = runCli(specPath, dataDir, { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_GATE_FILE: gate });
+  const run = runCli(specPath, dataDir, { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '300' });
   let core = null;
   let adapter = null;
   try {
     core = await connectOrchestratorCore(dataDir, runId);
     adapter = sleeper(30000);
-    fs.writeFileSync(gate, 'go');
     const exited = await waitForExit(run.proc, 120000); // the stall: the run runs to its end before the setup's first call
     assert.ok(exited, `belay run did not exit; stderr: ${run.stderr.slice(-1500)}`);
     const endedBefore = currentRunRow(dataDir, runId);
     assert.ok(endedBefore && endedBefore.ended_at != null, 'the run row is ended before the late attach');
     const rowsBefore = runRowCount(dataDir, runId);
-    await assert.rejects(core.run.attach({ adapter_pid: adapter.pid }), (e) => ((e.code === 'E_ARGS' || e.code === 'E_SHUTDOWN') && /already ended/.test(e.message)) || e.code === 'E_NO_OWNER', 'a late attach after run.end is refused'); // a core that holds a bind key never elects (E_NO_OWNER); an unbound one is refused as ended
+    await assert.rejects(core.run.attach({ adapter_pid: adapter.pid }), (e) => (e.code === 'E_ARGS' || e.code === 'E_SHUTDOWN') && /already ended/.test(e.message), 'a late attach after run.end is refused');
     const after = currentRunRow(dataDir, runId);
     assert.strictEqual(after.seq, endedBefore.seq, 'the refused attach wrote no row');
     assert.strictEqual(runRowCount(dataDir, runId), rowsBefore);

@@ -150,15 +150,14 @@ test('interactive run, claude exits before its session file exists: ended_by say
 }));
 
 test('interactive run: a life-claiming worker is killed by its exact pid before run.end, and its row closed', async (t) => withRun(t, async (dir) => {
-  const r = start(dir, { env: { FAKE_EXIT_FILE: `${dir}/quit` } }); // the stub quits when the test says so: the owner's check and bind take longer than any fixed hold
+  const r = start(dir, { env: { FAKE_HOLD_MS: '2500' } });
   const w = sleeper();
   let core;
   try {
     assert.ok(await waitUntil(() => r.record(), 15000), 'the stub never started');
-    core = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(r.dataDir, r.runId, { waitMs: 15000 });
+    core = await openCore({ dataDir: r.dataDir, caller: { role: 'orchestrator', run_id: r.runId, pid: process.pid } });
     assert.ok(await waitUntil(async () => (await core.run.get()).run, 15000), 'no run row');
     await core.worker.write({ id: 'w-int', run_id: r.runId, substrate: 'claude-code', pid: w.pid, pid_image: 'node.exe', state: 'running', turns: 0, started_at: Date.now() });
-    fs.writeFileSync(`${dir}/quit`, '');
     const res = await r.done;
     assert.strictEqual(res.code, 0, res.text);
     const killed = res.json.workers_closed.killed.find((k) => k.worker_id === 'w-int');
@@ -201,14 +200,13 @@ test('SIGHUP: the fast close kills workers by pid, closes the row, and ends with
   try {
     const pre = await ID.processSnapshot(); // before the run starts, so its time is nobody's bound
     assert.ok(pre && pre.get(w.pid), 'precondition: the snapshot could not read the sleeper');
-    r = start(dir, { env: { FAKE_EXIT_FILE: `${dir}/quit` } });
+    r = start(dir, { env: { FAKE_HOLD_MS: '800' } });
     assert.ok(await waitUntil(() => r.record(), 15000));
-    core = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(r.dataDir, r.runId, { waitMs: 15000 });
+    core = await openCore({ dataDir: r.dataDir, caller: { role: 'orchestrator', run_id: r.runId, pid: process.pid } });
     assert.ok(await waitUntil(async () => (await core.run.get()).run, 15000));
     P.snapshotShared = () => Promise.resolve(pre);
     await core.worker.write({ id: 'w-hup', run_id: r.runId, substrate: 'claude-code', pid: w.pid, pid_image: 'node.exe', state: 'running', turns: 0, started_at: Date.now() });
     process.emit('SIGHUP');
-    fs.writeFileSync(`${dir}/quit`, ''); // the console closing ends claude
     const res = await r.done;
     assert.strictEqual(res.code, 1, 'a fast close is never a clean exit');
     assert.strictEqual(res.json.ended_by, 'console closed (fast close)');
@@ -300,7 +298,7 @@ test('belay stop: the killed claude gets the terminal reset written once, after 
   pid = rec.pid;
   let core;
   try {
-    core = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(r.dataDir, r.runId, { waitMs: 15000 });
+    core = await openCore({ dataDir: r.dataDir, caller: { role: 'orchestrator', run_id: r.runId, pid: process.pid } });
     assert.ok(await waitUntil(async () => (await core.run.get()).run, 15000));
     const stopped = await cmdStop.run({ argv: [r.runId], cwd: ROOT, dataDir: r.dataDir, json: true });
     assert.strictEqual(stopped.code, 0, stopped.text);
@@ -368,7 +366,7 @@ test('belay stop against an interactive run ends claude by its pid, runs the clo
   assert.ok(rec, 'the stub never started');
   let core;
   try {
-    core = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(r.dataDir, r.runId, { waitMs: 15000 });
+    core = await openCore({ dataDir: r.dataDir, caller: { role: 'orchestrator', run_id: r.runId, pid: process.pid } });
     assert.ok(await waitUntil(async () => (await core.run.get()).run, 15000));
     const w = sleeper();
     try {
@@ -393,7 +391,7 @@ test('belay stop against an interactive run ends claude by its pid, runs the clo
 }));
 
 test('belay pause against an interactive run is accepted (ADR 0023 amendment 5): no workers, the session undisturbed', async (t) => withRun(t, async (dir) => {
-  const r = start(dir, { env: { FAKE_EXIT_FILE: `${dir}/quit` } }); // the stub quits when the test says so: the owner's check of the pause's caller takes longer than any fixed hold
+  const r = start(dir, { env: { FAKE_HOLD_MS: '2500' } });
   assert.ok(await waitUntil(() => r.record(), 15000));
   const probe = await openCore({ dataDir: r.dataDir, caller: { role: 'operator', run_id: r.runId, pid: process.pid } });
   assert.ok(await waitUntil(async () => (await probe.run.get()).run, 15000));
@@ -403,7 +401,6 @@ test('belay pause against an interactive run is accepted (ADR 0023 amendment 5):
   assert.strictEqual(res.json.paused, true);
   assert.deepStrictEqual(res.json.workers, []);
   assert.strictEqual(res.json.interrupt, null);
-  fs.writeFileSync(`${dir}/quit`, '');
   const done = await r.done;
   assert.strictEqual(done.code, 0, 'the pause disturbed the run');
 }));

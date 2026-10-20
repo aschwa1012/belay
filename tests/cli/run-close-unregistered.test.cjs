@@ -69,7 +69,7 @@ test('run close: an orchestrator child that has not registered is waited for, an
     const rowsAfter = readStoreCopy(dataDir, (db) => db.prepare('SELECT COUNT(*) AS n FROM run WHERE id = ?').get(runId).n);
 
     // After run.end the same caller cannot write into the run, and does not become a stray owner.
-    await assert.rejects(core.worker.write({ id: 'w-after', run_id: runId, substrate: 'claude-code', pid: process.pid, pid_image: 'node.exe', state: 'running', worktree: wt, turns: 0, started_at: Date.now() }), (e) => ['E_SHUTDOWN', 'E_ARGS', 'E_OWNER_LOST', 'E_NO_OWNER'].includes(e.code)); // a core that holds a bind key never elects: with the owner gone it finds none (E_NO_OWNER)
+    await assert.rejects(core.worker.write({ id: 'w-after', run_id: runId, substrate: 'claude-code', pid: process.pid, pid_image: 'node.exe', state: 'running', worktree: wt, turns: 0, started_at: Date.now() }), (e) => ['E_SHUTDOWN', 'E_ARGS', 'E_OWNER_LOST'].includes(e.code));
     assert.ok(!fs.existsSync(`${dataDir}/owner.lock`), 'no stray owner');
     assert.strictEqual(readStoreCopy(dataDir, (db) => db.prepare('SELECT COUNT(*) AS n FROM worker WHERE id = ?').get('w-after').n), 0);
     assert.strictEqual(readStoreCopy(dataDir, (db) => db.prepare('SELECT COUNT(*) AS n FROM run WHERE id = ?').get(runId).n), rowsAfter);
