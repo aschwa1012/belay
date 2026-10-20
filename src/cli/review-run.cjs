@@ -54,7 +54,13 @@ async function sweepOrphan(h, claim, D) {
   try { const got = await h.worker.get({ worker_id: claim.job }); row = got && (got.worker || got); } catch { row = null; }
   if (!row || !Number.isInteger(row.pid) || !D.pidAlive(row.pid)) return { swept: false, detail: `the claimed job ${claim.job} left no live child` };
   const r = (await D.killMany([D.rowTarget(row)]))[0] || {};
-  return { swept: !!r.killed, pid: row.pid, detail: r.killed ? `killed orphan pid ${row.pid} of job ${claim.job}` : `orphan pid ${row.pid} of job ${claim.job} was not killed: ${r.detail || r.error || 'refused'}` };
+  // A refusal of kind `mismatch` or `absent` PROVES the child is gone (another process holds its pid, or no process does; ADR 0039), so the
+  // pid answering a pid check is no reviewer. Only an unverifiable refusal, or a kill that was not sent, leaves the child possibly running.
+  const gone = !r.killed && r.refused === 'identity' && (r.kind === 'mismatch' || r.kind === 'absent');
+  const detail = r.killed ? `killed orphan pid ${row.pid} of job ${claim.job}`
+    : gone ? `orphan pid ${row.pid} of job ${claim.job} is gone (${r.kind}: ${r.detail || 'identity check'})`
+      : `orphan pid ${row.pid} of job ${claim.job} was not killed: ${r.detail || r.error || 'refused'}`;
+  return { swept: !!r.killed || gone, pid: row.pid, kind: r.kind || null, refused: r.refused || null, detail };
 }
 
 const busy = (project, st, extra = '') => {

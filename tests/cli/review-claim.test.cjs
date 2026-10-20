@@ -129,6 +129,29 @@ test('a dead claim whose child could not be killed is not taken over: no second 
   });
 });
 
+test('a dead claim whose child pid was reused (killMany refuses with kind mismatch or absent) is swept: the review proceeds; an unverifiable refusal still blocks it', async () => {
+  await planted(async (T) => {
+    await holdOne(T);
+    T.store.close();
+    for (const kind of ['mismatch', 'absent', 'unverifiable']) {
+      const old = (await plantClaim(T, { pid: 424301, created: 100, job: `archreview-reused-${kind}` })).claim;
+      await asEngine(T, (E) => E.handle('worker.write', { caller: callerFor('orchestrator', { run_id: RUN }), id: old.job, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${kind}`, last_event_at: Date.now() }));
+      // The claimant is gone; the child's pid answers a pid check (this process) but killMany refuses it by identity.
+      const seam = { pidAlive: (p) => p === process.pid, createdOf: async () => ({ created: 9 }), killMany: async (targets) => targets.map((t) => ({ pid: t.pid, killed: false, refused: 'identity', kind, detail: `${kind} detail` })), makeManager: async () => fakeManager() };
+      const r = await cmd(T, [...base, T.repo, '--all'], seam);
+      if (kind === 'unverifiable') {
+        assert.strictEqual(r.code, 1, `${kind}: ${r.text}`);
+        assert.strictEqual(r.json.error.code, 'E_BUSY', kind);
+        await asEngine(T, (E) => E.handle('memory.reviewRelease', { caller: callerFor('operator', { run_id: RUN }), project: 'lc', claim_id: old.id, ok: true }));
+      } else {
+        assert.strictEqual(r.code, 0, `${kind}: ${r.text}`);
+        assert.strictEqual(r.json.claim.took_over, old.id, kind);
+        assert.ok(r.json.notes[0].includes(`is gone (${kind}:`), `${kind}: ${r.json.notes[0]}`);
+      }
+    }
+  });
+});
+
 test('a signal during the review fast-closes it: the child is killed, the claim is released as failed E_ABORTED, and the handlers are removed', async () => {
   await planted(async (T) => {
     await holdOne(T);
