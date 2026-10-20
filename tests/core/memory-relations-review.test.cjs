@@ -101,6 +101,7 @@ test('should-fix 4: the second hop of a chain carries the first hop\'s delivery 
   assert.deepStrictEqual([T.body(a).delivery_history.length, T.body(b).delivery_history.length], [0, 0]);
   await restore(b);
   assert.strictEqual(T.body(c).delivery_history.length, 0);
+  assert.deepStrictEqual(T.body(b).delivery_history.map(d => [d.from, d.hops, d.task_id]), [['z0', ['z0'], 't9']], 'b has the entry it handed over back, as it was');
 });
 
 test('should-fix 1: a relation that would archive a verified note becomes a hold for the reviewer; a scrubber resolve against one is refused', async () => {
