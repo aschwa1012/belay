@@ -357,7 +357,7 @@ const NO_NULL = { task_evaluate: ['base'] };
 // the core, never something a model says (invariant 3), so the boundary refuses them in either role,
 // by name, before the core sees them. The schema does not list them, which is why the listing does
 // not pay for them either.
-const HARNESS_ONLY = { memory_store: ['task_id', 'turn', 'source', 'embed', 'body', 'worker_id'] };
+const HARNESS_ONLY = { memory_store: ['task_id', 'turn', 'source', 'embed', 'body', 'worker_id'], worker_spawn: ['native_memory'] }; // worker_spawn.native_memory: the eval driver's lever, set on RunManager.spawn only (ADR 0024 amendment 3)
 // Tools that take exactly the properties their schema names: memory_store's row is written from its arguments, so an
 // unnamed one (an id, a created_at, a vector and its model) would reach the core as if the harness had chosen it.
 const CLOSED = new Set(['memory_store']);
