@@ -11,7 +11,7 @@ const AD = require('../run/agent-defaults.cjs');
 
 const MOD_NAMES = C.KEY_NAMES.filter((k) => C.KEYS[k].allowed);
 const MEMORY_NAMES = Object.keys(ML.DEFAULTS).map((k) => `memory.${k}`);
-const AGENT_NAMES = AD.AGENT_KEYS.flatMap((t) => AD.FIELDS.map((f) => `agents.${t}.${f}`));
+const AGENT_NAMES = AD.AGENT_KEYS.flatMap((t) => AD.fieldsOf(t).map((f) => `agents.${t}.${f}`));
 const NAMES = [...MOD_NAMES, ...MEMORY_NAMES, ...AGENT_NAMES];
 
 const kindOf = (key) => (MOD_NAMES.includes(key) ? 'mod' : key.startsWith('memory.') ? 'memory' : 'agents');
@@ -25,7 +25,7 @@ function shape(key) {
   if (kind === 'agents') {
     return fieldOf(key) === 'effort'
       ? { type: 'enum', allowed: [...AD.EFFORT_LEVELS, null], text: `${AD.EFFORT_LEVELS.join(' | ')} | null` }
-      : { type: 'model', allowed: null, text: 'a model name | null (no default)' };
+      : { type: 'model', allowed: null, text: fieldOf(key) === AD.CODEX_FIELD ? 'a Codex model name | null (no default: the Codex config decides)' : 'a model name | null (no default)' };
   }
   const s = ML.TYPES[leverOf(key)];
   if (s.type === 'boolean') return { type: 'boolean', allowed: [true, false], text: 'true | false' };
@@ -57,7 +57,12 @@ function parseValue(key, raw) {
     case 'boolean': return raw === 'true' || raw === 'false' ? { value: raw === 'true' } : bad('true or false');
     case 'integer': return /^-?\d+$/.test(raw) ? { value: Number(raw) } : bad('an integer');
     case 'number': return /^-?\d+(\.\d+)?$/.test(raw) ? { value: Number(raw) } : bad('a number');
-    case 'model': return raw === 'null' ? { value: null } : raw ? { value: raw } : bad('a model name or null');
+    case 'model': {
+      if (raw === 'null') return { value: null };
+      if (!raw) return bad('a model name or null');
+      const chk = checkStored(key, raw); // a Codex model under a Claude `model` key is refused here, before anything is written
+      return chk.ok ? { value: raw } : { error: `${JSON.stringify(raw)} is not a value of ${key}: ${chk.reason}` };
+    }
     case 'string': return { value: raw === 'null' && sh.nullable ? null : raw };
     default: {
       if (raw === 'null' && sh.allowed.includes(null)) return { value: null };
@@ -81,7 +86,8 @@ function checkStored(key, value) {
   if (kindOf(key) === 'agents') {
     if (value === null) return { ok: true, unset: true };
     if (fieldOf(key) === 'effort') return AD.EFFORT_LEVELS.includes(value) ? { ok: true } : { ok: false, reason: `${JSON.stringify(value)} is not one of ${AD.EFFORT_LEVELS.join(', ')}` };
-    return typeof value === 'string' && value ? { ok: true } : { ok: false, reason: `${JSON.stringify(value)} is not a model name` };
+    if (!(typeof value === 'string' && value)) return { ok: false, reason: `${JSON.stringify(value)} is not a model name` };
+    return fieldOf(key) === 'model' && AD.NOT_CLAUDE.test(value) ? { ok: false, reason: `${JSON.stringify(value)} is not a Claude model; a Codex model goes in ${key.replace(/model$/, AD.CODEX_FIELD)}` } : { ok: true };
   }
   const block = { [leverOf(key)]: value };
   const t = typeof value;
