@@ -17,6 +17,7 @@ function keysFor(E, ids) {
 // (a re-embedded pair is a new question, and a verdict made on the old vectors does not close it). Every note the mark names must have a
 // stored key that still matches; a row without keys (one proposed before they were recorded) or missing one is stale, never fresh.
 const named = (b) => [b.note_id, b.entry && b.entry.of].filter(Boolean);
+// The one freshness rule every reader of a proposal row applies (open lists, drafts, nominations, promotion, stranded counts); `E` needs only `.store`.
 const fresh = (E, b) => {
   const keys = b.keys && typeof b.keys === 'object' ? b.keys : null;
   const ids = named(b);
@@ -38,4 +39,4 @@ function openProposals(E, project) {
 const SIGNATURE = ['action', 'kind', 'resolve', 'relation', 'of', 'keep', 'ground'];
 const sameMark = (a, b) => a.id === b.id && SIGNATURE.every((k) => (a[k] || null) === (b[k] || null));
 
-module.exports = { openProposals, sameMark, keysFor };
+module.exports = { openProposals, sameMark, keysFor, fresh };

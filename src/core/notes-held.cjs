@@ -60,6 +60,7 @@ function stranded(store, only = null) {
     return true;
   };
   try {
+    const { fresh } = require('./proposal-open.cjs');
     const note = (id) => store.p("SELECT namespace, status, body FROM memory_entries WHERE id = ? AND type = 'note'").get(id);
     const bodyOf = (n) => { try { return JSON.parse(n.body) || {}; } catch { return {}; } };
     // Gate (b) of the relation (memory-relate.cjs liveNote): live in the project, not refuted, not superseded by another row, not held.
@@ -73,11 +74,12 @@ function stranded(store, only = null) {
       return !!nom && nom.state === 'nominated' && Number(at) >= Number(nom.created_at);
     };
     const judges = (n, other) => { try { return (JSON.parse(n.body).pair_judged || []).some((j) => j && j.of === other); } catch { return false; } };
-    for (const r of store.p(`SELECT namespace, created_at AS at, json_extract(body, '$.note_id') AS note_id, json_extract(body, '$.entry.action') AS action, json_extract(body, '$.entry.of') AS other
+    for (const r of store.p(`SELECT namespace, created_at AS at, json_extract(body, '$.note_id') AS note_id, json_extract(body, '$.entry.action') AS action, json_extract(body, '$.entry.of') AS other, body
       FROM memory_entries WHERE type = 'proposal' AND namespace LIKE 'proposal/%' AND json_extract(body, '$.state') = 'open' ORDER BY created_at, id`).all()) {
       const project = r.namespace.slice(9), live = `project/${project}`, pend = `pending/${project}`;
       const n = note(r.note_id);
       if (!n) continue;
+      if (!fresh({ store }, bodyOf(r))) continue; // the same freshness rule as proposal-open.cjs: complete stored keys, all still matching
       let open;
       if (r.action === 'resolve') open = n.namespace === pend;
       else if (r.action === 'relate') {
