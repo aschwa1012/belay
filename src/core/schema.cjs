@@ -188,6 +188,9 @@ const MIGRATIONS = [
   // The run's CURRENT on_embedder_failure mode (required, keyword or off): written by run.attach at launch and by run.setEmbedderMode when a
   // resume switches it, so a reader without the owner's guard (a copy fallback) sees the live mode. Null reads as the default, required.
   'ALTER TABLE run ADD COLUMN embedder_mode TEXT',
+  // The harness's record of the eval-only native_memory lever (ADR 0024 amendment 3): the resolved folder, or null. A relaunch reads the lever
+  // from here and never from the worker's settings.json, which the worker can edit.
+  'ALTER TABLE worker ADD COLUMN native_memory TEXT',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot
