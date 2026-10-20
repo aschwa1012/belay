@@ -12,7 +12,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { err } = require('./errors.cjs');
 const { ensureSchema, scanCeiling } = require('./schema.cjs');
-const { checkSchema, putStamp } = require('./schema-stamp.cjs');
+const { checkSchema, putStamp, writtenBy } = require('./schema-stamp.cjs');
 const { migrateOwner, ftsReady } = require('./memory-schema.cjs');
 const { deriveTitle, validId } = require('./memory-rows.cjs');
 const MV = require('./memory-vectors.cjs');
@@ -47,20 +47,23 @@ class Store {
     // older core would then open and write into as if the layout were its own.
     try {
       if (this.opts.stamp) {
+        let skipCatchUp = false;
         this.db.exec('BEGIN IMMEDIATE');
         try {
           checkSchema(this.db, dbPath);
           ensureSchema(this.db);
+          skipCatchUp = MV.lastWriterMaintainedCache(this.db); // read before putStamp overwrites written_by
           putStamp(this.db);
           this.db.exec('COMMIT');
         } catch (e) { try { this.db.exec('ROLLBACK'); } catch { /* already out */ } throw e; }
         migrateOwner(this.db);
         // The vector cache's table. Keep this the LAST owner migration: the migration number is not final, and a rebase that
-        // adds another one above it only moves this line. The table is created and backfilled only when it is new; every start
-        // then runs a catch-up that inserts what is missing, never rewrites what is there, and sweeps unreferenced vectors.
+        // adds another one above it only moves this line. The table is created and backfilled only when it is new; a start after
+        // an older core (or the first) runs a catch-up that inserts what is missing, never rewrites what is there, and sweeps unreferenced
+        // vectors; a start after a vector-aware owner skips it (the vector_cache_by marker, memory-vectors.cjs).
         // SCHEMA_VERSION stays 2 on purpose: an older core writing to this store leaves rows without vectors (they show up as backlog) and
         // deletes without sweeping (orphan vectors, removed by the next start's catch-up). Neither corrupts anything.
-        MV.migrateVectors(this.db);
+        MV.migrateVectors(this.db, { skipCatchUp, by: writtenBy() });
       } else {
         checkSchema(this.db, dbPath);
         ensureSchema(this.db);

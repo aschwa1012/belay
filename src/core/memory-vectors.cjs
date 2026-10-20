@@ -27,6 +27,7 @@ const TABLE_SQL = `CREATE TABLE IF NOT EXISTS memory_vectors (
 // Everything hashing and visibility need from a row; never the vector blob.
 const COLS = 'id, namespace, type, text, title, body, text_template, embedding_model, embedding_revision, dim, ttl_at, created_at, status';
 const VEC_BY_KEY = 'SELECT vector FROM memory_vectors WHERE model = ? AND model_revision = ? AND dims = ? AND template = ? AND embed_hash = ?';
+const MARKER = 'vector_cache_by';
 const INSERT_IGNORE = `INSERT OR IGNORE INTO memory_vectors(model, model_revision, dims, template, embed_hash, vector, created_at)
   VALUES (?, ?, ?, ?, ?, ?, ?)`;
 
@@ -102,9 +103,15 @@ function putRowVector(db, row) {
 
 // ---- the owner's start ---------------------------------------------------------------------------------------------
 
-// Owner-only. Creates the table and backfills it from every inline vector only when the table is new; then, on every start,
-// catches up without rewriting anything that is already there (catchUp).
-function migrateVectors(db) {
+// Owner-only. Creates the table and backfills it from every inline vector only when the table is new; then, unless the store's last
+// writer was a build that maintains the cache (opts.skipCatchUp), catches up without rewriting anything already there (catchUp).
+//
+// The capability marker is meta `vector_cache_by`: the written_by of the vector-aware owner that last finished a start. An older core
+// does not know the key and leaves it alone, but its own putStamp overwrites `written_by`. So at the next start the marker equals the
+// previous written_by only if no older core has written since; the Store reads both BEFORE its putStamp and passes the verdict here.
+// A crash between putStamp and the marker, or an older core, makes them differ, and the pass runs. (An older build with the very same
+// written_by string as the vector-aware one would be missed; the string names version and commit, so that needs the same commit.)
+function migrateVectors(db, opts = {}) {
   let backfilled = 0;
   if (!hasTable(db)) {
     db.exec('BEGIN IMMEDIATE');
@@ -118,33 +125,48 @@ function migrateVectors(db) {
       db.exec('COMMIT');
     } catch (e) { try { db.exec('ROLLBACK'); } catch { /* already out */ } throw e; }
   }
-  return { table: 'ready', backfilled, ...catchUp(db) };
+  const caught = opts.skipCatchUp && backfilled === 0 ? { caught_up: 0, swept: 0, skipped: true } : catchUp(db);
+  if (opts.by) {
+    const cur = db.prepare('SELECT value FROM meta WHERE key = ?').get(MARKER);
+    if (!cur || cur.value !== opts.by) db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(MARKER, opts.by);
+  }
+  return { table: 'ready', backfilled, ...caught };
 }
 
-// One pass over the rows without their blobs: the cached vector of each inline vector is looked up by its primary key, and only a
-// missing one has its blob fetched and inserted (INSERT OR IGNORE; nothing present is rewritten). The same pass builds the set of
-// referenced (template, hash) pairs, and every cached vector outside it is deleted. A pass that finds nothing to do writes nothing.
-function catchUp(db) {
-  const exists = db.prepare(VEC_BY_KEY);
-  const live = new Map(); // template -> Set(hash)
-  const missing = [];
-  for (const r of db.prepare(`SELECT ${COLS} FROM memory_entries`).iterate()) {
-    for (const t of templatesOf(r)) {
-      const h = embedHashOf(r, t);
-      if (h === null) continue;
-      if (!live.has(t)) live.set(t, new Set());
-      live.get(t).add(h);
-    }
-    const k = inlineKeyOf(r);
-    if (k && !exists.get(k.key.model, k.key.revision, k.key.dims, k.key.template, k.hash)) missing.push({ id: r.id, k });
-  }
-  const stale = [];
-  for (const v of db.prepare('SELECT DISTINCT template, embed_hash FROM memory_vectors').iterate()) {
-    if (!(live.has(v.template) && live.get(v.template).has(v.embed_hash))) stale.push([v.template, v.embed_hash]);
-  }
-  if (!missing.length && !stale.length) return { caught_up: 0, swept: 0 };
+// Whether the store's last writer was a vector-aware owner: the marker equals the written_by recorded before this start's stamp.
+function lastWriterMaintainedCache(db) {
+  try {
+    const m = db.prepare('SELECT value FROM meta WHERE key = ?').get(MARKER), w = db.prepare("SELECT value FROM meta WHERE key = 'written_by'").get();
+    return !!(m && w && m.value === w.value);
+  } catch { return false; }
+}
+
+// One pass over the rows without their blobs, in ONE write transaction taken before the scan (BEGIN IMMEDIATE, committed even when
+// nothing changed), so no writer can add a row or a vector between the scan and the deletes and have it judged stale. The cached
+// vector of each inline vector is looked up by its primary key, and only a missing one has its blob fetched and inserted (INSERT OR
+// IGNORE; nothing present is rewritten). The same pass builds the set of referenced (template, hash) pairs, and every cached vector
+// outside it is deleted. A pass that finds nothing to do writes nothing. `opts.afterScan` is a test seam called between scan and apply.
+function catchUp(db, opts = {}) {
   db.exec('BEGIN IMMEDIATE');
   try {
+    const exists = db.prepare(VEC_BY_KEY);
+    const live = new Map(); // template -> Set(hash)
+    const missing = [];
+    for (const r of db.prepare(`SELECT ${COLS} FROM memory_entries`).iterate()) {
+      for (const t of templatesOf(r)) {
+        const h = embedHashOf(r, t);
+        if (h === null) continue;
+        if (!live.has(t)) live.set(t, new Set());
+        live.get(t).add(h);
+      }
+      const k = inlineKeyOf(r);
+      if (k && !exists.get(k.key.model, k.key.revision, k.key.dims, k.key.template, k.hash)) missing.push({ id: r.id, k });
+    }
+    const stale = [];
+    for (const v of db.prepare('SELECT DISTINCT template, embed_hash FROM memory_vectors').iterate()) {
+      if (!(live.has(v.template) && live.get(v.template).has(v.embed_hash))) stale.push([v.template, v.embed_hash]);
+    }
+    if (opts.afterScan) opts.afterScan();
     const blob = db.prepare('SELECT embedding FROM memory_entries WHERE id = ?'), put = db.prepare(INSERT_IGNORE);
     for (const m of missing) {
       const b = blob.get(m.id);
@@ -162,7 +184,10 @@ function catchUp(db) {
 
 // The cached vector of a row under the tier, trying each template the row may sit under, or null.
 function lookup(get, k, row) {
-  for (const template of templatesOf(row)) {
+  // A row's own model reads its own inline vector first (as inline search does); content-keyed reuse is the fallback.
+  const own = hasInline(row) && row.embedding_model === k.model && revisionOf(row) === k.revision && row.dim === k.dims;
+  const order = own ? [inlineTemplateOf(row), ...templatesOf(row).filter(t => t !== inlineTemplateOf(row))] : templatesOf(row);
+  for (const template of order) {
     const hash = embedHashOf(row, template);
     if (hash === null) continue;
     const v = get.get(k.model, k.revision, k.dims, template, hash);
@@ -292,6 +317,6 @@ function sweepRows(db, gone) {
 }
 
 module.exports = {
-  TABLE_SQL, embedTextOf, embedHashOf, renderTemplateOf, templatesOf, hasTable, migrateVectors, catchUp, putVector, putRowVector,
+  TABLE_SQL, embedTextOf, embedHashOf, renderTemplateOf, templatesOf, hasTable, migrateVectors, lastWriterMaintainedCache, catchUp, putVector, putRowVector,
   vectorsFor, visibleRowFilter, selectSearchable, backlog, sweep, sweepRows,
 };
