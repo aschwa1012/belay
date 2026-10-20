@@ -12,6 +12,7 @@
 
 const path = require('node:path');
 const J = require('./stage-job.cjs');
+const { pickEvidence } = require('./scrub-stage.cjs');
 
 const JOB_PREFIX = 'archreview-';
 const VERDICTS_PER_APPLY = 500; // checkVerdicts takes 1 to 500
@@ -125,10 +126,13 @@ async function runReview({ core, runId, lv, dataDir, getManager, worktree = null
     if (bad) throw bad;
     const parsed = J.parseList(got.text, 'verdicts');
     if (parsed.error) throw J.coded('E_ARGS', parsed.error);
+    // A hold written at write time (a refine or replacement of a verified note) has no head commit of its own, so a file cite could never be read
+    // for it: the run's head, as the scrub is given, stands for the cites of this review.
+    const head = pickEvidence(workers, runId).head_sha;
     const tally = { verdicts: parsed.list.length, applied: 0, refused: 0 };
     const applied = [], refused = [];
     for (let i = 0; i < parsed.list.length; i += VERDICTS_PER_APPLY) {
-      const r = await core.memory.reviewApply({ verdicts: parsed.list.slice(i, i + VERDICTS_PER_APPLY), worktree: abs(cwd), evidence_files: streams.slice(0, STREAMS_MAX) });
+      const r = await core.memory.reviewApply({ verdicts: parsed.list.slice(i, i + VERDICTS_PER_APPLY), worktree: abs(cwd), evidence_files: streams.slice(0, STREAMS_MAX), ...(head ? { head_sha: head } : {}) });
       tally.applied += r.counts.applied; tally.refused += r.counts.refused;
       applied.push(...r.applied.map((a) => ({ id: a.id, outcome: a.outcome, receipt: a.receipt }))); refused.push(...r.refused.map((a) => ({ id: a.id, code: a.code })));
     }
