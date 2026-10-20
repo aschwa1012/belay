@@ -47,7 +47,7 @@ function unjudged(store) {
 // Work the default propose mode leaves for the operator: open proposals whose mark is still unsettled, and pending notes whose writer's run
 // has ended (nothing but a scrub or `belay memory resolve` settles them). Nothing closes a proposal row, so the mark is read against the notes:
 // a `resolve` counts while its note is still pending; a `relate` while both notes pass the relation's liveness gate (live, not refuted, not
-// superseded, not held) and neither records a `new` verdict on the other; a `draft` while the note's newest nomination is still open, the draft is
+// superseded, not held) and neither records a `new` verdict on the other that still matches both notes' keys (memory-relate.cjs judgedPair); a `draft` while the note's newest nomination is still open, the draft is
 // not older than it and the note is not promoted; any other action while its note is live or pending. A plain read of the rows.
 // { open_proposals, pending, total, by_project: { <project>: n }, note_ids, newest_at }; `total` and `by_project` count distinct notes.
 function stranded(store, only = null) {
@@ -61,7 +61,9 @@ function stranded(store, only = null) {
   };
   try {
     const { fresh } = require('./proposal-open.cjs');
-    const note = (id) => store.p("SELECT namespace, status, body FROM memory_entries WHERE id = ? AND type = 'note'").get(id);
+    const { judgedPair } = require('./memory-relate.cjs');
+    const { loadNote } = require('./memory-facts.cjs');
+    const note = (id) => { const r = loadNote({ store }, id); return r && r.type === 'note' ? r : null; };
     const bodyOf = (n) => { try { return JSON.parse(n.body) || {}; } catch { return {}; } };
     // Gate (b) of the relation (memory-relate.cjs liveNote): live in the project, not refuted, not superseded by another row, not held.
     const relatable = (id, n, live) => !!n && n.namespace === live && (n.status || 'unverified') !== 'refuted' && !bodyOf(n).held
@@ -73,7 +75,6 @@ function stranded(store, only = null) {
       const nom = store.p("SELECT created_at, json_extract(body, '$.state') AS state FROM memory_entries WHERE type = 'nomination' AND namespace = ? AND json_extract(body, '$.note_id') = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(`nomination/${project}`, id);
       return !!nom && nom.state === 'nominated' && Number(at) >= Number(nom.created_at);
     };
-    const judges = (n, other) => { try { return (JSON.parse(n.body).pair_judged || []).some((j) => j && j.of === other); } catch { return false; } };
     for (const r of store.p(`SELECT namespace, created_at AS at, json_extract(body, '$.note_id') AS note_id, json_extract(body, '$.entry.action') AS action, json_extract(body, '$.entry.of') AS other, body
       FROM memory_entries WHERE type = 'proposal' AND namespace LIKE 'proposal/%' AND json_extract(body, '$.state') = 'open' ORDER BY created_at, id`).all()) {
       const project = r.namespace.slice(9), live = `project/${project}`, pend = `pending/${project}`;
@@ -84,7 +85,7 @@ function stranded(store, only = null) {
       if (r.action === 'resolve') open = n.namespace === pend;
       else if (r.action === 'relate') {
         const o = r.other ? note(r.other) : null;
-        open = relatable(r.note_id, n, live) && !!o && relatable(r.other, o, live) && !judges(n, r.other) && !judges(o, r.note_id);
+        open = relatable(r.note_id, n, live) && !!o && relatable(r.other, o, live) && !judgedPair(n, o) && !judgedPair(o, n);
       } else if (r.action === 'draft') open = draftOpen(project, n, r.note_id, r.at);
       else open = n.namespace === live || n.namespace === pend;
       if (open && add(project, r.note_id, r.at)) open_proposals += 1;

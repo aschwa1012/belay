@@ -7,6 +7,7 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const { setup, PROJECT, A, A_NEAR } = require('./lifecycle-env.cjs');
 const { callerFor } = require('./helpers.cjs');
+const { keyOf } = require('../../src/core/memory-relate.cjs');
 const { strandedEvents, renderText } = require('../../src/cli/cmd-notices.cjs');
 
 let T;
@@ -222,7 +223,8 @@ test('D11: a relate proposal counts while both notes are live and no new verdict
     assert.strictEqual(made.counts.proposed, 1, JSON.stringify(made.refused));
     const first = await stranded();
     assert.deepStrictEqual([first.total, first.note_ids], [1, [n]]);
-    const setJudged = (id, of) => S.store.p('UPDATE memory_entries SET body = ? WHERE id = ?').run(JSON.stringify({ ...S.body(id), pair_judged: of ? [{ of }] : [] }), id);
+    const keyed = (id) => keyOf(S.store.p('SELECT text_hash, embedding_model, dim, text_template FROM memory_entries WHERE id = ?').get(id));
+    const setJudged = (id, of) => S.store.p('UPDATE memory_entries SET body = ? WHERE id = ?').run(JSON.stringify({ ...S.body(id), pair_judged: of ? [{ of, own_key: keyed(id), of_key: keyed(of) }] : [] }), id);
     setJudged(o, n);
     assert.strictEqual((await stranded()).total, 0, 'the verdict recorded on the partner closes it');
     setJudged(o, null); setJudged(n, o);

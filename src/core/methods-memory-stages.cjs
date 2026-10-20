@@ -23,7 +23,7 @@ const M = require('./methods-memory.cjs');
 const N = require('./methods-memory-notes.cjs');
 const { parse } = require('./memory-facts.cjs');
 const { standing, isRejected } = require('./report-marks.cjs');
-const { keyOf, relationFacts } = require('./memory-relate.cjs');
+const { relationFacts, judgedPair } = require('./memory-relate.cjs');
 const { nominationsForScope, countFor } = require('./memory-nominate.cjs');
 const { openProposals } = require('./proposal-open.cjs');
 
@@ -155,7 +155,7 @@ async function scrubScope(E, caller, args) {
     return E.store.p('SELECT 1 AS x FROM memory_entries WHERE supersedes = ? AND namespace = ?').get(id, n.namespace) ? null : n;
   };
   // A `new` verdict holds only while both notes still have the text, vector model, dimension and template it was made on.
-  const judged = (n, other) => (n.b.pair_judged || []).some((j) => j && j.of === other.id && j.own_key === keyOf(n) && j.of_key === keyOf(other));
+  const judged = judgedPair;
   const reported = E.store.p(`SELECT id FROM memory_entries WHERE type = 'note' AND namespace = ? AND EXISTS
     (SELECT 1 FROM json_each(memory_entries.body, '$.reported_wrong') WHERE json_extract(value, '$.run_id') = ? AND json_extract(value, '$.replaced_by') IS NOT NULL) ORDER BY created_at, id`).all(N.projectNs(project), runId);
   for (const r of reported) {
