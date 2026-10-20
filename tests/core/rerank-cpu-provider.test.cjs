@@ -5,6 +5,7 @@
 
 process.env.BELAY_TEST_MODE = '1';
 const { test } = require('node:test');
+const fs = require('node:fs');
 const assert = require('node:assert');
 const { core, sandbox, cleanup } = require('./helpers.cjs');
 const { writeStubPackage, writeCache, fakeEntry } = require('./fixtures/rerank-stub-pkg.cjs');
@@ -191,16 +192,100 @@ test('the bound during the first load is a coded timeout that leaves the load ru
   } finally { await rerank.close(); r.done(); }
 });
 
-test('a child that dies is a coded error on the call and on every later call; nothing restarts it', async () => {
+const until = async (fn, ms = 5000) => { const t0 = Date.now(); while (!fn() && Date.now() - t0 < ms) await new Promise(r => setTimeout(r, 10)); return fn(); };
+
+test('after a crash the NEXT call builds a new client and reloads the model, once per call; a failed reload fails that call with its real cause', async () => {
   const r = rig();
   const client = new CpuRerankClient({ pkg: r.pkg, cacheDir: r.cache, table: r.table });
   const rerank = cpuRerankProvider({ model: r.id, client });
+  const pids = [];
+  const starts = [], clients = [];
+  const realStart = CpuRerankClient.prototype.start;
+  CpuRerankClient.prototype.start = function start() { const was = this.child; const out = realStart.call(this); if (this.child !== was) { starts.push(this.pid); clients.push(this); } return out; };
   try {
     await rerank({ query: QUERY, docs: NOTES });
-    const pid = client.pid;
+    pids.push(client.pid);
     client.child.send({ id: 999, op: 'crash', code: 9 });
-    assert.ok(await waitGone(pid, 4000));
-    await assert.rejects(rerank({ query: QUERY, docs: NOTES }), (e) => e.code === 'E_MODEL_ABSENT' && e.detail.cause === 'dead' && e.detail.exit_code === 9);
-    assert.ok(client.exit && client.pid === pid, 'no new child');
+    assert.ok(await until(() => client.exit), 'the exit event arrived');
+    assert.strictEqual(client.exit.code, 9);
+    assert.throws(() => client.start(), (e) => e.code === 'E_MODEL_ABSENT' && e.detail.cause === 'dead' && /exit code 9/.test(e.message), 'start() does not re-fork over a dead child');
+    assert.strictEqual(client.child.pid, pids[0], 'and forked nothing');
+    // two later calls: each succeeds on a fresh child that loaded the model
+    for (let n = 0; n < 2; n += 1) {
+      const before = starts.length;
+      const out = await rerank({ query: QUERY, docs: NOTES });
+      assert.strictEqual(out.scores.length, NOTES.length);
+      assert.strictEqual(starts.length, before + 1, 'one new child for the call');
+      const fresh = starts[starts.length - 1];
+      assert.ok(!pids.includes(fresh), 'a new pid');
+      pids.push(fresh);
+      const fc = clients[clients.length - 1];
+      fc.child.send({ id: 998, op: 'crash', code: 5 });
+      assert.ok(await until(() => fc.exit), 'the exit event arrived');
+    }
+    // a reload that fails is that call's error, with the real cause, and the provider tries again on the next call
+    const gone = r.cache + '-away';
+    fs.renameSync(r.cache, gone);
+    await assert.rejects(rerank({ query: QUERY, docs: NOTES }), (e) => e.code === 'E_MODEL_ABSENT' && e.detail.cause === 'absent' && /belay embedder fetch --reranker/.test(e.message));
+    fs.renameSync(gone, r.cache);
+    assert.strictEqual((await rerank({ query: QUERY, docs: NOTES })).scores.length, NOTES.length);
+  } finally { CpuRerankClient.prototype.start = realStart; await rerank.close(); r.done(); }
+});
+
+test('two concurrent calls: one call\'s timeout closes the shared child, and the other is retried once on a fresh one inside its own bound', async () => {
+  const r = rig({ rankDelayMs: 300 });
+  const client = new CpuRerankClient({ pkg: r.pkg, cacheDir: r.cache, table: r.table });
+  const rerank = cpuRerankProvider({ model: r.id, client, chunk: 1 });
+  try {
+    await rerank({ query: QUERY, docs: NOTES.slice(0, 1) }); // loaded and warm
+    const first = client.pid;
+    const [a, b] = await Promise.allSettled([
+      rerank({ query: QUERY, docs: NOTES, boundMs: 400 }), // five chunks at 300 ms: its bound passes
+      rerank({ query: QUERY, docs: NOTES.slice(0, 2), boundMs: 30000 }), // queued behind it on the same child
+    ]);
+    assert.strictEqual(a.status, 'rejected');
+    assert.ok(a.reason.code === 'E_EMBEDDER_TIMEOUT' && a.reason.detail.cause === 'timeout');
+    assert.strictEqual(b.status, 'fulfilled', b.reason && b.reason.message);
+    assert.strictEqual(b.value.scores.length, 2);
+    assert.ok(await waitGone(first, 5000), 'the first child is gone');
   } finally { await rerank.close(); r.done(); }
+});
+
+test('after a timeout the next call waits for the old child to be gone before it forks: at most one model in memory', async () => {
+  const r = rig({ rankDelayMs: 300 });
+  const live = [];
+  const realStart = CpuRerankClient.prototype.start;
+  const seen = [];
+  CpuRerankClient.prototype.start = function start() { const was = this.child, alive = live.filter(pidAlive).length; const out = realStart.call(this); if (this.child !== was) { seen.push(alive); live.push(this.pid); } return out; }; // counted BEFORE the fork, which itself takes time
+  const rerank = cpuRerankProvider({ model: r.id, pkg: r.pkg, cacheDir: r.cache, table: r.table, chunk: 1 });
+  try {
+    await rerank({ query: QUERY, docs: NOTES.slice(0, 1) });
+    await assert.rejects(rerank({ query: QUERY, docs: NOTES, boundMs: 350 }), (e) => e.code === 'E_EMBEDDER_TIMEOUT');
+    await rerank({ query: QUERY, docs: NOTES.slice(0, 1) });
+    assert.strictEqual(live.length, 2);
+    assert.deepStrictEqual(seen, [0, 0], 'no earlier child was alive when a new one was forked');
+  } finally { CpuRerankClient.prototype.start = realStart; await rerank.close(); r.done(); }
+});
+
+test('with no boundMs the provider uses its default (10 s unless given), never unbounded', async () => {
+  const { DEFAULT_BOUND_MS } = core('rerank-cpu.cjs');
+  assert.strictEqual(DEFAULT_BOUND_MS, 10000);
+  const r = rig({ rankDelayMs: 1500 });
+  const rerank = r.provider({ defaultBoundMs: 400 });
+  try {
+    await assert.rejects(rerank({ query: QUERY, docs: NOTES }), (e) => e.code === 'E_EMBEDDER_TIMEOUT' && e.detail.bound_ms === 400);
+  } finally { await rerank.close(); r.done(); }
+});
+
+test('a load has a wall-clock limit that the child\'s heartbeats do not reset', async () => {
+  const r = rig({ loadDelayMs: 4000 });
+  const c = new CpuRerankClient({ pkg: r.pkg, cacheDir: r.cache, table: r.table, workerOpts: { heartbeatMs: 50 }, loadBoundMs: 2000, loadWallMs: 500 }).start();
+  try {
+    const t0 = Date.now();
+    await assert.rejects(c.load(r.id), (e) => e.code === 'E_EMBEDDER_TIMEOUT' && e.detail.cause === 'timeout' && e.detail.wall_clock === true && e.detail.timeout_ms === 500);
+    const ms = Date.now() - t0;
+    assert.ok(ms >= 450 && ms < 3500, `rejected after ${ms} ms, well before the 4 s load`);
+    assert.ok(c.hung, 'a load past its wall clock is a hung child');
+    await assert.rejects(c.ping ? c._call({ op: 'ping' }, 1000) : null, (e) => e.code === 'E_EMBEDDER_TIMEOUT');
+  } finally { await c.close(); r.done(); }
 });

@@ -17,7 +17,11 @@
 //                            below); it is treated as hung and every later op fails at once, until close() and a new start()
 //                load_failed / op_failed   E_INTERNAL  the child answered with an error of its own
 //              A refusal the child computed from a bad input (E_ARGS) is not a reranker failure and keeps its code.
-//              Nothing waits forever and nothing is restarted by itself: a dead child stays dead.
+//              Nothing waits forever and nothing is restarted by itself: a dead child stays dead, and start() refuses to
+//              fork over it. Only cpuRerankProvider replaces one, by building a NEW client and loading the model again,
+//              once per call (never a silent re-fork without a load).
+//   Wall clock A load also has a wall-clock limit (120 s) that progress lines do not reset: a load stuck in native code
+//              heartbeats forever. Passing it is the same coded timeout and the same hung state.
 //   Silence    A request is hung when the child sends nothing about THAT request (or one queued ahead of it) for a
 //              whole bound, counted from the call or from the last progress line. A rank sends one line per chunk and a
 //              load a heartbeat, so a long rank never trips it; answers to a ping do not count.
@@ -27,8 +31,9 @@
 // `pid` is the child's pid. Test seams (BELAY_TEST_MODE=1 alone): `workerPath` forks that script instead, `workerOpts`
 // is merged into the child's argv JSON, `table` replaces the reranker table.
 //
-// cpuRerankProvider(opts) is the function the rerank provider registry takes (see its comment): it owns one client,
-// starts and loads it on the first call, and answers { scores, model, device: 'cpu', ms, warnings? }.
+// cpuRerankProvider(opts) is the function the rerank provider registry takes (src/core/rerank-provider.cjs, on the
+// search branch): it owns one client, starts and loads it on the first call, and answers
+// { scores, model, device: 'cpu', ms, warnings? }.
 
 const path = require('node:path');
 const { fork } = require('node:child_process');
@@ -38,6 +43,8 @@ const K = require('./model-cache.cjs');
 const { killPid } = require('./process.cjs');
 
 const OP_BOUND_MS = 60000;
+const DEFAULT_BOUND_MS = 10000; // the provider's bound when the caller gives none: the rerank_bound_ms lever's default
+const LOAD_WALL_MS = 120000; // a load's WALL-CLOCK limit, which the child's heartbeats do not reset: a load stuck in native code heartbeats forever (the base model loads in seconds)
 const LOAD_BACKSTOP_MS = 600000; // a hung load only: the base model's cold load is measured in seconds
 const PING_BOUND_MS = 1000;
 const CLOSE_GRACE_MS = 2000;
@@ -53,6 +60,7 @@ class CpuRerankClient {
     this.cacheDir = opts.cacheDir || K.cacheRoot();
     this.opBoundMs = opts.opBoundMs || OP_BOUND_MS;
     this.loadBoundMs = opts.loadBoundMs || LOAD_BACKSTOP_MS;
+    this.loadWallMs = opts.loadWallMs || LOAD_WALL_MS;
     this.pingBoundMs = opts.pingBoundMs || PING_BOUND_MS;
     const test = process.env.BELAY_TEST_MODE === '1';
     this.fake = test && !!opts.workerPath;
@@ -63,9 +71,11 @@ class CpuRerankClient {
     this.onExit = null; this.pending = new Map(); this.seq = 0; this.models = new Map();
   }
 
-  // Forks the child. The package is checked first: a missing or wrong one is E_MODEL_ABSENT naming the fix.
+  // Forks the child. The package is checked first: a missing or wrong one is E_MODEL_ABSENT naming the fix. A child
+  // that has exited is not replaced here (that would be a fork with no model loaded): build a new client.
   start() {
     if (this.child && !this.exit) return this;
+    if (this.exit) throw err('E_MODEL_ABSENT', this._deadReason(), rr('dead', { pid: this.pid }));
     let pkgDir = this.pkg;
     if (!this.fake) {
       const info = K.packageInfo(this.pkg);
@@ -110,7 +120,7 @@ class CpuRerankClient {
 
   _settle(id) {
     const p = this.pending.get(id);
-    if (p) clearTimeout(p.timer);
+    if (p) { clearTimeout(p.timer); clearTimeout(p.wall); }
     this.pending.delete(id);
     if (!this.pending.size && this.child && this.child.channel) this.child.channel.unref();
   }
@@ -120,7 +130,7 @@ class CpuRerankClient {
     return 'the rerank process is not running; start() has not been called or close() was called';
   }
 
-  _call(msg, boundMs) {
+  _call(msg, boundMs, wallMs) {
     if (!this.child || this.exit) return Promise.reject(err('E_MODEL_ABSENT', this._deadReason(), rr('dead', { pid: this.pid })));
     if (this.hung) return Promise.reject(this.hung);
     return new Promise((resolve, reject) => {
@@ -137,6 +147,15 @@ class CpuRerankClient {
         reject(e);
       }, ms);
       this.pending.set(id, { resolve, reject, timer: arm(boundMs), op: msg.op, heard: sentAt });
+      if (wallMs) { // a wall clock no progress line resets: past it the child is treated as hung, like a silent one
+        this.pending.get(id).wall = setTimeout(() => {
+          if (!this.pending.has(id)) return;
+          this._settle(id);
+          const e = err('E_EMBEDDER_TIMEOUT', `the rerank process (pid ${this.pid}) did not finish ${msg.op} within ${wallMs} ms of wall-clock time (it kept sending progress) and is treated as hung`, rr('timeout', { op: msg.op, timeout_ms: wallMs, wall_clock: true, pid: this.pid }));
+          this.hung = e;
+          reject(e);
+        }, wallMs);
+      }
       if (this.child.channel) this.child.channel.ref();
       try { this.child.send({ id, ...msg }); }
       catch (e) { this._settle(id); reject(err('E_MODEL_ABSENT', `the rerank process (pid ${this.pid}) could not be reached: ${e.message}`, rr('dead', { pid: this.pid }))); }
@@ -176,7 +195,7 @@ class CpuRerankClient {
       const command = `belay embedder fetch --reranker ${entry.id}`;
       throw err('E_MODEL_ABSENT', `the CPU reranker ${entry.id} is not fetched or is wrong (${[...chk.missing, ...chk.wrong_size].join(', ')}); fetch it with \`${command}\``, rr('absent', { model: entry.id, command }));
     }
-    const info = await this._call({ op: 'load', model: entry.id, dir: chk.dir, dtype: entry.dtype, maxLength: entry.max_length }, this.loadBoundMs);
+    const info = await this._call({ op: 'load', model: entry.id, dir: chk.dir, dtype: entry.dtype, maxLength: entry.max_length }, this.loadBoundMs, this.loadWallMs);
     this.models.set(entry.id, { max_length: entry.max_length });
     return info;
   }
@@ -195,9 +214,9 @@ class CpuRerankClient {
   async close() {
     const c = this.child;
     this.closed = true; this.models.clear();
-    for (const id of [...this.pending.keys()]) { const p = this.pending.get(id); clearTimeout(p.timer); this.pending.delete(id); p.reject(err('E_INTERNAL', 'the rerank process was closed', rr('dead'))); }
+    for (const id of [...this.pending.keys()]) { const p = this.pending.get(id); clearTimeout(p.timer); clearTimeout(p.wall); this.pending.delete(id); p.reject(err('E_INTERNAL', 'the rerank process was closed', rr('dead'))); }
     if (!c) return;
-    this.child = null;
+    this.child = null; this.exit = null; // closed on purpose: a later start() may fork again
     if (c.exitCode !== null || c.signalCode !== null) return;
     const gone = new Promise(res => c.once('exit', res));
     try { c.send({ op: 'close' }); } catch { /* the channel is already gone */ }
@@ -214,45 +233,56 @@ class CpuRerankClient {
 
 // The provider the rerank registry takes: `async rerank({ query, docs: [{ id, text }], depth, boundMs })` resolving
 // { scores: [{ id, score }], model, device: 'cpu', ms, warnings? }.
-//   - The first `depth` docs are scored (all of them when depth is absent); scores come back best first, ties in
-//     input order, each a 0..1 sigmoid of the model's logit.
+//   - Only the first `depth` docs are scored (all of them when depth is absent); the caller appends the rest in their
+//     prior order. Scores come back best first, ties in input order, each a 0..1 sigmoid of the model's logit.
+//   - `boundMs` bounds the whole call and defaults to DEFAULT_BOUND_MS (10 s, the lever default); it is never unbounded.
 //   - The first call starts the child and loads the model, and that load is waited on: a `boundMs` that passes during
 //     the load throws the coded timeout but leaves the load running, so a later call finds the model ready.
 //   - `boundMs` passing during the rerank throws E_EMBEDDER_TIMEOUT (detail.cause 'timeout', detail.bound_ms) and
-//     closes the child in the background, because it is still busy with the abandoned work; the next call starts and
-//     loads a fresh one.
+//     closes the child, because it is still busy with the abandoned work. The next call waits for that close to finish
+//     (so at most one model is in memory), builds a fresh client and loads the model again. A sibling call that was
+//     running on the closed child is retried ONCE on the fresh one inside its own remaining bound.
+//   - A child that crashed or hung is replaced the same way on the NEXT call: a new client and a reload, once per call.
+//     There is no crash loop and no give-up counter here: if the reload fails, that call fails with the real coded cause,
+//     and the search layer makes a run's fallback sticky after its first failure.
 //   - A pair that reached the model's max_length (cut there if longer) is reported as warnings: [{ code: 'RERANK_TRUNCATED', ... }].
-// opts: { model, client?, pkg?, cacheDir?, chunk?, opBoundMs?, ... } (any other key goes to CpuRerankClient).
+// opts: { model, client?, chunk?, defaultBoundMs?, pkg?, cacheDir?, opBoundMs?, ... } (any other key goes to CpuRerankClient).
 function cpuRerankProvider(opts = {}) {
-  const { model, client: given, chunk, ...clientOpts } = opts;
+  const { model, client: given, chunk, defaultBoundMs = DEFAULT_BOUND_MS, ...clientOpts } = opts;
   if (typeof model !== 'string') throw err('E_ARGS', 'cpuRerankProvider needs a model id', { model: typeof model });
-  // A given client is the first child's owner; a replacement after an abandoned rerank is built from the same settings.
-  const settings = given ? { pkg: given.pkg, cacheDir: given.cacheDir, table: given.table, opBoundMs: given.opBoundMs, loadBoundMs: given.loadBoundMs, pingBoundMs: given.pingBoundMs, workerPath: given.fake ? given.workerPath : undefined, workerOpts: given.workerOpts } : clientOpts;
+  // A given client is the first child's owner; a replacement is built from the same settings.
+  const settings = given ? { pkg: given.pkg, cacheDir: given.cacheDir, table: given.table, opBoundMs: given.opBoundMs, loadBoundMs: given.loadBoundMs, loadWallMs: given.loadWallMs, pingBoundMs: given.pingBoundMs, workerPath: given.fake ? given.workerPath : undefined, workerOpts: given.workerOpts } : clientOpts;
   let c = given || null;
   rerankerFor(model, process.env.BELAY_TEST_MODE === '1' ? settings.table : undefined); // an unknown id fails here, not on the first search
   let loaded = null; // the load promise of c, kept while it is pending or succeeded
-  const closing = [];
+  const closing = new Set(); // closes in flight; each leaves the set when it settles
+  const abandoned = new WeakSet(); // clients this provider closed on purpose
 
-  const ensure = () => {
-    if (!c) c = new CpuRerankClient(settings);
-    c.start();
-    if (!loaded) {
-      const mine = c;
-      loaded = mine.load(model).catch((e) => { if (c === mine) loaded = null; throw e; });
-    }
-    return loaded;
-  };
   const abandon = () => {
     const old = c;
     c = null; loaded = null;
-    if (old) closing.push(old.close().catch(() => {}));
+    if (!old) return;
+    abandoned.add(old);
+    const done = old.close().catch(() => {}).then(() => closing.delete(done));
+    closing.add(done);
+  };
+  // Resolves the client to use, with its model loaded. A client whose child exited or hung is replaced here (a new
+  // client, so a reload), and a fork waits for every earlier close to finish.
+  const ensure = async () => {
+    if (c && (c.exit || c.hung)) abandon();
+    while (closing.size) await Promise.all([...closing]);
+    if (!c) c = new CpuRerankClient(settings);
+    const mine = c;
+    mine.start();
+    if (!loaded) loaded = mine.load(model).catch((e) => { if (c === mine) loaded = null; throw e; });
+    await loaded;
+    return mine;
   };
   const timeout = (boundMs, phase) => err('E_EMBEDDER_TIMEOUT', `the CPU rerank did not finish ${phase} within ${boundMs} ms`, rr('timeout', { bound_ms: boundMs, phase }));
-  const within = (promise, boundMs, phase, onTimeout) => {
-    if (!boundMs) return promise;
+  const within = (promise, boundMs, phase, onTimeout, reported = boundMs) => {
     let timer = null;
     // The clock rejects first and only then abandons the child, so the race ends on the timeout and not on the close of the abandoned rank.
-    const clock = new Promise((_, rej) => { timer = setTimeout(() => { rej(timeout(boundMs, phase)); if (onTimeout) onTimeout(); }, boundMs); });
+    const clock = new Promise((_, rej) => { timer = setTimeout(() => { rej(timeout(reported, phase)); if (onTimeout) onTimeout(); }, boundMs); });
     promise.catch(() => {}); // a late failure after the bound is not unhandled
     return Promise.race([promise, clock]).finally(() => clearTimeout(timer));
   };
@@ -265,19 +295,27 @@ function cpuRerankProvider(opts = {}) {
     const t0 = Date.now();
     const take = docs.slice(0, depth || docs.length);
     if (!take.length) return { scores: [], model, device: 'cpu', ms: 0 };
-    const bound = boundMs || null;
-    await within(ensure(), bound, 'loading the model', null);
-    const mine = c;
-    const left = bound ? Math.max(1, bound - (Date.now() - t0)) : null;
-    const r = await within(mine.rank(model, query, take.map(d => d.text), { chunk }), left, 'ranking', () => { if (c === mine) abandon(); });
+    const bound = boundMs || defaultBoundMs;
+    const left = () => Math.max(1, bound - (Date.now() - t0));
+    let r = null;
+    for (let attempt = 0; !r; attempt += 1) {
+      const mine = await within(ensure(), left(), 'loading the model', null, bound);
+      try {
+        r = await within(mine.rank(model, query, take.map(d => d.text), { chunk }), left(), 'ranking', () => { if (c === mine) abandon(); }, bound);
+      } catch (e) {
+        // A sibling call's timeout closed this child under us: its bound did not pass, so run once more on the fresh one.
+        if (attempt === 0 && abandoned.has(mine) && e && e.detail && e.detail.cause === 'dead' && e.detail.reranker === true && Date.now() - t0 < bound) continue;
+        throw e;
+      }
+    }
     const scores = take.map((d, i) => ({ id: d.id, score: r.scores[i], i })).sort((a, b) => b.score - a.score || a.i - b.i).map(({ id, score }) => ({ id, score }));
     const out = { scores, model, device: 'cpu', ms: Date.now() - t0 };
     if (r.truncated > 0) out.warnings = [{ code: 'RERANK_TRUNCATED', message: `${r.truncated} of ${take.length} pairs reached the model's ${r.max_length}-token limit (a longer pair is cut there)`, truncated: r.truncated, max_length: r.max_length }];
     return out;
   }
   rerank.model = model;
-  rerank.close = async () => { abandon(); await Promise.all(closing); };
+  rerank.close = async () => { abandon(); while (closing.size) await Promise.all([...closing]); };
   return rerank;
 }
 
-module.exports = { CpuRerankClient, cpuRerankProvider, CHILD_ENV };
+module.exports = { CpuRerankClient, cpuRerankProvider, CHILD_ENV, DEFAULT_BOUND_MS };

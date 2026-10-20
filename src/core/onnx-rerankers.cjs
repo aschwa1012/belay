@@ -14,7 +14,9 @@
 // tokenizer_config.json and onnx/model_int8.onnx; nothing else is listed because nothing else is read.
 //
 //   max_length        the longest query-plus-document token sequence the worker feeds the model; the tokenizer
-//                     truncates beyond it (the bench ran both at 512)
+//                     truncates beyond it (the bench ran both at 512). For gte-reranker-modernbert-base 512 is a
+//                     latency choice: its tokenizer allows 8192. The limit covers the PAIR, so a query longer than
+//                     max_length truncates every pair.
 //   score_transform   'sigmoid': the logit goes through 1 / (1 + e^-x). One logit per pair; a two-logit head would
 //                     use the second minus the first.
 
