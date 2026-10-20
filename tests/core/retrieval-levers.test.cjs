@@ -103,7 +103,7 @@ test('a pending model is refused with the coded error E_MODEL, by the lever pars
 });
 
 test('the GPU kinds copied into retrieval-profiles.cjs match the GGUF table exactly', () => {
-  assert.deepStrictEqual(Object.fromEntries(Object.values(GGUF_MODELS).map((e) => [e.id, e.kind])), RP.GGUF_KINDS);
+  assert.deepStrictEqual(Object.fromEntries(Object.entries(GGUF_MODELS).map(([key, e]) => { assert.strictEqual(key, e.id, 'the table key is the id'); return [key, e.kind]; })), RP.GGUF_KINDS);
 });
 
 test('parsing a default block and resolving a CPU routing load no GPU module', () => {

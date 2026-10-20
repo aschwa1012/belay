@@ -80,25 +80,25 @@ const PROJECT_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const INDEX_BYTES_MAX = 4096; // ADR 0042 decision 2
 const BOTTLE_BYTES_MAX = 262144; // ADR 0042 decision 4
 
-// The routing map: { <agent type>: <profile name> | { embedder, reranker? } }, or null. Returns an error sentence or null.
+// The routing map: { <agent type>: <profile name> | { embedder, reranker? } }, or null. Returns { msg, code? } or null.
 function routingProblem(r) {
   if (r === null) return null;
-  if (typeof r !== 'object' || Array.isArray(r)) return 'memory.routing must be null or an object from agent type to profile';
-  if (Object.keys(r).length > ROUTING_MAX) return `memory.routing has more than ${ROUTING_MAX} entries`;
+  if (typeof r !== 'object' || Array.isArray(r)) return { msg: 'memory.routing must be null or an object from agent type to profile' };
+  if (Object.keys(r).length > ROUTING_MAX) return { msg: `memory.routing has more than ${ROUTING_MAX} entries` };
   for (const [type, p] of Object.entries(r)) {
-    if (!ROUTING_TYPE_RE.test(type)) return `memory.routing.${type}: an agent type is lower-case letters, digits, - or _`;
+    if (!ROUTING_TYPE_RE.test(type)) return { msg: `memory.routing.${type}: an agent type is lower-case letters, digits, - or _` };
     if (typeof p === 'string') {
-      if (p === RP.CUSTOM || !RP.isProfile(p)) return `memory.routing.${type} must be one of ${RP.PROFILE_NAMES.join(', ')} or a pair { embedder, reranker }`;
+      if (p === RP.CUSTOM || !RP.isProfile(p)) return { msg: `memory.routing.${type} must be one of ${RP.PROFILE_NAMES.join(', ')} or a pair { embedder, reranker }` };
       const pend = RP.pendingIn(RP.PROFILES[p]);
-      if (pend) return `memory.routing.${type}: ${RP.pendingMessage(pend)}`;
+      if (pend) return { msg: `memory.routing.${type}: ${RP.pendingMessage(pend)}`, code: 'E_MODEL' };
       continue;
     }
-    if (!p || typeof p !== 'object' || Array.isArray(p)) return `memory.routing.${type} must be a profile name or a pair { embedder, reranker }`;
-    for (const k of Object.keys(p)) if (k !== 'embedder' && k !== 'reranker') return `memory.routing.${type}.${k} is not a field of a pair (embedder, reranker)`;
+    if (!p || typeof p !== 'object' || Array.isArray(p)) return { msg: `memory.routing.${type} must be a profile name or a pair { embedder, reranker }` };
+    for (const k of Object.keys(p)) if (k !== 'embedder' && k !== 'reranker') return { msg: `memory.routing.${type}.${k} is not a field of a pair (embedder, reranker)` };
     const bad = RP.embedderProblem(p.embedder) || RP.rerankerProblem(p.reranker === undefined ? 'none' : p.reranker);
-    if (bad) return `memory.routing.${type}: ${bad}`;
+    if (bad) return { msg: `memory.routing.${type}: ${bad}` };
     const pend = RP.pendingIn({ embedder: p.embedder, reranker: p.reranker === 'none' ? null : p.reranker });
-    if (pend) return `memory.routing.${type}: ${RP.pendingMessage(pend)}`;
+    if (pend) return { msg: `memory.routing.${type}: ${RP.pendingMessage(pend)}`, code: 'E_MODEL' };
   }
   return null;
 }
@@ -166,8 +166,7 @@ function parseMemoryBlock(block) {
     || RP.pendingIn({ embedder: v.embedder, reranker: v.reranker === 'none' ? null : v.reranker });
   if (pending) return { error: `memory: ${RP.pendingMessage(pending)}`, code: 'E_MODEL' };
   const routeProblem = routingProblem(v.routing);
-  if (routeProblem && / is not yet available in this build/.test(routeProblem)) return { error: routeProblem, code: 'E_MODEL' };
-  if (routeProblem) return { error: routeProblem };
+  if (routeProblem) return { error: routeProblem.msg, ...(routeProblem.code ? { code: routeProblem.code } : {}) };
   if (!boundedInt(v.rerank_depth, 200)) return { error: 'memory.rerank_depth must be an integer from 1 to 200' };
   if (!boundedInt(v.rerank_bound_ms, 600000)) return { error: 'memory.rerank_bound_ms must be an integer from 1 to 600000' };
   if (!boundedInt(v.search_log_cap_mb, 1048576)) return { error: 'memory.search_log_cap_mb must be an integer from 1 to 1048576' };

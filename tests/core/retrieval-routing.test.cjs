@@ -33,7 +33,7 @@ test('defaults: nano with no reranker for every type, no GPU model, no notice, a
 test('every profile resolves with a GPU (CPU rerankers refused as pending), at depth 50', () => {
   for (const [name, p] of Object.entries(RP.PROFILES)) {
     const call = () => run({ raw: { profile: name } });
-    if (name === 'cpu-rerank' || name === 'cpu-rerank-light') { assert.throws(call, (e) => e.code === 'E_MODEL' && e.detail.reason === 'pending_pin', name); continue; }
+    if (name === 'cpu-rerank' || name === 'cpu-rerank-light') { assert.throws(call, (e) => e.code === 'E_MODEL' && /not yet available/.test(e.message), name); continue; }
     const r = call();
     assert.deepStrictEqual([r.run.embedder, r.run.reranker, r.run.profile], [p.embedder, p.reranker, name], name);
     assert.strictEqual(r.run.device, name.startsWith('gpu-') ? 'gpu' : 'cpu', name);
@@ -104,7 +104,7 @@ test('no GPU: a heavy embedder is never placed on the CPU, and the fallback is i
 test('the pending pin is refused in a custom reranker and a routed pair, with a coded error naming the model', () => {
   const jina = 'jinaai/jina-reranker-v1-tiny-en';
   for (const raw of [{ profile: 'custom', reranker: jina }, { routing: { coder: { embedder: RP.NANO, reranker: jina } } }, { routing: { coder: 'cpu-rerank' } }]) {
-    assert.throws(() => run({ raw }), (e) => e.code === 'E_MODEL' && e.detail.reason === 'pending_pin' && /pinned/.test(e.message), JSON.stringify(raw));
+    assert.throws(() => run({ raw }), (e) => e.code === 'E_MODEL' && /not yet available/.test(e.message), JSON.stringify(raw));
     assert.strictEqual(require('../../src/core/memory-levers.cjs').parseMemoryBlock(raw).code, 'E_MODEL', 'and the lever parse refuses it first');
   }
 });
@@ -121,4 +121,17 @@ test('gpuUsable fails closed: true, or a probe result saying ok or available; ba
   assert.throws(() => resolveRouting({ agentTypes: [''] }), { code: 'E_ARGS' });
   for (const bad of ['__proto__', 'Coder', 'constructor!', 'a'.repeat(33)]) assert.throws(() => resolveRouting({ agentTypes: [bad] }), { code: 'E_ARGS' }, bad);
   assert.throws(() => resolveRouting({ agentTypes: 'coder' }), { code: 'E_ARGS' });
+});
+
+test('a raw block is re-validated: the four unsafe blocks are refused with a coded error, never resolved or crashed on', () => {
+  const E8 = 'Qwen/Qwen3-Embedding-8B-GGUF';
+  const cases = [
+    ['a GPU embedder as the CPU fallback', { profile: 'gpu-balanced', profile_cpu: 'custom', embedder: E8 }, /CPU-only/],
+    ['a reranker as the embedder', { profile: 'custom', embedder: Q.r4 }, /memory.embedder/],
+    ['a depth that is not a number', { rerank_depth: 'lots' }, /rerank_depth/],
+    ['an unknown pair', { routing: { coder: { embedder: 'nope/none', reranker: 'nope/none' } } }, /memory.routing.coder/],
+  ];
+  for (const [what, raw, re] of cases) {
+    for (const gpu of [false, true]) assert.throws(() => run({ raw, gpu }), (e) => e.code === 'E_ARGS' && re.test(e.message) && e.name === 'CoreError', what);
+  }
 });

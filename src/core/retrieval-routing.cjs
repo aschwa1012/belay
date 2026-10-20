@@ -6,7 +6,7 @@
 //
 // Layering (the settings rule of 2026-10-15) is NOT done here. The caller passes the memory levers already merged
 // (config file, then run spec, key by key, by run-levers.cjs's mergeMemory) and parsed (parseMemoryBlock), which is
-// the shape a run row's memory_levers holds (leversOfRow); missing keys are filled from the defaults.
+// the shape a run row's memory_levers holds (leversOfRow); missing keys are filled from the defaults, and re-validated by parseMemoryBlock (E_MODEL for a pending model, else E_ARGS).
 //
 // IDENTITY (invariant 3, ADR 0045): `agentTypes` is the caller's list of agent types, and a search's tier is the
 // entry for the agent type the worker was SPAWNED with. When this is wired in, the agent type must come from the
@@ -14,7 +14,7 @@
 // a model says. This module never reads an agent type from anywhere but its argument.
 
 const { err } = require('./errors.cjs');
-const { DEFAULTS, ROUTING_TYPE_RE } = require('./memory-levers.cjs');
+const { parseMemoryBlock, ROUTING_TYPE_RE } = require('./memory-levers.cjs');
 const RP = require('./retrieval-profiles.cjs');
 
 // Fails closed: a GPU is usable only when the caller says so, with true or a probe result that says ok or available.
@@ -52,7 +52,11 @@ function wanted(entry, merged) {
 // Refuses (E_MODEL) a tier that names a model whose pin is pending, and (E_ARGS) an invalid lever block.
 function resolveRouting({ levers, agentTypes = [], gpu = false } = {}) {
   if (levers !== undefined && (levers === null || typeof levers !== 'object' || Array.isArray(levers))) throw err('E_ARGS', 'levers must be the merged, parsed memory levers object', { reason: 'levers' });
-  const m = { ...DEFAULTS, ...(levers || {}) };
+  // The caller's block is validated again, whatever its origin: a raw row or a hand-built block must not place a heavy
+  // embedder on the CPU, take a reranker as the embedder or carry a lever of the wrong type. assertUsable below is the second line.
+  const parsed = parseMemoryBlock(levers || undefined);
+  if (parsed.error) throw err(parsed.code === 'E_MODEL' ? 'E_MODEL' : 'E_ARGS', parsed.error, { reason: 'levers' });
+  const m = parsed.value;
   if (!Array.isArray(agentTypes) || agentTypes.some((t) => typeof t !== 'string' || !ROUTING_TYPE_RE.test(t))) throw err('E_ARGS', 'agentTypes must be a list of agent type names (lower-case letters, digits, - or _)', { agentTypes });
   const haveGpu = gpuUsable(gpu);
   const routing = m.routing || {};
