@@ -149,7 +149,21 @@ test('P4: a cite that is not in the reporter task\'s evidence is E_CITATION and 
   assert.strictEqual(bodyOf(a.note).held, undefined);
   assert.deepStrictEqual(out.report_verdicts.unjudged, [], 'refused once, not also unjudged');
   assert.deepStrictEqual(out.report_verdicts.refused_open, [a.note], 'the report stays open and is named for the next review');
-  assert.strictEqual((await call('memory.held', orch, { reports: true })).unjudged_reports.length, 0);
+  // D16: the review ran and its verdict was refused, so the report is still unjudged and stays on the operator's list.
+  assert.ok((await call('memory.held', orch, { reports: true })).unjudged_reports.some((r) => r.id === a.note && r.task_id === tb), 'a refused verdict leaves the report on the operator list');
+});
+
+test('P4b: an ok review-job receipt for the reporter\'s task judges nothing: the report stays on the operator list until a verdict is applied', async () => {
+  const a = await written('w-a4b', 'K40');
+  const tb = await reported('w-b4b', a.note);
+  const listed = async () => (await call('memory.held', orch, { reports: true })).unjudged_reports.filter((r) => r.id === a.note && r.task_id === tb).length;
+  assert.strictEqual(await listed(), 1, 'listed before the job');
+  await call('memory.recordEvent', harness, { kind: 'review_job', ok: true, worker_id: 'notereview-x', task_id: tb, key: `task:${tb}`, message: 'reports applied 0, refused 1' });
+  assert.strictEqual(await listed(), 1, 'still listed after a job that left the report unjudged');
+  const rt = await review('rev-4b', tb, { report_verdicts: [rv(a.note, 'rejected', [cite('fixtures/unlisted.json was opened by the loader')])] });
+  const out = await apply(rt);
+  assert.strictEqual(out.report_verdicts.applied.length, 1, JSON.stringify(out.report_verdicts.refused));
+  assert.strictEqual(await listed(), 0, 'a verdict applied is what takes it off');
 });
 
 test('P5: a reviewer never judges a report about a note it wrote', async () => {
