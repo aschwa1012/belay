@@ -5,8 +5,8 @@
 // claims `operator` with no key, the owner
 //   1. reads the peer's pid from that table (the connection's remote port is the client's local port),
 //   2. walks the peer's ancestors in one process snapshot, and
-//   3. accepts it only if (a) no process on the chain is one belay spawned for this store (a worker, or the headless
-//      orchestrator), and (b) the chain is intact up to a root created before this owner started.
+//   3. accepts it only if (a) no process on the chain is one belay spawned, for this store or any other on the machine (a worker, or the
+//      headless orchestrator; spawn-register.cjs), and (b) the chain is intact up to a root created before this owner started.
 // Rule (b) is what refuses an orphan: a worker that starts a detached process and exits leaves a process whose parent is gone, and
 // that process is a root created after the owner. A fresh terminal's chain ends at the desktop shell, which predates the owner.
 // Fails closed: an unreadable table or snapshot, a peer not found, or a connection that is not loopback TCP is a refusal that names
@@ -93,7 +93,9 @@ function create({ startedAt, spawned, deps = {} }) {
     if (!shot.get(found.pid)) return { ok: false, reason: `the peer (pid ${found.pid}) is not in the process snapshot` };
     const { chain, root, intact } = chainOf(found.pid, shot);
     if (!intact || !root) return { ok: false, reason: `the peer's process chain could not be followed to a root (pid ${found.pid})` };
-    const bad = spawnedMatch(chain, spawned());
+    let known;
+    try { known = spawned(); } catch (e) { return { ok: false, reason: `the processes belay spawned could not be listed (${(e && e.message) || e}), so descent from one cannot be ruled out` }; }
+    const bad = spawnedMatch(chain, known);
     if (bad) return { ok: false, reason: `the peer descends from a process belay spawned (${bad.kind} pid ${bad.pid}, ${bad.image || 'unknown image'})` };
     if (root.created == null || !(root.created < startedAt)) return { ok: false, reason: `the peer's chain ends at pid ${root.pid} (${root.image || 'unknown image'}), which was not running when this owner started: an orphan or a process started since is not the operator` };
     const peer = { pid: found.pid, created: chain[0].created, image: chain[0].image, root: { pid: root.pid, created: root.created, image: root.image } };

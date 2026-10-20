@@ -205,7 +205,7 @@ class Owner {
   // ADR 0045 decision 4 (c): the processes belay spawned that an operator cannot be, from the store's worker rows. A row that names its
   // process's creation time matches on pid and creation time; one that does not is counted only while it is a worker's latest
   // row and claims life, so a dead row's recycled pid never refuses the operator. `opts.spawnedProcesses()` adds the run's own
-  // (the headless orchestrator, known only to the run process).
+  // (the headless orchestrator, known only to the run process) and the machine-wide spawn register (spawn-register.cjs), which holds every store's.
   _spawnedProcesses() {
     const out = [];
     try {
@@ -215,6 +215,7 @@ class Owner {
       for (const r of db.prepare('SELECT w.pid, w.state FROM worker w JOIN (SELECT id, MAX(seq) m FROM worker GROUP BY id) x ON w.id = x.id AND w.seq = x.m WHERE w.pid IS NOT NULL AND w.pid_created IS NULL').all()) if (live.has(r.state)) out.push({ pid: r.pid, created: null, kind: 'worker' });
     } catch { /* a store that cannot be read has no workers to name; the chain rule still stands */ }
     if (typeof this.opts.spawnedProcesses === 'function') { try { out.push(...this.opts.spawnedProcesses()); } catch { /* the run's own list is best effort */ } }
+    out.push(...require('./spawn-register.cjs').list()); // every harness on the machine, other stores' workers among them; unreadable throws, and the operator check refuses on it
     return out;
   }
 

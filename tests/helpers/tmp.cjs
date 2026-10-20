@@ -38,6 +38,10 @@ if (!globalThis[KEY]) {
   const origP = fs.promises.mkdtemp;
   fs.promises.mkdtemp = async function mkdtemp(...a) { return record(await origP.apply(this, a)); };
 
+  // The machine-wide spawn register (src/core/spawn-register.cjs) is this process's own for the run of the tests: a worker one test
+  // starts is never taken for the ancestor of another test's operator, and nothing is left in the real register.
+  if (!process.env.BELAY_SPAWN_REGISTRY) process.env.BELAY_SPAWN_REGISTRY = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-spawned-test-'));
+
   // One attempt per directory when budgetMs is 0; otherwise retried within the budget. Returns what remains.
   function cleanup(budgetMs = 3000) {
     const deadline = Date.now() + budgetMs;

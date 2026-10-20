@@ -164,6 +164,12 @@ async function run(ctx) {
   // the `attach` handed to `runOrchestrator` (below) fans out to both instead of `stopControl` alone.
   let stopControl, runPauseControl, guard;
   const hookBox = {};
+  // The headless orchestrator is recorded in the machine-wide spawn register, so another store's owner refuses its descendants too.
+  const registerOrchestrator = (pid) => {
+    if (!Number.isInteger(pid)) return;
+    try { const SR = require('../core/spawn-register.cjs'); SR.register({ pid, kind: 'orchestrator', dataDir }); process.once('exit', () => SR.unregister(pid)); }
+    catch (e) { console.error('belay run: the headless orchestrator could not be recorded in the spawn register (' + ((e && e.message) || e) + '); another store on this machine cannot tell its children from an operator'); }
+  };
   const core = await openCore({
     dataDir, caller: { role: 'operator', run_id: parsed.runId, pid: process.pid },
     ownerOpts: {
@@ -225,7 +231,7 @@ async function run(ctx) {
     pauseRun: (why) => runPauseControl.pause({ run_id: parsed.runId, caller: opCaller }, why),
   });
   if (ce && ctx.interactiveDeps && ctx.interactiveDeps.onGuard) ctx.interactiveDeps.onGuard(guard); // test seam
-  const attachHook = { attach: (h) => { stopControl.attach(h); Object.assign(hookBox, h); } };
+  const attachHook = { attach: (h) => { stopControl.attach(h); Object.assign(hookBox, h); if (!ce) registerOrchestrator(h.pid); } };
 
   // Step 2 (5a-2 design): elect before any write, any file under orchestrator_dir, or any process
   // spawned. A refusal here has made no write of any kind.

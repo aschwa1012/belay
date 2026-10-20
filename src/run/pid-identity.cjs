@@ -10,6 +10,8 @@
 const path = require('node:path');
 const P = require('./process.cjs');
 const ID = require('../core/proc-identity.cjs');
+const SR = require('../core/spawn-register.cjs');
+const { err } = require('../core/errors.cjs');
 
 const RETRY_SCHEDULE_MS = [30000, 60000, 120000];
 const RETRY_EVERY_MS = 300000;
@@ -17,6 +19,19 @@ const SPAWN_SLACK_MS = 1000; // a late reading may not be earlier than this befo
 
 const exitedYet = (child) => child.exitCode !== null && child.exitCode !== undefined || (child.signalCode !== null && child.signalCode !== undefined);
 const restate = (w, force) => { if (w.ctx && w.ctx.writeRow) require('./write-row.cjs').restatePidCreated(w, w.ctx, force); };
+
+// ADR 0045 decision 4: a worker is recorded in the machine-wide spawn register the moment it exists, so another store's owner never takes
+// its child for an operator. A register that cannot be written ends the child at once and fails the launch: a worker no owner can
+// recognise must not run.
+function registerSpawn(w, child, dataDir, kind = 'worker') {
+  if (!Number.isInteger(child.pid)) return;
+  try { SR.register({ pid: child.pid, kind, dataDir, workerId: w.id }); }
+  catch (e) {
+    try { child.kill(); } catch { /* it may already be gone */ }
+    throw err('E_SUBSTRATE', `worker ${w.id}: the spawn register could not be written (${(e && e.message) || e}); the process was ended, because a worker no owner can recognise must not run`, { worker_id: w.id, pid: child.pid, reason: 'spawn_register' });
+  }
+  child.once('exit', () => SR.unregister(child.pid));
+}
 
 function noteSpawn(w, child, { createdOf = P.createdOf, gate = ID.gate, schedule = RETRY_SCHEDULE_MS, every = RETRY_EVERY_MS, snapshotShared = ID.snapshotShared } = {}) {
   const pid = child.pid;
@@ -31,7 +46,7 @@ function noteSpawn(w, child, { createdOf = P.createdOf, gate = ID.gate, schedule
   const setPending = (why) => { w.pidCreatedError = `${why}; retrying while the worker runs (try ${tries})`; };
   const accept = (e) => { // the three conditions of decision 3, checked where the reading is taken
     if (!pending || !mine() || exitedYet(child) || !e || !Number.isFinite(e.created) || e.created < spawnedAt - SPAWN_SLACK_MS) return false;
-    w.pidCreated = e.created; w.pidCreatedError = null; stop(); restate(w, true);
+    w.pidCreated = e.created; w.pidCreatedError = null; stop(); SR.update(pid, e.created); restate(w, true);
     return true;
   };
   const scheduleNext = () => {
@@ -56,7 +71,7 @@ function noteSpawn(w, child, { createdOf = P.createdOf, gate = ID.gate, schedule
     if (mine()) w.pidCreatedError = `the process snapshot failed: ${(e && e.message) || e}`;
   }).then(() => {
     // The first rows went out before the read finished: restate the current state once with it.
-    if (mine()) restate(w, false);
+    if (mine()) { if (w.pidCreated != null) SR.update(pid, w.pidCreated); restate(w, false); }
   });
   return w.pidCreatedPromise;
 }
@@ -92,4 +107,4 @@ async function killWorker(w) {
   return P.killProcess(targetOf(w)).catch((e) => ({ tree: null, pidKill: { signalled: false, error: 'EIDENTITY' }, identity: null, refused: { refused: 'identity', kind: 'unverifiable', detail: (e && e.message) || String(e) } }));
 }
 
-module.exports = { RETRY_SCHEDULE_MS, RETRY_EVERY_MS, killWorker, noteSpawn, adoptFromRow, rowFields, targetOf };
+module.exports = { RETRY_SCHEDULE_MS, RETRY_EVERY_MS, killWorker, noteSpawn, registerSpawn, adoptFromRow, rowFields, targetOf };
