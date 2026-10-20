@@ -70,8 +70,9 @@ function reportsAbout(E, taskIds, project) {
   }));
 }
 
-// Reports no review will judge: the reporter's task has ended, has no review task and no ok review job. They stay unjudged until
-// the operator looks (notices, `belay memory proposals`). A read.
+// Reports nobody has judged: the reporter's task has ended and the note carries no judgment for the report (`report_judgments`). That is the
+// only test. A review task or a note-review job that ran and left the report out (or had its verdict refused) judged nothing, so the report
+// stays here until a verdict is applied or the operator looks (notices, `belay memory proposals`). A read.
 function unjudgedReports(E, project) {
   if (!project) return [];
   let found;
@@ -81,17 +82,13 @@ function unjudgedReports(E, project) {
   } catch { return []; }
   if (!found.length) return [];
   const tasks = new Map(rows.currentAll(E.store, 'task').map((t) => [t.id, t]));
-  const reviewed = new Set();
-  for (const t of tasks.values()) if (t.acceptance && t.acceptance.verdict === true && Array.isArray(t.depends_on)) t.depends_on.forEach((d) => reviewed.add(d));
-  let jobDone = new Set();
-  try { jobDone = new Set(E.store.p("SELECT task_id FROM memory_event WHERE kind = 'review_job' AND ok = 1").all().map((r) => r.task_id)); } catch { /* no ledger */ }
   const out = [];
   for (const n of found) {
     const b = parse(n.body);
     if (b.held || (n.status || 'unverified') === 'refuted') continue;
     for (const w of b.reported_wrong || []) {
       const t = w && tasks.get(w.task_id);
-      if (!t || w.by === n.written_by || judged(b, w) || !['done', 'released'].includes(t.state) || reviewed.has(t.id) || jobDone.has(t.id)) continue;
+      if (!t || w.by === n.written_by || judged(b, w) || !['done', 'released'].includes(t.state)) continue;
       out.push({ id: n.id, title: n.title, task_id: w.task_id, run_id: w.run_id || null, by: w.by, why: w.why, at: w.at });
     }
   }
