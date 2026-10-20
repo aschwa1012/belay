@@ -14,7 +14,7 @@ const bytes = (list) => Buffer.byteLength(JSON.stringify(list), 'utf8');
 test('without the flag the worker and orchestrator listings are what the notes contract left them', () => {
   // 4,965 and 9,829 before the paired write/search contract: its search guidance and memory_queries were added, and other descriptions trimmed to keep the notes-on worker listing 500 bytes inside its budget.
   assert.strictEqual(tools.listingBytes('worker'), 4816);
-  assert.strictEqual(tools.listingBytes('orchestrator'), 10120);
+  assert.strictEqual(tools.listingBytes('orchestrator'), 10030);
   assert.deepStrictEqual(tools.toolsFor('worker', { notes: false }), tools.toolsFor('worker'));
   assert.deepStrictEqual(tools.toolsFor('orchestrator', { notes: true }).slice(0, -2), tools.toolsFor('orchestrator'), 'the orchestrator is given memory_summaries and memory_note_refutation only (summaries-listing.test.cjs)');
 });
