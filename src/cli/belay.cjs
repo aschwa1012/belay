@@ -159,6 +159,13 @@ async function main(argv) {
   // Defined only when --json is not given (the comment block above states the contract this serves).
   if (!ctx.json) ctx.emit = (text) => { process.stdout.write(text); };
 
+  // The identity-bind stopgap: a process in a worker's environment is not the operator (src/cli/worker-guard.cjs). One variable
+  // read on every path; the guard module loads only when the marker is there.
+  if (process.env.BELAY_WORKER_ID) {
+    const refused = require('./worker-guard.cjs').workerRefusal({ name, mode: spec.mode, argv: ctx.argv, fix: g.fix });
+    if (refused) { process.stderr.write(refused); return 1; }
+  }
+
   let result;
   try {
     // Lazy: the module is loaded only now, once its name has matched.
