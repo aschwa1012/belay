@@ -120,4 +120,32 @@ function writeMeta(db, pairs) {
   }
 }
 
-module.exports = { CANARY, COSINE_FLOOR, META_KEYS, cosine, legacyCanaryHash, chooseModel, checkIdentity, checkCanary, identityRows, writeMeta };
+// ---- one identity per model (ADR 0050). The single-identity keys above stay the nano store's identity, unchanged. A model in
+// the vector cache (memory_vectors) keeps its own identity and canary in meta under `embedding_identity:<model>@<revision>:<dims>`,
+// as JSON of the same fields identityRows writes. Nothing heavy calls these yet.
+const modelIdentityKey = (model, revision, dims) => `embedding_identity:${model}@${revision || ''}:${dims}`;
+
+// The recorded identity of one model key, or null. Reads only.
+function getModelIdentity(db, key) {
+  if (!db.prepare("SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'meta'").get()) return null;
+  const r = db.prepare('SELECT value FROM meta WHERE key = ?').get(key);
+  if (!r) return null;
+  try { const v = JSON.parse(r.value); return v && typeof v === 'object' ? v : null; } catch { return null; }
+}
+
+// info: { model, sha, dtype, pooling, dim, library, canary_vector }. One INSERT OR REPLACE, in the caller's transaction or alone.
+function putModelIdentity(db, key, info) {
+  const value = JSON.stringify({ model: info.model, sha: info.sha, dtype: info.dtype, pooling: info.pooling, dim: info.dim, library: info.library, canary_vector: info.canary_vector });
+  db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(key, value);
+  return value;
+}
+
+// The recorded identity in the flat shape checkIdentity and checkCanary judge, so one model's check is the nano check.
+function flatIdentity(id) {
+  if (!id) return undefined;
+  return { embedding_model: id.model, embedding_sha: id.sha, embedding_dtype: id.dtype, embedding_pooling: id.pooling, embedding_dim: id.dim == null ? undefined : String(id.dim), embedding_library: id.library, canary_vector: id.canary_vector ? JSON.stringify(id.canary_vector) : undefined };
+}
+const checkModelIdentity = (entry, id) => checkIdentity(entry, flatIdentity(id));
+const checkModelCanary = (canary, id, library) => checkCanary(canary, flatIdentity(id), library);
+
+module.exports = { CANARY, COSINE_FLOOR, META_KEYS, cosine, legacyCanaryHash, chooseModel, checkIdentity, checkCanary, identityRows, writeMeta, modelIdentityKey, getModelIdentity, putModelIdentity, flatIdentity, checkModelIdentity, checkModelCanary };
