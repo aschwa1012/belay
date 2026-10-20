@@ -29,7 +29,7 @@ const rowOf = (id) => store.p('SELECT * FROM memory_entries WHERE id = ?').get(i
 const statusOf = (id) => rowOf(id).status ?? 'unverified';
 let seq = 0, useSeq = 0;
 
-const DIM = 64;
+const DIM = 128;
 const embed = async (text) => {
   const m = /\bK(\d+)\b/.exec(text);
   const v = new Array(DIM).fill(0);
@@ -48,17 +48,17 @@ const item = (it) => `${JSON.stringify({ type: 'item.completed', item: it })}\n`
 
 // A worker `w` that worked a fresh task and handed back `note`; `stream` is its stream file's content. `withHead` false leaves head_sha unset,
 // as it is while the worker lives. Returns { task, note }.
-async function written(w, marker, { stream, note = baseNote(marker), withHead = true, substrate = 'claude-code' } = {}) {
+async function written(w, marker, { stream, note = baseNote(marker), many = null, withHead = true, substrate = 'claude-code' } = {}) {
   await call('worker.write', orch, { id: w, substrate, pid: process.pid, state: 'running', session_id: `s-${w}`, last_event_at: Date.now(), worktree: repo, ...(withHead ? { head_sha: head } : {}) });
   const t = await call('task.create', orch, { spec: `job ${++seq}`, acceptance: { commands: [{ argv: [process.execPath, '-e', 'process.exit(0)'], timeout_ms: 20000 }] } });
   const a = await call('task.assign', orch, { task_id: t.id, worker_id: w });
   await call('worker.write', orch, { id: w, task_id: t.id });
   fs.mkdirSync(`${dir}/workers/${w}`, { recursive: true });
   fs.writeFileSync(`${dir}/workers/${w}/stream.jsonl`, stream === undefined ? toolLines('loader.js read 3 files\nfixtures/unlisted.json was never opened\n') : stream);
-  const out = await call('lease.release', worker(w), { lease_id: a.new_lease.id, notes: [note] });
-  assert.strictEqual(out.notes[0].state, 'stored', JSON.stringify(out.notes[0]));
+  const out = await call('lease.release', worker(w), { lease_id: a.new_lease.id, notes: many || [note] });
+  for (const x of out.notes) assert.strictEqual(x.state, 'stored', JSON.stringify(x));
   await call('task.evaluate', orch, { task_id: t.id, worktree: dir });
-  return { task: t.id, note: out.notes[0].id };
+  return { task: t.id, note: out.notes[0].id, notes: out.notes.map((x) => x.id) };
 }
 async function review(r, taskId, verdicts) {
   await call('worker.write', orch, { id: r, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${r}`, last_event_at: Date.now() });
@@ -228,6 +228,21 @@ test('K4-4b: a result that lists the note\'s title, or holds a different own sen
   assert.match(none.reason, /note's own text, which cannot be evidence/, 'a quote no tool result holds keeps the old reason');
 });
 
+test('K4-4c: a sentence the writer put in its `when` as well as its saw is exempt as neither: a tool that printed it is an echo of the note', async () => {
+  const T = 'the pager timeout is thirty seconds';
+  const quote = 'const DEFAULT_TIMEOUT_MS = 30000;';
+  const f = `${dir}/k44c.jsonl`;
+  fs.writeFileSync(f, toolLines(LINE));
+  const both = CC.streamCite(f, quote, [T, LINE, LINE], T, [LINE]); // the same long sentence in the when and in the saw
+  assert.strictEqual(both.found, false, 'the writer own prose does not become evidence because a saw holds the same words');
+  assert.match(both.reason, /also shows the note's own text/);
+  assert.strictEqual(CC.streamCite(f, quote, [T, LINE], T, [LINE]).found, true, 'a saw alone is still exempt');
+  const w = await written('w-k44c', 'K24', { stream: toolLines(readResult, 'Read'), note: baseNote('K24', { title: T, when: LINE, evidence: [{ where: 'src/pager.cjs', saw: LINE }] }) });
+  const out = await run1(w, 'confirmed', [cite(quote)]);
+  assert.deepStrictEqual([out.applied.length, out.refused[0] && out.refused[0].code], [0, 'E_CITATION']);
+  assert.strictEqual(statusOf(w.note), 'unverified');
+});
+
 // ---- K4-5 (D54) ------------------------------------------------------------------------------------------------------------
 test('K4-5: a Codex stream is evidence: command output and a non-belay MCP result count; prose, belay\'s tools and an unnamed server do not', async () => {
   const stream = [
@@ -246,6 +261,26 @@ test('K4-5: a Codex stream is evidence: command output and a non-belay MCP resul
   assert.strictEqual(statusOf(w.note), 'unverified');
   const ok = await run1(w, 'confirmed', [cite('manifest lists mb_2044 for sam.reed'), cite('the docs page says retries default to 5')]);
   assert.strictEqual(ok.applied.length, 1, JSON.stringify(ok.refused));
+});
+
+// ---- K4-13 (D13): a note the brief leaves out ----------------------------------------------------------------------------------
+test('K4-13: a verdict on a note the review task brief did not list is refused, whatever the order of the verdicts; the notes listed are judged', async () => {
+  const many = Array.from({ length: 9 }, (_, i) => baseNote(`K${100 + i}`)); // markers 100 to 108: no other note of this file has a vector near these
+  const w = await written('w-k413m', 'K100', { many });
+  assert.strictEqual(w.notes.length, 9);
+  const brief = await call('memory.reviewBrief', orch, { reviewed_task_id: w.task });
+  const tail = require('../../src/run/note-review-text.cjs').reviewerTail(brief, []);
+  const order = brief.notes.map((n) => n.id); // the brief's own order (created, then id), which the notes written in one millisecond do not keep
+  assert.deepStrictEqual(order.slice().sort(), w.notes.slice().sort());
+  assert.deepStrictEqual(w.notes.filter((id) => tail.includes(`- ${id} [`)).sort(), order.slice(0, 8).sort(), 'the brief lists the first eight notes');
+  const q = cite('fixtures/unlisted.json was never opened');
+  // The first note is judged first; judging it must not pull the ninth into the list.
+  const out = await apply(await review('rev-k413m', w.task, [verdict(order[0], 'confirmed', [q]), verdict(order[8], 'confirmed', [q]), verdict(order[7], 'refuted', [q])]));
+  assert.deepStrictEqual(out.applied.map((a) => a.id).sort(), [order[0], order[7]].sort());
+  assert.strictEqual(statusOf(order[0]), 'verified');
+  assert.strictEqual(statusOf(order[8]), 'unverified', 'a note the reviewer was not shown is not verified');
+  const refused = out.refused.find((r) => r.id === order[8]);
+  assert.ok(refused && refused.detail && refused.detail.reason === 'not_shown', JSON.stringify(out.refused));
 });
 
 // ---- K4-10 -----------------------------------------------------------------------------------------------------------------

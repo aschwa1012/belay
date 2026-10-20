@@ -244,10 +244,13 @@ async function drain(ctx, ms) {
   clearTimeout(timer);
 }
 
+// A job row whose process no longer answers a pid check. A reused pid only makes a closed job look alive, which leaves it to the run-end sweep.
+const processClosed = (w) => Number.isInteger(w.pid) && !require('../core/lock.cjs').pidAlive(w.pid);
+
 // The run's end, store-only (also runs in `belay run`, which holds no manager): apply the hand-back of every ended review task,
 // apply the answer of every review job that finished but was not applied, and name what was never reviewed. Idempotent.
 // `opts.preClose` is the sweep that runs before the run-close stages, while a killed job's row can still read idle or running: it applies
-// what is finished (a review task's hand-back, a job whose worker is stopped or dead) and writes no receipt of any kind, because a receipt
+// what is finished (a review task's hand-back, a job whose worker is stopped or dead, or whose process has closed with a whole answer in its stream) and writes no receipt of any kind, because a receipt
 // would stop the run-end sweep, which runs after run.end has settled the rows, from applying that job's answer.
 async function sweep(J, tasks, workers, opts = {}) {
   const { lv, ctx } = J;
@@ -261,6 +264,14 @@ async function sweep(J, tasks, workers, opts = {}) {
     const taskId = taskOfJob(w.id);
     if (!taskId || done(taskId)) continue;
     if (!['stopped', 'dead'].includes(w.state)) { // still starting or running: it has no answer to apply, and a missing cost is not a cost-cap failure
+      // A job whose process has closed but whose row still reads idle (run.end settles the row, after the scrub and archive stages have run)
+      // is finished all the same. Its answer is applied now when the stream holds a whole one and the row a cost, so an upheld report is not
+      // left unapplied for a note the scrub archives; anything less stays for the run-end sweep, with no receipt.
+      if (opts.preClose && processClosed(w) && typeof w.cost_usd === 'number') {
+        const got0 = await core.worker.get({ worker_id: w.id }).catch(() => null);
+        const text0 = got0 && got0.stream_path ? lastTextOf(got0.stream_path) : '';
+        if (!T.parseJobOutput(text0).error) await finishJob(core, { workerId: w.id, taskId, text: text0, cost: w.cost_usd, cap: lv.note_review_cost_cap_usd });
+      }
       if (!opts.preClose) await fail(core, { worker_id: w.id, task_id: taskId, key: `task:${taskId}` }, shutErr(`the run ended while the review job was ${w.state}; its notes stay unreviewed`));
       continue;
     }

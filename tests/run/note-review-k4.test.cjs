@@ -273,6 +273,32 @@ test('K4-11: the sweep before the scrub writes no receipt for a job whose row is
   assert.deepStrictEqual(receipts(`task:${late.task.id}`).map((r) => r.code), ['E_SHUTDOWN']);
 });
 
+test('K4-11c: the sweep before the scrub applies the answer of a job whose process has closed but whose row still reads idle; anything less is left, with no receipt', async () => {
+  const { spawnSync } = require('node:child_process');
+  const gone = spawnSync(process.execPath, ['-e', '0'], { windowsHide: true }).pid; // a process that has exited: its pid no longer answers
+  assert.ok(Number.isInteger(gone));
+  const idle = async (marker, { pid = gone, cost = 0.01, text = null } = {}) => {
+    const w = await written(marker);
+    const id = `notereview-${w.task.id}`;
+    await call('worker.write', orch, { id, substrate: 'claude-code', pid, state: 'idle', session_id: 's', last_event_at: Date.now(), ...(cost === null ? {} : { cost_usd: cost }) });
+    fs.mkdirSync(`${dir}/workers/${id}`, { recursive: true });
+    fs.writeFileSync(`${dir}/workers/${id}/stream.jsonl`, `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: text === null ? verdictsFor(w.notes) : text }] } })}
+`);
+    return w;
+  };
+  const done = await idle('wr-k411d');
+  const alive = await idle('wr-k411e', { pid: process.pid });
+  const free = await idle('wr-k411f', { cost: null });
+  const half = await idle('wr-k411g', { text: 'I am still reading the diff' });
+  await NR.reviewSweep({ core, runId: RUN, levers: LV });
+  assert.strictEqual(rowOf(done.notes[0]).status, 'verified', 'a closed process with a whole answer is applied before the scrub');
+  assert.deepStrictEqual(receipts(`task:${done.task.id}`).map((r) => r.ok), [1]);
+  for (const w of [alive, free, half]) {
+    assert.strictEqual(rowOf(w.notes[0]).status ?? 'unverified', 'unverified');
+    assert.deepStrictEqual(receipts(`task:${w.task.id}`), [], 'no receipt, so the run-end sweep still decides');
+  }
+});
+
 // ---- K4-12 -----------------------------------------------------------------------------------------------------------------
 const fatNote = (marker) => ({ ...note(marker), evidence: [1, 2, 3, 4].map((i) => ({ where: `src/${marker}-${i}.js`, saw: `entry ${i} ${'q'.repeat(300)}` })) });
 

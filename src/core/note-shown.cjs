@@ -7,6 +7,10 @@
 // core's check (methods-memory-note-review.cjs) read these same numbers, so they cannot drift apart.
 
 const TEXT_CAP = 400, SAW_CAP = 200, EVIDENCE_SHOWN = 3;
+// How many notes the brief lists: VERDICTS_FIT verdicts of about 330 bytes fit a 4096 byte hand-back beside the verdict and summary, and each
+// report listed (at most REPORTS_FIT) takes one place. A note past that is not in the brief, so its reviewer saw nothing of it.
+const VERDICTS_FIT = 8, REPORTS_FIT = 4;
+const noteFit = (reports) => (reports ? VERDICTS_FIT - Math.min(reports, REPORTS_FIT) : VERDICTS_FIT);
 const bytes = (s) => Buffer.byteLength(String(s == null ? '' : s), 'utf8');
 
 // What a capped brief leaves out of `n` ({ text, when?, evidence: [{ where, saw }] }): [] when the whole note was shown.
@@ -22,4 +26,4 @@ function hiddenParts(n) {
   return out;
 }
 
-module.exports = { TEXT_CAP, SAW_CAP, EVIDENCE_SHOWN, hiddenParts };
+module.exports = { TEXT_CAP, SAW_CAP, EVIDENCE_SHOWN, VERDICTS_FIT, REPORTS_FIT, noteFit, hiddenParts };

@@ -201,7 +201,12 @@ const PREFIX_LEN = 32, ANCHOR_MIN = 16, SENTENCE_LONG = 60, TITLE_LONG = 20, TIT
 function echoOf(own, title, quote = null, saws = [], opts = {}) {
   const low = s => norm(s).toLowerCase();
   const t = title ? low(title) : '';
-  const sawSet = new Set((saws || []).map(low));
+  // A saw is exempt only as a saw: a sentence the writer also put in another field (when, text, a title) is the writer's prose there, so it
+  // is exempt only when every copy of it among `own` is accounted for by a saw.
+  const spare = new Map();
+  for (const o of own || []) spare.set(low(o), (spare.get(low(o)) || 0) + 1);
+  for (const s of saws || []) spare.set(low(s), (spare.get(low(s)) || 0) - 1);
+  const sawSet = new Set((saws || []).map(low).filter(s => (spare.get(s) || 0) <= 0));
   const sentences = (own || []).map(low).filter(a => a.length >= ANCHOR_MIN && a.includes(' ') && a !== t);
   const idLike = t.length >= TITLE_MIN && !t.includes(' ');
   const wanted = quote == null ? [] : quoteForms(quote).map(q => q.toLowerCase());
