@@ -30,7 +30,8 @@ function validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, per
   // ADR 0024 amendment 3 (proposed): the eval-only native-memory folder; a Claude Code launch only, absolute.
   if (native_memory !== null) {
     if (substrate === 'codex') fail('E_SUBSTRATE', 'native_memory is Claude Code auto-memory, and codex has none', { substrate, native_memory });
-    try { require('./surface.cjs').checkNativeMemory(native_memory); } catch (e) { fail('E_ARGS', e.message, e.detail); }
+    // The string form, then the real path (a junction into the config directory), so a refusal leaves no worker directory and the id free.
+    try { require('./native-memory.cjs').assertOutsideConfig(require('./surface.cjs').checkNativeMemory(native_memory)); } catch (e) { fail('E_ARGS', e.message, e.detail); }
   }
   // ADR 0020 decision 1: Codex has no permission channel (approval_policy="never", MCP tools
   // pre-approved, ADR 0001 §1) — refused before any row is written or any file created.

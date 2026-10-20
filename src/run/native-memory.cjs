@@ -6,6 +6,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const S = require('./surface.cjs');
 
 const fwd = (p) => String(p).replace(/\\/g, '/');
@@ -13,20 +14,24 @@ const lc = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
 const refuse = (message, detail, code = 'E_ARGS') => Object.assign(new Error(message), { code, detail });
 
 // The real path of `p`, or of its deepest existing ancestor with the missing tail appended, so a folder that does not exist yet
-// but sits below a junction is judged by where it would land.
-function realOf(p) {
+// but sits below a junction is judged by where it would land. `strict` (the worker's folder, not a config directory): a link that
+// exists but does not resolve (a dangling junction) is refused, not walked past to its parent, since it could be retargeted.
+function realOf(p, strict = false) {
   let cur = path.resolve(p); const tail = [];
   for (;;) {
     try { return fwd(path.join(fs.realpathSync.native(cur), ...tail)); } catch (e) {
       const up = path.dirname(cur);
       if (up === cur || !e || e.code !== 'ENOENT') return fwd(path.resolve(p));
+      if (strict && fs.lstatSync(cur, { throwIfNoEntry: false })) {
+        throw refuse('native_memory passes through a link that does not resolve, so where it would land cannot be judged', { native_memory: fwd(p), link: fwd(cur), reason: 'unresolvable_link' });
+      }
       tail.unshift(path.basename(cur)); cur = up;
     }
   }
 }
 
 function assertOutsideConfig(folder) {
-  const real = realOf(folder);
+  const real = realOf(folder, true);
   for (const c of S.claudeConfigDirs()) {
     const realC = realOf(c);
     if (S.under(lc(real), lc(realC)) || S.under(lc(real), lc(c))) {
@@ -36,12 +41,19 @@ function assertOutsideConfig(folder) {
 }
 
 // Check the string form, then the real path, create the folder, then check the real path again. Returns the resolved folder.
-function prepareFolder(dir) {
+// `seam.beforeMkdir` (tests only) runs between the first check and the create, where a folder swap would land.
+function prepareFolder(dir, seam = {}) {
   const folder = S.checkNativeMemory(dir);
   assertOutsideConfig(folder);
+  if (seam.beforeMkdir) seam.beforeMkdir(folder);
   fs.mkdirSync(folder, { recursive: true });
   assertOutsideConfig(folder);
   return folder;
+}
+
+// A hash of the settings.json the harness wrote for this worker, taken straight after the write; null when it cannot be read.
+function fingerprint(settingsFile) {
+  try { return crypto.createHash('sha256').update(fs.readFileSync(settingsFile)).digest('hex'); } catch { return null; }
 }
 
 // The settings.json on disk must agree with the record: off means autoMemoryEnabled false and no autoMemoryDirectory; on means
@@ -63,19 +75,31 @@ function verifySettings(settingsFile, record) {
   }
 }
 
-// Called by the manager before every Claude Code launch and before an adopted worker's files are rewritten. A refusal is noted on the worker and, when no process of it is alive,
-// written as a dead row naming the cause.
-function guardLaunch(ctx, w, pidAlive) {
+// Called (and awaited) by the manager before every Claude Code launch of a process it is about to start. The refusals, each by name:
+// the folder's real path (a junction planted since the spawn), the record against settings.json, and settings.json against the
+// bytes this manager wrote. A refusal is noted on the worker and, when no process of it is alive, written as a dead row naming
+// the cause; the row is awaited and carried in the error, so a caller never sees a refusal before its row is confirmed.
+// An adopt (a second manager, a stop or message) never calls this: it regenerates the file from the record and refuses nothing.
+async function guardLaunch(ctx, w, pidAlive) {
   if (w.substrate !== 'claude-code') return;
-  try { verifySettings(w.workerSettingsPath || fwd(path.join(w.dir, 'settings.json')), w.nativeMemory); } catch (e) {
+  try {
+    if (w.nativeMemory != null) prepareFolder(w.nativeMemory);
+    const file = w.workerSettingsPath || fwd(path.join(w.dir, 'settings.json'));
+    verifySettings(file, w.nativeMemory);
+    if (w.settingsFingerprint && fingerprint(file) !== w.settingsFingerprint) {
+      throw refuse('the worker settings.json is not what the harness wrote for this worker; the launch is refused', { settings: file, reason: 'settings_changed' }, 'E_NATIVE_MEMORY_MISMATCH');
+    }
+  } catch (e) {
     w.lastError = { where: 'native_memory', code: e.code, message: e.message };
     w.launchFailed = true;
     if (!(w.pid && pidAlive(w.pid))) {
-      w.deathEstablishedBy = 'native_memory_settings_mismatch';
-      Promise.resolve(ctx.writeRow(w, 'dead')).catch((err) => { w.lastError = { where: 'native_memory.write', code: err && err.code, message: err && err.message }; });
+      w.deathEstablishedBy = e.code === 'E_NATIVE_MEMORY_MISMATCH' ? 'native_memory_settings_mismatch' : 'native_memory_folder_refused';
+      let row = null;
+      try { row = await ctx.writeRow(w, 'dead'); } catch (err) { w.lastError = { where: 'native_memory.write', code: err && err.code, message: err && err.message }; e.detail = { ...e.detail, dead_row_error: err && err.message }; }
+      e.detail = { ...e.detail, dead_row: row ? { seq: row.seq == null ? null : row.seq, state: row.state, death_established_by: row.death_established_by == null ? null : row.death_established_by } : null };
     }
     throw e;
   }
 }
 
-module.exports = { prepareFolder, assertOutsideConfig, verifySettings, guardLaunch };
+module.exports = { prepareFolder, assertOutsideConfig, verifySettings, guardLaunch, fingerprint };

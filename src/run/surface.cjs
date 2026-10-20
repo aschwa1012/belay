@@ -60,9 +60,9 @@ function ancestorExcludes(cwd) {
 // ADR 0024 amendment 3 (proposed): an eval-only `nativeMemory` directory turns Claude Code's own auto-memory on,
 // pointed at that folder. Off (null) is exactly what it was.
 function hygieneSettings(cwd, { nativeMemory = null } = {}) {
-  const base = { claudeMdExcludes: ancestorExcludes(cwd), autoDreamEnabled: false };
-  if (nativeMemory == null) return { ...base, autoMemoryEnabled: false };
-  return { ...base, autoMemoryEnabled: true, autoMemoryDirectory: checkNativeMemory(nativeMemory) };
+  const off = { claudeMdExcludes: ancestorExcludes(cwd), autoMemoryEnabled: false, autoDreamEnabled: false }; // key order is part of the file: off is byte-identical to before the lever
+  if (nativeMemory == null) return off;
+  return { ...off, autoMemoryEnabled: true, autoMemoryDirectory: checkNativeMemory(nativeMemory) };
 }
 
 // The requested folder must be absolute and outside Claude Code's config directory (<home>/.claude and CLAUDE_CONFIG_DIR);

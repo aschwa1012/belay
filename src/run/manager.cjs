@@ -132,7 +132,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     if (plugins.unreadable) fail('E_ARGS', plugins.error, { settings_path: plugins.path, worker_id: w.id });
     w.plugins = plugins;
     w.mcpJsonPath = mcpJsonPath;
-    w.workerSettingsPath = settingsPath;
+    w.workerSettingsPath = settingsPath; w.settingsFingerprint = NM.fingerprint(settingsPath); // the bytes this manager wrote; launch() refuses a file that no longer matches
     // Codex's ADR 0001 §8 ready check reads the wire log (WR-5); a Claude Code adapter logs there too
     // (ADR 0026 §3's keepalive lines) but its ready check does not.
     w.adapterLogPath = adapterLog;
@@ -141,8 +141,8 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     });
   }
 
-  function launch(w, { resume = null, prompt = null } = {}) {
-    NM.guardLaunch(ctx, w, P.pidAlive); let args; // ADR 0024 amendment 3: settings.json must still agree with the record
+  async function launch(w, { resume = null, prompt = null } = {}) {
+    await NM.guardLaunch(ctx, w, P.pidAlive); let args; // ADR 0024 amendment 3: folder, record and file are checked, and a refusal's dead row confirmed, before anything starts
     if (w.substrate === 'claude-code') {
       args = L.claudeLaunchArgv({
         workerId: w.id, mcpJsonPath: w.mcpJsonPath, settingsPath: w.workerSettingsPath,
@@ -266,7 +266,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     t0 += w.indexEmbedMs || 0;
     w.firstMessage = first;
 
-    launch(w, substrate === 'claude-code' ? {} : { prompt: first });
+    await launch(w, substrate === 'claude-code' ? {} : { prompt: first });
     await writeRow(w, 'starting');
     openWith(w, first, 'task');
 
@@ -322,7 +322,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     if (w.child && P.pidAlive(w.pid)) {
       fail('E_SUBSTRATE', 'codex worker is mid-turn; one process per turn', { worker_id, substrate: w.substrate, state: w.state, pid: w.pid });
     }
-    launch(w, { resume: w.sessionId, prompt: text });
+    await launch(w, { resume: w.sessionId, prompt: text });
     w.parser.noteStdinWrite();
     await writeRow(w, 'running');
     return { worker_id, channel: 'codex-resume', bytes: Buffer.byteLength(text, 'utf8'), pid: w.pid, turn: w.turns + 1 };
@@ -347,7 +347,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     if (known) return known;
     if (adopting.has(workerId)) return adopting.get(workerId);
     const p = W.adopt({ core, workerId, dataDir: root }).then(async (w) => {
-      NM.guardLaunch(ctx, w, P.pidAlive); workers.set(workerId, w); // the record, not the file the worker could edit, decides native_memory
+      workers.set(workerId, w); // no launch guard: a stop must always go through, and writeFilesFor below regenerates settings.json from the record
       await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the argv written below carries the notes lever
       writeFilesFor(w); // mcp.json, settings.json and the adapter log path belong to this run now
       if (w.substrate === 'claude-code') w.instructions = I.existingInstructions(w.dir); // never the worktree
@@ -385,7 +385,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     if (onFirstText) onFirstText(firstText);
 
     const resume = d.branch === 'resume' ? w.sessionId : null;
-    launch(w, w.substrate === 'claude-code' ? { resume } : { resume, prompt: firstText });
+    await launch(w, w.substrate === 'claude-code' ? { resume } : { resume, prompt: firstText });
     await writeRow(w, 'starting');
     openWith(w, firstText, 'resume');
 

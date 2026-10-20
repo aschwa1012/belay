@@ -224,7 +224,10 @@ test('readLaunchOptions: nothing is recovered from the worker-writable settings.
   } finally { cleanup(d); }
 });
 
-test('relaunch: settings.json edited by a worker spawned without the lever is refused by a second manager, and memory stays off', async () => {
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return !!(e && e.code === 'EPERM'); } };
+const cfgWith = (d) => { const cfg = path.join(d, 'fake-config'); fs.mkdirSync(path.join(cfg, 'projects', 'p', 'memory'), { recursive: true }); return cfg; };
+
+test('adopt: a second manager restarting a worker whose settings.json was edited regenerates it from the record, and memory stays off', async () => {
   for (const edit of [(st, sb) => ({ ...st, autoMemoryEnabled: true, autoMemoryDirectory: sb.mem }), (st) => ({ ...st, autoMemoryDirectory: 'C:/elsewhere' }), () => 'not json']) {
     const sb = sandbox(); const core = createFakeCore(); const first = mgr(sb, core); let second = null;
     try {
@@ -235,25 +238,130 @@ test('relaunch: settings.json edited by a worker spawned without the lever is re
       const planted = edit(settingsOf(sb, 'w-plant'), sb);
       fs.writeFileSync(file, typeof planted === 'string' ? planted : JSON.stringify(planted));
       second = mgr(sb, core);
-      await assert.rejects(() => second.restart({ worker_id: 'w-plant', first_turn_timeout_ms: 45000 }), (e) => e.code === 'E_NATIVE_MEMORY_MISMATCH');
+      const r = await second.restart({ worker_id: 'w-plant', first_turn_timeout_ms: 45000 });
+      assert.match(r.surface.tools_hash, /^[0-9a-f]{64}$/);
+      const now = settingsOf(sb, 'w-plant');
+      assert.equal(now.autoMemoryEnabled, false, 'regenerated from the record');
+      assert.equal('autoMemoryDirectory' in now, false);
       assert.equal(fs.existsSync(sb.mem), false, 'the planted folder was never created');
       assert.equal(core.currentWorker('w-plant').native_memory, null, 'the record still says off');
     } finally { delete process.env.FAKE_MEMORY_AUTO; if (second) await second.shutdown().catch(() => {}); await first.shutdown().catch(() => {}); cleanup(sb.d); }
   }
 });
 
-test('relaunch: a worker spawned with the lever and a settings.json edited to another folder is refused', async () => {
+test('adopt: a second manager stops a live worker whose settings.json was edited, and the pid goes', async () => {
   const sb = sandbox(); const core = createFakeCore(); const first = mgr(sb, core); let second = null;
+  try {
+    const row = await first.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'w-stop' });
+    const file = path.join(L.workerDir(sb.data, 'w-stop'), 'settings.json');
+    fs.writeFileSync(file, JSON.stringify({ ...settingsOf(sb, 'w-stop'), autoMemoryEnabled: true, autoMemoryDirectory: sb.mem }));
+    second = mgr(sb, core);
+    assert.ok(alive(row.pid));
+    await second.stop({ worker_id: 'w-stop', mode: 'graceful', timeout_ms: 8000 });
+    for (let i = 0; i < 100 && alive(row.pid); i++) await new Promise((r) => setTimeout(r, 50));
+    assert.equal(alive(row.pid), false, 'a stop always goes through');
+    assert.notEqual(core.currentWorker('w-stop').death_established_by, 'native_memory_settings_mismatch', 'a stop is not rewritten as a mismatch death');
+  } finally { if (second) await second.shutdown().catch(() => {}); await first.shutdown().catch(() => {}); cleanup(sb.d); }
+});
+
+test('relaunch: the same manager refuses a settings.json that is not what it wrote, launches nothing, and confirms the dead row', async () => {
+  const edits = [
+    ['lever on', (st, sb) => ({ ...st, autoMemoryEnabled: true, autoMemoryDirectory: sb.mem }), false],
+    ['other folder', (st) => ({ ...st, autoMemoryDirectory: 'C:/elsewhere' }), true],
+    ['unreadable', () => 'not json', false],
+    ['an extra key the record does not cover', (st) => ({ ...st, autoDreamEnabled: true }), false],
+    ['claudeMdExcludes emptied', (st) => ({ ...st, claudeMdExcludes: [] }), true],
+  ];
+  for (const [name, edit, withLever] of edits) {
+    const sb = sandbox(); const core = createFakeCore(); const m = mgr(sb, core); const id = 'w-same';
+    if (withLever) process.env.FAKE_MEMORY_AUTO = 'echo';
+    try {
+      await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: id, ...(withLever ? { native_memory: sb.mem } : {}) });
+      await m.stop({ worker_id: id, mode: 'kill', timeout_ms: 8000 });
+      const launches = m._worker(id).launches;
+      const planted = edit(settingsOf(sb, id), sb);
+      fs.writeFileSync(path.join(L.workerDir(sb.data, id), 'settings.json'), typeof planted === 'string' ? planted : JSON.stringify(planted));
+      let err = null;
+      try { await m.restart({ worker_id: id, first_turn_timeout_ms: 45000 }); } catch (e) { err = e; }
+      assert.ok(err && err.code === 'E_NATIVE_MEMORY_MISMATCH', name + ': ' + (err && err.code));
+      assert.equal(m._worker(id).launches, launches, name + ': nothing was launched');
+      if (name === 'lever on' || name === 'other folder') assert.ok('recorded' in err.detail && 'found' in err.detail, name + ': names the recorded and found values');
+      if (name.startsWith('an extra key') || name.startsWith('claudeMd')) assert.equal(err.detail.reason, 'settings_changed', name);
+      const cur = core.currentWorker(id);
+      assert.equal(cur.state, 'dead', name);
+      assert.equal(cur.death_established_by, 'native_memory_settings_mismatch', name);
+      assert.equal(err.detail.dead_row.seq, cur.seq, name + ': the error carries the row that was written, already confirmed');
+      assert.equal(err.detail.dead_row.state, 'dead');
+    } finally { delete process.env.FAKE_MEMORY_AUTO; await m.shutdown().catch(() => {}); cleanup(sb.d); }
+  }
+});
+
+test('relaunch: a folder swapped for a junction into the config directory after the spawn is refused by the same manager', { skip: process.platform === 'win32' ? false : 'junctions' }, async () => {
+  const sb = sandbox(); const core = createFakeCore(); const m = mgr(sb, core); const prev = process.env.CLAUDE_CONFIG_DIR;
   process.env.FAKE_MEMORY_AUTO = 'echo';
   try {
-    await first.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'w-plant2', native_memory: sb.mem });
-    await first.stop({ worker_id: 'w-plant2', mode: 'kill', timeout_ms: 8000 });
-    const real = fwd(path.join(os.homedir(), '.claude', 'projects', 'p', 'memory'));
-    fs.writeFileSync(path.join(L.workerDir(sb.data, 'w-plant2'), 'settings.json'), JSON.stringify({ ...settingsOf(sb, 'w-plant2'), autoMemoryDirectory: real }));
-    second = mgr(sb, core);
-    await assert.rejects(() => second.restart({ worker_id: 'w-plant2', first_turn_timeout_ms: 45000 }), (e) => e.code === 'E_NATIVE_MEMORY_MISMATCH' && e.detail.recorded === sb.mem);
-    assert.equal(core.currentWorker('w-plant2').native_memory, sb.mem);
-  } finally { delete process.env.FAKE_MEMORY_AUTO; if (second) await second.shutdown().catch(() => {}); await first.shutdown().catch(() => {}); cleanup(sb.d); }
+    const cfg = cfgWith(sb.d); const secret = path.join(cfg, 'projects', 'p', 'memory');
+    fs.writeFileSync(path.join(secret, 'MEMORY.md'), 'operator secret');
+    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'w-junc', native_memory: sb.mem });
+    process.env.CLAUDE_CONFIG_DIR = fwd(cfg);
+    await m.stop({ worker_id: 'w-junc', mode: 'kill', timeout_ms: 8000 });
+    fs.rmSync(sb.mem, { recursive: true, force: true }); fs.symlinkSync(secret, sb.mem, 'junction');
+    const launches = m._worker('w-junc').launches;
+    for (const verb of [() => m.restart({ worker_id: 'w-junc', first_turn_timeout_ms: 45000 })]) {
+      await assert.rejects(verb, (e) => e.code === 'E_ARGS' && e.detail.reason === 'claude_config_dir');
+    }
+    assert.equal(m._worker('w-junc').launches, launches, 'nothing was launched');
+    const cur = core.currentWorker('w-junc');
+    assert.equal(cur.state, 'dead'); assert.equal(cur.death_established_by, 'native_memory_folder_refused');
+  } finally { if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev; delete process.env.FAKE_MEMORY_AUTO; await m.shutdown().catch(() => {}); cleanup(sb.d); }
+});
+
+test('prepareFolder: the check after the create refuses a folder swapped for a junction between the first check and the create', { skip: process.platform === 'win32' ? false : 'junctions' }, () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-nm-race-')); const prev = process.env.CLAUDE_CONFIG_DIR;
+  try {
+    const cfg = cfgWith(d); process.env.CLAUDE_CONFIG_DIR = fwd(cfg);
+    const NMOD = require('../../src/run/native-memory.cjs'); const mem = fwd(path.join(d, 'mem'));
+    assert.equal(NMOD.prepareFolder(mem), mem, 'no swap: created');
+    fs.rmSync(mem, { recursive: true });
+    assert.throws(() => NMOD.prepareFolder(mem, { beforeMkdir: (folder) => fs.symlinkSync(path.join(cfg, 'projects', 'p', 'memory'), folder, 'junction') }),
+      (e) => e.code === 'E_ARGS' && e.detail.reason === 'claude_config_dir');
+  } finally { if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev; cleanup(d); }
+});
+
+test('assertOutsideConfig: a dangling junction is refused, not judged by its parent', { skip: process.platform === 'win32' ? false : 'junctions' }, () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-nm-dang-'));
+  try {
+    const target = path.join(d, 'gone'); fs.mkdirSync(target);
+    const link = path.join(d, 'link'); fs.symlinkSync(target, link, 'junction'); fs.rmdirSync(target);
+    const NMOD = require('../../src/run/native-memory.cjs');
+    for (const p of [fwd(link), fwd(link) + '/sub/mem']) {
+      assert.throws(() => NMOD.assertOutsideConfig(p), (e) => e.code === 'E_ARGS' && e.detail.reason === 'unresolvable_link', p);
+    }
+    assert.doesNotThrow(() => NMOD.assertOutsideConfig(fwd(path.join(d, 'plain', 'mem'))), 'a plain missing folder is still fine');
+  } finally { cleanup(d); }
+});
+
+test('spawn: a junction into the config directory is refused with nothing created and the id free', { skip: process.platform === 'win32' ? false : 'junctions' }, async () => {
+  const sb = sandbox(); const core = createFakeCore(); const m = mgr(sb, core); const prev = process.env.CLAUDE_CONFIG_DIR;
+  try {
+    const cfg = cfgWith(sb.d); process.env.CLAUDE_CONFIG_DIR = fwd(cfg);
+    fs.symlinkSync(path.join(cfg, 'projects', 'p', 'memory'), sb.mem, 'junction');
+    await assert.rejects(() => m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'w-jspawn', native_memory: sb.mem }), (e) => e.code === 'E_ARGS' && e.detail.reason === 'claude_config_dir');
+    assert.equal(fs.existsSync(L.workerDir(sb.data, 'w-jspawn')), false, 'no worker directory');
+    assert.deepStrictEqual(core.rowsFor('w-jspawn'), [], 'no worker row');
+    fs.unlinkSync(sb.mem);
+    process.env.FAKE_MEMORY_AUTO = 'echo';
+    const row = await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'w-jspawn', native_memory: sb.mem });
+    assert.equal(row.state, 'running', 'the same id spawns once the folder is fine');
+  } finally { if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev; delete process.env.FAKE_MEMORY_AUTO; await m.shutdown().catch(() => {}); cleanup(sb.d); }
+});
+
+test('settings: with the lever off the file is byte-identical to what it was before the lever existed', () => {
+  const wt = 'C:/a/wt';
+  const before = JSON.stringify({ claudeMdExcludes: S.ancestorExcludes(wt), autoMemoryEnabled: false, autoDreamEnabled: false });
+  assert.equal(JSON.stringify(S.hygieneSettings(wt)), before);
+  assert.equal(JSON.stringify(S.hygieneSettings(wt, { nativeMemory: null })), before);
+  assert.deepStrictEqual(Object.keys(S.hygieneSettings(wt, { nativeMemory: DIR })), ['claudeMdExcludes', 'autoMemoryEnabled', 'autoDreamEnabled', 'autoMemoryDirectory']);
 });
 
 test('adopt: a second manager relaunching the worker keeps the folder in settings.json and passes the gate', async () => {
