@@ -19,6 +19,7 @@
 const L =require('./memory-lifecycle.cjs');
 const C = require('./lifecycle-common.cjs');
 const { parse } = require('./memory-facts.cjs');
+const { fresh } = require('./proposal-open.cjs');
 const { noteDeliveries, sinkOf } = require('./memory-chances.cjs');
 const { leversOf } = require('./methods-memory.cjs');
 
@@ -169,7 +170,9 @@ function draftsFor(E, project, noteId, since) {
     if (b.rule && b.target) out.push({ source: 'draft', id: r.id, at: r.created_at, rule: b.rule, target: b.target });
   }
   for (const r of E.store.p("SELECT id, created_at, body FROM memory_entries WHERE namespace = ? AND type = 'proposal' AND json_extract(body, '$.note_id') = ? AND json_extract(body, '$.entry.action') = 'draft' AND created_at >= ?").all(L.nsOf('proposal', project), noteId, since || 0)) {
-    const e = (parse(r.body) || {}).entry || {};
+    const pb = parse(r.body) || {};
+    if (!fresh(E, pb)) continue; // a draft proposed on notes since changed is stale, as for every proposal reader
+    const e = pb.entry || {};
     if (e.draft && e.draft.rule && e.draft.target) out.push({ source: 'proposal', id: r.id, at: r.created_at, rule: e.draft.rule, target: e.draft.target });
   }
   return out.sort((a, b) => b.at - a.at);

@@ -193,7 +193,9 @@ test('notices: a pending note of an ended run and an open proposal on it are one
     const store = new Store(`${dataDir}/memory.db`, { stamp: true });
     const put = (ns, type, body, run_id) => store.storeIn({ namespace: ns, worker_id: 'w1', type, text: `${type} ${Math.random()}`, title: type, body, run_id, source: type === 'note' ? 'model' : 'harness', written_by: type === 'note' ? 'worker:w1' : 'harness' }).id;
     const note = put('pending/acme', 'note', { kind: 'lesson', state: 'pending', seen_in: [], seen_total: 0 }, 'run-gone');
-    put('proposal/acme', 'proposal', { state: 'open', note_id: note, entry: { id: note, action: 'resolve', resolve: 'new' } }, 'run-gone');
+    // the proposal records the note's key, as the scrub does; a row without one is stale (proposal-open.cjs)
+    const keys = require('../../src/core/proposal-open.cjs').keysFor({ store }, [note]);
+    put('proposal/acme', 'proposal', { state: 'open', note_id: note, entry: { id: note, action: 'resolve', resolve: 'new' }, keys }, 'run-gone');
     store.close();
     for (const argv of [[RUN], []]) {
       const r = cli(argv, dataDir);
