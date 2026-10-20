@@ -66,7 +66,7 @@ before(async () => {
   put('src/new.js', 'committed\n');
   git('add', '-A'); git('commit', '-qm', 'work');
   put('a.txt', 'edited, not committed\n');
-  put('docs/u.md', 'untracked\n');
+  put('lib/u.md', 'untracked\n');
 
   store = new Store(`${dir}/memory.db`, { stamp: true });
   E = new Engine({ dataDir: dir, store, getEmbedder: async () => embedder, owner: { opts: { embedderMode: () => mode, onEmbedderFailure: (ev) => { hookCalls.push(ev); } } }, establishedBy: 'test' });
@@ -101,7 +101,7 @@ test('applies_to is the worker\'s paths, the evidence paths and only the diff fi
   assert.deepStrictEqual(b.applies_to_from, ['worker', 'evidence', 'diff']);
   assert.deepStrictEqual(out.notes[0].applies_to, { total: 3, worker: 1, evidence: 1, diff: 1, dropped: 0, task_files: 3 });
   // the whole diff (committed since the base, edited, untracked), sorted, with its source
-  assert.deepStrictEqual(b.task_files, ['a.txt', 'docs/u.md', 'src/new.js']);
+  assert.deepStrictEqual(b.task_files, ['a.txt', 'lib/u.md', 'src/new.js']);
   assert.strictEqual(b.task_files_from, 'diff');
   // the worker never has to type a path; and two unrelated notes of one task do not share applies_to through the diff
   const t = await call('task.create', orch, { spec: `job ${++seq}` });
@@ -132,9 +132,9 @@ test('a worktree that cannot be read is named in the result and the note is stor
 
 test('merge: worker paths first, only diff files the note names join them, the whole diff is kept apart, and evidence paths are read as paths', () => {
   const diff = { paths: Array.from({ length: 40 }, (_, i) => `d/${String(i).padStart(2, '0')}.js`) };
-  const note = { title: 'd/05.js and 07.js disagree', applies_to: ['w/one.js'], evidence: [{ where: 'see `src/a.js:3:9`, docs/x.md#L4 and https://example.com/p.html', saw: 'x' }] };
+  const note = { title: 'd/05.js and 07.js disagree', applies_to: ['w/one.js'], evidence: [{ where: 'see `src/a.js:3:9`, lib/x.md#L4 and https://example.com/p.html', saw: 'x' }] };
   const m = NP.merge(note, diff);
-  assert.deepStrictEqual(m.applies_to, ['w/one.js', 'src/a.js', 'docs/x.md', 'd/05.js', 'd/07.js']);
+  assert.deepStrictEqual(m.applies_to, ['w/one.js', 'src/a.js', 'lib/x.md', 'd/05.js', 'd/07.js']);
   assert.deepStrictEqual(m.applies_to_from, ['worker', 'evidence', 'evidence', 'diff', 'diff']);
   assert.deepStrictEqual(m.counts, { total: 5, worker: 1, evidence: 2, diff: 2, dropped: 0, task_files: 40 });
   assert.strictEqual(m.task_files.length, 40); assert.strictEqual(m.task_files_truncated, 0);
