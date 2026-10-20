@@ -19,7 +19,7 @@ function checkMemoryQueries(list) {
   });
 }
 
-function validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id }) {
+function validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id, native_memory = null }) {
   if (substrate !== 'claude-code' && substrate !== 'codex') fail('E_ARGS', 'substrate must be claude-code or codex', { substrate });
   if (!worktree) fail('E_ARGS', 'spawn needs a worktree');
   if (typeof prompt !== 'string' || !prompt) fail('E_ARGS', 'spawn needs a prompt');
@@ -27,6 +27,11 @@ function validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, per
   if (!Number.isInteger(permit_wait_ms) || permit_wait_ms <= 0) fail('E_ARGS', 'spawn permit_wait_ms must be a positive integer', { permit_wait_ms });
   if (effort !== null && !L.EFFORT_LEVELS.includes(effort)) fail('E_ARGS', `spawn effort must be one of ${L.EFFORT_LEVELS.join(', ')} (ADR 0028)`, { effort });
   if (effort !== null && substrate === 'codex') fail('E_SUBSTRATE', 'codex effort is not measured, so spawn refuses it (ADR 0028 decision 6)', { substrate, effort });
+  // ADR 0024 amendment 3 (proposed): the eval-only native-memory folder; a Claude Code launch only, absolute.
+  if (native_memory !== null) {
+    if (substrate === 'codex') fail('E_SUBSTRATE', 'native_memory is Claude Code auto-memory, and codex has none', { substrate, native_memory });
+    try { require('./surface.cjs').checkNativeMemory(native_memory); } catch (e) { fail('E_ARGS', e.message, e.detail); }
+  }
   // ADR 0020 decision 1: Codex has no permission channel (approval_policy="never", MCP tools
   // pre-approved, ADR 0001 §1) — refused before any row is written or any file created.
   if (permission_prompt && substrate === 'codex') {

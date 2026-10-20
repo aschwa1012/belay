@@ -125,6 +125,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       dir: w.dir, workerId: w.id, runId, dataDir: root, mcpPath, settingsPath: settingsSource, logPath: adapterLog,
       permit: w.permissionPrompt, permitWaitMs: w.permitWaitMs, cwd: w.worktree, compactAt: ctx.compactAt, // ADR 0024; ADR 0007 decision 3
       notes: w.notesOn, // ADR 0047
+      nativeMemory: w.nativeMemory, // ADR 0024 amendment 3: eval-only, null by default
     });
     // ADR 0007 §6 hygiene never degrades quietly: an unreadable/unparseable user settings file would
     // disable nothing, so the launch fails instead (a file that just does not exist is not a failure).
@@ -209,7 +210,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const {
       substrate, worktree, prompt, task_id = null, model: modelArg = null, allowed_tools = null,
       permission_mode = null, startup_timeout_ms = 60000, worker_id = null, sandbox = null,
-      permission_prompt = false, permit_wait_ms = 600000, effort: effortArg = null, tools = null, agent_type = null, max_budget_usd = null, memory_queries = null,
+      permission_prompt = false, permit_wait_ms = 600000, effort: effortArg = null, tools = null, agent_type = null, max_budget_usd = null, memory_queries = null, native_memory = null,
     } = opts || {};
     let model = modelArg;
     let effort = effortArg;
@@ -221,7 +222,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       model = agent.model.value;
       effort = agent.effort.value;
     }
-    validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id });
+    validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id, native_memory });
     const indexQueries = checkMemoryQueries(memory_queries);
 
     const id = worker_id || crypto.randomUUID();
@@ -236,7 +237,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       w = W.newWorkerRecord({
         id, substrate, worktree, dataDir: root, taskId: task_id, model,
         allowedTools: allowed_tools, permissionMode: permission_mode, sandbox,
-        permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort, tools, maxBudgetUsd: max_budget_usd,
+        permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort, tools, maxBudgetUsd: max_budget_usd, nativeMemory: native_memory,
       });
       w.indexQueries = indexQueries; // the orchestrator's situation lines for this worker's memory index (memory.embedQuery extra_texts)
       workers.set(id, w);

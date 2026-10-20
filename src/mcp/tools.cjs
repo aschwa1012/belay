@@ -171,6 +171,7 @@ const ORCHESTRATOR = [
       memory_queries: strs('Up to 4 task lines naming the situations the worker will be in, each max 160 bytes'),
       allowed_tools: strs(),
       permission_mode: str(),
+      native_memory: str('Eval only: absolute dir for auto-memory'),
       startup_timeout_ms: int('default 60000'),
       worker_id: str('Otherwise generated'),
     }, ['substrate', 'worktree', 'prompt']),

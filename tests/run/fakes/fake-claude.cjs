@@ -83,6 +83,13 @@ function initEvent() {
   const isResume = process.argv.includes('--resume');
   const ev = { type: 'system', subtype: 'init', session_id: SESSION, tools: surfaceTools(),
     permissionMode: PERMISSION_MODE, claude_code_version: VERSION, plugins: PLUGINS, model: MODEL };
+  // ADR 0024 amendment 3: FAKE_MEMORY_AUTO=echo reports the autoMemoryDirectory the launch's --settings file names (as Claude Code does
+  // when it honours it); any other value is reported as is; unset reports no memory_paths.
+  if (process.env.FAKE_MEMORY_AUTO) {
+    let auto = process.env.FAKE_MEMORY_AUTO;
+    if (auto === 'echo') { try { auto = JSON.parse(require('node:fs').readFileSync(process.argv[process.argv.indexOf('--settings') + 1], 'utf8')).autoMemoryDirectory; } catch (e) { auto = null; } }
+    if (auto !== null && auto !== undefined) ev.memory_paths = { auto };
+  }
   if (MCP === 'absent') return ev;
   ev.mcp_servers = MCP === 'none' || !launchedBelay().present ? [] : [{ name: 'belay', status: MCP }];
   if (FAKE_SURFACE && (!FAKE_SURFACE_ON_RESUME || isResume)) {

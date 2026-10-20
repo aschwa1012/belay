@@ -140,14 +140,15 @@ function readEnabledPluginNames(settingsPath) {
 }
 
 // ADR 0024: a caller that passes `cwd` gets the hygiene block merged in; one that does not is unchanged.
-function workerSettings(pluginNames, { cwd } = {}) {
+function workerSettings(pluginNames, { cwd, nativeMemory = null } = {}) {
   const enabledPlugins = {};
   for (const n of pluginNames || []) enabledPlugins[n] = false;
   if (!cwd) return { enabledPlugins };
-  return { enabledPlugins, ...S.hygieneSettings(cwd) };
+  return { enabledPlugins, ...S.hygieneSettings(cwd, { nativeMemory }) };
 }
 
-function writeWorkerFiles({ dir, workerId, runId, dataDir, mcpPath, settingsPath, logPath = null, permit = false, permitWaitMs = null, cwd = null, compactAt = null, notes = false }) {
+function writeWorkerFiles({ dir, workerId, runId, dataDir, mcpPath, settingsPath, logPath = null, permit = false, permitWaitMs = null, cwd = null, compactAt = null, notes = false, nativeMemory = null }) {
+  if (nativeMemory != null) fs.mkdirSync(S.checkNativeMemory(nativeMemory), { recursive: true }); // ADR 0024 amendment 3: eval-only, created if missing
   fs.mkdirSync(dir, { recursive: true });
   const mcpJsonPath = fwd(path.join(dir, 'mcp.json'));
   const workerSettingsPath = fwd(path.join(dir, 'settings.json'));
@@ -157,7 +158,7 @@ function writeWorkerFiles({ dir, workerId, runId, dataDir, mcpPath, settingsPath
   );
   const plugins = readPluginConfig(settingsPath);
   const hooks = CP.hooksBlock({ dir, compactAt }); // null, and no `hooks` key at all, unless the lever is on
-  fs.writeFileSync(workerSettingsPath, JSON.stringify({ ...workerSettings(plugins.names, { cwd }), ...(hooks ? { hooks } : {}) }, null, 2) + '\n');
+  fs.writeFileSync(workerSettingsPath, JSON.stringify({ ...workerSettings(plugins.names, { cwd, nativeMemory }), ...(hooks ? { hooks } : {}) }, null, 2) + '\n');
   return { mcpJsonPath, settingsPath: workerSettingsPath, plugins };
 }
 

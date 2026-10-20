@@ -56,9 +56,28 @@ function ancestorExcludes(cwd) {
 }
 
 // ADR 0024 decisions 4 and 5, one settings-file block.
-function hygieneSettings(cwd) {
-  return { claudeMdExcludes: ancestorExcludes(cwd), autoMemoryEnabled: false, autoDreamEnabled: false };
+// ADR 0024 amendment 3 (proposed): an eval-only `nativeMemory` directory turns Claude Code's own auto-memory on,
+// pointed at that folder. Off (null) is exactly what it was.
+function hygieneSettings(cwd, { nativeMemory = null } = {}) {
+  const base = { claudeMdExcludes: ancestorExcludes(cwd), autoDreamEnabled: false };
+  if (nativeMemory == null) return { ...base, autoMemoryEnabled: false };
+  return { ...base, autoMemoryEnabled: true, autoMemoryDirectory: checkNativeMemory(nativeMemory) };
 }
+
+// The requested folder must be absolute (drive-rooted or posix-rooted); returned forward-slashed. Refused as E_ARGS otherwise.
+const ABSRE = /^([A-Za-z]:[\\/]|\/)/;
+const CTLRE = /[\x00-\x1f]/;
+function checkNativeMemory(dir) {
+  const ok = typeof dir === 'string' && ABSRE.test(dir) && CTLRE.test(dir) === false;
+  if (!ok) throw Object.assign(new Error('native_memory must be an absolute directory path'), { code: 'E_ARGS', detail: { native_memory: dir } });
+  return fwd(dir);
+}
+
+// Two paths name the same folder: separators, case and a trailing slash do not matter (Windows).
+const sameDir = (a, b) => {
+  const n = (p) => fwd(p).replace(/\/+$/, '').toLowerCase();
+  return typeof a === 'string' && typeof b === 'string' && a !== '' && n(a) === n(b);
+};
 
 // ADR 0024 decisions 1 and 3: a launch may narrow the built-in list (the knowledge agent reads only), never widen it.
 // Returns null for the full list, or the narrowed list; anything else is refused before any file or row exists.
@@ -76,7 +95,8 @@ function narrowTools(tools) {
 // list is; null for the full list.
 // `job`: the worker carries a reserved job id prefix (src/core/job-ids.cjs). Its adapter lists no belay tool by design, so the gate
 // expects none (ADR 0024 decision 6, amendment 2); the built-in check is unchanged and exact.
-function checkSurface(ready, { permissionPrompt = false, tools: wanted = null, job = false } = {}) {
+// `nativeMemory`: the folder this launch asked Claude Code to use for its auto-memory (ADR 0024 amendment 3), or null.
+function checkSurface(ready, { permissionPrompt = false, tools: wanted = null, job = false, nativeMemory = null } = {}) {
   const tools = ready && ready.tools;
   if (!Array.isArray(tools)) {
     return {
@@ -132,7 +152,14 @@ function checkSurface(ready, { permissionPrompt = false, tools: wanted = null, j
   // refused, not only a truthy `.auto` (review 1 finding 2: {project:...}, a string, an array and
   // {auto:''} all passed the looser check).
   const memoryPaths = ready && ready.memory_paths;
-  if (memoryPaths !== null && memoryPaths !== undefined) {
+  if (nativeMemory != null) {
+    // Exact equality, nothing else: a malformed directory is ignored by Claude Code, which then falls back to the default
+    // projects/<git root>/memory folder, possibly the operator's real memory.
+    const keys = memoryPaths && typeof memoryPaths === 'object' && !Array.isArray(memoryPaths) ? Object.keys(memoryPaths) : null;
+    if (!keys) reasons.push(`memory_paths is absent, and this launch asked for native memory in ${nativeMemory}: ${JSON.stringify(memoryPaths === undefined ? null : memoryPaths)}`);
+    else if (keys.length !== 1 || keys[0] !== 'auto') reasons.push(`memory_paths must carry exactly {auto} for native memory, and carries ${JSON.stringify(memoryPaths)}`);
+    else if (!sameDir(memoryPaths.auto, nativeMemory)) reasons.push(`memory_paths.auto is ${JSON.stringify(memoryPaths.auto)}, and this launch asked for ${nativeMemory}`);
+  } else if (memoryPaths !== null && memoryPaths !== undefined) {
     if (memoryPaths && typeof memoryPaths === 'object' && 'auto' in memoryPaths) {
       reasons.push(`memory_paths.auto is set: ${memoryPaths.auto}`);
     } else {
@@ -167,4 +194,4 @@ function surfaceFields(evidence) {
   return { tools_hash: tools_hash ?? null, builtins: builtins ?? null, belay_tools: belay_tools ?? null, plugins: plugins ?? null };
 }
 
-module.exports = { CLAUDE_TOOLS, narrowTools, SETTING_SOURCES_ARG, ancestorExcludes, hygieneSettings, checkSurface, surfaceFields };
+module.exports = { checkNativeMemory, sameDir, CLAUDE_TOOLS, narrowTools, SETTING_SOURCES_ARG, ancestorExcludes, hygieneSettings, checkSurface, surfaceFields };
