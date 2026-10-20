@@ -307,14 +307,16 @@ async function getRun(E, caller) {
 // caller.run_id, fixed at openCore. `alive` is derived the same way status.get's run-alive rung
 // derives it: the row has not ended and its adapter_pid answers a pid check right now.
 //
-// `life_pids` is every distinct { pid, created } adapter pid the run's PRESENT life has recorded: the rows after the last ended row
-// before the current one, the current row included. A run id is reused (a re-run over an ended row, a spec that names its run id) and
+// `life_pids` is every distinct { pid, created } adapter pid the run's PRESENT life has recorded: the rows after the last ended row that a live
+// row follows, the current row included. A run id is reused (a re-run over an ended row, a spec that names its run id) and
 // an orchestrator's attach overwrites `adapter_pid` with an adapter that exits before the close, so neither the current row nor the
 // run id's first row ever names the process that still owns the store through the close; some row of the present life does (audit D35).
 // A reader matches the owner lock's pid (and creation time) against this list.
 function lifePids(hist) {
   let start = 0;
-  for (let i = 0; i + 1 < hist.length; i++) if (hist[i].ended_at != null) start = i + 1;
+  // A life ends where an ended row is followed by a row that is not: the run process's own run.end appends a second ended row after
+  // the orchestrator's, and that pair is one close, not two lives.
+  for (let i = 0; i + 1 < hist.length; i++) if (hist[i].ended_at != null && hist[i + 1].ended_at == null) start = i + 1;
   const seen = new Set(), out = [];
   for (const r of hist.slice(start)) {
     if (r.adapter_pid == null) continue;
