@@ -95,17 +95,36 @@ function vectorsFor(db, tier, rowIds) {
   return out;
 }
 
-// The rows a search may consider, chosen BEFORE any vector is looked up: in the stated namespaces (never a lifecycle one),
-// not expired, not refuted, not held (body.held), and not superseded unless asked. Then the tier's vectors are joined on
-// (key, embed_hash). Returns { rows: [{ id, namespace, embed_hash, template, vector }], missing: [id] }, `missing` being the
-// searchable rows that have no vector under the tier.
-function selectSearchable(db, tier, { namespaces, includeSuperseded = false, at = Date.now() } = {}) {
-  const ns = (namespaces || []).filter(n => !LIFECYCLE_NS.some(p => String(n).startsWith(p)));
+// The rows memory.search considers, as one predicate over alias e: the terms of baseWhere in memory-search.cjs and the semantic
+// scan's own skips (_loadNs, semanticStage). memory-search should adopt this function when it is wired to this module, so the
+// visibility rules cannot drift between tiers:
+//   - the row is in one of the stated namespaces (the caller's choice; a held note stays in project/<p> and stays visible);
+//   - it has not expired (ttl_at null or not before `at`);
+//   - it is not superseded by a row of the same namespace, unless includeSuperseded.
+// What a caller's gate hides (refuted, another open run's, promoted or pending notes: memory-note-gate.cjs) depends on the caller,
+// so it is passed to selectSearchable as `hidden` ids. A refuted or held note is visible to an ungated caller.
+function visibleRowFilter({ namespaces, includeSuperseded = false, at = Date.now() }) {
+  const where = ['+e.namespace IN (SELECT value FROM json_each(?))', '(e.ttl_at IS NULL OR e.ttl_at >= ?)'];
+  if (!includeSuperseded) where.push('NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND +s.namespace = e.namespace)');
+  return { where: where.join(' AND '), params: [JSON.stringify(namespaces), at] };
+}
+
+function visibleRows(db, opts) {
+  const v = visibleRowFilter(opts);
+  return db.prepare(`SELECT e.* FROM memory_entries e WHERE ${v.where} ORDER BY e.created_at, e.id`).all(...v.params);
+}
+
+// The visible rows of the stated namespaces, chosen BEFORE any vector is looked up, then joined to the tier's vectors on
+// (key, embed_hash). Returns { rows: [{ id, namespace, embed_hash, template, vector }], missing: [id] }, `missing` being the visible
+// rows that have no vector under the tier. `hidden` is a caller's gate: ids to leave out.
+function selectSearchable(db, tier, { namespaces, includeSuperseded = false, at = Date.now(), hidden = null } = {}) {
   const out = { rows: [], missing: [] };
-  if (!ns.length) return out;
+  if (!namespaces || !namespaces.length) return out;
+  const skip = hidden ? new Set(hidden) : null;
   const k = keyOf(tier);
   const get = db.prepare('SELECT vector FROM memory_vectors WHERE model = ? AND model_revision = ? AND dims = ? AND template = ? AND embed_hash = ?');
-  for (const r of searchableRows(db, ns, includeSuperseded, at, 'e.*')) {
+  for (const r of visibleRows(db, { namespaces, includeSuperseded, at })) {
+    if (skip && skip.has(r.id)) continue;
     const template = k.template || templateOf(r), hash = embedHashOf(r, template);
     const v = hash === null ? null : get.get(k.model, k.revision, k.dims, template, hash);
     if (v) out.rows.push({ id: r.id, namespace: r.namespace, embed_hash: hash, template, vector: f32(v.vector) });
@@ -114,14 +133,7 @@ function selectSearchable(db, tier, { namespaces, includeSuperseded = false, at 
   return out;
 }
 
-function searchableRows(db, namespaces, includeSuperseded, at, cols) {
-  const where = ['+e.namespace IN (SELECT value FROM json_each(?))', '(e.ttl_at IS NULL OR e.ttl_at >= ?)', "COALESCE(e.status, '') <> 'refuted'",
-    "(e.body IS NULL OR instr(e.body, 'held') = 0 OR NOT json_valid(e.body) OR json_extract(e.body, '$.held') IS NULL)"];
-  if (!includeSuperseded) where.push('NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND +s.namespace = e.namespace)');
-  return db.prepare(`SELECT ${cols} FROM memory_entries e WHERE ${where.join(' AND ')} ORDER BY e.created_at, e.id`).all(JSON.stringify(namespaces), at);
-}
-
-// The live notes with no vector under the tier. Derived by this query; nothing is stored. `namespaces` defaults to every
+// The notes search shows (the visible set above, held notes included) with no vector under the tier. Derived by this query; nothing is stored. `namespaces` defaults to every
 // project namespace; a lifecycle namespace is never a backlog.
 function backlog(db, tier, { namespaces, at = Date.now() } = {}) {
   const ns = namespaces
@@ -131,7 +143,7 @@ function backlog(db, tier, { namespaces, at = Date.now() } = {}) {
   const k = keyOf(tier);
   const get = db.prepare('SELECT 1 AS x FROM memory_vectors WHERE model = ? AND model_revision = ? AND dims = ? AND template = ? AND embed_hash = ?');
   const out = [];
-  for (const r of searchableRows(db, ns, false, at, 'e.*')) {
+  for (const r of visibleRows(db, { namespaces: ns, at })) {
     if (r.type !== 'note') continue;
     const template = k.template || templateOf(r), hash = embedHashOf(r, template);
     if (hash !== null && get.get(k.model, k.revision, k.dims, template, hash)) continue;
@@ -183,5 +195,5 @@ function sweepRows(db, gone) {
 }
 
 module.exports = {
-  TABLE_SQL, embedTextOf, embedHashOf, hasTable, migrateVectors, putVector, putRowVector, vectorsFor, selectSearchable, backlog, sweep, sweepRows,
+  TABLE_SQL, embedTextOf, embedHashOf, hasTable, migrateVectors, putVector, putRowVector, vectorsFor, visibleRowFilter, selectSearchable, backlog, sweep, sweepRows,
 };

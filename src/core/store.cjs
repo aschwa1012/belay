@@ -57,6 +57,8 @@ class Store {
         migrateOwner(this.db);
         // The vector cache's table. Keep this the LAST owner migration: the migration number is not final, and a rebase that
         // adds another one above it only moves this line (the table is created and backfilled idempotently, in its own transaction).
+        // SCHEMA_VERSION stays 2 on purpose: an older core writing to this store leaves rows without vectors (they show up as backlog) and
+        // deletes without sweeping (orphan vectors, removed by a full sweep). Neither corrupts anything.
         MV.migrateVectors(this.db);
       } else {
         checkSchema(this.db, dbPath);
@@ -93,7 +95,7 @@ class Store {
     if (!this._vectors) this._vectors = MV.hasTable(this.db);
     return this._vectors;
   }
-  _snap(id) { return this._hasVectors() ? this.p('SELECT * FROM memory_entries WHERE id = ?').get(id) || null : null; }
+  rowSnapshot(id) { return this._hasVectors() ? this.p('SELECT * FROM memory_entries WHERE id = ?').get(id) || null : null; }
   _mirror(id) {
     if (this._hasVectors()) MV.putRowVector(this.db, this.p('SELECT * FROM memory_entries WHERE id = ?').get(id));
   }
@@ -154,7 +156,7 @@ class Store {
       let id, action, before = null;
       if (dup) {
         id = dup.id; action = 'updated';
-        before = blob ? this._snap(id) : null;
+        before = blob ? this.rowSnapshot(id) : null;
         this.p(`UPDATE memory_entries SET last_writer_id = ?, embedding = COALESCE(?, embedding), text_template = COALESCE(?, text_template),
                 tags = COALESCE(?, tags), provenance = COALESCE(?, provenance), supersedes = COALESCE(?, supersedes),
                 title = COALESCE(title, ?), body = COALESCE(?, body), redactions = COALESCE(?, redactions),
@@ -270,7 +272,7 @@ class Store {
   clearEmbedding(id) {
     const row = this.p('SELECT namespace FROM memory_entries WHERE id = ?').get(id);
     if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
-    const before = this._snap(id);
+    const before = this.rowSnapshot(id);
     this.p('UPDATE memory_entries SET embedding = NULL, embedding_model = NULL, embedding_revision = NULL, dim = NULL, text_template = NULL WHERE id = ?').run(id);
     if (before) this.sweepVectors([before]);
     this.cache.delete(row.namespace);
@@ -288,7 +290,7 @@ class Store {
       throw err('E_MODEL', `namespace ${row.namespace} is bound to ${m ? `${m.embedding_model}/${m.dim}` : 'no model'} and this vector is ${e.embedding_model}/${e.dim}`, { namespace: row.namespace, bound: m || null });
     }
     const vec = toUnitF32(e.embedding, e.dim);
-    const before = this._snap(id);
+    const before = this.rowSnapshot(id);
     this.p('UPDATE memory_entries SET embedding = ?, embedding_revision = ?, text_template = ? WHERE id = ?')
       .run(Buffer.from(vec.buffer), e.embedding_revision || null, e.text_template, id);
     this._mirror(id);

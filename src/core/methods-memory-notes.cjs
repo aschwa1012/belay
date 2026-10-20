@@ -278,7 +278,7 @@ function retitle(E, r, title, fresh) {
   const s = M.scrub(true, { text: [title, ...r.text.split('\n').slice(1)].join('\n'), title });
   const clash = E.store.p('SELECT id, type FROM memory_entries WHERE namespace = ? AND text_hash = ? AND id != ?').get(r.namespace, hashText(s.text), r.id);
   if (clash) throw err('E_EXISTS', `the changed title makes note ${r.id} the same text as ${clash.id} (a ${clash.type} row) in ${r.namespace}; choose another title or resolve it as repeats`, { id: r.id, existing_id: clash.id, existing_type: clash.type });
-  const before = E.store._snap(r.id); // the vector of the old title is swept once the row has its new one
+  const before = E.store.rowSnapshot(r.id); // the vector of the old title is swept once the row has its new one
   E.store.p('UPDATE memory_entries SET title = ?, text = ?, text_hash = ?, updated_at = ? WHERE id = ?').run(s.title, s.text, hashText(s.text), Date.now(), r.id);
   // The vector was made from the old title, so it is replaced by one made from the new, under the row's own template.
   if (fresh && fresh.unembedded) {
