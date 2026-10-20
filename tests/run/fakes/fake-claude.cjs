@@ -35,7 +35,7 @@ const HEARTBEAT_MS = Number(process.env.FAKE_HEARTBEAT_MS || 0);
 const MCP = process.env.FAKE_MCP || 'connected';
 // build step 6d: the smallest env echo a test can drive, to stderr so it never disturbs stream-json.
 if (process.env.FAKE_ECHO_MCP_TOOL_TIMEOUT === '1') {
-  process.stderr.write(`FAKE_ENV MCP_TOOL_TIMEOUT=${process.env.MCP_TOOL_TIMEOUT === undefined ? '(absent)' : process.env.MCP_TOOL_TIMEOUT}\n`);
+  process.stderr.write(`FAKE_ENV MCP_TOOL_TIMEOUT=${process.env.MCP_TOOL_TIMEOUT === undefined ? '(absent)' : process.env.MCP_TOOL_TIMEOUT} BELAY_WORKER_ID=${process.env.BELAY_WORKER_ID === undefined ? '(absent)' : process.env.BELAY_WORKER_ID}\n`);
 }
 // ADR 0021: the mode the session actually started in and the build's version, overridable by FAKE_PERMISSION_MODE.
 const modeAt = process.argv.indexOf('--permission-mode');

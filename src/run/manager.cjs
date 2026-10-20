@@ -177,7 +177,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       // MCP_TOOL_TIMEOUT is set only with permission_prompt, always outside permit_wait_ms's own bound.
       exe: spec.exe, args: spec.args, cwd: w.worktree,
       env: L.buildEnv(process.env, {
-        substrate: w.substrate, cwd: w.worktree,
+        substrate: w.substrate, cwd: w.worktree, workerId: w.id,
         mcpToolTimeoutMs: w.permissionPrompt ? w.permitWaitMs + 60000 : null,
       }),
       stdin: w.substrate === 'claude-code' ? 'pipe' : 'ignore',
