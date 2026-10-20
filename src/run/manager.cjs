@@ -140,8 +140,8 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       workerId: w.id, runId, dataDir: root, mcpPath, logPath: w.adapterLogPath, notes: w.notesOn,
     });
   }
-
-  async function launch(w, { resume = null, prompt = null } = {}) {
+  const launch = (w, o) => require('./bind-launch.cjs').launchBound({ core, runId, root, mcpPath }, w, () => launchNow(w, o)); // ADR 0045: one launch of a worker at a time, its bind opened first
+  async function launchNow(w, { resume = null, prompt = null } = {}) {
     try { NM.checkLaunch(w); } catch (e) { await NM.refuseLaunch(ctx, w, e, P.pidAlive); } let args; // sync and first (Codex's check-then-spawn stays one tick); only a refusal awaits
     if (w.substrate === 'claude-code') {
       args = L.claudeLaunchArgv({

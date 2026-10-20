@@ -77,9 +77,10 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   } = spec;
 
   const mcpPath = L.mcpServerPath();
+  const bind = await require('./bind-launch.cjs').bindOrchestrator(core, runId); // ADR 0045 decision 2: the owner is this process's own, so the bind is in process
   const written = L.writeOrchestratorFiles({
     dir: orchestratorDir, runId, dataDir, mcpPath, settingsPath: L.userSettingsPath(), cwd: worktree, // ADR 0024
-    compactAt: compactAtTokens, knowledgeAgent: !!spec.knowledgeAgent, agentDefaults: spec.agentDefaults || null, // ADR 0007 decision 3; ADR 0043 decision 1
+    compactAt: compactAtTokens, knowledgeAgent: !!spec.knowledgeAgent, agentDefaults: spec.agentDefaults || null, bind, // ADR 0007 decision 3; ADR 0043 decision 1
   });
   fs.writeFileSync(path.join(written.dir, 'prompt.txt'), promptText);
 
