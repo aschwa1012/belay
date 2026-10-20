@@ -391,3 +391,64 @@ test('worker_spawn: native_memory is harness-only, refused at the MCP boundary a
     (e) => e.code === 'E_ARGS' && e.detail.reason === 'harness_only' && e.detail.field === 'native_memory');
   assert.doesNotThrow(() => T.validateArgs('worker_spawn', { substrate: 'claude-code', worktree: 'C:/w', prompt: 'p' }));
 });
+
+test('assertOutsideConfig: a config directory reached through a junction refuses a folder named by its real path', { skip: process.platform === 'win32' ? false : 'junctions' }, () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-nm-cfgj-')); const prev = process.env.CLAUDE_CONFIG_DIR;
+  try {
+    const cfg = cfgWith(d); const junc = path.join(d, 'cfg-link'); fs.symlinkSync(cfg, junc, 'junction');
+    process.env.CLAUDE_CONFIG_DIR = fwd(junc);
+    const NMOD = require('../../src/run/native-memory.cjs');
+    const real = fwd(fs.realpathSync.native(cfg));
+    for (const target of [real + '/projects/p/memory', real + '/new-below-target']) {
+      assert.throws(() => NMOD.assertOutsideConfig(target), (e) => e.code === 'E_ARGS' && e.detail.reason === 'claude_config_dir', target);
+    }
+    assert.doesNotThrow(() => NMOD.assertOutsideConfig(fwd(path.join(d, 'elsewhere', 'mem'))));
+  } finally { if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev; cleanup(d); }
+});
+
+test('relaunch: after a refusal the restored settings.json launches again and reports a running worker, not a false dead pid', async () => {
+  const sb = sandbox(); const core = createFakeCore(); const m = mgr(sb, core); const id = 'w-reset';
+  try {
+    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: id });
+    await m.stop({ worker_id: id, mode: 'kill', timeout_ms: 8000 });
+    const file = path.join(L.workerDir(sb.data, id), 'settings.json'); const good = fs.readFileSync(file);
+    fs.writeFileSync(file, JSON.stringify({ ...settingsOf(sb, id), autoDreamEnabled: true }));
+    await assert.rejects(m.restart({ worker_id: id, first_turn_timeout_ms: 45000 }), (e) => e.code === 'E_NATIVE_MEMORY_MISMATCH');
+    assert.equal(m._worker(id).launchFailed, true);
+    fs.writeFileSync(file, good);
+    const again = await m.restart({ worker_id: id, first_turn_timeout_ms: 45000 });
+    assert.equal(m._worker(id).launchFailed, false, 'the refusal is over once the cause is gone');
+    assert.equal(core.currentWorker(id).state, 'running');
+    assert.ok(again && alive(m._worker(id).pid));
+  } finally { await m.shutdown().catch(() => {}); cleanup(sb.d); }
+});
+
+test('adopt: a stop goes through even when the recorded folder is now refused by the checker', async () => {
+  const sb = sandbox(); const core = createFakeCore(); const first = mgr(sb, core); let second = null; const prev = process.env.CLAUDE_CONFIG_DIR;
+  process.env.FAKE_MEMORY_AUTO = 'echo';
+  try {
+    const row = await first.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'w-badrec', native_memory: sb.mem });
+    process.env.CLAUDE_CONFIG_DIR = fwd(sb.d); // the recorded folder now sits inside the config directory
+    second = mgr(sb, core);
+    await second.stop({ worker_id: 'w-badrec', mode: 'graceful', timeout_ms: 8000 });
+    for (let i = 0; i < 100 && alive(row.pid); i++) await new Promise((r) => setTimeout(r, 50));
+    assert.equal(alive(row.pid), false, 'a stop is never refused by the lever check');
+    await assert.rejects(second.restart({ worker_id: 'w-badrec', first_turn_timeout_ms: 45000 }), (e) => e.code === 'E_ARGS' && e.detail.reason === 'claude_config_dir', 'a launch is');
+  } finally { if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev; delete process.env.FAKE_MEMORY_AUTO; if (second) await second.shutdown().catch(() => {}); await first.shutdown().catch(() => {}); cleanup(sb.d); }
+});
+
+test('message: two concurrent messages to an idle codex worker start one process and refuse the other E_SUBSTRATE', async () => {
+  const sb = sandbox(); const core = createFakeCore();
+  const m = createRunManager({ core, dataDir: sb.data, runId: 'run-nm', paths: { claudeExe: FAKE, codexExe: fwd(path.join(__dirname, 'fakes', 'fake-codex.cjs')), userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
+  try {
+    await m.spawn({ substrate: 'codex', worktree: sb.worktree, prompt: 'one', worker_id: 'w-cx' });
+    await m._waitTurn('w-cx', 8000);
+    for (let i = 0; i < 100 && alive(m._worker('w-cx').pid); i++) await new Promise((r) => setTimeout(r, 50)); // idle: the turn's process is gone
+    process.env.FAKE_CODEX_TURN_MS = '3000';
+    const before = m._worker('w-cx').launches;
+    const r = await Promise.allSettled([m.message({ worker_id: 'w-cx', text: 'a' }), m.message({ worker_id: 'w-cx', text: 'b' })]);
+    assert.equal(m._worker('w-cx').launches, before + 1, 'one launch');
+    assert.deepStrictEqual(r.map((x) => x.status).sort(), ['fulfilled', 'rejected']);
+    assert.equal(r.find((x) => x.status === 'rejected').reason.code, 'E_SUBSTRATE');
+  } finally { delete process.env.FAKE_CODEX_TURN_MS; await m.shutdown().catch(() => {}); cleanup(sb.d); }
+});

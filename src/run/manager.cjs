@@ -142,7 +142,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   }
 
   async function launch(w, { resume = null, prompt = null } = {}) {
-    await NM.guardLaunch(ctx, w, P.pidAlive); let args; // ADR 0024 amendment 3: folder, record and file are checked, and a refusal's dead row confirmed, before anything starts
+    try { NM.checkLaunch(w); } catch (e) { await NM.refuseLaunch(ctx, w, e, P.pidAlive); } let args; // sync and first (Codex's check-then-spawn stays one tick); only a refusal awaits
     if (w.substrate === 'claude-code') {
       args = L.claudeLaunchArgv({
         workerId: w.id, mcpJsonPath: w.mcpJsonPath, settingsPath: w.workerSettingsPath,
@@ -349,7 +349,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const p = W.adopt({ core, workerId, dataDir: root }).then(async (w) => {
       workers.set(workerId, w); // no launch guard: a stop must always go through, and writeFilesFor below regenerates settings.json from the record
       await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the argv written below carries the notes lever
-      writeFilesFor(w); // mcp.json, settings.json and the adapter log path belong to this run now
+      try { writeFilesFor(w); } catch (e) { if (w.nativeMemory == null || e.code !== 'E_ARGS') throw e; w.adoptRefusal = e; } // mcp.json, settings.json, the log path; a record the checker now refuses blocks launches (checkLaunch), never a stop
       if (w.substrate === 'claude-code') w.instructions = I.existingInstructions(w.dir); // never the worktree
       return w;
     });

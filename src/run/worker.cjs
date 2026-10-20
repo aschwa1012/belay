@@ -29,13 +29,13 @@ const EDIT_TOOLS = ['Edit', 'Write', 'NotebookEdit', 'MultiEdit'];
 const sha12 = (v) => crypto.createHash('sha256').update(JSON.stringify(v === undefined ? null : v)).digest('hex').slice(0, 12);
 const now = () => Date.now();
 
-function newWorkerRecord({ id, substrate, worktree, dataDir, taskId, model, allowedTools, permissionMode, sandbox, permissionPrompt = false, permitWaitMs = 600000, captureBase = true, effort = null, tools = null, maxBudgetUsd = null, nativeMemory = null }) {
+function newWorkerRecord({ id, substrate, worktree, dataDir, taskId, model, allowedTools, permissionMode, sandbox, permissionPrompt = false, permitWaitMs = 600000, captureBase = true, effort = null, tools = null, maxBudgetUsd = null, nativeMemory = null, trustRecord = false }) {
   const narrowed = L.narrowTools(tools); // ADR 0024: checked before the directory exists; null is the full list
   const dir = L.workerDir(dataDir, id);
   fs.mkdirSync(dir, { recursive: true });
   const w = {
     id, substrate, worktree: L.fwd(path.resolve(worktree)), dir, taskId: taskId || null,
-    model: model || null, effort: effort || null, maxBudgetUsd, nativeMemory: nativeMemory == null ? null : require('./surface.cjs').checkNativeMemory(nativeMemory), tools: narrowed, allowedTools: allowedTools || L.DEFAULT_ALLOWED_TOOLS,
+    model: model || null, effort: effort || null, maxBudgetUsd, nativeMemory: nativeMemory == null ? null : trustRecord ? nativeMemory : require('./surface.cjs').checkNativeMemory(nativeMemory), tools: narrowed, allowedTools: allowedTools || L.DEFAULT_ALLOWED_TOOLS,
     permissionMode: permissionMode || L.DEFAULT_PERMISSION_MODE, sandbox: sandbox || L.DEFAULT_CODEX_SANDBOX,
     // ADR 0021 decisions 3-4: what the last launch's system/init said it started with (noteInit); null
     // until a ready event carries it, always null for Codex.
@@ -90,7 +90,7 @@ async function adopt({ core, workerId, dataDir }) {
   const w = newWorkerRecord({
     id: row.id, substrate: row.substrate, worktree: row.worktree, dataDir, taskId: row.task_id,
     model: launchOpts.model, allowedTools: launchOpts.allowedTools, tools: launchOpts.tools,
-    nativeMemory: row.native_memory ? require('./surface.cjs').checkNativeMemory(row.native_memory) : null, // ADR 0024 amendment 3: from the harness's row, never the worker's files
+    nativeMemory: row.native_memory || null, trustRecord: true, // ADR 0024 amendment 3: from the harness row, never the worker files; a stop always goes through, an unusable value is refused at the next launch
     permissionMode: row.permission_mode_requested || null, sandbox: null,
     permissionPrompt: launchOpts.permissionPrompt, permitWaitMs: launchOpts.permitWaitMs || 600000,
     effort: row.effort_requested || null, // ADR 0028 decision 2: a cross-adapter relaunch keeps the level

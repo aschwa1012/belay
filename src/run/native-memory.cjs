@@ -75,31 +75,36 @@ function verifySettings(settingsFile, record) {
   }
 }
 
-// Called (and awaited) by the manager before every Claude Code launch of a process it is about to start. The refusals, each by name:
-// the folder's real path (a junction planted since the spawn), the record against settings.json, and settings.json against the
-// bytes this manager wrote. A refusal is noted on the worker and, when no process of it is alive, written as a dead row naming
-// the cause; the row is awaited and carried in the error, so a caller never sees a refusal before its row is confirmed.
-// An adopt (a second manager, a stop or message) never calls this: it regenerates the file from the record and refuses nothing.
-async function guardLaunch(ctx, w, pidAlive) {
+// The refusals, each by name: the folder's real path (a junction planted since the spawn), the record against settings.json, and
+// settings.json against the bytes this manager wrote. SYNCHRONOUS on purpose: the manager calls it first in launch(), so a
+// check-then-spawn (the Codex one-process-per-turn test) stays one tick. It returns when the launch may go ahead and throws the
+// refusal otherwise; the caller then awaits refuse() for the row. Only a Claude Code launch is guarded. Nothing here is a read of
+// settings.json at spawn time: the file can still change between this check and Claude Code's own read, and that window is not closed.
+function checkLaunch(w) {
   if (w.substrate !== 'claude-code') return;
-  try {
-    if (w.nativeMemory != null) prepareFolder(w.nativeMemory);
-    const file = w.workerSettingsPath || fwd(path.join(w.dir, 'settings.json'));
-    verifySettings(file, w.nativeMemory);
-    if (w.settingsFingerprint && fingerprint(file) !== w.settingsFingerprint) {
-      throw refuse('the worker settings.json is not what the harness wrote for this worker; the launch is refused', { settings: file, reason: 'settings_changed' }, 'E_NATIVE_MEMORY_MISMATCH');
-    }
-  } catch (e) {
-    w.lastError = { where: 'native_memory', code: e.code, message: e.message };
-    w.launchFailed = true;
-    if (!(w.pid && pidAlive(w.pid))) {
-      w.deathEstablishedBy = e.code === 'E_NATIVE_MEMORY_MISMATCH' ? 'native_memory_settings_mismatch' : 'native_memory_folder_refused';
-      let row = null;
-      try { row = await ctx.writeRow(w, 'dead'); } catch (err) { w.lastError = { where: 'native_memory.write', code: err && err.code, message: err && err.message }; e.detail = { ...e.detail, dead_row_error: err && err.message }; }
-      e.detail = { ...e.detail, dead_row: row ? { seq: row.seq == null ? null : row.seq, state: row.state, death_established_by: row.death_established_by == null ? null : row.death_established_by } : null };
-    }
-    throw e;
+  if (w.adoptRefusal) throw w.adoptRefusal; // the adopt could not write this worker's files from a record the checker now refuses
+  if (w.nativeMemory != null) prepareFolder(w.nativeMemory);
+  const file = w.workerSettingsPath || fwd(path.join(w.dir, 'settings.json'));
+  verifySettings(file, w.nativeMemory);
+  if (w.settingsFingerprint && fingerprint(file) !== w.settingsFingerprint) {
+    throw refuse('the worker settings.json is not what the harness wrote for this worker; the launch is refused', { settings: file, reason: 'settings_changed' }, 'E_NATIVE_MEMORY_MISMATCH');
   }
+  if (w.nativeMemoryRefused) { w.nativeMemoryRefused = false; w.launchFailed = false; } // the cause is gone: this launch may write its running row
 }
 
-module.exports = { prepareFolder, assertOutsideConfig, verifySettings, guardLaunch, fingerprint };
+// A refusal is noted on the worker and, when no process of it is alive, written as a dead row naming the cause; the row is awaited
+// and carried in the error, so a caller never sees a refusal before its row is confirmed. Throws `e`. An adopt (a stop, a message)
+// never calls checkLaunch: a stop always goes through.
+async function refuseLaunch(ctx, w, e, pidAlive) {
+  w.lastError = { where: 'native_memory', code: e.code, message: e.message };
+  w.launchFailed = true; w.nativeMemoryRefused = true;
+  if (!(w.pid && pidAlive(w.pid))) {
+    w.deathEstablishedBy = e.code === 'E_NATIVE_MEMORY_MISMATCH' ? 'native_memory_settings_mismatch' : 'native_memory_folder_refused';
+    let row = null;
+    try { row = await ctx.writeRow(w, 'dead'); } catch (err) { w.lastError = { where: 'native_memory.write', code: err && err.code, message: err && err.message }; e.detail = { ...e.detail, dead_row_error: err && err.message }; }
+    e.detail = { ...e.detail, dead_row: row ? { seq: row.seq == null ? null : row.seq, state: row.state, death_established_by: row.death_established_by == null ? null : row.death_established_by } : null };
+  }
+  throw e;
+}
+
+module.exports = { prepareFolder, assertOutsideConfig, verifySettings, checkLaunch, refuseLaunch, fingerprint };
