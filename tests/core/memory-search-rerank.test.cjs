@@ -22,7 +22,7 @@ before(async () => {
   E2 = new Engine({ dataDir: T.dir, store: T.store, getEmbedder: null, owner: { opts: { onEmbedderFailure: (x) => { hooked.push(x); } } }, establishedBy: 'test' });
 });
 after(() => T.close());
-afterEach(() => { provider.unregister(RR); hooked.length = 0; });
+afterEach(() => { provider.unregister(RR); hooked.length = 0; T.E._rerankFallback = null; E2._rerankFallback = null; });
 
 const tier = (over = {}) => ({ profile: 'custom', embedder: RP.NANO, reranker: RR, device: 'cpu', depth: 4, ...over });
 const ask = (E, args = {}, internal = {}) => search(E, T.who.operator('plain'), { namespaces: [NS], query: 'rerank me', query_embedding: [1, 0, 0], embedding_model: 'm', mode: 'semantic', k: 20, ...args }, { tier: tier(), ...internal });
@@ -90,9 +90,11 @@ test('a provider that throws, answers short or answers without scores falls back
   provider.register(RR, { rerank: async () => { throw new Error('model file missing'); } });
   let r = await ask(T.E);
   assert.deepStrictEqual([ids(r).length, r.rerank.cause.reason, /model file missing/.test(r.rerank.cause.message)], [FIX.length, 'error', true]);
+  T.E._rerankFallback = null; // each failure below is a first failure of its own
   provider.register(RR, { rerank: async (req) => ({ scores: req.docs.slice(1).map(d => ({ id: d.id, score: 1 })) }) });
   r = await ask(T.E);
   assert.strictEqual(r.rerank.cause.reason, 'malformed');
+  T.E._rerankFallback = null;
   provider.register(RR, { rerank: async () => ({}) });
   r = await ask(T.E);
   assert.deepStrictEqual([r.rerank.skipped, r.rerank.cause.reason, r.modes_failed[0].mode], [true, 'malformed', 'rerank']);
@@ -139,4 +141,47 @@ test('the default tier has no reranker: no rerank field, no provider call', asyn
   assert.strictEqual(r.rerank, undefined);
   assert.strictEqual(r.tier, undefined);
   assert.deepStrictEqual(ids(r), base());
+});
+
+test('a provider failure is sticky for the rest of the run: later searches skip the provider and say so', async () => {
+  provider.register(RR, { rerank: async () => { throw new Error('first failure'); } });
+  const first = await ask(T.E);
+  assert.strictEqual(first.rerank.cause.reason, 'error');
+  const seen = fake((i) => i); // the reranker would work now, but the run is on the fallback
+  const later = await ask(T.E);
+  assert.strictEqual(seen.length, 0, 'the provider is not called again');
+  assert.strictEqual(later.rerank.skipped, true);
+  assert.strictEqual(later.rerank.cause.reason, 'fallback_sticky');
+  assert.strictEqual(later.rerank.cause.first_cause.reason, 'error');
+  assert.match(later.rerank.cause.first_cause.message, /first failure/);
+  assert.strictEqual(later.modes_failed[0].mode, 'rerank');
+  assert.match(later.warning, /rerank did not run/);
+  assert.deepStrictEqual(ids(later), base());
+  // another run is not on the fallback
+  const other = await search(T.E, T.who.operator('propose'), { namespaces: [NS], query: 'rerank me', query_embedding: [1, 0, 0], embedding_model: 'm', mode: 'semantic', k: 20 }, { tier: tier() });
+  assert.strictEqual(other.rerank.ran, true);
+  assert.strictEqual(seen.length, 1);
+});
+
+test('a search with no query text is not a provider failure and does not make the run sticky', async () => {
+  fake((i) => i);
+  const vectorOnly = await search(T.E, T.who.operator('plain'), { namespaces: [NS], query_embedding: [1, 0, 0], embedding_model: 'm', mode: 'semantic' }, { tier: tier() });
+  assert.strictEqual(vectorOnly.rerank.cause.reason, 'no_query');
+  assert.strictEqual((await ask(T.E)).rerank.ran, true);
+});
+
+test('the reranker reads a v2 note as its title and its text (cut at 2,000 characters), and a v1 row as its text', async () => {
+  const seen = fake((i) => -i);
+  const id = T.note('v2 rerank title', { vec: [1, 0, 0] });
+  const body = { ...T.body(id), when: 'when reranking v2 notes' };
+  T.store.db.prepare('UPDATE memory_entries SET body = ?, text = ? WHERE id = ?').run(JSON.stringify(body), `body of the note ${'z'.repeat(3000)}`, id);
+  T.store.cache.clear();
+  try {
+    await ask(T.E, {}, { tier: tier({ depth: 10 }) });
+    const doc = seen[0].docs.find(d => d.id === id);
+    assert.ok(doc.text.startsWith('v2 rerank title\nbody of the note'), 'title, then the note text, not the When line');
+    assert.ok(!doc.text.includes('when reranking'));
+    assert.strictEqual(doc.text.length, 2000);
+    assert.ok(seen[0].docs.find(d => d.id === notes[0]).text.startsWith('rerank fixture 0'), 'a v1 row is its text');
+  } finally { T.store.delete(id); }
 });

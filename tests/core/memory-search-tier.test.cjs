@@ -1,13 +1,15 @@
 'use strict';
-// memory-search-tier.test.cjs — memory.search reads the vector cache for the caller's tier (ADR 0050 decisions 2 and 4, amendment 1):
-// the cache answers as the inline column did, a store without the cache table falls back to the inline column, a request cannot name
-// its tier, and a heavy tier with a backlog refuses by name instead of serving a partial index.
+// memory-search-tier.test.cjs — memory.search serves the caller's retrieval tier (ADR 0050 decisions 2 and 4, amendment 1): nano scans the
+// resident inline vectors as it always did and asks the vector cache only for a row that lacks one; a heavy tier reads its own vectors
+// from the cache, loaded once, and never serves a partial index; a request cannot name its tier.
 
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
+const crypto = require('node:crypto');
 const { setup, PROJECT } = require('./lifecycle-env.cjs');
 const MV = require('../../src/core/memory-vectors.cjs');
 const RP = require('../../src/core/retrieval-profiles.cjs');
+const ST = require('../../src/core/search-tier.cjs');
 const { search } = require('../../src/core/memory-search.cjs');
 
 let T, notes;
@@ -19,42 +21,65 @@ const NS = `project/${PROJECT}`;
 const blob = (v) => Buffer.from(new Float32Array(v).buffer);
 const ask = (args = {}, internal) => search(T.E, T.who.operator('plain'), { namespaces: [NS], query_embedding: [1, 0, 0], embedding_model: 'm', mode: 'semantic', k: 20, ...args }, internal);
 const ids = (r) => r.results.map(x => x.id);
-
-test('search through the vector cache returns what the inline column returns, ids and order', async () => {
-  const viaCache = await ask();
-  assert.strictEqual(viaCache.scanned, FIX.length);
-  assert.ok(MV.hasTable(T.store.db));
-  // the inline column is the reference: score every row by hand
-  const expected = notes.map((id, i) => ({ id, s: FIX[i][0] })).sort((a, b) => b.s - a.s).map(x => x.id);
-  assert.deepStrictEqual(ids(viaCache), expected);
-  // proof the cache is what is read: change one cached vector (not the inline one) and the ranking follows the cache
-  const row = T.row(notes[4]);
-  const k = { model: 'm', revision: 'r', dims: 3, template: MV.renderTemplateOf(row) };
-  MV.putVector(T.store.db, { ...k, template: row.text_template || 'v1' }, MV.embedHashOf(row, row.text_template || 'v1'), blob([1, 0, 0]));
-  try {
-    const moved = await ask();
-    assert.strictEqual(moved.results[0].score > 0.99 && ids(moved).slice(0, 2).includes(notes[4]), true, 'the cached vector decides');
-  } finally {
-    MV.putVector(T.store.db, { ...k, template: row.text_template || 'v1' }, MV.embedHashOf(row, row.text_template || 'v1'), blob(FIX[4]));
+const HEAVY = { profile: 'custom', embedder: 'heavy/x', reranker: null, device: 'gpu', depth: 0, dims: 3, revision: '' };
+const drain = (vec = [0, 0, 1]) => {
+  for (const r of T.store.db.prepare('SELECT * FROM memory_entries WHERE namespace = ?').all(NS)) {
+    const t = MV.renderTemplateOf(r);
+    MV.putVector(T.store.db, { model: 'heavy/x', revision: '', dims: 3, template: t }, MV.embedHashOf(r, t), blob(vec));
   }
-  assert.deepStrictEqual(ids(await ask()), expected);
+};
+const undrain = () => T.store.db.prepare("DELETE FROM memory_vectors WHERE model = 'heavy/x'").run();
+
+// Counts the work a search does: sha256 hashing and memory_vectors statement calls.
+function spy() {
+  const n = { hashes: 0, vectorCalls: 0 };
+  const createHash = crypto.createHash, prepare = T.store.db.prepare.bind(T.store.db);
+  crypto.createHash = (...a) => { n.hashes++; return createHash(...a); };
+  T.store.db.prepare = (sql) => {
+    const st = prepare(sql);
+    if (!/FROM memory_vectors/.test(sql)) return st; // reads of the table (its existence check is not one)
+    return new Proxy(st, { get: (t, k) => (['get', 'all', 'iterate', 'run'].includes(k) ? (...a) => { n.vectorCalls++; return t[k](...a); } : typeof t[k] === 'function' ? t[k].bind(t) : t[k]) });
+  };
+  return { n, stop() { crypto.createHash = createHash; delete T.store.db.prepare; } };
+}
+
+test('the nano tier returns the inline scores in order, and a second search does no hashing and reads no memory_vectors', async () => {
+  const first = await ask();
+  assert.strictEqual(first.scanned, FIX.length);
+  assert.deepStrictEqual(ids(first), notes.map((id, i) => ({ id, s: FIX[i][0] })).sort((a, b) => b.s - a.s).map(x => x.id));
+  const s = spy();
+  try {
+    const second = await ask();
+    assert.deepStrictEqual(ids(second), ids(first));
+    assert.deepStrictEqual(s.n, { hashes: 0, vectorCalls: 0 }, 'every row has an inline vector: the fast path does no per-row work');
+  } finally { s.stop(); }
 });
 
-test('a store without the cache table is read from the inline column, E_NO_INDEX territory', async () => {
-  const withCache = ids(await ask());
-  T.store.db.exec('DROP TABLE memory_vectors');
-  T.store._vectors = false;
+test('a row with no inline vector but a cached content vector is still found (the cleared v2 note case)', async () => {
+  const id = T.note('tier cleared inline', { vec: [1, 0, 0] });
+  T.store.db.prepare('UPDATE memory_entries SET embedding = NULL, embedding_model = NULL, embedding_revision = NULL, dim = NULL WHERE id = ?').run(id);
+  T.store.cache.clear();
   try {
     const r = await ask();
-    assert.deepStrictEqual(ids(r), withCache, 'the same ids in the same order');
-    assert.strictEqual(r.scanned, FIX.length);
-    assert.deepStrictEqual(r.modes_failed, []);
-  } finally {
-    T.store.db.exec(MV.TABLE_SQL);
-    MV.migrateVectors(T.store.db, {});
-    T.store._vectors = undefined;
-  }
-  assert.deepStrictEqual(ids(await ask()), withCache);
+    assert.ok(ids(r).includes(id), 'found through the cache');
+    assert.strictEqual(r.scanned, FIX.length + 1);
+    assert.strictEqual(r.results.find(x => x.id === id).score, 1);
+  } finally { T.store.delete(id); }
+});
+
+test('mixed revisions in one namespace: every inline vector is scanned, and the cache revision is the most common, ties by name', async () => {
+  const ranked = ids(await ask());
+  const set = (rev, list) => { for (const id of list) T.store.db.prepare('UPDATE memory_entries SET embedding_revision = ? WHERE id = ?').run(rev, id); T.store.cache.clear(); };
+  const m = { embedding_model: 'm', dim: 3 };
+  try {
+    set('r2', notes.slice(0, 2));
+    assert.deepStrictEqual(ids(await ask()), ranked, 'the same answer with two revisions');
+    assert.strictEqual(ST.nanoKey(T.E, NS, m).revision, 'r', 'four rows of r beat two of r2');
+    set('r2', notes.slice(0, 3));
+    assert.strictEqual(ST.nanoKey(T.E, NS, m).revision, 'r', 'three and three: the smaller name');
+    set('r2', notes.slice(0, 4));
+    assert.strictEqual(ST.nanoKey(T.E, NS, m).revision, 'r2');
+  } finally { set('r', notes); }
 });
 
 test('a request cannot name its tier: a tier field in the arguments is ignored', async () => {
@@ -65,32 +90,67 @@ test('a request cannot name its tier: a tier field in the arguments is ignored',
 });
 
 test('a heavy tier with a backlog refuses with E_TIER_BEHIND and serves nothing; once drained it serves', async () => {
-  const heavy = { profile: 'custom', embedder: 'heavy/x', reranker: null, device: 'gpu', depth: 0, dims: 3, revision: '' };
   const q = { embedding_model: 'heavy/x' };
-  await assert.rejects(() => ask(q, { tier: heavy }), (e) => {
-    assert.strictEqual(e.code, 'E_TIER_BEHIND');
-    assert.strictEqual(e.detail.behind, FIX.length);
-    assert.strictEqual(e.detail.embedder, 'heavy/x');
-    return true;
-  });
+  await assert.rejects(() => ask(q, { tier: HEAVY }), (e) => e.code === 'E_TIER_BEHIND' && e.detail.behind === FIX.length && e.detail.embedder === 'heavy/x');
   // all but one row: still behind, still refused (never a partial index)
   const all = T.store.db.prepare('SELECT * FROM memory_entries WHERE namespace = ?').all(NS);
-  const put = (r, v) => { const t = MV.renderTemplateOf(r); MV.putVector(T.store.db, { model: 'heavy/x', revision: '', dims: 3, template: t }, MV.embedHashOf(r, t), blob(v)); };
-  all.slice(1).forEach((r) => put(r, [0, 0, 1]));
-  await assert.rejects(() => ask(q, { tier: heavy }), (e) => e.code === 'E_TIER_BEHIND' && e.detail.behind === 1);
-  put(all[0], [0, 0, 1]);
-  const served = await ask({ ...q, query_embedding: [0, 0, 1] }, { tier: heavy });
+  const put = (r) => { const t = MV.renderTemplateOf(r); MV.putVector(T.store.db, { model: 'heavy/x', revision: '', dims: 3, template: t }, MV.embedHashOf(r, t), blob([0, 0, 1])); };
+  all.slice(1).forEach(put);
+  await assert.rejects(() => ask(q, { tier: HEAVY }), (e) => e.code === 'E_TIER_BEHIND' && e.detail.behind === 1);
+  put(all[0]);
+  const served = await ask({ ...q, query_embedding: [0, 0, 1] }, { tier: HEAVY });
   assert.strictEqual(served.results.length, FIX.length);
   assert.deepStrictEqual(served.tier, { profile: 'custom', embedder: 'heavy/x', reranker: null, device: 'gpu' });
   assert.strictEqual(served.model, 'heavy/x');
-  // keyword search uses no vectors, so a heavy tier's backlog does not refuse it
-  const kw = await search(T.E, T.who.operator('plain'), { namespaces: [NS], query: 'fixture', mode: 'keyword' }, { tier: { ...heavy, dims: 3 } });
-  assert.ok(kw.results.length > 0);
-  T.store.db.prepare("DELETE FROM memory_vectors WHERE model = 'heavy/x'").run();
+  const kw = await search(T.E, T.who.operator('plain'), { namespaces: [NS], query: 'fixture', mode: 'keyword' }, { tier: HEAVY });
+  assert.ok(kw.results.length > 0, 'keyword search uses no vectors, so a backlog does not refuse it');
+  undrain();
+});
+
+test('a note written after the backlog check is refused by the scan itself, never served as a partial index', async () => {
+  drain();
+  const m = ST.binding(T.E, HEAVY, NS);
+  const o = { filterSql: { where: '', params: [] }, includeSuperseded: false, hidden: null };
+  try {
+    ST.assertServable(T.E, HEAVY, [NS]); // passes: nothing is behind
+    assert.strictEqual(ST.candidates(T.E, HEAVY, NS, m, o).length, FIX.length);
+    const late = T.note('tier late note', { vec: [1, 0, 0] }); // written between the check and the scan
+    assert.throws(() => ST.candidates(T.E, HEAVY, NS, m, o), (e) => e.code === 'E_TIER_BEHIND' && e.detail.ids.includes(late) && e.detail.behind === 1);
+    T.store.delete(late);
+  } finally { undrain(); }
+});
+
+test('a heavy tier loads its vectors once per namespace and reloads after a write', async () => {
+  drain();
+  const q = { embedding_model: 'heavy/x', query_embedding: [0, 0, 1] };
+  try {
+    await ask(q, { tier: HEAVY });
+    const s = spy();
+    try {
+      await ask(q, { tier: HEAVY });
+      assert.deepStrictEqual(s.n, { hashes: 0, vectorCalls: 0 }, 'the second heavy search reads the loaded vectors');
+    } finally { s.stop(); }
+    const late = T.note('tier reload note', { vec: [1, 0, 0] });
+    await assert.rejects(() => ask(q, { tier: HEAVY }), (e) => e.code === 'E_TIER_BEHIND', 'the write dropped the loaded cache');
+    T.store.delete(late);
+    const s2 = spy();
+    try { await ask(q, { tier: HEAVY }); assert.ok(s2.n.hashes >= FIX.length, 'a reload hashes each row once'); } finally { s2.stop(); }
+  } finally { undrain(); }
+});
+
+test('a heavy tier on a store with no vector cache: a hybrid search answers from keywords with E_NO_INDEX in modes_failed', async () => {
+  T.store.db.exec('DROP TABLE memory_vectors');
+  try {
+    const r = await ask({ mode: 'hybrid', query: 'fixture', embedding_model: 'heavy/x' }, { tier: HEAVY });
+    assert.ok(r.results.length > 0, 'the keyword half answered');
+    assert.deepStrictEqual(r.modes_failed.map(f => [f.mode, f.code]), [['semantic', 'E_NO_INDEX']]);
+    await assert.rejects(() => ask({ embedding_model: 'heavy/x' }, { tier: HEAVY }), (e) => e.code === 'E_NO_INDEX', 'a semantic search is refused by name');
+    // nano needs no cache table: it reads the inline vectors
+    assert.strictEqual((await ask()).scanned, FIX.length);
+  } finally { T.store.db.exec(MV.TABLE_SQL); MV.migrateVectors(T.store.db, {}); }
 });
 
 test('the nano tier is the default and the seam returns it', () => {
-  const ST = require('../../src/core/search-tier.cjs');
   const tier = ST.tierFor(T.E, T.who.operator('plain'));
   assert.strictEqual(tier.embedder, RP.NANO);
   assert.strictEqual(tier.reranker, null);

@@ -56,7 +56,7 @@ async function findMatches(E, caller, project, emb, lv, template = NT.TEMPLATE_N
     namespace: projectNs(project), mode: 'semantic', view: 'full', k: Math.min(50, lv.notes_match_n * 5), min_score: lv.notes_match_threshold,
     query_embedding: emb.embedding, embedding_model: emb.embedding_model,
     filter: { types: ['note'], statuses: ['unverified', 'verified'] },
-  });
+  }, { log: false }); // an internal search: not a search the caller made, so not in the search log
   const ids = out.results.map(r => r.id);
   const tpl = new Map(ids.length ? E.store.p(`SELECT id, COALESCE(text_template, 'v1') AS t FROM memory_entries WHERE id IN (${ids.map(() => '?').join(', ')})`).all(...ids).map(r => [r.id, r.t]) : []);
   return out.results

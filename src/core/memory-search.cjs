@@ -120,8 +120,7 @@ async function semanticStage(E, caller, o, depth) {
     if (total > ceiling && !o.allowSlow) {
       throw err('E_NAMESPACE_TOO_LARGE', `namespace ${ns} holds ${total} rows, above the ${ceiling}-row exact-scan ceiling; pass allow_slow to scan it anyway`, { namespace: ns, rows: total, ceiling });
     }
-    // A namespace at or above the ceiling (allow_slow lets it through) is scanned from the namespace cache (the slow path), not the vector cache.
-    for (const r of ST.candidates(E, o.tier, ns, m, o, total >= ceiling)) {
+    for (const r of ST.candidates(E, o.tier, ns, m, o)) {
       scanned++;
       let s = 0;
       for (let d = 0; d < m.dim; d++) s += r.vec[d] * q[d];
@@ -257,8 +256,9 @@ function onSemanticFailure(E, caller, e) {
   throw err('E_SEMANTIC_REQUIRED', 'memory.search hybrid could not run its semantic half: ' + why + ' (' + cause.code + ': ' + cause.message + '), and the run embedder mode is required, so no keyword-only answer is given. ' + next, { cause: cause.code, mode: run.mode, run_id: caller.run_id, guarded });
 }
 
-// `internal` is never a request field (the engine passes none): { tier, levers } let a caller inside this process, and the tests, name the
-// retrieval tier; a request cannot (invariant 3). Without it the tier is ST.tierFor(E, caller).
+// `internal` is never a request field (the engine passes none): { tier, levers, log } let a caller inside this process, and the tests, name the
+// retrieval tier and switch the log off (an internal search, such as the hand-back's duplicate check); a request cannot (invariant 3).
+// Without a tier it is ST.tierFor(E, caller).
 async function search(E, caller, args, internal = {}) {
   const t0 = Date.now(), ms = {};
   const o = parseSearch(E, caller, args);
@@ -276,7 +276,7 @@ async function search(E, caller, args, internal = {}) {
     const ts = Date.now();
     try { sem = await semanticStage(E, caller, o, depth); ran.push('semantic'); }
     catch (e) {
-      if (o.mode === 'semantic') throw e; // unchanged: a semantic search that cannot run is refused by name
+      if (o.mode === 'semantic' || e.code === 'E_TIER_BEHIND') throw e; // a semantic search that cannot run is refused by name; a heavy tier never serves a partial index
       onSemanticFailure(E, caller, e);
       failed.push({ mode: 'semantic', code: asCode(e), message: e.message });
     }
@@ -361,9 +361,12 @@ async function search(E, caller, args, internal = {}) {
     out.warning = [`rerank did not run (${rr.failed.code}${rr.info.cause.reason ? `: ${rr.info.cause.reason}` : ''}); the results are in fusion order, not reranked`, out.warning].filter(Boolean).join('; ');
   }
   ms.total = Date.now() - t0;
-  if (E.owner) { // only the store owner logs; a search answered from a copy writes nothing (invariant 6)
+  // Only the store owner logs, and only the run that answered: a copy writes nothing (invariant 6), an internal search asked not to, and a
+  // run the in-process timeout abandoned (index.cjs re-runs it as keyword) leaves the log to the re-run.
+  const abandoned = args[Symbol.for('belay.search.abandoned')];
+  if (E.owner && internal.log !== false && !(abandoned && abandoned.abandoned)) {
     ST.logSearch(E, caller, { kind: 'search', tier: o.tier, query: o.query, mode: o.mode, namespaces: o.namespaces, k: o.k, offset: o.offset, ms, capMb: lv.search_log_cap_mb,
-      ranks: ST.rankRecord(fused, ranked, Math.max(lv.rerank_depth, o.offset + o.k)), fallback: failed.length ? { failed } : null });
+      ranks: ST.rankRecord(fused, ranked, Math.max(lv.rerank_depth, o.k), o.order), fallback: failed.length ? { failed } : null });
   }
   return out;
 }

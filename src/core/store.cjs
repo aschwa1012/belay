@@ -184,6 +184,7 @@ class Store {
         const row = { id, vec, ttl_at: ttl };
         if (i >= 0) c.rows[i] = row; else c.rows.push(row);
         if (a.supersedes) c.superseded.add(a.supersedes);
+        c.heavy = null; // search-tier.cjs keeps a heavy tier's vectors on this object
       }
       const stored = this.p('SELECT written_by, status, title, run_id, task_id, turn, source, redactions, embedding IS NOT NULL AS has_vec FROM memory_entries WHERE id = ?').get(id);
       return {
@@ -313,7 +314,7 @@ class Store {
       this.p('DELETE FROM memory_entries WHERE id = ?').run(id);
       this.sweepVectors([row]);
       const c = this.cache.get(row.namespace);
-      if (c) c.rows = c.rows.filter(r => r.id !== id);
+      if (c) { c.rows = c.rows.filter(r => r.id !== id); c.heavy = null; }
       return { id, deleted: true, namespace: row.namespace };
     });
   }

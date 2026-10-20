@@ -127,6 +127,8 @@ async function events(E, caller, args) {
     for (const k of args.kinds) if (!EVENT_KINDS.includes(k)) throw err('E_ARGS', `memory.events kinds named ${JSON.stringify(k)}, and must be among ${EVENT_KINDS.join(', ')}`);
     where.push(`kind IN (${args.kinds.map(() => '?').join(', ')})`); params.push(...args.kinds);
   }
+  // The search log (kinds search and index) is large and is read only on request: a call that names no kinds leaves it out.
+  if (args.kinds === undefined || args.kinds === null) { where.push(`kind NOT IN (${SEARCH_LOG_KINDS.map(() => '?').join(', ')})`); params.push(...SEARCH_LOG_KINDS); }
   let limit = '';
   if (args.limit !== undefined && args.limit !== null) {
     if (!Number.isInteger(args.limit) || args.limit < 1) throw err('E_ARGS', 'memory.events limit must be a positive integer');

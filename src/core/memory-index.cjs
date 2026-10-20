@@ -155,7 +155,7 @@ async function index(E, caller, args = {}) {
       const task = args.task_id ? rows.current(E.store, 'task', args.task_id) : null;
       const query = [typeof args.query === 'string' ? args.query : null, task && typeof task.spec === 'string' ? task.spec : null].filter(Boolean).join('\n') || null;
       const ranks = (out.row_ids || []).map((id, i) => ({ id, before: i + 1, after: i + 1 }));
-      ST.logIndex(E, caller, { query, mode: 'index', namespaces: args.namespaces || null, k: ranks.length, ranks, ms: { total: Date.now() - t0 }, worker_id: args.worker_id || null, task_id: args.task_id || null });
+      ST.logIndex(E, caller, { query, mode: 'index', namespaces: args.namespaces || null, k: ranks.length, ranks, ms: { total: Date.now() - t0 }, for_worker: args.worker_id || null, for_task: args.task_id || null });
     } catch { /* the log is a record, never the index's failure */ }
   }
   return out;
