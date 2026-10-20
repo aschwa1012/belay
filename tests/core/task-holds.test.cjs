@@ -136,6 +136,45 @@ test('a later attach of a live run does not make its tasks yield to a run that r
   await overlapOf(r.task.assign({ task_id: theirs.id, check_only: true }));
 });
 
+test('a run that lapsed with no run.end and re-attaches queues behind the run that took its paths meanwhile, and a later attach of the same life keeps that order (D36)', async () => {
+  const la = await open('run-lapse-a');
+  await la.run.attach({ adapter_pid: deadPid() }); // the first adapter dies; run.end never comes
+  const mine = await la.task.create({ spec: 'lapsed', files_owned: ['lapse/x'] });
+  const lb = await open('run-lapse-b');
+  await lb.run.attach({ adapter_pid: process.pid });
+  await lb.worker.write({ id: 'wlb', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's', last_event_at: Date.now() });
+  const theirs = await lb.task.create({ spec: 'took it meanwhile', files_owned: ['lapse/x'] }); // allowed: the lapsed run held nothing
+  assert.strictEqual(theirs.state, 'open');
+  await lb.task.assign({ task_id: theirs.id, worker_id: 'wlb' });
+  const r = await la.run.attach({ adapter_pid: process.pid }); // a new adapter over an unended row: the run is live again
+  assert.deepStrictEqual(r.overlaps, [{ task_id: mine.id, other_task_id: theirs.id, files: ['lapse/x'] }]);
+  await overlapOf(la.task.assign({ task_id: mine.id, check_only: true }));
+  await overlapOf(la.task.assign({ task_id: mine.id, worker_id: 'wlb' }));
+  assert.deepStrictEqual(await lb.task.assign({ task_id: theirs.id, check_only: true }), { assignable: true, task_id: theirs.id }, 'the incumbent keeps its paths');
+  assert.strictEqual((await lb.task.get({ task_id: theirs.id })).state, 'assigned');
+  assert.strictEqual((await la.task.get({ task_id: mine.id })).state, 'open', 'a refused assign wrote nothing');
+  // The orchestrator adapter of the revived life attaches while the run process still answers: no new lapse, so the order stays.
+  await la.run.attach({ adapter_pid: process.pid });
+  await overlapOf(la.task.assign({ task_id: mine.id, check_only: true }));
+  assert.deepStrictEqual(await lb.task.assign({ task_id: theirs.id, check_only: true }), { assignable: true, task_id: theirs.id });
+});
+
+test('of two runs that lapsed and revived, the later revival queues behind the earlier, and an ordinary attach of the earlier does not change that (D36)', async () => {
+  const y = await open('run-cont-y');
+  await y.run.attach({ adapter_pid: deadPid() });
+  const ty = await y.task.create({ spec: 'y', files_owned: ['cont/x'] });
+  const x = await open('run-cont-x');
+  await x.run.attach({ adapter_pid: deadPid() });
+  const tx = await x.task.create({ spec: 'x', files_owned: ['cont/x'] }); // both runs are lapsed: nobody holds
+  await y.run.attach({ adapter_pid: process.pid }); // y revives first
+  await x.run.attach({ adapter_pid: process.pid }); // x revives second
+  await overlapOf(x.task.assign({ task_id: tx.id, check_only: true }));
+  assert.deepStrictEqual(await y.task.assign({ task_id: ty.id, check_only: true }), { assignable: true, task_id: ty.id });
+  await y.run.attach({ adapter_pid: process.pid }); // y's orchestrator adapter: the same life, no lapse
+  await overlapOf(x.task.assign({ task_id: tx.id, check_only: true }));
+  assert.deepStrictEqual(await y.task.assign({ task_id: ty.id, check_only: true }), { assignable: true, task_id: ty.id });
+});
+
 test('a first attach reports no overlaps', async () => {
   const c = await open('run-first');
   const r = await c.run.attach({ adapter_pid: process.pid });

@@ -39,13 +39,19 @@ function holdOf(task, liveness) {
 }
 
 // The store sequence of the row that made a run live in its present life: the first row after its last ended row, or
-// its first row. Rows are ordered by `seq` across the whole table, so this orders two runs' revivals without a clock.
-// null for a run with no row. A later attach of the same life (the orchestrator adapter's) does not move it.
+// its first row, or the row whose attach revived a lapsed adapter (a `revived_epoch` that differs from the row before it:
+// the previous adapter was dead with no run.end, audit D36). Rows are ordered by `seq` across the whole table, so this
+// orders two runs' revivals without a clock. null for a run with no row. A later attach of a life that never lapsed (the
+// orchestrator adapter's) writes no `revived_epoch` and so does not move it.
 function liveSince(store, runId) {
   const hist = rows.history(store, 'run', runId);
   if (!hist.length) return null;
   let since = hist[0].seq;
-  for (let i = 0; i < hist.length; i++) if (hist[i].ended_at != null && hist[i + 1]) since = hist[i + 1].seq;
+  for (let i = 0; i + 1 < hist.length; i++) {
+    const cur = hist[i], next = hist[i + 1];
+    if (cur.ended_at != null) since = next.seq;
+    else if (next.revived_epoch != null && next.revived_epoch !== cur.revived_epoch) since = next.seq;
+  }
   return since;
 }
 

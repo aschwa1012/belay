@@ -32,7 +32,7 @@ const ATTACH_SUSPECT = LIFE_CLAIMING_STATES;
 // Fix round for 6f (diff-scope): `rows.cjs` (unowned) lacks paused_at/paused_by in COLUMNS.run, so
 // rows.append would drop both. This local insert (its own shape, via exported bind/parseRow) adds them.
 function appendRun(E, values, writtenBy, at = Date.now()) {
-  const cols = [...rows.COLUMNS.run, 'paused_at', 'paused_by', 'pause_parks', 'memory_levers', 'project', 'project_dir', 'embedder_mode']; // item 1: 6th local column; ADR 0041 decision 1: the memory levers and the project
+  const cols = [...rows.COLUMNS.run, 'paused_at', 'paused_by', 'pause_parks', 'memory_levers', 'project', 'project_dir', 'embedder_mode', 'revived_epoch']; // item 1: 6th local column; ADR 0041 decision 1: the memory levers and the project
   const all = [...cols, 'written_at', 'written_by'];
   const sql = `INSERT INTO run(${all.join(', ')}) VALUES (${all.map(() => '?').join(', ')})`;
   const params = cols.map(c => rows.bind(values[c]));
@@ -116,6 +116,12 @@ async function attach(E, caller, args) {
   // null already (run.end below), but a belated write reaching this rule any other way must not resurrect
   // a pause nothing holds on a new epoch of the same run id (probe `stale`).
   const carryPause = prev && prev.ended_at == null;
+  // ADR 0046 decision 1 (audit D36): an attach over an unended row whose adapter no longer answers revives a run that lapsed without a
+  // run.end, as a re-run over an ended row does, so its tasks queue behind a run that took its paths meanwhile. An attach while the previous
+  // adapter still answers (the orchestrator's adapter after the run process) is the same life and moves nothing.
+  // A reused pid reads as live, which fails towards keeping the old order, never towards a second owner.
+  const lapsed = !!(carryPause && !pidAlive(prev.adapter_pid));
+  const revivedEpoch = lapsed ? epoch : null; // an attach of a life that never lapsed writes null, which never moves a run's priority
   const run = appendRun(E, {
     id: runId,
     epoch,
@@ -140,6 +146,7 @@ async function attach(E, caller, args) {
     memory_levers: leversGiven ? args.memory_levers : (carryPause ? prev.memory_levers : null), // same carry rule
     project: projectGiven ? args.project : (carryPause ? prev.project : null),
     project_dir: dirGiven ? args.project_dir : (carryPause ? prev.project_dir : null),
+    revived_epoch: revivedEpoch,
     embedder_mode: modeGiven ? (args.embedder_mode === null ? null : require('./embedder-mode.cjs').normalize(args.embedder_mode)) : (carryPause ? prev.embedder_mode : null),
   }, by, t);
   E.noteWrite();
