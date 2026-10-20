@@ -54,6 +54,11 @@ function filesOverlap({ task, files }) {
   return err('E_FILES_OVERLAP', `task ${task.id} is not done and already owns ${files.join(', ')}`, { other_task_id: task.id, other_run_id: task.run_id, files });
 }
 
+function runNotLive(task, worker) {
+  return err('E_RUN_NOT_LIVE', `task ${task.id} owns files and its run ${task.run_id} is not live, and ${worker ? `worker ${worker.id}'s run ${worker.run_id} is not a live run that could hold them` : 'no live run was named to hold them'}; assigning it would leave its files unprotected, so close it and create the work again in a live run`,
+    { task_id: task.id, run_id: task.run_id, worker_run_id: worker ? worker.run_id : null });
+}
+
 async function create(E, caller, args) {
   if (typeof args.spec !== 'string' || !args.spec.trim()) throw err('E_ARGS', 'task.create needs a spec describing the work');
   const filesOwned = args.files_owned == null ? null : args.files_owned;
@@ -169,15 +174,19 @@ async function assign(E, caller, args) {
     // ADR 0046 decision 1: assigning makes a task hold its files, so another holding task, in any run, that overlaps them
     // refuses it. Inside one live run create already refused the overlap, so this fires for a re-attached run only: a task
     // of a run that came back to life after this task's run did yields, so the run live now keeps the paths.
+    // The hold belongs to a live run: a task whose own run has ended is taken over by the run of the worker that takes it
+    // (the calling orchestrator's run for a check_only), and is refused when no live run can own it.
+    const worker = checkOnly ? null : rows.current(E.store, 'worker', args.worker_id);
+    const ownerRun = holds.activationRun(E.store, task, checkOnly ? (caller.role === 'orchestrator' ? caller.run_id : null) : (worker && worker.run_id));
     if (Array.isArray(task.files_owned) && task.files_owned.length) {
-      const [first] = holds.findClashes(E.store, task.files_owned, task.id, { run_id: task.run_id });
+      const [first] = holds.findClashes(E.store, task.files_owned, task.id, { run_id: ownerRun == null ? task.run_id : ownerRun });
       if (first) throw filesOverlap(first);
     }
+    if (ownerRun == null) throw runNotLive(task, worker);
 
     // ADR 0030 decision 4: the task-side checks above are the whole of a check_only call; it writes nothing.
     if (checkOnly) return { assignable: true, task_id: task.id };
 
-    const worker = rows.current(E.store, 'worker', args.worker_id);
     if (!worker) throw err('E_WORKER_NOT_LIVE', `no worker row exists for ${args.worker_id}, so it cannot hold a lease`, { worker_id: args.worker_id });
     if (!LIVE_WORKER_STATES.has(worker.state)) {
       throw err('E_WORKER_NOT_LIVE', `worker ${args.worker_id} is in state ${worker.state} and only starting, running or idle can be assigned a task`, { worker_id: args.worker_id, state: worker.state });
@@ -197,11 +206,11 @@ async function assign(E, caller, args) {
     // operator writing from the CLI (run_id 'cli') must not produce a lease no run's store.diff can see.
     const t = Date.now(), by = E.writtenBy(caller);
     const lease = rows.append(E.store, 'lease', {
-      id: rows.newId(), task_id: args.task_id, run_id: task.run_id, holder: args.worker_id,
+      id: rows.newId(), task_id: args.task_id, run_id: ownerRun, holder: args.worker_id,
       holder_role: 'worker', granted_at: t, expires_at: t + ttlFrom(args), ttl_ms: ttlFrom(args), released_at: null,
       supersedes: old ? old.id : null,
     }, by, t);
-    const row = rows.append(E.store, 'task', { ...task, state: 'assigned' }, by, t);
+    const row = rows.append(E.store, 'task', { ...task, run_id: ownerRun, state: 'assigned' }, by, t);
     return { task: row, old_lease: old, new_lease: lease, paused_worker: null };
   });
   if (!checkOnly) E.noteWrite();
@@ -407,6 +416,13 @@ async function takeControl(E, caller, args) {
   const out = E.store.tx(() => {
     const task = rows.current(E.store, 'task', args.task_id);
     if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.task_id}`, { task_id: args.task_id });
+    // ADR 0046 decision 1: the operator's lease activates the task like an assignment does, so its files must be held by a
+    // live run (the task's own: the operator has no run to re-home it to) and not yielded to one that is live now.
+    if (task.state !== 'done' && Array.isArray(task.files_owned) && task.files_owned.length) {
+      if (holds.activationRun(E.store, task, null) == null) throw runNotLive(task, null);
+      const [first] = holds.findClashes(E.store, task.files_owned, task.id, { run_id: task.run_id });
+      if (first) throw filesOverlap(first);
+    }
     const old = rows.currentLeaseForTask(E.store, args.task_id);
     const t = Date.now(), by = E.writtenBy(caller);
     if (old && !old.released_at) rows.append(E.store, 'lease', { ...old, released_at: t }, by, t);

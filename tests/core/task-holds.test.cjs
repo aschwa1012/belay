@@ -200,3 +200,63 @@ test('an ended run\'s task does not take the priority a live run\'s task yields:
   assert.strictEqual((await op.task.get({ task_id: old.id })).state, 'open', 'a refused assign wrote nothing');
   assert.deepStrictEqual(await holdsOf(op, live.id), [true, 'live']);
 });
+
+// Activation (ADR 0046 decision 1): every path that makes a task worked must establish its hold for a live run, or refuse.
+const orphan = async (tag, files) => {
+  const o = await open(`run-orph-${tag}`);
+  await o.run.attach({ adapter_pid: process.pid });
+  await o.worker.write({ id: `w-orph-${tag}`, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's', last_event_at: Date.now() });
+  const t = await o.task.create({ spec: 'orphan', files_owned: files });
+  await o.run.end({ exit_reason: 'test' });
+  return t;
+};
+const liveWorker = async (c, id) => c.worker.write({ id, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's', last_event_at: Date.now() });
+
+test('an operator assigning an ended run\'s task to a live run\'s worker makes the live run hold its files', async () => {
+  const t = await orphan('adopt', ['adopt/x']);
+  const op = await open('cli', 'operator');
+  await liveWorker(b, 'w-adopt');
+  assert.deepStrictEqual(await holdsOf(op, t.id), [false, 'run_ended']);
+  const r = await op.task.assign({ task_id: t.id, worker_id: 'w-adopt' });
+  assert.strictEqual(r.task.run_id, 'run-b');
+  assert.strictEqual(r.new_lease.run_id, 'run-b');
+  assert.deepStrictEqual(await holdsOf(op, t.id), [true, 'live']);
+  await overlapOf(b.task.create({ spec: 'clash', files_owned: ['adopt/x'] }));
+});
+
+test('assigning an ended run\'s task to a worker whose run is also ended is refused, and nothing is written', async () => {
+  const t = await orphan('dead', ['bothended/x']);
+  const op = await open('cli', 'operator');
+  const before = await op.task.get({ task_id: t.id });
+  await assert.rejects(op.task.assign({ task_id: t.id, worker_id: 'w-orph-dead' }), (e) => { assert.strictEqual(e.code, 'E_RUN_NOT_LIVE', e.message); return true; });
+  assert.deepStrictEqual(await op.task.get({ task_id: t.id }), before);
+});
+
+test('check_only of an ended run\'s task is assignable for a live orchestrator and refused for the operator', async () => {
+  const t = await orphan('chk', ['chk/x']);
+  const op = await open('cli', 'operator');
+  assert.strictEqual((await b.task.assign({ task_id: t.id, check_only: true })).assignable, true);
+  await assert.rejects(op.task.assign({ task_id: t.id, check_only: true }), (e) => e.code === 'E_RUN_NOT_LIVE');
+});
+
+test('an ended run\'s task that owns no files is assigned as before, in its own run', async () => {
+  const t = await orphan('nofiles', null);
+  const op = await open('cli', 'operator');
+  await liveWorker(b, 'w-nofiles');
+  const r = await op.task.assign({ task_id: t.id, worker_id: 'w-nofiles' });
+  assert.strictEqual(r.task.run_id, 'run-orph-nofiles');
+});
+
+test('take-control of an ended run\'s task that owns files is refused, and nothing is written', async () => {
+  const t = await orphan('tc', ['tc/x']);
+  const op = await open('cli', 'operator');
+  const before = await op.task.get({ task_id: t.id });
+  await assert.rejects(op.lease.takeControl({ task_id: t.id }), (e) => { assert.strictEqual(e.code, 'E_RUN_NOT_LIVE', e.message); return true; });
+  assert.deepStrictEqual(await op.task.get({ task_id: t.id }), before);
+});
+
+test('take-control of a task in a live run still works, and refuses an overlap the live run now holds', async () => {
+  const op = await open('cli', 'operator');
+  const mine = await b.task.create({ spec: 'tc live', files_owned: ['tclive/x'] });
+  assert.strictEqual((await op.lease.takeControl({ task_id: mine.id })).new_lease.holder, 'operator');
+});
