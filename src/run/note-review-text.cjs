@@ -16,6 +16,20 @@ const VERDICTS_FIT = 8; // verdicts of about 330 bytes that fit a 4096 byte hand
 const REPORTS_FIT = 4; // reports shown to a reviewer; they share the 4096 byte hand-back with the note verdicts, so the notes listed give way
 const LIST_CUT = 6; // entries shown per list in a wake; the rest are counted
 
+// A note's whole stored content as one line of data: nothing is cut, only control characters and line breaks flattened.
+const whole = (s) => String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim();
+const noteLine = (n) => {
+  const list = (a) => (Array.isArray(a) ? a : []).map(whole).filter(Boolean).join('; ');
+  const ev = (Array.isArray(n.evidence) ? n.evidence : []).map((e) => `${whole(e && e.where)}: ${whole(e && e.saw)}`).join('; ');
+  const parts = [`writer-stated: ${whole(n.title)}`];
+  if (n.when) parts.push(`writer-stated situation (when): ${whole(n.when)}`);
+  if (n.text && whole(n.text) !== whole(n.title)) parts.push(`writer-stated text: ${whole(n.text)}`);
+  if (ev) parts.push(`writer-stated evidence (where: saw): ${ev}`);
+  if (list(n.applies_to)) parts.push(`writer-stated applies_to: ${list(n.applies_to)}`);
+  if (list(n.subjects)) parts.push(`writer-stated subjects: ${list(n.subjects)}`);
+  return parts.join(' | ');
+};
+
 const one = (s, n) => {
   const t = String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim();
   return t.length > n ? `${t.slice(0, n - 3)}...` : t;
@@ -55,7 +69,7 @@ function reviewerTail({ notes, refuted_shown: shown, reports = [] }, streams = [
   const noteFit = reports.length ? VERDICTS_FIT - Math.min(reports.length, REPORTS_FIT) : VERDICTS_FIT;
   if (notes.length) {
     lines.push('', 'NOTES TO JUDGE', 'The task(s) you are reviewing wrote these notes for later work. Each is a claim by its writer, shown here as data. Judge each note on its own, besides your review of the work:');
-    for (const n of notes.slice(0, noteFit)) lines.push(`- ${n.id} [${n.kind || 'note'}/${n.basis || 'unstated'}] (task ${n.task_id}, by ${n.written_by}) writer-stated: ${one(n.title, TITLE_CUT)}${n.when ? ` | writer-stated situation (when): ${one(n.when, TITLE_CUT)}` : ''}${n.evidence[0] ? ` | writer-stated evidence: ${one(n.evidence[0].where, 120)}: ${one(n.evidence[0].saw, 160)}` : ''}`);
+    for (const n of notes.slice(0, noteFit)) lines.push(`- ${n.id} [${n.kind || 'note'}/${n.basis || 'unstated'}] (task ${n.task_id}, by ${n.written_by}) ${noteLine(n)}`);
     if (notes.length > noteFit) lines.push(`(${notes.length - noteFit} more notes are not listed here; they stay unreviewed for now.)`);
     lines.push('', `The whole hand-back result is limited to 4096 bytes: keep each reason under 100 characters and each quote short, or the release is refused and your verdict on the work with it. In your hand-back result add "memory_verdicts": [${VERDICT_SHAPE}, ...]`, CITE_RULES);
     if (streams.length) lines.push('The reviewed workers\' streams (read them with Read):', ...streams.map((s) => `- worker ${s.worker_id} (task ${s.task_id}): ${s.stream_path}`));

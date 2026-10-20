@@ -65,10 +65,10 @@ function refutationOf(E, noteId) {
 // The notes the reviewed tasks wrote, live in the project and not yet judged (unverified), for a reviewer to judge.
 function notesUnderReview(E, taskIds, project) {
   if (!taskIds.length || !project) return [];
-  return E.store.p(`SELECT ${COLS} FROM memory_entries WHERE type = 'note' AND namespace = ? AND COALESCE(status, 'unverified') = 'unverified' AND json_extract(body, '$.unsupported') IS NULL AND task_id IN (${taskIds.map(() => '?').join(', ')}) ORDER BY created_at, id LIMIT ${NOTES_MAX}`)
+  return E.store.p(`SELECT ${COLS}, text FROM memory_entries WHERE type = 'note' AND namespace = ? AND COALESCE(status, 'unverified') = 'unverified' AND json_extract(body, '$.unsupported') IS NULL AND task_id IN (${taskIds.map(() => '?').join(', ')}) ORDER BY created_at, id LIMIT ${NOTES_MAX}`)
     .all(`project/${project}`, ...taskIds).map((r) => {
       const b = parse(r.body);
-      return { id: r.id, title: r.title, when: typeof b.when === 'string' ? b.when : null, task_id: r.task_id, written_by: r.written_by, kind: b.kind || null, basis: b.basis || null, evidence: Array.isArray(b.evidence) ? b.evidence : [], applies_to: Array.isArray(b.applies_to) ? b.applies_to : [] };
+      return { id: r.id, title: r.title, when: typeof b.when === 'string' ? b.when : null, text: typeof r.text === 'string' ? r.text : null, task_id: r.task_id, written_by: r.written_by, kind: b.kind || null, basis: b.basis || null, evidence: Array.isArray(b.evidence) ? b.evidence : [], applies_to: Array.isArray(b.applies_to) ? b.applies_to : [], subjects: Array.isArray(b.subjects) ? b.subjects : [] };
     });
 }
 
