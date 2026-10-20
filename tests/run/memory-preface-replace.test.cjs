@@ -219,3 +219,24 @@ test('a resume after a replace holds what the replacement was shown (receipts si
     cleanup(sb.data);
   }
 });
+
+test('a replace whose receipts cannot be read still relaunches, and the failed index is a receipt, not silence', async () => {
+  const core = memoryCore({ first_message_index: true, bottle: true }, ['mem-a']);
+  const sb = sandbox();
+  const m = mgr(sb, core);
+  try {
+    await withEnv({ FAKE_RECV_FILE: path.join(sb.data, 'recv.jsonl') }, async () => {
+      await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w1', task_id: 't1' });
+      await m._waitTurn('w1', 8000);
+      m._worker('w1').lastEventAt = 1;
+      core.memory.events = async () => { throw Object.assign(new Error('events unreadable'), { code: 'E_BUSY' }); };
+      assert.strictEqual((await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 })).branch, 'replace');
+    });
+    const bad = core.events.filter((e) => e.kind === 'index_injected' && e.ok === 0);
+    assert.strictEqual(bad.length, 1, JSON.stringify(core.events));
+    assert.strictEqual(m._worker('w1').lastError.where, 'memory.index');
+  } finally {
+    try { await m.shutdown(); } catch { /* best effort */ }
+    cleanup(sb.data);
+  }
+});

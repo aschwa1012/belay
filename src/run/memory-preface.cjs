@@ -226,7 +226,10 @@ async function projectSubjects(ctx, w) {
 // set by the restart only when the bottle kept the recorded first message), and a replacement with no bottle holds nothing of the old one,
 // so it is shown the whole index again.
 async function relaunch(w, ctx, firstText, { fresh = false } = {}) {
-  if (fresh) await startConversation(ctx, w, w.bottleCarriesFirst === true ? w.bottleText : '');
+  if (fresh && (await levers(ctx, w)).first_message_index) {
+    // The index read below fails the same way and is named there (an ok 0 receipt); a lever off reads no receipts at all.
+    try { await startConversation(ctx, w, w.bottleCarriesFirst === true ? w.bottleText : ''); } catch (e) { noteError(w, 'memory.events', e); }
+  }
   const text = await indexBlock(w, ctx, undefined, undefined);
   const out = !text ? firstText : firstText ? `${firstText}
 
