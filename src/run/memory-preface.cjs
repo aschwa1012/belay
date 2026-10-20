@@ -9,7 +9,7 @@
 // is a `memory_event` with ok 0 (and `w.lastError`), never silence.
 
 const { fail } = require('./errors.cjs');
-const { DEFAULTS, leversFor } = require('./memory-levers.cjs');
+const { defaultLevers, leversFor } = require('./memory-levers.cjs');
 
 const codeOf = (e) => (e && typeof e.code === 'string' && e.code.startsWith('E_') ? e.code : 'E_INTERNAL');
 const noteError = (w, where, e) => { w.lastError = { where, code: e && e.code, message: e && e.message }; };
@@ -19,7 +19,7 @@ const noteError = (w, where, e) => { w.lastError = { where, code: e && e.code, m
 // the run then proceeds with every lever off for this call, which is the only safe reading of an unknown.
 async function levers(ctx, w, { receipt = false } = {}) {
   if (ctx.memoryLevers) return ctx.memoryLevers;
-  if (!ctx.core || !ctx.core.run || typeof ctx.core.run.get !== 'function') return { ...DEFAULTS };
+  if (!ctx.core || !ctx.core.run || typeof ctx.core.run.get !== 'function') return defaultLevers();
   try {
     ctx.memoryLevers = await leversFor(ctx.core, ctx.runId);
     return ctx.memoryLevers;
@@ -31,7 +31,7 @@ async function levers(ctx, w, { receipt = false } = {}) {
       await record(ctx, w, { kind: 'levers_unread', ok: false, code: codeOf(e), message: String((e && e.message) || e).slice(0, 300) });
     }
     if (w) noteError(w, 'memory.levers', e);
-    return { ...DEFAULTS };
+    return defaultLevers();
   }
 }
 

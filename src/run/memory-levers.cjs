@@ -5,7 +5,10 @@
 // `memory_levers` only then). A run without the block has every lever at its default, and every lever that
 // does anything new defaults off.
 
-const { DEFAULTS, parseMemoryBlock, isDefault } = require('../core/memory-levers.cjs'); // the pure spec, shared with run.attach
+const core = require('../core/memory-levers.cjs'); // the pure spec, shared with run.attach
+const { defaultLevers, parseMemoryBlock, isDefault } = core;
+// What a run with no memory block has: the core's defaults with `notes` resolved to off (it needs a project, which is never derived).
+const DEFAULTS = Object.freeze(defaultLevers());
 
 // One read per manager. The cache holds the promise, so concurrent callers share the read; a failed read is
 // not cached, so the next call tries again. A row with no block (an older run, or a run that gave none) is
@@ -15,9 +18,9 @@ const cache = new WeakMap(); // core -> Map(runId -> Promise<levers>)
 // The levers a run row records: its parsed memory block, or the defaults for none or an unreadable one.
 function leversOfRow(row) {
   const raw = row ? row.memory_levers : null;
-  if (raw == null) return { ...DEFAULTS };
+  if (raw == null) return defaultLevers();
   let obj;
-  try { obj = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return { ...DEFAULTS }; }
+  try { obj = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return defaultLevers(); }
   const parsed = parseMemoryBlock(obj);
   return parsed.error ? { ...DEFAULTS } : parsed.value;
 }
@@ -44,4 +47,4 @@ function leversFor(core, runId) {
   return byRun.get(runId);
 }
 
-module.exports = { DEFAULTS, parseMemoryBlock, leversFor, leversOfRow, isDefault };
+module.exports = { DEFAULTS, defaultLevers, parseMemoryBlock, leversFor, leversOfRow, isDefault };

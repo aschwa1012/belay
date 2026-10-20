@@ -262,7 +262,7 @@ test('the new levers default off and need the notes lever', () => {
   const d = L.parseMemoryBlock({}).value;
   assert.deepStrictEqual([d.notes_overflow_line, d.notes_trust_wording], [false, false]);
   for (const k of ['notes_overflow_line', 'notes_trust_wording']) {
-    assert.match(L.parseMemoryBlock({ project: 'p', [k]: true }).error, /needs memory.notes/);
+    assert.match(L.parseMemoryBlock({ project: 'p', notes: false, [k]: true }).error, /needs memory.notes/);
     assert.strictEqual(L.parseMemoryBlock({ project: 'p', notes: true, [k]: true }).value[k], true);
     assert.match(L.parseMemoryBlock({ project: 'p', notes: true, [k]: 'yes' }).error, /true or false/);
   }
