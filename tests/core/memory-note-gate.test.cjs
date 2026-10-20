@@ -203,6 +203,23 @@ test('retrieve by explicit id is not filtered: it returns a hidden row with its 
   assert.strictEqual(G.visible(E, orch(READER), id), false, 'the gate itself says hidden');
 });
 
+test('retrieve by id leaves out the lifecycle namespaces for a tool-channel orchestrator; the harness and the operator keep them', async () => {
+  task('t-lcg', WRITER, 'done');
+  const proj = fresh();
+  const live = note(proj, 'live note', { task_id: 't-lcg' });
+  for (const prefix of ['archive/', 'held/', 'pending/', 'proposal/', 'draft/', 'nomination/']) {
+    const id = note(proj.replace('project/', prefix), `in ${prefix}`, { task_id: 't-lcg' });
+    const one = await call(orch(READER), 'memory.get', { id });
+    assert.strictEqual(one.found, false, `memory.get ${prefix}`);
+    const many = await call(orch(READER), 'memory.get_many', { ids: [live, id] });
+    assert.deepStrictEqual(many.missing, [id], `get_many ${prefix}: only the lifecycle row is missing`);
+    assert.strictEqual(many.rows.find((r) => r.id === live).found, true, 'the project row in the same batch is read');
+    assert.strictEqual(many.rows.find((r) => r.id === id).found, false);
+    assert.strictEqual((await call({ ...orch(READER), channel: 'harness' }, 'memory.get', { id })).found, true, `harness reads ${prefix}`);
+    assert.strictEqual((await call(callerFor('operator'), 'memory.get', { id })).found, true, `operator reads ${prefix}`);
+  }
+});
+
 test('memory.timeline goes through the gate: a hidden anchor is not found, and the sides leave hidden notes out', async () => {
   const space = fresh();
   task('t-tl', WRITER, 'done');
