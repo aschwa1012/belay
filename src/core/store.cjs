@@ -15,6 +15,7 @@ const { ensureSchema, scanCeiling } = require('./schema.cjs');
 const { checkSchema, putStamp } = require('./schema-stamp.cjs');
 const { migrateOwner, ftsReady } = require('./memory-schema.cjs');
 const { deriveTitle, validId } = require('./memory-rows.cjs');
+const MV = require('./memory-vectors.cjs');
 
 const now = () => Date.now();
 const hashText = t => crypto.createHash('sha256').update(String(t).trim()).digest('hex');
@@ -54,12 +55,16 @@ class Store {
           this.db.exec('COMMIT');
         } catch (e) { try { this.db.exec('ROLLBACK'); } catch { /* already out */ } throw e; }
         migrateOwner(this.db);
+        // The vector cache's table. Keep this the LAST owner migration: the migration number is not final, and a rebase that
+        // adds another one above it only moves this line (the table is created and backfilled idempotently, in its own transaction).
+        MV.migrateVectors(this.db);
       } else {
         checkSchema(this.db, dbPath);
         ensureSchema(this.db);
       }
     } catch (e) { try { this.db.close(); } catch { /* already closed */ } throw e; }
     this._stmts = new Map();
+    this._vectors = false; // true once memory_vectors is known to exist (it is made by the owner's open only)
     this.cache = new Map(); // namespace -> { rows: [{id, vec, ttl_at}], superseded: Set<id> }
   }
 
@@ -80,6 +85,20 @@ class Store {
       throw e;
     }
   }
+
+  // ---- the vector cache (memory-vectors.cjs): every inline vector written below is mirrored into memory_vectors, and the
+  // vectors a deleted or changed row leaves unreferenced are swept, in the caller's transaction. A store opened without the table
+  // (a copy, a writer that was not the owner) skips both.
+  _hasVectors() {
+    if (!this._vectors) this._vectors = MV.hasTable(this.db);
+    return this._vectors;
+  }
+  _snap(id) { return this._hasVectors() ? this.p('SELECT * FROM memory_entries WHERE id = ?').get(id) || null : null; }
+  _mirror(id) {
+    if (this._hasVectors()) MV.putRowVector(this.db, this.p('SELECT * FROM memory_entries WHERE id = ?').get(id));
+  }
+  // Sweeps the vectors the given row snapshots (taken before the change) held and no remaining row references.
+  sweepVectors(rows) { return MV.sweepRows(this.db, rows.filter(Boolean)); }
 
   // ---- memory write path -------------------------------------------------
   // ADR 0040 §1-3. `title`, `body`, `redactions` (objects or text), and the harness provenance `run_id`,
@@ -132,9 +151,10 @@ class Store {
       const tags = a.tags ? JSON.stringify(a.tags) : null;
       const prov = a.provenance || null;
       const blob = vec ? Buffer.from(vec.buffer) : null;
-      let id, action;
+      let id, action, before = null;
       if (dup) {
         id = dup.id; action = 'updated';
+        before = blob ? this._snap(id) : null;
         this.p(`UPDATE memory_entries SET last_writer_id = ?, embedding = COALESCE(?, embedding), text_template = COALESCE(?, text_template),
                 tags = COALESCE(?, tags), provenance = COALESCE(?, provenance), supersedes = COALESCE(?, supersedes),
                 title = COALESCE(title, ?), body = COALESCE(?, body), redactions = COALESCE(?, redactions),
@@ -150,6 +170,7 @@ class Store {
             a.embedding_revision || null, a.dim || null, tags, prov, a.supersedes || null, createdAt, createdAt, ttl,
             title, body, redactions, a.run_id ?? null, a.task_id ?? null, a.turn ?? null, a.source ?? null, a.written_by ?? null, blob ? (a.text_template || 'v1') : null);
       }
+      if (blob) { this._mirror(id); if (before) this.sweepVectors([before]); }
       const c = this.cache.get(ns);
       if (c) {
         const i = c.rows.findIndex(r => r.id === id);
@@ -239,6 +260,7 @@ class Store {
     const vec = toUnitF32(e.embedding, e.dim);
     this.p('UPDATE memory_entries SET embedding = ?, embedding_model = ?, embedding_revision = ?, dim = ?, text_template = ?, updated_at = ? WHERE id = ? AND embedding IS NULL')
       .run(Buffer.from(vec.buffer), e.embedding_model, e.embedding_revision || null, e.dim, e.text_template || 'v1', now(), id);
+    this._mirror(id);
     this.cache.delete(row.namespace);
     return true;
   }
@@ -248,7 +270,9 @@ class Store {
   clearEmbedding(id) {
     const row = this.p('SELECT namespace FROM memory_entries WHERE id = ?').get(id);
     if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
+    const before = this._snap(id);
     this.p('UPDATE memory_entries SET embedding = NULL, embedding_model = NULL, embedding_revision = NULL, dim = NULL, text_template = NULL WHERE id = ?').run(id);
+    if (before) this.sweepVectors([before]);
     this.cache.delete(row.namespace);
   }
 
@@ -264,8 +288,11 @@ class Store {
       throw err('E_MODEL', `namespace ${row.namespace} is bound to ${m ? `${m.embedding_model}/${m.dim}` : 'no model'} and this vector is ${e.embedding_model}/${e.dim}`, { namespace: row.namespace, bound: m || null });
     }
     const vec = toUnitF32(e.embedding, e.dim);
+    const before = this._snap(id);
     this.p('UPDATE memory_entries SET embedding = ?, embedding_revision = ?, text_template = ? WHERE id = ?')
       .run(Buffer.from(vec.buffer), e.embedding_revision || null, e.text_template, id);
+    this._mirror(id);
+    if (before) this.sweepVectors([before]);
     this.cache.delete(row.namespace);
     return { template: row.text_template || 'v1' };
   }
@@ -275,6 +302,7 @@ class Store {
       const row = this.p('SELECT * FROM memory_entries WHERE id = ?').get(id);
       if (!row) return { id, deleted: false };
       this.p('DELETE FROM memory_entries WHERE id = ?').run(id);
+      this.sweepVectors([row]);
       const c = this.cache.get(row.namespace);
       if (c) c.rows = c.rows.filter(r => r.id !== id);
       return { id, deleted: true, namespace: row.namespace };
@@ -285,7 +313,9 @@ class Store {
     const t = now();
     return this.tx(() => {
       const nss = this.p('SELECT DISTINCT namespace FROM memory_entries WHERE ttl_at IS NOT NULL AND ttl_at < ?').all(t).map(r => r.namespace);
+      const gone = this._hasVectors() ? this.p('SELECT * FROM memory_entries WHERE ttl_at IS NOT NULL AND ttl_at < ?').all(t) : [];
       const r = this.p('DELETE FROM memory_entries WHERE ttl_at IS NOT NULL AND ttl_at < ?').run(t);
+      this.sweepVectors(gone);
       for (const n of nss) this.cache.delete(n);
       return { expired_deleted: Number(r.changes), namespaces: nss };
     });
