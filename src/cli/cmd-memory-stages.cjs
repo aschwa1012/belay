@@ -5,7 +5,8 @@
 //   review [--project p] the Opus archive reviewer, ON DEMAND (the run-close trigger is off unless `archive_review_auto`), on the project's
 //                         held queue (every kind), ignoring the triggers. `--project` picks the newest ended run whose notes project it is.
 //                         It runs under a store-level claim (review-run.cjs): a second review of the project refuses while the first is
-//                         alive. `--start` launches it DETACHED and returns once the claim shows (the panel's button runs this).
+//                         alive. It also refuses while a run other than the one it acts for is live (that run's close would shut the owner
+//                         under it). `--start` launches it DETACHED and returns once the claim shows (the panel's button runs this).
 //   resolve <id> new | repeats <id> | supersedes <id> --evidence <text>
 //                         settle a pending note as the operator: memory.noteResolve's own logic (a repeat archives the pending row,
 //                         nothing is deleted). For a note whose run has ended and whose writer is gone.
@@ -30,6 +31,21 @@ async function chooseRun(core, wanted, project = null) {
   if (ended) return { runId: ended.id };
   const live = runs.find((r) => r.alive && notesOn(r));
   return { runId: null, live: live ? live.id : null };
+}
+
+// Audit D35: another run's close shuts the store owner down and destroys every connection, so a review (minutes long, and paid for)
+// started while a run other than the one it acts for is live can lose its calls (E_OWNER_LOST, outcome unknown) and leave a stray
+// owner behind that refuses the next `belay run`. It waits for that run to end. The run it acts for is the operator's own word
+// (`--run`). A listing that cannot be read blocks nothing: this guard adds no new failure. `resolve` is not gated: it is one
+// call of milliseconds, and a loss there is an explicit E_OWNER_LOST with the outcome named unknown, never a silent one.
+async function otherLiveRun(core, runId) {
+  let live = [];
+  try { live = ((await core.run.list({})).runs || []).filter((r) => r.alive && r.id !== runId); } catch { return null; }
+  if (!live.length) return null;
+  const ids = live.map((r) => r.id).join(', ');
+  const message = `run ${ids} is live in this data dir; its close would shut the store owner under this review, so wait for it to end (or stop it) and try again`;
+  return { code: 1, text: `belay memory review: ${one(message)}
+`, json: { error: { code: 'E_BUSY', message, live_runs: live.map((r) => r.id) } } };
 }
 
 // The stage's own core: the operator, as the run it acts for. Returns { rc, lv, runId, dataDir } or { fail }.
@@ -75,6 +91,10 @@ async function runStage(which, core, parsed, ctx, found) {
   const s = await stageCore(core, parsed, ctx, found);
   if (s.fail) return s.fail;
   if (which === 'review' && !s.project) { await release(s.rc); return { code: 1, text: 'belay memory review: the run has no project, so there is no held queue to review; pass --project <p>\n', json: { error: { code: 'E_ARGS', message: 'no project' } } }; }
+  if (which === 'review') {
+    const busy = await otherLiveRun(core, s.runId);
+    if (busy) { await release(s.rc); return busy; }
+  }
   try {
     if (which === 'review' && parsed.opts.start) return await require('./review-run.cjs').launch({ core, s, project: s.project, parsed, ctx, release });
     const deps = (process.env.BELAY_TEST_MODE === '1' && ctx.stageDeps) || {};

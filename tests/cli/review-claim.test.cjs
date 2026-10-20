@@ -22,6 +22,7 @@ const RUN = 'lc-apply';
 const cmd = (T, argv, stageDeps) => run({ argv, cwd: T.dir, dataDir: T.dir, dataDirGiven: true, stageDeps });
 async function planted(fn) {
   const T = await setup();
+  await T.endOthers('apply'); // the review waits for any other live run (audit D35)
   try { return await fn(T); } finally { try { T.store.close(); } catch { /* closed by the test */ } cleanup(T.dir); }
 }
 async function holdOne(T) {
