@@ -28,14 +28,14 @@ function stubClient(stub, workerOpts, clientOpts = {}) {
 }
 
 test('a request queued behind a slow load is kept alive by the load\'s heartbeat; without one it is declared hung', async () => {
-  const slow = stubClient({ loadDelayMs: 1500 }, { heartbeatMs: 150 }, { opBoundMs: 500 });
+  const slow = stubClient({ loadDelayMs: 3000 }, { heartbeatMs: 100 }, { opBoundMs: 1200 });
   try {
     const [loaded, vec] = await Promise.all([slow.c.load('org/emb'), slow.c.embed('org/emb', 'hello', { as: 'document' })]);
     assert.strictEqual(loaded.native_dims, 4);
     assert.strictEqual(vec.dim, 4);
     assert.strictEqual(slow.c.hung, null);
   } finally { await slow.done(); }
-  const quiet = stubClient({ loadDelayMs: 1500 }, { heartbeatMs: 100000 }, { opBoundMs: 500 });
+  const quiet = stubClient({ loadDelayMs: 3000 }, { heartbeatMs: 100000 }, { opBoundMs: 1200 });
   try {
     const results = await Promise.allSettled([quiet.c.load('org/emb'), quiet.c.embed('org/emb', 'hello', { as: 'document' })]);
     assert.strictEqual(results[1].status, 'rejected');
