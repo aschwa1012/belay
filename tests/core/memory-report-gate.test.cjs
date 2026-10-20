@@ -1,7 +1,8 @@
 'use strict';
 // memory-report-gate.test.cjs — which worker reports open the scrubber's relation gate, and the gate's other guards.
 //   A report a reviewer REJECTED is not evidence: it opens no relate gate, names no pair for the scrubber, gives no direction, and is
-//   shown to the scrubber as rejected and to workers not at all. An UNJUDGED report still opens the gate (ruling of 2026-10-15).
+//   shown to the scrubber as rejected and to workers not at all. An UNJUDGED report is a worker's say-so: it opens no relate gate and
+//   archives nothing; only a report a reviewer UPHELD does.
 //   Gate (b) (both notes live) and the redaction of a relation's reason are pinned here, each by a case a one-line change would fail.
 
 const { test, before, after } = require('node:test');
@@ -17,6 +18,7 @@ const RUN = 'lc-apply';
 const rep = (to, over = {}) => ({ by: 'worker:w2', worker_id: 'w2', task_id: 'tx-1', run_id: RUN, why: 'it is wrong', replaced_by: to, at: 11, ...over });
 const rejected = (over = {}) => ({ task_id: 'tx-1', report_at: 11, verdict: 'rejected', by: 'rev-1', ref: 'rt-1', at: 20, ...over });
 const setBody = (id, fn) => { const b = T.body(id); fn(b); T.store.p('UPDATE memory_entries SET body = ? WHERE id = ?').run(JSON.stringify(b), id); };
+const upheld = (over = {}) => rejected({ verdict: 'upheld', ...over });
 const relate = (id, relation, of, over = {}) => ({ id, action: 'relate', relation, of, reason: `they relate as ${relation}`, ...over });
 const scrub = (kind, entries) => T.call(T.who.harness(kind), 'memory.scrubApply', { scrub: entries, scope: entries.flatMap((e) => [e.id, e.of].filter(Boolean)), ...T.evidence });
 const scope = (kind = 'apply') => T.call(T.who.operator(kind), 'memory.scrubScope', {});
@@ -29,8 +31,16 @@ const unrelated = (mark) => {
   return { x, y };
 };
 
-test('D10: an unjudged report still opens the relate gate and archives the reported note (the ruling)', async () => {
+test('D10: an unjudged report opens no relate gate: the relation is refused and the reported note stays live', async () => {
   const { x, y } = unrelated();
+  const r = await scrub('apply', [relate(x, 'repeats', y)]);
+  assert.deepStrictEqual([r.counts.applied, r.refused[0].code], [0, 'E_PRECONDITION']);
+  assert.match(r.refused[0].message, /no worker report of this run/);
+  assert.strictEqual(ns(x), `project/${PROJECT}`, 'not archived');
+});
+
+test('D10: a report a reviewer upheld opens the relate gate and archives the reported note', async () => {
+  const { x, y } = unrelated((b) => { b.report_judgments = [upheld()]; });
   const r = await scrub('apply', [relate(x, 'repeats', y)]);
   assert.strictEqual(r.counts.applied, 1, JSON.stringify(r.refused));
   assert.strictEqual(r.applied[0].facts.source, 'stored_cosine');
@@ -51,16 +61,16 @@ test('D10: a report the reviewer rejected opens no gate: the relation is refused
   }
 });
 
-test('D10: only a rejection of THIS report suppresses it (same task, same report time, verdict rejected)', async () => {
+test('D10: only an upheld judgment of THIS report opens the gate (same task, same report time, verdict upheld)', async () => {
   for (const mark of [
-    (b) => { b.report_judgments = [rejected({ report_at: 12 })]; },
-    (b) => { b.report_judgments = [rejected({ task_id: 'tx-2' })]; },
-    (b) => { b.report_judgments = [rejected({ verdict: 'upheld' })]; },
+    (b) => { b.report_judgments = [upheld({ report_at: 12 })]; },
+    (b) => { b.report_judgments = [upheld({ task_id: 'tx-2' })]; },
+    (b) => { b.report_judgments = [upheld({ verdict: 'recommended' })]; }, // the Haiku job's recommendation is not a judgment
   ]) {
     const { x, y } = unrelated(mark);
     const r = await scrub('apply', [relate(x, 'repeats', y)]);
-    assert.strictEqual(r.counts.applied, 1, JSON.stringify(r.refused));
-    assert.strictEqual(ns(x), `archive/${PROJECT}`);
+    assert.deepStrictEqual([r.counts.applied, r.refused[0].code], [0, 'E_PRECONDITION']);
+    assert.strictEqual(ns(x), `project/${PROJECT}`);
   }
 });
 
@@ -73,10 +83,10 @@ test('D10: a rejected report gives no direction, so a pair the score relates fal
   const old2 = T.note('direction old 2', { vec: A, created_at: 100 });
   const neu2 = T.note('direction new 2', { vec: A_NEAR, created_at: 200, reported_wrong: [rep(old2)] });
   const r2 = await scrub('apply', [relate(neu2, 'repeats', old2)]);
-  assert.strictEqual(r2.applied[0].archived, neu2, 'the reported note is the one archived');
+  assert.strictEqual(r2.applied[0].archived, neu2, 'the newer is archived by age');
   const o3 = T.note('direction old 3', { vec: A, created_at: 100 });
   const n3 = T.note('direction new 3', { vec: A_NEAR, created_at: 200 });
-  setBody(o3, (b) => { b.reported_wrong = [rep(n3)]; }); // the OLDER note is the reported one: a standing report flips the usual direction
+  setBody(o3, (b) => { b.reported_wrong = [rep(n3)]; b.report_judgments = [upheld()]; }); // the OLDER note is the reported one: an upheld report flips the usual direction
   const r3 = await scrub('apply', [relate(o3, 'repeats', n3)]);
   assert.strictEqual(r3.applied[0].archived, o3);
   const o4 = T.note('direction old 4', { vec: A, created_at: 100 });
@@ -84,6 +94,11 @@ test('D10: a rejected report gives no direction, so a pair the score relates fal
   setBody(o4, (b) => { b.reported_wrong = [rep(n4)]; b.report_judgments = [rejected()]; });
   const r4 = await scrub('apply', [relate(o4, 'repeats', n4)]);
   assert.strictEqual(r4.applied[0].archived, n4, 'rejected: age decides, the newer one goes');
+  const o5 = T.note('direction old 5', { vec: A, created_at: 100 });
+  const n5 = T.note('direction new 5', { vec: A_NEAR, created_at: 200 });
+  setBody(o5, (b) => { b.reported_wrong = [rep(n5)]; }); // unjudged: the older note is reported, but a say-so gives no direction
+  const r5 = await scrub('apply', [relate(o5, 'repeats', n5)]);
+  assert.strictEqual(r5.applied[0].archived, n5, 'unjudged: age decides, the newer one goes');
 });
 
 test('D10: the scrub scope does not offer a pair on a rejected report, and shows the scrubber the rejection', async () => {
@@ -173,7 +188,7 @@ test('D30: gate (b): a refuted, a superseded and a held partner are each refused
 });
 
 test('S25: an error that is not a refusal propagates; it is never read as a clean per-entry refusal', async () => {
-  const { x, y } = unrelated();
+  const { x, y } = unrelated((b) => { b.report_judgments = [upheld()]; });
   const real = T.store.p.bind(T.store);
   let armed = false;
   T.store.p = (sql) => { if (armed && /FROM memory_entries WHERE supersedes = \?/.test(sql)) throw new TypeError('injected internal failure'); return real(sql); };

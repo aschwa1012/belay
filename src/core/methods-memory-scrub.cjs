@@ -24,7 +24,7 @@ const { plan, applyPlan } = require('./memory-relate.cjs');
 const N = require('./methods-memory-notes.cjs');
 const { validId } = require('./memory-rows.cjs');
 const { standing } = require('./report-marks.cjs');
-const { openProposals, sameMark } = require('./proposal-open.cjs');
+const { openProposals, sameMark, keysFor } = require('./proposal-open.cjs');
 
 const KEYS = ['scrub', 'scope', 'run_id', 'head_sha', 'worktree', 'evidence_files'];
 const REFUSALS = new Set(['E_CITATION', 'E_PRECONDITION', 'E_SCOPE', 'E_NOT_FOUND', 'E_EXISTS', 'E_ARGS', 'E_ROLE', 'E_MODEL']);
@@ -58,7 +58,7 @@ function propose(E, caller, ctx, ent, index, sources, facts) {
     ns: L.nsOf('proposal', ctx.project), type: 'proposal', runId: ctx.runId,
     text: `proposal ${ent.action}${ent.kind ? ` ${ent.kind}` : ''}${ent.resolve ? ` ${ent.resolve}` : ''}${ent.relation ? ` ${ent.relation}` : ''} ${ent.id}${ent.of ? ` of ${ent.of}` : ''} (run ${ctx.runId})`,
     title: `proposal: ${ent.action}${ent.kind ? ` ${ent.kind}` : ''} ${ent.id}`,
-    body: { state: 'open', note_id: ent.id, entry: ent, run_id: ctx.runId, head_sha: ctx.evidence.head_sha, facts: facts || null, scrub: scrubReceipt(ctx, ent, index, sources) },
+    body: { state: 'open', note_id: ent.id, entry: ent, keys: keysFor(E, [ent.id, ent.of]), run_id: ctx.runId, head_sha: ctx.evidence.head_sha, facts: facts || null, scrub: scrubReceipt(ctx, ent, index, sources) },
   });
   return { index, id: ent.id, action: ent.action, outcome: 'proposed', ...(open ? { already_open: true } : {}), ...(ent.relation ? { relation: ent.relation } : {}), ...(ent.resolve ? { resolve: ent.resolve } : {}), row: C.rowOut(E, row.id) };
 }
