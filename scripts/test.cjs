@@ -36,7 +36,7 @@ const TMP_HELPER = path.join(__dirname, '..', 'tests', 'helpers', 'tmp.cjs').spl
 // test (tests/run/integration.test.cjs) makes it write and which is not belay's. `belay-snapshot` is the process
 // snapshot's own TEMP (src/core/proc-identity.cjs): only PowerShell probe files belong in it, and the next snapshot
 // sweeps those once stale, so they are counted on their own line; anything else in it is a leak.
-const KEPT = new Set(['belay-run', 'belay-ro', 'claude', 'belay-snapshot']);
+const KEPT = new Set(['belay-run', 'belay-ro', 'claude', 'belay-snapshot', 'belay-spawned']); // belay-spawned: the spawn register's directory (src/core/spawn-register.cjs), emptied as its processes exit
 const PROBE_FILE = /^__PSScriptPolicyTest_/;
 const snapshotResidue = (scratch) => { try { return fs.readdirSync(path.join(scratch, 'belay-snapshot')).filter((c) => PROBE_FILE.test(c)).length; } catch { return 0; } };
 
