@@ -35,6 +35,14 @@ function storedCosine(a, b) {
   return na && nb ? dot / Math.sqrt(na * nb) : null;
 }
 
+// The similarity a note's recorded match (body.matches) names for `target`, or -1 when none binds to both vectors.
+function recordedSimilarity(note, target) {
+  const m = (note.b.matches || []).find(x => x && x.id === target.id && typeof x.similarity === 'number');
+  if (!m || !m.embedding_model || !m.dim) return -1;
+  if ((m.template || 'v1') !== templateOf(note) || templateOf(note) !== templateOf(target)) return -1;
+  return m.embedding_model === note.embedding_model && m.embedding_model === target.embedding_model && m.dim === note.dim && m.dim === target.dim ? m.similarity : -1;
+}
+
 // A live, kept note of the project: in project/<p>, a note, not refuted, not replaced by another row, not held.
 function liveKept(E, project, id, what) {
   const r = loadNote(E, id);
@@ -82,9 +90,10 @@ function checkHoldFacts(E, project, note, kind, ofId, ground, threshold = DUP_SI
     if (!path && !subject && !reportedBy && !(sim !== null && sim >= threshold)) throw refuse(`${target.id} shares no path or subject with ${note.id} and its stored similarity is ${sim === null ? 'unavailable' : round3(sim)} (needs ${threshold}), so it is not shown to replace it`, { id: note.id, of: target.id });
     return { replacement: target.id, replacement_created_at: target.created_at, note_created_at: note.created_at, shared: path ? 'path' : subject ? 'subject' : reportedBy ? 'report' : 'similarity', similarity: sim === null ? null : round3(sim), template: templateOf(note), replacement_template: templateOf(target) };
   }
+  // As a relation does (memory-relate.cjs): the stored cosine is the current fact and decides alone; a recorded match, made when the note was
+  // written and possibly on a vector since replaced, counts only when there is no cosine and it names the model, dimension and template of both.
   const sim = storedCosine(note, target);
-  const matched = (note.b.matches || []).find(m => m && m.id === target.id);
-  const best = Math.max(sim === null ? -1 : sim, matched && typeof matched.similarity === 'number' ? matched.similarity : -1);
+  const best = sim !== null ? sim : recordedSimilarity(note, target);
   const reported = (note.b.reported_wrong || []).some(w => w && w.replaced_by === target.id);
   const template = templateOf(note);
   if (best >= threshold) return { via: 'similarity', similarity: round3(best), kept: target.id, template };

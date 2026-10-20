@@ -21,6 +21,7 @@ const { search } = require('./memory-search.cjs');
 const { hashText } = require('./store.cjs');
 const { recordEventSync } = require('./methods-ledger.cjs');
 const { DEFAULTS } = require('./memory-levers.cjs');
+const { storedCosine } = require('./memory-facts.cjs');
 
 const SEEN_MAX = 20; // body.seen_in is bounded; body.seen_total keeps the full count
 const WRONG_KEEP = 20;
@@ -63,6 +64,27 @@ async function findMatches(E, caller, project, emb, lv, template = NT.TEMPLATE_N
     .filter(r => typeof r.score === 'number' && r.score >= lv.notes_match_threshold && tpl.get(r.id) === template)
     .map(r => ({ id: r.id, title: r.title, kind: r.body && r.body.kind, basis: r.body && r.body.basis, similarity: round3(r.score), template, embedding_model: emb.embedding_model, dim: emb.dim }))
     .sort((a, b) => b.similarity - a.similarity || (a.id < b.id ? -1 : 1)).slice(0, lv.notes_match_n);
+}
+
+// Claims the project already judged wrong that this text is close to: a refuted note of project/<p>, and a note archived as wrong in
+// archive/<p>. A live search never returns them (it reads only unverified and verified notes of project/), so without this a worker that
+// repeats a refuted claim writes it live with no step and no warning. Each is compared by the stored cosine, as a relation is (same model,
+// dimension and text template), against the same threshold. A lookup, not a ranking: bounded, and it writes nothing.
+const PRIOR_MAX = 2000;
+function priorVerdicts(E, project, emb, lv, template = NT.TEMPLATE_NEW) {
+  const q = { embedding: Buffer.from(Float32Array.from(emb.embedding).buffer), dim: emb.dim, embedding_model: emb.embedding_model, text_template: template };
+  const rows = E.store.p(`SELECT id, namespace, title, status, status_receipt, embedding, embedding_model, dim, text_template, body FROM memory_entries
+    WHERE type = 'note' AND embedding IS NOT NULL AND ((namespace = ? AND status = 'refuted') OR (namespace = ? AND json_extract(body, '$.archived.kind') = 'wrong')) LIMIT ${PRIOR_MAX}`).all(projectNs(project), `archive/${project}`);
+  const out = [];
+  for (const r of rows) {
+    const cos = storedCosine(q, r);
+    if (cos === null || cos < lv.notes_match_threshold) continue;
+    const a = bodyOf(r).archived || {};
+    out.push(r.status === 'refuted'
+      ? { id: r.id, title: r.title, verdict: 'refuted', similarity: round3(cos), receipt: r.status_receipt || null }
+      : { id: r.id, title: r.title, verdict: 'archived_wrong', similarity: round3(cos), ground: a.ground || null, reason: typeof a.reason === 'string' ? a.reason.slice(0, 300) : null, at: a.at || null });
+  }
+  return out.sort((a, b) => b.similarity - a.similarity || (a.id < b.id ? -1 : 1)).slice(0, lv.notes_match_n);
 }
 
 function leversUnread(E, caller) {
@@ -141,7 +163,8 @@ async function prepare(E, caller, args) {
       }
     }
     const matches = emb ? await findMatches(E, caller, project, emb, lv) : [];
-    prepared.push({ index: i, kind: n.kind, basis: n.basis, title, text: s.text, body: s.body, redactions: s.redactions, emb: emb || {}, template: NT.TEMPLATE_NEW, applies: { ...ap.counts, ...(diff && diff.error ? { diff_error: diff.error } : {}) }, unembedded: embedFailed, matches, model });
+    const prior = emb ? priorVerdicts(E, project, emb, lv) : [];
+    prepared.push({ index: i, kind: n.kind, basis: n.basis, title, text: s.text, body: s.body, redactions: s.redactions, emb: emb || {}, template: NT.TEMPLATE_NEW, applies: { ...ap.counts, ...(diff && diff.error ? { diff_error: diff.error } : {}) }, unembedded: embedFailed, matches, prior, model });
   }
   const verdict = args.result && typeof args.result === 'object' && typeof args.result.verdict === 'string' ? args.result.verdict : null;
   return { project, lv, notes: prepared, wrong, skipped, memoryIds, verdict };
@@ -161,29 +184,55 @@ function claimAfterRelease(E, caller, prep, lease, taskId) {
   recordEventSync(E, caller, { kind: 'reflection', key, worker_id: caller.worker_id, task_id: taskId, ok: true, message: `notes after the release of lease ${lease.id}` });
 }
 
+// A hand-back whose note has exactly the text of a live note: a sighting on that note when the writer or the task is not the note's own and
+// the pair is not already recorded. Returns { recorded, seen_total } or null when nothing was added.
+function sightText(E, caller, clash, by, taskId, p, t) {
+  if (clash.task_id === taskId && clash.written_by === by) return null;
+  let seen = null;
+  E.store.patchBody(clash.id, b => {
+    if ((b.seen_in || []).some(s => s && s.task_id === taskId && s.written_by === by)) return b;
+    const beforehand = inIndexBeforehand(E, { run_id: caller.run_id, worker_id: E.writtenBy(caller), created_at: t }, clash.id);
+    b.seen_in = [...(b.seen_in || []), { task_id: taskId, written_by: by, run_id: caller.run_id, in_index_beforehand: beforehand, at: t, evidence: (p.body.evidence || []).slice(0, 3), via: 'same_text' }].slice(-SEEN_MAX);
+    b.seen_total = (b.seen_total || 0) + 1;
+    seen = b.seen_total;
+    return fitBody(b);
+  });
+  return seen === null ? null : { recorded: true, seen_total: seen };
+}
+
 // Inside the release's transaction. Writes the notes and the marks and returns the proof of each. A note whose
 // text is already a row of the target namespace is never written over: the existing row is named as a duplicate.
 function commit(E, caller, prep, { task_id }) {
   const t = Date.now();
   const by = E.memoryWriter(caller);
   const items = prep.notes.map(p => {
-    const pending = p.matches.length > 0;
-    const ns = pending ? pendingNs(prep.project) : projectNs(prep.project);
-    const clash = E.store.p('SELECT id, type, written_by FROM memory_entries WHERE namespace = ? AND text_hash = ?').get(ns, hashText(p.text));
+    const pending = p.matches.length > 0 || p.prior.length > 0;
+    const byText = n => E.store.p('SELECT id, type, written_by, task_id, status, EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = memory_entries.id AND s.namespace = memory_entries.namespace) AS replaced FROM memory_entries WHERE namespace = ? AND text_hash = ?').get(n, hashText(p.text));
+    // A pending note is resolved against the notes it was matched with. The same words as a row of project/<p> that is not one of those matches
+    // (a refuted note, a row that is not a note, a note not compared) could never be resolved, so it answers duplicate and no pending row is written.
+    const inProject = pending ? byText(projectNs(prep.project)) : null;
+    const unresolvable = inProject && !p.matches.some(m => m.id === inProject.id) ? inProject : null;
+    const ns = unresolvable || !pending ? projectNs(prep.project) : pendingNs(prep.project);
+    const clash = unresolvable || byText(ns);
     if (clash) {
-      return { index: p.index, id: clash.id, action: 'duplicate', state: 'duplicate', namespace: ns, title: p.title, existing_type: clash.type, same_writer: clash.written_by === by, note: `${ns} already holds a ${clash.type} row with this text${clash.written_by === by ? '' : ' (another writer\'s)'}, so nothing was written and there is nothing for you to resolve` };
+      // The same words from another writer in another task are a second sighting of a live note, as a resolved repeat is: promotion counts them.
+      // A refuted or replaced note is not live, so it takes no sighting, and the writer is told the row was judged against.
+      const judged = clash.status === 'refuted' ? 'refuted' : (clash.replaced ? 'superseded' : null);
+      const sighted = clash.type === 'note' && !judged && !pending ? sightText(E, caller, clash, by, task_id, p, t) : null;
+      return { index: p.index, id: clash.id, action: 'duplicate', state: 'duplicate', namespace: ns, title: p.title, existing_type: clash.type, same_writer: clash.written_by === by, ...(judged ? { existing_status: judged } : {}), ...(p.prior.length ? { prior_verdicts: p.prior } : {}), ...(sighted ? { sighting: sighted } : {}), note: `${ns} already holds a ${clash.type} row with this text${clash.written_by === by ? '' : ' (another writer\'s)'}, so no new row was written${sighted ? ' (your hand-back is recorded as a sighting of it)' : ''}${judged === 'refuted' ? '; that note was judged wrong, so this is not agreement with your claim' : judged === 'superseded' ? '; that note was replaced by a newer one' : ''} and there is nothing for you to resolve` };
     }
     const body = {
       kind: p.kind, basis: p.basis, when: p.body.when, evidence: p.body.evidence, applies_to: p.body.applies_to, applies_to_from: p.body.applies_to_from, task_files: p.body.task_files, task_files_from: p.body.task_files_from, task_files_truncated: p.body.task_files_truncated, ...(p.body.applies_to_ambiguous ? { applies_to_ambiguous: p.body.applies_to_ambiguous } : {}), subjects: p.body.subjects,
       model: p.model, state: pending ? 'pending' : 'live', seen_in: [], seen_total: 0, reported_wrong: [],
-      ...(pending ? { matches: p.matches } : {}),
+      ...(p.matches.length ? { matches: p.matches } : {}),
+      ...(p.prior.length ? { prior_verdicts: p.prior } : {}),
     };
     const row = E.store.storeIn({
       namespace: ns, worker_id: E.writtenBy(caller), type: 'note', text: p.text, title: p.title, body, redactions: p.redactions,
       embedding: p.emb.embedding, embedding_model: p.emb.embedding_model, embedding_revision: p.emb.embedding_revision, dim: p.emb.dim, text_template: p.template,
       run_id: caller.run_id, task_id, source: 'model', written_by: by,
     });
-    return { index: p.index, id: row.id, action: row.action, state: pending ? 'pending' : 'stored', namespace: ns, title: p.title, applies_to: p.applies, ...(pending ? { matches: p.matches } : {}), ...(p.unembedded ? { embedded: false, embedder_failure: p.unembedded, note: 'stored without a vector (on_embedder_failure keyword): found by keyword search, and not compared with the other notes of the project' } : {}) };
+    return { index: p.index, id: row.id, action: row.action, state: pending ? 'pending' : 'stored', namespace: ns, title: p.title, applies_to: p.applies, ...(pending ? { matches: p.matches } : {}), ...(p.prior.length ? { prior_verdicts: p.prior, held_back: 'this text is close to a claim already judged wrong (see prior_verdicts); the note waits in pending until you resolve it as new, knowing that' } : {}), ...(p.unembedded ? { embedded: false, embedder_failure: p.unembedded, note: 'stored without a vector (on_embedder_failure keyword): found by keyword search, and not compared with the other notes of the project' } : {}) };
   });
   const marked = prep.wrong.map(w => {
     const m = NT.SELF_REF.exec(w.replaced_by || '');
@@ -202,7 +251,7 @@ function commit(E, caller, prep, { task_id }) {
   return {
     notes: items, reported_wrong: [...marked, ...(prep.skipped || [])], pending,
     ...(prep.memoryIds ? { memory_ids: require('./memory-chances.cjs').recordApplied(E, caller, prep, task_id) } : {}),
-    ...(pending ? { next: 'resolve each pending note with memory_note_resolve: new, repeats <id>, or supersedes <id> with evidence' } : {}),
+    ...(pending ? { next: 'resolve each pending note with memory_note_resolve: new, repeats <id>, or supersedes <id> with evidence (a note with prior_verdicts is close to a claim already judged wrong: resolve it as new only if yours is different)' } : {}),
   };
 }
 
@@ -338,7 +387,7 @@ async function resolve(E, caller, args) {
         if (tnote.b.held) throw err('E_EXISTS', `resolutions[${i}]: note ${target.id} is already held (${tnote.b.held.row}); the reviewer settles it first`, { id: target.id, held_row: tnote.b.held.row });
         release(E, r, project);
         E.store.patchBody(r.id, b => { b.state = 'live'; b.resolved = { as: x.resolve, of: target.id, ...(x.evidence ? { evidence: x.evidence } : {}), at: t, by, held_for_review: true }; delete b.matches; return b; });
-        const held = VH.holdVerified(E, caller, project, tnote, r.id, x.resolve, `resolved as ${x.resolve}`);
+        const held = VH.holdVerified(E, caller, project, tnote, r.id, x.resolve, `resolved as ${x.resolve}`, x.evidence, require('./note-report-verdicts.cjs').headOf(E, r.task_id));
         return { id: r.id, resolved: x.resolve, of: target.id, state: 'live', namespace: projectNs(project), held_for_review: held.id, note: 'the old note is review-verified, so it is held for the reviewer and not archived' };
       }
       if (x.resolve === 'refines') {
@@ -350,7 +399,7 @@ async function resolve(E, caller, args) {
         const done = A.archiveNote(E, project, require('./memory-facts.cjs').loadNote(E, target.id),
           { kind: 'superseded', relation: 'refines', refines: true, via: 'refines', of: r.id, ground: 'replaced_by_newer', reason: 'resolved as refines', run_id: caller.run_id, direct: true },
           require('./memory-facts.cjs').loadNote(E, r.id));
-        return { id: r.id, resolved: 'refines', of: target.id, state: 'live', namespace: projectNs(project), old_archived_as: done.to, history_moved: done.history_moved };
+        return { id: r.id, resolved: 'refines', of: target.id, state: 'live', namespace: projectNs(project), old_archived_as: done.to, history_moved: done.history_moved, replaced_also_archived: done.replaced_also_archived };
       }
       if (x.resolve === 'supersedes') {
         release(E, r, project);
@@ -388,4 +437,19 @@ async function resolve(E, caller, args) {
   return out;
 }
 
-module.exports = { prepare, commit, resolve, claimAfterRelease, notesLevers, findMatches, SEEN_MAX, fitBody, release, bodyOf, projectNs, pendingNs };
+// Notes-bearing hand-backs of one project run one at a time in this process (the store owner's): each checks its notes against the live
+// ones before it writes, and two that checked side by side would each find the other absent and store the same lesson twice.
+const tails = new Map();
+async function serialised(E, caller, args, fn) {
+  const project = caller.role === 'worker' && args.notes !== undefined ? M.projectOf(E, caller) : null;
+  if (!project) return fn();
+  const key = `${E.dataDir}|${project}`;
+  const prev = tails.get(key) || Promise.resolve();
+  const mine = prev.then(fn);
+  const tail = mine.then(() => {}, () => {});
+  tails.set(key, tail);
+  tail.then(() => { if (tails.get(key) === tail) tails.delete(key); });
+  return mine;
+}
+
+module.exports = { serialised, prepare, commit, resolve, claimAfterRelease, notesLevers, findMatches, SEEN_MAX, fitBody, release, bodyOf, projectNs, pendingNs };

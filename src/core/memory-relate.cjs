@@ -123,7 +123,7 @@ function applyPlan(E, ctx, ent, p) {
   const done = ent.relation === 'repeats'
     ? archiveNote(E, ctx.project, gone, { ...meta, kind: 'duplicate', of: kept.id, ground: 'same_claim', via: 'repeats' }, kept)
     : archiveNote(E, ctx.project, gone, { ...meta, kind: 'superseded', of: kept.id, ground: 'replaced_by_newer', refines: ent.relation === 'refines', via: ent.relation }, kept);
-  return { relation: ent.relation, facts: strip(f), archived: gone.id, kept: kept.id, archived_as: done.to, history_moved: done.history_moved };
+  return { relation: ent.relation, facts: strip(f), archived: gone.id, kept: kept.id, archived_as: done.to, history_moved: done.history_moved, replaced_also_archived: done.replaced_also_archived };
 }
 
 module.exports = { relationFacts, plan, applyPlan, liveNote, sides, keyOf, JUDGED_KEEP };
