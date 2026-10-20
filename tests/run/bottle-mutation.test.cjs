@@ -44,11 +44,11 @@ test('with no maxBytes the bottle is bounded at exactly 65536 bytes and not one 
 test('a failed bottle has exactly the documented shape', () => {
   const d = tmp();
   const empty = buildBottle({ streamPath: write(d, ''), redact: identity });
-  assert.deepEqual(empty, { text: '', bytes: 0, messages: 0, tool_calls_replaced: 0, dropped: 0, over_budget: false, user_messages: null, fallback: 'E_EMPTY' });
+  assert.deepEqual(empty, { text: '', bytes: 0, messages: 0, tool_calls_replaced: 0, dropped: 0, over_budget: false, user_messages: null, spec_pinned: false, fallback: 'E_EMPTY' });
   const missing = buildBottle({ streamPath: path.join(d, 'nope.jsonl'), redact: identity });
-  assert.deepEqual(missing, { text: '', bytes: 0, messages: 0, tool_calls_replaced: 0, dropped: 0, over_budget: false, user_messages: null, fallback: 'E_STREAM_UNREADABLE' });
+  assert.deepEqual(missing, { text: '', bytes: 0, messages: 0, tool_calls_replaced: 0, dropped: 0, over_budget: false, user_messages: null, spec_pinned: false, fallback: 'E_STREAM_UNREADABLE' });
   const bad = buildBottle({ streamPath: write(d, asst('hello')), redact: () => 'a string' });
-  assert.deepEqual(bad, { text: '', bytes: 0, messages: 0, tool_calls_replaced: 0, dropped: 0, over_budget: false, user_messages: null, fallback: 'E_REDACT' });
+  assert.deepEqual(bad, { text: '', bytes: 0, messages: 0, tool_calls_replaced: 0, dropped: 0, over_budget: false, user_messages: null, spec_pinned: false, fallback: 'E_REDACT' });
 });
 
 test('over budget with nothing droppable reports the dropped count and over_budget true', () => {
