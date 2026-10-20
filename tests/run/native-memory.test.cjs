@@ -437,6 +437,40 @@ test('adopt: a stop goes through even when the recorded folder is now refused by
   } finally { if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev; delete process.env.FAKE_MEMORY_AUTO; if (second) await second.shutdown().catch(() => {}); await first.shutdown().catch(() => {}); cleanup(sb.d); }
 });
 
+test('adopt: a stop goes through when the recorded folder can no longer be created, and the pid goes', async () => {
+  const sb = sandbox(); const core = createFakeCore(); const first = mgr(sb, core); let second = null;
+  process.env.FAKE_MEMORY_AUTO = 'echo';
+  try {
+    const mem = fwd(path.join(sb.d, 'parent', 'mem'));
+    const row = await first.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'w-enotdir', native_memory: mem });
+    fs.rmSync(path.join(sb.d, 'parent'), { recursive: true, force: true });
+    fs.writeFileSync(path.join(sb.d, 'parent'), 'a file where the folder\'s parent was'); // mkdir of the recorded folder now fails ENOTDIR
+    second = mgr(sb, core);
+    assert.ok(alive(row.pid));
+    await second.stop({ worker_id: 'w-enotdir', mode: 'graceful', timeout_ms: 8000 });
+    for (let i = 0; i < 100 && alive(row.pid); i++) await new Promise((r) => setTimeout(r, 50));
+    assert.equal(alive(row.pid), false, 'a stop always goes through, whatever the folder error');
+    await assert.rejects(second.restart({ worker_id: 'w-enotdir', first_turn_timeout_ms: 45000 }), (e) => e.code === 'ENOTDIR', 'a launch is refused by the same error');
+  } finally { delete process.env.FAKE_MEMORY_AUTO; if (second) await second.shutdown().catch(() => {}); await first.shutdown().catch(() => {}); cleanup(sb.d); }
+});
+
+test('resume: a refused resume does not leave the worker paused in that manager, so a restart is allowed once the cause is gone', async () => {
+  const sb = sandbox(); const core = createFakeCore(); const m = mgr(sb, core); const id = 'w-parkref';
+  try {
+    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: id });
+    await m.pause({ worker_id: id, by: 'test' });
+    const file = path.join(L.workerDir(sb.data, id), 'settings.json'); const good = fs.readFileSync(file);
+    fs.writeFileSync(file, JSON.stringify({ ...settingsOf(sb, id), autoDreamEnabled: true }));
+    await assert.rejects(m.resume({ worker_id: id, by: 'test' }), (e) => e.code === 'E_NATIVE_MEMORY_MISMATCH');
+    assert.equal(m._worker(id).paused, null, 'the refused relaunch cleared the park facts');
+    assert.equal(m._worker(id).parkRequested, null);
+    fs.writeFileSync(file, good);
+    await m.restart({ worker_id: id, first_turn_timeout_ms: 45000 }); // not E_PAUSED
+    assert.equal(core.currentWorker(id).state, 'running');
+    assert.ok(alive(m._worker(id).pid));
+  } finally { await m.shutdown().catch(() => {}); cleanup(sb.d); }
+});
+
 test('message: two concurrent messages to an idle codex worker start one process and refuse the other E_SUBSTRATE', async () => {
   const sb = sandbox(); const core = createFakeCore();
   const m = createRunManager({ core, dataDir: sb.data, runId: 'run-nm', paths: { claudeExe: FAKE, codexExe: fwd(path.join(__dirname, 'fakes', 'fake-codex.cjs')), userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });

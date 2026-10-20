@@ -349,7 +349,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const p = W.adopt({ core, workerId, dataDir: root }).then(async (w) => {
       workers.set(workerId, w); // no launch guard: a stop must always go through, and writeFilesFor below regenerates settings.json from the record
       await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the argv written below carries the notes lever
-      try { writeFilesFor(w); } catch (e) { if (w.nativeMemory == null || e.code !== 'E_ARGS') throw e; w.adoptRefusal = e; } // mcp.json, settings.json, the log path; a record the checker now refuses blocks launches (checkLaunch), never a stop
+      try { writeFilesFor(w); } catch (e) { if (w.nativeMemory == null) throw e; w.adoptRefusal = e; } // mcp.json, settings.json, the log path; with the lever on ANY failure here (a folder that cannot be made, a refused record) is kept for checkLaunch to throw on a launch, never on a stop
       if (w.substrate === 'claude-code') w.instructions = I.existingInstructions(w.dir); // never the worktree
       return w;
     });

@@ -103,6 +103,7 @@ async function refuseLaunch(ctx, w, e, pidAlive) {
     let row = null;
     try { row = await ctx.writeRow(w, 'dead'); } catch (err) { w.lastError = { where: 'native_memory.write', code: err && err.code, message: err && err.message }; e.detail = { ...e.detail, dead_row_error: err && err.message }; }
     e.detail = { ...e.detail, dead_row: row ? { seq: row.seq == null ? null : row.seq, state: row.state, death_established_by: row.death_established_by == null ? null : row.death_established_by } : null };
+    w.paused = null; w.parkRequested = null; // the park this refused relaunch would have cleared: the worker is dead now, so a later restart is allowed once the cause is gone
   }
   throw e;
 }
