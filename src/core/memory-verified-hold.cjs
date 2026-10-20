@@ -10,8 +10,10 @@ const C = require('./lifecycle-common.cjs');
 const isVerified = n => (n.status || 'unverified') === 'verified';
 const mustHold = (caller, target, relation) => (relation === 'refines' || relation === 'supersedes') && caller.role !== 'operator' && isVerified(target);
 
-// Throws E_EXISTS when the verified note already waits on a reviewer. Writes the held row and puts the pointer on the note.
-function holdVerified(E, caller, project, target, newId, relation, reason) {
+// Throws E_EXISTS when the verified note already waits on a reviewer. Writes the held row and puts the pointer on the note. `evidence` is the
+// writer's own { where, saw } for the refinement or replacement: it is data on the row for the reviewer, never a cite (the reviewer's cites are its own).
+// `headSha` is the head commit of the writer's own task when it has one (null otherwise): a file cite of the review is read there, not at another worker's head.
+function holdVerified(E, caller, project, target, newId, relation, reason, evidence, headSha = null) {
   if (target.b.held) throw err('E_EXISTS', `note ${target.id} is already held (${target.b.held.row}); the reviewer settles it before another hold`, { id: target.id, held_row: target.b.held.row });
   const runId = caller.run_id;
   const kind = 'superseded', ground = 'replaced_by_newer';
@@ -19,7 +21,7 @@ function holdVerified(E, caller, project, target, newId, relation, reason) {
     ns: L.nsOf('held', project), type: 'held', runId,
     text: `held ${kind}: ${target.id} against ${newId} (run ${runId})`,
     title: `held ${kind}: ${target.title || target.id}`,
-    body: { state: 'held', note_id: target.id, kind, relation, of: newId, ground, reason, run_id: runId, head_sha: null, cites: [], facts: { via: `write_time_${relation}`, by: E.memoryWriter(caller) }, scrub: null, reviews: [] },
+    body: { state: 'held', note_id: target.id, kind, relation, of: newId, ground, reason, run_id: runId, head_sha: headSha || null, cites: [], facts: { via: `write_time_${relation}`, by: E.memoryWriter(caller), ...(Array.isArray(evidence) && evidence.length ? { writer_evidence: evidence } : {}) }, scrub: null, reviews: [] },
   });
   E.store.patchBody(target.id, b => { b.held = { row: held.id, kind, of: newId, reason, run_id: runId, at: Date.now() }; return b; });
   return held;
