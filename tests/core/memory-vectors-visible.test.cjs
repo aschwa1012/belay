@@ -23,10 +23,18 @@ test('selectSearchable returns exactly the set memory.search returns, over live,
   const old = T.note('visible old');
   const newer = T.note('visible newer');
   const archived = T.note('visible archived', { ns: arch });
+  const promoted = T.note('visible promoted');
+  const pending = T.note('visible pending', { state: 'pending' });
+  const otherRun = T.note('visible other open run', { run_id: 'lc-plain' });
+  const zeroTtl = T.note('visible zero ttl');
   const b = T.body(held);
   b.held = { row: 'h', kind: 'wrong', of: null, reason: 'x', run_id: 'r', at: 1 };
   T.store.p('UPDATE memory_entries SET body = ? WHERE id = ?').run(JSON.stringify(b), held);
   T.store.p('UPDATE memory_entries SET ttl_at = 1 WHERE id = ?').run(expired);
+  T.store.p('UPDATE memory_entries SET ttl_at = 0 WHERE id = ?').run(zeroTtl);
+  const pb = T.body(promoted);
+  pb.promoted_to = 'some-row';
+  T.store.p('UPDATE memory_entries SET body = ? WHERE id = ?').run(JSON.stringify(pb), promoted);
   T.store.p('UPDATE memory_entries SET supersedes = ? WHERE id = ?').run(old, newer);
 
   const searchIds = async (caller, namespaces, extra = {}) => {
@@ -39,17 +47,18 @@ test('selectSearchable returns exactly the set memory.search returns, over live,
     const mine = MV.selectSearchable(T.store.db, TIER, { namespaces });
     assert.deepStrictEqual(mine.missing, [], 'every fixture row has the tier vector');
     assert.deepStrictEqual(mine.rows.map(r => r.id).sort(), await searchIds(op, namespaces), `operator, ${namespaces.join(' + ')}`);
-    const expectIds = [live, held, refuted, ...(namespaces.length > 1 ? [archived] : []), newer].sort();
-    assert.deepStrictEqual(mine.rows.map(r => r.id).sort(), expectIds, 'live, held, refuted and the superseder are visible; expired and superseded are not');
+    const expectIds = [live, held, refuted, promoted, pending, otherRun, zeroTtl, ...(namespaces.length > 1 ? [archived] : []), newer].sort();
+    assert.deepStrictEqual(mine.rows.map(r => r.id).sort(), expectIds, 'an ungated caller sees live, held, refuted, promoted, pending, other-run and zero-ttl notes and the superseder; expired and superseded are not');
     assert.ok(!mine.rows.some(r => r.id === expired || r.id === old));
   }
   // a gated caller (it may not name archive/): its gate's hidden ids go in as `hidden`
   const tool = T.who.tool('apply');
   const hidden = gate.hiddenIds(T.E, tool, { includeSuperseded: true, body: false, namespaces: [ns] });
-  assert.ok(hidden.includes(refuted));
-  const gated = MV.selectSearchable(T.store.db, TIER, { namespaces: [ns], hidden });
+  assert.ok(hidden.includes(refuted) && hidden.includes(otherRun));
+  const gated = MV.selectSearchable(T.store.db, TIER, { namespaces: [ns], hidden, bodyLive: true });
   assert.deepStrictEqual(gated.rows.map(r => r.id).sort(), await searchIds(tool, [ns]));
-  assert.ok(!gated.rows.some(r => r.id === refuted), 'a gated caller does not see the refuted note');
+  for (const gone of [refuted, otherRun, promoted, pending]) assert.ok(!gated.rows.some(r => r.id === gone), 'a gated caller does not see ' + gone);
+  assert.ok(MV.selectSearchable(T.store.db, TIER, { namespaces: [ns], hidden }).rows.some(r => r.id === promoted), 'without bodyLive a promoted note is still selected');
   // include_superseded is the same flag on both sides
   const withOld = MV.selectSearchable(T.store.db, TIER, { namespaces: [ns], includeSuperseded: true });
   assert.deepStrictEqual(withOld.rows.map(r => r.id).sort(), await searchIds(T.who.operator('apply'), [ns], { include_superseded: true }));

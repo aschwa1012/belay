@@ -133,19 +133,37 @@ test('row-first selection takes the visible rows first, for any tier key, includ
   });
 });
 
-test('the backlog is the visible set minus the rows that have the tier\'s vector, held notes included and archived ones not', () => {
+test('the backlog is the visible set minus the rows that have the tier\'s vector: any type, held and superseded included, archived only when asked', () => {
   withStore((s) => {
     const a = note(s, 'project/a', 'one', 'when one');
     const b = note(s, 'project/a', 'two', 'when two');
     const held = note(s, 'project/a', 'three', 'when three');
     s.patchBody(held.id, x => { x.held = { id: 'h' }; return x; });
-    note(s, 'archive/a', 'four', 'when four');
-    fact(s, 'project/a', 'not a note');
-    assert.deepStrictEqual(MV.backlog(s.db, HEAVY).map(r => r.id).sort(), [a.id, b.id, held.id].sort());
-    assert.deepStrictEqual(MV.backlog(s.db, HEAVY, { namespaces: ['archive/a'] }), []);
-    assert.deepStrictEqual(MV.backlog(s.db, NANO), []);
-    putHeavy(s, a.id);
-    assert.deepStrictEqual(MV.backlog(s.db, HEAVY).map(r => r.id).sort(), [b.id, held.id].sort());
+    const old = note(s, 'project/a', 'old', 'when old');
+    note(s, 'project/a', 'newer', 'when newer', { supersedes: old.id });
+    const f = fact(s, 'project/a', 'not a note');
+    const arch = note(s, 'archive/a', 'four', 'when four');
+    const ids = (opts) => MV.backlog(s.db, HEAVY, { namespaces: ['project/a'], ...opts }).map(r => r.id).sort();
+    const all = ids({});
+    assert.ok([a.id, b.id, held.id, old.id, f.id].every(id => all.includes(id)), 'held, superseded and non-note rows are in the backlog');
+    assert.ok(!ids({ includeSuperseded: false }).includes(old.id));
+    assert.deepStrictEqual(MV.backlog(s.db, HEAVY, { namespaces: ['archive/a'] }).map(r => r.id), [arch.id], 'an archived row is there when its namespace is asked for');
+    assert.ok(!all.includes(arch.id));
+    assert.throws(() => MV.backlog(s.db, HEAVY, {}), x => x.code === 'E_ARGS');
+    assert.deepStrictEqual(MV.backlog(s.db, NANO, { namespaces: ['project/a', 'archive/a'] }), []);
+    // the backlog is empty exactly when the selection misses nothing, for the same scope
+    for (const includeSuperseded of [true, false]) {
+      for (const tier of [NANO, HEAVY]) {
+        const opts = { namespaces: ['project/a'], includeSuperseded };
+        assert.strictEqual(MV.backlog(s.db, tier, opts).length === 0, MV.selectSearchable(s.db, tier, opts).missing.length === 0);
+      }
+    }
+    for (const r of s.db.prepare('SELECT * FROM memory_entries WHERE namespace = ?').all('project/a')) {
+      if (r.type === 'note') putHeavy(s, r.id);
+      else MV.putVector(s.db, { ...HEAVY, template: 'v1' }, MV.embedHashOf(r, 'v1'), blobOf(1));
+    }
+    assert.deepStrictEqual(MV.backlog(s.db, HEAVY, { namespaces: ['project/a'] }), []);
+    assert.strictEqual(MV.selectSearchable(s.db, HEAVY, { namespaces: ['project/a'] }).missing.length, 0);
   });
 });
 
@@ -174,10 +192,10 @@ test('a delete sweeps its orphan vector, an archive move keeps it, and sweep() r
 
 test('ttl expiry sweeps the expired row\'s vector', () => {
   withStore((s) => {
-    note(s, 'project/a', 'short lived', 'when it ends', { ttl_seconds: 0.001 });
+    const gone = note(s, 'project/a', 'short lived', 'when it ends');
     const keep = note(s, 'project/a', 'kept', 'when kept');
+    s.db.prepare('UPDATE memory_entries SET ttl_at = 1 WHERE id = ?').run(gone.id);
     assert.strictEqual(count(s.db), 2);
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
     assert.strictEqual(s.sweep().expired_deleted, 1);
     assert.strictEqual(count(s.db), 1);
     assert.strictEqual(MV.vectorsFor(s.db, NANO, [keep.id]).size, 1);
