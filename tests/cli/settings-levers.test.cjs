@@ -310,7 +310,7 @@ test('settings: the retrieval levers are listed with their defaults, the routing
   } finally { cleanup(dir); }
 });
 
-test('run spec: the retrieval levers layer config then spec, and the resolver reads the same two blocks', () => {
+test('run spec: the retrieval levers layer config then spec, and the resolver takes the merged levers', () => {
   const sb = runSandbox({ memory: { profile: 'gpu-balanced', rerank_depth: 80, routing: { reviewer: 'gpu-rerank' } } }, { memory: { profile: 'gpu-rerank-fast' } });
   try {
     const cfg = `${sb.dir}/belay.config.json`;
@@ -320,7 +320,23 @@ test('run spec: the retrieval levers layer config then spec, and the resolver re
     assert.deepStrictEqual([m.profile, m.rerank_depth, m.routing, m.on_heavy_behind], ['gpu-rerank-fast', 80, { reviewer: 'gpu-rerank' }, 'wait']);
     assert.deepStrictEqual([src.profile, src.rerank_depth, src.routing, src.on_heavy_behind], ['spec', cfg, cfg, 'default']);
     const { resolveRouting } = require('../../src/core/retrieval-routing.cjs');
-    const r = resolveRouting({ settings: { profile: 'gpu-balanced', rerank_depth: 80, routing: { reviewer: 'gpu-rerank' } }, spec: { profile: 'gpu-rerank-fast' }, agentTypes: ['reviewer', 'coder'], gpu: true });
+    const r = resolveRouting({ levers: m, agentTypes: ['reviewer', 'coder'], gpu: true });
     assert.deepStrictEqual([r.tiers.reviewer.profile, r.tiers.coder.profile, r.run.depth], ['gpu-rerank', 'gpu-rerank-fast', 80]);
+  } finally { cleanup(sb.dir); }
+});
+
+test('a pending-pin model is refused by the settings write and by the run spec, naming it as not yet available', () => {
+  const dir = project();
+  try {
+    for (const [k, v] of [['memory.reranker', 'jinaai/jina-reranker-v1-tiny-en'], ['memory.profile', 'cpu-rerank'], ['memory.routing', '{"coder":"cpu-rerank-light"}']]) {
+      const r = cli(dir, ['settings', k, v]);
+      assert.strictEqual(r.code, 2, `${k} ${v}`);
+      assert.match(r.out.error, /not yet available in this build/);
+    }
+    assert.ok(!fs.existsSync(`${dir}/belay.config.json`), 'nothing written');
+  } finally { cleanup(dir); }
+  const sb = runSandbox(null, { memory: { profile: 'cpu-rerank' } });
+  try {
+    assert.match(parseSpec(sb.specPath, sb.dir).error, /not yet available in this build/);
   } finally { cleanup(sb.dir); }
 });

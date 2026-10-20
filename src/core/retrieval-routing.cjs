@@ -4,9 +4,9 @@
 // no model is touched, so the owner, a menu or a test may call it. It requires only the lever spec and the
 // profile table (both pure data), so a read path may load it (invariant 9).
 //
-// Layering (the settings rule of 2026-10-15): `settings` is the config file's memory block, `spec` the run spec's;
-// the spec overrides the settings key by key (a spec `routing` replaces the settings `routing` whole, as
-// run-levers.cjs's mergeMemory does for every lever), then the merged block is validated once by parseMemoryBlock.
+// Layering (the settings rule of 2026-10-15) is NOT done here. The caller passes the memory levers already merged
+// (config file, then run spec, key by key, by run-levers.cjs's mergeMemory) and parsed (parseMemoryBlock), which is
+// the shape a run row's memory_levers holds (leversOfRow); missing keys are filled from the defaults.
 //
 // IDENTITY (invariant 3, ADR 0045): `agentTypes` is the caller's list of agent types, and a search's tier is the
 // entry for the agent type the worker was SPAWNED with. When this is wired in, the agent type must come from the
@@ -14,14 +14,14 @@
 // a model says. This module never reads an agent type from anywhere but its argument.
 
 const { err } = require('./errors.cjs');
-const ML = require('./memory-levers.cjs');
+const { DEFAULTS, ROUTING_TYPE_RE } = require('./memory-levers.cjs');
 const RP = require('./retrieval-profiles.cjs');
 
-// A probe or detection result counts as a usable GPU unless it says otherwise. false, null and undefined are no GPU.
+// Fails closed: a GPU is usable only when the caller says so, with true or a probe result that says ok or available.
+// {}, {gpus: []} and a refusal are no GPU.
 function gpuUsable(gpu) {
   if (gpu === true) return true;
-  if (!gpu || typeof gpu !== 'object') return false;
-  return gpu.ok !== false && gpu.available !== false;
+  return !!gpu && typeof gpu === 'object' && (gpu.ok === true || gpu.available === true);
 }
 
 // One wanted pair -> a tier. `models` is { embedder, reranker } ids (reranker null for none).
@@ -41,7 +41,7 @@ function wanted(entry, merged) {
   return { label: RP.CUSTOM, models: pairModels(entry) };
 }
 
-// resolveRouting({ settings, spec, agentTypes, gpu }) -> {
+// resolveRouting({ levers, agentTypes, gpu }) -> {
 //   run:      the tier of the run's own profile (what an unset agent type uses),
 //   tiers:    { <agent type>: tier } for every type in agentTypes (and every routed type),
 //   gpu:      whether a usable GPU was assumed,
@@ -50,11 +50,10 @@ function wanted(entry, merged) {
 //   levers:   the few merged levers the run needs beside the tiers (depth, bound, failure and behind policies, headroom) }
 // A tier is { profile, embedder, reranker, device, depth, source, fallback_from } and serialises as plain JSON.
 // Refuses (E_MODEL) a tier that names a model whose pin is pending, and (E_ARGS) an invalid lever block.
-function resolveRouting({ settings, spec, agentTypes = [], gpu = false } = {}) {
-  const parsed = ML.parseMemoryBlock({ ...(settings || {}), ...(spec || {}) });
-  if (parsed.error) throw err('E_ARGS', parsed.error, { reason: 'levers' });
-  const m = parsed.value;
-  if (!Array.isArray(agentTypes) || agentTypes.some((t) => typeof t !== 'string' || !t)) throw err('E_ARGS', 'agentTypes must be a list of agent type names', { agentTypes });
+function resolveRouting({ levers, agentTypes = [], gpu = false } = {}) {
+  if (levers !== undefined && (levers === null || typeof levers !== 'object' || Array.isArray(levers))) throw err('E_ARGS', 'levers must be the merged, parsed memory levers object', { reason: 'levers' });
+  const m = { ...DEFAULTS, ...(levers || {}) };
+  if (!Array.isArray(agentTypes) || agentTypes.some((t) => typeof t !== 'string' || !ROUTING_TYPE_RE.test(t))) throw err('E_ARGS', 'agentTypes must be a list of agent type names (lower-case letters, digits, - or _)', { agentTypes });
   const haveGpu = gpuUsable(gpu);
   const routing = m.routing || {};
   const types = [...new Set([...agentTypes, ...Object.keys(routing)])];
@@ -73,9 +72,11 @@ function resolveRouting({ settings, spec, agentTypes = [], gpu = false } = {}) {
   };
 
   const run = resolve(m.profile, 'run', 'run');
-  const tiers = {};
+  const tiers = Object.create(null); // agent types are data: no inherited key can answer for one
   for (const t of types) tiers[t] = Object.prototype.hasOwnProperty.call(routing, t) ? resolve(routing[t], 'routing', t) : { ...run, source: 'run' };
 
+  // The run tier counts even when every type is routed: it is what an unrouted type, and a first-message index, would load,
+  // so the probe must size it.
   const gpuModels = new Set();
   for (const tier of [run, ...Object.values(tiers)]) {
     for (const id of [tier.embedder, tier.reranker]) if (id && RP.describeModel(id).device === 'gpu') gpuModels.add(id);
@@ -86,7 +87,8 @@ function resolveRouting({ settings, spec, agentTypes = [], gpu = false } = {}) {
     notices.push({
       code: 'gpu_absent',
       message: `no usable GPU: ${roles.join(', ')} fell back to the ${m.profile_cpu} profile (a heavy embedder never runs on the CPU)`,
-      agent_types: roles,
+      agent_types: roles.filter((r) => r !== 'run'),
+      run_fell_back: roles.includes('run'),
     });
   }
   return {

@@ -6,22 +6,33 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { resolveRouting, gpuUsable } = require('../../src/core/retrieval-routing.cjs');
 const RP = require('../../src/core/retrieval-profiles.cjs');
+const { parseLevers } = require('../../src/cli/run-levers.cjs');
 
 const TYPES = ['orchestrator', 'reviewer', 'coder', 'tester', 'researcher'];
-const run = (o) => resolveRouting({ agentTypes: TYPES, gpu: true, ...o });
+// The caller's side of the contract: the config file's memory block and the run spec's, merged and parsed by the real
+// parseLevers, then handed over as the run row's memory_levers (absent when the block is all defaults).
+function lv(settings, spec) {
+  const p = parseLevers({ ...(spec ? { memory: spec } : {}) }, { config: settings ? { path: 'belay.config.json', memory: settings } : null });
+  if (p.error) throw new Error(p.error);
+  return p.memory_levers || {};
+}
+// `settings` / `spec` go through the real merge; `raw` goes straight in (for models the lever parse refuses).
+const run = ({ settings, spec, raw, ...o } = {}) => resolveRouting({ agentTypes: TYPES, gpu: true, levers: raw || lv(settings, spec), ...o });
 const Q = { e4: 'Qwen/Qwen3-Embedding-4B-GGUF', e8: 'Qwen/Qwen3-Embedding-8B-GGUF', r06: 'ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF', r4: 'giladgd/Qwen3-Reranker-4B-GGUF' };
 
 test('defaults: nano with no reranker for every type, no GPU model, no notice, and the result is plain JSON', () => {
   const r = run({ gpu: false });
   for (const t of TYPES) assert.deepStrictEqual(r.tiers[t], { profile: 'cpu-fast', embedder: RP.NANO, reranker: null, device: 'cpu', depth: 0, source: 'run', fallback_from: null }, t);
   assert.deepStrictEqual([r.gpu_models, r.notices], [[], []]);
-  assert.deepStrictEqual(JSON.parse(JSON.stringify(r)), r);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(r)), JSON.parse(JSON.stringify({ ...r, tiers: { ...r.tiers } })));
+  assert.strictEqual(Object.getPrototypeOf(r.tiers), null, 'no inherited key answers for an agent type');
+  assert.strictEqual(r.tiers.constructor, undefined);
   assert.deepStrictEqual(Object.keys(r), ['run', 'tiers', 'gpu', 'gpu_models', 'notices', 'levers']);
 });
 
 test('every profile resolves with a GPU (CPU rerankers refused as pending), at depth 50', () => {
   for (const [name, p] of Object.entries(RP.PROFILES)) {
-    const call = () => run({ settings: { profile: name } });
+    const call = () => run({ raw: { profile: name } });
     if (name === 'cpu-rerank' || name === 'cpu-rerank-light') { assert.throws(call, (e) => e.code === 'E_MODEL' && e.detail.reason === 'pending_pin', name); continue; }
     const r = call();
     assert.deepStrictEqual([r.run.embedder, r.run.reranker, r.run.profile], [p.embedder, p.reranker, name], name);
@@ -38,13 +49,14 @@ test('layering: the spec overrides the settings key by key, defaults fill the re
   assert.strictEqual(r.tiers.reviewer.profile, 'gpu-rerank-fast', 'the spec routing replaces the settings routing whole');
   assert.strictEqual(r.tiers.coder.profile, 'gpu-rerank');
   assert.strictEqual(r.levers.on_heavy_behind, 'wait');
-  assert.throws(() => run({ settings: { rerank_depth: 5 }, spec: { rerank_depth: 500 } }), { code: 'E_ARGS' });
+  assert.throws(() => run({ settings: { rerank_depth: 5 }, spec: { rerank_depth: 500 } }), /rerank_depth/, 'the real merge refuses it before the resolver');
+  assert.throws(() => run({ raw: 7 }), { code: 'E_ARGS' });
 });
 
 test('routing: main and advanced keys, a custom pair, and a routed type outside agentTypes', () => {
   const r = resolveRouting({
     gpu: true, agentTypes: ['orchestrator', 'reviewer', 'coder', 'tester'],
-    settings: { routing: { orchestrator: 'gpu-balanced', reviewer: 'gpu-rerank', coder: { embedder: RP.NANO, reranker: Q.r06 }, tester: 'cpu-fast', 'note-review': 'gpu-recall-max' } },
+    levers: lv({ routing: { orchestrator: 'gpu-balanced', reviewer: 'gpu-rerank', coder: { embedder: RP.NANO, reranker: Q.r06 }, tester: 'cpu-fast', 'note-review': 'gpu-recall-max' } }),
   });
   assert.deepStrictEqual([r.tiers.orchestrator.embedder, r.tiers.orchestrator.reranker], [Q.e4, Q.r4]);
   assert.deepStrictEqual([r.tiers.reviewer.embedder, r.tiers.reviewer.reranker], [RP.NANO, Q.r4]);
@@ -72,9 +84,10 @@ test('no GPU: every GPU tier takes the fallback profile with exactly one notice'
   assert.strictEqual(r.tiers.orchestrator.fallback_from, null, 'a CPU tier is not a fallback');
   assert.strictEqual(r.notices.length, 1);
   assert.strictEqual(r.notices[0].code, 'gpu_absent');
-  assert.deepStrictEqual(r.notices[0].agent_types.slice().sort(), ['coder', 'reviewer', 'run', 'tester']);
+  assert.deepStrictEqual(r.notices[0].agent_types.slice().sort(), ['coder', 'reviewer', 'tester']);
+  assert.strictEqual(r.notices[0].run_fell_back, true);
   assert.deepStrictEqual(r.gpu_models, []);
-  for (const gpu of [undefined, null, false, { ok: false }, { available: false }]) assert.strictEqual(run({ gpu, settings: { profile: 'gpu-rerank' } }).notices.length, 1, JSON.stringify(gpu));
+  for (const gpu of [undefined, null, false, {}, { gpus: [] }, { ok: false }, { available: false }, { refusal: { code: 'x' } }]) assert.strictEqual(run({ gpu, settings: { profile: 'gpu-rerank' } }).notices.length, 1, JSON.stringify(gpu));
   assert.strictEqual(run({ gpu: false }).notices.length, 0, 'nothing heavy asked, nothing said');
 });
 
@@ -85,13 +98,14 @@ test('no GPU: a heavy embedder is never placed on the CPU, and the fallback is i
   for (const t of Object.values(r.tiers)) assert.strictEqual(RP.describeModel(t.embedder).device, 'cpu');
   const lone = run({ gpu: false, settings: { routing: { coder: { embedder: Q.e8, reranker: 'none' } } } });
   assert.strictEqual(lone.tiers.coder.embedder, RP.NANO);
-  assert.throws(() => run({ gpu: false, settings: { profile: 'gpu-rerank', profile_cpu: 'cpu-rerank' } }), (e) => e.code === 'E_MODEL');
+  assert.throws(() => run({ gpu: false, raw: { profile: 'gpu-rerank', profile_cpu: 'cpu-rerank' } }), (e) => e.code === 'E_MODEL');
 });
 
 test('the pending pin is refused in a custom reranker and a routed pair, with a coded error naming the model', () => {
   const jina = 'jinaai/jina-reranker-v1-tiny-en';
-  for (const settings of [{ profile: 'custom', reranker: jina }, { routing: { coder: { embedder: RP.NANO, reranker: jina } } }, { routing: { coder: 'cpu-rerank' } }]) {
-    assert.throws(() => run({ settings }), (e) => e.code === 'E_MODEL' && e.detail.reason === 'pending_pin' && /pinned/.test(e.message), JSON.stringify(settings));
+  for (const raw of [{ profile: 'custom', reranker: jina }, { routing: { coder: { embedder: RP.NANO, reranker: jina } } }, { routing: { coder: 'cpu-rerank' } }]) {
+    assert.throws(() => run({ raw }), (e) => e.code === 'E_MODEL' && e.detail.reason === 'pending_pin' && /pinned/.test(e.message), JSON.stringify(raw));
+    assert.strictEqual(require('../../src/core/memory-levers.cjs').parseMemoryBlock(raw).code, 'E_MODEL', 'and the lever parse refuses it first');
   }
 });
 
@@ -101,9 +115,10 @@ test('gpu_models: the distinct GPU models over the run and every role, sorted, e
   assert.deepStrictEqual(run({ settings: { profile: 'cpu-fast' } }).gpu_models, []);
 });
 
-test('gpuUsable reads true or a probe-shaped object; bad agent types are refused', () => {
-  assert.deepStrictEqual([true, { ok: true, device: { name: 'x' } }, {}].map(gpuUsable), [true, true, true]);
-  assert.deepStrictEqual([false, null, undefined, 'yes', { ok: false }].map(gpuUsable), [false, false, false, false, false]);
+test('gpuUsable fails closed: true, or a probe result saying ok or available; bad agent types are refused', () => {
+  assert.deepStrictEqual([true, { ok: true, device: { name: 'x' } }, { available: true }].map(gpuUsable), [true, true, true]);
+  assert.deepStrictEqual([false, null, undefined, 'yes', {}, { gpus: [] }, { refusal: { code: 'x' } }, { ok: false }].map(gpuUsable), Array(8).fill(false));
   assert.throws(() => resolveRouting({ agentTypes: [''] }), { code: 'E_ARGS' });
+  for (const bad of ['__proto__', 'Coder', 'constructor!', 'a'.repeat(33)]) assert.throws(() => resolveRouting({ agentTypes: [bad] }), { code: 'E_ARGS' }, bad);
   assert.throws(() => resolveRouting({ agentTypes: 'coder' }), { code: 'E_ARGS' });
 });
