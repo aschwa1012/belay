@@ -311,7 +311,7 @@ class Engine {
     if (caller.role === 'operator') return;
     const run = require('./rows.cjs').current(this.store, 'run', caller.run_id);
     if (run && run.ended_at != null) {
-      throw err('E_ARGS', `${method}: run ${caller.run_id} has already ended, so a ${caller.role} launched for it writes nothing; nothing was written`, { method, run_id: caller.run_id, ended_at: run.ended_at, role: caller.role });
+      throw err('E_ARGS', `${method}: run ${caller.run_id} has already ended, so a ${caller.role} launched for it writes nothing; nothing was written`, { method, run_id: caller.run_id, ended_at: run.ended_at, role: caller.role, run_ended: true });
     }
   }
 

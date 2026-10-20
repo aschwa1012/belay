@@ -192,6 +192,7 @@ async function applyReportVerdicts(E, caller, route, list, project, out) {
       if (lease) throw err('E_ROLE', `worker ${route.reviewer} held lease ${lease.id} on task ${note.task_id}, which wrote note ${v.id}; it cannot judge a report about it`, { id: v.id, reason: 'independence' });
       const chk = await CC.checkTaskCites(E, report.task_id, v.cites, { title: note.title, text: note.text, evidence: note.b.evidence });
       if (!chk.ok) throw err('E_CITATION', `report on note ${v.id}: ${chk.failures.length} of ${v.cites.length} cites are not in the evidence task ${report.task_id} recorded; the verdict is dropped (${chk.failures.map((f) => `cites[${f.index}] ${f.where}: ${f.reason}`).join(' | ')})`.slice(0, 600), { id: v.id, failures: chk.failures });
+      E.assertRunOpen(caller, 'memory.noteVerdicts'); // the citation check awaited a file (audit D42)
       const red = C.redactEntry({ reason: v.reason, cites: heldCites(E, report.task_id, v.cites) });
       const outcome = E.store.tx(() => {
         // Everything that decides is read again here, in the transaction: a second application of the same review answers "already".
@@ -221,7 +222,7 @@ async function applyReportVerdicts(E, caller, route, list, project, out) {
         return { id: v.id, verdict: v.verdict, applied: true, ...(heldRow ? { held: C.rowOut(E, heldRow.id) } : { receipt: recommend ? 'report_recommended' : 'report_rejected' }), ...(recommend ? { recommended_only: true } : {}), event_id: ev.id };
       });
       if (outcome.already) res.already.push({ id: v.id, event_id: outcome.event_id }); else res.applied.push(outcome);
-    } catch (e) { refuse(e); }
+    } catch (e) { if (e && e.detail && e.detail.run_ended) throw e; refuse(e); }
   }
   if (res.applied.length) E.noteWrite();
   // A refused report is counted once, in `refused`; it stays open (no judgment was marked), so `refused_open` names it for the next review.
