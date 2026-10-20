@@ -60,3 +60,9 @@ test('an unreadable register is an error, never an empty list', () => withRegist
   assert.throws(() => SR.register({ pid: process.pid }), 'and nothing can be registered under it');
   assert.throws(() => SR.register({ pid: 'x' }), /not a pid/);
 }));
+
+test('belay run lists its headless orchestrator once its pid is known, and the interactive orchestrator never', () => {
+  assert.deepStrictEqual(SR.runSpawned(false, 4321), [{ pid: 4321, created: null, kind: 'orchestrator' }]);
+  assert.deepStrictEqual(SR.runSpawned(true, 4321), [], 'the interactive orchestrator is the human\'s own session');
+  assert.deepStrictEqual(SR.runSpawned(false, undefined), [], 'before the run process learns the pid');
+});

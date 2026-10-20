@@ -58,4 +58,10 @@ function list() {
   return out;
 }
 
-module.exports = { register, update, unregister, list, dir };
+// What `belay run` tells its owner it spawned besides the workers: the headless orchestrator, once its pid is known. The interactive
+// orchestrator is the human's own session (its plugin runs the CLI), so it is listed nowhere.
+function runSpawned(interactive, orchestratorPid) {
+  return !interactive && Number.isInteger(orchestratorPid) ? [{ pid: orchestratorPid, created: null, kind: 'orchestrator' }] : [];
+}
+
+module.exports = { register, update, unregister, list, dir, runSpawned };

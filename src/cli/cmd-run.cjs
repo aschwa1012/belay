@@ -178,7 +178,7 @@ async function run(ctx) {
       // headless orchestrator is a model with Bash, so a process that descends from it is not the operator; the interactive one is
       // the human's own session (its plugin runs the CLI), so it is not listed. Where the peer cannot be examined the owner stays claimed.
       mode: require('../core/operator-check.cjs').SUPPORTED ? 'bound' : 'claimed',
-      spawnedProcesses: () => (!ce && Number.isInteger(hookBox.pid) ? [{ pid: hookBox.pid, created: null, kind: 'orchestrator' }] : []),
+      spawnedProcesses: () => require('../core/spawn-register.cjs').runSpawned(!!ce, hookBox.pid),
       controls: {
         'run.stop': (params) => stopControl.handle(params),
         // ADR 0023 amendment 5: an interactive run registers them too; its pause parks the workers and leaves the session alone

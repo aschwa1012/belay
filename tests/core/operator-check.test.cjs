@@ -178,3 +178,28 @@ test('an orphan (a detached grandchild whose parent has exited) is refused: its 
     assert.match(r.error.message, /not running when this owner started/);
   });
 });
+
+test('a child of the headless orchestrator is refused as the operator, listed by the run process or by the spawn register (the interactive orchestrator lists neither)', { skip: process.platform !== 'win32' && 'the peer check reads Windows tools', timeout: 120000 }, async () => {
+  // this test process stands in for the headless orchestrator; belay run lists it two ways (cmd-run.cjs spawnedProcesses, and its spawn-register record)
+  await withBound({ spawnedProcesses: () => [{ pid: process.pid, created: null, kind: 'orchestrator' }] }, async (o) => {
+    const forged = await viaChild(o.tcpPort, 'tcp');
+    assert.strictEqual(forged.error && forged.error.code, 'E_UNBOUND', JSON.stringify(forged));
+    assert.match(forged.error.message, /descends from a process belay spawned \(orchestrator pid \d+/);
+    const bind = await viaChild(o.tcpPort, 'bind');
+    assert.strictEqual(bind.error && bind.error.code, 'E_UNBOUND', `bind.open as a forged operator: ${JSON.stringify(bind)}`);
+    assert.strictEqual(o.binds.byId.size, 0, 'and no bind was opened');
+  });
+  const SR = core('spawn-register.cjs');
+  await withBound({}, async (o) => {
+    SR.register({ pid: process.pid, kind: 'orchestrator', dataDir: 'C:/some/other/store/.belay' });
+    try {
+      const forged = await viaChild(o.tcpPort, 'tcp');
+      assert.strictEqual(forged.error && forged.error.code, 'E_UNBOUND', JSON.stringify(forged));
+      assert.match(forged.error.message, /orchestrator pid \d+/);
+    } finally { SR.unregister(process.pid); }
+  });
+  await withBound({ spawnedProcesses: () => [] }, async (o) => { // control: the interactive orchestrator is listed nowhere, so its child is the operator
+    const ok = await viaChild(o.tcpPort, 'tcp');
+    assert.strictEqual(ok.result && ok.result.written_by, 'operator', JSON.stringify(ok));
+  });
+});
