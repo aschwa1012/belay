@@ -18,6 +18,8 @@ const CODES = new Set([
   'E_NOTE_SHAPE',
   // wave 4 and the notes lifecycle: an unverifiable citation, a job over its cost cap, out of scope, a failed fact precondition, a ground that is not allowed
   'E_CITATION', 'E_COST_CAP', 'E_SCOPE', 'E_PRECONDITION', 'E_GROUND',
+  // ADR 0050: a heavy tier whose vectors are behind refuses to serve (E_TIER_BEHIND); the rerank stage failed (E_RERANK)
+  'E_TIER_BEHIND', 'E_RERANK',
 ]);
 
 class CoreError extends Error {

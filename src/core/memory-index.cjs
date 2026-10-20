@@ -1,7 +1,7 @@
 'use strict';
 // memory-index.cjs — memory.index (ADR 0042 decision 2): the bounded, titles-only block a worker's first
-// message carries. A read: every statement is a SELECT, nothing is stamped, and nothing here requires an
-// embedder, so any read path may load it.
+// message carries. A read: every statement is a SELECT, nothing is stamped (the store owner alone adds one search-log row, search-log.cjs),
+// and nothing here requires an embedder, so any read path may load it.
 //
 // Only lasting rows count (a summary, a decision, a verified row, or a worker's row promoted to a project namespace, which a successful promote event shows, not a direct write; never refuted, superseded or expired),
 // ranked mechanically in three tiers: rows about files under the task's files_owned, rows written for the
@@ -15,6 +15,7 @@ const { deriveTitle, validId, safeType, FRAME } = require('./memory-rows.cjs');
 const relevance = require('./memory-relevance.cjs');
 const { checkReach } = require('./memory-reach.cjs');
 const rows = require('./rows.cjs');
+const ST = require('./search-tier.cjs');
 
 const DEFAULT_BYTES = 1200;
 const CEILING_BYTES = 4096; // ADR 0042 decision 2: the hard ceiling of index_bytes
@@ -144,7 +145,23 @@ function runLevers(E, caller) {
   } catch { return null; }
 }
 
+// The block, and (served by the store owner) one `index` row in the search log: the injected ids in their order, the text they were
+// ranked against, the time taken. A copy-served index writes nothing. A failed log write never fails the index.
 async function index(E, caller, args = {}) {
+  const t0 = Date.now();
+  const out = await indexBlock(E, caller, args);
+  if (E.owner) {
+    try {
+      const task = args.task_id ? rows.current(E.store, 'task', args.task_id) : null;
+      const query = [typeof args.query === 'string' ? args.query : null, task && typeof task.spec === 'string' ? task.spec : null].filter(Boolean).join('\n') || null;
+      const ranks = (out.row_ids || []).map((id, i) => ({ id, before: i + 1, after: i + 1 }));
+      ST.logIndex(E, caller, { query, mode: 'index', namespaces: args.namespaces || null, k: ranks.length, ranks, ms: { total: Date.now() - t0 }, worker_id: args.worker_id || null, task_id: args.task_id || null });
+    } catch { /* the log is a record, never the index's failure */ }
+  }
+  return out;
+}
+
+async function indexBlock(E, caller, args = {}) {
   const o = parseArgs(args);
   const task = o.taskId ? rows.current(E.store, 'task', o.taskId) : null;
   const owned = task && Array.isArray(task.files_owned) ? task.files_owned.filter((f) => typeof f === 'string').map(norm).filter(Boolean) : [];

@@ -17,6 +17,7 @@ const { ftsReady } = require('./memory-schema.cjs');
 const { scanCeiling } = require('./schema.cjs');
 const { toUnitF32 } = require('./store.cjs');
 const gate = require('./memory-note-gate.cjs');
+const ST = require('./search-tier.cjs');
 const { nsFor, resolveNamespace, runAlpha, withEmbedding, reachOf, checkReach, runEmbedderMode } = require('./methods-memory.cjs');
 
 const MODES = ['semantic', 'keyword', 'hybrid'];
@@ -93,40 +94,33 @@ function rowsByIds(E, ids) {
 
 async function queryVector(E, caller, o) {
   if (o.queryEmbedding) return { vec: o.queryEmbedding, model: o.embeddingModel || null };
+  // Only the store's own (nano) embedder can embed a query; a heavy tier's query vector comes with the call until its embedder exists.
+  if (!ST.isNano(o.tier)) throw err('E_NO_EMBEDDER', `no embedder for the ${o.tier.embedder} tier is available, so a search on it needs a query_embedding`);
   // The shared embedding phase: loads on first use, raises E_NO_EMBEDDER, E_MODEL_ABSENT or E_MODEL_CHANGED, and
   // reports a failure to the ADR 0034 hook. A keyword stage never reaches this.
   const e = await withEmbedding(E, { query: o.query }, 'query_embedding', 'query', caller);
   return { vec: e.query_embedding, model: e.embedding_model };
 }
 
-// Exact cosine over the cached unit vectors of every stated namespace, restricted to the filter. Returns the
-// best `depth` hits best first. The scan ceiling, the model binding and the dimension are enforced as before.
+// Exact cosine over the tier's cached unit vectors (search-tier.cjs candidates) of every stated namespace, restricted to the filter.
+// Returns the best `depth` hits best first. The scan ceiling, the model binding and the dimension are enforced as before.
 async function semanticStage(E, caller, o, depth) {
   const { vec, model: qModel } = await queryVector(E, caller, o);
-  const db = E.store.db;
   const scored = [];
   let scanned = 0, model = null, dim = null;
-  const t = Date.now();
   for (const ns of o.namespaces) {
-    const m = E.store.p('SELECT embedding_model, dim FROM namespace_models WHERE namespace = ?').get(ns);
+    const m = ST.binding(E, o.tier, ns);
     if (!m) continue;
     if (qModel && qModel !== m.embedding_model) {
       throw err('E_MODEL', `the query was embedded with ${qModel} but namespace ${ns} is bound to ${m.embedding_model}`, { namespace: ns, bound: m.embedding_model });
     }
     model = model || m.embedding_model; dim = dim || m.dim;
     const q = toUnitF32(vec, m.dim);
-    const c = E.store._loadNs(ns);
-    const ceiling = scanCeiling(m.dim);
-    if (c.rows.length > ceiling && !o.allowSlow) {
-      throw err('E_NAMESPACE_TOO_LARGE', `namespace ${ns} holds ${c.rows.length} rows, above the ${ceiling}-row exact-scan ceiling; pass allow_slow to scan it anyway`, { namespace: ns, rows: c.rows.length, ceiling });
+    const total = ST.countRows(E, ns), ceiling = scanCeiling(m.dim);
+    if (total > ceiling && !o.allowSlow) {
+      throw err('E_NAMESPACE_TOO_LARGE', `namespace ${ns} holds ${total} rows, above the ${ceiling}-row exact-scan ceiling; pass allow_slow to scan it anyway`, { namespace: ns, rows: total, ceiling });
     }
-    let allowed = null;
-    if (o.filterSql.where) {
-      allowed = new Set(db.prepare(`SELECT e.id FROM memory_entries e WHERE e.namespace = ? AND ${o.filterSql.where}`).all(ns, ...o.filterSql.params).map(r => r.id));
-    }
-    const hidden = o.hidden; // the notes the gate hides (a small set): one lookup per row
-    for (const r of c.rows) {
-      if (!r.vec || (r.ttl_at && r.ttl_at < t) || (!o.includeSuperseded && c.superseded.has(r.id)) || (allowed && !allowed.has(r.id)) || (hidden && hidden.has(r.id))) continue;
+    for (const r of ST.candidates(E, o.tier, ns, m, o)) {
       scanned++;
       let s = 0;
       for (let d = 0; d < m.dim; d++) s += r.vec[d] * q[d];
@@ -167,11 +161,11 @@ function keywordStage(E, o, depth, base) {
 
 // The WHERE clause every keyword hit and the rows_considered count share (alias e).
 function baseWhere(o) {
-  const where = [`e.namespace IN (${marks(o.namespaces)})`, '(e.ttl_at IS NULL OR e.ttl_at >= ?)'];
-  const params = [...o.namespaces, Date.now()];
-  // The unary + keeps SQLite on ix_entries_supersedes for the inner lookup: on (namespace, created_at) it scans the
-  // whole namespace per outer row, which is quadratic (minutes, not milliseconds, at ten thousand rows).
-  if (!o.includeSuperseded) where.push('NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND +s.namespace = e.namespace)');
+  // The namespace, expiry and superseded terms are the one visibility rule every tier shares (memory-vectors visibleRowFilter; its
+  // superseded term keeps SQLite on ix_entries_supersedes with a unary +, as the old copy here did).
+  const v = ST.visibleRowFilter({ namespaces: o.namespaces, includeSuperseded: o.includeSuperseded });
+  const where = [v.where];
+  const params = [...v.params];
   if (o.filterSql.where) { where.push(o.filterSql.where); params.push(...o.filterSql.params); }
   if (o.gate) { where.push(o.gate.where); params.push(...o.gate.params); }
   return { where: where.join(' AND '), params };
@@ -262,8 +256,14 @@ function onSemanticFailure(E, caller, e) {
   throw err('E_SEMANTIC_REQUIRED', 'memory.search hybrid could not run its semantic half: ' + why + ' (' + cause.code + ': ' + cause.message + '), and the run embedder mode is required, so no keyword-only answer is given. ' + next, { cause: cause.code, mode: run.mode, run_id: caller.run_id, guarded });
 }
 
-async function search(E, caller, args) {
+// `internal` is never a request field (the engine passes none): { tier, levers } let a caller inside this process, and the tests, name the
+// retrieval tier; a request cannot (invariant 3). Without it the tier is ST.tierFor(E, caller).
+async function search(E, caller, args, internal = {}) {
+  const t0 = Date.now(), ms = {};
   const o = parseSearch(E, caller, args);
+  o.tier = internal.tier || ST.tierFor(E, caller);
+  const lv = ST.leversOfSearch(E, caller, internal.levers);
+  if (o.mode !== 'keyword') ST.assertServable(E, o.tier, o.namespaces); // a heavy tier never serves a partial index
   const depth = o.order === 'score' ? Math.min(Math.max((o.offset + o.k) * 3, 60), DEPTH_MAX) : DEPTH_MAX;
   const base = baseWhere(o);
   const db = E.store.db;
@@ -272,15 +272,19 @@ async function search(E, caller, args) {
   const ran = [], failed = [];
   let sem = null, kw = null;
   if (o.mode !== 'keyword') {
+    const ts = Date.now();
     try { sem = await semanticStage(E, caller, o, depth); ran.push('semantic'); }
     catch (e) {
       if (o.mode === 'semantic') throw e; // unchanged: a semantic search that cannot run is refused by name
       onSemanticFailure(E, caller, e);
       failed.push({ mode: 'semantic', code: asCode(e), message: e.message });
     }
+    ms.semantic = Date.now() - ts;
   }
   if (o.mode !== 'semantic') {
+    const tk = Date.now();
     const r = keywordStage(E, o, depth, base);
+    ms.keyword = Date.now() - tk;
     if (r.failed) failed.push({ mode: 'keyword', code: r.failed.code, message: r.failed.message });
     else { kw = r; ran.push('keyword'); }
   }
@@ -300,6 +304,11 @@ async function search(E, caller, args) {
     rows = rowsByIds(E, ranked.map(h => h.id));
     ranked = ranked.filter(h => rows.has(h.id) && gate.bodyLive(rows.get(h.id)));
   }
+  // The rerank stage (a tier with a reranker): the top of the fused list reordered by the provider, fusion rank as the tiebreak.
+  const fused = ranked, tr = Date.now();
+  const rr = await ST.rerankHead(E, caller, o, ranked, ids => rows || rowsByIds(E, ids), lv);
+  ranked = rr.ranked;
+  if (rr.info) ms.rerank = Date.now() - tr;
   let pool = ranked;
   if (o.order !== 'score') {
     rows = rows || rowsByIds(E, ranked.map(h => h.id));
@@ -315,6 +324,7 @@ async function search(E, caller, args) {
     const out = viewRow(r, o.view, h.score);
     if (o.view === 'full') {
       out.score = h.score;
+      if (h.rerank_score !== undefined) out.rerank_score = h.rerank_score;
       if (h.ranks) out.ranks = h.ranks;
       if (cosine.has(h.id)) {
         const cos = cosine.get(h.id);
@@ -341,8 +351,19 @@ async function search(E, caller, args) {
     scanned: sem ? sem.scanned : 0, model: sem ? sem.model : null, dim: sem ? sem.dim : null,
   };
   if (sem && sem.note) out.note = sem.note;
-  out.modes_run = ran; out.modes_failed = failed; out.absence_established = absence;
+  out.modes_run = rr.info && rr.info.ran ? [...ran, 'rerank'] : ran; out.modes_failed = failed; out.absence_established = absence;
   out.searched = searched; out.fusion = fusion;
+  if (rr.info || !ST.isNano(o.tier)) { const { profile, embedder, reranker, device } = o.tier; out.tier = { profile, embedder, reranker, device }; }
+  if (rr.info) out.rerank = rr.info;
+  if (rr.failed) { // loud (ADR 0040): the answer names the stage that did not run, in the warning and in modes_failed
+    failed.push(rr.failed);
+    out.warning = [`rerank did not run (${rr.failed.code}${rr.info.cause.reason ? `: ${rr.info.cause.reason}` : ''}); the results are in fusion order, not reranked`, out.warning].filter(Boolean).join('; ');
+  }
+  ms.total = Date.now() - t0;
+  if (E.owner) { // only the store owner logs; a search answered from a copy writes nothing (invariant 6)
+    ST.logSearch(E, caller, { kind: 'search', tier: o.tier, query: o.query, mode: o.mode, namespaces: o.namespaces, k: o.k, offset: o.offset, ms, capMb: lv.search_log_cap_mb,
+      ranks: ST.rankRecord(fused, ranked, Math.max(lv.rerank_depth, o.offset + o.k)), fallback: failed.length ? { failed } : null });
+  }
   return out;
 }
 
