@@ -68,7 +68,7 @@ function archive(E, ctx, held, v, sources) {
     held_row: held.id, receipt: entry.receipt, ...(held.b.relation ? { relation: held.b.relation, refines: held.b.relation === 'refines', via: held.b.relation } : {}),
   }, kept || (held.b.relation === 'refines' ? loadNote(E, held.b.of) : null));
   record(E, held.id, entry, { state: 'archived', archived_at: done.at });
-  return { id: note.id, verdict: 'archive', outcome: 'archived', receipt: entry.receipt, facts, history_moved: done.history_moved, held: C.rowOut(E, held.id), row: C.rowOut(E, note.id) };
+  return { id: note.id, verdict: 'archive', outcome: 'archived', receipt: entry.receipt, facts, history_moved: done.history_moved, replaced_also_archived: done.replaced_also_archived, held: C.rowOut(E, held.id), row: C.rowOut(E, note.id) };
 }
 
 // The cites of a verify or a refute. A stream cite is a TOOL RESULT of a non-belay tool in a stream among the evidence files (the task-cite rule:
@@ -87,7 +87,7 @@ async function unsupportedCites(E, ctx, held, note, cites) {
     if (!r.found) throw fail(r.reason);
     out.push({ where: c.where, source: 'stream result' });
   }
-  if (fileCites.length) out.push(...await checkCitations(fileCites, { ...ctx.evidence, head_sha: ctx.evidence.head_sha || held.b.head_sha, own: ownTexts(note), saws: sawsOf(note), title: note.title }));
+  if (fileCites.length) out.push(...await checkCitations(fileCites, { ...ctx.evidence, head_sha: held.b.head_sha || ctx.evidence.head_sha, own: ownTexts(note), saws: sawsOf(note), title: note.title }));
   return out;
 }
 
@@ -158,7 +158,7 @@ async function one(E, ctx, raw, index) {
     } else {
       if (!v.cites.length) throw err('E_CITATION', `archiving a ${held.b.kind} note needs at least one cite { where, quote }, verbatim`, { id: v.id });
       const own = loadNote(E, v.id);
-      sources = await checkCitations(v.cites, { ...ctx.evidence, head_sha: ctx.evidence.head_sha || held.b.head_sha, own: own ? ownTexts(own) : [], saws: own ? sawsOf(own) : [] });
+      sources = await checkCitations(v.cites, { ...ctx.evidence, head_sha: held.b.head_sha || ctx.evidence.head_sha, own: own ? ownTexts(own) : [], saws: own ? sawsOf(own) : [], title: own ? own.title : undefined });
       if (held.b.ground === 'code_contradicts' && !sources.some(s => s.source !== 'stream')) throw err('E_CITATION', 'a hold on the ground code_contradicts is archived on a citation of a file at the head commit', { id: v.id });
     }
   } catch (e) {
