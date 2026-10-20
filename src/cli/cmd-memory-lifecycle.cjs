@@ -36,7 +36,7 @@ function renderProposals(res) {
     const b = n.body || {}, c = b.counts || {};
     out.push(`  ${b.note_id}  [${b.state}]  ${c.tasks} tasks across ${c.runs} runs  nominated ${when(n.created_at)}  (${n.project})${n.note_state && n.note_state !== 'live' ? `  NOTE IS ${String(n.note_state).toUpperCase()}: reject it` : ''}${c.unrecorded ? `  [${c.unrecorded} sighting${c.unrecorded === 1 ? '' : 's'} not counted: delivery facts not recorded]` : ''}`);
     if (!n.drafts.length) out.push('    no draft yet: the scrubber drafts it at a run close');
-    for (const d of n.drafts.slice(0, 1)) out.push(`    draft (${d.source}) -> ${d.target}: ${one(d.rule).slice(0, 160)}${d.present ? `  [${d.present === 'present' ? 'already in the file' : 'not in the file'}]` : ''}`);
+    for (const d of n.drafts.slice(0, 1)) out.push(`    draft (${d.source}) -> ${d.target}, ${Buffer.byteLength(String(d.rule))} bytes, the whole rule (it reaches every later worker): ${one(d.rule)}${d.present ? `  [${d.present === 'present' ? 'already in the file' : 'not in the file'}]` : ''}`);
   }
   const pc = res.promoted_check;
   if (pc) {
