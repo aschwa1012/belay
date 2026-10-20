@@ -1,8 +1,8 @@
 'use strict';
 // retrieval-profiles.cjs — the named retrieval profiles and the model lookups the levers and the routing resolver
-// share (ADR 0050 decision 3 and the handoff's profiles table). Pure data: it requires only errors.cjs and the two
-// model tables, so a read path (settings, status, a menu) may load it. Invariant 9 holds because nothing here
-// reaches an embedder, the GPU child or any model file.
+// share (ADR 0050 decision 3 and the handoff's profiles table). Pure data: it requires only errors.cjs and the
+// model tables (onnx-rerankers.cjs among them), so a read path (settings, status, a menu) may load it. Invariant 9
+// holds because nothing here reaches an embedder, the GPU child or any model file.
 //
 // A profile is an embedder and a reranker, both named by model id. The device is not stored: it follows from the
 // model (a `runtime: 'gguf'` entry runs on the GPU, every ONNX entry on the CPU), so the table cannot disagree
@@ -10,6 +10,7 @@
 
 const { err } = require('./errors.cjs');
 const { MODELS, DEFAULT_MODEL } = require('./models.cjs');
+const { ONNX_RERANKER_TABLE } = require('./onnx-rerankers.cjs');
 
 // The GPU models by kind. This is a deliberate copy of the ids and kinds of gguf-models.cjs, not a require of it:
 // openCore loads memory-levers, which loads this file, and a default run must load no GPU module (ADR 0049,
@@ -25,19 +26,13 @@ const GGUF_KINDS = Object.freeze({
 const NANO = DEFAULT_MODEL;
 const DEFAULT_DEPTH = 50; // every profile, on every device, until the 0.3.2 eval re-picks it (operator, 2026-10-17)
 
-// The CPU (ONNX) rerankers. They are not in models.cjs: that table is iterated as the embedder table. `pending_pin`
-// means the commit and the file hashes are not recorded yet, so the entry names a model but cannot be fetched or
-// run; the resolver refuses it with E_MODEL. The pin (sha, files with bytes and sha256) comes in the next piece.
-const ONNX_RERANKERS = {
-  'jinaai/jina-reranker-v1-tiny-en': {
-    id: 'jinaai/jina-reranker-v1-tiny-en', runtime: 'onnx', kind: 'reranker', dtype: 'int8',
-    label: 'jina-reranker-v1-tiny-en int8', pending_pin: true,
-  },
-  'Alibaba-NLP/gte-reranker-modernbert-base': {
-    id: 'Alibaba-NLP/gte-reranker-modernbert-base', runtime: 'onnx', kind: 'reranker', dtype: 'int8',
-    label: 'gte-reranker-modernbert-base int8', pending_pin: true,
-  },
-};
+// The CPU (ONNX) rerankers. They are not in models.cjs: that table is iterated as the embedder table. Their pins
+// (commit, files with bytes and sha256, max_length, score transform) are in onnx-rerankers.cjs, a pure table this file
+// may require. `pending_pin: true` is the mechanism for a model that is named but not yet pinned: it is listed but
+// cannot be fetched or run, and the resolver refuses it with E_MODEL. No entry is pending today.
+const ONNX_RERANKERS = Object.fromEntries(Object.values(ONNX_RERANKER_TABLE).map(e => [e.id, {
+  id: e.id, runtime: 'onnx', kind: 'reranker', dtype: e.dtype, label: e.label, pin: 'onnx-rerankers.cjs', pending_pin: false,
+}]));
 
 const JINA_TINY = 'jinaai/jina-reranker-v1-tiny-en';
 const GTE_MODERN = 'Alibaba-NLP/gte-reranker-modernbert-base';
