@@ -80,3 +80,94 @@ test('an unended run with a dead adapter and no owner is a crashed run and block
     }
   });
 });
+
+// The rest of the close window: `belay run` has set ended_at and is running the run-end memory jobs, and still owns the store. The
+// run's first epoch names that process (the orchestrator's attach overwrote the current row's adapter pid).
+async function endedByLauncher(T, launchPid, created = null, endApply = false) {
+  await T.endOthers('apply');
+  if (endApply) await T.call(T.who.operator('apply'), 'run.end', { exit_reason: 'test' });
+  const op = require('../core/helpers.cjs').callerFor('operator', { run_id: 'lc-closing' });
+  await T.call(op, 'run.attach', { adapter_pid: launchPid, ...(created == null ? {} : { adapter_pid_created: created }), project: 'lc', memory_levers: JSON.stringify({ project: 'lc', notes: true }) });
+  await T.call(op, 'run.attach', { adapter_pid: deadPid() }); // the orchestrator's adapter takes over the row and exits
+  await T.call(op, 'run.end', { exit_reason: 'test' });
+  T.store.close();
+}
+const review = (T, runId, deps) => cmd(T, ['review', '--run', runId, '--all', '--worktree', T.repo], { makeManager: never, spawnDetached: never, ...deps });
+
+test('an ended run whose launching process still holds the store owner is closing: a review is refused whichever run it acts for', async () => {
+  await planted(async (T) => {
+    await endedByLauncher(T, process.ppid, null, true);
+    const deps = { ownerLock: () => ({ pid: process.ppid }) };
+    for (const runId of ['lc-apply', 'lc-closing']) {
+      const r = await review(T, runId, deps);
+      assert.strictEqual(r.code, 1, `${runId}: ${r.text}`);
+      assert.strictEqual(r.json.error.code, 'E_BUSY', runId);
+      assert.deepStrictEqual(r.json.error.live_runs, ['lc-closing'], runId);
+      assert.match(r.text, /has ended but its process \(pid \d+\) still holds the store owner/);
+    }
+    const s = await cmd(T, ['review', '--run', 'lc-apply', '--project', 'lc', '--start', '--worktree', T.repo], { spawnDetached: never, ...deps });
+    assert.strictEqual(s.json.error.code, 'E_BUSY', 'the detached launcher is refused the same way');
+  });
+});
+
+test('a historical ended run blocks nothing: its process is gone, or another process holds its pid, or nobody holds the owner', async () => {
+  await planted(async (T) => {
+    await endedByLauncher(T, deadPid(), 5);
+    for (const deps of [
+      { ownerLock: () => ({ pid: process.ppid }) },              // the owner is someone else's: this run's launcher is not the holder
+      { ownerLock: () => null },                                  // nothing holds it
+      { ownerLock: () => ({ pid: process.pid }) },                // this very process holds it
+    ]) {
+      const r = await review(T, 'lc-apply', deps);
+      assert.notStrictEqual(r.json && r.json.error && r.json.error.code, 'E_BUSY', r.text);
+      assert.strictEqual(r.code, 0, r.text);
+    }
+  });
+});
+
+test('the launching pid is matched by creation time: a pid another process now holds is not closing, and an unreadable time is', async () => {
+  await planted(async (T) => {
+    await endedByLauncher(T, process.ppid, 111);
+    const lock = { ownerLock: () => ({ pid: process.ppid }) };
+    const other = await review(T, 'lc-apply', { ...lock, createdOf: async () => ({ created: 222 }) });
+    assert.strictEqual(other.code, 0, `another process holds the pid: ${other.text}`);
+    const same = await review(T, 'lc-apply', { ...lock, createdOf: async () => ({ created: 111 }) });
+    assert.strictEqual(same.json.error.code, 'E_BUSY', 'the same process is closing');
+    const unreadable = await review(T, 'lc-apply', { ...lock, createdOf: async () => null });
+    assert.strictEqual(unreadable.json.error.code, 'E_BUSY', 'unprovable counts as closing, never as free');
+  });
+});
+
+// The same window without seams: this process stands in for `belay run` (it owns the real store owner and has ended its run, and the
+// run-end memory jobs it would be running are the gap), and the built CLI runs the review as a separate process. The real owner lock, the
+// real pid check and the run row's first epoch decide; the owner's shutdown call is what ends the window.
+test('the built CLI refuses a review while the ended run\'s process still owns the store, and proceeds once the owner is shut down', async () => {
+  const { spawnSync } = require('node:child_process');
+  const { ROOT, CLI } = require('./stop-helpers.cjs');
+  const { openCore } = require('../../src/core/index.cjs');
+  const { callerFor } = require('../core/helpers.cjs');
+  await planted(async (T) => {
+    await T.endOthers('apply');
+    T.store.close();
+    const env = { ...process.env, BELAY_TEST_MODE: '1', BELAY_TEST_SKIP_EMBEDDER_WARMUP: '1' };
+    const review = () => spawnSync(process.execPath, [CLI, 'memory', 'review', '--run', 'lc-apply', '--all', '--worktree', T.repo, '--data', T.dir, '--json'], { cwd: ROOT, windowsHide: true, encoding: 'utf8', env, timeout: 120000 });
+    const core = await openCore({ dataDir: T.dir, caller: callerFor('operator', { run_id: 'lc-closing' }), embed: false });
+    let owned = true;
+    try {
+      await core.becomeOwner(); // as belay run does
+      assert.strictEqual(core.isOwner(), true, 'this process is the store owner');
+      await core.run.attach({ adapter_pid: process.pid, project: 'lc', memory_levers: JSON.stringify({ project: 'lc', notes: true }) });
+      await core.run.end({ exit_reason: 'test' }); // ended_at is set; the run-end memory jobs and the owner shutdown are still to come
+      const held = review();
+      const j = JSON.parse(held.stdout || held.stderr);
+      assert.strictEqual(held.status, 1, held.stdout + held.stderr);
+      assert.strictEqual(j.error.code, 'E_BUSY');
+      // (the fixture's other runs were launched by this same process, so they read as closing too; a real run process hosts one run)
+      assert.ok(j.error.live_runs.includes('lc-closing'), JSON.stringify(j.error));
+      await core.shutdownOwner();
+      owned = false;
+      const after = review();
+      assert.strictEqual(after.status, 0, after.stdout + after.stderr);
+    } finally { if (owned) await core.shutdownOwner(); await core.close(); }
+  });
+});

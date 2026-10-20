@@ -51,17 +51,43 @@ function ownerHeldElsewhere(dataDir, deps) {
     return !!(lock && lock.pid && lock.pid !== process.pid && pidAlive(lock.pid));
   } catch { return false; }
 }
+// A third fact (audit D35, the rest of the close window): `belay run` sets `ended_at` and THEN runs the run-end memory jobs and only
+// then shuts the owner down, so for that stretch the run is ended and still owns the store. It is the run whose process (its first
+// epoch's adapter pid, with its creation time when the row has one) holds the owner lock now; that run is closing whichever run the
+// review acts for, since its shutdown ends this review's connection just the same. A historical ended run whose process is gone, or
+// whose pid another process holds, is not closing. An unreadable creation time fails towards refusing, as the other facts do.
+async function closingRuns(runs, dataDir, deps) {
+  let lock = null;
+  try { lock = deps && deps.ownerLock ? deps.ownerLock(dataDir) : readOwnerLock(dataDir); } catch { return []; }
+  if (!lock || !lock.pid || lock.pid === process.pid || !pidAlive(lock.pid)) return [];
+  const out = [];
+  for (const r of runs) {
+    if (r.ended_at == null || r.launch_pid !== lock.pid) continue;
+    if (r.launch_pid_created != null) {
+      let got = null;
+      try { got = await (deps && deps.createdOf ? deps.createdOf(lock.pid) : require('../core/process.cjs').createdOf(lock.pid)); } catch { got = null; }
+      if (got && got.created != null && got.created !== r.launch_pid_created) continue; // another process holds the pid now
+    }
+    out.push(r);
+  }
+  return out;
+}
 async function otherLiveRun(core, runId, dataDir, deps) {
-  let live = [];
+  let live = [], closing = [];
   try {
     const held = ownerHeldElsewhere(dataDir, deps);
-    live = ((await core.run.list({})).runs || []).filter((r) => r.id !== runId && (r.alive || (r.ended_at == null && held)));
+    const runs = (await core.run.list({})).runs || [];
+    live = runs.filter((r) => r.id !== runId && (r.alive || (r.ended_at == null && held)));
+    closing = (await closingRuns(runs, dataDir, deps)).filter((r) => !live.includes(r));
   } catch { return null; }
-  if (!live.length) return null;
-  const ids = live.map((r) => r.id).join(', ');
-  const message = `run ${ids} is live in this data dir; wait for it to end (or stop it) and try again, because its close would shut the store owner under this review`;
+  if (!live.length && !closing.length) return null;
+  const all = [...live, ...closing];
+  const ids = all.map((r) => r.id).join(', ');
+  const message = live.length
+    ? `run ${live.map((r) => r.id).join(', ')} is live in this data dir; wait for it to end (or stop it) and try again, because its close would shut the store owner under this review${closing.length ? `; run ${closing.map((r) => r.id).join(', ')} is also closing` : ''}`
+    : `run ${ids} has ended but its process (pid ${closing[0].launch_pid}) still holds the store owner while it closes; wait for \`belay run\` to exit and try again, because its owner shutdown would cut this review off`;
   return { code: 1, text: `belay memory review: ${one(message)}
-`, json: { error: { code: 'E_BUSY', message, live_runs: live.map((r) => r.id) } } };
+`, json: { error: { code: 'E_BUSY', message, live_runs: all.map((r) => r.id) } } };
 }
 
 // The stage's own core: the operator, as the run it acts for. Returns { rc, lv, runId, dataDir } or { fail }.

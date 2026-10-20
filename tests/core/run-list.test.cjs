@@ -47,3 +47,14 @@ test("run.list: every run's current row, newest first, with alive derived from t
     assert.ok(ib < ia, 'run-b (newest by seq) must sort ahead of test-run');
   } finally { await second.close(); }
 });
+
+test('run.list: launch_pid is the first epoch\'s adapter pid, which a later attach by another adapter does not change', async () => {
+  const c = await openCore({ dataDir: dir, caller: callerFor('orchestrator', { run_id: 'run-launch' }), embed: false });
+  try {
+    const other = require('./helpers.cjs').deadPid();
+    await c.run.attach({ adapter_pid: process.pid, adapter_pid_created: 4242 });
+    await c.run.attach({ adapter_pid: other }); // the orchestrator's adapter overwrites the current row, then exits
+    const r = (await operator.run.list({})).runs.find((x) => x.id === 'run-launch');
+    assert.deepStrictEqual([r.adapter_pid, r.launch_pid, r.launch_pid_created], [other, process.pid, 4242]);
+  } finally { await c.close(); }
+});

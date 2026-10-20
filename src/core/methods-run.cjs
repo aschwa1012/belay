@@ -306,9 +306,14 @@ async function getRun(E, caller) {
 // argument to find the current run, because status.get and run.get both read the run named by
 // caller.run_id, fixed at openCore. `alive` is derived the same way status.get's run-alive rung
 // derives it: the row has not ended and its adapter_pid answers a pid check right now.
+//
+// `launch_pid` and `launch_pid_created` are the adapter pid (and its creation time) of the run's FIRST epoch: the process that launched
+// the run, which `belay run` is. The orchestrator's attach overwrites `adapter_pid` with its own and that adapter exits before the run
+// closes, so the current row no longer names the process that still owns the store through the close; this does (audit D35).
 async function listRuns(E) {
+  const first = new Map(E.store.p('SELECT id, adapter_pid, adapter_pid_created FROM run WHERE seq IN (SELECT MIN(seq) FROM run GROUP BY id)').all().map(r => [r.id, r]));
   const runs = rows.currentAll(E.store, 'run')
-    .map(r => parseRunRow({ ...r, alive: !!(r.ended_at == null && pidAlive(r.adapter_pid)) }))
+    .map(r => parseRunRow({ ...r, alive: !!(r.ended_at == null && pidAlive(r.adapter_pid)), launch_pid: first.has(r.id) ? first.get(r.id).adapter_pid : null, launch_pid_created: first.has(r.id) ? first.get(r.id).adapter_pid_created : null }))
     .sort((a, b) => b.seq - a.seq);
   return { runs };
 }
