@@ -120,7 +120,8 @@ async function semanticStage(E, caller, o, depth) {
     if (total > ceiling && !o.allowSlow) {
       throw err('E_NAMESPACE_TOO_LARGE', `namespace ${ns} holds ${total} rows, above the ${ceiling}-row exact-scan ceiling; pass allow_slow to scan it anyway`, { namespace: ns, rows: total, ceiling });
     }
-    for (const r of ST.candidates(E, o.tier, ns, m, o)) {
+    // A namespace at or above the ceiling (allow_slow lets it through) is scanned from the namespace cache (the slow path), not the vector cache.
+    for (const r of ST.candidates(E, o.tier, ns, m, o, total >= ceiling)) {
       scanned++;
       let s = 0;
       for (let d = 0; d < m.dim; d++) s += r.vec[d] * q[d];

@@ -58,11 +58,12 @@ function keyFor(db, tier, ns, m) {
 
 // [{ id, vec }] for the rows of `ns` the semantic scan may score: visible by the shared rule (memory-vectors visibleRowFilter),
 // not hidden by the caller's gate, inside the caller's filter, with a vector under the tier.
-function candidates(E, tier, ns, m, o) {
+function candidates(E, tier, ns, m, o, slow = false) {
   const db = E.store.db;
   let allowed = null;
   if (o.filterSql.where) allowed = new Set(db.prepare(`SELECT e.id FROM memory_entries e WHERE e.namespace = ? AND ${o.filterSql.where}`).all(ns, ...o.filterSql.params).map(r => r.id));
   const keep = (id) => !allowed || allowed.has(id);
+  if (slow && isNano(tier)) return inline(E, ns, o, keep);
   if (!VT.hasTable(db)) { // E_NO_INDEX territory: no cache table, so read the inline column exactly as search did before the cache
     if (!isNano(tier)) throw err('E_NO_INDEX', 'this store has no vector cache (memory_vectors), and a heavy tier has no inline vectors to read');
     return inline(E, ns, o, keep);

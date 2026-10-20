@@ -13,6 +13,8 @@ const { redact } = require('./redact.cjs');
 
 const EVENT_KINDS = ['observation', 'summary', 'project_write', 'usage', 'index_injected', 'bottle', 'wrapup',
   'corpus_primed', 'knowledge_ask', 'reflection', 'levers_unread', 'embed_bound', 'index_bound', 'notes_applied', 'note_chance', 'note_changed', 'archive_purge', 'note_matches', 'note_review', 'note_refuted', 'review_job', 'scrub_job', 'scrub_owed', 'scrub_alarm', 'review_stage', 'stage_overrun', 'review_claim', 'search', 'index'];
+// Written only by the owner's search log (search-log.cjs passes opts.searchLog); no caller may record them.
+const SEARCH_LOG_KINDS = ['search', 'index'];
 const SUBSTRATES = ['claude-code', 'codex'];
 const COST_BASES = ['delta-of-cumulative', 'delta-of-cumulative (new process)', 'none'];
 const GROUPS = ['task', 'worker', 'model', 'turn'];
@@ -69,6 +71,9 @@ async function recordEvent(E, caller, args) { return recordEventSync(E, caller, 
 function recordEventSync(E, caller, args, opts = {}) {
   if (!EVENT_KINDS.includes(args.kind)) {
     throw err('E_ARGS', `memory.recordEvent kind must be one of ${EVENT_KINDS.join(', ')}, and this call carried ${JSON.stringify(args.kind)}`);
+  }
+  if (SEARCH_LOG_KINDS.includes(args.kind) && !opts.searchLog) {
+    throw err('E_ROLE', `memory.recordEvent: kind ${args.kind} belongs to the store owner's search log and cannot be written by a caller`, { kind: args.kind });
   }
   const code = optStr(args.code, 'code');
   const ok = flag(args.ok === undefined ? (code ? 0 : 1) : args.ok, 'ok');

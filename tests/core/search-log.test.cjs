@@ -144,3 +144,12 @@ test('the cap prunes the oldest runs first, keeps the newest, and keeps the coun
   assert.ok(kept[kept.length - 1].startsWith('q run-d 39'), 'the newest event is kept');
   assert.ok(sum() <= CAP * 1048576);
 });
+
+test('memory.recordEvent refuses the search and index kinds from every caller', async () => {
+  for (const kind of ['search', 'index']) {
+    for (const caller of [T.who.tool('plain'), T.who.operator('plain'), T.who.harness('plain')]) {
+      await assert.rejects(() => T.E.handle('memory.recordEvent', { caller, kind, message: 'forged' }), (e) => e.code === 'E_ROLE' && e.detail.kind === kind);
+    }
+  }
+  await T.E.handle('memory.recordEvent', { caller: T.who.tool('plain'), kind: 'bottle' }).catch(() => {}); // other kinds are untouched
+});
