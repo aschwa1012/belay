@@ -246,11 +246,13 @@ async function drain(ctx, ms) {
 
 // The run's end, store-only (also runs in `belay run`, which holds no manager): apply the hand-back of every ended review task,
 // apply the answer of every review job that finished but was not applied, and name what was never reviewed. Idempotent.
-async function sweep(J, tasks, workers) {
+// `opts.preClose` is the sweep that runs before the run-close stages, while a killed job's row can still read idle or running: it applies
+// what is finished (a review task's hand-back, a job whose worker is stopped or dead) and writes no receipt of any kind, because a receipt
+// would stop the run-end sweep, which runs after run.end has settled the rows, from applying that job's answer.
+async function sweep(J, tasks, workers, opts = {}) {
   const { lv, ctx } = J;
   const core = gated(J);
   if (!lv.notes) return;
-  const byId = new Map(tasks.map((t) => [t.id, t]));
   for (const t of tasks) if (isReview(t) && ENDED.has(t.state)) await applyHandback(J, t);
   const jobWorkers = workers.filter((w) => String(w.id).startsWith(JOB_PREFIX) && w.run_id === ctx.runId);
   const events = ((await core.memory.events({ run_id: ctx.runId || undefined, kinds: ['review_job'] })) || {}).events || [];
@@ -259,14 +261,14 @@ async function sweep(J, tasks, workers) {
     const taskId = taskOfJob(w.id);
     if (!taskId || done(taskId)) continue;
     if (!['stopped', 'dead'].includes(w.state)) { // still starting or running: it has no answer to apply, and a missing cost is not a cost-cap failure
-      await fail(core, { worker_id: w.id, task_id: taskId, key: `task:${taskId}` }, shutErr(`the run ended while the review job was ${w.state}; its notes stay unreviewed`));
+      if (!opts.preClose) await fail(core, { worker_id: w.id, task_id: taskId, key: `task:${taskId}` }, shutErr(`the run ended while the review job was ${w.state}; its notes stay unreviewed`));
       continue;
     }
     const got = await core.worker.get({ worker_id: w.id }).catch(() => null);
     const text = got && got.stream_path ? lastTextOf(got.stream_path) : '';
     await finishJob(core, { workerId: w.id, taskId, text, cost: typeof w.cost_usd === 'number' ? w.cost_usd : null, cap: lv.note_review_cost_cap_usd });
   }
-  if (!lv.note_review) return;
+  if (opts.preClose || !lv.note_review) return;
   const started = new Set(jobWorkers.map((w) => taskOfJob(w.id)));
   for (const t of tasks) {
     if (isReview(t) || !ENDED.has(t.state) || started.has(t.id) || events.some((e) => e.key === `task:${t.id}`)) continue; // a receipt of any kind is the record
@@ -276,18 +278,38 @@ async function sweep(J, tasks, workers) {
     if (!brief.notes.length && !(brief.reports || []).length) continue;
     await fail(core, { worker_id: undefined, task_id: t.id, key: `task:${t.id}`, row_ids: brief.notes.map((n) => n.id), message: `task ${t.id} wrote ${brief.notes.length} note(s) and the run ended before a review job ran; they stay unreviewed` }, Object.assign(new Error('owed'), { code: 'E_TIMEOUT' }));
   }
-  // A job decides once per task, when the task first ends. A note written after that (the reflection turn, a second attempt), or one the job
-  // refused or left out, is still unreviewed; the task's receipt does not say so, so each such task is named once here.
+  // A job decides once per task, when the task first ends. A note written after a clean job (the reflection turn, a second attempt) is still
+  // unreviewed, and the job's receipt does not say so, so such a task is named once here. A job that failed is not named again: its own receipt
+  // (its code says why) is the record. A partial job's receipt names the notes it left, so only a note it does not name is added.
   for (const t of tasks) {
-    if (isReview(t) || !ENDED.has(t.state) || !events.some((e) => e.key === `task:${t.id}`) || events.some((e) => e.key === `left:${t.id}`)) continue;
+    const own = events.filter((e) => e.key === `task:${t.id}`);
+    if (isReview(t) || !ENDED.has(t.state) || !own.length || events.some((e) => e.key === `left:${t.id}`)) continue;
+    const clean = own.some((e) => e.ok === 1 || e.ok === true);
+    const partial = own.filter((e) => e.code === 'E_PARTIAL');
+    if (!clean && !partial.length) continue;
     if (tasks.some((r) => isReview(r) && Array.isArray(r.depends_on) && r.depends_on.includes(t.id))) continue;
     let brief;
     try { brief = await core.memory.reviewBrief({ reviewed_task_id: t.id }); } catch { continue; }
-    if (!brief.notes.length) continue;
-    const ids = brief.notes.map((n) => n.id);
-    await fail(core, { worker_id: undefined, task_id: t.id, key: `left:${t.id}`, row_ids: ids, message: `task ${t.id} has ${ids.length} note(s) no review judged (written after its review job, refused or left out); they stay unreviewed: ${ids.slice(0, 8).join(', ')}${ids.length > 8 ? `, and ${ids.length - 8} more` : ''}` }, Object.assign(new Error('left'), { code: 'E_PARTIAL' }));
+    const named = partial.map((e) => String(e.message || '')).join(' ');
+    const ids = brief.notes.map((n) => n.id).filter((id) => clean || !named.includes(id));
+    if (!ids.length) continue;
+    const why = clean ? 'written after its review job' : 'not named by its review job\'s partial receipt';
+    await fail(core, { worker_id: undefined, task_id: t.id, key: `left:${t.id}`, row_ids: ids, message: `task ${t.id} has ${ids.length} note(s) no review judged (${why}); they stay unreviewed: ${ids.slice(0, 8).join(', ')}${ids.length > 8 ? `, and ${ids.length - 8} more` : ''}` }, Object.assign(new Error('left'), { code: 'E_PARTIAL' }));
   }
-  void byId;
 }
 
-module.exports = { waitJob, reviewTail, onTaskEnded, applyHandback, sweep, drain, expectsJobs, runJob, lastTextOf, jobIdFor, taskOfJob, isJob, JOB_PREFIX, JOB_WALL_MS };
+// The sweep alone, store-only, before the run-close stages (`belay run` hands it to them). A report that a finished job upheld is applied before the
+// scrub can archive its note; an upheld report applied after is refused ("not live in this run's project"). It is the pre-close sweep (see `sweep`):
+// the run-end sweep runs again after run.end and does the rest, and the store makes a second application a no-op. Returns null with notes off.
+async function reviewSweep({ core, runId, levers, gate = null }) {
+  const lv = levers;
+  if (!lv || !lv.notes) return null;
+  const J = { ctx: { core, runId, memoryLevers: lv }, core, lv, w: null, gate: gate || { aborted: false }, s: {}, turnPath: false };
+  const g = gated(J);
+  const tasks = ((await g.task.list({})) || {}).tasks || [];
+  const workers = ((await g.worker.list({})) || {}).workers || [];
+  await sweep(J, tasks, workers, { preClose: true });
+  return { swept: true, tasks: tasks.length };
+}
+
+module.exports = { waitJob, reviewTail, onTaskEnded, applyHandback, sweep, reviewSweep, drain, expectsJobs, runJob, lastTextOf, jobIdFor, taskOfJob, isJob, JOB_PREFIX, JOB_WALL_MS };

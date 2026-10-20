@@ -64,8 +64,8 @@ const REPORT_SHAPE = '{ "id": "<reported note id>", "verdict": "upheld" | "rejec
 const CITE_RULES = [
   'A cite is { where, quote }. The quote is one verbatim line or span copied exactly from the evidence, at most 2,000 bytes, that appears in:',
   '- a tool result in the reviewed worker\'s stream: where is "stream" (any worker of the task) or "stream:<worker id>"; or',
-  '- a file of the repository as the reviewed worker left it, at its head commit or, when it has not committed, in its working tree: where is the path from the repository root.',
-  'A quote under 6 non-space characters must be a whole line. If the note copied a printed line, quote that whole line or a different line of the result.',
+  '- a file of the repository, at the reviewed worker\'s head commit or, when it has not committed, in its worktree as it is when belay checks the cite: where is the path from the repository root.',
+  'A quote under 6 non-space characters must be a whole line with a letter or digit in it (a bare "}" is refused). If the note copied a printed line, quote that whole line or a different line of the result.',
   'belay checks that each quote is really there. A verdict with a quote that is not is dropped, whatever it says.',
   '"confirmed" means the evidence agrees with every specific value the note states (path, name, number, id); "refuted" means the evidence you cite contradicts any one of them. "unsupported" means no single place proves or disproves the note (cites are optional, a reason is required): the note stays as it is, with no warning, and waits for a deeper on-demand review. Leave out a note you have not looked at: it stays unreviewed.',
 ].join('\n');
