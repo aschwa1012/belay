@@ -20,11 +20,12 @@ const question = (lv) => read(lv && lv.notes_lesson_question ? 'notes-question-l
 // The project's most used subjects, as one line (memory.noteSubjects, chosen by the core): '' when it has none, and then the
 // placeholder's whole line goes, so a project with no subjects yet sees no empty line.
 const subjectsLine = (subjects) => (Array.isArray(subjects) && subjects.length ? `Subjects already used in this project: ${subjects.join(', ')}.` : '');
-// The one rule on findings: a later worker is shown none of them, unless the run keeps mechanical summaries, which carry the
-// hand-back's findings into rows that `memory_summaries` returns on request. Either way the worker must not assume they are covered.
+// The one rule on findings, stated as what is pushed to a later worker: nothing is, so it must not assume they are covered. The
+// task row (`task_list`) still holds them, and a run that keeps mechanical summaries also turns them into rows `memory_summaries`
+// returns on request; the line says only that nothing delivers them.
 const findingsLine = (lv) => (lv && lv.summaries === 'mechanical'
-  ? 'Your findings reach them only as a run summary they would have to search for; do not assume they are covered.'
-  : 'Your findings are not shown to them; do not assume they are covered.');
+  ? 'Your findings are not passed to them automatically, though a run summary of them can turn up if they search; do not assume they are covered.'
+  : 'Your findings are not passed to them automatically; do not assume they are covered.');
 const fill = (template, lv, subjects) => {
   const line = subjectsLine(subjects);
   return template.split('{{question}}').join(question(lv)).split('{{findings}}').join(findingsLine(lv)).split(line ? '{{subjects}}' : '\n{{subjects}}').join(line);

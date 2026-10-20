@@ -68,7 +68,7 @@ test('the contract text explains the purpose, shape and timing of a note, keeps 
   assert.ok(Buffer.byteLength(NC.contract({ ...DEFAULTS, ...ON }, ['s'.repeat(40), 'x'.repeat(40)])) <= 1900 + 400, 'with a full subject list');
   for (const must of ["They are found by matching that worker's task text against your note", 'Do not note what you built, or what your diff already shows', '`[]` is the normal answer',
     '`title` (at most 160 bytes)', '`when` (at most 160 bytes)', 'as a task line', "not the finding's", '`subjects` (0 to 3)', 'its paths also feed matching',
-    'Your findings are not shown to them; do not assume they are covered', 'mark a snapshot "as of <sha>"', '(made up:', 'says the same as another note', '`replaced_by`', '`reported_wrong`', '`memory_note_resolve`']) {
+    'Your findings are not passed to them automatically; do not assume they are covered', 'mark a snapshot "as of <sha>"', '(made up:', 'says the same as another note', '`replaced_by`', '`reported_wrong`', '`memory_note_resolve`']) {
     assert.ok(text.includes(must), must);
   }
   assert.ok(!text.includes('Subjects already used'), 'no subject line when the project has none');
@@ -86,11 +86,12 @@ test('the contract states one rule on findings: the question does not exclude th
   assert.ok(!NC.question({ ...DEFAULTS, ...ON, notes_lesson_question: true }).includes('findings'));
   assert.ok(!off.includes('hand-back already shows'), 'the hand-back goes to the orchestrator, so the contract does not say it already shows the lesson');
   assert.strictEqual(off.split('findings').length - 1, 1, 'findings are mentioned once');
-  assert.ok(off.includes('Your findings are not shown to them; do not assume they are covered.'), 'summaries off: findings reach no later worker');
+  assert.ok(off.includes('Your findings are not passed to them automatically; do not assume they are covered.'), 'summaries off: nothing delivers findings to a later worker');
+  assert.ok(!/\bonly\b[^.]*\bsummary/.test(off) && !off.includes('not shown'), 'and it does not claim findings are unavailable: task_list still returns the task row');
   assert.ok(!off.includes('run summary'));
   assert.strictEqual(mech.split('findings').length - 1, 1, 'and once with summaries on');
-  assert.ok(mech.includes('Your findings reach them only as a run summary they would have to search for; do not assume they are covered.'), 'summaries mechanical: findings are rows memory_summaries returns');
-  assert.ok(!mech.includes('are not shown to them'), 'so "not shown" is not said');
+  assert.ok(mech.includes('Your findings are not passed to them automatically, though a run summary of them can turn up if they search; do not assume they are covered.'), 'summaries mechanical: a summary row can turn up, but nothing delivers findings');
+  assert.ok(!mech.includes('not shown') && !/\breach them only\b/.test(mech), 'neither wording claims exclusivity (task_list returns the handoff)');
   assert.ok(!mech.includes('{{'));
   const strip = (t) => t.replace(/Your findings [^.]*./, 'X');
   assert.strictEqual(strip(mech), strip(off), 'nothing else differs');
