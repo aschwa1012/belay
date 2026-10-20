@@ -372,6 +372,11 @@ async function release(E, caller, args) {
       NM.claimAfterRelease(E, caller, prep, l, task.id); // only with memory.notes_reflection, once per lease
       return { ...task, last_checkpoint_id: (rows.lastCheckpoint(E.store, l.task_id) || {}).id || null, released_reason: args.reason || null, ...NM.commit(E, caller, prep, { task_id: task.id }) };
     }
+    // Audit D44: with notes off nothing above handles a second call, and the release below would append another released
+    // row and replace the hand-back it stands on. A released lease is released once; only the notes-only calls above return.
+    if (l.released_at != null) {
+      throw err('E_ARGS', `lease.release: lease ${l.id} was already released at ${l.released_at}, so a second release would replace its hand-back; nothing was written`, { lease_id: l.id, released_at: l.released_at });
+    }
     rows.append(E.store, 'lease', { ...l, released_at: t }, by, t);
     let handoff = task.handoff;
     if (args.result !== undefined) {
