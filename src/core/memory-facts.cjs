@@ -52,6 +52,11 @@ function ownTexts(note) {
   return [note.title, note.when !== undefined ? note.when : note.b.when, note.text, ...((note.b.evidence || []).flatMap(e => [e && e.saw, e && e.where]))].filter(t => typeof t === 'string' && t.trim());
 }
 
+// The part of the note's own words that is a copy of printed output by contract: the `saw` of each evidence entry (see echoOf).
+function sawsOf(note) {
+  return (note.b.evidence || []).map(e => e && e.saw).filter(t => typeof t === 'string' && t.trim());
+}
+
 const lower = list => new Set((Array.isArray(list) ? list : []).filter(x => typeof x === 'string').map(x => x.trim().toLowerCase()).filter(Boolean));
 const shares = (a, b) => [...a].some(x => b.has(x));
 
@@ -92,4 +97,4 @@ function checkHoldFacts(E, project, note, kind, ofId, ground, threshold = DUP_SI
   throw refuse(`note ${note.id} is not shown to duplicate ${target.id}: the stored similarity is ${best < 0 ? 'unavailable' : round3(best)} (needs ${threshold}) and no worker report names ${target.id} as the replacement`, { id: note.id, of: target.id, similarity: best < 0 ? null : round3(best) });
 }
 
-module.exports = { ownTexts, loadNote, storedCosine, liveKept, checkHoldFacts, parse, COLS };
+module.exports = { ownTexts, sawsOf, loadNote, storedCosine, liveKept, checkHoldFacts, parse, COLS };

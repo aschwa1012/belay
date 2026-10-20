@@ -22,11 +22,17 @@ const norm = s => String(s).replace(/\s+/g, ' ').trim();
 const fwd = p => String(p).split('\\').join('/');
 const LINE_SUFFIX = /:\d+(?:-\d+)?$/;
 // A quote of fewer than SHORT_SOLID (6) non-space characters must be a whole line of the evidence (a Read result's "41->" line number is not part of
-// the line), so a real short line is citable and a fragment such as "e" is not. Longer quotes may be any span.
-const SHORT_SOLID = 6;
+// the line), so a real short line is citable and a fragment such as "e" is not. It must also be a word, not a bracket: at least SHORT_MIN
+// non-space characters with a letter or digit among them, so "done." and "ok" can be cited and "}" and ");" (lines every code file has) cannot.
+// Longer quotes may be any span.
+const SHORT_SOLID = 6, SHORT_MIN = 2;
 const solid = s => s.replace(/\s/g, '').length;
 const NUMBERED = /^\s*\d+(?:\u2192|\t|:|\|)\s?/;
-function wholeLine(raw, q) { return String(raw).split(/\r?\n/).some(l => norm(l) === q || norm(l.replace(NUMBERED, '')) === q); }
+const WORDY = /[\p{L}\p{N}]/u;
+function wholeLine(raw, q) {
+  if (solid(q) < SHORT_MIN || !WORDY.test(q)) return false;
+  return String(raw).split(/\r?\n/).some(l => norm(l) === q || norm(l.replace(NUMBERED, '')) === q);
+}
 // forms: the quote as written and with JSON escapes decoded, whitespace collapsed (quoteForms).
 function holds(raw, forms) {
   const t = norm(raw);
@@ -175,9 +181,9 @@ function streamResultHas(file, quote, skip = null) {
 // that result is not an echo of the note (echoOf below). A quote found only in the note, in belay's own calls,
 // or in the worker's hand-back or prose is in no such result, and is refused as before.
 const SELF = 'the quote is the note\'s own text, which cannot be evidence about the note';
-function streamCite(file, quote, own, title) {
+function streamCite(file, quote, own, title, saws = []) {
   if (!selfQuoted(own, title, quote)) return streamResultHas(file, quote);
-  const r = streamResultHas(file, quote, echoOf(own, title, quote));
+  const r = streamResultHas(file, quote, echoOf(own, title, quote, saws));
   return r.found || r.echoed ? r : { found: false, reason: SELF };
 }
 // Echo rule. A tool result is an echo of the note, and no evidence about it, when its text (JSON string escapes decoded, whitespace
@@ -188,10 +194,14 @@ function streamCite(file, quote, own, title) {
 //     such sentence when the title is a single token with no space (an identifier such as RETRIES=3) that the result also holds.
 // A short saw that a tool really printed, or a short phrase title that a heading or log line holds, is not an echo: the result that proves the
 // saw is not its echo. What this leaves open: a worker that prints its own short saw with a tool.
+// `saws` are the `saw` fields among `own`: a copy of printed output by contract, so the line that holds the quote is left out of the long-sentence
+// check for a saw, and for a saw only. A `when` or a text sentence is the writer's own prose: a printed copy of it is an echo wherever the quote is.
+// `opts.file` is a file read from a working tree rather than a tool result: the identifier rule is left out (a source file names its identifiers).
 const PREFIX_LEN = 32, ANCHOR_MIN = 16, SENTENCE_LONG = 60, TITLE_LONG = 20, TITLE_MIN = 4;
-function echoOf(own, title, quote = null) {
+function echoOf(own, title, quote = null, saws = [], opts = {}) {
   const low = s => norm(s).toLowerCase();
   const t = title ? low(title) : '';
+  const sawSet = new Set((saws || []).map(low));
   const sentences = (own || []).map(low).filter(a => a.length >= ANCHOR_MIN && a.includes(' ') && a !== t);
   const idLike = t.length >= TITLE_MIN && !t.includes(' ');
   const wanted = quote == null ? [] : quoteForms(quote).map(q => q.toLowerCase());
@@ -199,15 +209,15 @@ function echoOf(own, title, quote = null) {
     const forms = [text.toLowerCase(), norm(unescapeJson(text)).toLowerCase()];
     const has = a => forms.some(f => f.includes(a));
     // The line that holds the quote is the evidence itself: a note that copied a printed line into its saw does not make that line an echo.
-    // The 60-character sentence rule looks at the rest of the result only; the title and identifier rules look at all of it.
+    // For a saw, the 60-character sentence rule looks at the rest of the result only; every other rule looks at all of it.
     const rest = String(raw || '').split(/\r?\n/).filter(l => !wanted.some(q => low(l).includes(q) || low(unescapeJson(l)).includes(q)));
     const restForms = wanted.length ? [norm(rest.join('\n')).toLowerCase(), norm(unescapeJson(rest.join('\n'))).toLowerCase()] : forms;
     const restHas = a => restForms.some(f => f.includes(a));
     const lines = String(raw || '').split(/\r?\n/).flatMap(l => [low(l), low(unescapeJson(l))]);
     const titleHeld = t.length >= TITLE_LONG ? has(t) : t.length >= TITLE_MIN && lines.includes(t);
     if (titleHeld || (t.length > PREFIX_LEN && has(t.slice(0, PREFIX_LEN)))) return true;
-    const idHeld = idLike && has(t);
-    return sentences.some(a => (idHeld ? has(a) : a.length >= SENTENCE_LONG && restHas(a)));
+    const idHeld = !opts.file && idLike && has(t);
+    return sentences.some(a => (idHeld ? has(a) : a.length >= SENTENCE_LONG && (sawSet.has(a) ? restHas(a) : has(a))));
   };
 }
 async function checkTaskCites(E, taskId, cites, note = null) {
@@ -223,7 +233,7 @@ async function checkTaskCites(E, taskId, cites, note = null) {
       const misses = [];
       let hit = false;
       for (const w of pool) {
-        const r = streamCite(path.join(E.dataDir, 'workers', w.id, 'stream.jsonl'), c.quote, own, note && note.title);
+        const r = streamCite(path.join(E.dataDir, 'workers', w.id, 'stream.jsonl'), c.quote, own, note && note.title, note ? sawsOf(note) : []);
         if (r.found) { hit = true; break; }
         misses.push(`${w.id}: ${r.reason}`);
       }
@@ -237,6 +247,7 @@ async function checkTaskCites(E, taskId, cites, note = null) {
     let hit = false;
     const misses = [];
     const forms = [norm(c.quote)];
+    const echoes = note ? text => echoOf(own, note.title, c.quote, sawsOf(note), { file: true })(norm(text), text) : () => false;
     for (const w of pool) {
       if (w.head_sha) { // the head is recorded when the worker settles; a worker still running has none
         const r = await gitShow(w.worktree, w.head_sha, rel);
@@ -246,7 +257,12 @@ async function checkTaskCites(E, taskId, cites, note = null) {
       }
       const t = await worktreeShow(w.worktree, rel); // work that is not committed: workers do not commit
       if (t.error) { misses.push(`${w.id}: ${rel} in its working tree: ${t.error}`); continue; }
-      if (holds(t.text, forms)) { hit = true; break; }
+      if (holds(t.text, forms)) {
+        // The writer may have made this file, so a file that holds the note's title or a long sentence of its own text (a draft, a hand-off file)
+        // proves nothing about the note. A committed file is not asked: its writer could not have changed it.
+        if (echoes(t.text)) { misses.push(`${w.id}: ${rel} in its working tree also holds the note's own text, so it is not independent evidence`); continue; }
+        hit = true; break;
+      }
       misses.push(`${w.id}: the quote is not in ${rel} in its working tree`);
     }
     if (!hit) fail(i, c.where, misses.join('; '));
@@ -254,6 +270,8 @@ async function checkTaskCites(E, taskId, cites, note = null) {
   if (seam.afterCheck) await seam.afterCheck();
   return { ok: failures.length === 0, failures };
 }
+
+const sawsOf = note => (note.evidence || []).map(e => e && e.saw).filter(t => typeof t === 'string' && t.trim());
 
 function relativeOk(p) {
   if (!p || path.isAbsolute(p) || /^[A-Za-z]:/.test(p) || p.startsWith('/')) return false;
@@ -284,7 +302,7 @@ async function checkCitations(cites, ctx) {
       // is evidence even when the note quoted the same line, so this applies to streams only.
       // The same search as a note review: decoded tool results only, JSON escapes tolerated, belay's own tools excluded. The JSON
       // structure of the stream (braces, field names, ids) is not something a tool printed, so it is no evidence.
-      const r = streamCite(want, c.quote, ctx.own, ctx.title);
+      const r = streamCite(want, c.quote, ctx.own, ctx.title, ctx.saws);
       if (!r.found) throw fail(r.reason);
       out.push({ where: c.where, source: 'stream' });
       continue;

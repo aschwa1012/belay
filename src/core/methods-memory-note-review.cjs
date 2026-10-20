@@ -99,7 +99,7 @@ function admit(E, caller, route, v) {
   // A confirmed note is shown to later workers as reviewed, so it is confirmed only on what the reviewer saw. A review task's brief caps a note
   // (note-shown.cjs); the review job reads every field from its notes file.
   if (v.verdict === 'confirmed' && route.capped) {
-    const hidden = hiddenParts({ text: n.text, evidence: parse(n.body).evidence });
+    const hidden = hiddenParts({ text: n.text, when: parse(n.body).when, evidence: parse(n.body).evidence });
     if (hidden.length) throw bad(`note ${n.id} was shown to the reviewer in part (${hidden.join('; ')}), so it cannot be confirmed; refute it on a value that was shown, or leave it unreviewed`, { id: n.id, reason: 'hidden_fields', hidden });
   }
   return n;

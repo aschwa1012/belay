@@ -5,6 +5,8 @@
 //   K4-3  a quote under six non-space characters must be a whole line
 //   K4-4  a note that copied a printed line into its saw does not make that line an echo; a result that shows the title still is one
 //   K4-5  a Codex worker's stream is evidence: command output and a non-belay MCP result count, prose and belay's own tools do not
+//   K4-10 the checks that sit around those: a junction out of the worktree, a working-tree file that echoes the note, a printed `when`,
+//         the title on the quote's line, a bracket line, a long stored text, and the saw cap on every shown entry
 
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
@@ -17,7 +19,7 @@ const { hiddenParts } = require('../../src/core/note-shown.cjs');
 const { Store } = core('store.cjs');
 const { Engine } = core('engine.cjs');
 
-let dir, repo, store, E, head;
+let dir, repo, outside, store, E, head;
 const RUN = 'r-k4';
 const orch = callerFor('orchestrator', { run_id: RUN });
 const harness = callerFor('orchestrator', { run_id: RUN, channel: 'harness' });
@@ -76,17 +78,27 @@ before(async () => {
   const git = (...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8', windowsHide: true });
   fs.writeFileSync(`${repo}/loader.js`, "module.exports = function load() { return 'skips unlisted fixtures'; };\n");
   fs.writeFileSync(`${repo}/.gitignore`, 'secret.env\n');
+  fs.writeFileSync(`${repo}/braces.js`, 'function a() {\n  return 1;\n}\nconst b = [\n  1,\n];\nf(\n  x\n);\n');
   git('init', '-q'); git('add', '.'); git('commit', '-q', '-m', 'init');
   head = git('rev-parse', 'HEAD').trim();
   // Work the writer has not committed: a new file, an edit to a tracked one, and an ignored file.
   fs.writeFileSync(`${repo}/fresh.js`, 'const PAGER_RETRIES = 7; // set by this task\n');
   fs.writeFileSync(`${repo}/loader.js`, "module.exports = function load() { return 'skips unlisted fixtures, now with a manifest'; };\n");
   fs.writeFileSync(`${repo}/secret.env`, 'API_TOKEN=hunter2-hunter2\n');
+  // A junction to a directory outside the repository: git lists what is behind it, and the real path must be refused.
+  outside = sandbox();
+  fs.writeFileSync(`${outside}/leak.txt`, 'LEAKED-LINE-123456 from outside the repository\n');
+  fs.symlinkSync(outside, `${repo}/linkout`, 'junction');
+  fs.writeFileSync(`${repo}/draft.md`, 'notes draft: the pager timeout is thirty seconds in every environment we ship\nconst DRAFT_ONLY = 41;\n');
   store = new Store(`${dir}/memory.db`, { stamp: true });
   E = new Engine({ dataDir: dir, store, getEmbedder: async () => ({ embed }), owner: null, establishedBy: 'test' });
   await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true }) });
 });
-after(() => { store.close(); cleanup(dir); cleanup(repo); });
+after(() => {
+  store.close(); cleanup(dir);
+  try { fs.unlinkSync(`${repo}/linkout`); } catch { try { fs.rmdirSync(`${repo}/linkout`); } catch { /* the sandbox cleanup below follows what is left */ } }
+  cleanup(repo); cleanup(outside);
+});
 
 // ---- K4-1 (D12) ------------------------------------------------------------------------------------------------------------
 test('K4-1: a file cite is checked in the working tree while the writer has no head commit; ignored files, .git and misses are refused', async () => {
@@ -123,6 +135,29 @@ test('K4-2: hiddenParts names what a capped brief hides, and nothing for a note 
   assert.strictEqual(hiddenParts({ text: 'x'.repeat(401), evidence: [] }).length, 1);
   assert.strictEqual(hiddenParts({ text: 'x'.repeat(400), evidence: [{ where: 'a', saw: 'y'.repeat(201) }] }).length, 1);
   assert.strictEqual(hiddenParts({ text: 'x', evidence: [1, 2, 3, 4].map((i) => ({ where: `w${i}`, saw: 's' })) }).length, 1);
+  // Each of the three shown entries is capped, not only the first.
+  for (const at of [0, 1, 2]) {
+    const ev = [0, 1, 2].map((i) => ({ where: `w${i}`, saw: i === at ? 'y'.repeat(201) : 's' }));
+    const hidden = hiddenParts({ text: 'x', evidence: ev });
+    assert.deepStrictEqual(hidden.map((h) => h.split(' ')[0]), [`evidence[${at}].saw`], `entry ${at}`);
+  }
+  // The text of a note with a `when` is derived from fields the brief shows in full; a note without one keeps the text cap.
+  assert.deepStrictEqual(hiddenParts({ text: 'x'.repeat(500), when: 'when the pager retries', evidence: [] }), []);
+  assert.strictEqual(hiddenParts({ text: 'x'.repeat(500), when: '', evidence: [] }).length, 1);
+  assert.strictEqual(hiddenParts({ text: 'x'.repeat(500), evidence: [] }).length, 1);
+});
+
+test('K4-2c: a note whose stored text is over the brief cap but whose every field was shown is confirmable on the review-task route', async () => {
+  const long = (n, c) => c.repeat(n);
+  const note = baseNote('K14', {
+    title: `the K14 loader skips unlisted fixtures ${long(120, 'a')}`, when: `add a K14 test fixture ${long(120, 'b')}`,
+    applies_to: ['src/loader/fixtures/manifest-reader.js', 'src/loader/fixtures/unlisted-files.js', 'tests/loader/fixtures/unlisted.test.js', 'docs/loader/fixtures.md'],
+  });
+  const w = await written('w-k42c', 'K14', { note });
+  assert.ok(Buffer.byteLength(rowOf(w.note).text) > 400, `the stored text is ${Buffer.byteLength(rowOf(w.note).text)} bytes`);
+  const out = await run1(w, 'confirmed', [cite('fixtures/unlisted.json was never opened')]);
+  assert.strictEqual(out.applied.length, 1, JSON.stringify(out.refused));
+  assert.strictEqual(statusOf(w.note), 'verified');
 });
 
 test('K4-2b: a review task cannot confirm a note whose later evidence it was not shown, but can refute it; the job route confirms it whole', async () => {
@@ -181,15 +216,15 @@ test('K4-4b: a result that lists the note\'s title, or holds a different own sen
   const T = 'the pager timeout is thirty seconds in every environment we ship';
   const own = [T, LINE];
   const file = (name, text) => { const f = `${dir}/${name}.jsonl`; fs.writeFileSync(f, toolLines(text)); return f; };
-  const listing = CC.streamCite(file('l1', `- note [lesson] ${T}\n${LINE}`), 'const DEFAULT_TIMEOUT_MS = 30000;', own, T);
+  const listing = CC.streamCite(file('l1', `- note [lesson] ${T}\n${LINE}`), 'const DEFAULT_TIMEOUT_MS = 30000;', own, T, [LINE]);
   assert.strictEqual(listing.found, false);
   assert.match(listing.reason, /also shows the note's own text/);
   assert.doesNotMatch(listing.reason, /^the quote is the note's own text, which cannot/);
   const other = 'the second long sentence of the note that a worker printed on another line of the same output';
-  const beside = CC.streamCite(file('l2', `${LINE}\n${other}`), 'const DEFAULT_TIMEOUT_MS = 30000;', [T, LINE, other], T);
+  const beside = CC.streamCite(file('l2', `${LINE}\n${other}`), 'const DEFAULT_TIMEOUT_MS = 30000;', [T, LINE, other], T, [LINE]);
   assert.strictEqual(beside.found, false, 'a different own sentence in the result keeps the result an echo');
-  assert.strictEqual(CC.streamCite(file('l3', `${LINE}\nconst RETRIES = 3;`), 'const DEFAULT_TIMEOUT_MS = 30000;', own, T).found, true);
-  const none = CC.streamCite(file('l4', 'nothing relevant'), 'const DEFAULT_TIMEOUT_MS = 30000;', own, T);
+  assert.strictEqual(CC.streamCite(file('l3', `${LINE}\nconst RETRIES = 3;`), 'const DEFAULT_TIMEOUT_MS = 30000;', own, T, [LINE]).found, true);
+  const none = CC.streamCite(file('l4', 'nothing relevant'), 'const DEFAULT_TIMEOUT_MS = 30000;', own, T, [LINE]);
   assert.match(none.reason, /note's own text, which cannot be evidence/, 'a quote no tool result holds keeps the old reason');
 });
 
@@ -201,13 +236,83 @@ test('K4-5: a Codex stream is evidence: command output and a non-belay MCP resul
     item({ id: 'i2', type: 'mcp_tool_call', server: 'docs', tool: 'search', result: { content: [{ type: 'text', text: 'the docs page says retries default to 5' }] }, status: 'completed' }),
     item({ id: 'i3', type: 'mcp_tool_call', server: 'belay', tool: 'memory_search', result: { content: [{ type: 'text', text: 'belay says mb_9999 exists' }] }, status: 'completed' }),
     item({ id: 'i4', type: 'mcp_tool_call', tool: 'mystery', result: 'an unnamed server said mb_7777 exists', status: 'completed' }),
+    item({ id: 'i5', type: 'mcp_tool_call', server: 'x', tool: 'belay_search', result: { content: [{ type: 'text', text: 'a belay tool under another server said mb_5555 exists' }] }, status: 'completed' }),
   ].join('');
   const w = await written('w-k45', 'K10', { stream, substrate: 'codex' });
-  for (const quote of ['the manifest lists mb_1021 and mb_1022 both', 'belay says mb_9999 exists', 'an unnamed server said mb_7777 exists']) {
+  for (const quote of ['the manifest lists mb_1021 and mb_1022 both', 'belay says mb_9999 exists', 'an unnamed server said mb_7777 exists', 'a belay tool under another server said mb_5555 exists']) {
     const out = await run1(w, 'confirmed', [cite(quote)]);
     assert.deepStrictEqual([out.applied.length, out.refused[0].code], [0, 'E_CITATION'], quote);
   }
   assert.strictEqual(statusOf(w.note), 'unverified');
   const ok = await run1(w, 'confirmed', [cite('manifest lists mb_2044 for sam.reed'), cite('the docs page says retries default to 5')]);
   assert.strictEqual(ok.applied.length, 1, JSON.stringify(ok.refused));
+});
+
+// ---- K4-10 -----------------------------------------------------------------------------------------------------------------
+test('K4-10a: a bracket line is not a citation: `}` and `);` are refused in a code file and in a Read result, `done.` and a numbered short line are accepted', async () => {
+  const w = await written('w-k410', 'K15', { stream: toolLines('     1\u2192function a() {\n     2\u2192  return 1;\n     3\u2192}\n     4\u2192);\n     5\u2192done.\nok\n', 'Read') });
+  for (const [quote, where] of [['}', 'stream'], [');', 'stream'], ['}', 'braces.js'], [');', 'braces.js'], ['];', 'braces.js']]) {
+    const out = await run1(w, 'confirmed', [cite(quote, where)]);
+    assert.deepStrictEqual([out.applied.length, out.refused[0].code], [0, 'E_CITATION'], `${where}:${quote}`);
+  }
+  assert.strictEqual(statusOf(w.note), 'unverified');
+  // A short whole line with a line number in front (a Read result) is still a whole line; `ok` is a word.
+  const ok = await run1(w, 'confirmed', [cite('done.'), cite('ok')]);
+  assert.strictEqual(ok.applied.length, 1, JSON.stringify(ok.refused));
+  const six = await written('w-k410b', 'K16');
+  assert.strictEqual((await run1(six, 'confirmed', [cite('return 1;', 'braces.js')])).applied.length, 1, 'a real line of the same file is citable');
+});
+
+test('K4-10b: a worker with a recorded head still reads the working tree for what it has not committed', async () => {
+  const w = await written('w-k411', 'K17'); // head is the initial commit, which has neither fresh.js nor the edit to loader.js
+  const out = await run1(w, 'confirmed', [cite('const PAGER_RETRIES = 7;', 'fresh.js'), cite('now with a manifest', 'loader.js')]);
+  assert.strictEqual(out.applied.length, 1, JSON.stringify(out.refused));
+});
+
+test('K4-10c: a path that resolves outside the worktree through a junction is refused', async () => {
+  const w = await written('w-k412', 'K18', { withHead: false });
+  const out = await run1(w, 'confirmed', [cite('LEAKED-LINE-123456', 'linkout/leak.txt')]);
+  assert.deepStrictEqual([out.applied.length, out.refused[0] && out.refused[0].code], [0, 'E_CITATION']);
+  assert.match(JSON.stringify(out.refused), /resolves outside the worktree/);
+});
+
+test('K4-10d: a working-tree file that holds the note\'s title or a long sentence of its own text is an echo, not evidence; a file that does not is', async () => {
+  const draftTitle = 'the pager timeout is thirty seconds in every environment we ship';
+  const byTitle = await written('w-k413', 'K19', { withHead: false, note: baseNote('K19', { title: draftTitle }) });
+  const t = await run1(byTitle, 'confirmed', [cite('const DRAFT_ONLY = 41;', 'draft.md')]);
+  assert.deepStrictEqual([t.applied.length, t.refused[0] && t.refused[0].code], [0, 'E_CITATION']);
+  assert.match(JSON.stringify(t.refused), /also holds the note's own text/);
+  const byWhen = await written('w-k413b', 'K20', { withHead: false, note: baseNote('K20', { title: 'K20 draft pager timeout', when: 'notes draft: the pager timeout is thirty seconds in every environment we ship' }) });
+  const wh = await run1(byWhen, 'confirmed', [cite('const DRAFT_ONLY = 41;', 'draft.md')]);
+  assert.deepStrictEqual([wh.applied.length, wh.refused[0] && wh.refused[0].code], [0, 'E_CITATION']);
+  const plain = await written('w-k413c', 'K21', { withHead: false });
+  assert.strictEqual((await run1(plain, 'confirmed', [cite('const DRAFT_ONLY = 41;', 'draft.md')])).applied.length, 1, 'the same file for a note that does not echo it');
+});
+
+test('K4-10e: the writer\'s own `when`, printed by a tool, is an echo even on the line that holds the quote', async () => {
+  const when = 'changing the pager retry loop, whose DEFAULT_RETRIES is 7 in src/pager.cjs and is read once at start';
+  const note = baseNote('K22', { title: 'K22 pager retries', when, evidence: [{ where: 'src/pager.cjs', saw: 'the retry count' }] });
+  const w = await written('w-k414', 'K22', { note, stream: toolLines(when, 'Bash') });
+  const out = await run1(w, 'confirmed', [cite('DEFAULT_RETRIES is 7')]);
+  assert.deepStrictEqual([out.applied.length, out.refused[0].code], [0, 'E_CITATION']);
+  assert.match(JSON.stringify(out.refused), /also shows the note's own text/);
+  assert.strictEqual(statusOf(w.note), 'unverified');
+});
+
+test('K4-10f: a result that shows the title on the very line that holds the quote is an echo, for a title the prefix rule covers and for one it does not', () => {
+  // 64 characters: also caught by the 32-character prefix clause. 30 characters: only the whole-title clause holds it.
+  for (const T of ['the pager timeout is thirty seconds in every environment we ship', 'the pager waits thirty seconds']) {
+    const quote = T.slice(T.indexOf('thirty'), T.indexOf('thirty') + 20);
+    const f = `${dir}/k410f.jsonl`;
+    fs.writeFileSync(f, toolLines(`see: ${T}`));
+    const r = CC.streamCite(f, quote, [T], T);
+    assert.strictEqual(r.found, false, T);
+    assert.match(r.reason, /also shows the note's own text/);
+    fs.writeFileSync(f, toolLines(`timeout: ${quote}`));
+    assert.strictEqual(CC.streamCite(f, quote, [T], T).found, true, 'a line that does not show the title is evidence');
+  }
+  // A listing that cuts the title shows its first 32 characters; that is the clause that catches it.
+  const long = 'the pager timeout is thirty seconds in every environment we ship';
+  fs.writeFileSync(`${dir}/k410f.jsonl`, toolLines(`see: ${long.slice(0, 40)}...`));
+  assert.strictEqual(CC.streamCite(`${dir}/k410f.jsonl`, 'pager timeout is thirty', [long], long).found, false);
 });

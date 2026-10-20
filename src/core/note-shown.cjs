@@ -9,10 +9,13 @@
 const TEXT_CAP = 400, SAW_CAP = 200, EVIDENCE_SHOWN = 3;
 const bytes = (s) => Buffer.byteLength(String(s == null ? '' : s), 'utf8');
 
-// What a capped brief leaves out of `n` ({ text, evidence: [{ where, saw }] }): [] when the whole note was shown.
+// What a capped brief leaves out of `n` ({ text, when?, evidence: [{ where, saw }] }): [] when the whole note was shown.
+// The stored `text` of a note with a `when` is derived from its title, when, subjects and applies_to, and the brief shows each of those in
+// full, so a long `text` hides nothing there. A note without a `when` (v1) keeps its text as its one body, and the cap hides the rest of it.
 function hiddenParts(n) {
   const out = [];
-  if (bytes(n && n.text) > TEXT_CAP) out.push(`text (${bytes(n.text)} bytes, ${TEXT_CAP} shown)`);
+  const derived = !!(n && typeof n.when === 'string' && n.when.trim());
+  if (!derived && bytes(n && n.text) > TEXT_CAP) out.push(`text (${bytes(n.text)} bytes, ${TEXT_CAP} shown)`);
   const ev = n && Array.isArray(n.evidence) ? n.evidence : [];
   ev.slice(0, EVIDENCE_SHOWN).forEach((e, i) => { if (e && typeof e === 'object' && bytes(e.saw) > SAW_CAP) out.push(`evidence[${i}].saw (${bytes(e.saw)} bytes, ${SAW_CAP} shown)`); });
   if (ev.length > EVIDENCE_SHOWN) out.push(`evidence[${EVIDENCE_SHOWN}..${ev.length - 1}] (${ev.length - EVIDENCE_SHOWN} entries not shown)`);
