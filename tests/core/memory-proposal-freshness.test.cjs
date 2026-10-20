@@ -62,3 +62,19 @@ test('K1: a relate proposal goes stale on a re-embed of either note, or when its
   dropKeys(made.proposed[0].row.id);
   assert.strictEqual((await stranded()).open_proposals, before, 'a row without keys is stale, never counted');
 });
+
+test('K1: a pair judgement made on vectors since replaced does not close a fresh proposal on the pair', async () => {
+  const o = T.note('rejudge old', { vec: A, created_at: 100 });
+  const x = T.note('rejudge new', { vec: A_NEAR, created_at: 200, matches: [{ id: o, title: 't', kind: 'lesson', basis: 'observed', similarity: 0.95 }] });
+  const mark = (relation, who) => T.call(T.who.harness(who), 'memory.scrubApply', { scrub: [{ id: x, action: 'relate', relation, of: o, reason: 'the same claim' }], scope: [x, o], ...T.evidence });
+  const before = (await stranded()).open_proposals;
+  const applied = await mark('new', 'apply');
+  assert.strictEqual(applied.counts.applied, 1, JSON.stringify(applied.refused));
+  reembed(x); reembed(o);
+  const made = await mark('repeats', 'propose');
+  assert.strictEqual(made.counts.proposed, 1, JSON.stringify(made.refused));
+  assert.strictEqual(openProposals(T.E, PROJECT).filter((p) => p.note_id === x).length, 1);
+  const st = await stranded();
+  assert.strictEqual(st.open_proposals, before + 1, 'the old verdict names the old vectors, so the fresh proposal is still open');
+  assert.ok(st.note_ids.includes(x));
+});
