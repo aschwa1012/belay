@@ -25,7 +25,7 @@ const restate = (w, force) => { if (w.ctx && w.ctx.writeRow) require('./write-ro
 // recognise must not run.
 function registerSpawn(w, child, dataDir, kind = 'worker') {
   if (!Number.isInteger(child.pid)) return;
-  try { SR.register({ pid: child.pid, kind, dataDir, workerId: w.id }); }
+  try { SR.register({ pid: child.pid, kind, dataDir, workerId: w.id, spawnedAt: child.belaySpawnStartedAt }); }
   catch (e) {
     try { child.kill(); } catch { /* it may already be gone */ }
     throw err('E_SUBSTRATE', `worker ${w.id}: the spawn register could not be written (${(e && e.message) || e}); the process was ended, because a worker no owner can recognise must not run`, { worker_id: w.id, pid: child.pid, reason: 'spawn_register' });

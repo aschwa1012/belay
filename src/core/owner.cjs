@@ -54,7 +54,7 @@ class Owner {
     // ADR 0045 decision 4: a `bound` owner vouches for an operator by the operator's process (operator-check.cjs), unless the caller
     // brought its own check. Where the peer cannot be examined (not Windows) it has no check and fails closed.
     if (this.mode === 'bound' && typeof this.opts.operatorCheck !== 'function' && OperatorCheck.SUPPORTED) {
-      this.opts.operatorCheck = OperatorCheck.create({ startedAt: this.startedAt, spawned: () => this._spawnedProcesses(), deps: this.opts.operatorCheckDeps });
+      this.opts.operatorCheck = OperatorCheck.create({ startedAt: this.startedAt, spawned: () => this._spawnedProcesses(), provenance: (snap) => require('./spawn-provenance.cjs').refresh(snap), deps: this.opts.operatorCheckDeps });
     }
     this.conns = new Set();
     this.counters = { calls: 0, errors: 0 };

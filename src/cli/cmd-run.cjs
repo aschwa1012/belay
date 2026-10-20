@@ -170,7 +170,7 @@ async function run(ctx) {
   const registerOrchestrator = (pid) => {
     if (!Number.isInteger(pid)) return;
     const SR = require('../core/spawn-register.cjs');
-    SR.registerProcess({ pid, kind: 'orchestrator', dataDir }, 'the headless orchestrator');
+    SR.registerProcess({ pid, kind: 'orchestrator', dataDir, spawnedAt: Date.now() }, 'the headless orchestrator');
     process.once('exit', () => SR.unregister(pid));
   };
   const core = await openCore({

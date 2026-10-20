@@ -39,7 +39,7 @@ async function withOtherStoreOwner(fn) {
   try { return await fn(o, stopped); } finally { await o.stop().catch(() => {}); cleanup(dir); }
 }
 
-const other = (extra) => ({ pid: process.pid, kind: 'worker', dataDir: 'C:/some/other/store/.belay', workerId: 'w-elsewhere', ...extra });
+const other = (extra) => ({ pid: process.pid, kind: 'worker', dataDir: 'C:/some/other/store/.belay', workerId: 'w-elsewhere', spawnedAt: Date.now(), ...extra });
 
 test('a child of another store\'s worker is refused as the operator: a write, an orchestrator bind and the run controls', { skip: SKIP, timeout: 120000 }, async () => {
   await withOtherStoreOwner(async (o, stopped) => {

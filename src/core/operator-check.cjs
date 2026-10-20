@@ -6,9 +6,12 @@
 //   1. reads the peer's pid from that table (the connection's remote port is the client's local port),
 //   2. walks the peer's ancestors in one process snapshot, and
 //   3. accepts it only if (a) no process on the chain is one belay spawned, for this store or any other on the machine (a worker, or the
-//      headless orchestrator; spawn-register.cjs), and (b) the chain is intact up to a root created before this owner started.
-// Rule (b) is what refuses an orphan: a worker that starts a detached process and exits leaves a process whose parent is gone, and
-// that process is a root created after the owner. A fresh terminal's chain ends at the desktop shell, which predates the owner.
+//      headless orchestrator; spawn-register.cjs), or one of their orphans (a process created while a spawned process ran whose parent
+//      is gone, live or exited; spawn-provenance.cjs), and (b) the chain is intact up to a root created before this owner started.
+// Rule (b) refuses an orphan of a process spawned after the owner started: a worker that starts a detached process and exits leaves a
+// process whose parent is gone, and that process is a root created after the owner. It does not refuse an orphan that predates the
+// owner (a worker of another store, whose helper outlives it), which is why (a) includes the orphans. A fresh terminal's chain ends
+// at the desktop shell, which predates both.
 // Fails closed: an unreadable table or snapshot, a peer not found, or a connection that is not loopback TCP is a refusal that names
 // why. A verdict is kept per connection (a connection's peer cannot change); a refusal is never kept.
 //
@@ -82,7 +85,9 @@ function spawnedMatch(chain, spawned) {
 }
 
 // -> async ({ conn, caller, method }) => { ok: true, via: 'peer', peer } | { ok: false, reason }
-function create({ startedAt, spawned, deps = {} }) {
+// `provenance(snap)` -> { alive: [{ pid, created, kind }] }, the orphans of spawned processes found in this snapshot; it throws when
+// the spawn history cannot be read, which is a refusal.
+function create({ startedAt, spawned, provenance = null, deps = {} }) {
   return async function operatorCheck({ conn }) {
     if (conn.belayPeer) return { ok: true, via: 'peer', peer: conn.belayPeer };
     if (conn.belayTransport !== 'tcp') return { ok: false, reason: 'an operator claim is verified on the owner\'s loopback port, and this connection is a pipe' };
@@ -95,6 +100,9 @@ function create({ startedAt, spawned, deps = {} }) {
     if (!intact || !root) return { ok: false, reason: `the peer's process chain could not be followed to a root (pid ${found.pid})` };
     let known;
     try { known = spawned(); } catch (e) { return { ok: false, reason: `the processes belay spawned could not be listed (${(e && e.message) || e}), so descent from one cannot be ruled out` }; }
+    if (provenance) {
+      try { known = known.concat(provenance(shot).alive); } catch (e) { return { ok: false, reason: `the orphans of the processes belay spawned could not be listed (${(e && e.message) || e}), so descent from one cannot be ruled out` }; }
+    }
     const bad = spawnedMatch(chain, known);
     if (bad) return { ok: false, reason: `the peer descends from a process belay spawned (${bad.kind} pid ${bad.pid}, ${bad.image || 'unknown image'})` };
     if (root.created == null || !(root.created < startedAt)) return { ok: false, reason: `the peer's chain ends at pid ${root.pid} (${root.image || 'unknown image'}), which was not running when this owner started: an orphan or a process started since is not the operator` };

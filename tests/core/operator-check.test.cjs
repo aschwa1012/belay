@@ -191,7 +191,7 @@ test('a child of the headless orchestrator is refused as the operator, listed by
   });
   const SR = core('spawn-register.cjs');
   await withBound({}, async (o) => {
-    SR.register({ pid: process.pid, kind: 'orchestrator', dataDir: 'C:/some/other/store/.belay' });
+    SR.register({ pid: process.pid, kind: 'orchestrator', dataDir: 'C:/some/other/store/.belay', spawnedAt: Date.now() });
     try {
       const forged = await viaChild(o.tcpPort, 'tcp');
       assert.strictEqual(forged.error && forged.error.code, 'E_UNBOUND', JSON.stringify(forged));

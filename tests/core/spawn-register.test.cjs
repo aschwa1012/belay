@@ -66,3 +66,17 @@ test('belay run lists its headless orchestrator once its pid is known, and the i
   assert.deepStrictEqual(SR.runSpawned(true, 4321), [], 'the interactive orchestrator is the human\'s own session');
   assert.deepStrictEqual(SR.runSpawned(false, undefined), [], 'before the run process learns the pid');
 });
+
+test('a retired record leaves a tombstone with the lifetime of its process, whether the harness retired it or the register found its pid gone', () => withRegistry(async () => {
+  SR.register({ pid: process.pid, kind: 'worker', created: 5000 });
+  SR.unregister(process.pid);
+  const [t] = SR.tombstones();
+  assert.deepStrictEqual([t.pid, t.created, t.from, t.kind, t.via, t.until > 0], [process.pid, 5000, 5000, 'worker', null, true]);
+  const pid = await deadPid();
+  SR.register({ pid, kind: 'orchestrator', spawnedAt: 7000 });
+  assert.deepStrictEqual(SR.list(), []);
+  const dead = SR.tombstones().find((x) => x.pid === pid);
+  assert.deepStrictEqual([dead.created, dead.from, dead.kind], [null, 7000, 'orchestrator'], 'a record with no creation time starts when its spawn call did');
+  assert.strictEqual(SR.live().length, 0);
+  assert.throws(() => { fs.writeFileSync(path.join(SR.dir(), 'exited', '1-1.json'), '{}'); SR.tombstones(); }, /names no pid or start/);
+}));
