@@ -281,3 +281,46 @@ test('settings: a single memory key warns, as the listing does, when the stored 
     assert.strictEqual(cli(dir, ['settings', 'agents.coder.model']).out.memory_error, undefined);
   } finally { cleanup(dir); }
 });
+
+test('settings: the retrieval levers are listed with their defaults, the routing map reads as one line, and a write round-trips', () => {
+  const dir = project();
+  try {
+    const listed = cli(dir, ['settings']);
+    const val = (k) => listed.out.settings.find((s) => s.key === `memory.${k}`);
+    assert.deepStrictEqual(['profile', 'profile_cpu', 'embedder', 'reranker', 'routing', 'rerank_depth', 'rerank_bound_ms', 'on_heavy_failure', 'on_heavy_behind', 'search_log_cap_mb', 'vram_headroom_gb'].map((k) => val(k).value),
+      ['cpu-fast', 'cpu-fast', 'onnx-community/voyage-4-nano-ONNX', 'none', null, 50, 10000, 'fallback', 'wait', 500, 0.75]);
+    assert.ok(val('profile').allowed.includes('gpu-balanced') && val('profile').allowed.includes('custom'));
+    assert.match(cli(dir, ['settings', 'memory.routing'], { json: false }).stdout, /none \(every agent type uses the run's profile\)/);
+
+    const set = cli(dir, ['settings', 'memory.routing', '{"orchestrator":"gpu-balanced","coder":{"embedder":"onnx-community/voyage-4-nano-ONNX","reranker":"giladgd/Qwen3-Reranker-4B-GGUF"}}']);
+    assert.strictEqual(set.code, 0, set.stderr);
+    assert.deepStrictEqual(set.out.old.value, null);
+    assert.deepStrictEqual(readConfig(dir).memory.routing.orchestrator, 'gpu-balanced');
+    assert.match(cli(dir, ['settings', 'memory.routing'], { json: false }).stdout, /orchestrator=gpu-balanced, coder=voyage-4-nano-ONNX\+Qwen3-Reranker-4B-GGUF/);
+
+    const before = fs.readFileSync(`${dir}/belay.config.json`, 'utf8');
+    for (const [k, v] of [['memory.routing', '{"coder":"bogus"}'], ['memory.routing', 'not json'], ['memory.rerank_depth', '201'], ['memory.profile_cpu', 'gpu-rerank'], ['memory.on_heavy_behind', 'pause']]) {
+      assert.strictEqual(cli(dir, ['settings', k, v]).code, 2, `${k} ${v}`);
+    }
+    assert.strictEqual(fs.readFileSync(`${dir}/belay.config.json`, 'utf8'), before, 'refusals wrote nothing');
+    assert.strictEqual(cli(dir, ['settings', 'memory.profile', 'gpu-rerank']).code, 0);
+    assert.strictEqual(cli(dir, ['settings', 'memory.routing', 'null']).code, 0);
+    assert.strictEqual(readConfig(dir).memory.routing, null);
+    assert.strictEqual(readConfig(dir).memory.profile, 'gpu-rerank');
+  } finally { cleanup(dir); }
+});
+
+test('run spec: the retrieval levers layer config then spec, and the resolver reads the same two blocks', () => {
+  const sb = runSandbox({ memory: { profile: 'gpu-balanced', rerank_depth: 80, routing: { reviewer: 'gpu-rerank' } } }, { memory: { profile: 'gpu-rerank-fast' } });
+  try {
+    const cfg = `${sb.dir}/belay.config.json`;
+    const p = parseSpec(sb.specPath, sb.dir);
+    assert.ifError(p.error);
+    const m = p.levers.memory_levers, src = p.levers.memory_sources;
+    assert.deepStrictEqual([m.profile, m.rerank_depth, m.routing, m.on_heavy_behind], ['gpu-rerank-fast', 80, { reviewer: 'gpu-rerank' }, 'wait']);
+    assert.deepStrictEqual([src.profile, src.rerank_depth, src.routing, src.on_heavy_behind], ['spec', cfg, cfg, 'default']);
+    const { resolveRouting } = require('../../src/core/retrieval-routing.cjs');
+    const r = resolveRouting({ settings: { profile: 'gpu-balanced', rerank_depth: 80, routing: { reviewer: 'gpu-rerank' } }, spec: { profile: 'gpu-rerank-fast' }, agentTypes: ['reviewer', 'coder'], gpu: true });
+    assert.deepStrictEqual([r.tiers.reviewer.profile, r.tiers.coder.profile, r.run.depth], ['gpu-rerank', 'gpu-rerank-fast', 80]);
+  } finally { cleanup(sb.dir); }
+});
