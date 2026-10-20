@@ -286,6 +286,30 @@ test('a load has a wall-clock limit that the child\'s heartbeats do not reset', 
     const ms = Date.now() - t0;
     assert.ok(ms >= 450 && ms < 3500, `rejected after ${ms} ms, well before the 4 s load`);
     assert.ok(c.hung, 'a load past its wall clock is a hung child');
-    await assert.rejects(c.ping ? c._call({ op: 'ping' }, 1000) : null, (e) => e.code === 'E_EMBEDDER_TIMEOUT');
+    assert.ok(await waitGone(c.pid, 5000), 'the wall-clock branch closed the stuck child itself');
   } finally { await c.close(); r.done(); }
+});
+
+test('close() during an in-flight ensure forks and loads nothing after it: a crash, a call, an immediate close', async () => {
+  const r = rig();
+  const client = new CpuRerankClient({ pkg: r.pkg, cacheDir: r.cache, table: r.table });
+  const rerank = cpuRerankProvider({ model: r.id, client });
+  const pids = [];
+  const realStart = CpuRerankClient.prototype.start;
+  CpuRerankClient.prototype.start = function start() { const was = this.child; const out = realStart.call(this); if (this.child !== was) pids.push(this.pid); return out; };
+  try {
+    await rerank({ query: QUERY, docs: NOTES });
+    client.child.send({ id: 997, op: 'crash', code: 4 });
+    assert.ok(await until(() => client.exit), 'the exit event arrived');
+    const before = pids.length;
+    const call = rerank({ query: QUERY, docs: NOTES }).catch((e) => e);
+    await rerank.close(); // immediately: the call is inside ensure()
+    const out = await call;
+    assert.ok(out instanceof Error && out.code === 'E_MODEL_ABSENT' && out.detail.cause === 'dead', 'the call failed with a coded dead error');
+    await new Promise(x => setTimeout(x, 500));
+    for (const pid of pids) assert.ok(!pidAlive(pid), `child ${pid} outlived close()`);
+    assert.ok(pids.length <= before + 1, 'at most the one child the call had started, now closed');
+    await assert.rejects(rerank({ query: QUERY, docs: NOTES }), (e) => e.code === 'E_MODEL_ABSENT' && e.detail.cause === 'dead', 'and nothing starts after close');
+    assert.strictEqual(pids.length, Math.min(pids.length, before + 1));
+  } finally { CpuRerankClient.prototype.start = realStart; await rerank.close(); r.done(); }
 });

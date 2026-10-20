@@ -218,7 +218,7 @@ test('a load has a wall-clock limit that the child\'s heartbeats do not reset', 
       await assert.rejects(c.load(e.id), (x) => x.code === 'E_EMBEDDER_TIMEOUT' && x.detail.cause === 'timeout' && x.detail.gpu === true && x.detail.wall_clock === true && x.detail.timeout_ms === 500);
       const ms = Date.now() - t0;
       assert.ok(ms >= 450 && ms < 3500, `rejected after ${ms} ms, before the 4 s load ended`);
-      await assert.rejects(c._call({ op: 'ping' }, 1000), (x) => x.code === 'E_EMBEDDER_TIMEOUT', 'the child is treated as hung');
+      assert.ok(await waitGone(c.pid, 5000), 'the wall-clock branch closed the stuck child itself, so it holds no memory');
     } finally { await c.close(); }
   } finally { cleanup(rt); cleanup(cache); }
 });

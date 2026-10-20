@@ -154,6 +154,9 @@ class CpuRerankClient {
           const e = err('E_EMBEDDER_TIMEOUT', `the rerank process (pid ${this.pid}) did not finish ${msg.op} within ${wallMs} ms of wall-clock time (it kept sending progress) and is treated as hung`, rr('timeout', { op: msg.op, timeout_ms: wallMs, wall_clock: true, pid: this.pid }));
           this.hung = e;
           reject(e);
+          // A load stuck in native code never recovers, so the child is closed here (by handle, then killed): nothing
+          // is lost, and a stuck load cannot go on holding its memory.
+          this.close().catch(() => {});
         }, wallMs);
       }
       if (this.child.channel) this.child.channel.ref();
@@ -256,6 +259,9 @@ function cpuRerankProvider(opts = {}) {
   rerankerFor(model, process.env.BELAY_TEST_MODE === '1' ? settings.table : undefined); // an unknown id fails here, not on the first search
   let loaded = null; // the load promise of c, kept while it is pending or succeeded
   const closing = new Set(); // closes in flight; each leaves the set when it settles
+  const inflight = new Set(); // ensure() calls in flight, which close() waits for
+  let shut = false; // set by close(): nothing is forked or loaded after it
+  const shutError = () => err('E_MODEL_ABSENT', 'the CPU rerank provider was closed; it starts no child after close()', rr('dead'));
   const abandoned = new WeakSet(); // clients this provider closed on purpose
 
   const abandon = () => {
@@ -268,14 +274,24 @@ function cpuRerankProvider(opts = {}) {
   };
   // Resolves the client to use, with its model loaded. A client whose child exited or hung is replaced here (a new
   // client, so a reload), and a fork waits for every earlier close to finish.
-  const ensure = async () => {
+  const ensure = () => {
+    const p = ensureNow();
+    inflight.add(p);
+    const done = () => inflight.delete(p);
+    p.then(done, done);
+    return p;
+  };
+  const ensureNow = async () => {
+    if (shut) throw shutError();
     if (c && (c.exit || c.hung)) abandon();
     while (closing.size) await Promise.all([...closing]);
+    if (shut) throw shutError();
     if (!c) c = new CpuRerankClient(settings);
     const mine = c;
     mine.start();
     if (!loaded) loaded = mine.load(model).catch((e) => { if (c === mine) loaded = null; throw e; });
     await loaded;
+    if (shut) { abandon(); throw shutError(); }
     return mine;
   };
   const timeout = (boundMs, phase) => err('E_EMBEDDER_TIMEOUT', `the CPU rerank did not finish ${phase} within ${boundMs} ms`, rr('timeout', { bound_ms: boundMs, phase }));
@@ -303,7 +319,8 @@ function cpuRerankProvider(opts = {}) {
       try {
         r = await within(mine.rank(model, query, take.map(d => d.text), { chunk }), left(), 'ranking', () => { if (c === mine) abandon(); }, bound);
       } catch (e) {
-        // A sibling call's timeout closed this child under us: its bound did not pass, so run once more on the fresh one.
+        // This provider closed that child under us (a sibling's timeout, or a rebuild after a crash or hang), and this
+        // call's own bound has not passed: run once more on the fresh one.
         if (attempt === 0 && abandoned.has(mine) && e && e.detail && e.detail.cause === 'dead' && e.detail.reranker === true && Date.now() - t0 < bound) continue;
         throw e;
       }
@@ -314,7 +331,13 @@ function cpuRerankProvider(opts = {}) {
     return out;
   }
   rerank.model = model;
-  rerank.close = async () => { abandon(); while (closing.size) await Promise.all([...closing]); };
+  rerank.close = async () => {
+    shut = true;
+    abandon();
+    await Promise.allSettled([...inflight]);
+    abandon(); // a child an in-flight ensure had already started
+    while (closing.size) await Promise.all([...closing]);
+  };
   return rerank;
 }
 

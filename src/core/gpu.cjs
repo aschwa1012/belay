@@ -140,6 +140,9 @@ class GpuClient {
           const e = err('E_EMBEDDER_TIMEOUT', `the GPU process (pid ${this.pid}) did not finish ${msg.op} within ${wallMs} ms of wall-clock time (it kept sending progress) and is treated as hung`, gpu('timeout', { op: msg.op, timeout_ms: wallMs, wall_clock: true, pid: this.pid }));
           this.hung = e;
           reject(e);
+          // A load stuck in native code never recovers, so the child is closed here (by handle, then killed): nothing
+          // is lost, and a stuck load cannot go on holding its memory.
+          this.close().catch(() => {});
         }, wallMs);
       }
       if (this.child.channel) this.child.channel.ref();

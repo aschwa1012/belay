@@ -56,7 +56,7 @@ test('the pure modules need no native code and no embedding library; the client 
 });
 
 test('openCore, status.get, belay doctor and the retrieval levers load neither the rerank client nor its worker', async () => {
-  const loaded = () => Object.keys(require.cache).filter(k => /[\\/]src[\\/]core[\\/]rerank-(cpu|worker)\.cjs$/i.test(k)); // [\\/]: Windows cache keys use backslashes // [\/]: Windows keys use backslashes
+  const loaded = () => Object.keys(require.cache).filter(k => /[\\/]src[\\/]core[\\/]rerank-(cpu|worker)\.cjs$/i.test(k)); // the class takes either slash: Windows cache keys use backslashes
   assert.deepStrictEqual(loaded(), []);
   core('onnx-rerankers.cjs'); core('retrieval-profiles.cjs'); core('memory-levers.cjs');
   const { openCore } = core('index.cjs');
