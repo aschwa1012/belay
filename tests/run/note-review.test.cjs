@@ -6,7 +6,7 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const { core: coreMod, sandbox, cleanup, callerFor } = require('../core/helpers.cjs');
+const { core: coreMod, sandbox, cleanup, callerFor, captureBrief } = require('../core/helpers.cjs');
 
 const { Store } = coreMod('store.cjs');
 const { Engine } = coreMod('engine.cjs');
@@ -150,6 +150,7 @@ test('N5: a review task\'s ended hand-back is applied by the manager (the review
   const r = await call('task.create', orch, { spec: 'review', depends_on: [w.task.id], acceptance: { verdict: true } });
   const a = await call('task.assign', orch, { task_id: r.id, worker_id: 'rv-5' });
   await call('lease.release', worker('rv-5'), { lease_id: a.new_lease.id, notes: [], result: { verdict: 'holds', summary: 'ok', memory_verdicts: JSON.parse(verdictsFor([w.notes[0]], 'refuted')).memory_verdicts } });
+  await NR.reviewTail(ctxFor(null), { id: 'rv-5', taskId: r.id }); // the brief is rendered when the reviewer launches, and fixes the notes it lists
   const m = fakeManager('{}');
   await NR.onTaskEnded(J(ctxFor(m)), await call('task.get', orch, { task_id: r.id }));
   assert.strictEqual(m.spawned.length, 0);
@@ -160,6 +161,7 @@ test('N5: a review task\'s ended hand-back is applied by the manager (the review
 test('N6: the run-end sweep applies a job that finished into its stream but was never applied, and names a task never reviewed', async () => {
   const w = await written('wr-6');
   const id = `notereview-${w.task.id}`;
+  await captureBrief(call, orch, harness, { job: { worker_id: id, reviewed_task_id: w.task.id } }); // the job was launched with this brief
   await call('worker.write', orch, { id, substrate: 'claude-code', pid: process.pid, state: 'stopped', session_id: 's', last_event_at: Date.now(), cost_usd: 0.01 });
   fs.mkdirSync(`${dir}/workers/${id}`, { recursive: true });
   fs.writeFileSync(`${dir}/workers/${id}/stream.jsonl`, `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: verdictsFor([w.notes[0]], 'refuted') }] } })}\n`);
@@ -182,11 +184,14 @@ test('N7: a review task\'s brief lists the notes to judge, the verdict shape, th
   const rt = await call('task.create', orch, { spec: 'rr', depends_on: [bad.task.id], acceptance: { verdict: true } });
   const a = await call('task.assign', orch, { task_id: rt.id, worker_id: 'rv-7x' });
   await call('lease.release', worker('rv-7x'), { lease_id: a.new_lease.id, notes: [], result: { verdict: 'holds', summary: 's', memory_verdicts: JSON.parse(verdictsFor([bad.notes[0]], 'refuted')).memory_verdicts } });
+  await NR.reviewTail(ctxFor(null), { id: 'rv-7x', taskId: rt.id });
   await NR.applyHandback(J(ctxFor(null)), await call('task.get', orch, { task_id: rt.id }));
   const t = await call('task.create', orch, { spec: 'review of w', depends_on: [w.task.id], acceptance: { verdict: true } });
   const text = await NR.reviewTail(ctxFor(null), { id: 'rv-7', taskId: t.id });
   assert.match(text, /NOTES TO JUDGE/);
   assert.ok(text.includes(w.notes[0]) && text.includes('memory_verdicts') && text.includes('stream.jsonl'));
+  const cap = events('note_brief').filter((e) => e.key === `brief:${t.id}`);
+  assert.deepStrictEqual(cap.map((e) => JSON.parse(e.row_ids).map((x) => x.split('#')[0])), [[w.notes[0]]], 'the brief that was rendered is the one captured');
   const hit = await call('task.create', orch, { spec: 'review of the shown', depends_on: [w.task.id], acceptance: { verdict: true } });
   void hit;
   // a reviewer of the task whose worker was shown the refuted note gets the fact
@@ -260,6 +265,7 @@ test('N9b: a run with the notes lever off reads no receipts for the wake', async
 test('N9c (review S-2, S-3): the sweep never applies a job the live path already refused; a job with no recorded cost is not used', async () => {
   const w = await written('wr-9c');
   const id = `notereview-${w.task.id}`;
+  await captureBrief(call, orch, harness, { job: { worker_id: id, reviewed_task_id: w.task.id } }); // the job was launched with this brief
   await call('worker.write', orch, { id, substrate: 'claude-code', pid: process.pid, state: 'stopped', session_id: 's', last_event_at: Date.now(), cost_usd: 0.01 });
   fs.mkdirSync(`${dir}/workers/${id}`, { recursive: true });
   fs.writeFileSync(`${dir}/workers/${id}/stream.jsonl`, `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: verdictsFor([w.notes[0]], 'refuted') }] } })}\n`);

@@ -12,7 +12,7 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const { execFileSync } = require('node:child_process');
-const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
+const { core, sandbox, cleanup, callerFor, capturingCall } = require('./helpers.cjs');
 const CC = require('../../src/core/memory-citations.cjs');
 const { hiddenParts } = require('../../src/core/note-shown.cjs');
 
@@ -24,7 +24,8 @@ const RUN = 'r-k4';
 const orch = callerFor('orchestrator', { run_id: RUN });
 const harness = callerFor('orchestrator', { run_id: RUN, channel: 'harness' });
 const worker = (id) => callerFor('worker', { run_id: RUN, worker_id: id });
-const call = (method, caller, args = {}) => E.handle(method, { caller, ...args });
+const rawCall = (method, caller, args = {}) => E.handle(method, { caller, ...args });
+const call = capturingCall(rawCall, orch, harness); // a verdict call is preceded by the brief capture a run would have made
 const rowOf = (id) => store.p('SELECT * FROM memory_entries WHERE id = ?').get(id);
 const statusOf = (id) => rowOf(id).status ?? 'unverified';
 let seq = 0, useSeq = 0;

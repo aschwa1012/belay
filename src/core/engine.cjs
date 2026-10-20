@@ -73,6 +73,7 @@ const METHODS = {
   // and the two reads the refuted-note wake and a review's brief are built from.
   'memory.noteVerdicts': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-note-review.cjs', 'noteVerdicts') },
   'memory.noteRefutation': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-note-review.cjs', 'noteRefutation') },
+  'memory.noteBriefCapture': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-note-review.cjs', 'noteBriefCapture') },
   'memory.reviewBrief': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-note-review.cjs', 'reviewBrief') },
   // The notes lifecycle (scrub, review, archive). scrubApply and reviewApply are harness-channel calls (the check is inside);
   // noteRestore is the orchestrator's or the operator's; archivePurge is the operator's alone; the two reads are SELECTs.

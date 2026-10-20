@@ -26,4 +26,12 @@ function hiddenParts(n) {
   return out;
 }
 
-module.exports = { TEXT_CAP, SAW_CAP, EVIDENCE_SHOWN, VERDICTS_FIT, REPORTS_FIT, noteFit, hiddenParts };
+// A short hash of everything a reviewer could be shown of a note ({ title, when, text, evidence }): the key a captured brief holds a note under,
+// so a note edited after its brief was rendered is no longer the note that was shown.
+function shownHash(n) {
+  const ev = n && Array.isArray(n.evidence) ? n.evidence : [];
+  const body = JSON.stringify([n && n.title == null ? null : n && n.title, n && typeof n.when === 'string' ? n.when : null, n && n.text == null ? null : n && n.text, ev]);
+  return require('crypto').createHash('sha256').update(body).digest('hex').slice(0, 16);
+}
+
+module.exports = { TEXT_CAP, SAW_CAP, EVIDENCE_SHOWN, VERDICTS_FIT, REPORTS_FIT, noteFit, hiddenParts, shownHash };

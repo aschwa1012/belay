@@ -84,6 +84,9 @@ function reportLines(reports, bare) {
 
 // What a review task's brief gains: the notes to judge and, mechanically, any refuted note a reviewed worker was shown.
 // `brief` is memory.reviewBrief's answer; `streams` is [{ worker_id, task_id, stream_path }] for the reviewed tasks.
+// The notes the tail lists: the first ones that fit beside the reports (the core's note-shown.cjs noteFit). The capture of the brief holds exactly these.
+const listedNotes = ({ notes, reports = [] }) => notes.slice(0, fitOf(reports.length));
+
 function reviewerTail({ notes, refuted_shown: shown, reports = [] }, streams = []) {
   const lines = [];
   const noteFit = fitOf(reports.length);
@@ -170,4 +173,4 @@ function refutedWake(rs, ids, { withReason = false } = {}) {
   return { id: `note-refuted:${ids.join('+')}`, text };
 }
 
-module.exports = { capNote, reviewerTail, jobPrompt, jobTemplate, parseJobOutput, refutedWake, one, CITE_RULES, WAKE_MAX_BYTES };
+module.exports = { capNote, listedNotes, reviewerTail, jobPrompt, jobTemplate, parseJobOutput, refutedWake, one, CITE_RULES, WAKE_MAX_BYTES };

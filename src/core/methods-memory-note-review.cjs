@@ -24,7 +24,8 @@ const CC = require('./memory-citations.cjs');
 const F = require('./note-review-facts.cjs');
 const { heldLeaseOn } = require('./verdict.cjs');
 const RV = require('./note-report-verdicts.cjs');
-const { hiddenParts, noteFit } = require('./note-shown.cjs');
+const { hiddenParts } = require('./note-shown.cjs');
+const BC = require('./note-brief-capture.cjs');
 
 const VERDICTS = ['confirmed', 'refuted', 'unsupported'];
 const REASON_MAX = 500;
@@ -92,8 +93,11 @@ function admit(E, caller, route, v) {
   if (project && n.namespace !== `project/${project}`) throw bad(`note ${n.id} is in ${n.namespace}, not in this run's project`, { id: n.id });
   if (!route.scope.includes(n.task_id)) throw bad(`note ${n.id} was written for task ${n.task_id || 'none'}, which this review does not cover (${route.scope.join(', ') || 'no tasks'})`, { id: n.id, task_id: n.task_id });
   if (n.written_by === `worker:${route.reviewer}`) throw err('E_ROLE', `worker ${route.reviewer} wrote note ${n.id} and cannot review it`, { id: n.id, reason: 'independence' });
-  // A review task's brief lists only the first notes (note-shown.cjs noteFit); the reviewer was shown nothing of a note it leaves out.
-  if (route.rendered && !route.rendered.has(n.id)) throw bad(`note ${n.id} was not in the review task's brief (it lists ${route.rendered.size} notes), so the reviewer was not shown it; it stays unreviewed for a later review`, { id: n.id, reason: 'not_shown' });
+  // A reviewer judges only the notes its brief listed, as they stood then. The list was captured when the brief was rendered
+  // (note-brief-capture.cjs) and is read back here, never recomputed: a note written, reviewed or edited since is not in it.
+  if (!route.captured) throw bad(`no brief was captured for review ${route.ref}, so there is no record of the notes its reviewer was shown; the notes stay unreviewed for a later review`, { id: n.id, reason: 'not_shown' });
+  if (!route.captured.has(n.id)) throw bad(`note ${n.id} was not in the brief of review ${route.ref} (it listed ${route.captured.size} notes), so the reviewer was not shown it; it stays unreviewed for a later review`, { id: n.id, reason: 'not_shown' });
+  if (route.captured.get(n.id) !== BC.hashOfRow(n)) throw bad(`note ${n.id} changed after the brief of review ${route.ref} showed it, so the reviewer judged a different note; it stays unreviewed for a later review`, { id: n.id, reason: 'changed_since_shown' });
   const held = heldLeaseOn(E.store, route.reviewer, [n.task_id]);
   if (held) throw err('E_ROLE', `worker ${route.reviewer} held lease ${held.id} on task ${n.task_id}, which wrote note ${n.id}; a worker that did the work cannot review its notes`, { id: n.id, reason: 'independence', lease_id: held.id });
   const status = n.status || 'unverified';
@@ -136,11 +140,7 @@ async function noteVerdicts(E, caller, args) {
   const out = { reviewer: route.reviewer, ref: route.ref, applied: [], refused: [], already: [], unjudged: [], refused_open: [] };
   if (route.verdicts === null) { out.no_verdicts = true; }
   else if (!Array.isArray(route.verdicts) || route.verdicts.length > VERDICTS_MAX) throw bad(`memory_verdicts must be an array of at most ${VERDICTS_MAX} verdicts`);
-  // The notes the brief listed, fixed before any verdict is applied (applying one takes it out of the notes under review, which would pull the next into the list).
-  if (route.capped) {
-    const proj0 = caller.run_id ? projectOf(E, caller) : null;
-    route.rendered = new Set(F.notesUnderReview(E, route.scope, proj0).slice(0, noteFit(RV.reportsAbout(E, route.scope, proj0).length)).map((x) => x.id));
-  }
+  route.captured = BC.capturedFor(E, route.ref); // the brief's notes, as captured when it was rendered
   RV.validateReportVerdicts(route.reportVerdicts); // all or nothing: a malformed report list is refused before any note verdict is written
   const seen = new Set(), refusedIds = new Set();
   for (const [index, raw] of (route.verdicts || []).entries()) {
@@ -201,4 +201,4 @@ async function reviewBrief(E, caller, args) {
   return { task_id: t.id, review: true, reviewed_tasks: deps, notes: F.notesUnderReview(E, deps, proj), refuted_shown: F.refutedShownTo(E, deps), reports: RV.reportsAbout(E, deps, proj) };
 }
 
-module.exports = { noteVerdicts, noteRefutation, reviewBrief, applyOneIn };
+module.exports = { noteVerdicts, noteRefutation, reviewBrief, applyOneIn, noteBriefCapture: BC.capture };

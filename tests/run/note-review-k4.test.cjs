@@ -11,7 +11,7 @@
 const { test, before, after, mock } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
-const { core: coreMod, sandbox, cleanup, callerFor } = require('../core/helpers.cjs');
+const { core: coreMod, sandbox, cleanup, callerFor, captureBrief } = require('../core/helpers.cjs');
 
 const { Store } = coreMod('store.cjs');
 const { Engine } = coreMod('engine.cjs');
@@ -232,6 +232,7 @@ test('K4-9: closeStages sweeps first, before the scrub reads the store; a fast c
 test('K4-9b: reviewSweep applies the answer of a finished job and is the sweep belay run hands the stages', async () => {
   const w = await written('wr-k49');
   const id = `notereview-${w.task.id}`;
+  await captureBrief(call, orch, harness, { job: { worker_id: id, reviewed_task_id: w.task.id } }); // the job was launched with this brief
   await call('worker.write', orch, { id, substrate: 'claude-code', pid: process.pid, state: 'stopped', session_id: 's', last_event_at: Date.now(), cost_usd: 0.01 });
   fs.mkdirSync(`${dir}/workers/${id}`, { recursive: true });
   fs.writeFileSync(`${dir}/workers/${id}/stream.jsonl`, `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: verdictsFor(w.notes) }] } })}\n`);
@@ -250,6 +251,7 @@ test('K4-9b: reviewSweep applies the answer of a finished job and is the sweep b
 test('K4-11: the sweep before the scrub writes no receipt for a job whose row is still idle, so the run-end sweep applies its answer once the row is dead', async () => {
   const w = await written('wr-k411');
   const id = `notereview-${w.task.id}`;
+  await captureBrief(call, orch, harness, { job: { worker_id: id, reviewed_task_id: w.task.id } }); // the job was launched with this brief
   await call('worker.write', orch, { id, substrate: 'claude-code', pid: process.pid, state: 'idle', session_id: 's', last_event_at: Date.now(), cost_usd: 0.01 });
   fs.mkdirSync(`${dir}/workers/${id}`, { recursive: true });
   fs.writeFileSync(`${dir}/workers/${id}/stream.jsonl`, `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: verdictsFor(w.notes) }] } })}\n`);
@@ -280,6 +282,7 @@ test('K4-11c: the sweep before the scrub applies the answer of a job whose proce
   const idle = async (marker, { pid = gone, cost = 0.01, text = null } = {}) => {
     const w = await written(marker);
     const id = `notereview-${w.task.id}`;
+  await captureBrief(call, orch, harness, { job: { worker_id: id, reviewed_task_id: w.task.id } }); // the job was launched with this brief
     await call('worker.write', orch, { id, substrate: 'claude-code', pid, state: 'idle', session_id: 's', last_event_at: Date.now(), ...(cost === null ? {} : { cost_usd: cost }) });
     fs.mkdirSync(`${dir}/workers/${id}`, { recursive: true });
     fs.writeFileSync(`${dir}/workers/${id}/stream.jsonl`, `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: text === null ? verdictsFor(w.notes) : text }] } })}

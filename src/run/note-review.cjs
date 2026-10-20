@@ -16,6 +16,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const T = require('./note-review-text.cjs');
+const { shownHash } = require('../core/note-shown.cjs');
 
 const JOB_PREFIX = 'notereview-';
 const JOB_WALL_MS = 180000;
@@ -60,6 +61,8 @@ async function stopJob(ctx, wid) {
   if (typeof m._killSurvivor === 'function') await Promise.resolve().then(() => m._killSurvivor(wid)).catch(() => {});
 }
 
+const briefNotes = (notes) => notes.map((n) => ({ id: n.id, hash: shownHash(n) }));
+
 // ---- the reviewer's brief ----------------------------------------------------------------------------------------
 // Appended to a review task's opening message. '' unless the notes switch is on and there is something to say.
 async function reviewTail(ctx, w) {
@@ -68,6 +71,10 @@ async function reviewTail(ctx, w) {
   let brief;
   try { brief = await ctx.core.memory.reviewBrief({ task_id: w.taskId }); } catch (e) { w.lastError = { where: 'memory.reviewBrief', code: codeOf(e), message: e && e.message }; return ''; }
   if (!brief.review || (!brief.notes.length && !brief.refuted_shown.length && !(brief.reports || []).length)) return '';
+  // The notes the tail will list are fixed now, with the text each had, so the verdicts are checked against what was shown (the core never recomputes it).
+  if (brief.notes.length) {
+    try { await ctx.core.memory.noteBriefCapture({ review_task_id: w.taskId, notes: briefNotes(T.listedNotes(brief)) }); } catch (e) { w.lastError = { where: 'memory.noteBriefCapture', code: codeOf(e), message: e && e.message }; return ''; }
+  }
   let streams = [];
   try {
     const list = ((await ctx.core.worker.list({})).workers || []).filter((x) => x.run_id === ctx.runId && brief.reviewed_tasks.includes(x.task_id));
@@ -177,6 +184,7 @@ async function runJob(J, task) {
     // The job reads its notes from a file, so it is shown every field of every note (no cap): the core allows `confirmed` for what a reviewer saw whole.
     const inputs = await writeInputs(ctx, taskId, wid, brief.reports && brief.reports.length ? { notes: brief.notes, reports: brief.reports } : brief.notes, workers);
     const streams = workers.map((x) => ({ worker_id: x.id, stream_path: fwd(path.join(ctx.dataDir, 'workers', x.id, 'stream.jsonl')) }));
+    await core.memory.noteBriefCapture({ job: { worker_id: wid, reviewed_task_id: taskId }, notes: briefNotes(brief.notes) }); // what the job's notes file holds, fixed before it starts
     const prompt = T.jobPrompt(T.jobTemplate(), { notesFile: inputs.notesFile, diffFile: inputs.diffFile, streams, taskId, reports: brief.reports || [] });
     const worktree = inputs.worktree || ctx.worktree || (workers.find((x) => x.worktree) || {}).worktree;
     if (!worktree) throw Object.assign(new Error('no worktree is known for the task, so the review job has nowhere to run'), { code: 'E_ARGS' });
