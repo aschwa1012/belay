@@ -71,7 +71,7 @@ function readOwnerLock(dataDir) {
   if (meta && meta.listening === false && meta.token) {
     try {
       const m = JSON.parse(fs.readFileSync(path.join(lockPath(dataDir), listeningName(meta)), 'utf8'));
-      if (m && m.pid === meta.pid && m.token === meta.token) return { ...meta, listening: true, listening_at: m.listening_at };
+      if (m && m.pid === meta.pid && m.token === meta.token) return { ...meta, listening: true, listening_at: m.listening_at, ...(Number.isInteger(m.tcp_port) ? { tcp_port: m.tcp_port } : {}) };
     } catch { /* no marker yet: the owner is starting */ }
   }
   return meta;
@@ -219,16 +219,17 @@ function acquireLock(dataDir, info, opts = {}) {
 // a loop starved it for a whole second. The name carries the token, so a takeover's new lock never
 // inherits its predecessor's marker. owner.json is then also rewritten with `listening: true` for
 // readers that look only there, best effort and briefly, since the marker is what readOwnerLock reads.
+// `extra` rides in both files (ADR 0045 decision 4: the loopback port a `bound` owner serves its operator on).
 // Returns true once the marker is in place (or was already); false means no reader will ever see this
 // owner as listening, and the caller must not serve as if it were.
-function markListening(lockDir, at = Date.now()) {
+function markListening(lockDir, at = Date.now(), extra = {}) {
   const meta = path.join(lockDir, 'owner.json');
   const cur = readSettled(meta);
   if (cur.state !== 'ok' || cur.meta.pid !== process.pid) return false;
   const marker = path.join(lockDir, listeningName(cur.meta));
   if (!fs.existsSync(marker)) {
     const tmp = aside(marker, 'tmp');
-    try { fs.writeFileSync(tmp, JSON.stringify({ pid: process.pid, token: cur.meta.token || null, listening_at: at })); }
+    try { fs.writeFileSync(tmp, JSON.stringify({ pid: process.pid, token: cur.meta.token || null, listening_at: at, ...extra })); }
     catch { try { fs.unlinkSync(tmp); } catch { /* never made */ } return false; }
     let placed = false;
     for (let i = 0; i < 50 && !placed; i++) {
@@ -239,7 +240,7 @@ function markListening(lockDir, at = Date.now()) {
     }
     if (!placed) { try { fs.unlinkSync(tmp); } catch { /* gone */ } return false; }
   }
-  try { replaceFile(meta, JSON.stringify({ ...cur.meta, listening: true, listening_at: at }), 5); } catch { /* best effort */ }
+  try { replaceFile(meta, JSON.stringify({ ...cur.meta, listening: true, listening_at: at, ...extra }), 5); } catch { /* best effort */ }
   return true;
 }
 
