@@ -207,7 +207,7 @@ function commit(E, caller, prep, { task_id }) {
   const by = E.memoryWriter(caller);
   const items = prep.notes.map(p => {
     const pending = p.matches.length > 0 || p.prior.length > 0;
-    const byText = n => E.store.p('SELECT id, type, written_by, task_id FROM memory_entries WHERE namespace = ? AND text_hash = ?').get(n, hashText(p.text));
+    const byText = n => E.store.p('SELECT id, type, written_by, task_id, status, EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = memory_entries.id AND s.namespace = memory_entries.namespace) AS replaced FROM memory_entries WHERE namespace = ? AND text_hash = ?').get(n, hashText(p.text));
     // A pending note is resolved against the notes it was matched with. The same words as a row of project/<p> that is not one of those matches
     // (a refuted note, a row that is not a note, a note not compared) could never be resolved, so it answers duplicate and no pending row is written.
     const inProject = pending ? byText(projectNs(prep.project)) : null;
@@ -216,8 +216,10 @@ function commit(E, caller, prep, { task_id }) {
     const clash = unresolvable || byText(ns);
     if (clash) {
       // The same words from another writer in another task are a second sighting of a live note, as a resolved repeat is: promotion counts them.
-      const sighted = clash.type === 'note' && !pending ? sightText(E, caller, clash, by, task_id, p, t) : null;
-      return { index: p.index, id: clash.id, action: 'duplicate', state: 'duplicate', namespace: ns, title: p.title, existing_type: clash.type, same_writer: clash.written_by === by, ...(sighted ? { sighting: sighted } : {}), note: `${ns} already holds a ${clash.type} row with this text${clash.written_by === by ? '' : ' (another writer\'s)'}, so no new row was written${sighted ? ' (your hand-back is recorded as a sighting of it)' : ''} and there is nothing for you to resolve` };
+      // A refuted or replaced note is not live, so it takes no sighting, and the writer is told the row was judged against.
+      const judged = clash.status === 'refuted' ? 'refuted' : (clash.replaced ? 'superseded' : null);
+      const sighted = clash.type === 'note' && !judged && !pending ? sightText(E, caller, clash, by, task_id, p, t) : null;
+      return { index: p.index, id: clash.id, action: 'duplicate', state: 'duplicate', namespace: ns, title: p.title, existing_type: clash.type, same_writer: clash.written_by === by, ...(judged ? { existing_status: judged } : {}), ...(p.prior.length ? { prior_verdicts: p.prior } : {}), ...(sighted ? { sighting: sighted } : {}), note: `${ns} already holds a ${clash.type} row with this text${clash.written_by === by ? '' : ' (another writer\'s)'}, so no new row was written${sighted ? ' (your hand-back is recorded as a sighting of it)' : ''}${judged === 'refuted' ? '; that note was judged wrong, so this is not agreement with your claim' : judged === 'superseded' ? '; that note was replaced by a newer one' : ''} and there is nothing for you to resolve` };
     }
     const body = {
       kind: p.kind, basis: p.basis, when: p.body.when, evidence: p.body.evidence, applies_to: p.body.applies_to, applies_to_from: p.body.applies_to_from, task_files: p.body.task_files, task_files_from: p.body.task_files_from, task_files_truncated: p.body.task_files_truncated, ...(p.body.applies_to_ambiguous ? { applies_to_ambiguous: p.body.applies_to_ambiguous } : {}), subjects: p.body.subjects,

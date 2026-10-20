@@ -187,3 +187,30 @@ test('D31: the exact text of a live matched note still waits in pending and reso
   const r = await call('memory.noteResolve', worker('w2'), { resolutions: [{ id: p.id, resolve: 'repeats', of: live.id }] });
   assert.deepStrictEqual([r.resolved[0].resolved, r.resolved[0].of], ['repeats', live.id]);
 });
+
+test("D31: the refuted duplicate shows the writer the earlier verdict and says the row was judged wrong", async () => {
+  const first = (await hand(worker('w1'), { notes: [note('K14')] })).out.notes[0];
+  store.p("UPDATE memory_entries SET status = 'refuted', status_receipt = 'review:k14' WHERE id = ?").run(first.id);
+  const d = (await hand(worker('w2'), { notes: [note('K14')] })).out.notes[0];
+  assert.deepStrictEqual([d.state, d.id, d.existing_status], ['duplicate', first.id, 'refuted']);
+  assert.deepStrictEqual(d.prior_verdicts.map(v => [v.id, v.verdict, v.receipt]), [[first.id, 'refuted', 'review:k14']]);
+  assert.match(d.note, /judged wrong/);
+});
+
+test("D31: a refuted note whose template cannot be compared takes no sighting from an exact repeat, and still says it was refuted", async () => {
+  const first = (await hand(worker('w1'), { notes: [note('K15')] })).out.notes[0];
+  store.p("UPDATE memory_entries SET status = 'refuted', status_receipt = 'review:k15', text_template = 'v1' WHERE id = ?").run(first.id);
+  const d = (await hand(worker('w2'), { notes: [note('K15')] })).out.notes[0];
+  assert.deepStrictEqual([d.state, d.id, d.existing_status, d.sighting], ['duplicate', first.id, 'refuted', undefined]);
+  assert.strictEqual(d.prior_verdicts, undefined, 'the templates cannot be compared, so no verdict is computed');
+  assert.deepStrictEqual([bodyOf(first.id).seen_total, bodyOf(first.id).seen_in], [0, []]);
+});
+
+test("D31: a replaced note takes no sighting from an exact repeat of its words", async () => {
+  const old = (await hand(worker('w1'), { notes: [note('K1')] })).out.notes[0];
+  const neu = (await hand(worker('w1'), { notes: [note('K1y', { title: 'the K1y loader needs a listed fixture' })] })).out.notes[0];
+  store.setSupersedes(neu.id, old.id);
+  const d = (await hand(worker('w2'), { notes: [note('K1')] })).out.notes[0];
+  assert.deepStrictEqual([d.state, d.id, d.existing_status, d.sighting], ['duplicate', old.id, 'superseded', undefined]);
+  assert.strictEqual(bodyOf(old.id).seen_total, 0);
+});
