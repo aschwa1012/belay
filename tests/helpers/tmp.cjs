@@ -10,6 +10,10 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+// A belay worker that runs `npm test` carries BELAY_WORKER_ID (src/run/env.cjs), and the CLI refuses its write verbs under it.
+// The suite's own CLI children must act as the operator, so the marker does not pass into them. A test of the guard sets it itself.
+delete process.env.BELAY_WORKER_ID;
+
 const KEY = Symbol.for('belay.tests.tmp');
 if (!globalThis[KEY]) {
   const made = new Set();
