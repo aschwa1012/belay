@@ -97,10 +97,13 @@ let runPromise = null;
 let attachPromise = null;
 let ATTACH = null;
 
+// ADR 0045 decision 2: the session key the owner handed this adapter at its bind. Memory only: never a file, the environment, a log or argv.
+let BIND_KEY = null;
+
 function openCoreOnce() {
   if (!corePromise) {
     corePromise = Promise.resolve()
-      .then(() => coreModule().openCore({ dataDir: opts.dataDir, caller: CALLER, embed: opts.embed }))
+      .then(() => coreModule().openCore({ dataDir: opts.dataDir, caller: CALLER, embed: opts.embed, ...(BIND_KEY ? { key: BIND_KEY } : {}) }))
       .then((c) => { core = c; return c; })
       .catch((e) => { corePromise = null; throw e; });
   }
@@ -365,25 +368,48 @@ async function handle(msg) {
 // BELAY_KEEPALIVE_TICK_MS (a positive integer) overrides the 60 s tick of the lease keepalive; a test hook (ADR 0026).
 const keepalive = opts.role !== 'worker' ? null : require('./lease-keepalive.cjs').createKeepalive({
   call: callCore, workerId: opts.workerId, log: wlog, tickMs: Number(process.env.BELAY_KEEPALIVE_TICK_MS) });
-if (keepalive) keepalive.start();
 let buf = '';
 wlog('##', `start role=${opts.role} run=${opts.runId} worker=${opts.workerId || '-'} data=${opts.dataDir}`);
 
-process.stdin.on('data', (d) => {
-  buf += d.toString('utf8');
-  let i;
-  // Each request is handled as its own promise and never awaited here, so a worker_spawn that takes
-  // seconds cannot stop the loop from answering status (ADR 0010 consequences).
-  while ((i = buf.indexOf('\n')) >= 0) {
-    const line = buf.slice(0, i);
-    buf = buf.slice(i + 1);
-    if (!line.trim()) continue;
-    wlog('<<', line);
-    let m;
-    try { m = JSON.parse(line); } catch { wlog('!!', 'unparseable line'); continue; }
-    handle(m).catch((e) => process.stderr.write(`belay-mcp: handler error: ${e && e.message}\n`));
-  }
-});
+// ADR 0045 decision 2: with --bind the adapter claims its identity BEFORE it reads a byte of MCP, so `initialize` is answered only by a
+// bound adapter. The bind pipe's answer must agree with argv; anything else (no listener, a second claim, a different identity) ends this
+// process before the session sees a server, which Claude Code reports as belay not connected, and the launch is refused.
+function startServing() {
+  if (keepalive) keepalive.start();
+  process.stdin.on('data', (d) => {
+    buf += d.toString('utf8');
+    let i;
+    // Each request is handled as its own promise and never awaited here, so a worker_spawn that takes
+    // seconds cannot stop the loop from answering status (ADR 0010 consequences).
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i);
+      buf = buf.slice(i + 1);
+      if (!line.trim()) continue;
+      wlog('<<', line);
+      let m;
+      try { m = JSON.parse(line); } catch { wlog('!!', 'unparseable line'); continue; }
+      handle(m).catch((e) => process.stderr.write(`belay-mcp: handler error: ${e && e.message}\n`));
+    }
+  });
+}
+
+if (!opts.bind) startServing();
+else {
+  require('../core/bind.cjs').claimBind(opts.bind).then((b) => {
+    const c = b.caller || {};
+    if (c.role !== opts.role || c.run_id !== opts.runId || (c.worker_id || null) !== (opts.workerId || null)) {
+      throw Object.assign(new Error(`the bind names ${JSON.stringify(c)}, which is not this adapter's argv identity`), { code: 'E_BIND' });
+    }
+    BIND_KEY = b.key;
+    wlog('##', `bound bind_id=${b.bind_id}`);
+    startServing();
+  }).catch((e) => {
+    wlog('!!', `bind failed: ${e && e.message}`);
+    process.stderr.write(`belay-mcp: ${e && e.code ? e.code + ': ' : ''}${e && e.message}\n`);
+    wlog.flushSync();
+    process.exit(3);
+  });
+}
 
 let closing = false;
 const RESTART_MCP_BUDGET_MS = 100000;
