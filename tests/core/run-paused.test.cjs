@@ -80,7 +80,7 @@ test('run.setPaused: sets and clears paused_at and paused_by, refuses an ended r
   // an ended run refuses E_ARGS, whatever its own pause state.
   await assert.rejects(orch.run.setPaused({ paused: true }), (e) => { assert.strictEqual(e.code, 'E_ARGS'); return true; });
 
-  const reattached3 = await orch.run.attach({ adapter_pid: process.pid });
+  const reattached3 = await operator.run.attach({ adapter_pid: process.pid });
   assert.strictEqual(reattached3.run.paused_at, null, 'run.attach must carry a pause forward only from an epoch that has not ended');
   assert.strictEqual(reattached3.run.paused_by, null);
 
@@ -96,7 +96,7 @@ test('run.setPaused: sets and clears paused_at and paused_by, refuses an ended r
   const legacyRow = (await orch.run.get()).run;
   assert.ok(legacyRow.ended_at != null && legacyRow.paused_at != null, 'the planted legacy row must itself carry both ended_at and paused_at');
 
-  const reattached4 = await orch.run.attach({ adapter_pid: process.pid });
+  const reattached4 = await operator.run.attach({ adapter_pid: process.pid });
   assert.strictEqual(reattached4.run.paused_at, null, 'run.attach must never carry paused_at forward from an ended row, legacy or not');
   assert.strictEqual(reattached4.run.paused_by, null);
 });

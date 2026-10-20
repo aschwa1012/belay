@@ -15,6 +15,12 @@ function createRunIdentity(ownPid) {
     // This process's creation time for run.attach, never waiting on the snapshot.
     ownNow() { return own(); },
     watchOrchestrator(pid) { orchPid = pid; orch = P.createdOf(pid, { kind: 'spawn-read' }).catch(() => null); },
+    // { pid, created } of the orchestrator this run spawned, or null when its creation time was never read (ADR 0029 amendment 4).
+    async orchestratorRef() {
+      if (!orch) return null;
+      const r = await orch;
+      return r && r.created != null ? { pid: orchPid, created: r.created } : null;
+    },
     async orchestratorFacts() {
       if (!orch) return { pid_created: null, pid_created_error: 'the orchestrator was never started' };
       const r = await orch;

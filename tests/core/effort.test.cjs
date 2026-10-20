@@ -9,15 +9,16 @@ const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
 
 const { openCore } = core('index.cjs');
 
-let dir, orch;
+let dir, orch, op;
 
 before(async () => {
   dir = sandbox();
   orch = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
+  op = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false }); // the run process: only it reopens an ended run (ADR 0029 amendment 4, proposed)
 });
 
 after(async () => {
-  try { if (orch.isOwner()) await orch.shutdownOwner(); } finally { await orch.close(); cleanup(dir); }
+  try { await op.close(); if (orch.isOwner()) await orch.shutdownOwner(); } finally { await orch.close(); cleanup(dir); }
 });
 
 test('effort: the run row records orch_effort_requested, an absent key keeps it inside the unended chain, and an ended epoch never passes it on', async () => {
@@ -28,7 +29,7 @@ test('effort: the run row records orch_effort_requested, an absent key keeps it 
   const ended = await orch.run.end({ exit_reason: 'test' });
   assert.strictEqual(ended.orch_effort_requested, 'high');
   // MF1: the next epoch of the same run id.
-  const third = await orch.run.attach({ adapter_pid: process.pid });
+  const third = await op.run.attach({ adapter_pid: process.pid });
   assert.strictEqual(third.run.orch_effort_requested, null, 'an absent key over an ended epoch is null');
   const fourth = await orch.run.attach({ adapter_pid: process.pid, orch_effort_requested: 'max' });
   assert.strictEqual(fourth.run.orch_effort_requested, 'max');
@@ -51,8 +52,8 @@ test('effort: the core level list equals the launch table list', () => {
 });
 
 test('effort: the worker row carries effort_requested and inherits it across a restating write', async () => {
-  await orch.run.attach({ adapter_pid: process.pid });
-  const w = await orch.worker.write({ id: 'w-eff', substrate: 'claude-code', pid: process.pid, state: 'running', effort_requested: 'xhigh' });
+  await op.run.attach({ adapter_pid: process.pid });
+  const w =await orch.worker.write({ id: 'w-eff', substrate: 'claude-code', pid: process.pid, state: 'running', effort_requested: 'xhigh' });
   assert.strictEqual(w.effort_requested, 'xhigh');
   const idle = await orch.worker.write({ id: 'w-eff', state: 'idle' });
   assert.strictEqual(idle.effort_requested, 'xhigh');
