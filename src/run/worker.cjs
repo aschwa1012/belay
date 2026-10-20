@@ -17,7 +17,7 @@ const EX = require('./exit.cjs'); // 6f-2 design items 6 and 9: terminalState, n
 const MC = require('./memory-capture.cjs'); // ADR 0041 decision 7: the turn's event buffer, lever-gated
 const NC = require('./note-chances.cjs'); // the notes sink record: what a worker was shown, sent to the core at task end
 const TR = require('./turn-record.cjs'); // 6i-2 fix round (item 3, should-fix): onTurnEnd's checkpoint/memory write, gated on shutdownFlags
-const { lookupSha } = require('./head-lookup.cjs'); // W2-3: base_sha at record creation, head_sha at settle (write-row.cjs)
+const HL = require('./head-lookup.cjs'); // W2-3: base_sha at record creation, head_sha at settle (write-row.cjs)
 const CP = require('./compaction.cjs'); // ADR 0007 decision 3: the compact_at_tokens lever (inert while ctx.compactAt is null)
 const PI = require('./pid-identity.cjs'); // ADR 0039: pid_created, read once at spawn
 
@@ -72,7 +72,7 @@ function newWorkerRecord({ id, substrate, worktree, dataDir, taskId, model, allo
     initModel: null, cacheReadTokens: 0, cacheCreationTokens: 0, toolCalls: 0, baseSha: null, baseError: null, basePromise: null, headSha: null, headError: null, headPromise: null, headRequested: false, lastRowHadBase: null, ctx: null,
   };
   // Kept on the record (build 12 a2): shutdown awaits it like headPromise, so no git child of ours still has the worktree as its cwd when the run ends.
-  if (captureBase) w.basePromise = lookupSha(w.worktree).then(({ sha, reason }) => { w.baseSha = sha; w.baseError = sha ? null : reason; if (w.ctx) require('./write-row.cjs').restateBase(w, w.ctx); });
+  if (captureBase) w.basePromise = HL.lookupSha(w.worktree).then(({ sha, reason }) => { w.baseSha = sha; w.baseError = sha ? null : reason; if (w.ctx) require('./write-row.cjs').restateBase(w, w.ctx); });
   return w;
 }
 

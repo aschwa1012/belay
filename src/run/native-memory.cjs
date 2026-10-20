@@ -40,11 +40,34 @@ function assertOutsideConfig(folder) {
   }
 }
 
+// The folder, or the deepest ancestor of it that exists, must be a directory: a regular file there would make the create throw
+// EEXIST or ENOTDIR after a worker's directory and record already exist. Nothing is created.
+function assertCreatable(folder) {
+  for (let cur = path.resolve(folder); ;) {
+    const st = fs.statSync(cur, { throwIfNoEntry: false });
+    if (st) {
+      if (!st.isDirectory()) throw refuse('native_memory is, or sits below, something that is not a directory', { native_memory: fwd(folder), blocking: fwd(cur), reason: 'not_a_directory' });
+      return;
+    }
+    const up = path.dirname(cur);
+    if (up === cur) return;
+    cur = up;
+  }
+}
+
+// The checks that need no folder to exist, shared by the spawn's validation and prepareFolder: the string form, the real path
+// against the config directories, and that the folder can be created. Returns the resolved folder; creates nothing.
+function checkFolder(dir) {
+  const folder = S.checkNativeMemory(dir);
+  assertOutsideConfig(folder);
+  assertCreatable(folder);
+  return folder;
+}
+
 // Check the string form, then the real path, create the folder, then check the real path again. Returns the resolved folder.
 // `seam.beforeMkdir` (tests only) runs between the first check and the create, where a folder swap would land.
 function prepareFolder(dir, seam = {}) {
-  const folder = S.checkNativeMemory(dir);
-  assertOutsideConfig(folder);
+  const folder = checkFolder(dir);
   if (seam.beforeMkdir) seam.beforeMkdir(folder);
   fs.mkdirSync(folder, { recursive: true });
   assertOutsideConfig(folder);
@@ -100,6 +123,7 @@ async function refuseLaunch(ctx, w, e, pidAlive) {
   w.launchFailed = true; w.nativeMemoryRefused = true;
   if (!(w.pid && pidAlive(w.pid))) {
     w.deathEstablishedBy = e.code === 'E_NATIVE_MEMORY_MISMATCH' ? 'native_memory_settings_mismatch' : 'native_memory_folder_refused';
+    w.settled = true; w.settledState = 'dead'; // dead now: a settled state fixed by the life before (paused, stopped) must not be what worker_wait answers
     let row = null;
     try { row = await ctx.writeRow(w, 'dead'); } catch (err) { w.lastError = { where: 'native_memory.write', code: err && err.code, message: err && err.message }; e.detail = { ...e.detail, dead_row_error: err && err.message }; }
     e.detail = { ...e.detail, dead_row: row ? { seq: row.seq == null ? null : row.seq, state: row.state, death_established_by: row.death_established_by == null ? null : row.death_established_by } : null };
@@ -108,4 +132,4 @@ async function refuseLaunch(ctx, w, e, pidAlive) {
   throw e;
 }
 
-module.exports = { prepareFolder, assertOutsideConfig, verifySettings, checkLaunch, refuseLaunch, fingerprint };
+module.exports = { checkFolder, assertCreatable, prepareFolder, assertOutsideConfig, verifySettings, checkLaunch, refuseLaunch, fingerprint };
