@@ -1,7 +1,7 @@
 'use strict';
 // memory-levers.cjs (core) — ADR 0041 decision 1: the pure spec of a run's memory levers. `parseMemoryBlock`
 // validates the spec's optional `memory` block and `isDefault` says whether a block differs from the defaults.
-// It requires nothing, so run.attach can validate a block without loading the run manager; src/run reads the
+// It requires only pure data (the profile table, which loads no GPU module), so run.attach can validate a block without loading the run manager; src/run reads the
 // parsed block back with `leversFor`. Every lever that does anything new defaults off.
 
 const RP = require('./retrieval-profiles.cjs'); // pure data: the profile table and the model lookups (ADR 0050)
@@ -74,6 +74,7 @@ const SINKS = ['off', 'record', 'penalty'];
 const PROFILE_VALUES = [...RP.PROFILE_NAMES, RP.CUSTOM];
 const HEAVY_FAILURE = ['fallback', 'pause'];
 const HEAVY_BEHIND = ['wait', 'fallback'];
+const ROUTING_MAX = 64; // entries in the routing map
 const ROUTING_TYPE_RE = /^[a-z][a-z0-9_-]{0,31}$/; // the main keys are orchestrator, reviewer and coder; any other agent type is an advanced key
 const PROJECT_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const INDEX_BYTES_MAX = 4096; // ADR 0042 decision 2
@@ -83,16 +84,21 @@ const BOTTLE_BYTES_MAX = 262144; // ADR 0042 decision 4
 function routingProblem(r) {
   if (r === null) return null;
   if (typeof r !== 'object' || Array.isArray(r)) return 'memory.routing must be null or an object from agent type to profile';
+  if (Object.keys(r).length > ROUTING_MAX) return `memory.routing has more than ${ROUTING_MAX} entries`;
   for (const [type, p] of Object.entries(r)) {
     if (!ROUTING_TYPE_RE.test(type)) return `memory.routing.${type}: an agent type is lower-case letters, digits, - or _`;
     if (typeof p === 'string') {
-      if (p === RP.CUSTOM || !RP.PROFILES[p]) return `memory.routing.${type} must be one of ${RP.PROFILE_NAMES.join(', ')} or a pair { embedder, reranker }`;
+      if (p === RP.CUSTOM || !RP.isProfile(p)) return `memory.routing.${type} must be one of ${RP.PROFILE_NAMES.join(', ')} or a pair { embedder, reranker }`;
+      const pend = RP.pendingIn(RP.PROFILES[p]);
+      if (pend) return `memory.routing.${type}: ${RP.pendingMessage(pend)}`;
       continue;
     }
     if (!p || typeof p !== 'object' || Array.isArray(p)) return `memory.routing.${type} must be a profile name or a pair { embedder, reranker }`;
     for (const k of Object.keys(p)) if (k !== 'embedder' && k !== 'reranker') return `memory.routing.${type}.${k} is not a field of a pair (embedder, reranker)`;
     const bad = RP.embedderProblem(p.embedder) || RP.rerankerProblem(p.reranker === undefined ? 'none' : p.reranker);
     if (bad) return `memory.routing.${type}: ${bad}`;
+    const pend = RP.pendingIn({ embedder: p.embedder, reranker: p.reranker === 'none' ? null : p.reranker });
+    if (pend) return `memory.routing.${type}: ${RP.pendingMessage(pend)}`;
   }
   return null;
 }
@@ -150,13 +156,17 @@ function parseMemoryBlock(block) {
   if (!SINKS.includes(v.notes_sink)) return { error: `memory.notes_sink must be one of ${SINKS.join(', ')}` };
   if (v.notes_sink !== 'off' && !v.notes) return { error: 'memory.notes_sink needs memory.notes' };
   for (const k of ['profile', 'profile_cpu']) if (!PROFILE_VALUES.includes(v[k])) return { error: `memory.${k} must be one of ${PROFILE_VALUES.join(', ')}` };
-  if (RP.PROFILES[v.profile_cpu] && RP.needsGpu(RP.PROFILES[v.profile_cpu])) return { error: `memory.profile_cpu ${v.profile_cpu} needs a GPU; it is the profile used when there is none` };
+  if (RP.isProfile(v.profile_cpu) && RP.needsGpu(RP.PROFILES[v.profile_cpu])) return { error: `memory.profile_cpu ${v.profile_cpu} needs a GPU; it is the profile used when there is none` };
   const embProblem = RP.embedderProblem(v.embedder);
   if (embProblem) return { error: `memory.embedder: ${embProblem}` };
   const rrProblem = RP.rerankerProblem(v.reranker);
   if (rrProblem) return { error: `memory.reranker: ${rrProblem}` };
   if (v.profile_cpu === RP.CUSTOM && RP.needsGpu({ embedder: v.embedder, reranker: v.reranker === 'none' ? null : v.reranker })) return { error: 'memory.profile_cpu custom needs a CPU-only memory.embedder and memory.reranker; it is the profile used when there is no GPU' };
+  const pending = (RP.isProfile(v.profile) && RP.pendingIn(RP.PROFILES[v.profile])) || (RP.isProfile(v.profile_cpu) && RP.pendingIn(RP.PROFILES[v.profile_cpu]))
+    || RP.pendingIn({ embedder: v.embedder, reranker: v.reranker === 'none' ? null : v.reranker });
+  if (pending) return { error: `memory: ${RP.pendingMessage(pending)}`, code: 'E_MODEL' };
   const routeProblem = routingProblem(v.routing);
+  if (routeProblem && / is not yet available in this build/.test(routeProblem)) return { error: routeProblem, code: 'E_MODEL' };
   if (routeProblem) return { error: routeProblem };
   if (!boundedInt(v.rerank_depth, 200)) return { error: 'memory.rerank_depth must be an integer from 1 to 200' };
   if (!boundedInt(v.rerank_bound_ms, 600000)) return { error: 'memory.rerank_bound_ms must be an integer from 1 to 600000' };
@@ -220,4 +230,4 @@ function specOf(key) {
 
 const TYPES = Object.freeze(Object.fromEntries(Object.keys(DEFAULTS).map((k) => [k, specOf(k)])));
 
-module.exports = { DEFAULTS, TYPES, MODE_VALUES, parseMemoryBlock, isDefault };
+module.exports = { ROUTING_TYPE_RE, ROUTING_MAX, DEFAULTS, TYPES, MODE_VALUES, parseMemoryBlock, isDefault };

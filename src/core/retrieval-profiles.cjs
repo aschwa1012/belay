@@ -10,7 +10,17 @@
 
 const { err } = require('./errors.cjs');
 const { MODELS, DEFAULT_MODEL } = require('./models.cjs');
-const { GGUF_MODELS } = require('./gguf-models.cjs');
+
+// The GPU models by kind. This is a deliberate copy of the ids and kinds of gguf-models.cjs, not a require of it:
+// openCore loads memory-levers, which loads this file, and a default run must load no GPU module (ADR 0049,
+// tests/core/gpu-import-graph.test.cjs). tests/core/retrieval-levers.test.cjs checks the copy against the table.
+const GGUF_KINDS = Object.freeze({
+  'Qwen/Qwen3-Embedding-0.6B-GGUF': 'embedder',
+  'Qwen/Qwen3-Embedding-4B-GGUF': 'embedder',
+  'Qwen/Qwen3-Embedding-8B-GGUF': 'embedder',
+  'ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF': 'reranker',
+  'giladgd/Qwen3-Reranker-4B-GGUF': 'reranker',
+});
 
 const NANO = DEFAULT_MODEL;
 const DEFAULT_DEPTH = 50; // every profile, on every device, until the 0.3.2 eval re-picks it (operator, 2026-10-17)
@@ -54,14 +64,25 @@ const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 // What a model id is: { id, kind: 'embedder'|'reranker', runtime: 'onnx'|'gguf', device: 'cpu'|'gpu', pending_pin }, or null.
 function describeModel(id) {
   if (typeof id !== 'string') return null;
-  if (has(GGUF_MODELS, id)) { const e = GGUF_MODELS[id]; return { id, kind: e.kind, runtime: 'gguf', device: 'gpu', pending_pin: false }; }
+  if (has(GGUF_KINDS, id)) return { id, kind: GGUF_KINDS[id], runtime: 'gguf', device: 'gpu', pending_pin: false };
   if (has(ONNX_RERANKERS, id)) { const e = ONNX_RERANKERS[id]; return { id, kind: 'reranker', runtime: 'onnx', device: 'cpu', pending_pin: e.pending_pin === true }; }
   if (has(MODELS, id)) return { id, kind: 'embedder', runtime: 'onnx', device: 'cpu', pending_pin: false };
   return null;
 }
 
-const embedderIds = () => [...Object.keys(MODELS), ...Object.values(GGUF_MODELS).filter((e) => e.kind === 'embedder').map((e) => e.id)];
-const rerankerIds = () => [...Object.keys(ONNX_RERANKERS), ...Object.values(GGUF_MODELS).filter((e) => e.kind === 'reranker').map((e) => e.id)];
+const gguf = (kind) => Object.keys(GGUF_KINDS).filter((id) => GGUF_KINDS[id] === kind);
+const embedderIds = () => [...Object.keys(MODELS), ...gguf('embedder')];
+const rerankerIds = () => [...Object.keys(ONNX_RERANKERS), ...gguf('reranker')];
+
+// A profile name, by own property: 'toString' and '__proto__' are not profiles.
+const isProfile = (name) => typeof name === 'string' && has(PROFILES, name);
+
+// The first model in a { embedder, reranker } pair whose pin is pending, or null. A pending model is listed but cannot run.
+function pendingIn(models) {
+  for (const id of [models.embedder, models.reranker]) { const m = id && describeModel(id); if (m && m.pending_pin) return id; }
+  return null;
+}
+const pendingMessage = (id) => `${id} is not yet available in this build (its commit and file hashes are not pinned)`;
 
 // An embedder / reranker id the levers accept (the reranker also takes the word none). Returns an error sentence or null.
 function embedderProblem(id) {
@@ -78,7 +99,7 @@ function rerankerProblem(id) {
 function assertUsable(id) {
   const m = describeModel(id);
   if (m && m.pending_pin) {
-    throw err('E_MODEL', `${id} is listed but its commit and file hashes are not pinned yet, so it cannot be fetched or run`, { model: id, reason: 'pending_pin' });
+    throw err('E_MODEL', pendingMessage(id), { model: id, reason: 'pending_pin' });
   }
   return m;
 }
@@ -93,5 +114,5 @@ const needsGpu = (models) => [models.embedder, models.reranker].some((id) => id 
 
 module.exports = {
   PROFILES, PROFILE_NAMES, FALLBACK_PROFILE, CUSTOM, NANO, DEFAULT_DEPTH, ONNX_RERANKERS,
-  describeModel, embedderProblem, rerankerProblem, assertUsable, profileModels, needsGpu,
+  GGUF_KINDS, isProfile, pendingIn, pendingMessage, describeModel, embedderProblem, rerankerProblem, assertUsable, profileModels, needsGpu,
 };

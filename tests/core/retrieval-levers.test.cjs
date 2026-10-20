@@ -7,6 +7,8 @@ const ML = require('../../src/core/memory-levers.cjs');
 const RP = require('../../src/core/retrieval-profiles.cjs');
 const { MODELS } = require('../../src/core/models.cjs');
 const { GGUF_MODELS } = require('../../src/core/gguf-models.cjs');
+const { spawnSync } = require('node:child_process');
+const path = require('node:path');
 
 const parse = (b) => ML.parseMemoryBlock(b);
 const LEVERS = ['profile', 'profile_cpu', 'embedder', 'reranker', 'routing', 'rerank_depth', 'rerank_bound_ms', 'on_heavy_failure', 'on_heavy_behind', 'search_log_cap_mb', 'vram_headroom_gb'];
@@ -60,6 +62,17 @@ test('validation: each lever refuses a bad value and names the key', () => {
     [{ search_log_cap_mb: 0 }, /memory\.search_log_cap_mb/],
     [{ vram_headroom_gb: -1 }, /memory\.vram_headroom_gb/],
     [{ vram_headroom_gb: '1' }, /memory\.vram_headroom_gb/],
+    [{ profile: 'toString' }, /memory.profile must be one of/],
+    [{ profile_cpu: 'constructor' }, /memory.profile_cpu must be one of/],
+    [{ routing: { reviewer: 'toString' } }, /memory.routing.reviewer must be one of/],
+    [{ routing: { reviewer: 'constructor' } }, /memory.routing.reviewer must be one of/],
+    [{ routing: { reviewer: '__proto__' } }, /memory.routing.reviewer must be one of/],
+    [{ routing: Object.fromEntries(Array.from({ length: 65 }, (_, i) => [`t${i}`, 'cpu-fast'])) }, /more than 64 entries/],
+    [{ routing: { reviewer: 'cpu-rerank' } }, /not yet available in this build/],
+    [{ routing: { reviewer: { embedder: RP.NANO, reranker: 'jinaai/jina-reranker-v1-tiny-en' } } }, /not yet available in this build/],
+    [{ profile: 'cpu-rerank-light' }, /not yet available in this build/],
+    [{ profile_cpu: 'cpu-rerank' }, /not yet available in this build/],
+    [{ reranker: 'Alibaba-NLP/gte-reranker-modernbert-base' }, /not yet available in this build/],
     [{ routing: [] }, /memory\.routing must be null or an object/],
     [{ routing: { Reviewer: 'cpu-fast' } }, /memory\.routing\.Reviewer/],
     [{ routing: { reviewer: 'custom' } }, /memory\.routing\.reviewer must be one of/],
@@ -78,5 +91,23 @@ test('validation: good values are accepted, including custom pairs, advanced age
     rerank_depth: 200, rerank_bound_ms: 600000, on_heavy_failure: 'pause', on_heavy_behind: 'fallback', search_log_cap_mb: 1, vram_headroom_gb: 0,
   });
   assert.strictEqual(ok.error, undefined);
-  assert.strictEqual(parse({ reranker: 'jinaai/jina-reranker-v1-tiny-en' }).error, undefined);
+  assert.strictEqual(parse({ routing: Object.fromEntries(Array.from({ length: 64 }, (_, i) => [`t${i}`, 'cpu-fast'])) }).error, undefined, '64 entries is the cap');
+});
+
+test('a pending model is refused with the coded error E_MODEL, by the lever parse (so settings and the run spec refuse it)', () => {
+  for (const block of [{ reranker: 'jinaai/jina-reranker-v1-tiny-en' }, { profile: 'cpu-rerank' }, { routing: { coder: 'cpu-rerank-light' } }]) {
+    const r = parse(block);
+    assert.strictEqual(r.code, 'E_MODEL', JSON.stringify(block));
+    assert.match(r.error, /not yet available in this build/);
+  }
+});
+
+test('the GPU kinds copied into retrieval-profiles.cjs match the GGUF table exactly', () => {
+  assert.deepStrictEqual(Object.fromEntries(Object.values(GGUF_MODELS).map((e) => [e.id, e.kind])), RP.GGUF_KINDS);
+});
+
+test('parsing a default block and resolving a CPU routing load no GPU module', () => {
+  const r = spawnSync(process.execPath, [path.join(__dirname, 'retrieval-import-child.cjs')], { encoding: 'utf8', windowsHide: true });
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.deepStrictEqual(JSON.parse(r.stdout), { ok: true, loaded: [] });
 });

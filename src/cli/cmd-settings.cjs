@@ -9,7 +9,7 @@
 // `settings` and `settings <key>` are mode R: discovery and one read, no file created, no process
 // started. `settings <key> <value>` writes the config file and nothing else — never the store — and
 // returns the old and new value as its receipt (invariant 5). Nothing here imports src/core beyond the pure
-// src/core/memory-levers.cjs (it requires nothing), through settings-keys.cjs.
+// src/core/memory-levers.cjs (pure data; it loads no GPU module, no embedder), through settings-keys.cjs.
 
 const fs = require('node:fs');
 const C = require('./config.cjs');
