@@ -63,7 +63,7 @@ function cliSync(args, dataDir, extraEnv) {
 // (tests/cli/stop-helpers.cjs's connectOrchestratorCore waits for the run row; this is the same shape,
 // kept local so no CLI-test file needs to reach into tests/core/helpers.cjs).
 async function connectOrchestrator(dataDir, runId) {
-  const core = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 15000 });
+  const core = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
   const row = await waitUntil(async () => (await core.run.get()).run || null, 10000, 100);
   assert.ok(row, "the CLI's run row never appeared within 10,000 ms");
   return core;
@@ -121,10 +121,7 @@ test('take-control: against a live owner, takes the lease of an assigned task fr
     // runs before the holder check), matching what the note and the command table row now say.
     let displaced = null;
     try {
-      // the run's owner serves bound callers (ADR 0045): w1 is a worker the way a launched one is, through a bind the run's orchestrator asks for
-      const opened = await core.bindOpen({ role: 'worker', run_id: runId, worker_id: 'w1' });
-      const claimed = await require('../../src/core/bind.cjs').claimBind(opened.pipe, { timeoutMs: 5000 });
-      displaced = await openCore({ dataDir, caller: { ...claimed.caller, pid: process.pid }, key: claimed.key });
+      displaced = await openCore({ dataDir, caller: { role: 'worker', run_id: runId, worker_id: 'w1', pid: process.pid } });
       await assert.rejects(
         displaced.lease.renew({ lease_id: assign.new_lease.id }),
         (e) => { assert.strictEqual(e.code, 'E_LEASE_EXPIRED', `the displaced worker's renew must be E_LEASE_EXPIRED, got ${e.code}`); return true; },

@@ -335,8 +335,6 @@ async function onTurnEnd(w, e, ctx) {
 const { terminalState, noteStoppedWhileSettled, settle } = EX;
 
 function attach(w, child, ctx) {
-  PI.registerSpawn(w, child, ctx.dataDir); // before anything else is touched: a refusal leaves the record as it was
-  w.launchFailed = false; // a new process is a new launch: the last one's failure no longer blocks its `running` row
   w.settledChild = null; // reset per launch; see the exit handler below
   w.ctx = ctx; w.headPromise = null; w.headSha = null; w.headError = null; w.headRequested = false; // W2-3: head_sha belongs to the life that is starting; captured again at its settle
   w.child = child;

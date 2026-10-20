@@ -199,8 +199,7 @@ test('stop and message reach a worker that exists only in the store', async () =
 });
 
 // Build 12 A10: a write that fails after a relaunch must not leave the relaunched child alive past shutdown.
-// Before the fix, doStop's `stopping` write threw the same E_ARGS and the kill behind it never ran. ADR 0045 amendment 3 goes further:
-// the failed start ends its own child (it holds a bind), so the child is gone when the rejection arrives, not only once shutdown returns.
+// Before the fix, doStop's `stopping` write threw the same E_ARGS and the kill behind it never ran.
 test('a write failure after a relaunch still leaves no live child once shutdown returns', { timeout: 60000 }, async () => {
   const sb = sandbox();
   const core = createFakeCore();
@@ -218,11 +217,16 @@ test('a write failure after a relaunch still leaves no live child once shutdown 
     await assert.rejects(second.restart({ worker_id: 'w-wfail', first_turn_timeout_ms: SLOW }), (e) => e.code === 'E_ARGS');
     pid = second._worker('w-wfail').pid;
     child = second._worker('w-wfail').child; // ADR 0039: the live handle, for the safety net below
-    assert.ok(Number.isInteger(pid), 'the relaunch started a child');
-    assert.notEqual(await P.waitPidGone(pid, { timeoutMs: 10000 }), null, 'the failed start ended the relaunched child by its exact pid');
+    assert.ok(Number.isInteger(pid) && P.pidAlive(pid), 'the relaunched child is alive after the failed write');
 
-    await second.shutdown();
-    assert.equal(P.pidAlive(pid), false, 'and nothing is alive once shutdown returns');
+    const sd = await second.shutdown();
+    assert.equal(sd.stop_failed.length, 1);
+    assert.equal(sd.stop_failed[0].worker_id, 'w-wfail');
+    assert.equal(sd.stop_failed[0].code, 'E_ARGS');
+    assert.equal(sd.stop_failed[0].pid, pid);
+    assert.ok(Number.isInteger(sd.stop_failed[0].pid_gone_ms));
+    await P.waitPidGone(pid, { timeoutMs: 5000 });
+    assert.equal(P.pidAlive(pid), false, 'shutdown killed the relaunched child by its exact pid');
     core.worker.write = realWrite;
   } finally {
     if (child) require('../crash.cjs').crash(child); // the live handle, only if the assertion above failed

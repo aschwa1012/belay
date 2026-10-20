@@ -26,7 +26,7 @@ test('fast close with a snapshot that cannot fit: nothing is signalled, the rece
     let core;
     try {
       assert.ok(await waitUntil(() => r.record(), 15000));
-      core = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(r.dataDir, r.runId, { waitMs: 15000 });
+      core = await openCore({ dataDir: r.dataDir, caller: { role: 'orchestrator', run_id: r.runId, pid: process.pid } });
       assert.ok(await waitUntil(async () => (await core.run.get()).run, 15000));
       await core.worker.write({ id: 'w-nf', run_id: r.runId, substrate: 'claude-code', state: 'running', turns: 0, started_at: Date.now(), pid: w.pid, pid_created: made.created, pid_image: 'node.exe' });
       let asked = 0;
@@ -66,7 +66,7 @@ test('fast close: a snapshot that lands after the budget signals nothing, and th
     let core;
     try {
       assert.ok(await waitUntil(() => r.record(), 15000));
-      core = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(r.dataDir, r.runId, { waitMs: 15000 });
+      core = await openCore({ dataDir: r.dataDir, caller: { role: 'orchestrator', run_id: r.runId, pid: process.pid } });
       assert.ok(await waitUntil(async () => (await core.run.get()).run, 15000));
       await core.worker.write({ id: 'w-late', run_id: r.runId, substrate: 'claude-code', state: 'running', turns: 0, started_at: Date.now(), pid: w.pid, pid_created: made.created, pid_image: 'node.exe' });
       let landed = false;

@@ -139,7 +139,10 @@ function receiptOf(run, exitCode) {
 // `orchestrator` on the CLI's data dir connects to the CLI's already-elected owner over the pipe
 // (invariant 2: only a write elects, and the CLI elected first).
 async function connectOrchestratorCore(dataDir, runId) {
-  return require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 10000 });
+  const core = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
+  const row = await waitUntil(async () => (await core.run.get()).run || null, 10000, 100);
+  assert.ok(row, "the CLI's run row never appeared within 10,000 ms");
+  return core;
 }
 
 function workerWorktree(dir, id) {
@@ -170,8 +173,7 @@ test('run: a worker whose exit event trails its death by 3,000 ms still wakes an
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, runId, orchestratorDir } = makeSpec(dir, { poll_ms: 300 });
-  // the run's owner vouches for this test by its process before it binds it (ADR 0045): the first answer waits for the gate, written once the setup is done
-  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '1500', FAKE_ANSWER_GATE_FILE: `${dir}/orch.gate` };
+  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '1500' };
   const runCliProc = runCli(specPath, dataDir, env);
   let core = null; let m = null; const spawnedPids = [];
   try {
@@ -183,7 +185,6 @@ test('run: a worker whose exit event trails its death by 3,000 ms still wakes an
     try { row = await m.spawn({ substrate: 'claude-code', worktree: workerWorktree(dir, 'w1'), prompt: 'hello', worker_id: 'w1' }); }
     finally { delete process.env.FAKE_ANSWER_DELAY_MS; }
     spawnedPids.push({ pid: row.pid, created: row.pid_created });
-    fs.writeFileSync(`${dir}/orch.gate`, '');
 
     const gotResult = await waitForFileLine(`${orchestratorDir}/stream.jsonl`, '"type":"result"', 15000);
     assert.ok(gotResult, "the orchestrator's own first turn never ended");

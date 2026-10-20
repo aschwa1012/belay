@@ -164,17 +164,6 @@ test('R7: setStatus refuses a review: receipt from anyone', async () => {
   await assert.rejects(call('memory.setStatus', orch, { id: w.note, status: 'verified', receipt: 'review:anything' }), (e) => e.code === 'E_RECEIPT' && /only by belay/.test(e.message));
 });
 
-test('R7b: setStatus cannot make a note verified on a receipt the caller supplies, from the orchestrator or the operator', async () => {
-  const w = await written('w-g2', 'K50');
-  const operator = callerFor('operator', { run_id: RUN });
-  for (const [who, receipt] of [[orch, 'test:claimed-pass'], [operator, 'test:claimed-pass'], [operator, `task:${w.task}`]]) {
-    await assert.rejects(call('memory.setStatus', who, { id: w.note, status: 'verified', receipt }), (e) => e.code === 'E_RECEIPT' && e.detail && e.detail.reason === 'note_needs_review');
-  }
-  assert.ok(!rowOf(w.note).status || rowOf(w.note).status === 'unverified', 'the refused calls changed nothing');
-  const refuted = await call('memory.setStatus', operator, { id: w.note, status: 'refuted', receipt: 'test:it-failed' });
-  assert.strictEqual(refuted.status, 'refuted', 'refuting a note on the operator word stays open');
-});
-
 test('R8: scope and liveness: a note of another task, a pending note and an unknown id are refused by name', async () => {
   const w = await written('w-h', 'K9');
   const other = await written('w-h2', 'K10');

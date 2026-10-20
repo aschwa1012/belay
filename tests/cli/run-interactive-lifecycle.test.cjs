@@ -197,10 +197,9 @@ test('L6: a stop that finds claude already gone does not claim to have ended it'
   let rec = null;
   const deps = {
     killPid: (target, sig) => { pidCalls.push(target.pid); return P.killPid(target, sig); },
-    // claude is exiting on its own as the stop arrives: the stub quits when the stop first looks for it (the owner's check of the stop's caller takes longer than any fixed hold)
-    pidAlive: (pid) => { if (rec && pid === rec.pid) { fs.writeFileSync(`${dir}/quit`, ''); return false; } return P.pidAlive(pid); },
+    pidAlive: (pid) => (rec && pid === rec.pid ? false : P.pidAlive(pid)), // claude is exiting on its own as the stop arrives
   };
-  const r = start(dir, { env: { FAKE_EXIT_FILE: `${dir}/quit` }, deps });
+  const r = start(dir, { env: { FAKE_HOLD_MS: '1500' }, deps });
   rec = await waitUntil(() => r.record(), 15000);
   assert.ok(await waitUntil(() => currentRunRow(r.dataDir, r.runId), 15000));
   const stopped = await cmdStop.run({ argv: [r.runId], cwd: ROOT, dataDir: r.dataDir, json: true });

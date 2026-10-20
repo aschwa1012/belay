@@ -341,11 +341,9 @@ test('restart: a second restart issued while the first\'s own relaunch is still 
 });
 
 // ---------------------------------------------------------------- (lifecycle.cjs:65 fix)
-// A resume whose 'starting' row write failed used to leave state 'paused' with a live child still attached, and shutdown's left_parked
-// skip must never key on the state word alone (review, lifecycle.cjs:65). Since ADR 0045 amendment 3 a failed start ends its own child
-// (it holds a bind) and the worker goes back to parked, so shutdown finds a parked worker with no process: nothing is alive, and it is
-// listed as left parked, which it truly is.
-test('shutdown: a failed resume write ends the relaunched child and leaves the worker parked, with nothing alive', async () => {
+// A resume whose 'starting' row write failed leaves state 'paused' with a live child still attached;
+// shutdown's left_parked skip must never key on the state word alone (review, lifecycle.cjs:65).
+test('shutdown: a paused row with a live child from a failed resume write is stopped, not left parked', async () => {
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core);
@@ -362,12 +360,13 @@ test('shutdown: a failed resume write ends the relaunched child and leaves the w
     await assert.rejects(m.resume({ worker_id: 'w1', by: 'operator:2' }));
     core.worker.write = origWrite;
     const w = m._worker('w1');
+    assert.strictEqual(w.state, 'paused', 'the in-memory state must still read paused after the failed write');
+    assert.ok(w.child, 'the relaunch must have already attached a live child');
     const pid = w.pid;
-    assert.notStrictEqual(await P.waitPidGone(pid, { timeoutMs: 10000 }), null, 'the failed start must have ended the relaunched process');
-    assert.ok(await pollUntil(() => !w.child && w.state === 'paused', 5000), `the worker must read parked again (state ${w.state}, child ${!!w.child})`);
     const receipt = await m.shutdown();
-    assert.deepStrictEqual(receipt.left_parked, ['w1'], 'a parked worker with no process is left parked');
-    assert.strictEqual(P.pidAlive(pid), false, 'and nothing is alive');
+    assert.deepStrictEqual(receipt.left_parked, [], 'a worker with a live child must never be left parked');
+    assert.deepStrictEqual(receipt.stopped, ['w1']);
+    assert.strictEqual(P.pidAlive(pid), false, 'the live process must actually have been stopped');
   } finally { await teardown({ m, sb }); }
 });
 
