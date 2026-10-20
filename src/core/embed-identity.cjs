@@ -121,16 +121,22 @@ function writeMeta(db, pairs) {
 }
 
 // ---- one identity per model (ADR 0050). The single-identity keys above stay the nano store's identity, unchanged. A model in
-// the vector cache (memory_vectors) keeps its own identity and canary in meta under `embedding_identity:<model>@<revision>:<dims>`,
+// the vector cache (memory_vectors) keeps its own identity and canary in meta under `embedding_identity:` and the JSON of [model, revision, dims],
 // as JSON of the same fields identityRows writes. Nothing heavy calls these yet.
-const modelIdentityKey = (model, revision, dims) => `embedding_identity:${model}@${revision || ''}:${dims}`;
+const modelIdentityKey = (model, revision, dims) => `embedding_identity:${JSON.stringify([model, revision || '', dims])}`;
 
 // The recorded identity of one model key, or null. Reads only.
 function getModelIdentity(db, key) {
   if (!db.prepare("SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'meta'").get()) return null;
   const r = db.prepare('SELECT value FROM meta WHERE key = ?').get(key);
   if (!r) return null;
-  try { const v = JSON.parse(r.value); return v && typeof v === 'object' ? v : null; } catch { return null; }
+  // A recorded identity that cannot be read is an incomplete one, never an absent one: absent would adopt a new identity over it.
+  let v = null;
+  try { v = JSON.parse(r.value); } catch { v = null; }
+  if (!v || typeof v !== 'object' || Array.isArray(v)) {
+    throw err('E_MODEL_CHANGED', `this store's recorded identity ${key} cannot be read, so it is incomplete and is not adopted`, { reason: 'incomplete identity', key });
+  }
+  return v;
 }
 
 // info: { model, sha, dtype, pooling, dim, library, canary_vector }. One INSERT OR REPLACE, in the caller's transaction or alone.
