@@ -40,7 +40,8 @@ function idsOf(route, b) {
   else list = Array.isArray(b.rows) ? b.rows : [b];
   if (!Array.isArray(list)) return null;
   const rows = list.filter((r) => r && typeof r.id === 'string' && r.found !== false).slice(0, ID_MAX);
-  return { ids: rows.map((r) => r.id), full: rows.filter((r) => typeof r.text === 'string').map((r) => r.id) };
+  // memory_list answers a 200-character preview of each text, never the whole row, so nothing it lists was opened.
+  return { ids: rows.map((r) => r.id), full: route === 'list' ? [] : rows.filter((r) => typeof r.text === 'string').map((r) => r.id) };
 }
 
 // Returns `f` itself (with `shown` added when the call was a search or retrieve that answered).

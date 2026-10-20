@@ -380,7 +380,7 @@ async function resolve(E, caller, args) {
         if (tnote.b.held) throw err('E_EXISTS', `resolutions[${i}]: note ${target.id} is already held (${tnote.b.held.row}); the reviewer settles it first`, { id: target.id, held_row: tnote.b.held.row });
         release(E, r, project);
         E.store.patchBody(r.id, b => { b.state = 'live'; b.resolved = { as: x.resolve, of: target.id, ...(x.evidence ? { evidence: x.evidence } : {}), at: t, by, held_for_review: true }; delete b.matches; return b; });
-        const held = VH.holdVerified(E, caller, project, tnote, r.id, x.resolve, `resolved as ${x.resolve}`, x.evidence);
+        const held = VH.holdVerified(E, caller, project, tnote, r.id, x.resolve, `resolved as ${x.resolve}`, x.evidence, require('./note-report-verdicts.cjs').headOf(E, r.task_id));
         return { id: r.id, resolved: x.resolve, of: target.id, state: 'live', namespace: projectNs(project), held_for_review: held.id, note: 'the old note is review-verified, so it is held for the reviewer and not archived' };
       }
       if (x.resolve === 'refines') {
@@ -392,7 +392,7 @@ async function resolve(E, caller, args) {
         const done = A.archiveNote(E, project, require('./memory-facts.cjs').loadNote(E, target.id),
           { kind: 'superseded', relation: 'refines', refines: true, via: 'refines', of: r.id, ground: 'replaced_by_newer', reason: 'resolved as refines', run_id: caller.run_id, direct: true },
           require('./memory-facts.cjs').loadNote(E, r.id));
-        return { id: r.id, resolved: 'refines', of: target.id, state: 'live', namespace: projectNs(project), old_archived_as: done.to, history_moved: done.history_moved };
+        return { id: r.id, resolved: 'refines', of: target.id, state: 'live', namespace: projectNs(project), old_archived_as: done.to, history_moved: done.history_moved, replaced_also_archived: done.replaced_also_archived };
       }
       if (x.resolve === 'supersedes') {
         release(E, r, project);

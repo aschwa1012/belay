@@ -15,12 +15,12 @@ function feed(lines) {
   return lines.flatMap((l) => p.pushLine(l)).filter((e) => e.kind === 'tool_result');
 }
 
-test('a memory_list answer shows its rows, in order, and the full ones are named', () => {
+test('a memory_list answer shows its rows, in order, and none is named full (a list carries only a preview)', () => {
   const [l] = feed([
     use('t1', 'mcp__belay__memory_list', { namespace: 'project/acme' }),
     res('t1', { data_notice: 'data', rows: [{ id: 'm-a', type: 'note', text: 'whole text' }, { id: 'm-b', type: 'note' }], total: 2 }),
   ]);
-  assert.deepStrictEqual(l.shown, { route: 'list', ids: ['m-a', 'm-b'], full: ['m-a'] });
+  assert.deepStrictEqual(l.shown, { route: 'list', ids: ['m-a', 'm-b'], full: [] });
 });
 
 test('a memory_timeline answer shows its anchor and the rows around it', () => {

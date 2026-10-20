@@ -31,10 +31,11 @@ function triggerOf(counts, lv) {
   return null;
 }
 
-function buildBrief({ runId, project, held }) {
+function buildBrief({ runId, project, held, head = null }) {
   return [
     '# Archive review brief', '',
     `Run: ${runId}   Project: ${project}   Held marks: ${held.length}`,
+    `Head commit for an entry with no head_sha of its own (a hold written at write time): ${head || '(none recorded)'}. Your working directory is that commit's worktree.`,
     'Each entry is one held note. "files" are the repository files the mark cites, saved as they were at the mark\'s head commit.',
     'target_review_verified = a review confirmed this note earlier: weigh a mark against it with care.',
     'For a duplicate mark, "note" and "of_note" are both given in full: archive only if they make the same claim and do not contradict (same_claim: true), else release.',
@@ -111,11 +112,17 @@ async function runReview({ core, runId, lv, dataDir, getManager, worktree = null
   };
   try {
     const workers = ((await core.worker.list({})).workers) || [];
-    const cwd = worktree || (workers.filter((w) => w.run_id === runId && w.worktree).pop() || {}).worktree;
+    // The directory the reviewer reads in and the head a file cite is read at come from ONE worker, so a quoted file is the file at that head.
+    const samePath = (a, b) => abs(a).toLowerCase() === abs(b).toLowerCase();
+    const evidence = pickEvidence(workers, runId);
+    const cwd = worktree || evidence.worktree || (workers.filter((w) => w.run_id === runId && w.worktree).pop() || {}).worktree;
+    const head = worktree
+      ? ((workers.filter((w) => w.run_id === runId && w.head_sha && w.worktree && samePath(w.worktree, worktree)).sort((a, b) => (a.exited_at || a.last_event_at || 0) - (b.exited_at || b.last_event_at || 0)).pop() || {}).head_sha || null)
+      : (evidence.worktree && cwd === evidence.worktree ? evidence.head_sha : null);
     if (!cwd) throw J.coded('E_ARGS', 'no worktree is known for the run, so the review child has nowhere to run and no commit can be read');
     const dir = path.join(dataDir, 'workers', jobId, 'inputs');
     const { held, streams } = await withFiles(queued, cwd, dir, { workers, dataDir });
-    const briefFile = J.writeFileIn(dir, 'brief.md', buildBrief({ runId, project: q.project, held }));
+    const briefFile = J.writeFileIn(dir, 'brief.md', buildBrief({ runId, project: q.project, held, head }));
     if (log) log(`run close: reviewing ${queued.length} held mark(s), at most ${lv.review_wall_s} s and $${lv.review_cost_cap_usd}`);
     const got = await J.runChild({ manager: await getManager(), workerId: jobId, worktree: cwd, model: lv.archive_review_model, capUsd: lv.review_cost_cap_usd, wallMs: lv.review_wall_s * 1000, prompt: promptFor(briefFile), label: 'archive review', fast, sink });
     out.cost = got.cost;
@@ -127,8 +134,7 @@ async function runReview({ core, runId, lv, dataDir, getManager, worktree = null
     const parsed = J.parseList(got.text, 'verdicts');
     if (parsed.error) throw J.coded('E_ARGS', parsed.error);
     // A hold written at write time (a refine or replacement of a verified note) has no head commit of its own, so a file cite could never be read
-    // for it: the run's head, as the scrub is given, stands for the cites of this review.
-    const head = pickEvidence(workers, runId).head_sha;
+    // for it: the head of the worktree the reviewer worked in (named in the brief) stands for its cites. A hold with a head keeps its own.
     const tally = { verdicts: parsed.list.length, applied: 0, refused: 0 };
     const applied = [], refused = [];
     for (let i = 0; i < parsed.list.length; i += VERDICTS_PER_APPLY) {

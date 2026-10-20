@@ -71,7 +71,7 @@ function transferHistory(E, B, A, meta) {
   // A delivery B already carries in its history (a restore gives B its own back) is not read from the ledger a second time.
   const dKey = d => `${d.task_id}|${d.worker_id}|${d.route || 'index'}`;
   const carried = (bb.delivery_history || []).map(d => hop(d, B.id, 'from'));
-  const have = new Set(carried.map(dKey));
+  const have = new Set(carried.filter(d => d.hops[0] === B.id).map(dKey));
   const deliveries = [...carried, ...deliveriesOf(E, B.id).filter(d => !have.has(dKey(d))).map(d => ({ ...d, hops: [B.id] }))];
   E.store.patchBody(A.id, b => {
     b.seen_in = [...(b.seen_in || []), ...moved, ...(sighting ? [sighting] : [])].slice(-SEEN_MAX);
@@ -155,18 +155,18 @@ function closeHold(E, note, meta) {
 // look for a superseding row in the same namespace. So when such a note leaves for archive/ and its claim lives on in another note (a
 // duplicate or a refinement of the kept note, or a note replaced by a newer one), the note it replaced would come back beside the claim
 // that displaced it. It is archived instead, as replaced by the kept note, and a restore can bring it back. A note archived as wrong
-// (no kept note) leaves the old one visible again: its replacement was not true. Returns the id archived, or null.
+// (no kept note) leaves the old one visible again: its replacement was not true. Returns the ids archived (the replaced note, then any it had itself replaced), or an empty list.
 function carryReplaced(E, project, note, meta, kept, depth) {
-  if (meta.kind === 'wrong' || note.namespace !== `project/${project}` || depth > 20) return null;
+  if (meta.kind === 'wrong' || note.namespace !== `project/${project}` || depth > 20) return [];
   const target = kept || (meta.of ? loadNote(E, meta.of) : null);
   const col = E.store.p('SELECT supersedes FROM memory_entries WHERE id = ?').get(note.id);
   const old = col && col.supersedes && target && col.supersedes !== target.id ? loadNote(E, col.supersedes) : null;
-  if (!old || old.type !== 'note' || old.namespace !== `project/${project}`) return null;
-  archiveNote(E, project, old, {
+  if (!old || old.type !== 'note' || old.namespace !== `project/${project}`) return [];
+  const inner = archiveNote(E, project, old, {
     kind: 'superseded', of: target.id, ground: 'replaced_by_newer', direct: true, run_id: meta.run_id || null, via: 'replacement_archived', replaced_by_archived: note.id,
     reason: `the note that replaced it (${note.id}) was archived as ${meta.kind} of ${target.id}, so ${target.id} stands in its place`,
   }, target, depth + 1);
-  return old.id;
+  return [old.id, ...inner.replaced_also_archived];
 }
 
 // Moves the note to archive/<project>. `meta` is what the archive records: { kind, of, ground, reason, cites, run_id,
@@ -186,12 +186,12 @@ function archiveNote(E, project, note, meta, kept, depth = 0) {
     b.state = 'archived';
     b.archived = {
       at, from, kind: meta.kind, of: meta.of || null, ground: meta.ground || null, reason: meta.reason, cites: meta.cites || [], run_id: meta.run_id || null,
-      head_sha: meta.head_sha || null, held_row: meta.held_row || null, review: meta.receipt || null, direct: !!meta.direct, ...(closed ? { held_row_closed: closed } : {}), ...(carried ? { replaced_also_archived: carried } : {}), ...(meta.replaced_by_archived ? { replaced_by_archived: meta.replaced_by_archived } : {}), ...(meta.relation ? { relation: meta.relation } : {}), ...(transfer ? { history_moved: transfer } : {}),
+      head_sha: meta.head_sha || null, held_row: meta.held_row || null, review: meta.receipt || null, direct: !!meta.direct, ...(closed ? { held_row_closed: closed } : {}), ...(carried.length ? { replaced_also_archived: carried[0] } : {}), ...(meta.replaced_by_archived ? { replaced_by_archived: meta.replaced_by_archived } : {}), ...(meta.relation ? { relation: meta.relation } : {}), ...(transfer ? { history_moved: transfer } : {}),
     };
     delete b.held;
     return fitBody(b);
   });
-  return { at, to, from, history_moved: transfer };
+  return { at, to, from, history_moved: transfer, replaced_also_archived: carried };
 }
 
 module.exports = { archiveNote, transferHistory, untransfer, deliveriesOf, bindNamespace, parse };

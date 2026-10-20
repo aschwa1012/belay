@@ -150,3 +150,16 @@ test('D43: two hand-backs of one project that are near-duplicates are checked on
     assert.deepStrictEqual(pending.matches.map(m => m.id), [stored.id]);
   } finally { hook = null; }
 });
+
+// ---- L01: a pending note is not sighted ------------------------------------------------------------------------------
+
+test('L01: the same words meeting a pending note record no sighting on it; only a live note is sighted', async () => {
+  const near = { title: 'the K11x loader ignores unlisted fixtures' };
+  await hand(worker('w1'), { notes: [note('K11')] });
+  const pend = (await hand(worker('w2'), { notes: [note('K11x', near)] })).out.notes[0];
+  assert.strictEqual(pend.state, 'pending');
+  const again = (await hand(worker('w3'), { notes: [note('K11x', near)] })).out.notes[0];
+  assert.deepStrictEqual([again.state, again.id, again.sighting], ['duplicate', pend.id, undefined]);
+  assert.strictEqual(bodyOf(pend.id).seen_total, 0);
+  assert.deepStrictEqual(bodyOf(pend.id).seen_in, []);
+});
