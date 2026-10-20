@@ -84,7 +84,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   async function failNoReady(w, reason, extra = {}) {
     // The launch is over from here; a turn end mid-teardown must not write a `running` row for a
     // start the caller is being told failed. Tree first, then the exact pid (ADR 0011 §2, contract §5).
-    w.launchFailed = true;
+    w.launchFailed = true; const bind = await require('./bind-launch.cjs').revokeBind(core, w); // ADR 0045 decision 2: a failed launch holds no key, revoked before the kill
     if (!w.settled && w.pid) {
       w.treeKill = (await PI.killWorker(w)).tree;
       await W.waitExit(w, 5000);
@@ -97,7 +97,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     fail('E_NO_READY', reason, {
       worker_id: w.id, pid: w.pid, exit_code: w.exitCode, exit_signal: w.exitSignal,
       stderr_tail: w.stderr.slice(-2000), reason, spawn_error: w.spawnError,
-      death_established_by: w.deathEstablishedBy, ...extra,
+      death_established_by: w.deathEstablishedBy, bind_id: bind.bind_id, bind_revoked: bind.revoked, ...extra,
     });
   }
 
