@@ -17,6 +17,11 @@ if (process.env.FAKE_ORPHAN_CHILD === '1') {
   if (process.env.FAKE_CHILD_PID_FILE) fs.writeFileSync(process.env.FAKE_CHILD_PID_FILE, String(kid.pid));
 }
 
+// ADR 0045 (audit D06): FAKE_SPAWN_SCRIPT=<path> starts that script as an ordinary child of this process, the way a worker's Bash starts one.
+if (process.env.FAKE_SPAWN_SCRIPT) {
+  require('node:child_process').spawn(process.execPath, [process.env.FAKE_SPAWN_SCRIPT], { windowsHide: true, stdio: 'ignore' }).unref();
+}
+
 const SESSION = process.env.FAKE_SESSION_ID || 'fake-session-0000-0000-0000-000000000001';
 const EXTRA_INIT = process.env.FAKE_EXTRA_INIT === '1'; // simulate an inbound cross-session turn
 // 5b-2: the unsolicited turn's own init lands right after the answer it rides in on; its own
