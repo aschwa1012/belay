@@ -24,7 +24,7 @@
 // stages read them.
 //
 // Only rows of type `note` are filtered. The operator (the CLI) is not gated: it is the window onto every row. A worker or the
-// orchestrator is. memory.get and memory.retrieve by explicit id are NOT filtered (they return the row with its status).
+// orchestrator is. memory.get and memory.retrieve by explicit id are NOT filtered by the two-clock clauses (they return the row with its status), but a lifecycle namespace answers not found there too.
 //
 // How it is evaluated. A row of the store is large (it carries its vector), and run_id and body sit after the vector, so a
 // per-row predicate costs a scan of the namespace (about 30 ms at 10,000 rows, three times in one search). The hidden notes are a
@@ -52,6 +52,11 @@ function checkNamespaces(caller, namespaces) {
       throw err('E_ROLE', `a ${caller.role} may not read ${ns}: the lifecycle namespaces (${LIFECYCLE_NS.join(', ')}) are read by the harness and the operator only`, { namespace: ns, role: caller.role });
     }
   }
+}
+
+// Whether `ns` is a lifecycle namespace the caller may not read (a gated tool-channel caller); a read by explicit id uses it to answer "not found".
+function inLifecycle(caller, ns) {
+  return gated(caller) && caller.channel !== 'harness' && LIFECYCLE_NS.some((p) => String(ns).startsWith(p));
 }
 
 // SQL that leaves out the lifecycle namespaces for a gated tool-channel caller (a read that names no namespace, as a timeline by task
@@ -131,4 +136,4 @@ function visible(E, caller, id, opts) {
   return hiddenIds(E, caller, { ...opts, ids: [id], body: true }).length === 0;
 }
 
-module.exports = { checkNamespaces, lifecycleSql, LIFECYCLE_NS, hiddenIds, sql, and, bodySql, bodyLive, visible, gated };
+module.exports = { checkNamespaces, inLifecycle, lifecycleSql, LIFECYCLE_NS, hiddenIds, sql, and, bodySql, bodyLive, visible, gated };

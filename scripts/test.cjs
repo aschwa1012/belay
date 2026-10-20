@@ -17,7 +17,7 @@ const { spawn } = require('node:child_process');
 const { killTree } = require('../src/core/process.cjs');
 
 const PHASE1_GLOBS = [
-  'tests/core/**/*.test.cjs', 'tests/run/**/*.test.cjs', 'tests/mcp/**/*.test.cjs', 'tests/cli/**/*.test.cjs',
+  'tests/core/**/*.test.cjs', 'tests/run/**/*.test.cjs', 'tests/mcp/**/*.test.cjs', 'tests/cli/**/*.test.cjs', 'tests/mod/**/*.test.cjs',
 ];
 const PHASE2_GLOB = 'tests/budgets/**/*.test.cjs';
 const PHASE1_TIMEOUT_MS = 1200000;
