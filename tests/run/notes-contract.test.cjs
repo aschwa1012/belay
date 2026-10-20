@@ -66,6 +66,20 @@ test('the contract text explains the purpose, shape and timing of a note, keeps 
   // 1,400 before the paired write/search contract; the pin is 1,900 (the text is about 1,800) so a small wording change does not break it, and the explanation, two restored rules and the replaced_by route are longer, and the project's subject list (at most 400 bytes) is added after it.
   assert.ok(Buffer.byteLength(text) <= 1900, `${Buffer.byteLength(text)} bytes`);
   assert.ok(Buffer.byteLength(NC.contract({ ...DEFAULTS, ...ON }, ['s'.repeat(40), 'x'.repeat(40)])) <= 1900 + 600, 'with a full subject list');
+  // JSON escaping doubles a quote or a backslash, so a list that fits the core's 400-byte cap raw can encode to twice that: the
+  // bound is on the encoded bytes. Ten subjects of 37 quotes (or backslashes) pass the core and used to make a 2,774-byte contract.
+  for (const ch of ['"', '\\']) {
+    const hostile = Array.from({ length: 10 }, (_, i) => `${i}${ch.repeat(37)}`);
+    const t = NC.contract({ ...DEFAULTS, ...ON }, hostile);
+    assert.ok(Buffer.byteLength(t) <= 1900 + 600, `${JSON.stringify(ch)}: ${Buffer.byteLength(t)} bytes`);
+    const line = t.split('\n').find((l) => l.startsWith('Subjects already used'));
+    const kept = JSON.parse(line.slice(line.indexOf('): ') + 3, -1));
+    assert.ok(kept.length >= 1 && kept.length < hostile.length, 'some are kept and the rest are left out');
+    assert.deepStrictEqual(kept, hostile.slice(0, kept.length), 'in the core\'s order, none altered');
+  }
+  // An ordinary full list from the core (20 subjects inside its 400 bytes) is not cut.
+  const ordinary = Array.from({ length: 20 }, (_, i) => `subject-${String(i).padStart(2, '0')}`);
+  assert.ok(NC.contract({ ...DEFAULTS, ...ON }, ordinary).includes(JSON.stringify(ordinary)));
   for (const must of ["They are found by matching that worker's task text against your note", 'Do not note what you built, or what your diff or hand-back already shows', '`[]` is the normal answer',
     '`title` (at most 160 bytes)', '`when` (at most 160 bytes)', 'as a task line', "not the finding's", '`subjects` (0 to 3)', 'its paths also feed matching',
     'Your findings are not shown to them; do not assume they are covered', 'mark a snapshot "as of <sha>"', '(made up:', 'says the same as another note', '`replaced_by`', '`reported_wrong`', '`memory_note_resolve`']) {
