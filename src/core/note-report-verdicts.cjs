@@ -2,7 +2,7 @@
 // note-report-verdicts.cjs — a worker's report that a note is WRONG, judged by the task's reviewer (or the Haiku note-review job).
 // "Is a note wrong about the world?" needs evidence and context, so it is the reviewer's, with cites, never the scrubber's.
 //   reportsAbout(E, taskIds, project)   a read: the open reports the tasks made about OTHER notes, for a reviewer's brief
-//   unjudgedReports(E, project)         a read: reports no review will judge, for the operator (notices, `belay memory proposals`)
+//   unjudgedReports(E, project)         a read: reports no verdict has been applied to, for the operator (notices, `belay memory proposals`)
 //   applyReportVerdicts(...)            the write: `report_verdicts: [{ id, verdict: upheld|rejected, cites, reason }]`
 // An upheld report creates a `wrong` hold on the reported note (the note stays visible with its warning; only the Opus archive
 // reviewer archives it). A rejected report is a `report_rejected` receipt on the note. Same citation check and same independence rule

@@ -200,9 +200,9 @@ test('notices: a pending note of an ended run and an open proposal on it are one
       assert.strictEqual(r.status, 0, r.stderr);
       const ev = JSON.parse(r.stdout).events.filter((e) => e.kind === 'notes_stranded');
       assert.strictEqual(ev.length, 1, `argv ${argv}`);
-      assert.deepStrictEqual([ev[0].count, ev[0].open_proposals, ev[0].pending, ev[0].note_ids, ev[0].command], [2, 1, 1, [note], 'belay memory proposals']);
+      assert.deepStrictEqual([ev[0].count, ev[0].open_proposals, ev[0].pending, ev[0].note_ids, ev[0].command], [1, 1, 1, [note], 'belay memory proposals']);
     }
-    assert.match(cli([RUN], dataDir, { json: false }).stdout, /1 open proposal and 1 pending note of ended runs wait on you/);
+    assert.ok(cli([RUN], dataDir, { json: false }).stdout.includes('1 note waits on you (1 open proposal, 1 pending note of ended runs'));
   } finally { cleanup(dir); }
 });
 

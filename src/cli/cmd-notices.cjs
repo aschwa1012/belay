@@ -20,8 +20,8 @@
 //   scrub_dropped       items a scrub child gave no entry in two scrubs: named here, and not offered again until a new report, sighting or nomination
 //   scrub_failed        a run-close scrub or archive review that failed, with its code
 //   notes_held          notes held for the on-demand Opus archive reviewer (a hold of any kind): `count` (every queued note), `unsupported` (the part with no warning), `by_project`, `oldest_age_runs`, the command that dispatches it
-//   reports_unjudged    reports that a note is wrong that no review judged (a verdict applied is the only way off the list): listed for the operator
-//   notes_stranded      open scrub proposals on unsettled notes and pending notes of ended runs: `count`, `open_proposals`, `pending`, `by_project`, `note_ids`
+//   reports_unjudged    reports that a note is wrong with no verdict applied (the review or job may have run and left it out; a verdict applied is the only way off the list): listed for the operator
+//   notes_stranded      notes with an unsettled open scrub proposal or pending after their run ended (`count` is distinct notes): `count`, `open_proposals`, `pending`, `by_project`, `note_ids`
 //   review_running     an archive review of a project holds its claim (memory.reviewState): the pid, the job, the claim, and whether a pid check
 //                       answers; a claim whose process is gone says so (the next review takes it over)
 //   review_ended        the newest archive review of a project ended in the last 24 hours: ok, or the code that failed it, and its summary
@@ -219,16 +219,16 @@ function reviewEvents(reviews, runId, now = Date.now()) {
   return out;
 }
 
-// Reports of "wrong" that no review will judge, one standing event while any exist (the operator looks: belay memory proposals).
+// Reports of "wrong" with no verdict applied, one standing event while any exist (the operator looks: belay memory proposals).
 function unjudgedEvents(list, runId) {
   if (!list || !list.length) return [];
-  return [{ kind: 'reports_unjudged', ts: Math.max(0, ...list.map((r) => num(r.at) || 0)) || null, run_id: runId, count: list.length, note_ids: list.slice(0, 20).map((r) => r.id), command: 'belay memory proposals', source: 'reported_wrong entries of tasks that ended with no review' }];
+  return [{ kind: 'reports_unjudged', ts: Math.max(0, ...list.map((r) => num(r.at) || 0)) || null, run_id: runId, count: list.length, note_ids: list.slice(0, 20).map((r) => r.id), command: 'belay memory proposals', source: 'reported_wrong entries no verdict has been applied to' }];
 }
 
-// Work the default propose mode leaves for the operator (notes-held.cjs `stranded`): open proposals on unsettled notes and pending notes whose run ended.
+// Work the default propose mode leaves for the operator (notes-held.cjs `stranded`): proposals whose mark is still unsettled and pending notes whose run ended; `count` is distinct notes.
 function strandedEvents(s, runId) {
   if (!s || !(s.total > 0)) return [];
-  return [{ kind: 'notes_stranded', ts: num(s.newest_at), run_id: runId, count: s.total, open_proposals: s.open_proposals || 0, pending: s.pending || 0, by_project: s.by_project || {}, note_ids: s.note_ids || [], command: 'belay memory proposals', source: 'memory_entries rows: open proposals on unsettled notes, pending notes of ended runs' }];
+  return [{ kind: 'notes_stranded', ts: num(s.newest_at), run_id: runId, count: s.total, open_proposals: s.open_proposals || 0, pending: s.pending || 0, by_project: s.by_project || {}, note_ids: s.note_ids || [], command: 'belay memory proposals', source: 'memory_entries rows: open proposals whose mark is unsettled, pending notes of ended runs' }];
 }
 
 // Oldest first; an event with no timestamp sorts last, and `--since` keeps it, since nothing proves it is old.
@@ -273,9 +273,9 @@ function summaryOf(e) {
     case 'review_ended':
       return `archive review of ${P.v(e.project, 64)} ${e.ok ? 'ended ok' : `FAILED ${P.v(e.code, 40)}`}${e.text ? `: ${P.v(e.text, 240)}` : ''}`;
     case 'reports_unjudged':
-      return `${e.count} report${e.count === 1 ? '' : 's'} that a note is wrong no review judged (${(e.note_ids || []).slice(0, 5).map((x) => P.v(x, 40)).join(', ')}): see belay memory proposals`;
+      return `${e.count} report${e.count === 1 ? '' : 's'} that a note is wrong with no verdict applied (${(e.note_ids || []).slice(0, 5).map((x) => P.v(x, 40)).join(', ')}): see belay memory proposals`;
     case 'notes_stranded':
-      return `${e.open_proposals} open proposal${e.open_proposals === 1 ? '' : 's'} and ${e.pending} pending note${e.pending === 1 ? '' : 's'} of ended runs wait on you (${(e.note_ids || []).slice(0, 5).map((x) => P.v(x, 40)).join(', ')}): see belay memory proposals; settle a pending note with belay memory resolve, or set memory.scrub_action to apply`;
+      return `${e.count} note${e.count === 1 ? '' : 's'} wait${e.count === 1 ? 's' : ''} on you (${e.open_proposals} open proposal${e.open_proposals === 1 ? '' : 's'}, ${e.pending} pending note${e.pending === 1 ? '' : 's'} of ended runs; ${(e.note_ids || []).slice(0, 5).map((x) => P.v(x, 40)).join(', ')}): see belay memory proposals; settle a pending note with belay memory resolve, or set memory.scrub_action to apply so a scrub settles a proposed pair`;
     case 'run_paused':
       return `${id('run', e.run_id)} paused by ${P.v(e.paused_by, e.embedder_failure ? 160 : 60)}${e.embedder_failure ? ` (an embedder failure, on_embedder_failure required: belay settings memory.on_embedder_failure keyword|off saves a choice for later runs, belay resume ${e.run_id} --embedder keyword|off resumes with one, or leave it paused)` : ''}`;
     default:
