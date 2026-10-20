@@ -10,6 +10,7 @@
 
 const { fail } = require('./errors.cjs');
 const { DEFAULTS, leversFor } = require('./memory-levers.cjs');
+const MARK = require('./convo-marker.cjs');
 
 const codeOf = (e) => (e && typeof e.code === 'string' && e.code.startsWith('E_') ? e.code : 'E_INTERNAL');
 const noteError = (w, where, e) => { w.lastError = { where, code: e && e.code, message: e && e.message }; };
@@ -61,10 +62,15 @@ async function record(ctx, w, fields, attempts = 1) {
 // record of where that conversation begins, so its write is tried three times, and a write that still fails leaves `w.convoLost`: the
 // next launch cannot find the boundary in the store, so it shows every row (excludes none) and writes the boundary itself. That clears
 // the flag once a receipt carrying it is stored. A launch that begins no conversation is a plain best-effort receipt.
+// The flag does not live only on the worker object: a marker file in the worker's directory (convo-marker.cjs) is set before the
+// receipt is tried and cleared once it is stored, and a process that adopts the worker reads it back into `convoLost`.
 async function recordIndex(ctx, w, convo, fields) {
   if (!convo) return record(ctx, w, { kind: 'index_injected', ...fields });
+  const marked = MARK.set(w.dir);
+  if (!marked) noteError(w, 'convo-marker.set', { code: 'E_INTERNAL', message: 'the boundary marker could not be written' });
   const ok = await record(ctx, w, { kind: 'index_injected', key: convoKey(convo), ...fields }, BOUNDARY_TRIES);
   w.convoLost = !ok;
+  if (ok) MARK.clear(w.dir);
   return ok;
 }
 const BOUNDARY_TRIES = 3;

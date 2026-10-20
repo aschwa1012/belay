@@ -239,3 +239,32 @@ test('a boundary key that cannot be read is a boundary with nothing carried', as
     assert.deepStrictEqual(indexCalls(core).pop().args.exclude_ids, [], 'rows before the unreadable boundary are not taken as held');
   });
 });
+
+test('a process that adopts the worker after a lost boundary write still shows every row, and its repair clears the loss', async () => {
+  const rows = ['mem-a'];
+  const core = memoryCore({ first_message_index: true, bottle: true, bottle_bytes: 12000 }, rows);
+  await scenario(core, rows, async (m, recv) => {
+    await throughResume(m, rows);
+    const write = core.memory.recordEvent;
+    let lose = true;
+    core.memory.recordEvent = async (a) => { if (lose && a.kind === 'index_injected') throw Object.assign(new Error('busy'), { code: 'E_BUSY' }); return write(a); };
+    await replace(m);
+    lose = false;
+    assert.strictEqual(core.events.filter((e) => e.kind === 'index_injected').length, 2, 'all three boundary writes failed');
+    await m._waitTurn('w1', 8000);
+    // The first process goes away; a second one, with its own worker records, adopts the worker from the store and the worker directory.
+    const dir = m._worker('w1').dir;
+    assert.ok(fs.existsSync(path.join(dir, 'convo-boundary-pending')), 'the loss is on disk, not only on the worker object');
+    await m.stop({ worker_id: 'w1', mode: 'kill', timeout_ms: 8000 });
+    const second = mgr(m._sb, core);
+    try {
+      assert.deepStrictEqual(second.list().workers, [], 'the second process starts knowing no worker');
+      assert.strictEqual((await second.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 })).branch, 'resume');
+      assert.strictEqual(second._worker('w1').adopted !== undefined, true, 'the worker was adopted, not carried over');
+      assert.deepStrictEqual(indexCalls(core).pop().args.exclude_ids, [], 'the adopter excludes nothing: this conversation never received what the old one saw');
+      assert.ok(received(recv).pop().includes('- mem-a ['), 'mem-a is shown again');
+      assert.strictEqual(core.events.filter((e) => e.kind === 'index_injected').pop().key, 'convo:{"carried":[]}', 'the adopter wrote the boundary');
+      assert.ok(!fs.existsSync(path.join(dir, 'convo-boundary-pending')), 'a stored boundary clears the loss');
+    } finally { try { await second.shutdown(); } catch { /* best effort */ } }
+  });
+});
