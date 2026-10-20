@@ -63,6 +63,8 @@ function namespacesOf(E, caller, args) {
 }
 // A row a worker may not read is reported as not found, by id as by search: its existence is not the worker's to learn.
 const visible = (reach, r) => !reach || reach.has(r.namespace);
+// A read by explicit id also leaves out the lifecycle namespaces for a gated tool-channel caller (the orchestrator has no reach to stop it).
+const readable = (caller, reach, r) => visible(reach, r) && !gate.inLifecycle(caller, r.namespace);
 
 const parseJson = s => { if (s == null) return null; try { return JSON.parse(s); } catch { return s; } };
 
@@ -390,7 +392,7 @@ async function getMany(E, caller, args) {
   const rows = rowsByIds(E, [...new Set(ids)]);
   const out = [], missing = [];
   for (const id of ids) {
-    const r = rows.has(id) && visible(reach, rows.get(id)) ? rows.get(id) : null;
+    const r = rows.has(id) && readable(caller, reach, rows.get(id)) ? rows.get(id) : null;
     if (r) out.push({ ...viewRow(r, view), found: true });
     else { out.push({ id, found: false }); if (!missing.includes(id)) missing.push(id); }
   }
@@ -403,7 +405,7 @@ async function get(E, caller, args) {
   const view = enumArg('view', args.view, VIEWS, 'full');
   // A read: a plain SELECT, so invariant 6 holds (retrieve() would stamp accessed_at).
   const got = E.store.db.prepare('SELECT * FROM memory_entries WHERE id = ?').get(args.id);
-  const r = got && visible(reachOf(E, caller), got) ? got : null;
+  const r = got && readable(caller, reachOf(E, caller), got) ? got : null;
   return r ? { ...viewRow(r, view), found: true } : { id: args.id, found: false };
 }
 

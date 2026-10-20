@@ -60,7 +60,7 @@ test('the wording a worker reads is fixed', () => {
   assert.ok(HEADER.endsWith('Titles only; open with memory_retrieve {"ids":[...]}:'), HEADER);
   assert.ok(FOOTER.startsWith('Memory rules: search the index first;'));
   assert.ok(FOOTER.includes('cite row ids as memory_ids in lease_release'));
-  assert.ok(FOOTER.includes('absence_established false means not yet searched'));
+  assert.ok(FOOTER.includes('absence_established false is normal when rows exist: read modes_failed and warning'));
   assert.ok(FOOTER.endsWith('never state an unverified row as fact.\nEND MEMORY'), FOOTER);
 });
 
