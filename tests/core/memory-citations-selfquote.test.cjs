@@ -47,6 +47,25 @@ test('a tool result that echoes the note\'s title does not count for a quote the
   assert.strictEqual(streamCite(g, 'data/a.json lists mb_1021', own, TITLE).found, true);
 });
 
+test('echoes of the note by other routes are refused: its saw text, a cut title, an escaped title, a short title', () => {
+  const T = 'The pager retries a failed send exactly 3 times before it gives up and logs the receipt to data/pager/receipts.jsonl';
+  const SAW = 'pager.cjs: const RETRIES = 3';
+  const refusedIn = (name, lines, quote, o, t) => assert.strictEqual(streamCite(stream(name, lines), quote, o, t).found, false, name);
+  refusedIn('ea', [use('1', 'Bash'), result('1', SAW)], SAW, [T, SAW], T);
+  refusedIn('eb', [use('1', 'Bash'), result('1', `id status title\nn-1 unverified ${T.slice(0, 80)}`)], T.slice(0, 60), [T, SAW], T);
+  const T2 = 'The config key is "retry_limit" and its default is 3 in src/config.cjs';
+  refusedIn('ec', [use('1', 'Bash'), result('1', JSON.stringify({ title: T2, saw: 'src/config.cjs: retry_limit: 3' }))], 'src/config.cjs: retry_limit: 3', [T2, 'src/config.cjs: retry_limit: 3'], T2);
+  refusedIn('ed', [use('1', 'Bash'), result('1', `note: RETRIES=3; ${SAW}`)], SAW, ['RETRIES=3', SAW], 'RETRIES=3');
+});
+
+test('genuine evidence that shares words with the note stays accepted', () => {
+  const T = 'No file: 004 exists, the list is 001 002 003 only';
+  const f = stream('g7', [use('1', 'Bash'), result('1', 'ls out\nno file: 004\n["001","002","003"]')]);
+  assert.strictEqual(streamCite(f, 'no file: 004', [T, 'saw no file: 004 in the listing'], T).found, true);
+  const g = stream('read', [use('1', 'Read'), result('1', '  12\tconst RETRIES = 3;')]);
+  assert.strictEqual(streamCite(g, 'const RETRIES = 3', ['pager.cjs: const RETRIES = 3', 'The pager retries 3 times'], 'The pager retries 3 times').found, true);
+});
+
 test('a quote the note does not hold is checked as before', () => {
   const f = stream('plain', [use('a', 'Bash'), result('a', 'build ok')]);
   assert.strictEqual(streamCite(f, 'build ok', own, TITLE).found, true);

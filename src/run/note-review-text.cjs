@@ -16,16 +16,37 @@ const VERDICTS_FIT = 8; // verdicts of about 330 bytes that fit a 4096 byte hand
 const REPORTS_FIT = 4; // reports shown to a reviewer; they share the 4096 byte hand-back with the note verdicts, so the notes listed give way
 const LIST_CUT = 6; // entries shown per list in a wake; the rest are counted
 
-// A note's whole stored content as one line of data: nothing is cut, only control characters and line breaks flattened.
+// A note as a reviewer sees it, capped: title, when, kind and basis in full; text at TEXT_CAP bytes; at most EVIDENCE_SHOWN evidence entries, each
+// `where` in full and each `saw` at SAW_CAP bytes; applies_to and subjects in full. A cut ends in an ellipsis and names the original length.
+const TEXT_CAP = 400, SAW_CAP = 200, EVIDENCE_SHOWN = 3;
+const cutBytes = (s, cap) => {
+  const t = String(s == null ? '' : s);
+  const n = Buffer.byteLength(t, 'utf8');
+  if (n <= cap) return t;
+  return `${Buffer.from(t, 'utf8').subarray(0, cap).toString('utf8').replace(/\uFFFD+$/, '')}\u2026 [cut: ${n} bytes in all]`;
+};
+function capNote(n) {
+  const ev = Array.isArray(n.evidence) ? n.evidence : [];
+  const out = { ...n, text: n.text == null ? n.text : cutBytes(n.text, TEXT_CAP), evidence: ev.slice(0, EVIDENCE_SHOWN).map((e) => (e && typeof e === 'object' ? { ...e, saw: cutBytes(e.saw, SAW_CAP) } : e)) };
+  if (ev.length > EVIDENCE_SHOWN) out.evidence_not_shown = ev.length - EVIDENCE_SHOWN;
+  return out;
+}
+
+// A note's content as one line of data: control characters and line breaks flattened, cut as capNote says.
 const whole = (s) => String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim();
-const noteLine = (n) => {
+const noteLine = (note) => {
+  const n = capNote(note);
   const list = (a) => (Array.isArray(a) ? a : []).map(whole).filter(Boolean).join('; ');
   const ev = (Array.isArray(n.evidence) ? n.evidence : []).map((e) => `${whole(e && e.where)}: ${whole(e && e.saw)}`).join('; ');
   const parts = [`writer-stated: ${whole(n.title)}`];
   if (n.when) parts.push(`writer-stated situation (when): ${whole(n.when)}`);
   if (n.text && whole(n.text) !== whole(n.title)) parts.push(`writer-stated text: ${whole(n.text)}`);
-  if (ev) parts.push(`writer-stated evidence (where: saw): ${ev}`);
-  if (list(n.applies_to)) parts.push(`writer-stated applies_to: ${list(n.applies_to)}`);
+  if (ev) parts.push(`writer-stated evidence (where: saw): ${ev}${n.evidence_not_shown ? `; (${n.evidence_not_shown} more evidence entries not shown)` : ''}`);
+  // applies_to holds the writer's paths and paths belay added (found in the evidence or the diff); aligned with applies_to_from.
+  const ap = Array.isArray(n.applies_to) ? n.applies_to : [], from = Array.isArray(n.applies_to_from) ? n.applies_to_from : [];
+  const byWriter = ap.filter((_, i) => !from[i] || from[i] === 'worker'), byBelay = ap.filter((_, i) => from[i] && from[i] !== 'worker');
+  if (list(byWriter)) parts.push(`writer-stated applies_to: ${list(byWriter)}`);
+  if (list(byBelay)) parts.push(`belay-derived applies_to (from the evidence or the diff, not stated by the writer): ${list(byBelay)}`);
   if (list(n.subjects)) parts.push(`writer-stated subjects: ${list(n.subjects)}`);
   return parts.join(' | ');
 };
@@ -148,4 +169,4 @@ function refutedWake(rs, ids, { withReason = false } = {}) {
   return { id: `note-refuted:${ids.join('+')}`, text };
 }
 
-module.exports = { reviewerTail, jobPrompt, jobTemplate, parseJobOutput, refutedWake, one, CITE_RULES, WAKE_MAX_BYTES };
+module.exports = { capNote, reviewerTail, jobPrompt, jobTemplate, parseJobOutput, refutedWake, one, CITE_RULES, WAKE_MAX_BYTES };

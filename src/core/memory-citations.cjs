@@ -124,14 +124,29 @@ function streamResultHas(file, quote, skip = null) {
   return { found: false, reason: 'the quote is in no tool result of that stream (results of belay\'s own tools are not evidence)' };
 }
 // A stream cite for a note. A quote that the note's own words also hold is accepted only when a non-belay tool result holds it and
-// that result is not an echo of the note (it does not hold the note's title). A quote found only in the note, in belay's own calls,
+// that result is not an echo of the note (echoOf below). A quote found only in the note, in belay's own calls,
 // or in the worker's hand-back or prose is in no such result, and is refused as before.
 const SELF = 'the quote is the note\'s own text, which cannot be evidence about the note';
 function streamCite(file, quote, own, title) {
   if (!selfQuoted(own, title, quote)) return streamResultHas(file, quote);
-  const t = title ? norm(title).toLowerCase() : '';
-  const r = streamResultHas(file, quote, t.length >= 12 ? text => text.toLowerCase().includes(t) : null);
+  const r = streamResultHas(file, quote, echoOf(own, title));
   return r.found ? r : { found: false, reason: SELF };
+}
+// Echo rule. A tool result is an echo of the note, and no evidence about it, when its text (JSON string escapes decoded, whitespace
+// collapsed, case folded; also checked as printed) holds, in full, any of the note's own anchors: its title (any length from 4
+// characters), a sentence of its own text (an own field of 16 or more characters with a space in it: title, when, text, a `saw`;
+// not a path or a name), or the first 32 characters of its title, which a listing that cuts titles still prints.
+// A result that only shares some words with the note (a file, a test run, a log) holds none of these and stays evidence.
+const PREFIX_LEN = 32, ANCHOR_MIN = 16, TITLE_MIN = 4;
+function echoOf(own, title) {
+  const low = s => norm(s).toLowerCase();
+  const anchors = new Set();
+  const t = title ? low(title) : '';
+  if (t.length >= TITLE_MIN) anchors.add(t);
+  if (t.length > PREFIX_LEN) anchors.add(t.slice(0, PREFIX_LEN));
+  for (const o of own || []) { const a = low(o); if (a.length >= ANCHOR_MIN && a.includes(' ')) anchors.add(a); }
+  const list = [...anchors];
+  return text => { const forms = [text.toLowerCase(), norm(unescapeJson(text)).toLowerCase()]; return list.some(a => forms.some(f => f.includes(a))); };
 }
 async function checkTaskCites(E, taskId, cites, note = null) {
   const workers = rows.currentAll(E.store, 'worker').filter(w => w.task_id === taskId);
