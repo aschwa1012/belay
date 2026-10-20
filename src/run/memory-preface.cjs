@@ -142,7 +142,7 @@ function noIndexNotice(e) {
 // A failure to embed is never silent. Under `stop` the launch injects nothing (stopReceipt; a spawn is refused before it gets
 // here, see `preface`). Under `continue`, after the spawn's own bound, or when the call itself failed and the run's mode is not
 // known, the index is built from keywords alone and the receipt (ok 1, hybrid false) names the failure.
-async function indexBlock(w, ctx, prompt, given) {
+async function indexBlock(w, ctx, prompt, given, { excludeShown = true } = {}) {
   const lv = await levers(ctx, w);
   if (!lv.first_message_index) return '';
   const emb = given || await embedForIndex(ctx, w, lv);
@@ -150,7 +150,7 @@ async function indexBlock(w, ctx, prompt, given) {
   if (emb.off) { await offReceipt(ctx, w, emb); return ''; }
   let got;
   try {
-    const exclude = await shownBefore(ctx, w);
+    const exclude = excludeShown ? await shownBefore(ctx, w) : [];
     const query = queryOf(prompt);
     got = await ctx.core.memory.index({
       task_id: w.taskId || undefined, worker_id: w.id, max_bytes: lv.index_bytes, exclude_ids: exclude,
@@ -205,9 +205,11 @@ async function projectSubjects(ctx, w) {
   }
 }
 
-// A relaunch (replace or parked resume): the same index minus the rows already shown, after the relaunch's own text.
-async function relaunch(w, ctx, firstText) {
-  const text = await indexBlock(w, ctx);
+// A relaunch: the same index, after the relaunch's own text. `excludeShown` (default true) leaves out the rows the worker was already
+// shown, which is right only when the conversation still holds them: a resumed session, or a replacement whose bottle carries the
+// first message. A fresh session that carries nothing of the old one (bottle off or failed, a Codex worker) gets the whole index.
+async function relaunch(w, ctx, firstText, { excludeShown = true } = {}) {
+  const text = await indexBlock(w, ctx, undefined, undefined, { excludeShown });
   const out = !text ? firstText : firstText ? `${firstText}\n\n${text}` : text;
   const tail = await contractTail(ctx, w);
   return tail ? (out ? `${out}${tail}` : tail.trimStart()) : out;
