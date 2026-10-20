@@ -333,6 +333,10 @@ test('the pinned CPU rerankers are accepted by the settings write and the run sp
       const r = cli(dir, ['settings', k, v]);
       assert.strictEqual(r.code, 0, k + ' ' + v + ' ' + JSON.stringify(r.out));
     }
+    const m = readConfig(dir).memory; // the writes landed in belay.config.json, not only an exit code
+    assert.strictEqual(m.reranker, 'jinaai/jina-reranker-v1-tiny-en');
+    assert.strictEqual(m.profile, 'cpu-rerank');
+    assert.deepStrictEqual(m.routing, { coder: 'cpu-rerank-light' });
   } finally { cleanup(dir); }
   const sb = runSandbox(null, { memory: { profile: 'cpu-rerank' } });
   try {

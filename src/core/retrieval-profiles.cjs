@@ -29,7 +29,8 @@ const DEFAULT_DEPTH = 50; // every profile, on every device, until the 0.3.2 eva
 // The CPU (ONNX) rerankers. They are not in models.cjs: that table is iterated as the embedder table. Their pins
 // (commit, files with bytes and sha256, max_length, score transform) are in onnx-rerankers.cjs, a pure table this file
 // may require. `pending_pin: true` is the mechanism for a model that is named but not yet pinned: it is listed but
-// cannot be fetched or run, and the resolver refuses it with E_MODEL. No entry is pending today.
+// cannot be fetched or run, and the resolver refuses it with E_MODEL. No entry is pending today, so the mechanism is
+// reachable only through tests (they mutate pending_pin on a live entry) until a future model is added unpinned.
 const ONNX_RERANKERS = Object.fromEntries(Object.values(ONNX_RERANKER_TABLE).map(e => [e.id, {
   id: e.id, runtime: 'onnx', kind: 'reranker', dtype: e.dtype, label: e.label, pin: 'onnx-rerankers.cjs', pending_pin: false,
 }]));
