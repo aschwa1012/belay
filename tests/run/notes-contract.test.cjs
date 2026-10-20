@@ -21,7 +21,7 @@ const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/\\/g, '/'
 const RL = 'task t1 state assigned; next step: (stated) none yet';
 const PROMPT = 'implement the thing';
 const ON = { project: 'demo', notes: true };
-const QUESTION = 'What would the next worker get wrong, or have to rediscover, that neither the code nor your findings say? What would a newcomer assume that turned out false?';
+const QUESTION = 'What would the next worker get wrong, or have to rediscover, that the code does not say? What would a newcomer assume that turned out false?';
 
 function sandbox() {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-notes-contract-'));
@@ -66,7 +66,7 @@ test('the contract text explains the purpose, shape and timing of a note, keeps 
   // 1,400 before the paired write/search contract; the pin is 1,900 (the text is about 1,800) so a small wording change does not break it, and the explanation, two restored rules and the replaced_by route are longer, and the project's subject list (at most 400 bytes) is added after it.
   assert.ok(Buffer.byteLength(text) <= 1900, `${Buffer.byteLength(text)} bytes`);
   assert.ok(Buffer.byteLength(NC.contract({ ...DEFAULTS, ...ON }, ['s'.repeat(40), 'x'.repeat(40)])) <= 1900 + 400, 'with a full subject list');
-  for (const must of ["They are found by matching that worker's task text against your note", 'Do not note what you built, or what your diff or hand-back already shows', '`[]` is the normal answer',
+  for (const must of ["They are found by matching that worker's task text against your note", 'Do not note what you built, or what your diff already shows', '`[]` is the normal answer',
     '`title` (at most 160 bytes)', '`when` (at most 160 bytes)', 'as a task line', "not the finding's", '`subjects` (0 to 3)', 'its paths also feed matching',
     'Your findings are not shown to them; do not assume they are covered', 'mark a snapshot "as of <sha>"', '(made up:', 'says the same as another note', '`replaced_by`', '`reported_wrong`', '`memory_note_resolve`']) {
     assert.ok(text.includes(must), must);
@@ -77,6 +77,23 @@ test('the contract text explains the purpose, shape and timing of a note, keeps 
   assert.ok(!text.includes('{{'), 'no placeholder is left');
   assert.strictEqual(NC.contract({ ...DEFAULTS }), '', 'lever off: no text');
   assert.strictEqual(NC.reflection({ ...DEFAULTS, ...ON }), '', 'reflection off: no text');
+});
+
+test('the contract states one rule on findings: the question does not exclude them, the contract says what a later worker is shown', () => {
+  const off = NC.contract({ ...DEFAULTS, ...ON });
+  const mech = NC.contract({ ...DEFAULTS, ...ON, summaries: 'mechanical' });
+  assert.ok(!NC.question({ ...DEFAULTS, ...ON }).includes('findings'), 'the question does not send the worker away from its findings');
+  assert.ok(!NC.question({ ...DEFAULTS, ...ON, notes_lesson_question: true }).includes('findings'));
+  assert.ok(!off.includes('hand-back already shows'), 'the hand-back goes to the orchestrator, so the contract does not say it already shows the lesson');
+  assert.strictEqual(off.split('findings').length - 1, 1, 'findings are mentioned once');
+  assert.ok(off.includes('Your findings are not shown to them; do not assume they are covered.'), 'summaries off: findings reach no later worker');
+  assert.ok(!off.includes('run summary'));
+  assert.strictEqual(mech.split('findings').length - 1, 1, 'and once with summaries on');
+  assert.ok(mech.includes('Your findings reach them only as a run summary they would have to search for; do not assume they are covered.'), 'summaries mechanical: findings are rows memory_summaries returns');
+  assert.ok(!mech.includes('are not shown to them'), 'so "not shown" is not said');
+  assert.ok(!mech.includes('{{'));
+  const strip = (t) => t.replace(/Your findings [^.]*./, 'X');
+  assert.strictEqual(strip(mech), strip(off), 'nothing else differs');
 });
 
 test('the lesson-aimed question replaces the base question and nothing else', () => {
