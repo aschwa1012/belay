@@ -94,8 +94,9 @@ test('N1: the review job is spawned read-only with the levers\' model and cap, n
   assert.deepStrictEqual([rowOf(w.notes[0]).status, rowOf(w.notes[0]).status_receipt], ['verified', `review:${a.worker_id}`]);
   assert.strictEqual(rowOf(w.notes[1]).status ?? 'unverified', 'unverified', 'a note the job did not judge is left alone');
   const ev = events('review_job').find((e) => e.key === `task:${w.task.id}`);
-  assert.deepStrictEqual([ev.ok, ev.worker_id, JSON.parse(ev.row_ids)], [1, a.worker_id, [w.notes[0]]]);
-  assert.match(ev.message, /applied 1.*unjudged 1/);
+  // A job that left a note unjudged is not an ok review: the receipt says partial and names the note it left.
+  assert.deepStrictEqual([ev.ok, ev.code, ev.worker_id, JSON.parse(ev.row_ids)], [0, 'E_PARTIAL', a.worker_id, [w.notes[0]]]);
+  assert.match(ev.message, new RegExp(`partly reviewed; left unreviewed: ${w.notes[1]}; applied 1.*unjudged 1`));
 });
 
 test('N2: a job over its cost cap, a malformed answer or a job that did not finish applies nothing and says why', async () => {

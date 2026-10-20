@@ -117,7 +117,11 @@ async function finishJob(core, { workerId, taskId, text, cost, cap }) {
   const ids = out.applied.map((a) => a.id);
   const rv = out.report_verdicts;
   const rids = rv ? rv.applied.map((a) => a.id) : [];
-  return receipt(core, { ok: true, ...base, row_ids: ids.length || rids.length ? [...ids, ...rids] : undefined, message: `applied ${out.applied.length}, refused ${out.refused.length}, already ${out.already.length}, unjudged ${out.unjudged.length}, refused_open ${(out.refused_open || []).length}${rv && !rv.none ? `; reports applied ${rv.applied.length}, refused ${rv.refused.length}, unjudged ${rv.unjudged.length}, refused_open ${(rv.refused_open || []).length}` : ''}${typeof cost === 'number' ? `; cost $${cost.toFixed(4)}` : ''}` });
+  // ok only when the job left nothing behind: a note or report it refused, or gave no verdict, is still unreviewed, and a receipt that says ok
+  // would read as a review done. The notes stay as they were (a later review offers them again) and the receipt names them.
+  const left = [...out.refused_open || [], ...out.unjudged || [], ...(rv ? [...rv.refused_open || [], ...rv.unjudged || []] : [])];
+  const partial = left.length > 0;
+  return receipt(core, { ok: !partial, ...(partial ? { code: 'E_PARTIAL' } : {}), ...base, row_ids: ids.length || rids.length ? [...ids, ...rids] : undefined, message: `${partial ? `partly reviewed; left unreviewed: ${left.slice(0, 8).join(', ') || 'none named'}${left.length > 8 ? `, and ${left.length - 8} more` : ''}; ` : ''}applied ${out.applied.length}, refused ${out.refused.length}, already ${out.already.length}, unjudged ${out.unjudged.length}, refused_open ${(out.refused_open || []).length}${rv && !rv.none ? `; reports applied ${rv.applied.length}, refused ${rv.refused.length}, unjudged ${rv.unjudged.length}, refused_open ${(rv.refused_open || []).length}` : ''}${typeof cost === 'number' ? `; cost $${cost.toFixed(4)}` : ''}` });
 }
 
 // ---- the job ----------------------------------------------------------------------------------------------------
@@ -144,6 +148,19 @@ async function writeInputs(ctx, taskId, wid, notes, workers) {
   return { notesFile, diffFile, worktree: (w && w.worktree) || null };
 }
 
+// The job's wait. One wait is capped by MCP_TOOL_TIMEOUT (the answer says so, as timeout_capped), so it is asked again until the job's own wall
+// is spent, as stage-job.cjs does. `waited_ms` is the wall really used, for the receipt.
+async function waitJob(manager, wid, wallMs, now = Date.now) {
+  const t0 = now();
+  let got, first = true;
+  for (;;) {
+    got = await manager.wait({ worker_ids: [wid], timeout_ms: first ? wallMs : Math.max(1, wallMs - (now() - t0)) });
+    first = false;
+    if (!(got.timed_out && got.timeout_capped && now() - t0 < wallMs)) break;
+  }
+  return { got, waited_ms: now() - t0 };
+}
+
 // One job for one ended task. Never throws; every outcome is a receipt.
 async function runJob(J, task) {
   const { ctx, core, lv } = J;
@@ -157,8 +174,8 @@ async function runJob(J, task) {
     if (isClosed(ctx)) throw shutErr('the run manager is shutting down, so no review job was started');
     if (!ctx.manager || typeof ctx.manager.spawn !== 'function') throw Object.assign(new Error('the run manager has no way to spawn the review job here'), { code: 'E_INTERNAL' });
     const workers = ((await core.worker.list({})).workers || []).filter((x) => x.run_id === ctx.runId && x.task_id === taskId);
-    const capped = brief.notes.map(T.capNote);
-    const inputs = await writeInputs(ctx, taskId, wid, brief.reports && brief.reports.length ? { notes: capped, reports: brief.reports } : capped, workers);
+    // The job reads its notes from a file, so it is shown every field of every note (no cap): the core allows `confirmed` for what a reviewer saw whole.
+    const inputs = await writeInputs(ctx, taskId, wid, brief.reports && brief.reports.length ? { notes: brief.notes, reports: brief.reports } : brief.notes, workers);
     const streams = workers.map((x) => ({ worker_id: x.id, stream_path: fwd(path.join(ctx.dataDir, 'workers', x.id, 'stream.jsonl')) }));
     const prompt = T.jobPrompt(T.jobTemplate(), { notesFile: inputs.notesFile, diffFile: inputs.diffFile, streams, taskId, reports: brief.reports || [] });
     const worktree = inputs.worktree || ctx.worktree || (workers.find((x) => x.worktree) || {}).worktree;
@@ -172,9 +189,9 @@ async function runJob(J, task) {
     }
     let text = '', cost = null, settled = null;
     try {
-      const got = await ctx.manager.wait({ worker_ids: [wid], timeout_ms: JOB_WALL_MS });
+      const { got, waited_ms } = await waitJob(ctx.manager, wid, JOB_WALL_MS);
       const rec = ctx.manager._worker(wid);
-      if (got.timed_out) settled = Object.assign(new Error(`the review job did not finish inside ${JOB_WALL_MS} ms`), { code: 'E_TIMEOUT' });
+      if (got.timed_out) settled = Object.assign(new Error(`the review job did not finish: it waited ${waited_ms} ms of a ${JOB_WALL_MS} ms wall`), { code: 'E_TIMEOUT' });
       else if (got.event !== 'turn_end' || got.is_error) settled = Object.assign(new Error(`the review job ${got.event === 'turn_end' ? 'ended its turn in error' : `is ${got.event}`}`), { code: 'E_WORKER_NOT_LIVE' });
       text = rec && typeof rec.lastAssistantText === 'string' ? rec.lastAssistantText : '';
       cost = rec && typeof rec.costUsd === 'number' ? rec.costUsd : null;
@@ -259,7 +276,18 @@ async function sweep(J, tasks, workers) {
     if (!brief.notes.length && !(brief.reports || []).length) continue;
     await fail(core, { worker_id: undefined, task_id: t.id, key: `task:${t.id}`, row_ids: brief.notes.map((n) => n.id), message: `task ${t.id} wrote ${brief.notes.length} note(s) and the run ended before a review job ran; they stay unreviewed` }, Object.assign(new Error('owed'), { code: 'E_TIMEOUT' }));
   }
+  // A job decides once per task, when the task first ends. A note written after that (the reflection turn, a second attempt), or one the job
+  // refused or left out, is still unreviewed; the task's receipt does not say so, so each such task is named once here.
+  for (const t of tasks) {
+    if (isReview(t) || !ENDED.has(t.state) || !events.some((e) => e.key === `task:${t.id}`) || events.some((e) => e.key === `left:${t.id}`)) continue;
+    if (tasks.some((r) => isReview(r) && Array.isArray(r.depends_on) && r.depends_on.includes(t.id))) continue;
+    let brief;
+    try { brief = await core.memory.reviewBrief({ reviewed_task_id: t.id }); } catch { continue; }
+    if (!brief.notes.length) continue;
+    const ids = brief.notes.map((n) => n.id);
+    await fail(core, { worker_id: undefined, task_id: t.id, key: `left:${t.id}`, row_ids: ids, message: `task ${t.id} has ${ids.length} note(s) no review judged (written after its review job, refused or left out); they stay unreviewed: ${ids.slice(0, 8).join(', ')}${ids.length > 8 ? `, and ${ids.length - 8} more` : ''}` }, Object.assign(new Error('left'), { code: 'E_PARTIAL' }));
+  }
   void byId;
 }
 
-module.exports = { reviewTail, onTaskEnded, applyHandback, sweep, drain, expectsJobs, runJob, lastTextOf, jobIdFor, taskOfJob, isJob, JOB_PREFIX, JOB_WALL_MS };
+module.exports = { waitJob, reviewTail, onTaskEnded, applyHandback, sweep, drain, expectsJobs, runJob, lastTextOf, jobIdFor, taskOfJob, isJob, JOB_PREFIX, JOB_WALL_MS };

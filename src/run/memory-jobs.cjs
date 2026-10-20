@@ -443,6 +443,19 @@ async function runEndWork(J, progress) {
   }
 }
 
+// The note-review sweep alone, store-only. `belay run` calls it before the run-close stages: an upheld report applied after the scrub has archived
+// its note is refused ("not live in this run's project"), so the answers of finished jobs are applied first. The run-end sweep runs it again
+// (idempotent: the store makes a second application a no-op). Returns null with notes off.
+async function reviewSweep({ core, runId, levers, gate = null }) {
+  const lv = levers || { ...DEFAULTS };
+  if (!lv.notes) return null;
+  const J = jobCtx({ core, runId, memoryLevers: lv }, lv, null, gate);
+  const tasks = ((await call(J, () => core.task.list({}))) || {}).tasks || [];
+  const workers = ((await call(J, () => core.worker.list({}))) || {}).workers || [];
+  await require('./note-review.cjs').sweep(J, tasks, workers);
+  return { swept: true, tasks: tasks.length };
+}
+
 function afterBound(ms, fn, box = {}) {
   let timer;
   const timeout = new Promise((res) => { timer = setTimeout(() => res('timeout'), ms); });
@@ -495,4 +508,4 @@ async function runEndJobs({ core, runId, levers, boundMs = null, modules = null,
   return ctx.runEndError ? { ...got, error: ctx.runEndError } : got;
 }
 
-module.exports = { afterTurn, atRunEnd, runEndJobs, RUN_END_BOUND_MS, WRAPUP_MAX, SUMMARY_LABEL, NEW_PROCESS };
+module.exports = { afterTurn, atRunEnd, runEndJobs, reviewSweep, RUN_END_BOUND_MS, WRAPUP_MAX, SUMMARY_LABEL, NEW_PROCESS };
