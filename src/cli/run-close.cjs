@@ -48,7 +48,8 @@ async function closeRunWorkers(opts) {
   // ADR 0029 amendment 4 (proposed). Two ways the adapter can be missed by the run row the close reads: its attach has not
   // landed yet (candidates: this process's own orchestrator's children, found by one snapshot with the creation time
   // recorded at spawn), or it lands while the close runs (the row is read once more, one read per round).
-  const candidatesP = opts.fast ? Promise.resolve([]) : adapterCandidates(opts); // started now, awaited where the wait needs it: the close reads its rows meanwhile
+  // A console exists in every interactive run, so a present `fast` is not a request: only a requested one skips the scan.
+  const candidatesP = opts.fast && opts.fast.requested() ? Promise.resolve([]) : adapterCandidates(opts); // started now, awaited where the wait needs it: the close reads its rows meanwhile
   let out = await closeRunWorkersOnce({ ...opts, candidatesP });
   const candidates = await candidatesP;
   const handled = new Set([out.adapter_pid, ...candidates]);

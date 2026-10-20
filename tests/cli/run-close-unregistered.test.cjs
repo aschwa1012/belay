@@ -56,7 +56,9 @@ test('run close: an orchestrator child that has not registered is waited for, an
     const receipt = receiptOf(run, exited.code);
     assert.strictEqual(exited.code, 0, `exit ${exited.code}; ended_by: ${receipt.ended_by}`);
     const wc = receipt.workers_closed;
-    assert.ok(wc.unregistered_adapter_pids && wc.unregistered_adapter_pids.includes(adapterPid), 'the close named the child it waited for');
+    // Which name the child carries depends on whether the close read the run row before this test's attach landed (unregistered) or
+    // after (the run's adapter). Nothing in the test orders those two reads; run-close-scan.test.cjs forces each ordering.
+    assert.ok(wc.adapter_pid === adapterPid || (wc.unregistered_adapter_pids && wc.unregistered_adapter_pids.includes(adapterPid)), 'the close named the child it waited for');
     assert.strictEqual(wc.adapter_gone, true);
     assert.ok(receipt.store.ended.ended_at >= killedAt - 250, 'run.end ran before the unregistered adapter was gone');
 
