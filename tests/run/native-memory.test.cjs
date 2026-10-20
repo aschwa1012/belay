@@ -450,7 +450,7 @@ test('adopt: a stop goes through when the recorded folder can no longer be creat
     await second.stop({ worker_id: 'w-enotdir', mode: 'graceful', timeout_ms: 8000 });
     for (let i = 0; i < 100 && alive(row.pid); i++) await new Promise((r) => setTimeout(r, 50));
     assert.equal(alive(row.pid), false, 'a stop always goes through, whatever the folder error');
-    await assert.rejects(second.restart({ worker_id: 'w-enotdir', first_turn_timeout_ms: 45000 }), (e) => e.code === 'ENOTDIR', 'a launch is refused by the same error');
+    await assert.rejects(second.restart({ worker_id: 'w-enotdir', first_turn_timeout_ms: 45000 }), (e) => e.code === 'E_ARGS' && e.detail.reason === 'not_a_directory', 'a launch is refused, now before the create is tried');
   } finally { delete process.env.FAKE_MEMORY_AUTO; if (second) await second.shutdown().catch(() => {}); await first.shutdown().catch(() => {}); cleanup(sb.d); }
 });
 
