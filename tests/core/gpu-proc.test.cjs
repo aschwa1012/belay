@@ -114,11 +114,11 @@ test('rank goes out in chunks: one progress line and one chunk per submission, s
 });
 
 test('a long rank that keeps sending progress is not mistaken for a hung child', async () => {
-  const c = mk({ opBoundMs: 300, workerOpts: { fake: { rank_ms_per_pair: 60 } } });
+  const c = mk({ opBoundMs: 1200, workerOpts: { fake: { rank_ms_per_pair: 60 } } });
   try {
     await c._call({ op: 'load', model: 'm', kind: 'reranker', gpu: 'vulkan' }, 5000);
-    const r = await c.rank('m', 'stop worker pid', Array.from({ length: 20 }, (_, i) => `note ${i}`), { chunk: 2 });
-    assert.ok(r.ms > 900, `the rank ran ${r.ms} ms against a 300 ms silence bound`);
+    const r = await c.rank('m', 'stop worker pid', Array.from({ length: 40 }, (_, i) => `note ${i}`), { chunk: 2 });
+    assert.ok(r.ms > 1800, `the rank ran ${r.ms} ms against a 1200 ms silence bound`);
   } finally { await c.close(); }
 });
 
@@ -148,7 +148,7 @@ test('a hung op still rejects at its bound while the owner pings for liveness (p
 });
 
 test('a request queued behind a long rank is credited by that rank\'s progress, not timed out for the wait', async () => {
-  const c = mk({ opBoundMs: 300, workerOpts: { fake: { rank_ms_per_pair: 60 } } });
+  const c = mk({ opBoundMs: 1200, workerOpts: { fake: { rank_ms_per_pair: 60 } } });
   try {
     await c._call({ op: 'load', model: 'm', kind: 'reranker', gpu: 'vulkan' }, 5000);
     const docs = Array.from({ length: 20 }, (_, i) => `note ${i}`);
