@@ -125,11 +125,11 @@ function untransfer(E, B) {
         }) };
         b.seen_in = (b.seen_in || []).filter(s => !(s && through(s, B.id, 'transferred_from')));
         b.seen_total = Math.max(0, (b.seen_total || 0) - entry.seen_total);
-        // The deliveries B handed over come back to B, each with its hops cut at B (an own delivery has no earlier hop and keeps from = B).
+        // The deliveries B handed over come back to B, each with its hops cut at B (with no earlier hop the delivery is B's own again: from = B, whatever notes carried it since).
         back.delivery_history = (b.delivery_history || []).filter(d => d && through(d, B.id, 'from')).map(d => {
           const h = hopsOf(d, 'from'); const keep = h.slice(0, h.indexOf(B.id));
           const { hops, ...rest } = d;
-          return keep.length ? { ...rest, from: keep[keep.length - 1], hops: keep } : rest;
+          return keep.length ? { ...rest, from: keep[keep.length - 1], hops: keep } : { ...rest, from: B.id };
         });
         b.delivery_history = (b.delivery_history || []).filter(d => !(d && through(d, B.id, 'from')));
       }
@@ -155,30 +155,43 @@ function closeHold(E, note, meta) {
 // look for a superseding row in the same namespace. So when such a note leaves for archive/ and its claim lives on in another note (a
 // duplicate or a refinement of the kept note, or a note replaced by a newer one), the note it replaced would come back beside the claim
 // that displaced it. It is archived instead, as replaced by the kept note, and a restore can bring it back. A note archived as wrong
-// (no kept note) leaves the old one visible again: its replacement was not true. Returns the ids archived (the replaced note, then any it had itself replaced), or an empty list.
-function carryReplaced(E, project, note, meta, kept, depth) {
-  if (meta.kind === 'wrong' || note.namespace !== `project/${project}` || depth > 20) return [];
+// (no kept note) leaves the old one visible again: its replacement was not true. The whole chain goes, however long (it is walked
+// without recursion and stops only at a note that is not a project note, the kept note, or one already on the chain, so a cycle ends).
+// Returns the ids archived (the replaced note, then any it had itself replaced), or an empty list.
+function carryReplaced(E, project, note, meta, kept) {
+  if (meta.kind === 'wrong' || note.namespace !== `project/${project}`) return [];
   const target = kept || (meta.of ? loadNote(E, meta.of) : null);
-  const col = E.store.p('SELECT supersedes FROM memory_entries WHERE id = ?').get(note.id);
-  const old = col && col.supersedes && target && col.supersedes !== target.id ? loadNote(E, col.supersedes) : null;
-  if (!old || old.type !== 'note' || old.namespace !== `project/${project}`) return [];
-  const inner = archiveNote(E, project, old, {
-    kind: 'superseded', of: target.id, ground: 'replaced_by_newer', direct: true, run_id: meta.run_id || null, via: 'replacement_archived', replaced_by_archived: note.id,
-    reason: `the note that replaced it (${note.id}) was archived as ${meta.kind} of ${target.id}, so ${target.id} stands in its place`,
-  }, target, depth + 1);
-  return [old.id, ...inner.replaced_also_archived];
+  if (!target) return [];
+  const chain = [];
+  const seen = new Set([note.id, target.id]);
+  for (let cur = note; ;) {
+    const col = E.store.p('SELECT supersedes FROM memory_entries WHERE id = ?').get(cur.id);
+    const old = col && col.supersedes && !seen.has(col.supersedes) ? loadNote(E, col.supersedes) : null;
+    if (!old || old.type !== 'note' || old.namespace !== `project/${project}`) break;
+    seen.add(old.id); chain.push(old); cur = old;
+  }
+  // The deepest note leaves first, as when each archive carried the next; each records the ones that left with it.
+  for (let i = chain.length - 1; i >= 0; i -= 1) {
+    const replacer = i === 0 ? note : chain[i - 1];
+    archiveNote(E, project, chain[i], {
+      kind: 'superseded', of: target.id, ground: 'replaced_by_newer', direct: true, run_id: meta.run_id || null, via: 'replacement_archived', replaced_by_archived: replacer.id,
+      carried_ids: chain.slice(i + 1).map(n => n.id),
+      reason: `the note that replaced it (${replacer.id}) was archived as ${i === 0 ? meta.kind : 'superseded'} of ${target.id}, so ${target.id} stands in its place`,
+    }, target);
+  }
+  return chain.map(n => n.id);
 }
 
 // Moves the note to archive/<project>. `meta` is what the archive records: { kind, of, ground, reason, cites, run_id,
 // head_sha, held_row, receipt, direct }. For a duplicate with `of`, the history moves to `of` first.
-function archiveNote(E, project, note, meta, kept, depth = 0) {
+function archiveNote(E, project, note, meta, kept) {
   const to = `archive/${project}`;
   const from = note.namespace;
   // A duplicate hands its history to the kept note; so does a note replaced by one that refines it (the same lesson, so its
   // whole history belongs on the surviving note). A superseded note (a different lesson) keeps its history.
   const transfer = meta.history_moved || ((meta.kind === 'duplicate' || meta.refines) && kept && !meta.no_transfer ? transferHistory(E, note, kept, meta) : null);
   const closed = closeHold(E, note, meta);
-  const carried = carryReplaced(E, project, note, meta, kept, depth);
+  const carried = meta.carried_ids || carryReplaced(E, project, note, meta, kept);
   bindNamespace(E, to, note);
   E.store.moveRow(note.id, from, to);
   const at = Date.now();

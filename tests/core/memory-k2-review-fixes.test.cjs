@@ -116,3 +116,52 @@ test('L07: a recorded match binds only to the dimension and template of both vec
   await refused('note template', { note: "text_template = 'v2'" }, {});
   await refused('target template', { target: "text_template = 'v2'" }, {});
 });
+
+test("D63: a note restored after a chain of merges has its own provenance back, and archiving it again hands over each delivery once", async () => {
+  const a = T.note('prov a', { vec: A, created_at: 100 });
+  const b = T.note('prov b', { vec: A_NEAR, created_at: 200, task_id: 'pv-b', written_by: 'worker:wb' });
+  const c = T.note('prov c', { vec: A_NEAR, created_at: 300, task_id: 'pv-c', written_by: 'worker:wc' });
+  const op = T.who.operator('apply');
+  await T.call(T.who.tool('apply'), 'memory.recordEvent', { kind: 'index_injected', worker_id: 'w9', task_id: 'tz', row_ids: [c] });
+  await scrub([relate(c, 'repeats', b)]);
+  await scrub([relate(b, 'repeats', a)]);
+  await T.call(op, 'memory.noteRestore', { id: c, reason: 'not a repeat' });
+  assert.deepStrictEqual(T.body(c).delivery_history.map(d => [d.task_id, d.from, d.hops]), [['tz', c, undefined]], 'the delivery is c\'s own again, not b\'s');
+  const shown = (await T.call(op, 'memory.noteDeliveries', { note_id: c })).deliveries;
+  assert.deepStrictEqual(shown.map(d => [d.task_id, d.from_duplicate]), [['tz', undefined]]);
+  await scrub([relate(c, 'repeats', a)]);
+  const moved = T.body(a).delivery_history.filter(d => d.hops && d.hops[0] === c);
+  assert.strictEqual(moved.length, 1, 'the delivery c carried is not copied a second time beside its ledger entry');
+  assert.strictEqual(T.body(a).merged_from.filter(m => m.id === c).pop().deliveries, 1);
+  assert.strictEqual(T.body(c).delivery_history.length, 0);
+});
+
+test("D30: a chain of replaced notes longer than any bound goes whole with the note that displaced it, and each archive names its replacer", async () => {
+  const kept = T.note('long kept', { vec: A, created_at: 100 });
+  const ids = [];
+  for (let i = 0; i < 25; i += 1) {
+    ids.push(T.note(`long ${i}`, { vec: i === 24 ? A_NEAR : B, created_at: 100 + i }));
+    if (i > 0) T.store.setSupersedes(ids[i], ids[i - 1]);
+  }
+  const top = ids[24];
+  const r = await scrub([relate(top, 'repeats', kept)]);
+  assert.strictEqual(r.refused.length, 0, JSON.stringify(r.refused));
+  assert.deepStrictEqual(r.applied[0].replaced_also_archived, ids.slice(0, 24).reverse(), 'every replaced note is returned, newest first');
+  assert.strictEqual(r.counts.archives, 25);
+  for (const id of ids) assert.strictEqual(ns(id), `archive/${PROJECT}`, 'no displaced note comes back to the project');
+  assert.strictEqual(T.body(ids[0]).archived.replaced_by_archived, ids[1]);
+  assert.strictEqual(T.body(ids[23]).archived.replaced_by_archived, top);
+  assert.strictEqual(T.body(top).archived.replaced_also_archived, ids[23]);
+});
+
+test("D30: a cycle of replacements ends, and each note is archived once", async () => {
+  const kept = T.note('cycle kept', { vec: A, created_at: 100 });
+  const x = T.note('cycle x', { vec: B, created_at: 100 });
+  const y = T.note('cycle y', { vec: B, created_at: 101 });
+  const top = T.note('cycle top', { vec: A_NEAR, created_at: 102 });
+  for (const [row, target] of [[top, x], [x, y], [y, x]]) T.store.p('UPDATE memory_entries SET supersedes = ? WHERE id = ?').run(target, row);
+  const r = await scrub([relate(top, 'repeats', kept)]);
+  assert.strictEqual(r.refused.length, 0, JSON.stringify(r.refused));
+  assert.deepStrictEqual(r.applied[0].replaced_also_archived, [x, y]);
+  assert.deepStrictEqual([ns(top), ns(x), ns(y)], [`archive/${PROJECT}`, `archive/${PROJECT}`, `archive/${PROJECT}`]);
+});
