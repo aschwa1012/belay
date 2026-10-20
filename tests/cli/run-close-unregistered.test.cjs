@@ -77,7 +77,6 @@ test('run close: an orchestrator child that has not registered is waited for, an
     await releaseCore(core);
     if (worker) crash(worker);
     if (run.proc.exitCode === null) { try { await P.killTree(run.proc); } catch { /* best effort */ } }
-    try {  } catch (e) { console.log("nolog"); }
     cleanup(dir);
   }
 });
