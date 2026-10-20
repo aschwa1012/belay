@@ -56,9 +56,10 @@ class Store {
         } catch (e) { try { this.db.exec('ROLLBACK'); } catch { /* already out */ } throw e; }
         migrateOwner(this.db);
         // The vector cache's table. Keep this the LAST owner migration: the migration number is not final, and a rebase that
-        // adds another one above it only moves this line (the table is created and backfilled idempotently, in its own transaction).
+        // adds another one above it only moves this line. The table is created and backfilled only when it is new; every start
+        // then runs a catch-up that inserts what is missing, never rewrites what is there, and sweeps unreferenced vectors.
         // SCHEMA_VERSION stays 2 on purpose: an older core writing to this store leaves rows without vectors (they show up as backlog) and
-        // deletes without sweeping (orphan vectors, removed by a full sweep). Neither corrupts anything.
+        // deletes without sweeping (orphan vectors, removed by the next start's catch-up). Neither corrupts anything.
         MV.migrateVectors(this.db);
       } else {
         checkSchema(this.db, dbPath);
@@ -158,10 +159,11 @@ class Store {
         id = dup.id; action = 'updated';
         before = blob ? this.rowSnapshot(id) : null;
         this.p(`UPDATE memory_entries SET last_writer_id = ?, embedding = COALESCE(?, embedding), text_template = COALESCE(?, text_template),
+                embedding_model = COALESCE(?, embedding_model), embedding_revision = COALESCE(?, embedding_revision), dim = COALESCE(?, dim),
                 tags = COALESCE(?, tags), provenance = COALESCE(?, provenance), supersedes = COALESCE(?, supersedes),
                 title = COALESCE(title, ?), body = COALESCE(?, body), redactions = COALESCE(?, redactions),
                 updated_at = ?, ttl_at = ? WHERE id = ?`)
-          .run(wid, blob, blob ? (a.text_template || 'v1') : null, tags, prov, a.supersedes || null, title, body, redactions, t, ttl, id);
+          .run(wid, blob, blob ? (a.text_template || 'v1') : null, blob ? a.embedding_model : null, blob ? (a.embedding_revision || null) : null, blob ? a.dim : null, tags, prov, a.supersedes || null, title, body, redactions, t, ttl, id);
       } else {
         id = a.id || crypto.randomUUID(); action = 'inserted';
         this.p(`INSERT INTO memory_entries(id, namespace, worker_id, last_writer_id, type, text, text_hash, embedding,
@@ -260,9 +262,11 @@ class Store {
       throw err('E_MODEL', `namespace ${row.namespace} is bound to ${m.embedding_model}/${m.dim} and this vector is ${e.embedding_model}/${e.dim}`, { namespace: row.namespace, bound: m });
     }
     const vec = toUnitF32(e.embedding, e.dim);
+    const before = this.rowSnapshot(id);
     this.p('UPDATE memory_entries SET embedding = ?, embedding_model = ?, embedding_revision = ?, dim = ?, text_template = ?, updated_at = ? WHERE id = ? AND embedding IS NULL')
       .run(Buffer.from(vec.buffer), e.embedding_model, e.embedding_revision || null, e.dim, e.text_template || 'v1', now(), id);
     this._mirror(id);
+    if (before) this.sweepVectors([before]);
     this.cache.delete(row.namespace);
     return true;
   }
