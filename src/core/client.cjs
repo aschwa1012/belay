@@ -105,18 +105,30 @@ class Client {
   // check is asked for here with a bound of its own, since a read's own bound is a fraction of a second and a read that ran out of time
   // would be taken for a wedged owner. The answer is not used: a refused claim is refused again by the call that needs it, with the
   // reason. An ordinary open read (status, worker reads) never gets here, and the owner starts no process for it.
-  async _verifyOperator() {
-    this._opChecked = true;
-    if (!this.sock || !this._viaPort) return;
-    try { const r = await this.call('ping', { caller: this.opts.caller, verify_operator: true }, { timeoutMs: VERIFY_OPERATOR_MS }); return !!(r && r.operator_verified === true); }
-    catch { return false; /* the next call finds out */ }
+  // One verification is in flight per connection and every caller that needs the answer awaits that same promise, so a second concurrent
+  // call is never served before the first check finishes. Only a success is remembered: a failure (the host tables unreadable, the owner
+  // slow) clears the in-flight promise, and the next call asks again. Resolves true or false; undefined when there is nothing to ask.
+  _verifyOperator() {
+    if (!this.sock || !this._viaPort) return Promise.resolve(undefined);
+    if (this._opChecked) return Promise.resolve(true);
+    if (this._opVerifying) return this._opVerifying;
+    const sock = this.sock;
+    const p = (async () => {
+      let ok = false;
+      try { const r = await this.call('ping', { caller: this.opts.caller, verify_operator: true }, { timeoutMs: VERIFY_OPERATOR_MS }); ok = !!(r && r.operator_verified === true); }
+      catch { ok = false; }
+      if (this.sock === sock) { if (ok) this._opChecked = true; if (this._opVerifying === p) this._opVerifying = null; }
+      return ok;
+    })();
+    this._opVerifying = p;
+    return p;
   }
 
   _dial(timeoutMs) {
     return new Promise((resolve, reject) => {
       let target;
       try { target = this._target(); } catch (e) { reject(e); return; }
-      this._viaPort = !!target.port; this._opChecked = false;
+      this._viaPort = !!target.port; this._opChecked = false; this._opVerifying = null;
       const s = target.port ? net.connect({ host: target.host, port: target.port }) : net.connect(target.pipe);
       let buf = '', settled = false;
       const timer = setTimeout(() => { if (!settled) { settled = true; try { s.unref(); } catch { /* best effort */ } s.destroy(); reject(err('E_TIMEOUT', `connecting to ${this.pipe} took longer than ${timeoutMs} ms`)); } }, timeoutMs);
@@ -165,17 +177,28 @@ class Client {
   }
 
   async call(method, params, opts = {}) {
-    if (!this._viaPort || this._opChecked || method === 'ping') return this._send(method, params, opts);
+    if (!this._viaPort || this._opChecked || method === 'ping' || !this.connected) return this._send(method, params, opts);
     const spec = METHODS[method];
+    const openRead = !!spec && spec.kind === 'read' && Array.isArray(spec.roles) && spec.roles.includes('worker');
     // authority needed, or a memory read, whose answer depends on the role (a worker's view hides rows an operator's finds, and says
     // not found rather than refused): the check first, with its own bound, so an unverified operator is never answered as a worker
-    if (!(spec && spec.kind === 'read' && Array.isArray(spec.roles) && spec.roles.includes('worker')) || method.startsWith('memory.')) { await this._verifyOperator(); return this._send(method, params, opts); }
+    if (!openRead || method.startsWith('memory.')) {
+      const ok = await this._verifyOperator();
+      // A call that needs authority is sent anyway: the owner refuses it with the reason. A read that would be answered as the anonymous
+      // worker is not, since that answer (found:false for a row that exists) would pass for the operator's.
+      if (ok === false && openRead) throw this._unverified(method);
+      return this._send(method, params, opts);
+    }
     try { return await this._send(method, params, opts); }
     catch (e) { // an open read is served anonymous; when that role may not make this particular read, the check is asked for and the read repeated
       if (!(e && e.code === 'E_ROLE')) throw e;
       await this._verifyOperator();
       return this._send(method, params, opts);
     }
+  }
+
+  _unverified(method) {
+    return err('E_UNBOUND', `${method}: the operator check did not vouch for this connection (the owner could not read the host's connection table or process snapshot, or refused); the read was not made as the anonymous worker, whose answer hides rows the operator may read. Retry; the check is asked again`, { reason: 'operator_check', method, role: 'operator' });
   }
 
   _send(method, params, opts = {}) {
