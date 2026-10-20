@@ -107,7 +107,7 @@ test('dual write: insert, set, re-embed and retitle each keep the table in step 
   });
 });
 
-test('row-first selection excludes held, archived and superseded notes for any tier key, including a note with no heavy vector', () => {
+test('row-first selection takes the visible rows first, for any tier key, including a note with no heavy vector', () => {
   withStore((s) => {
     const live = note(s, 'project/a', 'live note', 'when live');
     const sup = note(s, 'project/a', 'old note', 'when old');
@@ -115,23 +115,25 @@ test('row-first selection excludes held, archived and superseded notes for any t
     const held = note(s, 'project/a', 'held note', 'when held');
     s.patchBody(held.id, b => { b.held = { id: 'h1' }; return b; });
     note(s, 'archive/a', 'archived note', 'when archived');
-    note(s, 'held/a', 'a hold row', 'when hold');
     // the heavy tier has vectors for the live and the superseded note only
     putHeavy(s, live.id);
     putHeavy(s, sup.id);
-    const ns = ['project/a', 'archive/a', 'held/a'];
-    const heavy = MV.selectSearchable(s.db, HEAVY, { namespaces: ns });
-    assert.deepStrictEqual(heavy.rows.map(r => r.id), [live.id]);
+    putHeavy(s, held.id);
+    const heavy = MV.selectSearchable(s.db, HEAVY, { namespaces: ['project/a'] });
+    assert.deepStrictEqual(heavy.rows.map(r => r.id).sort(), [live.id, held.id].sort(), 'a held note stays visible; the superseded one does not');
     assert.deepStrictEqual(heavy.missing, [fresh.id], 'the new note has no heavy vector yet and is reported, not dropped');
-    const nano = MV.selectSearchable(s.db, NANO, { namespaces: ns });
-    assert.deepStrictEqual(nano.rows.map(r => r.id).sort(), [live.id, fresh.id].sort(), 'never held, archived or superseded');
+    const nano = MV.selectSearchable(s.db, NANO, { namespaces: ['project/a'] });
+    assert.deepStrictEqual(nano.rows.map(r => r.id).sort(), [live.id, fresh.id, held.id].sort());
     assert.strictEqual(nano.missing.length, 0);
     assert.ok(nano.rows.every(r => r.vector instanceof Float32Array && r.vector.length === 4));
-    assert.deepStrictEqual([...MV.vectorsFor(s.db, HEAVY, [live.id, sup.id, held.id]).keys()].sort(), [live.id, sup.id].sort());
+    // the archived note is out because its namespace is not asked for; a caller's gate hides what it hides
+    assert.ok(!nano.rows.some(r => r.namespace === 'archive/a'));
+    assert.deepStrictEqual(MV.selectSearchable(s.db, NANO, { namespaces: ['project/a'], hidden: [held.id] }).rows.map(r => r.id).sort(), [live.id, fresh.id].sort());
+    assert.deepStrictEqual([...MV.vectorsFor(s.db, HEAVY, [live.id, sup.id, held.id]).keys()].sort(), [live.id, sup.id, held.id].sort());
   });
 });
 
-test('the backlog is derived, and holds neither held nor archived notes', () => {
+test('the backlog is the visible set minus the rows that have the tier\'s vector, held notes included and archived ones not', () => {
   withStore((s) => {
     const a = note(s, 'project/a', 'one', 'when one');
     const b = note(s, 'project/a', 'two', 'when two');
@@ -139,11 +141,11 @@ test('the backlog is derived, and holds neither held nor archived notes', () => 
     s.patchBody(held.id, x => { x.held = { id: 'h' }; return x; });
     note(s, 'archive/a', 'four', 'when four');
     fact(s, 'project/a', 'not a note');
-    assert.deepStrictEqual(MV.backlog(s.db, HEAVY).map(r => r.id).sort(), [a.id, b.id].sort());
+    assert.deepStrictEqual(MV.backlog(s.db, HEAVY).map(r => r.id).sort(), [a.id, b.id, held.id].sort());
     assert.deepStrictEqual(MV.backlog(s.db, HEAVY, { namespaces: ['archive/a'] }), []);
     assert.deepStrictEqual(MV.backlog(s.db, NANO), []);
     putHeavy(s, a.id);
-    assert.deepStrictEqual(MV.backlog(s.db, HEAVY).map(r => r.id), [b.id]);
+    assert.deepStrictEqual(MV.backlog(s.db, HEAVY).map(r => r.id).sort(), [b.id, held.id].sort());
   });
 });
 
