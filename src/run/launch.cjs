@@ -148,7 +148,7 @@ function workerSettings(pluginNames, { cwd, nativeMemory = null } = {}) {
 }
 
 function writeWorkerFiles({ dir, workerId, runId, dataDir, mcpPath, settingsPath, logPath = null, permit = false, permitWaitMs = null, cwd = null, compactAt = null, notes = false, nativeMemory = null }) {
-  if (nativeMemory != null) fs.mkdirSync(S.checkNativeMemory(nativeMemory), { recursive: true }); // ADR 0024 amendment 3: eval-only, created if missing
+  if (nativeMemory != null) nativeMemory = require('./native-memory.cjs').prepareFolder(nativeMemory); // ADR 0024 amendment 3: eval-only; resolved, checked on disk before and after it is created
   fs.mkdirSync(dir, { recursive: true });
   const mcpJsonPath = fwd(path.join(dir, 'mcp.json'));
   const workerSettingsPath = fwd(path.join(dir, 'settings.json'));

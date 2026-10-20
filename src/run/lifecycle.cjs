@@ -204,7 +204,7 @@ async function shutdown(workers, { stop, core, clearPoll, markClosed, markOwnerG
 // this build's bare defaults. The last launch's own argv.json (written by `launch`, manager.cjs) and
 // mcp.json name what actually ran; a read or parse failure is recorded on the result, never thrown.
 function readLaunchOptions(dir) {
-  const out = { model: null, allowedTools: null, tools: null, nativeMemory: null, permissionPrompt: false, permitWaitMs: null, error: null };
+  const out = { model: null, allowedTools: null, tools: null, permissionPrompt: false, permitWaitMs: null, error: null };
   try {
     const argv = JSON.parse(fs.readFileSync(path.join(dir, 'argv.json'), 'utf8')).spec.args;
     const modelAt = argv.indexOf('--model');
@@ -220,14 +220,6 @@ function readLaunchOptions(dir) {
     if (builtinsAt >= 0) out.tools = require('./surface.cjs').narrowTools(String(argv[builtinsAt + 1]).split(','));
   } catch (e) {
     out.error = { where: 'argv.json', code: e && e.code, message: e && e.message };
-  }
-  try {
-    // ADR 0024 amendment 3: the folder the last launch's settings.json named, if any (the file is rewritten at the next launch, so read it first).
-    const st = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8'));
-    // A worker can edit this file, so the folder is read back only if it passes the same check a spawn argument does.
-    if (st.autoMemoryEnabled === true && typeof st.autoMemoryDirectory === 'string') out.nativeMemory = require('./surface.cjs').checkNativeMemory(st.autoMemoryDirectory);
-  } catch (e) {
-    if (!e || e.code !== 'ENOENT') out.error = out.error || { where: 'settings.json', code: e && e.code, message: e && e.message };
   }
   try {
     const mcp = JSON.parse(fs.readFileSync(path.join(dir, 'mcp.json'), 'utf8'));

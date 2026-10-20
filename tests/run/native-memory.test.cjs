@@ -105,7 +105,7 @@ const mgr = (sb, core) => createRunManager({
 const settingsOf = (sb, id) => JSON.parse(fs.readFileSync(path.join(L.workerDir(sb.data, id), 'settings.json'), 'utf8'));
 
 test('spawn: native_memory launches when the init reports exactly that folder, and a restart keeps it', async () => {
-  const sb = sandbox(); const m = mgr(sb, createFakeCore());
+  const sb = sandbox(); const core = createFakeCore(); const m = mgr(sb, core);
   process.env.FAKE_MEMORY_AUTO = 'echo';
   try {
     const row = await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'w-nm', native_memory: sb.mem });
@@ -116,8 +116,9 @@ test('spawn: native_memory launches when the init reports exactly that folder, a
     assert.match(again.surface.tools_hash, /^[0-9a-f]{64}$/, 'the relaunch passes the same exact-equality check');
     assert.equal(settingsOf(sb, 'w-nm').autoMemoryDirectory, sb.mem);
     assert.equal(settingsOf(sb, 'w-nm').autoMemoryEnabled, true);
-    // a cross-adapter relaunch recovers the folder from the worker directory
-    assert.equal(LC.readLaunchOptions(L.workerDir(sb.data, 'w-nm')).nativeMemory, sb.mem);
+    // the lever is recorded on the worker row, and the worker's own files are not read back for it
+    assert.equal(core.currentWorker('w-nm').native_memory, sb.mem);
+    assert.equal('nativeMemory' in LC.readLaunchOptions(L.workerDir(sb.data, 'w-nm')), false);
   } finally { delete process.env.FAKE_MEMORY_AUTO; await m.shutdown?.().catch(() => {}); cleanup(sb.d); }
 });
 
@@ -166,19 +167,93 @@ test('checkNativeMemory: refuses Claude Code config directories, the default mem
   } finally { if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev; }
 });
 
-test('readLaunchOptions: a settings.json a worker edited to name a Claude config folder is not read back', () => {
+const WIN = process.platform === 'win32';
+const winOnly = WIN ? {} : { skip: 'Windows path semantics (drive roots, trailing dots, UNC, device prefixes)' };
+
+test('checkNativeMemory: Windows spellings of the config directory are refused, the resolved form is returned', winOnly, () => {
+  const home = fwd(os.homedir()); const noDrive = home.replace(/^[A-Za-z]:/, ''); const drive = home.slice(0, 2);
+  const refused = [
+    noDrive + '/.claude/projects/x/memory', // posix-rooted, resolves onto the current drive
+    home + '/.claude./projects/x/memory', home + '/.claude /projects/x/memory', home + '/.claude.. /projects/x/memory',
+    '//localhost/' + drive[0] + '$' + noDrive + '/.claude/projects/x/memory', // UNC to the same disk
+    '//?/' + home + '/.claude/projects/x/memory', '//./' + home + '/.claude/projects/x/memory', // device prefixes
+    home + '/.claude/projects/x/memory:stream', home + '/x/.. /y',
+  ];
+  for (const bad of refused) assert.throws(() => S.checkNativeMemory(bad), (e) => e.code === 'E_ARGS', bad);
+  assert.equal(S.checkNativeMemory(home + '/.claudex./mem/'), home + '/.claudex/mem', 'trailing dots are stripped, then resolved');
+  assert.equal(S.checkNativeMemory('C:\\eval\\.\\a\\..\\mem-arm\\'), DIR);
+});
+
+test('writeWorkerFiles: a folder in the config directory is refused before anything is created there', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-nm-cfg-')); const prev = process.env.CLAUDE_CONFIG_DIR;
+  try {
+    const cfg = fwd(path.join(d, 'cfg')); fs.mkdirSync(cfg);
+    process.env.CLAUDE_CONFIG_DIR = cfg;
+    const base = { workerId: 'w', runId: 'r', dataDir: fwd(d), mcpPath: 'x.cjs', settingsPath: path.join(d, 'none.json'), cwd: fwd(path.join(d, 'wt')), dir: path.join(d, 'w') };
+    assert.throws(() => L.writeWorkerFiles({ ...base, nativeMemory: cfg + '/projects/x/memory' }), (e) => e.code === 'E_ARGS');
+    assert.deepStrictEqual(fs.readdirSync(cfg), [], 'nothing was created in the config directory');
+    assert.equal(fs.existsSync(path.join(d, 'w')), false, 'no worker files either');
+  } finally { if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev; cleanup(d); }
+});
+
+test('writeWorkerFiles: a junction into the config directory is refused, before and after the folder is created', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-nm-junc-')); const prev = process.env.CLAUDE_CONFIG_DIR;
+  try {
+    const cfg = path.join(d, 'fake-config'); fs.mkdirSync(path.join(cfg, 'projects'), { recursive: true });
+    const junc = path.join(d, 'junc'); fs.symlinkSync(cfg, junc, 'junction');
+    process.env.CLAUDE_CONFIG_DIR = fwd(cfg);
+    const base = { workerId: 'w', runId: 'r', dataDir: fwd(d), mcpPath: 'x.cjs', settingsPath: path.join(d, 'none.json'), cwd: fwd(path.join(d, 'wt')), dir: path.join(d, 'w') };
+    for (const target of [fwd(junc) + '/projects/p/memory', fwd(junc)]) {
+      assert.throws(() => L.writeWorkerFiles({ ...base, nativeMemory: target }), (e) => e.code === 'E_ARGS' && e.detail.reason === 'claude_config_dir', target);
+    }
+    assert.deepStrictEqual(fs.readdirSync(path.join(cfg, 'projects')), [], 'nothing was created through the junction');
+    const NMOD = require('../../src/run/native-memory.cjs');
+    assert.throws(() => NMOD.assertOutsideConfig(fwd(junc) + '/projects'), (e) => e.code === 'E_ARGS', 'the post-create check refuses a folder that is already there');
+    assert.doesNotThrow(() => NMOD.assertOutsideConfig(fwd(path.join(d, 'elsewhere', 'mem'))));
+  } finally { if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev; cleanup(d); }
+});
+
+test('readLaunchOptions: nothing is recovered from the worker-writable settings.json', () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-nm-rb-'));
   try {
     fs.writeFileSync(path.join(d, 'argv.json'), JSON.stringify({ spec: { args: [] } }));
-    const put = (dir) => fs.writeFileSync(path.join(d, 'settings.json'), JSON.stringify({ autoMemoryEnabled: true, autoMemoryDirectory: dir }));
-    put(fwd(path.join(os.homedir(), '.claude', 'projects', 'p', 'memory')));
-    const bad = LC.readLaunchOptions(d);
-    assert.equal(bad.nativeMemory, null);
-    assert.equal(bad.error.where, 'settings.json');
-    assert.equal(bad.error.code, 'E_ARGS');
-    put(fwd(path.join(d, 'mem')));
-    assert.equal(LC.readLaunchOptions(d).nativeMemory, fwd(path.join(d, 'mem')), 'a folder that passes the spawn check is read back');
+    fs.writeFileSync(path.join(d, 'settings.json'), JSON.stringify({ autoMemoryEnabled: true, autoMemoryDirectory: fwd(path.join(d, 'mem')) }));
+    const r = LC.readLaunchOptions(d);
+    assert.equal('nativeMemory' in r, false);
+    assert.notEqual(r.error && r.error.where, 'settings.json');
   } finally { cleanup(d); }
+});
+
+test('relaunch: settings.json edited by a worker spawned without the lever is refused by a second manager, and memory stays off', async () => {
+  for (const edit of [(st, sb) => ({ ...st, autoMemoryEnabled: true, autoMemoryDirectory: sb.mem }), (st) => ({ ...st, autoMemoryDirectory: 'C:/elsewhere' }), () => 'not json']) {
+    const sb = sandbox(); const core = createFakeCore(); const first = mgr(sb, core); let second = null;
+    try {
+      await first.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'w-plant' });
+      assert.equal(core.currentWorker('w-plant').native_memory, null);
+      await first.stop({ worker_id: 'w-plant', mode: 'kill', timeout_ms: 8000 });
+      const file = path.join(L.workerDir(sb.data, 'w-plant'), 'settings.json');
+      const planted = edit(settingsOf(sb, 'w-plant'), sb);
+      fs.writeFileSync(file, typeof planted === 'string' ? planted : JSON.stringify(planted));
+      second = mgr(sb, core);
+      await assert.rejects(() => second.restart({ worker_id: 'w-plant', first_turn_timeout_ms: 45000 }), (e) => e.code === 'E_NATIVE_MEMORY_MISMATCH');
+      assert.equal(fs.existsSync(sb.mem), false, 'the planted folder was never created');
+      assert.equal(core.currentWorker('w-plant').native_memory, null, 'the record still says off');
+    } finally { delete process.env.FAKE_MEMORY_AUTO; if (second) await second.shutdown().catch(() => {}); await first.shutdown().catch(() => {}); cleanup(sb.d); }
+  }
+});
+
+test('relaunch: a worker spawned with the lever and a settings.json edited to another folder is refused', async () => {
+  const sb = sandbox(); const core = createFakeCore(); const first = mgr(sb, core); let second = null;
+  process.env.FAKE_MEMORY_AUTO = 'echo';
+  try {
+    await first.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'w-plant2', native_memory: sb.mem });
+    await first.stop({ worker_id: 'w-plant2', mode: 'kill', timeout_ms: 8000 });
+    const real = fwd(path.join(os.homedir(), '.claude', 'projects', 'p', 'memory'));
+    fs.writeFileSync(path.join(L.workerDir(sb.data, 'w-plant2'), 'settings.json'), JSON.stringify({ ...settingsOf(sb, 'w-plant2'), autoMemoryDirectory: real }));
+    second = mgr(sb, core);
+    await assert.rejects(() => second.restart({ worker_id: 'w-plant2', first_turn_timeout_ms: 45000 }), (e) => e.code === 'E_NATIVE_MEMORY_MISMATCH' && e.detail.recorded === sb.mem);
+    assert.equal(core.currentWorker('w-plant2').native_memory, sb.mem);
+  } finally { delete process.env.FAKE_MEMORY_AUTO; if (second) await second.shutdown().catch(() => {}); await first.shutdown().catch(() => {}); cleanup(sb.d); }
 });
 
 test('adopt: a second manager relaunching the worker keeps the folder in settings.json and passes the gate', async () => {

@@ -35,7 +35,7 @@ function newWorkerRecord({ id, substrate, worktree, dataDir, taskId, model, allo
   fs.mkdirSync(dir, { recursive: true });
   const w = {
     id, substrate, worktree: L.fwd(path.resolve(worktree)), dir, taskId: taskId || null,
-    model: model || null, effort: effort || null, maxBudgetUsd, nativeMemory, tools: narrowed, allowedTools: allowedTools || L.DEFAULT_ALLOWED_TOOLS,
+    model: model || null, effort: effort || null, maxBudgetUsd, nativeMemory: nativeMemory == null ? null : require('./surface.cjs').checkNativeMemory(nativeMemory), tools: narrowed, allowedTools: allowedTools || L.DEFAULT_ALLOWED_TOOLS,
     permissionMode: permissionMode || L.DEFAULT_PERMISSION_MODE, sandbox: sandbox || L.DEFAULT_CODEX_SANDBOX,
     // ADR 0021 decisions 3-4: what the last launch's system/init said it started with (noteInit); null
     // until a ready event carries it, always null for Codex.
@@ -90,7 +90,7 @@ async function adopt({ core, workerId, dataDir }) {
   const w = newWorkerRecord({
     id: row.id, substrate: row.substrate, worktree: row.worktree, dataDir, taskId: row.task_id,
     model: launchOpts.model, allowedTools: launchOpts.allowedTools, tools: launchOpts.tools,
-    nativeMemory: launchOpts.nativeMemory, // ADR 0024 amendment 3: the folder survives a cross-adapter relaunch
+    nativeMemory: row.native_memory ? require('./surface.cjs').checkNativeMemory(row.native_memory) : null, // ADR 0024 amendment 3: from the harness's row, never the worker's files
     permissionMode: row.permission_mode_requested || null, sandbox: null,
     permissionPrompt: launchOpts.permissionPrompt, permitWaitMs: launchOpts.permitWaitMs || 600000,
     effort: row.effort_requested || null, // ADR 0028 decision 2: a cross-adapter relaunch keeps the level
@@ -169,6 +169,7 @@ function rowOf(w, state, { runId, adapterPid }) {
     permission_mode_requested: w.permissionModeEffective ? w.permissionMode : null,
     permission_mode_effective: w.permissionModeEffective, claude_code_version: w.claudeCodeVersion,
     effort_requested: w.effort || null, // ADR 0028 decision 3: the request, not the level the substrate used
+    native_memory: w.nativeMemory || null, // ADR 0024 amendment 3: the harness's record of the lever; a relaunch reads it here
     memory_queries: Array.isArray(w.indexQueries) && w.indexQueries.length ? w.indexQueries : null, // the orchestrator's index queries, kept for a relaunch
     // 6e-5 item 3: `paused` dropped — a parked worker has no process, so it is never mid-turn.
     mid_turn: (state === 'starting' || state === 'running') && !w.turnEnded ? 1 : 0,

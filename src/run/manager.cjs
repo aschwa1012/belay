@@ -20,7 +20,7 @@ const { fail } = require('./errors.cjs');
 const { validateSpawnArgs, checkMemoryQueries } = require('./spawn-args.cjs');
 const AD = require('./agent-defaults.cjs'); // the config's per-agent-type model and effort defaults
 const MP = require('./memory-preface.cjs'); // ADR 0042: the first-message preface and the memory hooks
-const NR = require('./note-review.cjs'); // wave 4: the notes' review (the reviewer's brief, the short review job)
+const NM = require('./native-memory.cjs'); const NR = require('./note-review.cjs'); // NM: ADR 0024 amendment 3, the native_memory guards // wave 4: the notes' review (the reviewer's brief, the short review job)
 // build step 6c: `wait`, `decideBranch`, `restartFirstText` and the resume-window constants moved
 // verbatim into their own files (the 500-line rule); re-exported under the same names below.
 const { createWait } = require('./wait.cjs');
@@ -142,7 +142,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   }
 
   function launch(w, { resume = null, prompt = null } = {}) {
-    let args;
+    NM.guardLaunch(ctx, w, P.pidAlive); let args; // ADR 0024 amendment 3: settings.json must still agree with the record
     if (w.substrate === 'claude-code') {
       args = L.claudeLaunchArgv({
         workerId: w.id, mcpJsonPath: w.mcpJsonPath, settingsPath: w.workerSettingsPath,
@@ -347,7 +347,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     if (known) return known;
     if (adopting.has(workerId)) return adopting.get(workerId);
     const p = W.adopt({ core, workerId, dataDir: root }).then(async (w) => {
-      workers.set(workerId, w);
+      NM.guardLaunch(ctx, w, P.pidAlive); workers.set(workerId, w); // the record, not the file the worker could edit, decides native_memory
       await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the argv written below carries the notes lever
       writeFilesFor(w); // mcp.json, settings.json and the adapter log path belong to this run now
       if (w.substrate === 'claude-code') w.instructions = I.existingInstructions(w.dir); // never the worktree

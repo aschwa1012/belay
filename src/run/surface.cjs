@@ -65,26 +65,41 @@ function hygieneSettings(cwd, { nativeMemory = null } = {}) {
   return { ...base, autoMemoryEnabled: true, autoMemoryDirectory: checkNativeMemory(nativeMemory) };
 }
 
-// The requested folder must be absolute (drive-rooted or posix-rooted) and outside Claude Code's own config directory;
-// returned forward-slashed. Refused as E_ARGS otherwise. Inside that directory is where Claude Code's default memory
-// folder lives (<config>/projects/<git root>/memory), so the gate's equality check could not tell a folder it honoured
-// from the fallback it takes on a malformed value (ADR 0024 amendment 3): the operator's real memory is never a valid ask.
+// The requested folder must be absolute and outside Claude Code's config directory (<home>/.claude and CLAUDE_CONFIG_DIR);
+// the RESOLVED form, forward-slashed, is what is stored, written to settings and compared at the ready gate. Refused as E_ARGS
+// otherwise. Inside that directory is where Claude Code's default memory folder lives (<config>/projects/<git root>/memory), so
+// the gate's equality check could not tell a folder it honoured from the fallback it takes on a malformed value (ADR 0024
+// amendment 3): the operator's real memory is never a valid ask. On Windows the path must be drive-rooted (a posix-rooted, UNC,
+// \\?\ or \\.\ path is refused), each segment loses its trailing dots and spaces the way Win32 does, then it is resolved and
+// compared case-insensitively. Junctions and 8.3 names are the file-system half of this guarantee (native-memory.cjs).
 const ABSRE = /^([A-Za-z]:[\\/]|\/)/;
+const WINABS = /^[A-Za-z]:[\\/]/;
 const CTLRE = /[\x00-\x1f]/;
-const norm = (p) => path.posix.normalize(fwd(p)).replace(/\/+$/, '').toLowerCase();
+const WINBAD = /[<>"|?*]/;
+function win32Segments(p) { // trailing dots and spaces are stripped per segment by Win32; '.' and '..' stay navigation
+  return fwd(p).split('/').map((seg) => (seg === '.' || seg === '..' ? seg : seg.replace(/[. ]+$/, ''))).filter((seg) => seg !== '');
+}
+function resolveFolder(dir) {
+  const win = process.platform === 'win32';
+  const ok = typeof dir === 'string' && (win ? WINABS : ABSRE).test(dir) && CTLRE.test(dir) === false && !(win && (WINBAD.test(dir) || dir.indexOf(':', 2) >= 0 || fwd(dir).split('/').some((sg) => sg !== '.' && sg !== '..' && /^[. ]+$/.test(sg))));
+  if (!ok) throw Object.assign(new Error('native_memory must be an absolute directory path'), { code: 'E_ARGS', detail: { native_memory: dir } });
+  if (!win) return path.posix.resolve(fwd(dir));
+  const parts = win32Segments(dir);
+  return fwd(path.win32.resolve(parts[0] + '/', ...parts.slice(1)));
+}
+const lc = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
+const under = (n, c) => n === c || n.startsWith(c.replace(/\/+$/, '') + '/');
 function claudeConfigDirs() {
   const dirs = [path.join(os.homedir(), '.claude')];
   if (process.env.CLAUDE_CONFIG_DIR) dirs.push(process.env.CLAUDE_CONFIG_DIR);
-  return dirs.map(norm);
+  return dirs.map((d) => fwd(path.resolve(d)));
 }
 function checkNativeMemory(dir) {
-  const ok = typeof dir === 'string' && ABSRE.test(dir) && CTLRE.test(dir) === false;
-  if (!ok) throw Object.assign(new Error('native_memory must be an absolute directory path'), { code: 'E_ARGS', detail: { native_memory: dir } });
-  const n = norm(dir);
-  if (claudeConfigDirs().some((c) => n === c || n.startsWith(c + '/'))) {
+  const folder = resolveFolder(dir);
+  if (claudeConfigDirs().some((c) => under(lc(folder), lc(c)))) {
     throw Object.assign(new Error("native_memory must be outside Claude Code's config directory, where its default memory folder lives"), { code: 'E_ARGS', detail: { native_memory: dir, reason: 'claude_config_dir' } });
   }
-  return fwd(dir);
+  return folder;
 }
 
 // Two paths name the same folder: separators, case and a trailing slash do not matter (Windows).
@@ -208,4 +223,4 @@ function surfaceFields(evidence) {
   return { tools_hash: tools_hash ?? null, builtins: builtins ?? null, belay_tools: belay_tools ?? null, plugins: plugins ?? null };
 }
 
-module.exports = { checkNativeMemory, sameDir, CLAUDE_TOOLS, narrowTools, SETTING_SOURCES_ARG, ancestorExcludes, hygieneSettings, checkSurface, surfaceFields };
+module.exports = { checkNativeMemory, claudeConfigDirs, under, sameDir, CLAUDE_TOOLS, narrowTools, SETTING_SOURCES_ARG, ancestorExcludes, hygieneSettings, checkSurface, surfaceFields };
