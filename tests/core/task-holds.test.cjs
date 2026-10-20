@@ -111,6 +111,29 @@ test('a re-attached run holds again: attach names the overlap and assign refuses
   await overlapOf(c.task.assign({ task_id: old.id, worker_id: 'wr' }));
   await overlapOf(c.task.assign({ task_id: old.id, check_only: true }));
   assert.strictEqual((await c.task.get({ task_id: old.id })).state, 'open', 'a refused assign wrote nothing');
+  // The run that is live now keeps the paths: the incumbent's task is not refused by the resumed run's, and the two
+  // runs are not deadlocked. The resumed run's task is still refused after the incumbent's is assigned.
+  await a.worker.write({ id: 'wa', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's', last_event_at: Date.now() });
+  assert.deepStrictEqual(await a.task.assign({ task_id: mine.id, check_only: true }), { assignable: true, task_id: mine.id });
+  const got = await a.task.assign({ task_id: mine.id, worker_id: 'wa' });
+  assert.strictEqual(got.task.state, 'assigned');
+  await overlapOf(c.task.assign({ task_id: old.id, worker_id: 'wr' }));
+});
+
+test('a later attach of a live run does not make its tasks yield to a run that resumed before it', async () => {
+  const c = await open('run-late-a');
+  await c.run.attach({ adapter_pid: process.pid });
+  const r = await open('run-late-r');
+  await r.run.attach({ adapter_pid: process.pid });
+  const theirs = await r.task.create({ spec: 'theirs', files_owned: ['late/y'] });
+  await r.run.end({ exit_reason: 'test' });
+  const thief = await c.task.create({ spec: 'thief', files_owned: ['late/y'] });
+  const op = await open('run-late-r', 'operator');
+  await op.run.attach({ adapter_pid: process.pid });
+  // c's orchestrator adapter attaches again (a second epoch of a life that never ended) after r came back
+  await c.run.attach({ adapter_pid: process.pid });
+  assert.deepStrictEqual(await c.task.assign({ task_id: thief.id, check_only: true }), { assignable: true, task_id: thief.id });
+  await overlapOf(r.task.assign({ task_id: theirs.id, check_only: true }));
 });
 
 test('a first attach reports no overlaps', async () => {

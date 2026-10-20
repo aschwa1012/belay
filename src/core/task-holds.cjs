@@ -38,12 +38,33 @@ function holdOf(task, liveness) {
   return { holds: r.live, reason: r.reason };
 }
 
+// The store sequence of the row that made a run live in its present life: the first row after its last ended row, or
+// its first row. Rows are ordered by `seq` across the whole table, so this orders two runs' revivals without a clock.
+// null for a run with no row. A later attach of the same life (the orchestrator adapter's) does not move it.
+function liveSince(store, runId) {
+  const hist = rows.history(store, 'run', runId);
+  if (!hist.length) return null;
+  let since = hist[0].seq;
+  for (let i = 0; i < hist.length; i++) if (hist[i].ended_at != null && hist[i + 1]) since = hist[i + 1].seq;
+  return since;
+}
+
 // The holding tasks (other than `exceptId`) that overlap `files`, with the paths that clash, first match per task.
-function findClashes(store, files, exceptId) {
+// `asker` ({ run_id }) is the run of the task being assigned: a holding task of another run that came back to life after
+// the asker's run did yields to it (ADR 0046 decision 1: the run that is live now keeps the paths), so it is skipped.
+function findClashes(store, files, exceptId, asker) {
   const liveness = runLiveness(store);
+  const askerSince = asker ? liveSince(store, asker.run_id) : null;
+  const sinceMemo = new Map();
+  const yields = (runId) => {
+    if (askerSince == null || runId === asker.run_id) return false;
+    if (!sinceMemo.has(runId)) sinceMemo.set(runId, liveSince(store, runId));
+    const theirs = sinceMemo.get(runId);
+    return theirs != null && theirs > askerSince;
+  };
   const out = [];
   for (const other of rows.currentAll(store, 'task')) {
-    if (other.id === exceptId || !holdOf(other, liveness).holds) continue;
+    if (other.id === exceptId || !holdOf(other, liveness).holds || yields(other.run_id)) continue;
     const clash = [];
     for (const mine of files) for (const theirs of other.files_owned) if (overlaps(mine, theirs)) clash.push(mine);
     if (clash.length) out.push({ task: other, files: [...new Set(clash)] });

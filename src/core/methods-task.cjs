@@ -167,9 +167,10 @@ async function assign(E, caller, args) {
     }
 
     // ADR 0046 decision 1: assigning makes a task hold its files, so another holding task, in any run, that overlaps them
-    // refuses it. Inside one live run create already refused the overlap, so this fires for a re-attached run only.
+    // refuses it. Inside one live run create already refused the overlap, so this fires for a re-attached run only: a task
+    // of a run that came back to life after this task's run did yields, so the run live now keeps the paths.
     if (Array.isArray(task.files_owned) && task.files_owned.length) {
-      const [first] = holds.findClashes(E.store, task.files_owned, task.id);
+      const [first] = holds.findClashes(E.store, task.files_owned, task.id, { run_id: task.run_id });
       if (first) throw filesOverlap(first);
     }
 
@@ -258,6 +259,7 @@ async function evaluate(E, caller, args) {
   // release that landed meanwhile (its handoff, its state) is what the verdict check reads and what the
   // written row carries forward (ADR 0025 decision 4).
   const row = E.store.tx(() => {
+    E.assertRunOpen(caller, 'task.evaluate'); // run.end may have committed while the commands ran (audit D42)
     const fresh = rows.current(E.store, 'task', args.task_id) || task;
     const checks = [...commandChecks];
     if (fresh.acceptance && fresh.acceptance.verdict === true) checks.push(verdictCheck(E.store, fresh));
@@ -348,6 +350,7 @@ async function release(E, caller, args) {
   const dropped = got && got.dropped ? { notes_dropped: got.dropped } : null;
   const prep = dropped ? null : got;
   const out = E.store.tx(() => {
+    E.assertRunOpen(caller, 'lease.release'); // the notes were embedded above; run.end may have committed meanwhile (audit D42)
     // Releasing a superseded lease would destroy the current holder's live lease, so the currency rule
     // applies to the operator too; what the operator overrides is the holder check, not the rule that a
     // release acts on the lease the task actually has.
