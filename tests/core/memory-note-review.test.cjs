@@ -165,7 +165,7 @@ test('R7: setStatus refuses a review: receipt from anyone', async () => {
 });
 
 test('R7b: setStatus cannot make a note verified on a receipt the caller supplies, from the orchestrator or the operator', async () => {
-  const w = await written('w-g2', 'K8b');
+  const w = await written('w-g2', 'K50');
   const operator = callerFor('operator', { run_id: RUN });
   for (const [who, receipt] of [[orch, 'test:claimed-pass'], [operator, 'test:claimed-pass'], [operator, `task:${w.task}`]]) {
     await assert.rejects(call('memory.setStatus', who, { id: w.note, status: 'verified', receipt }), (e) => e.code === 'E_RECEIPT' && e.detail && e.detail.reason === 'note_needs_review');
