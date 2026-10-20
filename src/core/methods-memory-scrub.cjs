@@ -23,6 +23,8 @@ const { archiveNote } = require('./memory-archive.cjs');
 const { plan, applyPlan } = require('./memory-relate.cjs');
 const N = require('./methods-memory-notes.cjs');
 const { validId } = require('./memory-rows.cjs');
+const { standing } = require('./report-marks.cjs');
+const { openProposals, sameMark } = require('./proposal-open.cjs');
 
 const KEYS = ['scrub', 'scope', 'run_id', 'head_sha', 'worktree', 'evidence_files'];
 const REFUSALS = new Set(['E_CITATION', 'E_PRECONDITION', 'E_SCOPE', 'E_NOT_FOUND', 'E_EXISTS', 'E_ARGS', 'E_ROLE', 'E_MODEL']);
@@ -49,13 +51,15 @@ const scrubReceipt = (ctx, ent, index, sources) => ({
 
 // The proposal row: the entry as the scrubber gave it, what S3 verified, and the facts S4 found. Applies nothing.
 function propose(E, caller, ctx, ent, index, sources, facts) {
-  const row = C.putRow(E, caller, {
+  // The same mark already open for this note is not proposed twice (every close of an unattended project would add one): the open row is returned.
+  const open = openProposals(E, ctx.project).find((p) => sameMark(p.entry, ent));
+  const row = open ? { id: open.id } : C.putRow(E, caller, {
     ns: L.nsOf('proposal', ctx.project), type: 'proposal', runId: ctx.runId,
     text: `proposal ${ent.action}${ent.kind ? ` ${ent.kind}` : ''}${ent.resolve ? ` ${ent.resolve}` : ''}${ent.relation ? ` ${ent.relation}` : ''} ${ent.id}${ent.of ? ` of ${ent.of}` : ''} (run ${ctx.runId})`,
     title: `proposal: ${ent.action}${ent.kind ? ` ${ent.kind}` : ''} ${ent.id}`,
     body: { state: 'open', note_id: ent.id, entry: ent, run_id: ctx.runId, head_sha: ctx.evidence.head_sha, facts: facts || null, scrub: scrubReceipt(ctx, ent, index, sources) },
   });
-  return { index, id: ent.id, action: ent.action, outcome: 'proposed', ...(ent.relation ? { relation: ent.relation } : {}), ...(ent.resolve ? { resolve: ent.resolve } : {}), row: C.rowOut(E, row.id) };
+  return { index, id: ent.id, action: ent.action, outcome: 'proposed', ...(open ? { already_open: true } : {}), ...(ent.relation ? { relation: ent.relation } : {}), ...(ent.resolve ? { resolve: ent.resolve } : {}), row: C.rowOut(E, row.id) };
 }
 
 function dismiss(E, ctx, ent, index, sources, note) {
@@ -114,7 +118,7 @@ async function settle(E, caller, ctx, ent, index, sources, pending) {
 function reachable(E, ctx, st, ent) {
   if (ctx.scope.has(ent.of)) return true;
   const other = loadNote(E, ent.of);
-  const names = (n, id) => n && ((n.b.matches || []).some(m => m && m.id === id) || (n.b.reported_wrong || []).some(w => w && w.replaced_by === id));
+  const names = (n, id) => n && ((n.b.matches || []).some(m => m && m.id === id) || standing(n.b).some(w => w && w.replaced_by === id));
   return names(st.note, ent.of) || names(other, ent.id);
 }
 
@@ -156,7 +160,7 @@ async function one(E, caller, ctx, raw, index) {
   if (ent.action === 'hold') {
     if (st.live && st.note.b.held) throw err('E_EXISTS', `note ${ent.id} is already held (${st.note.b.held.row}); the reviewer settles it before another hold`, { id: ent.id, held_row: st.note.b.held.row });
     // S2 reaches the note a hold stands against: it is in scope, or a report or a stored match already names it.
-    const named = (st.note.b.reported_wrong || []).some(w => w && w.replaced_by === ent.of) || (st.note.b.matches || []).some(m => m && m.id === ent.of);
+    const named = standing(st.note.b).some(w => w && w.replaced_by === ent.of) || (st.note.b.matches || []).some(m => m && m.id === ent.of);
     if (ent.of && !ctx.scope.has(ent.of) && !named) throw err('E_SCOPE', `note ${ent.of} is neither in the scope list nor named by a report or a stored match on ${ent.id}, so a hold may not stand against it`, { id: ent.id, of: ent.of });
   }
   const sources = ent.cites && ent.cites.length ? await checkCitations(ent.cites, { ...ctx.evidence, own: ownTexts(st.note), title: st.note.title }) : [];

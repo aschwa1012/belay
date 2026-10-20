@@ -23,6 +23,7 @@
 const { err } = require('./errors.cjs');
 const { loadNote, storedCosine } = require('./memory-facts.cjs');
 const { archiveNote } = require('./memory-archive.cjs');
+const { standing } = require('./report-marks.cjs');
 
 const JUDGED_KEEP = 20;
 const round3 = x => Math.round(x * 1000) / 1000;
@@ -57,8 +58,8 @@ function bindingMatches(x, y) {
   return out;
 }
 
-// A report that opens the gate: from this run, naming `to` as the replacement of `from`, by a writer other than from's own.
-const reportOn = (from, to, runId) => (from.b.reported_wrong || []).some(w => w && w.replaced_by === to.id && w.run_id === runId && w.by !== from.written_by);
+// A report that opens the gate (never one a reviewer rejected; report-marks.cjs): from this run, naming `to` as the replacement of `from`, by a writer other than from's own.
+const reportOn = (from, to, runId) => standing(from.b).some(w => w && w.replaced_by === to.id && w.run_id === runId && w.by !== from.written_by);
 
 // Gates (a) and (b). Returns the facts that held, or throws E_PRECONDITION naming the one that did not.
 function relationFacts(E, project, a, b, threshold, runId) {

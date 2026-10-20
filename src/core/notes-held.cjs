@@ -44,6 +44,30 @@ function unjudged(store) {
   return projects.flatMap((p) => [...RV.unjudgedReports({ store }, p), ...RV.recommendedReports({ store }, p)].map((r) => ({ project: p, ...r })));
 }
 
+// Work the default propose mode leaves for the operator: open proposals whose note is still unsettled (pending, or live in the project), and
+// pending notes whose writer's run has ended (nothing but a scrub or `belay memory resolve` settles them). A plain read of the rows.
+// { open_proposals, pending, total, by_project: { <project>: n }, note_ids, newest_at }.
+function stranded(store, only = null) {
+  const by_project = {}, ids = new Set();
+  let open_proposals = 0, pending = 0, newest = null;
+  const add = (project, n, at) => { if (only && project !== only) return false; by_project[project] = (by_project[project] || 0) + n; if (at != null && (newest === null || Number(at) > newest)) newest = Number(at); return true; };
+  try {
+    for (const r of store.p(`SELECT p.namespace AS namespace, json_extract(p.body, '$.note_id') AS note_id, p.created_at AS at FROM memory_entries p
+      WHERE p.type = 'proposal' AND p.namespace LIKE 'proposal/%' AND json_extract(p.body, '$.state') = 'open'
+      AND EXISTS (SELECT 1 FROM memory_entries n WHERE n.id = json_extract(p.body, '$.note_id') AND n.type = 'note'
+        AND (n.namespace = 'project/' || substr(p.namespace, 10) OR n.namespace = 'pending/' || substr(p.namespace, 10))) ORDER BY p.created_at, p.id`).all()) {
+      if (add(r.namespace.slice(9), 1, r.at)) { open_proposals += 1; ids.add(r.note_id); }
+    }
+  } catch { /* no table */ }
+  try {
+    for (const r of store.p(`SELECT id, namespace, created_at FROM memory_entries WHERE type = 'note' AND namespace LIKE 'pending/%'
+      AND (run_id IS NULL OR run_id NOT IN (SELECT r.id FROM run r WHERE r.ended_at IS NULL AND r.seq = (SELECT MAX(seq) FROM run WHERE id = r.id))) ORDER BY created_at, id`).all()) {
+      if (add(r.namespace.slice(8), 1, r.created_at)) { pending += 1; ids.add(r.id); }
+    }
+  } catch { /* no run table */ }
+  return { open_proposals, pending, total: open_proposals + pending, by_project, note_ids: [...ids].slice(0, 20), newest_at: newest };
+}
+
 // memory.held, a read: { project?, reports?, reviews? } -> the count, and the unjudged reports when asked for.
 async function held(E, caller, args = {}) {
   const c = count(E.store);
@@ -51,7 +75,7 @@ async function held(E, caller, args = {}) {
   const scoped = project ? { total: c.by_project[project] || 0, unsupported: c.unsupported_by_project[project] || 0, unsupported_by_project: c.unsupported_by_project[project] ? { [project]: c.unsupported_by_project[project] } : {}, by_project: c.by_project[project] ? { [project]: c.by_project[project] } : {}, oldest_age_runs: c.age_by_project[project] || 0, oldest_at: c.oldest_at, newest_at: c.newest_at } : c;
   // One call (one copy of the store) answers notices: the counts, the unjudged reports and the archive reviews' claims.
   const reviews = args.reviews ? (await require('./review-claim.cjs').reviewState(E, caller, project ? { project } : {})).reviews : undefined;
-  return { ...scoped, ...(reviews ? { reviews } : {}), ...(args.reports ? { unjudged_reports: unjudged(E.store).filter((r) => !project || r.project === project) } : {}) };
+  return { ...scoped, ...(reviews ? { reviews } : {}), ...(args.reports ? { unjudged_reports: unjudged(E.store).filter((r) => !project || r.project === project), stranded: stranded(E.store, project) } : {}) };
 }
 
-module.exports = { count, unjudged, held };
+module.exports = { count, unjudged, stranded, held };

@@ -9,6 +9,7 @@
 //   wrong       a trigger fact: a report from a writer other than the note's own, or a refuting review (status refuted).
 
 const { err } = require('./errors.cjs');
+const { standing } = require('./report-marks.cjs');
 const { DUP_SIMILARITY } = require('./memory-lifecycle.cjs');
 
 const COLS = 'id, namespace, type, written_by, run_id, task_id, title, text, text_hash, embedding, embedding_model, dim, body, status, status_receipt, created_at, supersedes, text_template';
@@ -62,7 +63,7 @@ const GROUND_TRIGGER = { refuted_review: 'refuted_review', report_confirmed: 're
 // one the facts support (refuted_review needs a refuted status; report_confirmed a report from another writer).
 function checkHoldFacts(E, project, note, kind, ofId, ground, threshold = DUP_SIMILARITY, runId = null) {
   if (kind === 'wrong') {
-    const others = (note.b.reported_wrong || []).filter(w => w && w.by !== note.written_by);
+    const others = standing(note.b).filter(w => w && w.by !== note.written_by);
     const refuted = (note.status || 'unverified') === 'refuted';
     if (!others.length && !refuted) throw refuse(`note ${note.id} has no trigger fact for a wrong hold: no report from a writer other than its own, and no refuting review`, { id: note.id, kind });
     const triggers = [...(refuted ? ['refuted_review'] : []), ...(others.length ? ['report_from_other_writer'] : [])];
@@ -74,7 +75,7 @@ function checkHoldFacts(E, project, note, kind, ofId, ground, threshold = DUP_SI
   if (target.id === note.id) throw refuse('a note cannot stand against itself', { id: note.id });
   if (kind === 'superseded') {
     // A report of the hold's own run, by another writer, naming the replacement stands for the direction (a verified note a worker reported may be the newer one).
-    const reportedBy = (note.b.reported_wrong || []).some(w => w && w.replaced_by === target.id && w.by !== note.written_by && runId && w.run_id === runId);
+    const reportedBy = standing(note.b).some(w => w && w.replaced_by === target.id && w.by !== note.written_by && runId && w.run_id === runId);
     if (!(target.created_at > note.created_at) && !reportedBy) throw refuse(`${target.id} is not newer than ${note.id}, so it cannot replace it`, { id: note.id, of: target.id });
     // REPORT S4: the replacement must also be about the same thing: a shared path or subject, or a stored cosine at the threshold.
     const sim = storedCosine(note, target);
@@ -85,7 +86,7 @@ function checkHoldFacts(E, project, note, kind, ofId, ground, threshold = DUP_SI
   const sim = storedCosine(note, target);
   const matched = (note.b.matches || []).find(m => m && m.id === target.id);
   const best = Math.max(sim === null ? -1 : sim, matched && typeof matched.similarity === 'number' ? matched.similarity : -1);
-  const reported = (note.b.reported_wrong || []).some(w => w && w.replaced_by === target.id);
+  const reported = standing(note.b).some(w => w && w.replaced_by === target.id);
   const template = templateOf(note);
   if (best >= threshold) return { via: 'similarity', similarity: round3(best), kept: target.id, template };
   if (reported) return { via: 'report', similarity: best < 0 ? null : round3(best), kept: target.id, template };
