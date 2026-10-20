@@ -124,3 +124,60 @@ test('spawn: a failed file write does not remove a worker directory that existed
     assert.ok(!m._worker(id), 'the record was dropped');
   } finally { await m.shutdown().catch(() => {}); cleanup(sb.d); }
 });
+
+// A refusal on the FIRST launch: the worker has no earlier settled life, so only the refusal itself can settle it.
+test('worker_wait after a refused first launch answers dead at once, not timed_out', async () => {
+  const sb = sandbox(); const core = createFakeCore(); const id = 'w-first';
+  const realWrite = core.worker.write;
+  // The seam: when the `starting` row is written, the folder is replaced by a file, which prepareFolder then refuses at launch.
+  core.worker.write = async (r, ...rest) => {
+    const out = await realWrite.call(core.worker, r, ...rest);
+    if (r && r.id === id && r.state === 'starting') { fs.rmSync(sb.mem, { recursive: true, force: true }); fs.writeFileSync(sb.mem, 'a file where the folder should be'); }
+    return out;
+  };
+  const m = mgr(sb, core);
+  try {
+    await assert.rejects(m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: id, native_memory: sb.mem }), (e) => e.code === 'E_ARGS' && e.detail.reason === 'not_a_directory');
+    assert.equal(core.currentWorker(id).state, 'dead');
+    const t0 = Date.now();
+    const r = await m.wait({ worker_ids: [id], timeout_ms: 3000 });
+    assert.equal(r.event, 'dead', JSON.stringify(r));
+    assert.equal(r.established_by, 'native_memory_folder_refused');
+    assert.equal(r.already, true);
+    assert.ok(Date.now() - t0 < 2000, 'answered from the settled record, not by waiting out the timeout');
+  } finally { await m.shutdown().catch(() => {}); cleanup(sb.d); }
+});
+
+test('spawn: an invalid native_memory is refused before a record or a worker directory is made', async () => {
+  const sb = sandbox(); const core = createFakeCore(); const m = mgr(sb, core); const id = 'w-early';
+  const W = require('../../src/run/worker.cjs'); const real = W.newWorkerRecord; let made = 0;
+  W.newWorkerRecord = (...a) => { made++; return real(...a); };
+  try {
+    fs.writeFileSync(sb.mem, 'a file');
+    await assert.rejects(m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: id, native_memory: sb.mem }), (e) => e.code === 'E_ARGS');
+    assert.equal(made, 0, 'the check ran in validation, before newWorkerRecord');
+  } finally { W.newWorkerRecord = real; await m.shutdown().catch(() => {}); cleanup(sb.d); }
+});
+
+test('spawn: a failed file write waits for the worker\'s base-sha lookup, so shutdown never leaves that git child behind', async () => {
+  const sb = sandbox(); const core = createFakeCore(); const id = 'w-lookup';
+  const us = path.join(sb.d, 'user-settings.json'); fs.writeFileSync(us, '{ not json');
+  const m = mgr(sb, core, us);
+  const HL = require('../../src/run/head-lookup.cjs'); const real = HL.lookupSha;
+  let release; const gate = new Promise((res) => { release = res; });
+  let started = false;
+  HL.lookupSha = (cwd) => { started = true; return gate.then(() => ({ sha: null, reason: 'stalled' })); };
+  try {
+    let settled = false;
+    const p = m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: id }).then(() => { settled = 'resolved'; }, (e) => { settled = e.code; });
+    for (let i = 0; i < 50 && !started; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.ok(started, 'the lookup began with the record');
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(settled, false, 'the failed spawn is still waiting on the lookup');
+    release();
+    await p;
+    assert.equal(settled, 'E_ARGS');
+    assert.ok(!m._worker(id), 'the record is dropped once the lookup is done');
+    assert.equal(fs.existsSync(L.workerDir(sb.data, id)), false);
+  } finally { HL.lookupSha = real; release(); await m.shutdown().catch(() => {}); cleanup(sb.d); }
+});

@@ -244,7 +244,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     } finally { pendingIds.delete(id); }
     const spawnLevers = await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the worker adapter's argv carries the notes lever, so the levers are known before the files are written
     if (!spawnLevers.first_message_index) w.indexQueries = []; // the first-message index is their only reader: with it off the row keeps none (null)
-    try { writeFilesFor(w); } catch (e) { discardUnstarted(workers, w, dirExisted); throw e; } // no row, nothing launched: leave no record and no directory, so a corrected retry with the same id is free
+    try { writeFilesFor(w); } catch (e) { await discardUnstarted(workers, w, dirExisted); throw e; } // no row, nothing launched: leave no record and no directory, so a corrected retry with the same id is free
     if (substrate === 'claude-code') w.instructions = I.snapshotInstructions(w.worktree, w.dir); // spawn only
 
     // The worker row comes first, with no pid yet: `task.assign` refuses a worker with no row, and the
