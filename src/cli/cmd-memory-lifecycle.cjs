@@ -26,7 +26,7 @@ function renderProposals(res) {
     if (!list.length) out.push('  none'); else for (const r of list) out.push(rowLine(r));
   }
   if ((res.unjudged_reports || []).length) {
-    out.push('', `reports of "wrong" no review judged (${res.unjudged_reports.length}; the reporter's task ended with no reviewer):`);
+    out.push('', `reports of "wrong" with no verdict applied (${res.unjudged_reports.length}; a reviewer or job that ran may have left them out):`);
     for (const r of res.unjudged_reports.slice(0, 20)) out.push(`  ${r.id}  task ${r.task_id || '-'}  by ${one(r.by || '-')}  ${when(r.at)}  ${one(r.why || '').slice(0, 100)}`);
   }
   out.push('', 'nominated for an instruction file (the operator decides: belay memory promote <note-id> --approve|--reject):');
@@ -54,7 +54,7 @@ async function proposals(core, parsed, ctx, found) {
   if (parsed.opts.project) args.project = parsed.opts.project;
   if (parsed.opts.all) args.all = true;
   const res = await core.memory.proposals(args);
-  // Reports of "wrong" that no review will judge (the reporter's task ended with no reviewer and no review job): listed for the operator.
+  // Reports of "wrong" with no verdict applied (a review or job may have run and left the report out): listed for the operator.
   try { if (core.memory && typeof core.memory.held === 'function') res.unjudged_reports = (await core.memory.held({ ...(args.project ? { project: args.project } : {}), reports: true })).unjudged_reports || []; } catch { /* the list is extra; the proposals stand */ }
   return { code: 0, text: renderProposals(res), json: res };
 }

@@ -2,7 +2,7 @@
 // notes-held.cjs — the notes waiting on the Opus archive reviewer, as a plain read of the rows (every held kind: wrong, duplicate,
 // superseded). A hold keeps the note live and visible with its warning; only the on-demand reviewer (`belay memory review`, the panel's button) archives it. This module only counts
 // and lists, in the shape of notes-unembedded.cjs, and imports nothing that can reach the embedder, so status, notices and the panel may
-// read it (invariants 6 and 9). Also the reports of "wrong" no review will judge, for the operator.
+// read it (invariants 6 and 9). Also the reports of "wrong" with no verdict applied, for the operator.
 
 const HELD_PREFIX = 'held/';
 
@@ -34,7 +34,7 @@ function count(store) {
   return { total, unsupported, by_project, unsupported_by_project, age_by_project, oldest_age_runs: age, oldest_at: oldest, newest_at: newest };
 }
 
-// Reports of "wrong" that no review will judge (the reporter's task ended with no reviewer and no review job), every project, and the
+// Reports of "wrong" with no verdict applied (a review or job may have run and left the report out), every project, and the
 // upheld ones the Haiku job could only recommend because a review verified the note (`recommended: true`).
 function unjudged(store) {
   let projects;
@@ -44,28 +44,44 @@ function unjudged(store) {
   return projects.flatMap((p) => [...RV.unjudgedReports({ store }, p), ...RV.recommendedReports({ store }, p)].map((r) => ({ project: p, ...r })));
 }
 
-// Work the default propose mode leaves for the operator: open proposals whose note is still unsettled (pending, or live in the project), and
-// pending notes whose writer's run has ended (nothing but a scrub or `belay memory resolve` settles them). A plain read of the rows.
-// { open_proposals, pending, total, by_project: { <project>: n }, note_ids, newest_at }.
+// Work the default propose mode leaves for the operator: open proposals whose mark is still unsettled, and pending notes whose writer's run
+// has ended (nothing but a scrub or `belay memory resolve` settles them). Nothing closes a proposal row, so the mark is read against the notes:
+// a `resolve` counts while its note is still pending; a `relate` while both notes are live and neither records a `new` verdict on the other;
+// any other action while its note is live or pending. A plain read of the rows.
+// { open_proposals, pending, total, by_project: { <project>: n }, note_ids, newest_at }; `total` and `by_project` count distinct notes.
 function stranded(store, only = null) {
   const by_project = {}, ids = new Set();
   let open_proposals = 0, pending = 0, newest = null;
-  const add = (project, n, at) => { if (only && project !== only) return false; by_project[project] = (by_project[project] || 0) + n; if (at != null && (newest === null || Number(at) > newest)) newest = Number(at); return true; };
+  const add = (project, id, at) => {
+    if (only && project !== only) return false;
+    if (at != null && (newest === null || Number(at) > newest)) newest = Number(at);
+    if (!ids.has(id)) { ids.add(id); by_project[project] = (by_project[project] || 0) + 1; }
+    return true;
+  };
   try {
-    for (const r of store.p(`SELECT p.namespace AS namespace, json_extract(p.body, '$.note_id') AS note_id, p.created_at AS at FROM memory_entries p
-      WHERE p.type = 'proposal' AND p.namespace LIKE 'proposal/%' AND json_extract(p.body, '$.state') = 'open'
-      AND EXISTS (SELECT 1 FROM memory_entries n WHERE n.id = json_extract(p.body, '$.note_id') AND n.type = 'note'
-        AND (n.namespace = 'project/' || substr(p.namespace, 10) OR n.namespace = 'pending/' || substr(p.namespace, 10))) ORDER BY p.created_at, p.id`).all()) {
-      if (add(r.namespace.slice(9), 1, r.at)) { open_proposals += 1; ids.add(r.note_id); }
+    const note = (id) => store.p("SELECT namespace, body FROM memory_entries WHERE id = ? AND type = 'note'").get(id);
+    const judges = (n, other) => { try { return (JSON.parse(n.body).pair_judged || []).some((j) => j && j.of === other); } catch { return false; } };
+    for (const r of store.p(`SELECT namespace, created_at AS at, json_extract(body, '$.note_id') AS note_id, json_extract(body, '$.entry.action') AS action, json_extract(body, '$.entry.of') AS other
+      FROM memory_entries WHERE type = 'proposal' AND namespace LIKE 'proposal/%' AND json_extract(body, '$.state') = 'open' ORDER BY created_at, id`).all()) {
+      const project = r.namespace.slice(9), live = `project/${project}`, pend = `pending/${project}`;
+      const n = note(r.note_id);
+      if (!n) continue;
+      let open;
+      if (r.action === 'resolve') open = n.namespace === pend;
+      else if (r.action === 'relate') {
+        const o = r.other ? note(r.other) : null;
+        open = n.namespace === live && !!o && o.namespace === live && !judges(n, r.other) && !judges(o, r.note_id);
+      } else open = n.namespace === live || n.namespace === pend;
+      if (open && add(project, r.note_id, r.at)) open_proposals += 1;
     }
   } catch { /* no table */ }
   try {
     for (const r of store.p(`SELECT id, namespace, created_at FROM memory_entries WHERE type = 'note' AND namespace LIKE 'pending/%'
       AND (run_id IS NULL OR run_id NOT IN (SELECT r.id FROM run r WHERE r.ended_at IS NULL AND r.seq = (SELECT MAX(seq) FROM run WHERE id = r.id))) ORDER BY created_at, id`).all()) {
-      if (add(r.namespace.slice(8), 1, r.created_at)) { pending += 1; ids.add(r.id); }
+      if (add(r.namespace.slice(8), r.id, r.created_at)) pending += 1;
     }
   } catch { /* no run table */ }
-  return { open_proposals, pending, total: open_proposals + pending, by_project, note_ids: [...ids].slice(0, 20), newest_at: newest };
+  return { open_proposals, pending, total: ids.size, by_project, note_ids: [...ids].slice(0, 20), newest_at: newest };
 }
 
 // memory.held, a read: { project?, reports?, reviews? } -> the count, and the unjudged reports when asked for.

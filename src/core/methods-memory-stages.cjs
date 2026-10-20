@@ -135,6 +135,7 @@ async function scrubScope(E, caller, args) {
   const proposeMode = ((N.notesLevers(E, caller) || {}).scrub_action) === 'propose';
   const proposals = proposeMode ? openProposals(E, project) : [];
   const proposedOn = (id, since = 0) => proposals.some((p) => p.note_id === id && p.at >= since);
+  const proposedPairSince = (a, b, since) => proposals.some((p) => p.at >= since && ((p.note_id === a && p.of === b) || (p.note_id === b && p.of === a)));
   const proposedPair = (a, b) => proposals.some((p) => (p.note_id === a && p.of === b) || (p.note_id === b && p.of === a));
   for (const [id, o] of history.owed) add(load(E, id), 'owed', { owed: o });
   // A pair a scrub of this run handled is offered again when a report naming a partner arrived after that scrub.
@@ -159,9 +160,11 @@ async function scrubScope(E, caller, args) {
     (SELECT 1 FROM json_each(memory_entries.body, '$.reported_wrong') WHERE json_extract(value, '$.run_id') = ? AND json_extract(value, '$.replaced_by') IS NOT NULL) ORDER BY created_at, id`).all(N.projectNs(project), runId);
   for (const r of reported) {
     const n = load(E, r.id);
-    const named = standing(n.b).filter((w) => w && w.run_id === runId && w.replaced_by && w.replaced_by !== n.id && w.by !== n.written_by).map((w) => w.replaced_by);
-    const newest = Math.max(0, ...standing(n.b).filter((w) => w && w.run_id === runId && w.replaced_by).map((w) => Number(w.at) || 0));
-    if (!n.b.held && named.some((id) => liveNote(id)) && !proposedOn(r.id, newest)) addNew(r.id, 'replaced_by');
+    // Each partner a standing report of this run names, with the time of the newest such report. The note is offered while some live partner has
+    // no open proposal on THAT pair made since its newest report: a proposal about another partner of the note says nothing about this one.
+    const newest = new Map();
+    for (const w of standing(n.b)) if (w && w.run_id === runId && w.replaced_by && w.replaced_by !== n.id && w.by !== n.written_by) newest.set(w.replaced_by, Math.max(newest.get(w.replaced_by) || 0, Number(w.at) || 0));
+    if (!n.b.held && [...newest].some(([id, at]) => liveNote(id) && !proposedPairSince(r.id, id, at))) addNew(r.id, 'replaced_by');
   }
   // Pending notes stay in scope until settled: this run's, and an ended run's (a scrub of its own close may have only proposed, or left
   // the note out). A live run's other pending notes are its writers' to resolve. A note the child gave no entry for in two scrubs is dropped.
