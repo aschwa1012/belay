@@ -35,7 +35,10 @@ const fill = (template, lv, subjects) => {
 // With the notes sink on, one more line asks for `memory_ids` (the core requires it then).
 const withIds = (lv) => (lv.notes_sink && lv.notes_sink !== 'off' ? '\n' + read('notes-memory-ids.md') : '');
 const contract = (lv, subjects) => (lv && lv.notes ? fill(read('notes-contract.md'), lv, subjects) + withIds(lv) : '');
+// Eval-only (`handback_question`): with notes off, the same end-of-task question as a short request, with no note contract and no
+// `notes` field. '' unless the lever is on and notes are off, so with notes on the question is delivered once, inside the contract.
+const handback = (lv) => (lv && lv.handback_question && !lv.notes ? read('handback-question.md').split('{{question}}').join(question(lv)) : '');
 // The reflection turn's message; '' unless both levers are on.
 const reflection = (lv) => (lv && lv.notes && lv.notes_reflection ? fill(read('notes-reflection.md'), lv, null) : '');
 
-module.exports = { contract, reflection, question };
+module.exports = { contract, reflection, question, handback };

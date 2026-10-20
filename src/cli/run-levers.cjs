@@ -73,6 +73,21 @@ function mergeMemory(specBlock, config) {
   return { block: cfg === null && own === null ? undefined : block, sources, fromConfig: cfg !== null && Object.keys(cfg).length > 0, ...(dropped.length ? { dropped } : {}) };
 }
 
+// The eval-only spec keys `native_memory` (an absolute folder) and `handback_question` (boolean), both off by default. They are
+// recorded as memory levers (the run row is how the worker adapter's manager learns them); a key also given inside `memory` is refused.
+function evalKeys(spec) {
+  const fold = {};
+  const inBlock = spec.memory && typeof spec.memory === 'object' ? spec.memory : {};
+  for (const k of ['native_memory', 'handback_question']) {
+    if (spec[k] === undefined) continue;
+    if (inBlock[k] !== undefined) return { error: `${k} is given both at the top of the spec and inside memory` };
+    if (k === 'native_memory' && (typeof spec[k] !== 'string' || !spec[k])) return { error: 'native_memory must be an absolute directory path' };
+    if (k === 'handback_question' && typeof spec[k] !== 'boolean') return { error: 'handback_question must be true or false' };
+    fold[k] = spec[k];
+  }
+  return { fold: Object.keys(fold).length ? fold : null };
+}
+
 // Returns { max_fix_rounds, fix_cutoff, on_embedder_failure[, compact_at_tokens] } or { error }. `compact_at_tokens` (ADR 0007 decision 3,
 // null by default) is present only when set, so a run without it has the receipt it always had.
 function parseLevers(spec, opts = {}) {
@@ -111,10 +126,15 @@ function parseLevers(spec, opts = {}) {
   // ADR 0041 decision 1: the memory block. Present on the result only when it differs from the defaults, so a
   // run without it has the levers, the receipt and the run row it always had.
   // The config's `memory` block is the project default under the spec's own (opts.config = { path, memory }).
-  const merged = mergeMemory(spec.memory, opts.config);
+  const ev = evalKeys(spec); // eval-only top-level keys, folded into the memory block
+  if (ev.error) return { error: ev.error };
+  const merged = mergeMemory(ev.fold ? { ...(spec.memory || {}), ...ev.fold } : spec.memory, opts.config);
   if (merged.error) return { error: merged.error };
   const mem = ML.parseMemoryBlock(merged.block);
   if (mem.error) return { error: merged.fromConfig ? `${mem.error} (memory defaults come from ${opts.config.path}, the spec's own memory block over them)` : mem.error };
+  if (mem.value.native_memory !== null) { // the spawn's own check, here at spec load, so a bad folder refuses the run before anything launches
+    try { require('../run/native-memory.cjs').checkFolder(mem.value.native_memory); } catch (e) { return { error: `native_memory: ${e.message}` }; }
+  }
   // on_embedder_failure is resolved above (spec top level, spec memory block, config, default) and recorded on its own: the
   // run's memory_levers never carries it, so the row cannot contradict the receipt, a config that sets only this lever does not
   // make every run row carry memory_levers, and an older core (which refuses the unknown key) still reads the block.
