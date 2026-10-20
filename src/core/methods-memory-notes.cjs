@@ -207,8 +207,13 @@ function commit(E, caller, prep, { task_id }) {
   const by = E.memoryWriter(caller);
   const items = prep.notes.map(p => {
     const pending = p.matches.length > 0 || p.prior.length > 0;
-    const ns = pending ? pendingNs(prep.project) : projectNs(prep.project);
-    const clash = E.store.p('SELECT id, type, written_by, task_id FROM memory_entries WHERE namespace = ? AND text_hash = ?').get(ns, hashText(p.text));
+    const byText = n => E.store.p('SELECT id, type, written_by, task_id FROM memory_entries WHERE namespace = ? AND text_hash = ?').get(n, hashText(p.text));
+    // A pending note is resolved against the notes it was matched with. The same words as a row of project/<p> that is not one of those matches
+    // (a refuted note, a row that is not a note, a note not compared) could never be resolved, so it answers duplicate and no pending row is written.
+    const inProject = pending ? byText(projectNs(prep.project)) : null;
+    const unresolvable = inProject && !p.matches.some(m => m.id === inProject.id) ? inProject : null;
+    const ns = unresolvable || !pending ? projectNs(prep.project) : pendingNs(prep.project);
+    const clash = unresolvable || byText(ns);
     if (clash) {
       // The same words from another writer in another task are a second sighting of a live note, as a resolved repeat is: promotion counts them.
       const sighted = clash.type === 'note' && !pending ? sightText(E, caller, clash, by, task_id, p, t) : null;

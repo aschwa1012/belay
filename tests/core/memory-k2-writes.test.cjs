@@ -163,3 +163,27 @@ test('L01: the same words meeting a pending note record no sighting on it; only 
   assert.strictEqual(bodyOf(pend.id).seen_total, 0);
   assert.deepStrictEqual(bodyOf(pend.id).seen_in, []);
 });
+
+// ---- D31: the exact words of a refuted note --------------------------------------------------------------------------------
+
+test('D31: the exact text of a refuted project note answers duplicate and writes no pending row', async () => {
+  const first = (await hand(worker('w1'), { notes: [note('K12')] })).out.notes[0];
+  assert.strictEqual(first.state, 'stored');
+  store.p("UPDATE memory_entries SET status = 'refuted', status_receipt = 'review:xyz' WHERE id = ?").run(first.id);
+  const before = store.p("SELECT COUNT(*) AS n FROM memory_entries WHERE namespace LIKE '%/acme'").get().n;
+  const { out } = await hand(worker('w2'), { notes: [note('K12')] });
+  const d = out.notes[0];
+  assert.deepStrictEqual([d.state, d.id, d.namespace, d.existing_type], ['duplicate', first.id, 'project/acme', 'note']);
+  assert.strictEqual(d.sighting, undefined, 'a refuted note takes no sighting');
+  assert.strictEqual(out.pending, 0);
+  assert.strictEqual(store.p("SELECT COUNT(*) AS n FROM memory_entries WHERE namespace LIKE '%/acme'").get().n, before, 'no row was written');
+  assert.strictEqual(store.p("SELECT COUNT(*) AS n FROM memory_entries WHERE namespace = 'pending/acme' AND text_hash = ?").get(rowOf(first.id).text_hash).n, 0);
+});
+
+test('D31: the exact text of a live matched note still waits in pending and resolves as a repeat of it', async () => {
+  const live = (await hand(worker('w1'), { notes: [note('K13')] })).out.notes[0];
+  const p = (await hand(worker('w2'), { notes: [note('K13')] })).out.notes[0];
+  assert.deepStrictEqual([p.state, p.matches.map(m => m.id)], ['pending', [live.id]]);
+  const r = await call('memory.noteResolve', worker('w2'), { resolutions: [{ id: p.id, resolve: 'repeats', of: live.id }] });
+  assert.deepStrictEqual([r.resolved[0].resolved, r.resolved[0].of], ['repeats', live.id]);
+});
