@@ -168,6 +168,10 @@ test('of two runs that lapsed and revived, the later revival queues behind the e
   const tx = await x.task.create({ spec: 'x', files_owned: ['cont/x'] }); // both runs are lapsed: nobody holds
   await y.run.attach({ adapter_pid: process.pid }); // y revives first
   await x.run.attach({ adapter_pid: process.pid }); // x revives second
+  // A pause and an embedder-mode change copy the row before them, revived_epoch included; neither is a new life, so y keeps its priority.
+  await y.run.setPaused({ paused: true });
+  await y.run.setEmbedderMode({ mode: 'keyword' });
+  await y.run.setPaused({ paused: false });
   await overlapOf(x.task.assign({ task_id: tx.id, check_only: true }));
   assert.deepStrictEqual(await y.task.assign({ task_id: ty.id, check_only: true }), { assignable: true, task_id: ty.id });
   await y.run.attach({ adapter_pid: process.pid }); // y's orchestrator adapter: the same life, no lapse

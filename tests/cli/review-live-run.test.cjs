@@ -52,6 +52,28 @@ test('with no other live run the review proceeds (the acted-for run itself may b
   });
 });
 
+// The residual of the D35 fix: a review of a LIVE run, on the operator's word, is not refused, but its run's close will cut it off, so
+// the result says so. An ended run it acts for carries no such warning.
+test('a review of a live run by --run carries a warning that the run close will cut it off; an ended run carries none', async () => {
+  await planted(async (T) => {
+    await T.endOthers('apply');
+    T.store.close();
+    const live = await cmd(T, ['review', '--run', 'lc-apply', '--all', '--worktree', T.repo], { makeManager: never });
+    assert.strictEqual(live.code, 0, live.text);
+    assert.match(live.json.closing_warning, /will shut the store owner under this review/);
+    assert.match(live.text, /^warning: this run is live; its close will shut the store owner/);
+  });
+  await planted(async (T) => {
+    await T.endOthers('apply');
+    await T.call(T.who.operator('apply'), 'run.end', { exit_reason: 'test' });
+    T.store.close();
+    const ended = await cmd(T, ['review', '--run', 'lc-apply', '--all', '--worktree', T.repo], { makeManager: never });
+    assert.strictEqual(ended.code, 0, ended.text);
+    assert.strictEqual(ended.json.closing_warning, undefined);
+    assert.doesNotMatch(ended.text, /warning/);
+  });
+});
+
 // The close window: the orchestrator's attach left adapter_pid on a process that has exited, the run has no ended_at, and
 // `belay run` still owns the store. The run reads as not alive, and only the owner lock says it is closing.
 async function closing(T) {
@@ -135,6 +157,37 @@ test('the launching pid is matched by creation time: a pid another process now h
     assert.strictEqual(same.json.error.code, 'E_BUSY', 'the same process is closing');
     const unreadable = await review(T, 'lc-apply', { ...lock, createdOf: async () => null });
     assert.strictEqual(unreadable.json.error.code, 'E_BUSY', 'unprovable counts as closing, never as free');
+  });
+});
+
+// A run id that is ended and run again: the process that owns the store through the second close is not the first life's launcher.
+async function endedTwice(T, firstPid, secondPid) {
+  await T.endOthers('apply');
+  const op = require('../core/helpers.cjs').callerFor('operator', { run_id: 'lc-closing' });
+  const levers = { project: 'lc', memory_levers: JSON.stringify({ project: 'lc', notes: true }) };
+  await T.call(op, 'run.attach', { adapter_pid: firstPid, ...levers });
+  await T.call(op, 'run.end', { exit_reason: 'first life' });
+  await T.call(op, 'run.attach', { adapter_pid: secondPid, ...levers }); // the same run id, run again by another process
+  await T.call(op, 'run.attach', { adapter_pid: deadPid() }); // its orchestrator's adapter takes over the row and exits
+  await T.call(op, 'run.end', { exit_reason: 'second life' });
+  T.store.close();
+}
+
+test("a run id ended and run again is closing by the process of its present life, not by its first life's", async () => {
+  await planted(async (T) => {
+    await endedTwice(T, deadPid(), process.ppid);
+    const held = await review(T, 'lc-apply', { ownerLock: () => ({ pid: process.ppid }) });
+    assert.strictEqual(held.json.error.code, 'E_BUSY', held.text);
+    assert.ok(held.json.error.live_runs.includes('lc-closing'), JSON.stringify(held.json.error));
+  });
+});
+
+test("the first life's pid, now holding the owner lock, does not make a re-run run closing", async () => {
+  await planted(async (T) => {
+    await endedTwice(T, process.ppid, deadPid());
+    const r = await review(T, 'lc-apply', { ownerLock: () => ({ pid: process.ppid }) });
+    assert.notStrictEqual(r.json && r.json.error && r.json.error.code, 'E_BUSY', r.text);
+    assert.strictEqual(r.code, 0, r.text);
   });
 });
 

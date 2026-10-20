@@ -5,8 +5,9 @@
 //   review [--project p] the Opus archive reviewer, ON DEMAND (the run-close trigger is off unless `archive_review_auto`), on the project's
 //                         held queue (every kind), ignoring the triggers. `--project` picks the newest ended run whose notes project it is.
 //                         It runs under a store-level claim (review-run.cjs): a second review of the project refuses while the first is
-//                         alive. It also refuses while a run other than the one it acts for is live (that run's close would shut the owner
-//                         under it). `--start` launches it DETACHED and returns once the claim shows (the panel's button runs this).
+//                         alive. It also refuses while a run other than the one it acts for is live, and while an ended run's process still
+//                         holds the store owner through its close (either would shut the owner under it). Acting for a live run by
+//                         `--run` is allowed on the operator's word, and the result carries a warning that the run's close will cut it off. `--start` launches it DETACHED and returns once the claim shows (the panel's button runs this).
 //   resolve <id> new | repeats <id> | supersedes <id> --evidence <text>
 //                         settle a pending note as the operator: memory.noteResolve's own logic (a repeat archives the pending row,
 //                         nothing is deleted). For a note whose run has ended and whose writer is gone.
@@ -42,7 +43,9 @@ async function chooseRun(core, wanted, project = null) {
 // whole close (stages, run.end, memory run end) the run reads as not alive while `belay run` still owns the store. An unended
 // run whose adapter is gone and whose owner is gone too is a crashed run and blocks nothing. The run it acts for is the
 // operator's own word (`--run`), live or not: it is how the operator acts on a live run's notes now, and the error that
-// suggests it says its close is still to come. A listing that cannot be read blocks nothing: this guard adds no new failure.
+// suggests it says its close is still to come. That path is a known limit (audit D35's residual): when the run it acts for is live, its
+// close will shut the owner under the review, so the result carries a warning saying so (`closing_warning`) and nothing waits.
+// The closing rule below is the one exception to "never refused": it applies whichever run the review acts for. A listing that cannot be read blocks nothing: this guard adds no new failure.
 // `resolve` is not gated: it is one call of milliseconds, and a loss there is an explicit E_OWNER_LOST with the outcome named
 // unknown, never a silent one.
 function ownerHeldElsewhere(dataDir, deps) {
@@ -52,25 +55,47 @@ function ownerHeldElsewhere(dataDir, deps) {
   } catch { return false; }
 }
 // A third fact (audit D35, the rest of the close window): `belay run` sets `ended_at` and THEN runs the run-end memory jobs and only
-// then shuts the owner down, so for that stretch the run is ended and still owns the store. It is the run whose process (its first
-// epoch's adapter pid, with its creation time when the row has one) holds the owner lock now; that run is closing whichever run the
-// review acts for, since its shutdown ends this review's connection just the same. A historical ended run whose process is gone, or
-// whose pid another process holds, is not closing. An unreadable creation time fails towards refusing, as the other facts do.
+// then shuts the owner down, so for that stretch the run is ended and still owns the store. It is a run whose present life
+// (`life_pids`: every adapter pid its rows since the last end recorded, a re-run of the same run id included) has the pid, with
+// its creation time when the row has one, that holds the owner lock now; that run is closing whichever run the review acts for,
+// since its shutdown ends this review's connection just the same. A historical ended run whose process is gone, or whose pid
+// another process holds, is not closing. An unreadable creation time fails towards refusing, as the other facts do.
 async function closingRuns(runs, dataDir, deps) {
   let lock = null;
   try { lock = deps && deps.ownerLock ? deps.ownerLock(dataDir) : readOwnerLock(dataDir); } catch { return []; }
   if (!lock || !lock.pid || lock.pid === process.pid || !pidAlive(lock.pid)) return [];
+  let got; // the lock holder's creation time, read once and only if a candidate row recorded one
+  const holderIs = async (created) => {
+    if (created == null) return true;
+    if (got === undefined) {
+      try { got = await (deps && deps.createdOf ? deps.createdOf(lock.pid) : require('../core/process.cjs').createdOf(lock.pid)); } catch { got = null; }
+    }
+    return !(got && got.created != null && got.created !== created); // another process holds the pid now
+  };
   const out = [];
   for (const r of runs) {
-    if (r.ended_at == null || r.launch_pid !== lock.pid) continue;
-    if (r.launch_pid_created != null) {
-      let got = null;
-      try { got = await (deps && deps.createdOf ? deps.createdOf(lock.pid) : require('../core/process.cjs').createdOf(lock.pid)); } catch { got = null; }
-      if (got && got.created != null && got.created !== r.launch_pid_created) continue; // another process holds the pid now
+    if (r.ended_at == null) continue;
+    for (const p of (Array.isArray(r.life_pids) ? r.life_pids : [])) {
+      if (p.pid === lock.pid && await holderIs(p.created)) { out.push({ ...r, closing_pid: lock.pid }); break; }
     }
-    out.push(r);
   }
   return out;
+}
+// The run the review acts for is live by the same two facts (alive, or unended while another process holds the owner).
+async function actedForLive(core, runId, dataDir, deps) {
+  try {
+    const held = ownerHeldElsewhere(dataDir, deps);
+    const r = ((await core.run.list({})).runs || []).find((x) => x.id === runId);
+    return !!(r && (r.alive || (r.ended_at == null && held)));
+  } catch { return false; }
+}
+const CLOSING_WARNING = 'this run is live; its close will shut the store owner under this review and cut it off (outcome unknown). Let the run end first for a review that finishes.';
+function warned(res) {
+  if (!res || typeof res !== 'object') return res;
+  const text = typeof res.text === 'string' ? `warning: ${CLOSING_WARNING}
+${res.text}` : res.text;
+  const json = res.json && typeof res.json === 'object' ? { ...res.json, closing_warning: CLOSING_WARNING } : res.json;
+  return { ...res, text, json };
 }
 async function otherLiveRun(core, runId, dataDir, deps) {
   let live = [], closing = [];
@@ -78,14 +103,14 @@ async function otherLiveRun(core, runId, dataDir, deps) {
     const held = ownerHeldElsewhere(dataDir, deps);
     const runs = (await core.run.list({})).runs || [];
     live = runs.filter((r) => r.id !== runId && (r.alive || (r.ended_at == null && held)));
-    closing = (await closingRuns(runs, dataDir, deps)).filter((r) => !live.includes(r));
+    closing = (await closingRuns(runs, dataDir, deps)).filter((r) => !live.some((l) => l.id === r.id));
   } catch { return null; }
   if (!live.length && !closing.length) return null;
   const all = [...live, ...closing];
   const ids = all.map((r) => r.id).join(', ');
   const message = live.length
     ? `run ${live.map((r) => r.id).join(', ')} is live in this data dir; wait for it to end (or stop it) and try again, because its close would shut the store owner under this review${closing.length ? `; run ${closing.map((r) => r.id).join(', ')} is also closing` : ''}`
-    : `run ${ids} has ended but its process (pid ${closing[0].launch_pid}) still holds the store owner while it closes; wait for \`belay run\` to exit and try again, because its owner shutdown would cut this review off`;
+    : `run ${ids} has ended but its process (pid ${closing[0].closing_pid}) still holds the store owner while it closes; wait for \`belay run\` to exit and try again, because its owner shutdown would cut this review off`;
   return { code: 1, text: `belay memory review: ${one(message)}
 `, json: { error: { code: 'E_BUSY', message, live_runs: all.map((r) => r.id) } } };
 }
@@ -137,14 +162,16 @@ async function runStage(which, core, parsed, ctx, found) {
     const busy = await otherLiveRun(core, s.runId, s.dataDir, (process.env.BELAY_TEST_MODE === '1' && ctx.stageDeps) || {});
     if (busy) { await release(s.rc); return busy; }
   }
+  const warn = which === 'review' && await actedForLive(core, s.runId, s.dataDir, (process.env.BELAY_TEST_MODE === '1' && ctx.stageDeps) || {});
+  const out2 = (r) => (warn ? warned(r) : r);
   try {
-    if (which === 'review' && parsed.opts.start) return await require('./review-run.cjs').launch({ core, s, project: s.project, parsed, ctx, release });
+    if (which === 'review' && parsed.opts.start) return out2(await require('./review-run.cjs').launch({ core, s, project: s.project, parsed, ctx, release }));
     const deps = (process.env.BELAY_TEST_MODE === '1' && ctx.stageDeps) || {};
     const CS = require('../run/close-stages.cjs');
     const h = s.rc.harness();
     const getManager = CS.lazyManager({ core: h, runId: s.runId, dataDir: s.dataDir, lv: s.lv, worktree: s.worktree, paths: deps.paths, makeManager: deps.makeManager });
     const common = { core: h, runId: s.runId, lv: s.lv, dataDir: s.dataDir, getManager, worktree: s.worktree };
-    if (which === 'review') return await require('./review-run.cjs').claimedReview({ s, project: s.project, ctx, common, runReview: require('../run/review-stage.cjs').runReview, renderStage });
+    if (which === 'review') return out2(await require('./review-run.cjs').claimedReview({ s, project: s.project, ctx, common, runReview: require('../run/review-stage.cjs').runReview, renderStage }));
     const out = await require('../run/scrub-stage.cjs').runScrub({ ...common, goal: parsed.opts.goal || null, summary: parsed.opts.summary || null });
     return { code: out.error || out.survivor ? 1 : 0, text: renderStage(which, out), json: { run_id: s.runId, ...out } };
   } finally { await release(s.rc); }

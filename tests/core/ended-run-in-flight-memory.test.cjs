@@ -23,7 +23,10 @@ const DIM = 64;
 // One axis per marker word, so two notes of different markers do not look like duplicates and stay live.
 let axis = 0;
 const axes = new Map();
+let embedWaiting = null, embedGate = null; // set by a test that parks the embedder; null otherwise
 const embed = async (text) => {
+  if (embedWaiting) embedWaiting();
+  if (embedGate) await embedGate;
   const m = /the (\w+) loader/.exec(text);
   const key = m ? m[1] : text;
   if (!axes.has(key)) axes.set(key, axis++ % DIM);
@@ -144,4 +147,28 @@ test('a report verdict whose citation check outlasts run.end is refused and writ
   } finally { CC.seam.afterCheck = null; }
   assert.strictEqual(store.p("SELECT COUNT(*) AS n FROM memory_entries WHERE type = 'held' AND json_extract(body, '$.note_id') = ?").get(id).n, 0, 'no hold was written');
   assert.strictEqual(events('note_review').length, reviewEvents, 'no receipt was written');
+});
+
+test('a pending note resolved with a new title, whose re-embedding outlasts run.end, is refused and stays pending, unchanged', async () => {
+  const c = await world('nr');
+  await work(c, c.w, 'the loader skips them\n', { notes: [note('nr')] });
+  const second = await work(c, c.w, 'again, the loader skips them\n', { notes: [note('nr', { title: 'the nr loader also skips unlisted fixtures' })] });
+  const pid = second.out.notes[0].id;
+  assert.strictEqual(second.out.notes[0].state, 'pending', 'a near-duplicate of a live note waits for its resolution');
+  const before = rowOf(pid);
+  let open, waiting;
+  embedGate = new Promise((r) => { open = r; });
+  const parked = new Promise((r) => { embedWaiting = r; });
+  try {
+    const settled = ended(call('memory.noteResolve', c.worker, { resolutions: [{ id: pid, resolve: 'new', title: 'the nr2 loader reads fixtures from the index' }] }));
+    await parked; // the real event: freshVectors is inside the embedder
+    await call('run.end', c.operator, { exit_reason: 'test' });
+    open();
+    await settled;
+  } finally { embedGate = null; embedWaiting = null; }
+  const after = rowOf(pid);
+  assert.strictEqual(after.namespace, before.namespace, 'still in the pending namespace');
+  assert.strictEqual(after.title, before.title, 'the title was not changed');
+  assert.strictEqual(after.text, before.text);
+  assert.strictEqual(JSON.parse(after.body).state, 'pending');
 });

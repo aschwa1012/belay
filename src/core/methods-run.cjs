@@ -307,13 +307,32 @@ async function getRun(E, caller) {
 // caller.run_id, fixed at openCore. `alive` is derived the same way status.get's run-alive rung
 // derives it: the row has not ended and its adapter_pid answers a pid check right now.
 //
-// `launch_pid` and `launch_pid_created` are the adapter pid (and its creation time) of the run's FIRST epoch: the process that launched
-// the run, which `belay run` is. The orchestrator's attach overwrites `adapter_pid` with its own and that adapter exits before the run
-// closes, so the current row no longer names the process that still owns the store through the close; this does (audit D35).
+// `life_pids` is every distinct { pid, created } adapter pid the run's PRESENT life has recorded: the rows after the last ended row
+// before the current one, the current row included. A run id is reused (a re-run over an ended row, a spec that names its run id) and
+// an orchestrator's attach overwrites `adapter_pid` with an adapter that exits before the close, so neither the current row nor the
+// run id's first row ever names the process that still owns the store through the close; some row of the present life does (audit D35).
+// A reader matches the owner lock's pid (and creation time) against this list.
+function lifePids(hist) {
+  let start = 0;
+  for (let i = 0; i + 1 < hist.length; i++) if (hist[i].ended_at != null) start = i + 1;
+  const seen = new Set(), out = [];
+  for (const r of hist.slice(start)) {
+    if (r.adapter_pid == null) continue;
+    const k = r.adapter_pid + ':' + r.adapter_pid_created;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push({ pid: r.adapter_pid, created: r.adapter_pid_created == null ? null : r.adapter_pid_created });
+  }
+  return out;
+}
 async function listRuns(E) {
-  const first = new Map(E.store.p('SELECT id, adapter_pid, adapter_pid_created FROM run WHERE seq IN (SELECT MIN(seq) FROM run GROUP BY id)').all().map(r => [r.id, r]));
+  const hist = new Map();
+  for (const r of E.store.p('SELECT id, seq, ended_at, adapter_pid, adapter_pid_created FROM run ORDER BY seq').all()) {
+    if (!hist.has(r.id)) hist.set(r.id, []);
+    hist.get(r.id).push(r);
+  }
   const runs = rows.currentAll(E.store, 'run')
-    .map(r => parseRunRow({ ...r, alive: !!(r.ended_at == null && pidAlive(r.adapter_pid)), launch_pid: first.has(r.id) ? first.get(r.id).adapter_pid : null, launch_pid_created: first.has(r.id) ? first.get(r.id).adapter_pid_created : null }))
+    .map(r => parseRunRow({ ...r, alive: !!(r.ended_at == null && pidAlive(r.adapter_pid)), life_pids: lifePids(hist.get(r.id) || []) }))
     .sort((a, b) => b.seq - a.seq);
   return { runs };
 }
