@@ -167,7 +167,9 @@ class Client {
   async call(method, params, opts = {}) {
     if (!this._viaPort || this._opChecked || method === 'ping') return this._send(method, params, opts);
     const spec = METHODS[method];
-    if (!(spec && spec.kind === 'read' && Array.isArray(spec.roles) && spec.roles.includes('worker'))) { await this._verifyOperator(); return this._send(method, params, opts); } // authority needed: the check first, with its own bound
+    // authority needed, or a memory read, whose answer depends on the role (a worker's view hides rows an operator's finds, and says
+    // not found rather than refused): the check first, with its own bound, so an unverified operator is never answered as a worker
+    if (!(spec && spec.kind === 'read' && Array.isArray(spec.roles) && spec.roles.includes('worker')) || method.startsWith('memory.')) { await this._verifyOperator(); return this._send(method, params, opts); }
     try { return await this._send(method, params, opts); }
     catch (e) { // an open read is served anonymous; when that role may not make this particular read, the check is asked for and the read repeated
       if (!(e && e.code === 'E_ROLE')) throw e;
