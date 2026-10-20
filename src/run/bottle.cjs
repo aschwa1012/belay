@@ -168,7 +168,7 @@ function collect(events, observations, sent) {
 }
 
 const failed = (fallback, extra = {}) => ({
-  text: '', bytes: 0, messages: 0, tool_calls_replaced: 0, dropped: 0, over_budget: false, user_messages: null, fallback, ...extra,
+  text: '', bytes: 0, messages: 0, tool_calls_replaced: 0, dropped: 0, over_budget: false, user_messages: null, spec_pinned: false, fallback, ...extra,
 });
 
 function loadRedact(redact) {
@@ -236,6 +236,7 @@ function buildBottle({ streamPath, sent, sentPath, observations = [], maxBytes =
     dropped: result.dropped,
     over_budget: false,
     user_messages: userMessages,
+    spec_pinned: !!sentRows && spec !== undefined && sentRows.some((r) => r.kind === 'task'), // the first `task` message of the sent record is in the bottle, verbatim (it carries the opening index)
     fallback: null,
     redactions,
   };

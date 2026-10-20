@@ -1,10 +1,12 @@
 'use strict';
 // memory-subjects.cjs — memory.noteSubjects, a read: the subjects the notes of a project already use, most used first. The
 // hand-back question shows them to a worker and asks it to reuse one if it fits, so the same thing is not filed under three
-// spellings. Nothing here judges a subject: it counts what the live notes carry. A refuted note and a replaced one do not count.
+// spellings. Nothing here judges a subject: it counts what the live notes carry. A refuted note and a replaced one do not count,
+// and neither does a note the two-clock gate hides from the caller (another run's, still open; a promoted or pending one).
 // The list is bounded twice, by number and by bytes, because it is text in a worker's opening message.
 
 const { err } = require('./errors.cjs');
+const gate = require('./memory-note-gate.cjs');
 
 const LIMIT_MAX = 20;
 const BYTES_MAX = 400;
@@ -20,7 +22,8 @@ async function noteSubjects(E, caller, args = {}) {
   const ns = `project/${args.project}`;
   let rows = [];
   try {
-    rows = E.store.p("SELECT e.body AS body FROM memory_entries e WHERE e.type = 'note' AND e.namespace = ? AND COALESCE(e.status, 'unverified') <> 'refuted' AND NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND s.namespace = e.namespace)").all(ns);
+    const g = gate.and({ where: '', params: [] }, E, caller, { namespaces: [ns] }); // the notes the caller could see, and no others
+    rows = E.store.p(`SELECT e.body AS body FROM memory_entries e WHERE e.type = 'note' AND e.namespace = ? AND COALESCE(e.status, 'unverified') <> 'refuted' AND NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND s.namespace = e.namespace)${g.where ? ` AND ${g.where}` : ''}`).all(ns, ...g.params);
   } catch { rows = []; }
   const counts = new Map(); // lower-cased spelling -> { subject: the first spelling seen, n }
   for (const r of rows) {

@@ -48,8 +48,9 @@ test('settings: every memory lever is listed as memory.<key> with its default, d
       assert.ok(s.type, `${s.key} names its type`);
     }
     const agents = r.out.settings.filter((s) => s.key.startsWith('agents.'));
-    assert.deepStrictEqual(agents.map((s) => s.key).slice(0, 4), ['agents.coder.model', 'agents.coder.effort', 'agents.tester.model', 'agents.tester.effort']);
-    assert.strictEqual(agents.length, 10);
+    assert.deepStrictEqual(agents.map((s) => s.key).slice(0, 4), ['agents.coder.model', 'agents.coder.effort', 'agents.coder.codex_model', 'agents.tester.model']);
+    assert.strictEqual(agents.length, 14, 'four worker types with model, effort and codex_model, and the orchestrator with model and effort');
+    assert.deepStrictEqual(agents.filter((s) => s.key.endsWith('codex_model')).map((s) => [s.key, s.value]), ['coder', 'tester', 'reviewer', 'researcher'].map((t) => [`agents.${t}.codex_model`, null]));
     assert.ok(agents.every((s) => s.source === 'default'));
     const by = Object.fromEntries(agents.map((s) => [s.key, s.value]));
     assert.deepStrictEqual([by['agents.coder.model'], by['agents.coder.effort'], by['agents.reviewer.model'], by['agents.reviewer.effort'], by['agents.orchestrator.model']],

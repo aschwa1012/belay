@@ -20,7 +20,7 @@ const { fail } = require('./errors.cjs');
 const { validateSpawnArgs, checkMemoryQueries } = require('./spawn-args.cjs');
 const AD = require('./agent-defaults.cjs'); // the config's per-agent-type model and effort defaults
 const MP = require('./memory-preface.cjs'); // ADR 0042: the first-message preface and the memory hooks
-const NR = require('./note-review.cjs'); // wave 4: the notes' review (the reviewer's brief, the short review job)
+const NM = require('./native-memory.cjs'); const NR = require('./note-review.cjs'); // NM: ADR 0024 amendment 3, the native_memory guards // wave 4: the notes' review (the reviewer's brief, the short review job)
 // build step 6c: `wait`, `decideBranch`, `restartFirstText` and the resume-window constants moved
 // verbatim into their own files (the 500-line rule); re-exported under the same names below.
 const { createWait } = require('./wait.cjs');
@@ -125,13 +125,14 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       dir: w.dir, workerId: w.id, runId, dataDir: root, mcpPath, settingsPath: settingsSource, logPath: adapterLog,
       permit: w.permissionPrompt, permitWaitMs: w.permitWaitMs, cwd: w.worktree, compactAt: ctx.compactAt, // ADR 0024; ADR 0007 decision 3
       notes: w.notesOn, // ADR 0047
+      nativeMemory: w.nativeMemory, // ADR 0024 amendment 3: eval-only, null by default
     });
     // ADR 0007 §6 hygiene never degrades quietly: an unreadable/unparseable user settings file would
     // disable nothing, so the launch fails instead (a file that just does not exist is not a failure).
     if (plugins.unreadable) fail('E_ARGS', plugins.error, { settings_path: plugins.path, worker_id: w.id });
     w.plugins = plugins;
     w.mcpJsonPath = mcpJsonPath;
-    w.workerSettingsPath = settingsPath;
+    w.workerSettingsPath = settingsPath; w.settingsFingerprint = NM.fingerprint(settingsPath); // the bytes this manager wrote; launch() refuses a file that no longer matches
     // Codex's ADR 0001 §8 ready check reads the wire log (WR-5); a Claude Code adapter logs there too
     // (ADR 0026 §3's keepalive lines) but its ready check does not.
     w.adapterLogPath = adapterLog;
@@ -140,8 +141,8 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     });
   }
 
-  function launch(w, { resume = null, prompt = null } = {}) {
-    let args;
+  async function launch(w, { resume = null, prompt = null } = {}) {
+    try { NM.checkLaunch(w); } catch (e) { await NM.refuseLaunch(ctx, w, e, P.pidAlive); } let args; // sync and first (Codex's check-then-spawn stays one tick); only a refusal awaits
     if (w.substrate === 'claude-code') {
       args = L.claudeLaunchArgv({
         workerId: w.id, mcpJsonPath: w.mcpJsonPath, settingsPath: w.workerSettingsPath,
@@ -209,7 +210,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const {
       substrate, worktree, prompt, task_id = null, model: modelArg = null, allowed_tools = null,
       permission_mode = null, startup_timeout_ms = 60000, worker_id = null, sandbox = null,
-      permission_prompt = false, permit_wait_ms = 600000, effort: effortArg = null, tools = null, agent_type = null, max_budget_usd = null, memory_queries = null,
+      permission_prompt = false, permit_wait_ms = 600000, effort: effortArg = null, tools = null, agent_type = null, max_budget_usd = null, memory_queries = null, native_memory = null,
     } = opts || {};
     let model = modelArg;
     let effort = effortArg;
@@ -221,7 +222,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       model = agent.model.value;
       effort = agent.effort.value;
     }
-    validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id });
+    validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id, native_memory });
     const indexQueries = checkMemoryQueries(memory_queries);
 
     const id = worker_id || crypto.randomUUID();
@@ -236,12 +237,13 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       w = W.newWorkerRecord({
         id, substrate, worktree, dataDir: root, taskId: task_id, model,
         allowedTools: allowed_tools, permissionMode: permission_mode, sandbox,
-        permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort, tools, maxBudgetUsd: max_budget_usd,
+        permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort, tools, maxBudgetUsd: max_budget_usd, nativeMemory: native_memory,
       });
       w.indexQueries = indexQueries; // the orchestrator's situation lines for this worker's memory index (memory.embedQuery extra_texts)
       workers.set(id, w);
     } finally { pendingIds.delete(id); }
-    await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the worker adapter's argv carries the notes lever, so the levers are known before the files are written
+    const spawnLevers = await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the worker adapter's argv carries the notes lever, so the levers are known before the files are written
+    if (!spawnLevers.first_message_index) w.indexQueries = []; // the first-message index is their only reader: with it off the row keeps none (null)
     writeFilesFor(w);
     if (substrate === 'claude-code') w.instructions = I.snapshotInstructions(w.worktree, w.dir); // spawn only
 
@@ -265,7 +267,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     t0 += w.indexEmbedMs || 0;
     w.firstMessage = first;
 
-    launch(w, substrate === 'claude-code' ? {} : { prompt: first });
+    await launch(w, substrate === 'claude-code' ? {} : { prompt: first });
     await writeRow(w, 'starting');
     openWith(w, first, 'task');
 
@@ -321,7 +323,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     if (w.child && P.pidAlive(w.pid)) {
       fail('E_SUBSTRATE', 'codex worker is mid-turn; one process per turn', { worker_id, substrate: w.substrate, state: w.state, pid: w.pid });
     }
-    launch(w, { resume: w.sessionId, prompt: text });
+    await launch(w, { resume: w.sessionId, prompt: text });
     w.parser.noteStdinWrite();
     await writeRow(w, 'running');
     return { worker_id, channel: 'codex-resume', bytes: Buffer.byteLength(text, 'utf8'), pid: w.pid, turn: w.turns + 1 };
@@ -346,9 +348,9 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     if (known) return known;
     if (adopting.has(workerId)) return adopting.get(workerId);
     const p = W.adopt({ core, workerId, dataDir: root }).then(async (w) => {
-      workers.set(workerId, w);
+      workers.set(workerId, w); // no launch guard: a stop must always go through, and writeFilesFor below regenerates settings.json from the record
       await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the argv written below carries the notes lever
-      writeFilesFor(w); // mcp.json, settings.json and the adapter log path belong to this run now
+      try { writeFilesFor(w); } catch (e) { if (w.nativeMemory == null) throw e; w.adoptRefusal = e; } // mcp.json, settings.json, the log path; with the lever on ANY failure here (a folder that cannot be made, a refused record) is kept for checkLaunch to throw on a launch, never on a stop
       if (w.substrate === 'claude-code') w.instructions = I.existingInstructions(w.dir); // never the worktree
       return w;
     });
@@ -375,7 +377,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
     const overridden = firstTextOverride ? await firstTextOverride(d.branch) : undefined;
     let firstText = overridden !== undefined ? overridden : await restartFirstText(w, d.branch, { core, ctx });
-    firstText = await MP.relaunch(w, ctx, firstText); // ADR 0042 decision 3: the index minus the rows already shown
+    firstText = await MP.relaunch(w, ctx, firstText, { excludeShown: d.branch === 'resume' || w.bottleCarriesFirst === true }); // ADR 0042 decision 3: minus the rows already shown, only where that conversation still holds them
     if (d.branch === 'replace') {
       w.sessionId = null;
       w.parser = createParser(w.substrate, MP.parserOpts(ctx));
@@ -384,7 +386,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     if (onFirstText) onFirstText(firstText);
 
     const resume = d.branch === 'resume' ? w.sessionId : null;
-    launch(w, w.substrate === 'claude-code' ? { resume } : { resume, prompt: firstText });
+    await launch(w, w.substrate === 'claude-code' ? { resume } : { resume, prompt: firstText });
     await writeRow(w, 'starting');
     openWith(w, firstText, 'resume');
 

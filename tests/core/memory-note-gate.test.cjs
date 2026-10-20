@@ -203,6 +203,38 @@ test('retrieve by explicit id is not filtered: it returns a hidden row with its 
   assert.strictEqual(G.visible(E, orch(READER), id), false, 'the gate itself says hidden');
 });
 
+test('retrieve by id leaves out the lifecycle namespaces for a tool-channel orchestrator; the harness and the operator keep them', async () => {
+  task('t-lcg', WRITER, 'done');
+  const proj = fresh();
+  const live = note(proj, 'live note', { task_id: 't-lcg' });
+  for (const prefix of ['archive/', 'held/', 'pending/', 'proposal/', 'draft/', 'nomination/']) {
+    const id = note(proj.replace('project/', prefix), `in ${prefix}`, { task_id: 't-lcg' });
+    const one = await call(orch(READER), 'memory.get', { id });
+    assert.strictEqual(one.found, false, `memory.get ${prefix}`);
+    const many = await call(orch(READER), 'memory.get_many', { ids: [live, id] });
+    assert.deepStrictEqual(many.missing, [id], `get_many ${prefix}: only the lifecycle row is missing`);
+    assert.strictEqual(many.rows.find((r) => r.id === live).found, true, 'the project row in the same batch is read');
+    assert.strictEqual(many.rows.find((r) => r.id === id).found, false);
+    assert.strictEqual((await call({ ...orch(READER), channel: 'harness' }, 'memory.get', { id })).found, true, `harness reads ${prefix}`);
+    assert.strictEqual((await call(callerFor('operator'), 'memory.get', { id })).found, true, `operator reads ${prefix}`);
+  }
+});
+
+test('memory.noteSubjects counts only the notes the gate shows the caller', async () => {
+  const space = fresh(), project = space.replace('project/', '');
+  task('t-sub-done', WRITER, 'done'); task('t-sub-open', WRITER, 'assigned');
+  note(space, 'ended', { task_id: 't-sub-done', body: { subjects: ['kept'] } });
+  note(space, 'mine', { run_id: READER, task_id: null, body: { subjects: ['own-run'] } });
+  note(space, 'open run', { task_id: 't-sub-open', body: { subjects: ['open-leak'] } });
+  note(space, 'promoted', { task_id: 't-sub-done', body: { subjects: ['promoted-leak'], promoted_to: { file: 'CLAUDE.md' } } });
+  note(space, 'pending', { task_id: 't-sub-done', body: { subjects: ['pending-leak'], state: 'pending' } });
+  const r = await call(orch(READER), 'memory.noteSubjects', { project });
+  assert.deepStrictEqual(r.subjects.map((x) => x.subject).sort(), ['kept', 'own-run']);
+  assert.strictEqual(r.considered, 2);
+  const op = await call(callerFor('operator'), 'memory.noteSubjects', { project });
+  assert.strictEqual(op.considered, 5, 'the operator is not gated');
+});
+
 test('memory.timeline goes through the gate: a hidden anchor is not found, and the sides leave hidden notes out', async () => {
   const space = fresh();
   task('t-tl', WRITER, 'done');
