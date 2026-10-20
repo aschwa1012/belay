@@ -56,11 +56,17 @@ test('after run.end the orchestrator and the worker are refused every write, and
   assert.strictEqual((await operator.memory.stats({})).n, memBefore, 'no memory row was added');
 });
 
-test('the run process (role operator) still writes into the ended run, and a repeated run.end is not refused', async () => {
+test('the run process (role operator) still writes into the ended run, and a repeated run.end from the orchestrator role is a no-op', async () => {
   const row = await operator.memory.store({ text: 'written by the run process', embed: false });
   assert.strictEqual(row.written_by, 'operator');
-  const again = await orch.run.end({ exit_reason: 'again' });
-  assert.ok(again.ended_at != null);
+  const was = (await operator.run.get({})).run;
+  const again = await orch.run.end({ exit_reason: 'again', usage: { orch_cost_usd: 99 } });
+  assert.strictEqual(again.already_ended, true);
+  assert.strictEqual(again.exit_reason, 'test', 'a second end from the orchestrator role answers with the row as it stands');
+  const now = await operator.run.get({});
+  assert.strictEqual(now.run.ended_at, was.ended_at, 'ended_at is unchanged');
+  assert.strictEqual(now.run.exit_reason, 'test', 'exit_reason is unchanged');
+  assert.strictEqual(now.run.seq, was.seq, 'nothing was written');
   const r = await operator.run.attach({ adapter_pid: process.pid }); // a re-run opens the next epoch
   assert.strictEqual(r.reattached, true);
   assert.strictEqual((await orch.task.create({ spec: 'the new epoch is live' })).state, 'open');

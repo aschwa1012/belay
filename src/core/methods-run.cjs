@@ -271,6 +271,10 @@ async function end(E, caller, args) {
   const { out: usage, invalid } = usageColumns(args.usage);
   const prev = rows.current(E.store, 'run', caller.run_id);
   if (!prev) throw err('E_NOT_FOUND', `no run row exists for ${caller.run_id}, so there is nothing to end`, { run_id: caller.run_id });
+  // Audit D42: a run that has ended is ended once. A second end from a process launched for the run (the orchestrator role)
+  // answers with the row as it stands and writes nothing, so it cannot replace the ended_at, exit_reason or usage the run
+  // process recorded. The run process (role operator) closes its own run and keeps the whole call.
+  if (prev.ended_at != null && caller.role !== 'operator') return { ...parseRunRow(prev), workers_marked_dead: [], heads_filled: [], already_ended: true };
   const t = Date.now();
   // 6f-2 design item 4 (should-fix, methods-run.cjs:77, first review 1b): a pause ends with its run — the
   // ended row never claims one, so a re-run under the same run id starts its next epoch unpaused too

@@ -318,6 +318,7 @@ async function resolve(E, caller, args) {
   const by = E.memoryWriter(caller);
   const fresh = await freshVectors(E, caller, list);
   const out = E.store.tx(() => {
+    E.assertRunOpen(caller, 'memory.noteResolve'); // the new vectors were awaited above (audit D42)
     const projects = new Set();
     const done = list.map((x, i) => {
       let r = loadPending(E, caller, x.id, i);
