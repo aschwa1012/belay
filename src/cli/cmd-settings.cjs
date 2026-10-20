@@ -9,7 +9,7 @@
 // `settings` and `settings <key>` are mode R: discovery and one read, no file created, no process
 // started. `settings <key> <value>` writes the config file and nothing else — never the store — and
 // returns the old and new value as its receipt (invariant 5). Nothing here imports src/core beyond the pure
-// src/core/memory-levers.cjs (it requires nothing), through settings-keys.cjs.
+// src/core/memory-levers.cjs (pure data; it loads no GPU module, no embedder), through settings-keys.cjs.
 
 const fs = require('node:fs');
 const C = require('./config.cjs');
@@ -45,7 +45,8 @@ function usageError(message) {
 const row = (found, key) => K.effective(found, key);
 
 function line(r, width) {
-  return `  ${r.key.padEnd(width)}  ${JSON.stringify(r.value)}  (from ${r.source})  [${r.type || r.allowed.join(' | ')}]`;
+  const shown = r.key === 'memory.routing' ? K.routingText(r.value) : JSON.stringify(r.value);
+  return `  ${r.key.padEnd(width)}  ${shown}  (from ${r.source})  [${r.type || r.allowed.join(' | ')}]`;
 }
 
 function listResult(found, json) {
@@ -146,7 +147,7 @@ function writeSetting(found, key, rawValue, ctx) {
   // The proof is a fresh read of the file just written, not the value we meant to write. From here the
   // file is on disk, so a failure says written: true.
   const back = K.effective(seams.discover(ctx.cwd), key);
-  if (back.value !== K.expectedValue(key, value) || back.source !== K.expectedSource(key, value, file)) {
+  if (JSON.stringify(back.value) !== JSON.stringify(K.expectedValue(key, value)) || back.source !== K.expectedSource(key, value, file)) {
     return fail(`wrote ${file} but reading it back gave ${JSON.stringify(back.value)} from ${back.source}`, key, { written: true, path: file });
   }
 
