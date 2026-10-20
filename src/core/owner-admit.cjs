@@ -29,19 +29,32 @@ function admit(owner, c, req) {
     return null;
   }
   // bound mode, no key from here on
-  if (req.method === 'ping') return null;
-  const spec = METHODS[req.method];
-  if (spec && spec.kind === 'read') {
-    // anonymous: a worker-shaped caller no run or worker owns, which reaches only the reads open to every role
-    params.caller = { role: 'worker', run_id: 'anonymous', worker_id: 'anonymous' };
-    c.belayVia = 'anonymous';
+  if (req.method === 'ping') {
+    // a keyless operator on the loopback port asks to be checked now (client.cjs _verifyOperator), so the check's cost is not its first call's
+    if (params.verify_operator === true && sent.role === 'operator' && c.belayTransport === 'tcp' && typeof owner.opts.operatorCheck === 'function') {
+      return Promise.resolve(owner.opts.operatorCheck({ conn: c, caller: sent, method: 'ping' })).then((v) => { c.belayVerified = !!(v && v.ok === true); return null; }, () => null);
+    }
     return null;
   }
+  const spec = METHODS[req.method];
+  // A read open to every role is served to an unverified caller as `anonymous`: a worker-shaped caller no worker owns. The run id the
+  // request names rides along as a selector (a read with no id asks for "the caller's run"); it grants nothing, since these reads are
+  // open to every role. A read restricted to the orchestrator or the operator is not open: it takes the operator check below.
+  const open = !!spec && spec.kind === 'read' && Array.isArray(spec.roles) && spec.roles.includes('worker');
+  const anonymous = () => {
+    params.caller = { role: 'worker', run_id: typeof sent.run_id === 'string' && sent.run_id ? sent.run_id : 'anonymous', worker_id: 'anonymous', ...(Number.isInteger(sent.pid) ? { pid: sent.pid } : {}) };
+    c.belayVia = 'anonymous';
+    return null;
+  };
   const refuse = (reason, message) => ({ code: 'E_UNBOUND', message, detail: { reason, method: req.method, role: sent.role === undefined ? null : sent.role } });
+  const checks = sent.role === 'operator' && typeof owner.opts.operatorCheck === 'function' && c.belayTransport === 'tcp';
+  // The operator's own reads (a search of another run's namespace) need the operator, so a claim on the loopback port is checked first;
+  // a refused claim on an open read falls back to anonymous rather than to a refusal, which is all an unverified caller could have had.
+  if (open && !checks) return anonymous();
   if (sent.role !== 'operator') return refuse('unbound', `${req.method} needs a bound caller on this owner (it serves bound callers): a role is taken from a bound process or from the operator check, never from a request`);
   if (typeof owner.opts.operatorCheck !== 'function') return refuse('unverifiable', `${req.method} claims the operator, and this owner has no check that can vouch for a pipe client, so it fails closed`);
   return Promise.resolve(owner.opts.operatorCheck({ conn: c, caller: sent, method: req.method })).then((v) => {
-    if (!v || v.ok !== true) return refuse('operator_check', `${req.method}: the operator check refused this connection${v && v.reason ? ` (${v.reason})` : ''}`);
+    if (!v || v.ok !== true) return open ? anonymous() : refuse('operator_check', `${req.method}: the operator check refused this connection${v && v.reason ? ` (${v.reason})` : ''}`);
     c.belayVia = v.via || 'peer';
     params.caller = { ...sent, role: 'operator' };
     return null;

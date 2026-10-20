@@ -14,6 +14,7 @@ const path = require('node:path');
 const { Store } = require('./store.cjs');
 const { Engine } = require('./engine.cjs');
 const { BindRegistry } = require('./bind.cjs');
+const OperatorCheck = require('./operator-check.cjs');
 const { err } = require('./errors.cjs');
 const lockApi = require('./lock.cjs'); // markListening is called through it, so a test can make it fail
 const { pipeName, acquireLock, releaseLock, resolveDataDir } = lockApi;
@@ -50,6 +51,11 @@ class Owner {
     this.mode = this.opts.mode === 'bound' ? 'bound' : 'claimed';
     this.binds = new BindRegistry(this.dataDir, { ttlMs: this.opts.bindTtlMs });
     this.startedAt = Date.now();
+    // ADR 0045 decision 4: a `bound` owner vouches for an operator by the operator's process (operator-check.cjs), unless the caller
+    // brought its own check. Where the peer cannot be examined (not Windows) it has no check and fails closed.
+    if (this.mode === 'bound' && typeof this.opts.operatorCheck !== 'function' && OperatorCheck.SUPPORTED) {
+      this.opts.operatorCheck = OperatorCheck.create({ startedAt: this.startedAt, spawned: () => this._spawnedProcesses(), deps: this.opts.operatorCheckDeps });
+    }
     this.conns = new Set();
     this.counters = { calls: 0, errors: 0 };
     this.lastWriteAt = Date.now();
@@ -68,7 +74,7 @@ class Owner {
   // connect to a missing pipe fails fast, but nothing in the lock said why, and the caller could not
   // tell a starting owner from a wedged one. Now it can, and it falls back to a copy or waits instead.
   async start() {
-    const lock = acquireLock(this.dataDir, { pipe: this.pipe, listening: false });
+    const lock = acquireLock(this.dataDir, { pipe: this.pipe, listening: false, mode: this.mode });
     if (!lock.won) {
       throw err('E_LOCKED', `the owner lock at ${this.dataDir} is held by pid ${lock.holder && lock.holder.pid}, which is alive`, { holder: lock.holder || null });
     }
@@ -78,9 +84,10 @@ class Owner {
       this.store.heartbeat(process.pid, this.pipe, this.startedAt);
       this.engine = new Engine({ dataDir: this.dataDir, store: this.store, getEmbedder: () => this.getEmbedder(), owner: this, establishedBy: 'owner' });
       await this._listen();
+      if (this.mode === 'bound') { this.tcpServer = await require('./owner-tcp.cjs').listenTcp(this); this.tcpPort = this.tcpServer.address().port; }
       // An owner no reader can see as listening is never dialled, so serving on would hold the lock
       // for nothing. Not marked means not started: the whole start is undone and the caller told.
-      if (!lockApi.markListening(this.lockDir)) {
+      if (!lockApi.markListening(this.lockDir, Date.now(), this.tcpPort ? { tcp_port: this.tcpPort } : {})) {
         throw err('E_INTERNAL', `the owner at ${this.dataDir} could not publish that its pipe is listening, so it gave up the lock rather than hold it unreachable`, { data_dir: this.dataDir, lock_dir: this.lockDir, cause: 'listening marker not written' });
       }
       this.listening = true;
@@ -195,6 +202,22 @@ class Owner {
     });
   }
 
+  // ADR 0045 decision 4 (c): the processes belay spawned that an operator cannot be, from the store's worker rows. A row that names its
+  // process's creation time matches on pid and creation time; one that does not is counted only while it is a worker's latest
+  // row and claims life, so a dead row's recycled pid never refuses the operator. `opts.spawnedProcesses()` adds the run's own
+  // (the headless orchestrator, known only to the run process).
+  _spawnedProcesses() {
+    const out = [];
+    try {
+      const live = require('./methods-run.cjs').LIFE_CLAIMING_STATES;
+      const db = this.store.db;
+      for (const r of db.prepare('SELECT DISTINCT pid, pid_created FROM worker WHERE pid IS NOT NULL AND pid_created IS NOT NULL').all()) out.push({ pid: r.pid, created: r.pid_created, kind: 'worker' });
+      for (const r of db.prepare('SELECT w.pid, w.state FROM worker w JOIN (SELECT id, MAX(seq) m FROM worker GROUP BY id) x ON w.id = x.id AND w.seq = x.m WHERE w.pid IS NOT NULL AND w.pid_created IS NULL').all()) if (live.has(r.state)) out.push({ pid: r.pid, created: null, kind: 'worker' });
+    } catch { /* a store that cannot be read has no workers to name; the chain rule still stands */ }
+    if (typeof this.opts.spawnedProcesses === 'function') { try { out.push(...this.opts.spawnedProcesses()); } catch { /* the run's own list is best effort */ } }
+    return out;
+  }
+
   noteWrite() { this.lastWriteAt = Date.now(); this.idleTruncated = false; }
 
   _idleCheckpoint() {
@@ -295,7 +318,7 @@ class Owner {
     if (who && typeof who === 'object') c.belayCaller = { pid: Number.isInteger(who.pid) ? who.pid : null, role: typeof who.role === 'string' ? who.role : null };
 
     if (req.method === 'ping') {
-      const result = { pid: process.pid, pipe: this.pipe, uptime_ms: Date.now() - this.startedAt, calls: this.counters.calls, embedder: this.embedInfo || null };
+      const result = { pid: process.pid, pipe: this.pipe, uptime_ms: Date.now() - this.startedAt, calls: this.counters.calls, embedder: this.embedInfo || null, ...(c.belayVerified === undefined ? {} : { operator_verified: c.belayVerified }) };
       if (!c.destroyed) c.write(JSON.stringify({ id: req.id, result }) + '\n');
       return;
     }
@@ -431,6 +454,10 @@ class Owner {
     // at most 2,000 ms of grace, then a kill by its exact pid (embedder.cjs close()).
     try { if (this.embedderObj) await this.embedderObj.close(); } catch (e) { record(e); }
     try { for (const c of this.conns) c.destroy(); this.conns.clear(); } catch (e) { record(e); }
+    await new Promise((resolve) => {
+      if (!this.tcpServer) return resolve();
+      try { this.tcpServer.close(() => resolve()); } catch (e) { record(e); resolve(); }
+    });
     await new Promise((resolve) => {
       if (!this.server) return resolve();
       try { this.server.close((closeErr) => { if (closeErr) record(closeErr); resolve(); }); }

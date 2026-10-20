@@ -167,6 +167,12 @@ async function run(ctx) {
   const core = await openCore({
     dataDir, caller: { role: 'operator', run_id: parsed.runId, pid: process.pid },
     ownerOpts: {
+      // ADR 0045 decisions 4 and 7: this process spawns everything that writes in the run, so its owner serves bound callers. An
+      // unkeyed request is anonymous (reads) or refused; the operator's CLI is vouched for by its process on the loopback port. The
+      // headless orchestrator is a model with Bash, so a process that descends from it is not the operator; the interactive one is
+      // the human's own session (its plugin runs the CLI), so it is not listed. Where the peer cannot be examined the owner stays claimed.
+      mode: require('../core/operator-check.cjs').SUPPORTED ? 'bound' : 'claimed',
+      spawnedProcesses: () => (!ce && Number.isInteger(hookBox.pid) ? [{ pid: hookBox.pid, created: null, kind: 'orchestrator' }] : []),
       controls: {
         'run.stop': (params) => stopControl.handle(params),
         // ADR 0023 amendment 5: an interactive run registers them too; its pause parks the workers and leaves the session alone

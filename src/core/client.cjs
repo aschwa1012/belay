@@ -11,9 +11,10 @@
 
 const net = require('node:net');
 const { err } = require('./errors.cjs');
-const { pipeName } = require('./lock.cjs');
+const { pipeName, readOwnerLock, pidAlive } = require('./lock.cjs');
 const { WRITE_METHODS } = require('./engine.cjs'); // the method table only; nothing here opens a store
 
+const VERIFY_OPERATOR_MS = 20000; // the operator check reads two tables of the host (netstat, a process snapshot); each has its own bound of 10 s
 const sleep = ms => new Promise(r => { const t = setTimeout(r, ms); if (t.unref) t.unref(); });
 
 // Embeddings travel as base64 float32, not as a JSON array of decimals: a 384-d vector is ~1.5 KB of
@@ -56,7 +57,7 @@ class Client {
 
   async connect() {
     for (let i = 0; i < this.opts.connectRetries; i++) {
-      try { await this._dial(this.opts.dialTimeoutMs); return this; }
+      try { await this._dial(this.opts.dialTimeoutMs); await this._verifyOperator(); return this; }
       catch { /* no owner answered; maybe elect, maybe wait for whoever is starting */ }
       if (this.opts.elect) {
         const { Owner } = require('./owner.cjs');
@@ -86,9 +87,34 @@ class Client {
     } catch { return null; }
   }
 
+  // ADR 0045 decision 4: an operator with no key is vouched for by its process, which only the owner's loopback port can show. When
+  // the lock says the owner serves `bound`, that caller dials the port; every other caller dials the pipe. A bound owner whose
+  // port is not yet published (it is starting) is waited for, never dialled on the pipe with an operator claim it would refuse.
+  _target() {
+    const c = this.opts.caller;
+    if (this.opts.key || this.opts.pipe || !c || c.role !== 'operator') return { pipe: this.pipe };
+    const lock = readOwnerLock(this.dataDir);
+    if (!lock || lock.mode !== 'bound' || !pidAlive(lock.pid)) return { pipe: this.pipe };
+    if (!Number.isInteger(lock.tcp_port)) throw err('E_NO_OWNER', 'the owner serves bound callers and has not published its loopback port yet', { data_dir: this.dataDir });
+    return { port: lock.tcp_port, host: '127.0.0.1' };
+  }
+
+  // ADR 0045 decision 4: on the loopback port the owner vouches for this process by reading the connection table and a process
+  // snapshot, about a second. It does that once per connection, and asks for it here, with a bound of its own, so that the first
+  // real call is not charged with it (a read's own bound is a fraction of a second, and a read that ran out of time would be taken
+  // for a wedged owner). The answer is not used: a refused claim is refused again by the call that needs it, with the reason.
+  async _verifyOperator() {
+    if (!this.sock || !this._viaPort) return;
+    try { await this.call('ping', { caller: this.opts.caller, verify_operator: true }, { timeoutMs: VERIFY_OPERATOR_MS }); }
+    catch { /* the next call finds out */ }
+  }
+
   _dial(timeoutMs) {
     return new Promise((resolve, reject) => {
-      const s = net.connect(this.pipe);
+      let target;
+      try { target = this._target(); } catch (e) { reject(e); return; }
+      this._viaPort = !!target.port;
+      const s = target.port ? net.connect({ host: target.host, port: target.port }) : net.connect(target.pipe);
       let buf = '', settled = false;
       const timer = setTimeout(() => { if (!settled) { settled = true; try { s.unref(); } catch { /* best effort */ } s.destroy(); reject(err('E_TIMEOUT', `connecting to ${this.pipe} took longer than ${timeoutMs} ms`)); } }, timeoutMs);
       timer.unref();

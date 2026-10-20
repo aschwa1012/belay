@@ -173,12 +173,14 @@ test('bound mode with an operator check: the check vouches for the connection or
     const { claimed } = await workerBind(o);
     await rawCall(o.pipe, 'memory.store', { text: 'keyed', embed: false, caller: claim }, claimed.key);
     assert.deepStrictEqual(seen, ['memory.store', 'memory.store'], 'the check ran for the two unkeyed claims only');
-    // an owner with no check fails closed on an operator claim
   });
+  // an owner left to its own check (a Windows owner builds one) refuses an operator claim that arrives on the pipe: the pipe cannot
+  // show who dialled, so the claim has to come in on the loopback port (tests/core/operator-check.test.cjs drives that path)
   await withOwner({ mode: 'bound' }, async (o) => {
     const r = await rawCall(o.pipe, 'memory.store', { text: 'x', embed: false, caller: { role: 'operator', run_id: RUN } });
     assert.strictEqual(r.error && r.error.code, 'E_UNBOUND');
-    assert.strictEqual(r.error.detail.reason, 'unverifiable');
+    assert.match(r.error.detail.reason, /^(operator_check|unverifiable)$/);
+    assert.match(r.error.message, /loopback port|no check/);
   });
 });
 
