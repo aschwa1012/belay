@@ -132,6 +132,7 @@ test('notes off, handback_question on: the question closes the message exactly o
   const first = await firstMessage({ handback_question: true });
   assert.equal(count(first, QUESTION), 1);
   assert.ok(first.endsWith('or give it in your hand-back.'));
+  assert.ok(first.includes('where this project keeps durable notes for later sessions') && !first.includes('CLAUDE.md'), 'the destination is no named file');
   assert.ok(first.includes('implement the thing'));
   assert.ok(!first.includes('lease_release') && !first.includes('`notes`') && !first.includes('Notes for the next worker'));
   assert.ok(!first.includes('{{'));
