@@ -8,18 +8,14 @@ const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 const { pidAlive } = require('./lock.cjs');
 const { DEFAULT_LEASE_TTL_MS, TASK_STATES } = require('./schema.cjs');
-const { runAcceptance, normalise } = require('./evaluate.cjs');
+const { runAcceptance } = require('./evaluate.cjs');
+const holds = require('./task-holds.cjs');
 
 // ADR 0025 decision 1: the most a worker may hand back on release, serialized.
 const HANDOFF_MAX_BYTES = 4096;
 
 // build step 6e-4: 'paused' dropped — a parked worker is not live, so task.assign refuses it E_WORKER_NOT_LIVE.
 const LIVE_WORKER_STATES = new Set(['starting', 'running', 'idle']);
-
-function overlaps(a, b) {
-  const x = normalise(a), y = normalise(b);
-  return x === y || x.startsWith(y + '/') || y.startsWith(x + '/');
-}
 
 function ttlFrom(args) {
   const n = Number(args && args.ttl_ms);
@@ -52,6 +48,10 @@ function findCycle(store, id, dependsOn) {
     return null;
   };
   return walk(id);
+}
+
+function filesOverlap({ task, files }) {
+  return err('E_FILES_OVERLAP', `task ${task.id} is not done and already owns ${files.join(', ')}`, { other_task_id: task.id, other_run_id: task.run_id, files });
 }
 
 async function create(E, caller, args) {
@@ -108,14 +108,9 @@ async function create(E, caller, args) {
   }
 
   if (filesOwned && filesOwned.length) {
-    for (const other of rows.currentAll(E.store, 'task')) {
-      if (other.state === 'done' || !Array.isArray(other.files_owned)) continue;
-      const clash = [];
-      for (const mine of filesOwned) for (const theirs of other.files_owned) if (overlaps(mine, theirs)) clash.push(mine);
-      if (clash.length) {
-        throw err('E_FILES_OVERLAP', `task ${other.id} is not done and already owns ${[...new Set(clash)].join(', ')}`, { other_task_id: other.id, files: [...new Set(clash)] });
-      }
-    }
+    // ADR 0046 decision 1: only a task that holds its files (its run is live) can refuse this one.
+    const [first] = holds.findClashes(E.store, filesOwned, null);
+    if (first) throw filesOverlap(first);
   }
 
   const t = Date.now();
@@ -171,6 +166,13 @@ async function assign(E, caller, args) {
         { task_id: task.id, blocked_by: dep, dependency_state: d.state, holder: dl && !dl.released_at ? dl.holder : null, holder_role: dl && !dl.released_at ? dl.holder_role : null });
     }
 
+    // ADR 0046 decision 1: assigning makes a task hold its files, so another holding task, in any run, that overlaps them
+    // refuses it. Inside one live run create already refused the overlap, so this fires for a re-attached run only.
+    if (Array.isArray(task.files_owned) && task.files_owned.length) {
+      const [first] = holds.findClashes(E.store, task.files_owned, task.id);
+      if (first) throw filesOverlap(first);
+    }
+
     // ADR 0030 decision 4: the task-side checks above are the whole of a check_only call; it writes nothing.
     if (checkOnly) return { assignable: true, task_id: task.id };
 
@@ -212,7 +214,7 @@ function refutedReview(d) {
   return checks.some(c => c && c.kind === 'verdict' && c.executable === true && c.passed === false);
 }
 
-function view(E, task) {
+function view(E, task, liveness) {
   const t = Date.now();
   const l = rows.currentLeaseForTask(E.store, task.id);
   let lease = null, holderPidAlive = null;
@@ -224,12 +226,14 @@ function view(E, task) {
     }
   }
   const ck = rows.lastCheckpoint(E.store, task.id);
-  return { ...task, lease, holder_pid_alive: holderPidAlive, last_checkpoint_id: ck ? ck.id : null, last_checkpoint_at: ck ? ck.written_at : null };
+  const h = holds.holdOf(task, liveness || holds.runLiveness(E.store));
+  return { ...task, holds_files: h.holds, holds_reason: h.reason, lease, holder_pid_alive: holderPidAlive, last_checkpoint_id: ck ? ck.id : null, last_checkpoint_at: ck ? ck.written_at : null };
 }
 
 async function list(E, caller, args) {
   const states = Array.isArray(args.states) && args.states.length ? new Set(args.states) : null;
-  const tasks = rows.currentAll(E.store, 'task').filter(t => !states || states.has(t.state)).map(t => view(E, t));
+  const liveness = holds.runLiveness(E.store);
+  const tasks = rows.currentAll(E.store, 'task').filter(t => !states || states.has(t.state)).map(t => view(E, t, liveness));
   return { tasks };
 }
 
@@ -415,4 +419,4 @@ function heldLease(E, taskId, workerId) {
   return l;
 }
 
-module.exports = { create, assign, list, get, evaluate, renew, release, takeControl, view, heldLease, overlaps, findCycle, dependsOf, TASK_STATES };
+module.exports = { create, assign, list, get, evaluate, renew, release, takeControl, view, heldLease, overlaps: holds.overlaps, findCycle, dependsOf, TASK_STATES };

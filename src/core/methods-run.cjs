@@ -143,7 +143,9 @@ async function attach(E, caller, args) {
     embedder_mode: modeGiven ? (args.embedder_mode === null ? null : require('./embedder-mode.cjs').normalize(args.embedder_mode)) : (carryPause ? prev.embedder_mode : null),
   }, by, t);
   E.noteWrite();
-  return { run, epoch, reattached: !!prev, previous: parseRunRow(prev), workers_marked_dead: marked }; // item c
+  // ADR 0046 decision 1: a re-attached run's unfinished tasks hold their files again; name any that now clash with another live run's.
+  const overlaps = prev ? require('./task-holds.cjs').resumeOverlaps(E.store, runId) : [];
+  return { run, epoch, reattached: !!prev, previous: parseRunRow(prev), workers_marked_dead: marked, overlaps }; // item c
 }
 
 // build step 6f, ADR 0023 amendment 3 decision 4.1, extended by build step 6i-2 design item 1 (amendment
