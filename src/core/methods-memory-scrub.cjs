@@ -52,7 +52,8 @@ const scrubReceipt = (ctx, ent, index, sources) => ({
 // The proposal row: the entry as the scrubber gave it, what S3 verified, and the facts S4 found. Applies nothing.
 function propose(E, caller, ctx, ent, index, sources, facts) {
   // The same mark already open for this note is not proposed twice (every close of an unattended project would add one): the open row is returned.
-  const open = openProposals(E, ctx.project).find((p) => sameMark(p.entry, ent));
+  // A draft is not a mark on the note's state: it answers a nomination, and a later nomination of the same note needs a draft of its own.
+  const open = ent.action === 'draft' ? null : openProposals(E, ctx.project).find((p) => sameMark(p.entry, ent));
   const row = open ? { id: open.id } : C.putRow(E, caller, {
     ns: L.nsOf('proposal', ctx.project), type: 'proposal', runId: ctx.runId,
     text: `proposal ${ent.action}${ent.kind ? ` ${ent.kind}` : ''}${ent.resolve ? ` ${ent.resolve}` : ''}${ent.relation ? ` ${ent.relation}` : ''} ${ent.id}${ent.of ? ` of ${ent.of}` : ''} (run ${ctx.runId})`,
