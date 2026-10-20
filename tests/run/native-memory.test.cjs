@@ -72,7 +72,7 @@ test('checkSurface: accepts memory_paths only on exact equality, separators, cas
 
 test('checkSurface: refuses absent, a different folder, extra keys and non-objects when native memory was requested', () => {
   const cases = [
-    [undefined, /absent/], [null, /absent/], [{}, /exactly/], [{ auto: 'C:/Work/x/.claude/projects/p/memory' }, /asked for/],
+    [undefined, /absent/], [null, /absent/], [{}, /exactly/], [{ auto: 'D:/home/x/.claude/projects/p/memory' }, /asked for/],
     [{ auto: DIR + '2' }, /asked for/], [{ auto: '' }, /asked for/], [{ auto: DIR, project: 'p' }, /exactly/],
     [{ project: DIR }, /exactly/], [DIR, /absent/], [[DIR], /absent/],
   ];
