@@ -60,7 +60,8 @@ function liveSince(store, runId) {
 // the asker's run did yields to it (ADR 0046 decision 1: the run that is live now keeps the paths), so it is skipped.
 function findClashes(store, files, exceptId, asker) {
   const liveness = runLiveness(store);
-  const askerSince = asker ? liveSince(store, asker.run_id) : null;
+  // The yield is the live run's privilege: the asker's run must itself be live now, or it holds nothing to keep.
+  const askerSince = asker && liveness(asker.run_id).live ? liveSince(store, asker.run_id) : null;
   const sinceMemo = new Map();
   const yields = (runId) => {
     if (askerSince == null || runId === asker.run_id) return false;

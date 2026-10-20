@@ -184,3 +184,19 @@ test('a first attach reports no overlaps', async () => {
   const r = await c.run.attach({ adapter_pid: process.pid });
   assert.deepStrictEqual(r.overlaps, []);
 });
+
+test('an ended run\'s task does not take the priority a live run\'s task yields: assigning it is refused on the live overlap', async () => {
+  const ea = await open('run-ended-a');
+  await ea.run.attach({ adapter_pid: process.pid });
+  const old = await ea.task.create({ spec: 'old', files_owned: ['endedprio/z'] });
+  await ea.run.end({ exit_reason: 'test' });
+  const eb = await open('run-ended-b'); // attaches after run-ended-a did, so its liveness is the later one
+  await eb.run.attach({ adapter_pid: process.pid });
+  const live = await eb.task.create({ spec: 'live', files_owned: ['endedprio/z'] });
+  const op = await open('cli', 'operator');
+  await eb.worker.write({ id: 'w-ended-prio', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's', last_event_at: Date.now() });
+  await overlapOf(op.task.assign({ task_id: old.id, check_only: true }));
+  await overlapOf(op.task.assign({ task_id: old.id, worker_id: 'w-ended-prio' }));
+  assert.strictEqual((await op.task.get({ task_id: old.id })).state, 'open', 'a refused assign wrote nothing');
+  assert.deepStrictEqual(await holdsOf(op, live.id), [true, 'live']);
+});
