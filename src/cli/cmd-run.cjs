@@ -165,10 +165,13 @@ async function run(ctx) {
   let stopControl, runPauseControl, guard;
   const hookBox = {};
   // The headless orchestrator is recorded in the machine-wide spawn register, so another store's owner refuses its descendants too.
+  // A register that cannot be written throws: the orchestrator runner ends the child before its first prompt (a launch that fails open
+  // would leave other stores taking its descendants for operators).
   const registerOrchestrator = (pid) => {
     if (!Number.isInteger(pid)) return;
-    try { const SR = require('../core/spawn-register.cjs'); SR.register({ pid, kind: 'orchestrator', dataDir }); process.once('exit', () => SR.unregister(pid)); }
-    catch (e) { console.error('belay run: the headless orchestrator could not be recorded in the spawn register (' + ((e && e.message) || e) + '); another store on this machine cannot tell its children from an operator'); }
+    const SR = require('../core/spawn-register.cjs');
+    SR.registerProcess({ pid, kind: 'orchestrator', dataDir }, 'the headless orchestrator');
+    process.once('exit', () => SR.unregister(pid));
   };
   const core = await openCore({
     dataDir, caller: { role: 'operator', run_id: parsed.runId, pid: process.pid },

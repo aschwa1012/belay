@@ -29,6 +29,12 @@ function register({ pid, kind, dataDir = null, workerId = null, created = null }
   return rec;
 }
 
+// register, for a caller that must not go on without the record: the error names what could not be recorded.
+function registerProcess(rec, what) {
+  try { return register(rec); }
+  catch (e) { throw new Error(`${what} (pid ${rec.pid}) could not be recorded in the spawn register (${(e && e.message) || e}); another store on this machine could not tell its children from an operator`); }
+}
+
 function update(pid, created) {
   if (!Number.isFinite(created)) return false;
   let rec;
@@ -64,4 +70,4 @@ function runSpawned(interactive, orchestratorPid) {
   return !interactive && Number.isInteger(orchestratorPid) ? [{ pid: orchestratorPid, created: null, kind: 'orchestrator' }] : [];
 }
 
-module.exports = { register, update, unregister, list, dir, runSpawned };
+module.exports = { register, registerProcess, update, unregister, list, dir, runSpawned };
