@@ -4,9 +4,10 @@
 // Everything ADR 0024 adds lives here: the positive tool list, the settings-source restriction, the
 // ancestor instruction-file excludes, the hygiene settings block, and the gate that reads a
 // system/init and refuses one whose surface differs. Pure: no process, no fs, no network. Invariant 9
-// (CLAUDE.md): no read path may import anything beyond node:path and node:crypto.
+// (CLAUDE.md): no read path may import anything beyond node:path, node:os (the home directory, for checkNativeMemory) and node:crypto.
 
 const path = require('node:path');
+const os = require('node:os');
 const crypto = require('node:crypto');
 
 // ADR 0024 decisions 1 and 2: one positive list, every role, every launch (fresh or resume).
@@ -64,12 +65,25 @@ function hygieneSettings(cwd, { nativeMemory = null } = {}) {
   return { ...base, autoMemoryEnabled: true, autoMemoryDirectory: checkNativeMemory(nativeMemory) };
 }
 
-// The requested folder must be absolute (drive-rooted or posix-rooted); returned forward-slashed. Refused as E_ARGS otherwise.
+// The requested folder must be absolute (drive-rooted or posix-rooted) and outside Claude Code's own config directory;
+// returned forward-slashed. Refused as E_ARGS otherwise. Inside that directory is where Claude Code's default memory
+// folder lives (<config>/projects/<git root>/memory), so the gate's equality check could not tell a folder it honoured
+// from the fallback it takes on a malformed value (ADR 0024 amendment 3): the operator's real memory is never a valid ask.
 const ABSRE = /^([A-Za-z]:[\\/]|\/)/;
 const CTLRE = /[\x00-\x1f]/;
+const norm = (p) => path.posix.normalize(fwd(p)).replace(/\/+$/, '').toLowerCase();
+function claudeConfigDirs() {
+  const dirs = [path.join(os.homedir(), '.claude')];
+  if (process.env.CLAUDE_CONFIG_DIR) dirs.push(process.env.CLAUDE_CONFIG_DIR);
+  return dirs.map(norm);
+}
 function checkNativeMemory(dir) {
   const ok = typeof dir === 'string' && ABSRE.test(dir) && CTLRE.test(dir) === false;
   if (!ok) throw Object.assign(new Error('native_memory must be an absolute directory path'), { code: 'E_ARGS', detail: { native_memory: dir } });
+  const n = norm(dir);
+  if (claudeConfigDirs().some((c) => n === c || n.startsWith(c + '/'))) {
+    throw Object.assign(new Error("native_memory must be outside Claude Code's config directory, where its default memory folder lives"), { code: 'E_ARGS', detail: { native_memory: dir, reason: 'claude_config_dir' } });
+  }
   return fwd(dir);
 }
 

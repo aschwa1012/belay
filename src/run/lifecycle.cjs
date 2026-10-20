@@ -224,7 +224,8 @@ function readLaunchOptions(dir) {
   try {
     // ADR 0024 amendment 3: the folder the last launch's settings.json named, if any (the file is rewritten at the next launch, so read it first).
     const st = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8'));
-    if (st.autoMemoryEnabled === true && typeof st.autoMemoryDirectory === 'string') out.nativeMemory = st.autoMemoryDirectory;
+    // A worker can edit this file, so the folder is read back only if it passes the same check a spawn argument does.
+    if (st.autoMemoryEnabled === true && typeof st.autoMemoryDirectory === 'string') out.nativeMemory = require('./surface.cjs').checkNativeMemory(st.autoMemoryDirectory);
   } catch (e) {
     if (!e || e.code !== 'ENOENT') out.error = out.error || { where: 'settings.json', code: e && e.code, message: e && e.message };
   }

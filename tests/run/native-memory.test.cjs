@@ -133,13 +133,78 @@ test('spawn: native_memory fails the launch when the init reports another folder
 });
 
 test('spawn: without native_memory a reported memory_paths still fails, and the argument is validated', async () => {
-  const sb = sandbox(); const m = mgr(sb, createFakeCore());
+  const sb = sandbox(); const core = createFakeCore(); const m = mgr(sb, core);
   try {
     process.env.FAKE_MEMORY_AUTO = 'C:/fake/mem';
     await assert.rejects(() => m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'w-nm-off' }), (e) => e.code === 'E_NO_READY');
     delete process.env.FAKE_MEMORY_AUTO;
-    await assert.rejects(() => m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', native_memory: 'relative' }), (e) => e.code === 'E_ARGS');
-    await assert.rejects(() => m.spawn({ substrate: 'codex', worktree: sb.worktree, prompt: 'hi', native_memory: sb.mem }), (e) => e.code === 'E_SUBSTRATE');
+    // Refused before any row or file (ADR 0030 decision 4): no worker directory, no row, no folder.
+    const home = fwd(path.join(os.homedir(), '.claude', 'projects', 'C--eval-git-root', 'memory'));
+    const refused = [['w-nm-rel', 'relative', 'E_ARGS', 'claude-code'], ['w-nm-home', home, 'E_ARGS', 'claude-code'], ['w-nm-codex', sb.mem, 'E_SUBSTRATE', 'codex']];
+    for (const [id, native_memory, code, substrate] of refused) {
+      await assert.rejects(() => m.spawn({ substrate, worktree: sb.worktree, prompt: 'hi', worker_id: id, native_memory }), (e) => e.code === code, id);
+      assert.equal(fs.existsSync(L.workerDir(sb.data, id)), false, id + ': no worker directory');
+      assert.deepStrictEqual(core.rowsFor(id), [], id + ': no worker row');
+    }
     assert.equal(fs.existsSync(sb.mem), false, 'a refused spawn creates no folder');
   } finally { delete process.env.FAKE_MEMORY_AUTO; await m.shutdown?.().catch(() => {}); cleanup(sb.d); }
+});
+
+test('checkNativeMemory: refuses Claude Code config directories, the default memory folder among them, and accepts a sibling', () => {
+  const home = fwd(os.homedir());
+  const cfg = fwd(path.join(os.tmpdir(), 'cfg-dir'));
+  const prev = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = cfg;
+  try {
+    const refused = [
+      home + '/.claude', home + '/.claude/', home + '/.claude/projects/C--eval-git-root/memory', (home + '/.claude/projects/x/memory').toUpperCase(),
+      home.split('/').join('\\') + '\\.claude\\projects\\x\\memory', home + '/.claude/../.claude/projects/x', cfg, cfg + '/projects/p/memory',
+    ];
+    for (const bad of refused) assert.throws(() => S.checkNativeMemory(bad), (e) => e.code === 'E_ARGS' && e.detail.reason === 'claude_config_dir', bad);
+    for (const good of [home + '/.claudex/mem', home + '/.claude-eval/mem', cfg + '-other/mem', DIR]) assert.equal(S.checkNativeMemory(good), good, good);
+    assert.throws(() => S.hygieneSettings('C:/a/wt', { nativeMemory: home + '/.claude/projects/p/memory' }), (e) => e.code === 'E_ARGS');
+  } finally { if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev; }
+});
+
+test('readLaunchOptions: a settings.json a worker edited to name a Claude config folder is not read back', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-nm-rb-'));
+  try {
+    fs.writeFileSync(path.join(d, 'argv.json'), JSON.stringify({ spec: { args: [] } }));
+    const put = (dir) => fs.writeFileSync(path.join(d, 'settings.json'), JSON.stringify({ autoMemoryEnabled: true, autoMemoryDirectory: dir }));
+    put(fwd(path.join(os.homedir(), '.claude', 'projects', 'p', 'memory')));
+    const bad = LC.readLaunchOptions(d);
+    assert.equal(bad.nativeMemory, null);
+    assert.equal(bad.error.where, 'settings.json');
+    assert.equal(bad.error.code, 'E_ARGS');
+    put(fwd(path.join(d, 'mem')));
+    assert.equal(LC.readLaunchOptions(d).nativeMemory, fwd(path.join(d, 'mem')), 'a folder that passes the spawn check is read back');
+  } finally { cleanup(d); }
+});
+
+test('adopt: a second manager relaunching the worker keeps the folder in settings.json and passes the gate', async () => {
+  const sb = sandbox(); const core = createFakeCore();
+  const first = mgr(sb, core); let second = null;
+  process.env.FAKE_MEMORY_AUTO = 'echo';
+  try {
+    await first.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'w-nm-adopt', native_memory: sb.mem });
+    await first.stop({ worker_id: 'w-nm-adopt', mode: 'kill', timeout_ms: 8000 });
+    second = mgr(sb, core);
+    const r = await second.restart({ worker_id: 'w-nm-adopt', first_turn_timeout_ms: 45000 });
+    assert.match(r.surface.tools_hash, /^[0-9a-f]{64}$/);
+    assert.equal(second._worker('w-nm-adopt').nativeMemory, sb.mem, 'the adopted record carries the folder');
+    assert.equal(settingsOf(sb, 'w-nm-adopt').autoMemoryEnabled, true);
+    assert.equal(settingsOf(sb, 'w-nm-adopt').autoMemoryDirectory, sb.mem);
+  } finally { delete process.env.FAKE_MEMORY_AUTO; if (second) await second.shutdown().catch(() => {}); await first.shutdown().catch(() => {}); cleanup(sb.d); }
+});
+
+test('worker_spawn: native_memory is harness-only, refused at the MCP boundary and absent from the listing', () => {
+  const T = require('../../src/mcp/tools.cjs');
+  assert.deepStrictEqual(T.HARNESS_ONLY.worker_spawn, ['native_memory']);
+  for (const role of ['orchestrator']) {
+    const spawnTool = T.toolsFor(role).find((t) => t.name === 'worker_spawn');
+    assert.equal('native_memory' in spawnTool.inputSchema.properties, false, 'not listed, so it costs the listing no bytes');
+  }
+  assert.throws(() => T.validateArgs('worker_spawn', { substrate: 'claude-code', worktree: 'C:/w', prompt: 'p', native_memory: 'C:/eval/mem' }),
+    (e) => e.code === 'E_ARGS' && e.detail.reason === 'harness_only' && e.detail.field === 'native_memory');
+  assert.doesNotThrow(() => T.validateArgs('worker_spawn', { substrate: 'claude-code', worktree: 'C:/w', prompt: 'p' }));
 });
