@@ -132,7 +132,9 @@ test('reading a briefing writes nothing to the data dir', async () => {
   await reader.continuity.resumeDoc({ task_id: taskId });
   assert.deepStrictEqual(listDataDir(dir), before, 'a briefing is derived from rows and writes nothing');
   await reader.close();
-  // Re-elect so the after() hook has an owner to stop; the run manager writes resume.md, not the core.
+  // Re-elect explicitly (a Core that shut its owner down never elects again by itself, ADR 0051) so the after() hook has an
+  // owner to stop; the run manager writes resume.md, not the core.
+  await orch.becomeOwner();
   await orch.run.attach({ adapter_pid: process.pid });
 });
 
