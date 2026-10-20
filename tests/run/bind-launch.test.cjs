@@ -65,6 +65,9 @@ test('a core that cannot open a bind fails the launch E_BIND and no worker proce
   try {
     await assert.rejects(m.spawn({ substrate: 'claude-code', worktree, prompt: 'hello', worker_id: 'w-nobind' }), (e) => e.code === 'E_BIND' && /would not open a bind/.test(e.message));
     assert.ok(!fs.existsSync(path.join(data, 'workers', 'w-nobind', 'argv.json')), 'the launch never got as far as writing its argv');
+    const rows = core.rowsFor('w-nobind');
+    assert.strictEqual(rows[rows.length - 1].state, 'dead', `the refused spawn leaves a dead row, not a ghost: ${JSON.stringify(rows.map((r) => r.state))}`);
+    assert.ok(rows.every((r) => r.pid == null), 'and no pid');
   } finally { await m.shutdown(); cleanup(data); }
 });
 
@@ -114,4 +117,41 @@ test('launchBound: a second launch of a worker while the first awaits its bind i
   const failing = BL.launchBound(env, w, async () => { throw new Error('spawn failed'); });
   await assert.rejects(failing, /spawn failed/);
   assert.strictEqual(w.launchSlot, false, 'a failed launch released the slot too');
+});
+
+const CODEX = path.join(__dirname, 'fakes', 'fake-codex.cjs').split(path.sep).join('/');
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+
+test('a stop that lands while a Codex message awaits its bind wins: the launch is abandoned, its bind revoked, no process starts', async () => {
+  const { data, worktree } = sandbox();
+  const { core, log } = bindingCore();
+  const open = core.bindOpen; let gate = null; let opening = null;
+  core.bindOpen = async (identity) => { if (gate) { opening(); await gate; } return open(identity); }; // gated only for the message below
+  const m = createRunManager({ core, dataDir: data, runId: 'run-bl', paths: { claudeExe: FAKE, codexExe: CODEX, userSettings: USER_SETTINGS } });
+  try {
+    await m.spawn({ substrate: 'codex', worktree, prompt: 'one', worker_id: 'w-race' });
+    await m._waitTurn('w-race', 8000);
+    for (let i = 0; i < 100 && alive(m._worker('w-race').pid); i++) await new Promise((r) => setTimeout(r, 50)); // idle: the turn's process is gone
+    const w = m._worker('w-race');
+    const launches = w.launches; const opened = log.opened.length;
+    let release; gate = new Promise((r) => { release = r; });
+    const atGate = new Promise((r) => { opening = r; });
+    const msg = m.message({ worker_id: 'w-race', text: 'again' }).then((v) => ({ ok: v }), (e) => ({ err: e }));
+    await atGate; // the message holds the launch slot and waits on its bind
+    const stopped = await m.stop({ worker_id: 'w-race' }); // sees the previous turn's dead pid, kills nothing
+    assert.strictEqual(stopped.killed, false);
+    release();
+    const r = await msg;
+    assert.ok(r.err, `the message must be refused, got ${JSON.stringify(r)}`);
+    assert.strictEqual(r.err.code, 'E_SUBSTRATE');
+    assert.strictEqual(r.err.detail.reason, 'stopped_during_launch');
+    assert.strictEqual(w.launches, launches, 'no process was started');
+    assert.ok(!w.child || !alive(w.pid), 'no live process of the worker');
+    assert.notStrictEqual(core.currentWorker('w-race').state, 'running', 'no running row was written after the stop');
+    assert.strictEqual(log.opened.length, opened + 1, 'the launch did open its bind');
+    assert.strictEqual(log.opened.length, 2, 'the spawn and the message each opened one');
+    assert.ok(log.revoked.includes('b2'), `and the abandoned launch's bind was revoked: ${JSON.stringify(log.revoked)}`);
+    assert.strictEqual(w.bindId, null);
+    assert.strictEqual(w.launchSlot, false);
+  } finally { await m.shutdown().catch(() => {}); cleanup(data); }
 });

@@ -33,11 +33,31 @@ async function bindWorker({ core, runId, root, mcpPath }, w) {
 // ADR 0045 decision 2: one launch of a worker at a time, its bind opened first. The bind is an await, and a Codex worker's turn is a
 // launch (message): without the slot, two messages could both pass the mid-turn check before either spawned. The slot is taken
 // synchronously, before the first await, so the second is refused where it used to be refused.
+// A stop that lands while the bind is awaited would read the previous turn's dead pid, kill nothing and return, and the launch would
+// then spawn a process the stop never saw. doStop counts its calls on the worker (`stopCalls`); the count is compared once the bind
+// is open, in the same tick the process is spawned, and a launch a stop overtook revokes its bind and is refused. A core with no
+// bind verbs awaits nothing: the launch stays synchronous, as it was before binds.
 async function launchBound(env, w, doLaunch) {
   if (w.launchSlot) throw err('E_SUBSTRATE', `worker ${w.id}: a launch of it is already in progress; one process per turn`, { worker_id: w.id, substrate: w.substrate, state: w.state });
   w.launchSlot = true;
-  try { await bindWorker(env, w); return await doLaunch(); }
-  finally { w.launchSlot = false; }
+  try {
+    if (!hasBinds(env.core)) return await doLaunch();
+    const stops = w.stopCalls || 0;
+    try {
+      await bindWorker(env, w);
+      if ((w.stopCalls || 0) !== stops) {
+        const spent = w.bindId; w.bindId = null;
+        if (spent) { try { await env.core.bindRevoke(spent); } catch { /* the owner is gone, or the bind already closed */ } }
+        throw err('E_SUBSTRATE', `worker ${w.id}: a stop arrived while the launch was opening its bind; the launch is abandoned and no process was started`, { worker_id: w.id, substrate: w.substrate, state: w.state, reason: 'stopped_during_launch' });
+      }
+    } catch (e) {
+      // A first launch refused before any process exists leaves the spawn's `starting` row behind: write it `dead`, as every other
+      // pre-launch refusal does, before the refusal is handed back. A row a stop already made terminal stays.
+      if (w.state === 'starting' && !w.child && env.writeRow) { w.launchFailed = true; await env.writeRow(w, 'dead'); }
+      throw e;
+    }
+    return await doLaunch();
+  } finally { w.launchSlot = false; }
 }
 
 // The orchestrator's bind, opened by the run process (the owner's own) before the orchestrator is spawned. Returns the pipe name or null.
