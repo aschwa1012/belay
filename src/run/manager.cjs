@@ -242,7 +242,8 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       w.indexQueries = indexQueries; // the orchestrator's situation lines for this worker's memory index (memory.embedQuery extra_texts)
       workers.set(id, w);
     } finally { pendingIds.delete(id); }
-    await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the worker adapter's argv carries the notes lever, so the levers are known before the files are written
+    const spawnLevers = await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the worker adapter's argv carries the notes lever, so the levers are known before the files are written
+    if (!spawnLevers.first_message_index) w.indexQueries = []; // the first-message index is their only reader: with it off the row keeps none (null)
     writeFilesFor(w);
     if (substrate === 'claude-code') w.instructions = I.snapshotInstructions(w.worktree, w.dir); // spawn only
 

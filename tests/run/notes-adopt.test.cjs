@@ -137,3 +137,21 @@ test('memory_queries are kept on the worker row, so a relaunch by another adapte
     for (const m of [first, second]) { if (m) { try { await m.shutdown(); } catch { /* best effort */ } } }
   }
 });
+
+// D58: the first-message index is the only reader of memory_queries, so with it off (every lever at its default) the argument is
+// still validated but the worker row keeps none.
+test('memory_queries are validated but not kept on the worker row while the first-message index is off', async () => {
+  const sb = sandbox();
+  const core = createFakeCore({ runId: 'run-fake' });
+  core.run = { get: async () => ({ run: { memory_levers: null } }) };
+  const m = mgr(sb, core);
+  try {
+    await assert.rejects(m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'wbad', task_id: 't1', memory_queries: ['ok', '  '] }), (e) => e.code === 'E_ARGS');
+    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'wq', task_id: 't1', memory_queries: ['add a migration'] });
+    await m._waitTurn('wq', SLOW);
+    await sleep(120);
+    await waitCreated(core, 'wq');
+    assert.deepStrictEqual(m._worker('wq').indexQueries, []);
+    assert.strictEqual(core.currentWorker('wq').memory_queries, null, 'the row carries none');
+  } finally { try { await m.shutdown(); } catch { /* best effort */ } }
+});
