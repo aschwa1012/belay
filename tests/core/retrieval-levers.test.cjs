@@ -7,6 +7,7 @@ const ML = require('../../src/core/memory-levers.cjs');
 const RP = require('../../src/core/retrieval-profiles.cjs');
 const { MODELS } = require('../../src/core/models.cjs');
 const { GGUF_MODELS } = require('../../src/core/gguf-models.cjs');
+const { ONNX_RERANKER_TABLE } = require('../../src/core/onnx-rerankers.cjs');
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 
@@ -35,14 +36,27 @@ test('the profile table: seven profiles, every model is in a table, devices foll
   assert.throws(() => RP.profileModels('nope'), { code: 'E_ARGS' });
 });
 
-test('the CPU rerankers are listed, flagged pending_pin, carry no invented hashes, and stay out of the embedder table', () => {
+// The pending mechanism is kept for a model named before it is pinned. No shipped entry is pending, so a test marks a
+// pinned one for the length of a call and restores it.
+const withPending = (id, fn) => { const e = RP.ONNX_RERANKERS[id]; e.pending_pin = true; try { return fn(); } finally { e.pending_pin = false; } };
+
+test('the CPU rerankers are listed with a pin in onnx-rerankers.cjs, usable, and stay out of the embedder table', () => {
+  assert.deepStrictEqual(Object.keys(RP.ONNX_RERANKERS).sort(), Object.keys(ONNX_RERANKER_TABLE).sort());
   for (const e of Object.values(RP.ONNX_RERANKERS)) {
-    assert.strictEqual(e.pending_pin, true);
-    assert.ok(!('sha' in e) && !('files' in e), e.id);
-    assert.throws(() => RP.assertUsable(e.id), (x) => x.code === 'E_MODEL' && x.detail.reason === 'pending_pin');
+    assert.strictEqual(e.pending_pin, false);
+    assert.strictEqual(e.pin, 'onnx-rerankers.cjs');
+    assert.doesNotThrow(() => RP.assertUsable(e.id));
     assert.ok(!MODELS[e.id], 'not iterated as an embedder');
+    assert.strictEqual(RP.describeModel(e.id).pending_pin, false);
   }
   assert.doesNotThrow(() => RP.assertUsable(RP.NANO));
+});
+
+test('the pending mechanism still refuses a model marked pending_pin, with E_MODEL and the reason', () => {
+  for (const e of Object.values(RP.ONNX_RERANKERS)) {
+    withPending(e.id, () => assert.throws(() => RP.assertUsable(e.id), (x) => x.code === 'E_MODEL' && x.detail.reason === 'pending_pin'));
+    assert.doesNotThrow(() => RP.assertUsable(e.id), 'restored');
+  }
 });
 
 test('validation: each lever refuses a bad value and names the key', () => {
@@ -68,11 +82,6 @@ test('validation: each lever refuses a bad value and names the key', () => {
     [{ routing: { reviewer: 'constructor' } }, /memory.routing.reviewer must be one of/],
     [{ routing: { reviewer: '__proto__' } }, /memory.routing.reviewer must be one of/],
     [{ routing: Object.fromEntries(Array.from({ length: 65 }, (_, i) => [`t${i}`, 'cpu-fast'])) }, /more than 64 entries/],
-    [{ routing: { reviewer: 'cpu-rerank' } }, /not yet available in this build/],
-    [{ routing: { reviewer: { embedder: RP.NANO, reranker: 'jinaai/jina-reranker-v1-tiny-en' } } }, /not yet available in this build/],
-    [{ profile: 'cpu-rerank-light' }, /not yet available in this build/],
-    [{ profile_cpu: 'cpu-rerank' }, /not yet available in this build/],
-    [{ reranker: 'Alibaba-NLP/gte-reranker-modernbert-base' }, /not yet available in this build/],
     [{ routing: [] }, /memory\.routing must be null or an object/],
     [{ routing: { Reviewer: 'cpu-fast' } }, /memory\.routing\.Reviewer/],
     [{ routing: { reviewer: 'custom' } }, /memory\.routing\.reviewer must be one of/],
@@ -84,7 +93,7 @@ test('validation: each lever refuses a bad value and names the key', () => {
   for (const [block, re] of bad) assert.match(parse(block).error || '', re, JSON.stringify(block));
 });
 
-test('validation: good values are accepted, including custom pairs, advanced agent types and the pending reranker (the resolver refuses it)', () => {
+test('validation: good values are accepted, including custom pairs, advanced agent types and a CPU reranker', () => {
   const ok = parse({
     profile: 'custom', embedder: 'Qwen/Qwen3-Embedding-8B-GGUF', reranker: 'ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF',
     routing: { orchestrator: 'gpu-balanced', coder: { embedder: RP.NANO }, researcher: { embedder: RP.NANO, reranker: 'none' }, 'note-review': 'cpu-fast' },
@@ -94,12 +103,16 @@ test('validation: good values are accepted, including custom pairs, advanced age
   assert.strictEqual(parse({ routing: Object.fromEntries(Array.from({ length: 64 }, (_, i) => [`t${i}`, 'cpu-fast'])) }).error, undefined, '64 entries is the cap');
 });
 
-test('a pending model is refused with the coded error E_MODEL, by the lever parse (so settings and the run spec refuse it)', () => {
-  for (const block of [{ reranker: 'jinaai/jina-reranker-v1-tiny-en' }, { profile: 'cpu-rerank' }, { routing: { coder: 'cpu-rerank-light' } }]) {
-    const r = parse(block);
-    assert.strictEqual(r.code, 'E_MODEL', JSON.stringify(block));
-    assert.match(r.error, /not yet available in this build/);
-  }
+test('a pinned CPU reranker is accepted by the lever parse; a model marked pending is refused with E_MODEL (so settings and the run spec refuse it)', () => {
+  const blocks = [{ reranker: 'jinaai/jina-reranker-v1-tiny-en' }, { reranker: 'Alibaba-NLP/gte-reranker-modernbert-base' }, { profile: 'cpu-rerank' }, { profile: 'cpu-rerank-light' }, { profile_cpu: 'cpu-rerank' }, { routing: { coder: 'cpu-rerank-light' } }, { routing: { reviewer: 'cpu-rerank' } }, { routing: { reviewer: { embedder: RP.NANO, reranker: 'jinaai/jina-reranker-v1-tiny-en' } } }];
+  for (const block of blocks) assert.strictEqual(parse(block).error, undefined, JSON.stringify(block));
+  withPending('jinaai/jina-reranker-v1-tiny-en', () => withPending('Alibaba-NLP/gte-reranker-modernbert-base', () => {
+    for (const block of blocks) {
+      const r = parse(block);
+      assert.strictEqual(r.code, 'E_MODEL', JSON.stringify(block));
+      assert.match(r.error, /not yet available in this build/);
+    }
+  }));
 });
 
 test('the GPU kinds copied into retrieval-profiles.cjs match the GGUF table exactly', () => {
