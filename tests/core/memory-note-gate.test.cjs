@@ -220,6 +220,21 @@ test('retrieve by id leaves out the lifecycle namespaces for a tool-channel orch
   }
 });
 
+test('memory.noteSubjects counts only the notes the gate shows the caller', async () => {
+  const space = fresh(), project = space.replace('project/', '');
+  task('t-sub-done', WRITER, 'done'); task('t-sub-open', WRITER, 'assigned');
+  note(space, 'ended', { task_id: 't-sub-done', body: { subjects: ['kept'] } });
+  note(space, 'mine', { run_id: READER, task_id: null, body: { subjects: ['own-run'] } });
+  note(space, 'open run', { task_id: 't-sub-open', body: { subjects: ['open-leak'] } });
+  note(space, 'promoted', { task_id: 't-sub-done', body: { subjects: ['promoted-leak'], promoted_to: { file: 'CLAUDE.md' } } });
+  note(space, 'pending', { task_id: 't-sub-done', body: { subjects: ['pending-leak'], state: 'pending' } });
+  const r = await call(orch(READER), 'memory.noteSubjects', { project });
+  assert.deepStrictEqual(r.subjects.map((x) => x.subject).sort(), ['kept', 'own-run']);
+  assert.strictEqual(r.considered, 2);
+  const op = await call(callerFor('operator'), 'memory.noteSubjects', { project });
+  assert.strictEqual(op.considered, 5, 'the operator is not gated');
+});
+
 test('memory.timeline goes through the gate: a hidden anchor is not found, and the sides leave hidden notes out', async () => {
   const space = fresh();
   task('t-tl', WRITER, 'done');
