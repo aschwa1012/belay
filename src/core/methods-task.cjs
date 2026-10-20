@@ -335,6 +335,10 @@ function missingCitations(E, result) {
 }
 
 async function release(E, caller, args) {
+  return require('./methods-memory-notes.cjs').serialised(E, caller, args, () => releaseNow(E, caller, args));
+}
+
+async function releaseNow(E, caller, args) {
   if (args.result !== undefined) checkResult(caller, args.result);
   // ADR 0047: with the run's notes lever on, the hand-back's notes and marks are checked and embedded here, before
   // anything is written; with it off this is null and the release below is exactly what it was.

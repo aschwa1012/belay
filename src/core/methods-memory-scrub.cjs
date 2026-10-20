@@ -79,7 +79,7 @@ function hold(E, caller, ctx, ent, index, sources, state) {
     // Marks on a pending note need no review: it hides nothing. Applied directly to the pending row.
     const done = archiveNote(E, ctx.project, note, { kind: ent.kind, of: ent.of, ground: ent.ground, reason: ent.reason, cites: ent.cites, run_id: ctx.runId, head_sha: ctx.evidence.head_sha, direct: true }, ent.of ? loadNote(E, ent.of) : null);
     E.store.patchBody(note.id, b => { b.archived.facts = facts; b.archived.scrub = receipt; return b; });
-    return { index, id: ent.id, action: 'hold', outcome: 'archived_directly', facts, history_moved: done.history_moved, row: C.rowOut(E, note.id) };
+    return { index, id: ent.id, action: 'hold', outcome: 'archived_directly', facts, history_moved: done.history_moved, replaced_also_archived: done.replaced_also_archived, row: C.rowOut(E, note.id) };
   }
   if (note.b.held) throw err('E_EXISTS', `note ${note.id} is already held (${note.b.held.row}); the reviewer settles it before another hold`, { id: note.id, held_row: note.b.held.row });
   const held = C.putRow(E, caller, {
@@ -206,7 +206,8 @@ async function scrubApply(E, caller, args, opts = {}) {
   const holds = [...applied, ...proposed].filter(r => r.action === 'hold').length;
   // The runaway alarm counts every note taken out of sight in one scrub: a hold, or a relation that archives a note.
   const archives = [...applied, ...proposed].filter(r => r.action === 'hold' || (r.action === 'relate' && r.relation !== 'new')
-    || (r.action === 'resolve' && ['supersedes', 'refines'].includes(r.resolved ? r.resolved.resolved : r.resolve))).length; // a pending repeat takes nothing out of sight
+    || (r.action === 'resolve' && ['supersedes', 'refines'].includes(r.resolved ? r.resolved.resolved : r.resolve))).length // a pending repeat takes nothing out of sight
+    + [...applied, ...proposed].reduce((n, r) => n + ((r.replaced_also_archived || (r.resolved && r.resolved.replaced_also_archived) || []).length), 0); // and a note a superseder replaced leaves with it
   const out = { mode, run_id: runId, project, counts: { entries: entries.length, applied: applied.length, proposed: proposed.length, refused: refused.length, holds, archives }, applied, proposed, refused };
   if (archives > lv.scrub_alarm_holds) out.alarm = { kind: 'many_holds', holds: archives, limit: lv.scrub_alarm_holds, message: `${archives} notes taken out of sight by one scrub (holds and archiving relations) is more than the ${lv.scrub_alarm_holds} that is normal: the orchestrator and the operator should look (belay memory proposals, belay memory archive)` };
   return out;
