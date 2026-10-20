@@ -111,6 +111,23 @@ test('a dead claim (no pid, or the pid reused by another process) is taken over 
   });
 });
 
+test('a dead claim whose child could not be killed is not taken over: no second reviewer starts, the command exits 1, and the dead claim stays', async () => {
+  await planted(async (T) => {
+    await holdOne(T);
+    T.store.close();
+    const old = (await plantClaim(T, { pid: 424301, created: 100, job: 'archreview-stuck' })).claim;
+    await asEngine(T, (E) => E.handle('worker.write', { caller: callerFor('orchestrator', { run_id: RUN }), id: old.job, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's-stuck', last_event_at: Date.now() }));
+    // The claimant is gone (only this process answers a pid check) but the child, which is this process, cannot be stopped.
+    const seam = { pidAlive: (p) => p === process.pid, createdOf: async () => ({ created: 9 }), killMany: async (targets) => targets.map((t) => ({ pid: t.pid, killed: false, detail: 'refused: unverifiable' })), makeManager: never };
+    const r = await cmd(T, [...base, T.repo, '--all'], seam);
+    assert.strictEqual(r.code, 1, r.text);
+    assert.strictEqual(r.json.error.code, 'E_BUSY');
+    assert.match(r.text, /still alive and could not be stopped \(orphan pid \d+ of job archreview-stuck was not killed: refused: unverifiable\)/);
+    const evs = await claims(T);
+    assert.deepStrictEqual(evs.map((e) => [e.id, e.m.phase]), [[old.id, 'claim']], 'no claim or release was written; the dead claim is still the newest');
+  });
+});
+
 test('a signal during the review fast-closes it: the child is killed, the claim is released as failed E_ABORTED, and the handlers are removed', async () => {
   await planted(async (T) => {
     await holdOne(T);

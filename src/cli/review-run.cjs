@@ -75,6 +75,11 @@ async function claimedReview({ s, project, ctx, common, runReview, renderStage }
     if (!dead.dead) return busy(project, state, `; ${dead.via}`);
     replaces = state.claim.id;
     const orphan = await sweepOrphan(h, state.claim, D);
+    // A child that outlived its claimant and could not be stopped is a reviewer still running (and paid for): a second one must not
+    // start beside it. Nothing is claimed or spawned, and the dead claim stays, so the next attempt tries the sweep again.
+    if (!orphan.swept && orphan.pid != null && D.pidAlive(orphan.pid)) {
+      return busy(project, state, `; the dead claim's child pid ${orphan.pid} is still alive and could not be stopped (${orphan.detail}); no second review was started`);
+    }
     notes.push(`took over the dead claim ${state.claim.id} (${dead.via}); ${orphan.detail}`);
   }
   const jobId = `archreview-${s.runId}-${Date.now().toString(36)}`;
