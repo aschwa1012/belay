@@ -50,7 +50,9 @@ function admit(owner, c, req) {
   const checks = sent.role === 'operator' && typeof owner.opts.operatorCheck === 'function' && c.belayTransport === 'tcp';
   // The operator's own reads (a search of another run's namespace) need the operator, so a claim on the loopback port is checked first;
   // a refused claim on an open read falls back to anonymous rather than to a refusal, which is all an unverified caller could have had.
-  if (open && !checks) return anonymous();
+  // An unverified claim on an open read is not checked here: the check costs a second and two host tools, and an open read needs none
+  // of it. The client asks for the check (a ping with verify_operator) when a call needs the operator; a verified connection is served as one.
+  if (open && (!checks || !c.belayPeer)) return anonymous();
   if (sent.role !== 'operator') return refuse('unbound', `${req.method} needs a bound caller on this owner (it serves bound callers): a role is taken from a bound process or from the operator check, never from a request`);
   if (typeof owner.opts.operatorCheck !== 'function') return refuse('unverifiable', `${req.method} claims the operator, and this owner has no check that can vouch for a pipe client, so it fails closed`);
   return Promise.resolve(owner.opts.operatorCheck({ conn: c, caller: sent, method: req.method })).then((v) => {

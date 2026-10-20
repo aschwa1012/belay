@@ -12,7 +12,7 @@
 const net = require('node:net');
 const { err } = require('./errors.cjs');
 const { pipeName, readOwnerLock, pidAlive } = require('./lock.cjs');
-const { WRITE_METHODS } = require('./engine.cjs'); // the method table only; nothing here opens a store
+const { WRITE_METHODS, METHODS } = require('./engine.cjs'); // the method table only; nothing here opens a store
 
 const VERIFY_OPERATOR_MS = 20000; // the operator check reads two tables of the host (netstat, a process snapshot); each has its own bound of 10 s
 const sleep = ms => new Promise(r => { const t = setTimeout(r, ms); if (t.unref) t.unref(); });
@@ -57,7 +57,7 @@ class Client {
 
   async connect() {
     for (let i = 0; i < this.opts.connectRetries; i++) {
-      try { await this._dial(this.opts.dialTimeoutMs); await this._verifyOperator(); return this; }
+      try { await this._dial(this.opts.dialTimeoutMs); return this; }
       catch { /* no owner answered; maybe elect, maybe wait for whoever is starting */ }
       if (this.opts.elect) {
         const { Owner } = require('./owner.cjs');
@@ -100,20 +100,23 @@ class Client {
   }
 
   // ADR 0045 decision 4: on the loopback port the owner vouches for this process by reading the connection table and a process
-  // snapshot, about a second. It does that once per connection, and asks for it here, with a bound of its own, so that the first
-  // real call is not charged with it (a read's own bound is a fraction of a second, and a read that ran out of time would be taken
-  // for a wedged owner). The answer is not used: a refused claim is refused again by the call that needs it, with the reason.
+  // snapshot, about a second, once per connection. Only a call that needs the operator pays it (`call` below): a write or a restricted
+  // read asks for the check first, and an open read the anonymous role may not make (refused E_ROLE) asks for it and is repeated. The
+  // check is asked for here with a bound of its own, since a read's own bound is a fraction of a second and a read that ran out of time
+  // would be taken for a wedged owner. The answer is not used: a refused claim is refused again by the call that needs it, with the
+  // reason. An ordinary open read (status, worker reads) never gets here, and the owner starts no process for it.
   async _verifyOperator() {
+    this._opChecked = true;
     if (!this.sock || !this._viaPort) return;
-    try { await this.call('ping', { caller: this.opts.caller, verify_operator: true }, { timeoutMs: VERIFY_OPERATOR_MS }); }
-    catch { /* the next call finds out */ }
+    try { const r = await this.call('ping', { caller: this.opts.caller, verify_operator: true }, { timeoutMs: VERIFY_OPERATOR_MS }); return !!(r && r.operator_verified === true); }
+    catch { return false; /* the next call finds out */ }
   }
 
   _dial(timeoutMs) {
     return new Promise((resolve, reject) => {
       let target;
       try { target = this._target(); } catch (e) { reject(e); return; }
-      this._viaPort = !!target.port;
+      this._viaPort = !!target.port; this._opChecked = false;
       const s = target.port ? net.connect({ host: target.host, port: target.port }) : net.connect(target.pipe);
       let buf = '', settled = false;
       const timer = setTimeout(() => { if (!settled) { settled = true; try { s.unref(); } catch { /* best effort */ } s.destroy(); reject(err('E_TIMEOUT', `connecting to ${this.pipe} took longer than ${timeoutMs} ms`)); } }, timeoutMs);
@@ -161,7 +164,19 @@ class Client {
     return err('E_OWNER_LOST', message + advice, d);
   }
 
-  call(method, params, opts = {}) {
+  async call(method, params, opts = {}) {
+    if (!this._viaPort || this._opChecked || method === 'ping') return this._send(method, params, opts);
+    const spec = METHODS[method];
+    if (!(spec && spec.kind === 'read' && Array.isArray(spec.roles) && spec.roles.includes('worker'))) { await this._verifyOperator(); return this._send(method, params, opts); } // authority needed: the check first, with its own bound
+    try { return await this._send(method, params, opts); }
+    catch (e) { // an open read is served anonymous; when that role may not make this particular read, the check is asked for and the read repeated
+      if (!(e && e.code === 'E_ROLE')) throw e;
+      await this._verifyOperator();
+      return this._send(method, params, opts);
+    }
+  }
+
+  _send(method, params, opts = {}) {
     if (!this.connected) return Promise.reject(err('E_OWNER_LOST', 'this client holds no connection to an owner', { method, sent: false }));
     const id = this.nextId++;
     const timeoutMs = opts.timeoutMs == null ? this.opts.callTimeoutMs : opts.timeoutMs;
