@@ -197,6 +197,11 @@ function validateCaller(caller) {
   return caller;
 }
 
+// Audit D42: an ended run takes no write from a process launched for it, orchestrator adapter or worker. The run process
+// (role operator) is not bound by this: it ends the run, then closes, scrubs and sweeps it. run.attach keeps its own refusal
+// (and the operator's re-run opens the next epoch), and run.end is not refused so that a late second end stays a no-op.
+const ENDED_RUN_EXEMPT = new Set(['run.attach', 'run.end']);
+
 class Engine {
   // `owner` is set only when this engine belongs to the process that holds the lock; `establishedBy`
   // says how the rows behind a read were obtained ('owner', 'copy' or 'none').
@@ -307,6 +312,12 @@ class Engine {
     }
     const args = { ...p };
     delete args.caller;
+    if (spec.kind === 'write' && caller.role !== 'operator' && !ENDED_RUN_EXEMPT.has(method)) {
+      const run = require('./rows.cjs').current(this.store, 'run', caller.run_id);
+      if (run && run.ended_at != null) {
+        throw err('E_ARGS', `${method}: run ${caller.run_id} has already ended, so a ${caller.role} launched for it writes nothing; nothing was written`, { method, run_id: caller.run_id, ended_at: run.ended_at, role: caller.role });
+      }
+    }
     const off = this.memoryOff(method);
     if (off === 'refuse') throw err('E_LEVER_OFF', `${method}: memory is off for this run (on_embedder_failure off, after an embedder failure), so nothing is read or written through it`, { lever: 'on_embedder_failure' });
     if (off === 'empty') return { text: '', bytes: 0, row_ids: [], dropped: 0, over_budget: false, sha256: require('node:crypto').createHash('sha256').update('', 'utf8').digest('hex'), considered: 0, excluded_already_injected: 0, memory_off: true };
