@@ -100,7 +100,7 @@ const BOTH = [
   },
   {
     name: 'memory_search',
-    description: 'Search memory. Query with one short task line for what you are about to do, naming files or symbols; several short queries beat one long one. view index returns ids and titles only. Result names modes_run, modes_failed, absence_established (false: not searched fully).',
+    description: 'Search memory. Query with one short task line for what you will do, naming files or symbols; several short queries beat one long one. view index: ids and titles only. Result names modes_run, modes_failed, absence_established (true only if both ran and found nothing).',
     inputSchema: S({
       query: str(),
       namespace: str(),

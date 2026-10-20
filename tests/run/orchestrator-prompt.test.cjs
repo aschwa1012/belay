@@ -86,7 +86,8 @@ test('memory rules: the text stays within 1,200 bytes and carries each rule the 
   assert.match(text, /memory_timeline/, 'a timeline');
   assert.match(text, /memory_retrieve[^\n]*`ids`[^\n]*only/, 'full rows only for what matters');
   assert.match(text, /memory_ids/, 'cite ids');
-  assert.match(text, /absence_established: false[^\n]*not searched properly yet/, 'absence is not established');
+  assert.match(text, /`absence_established` is true only when both modes ran and found nothing[^\n]*`false` is normal on a populated scope[^\n]*modes_failed/, 'false is not read as not searched');
+  assert.doesNotMatch(text, /not searched properly yet/, 'the old, untrue reading is gone');
   assert.match(text, /`unverified` row as a claim/, 'an unverified row is never presented as fact');
   assert.match(text, /`refuted`/, 'refuted rows');
   const named = [...text.matchAll(/mcp__belay__([a-z_]+)/g)].map((m) => m[1]);

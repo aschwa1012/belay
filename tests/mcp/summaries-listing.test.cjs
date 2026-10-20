@@ -1,6 +1,6 @@
 // summaries-listing.test.cjs — ADR 0047 decision 1 and ADR 0010 amendment 6: memory_summaries is listed for the orchestrator and
 // the workers of a notes run, with knowledge_ask too, inside the 11,264 and 7,168 byte budgets; with the lever off the
-// listings are those of a run without notes (4,816 and 10,030, the latter counting worker_spawn's agent_type). Every combination is measured on the module and on the wire.
+// listings are those of a run without notes (4,926 and 10,029, the latter counting worker_spawn's agent_type). Every combination is measured on the module and on the wire.
 'use strict';
 
 const test = require('node:test');
@@ -24,7 +24,7 @@ test('notes on: the orchestrator lists memory_summaries inside the budget; off, 
   const off = tools.toolsFor('orchestrator');
   const on = tools.toolsFor('orchestrator', { notes: true });
   console.log(`orchestrator listing: off ${bytes(off)}, notes on ${bytes(on)}, budget ${tools.BUDGET.orchestrator}`);
-  assert.strictEqual(bytes(off), 10030); // 9,829 before the paired write/search contract
+  assert.strictEqual(bytes(off), 10029); // 9,829 before the paired write/search contract
   assert.deepStrictEqual(on.map((t) => t.name).slice(-2), ['memory_summaries', 'memory_note_refutation']);
   assert.ok(bytes(on) <= tools.BUDGET.orchestrator);
   assert.deepStrictEqual(on.slice(0, -2), off);
@@ -79,6 +79,6 @@ test('every combination, measured on the module and on the wire, is inside its b
     assert.deepStrictEqual(wire, mod, name);
     assert.ok(bytes(wire) <= tools.BUDGET[role], name);
   }
-  assert.strictEqual(bytes(rows[0][2]), 4816); // 4,965 before the paired write/search contract
-  assert.strictEqual(bytes(rows[2][2]), 10030);
+  assert.strictEqual(bytes(rows[0][2]), 4815); // 4,965 before the paired write/search contract
+  assert.strictEqual(bytes(rows[2][2]), 10029);
 });
