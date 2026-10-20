@@ -49,6 +49,9 @@ const DEFAULTS = Object.freeze({
   review_wall_s: 600, // the reviewer's wall cap in seconds
   review_cost_cap_usd: 2, // the reviewer's cost cap in dollars (the whole queue is one spawn; leftovers carry over)
   archive_review_model: 'claude-opus-5-5', // the reviewer's model: a Claude 5.5 id
+  // Eval-only (0.3.2 memory eval), off by default; the run spec takes them as top-level keys, not inside `memory`.
+  native_memory: null, // an absolute folder: every Claude Code worker of the run gets Claude Code's own auto-memory there (never the orchestrator)
+  handback_question: false, // with notes off: the hand-back question, once, to the roles a notes contract would reach
   notes_sink: 'off', // off | record | penalty: record writes a note_chance fact per delivered note at task end; penalty records the same, its rank shift is not built yet (the index has a no-op seam, memory-index-rank.cjs sinkFactor)
 });
 
@@ -112,6 +115,8 @@ function parseMemoryBlock(block) {
   for (const [k, max] of [['scrub_wall_s', 3600], ['review_wall_s', 7200], ['review_min_held', 500], ['review_max_age_runs', 1000]]) if (!boundedInt(v[k], max)) return { error: `memory.${k} must be an integer from 1 to ${max}` };
   for (const [k, max] of [['scrub_cost_cap_usd', 5], ['review_cost_cap_usd', 20]]) if (typeof v[k] !== 'number' || !(v[k] > 0 && v[k] <= max)) return { error: `memory.${k} must be a number above 0 and at most ${max}` };
   for (const k of ['scrub_model', 'archive_review_model']) if (typeof v[k] !== 'string' || !MODEL_RE.test(v[k])) return { error: `memory.${k} must be a Claude 5.5 model id (claude-haiku-5-5, claude-sonnet-5-5 or claude-opus-5-5)` };
+  if (v.native_memory !== null && (typeof v.native_memory !== 'string' || !v.native_memory)) return { error: 'memory.native_memory must be null or an absolute directory path' };
+  if (typeof v.handback_question !== 'boolean') return { error: 'memory.handback_question must be true or false' };
   if (!SINKS.includes(v.notes_sink)) return { error: `memory.notes_sink must be one of ${SINKS.join(', ')}` };
   if (v.notes_sink !== 'off' && !v.notes) return { error: 'memory.notes_sink needs memory.notes' };
   if (v.summaries === 'mechanical' && !v.observations) return { error: 'memory.summaries "mechanical" needs memory.observations' };

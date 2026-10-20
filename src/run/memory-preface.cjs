@@ -176,6 +176,14 @@ async function indexBlock(w, ctx, prompt, given, { excludeShown = true } = {}) {
   return got.bytes > 0 ? got.text : '';
 }
 
+// Eval-only `native_memory` run lever (the run row's memory levers): the folder a Claude Code worker gets when the spawn call names none.
+// Never for Codex (it has no auto-memory) or one of belay's own read-only jobs. The call's own argument wins.
+function nativeMemory(ctx, substrate, workerId, given) {
+  if (given !== null && given !== undefined) return given;
+  if (substrate !== 'claude-code' || require('./job-prefixes.cjs').isJobId(String(workerId || ''))) return null;
+  return ctx.memoryLevers ? ctx.memoryLevers.native_memory || null : levers(ctx, null).then((lv) => lv.native_memory || null);
+}
+
 // ADR 0042 decision 2: after the resume line, before the prompt; the block and a blank line, or ''.
 async function memoryPreface(w, ctx, prompt, emb) {
   const text = await indexBlock(w, ctx, prompt, emb);
@@ -185,6 +193,10 @@ async function memoryPreface(w, ctx, prompt, emb) {
 // ADR 0047 decision 3: with the run's notes lever on, the end-of-task question and the note rules close the opening
 // message (a worker reads what it must do last); '' with the lever off, so the message is the one it always was.
 async function contractTail(ctx, w) {
+  if (w && !w.notesOn && !require('./job-prefixes.cjs').isJobId(String(w.id))) { // eval-only handback_question: the roles a notes contract reaches, with notes off
+    const q = require('./notes-contract.cjs').handback(ctx.memoryLevers);
+    return q ? `\n\n${q}` : '';
+  }
   if (!w || !w.notesOn) return ''; // decided with the adapter's argv (manager writeFilesFor), never re-read here
   return `\n\n${require('./notes-contract.cjs').contract(ctx.memoryLevers, await projectSubjects(ctx, w))}`;
 }
@@ -275,4 +287,4 @@ async function runEnd(ctx) {
   }
 }
 
-module.exports = { SPAWN_EMBED_MS, memoryPreface, relaunch, preface, contractTail, parserOpts, levers, ask, runEnd };
+module.exports = { nativeMemory, SPAWN_EMBED_MS, memoryPreface, relaunch, preface, contractTail, parserOpts, levers, ask, runEnd };
