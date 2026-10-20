@@ -98,7 +98,7 @@ async function runReview({ core, runId, lv, dataDir, getManager, worktree = null
   if (fast && fast()) return { ran: false, reason: 'fast close', counts: q.counts }; // the marks stay held; the next review takes them
   const why = force ? 'asked by hand' : triggerOf(q.counts, lv);
   if (!why) return { ran: false, reason: 'below the triggers', counts: q.counts };
-  const limit = await J.attemptLimit(core, 'review', 'review_stage', q.held.length); // half of an overrun attempt, oldest first, down to 1
+  const limit = await J.attemptLimit(core, 'review', 'review_stage', q.held.length, q.project); // half of an overrun attempt, oldest first, down to 1
   const queued = q.held.slice(0, limit);
   const jobId = given || `${JOB_PREFIX}${runId}-${Date.now().toString(36)}`; // a caller that holds a claim names the job in it
   const out = { ran: true, job: jobId, trigger: why, counts: q.counts, queue: q.held.length, offered: queued.length };
