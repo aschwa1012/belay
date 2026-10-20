@@ -55,15 +55,31 @@ async function record(ctx, w, fields) {
   }
 }
 
-// The ids this worker was already shown: the union of its earlier `index_injected` events (ADR 0042 decision 3).
-// Scoped to this run: a worker id is unique only within its run, so coder-1 of an earlier run is another worker.
-async function shownBefore(ctx, w) {
+// The receipts of this worker's index injections that showed rows, in write order (ADR 0042 decision 3). Scoped to this run: a
+// worker id is unique only within its run, so coder-1 of an earlier run is another worker.
+async function shownReceipts(ctx, w) {
   const got = await ctx.core.memory.events({ run_id: ctx.runId, worker_id: w.id, kinds: ['index_injected'] });
+  return ((got && got.events) || []).filter((ev) => !(ev.ok === 0 || ev.ok === false) && Array.isArray(ev.row_ids));
+}
+
+// A replacement starts a new conversation. What it holds of the old one is only what its bottle carries, so the receipts so far
+// are set apart (`skip` of them) and an id from them counts as shown only if its row line is in the bottle's text (`carried`,
+// '' when the replacement has no bottle). A row line renders `- <id> [type/status] title`, indented inside a message. That a
+// bottle kept the opening task message (spec_pinned) proves the opening index survived, never a later relaunch's, which the
+// bottle may have dropped.
+async function startConversation(ctx, w, carried) {
+  w.convo = { skip: (await shownReceipts(ctx, w)).length, carried: typeof carried === 'string' ? carried : '' };
+}
+
+// The ids this worker's current conversation was already shown: every receipt since the conversation began, and the earlier
+// ones only where the bottle holds their row. A worker not yet replaced (or adopted by a later process) has one conversation.
+async function shownBefore(ctx, w) {
+  const list = await shownReceipts(ctx, w);
+  const convo = w.convo || { skip: 0, carried: '' };
   const ids = new Set();
-  for (const ev of (got && got.events) || []) {
-    if (ev.ok === 0 || ev.ok === false || !Array.isArray(ev.row_ids)) continue;
-    for (const id of ev.row_ids) ids.add(id);
-  }
+  list.forEach((ev, i) => {
+    for (const id of ev.row_ids) if (i >= convo.skip || convo.carried.includes(`- ${id} [`)) ids.add(id);
+  });
   return [...ids];
 }
 
@@ -142,7 +158,7 @@ function noIndexNotice(e) {
 // A failure to embed is never silent. Under `stop` the launch injects nothing (stopReceipt; a spawn is refused before it gets
 // here, see `preface`). Under `continue`, after the spawn's own bound, or when the call itself failed and the run's mode is not
 // known, the index is built from keywords alone and the receipt (ok 1, hybrid false) names the failure.
-async function indexBlock(w, ctx, prompt, given, { excludeShown = true } = {}) {
+async function indexBlock(w, ctx, prompt, given) {
   const lv = await levers(ctx, w);
   if (!lv.first_message_index) return '';
   const emb = given || await embedForIndex(ctx, w, lv);
@@ -150,7 +166,7 @@ async function indexBlock(w, ctx, prompt, given, { excludeShown = true } = {}) {
   if (emb.off) { await offReceipt(ctx, w, emb); return ''; }
   let got;
   try {
-    const exclude = excludeShown ? await shownBefore(ctx, w) : [];
+    const exclude = await shownBefore(ctx, w);
     const query = queryOf(prompt);
     got = await ctx.core.memory.index({
       task_id: w.taskId || undefined, worker_id: w.id, max_bytes: lv.index_bytes, exclude_ids: exclude,
@@ -205,12 +221,16 @@ async function projectSubjects(ctx, w) {
   }
 }
 
-// A relaunch: the same index, after the relaunch's own text. `excludeShown` (default true) leaves out the rows the worker was already
-// shown, which is right only when the conversation still holds them: a resumed session, or a replacement whose bottle carries the
-// first message. A fresh session that carries nothing of the old one (bottle off or failed, a Codex worker) gets the whole index.
-async function relaunch(w, ctx, firstText, { excludeShown = true } = {}) {
-  const text = await indexBlock(w, ctx, undefined, undefined, { excludeShown });
-  const out = !text ? firstText : firstText ? `${firstText}\n\n${text}` : text;
+// A relaunch: the same index, after the relaunch's own text, leaving out the rows this conversation already holds. A resumed session
+// holds all it was shown. `fresh` (a replacement) begins a new conversation: it holds only what its bottle carried (`w.bottleText`,
+// set by the restart only when the bottle kept the recorded first message), and a replacement with no bottle holds nothing of the old one,
+// so it is shown the whole index again.
+async function relaunch(w, ctx, firstText, { fresh = false } = {}) {
+  if (fresh) await startConversation(ctx, w, w.bottleCarriesFirst === true ? w.bottleText : '');
+  const text = await indexBlock(w, ctx, undefined, undefined);
+  const out = !text ? firstText : firstText ? `${firstText}
+
+${text}` : text;
   const tail = await contractTail(ctx, w);
   return tail ? (out ? `${out}${tail}` : tail.trimStart()) : out;
 }
