@@ -242,7 +242,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       w.indexQueries = indexQueries; // the orchestrator's situation lines for this worker's memory index (memory.embedQuery extra_texts)
       workers.set(id, w);
     } finally { pendingIds.delete(id); }
-    try { await MP.spawnLevers(ctx, w); } catch (e) { await discardUnstarted(workers, w, dirExisted); throw e; } // ADR 0047: the levers are known before the files are written; with the first-message index off the row keeps no situation lines
+    try { await MP.spawnLevers(ctx, w); w.nativeMemoryAuth = await NM.authorize(core, runId, w.nativeMemory); } catch (e) { await discardUnstarted(workers, w, dirExisted); throw e; } // ADR 0047: the levers are known before the files are written; with the first-message index off the row keeps no situation lines
     try { writeFilesFor(w); } catch (e) { await discardUnstarted(workers, w, dirExisted); throw e; } // no row, nothing launched: leave no record and no directory, so a corrected retry with the same id is free
     if (substrate === 'claude-code') w.instructions = I.snapshotInstructions(w.worktree, w.dir); // spawn only
 
@@ -349,8 +349,8 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const p = W.adopt({ core, workerId, dataDir: root }).then(async (w) => {
       workers.set(workerId, w); // no launch guard: a stop must always go through, and writeFilesFor below regenerates settings.json from the record
       await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the argv written below carries the notes lever
-      const denied = NM.adoptDenied(w, runId, ctx.memoryLevers); // another run's native_memory is never written into this run's settings; the record stays, the relaunch is refused
-      if (denied) { const rec = w.nativeMemory; w.nativeMemory = null; try { writeFilesFor(w); } finally { w.nativeMemory = rec; } w.adoptRefusal = denied; }
+      const denied = await NM.adoptDenied(w, runId, ctx.memoryLevers, core); // another run's native_memory is never written into this run's settings; the record stays, the relaunch is refused
+      if (denied) { w.adoptRefusal = denied; const rec = w.nativeMemory; w.nativeMemory = null; try { writeFilesFor(w); } catch (e) { w.lastError = { where: 'adopt.settings', code: e && e.code, message: e && e.message }; } finally { w.nativeMemory = rec; } } // the refusal is set first and kept whatever the rewrite does: a stop still goes through, a launch never reaches the old settings
       else try { writeFilesFor(w); } catch (e) { if (w.nativeMemory == null) throw e; w.adoptRefusal = e; } // mcp.json, settings.json, the log path; with the lever on ANY failure here (a folder that cannot be made, a refused record) is kept for checkLaunch to throw on a launch, never on a stop
       if (w.substrate === 'claude-code') w.instructions = I.existingInstructions(w.dir); // never the worktree
       return w;
