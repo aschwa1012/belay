@@ -28,14 +28,31 @@ function updateRegister(w, pid, created) {
 const restate = (w, force) => { if (w.ctx && w.ctx.writeRow) require('./write-row.cjs').restatePidCreated(w, w.ctx, force); };
 
 // ADR 0045 decision 4: a worker is recorded in the machine-wide spawn register the moment it exists, so another store's owner never takes
-// its child for an operator. A register that cannot be written ends the child at once and fails the launch: a worker no owner can
-// recognise must not run.
+// its child for an operator. A register that cannot be written ends the child and its descendants and fails the launch: a worker no owner
+// can recognise must not run. The retries before the refusal take about a second, long enough for the child to have started a helper, so
+// the end is a tree kill by the live handle (descendants first, the parent last), never the parent alone. The refusal carries the
+// teardown as a non-enumerable `teardown` promise that settles once both are gone; the caller awaits it before it hands the error back.
+const TEARDOWN_WAIT_MS = 10000;
+async function endUnregistered(child, error) {
+  const out = { tree: null, parent_gone: null, descendants_not_killed: null };
+  try {
+    const r = await P.killProcess(child);
+    out.tree = r.tree ? { ok: !!r.tree.ok, terminated: r.tree.terminated, killed: r.tree.killed } : null;
+    out.descendants_not_killed = r.descendants_not_killed || (r.tree && r.tree.tree_refused) || null;
+  } catch (e) { out.descendants_not_killed = (e && e.message) || String(e); }
+  if (P.pidAlive(child.pid)) { try { child.kill(); } catch { /* it may already be gone */ } }
+  out.parent_gone = (await P.waitPidGone(child.pid, { timeoutMs: TEARDOWN_WAIT_MS })) !== null;
+  Object.assign(error.detail, { teardown: out });
+  return out;
+}
+
 function registerSpawn(w, child, dataDir, kind = 'worker') {
   if (!Number.isInteger(child.pid)) return;
   try { SR.register({ pid: child.pid, kind, dataDir, workerId: w.id, spawnedAt: child.belaySpawnStartedAt }); }
   catch (e) {
-    try { child.kill(); } catch { /* it may already be gone */ }
-    throw err('E_SUBSTRATE', `worker ${w.id}: the spawn register could not be written (${(e && e.message) || e}); the process was ended, because a worker no owner can recognise must not run`, { worker_id: w.id, pid: child.pid, reason: 'spawn_register' });
+    const refusal = err('E_SUBSTRATE', `worker ${w.id}: the spawn register could not be written (${(e && e.message) || e}); the process and its descendants were ended, because a worker no owner can recognise must not run`, { worker_id: w.id, pid: child.pid, reason: 'spawn_register' });
+    Object.defineProperty(refusal, 'teardown', { value: endUnregistered(child, refusal).catch(() => null), enumerable: false });
+    throw refusal;
   }
   child.once('exit', () => SR.unregister(child.pid));
 }
