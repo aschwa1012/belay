@@ -393,7 +393,6 @@ async function releaseNow(E, caller, args) {
     return { ...row, last_checkpoint_id: ck ? ck.id : null, released_reason: args.reason || null, ...(prep ? NM.commit(E, caller, prep, { task_id: task.id }) : {}), ...(dropped || {}) };
   });
   E.noteWrite();
-  if (out && Array.isArray(out.notes) && out.notes.length) await require('./heavy-notes.cjs').afterNotes(E, caller, out); // the run's heavy embedders, best effort (ADR 0050 decision 4)
   return out;
 }
 
