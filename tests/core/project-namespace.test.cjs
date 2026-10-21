@@ -26,8 +26,9 @@ before(async () => {
   dir = sandbox();
   store = new Store(`${dir}/memory.db`, { stamp: true });
   E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: null, establishedBy: 'test' });
-  const on = JSON.stringify({ project: 'acme', project_writes: true });
-  const off = JSON.stringify({ project: 'acme' });
+  // notes off: these cases are the project index and copy of a run without notes (with a project, notes now default on and list notes only)
+  const on = JSON.stringify({ project: 'acme', project_writes: true, notes: false });
+  const off = JSON.stringify({ project: 'acme', notes: false });
   await call('run.attach', proj, { adapter_pid: process.pid, project: 'acme', memory_levers: on });
   await call('run.attach', readOnly, { adapter_pid: process.pid, project: 'acme', memory_levers: off });
   await call('run.attach', none, { adapter_pid: process.pid });
