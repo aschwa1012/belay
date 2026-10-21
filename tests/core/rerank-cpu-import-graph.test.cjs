@@ -27,7 +27,8 @@ test('who requires which CPU rerank module', () => {
   assert.deepStrictEqual(by, {
     'rerank-cpu': ['core/rerank-provider.cjs'],
     'rerank-pure': ['core/rerank-worker.cjs'],
-    'onnx-rerankers': ['cli/cmd-embedder.cjs', 'core/rerank-cpu.cjs', 'core/rerank-provider.cjs', 'core/retrieval-profiles.cjs'],
+    // memory-menu.cjs reads the pure pin table to list the CPU rerankers in the Memory menu; the table needs no native code.
+    'onnx-rerankers': ['cli/cmd-embedder.cjs', 'core/memory-menu.cjs', 'core/rerank-cpu.cjs', 'core/rerank-provider.cjs', 'core/retrieval-profiles.cjs'],
   }, 'rerank-worker.cjs is forked by path from rerank-cpu.cjs and required by nothing; rerank-cpu.cjs is required by the provider registry alone, lazily');
 });
 
