@@ -72,6 +72,7 @@ async function writeBottle(w, ctx, core, lv) {
     return false;
   }
   w.bottleCarriesFirst = built.spec_pinned === true; // only a bottle that holds the recorded first message carries the opening index
+  w.bottleText = built.text; // the memory preface keeps only the shown rows whose lines this text holds
   await event({
     ok: 1, bytes: built.bytes, sha256: crypto.createHash('sha256').update(built.text).digest('hex'),
     dropped: built.dropped > 0 ? 1 : 0, over_budget: 0,
@@ -87,6 +88,7 @@ async function restartFirstText(w, branch, { core, ctx }) {
     return 'You were interrupted and resumed. Continue from where you left off.' + (rl && rl.text ? '\n\n' + rl.text : '');
   }
   const key = w.taskId ? { task_id: w.taskId } : { worker_id: w.id };
+  w.bottleText = null;
   w.bottleCarriesFirst = false; // set true by writeBottle only; every other replace starts a conversation that holds nothing of the old one's index
   const lv = ctx ? await require('./memory-preface.cjs').levers(ctx, w) : null;
   const bottled = !!(lv && lv.bottle) && await writeBottle(w, ctx, core, lv);

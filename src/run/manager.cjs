@@ -362,7 +362,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
     const overridden = firstTextOverride ? await firstTextOverride(d.branch) : undefined;
     let firstText = overridden !== undefined ? overridden : await restartFirstText(w, d.branch, { core, ctx });
-    firstText = await MP.relaunch(w, ctx, firstText, { excludeShown: d.branch === 'resume' || w.bottleCarriesFirst === true }); // ADR 0042 decision 3: minus the rows already shown, only where that conversation still holds them
+    firstText = await MP.relaunch(w, ctx, firstText, { fresh: d.branch === 'replace' }); // ADR 0042 decision 3: minus the rows already shown, only where that conversation still holds them
     if (d.branch === 'replace') {
       w.sessionId = null;
       w.parser = createParser(w.substrate, MP.parserOpts(ctx));

@@ -120,6 +120,7 @@ async function adopt({ core, workerId, dataDir }) {
   w.exitedAt = row.exited_at || null;
   w.exitCode = row.exit_code == null ? null : row.exit_code;
   w.exitSignal = row.exit_signal == null ? null : row.exit_signal;
+  w.convoLost = require('./convo-marker.cjs').present(w.dir); // a replacement whose boundary receipt was never stored: its next launch shows every row
   w.settled = true;
   w.deathEstablishedBy = 'adopted from the store, not seen exit by this adapter';
   // build step 6e-4: a park is a row fact, not an adapter's memory, so it can be resumed by the next
