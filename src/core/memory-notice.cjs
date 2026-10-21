@@ -32,19 +32,20 @@ function noticeFor(block) {
   return { code: CODE, title: TITLE, why: WHY, fix: FIX, config_line: FIX_LINE, name_rule: NAME_RULE };
 }
 
-// Do the notes of this run row stand on? The row's memory_levers is the resolved block the launch recorded (a run with
-// none recorded has the defaults: off). Pure; null for no row.
-function runNotes(row) {
-  if (!row) return null;
-  let l = row.memory_levers;
-  if (typeof l === 'string') { try { l = JSON.parse(l); } catch { l = null; } }
-  return !!(l && typeof l === 'object' && l.notes === true);
+const CODES = Object.freeze([CODE, REDACT_CODE]);
+
+// The notice a code names, or null (no code, or one this build does not know).
+function byCode(code) {
+  if (code === CODE) return noticeFor({});
+  if (code === REDACT_CODE) return noticeFor({ project: 'p', redact: false });
+  return null;
 }
 
-// The notice for the run a command is about: none when that run has notes on (whatever file or spec turned them on),
-// else the config's. `row` is the run row or null for no run.
+// The notice for the run a command is about. A run answers for itself, whatever the config says now: the code its launch recorded
+// (null for notes on, explicitly off, or memory null; a run from before the column has none either). The config's notice is
+// only for a command with no run selected. `row` is the run row or null for no run.
 function noticeForRun(row, found) {
-  return runNotes(row) === true ? null : noticeForConfig(found);
+  return row ? byCode(row.memory_notice) : noticeForConfig(found);
 }
 
 // From a discovered config ({ found, config }), as `belay doctor` and `belay status` hold it.
@@ -57,4 +58,4 @@ function noticeLines(n, prefix = '') {
   return [`${prefix}${n.title}.`, `${prefix}${n.why}`, `${prefix}${n.fix}`];
 }
 
-module.exports = { NAME_RULE, CODE, REDACT_CODE, noticeFor, noticeForConfig, noticeForRun, runNotes, noticeLines };
+module.exports = { NAME_RULE, CODE, REDACT_CODE, CODES, byCode, noticeFor, noticeForConfig, noticeForRun, noticeLines };

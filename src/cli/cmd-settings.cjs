@@ -76,7 +76,8 @@ function oneResult(found, key, json) {
   if (json) return { code: 0, text: '', json: memoryError ? { ...r, memory_error: memoryError } : r };
   const warn = (r.invalid ? `warning: ${key}: ${r.invalid.reason}\n` : '')
     + (memoryError ? `warning: the memory block would be refused by a run: ${memoryError}\n` : '');
-  return { code: 0, text: `${warn}${line(r, key.length)}\n`, json: r };
+  const note = r.note ? `  ${''.padEnd(key.length)}  ${r.note}\n` : ''; // the "effective: ... because" line the full listing prints
+  return { code: 0, text: `${warn}${line(r, key.length)}\n${note}`, json: r };
 }
 
 const fail = (message, key, extra = {}) => ({

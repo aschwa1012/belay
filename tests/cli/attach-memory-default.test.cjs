@@ -12,8 +12,8 @@ const { parseLevers } = require('../../src/cli/run-levers.cjs');
 const { openCore } = core('index.cjs');
 
 test('a default block sends nulls, and a block without a project sends a null project', () => {
-  assert.deepStrictEqual(attachMemory(parseLevers({}, {})), { memory_levers: null, project: null });
-  assert.deepStrictEqual(attachMemory({}), { memory_levers: null, project: null });
+  assert.deepStrictEqual(attachMemory(parseLevers({}, {})), { memory_levers: null, project: null, memory_notice: 'memory_project_unset' }, 'no project: the launch records its notice');
+  assert.deepStrictEqual(attachMemory({}), { memory_levers: null, project: null, memory_notice: null });
   const noProject = attachMemory({ memory_levers: { notes: true } });
   assert.strictEqual(noProject.project, null);
   assert.strictEqual(noProject.memory_levers, '{"notes":true}');

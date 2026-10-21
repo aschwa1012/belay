@@ -16,6 +16,7 @@ const { resolveParks, parseRunRow, clearedPause, pauseFields } = require('./paus
 const { runCommand } = require('./evaluate.cjs');
 
 const { EFFORT_LEVELS } = require('./effort-levels.cjs');
+const MN = require('./memory-notice.cjs'); // pure too
 const { parseMemoryBlock } = require('./memory-levers.cjs'); // pure: no requires, so the read path stays light
 
 const PROJECT_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -32,7 +33,7 @@ const ATTACH_SUSPECT = LIFE_CLAIMING_STATES;
 // Fix round for 6f (diff-scope): `rows.cjs` (unowned) lacks paused_at/paused_by in COLUMNS.run, so
 // rows.append would drop both. This local insert (its own shape, via exported bind/parseRow) adds them.
 function appendRun(E, values, writtenBy, at = Date.now()) {
-  const cols = [...rows.COLUMNS.run, 'paused_at', 'paused_by', 'pause_parks', 'memory_levers', 'project', 'project_dir', 'embedder_mode', 'revived_epoch']; // item 1: 6th local column; ADR 0041 decision 1: the memory levers and the project
+  const cols = [...rows.COLUMNS.run, 'paused_at', 'paused_by', 'pause_parks', 'memory_levers', 'project', 'project_dir', 'embedder_mode', 'revived_epoch', 'memory_notice']; // item 1: 6th local column; ADR 0041 decision 1: the memory levers and the project
   const all = [...cols, 'written_at', 'written_by'];
   const sql = `INSERT INTO run(${all.join(', ')}) VALUES (${all.map(() => '?').join(', ')})`;
   const params = cols.map(c => rows.bind(values[c]));
@@ -68,6 +69,10 @@ async function attach(E, caller, args) {
     const checked = parseMemoryBlock(parsed);
     if (checked.error) throw err('E_ARGS', `run.attach memory_levers is not a valid memory block: ${checked.error}`, { memory_levers: args.memory_levers });
     resolvedLevers = JSON.stringify(checked.value); // resolve once: the core readers and the run manager then read the same levers
+  }
+  const noticeGiven = args.memory_notice !== undefined;
+  if (noticeGiven && args.memory_notice !== null && !MN.CODES.includes(args.memory_notice)) {
+    throw err('E_ARGS', `run.attach memory_notice must be null or one of ${MN.CODES.join(', ')}`, { memory_notice: args.memory_notice });
   }
   const modeGiven = args.embedder_mode !== undefined;
   if (modeGiven && args.embedder_mode !== null && !require('./embedder-mode.cjs').normalize(args.embedder_mode)) throw err('E_ARGS', 'run.attach embedder_mode must be null, required, keyword or off', { embedder_mode: args.embedder_mode });
@@ -147,6 +152,7 @@ async function attach(E, caller, args) {
     max_fix_rounds: fixCapGiven ? args.max_fix_rounds : (carryPause ? prev.max_fix_rounds : null),
     memory_levers: leversGiven ? (args.memory_levers === null ? null : resolvedLevers) : (carryPause ? prev.memory_levers : null), // same carry rule
     project: projectGiven ? args.project : (carryPause ? prev.project : null),
+    memory_notice: noticeGiven ? args.memory_notice : (carryPause ? prev.memory_notice : null), // same carry rule
     project_dir: dirGiven ? args.project_dir : (carryPause ? prev.project_dir : null),
     revived_epoch: revivedEpoch,
     embedder_mode: modeGiven ? (args.embedder_mode === null ? null : require('./embedder-mode.cjs').normalize(args.embedder_mode)) : (carryPause ? prev.embedder_mode : null),
