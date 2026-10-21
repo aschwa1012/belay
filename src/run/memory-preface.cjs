@@ -10,6 +10,7 @@
 
 const { fail } = require('./errors.cjs');
 const { DEFAULTS, leversFor } = require('./memory-levers.cjs');
+const MARK = require('./convo-marker.cjs');
 
 const codeOf = (e) => (e && typeof e.code === 'string' && e.code.startsWith('E_') ? e.code : 'E_INTERNAL');
 const noteError = (w, where, e) => { w.lastError = { where, code: e && e.code, message: e && e.message }; };
@@ -45,26 +46,89 @@ const parserOpts = (ctx) => {
   return lv.redact === false ? { capture: true, redact: (t) => ({ text: t, redactions: {} }) } : { capture: true, redact: require('../core/redact.cjs').redact };
 };
 
-async function record(ctx, w, fields) {
-  try {
-    await ctx.core.memory.recordEvent({ worker_id: w.id, task_id: w.taskId || undefined, ...fields });
-    return true;
-  } catch (e) {
-    noteError(w, 'memory.recordEvent', e);
-    return false;
+async function record(ctx, w, fields, attempts = 1) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await ctx.core.memory.recordEvent({ worker_id: w.id, task_id: w.taskId || undefined, ...fields });
+      return true;
+    } catch (e) {
+      noteError(w, 'memory.recordEvent', e);
+    }
   }
+  return false;
 }
 
-// The ids this worker was already shown: the union of its earlier `index_injected` events (ADR 0042 decision 3).
-// Scoped to this run: a worker id is unique only within its run, so coder-1 of an earlier run is another worker.
-async function shownBefore(ctx, w) {
+// An index receipt. One that begins a conversation (`convo` set: a replacement's first, or the repair after a lost one) is the only
+// record of where that conversation begins, so its write is tried three times, and a write that still fails leaves `w.convoLost`: the
+// next launch cannot find the boundary in the store, so it shows every row (excludes none) and writes the boundary itself. That clears
+// the flag once a receipt carrying it is stored. A launch that begins no conversation is a plain best-effort receipt.
+// The flag does not live only on the worker object: a marker file in the worker's directory (convo-marker.cjs) is set before the
+// receipt is tried and cleared once it is stored, and a process that adopts the worker reads it back into `convoLost`.
+async function recordIndex(ctx, w, convo, fields) {
+  if (!convo) return record(ctx, w, { kind: 'index_injected', ...fields });
+  const marked = MARK.set(w.dir);
+  if (!marked) noteError(w, 'convo-marker.set', { code: 'E_INTERNAL', message: 'the boundary marker could not be written' });
+  const ok = await record(ctx, w, { kind: 'index_injected', key: convoKey(convo), ...fields }, BOUNDARY_TRIES);
+  w.convoLost = !ok;
+  if (ok) MARK.clear(w.dir);
+  return ok;
+}
+const BOUNDARY_TRIES = 3;
+
+// This worker's index receipts in write order, every one, failed ones too (ADR 0042 decision 3). Scoped to this run: a worker id is
+// unique only within its run, so coder-1 of an earlier run is another worker.
+async function receiptsOf(ctx, w) {
   const got = await ctx.core.memory.events({ run_id: ctx.runId, worker_id: w.id, kinds: ['index_injected'] });
+  return (got && got.events) || [];
+}
+const showed = (ev) => !(ev.ok === 0 || ev.ok === false) && Array.isArray(ev.row_ids);
+
+// A replacement starts a new conversation, and its first receipt says so: the receipt's `key` carries `convo:{"carried":[ids]}`, the ids of
+// the earlier rows that the replacement's bottle still holds. The boundary is therefore read from the store with the receipts it
+// divides, in one read, so a failed read leaves no boundary half set, and any process that adopts the worker finds the same one.
+// A replacement whose receipts could not be read records `carried: []`: nothing is then taken as held, which shows rows again and never
+// withholds one.
+// The boundary is in the receipt's `key`, a column the ledger stores as written. It is not in the `message`: the ledger redacts the
+// message as text (a pattern can cut the JSON, an id can look like a secret), so control state there can be lost or altered.
+// A key that names a boundary and cannot be read is a boundary with nothing carried, so the rows are shown again, never withheld.
+const CONVO_PREFIX = 'convo:';
+const convoKey = (convo) => CONVO_PREFIX + JSON.stringify({ carried: convo.carried });
+function convoOf(ev) {
+  if (typeof ev.key !== 'string' || !ev.key.startsWith(CONVO_PREFIX)) return null;
+  try {
+    const m = JSON.parse(ev.key.slice(CONVO_PREFIX.length));
+    return m && Array.isArray(m.carried) && m.carried.every((id) => typeof id === 'string') ? { carried: m.carried } : { carried: [] };
+  } catch { return { carried: [] }; }
+}
+
+// The ids this worker's current conversation was already shown: those the last replacement carried, and every row any receipt
+// since then showed (the replacement's own first among them). A worker never replaced has one conversation.
+function heldIds(list) {
+  let at = -1;
+  list.forEach((ev, i) => { if (convoOf(ev)) at = i; });
+  const ids = new Set(at >= 0 ? convoOf(list[at]).carried : []);
+  list.forEach((ev, i) => { if (i >= at && showed(ev)) for (const id of ev.row_ids) ids.add(id); });
+  return ids;
+}
+
+// The row ids a bottle's text holds as index rows. Only a user message counts: belay writes the index into what it sends, while
+// assistant prose and tool lines are the model's own words. A row renders `- <id> [type/status] title` at the start of a line,
+// which inside a message is indented two spaces (bottle.cjs `message`), so a title or a prose line that merely mentions
+// `- <id> [` mid-line is not a row. That a bottle kept the opening task message proves the opening index survived, never a
+// later relaunch's, which the bottle may have dropped.
+const USER_HEAD = /^user(?: \(generated, [a-z]+\))?: /;
+const ROW_LINE = /^(?:  |user(?: \(generated, [a-z]+\))?: )- (\S+) \[/;
+function bottleRowIds(text) {
   const ids = new Set();
-  for (const ev of (got && got.events) || []) {
-    if (ev.ok === 0 || ev.ok === false || !Array.isArray(ev.row_ids)) continue;
-    for (const id of ev.row_ids) ids.add(id);
+  let inUser = false;
+  for (const line of String(text || '').split('\n')) {
+    if (USER_HEAD.test(line)) inUser = true;
+    else if (!line.startsWith('  ')) inUser = false;
+    if (!inUser) continue;
+    const m = ROW_LINE.exec(line);
+    if (m) ids.add(m[1]);
   }
-  return [...ids];
+  return ids;
 }
 
 // The prompt as the index's relevance query: the core weighs at most 128 distinct terms and accepts 64 KB,
@@ -120,14 +184,14 @@ function receiptDetail(emb, hybrid, failure) {
 
 // ADR 0034 decision 2 under `required`: the owner's hook has paused the run, so this launch injects no index. The receipt is
 // ok 0 with the failure's code (a resume relaunches the worker, and its index is built again, since an ok 0 receipt shows no rows).
-async function stopReceipt(ctx, w, emb) {
+async function stopReceipt(ctx, w, emb, convo) {
   w.lastError = { where: 'memory.embedQuery', code: emb.failure.code, message: emb.failure.message };
-  await record(ctx, w, { kind: 'index_injected', ok: 0, code: emb.failure.code, message: receiptDetail(emb, false) });
+  return recordIndex(ctx, w, convo, { ok: 0, code: emb.failure.code, message: receiptDetail(emb, false, null) });
 }
 
 // on_embedder_failure `off`: the run's memory is off, so this launch gets no index. Recorded, never silent.
-async function offReceipt(ctx, w, emb) {
-  await record(ctx, w, { kind: 'index_injected', ok: 1, row_ids: [], bytes: 0, dropped: 0, over_budget: 0, message: JSON.stringify({ hybrid: false, memory: 'off', queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), ...(emb.failure ? { failure: { code: emb.failure.code, message: String(emb.failure.message || '').slice(0, 160) } } : {}) }) });
+async function offReceipt(ctx, w, emb, convo) {
+  return recordIndex(ctx, w, convo, { ok: 1, row_ids: [], bytes: 0, dropped: 0, over_budget: 0, message: JSON.stringify({ hybrid: false, memory: 'off', queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), ...(emb.failure ? { failure: { code: emb.failure.code, message: String(emb.failure.message || '').slice(0, 160) } } : {}) }) });
 }
 
 // What a worker is told when its first-message index was refused (E_INDEX_BOUND, E_SEMANTIC_REQUIRED): belay's own words, no note text.
@@ -142,15 +206,25 @@ function noIndexNotice(e) {
 // A failure to embed is never silent. Under `stop` the launch injects nothing (stopReceipt; a spawn is refused before it gets
 // here, see `preface`). Under `continue`, after the spawn's own bound, or when the call itself failed and the run's mode is not
 // known, the index is built from keywords alone and the receipt (ok 1, hybrid false) names the failure.
-async function indexBlock(w, ctx, prompt, given, { excludeShown = true } = {}) {
+// `replacing` ({ bottle }) marks the first launch of a replacement conversation; `bottle` is the text its bottle carries ('' for none).
+async function indexBlock(w, ctx, prompt, given, replacing = null) {
   const lv = await levers(ctx, w);
   if (!lv.first_message_index) return '';
   const emb = given || await embedForIndex(ctx, w, lv);
-  if (emb.stop) { await stopReceipt(ctx, w, emb); return ''; }
-  if (emb.off) { await offReceipt(ctx, w, emb); return ''; }
+  // Until the receipts are read, nothing is known to be held. After a boundary write was lost, nothing is known of the conversation
+  // either: this launch is shown every row and writes the boundary.
+  let convo = replacing || w.convoLost ? { carried: [] } : null;
+  if (emb.stop) { await stopReceipt(ctx, w, emb, convo); return ''; }
+  if (emb.off) { await offReceipt(ctx, w, emb, convo); return ''; }
   let got;
   try {
-    const exclude = excludeShown ? await shownBefore(ctx, w) : [];
+    const list = await receiptsOf(ctx, w);
+    let exclude;
+    if (replacing) {
+      const rows = bottleRowIds(replacing.bottle);
+      convo = { carried: [...new Set(list.filter(showed).flatMap((ev) => ev.row_ids))].filter((id) => rows.has(id)) };
+      exclude = convo.carried;
+    } else exclude = w.convoLost ? [] : [...heldIds(list)];
     const query = queryOf(prompt);
     got = await ctx.core.memory.index({
       task_id: w.taskId || undefined, worker_id: w.id, max_bytes: lv.index_bytes, exclude_ids: exclude,
@@ -161,7 +235,7 @@ async function indexBlock(w, ctx, prompt, given, { excludeShown = true } = {}) {
     noteError(w, 'memory.index', e);
     const refusal = codeOf(e) === 'E_INDEX_BOUND' || codeOf(e) === 'E_SEMANTIC_REQUIRED';
     if (refusal) await record(ctx, w, { kind: 'index_bound', ok: 0, code: codeOf(e), message: JSON.stringify({ refused: true, message: String((e && e.message) || e).slice(0, 300) }) });
-    await record(ctx, w, { kind: 'index_injected', ok: 0, code: codeOf(e), message: JSON.stringify({ hybrid: false, queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), failure: { code: codeOf(e), message: String((e && e.message) || e).slice(0, 160) } }) });
+    await recordIndex(ctx, w, convo, { ok: 0, code: codeOf(e), message: JSON.stringify({ hybrid: false, queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), failure: { code: codeOf(e), message: String((e && e.message) || e).slice(0, 160) } }) });
     // A refusal under `required` is not fixed by a pause, so the worker still starts. It is told plainly that it has no index and why.
     return refusal ? noIndexNotice(e) : '';
   }
@@ -169,8 +243,8 @@ async function indexBlock(w, ctx, prompt, given, { excludeShown = true } = {}) {
   const rel = got.relevance || {};
   const hybrid = rel.semantic_contributed === true;
   const semFailure = emb.embeddings.length && !hybrid && rel.semantic && typeof rel.semantic === 'object' ? rel.semantic : null;
-  await record(ctx, w, {
-    kind: 'index_injected', ok: 1, row_ids: got.row_ids, bytes: got.bytes, sha256: got.sha256,
+  await recordIndex(ctx, w, convo, {
+    ok: 1, row_ids: got.row_ids, bytes: got.bytes, sha256: got.sha256,
     dropped: got.dropped > 0 ? 1 : 0, over_budget: got.over_budget ? 1 : 0, message: receiptDetail(emb, hybrid, semFailure),
   });
   return got.bytes > 0 ? got.text : '';
@@ -205,12 +279,17 @@ async function projectSubjects(ctx, w) {
   }
 }
 
-// A relaunch: the same index, after the relaunch's own text. `excludeShown` (default true) leaves out the rows the worker was already
-// shown, which is right only when the conversation still holds them: a resumed session, or a replacement whose bottle carries the
-// first message. A fresh session that carries nothing of the old one (bottle off or failed, a Codex worker) gets the whole index.
-async function relaunch(w, ctx, firstText, { excludeShown = true } = {}) {
-  const text = await indexBlock(w, ctx, undefined, undefined, { excludeShown });
-  const out = !text ? firstText : firstText ? `${firstText}\n\n${text}` : text;
+// A relaunch: the same index, after the relaunch's own text, leaving out the rows this conversation already holds. A resumed session
+// holds all it was shown. `fresh` (a replacement) begins a new conversation: it holds only what its bottle carried (`w.bottleText`,
+// set by the restart only when the bottle kept the recorded first message), and a replacement with no bottle holds nothing of the old one,
+// so it is shown the whole index again.
+async function relaunch(w, ctx, firstText, { fresh = false } = {}) {
+  const replacing = fresh && (await levers(ctx, w)).first_message_index
+    ? { bottle: w.bottleCarriesFirst === true && typeof w.bottleText === 'string' ? w.bottleText : '' } : null;
+  const text = await indexBlock(w, ctx, undefined, undefined, replacing);
+  const out = !text ? firstText : firstText ? `${firstText}
+
+${text}` : text;
   const tail = await contractTail(ctx, w);
   return tail ? (out ? `${out}${tail}` : tail.trimStart()) : out;
 }
@@ -275,4 +354,4 @@ async function runEnd(ctx) {
   }
 }
 
-module.exports = { SPAWN_EMBED_MS, memoryPreface, relaunch, preface, contractTail, parserOpts, levers, ask, runEnd };
+module.exports = { SPAWN_EMBED_MS, bottleRowIds, memoryPreface, relaunch, preface, contractTail, parserOpts, levers, ask, runEnd };
