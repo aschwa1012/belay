@@ -76,7 +76,7 @@ async function runScrub({ core, runId, lv, dataDir, getManager, worktree = null,
     await owe(core, runId, ids, J.coded('E_ABORTED', 'a fast close was requested, so the scrub was not started'), jobId);
     return { ran: false, reason: 'fast close', owed: ids, counts: scope.counts };
   }
-  const limit = await J.attemptLimit(core, 'scrub', 'scrub_job', lv.scrub_max_items); // half of an overrun attempt, down to 1
+  const limit = await J.attemptLimit(core, 'scrub', 'scrub_job', lv.scrub_max_items, scope.project); // half of an overrun attempt, down to 1
   const offered = scope.items.slice(0, limit), rest = scope.items.slice(limit);
   const ids = offered.map((i) => i.id);
   const out = { ran: true, job: jobId, counts: scope.counts, offered: ids.length, owed: [], mode: lv.scrub_action };

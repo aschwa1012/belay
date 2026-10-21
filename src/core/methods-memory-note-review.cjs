@@ -24,6 +24,8 @@ const CC = require('./memory-citations.cjs');
 const F = require('./note-review-facts.cjs');
 const { heldLeaseOn } = require('./verdict.cjs');
 const RV = require('./note-report-verdicts.cjs');
+const { hiddenParts } = require('./note-shown.cjs');
+const BC = require('./note-brief-capture.cjs');
 
 const VERDICTS = ['confirmed', 'refuted', 'unsupported'];
 const REASON_MAX = 500;
@@ -55,7 +57,7 @@ function routeOf(E, args, caller) {
     }
     const r = h.result && isObj(h.result) ? h.result : null;
     const list = r && r.memory_verdicts;
-    return { reviewer: h.by, ref: t.id, keyBase: `review:${t.id}@${h.at}`, scope: Array.isArray(t.depends_on) ? t.depends_on : [], verdicts: list === undefined ? null : list, reportVerdicts: r && r.report_verdicts !== undefined ? r.report_verdicts : null, task_id: t.id };
+    return { reviewer: h.by, ref: t.id, keyBase: `review:${t.id}@${h.at}`, attempt: lease.id, scope: Array.isArray(t.depends_on) ? t.depends_on : [], capped: true, verdicts: list === undefined ? null : list, reportVerdicts: r && r.report_verdicts !== undefined ? r.report_verdicts : null, task_id: t.id };
   }
   const j = args.job;
   if (!isObj(j) || !validId(j.worker_id) || !validId(j.reviewed_task_id)) throw bad('memory.noteVerdicts needs review_task_id, or job { worker_id, reviewed_task_id } with verdicts');
@@ -91,10 +93,21 @@ function admit(E, caller, route, v) {
   if (project && n.namespace !== `project/${project}`) throw bad(`note ${n.id} is in ${n.namespace}, not in this run's project`, { id: n.id });
   if (!route.scope.includes(n.task_id)) throw bad(`note ${n.id} was written for task ${n.task_id || 'none'}, which this review does not cover (${route.scope.join(', ') || 'no tasks'})`, { id: n.id, task_id: n.task_id });
   if (n.written_by === `worker:${route.reviewer}`) throw err('E_ROLE', `worker ${route.reviewer} wrote note ${n.id} and cannot review it`, { id: n.id, reason: 'independence' });
+  // A reviewer judges only the notes its brief listed, as they stood then. The list was captured when the brief was rendered
+  // (note-brief-capture.cjs) and is read back here, never recomputed: a note written, reviewed or edited since is not in it.
+  if (!route.captured) throw bad(`no brief was captured for review ${route.ref}, so there is no record of the notes its reviewer was shown; the notes stay unreviewed for a later review`, { id: n.id, reason: 'not_shown' });
+  if (!route.captured.has(n.id)) throw bad(`note ${n.id} was not in the brief of review ${route.ref} (it listed ${route.captured.size} notes), so the reviewer was not shown it; it stays unreviewed for a later review`, { id: n.id, reason: 'not_shown' });
+  if (route.captured.get(n.id) !== BC.hashOfRow(n)) throw bad(`note ${n.id} changed after the brief of review ${route.ref} showed it, so the reviewer judged a different note; it stays unreviewed for a later review`, { id: n.id, reason: 'changed_since_shown' });
   const held = heldLeaseOn(E.store, route.reviewer, [n.task_id]);
   if (held) throw err('E_ROLE', `worker ${route.reviewer} held lease ${held.id} on task ${n.task_id}, which wrote note ${n.id}; a worker that did the work cannot review its notes`, { id: n.id, reason: 'independence', lease_id: held.id });
   const status = n.status || 'unverified';
   if (status === 'refuted' && v.verdict === 'confirmed') throw bad(`note ${n.id} is refuted; a refuted note is changed back only by the operator`, { id: n.id });
+  // A confirmed note is shown to later workers as reviewed, so it is confirmed only on what the reviewer saw. A review task's brief caps a note
+  // (note-shown.cjs); the review job reads every field from its notes file.
+  if (v.verdict === 'confirmed' && route.capped) {
+    const hidden = hiddenParts({ text: n.text, when: parse(n.body).when, evidence: parse(n.body).evidence });
+    if (hidden.length) throw bad(`note ${n.id} was shown to the reviewer in part (${hidden.join('; ')}), so it cannot be confirmed; refute it on a value that was shown, or leave it unreviewed`, { id: n.id, reason: 'hidden_fields', hidden });
+  }
   return n;
 }
 
@@ -127,11 +140,13 @@ async function noteVerdicts(E, caller, args) {
   const out = { reviewer: route.reviewer, ref: route.ref, applied: [], refused: [], already: [], unjudged: [], refused_open: [] };
   if (route.verdicts === null) { out.no_verdicts = true; }
   else if (!Array.isArray(route.verdicts) || route.verdicts.length > VERDICTS_MAX) throw bad(`memory_verdicts must be an array of at most ${VERDICTS_MAX} verdicts`);
+  route.captured = BC.capturedFor(E, route.ref, route.attempt); // the brief's notes, as captured when it was rendered
   RV.validateReportVerdicts(route.reportVerdicts); // all or nothing: a malformed report list is refused before any note verdict is written
   const seen = new Set(), refusedIds = new Set();
   for (const [index, raw] of (route.verdicts || []).entries()) {
     const idOf = isObj(raw) && typeof raw.id === 'string' ? raw.id : null;
     const refuse = (e, n) => {
+      E.assertRunOpen(caller, 'memory.noteVerdicts'); // a refusal receipt is a write: none after the run ended (audit D42)
       const message = String(e.message).slice(0, 300);
       if (idOf) refusedIds.add(idOf);
       out.refused.push({ index, id: idOf, code: codeOf(e), message, ...(e.detail ? { detail: e.detail } : {}) });
@@ -149,8 +164,9 @@ async function noteVerdicts(E, caller, args) {
       n = admit(E, caller, route, v);
       const chk = v.cites.length === 0 ? { ok: true } : await CC.checkTaskCites(E, n.task_id, v.cites, { title: n.title, when: parse(n.body).when, text: n.text, evidence: parse(n.body).evidence });
       if (!chk.ok) throw err('E_CITATION', `note ${n.id}: ${chk.failures.length} of ${v.cites.length} cites are not in the evidence task ${n.task_id} recorded; the verdict is dropped (${chk.failures.map((f) => `cites[${f.index}] ${f.where}: ${f.reason}`).join(' | ')})`.slice(0, 600), { id: n.id, failures: chk.failures });
+      E.assertRunOpen(caller, 'memory.noteVerdicts'); // the citation check awaited a file; a run that ended meanwhile takes no verdict (audit D42)
       out.applied.push(v.verdict === 'unsupported' ? require('./note-unsupported.cjs').queueUnsupported(E, caller, route, v, n) : applyOne(E, caller, route, v, n));
-    } catch (e) { refuse(e, n); }
+    } catch (e) { if (e && e.detail && e.detail.run_ended) throw e; refuse(e, n); } // an ended run is not a refused verdict: nothing more is written
   }
   if (out.applied.length) E.noteWrite();
   const judged = new Set([...seen]);
@@ -187,4 +203,4 @@ async function reviewBrief(E, caller, args) {
   return { task_id: t.id, review: true, reviewed_tasks: deps, notes: F.notesUnderReview(E, deps, proj), refuted_shown: F.refutedShownTo(E, deps), reports: RV.reportsAbout(E, deps, proj) };
 }
 
-module.exports = { noteVerdicts, noteRefutation, reviewBrief, applyOneIn };
+module.exports = { noteVerdicts, noteRefutation, reviewBrief, applyOneIn, noteBriefCapture: BC.capture };

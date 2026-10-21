@@ -52,7 +52,8 @@ async function runCloseStages({ core, runId, levers, dataDir, worktree = null, g
   const gate = { aborted: false };
   const gated = require('../run/gated-core.cjs').gatedCore(core.harness ? core.harness() : core, gate, 'the run-close stage');
   const cutLate = (m) => { gate.aborted = true; late(m); };
-  const out = await RI.within(ce, S.closeStages({ core: gated, runId, levers: lv, dataDir, worktree, goal, summary, fast, log, sink, ...deps }), 'the run-close stages', { cut: true }, cutLate, RI.END_RESERVE_MS);
+  const sweep = () => require('../run/note-review.cjs').reviewSweep({ core: gated, runId, levers: lv });
+  const out = await RI.within(ce, S.closeStages({ core: gated, runId, levers: lv, dataDir, worktree, goal, summary, fast, log, sink, sweep, ...deps }), 'the run-close stages', { cut: true }, cutLate, RI.END_RESERVE_MS);
   if (out && out.cut) await reap(core, sink, killPid || defaultKill, ce); // a cut stage's children are found by the pids recorded at spawn
   return sink.survivors.length && out && out.cut ? { ...out, survivors: sink.survivors } : out;
 }

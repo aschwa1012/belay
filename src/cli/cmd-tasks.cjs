@@ -33,7 +33,7 @@ function parseArgs(argv) {
 
 const COLUMNS = [
   'id', 'state', 'spec', 'lease_id', 'holder', 'holder_role', 'lease_expires_at', 'lease_expired',
-  'holder_pid_alive', 'last_checkpoint_id', 'last_checkpoint_at', 'depends_on',
+  'holder_pid_alive', 'holds_files', 'holds_reason', 'last_checkpoint_id', 'last_checkpoint_at', 'depends_on',
 ];
 
 // The first 60 characters of the spec, one line: newlines collapse to spaces before the cut, so a

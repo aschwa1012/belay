@@ -183,6 +183,48 @@ test('notices: the stall age is the newer of the row and the stream mtime; a row
   } finally { cleanup(dir); }
 });
 
+test('notices: a pending note of an ended run and an open proposal on it are one notes_stranded event, with and without a run', async () => {
+  const { Store } = require('../../src/core/store.cjs');
+  const dir = sandbox();
+  const dataDir = `${dir}/.belay`;
+  try {
+    await plant(dataDir);
+    assert.ok(!cli([RUN], dataDir).stdout.includes('notes_stranded'), 'nothing waits on the operator yet');
+    const store = new Store(`${dataDir}/memory.db`, { stamp: true });
+    const put = (ns, type, body, run_id) => store.storeIn({ namespace: ns, worker_id: 'w1', type, text: `${type} ${Math.random()}`, title: type, body, run_id, source: type === 'note' ? 'model' : 'harness', written_by: type === 'note' ? 'worker:w1' : 'harness' }).id;
+    const note = put('pending/acme', 'note', { kind: 'lesson', state: 'pending', seen_in: [], seen_total: 0 }, 'run-gone');
+    // the proposal records the note's key, as the scrub does; a row without one is stale (proposal-open.cjs)
+    const keys = require('../../src/core/proposal-open.cjs').keysFor({ store }, [note]);
+    put('proposal/acme', 'proposal', { state: 'open', note_id: note, entry: { id: note, action: 'resolve', resolve: 'new' }, keys }, 'run-gone');
+    store.close();
+    for (const argv of [[RUN], []]) {
+      const r = cli(argv, dataDir);
+      assert.strictEqual(r.status, 0, r.stderr);
+      const ev = JSON.parse(r.stdout).events.filter((e) => e.kind === 'notes_stranded');
+      assert.strictEqual(ev.length, 1, `argv ${argv}`);
+      assert.deepStrictEqual([ev[0].count, ev[0].open_proposals, ev[0].pending, ev[0].note_ids, ev[0].command], [1, 1, 1, [note], 'belay memory proposals']);
+    }
+    assert.ok(cli([RUN], dataDir, { json: false }).stdout.includes('1 note waits on you (1 open proposal, 1 pending note of ended runs'));
+  } finally { cleanup(dir); }
+});
+
+test('notices: with no run at all, a stranded note is still listed', () => {
+  const { Store } = require('../../src/core/store.cjs');
+  const dir = sandbox();
+  const dataDir = `${dir}/.belay`;
+  try {
+    fs.mkdirSync(dataDir, { recursive: true });
+    const store = new Store(`${dataDir}/memory.db`, { stamp: true });
+    store.storeIn({ namespace: 'pending/acme', worker_id: 'w1', type: 'note', text: 'stranded', title: 'stranded', body: { kind: 'lesson', state: 'pending', seen_in: [], seen_total: 0 }, run_id: 'run-gone', source: 'model', written_by: 'worker:w1' });
+    store.close();
+    const r = cli([], dataDir);
+    assert.strictEqual(r.status, 0, r.stderr);
+    const j = JSON.parse(r.stdout);
+    assert.strictEqual(j.run_id, null, 'no run exists');
+    assert.deepStrictEqual(j.events.map((e) => [e.kind, e.count, e.pending]), [['notes_stranded', 1, 1]]);
+  } finally { cleanup(dir); }
+});
+
 test('notices: every read of one command is served from a single copy of the store', async () => {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
