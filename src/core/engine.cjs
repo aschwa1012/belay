@@ -337,9 +337,10 @@ class Engine {
     const off = this.memoryOff(method);
     if (off === 'refuse') throw err('E_LEVER_OFF', `${method}: memory is off for this run (on_embedder_failure off, after an embedder failure), so nothing is read or written through it`, { lever: 'on_embedder_failure' });
     if (off === 'empty') return { text: '', bytes: 0, row_ids: [], dropped: 0, over_budget: false, sha256: require('node:crypto').createHash('sha256').update('', 'utf8').digest('hex'), considered: 0, excluded_already_injected: 0, memory_off: true };
+    const t0 = Date.now();
     const out = await spec.fn(this, caller, args);
     // ADR 0050 decision 4: a row written in a run whose pinned routing has heavy embedders is embedded by each of them before the call returns.
-    if (spec.kind === 'write' && this.owner && this.owner.stopped !== true) { const HN = require('./heavy-notes.cjs'); if (HN.feeds(method)) await HN.afterWrite(this, caller, method); }
+    if (spec.kind === 'write' && this.owner && this.owner.stopped !== true) { const HN = require('./heavy-notes.cjs'); if (HN.feeds(method)) await HN.afterWrite(this, caller, method, undefined, t0); }
     return out;
   }
 }
