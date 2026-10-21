@@ -9,7 +9,7 @@
 // is a `memory_event` with ok 0 (and `w.lastError`), never silence.
 
 const { fail } = require('./errors.cjs');
-const { DEFAULTS, leversFor } = require('./memory-levers.cjs');
+const { DEFAULTS, leversFor, unreadOf } = require('./memory-levers.cjs');
 const MARK = require('./convo-marker.cjs');
 
 const codeOf = (e) => (e && typeof e.code === 'string' && e.code.startsWith('E_') ? e.code : 'E_INTERNAL');
@@ -253,16 +253,28 @@ async function indexBlock(w, ctx, prompt, given, replacing = null) {
 
 // Eval-only `native_memory` run lever (the run row's memory levers): the folder a Claude Code worker gets when the spawn call names none.
 // Never for Codex (it has no auto-memory) or one of belay's own read-only jobs. The call's own argument wins.
+// A stored value that may have carried an eval lever and cannot be read (leversOfRow's unread marker) refuses the spawn of any worker
+// that is not a belay job, as a read that failed does for a Claude Code worker: the lever is unknown, never the default.
+const unreadRefusal = (what) => Object.assign(new Error(`eval levers (native_memory, handback_question): the run's levers could not be read, so the spawn is refused rather than run without them (${what})`), { code: 'E_LEVERS_UNREAD' });
 function nativeMemory(ctx, substrate, workerId, given) {
-  if (given !== null && given !== undefined) return given;
-  if (substrate !== 'claude-code' || require('./job-prefixes.cjs').isJobId(String(workerId || ''))) return null;
-  return ctx.memoryLevers ? ctx.memoryLevers.native_memory || null : levers(ctx, null, { strict: true }).then((lv) => lv.native_memory || null, (e) => { throw Object.assign(new Error(`native_memory: the run's levers could not be read, so the spawn is refused rather than run without it (${(e && e.message) || e})`), { code: 'E_LEVERS_UNREAD' }); });
+  if (require('./job-prefixes.cjs').isJobId(String(workerId || ''))) return null;
+  const has = given !== null && given !== undefined;
+  const claude = substrate === 'claude-code';
+  const decide = (lv) => {
+    const unread = unreadOf(lv);
+    if (unread) throw unreadRefusal(unread);
+    return has ? given : claude ? lv.native_memory || null : null;
+  };
+  if (ctx.memoryLevers) return decide(ctx.memoryLevers);
+  if (has || !claude) return has ? given : null; // nothing to read for the folder; spawnLevers still refuses an unreadable value once it has read the levers
+  return levers(ctx, null, { strict: true }).then(decide, (e) => { throw unreadRefusal((e && e.message) || e); });
 }
 
 // The levers a spawn takes before its files are written (ADR 0047: the adapter's argv carries the notes lever); with the
 // first-message index off the row keeps no situation lines.
 async function spawnLevers(ctx, w) {
   const lv = await levers(ctx, w, { receipt: true });
+  if (unreadOf(lv) && !require('./job-prefixes.cjs').isJobId(String(w.id))) throw unreadRefusal(unreadOf(lv));
   if (!lv.first_message_index) w.indexQueries = [];
   return lv;
 }
@@ -304,7 +316,7 @@ async function projectSubjects(ctx, w) {
 // holds all it was shown. `fresh` (a replacement) begins a new conversation: it holds only what its bottle carried (`w.bottleText`,
 // set by the restart only when the bottle kept the recorded first message), and a replacement with no bottle holds nothing of the old one,
 // so it is shown the whole index again.
-async function relaunch(w, ctx, firstText, { fresh = false } = {}) {
+async function relaunch(w, ctx, firstText, { fresh = false, message = null } = {}) {
   const replacing = fresh && (await levers(ctx, w)).first_message_index
     ? { bottle: w.bottleCarriesFirst === true && typeof w.bottleText === 'string' ? w.bottleText : '' } : null;
   const text = await indexBlock(w, ctx, undefined, undefined, replacing);
@@ -312,7 +324,11 @@ async function relaunch(w, ctx, firstText, { fresh = false } = {}) {
 
 ${text}` : text;
   const tail = await contractTail(ctx, w);
-  return tail ? (out ? `${out}${tail}` : tail.trimStart()) : out;
+  const withMessage = (s) => (message ? (s ? `${s}
+
+${message}` : message) : s); // the operator's message follows two newlines
+  if (tail && !w.notesOn) { const body = withMessage(out); return body ? `${body}${tail}` : tail.trimStart(); } // eval-only hand-back question: it closes the message, after the operator's words
+  return withMessage(tail ? (out ? `${out}${tail}` : tail.trimStart()) : out);
 }
 
 // The opening message's preface, moved verbatim out of manager.cjs (the 500-line rule): assign the task,

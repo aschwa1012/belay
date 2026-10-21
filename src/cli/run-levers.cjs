@@ -132,7 +132,8 @@ function parseLevers(spec, opts = {}) {
   // The config's `memory` block is the project default under the spec's own (opts.config = { path, memory }).
   const ev = evalKeys(spec); // eval-only top-level keys, folded into the memory block
   if (ev.error) return { error: ev.error };
-  const merged = mergeMemory(ev.fold ? { ...(spec.memory || {}), ...ev.fold } : spec.memory, spec.memory === null ? null : opts.config) // `memory: null` inherits no config, eval keys or not;
+  const shapeOk = spec.memory === undefined || spec.memory === null || (typeof spec.memory === 'object' && !Array.isArray(spec.memory)); // a bad block is refused as it is alone, never folded into an object by an eval key
+  const merged = mergeMemory(ev.fold && shapeOk ? { ...(spec.memory || {}), ...ev.fold } : spec.memory, spec.memory === null ? null : opts.config) // `memory: null` inherits no config, eval keys or not;
   if (merged.error) return { error: merged.error };
   const mem = ML.parseMemoryBlock(merged.block);
   if (mem.error) return { error: merged.fromConfig ? `${mem.error} (memory defaults come from ${opts.config.path}, the spec's own memory block over them)` : mem.error };
@@ -143,8 +144,12 @@ function parseLevers(spec, opts = {}) {
   // run's memory_levers never carries it, so the row cannot contradict the receipt, a config that sets only this lever does not
   // make every run row carry memory_levers, and an older core (which refuses the unknown key) still reads the block.
   const recorded = { ...mem.value }; delete recorded.on_embedder_failure;
+  const supplied = (k) => (ev.fold && k in ev.fold) || (spec.memory && typeof spec.memory === 'object' && Object.prototype.hasOwnProperty.call(spec.memory, k));
+  for (const k of ML.EVAL_ONLY) { // an eval-only lever nobody supplied is not recorded: a run without them has the levers, receipt and run row it always had
+    if (!supplied(k)) { delete recorded[k]; if (merged.sources) delete merged.sources[k]; }
+  }
   if (merged.sources) merged.sources.on_embedder_failure = given ? 'spec' : (spec.memory !== null && opts.config && opts.config.memory && opts.config.memory.on_embedder_failure !== undefined ? opts.config.path : 'default');
-  if (!ML.isDefault({ ...recorded, on_embedder_failure: ML.DEFAULTS.on_embedder_failure })) {
+  if (!ML.isDefault({ ...ML.DEFAULTS, ...recorded })) {
     out.memory_levers = recorded;
     if (merged.sources) out.memory_sources = merged.sources; // each lever's origin; absent for a default block, like memory_levers
     if (mem.value.rules) {

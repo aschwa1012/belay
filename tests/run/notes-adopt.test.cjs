@@ -62,21 +62,15 @@ test('an adopted worker is relaunched with --notes and the contract when the run
   }
 });
 
-test('a levers read that fails at spawn means no --notes and no contract, and the failure is on the worker', async () => {
+test('a levers read that fails at spawn refuses a Claude Code worker, naming the code, and leaves no record', async () => {
+  // The eval-only native_memory and handback_question levers are unknown when the run row cannot be read, so the spawn is refused rather
+  // than run without them (eval-levers.test.cjs). The worker-level receipt for a failed read is covered by the two tests below.
   const sb = sandbox();
   const core = levers(createFakeCore({ runId: 'run-fake' }), async () => { throw Object.assign(new Error('run row unreadable'), { code: 'E_OWNER_LOST' }); });
   const m = mgr(sb, core);
   try {
-    const recv = path.join(sb.data, 'recv.jsonl');
-    await withEnv({ FAKE_RECV_FILE: recv }, async () => {
-      await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'do it', worker_id: 'wf' });
-      await m._waitTurn('wf', 8000);
-    });
-    const w = m._worker('wf');
-    assert.strictEqual(w.notesOn, false);
-    assert.ok(!JSON.parse(fs.readFileSync(w.mcpJsonPath, 'utf8')).mcpServers.belay.args.includes('--notes'));
-    assert.strictEqual(w.firstMessage, 'do it');
-    assert.ok(!fs.readFileSync(recv, 'utf8').includes(NC.question({})), 'no contract on stdin');
+    await assert.rejects(m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'do it', worker_id: 'wf' }), (e) => e.code === 'E_LEVERS_UNREAD' && /run row unreadable/.test(e.message));
+    assert.strictEqual(m._worker('wf'), undefined);
   } finally {
     try { await m.shutdown(); } catch { /* best effort */ }
     fs.rmSync(sb.root, { recursive: true, force: true });
