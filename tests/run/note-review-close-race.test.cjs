@@ -101,3 +101,19 @@ test('R7: both drains share one budget: the close never waits longer than the si
   assert.ok(asked[0] <= BUDGET && asked[1] <= BUDGET, JSON.stringify(asked));
   assert.ok(ms < BUDGET + 300, `the close took ${ms} ms against a ${BUDGET} ms bound`); // 300 ms: timer and scheduling slack, not a second drain
 });
+
+test('R8: the two drains of one shutdown never ask for more than the shared deadline, even with an application that never ends', async () => {
+  const { NOTE_REVIEW_DRAIN_MS } = require('../../src/core/spawn-bounds.cjs');
+  const asked = [];
+  const t0 = Date.now();
+  await LC.shutdown(new Map([['w1', rec('w1')]]), {
+    stop: async () => {}, core: { isOwner: () => false }, clearPoll: () => {}, markClosed: () => {}, markOwnerGone: () => new Set(),
+    beforeStop: async (ms) => { asked.push(ms); }, // a stalled application is represented by the drain returning at once: only the asked budgets matter
+    onDrained: async () => {},
+  });
+  assert.strictEqual(asked.length, 2);
+  assert.ok(asked.every((x) => x <= NOTE_REVIEW_DRAIN_MS), JSON.stringify(asked)); // each drain is asked for at most the one deadline, and R7 shows the pair spends it once
+  assert.ok(Date.now() - t0 < 2000);
+  const { adapterStopBoundMs, adapterWaitBoundMs } = require('../../src/cli/run-close.cjs');
+  assert.ok(adapterWaitBoundMs(1, 0) >= adapterStopBoundMs(1) && adapterStopBoundMs(1) >= NOTE_REVIEW_DRAIN_MS, 'the outer wait covers the drain');
+});

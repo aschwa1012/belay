@@ -2,6 +2,7 @@
 // spawn-bounds.cjs — the one bound the run manager and the CLI's pipe bounds share: how long a spawn, a restart or a resume waits
 // for the first-message index's query embedding (memory.embedQuery) before it builds the index from keywords alone. The CLI's
 // bounds for a restart and a resume add it, so those verbs are never reported failed after they took effect.
-// NOTE_REVIEW_DRAIN_MS: the adapter's in-process bound on applying review tasks' verdicts in flight before it stops any worker
-// (lifecycle.shutdown's beforeStop). `belay run` adds nothing to the adapter wait for it.
-module.exports = { SPAWN_EMBED_MS: 12000, NOTE_REVIEW_DRAIN_MS: 120000 };
+// NOTE_REVIEW_DRAIN_MS: the one deadline for applying review tasks' verdicts in flight before the adapter stops any worker
+// (lifecycle.shutdown's beforeStop, both drains together). `belay run` adds the same amount to the adapter wait (run-close.cjs), so the
+// outer wait always covers the drain.
+module.exports = { SPAWN_EMBED_MS: 12000, NOTE_REVIEW_DRAIN_MS: 20000 };

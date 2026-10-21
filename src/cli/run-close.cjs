@@ -8,6 +8,7 @@ const processDefaults = require('../core/process.cjs');
 const KL = require('../core/kill-log.cjs');
 const { pidAlive } = require('../core/lock.cjs');
 const { SNAPSHOT_TIMEOUT_MS } = require('../core/proc-identity.cjs');
+const { NOTE_REVIEW_DRAIN_MS } = require('../core/spawn-bounds.cjs');
 const { LIFE_CLAIMING_STATES } = require('../core/methods-run.cjs');
 const ID = require('../core/proc-identity.cjs');
 
@@ -29,8 +30,9 @@ function outcomeOf(e) {
   return e.signalled ? 'signalled_still_alive' : 'not_signalled_still_alive';
 }
 
-// The adapter's own bound on applying review verdicts (NOTE_REVIEW_DRAIN_MS) is in-process and adds nothing to this wait.
-const adapterStopBoundMs = (n, snapMs = SNAPSHOT_TIMEOUT_MS) => n * (ADAPTER_STOP_PER_WORKER_MS + snapMs) + ADAPTER_STOP_SLACK_MS + snapMs;
+// The adapter first drains review verdict applications in flight (up to NOTE_REVIEW_DRAIN_MS, one deadline for both drains), then stops workers:
+// the wait covers both.
+const adapterStopBoundMs = (n, snapMs = SNAPSHOT_TIMEOUT_MS) => n * (ADAPTER_STOP_PER_WORKER_MS + snapMs) + ADAPTER_STOP_SLACK_MS + snapMs + NOTE_REVIEW_DRAIN_MS;
 const adapterWaitBoundMs = (n, graceMs, snapMs = SNAPSHOT_TIMEOUT_MS) => Math.max(graceMs, adapterStopBoundMs(n, snapMs));
 
 // A Codex `idle` row has no process by design (api.md §2): run.end closes it, belay run never kills it.
