@@ -10,8 +10,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { withCopy } = require('../core/copy-read.cjs');
+const { pidAlive } = require('../core/lock.cjs');
 
 const FLUSH_BYTES = 64 * 1024;
+// Test seam: the hard-link step, replaced by a test to stand in for a file system that has none.
+const ops = { linkSync: (a, b) => fs.linkSync(a, b) };
+const NO_LINK = new Set(['EPERM', 'ENOTSUP', 'EXDEV', 'EOPNOTSUPP']);
 const norm = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
 const fail = (code, message, exit) => ({ code: exit, text: `belay memory search-log: ${message}\n`, json: { error: { code, message } } });
 
@@ -21,18 +25,30 @@ function lineOf(ev) {
   return { ...rest, row_ids: parseJson(ids), detail: parseJson(message) };
 }
 
-// The output path, or a refusal: not inside the data dir (by real path, so a link into it does not slip by) and not an existing file
+// A temp file a dead export of the same target left behind (`<out>.tmp-<pid>`, pid not alive) is removed.
+function dropStale(out) {
+  const base = `${path.basename(out)}.tmp-`;
+  try {
+    for (const n of fs.readdirSync(path.dirname(out))) {
+      const m = n.startsWith(base) && /^[0-9]+$/.exec(n.slice(base.length));
+      if (m && !pidAlive(Number(m[0]))) fs.rmSync(path.join(path.dirname(out), n), { force: true });
+    }
+  } catch { /* best effort */ }
+}
+
+// The output path, or a refusal (real paths are the native ones: they expand 8.3 short names, which the JS realpath leaves as they are): not inside the data dir (by real path, so a link into it does not slip by) and not an existing file
 // without --force. Runs before any store is touched.
 function target(ctx, dataDir, opts) {
   const out = path.resolve(ctx.cwd, opts.export);
   let parent;
-  try { parent = fs.realpathSync(path.dirname(out)); } catch (e) { return { fail: fail('E_NOT_FOUND', `cannot write ${out}: the directory does not exist`, 1) }; }
+  try { parent = fs.realpathSync.native(path.dirname(out)); } catch (e) { return { fail: fail('E_NOT_FOUND', `cannot write ${out}: the directory does not exist`, 1) }; }
   let data = path.resolve(dataDir);
-  try { data = fs.realpathSync(data); } catch { /* no data dir: nothing can be inside it */ }
+  try { data = fs.realpathSync.native(data); } catch { /* no data dir: nothing can be inside it */ }
   let real = path.join(parent, path.basename(out));
-  try { real = fs.realpathSync(real); } catch { /* not there yet */ }
+  try { real = fs.realpathSync.native(real); } catch { /* not there yet */ }
   const rel = path.relative(norm(data), norm(real));
-  if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) return { fail: fail('E_ARGS', `${out} is inside the data directory ${dataDir}; the export goes somewhere else`, 2) };
+  if (rel === '' || !(rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel))) return { fail: fail('E_ARGS', `${out} is inside the data directory ${dataDir}; the export goes somewhere else`, 2) };
+  dropStale(out);
   if (fs.existsSync(out) && !opts.force) return { fail: fail('E_EXISTS', `${out} exists; pass --force to overwrite it`, 1) };
   return { out };
 }
@@ -72,7 +88,13 @@ async function run(ctx, parsed, dataDir) {
     flush();
     fs.closeSync(fd); fd = null;
     if (opts.force) fs.renameSync(tmp, t.out);
-    else { fs.linkSync(tmp, t.out); fs.unlinkSync(tmp); } // a link refuses an existing file atomically
+    else {
+      try { ops.linkSync(tmp, t.out); } catch (e) { // a link refuses an existing file atomically; where there are no hard links, an exclusive copy does
+        if (!NO_LINK.has(e.code)) throw e;
+        fs.copyFileSync(tmp, t.out, fs.constants.COPYFILE_EXCL);
+      }
+      fs.unlinkSync(tmp);
+    }
   } catch (e) {
     if (fd !== null) { try { fs.closeSync(fd); } catch { /* already closed */ } }
     try { fs.unlinkSync(tmp); } catch { /* none made */ }
@@ -83,4 +105,4 @@ async function run(ctx, parsed, dataDir) {
   return { code: 0, text: `exported ${count} search-log event${count === 1 ? '' : 's'} to ${t.out}  bytes: ${bytes}  sha256: ${receipt.sha256.slice(0, 12)}\n`, json: receipt };
 }
 
-module.exports = { run };
+module.exports = { run, ops };
