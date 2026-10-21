@@ -50,7 +50,7 @@ test('the WAL is truncated once the owner goes idle', async () => {
   try {
     c = await openCore({
       dataDir: dir, caller: callerFor('orchestrator'), embed: false,
-      ownerOpts: { idleMs: 150, idleCheckMs: 50, checkpointMs: 100000, sweepMs: 100000 },
+      ownerOpts: { idleMs: 150, idleCheckMs: 50, checkpointMs: 100000, sweepMs: 100000, heartbeatMs: 100000 },
     });
     for (let i = 0; i < 300; i++) {
       await c.memory.store({ namespace: 'wal', text: `row ${i} ${'padding '.repeat(20)}`, embedding: vec(i), embedding_model: 'm', dim: 2 });
