@@ -70,19 +70,32 @@ function ensureLoaded(modelId) {
   return p;
 }
 
-const VERDICT_TTL_MS = 600000;
-const keyOf = (models, headroomMb) => `${[...models].sort().join('|')}@${headroomMb}`;
+const keyOf = (models, headroomMb, runId) => `${runId || ''}#${[...models].sort().join('|')}@${headroomMb}`;
+
+// A re-pin of the SAME run (after a wait drain) keeps that run's first verdict instead of probing again (a fresh probe would count the embedder the shared
+// child already holds twice). It is not trusted blindly: one fresh nvidia-smi free reading, plus the measured peaks of the models the shared child already
+// holds (they are in that reading as used), must still cover the verdict's needed_mb. No reading (no nvidia-smi) trusts the verdict.
+async function recheck(kept, models) {
+  const smiFn = test().probeOpts && test().probeOpts.smi !== undefined ? test().probeOpts.smi : require('./gpu-probe.cjs').defaultSmi;
+  let row = null;
+  try { row = smiFn ? await smiFn() : null; } catch { row = null; }
+  if (!row || !Number.isFinite(row.free_mb)) return kept;
+  const held = models.filter((m) => holds(m)).reduce((s, m) => s + ((kept.peaks && kept.peaks[m] && kept.peaks[m].peak_mb) || 0), 0);
+  const free = row.free_mb + held;
+  if (kept.needed_mb <= free) return kept;
+  return { ok: false, refusal: { reason: 'insufficient_vram', message: `the set needs ${kept.needed_mb} MiB (its first probe, with headroom) and ${free} MiB of dedicated memory is free now (${row.free_mb} MiB read, plus ${held} MiB this run's own models already hold)`, options: ['close other programs that use the GPU', 'choose smaller models', 'lower the vram_headroom_gb lever'] } };
+}
 
 // -> the probe's result: { ok: true, ... } or { ok: false, refusal: { reason, message, options } }. Never throws.
-function probeOnce(models, { headroomMb } = {}) {
-  const key = keyOf(models, headroomMb);
+function probeOnce(models, { headroomMb, runId } = {}) {
+  const key = keyOf(models, headroomMb, runId);
   const run = async () => {
-    const kept = verdicts.get(key); // the first probe's verdict stands for the same models and headroom: a re-probe after a drain would count the resident embedder twice
-    if (kept && Date.now() - kept.at < VERDICT_TTL_MS) return kept.result;
+    const kept = runId ? verdicts.get(key) : null;
+    if (kept) return recheck(kept, models);
     const probe = test().probe || require('./gpu-probe.cjs').probe; // lazy: it starts a child of its own and calls nvidia-smi
     const r = await probe({ models, headroomMb, ...(test().probeOpts || {}) });
     if (r && r.ok) {
-      verdicts.set(key, { result: r, at: Date.now() });
+      if (runId) verdicts.set(key, r);
       for (const m of models) {
         const rr = r.rerank && r.rerank[m];
         if (rr) settings.set(m, { batchSize: rr.batch_size, chunk: rr.max_pairs, ...(Number.isFinite(rr.chunk_tokens) ? { chunkTokens: rr.chunk_tokens } : {}) });

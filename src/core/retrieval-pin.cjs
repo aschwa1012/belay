@@ -56,12 +56,16 @@ function tierFailure(ctx, code, cause, message, extra) {
     throw err('E_MODEL_ABSENT', `${message}, and on_heavy_failure is pause, so the run was not started on it${extra && extra.options && extra.options.length ? `. Options: ${extra.options.join('; ')}` : ''}`, { gpu: true, cause, ...(extra || {}) });
   }
   const was = ctx.routing;
-  ctx.routing = resolveRouting({ levers: { ...ctx.levers, profile: ctx.levers.profile_cpu, routing: null }, agentTypes: ctx.agentTypes, gpu: false });
+  // The profile a run falls back to is profile_cpu, unless the model that failed is part of profile_cpu itself (a CPU reranker that is not fetched): then
+  // the fallback profile proper (nano, no reranker), which needs no model but nano.
+  const cpuModels = ctx.levers.profile_cpu === RP.CUSTOM ? [ctx.levers.embedder, ctx.levers.reranker] : Object.values(RP.profileModels(ctx.levers.profile_cpu));
+  const target = extra && extra.model && cpuModels.includes(extra.model) ? RP.FALLBACK_PROFILE : ctx.levers.profile_cpu;
+  ctx.routing = resolveRouting({ levers: { ...ctx.levers, profile: target, routing: null }, agentTypes: ctx.agentTypes, gpu: false });
   const from = (k) => (k === 'run' ? was.run : was.tiers[k]).profile;
   ctx.routing.run = { ...ctx.routing.run, fallback_from: from('run') };
   for (const k of Object.keys(ctx.routing.tiers)) ctx.routing.tiers[k] = { ...ctx.routing.tiers[k], fallback_from: from(k) };
   const moved = [...new Set(Object.entries(was.tiers).filter(([, t]) => t.device === 'gpu' || t.reranker || t.embedder !== RP.NANO).map(([k]) => k))];
-  ctx.notices.push({ code, message: `${message}. The run is served on the ${ctx.levers.profile_cpu} profile (nano, no heavy model).`, ...(extra && extra.reason ? { reason: extra.reason } : {}), options: (extra && extra.options) || [], agent_types: moved });
+  ctx.notices.push({ code, message: `${message}. ${extra && extra.model && RP.describeModel(extra.model) && RP.describeModel(extra.model).runtime === 'onnx' ? `Fetch it with: belay embedder fetch --reranker ${extra.model}. ` : ''}The run is served on the ${target} profile${target === RP.FALLBACK_PROFILE ? ' (nano, no reranker)' : ''}.`, ...(extra && extra.reason ? { reason: extra.reason } : {}), options: (extra && extra.options) || [], agent_types: moved });
 }
 
 async function pinRouting(E, caller, args = {}) {
@@ -77,7 +81,7 @@ async function pinRouting(E, caller, args = {}) {
     const GS = require('./gpu-shared.cjs'); // lazy: only a routing that names a GPU model reaches it
     GS.recycle(); // a child that died or hung under an earlier run is forgotten, so this pin probes and forks afresh
     // The first probe's verdict stands for this model set and headroom (gpu-shared.cjs): a second pin after a drain does not probe again.
-    const r = await GS.probeOnce(ctx.routing.gpu_models, { headroomMb: Math.round(ctx.routing.levers.vram_headroom_gb * 1024) });
+    const r = await GS.probeOnce(ctx.routing.gpu_models, { headroomMb: Math.round(ctx.routing.levers.vram_headroom_gb * 1024), runId });
     if (r && r.ok) probe = { ok: true, device: r.device && r.device.name, needed_mb: r.needed_mb, free_mb: r.free_mb, headroom_mb: r.headroom_mb, models: r.models };
     else {
       const refusal = (r && r.refusal) || { reason: 'probe_failed', message: 'the GPU probe returned nothing', options: [] };
