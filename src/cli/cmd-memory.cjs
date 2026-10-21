@@ -311,7 +311,7 @@ async function doImport(core, parsed, read) {
 }
 
 const LC = require('./cmd-memory-lifecycle.cjs');
-const VERB_FN = { ...LC.VERB_FN, embed: (...a) => require('./cmd-memory-embed.cjs').doEmbed(...a), export: doExport, 'search-log': (...a) => require('./cmd-memory-searchlog.cjs').doSearchLog(...a), import: doImport, search: doSearch, list: doList, show: doShow, timeline: doTimeline, verify: doVerify, stats: doStats };
+const VERB_FN = { ...LC.VERB_FN, embed: (...a) => require('./cmd-memory-embed.cjs').doEmbed(...a), export: doExport, import: doImport, search: doSearch, list: doList, show: doShow, timeline: doTimeline, verify: doVerify, stats: doStats };
 
 function failure(sub, e) {
   const code = e.code || 'E_INTERNAL';
@@ -333,6 +333,11 @@ async function run(ctx) {
 
   const found = C.discover(ctx.cwd);
   const dataDir = C.dataDirOf(found, ctx);
+
+  // search-log reads a copy of the store itself (no core, no owner): checked and run before any core is opened.
+  if (parsed.sub === 'search-log') {
+    try { return await require('./cmd-memory-searchlog.cjs').run(ctx, parsed, dataDir); } catch (e) { return failure('search-log', e); }
+  }
 
   // Mode W for verify, as for `worker rm`: it never creates the data dir.
   if ((parsed.sub === 'verify' || parsed.sub === 'embed' || LC.writes(parsed)) && !fs.existsSync(dataDir)) {

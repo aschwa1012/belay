@@ -14,7 +14,7 @@ const fail = (reason, message, more) => err('E_RERANK', `the rerank stage failed
 // Returns { ranked: the head reordered then the untouched rest, info: { ran: true, model, device, ms, depth, reranked } }.
 async function rerank({ tier, query, ranked, textOf, depth, boundMs, owner }) {
   if (typeof query !== 'string' || !query) throw fail('no_query', 'a rerank needs the query text, and this search was given only a vector');
-  const impl = provider.get(tier, { owner: owner === true });
+  const impl = provider.get(tier, { owner });
   if (!impl) throw fail('absent', `no rerank provider is registered for ${tier.reranker}`, { reranker: tier.reranker });
   const head = ranked.slice(0, depth);
   const docs = [];
@@ -30,6 +30,7 @@ async function rerank({ tier, query, ranked, textOf, depth, boundMs, owner }) {
     answer = await Promise.race([call, bound]);
   } catch (e) {
     if (e && e.code === 'E_RERANK') throw e;
+    if (owner && typeof owner === 'object' && owner.stopped) throw fail('shutdown', 'the store owner is stopping and closed the reranker', { cause: e && e.code ? e.code : null }); // not the reranker's fault: never sticky, never a pause
     throw fail('error', `${e && e.code ? `${e.code}: ` : ''}${e && e.message ? e.message : String(e)}`, { cause: e && e.code ? e.code : null });
   } finally { clearTimeout(timer); }
   const list = answer && Array.isArray(answer.scores) ? answer.scores : null;

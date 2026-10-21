@@ -22,23 +22,27 @@ function register(name, impl) {
 function unregister(name) { return providers.delete(name); }
 
 // The impl for the tier's reranker, or null when the tier has none or nobody registered it. Only the store OWNER ever builds one
-// (ADR 0050 decision 5): with `opts.owner` true and a pinned CPU reranker id nobody registered, the CPU provider is built here, once
+// (ADR 0050 decision 5): with `opts.owner` (the Owner, or true) set and a pinned CPU reranker id nobody registered, the CPU provider is built here, once
 // per id per process, and registered. A search outside the owner (a copy read, a client) never forks a child; it gets null and the
 // rerank stage says so loudly. rerank-cpu.cjs is required only inside that branch, so no read path loads it (invariant 9).
 function get(tier, opts) {
   const name = tier && tier.reranker;
   if (!name) return null;
   if (providers.has(name)) return providers.get(name);
-  if (!(opts && opts.owner === true)) return null;
-  return autoBuild(name);
+  const owner = opts && opts.owner;
+  if (!owner) return null;
+  if (typeof owner === 'object' && owner.stopped) return null; // a stopping owner builds nothing: its close has already taken its list
+  return autoBuild(name, owner);
 }
 
 // Test seam (BELAY_TEST_MODE=1 alone): options merged into the auto-built CPU provider (pkg, cacheDir, table, workerPath, workerOpts).
 let autoOpts = null;
+const gpuNames = new Set(); // names of the GPU providers built
 let usesGpu = false; // set when a GPU provider was built: closeAll then closes the shared GPU child too
 function setAutoOptions(o) { if (process.env.BELAY_TEST_MODE !== '1') throw err('E_ARGS', 'setAutoOptions is a test seam', {}); autoOpts = o || null; }
 
-function autoBuild(name) {
+// An Owner that builds one keeps its name in owner.rerankBuilt, and closes exactly those at its stop (closeOwned).
+function autoBuild(name, owner) {
   const extra = process.env.BELAY_TEST_MODE === '1' && autoOpts ? autoOpts : {};
   const { rerankerFor } = require('./onnx-rerankers.cjs'); // pure table
   try { rerankerFor(name, extra.table); } catch {
@@ -46,31 +50,35 @@ function autoBuild(name) {
     const m = require('./retrieval-profiles.cjs').describeModel(name); // a pure table
     if (!m || m.kind !== 'reranker' || m.runtime !== 'gguf') return null;
     const { gpuRerankProvider } = require('./gpu-rerank.cjs'); // lazy: the owner's GPU tiers only
-    usesGpu = true;
-    providers.set(name, gpuRerankProvider({ model: name }));
+    providers.set(name, gpuRerankProvider({ model: name })); gpuNames.add(name);
+    if (owner && typeof owner === 'object') { (owner.rerankBuilt = owner.rerankBuilt || new Set()).add(name); owner.gpuUsed = true; } else usesGpu = true;
     return providers.get(name);
   }
   const { cpuRerankProvider } = require('./rerank-cpu.cjs'); // lazy: the owner's search only
   const impl = cpuRerankProvider({ model: name, ...extra });
   providers.set(name, { rerank: impl, close: impl.close });
+  if (owner && typeof owner === 'object') (owner.rerankBuilt = owner.rerankBuilt || new Set()).add(name);
   return providers.get(name);
 }
 
-// Closes every registered provider that has a close(), each bounded by boundMs; never throws. The owner calls it at shutdown. A closed
-// provider is forgotten (a closed CPU provider starts no child again), so an owner started later in the same process builds its own.
-async function closeAll(boundMs = 3000) {
-  const all = [...providers.entries()];
+// Closes the named providers (all registered ones when no names are given), each bounded by boundMs; never throws. A closed provider
+// is forgotten even when its close threw or timed out (a closed CPU provider starts no child again), so an owner started later in the
+// same process builds its own. An Owner calls closeOwned(owner.rerankBuilt) at its stop; closeAll is the process-wide form.
+async function closeAll(boundMs = 3000, names) {
+  const all = [...providers.entries()].filter(([n]) => !names || names.has(n));
   await Promise.all(all.map(async ([name, impl]) => {
     if (!impl || typeof impl.close !== 'function') return;
     if (providers.get(name) === impl) providers.delete(name);
     let timer;
     try { await Promise.race([Promise.resolve().then(() => impl.close()), new Promise((r) => { timer = setTimeout(r, boundMs); })]); } catch { /* best effort */ } finally { clearTimeout(timer); }
   }));
-  if (usesGpu) { // one child holds every GPU model, so closing the reranker's provider closes it for the embedder too
+  if (usesGpu || (names && [...names].some((n) => gpuNames.has(n)))) { // one child holds every GPU model, so closing the reranker's provider closes it for the embedder too
     usesGpu = false;
     let timer;
     try { await Promise.race([require('./gpu-shared.cjs').close(), new Promise((r) => { timer = setTimeout(r, boundMs); })]); } catch { /* best effort */ } finally { clearTimeout(timer); }
   }
 }
 
-module.exports = { register, unregister, get, closeAll, setAutoOptions };
+const closeOwned = (owner, boundMs) => closeAll(boundMs, new Set((owner && owner.rerankBuilt) || []));
+
+module.exports = { register, unregister, get, closeAll, closeOwned, setAutoOptions };

@@ -75,3 +75,101 @@ test('--export is required, and the usage text lists the verb', () => {
   assert.match(r.stderr, /search-log --export <file>/);
   assert.match(R.usageText(), /belay memory search-log --export <file> \[--run <id>\] \[--since <ms\|iso>\] \[--force\]/);
 });
+
+test('a target inside the data directory is refused before anything is read, and nothing in the directory changes', () => {
+  const snap = () => fs.readdirSync(T.dir).sort().map(n => `${n}:${fs.statSync(`${T.dir}/${n}`).size}`).join(',');
+  const before = snap();
+  for (const f of [`${T.dir}/memory.db`, `${T.dir}/new.jsonl`, `${T.dir}/sub/../memory.db`]) {
+    const r = belay('--export', f, '--force');
+    assert.strictEqual(r.status, 2, f + r.stderr);
+    assert.strictEqual(JSON.parse(r.stderr).error.code, 'E_ARGS');
+  }
+  assert.strictEqual(snap(), before);
+  assert.ok(fs.statSync(`${T.dir}/memory.db`).size > 0, 'the database is intact');
+});
+
+test('--force replaces a file through a temp file and leaves none behind', () => {
+  const f = `${outDir}/forced.jsonl`;
+  fs.writeFileSync(f, 'old\n');
+  assert.strictEqual(belay('--export', f, '--force').status, 0);
+  assert.strictEqual(lines(f).length, 3);
+  assert.deepStrictEqual(fs.readdirSync(outDir).filter(n => n.includes('.tmp-')), []);
+});
+
+test('with a live owner the export reads a copy and never connects to the owner', async () => {
+  const { Owner } = require('../../src/core/owner.cjs');
+  const od = fs.mkdtempSync(`${require('node:os').tmpdir()}/belay-sl-own-`);
+  const o = new Owner(od, { embed: false });
+  await o.start();
+  let connections = 0;
+  o.server.on('connection', () => { connections += 1; });
+  try {
+    const f = `${outDir}/owned.jsonl`;
+    const r = await new Promise((resolve) => {
+      const c = require('node:child_process').spawn(process.execPath, [CLI, 'memory', 'search-log', '--data', od, '--json', '--export', f], { stdio: ['ignore', 'pipe', 'pipe'] });
+      let out = ''; c.stdout.on('data', d => { out += d; }); c.on('exit', code => resolve({ code, out }));
+    });
+    assert.strictEqual(r.code, 0, r.out);
+    assert.strictEqual(connections, 0, 'the owner was not asked');
+    assert.strictEqual(JSON.parse(r.out).count, 0);
+  } finally { await o.stop(); fs.rmSync(od, { recursive: true, force: true }); }
+});
+
+const BS = String.fromCharCode(92);
+const SLC = require('../../src/cli/cmd-memory-searchlog.cjs');
+const inProc = (file, extra = {}) => SLC.run({ cwd: outDir }, { opts: { export: file, ...extra } }, T.dir);
+
+test('a file whose name merely starts with two dots, inside the data dir, is refused too', async () => {
+  const r = await inProc(`${T.dir}/..foo.jsonl`);
+  assert.strictEqual(r.code, 2);
+  assert.strictEqual(r.json.error.code, 'E_ARGS');
+  assert.ok(!fs.existsSync(`${T.dir}/..foo.jsonl`));
+});
+
+test('a case variant, a junction and an 8.3 alias of the data directory are all refused', async (t) => {
+  const os = require('node:os');
+  const refusals = [];
+  if (process.platform === 'win32') refusals.push([`${T.dir.toUpperCase()}/memory.db`, 'case variant']);
+  const link = `${outDir}/junction`;
+  fs.symlinkSync(T.dir, link, 'junction');
+  refusals.push([`${link}/memory.db`, 'junction']);
+  let short = null;
+  if (process.platform === 'win32') {
+    const cmd = `${outDir}/short.cmd`;
+    fs.writeFileSync(cmd, ['@echo off', 'for %%I in ("%~1") do @echo %%~sI', ''].join(`${String.fromCharCode(13)}${String.fromCharCode(10)}`));
+    const win = T.dir.split('/').join(BS);
+    const out = spawnSync('cmd', ['/c', cmd, win], { encoding: 'utf8' }).stdout.trim();
+    if (out && out.toLowerCase() !== win.toLowerCase() && /~d/.test(out)) short = out;
+    if (short) refusals.push([`${short}${BS}memory.db`, '8.3 alias']);
+  }
+  const before = fs.statSync(`${T.dir}/memory.db`).size;
+  for (const [f, what] of refusals) {
+    const r = await inProc(f, { force: true });
+    assert.strictEqual(r.code, 2, `${what}: ${f}`);
+  }
+  assert.strictEqual(fs.statSync(`${T.dir}/memory.db`).size, before);
+  if (process.platform === 'win32' && !short) t.diagnostic('8.3 short names are disabled on this volume: the alias case was skipped');
+  void os;
+});
+
+test('without hard links on the target volume the export falls back to an exclusive copy, and still refuses an existing file', async () => {
+  const real = SLC.ops.linkSync;
+  SLC.ops.linkSync = () => { throw Object.assign(new Error('no links here'), { code: 'EPERM' }); };
+  try {
+    const f = `${outDir}/nolink.jsonl`;
+    const r = await inProc(f);
+    assert.strictEqual(r.code, 0, JSON.stringify(r.json));
+    assert.strictEqual(lines(f).length, 3);
+    assert.deepStrictEqual(fs.readdirSync(outDir).filter(n => n.includes('.tmp-')), []);
+    assert.strictEqual((await inProc(f)).code, 1, 'an existing file is still refused');
+  } finally { SLC.ops.linkSync = real; }
+});
+
+test('a temp file left by a dead export of the same target is removed', async () => {
+  const dead = `${outDir}/stale.jsonl.tmp-2147483000`, live = `${outDir}/stale.jsonl.tmp-${process.ppid}`;
+  fs.writeFileSync(dead, 'x'); fs.writeFileSync(live, 'y');
+  const rs = await inProc(`${outDir}/stale.jsonl`); assert.strictEqual(rs.code, 0, JSON.stringify(rs.json));
+  assert.ok(!fs.existsSync(dead));
+  assert.ok(fs.existsSync(live), 'a live pid\'s file is not touched');
+  fs.rmSync(live);
+});

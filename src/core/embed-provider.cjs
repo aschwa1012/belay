@@ -49,12 +49,15 @@ function get(tier, opts) {
   const name = tier && tier.embedder;
   if (!name) return null;
   if (providers.has(name)) return providers.get(name);
-  if (!(opts && opts.owner === true)) return null;
+  const owner = opts && opts.owner;
+  if (!owner) return null;
+  if (typeof owner === 'object' && owner.stopped) return null; // a stopping owner forks no GPU child: its close has already taken its list
   const { describeModel } = require('./retrieval-profiles.cjs');
   const m = describeModel(name);
   if (!m || m.kind !== 'embedder' || m.runtime !== 'gguf') return null; // nano, or an id that is not a GPU embedder: nothing to build
   const impl = build(name);
   providers.set(name, impl);
+  if (typeof owner === 'object') { (owner.embedBuilt = owner.embedBuilt || new Set()).add(name); owner.gpuUsed = true; }
   return impl;
 }
 
@@ -67,4 +70,13 @@ async function closeAll(boundMs = 3000) {
   try { await Promise.race([require('./gpu-shared.cjs').close(), new Promise((r) => { timer = setTimeout(r, boundMs); })]); } catch { /* best effort */ } finally { clearTimeout(timer); }
 }
 
-module.exports = { register, unregister, get, closeAll };
+// An Owner's stop: closes the providers it built, and the shared GPU child when it used one (its reranker or its embedder). Bounded, never throws.
+async function closeOwned(owner, boundMs = 3000) {
+  const names = new Set((owner && owner.embedBuilt) || []);
+  for (const n of names) providers.delete(n);
+  if (!(owner && owner.gpuUsed)) return;
+  usedShared = true;
+  await closeAll(boundMs);
+}
+
+module.exports = { register, unregister, get, closeAll, closeOwned };
