@@ -65,17 +65,17 @@ async function probeFirst(model, headroomGb) {
   if (!(r && r.ok)) { const f = (r && r.refusal) || { reason: 'probe_failed', message: 'the GPU probe returned nothing', options: [] }; throw err('E_MODEL_ABSENT', `the GPU probe refused ${model} (${f.reason}): ${f.message}. Options: ${(f.options || []).join('; ') || 'none'}`, { gpu: true, cause: 'probe_refused', refusal: f }); }
 }
 
-async function drainHeavy(E, tierKey, { namespaces, onProgress, boundMs = DEFAULT_BOUND_MS, batch = BATCH, probe = false, headroomGb, cancelled } = {}) {
+async function drainHeavy(E, tierKey, { namespaces, onProgress, boundMs = DEFAULT_BOUND_MS, batch = BATCH, probe = false, headroomGb, cancelled, now = () => Date.now() } = {}) {
   const key = keyOfModel(tierKey);
   const db = E.store.db;
-  const t0 = Date.now();
+  const t0 = now();
   if (probe) await probeFirst(key.model, headroomGb);
   const missing = MV.backlog(db, key, { namespaces });
   const total = missing.length;
   const impl = total ? EP.get({ embedder: key.model }, { owner: E.owner || false }) : null;
   if (total && !impl) throw err('E_NO_EMBEDDER', `no embedder for ${key.model} is available here (only the store owner loads a heavy embedder)`, { embedder: key.model });
   for (let i = 0; i < total; i += batch) {
-    if (i > 0 && Date.now() - t0 >= boundMs) break;
+    if (i > 0 && now() - t0 >= boundMs) break;
     try { await embedIds(E, key, impl, missing.slice(i, i + batch).map((r) => r.id), { deadline: t0 + boundMs, cancelled }); } catch (e) {
       e.detail = { ...(e.detail || {}), written: total - MV.backlog(db, key, { namespaces }).length, embedder: key.model };
       throw e;
@@ -83,7 +83,7 @@ async function drainHeavy(E, tierKey, { namespaces, onProgress, boundMs = DEFAUL
     if (onProgress) { try { onProgress({ embedder: key.model, done: Math.min(i + batch, total), total }); } catch { /* a progress sink never stops the drain */ } }
   }
   const remaining = MV.backlog(db, key, { namespaces }).length;
-  return { embedder: key.model, dims: key.dims, total, written: total - remaining, remaining, done: remaining === 0, ms: Date.now() - t0 };
+  return { embedder: key.model, dims: key.dims, total, written: total - remaining, remaining, done: remaining === 0, ms: now() - t0 };
 }
 
 // The method behind `belay memory embed --model <gguf id>` (owner write, operator only): one bounded drain.

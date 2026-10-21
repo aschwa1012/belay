@@ -12,7 +12,8 @@ const fail = (reason, message, more) => err('E_RERANK', `the rerank stage failed
 
 // ranked: [{ id, ... }] best first. textOf(id) -> the text to score, or null when the row is gone.
 // Returns { ranked: the head reordered then the untouched rest, info: { ran: true, model, device, ms, depth, reranked } }.
-async function rerank({ tier, query, ranked, textOf, depth, boundMs, owner }) {
+async function rerank({ tier, query, ranked, textOf, depth, boundMs, owner, timers }) {
+  const T = { now: () => Date.now(), setTimeout: (...a) => setTimeout(...a), clearTimeout: (t) => clearTimeout(t), ...(timers || {}) }; // injectable, like `clock` in memory-index-rank
   if (typeof query !== 'string' || !query) throw fail('no_query', 'a rerank needs the query text, and this search was given only a vector');
   const impl = provider.get(tier, { owner });
   if (!impl) throw fail('absent', `no rerank provider is registered for ${tier.reranker}`, { reranker: tier.reranker });
@@ -21,18 +22,18 @@ async function rerank({ tier, query, ranked, textOf, depth, boundMs, owner }) {
   for (const h of head) { const text = textOf(h.id); if (typeof text === 'string') docs.push({ id: h.id, text }); }
   if (!docs.length) return { ranked, info: { ran: true, model: tier.reranker, device: tier.device, ms: 0, depth, reranked: 0 } };
   let timer;
-  const t0 = Date.now();
+  const t0 = T.now();
   let answer;
   try {
     const call = Promise.resolve().then(() => impl.rerank({ query, docs, depth, boundMs }));
     call.catch(() => {}); // an answer that comes after the bound is not read
-    const bound = new Promise((_, reject) => { timer = setTimeout(() => reject(fail('timeout', `the reranker did not answer within ${boundMs} ms`, { bound_ms: boundMs })), boundMs); });
+    const bound = new Promise((_, reject) => { timer = T.setTimeout(() => reject(fail('timeout', `the reranker did not answer within ${boundMs} ms`, { bound_ms: boundMs })), boundMs); });
     answer = await Promise.race([call, bound]);
   } catch (e) {
     if (e && e.code === 'E_RERANK') throw e;
     if (owner && typeof owner === 'object' && owner.stopped) throw fail('shutdown', 'the store owner is stopping and closed the reranker', { cause: e && e.code ? e.code : null }); // not the reranker's fault: never sticky, never a pause
     throw fail('error', `${e && e.code ? `${e.code}: ` : ''}${e && e.message ? e.message : String(e)}`, { cause: e && e.code ? e.code : null });
-  } finally { clearTimeout(timer); }
+  } finally { T.clearTimeout(timer); }
   const list = answer && Array.isArray(answer.scores) ? answer.scores : null;
   if (!list) throw fail('malformed', 'the provider answered without a scores list');
   const byId = new Map();
@@ -46,7 +47,7 @@ async function rerank({ tier, query, ranked, textOf, depth, boundMs, owner }) {
   const out = order.map(h => (byId.has(h.id) ? { ...h, rerank_score: byId.get(h.id) } : h));
   return {
     ranked: [...out, ...ranked.slice(depth)],
-    info: { ran: true, model: answer.model || tier.reranker, device: answer.device || tier.device, ms: Number.isFinite(answer.ms) ? answer.ms : Date.now() - t0, depth, reranked: docs.length, ...(answer.warnings && answer.warnings.length ? { warnings: answer.warnings } : {}) },
+    info: { ran: true, model: answer.model || tier.reranker, device: answer.device || tier.device, ms: Number.isFinite(answer.ms) ? answer.ms : T.now() - t0, depth, reranked: docs.length, ...(answer.warnings && answer.warnings.length ? { warnings: answer.warnings } : {}) },
   };
 }
 
