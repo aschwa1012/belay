@@ -21,10 +21,42 @@ function register(name, impl) {
 }
 function unregister(name) { return providers.delete(name); }
 
-// The impl for the tier's reranker, or null when the tier has none or nobody registered it.
-function get(tier) {
+// The impl for the tier's reranker, or null when the tier has none or nobody registered it. Only the store OWNER ever builds one
+// (ADR 0050 decision 5): with `opts.owner` true and a pinned CPU reranker id nobody registered, the CPU provider is built here, once
+// per id per process, and registered. A search outside the owner (a copy read, a client) never forks a child; it gets null and the
+// rerank stage says so loudly. rerank-cpu.cjs is required only inside that branch, so no read path loads it (invariant 9).
+function get(tier, opts) {
   const name = tier && tier.reranker;
-  return name && providers.has(name) ? providers.get(name) : null;
+  if (!name) return null;
+  if (providers.has(name)) return providers.get(name);
+  if (!(opts && opts.owner === true)) return null;
+  return autoBuild(name);
 }
 
-module.exports = { register, unregister, get };
+// Test seam (BELAY_TEST_MODE=1 alone): options merged into the auto-built CPU provider (pkg, cacheDir, table, workerPath, workerOpts).
+let autoOpts = null;
+function setAutoOptions(o) { if (process.env.BELAY_TEST_MODE !== '1') throw err('E_ARGS', 'setAutoOptions is a test seam', {}); autoOpts = o || null; }
+
+function autoBuild(name) {
+  const extra = process.env.BELAY_TEST_MODE === '1' && autoOpts ? autoOpts : {};
+  const { rerankerFor } = require('./onnx-rerankers.cjs'); // pure table
+  try { rerankerFor(name, extra.table); } catch { return null; } // not a pinned ONNX reranker (a GPU id, an unknown one): nothing to build
+  const { cpuRerankProvider } = require('./rerank-cpu.cjs'); // lazy: the owner's search only
+  const impl = cpuRerankProvider({ model: name, ...extra });
+  providers.set(name, { rerank: impl, close: impl.close });
+  return providers.get(name);
+}
+
+// Closes every registered provider that has a close(), each bounded by boundMs; never throws. The owner calls it at shutdown. A closed
+// provider is forgotten (a closed CPU provider starts no child again), so an owner started later in the same process builds its own.
+async function closeAll(boundMs = 3000) {
+  const all = [...providers.entries()];
+  await Promise.all(all.map(async ([name, impl]) => {
+    if (!impl || typeof impl.close !== 'function') return;
+    if (providers.get(name) === impl) providers.delete(name);
+    let timer;
+    try { await Promise.race([Promise.resolve().then(() => impl.close()), new Promise((r) => { timer = setTimeout(r, boundMs); })]); } catch { /* best effort */ } finally { clearTimeout(timer); }
+  }));
+}
+
+module.exports = { register, unregister, get, closeAll, setAutoOptions };

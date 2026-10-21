@@ -25,9 +25,10 @@ test('who requires which CPU rerank module', () => {
   // When the store owner (or the rerank provider registry) starts to require rerank-cpu.cjs, add that file here:
   // the point of the check is that the list is short and names no read path.
   assert.deepStrictEqual(by, {
+    'rerank-cpu': ['core/rerank-provider.cjs'],
     'rerank-pure': ['core/rerank-worker.cjs'],
-    'onnx-rerankers': ['cli/cmd-embedder.cjs', 'core/rerank-cpu.cjs', 'core/retrieval-profiles.cjs'],
-  }, 'rerank-worker.cjs is forked by path from rerank-cpu.cjs and required by nothing; rerank-cpu.cjs is required by nothing yet');
+    'onnx-rerankers': ['cli/cmd-embedder.cjs', 'core/rerank-cpu.cjs', 'core/rerank-provider.cjs', 'core/retrieval-profiles.cjs'],
+  }, 'rerank-worker.cjs is forked by path from rerank-cpu.cjs and required by nothing; rerank-cpu.cjs is required by the provider registry alone, lazily');
 });
 
 test('no read path, command or MCP module requires the client or the worker; cmd-embedder.cjs requires the table only', () => {
@@ -53,6 +54,13 @@ test('the pure modules need no native code and no embedding library; the client 
     assert.ok(!/require\(['"][^'"]*(embedder|embed-worker|transformers|gpu|gguf)[^'"]*['"]\)/.test(text), `${f} reaches the embedder or GPU side`);
   }
   assert.ok(!/require\(['"][^'"]*transformers/.test(fs.readFileSync(path.join(SRC, 'core', 'rerank-worker.cjs'), 'utf8')), 'the worker imports the package by path, as embedder-core does');
+});
+
+test('the provider registry requires rerank-cpu only inside a function, never at the top of the file', () => {
+  const text = fs.readFileSync(path.join(SRC, 'core', 'rerank-provider.cjs'), 'utf8');
+  const found = [...text.matchAll(/^.*require\(['"]\.\/rerank-cpu\.cjs['"]\).*$/gm)];
+  assert.strictEqual(found.length, 1);
+  assert.match(found[0][0], /^\s+/, `a top-level require: ${found[0][0]}`);
 });
 
 test('openCore, status.get, belay doctor and the retrieval levers load neither the rerank client nor its worker', async () => {

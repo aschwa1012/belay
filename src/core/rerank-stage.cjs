@@ -12,9 +12,9 @@ const fail = (reason, message, more) => err('E_RERANK', `the rerank stage failed
 
 // ranked: [{ id, ... }] best first. textOf(id) -> the text to score, or null when the row is gone.
 // Returns { ranked: the head reordered then the untouched rest, info: { ran: true, model, device, ms, depth, reranked } }.
-async function rerank({ tier, query, ranked, textOf, depth, boundMs }) {
+async function rerank({ tier, query, ranked, textOf, depth, boundMs, owner }) {
   if (typeof query !== 'string' || !query) throw fail('no_query', 'a rerank needs the query text, and this search was given only a vector');
-  const impl = provider.get(tier);
+  const impl = provider.get(tier, { owner: owner === true });
   if (!impl) throw fail('absent', `no rerank provider is registered for ${tier.reranker}`, { reranker: tier.reranker });
   const head = ranked.slice(0, depth);
   const docs = [];
