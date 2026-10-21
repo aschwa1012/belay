@@ -10,6 +10,7 @@
 // first asked, so a test can tell what happened before it). Test ops as in gpu-worker.cjs.
 // Announcements: a message with an `event` and no `id` (the client ignores it; a test listens on the child handle) at each state change:
 // load_started, transient_held, transient_released, sleep_started, wedge_started, wedge_done.
+// gate_chunks: after each chunk's progress line the rank waits for one `release` message (a test paces the progress lines and advances an injected clock between them).
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -22,6 +23,9 @@ let rankCalls = 0;
 let chain = Promise.resolve();
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const serial = (fn) => { const r = chain.then(fn); chain = r.catch(() => {}); return r; };
+let releases = 0;
+const gateWaiters = [];
+const gate = () => (releases > 0 ? (releases -= 1, Promise.resolve()) : new Promise(r => gateWaiters.push(r)));
 let vramAnswered = 0;
 const vramWaiters = [];
 const announce = (event, extra) => process.send({ event, ...(extra || {}) });
@@ -37,6 +41,7 @@ process.on('message', async (m) => {
     if (m.op === 'env') return reply(m.id, { env: { ...process.env }, execArgv: process.execArgv });
     if (m.op === 'sleep') return serial(() => { announce('sleep_started', { ref: m.id }); return sleep(m.ms); }).then(() => reply(m.id, { slept: m.ms }));
     if (m.op === 'hang') return;
+    if (m.op === 'release') { const w = gateWaiters.shift(); if (w) w(); else releases += 1; return; }
     if (m.op === 'wedge') return process.send({ event: 'wedge_started', ref: m.id }, () => { const end = Date.now() + m.ms; while (Date.now() < end); announce('wedge_done', { ref: m.id }); process.send({ id: m.id, ok: true, result: {} }); }); // blocks the loop once the announcement is written: no ping can be answered
     if (m.op === 'crash') return process.exit(m.code === undefined ? 3 : m.code);
     if (m.op === 'fail') throw Object.assign(new Error('injected child failure'), m.code === undefined ? {} : { code: m.code });
@@ -93,6 +98,7 @@ process.on('message', async (m) => {
           for (const d of part) scores.push(F.flat_scores ? 0.5 : [...words(d)].filter(w => q.has(w)).length / 10);
           chunks.push({ n: part.length, tokens, ms });
           process.send({ id: m.id, progress: { done: scores.length, total: m.docs.length } });
+          if (F.gate_chunks) await gate();
         }
         const reported = chunks.length && (F.call_ms || F.virtual_ms) ? chunks.reduce((s, k) => s + k.ms, 0) : null;
         return { scores, chunks, pair_tokens: cost, truncated, ms: reported !== null && (F.virtual_ms || F.call_ms[callNo] !== undefined) ? reported : Date.now() - t0 };

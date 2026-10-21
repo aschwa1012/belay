@@ -12,8 +12,9 @@ const { CpuRerankClient } = require(path.join(ROOT, 'src', 'core', 'rerank-cpu.c
   const table = JSON.parse(fs.readFileSync(process.argv[4], 'utf8'));
   const c = new CpuRerankClient({ pkg: process.argv[2], cacheDir: process.argv[3], table }).start();
   await c.load(Object.keys(table)[0]);
+  const started = new Promise(res => c.child.on('message', (m) => { if (m && m.event === 'sleep_started') res(); })); // the child's own announcement, not a guessed wait
   c._call({ op: 'sleep', ms: 60000 }, 120000).catch(() => {});
-  await new Promise(r => setTimeout(r, 300));
+  await started;
   console.log(JSON.stringify({ owner_pid: process.pid, rerank_pid: c.pid }));
   setInterval(() => {}, 1000);
 })().catch((e) => { console.log(JSON.stringify({ error: e.code || e.message })); process.exit(1); });

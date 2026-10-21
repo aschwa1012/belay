@@ -45,6 +45,15 @@ function countProgress(child) {
   return { get count() { return n; }, reach: (k, deadlineMs = UP_DEADLINE) => (n >= k ? Promise.resolve(n) : new Promise((res, rej) => { const w = { n: k, res }; waiters.push(w); setTimeout(() => rej(new Error(`timed out waiting for ${k} progress messages (saw ${n})`)), deadlineMs).unref(); })) };
 }
 
+// Resolves with the first JSON line a child prints on `stream` that has `key` (a fixture's one-line report), or rejects at the deadline.
+function waitLine(stream, key, { deadlineMs = UP_DEADLINE } = {}) {
+  return new Promise((resolve, reject) => {
+    let out = '';
+    const timer = setTimeout(() => reject(new Error(`no ${key} line within ${deadlineMs} ms; output so far: ${out}`)), deadlineMs);
+    stream.on('data', (d) => { out += d; for (const l of out.split(/\r?\n/)) if (l.includes(key)) { try { const j = JSON.parse(l); clearTimeout(timer); return resolve(j); } catch { /* a partial line */ } } });
+  });
+}
+
 // Resolves true once the pid is not alive, false at the deadline (which defaults to a close's worst case plus slack).
 async function waitGone(pid, { deadlineMs = GONE_DEADLINE } = {}) {
   const t0 = Date.now();
@@ -52,4 +61,4 @@ async function waitGone(pid, { deadlineMs = GONE_DEADLINE } = {}) {
   return !pidAlive(pid);
 }
 
-module.exports = { waitFor, waitEvent, waitGone, countProgress, upTo, tick, UP_DEADLINE, GRACE, GONE_DEADLINE };
+module.exports = { waitLine, waitFor, waitEvent, waitGone, countProgress, upTo, tick, UP_DEADLINE, GRACE, GONE_DEADLINE };

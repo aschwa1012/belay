@@ -33,3 +33,13 @@ function fakeTimers(start = 1000000) {
 }
 
 module.exports = { fakeTimers };
+
+// Tracks a promise without awaiting it: { settled, value, error, done } where `done` resolves once it has settled
+// (never rejects). A test advances an injected clock and then reads `settled`, so "still pending at bound - 1" is an assertion.
+function outcome(p) {
+  const o = { settled: false, value: undefined, error: undefined };
+  o.done = p.then((v) => { o.settled = true; o.value = v; }, (e) => { o.settled = true; o.error = e; });
+  return o;
+}
+
+module.exports.outcome = outcome;
