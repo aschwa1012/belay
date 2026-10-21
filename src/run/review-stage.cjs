@@ -50,17 +50,23 @@ function promptFor(briefFile) {
 }
 
 // The task ids that reported a held note wrong (an entry made by a report), or null.
-const reportedBy = (h) => ((h.ground === 'reported' || h.ground === 'report_confirmed') && Array.isArray(h.reports) ? new Set(h.reports.map((r) => r.task_id).filter(Boolean)) : null);
+const reportersOf = (h) => ((h.ground === 'reported' || h.ground === 'report_confirmed') && Array.isArray(h.reports) ? { tasks: new Set(h.reports.map((r) => r.task_id).filter(Boolean)), workers: new Set(h.reports.map((r) => r.worker_id).filter(Boolean)) } : null);
+const reportedBy = reportersOf;
 
 // For an unsupported note or one a report made: the stream files of the task that wrote it and of the run's other workers (all become citable), and the task's diff
 // saved beside the brief. Paths only; the reviewer reads what it needs.
 async function wideEvidence(h, ctx, dir, streams) {
   const workers = (ctx.workers || []).filter((w) => w && w.run_id === (h.note && h.note.run_id));
   const stream = (w) => abs(path.join(ctx.dataDir || '.', 'workers', w.id, 'stream.jsonl'));
-  const mine = workers.filter((w) => w.task_id === (h.note && h.note.task_id));
-  const others = workers.filter((w) => w.task_id !== (h.note && h.note.task_id));
+  // The writer is found by the worker id recorded on the note as well as by its task: a worker reassigned since still wrote the note.
+  const writerId = h.note && h.note.worker_id;
+  const isMine = (w) => w.task_id === (h.note && h.note.task_id) || (writerId && w.id === writerId);
+  const mine = (ctx.workers || []).filter((w) => w && (workers.includes(w) || (writerId && w.id === writerId)) && isMine(w));
+  const others = workers.filter((w) => !isMine(w));
   // An entry made by a report also gets the streams of each reporting task's workers, in any run (the reporter's evidence is where the claim is).
-  const reporting = reportedBy(h) ? (ctx.workers || []).filter((w) => w && w.task_id && reportedBy(h).has(w.task_id) && !mine.includes(w)) : [];
+  // The reporters are found by the worker id recorded on each report (any run, whatever task the worker holds now), then by the reporting task.
+  const reporters = reportersOf(h);
+  const reporting = reporters ? (ctx.workers || []).filter((w) => w && !mine.includes(w) && (reporters.workers.has(w.id) || (w.task_id && reporters.tasks.has(w.task_id)))) : [];
   for (const w of [...mine, ...reporting, ...others.slice(0, WIDE_OTHERS)].slice(0, WIDE_PER_ENTRY)) streams.add(stream(w));
   const w = mine.find((x) => x.base_sha && x.head_sha && x.worktree);
   const diff = w ? await J.diffText(w.worktree, w.base_sha, w.head_sha) : '(no worker of the task has a base and head commit recorded, so there is no diff)\n';

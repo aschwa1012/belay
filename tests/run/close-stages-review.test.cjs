@@ -319,3 +319,19 @@ test('a hold made by a report brings the streams of its reporting tasks into the
   assert.ok(entry.evidence.report_streams.some((s) => s.worker === 'w-reporter' && /w-reporter\/stream\.jsonl$/.test(s.path)));
   assert.ok(entry.shown_hash && entry.outcomes.includes('undecided') && entry.reports[0].key === 's:1');
 });
+
+test('a reporter reassigned to another task since its report still has its stream in the evidence, and so does the note writer', async () => {
+  await drain();
+  await X.worker('apply', 'w-moved-reporter', { task_id: 'tx-now-elsewhere' });
+  await X.worker('apply', 'w-moved-writer', { task_id: 'tx-writer-elsewhere' });
+  const n = T.note('reassigned workers', { task_id: 'tx-wrote-it', reported_wrong: [{ by: 'worker:w-moved-reporter', worker_id: 'w-moved-reporter', task_id: 'tx-reported', run_id: 'lc-apply', why: 'wrong', replaced_by: null, at: 7, seq: 1 }] });
+  T.store.p('UPDATE memory_entries SET worker_id = ? WHERE id = ?').run('w-moved-writer', n);
+  const row = T.store.storeIn({ namespace: 'held/lc', worker_id: 'harness', type: 'held', text: 'held reported ' + n, title: 'r', body: { state: 'held', note_id: n, kind: 'wrong', of: null, ground: 'reported', reason: 'wrong', run_id: 'lc-apply', head_sha: T.head, cites: [], reviews: [], rev: 0, reports: [{ key: 's:1', by: 'worker:w-moved-reporter', worker_id: 'w-moved-reporter', task_id: 'tx-reported', why: 'wrong', at: 7 }], reports_total: 1, report_verdicts: [] }, run_id: 'lc-apply', source: 'harness', written_by: 'harness' });
+  T.store.patchBody(n, (bd) => { bd.held = { row: row.id, kind: 'wrong', of: null, reason: 'wrong', run_id: 'lc-apply', at: 1 }; return bd; });
+  const m = fakeManager(T, 'apply', json('verdicts', []));
+  await review(m, {}, { force: true });
+  const brief = fs.readFileSync(/(\S+brief\.md)/.exec(m.spawned[0].prompt)[1], 'utf8');
+  const entry = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(brief)[1]).find((x) => x.id === n);
+  assert.ok(entry.evidence.report_streams.some((s) => s.worker === 'w-moved-reporter'), JSON.stringify(entry.evidence));
+  assert.ok(entry.evidence.task_streams.some((s) => s.worker === 'w-moved-writer'), 'the writer is found by the worker id on the note');
+});
