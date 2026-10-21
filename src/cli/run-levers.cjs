@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const CP = require('../run/compaction.cjs');
 const ML = require('../run/memory-levers.cjs');
+const MN = require('../core/memory-notice.cjs'); // pure; the shared wording of the no-project notice
 
 const FIX_CUTOFFS = ['orchestrator', 'cap-only'];
 const DEFAULT_MAX_FIX_ROUNDS = 2;
@@ -162,6 +163,10 @@ function parseLevers(spec, opts = {}) {
       Object.defineProperty(out, 'rules_text', { value: text, enumerable: false }); // not part of the receipt
     }
   }
+  // Notes default on but need a project: say so when there is none. Not enumerable, so the receipt is unchanged; `belay run` prints it.
+  // An explicit `memory: null` is silent, whether the spec says it or the config file does (an inherited one, unless the spec's own block overrides it).
+  const off = spec.memory === null || (spec.memory === undefined && !!opts.config && opts.config.memory === null);
+  Object.defineProperty(out, 'memory_notice', { value: MN.noticeFor(off ? null : merged.block), enumerable: false });
   if (merged.dropped) out.memory_dropped = merged.dropped; // config levers a spec's `notes: false` left out, so the receipt says what did not apply
   return out;
 }
@@ -171,7 +176,8 @@ function parseLevers(spec, opts = {}) {
 // never ended would otherwise inherit the previous run's levers and project (audit D55).
 function attachMemory(levers) {
   const m = levers && levers.memory_levers;
-  return m ? { memory_levers: JSON.stringify(m), project: m.project === undefined ? null : m.project } : { memory_levers: null, project: null };
+  const memory_notice = levers && levers.memory_notice ? levers.memory_notice.code : null; // the run records its own notice (status and the panel read it)
+  return m ? { memory_levers: JSON.stringify(m), project: m.project === undefined ? null : m.project, memory_notice } : { memory_levers: null, project: null, memory_notice };
 }
 
 // The receipt line's suffix, empty for a default block.

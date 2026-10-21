@@ -14,6 +14,7 @@
 const fs = require('node:fs');
 const C = require('./config.cjs');
 const K = require('./settings-keys.cjs');
+const MN = require('../core/memory-notice.cjs');
 
 // Test seams: a test replaces these to make a rename fail, change the file mid-write, or make the read-back disagree.
 const seams = {
@@ -51,15 +52,18 @@ function line(r, width) {
 function listResult(found, json) {
   const rows = SETTING_NAMES.map((k) => row(found, k));
   const memoryError = K.memoryBlockError(found);
-  const payload = { found: found.found, path: found.path, parse_error: found.parse_error || null, ...(memoryError ? { memory_error: memoryError } : {}), settings: rows };
+  const notice = MN.noticeForConfig(found); // the panel reads this; null once a project is set
+  const payload = { found: found.found, path: found.path, parse_error: found.parse_error || null, ...(memoryError ? { memory_error: memoryError } : {}), memory_notice: notice, settings: rows };
   if (json) return { code: 0, text: '', json: payload };
   const width = Math.max(...SETTING_NAMES.map((k) => k.length));
   const lines = [found.found ? `config: ${found.path}` : 'config: none found (settings <key> <value> writes one)'];
   if (found.parse_error) lines.push(`warning: ${found.parse_error}`);
   if (memoryError) lines.push(`warning: the memory block would be refused by a run: ${memoryError}`);
+  if (notice) lines.push(`warning: ${notice.title}. ${notice.fix}`);
   lines.push('');
   for (const r of rows) {
     lines.push(line(r, width));
+    if (r.note) lines.push(`  ${''.padEnd(width)}  ${r.note}`);
     if (r.invalid) lines.push(`  ${''.padEnd(width)}  invalid in file: ${r.invalid.reason}`);
   }
   lines.push('');
@@ -72,7 +76,8 @@ function oneResult(found, key, json) {
   if (json) return { code: 0, text: '', json: memoryError ? { ...r, memory_error: memoryError } : r };
   const warn = (r.invalid ? `warning: ${key}: ${r.invalid.reason}\n` : '')
     + (memoryError ? `warning: the memory block would be refused by a run: ${memoryError}\n` : '');
-  return { code: 0, text: `${warn}${line(r, key.length)}\n`, json: r };
+  const note = r.note ? `  ${''.padEnd(key.length)}  ${r.note}\n` : ''; // the "effective: ... because" line the full listing prints
+  return { code: 0, text: `${warn}${line(r, key.length)}\n${note}`, json: r };
 }
 
 const fail = (message, key, extra = {}) => ({
