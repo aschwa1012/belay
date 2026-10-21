@@ -57,7 +57,7 @@ function routeOf(E, args, caller) {
     }
     const r = h.result && isObj(h.result) ? h.result : null;
     const list = r && r.memory_verdicts;
-    return { reviewer: h.by, ref: t.id, keyBase: `review:${t.id}@${h.at}`, scope: Array.isArray(t.depends_on) ? t.depends_on : [], capped: true, verdicts: list === undefined ? null : list, reportVerdicts: r && r.report_verdicts !== undefined ? r.report_verdicts : null, task_id: t.id };
+    return { reviewer: h.by, ref: t.id, keyBase: `review:${t.id}@${h.at}`, attempt: lease.id, scope: Array.isArray(t.depends_on) ? t.depends_on : [], capped: true, verdicts: list === undefined ? null : list, reportVerdicts: r && r.report_verdicts !== undefined ? r.report_verdicts : null, task_id: t.id };
   }
   const j = args.job;
   if (!isObj(j) || !validId(j.worker_id) || !validId(j.reviewed_task_id)) throw bad('memory.noteVerdicts needs review_task_id, or job { worker_id, reviewed_task_id } with verdicts');
@@ -140,7 +140,7 @@ async function noteVerdicts(E, caller, args) {
   const out = { reviewer: route.reviewer, ref: route.ref, applied: [], refused: [], already: [], unjudged: [], refused_open: [] };
   if (route.verdicts === null) { out.no_verdicts = true; }
   else if (!Array.isArray(route.verdicts) || route.verdicts.length > VERDICTS_MAX) throw bad(`memory_verdicts must be an array of at most ${VERDICTS_MAX} verdicts`);
-  route.captured = BC.capturedFor(E, route.ref); // the brief's notes, as captured when it was rendered
+  route.captured = BC.capturedFor(E, route.ref, route.attempt); // the brief's notes, as captured when it was rendered
   RV.validateReportVerdicts(route.reportVerdicts); // all or nothing: a malformed report list is refused before any note verdict is written
   const seen = new Set(), refusedIds = new Set();
   for (const [index, raw] of (route.verdicts || []).entries()) {

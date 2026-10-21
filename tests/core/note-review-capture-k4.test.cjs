@@ -155,3 +155,65 @@ test('C2b: end to end, a false note whose saw is also embedded in its `when` can
   const o2 = await call('memory.noteVerdicts', harness, { review_task_id: r2 });
   assert.strictEqual(o2.applied.length, 1, JSON.stringify(o2.refused));
 });
+
+const LONG = `${S}, including the nightly release`;
+test('C2c: the exemption is the quoted span\'s, not the whole saw\'s: a longer saw around a span the `when` states is not exempt either', async () => {
+  const f = `${dir}/c2c.jsonl`;
+  const own = ['the pager timeout', `Editing the pager. ${S}`, LONG];
+  for (const quote of [S, 'DEFAULT_TIMEOUT_MS to 3000 milliseconds']) {
+    fs.writeFileSync(f, toolLines(LONG)); // a tool printed the whole saw
+    const r = CC.streamCite(f, quote, own, 'the pager timeout', [LONG]);
+    assert.strictEqual(r.found, false, `printed saw, quote ${quote}`);
+    assert.match(r.reason, /also shows the note's own text/);
+  }
+  fs.writeFileSync(f, toolLines(S)); // a tool printed only the span the `when` states
+  assert.strictEqual(CC.streamCite(f, S, own, 'the pager timeout', [LONG]).found, false, 'the span alone is the writer\'s prose');
+  // The control: the saw alone holds the span, so a tool that printed the saw is evidence.
+  fs.writeFileSync(f, toolLines(LONG));
+  assert.strictEqual(CC.streamCite(f, S, ['the pager timeout', 'Editing the pager.', LONG], 'the pager timeout', [LONG]).found, true);
+  // End to end: the false note does not become verified.
+  const bad = await written('w-c2c1', 'K126', { stream: toolLines(LONG), note: baseNote('K126', { when: `Editing the pager. ${S}`, evidence: [{ where: 'src/pager.cjs', saw: LONG }] }) });
+  const r1 = await review('rev-c2c1', bad.task, [verdict(bad.note, 'confirmed', [cite(S)])]);
+  const o1 = await call('memory.noteVerdicts', harness, { review_task_id: r1 });
+  assert.deepStrictEqual([o1.applied.length, o1.refused[0] && o1.refused[0].code], [0, 'E_CITATION'], JSON.stringify(o1));
+  assert.strictEqual(statusOf(bad.note), 'unverified');
+  const ok = await written('w-c2c2', 'K127', { stream: toolLines(LONG), note: baseNote('K127', { when: 'editing the pager timeout', evidence: [{ where: 'src/pager.cjs', saw: LONG }] }) });
+  const r2 = await review('rev-c2c2', ok.task, [verdict(ok.note, 'confirmed', [cite(S)])]);
+  assert.strictEqual((await call('memory.noteVerdicts', harness, { review_task_id: r2 })).applied.length, 1);
+});
+
+// ---- C3: a capture belongs to one attempt (lease) of the review ---------------------------------------------------------------
+// R is rendered with n1 and released without judging, another review verifies n1, and R is assigned again to a new reviewer.
+async function reassigned(label, marker) {
+  const w = await written(`w-${label}`, marker);
+  const r = await review(`rev-${label}a`, w.task, []);
+  const first = await captureBrief(raw, orch, harness, { review_task_id: r });
+  assert.strictEqual(first.notes, 1, 'the first attempt was shown the note');
+  const other = await review(`rev-${label}o`, w.task, [verdict(w.note, 'confirmed', [Q])]);
+  assert.strictEqual((await call('memory.noteVerdicts', harness, { review_task_id: other })).applied.length, 1);
+  assert.strictEqual(statusOf(w.note), 'verified');
+  await raw('worker.write', orch, { id: `rev-${label}b`, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${label}b`, last_event_at: Date.now() });
+  const a2 = await raw('task.assign', orch, { task_id: r, worker_id: `rev-${label}b` });
+  return { w, r, a2 };
+}
+const refuteAgain = async (x, label) => {
+  await raw('lease.release', worker(`rev-${label}b`), { lease_id: x.a2.new_lease.id, notes: [], result: { verdict: 'holds', summary: 'ok', memory_verdicts: [verdict(x.w.note, 'refuted', [Q])] } });
+  return raw('memory.noteVerdicts', harness, { review_task_id: x.r });
+};
+test('C3a: a reassigned review with no capture of its own does not inherit the notes the previous attempt was shown', async () => {
+  const x = await reassigned('c3a', 'K100');
+  const out = await refuteAgain(x, 'c3a');
+  assert.deepStrictEqual([out.applied.length, out.refused[0].detail.reason], [0, 'not_shown'], JSON.stringify(out));
+  assert.match(out.refused[0].message, /no brief was captured/);
+  assert.strictEqual(statusOf(x.w.note), 'verified');
+});
+
+test('C3b: a reassigned review whose brief listed no note is captured empty and judges nothing', async () => {
+  const x = await reassigned('c3b', 'K101');
+  const cap = await captureBrief(raw, orch, harness, { review_task_id: x.r });
+  assert.strictEqual(cap.notes, 0, 'the new brief lists nothing: the note is already verified');
+  const out = await refuteAgain(x, 'c3b');
+  assert.deepStrictEqual([out.applied.length, out.refused[0].detail.reason], [0, 'not_shown'], JSON.stringify(out));
+  assert.match(out.refused[0].message, /listed 0 notes/);
+  assert.strictEqual(statusOf(x.w.note), 'verified');
+});

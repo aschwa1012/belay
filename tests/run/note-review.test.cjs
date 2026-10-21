@@ -190,7 +190,7 @@ test('N7: a review task\'s brief lists the notes to judge, the verdict shape, th
   const text = await NR.reviewTail(ctxFor(null), { id: 'rv-7', taskId: t.id });
   assert.match(text, /NOTES TO JUDGE/);
   assert.ok(text.includes(w.notes[0]) && text.includes('memory_verdicts') && text.includes('stream.jsonl'));
-  const cap = events('note_brief').filter((e) => e.key === `brief:${t.id}`);
+  const cap = events('note_brief').filter((e) => e.key.startsWith(`brief:${t.id}@`));
   assert.deepStrictEqual(cap.map((e) => JSON.parse(e.row_ids).map((x) => x.split('#')[0])), [[w.notes[0]]], 'the brief that was rendered is the one captured');
   const hit = await call('task.create', orch, { spec: 'review of the shown', depends_on: [w.task.id], acceptance: { verdict: true } });
   void hit;
@@ -205,6 +205,16 @@ test('N7: a review task\'s brief lists the notes to judge, the verdict shape, th
   assert.strictEqual(await NR.reviewTail(ctxFor(null), { id: 'p', taskId: plain.id }), '');
   assert.strictEqual(await NR.reviewTail(ctxFor(null, { ...LV, notes: false }), { id: 'rv-7', taskId: t.id }), '');
   assert.strictEqual(await NR.reviewTail(ctxFor(null), { id: `notereview-x`, taskId: t.id }), '', 'the job never gets a review brief');
+});
+
+test('N7b: a brief that lists no note is still captured, empty, for the lease it was rendered for', async () => {
+  const dep = (await written('wr-7zw', 0)).task; // a task that wrote no note
+  await call('worker.write', orch, { id: 'rv-7z', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's', last_event_at: Date.now() });
+  const rt = await call('task.create', orch, { spec: 'review of nothing', depends_on: [dep.id], acceptance: { verdict: true } });
+  const a = await call('task.assign', orch, { task_id: rt.id, worker_id: 'rv-7z' });
+  assert.strictEqual(await NR.reviewTail(ctxFor(null), { id: 'rv-7z', taskId: rt.id }), '', 'nothing to say');
+  const cap = events('note_brief').filter((e) => e.key === `brief:${rt.id}@${a.new_lease.id}`);
+  assert.deepStrictEqual(cap.map((e) => JSON.parse(e.row_ids)), [[]], 'an empty capture, bound to the lease');
 });
 
 test('N8: a refutation wakes the orchestrator once, with facts only: the note, the review, who was shown it, their reviews and the notes they wrote', async () => {

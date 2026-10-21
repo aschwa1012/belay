@@ -70,11 +70,11 @@ async function reviewTail(ctx, w) {
   if (!lv || !lv.notes || !w || !w.taskId || String(w.id).startsWith(JOB_PREFIX)) return '';
   let brief;
   try { brief = await ctx.core.memory.reviewBrief({ task_id: w.taskId }); } catch (e) { w.lastError = { where: 'memory.reviewBrief', code: codeOf(e), message: e && e.message }; return ''; }
-  if (!brief.review || (!brief.notes.length && !brief.refuted_shown.length && !(brief.reports || []).length)) return '';
+  if (!brief.review) return '';
   // The notes the tail will list are fixed now, with the text each had, so the verdicts are checked against what was shown (the core never recomputes it).
-  if (brief.notes.length) {
-    try { await ctx.core.memory.noteBriefCapture({ review_task_id: w.taskId, notes: briefNotes(T.listedNotes(brief)) }); } catch (e) { w.lastError = { where: 'memory.noteBriefCapture', code: codeOf(e), message: e && e.message }; return ''; }
-  }
+  // A brief that lists none is a capture too (an empty one): this attempt's reviewer was shown no note, whatever an earlier attempt was shown.
+  try { await ctx.core.memory.noteBriefCapture({ review_task_id: w.taskId, notes: briefNotes(T.listedNotes(brief)) }); } catch (e) { w.lastError = { where: 'memory.noteBriefCapture', code: codeOf(e), message: e && e.message }; return ''; }
+  if (!brief.notes.length && !brief.refuted_shown.length && !(brief.reports || []).length) return '';
   let streams = [];
   try {
     const list = ((await ctx.core.worker.list({})).workers || []).filter((x) => x.run_id === ctx.runId && brief.reviewed_tasks.includes(x.task_id));

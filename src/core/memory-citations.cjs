@@ -211,10 +211,17 @@ function echoOf(own, title, quote = null, saws = [], opts = {}) {
     const k = low(o);
     if ((unspent.get(k) || 0) > 0) unspent.set(k, unspent.get(k) - 1); else prose.push(k, low(unescapeJson(o)));
   }
-  const sawSet = new Set((saws || []).map(low).filter(s => !prose.some(f => f.includes(s) || f.includes(low(unescapeJson(s))))));
-  const sentences = (own || []).map(low).filter(a => a.length >= ANCHOR_MIN && a.includes(' ') && a !== t);
-  const idLike = t.length >= TITLE_MIN && !t.includes(' ');
   const wanted = quote == null ? [] : quoteForms(quote).map(q => q.toLowerCase());
+  // The span is the quote: a saw that holds the quote is exempt only while the writer's prose does not hold that quote too (a longer saw
+  // around a span the `when` also states is no more exempt than the span alone). A quote too short to be a span (a whole line) is not looked for.
+  const spanIn = (f) => wanted.some(q => solid(q) >= SHORT_SOLID && f.includes(q));
+  const sawSet = new Set((saws || []).map(low).filter(s => !prose.some(f => f.includes(s) || f.includes(low(unescapeJson(s))))
+    && !((spanIn(s) || spanIn(low(unescapeJson(s)))) && prose.some(spanIn))));
+  const sentences = (own || []).map(low).filter(a => a.length >= ANCHOR_MIN && a.includes(' ') && a !== t);
+  // The quoted span itself: when it is a long sentence and the writer's prose (any non-saw field, as printed or JSON-unescaped) holds it, even
+  // inside a longer sentence, a tool result that prints it shows the writer's words, whatever longer saw also holds it.
+  for (const q of wanted) if (q.length >= SENTENCE_LONG && q.includes(' ') && prose.some(f => f.includes(q))) sentences.push(q);
+  const idLike = t.length >= TITLE_MIN && !t.includes(' ');
   return (text, raw) => {
     const forms = [text.toLowerCase(), norm(unescapeJson(text)).toLowerCase()];
     const has = a => forms.some(f => f.includes(a));
