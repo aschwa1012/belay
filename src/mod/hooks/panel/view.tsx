@@ -2,12 +2,14 @@
 // here fetches, writes or submits: a press only calls one of the `Act` handlers the caller passes.
 
 import type { Elements } from 'claude-code'
-import type { BelayAgent, BelayEntry, BelayNotice, BelayPanelSnap, BelayPanelUi } from '../../types/index'
+import type { BelayAgent, BelayEntry, BelayNotice, BelayPanelMenu, BelayPanelSnap, BelayPanelUi } from '../../types/index'
 import {
   bandLines, cacheSegs, CONFIRM_MS, confirmLine, heldLine, reviewLine, reviewProject, runningReview, ctxSegs, dur, fitSegs, isLive, markSeg, markWidth, money, runLine, STATE_NAME, TONE, unseenNotices, bar,
   memoryBandSegs, memoryFallbackSegs, type Seg,
 } from './model'
 import { cells, clipCells, cmdLines, wordWrap, wrapParts } from './wrap'
+import { badgeOf, type MemAction } from './memory'
+import { MemoryPane } from './memview'
 
 export type Els = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'>
 export type Act = {
@@ -20,8 +22,10 @@ export type Act = {
   toggle: () => void
   /** The memory line's one write action: the first press asks, the second dispatches (index.tsx). */
   review: () => void
+  /** The Memory menu's actions: tabs, routing picks and the confirmed writes (index.tsx memPress). */
+  mem: (a: MemAction) => void
 }
-type Ctx = { E: Els; snap: BelayPanelSnap; ui: BelayPanelUi; now: number; cols: number; act: Act }
+type Ctx = { E: Els; snap: BelayPanelSnap; ui: BelayPanelUi; now: number; cols: number; act: Act; menu: BelayPanelMenu | null }
 
 const tp = (s: Seg): Record<string, unknown> => ({
   ...(s.c ? { color: s.c } : {}), ...(s.dim ? { dimColor: true } : {}), ...(s.bold ? { bold: true } : {}), wrap: 'truncate-end',
@@ -49,8 +53,9 @@ export function shortModel(m: string | null): string {
 
 // ---- the band ----------------------------------------------------------------------------------
 
-export function Band({ E, snap, ui, now, cols, act }: Ctx) {
+export function Band({ E, snap, ui, now, cols, act, menu }: Ctx) {
   const { Box, Button } = E
+  const badge = badgeOf(menu?.menu ?? null)
   if (snap.fatal) return <Line E={E} w={cols} k="fatal" segs={[{ t: 'belay ', c: 'claude', bold: true }, { t: snap.fatal, c: 'error' }]} />
   const lines = bandLines(snap, ui, now, cols)
   const err = snap.errors[0]
@@ -61,8 +66,9 @@ export function Band({ E, snap, ui, now, cols, act }: Ctx) {
       {snap.memoryNotice && <Line E={E} w={cols} k="mn" segs={memoryBandSegs(snap.memoryNotice)} />}
       {lines.map((segs, i) => (
         <Box key={`band${i}`}>
-          <Line E={E} segs={segs} k={`l${i}`} w={i === 0 ? cols - toggle.length : cols} />
+          <Line E={E} segs={segs} k={`l${i}`} w={i === 0 ? cols - toggle.length - (badge > 0 ? String(badge).length + 3 : 0) : cols} />
           {i === 0 && <Button key="open" label={toggle} plain dimColor onPress={act.toggle} />}
+          {i === 0 && badge > 0 && <Line E={E} segs={[{ t: ` [${badge}]`, c: 'warning' }]} k="badge" />}
         </Box>
       ))}
       {err && <Line E={E} w={cols} segs={[{ t: err, dim: true }]} k="err" />}
@@ -401,7 +407,7 @@ function MemoryNotice({ E, snap, cols }: Ctx) {
 // ---- the pane ----------------------------------------------------------------------------------
 
 export function Pane(c: Ctx) {
-  const { E, snap, ui, now, act, cols } = c
+  const { E, snap, ui, now, act, cols, menu } = c
   const { Box, Button } = E
   const t = snap.tasks
   if (snap.fatal) return <Line E={E} w={cols} k="fatal" segs={[{ t: 'belay ', c: 'claude', bold: true }, { t: snap.fatal, c: 'error' }]} />
@@ -419,19 +425,25 @@ export function Pane(c: Ctx) {
   const costLine: Seg[] = f
     ? [{ t: money(f.totalCostUsd) }, { t: ` as of ${f.asOfMs ? new Date(f.asOfMs).toTimeString().slice(0, 5) : 'unknown'} · ${f.notRecorded} agent${f.notRecorded === 1 ? '' : 's'} unrecorded · moves when a turn ends`, dim: true }]
     : [{ t: 'cost not read', dim: true }]
+  const header = (
+    <Box justifyContent="space-between">
+      <Line E={E} w={cols - 6} k="ph" segs={runLine(snap, now)} />
+      <Box>
+        <Button key="legend" label="?" plain dimColor onPress={act.legend} />
+        <Button key="close" label=" ✕" plain dimColor onPress={act.close} />
+      </Box>
+    </Box>
+  )
+  if (ui.memTab !== null) return <Box flexDirection="column">{header}<MemoryPane E={E} state={menu} ui={ui} now={now} cols={cols} act={act} /></Box>
+  const badge = badgeOf(menu?.menu ?? null)
   return (
     <Box flexDirection="column">
-      <Box justifyContent="space-between">
-        <Line E={E} w={cols - 6} k="ph" segs={runLine(snap, now)} />
-        <Box>
-          <Button key="legend" label="?" plain dimColor onPress={act.legend} />
-          <Button key="close" label=" ✕" plain dimColor onPress={act.close} />
-        </Box>
-      </Box>
+      {header}
       <MemoryNotice {...c} />
       {ui.legend && <Legend {...c} />}
       {tasksLine.length > 0 && <Line E={E} w={cols} k="pt" segs={tasksLine} />}
       <Line E={E} w={cols} k="pc" segs={costLine} />
+      <Button key="mem" plain dimColor label={`◇ memory menu${badge > 0 ? ` [${badge}]` : ''}`} onPress={() => act.mem({ kind: 'tab', tab: 'profiles' })} />
       <Line E={E} w={cols} k="pa" segs={[{ t: `agents ${snap.agents.filter(isLive).length}`, dim: true, bold: true }]} />
       {snap.agents.length ? <Table {...c} /> : <Line E={E} w={cols} k="pn" segs={[{ t: 'no agents read', dim: true }]} />}
       <Notices {...c} />

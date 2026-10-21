@@ -1,4 +1,4 @@
-// The panel: a band above the prompt and a side pane over a belay run. Read-only, with ONE exception below. It runs belay's own
+// The panel: a band above the prompt and a side pane over a belay run. Read-only, with TWO exceptions below. It runs belay's own
 // read commands by argv, keeps what it read in `$.state`, and draws it. It never writes the store or a
 // stream, and it submits nothing to the model: its commands answer with a toast, never with text the
 // model would read.
@@ -11,20 +11,28 @@
 // detached belay CLI is the parent of the Opus child (invariant 1), holds the review's claim in the store, and is read back through belay's
 // notices (review_running, review_ended), so a reloaded panel still shows it and offers no second dispatch.
 //
+// The second exception (ADR 0050 amendment 3, the operator's Memory menu): the Memory tabs write the CONFIG FILE through belay's own commands, never the
+// store: `belay settings <key> <value>` for a short list of memory settings (memory.ts SETTABLE), `belay embedder verify` and `belay embedder delete`. They
+// are reachable ONLY from a press (view.tsx and memview.tsx act.mem -> memAct -> memPress -> dispatchMenu), need two presses of the same button, and run the
+// same validation as the command line, so a refused value shows belay's error and writes nothing. A download, an embed and the GPU runtime's install run for
+// minutes and a reload of this panel would end them, so those buttons print the exact command for the person to run.
+//
 // The engine follows `$` only into functions declared at the top of this file, so every helper that
 // takes `$` lives here; the pure parts (parsing, drawing) live in model.ts, fetch.ts and view.tsx.
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On, Timer } from 'claude-code'
-import type { BelayPanelSnap, BelayPanelUi, BelayPanelWatch } from '../../types/index'
+import type { BelayMenu as BelayMenuT, BelayPanelMenu, BelayPanelSnap, BelayPanelUi, BelayPanelWatch } from '../../types/index'
 import { argvFor, buildSnapshot, fatalSnapshot, fwd, launcherLine, isWindowsPath, parseRan, parseRunFile, projectRootOf, repoCliGuess, type Ran, type RunFileRead } from './fetch'
 import { CONFIRM_MS, DEFAULT_SETTINGS, DEFAULT_UI, reviewProject } from './model'
+import { actionId, confirmText, cycleDraft, draftOf, gb, modelById, normMenu, resultLine, routeFit, routingWrites, sameDraft, writeArgv, type MemAction } from './memory'
 import { Band, BandWaiting, Fallback, Pane, type Act, type Els } from './view'
 
 const PANE = 'belay'
 const watchA = atom({ plugin: 'belay', key: 'panelWatch' } as const, null)
 const snapA = atom({ plugin: 'belay', key: 'panelSnap' } as const, null)
 const uiA = atom({ plugin: 'belay', key: 'panelUi' } as const, DEFAULT_UI)
+const menuA = atom({ plugin: 'belay', key: 'panelMenu' } as const, { menu: null, error: null, at: 0 } as BelayPanelMenu)
 
 // A round starts this long after the previous round ENDS (a slow belay is never chased).
 const PANE_EVERY_MS = 4000
@@ -39,6 +47,9 @@ const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/
 const REVIEW_ARGS = ['memory', 'review', '--project'] // the one write the panel makes; the project follows, then START_FLAG
 const START_FLAG = '--start'
 const READ_VERBS = ['agents', 'notices', 'transcript', 'settings'] // the only commands runJson runs
+const MENU_EVERY_MS = 30000 // the Memory menu's facts while only the badge needs them; 10 s while the menu is open
+const MENU_OPEN_EVERY_MS = 10000
+const MEM_TIMEOUT_MS = { set: 20000, delete: 30000, verify: 180000 } as const // a verify hashes the whole model
 const START_TIMEOUT_MS = 40000 // the launcher waits up to 20 s for the claim
 const NO_CLI_WINDOWS = 'belay CLI not found: on Windows set belay_cli and node in belay-run.json, or load this plugin from <repo>/src/mod'
 
@@ -53,6 +64,8 @@ let lastFetchAt = 0
 let lastSettingsAt = 0
 let timeoutStreak = 0
 let backoffUntil = 0
+let lastMenuAt = 0
+let menuForce = false // a write, or opening the menu, asks for a fresh read now
 const starting = new Set<string>() // projects whose launcher is running now (up to START_TIMEOUT_MS); the store's claim is the authority past that
 
 // null: there is no run file. Anything else that goes wrong with an existing file is an error state.
@@ -80,7 +93,8 @@ async function resolveCli($: Host, watch: BelayPanelWatch): Promise<Resolved> {
 // timeout, which the caller turns into a skipped round and a back-off; any other rejection is a command
 // that did not run.
 async function runJson($: Host, cli: string[], args: string[], dataDir: string | null, cwd: string | null = null): Promise<Ran> {
-  if (!READ_VERBS.includes(args[0] ?? '')) return { error: `belay ${args[0] ?? ''}: the read helper runs only ${READ_VERBS.join(', ')}` } // never a write, whatever called it
+  const menuRead = args.length === 2 && args[0] === 'memory' && args[1] === 'menu' // `belay memory menu`: the one read of the memory verb
+  if (!READ_VERBS.includes(args[0] ?? '') && !menuRead) return { error: `belay ${args[0] ?? ''}: the read helper runs only ${READ_VERBS.join(', ')} and memory menu` } // never a write, whatever called it
   const t0 = await $.clock.now()
   try {
     const r = await $.process.run(argvFor(cli, args, dataDir), { timeoutMs: COMMAND_TIMEOUT_MS, ...(cwd ? { cwd } : {}) })
@@ -119,6 +133,19 @@ async function fetchSnapshot($: Host, watch: BelayPanelWatch, prev: BelayPanelSn
   return { snap: buildSnapshot({ watch, prev, now: o.now, agents, notices, transcript, settings }), timedOut: timedOut(settings) }
 }
 
+// The Memory menu's facts: `belay memory menu`, a read (it copies the store to count a heavy embedder's backlog, and starts nothing). Its own atom, so a
+// failure shows in the menu and never in the run's errors.
+async function fetchMenu($: Host, watch: BelayPanelWatch): Promise<void> {
+  const r = await resolveCli($, watch)
+  const now = await $.clock.now()
+  if ('error' in r) { await update($, menuA, m => ({ ...m, error: r.error, at: now })); return }
+  const cli = r.cli
+  const got = await runJson($, cli, ['memory', 'menu'], watch.dataDir, watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null)
+  if ('error' in got) { await update($, menuA, m => ({ menu: m.menu, error: got.error, at: now })); return }
+  const menu = normMenu(got.json)
+  await update($, menuA, m => (menu ? { menu, error: null, at: now } : { menu: m.menu, error: 'belay memory menu answered something the panel does not read', at: now }))
+}
+
 // Open or close the docked pane. Only a person's action calls this (a command or a press), because an
 // unasked open waits undrawn below 144 columns. If the pane is not placed the panel is drawn inline.
 async function setOpen($: Host, open: boolean): Promise<void> {
@@ -152,6 +179,13 @@ async function tick($: Host): Promise<void> {
         backoffUntil = slow ? (await $.clock.now()) + Math.min(BACKOFF_MAX_MS, BACKOFF_FIRST_MS * 2 ** (timeoutStreak - 1)) : 0
         if (settingsDue) lastSettingsAt = now
         await update($, snapA, () => snap)
+        // The Memory menu is read while it is open, after a write, and (for the badge) while the settings name a heavy profile or a routing.
+        const everyMs = ui.memTab !== null ? MENU_OPEN_EVERY_MS : MENU_EVERY_MS
+        if (!slow && (menuForce || ((ui.memTab !== null || snap.memWanted) && now - lastMenuAt >= everyMs))) {
+          menuForce = false
+          lastMenuAt = now
+          await fetchMenu($, watch)
+        }
         // `/belay watch` with no id resolved the newest run: pin that id once.
         if (!watch.runId && snap.runId) await update($, watchA, w => (w && !w.runId ? { ...w, runId: snap.runId } : w))
         // While the panel is open, notices that arrive are seen as they arrive.
@@ -237,8 +271,83 @@ async function reviewPress($: Host): Promise<void> {
   await update($, uiA, u => ({ ...u, confirm: { project, at: now } }))
 }
 
+// ---- the Memory menu: tabs and routing picks change what is drawn; a write needs two presses and goes through belay's own commands -------------------
+// Called from memPress below and from nowhere else. The argv comes from writeArgv (memory.ts): a settings key from a short list, or a model the menu lists.
+async function dispatchMenu($: Host, a: MemAction, menu: BelayMenuT): Promise<void> {
+  const watch = await read($, watchA)
+  if (!watch || watch.error) { $.ui.toast('belay: no run is watched, so nothing was written.'); return }
+  const r = await resolveCli($, watch)
+  if ('error' in r) { $.ui.toast(`belay: nothing was written: ${r.error}`); return }
+  const ui = await read($, uiA)
+  const steps: MemAction[] = a.kind === 'saveRouting' ? routingWrites(ui.routeDraft ?? draftOf(menu)) : [a]
+  const cwd = watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null
+  let ok = true
+  for (const step of steps) {
+    const argv = writeArgv(step, menu)
+    if ('error' in argv) { $.ui.toast(`belay: ${argv.error}`); ok = false; break }
+    try {
+      const res = await $.process.run(argvFor(r.cli, argv[0]!, watch.dataDir), { timeoutMs: step.kind === 'set' ? MEM_TIMEOUT_MS.set : step.kind === 'delete' ? MEM_TIMEOUT_MS.delete : MEM_TIMEOUT_MS.verify, ...(cwd ? { cwd } : {}) })
+      $.ui.toast(resultLine(step, res.exitCode, res.stdout, res.stderr))
+      if (res.exitCode !== 0) { ok = false; break }
+    } catch (err) {
+      $.ui.toast(`belay: ${step.kind} did not finish: ${firstLine(err instanceof Error ? err.message : String(err)) || 'no answer'}`)
+      ok = false
+      break
+    }
+  }
+  if (ok && a.kind === 'saveRouting') await update($, uiA, u => ({ ...u, routeDraft: null }))
+  lastSettingsAt = 0 // what was written shows on the next round
+  lastFetchAt = 0
+  menuForce = true
+  $.ui.invalidate('ui.render')
+}
+
+// A write's button. First press: ask (the banner turns into a confirm). Second press of the same button inside CONFIRM_MS: run it. A routing that does
+// not fit, and a model the settings use, are refused here before any question, so a press never ends in silence.
+async function memPress($: Host, a: MemAction): Promise<void> {
+  const menu = (await read($, menuA)).menu
+  if (!menu) { $.ui.toast('belay: the Memory menu has not been read yet.'); return }
+  const ui = await read($, uiA)
+  if (a.kind === 'saveRouting') {
+    const d = ui.routeDraft ?? draftOf(menu)
+    if (sameDraft(menu, d)) { $.ui.toast('belay: the routing has no changes to save.'); return }
+    const fit = routeFit(menu, d)
+    if (fit.ok === false) { $.ui.toast(`belay: the routing was not saved: its GPU models need ${gb(fit.needMb)} with headroom and ${gb(fit.freeMb ?? 0)} is free.`); return }
+  }
+  if (a.kind === 'delete') {
+    const row = modelById(menu, a.model)
+    if (row && row.inUse) { $.ui.toast(`belay: ${row.id} is in use by ${row.inUseBy.join(', ')}; it was not deleted.`); return }
+  }
+  const now = await $.clock.now()
+  const id = actionId(a)
+  if (ui.memConfirm && ui.memConfirm.id === id && now - ui.memConfirm.at <= CONFIRM_MS) {
+    await update($, uiA, u => ({ ...u, memConfirm: null }))
+    await dispatchMenu($, a, menu)
+    return
+  }
+  await update($, uiA, u => ({ ...u, confirm: null, memConfirm: { id, text: confirmText(a, menu), at: now } }))
+}
+
+// One press of the Memory menu: a tab or a routing pick changes only what is drawn; a `cmd` prints the command to run (a download, an embed and the
+// GPU runtime's install last long and a reload of this panel would end them, so the person runs them); the rest are writes (memPress).
+async function memAct($: Host, a: MemAction): Promise<void> {
+  if (a.kind === 'tab') {
+    await update($, uiA, u => ({ ...u, confirm: null, memConfirm: null, memNote: null, memTab: a.tab === 'main' ? null : a.tab }))
+    if (a.tab !== 'main') menuForce = true
+    $.ui.invalidate('ui.render')
+  } else if (a.kind === 'cycle') {
+    const menu = (await read($, menuA)).menu
+    if (menu) await update($, uiA, u => ({ ...calm(u), routeDraft: cycleDraft(menu, u.routeDraft ?? draftOf(menu), a.side, a.type) }))
+  } else if (a.kind === 'cmd') {
+    await update($, uiA, u => ({ ...calm(u), memNote: `run: ${a.line}` }))
+    $.ui.toast(`belay: run  ${a.line}`)
+  } else if (a.kind === 'refresh') {
+    menuForce = true
+  } else await memPress($, a)
+}
+
 // Every press that is not the review button cancels a pending confirm.
-const calm = (u: BelayPanelUi): BelayPanelUi => (u.confirm ? { ...u, confirm: null } : u)
+const calm = (u: BelayPanelUi): BelayPanelUi => (u.confirm || u.memConfirm ? { ...u, confirm: null, memConfirm: null } : u)
 
 function acts($: Host): Act {
   return {
@@ -250,6 +359,7 @@ function acts($: Host): Act {
     close: () => { void update($, uiA, calm).then(() => setOpen($, false)) },
     toggle: () => { void update($, uiA, calm).then(() => read($, uiA)).then(u => setOpen($, !u.open)) },
     review: () => { void reviewPress($) },
+    mem: a => { void memAct($, a) },
   }
 }
 
@@ -309,9 +419,10 @@ export function registerPanel(on: On): void {
     const snap = await read($, snapA)
     const ui = await read($, uiA)
     const now = await $.clock.now()
+    const menu = await read($, menuA)
     if (!watch) return <Box><Text dimColor>No belay run is watched. /belay watch [run-id]</Text></Box>
     if (!snap) return <BandWaiting E={E} runId={watch.runId} errors={[]} cols={e.props.bodyColumns} />
-    const c = { E, snap, ui, now, cols: e.props.bodyColumns, act: acts($) }
+    const c = { E, snap, ui, now, cols: e.props.bodyColumns, act: acts($), menu }
     return e.surface === 'terminal' ? <Pane {...c} /> : <Fallback {...c} />
   })
 
@@ -323,8 +434,9 @@ export function registerPanel(on: On): void {
     const snap = await read($, snapA)
     const ui = await read($, uiA)
     const now = await $.clock.now()
+    const menu = await read($, menuA)
     if (!snap) return <BandWaiting E={E} runId={watch.runId} errors={[]} cols={e.props.bodyColumns} />
-    const c = { E, snap, ui, now, cols: e.props.bodyColumns, act: acts($) }
+    const c = { E, snap, ui, now, cols: e.props.bodyColumns, act: acts($), menu }
     // Inline when the person chose above-prompt, or when the docked pane is not seated (a narrow terminal).
     const inline = ui.open && (snap.settings.pane === 'above-prompt' || !ui.placed)
     if (e.surface !== 'terminal') return inline ? <Fallback {...c} /> : <Band {...c} />

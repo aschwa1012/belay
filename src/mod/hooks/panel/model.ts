@@ -14,7 +14,7 @@ export type Seg = { t: string; c?: string; dim?: boolean; bold?: boolean; brk?: 
 export const DEFAULT_SETTINGS: BelaySettings = {
   pane: 'docked', marks: 'shapes', cache: 'both', context: 'both', band: 'two-lines', task: 'kind',
 }
-export const DEFAULT_UI: BelayPanelUi = { open: false, selected: null, legend: false, foldOpen: false, groups: [], placed: false, seen: [], confirm: null }
+export const DEFAULT_UI: BelayPanelUi = { open: false, selected: null, legend: false, foldOpen: false, groups: [], placed: false, seen: [], confirm: null, memTab: null, memConfirm: null, memNote: null, routeDraft: null }
 
 const num = (x: unknown): number | null => (typeof x === 'number' && Number.isFinite(x) ? x : null)
 const str = (x: unknown): string | null => (typeof x === 'string' && x !== '' ? x : null)
@@ -46,6 +46,19 @@ export function parseSettings(json: unknown): BelaySettings {
     if (name in ALLOWED && (ALLOWED[name] as readonly unknown[]).includes(o.value)) (out as Record<string, unknown>)[name] = o.value
   }
   return out
+}
+
+// The settings name a heavy profile or a routing (a GPU profile, or any routing), read from `belay settings --json`: then the panel reads the
+// Memory menu's facts beside its rounds, for the main page badge. A config that leaves memory at its defaults costs no extra read.
+export function heavyConfigured(json: unknown): boolean {
+  for (const r of arr(obj(json)?.settings)) {
+    const o = obj(r)
+    const key = o && str(o.key)
+    if (!o || !key) continue
+    if ((key === 'memory.profile' || key === 'memory.profile_cpu') && typeof o.value === 'string' && o.value.startsWith('gpu-')) return true
+    if ((key === 'memory.routing' || key === 'memory.routing_cpu') && o.value !== null && o.value !== undefined) return true
+  }
+  return false
 }
 
 // `belay settings --json` carries `memory_notice` (null once a project is set). A malformed one is no notice.
