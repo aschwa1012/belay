@@ -7,7 +7,7 @@
 // a search outside the owner (a copy read, a client) gets null and says so loudly. This file requires only the error module and the
 // tables it needs, and gpu-shared.cjs inside the branch that builds, so no read path loads the GPU client (invariant 9).
 //
-// impl: { model, dims,
+// impl: { model, dims,   (embedDocs takes an optional { deadline } and may return fewer rows than it was given)
 //   async embedQuery(text) -> { embedding: number[], dim, model, ms }          the model's own query prompt is applied by the child
 //   async embedDocs([{ id, text }]) -> [{ id, embedding: number[], dim }]     one unit vector per row, in order }
 // The vectors are unit length at the table's dims (the child renormalises the Matryoshka cut), as memory-vectors.cjs stores them.
@@ -39,7 +39,8 @@ function build(model) {
   return {
     model, dims: entry.dims,
     embedQuery: (text) => one(text, 'query'),
-    async embedDocs(list) { const out = []; for (const r of list) { const e = await one(r.text, 'document'); out.push({ id: r.id, embedding: e.embedding, dim: e.dim }); } return out; },
+    // `opts.deadline` (epoch ms) bounds ONE batch too: past it the documents embedded so far are returned (at least one), the rest stay behind.
+    async embedDocs(list, opts) { const out = []; for (const r of list) { if (out.length && opts && opts.deadline && Date.now() >= opts.deadline) break; const e = await one(r.text, 'document'); out.push({ id: r.id, embedding: e.embedding, dim: e.dim }); } return out; },
     close: () => GS.close(),
   };
 }

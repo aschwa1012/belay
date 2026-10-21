@@ -53,7 +53,7 @@ async function doEmbed(core, parsed, ctx, found) {
   const { opts } = parsed;
   const t0 = Date.now();
   const project = opts.project || (found && found.config && found.config.memory && found.config.memory.project) || null;
-  if (opts.model !== undefined) return require('./cmd-memory-embed-heavy.cjs').doHeavy(core, opts, project, t0, fail); // ADR 0050: a heavy embedder's backlog
+  if (opts.model !== undefined) return require('./cmd-memory-embed-heavy.cjs').doHeavy(core, opts, project, t0, fail, undefined, found && found.config && found.config.memory && typeof found.config.memory.vram_headroom_gb === 'number' ? found.config.memory.vram_headroom_gb : undefined); // ADR 0050: a heavy embedder's backlog
   if (opts.template !== undefined && !opts.reembed) return fail(2, 'E_ARGS', '--template goes with --reembed: belay memory embed --reembed --template v2');
   if (opts.reembed) return require('./cmd-memory-reembed.cjs').doReembed(core, opts, project, t0, fail);
   const lv = leversOf(found);
