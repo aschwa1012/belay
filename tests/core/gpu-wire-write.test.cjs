@@ -82,6 +82,7 @@ test('B1: a failing heavy embed under on_heavy_failure fallback leaves the row b
   const fb = HT.fallbackOf(E, 'wr-a');
   assert.ok(fb && fb.cause.code, 'the fallback is on the run row');
   assert.strictEqual(RV.describe(rowOf('wr-a')).fallback.cause.code, fb.cause.code);
+  assert.strictEqual(rowOf('wr-a').written_by, 'harness', 'the fallback is the owner write, not the caller identity');
   for (let i = 0; i < 2; i += 1) { // EVERY answer says so, not only the first
     const r = await search('wr-a', 'wra', { mode: 'hybrid', query: 'heavy embed fails' });
     assert.strictEqual(r.tier_fallback.to, 'cpu-fast', `search ${i}`);
@@ -143,6 +144,7 @@ test('B1: only the rows the call wrote are embedded, and a method that wrote no 
   await R.restore(); fresh();
   await pinnedRun('wr-o', 'wro');
   const foreign = T.note('a row written by someone else', { ns: ns('wro'), vec: [1, 0.2, 0] }); // another caller, another run
+  T.store.db.prepare('UPDATE memory_entries SET created_at = created_at - 5000, updated_at = updated_at - 5000 WHERE id = ?').run(foreign); // clearly before the call below, whatever the clock resolution
   const EP = core('embed-provider.cjs'), impl = EP.get({ embedder: EMB4 }, { owner: E.owner });
   const orig = impl.embedDocs, seenDocs = [];
   impl.embedDocs = async (list, o) => { seenDocs.push(list.length); return orig(list, o); };

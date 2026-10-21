@@ -68,10 +68,14 @@ test('rows written by another caller are caught up inline within the bound, and 
   assert.strictEqual(HD.backlogOf(E, EMB4, [ns('bha')]).length, 0);
 });
 
+const idleWithin = (ms) => { let t; return Promise.race([HB.idle(E.owner), new Promise((_, rej) => { t = setTimeout(() => rej(new Error(`the catch-up did not settle within ${ms} ms`)), ms); })]).finally(() => clearTimeout(t)); };
+const gateOf = () => { let release; const gate = new Promise(r => { release = r; }); return { gate, release }; };
+
 test('a large backlog is served on nano with cause behind (not sticky), one background catch-up runs, and later searches serve heavy again', async () => {
   await pinnedRun('bh-b', 'bhb');
   foreign('bhb', 120);
-  HB.setTestOptions({ inlineBoundMs: 250 });
+  const { gate, release } = gateOf(); // holds the background catch-up until the single-flight assertion has been made
+  HB.setTestOptions({ inlineBoundMs: 250, catchUpGate: gate });
   const restore = slowEmbed(8);
   try {
     const r1 = await search('bh-b', 'bhb');
@@ -82,30 +86,93 @@ test('a large backlog is served on nano with cause behind (not sticky), one back
     assert.match(r1.warning, /heavy_behind/);
     assert.strictEqual(HT.fallbackOf(E, 'bh-b'), null, 'not sticky, and not a heavy failure');
     assert.ok(r1.results.length >= 100, 'nano served the notes');
-    await search('bh-b', 'bhb'); // a second search while the catch-up runs starts no second one
+    await search('bh-b', 'bhb'); // a second search while the catch-up is held starts no second one
     assert.strictEqual(E.owner.catchUps.size, 1, 'single-flight per run and embedder');
-    await HB.idle(E.owner);
-  } finally { restore(); HB.setTestOptions(null); }
+    release();
+    await idleWithin(30000);
+  } finally { release(); restore(); HB.setTestOptions(null); }
   assert.strictEqual(HD.backlogOf(E, EMB4, [ns('bhb')]).length, 0, 'the catch-up finished the backlog');
   const r2 = await search('bh-b', 'bhb');
   assert.strictEqual(r2.tier_fallback, undefined, 'caught up: served heavy again');
   assert.strictEqual(r2.tier.embedder, EMB4);
 });
 
-test('the owner stop ends a background catch-up, and starts no more', async () => {
+test('the owner stop ends a background catch-up: a pass gated mid-flight writes no vector after the close', async () => {
   await pinnedRun('bh-c', 'bhc');
   foreign('bhc', 60);
-  HB.setTestOptions({ inlineBoundMs: 100 });
+  const held = gateOf(), mid = gateOf();
+  HB.setTestOptions({ inlineBoundMs: 100, catchUpGate: held.gate });
   const restore = slowEmbed(10);
+  const impl = EP.get({ embedder: EMB4 }, { owner: E.owner }), inner = impl.embedDocs;
+  let blocking = false, entered;
+  const inFlight = new Promise(r => { entered = r; });
+  impl.embedDocs = async (list, o) => { if (!blocking) return inner(list, o); entered(); await mid.gate; return inner(list, o); };
+  const MV = core('memory-vectors.cjs'), putVector = MV.putVector;
+  let puts = 0;
+  MV.putVector = (...a) => { puts += 1; return putVector(...a); };
   try {
     const r = await search('bh-c', 'bhc');
     assert.strictEqual(r.tier_fallback.cause, 'behind');
     assert.strictEqual(E.owner.catchUps.size, 1);
-    await EP.closeOwned(E.owner); // what Owner.stop() does
+    blocking = true; held.release(); await inFlight; // the catch-up pass is now inside an embed
+    await EP.closeOwned(E.owner, 100); // what Owner.stop() does: it cancels, and gives up waiting after its bound
+    puts = 0;
+    mid.release(); // the embed finishes after the close
+    await idleWithin(30000);
     assert.strictEqual(E.owner.catchUps.size, 0, 'the catch-up has ended');
-    const left = HD.backlogOf(E, EMB4, [ns('bhc')]).length;
-    assert.strictEqual(HD.backlogOf(E, EMB4, [ns('bhc')]).length, left, 'it has settled: nothing it started can still write');
-  } finally { restore(); HB.setTestOptions(null); E.owner.catchUpsCancelled = false; GS.reopen(); }
+    assert.strictEqual(puts, 0, 'and wrote no vector after the stop');
+  } finally { held.release(); mid.release(); MV.putVector = putVector; impl.embedDocs = inner; restore(); HB.setTestOptions(null); E.owner.catchUpsCancelled = false; GS.reopen(); }
+});
+
+test('a catch-up stops when its run has ended', async () => {
+  await pinnedRun('bh-i', 'bhi');
+  foreign('bhi', 40);
+  const { gate, release } = gateOf();
+  HB.setTestOptions({ inlineBoundMs: 60, catchUpGate: gate });
+  const restore = slowEmbed(10);
+  try {
+    const r = await search('bh-i', 'bhi');
+    assert.strictEqual(r.tier_fallback.cause, 'behind');
+    const left = HD.backlogOf(E, EMB4, [ns('bhi')]).length;
+    assert.ok(left > 0);
+    await E.handle('run.end', { caller: operator('bh-i'), exit_reason: 'ended while its catch-up waited' });
+    release();
+    await idleWithin(30000);
+    assert.strictEqual(HD.backlogOf(E, EMB4, [ns('bhi')]).length, left, 'no pass ran for an ended run');
+  } finally { release(); restore(); HB.setTestOptions(null); }
+});
+
+test('a second E_TIER_BEHIND inside the guard (a write between the retry query embed and its candidates) serves THIS search on nano, never throws', async () => {
+  await pinnedRun('bh-h', 'bhh');
+  foreign('bhh', 1);
+  const ST = core('search-tier.cjs'), candidates = ST.candidates;
+  let late = 0;
+  ST.candidates = (E2, tier, ...rest) => { if (tier.embedder !== RP.NANO) T.note(`a concurrent write ${late++}`, { ns: ns('bhh'), vec: [1, 0.5, 0] }); return candidates(E2, tier, ...rest); };
+  try {
+    const r = await search('bh-h', 'bhh');
+    assert.strictEqual(r.tier_fallback.cause, 'behind');
+    assert.ok(late >= 2, `the seam inserted before each heavy candidates call (${late})`);
+    assert.strictEqual(HT.fallbackOf(E, 'bh-h'), null, 'still not sticky');
+    assert.ok(r.results.length >= 3);
+  } finally { ST.candidates = candidates; await idleWithin(30000); }
+});
+
+test('a row with no renderable text is not behind and not in the catch-up, with ONE warning; searches stay on the heavy tier', async () => {
+  const bad = T.note('a row whose text is not text', { ns: ns('bhu'), vec: [1, 0.2, 0] });
+  T.store.db.prepare('UPDATE memory_entries SET text = ? WHERE id = ?').run(Buffer.from([0, 1, 2]), bad);
+  const warnings = [];
+  const onW = (w) => { if (w.code === 'BELAY_UNRENDERABLE_ROW') warnings.push(w.message); };
+  process.on('warning', onW);
+  try {
+    await pinnedRun('bh-u', 'bhu');
+    assert.strictEqual(HD.backlogOf(E, EMB4, [ns('bhu')]).length, 0, 'not counted as behind');
+    HD.backlogOf(E, EMB4, [ns('bhu')]);
+    const r = await search('bh-u', 'bhu');
+    assert.strictEqual(r.tier_fallback, undefined, 'served heavy: it does not keep every search on nano');
+    assert.strictEqual(r.tier.embedder, EMB4);
+    await new Promise(res => setImmediate(res)); // emitWarning delivers on the next tick
+    assert.strictEqual(warnings.filter(m => m.includes(bad)).length, 1, 'one warning for the row, however often it is met');
+  } finally { process.removeListener('warning', onW); }
 });
 
 test('a real embed failure is a heavy failure: sticky fallback with its cause, not a behind fallback', async () => {
