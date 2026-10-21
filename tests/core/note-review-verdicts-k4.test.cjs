@@ -152,7 +152,7 @@ test('K4-2c: a note whose stored text is over the brief cap but whose every fiel
   const long = (n, c) => c.repeat(n);
   const note = baseNote('K14', {
     title: `the K14 loader skips unlisted fixtures ${long(120, 'a')}`, when: `add a K14 test fixture ${long(120, 'b')}`,
-    applies_to: ['src/loader/fixtures/manifest-reader.js', 'src/loader/fixtures/unlisted-files.js', 'tests/loader/fixtures/unlisted.test.js', 'docs/loader/fixtures.md'],
+    applies_to: ['src/loader/fixtures/manifest-reader.js', 'src/loader/fixtures/unlisted-files.js', 'tests/loader/fixtures/unlisted.test.js', 'guides/loader/fixtures.md'],
   });
   const w = await written('w-k42c', 'K14', { note });
   assert.ok(Buffer.byteLength(rowOf(w.note).text) > 400, `the stored text is ${Buffer.byteLength(rowOf(w.note).text)} bytes`);
@@ -249,7 +249,7 @@ test('K4-5: a Codex stream is evidence: command output and a non-belay MCP resul
   const stream = [
     item({ id: 'i0', type: 'agent_message', text: 'the manifest lists mb_1021 and mb_1022 both' }),
     item({ id: 'i1', type: 'command_execution', command: 'cat manifest.json', aggregated_output: 'manifest lists mb_2044 for sam.reed\n', exit_code: 0, status: 'completed' }),
-    item({ id: 'i2', type: 'mcp_tool_call', server: 'docs', tool: 'search', result: { content: [{ type: 'text', text: 'the docs page says retries default to 5' }] }, status: 'completed' }),
+    item({ id: 'i2', type: 'mcp_tool_call', server: 'wiki', tool: 'search', result: { content: [{ type: 'text', text: 'the wiki page says retries default to 5' }] }, status: 'completed' }),
     item({ id: 'i3', type: 'mcp_tool_call', server: 'belay', tool: 'memory_search', result: { content: [{ type: 'text', text: 'belay says mb_9999 exists' }] }, status: 'completed' }),
     item({ id: 'i4', type: 'mcp_tool_call', tool: 'mystery', result: 'an unnamed server said mb_7777 exists', status: 'completed' }),
     item({ id: 'i5', type: 'mcp_tool_call', server: 'x', tool: 'belay_search', result: { content: [{ type: 'text', text: 'a belay tool under another server said mb_5555 exists' }] }, status: 'completed' }),
@@ -260,7 +260,7 @@ test('K4-5: a Codex stream is evidence: command output and a non-belay MCP resul
     assert.deepStrictEqual([out.applied.length, out.refused[0].code], [0, 'E_CITATION'], quote);
   }
   assert.strictEqual(statusOf(w.note), 'unverified');
-  const ok = await run1(w, 'confirmed', [cite('manifest lists mb_2044 for sam.reed'), cite('the docs page says retries default to 5')]);
+  const ok = await run1(w, 'confirmed', [cite('manifest lists mb_2044 for sam.reed'), cite('the wiki page says retries default to 5')]);
   assert.strictEqual(ok.applied.length, 1, JSON.stringify(ok.refused));
 });
 
