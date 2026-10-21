@@ -93,6 +93,7 @@ function record(E, caller, o) {
       v: 1, role: caller.role, worker_id: caller.worker_id || null, for_worker: harness ? o.for_worker || null : null, for_task: harness ? o.for_task || null : null,
       channel: caller.channel || null,
       tier: { profile: t.profile || null, embedder: t.embedder || null, reranker: t.reranker || null, device: t.device || null },
+      ...(o.pinned_tier ? { pinned_tier: { profile: o.pinned_tier.profile || null, embedder: o.pinned_tier.embedder || null, reranker: o.pinned_tier.reranker || null, device: o.pinned_tier.device || null } } : {}), // an index ranks on nano whatever the worker's tier is: `tier` is what served, `pinned_tier` what the worker was pinned with
       mode: o.mode || null, namespaces: o.namespaces || null, k: o.k ?? null, offset: o.offset ?? 0,
       query: cut ? q.slice(0, QUERY_MAX) : q, query_cut: cut,
       ranks: o.ranks || [], ms: o.ms || {}, fallback,

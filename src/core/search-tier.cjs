@@ -200,5 +200,5 @@ function rankRecord(before, after, cap, order = 'score') {
 module.exports = {
   NANO_TIER, isNano, tierFor, leversOfSearch, binding, countRows, nanoKey, boundFor, candidates, assertServable, rerankHead, rankRecord,
   visibleRowFilter: VT.visibleRowFilter, logSearch: SL.record,
-  logIndex: (E, caller, o) => SL.record(E, caller, { kind: 'index', tier: (o && o.for_worker && HT.tierForWorker(E, caller, o.for_worker)) || tierFor(E, caller), ...o, capMb: leversOfSearch(E, caller).search_log_cap_mb }),
+  logIndex: (E, caller, o) => SL.record(E, caller, { kind: 'index', tier: NANO_TIER, pinned_tier: (o && o.for_worker && HT.tierForWorker(E, caller, o.for_worker)) || tierFor(E, caller), ...o, capMb: leversOfSearch(E, caller).search_log_cap_mb }),
 };
