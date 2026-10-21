@@ -1,5 +1,5 @@
 'use strict';
-// rerank-gpu.cjs — the GPU rerank provider (ADR 0050 decision 5, ADR 0049): scores a query against documents with one pinned GGUF
+// gpu-rerank.cjs — the GPU rerank provider (ADR 0050 decision 5, ADR 0049): scores a query against documents with one pinned GGUF
 // reranker held in the owner's shared GPU child (gpu-shared.cjs). It is the GPU sibling of rerank-cpu.cjs's cpuRerankProvider and has
 // the same shape, so rerank-provider.cjs registers either under the reranker's model id. Built in the store owner only.
 //

@@ -45,7 +45,7 @@ function autoBuild(name) {
     // Not a pinned ONNX reranker. A pinned GGUF reranker is served by the owner's shared GPU child (ADR 0049); anything else has nothing to build.
     const m = require('./retrieval-profiles.cjs').describeModel(name); // a pure table
     if (!m || m.kind !== 'reranker' || m.runtime !== 'gguf') return null;
-    const { gpuRerankProvider } = require('./rerank-gpu.cjs'); // lazy: the owner's GPU tiers only
+    const { gpuRerankProvider } = require('./gpu-rerank.cjs'); // lazy: the owner's GPU tiers only
     usesGpu = true;
     providers.set(name, gpuRerankProvider({ model: name }));
     return providers.get(name);

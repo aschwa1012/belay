@@ -1,7 +1,7 @@
 'use strict';
 // gpu-shared.cjs — the store owner's one GPU child (ADR 0049 decision 3, ADR 0050 decisions 4 to 6). Every GPU model the owner serves,
 // a reranker and an embedder alike, lives in ONE child process through load ops, so the probe's summed peaks are what the child
-// really holds. The rerank provider (rerank-gpu.cjs) and the embed provider (embed-provider.cjs) share it; the owner closes it at
+// really holds. The rerank provider (gpu-rerank.cjs) and the embed provider (embed-provider.cjs) share it; the owner closes it at
 // shutdown through either provider's closeAll.
 //
 // Owner only, and lazy: nothing here is required until a pinned GPU tier asks for a model (rerank-provider.cjs and embed-provider.cjs
