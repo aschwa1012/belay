@@ -74,7 +74,7 @@ test('delete refuses a model the pinned routing of a LIVE run names, naming the 
   assert.strictEqual(m.models.find((x) => x.id === E4).in_use, true);
   const r = await embedderExtra.run({ argv: ['delete', R4], cwd: proj, dataDir: data, json: true });
   assert.strictEqual(r.code, 1);
-  assert.match(r.text, /live run \(.*run r-live/);
+  assert.match(r.text, /this project's settings or runs \(run r-live/);
   assert.ok(fs.existsSync(dir), 'nothing was removed');
   const db = path.join(data, 'memory.db');
   for (const f of [db, `${db}-wal`, `${db}-shm`]) fs.rmSync(f, { force: true });
@@ -138,6 +138,7 @@ test('the selected embedder needs the runtime sound now, not only an ok probe; t
   fs.mkdirSync(data);
   writeConfig(proj, { project: 'acme', profile: 'gpu-balanced' });
   fakeFetch(process.env.BELAY_MODEL_CACHE, GGUF_MODELS[E4]);
+  fakeFetch(process.env.BELAY_MODEL_CACHE, GGUF_MODELS[R4]);
   const store = new Store(path.join(data, 'memory.db'), { stamp: true });
   for (const t of ['a', 'b']) store.storeIn({ namespace: 'project/acme', worker_id: 'w', type: 'note', text: `${t} note ${t}`, title: t, run_id: 'r', embedding: [1, 0], embedding_model: 'fake', embedding_revision: 'r', dim: 2 });
   store.close();
@@ -148,8 +149,11 @@ test('the selected embedder needs the runtime sound now, not only an ok probe; t
   const down = await withRuntime(false, () => MM.badge(opts));
   assert.deepStrictEqual([down.selected_embedder, down.behind], [NANO, 0], 'a probe that was ok does not make a missing runtime usable');
   assert.strictEqual((await withRuntime(false, () => build(proj, data))).selected_embedder, NANO);
-  assert.strictEqual(P.recordLast(P.peaksFile(), { ok: false, refusal: { reason: 'no_runtime' } }, []), false, 'a probe that fails before the device is read records nothing');
-  assert.strictEqual(P.readLast(P.peaksFile()).ok, true, 'so an earlier ok reading stays');
+  assert.strictEqual(P.recordLast(P.peaksFile(), { ok: false, refusal: { reason: 'some_other' } }, []), false, 'a refusal that is not one of the four records nothing');
+  assert.strictEqual(P.readLast(P.peaksFile()).ok, true);
+  assert.strictEqual(P.recordLast(P.peaksFile(), { ok: false, refusal: { reason: 'no_runtime' } }, []), true, 'a probe that fails before the device is read says the GPU is not usable now');
+  const last = P.readLast(P.peaksFile());
+  assert.deepStrictEqual([last.ok, last.reason, last.device, last.free_mb], [false, 'no_runtime', 'GPU', 8000], 'with the earlier device reading kept for display');
   assert.match(require('../../src/cli/cmd-memory-menu.cjs').text(up), /selected embedder .*: 2 notes behind/);
   fs.rmSync(P.peaksFile());
 });
