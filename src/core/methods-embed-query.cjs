@@ -137,7 +137,8 @@ async function embedQuery(E, caller, args = {}) {
     // caller refuses the spawn), under `keyword` it is recorded and the index is keyword-only, under `off` memory goes off.
     for (const q of bounded) q.embedder = true;
     notifyEmbedderFailure(E, caller, CALL, err('E_EMBED_BOUND', bounded[0].message, { embedder: true, cause: 'timeout', op: 'embed' }), args.worker_id);
-    try { recordEventSync(E, caller, { kind: 'embed_bound', ok: 0, code: 'E_EMBED_BOUND', worker_id: args.worker_id, task_id: args.task_id, message: JSON.stringify({ labels: bounded.map((q) => q.label), bound_ms: timeout }) }); } catch { /* the receipt is best effort; the result below still names the bound */ }
+    // The embeds were awaited: a run that ended meanwhile takes no receipt (audit D42); the guard's refusal is swallowed like any receipt failure.
+    try { E.assertRunOpen(caller, 'memory.embedQuery'); recordEventSync(E, caller, { kind: 'embed_bound', ok: 0, code: 'E_EMBED_BOUND', worker_id: args.worker_id, task_id: args.task_id, message: JSON.stringify({ labels: bounded.map((q) => q.label), bound_ms: timeout }) }); } catch { /* the receipt is best effort; the result below still names the bound */ }
   }
   return { queries, on_embedder_failure: mode, ...(typeof opts.runEnding === 'function' ? { run_ending: !!opts.runEnding() } : {}), embed_ms: Date.now() - t0 };
 }

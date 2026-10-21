@@ -48,7 +48,8 @@ async function closeRunWorkers(opts) {
   // ADR 0029 amendment 4 (proposed). Two ways the adapter can be missed by the run row the close reads: its attach has not
   // landed yet (candidates: this process's own orchestrator's children, found by one snapshot with the creation time
   // recorded at spawn), or it lands while the close runs (the row is read once more, one read per round).
-  const candidatesP = opts.fast ? Promise.resolve([]) : adapterCandidates(opts); // started now, awaited where the wait needs it: the close reads its rows meanwhile
+  // A console exists in every interactive run, so a present `fast` is not a request: only a requested one skips the scan.
+  const candidatesP = opts.fast && opts.fast.requested() ? Promise.resolve([]) : adapterCandidates(opts); // started now, awaited where the wait needs it: the close reads its rows meanwhile
   let out = await closeRunWorkersOnce({ ...opts, candidatesP });
   const candidates = await candidatesP;
   const handled = new Set([out.adapter_pid, ...candidates]);
@@ -100,6 +101,9 @@ async function closeRunWorkersOnce({ core, runId, graceMs, ownPid = process.pid,
     const pid = adapterPid !== undefined ? adapterPid : (((await core.run.get()) || {}).run || {}).adapter_pid;
     out.adapter_pid = Number.isInteger(pid) ? pid : null;
   } catch (e) { out.errors.push(`run.get: ${(e && e.message) || String(e)}`); }
+  // BELAY_CLOSE_LOG names a file; the close appends `run-row-read` once it has read the run row. Off unless set. A test that must
+  // land an attach after this read waits for the line, so the order is a fact it observed and not an assumption about timing.
+  if (process.env.BELAY_CLOSE_LOG) { try { require('node:fs').appendFileSync(process.env.BELAY_CLOSE_LOG, `run-row-read adapter_pid=${out.adapter_pid}\n`); } catch { /* best effort */ } }
   const before = await listRun();
   // A cut before the final listing still names the workers known now (finalizeCut).
   if (fast) { fast.progress = { out, unrecorded, cut }; for (const w of before || []) if (claimsLiveProcess(w)) unrecorded.set(w.id, { w, touched: () => false }); }

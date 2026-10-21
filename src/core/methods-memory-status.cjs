@@ -118,11 +118,18 @@ async function setStatus(E, caller, args) {
   const { id, status, receipt } = args;
   if (typeof id !== 'string' || !id) throw err('E_ARGS', 'memory.setStatus needs an id', { field: 'id' });
   if (!STATUSES.includes(status)) throw err('E_ARGS', `memory.setStatus status must be one of ${STATUSES.join(', ')}`, { field: 'status', value: status });
-  if (!E.store.p('SELECT 1 FROM memory_entries WHERE id = ?').get(id)) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
+  const target = E.store.p('SELECT type FROM memory_entries WHERE id = ?').get(id);
+  if (!target) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
   let kept = null, check = null;
   if (status !== 'unverified') {
     // Before any write: a refused receipt changes nothing.
     if (typeof receipt === 'string' && receipt.startsWith('review:')) throw noReceipt(receipt, 'a review: receipt is written only by belay, when it applies a reviewer\'s verdict whose citations it has checked (memory.noteVerdicts)');
+    // A note is verified only by a review: belay applies a reviewer's verdict after checking its citations (memory.noteVerdicts,
+    // which writes the review: receipt itself). A test: or commit: receipt the caller supplies proves nothing about a note, and the
+    // index would show it as verified fact. Refuting or resetting a note stays open to the orchestrator and the operator.
+    if (target.type === 'note' && status === 'verified') {
+      throw err('E_RECEIPT', `memory.setStatus: ${id} is a note, and a note becomes verified only through a review (memory.noteVerdicts); a receipt supplied by the caller cannot make it so`, { id, reason: 'note_needs_review' });
+    }
     const parsed = parseReceipt(receipt);
     if (parsed.error) throw noReceipt(receipt, parsed.error);
     checkRef(E, parsed, receipt, id, status);
@@ -130,6 +137,9 @@ async function setStatus(E, caller, args) {
     else if (parsed.kind === 'test') check = { kind: 'test', checked: false, claim: TEST_CLAIM };
     kept = receipt;
   }
+  // checkCommit awaited git: run.end may have committed meanwhile (audit D42). Checked in the tick of the first write. Once the status
+  // has landed, its project copies follow it to the end (a copy must never keep a status its source lost), so they are not re-checked.
+  E.assertRunOpen(caller, 'memory.setStatus');
   const at = Date.now();
   const out = E.store.setStatus(id, { status, receipt: kept, by: E.writtenBy(caller), at });
   E.noteWrite();

@@ -47,3 +47,50 @@ test("run.list: every run's current row, newest first, with alive derived from t
     assert.ok(ib < ia, 'run-b (newest by seq) must sort ahead of test-run');
   } finally { await second.close(); }
 });
+
+test('run.list: life_pids names every adapter pid of the present life, so an orchestrator attach does not hide the launcher', async () => {
+  const c = await openCore({ dataDir: dir, caller: callerFor('orchestrator', { run_id: 'run-launch' }), embed: false });
+  try {
+    const other = require('./helpers.cjs').deadPid();
+    await c.run.attach({ adapter_pid: process.pid, adapter_pid_created: 4242 });
+    await c.run.attach({ adapter_pid: other }); // the orchestrator's adapter overwrites the current row, then exits
+    const r = (await operator.run.list({})).runs.find((x) => x.id === 'run-launch');
+    assert.strictEqual(r.adapter_pid, other);
+    assert.deepStrictEqual(r.life_pids, [{ pid: process.pid, created: 4242 }, { pid: other, created: null }]);
+  } finally { await c.close(); }
+});
+
+test('run.list: life_pids covers only the present life of a reused run id, whatever the earlier lives recorded', async () => {
+  const c = await openCore({ dataDir: dir, caller: callerFor('operator', { run_id: 'run-reused' }), embed: false });
+  try {
+    const { deadPid } = require('./helpers.cjs');
+    const first = deadPid(), orch = deadPid();
+    await c.run.attach({ adapter_pid: first, adapter_pid_created: 111 });
+    await c.run.end({ exit_reason: 'first life' });
+    let r = (await operator.run.list({})).runs.find((x) => x.id === 'run-reused');
+    assert.deepStrictEqual(r.life_pids, [{ pid: first, created: 111 }], 'an ended run keeps the life that just ended');
+    await c.run.attach({ adapter_pid: process.pid, adapter_pid_created: 777 }); // the run id is re-run by this process
+    await c.run.attach({ adapter_pid: orch });
+    await c.run.end({ exit_reason: 'second life' });
+    r = (await operator.run.list({})).runs.find((x) => x.id === 'run-reused');
+    assert.strictEqual(r.adapter_pid, orch);
+    assert.deepStrictEqual(r.life_pids, [{ pid: process.pid, created: 777 }, { pid: orch, created: null }], "the first life's pid is not in the second life's list");
+  } finally { await c.close(); }
+});
+
+test('run.list: life_pids keeps the launcher through the orchestrator end and the run process end that follows it', async () => {
+  const { deadPid } = require('./helpers.cjs');
+  const launcher = deadPid(), adapter = deadPid();
+  const run = 'run-two-ends';
+  const op = await openCore({ dataDir: dir, caller: callerFor('operator', { run_id: run }), embed: false });
+  const orchestrator = await openCore({ dataDir: dir, caller: callerFor('orchestrator', { run_id: run }), embed: false });
+  try {
+    await op.run.attach({ adapter_pid: launcher, adapter_pid_created: 31 });
+    await orchestrator.run.attach({ adapter_pid: adapter });
+    await orchestrator.run.end({ exit_reason: 'orchestrator done' });
+    await op.run.end({ exit_reason: 'run closed' }); // the run process appends a second ended row; it is the same close
+    const r = (await operator.run.list({})).runs.find((x) => x.id === run);
+    assert.notStrictEqual(r.ended_at, null);
+    assert.deepStrictEqual(r.life_pids, [{ pid: launcher, created: 31 }, { pid: adapter, created: null }], 'the launcher is still named by the second ended row');
+  } finally { await orchestrator.close(); await op.close(); }
+});

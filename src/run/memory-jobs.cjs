@@ -12,7 +12,7 @@
 const crypto = require('node:crypto');
 const { fit } = require('../core/fit-budget.cjs');
 const { summarise, POLICY } = require('./summarise.cjs');
-const { DEFAULTS } = require('./memory-levers.cjs');
+const { defaultLevers } = require('./memory-levers.cjs');
 
 const RUN_END_BOUND_MS = 5000; // atRunEnd's whole budget, the give-up record included
 const GIVE_UP_MS = 500;
@@ -56,7 +56,7 @@ function once(s, key, fn) {
 // `levers`; a caller that reaches here with neither asks it to read.
 async function leversOf(ctx, w) {
   if (ctx.memoryLevers) return ctx.memoryLevers;
-  try { return await require('./memory-preface.cjs').levers(ctx, w); } catch (e) { note(w, 'memory.levers', e); return { ...DEFAULTS }; }
+  try { return await require('./memory-preface.cjs').levers(ctx, w); } catch (e) { note(w, 'memory.levers', e); return defaultLevers(); }
 }
 
 // J: the job context. `gate.aborted` is set when atRunEnd gives up, so a step that has not started never does.
@@ -490,7 +490,7 @@ async function atRunEnd(ctx) {
 // the store: it reads the run's task and worker rows, and `core` is the store `belay run` owns. Idempotent with a
 // partial adapter-side run (see atRunEnd). Never throws; returns { outcome, unfinished?, error? }.
 async function runEndJobs({ core, runId, levers, boundMs = null, modules = null, gate = null }) {
-  const ctx = { core, runId, memoryLevers: levers || { ...DEFAULTS }, runEndBoundMs: boundMs, modules, runEndGate: gate };
+  const ctx = { core, runId, memoryLevers: levers || defaultLevers(), runEndBoundMs: boundMs, modules, runEndGate: gate };
   const got = await atRunEnd(ctx);
   return ctx.runEndError ? { ...got, error: ctx.runEndError } : got;
 }

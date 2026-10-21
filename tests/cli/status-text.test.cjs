@@ -116,7 +116,7 @@ test('status text: an open row with a dead adapter pid reads not running, an end
   for (const [runId, expectedRunLine] of cases) {
     const r = withListingCheck(dataDir, `status ${runId}`, () => statusTextOf(runId, dataDir));
     assert.strictEqual(r.status, 0, `status ${runId}: ${r.stdout} / ${r.stderr}`);
-    const lines = r.stdout.split(/\r?\n/).filter((l) => l.length > 0);
+    const lines = r.stdout.split(/\r?\n/).filter((l) => l.length > 0 && !l.startsWith('warning: ')); // a config warning (no memory.project) is a line of its own; see memory-notice.test.cjs
     assert.deepStrictEqual(lines.slice(0, 6).map((l) => l.split(/\s{2,}/)[0]), RUNGS, `${runId}: rung lines out of order:\n${r.stdout}`);
     assert.ok(lines[6].startsWith('verdict: '), `${runId}: line 7 must be verdict::\n${r.stdout}`);
     assert.ok(lines[7].startsWith('established_by: '), `${runId}: line 8 must be established_by::\n${r.stdout}`);

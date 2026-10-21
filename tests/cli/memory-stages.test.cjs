@@ -125,6 +125,7 @@ test('review --all: runs on a queue below every trigger, applies the verdicts th
   await planted(async (T) => {
     const n = T.note('held by the scrubber', { reported_wrong: [T.report()] });
     await T.call(T.who.harness('apply'), 'memory.scrubApply', { scrub: [{ id: n, action: 'hold', kind: 'wrong', ground: 'report_confirmed', reason: 'the loader throws', cites: [T.cite] }], scope: [n], ...T.evidence });
+    await T.endOthers('apply'); // the review waits for any other live run (audit D35)
     T.store.close();
     const m = fakeManager(JSON.stringify({ verdicts: [{ id: n, verdict: 'release', reason: 'the code supports the note' }] }));
     const r = await cmd(T, ['review', '--all', '--run', 'lc-apply', '--worktree', T.repo], { makeManager: async () => m });

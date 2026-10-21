@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1'; // ADR 0034: a run here has no model to warm; the one suite that tests the warm-up opts in
 // stop-helpers.cjs — build step 5c-2, owned: split out of
 // tests/cli/stop.test.cjs so that file stays under 500 lines once its two new tests landed. Every
@@ -92,12 +93,10 @@ function receiptOf(run, exitCode) {
   return JSON.parse(exitCode === 0 ? run.stdout : run.stderr);
 }
 
+// The run's owner serves bound callers (ADR 0045), so this test is the orchestrator the way a run's is: through a bind the operator asks for.
+// A hang guard: a node CLI's start-up took several seconds on a saturated host (w2-flakes), so 10 s was a speed claim.
 async function connectOrchestratorCore(dataDir, runId) {
-  const core = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
-  // A hang guard: a node CLI's start-up took several seconds on a saturated host (w2-flakes), so 10 s was a speed claim.
-  const row = await waitUntil(async () => (await core.run.get()).run || null, 60000, 100);
-  assert.ok(row, "the CLI's run row never appeared within 60,000 ms");
-  return core;
+  return require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 60000 });
 }
 
 // A test core that won the election owns the store: close() only drops the client, so shut the owner down

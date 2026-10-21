@@ -4,7 +4,7 @@
 
 import type {
   BelayAgent, BelayCache, BelayDisplayState, BelayEntry, BelayHeld, BelayNotice, BelayReview, BelayPanelFooter, BelayPanelSnap,
-  BelayPanelUi, BelaySettings,
+  BelayPanelUi, BelaySettings, BelayMemoryNotice,
 } from '../../types/index'
 import { cells, clipCells } from './wrap'
 
@@ -46,6 +46,22 @@ export function parseSettings(json: unknown): BelaySettings {
     if (name in ALLOWED && (ALLOWED[name] as readonly unknown[]).includes(o.value)) (out as Record<string, unknown>)[name] = o.value
   }
   return out
+}
+
+// `belay settings --json` carries `memory_notice` (null once a project is set). A malformed one is no notice.
+export function parseMemoryNotice(json: unknown): BelayMemoryNotice | null {
+  const n = obj(obj(json)?.memory_notice)
+  const title = n && str(n.title), why = n && str(n.why), fix = n && str(n.fix)
+  if (!n || !title || !why || !fix) return null
+  return { title: clean(title, 80), why: clean(why, 240), fix: clean(fix, 400), configLine: clean(str(n.config_line) ?? '"memory": { "project": "<name>" }', 80) }
+}
+
+// The band's one-line warning and the plain-surface line for the notice (view.tsx draws exactly these).
+export function memoryBandSegs(n: BelayMemoryNotice): Seg[] {
+  return [{ t: '▲ ', c: 'warning' }, { t: n.title, c: 'warning', bold: true }, { t: ` · add ${n.configLine}`, dim: true }]
+}
+export function memoryFallbackSegs(n: BelayMemoryNotice): Seg[] {
+  return [{ t: `▲ ${n.title}. ${n.fix}`, c: 'warning' }]
 }
 
 // ---- agents -------------------------------------------------------------------------------------

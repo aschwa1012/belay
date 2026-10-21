@@ -16,6 +16,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const T = require('./note-review-text.cjs');
+const { shownHash } = require('../core/note-shown.cjs');
 
 const JOB_PREFIX = 'notereview-';
 const JOB_WALL_MS = 180000;
@@ -60,6 +61,8 @@ async function stopJob(ctx, wid) {
   if (typeof m._killSurvivor === 'function') await Promise.resolve().then(() => m._killSurvivor(wid)).catch(() => {});
 }
 
+const briefNotes = (notes) => notes.map((n) => ({ id: n.id, hash: shownHash(n) }));
+
 // ---- the reviewer's brief ----------------------------------------------------------------------------------------
 // Appended to a review task's opening message. '' unless the notes switch is on and there is something to say.
 async function reviewTail(ctx, w) {
@@ -67,7 +70,11 @@ async function reviewTail(ctx, w) {
   if (!lv || !lv.notes || !w || !w.taskId || String(w.id).startsWith(JOB_PREFIX)) return '';
   let brief;
   try { brief = await ctx.core.memory.reviewBrief({ task_id: w.taskId }); } catch (e) { w.lastError = { where: 'memory.reviewBrief', code: codeOf(e), message: e && e.message }; return ''; }
-  if (!brief.review || (!brief.notes.length && !brief.refuted_shown.length && !(brief.reports || []).length)) return '';
+  if (!brief.review) return '';
+  // The notes the tail will list are fixed now, with the text each had, so the verdicts are checked against what was shown (the core never recomputes it).
+  // A brief that lists none is a capture too (an empty one): this attempt's reviewer was shown no note, whatever an earlier attempt was shown.
+  try { await ctx.core.memory.noteBriefCapture({ review_task_id: w.taskId, notes: briefNotes(T.listedNotes(brief)) }); } catch (e) { w.lastError = { where: 'memory.noteBriefCapture', code: codeOf(e), message: e && e.message }; return ''; }
+  if (!brief.notes.length && !brief.refuted_shown.length && !(brief.reports || []).length) return '';
   let streams = [];
   try {
     const list = ((await ctx.core.worker.list({})).workers || []).filter((x) => x.run_id === ctx.runId && brief.reviewed_tasks.includes(x.task_id));
@@ -117,7 +124,11 @@ async function finishJob(core, { workerId, taskId, text, cost, cap }) {
   const ids = out.applied.map((a) => a.id);
   const rv = out.report_verdicts;
   const rids = rv ? rv.applied.map((a) => a.id) : [];
-  return receipt(core, { ok: true, ...base, row_ids: ids.length || rids.length ? [...ids, ...rids] : undefined, message: `applied ${out.applied.length}, refused ${out.refused.length}, already ${out.already.length}, unjudged ${out.unjudged.length}, refused_open ${(out.refused_open || []).length}${rv && !rv.none ? `; reports applied ${rv.applied.length}, refused ${rv.refused.length}, unjudged ${rv.unjudged.length}, refused_open ${(rv.refused_open || []).length}` : ''}${typeof cost === 'number' ? `; cost $${cost.toFixed(4)}` : ''}` });
+  // ok only when the job left nothing behind: a note or report it refused, or gave no verdict, is still unreviewed, and a receipt that says ok
+  // would read as a review done. The notes stay as they were (a later review offers them again) and the receipt names them.
+  const left = [...out.refused_open || [], ...out.unjudged || [], ...(rv ? [...rv.refused_open || [], ...rv.unjudged || []] : [])];
+  const partial = left.length > 0;
+  return receipt(core, { ok: !partial, ...(partial ? { code: 'E_PARTIAL' } : {}), ...base, row_ids: ids.length || rids.length ? [...ids, ...rids] : undefined, message: `${partial ? `partly reviewed; left unreviewed: ${left.slice(0, 8).join(', ') || 'none named'}${left.length > 8 ? `, and ${left.length - 8} more` : ''}; ` : ''}applied ${out.applied.length}, refused ${out.refused.length}, already ${out.already.length}, unjudged ${out.unjudged.length}, refused_open ${(out.refused_open || []).length}${rv && !rv.none ? `; reports applied ${rv.applied.length}, refused ${rv.refused.length}, unjudged ${rv.unjudged.length}, refused_open ${(rv.refused_open || []).length}` : ''}${typeof cost === 'number' ? `; cost $${cost.toFixed(4)}` : ''}` });
 }
 
 // ---- the job ----------------------------------------------------------------------------------------------------
@@ -144,6 +155,19 @@ async function writeInputs(ctx, taskId, wid, notes, workers) {
   return { notesFile, diffFile, worktree: (w && w.worktree) || null };
 }
 
+// The job's wait. One wait is capped by MCP_TOOL_TIMEOUT (the answer says so, as timeout_capped), so it is asked again until the job's own wall
+// is spent, as stage-job.cjs does. `waited_ms` is the wall really used, for the receipt.
+async function waitJob(manager, wid, wallMs, now = Date.now) {
+  const t0 = now();
+  let got, first = true;
+  for (;;) {
+    got = await manager.wait({ worker_ids: [wid], timeout_ms: first ? wallMs : Math.max(1, wallMs - (now() - t0)) });
+    first = false;
+    if (!(got.timed_out && got.timeout_capped && now() - t0 < wallMs)) break;
+  }
+  return { got, waited_ms: now() - t0 };
+}
+
 // One job for one ended task. Never throws; every outcome is a receipt.
 async function runJob(J, task) {
   const { ctx, core, lv } = J;
@@ -157,9 +181,10 @@ async function runJob(J, task) {
     if (isClosed(ctx)) throw shutErr('the run manager is shutting down, so no review job was started');
     if (!ctx.manager || typeof ctx.manager.spawn !== 'function') throw Object.assign(new Error('the run manager has no way to spawn the review job here'), { code: 'E_INTERNAL' });
     const workers = ((await core.worker.list({})).workers || []).filter((x) => x.run_id === ctx.runId && x.task_id === taskId);
-    const capped = brief.notes.map(T.capNote);
-    const inputs = await writeInputs(ctx, taskId, wid, brief.reports && brief.reports.length ? { notes: capped, reports: brief.reports } : capped, workers);
+    // The job reads its notes from a file, so it is shown every field of every note (no cap): the core allows `confirmed` for what a reviewer saw whole.
+    const inputs = await writeInputs(ctx, taskId, wid, brief.reports && brief.reports.length ? { notes: brief.notes, reports: brief.reports } : brief.notes, workers);
     const streams = workers.map((x) => ({ worker_id: x.id, stream_path: fwd(path.join(ctx.dataDir, 'workers', x.id, 'stream.jsonl')) }));
+    await core.memory.noteBriefCapture({ job: { worker_id: wid, reviewed_task_id: taskId }, notes: briefNotes(brief.notes) }); // what the job's notes file holds, fixed before it starts
     const prompt = T.jobPrompt(T.jobTemplate(), { notesFile: inputs.notesFile, diffFile: inputs.diffFile, streams, taskId, reports: brief.reports || [] });
     const worktree = inputs.worktree || ctx.worktree || (workers.find((x) => x.worktree) || {}).worktree;
     if (!worktree) throw Object.assign(new Error('no worktree is known for the task, so the review job has nowhere to run'), { code: 'E_ARGS' });
@@ -172,9 +197,9 @@ async function runJob(J, task) {
     }
     let text = '', cost = null, settled = null;
     try {
-      const got = await ctx.manager.wait({ worker_ids: [wid], timeout_ms: JOB_WALL_MS });
+      const { got, waited_ms } = await waitJob(ctx.manager, wid, JOB_WALL_MS);
       const rec = ctx.manager._worker(wid);
-      if (got.timed_out) settled = Object.assign(new Error(`the review job did not finish inside ${JOB_WALL_MS} ms`), { code: 'E_TIMEOUT' });
+      if (got.timed_out) settled = Object.assign(new Error(`the review job did not finish: it waited ${waited_ms} ms of a ${JOB_WALL_MS} ms wall`), { code: 'E_TIMEOUT' });
       else if (got.event !== 'turn_end' || got.is_error) settled = Object.assign(new Error(`the review job ${got.event === 'turn_end' ? 'ended its turn in error' : `is ${got.event}`}`), { code: 'E_WORKER_NOT_LIVE' });
       text = rec && typeof rec.lastAssistantText === 'string' ? rec.lastAssistantText : '';
       cost = rec && typeof rec.costUsd === 'number' ? rec.costUsd : null;
@@ -227,13 +252,18 @@ async function drain(ctx, ms) {
   clearTimeout(timer);
 }
 
+// A job row whose process no longer answers a pid check. A reused pid only makes a closed job look alive, which leaves it to the run-end sweep.
+const processClosed = (w) => Number.isInteger(w.pid) && !require('../core/lock.cjs').pidAlive(w.pid);
+
 // The run's end, store-only (also runs in `belay run`, which holds no manager): apply the hand-back of every ended review task,
 // apply the answer of every review job that finished but was not applied, and name what was never reviewed. Idempotent.
-async function sweep(J, tasks, workers) {
+// `opts.preClose` is the sweep that runs before the run-close stages, while a killed job's row can still read idle or running: it applies
+// what is finished (a review task's hand-back, a job whose worker is stopped or dead, or whose process has closed with a whole answer in its stream) and writes no receipt of any kind, because a receipt
+// would stop the run-end sweep, which runs after run.end has settled the rows, from applying that job's answer.
+async function sweep(J, tasks, workers, opts = {}) {
   const { lv, ctx } = J;
   const core = gated(J);
   if (!lv.notes) return;
-  const byId = new Map(tasks.map((t) => [t.id, t]));
   for (const t of tasks) if (isReview(t) && ENDED.has(t.state)) await applyHandback(J, t);
   const jobWorkers = workers.filter((w) => String(w.id).startsWith(JOB_PREFIX) && w.run_id === ctx.runId);
   const events = ((await core.memory.events({ run_id: ctx.runId || undefined, kinds: ['review_job'] })) || {}).events || [];
@@ -242,14 +272,22 @@ async function sweep(J, tasks, workers) {
     const taskId = taskOfJob(w.id);
     if (!taskId || done(taskId)) continue;
     if (!['stopped', 'dead'].includes(w.state)) { // still starting or running: it has no answer to apply, and a missing cost is not a cost-cap failure
-      await fail(core, { worker_id: w.id, task_id: taskId, key: `task:${taskId}` }, shutErr(`the run ended while the review job was ${w.state}; its notes stay unreviewed`));
+      // A job whose process has closed but whose row still reads idle (run.end settles the row, after the scrub and archive stages have run)
+      // is finished all the same. Its answer is applied now when the stream holds a whole one and the row a cost, so an upheld report is not
+      // left unapplied for a note the scrub archives; anything less stays for the run-end sweep, with no receipt.
+      if (opts.preClose && processClosed(w) && typeof w.cost_usd === 'number') {
+        const got0 = await core.worker.get({ worker_id: w.id }).catch(() => null);
+        const text0 = got0 && got0.stream_path ? lastTextOf(got0.stream_path) : '';
+        if (!T.parseJobOutput(text0).error) await finishJob(core, { workerId: w.id, taskId, text: text0, cost: w.cost_usd, cap: lv.note_review_cost_cap_usd });
+      }
+      if (!opts.preClose) await fail(core, { worker_id: w.id, task_id: taskId, key: `task:${taskId}` }, shutErr(`the run ended while the review job was ${w.state}; its notes stay unreviewed`));
       continue;
     }
     const got = await core.worker.get({ worker_id: w.id }).catch(() => null);
     const text = got && got.stream_path ? lastTextOf(got.stream_path) : '';
     await finishJob(core, { workerId: w.id, taskId, text, cost: typeof w.cost_usd === 'number' ? w.cost_usd : null, cap: lv.note_review_cost_cap_usd });
   }
-  if (!lv.note_review) return;
+  if (opts.preClose || !lv.note_review) return;
   const started = new Set(jobWorkers.map((w) => taskOfJob(w.id)));
   for (const t of tasks) {
     if (isReview(t) || !ENDED.has(t.state) || started.has(t.id) || events.some((e) => e.key === `task:${t.id}`)) continue; // a receipt of any kind is the record
@@ -259,7 +297,38 @@ async function sweep(J, tasks, workers) {
     if (!brief.notes.length && !(brief.reports || []).length) continue;
     await fail(core, { worker_id: undefined, task_id: t.id, key: `task:${t.id}`, row_ids: brief.notes.map((n) => n.id), message: `task ${t.id} wrote ${brief.notes.length} note(s) and the run ended before a review job ran; they stay unreviewed` }, Object.assign(new Error('owed'), { code: 'E_TIMEOUT' }));
   }
-  void byId;
+  // A job decides once per task, when the task first ends. A note written after a clean job (the reflection turn, a second attempt) is still
+  // unreviewed, and the job's receipt does not say so, so such a task is named once here. A job that failed is not named again: its own receipt
+  // (its code says why) is the record. A partial job's receipt names the notes it left, so only a note it does not name is added.
+  for (const t of tasks) {
+    const own = events.filter((e) => e.key === `task:${t.id}`);
+    if (isReview(t) || !ENDED.has(t.state) || !own.length || events.some((e) => e.key === `left:${t.id}`)) continue;
+    const clean = own.some((e) => e.ok === 1 || e.ok === true);
+    const partial = own.filter((e) => e.code === 'E_PARTIAL');
+    if (!clean && !partial.length) continue;
+    if (tasks.some((r) => isReview(r) && Array.isArray(r.depends_on) && r.depends_on.includes(t.id))) continue;
+    let brief;
+    try { brief = await core.memory.reviewBrief({ reviewed_task_id: t.id }); } catch { continue; }
+    const named = partial.map((e) => String(e.message || '')).join(' ');
+    const ids = brief.notes.map((n) => n.id).filter((id) => clean || !named.includes(id));
+    if (!ids.length) continue;
+    const why = clean ? 'written after its review job' : 'not named by its review job\'s partial receipt';
+    await fail(core, { worker_id: undefined, task_id: t.id, key: `left:${t.id}`, row_ids: ids, message: `task ${t.id} has ${ids.length} note(s) no review judged (${why}); they stay unreviewed: ${ids.slice(0, 8).join(', ')}${ids.length > 8 ? `, and ${ids.length - 8} more` : ''}` }, Object.assign(new Error('left'), { code: 'E_PARTIAL' }));
+  }
 }
 
-module.exports = { reviewTail, onTaskEnded, applyHandback, sweep, drain, expectsJobs, runJob, lastTextOf, jobIdFor, taskOfJob, isJob, JOB_PREFIX, JOB_WALL_MS };
+// The sweep alone, store-only, before the run-close stages (`belay run` hands it to them). A report that a finished job upheld is applied before the
+// scrub can archive its note; an upheld report applied after is refused ("not live in this run's project"). It is the pre-close sweep (see `sweep`):
+// the run-end sweep runs again after run.end and does the rest, and the store makes a second application a no-op. Returns null with notes off.
+async function reviewSweep({ core, runId, levers, gate = null }) {
+  const lv = levers;
+  if (!lv || !lv.notes) return null;
+  const J = { ctx: { core, runId, memoryLevers: lv }, core, lv, w: null, gate: gate || { aborted: false }, s: {}, turnPath: false };
+  const g = gated(J);
+  const tasks = ((await g.task.list({})) || {}).tasks || [];
+  const workers = ((await g.worker.list({})) || {}).workers || [];
+  await sweep(J, tasks, workers, { preClose: true });
+  return { swept: true, tasks: tasks.length };
+}
+
+module.exports = { waitJob, reviewTail, onTaskEnded, applyHandback, sweep, reviewSweep, drain, expectsJobs, runJob, lastTextOf, jobIdFor, taskOfJob, isJob, JOB_PREFIX, JOB_WALL_MS };

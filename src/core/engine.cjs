@@ -15,6 +15,7 @@ const { isJobId } = require('./job-ids.cjs');
 const memory = require('./methods-memory.cjs');
 const run = require('./methods-run.cjs');
 const task = require('./methods-task.cjs');
+const taskHold = require('./methods-task-hold.cjs');
 const continuity = require('./continuity.cjs');
 const status = require('./status.cjs');
 const diff = require('./methods-diff.cjs');
@@ -73,6 +74,7 @@ const METHODS = {
   // and the two reads the refuted-note wake and a review's brief are built from.
   'memory.noteVerdicts': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-note-review.cjs', 'noteVerdicts') },
   'memory.noteRefutation': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-note-review.cjs', 'noteRefutation') },
+  'memory.noteBriefCapture': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-note-review.cjs', 'noteBriefCapture') },
   'memory.reviewBrief': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-note-review.cjs', 'reviewBrief') },
   // The notes lifecycle (scrub, review, archive). scrubApply and reviewApply are harness-channel calls (the check is inside);
   // noteRestore is the orchestrator's or the operator's; archivePurge is the operator's alone; the two reads are SELECTs.
@@ -147,6 +149,8 @@ const METHODS = {
   // build step 6a, ADR 0010 §4 amendment 1: opened to the operator as well (see the comment above
   // ORCH_OR_OPERATOR); the MCP adapter's task_assign tool stays orchestrator-only.
   'task.assign': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: task.assign },
+  // The run manager asks this before it relaunches a worker (restart, resume, a Codex turn): the task it holds is held for the manager's live run, or the relaunch is refused.
+  'task.ensureHold': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: taskHold.ensureHold },
   'task.list': { roles: ALL, kind: 'read', fn: task.list },
   'task.get': { roles: ALL, kind: 'read', fn: task.get },
   'task.evaluate': { roles: ORCH, kind: 'write', fn: task.evaluate },
@@ -196,6 +200,12 @@ function validateCaller(caller) {
   }
   return caller;
 }
+
+// Audit D42: an ended run takes no write from a process launched for it, orchestrator adapter or worker. The run process
+// (role operator) is not bound by this: it ends the run, then closes, scrubs and sweeps it. run.attach keeps its own refusal
+// (and the operator's re-run opens the next epoch), and run.end is not refused here: a repeated run.end is the run
+// process's own business (run.end sees the ended row itself).
+const ENDED_RUN_EXEMPT = new Set(['run.attach', 'run.end']);
 
 class Engine {
   // `owner` is set only when this engine belongs to the process that holds the lock; `establishedBy`
@@ -297,6 +307,18 @@ class Engine {
     return { pid: lock.pid, pipe: lock.pipe || pipeName(this.dataDir), alive: pidAlive(lock.pid), established_by: 'owner.lock pid check' };
   }
 
+  // Audit D42: refuse a write from a process launched for a run that has ended. Dispatch checks it once, before the method
+  // runs; a method that awaits before it writes (task.evaluate's commands, a release's or a store's embedding) checks again,
+  // synchronously, in the same tick as its write, so a run.end that committed while it waited is seen. The run process
+  // (role operator) is never bound by it.
+  assertRunOpen(caller, method = 'write') {
+    if (caller.role === 'operator') return;
+    const run = require('./rows.cjs').current(this.store, 'run', caller.run_id);
+    if (run && run.ended_at != null) {
+      throw err('E_ARGS', `${method}: run ${caller.run_id} has already ended, so a ${caller.role} launched for it writes nothing; nothing was written`, { method, run_id: caller.run_id, ended_at: run.ended_at, role: caller.role, run_ended: true });
+    }
+  }
+
   async handle(method, params) {
     const spec = METHODS[method];
     if (!spec) throw err('E_ARGS', `${method} is not a Core API method`, { method });
@@ -307,6 +329,7 @@ class Engine {
     }
     const args = { ...p };
     delete args.caller;
+    if (spec.kind === 'write' && !ENDED_RUN_EXEMPT.has(method)) this.assertRunOpen(caller, method);
     const off = this.memoryOff(method);
     if (off === 'refuse') throw err('E_LEVER_OFF', `${method}: memory is off for this run (on_embedder_failure off, after an embedder failure), so nothing is read or written through it`, { lever: 'on_embedder_failure' });
     if (off === 'empty') return { text: '', bytes: 0, row_ids: [], dropped: 0, over_budget: false, sha256: require('node:crypto').createHash('sha256').update('', 'utf8').digest('hex'), considered: 0, excluded_already_injected: 0, memory_off: true };

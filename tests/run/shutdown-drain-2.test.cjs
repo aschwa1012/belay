@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // shutdown-drain-2.test.cjs — build step 6i-2 fix round (reviewer should-fix on item 3). shutdown-drain
 // (h14) assembles write-row.cjs and lifecycle.cjs's shutdown() by hand, so it never exercises manager.cjs's
 // own wiring (the shutdownFlags object it builds and the markClosed closure it passes) nor worker.cjs's

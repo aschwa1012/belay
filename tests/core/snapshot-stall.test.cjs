@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // snapshot-stall.test.cjs — ADR 0048 decision 6 and 7.1: BELAY_TEST_SNAPSHOT_STALL_MS only makes a snapshot slower.
 // Unset or invalid, the PowerShell command is byte-identical to the one without the seam.
 

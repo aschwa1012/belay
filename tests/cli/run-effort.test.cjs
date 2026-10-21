@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1'; // ADR 0034: a run here has no model to warm; the one suite that tests the warm-up opts in
 // run-effort.test.cjs — build step S6b fix round 1 (MF1, SF2, SF3): `belay run --effort` end to end with
 // the fake orchestrator. The level reaches the orchestrator's recorded argv, the run row and the run's

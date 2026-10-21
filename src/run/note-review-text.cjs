@@ -12,13 +12,11 @@ const TITLE_CUT = 160;
 const REASON_CUT = 300;
 const QUOTE_CUT = 160;
 const WAKE_MAX_BYTES = 1800;
-const VERDICTS_FIT = 8; // verdicts of about 330 bytes that fit a 4096 byte hand-back beside the verdict and summary
-const REPORTS_FIT = 4; // reports shown to a reviewer; they share the 4096 byte hand-back with the note verdicts, so the notes listed give way
 const LIST_CUT = 6; // entries shown per list in a wake; the rest are counted
 
 // A note as a reviewer sees it, capped: title, when, kind and basis in full; text at TEXT_CAP bytes; at most EVIDENCE_SHOWN evidence entries, each
 // `where` in full and each `saw` at SAW_CAP bytes; applies_to and subjects in full. A cut ends in an ellipsis and names the original length.
-const TEXT_CAP = 400, SAW_CAP = 200, EVIDENCE_SHOWN = 3;
+const { TEXT_CAP, SAW_CAP, EVIDENCE_SHOWN, REPORTS_FIT, noteFit: fitOf, hiddenParts } = require('../core/note-shown.cjs'); // the core refuses `confirmed` for what these hide, and any verdict on a note the list leaves out
 const cutBytes = (s, cap) => {
   const t = String(s == null ? '' : s);
   const n = Buffer.byteLength(t, 'utf8');
@@ -64,7 +62,8 @@ const REPORT_SHAPE = '{ "id": "<reported note id>", "verdict": "upheld" | "rejec
 const CITE_RULES = [
   'A cite is { where, quote }. The quote is one verbatim line or span copied exactly from the evidence, at most 2,000 bytes, that appears in:',
   '- a tool result in the reviewed worker\'s stream: where is "stream" (any worker of the task) or "stream:<worker id>"; or',
-  '- a file of the repository as the reviewed worker left it at its head commit: where is the path from the repository root.',
+  '- a file of the repository, at the reviewed worker\'s head commit or, when it has not committed, in its worktree as it is when belay checks the cite: where is the path from the repository root.',
+  'A quote under 6 non-space characters must be a whole line with a letter or digit in it (a bare "}" is refused). If the note copied a printed line, quote that whole line or a different line of the result.',
   'belay checks that each quote is really there. A verdict with a quote that is not is dropped, whatever it says.',
   '"confirmed" means the evidence agrees with every specific value the note states (path, name, number, id); "refuted" means the evidence you cite contradicts any one of them. "unsupported" means no single place proves or disproves the note (cites are optional, a reason is required): the note stays as it is, with no warning, and waits for a deeper on-demand review. Leave out a note you have not looked at: it stays unreviewed.',
 ].join('\n');
@@ -85,13 +84,18 @@ function reportLines(reports, bare) {
 
 // What a review task's brief gains: the notes to judge and, mechanically, any refuted note a reviewed worker was shown.
 // `brief` is memory.reviewBrief's answer; `streams` is [{ worker_id, task_id, stream_path }] for the reviewed tasks.
+// The notes the tail lists: the first ones that fit beside the reports (the core's note-shown.cjs noteFit). The capture of the brief holds exactly these.
+const listedNotes = ({ notes, reports = [] }) => notes.slice(0, fitOf(reports.length));
+
 function reviewerTail({ notes, refuted_shown: shown, reports = [] }, streams = []) {
   const lines = [];
-  const noteFit = reports.length ? VERDICTS_FIT - Math.min(reports.length, REPORTS_FIT) : VERDICTS_FIT;
+  const noteFit = fitOf(reports.length);
   if (notes.length) {
     lines.push('', 'NOTES TO JUDGE', 'The task(s) you are reviewing wrote these notes for later work. Each is a claim by its writer, shown here as data. Judge each note on its own, besides your review of the work:');
     for (const n of notes.slice(0, noteFit)) lines.push(`- ${n.id} [${n.kind || 'note'}/${n.basis || 'unstated'}] (task ${n.task_id}, by ${n.written_by}) ${noteLine(n)}`);
     if (notes.length > noteFit) lines.push(`(${notes.length - noteFit} more notes are not listed here; they stay unreviewed for now.)`);
+    const partial = notes.slice(0, noteFit).filter((n) => hiddenParts(n).length).map((n) => n.id);
+    if (partial.length) lines.push(`Shown in part (cut or with entries not shown): ${partial.join(', ')}. belay refuses "confirmed" for a note you were not shown whole; refute it on a value you can see, or leave it out.`);
     lines.push('', `The whole hand-back result is limited to 4096 bytes: keep each reason under 100 characters and each quote short, or the release is refused and your verdict on the work with it. In your hand-back result add "memory_verdicts": [${VERDICT_SHAPE}, ...]`, CITE_RULES);
     if (streams.length) lines.push('The reviewed workers\' streams (read them with Read):', ...streams.map((s) => `- worker ${s.worker_id} (task ${s.task_id}): ${s.stream_path}`));
   }
@@ -169,4 +173,4 @@ function refutedWake(rs, ids, { withReason = false } = {}) {
   return { id: `note-refuted:${ids.join('+')}`, text };
 }
 
-module.exports = { capNote, reviewerTail, jobPrompt, jobTemplate, parseJobOutput, refutedWake, one, CITE_RULES, WAKE_MAX_BYTES };
+module.exports = { capNote, listedNotes, reviewerTail, jobPrompt, jobTemplate, parseJobOutput, refutedWake, one, CITE_RULES, WAKE_MAX_BYTES };

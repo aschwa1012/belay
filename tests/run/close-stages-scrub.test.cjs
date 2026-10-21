@@ -315,6 +315,18 @@ test('a cost overrun halves the next attempt, oldest first, down to 1; a success
   assert.strictEqual((await go(after)).offered, 3, 'the success ended the halving: every remaining item is taken');
 });
 
+test('another project\'s cost overrun does not halve this project\'s scrub', async () => {
+  await settleAll();
+  const t0 = Date.now() + 700000;
+  const ns = [1, 2, 3, 4].map((i) => X.reported(`other project overrun item ${i}`, 'apply', { created_at: t0 + i }));
+  await T.E.handle('run.attach', { caller: callerFor('orchestrator', { run_id: 'lc-elsewhere' }), adapter_pid: process.pid, project: 'elsewhere', memory_levers: JSON.stringify({ project: 'elsewhere', notes: true }) });
+  await T.call(T.who.harness('apply'), 'memory.recordEvent', { kind: 'stage_overrun', ok: false, code: 'E_COST_CAP', run_id: 'lc-elsewhere', key: 'scrub', row_ids: ['x1', 'x2', 'x3', 'x4'], message: 'another project overran' });
+  const lv = { ...LV.apply, scrub_max_items: 4 };
+  const m = fakeManager(T, 'apply', json('scrub', []));
+  const out = await runScrub({ core: X.coreFor('apply'), runId: RUN.apply, lv, dataDir: T.dir, getManager: async () => m, worktree: T.repo });
+  assert.strictEqual(out.offered, 4, 'all four are taken, not two');
+});
+
 test('a failure that spent most of the cap counts as an overrun; a cheap failure does not', async () => {
   X.reported('cheap failure');
   const cheap = await stage('apply', fakeManager(T, 'apply', 'junk', { cost: 0.01 }));

@@ -191,6 +191,16 @@ const MIGRATIONS = [
   // The harness's record of the eval-only native_memory lever (ADR 0024 amendment 3): the resolved folder, or null. A relaunch reads the lever
   // from here and never from the worker's settings.json, which the worker can edit.
   'ALTER TABLE worker ADD COLUMN native_memory TEXT',
+  // Who opted in to that folder (JSON text {run_id, lifetime}): set once by the spawn that took the lever and carried unchanged by every later row, so
+  // a refusal's or a stop's row (whose run_id is the writer's) never authorizes the next adopter. Null on a row written before the column.
+  'ALTER TABLE worker ADD COLUMN native_memory_auth TEXT',
+  // ADR 0046 decision 1: the epoch of the attach that revived a run whose previous adapter was dead with no run.end, carried by every later
+  // row of that life; null for a run that never lapsed. It lets "the run that is live now keeps the paths" order two lapsed runs without a clock.
+  'ALTER TABLE run ADD COLUMN revived_epoch INTEGER',
+  // The memory notice the launch resolved for this run: the code of the "notes would be on, but ..." notice (memory-notice.cjs), or null when
+  // there is none (notes on, notes explicitly off, or memory null). The levers cannot say it (a default block is stored as null, and an
+  // explicit off looks like no project), so status and the panel read the run's own answer, never the current config's.
+  'ALTER TABLE run ADD COLUMN memory_notice TEXT',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot

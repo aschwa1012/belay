@@ -63,4 +63,10 @@ function redactEntry(ent) {
   return out;
 }
 
-module.exports = { clean, redactEntry, needHarness, allowKeys, notesContext, putRow, rowOut };
+// A write transaction for a non-operator caller: the run is checked inside it, in the same tick as the writes, so a run.end
+// that committed while the method awaited (a citation check, an embedding, an earlier verdict) is seen (audit D42).
+function openTx(E, caller, method, fn) {
+  return E.store.tx(() => { E.assertRunOpen(caller, method); return fn(); });
+}
+
+module.exports = { openTx, clean, redactEntry, needHarness, allowKeys, notesContext, putRow, rowOut };

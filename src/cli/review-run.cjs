@@ -54,7 +54,13 @@ async function sweepOrphan(h, claim, D) {
   try { const got = await h.worker.get({ worker_id: claim.job }); row = got && (got.worker || got); } catch { row = null; }
   if (!row || !Number.isInteger(row.pid) || !D.pidAlive(row.pid)) return { swept: false, detail: `the claimed job ${claim.job} left no live child` };
   const r = (await D.killMany([D.rowTarget(row)]))[0] || {};
-  return { swept: !!r.killed, pid: row.pid, detail: r.killed ? `killed orphan pid ${row.pid} of job ${claim.job}` : `orphan pid ${row.pid} of job ${claim.job} was not killed: ${r.detail || r.error || 'refused'}` };
+  // A refusal of kind `mismatch` or `absent` PROVES the child is gone (another process holds its pid, or no process does; ADR 0039), so the
+  // pid answering a pid check is no reviewer. Only an unverifiable refusal, or a kill that was not sent, leaves the child possibly running.
+  const gone = !r.killed && r.refused === 'identity' && (r.kind === 'mismatch' || r.kind === 'absent');
+  const detail = r.killed ? `killed orphan pid ${row.pid} of job ${claim.job}`
+    : gone ? `orphan pid ${row.pid} of job ${claim.job} is gone (${r.kind}: ${r.detail || 'identity check'})`
+      : `orphan pid ${row.pid} of job ${claim.job} was not killed: ${r.detail || r.error || 'refused'}`;
+  return { swept: !!r.killed || gone, pid: row.pid, kind: r.kind || null, refused: r.refused || null, detail };
 }
 
 const busy = (project, st, extra = '') => {
@@ -75,6 +81,11 @@ async function claimedReview({ s, project, ctx, common, runReview, renderStage }
     if (!dead.dead) return busy(project, state, `; ${dead.via}`);
     replaces = state.claim.id;
     const orphan = await sweepOrphan(h, state.claim, D);
+    // A child that outlived its claimant and could not be stopped is a reviewer still running (and paid for): a second one must not
+    // start beside it. Nothing is claimed or spawned, and the dead claim stays, so the next attempt tries the sweep again.
+    if (!orphan.swept && orphan.pid != null && D.pidAlive(orphan.pid)) {
+      return busy(project, state, `; the dead claim's child pid ${orphan.pid} is still alive and could not be stopped (${orphan.detail}); no second review was started`);
+    }
     notes.push(`took over the dead claim ${state.claim.id} (${dead.via}); ${orphan.detail}`);
   }
   const jobId = `archreview-${s.runId}-${Date.now().toString(36)}`;

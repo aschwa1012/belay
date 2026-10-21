@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // Golden argv for the three launch-table entries (ADR 0001 §1, ADR 0008 §6), the per-worker files
 // (ADR 0007 §6) and the environment scrub. Nothing here spawns a substrate; the one spawn is a bare
 // `node -e` that reports its own PWD, which is the receipt for ADR 0016.

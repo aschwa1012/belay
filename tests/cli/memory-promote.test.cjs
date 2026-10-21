@@ -50,9 +50,22 @@ test('proposals lists the nominations with their drafts and whether the text is 
     const t = runText(['proposals', '--project', 'acme'], dir, cwd);
     assert.match(t.stdout, /nominated for an instruction file/);
     assert.match(t.stdout, /3 tasks across 2 runs/);
-    assert.match(t.stdout, /draft \(draft\) -> CLAUDE\.md: Mock the gate in unit tests\.\s+\[already in the file\]/);
+    assert.match(t.stdout, /draft \(draft\) -> CLAUDE\.md, 28 bytes, the whole rule \(it reaches every later worker\): Mock the gate in unit tests\.\s+\[already in the file\]/);
     assert.deepStrictEqual(listDir(dir), before, 'a read creates nothing in the data dir');
     assert.deepStrictEqual(listDir(cwd), cwdBefore);
+  } finally { cleanup(dir); cleanup(cwd); }
+});
+
+test('proposals prints the whole drafted rule and its byte count, so the approval is given on what will be written', () => {
+  const dir = sandbox(), cwd = sandbox();
+  try {
+    const rule = `Keep fixtures sorted. ${'Never read an unlisted fixture without a manifest entry. '.repeat(15)}END-OF-RULE`;
+    plant(dir, { rule });
+    const t = runText(['proposals', '--project', 'acme'], dir, cwd);
+    assert.strictEqual(t.status, 0, t.stderr);
+    assert.ok(Buffer.byteLength(rule) > 160, 'longer than the old cut');
+    assert.match(t.stdout, new RegExp(`, ${Buffer.byteLength(rule)} bytes, the whole rule`));
+    assert.ok(t.stdout.includes('END-OF-RULE'), 'the last words of the rule are shown');
   } finally { cleanup(dir); cleanup(cwd); }
 });
 

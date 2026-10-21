@@ -1,6 +1,6 @@
 'use strict';
 // memory-notes-shape.test.cjs — ADR 0047 decision 2: a note's shape is refused by name with E_NOTE_SHAPE, never truncated;
-// the notes lever and its tuning levers validate and default off.
+// the notes lever and its tuning levers validate; notes defaults on and applies with a project.
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -100,7 +100,7 @@ test('reported_wrong and resolutions are checked', () => {
   assert.strictEqual(N.checkResolutions([{ id: 'p', resolve: 'supersedes', of: 'q', evidence: [{ where: 'a', saw: 'b' }] }])[0].of, 'q');
 });
 
-test('levers: notes defaults off with its tuning levers, and validates', () => {
+test('levers: with no block notes is off with its tuning levers, and validates', () => {
   const d = L.parseMemoryBlock(undefined).value;
   assert.deepStrictEqual([d.notes, d.notes_reflection, d.notes_lesson_question, d.notes_match_n, d.notes_match_threshold], [false, false, false, 3, 0.8]);
   assert.ok(L.isDefault(d));
@@ -115,4 +115,15 @@ test('levers: notes defaults off with its tuning levers, and validates', () => {
     [{ project: 'p', notes: true, notes_match_threshold: 0 }, /notes_match_threshold/],
     [{ project: 'p', notes: 'yes' }, /true or false/],
   ]) assert.match(L.parseMemoryBlock(b).error || '', re, JSON.stringify(b));
+});
+
+test('levers: notes is on by default and takes effect once the run has a project', () => {
+  assert.strictEqual(L.DEFAULTS.notes, false, 'one default: a block with no project has notes off');
+  assert.deepStrictEqual(require('../../src/run/memory-levers.cjs').DEFAULTS, L.DEFAULTS, 'the run side shares the core default');
+  assert.strictEqual(L.parseMemoryBlock({ project: 'p' }).value.notes, true);
+  assert.strictEqual(L.parseMemoryBlock({}).value.notes, false, 'no project, no notes namespace: off, not an error');
+  assert.strictEqual(L.parseMemoryBlock({ project: 'p', redact: false }).value.notes, false, 'unredacted text never goes to the project namespace');
+  assert.strictEqual(L.parseMemoryBlock({ project: 'p', notes: false }).value.notes, false);
+  assert.match(L.parseMemoryBlock({ notes: true }).error || '', /needs memory.project/, 'an explicit notes true is still refused without a project');
+  assert.ok(L.isDefault(L.defaultLevers()));
 });

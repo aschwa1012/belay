@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // shutdown-head.test.cjs — ADR 0029 amendment 2 items 3 and 4 (S8-fix-3). Item 3: the adapter's shutdown
 // stops a store owner only when this process holds it. Item 4: a graceful shutdown waits for each worker's
 // pending head request, so the follow-up row lands before the write path is marked closed.

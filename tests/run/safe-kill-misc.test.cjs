@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // safe-kill-misc.test.cjs — ADR 0039 review round: the creation time is discarded when the child exited before
 // the read, the fast-close kill is refused (and recorded) when the budget cannot pay for a fresh snapshot, and
 // the own-process probe never delays an attach.

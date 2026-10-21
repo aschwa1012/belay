@@ -16,7 +16,6 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn, spawnSync } = require('node:child_process');
 
-const { openCore } = require('../../src/core/index.cjs');
 const { releaseCore } = require('./stop-helpers.cjs');
 const P = require('../../src/run/process.cjs');
 const { SNAPSHOT_TIMEOUT_MS } = require('../../src/core/proc-identity.cjs');
@@ -153,12 +152,9 @@ test('run: the orchestrator is a child of the CLI, the run row is written, stdin
   let testCore = null;
   let fakeWorker = null;
   try {
-    testCore = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
-
-    const row = await waitUntil(async () => {
-      const got = await testCore.run.get();
-      return got.run || null;
-    }, 10000, 100);
+    // the run's owner serves bound callers (ADR 0045): the test is the orchestrator the way a run's is, through a bind the operator asks for
+    testCore = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 10000 });
+    const row = (await testCore.run.get()).run;
     assert.ok(row, 'the run row never appeared within 10,000 ms of the CLI spawning');
     assert.strictEqual(row.adapter_pid, cliProc.pid, "adapter_pid must be the CLI process's own pid");
     assert.ok(Number.isInteger(row.orchestrator_pid) && row.orchestrator_pid > 0, 'orchestrator_pid must be a positive integer');

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1'; // ADR 0034: a run here has no model to warm; the one suite that tests the warm-up opts in
 // run-election.test.cjs — three tests on the election and shutdown paths of `belay run`, owned by
 // build step 5a-4: they share the same subprocess-driving scaffolding as tests/cli/run-paths.test.cjs and are

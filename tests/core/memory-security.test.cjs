@@ -41,7 +41,7 @@ before(async () => {
   store = new Store(`${dir}/memory.db`, { stamp: true });
   const getEmbedder = async () => ({ embed: async () => ({ embedding: [1, 0], embedding_model: 'fake', embedding_revision: 'r', dim: 2 }) });
   E = new Engine({ dataDir: dir, store, getEmbedder, owner: null, establishedBy: 'test' });
-  await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', project_writes: true }) });
+  await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', project_writes: true, notes: false }) });
   await call('run.attach', { ...orch, run_id: 'r2' }, { adapter_pid: process.pid });
 });
 after(() => { store.close(); cleanup(dir); });

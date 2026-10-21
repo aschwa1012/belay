@@ -3,7 +3,9 @@
 // evidence it names, never what the quote means (the shape of ADR 0044 decision 5's check). A cite is
 // { where, quote }, and `where` is one of
 //   a path relative to the run's worktree, read at the run's head commit (`git show <head>:<path>`), optionally
-//   followed by `:<line>` or `:<line>-<line>`, which is ignored (the quote is what is checked); or
+//   followed by `:<line>` or `:<line>-<line>`, which is ignored (the quote is what is checked); for the note-review route, where the
+//   writer may not have committed (a worker's head is recorded only when it settles, and workers do not commit), a file git lists in
+//   the worker's working tree is read too; or
 //   `stream:<path>`, where <path> is one of the recorded stream files the caller listed in `evidence_files`.
 // Whitespace is collapsed on both sides, so a re-wrapped line still matches; nothing else is relaxed.
 // A cite that cannot be checked is refused the same as one that is not found: E_CITATION, naming which and why.
@@ -19,6 +21,23 @@ const FILE_MAX = 8 * 1024 * 1024;
 const norm = s => String(s).replace(/\s+/g, ' ').trim();
 const fwd = p => String(p).split('\\').join('/');
 const LINE_SUFFIX = /:\d+(?:-\d+)?$/;
+// A quote of fewer than SHORT_SOLID (6) non-space characters must be a whole line of the evidence (a Read result's "41->" line number is not part of
+// the line), so a real short line is citable and a fragment such as "e" is not. It must also be a word, not a bracket: at least SHORT_MIN
+// non-space characters with a letter or digit among them, so "done." and "ok" can be cited and "}" and ");" (lines every code file has) cannot.
+// Longer quotes may be any span.
+const SHORT_SOLID = 6, SHORT_MIN = 2;
+const solid = s => s.replace(/\s/g, '').length;
+const NUMBERED = /^\s*\d+(?:\u2192|\t|:|\|)\s?/;
+const WORDY = /[\p{L}\p{N}]/u;
+function wholeLine(raw, q) {
+  if (solid(q) < SHORT_MIN || !WORDY.test(q)) return false;
+  return String(raw).split(/\r?\n/).some(l => norm(l) === q || norm(l.replace(NUMBERED, '')) === q);
+}
+// forms: the quote as written and with JSON escapes decoded, whitespace collapsed (quoteForms).
+function holds(raw, forms) {
+  const t = norm(raw);
+  return forms.some(q => (solid(q) >= SHORT_SOLID ? t.includes(q) : wholeLine(raw, q)));
+}
 
 // A file cite reads a blob only: `git show` of a directory prints its tree listing, which would make file names citable.
 function gitType(worktree, head, rel) {
@@ -38,6 +57,26 @@ function gitShowBlob(worktree, head, rel) {
   });
 }
 
+// The working tree of a worker that has not committed: a file git lists there (tracked, or untracked and not ignored, so a secret in an
+// ignored file is not an oracle; git never lists .git), and read only when its real path stays inside the worktree.
+async function worktreeShow(worktree, rel) {
+  const listed = await new Promise(resolve => {
+    execFile('git', ['--literal-pathspecs', 'ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', rel], { cwd: worktree, timeout: GIT_BOUND_MS, windowsHide: true, encoding: 'utf8' }, (e, stdout) => resolve(e ? null : String(stdout)));
+  });
+  if (listed === null) return { error: 'git did not answer' };
+  if (!listed.split('\0').includes(rel)) return { error: 'not a file git lists in the working tree' };
+  try {
+    const root = fs.realpathSync(worktree);
+    const real = fs.realpathSync(path.join(worktree, rel));
+    const within = path.relative(root, real);
+    if (!within || within.startsWith('..') || path.isAbsolute(within)) return { error: 'resolves outside the worktree' };
+    const st = fs.statSync(real);
+    if (!st.isFile()) return { error: 'not a file in the working tree' };
+    if (st.size > FILE_MAX) return { error: 'too large to search' };
+    return { text: fs.readFileSync(real, 'utf8') };
+  } catch { return { error: 'not in the working tree' }; }
+}
+
 // ---- shared rules (one module for every citation check) ---------------------------------------------------------------
 // Evidence is what the world answered, not what belay said back: a tool result whose tool_use is one of belay's own tools
 // (`mcp__belay__*`: a hand-back echoes the note's title, a search echoes other notes) never counts. A stream is JSON lines of
@@ -46,6 +85,8 @@ const BELAY_TOOL = /^mcp__belay__/;
 function blocksOf(line) {
   let j;
   try { j = JSON.parse(line); } catch { return []; }
+  const it = j && j.type === 'item.completed' && j.item && typeof j.item === 'object' ? j.item : null;
+  if (it) return codexBlocks(it);
   const content = j && j.message && j.message.content;
   if (!Array.isArray(content)) return [];
   const out = [];
@@ -57,6 +98,16 @@ function blocksOf(line) {
     for (const text of texts) out.push({ id: b.tool_use_id, text });
   }
   return out;
+}
+// A Codex stream records a finished command as an item.completed line with its output, and a finished MCP call with its result. The output of
+// a command is what a tool printed; an MCP call counts unless its server or tool is belay's (a result whose server is not stated is not trusted).
+function codexBlocks(it) {
+  if (it.type === 'command_execution') return typeof it.aggregated_output === 'string' && it.aggregated_output ? [{ id: it.id, text: it.aggregated_output }] : [];
+  if (it.type !== 'mcp_tool_call') return [];
+  if (typeof it.server !== 'string' || !it.server || /belay/i.test(it.server) || /belay/i.test(String(it.tool || ''))) return [];
+  const r = it.result;
+  const texts = typeof r === 'string' ? [r] : r && Array.isArray(r.content) ? r.content.filter(p => p && typeof p.text === 'string').map(p => p.text) : [];
+  return texts.map(text => ({ id: it.id, text }));
 }
 function belayUseIds(lines) {
   const ids = new Set();
@@ -105,6 +156,7 @@ function checkShape(cites) {
 // note: { title, text, evidence } of the note judged; its own words are refused for stream cites only.
 // Returns { ok, failures: [{ index, where, reason }] }.
 const seam = { afterCheck: null }; // tests only: lets a test land another review between the check and the write
+const ECHO = 'the quote is in a tool result that also shows the note\'s own text (its title, or a long sentence of the note), so that result is not independent evidence; quote a line of a different tool result, or cite a file';
 function streamResultHas(file, quote, skip = null) {
   let raw;
   try { raw = fs.readFileSync(file, 'utf8'); } catch { return { found: false, reason: `no stream at ${file}` }; }
@@ -112,25 +164,27 @@ function streamResultHas(file, quote, skip = null) {
   const lines = raw.split('\n');
   const belay = belayUseIds(lines);
   const forms = quoteForms(quote);
+  let echoed = false;
   for (const line of lines) {
-    if (!line.includes('tool_result')) continue;
+    if (!line.includes('tool_result') && !line.includes('item.completed')) continue;
     for (const b of blocksOf(line)) {
       if (b.text === undefined || (b.id !== undefined && belay.has(b.id))) continue;
-      const t = norm(b.text);
-      if (skip && skip(t, b.text)) continue;
-      if (forms.some(q => t.includes(q))) return { found: true };
+      if (!holds(b.text, forms)) continue;
+      if (skip && skip(norm(b.text), b.text)) { echoed = true; continue; }
+      return { found: true };
     }
   }
+  if (echoed) return { found: false, echoed: true, reason: ECHO };
   return { found: false, reason: 'the quote is in no tool result of that stream (results of belay\'s own tools are not evidence)' };
 }
 // A stream cite for a note. A quote that the note's own words also hold is accepted only when a non-belay tool result holds it and
 // that result is not an echo of the note (echoOf below). A quote found only in the note, in belay's own calls,
 // or in the worker's hand-back or prose is in no such result, and is refused as before.
 const SELF = 'the quote is the note\'s own text, which cannot be evidence about the note';
-function streamCite(file, quote, own, title) {
+function streamCite(file, quote, own, title, saws = []) {
   if (!selfQuoted(own, title, quote)) return streamResultHas(file, quote);
-  const r = streamResultHas(file, quote, echoOf(own, title));
-  return r.found ? r : { found: false, reason: SELF };
+  const r = streamResultHas(file, quote, echoOf(own, title, quote, saws));
+  return r.found || r.echoed ? r : { found: false, reason: SELF };
 }
 // Echo rule. A tool result is an echo of the note, and no evidence about it, when its text (JSON string escapes decoded, whitespace
 // collapsed, case folded; also checked as printed) shows the note rather than independent output:
@@ -140,20 +194,47 @@ function streamCite(file, quote, own, title) {
 //     such sentence when the title is a single token with no space (an identifier such as RETRIES=3) that the result also holds.
 // A short saw that a tool really printed, or a short phrase title that a heading or log line holds, is not an echo: the result that proves the
 // saw is not its echo. What this leaves open: a worker that prints its own short saw with a tool.
+// `saws` are the `saw` fields among `own`: a copy of printed output by contract, so the line that holds the quote is left out of the long-sentence
+// check for a saw, and for a saw only. A `when` or a text sentence is the writer's own prose: a printed copy of it is an echo wherever the quote is.
+// `opts.file` is a file read from a working tree rather than a tool result: the identifier rule is left out (a source file names its identifiers).
 const PREFIX_LEN = 32, ANCHOR_MIN = 16, SENTENCE_LONG = 60, TITLE_LONG = 20, TITLE_MIN = 4;
-function echoOf(own, title) {
+function echoOf(own, title, quote = null, saws = [], opts = {}) {
   const low = s => norm(s).toLowerCase();
   const t = title ? low(title) : '';
+  // A saw is exempt only as a saw, and by span: a saw that appears anywhere inside another of the writer's fields (when, text, a title,
+  // an evidence `where`), alone or embedded in a longer sentence, is the writer's prose there, so it is not exempt. The saws' own copies are
+  // taken out of `own` first (one copy each); what is left is the writer's prose.
+  const unspent = new Map();
+  for (const s of saws || []) unspent.set(low(s), (unspent.get(low(s)) || 0) + 1);
+  const prose = [];
+  for (const o of own || []) {
+    const k = low(o);
+    if ((unspent.get(k) || 0) > 0) unspent.set(k, unspent.get(k) - 1); else prose.push(k, low(unescapeJson(o)));
+  }
+  const wanted = quote == null ? [] : quoteForms(quote).map(q => q.toLowerCase());
+  // The span is the quote: a saw that holds the quote is exempt only while the writer's prose does not hold that quote too (a longer saw
+  // around a span the `when` also states is no more exempt than the span alone). A quote too short to be a span (a whole line) is not looked for.
+  const spanIn = (f) => wanted.some(q => solid(q) >= SHORT_SOLID && f.includes(q));
+  const sawSet = new Set((saws || []).map(low).filter(s => !prose.some(f => f.includes(s) || f.includes(low(unescapeJson(s))))
+    && !((spanIn(s) || spanIn(low(unescapeJson(s)))) && prose.some(spanIn))));
   const sentences = (own || []).map(low).filter(a => a.length >= ANCHOR_MIN && a.includes(' ') && a !== t);
+  // The quoted span itself: when it is a long sentence and the writer's prose (any non-saw field, as printed or JSON-unescaped) holds it, even
+  // inside a longer sentence, a tool result that prints it shows the writer's words, whatever longer saw also holds it.
+  for (const q of wanted) if (q.length >= SENTENCE_LONG && q.includes(' ') && prose.some(f => f.includes(q))) sentences.push(q);
   const idLike = t.length >= TITLE_MIN && !t.includes(' ');
   return (text, raw) => {
     const forms = [text.toLowerCase(), norm(unescapeJson(text)).toLowerCase()];
     const has = a => forms.some(f => f.includes(a));
+    // The line that holds the quote is the evidence itself: a note that copied a printed line into its saw does not make that line an echo.
+    // For a saw, the 60-character sentence rule looks at the rest of the result only; every other rule looks at all of it.
+    const rest = String(raw || '').split(/\r?\n/).filter(l => !wanted.some(q => low(l).includes(q) || low(unescapeJson(l)).includes(q)));
+    const restForms = wanted.length ? [norm(rest.join('\n')).toLowerCase(), norm(unescapeJson(rest.join('\n'))).toLowerCase()] : forms;
+    const restHas = a => restForms.some(f => f.includes(a));
     const lines = String(raw || '').split(/\r?\n/).flatMap(l => [low(l), low(unescapeJson(l))]);
     const titleHeld = t.length >= TITLE_LONG ? has(t) : t.length >= TITLE_MIN && lines.includes(t);
     if (titleHeld || (t.length > PREFIX_LEN && has(t.slice(0, PREFIX_LEN)))) return true;
-    const idHeld = idLike && has(t);
-    return sentences.some(a => (a.length >= SENTENCE_LONG || idHeld) && has(a));
+    const idHeld = !opts.file && idLike && has(t);
+    return sentences.some(a => (idHeld ? has(a) : a.length >= SENTENCE_LONG && (sawSet.has(a) ? restHas(a) : has(a))));
   };
 }
 async function checkTaskCites(E, taskId, cites, note = null) {
@@ -169,7 +250,7 @@ async function checkTaskCites(E, taskId, cites, note = null) {
       const misses = [];
       let hit = false;
       for (const w of pool) {
-        const r = streamCite(path.join(E.dataDir, 'workers', w.id, 'stream.jsonl'), c.quote, own, note && note.title);
+        const r = streamCite(path.join(E.dataDir, 'workers', w.id, 'stream.jsonl'), c.quote, own, note && note.title, note ? sawsOf(note) : []);
         if (r.found) { hit = true; break; }
         misses.push(`${w.id}: ${r.reason}`);
       }
@@ -178,21 +259,36 @@ async function checkTaskCites(E, taskId, cites, note = null) {
     }
     const rel = fwd(c.where.replace(LINE_SUFFIX, '')).replace(/^\.\//, '');
     if (!relativeOk(rel)) { fail(i, c.where, 'a file cite is a path to a file inside the repository, relative to its root (not "./", not a directory)'); continue; }
-    const pool = workers.filter(w => w.head_sha && w.worktree);
-    if (!pool.length) { fail(i, c.where, `task ${taskId} has no worker row with a head commit and a worktree, so no file can be read at its head`); continue; }
+    const pool = workers.filter(w => w.worktree);
+    if (!pool.length) { fail(i, c.where, `task ${taskId} has no worker row with a worktree, so no file can be read`); continue; }
     let hit = false;
     const misses = [];
+    const forms = [norm(c.quote)];
+    const echoes = note ? text => echoOf(own, note.title, c.quote, sawsOf(note), { file: true })(norm(text), text) : () => false;
     for (const w of pool) {
-      const r = await gitShow(w.worktree, w.head_sha, rel);
-      if (r.error) { misses.push(`${w.id}: ${r.error}`); continue; }
-      if (norm(r.text).includes(norm(c.quote))) { hit = true; break; }
-      misses.push(`${w.id}: the quote is not in ${rel} at ${String(w.head_sha).slice(0, 12)}`);
+      if (w.head_sha) { // the head is recorded when the worker settles; a worker still running has none
+        const r = await gitShow(w.worktree, w.head_sha, rel);
+        if (r.error) misses.push(`${w.id}: ${r.error}`);
+        else if (holds(r.text, forms)) { hit = true; break; }
+        else misses.push(`${w.id}: the quote is not in ${rel} at ${String(w.head_sha).slice(0, 12)}`);
+      }
+      const t = await worktreeShow(w.worktree, rel); // work that is not committed: workers do not commit
+      if (t.error) { misses.push(`${w.id}: ${rel} in its working tree: ${t.error}`); continue; }
+      if (holds(t.text, forms)) {
+        // The writer may have made this file, so a file that holds the note's title or a long sentence of its own text (a draft, a hand-off file)
+        // proves nothing about the note. A committed file is not asked: its writer could not have changed it.
+        if (echoes(t.text)) { misses.push(`${w.id}: ${rel} in its working tree also holds the note's own text, so it is not independent evidence`); continue; }
+        hit = true; break;
+      }
+      misses.push(`${w.id}: the quote is not in ${rel} in its working tree`);
     }
     if (!hit) fail(i, c.where, misses.join('; '));
   }
   if (seam.afterCheck) await seam.afterCheck();
   return { ok: failures.length === 0, failures };
 }
+
+const sawsOf = note => (note.evidence || []).map(e => e && e.saw).filter(t => typeof t === 'string' && t.trim());
 
 function relativeOk(p) {
   if (!p || path.isAbsolute(p) || /^[A-Za-z]:/.test(p) || p.startsWith('/')) return false;
@@ -223,7 +319,7 @@ async function checkCitations(cites, ctx) {
       // is evidence even when the note quoted the same line, so this applies to streams only.
       // The same search as a note review: decoded tool results only, JSON escapes tolerated, belay's own tools excluded. The JSON
       // structure of the stream (braces, field names, ids) is not something a tool printed, so it is no evidence.
-      const r = streamCite(want, c.quote, ctx.own, ctx.title);
+      const r = streamCite(want, c.quote, ctx.own, ctx.title, ctx.saws);
       if (!r.found) throw fail(r.reason);
       out.push({ where: c.where, source: 'stream' });
       continue;
@@ -236,9 +332,10 @@ async function checkCitations(cites, ctx) {
     const got = cache.get(key);
     if (got.error) throw fail(`${rel}: ${got.error} ${ctx.head_sha.slice(0, 12)}`);
     text = got.text;
-    if (!norm(text).includes(quote)) throw fail(`the quote does not appear in ${rel} at ${ctx.head_sha.slice(0, 12)}`);
+    if (!holds(text, [quote])) throw fail(`the quote does not appear in ${rel} at ${ctx.head_sha.slice(0, 12)}`);
     out.push({ where: c.where, source: `${rel}@${ctx.head_sha.slice(0, 12)}` });
   }
+  if (seam.afterCheck) await seam.afterCheck(); // tests only, as in checkTaskCites
   return out;
 }
 

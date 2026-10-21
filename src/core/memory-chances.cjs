@@ -18,8 +18,8 @@ const rows = require('./rows.cjs');
 const { validId } = require('./memory-rows.cjs');
 const { recordEventSync } = require('./methods-ledger.cjs');
 
-const ROUTES = ['index', 'search', 'retrieve'];
-const SHOWN_ROUTES = ['search', 'retrieve'];
+const SHOWN_ROUTES = ['search', 'retrieve', 'list', 'timeline'];
+const ROUTES = ['index', ...SHOWN_ROUTES];
 const CHANGED_MAX = 500; // note ids on one note_changed event
 const FILES_MAX = 2000;
 const SHOWN_MAX = 200;
@@ -99,7 +99,7 @@ function deliveriesOf(E, task, workerId, shown) {
   return out;
 }
 
-// memory.recordChances { task_id, shown?: [{ route: 'search'|'retrieve', ids, at? }], changed_files?: [paths], worker_id? }.
+// memory.recordChances { task_id, shown?: [{ route: 'search'|'retrieve'|'list'|'timeline', ids, at? }], changed_files?: [paths], worker_id? }.
 // Harness only (the run manager, at task end). `worker_id` is required: the record is of one worker's life of the task
 // (index events, applied ids and chances are all scoped to it), so a retry by another worker is recorded on its own.
 // Once per (task, worker): a second call answers the first one's events with `already: true` and writes nothing.
@@ -214,7 +214,7 @@ async function noteDeliveries(E, caller, args) {
     const k = `${d.task_id}|${d.worker_id}|${d.route || 'index'}`;
     if (taken.has(k)) continue;
     taken.add(k);
-    list.push({ id: null, seq: null, task_id: d.task_id, run_id: d.run_id, worker_id: d.worker_id, note_id: args.note_id, from_duplicate: d.from, route: d.route || 'index', delivered_at: d.at, recorded_at: d.at, used: false, from_history: true });
+    list.push({ id: null, seq: null, task_id: d.task_id, run_id: d.run_id, worker_id: d.worker_id, note_id: args.note_id, ...(d.from === args.note_id ? {} : { from_duplicate: d.from }), route: d.route || 'index', delivered_at: d.at, recorded_at: d.at, used: false, from_history: true });
   }
   // A hand-back after the record (the reflection turn) can still cite the note: join those later ids on read.
   const later = new Map();

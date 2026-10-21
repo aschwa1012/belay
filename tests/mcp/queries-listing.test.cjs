@@ -42,7 +42,7 @@ test('a worker_spawn call that carries memory_queries is accepted when the field
 test('over the wire: no levers and a run without the index do not list it, first_message_index does', async () => {
   assert.strictEqual(hasQueries(await wireListing(null)), false);
   assert.strictEqual(hasQueries(await wireListing(JSON.stringify({ project: 'p', notes: true }))), false);
-  const on = await wireListing(JSON.stringify({ project: 'p', first_message_index: true }));
+  const on = await wireListing(JSON.stringify({ project: 'p', notes: false, first_message_index: true }));
   assert.strictEqual(hasQueries(on), true);
   assert.deepStrictEqual(on, tools.toolsFor('orchestrator', { queries: true }));
 });

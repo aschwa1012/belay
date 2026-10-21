@@ -92,6 +92,17 @@ async function runKill(core, workerId) {
     };
   }
 
+  // ADR 0045 decision 4: the signal below is this process's own, so the owner never sees it. A bound owner is asked whether it vouches
+  // for this process as the operator (the worker marker is only the stopgap; a worker's child with the marker removed is refused here).
+  const proof = await require('../core/operator-proof.cjs').operatorProof(core);
+  if (proof.verified === false) {
+    return {
+      worker_id: workerId, run_id: w.run_id, pid: w.pid, killed: false, row: w,
+      reason: `refused: the run's owner would not vouch for this process as the operator (${proof.via}); nothing was signalled`,
+      established_by: proof.via,
+    };
+  }
+
   // Exactly src/run/stop.cjs's killWorkerRow sequence, through src/core/process.cjs (build step 6b
   // design item 1) rather than src/run/process.cjs, so this file never imports src/run. build step 6c
   // item 8: t0 is before killTree, so a kill the tree kill itself ended reads its true time.

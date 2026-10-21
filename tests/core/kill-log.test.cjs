@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // kill-log.test.cjs — ADR 0039 P2, the refusal counter: BELAY_KILL_LOG set, every kill attempt in
 // src/core/process.cjs appends one JSONL line; unset, nothing is written.
 

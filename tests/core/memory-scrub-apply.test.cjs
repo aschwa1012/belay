@@ -241,7 +241,9 @@ test('a short real quote is accepted by the scrub cite check; empty, whitespace,
   }
   const absent = await scrub('apply', [holdWrong(n, { cites: [{ where: 'loader.js', quote: 'nope()' }] })]);
   assert.strictEqual(absent.refused[0].code, 'E_CITATION');
-  const ok = await scrub('apply', [holdWrong(n, { cites: [{ where: 'loader.js', quote: 'function load(name) {' }, { where: 'loader.js', quote: '}' }] })]);
+  const bracket = await scrub('apply', [holdWrong(n, { cites: [{ where: 'loader.js', quote: '}' }] })]);
+  assert.strictEqual(bracket.refused[0].code, 'E_CITATION', 'a bare bracket line proves nothing was read');
+  const ok = await scrub('apply', [holdWrong(n, { cites: [{ where: 'loader.js', quote: 'function load(name) {' }, { where: 'loader.js', quote: 'return fixtures.get(name);' }] })]);
   assert.strictEqual(ok.refused.length, 0, JSON.stringify(ok.refused));
   assert.strictEqual(ok.applied[0].outcome, 'held');
 });

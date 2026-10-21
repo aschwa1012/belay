@@ -1,1 +1,1 @@
-What would the next worker get wrong, or have to rediscover, that neither the code nor your findings say? What would a newcomer assume that turned out false?
+What would the next worker get wrong, or have to rediscover, that the code does not say? What would a newcomer assume that turned out false?

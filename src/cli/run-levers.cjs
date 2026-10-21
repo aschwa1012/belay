@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const CP = require('../run/compaction.cjs');
 const ML = require('../run/memory-levers.cjs');
+const MN = require('../core/memory-notice.cjs'); // pure; the shared wording of the no-project notice
 
 const FIX_CUTOFFS = ['orchestrator', 'cap-only'];
 const DEFAULT_MAX_FIX_ROUNDS = 2;
@@ -56,6 +57,10 @@ function mergeMemory(specBlock, config) {
   }
   const cfg = config && config.memory !== undefined && config.memory !== null ? config.memory : null;
   if (cfg !== null && (typeof cfg !== 'object' || Array.isArray(cfg))) return { error: `${config.path}: memory must be an object` };
+  if (cfg !== null) {
+    const eo = require('../core/memory-levers.cjs').EVAL_ONLY.filter((k) => Object.prototype.hasOwnProperty.call(cfg, k));
+    if (eo.length) return { error: `${config.path}: memory.${eo.join(', memory.')} ${eo.length > 1 ? 'are' : 'is'} eval-only (a run spec's top-level key), not a project default` };
+  }
   const own = specBlock !== undefined && specBlock !== null && typeof specBlock === 'object' && !Array.isArray(specBlock) ? specBlock : null;
   if (own === null && specBlock !== undefined && specBlock !== null) return { block: specBlock, sources: null }; // not an object: parseMemoryBlock says so
   const block = { ...(cfg || {}), ...(own || {}) };
@@ -71,6 +76,21 @@ function mergeMemory(specBlock, config) {
   const sources = {};
   for (const k of Object.keys(ML.DEFAULTS)) sources[k] = has(own, k) ? 'spec' : has(cfg, k) && !dropped.includes(k) ? config.path : 'default';
   return { block: cfg === null && own === null ? undefined : block, sources, fromConfig: cfg !== null && Object.keys(cfg).length > 0, ...(dropped.length ? { dropped } : {}) };
+}
+
+// The eval-only spec keys `native_memory` (an absolute folder) and `handback_question` (boolean), both off by default. They are
+// recorded as memory levers (the run row is how the worker adapter's manager learns them); a key also given inside `memory` is refused.
+function evalKeys(spec) {
+  const fold = {};
+  const inBlock = spec.memory && typeof spec.memory === 'object' ? spec.memory : {};
+  for (const k of ['native_memory', 'handback_question']) {
+    if (spec[k] === undefined) continue;
+    if (inBlock[k] !== undefined) return { error: `${k} is given both at the top of the spec and inside memory` };
+    if (k === 'native_memory' && (typeof spec[k] !== 'string' || !spec[k])) return { error: 'native_memory must be an absolute directory path' };
+    if (k === 'handback_question' && typeof spec[k] !== 'boolean') return { error: 'handback_question must be true or false' };
+    fold[k] = spec[k];
+  }
+  return { fold: Object.keys(fold).length ? fold : null };
 }
 
 // Returns { max_fix_rounds, fix_cutoff, on_embedder_failure[, compact_at_tokens] } or { error }. `compact_at_tokens` (ADR 0007 decision 3,
@@ -111,16 +131,26 @@ function parseLevers(spec, opts = {}) {
   // ADR 0041 decision 1: the memory block. Present on the result only when it differs from the defaults, so a
   // run without it has the levers, the receipt and the run row it always had.
   // The config's `memory` block is the project default under the spec's own (opts.config = { path, memory }).
-  const merged = mergeMemory(spec.memory, opts.config);
+  const ev = evalKeys(spec); // eval-only top-level keys, folded into the memory block
+  if (ev.error) return { error: ev.error };
+  const shapeOk = spec.memory === undefined || spec.memory === null || (typeof spec.memory === 'object' && !Array.isArray(spec.memory)); // a bad block is refused as it is alone, never folded into an object by an eval key
+  const merged = mergeMemory(ev.fold && shapeOk ? { ...(spec.memory || {}), ...ev.fold } : spec.memory, spec.memory === null ? null : opts.config) // `memory: null` inherits no config, eval keys or not;
   if (merged.error) return { error: merged.error };
   const mem = ML.parseMemoryBlock(merged.block);
   if (mem.error) return { error: merged.fromConfig ? `${mem.error} (memory defaults come from ${opts.config.path}, the spec's own memory block over them)` : mem.error };
+  if (mem.value.native_memory !== null) { // the spawn's own check, here at spec load, so a bad folder refuses the run before anything launches
+    try { require('../run/native-memory.cjs').checkFolder(mem.value.native_memory); } catch (e) { return { error: `native_memory: ${e.message}` }; }
+  }
   // on_embedder_failure is resolved above (spec top level, spec memory block, config, default) and recorded on its own: the
   // run's memory_levers never carries it, so the row cannot contradict the receipt, a config that sets only this lever does not
   // make every run row carry memory_levers, and an older core (which refuses the unknown key) still reads the block.
   const recorded = { ...mem.value }; delete recorded.on_embedder_failure;
+  const supplied = (k) => (ev.fold && k in ev.fold) || (spec.memory && typeof spec.memory === 'object' && Object.prototype.hasOwnProperty.call(spec.memory, k));
+  for (const k of ML.EVAL_ONLY) { // an eval-only lever nobody supplied is not recorded: a run without them has the levers, receipt and run row it always had
+    if (!supplied(k)) { delete recorded[k]; if (merged.sources) delete merged.sources[k]; }
+  }
   if (merged.sources) merged.sources.on_embedder_failure = given ? 'spec' : (spec.memory !== null && opts.config && opts.config.memory && opts.config.memory.on_embedder_failure !== undefined ? opts.config.path : 'default');
-  if (!ML.isDefault({ ...recorded, on_embedder_failure: ML.DEFAULTS.on_embedder_failure })) {
+  if (!ML.isDefault({ ...ML.DEFAULTS, ...recorded })) {
     out.memory_levers = recorded;
     if (merged.sources) out.memory_sources = merged.sources; // each lever's origin; absent for a default block, like memory_levers
     if (mem.value.rules) {
@@ -133,14 +163,21 @@ function parseLevers(spec, opts = {}) {
       Object.defineProperty(out, 'rules_text', { value: text, enumerable: false }); // not part of the receipt
     }
   }
+  // Notes default on but need a project: say so when there is none. Not enumerable, so the receipt is unchanged; `belay run` prints it.
+  // An explicit `memory: null` is silent, whether the spec says it or the config file does (an inherited one, unless the spec's own block overrides it).
+  const off = spec.memory === null || (spec.memory === undefined && !!opts.config && opts.config.memory === null);
+  Object.defineProperty(out, 'memory_notice', { value: MN.noticeFor(off ? null : merged.block), enumerable: false });
   if (merged.dropped) out.memory_dropped = merged.dropped; // config levers a spec's `notes: false` left out, so the receipt says what did not apply
   return out;
 }
 
-// The columns run.attach records for the memory levers; nothing at all for a default block.
+// The columns run.attach records for the memory levers. A default block records explicit nulls, never nothing: run.attach carries
+// an absent field forward from an unended epoch (a rule meant for the orchestrator's own adapter), so a re-run over a run that
+// never ended would otherwise inherit the previous run's levers and project (audit D55).
 function attachMemory(levers) {
   const m = levers && levers.memory_levers;
-  return m ? { memory_levers: JSON.stringify(m), project: m.project } : {};
+  const memory_notice = levers && levers.memory_notice ? levers.memory_notice.code : null; // the run records its own notice (status and the panel read it)
+  return m ? { memory_levers: JSON.stringify(m), project: m.project === undefined ? null : m.project, memory_notice } : { memory_levers: null, project: null, memory_notice };
 }
 
 // The receipt line's suffix, empty for a default block.

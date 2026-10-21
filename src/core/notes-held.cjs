@@ -2,7 +2,7 @@
 // notes-held.cjs — the notes waiting on the Opus archive reviewer, as a plain read of the rows (every held kind: wrong, duplicate,
 // superseded). A hold keeps the note live and visible with its warning; only the on-demand reviewer (`belay memory review`, the panel's button) archives it. This module only counts
 // and lists, in the shape of notes-unembedded.cjs, and imports nothing that can reach the embedder, so status, notices and the panel may
-// read it (invariants 6 and 9). Also the reports of "wrong" no review will judge, for the operator.
+// read it (invariants 6 and 9). Also the reports of "wrong" with no verdict applied, for the operator.
 
 const HELD_PREFIX = 'held/';
 
@@ -34,7 +34,7 @@ function count(store) {
   return { total, unsupported, by_project, unsupported_by_project, age_by_project, oldest_age_runs: age, oldest_at: oldest, newest_at: newest };
 }
 
-// Reports of "wrong" that no review will judge (the reporter's task ended with no reviewer and no review job), every project, and the
+// Reports of "wrong" with no verdict applied (a review or job may have run and left the report out), every project, and the
 // upheld ones the Haiku job could only recommend because a review verified the note (`recommended: true`).
 function unjudged(store) {
   let projects;
@@ -44,6 +44,62 @@ function unjudged(store) {
   return projects.flatMap((p) => [...RV.unjudgedReports({ store }, p), ...RV.recommendedReports({ store }, p)].map((r) => ({ project: p, ...r })));
 }
 
+// Work the default propose mode leaves for the operator: open proposals whose mark is still unsettled, and pending notes whose writer's run
+// has ended (nothing but a scrub or `belay memory resolve` settles them). Nothing closes a proposal row, so the mark is read against the notes:
+// a `resolve` counts while its note is still pending; a `relate` while both notes pass the relation's liveness gate (live, not refuted, not
+// superseded, not held) and neither records a `new` verdict on the other that still matches both notes' keys (memory-relate.cjs judgedPair); a `draft` while the note's newest nomination is still open, the draft is
+// not older than it and the note is not promoted; any other action while its note is live or pending. A plain read of the rows.
+// { open_proposals, pending, total, by_project: { <project>: n }, note_ids, newest_at }; `total` and `by_project` count distinct notes.
+function stranded(store, only = null) {
+  const by_project = {}, ids = new Set();
+  let open_proposals = 0, pending = 0, newest = null;
+  const add = (project, id, at) => {
+    if (only && project !== only) return false;
+    if (at != null && (newest === null || Number(at) > newest)) newest = Number(at);
+    if (!ids.has(id)) { ids.add(id); by_project[project] = (by_project[project] || 0) + 1; }
+    return true;
+  };
+  try {
+    const { fresh } = require('./proposal-open.cjs');
+    const { judgedPair } = require('./memory-relate.cjs');
+    const { loadNote } = require('./memory-facts.cjs');
+    const note = (id) => { const r = loadNote({ store }, id); return r && r.type === 'note' ? r : null; };
+    const bodyOf = (n) => { try { return JSON.parse(n.body) || {}; } catch { return {}; } };
+    // Gate (b) of the relation (memory-relate.cjs liveNote): live in the project, not refuted, not superseded by another row, not held.
+    const relatable = (id, n, live) => !!n && n.namespace === live && (n.status || 'unverified') !== 'refuted' && !bodyOf(n).held
+      && !store.p('SELECT 1 AS x FROM memory_entries WHERE supersedes = ? AND namespace = ?').get(id, live);
+    // A draft waits on the operator while the note's newest nomination is still open (no later decision) and the proposal is not older than it;
+    // a promoted note, a rejected or promoted nomination, or a draft made for an earlier nomination leaves nothing to decide.
+    const draftOpen = (project, n, id, at) => {
+      if (n.namespace !== `project/${project}` || bodyOf(n).promoted_to) return false;
+      const nom = store.p("SELECT created_at, json_extract(body, '$.state') AS state FROM memory_entries WHERE type = 'nomination' AND namespace = ? AND json_extract(body, '$.note_id') = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(`nomination/${project}`, id);
+      return !!nom && nom.state === 'nominated' && Number(at) >= Number(nom.created_at);
+    };
+    for (const r of store.p(`SELECT namespace, created_at AS at, json_extract(body, '$.note_id') AS note_id, json_extract(body, '$.entry.action') AS action, json_extract(body, '$.entry.of') AS other, body
+      FROM memory_entries WHERE type = 'proposal' AND namespace LIKE 'proposal/%' AND json_extract(body, '$.state') = 'open' ORDER BY created_at, id`).all()) {
+      const project = r.namespace.slice(9), live = `project/${project}`, pend = `pending/${project}`;
+      const n = note(r.note_id);
+      if (!n) continue;
+      if (!fresh({ store }, bodyOf(r))) continue; // the same freshness rule as proposal-open.cjs: complete stored keys, all still matching
+      let open;
+      if (r.action === 'resolve') open = n.namespace === pend;
+      else if (r.action === 'relate') {
+        const o = r.other ? note(r.other) : null;
+        open = relatable(r.note_id, n, live) && !!o && relatable(r.other, o, live) && !judgedPair(n, o) && !judgedPair(o, n);
+      } else if (r.action === 'draft') open = draftOpen(project, n, r.note_id, r.at);
+      else open = n.namespace === live || n.namespace === pend;
+      if (open && add(project, r.note_id, r.at)) open_proposals += 1;
+    }
+  } catch { /* no table */ }
+  try {
+    for (const r of store.p(`SELECT id, namespace, created_at FROM memory_entries WHERE type = 'note' AND namespace LIKE 'pending/%'
+      AND (run_id IS NULL OR run_id NOT IN (SELECT r.id FROM run r WHERE r.ended_at IS NULL AND r.seq = (SELECT MAX(seq) FROM run WHERE id = r.id))) ORDER BY created_at, id`).all()) {
+      if (add(r.namespace.slice(8), r.id, r.created_at)) pending += 1;
+    }
+  } catch { /* no run table */ }
+  return { open_proposals, pending, total: ids.size, by_project, note_ids: [...ids].slice(0, 20), newest_at: newest };
+}
+
 // memory.held, a read: { project?, reports?, reviews? } -> the count, and the unjudged reports when asked for.
 async function held(E, caller, args = {}) {
   const c = count(E.store);
@@ -51,7 +107,7 @@ async function held(E, caller, args = {}) {
   const scoped = project ? { total: c.by_project[project] || 0, unsupported: c.unsupported_by_project[project] || 0, unsupported_by_project: c.unsupported_by_project[project] ? { [project]: c.unsupported_by_project[project] } : {}, by_project: c.by_project[project] ? { [project]: c.by_project[project] } : {}, oldest_age_runs: c.age_by_project[project] || 0, oldest_at: c.oldest_at, newest_at: c.newest_at } : c;
   // One call (one copy of the store) answers notices: the counts, the unjudged reports and the archive reviews' claims.
   const reviews = args.reviews ? (await require('./review-claim.cjs').reviewState(E, caller, project ? { project } : {})).reviews : undefined;
-  return { ...scoped, ...(reviews ? { reviews } : {}), ...(args.reports ? { unjudged_reports: unjudged(E.store).filter((r) => !project || r.project === project) } : {}) };
+  return { ...scoped, ...(reviews ? { reviews } : {}), ...(args.reports ? { unjudged_reports: unjudged(E.store).filter((r) => !project || r.project === project), stranded: stranded(E.store, project) } : {}) };
 }
 
-module.exports = { count, unjudged, held };
+module.exports = { count, unjudged, stranded, held };
