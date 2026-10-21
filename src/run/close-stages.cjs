@@ -26,11 +26,14 @@ function lazyManager({ core, runId, dataDir, lv, worktree, paths, makeManager })
 // scrub's items are recorded as owed. `log(line)` tells the operator what a stage is about to spend, since a stage can take minutes.
 // opts: { core (the harness view), runId, levers (the memory lever block), dataDir, worktree, goal, summary, paths, makeManager, review }.
 // `review` is true (default) to run the archive reviewer after the scrub. Returns { scrub, review }, or null with notes off.
-async function closeStages({ core, runId, levers, dataDir, worktree = null, goal = null, summary = null, paths = null, makeManager = null, review = true, fast = null, log = null, sink = null }) {
+async function closeStages({ core, runId, levers, dataDir, worktree = null, goal = null, summary = null, paths = null, makeManager = null, review = true, fast = null, log = null, sink = null, sweep = null }) {
   const lv = levers && levers.memory_levers ? levers.memory_levers : levers;
   if (!lv || !lv.notes) return null;
   const getManager = lazyManager({ core, runId, dataDir, lv, worktree, paths, makeManager });
   const out = { scrub: null, review: null };
+  // First, the store-only note-review sweep: a report a finished job upheld is applied before the scrub can archive its note (the sweep it
+  // would otherwise wait for runs after the stages). Skipped in a fast close, whose run-end sweep still runs.
+  if (sweep && !(fast && fast())) { try { out.sweep = await sweep(); } catch (e) { out.sweep = { ran: false, message: String(e && e.message).slice(0, 200) }; } }
   try { out.scrub = await runScrub({ core, runId, lv, dataDir, getManager, worktree, goal, summary, fast, log, sink }); } catch (e) { out.scrub = { ran: false, reason: 'stage crashed', message: String(e && e.message).slice(0, 200) }; }
   if (review) {
     try { out.review = await runReview({ core, runId, lv, dataDir, getManager, worktree, fast, log, sink }); } catch (e) { out.review = { ran: false, reason: 'stage crashed', message: String(e && e.message).slice(0, 200) }; }
