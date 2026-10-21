@@ -137,7 +137,7 @@ process.on('message', async (m) => {
     if (m.op === 'close') return await close();
     if (m.op === 'ping') return reply(m.id, { pong: true, pid: process.pid, models: [...models.keys()] });
     if (test && m.op === 'env') return reply(m.id, { env: { ...process.env }, execArgv: process.execArgv });
-    if (test && m.op === 'sleep') return serial(() => new Promise(r => setTimeout(r, m.ms))).then(() => reply(m.id, { slept: m.ms }));
+    if (test && m.op === 'sleep') return serial(() => { process.send({ event: 'sleep_started', ref: m.id }); return new Promise(r => setTimeout(r, m.ms)); }).then(() => reply(m.id, { slept: m.ms })); // announces its start, so a test waits for the event and not a time
     if (test && m.op === 'hang') return; // never answers
     if (test && m.op === 'crash') return process.exit(m.code === undefined ? 3 : m.code);
     if (test && m.op === 'fail') throw Object.assign(new Error('injected child failure'), m.code === undefined ? {} : { code: m.code });

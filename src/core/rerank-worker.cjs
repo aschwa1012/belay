@@ -106,9 +106,11 @@ process.on('message', async (m) => {
     if (m.op === 'close') return await close();
     if (m.op === 'ping') return reply(m.id, { pong: true, pid: process.pid, models: [...models.keys()] });
     if (test && m.op === 'env') return reply(m.id, { env: { ...process.env }, execArgv: process.execArgv });
-    if (test && m.op === 'sleep') return serial(() => new Promise(r => setTimeout(r, m.ms))).then(() => reply(m.id, { slept: m.ms }));
+    if (test && m.op === 'sleep') return serial(() => { process.send({ event: 'sleep_started', ref: m.id }); return new Promise(r => setTimeout(r, m.ms)); }).then(() => reply(m.id, { slept: m.ms })); // announces its start, so a test waits for the event and not a time
     if (test && m.op === 'hang') return; // never answers
-    if (test && m.op === 'wedge') { setTimeout(() => process.send({ id: m.id, ok: true, result: {} }), 0); const end = Date.now() + m.ms; while (Date.now() < end); return; } // blocks the loop: no ping can be answered
+    if (test && m.op === 'wedge') { // blocks the loop: no ping can be answered. It announces first, and blocks only once that message is written, so a test waits for the event
+      return process.send({ event: 'wedge_started', ref: m.id }, () => { const end = Date.now() + m.ms; while (Date.now() < end); process.send({ event: 'wedge_done', ref: m.id }); process.send({ id: m.id, ok: true, result: {} }); });
+    }
     if (test && m.op === 'crash') return process.exit(m.code === undefined ? 3 : m.code);
     if (test && m.op === 'fail') throw Object.assign(new Error('injected child failure'), m.code === undefined ? {} : { code: m.code });
     if (m.op === 'load') {
