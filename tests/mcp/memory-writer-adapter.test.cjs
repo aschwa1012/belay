@@ -2,6 +2,7 @@
 // is written as the orchestrator, and the run manager's own turn row, written in the same process on the same core,
 // is written as the harness. The embedding model is out of the picture (fake-core-writer.cjs).
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 
 const test = require('node:test');
 const assert = require('node:assert');

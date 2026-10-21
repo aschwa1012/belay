@@ -15,6 +15,7 @@ function createDoStop({ ctx, writeRow }) {
     const t0 = now();
     const pid = w.pid;
     w.stopRequested = true;
+    w.stopCalls = (w.stopCalls || 0) + 1; // launchBound compares this across its bind await: a launch a stop overtook is abandoned
     // Already gone, or a parked worker's dead-by-construction pid, never re-checked (fix round #2, :351).
     if (!pid || treatPidAsDead || !P.pidAlive(pid)) {
       W.settleHeld(w, ctx, 'pid-check-on-stop'); await w.queue; // a death the poll still holds settles now

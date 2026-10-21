@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // permit.test.cjs — build step 6d, design item 3, ADR
 // 0020 decisions 1, 3 and 5. The worker adapter as a real child process through tests/mcp/rpc.cjs,
 // against an owner elected in this test process (openCore as orchestrator, run.attach, in a

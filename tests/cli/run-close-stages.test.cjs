@@ -78,13 +78,14 @@ test('interactive: the same call, with fast() false at a normal exit', async (t)
 test('interactive fast close: after a SIGHUP the stages are told so (fast() true), and a stage that returns at once is not a fast-close failure', async (t) => withRun(t, async (dir) => {
   const seen = [];
   const mod = { closeStages: async (a) => { seen.push(a.fast && a.fast()); return { scrub: { ran: false, reason: 'fast close' }, review: { ran: false, reason: 'fast close' } }; } };
-  const r = start(dir, { env: { FAKE_HOLD_MS: '800' }, specOverrides: { memory: NOTES }, ctxExtra: { closeStagesModule: mod } });
+  const r = start(dir, { env: { FAKE_EXIT_FILE: `${dir}/quit` }, specOverrides: { memory: NOTES }, ctxExtra: { closeStagesModule: mod } });
   let core;
   try {
     assert.ok(await waitUntil(() => r.record(), 15000));
-    core = await openCore({ dataDir: r.dataDir, caller: { role: 'orchestrator', run_id: r.runId, pid: process.pid } });
+    core = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(r.dataDir, r.runId, { waitMs: 15000 });
     assert.ok(await waitUntil(async () => (await core.run.get()).run, 15000));
     process.emit('SIGHUP');
+    fs.writeFileSync(`${dir}/quit`, ''); // the console closing ends claude; the stub quits on this file (the owner's bind and check took longer than any fixed hold)
     const res = await r.done;
     assert.deepStrictEqual(seen, [true]);
     assert.strictEqual(res.json.ended_by, 'console closed (fast close)', 'no "deadline passed during the run-close stages" was chained on');

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1';
 // `belay settings agents.<type>.codex_model` (audit L24): listed, written and unset like the other agents keys, refused on the
 // orchestrator, and a Codex model under agents.<type>.model is refused at the write.

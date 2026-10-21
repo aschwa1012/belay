@@ -1,4 +1,5 @@
 'use strict';
+require('./helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // crash.cjs — ADR 0039: the test plays the outside world, but it too may only kill what it can prove. belay's
 // kill API refuses a bare pid, and so does this. Three ways in, nothing else:
 //   - crash(handle): a child handle that is still live (exitCode and signalCode both null);

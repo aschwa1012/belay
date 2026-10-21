@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // Process primitives: liveness, the refusal to kill anything that is not a pid, graceful stop.
 
 const test = require('node:test');

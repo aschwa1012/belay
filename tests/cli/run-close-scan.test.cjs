@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1';
 // run-close-scan.test.cjs — the close's scan for an orchestrator adapter that has not registered yet (ADR 0029 amendment 4).
 //   * An interactive run always has a fast-close object, whether or not a console close was requested; only a REQUESTED one

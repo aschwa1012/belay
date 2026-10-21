@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // holds-helpers.cjs: the polling helpers tests/cli/run-wake.test.cjs shares, split out so that file stays under 500 lines.
 // Each is exactly what that file had inline, unchanged.
 
