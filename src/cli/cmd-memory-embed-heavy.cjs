@@ -12,7 +12,7 @@ const PASSES = 10000; // a backstop: a pass that writes nothing stops the loop
 async function doHeavy(core, opts, project, t0, fail, write = (m) => process.stderr.write(m)) {
   const RP = require('../core/retrieval-profiles.cjs'); // a pure table
   const d = RP.describeModel(opts.model);
-  if (!d || d.kind !== 'embedder' || d.runtime !== 'gguf') return fail(2, 'E_ARGS', `--model must name a heavy (GPU) embedder (${RP.embedderIds().filter((id) => RP.describeModel(id).runtime === 'gguf').join(', ')}); nano embeds every note on write and has no backlog`);
+  if (!d || d.kind !== 'embedder' || d.runtime !== 'gguf') return fail(2, 'E_ARGS', `--model must name a heavy (GPU) embedder (${Object.keys(RP.GGUF_KINDS).filter((id) => RP.GGUF_KINDS[id] === 'embedder').join(', ')}); nano embeds every note on write and has no backlog`);
   if (opts.reembed || opts.template !== undefined) return fail(2, 'E_ARGS', '--model drains a heavy embedder and does not go with --reembed or --template');
   if (opts.dryRun) return fail(2, 'E_ARGS', '--dry-run is not offered with --model: a drain is the only way to see the heavy backlog, and it writes only vectors');
   if (!project) return fail(2, 'E_ARGS', 'no project: pass --project <p>, or set memory.project in the config');
