@@ -272,3 +272,23 @@ test('H16: a scrub entry naming the ground reported is E_GROUND (the scrubber ca
   const L = require('../../src/core/memory-lifecycle.cjs');
   assert.throws(() => L.checkScrub([{ id: a.note, action: 'hold', kind: 'wrong', ground: 'reported', reason: 'x', cites: [{ where: 'a', quote: 'b' }] }], 40), (e) => e.code === 'E_GROUND');
 });
+
+test('H17: a note whose own review receipt fills the body to the ceiling still keeps a new report and its hold; a note that cannot is refused, not claimed as marked', async () => {
+  const a = await X.written('w-a18', 'K38');
+  const big = (n) => Array.from({ length: n }, (_, i) => ({ where: 'stream', quote: 'q'.repeat(1990) + i }));
+  X.store.patchBody(a.note, (b) => { b.review = { verdict: 'confirmed', by: 'rev', ref: 'rt', at: 1, reason: 'r'.repeat(400), cites: big(4) }; b.report_judgments = Array.from({ length: 20 }, (_, i) => ({ verdict: 'upheld', task_id: 't', report_at: i, report_key: 's:' + (900 + i), by: 'x'.repeat(100) })); return b; });
+  assert.ok(Buffer.byteLength(JSON.stringify(X.bodyOf(a.note))) > 8192, 'the body is over the ceiling before the report');
+  await X.reported('w-b18', a.note, 'a report on a note with a large review');
+  const e = entryOf();
+  assert.strictEqual(e.marked, 'reported_wrong');
+  assert.ok(e.reports >= 1 && e.held.row, JSON.stringify(e));
+  assert.strictEqual(X.bodyOf(a.note).reported_wrong.length, 1, 'the report is on the note');
+  assert.strictEqual(hold(a.note).b.reports.length, 1);
+  const c = await X.written('w-a19', 'K39');
+  X.store.patchBody(c.note, (b) => { b.evidence = Array.from({ length: 8 }, (_, i) => ({ where: 'src/' + i + '.js', saw: 's'.repeat(2000) })); return b; });
+  const s = await X.startTask('w-b19', 'fixtures/unlisted.json was opened by the loader\n');
+  await assert.rejects(X.call('lease.release', X.worker('w-b19'), { lease_id: s.lease, notes: [], reported_wrong: [{ id: c.note, why: 'wrong' }] }), (er) => er.code === 'E_NOTE_SHAPE');
+  assert.strictEqual(X.bodyOf(c.note).reported_wrong.length, 0);
+  assert.strictEqual(X.heldRows(c.note).length, 0);
+  assert.notStrictEqual((await X.call('task.get', X.orch, { task_id: s.task })).state, 'released');
+});
