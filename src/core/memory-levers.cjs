@@ -56,6 +56,7 @@ const DEFAULTS = Object.freeze({
   embedder: RP.NANO, // custom profile: a model id from the embedder tables
   reranker: 'none', // custom profile: a reranker model id, or none
   routing: null, // null, or a map from agent type to a profile name or a custom pair { embedder, reranker? }; an unset type uses the run's profile
+  routing_cpu: null, // null, or a map from agent type to a CPU-only profile name: what that type takes when there is no usable GPU (an unset type takes profile_cpu)
   rerank_depth: RP.DEFAULT_DEPTH, // the top candidates reranked, on every device, until the 0.3.2 eval re-picks it
   rerank_bound_ms: 10000, // the rerank stage's own bound, inside the MCP tool timeout
   on_heavy_failure: 'fallback', // fallback | pause: a heavy model that fails to load or fails mid-run
@@ -102,6 +103,21 @@ function routingProblem(r) {
     if (bad) return { msg: `memory.routing.${type}: ${bad}` };
     const pend = RP.pendingIn({ embedder: p.embedder, reranker: p.reranker === 'none' ? null : p.reranker });
     if (pend) return { msg: `memory.routing.${type}: ${RP.pendingMessage(pend)}`, code: 'E_MODEL' };
+  }
+  return null;
+}
+
+// The CPU routing map: { <agent type>: <profile name> } of profiles that need no GPU, or null (ADR 0050 amendment 3).
+function routingCpuProblem(r) {
+  if (r === null) return null;
+  if (typeof r !== 'object' || Array.isArray(r)) return { msg: 'memory.routing_cpu must be null or an object from agent type to a CPU-only profile' };
+  if (Object.keys(r).length > ROUTING_MAX) return { msg: `memory.routing_cpu has more than ${ROUTING_MAX} entries` };
+  for (const [type, p] of Object.entries(r)) {
+    if (!ROUTING_TYPE_RE.test(type)) return { msg: `memory.routing_cpu.${type}: an agent type is lower-case letters, digits, - or _` };
+    if (typeof p !== 'string' || p === RP.CUSTOM || !RP.isProfile(p)) return { msg: `memory.routing_cpu.${type} must be one of ${RP.PROFILE_NAMES.join(', ')}` };
+    if (RP.needsGpu(RP.PROFILES[p])) return { msg: `memory.routing_cpu.${type} ${p} needs a GPU; this map is what a type takes when there is none` };
+    const pend = RP.pendingIn(RP.PROFILES[p]);
+    if (pend) return { msg: `memory.routing_cpu.${type}: ${RP.pendingMessage(pend)}`, code: 'E_MODEL' };
   }
   return null;
 }
@@ -184,6 +200,8 @@ function parseMemoryBlock(block) {
   if (pending) return { error: `memory: ${RP.pendingMessage(pending)}`, code: 'E_MODEL' };
   const routeProblem = routingProblem(v.routing);
   if (routeProblem) return { error: routeProblem.msg, ...(routeProblem.code ? { code: routeProblem.code } : {}) };
+  const cpuRouteProblem = routingCpuProblem(v.routing_cpu);
+  if (cpuRouteProblem) return { error: cpuRouteProblem.msg, ...(cpuRouteProblem.code ? { code: cpuRouteProblem.code } : {}) };
   if (!boundedInt(v.rerank_depth, 200)) return { error: 'memory.rerank_depth must be an integer from 1 to 200' };
   if (!boundedInt(v.rerank_bound_ms, 600000)) return { error: 'memory.rerank_bound_ms must be an integer from 1 to 600000' };
   if (!boundedInt(v.search_log_cap_mb, 1048576)) return { error: 'memory.search_log_cap_mb must be an integer from 1 to 1048576' };
@@ -225,6 +243,7 @@ const OVERRIDES = {
   embedder: { type: 'string' },
   reranker: { type: 'string' },
   routing: { type: 'json', nullable: true },
+  routing_cpu: { type: 'json', nullable: true },
   rerank_depth: { type: 'integer', min: 1, max: 200 },
   rerank_bound_ms: { type: 'integer', min: 1, max: 600000 },
   on_heavy_failure: { type: 'enum', values: HEAVY_FAILURE },

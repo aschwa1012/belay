@@ -304,7 +304,9 @@ async function run(ctx) {
       RID.watchOrchestrator(pid); // ADR 0039: run-identity.cjs; the attach never waits on a snapshot
       attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
       // ADR 0050: the routing is resolved once, here, before the orchestrator's first prompt (a heavy backlog is drained or fallen back from first).
-      routingPin = await require('./run-routing.cjs').pinAtStart(core, { levers: parsed.levers, write: ctx.json ? null : (m) => process.stderr.write(m) });
+      try {
+        routingPin = await require('./run-routing.cjs').pinAtStart(core, { levers: parsed.levers, write: ctx.json ? null : (m) => process.stderr.write(m) }); // as the memory notice: under --json stderr carries failure receipts, so the progress goes into the receipt's retrieval block instead
+      } catch (e) { return { ok: false, stage: 'pin', error: (e && e.message) || String(e) }; } // the attach landed; the pin is what failed
       return { ok: true, attach: attachRow };
     } catch (e) {
       return { ok: false, error: (e && e.message) || String(e) };
@@ -466,7 +468,7 @@ async function run(ctx) {
     ended_by: endedBy, holds, polls, wakes, wakes_suppressed: wakesSuppressed, wakes_expired: wakesExpired,
     wakes_held: wakesHeld, pauses,
     stop: stopReceipt, ms: Date.now() - t0, receipt_path: null,
-    ...(routingPin ? { retrieval: { profile: routingPin.routing.run.profile, probe: routingPin.probe, notices: routingPin.notices, on_heavy_behind: routingPin.behind } } : {}),
+    ...(routingPin ? { retrieval: { ...(require('../core/retrieval-view.cjs').describe(gotRun && gotRun.run && gotRun.run.retrieval_routing ? gotRun.run : { retrieval_routing: JSON.stringify(routingPin), epoch: gotRun && gotRun.run ? gotRun.run.epoch : null }) || { profile: routingPin.routing.run.profile, notices: routingPin.notices }), start_progress: routingPin.start_progress || [] } } : {}), // the pin as the row holds it at the end, so a fallback in force is in the receipt; under --json the start-up progress lines are here
     levers: parsed.levers, on_embedder_failure_final: guard.mode(), memory_off: guard.memoryOff(), embedder: warm, embedder_failures: guard.events(), ...(embedBounds && embedBounds.length ? { embedder_bounds: embedBounds } : {}),
     review_rounds: reviewRounds.value, review_rounds_reason: reviewRounds.reason,
     workers_closed: closed ? workersClosedBlock(closed, endedRow ? (endedRow.workers_marked_dead || []) : null) : null,

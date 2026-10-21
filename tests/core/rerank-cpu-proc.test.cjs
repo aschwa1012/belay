@@ -11,13 +11,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn, fork } = require('node:child_process');
 const { core, sandbox, cleanup, FIXTURES } = require('./helpers.cjs');
+const { waitGone, waitEvent, waitLine, countProgress, UP_DEADLINE } = require('../helpers/wait.cjs');
+const { fakeTimers, outcome } = require('../helpers/fake-timers.cjs');
 const { writeStubPackage, writeCache, fakeEntry } = require('./fixtures/rerank-stub-pkg.cjs');
 
 const { CpuRerankClient } = core('rerank-cpu.cjs');
 const { pidAlive } = core('lock.cjs');
 const OWNER = path.join(FIXTURES, 'rerank-owner-hold.cjs');
 const WORKER = path.join(__dirname, '..', '..', 'src', 'core', 'rerank-worker.cjs');
-const waitGone = async (pid, ms) => { const t0 = Date.now(); while (pidAlive(pid) && Date.now() - t0 < ms) await new Promise(r => setTimeout(r, 20)); return !pidAlive(pid); };
+
+// Timing: a bound is asserted on an INJECTED clock (helpers/fake-timers.cjs): wait for the child's real message, advance to
+// bound - 1 (still pending), then 1 (the coded rejection). A wait on a child is an event with a generous deadline, never a sleep.
 
 // A sandbox with a stub package, a cache holding the fake model, and the table that names it.
 function rig(stub = {}) {
@@ -34,14 +38,14 @@ test('start forks the child by handle; ping answers within its bound; close ends
   const r = rig(), c = r.mk();
   try {
     assert.ok(Number.isInteger(c.pid) && pidAlive(c.pid));
-    const p = await c.ping(3000);
+    const p = await c.ping(UP_DEADLINE);
     assert.strictEqual(p.ok, true);
     assert.strictEqual(p.pid, c.pid);
     assert.deepStrictEqual(p.models, []);
     await c.load(r.id);
-    assert.deepStrictEqual((await c.ping(3000)).models, [r.id]);
+    assert.deepStrictEqual((await c.ping(UP_DEADLINE)).models, [r.id]);
   } finally { await c.close(); }
-  assert.ok(await waitGone(c.pid, 3000), 'close ended the child');
+  assert.ok(await waitGone(c.pid), 'close ended the child');
   await c.close();
   assert.strictEqual((await c.ping(200)).ok, false, 'a ping after close does not hang');
   await assert.rejects(c._call({ op: 'ping' }, 1000), (e) => e.code === 'E_MODEL_ABSENT' && e.detail.reranker === true && e.detail.cause === 'dead');
@@ -49,21 +53,28 @@ test('start forks the child by handle; ping answers within its bound; close ends
 });
 
 test('a wedged child fails its ping within the bound without marking it hung; a silent op is a hung child, never a hang', async () => {
-  const r = rig(), c = r.mk({ opBoundMs: 400 });
+  const r = rig(), ft = fakeTimers(), c = r.mk({ opBoundMs: 400, timers: ft.timers });
   try {
-    await c.ping(3000); // the child is up
+    await c.ping(UP_DEADLINE); // the child is up (answered by the child, not by the clock)
+    const started = waitEvent(c.child, 'wedge_started'), done = waitEvent(c.child, 'wedge_done');
     c.child.send({ id: 900, op: 'wedge', ms: 1500 });
-    await new Promise(x => setTimeout(x, 100));
-    const t0 = Date.now();
-    const p = await c.ping(250);
-    assert.strictEqual(p.ok, false);
-    assert.match(p.reason, /did not answer a 250 ms ping/);
-    assert.ok(Date.now() - t0 < 1200, `the ping took ${Date.now() - t0} ms`);
+    await started; // the child announces before it blocks its loop
+    const ping = outcome(c.ping(250));
+    await ft.advance(249);
+    assert.strictEqual(ping.settled, false, 'the ping is still waiting at bound - 1');
+    await ft.advance(1);
+    assert.strictEqual(ping.value.ok, false);
+    assert.match(ping.value.reason, /did not answer a 250 ms ping/);
+    assert.strictEqual(ping.value.ms, 250, 'the injected clock measured the bound exactly');
     assert.strictEqual(c.hung, null, 'an unanswered ping is not a hang');
-    await new Promise(x => setTimeout(x, 1500));
-    const c2 = r.mk({ opBoundMs: 300 });
+    await done;
+    const f2 = fakeTimers(), c2 = r.mk({ opBoundMs: 300, timers: f2.timers });
     try {
-      await assert.rejects(c2._call({ op: 'hang' }, 300), (e) => e.code === 'E_EMBEDDER_TIMEOUT' && e.detail.cause === 'timeout' && e.detail.reranker === true);
+      const hang = outcome(c2._call({ op: 'hang' }, 300));
+      await f2.advance(299);
+      assert.strictEqual(hang.settled, false, 'a silent op is not hung before its bound');
+      await f2.advance(1);
+      assert.ok(hang.error && hang.error.code === 'E_EMBEDDER_TIMEOUT' && hang.error.detail.cause === 'timeout' && hang.error.detail.reranker === true);
       await assert.rejects(c2.load(r.id), (e) => e.code === 'E_EMBEDDER_TIMEOUT', 'later ops fail at once with the same cause');
     } finally { await c2.close(); }
   } finally { await c.close(); r.done(); }
@@ -74,8 +85,9 @@ test('a crash mid-op becomes E_MODEL_ABSENT with the exit code; the child is not
   let heard = null;
   c.onExit = (why, exit) => { heard = { why, exit }; };
   try {
+    const started = waitEvent(c.child, 'sleep_started');
     const pending = c._call({ op: 'sleep', ms: 5000 }, 20000);
-    await new Promise(x => setTimeout(x, 100));
+    await started; // the op is in the child
     c.child.send({ id: 901, op: 'crash', code: 7 });
     await assert.rejects(pending, (e) => e.code === 'E_MODEL_ABSENT' && e.detail.cause === 'dead' && e.detail.exit_code === 7 && /exit code 7/.test(e.message));
     assert.strictEqual(heard.exit.code, 7);
@@ -141,27 +153,42 @@ test('the child sees an allow-listed environment and no execArgv', async () => {
 });
 
 test('a hung op still rejects at its bound while the owner pings for liveness (pings are not proof of progress)', async () => {
-  const r = rig(), c = r.mk({ opBoundMs: 500 });
-  await c.ping(3000);
-  const pinger = setInterval(() => { c.ping(300).catch(() => {}); }, 100);
+  const r = rig(), ft = fakeTimers(), c = r.mk({ opBoundMs: 500, timers: ft.timers });
   try {
-    const t0 = Date.now();
-    await assert.rejects(c._call({ op: 'hang' }, 500), (e) => e.code === 'E_EMBEDDER_TIMEOUT' && e.detail.cause === 'timeout');
-    const ms = Date.now() - t0;
-    assert.ok(ms >= 450 && ms < 2500, `rejected after ${ms} ms`);
-  } finally { clearInterval(pinger); await c.close(); r.done(); }
+    await c.ping(UP_DEADLINE);
+    const hang = outcome(c._call({ op: 'hang' }, 500));
+    for (let i = 0; i < 4; i += 1) {
+      await ft.advance(100);
+      assert.strictEqual((await c.ping(300)).ok, true, 'the child answers its pings, which are not progress on the op');
+    }
+    await ft.advance(99); // 499 ms of silence about the op
+    assert.strictEqual(hang.settled, false, 'not rejected at bound - 1');
+    await ft.advance(1);
+    assert.ok(hang.error && hang.error.code === 'E_EMBEDDER_TIMEOUT' && hang.error.detail.cause === 'timeout' && hang.error.detail.timeout_ms === 500);
+  } finally { await c.close(); r.done(); }
 });
 
+// The stub child waits before each model call for a release file the test writes (rerank-stub-pkg.cjs, gateDir), so the
+// silence clock is driven by the injected clock: every gap is under the bound, the whole run is well over it.
 test('a long rank that keeps sending progress is not mistaken for a hung child, and a request queued behind it is credited by that progress', async () => {
-  const r = rig({ rankDelayMs: 60 }), c = r.mk({ opBoundMs: 900 });
+  const gateDir = sandbox(), r = rig({ gateDir }), ft = fakeTimers(), c = r.mk({ opBoundMs: 900, timers: ft.timers });
   try {
     await c.load(r.id);
-    const docs = Array.from({ length: 40 }, (_, i) => `note ${i}`);
-    const [a, b] = await Promise.all([c.rank(r.id, 'q', docs, { chunk: 2 }), c.rank(r.id, 'q', docs.slice(0, 20), { chunk: 2 })]);
-    assert.ok(a.ms > 1200, `the first rank ran ${a.ms} ms against a 900 ms silence bound`);
-    assert.strictEqual(b.scores.length, 20);
+    const progress = countProgress(c.child);
+    const docs = Array.from({ length: 6 }, (_, i) => `note ${i}`);
+    const a = outcome(c.rank(r.id, 'q', docs, { chunk: 2 })), b = outcome(c.rank(r.id, 'q', docs, { chunk: 2 })); // a: three model calls; b waits behind it, then three more
+    for (let k = 1; k <= 6; k += 1) {
+      fs.writeFileSync(path.join(gateDir, `go-${k}`), '');
+      await progress.reach(k);
+      await ft.advance(800); // under the 900 ms bound since the last line; the first rank alone runs 2400 ms, b waits 2400 behind it
+      assert.strictEqual(c.hung, null, `line ${k}: not hung`);
+    }
+    await Promise.all([a.done, b.done]);
+    assert.strictEqual(a.error, undefined, a.error && a.error.message);
+    assert.strictEqual(b.error, undefined, b.error && b.error.message);
+    assert.strictEqual(b.value.scores.length, 6);
     assert.strictEqual(c.hung, null);
-  } finally { await c.close(); r.done(); }
+  } finally { await c.close(); r.done(); cleanup(gateDir); }
 });
 
 test('killing the owner by its exact pid takes the REAL rerank child with it promptly', async () => {
@@ -169,13 +196,10 @@ test('killing the owner by its exact pid takes the REAL rerank child with it pro
   let owner = null;
   try {
     owner = spawn(process.execPath, [OWNER, r.pkg, r.cache, r.tableFile], { windowsHide: true, stdio: ['ignore', 'pipe', 'inherit'], env: { ...process.env, BELAY_TEST_MODE: '1' } });
-    let out = '', info = null;
-    owner.stdout.on('data', (d) => { out += d; for (const l of out.split('\n')) if (l.includes('rerank_pid') && !info) info = JSON.parse(l); });
-    for (let i = 0; i < 600 && !info; i += 1) await new Promise(x => setTimeout(x, 25));
-    assert.ok(info, `the owner never had a rerank op in flight: ${out}`);
+    const info = await waitLine(owner.stdout, 'rerank_pid'); // printed once the child announced its op is in flight
     assert.ok(pidAlive(info.rerank_pid), 'the child is up and busy');
     process.kill(info.owner_pid); // the exact pid of the owner this test spawned
-    assert.ok(await waitGone(info.rerank_pid, 5000), 'the child outlived its owner');
+    assert.ok(await waitGone(info.rerank_pid), 'the child outlived its owner');
   } finally { if (owner && owner.exitCode === null) { try { process.kill(owner.pid); } catch { /* gone */ } } r.done(); }
 });
 
@@ -194,6 +218,6 @@ test('the real rerank-worker ends itself when its owner\'s channel closes, thoug
     assert.strictEqual(reply.ok, true, JSON.stringify(reply));
     const pid = kid.pid;
     kid.disconnect();
-    assert.ok(await waitGone(pid, 5000), 'the worker stayed alive after its owner\'s channel closed');
+    assert.ok(await waitGone(pid), 'the worker stayed alive after its owner\'s channel closed');
   } finally { if (kid && kid.exitCode === null) { try { process.kill(kid.pid); } catch { /* gone */ } } r.done(); }
 });

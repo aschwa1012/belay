@@ -77,7 +77,7 @@ function heavyVectors(E, tier, ns, c) {
   const h = new Map(), t = Date.now();
   for (const [id, f] of VT.vectorsFor(db, { model: tier.embedder, revision: tier.revision || '', dims: tier.dims }, c.rows.map(r => r.id))) h.set(id, f.vector);
   // An expired row that has not been swept yet is not in the backlog, so it does not keep the map from being kept.
-  if (c.rows.every(r => h.has(r.id) || (r.ttl_at && r.ttl_at < t))) (c.heavy || (c.heavy = new Map())).set(key, { gen, h });
+  if (c.rows.every(r => h.has(r.id) || (r.ttl_at && r.ttl_at < t) || r.unrenderable)) (c.heavy || (c.heavy = new Map())).set(key, { gen, h });
   return h;
 }
 
@@ -100,7 +100,7 @@ function candidates(E, tier, ns, m, o) {
     return out;
   }
   const h = heavyVectors(E, tier, ns, c);
-  for (const r of c.rows) { if (!live(r)) continue; const v = h.get(r.id); if (v) out.push({ id: r.id, vec: v }); else lacking.push(r.id); }
+  for (const r of c.rows) { if (!live(r)) continue; const v = h.get(r.id); if (v) out.push({ id: r.id, vec: v }); else if (r.unrenderable) VT.warnUnrenderable(r); else lacking.push(r.id); }
   if (lacking.length) throw behindError(tier, [ns], lacking);
   return out;
 }
@@ -118,7 +118,7 @@ function assertServable(E, tier, namespaces) {
   const t = Date.now(), behind = [];
   for (const ns of namespaces) {
     const c = E.store._loadNs(ns), h = heavyVectors(E, tier, ns, c);
-    for (const r of c.rows) if (!(r.ttl_at && r.ttl_at < t) && !h.has(r.id)) behind.push(r.id);
+    for (const r of c.rows) if (!(r.ttl_at && r.ttl_at < t) && !h.has(r.id) && !r.unrenderable) behind.push(r.id);
   }
   if (behind.length) throw behindError(tier, namespaces, behind);
 }
@@ -200,5 +200,5 @@ function rankRecord(before, after, cap, order = 'score') {
 module.exports = {
   NANO_TIER, isNano, tierFor, leversOfSearch, binding, countRows, nanoKey, boundFor, candidates, assertServable, rerankHead, rankRecord,
   visibleRowFilter: VT.visibleRowFilter, logSearch: SL.record,
-  logIndex: (E, caller, o) => SL.record(E, caller, { kind: 'index', tier: (o && o.for_worker && HT.tierForWorker(E, caller, o.for_worker)) || tierFor(E, caller), ...o, capMb: leversOfSearch(E, caller).search_log_cap_mb }),
+  logIndex: (E, caller, o) => SL.record(E, caller, { kind: 'index', tier: NANO_TIER, pinned_tier: (o && o.for_worker && HT.tierForWorker(E, caller, o.for_worker)) || tierFor(E, caller), ...o, capMb: leversOfSearch(E, caller).search_log_cap_mb }),
 };

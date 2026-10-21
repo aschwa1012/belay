@@ -141,3 +141,19 @@ test('a raw block is re-validated: the four unsafe blocks are refused with a cod
     for (const gpu of [false, true]) assert.throws(() => run({ raw, gpu }), (e) => e.code === 'E_ARGS' && re.test(e.message) && e.name === 'CoreError', what);
   }
 });
+
+test('routing_cpu: with no GPU a type takes its own CPU profile, with a GPU it is ignored, and an unset type still takes profile_cpu', () => {
+  const settings = { profile: 'gpu-balanced', profile_cpu: 'cpu-fast', routing: { reviewer: 'gpu-rerank' }, routing_cpu: { reviewer: 'cpu-rerank', coder: 'cpu-rerank-light' } };
+  const none = run({ settings, gpu: false });
+  assert.strictEqual(none.tiers.reviewer.profile, 'cpu-rerank');
+  assert.strictEqual(none.tiers.reviewer.fallback_from, 'gpu-rerank');
+  assert.strictEqual(none.tiers.coder.profile, 'cpu-rerank-light', 'a type with no routing entry takes its CPU pick when the run profile fell back');
+  assert.strictEqual(none.tiers.coder.fallback_from, 'gpu-balanced');
+  assert.strictEqual(none.tiers.tester.profile, 'cpu-fast', 'an unset type takes profile_cpu');
+  assert.deepStrictEqual(none.gpu_models, []);
+  const some = run({ settings, gpu: true });
+  assert.strictEqual(some.tiers.reviewer.profile, 'gpu-rerank');
+  assert.strictEqual(some.tiers.coder.profile, 'gpu-balanced', 'the CPU pick is not used while a GPU is usable');
+  assert.deepStrictEqual(some.gpu_models, [Q.e4, Q.r4].sort());
+  assert.ok(run({ settings: { profile: 'cpu-fast', routing_cpu: { coder: 'cpu-rerank' } }, gpu: false }).tiers.coder.source === 'run', 'a CPU-only run profile never fell back, so the CPU pick is not consulted');
+});

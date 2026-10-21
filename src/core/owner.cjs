@@ -61,6 +61,7 @@ class Owner {
     this.lastWriteAt = Date.now();
     this.idleTruncated = false;
     this.stopped = false;
+    try { const g = require.cache[require.resolve('./gpu-shared.cjs')]; if (g) g.exports.reopen(); } catch { /* the GPU wiring was never loaded */ } // a previous owner's stop latched the shared GPU child; a new owner may fork again
     // 5c: `run.stop`, a pipe-level method dispatched to a control this owner was built with, never to
     // the engine. `inFlightControls` tracks each call plus its flushed reply so `stop()` can wait.
     this.controls = opts.controls || {};
@@ -458,7 +459,7 @@ class Owner {
     // reach their callers over a connection that is still open (m11). The rerank close is bounded (3,000 ms) and never throws.
     for (const r of await Promise.allSettled([
       this.embedderObj ? Promise.resolve().then(() => this.embedderObj.close()) : null,
-      Promise.resolve().then(() => require('./rerank-provider.cjs').closeOwned(this, 3000)),
+      Promise.resolve().then(() => require('./rerank-provider.cjs').closeOwned(this, this.opts.rerankCloseBoundMs || 3000)),
       Promise.resolve().then(() => require('./embed-provider.cjs').closeOwned(this, 3000)), // the heavy embed providers and, with them, the shared GPU child this owner used
     ])) if (r.status === 'rejected') record(r.reason);
     try { for (const c of this.conns) c.destroy(); this.conns.clear(); } catch (e) { record(e); }

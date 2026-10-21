@@ -22,7 +22,7 @@ after(() => R.restore());
 const rerankTier = { profile: 'custom', embedder: RP.NANO, reranker: RR4, device: 'gpu', depth: 4 };
 const heavyTier = { profile: 'custom', embedder: EMB4, reranker: null, device: 'gpu', depth: 0 };
 const docs = [{ id: 'a', text: 'lunch order for friday' }, { id: 'b', text: 'stop a worker process by its pid' }, { id: 'c', text: 'worker pid list' }];
-const gone = async (pid) => { const t0 = Date.now(); while (pidAlive(pid) && Date.now() - t0 < 4000) await new Promise(r => setTimeout(r, 20)); return !pidAlive(pid); };
+const { waitGone: gone } = require('../helpers/wait.cjs');
 
 test('the owner builds the GPU rerank provider on the first get, once, and a non-owner never does', async () => {
   assert.strictEqual(RPV.get(rerankTier), null, 'no owner fact, nothing built');
@@ -70,6 +70,7 @@ test('one child holds the reranker and the embedder, and closeAll closes it', as
 });
 
 test('the embed providers closeAll closes the shared child too, and both are safe twice', async () => {
+  R.install(); // a closed child latches the shared client until a new owner (or a test) opens it again
   const e = EP.get(heavyTier, { owner: true });
   await e.embedQuery('hello');
   const pid = GS.client().pid;
@@ -78,6 +79,28 @@ test('the embed providers closeAll closes the shared child too, and both are saf
   await EP.closeAll();
   await RPV.closeAll();
   assert.strictEqual(EP.get(heavyTier), null);
+});
+
+test('after close no GPU child is forked; a child that closed itself is not silently re-forked; a new pin recycles it', async () => {
+  R.install();
+  const e = EP.get(heavyTier, { owner: true });
+  await e.embedQuery('x');
+  const first = GS.client();
+  await GS.close();
+  assert.throws(() => GS.client(), (x) => x.code === 'E_MODEL_ABSENT' && x.detail.closing === true, 'a stopping owner or an in-flight drain forks nothing');
+  await assert.rejects(e.embedQuery('y'), (x) => x.code === 'E_MODEL_ABSENT' && x.detail.cause === 'dead');
+  R.install(); // reopened
+  const second = EP.get(heavyTier, { owner: true });
+  await second.embedQuery('z');
+  const child = GS.client();
+  assert.notStrictEqual(child, first);
+  await child.close(); // the child closes itself, as it does on its wall-clock timeout
+  assert.strictEqual(GS.client(), child, 'the dead child is returned as it is, not replaced');
+  await assert.rejects(second.embedQuery('again'), (x) => x.code === 'E_MODEL_ABSENT' && x.detail.cause === 'dead', 'its coded error is the answer: no re-fork without a probe');
+  assert.strictEqual(GS.recycle(), true, 'only a new pin (which probes first) forgets it');
+  await second.embedQuery('fresh');
+  assert.notStrictEqual(GS.client(), child, 'and then a new child serves');
+  assert.strictEqual(GS.holds(EMB4), true);
 });
 
 test('a load that fails is a coded GPU error', async () => {

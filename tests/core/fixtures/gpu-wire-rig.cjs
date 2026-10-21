@@ -14,10 +14,11 @@ const FAKE = path.join(FIXTURES, 'gpu-worker-fake.cjs');
 const MIB = 1048576;
 const EMB4 = 'Qwen/Qwen3-Embedding-4B-GGUF', RR4 = 'giladgd/Qwen3-Reranker-4B-GGUF', RR06 = 'ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF';
 const entry = (id, kind, extra) => ({ id, sha: SHA, runtime: 'gguf', kind, label: id, files: [{ path: 'm.gguf', bytes: 10, sha256: H }], pooling: kind === 'embedder' ? 'last' : null, query_prompt: kind === 'embedder' ? 'Q: ' : '', document_prompt: '', native_dims: kind === 'embedder' ? 8 : null, dims: kind === 'embedder' ? 8 : null, license: 'apache-2.0', context_size: 1024, vram_mb_ref: 500, ...extra });
-const TABLE = { [EMB4]: entry(EMB4, 'embedder'), [RR4]: entry(RR4, 'reranker'), [RR06]: entry(RR06, 'reranker') };
+const EMB06 = 'Qwen/Qwen3-Embedding-0.6B-GGUF';
+const TABLE = { [EMB06]: entry(EMB06, 'embedder'), [EMB4]: entry(EMB4, 'embedder'), [RR4]: entry(RR4, 'reranker'), [RR06]: entry(RR06, 'reranker') };
 const smi = () => ({ name: 'NVIDIA GeForce RTX 5060 Laptop GPU', driver: '617.42', total_mb: 8151, used_mb: 0, free_mb: 7899 });
 
-function rig({ fake = {}, probe = {} } = {}) {
+function rig({ fake = {}, probe = {}, smi: smiFn } = {}) {
   const cache = sandbox();
   writeCache(cache, TABLE);
   const GS = core('gpu-shared.cjs'), HT = core('heavy-tier.cjs');
@@ -25,11 +26,11 @@ function rig({ fake = {}, probe = {} } = {}) {
   return {
     cache, table: TABLE, clientOpts,
     install() {
-      GS.setTestOptions({ clientOpts, probeOpts: { table: TABLE, cacheDir: cache, runtimeDir: 'unused', record: false, smi, clientOpts: { ...clientOpts, workerOpts: { fake: { ...clientOpts.workerOpts.fake, ...probe } } } } });
+      GS.setTestOptions({ clientOpts, probeOpts: { table: TABLE, cacheDir: cache, runtimeDir: 'unused', record: false, smi: smiFn || smi, clientOpts: { ...clientOpts, workerOpts: { fake: { ...clientOpts.workerOpts.fake, ...probe } } } } });
       HT.setTestTable(TABLE);
     },
     async restore() { await GS.close(); await core('rerank-provider.cjs').closeAll(); await core('embed-provider.cjs').closeAll(); GS.setTestOptions(null); HT.setTestTable(undefined); cleanup(cache); },
   };
 }
 
-module.exports = { rig, TABLE, EMB4, RR4, RR06, FAKE, MIB };
+module.exports = { rig, TABLE, EMB06, EMB4, RR4, RR06, FAKE, MIB };

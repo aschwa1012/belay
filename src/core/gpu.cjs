@@ -39,6 +39,7 @@ const LOAD_WALL_MS = 300000; // a load's WALL-CLOCK limit, which the child's hea
 const LOAD_BACKSTOP_MS = 600000; // a hung load only: a cold 8B load has been measured at 5 s, a first Vulkan shader build longer
 const PING_BOUND_MS = 1000;
 const CLOSE_GRACE_MS = 2000;
+const KILL_WAIT_MS = 3000; // after the kill, how long close() waits for the exit event
 // Exactly what the GPU child may see of the owner's environment: the cache roots and the Windows basics a
 // Vulkan loader needs. An allow-list, never a scrubbed copy (the owner holds every secret).
 const CHILD_ENV = ['PATH', 'Path', 'SystemRoot', 'TEMP', 'TMP', 'LOCALAPPDATA', 'APPDATA', 'USERPROFILE', 'HOME', 'XDG_CACHE_HOME', 'BELAY_MODEL_CACHE', 'BELAY_GPU_RUNTIME', 'BELAY_TEST_MODE'];
@@ -53,6 +54,8 @@ class GpuClient {
     this.loadBoundMs = opts.loadBoundMs || LOAD_BACKSTOP_MS;
     this.loadWallMs = opts.loadWallMs || LOAD_WALL_MS;
     this.pingBoundMs = opts.pingBoundMs || PING_BOUND_MS;
+    // Injected parent-side clock and timers (default: the globals). A test passes its own to advance a bound without waiting for it.
+    this.timers = { now: () => Date.now(), setTimeout: (...a) => setTimeout(...a), clearTimeout: (t) => clearTimeout(t), ...(opts.timers || {}) };
     const test = process.env.BELAY_TEST_MODE === '1';
     this.fake = test && !!opts.workerPath; // a fake child needs no installed runtime
     this.workerPath = this.fake ? opts.workerPath : path.join(__dirname, 'gpu-worker.cjs');
@@ -76,7 +79,7 @@ class GpuClient {
     c.on('message', (m) => {
       const p = this.pending.get(m.id);
       if (m.progress) { // proof of life for THIS request, and for those queued behind it (the child serves one at a time)
-        const now = Date.now();
+        const now = this.timers.now();
         for (const [id, q] of this.pending) if (id >= m.id) q.heard = now;
         return;
       }
@@ -102,7 +105,7 @@ class GpuClient {
 
   _settle(id) {
     const p = this.pending.get(id);
-    if (p) { clearTimeout(p.timer); clearTimeout(p.wall); }
+    if (p) { this.timers.clearTimeout(p.timer); this.timers.clearTimeout(p.wall); }
     this.pending.delete(id);
     if (!this.pending.size && this.child && this.child.channel) this.child.channel.unref();
   }
@@ -121,11 +124,11 @@ class GpuClient {
       // progress line for it (or for a request ahead of it in the child's queue). Answers to a ping or to vram
       // do not count: a wedged rank must still reject while the owner pings for liveness. A rank sends a line
       // per chunk, so a long rank never trips it.
-      const sentAt = Date.now();
-      const arm = (ms) => setTimeout(() => {
+      const sentAt = this.timers.now();
+      const arm = (ms) => this.timers.setTimeout(() => {
         const p = this.pending.get(id);
         if (!p) return;
-        const silent = Date.now() - Math.max(p.heard, sentAt);
+        const silent = this.timers.now() - Math.max(p.heard, sentAt);
         if (silent < boundMs) { p.timer = arm(boundMs - silent); return; }
         this._settle(id);
         const e = err('E_EMBEDDER_TIMEOUT', `the GPU process (pid ${this.pid}) did not answer ${msg.op} within ${boundMs} ms and is treated as hung`, gpu('timeout', { op: msg.op, timeout_ms: boundMs, pid: this.pid }));
@@ -134,7 +137,7 @@ class GpuClient {
       }, ms);
       this.pending.set(id, { resolve, reject, timer: arm(boundMs), op: msg.op, heard: sentAt });
       if (wallMs) { // a wall clock no progress line resets: past it the child is treated as hung, like a silent one
-        this.pending.get(id).wall = setTimeout(() => {
+        this.pending.get(id).wall = this.timers.setTimeout(() => {
           if (!this.pending.has(id)) return;
           this._settle(id);
           const e = err('E_EMBEDDER_TIMEOUT', `the GPU process (pid ${this.pid}) did not finish ${msg.op} within ${wallMs} ms of wall-clock time (it kept sending progress) and is treated as hung`, gpu('timeout', { op: msg.op, timeout_ms: wallMs, wall_clock: true, pid: this.pid }));
@@ -155,18 +158,18 @@ class GpuClient {
   // passes (a late answer is dropped): { ok:true, ms, result } or { ok:false, ms, reason }. ping and the probe's
   // samples use it; the caller decides what a miss means.
   _quick(msg, timeoutMs) {
-    const t0 = Date.now();
+    const t0 = this.timers.now();
     if (!this.child || this.exit) return Promise.resolve({ ok: false, ms: 0, reason: this._deadReason() });
     return new Promise((resolve) => {
       const id = ++this.seq;
-      const timer = setTimeout(() => { this._settle(id); resolve({ ok: false, ms: Date.now() - t0, reason: `the GPU process (pid ${this.pid}) did not answer ${msg.op === 'ping' ? `a ${timeoutMs} ms ping` : `${msg.op} within ${timeoutMs} ms`}` }); }, timeoutMs);
+      const timer = this.timers.setTimeout(() => { this._settle(id); resolve({ ok: false, ms: this.timers.now() - t0, reason: `the GPU process (pid ${this.pid}) did not answer ${msg.op === 'ping' ? `a ${timeoutMs} ms ping` : `${msg.op} within ${timeoutMs} ms`}` }); }, timeoutMs);
       this.pending.set(id, {
         timer, op: msg.op, heard: t0,
-        resolve: (result) => resolve({ ok: true, ms: Date.now() - t0, result }),
-        reject: (e) => resolve({ ok: false, ms: Date.now() - t0, reason: e.message }),
+        resolve: (result) => resolve({ ok: true, ms: this.timers.now() - t0, result }),
+        reject: (e) => resolve({ ok: false, ms: this.timers.now() - t0, reason: e.message }),
       });
       if (this.child.channel) this.child.channel.ref();
-      try { this.child.send({ id, ...msg }); } catch (e) { this._settle(id); resolve({ ok: false, ms: Date.now() - t0, reason: `the GPU process could not be reached: ${e.message}` }); }
+      try { this.child.send({ id, ...msg }); } catch (e) { this._settle(id); resolve({ ok: false, ms: this.timers.now() - t0, reason: `the GPU process could not be reached: ${e.message}` }); }
     });
   }
 
@@ -221,12 +224,12 @@ class GpuClient {
     return r;
   }
 
-  // Ends the child: `close` over IPC, at most 2,000 ms of grace, then a kill by its exact child handle. Safe to
+  // Ends the child (on the real timers, whatever `timers` was injected): `close` over IPC, at most 2,000 ms of grace, then a kill by its exact child handle. Safe to
   // call twice, after a failed load, and mid-op.
   async close() {
     const c = this.child;
     this.closed = true; this.models.clear();
-    for (const id of [...this.pending.keys()]) { const p = this.pending.get(id); clearTimeout(p.timer); clearTimeout(p.wall); this.pending.delete(id); p.reject(err('E_INTERNAL', 'the GPU process was closed', gpu('dead'))); }
+    for (const id of [...this.pending.keys()]) { const p = this.pending.get(id); this.timers.clearTimeout(p.timer); this.timers.clearTimeout(p.wall); this.pending.delete(id); p.reject(err('E_INTERNAL', 'the GPU process was closed', gpu('dead'))); }
     if (!c) return;
     this.child = null;
     if (c.exitCode !== null || c.signalCode !== null) return;
@@ -237,10 +240,10 @@ class GpuClient {
     clearTimeout(timer);
     if (!exited) {
       killPid(c); // ADR 0039: by the live child handle (exitCode checked above)
-      await Promise.race([gone, new Promise(res => setTimeout(res, 3000).unref())]);
+      await Promise.race([gone, new Promise(res => { setTimeout(res, KILL_WAIT_MS).unref(); })]);
     }
     try { c.disconnect(); } catch { /* already closed */ }
   }
 }
 
-module.exports = { GpuClient, CHILD_ENV };
+module.exports = { GpuClient, CHILD_ENV, OP_BOUND_MS, PING_BOUND_MS, CLOSE_GRACE_MS, KILL_WAIT_MS };

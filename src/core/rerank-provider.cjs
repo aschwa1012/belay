@@ -12,6 +12,7 @@
 
 const { err } = require('./errors.cjs');
 
+const CLOSE_BOUND_MS = 3000; // closeAll's default bound per provider
 const providers = new Map();
 
 function register(name, impl) {
@@ -64,21 +65,22 @@ function autoBuild(name, owner) {
 // Closes the named providers (all registered ones when no names are given), each bounded by boundMs; never throws. A closed provider
 // is forgotten even when its close threw or timed out (a closed CPU provider starts no child again), so an owner started later in the
 // same process builds its own. An Owner calls closeOwned(owner.rerankBuilt) at its stop; closeAll is the process-wide form.
-async function closeAll(boundMs = 3000, names) {
+async function closeAll(boundMs = CLOSE_BOUND_MS, names, timers) {
+  const T = { setTimeout: (...a) => setTimeout(...a), clearTimeout: (t) => clearTimeout(t), ...(timers || {}) };
   const all = [...providers.entries()].filter(([n]) => !names || names.has(n));
   await Promise.all(all.map(async ([name, impl]) => {
     if (!impl || typeof impl.close !== 'function') return;
     if (providers.get(name) === impl) providers.delete(name);
     let timer;
-    try { await Promise.race([Promise.resolve().then(() => impl.close()), new Promise((r) => { timer = setTimeout(r, boundMs); })]); } catch { /* best effort */ } finally { clearTimeout(timer); }
+    try { await Promise.race([Promise.resolve().then(() => impl.close()), new Promise((r) => { timer = T.setTimeout(r, boundMs); })]); } catch { /* best effort */ } finally { T.clearTimeout(timer); }
   }));
   if (usesGpu || (names && [...names].some((n) => gpuNames.has(n)))) { // one child holds every GPU model, so closing the reranker's provider closes it for the embedder too
     usesGpu = false;
     let timer;
-    try { await Promise.race([require('./gpu-shared.cjs').close(), new Promise((r) => { timer = setTimeout(r, boundMs); })]); } catch { /* best effort */ } finally { clearTimeout(timer); }
+    try { await Promise.race([require('./gpu-shared.cjs').close(), new Promise((r) => { timer = T.setTimeout(r, boundMs); })]); } catch { /* best effort */ } finally { T.clearTimeout(timer); }
   }
 }
 
-const closeOwned = (owner, boundMs) => closeAll(boundMs, new Set((owner && owner.rerankBuilt) || []));
+const closeOwned = (owner, boundMs, timers) => closeAll(boundMs, new Set((owner && owner.rerankBuilt) || []), timers);
 
-module.exports = { register, unregister, get, closeAll, closeOwned, setAutoOptions };
+module.exports = { register, unregister, get, closeAll, closeOwned, setAutoOptions, CLOSE_BOUND_MS };

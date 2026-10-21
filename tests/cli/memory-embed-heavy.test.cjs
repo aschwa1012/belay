@@ -27,7 +27,7 @@ test('it drains in passes until the backlog is empty, with progress, and reports
   const lines = [];
   const r = await run(core, { model: EMB }, 'proj', lines);
   assert.strictEqual(r.code, 0);
-  assert.deepStrictEqual(core.calls, [{ model: EMB, namespaces: ['project/proj'] }, { model: EMB, namespaces: ['project/proj'] }]);
+  assert.deepStrictEqual(core.calls, [{ model: EMB, namespaces: ['project/proj'], probe: true }, { model: EMB, namespaces: ['project/proj'], probe: true }], 'every pass asks for the VRAM probe before the model loads');
   assert.deepStrictEqual([r.json.total, r.json.embedded, r.json.remaining, r.json.done], [5, 5, 0, true]);
   assert.match(r.text, /embedded 5 of 5 notes/);
   assert.strictEqual(lines.length, 2);

@@ -9,7 +9,7 @@ const P = require('./panel-common.cjs');
 const clean = (s, cap = 160) => P.clean(s == null ? '' : s, cap);
 const PASSES = 10000; // a backstop: a pass that writes nothing stops the loop
 
-async function doHeavy(core, opts, project, t0, fail, write = (m) => process.stderr.write(m)) {
+async function doHeavy(core, opts, project, t0, fail, write = (m) => process.stderr.write(m), headroomGb) {
   const RP = require('../core/retrieval-profiles.cjs'); // a pure table
   const d = RP.describeModel(opts.model);
   if (!d || d.kind !== 'embedder' || d.runtime !== 'gguf') return fail(2, 'E_ARGS', `--model must name a heavy (GPU) embedder (${Object.keys(RP.GGUF_KINDS).filter((id) => RP.GGUF_KINDS[id] === 'embedder').join(', ')}); nano embeds every note on write and has no backlog`);
@@ -19,7 +19,8 @@ async function doHeavy(core, opts, project, t0, fail, write = (m) => process.std
   const namespaces = [`project/${project}`];
   let total = null, written = 0, last = null;
   for (let pass = 0; pass < PASSES; pass += 1) {
-    try { last = await core.memory.drainHeavy({ model: opts.model, namespaces }); } catch (e) {
+    // probe: true asks the owner for the VRAM probe (with the headroom lever) before the model loads
+    try { last = await core.memory.drainHeavy({ model: opts.model, namespaces, probe: true, ...(headroomGb !== undefined ? { headroom_gb: headroomGb } : {}) }); } catch (e) {
       const dd = e && e.detail;
       return fail(1, (e && e.code) || 'E_INTERNAL', `the ${opts.model} embedder failed, so the drain stopped (${written + (dd && dd.written ? dd.written : 0)} written, the rest stay in the backlog): ${(e && e.message) || e}`, { written: written + (dd && dd.written ? dd.written : 0) });
     }

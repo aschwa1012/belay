@@ -43,40 +43,46 @@ test('free memory is read AFTER the child is up, so the child\'s own overhead is
 });
 
 test('a peak is the highest SAMPLED value while the load runs, above the steady level after it', async () => {
-  const { cache, base } = rig({ per_model: { 'org/emb': 700 * MIB }, transient_mb: 900, load_ms: 450 });
+  // The fake holds the 900 MiB transient until it has answered 3 vram requests during the load, so the sampler sees it however slowly the runner runs.
+  const { cache, base } = rig({ per_model: { 'org/emb': 700 * MIB }, transient_mb: 900 });
   try {
-    const r = await P.probe(base({ models: ['org/emb'], smi: false, clientOpts: { workerPath: FAKE, workerOpts: { fake: { per_model: { 'org/emb': 700 * MIB }, transient_mb: 900, load_ms: 450 } } } }));
+    const r = await P.probe(base({ models: ['org/emb'], smi: false, clientOpts: { workerPath: FAKE, workerOpts: { fake: { per_model: { 'org/emb': 700 * MIB }, transient_mb: 900 } } } }));
     assert.strictEqual(r.ok, true, JSON.stringify(r.refusal));
     const p = r.peaks['org/emb'];
     assert.strictEqual(p.steady_mb, 700, 'what is left after the load');
     assert.strictEqual(p.peak_mb, 1600, 'the transient 900 MiB the sampler caught while the load ran');
-    assert.ok(p.samples.vulkan >= 2, `${p.samples.vulkan} samples`);
+    assert.ok(p.samples.vulkan >= 3, `${p.samples.vulkan} samples`);
   } finally { cleanup(cache); }
 });
 
 test('the sampler keeps the maximum, drops a call that does not answer, and stops when told', async () => {
   const seq = [5, 9, 7];
-  let i = 0;
-  const s = P.sampler(async () => seq[Math.min(i++, seq.length - 1)], 5);
-  await new Promise(r => setTimeout(r, 60));
+  let i = 0, third;
+  const thirdCall = new Promise(r => { third = r; }); // a gate on the sampler's 3rd call, not on elapsed time
+  const s = P.sampler(async () => { const v = seq[Math.min(i++, seq.length - 1)]; if (i === 3) third(); return v; }, 5);
+  await thirdCall;
   const out = await s.stop();
   assert.strictEqual(out.max, 9);
   assert.ok(out.n >= 3);
-  const none = P.sampler(async () => { throw new Error('meter gone'); }, 5);
-  await new Promise(r => setTimeout(r, 30));
+  let first;
+  const firstCall = new Promise(r => { first = r; });
+  const none = P.sampler(async () => { first(); throw new Error('meter gone'); }, 5);
+  await firstCall;
   assert.deepStrictEqual(await none.stop(), { max: null, n: 0 });
 });
 
-test('nvidia-smi is called asynchronously: the probe never blocks the owner\'s loop on a child process', () => {
+test('nvidia-smi is called asynchronously: the probe never blocks the owner\'s loop on a child process', async () => {
   const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'core', 'gpu-probe.cjs'), 'utf8');
   assert.ok(!/execFileSync|spawnSync|execSync/.test(src));
-  assert.ok(P.defaultSmi() instanceof Promise);
+  const smi = P.defaultSmi();
+  assert.ok(smi instanceof Promise);
+  await smi; // settled, so no nvidia-smi process outlives the test
 });
 
 test('a reranker whose full batch takes longer than the target is refused, with the measured time', async () => {
   const { cache, base } = rig();
   try {
-    const r = await P.probe(base({ models: ['org/rr'], clientOpts: { workerPath: FAKE, workerOpts: { fake: { rank_ms_per_token: 4 } } } }));
+    const r = await P.probe(base({ models: ['org/rr'], clientOpts: { workerPath: FAKE, workerOpts: { fake: { rank_ms_per_token: 4, virtual_ms: true } } } }));
     assert.strictEqual(r.ok, false);
     assert.strictEqual(r.refusal.reason, 'submission_too_long');
     assert.match(r.refusal.message, /one full batch of \d+ tokens/);

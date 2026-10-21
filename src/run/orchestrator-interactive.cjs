@@ -318,6 +318,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
     try { attached = await onAttached({ pid: child.pid }); } catch (e) { attached = { ok: false, error: (e && e.message) || String(e) }; }
     if (!attached || attached.ok !== true) {
       state.attachFailure = (attached && attached.error) || 'attach refused';
+      state.attachStage = attached && attached.stage;
       await killChild();
     } else runStart = writeRunStart(written.dir, runId, attached.attach, Date.now());
     try {
@@ -411,7 +412,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
   const primary = state.spawnError || state.attachFailure || state.gateFailure || state.stopBy;
   let endedBy;
   if (state.spawnError) endedBy = `claude could not be started: ${state.spawnError}`;
-  else if (state.attachFailure) endedBy = `the run's attach write failed after this process became the store owner: ${state.attachFailure}`;
+  else if (state.attachFailure) endedBy = state.attachStage === 'pin' ? `the run's retrieval routing could not be pinned (the attach itself succeeded), so the run did not start: ${state.attachFailure}` : `the run's attach write failed after this process became the store owner: ${state.attachFailure}`;
   else if (state.gateFailure) {
     const g = state.gateFailure;
     endedBy = g.check === 'plugin' ? String(g.failed) : `surface gate failed (${g.check}): ${g.failed || 'check failed'}${g.detail ? `: ${g.detail}` : ''}`;

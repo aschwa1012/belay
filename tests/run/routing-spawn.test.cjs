@@ -93,5 +93,39 @@ test('a drain that makes no progress stops the start by name, and a notice is wr
   const noisy = pinCore({ pin: [{ pinned: true, action: 'pinned', notices: [notice], routing: { run: {} } }], drain: [{}] });
   const lines = [];
   await RR.pinAtStart(noisy, { levers: { memory_levers: { profile: 'gpu-balanced' } }, write: (m) => lines.push(m) });
-  assert.deepStrictEqual(lines, ['belay: notice (gpu_probe_refused): the GPU probe refused this run routing (no_gpu)\n']);
+  assert.deepStrictEqual(lines.filter(l => /notice/.test(l)), ['belay: notice (gpu_probe_refused): the GPU probe refused this run routing (no_gpu)\n']);
+});
+
+const BEHIND = [{ embedder: 'Qwen/Qwen3-Embedding-4B-GGUF', rows: 4, namespaces: ['project/p'] }];
+const LEVERS = (extra = {}) => ({ memory_levers: { profile: 'gpu-balanced', ...extra } });
+const boom = () => Object.assign(new Error('the GPU process exited with exit code 3'), { code: 'E_MODEL_ABSENT' });
+
+test('B2: a GPU failure during the start-wait drain under on_heavy_failure fallback pins the demoted routing with ONE notice and starts', async () => {
+  const core = pinCore({
+    pin: [{ pinned: false, action: 'drain', behind: BEHIND, notices: [] }, { pinned: true, action: 'pinned', routing: { run: { profile: 'custom' } }, notices: [{ code: 'heavy_drain_failed', message: 'the embedder failed while draining' }] }],
+    drain: [boom()],
+  });
+  const lines = [];
+  const r = await RR.pinAtStart(core, { levers: LEVERS(), write: (m) => lines.push(m) });
+  assert.strictEqual(r.pinned, true);
+  assert.deepStrictEqual(core.calls.map(c => c[0]), ['pin', 'drain', 'pin']);
+  assert.strictEqual(core.calls[2][1].drain_failed[0].embedder, BEHIND[0].embedder, 'the owner is told which drain failed');
+  assert.strictEqual(core.calls[2][1].drain_failed[0].code, 'E_MODEL_ABSENT');
+  assert.strictEqual(lines.filter(l => /notice \(heavy_drain_failed\)/.test(l)).length, 1, 'one notice');
+});
+
+test('B2: under on_heavy_failure pause the same failure refuses the start with a message naming the pin, not the attach', async () => {
+  const core = pinCore({ pin: [{ pinned: false, action: 'drain', behind: BEHIND, notices: [] }], drain: [boom()] });
+  await assert.rejects(RR.pinAtStart(core, { levers: LEVERS({ on_heavy_failure: 'pause' }) }), (e) => /failed while draining its backlog/.test(e.message) && /on_heavy_failure is pause, so the run was not started/.test(e.message) && !/attach/.test(e.message));
+  assert.deepStrictEqual(core.calls.map(c => c[0]), ['pin', 'drain'], 'nothing was pinned');
+});
+
+test('S7: under --json (no write sink) every start-up line is kept in start_progress for the receipt', async () => {
+  const core = pinCore({
+    pin: [{ pinned: false, action: 'drain', behind: BEHIND, notices: [] }, { pinned: true, action: 'pinned', routing: { run: {} }, notices: [] }],
+    drain: [{ total: 4, written: 4, remaining: 0, done: true, ms: 5 }],
+  });
+  const r = await RR.pinAtStart(core, { levers: LEVERS(), write: null });
+  assert.ok(r.start_progress.some(l => /embedding them before the run starts/.test(l)));
+  assert.ok(r.start_progress.some(l => /4 of 4 embedded this pass/.test(l)));
 });

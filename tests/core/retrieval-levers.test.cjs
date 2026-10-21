@@ -125,3 +125,13 @@ test('parsing a default block and resolving a CPU routing load no GPU module', (
   assert.strictEqual(r.status, 0, r.stderr);
   assert.deepStrictEqual(JSON.parse(r.stdout), { ok: true, loaded: [] });
 });
+
+test('routing_cpu: null by default, a map of CPU-only profiles, and a GPU profile, an unknown one or a bad type is refused', () => {
+  assert.strictEqual(parse(undefined).value.routing_cpu, null);
+  assert.ok(ML.TYPES.routing_cpu && ML.TYPES.routing_cpu.type === 'json');
+  assert.ok(!ML.isDefault(parse({ routing_cpu: { reviewer: 'cpu-rerank' } }).value));
+  assert.deepStrictEqual(parse({ routing_cpu: { reviewer: 'cpu-rerank', coder: 'cpu-fast' } }).value.routing_cpu, { reviewer: 'cpu-rerank', coder: 'cpu-fast' });
+  for (const [b, re] of [[{ routing_cpu: { reviewer: 'gpu-rerank' } }, /needs a GPU/], [{ routing_cpu: { reviewer: 'bogus' } }, /must be one of/], [{ routing_cpu: { reviewer: 'custom' } }, /must be one of/], [{ routing_cpu: { Reviewer: 'cpu-fast' } }, /agent type is lower-case/], [{ routing_cpu: [] }, /must be null or an object/]]) {
+    assert.match(parse(b).error || '', re, JSON.stringify(b));
+  }
+});
