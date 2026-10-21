@@ -130,6 +130,7 @@ async function nominate(E, caller, args) {
   const live = E.store.p("SELECT id, task_id, run_id, written_by, created_at, status, body FROM memory_entries WHERE type = 'note' AND namespace = ?").all(`project/${project}`);
   const last = latestByNote(E, project);
   const nominated = [], skipped = [];
+  let ended = false;
   for (const row of live) {
     const b = parse(row.body) || {};
     if (((b.seen_in || []).length + 1) < MIN_TASKS) continue; // cannot reach three tasks
@@ -143,7 +144,10 @@ async function nominate(E, caller, args) {
       const had = new Set(prior.body.rejected && prior.body.rejected.keys || []);
       if (!counted.keys.some(k => !had.has(k))) { skipped.push({ id: row.id, reason: 'rejected, and no new independent sighting since' }); continue; }
     }
-    const out = E.store.tx(() => {
+    // countFor awaited above, so run.end may have committed since dispatch checked: the guard sits inside the write (audit D42).
+    let out;
+    try {
+      out = C.openTx(E, caller, 'memory.nominate', () => {
       const r = C.putRow(E, caller, {
         ns: nominationNs(project), type: 'nomination', runId,
         text: `nomination: ${row.id} seen in ${counted.tasks} tasks across ${counted.runs} runs (run ${runId})`,
@@ -155,11 +159,16 @@ async function nominate(E, caller, args) {
         },
       });
       return C.rowOut(E, r.id);
-    });
+      });
+    } catch (e) {
+      // The run ended part-way: rows already written stand and are returned; with none written, the refusal is the answer.
+      if (e && e.detail && e.detail.run_ended && nominated.length) { ended = true; break; }
+      throw e;
+    }
     nominated.push(out);
   }
   if (nominated.length) E.noteWrite();
-  return { project, run_id: runId, considered: live.length, nominated, skipped };
+  return { project, run_id: runId, considered: live.length, nominated, skipped, ...(ended ? { run_ended: true } : {}) };
 }
 
 // The drafts stored for a note since a time: draft rows and, in propose mode, the scrubber's draft proposals. Newest first.
