@@ -9,19 +9,21 @@
 //     [n, 2] with { twoLogits: true }): 4 * (words in common with the query) - 2, so a relevant document scores high
 //   - { keepAlive: true } holds an interval, standing in for the native threads that keep a real child's loop alive
 //   - { rankDelayMs, loadDelayMs } make a model call or a load slow; { nanAt } makes pair i score NaN
+//   - { gateDir } makes model call n wait until the file <gateDir>/go-n exists, so a test paces the progress lines itself
 // writeCache(cache, table) lays out each table entry's files where the cache looks for them, at the table's byte
 // sizes, with a manifest.
 
 const fs = require('node:fs');
 const path = require('node:path');
 
-function writeStubPackage(dir, { keepAlive = false, rankDelayMs = 0, loadDelayMs = 0, twoLogits = false, nanAt = -1, version = '4.3.0' } = {}) {
+function writeStubPackage(dir, { keepAlive = false, rankDelayMs = 0, loadDelayMs = 0, twoLogits = false, nanAt = -1, version = '4.3.0', gateDir = '' } = {}) {
   fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: '@huggingface/transformers', version, type: 'module' }));
   fs.writeFileSync(path.join(dir, 'src', 'transformers.js'), `
     import fs from 'node:fs';
     import path from 'node:path';
-    const KEEP = ${keepAlive ? 'true' : 'false'}, RANK_DELAY = ${Number(rankDelayMs)}, LOAD_DELAY = ${Number(loadDelayMs)}, TWO = ${twoLogits ? 'true' : 'false'}, NAN_AT = ${Number(nanAt)};
+    const KEEP = ${keepAlive ? 'true' : 'false'}, RANK_DELAY = ${Number(rankDelayMs)}, LOAD_DELAY = ${Number(loadDelayMs)}, TWO = ${twoLogits ? 'true' : 'false'}, NAN_AT = ${Number(nanAt)}, GATE = ${JSON.stringify(String(gateDir))};
+    let calls = 0;
     const wait = (ms) => new Promise(r => setTimeout(r, ms));
     const words = (s) => new Set(String(s).toLowerCase().match(/[a-z]{3,}/g) || []);
     export const env = { version: 'stub-4.3.0' };
@@ -43,6 +45,7 @@ function writeStubPackage(dir, { keepAlive = false, rankDelayMs = 0, loadDelayMs
         if (!o || o.device !== 'cpu' || !o.dtype || !fs.existsSync(path.join(dir, 'onnx', 'model_' + o.dtype + '.onnx'))) throw new Error('no onnx file for ' + JSON.stringify(o) + ' in ' + dir);
         if (KEEP) setInterval(() => {}, 1000);
         const m = async (enc) => {
+          if (GATE) { const n = ++calls; while (!fs.existsSync(path.join(GATE, 'go-' + n))) await wait(5); }
           if (RANK_DELAY) await wait(RANK_DELAY);
           const n = enc._q.length, k = TWO ? 2 : 1, data = new Float32Array(n * k);
           for (let i = 0; i < n; i += 1) {
