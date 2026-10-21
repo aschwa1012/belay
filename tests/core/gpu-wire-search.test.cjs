@@ -44,13 +44,13 @@ test('the heavy tier has a backlog of every visible note until it is drained', (
   assert.ok(Number.isInteger(HT.withDims({ embedder: EMB4 }).dims), 'the tier knows its dims');
 });
 
-test('a bounded drain stops after a batch and reports what is left', async () => {
+test('a bounded drain stops inside a batch, per document, and reports what is left', async () => {
   const r = await HD.drainHeavy(E, EMB4, { namespaces: [NS], batch: 2, boundMs: 1 });
   assert.strictEqual(r.total, notes.length);
-  assert.strictEqual(r.written, 2, 'one batch of two, then the bound');
-  assert.strictEqual(r.remaining, notes.length - 2);
+  assert.strictEqual(r.written, 1, 'the bound covers one batch too: one document, then the deadline');
+  assert.strictEqual(r.remaining, notes.length - 1);
   assert.strictEqual(r.done, false);
-  assert.strictEqual(heavyRows(), 2);
+  assert.strictEqual(heavyRows(), 1);
 });
 
 test('the drain writes vectors, bumps the cache generation, reports progress and empties the backlog', async () => {
@@ -60,7 +60,7 @@ test('the drain writes vectors, bumps the cache generation, reports progress and
   assert.strictEqual(r.done, true);
   assert.strictEqual(r.remaining, 0);
   assert.strictEqual(r.written, r.total);
-  assert.deepStrictEqual(progress.map(p => p.done), [2, 4], 'progress per batch, ending at the backlog it started with');
+  assert.deepStrictEqual(progress.map(p => p.done), [2, 4, 5], 'progress per batch, ending at the backlog it started with (one row was already done)');
   assert.ok(MV.generation(T.store.db) > gen, 'every vector write bumps the generation');
   assert.strictEqual(heavyRows(), notes.length);
   assert.strictEqual(HD.backlogOf(E, EMB4, [NS]).length, 0);
@@ -91,26 +91,41 @@ test('without the owner there is no heavy provider, and the search fails by name
   await require('../../src/core/embed-provider.cjs').closeAll(); // a provider built earlier in this process is every caller's: start clean
   const plain = new Engine({ dataDir: T.dir, store: T.store, getEmbedder: null, owner: null, establishedBy: 'test' });
   await assert.rejects(search(plain, T.who.operator('plain'), { namespaces: [NS], query: 'anything', mode: 'semantic' }, { tier: heavy(), levers: { on_heavy_failure: 'pause' } }), (e) => e.code === 'E_NO_EMBEDDER' && e.detail.heavy === true);
+  const copy = await search(plain, T.who.operator('plain'), { namespaces: [NS], query: 'anything', mode: 'semantic' }, { tier: heavy(), levers: { on_heavy_failure: 'pause' } }).catch((e) => e);
+  assert.doesNotMatch(copy.message, /belay resume/, 'a copy-served search cannot resume a run, so it does not say to');
 });
 
 test('a heavy embed failure under on_heavy_failure pause is loud, tells the run hook, and keeps the run on its tier', async () => {
   await R.restore(); // a fresh child that cannot load
   R = rig({ fake: { load_fail: true } }); R.install();
   seen.length = 0;
-  await assert.rejects(ask({ query: 'anything at all' }, { levers: { on_heavy_failure: 'pause' } }), (e) => e.code === 'E_INTERNAL' && e.detail.heavy === true && e.detail.cause === 'load_failed' && /Tell the operator/.test(e.message));
+  await assert.rejects(ask({ query: 'anything at all' }, { levers: { on_heavy_failure: 'pause' } }), (e) => e.code === 'E_INTERNAL' && e.detail.heavy === true && e.detail.cause === 'load_failed' && /Tell the operator/.test(e.message) && /fix the GPU embedder/.test(e.message) && !/embedder fetch/.test(e.message) && e.detail.stage === 'heavy_embed');
   assert.strictEqual(seen.length, 1, 'the run hook was told once');
   assert.strictEqual(seen[0].call, 'memory.search');
   assert.strictEqual(HT.fallbackOf(E, 'lc-plain'), null, 'pause does not fall back');
 });
 
-test('a heavy embed failure under on_heavy_failure fallback serves the search on nano, says so, and is sticky for the run', async () => {
+test('a heavy embed failure under on_heavy_failure fallback serves the search on nano and says so (a run with no pin has no sticky state)', async () => {
   const r = await ask({ query: 'anything at all' }, { levers: { on_heavy_failure: 'fallback' } });
   assert.strictEqual(r.tier_fallback.to, 'cpu-fast');
   assert.strictEqual(r.tier_fallback.cause.code, 'E_INTERNAL');
   assert.ok(r.modes_failed.some(m => m.mode === 'heavy_embed'), JSON.stringify(r.modes_failed));
   assert.match(r.warning, /heavy_embed/);
   assert.strictEqual(r.results.length, notes.length + 1, 'the nano scan answered');
-  const fb = HT.fallbackOf(E, 'lc-plain');
-  assert.ok(fb && fb.cause.code === 'E_INTERNAL', 'the run is on the fallback profile from here');
+  assert.strictEqual(HT.fallbackOf(E, 'lc-plain'), null, 'the sticky fallback lives on a pinned run row (gpu-wire-write.test.cjs)');
   assert.deepStrictEqual(Object.keys(TABLE).includes(EMB4), true);
+});
+
+test('S7: memory.drainHeavy asked to probe runs the VRAM probe before any load; a refusal loads nothing, and a pass drains', async () => {
+  const GS = core('gpu-shared.cjs');
+  await R.restore(); R = rig({ probe: { vram_fail: true } }); R.install();
+  const late = T.note('a note for the probing drain', { vec: [1, 0.8, 0] });
+  const op = T.who.operator('plain');
+  await assert.rejects(E.handle('memory.drainHeavy', { caller: op, model: EMB4, namespaces: [NS], probe: true }), (e) => e.code === 'E_MODEL_ABSENT' && e.detail.cause === 'probe_refused' && e.detail.refusal.reason === 'no_gpu');
+  assert.strictEqual(GS.isOpen(), false, 'the refused probe loaded nothing in the shared child');
+  assert.ok(HD.backlogOf(E, EMB4, [NS]).some(r => r.id === late), 'the row is still behind');
+  await R.restore(); R = rig(); R.install();
+  const ok = await E.handle('memory.drainHeavy', { caller: op, model: EMB4, namespaces: [NS], probe: true, headroom_gb: 0.5 });
+  assert.strictEqual(ok.done, true);
+  assert.strictEqual(HD.backlogOf(E, EMB4, [NS]).length, 0);
 });

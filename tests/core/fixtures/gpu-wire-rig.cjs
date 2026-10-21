@@ -17,7 +17,7 @@ const entry = (id, kind, extra) => ({ id, sha: SHA, runtime: 'gguf', kind, label
 const TABLE = { [EMB4]: entry(EMB4, 'embedder'), [RR4]: entry(RR4, 'reranker'), [RR06]: entry(RR06, 'reranker') };
 const smi = () => ({ name: 'NVIDIA GeForce RTX 5060 Laptop GPU', driver: '617.42', total_mb: 8151, used_mb: 0, free_mb: 7899 });
 
-function rig({ fake = {}, probe = {} } = {}) {
+function rig({ fake = {}, probe = {}, smi: smiFn } = {}) {
   const cache = sandbox();
   writeCache(cache, TABLE);
   const GS = core('gpu-shared.cjs'), HT = core('heavy-tier.cjs');
@@ -25,7 +25,7 @@ function rig({ fake = {}, probe = {} } = {}) {
   return {
     cache, table: TABLE, clientOpts,
     install() {
-      GS.setTestOptions({ clientOpts, probeOpts: { table: TABLE, cacheDir: cache, runtimeDir: 'unused', record: false, smi, clientOpts: { ...clientOpts, workerOpts: { fake: { ...clientOpts.workerOpts.fake, ...probe } } } } });
+      GS.setTestOptions({ clientOpts, probeOpts: { table: TABLE, cacheDir: cache, runtimeDir: 'unused', record: false, smi: smiFn || smi, clientOpts: { ...clientOpts, workerOpts: { fake: { ...clientOpts.workerOpts.fake, ...probe } } } } });
       HT.setTestTable(TABLE);
     },
     async restore() { await GS.close(); await core('rerank-provider.cjs').closeAll(); await core('embed-provider.cjs').closeAll(); GS.setTestOptions(null); HT.setTestTable(undefined); cleanup(cache); },

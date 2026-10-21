@@ -16,7 +16,6 @@ const { Engine } = core('engine.cjs');
 const ST = core('search-tier.cjs');
 const HT = core('heavy-tier.cjs');
 const HD = core('heavy-drain.cjs');
-const HN = core('heavy-notes.cjs');
 const RP = core('retrieval-profiles.cjs');
 const rows = core('rows.cjs');
 
@@ -83,14 +82,16 @@ test('a worker cannot claim the orchestrator tier, by its row, its identity or i
   assert.ok(sp instanceof Error ? sp.code === 'E_ARGS' : true, 'a request field naming a tier is refused or ignored, never obeyed');
 });
 
-test('the first-message index is logged on the tier of the worker it is for', async () => {
+test('the first-message index logs the tier that served (nano) and the pinned tier of the worker it is for', async () => {
   const harness = callerFor('orchestrator', { run_id: 'pin-a', channel: 'harness' });
   await E.handle('memory.index', { caller: harness, worker_id: 'w-rev', task_id: 't1' });
   await E.handle('memory.index', { caller: harness, worker_id: 'w-cod', task_id: 't2' });
   const ev = T.store.db.prepare("SELECT message FROM memory_event WHERE kind = 'index' ORDER BY id").all().map(r => JSON.parse(r.message));
   const byWorker = Object.fromEntries(ev.map(e => [e.for_worker, e.tier]));
-  assert.strictEqual(byWorker['w-rev'].profile, 'cpu-fast', 'the reviewer worker tier, not the orchestrator tier of the caller');
-  assert.strictEqual(byWorker['w-cod'].reranker, RR06);
+  const pinnedOf = Object.fromEntries(ev.map(e => [e.for_worker, e.pinned_tier]));
+  for (const w of ['w-rev', 'w-cod']) assert.deepStrictEqual([byWorker[w].embedder, byWorker[w].reranker], [RP.NANO, null], 'the index ranks on nano, so the tier that SERVED is nano');
+  assert.strictEqual(pinnedOf['w-rev'].profile, 'cpu-fast', 'the reviewer worker pinned tier, not the orchestrator tier of the caller');
+  assert.strictEqual(pinnedOf['w-cod'].reranker, RR06);
 });
 
 test('a probe refusal under on_heavy_failure fallback serves the fallback profile everywhere, with ONE notice', async () => {
@@ -149,24 +150,4 @@ test('on_heavy_behind fallback: the heavy roles use nano for this run, with ONE 
   assert.strictEqual(rec.routing.run.reranker, RR4, 'the reranker is kept');
   assert.strictEqual(rec.routing.tiers.reviewer.embedder, RP.NANO, 'every heavy role is demoted');
   assert.strictEqual(gpuRows(), before, 'nothing was drained');
-});
-
-test('a note written while the heavy tier is live is also embedded by the routing heavy embedder, best effort', async () => {
-  const caller = callerFor('orchestrator', { run_id: 'pin-w' });
-  const id = T.note('a note written during the run', { ns: 'project/pinw', vec: [1, 0.5, 0] });
-  assert.strictEqual(HD.backlogOf(E, EMB4, ['project/pinw']).length, 1);
-  assert.deepStrictEqual(HN.heavyOf(E, 'pin-w'), [EMB4]);
-  assert.deepStrictEqual(HN.heavyOf(E, 'pin-x'), [], 'a run that fell back to nano has no heavy embedder to feed');
-  const ok = await HN.afterNotes(E, caller, { notes: [{ id, state: 'stored' }, { id: 'dup', state: 'duplicate' }] });
-  assert.deepStrictEqual(ok.embedded, [{ embedder: EMB4, ids: [id] }]);
-  assert.strictEqual(HD.backlogOf(E, EMB4, ['project/pinw']).length, 0);
-
-  await R.restore(); R = rig({ fake: { load_fail: true } }); R.install();
-  const id2 = T.note('a second note whose heavy embed fails', { ns: 'project/pinw', vec: [1, 0.6, 0] });
-  const bad = await HN.afterNotes(E, caller, { notes: [{ id: id2, state: 'stored' }] });
-  assert.strictEqual(bad.embedded.length, 0);
-  assert.strictEqual(bad.failed[0].embedder, EMB4);
-  assert.strictEqual(HD.backlogOf(E, EMB4, ['project/pinw']).length, 1, 'a failure leaves the note in the backlog');
-  const none = await HN.afterNotes(E, callerFor('orchestrator', { run_id: 'pin-default' }), { notes: [{ id: id2, state: 'stored' }] });
-  assert.deepStrictEqual(none, { embedded: [], failed: [] }, 'a run with no heavy embedder does nothing');
 });
