@@ -28,6 +28,7 @@ const EMBEDDING_READ_TIMEOUT_MS = 100000; // a call that needs a vector: the fir
 const WRITE_TIMEOUT_MS = 30000;
 const REPING_BEFORE_LOST_MS = 2000; // E2: a live pid that missed the first ping gets one longer chance (a fork on its loop stalls it 80-365 ms)
 const PING_BEFORE_VECTOR_MS = 300; // MF3-1: the liveness ping a vector call sends before waiting its long bound
+const PIN_TIMEOUT_MS = 700000; // run.pinRouting: a cold load of every GPU model of the routing, under the probe's own limits
 const EVALUATE_TIMEOUT_MS = 600000; // task.evaluate runs the acceptance commands inside the owner
 
 // 5a-3 fix round (blocking): owner.json is rewritten non-atomically at the moment a loser's connect
@@ -67,6 +68,8 @@ function writeTimeoutFor(method, params) {
   if (method === 'task.evaluate') return EVALUATE_TIMEOUT_MS;
   if (method === 'memory.embedQuery') return EMBEDDING_READ_TIMEOUT_MS; // one embed of the query, bounded like a search's
   if (method === 'memory.embedNote') return EMBEDDING_READ_TIMEOUT_MS; // one note's embed and its comparison
+  if (method === 'run.pinRouting') return PIN_TIMEOUT_MS; // the GPU probe loads every model of the routing once
+  if (method === 'memory.drainHeavy') return Math.min(Number.isInteger(params.bound_ms) ? params.bound_ms : 20000, 120000) + 30000; // its own bound, plus the last batch and the round trip
   if (method === 'memory.store' && params.embed !== false && !params.embedding && !params.embedding_b64) return EMBEDDING_READ_TIMEOUT_MS; // embed: false needs no vector (ADR 0040)
   // ADR 0047: a hand-back carrying notes embeds each one, so it has the vector limit; one without notes does not.
   if (method === 'lease.release' && Array.isArray(params.notes) && params.notes.length) return EMBEDDING_READ_TIMEOUT_MS;

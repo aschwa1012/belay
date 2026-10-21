@@ -35,12 +35,21 @@ function get(tier, opts) {
 
 // Test seam (BELAY_TEST_MODE=1 alone): options merged into the auto-built CPU provider (pkg, cacheDir, table, workerPath, workerOpts).
 let autoOpts = null;
+let usesGpu = false; // set when a GPU provider was built: closeAll then closes the shared GPU child too
 function setAutoOptions(o) { if (process.env.BELAY_TEST_MODE !== '1') throw err('E_ARGS', 'setAutoOptions is a test seam', {}); autoOpts = o || null; }
 
 function autoBuild(name) {
   const extra = process.env.BELAY_TEST_MODE === '1' && autoOpts ? autoOpts : {};
   const { rerankerFor } = require('./onnx-rerankers.cjs'); // pure table
-  try { rerankerFor(name, extra.table); } catch { return null; } // not a pinned ONNX reranker (a GPU id, an unknown one): nothing to build
+  try { rerankerFor(name, extra.table); } catch {
+    // Not a pinned ONNX reranker. A pinned GGUF reranker is served by the owner's shared GPU child (ADR 0049); anything else has nothing to build.
+    const m = require('./retrieval-profiles.cjs').describeModel(name); // a pure table
+    if (!m || m.kind !== 'reranker' || m.runtime !== 'gguf') return null;
+    const { gpuRerankProvider } = require('./rerank-gpu.cjs'); // lazy: the owner's GPU tiers only
+    usesGpu = true;
+    providers.set(name, gpuRerankProvider({ model: name }));
+    return providers.get(name);
+  }
   const { cpuRerankProvider } = require('./rerank-cpu.cjs'); // lazy: the owner's search only
   const impl = cpuRerankProvider({ model: name, ...extra });
   providers.set(name, { rerank: impl, close: impl.close });
@@ -57,6 +66,11 @@ async function closeAll(boundMs = 3000) {
     let timer;
     try { await Promise.race([Promise.resolve().then(() => impl.close()), new Promise((r) => { timer = setTimeout(r, boundMs); })]); } catch { /* best effort */ } finally { clearTimeout(timer); }
   }));
+  if (usesGpu) { // one child holds every GPU model, so closing the reranker's provider closes it for the embedder too
+    usesGpu = false;
+    let timer;
+    try { await Promise.race([require('./gpu-shared.cjs').close(), new Promise((r) => { timer = setTimeout(r, boundMs); })]); } catch { /* best effort */ } finally { clearTimeout(timer); }
+  }
 }
 
 module.exports = { register, unregister, get, closeAll, setAutoOptions };

@@ -18,6 +18,7 @@ const { scanCeiling } = require('./schema.cjs');
 const { toUnitF32 } = require('./store.cjs');
 const gate = require('./memory-note-gate.cjs');
 const ST = require('./search-tier.cjs');
+const HE = require('./heavy-embed.cjs');
 const { notesDefaults } = require('./memory-search-scope.cjs');
 const { nsFor, resolveNamespace, runAlpha, withEmbedding, reachOf, checkReach, runEmbedderMode } = require('./methods-memory.cjs');
 
@@ -93,10 +94,14 @@ function rowsByIds(E, ids) {
 
 // ---- the two stages ---------------------------------------------------------------------------------------
 
-async function queryVector(E, caller, o) {
+async function queryVector(E, caller, o, lv) {
   if (o.queryEmbedding) return { vec: o.queryEmbedding, model: o.embeddingModel || null };
-  // Only the store's own (nano) embedder can embed a query; a heavy tier's query vector comes with the call until its embedder exists.
-  if (!ST.isNano(o.tier)) throw err('E_NO_EMBEDDER', `no embedder for the ${o.tier.embedder} tier is available, so a search on it needs a query_embedding`);
+  // A heavy tier's query is embedded by the owner's heavy embed provider (heavy-embed.cjs); a failure is decided by on_heavy_failure.
+  if (!ST.isNano(o.tier)) {
+    const h = await HE.queryVector(E, caller, o, lv);
+    if (h.vec) return h;
+    o.tier = h.fallback.tier; o.tierFallback = h.fallback; // served on the fallback profile, and the answer says so
+  }
   // The shared embedding phase: loads on first use, raises E_NO_EMBEDDER, E_MODEL_ABSENT or E_MODEL_CHANGED, and
   // reports a failure to the ADR 0034 hook. A keyword stage never reaches this.
   const e = await withEmbedding(E, { query: o.query }, 'query_embedding', 'query', caller);
@@ -105,8 +110,8 @@ async function queryVector(E, caller, o) {
 
 // Exact cosine over the tier's cached unit vectors (search-tier.cjs candidates) of every stated namespace, restricted to the filter.
 // Returns the best `depth` hits best first. The scan ceiling, the model binding and the dimension are enforced as before.
-async function semanticStage(E, caller, o, depth) {
-  const { vec, model: qModel } = await queryVector(E, caller, o);
+async function semanticStage(E, caller, o, depth, lv) {
+  const { vec, model: qModel } = await queryVector(E, caller, o, lv);
   const scored = [];
   let scanned = 0, model = null, dim = null;
   for (const ns of o.namespaces) {
@@ -278,13 +283,14 @@ async function search(E, caller, args, internal = {}) {
   let sem = null, kw = null;
   if (o.mode !== 'keyword') {
     const ts = Date.now();
-    try { sem = await semanticStage(E, caller, o, depth); ran.push('semantic'); }
+    try { sem = await semanticStage(E, caller, o, depth, lv); ran.push('semantic'); }
     catch (e) {
       if (o.mode === 'semantic' || e.code === 'E_TIER_BEHIND') throw e; // a semantic search that cannot run is refused by name; a heavy tier never serves a partial index
       onSemanticFailure(E, caller, e);
       failed.push({ mode: 'semantic', code: asCode(e), message: e.message });
     }
     ms.semantic = Date.now() - ts;
+    if (o.tierFallback) failed.push({ mode: 'heavy_embed', code: o.tierFallback.cause.code, message: `the heavy embedder failed (${o.tierFallback.cause.message}); this search and the rest of the run are served on the ${o.tier.profile} profile` });
   }
   if (o.mode !== 'semantic') {
     const tk = Date.now();
@@ -360,6 +366,7 @@ async function search(E, caller, args, internal = {}) {
   out.searched = searched; out.fusion = fusion;
   if (rr.info || !ST.isNano(o.tier)) { const { profile, embedder, reranker, device } = o.tier; out.tier = { profile, embedder, reranker, device }; }
   if (rr.info) out.rerank = rr.info;
+  if (o.tierFallback) out.tier_fallback = { to: o.tier.profile, from: o.tier.fallback_from || null, cause: o.tierFallback.cause };
   if (rr.failed) { // loud (ADR 0040): the answer names the stage that did not run, in the warning and in modes_failed
     failed.push(rr.failed);
     out.warning = [`rerank did not run (${rr.failed.code}${rr.info.cause.reason ? `: ${rr.info.cause.reason}` : ''}); the results are in fusion order, not reranked`, out.warning].filter(Boolean).join('; ');

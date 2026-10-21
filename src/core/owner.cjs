@@ -456,6 +456,7 @@ class Owner {
     try { if (this.embedderObj) await this.embedderObj.close(); } catch (e) { record(e); }
     // ADR 0050: the CPU rerank child ends with the owner too (it would also end by itself when its channel closes). Bounded, never throws.
     try { await require('./rerank-provider.cjs').closeAll(3000); } catch (e) { record(e); }
+    try { await require('./embed-provider.cjs').closeAll(3000); } catch (e) { record(e); } // the heavy embed providers; the GPU child is shared, so this closes it too if the reranker's closeAll did not
     try { for (const c of this.conns) c.destroy(); this.conns.clear(); } catch (e) { record(e); }
     await new Promise((resolve) => {
       if (!this.tcpServer) return resolve();
