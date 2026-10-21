@@ -8,7 +8,7 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const { execFileSync } = require('node:child_process');
-const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
+const { core, sandbox, cleanup, callerFor, captureBrief } = require('./helpers.cjs');
 
 const { Store } = core('store.cjs');
 const { Engine } = core('engine.cjs');
@@ -126,6 +126,7 @@ test('a note verdict whose citation check outlasts run.end is refused and writes
   const reviewEvents = events('note_review').length;
   endDuringCheck(c);
   try {
+    await captureBrief(call, c.orch, c.harness, { review_task_id: rt }); // the brief a run would have captured
     await ended(call('memory.noteVerdicts', c.harness, { review_task_id: rt }));
   } finally { CC.seam.afterCheck = null; }
   assert.strictEqual(rowOf(id).status ?? 'unverified', 'unverified', 'the verdict was not applied');
@@ -143,6 +144,7 @@ test('a report verdict whose citation check outlasts run.end is refused and writ
   const reviewEvents = events('note_review').length;
   endDuringCheck(c);
   try {
+    await captureBrief(call, c.orch, c.harness, { review_task_id: rt }); // the brief a run would have captured
     await ended(call('memory.noteVerdicts', c.harness, { review_task_id: rt }));
   } finally { CC.seam.afterCheck = null; }
   assert.strictEqual(store.p("SELECT COUNT(*) AS n FROM memory_entries WHERE type = 'held' AND json_extract(body, '$.note_id') = ?").get(id).n, 0, 'no hold was written');
@@ -181,6 +183,7 @@ test('a note verdict whose citation check fails while the run ends in it is an e
   const reviewEvents = events('note_review').length;
   endDuringCheck(c);
   try {
+    await captureBrief(call, c.orch, c.harness, { review_task_id: rt }); // the brief a run would have captured
     await ended(call('memory.noteVerdicts', c.harness, { review_task_id: rt }));
   } finally { CC.seam.afterCheck = null; }
   assert.strictEqual(events('note_review').length, reviewEvents, 'no note_review receipt, not even an ok:false refusal, was written into the ended run');
@@ -197,6 +200,7 @@ test('a report verdict whose citation check fails while the run ends in it is an
   const reviewEvents = events('note_review').length;
   endDuringCheck(c);
   try {
+    await captureBrief(call, c.orch, c.harness, { review_task_id: rt }); // the brief a run would have captured
     await ended(call('memory.noteVerdicts', c.harness, { review_task_id: rt }));
   } finally { CC.seam.afterCheck = null; }
   assert.strictEqual(events('note_review').length, reviewEvents, 'no receipt, applied or refused, was written');

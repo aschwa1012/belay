@@ -29,6 +29,7 @@ function world() {
   Object.assign(core.memory, {
     events: async () => ({ events: events.slice() }),
     recordEvent: async (e) => { events.push(e); return e; },
+    noteBriefCapture: async (a) => ({ ref: 'fake', notes: a.notes.length, event_id: 'me-fake' }),
     reviewBrief: async () => ({ notes: [{ id: 'n1', title: 'x' }], reports: [], review: false, refuted_shown: [], reviewed_tasks: [] }),
     noteVerdicts: async (a) => { verdicts.push(a); return { applied: [], refused: [], already: [], unjudged: [{ id: 'n1' }] }; },
   });
