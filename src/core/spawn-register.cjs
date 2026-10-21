@@ -22,16 +22,52 @@ const dir = () => process.env.BELAY_SPAWN_REGISTRY || path.join(os.tmpdir(), 'be
 const fileOf = (pid) => path.join(dir(), `${Number(pid)}.json`);
 const exitedDir = () => path.join(dir(), 'exited');
 const tombFile = (t) => path.join(exitedDir(), `${Number(t.pid)}-${Number.isFinite(t.created) ? t.created : 0}.json`);
+// The file calls, in one object so a test can fail them in a chosen order (a Windows rename onto a file another process has open
+// answers EPERM, EBUSY or EACCES for a moment; production never changes this).
+const io = { rename: (a, b) => fs.renameSync(a, b), read: (p) => fs.readFileSync(p, 'utf8'), sleep: (ms) => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* no SAB */ } } };
+const TRANSIENT = new Set(['EPERM', 'EBUSY', 'EACCES']);
+const RETRIES = 12; // attempts after the first; the waits double from 5 ms to a cap of 80 ms, about 0.7 s in all
+const backoff = (i) => Math.min(5 * 2 ** i, 80);
+let tmpSeq = 0;
 const UNKNOWN_START_SLACK_MS = 2000; // a record with no creation time and no spawn time: it was made this long after the process started, at most
+
+// Write `text` to `target` so a reader sees the old file or the whole new one. The temp name is unique per call (process, counter,
+// time), so two writers of one target never share it. Many processes write here at once and Windows refuses a rename onto a file
+// another process has open, so a transient refusal is retried with a bounded backoff; a target that already holds exactly this text
+// is a success whoever wrote it. Anything else still failing after the retries throws, and the temp file is removed.
+function writeAtomic(target, text) {
+  const tmp = `${target}.${process.pid}.${++tmpSeq}.${Date.now().toString(36)}.tmp`;
+  fs.writeFileSync(tmp, text);
+  try {
+    for (let i = 0; ; i++) {
+      try { io.rename(tmp, target); return; }
+      catch (e) {
+        if (!e || !TRANSIENT.has(e.code)) throw e;
+        let same = false;
+        try { same = io.read(target) === text; } catch { /* unreadable or gone: not the same */ }
+        if (same) return;
+        if (i >= RETRIES) throw e;
+        io.sleep(backoff(i));
+      }
+    }
+  } finally { try { fs.unlinkSync(tmp); } catch { /* renamed into place, or never written */ } }
+}
+
+// Read and parse one register file. A file another process is renaming over answers a transient error for a moment: retry it. A
+// missing file throws ENOENT as ever (the caller decides); a persistent error or an unparseable file throws, and the caller fails closed.
+function readJson(file) {
+  for (let i = 0; ; i++) {
+    try { return JSON.parse(io.read(file)); }
+    catch (e) { if (!e || !TRANSIENT.has(e.code) || i >= RETRIES) throw e; io.sleep(backoff(i)); }
+  }
+}
 
 // -> the record written. `created` is the process's creation time when known (it usually is not yet at spawn; `update` fills it).
 function register({ pid, kind, dataDir = null, workerId = null, created = null, spawnedAt = null }) {
   if (!Number.isInteger(pid) || pid <= 0) throw new Error(`spawn register: not a pid: ${pid}`);
   fs.mkdirSync(dir(), { recursive: true });
   const rec = { pid, created: Number.isFinite(created) ? created : null, kind: kind || 'worker', data_dir: dataDir, worker_id: workerId, spawned_at: Number.isFinite(spawnedAt) ? spawnedAt : null, by_pid: process.pid, at: Date.now() };
-  const tmp = `${fileOf(pid)}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(rec));
-  fs.renameSync(tmp, fileOf(pid));
+  writeAtomic(fileOf(pid), JSON.stringify(rec));
   return rec;
 }
 
@@ -44,7 +80,7 @@ function registerProcess(rec, what) {
 function update(pid, created) {
   if (!Number.isFinite(created)) return false;
   let rec;
-  try { rec = JSON.parse(fs.readFileSync(fileOf(pid), 'utf8')); } catch { return false; }
+  try { rec = readJson(fileOf(pid)); } catch { return false; }
   if (rec.created === created) return true;
   register({ pid, kind: rec.kind, dataDir: rec.data_dir, workerId: rec.worker_id, created, spawnedAt: rec.spawned_at });
   return true;
@@ -55,9 +91,7 @@ const startOf = (rec) => Number.isFinite(rec.created) ? rec.created : Number.isF
 
 function saveTombstone(t) {
   fs.mkdirSync(exitedDir(), { recursive: true });
-  const tmp = `${tombFile(t)}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(t));
-  fs.renameSync(tmp, tombFile(t));
+  writeAtomic(tombFile(t), JSON.stringify(t));
   return t;
 }
 function dropTombstone(t) { try { fs.unlinkSync(tombFile(t)); } catch { /* already gone */ } }
@@ -69,7 +103,7 @@ const tombstoneOf = (rec, until) => ({ pid: rec.pid, created: Number.isFinite(re
 // retires it again (and throws, which the operator check turns into a refusal) rather than forgetting the process.
 function unregister(pid) {
   let rec;
-  try { rec = JSON.parse(fs.readFileSync(fileOf(pid), 'utf8')); } catch { return; }
+  try { rec = readJson(fileOf(pid)); } catch { return; }
   try { saveTombstone(tombstoneOf(rec, Date.now())); } catch { return; }
   try { fs.unlinkSync(fileOf(pid)); } catch { /* someone else removed it */ }
 }
@@ -84,7 +118,7 @@ function live() {
     if (!/^\d+\.json$/.test(n)) continue; // a temp file being renamed into place, the exited directory, or something else
     const file = path.join(dir(), n);
     let rec;
-    try { rec = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { if (e && e.code === 'ENOENT') continue; throw new Error(`spawn register: ${n} cannot be read (${e.message})`); }
+    try { rec = readJson(file); } catch (e) { if (e && e.code === 'ENOENT') continue; throw new Error(`spawn register: ${n} cannot be read (${e.message})`); }
     if (!rec || !Number.isInteger(rec.pid)) throw new Error(`spawn register: ${n} names no pid`);
     if (!pidAlive(rec.pid)) { saveTombstone(tombstoneOf(rec, Date.now())); try { fs.unlinkSync(file); } catch { /* someone else removed it */ } continue; }
     out.push(rec);
@@ -105,7 +139,7 @@ function tombstones() {
   for (const n of names) {
     if (!/^\d+-\d+\.json$/.test(n)) continue;
     let t;
-    try { t = JSON.parse(fs.readFileSync(path.join(exitedDir(), n), 'utf8')); } catch (e) { if (e && e.code === 'ENOENT') continue; throw new Error(`spawn register: exited/${n} cannot be read (${e.message})`); }
+    try { t = readJson(path.join(exitedDir(), n)); } catch (e) { if (e && e.code === 'ENOENT') continue; throw new Error(`spawn register: exited/${n} cannot be read (${e.message})`); }
     if (!t || !Number.isInteger(t.pid) || !Number.isFinite(t.from)) throw new Error(`spawn register: exited/${n} names no pid or start`);
     out.push({ pid: t.pid, created: Number.isFinite(t.created) ? t.created : null, from: t.from, until: Number.isFinite(t.until) ? t.until : null, kind: t.kind || 'worker', via: t.via == null ? null : t.via });
   }
@@ -118,4 +152,4 @@ function runSpawned(interactive, orchestratorPid) {
   return !interactive && Number.isInteger(orchestratorPid) ? [{ pid: orchestratorPid, created: null, kind: 'orchestrator' }] : [];
 }
 
-module.exports = { register, registerProcess, update, unregister, list, live, startOf, tombstones, saveTombstone, dropTombstone, dir, runSpawned };
+module.exports = { register, registerProcess, update, unregister, list, live, startOf, tombstones, saveTombstone, dropTombstone, dir, runSpawned, io };
