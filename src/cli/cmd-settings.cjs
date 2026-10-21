@@ -24,6 +24,18 @@ const seams = {
 };
 
 const SETTING_NAMES = K.NAMES;
+const RETIRED = require('../core/memory-levers.cjs').RETIRED; // memory.<key> of the removed note-review job
+
+// A key of the removed note-review job. Setting a true value (or a model or a cost cap) is refused with the removal message and writes
+// nothing; setting note_review false is accepted as the only value left, says it was removed and writes nothing; reading prints the message.
+const retiredKey = (key) => (typeof key === 'string' && key.startsWith('memory.') && Object.prototype.hasOwnProperty.call(RETIRED, key.slice(7)) ? key.slice(7) : null);
+function retiredResult(key, value) {
+  const k = retiredKey(key);
+  const message = RETIRED[k];
+  if (value === undefined) return { code: 0, text: `${message}\n`, json: { key, removed: true, message } };
+  if (k === 'note_review' && (value === false || value === 'false')) return { code: 0, text: `${message}\nnothing was written\n`, json: { key, removed: true, written: false, message } };
+  return usageError(message);
+}
 
 const USAGE = [
   'usage: belay settings [<key> [<value>]]',
@@ -112,6 +124,7 @@ function writeAtomic(file, text, expectRaw) {
 // memory block included), writes the config file atomically and returns { code, text, json } with the old and new value;
 // a refusal writes nothing.
 function writeSetting(found, key, rawValue, ctx) {
+  if (retiredKey(key)) return retiredResult(key, rawValue);
   if (!SETTING_NAMES.includes(key)) return usageError(`unknown key ${key}; the keys are ${SETTING_NAMES.join(', ')}`);
   const parsed = K.parseValue(key, rawValue);
   if (parsed.error) return usageError(parsed.error);
@@ -169,6 +182,7 @@ function writeSetting(found, key, rawValue, ctx) {
 
 async function run(ctx) {
   const [key, value, extra] = ctx.argv;
+  if (retiredKey(key) && extra === undefined) return retiredResult(key, value);
   if (key !== undefined && !SETTING_NAMES.includes(key)) {
     return usageError(`unknown key ${key}; the keys are ${SETTING_NAMES.join(', ')}`);
   }

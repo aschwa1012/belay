@@ -5,7 +5,7 @@
 // Nothing here deletes a row; only the operator's purge does, and it covers archive/ alone.
 
 const { fitBody, SEEN_MAX } = require('./methods-memory-notes.cjs');
-const { parse, loadNote } = require('./memory-facts.cjs');
+const { parse, loadNote, isHeldNow } = require('./memory-facts.cjs');
 
 const HISTORY_KEEP = 50; // delivery entries kept on the kept note, newest; the full count is in merged_from
 const MERGED_KEEP = 20;
@@ -159,15 +159,18 @@ function closeHold(E, note, meta) {
 // without recursion and stops only at a note that is not a project note, the kept note, or one already on the chain, so a cycle ends).
 // Returns the ids archived (the replaced note, then any it had itself replaced), or an empty list.
 function carryReplaced(E, project, note, meta, kept) {
-  if (meta.kind === 'wrong' || note.namespace !== `project/${project}`) return [];
+  if (meta.kind === 'wrong' || note.namespace !== `project/${project}`) return { ids: [], stopped_at: null };
   const target = kept || (meta.of ? loadNote(E, meta.of) : null);
-  if (!target) return [];
+  if (!target) return { ids: [], stopped_at: null };
   const chain = [];
+  let stoppedAt = null;
   const seen = new Set([note.id, target.id]);
   for (let cur = note; ;) {
     const col = E.store.p('SELECT supersedes FROM memory_entries WHERE id = ?').get(cur.id);
     const old = col && col.supersedes && !seen.has(col.supersedes) ? loadNote(E, col.supersedes) : null;
     if (!old || old.type !== 'note' || old.namespace !== `project/${project}`) break;
+    // A held ancestor stays in project/ (visible again, still held): only the archive review or the operator archives it. The chain ends there.
+    if (isHeldNow(E, old)) { stoppedAt = old.id; break; }
     seen.add(old.id); chain.push(old); cur = old;
   }
   // The deepest note leaves first, as when each archive carried the next; each records the ones that left with it.
@@ -179,7 +182,7 @@ function carryReplaced(E, project, note, meta, kept) {
       reason: `the note that replaced it (${replacer.id}) was archived as ${i === 0 ? meta.kind : 'superseded'} of ${target.id}, so ${target.id} stands in its place`,
     }, target);
   }
-  return chain.map(n => n.id);
+  return { ids: chain.map(n => n.id), stopped_at: stoppedAt };
 }
 
 // Moves the note to archive/<project>. `meta` is what the archive records: { kind, of, ground, reason, cites, run_id,
@@ -191,7 +194,8 @@ function archiveNote(E, project, note, meta, kept) {
   // whole history belongs on the surviving note). A superseded note (a different lesson) keeps its history.
   const transfer = meta.history_moved || ((meta.kind === 'duplicate' || meta.refines) && kept && !meta.no_transfer ? transferHistory(E, note, kept, meta) : null);
   const closed = closeHold(E, note, meta);
-  const carried = meta.carried_ids || carryReplaced(E, project, note, meta, kept);
+  const carry = meta.carried_ids ? { ids: meta.carried_ids, stopped_at: null } : carryReplaced(E, project, note, meta, kept);
+  const carried = carry.ids;
   bindNamespace(E, to, note);
   E.store.moveRow(note.id, from, to);
   const at = Date.now();
@@ -199,7 +203,7 @@ function archiveNote(E, project, note, meta, kept) {
     b.state = 'archived';
     b.archived = {
       at, from, kind: meta.kind, of: meta.of || null, ground: meta.ground || null, reason: meta.reason, cites: meta.cites || [], run_id: meta.run_id || null,
-      head_sha: meta.head_sha || null, held_row: meta.held_row || null, review: meta.receipt || null, direct: !!meta.direct, ...(closed ? { held_row_closed: closed } : {}), ...(carried.length ? { replaced_also_archived: carried[0] } : {}), ...(meta.replaced_by_archived ? { replaced_by_archived: meta.replaced_by_archived } : {}), ...(meta.relation ? { relation: meta.relation } : {}), ...(transfer ? { history_moved: transfer } : {}),
+      head_sha: meta.head_sha || null, held_row: meta.held_row || null, review: meta.receipt || null, direct: !!meta.direct, ...(closed ? { held_row_closed: closed } : {}), ...(carried.length ? { replaced_also_archived: carried[0] } : {}), ...(carry.stopped_at ? { carry_stopped_at: carry.stopped_at } : {}), ...(meta.replaced_by_archived ? { replaced_by_archived: meta.replaced_by_archived } : {}), ...(meta.relation ? { relation: meta.relation } : {}), ...(transfer ? { history_moved: transfer } : {}),
     };
     delete b.held;
     return fitBody(b);

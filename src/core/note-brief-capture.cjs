@@ -2,10 +2,10 @@
 // note-brief-capture.cjs — the notes a review's brief listed, fixed when the brief is rendered (memory.noteBriefCapture) and read
 // back when the verdicts arrive (capturedFor). A reviewer can judge only what it was shown, and what it was shown is a fact of the
 // moment the brief was written, so apply time never recomputes it: a note written, reviewed or edited since is not in it.
-// One `note_brief` receipt per rendering, ref being the review task's id or the review job's worker id. Its row_ids hold
+// One `note_brief` receipt per rendering, ref being the review task's id. Its row_ids hold
 // `<note id>#<shownHash>` for each note listed (none for a brief that listed none: that is a capture too). A review task's receipt is keyed
 // brief:<task id>@<lease id>, the lease being the attempt the brief was rendered for, so a reassigned review never reads the notes a
-// previous reviewer was shown; a job's is keyed brief:<worker id>. The newest receipt for a key is the brief the reviewer saw.
+// previous reviewer was shown. The newest receipt for a key is the brief the reviewer saw.
 
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
@@ -30,11 +30,8 @@ function refOf(E, args) {
     const lease = rows.currentLeaseForTask(E.store, t.id);
     return { ref: t.id, task_id: t.id, key: keyOf(t.id, lease ? lease.id : 'none') };
   }
-  const j = args.job;
-  if (!isObj(j) || !validId(j.worker_id) || !validId(j.reviewed_task_id) || j.worker_id !== `notereview-${j.reviewed_task_id}`) {
-    throw bad('memory.noteBriefCapture needs review_task_id, or job { worker_id, reviewed_task_id } with worker_id notereview-<reviewed_task_id>');
-  }
-  return { ref: j.worker_id, task_id: j.reviewed_task_id, key: keyOf(j.worker_id) };
+  if (args.job !== undefined) throw bad('the note-review job was removed (2026-10-21): a brief is captured for a review task only');
+  throw bad('memory.noteBriefCapture needs review_task_id');
 }
 
 // args: { review_task_id | job, notes: [{ id, hash }] } hash is shownHash of the note as the brief showed it. Returns the receipt.
@@ -54,7 +51,7 @@ async function capture(E, caller, args) {
   return { ref, notes: ids.length, event_id: ev.id };
 }
 
-// The newest captured brief of a ref for an attempt (a review task's lease id; none for a job): a Map note id -> hash (empty when the
+// The newest captured brief of a ref for an attempt (a review task's lease id): a Map note id -> hash (empty when the
 // brief listed nothing), or null when none was captured for that attempt.
 function capturedFor(E, ref, attempt) {
   const r = E.store.p("SELECT row_ids FROM memory_event WHERE kind = 'note_brief' AND ok = 1 AND key = ? ORDER BY seq DESC LIMIT 1").get(keyOf(ref, attempt));

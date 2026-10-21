@@ -226,6 +226,8 @@ class Engine {
     // build step 6d: in-process waiters for `permission.wait`, keyed by permission id — meaningful only
     // on the live owner's engine; a copy's engine has an empty map and nothing to resolve.
     this.waiters = new Map();
+    // The held-note guard (held-guard.cjs): installed on the store, loaded on its first guarded write, so no read path loads it.
+    if (store && typeof store === 'object') store.guard = (op, id, detail) => require('./held-guard.cjs').check(this, op, id, detail);
   }
 
   // ADR 0034 amendment 1: under on_embedder_failure `off`, once an embedder failure has turned the run's memory off (the owner's
@@ -333,6 +335,8 @@ class Engine {
     const off = this.memoryOff(method);
     if (off === 'refuse') throw err('E_LEVER_OFF', `${method}: memory is off for this run (on_embedder_failure off, after an embedder failure), so nothing is read or written through it`, { lever: 'on_embedder_failure' });
     if (off === 'empty') return { text: '', bytes: 0, row_ids: [], dropped: 0, over_budget: false, sha256: require('node:crypto').createHash('sha256').update('', 'utf8').digest('hex'), considered: 0, excluded_already_injected: 0, memory_off: true };
+    // A write method runs inside its caller's context (held-guard.cjs), which follows it across its awaits and reaches no other call.
+    if (spec.kind === 'write') return require('./held-guard.cjs').runAs(caller, () => spec.fn(this, caller, args));
     return spec.fn(this, caller, args);
   }
 }

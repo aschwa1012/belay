@@ -18,9 +18,16 @@ test('a cut during the notes sweep writes nothing after the shutdown', async () 
   const op = await openCore({ dataDir: dir, caller: { role: 'operator', run_id: RUN, pid: process.pid }, embed: false });
   await op.becomeOwner();
   const orch = await openCore({ dataDir: dir, caller: callerFor('orchestrator', { run_id: RUN }), embed: false });
-  await orch.run.attach({ adapter_pid: process.pid, memory_levers: JSON.stringify(LEVERS) });
+  await orch.run.attach({ adapter_pid: process.pid, memory_levers: JSON.stringify(LEVERS), project: 'p' });
   const t = await orch.task.create({ spec: 'x' });
-  await orch.worker.write({ id: 'notereview-' + t.id, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's2', last_event_at: Date.now() });
+  // An ended review task gives the notes sweep a hand-back to apply (memory.noteVerdicts, a write).
+  const rt = await orch.task.create({ spec: 'review', acceptance: { verdict: true } });
+  await orch.worker.write({ id: 'rev-1', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's2', last_event_at: Date.now() });
+  const ra = await orch.task.assign({ task_id: rt.id, worker_id: 'rev-1' });
+  const rw = await openCore({ dataDir: dir, caller: callerFor('worker', { worker_id: 'rev-1', run_id: RUN }), embed: false });
+  await rw.lease.release({ lease_id: ra.new_lease.id, reason: 'done', notes: [], result: { summary: 'reviewed', verdict: 'holds' } });
+  await rw.close();
+  await orch.worker.write({ id: 'rev-1', substrate: 'claude-code', pid: process.pid, state: 'dead', session_id: 's2', task_id: rt.id });
   await orch.close();
   const state = { calls: [], shutDown: false };
   let reached; const atStall = new Promise((r) => { reached = r; });
@@ -28,7 +35,7 @@ test('a cut during the notes sweep writes nothing after the shutdown', async () 
   const view = op.harness();
   const wrap = (group) => Object.fromEntries(Object.entries(view[group]).map(([name, fn]) => [name, async (a) => {
     state.calls.push({ call: `${group}.${name}`, afterShutdown: state.shutDown });
-    if (`${group}.${name}` === 'memory.events' && a && Array.isArray(a.kinds) && a.kinds.includes('review_job')) { reached(); await held; }
+    if (`${group}.${name}` === 'memory.noteVerdicts') { reached(); await held; }
     return fn(a);
   }]));
   const out = { ...view, worker: wrap('worker'), task: wrap('task'), memory: wrap('memory'), usage: wrap('usage') };

@@ -8,14 +8,14 @@ const assert = require('node:assert');
 const { parseLevers, mergeMemory, memoryText } = require('../../src/cli/run-levers.cjs');
 const ML = require('../../src/core/memory-levers.cjs');
 
-const CFG = { path: '/p/belay.config.json', memory: { project: 'acme', notes: true, note_review: true, notes_reflection: true, notes_sink: 'record', on_embedder_failure: 'stop' } };
+const CFG = { path: '/p/belay.config.json', memory: { project: 'acme', notes: true, notes_reflection: true, notes_lesson_question: true, notes_sink: 'record', on_embedder_failure: 'stop' } };
 const lv = (memory, config = CFG, extra = {}) => parseLevers({ ...(memory === undefined ? {} : { memory }), ...extra }, { config });
 
 test('an absent memory block and an empty one inherit the config; the sources name the file', () => {
   for (const spec of [undefined, {}]) {
     const l = lv(spec);
     assert.ifError(l.error);
-    assert.deepStrictEqual([l.memory_levers.notes, l.memory_levers.project, l.memory_levers.note_review], [true, 'acme', true]);
+    assert.deepStrictEqual([l.memory_levers.notes, l.memory_levers.project, l.memory_levers.notes_reflection], [true, 'acme', true]);
     assert.strictEqual(l.memory_sources.notes, CFG.path);
   }
 });
@@ -42,24 +42,24 @@ test('notes: false in the spec drops the notes-dependent levers inherited from t
   const l = lv({ notes: false });
   assert.ifError(l.error);
   assert.strictEqual(l.memory_levers.notes, false);
-  assert.deepStrictEqual([l.memory_levers.note_review, l.memory_levers.notes_reflection, l.memory_levers.notes_sink], [false, false, 'off']);
+  assert.deepStrictEqual([l.memory_levers.notes_lesson_question, l.memory_levers.notes_reflection, l.memory_levers.notes_sink], [false, false, 'off']);
   assert.strictEqual(l.memory_levers.project, 'acme', 'levers that do not need notes are still inherited');
-  assert.deepStrictEqual(l.memory_dropped.slice().sort(), ['note_review', 'notes_reflection', 'notes_sink']);
-  assert.strictEqual(l.memory_sources.note_review, 'default');
+  assert.deepStrictEqual(l.memory_dropped.slice().sort(), ['notes_lesson_question', 'notes_reflection', 'notes_sink']);
+  assert.strictEqual(l.memory_sources.notes_lesson_question, 'default');
   assert.strictEqual(l.memory_sources.project, CFG.path);
   assert.strictEqual(l.memory_sources.notes, 'spec');
-  assert.match(memoryText(l), /config levers dropped by notes false: .*note_review/);
+  assert.match(memoryText(l), /config levers dropped by notes false: .*notes_reflection/);
 });
 
 test('a notes-dependent lever the spec itself sets beside notes: false is still refused', () => {
-  const l = lv({ notes: false, note_review: true });
-  assert.match(l.error, /memory\.note_review needs memory\.notes/);
-  const noConfig = parseLevers({ memory: { notes: false, note_review: true } }, { config: null });
-  assert.match(noConfig.error, /memory\.note_review needs memory\.notes/);
+  const l = lv({ notes: false, notes_reflection: true });
+  assert.match(l.error, /memory\.notes_reflection needs memory\.notes/);
+  const noConfig = parseLevers({ memory: { notes: false, notes_reflection: true } }, { config: null });
+  assert.match(noConfig.error, /memory\.notes_reflection needs memory\.notes/);
 });
 
 test('without notes: false nothing is dropped, and a config that is invalid on its own is still refused', () => {
   assert.strictEqual(lv({ alpha: 0.7 }).memory_dropped, undefined);
-  const bad = parseLevers({ memory: { alpha: 0.7 } }, { config: { path: '/p/c.json', memory: { note_review: true } } });
-  assert.match(bad.error, /memory\.note_review needs memory\.notes/);
+  const bad = parseLevers({ memory: { alpha: 0.7 } }, { config: { path: '/p/c.json', memory: { notes_reflection: true } } });
+  assert.match(bad.error, /memory\.notes_reflection needs memory\.notes/);
 });

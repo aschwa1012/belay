@@ -1,6 +1,6 @@
 'use strict';
-// note-review.test.cjs — wave 4, the run manager's side: the reviewer's brief, the short review job (with a fake manager, so no
-// session is ever started), the run-end sweep, and the refuted-note wake. The core is the real engine on a sandbox store.
+// note-review.test.cjs — the run manager's side: the reviewer's brief, applying a review task's hand-back, and the refuted-note wake.
+// The short review job was removed: a task with no reviewer starts no worker (N3). The core is the real engine on a sandbox store.
 
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
@@ -23,7 +23,7 @@ const worker = (id) => callerFor('worker', { run_id: RUN, worker_id: id });
 const call = (method, caller, args = {}) => E.handle(method, { caller, ...args });
 const rowOf = (id) => store.p('SELECT * FROM memory_entries WHERE id = ?').get(id);
 const events = (kind) => store.p('SELECT * FROM memory_event WHERE kind = ? ORDER BY seq').all(kind);
-const LV = { ...DEFAULTS, project: 'acme', notes: true, note_review: true };
+const LV = { ...DEFAULTS, project: 'acme', notes: true };
 let seq = 0, k = 30;
 
 const DIM = 64;
@@ -50,20 +50,8 @@ async function written(w, n = 1) {
   return { task: (await call('task.get', orch, { task_id: t.id })), notes: out.notes.map((x) => x.id) };
 }
 
-// A fake run manager: it records what it was asked and answers a job's turn with `answer`.
-function fakeManager(answer, { cost = 0.01, event = 'turn_end' } = {}) {
-  const m = { spawned: [], stopped: [], recs: new Map() };
-  m.spawn = async (a) => {
-    m.spawned.push(a);
-    await call('worker.write', orch, { id: a.worker_id, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's', last_event_at: Date.now(), worktree: a.worktree });
-    m.recs.set(a.worker_id, { lastAssistantText: typeof answer === 'function' ? answer(a) : answer, costUsd: cost });
-    return {};
-  };
-  m.wait = async () => ({ event, is_error: false, timed_out: event === 'timeout' });
-  m.stop = async ({ worker_id }) => { m.stopped.push(worker_id); };
-  m._worker = (id) => m.recs.get(id);
-  return m;
-}
+// A manager that records every spawn: none is ever expected, since the short review job was removed.
+const spawnLog = () => { const m = { spawned: [] }; m.spawn = async (a) => { m.spawned.push(a); return {}; }; return m; };
 const ctxFor = (manager, lv = LV) => ({ core, runId: RUN, dataDir: dir, memoryLevers: lv, worktree: dir, manager });
 const J = (ctx, lv = LV) => ({ ctx, core, lv, w: null, gate: { aborted: false }, s: {}, turnPath: false });
 const verdictsFor = (ids, v = 'confirmed') => JSON.stringify({ memory_verdicts: ids.map((id) => ({ id, verdict: v, cites: [{ where: 'stream', quote: STREAM_LINE }], reason: 'the stream shows it' })) });
@@ -74,74 +62,20 @@ before(async () => {
   E = new Engine({ dataDir: dir, store, getEmbedder: async () => ({ embed }), owner: null, establishedBy: 'test' });
   const coreFor = (caller) => new Proxy({}, { get: (_, g) => (g === 'caller' ? caller : new Proxy({}, { get: (__, n) => (args) => call(`${g}.${n}`, caller, args || {}) })) });
   core = coreFor(harness);
-  await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true, note_review: true }) });
+  await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true }) });
 });
 after(() => { store.close(); cleanup(dir); });
 
-test('N1: the review job is spawned read-only with the levers\' model and cap, no belay preface, and its verdicts are applied', async () => {
-  const w = await written('wr-1', 2);
-  const m = fakeManager(verdictsFor([w.notes[0]]) );
-  await NR.onTaskEnded(J(ctxFor(m)), { ...w.task, state: 'released' });
-  assert.strictEqual(m.spawned.length, 1);
-  const a = m.spawned[0];
-  assert.deepStrictEqual([a.worker_id, a.model, a.allowed_tools, a.tools, a.max_budget_usd], [`notereview-${w.task.id}`, 'claude-haiku-5-5', ['Read', 'Glob', 'Grep'], ['Read', 'Glob', 'Grep'], 0.05]);
-  assert.ok(!('task_id' in a), 'the job holds no task and no lease');
-  const notesFile = /(\S+notes\.json)/.exec(a.prompt)[1];
-  assert.deepStrictEqual(JSON.parse(fs.readFileSync(notesFile, 'utf8')).map((n) => n.id).sort(), w.notes.slice().sort());
-  assert.ok(fs.existsSync(/(\S+diff\.patch)/.exec(a.prompt)[1]));
-  assert.match(a.prompt, new RegExp(`${w.task.id}`));
-  assert.deepStrictEqual(m.stopped, [a.worker_id]);
-  assert.deepStrictEqual([rowOf(w.notes[0]).status, rowOf(w.notes[0]).status_receipt], ['verified', `review:${a.worker_id}`]);
-  assert.strictEqual(rowOf(w.notes[1]).status ?? 'unverified', 'unverified', 'a note the job did not judge is left alone');
-  const ev = events('review_job').find((e) => e.key === `task:${w.task.id}`);
-  // A job that left a note unjudged is not an ok review: the receipt says partial and names the note it left.
-  assert.deepStrictEqual([ev.ok, ev.code, ev.worker_id, JSON.parse(ev.row_ids)], [0, 'E_PARTIAL', a.worker_id, [w.notes[0]]]);
-  assert.match(ev.message, new RegExp(`partly reviewed; left unreviewed: ${w.notes[1]}; applied 1.*unjudged 1`));
-});
-
-test('N2: a job over its cost cap, a malformed answer or a job that did not finish applies nothing and says why', async () => {
-  for (const [label, m, code] of [
-    ['cap', fakeManager(null, { cost: 0.5 }), 'E_COST_CAP'],
-    ['junk', fakeManager('I looked and everything seems fine.'), 'E_ARGS'],
-    ['timeout', fakeManager('', { event: 'timeout' }), 'E_TIMEOUT'],
-  ]) {
-    const w = await written(`wr-2${label}`);
-    m.recs; // eslint
-    const mm = label === 'cap' ? fakeManager(verdictsFor([w.notes[0]]), { cost: 0.5 }) : m;
-    await NR.onTaskEnded(J(ctxFor(mm)), { ...w.task, state: 'released' });
-    const ev = events('review_job').find((e) => e.key === `task:${w.task.id}`);
-    assert.deepStrictEqual([label, ev.ok, ev.code], [label, 0, code]);
-    assert.strictEqual(rowOf(w.notes[0]).status ?? 'unverified', 'unverified', label);
-    assert.strictEqual(mm.stopped.length, 1, `${label}: the job's worker is stopped`);
-  }
-});
-
-test('N3: no job when a review task depends on the task, when note_review is off, when notes are off, or nothing is unreviewed', async () => {
+test('N3: a task with no reviewer starts no notereview worker and writes no review_job; a review task is applied', async () => {
   const w = await written('wr-3');
-  await call('task.create', orch, { spec: 'its review', depends_on: [w.task.id], acceptance: { verdict: true } });
-  const m = fakeManager('{}');
+  const m = spawnLog();
   await NR.onTaskEnded(J(ctxFor(m)), { ...w.task, state: 'released' });
-  assert.strictEqual(m.spawned.length, 0, 'it has a reviewer');
-  const w2 = await written('wr-3b');
-  const off = { ...LV, note_review: false };
-  await NR.onTaskEnded(J(ctxFor(m, off), off), { ...w2.task, state: 'released' });
+  assert.strictEqual(m.spawned.length, 0, 'no job is spawned');
+  assert.strictEqual(events('review_job').filter((e) => e.task_id === w.task.id).length, 0, 'no review_job receipt');
+  assert.deepStrictEqual((await call('worker.list', orch, {})).workers.filter((x) => String(x.id).startsWith('notereview-')), [], 'no notereview worker row');
   const noNotes = { ...LV, notes: false };
-  await NR.onTaskEnded(J(ctxFor(m, noNotes), noNotes), { ...w2.task, state: 'released' });
-  await NR.onTaskEnded(J(ctxFor(m)), { ...w2.task, state: 'assigned' });
+  await NR.onTaskEnded(J(ctxFor(m, noNotes), noNotes), { ...w.task, state: 'released' });
   assert.strictEqual(m.spawned.length, 0);
-  const w3 = await written('wr-3c', 0);
-  await NR.onTaskEnded(J(ctxFor(m)), { ...w3.task, state: 'released' });
-  assert.strictEqual(m.spawned.length, 0, 'a task with no notes costs nothing');
-});
-
-test('N4: the job is not run twice for a task, in this manager or across adapters', async () => {
-  const w = await written('wr-4');
-  const m = fakeManager(verdictsFor([w.notes[0]]));
-  const ctx = ctxFor(m);
-  await NR.onTaskEnded(J(ctx), { ...w.task, state: 'released' });
-  await NR.onTaskEnded(J(ctx), { ...w.task, state: 'released' });
-  await NR.onTaskEnded(J(ctxFor(m)), { ...w.task, state: 'released' });
-  assert.strictEqual(m.spawned.length, 1);
 });
 
 test('N5: a review task\'s ended hand-back is applied by the manager (the reviewer route)', async () => {
@@ -151,29 +85,11 @@ test('N5: a review task\'s ended hand-back is applied by the manager (the review
   const a = await call('task.assign', orch, { task_id: r.id, worker_id: 'rv-5' });
   await call('lease.release', worker('rv-5'), { lease_id: a.new_lease.id, notes: [], result: { verdict: 'holds', summary: 'ok', memory_verdicts: JSON.parse(verdictsFor([w.notes[0]], 'refuted')).memory_verdicts } });
   await NR.reviewTail(ctxFor(null), { id: 'rv-5', taskId: r.id }); // the brief is rendered when the reviewer launches, and fixes the notes it lists
-  const m = fakeManager('{}');
+  const m = spawnLog();
   await NR.onTaskEnded(J(ctxFor(m)), await call('task.get', orch, { task_id: r.id }));
   assert.strictEqual(m.spawned.length, 0);
   assert.strictEqual(rowOf(w.notes[0]).status, 'refuted');
   assert.strictEqual(rowOf(w.notes[0]).status_receipt, `review:${r.id}`);
-});
-
-test('N6: the run-end sweep applies a job that finished into its stream but was never applied, and names a task never reviewed', async () => {
-  const w = await written('wr-6');
-  const id = `notereview-${w.task.id}`;
-  await captureBrief(call, orch, harness, { job: { worker_id: id, reviewed_task_id: w.task.id } }); // the job was launched with this brief
-  await call('worker.write', orch, { id, substrate: 'claude-code', pid: process.pid, state: 'stopped', session_id: 's', last_event_at: Date.now(), cost_usd: 0.01 });
-  fs.mkdirSync(`${dir}/workers/${id}`, { recursive: true });
-  fs.writeFileSync(`${dir}/workers/${id}/stream.jsonl`, `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: verdictsFor([w.notes[0]], 'refuted') }] } })}\n`);
-  const lost = await written('wr-6b');
-  const tasks = (await call('task.list', orch, {})).tasks;
-  const workers = (await call('worker.list', orch, {})).workers;
-  await NR.sweep(J(ctxFor(null)), tasks, workers);
-  assert.strictEqual(rowOf(w.notes[0]).status, 'refuted', 'applied from the stream');
-  const owed = events('review_job').find((e) => e.key === `task:${lost.task.id}`);
-  assert.deepStrictEqual([owed.ok, owed.code, JSON.parse(owed.row_ids)], [0, 'E_TIMEOUT', lost.notes]);
-  await NR.sweep(J(ctxFor(null)), tasks, workers);
-  assert.strictEqual(events('review_job').filter((e) => e.key === `task:${lost.task.id}`).length, 1, 'a second sweep adds nothing');
 });
 
 test('N7: a review task\'s brief lists the notes to judge, the verdict shape, the streams, and any refuted note a reviewed worker was shown', async () => {
@@ -204,7 +120,7 @@ test('N7: a review task\'s brief lists the notes to judge, the verdict shape, th
   const plain = await call('task.create', orch, { spec: 'plain' });
   assert.strictEqual(await NR.reviewTail(ctxFor(null), { id: 'p', taskId: plain.id }), '');
   assert.strictEqual(await NR.reviewTail(ctxFor(null, { ...LV, notes: false }), { id: 'rv-7', taskId: t.id }), '');
-  assert.strictEqual(await NR.reviewTail(ctxFor(null), { id: `notereview-x`, taskId: t.id }), '', 'the job never gets a review brief');
+  assert.strictEqual(await NR.reviewTail(ctxFor(null), { id: `scrub-x`, taskId: t.id }), '', 'a belay job never gets a review brief');
 });
 
 test('N7b: a brief that lists no note is still captured, empty, for the lease it was rendered for', async () => {
@@ -217,6 +133,17 @@ test('N7b: a brief that lists no note is still captured, empty, for the lease it
   assert.deepStrictEqual(cap.map((e) => JSON.parse(e.row_ids)), [[]], 'an empty capture, bound to the lease');
 });
 
+// A review task of `w` hands back refuting `ids`; the manager applies it. Returns the review task id.
+async function refuteByReview(w, ids, rid) {
+  await call('worker.write', orch, { id: rid, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's', last_event_at: Date.now() });
+  const r = await call('task.create', orch, { spec: 'review for refuting', depends_on: [w.task.id], acceptance: { verdict: true } });
+  const a = await call('task.assign', orch, { task_id: r.id, worker_id: rid });
+  await call('lease.release', worker(rid), { lease_id: a.new_lease.id, notes: [], result: { verdict: 'holds', summary: 's', memory_verdicts: JSON.parse(verdictsFor(ids, 'refuted')).memory_verdicts } });
+  await NR.reviewTail(ctxFor(null), { id: rid, taskId: r.id });
+  await NR.onTaskEnded(J(ctxFor(spawnLog())), await call('task.get', orch, { task_id: r.id }));
+  return r.id;
+}
+
 test('N8: a refutation wakes the orchestrator once, with facts only: the note, the review, who was shown it, their reviews and the notes they wrote', async () => {
   const w = await written('wr-8');
   const user = await written('wr-8u');
@@ -224,13 +151,12 @@ test('N8: a refutation wakes the orchestrator once, with facts only: the note, t
   const rv = await call('task.create', orch, { spec: 'review of the shown', depends_on: [user.task.id], acceptance: { verdict: true } });
   const watcher = createNoteWatcher({ core, runId: RUN, enabled: true });
   await watcher.poll(); // earlier tests' refutations in this run are the first poll's
-  const m = fakeManager(verdictsFor([w.notes[0]], 'refuted'));
-  await NR.onTaskEnded(J(ctxFor(m)), { ...w.task, state: 'released' });
+  const rid = await refuteByReview(w, [w.notes[0]], 'rv-8');
   const got = await watcher.poll();
   assert.strictEqual(got.length, 1);
   const text = got[0].text;
   assert.deepStrictEqual(got[0].note_ids, [w.notes[0]]);
-  assert.ok(text.startsWith(`belay: note ${w.notes[0]} was refuted by review notereview-${w.task.id}; read memory_note_refutation`));
+  assert.ok(text.startsWith(`belay: note ${w.notes[0]} was refuted by review ${rid}; read memory_note_refutation`));
   assert.ok(text.includes(`${user.task.id} (finished, did not cite it)`));
   assert.ok(text.includes(`${rv.id} (running, of ${user.task.id})`), 'a review of a shown task is named');
   assert.ok(text.includes(user.notes[0]), 'the note the shown worker wrote');
@@ -248,12 +174,11 @@ test('N9: one review that refutes several notes is one wake; the first sentence 
   const w = await written('wr-9', 3);
   const watcher = createNoteWatcher({ core, runId: RUN, enabled: true });
   await watcher.poll();
-  const m = fakeManager(verdictsFor(w.notes, 'refuted'));
-  await NR.onTaskEnded(J(ctxFor(m)), { ...w.task, state: 'released' });
+  await refuteByReview(w, w.notes, 'rv-9');
   const got = await watcher.poll();
   assert.strictEqual(got.length, 1, 'one wake, not one per note');
   assert.deepStrictEqual(got[0].note_ids.slice().sort(), w.notes.slice().sort());
-  assert.match(got[0].text.split('\n')[0], /^belay: 3 notes were refuted by review notereview-/);
+  assert.match(got[0].text.split('\n')[0], /^belay: 3 notes were refuted by review /);
   const first = got[0].text.split('\n')[0];
   assert.ok(w.notes.every((id) => first.includes(id)) && first.includes('memory_note_refutation'));
   const many = T.refutedWake(Array.from({ length: 50 }, (_, i) => ({ note: { id: `n${i}` }, review: { ref: 'r' }, shown: [], notes_written_by_shown: [] })), ['e']);
@@ -272,27 +197,7 @@ test('N9b: a run with the notes lever off reads no receipts for the wake', async
   assert.strictEqual(read, false, 'the receipts were not read');
 });
 
-test('N9c (review S-2, S-3): the sweep never applies a job the live path already refused; a job with no recorded cost is not used', async () => {
-  const w = await written('wr-9c');
-  const id = `notereview-${w.task.id}`;
-  await captureBrief(call, orch, harness, { job: { worker_id: id, reviewed_task_id: w.task.id } }); // the job was launched with this brief
-  await call('worker.write', orch, { id, substrate: 'claude-code', pid: process.pid, state: 'stopped', session_id: 's', last_event_at: Date.now(), cost_usd: 0.01 });
-  fs.mkdirSync(`${dir}/workers/${id}`, { recursive: true });
-  fs.writeFileSync(`${dir}/workers/${id}/stream.jsonl`, `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: verdictsFor([w.notes[0]], 'refuted') }] } })}\n`);
-  await call('memory.recordEvent', harness, { kind: 'review_job', ok: false, code: 'E_WORKER_NOT_LIVE', worker_id: id, task_id: w.task.id, key: `task:${w.task.id}`, message: 'the job hit its budget' });
-  const tasks = (await call('task.list', orch, {})).tasks;
-  const workers = (await call('worker.list', orch, {})).workers;
-  await NR.sweep(J(ctxFor(null)), tasks, workers);
-  assert.strictEqual(rowOf(w.notes[0]).status ?? 'unverified', 'unverified', 'its last draft is not applied');
-  const w2 = await written('wr-9d');
-  const m = fakeManager(verdictsFor([w2.notes[0]]), { cost: 0 });
-  await NR.onTaskEnded(J(ctxFor(m)), { ...w2.task, state: 'released' });
-  const ev = events('review_job').find((e) => e.key === `task:${w2.task.id}`);
-  assert.deepStrictEqual([ev.ok, ev.code], [0, 'E_COST_CAP']);
-  assert.strictEqual(rowOf(w2.notes[0]).status ?? 'unverified', 'unverified');
-});
-
-test('N9d (review S-1): shutdown waits for a review job in flight before it stops any worker', async () => {
+test('N9d (review S-1): shutdown waits for a verdict application in flight before it stops any worker', async () => {
   const LC = require('../../src/run/lifecycle.cjs');
   const order = [];
   const workers = new Map([['x', { id: 'x', queue: Promise.resolve(), state: 'running' }]]);
@@ -307,9 +212,4 @@ test('N9d (review S-1): shutdown waits for a review job in flight before it stop
   release();
   await sd;
   assert.deepStrictEqual(order.slice(0, 3), ['job-start', 'job-done', 'stop']);
-});
-test('N10: parseJobOutput accepts bare JSON, a fenced block, or JSON inside prose, and refuses anything else', () => {
-  const body = { memory_verdicts: [{ id: 'a' }] };
-  for (const t of [JSON.stringify(body), `\`\`\`json\n${JSON.stringify(body)}\n\`\`\``, `Here you go: ${JSON.stringify(body)} done`]) assert.deepStrictEqual(T.parseJobOutput(t).verdicts, body.memory_verdicts);
-  for (const t of ['', 'all fine', '{"memory_verdicts": 3}']) assert.ok(T.parseJobOutput(t).error);
 });

@@ -328,7 +328,7 @@ async function run(ctx) {
   let reviewRounds = { value: null, reason: 'the run was never attached, so no tasks were read' };
   // ADR 0039 follow-up: one worker close (ADR 0029); a fast close runs it inside the loop, before the gate collect.
   const fastClose = RI.fastOf(ce);
-  const workerClose = RI.onceClose(ce, () => ((ctx.interactiveDeps && ctx.interactiveDeps.closeRunWorkers) || closeRunWorkers)({ core, runId: parsed.runId, graceMs: parsed.close_grace_ms, fast: fastClose, orchestrator: () => RID.orchestratorRef(), noteReview: !!(parsed.levers.memory_levers && parsed.levers.memory_levers.note_review) }), () => !!attachRow);
+  const workerClose = RI.onceClose(ce, () => ((ctx.interactiveDeps && ctx.interactiveDeps.closeRunWorkers) || closeRunWorkers)({ core, runId: parsed.runId, graceMs: parsed.close_grace_ms, fast: fastClose, orchestrator: () => RID.orchestratorRef() }), () => !!attachRow);
   try {
     try {
       partial = await (ce ? runInteractiveOrchestrator : runOrchestrator)({

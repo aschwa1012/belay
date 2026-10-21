@@ -363,7 +363,7 @@ function afterTurn(w, ctx, { turnEvents, checkpointId, snap: given = null } = {}
       const wantSummary = lv.summaries !== 'off';
       const wantPromote = wantsProject(lv);
       const wantReflect = !!(lv.notes && lv.notes_reflection); // ADR 0047 write ablation: the question again, as a turn of its own
-      const wantReview = !!lv.notes; // wave 4: a review task's verdicts, or the short review job for a task that wrote notes
+      const wantReview = !!lv.notes; // a review task's verdicts are applied when it ends
       if (!snap.taskId || !(wantSummary || lv.wrapup || wantPromote || wantReflect || wantReview)) return;
       const s = J.s;
       const sKey = `${snap.taskId}|${snap.workerId}`;
@@ -380,7 +380,7 @@ function afterTurn(w, ctx, { turnEvents, checkpointId, snap: given = null } = {}
       if (lv.wrapup) await ensureWrapup(J, snap.taskId, { taskRow: task });
       if (needReview) {
         s.reviewSeen.add(snap.taskId);
-        // onTaskEnded registers its job synchronously, so the run's close drain sees it (note-review.cjs). A turn that reaches here after the close drops it; the run's sweep names the owed notes.
+        // onTaskEnded registers a review task's application synchronously, so the run's close drain sees it (note-review.cjs). A turn that reaches here after the close drops it; the run's sweep applies it.
         if (closed(ctx)) note(w, 'after-shutdown', { code: SHUT, message: 'the run closed before the note review was decided on' });
         else void require('./note-review.cjs').onTaskEnded(J, task).catch((e) => note(w, 'note-review', e));
       }

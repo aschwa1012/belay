@@ -103,6 +103,12 @@ async function copyVerified(E, caller, row, namespace, receipt, at) {
       run_id: row.run_id, task_id: row.task_id, turn: row.turn, source: row.source,
       ...(vec ? { embedding: vec, embedding_model: row.embedding_model, embedding_revision: row.embedding_revision, dim: row.dim } : {}),
     });
+    // A copy whose text is exactly a note's text is a dedup hit that returned that note unchanged. Setting the note verified on a test: or commit:
+    // receipt would verify a note without a review (and, for a held note, past its hold), so it is refused: the copy lands only on a row that is not a note.
+    if (copy.action === 'unchanged') {
+      const dest = E.store.p('SELECT type FROM memory_entries WHERE id = ?').get(copy.id);
+      if (dest && dest.type === 'note') throw err('E_PRECONDITION', `the copy's text is the text of note ${copy.id}, and a note is verified only by a review (a reviewer's verdict or the archive review's cited outcome), never by a copy of a run row`, { id: copy.id, source_id: row.id });
+    }
     const status = E.store.setStatus(copy.id, { status: 'verified', receipt, by: E.writtenBy(caller), at });
     E.noteWrite();
     await recordCopy(E, caller, row, { ok: true, row_ids: [copy.id], newest_row_id: copy.id, message: `copied ${row.id} to ${namespace}` });

@@ -18,6 +18,8 @@ const CODES = new Set([
   'E_NOTE_SHAPE',
   // wave 4 and the notes lifecycle: an unverifiable citation, a job over its cost cap, out of scope, a failed fact precondition, a ground that is not allowed
   'E_CITATION', 'E_COST_CAP', 'E_SCOPE', 'E_PRECONDITION', 'E_GROUND',
+  // a write that would change a held note's visibility or status, from a caller that is neither the operator nor the archive review's cited outcome
+  'E_HELD',
   // ADR 0045: a write with no bound identity on an owner that serves only bound callers, and a bind that cannot be opened or claimed
   'E_UNBOUND', 'E_BIND',
 ]);

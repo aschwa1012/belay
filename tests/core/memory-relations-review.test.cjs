@@ -44,7 +44,7 @@ test('B1b: vectors of different templates are never compared', async () => {
   assert.deepStrictEqual([r.counts.applied, r.refused[0].code], [0, 'E_PRECONDITION']);
 });
 
-test('B2: a refines (write time or scrubber) that archives a held note closes its held row', async () => {
+test('B2: the operator refines that archives a held note closes its held row; the scrubber refines of a held note is refused', async () => {
   const old = T.note('b2 old', { vec: A, created_at: 100, reported_wrong: [T.report()] });
   assert.strictEqual((await mkHold(old)).applied[0].outcome, 'held');
   const open = heldOpen();
@@ -58,8 +58,10 @@ test('B2: a refines (write time or scrubber) that archives a held note closes it
   await mkHold(old2);
   const pend2 = pendingOf('b2 new two', old2);
   const open2 = heldOpen();
-  await scrub('apply', [{ id: pend2, action: 'resolve', resolve: 'refines', of: old2, reason: 'same lesson plus a caveat' }]);
-  assert.strictEqual(heldOpen(), open2 - 1);
+  const r2 = await scrub('apply', [{ id: pend2, action: 'resolve', resolve: 'refines', of: old2, reason: 'same lesson plus a caveat' }]);
+  assert.deepStrictEqual([r2.counts.applied, r2.refused[0].code], [0, 'E_HELD']);
+  assert.strictEqual(ns(old2), `project/${PROJECT}`, 'the held note stays where it is');
+  assert.strictEqual(heldOpen(), open2, 'and stays held');
 });
 
 test('B3: restoring a refines chain in any order ends at the same counts, and exactly the right rows come back', async () => {

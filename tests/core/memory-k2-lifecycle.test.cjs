@@ -95,7 +95,7 @@ test('D32 (K5): a second write-time refines of a held verified note is refused, 
   const first = await resolve([{ id: p1, resolve: 'refines', of: v, evidence: [{ where: 'a.js', saw: 'one' }] }], tool);
   const heldRow = T.body(v).held.row;
   assert.strictEqual(first.resolved[0].held_for_review, heldRow);
-  await assert.rejects(resolve([{ id: p2, resolve: 'refines', of: v, evidence: [{ where: 'a.js', saw: 'two' }] }], tool), x => x.code === 'E_EXISTS');
+  await assert.rejects(resolve([{ id: p2, resolve: 'refines', of: v, evidence: [{ where: 'a.js', saw: 'two' }] }], tool), x => x.code === 'E_HELD' && x.detail.held_row === heldRow);
   assert.strictEqual(T.body(v).held.row, heldRow);
   assert.strictEqual(heldRowsOf(v).length, 1);
   assert.strictEqual(ns(p2), `pending/${PROJECT}`, 'the refused resolution left its note pending');
