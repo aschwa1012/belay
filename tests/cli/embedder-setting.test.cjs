@@ -83,7 +83,7 @@ test('the run record and the receipt agree: the resolved mode is recorded on its
   const a = parseLevers({ on_embedder_failure: 'required' }, { config: cfg({ on_embedder_failure: 'keyword' }) });
   assert.strictEqual(a.on_embedder_failure, 'required');
   assert.ok(!a.memory_levers && !a.memory_sources, 'a config that sets only this lever makes no memory_levers');
-  assert.deepStrictEqual(attachMemory(a), {}, 'and the run row carries none');
+  assert.deepStrictEqual(attachMemory(a), { memory_levers: null, project: null, memory_notice: 'memory_project_unset' }, 'and the run row carries none, as explicit nulls (and the launch notice)');
   // with another lever set, memory_levers exists, has no on_embedder_failure, and the source names the winner
   const b = parseLevers({ on_embedder_failure: 'required' }, { config: cfg({ on_embedder_failure: 'keyword', capture: true }) });
   assert.strictEqual(b.on_embedder_failure, 'required');

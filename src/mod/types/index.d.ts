@@ -71,6 +71,9 @@ export type BelayReview = { project: string; state: 'running' | 'interrupted' | 
 /** Notes held for the on-demand Opus archive reviewer, from belay's `notes_held` notice, and the state of the project's review. */
 export type BelayHeld = { count: number; unsupported: number; byProject: Record<string, number>; oldestAgeRuns: number; reviews: BelayReview[] }
 
+/** `belay settings`' memory_notice: notes are on by default but no memory.project is set, so memory is off. null once a project is set. */
+export type BelayMemoryNotice = { title: string; why: string; fix: string; configLine: string }
+
 export type BelayPanelSnap = {
   fetchedAt: number
   runId: string | null
@@ -100,6 +103,7 @@ export type BelayPanelSnap = {
   held: BelayHeld | null
   transcript: BelayEntry[] | null
   settings: BelaySettings
+  memoryNotice: BelayMemoryNotice | null
   /** One line per failing command: the command and its exit code. */
   errors: string[]
 }

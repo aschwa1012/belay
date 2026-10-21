@@ -23,7 +23,7 @@ before(async () => {
   store = new Store(`${dir}/memory.db`, { stamp: true });
   E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: null, establishedBy: 'test' });
   const lv = { project: 'acme', notes: true };
-  const levers = { on: lv, trust: { ...lv, notes_trust_wording: true }, over: { ...lv, notes_overflow_line: true }, off: { project: 'acme' } };
+  const levers = { on: lv, trust: { ...lv, notes_trust_wording: true }, over: { ...lv, notes_overflow_line: true }, off: { project: 'acme', notes: false } };
   for (const k of Object.keys(RUNS)) await call(k, 'run.attach', { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify(levers[k]) });
 });
 after(() => { store.close(); cleanup(dir); });
@@ -262,7 +262,7 @@ test('the new levers default off and need the notes lever', () => {
   const d = L.parseMemoryBlock({}).value;
   assert.deepStrictEqual([d.notes_overflow_line, d.notes_trust_wording], [false, false]);
   for (const k of ['notes_overflow_line', 'notes_trust_wording']) {
-    assert.match(L.parseMemoryBlock({ project: 'p', [k]: true }).error, /needs memory.notes/);
+    assert.match(L.parseMemoryBlock({ project: 'p', notes: false, [k]: true }).error, /needs memory.notes/);
     assert.strictEqual(L.parseMemoryBlock({ project: 'p', notes: true, [k]: true }).value[k], true);
     assert.match(L.parseMemoryBlock({ project: 'p', notes: true, [k]: 'yes' }).error, /true or false/);
   }

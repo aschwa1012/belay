@@ -30,6 +30,7 @@ const { checkReach, runEmbedderMode } = require('./memory-reach.cjs');
 const gate = require('./memory-note-gate.cjs');
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
+const { standing } = require('./report-marks.cjs');
 
 const redactText = (s) => require('./redact.cjs').redact(String(s)).text; // the held line shows redacted text whatever a body holds
 const WHERE_SHOWN = 80; // bytes of the evidence location shown (the location, not the claim, is cut)
@@ -155,7 +156,7 @@ function lineOf(r, body, trust, runId) {
   const kind = KINDS.includes(body && body.kind) ? body.kind : 'note';
   const basis = BASES.includes(body && body.basis) ? body.basis : 'unstated';
   const ev = body && Array.isArray(body.evidence) && body.evidence[0] && typeof body.evidence[0].where === 'string' ? oneLine(body.evidence[0].where) : '';
-  const wrong = (body && Array.isArray(body.reported_wrong) ? body.reported_wrong : []).filter((w) => w && w.run_id === runId && typeof w.why === 'string' && oneLine(w.why)); // ADR 0047 decision 3: this run's reports
+  const wrong = (body && Array.isArray(body.reported_wrong) ? standing(body) : []).filter((w) => w && w.run_id === runId && typeof w.why === 'string' && oneLine(w.why)); // ADR 0047 decision 3: this run's reports
   let out = `- ${r.id} [${kind}/${basis}/${statusTag(r, trust)}] ${oneLine(deriveTitle(r.title || r.title_src))}`;
   if (ev) out += ` (evidence: ${cutBytes(ev, WHERE_SHOWN)})`;
   if (wrong.length) {

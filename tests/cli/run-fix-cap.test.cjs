@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1'; // ADR 0034: a run here has no model to warm; the one suite that tests the warm-up opts in
 // run-fix-cap.test.cjs — ADR 0031 decision 6 (build 12 wave 2): `belay run` records its `max_fix_rounds`
 // lever on the run row through run.attach, which is what lets core refuse a fix task past the cap. If the

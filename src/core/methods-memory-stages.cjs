@@ -22,8 +22,10 @@ const C = require('./lifecycle-common.cjs');
 const M = require('./methods-memory.cjs');
 const N = require('./methods-memory-notes.cjs');
 const { parse } = require('./memory-facts.cjs');
-const { keyOf, relationFacts } = require('./memory-relate.cjs');
+const { standing, isRejected } = require('./report-marks.cjs');
+const { relationFacts, judgedPair } = require('./memory-relate.cjs');
 const { nominationsForScope, countFor } = require('./memory-nominate.cjs');
+const { openProposals } = require('./proposal-open.cjs');
 
 const fwd = p => String(p).split('\\').join('/');
 const TEXT_CUT = 1500;
@@ -98,7 +100,9 @@ function streamsOf(E, ids) {
 
 function item(E, note, why) {
   const b = note.b;
-  const reports = (b.reported_wrong || []).slice(-REPORTS_SHOWN).map(w => ({ by: w.by, worker_id: w.worker_id || null, task_id: w.task_id || null, run_id: w.run_id || null, why: cut(w.why, 500), replaced_by: w.replaced_by || null, at: w.at || null }));
+  // A report a reviewer rejected is shown as such, with the reviewer's reason: it names no pair and opens no gate (report-marks.cjs).
+  const rejection = w => { const j = (b.report_rejected || []).find(x => x && x.task_id === w.task_id && x.report_at === w.at); return { rejected: true, rejected_by: (j && j.by) || null, rejected_reason: j ? cut(j.reason, 300) : null }; };
+  const reports = (b.reported_wrong || []).slice(-REPORTS_SHOWN).map(w => ({ ...(isRejected(b, w) ? rejection(w) : {}), by: w.by, worker_id: w.worker_id || null, task_id: w.task_id || null, run_id: w.run_id || null, why: cut(w.why, 500), replaced_by: w.replaced_by || null, at: w.at || null }));
   const matches = (b.matches || []).map(m => ({ id: m.id, similarity: m.similarity }));
   const related = [];
   for (const rid of new Set([...reports.map(r => r.replaced_by), ...matches.map(m => m.id)].filter(x => typeof x === 'string' && x !== note.id))) {
@@ -126,13 +130,20 @@ async function scrubScope(E, caller, args) {
     byId.set(note.id, { ...item(E, note, [why]), ...(extra || {}) });
   };
   const history = scrubHistory(E, runId);
+  // In propose mode a mark that is already an open proposal waits on the operator and is not offered (and proposed) again at every close; in
+  // apply mode an open proposal changes nothing, so a project switched to apply takes the same notes up again. Nominations are not covered.
+  const proposeMode = ((N.notesLevers(E, caller) || {}).scrub_action) === 'propose';
+  const proposals = proposeMode ? openProposals(E, project) : [];
+  const proposedOn = (id, since = 0) => proposals.some((p) => p.note_id === id && p.at >= since);
+  const proposedPairSince = (a, b, since) => proposals.some((p) => p.at >= since && ((p.note_id === a && p.of === b) || (p.note_id === b && p.of === a)));
+  const proposedPair = (a, b) => proposals.some((p) => (p.note_id === a && p.of === b) || (p.note_id === b && p.of === a));
   for (const [id, o] of history.owed) add(load(E, id), 'owed', { owed: o });
   // A pair a scrub of this run handled is offered again when a report naming a partner arrived after that scrub.
   const addNew = (id, why, extra) => {
     const at = history.handled.get(id);
     if (at !== undefined) {
       const note = load(E, id);
-      const newest = Math.max(0, ...((note && note.b.reported_wrong) || []).filter((w) => w && w.run_id === runId && w.replaced_by).map((w) => Number(w.at) || 0));
+      const newest = Math.max(0, ...(note ? standing(note.b) : []).filter((w) => w && w.run_id === runId && w.replaced_by).map((w) => Number(w.at) || 0));
       if (why !== 'replaced_by' || newest <= at) return;
     }
     add(load(E, id), why, extra);
@@ -144,16 +155,22 @@ async function scrubScope(E, caller, args) {
     return E.store.p('SELECT 1 AS x FROM memory_entries WHERE supersedes = ? AND namespace = ?').get(id, n.namespace) ? null : n;
   };
   // A `new` verdict holds only while both notes still have the text, vector model, dimension and template it was made on.
-  const judged = (n, other) => (n.b.pair_judged || []).some((j) => j && j.of === other.id && j.own_key === keyOf(n) && j.of_key === keyOf(other));
+  const judged = judgedPair;
   const reported = E.store.p(`SELECT id FROM memory_entries WHERE type = 'note' AND namespace = ? AND EXISTS
     (SELECT 1 FROM json_each(memory_entries.body, '$.reported_wrong') WHERE json_extract(value, '$.run_id') = ? AND json_extract(value, '$.replaced_by') IS NOT NULL) ORDER BY created_at, id`).all(N.projectNs(project), runId);
   for (const r of reported) {
     const n = load(E, r.id);
-    const named = (n.b.reported_wrong || []).filter((w) => w && w.run_id === runId && w.replaced_by && w.replaced_by !== n.id && w.by !== n.written_by).map((w) => w.replaced_by);
-    if (!n.b.held && named.some((id) => liveNote(id))) addNew(r.id, 'replaced_by');
+    // Each partner a standing report of this run names, with the time of the newest such report. The note is offered while some live partner has
+    // no open proposal on THAT pair made since its newest report: a proposal about another partner of the note says nothing about this one.
+    const newest = new Map();
+    for (const w of standing(n.b)) if (w && w.run_id === runId && w.replaced_by && w.replaced_by !== n.id && w.by !== n.written_by) newest.set(w.replaced_by, Math.max(newest.get(w.replaced_by) || 0, Number(w.at) || 0));
+    if (!n.b.held && [...newest].some(([id, at]) => liveNote(id) && !proposedPairSince(r.id, id, at))) addNew(r.id, 'replaced_by');
   }
-  const pending = E.store.p("SELECT id FROM memory_entries WHERE type = 'note' AND namespace = ? AND run_id = ? ORDER BY created_at, id").all(N.pendingNs(project), runId);
-  for (const r of pending) addNew(r.id, 'pending');
+  // Pending notes stay in scope until settled: this run's, and an ended run's (a scrub of its own close may have only proposed, or left
+  // the note out). A live run's other pending notes are its writers' to resolve. A note the child gave no entry for in two scrubs is dropped.
+  const pending = E.store.p(`SELECT id, run_id FROM memory_entries WHERE type = 'note' AND namespace = ? AND (run_id = ? OR run_id IN
+    (SELECT r.id FROM run r WHERE r.ended_at IS NOT NULL AND r.seq = (SELECT MAX(seq) FROM run WHERE id = r.id))) ORDER BY created_at, id`).all(N.pendingNs(project), runId);
+  for (const r of pending) if (!proposedOn(r.id) && (r.run_id === runId || !history.dropped.has(r.id))) addNew(r.id, 'pending');
   // Live notes whose stored embed matches have not been judged: a partner is a live note and neither side recorded a `new` verdict on the pair.
   const threshold = (N.notesLevers(E, caller) || {}).notes_match_threshold;
   const withMatches = E.store.p(`SELECT id FROM memory_entries WHERE type = 'note' AND namespace = ? AND json_array_length(COALESCE(json_extract(body, '$.matches'), '[]')) > 0 ORDER BY created_at, id`).all(N.projectNs(project));
@@ -162,7 +179,7 @@ async function scrubScope(E, caller, args) {
     if (n.b.held) continue;
     // Offered only when the relation gate would pass the pair (the same function): a pair every verdict would be refused is not offered.
     const passes = (id) => { try { relationFacts(E, project, n.id, id, threshold, runId); return true; } catch { return false; } };
-    const open = (n.b.matches || []).some((m) => m && m.id !== n.id && liveNote(m.id) && !judged(n, liveNote(m.id)) && !judged(liveNote(m.id), n) && passes(m.id));
+    const open = (n.b.matches || []).some((m) => m && m.id !== n.id && liveNote(m.id) && !judged(n, liveNote(m.id)) && !judged(liveNote(m.id), n) && !proposedPair(n.id, m.id) && passes(m.id));
     if (open) addNew(n.id, 'matched');
   }
   for (const nom of nominationsForScope(E, project) || []) {

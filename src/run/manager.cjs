@@ -25,7 +25,7 @@ const NM = require('./native-memory.cjs'); const NR = require('./note-review.cjs
 // verbatim into their own files (the 500-line rule); re-exported under the same names below.
 const { createWait } = require('./wait.cjs');
 const SENT = require('./sent-log.cjs'); // ADR 0042 decision 4: the record of what is written to a worker's stdin
-const { decideBranch, restartFirstText, CLAUDE_RESUME_WINDOW_MS, CODEX_RESUME_WINDOW_MS } = require('./restart.cjs');
+const { decideBranch, restartFirstText, holdForLaunch, CLAUDE_RESUME_WINDOW_MS, CODEX_RESUME_WINDOW_MS } = require('./restart.cjs');
 // build step 6e-4: pause and resume (the park design, ADR 0023 amendment 2), and the one per-worker
 // operation slot pause, resume, restart and stop all share.
 const { createPause, INTERRUPT_TIMEOUT_MS, EXIT_TIMEOUT_MS } = require('./pause.cjs');
@@ -33,6 +33,7 @@ const LC = require('./lifecycle.cjs');
 // build step 6i-2 design item 3 (R4): writeRow moved verbatim here to keep this file under its own
 // 500-line budget once the closed-flag fix (shutdownFlags below) landed.
 const { createWriteRow } = require('./write-row.cjs');
+const { createStartFail } = require('./start-fail.cjs');
 // A park's own worst case, the longest one started during a restart's first turn takes to settle (`restart`).
 const PARK_SETTLE_WAIT_MS = INTERRUPT_TIMEOUT_MS + EXIT_TIMEOUT_MS;
 const LIST = require('./list.cjs');
@@ -79,27 +80,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     return w;
   }
 
-  // The one shape a failed start takes (contract §5): E_NO_READY { pid, exit_code, stderr_tail,
-  // reason }. Nothing rejects before the worker is settled and its `dead` row is written (invariant 5).
-  async function failNoReady(w, reason, extra = {}) {
-    // The launch is over from here; a turn end mid-teardown must not write a `running` row for a
-    // start the caller is being told failed. Tree first, then the exact pid (ADR 0011 §2, contract §5).
-    w.launchFailed = true;
-    if (!w.settled && w.pid) {
-      w.treeKill = (await PI.killWorker(w)).tree;
-      await W.waitExit(w, 5000);
-    }
-    // The exit code is the most useful field this error carries, and a pid check can establish the
-    // death before the exit event delivers one (by seconds under load). Wait, bounded, for it.
-    if (W.deathByPidCheck(w)) await W.awaitExitCode(w, W.EXIT_CODE_WAIT_MS);
-    await w.queue;
-    if (w.state !== 'dead') await writeRow(w, 'dead');
-    fail('E_NO_READY', reason, {
-      worker_id: w.id, pid: w.pid, exit_code: w.exitCode, exit_signal: w.exitSignal,
-      stderr_tail: w.stderr.slice(-2000), reason, spawn_error: w.spawnError,
-      death_established_by: w.deathEstablishedBy, ...extra,
-    });
-  }
+  const { failNoReady, guarded } = createStartFail({ core, writeRow }); // contract §5; ADR 0045 decision 2: every failed start settles its launch
 
   function startPoll() {
     if (poll) return;
@@ -140,8 +121,8 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       workerId: w.id, runId, dataDir: root, mcpPath, logPath: w.adapterLogPath, notes: w.notesOn,
     });
   }
-
-  async function launch(w, { resume = null, prompt = null } = {}) {
+  const launch = (w, o) => require('./bind-launch.cjs').launchBound({ core, runId, root, mcpPath, writeRow }, w, () => launchNow(w, o)); // ADR 0045: one launch of a worker at a time, its bind opened first
+  async function launchNow(w, { resume = null, prompt = null } = {}) {
     try { NM.checkLaunch(w); } catch (e) { await NM.refuseLaunch(ctx, w, e, P.pidAlive); } let args; // sync and first (Codex's check-then-spawn stays one tick); only a refusal awaits
     if (w.substrate === 'claude-code') {
       args = L.claudeLaunchArgv({
@@ -177,14 +158,15 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       // MCP_TOOL_TIMEOUT is set only with permission_prompt, always outside permit_wait_ms's own bound.
       exe: spec.exe, args: spec.args, cwd: w.worktree,
       env: L.buildEnv(process.env, {
-        substrate: w.substrate, cwd: w.worktree,
+        substrate: w.substrate, cwd: w.worktree, workerId: w.id,
         mcpToolTimeoutMs: w.permissionPrompt ? w.permitWaitMs + 60000 : null,
       }),
       stdin: w.substrate === 'claude-code' ? 'pipe' : 'ignore',
     });
     w.launches += 1;
     w.launchedAt = now();
-    W.attach(w, child, ctx);
+    try { W.attach(w, child, ctx); }
+    catch (e) { if (e && e.teardown) await e.teardown; throw e; } // a register refusal ends the child and its helpers: the error waits for that
     startPoll();
     return spec;
   }
@@ -212,8 +194,8 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       permission_mode = null, startup_timeout_ms = 60000, worker_id = null, sandbox = null,
       permission_prompt = false, permit_wait_ms = 600000, effort: effortArg = null, tools = null, agent_type = null, max_budget_usd = null, memory_queries = null, native_memory = null,
     } = opts || {};
-    let model = modelArg;
-    let effort = effortArg;
+    let model = modelArg; let effort = effortArg;
+    let nativeMemory = MP.nativeMemory(ctx, substrate, worker_id, native_memory); if (nativeMemory && nativeMemory.then) nativeMemory = await nativeMemory; // sync unless the run's levers are still to be read (the worker record must exist in the same tick)
     let agent = null;
     if (agent_type !== null) {
       if (!AD.WORKER_TYPES.includes(agent_type)) fail('E_ARGS', `spawn agent_type must be one of ${AD.WORKER_TYPES.join(', ')}`, { agent_type });
@@ -222,7 +204,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       model = agent.model.value;
       effort = agent.effort.value;
     }
-    validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id, native_memory });
+    validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id, native_memory: nativeMemory });
     const indexQueries = checkMemoryQueries(memory_queries);
 
     const id = worker_id || crypto.randomUUID();
@@ -237,13 +219,12 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       w = W.newWorkerRecord({
         id, substrate, worktree, dataDir: root, taskId: task_id, model,
         allowedTools: allowed_tools, permissionMode: permission_mode, sandbox,
-        permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort, tools, maxBudgetUsd: max_budget_usd, nativeMemory: native_memory,
+        permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort, tools, maxBudgetUsd: max_budget_usd, nativeMemory,
       });
       w.indexQueries = indexQueries; // the orchestrator's situation lines for this worker's memory index (memory.embedQuery extra_texts)
       workers.set(id, w);
     } finally { pendingIds.delete(id); }
-    const spawnLevers = await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the worker adapter's argv carries the notes lever, so the levers are known before the files are written
-    if (!spawnLevers.first_message_index) w.indexQueries = []; // the first-message index is their only reader: with it off the row keeps none (null)
+    try { await MP.spawnLevers(ctx, w); w.nativeMemoryAuth = await NM.authorize(core, runId, w.nativeMemory); } catch (e) { await discardUnstarted(workers, w, dirExisted); throw e; } // ADR 0047: the levers are known before the files are written; with the first-message index off the row keeps no situation lines
     try { writeFilesFor(w); } catch (e) { await discardUnstarted(workers, w, dirExisted); throw e; } // no row, nothing launched: leave no record and no directory, so a corrected retry with the same id is free
     if (substrate === 'claude-code') w.instructions = I.snapshotInstructions(w.worktree, w.dir); // spawn only
 
@@ -268,34 +249,36 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     w.firstMessage = first;
 
     await launch(w, substrate === 'claude-code' ? {} : { prompt: first });
-    await writeRow(w, 'starting');
-    openWith(w, first, 'task');
+    return guarded(w, async () => {
+      await writeRow(w, 'starting');
+      openWith(w, first, 'task');
 
-    const ready = await W.waitReady(w, startup_timeout_ms);
-    if (!ready) {
-      await failNoReady(w, 'the worker produced no ready event inside the startup window', { startup_timeout_ms });
-    }
-    const v = await verifyReady(w, ready, t0 + startup_timeout_ms);
-    if (!v.ok) await failNoReady(w, v.reason, { startup_timeout_ms, session_id: w.sessionId });
-    w.readyEvidence = v.evidence;
-    const init = W.noteInit(w, ready); // ADR 0021 decisions 3 and 4
-
-    const ready_ms = now() - t0;
-    // `running` is a claim about a process, and a worker can die before this line. writeRow returns null
-    // when the pid was gone or the core refused E_WORKER_NOT_LIVE; either way the row is `dead` and the
-    // caller is owed E_NO_READY, never a `running` row the store never took.
-    const written = await writeRow(w, 'running');
-    if (!written) {
-      await w.queue;
-      // One exception: a Codex turn can finish before this line; a settled `idle` worker did start, so
-      // the row to return is the store's own (`worker.get`'s pid_alive/last_event_age_ms dropped here).
-      if (w.state === 'idle') {
-        const { pid_alive, last_event_age_ms, ...row } = await core.worker.get({ worker_id: id });
-        return { ...row, ready_ms, permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions), ...(agent ? { agent } : {}) };
+      const ready = await W.waitReady(w, startup_timeout_ms);
+      if (!ready) {
+        await failNoReady(w, 'the worker produced no ready event inside the startup window', { startup_timeout_ms });
       }
-      await failNoReady(w, `the worker reached ready but its pid ${w.pid} was no longer alive when the running row would have been written`, { ready_ms });
-    }
-    return { ...written, ready_ms, permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions), ...(agent ? { agent } : {}) }; // agent: the model and effort used, each with its source
+      const v = await verifyReady(w, ready, t0 + startup_timeout_ms);
+      if (!v.ok) await failNoReady(w, v.reason, { startup_timeout_ms, session_id: w.sessionId });
+      w.readyEvidence = v.evidence;
+      const init = W.noteInit(w, ready); // ADR 0021 decisions 3 and 4
+
+      const ready_ms = now() - t0;
+      // `running` is a claim about a process, and a worker can die before this line. writeRow returns null
+      // when the pid was gone or the core refused E_WORKER_NOT_LIVE; either way the row is `dead` and the
+      // caller is owed E_NO_READY, never a `running` row the store never took.
+      const written = await writeRow(w, 'running');
+      if (!written) {
+        await w.queue;
+        // One exception: a Codex turn can finish before this line; a settled `idle` worker did start, so
+        // the row to return is the store's own (`worker.get`'s pid_alive/last_event_age_ms dropped here).
+        if (w.state === 'idle') {
+          const { pid_alive, last_event_age_ms, ...row } = await core.worker.get({ worker_id: id });
+          return { ...row, ready_ms, permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions), ...(agent ? { agent } : {}) };
+        }
+        await failNoReady(w, `the worker reached ready but its pid ${w.pid} was no longer alive when the running row would have been written`, { ready_ms });
+      }
+      return { ...written, ready_ms, permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions), ...(agent ? { agent } : {}) }; // agent: the model and effort used, each with its source
+    });
   }
 
   async function message({ worker_id, text }) {
@@ -313,7 +296,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     }
     // Codex: the previous process has exited by design, so a message is a new resume process
     // (ADR 0001 §4, ADR 0008 §6). Returns at once with the new pid; the turn lands later.
-    if (!w.sessionId) fail('E_SUBSTRATE', 'codex worker has no thread id to resume', { worker_id, substrate: w.substrate, state: w.state });
+    if (!w.sessionId) fail('E_SUBSTRATE', 'codex worker has no thread id to resume', { worker_id, substrate: w.substrate, state: w.state }); await holdForLaunch(w, core); // before the checks below: they and the spawn stay one tick, so two concurrent messages still start one process
     // An adopted worker whose pid is still alive is a process a previous adapter owns. belay is not
     // its parent (invariant 1), so it cannot see that turn end, and starting a second process on
     // the same worktree is the one thing one-process-per-turn exists to prevent. Stop it first.
@@ -324,8 +307,10 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       fail('E_SUBSTRATE', 'codex worker is mid-turn; one process per turn', { worker_id, substrate: w.substrate, state: w.state, pid: w.pid });
     }
     await launch(w, { resume: w.sessionId, prompt: text });
-    w.parser.noteStdinWrite();
-    await writeRow(w, 'running');
+    await guarded(w, async () => {
+      w.parser.noteStdinWrite();
+      await writeRow(w, 'running');
+    });
     return { worker_id, channel: 'codex-resume', bytes: Buffer.byteLength(text, 'utf8'), pid: w.pid, turn: w.turns + 1 };
   }
 
@@ -350,7 +335,9 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const p = W.adopt({ core, workerId, dataDir: root }).then(async (w) => {
       workers.set(workerId, w); // no launch guard: a stop must always go through, and writeFilesFor below regenerates settings.json from the record
       await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the argv written below carries the notes lever
-      try { writeFilesFor(w); } catch (e) { if (w.nativeMemory == null) throw e; w.adoptRefusal = e; } // mcp.json, settings.json, the log path; with the lever on ANY failure here (a folder that cannot be made, a refused record) is kept for checkLaunch to throw on a launch, never on a stop
+      const denied = await NM.adoptDenied(w, runId, ctx.memoryLevers, core); // another run's native_memory is never written into this run's settings; the record stays, the relaunch is refused
+      if (denied) { w.adoptRefusal = denied; const rec = w.nativeMemory; w.nativeMemory = null; try { writeFilesFor(w); } catch (e) { w.lastError = { where: 'adopt.settings', code: e && e.code, message: e && e.message }; } finally { w.nativeMemory = rec; } } // the refusal is set first and kept whatever the rewrite does: a stop still goes through, a launch never reaches the old settings
+      else try { writeFilesFor(w); } catch (e) { if (w.nativeMemory == null) throw e; w.adoptRefusal = e; } // mcp.json, settings.json, the log path; with the lever on ANY failure here (a folder that cannot be made, a refused record) is kept for checkLaunch to throw on a launch, never on a stop
       if (w.substrate === 'claude-code') w.instructions = I.existingInstructions(w.dir); // never the worktree
       return w;
     });
@@ -364,7 +351,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   async function doRestart(w, { firstTextOverride = null, appendMessage = null, awaitFirstTurn = true, first_turn_timeout_ms = 180000, onFirstText = null, skipDeadPidKill = false } = {}) {
     const worker_id = w.id;
     const old_pid = w.pid;
-    const d = decideBranch(w);
+    const d = decideBranch(w); await holdForLaunch(w, core); // the task's files are held for this run, or nothing is touched
     if (W.settleHeld(w, ctx, 'pid-check-on-restart')) await w.queue; // a held death gets its dead row before the relaunch
     if (w.child && P.pidAlive(w.pid)) await doStop(w, 'graceful', 10000);
     // Fix round, should-fix finding: `skipDeadPidKill` (resume, pause.cjs) skips this branch — a park's own
@@ -377,31 +364,33 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
     const overridden = firstTextOverride ? await firstTextOverride(d.branch) : undefined;
     let firstText = overridden !== undefined ? overridden : await restartFirstText(w, d.branch, { core, ctx });
-    firstText = await MP.relaunch(w, ctx, firstText, { excludeShown: d.branch === 'resume' || w.bottleCarriesFirst === true }); // ADR 0042 decision 3: minus the rows already shown, only where that conversation still holds them
+    firstText = await MP.relaunch(w, ctx, firstText, { fresh: d.branch === 'replace', message: appendMessage }); // ADR 0042 decision 3: minus the rows already shown, only where that conversation still holds them
     if (d.branch === 'replace') {
       w.sessionId = null;
       w.parser = createParser(w.substrate, MP.parserOpts(ctx));
     }
-    if (appendMessage) firstText = firstText ? `${firstText}\n\n${appendMessage}` : appendMessage;
     if (onFirstText) onFirstText(firstText);
 
     const resume = d.branch === 'resume' ? w.sessionId : null;
     await launch(w, w.substrate === 'claude-code' ? { resume } : { resume, prompt: firstText });
-    await writeRow(w, 'starting');
-    openWith(w, firstText, 'resume');
+    let init;
+    await guarded(w, async () => {
+      await writeRow(w, 'starting');
+      openWith(w, firstText, 'resume');
 
-    const t0 = now();
-    const ready = await W.waitReady(w, 60000);
-    if (!ready) {
-      await failNoReady(w, 'the relaunched worker produced no ready event inside the startup window', { branch: d.branch });
-    }
-    const v = await verifyReady(w, ready, t0 + 60000);
-    if (!v.ok) await failNoReady(w, v.reason, { branch: d.branch });
-    w.readyEvidence = v.evidence;
-    const init = W.noteInit(w, ready); // ADR 0021 decisions 3 and 4
-    if (!(await writeRow(w, 'running')) && w.state !== 'idle') {
-      await failNoReady(w, `the relaunched worker reached ready but its pid ${w.pid} was no longer alive when the running row would have been written`, { branch: d.branch });
-    }
+      const t0 = now();
+      const ready = await W.waitReady(w, 60000);
+      if (!ready) {
+        await failNoReady(w, 'the relaunched worker produced no ready event inside the startup window', { branch: d.branch });
+      }
+      const v = await verifyReady(w, ready, t0 + 60000);
+      if (!v.ok) await failNoReady(w, v.reason, { branch: d.branch });
+      w.readyEvidence = v.evidence;
+      init = W.noteInit(w, ready); // ADR 0021 decisions 3 and 4
+      if (!(await writeRow(w, 'running')) && w.state !== 'idle') {
+        await failNoReady(w, `the relaunched worker reached ready but its pid ${w.pid} was no longer alive when the running row would have been written`, { branch: d.branch });
+      }
+    }, { parkOnFailure: skipDeadPidKill }); // a failed resume goes back to parked (start-fail.cjs)
     const turn = awaitFirstTurn ? await W.waitTurn(w, first_turn_timeout_ms) : null;
     await w.queue;
     return {

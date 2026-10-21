@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1';
 // settings-levers.test.cjs — `belay settings` for the memory levers and the per-agent-type defaults: the keys
 // derived from src/core/memory-levers.cjs, a refused write that leaves the file unchanged, the config's memory
@@ -40,7 +41,7 @@ test('settings: every memory lever is listed as memory.<key> with its default, d
     const r = cli(dir, ['settings']);
     assert.strictEqual(r.code, 0);
     const mem = r.out.settings.filter((s) => s.key.startsWith('memory.'));
-    assert.deepStrictEqual(mem.map((s) => s.key), Object.keys(ML.DEFAULTS).map((k) => `memory.${k}`));
+    assert.deepStrictEqual(mem.map((s) => s.key), Object.keys(ML.DEFAULTS).filter((k) => !ML.EVAL_ONLY.includes(k)).map((k) => `memory.${k}`));
     for (const s of mem) {
       assert.strictEqual(s.value, ML.DEFAULTS[s.key.slice(7)], s.key);
       assert.deepStrictEqual(s.default, ML.DEFAULTS[s.key.slice(7)], s.key);
@@ -154,9 +155,9 @@ test('run spec: the config memory block is the default and the spec overrides it
     const p = parseSpec(sb.specPath, sb.dir);
     assert.ifError(p.error);
     const m = p.levers.memory_levers;
-    assert.deepStrictEqual([m.project, m.capture, m.alpha, m.rules, m.index_bytes, m.notes], ['acme', true, 0.7, true, 900, false]);
+    assert.deepStrictEqual([m.project, m.capture, m.alpha, m.rules, m.index_bytes, m.notes], ['acme', true, 0.7, true, 900, true]);
     const s = p.levers.memory_sources;
-    assert.deepStrictEqual(Object.keys(s), Object.keys(ML.DEFAULTS));
+    assert.deepStrictEqual(Object.keys(s), Object.keys(ML.DEFAULTS).filter((k) => !ML.EVAL_ONLY.includes(k))); // an eval-only lever nobody supplied is not listed
     assert.deepStrictEqual([s.alpha, s.rules, s.project, s.capture, s.index_bytes, s.notes], ['spec', 'spec', cfg, cfg, cfg, 'default']);
   } finally { cleanup(sb.dir); }
 });
@@ -249,7 +250,7 @@ test('writeSetting: the exported writer takes a typed value, validates the whole
     assert.strictEqual(writeSetting(C.discover(dir), 'memory.project', 'acme', { cwd: dir }).code, 0);
     const ok = writeSetting(C.discover(dir), 'memory.notes', true, { cwd: dir });
     assert.strictEqual(ok.code, 0);
-    assert.deepStrictEqual([ok.json.old.value, ok.json.new.value], [false, true]);
+    assert.deepStrictEqual([ok.json.old.value, ok.json.new.value], [true, true]);
     assert.strictEqual(writeSetting(C.discover(dir), 'memory.index_bytes', '7', { cwd: dir }).json.new.value, 7);
     assert.strictEqual(writeSetting(C.discover(dir), 'memory.index_bytes', 'x', { cwd: dir }).code, 2);
     assert.strictEqual(writeSetting(C.discover(dir), 'memory.alpha', 'x'.length, { cwd: dir }).code, 0);
@@ -280,5 +281,19 @@ test('settings: a single memory key warns, as the listing does, when the stored 
     const text = cli(dir, ['settings', 'memory.alpha'], { json: false });
     assert.match(text.stdout, /warning: the memory block would be refused by a run: memory\.notes needs memory\.project/);
     assert.strictEqual(cli(dir, ['settings', 'agents.coder.model']).out.memory_error, undefined);
+  } finally { cleanup(dir); }
+});
+
+test('settings: the eval-only run-spec levers are not settings, and a config memory block naming one is refused', () => {
+  const dir = project();
+  try {
+    const all = cli(dir, ['settings']).out.settings.map((x) => x.key);
+    for (const k of ['native_memory', 'handback_question']) {
+      assert.ok(!all.includes(`memory.${k}`), k);
+      assert.notStrictEqual(cli(dir, ['settings', `memory.${k}`, k === 'native_memory' ? 'C:/x' : 'true']).code, 0, k);
+    }
+    assert.ok(!fs.existsSync(`${dir}/belay.config.json`), 'nothing was written');
+    writeConfig(dir, { memory: { handback_question: true } });
+    assert.match(String(cli(dir, ['settings']).out.memory_error), /handback_question is eval-only/);
   } finally { cleanup(dir); }
 });

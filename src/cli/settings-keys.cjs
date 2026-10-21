@@ -10,7 +10,7 @@ const ML = require('../core/memory-levers.cjs');
 const AD = require('../run/agent-defaults.cjs');
 
 const MOD_NAMES = C.KEY_NAMES.filter((k) => C.KEYS[k].allowed);
-const MEMORY_NAMES = Object.keys(ML.DEFAULTS).map((k) => `memory.${k}`);
+const MEMORY_NAMES = Object.keys(ML.DEFAULTS).filter((k) => !ML.EVAL_ONLY.includes(k)).map((k) => `memory.${k}`);
 const AGENT_NAMES = AD.AGENT_KEYS.flatMap((t) => AD.fieldsOf(t).map((f) => `agents.${t}.${f}`));
 const NAMES = [...MOD_NAMES, ...MEMORY_NAMES, ...AGENT_NAMES];
 
@@ -100,6 +100,17 @@ function checkStored(key, value) {
 }
 
 // { key, value, source, default, allowed, describe, type, invalid? } for a memory or agents key; the mod keys go through config.cjs.
+// `memory.notes` left unstated resolves per run: on when the memory block has a project and keeps redaction. Show that
+// state and why, instead of the bare lever default (off), which says nothing about the project.
+function effectiveNotes(found, out) {
+  const cfg = found.found && found.config && found.config.memory;
+  const block = cfg && typeof cfg === 'object' && !Array.isArray(cfg) ? cfg : {};
+  const r = ML.parseMemoryBlock(block);
+  if (r.error) return { ...out, note: 'effective: off (the memory block is refused: ' + r.error + ')' };
+  const why = r.value.notes ? 'on, because memory.project is set' : block.redact === false ? 'off, because memory.redact is false' : 'off, because memory.project is not set';
+  return { ...out, value: r.value.notes, note: 'effective: ' + why };
+}
+
 function effective(found, key) {
   if (kindOf(key) === 'mod') {
     const e = C.effective(found, key);
@@ -112,10 +123,11 @@ function effective(found, key) {
     key, value: dflt, source: 'default', default: dflt, allowed: sh.allowed, type: sh.text,
     describe: kindOf(key) === 'memory' ? 'memory lever: the default every run inherits; the run spec\'s memory block overrides it key by key' : 'default for the agent type; an explicit model or effort always wins',
   };
-  if (!stored.present) return out;
+  const withNote = (o) => (key === 'memory.notes' && o.source === 'default' ? effectiveNotes(found, o) : o);
+  if (!stored.present) return withNote(out);
   const chk = checkStored(key, stored.value);
   if (!chk.ok) return { ...out, invalid: { stored: stored.value, reason: `${chk.reason}; the default ${JSON.stringify(dflt)} is used` } };
-  if (chk.unset) return out;
+  if (chk.unset) return withNote(out);
   return { ...out, value: stored.value, source: found.path };
 }
 
@@ -142,8 +154,16 @@ const expectedValue = (key, value) => (kindOf(key) === 'agents' && value === nul
 const expectedSource = (key, value, file) => (kindOf(key) === 'agents' && value === null ? 'default' : file);
 
 // The memory block's own verdict, for a listing: an error string when the stored block would be refused by a run.
+// The eval-only run-spec keys are no project default: a config memory block naming one is refused (null when it names none).
+function evalOnlyIn(memory) {
+  const bad = memory && typeof memory === 'object' ? ML.EVAL_ONLY.filter((k) => Object.prototype.hasOwnProperty.call(memory, k)) : [];
+  return bad.length ? `${bad.join(', ')} ${bad.length > 1 ? 'are' : 'is'} eval-only: set in a run spec (top level), never in the config's memory block` : null;
+}
+
 function memoryBlockError(found) {
   if (!found.found || found.config.memory === undefined) return null;
+  const eo = evalOnlyIn(found.config.memory);
+  if (eo) return eo;
   const r = ML.parseMemoryBlock(found.config.memory);
   return r.error || null;
 }

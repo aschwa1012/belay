@@ -7,7 +7,7 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const { execFileSync } = require('node:child_process');
-const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
+const { core, sandbox, cleanup, callerFor, capturingCall } = require('./helpers.cjs');
 
 const { Store } = core('store.cjs');
 const { Engine } = core('engine.cjs');
@@ -17,7 +17,8 @@ const RUN = 'r-nrev';
 const orch = callerFor('orchestrator', { run_id: RUN });
 const harness = callerFor('orchestrator', { run_id: RUN, channel: 'harness' });
 const worker = (id) => callerFor('worker', { run_id: RUN, worker_id: id });
-const call = (method, caller, args = {}) => E.handle(method, { caller, ...args });
+const rawCall = (method, caller, args = {}) => E.handle(method, { caller, ...args });
+const call = capturingCall(rawCall, orch, harness); // a verdict call is preceded by the brief capture a run would have made
 const rowOf = (id) => store.p('SELECT * FROM memory_entries WHERE id = ?').get(id);
 const bodyOf = (id) => JSON.parse(rowOf(id).body);
 const events = (kind) => store.p('SELECT * FROM memory_event WHERE kind = ? ORDER BY seq').all(kind);
@@ -162,6 +163,17 @@ test('R6: the orchestrator model cannot apply verdicts; only the harness channel
 test('R7: setStatus refuses a review: receipt from anyone', async () => {
   const w = await written('w-g', 'K8');
   await assert.rejects(call('memory.setStatus', orch, { id: w.note, status: 'verified', receipt: 'review:anything' }), (e) => e.code === 'E_RECEIPT' && /only by belay/.test(e.message));
+});
+
+test('R7b: setStatus cannot make a note verified on a receipt the caller supplies, from the orchestrator or the operator', async () => {
+  const w = await written('w-g2', 'K50');
+  const operator = callerFor('operator', { run_id: RUN });
+  for (const [who, receipt] of [[orch, 'test:claimed-pass'], [operator, 'test:claimed-pass'], [operator, `task:${w.task}`]]) {
+    await assert.rejects(call('memory.setStatus', who, { id: w.note, status: 'verified', receipt }), (e) => e.code === 'E_RECEIPT' && e.detail && e.detail.reason === 'note_needs_review');
+  }
+  assert.ok(!rowOf(w.note).status || rowOf(w.note).status === 'unverified', 'the refused calls changed nothing');
+  const refuted = await call('memory.setStatus', operator, { id: w.note, status: 'refuted', receipt: 'test:it-failed' });
+  assert.strictEqual(refuted.status, 'refuted', 'refuting a note on the operator word stays open');
 });
 
 test('R8: scope and liveness: a note of another task, a pending note and an unknown id are refused by name', async () => {

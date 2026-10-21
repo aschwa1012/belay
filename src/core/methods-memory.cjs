@@ -187,6 +187,7 @@ async function store(E, caller, args) {
     source: source || (caller.role === 'operator' ? 'operator' : 'model'),
   };
   const a = embed === false ? base : await withEmbedding(E, base, 'embedding', 'text', caller);
+  E.assertRunOpen(caller, 'memory.store'); // the embedding was awaited above; run.end may have committed meanwhile (audit D42)
   const row = E.store.store(a);
   E.noteWrite();
   return row;

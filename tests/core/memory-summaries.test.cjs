@@ -32,7 +32,7 @@ before(async () => {
   store = new Store(`${dir}/memory.db`, { stamp: true });
   E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: null, establishedBy: 'test' });
   await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true }) });
-  await call('run.attach', orchOff, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme' }) });
+  await call('run.attach', orchOff, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: false }) });
 });
 after(() => { store.close(); cleanup(dir); });
 

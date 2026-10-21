@@ -5,7 +5,7 @@
 
 const CODES = new Set([
   'E_ARGS', 'E_ROLE', 'E_NOT_FOUND', 'E_NOT_HOLDER', 'E_LEASE_EXPIRED', 'E_NO_LEASE',
-  'E_OPERATOR_HOLDS', 'E_WORKER_NOT_LIVE', 'E_WORKER_LIVE', 'E_FILES_OVERLAP', 'E_DEPENDENCY_OPEN',
+  'E_OPERATOR_HOLDS', 'E_WORKER_NOT_LIVE', 'E_WORKER_LIVE', 'E_FILES_OVERLAP', 'E_RUN_NOT_LIVE', 'E_DEPENDENCY_OPEN',
   'E_DEPENDENCY_CYCLE', 'E_TASK_DONE', 'E_NO_READY', 'E_SUBSTRATE',
   'E_NO_OWNER', 'E_OWNER_LOST', 'E_LOCKED', 'E_NO_EMBEDDER', 'E_TOO_LONG', 'E_MODEL',
   'E_MODEL_ABSENT', 'E_MODEL_CHANGED', 'E_DIM', 'E_VEC', 'E_SUPERSEDES',
@@ -18,6 +18,8 @@ const CODES = new Set([
   'E_NOTE_SHAPE',
   // wave 4 and the notes lifecycle: an unverifiable citation, a job over its cost cap, out of scope, a failed fact precondition, a ground that is not allowed
   'E_CITATION', 'E_COST_CAP', 'E_SCOPE', 'E_PRECONDITION', 'E_GROUND',
+  // ADR 0045: a write with no bound identity on an owner that serves only bound callers, and a bind that cannot be opened or claimed
+  'E_UNBOUND', 'E_BIND',
 ]);
 
 class CoreError extends Error {

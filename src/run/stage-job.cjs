@@ -55,9 +55,15 @@ const overran = (cost, cap, failed) => typeof cost === 'number' && (cost > cap |
 
 // How many items the next attempt of a stage takes: the full count, or half of what the last attempt tried while the last thing the
 // ledger says about the stage is an overrun, down to 1. A success (`successKind`, ok) ends the halving.
-async function attemptLimit(core, stage, successKind, full) {
+// Only the events of the project's own runs count when `project` is given: another project's overrun or success says nothing about this one's items.
+async function attemptLimit(core, stage, successKind, full, project = null) {
   let evs;
   try { evs = ((await core.memory.events({ kinds: ['stage_overrun', successKind] })) || {}).events || []; } catch { return full; }
+  if (project) {
+    let ids;
+    try { ids = new Set((((await core.run.list({})) || {}).runs || []).filter((r) => r.project === project).map((r) => r.id)); } catch { return full; }
+    evs = evs.filter((e) => ids.has(e.run_id));
+  }
   const mine = evs.filter((e) => (e.kind === 'stage_overrun' ? e.key === stage : e.ok === 1 || e.ok === true));
   const last = mine[mine.length - 1];
   if (!last || last.kind !== 'stage_overrun') return full;

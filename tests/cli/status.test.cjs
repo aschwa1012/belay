@@ -126,7 +126,9 @@ test('status: a live run reads alive, established by a bounded ping and pid chec
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, runId, orchestratorDir } = makeSpec(dir, { poll_ms: 300, close_grace_ms: 2000 });
-  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '500' };
+  // The orchestrator answers late: the run's owner vouches for this test as the operator by its process before it binds the test as an
+  // orchestrator (about a second), and the planted worker has to land before the orchestrator's turn ends the run.
+  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '5000' };
   const runCliProc = runCli(specPath, dataDir, env);
   let core = null;
   let plantedProc = null;
