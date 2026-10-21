@@ -43,7 +43,13 @@ const pauseAdvice = (caller, copy) => (caller.role === 'worker'
 // The query vector for a search on a heavy tier: { vec, model } or, when the failure fell back, { fallback: { tier, cause } } for the caller to
 // re-embed on that tier. Throws (after telling the run's hook) under on_heavy_failure pause.
 async function queryVector(E, caller, o, lv) {
-  try { return await embedQuery(E, o.tier, o.query); } catch (e) {
+  try { return await embedQuery(E, o.tier, o.query); } catch (e) { return failure(E, caller, o, lv, e); }
+}
+
+// A real heavy failure (an error, a dead child, a failed load) of a search on a heavy tier: on_heavy_failure decides. `pause` tells the run hook and
+// throws; `fallback` records the sticky fallback on the run row and answers { fallback: { tier, cause } } for the caller to serve on nano.
+function failure(E, caller, o, lv, e) {
+  {
     if (lv.on_heavy_failure === 'pause') {
       e.detail = { ...e.detail, advised: true };
       e.message = `${e.message} ${pauseAdvice(caller, !E.owner)}`;
@@ -56,4 +62,4 @@ async function queryVector(E, caller, o, lv) {
   }
 }
 
-module.exports = { embedQuery, queryVector, BOUND_MS };
+module.exports = { embedQuery, queryVector, failure, BOUND_MS };

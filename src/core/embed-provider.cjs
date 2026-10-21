@@ -73,6 +73,8 @@ async function closeAll(boundMs = 3000) {
 
 // An Owner's stop: closes the providers it built, and the shared GPU child when it used one (its reranker or its embedder). Bounded, never throws.
 async function closeOwned(owner, boundMs = 3000) {
+  const hb = require.cache[require.resolve('./heavy-behind.cjs')]; // the owner's background catch-ups end first, and start no more
+  if (hb) await hb.exports.cancel(owner, boundMs);
   const names = new Set((owner && owner.embedBuilt) || []);
   for (const n of names) providers.delete(n);
   if (!(owner && owner.gpuUsed)) return;

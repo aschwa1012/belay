@@ -19,6 +19,7 @@ const { toUnitF32 } = require('./store.cjs');
 const gate = require('./memory-note-gate.cjs');
 const ST = require('./search-tier.cjs');
 const HE = require('./heavy-embed.cjs');
+const HB = require('./heavy-behind.cjs');
 const { notesDefaults } = require('./memory-search-scope.cjs');
 const { nsFor, resolveNamespace, runAlpha, withEmbedding, reachOf, checkReach, runEmbedderMode } = require('./methods-memory.cjs');
 
@@ -273,7 +274,8 @@ async function search(E, caller, args, internal = {}) {
   o.tier = internal.tier || ST.tierFor(E, caller);
   o.t0 = t0;
   const lv = ST.leversOfSearch(E, caller, internal.levers);
-  if (o.mode !== 'keyword') ST.assertServable(E, o.tier, o.namespaces); // a heavy tier never serves a partial index
+  // A heavy tier never serves a partial index. Mid-run on a pinned tier the rows behind are caught up inline or the search is served on nano (heavy-behind.cjs); elsewhere it refuses by name.
+  if (o.mode !== 'keyword') await HB.guard(E, caller, o, lv, () => ST.assertServable(E, o.tier, o.namespaces));
   const depth = o.order === 'score' ? Math.min(Math.max((o.offset + o.k) * 3, 60), DEPTH_MAX) : DEPTH_MAX;
   const base = baseWhere(o);
   const db = E.store.db;
@@ -283,7 +285,7 @@ async function search(E, caller, args, internal = {}) {
   let sem = null, kw = null;
   if (o.mode !== 'keyword') {
     const ts = Date.now();
-    try { sem = await semanticStage(E, caller, o, depth, lv); ran.push('semantic'); }
+    try { sem = await HB.guard(E, caller, o, lv, () => semanticStage(E, caller, o, depth, lv)); ran.push('semantic'); }
     catch (e) {
       if (o.mode === 'semantic' || e.code === 'E_TIER_BEHIND') throw e; // a semantic search that cannot run is refused by name; a heavy tier never serves a partial index
       onSemanticFailure(E, caller, e);
@@ -293,7 +295,7 @@ async function search(E, caller, args, internal = {}) {
   }
   // A heavy tier that failed (this search, or earlier in the run: the fallback is on the run row) is said in EVERY answer served on the fallback profile.
   const tierFb = o.tierFallback || (o.tier.source === 'fallback' && o.tier.fallback_cause ? { cause: o.tier.fallback_cause } : null);
-  if (tierFb) failed.push({ mode: 'heavy_embed', code: tierFb.cause.code, message: `the heavy tier failed (${tierFb.cause.message}); this search and the rest of the run are served on the ${o.tier.profile} profile` });
+  if (tierFb) failed.push(HB.failedEntry(tierFb, o.tier));
   if (o.mode !== 'semantic') {
     const tk = Date.now();
     const r = keywordStage(E, o, depth, base);
@@ -368,7 +370,7 @@ async function search(E, caller, args, internal = {}) {
   out.searched = searched; out.fusion = fusion;
   if (rr.info || !ST.isNano(o.tier)) { const { profile, embedder, reranker, device } = o.tier; out.tier = { profile, embedder, reranker, device }; }
   if (rr.info) out.rerank = rr.info;
-  if (tierFb) out.tier_fallback = { to: o.tier.profile, from: o.tier.fallback_from || null, cause: tierFb.cause };
+  if (tierFb) out.tier_fallback = HB.answerOf(tierFb, o.tier);
   if (rr.failed) { // loud (ADR 0040): the answer names the stage that did not run, in the warning and in modes_failed
     failed.push(rr.failed);
     out.warning = [`rerank did not run (${rr.failed.code}${rr.info.cause.reason ? `: ${rr.info.cause.reason}` : ''}); the results are in fusion order, not reranked`, out.warning].filter(Boolean).join('; ');
