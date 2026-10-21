@@ -165,7 +165,8 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     });
     w.launches += 1;
     w.launchedAt = now();
-    W.attach(w, child, ctx);
+    try { W.attach(w, child, ctx); }
+    catch (e) { if (e && e.teardown) await e.teardown; throw e; } // a register refusal ends the child and its helpers: the error waits for that
     startPoll();
     return spec;
   }

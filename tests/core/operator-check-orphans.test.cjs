@@ -70,14 +70,35 @@ test('the record outlives the worker: a child of the helper is refused once the 
     const helperEntry = { ppid: 9999, created: W.created + 5000, image: 'node.exe' };
     assert.strictEqual((await check({ ...OLD_SHELL, [HELPER]: helperEntry })({ conn: tcp() })).ok, false);
     assert.deepStrictEqual(SR.tombstones().map((t) => [t.pid, t.via, t.until]), [[HELPER, 'worker pid 7001', null]], 'the worker\'s tombstone is replaced by its live descendant');
-    // a child (pid 4300) of the helper, created long after the worker's window: reached through the helper's record
-    const kid = { ppid: HELPER, created: NOW + 30000, image: 'cmd.exe' };
+    // a child (pid 4300) of the helper, created long after the worker's window but while the helper ran: reached through the helper's record
+    const kid = { ppid: HELPER, created: NOW - 1000, image: 'cmd.exe' };
     const viaChain = await check({ [HELPER]: helperEntry, 4300: kid }, {}, 4300)({ conn: tcp() });
     assert.strictEqual(viaChain.ok, false, JSON.stringify(viaChain));
     // the helper exits and its child is left a root whose parent pid is the helper
     const orphanKid = await check({ 4300: kid }, {}, 4300)({ conn: tcp() });
     assert.strictEqual(orphanKid.ok, false, JSON.stringify(orphanKid));
     assert.match(orphanKid.reason, /descendant of descendant pid 4242/);
+  });
+});
+
+test('a parent pid reused after the worker exited does not make a later process its descendant', async () => {
+  await withRegistry(async () => {
+    // The worker lived from NOW-120000 to NOW-100000. Windows hands its pid to an unrelated short-lived launcher that starts a detached
+    // terminal: the terminal is a root whose parent pid is the worker's, and it is older than this owner's start.
+    SR.saveTombstone({ pid: W.pid, created: NOW - 120000, from: NOW - 120000, until: NOW - 100000, kind: 'worker', via: null });
+    const terminal = (created) => ({ ...OLD_SHELL, [HELPER]: { ppid: W.pid, created, image: 'WindowsTerminal.exe' } });
+    const reused = await check(terminal(NOW - 100000 + Prov.SLACK_MS + 5000))({ conn: tcp() });
+    assert.strictEqual(reused.ok, true, `a root created after the worker's lifetime and grace is not its descendant: ${JSON.stringify(reused)}`);
+    assert.deepStrictEqual(SR.tombstones().map((t) => [t.pid, t.via]), [], 'no descendant was recorded for the reused pid (the exited worker tombstone is dropped once nothing alive is left to reach)');
+    SR.saveTombstone({ pid: W.pid, created: NOW - 120000, from: NOW - 120000, until: NOW - 100000, kind: 'worker', via: null });
+    const inside = await check(terminal(NOW - 100000 + 500))({ conn: tcp() });
+    assert.strictEqual(inside.ok, false, `a child created while the worker ran is still its descendant: ${JSON.stringify(inside)}`);
+  });
+  await withRegistry(async () => {
+    // the same for a recorded descendant that has exited: its tombstone bounds its children
+    SR.saveTombstone({ pid: 4300, created: NOW - 90000, from: NOW - 90000, until: NOW - 80000, kind: 'descendant', via: 'worker pid 7001' });
+    const late = await check({ ...OLD_SHELL, [HELPER]: { ppid: 4300, created: NOW - 60000, image: 'WindowsTerminal.exe' } })({ conn: tcp() });
+    assert.strictEqual(late.ok, true, JSON.stringify(late));
   });
 });
 

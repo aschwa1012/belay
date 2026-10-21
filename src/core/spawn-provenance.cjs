@@ -39,7 +39,9 @@ function isRoot(pid, e, snap) {
 function covers(w, pid, e) {
   if (w.pid === pid && (w.created == null || w.created === e.created)) return false; // the process itself
   if (w.window && e.created >= w.from && (w.until == null || e.created <= w.until + SLACK_MS)) return true;
-  return e.ppid === w.pid && e.created >= (w.created == null ? w.from : w.created); // its parent pid is the recorded process
+  // its parent pid is the recorded process: created after it began and, once it has exited, no later than its exit (plus the slack).
+  // A pid is reused after an exit, so a root created after the lifetime that names the same pid as its parent has an unrelated parent.
+  return e.ppid === w.pid && e.created >= (w.created == null ? w.from : w.created) && (w.until == null || e.created <= w.until + SLACK_MS);
 }
 
 // -> { alive: [{ pid, created, kind }] } the recorded descendants whose process is alive.
