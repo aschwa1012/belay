@@ -93,14 +93,15 @@ function resumeOverlaps(store, runId) {
 
 // ADR 0046 decision 1, activation: a task that is about to be worked must hold its files for a live run, or the work is
 // unprotected (a later create could take the same paths). Returns the run id that will own the work: the task's own run
-// when it is live (or the task owns no files, so nothing is held), else `candidateRunId` (the run of the worker that is
-// taking the work) when that run is live, which re-homes the task. null when no live run can own it: the caller refuses.
+// when it owns no files (nothing is held); else `candidateRunId`, the run of the worker that is taking the work, when it
+// names a run. That run must be live, and the task moves to it unless it is already its own: a hold lasts as long as the
+// run doing the work, not the run that wrote the task. With no run named (the operator's check) the task's own run stands
+// when it is live. null when no live run can own it: the caller refuses.
 function activationRun(store, task, candidateRunId) {
   if (!Array.isArray(task.files_owned) || !task.files_owned.length) return task.run_id;
   const liveness = runLiveness(store);
-  if (liveness(task.run_id).live) return task.run_id;
-  if (typeof candidateRunId === 'string' && candidateRunId && candidateRunId !== 'cli' && liveness(candidateRunId).live) return candidateRunId;
-  return null;
+  if (typeof candidateRunId === 'string' && candidateRunId && candidateRunId !== 'cli') return liveness(candidateRunId).live ? candidateRunId : null;
+  return liveness(task.run_id).live ? task.run_id : null;
 }
 
 module.exports = { activationRun, resumeOverlaps, overlaps, runLiveness, holdOf, findClashes };

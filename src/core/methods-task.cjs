@@ -10,6 +10,7 @@ const { pidAlive } = require('./lock.cjs');
 const { DEFAULT_LEASE_TTL_MS, TASK_STATES } = require('./schema.cjs');
 const { runAcceptance } = require('./evaluate.cjs');
 const holds = require('./task-holds.cjs');
+const { filesOverlap, runNotLive, resolveOwner } = require('./methods-task-hold.cjs');
 
 // ADR 0025 decision 1: the most a worker may hand back on release, serialized.
 const HANDOFF_MAX_BYTES = 4096;
@@ -48,15 +49,6 @@ function findCycle(store, id, dependsOn) {
     return null;
   };
   return walk(id);
-}
-
-function filesOverlap({ task, files }) {
-  return err('E_FILES_OVERLAP', `task ${task.id} is not done and already owns ${files.join(', ')}`, { other_task_id: task.id, other_run_id: task.run_id, files });
-}
-
-function runNotLive(task, worker) {
-  return err('E_RUN_NOT_LIVE', `task ${task.id} owns files and its run ${task.run_id} is not live, and ${worker ? `worker ${worker.id}'s run ${worker.run_id} is not a live run that could hold them` : 'no live run was named to hold them'}; assigning it would leave its files unprotected, so close it and create the work again in a live run`,
-    { task_id: task.id, run_id: task.run_id, worker_run_id: worker ? worker.run_id : null });
 }
 
 async function create(E, caller, args) {
@@ -177,12 +169,8 @@ async function assign(E, caller, args) {
     // The hold belongs to a live run: a task whose own run has ended is taken over by the run of the worker that takes it
     // (the calling orchestrator's run for a check_only), and is refused when no live run can own it.
     const worker = checkOnly ? null : rows.current(E.store, 'worker', args.worker_id);
-    const ownerRun = holds.activationRun(E.store, task, checkOnly ? (caller.role === 'orchestrator' ? caller.run_id : null) : (worker && worker.run_id));
-    if (Array.isArray(task.files_owned) && task.files_owned.length) {
-      const [first] = holds.findClashes(E.store, task.files_owned, task.id, { run_id: ownerRun == null ? task.run_id : ownerRun });
-      if (first) throw filesOverlap(first);
-    }
-    if (ownerRun == null) throw runNotLive(task, worker);
+    // A task that owns files moves to the run of the worker that takes it, and a move is a new claim: every overlapping holder refuses it.
+    const ownerRun = resolveOwner(E.store, task, checkOnly ? (caller.role === 'orchestrator' ? caller.run_id : null) : (worker && worker.run_id), worker);
 
     // ADR 0030 decision 4: the task-side checks above are the whole of a check_only call; it writes nothing.
     if (checkOnly) return { assignable: true, task_id: task.id };

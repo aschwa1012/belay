@@ -15,6 +15,7 @@ const { isJobId } = require('./job-ids.cjs');
 const memory = require('./methods-memory.cjs');
 const run = require('./methods-run.cjs');
 const task = require('./methods-task.cjs');
+const taskHold = require('./methods-task-hold.cjs');
 const continuity = require('./continuity.cjs');
 const status = require('./status.cjs');
 const diff = require('./methods-diff.cjs');
@@ -147,6 +148,8 @@ const METHODS = {
   // build step 6a, ADR 0010 §4 amendment 1: opened to the operator as well (see the comment above
   // ORCH_OR_OPERATOR); the MCP adapter's task_assign tool stays orchestrator-only.
   'task.assign': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: task.assign },
+  // The run manager asks this before it relaunches a worker (restart, resume, a Codex turn): the task it holds is held for the manager's live run, or the relaunch is refused.
+  'task.ensureHold': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: taskHold.ensureHold },
   'task.list': { roles: ALL, kind: 'read', fn: task.list },
   'task.get': { roles: ALL, kind: 'read', fn: task.get },
   'task.evaluate': { roles: ORCH, kind: 'write', fn: task.evaluate },
