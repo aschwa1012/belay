@@ -41,6 +41,7 @@ async function embedIds(E, key, impl, ids, opts) {
   }
   const list = [...want.entries()].map(([k, w]) => ({ id: k, text: w.text }));
   const embedded = list.length ? await impl.embedDocs(list, opts) : [];
+  if (opts && opts.cancelled && opts.cancelled()) return 0; // the owner's catch-up was ended while this batch was in flight: write nothing
   E.store.tx(() => {
     for (const d of embedded) {
       const w = want.get(d.id);
@@ -64,7 +65,7 @@ async function probeFirst(model, headroomGb) {
   if (!(r && r.ok)) { const f = (r && r.refusal) || { reason: 'probe_failed', message: 'the GPU probe returned nothing', options: [] }; throw err('E_MODEL_ABSENT', `the GPU probe refused ${model} (${f.reason}): ${f.message}. Options: ${(f.options || []).join('; ') || 'none'}`, { gpu: true, cause: 'probe_refused', refusal: f }); }
 }
 
-async function drainHeavy(E, tierKey, { namespaces, onProgress, boundMs = DEFAULT_BOUND_MS, batch = BATCH, probe = false, headroomGb } = {}) {
+async function drainHeavy(E, tierKey, { namespaces, onProgress, boundMs = DEFAULT_BOUND_MS, batch = BATCH, probe = false, headroomGb, cancelled } = {}) {
   const key = keyOfModel(tierKey);
   const db = E.store.db;
   const t0 = Date.now();
@@ -75,7 +76,7 @@ async function drainHeavy(E, tierKey, { namespaces, onProgress, boundMs = DEFAUL
   if (total && !impl) throw err('E_NO_EMBEDDER', `no embedder for ${key.model} is available here (only the store owner loads a heavy embedder)`, { embedder: key.model });
   for (let i = 0; i < total; i += batch) {
     if (i > 0 && Date.now() - t0 >= boundMs) break;
-    try { await embedIds(E, key, impl, missing.slice(i, i + batch).map((r) => r.id), { deadline: t0 + boundMs }); } catch (e) {
+    try { await embedIds(E, key, impl, missing.slice(i, i + batch).map((r) => r.id), { deadline: t0 + boundMs, cancelled }); } catch (e) {
       e.detail = { ...(e.detail || {}), written: total - MV.backlog(db, key, { namespaces }).length, embedder: key.model };
       throw e;
     }

@@ -18,8 +18,11 @@ const rows = require('./rows.cjs');
 let inlineBoundMs = 2000;
 const CATCHUP_PASS_MS = 5000;
 const CATCHUP_TOTAL_MS = 300000;
-function setTestOptions(o) { if (process.env.BELAY_TEST_MODE !== '1') throw new Error('setTestOptions is a test seam'); inlineBoundMs = (o && o.inlineBoundMs) || 2000; }
+let catchUpGate = null; // test seam: a promise every background catch-up awaits before each pass
+function setTestOptions(o) { if (process.env.BELAY_TEST_MODE !== '1') throw new Error('setTestOptions is a test seam'); inlineBoundMs = (o && o.inlineBoundMs) || 2000; catchUpGate = (o && o.catchUpGate) || null; }
 
+// A catch-up serves a live run: it stops when the run has ended.
+const runOpen = (E, runId) => { const r = rows.current(E.store, 'run', runId); return !!r && r.ended_at == null; };
 const scopeOfRun = (E, runId) => require('./retrieval-pin.cjs').scopeOf(rows.current(E.store, 'run', runId));
 
 // Whether this search is mid-run on a pinned heavy tier whose scope the run owns.
@@ -35,9 +38,15 @@ async function guard(E, caller, o, lv, fn) {
   try { return await fn(); } catch (e) {
     if (!(e && e.code === 'E_TIER_BEHIND') || !eligible(E, caller, o)) throw e;
     await handle(E, caller, o, lv);
-    return fn();
+    try { return await fn(); } catch (e2) {
+      // A concurrent write landed between the retry's query embed and its candidates: this search is served on nano (behind), never thrown.
+      if (!(e2 && e2.code === 'E_TIER_BEHIND') || ST_isNano(o.tier)) throw e2;
+      serveNano(E, caller, o, require('./heavy-drain.cjs').backlogOf(E, o.tier.embedder, o.namespaces).length || 1);
+      return fn();
+    }
   }
 }
+const ST_isNano = (t) => !t || t.embedder === RP.NANO;
 
 async function handle(E, caller, o, lv) {
   const HD = require('./heavy-drain.cjs'), HE = require('./heavy-embed.cjs'), EP = require('./embed-provider.cjs');
@@ -59,7 +68,13 @@ async function handle(E, caller, o, lv) {
   }
   const left = HD.backlogOf(E, embedder, namespaces).length;
   if (!left) return; // all embedded within the bound: serve heavy
-  startCatchUp(E, caller, embedder, namespaces);
+  serveNano(E, caller, o, left);
+}
+
+// THIS search is served on nano, loudly, and the one background catch-up starts. Not sticky, not a heavy failure.
+function serveNano(E, caller, o, left) {
+  const embedder = o.tier.embedder;
+  startCatchUp(E, caller, embedder, o.namespaces);
   const message = `${left} note${left === 1 ? ' is' : 's are'} not yet embedded by ${embedder} (written outside this run's own writes), so this search is served on the ${RP.FALLBACK_PROFILE} profile; a background catch-up is embedding them and later searches serve the heavy tier again`;
   o.tier = { ...HT.FALLBACK_TIER, source: 'behind', fallback_from: o.tier.profile };
   o.tierFallback = { cause: { code: 'E_TIER_BEHIND', reason: 'behind', message }, behind: left };
@@ -75,8 +90,11 @@ function startCatchUp(E, caller, embedder, namespaces) {
   const p = (async () => {
     const t0 = Date.now();
     try {
-      while (!owner.stopped && !owner.catchUpsCancelled && Date.now() - t0 < CATCHUP_TOTAL_MS) {
-        const r = await HD.drainHeavy(E, embedder, { namespaces, boundMs: CATCHUP_PASS_MS });
+      const live = () => !owner.stopped && !owner.catchUpsCancelled && runOpen(E, caller.run_id);
+      while (live() && Date.now() - t0 < CATCHUP_TOTAL_MS) {
+        if (catchUpGate) await catchUpGate;
+        if (!live()) break; // ended while it waited
+        const r = await HD.drainHeavy(E, embedder, { namespaces, boundMs: CATCHUP_PASS_MS, cancelled: () => !live() });
         if (r.done || r.written === 0) break;
       }
     } catch (e) {
