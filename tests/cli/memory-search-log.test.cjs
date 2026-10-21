@@ -75,3 +75,42 @@ test('--export is required, and the usage text lists the verb', () => {
   assert.match(r.stderr, /search-log --export <file>/);
   assert.match(R.usageText(), /belay memory search-log --export <file> \[--run <id>\] \[--since <ms\|iso>\] \[--force\]/);
 });
+
+test('a target inside the data directory is refused before anything is read, and nothing in the directory changes', () => {
+  const snap = () => fs.readdirSync(T.dir).sort().map(n => `${n}:${fs.statSync(`${T.dir}/${n}`).size}`).join(',');
+  const before = snap();
+  for (const f of [`${T.dir}/memory.db`, `${T.dir}/new.jsonl`, `${T.dir}/sub/../memory.db`]) {
+    const r = belay('--export', f, '--force');
+    assert.strictEqual(r.status, 2, f + r.stderr);
+    assert.strictEqual(JSON.parse(r.stderr).error.code, 'E_ARGS');
+  }
+  assert.strictEqual(snap(), before);
+  assert.ok(fs.statSync(`${T.dir}/memory.db`).size > 0, 'the database is intact');
+});
+
+test('--force replaces a file through a temp file and leaves none behind', () => {
+  const f = `${outDir}/forced.jsonl`;
+  fs.writeFileSync(f, 'old\n');
+  assert.strictEqual(belay('--export', f, '--force').status, 0);
+  assert.strictEqual(lines(f).length, 3);
+  assert.deepStrictEqual(fs.readdirSync(outDir).filter(n => n.includes('.tmp-')), []);
+});
+
+test('with a live owner the export reads a copy and never connects to the owner', async () => {
+  const { Owner } = require('../../src/core/owner.cjs');
+  const od = fs.mkdtempSync(`${require('node:os').tmpdir()}/belay-sl-own-`);
+  const o = new Owner(od, { embed: false });
+  await o.start();
+  let connections = 0;
+  o.server.on('connection', () => { connections += 1; });
+  try {
+    const f = `${outDir}/owned.jsonl`;
+    const r = await new Promise((resolve) => {
+      const c = require('node:child_process').spawn(process.execPath, [CLI, 'memory', 'search-log', '--data', od, '--json', '--export', f], { stdio: ['ignore', 'pipe', 'pipe'] });
+      let out = ''; c.stdout.on('data', d => { out += d; }); c.on('exit', code => resolve({ code, out }));
+    });
+    assert.strictEqual(r.code, 0, r.out);
+    assert.strictEqual(connections, 0, 'the owner was not asked');
+    assert.strictEqual(JSON.parse(r.out).count, 0);
+  } finally { await o.stop(); fs.rmSync(od, { recursive: true, force: true }); }
+});
