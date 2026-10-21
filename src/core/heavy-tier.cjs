@@ -59,7 +59,7 @@ function setFallback(E, caller, cause) {
   const run = runOf(E, runId), pin = pinOfRow(run);
   if (!pin || run.ended_at != null || (pin.fallback && pin.fallback.epoch === run.epoch)) return false;
   pin.fallback = { cause: { code: cause.code || null, reason: cause.reason || null, message: String(cause.message || '').slice(0, 400) }, at: Date.now(), epoch: run.epoch };
-  require('./methods-run.cjs').appendRun(E, { ...run, retrieval_routing: JSON.stringify(pin) }, E.writtenBy(caller));
+  require('./methods-run.cjs').appendRun(E, { ...run, retrieval_routing: JSON.stringify(pin) }, 'harness'); // the owner's own write, not the caller's (a worker's) identity
   if (E.noteWrite) E.noteWrite();
   return true;
 }

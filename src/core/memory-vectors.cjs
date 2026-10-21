@@ -238,6 +238,16 @@ function visibleRows(db, opts) {
   return db.prepare(`SELECT ${cols} FROM memory_entries e WHERE ${v.where} ORDER BY e.created_at, e.id`).all(...v.params);
 }
 
+// A row whose embed text cannot be rendered (its text is not a string) can never have a vector under any tier. It is left out of the backlog and
+// of a heavy tier's candidates, with ONE warning per row, so it does not keep every search on nano for ever.
+const unrenderable = (r) => typeof r.text !== 'string';
+const warned = new Set();
+function warnUnrenderable(r) {
+  if (warned.has(r.id)) return;
+  warned.add(r.id);
+  try { process.emitWarning(`memory row ${r.id} has no renderable text, so no embedder can embed it; it is left out of every heavy backlog`, { code: 'BELAY_UNRENDERABLE_ROW' }); } catch { /* a warning is a courtesy */ }
+}
+
 function scan(db, tier, { namespaces, includeSuperseded = false, at = Date.now(), hidden = null, bodyLive = false } = {}) {
   needTable(db);
   const out = { rows: [], missing: [] };
@@ -249,6 +259,7 @@ function scan(db, tier, { namespaces, includeSuperseded = false, at = Date.now()
     if (bodyLive && !gate.bodyLive(r)) continue; // as search does after ranking, for a gated caller
     const found = lookup(get, k, r);
     if (found) out.rows.push({ id: r.id, namespace: r.namespace, ...found });
+    else if (unrenderable(r)) warnUnrenderable(r); // no text to embed: it can never have a vector, so it is not behind
     else out.missing.push(r);
   }
   return out;
@@ -329,5 +340,5 @@ function sweepRows(db, gone) {
 
 module.exports = {
   TABLE_SQL, embedTextOf, embedHashOf, renderTemplateOf, templatesOf, hasTable, migrateVectors, lastWriterMaintainedCache, catchUp, putVector, putRowVector,
-  generation, bump, vectorsFor, visibleRowFilter, selectSearchable, backlog, sweep, sweepRows,
+  unrenderable, warnUnrenderable, generation, bump, vectorsFor, visibleRowFilter, selectSearchable, backlog, sweep, sweepRows,
 };
