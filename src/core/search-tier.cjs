@@ -167,7 +167,7 @@ async function rerankHead(E, caller, o, ranked, rowsOf, lv) {
   const depth = Math.min(tier.depth > 0 ? tier.depth : lv.rerank_depth, ranked.length);
   const rows = rowsOf(ranked.slice(0, depth).map(h => h.id));
   try {
-    const r = await rerank({ tier, query: o.query, ranked, textOf: (id) => (rows.has(id) ? rerankText(rows.get(id)) : null), depth, boundMs: boundFor(lv.rerank_bound_ms, o.t0 || Date.now()) });
+    const r = await rerank({ tier, query: o.query, ranked, textOf: (id) => (rows.has(id) ? rerankText(rows.get(id)) : null), depth, boundMs: boundFor(lv.rerank_bound_ms, o.t0 || Date.now()), owner: !!E.owner });
     return { ranked: r.ranked, info: r.info, failed: null };
   } catch (e) {
     if (lv.on_heavy_failure === 'pause') {
