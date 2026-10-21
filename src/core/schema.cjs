@@ -191,6 +191,9 @@ const MIGRATIONS = [
   // The harness's record of the eval-only native_memory lever (ADR 0024 amendment 3): the resolved folder, or null. A relaunch reads the lever
   // from here and never from the worker's settings.json, which the worker can edit.
   'ALTER TABLE worker ADD COLUMN native_memory TEXT',
+  // ADR 0046 decision 1: the epoch of the attach that revived a run whose previous adapter was dead with no run.end, carried by every later
+  // row of that life; null for a run that never lapsed. It lets "the run that is live now keeps the paths" order two lapsed runs without a clock.
+  'ALTER TABLE run ADD COLUMN revived_epoch INTEGER',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot

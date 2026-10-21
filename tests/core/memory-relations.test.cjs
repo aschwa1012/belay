@@ -110,9 +110,9 @@ test('relate gates: (a) a score or a report, (b) both live', async () => {
   const refused = await scrub('apply', [relate(far.neu, 'repeats', far.old)]);
   assert.deepStrictEqual([refused.refused[0].code, refused.counts.applied], ['E_PRECONDITION', 0]);
   assert.match(refused.refused[0].message, /not shown to be related/);
-  // A worker report naming the pair opens the gate without a score.
+  // A worker report naming the pair, once a reviewer has upheld it, opens the gate without a score.
   const rep = pair({ neu: { vec: B, reported_wrong: [{ ...T.report('worker:w2', null), run_id: 'lc-apply' }] } });
-  T.store.patchBody(rep.neu, b => { b.reported_wrong[0].replaced_by = rep.old; return b; });
+  T.store.patchBody(rep.neu, b => { b.reported_wrong[0].replaced_by = rep.old; b.report_judgments = [{ task_id: 'tx', report_at: 1, verdict: 'upheld', by: 'rev-1', ref: 'rt-1', at: 2 }]; return b; });
   const viaReport = await scrub('apply', [relate(rep.neu, 'refines', rep.old)]);
   assert.strictEqual(viaReport.applied[0].facts.via, 'report');
   // (b): an archived partner, a pending partner and a held partner are refused.

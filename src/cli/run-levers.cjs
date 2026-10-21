@@ -140,10 +140,12 @@ function parseLevers(spec, opts = {}) {
   return out;
 }
 
-// The columns run.attach records for the memory levers; nothing at all for a default block.
+// The columns run.attach records for the memory levers. A default block records explicit nulls, never nothing: run.attach carries
+// an absent field forward from an unended epoch (a rule meant for the orchestrator's own adapter), so a re-run over a run that
+// never ended would otherwise inherit the previous run's levers and project (audit D55).
 function attachMemory(levers) {
   const m = levers && levers.memory_levers;
-  return m ? { memory_levers: JSON.stringify(m), project: m.project } : {};
+  return m ? { memory_levers: JSON.stringify(m), project: m.project === undefined ? null : m.project } : { memory_levers: null, project: null };
 }
 
 // The receipt line's suffix, empty for a default block.
