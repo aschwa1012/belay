@@ -80,6 +80,7 @@ function onTaskEnded(J, task) {
   if (s.pending.has(key)) return Promise.resolve();
   const p = applyHandback(J, task).then(() => {}, () => {});
   s.pending.set(key, p);
+  p.then(() => { (s.done = s.done || new Set()).add(key); });
   return p;
 }
 
@@ -96,6 +97,12 @@ async function drainVerdicts(ctx, ms) {
     if (!all || s.pending.size === known) break;
   }
   clearTimeout(timer);
+  // A cut-off is never silent: the applications still running when the deadline passed are named on a receipt. They are not lost: the hand-back is
+  // on the review task's row, and `belay run`'s reviewSweep (store-only, after the adapter has gone) applies it; the store makes a second application a no-op.
+  const left = [...s.pending.keys()].filter((k) => !(s.done && s.done.has(k)));
+  if (left.length && ctx.core && ctx.core.memory && typeof ctx.core.memory.recordEvent === 'function') {
+    await receipt(ctx.core, { ok: false, code: 'E_TIMEOUT', run_id: ctx.runId, key: `drain:${ctx.runId}`, message: `the verdict drain gave up after ${ms} ms with ${left.length} application(s) still running (${left.map((k) => k.replace(/^apply:/, '')).slice(0, 8).join(', ')}); belay run's review sweep applies them from the review tasks' hand-backs` });
+  }
 }
 
 // The run's end, store-only (also runs in `belay run`, which holds no manager): apply the hand-back of every ended review task.

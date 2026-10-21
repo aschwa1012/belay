@@ -22,9 +22,10 @@ const reviewTask = (id) => ({ id, state: 'released', acceptance: { verdict: true
 
 function world(budget = 120000) {
   const core = createFakeCore({ runId: 'run-fake' });
-  const applied = [], gates = new Map();
+  const applied = [], gates = new Map(), events = [];
   Object.assign(core.memory, {
-    noteVerdicts: async ({ review_task_id }) => { if (gates.has(review_task_id)) await gates.get(review_task_id).promise; applied.push(review_task_id); return { applied: [], refused: [], already: [], unjudged: [] }; },
+    recordEvent: async (e) => { events.push(e); return e; },
+    noteVerdicts: async ({ review_task_id }) => { if (gates.has(review_task_id)) { const g = gates.get(review_task_id); gates.delete(review_task_id); await g.promise; } applied.push(review_task_id); return { applied: [], refused: [], already: [], unjudged: [] }; },
   });
   const flags = { closed: false, closing: false, ownerGone: false };
   const workers = new Map();
@@ -38,7 +39,7 @@ function world(budget = 120000) {
     markClosed: () => { flags.closed = true; }, markClosing: () => { flags.closing = true; }, markOwnerGone: () => { flags.ownerGone = true; return new Set(); },
     beforeStop: (ms) => { calls.push(ms); return NR.drainVerdicts(ctx, ms); }, onDrained: async () => {}, drainBudgetMs: budget, ...over,
   });
-  return { m, workers, ctx, J, gates, applied, shutdown, calls, flags };
+  return { m, workers, ctx, J, gates, applied, shutdown, calls, flags, events };
 }
 
 test('R1: an application registered while another is drained is waited for too; no worker stops until it ends', async () => {
@@ -102,18 +103,33 @@ test('R7: both drains share one budget: the close never waits longer than the si
   assert.ok(ms < BUDGET + 300, `the close took ${ms} ms against a ${BUDGET} ms bound`); // 300 ms: timer and scheduling slack, not a second drain
 });
 
-test('R8: the two drains of one shutdown never ask for more than the shared deadline, even with an application that never ends', async () => {
+test('R8: a verdict application held past the deadline: the drain gives up with a receipt naming it, the outer wait covers the drain, and the run sweep applies the verdict', async () => {
   const { NOTE_REVIEW_DRAIN_MS } = require('../../src/core/spawn-bounds.cjs');
-  const asked = [];
-  const t0 = Date.now();
-  await LC.shutdown(new Map([['w1', rec('w1')]]), {
-    stop: async () => {}, core: { isOwner: () => false }, clearPoll: () => {}, markClosed: () => {}, markOwnerGone: () => new Set(),
-    beforeStop: async (ms) => { asked.push(ms); }, // a stalled application is represented by the drain returning at once: only the asked budgets matter
-    onDrained: async () => {},
-  });
-  assert.strictEqual(asked.length, 2);
-  assert.ok(asked.every((x) => x <= NOTE_REVIEW_DRAIN_MS), JSON.stringify(asked)); // each drain is asked for at most the one deadline, and R7 shows the pair spends it once
-  assert.ok(Date.now() - t0 < 2000);
   const { adapterStopBoundMs, adapterWaitBoundMs } = require('../../src/cli/run-close.cjs');
-  assert.ok(adapterWaitBoundMs(1, 0) >= adapterStopBoundMs(1) && adapterStopBoundMs(1) >= NOTE_REVIEW_DRAIN_MS, 'the outer wait covers the drain');
+  const W = world(); // default budget: the one shared deadline
+  W.workers.set('wa', rec('wa'));
+  const hold = defer();
+  W.gates.set('ra', hold);
+  const task = reviewTask('ra');
+  void NR.onTaskEnded(W.J, task);
+  await ticks();
+  // the drain is asked for at most the one deadline, and the outer wait for one worker covers that and the worker's own stop window
+  const asked = [];
+  await NR.drainVerdicts(W.ctx, 30); // the application is held: the deadline (30 ms here) passes
+  const gaveUp = W.events.filter((e) => e.kind === 'review_job' && String(e.key).startsWith('drain:'));
+  assert.strictEqual(gaveUp.length, 1, 'the cut-off is a receipt, never silent');
+  assert.deepStrictEqual([gaveUp[0].ok, gaveUp[0].code], [false, 'E_TIMEOUT']);
+  assert.match(gaveUp[0].message, /still running \(ra\)/);
+  assert.match(gaveUp[0].message, /review sweep applies them/);
+  assert.deepStrictEqual(W.applied, [], 'nothing was applied yet');
+  await W.shutdown({ drainBudgetMs: undefined, beforeStop: async (ms) => { asked.push(ms); } }); // undefined: the lifecycle's own default budget
+  assert.ok(asked.every((x) => x <= NOTE_REVIEW_DRAIN_MS), JSON.stringify(asked));
+  assert.ok(adapterWaitBoundMs(1, 0) >= asked[0] + 10000, 'the outer wait for one worker covers the whole drain and the worker stop window');
+  assert.ok(adapterStopBoundMs(1) >= NOTE_REVIEW_DRAIN_MS);
+  // belay run's store-only sweep (another manager state) applies the hand-back the held application never finished
+  const J2 = { ...W.J, ctx: { ...W.ctx } };
+  await NR.sweep(J2, [task]);
+  assert.deepStrictEqual(W.applied, ['ra'], 'the sweep applied it');
+  hold.resolve();
+  await ticks();
 });
