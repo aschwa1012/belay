@@ -9,6 +9,8 @@
 // 2. Election is a choice, not a default. A worker-role caller must never elect (api.md §1); with
 //    `elect: false` this client takes no lock, creates no data dir, and fails E_NO_OWNER.
 
+const fs = require('node:fs');
+const path = require('node:path');
 const net = require('node:net');
 const { err } = require('./errors.cjs');
 const { pipeName } = require('./lock.cjs');
@@ -54,10 +56,19 @@ class Client {
   get connected() { return !!this.sock && !this.sock.destroyed; }
 
   async connect() {
+    let preChecked = false;
     for (let i = 0; i < this.opts.connectRetries; i++) {
       try { await this._dial(this.opts.dialTimeoutMs); return this; }
       catch { /* no owner answered; maybe elect, maybe wait for whoever is starting */ }
       if (this.opts.elect) {
+        // Audit L19: look at the run from a copy of the store before starting anything, so a late orchestrator adapter refused
+        // below never takes the lock, writes a heartbeat or opens a pipe. Once only: the check after the start still stands for
+        // a run that ends in between.
+        if (!preChecked) {
+          preChecked = true;
+          const gone = await this._endedRunBeforeStart();
+          if (gone) throw this._notMadeOwner(gone);
+        }
         const { Owner } = require('./owner.cjs');
         const o = new Owner(this.dataDir, this.opts.ownerOpts);
         try {
@@ -66,7 +77,7 @@ class Client {
           // already ended is a late adapter. It would be a stray owner that writes into the ended run, and the per-Core
           // E_SHUTDOWN guard cannot see it (another process shut the owner down). It gives the lock back and fails.
           const ended = this._endedRun(o);
-          if (ended) { await o.stop(); throw err('E_SHUTDOWN', `run ${ended.id} has already ended; this orchestrator-role process was not made the store owner`, { run_id: ended.id, ended_at: ended.ended_at, data_dir: this.dataDir }); }
+          if (ended) { await o.stop(); throw this._notMadeOwner(ended); }
           this.owner = o; this.becameOwner = true; return this;
         }
         catch (e) { if (e.code !== 'E_LOCKED') throw e; } // someone else is the owner; dial again
@@ -74,6 +85,27 @@ class Client {
       if (i < this.opts.connectRetries - 1) await sleep(this.opts.retryMs);
     }
     throw err('E_NO_OWNER', `no owner answered at ${this.pipe} and this caller may not elect one`, { data_dir: this.dataDir, pipe: this.pipe, elect: !!this.opts.elect });
+  }
+
+  _notMadeOwner(ended) {
+    return err('E_SHUTDOWN', `run ${ended.id} has already ended; this orchestrator-role process was not made the store owner`, { run_id: ended.id, ended_at: ended.ended_at, data_dir: this.dataDir });
+  }
+
+  // The same question as _endedRun, asked of a throwaway copy of the store (invariant 6: a read copies, it never opens the live
+  // file), so nothing is started to ask it. A store that does not exist, or a copy that cannot be read, answers "not ended".
+  async _endedRunBeforeStart() {
+    const caller = this.opts.caller;
+    if (!caller || caller.role !== 'orchestrator' || !caller.run_id) return null;
+    if (!fs.existsSync(path.join(this.dataDir, 'memory.db'))) return null;
+    try {
+      const { withCopy } = require('./copy-read.cjs');
+      return await withCopy(this.dataDir, async (dbPath, how) => {
+        if (how !== 'copy') return null;
+        const { Store } = require('./store.cjs');
+        const store = new Store(dbPath);
+        try { return this._endedRun({ store }); } finally { try { store.close(); } catch { /* throwaway copy */ } }
+      });
+    } catch { return null; }
   }
 
   _endedRun(owner) {

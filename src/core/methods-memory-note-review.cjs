@@ -146,6 +146,7 @@ async function noteVerdicts(E, caller, args) {
   for (const [index, raw] of (route.verdicts || []).entries()) {
     const idOf = isObj(raw) && typeof raw.id === 'string' ? raw.id : null;
     const refuse = (e, n) => {
+      E.assertRunOpen(caller, 'memory.noteVerdicts'); // a refusal receipt is a write: none after the run ended (audit D42)
       const message = String(e.message).slice(0, 300);
       if (idOf) refusedIds.add(idOf);
       out.refused.push({ index, id: idOf, code: codeOf(e), message, ...(e.detail ? { detail: e.detail } : {}) });
@@ -163,8 +164,9 @@ async function noteVerdicts(E, caller, args) {
       n = admit(E, caller, route, v);
       const chk = v.cites.length === 0 ? { ok: true } : await CC.checkTaskCites(E, n.task_id, v.cites, { title: n.title, when: parse(n.body).when, text: n.text, evidence: parse(n.body).evidence });
       if (!chk.ok) throw err('E_CITATION', `note ${n.id}: ${chk.failures.length} of ${v.cites.length} cites are not in the evidence task ${n.task_id} recorded; the verdict is dropped (${chk.failures.map((f) => `cites[${f.index}] ${f.where}: ${f.reason}`).join(' | ')})`.slice(0, 600), { id: n.id, failures: chk.failures });
+      E.assertRunOpen(caller, 'memory.noteVerdicts'); // the citation check awaited a file; a run that ended meanwhile takes no verdict (audit D42)
       out.applied.push(v.verdict === 'unsupported' ? require('./note-unsupported.cjs').queueUnsupported(E, caller, route, v, n) : applyOne(E, caller, route, v, n));
-    } catch (e) { refuse(e, n); }
+    } catch (e) { if (e && e.detail && e.detail.run_ended) throw e; refuse(e, n); } // an ended run is not a refused verdict: nothing more is written
   }
   if (out.applied.length) E.noteWrite();
   const judged = new Set([...seen]);

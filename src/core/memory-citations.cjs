@@ -335,6 +335,7 @@ async function checkCitations(cites, ctx) {
     if (!holds(text, [quote])) throw fail(`the quote does not appear in ${rel} at ${ctx.head_sha.slice(0, 12)}`);
     out.push({ where: c.where, source: `${rel}@${ctx.head_sha.slice(0, 12)}` });
   }
+  if (seam.afterCheck) await seam.afterCheck(); // tests only, as in checkTaskCites
   return out;
 }
 

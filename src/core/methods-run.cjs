@@ -32,7 +32,7 @@ const ATTACH_SUSPECT = LIFE_CLAIMING_STATES;
 // Fix round for 6f (diff-scope): `rows.cjs` (unowned) lacks paused_at/paused_by in COLUMNS.run, so
 // rows.append would drop both. This local insert (its own shape, via exported bind/parseRow) adds them.
 function appendRun(E, values, writtenBy, at = Date.now()) {
-  const cols = [...rows.COLUMNS.run, 'paused_at', 'paused_by', 'pause_parks', 'memory_levers', 'project', 'project_dir', 'embedder_mode']; // item 1: 6th local column; ADR 0041 decision 1: the memory levers and the project
+  const cols = [...rows.COLUMNS.run, 'paused_at', 'paused_by', 'pause_parks', 'memory_levers', 'project', 'project_dir', 'embedder_mode', 'revived_epoch']; // item 1: 6th local column; ADR 0041 decision 1: the memory levers and the project
   const all = [...cols, 'written_at', 'written_by'];
   const sql = `INSERT INTO run(${all.join(', ')}) VALUES (${all.map(() => '?').join(', ')})`;
   const params = cols.map(c => rows.bind(values[c]));
@@ -116,6 +116,12 @@ async function attach(E, caller, args) {
   // null already (run.end below), but a belated write reaching this rule any other way must not resurrect
   // a pause nothing holds on a new epoch of the same run id (probe `stale`).
   const carryPause = prev && prev.ended_at == null;
+  // ADR 0046 decision 1 (audit D36): an attach over an unended row whose adapter no longer answers revives a run that lapsed without a
+  // run.end, as a re-run over an ended row does, so its tasks queue behind a run that took its paths meanwhile. An attach while the previous
+  // adapter still answers (the orchestrator's adapter after the run process) is the same life and moves nothing.
+  // A reused pid reads as live, which fails towards keeping the old order, never towards a second owner.
+  const lapsed = !!(carryPause && !pidAlive(prev.adapter_pid));
+  const revivedEpoch = lapsed ? epoch : null; // an attach of a life that never lapsed writes null, which never moves a run's priority
   const run = appendRun(E, {
     id: runId,
     epoch,
@@ -140,10 +146,13 @@ async function attach(E, caller, args) {
     memory_levers: leversGiven ? args.memory_levers : (carryPause ? prev.memory_levers : null), // same carry rule
     project: projectGiven ? args.project : (carryPause ? prev.project : null),
     project_dir: dirGiven ? args.project_dir : (carryPause ? prev.project_dir : null),
+    revived_epoch: revivedEpoch,
     embedder_mode: modeGiven ? (args.embedder_mode === null ? null : require('./embedder-mode.cjs').normalize(args.embedder_mode)) : (carryPause ? prev.embedder_mode : null),
   }, by, t);
   E.noteWrite();
-  return { run, epoch, reattached: !!prev, previous: parseRunRow(prev), workers_marked_dead: marked }; // item c
+  // ADR 0046 decision 1: a re-attached run's unfinished tasks hold their files again; name any that now clash with another live run's.
+  const overlaps = prev ? require('./task-holds.cjs').resumeOverlaps(E.store, runId) : [];
+  return { run, epoch, reattached: !!prev, previous: parseRunRow(prev), workers_marked_dead: marked, overlaps }; // item c
 }
 
 // build step 6f, ADR 0023 amendment 3 decision 4.1, extended by build step 6i-2 design item 1 (amendment
@@ -269,6 +278,10 @@ async function end(E, caller, args) {
   const { out: usage, invalid } = usageColumns(args.usage);
   const prev = rows.current(E.store, 'run', caller.run_id);
   if (!prev) throw err('E_NOT_FOUND', `no run row exists for ${caller.run_id}, so there is nothing to end`, { run_id: caller.run_id });
+  // Audit D42: a run that has ended is ended once. A second end from a process launched for the run (the orchestrator role)
+  // answers with the row as it stands and writes nothing, so it cannot replace the ended_at, exit_reason or usage the run
+  // process recorded. The run process (role operator) closes its own run and keeps the whole call.
+  if (prev.ended_at != null && caller.role !== 'operator') return { ...parseRunRow(prev), workers_marked_dead: [], heads_filled: [], already_ended: true };
   const t = Date.now();
   // 6f-2 design item 4 (should-fix, methods-run.cjs:77, first review 1b): a pause ends with its run — the
   // ended row never claims one, so a re-run under the same run id starts its next epoch unpaused too
@@ -293,9 +306,35 @@ async function getRun(E, caller) {
 // argument to find the current run, because status.get and run.get both read the run named by
 // caller.run_id, fixed at openCore. `alive` is derived the same way status.get's run-alive rung
 // derives it: the row has not ended and its adapter_pid answers a pid check right now.
+//
+// `life_pids` is every distinct { pid, created } adapter pid the run's PRESENT life has recorded: the rows after the last ended row that a live
+// row follows, the current row included. A run id is reused (a re-run over an ended row, a spec that names its run id) and
+// an orchestrator's attach overwrites `adapter_pid` with an adapter that exits before the close, so neither the current row nor the
+// run id's first row ever names the process that still owns the store through the close; some row of the present life does (audit D35).
+// A reader matches the owner lock's pid (and creation time) against this list.
+function lifePids(hist) {
+  let start = 0;
+  // A life ends where an ended row is followed by a row that is not: the run process's own run.end appends a second ended row after
+  // the orchestrator's, and that pair is one close, not two lives.
+  for (let i = 0; i + 1 < hist.length; i++) if (hist[i].ended_at != null && hist[i + 1].ended_at == null) start = i + 1;
+  const seen = new Set(), out = [];
+  for (const r of hist.slice(start)) {
+    if (r.adapter_pid == null) continue;
+    const k = r.adapter_pid + ':' + r.adapter_pid_created;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push({ pid: r.adapter_pid, created: r.adapter_pid_created == null ? null : r.adapter_pid_created });
+  }
+  return out;
+}
 async function listRuns(E) {
+  const hist = new Map();
+  for (const r of E.store.p('SELECT id, seq, ended_at, adapter_pid, adapter_pid_created FROM run ORDER BY seq').all()) {
+    if (!hist.has(r.id)) hist.set(r.id, []);
+    hist.get(r.id).push(r);
+  }
   const runs = rows.currentAll(E.store, 'run')
-    .map(r => parseRunRow({ ...r, alive: !!(r.ended_at == null && pidAlive(r.adapter_pid)) }))
+    .map(r => parseRunRow({ ...r, alive: !!(r.ended_at == null && pidAlive(r.adapter_pid)), life_pids: lifePids(hist.get(r.id) || []) }))
     .sort((a, b) => b.seq - a.seq);
   return { runs };
 }
