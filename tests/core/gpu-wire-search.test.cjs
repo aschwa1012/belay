@@ -45,7 +45,9 @@ test('the heavy tier has a backlog of every visible note until it is drained', (
 });
 
 test('a bounded drain stops inside a batch, per document, and reports what is left', async () => {
-  const r = await HD.drainHeavy(E, EMB4, { namespaces: [NS], batch: 2, boundMs: 1 });
+  // The drain's clock is injected and ticks once per read, so the 1 ms bound passes after exactly one document however fast the machine is.
+  let tick = 0;
+  const r = await HD.drainHeavy(E, EMB4, { namespaces: [NS], batch: 2, boundMs: 1, now: () => tick++ });
   assert.strictEqual(r.total, notes.length);
   assert.strictEqual(r.written, 1, 'the bound covers one batch too: one document, then the deadline');
   assert.strictEqual(r.remaining, notes.length - 1);

@@ -76,7 +76,7 @@ async function drainHeavy(E, tierKey, { namespaces, onProgress, boundMs = DEFAUL
   if (total && !impl) throw err('E_NO_EMBEDDER', `no embedder for ${key.model} is available here (only the store owner loads a heavy embedder)`, { embedder: key.model });
   for (let i = 0; i < total; i += batch) {
     if (i > 0 && now() - t0 >= boundMs) break;
-    try { await embedIds(E, key, impl, missing.slice(i, i + batch).map((r) => r.id), { deadline: t0 + boundMs, cancelled }); } catch (e) {
+    try { await embedIds(E, key, impl, missing.slice(i, i + batch).map((r) => r.id), { deadline: t0 + boundMs, cancelled, now }); } catch (e) {
       e.detail = { ...(e.detail || {}), written: total - MV.backlog(db, key, { namespaces }).length, embedder: key.model };
       throw e;
     }

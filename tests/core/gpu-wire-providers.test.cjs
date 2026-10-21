@@ -22,7 +22,7 @@ after(() => R.restore());
 const rerankTier = { profile: 'custom', embedder: RP.NANO, reranker: RR4, device: 'gpu', depth: 4 };
 const heavyTier = { profile: 'custom', embedder: EMB4, reranker: null, device: 'gpu', depth: 0 };
 const docs = [{ id: 'a', text: 'lunch order for friday' }, { id: 'b', text: 'stop a worker process by its pid' }, { id: 'c', text: 'worker pid list' }];
-const gone = async (pid) => { const t0 = Date.now(); while (pidAlive(pid) && Date.now() - t0 < 4000) await new Promise(r => setTimeout(r, 20)); return !pidAlive(pid); };
+const { waitGone: gone } = require('../helpers/wait.cjs');
 
 test('the owner builds the GPU rerank provider on the first get, once, and a non-owner never does', async () => {
   assert.strictEqual(RPV.get(rerankTier), null, 'no owner fact, nothing built');
