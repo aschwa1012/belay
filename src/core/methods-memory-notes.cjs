@@ -44,7 +44,7 @@ function notesLevers(E, caller) {
 // never dropped (a report the release claims as marked must still be on the note when its hold is written). When only that report and the bodies' own
 // optional payloads are left, the optional history goes first (rejections, dismissals, releases, restores, judgments, then the review's cites and reason).
 const OPTIONAL = ['report_rejected', 'dismissed', 'releases', 'restored', 'report_judgments'];
-function fitBody(b, protect = null) {
+function fitBody(b, protect = null, noteId = null) {
   const droppable = () => (b.reported_wrong || []).findIndex((w) => w !== protect);
   while (size(b) > BODY_CEILING && ((b.seen_in || []).length || droppable() >= 0)) {
     if ((b.seen_in || []).length >= (b.reported_wrong || []).length || droppable() < 0) b.seen_in.shift(); else b.reported_wrong.splice(droppable(), 1);
@@ -52,7 +52,7 @@ function fitBody(b, protect = null) {
   if (protect) {
     for (const k of OPTIONAL) { if (size(b) <= BODY_CEILING) break; if (Array.isArray(b[k]) && b[k].length) b[k] = []; }
     if (size(b) > BODY_CEILING && b.review && typeof b.review === 'object') b.review = { ...b.review, cites: [], reason: String(b.review.reason || '').slice(0, 120) };
-    if (size(b) > BODY_CEILING) throw err('E_NOTE_SHAPE', 'the note is too large to keep one more report on it (its own body is over the limit); the release is refused and nothing was written', { max: BODY_CEILING });
+    if (size(b) > BODY_CEILING) throw err('E_NOTE_SHAPE', `note ${noteId || '(unnamed)'} is too large to keep one more report on it (its body is over ${BODY_CEILING} bytes even without its optional history); the release is refused and nothing was written. Shorten the report text (reported_wrong[].why) and call lease_release again; if the note's own review payload is the cause, ask the operator to trim it`, { max: BODY_CEILING, id: noteId });
   }
   return require('./report-marks.cjs').pruneSettled(b); // a settled key leaves only together with its report
 }
@@ -266,7 +266,7 @@ function commit(E, caller, prep, { task_id }) {
       b.report_seq = seq;
       report = { by, worker_id: caller.worker_id, task_id, run_id: caller.run_id, why: w.why, replaced_by: replacedBy, at: t, seq };
       b.reported_wrong = [...(b.reported_wrong || []).filter(x => x.by !== by), report].slice(-WRONG_KEEP);
-      return fitBody(b, report);
+      return fitBody(b, report, w.id);
     });
     if (!next.reported_wrong.includes(report) && !next.reported_wrong.some(x => x.seq === report.seq)) throw err('E_NOTE_SHAPE', `the report on note ${w.id} could not be kept on it, so the release is refused`, { id: w.id });
     // The note is held at once, in this transaction, for the archive review (the report itself keeps the worker's identity).

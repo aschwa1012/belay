@@ -287,7 +287,7 @@ test('H17: a note whose own review receipt fills the body to the ceiling still k
   const c = await X.written('w-a19', 'K39');
   X.store.patchBody(c.note, (b) => { b.evidence = Array.from({ length: 8 }, (_, i) => ({ where: 'src/' + i + '.js', saw: 's'.repeat(2000) })); return b; });
   const s = await X.startTask('w-b19', 'fixtures/unlisted.json was opened by the loader\n');
-  await assert.rejects(X.call('lease.release', X.worker('w-b19'), { lease_id: s.lease, notes: [], reported_wrong: [{ id: c.note, why: 'wrong' }] }), (er) => er.code === 'E_NOTE_SHAPE');
+  await assert.rejects(X.call('lease.release', X.worker('w-b19'), { lease_id: s.lease, notes: [], reported_wrong: [{ id: c.note, why: 'wrong' }] }), (er) => er.code === 'E_NOTE_SHAPE' && er.message.includes(c.note) && /Shorten the report text.*call lease_release again/.test(er.message));
   assert.strictEqual(X.bodyOf(c.note).reported_wrong.length, 0);
   assert.strictEqual(X.heldRows(c.note).length, 0);
   assert.notStrictEqual((await X.call('task.get', X.orch, { task_id: s.task })).state, 'released');
