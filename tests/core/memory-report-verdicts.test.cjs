@@ -381,3 +381,31 @@ test('P21: two applications of one review of a held note in flight write one adv
   } finally { CC.seam.afterCheck = null; open(); }
   assert.deepStrictEqual([hold(a.note).b.note_verdicts.length, hold(a.note).b.rev], [1, 1], 'one entry, one revision');
 });
+
+// Two applications of one review whose citation checks interleave: the first waits at the seam until the second has passed its own check.
+async function twice(rt) {
+  const CC = require('../../src/core/memory-citations.cjs');
+  let n = 0, open; const gate = new Promise((r) => { open = r; });
+  CC.seam.afterCheck = async () => { n += 1; if (n === 1) await gate; else open(); };
+  try { return await Promise.all([apply(rt), apply(rt)]); } finally { CC.seam.afterCheck = null; open(); }
+}
+
+test('P22: two applications of one review of an unheld note write one receipt and one status change (applyOneIn rechecks its receipt in the transaction)', async () => {
+  const a = await written('w-a27', 'K27');
+  const rt = await review('rev-27', a.task, { memory_verdicts: [{ id: a.note, verdict: 'confirmed', cites: [cite('the loader worked as the note says')], reason: 'what the stream shows' }] });
+  const [x, y] = await twice(rt);
+  assert.strictEqual(x.applied.length + y.applied.length, 1, JSON.stringify([x, y]));
+  assert.strictEqual(x.already.length + y.already.length, 1);
+  assert.strictEqual(events('note_review').filter((e) => e.ok === 1 && e.key.includes(rt) && e.key.endsWith(':' + a.note)).length, 1, 'one receipt');
+  assert.strictEqual(rowOf(a.note).status, 'verified');
+});
+
+test('P23: two applications of one unsupported verdict queue the note once (queueUnsupported rechecks its receipt in the transaction)', async () => {
+  const a = await written('w-a28', 'K28');
+  const rt = await review('rev-28', a.task, { memory_verdicts: [{ id: a.note, verdict: 'unsupported', cites: [cite('the loader worked as the note says')], reason: 'no single place proves it' }] });
+  const [x, y] = await twice(rt);
+  assert.strictEqual(x.applied.length + y.applied.length, 1, JSON.stringify([x, y]));
+  assert.strictEqual(x.already.length + y.already.length, 1);
+  assert.strictEqual(X.heldRows(a.note).length, 1, 'one queue row');
+  assert.strictEqual(events('note_review').filter((e) => e.ok === 1 && e.key.includes(rt) && e.key.endsWith(':' + a.note)).length, 1);
+});

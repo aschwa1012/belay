@@ -98,6 +98,7 @@ function releaseVerifying(E, ctx, held, v, sources) {
     if (e.code !== 'E_ARGS') throw e;
     return refuse('E_PRECONDITION', `the note cannot be verified: ${e.message}`);
   }
+  if (status.already) return refuse('E_PRECONDITION', 'this verdict was already applied');
   const keys = settledKeys(note, held);
   const out = release(E, ctx, held, v, { verified: sources, settled: keys, status: status.status }, (b) => { b.reports_settled = [...new Set([...(b.reports_settled || []), ...keys])]; });
   return { ...out, status: status.status, event_id: status.event_id, settled: { keys, count: keys.length } };

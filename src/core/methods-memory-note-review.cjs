@@ -116,6 +116,9 @@ function applyOneIn(E, caller, route, v, n) {
   {
     // The status is read again inside the write: the citation check awaited a file, and another review may have landed since
     // admit() looked. A refuted note is never confirmed back, and the answer's previous_status is what was really there.
+    // The receipt is read again here, after every await of the caller: the losing one of two applications of one review answers already and writes nothing.
+    const done = E.store.p("SELECT id FROM memory_event WHERE kind = 'note_review' AND ok = 1 AND key = ?").get(common.key);
+    if (done) return { id: n.id, verdict: v.verdict, already: true, event_id: done.id };
     const cur = E.store.p('SELECT status FROM memory_entries WHERE id = ?').get(n.id);
     if (!cur) throw err('E_NOT_FOUND', `no note ${n.id}`, { id: n.id });
     const previous = cur.status || 'unverified';
@@ -186,7 +189,9 @@ async function noteVerdicts(E, caller, args) {
       E.assertRunOpen(caller, 'memory.noteVerdicts'); // the citation check awaited a file; a run that ended meanwhile takes no verdict (audit D42)
       const advice = adviceOnHold(E, caller, route, v, n);
       if (advice && advice.already) { out.already.push({ id: v.id, event_id: advice.event_id }); continue; }
-      out.applied.push(advice || (v.verdict === 'unsupported' ? require('./note-unsupported.cjs').queueUnsupported(E, caller, route, v, n) : applyOne(E, caller, route, v, n)));
+      const got = advice || (v.verdict === 'unsupported' ? require('./note-unsupported.cjs').queueUnsupported(E, caller, route, v, n) : applyOne(E, caller, route, v, n));
+      if (got.already) { out.already.push({ id: v.id, event_id: got.event_id }); continue; }
+      out.applied.push(got);
     } catch (e) { if (e && e.detail && e.detail.run_ended) throw e; refuse(e, n); } // an ended run is not a refused verdict: nothing more is written
   }
   if (out.applied.length) E.noteWrite();

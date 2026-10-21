@@ -79,6 +79,7 @@ async function unsupported(E, ctx, held, v, readRev) {
     if (v.verdict === 'verify' && v.shown_hash !== BC.hashOfRow(note)) return R.refuseOn(E, ctx, held.id, held, v, 'E_PRECONDITION', 'the note changed after the brief showed it, or the brief did not bind it (shown_hash), so it is not verified');
     const route = { reviewer: `archreview-${ctx.runId}`, ref: `${ctx.runId}:${held.id}`, keyBase: `archreview:${held.id}` };
     const status = R.granted(id, () => applyOneIn(E, ctx.caller, route, { id, verdict: v.verdict === 'verify' ? 'confirmed' : 'refuted', reason: v.reason, cites: v.cites }, note));
+    if (status.already) return R.refuseOn(E, ctx, held.id, held, v, 'E_PRECONDITION', 'this verdict was already applied');
     const entry = settle(v.verdict === 'verify' ? 'verified' : 'refuted', { verified: sources });
     return { id, verdict: v.verdict, outcome: entry.outcome, receipt: entry.receipt, status: status.status, event_id: status.event_id, held: C.rowOut(E, held.id), row: C.rowOut(E, id) };
   });
