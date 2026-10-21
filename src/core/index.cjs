@@ -87,6 +87,7 @@ class Core {
   constructor(opts) {
     this.dataDir = resolveDataDir(opts.dataDir);
     this.caller = Object.freeze({ ...opts.caller });
+    this.key = typeof opts.key === 'string' && opts.key ? opts.key : null; // ADR 0045: a bound adapter's session key; sent on every request, never logged
     this.embed = opts.embed !== false;
     this.ownerOpts = opts.ownerOpts || {};
     this.vectorLimitMs = process.env.BELAY_TEST_MODE === '1' && Number.isInteger(opts.vectorLimitMs) && opts.vectorLimitMs > 0 ? opts.vectorLimitMs : 0; // a shorter in-process vector limit (tests only)
@@ -286,7 +287,7 @@ class Core {
     // _pingBeforeVector's answered ping, so the mark does not apply to it.
     const marked = readTimeoutFor(method, params) === EMBEDDING_READ_TIMEOUT_MS ? null : unresponsive.get(lock.pipe || pipeName(this.dataDir), lock.pid);
     if (marked) return { ok: false, unresponsive: marked };
-    const c = new Client(this.dataDir, { caller: this.caller, elect: false, connectRetries: 1, dialTimeoutMs: timeoutMs, callTimeoutMs: timeoutMs });
+    const c = new Client(this.dataDir, { caller: this.caller, key: this.key, elect: false, connectRetries: 1, dialTimeoutMs: timeoutMs, callTimeoutMs: timeoutMs });
     try { await c.connect(); } catch (e) { return { ok: false, unresponsive: this._markIfTimeout(e, timeoutMs, lock, 'dial') }; }
     this.client = c;
     try { const value = await c.call(method, params, { timeoutMs }); unresponsive.clearPipe(pipeName(this.dataDir)); return { ok: true, value }; }
@@ -359,9 +360,10 @@ class Core {
     // ADR 0051: once this Core has shut its owner down it never elects another by itself. A write that gets here after that is a
     // path that missed its close gate, and it fails naming the call instead of creating a stray owner. It may still dial an owner
     // somebody else holds, and becomeOwner() is the explicit way to elect again.
-    const elect = this.caller.role !== 'worker' && !this.shutDown;
+    const elect = this.caller.role !== 'worker' && !this.shutDown && !this.key; // a bound adapter never elects (ADR 0045 decision 2)
     const c = new Client(this.dataDir, {
       caller: this.caller,
+      key: this.key,
       elect,
       ownerOpts: { embed: this.embed, ...this.ownerOpts },
       callTimeoutMs: WRITE_TIMEOUT_MS,
@@ -428,7 +430,7 @@ class Core {
     }
     if (!pidAlive(lock.pid)) throw err('E_NO_OWNER', `the lock names pid ${lock.pid}, which is dead`, { data_dir: this.dataDir, pid: lock.pid, method });
     if (lock.listening === false) throw err('E_NO_OWNER', `the owner at pid ${lock.pid} is not listening yet`, { data_dir: this.dataDir, pid: lock.pid, method });
-    const c = new Client(this.dataDir, { caller: this.caller, elect: false, connectRetries: 1, dialTimeoutMs: 1000, callTimeoutMs: timeoutMs });
+    const c = new Client(this.dataDir, { caller: this.caller, key: this.key, elect: false, connectRetries: 1, dialTimeoutMs: 1000, callTimeoutMs: timeoutMs });
     try { await c.connect(); }
     catch (e) { throw err('E_NO_OWNER', `connecting to the owner's pipe for ${method} failed: ${e.message}`, { data_dir: this.dataDir, pid: lock.pid, method }); }
     try { return await c.call(method, { ...params, caller: this.caller }, { timeoutMs }); }
@@ -445,6 +447,16 @@ class Core {
   }
 
   async close() { await this._dropClient(); }
+
+  // ADR 0045 decision 2: ask the owner for a bind for a process about to be spawned (in the owner's own process: a direct call, the
+  // root of trust; over the pipe: gated on the caller's bound role, an orchestrator binding only a worker of its own run).
+  async bindOpen(identity, { noExpiry = false } = {}) { return this._bind('bind.open', { identity, ...(noExpiry ? { no_expiry: true } : {}) }); }
+  async bindStatus(bindId) { return this._bind('bind.status', { bind_id: bindId }); }
+  async bindRevoke(bindId) { return this._bind('bind.revoke', { bind_id: bindId }); }
+  async _bind(method, params) {
+    if (!this.owner || this.owner.stopped) await this._ensureWriter(method);
+    return this.isOwner() ? this.owner.bindCall(method, params, { role: 'operator', run_id: this.caller.run_id }) : this.client.call(method, { ...params, caller: this.caller }, { timeoutMs: 10000 });
+  }
 
   // ADR 0051: a command that is done with the owner it elected, and is not the run that owns the store. With no other
   // client attached it is shutdownOwner() exactly. With one attached it keeps the owner serving and stops it when the last
@@ -467,7 +479,7 @@ class Core {
     const lock = readOwnerLock(this.dataDir);
     if (!lock || !pidAlive(lock.pid)) { await this._dropClient(); return { stopped: 'none', reason: 'no live owner holds the lock' }; }
     if (!this.client || !this.client.connected) {
-      const c = new Client(this.dataDir, { caller: this.caller, elect: false, connectRetries: 1, dialTimeoutMs: 1000 });
+      const c = new Client(this.dataDir, { caller: this.caller, key: this.key, elect: false, connectRetries: 1, dialTimeoutMs: 1000 });
       try { await c.connect(); } catch { return { stopped: 'none', reason: 'the lock names a live pid but its pipe did not answer' }; }
       this.client = c;
     }

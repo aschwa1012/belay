@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // slice-3a.test.cjs — the acceptance criterion for CLI slice 3a: `config`, `init`, `doctor` and
 // `mcp status`, plus the dispatcher's help path. No experiment: this is an ordinary test file now,
 // and its own spawned-process budgets (ADR 0018 amendment 1) live in the sequential budget phase,

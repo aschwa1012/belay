@@ -164,9 +164,24 @@ async function run(ctx) {
   // the `attach` handed to `runOrchestrator` (below) fans out to both instead of `stopControl` alone.
   let stopControl, runPauseControl, guard;
   const hookBox = {};
+  // The headless orchestrator is recorded in the machine-wide spawn register, so another store's owner refuses its descendants too.
+  // A register that cannot be written throws: the orchestrator runner ends the child before its first prompt (a launch that fails open
+  // would leave other stores taking its descendants for operators).
+  const registerOrchestrator = (pid) => {
+    if (!Number.isInteger(pid)) return;
+    const SR = require('../core/spawn-register.cjs');
+    SR.registerProcess({ pid, kind: 'orchestrator', dataDir, spawnedAt: Date.now() }, 'the headless orchestrator');
+    process.once('exit', () => SR.unregister(pid));
+  };
   const core = await openCore({
     dataDir, caller: { role: 'operator', run_id: parsed.runId, pid: process.pid },
     ownerOpts: {
+      // ADR 0045 decisions 4 and 7: this process spawns everything that writes in the run, so its owner serves bound callers. An
+      // unkeyed request is anonymous (reads) or refused; the operator's CLI is vouched for by its process on the loopback port. The
+      // headless orchestrator is a model with Bash, so a process that descends from it is not the operator; the interactive one is
+      // the human's own session (its plugin runs the CLI), so it is not listed. Where the peer cannot be examined the owner stays claimed.
+      mode: require('../core/operator-check.cjs').SUPPORTED ? 'bound' : 'claimed',
+      spawnedProcesses: () => require('../core/spawn-register.cjs').runSpawned(!!ce, hookBox.pid),
       controls: {
         'run.stop': (params) => stopControl.handle(params),
         // ADR 0023 amendment 5: an interactive run registers them too; its pause parks the workers and leaves the session alone
@@ -219,7 +234,7 @@ async function run(ctx) {
     pauseRun: (why) => runPauseControl.pause({ run_id: parsed.runId, caller: opCaller }, why),
   });
   if (ce && ctx.interactiveDeps && ctx.interactiveDeps.onGuard) ctx.interactiveDeps.onGuard(guard); // test seam
-  const attachHook = { attach: (h) => { stopControl.attach(h); Object.assign(hookBox, h); } };
+  const attachHook = { attach: (h) => { stopControl.attach(h); Object.assign(hookBox, h); if (!ce) registerOrchestrator(h.pid); } };
 
   // Step 2 (5a-2 design): elect before any write, any file under orchestrator_dir, or any process
   // spawned. A refusal here has made no write of any kind.

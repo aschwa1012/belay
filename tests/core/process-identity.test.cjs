@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // process-identity.test.cjs — ADR 0039 decisions 1 to 3 on src/core/process.cjs. Most cases inject the
 // snapshot and the kill, so nothing real is signalled; the last group uses processes this test spawned
 // and stops through their own handles.

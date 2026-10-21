@@ -98,13 +98,13 @@ function workerAdapterArgs({ workerId, runId, dataDir, mcpPath, logPath = null, 
   return argv;
 }
 
-function mcpConfig({ workerId, runId, dataDir, mcpPath, logPath = null, permit = false, permitWaitMs = null, notes = false }) {
+function mcpConfig({ workerId, runId, dataDir, mcpPath, logPath = null, permit = false, permitWaitMs = null, notes = false, bind = null }) {
   return {
     mcpServers: {
       [MCP_SERVER_NAME]: {
         type: 'stdio',
         command: fwd(process.execPath),
-        args: workerAdapterArgs({ workerId, runId, dataDir, mcpPath, logPath, permit, permitWaitMs, notes }),
+        args: [...workerAdapterArgs({ workerId, runId, dataDir, mcpPath, logPath, permit, permitWaitMs, notes }), ...(bind ? ['--bind', bind] : [])], // ADR 0045: the one-shot pipe the adapter claims its identity from; a public name, never a secret
       },
     },
   };
@@ -147,14 +147,14 @@ function workerSettings(pluginNames, { cwd, nativeMemory = null } = {}) {
   return { enabledPlugins, ...S.hygieneSettings(cwd, { nativeMemory }) };
 }
 
-function writeWorkerFiles({ dir, workerId, runId, dataDir, mcpPath, settingsPath, logPath = null, permit = false, permitWaitMs = null, cwd = null, compactAt = null, notes = false, nativeMemory = null }) {
+function writeWorkerFiles({ dir, workerId, runId, dataDir, mcpPath, settingsPath, logPath = null, permit = false, permitWaitMs = null, cwd = null, compactAt = null, notes = false, nativeMemory = null, bind = null }) {
   if (nativeMemory != null) nativeMemory = require('./native-memory.cjs').prepareFolder(nativeMemory); // ADR 0024 amendment 3: eval-only; resolved, checked on disk before and after it is created
   fs.mkdirSync(dir, { recursive: true });
   const mcpJsonPath = fwd(path.join(dir, 'mcp.json'));
   const workerSettingsPath = fwd(path.join(dir, 'settings.json'));
   fs.writeFileSync(
     mcpJsonPath,
-    JSON.stringify(mcpConfig({ workerId, runId, dataDir, mcpPath, logPath, permit, permitWaitMs, notes }), null, 2) + '\n'
+    JSON.stringify(mcpConfig({ workerId, runId, dataDir, mcpPath, logPath, permit, permitWaitMs, notes, bind }), null, 2) + '\n'
   );
   const plugins = readPluginConfig(settingsPath);
   const hooks = CP.hooksBlock({ dir, compactAt }); // null, and no `hooks` key at all, unless the lever is on
@@ -312,13 +312,13 @@ function orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath = null, comp
   return argv;
 }
 
-function orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath = null, compactAt = null, worktree = null, agentDefaultsPath = null }) {
+function orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath = null, compactAt = null, worktree = null, agentDefaultsPath = null, bind = null }) {
   return {
     mcpServers: {
       [MCP_SERVER_NAME]: {
         type: 'stdio',
         command: fwd(process.execPath),
-        args: orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath, compactAt, worktree, agentDefaultsPath }),
+        args: [...orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath, compactAt, worktree, agentDefaultsPath }), ...(bind ? ['--bind', bind] : [])], // ADR 0045
       },
     },
   };
@@ -337,7 +337,7 @@ function assertOutsideDataDir(dir, dataDir) {
 
 // `knowledgeAgent`: the run's memory block turns the knowledge agent on, so the adapter is told the worktree (its
 // cwd). With the lever off the adapter's argv is the base one, byte for byte.
-function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, logPath = null, cwd = null, compactAt = null, knowledgeAgent = false, agentDefaults = null }) {
+function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, logPath = null, cwd = null, compactAt = null, knowledgeAgent = false, agentDefaults = null, bind = null }) {
   const outDir = assertOutsideDataDir(dir, dataDir);
   fs.mkdirSync(outDir, { recursive: true });
   const agentDefaultsPath = require('./agent-defaults.cjs').writeFile(outDir, agentDefaults); // null unless the config sets a worker type's default
@@ -345,7 +345,7 @@ function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, lo
   const orchSettingsPath = fwd(path.join(outDir, 'settings.json'));
   fs.writeFileSync(
     mcpJsonPath,
-    JSON.stringify(orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath, compactAt, worktree: knowledgeAgent ? cwd : null, agentDefaultsPath }), null, 2) + '\n'
+    JSON.stringify(orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath, compactAt, worktree: knowledgeAgent ? cwd : null, agentDefaultsPath, bind }), null, 2) + '\n'
   );
   // Same hygiene as a worker (ADR 0007 §6): the operator's plugins and their hooks are disabled, so
   // the orchestrator's own context is not shaped by whatever is installed on the host. For the
