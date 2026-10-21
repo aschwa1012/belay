@@ -101,6 +101,12 @@ function createFakeCore({ runId = 'run-fake', resumeLineText = null, failing = {
         };
         return record('task.get', { task_id }, out);
       },
+      // task.ensureHold: the relaunch check. 'task.ensureHold' in `failing` refuses it with that code, as the core's overlap and
+      // run-not-live refusals do; the fake holds everything otherwise.
+      async ensureHold({ task_id, worker_id }) {
+        maybeFail('task.ensureHold');
+        return record('task.ensureHold', { task_id, worker_id }, { task_id, run_id: runId, held: true, reason: 'live', rehomed: false });
+      },
       async assign({ task_id, worker_id, ttl_ms = 600000, check_only = false }) {
         // 'task.assign:check' fails the check_only call (ADR 0030 decision 4) and writes nothing;
         // 'task.assign' fails only the real assign, the race the write-dead path still covers.

@@ -25,7 +25,7 @@ const NM = require('./native-memory.cjs'); const NR = require('./note-review.cjs
 // verbatim into their own files (the 500-line rule); re-exported under the same names below.
 const { createWait } = require('./wait.cjs');
 const SENT = require('./sent-log.cjs'); // ADR 0042 decision 4: the record of what is written to a worker's stdin
-const { decideBranch, restartFirstText, CLAUDE_RESUME_WINDOW_MS, CODEX_RESUME_WINDOW_MS } = require('./restart.cjs');
+const { decideBranch, restartFirstText, holdForLaunch, CLAUDE_RESUME_WINDOW_MS, CODEX_RESUME_WINDOW_MS } = require('./restart.cjs');
 // build step 6e-4: pause and resume (the park design, ADR 0023 amendment 2), and the one per-worker
 // operation slot pause, resume, restart and stop all share.
 const { createPause, INTERRUPT_TIMEOUT_MS, EXIT_TIMEOUT_MS } = require('./pause.cjs');
@@ -296,7 +296,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     }
     // Codex: the previous process has exited by design, so a message is a new resume process
     // (ADR 0001 §4, ADR 0008 §6). Returns at once with the new pid; the turn lands later.
-    if (!w.sessionId) fail('E_SUBSTRATE', 'codex worker has no thread id to resume', { worker_id, substrate: w.substrate, state: w.state });
+    if (!w.sessionId) fail('E_SUBSTRATE', 'codex worker has no thread id to resume', { worker_id, substrate: w.substrate, state: w.state }); await holdForLaunch(w, core); // before the checks below: they and the spawn stay one tick, so two concurrent messages still start one process
     // An adopted worker whose pid is still alive is a process a previous adapter owns. belay is not
     // its parent (invariant 1), so it cannot see that turn end, and starting a second process on
     // the same worktree is the one thing one-process-per-turn exists to prevent. Stop it first.
@@ -349,7 +349,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   async function doRestart(w, { firstTextOverride = null, appendMessage = null, awaitFirstTurn = true, first_turn_timeout_ms = 180000, onFirstText = null, skipDeadPidKill = false } = {}) {
     const worker_id = w.id;
     const old_pid = w.pid;
-    const d = decideBranch(w);
+    const d = decideBranch(w); await holdForLaunch(w, core); // the task's files are held for this run, or nothing is touched
     if (W.settleHeld(w, ctx, 'pid-check-on-restart')) await w.queue; // a held death gets its dead row before the relaunch
     if (w.child && P.pidAlive(w.pid)) await doStop(w, 'graceful', 10000);
     // Fix round, should-fix finding: `skipDeadPidKill` (resume, pause.cjs) skips this branch — a park's own

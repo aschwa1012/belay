@@ -8,18 +8,15 @@ const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 const { pidAlive } = require('./lock.cjs');
 const { DEFAULT_LEASE_TTL_MS, TASK_STATES } = require('./schema.cjs');
-const { runAcceptance, normalise } = require('./evaluate.cjs');
+const { runAcceptance } = require('./evaluate.cjs');
+const holds = require('./task-holds.cjs');
+const { filesOverlap, runNotLive, resolveOwner } = require('./methods-task-hold.cjs');
 
 // ADR 0025 decision 1: the most a worker may hand back on release, serialized.
 const HANDOFF_MAX_BYTES = 4096;
 
 // build step 6e-4: 'paused' dropped — a parked worker is not live, so task.assign refuses it E_WORKER_NOT_LIVE.
 const LIVE_WORKER_STATES = new Set(['starting', 'running', 'idle']);
-
-function overlaps(a, b) {
-  const x = normalise(a), y = normalise(b);
-  return x === y || x.startsWith(y + '/') || y.startsWith(x + '/');
-}
 
 function ttlFrom(args) {
   const n = Number(args && args.ttl_ms);
@@ -108,14 +105,9 @@ async function create(E, caller, args) {
   }
 
   if (filesOwned && filesOwned.length) {
-    for (const other of rows.currentAll(E.store, 'task')) {
-      if (other.state === 'done' || !Array.isArray(other.files_owned)) continue;
-      const clash = [];
-      for (const mine of filesOwned) for (const theirs of other.files_owned) if (overlaps(mine, theirs)) clash.push(mine);
-      if (clash.length) {
-        throw err('E_FILES_OVERLAP', `task ${other.id} is not done and already owns ${[...new Set(clash)].join(', ')}`, { other_task_id: other.id, files: [...new Set(clash)] });
-      }
-    }
+    // ADR 0046 decision 1: only a task that holds its files (its run is live) can refuse this one.
+    const [first] = holds.findClashes(E.store, filesOwned, null);
+    if (first) throw filesOverlap(first);
   }
 
   const t = Date.now();
@@ -171,10 +163,18 @@ async function assign(E, caller, args) {
         { task_id: task.id, blocked_by: dep, dependency_state: d.state, holder: dl && !dl.released_at ? dl.holder : null, holder_role: dl && !dl.released_at ? dl.holder_role : null });
     }
 
+    // ADR 0046 decision 1: assigning makes a task hold its files, so another holding task, in any run, that overlaps them
+    // refuses it. Inside one live run create already refused the overlap, so this fires for a re-attached run only: a task
+    // of a run that came back to life after this task's run did yields, so the run live now keeps the paths.
+    // The hold belongs to a live run: a task whose own run has ended is taken over by the run of the worker that takes it
+    // (the calling orchestrator's run for a check_only), and is refused when no live run can own it.
+    const worker = checkOnly ? null : rows.current(E.store, 'worker', args.worker_id);
+    // A task that owns files moves to the run of the worker that takes it, and a move is a new claim: every overlapping holder refuses it.
+    const ownerRun = resolveOwner(E.store, task, checkOnly ? (caller.role === 'orchestrator' ? caller.run_id : null) : (worker && worker.run_id), worker);
+
     // ADR 0030 decision 4: the task-side checks above are the whole of a check_only call; it writes nothing.
     if (checkOnly) return { assignable: true, task_id: task.id };
 
-    const worker = rows.current(E.store, 'worker', args.worker_id);
     if (!worker) throw err('E_WORKER_NOT_LIVE', `no worker row exists for ${args.worker_id}, so it cannot hold a lease`, { worker_id: args.worker_id });
     if (!LIVE_WORKER_STATES.has(worker.state)) {
       throw err('E_WORKER_NOT_LIVE', `worker ${args.worker_id} is in state ${worker.state} and only starting, running or idle can be assigned a task`, { worker_id: args.worker_id, state: worker.state });
@@ -194,11 +194,11 @@ async function assign(E, caller, args) {
     // operator writing from the CLI (run_id 'cli') must not produce a lease no run's store.diff can see.
     const t = Date.now(), by = E.writtenBy(caller);
     const lease = rows.append(E.store, 'lease', {
-      id: rows.newId(), task_id: args.task_id, run_id: task.run_id, holder: args.worker_id,
+      id: rows.newId(), task_id: args.task_id, run_id: ownerRun, holder: args.worker_id,
       holder_role: 'worker', granted_at: t, expires_at: t + ttlFrom(args), ttl_ms: ttlFrom(args), released_at: null,
       supersedes: old ? old.id : null,
     }, by, t);
-    const row = rows.append(E.store, 'task', { ...task, state: 'assigned' }, by, t);
+    const row = rows.append(E.store, 'task', { ...task, run_id: ownerRun, state: 'assigned' }, by, t);
     return { task: row, old_lease: old, new_lease: lease, paused_worker: null };
   });
   if (!checkOnly) E.noteWrite();
@@ -212,7 +212,7 @@ function refutedReview(d) {
   return checks.some(c => c && c.kind === 'verdict' && c.executable === true && c.passed === false);
 }
 
-function view(E, task) {
+function view(E, task, liveness) {
   const t = Date.now();
   const l = rows.currentLeaseForTask(E.store, task.id);
   let lease = null, holderPidAlive = null;
@@ -224,12 +224,14 @@ function view(E, task) {
     }
   }
   const ck = rows.lastCheckpoint(E.store, task.id);
-  return { ...task, lease, holder_pid_alive: holderPidAlive, last_checkpoint_id: ck ? ck.id : null, last_checkpoint_at: ck ? ck.written_at : null };
+  const h = holds.holdOf(task, liveness || holds.runLiveness(E.store));
+  return { ...task, holds_files: h.holds, holds_reason: h.reason, lease, holder_pid_alive: holderPidAlive, last_checkpoint_id: ck ? ck.id : null, last_checkpoint_at: ck ? ck.written_at : null };
 }
 
 async function list(E, caller, args) {
   const states = Array.isArray(args.states) && args.states.length ? new Set(args.states) : null;
-  const tasks = rows.currentAll(E.store, 'task').filter(t => !states || states.has(t.state)).map(t => view(E, t));
+  const liveness = holds.runLiveness(E.store);
+  const tasks = rows.currentAll(E.store, 'task').filter(t => !states || states.has(t.state)).map(t => view(E, t, liveness));
   return { tasks };
 }
 
@@ -254,6 +256,7 @@ async function evaluate(E, caller, args) {
   // release that landed meanwhile (its handoff, its state) is what the verdict check reads and what the
   // written row carries forward (ADR 0025 decision 4).
   const row = E.store.tx(() => {
+    E.assertRunOpen(caller, 'task.evaluate'); // run.end may have committed while the commands ran (audit D42)
     const fresh = rows.current(E.store, 'task', args.task_id) || task;
     const checks = [...commandChecks];
     if (fresh.acceptance && fresh.acceptance.verdict === true) checks.push(verdictCheck(E.store, fresh));
@@ -348,6 +351,7 @@ async function releaseNow(E, caller, args) {
   const dropped = got && got.dropped ? { notes_dropped: got.dropped } : null;
   const prep = dropped ? null : got;
   const out = E.store.tx(() => {
+    E.assertRunOpen(caller, 'lease.release'); // the notes were embedded above; run.end may have committed meanwhile (audit D42)
     // Releasing a superseded lease would destroy the current holder's live lease, so the currency rule
     // applies to the operator too; what the operator overrides is the holder check, not the rule that a
     // release acts on the lease the task actually has.
@@ -372,6 +376,11 @@ async function releaseNow(E, caller, args) {
       NM.claimAfterRelease(E, caller, prep, l, task.id); // only with memory.notes_reflection, once per lease
       return { ...task, last_checkpoint_id: (rows.lastCheckpoint(E.store, l.task_id) || {}).id || null, released_reason: args.reason || null, ...NM.commit(E, caller, prep, { task_id: task.id }) };
     }
+    // Audit D44: with notes off nothing above handles a second call, and the release below would append another released
+    // row and replace the hand-back it stands on. A released lease is released once; only the notes-only calls above return.
+    if (l.released_at != null) {
+      throw err('E_ARGS', `lease.release: lease ${l.id} was already released at ${l.released_at}, so a second release would replace its hand-back; nothing was written`, { lease_id: l.id, released_at: l.released_at });
+    }
     rows.append(E.store, 'lease', { ...l, released_at: t }, by, t);
     let handoff = task.handoff;
     if (args.result !== undefined) {
@@ -395,6 +404,13 @@ async function takeControl(E, caller, args) {
   const out = E.store.tx(() => {
     const task = rows.current(E.store, 'task', args.task_id);
     if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.task_id}`, { task_id: args.task_id });
+    // ADR 0046 decision 1: the operator's lease activates the task like an assignment does, so its files must be held by a
+    // live run (the task's own: the operator has no run to re-home it to) and not yielded to one that is live now.
+    if (task.state !== 'done' && Array.isArray(task.files_owned) && task.files_owned.length) {
+      if (holds.activationRun(E.store, task, null) == null) throw runNotLive(task, null);
+      const [first] = holds.findClashes(E.store, task.files_owned, task.id, { run_id: task.run_id });
+      if (first) throw filesOverlap(first);
+    }
     const old = rows.currentLeaseForTask(E.store, args.task_id);
     const t = Date.now(), by = E.writtenBy(caller);
     if (old && !old.released_at) rows.append(E.store, 'lease', { ...old, released_at: t }, by, t);
@@ -419,4 +435,4 @@ function heldLease(E, taskId, workerId) {
   return l;
 }
 
-module.exports = { create, assign, list, get, evaluate, renew, release, takeControl, view, heldLease, overlaps, findCycle, dependsOf, TASK_STATES };
+module.exports = { create, assign, list, get, evaluate, renew, release, takeControl, view, heldLease, overlaps: holds.overlaps, findCycle, dependsOf, TASK_STATES };

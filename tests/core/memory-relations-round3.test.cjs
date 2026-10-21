@@ -18,6 +18,8 @@ const v2 = id => T.store.p("UPDATE memory_entries SET text_template = 'v2' WHERE
 const offered = async id => (await scope()).items.some(i => i.id === id);
 const match = (id, over = {}) => ({ id, title: 't', kind: 'lesson', basis: 'observed', similarity: 0.99, embedding_model: 'm', dim: 3, template: 'v1', ...over });
 const report = (by, replaced_by) => ({ by: `worker:${by}`, worker_id: by, task_id: 'tx', run_id: 'lc-apply', why: 'a reason', at: 1, replaced_by });
+// A reviewer's upheld judgment on the note's report (task `tx`, report time 1): the only kind of report that opens the relate gate.
+const uphold = id => T.store.patchBody(id, b => { b.report_judgments = [{ task_id: 'tx', report_at: 1, verdict: 'upheld', by: 'rev-1', ref: 'rt-1', at: 2 }]; return b; });
 const heldRows = () => T.store.p("SELECT id, body FROM memory_entries WHERE namespace = ? AND type = 'held'").all(`held/${PROJECT}`).map(r => JSON.parse(r.body));
 const pendingFor = (title, target) => T.note(title, { ns: `pending/${PROJECT}`, state: 'pending', vec: A_NEAR, matches: [{ id: target, title: 'x', kind: 'lesson', basis: 'observed', similarity: 0.99 }] });
 
@@ -49,6 +51,7 @@ test('R4: a recorded 0.85 against a stored cosine below the threshold is not off
 test('R2: a report names the pair, so the reported note is the one archived even when the score passes', async () => {
   const old = T.note('r2 old', { vec: A, created_at: 100 });
   const neu = T.note('r2 new', { vec: A_NEAR, created_at: 200, reported_wrong: [report('w2', old)] });
+  uphold(neu);
   const r = await scrub('apply', [relate(neu, 'supersedes', old)]);
   assert.deepStrictEqual([r.applied[0].archived, r.applied[0].kept, r.applied[0].facts.via], [neu, old, 'similarity']);
   assert.strictEqual(ns(old), `project/${PROJECT}`);
@@ -58,6 +61,7 @@ test('R2: a report names the pair, so the reported note is the one archived even
 test('R5: a verified note the worker reported wrong, even the newer one, becomes a hold for the reviewer', async () => {
   const old = T.note('r5 old', { vec: A, created_at: 100 });
   const neu = T.note('r5 new', { vec: B, created_at: 200, status: 'verified', reported_wrong: [report('w2', old)] });
+  uphold(neu);
   const r = await scrub('apply', [relate(neu, 'supersedes', old)]);
   assert.deepStrictEqual(r.refused, []);
   assert.deepStrictEqual([r.applied[0].outcome, ns(neu)], ['held', `project/${PROJECT}`]);
