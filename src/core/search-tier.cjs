@@ -18,6 +18,7 @@ const { leversOf, notifyEmbedderFailure } = require('./methods-memory.cjs');
 const { rerank } = require('./rerank-stage.cjs');
 const SL = require('./search-log.cjs');
 const rows = require('./rows.cjs');
+const HT = require('./heavy-tier.cjs');
 
 const NANO_TIER = Object.freeze({ profile: RP.FALLBACK_PROFILE, embedder: RP.NANO, reranker: null, device: 'cpu', depth: 0, source: 'default' });
 const BOUND_MAX_MS = 110000; // the MCP tool timeout is 120 s; 10 s is kept for the answer
@@ -26,9 +27,10 @@ const BOUND_MAX_MS = 110000; // the MCP tool timeout is 120 s; 10 s is kept for 
 const boundFor = (leverMs, startedAt, now = Date.now()) => Math.max(1, Math.min(leverMs, BOUND_MAX_MS - (now - startedAt)));
 const isNano = (tier) => !!tier && tier.embedder === RP.NANO;
 
-// The tier this caller's searches run on. The seam: the default today, the tier pinned at spawn later.
-function tierFor(E, caller) { // eslint-disable-line no-unused-vars
-  return NANO_TIER;
+// The tier this caller's searches run on: the tier the run was pinned with for the caller's agent type (heavy-tier.cjs reads it from the
+// caller's process-bound identity, never from the request), or nano with no reranker for a run with nothing pinned.
+function tierFor(E, caller) {
+  return HT.pinnedTier(E, caller) || NANO_TIER;
 }
 
 // The levers a search reads, from the built-in defaults, the run's own levers, then an internal override (tests).
@@ -194,5 +196,5 @@ function rankRecord(before, after, cap, order = 'score') {
 module.exports = {
   NANO_TIER, isNano, tierFor, leversOfSearch, binding, countRows, nanoKey, boundFor, candidates, assertServable, rerankHead, rankRecord,
   visibleRowFilter: VT.visibleRowFilter, logSearch: SL.record,
-  logIndex: (E, caller, o) => SL.record(E, caller, { kind: 'index', tier: tierFor(E, caller), ...o, capMb: leversOfSearch(E, caller).search_log_cap_mb }),
+  logIndex: (E, caller, o) => SL.record(E, caller, { kind: 'index', tier: (o && o.for_worker && HT.tierForWorker(E, caller, o.for_worker)) || tierFor(E, caller), ...o, capMb: leversOfSearch(E, caller).search_log_cap_mb }),
 };

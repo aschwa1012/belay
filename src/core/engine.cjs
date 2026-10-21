@@ -131,6 +131,10 @@ const METHODS = {
   // identity), and it is read back through the ordinary run row.
   'run.setPaused': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.setPaused },
   'run.setEmbedderMode': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.setEmbedderMode },
+  // The run's retrieval routing, resolved once (with the GPU probe) and recorded on its row; the run process calls it after run.attach.
+  'run.pinRouting': { roles: ['operator'], kind: 'write', fn: lazy('./retrieval-pin.cjs', 'pinRouting') },
+  // `belay memory embed --model <gguf id>` and the run start's wait: one bounded drain of a heavy embedder's backlog.
+  'memory.drainHeavy': { roles: ['operator'], kind: 'write', fn: lazy('./heavy-drain.cjs', 'drainMethod') },
   'run.get': { roles: ALL, kind: 'read', fn: run.getRun },
   // build step 4a: every run's current row, so a CLI with no run id argument (belay status,
   // belay workers) has a way to find the current run at all.

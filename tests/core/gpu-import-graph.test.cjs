@@ -25,11 +25,12 @@ test('who requires which GPU module', () => {
   }
   for (const k of Object.keys(by)) by[k] = [...new Set(by[k])].sort();
   assert.deepStrictEqual(by, {
-    gpu: ['core/gpu-probe.cjs'],
+    gpu: ['core/gpu-probe.cjs', 'core/gpu-shared.cjs'],
+    'gpu-probe': ['core/gpu-shared.cjs'],
     'gpu-chunk': ['core/gpu-probe.cjs', 'core/gpu-worker.cjs'],
     'gpu-runtime': ['cli/cmd-embedder.cjs', 'core/gpu-probe.cjs', 'core/gpu.cjs'],
-    'gguf-models': ['cli/cmd-embedder.cjs', 'core/gpu-probe.cjs', 'core/gpu.cjs'],
-  }, 'gpu-worker.cjs is forked by path from gpu.cjs and required by nothing; the probe and the client are required by nothing outside the GPU modules');
+    'gguf-models': ['cli/cmd-embedder.cjs', 'core/embed-provider.cjs', 'core/gpu-probe.cjs', 'core/gpu.cjs', 'core/heavy-tier.cjs'],
+  }, 'gpu-worker.cjs is forked by path from gpu.cjs and required by nothing; the probe and the client are required only by gpu-shared.cjs, the one GPU child of the owner, which the providers require inside the branch that builds (gpu-wire-import-graph.test.cjs); the model table is pure');
 });
 
 test('cmd-embedder.cjs requires the GPU modules only inside functions, never at the top', () => {

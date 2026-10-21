@@ -201,6 +201,10 @@ const MIGRATIONS = [
   // there is none (notes on, notes explicitly off, or memory null). The levers cannot say it (a default block is stored as null, and an
   // explicit off looks like no project), so status and the panel read the run's own answer, never the current config's.
   'ALTER TABLE run ADD COLUMN memory_notice TEXT',
+  // The retrieval routing the run was pinned with (retrieval-pin.cjs: the tier of each agent type, the probe's verdict, the notices and the on_heavy_behind choice), as JSON text; null until pinned.
+  'ALTER TABLE run ADD COLUMN retrieval_routing TEXT',
+  // The agent type a worker was SPAWNED with (worker_spawn's agent_type), written by the harness with the first row and carried by every later one; null for a worker spawned without one. A search's tier is read from here, never from a request.
+  'ALTER TABLE worker ADD COLUMN agent_type TEXT',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot
