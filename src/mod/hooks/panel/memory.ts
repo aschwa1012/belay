@@ -78,8 +78,13 @@ export function normMenu(json: unknown): BelayMenu | null {
   }
 }
 
-// The main page badge: a number only when the CURRENTLY selected embedder (belay says which) has notes behind it.
-export const badgeOf = (m: BelayMenu | null): number => (m && m.behind > 0 ? m.behind : 0)
+// The main page badge: a number only when the CURRENTLY selected embedder (belay says which) has notes behind it. `belay memory menu --badge` and the
+// full menu both give `behind`; the badge state keeps whichever was read last.
+export const badgeOf = (s: { behind: number } | null): number => (s && s.behind > 0 ? s.behind : 0)
+export function normBadge(json: unknown): number | null {
+  const j = obj(json)
+  return j && j.v === 1 && j.badge === true && num(j.behind) !== null ? Math.max(0, num(j.behind)!) : null
+}
 
 // ---- figures ------------------------------------------------------------------------------------
 
@@ -159,6 +164,7 @@ export type MemAction =
   | { kind: 'cmd'; line: string }
   | { kind: 'refresh' }
   | { kind: 'set'; key: string; value: string }
+  | { kind: 'setMany'; pairs: [string, string][] }
   | { kind: 'verify'; model: string | null }
   | { kind: 'delete'; model: string }
   | { kind: 'saveRouting' }
@@ -174,6 +180,15 @@ export function writeArgv(a: MemAction, m: BelayMenu): string[][] | { error: str
     if (a.value === '' || a.value.length > 2000 || /[\u0000-\u001f]/.test(a.value)) return { error: 'that value cannot be written' }
     return [['settings', a.key, a.value]]
   }
+  if (a.kind === 'setMany') {
+    if (!a.pairs.length || a.pairs.length > 4) return { error: 'that is not a set of settings the menu writes' }
+    const argv = ['settings']
+    for (const [k, v] of a.pairs) {
+      if (!SETTABLE.includes(k) || v === '' || v.length > 2000 || /[\u0000-\u001f]/.test(v)) return { error: `${k} is not a setting the Memory menu writes, or its value cannot be written` }
+      argv.push('--set', k, v)
+    }
+    return [argv]
+  }
   if (a.kind === 'verify' || a.kind === 'delete') {
     if (a.kind === 'verify' && a.model === null) return [['embedder', 'verify', '--gpu']]
     const id = a.model
@@ -186,10 +201,11 @@ export function writeArgv(a: MemAction, m: BelayMenu): string[][] | { error: str
   return { error: 'that action writes nothing' }
 }
 
-// The two settings a routing save writes, in order: the GPU picks, then the CPU picks (null clears the lever).
-export function routingWrites(d: BelayRouteDraft): MemAction[] {
+// The routing save: both settings in ONE `belay settings --set k v --set k v` call, which validates both before writing either and writes the file once
+// (the GPU picks, then the CPU picks; null clears the lever). A refusal of either writes neither.
+export function routingWrites(d: BelayRouteDraft): MemAction {
   const x = draftMaps(d)
-  return [{ kind: 'set', key: 'memory.routing', value: x.routing === null ? 'null' : JSON.stringify(x.routing) }, { kind: 'set', key: 'memory.routing_cpu', value: x.routingCpu === null ? 'null' : JSON.stringify(x.routingCpu) }]
+  return { kind: 'setMany', pairs: [['memory.routing', x.routing === null ? 'null' : JSON.stringify(x.routing)], ['memory.routing_cpu', x.routingCpu === null ? 'null' : JSON.stringify(x.routingCpu)]] }
 }
 
 // The flags that name a model to `belay embedder fetch|verify`.
@@ -218,17 +234,19 @@ export function resultLine(a: MemAction, exitCode: number, stdout: string, stder
     if (exitCode === 0 && j && typeof j.key === 'string') return `belay: ${a.key} set to ${a.value} (was ${JSON.stringify(obj(j.old)?.value ?? null)})`
     return `belay: ${a.key} was not written: ${said()}`
   }
+  if (a.kind === 'setMany') return exitCode === 0 && j && Array.isArray(j.keys) ? `belay: ${a.pairs.map(p => p[0]).join(' and ')} saved` : `belay: nothing was written: ${said()}`
   if (a.kind === 'verify') return exitCode === 0 && j && j.verified === true ? `belay: ${a.model ?? 'the GPU runtime'} verified` : `belay: verify of ${a.model ?? 'the GPU runtime'} failed: ${said()}`
   if (a.kind === 'delete') return exitCode === 0 && j && j.removed === true ? `belay: ${a.model} removed (${bytesText(num(j.bytes) ?? 0)})` : `belay: ${a.model} was not removed: ${said()}`
   return `belay: ${said()}`
 }
 
 // A stable id for a confirmed action, and the line the confirm shows.
-export const actionId = (a: MemAction): string => (a.kind === 'set' ? `set:${a.key}:${a.value}` : a.kind === 'verify' ? `verify:${a.model ?? 'runtime'}` : a.kind === 'delete' ? `delete:${a.model}` : a.kind)
+export const actionId = (a: MemAction): string => (a.kind === 'set' ? `set:${a.key}:${a.value}` : a.kind === 'setMany' ? `setMany:${a.pairs.map(p => p[0]).join(',')}` : a.kind === 'verify' ? `verify:${a.model ?? 'runtime'}` : a.kind === 'delete' ? `delete:${a.model}` : a.kind)
 export function confirmText(a: MemAction, m: BelayMenu | null): string {
   if (a.kind === 'set') return `set ${a.key} to ${a.key === 'memory.routing' || a.key === 'memory.routing_cpu' ? 'the new routing' : a.value}`
   if (a.kind === 'verify') return `hash ${a.model ?? 'the GPU runtime'} against its table (reads the whole model)`
   if (a.kind === 'delete') return `delete ${a.model} from belay's model cache${m ? ` (${bytesText(modelById(m, a.model)?.bytes ?? 0)})` : ''}`
+  if (a.kind === 'setMany') return 'save the routing (memory.routing and memory.routing_cpu)'
   if (a.kind === 'saveRouting') return 'save the routing (memory.routing and memory.routing_cpu)'
   return a.kind
 }

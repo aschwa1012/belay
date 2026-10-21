@@ -25,14 +25,14 @@ import type { EngineInterface, On, Timer } from 'claude-code'
 import type { BelayMenu as BelayMenuT, BelayPanelMenu, BelayPanelSnap, BelayPanelUi, BelayPanelWatch } from '../../types/index'
 import { argvFor, buildSnapshot, fatalSnapshot, fwd, launcherLine, isWindowsPath, parseRan, parseRunFile, projectRootOf, repoCliGuess, type Ran, type RunFileRead } from './fetch'
 import { CONFIRM_MS, DEFAULT_SETTINGS, DEFAULT_UI, reviewProject } from './model'
-import { actionId, confirmText, cycleDraft, draftOf, gb, modelById, normMenu, resultLine, routeFit, routingWrites, sameDraft, writeArgv, type MemAction } from './memory'
+import { actionId, confirmText, cycleDraft, draftOf, gb, modelById, normBadge, normMenu, resultLine, routeFit, routingWrites, sameDraft, writeArgv, type MemAction } from './memory'
 import { Band, BandWaiting, Fallback, Pane, type Act, type Els } from './view'
 
 const PANE = 'belay'
 const watchA = atom({ plugin: 'belay', key: 'panelWatch' } as const, null)
 const snapA = atom({ plugin: 'belay', key: 'panelSnap' } as const, null)
 const uiA = atom({ plugin: 'belay', key: 'panelUi' } as const, DEFAULT_UI)
-const menuA = atom({ plugin: 'belay', key: 'panelMenu' } as const, { menu: null, error: null, at: 0 } as BelayPanelMenu)
+const menuA = atom({ plugin: 'belay', key: 'panelMenu' } as const, { menu: null, error: null, at: 0, behind: 0 } as BelayPanelMenu)
 
 // A round starts this long after the previous round ENDS (a slow belay is never chased).
 const PANE_EVERY_MS = 4000
@@ -66,6 +66,7 @@ let timeoutStreak = 0
 let backoffUntil = 0
 let lastMenuAt = 0
 let menuForce = false // a write, or opening the menu, asks for a fresh read now
+let menuInflight = false // the menu read runs beside the rounds, never inside one, and one at a time
 const starting = new Set<string>() // projects whose launcher is running now (up to START_TIMEOUT_MS); the store's claim is the authority past that
 
 // null: there is no run file. Anything else that goes wrong with an existing file is an error state.
@@ -93,7 +94,7 @@ async function resolveCli($: Host, watch: BelayPanelWatch): Promise<Resolved> {
 // timeout, which the caller turns into a skipped round and a back-off; any other rejection is a command
 // that did not run.
 async function runJson($: Host, cli: string[], args: string[], dataDir: string | null, cwd: string | null = null): Promise<Ran> {
-  const menuRead = args.length === 2 && args[0] === 'memory' && args[1] === 'menu' // `belay memory menu`: the one read of the memory verb
+  const menuRead = args[0] === 'memory' && args[1] === 'menu' && (args.length === 2 || (args.length === 3 && args[2] === '--badge')) // `belay memory menu [--badge]`: the one read of the memory verb
   if (!READ_VERBS.includes(args[0] ?? '') && !menuRead) return { error: `belay ${args[0] ?? ''}: the read helper runs only ${READ_VERBS.join(', ')} and memory menu` } // never a write, whatever called it
   const t0 = await $.clock.now()
   try {
@@ -135,15 +136,22 @@ async function fetchSnapshot($: Host, watch: BelayPanelWatch, prev: BelayPanelSn
 
 // The Memory menu's facts: `belay memory menu`, a read (it copies the store to count a heavy embedder's backlog, and starts nothing). Its own atom, so a
 // failure shows in the menu and never in the run's errors.
-async function fetchMenu($: Host, watch: BelayPanelWatch): Promise<void> {
+async function fetchMenu($: Host, watch: BelayPanelWatch, full: boolean): Promise<void> {
   const r = await resolveCli($, watch)
   const now = await $.clock.now()
   if ('error' in r) { await update($, menuA, m => ({ ...m, error: r.error, at: now })); return }
   const cli = r.cli
-  const got = await runJson($, cli, ['memory', 'menu'], watch.dataDir, watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null)
-  if ('error' in got) { await update($, menuA, m => ({ menu: m.menu, error: got.error, at: now })); return }
+  const cwd = watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null
+  if (!full) { // the badge alone: the selected embedder's backlog, one count
+    const light = await runJson($, cli, ['memory', 'menu', '--badge'], watch.dataDir, cwd)
+    const behind = 'json' in light ? normBadge(light.json) : null
+    await update($, menuA, m => (behind !== null ? { ...m, behind, at: now } : { ...m, error: 'error' in light ? light.error : 'belay memory menu --badge answered something the panel does not read', at: now }))
+    return
+  }
+  const got = await runJson($, cli, ['memory', 'menu'], watch.dataDir, cwd)
+  if ('error' in got) { await update($, menuA, m => ({ ...m, error: got.error, at: now })); return }
   const menu = normMenu(got.json)
-  await update($, menuA, m => (menu ? { menu, error: null, at: now } : { menu: m.menu, error: 'belay memory menu answered something the panel does not read', at: now }))
+  await update($, menuA, m => (menu ? { menu, error: null, at: now, behind: menu.behind } : { ...m, error: 'belay memory menu answered something the panel does not read', at: now }))
 }
 
 // Open or close the docked pane. Only a person's action calls this (a command or a press), because an
@@ -182,9 +190,13 @@ async function tick($: Host): Promise<void> {
         // The Memory menu is read while it is open, after a write, and (for the badge) while the settings name a heavy profile or a routing.
         const everyMs = ui.memTab !== null ? MENU_OPEN_EVERY_MS : MENU_EVERY_MS
         if (!slow && (menuForce || ((ui.memTab !== null || snap.memWanted) && now - lastMenuAt >= everyMs))) {
+          const full = menuForce || ui.memTab !== null
           menuForce = false
           lastMenuAt = now
-          await fetchMenu($, watch)
+          if (!menuInflight) { // off the round: a slow store copy never holds the next round, and never two at once
+            menuInflight = true
+            void fetchMenu($, watch, full).finally(() => { menuInflight = false })
+          }
         }
         // `/belay watch` with no id resolved the newest run: pin that id once.
         if (!watch.runId && snap.runId) await update($, watchA, w => (w && !w.runId ? { ...w, runId: snap.runId } : w))
@@ -279,14 +291,14 @@ async function dispatchMenu($: Host, a: MemAction, menu: BelayMenuT): Promise<vo
   const r = await resolveCli($, watch)
   if ('error' in r) { $.ui.toast(`belay: nothing was written: ${r.error}`); return }
   const ui = await read($, uiA)
-  const steps: MemAction[] = a.kind === 'saveRouting' ? routingWrites(ui.routeDraft ?? draftOf(menu)) : [a]
+  const steps: MemAction[] = a.kind === 'saveRouting' ? [routingWrites(ui.routeDraft ?? draftOf(menu))] : [a]
   const cwd = watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null
   let ok = true
   for (const step of steps) {
     const argv = writeArgv(step, menu)
     if ('error' in argv) { $.ui.toast(`belay: ${argv.error}`); ok = false; break }
     try {
-      const res = await $.process.run(argvFor(r.cli, argv[0]!, watch.dataDir), { timeoutMs: step.kind === 'set' ? MEM_TIMEOUT_MS.set : step.kind === 'delete' ? MEM_TIMEOUT_MS.delete : MEM_TIMEOUT_MS.verify, ...(cwd ? { cwd } : {}) })
+      const res = await $.process.run(argvFor(r.cli, argv[0]!, watch.dataDir), { timeoutMs: step.kind === 'set' || step.kind === 'setMany' ? MEM_TIMEOUT_MS.set : step.kind === 'delete' ? MEM_TIMEOUT_MS.delete : MEM_TIMEOUT_MS.verify, ...(cwd ? { cwd } : {}) })
       $.ui.toast(resultLine(step, res.exitCode, res.stdout, res.stderr))
       if (res.exitCode !== 0) { ok = false; break }
     } catch (err) {

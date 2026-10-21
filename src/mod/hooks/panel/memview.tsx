@@ -47,11 +47,13 @@ function Profiles(c: MCtx & { menu: BelayMenu }) {
   const { E, menu, ui, now, cols, act } = c
   const { Box } = E
   const lv = menu.levers
+  const fit = routeFit(menu, draftOf(menu))
   const pick = (key: string, cur: string, value: string, text: string) => <Pick E={E} k={`set:${key}:${value}`} on={cur === value} text={text} a={{ kind: 'set', key, value }} ui={ui} now={now} cols={cols} act={act} />
   const radios = (key: string, cur: string, values: [string, string][]) => values.map(([v, t]) => pick(key, cur, v, t))
   return (
     <Box flexDirection="column">
       <Gpu E={E} menu={menu} cols={cols} act={act} />
+      {fit.ok === false && <Row E={E} w={cols} k="pw" segs={[{ t: `▲ the saved routing and this profile together need ${gb(fit.needMb)} and ${fit.freeMb === null ? '?' : gb(fit.freeMb)} is free: a run would fall back or refuse (see Routing)`, c: 'warning' }]} />}
       <Row E={E} w={cols} k="p1" segs={[{ t: 'When a GPU is available', bold: true }, { t: '  memory.profile', dim: true }]} />
       {menu.profiles.map(p => pick('memory.profile', lv.profile, p.name, profileText(p)))}
       <Row E={E} w={cols} k="p2" segs={[{ t: 'When on CPU only', bold: true }, { t: '  memory.profile_cpu', dim: true }]} />

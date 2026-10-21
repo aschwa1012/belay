@@ -181,7 +181,8 @@ export type BelayMenu = {
   diskModels: number
 }
 /** The Memory menu's last read: the facts, or why there are none. */
-export type BelayPanelMenu = { menu: BelayMenu | null; error: string | null; at: number }
+/** `behind` is the main page badge: set by the full menu read and by the light `--badge` read between menu visits. */
+export type BelayPanelMenu = { menu: BelayMenu | null; error: string | null; at: number; behind: number }
 
 declare module 'claude-code' {
   interface PluginState {

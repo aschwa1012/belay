@@ -12,7 +12,7 @@ const { menu: buildMenu } = require('../../src/core/memory-menu.cjs');
 const P = require('../../src/core/gpu-probe.cjs');
 const C = require('../../src/cli/config.cjs');
 const AD = require('../../src/run/agent-defaults.cjs');
-const { writeSetting } = require('../../src/cli/cmd-settings.cjs');
+const { writeSetting, writeSettings } = require('../../src/cli/cmd-settings.cjs');
 
 let M, root, saved;
 test.before(async () => {
@@ -49,14 +49,16 @@ test('the panel reads the real menu: the GPU line, the levers, the profiles, the
   assert.deepStrictEqual(menu.mainTypes, ['orchestrator', 'reviewer', 'coder']);
   assert.ok(menu.advancedTypes.includes('tester'));
   assert.strictEqual(menu.headroomMb, 768);
-  assert.strictEqual(M.badgeOf(menu), 0, 'no store, nothing behind: no badge');
+  assert.strictEqual(M.badgeOf({ behind: menu.behind }), 0, 'no store, nothing behind: no badge');
 });
 
 test('the badge is the selected embedder\'s backlog and nothing else', async () => {
   const { menu } = await real({ project: 'acme' });
-  assert.strictEqual(M.badgeOf({ ...menu, behind: 4 }), 4);
-  assert.strictEqual(M.badgeOf({ ...menu, behind: 0, models: menu.models.map((m) => ({ ...m, backlog: 9 })) }), 0, 'another embedder\'s backlog gives no badge');
+  assert.strictEqual(M.badgeOf({ behind: 4 }), 4);
+  assert.strictEqual(M.badgeOf({ behind: 0 }), 0, 'another embedder backlog is not in behind, so it gives no badge');
   assert.strictEqual(M.badgeOf(null), 0);
+  assert.strictEqual(M.normBadge({ v: 1, badge: true, behind: 3, selected_embedder: 'x' }), 3);
+  for (const bad of [null, {}, { v: 1, behind: 3 }, { v: 1, badge: true, behind: 'x' }, { v: 2, badge: true, behind: 1 }]) assert.strictEqual(M.normBadge(bad), null);
 });
 
 test('normMenu is defensive: a wrong version, a missing table or a non-object is null, and a field of the wrong type becomes null, never invented', async () => {
@@ -101,9 +103,10 @@ test('the routing draft: picks cycle from run default, a custom pair is kept unt
   assert.strictEqual(d.gpu.coder, 'cpu-fast');
   d = M.cycleDraft(menu, d, 'cpu', 'coder');
   assert.strictEqual(d.cpu.coder, 'cpu-fast');
-  const ws = M.routingWrites(d);
-  assert.deepStrictEqual(ws.map((w) => [w.key, w.value]), [['memory.routing', '{"coder":"cpu-fast"}'], ['memory.routing_cpu', '{"coder":"cpu-fast"}']]);
-  assert.deepStrictEqual(M.routingWrites({ gpu: {}, cpu: {} }).map((w) => w.value), ['null', 'null']);
+  assert.deepStrictEqual(M.routingWrites(d), { kind: 'setMany', pairs: [['memory.routing', '{"coder":"cpu-fast"}'], ['memory.routing_cpu', '{"coder":"cpu-fast"}']] });
+  assert.deepStrictEqual(M.routingWrites({ gpu: {}, cpu: {} }).pairs.map((w) => w[1]), ['null', 'null']);
+  assert.deepStrictEqual(M.writeArgv(M.routingWrites(d), { models: [] }), [['settings', '--set', 'memory.routing', '{"coder":"cpu-fast"}', '--set', 'memory.routing_cpu', '{"coder":"cpu-fast"}']]);
+  assert.ok(M.writeArgv({ kind: 'setMany', pairs: [['memory.routing', '{}'], ['memory.project', 'x']] }, { models: [] }).error, 'every key of a set must be one the menu writes');
   const cpuOpts = M.cpuOptions(menu);
   assert.ok(cpuOpts.every((o) => o === null || !o.startsWith('gpu-')));
   assert.strictEqual(M.nextPick(cpuOpts, cpuOpts[cpuOpts.length - 1]), null, 'the last option wraps to run default');
@@ -140,10 +143,14 @@ test('settings writes keep belay settings\' own validation: a refused value writ
     assert.ok(r.code !== 0, `${k} ${v} is refused`);
     assert.strictEqual(fs.readFileSync(file, 'utf8'), before, `${k} ${v}: nothing was written`);
   }
-  for (const [k, v] of M.routingWrites({ gpu: { reviewer: 'gpu-rerank' }, cpu: { reviewer: 'cpu-rerank' } }).map((w) => [w.key, w.value])) {
-    const r = writeSetting(C.discover(proj), k, v, ctx);
-    assert.strictEqual(r.code, 0, r.text);
-  }
+  const pairs = M.routingWrites({ gpu: { reviewer: 'gpu-rerank' }, cpu: { reviewer: 'cpu-rerank' } }).pairs;
+  // one bad key refuses BOTH: the good first pair is not written either
+  const bad = writeSettings(C.discover(proj), [pairs[0], ['memory.routing_cpu', '{"reviewer":"gpu-rerank"}']], ctx);
+  assert.ok(bad.code !== 0, 'the second pair is refused');
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), before, 'so the first is not written');
+  const both = writeSettings(C.discover(proj), pairs, ctx);
+  assert.strictEqual(both.code, 0, both.text);
+  assert.deepStrictEqual(both.json.keys, ['memory.routing', 'memory.routing_cpu']);
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).memory, { project: 'acme', routing: { reviewer: 'gpu-rerank' }, routing_cpu: { reviewer: 'cpu-rerank' } });
   const cleared = writeSetting(C.discover(proj), 'memory.routing_cpu', 'null', ctx);
   assert.strictEqual(cleared.code, 0, cleared.text);

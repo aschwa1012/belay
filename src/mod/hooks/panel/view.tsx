@@ -55,7 +55,7 @@ export function shortModel(m: string | null): string {
 
 export function Band({ E, snap, ui, now, cols, act, menu }: Ctx) {
   const { Box, Button } = E
-  const badge = badgeOf(menu?.menu ?? null)
+  const badge = badgeOf(menu)
   if (snap.fatal) return <Line E={E} w={cols} k="fatal" segs={[{ t: 'belay ', c: 'claude', bold: true }, { t: snap.fatal, c: 'error' }]} />
   const lines = bandLines(snap, ui, now, cols)
   const err = snap.errors[0]
@@ -435,7 +435,7 @@ export function Pane(c: Ctx) {
     </Box>
   )
   if (ui.memTab !== null) return <Box flexDirection="column">{header}<MemoryPane E={E} state={menu} ui={ui} now={now} cols={cols} act={act} /></Box>
-  const badge = badgeOf(menu?.menu ?? null)
+  const badge = badgeOf(menu)
   return (
     <Box flexDirection="column">
       {header}

@@ -20,6 +20,7 @@ describe('the badge on the main page', () => {
     const wd = await boot($, on, heavy)
     await later(wd, 31000)
     expect(wd.menuReads.length).toBeGreaterThan(0)
+    expect(wd.menuReads.every(a => a.includes('--badge'))).toBe(true) // the main page asks for the one count, not the whole menu
     expect((await band($)).text).toContain(' [3]')
     await openPane($, wd)
     expect((await pane($)).text).toContain('memory menu [3]')
@@ -36,6 +37,13 @@ describe('the badge on the main page', () => {
     const t = (await pane($)).text
     expect(t).toContain('memory menu')
     expect(t).not.toContain('memory menu [')
+  })
+
+  test('the Profiles tab warns, and does not block, when the saved routing with the run profile does not fit the free memory', async ($, on) => {
+    const m = await menuPane($, on, { menu: MENU({ levers: { ...MENU().levers, routing: { reviewer: 'gpu-rerank-fast' } } }) })
+    expect(await m.text()).toContain('▲ the saved routing and this profile together need 6.9 GB and 6.8 GB is free')
+    await m.ui.press({ key: 'set:memory.profile:gpu-rerank' })
+    expect(await m.text()).toContain('press the same button again') // a warning, not a refusal
   })
 
   test('a CPU-only configuration with the menu closed reads no menu at all (reading stays free for the default setup)', async ($, on) => {
@@ -191,7 +199,9 @@ describe('the Routing tab', () => {
     await press(m, 'route:save', 1)
     await later(m.wd, 100)
     const w = kinds(m.wd.menuWrites)
-    expect(w.map(a => a.slice(0, 3))).toEqual([['settings', 'memory.routing', '{"reviewer":"gpu-rerank"}'], ['settings', 'memory.routing_cpu', '{"reviewer":"cpu-rerank"}']])
+    expect(w.length).toBe(1) // both settings in ONE call: belay validates both before it writes either
+    expect(w[0]!.slice(0, 7)).toEqual(['settings', '--set', 'memory.routing', '{"reviewer":"gpu-rerank"}', '--set', 'memory.routing_cpu', '{"reviewer":"cpu-rerank"}'])
+    expect(m.wd.toasts).toContain('belay: memory.routing and memory.routing_cpu saved')
   })
 
   test('a routing with no picks writes null for both settings (the lever\'s own "no routing")', async ($, on) => {
@@ -203,7 +213,7 @@ describe('the Routing tab', () => {
     await press(m, 'route:cpu:reviewer', 1) // cpu-rerank is the last CPU option: one more wraps to run default
     await press(m, 'route:save', 2)
     await later(m.wd, 100)
-    expect(kinds(m.wd.menuWrites).map(a => a.slice(0, 3))).toEqual([['settings', 'memory.routing', 'null'], ['settings', 'memory.routing_cpu', 'null']])
+    expect(kinds(m.wd.menuWrites).map(a => a.slice(0, 7))).toEqual([['settings', '--set', 'memory.routing', 'null', '--set', 'memory.routing_cpu', 'null']])
   })
 
   test('without a probe the fit is unknown and nothing is refused on a guess', async ($, on) => {
@@ -216,7 +226,7 @@ describe('the Routing tab', () => {
     expect(t).not.toContain('cannot save')
     await press(m, 'route:save', 2)
     await later(m.wd, 100)
-    expect(m.wd.menuWrites.length).toBe(2)
+    expect(m.wd.menuWrites.length).toBe(1)
   })
 })
 

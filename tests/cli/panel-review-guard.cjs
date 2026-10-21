@@ -153,7 +153,7 @@ function analyze(files) {
   for (const r of refs(/\$\s*\.\s*(?:prompt\s*\.\s*submit|agent\s*\.\s*spawn|tool\s*\.\s*call|session\s*\.\s*append|fs\s*\.\s*(?:write|append|remove|rename|mkdir)\w*)\b/g).filter((r) => !r.f.startsWith('hooks/wake/'))) bad.push(`${r.f}:${r.owner}: a write or a model-facing call: ${r.line.trim().slice(0, 80)}`);
 
   // 6. The generic read helper runs reads only, and no spelling reaches the launcher's words or the host object by a computed name.
-  const READS = /^runJson\(\$,\s*cli,\s*\[(?:'(?:agents|notices|transcript|settings)'|'memory',\s*'menu'\s*\])/;
+  const READS = /^runJson\(\$,\s*cli,\s*\[(?:'(?:agents|notices|transcript|settings)'|'memory',\s*'menu'\s*(?:,\s*'--badge'\s*)?\])/;
   for (const [f, o] of Object.entries(info)) {
     for (const m of o.code.matchAll(/\brunJson\s*\(/g)) {
       if (/function\s+$/.test(o.code.slice(Math.max(0, m.index - 12), m.index))) continue;

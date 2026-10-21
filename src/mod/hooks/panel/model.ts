@@ -48,17 +48,10 @@ export function parseSettings(json: unknown): BelaySettings {
   return out
 }
 
-// The settings name a heavy profile or a routing (a GPU profile, or any routing), read from `belay settings --json`: then the panel reads the
-// Memory menu's facts beside its rounds, for the main page badge. A config that leaves memory at its defaults costs no extra read.
+// `belay settings --json` says `memory_heavy` when any tier the settings resolve names a GPU model (the routing resolver decides, not the panel).
+// Then the panel reads the Memory menu's badge beside its rounds; a config that leaves memory at its defaults costs no extra read.
 export function heavyConfigured(json: unknown): boolean {
-  for (const r of arr(obj(json)?.settings)) {
-    const o = obj(r)
-    const key = o && str(o.key)
-    if (!o || !key) continue
-    if ((key === 'memory.profile' || key === 'memory.profile_cpu') && typeof o.value === 'string' && o.value.startsWith('gpu-')) return true
-    if ((key === 'memory.routing' || key === 'memory.routing_cpu') && o.value !== null && o.value !== undefined) return true
-  }
-  return false
+  return obj(json)?.memory_heavy === true
 }
 
 // `belay settings --json` carries `memory_notice` (null once a project is set). A malformed one is no notice.

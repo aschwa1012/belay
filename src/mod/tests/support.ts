@@ -52,8 +52,8 @@ export const SETTINGS = (mod: Record<string, string> = {}, memoryNotice: unknown
   found: true, path: 'C:/x/belay.config.json', parse_error: null, memory_notice: memoryNotice,
   settings: [
     ...Object.keys(DEFAULTS).map(k => ({ key: `mod.${k}`, value: mod[k] ?? DEFAULTS[k], source: 'default', allowed: [] })),
-    ...(heavy ? [{ key: 'memory.profile', value: 'gpu-balanced', source: 'C:/x/belay.config.json', allowed: [] }] : []),
   ],
+  memory_heavy: heavy,
 })
 
 // `belay memory menu --json` as the CLI prints it (src/core/memory-menu.cjs): the 2026-10 tables, a probed RTX 5060 and the 4B embedder three notes behind.
@@ -127,12 +127,15 @@ export function world(on: any, w: World) {
     if (e.argv.includes('memory') && e.argv.includes('menu')) {
       menuReads.push([...e.argv])
       if (w.menu === null) return { value: { exitCode: 1, stdout: '', stderr: 'boom' } }
-      return { value: { exitCode: 0, stdout: JSON.stringify(w.menu ?? MENU()), stderr: '' } }
+      const m: any = w.menu ?? MENU()
+      if (e.argv.includes('--badge')) return { value: { exitCode: 0, stdout: JSON.stringify({ v: 1, badge: true, selected_embedder: m.selected_embedder, behind: m.behind, backlog_reason: null }), stderr: '' } }
+      return { value: { exitCode: 0, stdout: JSON.stringify(m), stderr: '' } }
     }
     if ((e.argv.includes('settings') && e.argv.some((a: string) => a.startsWith('memory.'))) || e.argv.includes('embedder')) {
       menuWrites.push([...e.argv])
       if (w.writeResult) return { value: w.writeResult([...e.argv]) }
       const i = e.argv.indexOf('settings')
+      if (i >= 0 && e.argv[i + 1] === '--set') return { value: { exitCode: 0, stdout: JSON.stringify({ keys: e.argv.filter((a: string, j: number) => e.argv[j - 1] === '--set'), results: [], path: 'C:/x/belay.config.json', created: false }), stderr: '' } }
       if (i >= 0) return { value: { exitCode: 0, stdout: JSON.stringify({ key: e.argv[i + 1], old: { value: 'cpu-fast', source: 'default' }, new: { value: e.argv[i + 2], source: 'C:/x/belay.config.json' }, path: 'C:/x/belay.config.json', created: false }), stderr: '' } }
       return { value: { exitCode: 0, stdout: JSON.stringify(e.argv.includes('delete') ? { removed: true, bytes: 35000000 } : { verified: true }), stderr: '' } }
     }
