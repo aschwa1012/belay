@@ -63,11 +63,11 @@ test('spec: parseSpec refuses before anything is created, and accepts the good p
   } finally { cleanup(d); }
 });
 
-test('the orchestrator is never given the folder: no orchestrator launch code names the lever', () => {
-  const dir = path.join(__dirname, '..', '..', 'src', 'run');
-  for (const f of fs.readdirSync(dir).filter((n) => /^orchestrator/.test(n))) {
-    assert.ok(!/native_?[mM]emory/.test(fs.readFileSync(path.join(dir, f), 'utf8')), f);
-  }
+test('the orchestrator is never given the folder: its settings are written without the lever', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'run', 'launch.cjs'), 'utf8');
+  const body = src.slice(src.indexOf('function writeOrchestratorFiles('), src.indexOf('function orchestratorLaunchArgv('));
+  assert.ok(body.length > 200 && /workerSettings[(]/.test(body), 'the orchestrator writer is found');
+  assert.ok(!/native_?[mM]emory/.test(body), 'it names no native-memory lever');
 });
 
 // ------------------------------------------------------------------ worker spawn
@@ -150,4 +150,21 @@ test('lever off, or notes on: the message is what it always was and the question
   const both = await firstMessage({ project: 'demo', notes: true, handback_question: true });
   assert.equal(both, withNotes, 'handback_question changes nothing with notes on');
   assert.equal(NC.handback({ notes: true, handback_question: true }), '');
+});
+
+// ------------------------------------------------------------------ M1/M2: spec and config
+
+test('memory: null inherits nothing from the config, eval keys or not', () => {
+  const config = { path: '/p/belay.config.json', memory: { project: 'demo', first_message_index: true } };
+  const plain = parseLevers({ memory: null, handback_question: true }, { config });
+  assert.equal(plain.error, undefined);
+  assert.deepEqual(plain.memory_levers && { q: plain.memory_levers.handback_question, p: plain.memory_levers.project, f: plain.memory_levers.first_message_index }, { q: true, p: null, f: false });
+  assert.equal(parseLevers({ memory: {}, handback_question: true }, { config }).memory_levers.project, 'demo', 'an empty block still inherits');
+});
+
+test('the config memory block cannot carry an eval-only lever', () => {
+  for (const memory of [{ handback_question: true }, { native_memory: ABS }]) {
+    const r = parseLevers({}, { config: { path: '/p/belay.config.json', memory } });
+    assert.match(String(r.error), /eval-only/, JSON.stringify(memory));
+  }
 });

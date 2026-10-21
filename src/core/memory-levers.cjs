@@ -164,4 +164,7 @@ function specOf(key) {
 
 const TYPES = Object.freeze(Object.fromEntries(Object.keys(DEFAULTS).map((k) => [k, specOf(k)])));
 
-module.exports = { DEFAULTS, TYPES, MODE_VALUES, parseMemoryBlock, isDefault };
+// Run-spec keys only: never a project default, so the config file's memory block and `belay settings` refuse them.
+const EVAL_ONLY = Object.freeze(['native_memory', 'handback_question']);
+
+module.exports = { EVAL_ONLY, DEFAULTS, TYPES, MODE_VALUES, parseMemoryBlock, isDefault };

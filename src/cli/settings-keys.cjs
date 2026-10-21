@@ -10,7 +10,7 @@ const ML = require('../core/memory-levers.cjs');
 const AD = require('../run/agent-defaults.cjs');
 
 const MOD_NAMES = C.KEY_NAMES.filter((k) => C.KEYS[k].allowed);
-const MEMORY_NAMES = Object.keys(ML.DEFAULTS).map((k) => `memory.${k}`);
+const MEMORY_NAMES = Object.keys(ML.DEFAULTS).filter((k) => !ML.EVAL_ONLY.includes(k)).map((k) => `memory.${k}`);
 const AGENT_NAMES = AD.AGENT_KEYS.flatMap((t) => AD.fieldsOf(t).map((f) => `agents.${t}.${f}`));
 const NAMES = [...MOD_NAMES, ...MEMORY_NAMES, ...AGENT_NAMES];
 
@@ -142,8 +142,16 @@ const expectedValue = (key, value) => (kindOf(key) === 'agents' && value === nul
 const expectedSource = (key, value, file) => (kindOf(key) === 'agents' && value === null ? 'default' : file);
 
 // The memory block's own verdict, for a listing: an error string when the stored block would be refused by a run.
+// The eval-only run-spec keys are no project default: a config memory block naming one is refused (null when it names none).
+function evalOnlyIn(memory) {
+  const bad = memory && typeof memory === 'object' ? ML.EVAL_ONLY.filter((k) => Object.prototype.hasOwnProperty.call(memory, k)) : [];
+  return bad.length ? `${bad.join(', ')} ${bad.length > 1 ? 'are' : 'is'} eval-only: set in a run spec (top level), never in the config's memory block` : null;
+}
+
 function memoryBlockError(found) {
   if (!found.found || found.config.memory === undefined) return null;
+  const eo = evalOnlyIn(found.config.memory);
+  if (eo) return eo;
   const r = ML.parseMemoryBlock(found.config.memory);
   return r.error || null;
 }
