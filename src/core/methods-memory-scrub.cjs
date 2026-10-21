@@ -17,12 +17,14 @@
 const { err } = require('./errors.cjs');
 const L = require('./memory-lifecycle.cjs');
 const C = require('./lifecycle-common.cjs');
-const { loadNote, checkHoldFacts, ownTexts } = require('./memory-facts.cjs');
+const { loadNote, checkHoldFacts, ownTexts, sawsOf } = require('./memory-facts.cjs');
 const { checkCitations, evidenceOf } = require('./memory-citations.cjs');
 const { archiveNote } = require('./memory-archive.cjs');
 const { plan, applyPlan } = require('./memory-relate.cjs');
 const N = require('./methods-memory-notes.cjs');
 const { validId } = require('./memory-rows.cjs');
+const { standing } = require('./report-marks.cjs');
+const { openProposals, sameMark, keysFor } = require('./proposal-open.cjs');
 
 const KEYS = ['scrub', 'scope', 'run_id', 'head_sha', 'worktree', 'evidence_files'];
 const REFUSALS = new Set(['E_CITATION', 'E_PRECONDITION', 'E_SCOPE', 'E_NOT_FOUND', 'E_EXISTS', 'E_ARGS', 'E_ROLE', 'E_MODEL']);
@@ -49,13 +51,16 @@ const scrubReceipt = (ctx, ent, index, sources) => ({
 
 // The proposal row: the entry as the scrubber gave it, what S3 verified, and the facts S4 found. Applies nothing.
 function propose(E, caller, ctx, ent, index, sources, facts) {
-  const row = C.putRow(E, caller, {
+  // The same mark already open for this note is not proposed twice (every close of an unattended project would add one): the open row is returned.
+  // A draft is not a mark on the note's state: it answers a nomination, and a later nomination of the same note needs a draft of its own.
+  const open = ent.action === 'draft' ? null : openProposals(E, ctx.project).find((p) => sameMark(p.entry, ent));
+  const row = open ? { id: open.id } : C.putRow(E, caller, {
     ns: L.nsOf('proposal', ctx.project), type: 'proposal', runId: ctx.runId,
     text: `proposal ${ent.action}${ent.kind ? ` ${ent.kind}` : ''}${ent.resolve ? ` ${ent.resolve}` : ''}${ent.relation ? ` ${ent.relation}` : ''} ${ent.id}${ent.of ? ` of ${ent.of}` : ''} (run ${ctx.runId})`,
     title: `proposal: ${ent.action}${ent.kind ? ` ${ent.kind}` : ''} ${ent.id}`,
-    body: { state: 'open', note_id: ent.id, entry: ent, run_id: ctx.runId, head_sha: ctx.evidence.head_sha, facts: facts || null, scrub: scrubReceipt(ctx, ent, index, sources) },
+    body: { state: 'open', note_id: ent.id, entry: ent, keys: keysFor(E, [ent.id, ent.of]), run_id: ctx.runId, head_sha: ctx.evidence.head_sha, facts: facts || null, scrub: scrubReceipt(ctx, ent, index, sources) },
   });
-  return { index, id: ent.id, action: ent.action, outcome: 'proposed', ...(ent.relation ? { relation: ent.relation } : {}), ...(ent.resolve ? { resolve: ent.resolve } : {}), row: C.rowOut(E, row.id) };
+  return { index, id: ent.id, action: ent.action, outcome: 'proposed', ...(open ? { already_open: true } : {}), ...(ent.relation ? { relation: ent.relation } : {}), ...(ent.resolve ? { resolve: ent.resolve } : {}), row: C.rowOut(E, row.id) };
 }
 
 function dismiss(E, ctx, ent, index, sources, note) {
@@ -114,7 +119,7 @@ async function settle(E, caller, ctx, ent, index, sources, pending) {
 function reachable(E, ctx, st, ent) {
   if (ctx.scope.has(ent.of)) return true;
   const other = loadNote(E, ent.of);
-  const names = (n, id) => n && ((n.b.matches || []).some(m => m && m.id === id) || (n.b.reported_wrong || []).some(w => w && w.replaced_by === id));
+  const names = (n, id) => n && ((n.b.matches || []).some(m => m && m.id === id) || standing(n.b).some(w => w && w.replaced_by === id));
   return names(st.note, ent.of) || names(other, ent.id);
 }
 
@@ -124,9 +129,9 @@ function relate(E, caller, ctx, ent, index) {
   if (ctx.mode === 'propose') {
     const { f } = plan(E, ctx, ent); // the gates are checked now, so a refused pair is never proposed
     const { x, y, ...facts } = f;
-    return E.store.tx(() => propose(E, caller, ctx, ent, index, [], facts));
+    return C.openTx(E, caller, 'memory.scrubApply', () => propose(E, caller, ctx, ent, index, [], facts));
   }
-  return E.store.tx(() => {
+  return C.openTx(E, caller, 'memory.scrubApply', () => {
     const p = plan(E, ctx, ent); // the state at the write, inside the transaction
     if (p.needsHold) {
       // A review-verified note is never hidden without the reviewer: the verdict becomes a hold for the on-demand Opus reviewer.
@@ -156,18 +161,18 @@ async function one(E, caller, ctx, raw, index) {
   if (ent.action === 'hold') {
     if (st.live && st.note.b.held) throw err('E_EXISTS', `note ${ent.id} is already held (${st.note.b.held.row}); the reviewer settles it before another hold`, { id: ent.id, held_row: st.note.b.held.row });
     // S2 reaches the note a hold stands against: it is in scope, or a report or a stored match already names it.
-    const named = (st.note.b.reported_wrong || []).some(w => w && w.replaced_by === ent.of) || (st.note.b.matches || []).some(m => m && m.id === ent.of);
+    const named = standing(st.note.b).some(w => w && w.replaced_by === ent.of) || (st.note.b.matches || []).some(m => m && m.id === ent.of);
     if (ent.of && !ctx.scope.has(ent.of) && !named) throw err('E_SCOPE', `note ${ent.of} is neither in the scope list nor named by a report or a stored match on ${ent.id}, so a hold may not stand against it`, { id: ent.id, of: ent.of });
   }
-  const sources = ent.cites && ent.cites.length ? await checkCitations(ent.cites, { ...ctx.evidence, own: ownTexts(st.note), title: st.note.title }) : [];
+  const sources = ent.cites && ent.cites.length ? await checkCitations(ent.cites, { ...ctx.evidence, own: ownTexts(st.note), saws: sawsOf(st.note), title: st.note.title }) : [];
   ent = C.redactEntry(ent); // after the verbatim check, before anything is stored or returned
   if (ent.ground === 'code_contradicts' && !sources.some(s => s.source !== 'stream')) throw err('E_CITATION', 'ground code_contradicts needs at least one citation of a file at the head commit: a stream quotes what was said, not what the code is', { id: ent.id });
   if (ctx.mode === 'propose') {
     const facts = ent.action === 'hold' ? checkHoldFacts(E, ctx.project, st.note, ent.kind, ent.of, ent.ground, ctx.threshold, ctx.runId) : null;
-    return E.store.tx(() => propose(E, caller, ctx, ent, index, sources, facts));
+    return C.openTx(E, caller, 'memory.scrubApply', () => propose(E, caller, ctx, ent, index, sources, facts));
   }
   if (ent.action === 'resolve') return settle(E, caller, ctx, ent, index, sources, st.note.id);
-  return E.store.tx(() => {
+  return C.openTx(E, caller, 'memory.scrubApply', () => {
     const fresh = target(E, ctx.project, ent.id); // the state at the write, inside the transaction
     if (ent.action === 'dismiss') return dismiss(E, ctx, ent, index, sources, fresh.note);
     if (ent.action === 'hold') return hold(E, caller, ctx, ent, index, sources, fresh);
@@ -193,7 +198,7 @@ async function scrubApply(E, caller, args, opts = {}) {
       const r = await one(E, caller, ctx, ent, i);
       (r.outcome === 'proposed' ? proposed : applied).push(r);
     } catch (e) {
-      if (!e || !REFUSALS.has(e.code)) throw e;
+      if (!e || !REFUSALS.has(e.code) || (e.detail && e.detail.run_ended)) throw e; // a run that ended mid-call is not a per-entry refusal
       refused.push({ index: i, id: ent.id, action: ent.action, code: e.code, message: e.message, ...(e.detail ? { detail: e.detail } : {}) });
     }
   }

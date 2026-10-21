@@ -103,4 +103,11 @@ async function restartFirstText(w, branch, { core, ctx }) {
     'This is a fresh session replacing an interrupted one. Read resume.md in your worker directory, then continue.';
 }
 
-module.exports = { decideBranch, restartFirstText, CLAUDE_RESUME_WINDOW_MS, CODEX_RESUME_WINDOW_MS };
+// ADR 0046 decision 1: a worker launched again (restart, resume, a Codex turn) may have been adopted from a run that has
+// ended. Before any process starts, the core makes its task's files held for this adapter's live run (the task and its
+// lease move here), or refuses E_FILES_OVERLAP / E_RUN_NOT_LIVE and nothing is launched.
+async function holdForLaunch(w, core) {
+  if (w.taskId) await core.task.ensureHold({ task_id: w.taskId, worker_id: w.id });
+}
+
+module.exports = { decideBranch, restartFirstText, holdForLaunch, CLAUDE_RESUME_WINDOW_MS, CODEX_RESUME_WINDOW_MS };

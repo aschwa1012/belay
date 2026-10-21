@@ -2,7 +2,7 @@
 // note-report-verdicts.cjs — a worker's report that a note is WRONG, judged by the task's reviewer (or the Haiku note-review job).
 // "Is a note wrong about the world?" needs evidence and context, so it is the reviewer's, with cites, never the scrubber's.
 //   reportsAbout(E, taskIds, project)   a read: the open reports the tasks made about OTHER notes, for a reviewer's brief
-//   unjudgedReports(E, project)         a read: reports no review will judge, for the operator (notices, `belay memory proposals`)
+//   unjudgedReports(E, project)         a read: reports no verdict has been applied to, for the operator (notices, `belay memory proposals`)
 //   applyReportVerdicts(...)            the write: `report_verdicts: [{ id, verdict: upheld|rejected, cites, reason }]`
 // An upheld report creates a `wrong` hold on the reported note (the note stays visible with its warning; only the Opus archive
 // reviewer archives it). A rejected report is a `report_rejected` receipt on the note. Same citation check and same independence rule
@@ -70,8 +70,9 @@ function reportsAbout(E, taskIds, project) {
   }));
 }
 
-// Reports no review will judge: the reporter's task has ended, has no review task and no ok review job. They stay unjudged until
-// the operator looks (notices, `belay memory proposals`). A read.
+// Reports nobody has judged: the reporter's task has ended and the note carries no judgment for the report (`report_judgments`). That is the
+// only test. A review task or a note-review job that ran and left the report out (or had its verdict refused) judged nothing, so the report
+// stays here until a verdict is applied or the operator looks (notices, `belay memory proposals`). A read.
 function unjudgedReports(E, project) {
   if (!project) return [];
   let found;
@@ -81,17 +82,13 @@ function unjudgedReports(E, project) {
   } catch { return []; }
   if (!found.length) return [];
   const tasks = new Map(rows.currentAll(E.store, 'task').map((t) => [t.id, t]));
-  const reviewed = new Set();
-  for (const t of tasks.values()) if (t.acceptance && t.acceptance.verdict === true && Array.isArray(t.depends_on)) t.depends_on.forEach((d) => reviewed.add(d));
-  let jobDone = new Set();
-  try { jobDone = new Set(E.store.p("SELECT task_id FROM memory_event WHERE kind = 'review_job' AND ok = 1").all().map((r) => r.task_id)); } catch { /* no ledger */ }
   const out = [];
   for (const n of found) {
     const b = parse(n.body);
     if (b.held || (n.status || 'unverified') === 'refuted') continue;
     for (const w of b.reported_wrong || []) {
       const t = w && tasks.get(w.task_id);
-      if (!t || w.by === n.written_by || judged(b, w) || !['done', 'released'].includes(t.state) || reviewed.has(t.id) || jobDone.has(t.id)) continue;
+      if (!t || w.by === n.written_by || judged(b, w) || !['done', 'released'].includes(t.state)) continue;
       out.push({ id: n.id, title: n.title, task_id: w.task_id, run_id: w.run_id || null, by: w.by, why: w.why, at: w.at });
     }
   }
@@ -167,6 +164,7 @@ async function applyReportVerdicts(E, caller, route, list, project, out) {
     const idOf = isObj(raw) && typeof raw.id === 'string' ? raw.id : null;
     const key = `${route.keyBase}:report:${idOf || index}`;
     const refuse = (e) => {
+      E.assertRunOpen(caller, 'memory.noteVerdicts'); // a refusal receipt is a write: none after the run ended (audit D42)
       const message = String(e.message).slice(0, 300), code = e && typeof e.code === 'string' && e.code.startsWith('E_') ? e.code : 'E_INTERNAL';
       if (idOf) refusedIds.add(idOf);
       res.refused.push({ index, id: idOf, code, message });
@@ -192,6 +190,7 @@ async function applyReportVerdicts(E, caller, route, list, project, out) {
       if (lease) throw err('E_ROLE', `worker ${route.reviewer} held lease ${lease.id} on task ${note.task_id}, which wrote note ${v.id}; it cannot judge a report about it`, { id: v.id, reason: 'independence' });
       const chk = await CC.checkTaskCites(E, report.task_id, v.cites, { title: note.title, text: note.text, evidence: note.b.evidence });
       if (!chk.ok) throw err('E_CITATION', `report on note ${v.id}: ${chk.failures.length} of ${v.cites.length} cites are not in the evidence task ${report.task_id} recorded; the verdict is dropped (${chk.failures.map((f) => `cites[${f.index}] ${f.where}: ${f.reason}`).join(' | ')})`.slice(0, 600), { id: v.id, failures: chk.failures });
+      E.assertRunOpen(caller, 'memory.noteVerdicts'); // the citation check awaited a file; a run that ended meanwhile takes no verdict (audit D42)
       const red = C.redactEntry({ reason: v.reason, cites: heldCites(E, report.task_id, v.cites) });
       const outcome = E.store.tx(() => {
         // Everything that decides is read again here, in the transaction: a second application of the same review answers "already".
@@ -221,7 +220,7 @@ async function applyReportVerdicts(E, caller, route, list, project, out) {
         return { id: v.id, verdict: v.verdict, applied: true, ...(heldRow ? { held: C.rowOut(E, heldRow.id) } : { receipt: recommend ? 'report_recommended' : 'report_rejected' }), ...(recommend ? { recommended_only: true } : {}), event_id: ev.id };
       });
       if (outcome.already) res.already.push({ id: v.id, event_id: outcome.event_id }); else res.applied.push(outcome);
-    } catch (e) { refuse(e); }
+    } catch (e) { if (e && e.detail && e.detail.run_ended) throw e; refuse(e); }
   }
   if (res.applied.length) E.noteWrite();
   // A refused report is counted once, in `refused`; it stays open (no judgment was marked), so `refused_open` names it for the next review.

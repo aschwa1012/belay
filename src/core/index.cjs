@@ -454,7 +454,8 @@ class Core {
     if (!this.owner || this.owner.stopped) return { stopped: 'none', reason: 'this process holds no owner' };
     const o = this.owner;
     const r = await o.retire();
-    if (r.deferred) { this.owner = null; await this._dropClient(); return { ...r, stopped: 'deferred' }; }
+    // A deferral is a release all the same: the owner is retiring, so a later write here must not elect another one.
+    if (r.deferred) { this.owner = null; this.shutDown = true; await this._dropClient(); return { ...r, stopped: 'deferred' }; }
     this.owner = null; this.shutDown = true; // stopped now: like shutdownOwner(), a later write here must not elect another
     await this._dropClient();
     return { ...r, stopped: 'in-process' };

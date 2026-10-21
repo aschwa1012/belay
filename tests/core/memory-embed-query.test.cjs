@@ -321,3 +321,18 @@ Acceptance: npm test exits 0`;
   const { openingParagraph } = core('methods-embed-query.cjs');
   assert.strictEqual(openingParagraph('a\r\nb\r\n\r\nc'), 'a b', 'CRLF is a line break too');
 });
+
+test('a call whose run ended while it waited for the embedder writes no embed_bound event', async () => {
+  mode = 'ok';
+  fakeRun('eq-ended');
+  const h = callerFor('orchestrator', { run_id: 'eq-ended', channel: 'harness' });
+  const before = (await call('memory.events', { kinds: ['embed_bound'] })).events.length;
+  await held(async () => {
+    const p = call('memory.embedQuery', { extra_texts: ['ended run query'], timeout_ms: 500 }, h);
+    while (!running.size) await new Promise((r) => setImmediate(r)); // the real event: the embed is parked in the stub
+    await call('run.end', { exit_reason: 'test' }, callerFor('operator', { run_id: 'eq-ended' }));
+    const r = await p;
+    assert.strictEqual(r.queries[0].timed_out, true, 'the bound was hit, so the receipt was due');
+  });
+  assert.strictEqual((await call('memory.events', { kinds: ['embed_bound'] })).events.length, before, 'no receipt was written into the ended run');
+});

@@ -238,3 +238,17 @@ test('the other elect-then-shutdown commands release through releaseOwner', () =
     assert.match(src, /releaseOwnerOf/, f);
   }
 });
+
+test('after a deferred release the Core never elects another owner: a later write is refused E_SHUTDOWN (audit L18)', async () => {
+  const { dir, rc } = await elected();
+  const y = await inProcessClient(dir, process.pid);
+  try {
+    const r = await rc.releaseOwner();
+    assert.strictEqual(r.stopped, 'deferred');
+    await y.close();
+    await within(retire.idle(), 15000, 'the retired owner to stop');
+    assert.ok(!fs.existsSync(lockOf(dir)), 'the retired owner is gone');
+    await assert.rejects(rc.run.attach({ adapter_pid: process.pid }), (e) => e.code === 'E_SHUTDOWN', 'the write is refused, naming the shutdown');
+    assert.ok(!fs.existsSync(lockOf(dir)), 'and no stray owner was elected for it');
+  } finally { await finish(dir, rc, y); }
+});
