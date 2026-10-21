@@ -25,7 +25,8 @@ test('run close: an orchestrator child that has not registered is waited for, an
   const pidFile = `${dir}/child.pid`;
   const gate = `${dir}/answer.gate`;
   const snapLog = `${dir}/snapshots.log`;
-  const run = runCli(specPath, dataDir, { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ORPHAN_CHILD: '1', FAKE_CHILD_PID_FILE: pidFile, FAKE_ANSWER_GATE_FILE: gate, BELAY_SNAPSHOT_LOG: snapLog });
+  const closeLog = `${dir}/close.log`;
+  const run = runCli(specPath, dataDir, { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ORPHAN_CHILD: '1', FAKE_CHILD_PID_FILE: pidFile, FAKE_ANSWER_GATE_FILE: gate, BELAY_SNAPSHOT_LOG: snapLog, BELAY_CLOSE_LOG: closeLog });
   let core = null;
   let worker = null;
   try {
@@ -37,8 +38,14 @@ test('run close: an orchestrator child that has not registered is waited for, an
     assert.ok(await waitForFileLine(snapLog, 'spawn-read', 60000), "the run never read the orchestrator's creation time");
     fs.writeFileSync(gate, 'go'); // the orchestrator's turn ends now; the child has not attached
     assert.ok(await waitForFileLine(`${orchestratorDir}/stream.jsonl`, '"type":"result"', 120000), 'the orchestrator turn never ended');
-    // The close has taken its one adapter snapshot and reads the run row next: the attach below lands after that read.
+    // The close has read the run row (it logs the line when it has) and is taking its one adapter snapshot: the attach below lands
+    // after that read, observed and not assumed, so the child can only be named as unregistered.
+    assert.ok(await waitForFileLine(closeLog, 'run-row-read', 60000), 'the close never read the run row');
     assert.ok(await waitForFileLine(snapLog, 'adapter-scan', 60000), 'the close never scanned for its orchestrator children');
+    // A scan that failed or timed out (a loaded machine) finds no candidate, which is not the ordering this test is about: say so.
+    const scanLine = fs.readFileSync(snapLog, 'utf8').split(/\r?\n/).filter((l) => l.includes('adapter-scan')).map((l) => JSON.parse(l)).pop();
+    assert.strictEqual(scanLine.err, null, `the adapter scan failed (${scanLine.err}) after ${scanLine.ms} ms: the snapshot, not the attach order, is what failed`);
+    assert.ok(scanLine.rows > 0, `the adapter scan returned no rows (${JSON.stringify(scanLine)})`);
 
     // The late attach: it can only succeed if the close has not ended the run, which is what waiting for the child guarantees.
     const att = await core.run.attach({ adapter_pid: adapterPid });
@@ -56,7 +63,7 @@ test('run close: an orchestrator child that has not registered is waited for, an
     const receipt = receiptOf(run, exited.code);
     assert.strictEqual(exited.code, 0, `exit ${exited.code}; ended_by: ${receipt.ended_by}`);
     const wc = receipt.workers_closed;
-    assert.ok(wc.unregistered_adapter_pids && wc.unregistered_adapter_pids.includes(adapterPid), 'the close named the child it waited for');
+    assert.ok(wc.unregistered_adapter_pids && wc.unregistered_adapter_pids.includes(adapterPid), `the close named the child it waited for as unregistered (adapter_pid ${wc.adapter_pid}, unregistered ${JSON.stringify(wc.unregistered_adapter_pids)}, errors ${JSON.stringify(wc.errors)})`);
     assert.strictEqual(wc.adapter_gone, true);
     assert.ok(receipt.store.ended.ended_at >= killedAt - 250, 'run.end ran before the unregistered adapter was gone');
 

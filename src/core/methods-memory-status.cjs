@@ -130,6 +130,9 @@ async function setStatus(E, caller, args) {
     else if (parsed.kind === 'test') check = { kind: 'test', checked: false, claim: TEST_CLAIM };
     kept = receipt;
   }
+  // checkCommit awaited git: run.end may have committed meanwhile (audit D42). Checked in the tick of the first write. Once the status
+  // has landed, its project copies follow it to the end (a copy must never keep a status its source lost), so they are not re-checked.
+  E.assertRunOpen(caller, 'memory.setStatus');
   const at = Date.now();
   const out = E.store.setStatus(id, { status, receipt: kept, by: E.writtenBy(caller), at });
   E.noteWrite();

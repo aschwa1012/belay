@@ -119,7 +119,7 @@ test('should-fix 1: a relation that would archive a verified note becomes a hold
 });
 
 test('should-fix 3: a report counts only from this run and from another writer, and it gives the direction', async () => {
-  const mk = (rep) => { const o = T.note('sf3 older', { vec: A, created_at: 100 }); const n = T.note('sf3 newer', { vec: B, created_at: 200 }); T.store.patchBody(n, b => { b.reported_wrong = [rep(o)]; return b; }); return { o, n }; };
+  const mk = (rep) => { const o = T.note('sf3 older', { vec: A, created_at: 100 }); const n = T.note('sf3 newer', { vec: B, created_at: 200 }); T.store.patchBody(n, b => { b.reported_wrong = [rep(o)]; b.report_judgments = [{ task_id: 'tx', report_at: 1, verdict: 'upheld', by: 'rev-1', ref: 'rt-1', at: 2 }]; return b; }); return { o, n }; };
   const good = o => ({ ...T.report('worker:w2', o), run_id: 'lc-apply' });
   const oldRun = mk(o => ({ ...good(o), run_id: 'old-run' }));
   assert.strictEqual((await scrub('apply', [relate(oldRun.n, 'repeats', oldRun.o)])).refused[0].code, 'E_PRECONDITION', 'an old run\'s report');

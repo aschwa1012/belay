@@ -23,6 +23,7 @@
 const { err } = require('./errors.cjs');
 const { loadNote, storedCosine } = require('./memory-facts.cjs');
 const { archiveNote } = require('./memory-archive.cjs');
+const { upheld } = require('./report-marks.cjs');
 
 const JUDGED_KEEP = 20;
 const round3 = x => Math.round(x * 1000) / 1000;
@@ -30,6 +31,9 @@ const refuse = (message, detail) => err('E_PRECONDITION', message, detail);
 const templateOf = r => r.text_template || 'v1';
 // What a judgement was made on: a note's text, its vector's model and dimension, and its template. A change in any reopens the pair.
 const keyOf = n => `${n.text_hash}|${n.embedding_model || ''}|${n.dim || ''}|${templateOf(n)}`;
+// A `new` verdict recorded by `n` on `other` holds only while both notes still have the text, vector model, dimension and template it was made on.
+// `n` and `other` are loaded notes (`.b` is the parsed body). The one rule every reader of a judged pair applies.
+const judgedPair = (n, other) => ((n.b && n.b.pair_judged) || []).some(j => j && j.of === other.id && j.own_key === keyOf(n) && j.of_key === keyOf(other));
 
 // A live note of the project for a relation (gate b). Throws E_PRECONDITION, or E_NOT_FOUND for no such note.
 function liveNote(E, project, id) {
@@ -57,8 +61,8 @@ function bindingMatches(x, y) {
   return out;
 }
 
-// A report that opens the gate: from this run, naming `to` as the replacement of `from`, by a writer other than from's own.
-const reportOn = (from, to, runId) => (from.b.reported_wrong || []).some(w => w && w.replaced_by === to.id && w.run_id === runId && w.by !== from.written_by);
+// A report that opens the gate (only one a reviewer upheld: never a rejected or an unjudged one; report-marks.cjs): from this run, naming `to` as the replacement of `from`, by a writer other than from's own.
+const reportOn = (from, to, runId) => upheld(from.b).some(w => w && w.replaced_by === to.id && w.run_id === runId && w.by !== from.written_by);
 
 // Gates (a) and (b). Returns the facts that held, or throws E_PRECONDITION naming the one that did not.
 function relationFacts(E, project, a, b, threshold, runId) {
@@ -126,4 +130,4 @@ function applyPlan(E, ctx, ent, p) {
   return { relation: ent.relation, facts: strip(f), archived: gone.id, kept: kept.id, archived_as: done.to, history_moved: done.history_moved, replaced_also_archived: done.replaced_also_archived };
 }
 
-module.exports = { relationFacts, plan, applyPlan, liveNote, sides, keyOf, JUDGED_KEEP };
+module.exports = { relationFacts, plan, applyPlan, liveNote, sides, keyOf, judgedPair, JUDGED_KEEP };
