@@ -12,13 +12,39 @@ const WHY = 'Memory notes are on by default, but they are kept per project and b
 const FIX_LINE = '"memory": { "project": "<name>" }';
 const FIX = `Add ${FIX_LINE} to belay.config.json (or to the run spec), or run: belay settings memory.project <name>. A name is lowercase letters, digits, dot, underscore or dash (${NAME_RULE}). To turn notes off and silence this: belay settings memory.notes false.`;
 
-// `block` is the memory block as written (config file's, or the spec's over it); anything else counts as no block.
-// Returns null when notes are explicitly off or a project is set, else the notice.
+const REDACT_CODE = 'memory_redact_off';
+const REDACT_TITLE = 'Memory notes are off: redaction is disabled';
+const REDACT_WHY = 'A memory block with memory.redact false never writes notes, because the project namespace outlives the run and must not hold unredacted text.';
+const REDACT_LINE = '"memory": { "redact": true }';
+const REDACT_FIX = 'Remove "redact": false from the memory block (or set it to true) to have notes on with the project set. To silence this: belay settings memory.notes false.';
+
+// `block` is the memory block as written (config file's, or the spec's over it). `null` is an explicit `memory: null`
+// (memory off, nothing to warn about); `undefined` or any other non-object is no block. Returns null when notes are
+// explicitly off or on, else the notice that says why they are off.
 function noticeFor(block) {
-  const b = block !== null && typeof block === 'object' && !Array.isArray(block) ? block : {};
+  if (block === null) return null;
+  const b = typeof block === 'object' && !Array.isArray(block) ? block : {};
   if (b.notes === false) return null;
-  if (typeof b.project === 'string' && b.project !== '') return null;
+  if (typeof b.project === 'string' && b.project !== '') {
+    if (b.redact === false && b.notes !== true) return { code: REDACT_CODE, title: REDACT_TITLE, why: REDACT_WHY, fix: REDACT_FIX, config_line: REDACT_LINE, name_rule: NAME_RULE };
+    return null;
+  }
   return { code: CODE, title: TITLE, why: WHY, fix: FIX, config_line: FIX_LINE, name_rule: NAME_RULE };
+}
+
+// Do the notes of this run row stand on? The row's memory_levers is the resolved block the launch recorded (a run with
+// none recorded has the defaults: off). Pure; null for no row.
+function runNotes(row) {
+  if (!row) return null;
+  let l = row.memory_levers;
+  if (typeof l === 'string') { try { l = JSON.parse(l); } catch { l = null; } }
+  return !!(l && typeof l === 'object' && l.notes === true);
+}
+
+// The notice for the run a command is about: none when that run has notes on (whatever file or spec turned them on),
+// else the config's. `row` is the run row or null for no run.
+function noticeForRun(row, found) {
+  return runNotes(row) === true ? null : noticeForConfig(found);
 }
 
 // From a discovered config ({ found, config }), as `belay doctor` and `belay status` hold it.
@@ -31,4 +57,4 @@ function noticeLines(n, prefix = '') {
   return [`${prefix}${n.title}.`, `${prefix}${n.why}`, `${prefix}${n.fix}`];
 }
 
-module.exports = { NAME_RULE, CODE, noticeFor, noticeForConfig, noticeLines };
+module.exports = { NAME_RULE, CODE, REDACT_CODE, noticeFor, noticeForConfig, noticeForRun, runNotes, noticeLines };

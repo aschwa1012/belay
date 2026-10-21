@@ -313,6 +313,7 @@ async function run(ctx) {
       started_at_ms: nn(chosen.started_at), paused_at_ms: nn(chosen.paused_at), ended_at_ms: nn(chosen.ended_at),
       tasks: { done: runTasks.filter((t) => t.state === 'done').length, total: runTasks.length },
       max_fix_rounds: nn(chosen.max_fix_rounds), // the run row records the limit, not the rounds used
+      memory_notes: require('../core/memory-notice.cjs').runNotes(chosen), // true when this run has notes on: the panel then shows no "memory is off" notice
       agents, footer: footerOf(agents), owner: core.ownerInfo(),
     };
     return { code: 0, text: renderText(receipt), json: receipt };

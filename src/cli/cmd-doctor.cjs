@@ -166,8 +166,8 @@ function applyFix(checks) {
 function memoryProjectCheck(found) {
   const n = require('../core/memory-notice.cjs').noticeForConfig(found);
   return n
-    ? row('memory-project', MISSING, `${n.title}. ${n.why} ${n.fix}`, { fix: n.config_line, notice: n })
-    : row('memory-project', OK, 'notes are off or memory.project is set in the config file');
+    ? row('memory-project', MISSING, `${n.title} (checked in the config file only; a run whose spec sets memory.project has notes on). ${n.why} ${n.fix}`, { fix: n.config_line, notice: n })
+    : row('memory-project', OK, 'notes are off, or memory.project is set in the config file');
 }
 
 async function run(ctx) {

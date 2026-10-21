@@ -63,6 +63,7 @@ function listResult(found, json) {
   lines.push('');
   for (const r of rows) {
     lines.push(line(r, width));
+    if (r.note) lines.push(`  ${''.padEnd(width)}  ${r.note}`);
     if (r.invalid) lines.push(`  ${''.padEnd(width)}  invalid in file: ${r.invalid.reason}`);
   }
   lines.push('');

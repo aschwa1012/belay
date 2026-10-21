@@ -58,6 +58,7 @@ async function attach(E, caller, args) {
   // ADR 0041 decision 1: the memory levers (the parsed block as JSON text) and the project name, written once by
   // the launching attach and carried forward like max_fix_rounds. The core is the boundary: bad values are refused.
   const leversGiven = args.memory_levers !== undefined;
+  let resolvedLevers = null; // the block as parseMemoryBlock resolves it, stored in place of the raw one
   if (leversGiven && args.memory_levers !== null) {
     let parsed = null;
     try { parsed = typeof args.memory_levers === 'string' ? JSON.parse(args.memory_levers) : null; } catch { /* refused below */ }
@@ -66,6 +67,7 @@ async function attach(E, caller, args) {
     }
     const checked = parseMemoryBlock(parsed);
     if (checked.error) throw err('E_ARGS', `run.attach memory_levers is not a valid memory block: ${checked.error}`, { memory_levers: args.memory_levers });
+    resolvedLevers = JSON.stringify(checked.value); // resolve once: the core readers and the run manager then read the same levers
   }
   const modeGiven = args.embedder_mode !== undefined;
   if (modeGiven && args.embedder_mode !== null && !require('./embedder-mode.cjs').normalize(args.embedder_mode)) throw err('E_ARGS', 'run.attach embedder_mode must be null, required, keyword or off', { embedder_mode: args.embedder_mode });
@@ -143,7 +145,7 @@ async function attach(E, caller, args) {
     orch_effort_requested: effortGiven ? args.orch_effort_requested : (carryPause ? prev.orch_effort_requested : null),
     // ADR 0031 decision 6: the fix-round cap `belay run` launched with, same carry rule as the effort.
     max_fix_rounds: fixCapGiven ? args.max_fix_rounds : (carryPause ? prev.max_fix_rounds : null),
-    memory_levers: leversGiven ? args.memory_levers : (carryPause ? prev.memory_levers : null), // same carry rule
+    memory_levers: leversGiven ? (args.memory_levers === null ? null : resolvedLevers) : (carryPause ? prev.memory_levers : null), // same carry rule
     project: projectGiven ? args.project : (carryPause ? prev.project : null),
     project_dir: dirGiven ? args.project_dir : (carryPause ? prev.project_dir : null),
     revived_epoch: revivedEpoch,

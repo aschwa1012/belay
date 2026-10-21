@@ -23,7 +23,7 @@ before(async () => {
   store = new Store(`${dir}/memory.db`, { stamp: true });
   E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: null, establishedBy: 'test' });
   const lv = { project: 'acme', notes: true };
-  const levers = { on: lv, trust: { ...lv, notes_trust_wording: true }, over: { ...lv, notes_overflow_line: true }, off: { project: 'acme' } };
+  const levers = { on: lv, trust: { ...lv, notes_trust_wording: true }, over: { ...lv, notes_overflow_line: true }, off: { project: 'acme', notes: false } };
   for (const k of Object.keys(RUNS)) await call(k, 'run.attach', { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify(levers[k]) });
 });
 after(() => { store.close(); cleanup(dir); });

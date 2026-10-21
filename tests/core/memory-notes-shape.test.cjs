@@ -118,7 +118,8 @@ test('levers: with no block notes is off with its tuning levers, and validates',
 });
 
 test('levers: notes is on by default and takes effect once the run has a project', () => {
-  assert.strictEqual(L.DEFAULTS.notes, true);
+  assert.strictEqual(L.DEFAULTS.notes, false, 'one default: a block with no project has notes off');
+  assert.deepStrictEqual(require('../../src/run/memory-levers.cjs').DEFAULTS, L.DEFAULTS, 'the run side shares the core default');
   assert.strictEqual(L.parseMemoryBlock({ project: 'p' }).value.notes, true);
   assert.strictEqual(L.parseMemoryBlock({}).value.notes, false, 'no project, no notes namespace: off, not an error');
   assert.strictEqual(L.parseMemoryBlock({ project: 'p', redact: false }).value.notes, false, 'unredacted text never goes to the project namespace');

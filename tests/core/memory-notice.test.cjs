@@ -7,7 +7,7 @@ const path = require('node:path');
 const N = require('../../src/core/memory-notice.cjs');
 
 test('the notice holds when notes are on by default and no project is set', () => {
-  for (const block of [undefined, null, {}, { project: null }, { project: '' }, { notes_match_n: 2 }, 'x', []]) {
+  for (const block of [undefined, {}, { project: null }, { project: '' }, { notes_match_n: 2 }, 'x', []]) {
     const n = N.noticeFor(block);
     assert.ok(n, JSON.stringify(block));
     assert.strictEqual(n.title, 'Memory is off for this project');
@@ -22,6 +22,27 @@ test('the notice does not hold once a project is set, or when notes are explicit
   assert.strictEqual(N.noticeFor({ project: 'acme', notes: true }), null);
   assert.strictEqual(N.noticeFor({ notes: false }), null);
   assert.strictEqual(N.noticeFor({ notes: false, project: null }), null);
+});
+
+test('memory: null is an explicit off and redact false with a project says why notes are off', () => {
+  assert.strictEqual(N.noticeFor(null), null, 'memory: null turns notes off: nothing to warn about');
+  const r = N.noticeFor({ project: 'acme', redact: false });
+  assert.strictEqual(r.code, 'memory_redact_off');
+  assert.ok(r.fix.includes('redact'), 'the fix names the lever');
+  assert.strictEqual(N.noticeFor({ project: 'acme', redact: false, notes: false }), null, 'notes explicitly off: silent');
+  assert.strictEqual(N.noticeFor({ redact: false }).code, 'memory_project_unset', 'no project: the project is the first thing missing');
+});
+
+test('a run row with notes on suppresses the config notice; one with none or off does not', () => {
+  const none = { found: false };
+  assert.strictEqual(N.runNotes(null), null);
+  assert.strictEqual(N.runNotes({ memory_levers: null }), false);
+  assert.strictEqual(N.runNotes({ memory_levers: '{"project":"p","notes":true}' }), true);
+  assert.strictEqual(N.runNotes({ memory_levers: '{"project":"p","notes":false}' }), false);
+  assert.strictEqual(N.runNotes({ memory_levers: 'not json' }), false);
+  assert.strictEqual(N.noticeForRun({ memory_levers: '{"notes":true,"project":"p"}' }, none), null, 'the spec set the project: no "Memory is off"');
+  assert.ok(N.noticeForRun({ memory_levers: null }, none));
+  assert.ok(N.noticeForRun(null, none));
 });
 
 test('from a discovered config: no file, an empty file and a file with a project', () => {

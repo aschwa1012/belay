@@ -7,7 +7,7 @@
 
 const core = require('../core/memory-levers.cjs'); // the pure spec, shared with run.attach
 const { defaultLevers, parseMemoryBlock, isDefault } = core;
-// What a run with no memory block has: the core's defaults with `notes` resolved to off (it needs a project, which is never derived).
+// What a run with no memory block has: the core's DEFAULTS, the one source (notes off: it needs a project, which is never derived).
 const DEFAULTS = Object.freeze(defaultLevers());
 
 // One read per manager. The cache holds the promise, so concurrent callers share the read; a failed read is

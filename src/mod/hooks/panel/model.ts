@@ -56,6 +56,14 @@ export function parseMemoryNotice(json: unknown): BelayMemoryNotice | null {
   return { title: clean(title, 80), why: clean(why, 240), fix: clean(fix, 400), configLine: clean(str(n.config_line) ?? '"memory": { "project": "<name>" }', 80) }
 }
 
+// The band's one-line warning and the plain-surface line for the notice (view.tsx draws exactly these).
+export function memoryBandSegs(n: BelayMemoryNotice): Seg[] {
+  return [{ t: '▲ ', c: 'warning' }, { t: n.title, c: 'warning', bold: true }, { t: ` · add ${n.configLine}`, dim: true }]
+}
+export function memoryFallbackSegs(n: BelayMemoryNotice): Seg[] {
+  return [{ t: `▲ ${n.title}. ${n.fix}`, c: 'warning' }]
+}
+
 // ---- agents -------------------------------------------------------------------------------------
 
 const STATES: readonly BelayDisplayState[] = ['running', 'waiting', 'idle', 'stalled', 'permission', 'parked', 'dead', 'done', 'starting', 'stopping', 'unknown']

@@ -135,7 +135,7 @@ function parseLevers(spec, opts = {}) {
     }
   }
   // Notes default on but need a project: say so when there is none. Not enumerable, so the receipt is unchanged; `belay run` prints it.
-  Object.defineProperty(out, 'memory_notice', { value: MN.noticeFor(merged.block), enumerable: false });
+  Object.defineProperty(out, 'memory_notice', { value: MN.noticeFor(spec.memory === null ? null : merged.block), enumerable: false });
   if (merged.dropped) out.memory_dropped = merged.dropped; // config levers a spec's `notes: false` left out, so the receipt says what did not apply
   return out;
 }

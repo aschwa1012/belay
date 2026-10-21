@@ -25,7 +25,7 @@ const DEFAULTS = Object.freeze({
   wrapup: false,
   knowledge_agent: false,
   // ADR 0047: notes workers mean to share. Every behaviour below sits behind `notes`; the other four tune it.
-  notes: true, // on by default (0.3.0); takes effect only with a project and redaction (see resolveNotes), so a run with no memory.project behaves as before
+  notes: false, // the lever as a block states it; an unstated `notes` resolves ON when the block has a project and keeps redaction (resolveNotes), so a run with no memory.project behaves as before. This is the one default: the run side re-exports it
   notes_match_threshold: 0.8, // operator 2026-10-15 from the planted-duplicate study (offline/duplicates): valid only for the embedder it was measured on (voyage-4-nano q4, 1024); re-measure if the embedder changes
   notes_match_n: 3, // provisional: at most this many matches are returned for a pending note
   notes_reflection: false, // write ablation: a second end-of-task question as its own turn after the hand-back
@@ -62,16 +62,16 @@ const PROJECT_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const INDEX_BYTES_MAX = 4096; // ADR 0042 decision 2
 const BOTTLE_BYTES_MAX = 262144; // ADR 0042 decision 4
 
-// `notes` defaults to true but notes live in the project namespace, so a run that did not say `notes` has them only when it
+// `notes` resolves on by default (0.3.0) but notes live in the project namespace, so a run that did not say `notes` has them only when it
 // has a project and keeps redaction on. The project is never derived (ADR 0041): a user turns notes on in practice by setting
 // memory.project. An explicit `notes` is taken as given, and refused below when it cannot work.
 function resolveNotes(v, given) {
   if (given) return v.notes;
-  return v.notes && v.project !== null && v.redact !== false;
+  return v.project !== null && v.redact !== false;
 }
 
-// The levers of a run that gave no memory block: every default, with notes resolved (off, there being no project).
-function defaultLevers() { return { ...DEFAULTS, notes: false }; }
+// The levers of a run that gave no memory block: every default (notes off, there being no project).
+function defaultLevers() { return { ...DEFAULTS }; }
 
 function boundedInt(v, max) {
   return typeof v === 'number' && Number.isSafeInteger(v) && v >= 1 && v <= max;

@@ -5,7 +5,7 @@ import type { Elements } from 'claude-code'
 import type { BelayAgent, BelayEntry, BelayNotice, BelayPanelSnap, BelayPanelUi } from '../../types/index'
 import {
   bandLines, cacheSegs, CONFIRM_MS, confirmLine, heldLine, reviewLine, reviewProject, runningReview, ctxSegs, dur, fitSegs, isLive, markSeg, markWidth, money, runLine, STATE_NAME, TONE, unseenNotices, bar,
-  type Seg,
+  memoryBandSegs, memoryFallbackSegs, type Seg,
 } from './model'
 import { cells, clipCells, cmdLines, wordWrap, wrapParts } from './wrap'
 
@@ -58,7 +58,7 @@ export function Band({ E, snap, ui, now, cols, act }: Ctx) {
   const toggle = cols >= 60 ? (ui.open ? '  ▾ panel' : '  ▸ panel') : (ui.open ? ' ▾' : ' ▸')
   return (
     <Box flexDirection="column">
-      {snap.memoryNotice && <Line E={E} w={cols} k="mn" segs={[{ t: '▲ ', c: 'warning' }, { t: snap.memoryNotice.title, c: 'warning', bold: true }, { t: ` · add ${snap.memoryNotice.configLine}`, dim: true }]} />}
+      {snap.memoryNotice && <Line E={E} w={cols} k="mn" segs={memoryBandSegs(snap.memoryNotice)} />}
       {lines.map((segs, i) => (
         <Box key={`band${i}`}>
           <Line E={E} segs={segs} k={`l${i}`} w={i === 0 ? cols - toggle.length : cols} />
@@ -453,7 +453,7 @@ export function Fallback(c: Ctx) {
     lines.push([markSeg(a.state, snap.settings.marks), { t: ` ${a.id} ${shortModel(a.model)} · ` }, ...ctxSegs(a, snap.settings), { t: ' · ' },
       ...cacheSegs(a, snap.settings, snap.fetchedAt, now), { t: ` · ${money(a.costUsd)}` }, { t: a.task ? ` · ${a.task.id}` : '', dim: true }])
   }
-  if (snap.memoryNotice) lines.push([{ t: `▲ ${snap.memoryNotice.title}. ${snap.memoryNotice.fix}`, c: 'warning' }])
+  if (snap.memoryNotice) lines.push(memoryFallbackSegs(snap.memoryNotice))
   if (snap.held) { // plain text: the review button is the terminal pane's alone
     for (const r of snap.held.reviews) lines.push([{ t: `◇ ${reviewLine(r)}`, c: 'warning' }])
     if (snap.held.count > 0) lines.push([{ t: `◇ ${heldLine(snap.held)}`, c: 'warning' }])
