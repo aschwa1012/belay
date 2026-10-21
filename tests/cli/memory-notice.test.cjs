@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs)
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1';
 // The no-project notice on the CLI: `belay run` prints it once on stderr before launching, and `belay settings`, `belay status` and
 // `belay doctor` list it as a warning with the fix line. Each is silent once memory.project is set. Read commands create no file.
