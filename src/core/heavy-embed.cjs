@@ -31,14 +31,14 @@ async function embedQuery(E, tier, text, boundMs = BOUND_MS) {
     return { vec: e.embedding, model: tier.embedder };
   } catch (x) {
     const e = coded(x);
-    e.detail = { ...(e.detail || {}), embedder: true, heavy: true, tier_embedder: tier.embedder };
+    e.detail = { ...(e.detail || {}), embedder: true, heavy: true, stage: 'heavy_embed', tier_embedder: tier.embedder };
     throw e;
   } finally { clearTimeout(timer); }
 }
 
-const pauseAdvice = (caller) => (caller.role === 'worker'
+const pauseAdvice = (caller, copy) => (caller.role === 'worker'
   ? 'Stop and wait: do not run belay commands; the operator will resume the run.'
-  : `Tell the operator (belay status shows the run); fix the GPU embedder, or set on_heavy_failure to fallback, then belay resume ${caller.run_id}.`);
+  : caller.run_id && !copy ? `Tell the operator (belay status shows the run); fix the GPU embedder, or set on_heavy_failure to fallback, then belay resume ${caller.run_id}.` : 'Fix the GPU embedder, or set on_heavy_failure to fallback.');
 
 // The query vector for a search on a heavy tier: { vec, model } or, when the failure fell back, { fallback: { tier, cause } } for the caller to
 // re-embed on that tier. Throws (after telling the run's hook) under on_heavy_failure pause.
@@ -46,12 +46,12 @@ async function queryVector(E, caller, o, lv) {
   try { return await embedQuery(E, o.tier, o.query); } catch (e) {
     if (lv.on_heavy_failure === 'pause') {
       e.detail = { ...e.detail, advised: true };
-      e.message = `${e.message} ${pauseAdvice(caller)}`;
+      e.message = `${e.message} ${pauseAdvice(caller, !E.owner)}`;
       notifyEmbedderFailure(E, caller, 'memory.search', e);
       throw e;
     }
     const cause = { code: e.code || 'E_INTERNAL', reason: e.detail && e.detail.cause ? e.detail.cause : null, message: e.message };
-    HT.setFallback(E, caller && caller.run_id, cause);
+    HT.setFallback(E, caller, cause);
     return { fallback: { tier: { ...HT.FALLBACK_TIER, fallback_from: o.tier.profile, fallback_cause: cause }, cause } };
   }
 }

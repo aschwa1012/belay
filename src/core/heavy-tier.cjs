@@ -16,13 +16,15 @@ const RP = require('./retrieval-profiles.cjs');
 
 const ROLE_TYPE = 'orchestrator';
 
-function pinOf(E, runId) {
+function runOf(E, runId) {
   if (!runId) return null;
-  let run;
-  try { run = rows.current(E.store, 'run', runId); } catch { return null; }
+  try { return rows.current(E.store, 'run', runId) || null; } catch { return null; }
+}
+function pinOfRow(run) {
   if (!run || !run.retrieval_routing) return null;
   try { const p = typeof run.retrieval_routing === 'string' ? JSON.parse(run.retrieval_routing) : run.retrieval_routing; return p && p.routing && p.routing.run ? p : null; } catch { return null; }
 }
+const pinOf = (E, runId) => pinOfRow(runOf(E, runId));
 
 // The agent type the harness spawned `workerId` with, or null.
 function agentTypeOfWorker(E, runId, workerId) {
@@ -46,21 +48,31 @@ function withDims(tier) {
 let seamTable;
 function setTestTable(t) { if (process.env.BELAY_TEST_MODE !== '1') throw new Error('setTestTable is a test seam'); seamTable = t; }
 
-// The run's sticky fallback to the fallback profile, once a heavy tier failed under on_heavy_failure `fallback`.
-const fallbacks = (E) => E._tierFallback || (E._tierFallback = new Map());
+// The run's sticky fallback to the fallback profile, once a heavy tier failed under on_heavy_failure `fallback`. It is a fact of the RUN
+// ROW (inside retrieval_routing: { cause, at, epoch }), so it survives an owner restart, is visible to status and the receipt, and ends
+// with the epoch it was written in (a resume attaches a new epoch, as the rerank sticky does).
 const FALLBACK_TIER = Object.freeze({ profile: RP.FALLBACK_PROFILE, embedder: RP.NANO, reranker: null, device: 'cpu', depth: 0, source: 'fallback' });
-function setFallback(E, runId, cause) {
-  if (!runId) return;
-  const m = fallbacks(E);
-  if (!m.has(runId)) m.set(runId, { cause, at: Date.now() });
+// Owner only (a copy never writes, invariant 6): a copy-served search falls back for that search alone. True when this call wrote it.
+function setFallback(E, caller, cause) {
+  const runId = caller && caller.run_id;
+  if (!runId || !E.owner) return false;
+  const run = runOf(E, runId), pin = pinOfRow(run);
+  if (!pin || run.ended_at != null || (pin.fallback && pin.fallback.epoch === run.epoch)) return false;
+  pin.fallback = { cause: { code: cause.code || null, reason: cause.reason || null, message: String(cause.message || '').slice(0, 400) }, at: Date.now(), epoch: run.epoch };
+  require('./methods-run.cjs').appendRun(E, { ...run, retrieval_routing: JSON.stringify(pin) }, E.writtenBy(caller));
+  if (E.noteWrite) E.noteWrite();
+  return true;
 }
-const fallbackOf = (E, runId) => (runId ? fallbacks(E).get(runId) || null : null);
+function fallbackOf(E, runId) {
+  const run = runOf(E, runId), pin = pinOfRow(run);
+  return pin && pin.fallback && pin.fallback.epoch === run.epoch ? pin.fallback : null;
+}
 
 // The pinned tier for `agentType` ('orchestrator', a worker type, or null for the run tier), or null when the run has none pinned.
 function tierOfType(E, runId, agentType) {
-  const pin = pinOf(E, runId);
+  const run = runOf(E, runId), pin = pinOfRow(run);
   if (!pin) return null;
-  const fb = fallbackOf(E, runId);
+  const fb = pin.fallback && pin.fallback.epoch === run.epoch ? pin.fallback : null;
   if (fb) return { ...FALLBACK_TIER, fallback_from: pin.routing.run.profile, fallback_cause: fb.cause };
   const t = agentType && Object.prototype.hasOwnProperty.call(pin.routing.tiers || {}, agentType) ? pin.routing.tiers[agentType] : pin.routing.run;
   return withDims(t);
@@ -78,4 +90,4 @@ function tierForWorker(E, caller, workerId) {
   return tierOfType(E, caller.run_id, agentTypeOfWorker(E, caller.run_id, workerId));
 }
 
-module.exports = { pinOf, pinnedTier, tierForWorker, tierOfType, agentTypeOfWorker, withDims, setFallback, fallbackOf, FALLBACK_TIER, setTestTable };
+module.exports = { pinOf, pinOfRow, pinnedTier, tierForWorker, tierOfType, agentTypeOfWorker, withDims, setFallback, fallbackOf, FALLBACK_TIER, setTestTable };
