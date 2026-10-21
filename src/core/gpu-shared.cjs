@@ -18,6 +18,7 @@
 const { err } = require('./errors.cjs');
 
 let shared = null;
+let latched = false; // set by close(): a stopping owner, or a drain in flight, forks no fresh child
 const loads = new Map(); // model id -> promise of its load info
 const verdicts = new Map(); // sorted model ids + headroom -> the probe's ok result, kept while the child holds them
 let chain = Promise.resolve(); // probes run one at a time
@@ -26,11 +27,28 @@ let seams = null;
 function setTestOptions(o) {
   if (process.env.BELAY_TEST_MODE !== '1') throw err('E_ARGS', 'setTestOptions is a test seam', {});
   seams = o || null;
+  latched = false;
 }
+
+// A dead, hung or self-closed child is forgotten so the NEXT pin can probe and fork afresh (never a silent re-fork inside a call).
+function recycle() {
+  if (latched || !shared) return false;
+  if (!(shared.closed || shared.exit || shared.hung)) return false;
+  shared = null; loads.clear(); verdicts.clear();
+  return true;
+}
+// A new owner may fork again (the previous owner's close latched it).
+function reopen() { latched = false; }
 const test = () => (process.env.BELAY_TEST_MODE === '1' && seams ? seams : {});
 
+const closing = () => err('E_MODEL_ABSENT', 'the GPU child is closed (the owner is stopping), so no new one is started', { gpu: true, cause: 'dead', closing: true });
+
+// The shared child. One that died, hung or closed itself on a wall-clock timeout is NOT replaced here: it is returned as it is, and its
+// coded error is the answer to the call (ADR 0049: nothing restarts by itself; on_heavy_failure decides). A new child comes only from a
+// new pin, which probes again (recycle()). After close() (the owner's stop) no child is forked at all until reopen().
 function client() {
-  if (shared && !shared.closed) return shared;
+  if (latched) throw closing();
+  if (shared) return shared;
   const { GpuClient } = require('./gpu.cjs'); // lazy: the owner's GPU tiers only
   const c = new GpuClient({ ...(test().clientOpts || {}) });
   c.start(); // E_MODEL_ABSENT naming the install command when the runtime is missing; nothing is kept then
@@ -52,17 +70,19 @@ function ensureLoaded(modelId) {
   return p;
 }
 
+const VERDICT_TTL_MS = 600000;
 const keyOf = (models, headroomMb) => `${[...models].sort().join('|')}@${headroomMb}`;
 
 // -> the probe's result: { ok: true, ... } or { ok: false, refusal: { reason, message, options } }. Never throws.
 function probeOnce(models, { headroomMb } = {}) {
   const key = keyOf(models, headroomMb);
   const run = async () => {
-    if (shared && !shared.closed && verdicts.has(key) && models.every((m) => loads.has(m))) return verdicts.get(key);
+    const kept = verdicts.get(key); // the first probe's verdict stands for the same models and headroom: a re-probe after a drain would count the resident embedder twice
+    if (kept && Date.now() - kept.at < VERDICT_TTL_MS) return kept.result;
     const probe = test().probe || require('./gpu-probe.cjs').probe; // lazy: it starts a child of its own and calls nvidia-smi
     const r = await probe({ models, headroomMb, ...(test().probeOpts || {}) });
     if (r && r.ok) {
-      verdicts.set(key, r);
+      verdicts.set(key, { result: r, at: Date.now() });
       for (const m of models) {
         const rr = r.rerank && r.rerank[m];
         if (rr) settings.set(m, { batchSize: rr.batch_size, chunk: rr.max_pairs, ...(Number.isFinite(rr.chunk_tokens) ? { chunkTokens: rr.chunk_tokens } : {}) });
@@ -76,12 +96,14 @@ function probeOnce(models, { headroomMb } = {}) {
 }
 
 async function close() {
+  latched = true;
   const c = shared;
   shared = null; loads.clear(); verdicts.clear();
   if (c) { try { await c.close(); } catch { /* best effort */ } }
 }
 
 const testTable = () => (test().clientOpts || {}).table;
+const holds = (model) => !!shared && !shared.closed && !shared.exit && loads.has(model); // the shared child has (or is loading) this model
 const isOpen = () => !!shared && !shared.closed;
 
-module.exports = { client, ensureLoaded, probeOnce, close, isOpen, setTestOptions, testTable };
+module.exports = { holds, recycle, reopen, client, ensureLoaded, probeOnce, close, isOpen, setTestOptions, testTable };

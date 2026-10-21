@@ -70,6 +70,7 @@ test('one child holds the reranker and the embedder, and closeAll closes it', as
 });
 
 test('the embed providers closeAll closes the shared child too, and both are safe twice', async () => {
+  R.install(); // a closed child latches the shared client until a new owner (or a test) opens it again
   const e = EP.get(heavyTier, { owner: true });
   await e.embedQuery('hello');
   const pid = GS.client().pid;
@@ -78,6 +79,28 @@ test('the embed providers closeAll closes the shared child too, and both are saf
   await EP.closeAll();
   await RPV.closeAll();
   assert.strictEqual(EP.get(heavyTier), null);
+});
+
+test('after close no GPU child is forked; a child that closed itself is not silently re-forked; a new pin recycles it', async () => {
+  R.install();
+  const e = EP.get(heavyTier, { owner: true });
+  await e.embedQuery('x');
+  const first = GS.client();
+  await GS.close();
+  assert.throws(() => GS.client(), (x) => x.code === 'E_MODEL_ABSENT' && x.detail.closing === true, 'a stopping owner or an in-flight drain forks nothing');
+  await assert.rejects(e.embedQuery('y'), (x) => x.code === 'E_MODEL_ABSENT' && x.detail.cause === 'dead');
+  R.install(); // reopened
+  const second = EP.get(heavyTier, { owner: true });
+  await second.embedQuery('z');
+  const child = GS.client();
+  assert.notStrictEqual(child, first);
+  await child.close(); // the child closes itself, as it does on its wall-clock timeout
+  assert.strictEqual(GS.client(), child, 'the dead child is returned as it is, not replaced');
+  await assert.rejects(second.embedQuery('again'), (x) => x.code === 'E_MODEL_ABSENT' && x.detail.cause === 'dead', 'its coded error is the answer: no re-fork without a probe');
+  assert.strictEqual(GS.recycle(), true, 'only a new pin (which probes first) forgets it');
+  await second.embedQuery('fresh');
+  assert.notStrictEqual(GS.client(), child, 'and then a new child serves');
+  assert.strictEqual(GS.holds(EMB4), true);
 });
 
 test('a load that fails is a coded GPU error', async () => {

@@ -61,6 +61,7 @@ class Owner {
     this.lastWriteAt = Date.now();
     this.idleTruncated = false;
     this.stopped = false;
+    try { const g = require.cache[require.resolve('./gpu-shared.cjs')]; if (g) g.exports.reopen(); } catch { /* the GPU wiring was never loaded */ } // a previous owner's stop latched the shared GPU child; a new owner may fork again
     // 5c: `run.stop`, a pipe-level method dispatched to a control this owner was built with, never to
     // the engine. `inFlightControls` tracks each call plus its flushed reply so `stop()` can wait.
     this.controls = opts.controls || {};
