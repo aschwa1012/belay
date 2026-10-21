@@ -267,3 +267,55 @@ test('a review overrun halves the next attempt, oldest first, and no verdict fro
   const m4 = fakeManager(T, 'apply', json('verdicts', []), { cost: 0.01 });
   assert.strictEqual((await review(m4)).offered, 3, 'a success ended the halving');
 });
+
+// ---- the reported flow: the brief, the prompt, the binding ---------------------------------------------------------------------------------
+const { promptFor, buildBrief } = require('../../src/run/review-stage.cjs');
+
+test('the assembled prompt: the three outcomes for a wrong or reported entry, the scrubber\'s citation-free release only under its own heading, none of the old sentences', () => {
+  const p = promptFor('C:/b/brief.md');
+  for (const old of ['A release needs neither', 'When you cannot tell, release', 'if the held note adds something the other lacks, release it']) assert.ok(!p.includes(old), old);
+  assert.match(p, /"undecided": when you can do neither/);
+  assert.match(p, /"release": only on your own cites that show the note is correct/);
+  assert.match(p, /Never release a reported note because a report is weak, rejected or unproven/);
+  const scrubberPart = p.slice(p.indexOf('An entry made by the scrubber'), p.indexOf('An entry of kind "unsupported"'));
+  assert.match(scrubberPart, /"release": when the two notes do not make the same claim, or the other does not replace it. No cites\./);
+  assert.strictEqual((p.match(/No cites\./g) || []).length, 1, 'the only citation-free release is the scrubber\'s');
+  assert.match(p, /\{ "verdicts": \[ \.\.\. \] \}/);
+  assert.strictEqual(Buffer.byteLength(p), 4088, 'byte pin of the assembled prompt (template with the brief path filled)');
+});
+
+test('the brief says what to do with a reported entry, and pins its size for one entry of each kind', () => {
+  const entries = [{ id: 'n1', kind: 'wrong', ground: 'reported', held_row: 'h1', rev: 0, outcomes: ['archive', 'release', 'undecided'] }, { id: 'n2', kind: 'duplicate', ground: 'same_claim', held_row: 'h2', rev: 0, outcomes: ['archive', 'release', 'undecided'] }, { id: 'n3', kind: 'unsupported', ground: 'unsupported', held_row: 'h3', rev: 0, outcomes: ['verify', 'refute', 'still_unsupported'] }];
+  const b = buildBrief({ runId: 'r1', project: 'acme', held: entries, head: 'abc123' });
+  assert.match(b, /release it only on your own cites that show it is correct/);
+  assert.match(b, /answer undecided with a reason: it stays held for the operator/);
+  assert.strictEqual(Buffer.byteLength(b), 1965, 'byte pin of the brief frame with three bare entries');
+});
+
+test('the stage binds the offered hold row and revision to each verdict, never taking them from the model\'s text; a verdict for a note it did not offer is refused and listed', async () => {
+  await drain();
+  const a = await held('bind a'), b = await held('bind b');
+  const unoffered = T.note('bind never held');
+  const forged = json('verdicts', [archiveV(a, { held_row: 'forged-row', rev: 99 }), archiveV(unoffered)]);
+  const o = await review(fakeManager(T, 'apply', forged), {}, { force: true });
+  assert.strictEqual(o.result.applied.filter((x) => x.outcome === 'archived').length, 1, JSON.stringify(o.result));
+  assert.strictEqual(nsOf(a), 'archive/lc', 'the offered row and revision replaced the forged ones');
+  assert.deepStrictEqual(o.result.refused.map((r) => [r.id, r.code, !!r.not_offered]), [[unoffered, 'E_PRECONDITION', true]]);
+  assert.strictEqual(nsOf(unoffered), 'project/lc');
+  assert.strictEqual(nsOf(b), 'project/lc');
+  assert.strictEqual(o.left_held, 1, 'left_held is read from the queue');
+});
+
+test('a hold made by a report brings the streams of its reporting tasks into the evidence', async () => {
+  await drain();
+  await X.worker('apply', 'w-reporter', { task_id: 'tx-rep' });
+  const n = T.note('reported entry', { reported_wrong: [{ by: 'worker:w-reporter', worker_id: 'w-reporter', task_id: 'tx-rep', run_id: 'lc-apply', why: 'wrong', replaced_by: null, at: 7, seq: 1 }] });
+  const row = T.store.storeIn({ namespace: 'held/lc', worker_id: 'harness', type: 'held', text: `held reported ${n}`, title: 'r', body: { state: 'held', note_id: n, kind: 'wrong', of: null, ground: 'reported', reason: 'wrong', run_id: 'lc-apply', head_sha: T.head, cites: [], reviews: [], rev: 0, reports: [{ key: 's:1', by: 'worker:w-reporter', task_id: 'tx-rep', why: 'wrong', at: 7 }], reports_total: 1, report_verdicts: [] }, run_id: 'lc-apply', source: 'harness', written_by: 'harness' });
+  T.store.patchBody(n, (bd) => { bd.held = { row: row.id, kind: 'wrong', of: null, reason: 'wrong', run_id: 'lc-apply', at: 1 }; return bd; });
+  const m = fakeManager(T, 'apply', json('verdicts', []));
+  await review(m, {}, { force: true });
+  const brief = fs.readFileSync(/(\S+brief\.md)/.exec(m.spawned[0].prompt)[1], 'utf8');
+  const entry = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(brief)[1])[0];
+  assert.ok(entry.evidence.report_streams.some((s) => s.worker === 'w-reporter' && /w-reporter\/stream\.jsonl$/.test(s.path)));
+  assert.ok(entry.shown_hash && entry.outcomes.includes('undecided') && entry.reports[0].key === 's:1');
+});

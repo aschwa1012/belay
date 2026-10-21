@@ -38,6 +38,7 @@ function buildBrief({ runId, project, held, head = null }) {
     `Head commit for an entry with no head_sha of its own (a hold written at write time): ${head || '(none recorded)'}. Your working directory is that commit's worktree.`,
     'Each entry is one held note. "files" are the repository files the mark cites, saved as they were at the mark\'s head commit.',
     'target_review_verified = a review confirmed this note earlier: weigh a mark against it with care.',
+    'For an entry of kind wrong, or of ground reported: archive it on your own cites that show it is wrong; release it only on your own cites that show it is correct (a release verifies the note and settles its reports); if you can do neither, answer undecided with a reason: it stays held for the operator. Reports are claims and report_verdicts are a task reviewer\'s advice. prior_hold names a hold it replaced. A duplicate or superseded entry of the scrubber is released, as before, when the two notes do not make the same claim (no cites).',
     'For a duplicate mark, "note" and "of_note" are both given in full: archive only if they make the same claim and do not contradict (same_claim: true), else release.',
     'An entry of kind "unsupported" is a note a reviewer could not prove or disprove from one place. It carries no warning. Its "evidence" lists PATHS: the streams of the task that wrote it, the streams of the run\'s other workers, and the task\'s diff. Read them selectively with Read, Glob and Grep; do not read them whole.', '',
     '```json', JSON.stringify(held, null, 1), '```', '',
@@ -48,18 +49,24 @@ function promptFor(briefFile) {
   return J.fill(J.readTemplate('archive-review-job.md'), { brief_file: briefFile });
 }
 
-// For an unsupported note: the stream files of the task that wrote it and of the run's other workers (all become citable), and the task's diff
+// The task ids that reported a held note wrong (an entry made by a report), or null.
+const reportedBy = (h) => ((h.ground === 'reported' || h.ground === 'report_confirmed') && Array.isArray(h.reports) ? new Set(h.reports.map((r) => r.task_id).filter(Boolean)) : null);
+
+// For an unsupported note or one a report made: the stream files of the task that wrote it and of the run's other workers (all become citable), and the task's diff
 // saved beside the brief. Paths only; the reviewer reads what it needs.
 async function wideEvidence(h, ctx, dir, streams) {
   const workers = (ctx.workers || []).filter((w) => w && w.run_id === (h.note && h.note.run_id));
   const stream = (w) => abs(path.join(ctx.dataDir || '.', 'workers', w.id, 'stream.jsonl'));
   const mine = workers.filter((w) => w.task_id === (h.note && h.note.task_id));
   const others = workers.filter((w) => w.task_id !== (h.note && h.note.task_id));
-  for (const w of [...mine, ...others.slice(0, WIDE_OTHERS)].slice(0, WIDE_PER_ENTRY)) streams.add(stream(w));
+  // An entry made by a report also gets the streams of each reporting task's workers, in any run (the reporter's evidence is where the claim is).
+  const reporting = reportedBy(h) ? (ctx.workers || []).filter((w) => w && w.task_id && reportedBy(h).has(w.task_id) && !mine.includes(w)) : [];
+  for (const w of [...mine, ...reporting, ...others.slice(0, WIDE_OTHERS)].slice(0, WIDE_PER_ENTRY)) streams.add(stream(w));
   const w = mine.find((x) => x.base_sha && x.head_sha && x.worktree);
   const diff = w ? await J.diffText(w.worktree, w.base_sha, w.head_sha) : '(no worker of the task has a base and head commit recorded, so there is no diff)\n';
   return {
     task_streams: mine.map((x) => ({ worker: x.id, path: stream(x) })),
+    ...(reporting.length ? { report_streams: reporting.map((x) => ({ worker: x.id, task: x.task_id, path: stream(x) })) } : {}),
     other_streams: others.slice(0, WIDE_OTHERS).map((x) => ({ worker: x.id, task: x.task_id || null, path: stream(x) })),
     diff_file: J.writeFileIn(path.join(dir, 'diffs'), `${h.held_row}.patch`, diff),
   };
@@ -74,7 +81,7 @@ async function withFiles(held, worktree, dir, ctx = {}) {
   for (const h of held) {
     const files = [];
     let evidence = null;
-    if (h.kind === 'unsupported') evidence = await wideEvidence(h, ctx, dir, wide);
+    if (h.kind === 'unsupported' || reportedBy(h)) evidence = await wideEvidence(h, ctx, dir, wide);
     for (const c of h.cites || []) {
       if (String(c.where).startsWith('stream:')) { streams.add(abs(String(c.where).slice(7))); continue; }
       if (!h.head_sha || !worktree || n >= FILES_MAX) { files.push({ where: c.where, saved_at: null }); continue; }
