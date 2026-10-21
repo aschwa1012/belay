@@ -1,8 +1,8 @@
 'use strict';
 // gpu-smoke.cjs — a real run of the GPU tier on this machine. NOT part of npm test: it installs the runtime with
 // npm, loads real models on the GPU and needs the bench GGUF files.
-// Usage: node tests/smoke/gpu-smoke.cjs <bench models dir> <receipt dir> [notes.json]
-// notes.json is a JSON file of notes.
+// Usage: node tests/smoke/gpu-smoke.cjs <bench models dir> <receipt dir> <notes.json>
+// <notes.json> is a JSON file of notes; it is required.
 // The cache is a sandbox directory (BELAY_MODEL_CACHE); the bench files are hard-linked (or copied) into it and
 // must pass the sha256 verify of `belay embedder verify --gpu --model` before anything loads. The receipt holds no
 // absolute path of this machine: the sandbox, the repository, the bench, the temp and home directories are replaced
@@ -13,7 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 const ROOT = path.resolve(__dirname, '..', '..');
 const [BENCH, OUT, NOTES] = [process.argv[2], process.argv[3], process.argv[4]];
-if (!BENCH || !OUT) { console.error('usage: node tests/smoke/gpu-smoke.cjs <bench models dir> <receipt dir> [notes.json]'); process.exit(2); }
+if (!BENCH || !OUT || !NOTES) { console.error('usage: node tests/smoke/gpu-smoke.cjs <bench models dir> <receipt dir> <notes.json>'); process.exit(2); }
 const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-gpu-smoke-')).split(path.sep).join('/');
 process.env.BELAY_MODEL_CACHE = `${SANDBOX}/models`;
 delete process.env.BELAY_GPU_RUNTIME;
