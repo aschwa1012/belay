@@ -56,6 +56,10 @@ function mergeMemory(specBlock, config) {
   }
   const cfg = config && config.memory !== undefined && config.memory !== null ? config.memory : null;
   if (cfg !== null && (typeof cfg !== 'object' || Array.isArray(cfg))) return { error: `${config.path}: memory must be an object` };
+  if (cfg !== null) {
+    const eo = require('../core/memory-levers.cjs').EVAL_ONLY.filter((k) => Object.prototype.hasOwnProperty.call(cfg, k));
+    if (eo.length) return { error: `${config.path}: memory.${eo.join(', memory.')} ${eo.length > 1 ? 'are' : 'is'} eval-only (a run spec's top-level key), not a project default` };
+  }
   const own = specBlock !== undefined && specBlock !== null && typeof specBlock === 'object' && !Array.isArray(specBlock) ? specBlock : null;
   if (own === null && specBlock !== undefined && specBlock !== null) return { block: specBlock, sources: null }; // not an object: parseMemoryBlock says so
   const block = { ...(cfg || {}), ...(own || {}) };
@@ -128,7 +132,7 @@ function parseLevers(spec, opts = {}) {
   // The config's `memory` block is the project default under the spec's own (opts.config = { path, memory }).
   const ev = evalKeys(spec); // eval-only top-level keys, folded into the memory block
   if (ev.error) return { error: ev.error };
-  const merged = mergeMemory(ev.fold ? { ...(spec.memory || {}), ...ev.fold } : spec.memory, opts.config);
+  const merged = mergeMemory(ev.fold ? { ...(spec.memory || {}), ...ev.fold } : spec.memory, spec.memory === null ? null : opts.config) // `memory: null` inherits no config, eval keys or not;
   if (merged.error) return { error: merged.error };
   const mem = ML.parseMemoryBlock(merged.block);
   if (mem.error) return { error: merged.fromConfig ? `${mem.error} (memory defaults come from ${opts.config.path}, the spec's own memory block over them)` : mem.error };

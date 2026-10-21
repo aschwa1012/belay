@@ -40,7 +40,7 @@ test('settings: every memory lever is listed as memory.<key> with its default, d
     const r = cli(dir, ['settings']);
     assert.strictEqual(r.code, 0);
     const mem = r.out.settings.filter((s) => s.key.startsWith('memory.'));
-    assert.deepStrictEqual(mem.map((s) => s.key), Object.keys(ML.DEFAULTS).map((k) => `memory.${k}`));
+    assert.deepStrictEqual(mem.map((s) => s.key), Object.keys(ML.DEFAULTS).filter((k) => !ML.EVAL_ONLY.includes(k)).map((k) => `memory.${k}`));
     for (const s of mem) {
       assert.strictEqual(s.value, ML.DEFAULTS[s.key.slice(7)], s.key);
       assert.deepStrictEqual(s.default, ML.DEFAULTS[s.key.slice(7)], s.key);
@@ -280,5 +280,19 @@ test('settings: a single memory key warns, as the listing does, when the stored 
     const text = cli(dir, ['settings', 'memory.alpha'], { json: false });
     assert.match(text.stdout, /warning: the memory block would be refused by a run: memory\.notes needs memory\.project/);
     assert.strictEqual(cli(dir, ['settings', 'agents.coder.model']).out.memory_error, undefined);
+  } finally { cleanup(dir); }
+});
+
+test('settings: the eval-only run-spec levers are not settings, and a config memory block naming one is refused', () => {
+  const dir = project();
+  try {
+    const all = cli(dir, ['settings']).out.settings.map((x) => x.key);
+    for (const k of ['native_memory', 'handback_question']) {
+      assert.ok(!all.includes(`memory.${k}`), k);
+      assert.notStrictEqual(cli(dir, ['settings', `memory.${k}`, k === 'native_memory' ? 'C:/x' : 'true']).code, 0, k);
+    }
+    assert.ok(!fs.existsSync(`${dir}/belay.config.json`), 'nothing was written');
+    writeConfig(dir, { memory: { handback_question: true } });
+    assert.match(String(cli(dir, ['settings']).out.memory_error), /handback_question is eval-only/);
   } finally { cleanup(dir); }
 });

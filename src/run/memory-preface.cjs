@@ -17,13 +17,14 @@ const noteError = (w, where, e) => { w.lastError = { where, code: e && e.code, m
 // The run's levers, read once and kept on ctx so a launch can ask for them without waiting. A core without
 // `run.get` is a test double and has the defaults. A failed read is not cached and is named on the worker:
 // the run then proceeds with every lever off for this call, which is the only safe reading of an unknown.
-async function levers(ctx, w, { receipt = false } = {}) {
+async function levers(ctx, w, { receipt = false, strict = false } = {}) {
   if (ctx.memoryLevers) return ctx.memoryLevers;
   if (!ctx.core || !ctx.core.run || typeof ctx.core.run.get !== 'function') return { ...DEFAULTS };
   try {
     ctx.memoryLevers = await leversFor(ctx.core, ctx.runId);
     return ctx.memoryLevers;
   } catch (e) {
+    if (strict) throw e; // a lever the caller cannot do without (native_memory): an unknown is a refusal, not the default
     // Never silence: a failed read is named on the worker, and at a worker's launch (`receipt`) it is also a receipt (ok 0,
     // with the code). That receipt is how the core knows this worker was launched without --notes and the contract (ADR 0047).
     if (receipt && w && !w.leversUnreadRecorded) {
@@ -181,7 +182,15 @@ async function indexBlock(w, ctx, prompt, given, { excludeShown = true } = {}) {
 function nativeMemory(ctx, substrate, workerId, given) {
   if (given !== null && given !== undefined) return given;
   if (substrate !== 'claude-code' || require('./job-prefixes.cjs').isJobId(String(workerId || ''))) return null;
-  return ctx.memoryLevers ? ctx.memoryLevers.native_memory || null : levers(ctx, null).then((lv) => lv.native_memory || null);
+  return ctx.memoryLevers ? ctx.memoryLevers.native_memory || null : levers(ctx, null, { strict: true }).then((lv) => lv.native_memory || null, (e) => { throw Object.assign(new Error(`native_memory: the run's levers could not be read, so the spawn is refused rather than run without it (${(e && e.message) || e})`), { code: 'E_LEVERS_UNREAD' }); });
+}
+
+// The levers a spawn takes before its files are written (ADR 0047: the adapter's argv carries the notes lever); with the
+// first-message index off the row keeps no situation lines.
+async function spawnLevers(ctx, w) {
+  const lv = await levers(ctx, w, { receipt: true });
+  if (!lv.first_message_index) w.indexQueries = [];
+  return lv;
 }
 
 // ADR 0042 decision 2: after the resume line, before the prompt; the block and a blank line, or ''.
@@ -287,4 +296,4 @@ async function runEnd(ctx) {
   }
 }
 
-module.exports = { nativeMemory, SPAWN_EMBED_MS, memoryPreface, relaunch, preface, contractTail, parserOpts, levers, ask, runEnd };
+module.exports = { spawnLevers, nativeMemory, SPAWN_EMBED_MS, memoryPreface, relaunch, preface, contractTail, parserOpts, levers, ask, runEnd };
