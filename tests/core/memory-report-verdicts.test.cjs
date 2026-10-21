@@ -1,5 +1,5 @@
 'use strict';
-// memory-report-verdicts.test.cjs — a worker's report that a note is WRONG is judged by the task's reviewer (or the review job), with
+// memory-report-verdicts.test.cjs — a worker's report that a note is WRONG is judged by the task's reviewer, with
 // cites: an upheld report creates a `wrong` hold (the note stays visible), a rejected one leaves a report_rejected receipt on the note.
 // Real core against a sandbox store, a real stream file and a real git repo. Nothing here starts a model.
 
@@ -63,6 +63,11 @@ async function reported(w, noteId, why = 'the loader reads unlisted fixtures') {
   await call('task.evaluate', orch, { task_id: s.task, worktree: dir });
   return s.task;
 }
+// The brief a reviewer of `taskId` would be shown (the job form of reviewBrief was removed): a throwaway review task over it.
+async function briefOf(taskId) {
+  const t = await call('task.create', orch, { spec: `brief probe ${++seq}`, depends_on: [taskId], acceptance: { verdict: true } });
+  return call('memory.reviewBrief', orch, { task_id: t.id });
+}
 async function review(r, taskId, extra) {
   await call('worker.write', orch, { id: r, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${r}`, last_event_at: Date.now() });
   const t = await call('task.create', orch, { spec: `review ${++seq}`, depends_on: [taskId], acceptance: { verdict: true } });
@@ -95,8 +100,6 @@ test('P1: a review task\'s brief carries the reports its task made about other n
   assert.strictEqual(brief.reports.length, 1, JSON.stringify(brief.reports));
   const r = brief.reports[0];
   assert.deepStrictEqual([r.note.id, r.note.written_by, r.report.task_id, r.report.why, r.report.replaced_by, r.head_sha], [a.note, 'worker:w-a1', tb, 'the loader reads unlisted fixtures', null, head]);
-  const job = await call('memory.reviewBrief', orch, { reviewed_task_id: tb });
-  assert.strictEqual(job.reports.length, 1, 'the review job form carries them too');
   const text = require('../../src/run/note-review-text.cjs').reviewerTail(brief, []);
   assert.match(text, /REPORTS TO JUDGE/);
   assert.match(text, /reporter-stated: the loader reads unlisted fixtures/);
@@ -125,7 +128,7 @@ test('P2: an upheld report creates a wrong hold: the held row, the pointer on th
   const again = await apply(rt);
   assert.strictEqual(again.report_verdicts.already.length, 1, 'a second application is a no-op');
   assert.strictEqual(store.p("SELECT COUNT(*) AS n FROM memory_entries WHERE type = 'held' AND json_extract(body, '$.note_id') = ?").get(a.note).n, 1);
-  const brief = await call('memory.reviewBrief', orch, { reviewed_task_id: tb });
+  const brief = await briefOf(tb);
   assert.deepStrictEqual(brief.reports, [], 'a judged report is not offered again');
 });
 
@@ -255,21 +258,7 @@ test('P10: a reviewer that made the report, or held a lease on the reporting tas
   assert.strictEqual(heldFor(a2.note), 0);
 });
 
-test('P11: an upheld report against a review-verified note: the task reviewer holds it, the Haiku job only recommends', async () => {
-  const a = await written('w-a13', 'K13');
-  const tb = await reported('w-b13', a.note);
-  mark(a.note, 'verified');
-  const job = `notereview-${tb}`;
-  await call('worker.write', orch, { id: job, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${job}`, last_event_at: Date.now() });
-  const via = () => call('memory.noteVerdicts', harness, { job: { worker_id: job, reviewed_task_id: tb }, verdicts: [], report_verdicts: UPHELD(a.note) });
-  const r = (await via()).report_verdicts;
-  assert.deepStrictEqual([r.applied.length, r.applied[0].recommended_only, r.applied[0].receipt, heldFor(a.note)], [1, true, 'report_recommended', 0], JSON.stringify(r));
-  const b = bodyOf(a.note);
-  assert.deepStrictEqual([b.held, b.report_recommended.length, b.report_judgments[0].verdict], [undefined, 1, 'recommended']);
-  const listed = (await call('memory.held', orch, { reports: true })).unjudged_reports.filter((x) => x.id === a.note);
-  assert.deepStrictEqual(listed.map((x) => x.recommended), [true]);
-  assert.strictEqual((await via()).report_verdicts.already.length, 1);
-  // The same situation with a task's reviewer: the hold is made.
+test('P11: an upheld report against a review-verified note is held by the task reviewer', async () => {
   const c = await written('w-a14', 'K14');
   const tc = await reported('w-b14', c.note);
   mark(c.note, 'verified');
@@ -334,20 +323,8 @@ test('U1: a reviewer answers unsupported with a reason and no cites: the note st
   const again = await apply(u.rt);
   assert.strictEqual(again.already.length, 1);
   assert.strictEqual(queued(u.note).length, 1, 'a second application queues nothing more');
-  const brief = await call('memory.reviewBrief', orch, { reviewed_task_id: u.task });
+  const brief = await briefOf(u.task);
   assert.ok(!brief.notes.some((x) => x.id === u.note), 'an unsupported note is not offered to a note review again');
-});
-
-test('U2: the Haiku job route takes unsupported too; cites are optional but checked when given; a bad cite drops the verdict', async () => {
-  const a = await written('w-u2', 'K21');
-  const job = `notereview-${a.task}`;
-  await call('worker.write', orch, { id: job, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${job}`, last_event_at: Date.now() });
-  const via = (verdicts) => call('memory.noteVerdicts', harness, { job: { worker_id: job, reviewed_task_id: a.task }, verdicts });
-  const bad = await via([UNS(a.note, { cites: [cite('a line nobody ever saw in any stream')] })]);
-  assert.deepStrictEqual([bad.applied.length, bad.refused[0].code], [0, 'E_CITATION']);
-  const ok = await via([UNS(a.note, { cites: [cite('the loader worked as the note says')] })]);
-  assert.deepStrictEqual([ok.applied.length, ok.applied[0].status], [1, 'unverified']);
-  assert.strictEqual(queued(a.note)[0].b.cites.length, 1);
 });
 
 test('U3: the Opus reviewer verifies an unsupported note on cites: verified, receipt returned, off the queue', async () => {
@@ -370,7 +347,7 @@ test('U4: refute marks the note refuted with the wake receipt; still_unsupported
   assert.deepStrictEqual([r2.applied[0].outcome, r2.applied[0].receipt.startsWith('review:r-rep:')], ['still_unsupported', true]);
   assert.deepStrictEqual([rowOf(s.note).status ?? 'unverified', bodyOf(s.note).unsupported.state, bodyOf(s.note).held], ['unverified', 'still_unsupported', undefined]);
   assert.ok(!(await call('memory.reviewQueue', harness, {})).held.some((h) => h.id === s.note));
-  const brief = await call('memory.reviewBrief', orch, { reviewed_task_id: s.task });
+  const brief = await briefOf(s.task);
   assert.ok(!brief.notes.some((x) => x.id === s.note), 'it is not offered to a note review again');
 });
 

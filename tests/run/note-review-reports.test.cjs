@@ -1,6 +1,6 @@
 'use strict';
-// The text side of judging "wrong" reports: the reviewer's brief and the review job's prompt carry the reports, the job's answer may hold
-// report_verdicts, and the brief stays small enough for the 4096 byte hand-back. Pure text; no store, no process.
+// The text side of judging "wrong" reports: the reviewer's brief carries the reports and the report_verdicts shape, and the brief stays small
+// enough for the 4096 byte hand-back. Pure text; no store, no process.
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -34,19 +34,6 @@ test('with notes and reports together the note list gives way, and the brief sta
   assert.match(text, /8 more notes are not listed/);
   assert.ok(Buffer.byteLength(text) < 6000);
   assert.strictEqual(T.reviewerTail({ notes: Array.from({ length: 12 }, (_, i) => noteRow(i)), refuted_shown: [] }, []).match(/^- m-/gm).length, 8, 'without reports the note list is as before');
-});
-
-test('the review job\'s prompt gains the reports, and its answer may hold report_verdicts', () => {
-  const tpl = 'job {{task_id}} {{notes_file}} {{diff_file}} {{streams}} {{verdict_shape}} {{cite_rules}}';
-  const plain = T.jobPrompt(tpl, { notesFile: 'n', diffFile: 'd', streams: [], taskId: 't-b' });
-  const withReports = T.jobPrompt(tpl, { notesFile: 'n', diffFile: 'd', streams: [], taskId: 't-b', reports: [report(1)] });
-  assert.ok(!plain.includes('REPORTS TO JUDGE'));
-  assert.ok(withReports.startsWith(plain) && withReports.includes('REPORTS TO JUDGE') && withReports.includes('"report_verdicts"'));
-  const both = JSON.stringify({ memory_verdicts: [], report_verdicts: [{ id: 'n-1', verdict: 'rejected', cites: [], reason: 'r' }] });
-  assert.deepStrictEqual(T.parseJobOutput(both), { verdicts: [], report_verdicts: [{ id: 'n-1', verdict: 'rejected', cites: [], reason: 'r' }] });
-  assert.deepStrictEqual(T.parseJobOutput('{"report_verdicts": []}'), { verdicts: [], report_verdicts: [] });
-  assert.deepStrictEqual(T.parseJobOutput('{"memory_verdicts": []}'), { verdicts: [] }, 'an answer without reports is as before');
-  assert.ok(T.parseJobOutput('{"x": 1}').error);
 });
 
 test('the held notice is modelled on notes_unembedded: count, by_project, oldest_age_runs; none while nothing is held', () => {

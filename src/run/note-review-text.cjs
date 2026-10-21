@@ -1,12 +1,8 @@
 'use strict';
-// note-review-text.cjs — the words belay writes around a note's review: the reviewer's brief addition, the short review
-// job's prompt, and the refuted-note wake. Pure: text in, text out, no store and no process.
+// note-review-text.cjs — the words belay writes around a note's review: the reviewer's brief addition and the refuted-note wake. Pure: text in, text out, no store and no process.
 //
 // Every model-written string that appears here (a note's title, a reviewer's reason, a cited quote) is cut, put on one
 // line and marked as stated by its writer; none of it is an instruction (invariant 8). belay's own words are the frame.
-
-const fs = require('node:fs');
-const path = require('node:path');
 
 const TITLE_CUT = 160;
 const REASON_CUT = 300;
@@ -107,43 +103,6 @@ function reviewerTail({ notes, refuted_shown: shown, reports = [] }, streams = [
   return lines.length ? `${lines.join('\n')}\n` : '';
 }
 
-// The review job's prompt. `files` names the inputs belay wrote for it.
-function jobPrompt(template, { notesFile, diffFile, streams, taskId, reports = [] }) {
-  const list = streams.length ? streams.map((s) => `- ${s.stream_path} (worker ${s.worker_id})`).join('\n') : '- (no stream recorded)';
-  return template.split('{{task_id}}').join(taskId).split('{{notes_file}}').join(notesFile).split('{{diff_file}}').join(diffFile)
-    .split('{{streams}}').join(list).split('{{verdict_shape}}').join(VERDICT_SHAPE).split('{{cite_rules}}').join(CITE_RULES)
-    + (reports.length ? `\n\n${jobReportBlock(reports)}` : '');
-}
-
-// Reports in the job's prompt (the notes file also holds them under `reports`). The final JSON object gains a second list.
-function jobReportBlock(reports) {
-  return [...reportLines(reports, false).slice(1), 'The reports are also in the notes file, under "reports". Your final JSON object then carries both lists: { "memory_verdicts": [ ... ], "report_verdicts": [ ... ] }. Each report verdict follows the same cite rules as a note verdict.'].join('\n');
-}
-let template = null;
-function jobTemplate() {
-  if (!template) template = fs.readFileSync(path.join(__dirname, 'prompts', 'note-review-job.md'), 'utf8').replace(/\r\n/g, '\n').replace(/\n+$/, '');
-  return template;
-}
-
-// The job's last assistant text, as the verdicts it states. Returns { verdicts } or { error }.
-function parseJobOutput(text) {
-  const raw = String(text || '').trim();
-  if (!raw) return { error: 'the review job ended its turn with no text' };
-  const tries = [raw];
-  const fence = /```(?:json)?\s*([\s\S]*?)```/.exec(raw);
-  if (fence) tries.push(fence[1]);
-  const a = raw.indexOf('{'), b = raw.lastIndexOf('}');
-  if (a !== -1 && b > a) tries.push(raw.slice(a, b + 1));
-  for (const t of tries) {
-    let j;
-    try { j = JSON.parse(t); } catch { continue; }
-    const list = Array.isArray(j) ? j : j && Array.isArray(j.memory_verdicts) ? j.memory_verdicts : null;
-    const reps = j && !Array.isArray(j) && Array.isArray(j.report_verdicts) ? j.report_verdicts : null;
-    if (list || reps) return { verdicts: list || [], ...(reps ? { report_verdicts: reps } : {}) };
-  }
-  return { error: 'the review job\'s final message holds no memory_verdicts JSON' };
-}
-
 // The wake for refuted notes: FACTS ONLY, every word belay's own (invariant 8, ADR 0015 section 2). It carries ids and states, no
 // title, reason or quote: the orchestrator reads those through memory_note_refutation, whose answer is marked data. The first
 // sentence stands alone, so a launcher that cuts a wake short (the interactive mod keeps about 220 bytes) still names the notes, the
@@ -173,4 +132,4 @@ function refutedWake(rs, ids, { withReason = false } = {}) {
   return { id: `note-refuted:${ids.join('+')}`, text };
 }
 
-module.exports = { capNote, listedNotes, reviewerTail, jobPrompt, jobTemplate, parseJobOutput, refutedWake, one, CITE_RULES, WAKE_MAX_BYTES };
+module.exports = { capNote, listedNotes, reviewerTail, refutedWake, one, CITE_RULES, WAKE_MAX_BYTES };

@@ -466,7 +466,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     stop, core, clearPoll: () => { if (poll) { clearInterval(poll); poll = null; } },
     markClosed: () => { shutdownFlags.closed = true; }, markClosing: () => { shutdownFlags.closing = true; },
     markOwnerGone: () => { shutdownFlags.ownerGone = true; return shutdownFlags.paired; },
-    beforeStop: (ms) => NR.drain(ctx, ms), queuesFirst: () => NR.expectsJobs(ctx),
+    beforeStop: (ms) => NR.drainVerdicts(ctx, ms),
     onDrained: () => MP.runEnd(ctx),
   });
 

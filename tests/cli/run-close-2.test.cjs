@@ -62,20 +62,16 @@ test('run close: the adapter wait bound is the larger of close_grace_ms and N x 
   } finally { for (const c of [adapter, a, b, idleCodex]) if (P.pidAlive(c.pid)) require('../crash.cjs').crash(c); }
 });
 
-test('run close: with note review on, the adapter wait adds the review drain the adapter does before it stops any worker', async () => {
+test('run close: the adapter wait adds no review drain: the own bound on applying verdicts is in-process', async () => {
   const T = require('../../src/core/proc-identity.cjs').SNAPSHOT_TIMEOUT_MS;
-  const { NOTE_REVIEW_DRAIN_MS } = require('../../src/core/spawn-bounds.cjs');
   const adapter = sleeper();
   const a = sleeper();
   try {
     const seen = [];
     const deps = { waitPidGone: async (pid, o) => { if (pid === adapter.pid) { seen.push(o.timeoutMs); return null; } return 1; }, killProcess: async () => ({ tree: null, pidKill: { signalled: false } }) };
-    const workers = [row('w1', a.pid)];
-    const off = await closeRunWorkers({ core: stub(adapter.pid, workers), runId: 'r1', graceMs: 1000, deps });
-    const on = await closeRunWorkers({ core: stub(adapter.pid, workers), runId: 'r1', graceMs: 1000, deps, noteReview: true });
-    assert.strictEqual(off.adapter_wait_bound_ms, 1 * (10000 + T) + 5000 + T);
-    assert.strictEqual(on.adapter_wait_bound_ms, off.adapter_wait_bound_ms + NOTE_REVIEW_DRAIN_MS, 'the drain comes before the worker stops, so it is added');
-    assert.deepStrictEqual(seen, [off.adapter_wait_bound_ms, on.adapter_wait_bound_ms], 'the close waited for the adapter for the longer bound');
+    const out = await closeRunWorkers({ core: stub(adapter.pid, [row('w1', a.pid)]), runId: 'r1', graceMs: 1000, deps, noteReview: true });
+    assert.strictEqual(out.adapter_wait_bound_ms, 1 * (10000 + T) + 5000 + T, 'a stray noteReview argument adds nothing');
+    assert.deepStrictEqual(seen, [out.adapter_wait_bound_ms]);
   } finally { for (const c of [adapter, a]) if (P.pidAlive(c.pid)) require('../crash.cjs').crash(c); }
 });
 

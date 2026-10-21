@@ -1,14 +1,14 @@
 'use strict';
 // methods-memory-note-review.cjs — wave 4: a note is judged on its own by a reviewer other than its writer, and belay applies
 // the verdict (ADR 0044 decision 5, ADR 0047). Three methods:
-//   memory.noteVerdicts    harness only: applies `confirmed` / `refuted` verdicts to notes, after the citation check
+//   memory.noteVerdicts    harness only: applies `confirmed` / `refuted` / `unsupported` verdicts to notes, after the citation check
 //   memory.noteRefutation  read: what a refuted note's wake carries
 //   memory.reviewBrief     read: the notes a review task should judge, and the refuted notes its tasks' workers were shown
 //
-// Two routes reach noteVerdicts, and the reviewer is never taken from the call's words:
+// One route reaches noteVerdicts, and the reviewer is never taken from the call's words:
 //   { review_task_id }                   a review task's own hand-back (`result.memory_verdicts`); the reviewer is the worker
 //                                        that handed it back, which belay proved when it took the lease
-//   { job: { worker_id, reviewed_task_id }, verdicts }   the short review job the run manager started; the worker row is belay's
+// (The short note-review job and its `job` form were removed, 2026-10-21: both are E_ARGS.)
 // Each verdict is applied or refused on its own, and each outcome is a `note_review` receipt. `confirmed` sets status verified,
 // `refuted` sets refuted, both with the receipt `review:<ref>`, status_by harness, and the verdict, reason and cites go on the
 // note's body so a later reader can see why. The citation check is the one gate on meaning: a quote that is not in the reviewed
@@ -34,6 +34,7 @@ const REF_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const ID_COLS = 'id, title, text, namespace, type, status, status_receipt, task_id, written_by, run_id, body';
 
 const bad = (message, detail) => err('E_ARGS', message, detail);
+const JOB_REMOVED = 'the note-review job was removed (2026-10-21): a report that a note is wrong now holds the note for the archive review, and the hand-back of a review task is the one route for note verdicts';
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const parse = (t) => { try { return t ? JSON.parse(t) : {}; } catch { return {}; } };
 
@@ -45,8 +46,9 @@ function guard(E, caller) {
 
 // The route: who reviewed, under what reference, which tasks' notes it may judge, and the verdicts as stated.
 function routeOf(E, args, caller) {
-  if (args.review_task_id !== undefined) {
-    if (args.job !== undefined || args.verdicts !== undefined) throw bad('memory.noteVerdicts takes review_task_id, or job and verdicts, not both');
+  if (args.job !== undefined || args.verdicts !== undefined) throw bad(JOB_REMOVED);
+  if (args.review_task_id === undefined) throw bad('memory.noteVerdicts needs review_task_id');
+  {
     const t = rows.current(E.store, 'task', args.review_task_id);
     if (!t) throw err('E_NOT_FOUND', `no task ${args.review_task_id}`, { task_id: args.review_task_id });
     if (!t.acceptance || t.acceptance.verdict !== true) throw bad(`task ${t.id} is not a review task (its acceptance has no verdict)`, { task_id: t.id });
@@ -59,14 +61,6 @@ function routeOf(E, args, caller) {
     const list = r && r.memory_verdicts;
     return { reviewer: h.by, ref: t.id, keyBase: `review:${t.id}@${h.at}`, attempt: lease.id, scope: Array.isArray(t.depends_on) ? t.depends_on : [], capped: true, verdicts: list === undefined ? null : list, reportVerdicts: r && r.report_verdicts !== undefined ? r.report_verdicts : null, task_id: t.id };
   }
-  const j = args.job;
-  if (!isObj(j) || !validId(j.worker_id) || !validId(j.reviewed_task_id)) throw bad('memory.noteVerdicts needs review_task_id, or job { worker_id, reviewed_task_id } with verdicts');
-  if (!j.worker_id.startsWith('notereview-')) throw bad(`job.worker_id ${j.worker_id} is not a review job (its id starts notereview-)`, { worker_id: j.worker_id });
-  if (j.worker_id !== `notereview-${j.reviewed_task_id}`) throw bad(`job.worker_id ${j.worker_id} is not the review job of task ${j.reviewed_task_id}`, { worker_id: j.worker_id });
-  const jw = rows.current(E.store, 'worker', j.worker_id);
-  if (!jw) throw err('E_NOT_FOUND', `no worker row ${j.worker_id}: a review job is a worker belay spawned`, { worker_id: j.worker_id });
-  if (caller && caller.run_id && jw.run_id && jw.run_id !== caller.run_id) throw bad(`worker ${j.worker_id} belongs to another run`, { worker_id: j.worker_id });
-  return { reviewer: j.worker_id, ref: j.worker_id, keyBase: `review:${j.worker_id}`, scope: [j.reviewed_task_id], verdicts: args.verdicts === undefined ? null : args.verdicts, reportVerdicts: args.report_verdicts === undefined ? null : args.report_verdicts, task_id: j.reviewed_task_id };
 }
 
 function shapeOne(v) {
@@ -103,7 +97,7 @@ function admit(E, caller, route, v) {
   const status = n.status || 'unverified';
   if (status === 'refuted' && v.verdict === 'confirmed') throw bad(`note ${n.id} is refuted; a refuted note is changed back only by the operator`, { id: n.id });
   // A confirmed note is shown to later workers as reviewed, so it is confirmed only on what the reviewer saw. A review task's brief caps a note
-  // (note-shown.cjs); the review job reads every field from its notes file.
+  // (note-shown.cjs).
   if (v.verdict === 'confirmed' && route.capped) {
     const hidden = hiddenParts({ text: n.text, when: parse(n.body).when, evidence: parse(n.body).evidence });
     if (hidden.length) throw bad(`note ${n.id} was shown to the reviewer in part (${hidden.join('; ')}), so it cannot be confirmed; refute it on a value that was shown, or leave it unreviewed`, { id: n.id, reason: 'hidden_fields', hidden });
@@ -192,10 +186,7 @@ async function noteRefutation(E, caller, args) {
 // a task that is not a review task has neither.
 async function reviewBrief(E, caller, args) {
   const proj = caller.run_id ? projectOf(E, caller) : null;
-  if (args && args.reviewed_task_id !== undefined) { // the review job's form: the task whose notes are judged, which has no review task
-    if (!validId(args.reviewed_task_id) || !rows.current(E.store, 'task', args.reviewed_task_id)) throw err('E_NOT_FOUND', `no task ${args.reviewed_task_id}`, { task_id: args.reviewed_task_id });
-    return { reviewed_tasks: [args.reviewed_task_id], notes: F.notesUnderReview(E, [args.reviewed_task_id], proj), refuted_shown: F.refutedShownTo(E, [args.reviewed_task_id]), reports: RV.reportsAbout(E, [args.reviewed_task_id], proj) };
-  }
+  if (args && args.reviewed_task_id !== undefined) throw bad(JOB_REMOVED);
   const t = rows.current(E.store, 'task', args && args.task_id);
   if (!t) throw err('E_NOT_FOUND', `no task ${args && args.task_id}`, { task_id: args && args.task_id });
   if (!t.acceptance || t.acceptance.verdict !== true) return { task_id: t.id, review: false, notes: [], refuted_shown: [], reports: [] };

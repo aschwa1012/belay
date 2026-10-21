@@ -21,8 +21,8 @@ const RUN = 'late-write-1';
 const BASE = { ...DEFAULTS, capture: true, observations: true, summaries: 'mechanical', wrapup: true };
 const leversFor = (notes) => (notes ? { ...BASE, notes: true, project: 'p' } : BASE);
 
-// `belay run`'s core is the owner; a done task and its dead worker give the run-end jobs something to write. With notes on, a
-// review-job worker still marked running gives the sweep a receipt to write ("the run ended while the review job was running").
+// `belay run`'s core is the owner; a done task and its dead worker give the run-end jobs something to write. With notes on, an
+// ended review task gives the sweep a hand-back to apply.
 async function setup(notes) {
   const dir = sandbox();
   const op = await openCore({ dataDir: dir, caller: { role: 'operator', run_id: RUN, pid: process.pid }, embed: false });
@@ -36,13 +36,22 @@ async function setup(notes) {
   await w.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { summary: 'parser built', verdict: 'holds' }, ...(notes ? { notes: [] } : {}) });
   await w.close();
   await orch.worker.write({ id: 'coder-1', substrate: 'claude-code', pid: process.pid, state: 'dead', session_id: 's1', task_id: t.id });
-  if (notes) await orch.worker.write({ id: `notereview-${t.id}`, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's2', last_event_at: Date.now() });
+  if (notes) {
+  // An ended review task gives the notes sweep a hand-back to apply (memory.noteVerdicts, a write).
+  const rt = await orch.task.create({ spec: 'review', acceptance: { verdict: true } });
+  await orch.worker.write({ id: 'rev-1', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's2', last_event_at: Date.now() });
+  const ra = await orch.task.assign({ task_id: rt.id, worker_id: 'rev-1' });
+  const rw = await openCore({ dataDir: dir, caller: callerFor('worker', { worker_id: 'rev-1', run_id: RUN }), embed: false });
+  await rw.lease.release({ lease_id: ra.new_lease.id, reason: 'done', notes: [], result: { summary: 'reviewed', verdict: 'holds' } });
+  await rw.close();
+  await orch.worker.write({ id: 'rev-1', substrate: 'claude-code', pid: process.pid, state: 'dead', session_id: 's2', task_id: rt.id });
+  }
   await orch.close();
   return { dir, op };
 }
 
 // The harness view with the `target` call held until `release()`, and every call logged against the shutdown flag. 'sweep.events'
-// is the notes sweep's own memory.events (kinds: review_job).
+// is the notes sweep's own memory.noteVerdicts (a review task's hand-back).
 function stalled(op, state, target) {
   const view = op.harness();
   let release;
@@ -50,7 +59,7 @@ function stalled(op, state, target) {
   const wrap = (group) => Object.fromEntries(Object.entries(view[group]).map(([name, fn]) => [name, async (a) => {
     const id = `${group}.${name}`;
     state.calls.push({ call: id, afterShutdown: state.shutDown });
-    const hit = id === target || (target === 'sweep.events' && id === 'memory.events' && a && Array.isArray(a.kinds) && a.kinds.includes('review_job'));
+    const hit = id === target || (target === 'sweep.verdicts' && id === 'memory.noteVerdicts');
     if (hit) { state.reached(); await held; }
     return fn(a);
   }]));
@@ -59,7 +68,7 @@ function stalled(op, state, target) {
 }
 
 for (const notes of [false, true]) {
-  const targets = ['task.list', 'worker.list', 'memory.events', ...(notes ? ['sweep.events'] : [])];
+  const targets = ['task.list', 'worker.list', 'memory.events', ...(notes ? ['sweep.verdicts'] : [])];
   for (const target of targets) {
     test(`a run-end job cut by the fast close (notes ${notes ? 'on' : 'off'}) while ${target} stalls writes nothing once the owner is shut down, and elects no stray owner`, async () => {
       const { dir, op } = await setup(notes);
