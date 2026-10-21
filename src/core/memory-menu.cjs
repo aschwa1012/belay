@@ -82,30 +82,69 @@ function modelsInUse(levers, live = {}) {
   return used;
 }
 
-// The models the pinned routing of every LIVE run (not ended, its adapter's pid alive; a paused run is live) names, read from a COPY of the store:
-// { model id: ['run <id>', ...] } and the run ids. A run pins its routing once at its start and keeps it whatever the settings say now, so a model
-// the settings no longer name can still be loaded by a run. `ok: false` when the store could not be read: a caller that must not guess refuses.
-async function liveRunUse(dataDir) {
-  const out = { models: {}, runs: [], ok: true };
-  if (!fs.existsSync(path.join(dataDir, 'memory.db'))) return out;
+// ONE copy of the store per read, shared by the live-run read and the backlog count. fn(null) when there is no store file yet.
+async function withStore(dataDir, fn) {
+  if (!fs.existsSync(path.join(dataDir, 'memory.db'))) return fn(null);
   const { withCopy } = require('./copy-read.cjs');
   const { Store } = require('./store.cjs');
-  try {
-    return await withCopy(dataDir, async (dbPath) => {
-      const store = new Store(dbPath);
-      try {
-        for (const r of rows.currentAll(store, 'run')) {
-          if (r.ended_at != null || !pidAlive(r.adapter_pid)) continue;
-          out.runs.push(r.id);
-          let pin = null;
-          try { pin = typeof r.retrieval_routing === 'string' ? JSON.parse(r.retrieval_routing) : r.retrieval_routing; } catch { pin = null; }
-          const tiers = pin && pin.routing ? [pin.routing.run, ...Object.values(pin.routing.tiers || {})] : [];
-          for (const t of tiers) for (const id of [t && t.embedder, t && t.reranker]) if (id) { const l = (out.models[id] = out.models[id] || []); if (!l.includes(`run ${r.id}`)) l.push(`run ${r.id}`); }
+  return withCopy(dataDir, async (dbPath) => {
+    const store = new Store(dbPath);
+    try { return await fn(store); } finally { try { store.close(); } catch { /* a throwaway copy */ } }
+  });
+}
+
+// The models a run's routing names: the pin it recorded, or (still pinning or warming up, no pin yet) the routing its own recorded levers resolve to
+// with a GPU assumed, so a model it is about to load counts as in use.
+function modelsOfRun(r) {
+  let pin = null;
+  try { pin = typeof r.retrieval_routing === 'string' ? JSON.parse(r.retrieval_routing) : r.retrieval_routing; } catch { pin = null; }
+  let tiers = pin && pin.routing ? [pin.routing.run, ...Object.values(pin.routing.tiers || {})] : null;
+  if (!tiers) {
+    try {
+      const raw = typeof r.memory_levers === 'string' ? JSON.parse(r.memory_levers) : r.memory_levers;
+      const res = resolveRouting({ levers: raw || undefined, agentTypes: [...MAIN_TYPES], gpu: true });
+      tiers = [res.run, ...Object.values(res.tiers)];
+    } catch { tiers = []; }
+  }
+  const ids = new Set();
+  for (const t of tiers) for (const id of [t && t.embedder, t && t.reranker]) if (id) ids.add(id);
+  return [...ids];
+}
+
+// The runs that keep a model in use, read from a store copy `store` (null: none). A run counts when it has not ended and EITHER it is paused (a
+// parked run holds its pin whatever its pid says) OR its adapter pid is alive. With `verify` (the delete path), a live pid that recorded its creation
+// time is confirmed against ONE process snapshot (ADR 0039): a different creation time is a reused pid, so the run is dead and does not count; an
+// unreadable snapshot keeps the run counted, flagged `unverified`. The menu read skips the snapshot (a read budget) and trusts the bare pid.
+// -> { models: { id: ['run <id>', ...] }, runs: [{ id, why: 'live'|'paused'|'unverified', pid }], stale: [{ id, pid }], ok }
+async function liveRunsIn(store, { verify = false, snapshot = null } = {}) {
+  const out = { models: {}, runs: [], stale: [], ok: true };
+  if (!store) return out;
+  let snap;
+  const take = async () => { if (snap === undefined) snap = await (snapshot || require('./proc-identity.cjs').processSnapshot)(); return snap; };
+  for (const r of rows.currentAll(store, 'run')) {
+    if (r.ended_at != null) continue;
+    let why = null;
+    if (r.paused_at != null) why = 'paused';
+    else if (pidAlive(r.adapter_pid)) {
+      why = 'live';
+      if (verify && r.adapter_pid_created != null) {
+        const sn = await take();
+        if (!sn) why = 'unverified';
+        else {
+          const e = sn.get(r.adapter_pid);
+          if (!e || e.created == null || e.created !== r.adapter_pid_created) { out.stale.push({ id: r.id, pid: r.adapter_pid }); why = null; }
         }
-        return out;
-      } finally { try { store.close(); } catch { /* a throwaway copy */ } }
-    });
-  } catch { return { ...out, ok: false }; }
+      }
+    }
+    if (!why) continue;
+    out.runs.push({ id: r.id, why, pid: r.adapter_pid });
+    for (const id of modelsOfRun(r)) { const l = (out.models[id] = out.models[id] || []); const w = `run ${r.id}${why === 'paused' ? ' (paused)' : why === 'unverified' ? ' (adapter pid not verified)' : ''}`; if (!l.includes(w)) l.push(w); }
+  }
+  return out;
+}
+
+async function liveRunUse(dataDir, opts = {}) {
+  try { return await withStore(dataDir, (store) => liveRunsIn(store, opts)); } catch { return { models: {}, runs: [], stale: [], ok: false }; }
 }
 
 function modelRows({ cacheRoot, probe, used, backlog }) {
@@ -128,26 +167,18 @@ function modelRows({ cacheRoot, probe, used, backlog }) {
   return rows;
 }
 
-// The backlog of each heavy embedder: the visible notes of project/<p> with no vector under it, read from a COPY of the store. null for an embedder
-// whose backlog cannot be counted (no project, no store, no vector table yet): the menu says so instead of 0.
-async function backlogs(dataDir, project, ids) {
+// The backlog of each heavy embedder: the visible notes of project/<p> with no vector under it, counted in the shared store copy. A model whose backlog
+// cannot be counted (no project, no store, no vector table yet) has no entry, and the reason says why: the menu says so instead of 0.
+function backlogsIn(store, project, ids) {
   const out = {};
   if (!project || !ids.length) return { by: out, reason: project ? null : 'no memory.project is set' };
-  const src = path.join(dataDir, 'memory.db');
-  if (!fs.existsSync(src)) return { by: out, reason: 'no store yet' };
-  const { withCopy } = require('./copy-read.cjs');
-  const { Store } = require('./store.cjs');
+  if (!store) return { by: out, reason: 'no store yet' };
   const MV = require('./memory-vectors.cjs');
-  return withCopy(dataDir, async (dbPath) => {
-    const store = new Store(dbPath);
-    try {
-      for (const id of ids) {
-        const g = GGUF_MODELS[id];
-        try { out[id] = MV.backlog(store.db, { model: id, revision: g.sha, dims: g.dims }, { namespaces: [`project/${project}`] }).length; } catch { /* no vector table in this copy: not counted */ }
-      }
-      return { by: out, reason: Object.keys(out).length === ids.length ? null : 'the store has no vector table yet' };
-    } finally { try { store.close(); } catch { /* a throwaway copy */ } }
-  });
+  for (const id of ids) {
+    const g = GGUF_MODELS[id];
+    try { out[id] = MV.backlog(store.db, { model: id, revision: g.sha, dims: g.dims }, { namespaces: [`project/${project}`] }).length; } catch { /* no vector table in this copy: not counted */ }
+  }
+  return { by: out, reason: Object.keys(out).length === ids.length ? null : 'the store has no vector table yet' };
 }
 
 const profileRows = (probe) => RP.PROFILE_NAMES.map((name) => {
@@ -158,9 +189,14 @@ const profileRows = (probe) => RP.PROFILE_NAMES.map((name) => {
   return { name, embedder: p.embedder, reranker: p.reranker, device: gpuIds.length ? 'gpu' : 'cpu', embedder_label: label(p.embedder), reranker_label: label(p.reranker), time_s: PROFILE_TIME_S[name], vram_mb: vram };
 });
 
-// menu({ found, dataDir, agentTypes, env }) -> the object `belay memory menu --json` prints.
-// The GPU is usable for the selected embedder when the last probe was ok AND the runtime is still sound now (a runtime removed since the probe is not).
-const gpuUsable = (gpu) => gpu.state === 'probed' && gpu.ok === true && gpu.runtime.ok === true;
+// The GPU is usable for the selected embedder when the last probe was ok, the runtime is sound NOW, and every GPU model of the saved routing is still in
+// the cache (a stat): an ok probe does not outlive a runtime or a model removed since.
+function gpuUsable(gpu, levers, cacheRoot) {
+  if (!(gpu.state === 'probed' && gpu.ok === true && gpu.runtime.ok === true)) return false;
+  let ids = [];
+  try { ids = resolveRouting({ levers, agentTypes: [...MAIN_TYPES], gpu: true }).gpu_models; } catch { return false; }
+  return ids.every((id) => { const e = tableEntry(id); return !!e && K.checkPresent(e, cacheRoot).present; });
+}
 
 // The selected embedder (the profile when the GPU is usable, else profile_cpu) and the notes behind it. The badge needs no more than this, so
 // `belay memory menu --badge` counts one embedder instead of every heavy one.
@@ -168,8 +204,11 @@ async function badge({ found, dataDir, env = process.env }) {
   const { levers } = leversOf(found);
   const gpu = gpuOf(probeRead(env), env);
   let selected = RP.NANO;
-  try { selected = resolveRouting({ levers, agentTypes: [...MAIN_TYPES], gpu: gpuUsable(gpu) }).run.embedder; } catch { /* the block is refused: nano */ }
-  const bl = has(GGUF_MODELS, selected) ? await backlogs(dataDir, levers.project, [selected]) : { by: {}, reason: null };
+  try { selected = resolveRouting({ levers, agentTypes: [...MAIN_TYPES], gpu: gpuUsable(gpu, levers, K.cacheRoot(env)) }).run.embedder; } catch { /* the block is refused: nano */ }
+  let bl = { by: {}, reason: null };
+  if (has(GGUF_MODELS, selected)) {
+    try { bl = await withStore(dataDir, (store) => backlogsIn(store, levers.project, [selected])); } catch { bl = { by: {}, reason: 'the store could not be read' }; }
+  }
   return { v: 1, badge: true, selected_embedder: selected, behind: has(bl.by, selected) ? bl.by[selected] : 0, backlog_reason: bl.reason };
 }
 
@@ -178,20 +217,24 @@ async function menu({ found, dataDir, agentTypes, env = process.env }) {
   const probe = probeRead(env);
   const gpu = gpuOf(probe, env);
   const cacheRoot = K.cacheRoot(env);
-  const live = await liveRunUse(dataDir);
-  const used = modelsInUse(levers, live.models);
   const heavyIds = Object.values(GGUF_MODELS).filter((e) => e.kind === 'embedder').map((e) => e.id);
-  const wanted = heavyIds.filter((id) => has(used, id) || K.checkPresent(GGUF_MODELS[id], cacheRoot).present);
-  const bl = await backlogs(dataDir, levers.project, wanted);
+  let live = { models: {}, runs: [], stale: [], ok: true }, used = {}, bl = { by: {}, reason: null };
+  try { // one store copy for the live runs and the backlog
+    await withStore(dataDir, async (store) => {
+      live = await liveRunsIn(store);
+      used = modelsInUse(levers, live.models);
+      bl = backlogsIn(store, levers.project, heavyIds.filter((id) => has(used, id) || K.checkPresent(GGUF_MODELS[id], cacheRoot).present));
+    });
+  } catch { live = { ...live, ok: false }; used = modelsInUse(levers, {}); bl = { by: {}, reason: 'the store could not be read' }; }
   const models = modelRows({ cacheRoot, probe, used, backlog: bl.by });
-  const usable = gpuUsable(gpu);
+  const usable = gpuUsable(gpu, levers, cacheRoot);
   const selectedProfile = usable ? levers.profile : levers.profile_cpu;
   let selected = RP.NANO;
   try { selected = resolveRouting({ levers, agentTypes: [...MAIN_TYPES], gpu: usable }).run.embedder; } catch { /* the block is refused: nano */ }
   const saved = (() => { try { return resolveRouting({ levers, agentTypes: [...MAIN_TYPES], gpu: true }).gpu_models; } catch { return []; } })();
   const disk = models.filter((m) => m.state === 'ready').reduce((n, m) => n + m.bytes, 0);
   return {
-    v: 1, live_runs: live.runs, live_runs_ok: live.ok, config: found && found.found ? found.path : null, config_error: error, project: levers.project, cache_root: cacheRoot,
+    v: 1, live_runs: live.runs.map((r) => r.id), live_runs_ok: live.ok, config: found && found.found ? found.path : null, config_error: error, project: levers.project, cache_root: cacheRoot,
     gpu, levers: Object.fromEntries(LEVER_KEYS.map((k) => [k, levers[k]])), headroom_mb: Math.round(levers.vram_headroom_gb * 1024),
     profiles: profileRows(probe), models,
     agent_types: { main: [...MAIN_TYPES], advanced: agentTypes.filter((t) => !MAIN_TYPES.includes(t)) },

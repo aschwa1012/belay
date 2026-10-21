@@ -7,8 +7,9 @@
 // defaults (`agents.<type>.model|effort`), both defined in settings-keys.cjs from the modules that own them.
 //
 // `settings` and `settings <key>` are mode R: discovery and one read, no file created, no process
-// started. `settings <key> <value>` writes the config file and nothing else — never the store — and
-// returns the old and new value as its receipt (invariant 5). Nothing here imports src/core beyond the pure
+// started. `settings <key> <value>` and `settings --set <key> <value> [--set <key> <value>]...` write the config file and nothing else — never
+// the store — and return the old and new value of each key as their receipt (invariant 5). The several-key form refuses a repeated key and any
+// invalid final block before it writes, and writes once. Nothing here imports src/core beyond the pure
 // src/core/memory-levers.cjs (pure data; it loads no GPU module, no embedder), through settings-keys.cjs.
 
 const fs = require('node:fs');
@@ -91,7 +92,7 @@ const fail = (message, key, extra = {}) => ({
 // the text the config was parsed from (null when the file did not exist); if the file differs just
 // before the rename, another writer got in between and this write would silently undo theirs. A window
 // remains between that compare and the rename: Windows has no compare-and-swap rename. There is no lock
-// because the only other writer is the operator's editor; the mod writes nothing (ADR 0036 amendment 1 §6).
+// because the other writers are the operator's editor and the panel's Memory menu (ADR 0050 amendment 3), which runs this command, one press at a time.
 function writeAtomic(file, text, expectRaw) {
   const tmp = `${file}.${process.pid}.tmp`;
   try {
@@ -182,12 +183,13 @@ function writeSettings(found, pairs, ctx) {
   const config = created ? {} : JSON.parse(JSON.stringify(found.config));
   const olds = [];
   const values = [];
+  const seen = new Set();
   for (const [key, raw] of pairs) {
     if (!SETTING_NAMES.includes(key)) return usageError(`unknown key ${key}; the keys are ${SETTING_NAMES.join(', ')}`);
+    if (seen.has(key)) return usageError(`${key} is given twice; nothing was written`);
+    seen.add(key);
     const parsed = K.parseValue(key, raw);
     if (parsed.error) return usageError(`${parsed.error}; nothing was written`);
-    const refused = K.refusal(config, key, parsed.value);
-    if (refused) return usageError(refused);
     olds.push(row(found, key));
     values.push(parsed.value);
     const segs = key.split('.');
@@ -199,6 +201,12 @@ function writeSettings(found, pairs, ctx) {
     }
     at[segs[segs.length - 1]] = parsed.value;
   }
+  // The FINAL block is judged once: a prerequisite one pair needs may come from another pair, whatever their order.
+  const mem = pairs.findIndex(([key]) => key.startsWith('memory.'));
+  if (mem >= 0) {
+    const refused = K.refusal(config, pairs[mem][0], values[mem]);
+    if (refused) return usageError(refused);
+  }
   try { writeAtomic(file, `${JSON.stringify(config, null, 2)}\n`, created ? null : found.raw); } catch (e) { return fail(e.conflict ? e.message : `could not write ${file}: ${e.message}`, pairs[0][0]); }
   const back = seams.discover(ctx.cwd);
   const results = [];
@@ -208,7 +216,7 @@ function writeSettings(found, pairs, ctx) {
     if (JSON.stringify(now.value) !== JSON.stringify(K.expectedValue(key, values[i])) || now.source !== K.expectedSource(key, values[i], file)) {
       return fail(`wrote ${file} but reading it back gave ${JSON.stringify(now.value)} from ${now.source} for ${key}`, key, { written: true, path: file });
     }
-    results.push({ key, old: { value: olds[i].value, source: olds[i].source }, new: { value: now.value, source: now.source } });
+    results.push({ key, old: { value: olds[i].value, source: olds[i].source, ...(olds[i].invalid ? { invalid: olds[i].invalid } : {}) }, new: { value: now.value, source: now.source } });
   }
   const text = `${results.map((r) => `${r.key}: ${JSON.stringify(r.old.value)} (${r.old.source}) -> ${JSON.stringify(r.new.value)}`).join('\n')}\n${created ? 'created' : 'updated'} ${file}\n`;
   return { code: 0, text, json: { keys: results.map((r) => r.key), results, path: file, created } };

@@ -189,15 +189,17 @@ async function tick($: Host): Promise<void> {
         await update($, snapA, () => snap)
         // The Memory menu is read while it is open, after a write, and (for the badge) while the settings name a heavy profile or a routing.
         const everyMs = ui.memTab !== null ? MENU_OPEN_EVERY_MS : MENU_EVERY_MS
-        if (!slow && (menuForce || ((ui.memTab !== null || snap.memWanted) && now - lastMenuAt >= everyMs))) {
+        if (!slow && !menuInflight && (menuForce || ((ui.memTab !== null || snap.memWanted) && now - lastMenuAt >= everyMs))) {
+          // Off the round: a slow store copy never holds the next round, and never two at once. The request is only spent when a read really starts,
+          // so a forced refresh that arrives during a badge read waits for it instead of being dropped.
           const full = menuForce || ui.memTab !== null
           menuForce = false
           lastMenuAt = now
-          if (!menuInflight) { // off the round: a slow store copy never holds the next round, and never two at once
-            menuInflight = true
-            void fetchMenu($, watch, full).finally(() => { menuInflight = false })
-          }
+          menuInflight = true
+          void fetchMenu($, watch, full).catch(() => { /* a failed read is shown in the menu by the next one */ }).finally(() => { menuInflight = false })
         }
+        // The settings stopped naming a heavy tier: the badge goes with them (it would otherwise keep the last count).
+        if (!snap.memWanted && ui.memTab === null) await update($, menuA, m => (m.behind === 0 ? m : { ...m, behind: 0 }))
         // `/belay watch` with no id resolved the newest run: pin that id once.
         if (!watch.runId && snap.runId) await update($, watchA, w => (w && !w.runId ? { ...w, runId: snap.runId } : w))
         // While the panel is open, notices that arrive are seen as they arrive.
@@ -241,8 +243,12 @@ async function watchRun($: Host, next: BelayPanelWatch): Promise<void> {
   await update($, snapA, () => null)
   lastFetchAt = 0
   lastSettingsAt = 0
+  lastMenuAt = 0
+  menuForce = false
+  menuInflight = false // a read of the old watch may still finish; it writes the atom below only if it finishes after this reset, which a later read corrects
   timeoutStreak = 0
   backoffUntil = 0
+  await update($, menuA, () => ({ menu: null, error: null, at: 0, behind: 0 })) // another run, another store: nothing of the last one's menu stays
   ensureTicker($)
 }
 

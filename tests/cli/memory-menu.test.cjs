@@ -107,6 +107,7 @@ test('the backlog of the selected heavy embedder counts the project\'s notes wit
   fs.mkdirSync(data);
   writeConfig(proj, { project: 'acme', profile: 'gpu-balanced', profile_cpu: 'cpu-fast' });
   fakeFetch(process.env.BELAY_MODEL_CACHE, GGUF_MODELS[E4]);
+  fakeFetch(process.env.BELAY_MODEL_CACHE, GGUF_MODELS[R4]); // the saved routing's models must all be there for the GPU to count as usable
   const store = new Store(path.join(data, 'memory.db'), { stamp: true });
   for (const t of ['one', 'two', 'three']) {
     store.storeIn({ namespace: 'project/acme', worker_id: 'w', type: 'note', text: `${t} a note about ${t}`, title: t, run_id: 'r', embedding: [1, 0], embedding_model: 'fake', embedding_revision: 'r', dim: 2 });
@@ -119,8 +120,8 @@ test('the backlog of the selected heavy embedder counts the project\'s notes wit
   assert.strictEqual(m.selected_embedder, E4, 'the GPU is probed ok, so the profile (not profile_cpu) is selected');
   assert.strictEqual(m.behind, 3);
   assert.strictEqual(m.models.find((x) => x.id === E8).backlog, null, 'not fetched and not in use: not counted');
-  assert.strictEqual(m.disk.models, 1);
-  assert.strictEqual(m.disk.bytes, GGUF_MODELS[E4].files[0].bytes);
+  assert.strictEqual(m.disk.models, 2);
+  assert.strictEqual(m.disk.bytes, GGUF_MODELS[E4].files[0].bytes + GGUF_MODELS[R4].files[0].bytes);
   fs.rmSync(P.peaksFile());
   const cpuOnly = await withRuntime(true, () => build(proj, data));
   assert.deepStrictEqual([cpuOnly.selected_embedder, cpuOnly.behind], [NANO, 0], 'with no probed GPU the selected embedder is nano, so there is no badge');
@@ -144,7 +145,7 @@ test('delete removes a fetched model nothing uses, and refuses one the settings 
   writeConfig(proj, { project: 'acme', profile_cpu: 'cpu-rerank-light' });
   const used = await embedderExtra.run(ctx([JINA]));
   assert.strictEqual(used.code, 1);
-  assert.match(used.text, /in use by the current settings or a live run \(run \(CPU only\)/);
+  assert.match(used.text, /in use by this project's settings or runs \(run \(CPU only\)/);
   assert.ok(fs.existsSync(dir), 'nothing was removed');
   assert.ok((await embedderExtra.run(ctx([NANO]))).json.in_use_by.includes('every note (the base)'));
   writeConfig(proj, { project: 'acme' });

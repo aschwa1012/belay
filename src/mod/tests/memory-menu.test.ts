@@ -17,7 +17,7 @@ const kinds = (argvs: string[][]) => argvs.map(a => a.slice(a.findIndex(x => x =
 
 describe('the badge on the main page', () => {
   test('a numbered badge shows on the band and the pane button while the selected embedder has notes behind it', async ($, on) => {
-    const wd = await boot($, on, heavy)
+    const wd = await boot($, on, { ...heavy })
     await later(wd, 31000)
     expect(wd.menuReads.length).toBeGreaterThan(0)
     expect(wd.menuReads.every(a => a.includes('--badge'))).toBe(true) // the main page asks for the one count, not the whole menu
@@ -58,6 +58,40 @@ describe('the badge on the main page', () => {
     expect(await m.text()).toContain('The Memory menu could not be read: belay memory menu exit 1')
     expect(await m.text()).not.toContain('belay agents')
     expect((await band($)).text).not.toContain('memory menu exit')
+  })
+})
+
+describe('the badge poll and the menu read', () => {
+  test('the badge goes when the settings stop naming a heavy tier', async ($, on) => {
+    const wd = await boot($, on, { ...heavy })
+    await later(wd, 31000)
+    expect((await band($)).text).toContain(' [3]')
+    wd.w.heavy = false
+    await later(wd, 12000) // the next settings round says memory_heavy false
+    expect((await band($)).text).not.toContain('[3]')
+  })
+
+  test('a refresh forced while a badge read is in flight is not dropped: the full menu is read as soon as that read ends', async ($, on) => {
+    const wd = await boot($, on, { ...heavy, menuSlow: 6000 })
+    await later(wd, 100)
+    expect(wd.menuReads.length).toBe(1) // the first tick started the badge read, which takes 6 s
+    expect(wd.menuReads[0]!.includes('--badge')).toBe(true)
+    await openPane($, wd)
+    const p = await pane($)
+    await p.ui.press({ key: 'mem' }) // asks for the full menu while the badge read is still running
+    await later(wd, 3000)
+    expect(wd.menuReads.length).toBe(1) // never two at once
+    await later(wd, 12000)
+    expect(wd.menuReads.some(a => !a.includes('--badge'))).toBe(true)
+  })
+
+  test('a failing read does not stop the next one', async ($, on) => {
+    const wd = await boot($, on, { ...heavy, menu: null })
+    await later(wd, 31000)
+    const first = wd.menuReads.length
+    expect(first).toBeGreaterThan(0)
+    await later(wd, 31000)
+    expect(wd.menuReads.length).toBeGreaterThan(first)
   })
 })
 

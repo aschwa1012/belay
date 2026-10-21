@@ -332,11 +332,18 @@ async function probeInner(opts = {}) {
 }
 
 // The last device reading any probe took, kept in the peaks file beside the peaks: { device, free_mb, total_mb, ok, reason, models, at }.
-// The Memory menu shows it ("probed 14:02"); a probe that never reached the device (no runtime, a model not fetched) records nothing.
+// The Memory menu shows it ("probed 14:02"). A probe that fails before it reads the device records ok false with the reason for the four reasons in NO_DEVICE_REASONS, and nothing for any other.
+const NO_DEVICE_REASONS = ['model_absent', 'no_runtime', 'child_died', 'child_hung'];
 function recordLast(file, r, models) {
-  if (!r || !r.dedicated || !r.device || !r.device.name) return false;
+  if (!r) return false;
+  const reached = !!(r.dedicated && r.device && r.device.name);
+  const reason = r.ok ? null : (r.refusal && r.refusal.reason) || null;
+  // A probe that failed BEFORE it read the device (no runtime, a model not fetched, a dead or hung child) still says the GPU is not usable now: the
+  // earlier device reading stays for display, with ok false and the reason, so the menu stops trusting the old ok.
+  if (!reached && !(reason && NO_DEVICE_REASONS.includes(reason))) return false;
   try {
     const cur = readPeaks(file);
+    if (!reached) { cur.last = { device: null, free_mb: null, total_mb: null, ...(cur.last || {}), ok: false, reason, models, at: new Date().toISOString() }; writeRecord(file, cur); return true; }
     cur.last = { device: r.device.name, free_mb: r.dedicated.free_mb, total_mb: r.dedicated.total_mb, ok: r.ok === true, reason: r.ok ? null : (r.refusal && r.refusal.reason) || null, models, at: new Date().toISOString() };
     writeRecord(file, cur);
     return true;

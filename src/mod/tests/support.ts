@@ -93,7 +93,7 @@ export type World = {
   file?: boolean; runFile?: unknown; repoCli?: boolean; watchId?: string
   mode?: string | null; mod?: Record<string, string>; notices?: unknown
   failAgents?: boolean; transcriptFail?: boolean; orchDisplay?: string; noDisplay?: boolean; noRun?: boolean
-  extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; heavy?: boolean; menu?: unknown | null; writeResult?: (argv: string[]) => { exitCode: number; stdout: string; stderr: string }; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number; memoryNotice?: boolean
+  extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; heavy?: boolean; menuSlow?: number; menu?: unknown | null; writeResult?: (argv: string[]) => { exitCode: number; stdout: string; stderr: string }; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number; memoryNotice?: boolean
 }
 
 // The host beneath the plugin: a run file (or none), belay's read commands as fixtures, and a recorder
@@ -126,6 +126,7 @@ export function world(on: any, w: World) {
     }
     if (e.argv.includes('memory') && e.argv.includes('menu')) {
       menuReads.push([...e.argv])
+      if (w.menuSlow) await clock.sleep(w.menuSlow) // a slow store copy
       if (w.menu === null) return { value: { exitCode: 1, stdout: '', stderr: 'boom' } }
       const m: any = w.menu ?? MENU()
       if (e.argv.includes('--badge')) return { value: { exitCode: 0, stdout: JSON.stringify({ v: 1, badge: true, selected_embedder: m.selected_embedder, behind: m.behind, backlog_reason: null }), stderr: '' } }
