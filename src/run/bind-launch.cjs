@@ -45,6 +45,15 @@ async function bindWorker({ core, runId, root, mcpPath }, w) {
   } catch (e) { await revokeBind(core, w); throw e; } // the config never reached the adapter, so nothing will claim it honestly
 }
 
+// A launch whose child could not be put in the spawn register was ended before the worker took its handle (pid-identity.cjs registerSpawn),
+// so no exit listener will ever settle the row the spawn wrote as `starting`. A first launch settles it `dead` before the refusal is handed
+// back, as every other pre-launch refusal does. A relaunch keeps the terminal row the worker already had. The refusal stays the error.
+async function settleUnregistered(env, w, e) {
+  if (!(e && e.detail && e.detail.reason === 'spawn_register') || w.state !== 'starting' || w.child || !env.writeRow) return;
+  w.launchFailed = true;
+  try { await env.writeRow(w, 'dead'); } catch { /* the registration refusal is the error to report */ }
+}
+
 // ADR 0045 decision 2: one launch of a worker at a time, its bind opened first. The bind is an await, and a Codex worker's turn is a
 // launch (message): without the slot, two messages could both pass the mid-turn check before either spawned. The slot is taken
 // synchronously, before the first await, so the second is refused where it used to be refused.
@@ -56,7 +65,9 @@ async function launchBound(env, w, doLaunch) {
   if (w.launchSlot) throw err('E_SUBSTRATE', `worker ${w.id}: a launch of it is already in progress; one process per turn`, { worker_id: w.id, substrate: w.substrate, state: w.state });
   w.launchSlot = true;
   try {
-    if (!hasBinds(env.core)) return await doLaunch();
+    if (!hasBinds(env.core)) {
+      try { return await doLaunch(); } catch (e) { await settleUnregistered(env, w, e); throw e; }
+    }
     const stops = w.stopCalls || 0;
     try {
       await bindWorker(env, w);
@@ -72,7 +83,11 @@ async function launchBound(env, w, doLaunch) {
       throw e;
     }
     try { return await doLaunch(); }
-    catch (e) { await revokeBind(env.core, w); throw e; } // a launch that threw (a refused check, a spawn error) leaves no key behind
+    catch (e) {
+      await revokeBind(env.core, w); // a launch that threw (a refused check, a spawn error) leaves no key behind
+      await settleUnregistered(env, w, e);
+      throw e;
+    }
   } finally { w.launchSlot = false; }
 }
 

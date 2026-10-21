@@ -18,6 +18,13 @@ const RETRY_EVERY_MS = 300000;
 const SPAWN_SLACK_MS = 1000; // a late reading may not be earlier than this before the spawn call
 
 const exitedYet = (child) => child.exitCode !== null && child.exitCode !== undefined || (child.signalCode !== null && child.signalCode !== undefined);
+// The register record is written at spawn without a creation time (conservative: its window opens at the spawn call), so a failed update
+// costs precision, not safety. It must never reject a promise nothing awaits (that ends the adapter and skips every worker's cleanup):
+// the failure is kept on the record, where status reads it, and the conservative record stays.
+function updateRegister(w, pid, created) {
+  try { SR.update(pid, created); }
+  catch (e) { w.lastError = { where: 'spawn-register.update', code: e && e.code, message: (e && e.message) || String(e) }; }
+}
 const restate = (w, force) => { if (w.ctx && w.ctx.writeRow) require('./write-row.cjs').restatePidCreated(w, w.ctx, force); };
 
 // ADR 0045 decision 4: a worker is recorded in the machine-wide spawn register the moment it exists, so another store's owner never takes
@@ -46,7 +53,7 @@ function noteSpawn(w, child, { createdOf = P.createdOf, gate = ID.gate, schedule
   const setPending = (why) => { w.pidCreatedError = `${why}; retrying while the worker runs (try ${tries})`; };
   const accept = (e) => { // the three conditions of decision 3, checked where the reading is taken
     if (!pending || !mine() || exitedYet(child) || !e || !Number.isFinite(e.created) || e.created < spawnedAt - SPAWN_SLACK_MS) return false;
-    w.pidCreated = e.created; w.pidCreatedError = null; stop(); SR.update(pid, e.created); restate(w, true);
+    w.pidCreated = e.created; w.pidCreatedError = null; stop(); updateRegister(w, pid, e.created); restate(w, true);
     return true;
   };
   const scheduleNext = () => {
@@ -71,7 +78,7 @@ function noteSpawn(w, child, { createdOf = P.createdOf, gate = ID.gate, schedule
     if (mine()) w.pidCreatedError = `the process snapshot failed: ${(e && e.message) || e}`;
   }).then(() => {
     // The first rows went out before the read finished: restate the current state once with it.
-    if (mine()) { if (w.pidCreated != null) SR.update(pid, w.pidCreated); restate(w, false); }
+    if (mine()) { if (w.pidCreated != null) updateRegister(w, pid, w.pidCreated); restate(w, false); }
   });
   return w.pidCreatedPromise;
 }
