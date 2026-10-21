@@ -180,4 +180,13 @@ function memoryBlockError(found) {
   return r.error || null;
 }
 
-module.exports = { routingText, NAMES, MOD_NAMES, MEMORY_NAMES, AGENT_NAMES, kindOf, shape, parseValue, effective, refusal, expectedSource, expectedValue, memoryBlockError };
+// Does any tier the settings resolve (the run profile, every routed type, with a usable GPU assumed) name a GPU model? Then the panel reads the Memory
+// menu's facts for its badge. The routing resolver is the judge, so a pair, a CPU pick or `custom` count the way a run would count them.
+function heavyConfigured(found) {
+  const block = found && found.found && found.config && found.config.memory && typeof found.config.memory === 'object' && !Array.isArray(found.config.memory) ? found.config.memory : undefined;
+  const r = ML.parseMemoryBlock(block);
+  if (r.error) return false;
+  try { return require('../core/retrieval-routing.cjs').resolveRouting({ levers: r.value, agentTypes: ['orchestrator', 'reviewer', 'coder'], gpu: true }).gpu_models.length > 0; } catch { return false; }
+}
+
+module.exports = { heavyConfigured, routingText, NAMES, MOD_NAMES, MEMORY_NAMES, AGENT_NAMES, kindOf, shape, parseValue, effective, refusal, expectedSource, expectedValue, memoryBlockError };

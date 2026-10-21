@@ -53,6 +53,7 @@ const FLAGS = {
   '--force': { key: 'force', type: 'bool' },
   '--approve': { key: 'approve', type: 'bool' },
   '--reject': { key: 'reject', type: 'bool' },
+  '--badge': { key: 'badge', type: 'bool' },
 };
 
 const FILTER_FLAGS = ['--type', '--status', '--task', '--worker', '--since', '--namespace'];
@@ -75,7 +76,7 @@ const VERBS = {
   resolve: { flags: ['--evidence'], positional: [2, 3], usage: 'belay memory resolve <id> new   |   belay memory resolve <id> repeats <of>   |   belay memory resolve <id> supersedes <of> --evidence <text>' },
   promote: { flags: ['--approve', '--reject', '--reason'], positional: [1, 1], usage: 'belay memory promote <note-id> (--approve | --reject) [--reason <text>]' },
   'search-log': { flags: ['--export', '--run', '--since', '--force'], positional: [0, 0], usage: 'belay memory search-log --export <file> [--run <id>] [--since <ms|iso>] [--force]' },
-  menu: { flags: [], positional: [0, 0], usage: 'belay memory menu   (the facts the panel Memory menu shows: GPU, profiles, models, backlog; a read)' },
+  menu: { flags: ['--badge'], positional: [0, 0], usage: 'belay memory menu [--badge]   (the facts the panel Memory menu shows: GPU, profiles, models, backlog; a read; --badge: only the backlog of the selected embedder)' },
   archive: { flags: ['--ids', '--older-than', '--confirm', '--project'], positional: [1, 1], usage: 'belay memory archive purge (--ids a,b | --older-than <days>) --confirm [--project p]' },
 };
 

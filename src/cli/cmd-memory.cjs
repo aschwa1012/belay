@@ -341,7 +341,7 @@ async function run(ctx) {
 
   // menu reads the config, the model cache and a copy of the store itself (no core, no owner), like search-log.
   if (parsed.sub === 'menu') {
-    try { return await require('./cmd-memory-menu.cjs').run(ctx, found, dataDir); } catch (e) { return failure('menu', e); }
+    try { return await require('./cmd-memory-menu.cjs').run(ctx, found, dataDir, parsed.opts); } catch (e) { return failure('menu', e); }
   }
 
   // Mode W for verify, as for `worker rm`: it never creates the data dir.
