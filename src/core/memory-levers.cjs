@@ -91,6 +91,7 @@ function routingProblem(r) {
   if (Object.keys(r).length > ROUTING_MAX) return { msg: `memory.routing has more than ${ROUTING_MAX} entries` };
   for (const [type, p] of Object.entries(r)) {
     if (!ROUTING_TYPE_RE.test(type)) return { msg: `memory.routing.${type}: an agent type is lower-case letters, digits, - or _` };
+    if (type === 'run') return { msg: 'memory.routing.run: run is not an agent type (the run profile is memory.profile)' };
     if (typeof p === 'string') {
       if (p === RP.CUSTOM || !RP.isProfile(p)) return { msg: `memory.routing.${type} must be one of ${RP.PROFILE_NAMES.join(', ')} or a pair { embedder, reranker }` };
       const pend = RP.pendingIn(RP.PROFILES[p]);
@@ -114,6 +115,7 @@ function routingCpuProblem(r) {
   if (Object.keys(r).length > ROUTING_MAX) return { msg: `memory.routing_cpu has more than ${ROUTING_MAX} entries` };
   for (const [type, p] of Object.entries(r)) {
     if (!ROUTING_TYPE_RE.test(type)) return { msg: `memory.routing_cpu.${type}: an agent type is lower-case letters, digits, - or _` };
+    if (type === 'run') return { msg: 'memory.routing_cpu.run: run is not an agent type (the CPU profile is memory.profile_cpu)' };
     if (typeof p !== 'string' || p === RP.CUSTOM || !RP.isProfile(p)) return { msg: `memory.routing_cpu.${type} must be one of ${RP.PROFILE_NAMES.join(', ')}` };
     if (RP.needsGpu(RP.PROFILES[p])) return { msg: `memory.routing_cpu.${type} ${p} needs a GPU; this map is what a type takes when there is none` };
     const pend = RP.pendingIn(RP.PROFILES[p]);
