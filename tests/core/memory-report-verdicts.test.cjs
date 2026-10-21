@@ -365,3 +365,19 @@ test('P20: a task reviewer\'s note verdict on a held note is advice on the hold:
   assert.strictEqual(rowOf(free.note).status, 'verified', 'an unheld note is judged as ever');
   assert.ok(ok.applied[0].status === 'verified');
 });
+
+test('P21: two applications of one review of a held note in flight write one advice entry and advance the hold once', async () => {
+  const a = await written('w-a26', 'K26');
+  await reported('w-b26', a.note);
+  const rt = await review('rev-26', a.task, { memory_verdicts: [{ id: a.note, verdict: 'refuted', cites: [cite('the loader worked as the note says')], reason: 'what the stream shows' }] });
+  const CC = require('../../src/core/memory-citations.cjs');
+  let n = 0;
+  let open; const gate = new Promise((r) => { open = r; });
+  CC.seam.afterCheck = async () => { n += 1; if (n === 1) await gate; else open(); }; // the first call waits until the second has also passed its check
+  try {
+    const [x, y] = await Promise.all([apply(rt), apply(rt)]);
+    assert.strictEqual(x.applied.length + y.applied.length, 1, JSON.stringify([x, y]));
+    assert.strictEqual(x.already.length + y.already.length, 1);
+  } finally { CC.seam.afterCheck = null; open(); }
+  assert.deepStrictEqual([hold(a.note).b.note_verdicts.length, hold(a.note).b.rev], [1, 1], 'one entry, one revision');
+});

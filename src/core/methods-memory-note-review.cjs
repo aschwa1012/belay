@@ -137,6 +137,9 @@ function adviceOnHold(E, caller, route, v, n) {
   const now = loadNote(E, n.id);
   if (!now || !isHeldNow(E, now)) return null;
   return E.store.tx(() => {
+    // The receipt is read again here, after the citation await: the losing one of two applications of one review answers already and writes nothing.
+    const done2 = E.store.p("SELECT id FROM memory_event WHERE kind = 'note_review' AND ok = 1 AND key = ?").get(`${route.keyBase}:${n.id}`);
+    if (done2) return { already: true, event_id: done2.id };
     const hold = activeHoldOf(E, project, n.id);
     if (!hold) return null; // a stale pointer only: the verdict is applied as ever (the guard still stands behind the status write)
     const at = Date.now();
@@ -181,7 +184,9 @@ async function noteVerdicts(E, caller, args) {
       const chk = v.cites.length === 0 ? { ok: true } : await CC.checkTaskCites(E, n.task_id, v.cites, { title: n.title, when: parse(n.body).when, text: n.text, evidence: parse(n.body).evidence });
       if (!chk.ok) throw err('E_CITATION', `note ${n.id}: ${chk.failures.length} of ${v.cites.length} cites are not in the evidence task ${n.task_id} recorded; the verdict is dropped (${chk.failures.map((f) => `cites[${f.index}] ${f.where}: ${f.reason}`).join(' | ')})`.slice(0, 600), { id: n.id, failures: chk.failures });
       E.assertRunOpen(caller, 'memory.noteVerdicts'); // the citation check awaited a file; a run that ended meanwhile takes no verdict (audit D42)
-      out.applied.push(adviceOnHold(E, caller, route, v, n) || (v.verdict === 'unsupported' ? require('./note-unsupported.cjs').queueUnsupported(E, caller, route, v, n) : applyOne(E, caller, route, v, n)));
+      const advice = adviceOnHold(E, caller, route, v, n);
+      if (advice && advice.already) { out.already.push({ id: v.id, event_id: advice.event_id }); continue; }
+      out.applied.push(advice || (v.verdict === 'unsupported' ? require('./note-unsupported.cjs').queueUnsupported(E, caller, route, v, n) : applyOne(E, caller, route, v, n)));
     } catch (e) { if (e && e.detail && e.detail.run_ended) throw e; refuse(e, n); } // an ended run is not a refused verdict: nothing more is written
   }
   if (out.applied.length) E.noteWrite();
