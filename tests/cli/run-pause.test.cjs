@@ -164,13 +164,16 @@ test('run pause: a paused run is never closed by the idle rule, and resume lets 
   const dir = sandbox();
   let ctx;
   try {
-    // The orchestrator's own prompt turn stays open well past this test's own steps, so nothing here
-    // races its natural idle-close (which the pause is what must prevent, not a lucky ordering).
-    ctx = await startRun(dir, {}, { FAKE_ANSWER_DELAY_MS: '6000' });
+    // The orchestrator's own prompt turn stays open until the pause interrupts it (it waits for a gate nothing writes first), so
+    // nothing here races its natural idle-close (which the pause is what must prevent, not a lucky ordering). A fixed answer delay
+    // did that only while this test's setup and the pause, each vouched for by the owner's operator check (ADR 0045), fitted in it.
+    const gate = `${dir}/orch.gate`;
+    ctx = await startRun(dir, {}, { FAKE_ANSWER_DELAY_MS: '6000', FAKE_ANSWER_GATE_FILE: gate });
     await sleep(300);
 
     const p = await cliAsync(['pause', ctx.runId], ctx.dataDir);
     assert.strictEqual(p.status, 0, `${p.stdout} / ${p.stderr}`);
+    fs.writeFileSync(gate, ''); // the resume line's answer takes the ordinary delay
 
     await sleep(1500); // several poll cycles: the idle rule must not close a paused run
     assert.strictEqual(ctx.cliProc.proc.exitCode, null, 'a paused run must not have closed on its own');
@@ -347,13 +350,15 @@ test('run pause: an interrupted orchestrator write is answered by its cancelled 
   const spawnedPids = [];
   let ctx;
   try {
-    ctx = await startRun(dir, { mcp_tool_timeout_ms: 120000 }, { FAKE_ANSWER_DELAY_MS: '6000', FAKE_FOLD: '1' });
+    // The orchestrator's prompt turn is held by a gate nothing writes, so the pause below lands mid-turn however long this test's
+    // setup and the pause's own operator check (ADR 0045) take; a fixed 6,000 ms answer held it only while they fitted.
+    ctx = await startRun(dir, { mcp_tool_timeout_ms: 120000 }, { FAKE_ANSWER_DELAY_MS: '6000', FAKE_FOLD: '1', FAKE_ANSWER_GATE_FILE: `${dir}/orch.gate` });
     process.env.FAKE_ANSWER_DELAY_MS = '300'; // the worker's own turn, inherited at spawn
     const row = await ctx.m.spawn({ substrate: 'claude-code', worktree: workerWorktree(dir, 'w1'), prompt: 'hello', worker_id: 'w1' });
     delete process.env.FAKE_ANSWER_DELAY_MS;
     spawnedPids.push({ pid: row.pid, created: row.pid_created });
 
-    // w1's own turn ends well inside the orchestrator's own 6,000 ms answer, so its wake is written
+    // w1's own turn ends inside the orchestrator's held answer, so its wake is written
     // while the orchestrator is still mid-turn and, FAKE_FOLD=1, folded into it rather than started as
     // a turn of its own — exactly the shape an interrupt must cancel rather than let complete.
     const turned = await waitUntil(async () => {
