@@ -78,3 +78,18 @@ test('run: no notice when the spec or the config sets a project, or notes are of
     } finally { cleanup(dir); }
   }
 });
+
+// parseLevers computes the notice a launch records on the run row (attachMemory carries its code).
+test('launch notice: a config-level memory null is silent, a spec block overrides it, a spec null always is', () => {
+  const RL = require('../../src/cli/run-levers.cjs');
+  const code = (spec, config) => {
+    const l = RL.parseLevers(spec, config === undefined ? {} : { config: { path: 'c.json', memory: config } });
+    return { code: l.memory_notice ? l.memory_notice.code : null, recorded: RL.attachMemory(l).memory_notice };
+  };
+  assert.deepStrictEqual(code({}, null), { code: null, recorded: null }, 'inherited config memory: null');
+  assert.deepStrictEqual(code({}, undefined), { code: 'memory_project_unset', recorded: 'memory_project_unset' }, 'nothing set: warned');
+  assert.deepStrictEqual(code({ memory: {} }, null), { code: 'memory_project_unset', recorded: 'memory_project_unset' }, 'a spec block overrides the inherited null');
+  assert.deepStrictEqual(code({ memory: { project: 'acme' } }, null), { code: null, recorded: null }, 'a project-bearing spec block');
+  assert.deepStrictEqual(code({ memory: null }, { project: 'acme' }), { code: null, recorded: null }, 'spec null');
+  assert.deepStrictEqual(code({ memory: { project: 'acme', redact: false } }, undefined), { code: 'memory_redact_off', recorded: 'memory_redact_off' });
+});

@@ -48,12 +48,12 @@ test('a run whose spec sets the project: status and agents say notes are on, not
     assert.strictEqual(JSON.parse(st.stdout).memory_notice, undefined, 'the config has no project but the run does');
     assert.strictEqual(cli(on.dir, ['status', on.runId, '--data', `${on.dir}/.belay`]).stdout.includes(TITLE), false);
     const ag = JSON.parse(cli(on.dir, ['agents', on.runId, '--data', `${on.dir}/.belay`, '--json']).stdout);
-    assert.strictEqual(ag.memory_notes, true, 'the panel reads this to drop the settings notice');
+    assert.strictEqual(ag.memory_notice, null, 'the panel reads this: the run has none, so the settings notice is dropped');
 
     const so = cli(off.dir, ['status', off.runId, '--data', `${off.dir}/.belay`, '--json']);
     assert.ok(JSON.parse(so.stdout).memory_notice, 'no project anywhere: the notice stands');
     const ao = JSON.parse(cli(off.dir, ['agents', off.runId, '--data', `${off.dir}/.belay`, '--json']).stdout);
-    assert.strictEqual(ao.memory_notes, false);
+    assert.strictEqual(ao.memory_notice.code, 'memory_project_unset', 'the run launched without a project carries the notice itself');
   } finally { cleanup(on.dir); cleanup(off.dir); }
 });
 
@@ -95,4 +95,43 @@ test('settings shows the effective notes state and why, in text and json', () =>
       if (config && config.memory.redact === false) assert.strictEqual(j.memory_notice.code, 'memory_redact_off');
     } finally { cleanup(dir); }
   }
+});
+
+// A run answers for itself: status and the agents read follow what its launch recorded, in every case, never the config as it is now.
+const notices = (dir, runId) => {
+  const st = JSON.parse(cli(dir, ['status', runId, '--data', `${dir}/.belay`, '--json']).stdout);
+  const ag = JSON.parse(cli(dir, ['agents', runId, '--data', `${dir}/.belay`, '--json']).stdout);
+  return { status: st.memory_notice ? st.memory_notice.code : null, agents: ag.memory_notice ? ag.memory_notice.code : null };
+};
+
+test('a run keeps its own notice when the config changes: no project at launch stays warned, explicit off and memory null stay silent, redact false stays named', () => {
+  const noProject = runWith(null, undefined);
+  const memNull = runWith(null, null);
+  const notesOff = runWith(null, { notes: false });
+  const redactOff = runWith(null, { project: 'acme', redact: false });
+  const cfgNull = runWith({ memory: null }, undefined);
+  try {
+    for (const x of [noProject, memNull, notesOff, redactOff, cfgNull]) assert.strictEqual(x.r.status, 0, x.r.stderr);
+    assert.strictEqual(cfgNull.r.stderr.includes(TITLE), false, 'a config-level memory: null is as silent as a spec-level one');
+    // the config as it is now: a project for the run launched without one, nothing for the rest
+    fs.writeFileSync(`${noProject.dir}/belay.config.json`, JSON.stringify({ memory: { project: 'acme' } }));
+    assert.deepStrictEqual(notices(noProject.dir, noProject.runId), { status: 'memory_project_unset', agents: 'memory_project_unset' }, 'the config gained a project; the live run was launched without one');
+    assert.deepStrictEqual(notices(memNull.dir, memNull.runId), { status: null, agents: null }, 'memory null: silent against an empty config');
+    assert.deepStrictEqual(notices(notesOff.dir, notesOff.runId), { status: null, agents: null }, 'notes false: silent against an empty config');
+    assert.deepStrictEqual(notices(redactOff.dir, redactOff.runId), { status: 'memory_redact_off', agents: 'memory_redact_off' }, 'redaction off is named even though the config has no redact setting');
+    assert.deepStrictEqual(notices(cfgNull.dir, cfgNull.runId), { status: null, agents: null });
+  } finally { for (const x of [noProject, memNull, notesOff, redactOff, cfgNull]) cleanup(x.dir); }
+});
+
+test('settings <key> prints the same because line as the full listing', () => {
+  for (const [config, why] of [[{ memory: { project: 'acme' } }, 'on, because memory.project is set'], [null, 'off, because memory.project is not set'], [{ memory: { project: 'acme', redact: false } }, 'off, because memory.redact is false']]) {
+    const dir = project(config);
+    try {
+      const one = cli(dir, ['settings', 'memory.notes']);
+      assert.strictEqual(one.status, 0, one.stderr);
+      assert.ok(one.stdout.includes(`effective: ${why}`), one.stdout);
+    } finally { cleanup(dir); }
+  }
+  const dir = project({ memory: { project: 'acme', notes: false } });
+  try { assert.ok(!cli(dir, ['settings', 'memory.notes']).stdout.includes('effective:'), 'stated in the file: no effective line'); } finally { cleanup(dir); }
 });

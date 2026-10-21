@@ -34,15 +34,19 @@ test('memory: null is an explicit off and redact false with a project says why n
 });
 
 test('a run row with notes on suppresses the config notice; one with none or off does not', () => {
-  const none = { found: false };
-  assert.strictEqual(N.runNotes(null), null);
-  assert.strictEqual(N.runNotes({ memory_levers: null }), false);
-  assert.strictEqual(N.runNotes({ memory_levers: '{"project":"p","notes":true}' }), true);
-  assert.strictEqual(N.runNotes({ memory_levers: '{"project":"p","notes":false}' }), false);
-  assert.strictEqual(N.runNotes({ memory_levers: 'not json' }), false);
-  assert.strictEqual(N.noticeForRun({ memory_levers: '{"notes":true,"project":"p"}' }, none), null, 'the spec set the project: no "Memory is off"');
-  assert.ok(N.noticeForRun({ memory_levers: null }, none));
-  assert.ok(N.noticeForRun(null, none));
+  const cfgNoProject = { found: true, config: {} };
+  const cfgProject = { found: true, config: { memory: { project: 'acme' } } };
+  // a run answers for itself, whatever the config says: its recorded code, or none
+  assert.strictEqual(N.noticeForRun({ memory_notice: null }, cfgNoProject), null, 'notes on, explicitly off or memory null: silent even when the config has no project');
+  assert.strictEqual(N.noticeForRun({ memory_notice: N.CODE }, cfgProject).code, N.CODE, 'launched without a project: the warning stays after the config gains one');
+  assert.strictEqual(N.noticeForRun({ memory_notice: N.REDACT_CODE }, cfgProject).code, N.REDACT_CODE, 'redaction off stays named');
+  assert.strictEqual(N.noticeForRun({ memory_notice: 'unknown_code' }, cfgNoProject), null, 'a code this build does not know is no notice');
+  assert.strictEqual(N.noticeForRun({}, cfgNoProject), null, 'a run from before the column has none');
+  // no run selected: the config's notice
+  assert.ok(N.noticeForRun(null, cfgNoProject));
+  assert.strictEqual(N.noticeForRun(null, cfgProject), null);
+  assert.deepStrictEqual(N.CODES, [N.CODE, N.REDACT_CODE]);
+  for (const c of N.CODES) assert.strictEqual(N.byCode(c).code, c);
 });
 
 test('from a discovered config: no file, an empty file and a file with a project', () => {

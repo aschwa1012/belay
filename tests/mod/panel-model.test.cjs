@@ -86,9 +86,14 @@ test('parseMemoryNotice and buildSnapshot: the no-project notice rides the setti
   assert.strictEqual(F.buildSnapshot(parts({ error: 'belay settings exit 3' }, on)).memoryNotice.title, notice.title, 'a failed read keeps the earlier notice');
   assert.strictEqual(F.buildSnapshot(parts({ json: { memory_notice: null, settings: [] } }, on)).memoryNotice, null, 'a project set clears it');
   assert.strictEqual(F.buildSnapshot(parts(null, null)).memoryNotice, null);
-  const live = { ...parts({ json: { memory_notice: notice, settings: [] } }, null), agents: { json: { agents: [], memory_notes: true } } };
-  assert.strictEqual(F.buildSnapshot(live).memoryNotice, null, 'the live run has notes on (its spec set the project): the config notice is dropped');
-  assert.strictEqual(F.buildSnapshot({ ...live, agents: { json: { agents: [], memory_notes: false } } }).memoryNotice.title, notice.title);
+  // A run the agents read names answers for itself: its own notice, or none, whatever the config says now.
+  const runNotice = { ...notice, title: 'Memory notes are off: redaction is disabled' };
+  const live = (memory_notice) => ({ ...parts({ json: { memory_notice: notice, settings: [] } }, null), agents: { json: { agents: [], run_id: 'r1', memory_notice } } });
+  assert.strictEqual(F.buildSnapshot(live(null)).memoryNotice, null, 'the run has none (notes on, explicitly off, or memory null): the config notice is dropped');
+  assert.strictEqual(F.buildSnapshot(live(runNotice)).memoryNotice.title, runNotice.title, 'its own notice, not the config notice');
+  assert.strictEqual(F.buildSnapshot({ ...live(runNotice), settings: { json: { memory_notice: null, settings: [] } } }).memoryNotice.title, runNotice.title, 'a config that gained a project does not clear a run launched without one');
+  assert.strictEqual(F.buildSnapshot({ ...live(runNotice), settings: { error: 'belay settings exit 3' } }).memoryNotice.title, runNotice.title, 'nor does a failed settings read');
+  assert.strictEqual(F.buildSnapshot({ ...parts({ json: { memory_notice: notice, settings: [] } }, null), agents: { json: { agents: [], run_id: null } } }).memoryNotice.title, notice.title, 'no run selected: the config notice');
   // the band's warning line and the plain surfaces' line are built here, so a removed or reworded line fails
   const p = M.parseMemoryNotice({ memory_notice: notice });
   assert.deepStrictEqual(M.memoryBandSegs(p).map((s) => s.t).join(''), '▲ Memory is off for this project · add "memory": { "project": "<name>" }');

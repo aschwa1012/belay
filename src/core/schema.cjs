@@ -194,6 +194,10 @@ const MIGRATIONS = [
   // ADR 0046 decision 1: the epoch of the attach that revived a run whose previous adapter was dead with no run.end, carried by every later
   // row of that life; null for a run that never lapsed. It lets "the run that is live now keeps the paths" order two lapsed runs without a clock.
   'ALTER TABLE run ADD COLUMN revived_epoch INTEGER',
+  // The memory notice the launch resolved for this run: the code of the "notes would be on, but ..." notice (memory-notice.cjs), or null when
+  // there is none (notes on, notes explicitly off, or memory null). The levers cannot say it (a default block is stored as null, and an
+  // explicit off looks like no project), so status and the panel read the run's own answer, never the current config's.
+  'ALTER TABLE run ADD COLUMN memory_notice TEXT',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot
