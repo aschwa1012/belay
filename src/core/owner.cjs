@@ -453,13 +453,13 @@ class Owner {
     try { for (const t of this.timers || []) clearInterval(t); } catch (e) { record(e); }
     // MF1: the embedder child process ends with the owner, even mid-load or mid-embed: `close` over IPC,
     // at most 2,000 ms of grace, then a kill by its exact pid (embedder.cjs close()).
-    // ADR 0050: the CPU rerank child, if this owner built one, ends with it too. Both children close CONCURRENTLY with the
-    // listeners and the store below (neither needs them), and the lock is released only after both have ended, so a successor owner
-    // never overlaps a child of this one. The rerank close is bounded (3,000 ms) and never throws.
-    const children = Promise.allSettled([
+    // ADR 0050: the CPU rerank child, if this owner built one, ends with it too. The two children close CONCURRENTLY, and both are
+    // awaited here, BEFORE the connections are destroyed: the embedder's close rejects its in-flight requests, and those replies must
+    // reach their callers over a connection that is still open (m11). The rerank close is bounded (3,000 ms) and never throws.
+    for (const r of await Promise.allSettled([
       this.embedderObj ? Promise.resolve().then(() => this.embedderObj.close()) : null,
       Promise.resolve().then(() => require('./rerank-provider.cjs').closeOwned(this, 3000)),
-    ]);
+    ])) if (r.status === 'rejected') record(r.reason);
     try { for (const c of this.conns) c.destroy(); this.conns.clear(); } catch (e) { record(e); }
     await new Promise((resolve) => {
       if (!this.tcpServer) return resolve();
@@ -471,7 +471,6 @@ class Owner {
       catch (e) { record(e); resolve(); }
     });
     try { if (this.store) this.store.close(); } catch (e) { record(e); }
-    for (const r of await children) if (r.status === 'rejected') record(r.reason);
     try { if (this.lockDir) releaseLock(this.lockDir); } catch (e) { record(e); }
     if (firstError) throw firstError;
     return { pid: process.pid, pipe: this.pipe, already: false };
