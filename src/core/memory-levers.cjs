@@ -36,9 +36,6 @@ const DEFAULTS = Object.freeze({
   scrub_max_items: 40, // entries in one scrub hand-back
   scrub_alarm_holds: 20, // more holds than this from one scrub raise the alarm field (the call still succeeds)
   notes_trust_wording: false, // ADR 0047 decision 6: basis, evidence and review status instead of "unverified"; off until the harm arms have run
-  note_review: false, // wave 4: when a task that wrote notes ends with no reviewer, belay starts one short read-only review job for them; off until the planted-false-claim gate sets its model
-  note_review_model: 'claude-haiku-5-5', // the review job's model; a lever, set by the planted-false-claim gate
-  note_review_cost_cap_usd: 0.05, // the review job's cost cap in dollars: passed to the substrate as its budget, and a job that went over leaves its notes unreviewed
   // The run-close stages (the Haiku scrubber and the Opus archive reviewer). Caps are real: the recorded cost is the binding check.
   scrub_wall_s: 300, // the scrubber's wall cap in seconds
   scrub_cost_cap_usd: 0.1, // the scrubber's cost cap in dollars: passed to the substrate as its budget; a scrub that recorded more applies nothing and its items are owed
@@ -56,7 +53,7 @@ const DEFAULTS = Object.freeze({
 });
 
 const BOOLEAN_KEYS = ['redact', 'rules', 'capture', 'observations', 'project_writes', 'cost_ledger',
-  'first_message_index', 'bottle', 'wrapup', 'knowledge_agent', 'notes', 'notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording', 'note_review', 'archive_review_auto'];
+  'first_message_index', 'bottle', 'wrapup', 'knowledge_agent', 'notes', 'notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording', 'archive_review_auto'];
 const MODEL_RE = /^claude-(haiku|sonnet|opus)-5-5$/; // a Claude 5.5 model id: the only models the roster allows (ADR 0021 amendments 5 and 6)
 const SUMMARIES = ['off', 'mechanical'];
 const SCRUB_ACTIONS = ['off', 'propose', 'apply'];
@@ -80,11 +77,28 @@ function boundedInt(v, max) {
   return typeof v === 'number' && Number.isSafeInteger(v) && v >= 1 && v <= max;
 }
 
+// The levers of the removed note-review job. A report that a note is wrong now holds the note for the archive review, so there is no job
+// to configure. `note_review: false` is still accepted, as the only value left, and has no effect; a true value, or a model or a cost cap
+// of any value, is refused with the message below. A run row written before the removal is read with `stored: true`: the three keys are
+// dropped, never refused, so an older run's other levers are not lost.
+const RETIRED_KEYS = Object.freeze(['note_review', 'note_review_model', 'note_review_cost_cap_usd']);
+const RETIRED = Object.freeze(Object.fromEntries(RETIRED_KEYS.map((k) => [k, `memory.${k} was removed (2026-10-21): a report that a note is wrong now holds the note at once for the archive review (belay memory review); there is no note-review job to configure. Delete the key.`])));
+
 // Returns { value } (every key present, defaults filled) or { error } naming the key. `undefined` and null
 // both mean "no block". Unknown keys, wrong types and a lever whose prerequisite is off are refused.
-function parseMemoryBlock(block) {
+// `opts.stored`: the block is a stored run row's, so the removed note-review keys are dropped, whatever their values.
+function parseMemoryBlock(block, opts = {}) {
   if (block === undefined || block === null) return { value: defaultLevers() };
   if (typeof block !== 'object' || Array.isArray(block)) return { error: 'memory must be an object' };
+  if (RETIRED_KEYS.some((k) => Object.prototype.hasOwnProperty.call(block, k))) {
+    const copy = { ...block };
+    for (const k of RETIRED_KEYS) {
+      if (!Object.prototype.hasOwnProperty.call(copy, k)) continue;
+      if (!opts.stored && (k !== 'note_review' || copy[k] !== false)) return { error: RETIRED[k] };
+      delete copy[k];
+    }
+    block = copy;
+  }
   for (const key of Object.keys(block)) {
     if (!Object.prototype.hasOwnProperty.call(DEFAULTS, key)) {
       return { error: `memory.${key} is not a known memory lever (known: ${Object.keys(DEFAULTS).join(', ')})` };
@@ -121,9 +135,7 @@ function parseMemoryBlock(block) {
   if (v.notes && v.project === null) return { error: 'memory.notes needs memory.project: notes live in the project namespace' };
   // Notes outlive the run in the project namespace, so they never take unredacted text.
   if (v.notes && v.redact === false) return { error: 'memory.redact false cannot be combined with memory.notes true: the project namespace outlives the run and must never hold unredacted text' };
-  if (typeof v.note_review_model !== 'string' || !MODEL_RE.test(v.note_review_model)) return { error: 'memory.note_review_model must be a Claude 5.5 model id (claude-haiku-5-5, claude-sonnet-5-5 or claude-opus-5-5)' };
-  if (typeof v.note_review_cost_cap_usd !== 'number' || !(v.note_review_cost_cap_usd > 0 && v.note_review_cost_cap_usd <= 5)) return { error: 'memory.note_review_cost_cap_usd must be a number above 0 and at most 5' };
-  for (const k of ['notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording', 'note_review', 'archive_review_auto']) if (v[k] && !v.notes) return { error: `memory.${k} needs memory.notes` };
+  for (const k of ['notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording', 'archive_review_auto']) if (v[k] && !v.notes) return { error: `memory.${k} needs memory.notes` };
   for (const [k, max] of [['scrub_wall_s', 3600], ['review_wall_s', 7200], ['review_min_held', 500], ['review_max_age_runs', 1000]]) if (!boundedInt(v[k], max)) return { error: `memory.${k} must be an integer from 1 to ${max}` };
   for (const [k, max] of [['scrub_cost_cap_usd', 5], ['review_cost_cap_usd', 20]]) if (typeof v[k] !== 'number' || !(v[k] > 0 && v[k] <= max)) return { error: `memory.${k} must be a number above 0 and at most ${max}` };
   for (const k of ['scrub_model', 'archive_review_model']) if (typeof v[k] !== 'string' || !MODEL_RE.test(v[k])) return { error: `memory.${k} must be a Claude 5.5 model id (claude-haiku-5-5, claude-sonnet-5-5 or claude-opus-5-5)` };
@@ -156,7 +168,6 @@ const OVERRIDES = {
   bottle_bytes: { type: 'integer', min: 1, max: BOTTLE_BYTES_MAX },
   notes_match_threshold: { type: 'number', min: 0, max: 1, minExclusive: true },
   notes_match_n: { type: 'integer', min: 1, max: 10 },
-  note_review_cost_cap_usd: { type: 'number', min: 0, max: 5, minExclusive: true },
   scrub_action: { type: 'enum', values: SCRUB_ACTIONS },
   scrub_max_items: { type: 'integer', min: 1, max: 500 },
   scrub_alarm_holds: { type: 'integer', min: 1, max: 500 },
@@ -180,4 +191,4 @@ const TYPES = Object.freeze(Object.fromEntries(Object.keys(DEFAULTS).map((k) => 
 // Run-spec keys only: never a project default, so the config file's memory block and `belay settings` refuse them.
 const EVAL_ONLY = Object.freeze(['native_memory', 'handback_question']);
 
-module.exports = { EVAL_ONLY, DEFAULTS, defaultLevers, TYPES, MODE_VALUES, parseMemoryBlock, isDefault };
+module.exports = { EVAL_ONLY, RETIRED, RETIRED_KEYS, DEFAULTS, defaultLevers, TYPES, MODE_VALUES, parseMemoryBlock, isDefault };
