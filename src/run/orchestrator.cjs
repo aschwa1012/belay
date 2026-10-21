@@ -476,7 +476,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       if (!attached || attached.ok !== true) {
         if (state.finishing) return; // already ending (e.g. the child died first)
         state.finishing = true;
-        state.endedBy = `the run's attach write failed after this process became the store owner: ${(attached && attached.error) || 'attach refused'}`;
+        state.endedBy = attached && attached.stage === 'pin' ? `the run's retrieval routing could not be pinned (the attach itself succeeded), so the run did not start: ${attached.error}` : `the run's attach write failed after this process became the store owner: ${(attached && attached.error) || 'attach refused'}`;
         await killChild();
         return; // the exit handler above resolves once the child actually exits
       }
