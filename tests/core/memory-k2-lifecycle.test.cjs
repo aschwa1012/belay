@@ -10,7 +10,7 @@ const { setup, PROJECT, A, A_NEAR, B } = require('./lifecycle-env.cjs');
 const { callerFor } = require('./helpers.cjs');
 const { archiveNote } = require('../../src/core/memory-archive.cjs');
 const { loadNote } = require('../../src/core/memory-facts.cjs');
-const { holdWrongFromReport } = require('../../src/core/memory-report-hold.cjs');
+const { holdReported } = require('../../src/core/memory-report-hold.cjs');
 const gate = require('../../src/core/memory-note-gate.cjs');
 
 let T;
@@ -127,16 +127,17 @@ test('D32: the reviewer archives a write-time hold on a file cite when the call 
   }
 });
 
-test('D32: an upheld report on a note that already waits on a reviewer stacks no second hold', async () => {
-  const n = T.note('d32 report stack', { reported_wrong: [T.report('worker:w2')] });
-  const ctx = { project: PROJECT, runId: 'lc-apply', headSha: null, reviewer: 'r1', ref: 'ref', report: { by: 'worker:w2', task_id: 'tx', why: 'it is wrong', replaced_by: null, at: 1 } };
-  const ent = { reason: 'the report is upheld', cites: [] };
+test('D32: a report on a note that already waits on a reviewer for a report stacks no second hold: it is appended to the one', async () => {
+  const n = T.note('d32 report stack', { reported_wrong: [{ ...T.report('worker:w2'), seq: 1 }] });
+  const ctx = { project: PROJECT, runId: 'lc-apply', threshold: 0.8, headSha: null };
   const harness = T.who.harness('apply');
-  const first = T.store.tx(() => holdWrongFromReport(T.E, harness, ctx, loadNote(T.E, n), ent));
+  const first = T.store.tx(() => holdReported(T.E, harness, ctx, loadNote(T.E, n), { why: 'it is wrong' }));
   assert.strictEqual(heldRowsOf(n).length, 1);
-  assert.throws(() => T.store.tx(() => holdWrongFromReport(T.E, harness, ctx, loadNote(T.E, n), ent)), x => x.code === 'E_EXISTS');
+  T.store.patchBody(n, (b) => { b.reported_wrong.push({ ...T.report('worker:w3'), seq: 2, task_id: 'ty' }); b.report_seq = 2; return b; });
+  const second = T.store.tx(() => holdReported(T.E, harness, ctx, loadNote(T.E, n), { why: 'it is wrong too' }));
+  assert.deepStrictEqual([second.row, second.already_held, second.rev], [first.row, true, 1]);
   assert.strictEqual(heldRowsOf(n).length, 1);
-  assert.strictEqual(T.body(n).held.row, first.id);
+  assert.strictEqual(T.body(n).held.row, first.row);
 });
 
 // ---- D63: a restore gives back what the merge took -----------------------------------------------------------------

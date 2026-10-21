@@ -26,6 +26,8 @@ const { heldLeaseOn } = require('./verdict.cjs');
 const RV = require('./note-report-verdicts.cjs');
 const { hiddenParts } = require('./note-shown.cjs');
 const BC = require('./note-brief-capture.cjs');
+const { loadNote, isHeldNow, activeHoldOf } = require('./memory-facts.cjs');
+const RH = require('./memory-report-hold.cjs');
 
 const VERDICTS = ['confirmed', 'refuted', 'unsupported'];
 const REASON_MAX = 500;
@@ -127,6 +129,26 @@ function applyOneIn(E, caller, route, v, n) {
 }
 const applyOne = (E, caller, route, v, n) => E.store.tx(() => applyOneIn(E, caller, route, v, n));
 
+// A task reviewer's note verdict on a note that is held for the archive review is ADVICE: it is recorded on the hold (which raises its revision, so
+// the archive reviewer is offered the hold again with it) and the note's status is left alone. Only the archive review's cited outcome verifies
+// or refutes a held note. Returns the applied entry, or null when the note is not held (the verdict is then applied as ever). One transaction.
+function adviceOnHold(E, caller, route, v, n) {
+  const project = String(n.namespace).replace(/^project\//, '');
+  const now = loadNote(E, n.id);
+  if (!now || !isHeldNow(E, now)) return null;
+  return E.store.tx(() => {
+    const hold = activeHoldOf(E, project, n.id);
+    if (!hold) return null; // a stale pointer only: the verdict is applied as ever (the guard still stands behind the status write)
+    const at = Date.now();
+    const next = RH.bumpHold(E, hold.id, (b) => {
+      b.note_verdicts = [...(b.note_verdicts || []), { verdict: v.verdict, by: route.reviewer, ref: route.ref, at, reason: v.reason, cites: v.cites }].slice(-20);
+      return b;
+    });
+    const ev = recordEventSync(E, caller, { kind: 'note_review', ok: true, run_id: caller.run_id || n.run_id, worker_id: route.reviewer, task_id: n.task_id, key: `${route.keyBase}:${n.id}`, row_ids: [n.id], newest_row_id: n.id, message: `${v.verdict} recorded as advice on held row ${hold.id}: ${v.reason}`.slice(0, 300) });
+    return { id: n.id, verdict: v.verdict, applied: true, advice: true, status: n.status || 'unverified', held_row: hold.id, rev: next.rev, event_id: ev.id };
+  });
+}
+
 async function noteVerdicts(E, caller, args) {
   guard(E, caller);
   const route = routeOf(E, args || {}, caller);
@@ -159,7 +181,7 @@ async function noteVerdicts(E, caller, args) {
       const chk = v.cites.length === 0 ? { ok: true } : await CC.checkTaskCites(E, n.task_id, v.cites, { title: n.title, when: parse(n.body).when, text: n.text, evidence: parse(n.body).evidence });
       if (!chk.ok) throw err('E_CITATION', `note ${n.id}: ${chk.failures.length} of ${v.cites.length} cites are not in the evidence task ${n.task_id} recorded; the verdict is dropped (${chk.failures.map((f) => `cites[${f.index}] ${f.where}: ${f.reason}`).join(' | ')})`.slice(0, 600), { id: n.id, failures: chk.failures });
       E.assertRunOpen(caller, 'memory.noteVerdicts'); // the citation check awaited a file; a run that ended meanwhile takes no verdict (audit D42)
-      out.applied.push(v.verdict === 'unsupported' ? require('./note-unsupported.cjs').queueUnsupported(E, caller, route, v, n) : applyOne(E, caller, route, v, n));
+      out.applied.push(adviceOnHold(E, caller, route, v, n) || (v.verdict === 'unsupported' ? require('./note-unsupported.cjs').queueUnsupported(E, caller, route, v, n) : applyOne(E, caller, route, v, n)));
     } catch (e) { if (e && e.detail && e.detail.run_ended) throw e; refuse(e, n); } // an ended run is not a refused verdict: nothing more is written
   }
   if (out.applied.length) E.noteWrite();
