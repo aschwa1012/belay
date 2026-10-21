@@ -2,6 +2,7 @@
 // Argument checks for RunManager.spawn, moved verbatim out of manager.cjs (the 500-line rule, ADR 0030).
 // Every refusal here happens before any row is written or any file created.
 
+const fs = require('node:fs');
 const L = require('./launch.cjs');
 const { fail } = require('./errors.cjs');
 
@@ -30,8 +31,8 @@ function validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, per
   // ADR 0024 amendment 3 (proposed): the eval-only native-memory folder; a Claude Code launch only, absolute.
   if (native_memory !== null) {
     if (substrate === 'codex') fail('E_SUBSTRATE', 'native_memory is Claude Code auto-memory, and codex has none', { substrate, native_memory });
-    // The string form, then the real path (a junction into the config directory), so a refusal leaves no worker directory and the id free.
-    try { require('./native-memory.cjs').assertOutsideConfig(require('./surface.cjs').checkNativeMemory(native_memory)); } catch (e) { fail('E_ARGS', e.message, e.detail); }
+    // The string form, then the real path (a junction into the config directory), then that the folder is a directory or absent, so a refusal leaves no worker directory and the id free.
+    try { require('./native-memory.cjs').checkFolder(native_memory); } catch (e) { fail('E_ARGS', e.message, e.detail); }
   }
   // ADR 0020 decision 1: Codex has no permission channel (approval_policy="never", MCP tools
   // pre-approved, ADR 0001 §1) — refused before any row is written or any file created.
@@ -40,4 +41,14 @@ function validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, per
   }
 }
 
-module.exports = { validateSpawnArgs, checkMemoryQueries, QUERIES_MAX, QUERY_BYTES_MAX };
+// A spawn that failed while writing the worker's files, before any row or process: forget the record and remove the directory this
+// spawn created, so no phantom starting worker is left holding the id. A directory that existed before the spawn is left alone.
+// The record's base-sha lookup (a git child with the worktree as its cwd) is awaited first: forgetting the record would take it off
+// shutdown's drain list, and the run must not end with that child still running.
+async function discardUnstarted(workers, w, dirExisted) {
+  if (w.basePromise) await w.basePromise.catch(() => {});
+  workers.delete(w.id);
+  if (!dirExisted) { try { fs.rmSync(w.dir, { recursive: true, force: true }); } catch { /* the original error is the one to report */ } }
+}
+
+module.exports = { discardUnstarted, validateSpawnArgs, checkMemoryQueries, QUERIES_MAX, QUERY_BYTES_MAX };

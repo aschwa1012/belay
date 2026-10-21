@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // settings.test.cjs — `belay settings`, the panel's display settings (ADR 0036 amendment 1 §6).
 // Drives the built CLI as a subprocess with its cwd in a temporary sandbox project (a `.git` directory
 // marks the root so discovery stops there). Never the repository's own config.

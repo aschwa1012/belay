@@ -2,7 +2,7 @@
 // index.tsx: the engine follows `$` only inside the file that declares the hooks.
 
 import type { BelayAgent, BelayPanelSnap, BelayPanelWatch } from '../../types/index'
-import { DEFAULT_SETTINGS, normAgents, normHeld, normNotices, normTranscript, parseSettings, type AgentsRead } from './model'
+import { DEFAULT_SETTINGS, normAgents, normHeld, normNotices, normTranscript, parseMemoryNotice, parseSettings, type AgentsRead } from './model'
 
 export type RunFile = { role: string; runId: string; dataDir: string; cli: string; node: string }
 export type RunFileRead = { file: RunFile } | { error: string }
@@ -77,7 +77,7 @@ export function fatalSnapshot(message: string, runId: string | null, now: number
   return {
     fetchedAt: now, runId, mode: null, runState: null, stale: false, fatal: message, transcriptOk: false, transcriptAt: null,
     startedAtMs: null, pausedAtMs: null, frozenAtMs: null, endedAtMs: null, tasks: null, maxFixRounds: null, embedder: null, agents: [], footer: null, notices: [], held: null, transcript: null,
-    settings: DEFAULT_SETTINGS, errors: [],
+    settings: DEFAULT_SETTINGS, memoryNotice: null, errors: [],
   }
 }
 
@@ -134,6 +134,12 @@ export function buildSnapshot(p: Parts): BelayPanelSnap {
   }
   const sj = take(p.settings)
   const settings = sj !== undefined ? parseSettings(sj) : (prev?.settings ?? DEFAULT_SETTINGS)
+  // The settings read sees the config file only. A run answers for itself (its launch recorded the notice, or none: notes on, notes
+  // off on purpose, memory null), whatever the config says now; the config's notice is for a panel with no run to read.
+  const runRead = aj !== undefined && typeof (aj as { run_id?: unknown }).run_id === 'string'
+  // A failed agents read leaves the selected run as it was: its cached notice stands, null included.
+  const runSelected = aj === undefined && (p.watch.runId ?? prev?.runId ?? null) !== null
+  const memoryNotice = runRead ? parseMemoryNotice(aj) : runSelected ? (prev?.memoryNotice ?? null) : sj !== undefined ? parseMemoryNotice(sj) : (prev?.memoryNotice ?? null)
   const orchRaw = aj !== undefined ? ((aj as { agents?: { role?: string; state?: string }[] }).agents ?? []).find(a => a.role === 'orchestrator')?.state ?? null : null
   return {
     // the cache countdown is anchored to when the agents were last read, not to a failed round
@@ -151,6 +157,6 @@ export function buildSnapshot(p: Parts): BelayPanelSnap {
     embedder: ag ? ag.embedder : (prev?.embedder ?? null),
     agents: ag ? ag.agents : (prev?.agents ?? []),
     footer: ag ? ag.footer : (prev?.footer ?? null),
-    notices, held: nj !== undefined ? normHeld(nj) : (prev?.held ?? null), transcript, settings, errors,
+    notices, held: nj !== undefined ? normHeld(nj) : (prev?.held ?? null), transcript, settings, memoryNotice, errors,
   }
 }

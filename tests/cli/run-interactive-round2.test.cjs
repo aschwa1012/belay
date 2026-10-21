@@ -101,8 +101,9 @@ test('F3: a gate failure ends claude with killPid on its exact pid and never a t
 
 test('L6: a stop whose kill was not delivered (signalled false) sets no stop cause and ended_by tells what happened', async (t) => withRun(t, async (dir) => {
   const pidCalls = [];
-  const deps = { killPid: (target) => { pidCalls.push(target.pid); return { signalled: false }; } };
-  const r = start(dir, { env: { FAKE_HOLD_MS: '1500' }, deps });
+  // the stub quits when the stop tries its kill (the owner's check of the stop's caller takes longer than any fixed hold)
+  const deps = { killPid: (target) => { pidCalls.push(target.pid); require('node:fs').writeFileSync(`${dir}/quit`, ''); return { signalled: false }; } };
+  const r = start(dir, { env: { FAKE_EXIT_FILE: `${dir}/quit` }, deps });
   const rec = await waitUntil(() => r.record(), 15000);
   assert.ok(rec);
   assert.ok(await waitUntil(() => currentRunRow(r.dataDir, r.runId), 15000));

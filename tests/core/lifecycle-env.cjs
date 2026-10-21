@@ -17,7 +17,7 @@ const LEVERS = {
   propose: { project: PROJECT, notes: true },
   off: { project: PROJECT, notes: true, scrub_action: 'off' },
   alarm: { project: PROJECT, notes: true, scrub_action: 'apply', scrub_alarm_holds: 2 },
-  plain: { project: PROJECT },
+  plain: { project: PROJECT, notes: false },
   strict: { project: PROJECT, notes: true, scrub_action: 'apply', notes_match_threshold: 0.995 },
 };
 
@@ -66,7 +66,10 @@ async function setup() {
   const evidence = { head_sha: head, worktree: repo };
   const cite = { where: 'loader.js:2', quote: 'return fixtures.get(name); // unlisted names throw' };
 
-  return { dir, store, E, who, call, note, row, body, report, evidence, cite, head, repo, close: () => { store.close(); cleanup(dir); } };
+  // The review stage refuses while a run other than the one it acts for is live (audit D35); a test that drives it ends the others.
+  const endOthers = async (keep) => { for (const k of Object.keys(RUNS)) if (k !== keep) await call(who.operator(k), 'run.end', { exit_reason: 'test' }); };
+
+  return { dir, store, E, who, call, endOthers, note, row, body, report, evidence, cite, head, repo, close: () => { store.close(); cleanup(dir); } };
 }
 
 module.exports = { setup, PROJECT, RUNS, A, A_NEAR, B };

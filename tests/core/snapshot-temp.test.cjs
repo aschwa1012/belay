@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // snapshot-temp.test.cjs — the snapshot PowerShell's probe files never reach the shared TEMP. A Windows child dies
 // with its parent, and a PowerShell ended in its first ~200 ms leaves its __PSScriptPolicyTest_* files behind for
 // good, so the snapshot runs with TEMP set to belay's own directory and sweeps the stale ones (proc-identity.cjs).

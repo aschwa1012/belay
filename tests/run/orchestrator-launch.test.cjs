@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // orchestrator-launch.test.cjs — the fourth launch-table entry (ADR 0009 §1 and its consequences):
 // a headless `claude -p` orchestrator with the belay adapter in a strict MCP config, spawned by the
 // CLI. Nothing here spawns a real session; these assert the argv, the config and the file placement,

@@ -55,6 +55,7 @@ function renderText(receipt) {
   }
   if (receipt.notes_unembedded && receipt.notes_unembedded.total > 0) lines.push(require('./panel-common.cjs').unembeddedText(receipt.notes_unembedded));
   if (receipt.notes_held && receipt.notes_held.total > 0) lines.push(require('./panel-common.cjs').heldText(receipt.notes_held));
+  if (receipt.memory_notice) lines.push(`warning: ${receipt.memory_notice.title}. ${receipt.memory_notice.why} ${receipt.memory_notice.fix}`);
   lines.push('');
   return lines.join('\n');
 }
@@ -72,8 +73,8 @@ async function run(ctx) {
   try {
     let runId = parsed.runId;
     let runIdSource = parsed.runId ? 'argument' : null;
+    const { runs } = await core.run.list({});
     if (!runId) {
-      const { runs } = await core.run.list({});
       if (runs.length) {
         // Fix round: run.list orders by the row most recently WRITTEN, not by which run is actually
         // alive — a run that ended a second ago can outrank one still running and never named. The
@@ -84,7 +85,8 @@ async function run(ctx) {
       } else runIdSource = 'none';
     }
     const st = await core.status.get(runId ? { run_id: runId } : {});
-    const receipt = { ...st, run_id_source: runIdSource };
+    const notice = require('../core/memory-notice.cjs').noticeForRun(runs.find(r => r.id === runId) || null, found); // a live run's own levers win over the config file
+    const receipt = { ...st, run_id_source: runIdSource, ...(notice ? { memory_notice: notice } : {}) };
     // Exit 0 whenever the ladder was read, whatever the verdict: a dead system is a valid answer.
     return { code: 0, text: renderText(receipt), json: receipt };
   } catch (e) {

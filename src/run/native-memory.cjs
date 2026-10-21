@@ -40,11 +40,34 @@ function assertOutsideConfig(folder) {
   }
 }
 
+// The folder, or the deepest ancestor of it that exists, must be a directory: a regular file there would make the create throw
+// EEXIST or ENOTDIR after a worker's directory and record already exist. Nothing is created.
+function assertCreatable(folder) {
+  for (let cur = path.resolve(folder); ;) {
+    const st = fs.statSync(cur, { throwIfNoEntry: false });
+    if (st) {
+      if (!st.isDirectory()) throw refuse('native_memory is, or sits below, something that is not a directory', { native_memory: fwd(folder), blocking: fwd(cur), reason: 'not_a_directory' });
+      return;
+    }
+    const up = path.dirname(cur);
+    if (up === cur) return;
+    cur = up;
+  }
+}
+
+// The checks that need no folder to exist, shared by the spawn's validation and prepareFolder: the string form, the real path
+// against the config directories, and that the folder can be created. Returns the resolved folder; creates nothing.
+function checkFolder(dir) {
+  const folder = S.checkNativeMemory(dir);
+  assertOutsideConfig(folder);
+  assertCreatable(folder);
+  return folder;
+}
+
 // Check the string form, then the real path, create the folder, then check the real path again. Returns the resolved folder.
 // `seam.beforeMkdir` (tests only) runs between the first check and the create, where a folder swap would land.
 function prepareFolder(dir, seam = {}) {
-  const folder = S.checkNativeMemory(dir);
-  assertOutsideConfig(folder);
+  const folder = checkFolder(dir);
   if (seam.beforeMkdir) seam.beforeMkdir(folder);
   fs.mkdirSync(folder, { recursive: true });
   assertOutsideConfig(folder);
@@ -92,6 +115,45 @@ function checkLaunch(w) {
   if (w.nativeMemoryRefused) { w.nativeMemoryRefused = false; w.launchFailed = false; } // the cause is gone: this launch may write its running row
 }
 
+// Who opted in to a worker's native_memory is its own fact on the worker row (`native_memory_auth`), written once by the spawn that took the
+// lever and carried unchanged by every later row. It is not the row's run_id, which every writer sets to itself (a refusal's dead row, a stop),
+// so a run that was refused cannot pass as the run that opted in. A run id can also be used again by a later run, so the grant names the run's
+// lifetime: the seq of the first run row after the last row that ended one, the same for every epoch of a run that lapsed and reattached.
+const UNKNOWN = Symbol('lifetime unknown');
+async function lifetimeOf(core, runId) {
+  if (!core || !core.run || typeof core.run.get !== 'function') return null;
+  const got = await core.run.get();
+  const rows = ((got && got.epochs) || []).filter((r) => r && r.id === runId && Number.isInteger(r.seq)).sort((x, y) => x.seq - y.seq);
+  let start = null; let cur = null;
+  for (const r of rows) { if (start == null) start = r.seq; cur = start; if (r.ended_at != null) start = null; }
+  return cur;
+}
+async function authorize(core, runId, folder) {
+  return folder == null ? null : JSON.stringify({ run_id: runId, lifetime: await lifetimeOf(core, runId) });
+}
+function authOf(raw) {
+  try { const a = JSON.parse(raw); return a && typeof a === 'object' && !Array.isArray(a) ? a : null; } catch { return null; }
+}
+
+// An adopted worker's native_memory is the record of the run that opted in. It is carried only into that run in that lifetime (a restart by
+// another adapter of it) or into a run whose own lever names the same folder; any other run never opted in, so the folder is not written
+// into its settings and its relaunch is refused. A lifetime that cannot be read grants nothing. Returns the refusal, or null. A stop is
+// never affected: it goes through.
+async function adoptDenied(w, runId, levers, core) {
+  if (w.nativeMemory == null) return null;
+  const auth = authOf(w.nativeMemoryAuth);
+  if (auth && auth.run_id === runId) {
+    let now = UNKNOWN; try { now = await lifetimeOf(core, runId); } catch { now = UNKNOWN; }
+    if (now === auth.lifetime) return null;
+  }
+  const lever = levers && levers.native_memory;
+  let same = false;
+  try { same = typeof lever === 'string' && S.sameDir(S.checkNativeMemory(lever), w.nativeMemory); } catch { same = false; }
+  if (same) return null;
+  return refuse("the worker's native_memory was recorded by another run, and this run's own native_memory lever does not name it; a relaunch is refused (a stop still goes through)",
+    { worker_id: w.id, native_memory: w.nativeMemory, opted_in_by: auth ? { run_id: auth.run_id == null ? null : auth.run_id, lifetime: auth.lifetime === undefined ? null : auth.lifetime } : null, run_id: runId, reason: 'foreign_native_memory' });
+}
+
 // A refusal is noted on the worker and, when no process of it is alive, written as a dead row naming the cause; the row is awaited
 // and carried in the error, so a caller never sees a refusal before its row is confirmed. Throws `e`. An adopt (a stop, a message)
 // never calls checkLaunch: a stop always goes through.
@@ -100,6 +162,7 @@ async function refuseLaunch(ctx, w, e, pidAlive) {
   w.launchFailed = true; w.nativeMemoryRefused = true;
   if (!(w.pid && pidAlive(w.pid))) {
     w.deathEstablishedBy = e.code === 'E_NATIVE_MEMORY_MISMATCH' ? 'native_memory_settings_mismatch' : 'native_memory_folder_refused';
+    w.settled = true; w.settledState = 'dead'; // dead now: a settled state fixed by the life before (paused, stopped) must not be what worker_wait answers
     let row = null;
     try { row = await ctx.writeRow(w, 'dead'); } catch (err) { w.lastError = { where: 'native_memory.write', code: err && err.code, message: err && err.message }; e.detail = { ...e.detail, dead_row_error: err && err.message }; }
     e.detail = { ...e.detail, dead_row: row ? { seq: row.seq == null ? null : row.seq, state: row.state, death_established_by: row.death_established_by == null ? null : row.death_established_by } : null };
@@ -108,4 +171,4 @@ async function refuseLaunch(ctx, w, e, pidAlive) {
   throw e;
 }
 
-module.exports = { prepareFolder, assertOutsideConfig, verifySettings, checkLaunch, refuseLaunch, fingerprint };
+module.exports = { adoptDenied, authorize, lifetimeOf, checkFolder, assertCreatable, prepareFolder, assertOutsideConfig, verifySettings, checkLaunch, refuseLaunch, fingerprint };

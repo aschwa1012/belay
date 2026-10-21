@@ -92,7 +92,7 @@ before(async () => {
 after(() => { store.close(); cleanup(dir); });
 
 test('C1: the close begins before afterTurn reaches onTaskEnded; the job is still created first, awaited, applied, and the workers stop after it', async () => {
-  const w = await written('wr-c1', 2);
+  const w = await written('wr-c1', 1);
   const m = fakeManager(verdictsFor([w.notes[0]]));
   const gate = defer();
   // The seam: task.get, the call afterTurn makes before it decides on the review, is held until the test opens it.
