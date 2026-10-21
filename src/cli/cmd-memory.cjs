@@ -1,5 +1,5 @@
 'use strict';
-// cmd-memory.cjs — `belay memory search|list|show|timeline|verify|stats|export|import` (ADR 0040 §5, ADR 0043 §3).
+// cmd-memory.cjs — `belay memory search|list|show|timeline|verify|stats|export|import|search-log` (ADR 0040 §5, ADR 0043 §3).
 // The read verbs, `export` among them, are mode R: they read state without writing anything and never
 // `mkdir owner.lock`. `verify`, `import` and `embed` are mode W (they write rows, electing an owner on demand and
 // shutting it down again; `embed --dry-run` only reads). Parsing and text
@@ -311,7 +311,7 @@ async function doImport(core, parsed, read) {
 }
 
 const LC = require('./cmd-memory-lifecycle.cjs');
-const VERB_FN = { ...LC.VERB_FN, embed: (...a) => require('./cmd-memory-embed.cjs').doEmbed(...a), export: doExport, import: doImport, search: doSearch, list: doList, show: doShow, timeline: doTimeline, verify: doVerify, stats: doStats };
+const VERB_FN = { ...LC.VERB_FN, embed: (...a) => require('./cmd-memory-embed.cjs').doEmbed(...a), export: doExport, 'search-log': (...a) => require('./cmd-memory-searchlog.cjs').doSearchLog(...a), import: doImport, search: doSearch, list: doList, show: doShow, timeline: doTimeline, verify: doVerify, stats: doStats };
 
 function failure(sub, e) {
   const code = e.code || 'E_INTERNAL';
