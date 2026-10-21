@@ -12,7 +12,13 @@ const { writeStubPackage, writeCache, fakeEntry } = require('./fixtures/rerank-s
 
 const { CpuRerankClient, cpuRerankProvider } = core('rerank-cpu.cjs');
 const { pidAlive } = core('lock.cjs');
-const waitGone = async (pid, ms) => { const t0 = Date.now(); while (pidAlive(pid) && Date.now() - t0 < ms) await new Promise(r => setTimeout(r, 20)); return !pidAlive(pid); };
+const { waitGone, waitFor, countProgress, UP_DEADLINE } = require('../helpers/wait.cjs');
+const { fakeTimers, outcome } = require('../helpers/fake-timers.cjs');
+
+// Timing: a bound the provider enforces is asserted on an INJECTED clock (the `timers` option): wait for the child's own
+// message, advance to bound - 1 (still pending) and then 1 (the coded timeout). A wait on a child is an event with a
+// generous deadline, never a sleep; a fake child delay only has to be longer than the test's own steps.
+const crash = async (client, code) => { const exited = waitFor({ emitter: client.child, event: 'exit' }); client.child.send({ id: 990 + code, op: 'crash', code }); await exited; };
 
 function rig(stub = {}) {
   const dir = sandbox(), entry = fakeEntry();
@@ -142,11 +148,11 @@ test('the first call loads once; later calls reuse the child; close ends it', as
     const shared = cpuRerankProvider({ model: r.id, client });
     await Promise.all([shared({ query: QUERY, docs: NOTES }), shared({ query: QUERY, docs: NOTES })]);
     pid = client.pid;
-    assert.deepStrictEqual((await client.ping(3000)).models, [r.id], 'one load for two simultaneous first calls');
+    assert.deepStrictEqual((await client.ping(UP_DEADLINE)).models, [r.id], 'one load for two simultaneous first calls');
     await shared({ query: QUERY, docs: NOTES });
     assert.strictEqual(client.pid, pid, 'the same child');
     await shared.close();
-    assert.ok(await waitGone(pid, 4000), 'close ended the child');
+    assert.ok(await waitGone(pid), 'close ended the child');
   } finally { await rerank.close(); r.done(); }
 });
 
@@ -162,28 +168,37 @@ test('a model that is not fetched fails each call with the command, and works th
 });
 
 test('the bound during a rerank is a coded timeout, the abandoned child is closed, and the next call starts a fresh one', async () => {
-  const r = rig({ rankDelayMs: 300 });
+  const r = rig({ rankDelayMs: 800 });
+  const ft = fakeTimers();
   const client = new CpuRerankClient({ pkg: r.pkg, cacheDir: r.cache, table: r.table });
-  const rerank = cpuRerankProvider({ model: r.id, client, chunk: 1 });
+  const rerank = cpuRerankProvider({ model: r.id, client, chunk: 1, timers: ft.timers });
   try {
     await rerank({ query: QUERY, docs: NOTES.slice(0, 1), boundMs: 20000 }); // loads, and warms the child
     const first = client.pid;
-    const t0 = Date.now();
-    await assert.rejects(rerank({ query: QUERY, docs: NOTES, boundMs: 400 }), (e) => e.code === 'E_EMBEDDER_TIMEOUT' && e.detail.cause === 'timeout' && e.detail.reranker === true && e.detail.bound_ms === 400 && e.detail.phase === 'ranking');
-    const ms = Date.now() - t0;
-    assert.ok(ms >= 380 && ms < 3000, `rejected after ${ms} ms`);
-    assert.ok(await waitGone(first, 5000), 'the abandoned child was closed');
+    const progress = countProgress(client.child);
+    const call = outcome(rerank({ query: QUERY, docs: NOTES, boundMs: 400 }));
+    await progress.reach(1); // the child is ranking: its first chunk has come back, four more are to come
+    await ft.advance(399);
+    assert.strictEqual(call.settled, false, 'still pending at bound - 1');
+    await ft.advance(1);
+    assert.ok(call.error && call.error.code === 'E_EMBEDDER_TIMEOUT' && call.error.detail.cause === 'timeout' && call.error.detail.reranker === true && call.error.detail.bound_ms === 400 && call.error.detail.phase === 'ranking', call.error && call.error.message);
+    assert.ok(await waitGone(first), 'the abandoned child was closed');
     const out = await rerank({ query: QUERY, docs: NOTES.slice(0, 2), boundMs: 20000 });
     assert.strictEqual(out.scores.length, 2);
   } finally { await rerank.close(); r.done(); }
 });
 
 test('the bound during the first load is a coded timeout that leaves the load running, so a later call finds the model ready', async () => {
-  const r = rig({ loadDelayMs: 700 });
+  const r = rig({ loadDelayMs: 1500 });
+  const ft = fakeTimers();
   const client = new CpuRerankClient({ pkg: r.pkg, cacheDir: r.cache, table: r.table });
-  const rerank = cpuRerankProvider({ model: r.id, client });
+  const rerank = cpuRerankProvider({ model: r.id, client, timers: ft.timers });
   try {
-    await assert.rejects(rerank({ query: QUERY, docs: NOTES, boundMs: 150 }), (e) => e.code === 'E_EMBEDDER_TIMEOUT' && e.detail.phase === 'loading the model' && e.detail.bound_ms === 150);
+    const call = outcome(rerank({ query: QUERY, docs: NOTES, boundMs: 150 }));
+    await ft.advance(149);
+    assert.strictEqual(call.settled, false, 'still pending at bound - 1');
+    await ft.advance(1);
+    assert.ok(call.error && call.error.code === 'E_EMBEDDER_TIMEOUT' && call.error.detail.phase === 'loading the model' && call.error.detail.bound_ms === 150, call.error && call.error.message);
     const pid = client.pid;
     assert.ok(pidAlive(pid), 'the child was not closed');
     const out = await rerank({ query: QUERY, docs: NOTES, boundMs: 20000 });
@@ -191,8 +206,6 @@ test('the bound during the first load is a coded timeout that leaves the load ru
     assert.strictEqual(out.scores.length, NOTES.length);
   } finally { await rerank.close(); r.done(); }
 });
-
-const until = async (fn, ms = 5000) => { const t0 = Date.now(); while (!fn() && Date.now() - t0 < ms) await new Promise(r => setTimeout(r, 10)); return fn(); };
 
 test('after a crash the NEXT call builds a new client and reloads the model, once per call; a failed reload fails that call with its real cause', async () => {
   const r = rig();
@@ -205,8 +218,7 @@ test('after a crash the NEXT call builds a new client and reloads the model, onc
   try {
     await rerank({ query: QUERY, docs: NOTES });
     pids.push(client.pid);
-    client.child.send({ id: 999, op: 'crash', code: 9 });
-    assert.ok(await until(() => client.exit), 'the exit event arrived');
+    await crash(client, 9); // the exit event arrived
     assert.strictEqual(client.exit.code, 9);
     assert.throws(() => client.start(), (e) => e.code === 'E_MODEL_ABSENT' && e.detail.cause === 'dead' && /exit code 9/.test(e.message), 'start() does not re-fork over a dead child');
     assert.strictEqual(client.child.pid, pids[0], 'and forked nothing');
@@ -219,9 +231,7 @@ test('after a crash the NEXT call builds a new client and reloads the model, onc
       const fresh = starts[starts.length - 1];
       assert.ok(!pids.includes(fresh), 'a new pid');
       pids.push(fresh);
-      const fc = clients[clients.length - 1];
-      fc.child.send({ id: 998, op: 'crash', code: 5 });
-      assert.ok(await until(() => fc.exit), 'the exit event arrived');
+      await crash(clients[clients.length - 1], 5);
     }
     // a reload that fails is that call's error, with the real cause, and the provider tries again on the next call
     const gone = r.cache + '-away';
@@ -232,35 +242,47 @@ test('after a crash the NEXT call builds a new client and reloads the model, onc
   } finally { CpuRerankClient.prototype.start = realStart; await rerank.close(); r.done(); }
 });
 
-test('two concurrent calls: one call\'s timeout closes the shared child, and the other is retried once on a fresh one inside its own bound', async () => {
-  const r = rig({ rankDelayMs: 300 });
+test("two concurrent calls: one call's timeout closes the shared child, and the other is retried once on a fresh one inside its own bound", async () => {
+  const r = rig({ rankDelayMs: 800 });
+  const ft = fakeTimers();
   const client = new CpuRerankClient({ pkg: r.pkg, cacheDir: r.cache, table: r.table });
-  const rerank = cpuRerankProvider({ model: r.id, client, chunk: 1 });
+  const rerank = cpuRerankProvider({ model: r.id, client, chunk: 1, timers: ft.timers });
   try {
     await rerank({ query: QUERY, docs: NOTES.slice(0, 1) }); // loaded and warm
     const first = client.pid;
-    const [a, b] = await Promise.allSettled([
-      rerank({ query: QUERY, docs: NOTES, boundMs: 400 }), // five chunks at 300 ms: its bound passes
-      rerank({ query: QUERY, docs: NOTES.slice(0, 2), boundMs: 30000 }), // queued behind it on the same child
-    ]);
-    assert.strictEqual(a.status, 'rejected');
-    assert.ok(a.reason.code === 'E_EMBEDDER_TIMEOUT' && a.reason.detail.cause === 'timeout');
-    assert.strictEqual(b.status, 'fulfilled', b.reason && b.reason.message);
+    const progress = countProgress(client.child);
+    const a = outcome(rerank({ query: QUERY, docs: NOTES, boundMs: 400 })); // five chunks: its bound passes
+    const b = outcome(rerank({ query: QUERY, docs: NOTES.slice(0, 2), boundMs: 30000 })); // queued behind it on the same child
+    await progress.reach(1);
+    await ft.advance(399);
+    assert.strictEqual(a.settled, false, 'a is still pending at bound - 1');
+    await ft.advance(1);
+    await Promise.all([a.done, b.done]);
+    assert.ok(a.error && a.error.code === 'E_EMBEDDER_TIMEOUT' && a.error.detail.cause === 'timeout');
+    assert.strictEqual(b.error, undefined, b.error && b.error.message);
     assert.strictEqual(b.value.scores.length, 2);
-    assert.ok(await waitGone(first, 5000), 'the first child is gone');
+    assert.ok(await waitGone(first), 'the first child is gone');
   } finally { await rerank.close(); r.done(); }
 });
 
 test('after a timeout the next call waits for the old child to be gone before it forks: at most one model in memory', async () => {
-  const r = rig({ rankDelayMs: 300 });
-  const live = [];
+  const r = rig({ rankDelayMs: 800 });
+  const ft = fakeTimers();
+  const live = [], clients = [];
   const realStart = CpuRerankClient.prototype.start;
   const seen = [];
-  CpuRerankClient.prototype.start = function start() { const was = this.child, alive = live.filter(pidAlive).length; const out = realStart.call(this); if (this.child !== was) { seen.push(alive); live.push(this.pid); } return out; }; // counted BEFORE the fork, which itself takes time
-  const rerank = cpuRerankProvider({ model: r.id, pkg: r.pkg, cacheDir: r.cache, table: r.table, chunk: 1 });
+  CpuRerankClient.prototype.start = function start() { const was = this.child, alive = live.filter(pidAlive).length; const out = realStart.call(this); if (this.child !== was) { seen.push(alive); live.push(this.pid); clients.push(this); } return out; }; // counted BEFORE the fork, which itself takes time
+  const rerank = cpuRerankProvider({ model: r.id, pkg: r.pkg, cacheDir: r.cache, table: r.table, chunk: 1, timers: ft.timers });
   try {
     await rerank({ query: QUERY, docs: NOTES.slice(0, 1) });
-    await assert.rejects(rerank({ query: QUERY, docs: NOTES, boundMs: 350 }), (e) => e.code === 'E_EMBEDDER_TIMEOUT');
+    const progress = countProgress(clients[0].child);
+    const call = outcome(rerank({ query: QUERY, docs: NOTES, boundMs: 350 }));
+    await progress.reach(1);
+    await ft.advance(349);
+    assert.strictEqual(call.settled, false, 'still pending at bound - 1');
+    await ft.advance(1);
+    await call.done;
+    assert.ok(call.error && call.error.code === 'E_EMBEDDER_TIMEOUT');
     await rerank({ query: QUERY, docs: NOTES.slice(0, 1) });
     assert.strictEqual(live.length, 2);
     assert.deepStrictEqual(seen, [0, 0], 'no earlier child was alive when a new one was forked');
@@ -270,23 +292,36 @@ test('after a timeout the next call waits for the old child to be gone before it
 test('with no boundMs the provider uses its default (10 s unless given), never unbounded', async () => {
   const { DEFAULT_BOUND_MS } = core('rerank-cpu.cjs');
   assert.strictEqual(DEFAULT_BOUND_MS, 10000);
-  const r = rig({ rankDelayMs: 1500 });
-  const rerank = r.provider({ defaultBoundMs: 400 });
+  const r = rig({ rankDelayMs: 3000 });
+  const ft = fakeTimers();
+  const client = new CpuRerankClient({ pkg: r.pkg, cacheDir: r.cache, table: r.table });
+  const rerank = cpuRerankProvider({ model: r.id, client, defaultBoundMs: 400, timers: ft.timers });
   try {
-    await assert.rejects(rerank({ query: QUERY, docs: NOTES }), (e) => e.code === 'E_EMBEDDER_TIMEOUT' && e.detail.bound_ms === 400);
+    const call = outcome(rerank({ query: QUERY, docs: NOTES }));
+    await waitFor(() => client.models.size > 0, { label: 'the model loaded (the rank is under way)' });
+    await ft.settle();
+    await ft.advance(399);
+    assert.strictEqual(call.settled, false, 'the default bound is 400 here, not passed again');
+    await ft.advance(1);
+    assert.ok(call.error && call.error.code === 'E_EMBEDDER_TIMEOUT' && call.error.detail.bound_ms === 400, call.error && call.error.message);
   } finally { await rerank.close(); r.done(); }
 });
 
-test('a load has a wall-clock limit that the child\'s heartbeats do not reset', async () => {
+test("a load has a wall-clock limit that the child's heartbeats do not reset", async () => {
   const r = rig({ loadDelayMs: 4000 });
-  const c = new CpuRerankClient({ pkg: r.pkg, cacheDir: r.cache, table: r.table, workerOpts: { heartbeatMs: 50 }, loadBoundMs: 2000, loadWallMs: 500 }).start();
+  const ft = fakeTimers();
+  const c = new CpuRerankClient({ pkg: r.pkg, cacheDir: r.cache, table: r.table, workerOpts: { heartbeatMs: 50 }, loadBoundMs: 2000, loadWallMs: 500, timers: ft.timers }).start();
   try {
-    const t0 = Date.now();
-    await assert.rejects(c.load(r.id), (e) => e.code === 'E_EMBEDDER_TIMEOUT' && e.detail.cause === 'timeout' && e.detail.wall_clock === true && e.detail.timeout_ms === 500);
-    const ms = Date.now() - t0;
-    assert.ok(ms >= 450 && ms < 3500, `rejected after ${ms} ms, well before the 4 s load`);
+    assert.strictEqual((await c.ping(UP_DEADLINE)).ok, true, 'warm: the child is up before the clock starts');
+    const progress = countProgress(c.child);
+    const load = outcome(c.load(r.id));
+    await progress.reach(3); // at least three real heartbeats: the silence clock has been credited repeatedly
+    await ft.advance(499);
+    assert.strictEqual(load.settled, false, 'not rejected at wall - 1');
+    await ft.advance(1);
+    assert.ok(load.error && load.error.code === 'E_EMBEDDER_TIMEOUT' && load.error.detail.cause === 'timeout' && load.error.detail.wall_clock === true && load.error.detail.timeout_ms === 500, JSON.stringify(load.error));
     assert.ok(c.hung, 'a load past its wall clock is a hung child');
-    assert.ok(await waitGone(c.pid, 5000), 'the wall-clock branch closed the stuck child itself');
+    assert.ok(await waitGone(c.pid), 'the wall-clock branch closed the stuck child itself');
   } finally { await c.close(); r.done(); }
 });
 
@@ -299,15 +334,13 @@ test('close() during an in-flight ensure forks and loads nothing after it: a cra
   CpuRerankClient.prototype.start = function start() { const was = this.child; const out = realStart.call(this); if (this.child !== was) pids.push(this.pid); return out; };
   try {
     await rerank({ query: QUERY, docs: NOTES });
-    client.child.send({ id: 997, op: 'crash', code: 4 });
-    assert.ok(await until(() => client.exit), 'the exit event arrived');
+    await crash(client, 4); // the exit event arrived
     const before = pids.length;
     const call = rerank({ query: QUERY, docs: NOTES }).catch((e) => e);
     await rerank.close(); // immediately: the call is inside ensure()
     const out = await call;
     assert.ok(out instanceof Error && out.code === 'E_MODEL_ABSENT' && out.detail.cause === 'dead', 'the call failed with a coded dead error');
-    await new Promise(x => setTimeout(x, 500));
-    for (const pid of pids) assert.ok(!pidAlive(pid), `child ${pid} outlived close()`);
+    for (const pid of pids) assert.ok(await waitGone(pid), `child ${pid} outlived close()`);
     assert.ok(pids.length <= before + 1, 'at most the one child the call had started, now closed');
     await assert.rejects(rerank({ query: QUERY, docs: NOTES }), (e) => e.code === 'E_MODEL_ABSENT' && e.detail.cause === 'dead', 'and nothing starts after close');
     assert.strictEqual(pids.length, Math.min(pids.length, before + 1));
