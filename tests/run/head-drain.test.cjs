@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // head-drain.test.cjs — the shutdown head drain must outlast a git killed at its own 5000 ms timeout. git is a
 // stub that hangs until execFile's timeout kills it, the kill completing KILL_LAG_MS late; execFile is wrapped
 // before the run modules load, as head-retry.test.cjs does.

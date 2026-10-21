@@ -36,9 +36,22 @@ const TMP_HELPER = path.join(__dirname, '..', 'tests', 'helpers', 'tmp.cjs').spl
 // test (tests/run/integration.test.cjs) makes it write and which is not belay's. `belay-snapshot` is the process
 // snapshot's own TEMP (src/core/proc-identity.cjs): only PowerShell probe files belong in it, and the next snapshot
 // sweeps those once stale, so they are counted on their own line; anything else in it is a leak.
-const KEPT = new Set(['belay-run', 'belay-ro', 'claude', 'belay-snapshot', 'belay-spawned']); // belay-spawned: the spawn register's directory (src/core/spawn-register.cjs), emptied as its processes exit
+const KEPT = new Set(['belay-run', 'belay-ro', 'claude', 'belay-snapshot', 'belay-spawned']); // belay-spawned: the spawn register's DEFAULT directory (src/core/spawn-register.cjs); no test may write to it (tests/helpers/tmp.cjs gives every test process its own), so anything in it is a leak, reported below
 const PROBE_FILE = /^__PSScriptPolicyTest_/;
 const snapshotResidue = (scratch) => { try { return fs.readdirSync(path.join(scratch, 'belay-snapshot')).filter((c) => PROBE_FILE.test(c)).length; } catch { return 0; } };
+
+// Every file in the default spawn register's directory (and its exited/ tombstones), as relative names. A test that reaches the
+// machine-wide register shows up here: the register is the one place where one test's processes can be taken for another's.
+function registerEntries(dir) {
+  const out = [];
+  const walk = (d, prefix) => {
+    let names = [];
+    try { names = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of names) { if (e.isDirectory()) walk(path.join(d, e.name), prefix + e.name + '/'); else out.push(prefix + e.name); }
+  };
+  walk(dir, '');
+  return out;
+}
 
 // The tmp guard. The suite runs with TEMP/TMP/TMPDIR pointed at a scratch directory of its own, so every
 // entry found in it afterwards was left by this suite and nothing else (a snapshot diff of the shared temp
@@ -55,6 +68,7 @@ function leaked(scratch) {
       continue;
     }
     if (n === 'belay-ro') { try { for (const c of fs.readdirSync(path.join(scratch, n))) out.push(n + '/' + c); } catch { /* gone */ } }
+    if (n === 'belay-spawned') { for (const c of registerEntries(path.join(scratch, n))) out.push(n + '/' + c); }
     if (n === 'belay-snapshot') { try { for (const c of fs.readdirSync(path.join(scratch, n))) if (!PROBE_FILE.test(c)) out.push(n + '/' + c); } catch { /* gone */ } }
   }
   return out;

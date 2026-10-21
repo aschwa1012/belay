@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // review-stage-unsupported.test.cjs — the archive reviewer's brief for an `unsupported` queue entry carries the run's wider evidence as PATHS: the
 // streams of the task that wrote the note, the streams of the run's other workers (not another run's), and the task's diff saved beside the brief.
 // Those streams are passed to memory.reviewApply as citable evidence files. The core is a stub; the git repository and the files are real.

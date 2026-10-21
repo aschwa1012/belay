@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // base-error.test.cjs — a worker row says why it has no base_sha (base_error), mirroring head_error. git is made to
 // fail by wrapping child_process.execFile before the run modules load, exactly as head-retry.test.cjs does.
 

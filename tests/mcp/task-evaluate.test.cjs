@@ -3,6 +3,7 @@
 // clear a dependency. The owner is elected in this test process (as permit.test.cjs does), the adapter
 // is a child process, and every child is stopped by its exact pid in teardown.
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 
 const test = require('node:test');
 const assert = require('node:assert');

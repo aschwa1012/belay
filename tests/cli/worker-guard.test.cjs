@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // worker-guard.test.cjs — the identity-bind stopgap: a process whose environment carries BELAY_WORKER_ID is a worker's, and the
 // CLI refuses every verb that writes (each one opens the core as the operator). Read verbs still answer. Real CLI children.
 

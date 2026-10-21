@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // run-interactive-helpers.cjs — the scaffolding shared by run-interactive.test.cjs and
 // run-interactive-lifecycle.test.cjs: a spec writer, a fake of createInteractiveGate's contract
 // ({ debug, session, firstMessage, current(), stop() }), a fake argv builder, and `start`, which runs

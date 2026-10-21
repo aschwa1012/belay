@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');

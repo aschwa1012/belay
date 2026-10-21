@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // snapshot-retry.test.cjs — ADR 0048 decisions 1 and 3 (which amend ADR 0039 review follow-up 3): a kill-time
 // snapshot and the spawn-time creation-time read each take ONE attempt, never retried; an unreadable snapshot
 // refuses the kill at once with the exact way to end the process by hand; a spawn whose read failed is left
