@@ -18,6 +18,11 @@ const { checkCitations, evidenceOf, streamCite } = require('./memory-citations.c
 const { archiveNote } = require('./memory-archive.cjs');
 const N = require('./methods-memory-notes.cjs');
 const { applyOneIn } = require('./methods-memory-note-review.cjs');
+const HG = require('./held-guard.cjs');
+
+// The archive review's cited outcome on one note is the only authority besides the operator's own command that may change a held note's
+// visibility or status (held-guard.cjs). Each wrapper covers one synchronous transaction, after its cites were checked.
+const granted = (noteId, fn) => HG.grant('archive_review', noteId, fn);
 
 const KEYS = ['verdicts', 'run_id', 'head_sha', 'worktree', 'evidence_files'];
 const REVIEWS_KEEP = 20;
@@ -134,7 +139,7 @@ async function unsupported(E, ctx, held, v) {
       return { id, verdict: v.verdict, outcome: 'refused', receipt: entry.receipt, code: 'E_PRECONDITION', message, held: C.rowOut(E, held.id), row: C.rowOut(E, id) };
     }
     const route = { reviewer: `archreview-${ctx.runId}`, ref: `${ctx.runId}:${held.id}`, keyBase: `archreview:${held.id}` };
-    const status = applyOneIn(E, ctx.caller, route, { id, verdict: v.verdict === 'verify' ? 'confirmed' : 'refuted', reason: v.reason, cites: v.cites }, note);
+    const status = granted(id, () => applyOneIn(E, ctx.caller, route, { id, verdict: v.verdict === 'verify' ? 'confirmed' : 'refuted', reason: v.reason, cites: v.cites }, note));
     const entry = settle(v.verdict === 'verify' ? 'verified' : 'refuted', { verified: sources });
     return { id, verdict: v.verdict, outcome: entry.outcome, receipt: entry.receipt, status: status.status, event_id: status.event_id, held: C.rowOut(E, held.id), row: C.rowOut(E, id) };
   });
@@ -150,7 +155,7 @@ async function one(E, ctx, raw, index) {
   }
   const tx = fn => C.openTx(E, ctx.caller, 'memory.reviewApply', fn);
   if (isUns) return unsupported(E, ctx, held, v);
-  if (v.verdict === 'release') { v = { ...v, ...pick(C.redactEntry(v)) }; return tx(() => release(E, ctx, held, v)); }
+  if (v.verdict === 'release') { v = { ...v, ...pick(C.redactEntry(v)) }; return tx(() => granted(v.id, () => release(E, ctx, held, v))); }
   let sources = [];
   try {
     if (held.b.kind === 'duplicate') {
@@ -176,7 +181,7 @@ async function one(E, ctx, raw, index) {
   return tx(() => {
     const fresh = activeHold(E, ctx.project, v.id); // the state at the write
     if (!fresh) throw err('E_NOT_FOUND', `the hold on note ${v.id} was settled while the verdict was being checked`, { id: v.id });
-    return archive(E, ctx, fresh, v, sources);
+    return granted(v.id, () => archive(E, ctx, fresh, v, sources));
   });
 }
 

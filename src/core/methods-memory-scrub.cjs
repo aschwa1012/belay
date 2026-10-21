@@ -27,7 +27,7 @@ const { standing } = require('./report-marks.cjs');
 const { openProposals, sameMark, keysFor } = require('./proposal-open.cjs');
 
 const KEYS = ['scrub', 'scope', 'run_id', 'head_sha', 'worktree', 'evidence_files'];
-const REFUSALS = new Set(['E_CITATION', 'E_PRECONDITION', 'E_SCOPE', 'E_NOT_FOUND', 'E_EXISTS', 'E_ARGS', 'E_ROLE', 'E_MODEL']);
+const REFUSALS = new Set(['E_CITATION', 'E_PRECONDITION', 'E_SCOPE', 'E_NOT_FOUND', 'E_EXISTS', 'E_ARGS', 'E_ROLE', 'E_MODEL', 'E_HELD']);
 const DISMISS_KEEP = 20;
 
 function checkScope(scope) {

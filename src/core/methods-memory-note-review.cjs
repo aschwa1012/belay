@@ -118,7 +118,7 @@ function applyOneIn(E, caller, route, v, n) {
     if (!cur) throw err('E_NOT_FOUND', `no note ${n.id}`, { id: n.id });
     const previous = cur.status || 'unverified';
     if (previous === 'refuted' && v.verdict === 'confirmed') throw bad(`note ${n.id} was refuted while this verdict was being checked; a refuted note is changed back only by the operator`, { id: n.id });
-    E.store.p('UPDATE memory_entries SET status = ?, status_receipt = ?, status_by = ?, status_at = ? WHERE id = ?').run(status, receipt, E.memoryWriter(caller), at, n.id);
+    E.store.setStatusIn(n.id, { status, receipt, by: E.memoryWriter(caller), at }); // through the store, so a held note's status is guarded (held-guard.cjs)
     E.store.patchBody(n.id, (b) => { b.review = { verdict: v.verdict, by: route.reviewer, ref: route.ref, at, reason: v.reason, cites: v.cites }; return b; });
     const ev = recordEventSync(E, caller, { kind: 'note_review', ok: true, ...common, row_ids: [n.id], newest_row_id: n.id, message: `${v.verdict}: ${v.reason}`.slice(0, 300) });
     if (v.verdict === 'refuted') recordEventSync(E, caller, { kind: 'note_refuted', ok: true, ...common, key: `refuted:${n.id}`, row_ids: [n.id], newest_row_id: n.id, message: `note ${n.id} refuted by review ${route.ref}` });

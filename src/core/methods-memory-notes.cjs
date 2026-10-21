@@ -299,6 +299,9 @@ function liveTarget(E, caller, pending, project, x, i) {
   if ((r.status || 'unverified') === 'refuted') throw err('E_ARGS', `${at}: note ${x.of} is refuted`, { id: x.of });
   const gone = E.store.p('SELECT id FROM memory_entries WHERE supersedes = ? AND namespace = ?').get(x.of, r.namespace);
   if (gone) throw err('E_ARGS', `${at}: note ${x.of} was superseded by ${gone.id}; resolve against ${gone.id}`, { id: x.of, superseded_by: gone.id });
+  // A held note is hidden by nobody but the archive review and the operator: a refines or supersedes of it is refused here, naming the hold.
+  // (A repeat only adds a sighting and hides nothing, so it is allowed.)
+  if (x.resolve === 'supersedes' || x.resolve === 'refines') require('./held-guard.cjs').check(E, x.resolve, r.id, { resolution: x.resolve });
   if ((x.resolve === 'supersedes' || x.resolve === 'refines') && caller.role === 'worker' && r.status === 'verified') {
     throw err('E_ROLE', `${at}: note ${x.of} is verified, and a worker may not ${x.resolve === 'refines' ? 'refine' : 'supersede'} a verified note (a repeat of it is fine)`, { id: x.of, role: caller.role });
   }

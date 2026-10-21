@@ -8,7 +8,8 @@ const L = require('./memory-lifecycle.cjs');
 const C = require('./lifecycle-common.cjs');
 
 const isVerified = n => (n.status || 'unverified') === 'verified';
-const mustHold = (caller, target, relation) => (relation === 'refines' || relation === 'supersedes') && caller.role !== 'operator' && isVerified(target);
+// Only the explicit operator (a command of the human's, not the run's close stages) replaces a verified note directly.
+const mustHold = (caller, target, relation) => (relation === 'refines' || relation === 'supersedes') && !require('./held-guard.cjs').explicitOperator(caller) && isVerified(target);
 
 // Throws E_EXISTS when the verified note already waits on a reviewer. Writes the held row and puts the pointer on the note. `evidence` is the
 // writer's own { where, saw } for the refinement or replacement: it is data on the row for the reviewer, never a cite (the reviewer's cites are its own).
