@@ -145,6 +145,7 @@ async function fetchModel(entry, ctx) {
   const fail = (message, files = []) => ({ code: 1, verb: 'fetch', model: entry.id, sha: entry.sha, dir: target, error: message, files, total_bytes: 0, total_ms: Date.now() - t0 });
   // Exclusive lock: a second concurrent fetch fails naming it and touches nothing.
   fs.mkdirSync(root, { recursive: true });
+  K.sweepTombstones(root); // a delete whose removal failed left a tombstone: clear it
   const lock = path.join(root, `.fetch-${entry.id.split('/').join('__')}@${entry.sha}.lock`);
   if (!takeLock(lock)) return fail(`another fetch of ${entry.id} holds the lock ${fwdp(lock)}; nothing was touched`);
   try {

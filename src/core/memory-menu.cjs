@@ -18,6 +18,8 @@ const { ONNX_RERANKER_TABLE } = require('./onnx-rerankers.cjs');
 const ML = require('./memory-levers.cjs');
 const K = require('./model-cache.cjs');
 const R = require('./gpu-runtime.cjs');
+const rows = require('./rows.cjs');
+const { pidAlive } = require('./lock.cjs');
 
 // What a search costs beyond nano's own, per profile (seconds, depth 50), measured on the operator's laptop (docs/HANDOFF-RETRIEVAL-0-3-1.md): speed
 // and fit only. A guide, never a promise: the retrieval eval (0.3.2) re-picks the defaults.
@@ -62,8 +64,9 @@ function gpuOf(probe, env) {
 
 // Every model id the settings name, whether or not a run would reach it today: the run's profile, the CPU profile, every routed type and every
 // CPU pick. { id: [who, ...] }. A name is a reason to keep the model, so `belay embedder delete` refuses it.
-function modelsInUse(levers) {
+function modelsInUse(levers, live = {}) {
   const used = {};
+  for (const [id, who] of Object.entries(live)) used[id] = [...who];
   const note = (id, who) => { if (id && id !== 'none') (used[id] = used[id] || []).push(who); };
   const named = (entry, who) => {
     if (entry === null || entry === undefined) return;
@@ -77,6 +80,32 @@ function modelsInUse(levers) {
   note(RP.NANO, 'every note (the base)');
   for (const id of Object.keys(used)) used[id] = [...new Set(used[id])];
   return used;
+}
+
+// The models the pinned routing of every LIVE run (not ended, its adapter's pid alive; a paused run is live) names, read from a COPY of the store:
+// { model id: ['run <id>', ...] } and the run ids. A run pins its routing once at its start and keeps it whatever the settings say now, so a model
+// the settings no longer name can still be loaded by a run. `ok: false` when the store could not be read: a caller that must not guess refuses.
+async function liveRunUse(dataDir) {
+  const out = { models: {}, runs: [], ok: true };
+  if (!fs.existsSync(path.join(dataDir, 'memory.db'))) return out;
+  const { withCopy } = require('./copy-read.cjs');
+  const { Store } = require('./store.cjs');
+  try {
+    return await withCopy(dataDir, async (dbPath) => {
+      const store = new Store(dbPath);
+      try {
+        for (const r of rows.currentAll(store, 'run')) {
+          if (r.ended_at != null || !pidAlive(r.adapter_pid)) continue;
+          out.runs.push(r.id);
+          let pin = null;
+          try { pin = typeof r.retrieval_routing === 'string' ? JSON.parse(r.retrieval_routing) : r.retrieval_routing; } catch { pin = null; }
+          const tiers = pin && pin.routing ? [pin.routing.run, ...Object.values(pin.routing.tiers || {})] : [];
+          for (const t of tiers) for (const id of [t && t.embedder, t && t.reranker]) if (id) { const l = (out.models[id] = out.models[id] || []); if (!l.includes(`run ${r.id}`)) l.push(`run ${r.id}`); }
+        }
+        return out;
+      } finally { try { store.close(); } catch { /* a throwaway copy */ } }
+    });
+  } catch { return { ...out, ok: false }; }
 }
 
 function modelRows({ cacheRoot, probe, used, backlog }) {
@@ -130,24 +159,39 @@ const profileRows = (probe) => RP.PROFILE_NAMES.map((name) => {
 });
 
 // menu({ found, dataDir, agentTypes, env }) -> the object `belay memory menu --json` prints.
+// The GPU is usable for the selected embedder when the last probe was ok AND the runtime is still sound now (a runtime removed since the probe is not).
+const gpuUsable = (gpu) => gpu.state === 'probed' && gpu.ok === true && gpu.runtime.ok === true;
+
+// The selected embedder (the profile when the GPU is usable, else profile_cpu) and the notes behind it. The badge needs no more than this, so
+// `belay memory menu --badge` counts one embedder instead of every heavy one.
+async function badge({ found, dataDir, env = process.env }) {
+  const { levers } = leversOf(found);
+  const gpu = gpuOf(probeRead(env), env);
+  let selected = RP.NANO;
+  try { selected = resolveRouting({ levers, agentTypes: [...MAIN_TYPES], gpu: gpuUsable(gpu) }).run.embedder; } catch { /* the block is refused: nano */ }
+  const bl = has(GGUF_MODELS, selected) ? await backlogs(dataDir, levers.project, [selected]) : { by: {}, reason: null };
+  return { v: 1, badge: true, selected_embedder: selected, behind: has(bl.by, selected) ? bl.by[selected] : 0, backlog_reason: bl.reason };
+}
+
 async function menu({ found, dataDir, agentTypes, env = process.env }) {
   const { levers, error } = leversOf(found);
   const probe = probeRead(env);
   const gpu = gpuOf(probe, env);
   const cacheRoot = K.cacheRoot(env);
-  const used = modelsInUse(levers);
+  const live = await liveRunUse(dataDir);
+  const used = modelsInUse(levers, live.models);
   const heavyIds = Object.values(GGUF_MODELS).filter((e) => e.kind === 'embedder').map((e) => e.id);
   const wanted = heavyIds.filter((id) => has(used, id) || K.checkPresent(GGUF_MODELS[id], cacheRoot).present);
   const bl = await backlogs(dataDir, levers.project, wanted);
   const models = modelRows({ cacheRoot, probe, used, backlog: bl.by });
-  const usable = gpu.state === 'probed' && gpu.ok;
+  const usable = gpuUsable(gpu);
   const selectedProfile = usable ? levers.profile : levers.profile_cpu;
   let selected = RP.NANO;
   try { selected = resolveRouting({ levers, agentTypes: [...MAIN_TYPES], gpu: usable }).run.embedder; } catch { /* the block is refused: nano */ }
   const saved = (() => { try { return resolveRouting({ levers, agentTypes: [...MAIN_TYPES], gpu: true }).gpu_models; } catch { return []; } })();
   const disk = models.filter((m) => m.state === 'ready').reduce((n, m) => n + m.bytes, 0);
   return {
-    v: 1, config: found && found.found ? found.path : null, config_error: error, project: levers.project, cache_root: cacheRoot,
+    v: 1, live_runs: live.runs, live_runs_ok: live.ok, config: found && found.found ? found.path : null, config_error: error, project: levers.project, cache_root: cacheRoot,
     gpu, levers: Object.fromEntries(LEVER_KEYS.map((k) => [k, levers[k]])), headroom_mb: Math.round(levers.vram_headroom_gb * 1024),
     profiles: profileRows(probe), models,
     agent_types: { main: [...MAIN_TYPES], advanced: agentTypes.filter((t) => !MAIN_TYPES.includes(t)) },
@@ -164,4 +208,4 @@ function describeForDelete(id) {
   return { entry: e, runtime: has(GGUF_MODELS, id) ? 'gguf' : 'onnx', kind: has(GGUF_MODELS, id) ? GGUF_MODELS[id].kind : has(ONNX_RERANKER_TABLE, id) ? 'reranker' : 'embedder' };
 }
 
-module.exports = { menu, modelsInUse, leversOf, probeRead, describeForDelete, tableEntry, PROFILE_TIME_S, MAIN_TYPES };
+module.exports = { menu, badge, liveRunUse, gpuUsable, modelsInUse, leversOf, probeRead, describeForDelete, tableEntry, PROFILE_TIME_S, MAIN_TYPES };

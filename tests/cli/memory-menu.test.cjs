@@ -17,6 +17,13 @@ const embedderExtra = require('../../src/cli/cmd-embedder-extra.cjs');
 const P = require('../../src/core/gpu-probe.cjs');
 const C = require('../../src/cli/config.cjs');
 const AD = require('../../src/run/agent-defaults.cjs');
+const R = require('../../src/core/gpu-runtime.cjs');
+// The runtime check reads a real installed tree; a test says what it answers.
+const withRuntime = async (ok, fn) => {
+  const keep = R.check;
+  R.check = () => ({ ok, dir: 'x', versions: {}, problems: ok ? [] : ['the GPU runtime is not installed (x)'], command: 'belay embedder fetch --gpu', manifest_version: '0' });
+  try { return await fn(); } finally { R.check = keep; }
+};
 
 const { Store } = core('store.cjs');
 const JINA = 'jinaai/jina-reranker-v1-tiny-en';
@@ -106,7 +113,7 @@ test('the backlog of the selected heavy embedder counts the project\'s notes wit
   }
   store.close();
   P.recordLast(P.peaksFile(), { ok: true, device: { name: 'GPU' }, dedicated: { free_mb: 8000, total_mb: 8000 } }, [E4]);
-  const m = await build(proj, data);
+  const m = await withRuntime(true, () => build(proj, data));
   const row = m.models.find((x) => x.id === E4);
   assert.deepStrictEqual([row.state, row.heavy, row.backlog, row.in_use], ['ready', true, 3, true]);
   assert.strictEqual(m.selected_embedder, E4, 'the GPU is probed ok, so the profile (not profile_cpu) is selected');
@@ -115,7 +122,7 @@ test('the backlog of the selected heavy embedder counts the project\'s notes wit
   assert.strictEqual(m.disk.models, 1);
   assert.strictEqual(m.disk.bytes, GGUF_MODELS[E4].files[0].bytes);
   fs.rmSync(P.peaksFile());
-  const cpuOnly = await build(proj, data);
+  const cpuOnly = await withRuntime(true, () => build(proj, data));
   assert.deepStrictEqual([cpuOnly.selected_embedder, cpuOnly.behind], [NANO, 0], 'with no probed GPU the selected embedder is nano, so there is no badge');
   assert.strictEqual(cpuOnly.models.find((x) => x.id === E4).backlog, 3, 'the per-embedder count stays');
 });
@@ -137,7 +144,7 @@ test('delete removes a fetched model nothing uses, and refuses one the settings 
   writeConfig(proj, { project: 'acme', profile_cpu: 'cpu-rerank-light' });
   const used = await embedderExtra.run(ctx([JINA]));
   assert.strictEqual(used.code, 1);
-  assert.match(used.text, /in use by the current settings \(.*run \(CPU only\)/);
+  assert.match(used.text, /in use by the current settings or a live run \(run \(CPU only\)/);
   assert.ok(fs.existsSync(dir), 'nothing was removed');
   assert.ok((await embedderExtra.run(ctx([NANO]))).json.in_use_by.includes('every note (the base)'));
   writeConfig(proj, { project: 'acme' });
