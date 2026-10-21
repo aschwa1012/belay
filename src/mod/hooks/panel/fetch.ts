@@ -2,7 +2,7 @@
 // index.tsx: the engine follows `$` only inside the file that declares the hooks.
 
 import type { BelayAgent, BelayPanelSnap, BelayPanelWatch } from '../../types/index'
-import { DEFAULT_SETTINGS, normAgents, normHeld, normNotices, normTranscript, parseMemoryNotice, parseSettings, type AgentsRead } from './model'
+import { DEFAULT_SETTINGS, normAgents, normHeld, normNotices, normTranscript, parseMemoryNotice, parseSettings, heavyConfigured, type AgentsRead } from './model'
 
 export type RunFile = { role: string; runId: string; dataDir: string; cli: string; node: string }
 export type RunFileRead = { file: RunFile } | { error: string }
@@ -77,7 +77,7 @@ export function fatalSnapshot(message: string, runId: string | null, now: number
   return {
     fetchedAt: now, runId, mode: null, runState: null, stale: false, fatal: message, transcriptOk: false, transcriptAt: null,
     startedAtMs: null, pausedAtMs: null, frozenAtMs: null, endedAtMs: null, tasks: null, maxFixRounds: null, embedder: null, agents: [], footer: null, notices: [], held: null, transcript: null,
-    settings: DEFAULT_SETTINGS, memoryNotice: null, errors: [],
+    settings: DEFAULT_SETTINGS, memoryNotice: null, memWanted: false, errors: [],
   }
 }
 
@@ -157,6 +157,7 @@ export function buildSnapshot(p: Parts): BelayPanelSnap {
     embedder: ag ? ag.embedder : (prev?.embedder ?? null),
     agents: ag ? ag.agents : (prev?.agents ?? []),
     footer: ag ? ag.footer : (prev?.footer ?? null),
-    notices, held: nj !== undefined ? normHeld(nj) : (prev?.held ?? null), transcript, settings, memoryNotice, errors,
+    notices, held: nj !== undefined ? normHeld(nj) : (prev?.held ?? null), transcript, settings, memoryNotice,
+    memWanted: sj !== undefined ? heavyConfigured(sj) : (prev?.memWanted ?? false), errors,
   }
 }

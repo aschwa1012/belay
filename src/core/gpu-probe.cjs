@@ -137,13 +137,26 @@ function readPeaks(file) {
   try { const j = JSON.parse(fs.readFileSync(file, 'utf8')); return j && j.entries ? j : { version: 1, entries: {} }; } catch { return { version: 1, entries: {} }; }
 }
 
+// Read, change, write by temp file and rename. Limit: the file is machine-wide and there is no lock, so two probes that finish at the same
+// moment can lose one update (the last rename wins). Both writers are the store owner's probe and the record is a hint for the menu, so it is
+// not worth a lock; a lost row is measured again by the next probe.
+function writeRecord(file, cur) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmp, `${JSON.stringify(cur, null, 2)}
+`);
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* a leftover temp file is harmless */ }
+    throw e;
+  }
+}
+
 function recordPeaks(file, rows) {
   const cur = readPeaks(file);
   for (const [k, v] of Object.entries(rows)) cur.entries[k] = v;
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(cur, null, 2)}\n`);
-  fs.renameSync(tmp, file);
+  writeRecord(file, cur);
   return Object.keys(rows).length;
 }
 
@@ -325,11 +338,7 @@ function recordLast(file, r, models) {
   try {
     const cur = readPeaks(file);
     cur.last = { device: r.device.name, free_mb: r.dedicated.free_mb, total_mb: r.dedicated.total_mb, ok: r.ok === true, reason: r.ok ? null : (r.refusal && r.refusal.reason) || null, models, at: new Date().toISOString() };
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    const tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, `${JSON.stringify(cur, null, 2)}
-`);
-    fs.renameSync(tmp, file);
+    writeRecord(file, cur);
     return true;
   } catch { return false; }
 }

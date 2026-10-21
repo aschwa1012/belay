@@ -60,6 +60,21 @@ function checkPresent(entry, root = cacheRoot()) {
   return { present: !missing.length && !wrong.length, dir, missing, wrong_size: wrong, manifest_sha: manifestSha };
 }
 
+// A model folder being deleted is first renamed to `<root>/.tomb-<name>-<pid>-<time>`, so a delete either moves the whole folder or leaves it
+// alone (Windows refuses a rename while a file in it is open). A tombstone that outlived its delete (its removal failed) is swept by the next delete
+// or fetch. Returns the number removed; never throws.
+const TOMB = '.tomb-';
+function sweepTombstones(root = cacheRoot()) {
+  let n = 0;
+  try {
+    for (const name of fs.readdirSync(root)) {
+      if (!name.startsWith(TOMB)) continue;
+      try { fs.rmSync(path.join(root, name), { recursive: true, force: true }); if (!fs.existsSync(path.join(root, name))) n += 1; } catch { /* still held: the next sweep tries again */ }
+    }
+  } catch { /* no cache yet */ }
+  return n;
+}
+
 // The embedding package, found without loading it: BELAY_TRANSFORMERS_PKG (or `override`), else belay's
 // own node_modules only (the repository root, two levels above src/core). No ancestor directory, home
 // directory or global prefix is searched: an install that failed here must not be papered over by
@@ -81,4 +96,4 @@ function packageDir(override, env = process.env) {
   return p && p.version === PKG_VERSION ? p.dir : null;
 }
 
-module.exports = { cacheRoot, defaultCacheRoot, modelDir, dirName, checkPresent, packageDir, packageInfo, MANIFEST, PKG_NAME, PKG_VERSION };
+module.exports = { TOMB, sweepTombstones, cacheRoot, defaultCacheRoot, modelDir, dirName, checkPresent, packageDir, packageInfo, MANIFEST, PKG_NAME, PKG_VERSION };

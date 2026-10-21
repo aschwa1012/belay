@@ -197,7 +197,7 @@ test('budgets: config path, doctor and mcp status each add under 500 ms to the h
   assertGate(result);
 });
 
-test('budgets: status, workers, tasks, receipts, memory stats and reads (a hybrid search among them), usage, briefing, logs (with --memory too) and diff each add under 500 ms to the host floor, interleaved, on a dead store', () => {
+test('budgets: status, workers, tasks, receipts, memory stats and reads (a hybrid search among them), usage, briefing, logs (with --memory too), diff and memory menu (with --badge) each add under 500 ms to the host floor, interleaved, on a dead store', () => {
   const result = interleaved({
     spawnFloor: makeSpawnFloor(),
     commands: {
@@ -219,6 +219,9 @@ test('budgets: status, workers, tasks, receipts, memory stats and reads (a hybri
       logs: () => timedCli(['logs', 'w1', '--tail', '5', '--data', dataDir], {}, 0, dataDir),
       logs_memory: () => timedCli(['logs', 'w1', '--tail', '5', '--memory', '--data', dataDir], {}, 0, dataDir),
       diff: () => timedCli(['diff', '--data', dataDir], {}, 0, dataDir),
+      // The panel's Memory menu facts and its badge-only count (ADR 0050 amendment 3): reads of the config, the cache and a store copy.
+      memory_menu: () => timedCli(['memory', 'menu', '--data', dataDir], {}, 0, dataDir),
+      memory_menu_badge: () => timedCli(['memory', 'menu', '--badge', '--data', dataDir], {}, 0, dataDir),
     },
     n: N,
   });
