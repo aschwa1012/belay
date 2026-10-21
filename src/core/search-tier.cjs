@@ -167,9 +167,13 @@ async function rerankHead(E, caller, o, ranked, rowsOf, lv) {
   const depth = Math.min(tier.depth > 0 ? tier.depth : lv.rerank_depth, ranked.length);
   const rows = rowsOf(ranked.slice(0, depth).map(h => h.id));
   try {
-    const r = await rerank({ tier, query: o.query, ranked, textOf: (id) => (rows.has(id) ? rerankText(rows.get(id)) : null), depth, boundMs: boundFor(lv.rerank_bound_ms, o.t0 || Date.now()), owner: !!E.owner });
+    const r = await rerank({ tier, query: o.query, ranked, textOf: (id) => (rows.has(id) ? rerankText(rows.get(id)) : null), depth, boundMs: boundFor(lv.rerank_bound_ms, o.t0 || Date.now()), owner: E.owner || false });
     return { ranked: r.ranked, info: r.info, failed: null };
   } catch (e) {
+    if (e.detail && e.detail.reason === 'shutdown') { // the owner is stopping: keep the fusion order, and neither stick nor pause
+      const cause = { code: e.code, reason: 'shutdown', message: e.message };
+      return { ranked, info: { ran: false, skipped: true, cause }, failed: { mode: 'rerank', code: cause.code, message: cause.message } };
+    }
     if (lv.on_heavy_failure === 'pause') {
       e.detail = { ...e.detail, advised: true }; // the reranker's own advice below; adviseEmbedderFailure's text is about the embedder
       e.message = `${e.message} ${pauseAdvice(caller)}`;
