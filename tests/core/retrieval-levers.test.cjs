@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs)
 // retrieval-levers.test.cjs — the ADR 0050 levers: defaults, validation, the profile table and the pending-pin entries.
 
 const { test } = require('node:test');

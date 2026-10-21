@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs)
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1';
 // The no-project notice follows the effective levers: a run whose spec sets the project has notes on, so status and the
 // panel's agents read say nothing is off; `belay settings` shows the effective notes state and why; `belay run --json`
