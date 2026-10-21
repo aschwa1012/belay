@@ -48,6 +48,8 @@ const FLAGS = {
   '--reembed': { key: 'reembed', type: 'bool' },
   '--template': { key: 'template', type: 'one' },
   '--candidates': { key: 'candidates', type: 'bool' },
+  '--export': { key: 'export', type: 'one' },
+  '--force': { key: 'force', type: 'bool' },
   '--approve': { key: 'approve', type: 'bool' },
   '--reject': { key: 'reject', type: 'bool' },
 };
@@ -71,6 +73,7 @@ const VERBS = {
   review: { flags: ['--run', '--project', '--worktree', '--all', '--start'], positional: [0, 0], usage: 'belay memory review [--project <p>] [--all] [--run <id>] [--worktree <dir>] [--start]' },
   resolve: { flags: ['--evidence'], positional: [2, 3], usage: 'belay memory resolve <id> new   |   belay memory resolve <id> repeats <of>   |   belay memory resolve <id> supersedes <of> --evidence <text>' },
   promote: { flags: ['--approve', '--reject', '--reason'], positional: [1, 1], usage: 'belay memory promote <note-id> (--approve | --reject) [--reason <text>]' },
+  'search-log': { flags: ['--export', '--run', '--since', '--force'], positional: [0, 0], usage: 'belay memory search-log --export <file> [--run <id>] [--since <ms|iso>] [--force]' },
   archive: { flags: ['--ids', '--older-than', '--confirm', '--project'], positional: [1, 1], usage: 'belay memory archive purge (--ids a,b | --older-than <days>) --confirm [--project p]' },
 };
 
@@ -154,6 +157,7 @@ function checkOpts(sub, opts, positional = []) {
   if (sub === 'resolve') return checkResolve(opts, positional);
   if (sub === 'promote' && !!opts.approve === !!opts.reject) return { error: 'belay memory promote needs exactly one of --approve or --reject' };
   if (sub === 'archive') return checkPurge(opts);
+  if (sub === 'search-log' && !opts.export) return { error: 'belay memory search-log needs --export <file>' };
   if (sub === 'verify') {
     if (opts.status === undefined) return { error: 'belay memory verify needs --status verified|refuted|unverified' };
     if (opts.receipt === undefined && opts.status !== 'unverified') return { error: 'belay memory verify needs --receipt <r>: a status without evidence is refused' };
