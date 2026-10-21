@@ -154,7 +154,7 @@ test('run spec: the config memory block is the default and the spec overrides it
     const p = parseSpec(sb.specPath, sb.dir);
     assert.ifError(p.error);
     const m = p.levers.memory_levers;
-    assert.deepStrictEqual([m.project, m.capture, m.alpha, m.rules, m.index_bytes, m.notes], ['acme', true, 0.7, true, 900, false]);
+    assert.deepStrictEqual([m.project, m.capture, m.alpha, m.rules, m.index_bytes, m.notes], ['acme', true, 0.7, true, 900, true]);
     const s = p.levers.memory_sources;
     assert.deepStrictEqual(Object.keys(s), Object.keys(ML.DEFAULTS));
     assert.deepStrictEqual([s.alpha, s.rules, s.project, s.capture, s.index_bytes, s.notes], ['spec', 'spec', cfg, cfg, cfg, 'default']);
@@ -249,7 +249,7 @@ test('writeSetting: the exported writer takes a typed value, validates the whole
     assert.strictEqual(writeSetting(C.discover(dir), 'memory.project', 'acme', { cwd: dir }).code, 0);
     const ok = writeSetting(C.discover(dir), 'memory.notes', true, { cwd: dir });
     assert.strictEqual(ok.code, 0);
-    assert.deepStrictEqual([ok.json.old.value, ok.json.new.value], [false, true]);
+    assert.deepStrictEqual([ok.json.old.value, ok.json.new.value], [true, true]);
     assert.strictEqual(writeSetting(C.discover(dir), 'memory.index_bytes', '7', { cwd: dir }).json.new.value, 7);
     assert.strictEqual(writeSetting(C.discover(dir), 'memory.index_bytes', 'x', { cwd: dir }).code, 2);
     assert.strictEqual(writeSetting(C.discover(dir), 'memory.alpha', 'x'.length, { cwd: dir }).code, 0);

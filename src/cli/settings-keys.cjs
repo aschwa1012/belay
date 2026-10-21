@@ -100,6 +100,17 @@ function checkStored(key, value) {
 }
 
 // { key, value, source, default, allowed, describe, type, invalid? } for a memory or agents key; the mod keys go through config.cjs.
+// `memory.notes` left unstated resolves per run: on when the memory block has a project and keeps redaction. Show that
+// state and why, instead of the bare lever default (off), which says nothing about the project.
+function effectiveNotes(found, out) {
+  const cfg = found.found && found.config && found.config.memory;
+  const block = cfg && typeof cfg === 'object' && !Array.isArray(cfg) ? cfg : {};
+  const r = ML.parseMemoryBlock(block);
+  if (r.error) return { ...out, note: 'effective: off (the memory block is refused: ' + r.error + ')' };
+  const why = r.value.notes ? 'on, because memory.project is set' : block.redact === false ? 'off, because memory.redact is false' : 'off, because memory.project is not set';
+  return { ...out, value: r.value.notes, note: 'effective: ' + why };
+}
+
 function effective(found, key) {
   if (kindOf(key) === 'mod') {
     const e = C.effective(found, key);
@@ -112,10 +123,11 @@ function effective(found, key) {
     key, value: dflt, source: 'default', default: dflt, allowed: sh.allowed, type: sh.text,
     describe: kindOf(key) === 'memory' ? 'memory lever: the default every run inherits; the run spec\'s memory block overrides it key by key' : 'default for the agent type; an explicit model or effort always wins',
   };
-  if (!stored.present) return out;
+  const withNote = (o) => (key === 'memory.notes' && o.source === 'default' ? effectiveNotes(found, o) : o);
+  if (!stored.present) return withNote(out);
   const chk = checkStored(key, stored.value);
   if (!chk.ok) return { ...out, invalid: { stored: stored.value, reason: `${chk.reason}; the default ${JSON.stringify(dflt)} is used` } };
-  if (chk.unset) return out;
+  if (chk.unset) return withNote(out);
   return { ...out, value: stored.value, source: found.path };
 }
 

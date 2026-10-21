@@ -17,7 +17,7 @@ const LEVERS = {
   propose: { project: PROJECT, notes: true },
   off: { project: PROJECT, notes: true, scrub_action: 'off' },
   alarm: { project: PROJECT, notes: true, scrub_action: 'apply', scrub_alarm_holds: 2 },
-  plain: { project: PROJECT },
+  plain: { project: PROJECT, notes: false },
   strict: { project: PROJECT, notes: true, scrub_action: 'apply', notes_match_threshold: 0.995 },
 };
 
