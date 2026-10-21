@@ -136,4 +136,24 @@ function optInModel() {
   if (process.env.BELAY_PHASE_EMPTY_CACHE === '1') process.env.BELAY_MODEL_CACHE = core('model-cache.cjs').defaultCacheRoot();
 }
 
-module.exports = { optInModel, ROOT, CORE, FIXTURES, core, sandbox, cleanup, callerFor, deadPid, listDataDir, sleep, startOwnerProcess, trackOwnerChild, stopOwnerProcesses, runFixture };
+// A review's brief is captured when it is rendered and verdicts are checked against that capture (note-brief-capture.cjs). A test that drives
+// memory.noteVerdicts without rendering a brief gets the capture a real run would have made: the brief as it stands now, taken just before.
+// `call` is (method, caller, args) => Promise; `orch` reads the brief; `harness` is the run manager's caller.
+async function captureBrief(call, orch, harness, route) {
+  const T = require('../../src/run/note-review-text.cjs');
+  const { shownHash } = core('note-shown.cjs');
+  const brief = await call('memory.reviewBrief', orch, route.review_task_id !== undefined ? { task_id: route.review_task_id } : { reviewed_task_id: route.job.reviewed_task_id });
+  const listed = route.review_task_id !== undefined ? T.listedNotes(brief) : brief.notes;
+  return call('memory.noteBriefCapture', harness, { ...route, notes: listed.map((n) => ({ id: n.id, hash: shownHash(n) })) });
+}
+function capturingCall(call, orch, harness) {
+  return async (method, caller, args = {}) => {
+    if (method === 'memory.noteVerdicts' && caller === harness) {
+      const route = args.review_task_id !== undefined ? { review_task_id: args.review_task_id } : args.job ? { job: args.job } : null;
+      if (route) { try { await captureBrief(call, orch, harness, route); } catch { /* the verdict call reports a bad route itself */ } }
+    }
+    return call(method, caller, args);
+  };
+}
+
+module.exports = { captureBrief, capturingCall, optInModel, ROOT, CORE, FIXTURES, core, sandbox, cleanup, callerFor, deadPid, listDataDir, sleep, startOwnerProcess, trackOwnerChild, stopOwnerProcesses, runFixture };

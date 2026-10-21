@@ -6,7 +6,7 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const { core: coreMod, sandbox, cleanup, callerFor } = require('../core/helpers.cjs');
+const { core: coreMod, sandbox, cleanup, callerFor, captureBrief } = require('../core/helpers.cjs');
 
 const { Store } = coreMod('store.cjs');
 const { Engine } = coreMod('engine.cjs');
@@ -94,8 +94,9 @@ test('N1: the review job is spawned read-only with the levers\' model and cap, n
   assert.deepStrictEqual([rowOf(w.notes[0]).status, rowOf(w.notes[0]).status_receipt], ['verified', `review:${a.worker_id}`]);
   assert.strictEqual(rowOf(w.notes[1]).status ?? 'unverified', 'unverified', 'a note the job did not judge is left alone');
   const ev = events('review_job').find((e) => e.key === `task:${w.task.id}`);
-  assert.deepStrictEqual([ev.ok, ev.worker_id, JSON.parse(ev.row_ids)], [1, a.worker_id, [w.notes[0]]]);
-  assert.match(ev.message, /applied 1.*unjudged 1/);
+  // A job that left a note unjudged is not an ok review: the receipt says partial and names the note it left.
+  assert.deepStrictEqual([ev.ok, ev.code, ev.worker_id, JSON.parse(ev.row_ids)], [0, 'E_PARTIAL', a.worker_id, [w.notes[0]]]);
+  assert.match(ev.message, new RegExp(`partly reviewed; left unreviewed: ${w.notes[1]}; applied 1.*unjudged 1`));
 });
 
 test('N2: a job over its cost cap, a malformed answer or a job that did not finish applies nothing and says why', async () => {
@@ -149,6 +150,7 @@ test('N5: a review task\'s ended hand-back is applied by the manager (the review
   const r = await call('task.create', orch, { spec: 'review', depends_on: [w.task.id], acceptance: { verdict: true } });
   const a = await call('task.assign', orch, { task_id: r.id, worker_id: 'rv-5' });
   await call('lease.release', worker('rv-5'), { lease_id: a.new_lease.id, notes: [], result: { verdict: 'holds', summary: 'ok', memory_verdicts: JSON.parse(verdictsFor([w.notes[0]], 'refuted')).memory_verdicts } });
+  await NR.reviewTail(ctxFor(null), { id: 'rv-5', taskId: r.id }); // the brief is rendered when the reviewer launches, and fixes the notes it lists
   const m = fakeManager('{}');
   await NR.onTaskEnded(J(ctxFor(m)), await call('task.get', orch, { task_id: r.id }));
   assert.strictEqual(m.spawned.length, 0);
@@ -159,6 +161,7 @@ test('N5: a review task\'s ended hand-back is applied by the manager (the review
 test('N6: the run-end sweep applies a job that finished into its stream but was never applied, and names a task never reviewed', async () => {
   const w = await written('wr-6');
   const id = `notereview-${w.task.id}`;
+  await captureBrief(call, orch, harness, { job: { worker_id: id, reviewed_task_id: w.task.id } }); // the job was launched with this brief
   await call('worker.write', orch, { id, substrate: 'claude-code', pid: process.pid, state: 'stopped', session_id: 's', last_event_at: Date.now(), cost_usd: 0.01 });
   fs.mkdirSync(`${dir}/workers/${id}`, { recursive: true });
   fs.writeFileSync(`${dir}/workers/${id}/stream.jsonl`, `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: verdictsFor([w.notes[0]], 'refuted') }] } })}\n`);
@@ -181,11 +184,14 @@ test('N7: a review task\'s brief lists the notes to judge, the verdict shape, th
   const rt = await call('task.create', orch, { spec: 'rr', depends_on: [bad.task.id], acceptance: { verdict: true } });
   const a = await call('task.assign', orch, { task_id: rt.id, worker_id: 'rv-7x' });
   await call('lease.release', worker('rv-7x'), { lease_id: a.new_lease.id, notes: [], result: { verdict: 'holds', summary: 's', memory_verdicts: JSON.parse(verdictsFor([bad.notes[0]], 'refuted')).memory_verdicts } });
+  await NR.reviewTail(ctxFor(null), { id: 'rv-7x', taskId: rt.id });
   await NR.applyHandback(J(ctxFor(null)), await call('task.get', orch, { task_id: rt.id }));
   const t = await call('task.create', orch, { spec: 'review of w', depends_on: [w.task.id], acceptance: { verdict: true } });
   const text = await NR.reviewTail(ctxFor(null), { id: 'rv-7', taskId: t.id });
   assert.match(text, /NOTES TO JUDGE/);
   assert.ok(text.includes(w.notes[0]) && text.includes('memory_verdicts') && text.includes('stream.jsonl'));
+  const cap = events('note_brief').filter((e) => e.key.startsWith(`brief:${t.id}@`));
+  assert.deepStrictEqual(cap.map((e) => JSON.parse(e.row_ids).map((x) => x.split('#')[0])), [[w.notes[0]]], 'the brief that was rendered is the one captured');
   const hit = await call('task.create', orch, { spec: 'review of the shown', depends_on: [w.task.id], acceptance: { verdict: true } });
   void hit;
   // a reviewer of the task whose worker was shown the refuted note gets the fact
@@ -199,6 +205,16 @@ test('N7: a review task\'s brief lists the notes to judge, the verdict shape, th
   assert.strictEqual(await NR.reviewTail(ctxFor(null), { id: 'p', taskId: plain.id }), '');
   assert.strictEqual(await NR.reviewTail(ctxFor(null, { ...LV, notes: false }), { id: 'rv-7', taskId: t.id }), '');
   assert.strictEqual(await NR.reviewTail(ctxFor(null), { id: `notereview-x`, taskId: t.id }), '', 'the job never gets a review brief');
+});
+
+test('N7b: a brief that lists no note is still captured, empty, for the lease it was rendered for', async () => {
+  const dep = (await written('wr-7zw', 0)).task; // a task that wrote no note
+  await call('worker.write', orch, { id: 'rv-7z', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's', last_event_at: Date.now() });
+  const rt = await call('task.create', orch, { spec: 'review of nothing', depends_on: [dep.id], acceptance: { verdict: true } });
+  const a = await call('task.assign', orch, { task_id: rt.id, worker_id: 'rv-7z' });
+  assert.strictEqual(await NR.reviewTail(ctxFor(null), { id: 'rv-7z', taskId: rt.id }), '', 'nothing to say');
+  const cap = events('note_brief').filter((e) => e.key === `brief:${rt.id}@${a.new_lease.id}`);
+  assert.deepStrictEqual(cap.map((e) => JSON.parse(e.row_ids)), [[]], 'an empty capture, bound to the lease');
 });
 
 test('N8: a refutation wakes the orchestrator once, with facts only: the note, the review, who was shown it, their reviews and the notes they wrote', async () => {
@@ -259,6 +275,7 @@ test('N9b: a run with the notes lever off reads no receipts for the wake', async
 test('N9c (review S-2, S-3): the sweep never applies a job the live path already refused; a job with no recorded cost is not used', async () => {
   const w = await written('wr-9c');
   const id = `notereview-${w.task.id}`;
+  await captureBrief(call, orch, harness, { job: { worker_id: id, reviewed_task_id: w.task.id } }); // the job was launched with this brief
   await call('worker.write', orch, { id, substrate: 'claude-code', pid: process.pid, state: 'stopped', session_id: 's', last_event_at: Date.now(), cost_usd: 0.01 });
   fs.mkdirSync(`${dir}/workers/${id}`, { recursive: true });
   fs.writeFileSync(`${dir}/workers/${id}/stream.jsonl`, `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: verdictsFor([w.notes[0]], 'refuted') }] } })}\n`);

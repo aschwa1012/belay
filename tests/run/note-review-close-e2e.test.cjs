@@ -31,6 +31,7 @@ function build(tasks = ['t1']) {
     events: async () => ({ events: events.slice() }),
     recordEvent: async (e) => { events.push(e); return { seq: events.length, ...e }; },
     reviewBrief: async () => ({ notes: [{ id: 'n1', title: 'x' }], reports: [], review: false, refuted_shown: [], reviewed_tasks: [] }),
+    noteBriefCapture: async (a) => ({ ref: 'fake', notes: a.notes.length, event_id: 'me-fake' }),
     noteVerdicts: async () => ({ applied: [], refused: [], already: [], unjudged: [{ id: 'n1' }] }),
     noteSubjects: async ({ project }) => ({ project, subjects: [] }),
   });
