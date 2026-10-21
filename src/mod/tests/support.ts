@@ -48,16 +48,52 @@ export const TRANSCRIPT = {
 
 export const DEFAULTS: Record<string, string> = { pane: 'docked', marks: 'shapes', cache: 'both', context: 'both', band: 'two-lines', task: 'kind' }
 export const NOTICE = { code: 'memory_project_unset', title: 'Memory is off for this project', why: 'Memory notes are on by default, but they are kept per project and belay never guesses a project name, so with none set nothing is saved or recalled.', fix: 'Add "memory": { "project": "<name>" } to belay.config.json (or to the run spec), or run: belay settings memory.project <name>. A name is lowercase letters, digits, dot, underscore or dash (^[a-z0-9][a-z0-9._-]{0,63}$). To turn notes off and silence this: belay settings memory.notes false.', config_line: '"memory": { "project": "<name>" }', name_rule: '^[a-z0-9][a-z0-9._-]{0,63}$' }
-export const SETTINGS = (mod: Record<string, string> = {}, memoryNotice: unknown = null) => ({
+export const SETTINGS = (mod: Record<string, string> = {}, memoryNotice: unknown = null, heavy = false) => ({
   found: true, path: 'C:/x/belay.config.json', parse_error: null, memory_notice: memoryNotice,
-  settings: Object.keys(DEFAULTS).map(k => ({ key: `mod.${k}`, value: mod[k] ?? DEFAULTS[k], source: 'default', allowed: [] })),
+  settings: [
+    ...Object.keys(DEFAULTS).map(k => ({ key: `mod.${k}`, value: mod[k] ?? DEFAULTS[k], source: 'default', allowed: [] })),
+    ...(heavy ? [{ key: 'memory.profile', value: 'gpu-balanced', source: 'C:/x/belay.config.json', allowed: [] }] : []),
+  ],
+})
+
+// `belay memory menu --json` as the CLI prints it (src/core/memory-menu.cjs): the 2026-10 tables, a probed RTX 5060 and the 4B embedder three notes behind.
+const E4 = 'Qwen/Qwen3-Embedding-4B-GGUF', E8 = 'Qwen/Qwen3-Embedding-8B-GGUF', R4 = 'giladgd/Qwen3-Reranker-4B-GGUF', R06 = 'ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF'
+export const NANO = 'onnx-community/voyage-4-nano-ONNX', JINA = 'jinaai/jina-reranker-v1-tiny-en', GTE = 'Alibaba-NLP/gte-reranker-modernbert-base'
+export const IDS = { E4, E8, R4, R06 }
+const mdl = (id: string, kind: string, runtime: string, label: string, bytes: number, vram: number | null, state: string, o: Record<string, unknown> = {}) => ({
+  id, kind, runtime, device: runtime === 'gguf' ? 'gpu' : 'cpu', label, bytes, vram_mb: vram, vram_source: vram === null ? null : 'reference', state, in_use: false, in_use_by: [], heavy: runtime === 'gguf' && kind === 'embedder', backlog: null, ...o,
+})
+const prof = (name: string, embedder: string, reranker: string | null, device: string, el: string, rl: string, time_s: number, vram_mb: number) => ({ name, embedder, reranker, device, embedder_label: el, reranker_label: rl, time_s, vram_mb })
+export const MENU = (over: Record<string, unknown> = {}) => ({
+  v: 1, config: 'C:/x/belay.config.json', config_error: null, project: 'acme', cache_root: 'C:/m',
+  gpu: { state: 'probed', device: 'NVIDIA GeForce RTX 5060', free_mb: 7000, total_mb: 7899, ok: true, reason: null, at: '2026-10-21T14:02:00.000Z', runtime: { installed: true, ok: true, command: 'belay embedder fetch --gpu', problems: 0 } },
+  levers: { profile: 'gpu-balanced', profile_cpu: 'cpu-rerank', on_heavy_failure: 'fallback', on_heavy_behind: 'wait', rerank_depth: 50, search_log_cap_mb: 500, vram_headroom_gb: 0.75, routing: null, routing_cpu: null },
+  headroom_mb: 768,
+  profiles: [
+    prof('cpu-fast', NANO, null, 'cpu', 'voyage-4-nano', 'none', 0, 0), prof('cpu-rerank-light', NANO, JINA, 'cpu', 'voyage-4-nano', 'jina-reranker-v1-tiny-en int8', 0.3, 0),
+    prof('cpu-rerank', NANO, GTE, 'cpu', 'voyage-4-nano', 'gte-reranker-modernbert-base int8', 3.6, 0), prof('gpu-rerank-fast', NANO, R06, 'gpu', 'voyage-4-nano', 'Qwen3-Reranker-0.6B Q8_0', 0.73, 879),
+    prof('gpu-rerank', NANO, R4, 'gpu', 'voyage-4-nano', 'Qwen3-Reranker-4B Q4_K_M', 2.7, 2782), prof('gpu-balanced', E4, R4, 'gpu', 'Qwen3-Embedding-4B Q4_K_M', 'Qwen3-Reranker-4B Q4_K_M', 2.8, 5411),
+    prof('gpu-recall-max', E8, R06, 'gpu', 'Qwen3-Embedding-8B Q4_K_M', 'Qwen3-Reranker-0.6B Q8_0', 0.8, 5621),
+  ],
+  models: [
+    mdl(NANO, 'embedder', 'onnx', 'voyage-4-nano q4', 243_000_000, null, 'ready', { in_use: true, in_use_by: ['every note (the base)'] }),
+    mdl(E4, 'embedder', 'gguf', 'Qwen3-Embedding-4B Q4_K_M', 2_496_703_776, 2629, 'ready', { in_use: true, in_use_by: ['run'], backlog: 3 }),
+    mdl(E8, 'embedder', 'gguf', 'Qwen3-Embedding-8B Q4_K_M', 4_676_804_928, 4742, 'download'),
+    mdl(JINA, 'reranker', 'onnx', 'jina-reranker-v1-tiny-en int8', 35_000_000, null, 'ready'),
+    mdl(GTE, 'reranker', 'onnx', 'gte-reranker-modernbert-base int8', 155_000_000, null, 'download', { in_use: true, in_use_by: ['run (CPU only)'] }),
+    mdl(R06, 'reranker', 'gguf', 'Qwen3-Reranker-0.6B Q8_0', 639_153_184, 879, 'download'),
+    mdl(R4, 'reranker', 'gguf', 'Qwen3-Reranker-4B Q4_K_M', 2_496_717_472, 2782, 'download', { in_use: true, in_use_by: ['run'] }),
+  ],
+  agent_types: { main: ['orchestrator', 'reviewer', 'coder'], advanced: ['tester', 'researcher'] },
+  routing_gpu_models: [E4, R4], selected_profile: 'gpu-balanced', selected_embedder: E4, behind: 3, backlog_reason: null, disk: { bytes: 2_739_703_776, models: 3 },
+  ...over,
 })
 export const FULL_RUNFILE = { role: 'orchestrator', run_id: RUN, data_dir: 'C:/d/.belay', belay_cli: 'C:/x/belay.cjs', node: 'C:/n/node.exe' }
 export type World = {
   file?: boolean; runFile?: unknown; repoCli?: boolean; watchId?: string
   mode?: string | null; mod?: Record<string, string>; notices?: unknown
   failAgents?: boolean; transcriptFail?: boolean; orchDisplay?: string; noDisplay?: boolean; noRun?: boolean
-  extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number; memoryNotice?: boolean
+  extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; heavy?: boolean; menu?: unknown | null; writeResult?: (argv: string[]) => { exitCode: number; stdout: string; stderr: string }; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number; memoryNotice?: boolean
 }
 
 // The host beneath the plugin: a run file (or none), belay's read commands as fixtures, and a recorder
@@ -69,6 +105,8 @@ export function world(on: any, w: World) {
   const opened: string[] = []
   const commands: string[] = []
   const toasts: string[] = []
+  const menuReads: string[][] = [] // every `belay memory menu` the panel ran
+  const menuWrites: string[][] = [] // every write the Memory menu ran: belay settings <memory key> <value>, belay embedder verify|delete
   const spawned: string[][] = [] // every review launcher (`... memory review --project p --start`) the panel runs: only the review button may run one
   const attempts: { verb: string; t: number; timeoutMs: number; cwd?: string; argv: string[] }[] = []
   const stat = { active: 0, maxActive: 0 }
@@ -85,6 +123,18 @@ export function world(on: any, w: World) {
     if (e.argv.includes('--start')) {
       spawned.push([...e.argv])
       return { value: w.launcher ?? { exitCode: 0, stdout: JSON.stringify({ started: true, project: 'acme', run_id: 'r-1', pid: 4242, job: 'archreview-r-1', claim_id: 'me-1' }), stderr: '' } }
+    }
+    if (e.argv.includes('memory') && e.argv.includes('menu')) {
+      menuReads.push([...e.argv])
+      if (w.menu === null) return { value: { exitCode: 1, stdout: '', stderr: 'boom' } }
+      return { value: { exitCode: 0, stdout: JSON.stringify(w.menu ?? MENU()), stderr: '' } }
+    }
+    if ((e.argv.includes('settings') && e.argv.some((a: string) => a.startsWith('memory.'))) || e.argv.includes('embedder')) {
+      menuWrites.push([...e.argv])
+      if (w.writeResult) return { value: w.writeResult([...e.argv]) }
+      const i = e.argv.indexOf('settings')
+      if (i >= 0) return { value: { exitCode: 0, stdout: JSON.stringify({ key: e.argv[i + 1], old: { value: 'cpu-fast', source: 'default' }, new: { value: e.argv[i + 2], source: 'C:/x/belay.config.json' }, path: 'C:/x/belay.config.json', created: false }), stderr: '' } }
+      return { value: { exitCode: 0, stdout: JSON.stringify(e.argv.includes('delete') ? { removed: true, bytes: 35000000 } : { verified: true }), stderr: '' } }
     }
     ran.push([...e.argv])
     const verb = e.argv.find((a: string) => ['agents', 'notices', 'transcript', 'settings'].includes(a))
@@ -117,12 +167,12 @@ export function world(on: any, w: World) {
       },
       notices: w.notices ?? (w.longNotices ? LONG_NOTICES : NOTICES),
       transcript: w.nullTs ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.map(x => ({ ...x, ts: null })) } : w.manyTexts ? { run_id: RUN, entries: MANY } : w.toolsOnly ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.filter(x => x.kind !== 'text') } : w.longTranscript ? { run_id: RUN, entries: LONG_ENTRIES.slice(-Number(e.argv[e.argv.indexOf('--tail') + 1])) } : w.honorTail ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.slice(-Number(e.argv[e.argv.indexOf('--tail') + 1])) } : TRANSCRIPT,
-      settings: SETTINGS(w.mod, w.memoryNotice ? NOTICE : null),
+      settings: SETTINGS(w.mod, w.memoryNotice ? NOTICE : null, w.heavy),
     }
     if ((verb === 'agents' && w.failAgents) || (verb === 'transcript' && w.transcriptFail)) return { value: { exitCode: verb === 'agents' ? 3 : 4, stdout: '', stderr: 'boom' } }
     return { value: { exitCode: 0, stdout: JSON.stringify(body[verb]), stderr: '' } }
   })
-  return { clock, ran, writes, opened, commands, toasts, spawned, attempts, stat, w }
+  return { clock, ran, writes, opened, commands, toasts, spawned, attempts, stat, menuReads, menuWrites, w }
 }
 
 export const START = { cwd: '/x', surface: 'terminal', isInteractive: true } as const
