@@ -115,6 +115,21 @@ function checkLaunch(w) {
   if (w.nativeMemoryRefused) { w.nativeMemoryRefused = false; w.launchFailed = false; } // the cause is gone: this launch may write its running row
 }
 
+// An adopted worker's native_memory is the record of the run that launched it. It is carried only into the same run (a restart by
+// another adapter of it) or into a run whose own lever names the same folder; any other run never opted in, so the folder is not
+// written into its settings and its relaunch is refused. Returns the refusal, or null. A stop is never affected: it goes through.
+function adoptDenied(w, runId, levers) {
+  if (w.nativeMemory == null) return null;
+  const from = w.adopted && w.adopted.from_run_id;
+  if (from != null && from === runId) return null;
+  const lever = levers && levers.native_memory;
+  let same = false;
+  try { same = typeof lever === 'string' && S.sameDir(S.checkNativeMemory(lever), w.nativeMemory); } catch { same = false; }
+  if (same) return null;
+  return refuse("the worker's native_memory was recorded by another run, and this run's own native_memory lever does not name it; a relaunch is refused (a stop still goes through)",
+    { worker_id: w.id, native_memory: w.nativeMemory, from_run_id: from == null ? null : from, run_id: runId, reason: 'foreign_native_memory' });
+}
+
 // A refusal is noted on the worker and, when no process of it is alive, written as a dead row naming the cause; the row is awaited
 // and carried in the error, so a caller never sees a refusal before its row is confirmed. Throws `e`. An adopt (a stop, a message)
 // never calls checkLaunch: a stop always goes through.
@@ -132,4 +147,4 @@ async function refuseLaunch(ctx, w, e, pidAlive) {
   throw e;
 }
 
-module.exports = { checkFolder, assertCreatable, prepareFolder, assertOutsideConfig, verifySettings, checkLaunch, refuseLaunch, fingerprint };
+module.exports = { adoptDenied, checkFolder, assertCreatable, prepareFolder, assertOutsideConfig, verifySettings, checkLaunch, refuseLaunch, fingerprint };

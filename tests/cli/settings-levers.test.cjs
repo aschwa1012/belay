@@ -156,7 +156,7 @@ test('run spec: the config memory block is the default and the spec overrides it
     const m = p.levers.memory_levers;
     assert.deepStrictEqual([m.project, m.capture, m.alpha, m.rules, m.index_bytes, m.notes], ['acme', true, 0.7, true, 900, false]);
     const s = p.levers.memory_sources;
-    assert.deepStrictEqual(Object.keys(s), Object.keys(ML.DEFAULTS));
+    assert.deepStrictEqual(Object.keys(s), Object.keys(ML.DEFAULTS).filter((k) => !ML.EVAL_ONLY.includes(k))); // an eval-only lever nobody supplied is not listed
     assert.deepStrictEqual([s.alpha, s.rules, s.project, s.capture, s.index_bytes, s.notes], ['spec', 'spec', cfg, cfg, cfg, 'default']);
   } finally { cleanup(sb.dir); }
 });

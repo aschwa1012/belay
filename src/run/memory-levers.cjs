@@ -5,21 +5,34 @@
 // `memory_levers` only then). A run without the block has every lever at its default, and every lever that
 // does anything new defaults off.
 
-const { DEFAULTS, parseMemoryBlock, isDefault } = require('../core/memory-levers.cjs'); // the pure spec, shared with run.attach
+const { DEFAULTS, EVAL_ONLY, parseMemoryBlock, isDefault } = require('../core/memory-levers.cjs'); // the pure spec, shared with run.attach
 
 // One read per manager. The cache holds the promise, so concurrent callers share the read; a failed read is
 // not cached, so the next call tries again. A row with no block (an older run, or a run that gave none) is
 // the defaults, and so is an unreadable column: a bad stored value is never silently half-applied.
 const cache = new WeakMap(); // core -> Map(runId -> Promise<levers>)
 
-// The levers a run row records: its parsed memory block, or the defaults for none or an unreadable one.
+// The levers a run row records: its parsed memory block, or the defaults for none or an unreadable one. An unreadable value that
+// may have carried an eval-only lever (text that is not JSON, a non-object, or a block naming native_memory or handback_question
+// that does not validate) is still the defaults for every other reader, but the object carries an unread marker (non-enumerable,
+// so it never shows in a copy or a listing) that a spawn which needs those levers reads with `unreadOf` and refuses on.
+const UNREAD = Symbol.for('belay.levers.unread');
+const unreadOf = (lv) => (lv && lv[UNREAD]) || null;
+function defaultsUnread(reason) {
+  const lv = { ...DEFAULTS };
+  Object.defineProperty(lv, UNREAD, { value: reason, enumerable: false });
+  return lv;
+}
 function leversOfRow(row) {
   const raw = row ? row.memory_levers : null;
   if (raw == null) return { ...DEFAULTS };
   let obj;
-  try { obj = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return { ...DEFAULTS }; }
+  try { obj = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return defaultsUnread('the stored memory levers are not valid JSON'); }
   const parsed = parseMemoryBlock(obj);
-  return parsed.error ? { ...DEFAULTS } : parsed.value;
+  if (!parsed.error) return parsed.value;
+  const plain = obj !== null && typeof obj === 'object' && !Array.isArray(obj);
+  if (!plain) return defaultsUnread(parsed.error);
+  return EVAL_ONLY.some((k) => Object.prototype.hasOwnProperty.call(obj, k)) ? defaultsUnread(parsed.error) : { ...DEFAULTS };
 }
 
 async function readLevers(core, runId) {
@@ -44,4 +57,4 @@ function leversFor(core, runId) {
   return byRun.get(runId);
 }
 
-module.exports = { DEFAULTS, parseMemoryBlock, leversFor, leversOfRow, isDefault };
+module.exports = { DEFAULTS, EVAL_ONLY, parseMemoryBlock, leversFor, leversOfRow, unreadOf, isDefault };

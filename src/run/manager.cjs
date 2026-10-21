@@ -242,7 +242,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       w.indexQueries = indexQueries; // the orchestrator's situation lines for this worker's memory index (memory.embedQuery extra_texts)
       workers.set(id, w);
     } finally { pendingIds.delete(id); }
-    await MP.spawnLevers(ctx, w); // ADR 0047: the levers are known before the files are written; with the first-message index off the row keeps no situation lines
+    try { await MP.spawnLevers(ctx, w); } catch (e) { await discardUnstarted(workers, w, dirExisted); throw e; } // ADR 0047: the levers are known before the files are written; with the first-message index off the row keeps no situation lines
     try { writeFilesFor(w); } catch (e) { await discardUnstarted(workers, w, dirExisted); throw e; } // no row, nothing launched: leave no record and no directory, so a corrected retry with the same id is free
     if (substrate === 'claude-code') w.instructions = I.snapshotInstructions(w.worktree, w.dir); // spawn only
 
@@ -349,7 +349,9 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const p = W.adopt({ core, workerId, dataDir: root }).then(async (w) => {
       workers.set(workerId, w); // no launch guard: a stop must always go through, and writeFilesFor below regenerates settings.json from the record
       await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the argv written below carries the notes lever
-      try { writeFilesFor(w); } catch (e) { if (w.nativeMemory == null) throw e; w.adoptRefusal = e; } // mcp.json, settings.json, the log path; with the lever on ANY failure here (a folder that cannot be made, a refused record) is kept for checkLaunch to throw on a launch, never on a stop
+      const denied = NM.adoptDenied(w, runId, ctx.memoryLevers); // another run's native_memory is never written into this run's settings; the record stays, the relaunch is refused
+      if (denied) { const rec = w.nativeMemory; w.nativeMemory = null; try { writeFilesFor(w); } finally { w.nativeMemory = rec; } w.adoptRefusal = denied; }
+      else try { writeFilesFor(w); } catch (e) { if (w.nativeMemory == null) throw e; w.adoptRefusal = e; } // mcp.json, settings.json, the log path; with the lever on ANY failure here (a folder that cannot be made, a refused record) is kept for checkLaunch to throw on a launch, never on a stop
       if (w.substrate === 'claude-code') w.instructions = I.existingInstructions(w.dir); // never the worktree
       return w;
     });
@@ -376,12 +378,11 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
     const overridden = firstTextOverride ? await firstTextOverride(d.branch) : undefined;
     let firstText = overridden !== undefined ? overridden : await restartFirstText(w, d.branch, { core, ctx });
-    firstText = await MP.relaunch(w, ctx, firstText, { fresh: d.branch === 'replace' }); // ADR 0042 decision 3: minus the rows already shown, only where that conversation still holds them
+    firstText = await MP.relaunch(w, ctx, firstText, { fresh: d.branch === 'replace', message: appendMessage }); // ADR 0042 decision 3: minus the rows already shown, only where that conversation still holds them
     if (d.branch === 'replace') {
       w.sessionId = null;
       w.parser = createParser(w.substrate, MP.parserOpts(ctx));
     }
-    if (appendMessage) firstText = firstText ? `${firstText}\n\n${appendMessage}` : appendMessage;
     if (onFirstText) onFirstText(firstText);
 
     const resume = d.branch === 'resume' ? w.sessionId : null;
