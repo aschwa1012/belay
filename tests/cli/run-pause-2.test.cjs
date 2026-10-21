@@ -175,20 +175,24 @@ test('run pause and resume: a run whose stdin the timeout or idle rule has close
     // almost at once (run-pause.test.cjs's own s9 precedent). FAKE_IGNORE_STDIN_END keeps the process
     // alive past that close, inside close_grace_ms, so `state.finishing` is true well before the child's
     // own exit event lands — review 2's own window (blocking finding, orchestrator.cjs:308's sibling).
-    ctx = await startRun(dir, { close_grace_ms: 5000 }, { FAKE_ANSWER_DELAY_MS: '200', FAKE_IGNORE_STDIN_END: '1' });
-    await sleep(600); // past the prompt turn and the idle rule's own close
+    // The prompt turn waits for a gate written once the setup is done, and the test waits for the stdin close itself (the fake's
+    // marker file), not a fixed sleep: the setup and each command below are vouched for by the owner's operator check (ADR 0045),
+    // about a second each and more on a loaded host, so the close-grace window starts at the close and holds both, sent together.
+    const gate = `${dir}/orch.gate`; const closed = `${dir}/stdin-closed`;
+    ctx = await startRun(dir, { close_grace_ms: 10000 }, { FAKE_ANSWER_DELAY_MS: '200', FAKE_IGNORE_STDIN_END: '1', FAKE_ANSWER_GATE_FILE: gate, FAKE_STDIN_END_FILE: closed });
+    fs.writeFileSync(gate, '');
+    assert.ok(await waitUntil(() => fs.existsSync(closed), 15000, 25), "the idle rule never closed the orchestrator's stdin");
 
-    const p = await cliAsync(['pause', ctx.runId], ctx.dataDir);
+    const [p, r] = await Promise.all([cliAsync(['pause', ctx.runId], ctx.dataDir), cliAsync(['resume', ctx.runId], ctx.dataDir)]);
     assert.strictEqual(p.status, 1, `${p.stdout} / ${p.stderr}`);
     assert.strictEqual(p.receipt.paused, false);
     assert.match(p.receipt.reason, /finishing/);
 
-    const r = await cliAsync(['resume', ctx.runId], ctx.dataDir);
     assert.strictEqual(r.status, 1, `${r.stdout} / ${r.stderr}`);
     assert.strictEqual(r.receipt.resumed, false);
     assert.match(r.receipt.reason, /finishing/);
 
-    const exited = await waitForExit(ctx.cliProc.proc, 15000);
+    const exited = await waitForExit(ctx.cliProc.proc, 25000);
     assert.ok(exited, 'the run never exited after its own close-grace kill');
   } finally { await teardown({ ...ctx, spawnedPids: [], dir }); }
 });
@@ -201,29 +205,29 @@ test('run pause and resume: a run.stop in flight refuses both naming finishing, 
   const dir = sandbox();
   let ctx;
   try {
-    // The orchestrator is kept mid prompt-turn throughout (long FAKE_ANSWER_DELAY_MS), and its own
-    // stdin close is ignored, so only the stop's own close_grace_ms kill ever ends it — nothing else
-    // races this window.
-    ctx = await startRun(dir, { close_grace_ms: 3000 }, { FAKE_ANSWER_DELAY_MS: '8000', FAKE_IGNORE_STDIN_END: '1' });
-    await sleep(400);
+    // The orchestrator is kept mid prompt-turn throughout (a gate nothing writes), and its own stdin close is ignored, so only the
+    // stop's own close_grace_ms kill ever ends it. The stop is known to be in flight once the orchestrator's stdin has closed (the
+    // fake's marker file), not after a fixed sleep: the stop, the pause and the resume are each vouched for by the owner's operator
+    // check (ADR 0045), about a second each and more on a loaded host, so the window starts at the close and holds the two, sent together.
+    const closed = `${dir}/stdin-closed`;
+    ctx = await startRun(dir, { close_grace_ms: 10000 }, { FAKE_ANSWER_DELAY_MS: '8000', FAKE_IGNORE_STDIN_END: '1', FAKE_ANSWER_GATE_FILE: `${dir}/orch.gate`, FAKE_STDIN_END_FILE: closed });
 
     const stopP = cliAsync(['stop', ctx.runId], ctx.dataDir);
-    await sleep(300); // well inside close_grace_ms: the stop is genuinely in flight
+    assert.ok(await waitUntil(() => fs.existsSync(closed), 30000, 25), "the stop never closed the orchestrator's stdin");
     assert.strictEqual(ctx.cliProc.proc.exitCode, null, 'the run must not have exited on its own yet');
 
-    const p = await cliAsync(['pause', ctx.runId], ctx.dataDir);
+    const [p, r] = await Promise.all([cliAsync(['pause', ctx.runId], ctx.dataDir), cliAsync(['resume', ctx.runId], ctx.dataDir)]);
     assert.strictEqual(p.status, 1, `${p.stdout} / ${p.stderr}`);
     assert.strictEqual(p.receipt.paused, false);
     assert.strictEqual(p.receipt.error && p.receipt.error.code, 'E_NOT_FOUND', JSON.stringify(p.receipt));
     assert.match(p.receipt.reason, /finishing/);
 
-    const r = await cliAsync(['resume', ctx.runId], ctx.dataDir);
     assert.strictEqual(r.status, 1, `${r.stdout} / ${r.stderr}`);
     assert.strictEqual(r.receipt.error && r.receipt.error.code, 'E_NOT_FOUND', JSON.stringify(r.receipt));
     assert.match(r.receipt.reason, /finishing/);
 
     await stopP;
-    const exited = await waitForExit(ctx.cliProc.proc, 15000);
+    const exited = await waitForExit(ctx.cliProc.proc, 25000);
     assert.ok(exited, 'the run never exited after the stop\'s own close-grace kill');
   } finally { await teardown({ ...ctx, spawnedPids: [], dir }); }
 });

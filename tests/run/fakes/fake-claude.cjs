@@ -405,6 +405,9 @@ process.stdin.on('data', (d) => {
 // A worker that does not exit when its stdin closes: the wedged case ADR 0001 §5's graceful stop
 // has to time out on before belay kills it. Without this the fake always exits on stdin end and the
 // timeout branch is never reached.
-if (process.env.FAKE_IGNORE_STDIN_END === '1') setInterval(() => {}, 1000);
-else process.stdin.on('end', () => process.exit(0));
+// FAKE_STDIN_END_FILE: written when stdin closes, so a test waits on the close itself rather than a guess at when it came.
+if (process.env.FAKE_IGNORE_STDIN_END === '1') {
+  setInterval(() => {}, 1000);
+  if (process.env.FAKE_STDIN_END_FILE) process.stdin.on('end', () => { try { require('node:fs').writeFileSync(process.env.FAKE_STDIN_END_FILE, String(Date.now())); } catch { /* the test reports the missing file */ } });
+} else process.stdin.on('end', () => process.exit(0));
 process.stdin.resume();

@@ -400,15 +400,21 @@ test('run: an unanswered wake holds stdin open until the orchestrator answers it
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, runId, orchestratorDir } = makeSpec(dir, { poll_ms: 300 });
-  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '3000' };
+  // the run's owner vouches for this test by its process before it binds it (ADR 0045): the first answer waits for the gate, written
+  // once w1 is mid-turn (its own 1,500 ms), so w1's wake comes after that turn and the next answer takes the 3,000 ms delay
+  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '3000', FAKE_ANSWER_GATE_FILE: `${dir}/orch.gate` };
   const runCliProc = runCli(specPath, dataDir, env);
   let core = null; let m = null; const spawnedPids = [];
   try {
     core = await connectOrchestratorCore(dataDir, runId);
     m = createRunManager({ core, dataDir, runId, paths: { claudeExe: FAKE_CLAUDE, userSettings: USER_SETTINGS } });
 
-    const row = await m.spawn({ substrate: 'claude-code', worktree: workerWorktree(dir, 'w1'), prompt: 'hello', worker_id: 'w1' });
+    process.env.FAKE_ANSWER_DELAY_MS = '1500'; // the worker's, inherited at spawn
+    let row;
+    try { row = await m.spawn({ substrate: 'claude-code', worktree: workerWorktree(dir, 'w1'), prompt: 'hello', worker_id: 'w1' }); }
+    finally { delete process.env.FAKE_ANSWER_DELAY_MS; }
     spawnedPids.push({ pid: row.pid, created: row.pid_created });
+    fs.writeFileSync(`${dir}/orch.gate`, '');
 
     const exited = await waitForExit(runCliProc.proc, 20000);
     assert.ok(exited, 'the CLI did not exit in time');
@@ -448,7 +454,8 @@ test('run: two wakes answered by one orchestrator turn are both answered, one by
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, runId } = makeSpec(dir, { poll_ms: 300, mcp_tool_timeout_ms: 60000 }); // the stranded wake holds the run to this expiry; the bounds below sit well under it
-  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '3000', FAKE_FOLD: '1' };
+  // the run's owner vouches for this test by its process before it binds it (ADR 0045): the first answer waits for the gate, written once both workers are mid-turn
+  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '3000', FAKE_FOLD: '1', FAKE_ANSWER_GATE_FILE: `${dir}/orch.gate` };
   const runCliProc = runCli(specPath, dataDir, env);
   let core = null; let m = null; const spawnedPids = [];
   try {
@@ -458,6 +465,7 @@ test('run: two wakes answered by one orchestrator turn are both answered, one by
     const rows = await Promise.all(['w1', 'w2'].map((id) =>
       m.spawn({ substrate: 'claude-code', worktree: workerWorktree(dir, id), prompt: 'hello', worker_id: id })));
     for (const r of rows) spawnedPids.push({ pid: r.pid, created: r.pid_created });
+    fs.writeFileSync(`${dir}/orch.gate`, '');
 
     const exited = await waitForExit(runCliProc.proc, 50000);
     assert.ok(exited, 'the CLI did not exit in time: a stranded wake holds it until the 60,000 ms expiry');
