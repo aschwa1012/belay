@@ -60,7 +60,8 @@ function resolveRouting({ levers, agentTypes = [], gpu = false } = {}) {
   if (!Array.isArray(agentTypes) || agentTypes.some((t) => typeof t !== 'string' || !ROUTING_TYPE_RE.test(t))) throw err('E_ARGS', 'agentTypes must be a list of agent type names (lower-case letters, digits, - or _)', { agentTypes });
   const haveGpu = gpuUsable(gpu);
   const routing = m.routing || {};
-  const types = [...new Set([...agentTypes, ...Object.keys(routing)])];
+  const cpuRouting = m.routing_cpu || {}; // a type's own CPU-only profile, taken instead of profile_cpu when there is no GPU (ADR 0050 amendment 3)
+  const types = [...new Set([...agentTypes, ...Object.keys(routing), ...Object.keys(cpuRouting)])];
 
   const affected = [];
   const resolve = (entry, source, who) => {
@@ -69,7 +70,7 @@ function resolveRouting({ levers, agentTypes = [], gpu = false } = {}) {
     if (!haveGpu && RP.needsGpu(w.models)) {
       fallbackFrom = w.label;
       affected.push(who);
-      w = wanted(m.profile_cpu, m);
+      w = wanted(Object.prototype.hasOwnProperty.call(cpuRouting, who) ? cpuRouting[who] : m.profile_cpu, m);
     }
     for (const id of [w.models.embedder, w.models.reranker]) if (id) RP.assertUsable(id);
     return tierOf(w.label, w.models, m.rerank_depth, { source, fallback_from: fallbackFrom });
@@ -77,7 +78,12 @@ function resolveRouting({ levers, agentTypes = [], gpu = false } = {}) {
 
   const run = resolve(m.profile, 'run', 'run');
   const tiers = Object.create(null); // agent types are data: no inherited key can answer for one
-  for (const t of types) tiers[t] = Object.prototype.hasOwnProperty.call(routing, t) ? resolve(routing[t], 'routing', t) : { ...run, source: 'run' };
+  const has = (o, t) => Object.prototype.hasOwnProperty.call(o, t);
+  for (const t of types) {
+    if (has(routing, t)) tiers[t] = resolve(routing[t], 'routing', t);
+    else if (has(cpuRouting, t) && run.fallback_from) tiers[t] = resolve(m.profile, 'routing', t); // no GPU: this type's own CPU pick, not the run's
+    else tiers[t] = { ...run, source: 'run' };
+  }
 
   // The run tier counts even when every type is routed: it is what an unrouted type, and a first-message index, would load,
   // so the probe must size it.
