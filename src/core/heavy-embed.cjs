@@ -20,7 +20,7 @@ const coded = (e) => (e && e.code ? e : err('E_INTERNAL', `the heavy embedder fa
 // -> { vec: number[], model } for the tier's embedder. Throws a coded error with detail.embedder true and detail.heavy true.
 async function embedQuery(E, tier, text, boundMs = BOUND_MS) {
   if (typeof text !== 'string' || !text) throw err('E_NO_EMBEDDER', `a search on the ${tier.embedder} tier needs query text or a query_embedding`, { embedder: true, heavy: true });
-  const impl = EP.get(tier, { owner: !!E.owner });
+  const impl = EP.get(tier, { owner: E.owner || false });
   if (!impl) throw err('E_NO_EMBEDDER', `no embedder for the ${tier.embedder} tier is available here (only the store owner loads a heavy embedder), so a search on it needs a query_embedding`, { embedder: true, heavy: true });
   let timer;
   try {

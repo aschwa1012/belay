@@ -60,7 +60,7 @@ async function drainHeavy(E, tierKey, { namespaces, onProgress, boundMs = DEFAUL
   const t0 = Date.now();
   const missing = MV.backlog(db, key, { namespaces });
   const total = missing.length;
-  const impl = total ? EP.get({ embedder: key.model }, { owner: !!E.owner }) : null;
+  const impl = total ? EP.get({ embedder: key.model }, { owner: E.owner || false }) : null;
   if (total && !impl) throw err('E_NO_EMBEDDER', `no embedder for ${key.model} is available here (only the store owner loads a heavy embedder)`, { embedder: key.model });
   for (let i = 0; i < total; i += batch) {
     if (i > 0 && Date.now() - t0 >= boundMs) break;

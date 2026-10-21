@@ -30,7 +30,7 @@ async function afterNotes(E, caller, out, boundMs = BOUND_MS) {
     for (const id of heavy) {
       let timer;
       try {
-        const key = HD.keyOfModel(id), impl = EP.get({ embedder: id }, { owner: true });
+        const key = HD.keyOfModel(id), impl = EP.get({ embedder: id }, { owner: E.owner });
         if (!impl) throw new Error(`no provider for ${id}`);
         await Promise.race([HD.embedIds(E, key, impl, ids), new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`the ${id} embed took over ${boundMs} ms`)), boundMs); })]);
         res.embedded.push({ embedder: id, ids });
