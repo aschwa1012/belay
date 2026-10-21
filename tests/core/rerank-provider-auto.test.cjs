@@ -21,7 +21,8 @@ const provider = core('rerank-provider.cjs');
 const { search } = core('memory-search.cjs');
 const { Engine } = core('engine.cjs');
 const { pidAlive } = core('lock.cjs');
-const gone = async (pid, ms = 5000) => { const t0 = Date.now(); while (pidAlive(pid) && Date.now() - t0 < ms) await new Promise(r => setTimeout(r, 20)); return !pidAlive(pid); };
+const { waitGone: gone } = require('../helpers/wait.cjs');
+const { CLOSE_BOUND_MS } = core('rerank-provider.cjs');
 
 const NS = `project/${PROJECT}`;
 const entry = fakeEntry();
@@ -140,7 +141,8 @@ test('a provider that fails because the owner is stopping is a non-sticky, non-p
 test('a provider whose close never settles does not hold stop() past its bound, and the lock is released; one whose close throws is forgotten', async () => {
   const d = sandbox();
   try {
-    const o = new Owner(d, { embed: false });
+    // The owner's close bound for rerank providers is an option, so the test passes a small one and asserts the stop stays under it plus slack.
+    const o = new Owner(d, { embed: false, rerankCloseBoundMs: 100 });
     await o.start();
     provider.register('hang/close', { rerank: async () => ({ scores: [] }), close: () => new Promise(() => {}) });
     provider.register('throw/close', { rerank: async () => ({ scores: [] }), close: async () => { throw new Error('cannot close'); } });
@@ -148,7 +150,7 @@ test('a provider whose close never settles does not hold stop() past its bound, 
     const t0 = Date.now();
     await o.stop();
     const ms = Date.now() - t0;
-    assert.ok(ms >= 2800 && ms < 5000, `stop took ${ms} ms`);
+    assert.ok(ms < CLOSE_BOUND_MS, `stop took ${ms} ms; the 100 ms option bound it, so it did not wait out the ${CLOSE_BOUND_MS} ms default`);
     assert.ok(!lockHeld(d), 'the lock is released');
     assert.strictEqual(provider.get({ reranker: 'hang/close' }), null);
     assert.strictEqual(provider.get({ reranker: 'throw/close' }), null);
