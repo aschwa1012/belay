@@ -17,6 +17,7 @@ const lv = (over = {}) => ({ ...LV.apply, ...over });
 const review = (manager, over = {}, extra = {}) => runReview({ core: X.coreFor('apply'), runId: RUN.apply, lv: lv(over), dataDir: T.dir, getManager: async () => manager, worktree: T.repo, ...extra });
 const archiveV = (id, over = {}) => ({ id, verdict: 'archive', reason: 'the code confirms the hold', cites: [T.cite], same_claim: true, ...over });
 const releaseV = (id) => ({ id, verdict: 'release', reason: 'the code supports the note' });
+const undecidedV = (id) => ({ id, verdict: 'undecided', reason: 'the evidence settles neither way' });
 const queue = async () => (await T.call(T.who.operator('apply'), 'memory.reviewQueue', {})).held;
 const nsOf = (id) => T.row(id).namespace;
 
@@ -29,8 +30,8 @@ async function held(title, over = {}) {
 }
 // The queue is the project's: each test starts from an empty one.
 async function drain() {
-  const q = await queue();
-  if (q.length) await T.call(T.who.harness('apply'), 'memory.reviewApply', { verdicts: q.map((h) => releaseV(h.id)), ...T.evidence });
+  const q = (await T.call(T.who.operator('apply'), 'memory.held', { list: true, project: 'lc' })).entries.map((e) => ({ id: e.note_id }));
+  for (const h of q) await T.call(T.who.operator('apply'), 'memory.heldSettle', { id: h.id, action: 'release', reason: 'test drain' }); // the operator's own settle: a release of a wrong hold by the review verifies, so it needs cites
   assert.strictEqual((await queue()).length, 0);
 }
 
@@ -124,13 +125,13 @@ test('the run-close trigger runs only with archive_review_auto; the default is o
   await drain();
 });
 
-test('a note the reviewer leaves out stays held and carries over; a release clears the warning', async () => {
+test('a note the reviewer leaves out stays held and carries over; an undecided one stays held for the operator and is counted', async () => {
   await drain();
   const ids = [];
   for (let i = 0; i < 4; i += 1) ids.push(await held(`partial ${i}`));
-  const o = await review(fakeManager(T, 'apply', json('verdicts', [archiveV(ids[0]), releaseV(ids[1])])));
-  assert.deepStrictEqual([o.result.counts.applied, o.left_held], [2, 2]);
-  assert.deepStrictEqual([nsOf(ids[0]), nsOf(ids[1]), JSON.parse(T.row(ids[1]).body).held], ['archive/lc', 'project/lc', undefined]);
+  const o = await review(fakeManager(T, 'apply', json('verdicts', [archiveV(ids[0]), undecidedV(ids[1])])));
+  assert.deepStrictEqual([o.result.counts.applied, o.result.counts.undecided, o.left_held], [2, 1, 3], 'two untouched and one undecided are still held');
+  assert.deepStrictEqual([nsOf(ids[0]), nsOf(ids[1]), !!JSON.parse(T.row(ids[1]).body).held], ['archive/lc', 'project/lc', true]);
   assert.deepStrictEqual((await queue()).map((h) => h.id).sort(), [ids[2], ids[3]].sort());
 });
 
@@ -165,7 +166,7 @@ test('adversarial verdicts: an id with no hold, an archive without a cite, a cit
   const before = await queueIds();
 
   const nohold = await review(fakeManager(T, 'apply', json('verdicts', [archiveV(unheld)])), {}, {});
-  assert.deepStrictEqual(nohold.result.refused.map((r) => r.code), ['E_NOT_FOUND'], 'a note nobody held cannot be archived');
+  assert.deepStrictEqual(nohold.result.refused.map((r) => r.code), ['E_PRECONDITION'], 'a note nobody held was not offered, so a verdict for it is refused before the core');
   assert.strictEqual(nsOf(unheld), 'project/lc');
 
   const nocite = await review(fakeManager(T, 'apply', json('verdicts', [archiveV(a, { cites: [] })])));
@@ -203,10 +204,10 @@ test('by hand the reviewer ignores the triggers, and an empty queue is still not
   const empty = await review(null, {}, { force: true });
   assert.strictEqual(empty.reason, 'empty queue');
   const n = await held('forced review');
-  const o = await review(fakeManager(T, 'apply', json('verdicts', [releaseV(n)])), {}, { force: true });
+  const o = await review(fakeManager(T, 'apply', json('verdicts', [undecidedV(n)])), {}, { force: true });
   assert.deepStrictEqual([o.ran, o.trigger, o.result.counts.applied], [true, 'asked by hand', 1]);
   const off = await review(fakeManager(T, 'apply', json('verdicts', [])), { scrub_action: 'off' }, { force: true });
-  assert.strictEqual(off.ran, false, 'nothing to review after the release');
+  assert.strictEqual(off.ran, false, 'nothing to review after the undecided one: it waits for the operator');
 });
 
 test('closeStages: the scrub then the review, one manager built only when a child is to be spawned, nothing at all with notes off', async () => {

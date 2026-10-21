@@ -203,7 +203,7 @@ function archiveNote(E, project, note, meta, kept) {
     b.state = 'archived';
     b.archived = {
       at, from, kind: meta.kind, of: meta.of || null, ground: meta.ground || null, reason: meta.reason, cites: meta.cites || [], run_id: meta.run_id || null,
-      head_sha: meta.head_sha || null, held_row: meta.held_row || null, review: meta.receipt || null, direct: !!meta.direct, ...(closed ? { held_row_closed: closed } : {}), ...(carried.length ? { replaced_also_archived: carried[0] } : {}), ...(carry.stopped_at ? { carry_stopped_at: carry.stopped_at } : {}), ...(meta.replaced_by_archived ? { replaced_by_archived: meta.replaced_by_archived } : {}), ...(meta.relation ? { relation: meta.relation } : {}), ...(transfer ? { history_moved: transfer } : {}),
+      head_sha: meta.head_sha || null, held_row: meta.held_row || null, review: meta.receipt || null, ...(meta.kind_changed ? { kind_changed: meta.kind_changed } : {}), ...(meta.settled_by ? { settled_by: meta.settled_by } : {}), direct: !!meta.direct, ...(closed ? { held_row_closed: closed } : {}), ...(carried.length ? { replaced_also_archived: carried[0] } : {}), ...(carry.stopped_at ? { carry_stopped_at: carry.stopped_at } : {}), ...(meta.replaced_by_archived ? { replaced_by_archived: meta.replaced_by_archived } : {}), ...(meta.relation ? { relation: meta.relation } : {}), ...(transfer ? { history_moved: transfer } : {}),
     };
     delete b.held;
     return fitBody(b);

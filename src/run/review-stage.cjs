@@ -135,16 +135,31 @@ async function runReview({ core, runId, lv, dataDir, getManager, worktree = null
     if (parsed.error) throw J.coded('E_ARGS', parsed.error);
     // A hold written at write time (a refine or replacement of a verified note) has no head commit of its own, so a file cite could never be read
     // for it: the head of the worktree the reviewer worked in (named in the brief) stands for its cites. A hold with a head keeps its own.
-    const tally = { verdicts: parsed.list.length, applied: 0, refused: 0 };
+    const tally = { verdicts: parsed.list.length, applied: 0, refused: 0, undecided: 0, refused_stale: 0 };
     const applied = [], refused = [];
-    for (let i = 0; i < parsed.list.length; i += VERDICTS_PER_APPLY) {
-      const r = await core.memory.reviewApply({ verdicts: parsed.list.slice(i, i + VERDICTS_PER_APPLY), worktree: abs(cwd), evidence_files: streams.slice(0, STREAMS_MAX), ...(head ? { head_sha: head } : {}) });
+    // Each verdict is bound to the hold row and revision (and, where an outcome would verify the note, the hash of the whole note) of the entry that was
+    // OFFERED, taken from the queue by note id and never from the model's text. A verdict for a note that was not offered is refused here and listed.
+    const offeredBy = new Map(queued.map((h) => [h.id, h]));
+    const plain = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+    const verdictList = [];
+    for (const v of parsed.list) {
+      if (!plain(v)) { verdictList.push(v); continue; } // a malformed list is refused whole by the core
+      const h = offeredBy.get(v.id);
+      if (!h) { refused.push({ id: v.id, code: 'E_PRECONDITION', not_offered: true }); tally.refused += 1; continue; }
+      verdictList.push({ ...v, held_row: h.held_row, rev: h.rev, ...(h.shown_hash ? { shown_hash: h.shown_hash } : {}) });
+    }
+    for (let i = 0; i < verdictList.length; i += VERDICTS_PER_APPLY) {
+      const r = await core.memory.reviewApply({ verdicts: verdictList.slice(i, i + VERDICTS_PER_APPLY), worktree: abs(cwd), evidence_files: streams.slice(0, STREAMS_MAX), ...(head ? { head_sha: head } : {}) });
       tally.applied += r.counts.applied; tally.refused += r.counts.refused;
-      applied.push(...r.applied.map((a) => ({ id: a.id, outcome: a.outcome, receipt: a.receipt }))); refused.push(...r.refused.map((a) => ({ id: a.id, code: a.code })));
+      applied.push(...r.applied.map((a) => ({ id: a.id, outcome: a.outcome, receipt: a.receipt }))); refused.push(...r.refused.map((a) => ({ id: a.id, code: a.code, ...(a.detail && a.detail.current_rev !== undefined ? { stale: true } : {}) })));
     }
     out.result = { counts: tally, applied, refused };
-    out.left_held = q.held.length - applied.length; // every mark not decided stays held and carries over
-    await J.receipt(core, { kind: 'review_stage', ok: true, ...base, row_ids: applied.map((a) => a.id), message: `${why}: ${tally.verdicts} verdicts for ${queued.length} of ${q.held.length} held marks; applied ${tally.applied}, refused ${tally.refused}; cost $${got.cost.toFixed(4)}` });
+    tally.undecided = applied.filter((a) => a.outcome === 'undecided').length;
+    tally.refused_stale = refused.filter((a) => a.stale).length;
+    // Every mark not settled stays held and carries over: read from the queue again (an undecided hold is still held, waiting for the operator).
+    out.left_held = q.held.length - applied.length;
+    try { const after = await core.memory.reviewQueue({}); out.left_held = after.held.length + ((after.counts && after.counts.awaiting_operator) || 0); } catch { /* the estimate above stands */ }
+    await J.receipt(core, { kind: 'review_stage', ok: true, ...base, row_ids: applied.map((a) => a.id), message: `${why}: ${tally.verdicts} verdicts for ${queued.length} of ${q.held.length} held marks; applied ${tally.applied} (undecided ${tally.undecided}), refused ${tally.refused} (stale ${tally.refused_stale}); cost $${got.cost.toFixed(4)}` });
   } catch (e) {
     await noteOverrun(true);
     out.error = { code: J.codeOf(e), message: String((e && e.message) || e).slice(0, 300) };

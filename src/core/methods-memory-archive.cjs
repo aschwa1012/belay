@@ -28,7 +28,10 @@ const esc = s => s.replace(/[\\%_]/g, c => `\\${c}`);
 // ---- memory.noteRestore ---------------------------------------------------------------------------------------
 
 async function noteRestore(E, caller, args) {
-  C.allowKeys(args, ['id', 'reason'], 'memory.noteRestore');
+  C.allowKeys(args, ['id', 'reason', 'settle_reports'], 'memory.noteRestore');
+  if (args.settle_reports !== undefined && typeof args.settle_reports !== 'boolean') throw err('E_ARGS', 'memory.noteRestore settle_reports must be true or false', { field: 'settle_reports' });
+  // Only the operator's own command may restore a note with its reports settled instead of held again.
+  if (args.settle_reports === true && !require('./held-guard.cjs').explicitOperator(caller)) throw err('E_ROLE', 'memory.noteRestore settle_reports is the operator\'s own command: a restore by anyone else holds the note again for its unsettled reports', { role: caller.role });
   if (!validId(args.id)) throw err('E_ARGS', 'memory.noteRestore needs the id of an archived note', { field: 'id' });
   const reason = C.clean(L.checkText(args.reason, 'reason', 500, 'memory.noteRestore: ')).text;
   if (caller.role !== 'operator' && !N.notesLevers(E, caller)) throw err('E_LEVER_OFF', 'memory.noteRestore needs the run\'s memory.notes lever, and this run has it off', { lever: 'notes' });
@@ -52,7 +55,23 @@ async function noteRestore(E, caller, args) {
     const returned = require('./memory-archive.cjs').untransfer(E, row);
     const entry = { at: Date.now(), by: E.memoryWriter(caller), role: caller.role, run_id: caller.run_id, reason, was_archived: was, history_returned: returned };
     E.store.patchBody(row.id, b => { b.state = toPending ? 'pending' : 'live'; b.restored = [...(b.restored || []), entry].slice(-RESTORED_KEEP); delete b.archived; if (!toPending) delete b.matches; return N.fitBody(b); });
-    return { id: row.id, restored: true, namespace: toPending ? N.pendingNs(project) : N.projectNs(project), receipt: { kind: 'restore', ...entry }, history_returned: returned, row: C.rowOut(E, row.id) };
+    // A note archived with reports that were never settled is held again, in the same transaction, for those reports (a restore reopens the dispute); the
+    // operator may settle them instead. A restore to pending writes no hold: a pending note is not live, and its reports wait.
+    let reopened = null, settled = null;
+    if (!toPending) {
+      const RM = require('./report-marks.cjs');
+      const fresh = loadNote(E, row.id);
+      const open = RM.unsettled(fresh.b);
+      if (open.length && args.settle_reports === true) {
+        const keys = open.map(RM.reportKey);
+        E.store.patchBody(row.id, b => { b.reports_settled = [...new Set([...(b.reports_settled || []), ...keys])]; b.restore_settled = { by: 'operator', at: entry.at, reason }; return N.fitBody(b); });
+        settled = { keys, count: keys.length };
+      } else if (open.length) {
+        const threshold = (N.notesLevers(E, caller) || { notes_match_threshold: 0.8 }).notes_match_threshold;
+        reopened = require('./memory-report-hold.cjs').holdReported(E, caller, { project, runId: caller.run_id, threshold, headSha: null, extra: { restored_from: (was && (was.review || was.held_row)) || null } }, fresh, open[open.length - 1]);
+      }
+    }
+    return { id: row.id, restored: true, ...(reopened ? { held: reopened } : {}), ...(settled ? { settled } : {}), namespace: toPending ? N.pendingNs(project) : N.projectNs(project), receipt: { kind: 'restore', ...entry }, history_returned: returned, row: C.rowOut(E, row.id) };
   });
   E.noteWrite();
   return out;

@@ -1,54 +1,56 @@
 'use strict';
-// methods-memory-review.cjs — memory.reviewApply: the Opus reviewer's verdicts on held notes ("hold, then decide").
-// Harness caller only. For each held note the reviewer either
-//   archive  S4's facts are checked again at this moment, then the note moves to archive/<project> keeping its id
-//            (a duplicate hands its sightings and delivery history to the note it duplicates); or
-//   release  the hold is dropped and the warning with it.
-// A queue row of kind `unsupported` (a note a reviewer could not prove or disprove; it carries no warning) is judged with its own three answers:
-//   verify | refute  the note's status is set, as a note review sets it (refute also writes the receipt the orchestrator's wake comes from), on cites;
-//   still_unsupported  the note leaves the queue and stays unverified.
-// Every verdict, applied or refused, is written on the held row and returned with a `review:` receipt, so a refusal
-// is a fact on the row and not a silence. Nothing is deleted.
+// methods-memory-review.cjs — memory.reviewApply: the Opus reviewer's verdicts on held notes ("hold, then decide"). Harness caller only.
+// For a hold with a warning the reviewer has three outcomes (operator, 2026-10-21):
+//   archive    on its own cites that show the note is wrong: S4's facts are checked again at this moment, then the note moves to archive/<project>
+//              keeping its id (a duplicate hands its sightings and delivery history to the note it duplicates);
+//   release    for a hold of kind wrong or ground reported, ONLY on its own cites that show the note is correct, checked as an archive's are:
+//              a release is a verify (the note becomes verified through the same write a note review uses, its reports are settled, the hold
+//              ends), and it names the hash of the whole note the brief showed (shown_hash). For a scrubber duplicate or superseded hold a release
+//              keeps its meaning (the two notes do not make the same claim, or the other does not replace it) and needs no cites;
+//   undecided  with a reason: the hold stays held, with its warning, marked reviewed-undecided at its revision; it waits for the operator.
+// A queue row of kind `unsupported` (a note a reviewer could not prove or disprove; it carries no warning) has its own three answers
+// (memory-review-unsupported.cjs): verify, refute, still_unsupported.
+// Every verdict is bound to the hold row and revision it was offered (a hold that changed since refuses it, with the refusal on the row), and every
+// verdict, applied or refused, is written on the held row and returned with a `review:` receipt, so a refusal is a fact on the row and not a silence.
+// Nothing is deleted.
 
 const { err } = require('./errors.cjs');
 const L = require('./memory-lifecycle.cjs');
 const C = require('./lifecycle-common.cjs');
-const { loadNote, checkHoldFacts, ownTexts, sawsOf } = require('./memory-facts.cjs');
-const { checkCitations, evidenceOf, streamCite } = require('./memory-citations.cjs');
+const { loadNote, checkHoldFacts, reportedKind, ownTexts, sawsOf } = require('./memory-facts.cjs');
+const { checkCitations, evidenceOf } = require('./memory-citations.cjs');
 const { archiveNote } = require('./memory-archive.cjs');
 const N = require('./methods-memory-notes.cjs');
 const { applyOneIn } = require('./methods-memory-note-review.cjs');
-const HG = require('./held-guard.cjs');
-
-// The archive review's cited outcome on one note is the only authority besides the operator's own command that may change a held note's
-// visibility or status (held-guard.cjs). Each wrapper covers one synchronous transaction, after its cites were checked.
-const granted = (noteId, fn) => HG.grant('archive_review', noteId, fn);
+const { reportKey } = require('./report-marks.cjs');
+const BC = require('./note-brief-capture.cjs');
+const R = require('./memory-review-common.cjs');
 
 const KEYS = ['verdicts', 'run_id', 'head_sha', 'worktree', 'evidence_files'];
-const REVIEWS_KEEP = 20;
-const pick = e => ({ reason: e.reason, cites: e.cites });
+const isReported = (b) => b.ground === 'reported' || b.ground === 'report_confirmed';
+// Whether a release of this hold verifies the note (a wrong hold of any ground, or any hold made by a report).
+const verifying = (b) => b.kind === 'wrong' || isReported(b);
 
-// The one active hold of a note, as a row with its parsed body, or null.
-function activeHold(E, project, noteId) {
-  const r = E.store.p(`SELECT id, namespace, body FROM memory_entries WHERE namespace = ? AND type = 'held' AND written_by = 'harness'
-    AND json_extract(body, '$.note_id') = ? AND json_extract(body, '$.state') = 'held' ORDER BY created_at DESC LIMIT 1`).get(L.nsOf('held', project), noteId);
-  return r ? { id: r.id, namespace: r.namespace, b: JSON.parse(r.body) } : null;
+// The keys of every report on a hold at the revision read (the new and the legacy), which a release settles.
+function settledKeys(note, held) {
+  const keys = new Set((held.b.reports || []).map((r) => r.key).filter(Boolean));
+  if (held.b.report) {
+    const w = (note.b.reported_wrong || []).find((x) => x && x.task_id === held.b.report.task_id && x.at === held.b.report.at);
+    if (w) keys.add(reportKey(w));
+  }
+  return [...keys];
 }
 
-function record(E, heldId, entry, patch) {
-  E.store.patchBody(heldId, b => {
-    b.reviews = [...(b.reviews || []), entry].slice(-REVIEWS_KEEP);
-    if (patch) Object.assign(b, patch);
-    return b;
+// Ends the hold as released and drops the warning. `extra` goes on the review entry and the proof.
+function release(E, ctx, held, v, extra = {}, patchNote = null) {
+  const entry = R.review(ctx, held, v, 'released', extra);
+  R.record(E, held.id, entry, { state: 'released', released_at: entry.at });
+  E.store.patchBody(held.b.note_id, (b) => {
+    delete b.held;
+    b.releases = [...(b.releases || []), { held_row: held.id, at: entry.at, receipt: entry.receipt, reason: v.reason }].slice(-R.REVIEWS_KEEP);
+    if (patchNote) patchNote(b);
+    return N.fitBody(b);
   });
-}
-
-const review = (ctx, held, v, outcome, extra) => ({ receipt: `review:${ctx.runId}:${held.id}`, run_id: ctx.runId, at: Date.now(), verdict: v.verdict, outcome, reason: v.reason, cites: v.cites, ...(v.same_claim === undefined ? {} : { same_claim: v.same_claim }), ...extra });
-
-function release(E, ctx, held, v) {
-  const entry = review(ctx, held, v, 'released');
-  record(E, held.id, entry, { state: 'released', released_at: entry.at });
-  E.store.patchBody(held.b.note_id, b => { delete b.held; b.releases = [...(b.releases || []), { held_row: held.id, at: entry.at, receipt: entry.receipt, reason: v.reason }].slice(-REVIEWS_KEEP); return b; });
   return { id: held.b.note_id, verdict: 'release', outcome: 'released', receipt: entry.receipt, held: C.rowOut(E, held.id), row: C.rowOut(E, held.b.note_id) };
 }
 
@@ -56,132 +58,113 @@ function release(E, ctx, held, v) {
 function archive(E, ctx, held, v, sources) {
   const note = loadNote(E, held.b.note_id);
   const refuse = (code, message, detail) => {
-    const entry = review(ctx, held, v, 'refused', { code, message, verified: sources });
-    record(E, held.id, entry);
+    const entry = R.review(ctx, held, v, 'refused', { code, message, verified: sources });
+    R.record(E, held.id, entry);
     return { id: held.b.note_id, verdict: 'archive', outcome: 'refused', receipt: entry.receipt, code, message, ...(detail ? { detail } : {}), held: C.rowOut(E, held.id), row: C.rowOut(E, held.b.note_id) };
   };
   if (!note || note.namespace !== N.projectNs(ctx.project)) return refuse('E_NOT_FOUND', `note ${held.b.note_id} is no longer a live note of the project (${note ? note.namespace : 'gone'}), so there is nothing to archive`);
+  // A report-made hold is classified again here, by the same function that classified it: a replacement that is no longer live, kept and related
+  // (archived or held meanwhile) makes the archive a wrong one (or one of another passing replacement), recorded as kind_changed.
+  let kind = held.b.kind, of = held.b.of || null, kindChanged = null;
+  if (held.b.ground === 'reported') {
+    const rk = reportedKind(E, ctx.project, note, held.b.reports || [], ctx.threshold, held.b.prior_hold || null);
+    if (rk.kind !== kind || (rk.of || null) !== of) { kindChanged = `${kind}->${rk.kind}`; kind = rk.kind; of = rk.of || null; }
+  }
   let facts;
-  try { facts = checkHoldFacts(E, ctx.project, note, held.b.kind, held.b.of, held.b.ground, ctx.threshold, held.b.run_id, held.b); } catch (e) {
+  try { facts = checkHoldFacts(E, ctx.project, note, kind, of, held.b.ground, ctx.threshold, held.b.run_id, { ...held.b, kind, of }); } catch (e) {
     if (e.code !== 'E_PRECONDITION') throw e;
     return refuse(e.code, `S4 no longer holds at apply time: ${e.message}`, e.detail);
   }
-  const entry = review(ctx, held, v, 'archived', { facts, verified: sources });
-  const kept = held.b.kind === 'duplicate' ? loadNote(E, held.b.of) : null;
+  const entry = R.review(ctx, held, v, 'archived', { facts, verified: sources, ...(kindChanged ? { kind_changed: kindChanged } : {}) });
+  const kept = kind === 'duplicate' ? loadNote(E, of) : null;
   const done = archiveNote(E, ctx.project, note, {
-    kind: held.b.kind, of: held.b.of, ground: held.b.ground, reason: held.b.reason, cites: held.b.cites, run_id: held.b.run_id, head_sha: held.b.head_sha,
-    held_row: held.id, receipt: entry.receipt, ...(held.b.relation ? { relation: held.b.relation, refines: held.b.relation === 'refines', via: held.b.relation } : {}),
-  }, kept || (held.b.relation === 'refines' ? loadNote(E, held.b.of) : null));
-  record(E, held.id, entry, { state: 'archived', archived_at: done.at });
-  return { id: note.id, verdict: 'archive', outcome: 'archived', receipt: entry.receipt, facts, history_moved: done.history_moved, replaced_also_archived: done.replaced_also_archived, held: C.rowOut(E, held.id), row: C.rowOut(E, note.id) };
+    kind, of, ground: held.b.ground, reason: held.b.reason, cites: held.b.cites, run_id: held.b.run_id, head_sha: held.b.head_sha,
+    held_row: held.id, receipt: entry.receipt, ...(kindChanged ? { kind_changed: kindChanged } : {}), ...(held.b.relation ? { relation: held.b.relation, refines: held.b.relation === 'refines', via: held.b.relation } : {}),
+  }, kept || (held.b.relation === 'refines' ? loadNote(E, of) : null));
+  R.record(E, held.id, entry, { state: 'archived', archived_at: done.at });
+  return { id: note.id, verdict: 'archive', outcome: 'archived', receipt: entry.receipt, facts, ...(kindChanged ? { kind_changed: kindChanged } : {}), history_moved: done.history_moved, replaced_also_archived: done.replaced_also_archived, held: C.rowOut(E, held.id), row: C.rowOut(E, note.id) };
 }
 
-// The cites of a verify or a refute. A stream cite is a TOOL RESULT of a non-belay tool in a stream among the evidence files (the task-cite rule:
-// never belay's own tool inputs or results, the assistant's or the user's prose, or the task brief), and it may not be the note's own words (title,
-// when, text, evidence). A file cite is read at the head commit as for any hold.
-async function unsupportedCites(E, ctx, held, note, cites) {
-  const own = [note.title, note.b.when, note.text, ...((note.b.evidence || []).flatMap(e => [e && e.saw, e && e.where]))].filter(t => typeof t === 'string' && t.trim());
-  const files = (ctx.evidence.evidence_files || []).map(f => String(f).split('\\').join('/'));
-  const out = [], fileCites = [];
-  for (const [i, c] of cites.entries()) {
-    const fail = reason => err('E_CITATION', `cites[${i}] (${c.where}) refused: ${reason}`, { index: i, where: c.where, reason });
-    if (!c.where.startsWith('stream:')) { fileCites.push(c); continue; }
-    const file = c.where.slice('stream:'.length).split('\\').join('/');
-    if (!files.includes(file)) throw fail('that stream file is not among the evidence files named for this call');
-    const r = streamCite(file, c.quote, own, note.title, sawsOf(note));
-    if (!r.found) throw fail(r.reason);
-    out.push({ where: c.where, source: 'stream result' });
+// A verifying release, inside the transaction and the review's grant: the note becomes verified on the reviewer's cites (applyOneIn, route
+// archreview-<run>), every report on the hold is settled, and the hold ends. The whole note the brief showed is bound by hash.
+function releaseVerifying(E, ctx, held, v, sources) {
+  const refuse = (code, message) => R.refuseOn(E, ctx, held.id, held, v, code, message);
+  const note = loadNote(E, held.b.note_id);
+  if (!note || note.namespace !== N.projectNs(ctx.project)) return refuse('E_NOT_FOUND', `note ${held.b.note_id} is no longer a live note of the project, so there is nothing to release`);
+  if (v.shown_hash !== BC.hashOfRow(note)) return refuse('E_PRECONDITION', 'the note changed after the brief showed it, or the brief did not bind it (shown_hash), so it is not verified');
+  const route = { reviewer: `archreview-${ctx.runId}`, ref: `${ctx.runId}:${held.id}`, keyBase: `archreview:${held.id}` };
+  let status;
+  try { status = applyOneIn(E, ctx.caller, route, { id: note.id, verdict: 'confirmed', reason: v.reason, cites: v.cites }, note); } catch (e) {
+    if (e.code !== 'E_ARGS') throw e;
+    return refuse('E_PRECONDITION', `the note cannot be verified: ${e.message}`);
   }
-  if (fileCites.length) out.push(...await checkCitations(fileCites, { ...ctx.evidence, head_sha: held.b.head_sha || ctx.evidence.head_sha, own: ownTexts(note), saws: sawsOf(note), title: note.title }));
-  return out;
+  const keys = settledKeys(note, held);
+  const out = release(E, ctx, held, v, { verified: sources, settled: keys, status: status.status }, (b) => { b.reports_settled = [...new Set([...(b.reports_settled || []), ...keys])]; });
+  return { ...out, status: status.status, event_id: status.event_id, settled: { keys, count: keys.length } };
 }
 
-// The three answers on an unsupported note. A failed precondition is written on the row and returned, as an archive's is.
-async function unsupported(E, ctx, held, v) {
-  const id = held.b.note_id;
-  v = { ...v, ...pick(C.redactEntry(v)) };
-  const tx = fn => C.openTx(E, ctx.caller, 'memory.reviewApply', fn);
-  const refuse = (code, message) => tx(() => {
-    const entry = review(ctx, held, v, 'refused', { code, message });
-    record(E, held.id, entry);
-    return { id, verdict: v.verdict, outcome: 'refused', receipt: entry.receipt, code, message, held: C.rowOut(E, held.id), row: C.rowOut(E, id) };
-  });
-  const settle = (state, extra) => {
-    const entry = review(ctx, held, v, state, extra);
-    record(E, held.id, entry, { state, settled_at: entry.at });
-    E.store.patchBody(id, b => { b.unsupported = { ...(b.unsupported || {}), state, settled_at: entry.at, receipt: entry.receipt }; return N.fitBody(b); });
-    return entry;
-  };
-  if (v.verdict === 'still_unsupported') {
-    return tx(() => {
-      const entry = settle('still_unsupported');
-      return { id, verdict: v.verdict, outcome: 'still_unsupported', receipt: entry.receipt, held: C.rowOut(E, held.id), row: C.rowOut(E, id) };
-    });
+// The cites of an archive of a wrong or superseded note, and of a verifying release: at least one, checked verbatim against the evidence. A duplicate is
+// archived on the reviewer's explicit "same claim, not contradicting" and S4's facts (rechecked in archive()), no cites.
+async function citesFor(E, ctx, held, v) {
+  if (v.verdict === 'archive' && held.b.kind === 'duplicate') {
+    if (v.same_claim !== true) throw err('E_PRECONDITION', 'archiving a duplicate needs same_claim: true, the reviewer\'s statement that both notes make the same claim and do not contradict; release it if they differ', { id: v.id });
+    return { v: { ...v, cites: [] }, sources: [] };
   }
-  let sources = [];
-  try {
-    if (!v.cites.length) throw err('E_CITATION', `a ${v.verdict} of an unsupported note needs at least one cite { where, quote }, verbatim, from the evidence paths in the brief`, { id });
-    const own = loadNote(E, id);
-    if (!own) throw err('E_NOT_FOUND', `no note ${id}`, { id });
-    sources = await unsupportedCites(E, ctx, held, own, v.cites);
-  } catch (e) {
-    if (e.code !== 'E_CITATION') throw e;
-    return refuse(e.code, e.message);
-  }
-  return tx(() => {
-    const fresh = activeHold(E, ctx.project, id); // the state at the write
-    const note = loadNote(E, id);
-    if (!fresh || !note || note.namespace !== N.projectNs(ctx.project)) throw err('E_NOT_FOUND', `the queue row of note ${id} was settled, or the note left the project, while the verdict was being checked`, { id });
-    if ((note.status || 'unverified') !== 'unverified') {
-      const message = `note ${id} is now ${note.status}; an unsupported note is judged only while it is unverified`;
-      const entry = review(ctx, held, v, 'refused', { code: 'E_PRECONDITION', message });
-      record(E, held.id, entry);
-      return { id, verdict: v.verdict, outcome: 'refused', receipt: entry.receipt, code: 'E_PRECONDITION', message, held: C.rowOut(E, held.id), row: C.rowOut(E, id) };
-    }
-    const route = { reviewer: `archreview-${ctx.runId}`, ref: `${ctx.runId}:${held.id}`, keyBase: `archreview:${held.id}` };
-    const status = granted(id, () => applyOneIn(E, ctx.caller, route, { id, verdict: v.verdict === 'verify' ? 'confirmed' : 'refuted', reason: v.reason, cites: v.cites }, note));
-    const entry = settle(v.verdict === 'verify' ? 'verified' : 'refuted', { verified: sources });
-    return { id, verdict: v.verdict, outcome: entry.outcome, receipt: entry.receipt, status: status.status, event_id: status.event_id, held: C.rowOut(E, held.id), row: C.rowOut(E, id) };
-  });
+  if (!v.cites.length) throw err('E_CITATION', v.verdict === 'release' ? `a release of a ${isReported(held.b) ? 'reported' : 'wrong'} note verifies it, and needs at least one cite { where, quote }, verbatim, that shows the note is correct` : `archiving a ${held.b.kind} note needs at least one cite { where, quote }, verbatim`, { id: v.id });
+  const own = loadNote(E, v.id);
+  const sources = await checkCitations(v.cites, { ...ctx.evidence, head_sha: held.b.head_sha || ctx.evidence.head_sha, own: own ? ownTexts(own) : [], saws: own ? sawsOf(own) : [], title: own ? own.title : undefined });
+  if (v.verdict === 'archive' && held.b.ground === 'code_contradicts' && !sources.some((s) => s.source !== 'stream')) throw err('E_CITATION', 'a hold on the ground code_contradicts is archived on a citation of a file at the head commit', { id: v.id });
+  return { v, sources };
 }
 
 async function one(E, ctx, raw, index) {
   let v = raw;
-  const held = activeHold(E, ctx.project, v.id);
+  const held = R.activeHold(E, ctx.project, v.id);
   if (!held) throw err('E_NOT_FOUND', `note ${v.id} has no active hold in held/${ctx.project}`, { id: v.id });
+  const readRev = R.revOf(held);
   const isUns = held.b.kind === 'unsupported';
   if (isUns !== ['verify', 'refute', 'still_unsupported'].includes(v.verdict)) {
-    throw err('E_PRECONDITION', isUns ? `note ${v.id} is queued as unsupported: answer verify, refute or still_unsupported, not ${v.verdict}` : `note ${v.id} is held with a warning (${held.b.kind}): answer archive or release, not ${v.verdict}`, { id: v.id });
+    throw err('E_PRECONDITION', isUns ? `note ${v.id} is queued as unsupported: answer verify, refute or still_unsupported, not ${v.verdict}` : `note ${v.id} is held with a warning (${held.b.kind}): answer archive, release or undecided, not ${v.verdict}`, { id: v.id });
   }
-  const tx = fn => C.openTx(E, ctx.caller, 'memory.reviewApply', fn);
-  if (isUns) return unsupported(E, ctx, held, v);
-  if (v.verdict === 'release') { v = { ...v, ...pick(C.redactEntry(v)) }; return tx(() => granted(v.id, () => release(E, ctx, held, v))); }
+  const tx = (fn) => C.openTx(E, ctx.caller, 'memory.reviewApply', fn);
+  const clean = (x) => ({ ...x, ...R.pick(C.redactEntry(x)) }); // anything written on a row is redacted first
+  // The verdict is bound to the row and revision it was offered. At the first read: a different row or revision is refused, and a release or an
+  // undecided of a reported hold must say which revision it saw (what was settled, or left undecided, has to be known).
+  const offeredRow = v.held_row && E.store.p("SELECT 1 AS x FROM memory_entries WHERE id = ? AND type = 'held'").get(v.held_row) ? v.held_row : held.id;
+  const detail = { offered_row: v.held_row || held.id, offered_rev: v.rev !== undefined ? v.rev : readRev, current_row: held.id, current_rev: readRev };
+  if ((v.held_row !== undefined && v.held_row !== held.id) || (v.rev !== undefined && v.rev !== readRev)) return tx(() => R.refuseOn(E, ctx, offeredRow, held, clean(v), 'E_PRECONDITION', R.STALE, detail));
+  if (isReported(held.b) && (v.verdict === 'release' || v.verdict === 'undecided') && v.rev === undefined) return tx(() => R.refuseOn(E, ctx, held.id, held, clean(v), 'E_PRECONDITION', `a ${v.verdict} of a reported hold must carry the rev it saw (the settlement and the undecided mark must know what was seen)`, detail));
+  if (isUns) return require('./memory-review-unsupported.cjs').unsupported(E, ctx, held, v, readRev);
+  const stale = () => { const d = R.mismatch(E, ctx, v, held, readRev); return d ? R.refuseOn(E, ctx, held.id, held, clean(v), 'E_PRECONDITION', R.STALE, d) : null; };
+  if (v.verdict === 'undecided') {
+    v = { ...v, ...R.pick(C.redactEntry(v)) };
+    return tx(() => stale() || (() => {
+      const entry = R.review(ctx, held, v, 'undecided');
+      R.record(E, held.id, entry, { undecided: { rev: readRev, at: entry.at, receipt: entry.receipt, reason: v.reason } }); // marks, does not bump
+      return { id: v.id, verdict: 'undecided', outcome: 'undecided', receipt: entry.receipt, rev: readRev, held: C.rowOut(E, held.id), row: C.rowOut(E, v.id) };
+    })());
+  }
+  if (v.verdict === 'release' && !verifying(held.b)) {
+    v = { ...v, ...R.pick(C.redactEntry(v)) };
+    return tx(() => stale() || R.granted(v.id, () => release(E, ctx, held, v)));
+  }
   let sources = [];
-  try {
-    if (held.b.kind === 'duplicate') {
-      // A duplicate is archived on the reviewer's explicit "same claim, not contradicting" and S4's facts (rechecked in archive()); no cites.
-      if (v.same_claim !== true) throw err('E_PRECONDITION', 'archiving a duplicate needs same_claim: true, the reviewer\'s statement that both notes make the same claim and do not contradict; release it if they differ', { id: v.id });
-      v = { ...v, cites: [] };
-    } else {
-      if (!v.cites.length) throw err('E_CITATION', `archiving a ${held.b.kind} note needs at least one cite { where, quote }, verbatim`, { id: v.id });
-      const own = loadNote(E, v.id);
-      sources = await checkCitations(v.cites, { ...ctx.evidence, head_sha: held.b.head_sha || ctx.evidence.head_sha, own: own ? ownTexts(own) : [], saws: own ? sawsOf(own) : [], title: own ? own.title : undefined });
-      if (held.b.ground === 'code_contradicts' && !sources.some(s => s.source !== 'stream')) throw err('E_CITATION', 'a hold on the ground code_contradicts is archived on a citation of a file at the head commit', { id: v.id });
-    }
-  } catch (e) {
+  try { ({ v, sources } = await citesFor(E, ctx, held, v)); } catch (e) {
     if (e.code !== 'E_CITATION' && e.code !== 'E_PRECONDITION') throw e;
-    v = { ...v, ...pick(C.redactEntry(v)) };
-    return tx(() => {
-      const entry = review(ctx, held, v, 'refused', { code: e.code, message: e.message });
-      record(E, held.id, entry);
-      return { id: v.id, verdict: 'archive', outcome: 'refused', receipt: entry.receipt, code: e.code, message: e.message, held: C.rowOut(E, held.id), row: C.rowOut(E, v.id) };
-    });
+    v = { ...v, ...R.pick(C.redactEntry(v)) };
+    return tx(() => stale() || (() => {
+      const entry = R.review(ctx, held, v, 'refused', { code: e.code, message: e.message });
+      R.record(E, held.id, entry);
+      return { id: v.id, verdict: v.verdict, outcome: 'refused', receipt: entry.receipt, code: e.code, message: e.message, held: C.rowOut(E, held.id), row: C.rowOut(E, v.id) };
+    })());
   }
-  v = { ...v, ...pick(C.redactEntry(v)) };
+  v = { ...v, ...R.pick(C.redactEntry(v)) };
   return tx(() => {
-    const fresh = activeHold(E, ctx.project, v.id); // the state at the write
+    const bad = stale(); // the state at the write: the same row at the same revision, else the verdict is refused
+    if (bad) return bad;
+    const fresh = R.activeHold(E, ctx.project, v.id);
     if (!fresh) throw err('E_NOT_FOUND', `the hold on note ${v.id} was settled while the verdict was being checked`, { id: v.id });
-    return granted(v.id, () => archive(E, ctx, fresh, v, sources));
+    return R.granted(v.id, () => (v.verdict === 'release' ? releaseVerifying(E, ctx, fresh, v, sources) : archive(E, ctx, fresh, v, sources)));
   });
 }
 
@@ -198,7 +181,7 @@ async function reviewApply(E, caller, args) {
       const r = await one(E, ctx, v, i);
       (r.outcome === 'refused' ? refused : applied).push({ index: i, ...r });
     } catch (e) {
-      if (!e || !['E_NOT_FOUND', 'E_CITATION', 'E_PRECONDITION', 'E_EXISTS'].includes(e.code)) throw e;
+      if (!e || !['E_NOT_FOUND', 'E_CITATION', 'E_PRECONDITION', 'E_EXISTS', 'E_HELD'].includes(e.code)) throw e;
       refused.push({ index: i, id: v.id, verdict: v.verdict, outcome: 'refused', code: e.code, message: e.message, ...(e.detail ? { detail: e.detail } : {}) });
     }
   }
@@ -206,4 +189,4 @@ async function reviewApply(E, caller, args) {
   return { run_id: runId, project, counts: { verdicts: verdicts.length, applied: applied.length, refused: refused.length }, applied, refused };
 }
 
-module.exports = { reviewApply, activeHold };
+module.exports = { reviewApply, activeHold: R.activeHold };
