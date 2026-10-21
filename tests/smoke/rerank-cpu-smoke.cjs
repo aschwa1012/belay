@@ -2,10 +2,9 @@
 // rerank-cpu-smoke.cjs — a real run of the CPU rerank tier on this machine. NOT part of npm test: it loads the two real
 // ONNX rerankers (jina-reranker-v1-tiny-en and gte-reranker-modernbert-base, int8) through belay's pinned transformers.js
 // in the forked child, so run it only when the machine is free.
-// Usage: node tests/smoke/rerank-cpu-smoke.cjs <bench cache dir> <receipt dir> [notes.json]
+// Usage: node tests/smoke/rerank-cpu-smoke.cjs <bench cache dir> <receipt dir> <notes.json>
 // <bench cache dir> is a transformers.js cache holding <org>/<name>/{config.json,tokenizer.json,tokenizer_config.json,
-// onnx/model_int8.onnx} for both models (the GPU bench's cache). notes.json is a JSON
-// file of notes.
+// onnx/model_int8.onnx} for both models (the GPU bench's cache). <notes.json> is a JSON file of notes and is required.
 // The model cache is a sandbox directory (BELAY_MODEL_CACHE); the bench files are hard-linked (or copied) into it and
 // must pass the sha256 verify of `belay embedder verify --reranker` before anything loads. Per model it ranks 50 real
 // notes for three queries (three keyword-overlap notes are the relevant ones, the rest is a fixed seeded filler) and
@@ -18,7 +17,7 @@ const os = require('node:os');
 const path = require('node:path');
 const ROOT = path.resolve(__dirname, '..', '..');
 const [BENCH, OUT, NOTES] = [process.argv[2], process.argv[3], process.argv[4]];
-if (!BENCH || !OUT) { console.error('usage: node tests/smoke/rerank-cpu-smoke.cjs <bench cache dir> <receipt dir> [notes.json]'); process.exit(2); }
+if (!BENCH || !OUT || !NOTES) { console.error('usage: node tests/smoke/rerank-cpu-smoke.cjs <bench cache dir> <receipt dir> <notes.json>'); process.exit(2); }
 const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-rerank-smoke-')).split(path.sep).join('/');
 process.env.BELAY_MODEL_CACHE = `${SANDBOX}/models`;
 const { ONNX_RERANKER_TABLE } = require(path.join(ROOT, 'src/core/onnx-rerankers.cjs'));
