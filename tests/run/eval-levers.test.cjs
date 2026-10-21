@@ -168,3 +168,56 @@ test('the config memory block cannot carry an eval-only lever', () => {
     assert.match(String(r.error), /eval-only/, JSON.stringify(memory));
   }
 });
+
+// ------------------------------------------------------------------ the question across launches
+
+const recvOf = (file) => fs.readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l).text);
+
+test('the guard that keeps the question from a belay job holds on its own', () => {
+  const MP = require('../../src/run/memory-preface.cjs');
+  const ctx = { memoryLevers: { handback_question: true } };
+  return Promise.all([MP.contractTail(ctx, { id: 'notereview-x', notesOn: false }), MP.contractTail(ctx, { id: 'scrub-1', notesOn: false }), MP.contractTail(ctx, { id: 'w1', notesOn: false })])
+    .then(([review, scrub, worker]) => {
+      assert.equal(review, ''); assert.equal(scrub, '');
+      assert.equal(count(worker, QUESTION), 1);
+    });
+});
+
+test('a restart, a park-resume and an adopting manager each send the question exactly once', async () => {
+  const sb = sandbox(); const recv = path.join(sb.d, 'recv.jsonl');
+  const core = coreWith({ handback_question: true });
+  const make = () => createRunManager({ core, dataDir: sb.data, runId: 'run-el', paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
+  const m1 = make(); let m2 = null;
+  process.env.FAKE_RECV_FILE = recv;
+  try {
+    await m1.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'do it', worker_id: 'w-rl', task_id: 't1' });
+    assert.equal(count(recvOf(recv)[0], QUESTION), 1, 'the opening message');
+    await m1.stop({ worker_id: 'w-rl', mode: 'kill', timeout_ms: 8000 });
+    await m1.restart({ worker_id: 'w-rl', first_turn_timeout_ms: 45000 });
+    let msgs = recvOf(recv);
+    assert.equal(count(msgs[msgs.length - 1], QUESTION), 1, 'restart');
+    await m1.pause({ worker_id: 'w-rl', by: 'operator:1' });
+    await m1.resume({ worker_id: 'w-rl', by: 'operator:1' });
+    msgs = recvOf(recv);
+    assert.equal(count(msgs[msgs.length - 1], QUESTION), 1, 'resume');
+    await m1.stop({ worker_id: 'w-rl', mode: 'kill', timeout_ms: 8000 });
+    m2 = make();
+    const n = recvOf(recv).length;
+    await m2.restart({ worker_id: 'w-rl', first_turn_timeout_ms: 45000 });
+    msgs = recvOf(recv);
+    assert.equal(msgs.length, n + 1);
+    assert.equal(count(msgs[msgs.length - 1], QUESTION), 1, 'an adopting manager');
+  } finally { delete process.env.FAKE_RECV_FILE; if (m2) await m2.shutdown().catch(() => {}); await m1.shutdown().catch(() => {}); cleanup(sb.d); }
+});
+
+test('a failed levers read refuses the spawn when native_memory is unknowable, and names it', async () => {
+  const sb = sandbox();
+  const core = coreWith({ native_memory: sb.mem });
+  core.run = { get: async () => { throw Object.assign(new Error('owner gone'), { code: 'E_INTERNAL' }); } };
+  const m = createRunManager({ core, dataDir: sb.data, runId: 'run-el', paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
+  try {
+    await assert.rejects(m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'w-un' }), (e) => e.code === 'E_LEVERS_UNREAD' && /native_memory/.test(e.message));
+    assert.equal(m._worker('w-un'), undefined, 'no record was left');
+    assert.equal(fs.existsSync(sb.mem), false);
+  } finally { await m.shutdown?.().catch(() => {}); cleanup(sb.d); }
+});
