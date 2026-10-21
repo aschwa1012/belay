@@ -254,11 +254,12 @@ class CpuRerankClient {
 //   - A pair that reached the model's max_length (cut there if longer) is reported as warnings: [{ code: 'RERANK_TRUNCATED', ... }].
 // opts: { model, client?, chunk?, defaultBoundMs?, pkg?, cacheDir?, opBoundMs?, ... } (any other key goes to CpuRerankClient).
 function cpuRerankProvider(opts = {}) {
-  const { model, client: given, chunk, defaultBoundMs = DEFAULT_BOUND_MS, ...clientOpts } = opts;
-  const T = { now: () => Date.now(), setTimeout: (...a) => setTimeout(...a), clearTimeout: (t) => clearTimeout(t), ...((given && given.timers) || clientOpts.timers || {}) }; // injectable like the client's
+  const { model, client: given, chunk, defaultBoundMs = DEFAULT_BOUND_MS, timers, ...clientOpts } = opts;
+  const T = { now: () => Date.now(), setTimeout: (...a) => setTimeout(...a), clearTimeout: (t) => clearTimeout(t), ...(timers || (given && given.timers) || {}) }; // injectable like the client's; an explicit `timers` wins over a given client's
   if (typeof model !== 'string') throw err('E_ARGS', 'cpuRerankProvider needs a model id', { model: typeof model });
   // A given client is the first child's owner; a replacement is built from the same settings.
-  const settings = given ? { pkg: given.pkg, cacheDir: given.cacheDir, table: given.table, opBoundMs: given.opBoundMs, loadBoundMs: given.loadBoundMs, loadWallMs: given.loadWallMs, pingBoundMs: given.pingBoundMs, timers: given.timers, workerPath: given.fake ? given.workerPath : undefined, workerOpts: given.workerOpts } : clientOpts;
+  const settings = given ? { pkg: given.pkg, cacheDir: given.cacheDir, table: given.table, opBoundMs: given.opBoundMs, loadBoundMs: given.loadBoundMs, loadWallMs: given.loadWallMs, pingBoundMs: given.pingBoundMs, timers: timers || given.timers, workerPath: given.fake ? given.workerPath : undefined, workerOpts: given.workerOpts } : clientOpts;
+  if (timers && !given) clientOpts.timers = timers; // the clients it builds share the injected clock
   let c = given || null;
   rerankerFor(model, process.env.BELAY_TEST_MODE === '1' ? settings.table : undefined); // an unknown id fails here, not on the first search
   let loaded = null; // the load promise of c, kept while it is pending or succeeded
