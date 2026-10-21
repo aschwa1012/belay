@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const CP = require('../run/compaction.cjs');
 const ML = require('../run/memory-levers.cjs');
+const MN = require('../core/memory-notice.cjs'); // pure; the shared wording of the no-project notice
 
 const FIX_CUTOFFS = ['orchestrator', 'cap-only'];
 const DEFAULT_MAX_FIX_ROUNDS = 2;
@@ -133,6 +134,8 @@ function parseLevers(spec, opts = {}) {
       Object.defineProperty(out, 'rules_text', { value: text, enumerable: false }); // not part of the receipt
     }
   }
+  // Notes default on but need a project: say so when there is none. Not enumerable, so the receipt is unchanged; `belay run` prints it.
+  Object.defineProperty(out, 'memory_notice', { value: MN.noticeFor(merged.block), enumerable: false });
   if (merged.dropped) out.memory_dropped = merged.dropped; // config levers a spec's `notes: false` left out, so the receipt says what did not apply
   return out;
 }

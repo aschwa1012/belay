@@ -145,6 +145,7 @@ async function run(ctx) {
   require('../run/exe-discovery.cjs').exportConfigured(found, C.effective); // config claude_exe/codex_exe reach every child
   // The orchestrator is always Claude Code: a missing executable exits 1 (a host prerequisite, like the embedder) before any file is created.
   try { require('../run/exe-discovery.cjs').exeFor('claude'); } catch (e) { return { code: 1, text: `belay run: ${e.message}\n`, json: { error: e.message } }; }
+  if (parsed.levers.memory_notice && !ctx.json) process.stderr.write(`${require('../core/memory-notice.cjs').noticeLines(parsed.levers.memory_notice, 'belay: ').join('\n')}\n`); // once, before anything launches; under --json stderr carries failure receipts, so the notice stays out of it
   const dataDir = C.dataDirOf(found, ctx);
   const orchestratorDir = parsed.orchestratorDirRaw || fwd(path.join(os.tmpdir(), 'belay-run', parsed.runId));
   if (orchestratorDir === dataDir || orchestratorDir.startsWith(`${dataDir}/`)) {

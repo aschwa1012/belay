@@ -58,6 +58,7 @@ export function Band({ E, snap, ui, now, cols, act }: Ctx) {
   const toggle = cols >= 60 ? (ui.open ? '  ▾ panel' : '  ▸ panel') : (ui.open ? ' ▾' : ' ▸')
   return (
     <Box flexDirection="column">
+      {snap.memoryNotice && <Line E={E} w={cols} k="mn" segs={[{ t: '▲ ', c: 'warning' }, { t: snap.memoryNotice.title, c: 'warning', bold: true }, { t: ` · add ${snap.memoryNotice.configLine}`, dim: true }]} />}
       {lines.map((segs, i) => (
         <Box key={`band${i}`}>
           <Line E={E} segs={segs} k={`l${i}`} w={i === 0 ? cols - toggle.length : cols} />
@@ -382,6 +383,21 @@ function Legend({ E, cols }: Ctx) {
   )
 }
 
+// The full notice, at the top of the pane while no memory.project is set: a title, why, and the exact fix.
+function MemoryNotice({ E, snap, cols }: Ctx) {
+  const n = snap.memoryNotice
+  if (!n) return null
+  const { Box } = E
+  const body = (t: string, k: string, dim = false) => wordWrap(t, cols - 2).map((l, i) => <Line E={E} w={cols} k={`${k}${i}`} segs={[{ t: `  ${l}`, dim }]} />)
+  return (
+    <Box flexDirection="column">
+      <Line E={E} w={cols} k="mnt" segs={[{ t: '▲ ', c: 'warning' }, { t: n.title, c: 'warning', bold: true }]} />
+      {body(n.why, 'mnw')}
+      {body(n.fix, 'mnf')}
+    </Box>
+  )
+}
+
 // ---- the pane ----------------------------------------------------------------------------------
 
 export function Pane(c: Ctx) {
@@ -412,6 +428,7 @@ export function Pane(c: Ctx) {
           <Button key="close" label=" ✕" plain dimColor onPress={act.close} />
         </Box>
       </Box>
+      <MemoryNotice {...c} />
       {ui.legend && <Legend {...c} />}
       {tasksLine.length > 0 && <Line E={E} w={cols} k="pt" segs={tasksLine} />}
       <Line E={E} w={cols} k="pc" segs={costLine} />
@@ -436,6 +453,7 @@ export function Fallback(c: Ctx) {
     lines.push([markSeg(a.state, snap.settings.marks), { t: ` ${a.id} ${shortModel(a.model)} · ` }, ...ctxSegs(a, snap.settings), { t: ' · ' },
       ...cacheSegs(a, snap.settings, snap.fetchedAt, now), { t: ` · ${money(a.costUsd)}` }, { t: a.task ? ` · ${a.task.id}` : '', dim: true }])
   }
+  if (snap.memoryNotice) lines.push([{ t: `▲ ${snap.memoryNotice.title}. ${snap.memoryNotice.fix}`, c: 'warning' }])
   if (snap.held) { // plain text: the review button is the terminal pane's alone
     for (const r of snap.held.reviews) lines.push([{ t: `◇ ${reviewLine(r)}`, c: 'warning' }])
     if (snap.held.count > 0) lines.push([{ t: `◇ ${heldLine(snap.held)}`, c: 'warning' }])

@@ -74,3 +74,16 @@ test('runningReview and reviewLine: only a live review blocks the button; an old
   assert.strictEqual(M.reviewLine({ ...r('ok'), text: 'kept 3' }), 'archive review of acme ended ok · kept 3');
   assert.strictEqual(M.reviewLine({ ...r('failed'), text: 'E_ARGS' }), 'archive review of acme FAILED · E_ARGS');
 });
+
+test('parseMemoryNotice and buildSnapshot: the no-project notice rides the settings read, survives a failed read and goes when belay stops reporting it', async () => {
+  const F = await loadPanelModule('fetch');
+  const notice = { title: 'Memory is off for this project', why: 'Notes are per project.', fix: 'Add "memory": { "project": "<name>" } to belay.config.json.', config_line: '"memory": { "project": "<name>" }' };
+  assert.deepStrictEqual(M.parseMemoryNotice({ memory_notice: notice }), { title: notice.title, why: notice.why, fix: notice.fix, configLine: notice.config_line });
+  for (const j of [null, {}, { memory_notice: null }, { memory_notice: { title: 'x' } }, { memory_notice: 'x' }]) assert.strictEqual(M.parseMemoryNotice(j), null, JSON.stringify(j));
+  const parts = (settings, prev) => ({ watch: { runId: null, dataDir: null, cli: null, fixed: false }, prev, now: 1, agents: { json: { agents: [] } }, notices: null, transcript: null, settings });
+  const on = F.buildSnapshot(parts({ json: { memory_notice: notice, settings: [] } }, null));
+  assert.strictEqual(on.memoryNotice.title, notice.title);
+  assert.strictEqual(F.buildSnapshot(parts({ error: 'belay settings exit 3' }, on)).memoryNotice.title, notice.title, 'a failed read keeps the earlier notice');
+  assert.strictEqual(F.buildSnapshot(parts({ json: { memory_notice: null, settings: [] } }, on)).memoryNotice, null, 'a project set clears it');
+  assert.strictEqual(F.buildSnapshot(parts(null, null)).memoryNotice, null);
+});

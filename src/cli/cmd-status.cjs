@@ -55,6 +55,7 @@ function renderText(receipt) {
   }
   if (receipt.notes_unembedded && receipt.notes_unembedded.total > 0) lines.push(require('./panel-common.cjs').unembeddedText(receipt.notes_unembedded));
   if (receipt.notes_held && receipt.notes_held.total > 0) lines.push(require('./panel-common.cjs').heldText(receipt.notes_held));
+  if (receipt.memory_notice) lines.push(`warning: ${receipt.memory_notice.title}. ${receipt.memory_notice.why} ${receipt.memory_notice.fix}`);
   lines.push('');
   return lines.join('\n');
 }
@@ -84,7 +85,8 @@ async function run(ctx) {
       } else runIdSource = 'none';
     }
     const st = await core.status.get(runId ? { run_id: runId } : {});
-    const receipt = { ...st, run_id_source: runIdSource };
+    const notice = require('../core/memory-notice.cjs').noticeForConfig(found);
+    const receipt = { ...st, run_id_source: runIdSource, ...(notice ? { memory_notice: notice } : {}) };
     // Exit 0 whenever the ladder was read, whatever the verdict: a dead system is a valid answer.
     return { code: 0, text: renderText(receipt), json: receipt };
   } catch (e) {

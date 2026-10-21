@@ -47,8 +47,9 @@ export const TRANSCRIPT = {
 }
 
 export const DEFAULTS: Record<string, string> = { pane: 'docked', marks: 'shapes', cache: 'both', context: 'both', band: 'two-lines', task: 'kind' }
-export const SETTINGS = (mod: Record<string, string> = {}) => ({
-  found: true, path: 'C:/x/belay.config.json', parse_error: null,
+export const NOTICE = { code: 'memory_project_unset', title: 'Memory is off for this project', why: 'Memory notes are on by default, but they are kept per project and belay never guesses a project name, so with none set nothing is saved or recalled.', fix: 'Add "memory": { "project": "<name>" } to belay.config.json (or to the run spec), or run: belay settings memory.project <name>.', config_line: '"memory": { "project": "<name>" }', name_rule: '^[a-z0-9][a-z0-9._-]{0,63}$' }
+export const SETTINGS = (mod: Record<string, string> = {}, memoryNotice: unknown = null) => ({
+  found: true, path: 'C:/x/belay.config.json', parse_error: null, memory_notice: memoryNotice,
   settings: Object.keys(DEFAULTS).map(k => ({ key: `mod.${k}`, value: mod[k] ?? DEFAULTS[k], source: 'default', allowed: [] })),
 })
 export const FULL_RUNFILE = { role: 'orchestrator', run_id: RUN, data_dir: 'C:/d/.belay', belay_cli: 'C:/x/belay.cjs', node: 'C:/n/node.exe' }
@@ -56,7 +57,7 @@ export type World = {
   file?: boolean; runFile?: unknown; repoCli?: boolean; watchId?: string
   mode?: string | null; mod?: Record<string, string>; notices?: unknown
   failAgents?: boolean; transcriptFail?: boolean; orchDisplay?: string; noDisplay?: boolean; noRun?: boolean
-  extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number
+  extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number; memoryNotice?: boolean
 }
 
 // The host beneath the plugin: a run file (or none), belay's read commands as fixtures, and a recorder
@@ -116,7 +117,7 @@ export function world(on: any, w: World) {
       },
       notices: w.notices ?? (w.longNotices ? LONG_NOTICES : NOTICES),
       transcript: w.nullTs ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.map(x => ({ ...x, ts: null })) } : w.manyTexts ? { run_id: RUN, entries: MANY } : w.toolsOnly ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.filter(x => x.kind !== 'text') } : w.longTranscript ? { run_id: RUN, entries: LONG_ENTRIES.slice(-Number(e.argv[e.argv.indexOf('--tail') + 1])) } : w.honorTail ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.slice(-Number(e.argv[e.argv.indexOf('--tail') + 1])) } : TRANSCRIPT,
-      settings: SETTINGS(w.mod),
+      settings: SETTINGS(w.mod, w.memoryNotice ? NOTICE : null),
     }
     if ((verb === 'agents' && w.failAgents) || (verb === 'transcript' && w.transcriptFail)) return { value: { exitCode: verb === 'agents' ? 3 : 4, stdout: '', stderr: 'boom' } }
     return { value: { exitCode: 0, stdout: JSON.stringify(body[verb]), stderr: '' } }

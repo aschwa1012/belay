@@ -162,6 +162,14 @@ function applyFix(checks) {
   return fixed;
 }
 
+// A warning in the table's own terms: `missing` (nothing is broken, a thing is not set), with the fix line.
+function memoryProjectCheck(found) {
+  const n = require('../core/memory-notice.cjs').noticeForConfig(found);
+  return n
+    ? row('memory-project', MISSING, `${n.title}. ${n.why} ${n.fix}`, { fix: n.config_line, notice: n })
+    : row('memory-project', OK, 'notes are off or memory.project is set in the config file');
+}
+
 async function run(ctx) {
   if (ctx.argv.length) {
     const message = `unknown argument ${ctx.argv[0]}`;
@@ -174,7 +182,7 @@ async function run(ctx) {
 
   const found = C.discover(ctx.cwd);
   const dataDir = C.dataDirOf(found, ctx);
-  const checks = [...configChecks(found), ...storeChecks(dataDir), ...substrateChecks(found), ...embedderChecks(), await memoryIndexCheck(dataDir)];
+  const checks = [...configChecks(found), ...storeChecks(dataDir), ...substrateChecks(found), ...embedderChecks(), await memoryIndexCheck(dataDir), memoryProjectCheck(found)];
 
   const fixed = ctx.fix ? applyFix(checks) : [];
 
