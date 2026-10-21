@@ -131,19 +131,19 @@ test('H7: a refuted note, or one replaced by another note, is held like any othe
 
 test('H8: the report text is redacted once: on the note, the hold, the index line and the proof, on a first report and on an append', async () => {
   const a = await X.written('w-a8', 'K8');
-  const secret = 'sk-' + 'ant-api03-abcdefghijklmnopqrstuvwxyz0123456789';
+  const secret = 'ghp_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8';
   await X.reported('w-b8', a.note, `it leaks ${secret} into the log`);
   const first = entryOf();
   assert.strictEqual(first.redacted, 1);
   await X.reported('w-c8', a.note, `and again ${secret} here`);
   assert.strictEqual(entryOf().redacted, 1);
   const raw = JSON.stringify([X.rowOf(a.note), X.heldRows(a.note), X.reported.last]);
-  assert.ok(!raw.includes('abcdefghijklmnopqrstuvwxyz0123456789'), 'the secret is nowhere in the note, the hold or the proof');
-  assert.deepStrictEqual(X.bodyOf(a.note).reported_wrong.map((r) => r.why.includes('[REDACTED:anthropic_key]')), [true, true]);
-  assert.ok(hold(a.note).b.reports.every((r) => r.why.includes('[REDACTED:anthropic_key]')));
-  assert.ok(!hold(a.note).b.reason.includes('abcdefghijklmnopqrstuvwxyz'));
+  assert.ok(!raw.includes('a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'), 'the secret is nowhere in the note, the hold or the proof');
+  assert.deepStrictEqual(X.bodyOf(a.note).reported_wrong.map((r) => r.why.includes('[REDACTED:github_token]')), [true, true]);
+  assert.ok(hold(a.note).b.reports.every((r) => r.why.includes('[REDACTED:github_token]')));
+  assert.ok(!hold(a.note).b.reason.includes('a1B2c3D4e5F6g7H8'));
   const idx = await X.call('memory.index', X.orch, {});
-  assert.ok(!idx.text.includes('abcdefghijklmnopqrstuvwxyz0123456789'), 'nor in the index');
+  assert.ok(!idx.text.includes('a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'), 'nor in the index');
 });
 
 test('H9: a release that throws after commit() leaves no report, no hold and no merge', async () => {
