@@ -17,6 +17,11 @@ if (process.env.FAKE_ORPHAN_CHILD === '1') {
   if (process.env.FAKE_CHILD_PID_FILE) fs.writeFileSync(process.env.FAKE_CHILD_PID_FILE, String(kid.pid));
 }
 
+// ADR 0045 (audit D06): FAKE_SPAWN_SCRIPT=<path> starts that script as an ordinary child of this process, the way a worker's Bash starts one.
+if (process.env.FAKE_SPAWN_SCRIPT) {
+  require('node:child_process').spawn(process.execPath, [process.env.FAKE_SPAWN_SCRIPT], { windowsHide: true, stdio: 'ignore' }).unref();
+}
+
 const SESSION = process.env.FAKE_SESSION_ID || 'fake-session-0000-0000-0000-000000000001';
 const EXTRA_INIT = process.env.FAKE_EXTRA_INIT === '1'; // simulate an inbound cross-session turn
 // 5b-2: the unsolicited turn's own init lands right after the answer it rides in on; its own
@@ -35,7 +40,7 @@ const HEARTBEAT_MS = Number(process.env.FAKE_HEARTBEAT_MS || 0);
 const MCP = process.env.FAKE_MCP || 'connected';
 // build step 6d: the smallest env echo a test can drive, to stderr so it never disturbs stream-json.
 if (process.env.FAKE_ECHO_MCP_TOOL_TIMEOUT === '1') {
-  process.stderr.write(`FAKE_ENV MCP_TOOL_TIMEOUT=${process.env.MCP_TOOL_TIMEOUT === undefined ? '(absent)' : process.env.MCP_TOOL_TIMEOUT}\n`);
+  process.stderr.write(`FAKE_ENV MCP_TOOL_TIMEOUT=${process.env.MCP_TOOL_TIMEOUT === undefined ? '(absent)' : process.env.MCP_TOOL_TIMEOUT} BELAY_WORKER_ID=${process.env.BELAY_WORKER_ID === undefined ? '(absent)' : process.env.BELAY_WORKER_ID}\n`);
 }
 // ADR 0021: the mode the session actually started in and the build's version, overridable by FAKE_PERMISSION_MODE.
 const modeAt = process.argv.indexOf('--permission-mode');
@@ -400,6 +405,9 @@ process.stdin.on('data', (d) => {
 // A worker that does not exit when its stdin closes: the wedged case ADR 0001 §5's graceful stop
 // has to time out on before belay kills it. Without this the fake always exits on stdin end and the
 // timeout branch is never reached.
-if (process.env.FAKE_IGNORE_STDIN_END === '1') setInterval(() => {}, 1000);
-else process.stdin.on('end', () => process.exit(0));
+// FAKE_STDIN_END_FILE: written when stdin closes, so a test waits on the close itself rather than a guess at when it came.
+if (process.env.FAKE_IGNORE_STDIN_END === '1') {
+  setInterval(() => {}, 1000);
+  if (process.env.FAKE_STDIN_END_FILE) process.stdin.on('end', () => { try { require('node:fs').writeFileSync(process.env.FAKE_STDIN_END_FILE, String(Date.now())); } catch { /* the test reports the missing file */ } });
+} else process.stdin.on('end', () => process.exit(0));
 process.stdin.resume();

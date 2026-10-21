@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // embedder.test.cjs (CLI) — `belay embedder fetch|verify` (ADR 0027 decision 4) against a local
 // node:http server standing in for Hugging Face. BELAY_HF_BASE points the CLI at it and
 // BELAY_EMBEDDER_TABLE at a JSON table naming a tiny fake model; BELAY_MODEL_CACHE at a fresh temp

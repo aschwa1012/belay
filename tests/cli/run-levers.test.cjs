@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1'; // ADR 0034: a run here has no model to warm; the one suite that tests the warm-up opts in
 // run-levers.test.cjs — ADR 0031 decisions 3 to 6: the spec's max_fix_rounds and fix_cutoff (validation,
 // substitution into the orchestrator's prompt, pass-through), the receipt's levers and review_rounds, and the

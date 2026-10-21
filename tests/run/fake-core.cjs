@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // A small in-memory stand-in for the core methods src/run calls, so the run module can be tested
 // before src/core lands. Only the seven methods the contract says the run manager uses:
 // worker.write, worker.get, task.assign, continuity.checkpoint, continuity.resumeLine,

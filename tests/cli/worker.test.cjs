@@ -79,7 +79,7 @@ function countWorkerRows(dataDir) {
 }
 
 async function connectOrchestrator(dataDir, runId) {
-  const core = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
+  const core = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 15000 });
   const row = await waitUntil(async () => (await core.run.get()).run || null, 10000, 100);
   assert.ok(row, "the CLI's run row never appeared within 10,000 ms");
   return core;

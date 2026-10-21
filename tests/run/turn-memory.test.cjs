@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // turn-memory.test.cjs — review 3 of build step E1, finding F. A turn's memory write is an embed (about
 // 0.5 s with voyage, seconds on an owner's first turn) and must not sit on the path the orchestrator's
 // wait and wake depend on. r-f1: with memory.store slowed by 3,000 ms the turn's waiter resolves and the

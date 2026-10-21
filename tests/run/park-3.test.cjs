@@ -111,7 +111,7 @@ test('restart: a first-turn wait ends when the worker exits, and the receipt nam
 });
 
 // ---------------------------------------------------------------- (r3)
-test('stop: a worker whose resume left state paused with a live child attached is stopped and killed, and its row reads stopped', async () => {
+test('stop: a worker whose resume failed to write its starting row is parked again with its relaunched child ended, and a stop turns its row stopped', async () => {
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core);
@@ -121,8 +121,8 @@ test('stop: a worker whose resume left state paused with a live child attached i
     await m.pause({ worker_id: 'w1', by: 'operator:1' });
     assert.strictEqual(m._worker('w1').state, 'paused');
 
-    // A resume whose 'starting' row write fails: the relaunch has already spawned a live child (`launch`
-    // runs before the write), so `w.child` is attached even though `w.state` (and the row) stay 'paused'.
+    // A resume whose 'starting' row write fails: the relaunch has already spawned a child (`launch` runs before the write). It holds
+    // a bind, so the failed start ends it (ADR 0045 amendment 3) and the worker reads parked again, as before the resume.
     const origWrite = core.worker.write.bind(core.worker);
     let failOnce = true;
     core.worker.write = async (r) => {
@@ -137,13 +137,13 @@ test('stop: a worker whose resume left state paused with a live child attached i
 
     const w = m._worker('w1');
     assert.strictEqual(w.state, 'paused', 'the in-memory state must still read paused after the failed write');
-    assert.ok(w.child, 'the relaunch must have already attached a live child');
-    assert.strictEqual(P.pidAlive(w.pid), true, 'the relaunched process must actually be alive');
+    assert.notStrictEqual(await P.waitPidGone(w.pid, { timeoutMs: 10000 }), null, 'the relaunched process must have been ended');
+    assert.ok(await pollUntil(() => !w.child && w.state === 'paused', 5000), `the worker must read parked again (state ${w.state}, child ${!!w.child})`);
     const rowBefore = await core.worker.get({ worker_id: 'w1' });
     assert.strictEqual(rowBefore.state, 'paused');
 
     const stopped = await m.stop({ worker_id: 'w1', mode: 'graceful', timeout_ms: 5000 });
-    assert.strictEqual(stopped.stale, undefined, 'a live child this adapter holds must never be treated as a dead-by-construction park');
+    assert.strictEqual(stopped.stale, undefined, "a park this adapter returned to is not another adapter's resume");
     assert.strictEqual(P.pidAlive(w.pid), false, 'the live process must actually have been stopped');
     const rowAfter = await core.worker.get({ worker_id: 'w1' });
     assert.strictEqual(rowAfter.state, 'stopped');
@@ -198,11 +198,10 @@ test('stop: a starting row written by this adapter is not taken for another adap
     await assert.rejects(m.resume({ worker_id: 'w2', by: 'operator:2' }));
     const w2 = m._worker('w2');
     assert.strictEqual(w2.state, 'paused', 'the in-memory state must still read paused after the apparently failed write');
-    require('../crash.cjs').crash(w2.child); // the relaunched child dies before w2.state ever catches up
-    assert.ok(await pollUntil(() => !w2.child, 3000), 'the relaunched child never settled dead');
-    assert.strictEqual(w2.state, 'paused', 'w2.state must still be stuck: settle\'s own dead write must also have thrown');
+    assert.ok(await pollUntil(() => !w2.child, 10000), 'the failed start never ended the relaunched child'); // ADR 0045 amendment 3: the guard, not a crash
+    assert.strictEqual(w2.state, 'paused', 'w2.state must still be stuck: every write for w2 threw');
     const rowNow2 = await core.worker.get({ worker_id: 'w2' });
-    assert.notStrictEqual(rowNow2.state, 'paused', 'this adapter\'s own writes must have actually committed');
+    assert.strictEqual(rowNow2.adapter_pid, process.pid, "this adapter's own writes must have actually committed: the row carries its pid");
     failWrites2 = false;
     core.worker.write = origWrite2;
     const stopped2 = await m.stop({ worker_id: 'w2', mode: 'kill', timeout_ms: 5000 });
