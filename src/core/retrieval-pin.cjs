@@ -49,6 +49,21 @@ function demote(r, behind) {
   return out;
 }
 
+// A probe refusal or a warm-up failure is a loud tier failure, and on_heavy_failure decides: `pause` refuses to pin (E_MODEL_ABSENT, the
+// run does not start on a tier it cannot serve); `fallback` serves the fallback profile everywhere with ONE notice.
+function tierFailure(ctx, code, cause, message, extra) {
+  if (ctx.levers.on_heavy_failure === 'pause') {
+    throw err('E_MODEL_ABSENT', `${message}, and on_heavy_failure is pause, so the run was not started on it${extra && extra.options && extra.options.length ? `. Options: ${extra.options.join('; ')}` : ''}`, { gpu: true, cause, ...(extra || {}) });
+  }
+  const was = ctx.routing;
+  ctx.routing = resolveRouting({ levers: { ...ctx.levers, profile: ctx.levers.profile_cpu, routing: null }, agentTypes: ctx.agentTypes, gpu: false });
+  const from = (k) => (k === 'run' ? was.run : was.tiers[k]).profile;
+  ctx.routing.run = { ...ctx.routing.run, fallback_from: from('run') };
+  for (const k of Object.keys(ctx.routing.tiers)) ctx.routing.tiers[k] = { ...ctx.routing.tiers[k], fallback_from: from(k) };
+  const moved = [...new Set(Object.entries(was.tiers).filter(([, t]) => t.device === 'gpu' || t.reranker || t.embedder !== RP.NANO).map(([k]) => k))];
+  ctx.notices.push({ code, message: `${message}. The run is served on the ${ctx.levers.profile_cpu} profile (nano, no heavy model).`, ...(extra && extra.reason ? { reason: extra.reason } : {}), options: (extra && extra.options) || [], agent_types: moved });
+}
+
 async function pinRouting(E, caller, args = {}) {
   const runId = caller.run_id;
   const prev = rows.current(E.store, 'run', runId);
@@ -56,42 +71,49 @@ async function pinRouting(E, caller, args = {}) {
   if (prev.ended_at != null) throw err('E_ARGS', `run ${runId} has already ended`, { run_id: runId, ended_at: prev.ended_at });
   const levers = leversOfRow(prev);
   const agentTypes = [...new Set([...AGENT_TYPES, ...(Array.isArray(args.agent_types) ? args.agent_types : [])])];
-  let routing = resolveRouting({ levers, agentTypes, gpu: true });
-  const notices = [];
-  let probe = null;
-  if (routing.gpu_models.length) {
+  const ctx = { levers, agentTypes, routing: resolveRouting({ levers, agentTypes, gpu: true }), notices: [] };
+  let probe = null, warm = null;
+  if (ctx.routing.gpu_models.length) {
     const GS = require('./gpu-shared.cjs'); // lazy: only a routing that names a GPU model reaches it
-    const r = await GS.probeOnce(routing.gpu_models, { headroomMb: Math.round(routing.levers.vram_headroom_gb * 1024) });
+    GS.recycle(); // a child that died or hung under an earlier run is forgotten, so this pin probes and forks afresh
+    // The first probe's verdict stands for this model set and headroom (gpu-shared.cjs): a second pin after a drain does not probe again.
+    const r = await GS.probeOnce(ctx.routing.gpu_models, { headroomMb: Math.round(ctx.routing.levers.vram_headroom_gb * 1024) });
     if (r && r.ok) probe = { ok: true, device: r.device && r.device.name, needed_mb: r.needed_mb, free_mb: r.free_mb, headroom_mb: r.headroom_mb, models: r.models };
     else {
       const refusal = (r && r.refusal) || { reason: 'probe_failed', message: 'the GPU probe returned nothing', options: [] };
       probe = { ok: false, reason: refusal.reason, message: refusal.message };
-      if (routing.levers.on_heavy_failure === 'pause') {
-        throw err('E_MODEL_ABSENT', `the GPU probe refused the routing (${refusal.reason}: ${refusal.message}), and on_heavy_failure is pause, so the run was not started on it. Options: ${(refusal.options || []).join('; ') || 'none'}`, { gpu: true, cause: 'probe_refused', refusal });
-      }
-      const wanted = routing;
-      routing = resolveRouting({ levers, agentTypes, gpu: false });
-      const moved = wanted.gpu_models.length && routing.notices.length ? routing.notices[0].agent_types : [];
-      notices.push({ code: 'gpu_probe_refused', message: `the GPU probe refused this run's routing (${refusal.reason}): ${refusal.message}. The run is served on the ${levers.profile_cpu} profile (nano, no GPU model).`, reason: refusal.reason, options: refusal.options || [], agent_types: moved });
+      tierFailure(ctx, 'gpu_probe_refused', 'probe_refused', `the GPU probe refused this run's routing (${refusal.reason}): ${refusal.message}`, { refusal, reason: refusal.reason, options: refusal.options || [] });
     }
   }
   const behind = [];
   const scope = scopeOf(prev);
-  const heavy = heavyEmbedders(routing);
-  if (heavy.length) {
-    const HD = require('./heavy-drain.cjs');
-    for (const id of heavy) { const n = HD.backlogOf(E, id, scope).length; if (n) behind.push({ embedder: id, rows: n, namespaces: scope }); }
+  for (const id of heavyEmbedders(ctx.routing)) {
+    const n = require('./heavy-drain.cjs').backlogOf(E, id, scope).length;
+    if (n) behind.push({ embedder: id, rows: n, namespaces: scope });
   }
   let choice = null;
   if (behind.length) {
-    choice = routing.levers.on_heavy_behind;
-    if (choice === 'wait') return { pinned: false, action: 'drain', behind, notices, routing };
-    routing = demote(routing, new Set(behind.map((b) => b.embedder)));
-    notices.push({ code: 'heavy_behind', message: `${behind.map((b) => `${b.embedder} is ${b.rows} note${b.rows === 1 ? '' : 's'} behind`).join('; ')}, and on_heavy_behind is fallback, so the heavy roles use nano for this run; drain with: belay memory embed --model ${behind[0].embedder}`, embedders: behind.map((b) => b.embedder) });
+    // A drain the caller tried and that FAILED is a heavy failure it already handled (on_heavy_failure fallback): demote, with ONE notice.
+    const failed = new Map((Array.isArray(args.drain_failed) ? args.drain_failed : []).filter((d) => d && typeof d.embedder === 'string').map((d) => [d.embedder, d]));
+    choice = behind.every((b) => failed.has(b.embedder)) && failed.size ? 'fallback' : ctx.routing.levers.on_heavy_behind;
+    if (choice === 'wait') return { pinned: false, action: 'drain', behind, notices: ctx.notices, routing: ctx.routing };
+    ctx.routing = demote(ctx.routing, new Set(behind.map((b) => b.embedder)));
+    const drainFailure = behind.map((b) => failed.get(b.embedder)).find(Boolean);
+    ctx.notices.push({ code: drainFailure ? 'heavy_drain_failed' : 'heavy_behind', message: drainFailure ? `the ${drainFailure.embedder} embedder failed while draining its backlog (${drainFailure.code}: ${drainFailure.message}), and on_heavy_failure is fallback, so the heavy roles use nano for this run; drain with: belay memory embed --model ${behind[0].embedder}` : `${behind.map((b) => `${b.embedder} is ${b.rows} note${b.rows === 1 ? '' : 's'} behind`).join('; ')}, and on_heavy_behind is fallback, so the heavy roles use nano for this run; drain with: belay memory embed --model ${behind[0].embedder}`, embedders: behind.map((b) => b.embedder) });
   }
-  const record = { v: 1, pinned_at: Date.now(), routing, probe, notices, behind: { choice, embedders: behind } };
-  const { appendRun } = require('./methods-run.cjs');
-  appendRun(E, { ...prev, retrieval_routing: JSON.stringify(record) }, E.writtenBy(caller));
+  // Warm-up (after the probe, before the run's first prompt): every model of the final routing is loaded now, so the first rerank or heavy
+  // query of the run pays no cold load. A failure is a tier failure like a probe refusal.
+  if (tiersOf(ctx.routing).some((t) => t.reranker || t.embedder !== RP.NANO)) {
+    warm = await require('./retrieval-warm.cjs').warmUp(E, ctx.routing);
+    if (!warm.ok) tierFailure(ctx, 'retrieval_warmup_failed', 'warmup_failed', `warming ${warm.model} failed (${warm.code}): ${warm.message}`, { model: warm.model, reason: warm.code });
+  }
+  // The row is read AGAIN after every await above (a probe and a warm-up take minutes): a run that ended meanwhile is refused, and the
+  // record is merged onto the fresh row, never onto the stale copy (which would resurrect the run or clear a pause).
+  const fresh = rows.current(E.store, 'run', runId);
+  if (!fresh) throw err('E_NOT_FOUND', `no run row exists for ${runId}`, { run_id: runId });
+  if (fresh.ended_at != null) throw err('E_ARGS', `run ${runId} ended while its routing was being resolved, so nothing was pinned`, { run_id: runId, ended_at: fresh.ended_at });
+  const record = { v: 1, pinned_at: Date.now(), routing: ctx.routing, probe, warm: warm && warm.ok ? warm.models : null, notices: ctx.notices, behind: { choice, embedders: behind } };
+  require('./methods-run.cjs').appendRun(E, { ...fresh, retrieval_routing: JSON.stringify(record) }, E.writtenBy(caller));
   E.noteWrite();
   return { pinned: true, action: 'pinned', ...record };
 }
