@@ -44,7 +44,7 @@ function fitBody(b) {
   while (size(b) > BODY_CEILING && ((b.seen_in || []).length || (b.reported_wrong || []).length)) {
     if ((b.seen_in || []).length >= (b.reported_wrong || []).length) b.seen_in.shift(); else b.reported_wrong.shift();
   }
-  return b;
+  return require('./report-marks.cjs').pruneSettled(b); // a settled key leaves only together with its report
 }
 
 // Live notes of the project that are close to this text, best first, at most `notes_match_n`. The semantic cosine

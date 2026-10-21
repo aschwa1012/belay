@@ -24,6 +24,9 @@ const HOLD_GROUNDS = Object.freeze({
   superseded: ['replaced_by_newer'],
   duplicate: ['same_claim'],
 });
+// Grounds only the harness writes, never the scrubber (checkGround is given HOLD_GROUNDS): `reported` is a report that a note is wrong, held at once.
+// Used by the report-time hold (memory-report-hold.cjs) and the facts check (memory-facts.cjs) alone, so a scrub entry naming it is E_GROUND.
+const HARNESS_GROUNDS = Object.freeze({ wrong: ['reported'], superseded: ['reported'] });
 const DISMISS_GROUNDS = Object.freeze(['report_unfounded', 'code_supports_note', 'report_resolved']);
 const USE_OR_MISS = /use|miss|unused|sink|deliver|cite|stale|inert|ignor|apply|applied|popular|idle/i;
 
@@ -159,6 +162,6 @@ function checkVerdicts(list) {
 
 
 module.exports = {
-  ACTIONS, HOLD_KINDS, VERDICTS, SCRUB_MODES, HOLD_GROUNDS, DISMISS_GROUNDS, DUP_SIMILARITY, SCOPE_MAX, VERDICTS_MAX,
+  ACTIONS, HOLD_KINDS, VERDICTS, SCRUB_MODES, HOLD_GROUNDS, HARNESS_GROUNDS, DISMISS_GROUNDS, DUP_SIMILARITY, SCOPE_MAX, VERDICTS_MAX,
   RULE_MAX, TARGET_MAX, nsOf, isObj, bytes, bad, checkText, checkCites, checkGround, checkScrub, checkVerdicts, RESOLVES,
 };

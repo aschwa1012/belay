@@ -10,7 +10,7 @@
 
 const { err } = require('./errors.cjs');
 const { standing } = require('./report-marks.cjs');
-const { DUP_SIMILARITY } = require('./memory-lifecycle.cjs');
+const { DUP_SIMILARITY, HARNESS_GROUNDS } = require('./memory-lifecycle.cjs');
 
 const COLS = 'id, namespace, type, written_by, run_id, task_id, title, text, text_hash, embedding, embedding_model, dim, body, status, status_receipt, created_at, supersedes, text_template';
 const parse = s => { try { return s ? JSON.parse(s) : {}; } catch { return {}; } };
@@ -44,6 +44,15 @@ function recordedSimilarity(note, target) {
   return m.embedding_model === note.embedding_model && m.embedding_model === target.embedding_model && m.dim === note.dim && m.dim === target.dim ? m.similarity : -1;
 }
 
+// Whether a note is held now: its pointer is set, or an active harness hold row of any kind (an unsupported queue row included) names it.
+function isHeldNow(E, note) {
+  if (!note || note.type !== 'note') return false;
+  if (note.b && note.b.held) return true;
+  const project = typeof note.namespace === 'string' && note.namespace.startsWith('project/') ? note.namespace.slice(8) : null;
+  if (!project) return false;
+  return !!E.store.p("SELECT 1 AS x FROM memory_entries WHERE namespace = ? AND type = 'held' AND written_by = 'harness' AND json_extract(body, '$.note_id') = ? AND json_extract(body, '$.state') = 'held' LIMIT 1").get(`held/${project}`, note.id);
+}
+
 // A live, kept note of the project: in project/<p>, a note, not refuted, not replaced by another row, not held.
 function liveKept(E, project, id, what) {
   const r = loadNote(E, id);
@@ -52,7 +61,7 @@ function liveKept(E, project, id, what) {
   if ((r.status || 'unverified') === 'refuted') throw refuse(`${what} ${id} is refuted`, { of: id });
   const gone = E.store.p('SELECT id FROM memory_entries WHERE supersedes = ? AND namespace = ?').get(id, r.namespace);
   if (gone) throw refuse(`${what} ${id} was superseded by ${gone.id}`, { of: id, superseded_by: gone.id });
-  if (r.b.held) throw refuse(`${what} ${id} is itself held for archive, so it cannot be what another note stands against`, { of: id, held: r.b.held.row });
+  if (isHeldNow(E, r)) throw refuse(`${what} ${id} is itself held for archive, so it cannot be what another note stands against`, { of: id, held: r.b.held ? r.b.held.row : null });
   return r;
 }
 
@@ -72,9 +81,54 @@ const shares = (a, b) => [...a].some(x => b.has(x));
 // The ground a hold states must be one its facts bear out.
 const GROUND_TRIGGER = { refuted_review: 'refuted_review', report_confirmed: 'report_from_other_writer' };
 
+// The replacement test of a report-made hold (ground `reported`): `targetId` is a live, kept note other than the note, and about the same thing (a
+// shared path or subject, or a stored cosine at the threshold). The direction comes from the report, so the age rule does not apply and no report
+// stands in for this test. Throws E_PRECONDITION, else returns the facts.
+function supersededFacts(E, project, note, targetId, threshold) {
+  const target = liveKept(E, project, targetId, 'the replacement');
+  if (target.id === note.id) throw refuse('a note cannot stand against itself', { id: note.id });
+  const sim = storedCosine(note, target);
+  const path = shares(lower(note.b.applies_to), lower(target.b.applies_to)), subject = shares(lower(note.b.subjects), lower(target.b.subjects));
+  if (!path && !subject && !(sim !== null && sim >= threshold)) throw refuse(`${target.id} shares no path or subject with ${note.id} and its stored similarity is ${sim === null ? 'unavailable' : round3(sim)} (needs ${threshold}), so it is not shown to replace it`, { id: note.id, of: target.id });
+  return { replacement: target.id, replacement_created_at: target.created_at, note_created_at: note.created_at, shared: path ? 'path' : subject ? 'subject' : 'similarity', similarity: sim === null ? null : round3(sim), template: templateOf(note), replacement_template: templateOf(target) };
+}
+
+// The kind of a report-made hold, from its reports: one function at hold time and at archive time. Candidates in order: each report's
+// replaced_by, newest report first, then the merged prior hold's `of` when it was a superseded or duplicate hold. The first that passes
+// supersededFacts decides: { kind: 'superseded', of, facts }. Otherwise { kind: 'wrong', of: null, facts } with the replacement recorded and why it was refused.
+function reportedKind(E, project, note, reports, threshold = DUP_SIMILARITY, prior = null) {
+  const candidates = [];
+  for (const w of [...(reports || [])].reverse()) if (w && typeof w.replaced_by === 'string' && w.replaced_by && !candidates.includes(w.replaced_by)) candidates.push(w.replaced_by);
+  if (prior && (prior.kind === 'superseded' || prior.kind === 'duplicate') && typeof prior.of === 'string' && prior.of && !candidates.includes(prior.of)) candidates.push(prior.of);
+  let refused = null;
+  for (const id of candidates) {
+    try { return { kind: 'superseded', of: id, facts: { ...supersededFacts(E, project, note, id, threshold), via: 'reported' } }; } catch (e) {
+      if (e.code !== 'E_PRECONDITION') throw e;
+      refused = refused || { of: id, reason: e.message };
+    }
+  }
+  return { kind: 'wrong', of: null, facts: { trigger: 'report', reports: (reports || []).length, status: note.status || 'unverified', ...(candidates.length ? { replaced_by: candidates[0] } : {}), ...(refused ? { superseded_refused: refused.reason } : {}) } };
+}
+
+// The facts of a hold with ground `reported`. `held` is the hold body (its reports and, for superseded, its `of`): the facts are checked against
+// the body that is stored. Kind wrong needs a report on the hold (whoever made it, whatever a reviewer said of it); kind superseded needs that
+// and a replacement that still passes.
+function reportedFacts(E, project, note, kind, ofId, threshold, held) {
+  const reports = held && Array.isArray(held.reports) ? held.reports : [];
+  if (!reports.length) throw refuse(`note ${note.id} has no report recorded on its hold, so a reported hold has no trigger fact`, { id: note.id, kind });
+  if (kind === 'wrong') return { trigger: 'report', reports: reports.length, status: note.status || 'unverified' };
+  if (kind !== 'superseded' || !ofId) throw refuse(`a reported hold is wrong or superseded of a named note, and this one is ${kind}`, { id: note.id, kind });
+  return { ...supersededFacts(E, project, note, ofId, threshold), via: 'reported' };
+}
+
 // Throws E_PRECONDITION naming the missing fact, else returns the facts that held. `ground`, when given, must be
-// one the facts support (refuted_review needs a refuted status; report_confirmed a report from another writer).
-function checkHoldFacts(E, project, note, kind, ofId, ground, threshold = DUP_SIMILARITY, runId = null) {
+// one the facts support (refuted_review needs a refuted status; report_confirmed a report from another writer). `held` is the hold body
+// that will be stored: required for ground `reported`, ignored for the other grounds.
+function checkHoldFacts(E, project, note, kind, ofId, ground, threshold = DUP_SIMILARITY, runId = null, held = null) {
+  if (ground === 'reported') {
+    if (!(HARNESS_GROUNDS[kind] || []).includes('reported')) throw refuse(`ground reported is for a wrong or superseded hold, and this one is ${kind}`, { id: note.id, kind });
+    return reportedFacts(E, project, note, kind, ofId, threshold, held);
+  }
   if (kind === 'wrong') {
     const others = standing(note.b).filter(w => w && w.by !== note.written_by);
     const refuted = (note.status || 'unverified') === 'refuted';
@@ -107,4 +161,4 @@ function checkHoldFacts(E, project, note, kind, ofId, ground, threshold = DUP_SI
   throw refuse(`note ${note.id} is not shown to duplicate ${target.id}: the stored similarity is ${best < 0 ? 'unavailable' : round3(best)} (needs ${threshold}) and no worker report names ${target.id} as the replacement`, { id: note.id, of: target.id, similarity: best < 0 ? null : round3(best) });
 }
 
-module.exports = { ownTexts, sawsOf, loadNote, storedCosine, liveKept, checkHoldFacts, parse, COLS };
+module.exports = { ownTexts, sawsOf, loadNote, storedCosine, liveKept, isHeldNow, checkHoldFacts, reportedKind, supersededFacts, parse, COLS };

@@ -73,20 +73,24 @@ function dismiss(E, ctx, ent, index, sources, note) {
 
 function hold(E, caller, ctx, ent, index, sources, state) {
   const { note, pending } = state;
-  const facts = checkHoldFacts(E, ctx.project, note, ent.kind, ent.of, ent.ground, ctx.threshold, ctx.runId);
   const receipt = scrubReceipt(ctx, ent, index, sources);
   if (pending) {
+    const facts = checkHoldFacts(E, ctx.project, note, ent.kind, ent.of, ent.ground, ctx.threshold, ctx.runId);
     // Marks on a pending note need no review: it hides nothing. Applied directly to the pending row.
     const done = archiveNote(E, ctx.project, note, { kind: ent.kind, of: ent.of, ground: ent.ground, reason: ent.reason, cites: ent.cites, run_id: ctx.runId, head_sha: ctx.evidence.head_sha, direct: true }, ent.of ? loadNote(E, ent.of) : null);
     E.store.patchBody(note.id, b => { b.archived.facts = facts; b.archived.scrub = receipt; return b; });
     return { index, id: ent.id, action: 'hold', outcome: 'archived_directly', facts, history_moved: done.history_moved, replaced_also_archived: done.replaced_also_archived, row: C.rowOut(E, note.id) };
   }
   if (note.b.held) throw err('E_EXISTS', `note ${note.id} is already held (${note.b.held.row}); the reviewer settles it before another hold`, { id: note.id, held_row: note.b.held.row });
+  // The body is built first and the facts are checked against it, so what was checked is what is stored.
+  const body = { state: 'held', note_id: note.id, kind: ent.kind, ...(ent.relation ? { relation: ent.relation } : {}), of: ent.of, ground: ent.ground, reason: ent.reason, run_id: ctx.runId, head_sha: ctx.evidence.head_sha, cites: ent.cites, scrub: receipt, ...(ctx.heldExtra || {}), reviews: [] };
+  const facts = checkHoldFacts(E, ctx.project, note, ent.kind, ent.of, ent.ground, ctx.threshold, ctx.runId, body);
+  body.facts = facts;
   const held = C.putRow(E, caller, {
     ns: L.nsOf('held', ctx.project), type: 'held', runId: ctx.runId,
     text: `held ${ent.kind}: ${note.id}${ent.of ? ` against ${ent.of}` : ''} (run ${ctx.runId})`,
     title: `held ${ent.kind}: ${note.title || note.id}`,
-    body: { state: 'held', note_id: note.id, kind: ent.kind, ...(ent.relation ? { relation: ent.relation } : {}), of: ent.of, ground: ent.ground, reason: ent.reason, run_id: ctx.runId, head_sha: ctx.evidence.head_sha, cites: ent.cites, facts, scrub: receipt, ...(ctx.heldExtra || {}), reviews: [] },
+    body,
   });
   // The note itself carries a pointer, so the warning follows it into later runs without a second lookup.
   E.store.patchBody(note.id, b => { b.held = { row: held.id, kind: ent.kind, of: ent.of, reason: ent.reason, run_id: ctx.runId, at: Date.now() }; return N.fitBody(b); });
@@ -168,7 +172,7 @@ async function one(E, caller, ctx, raw, index) {
   ent = C.redactEntry(ent); // after the verbatim check, before anything is stored or returned
   if (ent.ground === 'code_contradicts' && !sources.some(s => s.source !== 'stream')) throw err('E_CITATION', 'ground code_contradicts needs at least one citation of a file at the head commit: a stream quotes what was said, not what the code is', { id: ent.id });
   if (ctx.mode === 'propose') {
-    const facts = ent.action === 'hold' ? checkHoldFacts(E, ctx.project, st.note, ent.kind, ent.of, ent.ground, ctx.threshold, ctx.runId) : null;
+    const facts = ent.action === 'hold' ? checkHoldFacts(E, ctx.project, st.note, ent.kind, ent.of, ent.ground, ctx.threshold, ctx.runId, { kind: ent.kind, of: ent.of, ground: ent.ground }) : null;
     return C.openTx(E, caller, 'memory.scrubApply', () => propose(E, caller, ctx, ent, index, sources, facts));
   }
   if (ent.action === 'resolve') return settle(E, caller, ctx, ent, index, sources, st.note.id);
