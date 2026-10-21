@@ -94,6 +94,20 @@ test('parseMemoryNotice and buildSnapshot: the no-project notice rides the setti
   assert.strictEqual(F.buildSnapshot({ ...live(runNotice), settings: { json: { memory_notice: null, settings: [] } } }).memoryNotice.title, runNotice.title, 'a config that gained a project does not clear a run launched without one');
   assert.strictEqual(F.buildSnapshot({ ...live(runNotice), settings: { error: 'belay settings exit 3' } }).memoryNotice.title, runNotice.title, 'nor does a failed settings read');
   assert.strictEqual(F.buildSnapshot({ ...parts({ json: { memory_notice: notice, settings: [] } }, null), agents: { json: { agents: [], run_id: null } } }).memoryNotice.title, notice.title, 'no run selected: the config notice');
+  // A failed agents read keeps the selected run's cached notice (null included); the config notice is for a panel with no run.
+  const failedAgents = (prevSnap, settings, watchRunId = null) => ({ ...parts(settings, prevSnap), watch: { runId: watchRunId, dataDir: null, cli: null, fixed: false }, agents: { error: 'belay agents exit 3' } });
+  const cfg = { json: { memory_notice: notice, settings: [] } };
+  const cfgOk = { json: { memory_notice: null, settings: [] } };
+  const silent = F.buildSnapshot(live(null));
+  const redacted = F.buildSnapshot(live(runNotice));
+  assert.strictEqual(silent.runId, 'r1');
+  assert.strictEqual(F.buildSnapshot(failedAgents(silent, cfg)).memoryNotice, null, 'a silent run gains no no-project warning from the config');
+  assert.strictEqual(F.buildSnapshot(failedAgents(redacted, cfg)).memoryNotice.title, runNotice.title, 'a redaction-disabled run keeps its own warning');
+  assert.strictEqual(F.buildSnapshot(failedAgents(redacted, cfgOk)).memoryNotice.title, runNotice.title, 'a config that gained a project does not clear it');
+  const noProj = F.buildSnapshot({ ...live(notice), settings: cfg });
+  assert.strictEqual(F.buildSnapshot(failedAgents(noProj, cfgOk)).memoryNotice.title, notice.title, 'a no-project run keeps its warning after the config gains a project');
+  assert.strictEqual(F.buildSnapshot(failedAgents(null, cfg, 'r1')).memoryNotice, null, 'a run named by the watch with nothing cached: not the config notice');
+  assert.strictEqual(F.buildSnapshot(failedAgents(on, cfg)).memoryNotice.title, notice.title, 'no run selected: the config notice');
   // the band's warning line and the plain surfaces' line are built here, so a removed or reworded line fails
   const p = M.parseMemoryNotice({ memory_notice: notice });
   assert.deepStrictEqual(M.memoryBandSegs(p).map((s) => s.t).join(''), '▲ Memory is off for this project · add "memory": { "project": "<name>" }');

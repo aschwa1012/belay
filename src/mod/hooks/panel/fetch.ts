@@ -137,7 +137,9 @@ export function buildSnapshot(p: Parts): BelayPanelSnap {
   // The settings read sees the config file only. A run answers for itself (its launch recorded the notice, or none: notes on, notes
   // off on purpose, memory null), whatever the config says now; the config's notice is for a panel with no run to read.
   const runRead = aj !== undefined && typeof (aj as { run_id?: unknown }).run_id === 'string'
-  const memoryNotice = runRead ? parseMemoryNotice(aj) : sj !== undefined ? parseMemoryNotice(sj) : (prev?.memoryNotice ?? null)
+  // A failed agents read leaves the selected run as it was: its cached notice stands, null included.
+  const runSelected = aj === undefined && (p.watch.runId ?? prev?.runId ?? null) !== null
+  const memoryNotice = runRead ? parseMemoryNotice(aj) : runSelected ? (prev?.memoryNotice ?? null) : sj !== undefined ? parseMemoryNotice(sj) : (prev?.memoryNotice ?? null)
   const orchRaw = aj !== undefined ? ((aj as { agents?: { role?: string; state?: string }[] }).agents ?? []).find(a => a.role === 'orchestrator')?.state ?? null : null
   return {
     // the cache countdown is anchored to when the agents were last read, not to a failed round
