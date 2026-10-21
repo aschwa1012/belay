@@ -220,7 +220,7 @@ async function batchReranker(client, entry, { targetMs, batchTokens }) {
 // probe({ models: [ids], headroomMb?, chunkTargetMs?, batchTokens?, contextSizes?, cacheDir?, runtimeDir?, record?, smi?, table?, clientOpts? })
 // `smi` is an (async) function returning the nvidia-smi row (tests), or false to skip it. `table`, `clientOpts` and
 // `runtimeDir` are the test seams (a fake child, a fake table); `record` is the peaks file or false.
-async function probe(opts = {}) {
+async function probeInner(opts = {}) {
   const ids = opts.models || [];
   const headroomMb = opts.headroomMb === undefined ? HEADROOM_MB : opts.headroomMb;
   const targetMs = opts.chunkTargetMs || CHUNK_TARGET_MS, batchTokens = opts.batchTokens || BATCH_TOKENS;
@@ -318,7 +318,35 @@ async function probe(opts = {}) {
   } finally { if (client) await client.close(); }
 }
 
+// The last device reading any probe took, kept in the peaks file beside the peaks: { device, free_mb, total_mb, ok, reason, models, at }.
+// The Memory menu shows it ("probed 14:02"); a probe that never reached the device (no runtime, a model not fetched) records nothing.
+function recordLast(file, r, models) {
+  if (!r || !r.dedicated || !r.device || !r.device.name) return false;
+  try {
+    const cur = readPeaks(file);
+    cur.last = { device: r.device.name, free_mb: r.dedicated.free_mb, total_mb: r.dedicated.total_mb, ok: r.ok === true, reason: r.ok ? null : (r.refusal && r.refusal.reason) || null, models, at: new Date().toISOString() };
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, `${JSON.stringify(cur, null, 2)}
+`);
+    fs.renameSync(tmp, file);
+    return true;
+  } catch { return false; }
+}
+
+// The last reading, or null. A read: it creates nothing.
+function readLast(file = peaksFile()) {
+  const l = readPeaks(file).last;
+  return l && typeof l === 'object' ? l : null;
+}
+
+async function probe(opts = {}) {
+  const r = await probeInner(opts);
+  if (opts.record !== false) recordLast(opts.record || peaksFile(opts.env || process.env), r, opts.models || []);
+  return r;
+}
+
 module.exports = {
-  probe, dedicatedFrom, freeDedicated, peakFrom, needed, peakKey, sampler, recordedPeak, recordPeaks, readPeaks, peaksFile, defaultSmi,
+  probe, readLast, recordLast, dedicatedFrom, freeDedicated, peakFrom, needed, peakKey, sampler, recordedPeak, recordPeaks, readPeaks, peaksFile, defaultSmi,
   deriveChunkTokens: C.deriveChunkTokens, HEADROOM_MB, CHUNK_TARGET_MS, BATCH_TOKENS, SANITY_DOCS, QUERY,
 };

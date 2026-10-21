@@ -100,7 +100,9 @@ test('probe: the sum plus headroom against free is what refuses, naming needed a
     assert.strictEqual(r.free_mb, 7899);
     assert.match(r.refusal.message, /needs 8268 MiB/);
     assert.ok(r.refusal.options.length >= 2);
-    assert.strictEqual(fs.existsSync(path.join(cache, 'peaks.json')), false, 'a refusal records nothing');
+    const rec = JSON.parse(fs.readFileSync(path.join(cache, 'peaks.json'), 'utf8'));
+    assert.deepStrictEqual(rec.entries, {}, 'a refusal records no peaks');
+    assert.deepStrictEqual([rec.last.ok, rec.last.reason, rec.last.free_mb, rec.last.total_mb], [false, 'insufficient_vram', 7899, 7899], 'it records the device reading the menu shows, with the refusal');
     // each alone would have fit: it is the sum that refuses
     const alone = await P.probe(base({ models: ['org/emb'] }));
     assert.strictEqual(alone.ok, true);
