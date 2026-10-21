@@ -297,3 +297,9 @@ test('--start judges a running claim by pid AND creation time: a reused pid does
     assert.strictEqual(reused.json.pid, 424330);
   });
 });
+
+test('the held notice and its text carry the breakdown by ground and the count awaiting the operator', () => {
+  const [ev] = require('../../src/cli/cmd-notices.cjs').heldEvents({ total: 3, unsupported: 0, by_project: { acme: 3 }, by_ground: { reported: 2, same_claim: 1 }, awaiting_operator: 1, oldest_age_runs: 2, newest_at: 1 }, 'r-1');
+  assert.deepStrictEqual([ev.by_ground, ev.awaiting_operator], [{ reported: 2, same_claim: 1 }, 1]);
+  assert.match(require('../../src/cli/panel-common.cjs').heldText({ total: 3, by_ground: ev.by_ground, awaiting_operator: 1, by_project: { acme: 3 } }), /^3 held: 2 reported wrong, 1 duplicate; 1 awaits you/);
+});

@@ -53,6 +53,22 @@ function isHeldNow(E, note) {
   return !!E.store.p("SELECT 1 AS x FROM memory_entries WHERE namespace = ? AND type = 'held' AND written_by = 'harness' AND json_extract(body, '$.note_id') = ? AND json_extract(body, '$.state') = 'held' LIMIT 1").get(`held/${project}`, note.id);
 }
 
+// The one active hold row of a note, as { id, namespace, b } (b the parsed body), or null: a harness row of held/<project> in state `held` that names the note.
+function activeHoldOf(E, project, noteId) {
+  const r = E.store.p("SELECT id, namespace, body FROM memory_entries WHERE namespace = ? AND type = 'held' AND written_by = 'harness' AND json_extract(body, '$.note_id') = ? AND json_extract(body, '$.state') = 'held' ORDER BY created_at DESC, rowid DESC LIMIT 1").get(`held/${project}`, noteId);
+  return r ? { id: r.id, namespace: r.namespace, b: parse(r.body) } : null;
+}
+
+// Every active hold of a project at once: a Map from note id to { id, b }. A read.
+function activeHoldsOf(E, project) {
+  const out = new Map();
+  for (const r of E.store.p("SELECT id, body FROM memory_entries WHERE namespace = ? AND type = 'held' AND written_by = 'harness' AND json_extract(body, '$.state') = 'held' ORDER BY created_at, rowid").all(`held/${project}`)) {
+    const b = parse(r.body);
+    if (b.note_id) out.set(b.note_id, { id: r.id, b });
+  }
+  return out;
+}
+
 // A live, kept note of the project: in project/<p>, a note, not refuted, not replaced by another row, not held.
 function liveKept(E, project, id, what) {
   const r = loadNote(E, id);
@@ -161,4 +177,4 @@ function checkHoldFacts(E, project, note, kind, ofId, ground, threshold = DUP_SI
   throw refuse(`note ${note.id} is not shown to duplicate ${target.id}: the stored similarity is ${best < 0 ? 'unavailable' : round3(best)} (needs ${threshold}) and no worker report names ${target.id} as the replacement`, { id: note.id, of: target.id, similarity: best < 0 ? null : round3(best) });
 }
 
-module.exports = { ownTexts, sawsOf, loadNote, storedCosine, liveKept, isHeldNow, checkHoldFacts, reportedKind, supersededFacts, parse, COLS };
+module.exports = { ownTexts, sawsOf, loadNote, storedCosine, liveKept, isHeldNow, activeHoldOf, activeHoldsOf, checkHoldFacts, reportedKind, supersededFacts, parse, COLS };

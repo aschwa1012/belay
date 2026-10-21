@@ -30,9 +30,10 @@ test('reviewApply is a harness call, and a verdict needs an active hold', async 
   assert.strictEqual((await review([{ id: n, verdict: 'archive', reason: 'x' }])).refused[0].code, 'E_NOT_FOUND', 'no hold, so nothing to archive, cites or not');
 });
 
-test('release drops the hold and clears the warning; the note was never out of the index set', async () => {
-  const n = T.note('released target', { reported_wrong: [T.report()] });
-  const h = await hold(wrong(n));
+test('release of a scrubber duplicate hold drops the hold and clears the warning; the note was never out of the index set', async () => {
+  const keptR = T.note('released kept', { vec: A, created_at: 100 });
+  const n = T.note('released target', { vec: A_NEAR, created_at: 200, reported_wrong: [T.report()] });
+  const h = await hold(dup(n, keptR));
   assert.ok(T.body(n).held);
   const r = await review([releaseV(n)]);
   const v = r.applied[0];
@@ -218,7 +219,7 @@ test('nothing in the lifecycle deletes a row: only the purge removes any', async
   await hold(wrong(n)); await review([archiveV(n)]);
   await T.call(T.who.tool('apply'), 'memory.noteRestore', { id: n, reason: 'back' });
   const after = T.store.p('SELECT COUNT(*) AS n FROM memory_entries').get().n;
-  assert.strictEqual(after, before + 2, 'the note and its held row; both still there');
+  assert.strictEqual(after, before + 3, 'the note, its held row, and the fresh hold the restore writes for the reports nobody settled; nothing deleted');
 });
 
 

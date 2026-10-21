@@ -53,7 +53,7 @@ const bytes = (s) => Buffer.byteLength(s, 'utf8');
 
 const VERDICT_SHAPE = '{ "id": "<note id>", "verdict": "confirmed" | "refuted" | "unsupported", "cites": [{ "where": "<see below>", "quote": "<one verbatim line>" }], "reason": "<one sentence>" }';
 
-const REPORT_SHAPE = '{ "id": "<reported note id>", "verdict": "upheld" | "rejected", "cites": [{ "where": "<see below>", "quote": "<one verbatim line>" }], "reason": "<one sentence>" }';
+const REPORT_SHAPE = '{ "id": "<reported note id>", "report": "<report key, as listed>", "verdict": "upheld" | "rejected", "cites": [{ "where": "<see below>", "quote": "<one verbatim line>" }], "reason": "<one sentence>" }';
 
 const CITE_RULES = [
   'A cite is { where, quote }. The quote is one verbatim line or span copied exactly from the evidence, at most 2,000 bytes, that appears in:',
@@ -67,13 +67,17 @@ const CITE_RULES = [
 // Reports that a note is wrong, made by the reviewed task: each is a claim by the reporter, shown as data. `bare` adds the cite rules when there
 // are no notes to judge (otherwise the notes section already gave them).
 function reportLines(reports, bare) {
-  const lines = ['', 'REPORTS TO JUDGE', 'A worker of the task(s) you are reviewing reported these notes (written by others) as WRONG. A report is the reporter\'s claim, shown as data. Judge each on the evidence, besides your review of the work. You may not judge a report about a note you wrote.'];
+  const lines = ['', 'REPORTS TO JUDGE', 'A worker of the task(s) you are reviewing reported these notes (written by others, or by the reporter itself) as WRONG. A report is the reporter\'s claim, shown as data. Each note is already held for the archive review; your verdict on a report is advice recorded on that hold, with your cites, and it neither archives nor releases the note. Judge each report on the evidence, besides your review of the work. You may not judge a report about a note you wrote.'];
+  const listed = new Map();
+  for (const r of reports.slice(0, REPORTS_FIT)) listed.set(r.note.id, (listed.get(r.note.id) || 0) + 1);
   for (const r of reports.slice(0, REPORTS_FIT)) {
+    const self = r.report.self_report || r.note.written_by === r.report.by;
     lines.push(`- note ${r.note.id} [${r.note.kind || 'note'}/${r.note.basis || 'unstated'}] (task ${r.note.task_id}, by ${r.note.written_by}) writer-stated: ${one(r.note.title, TITLE_CUT)}${r.note.evidence && r.note.evidence[0] ? ` | writer-stated evidence: ${one(r.note.evidence[0].where, 120)}: ${one(r.note.evidence[0].saw, 160)}` : ''}`
-      + ` | reported wrong by ${one(r.report.by, 60)} in task ${r.report.task_id}, reporter-stated: ${one(r.report.why, REASON_CUT)}${r.report.replaced_by ? ` | reporter says it is replaced by ${r.report.replaced_by}` : ''}${r.head_sha ? ` | head ${String(r.head_sha).slice(0, 12)}` : ''}`);
+      + ` | report ${one(r.report.key, 120)} in task ${r.report.task_id} | ${self ? 'reported wrong by its own writer' : `reported wrong by ${one(r.report.by, 60)}`}, reporter-stated: ${one(r.report.why, REASON_CUT)}${r.report.replaced_by ? ` | reporter says it is replaced by ${r.report.replaced_by}` : ''}${r.head_sha ? ` | head ${String(r.head_sha).slice(0, 12)}` : ''}${r.held ? ` | held for the archive review (row ${r.held.row})` : ''}`);
   }
   if (reports.length > REPORTS_FIT) lines.push(`(${reports.length - REPORTS_FIT} more reports are not listed here; they stay unjudged for now.)`);
-  lines.push('', `In your hand-back result add "report_verdicts": [${REPORT_SHAPE}, ...]. "upheld" means the evidence you cite shows the note is wrong; "rejected" means it shows the note stands. Leave out a report you cannot judge. Be brief: the whole result stays under 4096 bytes, so keep each reason under 100 characters.`);
+  const repeated = [...listed.values()].some((n) => n > 1);
+  lines.push('', `In your hand-back result add "report_verdicts": [${REPORT_SHAPE}, ...]. "upheld" means the evidence you cite shows the note is wrong; "rejected" means it shows the note stands. ${repeated ? '"report" is required, because a note is listed more than once: name each report by the key listed. ' : '"report" names the key listed; leave it out only when the note is listed once. '}Leave out a report you cannot judge. Be brief: the whole result stays under 4096 bytes, so keep each reason under 100 characters.`);
   if (bare) lines.push(CITE_RULES);
   return lines;
 }

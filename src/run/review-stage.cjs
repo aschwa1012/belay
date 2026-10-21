@@ -38,6 +38,7 @@ function buildBrief({ runId, project, held, head = null }) {
     `Head commit for an entry with no head_sha of its own (a hold written at write time): ${head || '(none recorded)'}. Your working directory is that commit's worktree.`,
     'Each entry is one held note. "files" are the repository files the mark cites, saved as they were at the mark\'s head commit.',
     'target_review_verified = a review confirmed this note earlier: weigh a mark against it with care.',
+    'For an entry of kind wrong, or of ground reported: archive it on your own cites that show it is wrong; release it only on your own cites that show it is correct (a release verifies the note and settles its reports); if you can do neither, answer undecided with a reason: it stays held for the operator. Reports are claims and report_verdicts are a task reviewer\'s advice. prior_hold names a hold it replaced. A duplicate or superseded entry of the scrubber is released, as before, when the two notes do not make the same claim (no cites).',
     'For a duplicate mark, "note" and "of_note" are both given in full: archive only if they make the same claim and do not contradict (same_claim: true), else release.',
     'An entry of kind "unsupported" is a note a reviewer could not prove or disprove from one place. It carries no warning. Its "evidence" lists PATHS: the streams of the task that wrote it, the streams of the run\'s other workers, and the task\'s diff. Read them selectively with Read, Glob and Grep; do not read them whole.', '',
     '```json', JSON.stringify(held, null, 1), '```', '',
@@ -48,18 +49,30 @@ function promptFor(briefFile) {
   return J.fill(J.readTemplate('archive-review-job.md'), { brief_file: briefFile });
 }
 
-// For an unsupported note: the stream files of the task that wrote it and of the run's other workers (all become citable), and the task's diff
+// The task ids that reported a held note wrong (an entry made by a report), or null.
+const reportersOf = (h) => ((h.ground === 'reported' || h.ground === 'report_confirmed') && Array.isArray(h.reports) ? { tasks: new Set(h.reports.map((r) => r.task_id).filter(Boolean)), workers: new Set(h.reports.map((r) => r.worker_id).filter(Boolean)) } : null);
+const reportedBy = reportersOf;
+
+// For an unsupported note or one a report made: the stream files of the task that wrote it and of the run's other workers (all become citable), and the task's diff
 // saved beside the brief. Paths only; the reviewer reads what it needs.
 async function wideEvidence(h, ctx, dir, streams) {
   const workers = (ctx.workers || []).filter((w) => w && w.run_id === (h.note && h.note.run_id));
   const stream = (w) => abs(path.join(ctx.dataDir || '.', 'workers', w.id, 'stream.jsonl'));
-  const mine = workers.filter((w) => w.task_id === (h.note && h.note.task_id));
-  const others = workers.filter((w) => w.task_id !== (h.note && h.note.task_id));
-  for (const w of [...mine, ...others.slice(0, WIDE_OTHERS)].slice(0, WIDE_PER_ENTRY)) streams.add(stream(w));
+  // The writer is found by the worker id recorded on the note as well as by its task: a worker reassigned since still wrote the note.
+  const writerId = h.note && h.note.worker_id;
+  const isMine = (w) => w.task_id === (h.note && h.note.task_id) || (writerId && w.id === writerId);
+  const mine = (ctx.workers || []).filter((w) => w && (workers.includes(w) || (writerId && w.id === writerId)) && isMine(w));
+  const others = workers.filter((w) => !isMine(w));
+  // An entry made by a report also gets the streams of each reporting task's workers, in any run (the reporter's evidence is where the claim is).
+  // The reporters are found by the worker id recorded on each report (any run, whatever task the worker holds now), then by the reporting task.
+  const reporters = reportersOf(h);
+  const reporting = reporters ? (ctx.workers || []).filter((w) => w && !mine.includes(w) && (reporters.workers.has(w.id) || (w.task_id && reporters.tasks.has(w.task_id)))) : [];
+  for (const w of [...mine, ...reporting, ...others.slice(0, WIDE_OTHERS)].slice(0, WIDE_PER_ENTRY)) streams.add(stream(w));
   const w = mine.find((x) => x.base_sha && x.head_sha && x.worktree);
   const diff = w ? await J.diffText(w.worktree, w.base_sha, w.head_sha) : '(no worker of the task has a base and head commit recorded, so there is no diff)\n';
   return {
     task_streams: mine.map((x) => ({ worker: x.id, path: stream(x) })),
+    ...(reporting.length ? { report_streams: reporting.map((x) => ({ worker: x.id, task: x.task_id, path: stream(x) })) } : {}),
     other_streams: others.slice(0, WIDE_OTHERS).map((x) => ({ worker: x.id, task: x.task_id || null, path: stream(x) })),
     diff_file: J.writeFileIn(path.join(dir, 'diffs'), `${h.held_row}.patch`, diff),
   };
@@ -74,7 +87,7 @@ async function withFiles(held, worktree, dir, ctx = {}) {
   for (const h of held) {
     const files = [];
     let evidence = null;
-    if (h.kind === 'unsupported') evidence = await wideEvidence(h, ctx, dir, wide);
+    if (h.kind === 'unsupported' || reportedBy(h)) evidence = await wideEvidence(h, ctx, dir, wide);
     for (const c of h.cites || []) {
       if (String(c.where).startsWith('stream:')) { streams.add(abs(String(c.where).slice(7))); continue; }
       if (!h.head_sha || !worktree || n >= FILES_MAX) { files.push({ where: c.where, saved_at: null }); continue; }
@@ -135,16 +148,31 @@ async function runReview({ core, runId, lv, dataDir, getManager, worktree = null
     if (parsed.error) throw J.coded('E_ARGS', parsed.error);
     // A hold written at write time (a refine or replacement of a verified note) has no head commit of its own, so a file cite could never be read
     // for it: the head of the worktree the reviewer worked in (named in the brief) stands for its cites. A hold with a head keeps its own.
-    const tally = { verdicts: parsed.list.length, applied: 0, refused: 0 };
+    const tally = { verdicts: parsed.list.length, applied: 0, refused: 0, undecided: 0, refused_stale: 0 };
     const applied = [], refused = [];
-    for (let i = 0; i < parsed.list.length; i += VERDICTS_PER_APPLY) {
-      const r = await core.memory.reviewApply({ verdicts: parsed.list.slice(i, i + VERDICTS_PER_APPLY), worktree: abs(cwd), evidence_files: streams.slice(0, STREAMS_MAX), ...(head ? { head_sha: head } : {}) });
+    // Each verdict is bound to the hold row and revision (and, where an outcome would verify the note, the hash of the whole note) of the entry that was
+    // OFFERED, taken from the queue by note id and never from the model's text. A verdict for a note that was not offered is refused here and listed.
+    const offeredBy = new Map(queued.map((h) => [h.id, h]));
+    const plain = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+    const verdictList = [];
+    for (const v of parsed.list) {
+      if (!plain(v)) { verdictList.push(v); continue; } // a malformed list is refused whole by the core
+      const h = offeredBy.get(v.id);
+      if (!h) { refused.push({ id: v.id, code: 'E_PRECONDITION', not_offered: true }); tally.refused += 1; continue; }
+      verdictList.push({ ...v, held_row: h.held_row, rev: h.rev, ...(h.shown_hash ? { shown_hash: h.shown_hash } : {}) });
+    }
+    for (let i = 0; i < verdictList.length; i += VERDICTS_PER_APPLY) {
+      const r = await core.memory.reviewApply({ verdicts: verdictList.slice(i, i + VERDICTS_PER_APPLY), worktree: abs(cwd), evidence_files: streams.slice(0, STREAMS_MAX), ...(head ? { head_sha: head } : {}) });
       tally.applied += r.counts.applied; tally.refused += r.counts.refused;
-      applied.push(...r.applied.map((a) => ({ id: a.id, outcome: a.outcome, receipt: a.receipt }))); refused.push(...r.refused.map((a) => ({ id: a.id, code: a.code })));
+      applied.push(...r.applied.map((a) => ({ id: a.id, outcome: a.outcome, receipt: a.receipt }))); refused.push(...r.refused.map((a) => ({ id: a.id, code: a.code, ...(a.detail && a.detail.current_rev !== undefined ? { stale: true } : {}) })));
     }
     out.result = { counts: tally, applied, refused };
-    out.left_held = q.held.length - applied.length; // every mark not decided stays held and carries over
-    await J.receipt(core, { kind: 'review_stage', ok: true, ...base, row_ids: applied.map((a) => a.id), message: `${why}: ${tally.verdicts} verdicts for ${queued.length} of ${q.held.length} held marks; applied ${tally.applied}, refused ${tally.refused}; cost $${got.cost.toFixed(4)}` });
+    tally.undecided = applied.filter((a) => a.outcome === 'undecided').length;
+    tally.refused_stale = refused.filter((a) => a.stale).length;
+    // Every mark not settled stays held and carries over: read from the queue again (an undecided hold is still held, waiting for the operator).
+    out.left_held = q.held.length - applied.length;
+    try { const after = await core.memory.reviewQueue({}); out.left_held = after.held.length + ((after.counts && after.counts.awaiting_operator) || 0); } catch { /* the estimate above stands */ }
+    await J.receipt(core, { kind: 'review_stage', ok: true, ...base, row_ids: applied.map((a) => a.id), message: `${why}: ${tally.verdicts} verdicts for ${queued.length} of ${q.held.length} held marks; applied ${tally.applied} (undecided ${tally.undecided}), refused ${tally.refused} (stale ${tally.refused_stale}); cost $${got.cost.toFixed(4)}` });
   } catch (e) {
     await noteOverrun(true);
     out.error = { code: J.codeOf(e), message: String((e && e.message) || e).slice(0, 300) };

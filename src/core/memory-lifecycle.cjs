@@ -14,7 +14,7 @@ const { RESOLVES } = require('./memory-notes.cjs');
 // hand-back may not carry them (memory.scrubApply refuses both by name): a wrong report is judged by a reviewer, not the scrubber.
 const ACTIONS = Object.freeze(['dismiss', 'hold', 'resolve', 'draft', 'relate']);
 const HOLD_KINDS = Object.freeze(['wrong', 'superseded', 'duplicate']);
-const VERDICTS = Object.freeze(['archive', 'release', 'verify', 'refute', 'still_unsupported']); // archive and release judge a hold with a warning; the other three judge an unsupported note
+const VERDICTS = Object.freeze(['archive', 'release', 'undecided', 'verify', 'refute', 'still_unsupported']); // archive, release and undecided judge a hold with a warning; the other three judge an unsupported note
 const SCRUB_MODES = Object.freeze(['off', 'propose', 'apply']);
 
 // A ground is a fact class, never a count of how a note was used. Anything else, use and miss facts included, is
@@ -139,24 +139,30 @@ function checkScrub(list, maxItems) {
   });
 }
 
-// The reviewer's verdicts on held notes: `verdicts: [{ id, verdict: archive | release, reason, cites? }]` where `id`
-// is the held note. An archive of a wrong or superseded note cites what it read (S3); an archive of a duplicate states `same_claim: true`
-// instead; a release needs neither.
+// The reviewer's verdicts on held notes: `verdicts: [{ id, verdict: archive | release | undecided | verify | refute | still_unsupported, reason, cites?, same_claim?,
+// held_row?, rev?, shown_hash? }]` where `id` is the held note. An archive of a wrong or superseded note cites what it read (S3); an archive of a duplicate
+// states `same_claim: true` instead; a release of a wrong or reported hold cites what shows the note correct (it verifies it) and a release of a scrubber's
+// duplicate or superseded hold needs no cites; `undecided` needs a reason. `held_row` and `rev` are the hold row and revision the verdict was offered
+// (the archive stage attaches them from the queue entry, never from the model's text); `shown_hash` is the hash of the whole note the brief showed.
+const HASH_RE = /^[0-9a-f]{16}$/;
 function checkVerdicts(list) {
   if (!Array.isArray(list) || !list.length || list.length > VERDICTS_MAX) throw bad(`verdicts must be an array of 1 to ${VERDICTS_MAX} entries`, { field: 'verdicts' });
   const seen = new Set();
   return list.map((v, i) => {
     const at = `verdicts[${i}]: `;
     if (!isObj(v)) throw bad(`${at}a verdict must be an object { id, verdict, reason, cites }`, { index: i });
-    for (const k of Object.keys(v)) if (!['id', 'verdict', 'reason', 'cites', 'same_claim'].includes(k)) throw bad(`${at}${k} is not a field; use id, verdict, reason, cites, same_claim`, { field: k, index: i });
+    for (const k of Object.keys(v)) if (!['id', 'verdict', 'reason', 'cites', 'same_claim', 'held_row', 'rev', 'shown_hash'].includes(k)) throw bad(`${at}${k} is not a field; use id, verdict, reason, cites, same_claim, held_row, rev, shown_hash`, { field: k, index: i });
     if (!validId(v.id)) throw bad(`${at}id must be the id of a held note`, { field: 'id', index: i });
     if (seen.has(v.id)) throw bad(`${at}id ${v.id} appears twice in one call`, { field: 'id', index: i });
     seen.add(v.id);
     if (!VERDICTS.includes(v.verdict)) throw bad(`${at}verdict must be one of ${VERDICTS.join(', ')}`, { field: 'verdict', index: i });
     if (v.same_claim !== undefined && typeof v.same_claim !== 'boolean') throw bad(`${at}same_claim must be true or false`, { field: 'same_claim', index: i });
+    if (v.held_row !== undefined && !validId(v.held_row)) throw bad(`${at}held_row must be the id of a hold row`, { field: 'held_row', index: i });
+    if (v.rev !== undefined && !(Number.isSafeInteger(v.rev) && v.rev >= 0)) throw bad(`${at}rev must be an integer from 0`, { field: 'rev', index: i });
+    if (v.shown_hash !== undefined && !(typeof v.shown_hash === 'string' && HASH_RE.test(v.shown_hash))) throw bad(`${at}shown_hash must be 16 hex digits`, { field: 'shown_hash', index: i });
     // Whether an archive needs cites depends on the hold's kind, which only reviewApply knows: a duplicate needs same_claim true and no cites,
-    // wrong and superseded need cites. reviewApply enforces both.
-    return { id: v.id, verdict: v.verdict, reason: checkText(v.reason, 'reason', REASON_MAX, at), cites: checkCites(v.cites, at, false), ...(v.same_claim === undefined ? {} : { same_claim: v.same_claim }) };
+    // wrong and superseded need cites, and a release of a wrong or reported hold needs them too. reviewApply enforces all of these.
+    return { id: v.id, verdict: v.verdict, reason: checkText(v.reason, 'reason', REASON_MAX, at), cites: checkCites(v.cites, at, false), ...(v.same_claim === undefined ? {} : { same_claim: v.same_claim }), ...(v.held_row === undefined ? {} : { held_row: v.held_row }), ...(v.rev === undefined ? {} : { rev: v.rev }), ...(v.shown_hash === undefined ? {} : { shown_hash: v.shown_hash }) };
   });
 }
 

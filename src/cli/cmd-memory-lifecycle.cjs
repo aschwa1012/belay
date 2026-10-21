@@ -89,6 +89,21 @@ async function restore(core, parsed) {
   return { code: 0, text: `restored ${res.id} to ${res.namespace}  reason: ${one(res.receipt.reason)}  at ${when(res.receipt.at)}${stays}\n`, json: res };
 }
 
+// belay memory held [--project p] [--awaiting]: one line per held note (a read). belay memory held settle <id> ...: the operator's settle (a write).
+async function held(core, parsed) {
+  const o = parsed.opts;
+  if (parsed.positional[0] === 'settle') {
+    const res = await core.memory.heldSettle({ id: parsed.positional[1], action: o.action, reason: o.reason });
+    const changed = [`hold ${res.held_row}: ${res.held ? res.held.body.state : '?'}`, `note ${res.id}: ${res.row ? res.row.namespace : '?'}`];
+    const extra = res.settled ? ` (${res.settled.count} report${res.settled.count === 1 ? '' : 's'} settled, the note not verified)` : '';
+    return { code: 0, text: `${res.action} ${res.id}: ${res.outcome}${extra}  receipt: ${res.receipt}\n  ${changed.join('\n  ')}\n`, json: res };
+  }
+  const res = await core.memory.held({ list: true, ...(o.project ? { project: o.project } : {}), ...(o.awaiting ? { awaiting: true } : {}) });
+  const lines = res.entries.map((e) => `${e.note_id}  ${e.kind}/${e.ground || 'none'}  rev ${e.rev}  ${e.reports} report${e.reports === 1 ? '' : 's'}${e.self_report ? ' (self)' : ''}  held ${e.runs_waited} run${e.runs_waited === 1 ? '' : 's'}${e.awaiting_operator ? `  AWAITS YOU: ${one(e.undecided && e.undecided.reason)}` : ''}  [${e.project}]  ${one(e.title)}`);
+  const head = `${res.total} held, ${res.awaiting_operator || 0} awaiting the operator${res.truncated ? ' (first 200 listed)' : ''}`;
+  return { code: 0, text: `${head}\n${lines.join('\n')}${lines.length ? '\n' : ''}`, json: res };
+}
+
 async function archive(core, parsed) {
   if (parsed.positional[0] !== 'purge') return { code: 2, text: `belay memory archive: unknown action ${one(parsed.positional[0])}; expected purge\n`, json: { error: 'unknown action' } };
   const o = parsed.opts;
@@ -99,7 +114,7 @@ async function archive(core, parsed) {
   return { code: 0, text, json: res };
 }
 
-const WRITES = { restore: p => !p.opts.candidates, archive: () => true, promote: () => true, scrub: () => true, review: () => true, resolve: () => true };
+const WRITES = { held: p => p.positional[0] === 'settle', restore: p => !p.opts.candidates, archive: () => true, promote: () => true, scrub: () => true, review: () => true, resolve: () => true };
 const writes = parsed => !!(WRITES[parsed.sub] && WRITES[parsed.sub](parsed));
 
-module.exports = { VERB_FN: { proposals, restore, archive, promote, ...require('./cmd-memory-stages.cjs').VERB_FN }, writes };
+module.exports = { VERB_FN: { proposals, held, restore, archive, promote, ...require('./cmd-memory-stages.cjs').VERB_FN }, writes };

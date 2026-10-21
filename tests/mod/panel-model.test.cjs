@@ -113,3 +113,12 @@ test('parseMemoryNotice and buildSnapshot: the no-project notice rides the setti
   assert.deepStrictEqual(M.memoryBandSegs(p).map((s) => s.t).join(''), '▲ Memory is off for this project · add "memory": { "project": "<name>" }');
   assert.deepStrictEqual(M.memoryFallbackSegs(p), [{ t: `▲ ${notice.title}. ${notice.fix}`, c: 'warning' }]);
 });
+
+test('the held count is one count broken down by ground, with how many await the operator', () => {
+  const g = M.normHeld({ events: [held(3, { acme: 3 }, { by_ground: { reported: 2, same_claim: 1 }, awaiting_operator: 1 })] });
+  assert.deepStrictEqual([g.byGround, g.awaiting], [{ reported: 2, same_claim: 1 }, 1]);
+  assert.strictEqual(M.heldLine(g), '3 held: 2 reported wrong, 1 duplicate; 1 awaits you');
+  assert.strictEqual(M.heldLine(H({ count: 4, byGround: { reported: 2, report_confirmed: 1, unsupported: 1 }, awaiting: 2 })), '4 held: 3 reported wrong, 1 unsupported; 2 await you');
+  assert.strictEqual(M.heldLine(H({ count: 1, byGround: { reported: 1 }, awaiting: 0 })), '1 held: 1 reported wrong');
+  assert.strictEqual(M.normHeld({ events: [held(2, { acme: 2 })] }).byGround, undefined, 'without a breakdown the line is as before');
+});

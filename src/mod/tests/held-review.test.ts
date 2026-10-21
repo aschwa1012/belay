@@ -153,3 +153,12 @@ describe('notes held for the archive reviewer', () => {
     expect(wd.writes).toEqual([])
   })
 })
+
+describe('the held count is broken down by ground', () => {
+  test('the line names the grounds and how many wait for the operator', async ($, on) => {
+    const wd = await boot($, on, { notices: notices({ ...held(3), by_ground: { reported: 2, same_claim: 1 }, awaiting_operator: 1 }) })
+    const text = (await pane($)).text
+    expect(text).toContain('3 held: 2 reported wrong, 1 duplicate; 1 awaits you')
+    void wd
+  })
+})

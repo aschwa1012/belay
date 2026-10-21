@@ -183,16 +183,19 @@ test('a delayed callback or an unawaited promise created inside a grant cannot r
   const { id, hold } = await heldNote('guard grant expiry');
   const f = { status: 'verified', receipt: 'review:x', by: 'harness', at: 1 };
   const late = [];
+  const done = [];
+  const completion = () => { let r; const p = new Promise((x) => { r = x; }); done.push(p); return r; };
   await new Promise((resolve) => {
     HG.runAs(closeStages(), () => {
       HG.grant('archive_review', id, () => {
-        setTimeout(() => { try { T.store.setStatusIn(id, f); late.push('timer wrote'); } catch (e) { late.push(`timer ${e.code}`); } }, 0);
-        Promise.resolve().then(() => { try { T.store.setStatusIn(id, f); late.push('promise wrote'); } catch (e) { late.push(`promise ${e.code}`); } });
-        setImmediate(() => { try { T.store.setStatusIn(id, f); late.push('immediate wrote'); } catch (e) { late.push(`immediate ${e.code}`); } resolve(); });
+        const t = completion(); setTimeout(() => { try { T.store.setStatusIn(id, f); late.push('timer wrote'); } catch (e) { late.push(`timer ${e.code}`); } t(); }, 0);
+        const p = completion(); Promise.resolve().then(() => { try { T.store.setStatusIn(id, f); late.push('promise wrote'); } catch (e) { late.push(`promise ${e.code}`); } p(); });
+        const im = completion();
+        setImmediate(() => { try { T.store.setStatusIn(id, f); late.push('immediate wrote'); } catch (e) { late.push(`immediate ${e.code}`); } im(); resolve(); });
       });
     });
   });
-  await new Promise((r) => setTimeout(r, 20));
+  await Promise.all(done); // each deferred callback signals its own completion
   assert.deepStrictEqual(late.sort(), ['immediate E_HELD', 'promise E_HELD', 'timer E_HELD']);
   assert.strictEqual(T.row(id).status, null, 'nothing was written');
   assert.ok(hold);
