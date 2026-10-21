@@ -17,6 +17,7 @@ const { ftsReady } = require('./memory-schema.cjs');
 const { scanCeiling } = require('./schema.cjs');
 const { toUnitF32 } = require('./store.cjs');
 const gate = require('./memory-note-gate.cjs');
+const { notesDefaults } = require('./memory-search-scope.cjs');
 const { nsFor, resolveNamespace, runAlpha, withEmbedding, reachOf, checkReach, runEmbedderMode } = require('./methods-memory.cjs');
 
 const MODES = ['semantic', 'keyword', 'hybrid'];
@@ -193,11 +194,13 @@ function parseSearch(E, caller, args) {
   const alpha = args.alpha === undefined ? (lever === null ? DEFAULT_ALPHA : lever) : args.alpha;
   if (typeof alpha !== 'number' || !(alpha >= 0 && alpha <= 1)) throw bad('alpha must be a number from 0 to 1', 'alpha');
   const order = enumArg('order', args.order, ['score', 'newest', 'oldest'], 'score');
-  const filter = args.filter == null ? {} : args.filter;
+  // A run with the notes lever on searches its project's notes unless the call names a scope (memory-search-scope.cjs).
+  const scoped = notesDefaults(E, caller, args, args.filter == null ? {} : args.filter);
+  const filter = scoped.filter;
   // The notes gate (memory-note-gate.cjs) is kept apart from the caller's filter: the keyword stage and the count add it to their WHERE,
   // the semantic stage subtracts the few rows it hides. Superseded rows are handled below (baseWhere, the cache), so the gate leaves them.
   const fsql = filterSql(filter, 'e');
-  const namespaces = namespacesOf(E, caller, args);
+  const namespaces = namespacesOf(E, caller, scoped.args);
   // Without the body clauses: they would scan every body of the namespace (about 55 ms at 10,000 notes). They are tested on the rows the
   // route returns instead (bodyLive, below), so rows_considered still counts a promoted or pending note.
   const gateSql = gate.sql(E, caller, { includeSuperseded: true, namespaces });

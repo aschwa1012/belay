@@ -51,7 +51,7 @@ before(async () => {
   store = new Store(`${dir}/memory.db`, { stamp: true });
   E = new Engine({ dataDir: dir, store, getEmbedder: async () => ({ embed }), owner: null, establishedBy: 'test' });
   await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true, notes_reflection: true }) });
-  await call('run.attach', orchOff, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme' }) });
+  await call('run.attach', orchOff, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: false }) });
   await call('run.attach', orchHi, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true, notes_match_threshold: 0.999 }) });
   for (const [id, run] of [['w1', RUN], ['w2', RUN], ['w3', RUN], ['woff', OFF], ['wstrict', HI]]) {
     await call('worker.write', orchOf(run), { id, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${id}`, last_event_at: Date.now(), model: 'claude-test-1' });
