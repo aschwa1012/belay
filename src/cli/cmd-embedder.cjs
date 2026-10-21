@@ -46,7 +46,7 @@ const K = require('../core/model-cache.cjs');
 const READ_TIMEOUT_MS = 60000;
 const MAX_REDIRECTS = 5;
 
-const USAGE = 'usage: belay embedder fetch|verify [--model <id>] [--gpu] [--reranker <id>] [--json]\n  --gpu       with no --model, the GPU runtime; with --model, a model of the GPU table\n  --reranker  a CPU reranker of the reranker table (not with --model or --gpu)\n';
+const USAGE = 'usage: belay embedder fetch|verify|delete [--model <id>] [--gpu] [--reranker <id>] [--json]\n  --gpu       with no --model, the GPU runtime; with --model, a model of the GPU table\n  --reranker  a CPU reranker of the reranker table (not with --model or --gpu)\n';
 
 const testMode = () => process.env.BELAY_TEST_MODE === '1';
 const idleMs = () => (testMode() && Number(process.env.BELAY_FETCH_IDLE_MS) > 0 ? Number(process.env.BELAY_FETCH_IDLE_MS) : READ_TIMEOUT_MS);
@@ -273,6 +273,7 @@ async function runRuntime(a, ctx) {
 }
 
 async function run(ctx) {
+  if (ctx.argv[0] === 'delete') return require('./cmd-embedder-extra.cjs').run(ctx); // ADR 0050 amendment 3: delete a cached model
   const a = parseArgs(ctx.argv);
   if (a.error) return { code: 2, text: `belay embedder: ${a.error}\n\n${USAGE}`, json: { error: a.error } };
   if (a.gpu && !a.model) return runRuntime(a, ctx);

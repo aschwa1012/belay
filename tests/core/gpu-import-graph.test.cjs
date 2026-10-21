@@ -28,8 +28,8 @@ test('who requires which GPU module', () => {
     gpu: ['core/gpu-probe.cjs', 'core/gpu-shared.cjs'],
     'gpu-probe': ['core/gpu-shared.cjs'],
     'gpu-chunk': ['core/gpu-probe.cjs', 'core/gpu-worker.cjs'],
-    'gpu-runtime': ['cli/cmd-embedder.cjs', 'core/gpu-probe.cjs', 'core/gpu.cjs'],
-    'gguf-models': ['cli/cmd-embedder.cjs', 'core/embed-provider.cjs', 'core/gpu-probe.cjs', 'core/gpu.cjs', 'core/heavy-tier.cjs'],
+    'gpu-runtime': ['cli/cmd-embedder.cjs', 'core/gpu-probe.cjs', 'core/gpu.cjs', 'core/memory-menu.cjs'],
+    'gguf-models': ['cli/cmd-embedder.cjs', 'core/embed-provider.cjs', 'core/gpu-probe.cjs', 'core/gpu.cjs', 'core/heavy-tier.cjs', 'core/memory-menu.cjs'],
   }, 'gpu-worker.cjs is forked by path from gpu.cjs and required by nothing; the probe and the client are required only by gpu-shared.cjs, the one GPU child of the owner, which the providers require inside the branch that builds (gpu-wire-import-graph.test.cjs); the model table is pure');
 });
 

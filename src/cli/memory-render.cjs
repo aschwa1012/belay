@@ -75,6 +75,7 @@ const VERBS = {
   resolve: { flags: ['--evidence'], positional: [2, 3], usage: 'belay memory resolve <id> new   |   belay memory resolve <id> repeats <of>   |   belay memory resolve <id> supersedes <of> --evidence <text>' },
   promote: { flags: ['--approve', '--reject', '--reason'], positional: [1, 1], usage: 'belay memory promote <note-id> (--approve | --reject) [--reason <text>]' },
   'search-log': { flags: ['--export', '--run', '--since', '--force'], positional: [0, 0], usage: 'belay memory search-log --export <file> [--run <id>] [--since <ms|iso>] [--force]' },
+  menu: { flags: [], positional: [0, 0], usage: 'belay memory menu   (the facts the panel Memory menu shows: GPU, profiles, models, backlog; a read)' },
   archive: { flags: ['--ids', '--older-than', '--confirm', '--project'], positional: [1, 1], usage: 'belay memory archive purge (--ids a,b | --older-than <days>) --confirm [--project p]' },
 };
 
