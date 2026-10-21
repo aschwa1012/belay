@@ -13,7 +13,7 @@ const { test, before, after, afterEach } = require('node:test');
 const assert = require('node:assert');
 const { setup } = require('./lifecycle-env.cjs');
 const { core, callerFor } = require('./helpers.cjs');
-const { rig, EMB4, RR4, MIB } = require('./fixtures/gpu-wire-rig.cjs');
+const { rig, EMB4, EMB06, RR4, MIB } = require('./fixtures/gpu-wire-rig.cjs');
 
 const { Engine } = core('engine.cjs');
 const HT = core('heavy-tier.cjs');
@@ -41,7 +41,7 @@ async function pinnedRun(run, p, extra = {}, n = 2) {
   await attach(run, { project: p, profile: 'gpu-balanced', ...extra });
   const first = await pin(run);
   assert.strictEqual(first.action, 'drain', JSON.stringify([first.notices, first.probe]));
-  await E.handle('memory.drainHeavy', { caller: operator(run), model: EMB4, namespaces: first.behind[0].namespaces });
+  for (const b of first.behind) await E.handle('memory.drainHeavy', { caller: operator(run), model: b.embedder, namespaces: b.namespaces });
   const done = await pin(run);
   assert.strictEqual(done.pinned, true);
   return done;
@@ -108,26 +108,54 @@ test('B1: under on_heavy_failure pause a failing heavy embed tells the run hook 
   assert.strictEqual(seen[0].error.detail.stage, 'heavy_embed');
   assert.strictEqual(HT.fallbackOf(E, 'wr-p'), null);
   assert.strictEqual(backlog('wrp'), 1);
-  await assert.rejects(search('wr-p', 'wrp'), (e) => e.code === 'E_TIER_BEHIND', 'the heavy tier never serves a partial index');
+  await assert.rejects(search('wr-p', 'wrp'), (e) => e.detail && e.detail.stage === 'heavy_embed' && e.detail.cause === 'load_failed', 'mid-run the search catches the row up inline; the real failure under pause is loud, not a hard E_TIER_BEHIND');
 });
 
-test('B1: the embed after a write has ONE deadline, not one per embedder', async () => {
+test('B1: the embed after a write has ONE total deadline across embedders, and reaching it is not a failure', async () => {
   await R.restore(); fresh();
-  await pinnedRun('wr-d', 'wrd');
-  const HN = core('heavy-notes.cjs');
-  T.note('a late row', { ns: ns('wrd'), vec: [1, 0.3, 0] });
-  const EP = core('embed-provider.cjs');
-  const impl = EP.get({ embedder: EMB4 }, { owner: E.owner });
-  const slow = impl.embedDocs;
-  impl.embedDocs = async (list, o) => { await new Promise(r => setTimeout(r, 400)); return slow(list, o); };
+  // two heavy embedders in the routing: the run's gpu-balanced one and a reviewer's own
+  await pinnedRun('wr-d', 'wrd', { routing: { reviewer: { embedder: EMB06, reranker: 'none' } } });
+  const HN = core('heavy-notes.cjs'), EP = core('embed-provider.cjs');
+  await store('wr-d', 'wrd', 'a row whose embed outlives the deadline');
   const t0 = Date.now();
-  const res = await HN.afterWrite(E, operator('wr-d'), 'memory.store', 100);
-  impl.embedDocs = slow;
-  await new Promise(r => setTimeout(r, 700)); // the abandoned embed finishes on its own; let it, so it cannot touch the next test's child
-  assert.ok(Date.now() - t0 < 1500, `returned near the 100 ms deadline, not after the slow embed (${Date.now() - t0} ms)`);
-  assert.strictEqual(res.failed.length, 1);
-  assert.strictEqual(res.failed[0].code, 'E_EMBEDDER_TIMEOUT');
-  assert.ok(HT.fallbackOf(E, 'wr-d'), 'a deadline is a heavy failure: on_heavy_failure fallback applies');
+  T.note('another row written outside the call', { ns: ns('wrd'), vec: [1, 0.3, 0] });
+  const slow = new Map(), calls = [];
+  let release; const gate = new Promise(r => { release = r; });
+  for (const id of [EMB4, EMB06]) {
+    const impl = EP.get({ embedder: id }, { owner: E.owner });
+    slow.set(id, impl.embedDocs);
+    impl.embedDocs = async (list, o) => { calls.push(id); await gate; return slow.get(id)(list, o); };
+  }
+  E.owner.catchUpsCancelled = true; // the background catch-up the deadline starts must not add its own embed calls to the count
+  const res = await HN.afterWrite(E, operator('wr-d'), 'memory.store', 150, t0);
+  assert.strictEqual(res.deadline, true);
+  assert.deepStrictEqual(res.failed, [], 'a deadline is not a failure');
+  assert.strictEqual(HT.fallbackOf(E, 'wr-d'), null, 'and applies no on_heavy_failure');
+  assert.strictEqual(calls.length, 1, 'the first embedder was started and the deadline was shared: the second was never started');
+  release();
+  await res.settled; // the abandoned work finishes through the seam, so it cannot touch the next test
+  for (const [id, f] of slow) EP.get({ embedder: id }, { owner: E.owner }).embedDocs = f;
+  await core('heavy-behind.cjs').idle(E.owner);
+  E.owner.catchUpsCancelled = false;
+});
+
+test('B1: only the rows the call wrote are embedded, and a method that wrote no row embeds nothing', async () => {
+  await R.restore(); fresh();
+  await pinnedRun('wr-o', 'wro');
+  const foreign = T.note('a row written by someone else', { ns: ns('wro'), vec: [1, 0.2, 0] }); // another caller, another run
+  const EP = core('embed-provider.cjs'), impl = EP.get({ embedder: EMB4 }, { owner: E.owner });
+  const orig = impl.embedDocs, seenDocs = [];
+  impl.embedDocs = async (list, o) => { seenDocs.push(list.length); return orig(list, o); };
+  try {
+    const own = await store('wr-o', 'wro', 'the row this call wrote');
+    assert.deepStrictEqual(seenDocs, [1], 'one document: the call own row, not the whole backlog');
+    assert.ok(HD.backlogOf(E, EMB4, [ns('wro')]).some(r => r.id === foreign), "someone else's row is left to the catch-up");
+    assert.ok(!HD.backlogOf(E, EMB4, [ns('wro')]).some(r => r.id === own.id));
+    seenDocs.length = 0;
+    await E.handle('memory.stats', { caller: operator('wr-o') });
+    await E.handle('memory.setStatus', { caller: operator('wr-o'), id: own.id, status: 'verified', receipt: 'test:ok' }).catch(() => {});
+    assert.deepStrictEqual(seenDocs, [], 'a method that wrote no row (or no new text) embeds nothing');
+  } finally { impl.embedDocs = orig; }
 });
 
 test('B3: a re-pin after a wait drain keeps the first probe verdict (8 GB laptop: 7,899 MiB free, 4B embedder 2,622, 4B reranker 2,763, headroom 768)', async () => {
