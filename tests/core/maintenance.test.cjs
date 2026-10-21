@@ -12,12 +12,20 @@ const { core, sandbox, cleanup, callerFor, sleep } = require('./helpers.cjs');
 const { openCore } = core('index.cjs');
 const { Store } = core('store.cjs');
 
+// Runs even when setup or an assertion failed partway; a live owner pipe keeps the process alive.
+async function down(c) {
+  if (!c) return;
+  try { await c.shutdownOwner(); } catch { /* already down */ }
+  try { await c.close(); } catch { /* already closed */ }
+}
+
 const vec = i => [Math.cos(i), Math.sin(i)];
 
 test('a row with a ttl is swept by the owner and is then genuinely gone', async () => {
   const dir = sandbox();
+  let c;
   try {
-    const c = await openCore({
+    c = await openCore({
       dataDir: dir, caller: callerFor('orchestrator'), embed: false,
       ownerOpts: { sweepMs: 50, heartbeatMs: 50 },
     });
@@ -33,16 +41,14 @@ test('a row with a ttl is swept by the owner and is then genuinely gone', async 
     // A swept row must also be gone from the search cache, not merely from the table.
     const s = await c.memory.search({ namespace: 'ttl', query_embedding: vec(2), k: 5 });
     assert.ok(!s.results.some(r => r.id === go.id), 'an expired row must not come back from the vector cache');
-
-    await c.shutdownOwner();
-    await c.close();
-  } finally { cleanup(dir); }
+  } finally { await down(c); cleanup(dir); }
 });
 
 test('the WAL is truncated once the owner goes idle', async () => {
   const dir = sandbox();
+  let c;
   try {
-    const c = await openCore({
+    c = await openCore({
       dataDir: dir, caller: callerFor('orchestrator'), embed: false,
       ownerOpts: { idleMs: 150, idleCheckMs: 50, checkpointMs: 100000, sweepMs: 100000 },
     });
@@ -60,16 +66,14 @@ test('the WAL is truncated once the owner goes idle', async () => {
     const stats = await c.memory.stats({});
     assert.strictEqual(stats.n, 300);
     assert.strictEqual(stats.wal_bytes, 0);
-
-    await c.shutdownOwner();
-    await c.close();
-  } finally { cleanup(dir); }
+  } finally { await down(c); cleanup(dir); }
 });
 
 test('backup is VACUUM INTO, and the copy passes its own integrity check', async () => {
   const dir = sandbox();
+  let c;
   try {
-    const c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
+    c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
     for (let i = 0; i < 50; i++) await c.memory.store({ namespace: 'bk', text: `row ${i}`, embedding: vec(i), embedding_model: 'm', dim: 2 });
     await c.shutdownOwner();
     await c.close();
@@ -87,13 +91,14 @@ test('backup is VACUUM INTO, and the copy passes its own integrity check', async
         assert.strictEqual(b.count(), 50);
       } finally { b.close(); }
     } finally { s.close(); }
-  } finally { cleanup(dir); }
+  } finally { await down(c); cleanup(dir); }
 });
 
 test('the heartbeat row names the live owner and its pipe', async () => {
   const dir = sandbox();
+  let c;
   try {
-    const c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false, ownerOpts: { heartbeatMs: 50 } });
+    c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false, ownerOpts: { heartbeatMs: 50 } });
     await c.memory.store({ namespace: 'hb', text: 'x', embedding: vec(1), embedding_model: 'm', dim: 2 });
     const first = (await c.memory.stats({})).heartbeat;
     assert.strictEqual(first.pid, process.pid);
@@ -102,7 +107,5 @@ test('the heartbeat row names the live owner and its pipe', async () => {
     const later = (await c.memory.stats({})).heartbeat;
     assert.ok(later.beat_at > first.beat_at, 'the heartbeat keeps beating while the owner lives');
     assert.strictEqual(later.started_at, first.started_at);
-    await c.shutdownOwner();
-    await c.close();
-  } finally { cleanup(dir); }
+  } finally { await down(c); cleanup(dir); }
 });
