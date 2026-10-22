@@ -63,8 +63,8 @@ const counts = (dataDir) => readStoreCopy(dataDir, (db) => ({ runs: db.prepare('
 test('a late orchestrator process after the owner shut down is not elected owner and writes nothing into the ended run', async (tcx) => {
   const d = sandbox();
   const op = await openCore({ dataDir: d, caller: callerFor('operator'), embed: false });
-  tcx.after(() => Promise.resolve().then(() => op.shutdownOwner()).catch(() => {}));
-  tcx.after(() => Promise.resolve().then(() => op.close()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => op.shutdownOwner()));
+  tcx.after(() => Promise.resolve().then(() => op.close()));
   try {
     await op.run.attach({ adapter_pid: process.pid });
     await op.run.end({ exit_reason: 'test' });
