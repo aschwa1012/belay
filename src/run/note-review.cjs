@@ -64,6 +64,9 @@ async function applyHandback(J, task) {
   if (s.applied.has(once)) return null;
   s.applied.add(once);
   try { return await core.memory.noteVerdicts({ review_task_id: task.id }); } catch (e) {
+    // Past this flag the owner is going or gone: a receipt now would elect a new one in this process (invariant 2). The hand-back stays on the review
+    // task's row, and the store-only sweep applies it (a failure there is its own receipt).
+    if (J.ctx.shutdownFlags && J.ctx.shutdownFlags.ownerGone) return null;
     await fail(core, { key: `route:${task.id}`, task_id: task.id, message: `the verdicts of review ${task.id} were not applied: ${e && e.message}` }, e);
     return null;
   }
@@ -75,6 +78,9 @@ async function applyHandback(J, task) {
 function onTaskEnded(J, task) {
   const { ctx, lv } = J;
   if (!lv.notes || !task || !ENDED.has(task.state) || !isReview(task)) return Promise.resolve();
+  // Once the close has begun (the second drain is done or under way), no new application starts from a turn: it would never be drained. Nothing is marked
+  // applied, so the hand-back stays eligible for the store-only sweep (the adapter's run-end sweep, then belay run's).
+  if (ctx.shutdownFlags && (ctx.shutdownFlags.closing || ctx.shutdownFlags.closed)) return Promise.resolve();
   const s = stateOf(ctx);
   const key = `apply:${task.id}`;
   if (s.pending.has(key)) return Promise.resolve();
@@ -84,12 +90,16 @@ function onTaskEnded(J, task) {
   return p;
 }
 
-// The adapter's shutdown waits for verdict applications it started, up to `ms`.
+// The adapter's shutdown waits for verdict applications it started, up to `ms` in all: the wait takes `ms` less a reserve, and the receipt that names
+// a cut-off takes the reserve, so the shared deadline holds even when the store is slow. Returns { pending, receipt }: the review task ids whose application
+// had not finished (never swallowed: the shutdown result carries them) and what became of the receipt ('written', or { error }); never throws.
 async function drainVerdicts(ctx, ms) {
+  const out = { pending: [], receipt: null };
   const s = STATE.get(ctx);
-  if (!s || !s.pending.size) return;
+  if (!s || !s.pending.size) return out;
+  const reserve = Math.min(2000, Math.floor(ms / 4));
   let timer;
-  const deadline = new Promise((r) => { timer = setTimeout(() => r(false), ms); });
+  const deadline = new Promise((r) => { timer = setTimeout(() => r(false), Math.max(0, ms - reserve)); });
   // An application registered while the others finish (a review that ended during the close) is waited for too, until none is new.
   for (;;) {
     const known = s.pending.size;
@@ -98,11 +108,18 @@ async function drainVerdicts(ctx, ms) {
   }
   clearTimeout(timer);
   // A cut-off is never silent: the applications still running when the deadline passed are named on a receipt. They are not lost: the hand-back is
-  // on the review task's row, and `belay run`'s reviewSweep (store-only, after the adapter has gone) applies it; the store makes a second application a no-op.
+  // on the review task's row, and the store-only sweep (the adapter's run-end sweep, then `belay run`'s reviewSweep) applies it.
   const left = [...s.pending.keys()].filter((k) => !(s.done && s.done.has(k)));
-  if (left.length && ctx.core && ctx.core.memory && typeof ctx.core.memory.recordEvent === 'function') {
-    await receipt(ctx.core, { ok: false, code: 'E_TIMEOUT', run_id: ctx.runId, key: `drain:${ctx.runId}`, message: `the verdict drain gave up after ${ms} ms with ${left.length} application(s) still running (${left.map((k) => k.replace(/^apply:/, '')).slice(0, 8).join(', ')}); belay run's review sweep applies them from the review tasks' hand-backs` });
+  out.pending = left.map((k) => k.replace(/^apply:/, ''));
+  if (left.length) {
+    if (!(ctx.core && ctx.core.memory && typeof ctx.core.memory.recordEvent === 'function')) { out.receipt = { error: 'no way to write the receipt' }; return out; }
+    let rt;
+    const bound = new Promise((r) => { rt = setTimeout(() => r({ error: `the receipt was not written within ${reserve} ms` }), Math.max(1, reserve)); });
+    const write = Promise.resolve().then(() => ctx.core.memory.recordEvent({ kind: 'review_job', ok: false, code: 'E_TIMEOUT', run_id: ctx.runId, key: `drain:${ctx.runId}`, message: `the verdict drain gave up after ${ms} ms with ${left.length} application(s) still running (${out.pending.slice(0, 8).join(', ')}); the review sweep applies them from the review tasks' hand-backs` })).then(() => 'written', (e) => ({ error: String((e && e.message) || e).slice(0, 200) }));
+    out.receipt = await Promise.race([write, bound]);
+    clearTimeout(rt);
   }
+  return out;
 }
 
 // The run's end, store-only (also runs in `belay run`, which holds no manager): apply the hand-back of every ended review task.

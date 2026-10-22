@@ -381,7 +381,7 @@ function afterTurn(w, ctx, { turnEvents, checkpointId, snap: given = null } = {}
       if (needReview) {
         s.reviewSeen.add(snap.taskId);
         // onTaskEnded registers a review task's application synchronously, so the run's close drain sees it (note-review.cjs). A turn that reaches here after the close drops it; the run's sweep applies it.
-        if (closed(ctx)) note(w, 'after-shutdown', { code: SHUT, message: 'the run closed before the note review was decided on' });
+        if (closed(ctx) || (ctx.shutdownFlags && ctx.shutdownFlags.closing)) note(w, 'after-shutdown', { code: SHUT, message: 'the close began before the note review was decided on; its hand-back stays for the run-end sweep' });
         else void require('./note-review.cjs').onTaskEnded(J, task).catch((e) => note(w, 'note-review', e));
       }
       if (needReflect) await require('./notes-reflection.cjs').reflect(J, { taskId: snap.taskId, workerId: snap.workerId }, event);

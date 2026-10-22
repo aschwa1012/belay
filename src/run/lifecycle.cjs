@@ -126,8 +126,14 @@ async function shutdown(workers, { stop, core, clearPoll, markClosed, markOwnerG
   const floor = Math.min(2000, Math.floor(budget / 4));
   const tBudget = now();
   const left = (keep) => Math.max(0, budget - keep - (now() - tBudget));
+  // What the verdict drains left (review tasks whose verdicts were still being applied, and whether the receipt naming them was written) comes back on
+  // the result: a cut-off is never silent. A drain that throws is recorded as an error, never swallowed.
+  let verdictDrain = null;
+  const drain = async (ms) => {
+    try { const r = await beforeStop(ms); if (r && typeof r === 'object' && Array.isArray(r.pending)) verdictDrain = r; } catch (e) { verdictDrain = { ...(verdictDrain || { pending: [] }), error: String((e && e.message) || e).slice(0, 200) }; }
+  };
   if (beforeStop) {
-    await Promise.resolve().then(() => beforeStop(left(floor))).catch(() => {});
+    await drain(left(floor));
     if (markClosing) markClosing(); // no verdict application starts past here
   }
   const t0 = now();
@@ -157,7 +163,7 @@ async function shutdown(workers, { stop, core, clearPoll, markClosed, markOwnerG
   // A worker that joined the map while the loop ran (a review job whose spawn was already under way) is stopped too, until none is new.
   for (let extra = [...workers.values()].filter((w) => !seen.has(w.id)); extra.length; extra = [...workers.values()].filter((w) => !seen.has(w.id))) for (const w of extra) await stopOne(w);
   // Jobs stopped above write their receipts now, while the store is still open (and before the owner is marked gone).
-  if (beforeStop) await Promise.resolve().then(() => beforeStop(left(0))).catch(() => {});
+  if (beforeStop) await drain(left(0));
   // ADR 0029 amendment 2 item 4: a head follow-up is queued only once git answers, and markClosed turns every
   // later write away. Each worker's own queue is drained, its pending head request awaited, and its queue
   // drained again (the follow-up is on it by then), all inside one HEAD_DRAIN_MS bound, before the flag flips.
@@ -193,7 +199,7 @@ async function shutdown(workers, { stop, core, clearPoll, markClosed, markOwnerG
     await new Promise((res) => setImmediate(res));
   }
   if (holdsOwner && typeof core.shutdownOwner === 'function') await core.shutdownOwner().catch(() => {});
-  return { stopped, left_parked, left_stale, stop_failed, memory_gave_up: gaveUp, paired_gave_up: pairedGaveUp, ms: now() - t0 };
+  return { stopped, left_parked, left_stale, stop_failed, memory_gave_up: gaveUp, paired_gave_up: pairedGaveUp, ...(verdictDrain && (verdictDrain.pending.length || verdictDrain.error || (verdictDrain.receipt && verdictDrain.receipt !== 'written')) ? { verdict_drain: verdictDrain } : {}), ms: now() - t0 };
 }
 
 // build step 6e-5 design item 5 (review 1/2, worker.cjs's `adopt`): the worker row carries no column for
