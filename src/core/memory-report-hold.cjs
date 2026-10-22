@@ -20,7 +20,7 @@ const KIND_HISTORY_KEEP = 10;
 
 // A report as the hold carries it. The text is redacted again here (a report made before redaction was applied once is copied clean too).
 function copyOf(note, w) {
-  return { key: reportKey(w), ...(Number.isInteger(w.seq) ? { seq: w.seq } : {}), by: w.by, worker_id: w.worker_id || null, task_id: w.task_id || null, run_id: w.run_id || null, why: redact(String(w.why || '')).text, replaced_by: w.replaced_by || null, ...(Array.isArray(w.cites) && w.cites.length ? { cites: w.cites } : {}), at: w.at, ...(w.by === note.written_by ? { self_report: true } : {}) };
+  return { key: reportKey(w), ...(Number.isInteger(w.seq) ? { seq: w.seq } : {}), by: w.by, worker_id: w.worker_id || null, task_id: w.task_id || null, run_id: w.run_id || null, why: redact(String(w.why || '')).text, replaced_by: w.replaced_by || null, ...(Array.isArray(w.cites) && w.cites.length ? { cites: w.cites } : {}), at: w.at, ...(typeof w.withhold === 'boolean' ? { withhold: w.withhold, ...(w.breaker ? { breaker: w.breaker } : {}) } : {}), ...(w.by === note.written_by ? { self_report: true } : {}) };
 }
 
 // Every report on the note that is not settled (new and legacy), newest REPORTS_KEEP, oldest first.

@@ -16,6 +16,10 @@ const WRONG_KEEP = 20;
 function reportIn(E, caller, p) {
   const RH = require('./memory-report-hold.cjs');
   const t = Date.now();
+  // The breaker (ADR 0047 amendment, decision 9) is decided here, in this transaction, from the reporter's run, and written on the report.
+  const before = loadNote(E, p.note);
+  const prior = before && before.b ? (before.b.reported_wrong || []).find((x) => x.by === p.by) || null : null;
+  const verdict = require('./held-breaker.cjs').decide(E, { project: p.project, note: p.note, by: p.by, runId: p.run_id || null, prior });
   let report = null;
   const next = E.store.patchBody(p.note, (b) => {
     const seq = (Number(b.report_seq) || 0) + 1;
@@ -23,6 +27,7 @@ function reportIn(E, caller, p) {
     report = {
       by: p.by, worker_id: p.worker_id || null, task_id: p.task_id || null, run_id: p.run_id || null, why: p.why, replaced_by: p.replaced_by || null, at: t, seq,
       ...(Array.isArray(p.cites) && p.cites.length ? { cites: p.cites } : {}), ...(p.extra || {}),
+      withhold: verdict.withhold, ...(verdict.breaker ? { breaker: verdict.breaker } : {}),
     };
     b.reported_wrong = [...(b.reported_wrong || []).filter((x) => x.by !== p.by), report].slice(-WRONG_KEEP);
     return NW.fitBody(b, report, p.note);
@@ -31,7 +36,9 @@ function reportIn(E, caller, p) {
     throw err('E_NOTE_SHAPE', `the report on note ${p.note} could not be kept on it${p.refused ? `, ${p.refused}` : ''}`, { id: p.note });
   }
   const held = RH.holdReported(E, caller, { project: p.project, runId: p.run_id || null, threshold: p.threshold, headSha: p.headSha || null }, loadNote(E, p.note), report);
-  return { report, reports: next.reported_wrong.length, held };
+  // Proof of the decision: withheld is what a worker's read does with the note now (a skipped hold withholds nothing), and why says so.
+  const withheld = !held.skipped && verdict.withhold;
+  return { report, reports: next.reported_wrong.length, held, withheld, withheld_why: held.skipped ? `not held (${held.skipped}): nothing to withhold` : verdict.why, breaker: verdict.breaker };
 }
 
 module.exports = { reportIn, WRONG_KEEP };

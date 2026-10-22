@@ -72,7 +72,7 @@ async function reportNote(E, caller, by, args, cites) {
     ? { state: 'not_held', reason: held.skipped }
     : { state: held.already_held ? 'already_held' : 'held', hold: { row: held.row, kind: held.kind, rev: held.rev, ...(held.merged ? { merged: held.merged } : {}), ...(held.reclassified ? { reclassified: true } : {}) } };
   return {
-    id: args.note_id, project, reported_by: by, ...proof,
+    id: args.note_id, project, reported_by: by, ...proof, withheld: out.withheld, withheld_why: out.withheld_why, ...(out.breaker ? { breaker: out.breaker } : {}),
     report: { by: report.by, seq: report.seq, at: report.at, why: report.why, replaced_by: report.replaced_by },
     reports: out.reports, ...(red.redactions && Object.keys(red.redactions).length ? { redacted: Object.values(red.redactions).reduce((a, b) => a + b, 0) } : {}),
     ...(held.skipped ? {} : { held: C.rowOut(E, held.row) }), row: C.rowOut(E, args.note_id),
@@ -87,7 +87,7 @@ async function reportByStatus(E, caller, id, receipt) {
   const out = await reportNote(E, caller, 'orchestrator', { note_id: id, why }, [receipt]);
   const row = out.row;
   return {
-    id, status: row.status, receipt: row.status_receipt || null, reported: { seq: out.report.seq }, reported_by: out.reported_by, state: out.state,
+    id, status: row.status, receipt: row.status_receipt || null, reported: { seq: out.report.seq }, reported_by: out.reported_by, state: out.state, withheld: out.withheld, withheld_why: out.withheld_why,
     ...(out.state === 'not_held' ? { reason: out.reason } : { hold: out.hold }), reports: out.reports, project: out.project,
   };
 }
