@@ -15,6 +15,7 @@ const { core, sandbox, cleanup, deadPid } = require('./helpers.cjs');
 const { openCore } = core('index.cjs');
 const { ping } = core('ping.cjs');
 const retire = core('retire.cjs');
+const { teardown } = require('../helpers/teardown.cjs');
 const { release } = require('../../src/cli/cmd-memory-stages.cjs');
 
 const CHILD = path.join(__dirname, 'fixtures', 'owner-client.cjs');
@@ -24,11 +25,10 @@ const op = (dir, pid = process.pid) => openCore({ dataDir: dir, caller: { role: 
 // before its finish(), still gets the owner shut down when the file ends (finish() on a closed Core is a no-op).
 const opened = new Set();
 test.after(async () => {
-  for (const c of opened) {
-    try { if (c.isOwner()) await c.shutdownOwner(); } catch { /* best effort */ }
-    try { await c.close(); } catch { /* best effort */ }
-  }
+  const cores = [...opened];
   opened.clear();
+  // Every step runs; the first failure is thrown.
+  await teardown(null, cores.flatMap((c) => [() => c.isOwner() && c.shutdownOwner(), () => c.close()]));
 });
 // A wait that fails the test instead of hanging it.
 const within = (p, ms, what) => { let t; return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => rej(new Error(`timed out waiting for ${what}`)), ms); })]).finally(() => clearTimeout(t)); };
@@ -83,7 +83,7 @@ test('release with no other client attached stops the owner at once, exactly as 
 test('a client attached when the electing command releases keeps its owner; the last client leaving stops it', async (tcx) => {
   const { dir, rc } = await elected();
   const y = await inProcessClient(dir, process.pid);
-  tcx.after(() => Promise.resolve().then(() => y.close()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => y.close()));
   try {
     await release(rc);
     assert.ok(fs.existsSync(lockOf(dir)), 'the owner.lock is still held: the owner was not shut down under the client');
@@ -100,7 +100,7 @@ test('a client attached when the electing command releases keeps its owner; the 
 test('release names what it did: a deferral lists the attached client, a stop gives the stop receipt', async (tcx) => {
   const { dir, rc } = await elected();
   const y = await inProcessClient(dir, process.pid);
-  tcx.after(() => Promise.resolve().then(() => y.close()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => y.close()));
   try {
     const r = await rc.releaseOwner();
     assert.strictEqual(r.stopped, 'deferred');
@@ -170,9 +170,9 @@ test('a client whose pid dies while the connection stays open is dropped by the 
 test('a second client that attaches during the retirement holds the owner until it too is gone', async (tcx) => {
   const { dir, rc } = await elected();
   const y1 = await inProcessClient(dir, process.pid);
-  tcx.after(() => Promise.resolve().then(() => y1.close()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => y1.close()));
   let y2 = null;
-  tcx.after(() => Promise.resolve().then(() => y2.close()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => y2 && y2.close()));
   try {
     await release(rc);
     y2 = await inProcessClient(dir, process.pid);
@@ -188,7 +188,7 @@ test('a second client that attaches during the retirement holds the owner until 
 test('a remote shutdown during the retirement stops the owner once and the wait ends', async (tcx) => {
   const { dir, rc } = await elected();
   const y = await inProcessClient(dir, process.pid); // an operator: allowed to ask for the shutdown
-  tcx.after(() => Promise.resolve().then(() => y.shutdownOwner()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => y.shutdownOwner()));
   try {
     await release(rc);
     await y.shutdownOwner();
@@ -261,7 +261,7 @@ test('the other elect-then-shutdown commands release through releaseOwner', () =
 test('after a deferred release the Core never elects another owner: a later write is refused E_SHUTDOWN (audit L18)', async (tcx) => {
   const { dir, rc } = await elected();
   const y = await inProcessClient(dir, process.pid);
-  tcx.after(() => Promise.resolve().then(() => y.close()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => y.close()));
   try {
     const r = await rc.releaseOwner();
     assert.strictEqual(r.stopped, 'deferred');
