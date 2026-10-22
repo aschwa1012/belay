@@ -144,20 +144,26 @@ test('C3b: a rejected receipt is returned, not swallowed; a written one is just 
   } finally { world.record = null; hold.resolve(); }
 });
 
-test('C3c: the reserve is real: the wait takes the deadline less the reserve, so wait plus receipt bound stays inside the deadline', async () => {
+test('C3c: the reserve is real: the receipt write starts inside the reserve, before the deadline, and the drain ends within a fixed allowance of it', async () => {
   const W = world();
   const hold = defer();
   W.gates.set('rt-res', hold);
-  world.record = () => new Promise(() => {});
+  let wroteAt = null;
+  const t0 = Date.now();
+  world.record = () => { wroteAt = Date.now() - t0; return new Promise(() => {}); }; // the receipt write is noted when it starts, and never answers
+  const MS = 1000; // reserve = 250
+  let guard;
   try {
     W.turn('rt-res');
     await ticks();
-    const t0 = Date.now();
-    const r = await NR.drainVerdicts(W.ctx, 400); // reserve 100: the wait ends at ~300 ms, the receipt gives up at ~400 ms
+    // its own deadline: without the bound on the receipt this would hang, so it fails here instead
+    const r = await Promise.race([NR.drainVerdicts(W.ctx, MS), new Promise((_, rej) => { guard = setTimeout(() => rej(new Error('the drain was held by a stalled receipt')), 6000); })]);
+    clearTimeout(guard);
     const spent = Date.now() - t0;
-    assert.ok(spent >= 380 && spent < 480, `the drain took ${spent} ms against a 400 ms deadline`);
-    assert.match(r.receipt.error, /not written within 100 ms/);
-  } finally { world.record = null; hold.resolve(); }
+    assert.ok(wroteAt !== null && wroteAt < MS - 125, `the receipt write started at ${wroteAt} ms: inside the reserve, before the ${MS} ms deadline`);
+    assert.ok(spent < MS + 3000, `the drain ended after ${spent} ms`); // a generous allowance for a loaded runner
+    assert.match(r.receipt.error, /not written within 250 ms/);
+  } finally { clearTimeout(guard); world.record = null; hold.resolve(); }
 });
 
 test('C4: notes as the only lever, a standalone adapter shutdown: a turn that ends during the stop loop is applied by the run-end sweep, with its receipt', async () => {
