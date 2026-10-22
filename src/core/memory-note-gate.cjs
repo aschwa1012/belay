@@ -35,6 +35,7 @@
 // with one json_each parameter. bodyLive is the same body test in JS.
 
 const { err } = require('./errors.cjs');
+const { withholds, withheldIds } = require('./memory-withhold.cjs'); // ADR 0047 amendment (2026-10-22): the held-on-a-report withholding
 
 const LIFECYCLE_NS = ['archive/', 'held/', 'pending/', 'proposal/', 'draft/', 'nomination/'];
 const SCOPE_COLS = ['namespace', 'task_id', 'worker_id', 'run_id'];
@@ -133,6 +134,7 @@ function hiddenIds(E, caller, { includeSuperseded = false, body = false, ids = n
   if (!includeSuperseded) {
     for (const r of db.prepare(`SELECT e.id FROM memory_entries e WHERE e.type = 'note' AND EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND +s.namespace = e.namespace)${R}`).all(...lp)) out.add(r.id);
   }
+  for (const id of withheldIds(E, caller, lim, lp)) out.add(id);
   if (body) {
     for (const r of db.prepare(`SELECT e.id FROM memory_entries e WHERE e.type = 'note'${Rbody} AND NOT ${bodySql('e')}`).all(...lp)) out.add(r.id);
   }
@@ -162,4 +164,4 @@ function visible(E, caller, id, opts) {
   return hiddenIds(E, caller, { ...opts, ids: [id], body: true }).length === 0;
 }
 
-module.exports = { legacyHidden, legacySql, isLegacy, legacyIds, checkNamespaces, inLifecycle, lifecycleSql, LIFECYCLE_NS, hiddenIds, sql, and, bodySql, bodyLive, visible, gated };
+module.exports = { withholds, legacyHidden, legacySql, isLegacy, legacyIds, checkNamespaces, inLifecycle, lifecycleSql, LIFECYCLE_NS, hiddenIds, sql, and, bodySql, bodyLive, visible, gated };

@@ -18,6 +18,24 @@ describe('notes held for the archive reviewer', () => {
     expect(text).toContain('review the held notes')
   })
 
+  test('the plain line says how long the oldest held note has waited', async ($, on) => {
+    const wd = await boot($, on, { notices: notices({ ...held(3), oldest_at: T0 - 2 * 3600000 + 5 * 60000 }) })
+    await openPane($, wd)
+    expect((await pane($)).text).toMatch(/3 notes held for review · oldest 2 runs · acme · oldest waited [0-9]h[0-9][0-9]m/) // 2h05m at the first render, the clock moves a little while it boots
+  })
+
+  test('the by-ground line says it too', async ($, on) => {
+    const wd = await boot($, on, { notices: notices({ ...{ ...held(4), by_ground: { reported: 3, same_claim: 1 } }, oldest_at: T0 - 90000 }) })
+    await openPane($, wd)
+    expect((await pane($)).text).toMatch(/4 held: 3 reported wrong, 1 duplicate · oldest waited [0-9]m/)
+  })
+
+  test('the unsupported line says it too', async ($, on) => {
+    const wd = await boot($, on, { notices: notices({ ...held(3, { acme: 3 }, 3), oldest_at: T0 - 30000 }) })
+    await openPane($, wd)
+    expect((await pane($)).text).toMatch(/3 unsupported awaiting review · oldest 2 runs · acme · oldest waited ([0-9]+s|[0-9]m)/)
+  })
+
   test('unsupported notes are counted apart from the holds that carry a warning, and the same button reviews both', async ($, on) => {
     const wd = await boot($, on, { notices: notices(held(8, { acme: 8 }, 3)) })
     await openPane($, wd)

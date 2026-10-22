@@ -9,6 +9,7 @@
 // identical inputs render identical bytes (ADR 0042 decision 5). The clock is read only to drop expired rows.
 
 const crypto = require('node:crypto');
+const W = require('./memory-withhold.cjs');
 const { err } = require('./errors.cjs');
 const { fit } = require('./fit-budget.cjs');
 const { deriveTitle, validId, safeType, FRAME } = require('./memory-rows.cjs');
@@ -146,6 +147,9 @@ function runLevers(E, caller) {
 
 async function index(E, caller, args = {}) {
   const o = parseArgs(args);
+  // The run manager builds a worker's injected index through the harness core: the index is DELIVERED to the worker it names, so held-note
+  // withholding is by that recipient (the spawn's worker id, which only the harness channel can name), not by the caller's role.
+  if (caller && caller.channel === 'harness' && typeof args.worker_id === 'string' && args.worker_id) caller = Object.assign({}, caller, { [W.WITHHOLD_FOR]: args.worker_id });
   const task = o.taskId ? rows.current(E.store, 'task', o.taskId) : null;
   const owned = task && Array.isArray(task.files_owned) ? task.files_owned.filter((f) => typeof f === 'string').map(norm).filter(Boolean) : [];
   // ADR 0047 decision 6: a run with the notes lever on lists notes only, ranked for the task, in a one-line frame.

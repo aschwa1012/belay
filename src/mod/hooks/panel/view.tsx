@@ -324,7 +324,7 @@ function Held({ E, snap, ui, now, act, cols }: Ctx) {
   return (
     <Box flexDirection="column">
       {hd.reviews.map((r, i) => <Line E={E} w={cols} k={`hr${i}`} segs={[{ t: '◇ ', c: r.state === 'failed' || r.state === 'interrupted' ? 'error' : 'warning' }, { t: reviewLine(r, now), c: r.state === 'failed' || r.state === 'interrupted' ? 'error' : undefined }]} />)}
-      {hd.count > 0 && <Line E={E} w={cols} k="hl" segs={[{ t: '◇ ', c: 'warning' }, { t: asking && project ? confirmLine(hd, project) : heldLine(hd), c: asking ? 'warning' : undefined }]} />}
+      {hd.count > 0 && <Line E={E} w={cols} k="hl" segs={[{ t: '◇ ', c: 'warning' }, { t: asking && project ? confirmLine(hd, project) : heldLine(hd, now), c: asking ? 'warning' : undefined }]} />}
       {project !== null && !busy && <Button key="review" plain label={asking ? '  ▸ press again to dispatch · any other press cancels' : `  ▸ review the held notes${Object.keys(hd.byProject).length > 1 ? ` (${project} first)` : ''}`} onPress={act.review} />}
     </Box>
   )
@@ -463,7 +463,7 @@ export function Fallback(c: Ctx) {
   if (snap.memoryNotice) lines.push(memoryFallbackSegs(snap.memoryNotice))
   if (snap.held) { // plain text: the review button is the terminal pane's alone
     for (const r of snap.held.reviews) lines.push([{ t: `◇ ${reviewLine(r)}`, c: 'warning' }])
-    if (snap.held.count > 0) lines.push([{ t: `◇ ${heldLine(snap.held)}`, c: 'warning' }])
+    if (snap.held.count > 0) lines.push([{ t: `◇ ${heldLine(snap.held, now)}`, c: 'warning' }])
   }
   for (const n of snap.notices) lines.push([{ t: `${TONE[n.tone].glyph} ${n.text}`, c: TONE[n.tone].color, dim: ui.seen.includes(n.key) }])
   if (snap.mode === 'headless') for (const e of (snap.transcript ?? []).slice(-5)) lines.push([{ t: e.text, dim: e.kind !== 'text' }])
