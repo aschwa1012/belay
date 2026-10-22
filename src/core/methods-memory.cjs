@@ -8,6 +8,7 @@ const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 const { SOURCES, TYPE_RE, validId } = require('./memory-rows.cjs');
 const { redact, redactDeep } = require('./redact.cjs');
+const gate = require('./memory-note-gate.cjs');
 
 // ADR 0041 §5 and ADR 0040 §2: the project alias and a caller's reach live in memory-reach.cjs, a read module.
 const { projectOf, resolveNamespace, reachOf, checkReach, checkOrchestratorWrite, runEmbedderMode } = require('./memory-reach.cjs');
@@ -251,6 +252,8 @@ const isReserved = ns => typeof ns === 'string' && RESERVED_NS.some(p => ns.star
 async function del(E, caller, args) {
   if (!args.id) throw err('E_ARGS', 'memory.delete needs an id');
   if (!validId(args.id)) throw err('E_ARGS', 'memory.delete id must be a row id', { field: 'id' });
+  // A row the caller cannot read is not found for it, in the same words as a missing id: no namespace leaks (a notes run hides the project's non-note rows).
+  if (gate.legacyHidden(E, caller) && gate.isLegacy(E.store.p('SELECT namespace, type FROM memory_entries WHERE id = ?').get(args.id))) return { id: args.id, deleted: false };
   if (caller.role !== 'operator') {
     const r = E.store.p('SELECT type, namespace FROM memory_entries WHERE id = ?').get(args.id);
     if (r && (r.type === 'note' || isReserved(r.namespace))) throw err('E_ROLE', `row ${args.id} is a ${r.type === 'note' ? 'note' : `row of ${r.namespace.split('/')[0]}/`}, and only the operator deletes those (an archived note leaves only by the operator's purge)`, { id: args.id, role: caller.role });

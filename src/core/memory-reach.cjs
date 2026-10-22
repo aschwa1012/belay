@@ -22,6 +22,29 @@ function projectOf(E, caller) {
   } catch { return null; }
 }
 
+// One spelling per namespace, applied once at the Core boundary (engine.cjs) before any routing or reach check (ADR 0047 amendment of 2026-10-22). A
+// spelling such as 'Project/acme', ' project', 'PROJECT' or 'project//acme' would otherwise miss the 'project' alias and the prefix tests that route a write
+// to the notes path. NFKC, backslashes to slashes, trimmed, runs of slashes collapsed, edge slashes dropped, and the first segment lower-cased; the rest is
+// lower-cased too for the namespaces belay names itself (their parts are lower-case by construction), and left alone for run/<id>, whose id may have capitals.
+const BELAY_NS = new Set(['project', 'summary', 'archive', 'held', 'pending', 'proposal', 'draft', 'nomination']);
+function normalizeNamespace(ns) {
+  if (typeof ns !== 'string') return ns;
+  let s = ns.normalize('NFKC').replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2060\ufeff]/g, '').split(String.fromCharCode(92)).join('/').trim();
+  s = s.replace(/\/+/g, '/').replace(/^\/|\/$/g, '');
+  const i = s.indexOf('/');
+  const head = (i < 0 ? s : s.slice(0, i)).trim().toLowerCase();
+  const tail = i < 0 ? '' : s.slice(i + 1).split('/').map((x) => x.trim()).join('/');
+  if (i < 0) return head;
+  return BELAY_NS.has(head) ? `${head}/${tail.toLowerCase()}` : `${head}/${tail}`;
+}
+// Normalises the namespace-bearing arguments of a memory call in place (a copy of the caller's args).
+function normalizeArgs(args) {
+  for (const k of ['namespace', 'to']) if (typeof args[k] === 'string') args[k] = normalizeNamespace(args[k]);
+  if (Array.isArray(args.namespaces)) args.namespaces = args.namespaces.map(normalizeNamespace);
+  if (typeof args.project === 'string') args.project = args.project.normalize('NFKC').trim().toLowerCase();
+  return args;
+}
+
 // In any namespace argument the literal "project" means `project/<run.project>` when the caller's run has a
 // project. With none it stays the literal namespace it has always been, so a run without a project reads and
 // writes exactly what it did before.
@@ -82,4 +105,4 @@ function runEmbedderMode(E, caller) {
   return { live: true, mode: EM.normalize(row.embedder_mode) || EM.normalize(lv && lv.on_embedder_failure) || EM.DEFAULT_MODE, source: 'row' };
 }
 
-module.exports = { runEmbedderMode, projectOf, resolveNamespace, reachOf, checkReach, checkOrchestratorWrite };
+module.exports = { normalizeNamespace, normalizeArgs, runEmbedderMode, projectOf, resolveNamespace, reachOf, checkReach, checkOrchestratorWrite };
