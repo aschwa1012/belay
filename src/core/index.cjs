@@ -142,6 +142,9 @@ class Core {
   // adapter, belay run's warm-up) for the 600 s backstop. The limit ends the CALL; the load continues and
   // a retry joins it. Only a vector call has a limit; every other method returns as before.
   _local(method, params, capMs) {
+    // This process IS the owner and the caller is itself, so its own pid is the checked one (a peer_pid in the arguments is dropped).
+    const { peer_pid: forged, ...own } = params.caller || {};
+    if (params.caller) params = { ...params, caller: own.role === 'operator' ? { ...own, peer_pid: process.pid } : own };
     const run = this.owner.engine.handle(method, params);
     let limit = method === 'memory.warm' ? vectorLimit(method, params) : (vectorLimit(method, params) && this.vectorLimitMs) || vectorLimit(method, params);
     if (!limit) return run;

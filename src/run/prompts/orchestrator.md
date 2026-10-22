@@ -30,7 +30,7 @@ A task is made with `mcp__belay__task_create`:
 Prefer `mcp__belay__worker_spawn` with `task_id`: it assigns the task and puts a first line in front
 of your prompt, `task <id> state=assigned lease=<lease id>.`. Give it `substrate` (`claude-code`),
 `worktree` (absolute), `prompt`, and `agent_type`, always (`coder|tester|reviewer|researcher`; a fixer is a
-`coder`): belay applies its model and effort. Pass `model` or `effort` only when your plan needs another.{{memory_queries_line}}
+`coder`): belay applies its model and effort. Pass `model` or `effort` only when your plan needs another.{{memory_queries_line}}{{memory_report_line}}
 
 `mcp__belay__task_assign` to a worker that is already running tells that worker nothing. After it,
 call `mcp__belay__worker_message` with the task id, the lease id from the assign result

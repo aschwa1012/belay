@@ -295,7 +295,12 @@ class Owner {
     catch { if (!c.destroyed) c.write(JSON.stringify({ id: null, error: { code: 'E_ARGS', message: 'the request line was not valid JSON' } }) + '\n'); return; }
     this.counters.calls++;
     // A claimed owner with an unkeyed request is the path every existing client takes: it stays synchronous and unchanged.
-    if (req.key === undefined && this.mode !== 'bound') return this._serve(c, req);
+    if (req.key === undefined && this.mode !== 'bound') {
+      // claimed mode has no operator check, so there is no checked peer: a peer_pid in the request is dropped, never believed
+      const sent = req.params && req.params.caller;
+      if (sent && typeof sent === 'object' && 'peer_pid' in sent) { const { peer_pid: forged, ...rest } = sent; req.params.caller = rest; }
+      return this._serve(c, req);
+    }
     let admitted;
     try { admitted = this._admit(c, req); } catch (e) { admitted = { code: e.code || 'E_INTERNAL', message: e.message, detail: e.detail }; }
     Promise.resolve(admitted)
