@@ -42,12 +42,13 @@ const selfOnly = (reports) => reports.length > 0 && reports.every((r) => r.self_
 
 // Appends to an existing reported hold and classifies it again over its current reports (the newest report that names a passing replacement
 // decides). A change of kind or `of` replaces the hold's, keeps the earlier in kind_history, and moves the note's pointer in the same transaction.
-function appendTo(E, ctx, note, active, reports) {
+function appendTo(E, ctx, note, active, reports, newReport) {
+  const replaced = !!(newReport && (active.b.reports || []).some((r) => r.by === newReport.by)); // a reporter's repeat replaces its own
   const rk = reportedKind(E, ctx.project, note, reports, ctx.threshold, active.b.prior_hold || null);
   const changed = rk.kind !== active.b.kind || (rk.of || null) !== (active.b.of || null);
   const next = bumpHold(E, active.id, (b) => {
     b.reports = reports;
-    b.reports_total = (Number(b.reports_total) || (b.reports || []).length) + 1;
+    b.reports_total = (Number(b.reports_total) || (b.reports || []).length) + (replaced ? 0 : 1);
     b.reports_dropped = Math.max(0, b.reports_total - reports.length);
     b.self_report = selfOnly(reports);
     if (changed) {
@@ -67,7 +68,7 @@ function holdReported(E, caller, ctx, note, newReport) {
   const reports = holdReportsOf(note);
   if (!reports.length) return { skipped: 'no_standing_report' };
   const active = activeHoldOf(E, ctx.project, note.id);
-  if (active && active.b.ground === 'reported' && active.b.kind !== 'unsupported') return appendTo(E, ctx, note, active, reports);
+  if (active && active.b.ground === 'reported' && active.b.kind !== 'unsupported') return appendTo(E, ctx, note, active, reports, newReport);
 
   // A new hold, or a merge of another into it. Every pointer decision is made here, so hold() never meets its own E_EXISTS guard.
   let prior = null, merged = null, stale = null;

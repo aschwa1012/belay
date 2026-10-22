@@ -104,6 +104,15 @@ async function held(core, parsed) {
   return { code: 0, text: `${head}\n${lines.join('\n')}${lines.length ? '\n' : ''}`, json: res };
 }
 
+// belay memory report <note-id> --reason <text> [--replaced-by <note-id>]: the operator reports a note wrong; it is held for the archive review.
+async function report(core, parsed) {
+  const o = parsed.opts;
+  const res = await core.memory.noteReport({ note_id: parsed.positional[0], why: o.reason, ...(o.replacedBy ? { replaced_by: o.replacedBy } : {}) });
+  const hold = res.hold ? `hold ${res.hold.row} (${res.hold.kind}, rev ${res.hold.rev})${res.hold.merged ? `, merged ${res.hold.merged}` : ''}` : `not held (${res.reason})`;
+  const lines = [`reported ${res.id} wrong by ${res.reported_by}: ${res.state}, ${hold}`, `  report ${res.report.seq} at ${when(res.report.at)}${res.report.replaced_by ? `  replaced by ${res.report.replaced_by}` : ''}  (${res.reports} report${res.reports === 1 ? '' : 's'} on the note)`];
+  return { code: 0, text: `${lines.join('\n')}\n`, json: res };
+}
+
 async function archive(core, parsed) {
   if (parsed.positional[0] !== 'purge') return { code: 2, text: `belay memory archive: unknown action ${one(parsed.positional[0])}; expected purge\n`, json: { error: 'unknown action' } };
   const o = parsed.opts;
@@ -114,7 +123,7 @@ async function archive(core, parsed) {
   return { code: 0, text, json: res };
 }
 
-const WRITES = { held: p => p.positional[0] === 'settle', restore: p => !p.opts.candidates, archive: () => true, promote: () => true, scrub: () => true, review: () => true, resolve: () => true };
+const WRITES = { held: p => p.positional[0] === 'settle', restore: p => !p.opts.candidates, report: () => true, archive: () => true, promote: () => true, scrub: () => true, review: () => true, resolve: () => true };
 const writes = parsed => !!(WRITES[parsed.sub] && WRITES[parsed.sub](parsed));
 
-module.exports = { VERB_FN: { proposals, held, restore, archive, promote, ...require('./cmd-memory-stages.cjs').VERB_FN }, writes };
+module.exports = { VERB_FN: { proposals, held, restore, report, archive, promote, ...require('./cmd-memory-stages.cjs').VERB_FN }, writes };

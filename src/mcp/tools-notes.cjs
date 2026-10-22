@@ -68,4 +68,11 @@ const NOTE_REFUTATION = {
   inputSchema: S({ note_id: str() }, ['note_id']),
 };
 
-module.exports = { LEASE_RELEASE, NOTE_RESOLVE, SUMMARIES, NOTE_REFUTATION, notesWorkerListing };
+// The operator's word that a note is wrong, passed on by the orchestrator (it holds the note for the archive review). Orchestrator only, listed with the notes lever.
+const MEMORY_REPORT = {
+  name: 'memory_report',
+  description: 'Report a note wrong when the operator says so; holds it for the archive review. Returns the hold row, or not_held with the reason.',
+  inputSchema: S({ note_id: str(), why: str(), replaced_by: str() }, ['note_id', 'why']),
+};
+
+module.exports = { LEASE_RELEASE, NOTE_RESOLVE, SUMMARIES, NOTE_REFUTATION, MEMORY_REPORT, notesWorkerListing };

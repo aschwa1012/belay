@@ -25,9 +25,9 @@ test('notes on: the orchestrator lists memory_summaries inside the budget; off, 
   const on = tools.toolsFor('orchestrator', { notes: true });
   console.log(`orchestrator listing: off ${bytes(off)}, notes on ${bytes(on)}, budget ${tools.BUDGET.orchestrator}`);
   assert.strictEqual(bytes(off), 9870); // 9,829 before the paired write/search contract
-  assert.deepStrictEqual(on.map((t) => t.name).slice(-2), ['memory_summaries', 'memory_note_refutation']);
+  assert.deepStrictEqual(on.map((t) => t.name).slice(-3), ['memory_summaries', 'memory_note_refutation', 'memory_report']);
   assert.ok(bytes(on) <= tools.BUDGET.orchestrator);
-  assert.deepStrictEqual(on.slice(0, -2), off);
+  assert.deepStrictEqual(on.slice(0, -3), off);
 });
 
 test('notes and knowledge_ask together list both tools, inside the budget', () => {
