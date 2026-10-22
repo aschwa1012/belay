@@ -42,10 +42,11 @@ const sandbox = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'nr-e2e-
 const reviewEvents = (events) => events.filter((e) => e.kind === 'review_job');
 const cleanup = (d, pids) => { for (const pid of pids) if (pid && P.pidAlive(pid)) { try { process.kill(pid); } catch { /* gone */ } } try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } };
 
-test('E1: the run closes right after a task that wrote a note: its job runs to its end first, and no child survives shutdown()', async () => {
+test('E1: the run closes right after a task that wrote a note: its job runs to its end first, and no child survives shutdown()', async (tcx) => {
   const d = sandbox();
   const { core, events } = build();
   const m = manager(core, d);
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()).catch(() => {}));
   const pids = [];
   try {
     await m.spawn({ substrate: 'claude-code', worktree: `${d}/wt`, prompt: 'do it', worker_id: 'w1', task_id: 't1' });
@@ -64,10 +65,11 @@ test('E1: the run closes right after a task that wrote a note: its job runs to i
   } finally { cleanup(d, pids); }
 });
 
-test('E2: the manager wires queuesFirst, the closing flag and _killSurvivor', async () => {
+test('E2: the manager wires queuesFirst, the closing flag and _killSurvivor', async (tcx) => {
   const d = sandbox();
   const { core } = build();
   const m = manager(core, d);
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()).catch(() => {}));
   const pids = [];
   try {
     await m.spawn({ substrate: 'claude-code', worktree: `${d}/wt`, prompt: 'x', worker_id: 'w1', task_id: 't1' });
