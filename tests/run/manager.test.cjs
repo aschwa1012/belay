@@ -342,7 +342,7 @@ test('list reports the in-memory view and shutdown stops every worker and the ow
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core);
-  tcx.after(() => Promise.resolve().then(() => m.shutdown()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()));
   try {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'wa' });
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'wb' });
