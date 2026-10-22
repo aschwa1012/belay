@@ -20,6 +20,16 @@ const { release } = require('../../src/cli/cmd-memory-stages.cjs');
 const CHILD = path.join(__dirname, 'fixtures', 'owner-client.cjs');
 const lockOf = (dir) => path.join(dir, 'owner.lock');
 const op = (dir, pid = process.pid) => openCore({ dataDir: dir, caller: { role: 'operator', run_id: 'test-run', pid }, embed: false });
+// Every Core a helper opens is registered at once, so a helper whose own assertion fails after the open, or a test that fails
+// before its finish(), still gets the owner shut down when the file ends (finish() on a closed Core is a no-op).
+const opened = new Set();
+test.after(async () => {
+  for (const c of opened) {
+    try { if (c.isOwner()) await c.shutdownOwner(); } catch { /* best effort */ }
+    try { await c.close(); } catch { /* best effort */ }
+  }
+  opened.clear();
+});
 // A wait that fails the test instead of hanging it.
 const within = (p, ms, what) => { let t; return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => rej(new Error(`timed out waiting for ${what}`)), ms); })]).finally(() => clearTimeout(t)); };
 
@@ -27,6 +37,7 @@ const within = (p, ms, what) => { let t; return Promise.race([p, new Promise((_,
 async function elected() {
   const dir = sandbox();
   const rc = await op(dir);
+  opened.add(rc);
   await rc.becomeOwner();
   assert.ok(rc.isOwner());
   return { dir, rc };
@@ -34,6 +45,7 @@ async function elected() {
 // A client in this process: a read that the owner's pipe answers, so it holds an open connection.
 async function inProcessClient(dir, pid) {
   const y = await op(dir, pid);
+  opened.add(y);
   await y.worker.list({});
   assert.ok(y.client && y.client.connected, 'the client holds a connection');
   return y;
