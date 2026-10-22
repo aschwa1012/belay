@@ -188,7 +188,7 @@ test('without --run the newest ENDED run with notes on is used; a live run is re
     const { Engine } = require('../../src/core/engine.cjs');
     const { callerFor } = require('../core/helpers.cjs');
     const s2 = new Store(`${T.dir}/memory.db`, { stamp: true });
-    tcx.after(() => Promise.resolve().then(() => s2.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => s2.db.isOpen !== false && s2.close()));
     const E = new Engine({ dataDir: T.dir, store: s2, getEmbedder: null, owner: null, establishedBy: 'test' });
     await E.handle('run.end', { caller: callerFor('operator', { run_id: 'lc-apply' }), exit_reason: 'done' });
     s2.close();
