@@ -110,7 +110,7 @@ test('embedder: the owner finds a stored row by a text query', async t => {
     assert.strictEqual(info.dim, 1024);
     assert.strictEqual(info.canary_vector, undefined, 'stats does not carry the 1024-float canary');
   } finally {
-    if (c) { await c.shutdownOwner(); await c.close(); }
+    if (c) { await c.shutdownOwner().catch(() => {}); await c.close().catch(() => {}); } // each step on its own; never masks the body's failure
     cleanup(dir);
   }
 });
@@ -148,7 +148,7 @@ test('embedder: a canary vector with cosine below 0.9999 is E_MODEL_CHANGED nami
     assert.strictEqual(row.action, 'inserted', 'a caller-supplied vector needs no model');
     assert.strictEqual((await c.memory.stats({})).owner.embedder_error.code, 'E_MODEL_CHANGED', 'stats says why the store cannot embed');
   } finally {
-    if (c) { await c.shutdownOwner(); await c.close(); }
+    if (c) { await c.shutdownOwner().catch(() => {}); await c.close().catch(() => {}); } // each step on its own; never masks the body's failure
     cleanup(dir);
   }
 });
@@ -172,7 +172,7 @@ test('embedder: a store recorded with another model id is E_MODEL_CHANGED withou
     c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: true });
     await assert.rejects(c.memory.store({ text: 'x' }), x => x.code === 'E_MODEL_CHANGED' && x.message.includes('someone/else-model'));
   } finally {
-    if (c) { await c.shutdownOwner(); await c.close(); }
+    if (c) { await c.shutdownOwner().catch(() => {}); await c.close().catch(() => {}); } // each step on its own; never masks the body's failure
     cleanup(dir);
   }
 });
@@ -195,7 +195,7 @@ test('embedder: an older MiniLM store with only canary_sha256 adopts the canary 
     assert.strictEqual(meta.embedding_sha, MINILM.sha, 'the legacy shape adopts the full identity, in one transaction (review 1, M2)');
     assert.strictEqual(meta.embedding_library.length > 0, true);
   } finally {
-    if (c) { await c.shutdownOwner(); await c.close(); }
+    if (c) { await c.shutdownOwner().catch(() => {}); await c.close().catch(() => {}); } // each step on its own; never masks the body's failure
     cleanup(dir);
   }
   // The same store opened with a different model is refused.
@@ -274,7 +274,7 @@ test('an absent model or package fails the calls that need a vector, and only th
     const row = await c.memory.store({ text: 'caller supplied', embedding: [1, 0], embedding_model: 'm', dim: 2 });
     assert.strictEqual(row.action, 'inserted');
   } finally {
-    if (c) { await c.shutdownOwner(); await c.close(); }
+    if (c) { await c.shutdownOwner().catch(() => {}); await c.close().catch(() => {}); } // each step on its own; never masks the body's failure
     cleanup(dir);
   }
 });
