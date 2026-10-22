@@ -111,6 +111,8 @@ const METHODS = {
   'memory.held': { roles: ALL, kind: 'read', fn: lazy('./notes-held.cjs', 'held') },
   // The operator's own settlement of a held note (`belay memory held settle`): archive, release (reports settled, note not verified) or re-offer. The explicit operator only.
   'memory.heldSettle': { roles: ['operator'], kind: 'write', fn: lazy('./methods-memory-held-settle.cjs', 'heldSettle') },
+  // A report that a note is wrong, by the operator (`belay memory report`) or the orchestrator (`memory_report`): marked on the note and held for the archive review in one transaction, as a worker's report is. Never a worker.
+  'memory.noteReport': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-note-report.cjs', 'noteReport') },
   // `belay memory embed --reembed`: which notes have a vector made from another template, and which of those can be rebuilt (a read).
   'memory.retemplate': { roles: ['operator'], kind: 'read', fn: lazy('./notes-unembedded.cjs', 'retemplate') },
   // The project's most used note subjects, for the hand-back question to offer a worker (a read; the run manager asks at spawn).
