@@ -121,7 +121,7 @@ function commit(E, caller, prep, { task_id }) {
     const replacedBy = m ? (mine.state === 'stored' || mine.state === 'pending' ? mine.id : null) : w.replaced_by;
     // The note is held at once, in this transaction, for the archive review (the report itself keeps the worker's identity).
     const out = require('./note-report-in.cjs').reportIn(E, caller, { note: w.id, project: prep.project, by, worker_id: caller.worker_id, task_id, run_id: caller.run_id, why: w.why, replaced_by: replacedBy, threshold: prep.lv.notes_match_threshold, headSha: require('./note-report-verdicts.cjs').headOf(E, task_id), refused: 'so the release is refused' });
-    return { id: w.id, marked: 'reported_wrong', reports: out.reports, replaced_by: replacedBy, ...(w.redacted ? { redacted: w.redacted } : {}), held: out.held };
+    return { id: w.id, marked: 'reported_wrong', reports: out.reports, withheld: out.withheld, withheld_why: out.withheld_why, replaced_by: replacedBy, ...(w.redacted ? { redacted: w.redacted } : {}), held: out.held };
   });
   const pending = items.filter(i => i.state === 'pending').length;
   return {

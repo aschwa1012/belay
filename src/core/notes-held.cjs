@@ -50,6 +50,24 @@ function count(store) {
   return { total, unsupported, by_project, unsupported_by_project, by_ground, by_ground_by_project, awaiting_operator, awaiting_by_project, age_by_project, oldest_age_runs: age, oldest_at: oldest, newest_at: newest };
 }
 
+// Runs whose reports hit the circuit breaker (ADR 0047 amendment, decision 9): an active reported hold with a report of the run that does not
+// withhold. `disputed` is the distinct notes of the project the run's reports hold now. A read of the rows, newest first.
+function breakers(store) {
+  const by = new Map();
+  try {
+    for (const r of store.p(`SELECT substr(h.namespace, 6) AS p, h.created_at AS at, json_extract(h.body, '$.note_id') AS nid, json_extract(r.value, '$.run_id') AS run,
+        json_extract(r.value, '$.withhold') AS w, json_extract(r.value, '$.breaker.limit') AS lim FROM memory_entries h, json_each(h.body, '$.reports') r
+      WHERE ${ACTIVE} AND json_extract(h.body, '$.ground') = 'reported' AND json_extract(r.value, '$.run_id') IS NOT NULL AND json_extract(r.value, '$.by') <> 'operator'`).all()) {
+      const k = `${r.p}|${r.run}`;
+      const e = by.get(k) || { run_id: r.run, project: r.p, notes: new Set(), tripped: false, limit: null, at: 0 };
+      e.notes.add(r.nid);
+      if (r.w === 0) { e.tripped = true; e.at = Math.max(e.at, Number(r.at) || 0); if (r.lim != null) e.limit = Number(r.lim); }
+      by.set(k, e);
+    }
+  } catch { return []; }
+  return [...by.values()].filter((e) => e.tripped).sort((a, b) => b.at - a.at).map((e) => ({ run_id: e.run_id, project: e.project, disputed: e.notes.size, limit: e.limit, at: e.at }));
+}
+
 // One entry per active hold, oldest first, at most ENTRIES_MAX: what `belay memory held` lists. `projects` limits the projects read (null: every one); `awaiting`
 // keeps the holds waiting on the operator. A read of the copy.
 function entries(store, { projects = null, awaiting = false } = {}) {
@@ -161,7 +179,7 @@ async function held(E, caller, args = {}) {
   const scoped = project ? { awaiting_operator: c.awaiting_by_project[project] || 0, by_ground: c.by_ground_by_project[project] || {}, total: c.by_project[project] || 0, unsupported: c.unsupported_by_project[project] || 0, unsupported_by_project: c.unsupported_by_project[project] ? { [project]: c.unsupported_by_project[project] } : {}, by_project: c.by_project[project] ? { [project]: c.by_project[project] } : {}, oldest_age_runs: c.age_by_project[project] || 0, oldest_at: c.oldest_at, newest_at: c.newest_at } : c;
   // One call (one copy of the store) answers notices: the counts, the unjudged reports and the archive reviews' claims.
   const reviews = args.reviews ? (await require('./review-claim.cjs').reviewState(E, caller, project ? { project } : {})).reviews : undefined;
-  return { ...scoped, ...(listing ? listing : {}), ...(reviews ? { reviews } : {}), ...(args.reports ? { unjudged_reports: unjudged(E.store).filter((r) => !project || r.project === project), stranded: stranded(E.store, project) } : {}) };
+  return { ...scoped, ...(listing ? listing : {}), ...(reviews ? { reviews } : {}), ...(args.reports ? { breakers: breakers(E.store).filter((b) => !project || b.project === project), unjudged_reports: unjudged(E.store).filter((r) => !project || r.project === project), stranded: stranded(E.store, project) } : {}) };
 }
 
-module.exports = { count, entries, unjudged, stranded, held };
+module.exports = { count, breakers, entries, unjudged, stranded, held };

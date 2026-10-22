@@ -10,6 +10,7 @@ const { Store } = core('store.cjs');
 const { Engine } = core('engine.cjs');
 const IX = core('memory-index.cjs');
 const N = core('memory-index-notes.cjs');
+const rows = core('rows.cjs');
 const L = core('memory-levers.cjs');
 
 let dir, store, E;
@@ -32,7 +33,15 @@ after(() => { store.close(); cleanup(dir); });
 
 // Each test has its own project namespace so notes never leak between cases; a run is pointed at it by `namespaces`.
 let ns = 0;
-const fresh = () => `project/acme-n${++ns}`;
+// A notes run reaches only its levers' project (ADR 0047 amendment of 2026-10-22), so each case points the runs at its own project: their run rows are re-written with it.
+const fresh = () => {
+  const name = `acme-n${++ns}`;
+  for (const id of Object.values(RUNS)) {
+    const cur = rows.current(store, 'run', id);
+    store.p('UPDATE run SET project = ?, memory_levers = ? WHERE id = ? AND seq = ?').run(name, JSON.stringify({ ...JSON.parse(cur.memory_levers), project: name }), id, cur.seq);
+  }
+  return `project/${name}`;
+};
 function note(space, title, over = {}) {
   const { applies_to = [], subjects = [], kind = 'lesson', basis = 'observed', evidence = [{ where: 'src/x.js', saw: 'saw it' }], reported_wrong = [], seen_total = 0, created_at, status, state = 'live', ttl_at } = over;
   const r = store.storeIn({

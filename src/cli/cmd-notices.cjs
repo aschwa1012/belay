@@ -20,6 +20,7 @@
 //   scrub_dropped       items a scrub child gave no entry in two scrubs: named here, and not offered again until a new report, sighting or nomination
 //   scrub_failed        a run-close scrub or archive review that failed, with its code
 //   notes_held          notes held for the on-demand Opus archive reviewer (a hold of any kind): `count` (every queued note), `unsupported` (the part with no warning), `by_project`, `oldest_age_runs`, `oldest_at` (when the oldest hold was marked), the command that dispatches it
+//   run_disputed        a run whose reports hit the circuit breaker (it disputed more notes than its limit): the run, project, `disputed` and `limit`; "run <id> disputed N notes; review before trusting"
 //   reports_unjudged    reports that a note is wrong with no verdict applied (the review or job may have run and left it out; a verdict applied is the only way off the list): listed for the operator
 //   notes_stranded      notes with an unsettled open scrub proposal or pending after their run ended (`count` is distinct notes): `count`, `open_proposals`, `pending`, `by_project`, `note_ids`
 //   review_running     an archive review of a project holds its claim (memory.reviewState): the pid, the job, the claim, and whether a pid check
@@ -207,6 +208,11 @@ function heldEvents(h, runId) {
   return [{ kind: 'notes_held', ts: num(h.newest_at), run_id: runId, count: h.total, unsupported: h.unsupported || 0, by_project: h.by_project || {}, by_ground: h.by_ground || {}, awaiting_operator: h.awaiting_operator || 0, oldest_age_runs: h.oldest_age_runs || 0, oldest_at: num(h.oldest_at), command: 'belay memory review', source: 'memory_entries rows of type held, state held' }];
 }
 
+// A run whose reports tripped the circuit breaker (notes-held.cjs `breakers`): one event per run and project while its holds stand.
+function breakerEvents(list, runId) {
+  return (list || []).map((b) => ({ kind: 'run_disputed', ts: num(b.at), run_id: runId, disputed_run: b.run_id, project: b.project, disputed: b.disputed, limit: b.limit ?? null, command: 'belay memory review', source: 'held rows with a report the breaker did not withhold' }));
+}
+
 // The archive reviews (memory.reviewState, a plain read of the claim receipts): one event per project while its newest review runs, and
 // for REVIEW_SHOWN_MS after one ended. `pid_alive` is a pid check (not an identity proof); the launcher and the next review prove identity.
 const REVIEW_SHOWN_MS = 24 * 3600 * 1000;
@@ -286,6 +292,8 @@ function summaryOf(e) {
     case 'review_ended':
       if (e.ok && reviewOutcome(e.text)) return `archive review of ${P.v(e.project, 64)} done: ${reviewOutcome(e.text)}${e.job ? `, job ${P.v(e.job, 80)}` : ''}`;
       return `archive review of ${P.v(e.project, 64)} ${e.ok ? 'ended ok' : `FAILED ${P.v(e.code, 40)}`}${e.text ? `: ${P.v(e.text, 240)}` : ''}`;
+    case 'run_disputed':
+      return `${id('run', e.disputed_run)} disputed ${e.disputed} note${e.disputed === 1 ? '' : 's'}; review before trusting (project ${P.v(e.project, 64)}, over its limit of ${e.limit ?? 'n/a'}): see belay memory review`;
     case 'reports_unjudged':
       return `${e.count} report${e.count === 1 ? '' : 's'} that a note is wrong with no verdict applied (${(e.note_ids || []).slice(0, 5).map((x) => P.v(x, 40)).join(', ')}): see belay memory proposals`;
     case 'notes_stranded':
@@ -322,7 +330,7 @@ async function run(ctx) {
     const reviews = heldNotes && heldNotes.reviews ? { reviews: heldNotes.reviews } : null;
     if (!chosen) {
       if (!parsed.runId) {
-        const events = ordered([...unembeddedEvents(unembedded, null), ...heldEvents(heldNotes, null), ...reviewEvents(reviews, null), ...unjudgedEvents(heldNotes && heldNotes.unjudged_reports, null), ...strandedEvents(heldNotes && heldNotes.stranded, null)], parsed.since);
+        const events = ordered([...unembeddedEvents(unembedded, null), ...heldEvents(heldNotes, null), ...breakerEvents(heldNotes && heldNotes.breakers, null), ...reviewEvents(reviews, null), ...unjudgedEvents(heldNotes && heldNotes.unjudged_reports, null), ...strandedEvents(heldNotes && heldNotes.stranded, null)], parsed.since);
         const empty = { run_id: null, run_id_source: source, since: parsed.since, stall_ms: parsed.stallMs, events, count: events.length };
         return { code: 0, text: renderText(events), json: empty };
       }
@@ -341,6 +349,7 @@ async function run(ctx) {
       ...stageEvents(ledger, chosen.id),
       ...unembeddedEvents(unembedded, chosen.id),
       ...heldEvents(heldNotes, chosen.id),
+      ...breakerEvents(heldNotes && heldNotes.breakers, chosen.id),
       ...reviewEvents(reviews, chosen.id),
       ...unjudgedEvents(heldNotes && heldNotes.unjudged_reports, chosen.id),
       ...strandedEvents(heldNotes && heldNotes.stranded, chosen.id),
@@ -359,4 +368,4 @@ async function run(ctx) {
   }
 }
 
-module.exports = { run, heldEvents, reviewEvents, unjudgedEvents, strandedEvents, stageEvents, wrapupEvents, verdictEvents, runEvents, ordered, workerEvents, stallAge, renderText };
+module.exports = { run, heldEvents, breakerEvents, reviewEvents, unjudgedEvents, strandedEvents, stageEvents, wrapupEvents, verdictEvents, runEvents, ordered, workerEvents, stallAge, renderText };

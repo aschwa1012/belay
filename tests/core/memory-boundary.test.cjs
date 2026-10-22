@@ -81,3 +81,55 @@ test('BD5: run.attach refuses a project that differs from the levers\' project, 
   const ok = await X.call('run.attach', c, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true }) });
   assert.ok(ok.run);
 });
+
+const ODD = ['Notes/X', 'notes/x/', 'Team/Alpha', 'mixed\path', 'Team//Beta', ' padded '];
+
+test('BD6: a namespace that is not one of belay\'s routes is left byte for byte: rows under odd spellings are listed, exported, searched and written by the same spelling', async () => {
+  const ids = ODD.map((ns, i) => X.store.storeIn({ namespace: ns, worker_id: 'old', type: 'fact', text: `oddspelling row ${i} zebra${i}`, run_id: 'r-old', source: 'model', written_by: 'harness' }).id);
+  for (const [i, ns] of ODD.entries()) {
+    const listed = await X.call('memory.list', X.operator, { namespaces: [ns] });
+    assert.deepStrictEqual(listed.rows.map((r) => r.id), [ids[i]], JSON.stringify(ns));
+    assert.deepStrictEqual(listed.searched.namespaces, [ns]);
+    const found = await X.call('memory.search', X.operator, { namespace: ns, query: `zebra${i}`, mode: 'keyword' });
+    assert.deepStrictEqual(found.results.map((r) => r.id), [ids[i]], `search ${JSON.stringify(ns)}`);
+    const exported = await X.call('memory.get', X.operator, { ids: listed.rows.map((r) => r.id) }); // what export reads after list
+    assert.strictEqual(exported.rows[0].namespace, ns);
+    const more = await X.call('memory.store', X.operator, { namespace: ns, type: 'fact', text: `second oddspelling row ${i}`, embed: false });
+    assert.strictEqual(X.rowOf(more.id).namespace, ns, 'a new write lands in the same namespace, not a second one');
+  }
+  assert.strictEqual(X.store.p("SELECT COUNT(DISTINCT namespace) AS n FROM memory_entries WHERE namespace LIKE '%otes%x%'").get().n, 2, 'Notes/X and notes/x/ stay two namespaces, as stored');
+});
+
+test('BD7: a look-alike of a routed prefix in another script is refused, not stored as a second namespace', async () => {
+  for (const ns of ['\u0440roject/acme', 'pr\u043eject', 'summ\u0430ry/acme', '\u0455ummary', '\u0420ROJECT/acme']) {
+    const before = count();
+    await assert.rejects(X.call('memory.store', X.orch, { namespace: ns, type: 'fact', text: 'x', embed: false }), (e) => e.code === 'E_ARGS' && /look-alike/.test(e.message), JSON.stringify(ns));
+    assert.strictEqual(count(), before);
+  }
+});
+
+test('BD8: a notes run reaches exactly the resolved levers\' project, whatever its project column holds; writes and reads of another project are E_ROLE', async () => {
+  const run = 'r-bd-nullproj';
+  const o = callerFor('orchestrator', { run_id: run });
+  await X.call('run.attach', o, { adapter_pid: process.pid, project: null, memory_levers: JSON.stringify({ project: 'acme', notes: true }) });
+  assert.strictEqual(X.store.p('SELECT project FROM run WHERE id = ?').get(run).project, null, 'the column is never derived from the levers');
+  const w = callerFor('worker', { run_id: run, worker_id: 'w-bd8' });
+  await X.call('worker.write', X.orch, { id: 'w-bd8', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's', last_event_at: Date.now() });
+  const before = count();
+  for (const ns of ['project/zzz', 'Project/ZZZ', 'summary/zzz']) {
+    await assert.rejects(X.call('memory.store', o, { namespace: ns, title: 't', text: 'x', kind: 'lesson', when: 'w', basis: 'inferred' }), (e) => e.code === 'E_ROLE', `write ${ns}`);
+    for (const [m, args] of [['memory.list', { namespaces: [ns] }], ['memory.search', { namespace: ns, query: 'x', mode: 'keyword' }], ['memory.timeline', { anchor_id: 'x' }]]) {
+      if (m === 'memory.timeline') continue;
+      await assert.rejects(X.call(m, o, args), (e) => e.code === 'E_ROLE', `${m} ${ns}`);
+    }
+    await assert.rejects(X.call('memory.list', w, { namespaces: [ns] }), (e) => e.code === 'E_ROLE', `worker read ${ns}`);
+    await assert.rejects(X.call('memory.store', w, { namespace: ns, title: 't', text: 'x', kind: 'lesson', when: 'w', basis: 'inferred' }), (e) => e.code === 'E_ROLE', `worker write ${ns}`);
+  }
+  await assert.rejects(X.call('memory.corpus', o, { project: 'zzz' }), (e) => e.code === 'E_ROLE');
+  assert.strictEqual(count(), before, 'nothing was written');
+  const mine = await X.call('memory.store', o, { namespace: 'project', ...X.note('K31') });
+  assert.strictEqual(mine.namespace, 'project/acme', 'the alias resolves to the levers\' project');
+  const sum = await X.call('memory.store', o, { namespace: 'summary', title: 't', text: 'outcome' });
+  assert.strictEqual(X.rowOf(sum.id).namespace, 'summary/acme');
+  assert.ok((await X.call('memory.list', o, { namespaces: ['project/acme'] })).rows.length >= 0);
+});

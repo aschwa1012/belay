@@ -157,7 +157,7 @@ function reportByReview(E, caller, route, v, n) {
       return b;
     });
     const ev = recordEventSync(E, caller, { kind: 'note_review', ok: true, run_id: caller.run_id || n.run_id, worker_id: route.reviewer, task_id: n.task_id, key, row_ids: [n.id], newest_row_id: n.id, message: `refuted: reported and held (row ${rep.held.row}); ${v.reason}`.slice(0, 300) });
-    return { id: n.id, verdict: 'refuted', applied: true, reported: { seq: rep.report.seq }, held_row: rep.held.row, status: n.status || 'unverified', event_id: ev.id };
+    return { id: n.id, verdict: 'refuted', applied: true, reported: { seq: rep.report.seq }, withheld: rep.withheld, withheld_why: rep.withheld_why, held_row: rep.held.row, status: n.status || 'unverified', event_id: ev.id };
   });
 }
 
