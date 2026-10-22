@@ -17,6 +17,7 @@ const { ftsReady } = require('./memory-schema.cjs');
 const { scanCeiling } = require('./schema.cjs');
 const { toUnitF32 } = require('./store.cjs');
 const gate = require('./memory-note-gate.cjs');
+const W = require('./memory-withhold.cjs');
 const { notesDefaults } = require('./memory-search-scope.cjs');
 const { nsFor, resolveNamespace, runAlpha, withEmbedding, reachOf, checkReach, runEmbedderMode } = require('./methods-memory.cjs');
 
@@ -385,6 +386,9 @@ async function timeline(E, caller, args) {
   };
 }
 
+// The honest answer for a note that exists but is held on a report and withheld from this reader (ADR 0047 amendment, 2026-10-22).
+const withheldAnswer = (id) => ({ id, found: false, withheld: true, note: 'this note exists but is held for review after a report that it is wrong, and is withheld from workers until the review settles it' });
+
 async function getMany(E, caller, args) {
   const ids = args.ids;
   if (!Array.isArray(ids) || !ids.length || ids.length > ID_MAX || ids.some(x => typeof x !== 'string' || !x)) {
@@ -394,12 +398,14 @@ async function getMany(E, caller, args) {
   const reach = reachOf(E, caller);
   const rows = rowsByIds(E, [...new Set(ids)]);
   const out = [], missing = [];
+  const held = W.withheldAmong(E, caller, [...rows.values()].filter(r => readable(caller, reach, r)));
   for (const id of ids) {
     const r = rows.has(id) && readable(caller, reach, rows.get(id)) ? rows.get(id) : null;
-    if (r) out.push({ ...viewRow(r, view), found: true });
+    if (r && held.has(id)) { out.push(withheldAnswer(id)); if (!missing.includes(id)) missing.push(id); }
+    else if (r) out.push({ ...viewRow(r, view), found: true });
     else { out.push({ id, found: false }); if (!missing.includes(id)) missing.push(id); }
   }
-  return { rows: out, found: out.filter(r => r.found).length, missing };
+  return { rows: out, found: out.filter(r => r.found).length, missing, ...(held.size ? { withheld: [...held] } : {}) };
 }
 
 async function get(E, caller, args) {
@@ -409,6 +415,7 @@ async function get(E, caller, args) {
   // A read: a plain SELECT, so invariant 6 holds (retrieve() would stamp accessed_at).
   const got = E.store.db.prepare('SELECT * FROM memory_entries WHERE id = ?').get(args.id);
   const r = got && readable(caller, reachOf(E, caller), got) ? got : null;
+  if (r && W.withheldAmong(E, caller, [r]).size) return withheldAnswer(args.id);
   return r ? { ...viewRow(r, view), found: true } : { id: args.id, found: false };
 }
 
