@@ -24,7 +24,6 @@ const { DEFAULTS } = require('./memory-levers.cjs');
 const { loadNote } = require('./memory-facts.cjs');
 const { redact } = require('./redact.cjs');
 
-const WRONG_KEEP = 20;
 
 // The run's levers when `notes` is on, else null. A read of the caller's own run row.
 function notesLevers(E, caller) {
@@ -107,7 +106,6 @@ function commit(E, caller, prep, { task_id }) {
   const t = Date.now();
   const by = E.memoryWriter(caller);
   const items = NW.commitNotes(E, caller, prep, { task_id });
-  const RH = require('./memory-report-hold.cjs');
   const marked = prep.wrong.map(w => {
     // The target is read again here, in the transaction: preparation awaited an embedding and a diff, and the note may have been archived,
     // resolved, moved or purged meanwhile (and the reflection turn's second release comes through here too). A note that is no longer live in the
@@ -120,20 +118,9 @@ function commit(E, caller, prep, { task_id }) {
     // notes[i] names the row this call wrote; a duplicate is somebody else's row (or not a note), so it is never a replacement.
     const mine = m ? items[Number(m[1])] : null;
     const replacedBy = m ? (mine.state === 'stored' || mine.state === 'pending' ? mine.id : null) : w.replaced_by;
-    // One report per writer per note, so a writer's repeat replaces its own and never pushes out another writer's. Each report gets the next
-    // number of the note's counter, which is its key.
-    let report = null;
-    const next = E.store.patchBody(w.id, b => {
-      const seq = (Number(b.report_seq) || 0) + 1;
-      b.report_seq = seq;
-      report = { by, worker_id: caller.worker_id, task_id, run_id: caller.run_id, why: w.why, replaced_by: replacedBy, at: t, seq };
-      b.reported_wrong = [...(b.reported_wrong || []).filter(x => x.by !== by), report].slice(-WRONG_KEEP);
-      return fitBody(b, report, w.id);
-    });
-    if (!next.reported_wrong.includes(report) && !next.reported_wrong.some(x => x.seq === report.seq)) throw err('E_NOTE_SHAPE', `the report on note ${w.id} could not be kept on it, so the release is refused`, { id: w.id });
     // The note is held at once, in this transaction, for the archive review (the report itself keeps the worker's identity).
-    const held = RH.holdReported(E, caller, { project: prep.project, runId: caller.run_id, threshold: prep.lv.notes_match_threshold, headSha: require('./note-report-verdicts.cjs').headOf(E, task_id) }, loadNote(E, w.id), report);
-    return { id: w.id, marked: 'reported_wrong', reports: next.reported_wrong.length, replaced_by: replacedBy, ...(w.redacted ? { redacted: w.redacted } : {}), held };
+    const out = require('./note-report-in.cjs').reportIn(E, caller, { note: w.id, project: prep.project, by, worker_id: caller.worker_id, task_id, run_id: caller.run_id, why: w.why, replaced_by: replacedBy, threshold: prep.lv.notes_match_threshold, headSha: require('./note-report-verdicts.cjs').headOf(E, task_id), refused: 'so the release is refused' });
+    return { id: w.id, marked: 'reported_wrong', reports: out.reports, replaced_by: replacedBy, ...(w.redacted ? { redacted: w.redacted } : {}), held: out.held };
   });
   const pending = items.filter(i => i.state === 'pending').length;
   return {

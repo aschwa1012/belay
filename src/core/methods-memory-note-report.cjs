@@ -21,7 +21,6 @@ const { validId } = require('./memory-rows.cjs');
 const { redact } = require('./redact.cjs');
 
 const WHY_MAX = 500;
-const WRONG_KEEP = 20;
 
 // Who is reporting: the role of the checked caller, nothing else, so one operator is one reporter. Returns null when the caller may not report.
 function reporterOf(caller) {
@@ -55,23 +54,12 @@ async function noteReport(E, caller, args) {
     threshold = lv.notes_match_threshold;
   }
 
-  const RH = require('./memory-report-hold.cjs');
+  const { reportIn } = require('./note-report-in.cjs');
   const out = E.store.tx(() => {
     // Read again inside the transaction: the note may have left the project since the first look.
     const live = loadNote(E, args.note_id);
     if (!live || live.type !== 'note' || live.namespace !== N.projectNs(project)) throw missing();
-    const t = Date.now();
-    let report = null;
-    const next = E.store.patchBody(live.id, (b) => {
-      const seq = (Number(b.report_seq) || 0) + 1;
-      b.report_seq = seq;
-      report = { by, worker_id: null, task_id: null, run_id: caller.run_id || null, why, replaced_by: rb, at: t, seq, ...(by === 'operator' && Number.isInteger(caller.peer_pid) ? { operator_pid: caller.peer_pid } : {}) };
-      b.reported_wrong = [...(b.reported_wrong || []).filter((x) => x.by !== by), report].slice(-WRONG_KEEP);
-      return N.fitBody(b, report, live.id);
-    });
-    if (!next.reported_wrong.some((x) => x.seq === report.seq)) throw err('E_NOTE_SHAPE', `the report on note ${live.id} could not be kept on it`, { id: live.id });
-    const held = RH.holdReported(E, caller, { project, runId: caller.run_id || null, threshold, headSha: null }, loadNote(E, live.id), report);
-    return { report, reports: next.reported_wrong.length, held };
+    return reportIn(E, caller, { note: live.id, project, by, run_id: caller.run_id || null, why, replaced_by: rb, threshold, headSha: null, extra: by === 'operator' && Number.isInteger(caller.peer_pid) ? { operator_pid: caller.peer_pid } : null });
   });
   E.noteWrite();
   const { report, held } = out;
