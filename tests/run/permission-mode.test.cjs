@@ -89,10 +89,12 @@ for (const [label, fakeMode, effective, degraded] of [
   });
 }
 
-test('the real core stores the three columns, which reach every store through the additive migrations, and a later write inherits them', async () => {
+test('the real core stores the three columns, which reach every store through the additive migrations, and a later write inherits them', async (tcx) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-perm-core-')).replace(/\\/g, '/');
   try {
     const o = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
+    tcx.after(() => Promise.resolve().then(() => o.shutdownOwner()));
+    tcx.after(() => Promise.resolve().then(() => o.close()));
     await o.run.attach({ adapter_pid: process.pid });
     const w = await o.worker.write({
       id: 'w1', substrate: 'claude-code', pid: process.pid, state: 'running',

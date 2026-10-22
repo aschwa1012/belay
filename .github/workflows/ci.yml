@@ -3,7 +3,12 @@ name: CI
 on:
   push:
     branches: [main]
+    # Changes under docs/ ship nothing and no test reads them.
+    paths-ignore:
+      - 'docs/**'
   pull_request:
+    paths-ignore:
+      - 'docs/**'
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -16,7 +21,7 @@ jobs:
   test:
     name: npm test (Windows)
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v5
 
@@ -31,5 +36,5 @@ jobs:
       - name: Test
         run: npm test
         env:
-          # A hosted runner is slower than a developer machine: give the main test phase an hour.
-          BELAY_TEST_PHASE1_TIMEOUT_MS: '3600000'
+          # A hosted runner is slower than a developer machine; a green run takes about 40 minutes in all.
+          BELAY_TEST_PHASE1_TIMEOUT_MS: '2700000'
