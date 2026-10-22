@@ -49,6 +49,10 @@ const DEFAULTS = Object.freeze({
   // Eval-only (0.3.2 memory eval), off by default; the run spec takes them as top-level keys, not inside `memory`.
   native_memory: null, // an absolute folder: every Claude Code worker of the run gets Claude Code's own auto-memory there (never the orchestrator)
   handback_question: false, // with notes off: the hand-back question, once, to the roles a notes contract would reach
+  // ADR 0047 amendment (2026-10-22): a note reported wrong is withheld from workers until it is reviewed; a run that disputes too many stops withholding.
+  held_visibility: 'withhold', // withhold | warn: warn shows a held note to a worker with its warning line, as before
+  held_breaker_count: 5, // the most notes one run's reports may withhold (bounded further by held_breaker_share)
+  held_breaker_share: 0.2, // ... or this share of the project's live notes, whichever is fewer
   notes_sink: 'off', // off | record | penalty: record writes a note_chance fact per delivered note at task end; penalty records the same, its rank shift is not built yet (the index has a no-op seam, memory-index-rank.cjs sinkFactor)
 });
 
@@ -58,6 +62,7 @@ const MODEL_RE = /^claude-(haiku|sonnet|opus)-5-5$/; // a Claude 5.5 model id: t
 const SUMMARIES = ['off', 'mechanical'];
 const SCRUB_ACTIONS = ['off', 'propose', 'apply'];
 const SINKS = ['off', 'record', 'penalty'];
+const HELD_VIS = ['withhold', 'warn'];
 const PROJECT_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const INDEX_BYTES_MAX = 4096; // ADR 0042 decision 2
 const BOTTLE_BYTES_MAX = 262144; // ADR 0042 decision 4
@@ -124,6 +129,9 @@ function parseMemoryBlock(block, opts = {}) {
   if (v.observations && !v.capture) return { error: 'memory.observations needs memory.capture' };
   if (v.project_writes && v.project === null) return { error: 'memory.project_writes needs memory.project' };
   // A project namespace outlives the run and is read by every later one, so it never takes unredacted text.
+  // ADR 0047 amendment (2026-10-22): a project write by a worker or the orchestrator is a note, so the two harness routes into the project that
+  // bypass the notes path (promotion at task end, the copy made when a run row is verified) cannot be on beside it. A stored row is read as written.
+  if (v.project_writes && v.notes && !opts.stored) return { error: 'memory.project_writes cannot be combined with memory.notes (on by default with a project): notes are the only project writes; set notes: false to keep project_writes' };
   if (v.project_writes && v.redact === false) {
     return { error: 'memory.redact false cannot be combined with memory.project_writes true: the project namespace outlives the run and must never hold unredacted text' };
   }
@@ -141,6 +149,9 @@ function parseMemoryBlock(block, opts = {}) {
   for (const k of ['scrub_model', 'archive_review_model']) if (typeof v[k] !== 'string' || !MODEL_RE.test(v[k])) return { error: `memory.${k} must be a Claude 5.5 model id (claude-haiku-5-5, claude-sonnet-5-5 or claude-opus-5-5)` };
   if (v.native_memory !== null && (typeof v.native_memory !== 'string' || !v.native_memory)) return { error: 'memory.native_memory must be null or an absolute directory path' };
   if (typeof v.handback_question !== 'boolean') return { error: 'memory.handback_question must be true or false' };
+  if (!HELD_VIS.includes(v.held_visibility)) return { error: `memory.held_visibility must be one of ${HELD_VIS.join(', ')}` };
+  if (!boundedInt(v.held_breaker_count, 500)) return { error: 'memory.held_breaker_count must be an integer from 1 to 500' };
+  if (typeof v.held_breaker_share !== 'number' || !(v.held_breaker_share > 0 && v.held_breaker_share <= 1)) return { error: 'memory.held_breaker_share must be a number above 0 and at most 1' };
   if (!SINKS.includes(v.notes_sink)) return { error: `memory.notes_sink must be one of ${SINKS.join(', ')}` };
   if (v.notes_sink !== 'off' && !v.notes) return { error: 'memory.notes_sink needs memory.notes' };
   if (v.summaries === 'mechanical' && !v.observations) return { error: 'memory.summaries "mechanical" needs memory.observations' };
@@ -172,6 +183,9 @@ const OVERRIDES = {
   scrub_max_items: { type: 'integer', min: 1, max: 500 },
   scrub_alarm_holds: { type: 'integer', min: 1, max: 500 },
   notes_sink: { type: 'enum', values: SINKS },
+  held_visibility: { type: 'enum', values: HELD_VIS },
+  held_breaker_count: { type: 'integer', min: 1, max: 500 },
+  held_breaker_share: { type: 'number', min: 0, max: 1, minExclusive: true },
   scrub_wall_s: { type: 'integer', min: 1, max: 3600 },
   review_wall_s: { type: 'integer', min: 1, max: 7200 },
   review_min_held: { type: 'integer', min: 1, max: 500 },

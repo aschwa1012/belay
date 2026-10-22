@@ -37,7 +37,7 @@ before(async () => {
   store = new Store(`${dir}/memory.db`, { stamp: true });
   const getEmbedder = async () => ({ embed: async () => unit(1, 0) });
   E = new Engine({ dataDir: dir, store, getEmbedder, owner: null, establishedBy: 'test' });
-  await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', project_writes: true }) });
+  await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', project_writes: true, notes: false }) });
   await call('run.attach', off, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme' }) });
   await call('run.attach', none, { adapter_pid: process.pid });
 });
@@ -90,7 +90,7 @@ test('a row whose text already exists in the project stays, and the answer names
 test('a project bound to another model refuses E_MODEL with an ok 0 event and the row stays', async () => {
   const other = 'r-pr-other';
   const oc = callerFor('orchestrator', { run_id: other });
-  await call('run.attach', oc, { adapter_pid: process.pid, project: 'bound', memory_levers: JSON.stringify({ project: 'bound', project_writes: true }) });
+  await call('run.attach', oc, { adapter_pid: process.pid, project: 'bound', memory_levers: JSON.stringify({ project: 'bound', project_writes: true, notes: false }) });
   await call('memory.store', oc, { namespace: 'project', text: 'bound to another model', embedding: [0, 1, 0], embedding_model: 'elsewhere', embedding_revision: 'r', dim: 3 });
   const r = store.store({ namespace: `run/${other}`, worker_id: 'w1', written_by: 'worker:w1', task_id: 't1', run_id: other, source: 'model', text: 'worker fact for the bound project', ...unit(0, 1) });
   const out = await call('memory.promote', Object.freeze({ ...oc, channel: 'harness' }), { ids: [r.id], to: 'project', task_id: 't1', worker_id: 'w1' });
