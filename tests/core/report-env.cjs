@@ -28,15 +28,17 @@ async function setup(RUN, levers = {}) {
   const head = git('rev-parse', 'HEAD').trim();
   const store = new Store(`${dir}/memory.db`, { stamp: true });
   // A deterministic seam on the embedder: while a stall is set, an embedding waits until the test releases it (preparation of a hand-back awaits it).
-  const seam = { gate: null, reached: null };
-  const stallingEmbed = async (text) => { if (seam.gate) { if (seam.reached) seam.reached(); await seam.gate; } return embed(text); };
+  const seam = { gate: null, reached: null, waiting: 0 };
+  const stallingEmbed = async (text) => { if (seam.gate) { seam.waiting += 1; if (seam.reached) seam.reached(); await seam.gate; } return embed(text); };
   const E = new Engine({ dataDir: dir, store, getEmbedder: async () => ({ embed: stallingEmbed }), owner: null, establishedBy: 'test' });
   const stall = () => {
     let release, reached;
     seam.gate = new Promise((r) => { release = r; });
     const hit = new Promise((r) => { reached = r; });
     seam.reached = reached;
-    return { reached: hit, release: () => { seam.gate = null; seam.reached = null; release(); } };
+    seam.waiting = 0;
+    // `waiting()` is how many embeddings are held at the gate now: a write that is queued behind another has not reached it.
+    return { reached: hit, waiting: () => seam.waiting, release: () => { seam.gate = null; seam.reached = null; release(); } };
   };
   const orch = callerFor('orchestrator', { run_id: RUN });
   const harness = callerFor('orchestrator', { run_id: RUN, channel: 'harness' });

@@ -90,21 +90,37 @@ test('S6: an orchestrator note has no task, is hidden from another run until run
   assert.ok(!('diff_error' in out.applies_to), 'no false diff_error');
 });
 
-test('S7: a store-note and a hand-back of one project run in order: the second sees the first as a match', async () => {
-  const s = await X.startTask('w-s7', 'a stream\n');
+const turn = () => new Promise((r) => setImmediate(r)); // every microtask has run: an embedding that could be reached, has been
+
+test('S7: two store-notes of one project run in order: the second waits for the first and then sees it as a match', async () => {
   const stall = X.stall();
   const first = store(X.orch, noteArgs('K7 alpha'));
   await stall.reached; // the first is inside its embedding
-  const second = X.call('lease.release', X.worker('w-s7'), { lease_id: s.lease, notes: [X.note('K7 beta')] });
-  let settled = false;
-  second.then(() => { settled = true; }, () => { settled = true; });
-  await Promise.resolve();
-  assert.strictEqual(settled, false, 'the second waits for the first');
+  const second = store(X.orch, noteArgs('K7 beta'));
+  await turn();
+  const waiting = stall.waiting();
   stall.release();
   const a = await first, b = await second;
+  assert.strictEqual(waiting, 1, 'the second is queued behind the first, not embedding beside it');
   assert.strictEqual(a.state, 'stored');
-  assert.strictEqual(b.notes[0].state, 'pending', 'the hand-back found the store-note');
-  assert.deepStrictEqual(b.notes[0].matches.map((m) => m.id), [a.id]);
+  assert.strictEqual(b.state, 'pending', 'the second found the first');
+  assert.deepStrictEqual(b.matches.map((m) => m.id), [a.id]);
+});
+
+test('S7b: a hand-back and a store-note of one project share the order: the store-note waits for the hand-back', async () => {
+  const s = await X.startTask('w-s7b', 'a stream\n');
+  const stall = X.stall();
+  const handBack = X.call('lease.release', X.worker('w-s7b'), { lease_id: s.lease, notes: [X.note('K8 alpha')] });
+  await stall.reached;
+  const second = store(X.orch, noteArgs('K8 beta'));
+  await turn();
+  const waiting = stall.waiting();
+  stall.release();
+  const h = await handBack, b = await second;
+  assert.strictEqual(waiting, 1, 'the store-note is queued behind the hand-back');
+  assert.strictEqual(h.notes[0].state, 'stored');
+  assert.strictEqual(b.state, 'pending');
+  assert.deepStrictEqual(b.matches.map((m) => m.id), [h.notes[0].id]);
 });
 
 test('S8: with notes off a project store is the ordinary row, and a note field is refused by name', async () => {

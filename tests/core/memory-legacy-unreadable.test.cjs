@@ -12,10 +12,13 @@ let X, Y;
 before(async () => {
   X = await setup('r-lg');
   Y = await setup('r-lg-off', { notes: false });
-  ids = [legacy(X, 'fact', 'legacyterm fact about the loader', 7, T0), legacy(X, 'episode', 'legacyterm episode of a run', 7, T0 + 1000), legacy(X, 'imported', 'legacyterm imported row', 7, T0 + 2000)];
+  // The legacy rows sit on axis 3 and the note on axis 7, so a semantic query on axis 3 ranks every legacy row above the note.
+  ids = [legacy(X, 'fact', 'legacyterm fact about the loader', 3, T0), legacy(X, 'episode', 'legacyterm episode of a run', 3, T0 + 1000), legacy(X, 'imported', 'legacyterm imported row', 3, T0 + 2000)];
   noteId = (await X.call('memory.store', X.orch, { namespace: 'project', ...X.note('K7') })).id;
   X.store.db.prepare('UPDATE memory_entries SET created_at = ? WHERE id = ?').run(T0 + 1500, noteId);
-  ids.push(legacy(Y, 'fact', 'legacyterm fact about the loader', 7, T0));
+  // More legacy rows than the semantic stage keeps (60 at least), all nearer the query than the note: only the scan's own exclusion lets the note through.
+  for (let i = 0; i < 65; i++) legacy(X, 'fact', `legacyterm bulk row ${i}`, 3, T0 - 10000 - i);
+  ids.push(legacy(Y, 'fact', 'legacyterm fact about the loader', 3, T0));
 });
 after(async () => { await X.cleanup(); await Y.cleanup(); });
 
@@ -38,8 +41,11 @@ test('LG1: search finds the note and none of the legacy rows, in keyword, semant
   await X.startTask('w-lg', 'a stream\n');
   const before = fileState(X);
   for (const [who, caller] of READERS()) {
+    // k 1 on axis 3: the legacy rows would fill the page if the scan did not leave them out, and the note would be missing
+    const sem = await X.call('memory.search', caller, { namespaces: ['project/acme'], query: 'legacyterm loader', mode: 'semantic', query_embedding: vec(3), embedding_model: 'fake', k: 1 });
+    assert.deepStrictEqual(sem.results.map((x) => x.id), [noteId], `${who} semantic k 1`);
     for (const mode of ['keyword', 'semantic', 'hybrid']) {
-      const r = await X.call('memory.search', caller, { namespaces: ['project/acme'], query: 'legacyterm loader', mode, query_embedding: vec(7), embedding_model: 'fake', k: 20 });
+      const r = await X.call('memory.search', caller, { namespaces: ['project/acme'], query: 'legacyterm loader episode imported', mode, query_embedding: vec(7), embedding_model: 'fake', k: 20 });
       const got = r.results.map((x) => x.id);
       for (const id of ids.slice(0, 3)) assert.ok(!got.includes(id), `${who} ${mode} must not see ${id}`);
       if (mode !== 'keyword') assert.ok(got.includes(noteId), `${who} ${mode} still finds the note`);
@@ -68,9 +74,11 @@ test('LG3: the operator reads every row, as before', async () => {
   for (const id of ids.slice(0, 3)) assert.ok(list.rows.some((r) => r.id === id), id);
   assert.strictEqual((await X.call('memory.get', X.operator, { id: ids[0] })).found, true);
   const tl = await X.call('memory.timeline', X.operator, { anchor_id: noteId, scope: 'namespace', before: 10, after: 10 });
-  assert.strictEqual([...tl.before, ...tl.after].length, 3);
-  const s = await X.call('memory.search', X.operator, { namespaces: ['project/acme'], query: 'legacyterm', mode: 'keyword' });
-  assert.strictEqual(s.results.filter((r) => ids.includes(r.id)).length, 3);
+  const around = [...tl.before, ...tl.after].map((r) => r.id);
+  for (const id of ids.slice(0, 3)) assert.ok(around.includes(id), `timeline neighbour ${id}`);
+  // 'legacyterm' is in most rows of the namespace, so the keyword stage leaves it out as uninformative; the words that tell the three rows apart are the query.
+  const s = await X.call('memory.search', X.operator, { namespaces: ['project/acme'], query: 'loader episode imported', mode: 'keyword', k: 100 });
+  for (const id of ids.slice(0, 3)) assert.ok(s.results.some((r) => r.id === id), `operator keyword search finds ${id}`);
 });
 
 test('LG4: a run with notes off reads its legacy rows as before', async () => {

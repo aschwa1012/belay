@@ -207,7 +207,7 @@ function parseSearch(E, caller, args) {
   // route returns instead (bodyLive, below), so rows_considered still counts a promoted or pending note.
   const gateSql = gate.sql(E, caller, { includeSuperseded: true, namespaces });
   return {
-    gate: gateSql, hidden: gateSql ? new Set(JSON.parse(gateSql.params[0])) : null, legacy: gate.legacyHidden(E, caller),
+    gate: gateSql, hidden: gateSql ? new Set(JSON.parse(gateSql.params[0])) : null,
     mode, view: enumArg('view', args.view, VIEWS, 'full'), order, alpha, filter, filterSql: fsql,
     k: intArg('k', args.k, DEFAULT_PAGE, 1, K_MAX), offset: intArg('offset', args.offset, 0, 0, OFFSET_MAX),
     namespaces,
@@ -303,7 +303,7 @@ async function search(E, caller, args) {
   let rows = null;
   if (o.gate) { // the gate's body clauses (a promoted note, a pending state) on the rows the page is built from
     rows = rowsByIds(E, ranked.map(h => h.id));
-    ranked = ranked.filter(h => rows.has(h.id) && gate.bodyLive(rows.get(h.id)) && !(o.legacy && gate.isLegacy(rows.get(h.id))));
+    ranked = ranked.filter(h => rows.has(h.id) && gate.bodyLive(rows.get(h.id))); // (the project's legacy rows never get here: the keyword WHERE and the semantic scan leave them out)
   }
   let pool = ranked;
   if (o.order !== 'score') {
