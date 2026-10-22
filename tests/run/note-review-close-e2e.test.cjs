@@ -46,7 +46,7 @@ test('E1: the run closes right after a task that wrote a note: its job runs to i
   const d = sandbox();
   const { core, events } = build();
   const m = manager(core, d);
-  tcx.after(() => Promise.resolve().then(() => m.shutdown()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()));
   const pids = [];
   try {
     await m.spawn({ substrate: 'claude-code', worktree: `${d}/wt`, prompt: 'do it', worker_id: 'w1', task_id: 't1' });
@@ -69,7 +69,7 @@ test('E2: the manager wires queuesFirst, the closing flag and _killSurvivor', as
   const d = sandbox();
   const { core } = build();
   const m = manager(core, d);
-  tcx.after(() => Promise.resolve().then(() => m.shutdown()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()));
   const pids = [];
   try {
     await m.spawn({ substrate: 'claude-code', worktree: `${d}/wt`, prompt: 'x', worker_id: 'w1', task_id: 't1' });
