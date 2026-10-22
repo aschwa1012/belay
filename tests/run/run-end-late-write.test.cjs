@@ -11,6 +11,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { core, sandbox, cleanup, callerFor } = require('../core/helpers.cjs');
+const { teardown } = require('../helpers/teardown.cjs');
 const { openCore } = core('index.cjs');
 const { memoryRunEnd } = require('../../src/cli/run-memory-end.cjs');
 const MJ = require('../../src/run/memory-jobs.cjs');
@@ -23,18 +24,31 @@ const leversFor = (notes) => (notes ? { ...BASE, notes: true, project: 'p' } : B
 
 // `belay run`'s core is the owner; a done task and its dead worker give the run-end jobs something to write. With notes on, an
 // ended review task gives the sweep a hand-back to apply.
+// Every owner, core and directory registers its teardown right after it is created; a setup that fails midway tears down what it made.
 async function setup(notes) {
+  const steps = [];
+  try { return await setupInner(notes, steps); } catch (e) { await teardown(e === undefined ? new Error('undefined was thrown') : e, steps.slice().reverse()); throw e; }
+}
+async function setupInner(notes, steps) {
   const dir = sandbox();
+  steps.push(() => cleanup(dir));
   const op = await openCore({ dataDir: dir, caller: { role: 'operator', run_id: RUN, pid: process.pid }, embed: false });
+  steps.push(() => op.close());
   await op.becomeOwner();
+  steps.push(async () => { if (op.isOwner()) await op.shutdownOwner(); });
   const orch = await openCore({ dataDir: dir, caller: callerFor('orchestrator', { run_id: RUN }), embed: false });
+  const closeOrch = () => orch.close();
+  steps.push(closeOrch);
   await orch.run.attach({ adapter_pid: process.pid, memory_levers: JSON.stringify(leversFor(notes)), ...(notes ? { project: 'p' } : {}) });
   const t = await orch.task.create({ spec: 'build the parser' });
   await orch.worker.write({ id: 'coder-1', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's1', last_event_at: Date.now(), task_id: t.id });
   const a = await orch.task.assign({ task_id: t.id, worker_id: 'coder-1' });
   const w = await openCore({ dataDir: dir, caller: callerFor('worker', { worker_id: 'coder-1', run_id: RUN }), embed: false });
+  const closeW = () => w.close();
+  steps.push(closeW);
   await w.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { summary: 'parser built', verdict: 'holds' }, ...(notes ? { notes: [] } : {}) });
   await w.close();
+  steps.splice(steps.indexOf(closeW), 1);
   await orch.worker.write({ id: 'coder-1', substrate: 'claude-code', pid: process.pid, state: 'dead', session_id: 's1', task_id: t.id });
   if (notes) {
   // An ended review task gives the notes sweep a hand-back to apply (memory.noteVerdicts, a write).
@@ -42,11 +56,15 @@ async function setup(notes) {
   await orch.worker.write({ id: 'rev-1', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's2', last_event_at: Date.now() });
   const ra = await orch.task.assign({ task_id: rt.id, worker_id: 'rev-1' });
   const rw = await openCore({ dataDir: dir, caller: callerFor('worker', { worker_id: 'rev-1', run_id: RUN }), embed: false });
+  const closeRw = () => rw.close();
+  steps.push(closeRw);
   await rw.lease.release({ lease_id: ra.new_lease.id, reason: 'done', notes: [], result: { summary: 'reviewed', verdict: 'holds' } });
   await rw.close();
+  steps.splice(steps.indexOf(closeRw), 1);
   await orch.worker.write({ id: 'rev-1', substrate: 'claude-code', pid: process.pid, state: 'dead', session_id: 's2', task_id: rt.id });
   }
   await orch.close();
+  steps.splice(steps.indexOf(closeOrch), 1);
   return { dir, op };
 }
 
@@ -76,6 +94,7 @@ for (const notes of [false, true]) {
       const atStall = new Promise((r) => { state.reached = r; });
       let tail = null;
       let held = null;
+      let bodyError = null;
       try {
         held = stalled(op, state, target);
         // A console whose budget is spent as soon as the stalled call is reached: whatever is awaited then is cut.
@@ -92,12 +111,12 @@ for (const notes of [false, true]) {
         assert.deepStrictEqual(late, [], `no write reached the store after the shutdown: ${JSON.stringify(late.map((c) => c.call))}`);
         assert.strictEqual(op.isOwner(), false, 'no stray owner was elected');
         assert.ok(!fs.existsSync(path.join(dir, 'owner.lock')), 'no owner.lock came back');
+      } catch (e) {
+        bodyError = e === undefined ? new Error('undefined was thrown') : e;
+        throw bodyError;
       } finally {
         if (held) held.release(); // a failed assertion above must not leave the stalled call, and so the tail, waiting forever
-        if (tail) await tail.catch(() => {});
-        if (op.isOwner()) await op.shutdownOwner();
-        await op.close();
-        cleanup(dir);
+        await teardown(bodyError, [() => tail, async () => { if (op.isOwner()) await op.shutdownOwner(); }, () => op.close(), () => cleanup(dir)]);
       }
     });
   }
