@@ -8,6 +8,7 @@
 const C = require('./config.cjs');
 const ML = require('../core/memory-levers.cjs');
 const AD = require('../run/agent-defaults.cjs');
+const EM = require('../core/embedder-mode.cjs');
 
 const MOD_NAMES = C.KEY_NAMES.filter((k) => C.KEYS[k].allowed);
 const MEMORY_NAMES = Object.keys(ML.DEFAULTS).filter((k) => !ML.EVAL_ONLY.includes(k)).map((k) => `memory.${k}`);
@@ -17,6 +18,13 @@ const NAMES = [...MOD_NAMES, ...MEMORY_NAMES, ...AGENT_NAMES];
 const kindOf = (key) => (MOD_NAMES.includes(key) ? 'mod' : key.startsWith('memory.') ? 'memory' : 'agents');
 const leverOf = (key) => key.slice('memory.'.length);
 const fieldOf = (key) => key.slice(key.lastIndexOf('.') + 1);
+
+// memory.on_embedder_failure also takes the 0.2.0 names (stop, continue). Every reader and the writer map them with the one
+// function `belay run` uses (embedder-mode.cjs), so settings never disagrees with a run about the effective value.
+const isModeKey = (key) => key === 'memory.on_embedder_failure';
+// { value, from } when `raw` is a legacy name mapped to its current one; null otherwise.
+const legacyMap = (key, raw) => (isModeKey(key) && typeof raw === 'string' && EM.ALIASES[raw] !== undefined ? { value: EM.normalize(raw), from: raw } : null);
+const legacyNote = (m) => `${JSON.stringify(m.from)} is the 0.2.0 name of ${JSON.stringify(m.value)}; read as ${JSON.stringify(m.value)}`;
 
 // What a key accepts: { type, allowed (array or null), text (for the listing) }.
 function shape(key) {
@@ -53,6 +61,8 @@ function parseValue(key, raw) {
     return ok ? { value: raw } : { error: `${JSON.stringify(raw)} is not a value of ${key} (${sh.text})` };
   }
   const bad = (what) => ({ error: `${JSON.stringify(raw)} is not ${what} for ${key}` });
+  const legacy = legacyMap(key, raw);
+  if (legacy) return { value: legacy.value, mapped_from: legacy.from }; // written as the current name
   switch (sh.type) {
     case 'boolean': return raw === 'true' || raw === 'false' ? { value: raw === 'true' } : bad('true or false');
     case 'integer': return /^-?\d+$/.test(raw) ? { value: Number(raw) } : bad('an integer');
@@ -92,7 +102,7 @@ function checkStored(key, value) {
   const block = { [leverOf(key)]: value };
   const t = typeof value;
   const s = ML.TYPES[leverOf(key)];
-  const typeOk = s.type === 'boolean' ? t === 'boolean' : s.type === 'string' ? (value === null ? !!s.nullable : t === 'string') : s.type === 'enum' ? s.values.includes(value) : t === 'number';
+  const typeOk = s.type === 'boolean' ? t === 'boolean' : s.type === 'string' ? (value === null ? !!s.nullable : t === 'string') : s.type === 'enum' ? (isModeKey(key) ? EM.normalize(value) !== null : s.values.includes(value)) : t === 'number';
   if (!typeOk) return { ok: false, reason: `${JSON.stringify(value)} is not ${shape(key).text}` };
   // Ranges and patterns are parseMemoryBlock's to judge; a prerequisite on another key is not this key's fault.
   const r = ML.parseMemoryBlock(block);
@@ -128,6 +138,8 @@ function effective(found, key) {
   const chk = checkStored(key, stored.value);
   if (!chk.ok) return { ...out, invalid: { stored: stored.value, reason: `${chk.reason}; the default ${JSON.stringify(dflt)} is used` } };
   if (chk.unset) return withNote(out);
+  const legacy = legacyMap(key, stored.value);
+  if (legacy) return { ...out, value: legacy.value, source: found.path, mapped_from: legacy.from, note: legacyNote(legacy) };
   return { ...out, value: stored.value, source: found.path };
 }
 

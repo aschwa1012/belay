@@ -297,3 +297,27 @@ test('settings: the eval-only run-spec levers are not settings, and a config mem
     assert.match(String(cli(dir, ['settings']).out.memory_error), /handback_question is eval-only/);
   } finally { cleanup(dir); }
 });
+
+test('settings: the 0.2.0 on_embedder_failure names are read and written as the names a run maps them to', () => {
+  const dir = project();
+  try {
+    writeConfig(dir, { memory: { on_embedder_failure: 'continue' } });
+    const r = cli(dir, ['settings', 'memory.on_embedder_failure']);
+    assert.strictEqual(r.code, 0);
+    assert.strictEqual(r.out.value, 'keyword');
+    assert.strictEqual(r.out.invalid, undefined);
+    assert.strictEqual(r.out.mapped_from, 'continue');
+    assert.match(r.out.note, /0\.2\.0 name/);
+    const list = cli(dir, ['settings']);
+    assert.strictEqual(list.out.settings.find((s) => s.key === 'memory.on_embedder_failure').value, 'keyword');
+    const w = cli(dir, ['settings', 'memory.on_embedder_failure', 'stop']);
+    assert.strictEqual(w.code, 0);
+    assert.strictEqual(w.out.mapped_from, 'stop');
+    assert.strictEqual(w.out.new.value, 'required');
+    assert.strictEqual(readConfig(dir).memory.on_embedder_failure, 'required');
+    const t = cli(dir, ['settings', 'memory.on_embedder_failure', 'continue'], { json: false });
+    assert.strictEqual(t.code, 0);
+    assert.match(t.stdout, /"continue" is the 0\.2\.0 name of "keyword"; wrote "keyword"/);
+    assert.strictEqual(cli(dir, ['settings', 'memory.on_embedder_failure', 'bogus']).code, 2);
+  } finally { cleanup(dir); }
+});
