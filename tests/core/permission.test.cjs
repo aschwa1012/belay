@@ -12,6 +12,7 @@ const fs = require('node:fs');
 const { core, sandbox, cleanup, callerFor, deadPid, listDataDir, sleep } = require('./helpers.cjs');
 
 const { openCore } = core('index.cjs');
+const { teardown } = require('../helpers/teardown.cjs');
 const { PERMISSION_STATES } = core('schema.cjs');
 
 let dir, orch, w1, w2, operator;
@@ -26,12 +27,15 @@ before(async () => {
 });
 
 after(async () => {
-  await w1.close();
-  await w2.close();
-  await operator.close();
-  await orch.shutdownOwner();
-  await orch.close();
-  cleanup(dir);
+  // Every step runs even if an earlier one fails (a before hook that failed part-way leaves some unset); the first failure is thrown.
+  await teardown(null, [
+    () => w1 && w1.close(),
+    () => w2 && w2.close(),
+    () => operator && operator.close(),
+    () => orch && orch.shutdownOwner(),
+    () => orch && orch.close(),
+    () => cleanup(dir),
+  ]);
 });
 
 const allCount = async () => (await operator.permission.list({ states: PERMISSION_STATES })).requests.length;
@@ -197,9 +201,10 @@ test('permission.wait: an already-decided row answers at once with already true;
   } finally { cleanup(dir2); }
 });
 
-test('permission.wait: an owner stopping settles every waiter, and the client sees E_OWNER_LOST, never a hang', async () => {
+test('permission.wait: an owner stopping settles every waiter, and the client sees E_OWNER_LOST, never a hang', async (tcx) => {
   const dir2 = sandbox();
   let orch2 = null;
+  tcx.after(() => Promise.resolve().then(() => orch2 && orch2.shutdownOwner()));
   try {
     orch2 = await openCore({ dataDir: dir2, caller: callerFor('orchestrator'), embed: false });
     await orch2.run.attach({ adapter_pid: process.pid });

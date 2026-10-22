@@ -85,11 +85,12 @@ test('min_score, dup_threshold and list limit are type-checked in core', async (
 
 const snap = d => fs.readdirSync(d, { recursive: true }).sort().map(f => { const s = fs.statSync(path.join(d, f)); return `${f}:${s.size}:${s.mtimeMs}`; }).join('|');
 
-test('a wedged owner (live pid, no pipe): hybrid answers from the copy naming E_OWNER_LOST, semantic is refused, no file changes', async () => {
+test('a wedged owner (live pid, no pipe): hybrid answers from the copy naming E_OWNER_LOST, semantic is refused, no file changes', async (tcx) => {
   const dir = sandbox();
   let c;
   try {
     const store = new Store(path.join(dir, 'memory.db'), { stamp: true });
+    tcx.after(() => Promise.resolve().then(() => store.db.isOpen !== false && store.close()));
     store.store({ namespace: 'run/r', worker_id: 'w', text: 'The owner pipe wedges when the loop blocks on CreateProcess' });
     store.close();
     // owner.json names this live process as the listening owner, and nothing serves the pipe.

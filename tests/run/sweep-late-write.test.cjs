@@ -47,6 +47,7 @@ test('a cut during the notes sweep writes nothing after the shutdown', async () 
     assert.deepStrictEqual(late.filter((c) => !/\.(list|get|events|reviewBrief)$/.test(c.call)), [], 'no write after the shutdown');
     assert.strictEqual(op.isOwner(), false, 'no stray owner');
   } finally {
+    release(); // a failed assertion above must not leave the stalled call, and so the tail, waiting forever
     if (tail) await tail.catch(() => {});
     if (op.isOwner()) await op.shutdownOwner();
     await op.close();

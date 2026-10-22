@@ -396,6 +396,7 @@ test('belay pause against an interactive run is accepted (ADR 0023 amendment 5):
   const r = start(dir, { env: { FAKE_EXIT_FILE: `${dir}/quit` } }); // the stub quits when the test says so: the owner's check of the pause's caller takes longer than any fixed hold
   assert.ok(await waitUntil(() => r.record(), 15000));
   const probe = await openCore({ dataDir: r.dataDir, caller: { role: 'operator', run_id: r.runId, pid: process.pid } });
+  t.after(() => Promise.resolve().then(() => probe.close()));
   assert.ok(await waitUntil(async () => (await probe.run.get()).run, 15000));
   await probe.close();
   const res = await cmdPause.run({ command: 'pause', argv: [r.runId], cwd: ROOT, dataDir: r.dataDir, json: true });

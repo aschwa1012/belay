@@ -10,14 +10,22 @@ const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
 
 const { openCore } = core('index.cjs');
 const { err } = core('errors.cjs');
+const { teardown: runSteps } = require('../helpers/teardown.cjs');
 
 async function setup() {
   const dir = sandbox();
   const host = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
-  await host.run.attach({ adapter_pid: process.pid });
-  assert.ok(host.owner, 'the first Core is the owner');
-  const remote = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
-  await remote.run.get({}); // a read; the first write below connects over the pipe
+  let remote = null;
+  try {
+    await host.run.attach({ adapter_pid: process.pid });
+    assert.ok(host.owner, 'the first Core is the owner');
+    remote = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
+    await remote.run.get({}); // a read; the first write below connects over the pipe
+  } catch (e) {
+    // A failed setup must not leave the owner or the client open: unwind what exists (the setup's error wins), then rethrow.
+    await runSteps(e, [() => remote && remote.close(), () => host.shutdownOwner(), () => host.close(), () => cleanup(dir)]);
+    throw e;
+  }
   return { dir, host, remote };
 }
 
@@ -37,15 +45,14 @@ function dropFirstReplies(host, methods) {
   return seen;
 }
 
-async function teardown(ctx) {
-  await ctx.remote.close();
-  await ctx.host.shutdownOwner();
-  await ctx.host.close();
-  cleanup(ctx.dir);
+async function teardown(ctx, bodyError) {
+  // Every step runs; the body's error wins, and a teardown failure on a passing body is thrown.
+  await runSteps(bodyError, [() => ctx.remote.close(), () => ctx.host.shutdownOwner(), () => ctx.host.close(), () => cleanup(ctx.dir)]);
 }
 
 test('S8-FIX-3: run.end whose reply is lost is not re-run; one ended run row and outcome unknown', async () => {
   const ctx = await setup();
+  let bodyError = null;
   try {
     await ctx.remote.task.create({ spec: 'warm the connection' }); // makes the remote a pipe client
     assert.ok(ctx.remote.client && ctx.remote.client.connected && !ctx.remote.owner);
@@ -60,11 +67,12 @@ test('S8-FIX-3: run.end whose reply is lost is not re-run; one ended run row and
     assert.ok(seen.get('run.end'), 'the wrapper ran');
     const r = await ctx.host.run.get({});
     assert.strictEqual(r.epochs.filter(x => x.ended_at != null).length, 1, JSON.stringify(r.epochs));
-  } finally { await teardown(ctx); }
+  } catch (e) { bodyError = e; throw e; } finally { await teardown(ctx, bodyError); }
 });
 
 test('task.create with no id whose reply is lost is not re-run; exactly one task row', async () => {
   const ctx = await setup();
+  let bodyError = null;
   try {
     await ctx.remote.task.create({ spec: 'warm' });
     dropFirstReplies(ctx.host, ['task.create']);
@@ -72,11 +80,12 @@ test('task.create with no id whose reply is lost is not re-run; exactly one task
     const list = await ctx.host.task.list({});
     const rows = (list.tasks || list).filter(t => t.spec === 'lost reply');
     assert.strictEqual(rows.length, 1);
-  } finally { await teardown(ctx); }
+  } catch (e) { bodyError = e; throw e; } finally { await teardown(ctx, bodyError); }
 });
 
 test('memory.store whose reply is lost is re-run, converges on one row and is flagged', async () => {
   const ctx = await setup();
+  let bodyError = null;
   try {
     await ctx.remote.task.create({ spec: 'warm' });
     dropFirstReplies(ctx.host, ['memory.store']);
@@ -86,7 +95,7 @@ test('memory.store whose reply is lost is re-run, converges on one row and is fl
     const found = await ctx.host.memory.list({ namespace: 'rerun' });
     const rows = found.rows || found.entries || found;
     assert.strictEqual(rows.length, 1, JSON.stringify(found));
-  } finally { await teardown(ctx); }
+  } catch (e) { bodyError = e; throw e; } finally { await teardown(ctx, bodyError); }
 });
 
 test('a stub client rejecting sent: false is re-run once; one rejecting sent: true on worker.write is called once', async () => {
