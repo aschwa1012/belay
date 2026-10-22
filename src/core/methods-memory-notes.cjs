@@ -331,6 +331,11 @@ function liveTarget(E, caller, pending, project, x, i) {
   if ((r.status || 'unverified') === 'refuted') throw err('E_ARGS', `${at}: note ${x.of} is refuted`, { id: x.of });
   const gone = E.store.p('SELECT id FROM memory_entries WHERE supersedes = ? AND namespace = ?').get(x.of, r.namespace);
   if (gone) throw err('E_ARGS', `${at}: note ${x.of} was superseded by ${gone.id}; resolve against ${gone.id}`, { id: x.of, superseded_by: gone.id });
+  // A note held on a report is in dispute: a repeat would record agreement with it and a supersedes would bury it. Matching shows it so a
+  // restated claim waits in pending; the writer resolves that as new, or reports the held note.
+  if ((x.resolve === 'repeats' || x.resolve === 'supersedes') && WH.heldReported(E).get(r.id) === project) {
+    throw err('E_ARGS', `${at}: note ${x.of} is held for review after a report that it is wrong, so it cannot be ${x.resolve === 'repeats' ? 'repeated' : 'superseded'}; resolve as new, or report it`, { id: x.of, reason: 'held_for_review' });
+  }
   // A held note is hidden by nobody but the archive review and the operator: a refines or supersedes of it is refused here, naming the hold.
   // (A repeat only adds a sighting and hides nothing, so it is allowed.)
   if (x.resolve === 'supersedes' || x.resolve === 'refines') require('./held-guard.cjs').check(E, x.resolve, r.id, { resolution: x.resolve });
