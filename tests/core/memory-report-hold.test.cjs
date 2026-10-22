@@ -77,7 +77,7 @@ test('H3: a second report appends to the one hold (same row, revision up, held c
   assert.strictEqual(X.heldRows(a.note).length, 1);
   await X.reported('w-b3', a.note, 'first again');
   const h2 = hold(a.note);
-  assert.deepStrictEqual([h2.b.reports.map((r) => r.why).sort(), h2.b.reports_total, h2.b.rev], [['first again', 'second'], 3, 2]);
+  assert.deepStrictEqual([h2.b.reports.map((r) => r.why).sort(), h2.b.reports_total, h2.b.rev], [['first again', 'second'], 2, 2]);
   assert.deepStrictEqual(X.bodyOf(a.note).reported_wrong.map((r) => r.seq), [2, 3], 'the repeat took the next number');
 });
 

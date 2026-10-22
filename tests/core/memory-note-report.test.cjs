@@ -158,3 +158,12 @@ test('R11: the owner\'s admission ignores a pid or peer_pid the request carries 
   await report(req.params.caller, { note_id: a.note, why: 'checked' });
   assert.deepStrictEqual([X.bodyOf(a.note).reported_wrong[0].by, X.bodyOf(a.note).reported_wrong[0].operator_pid], ['operator', 777]);
 });
+
+test('R12: claimed mode: a peer_pid the request carries is dropped before the method; no checked peer, no operator_pid', () => {
+  const { Owner } = require('../../src/core/owner.cjs');
+  const seen = [];
+  const fake = { mode: 'claimed', counters: { calls: 0 }, _serve: (c, req) => seen.push(req.params.caller) };
+  Owner.prototype._dispatch.call(fake, { destroyed: true }, JSON.stringify({ id: 1, method: 'memory.noteReport', params: { caller: { role: 'operator', run_id: 'cli', pid: 5, peer_pid: 6 } } }));
+  assert.strictEqual(seen.length, 1);
+  assert.strictEqual('peer_pid' in seen[0], false);
+});
