@@ -26,7 +26,7 @@ const absence = () => {
   return c.present ? null : `the model ${VOYAGE.id} is not fetched (belay embedder fetch)`;
 };
 
-test('memory.search: a live owner whose loop is blocked fails a vector call within its ping, naming the ping (m12)', async () => {
+test('memory.search: a live owner whose loop is blocked fails a vector call within its ping, naming the ping (m12)', async (tcx) => {
   const dir = sandbox();
   let child = null;
   try {
@@ -38,6 +38,7 @@ test('memory.search: a live owner whose loop is blocked fails a vector call with
     assert.ok(buf.includes('READY'), `the wedged owner did not start: ${buf}`);
     await new Promise(r => setTimeout(r, 700)); // it is now wedged
     const c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
+    tcx.after(() => Promise.resolve().then(() => c.close()).catch(() => {}));
     const t0 = Date.now();
     await assert.rejects(c.memory.search({ query: 'which process?', mode: 'semantic' }), x => {
       const ms = Date.now() - t0;
