@@ -35,7 +35,7 @@
 // with one json_each parameter. bodyLive is the same body test in JS.
 
 const { err } = require('./errors.cjs');
-const rows = require('./rows.cjs');
+const { withholds, withheldIds } = require('./memory-withhold.cjs'); // ADR 0047 amendment (2026-10-22): the held-on-a-report withholding
 
 const LIFECYCLE_NS = ['archive/', 'held/', 'pending/', 'proposal/', 'draft/', 'nomination/'];
 const SCOPE_COLS = ['namespace', 'task_id', 'worker_id', 'run_id'];
@@ -53,32 +53,6 @@ function checkNamespaces(caller, namespaces) {
       throw err('E_ROLE', `a ${caller.role} may not read ${ns}: the lifecycle namespaces (${LIFECYCLE_NS.join(', ')}) are read by the harness and the operator only`, { namespace: ns, role: caller.role });
     }
   }
-}
-
-// ADR 0047 amendment (2026-10-22): a WORKER (not the knowledge agent, which answers the orchestrator) whose run has memory.held_visibility
-// 'withhold' (the default) does not see a note held on a report (ground reported, kind wrong or superseded, state held) while any report on
-// the hold still withholds (`withhold` not false). A read filter: SELECTs only, no model, nothing written. Released as correct, archived or
-// settled, the hold leaves state 'held' and the note reappears at once; undecided keeps state 'held' and stays withheld.
-function withholds(E, caller) {
-  if (!caller || caller.role !== 'worker' || caller.channel === 'harness') return false;
-  if (typeof caller.worker_id === 'string' && caller.worker_id.startsWith('knowledge-')) return false;
-  try {
-    const run = rows.current(E.store, 'run', caller.run_id);
-    const raw = run ? run.memory_levers : null;
-    const lv = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    return !!lv && typeof lv === 'object' && lv.notes === true && lv.held_visibility !== 'warn';
-  } catch { return false; }
-}
-function withheldIds(E, caller, lim, lp) {
-  if (!withholds(E, caller)) return [];
-  const R = lim.length ? ` AND ${lim.join(' AND ')}` : '';
-  try {
-    return E.store.db.prepare(`SELECT e.id FROM memory_entries e WHERE e.type = 'note'${R} AND EXISTS (SELECT 1 FROM memory_entries h
-      WHERE h.type = 'held' AND h.namespace = 'held/' || substr(e.namespace, 9) AND h.written_by = 'harness' AND substr(e.namespace, 1, 8) = 'project/'
-      AND json_extract(h.body, '$.note_id') = e.id AND json_extract(h.body, '$.state') = 'held' AND json_extract(h.body, '$.ground') = 'reported'
-      AND json_extract(h.body, '$.kind') IN ('wrong', 'superseded')
-      AND EXISTS (SELECT 1 FROM json_each(h.body, '$.reports') r WHERE json_extract(r.value, '$.withhold') IS NOT 0))`).all(...lp).map((r) => r.id);
-  } catch { return []; }
 }
 
 // Whether `ns` is a lifecycle namespace the caller may not read (a gated tool-channel caller); a read by explicit id uses it to answer "not found".
