@@ -12,6 +12,7 @@ const { createFakeCore } = require('./fake-core.cjs');
 const MJ = require('../../src/run/memory-jobs.cjs');
 const NR = require('../../src/run/note-review.cjs');
 const LC = require('../../src/run/lifecycle.cjs');
+const MP = require('../../src/run/memory-preface.cjs');
 
 const LV = { ...DEFAULTS, project: 'demo', notes: true };
 const defer = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
@@ -114,7 +115,10 @@ test('C3: a stalled receipt does not stretch the shared deadline, and the shutdo
     W.turn('rt-stall');
     await ticks();
     const t0 = Date.now();
-    const res = await W.shutdown({ drainBudgetMs: 200 });
+    // its own short deadline: a stalled recordEvent that nothing bounds fails here within seconds, not at the runner's timeout
+    let guard;
+    const res = await Promise.race([W.shutdown({ drainBudgetMs: 200 }), new Promise((_, rej) => { guard = setTimeout(() => rej(new Error('a stalled receipt held the shutdown')), 3000); })]);
+    clearTimeout(guard);
     const spent = Date.now() - t0;
     assert.ok(spent < 1500, `the shutdown took ${spent} ms: the receipt was bounded by the reserve inside the deadline`);
     assert.deepStrictEqual(res.verdict_drain.pending, ['rt-stall']);
@@ -138,4 +142,35 @@ test('C3b: a rejected receipt is returned, not swallowed; a written one is just 
     assert.strictEqual(ok.receipt, 'written');
     assert.ok(W.events.some((e) => e.code === 'E_TIMEOUT' && /still running \(rt-rej\)/.test(e.message)));
   } finally { world.record = null; hold.resolve(); }
+});
+
+test('C3c: the reserve is real: the wait takes the deadline less the reserve, so wait plus receipt bound stays inside the deadline', async () => {
+  const W = world();
+  const hold = defer();
+  W.gates.set('rt-res', hold);
+  world.record = () => new Promise(() => {});
+  try {
+    W.turn('rt-res');
+    await ticks();
+    const t0 = Date.now();
+    const r = await NR.drainVerdicts(W.ctx, 400); // reserve 100: the wait ends at ~300 ms, the receipt gives up at ~400 ms
+    const spent = Date.now() - t0;
+    assert.ok(spent >= 380 && spent < 480, `the drain took ${spent} ms against a 400 ms deadline`);
+    assert.match(r.receipt.error, /not written within 100 ms/);
+  } finally { world.record = null; hold.resolve(); }
+});
+
+test('C4: notes as the only lever, a standalone adapter shutdown: a turn that ends during the stop loop is applied by the run-end sweep, with its receipt', async () => {
+  const W = world();
+  const real = W.core.memory.noteVerdicts;
+  W.core.memory.noteVerdicts = async (a) => { const r = await real(a); await W.core.memory.recordEvent({ kind: 'note_review', ok: true, key: 'applied:' + a.review_task_id }); return r; };
+  const res = await W.shutdown({
+    drainBudgetMs: 5000,
+    stop: async () => { W.turn('rt-stop'); await ticks(40); }, // the turn ends while the stop loop runs: the close has begun, so no application starts
+    onDrained: () => MP.runEnd(W.ctx), // what manager.cjs wires: the memory run-end, once the queues are drained
+  });
+  assert.strictEqual(res.stopped.length, 1);
+  assert.deepStrictEqual(W.applied, ['rt-stop'], 'the run-end sweep applied the deferred hand-back');
+  assert.ok(W.events.some((e) => e.key === 'applied:rt-stop'), 'with its receipt');
+  assert.strictEqual(W.ctx.runEndError, undefined);
 });
