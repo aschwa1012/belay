@@ -184,10 +184,11 @@ test('bound mode with an operator check: the check vouches for the connection or
   });
 });
 
-test('Core: the run process binds in process, a keyed orchestrator Core binds only its own run\'s workers over the pipe, and a keyed Core never elects', async () => {
+test('Core: the run process binds in process, a keyed orchestrator Core binds only its own run\'s workers over the pipe, and a keyed Core never elects', async (tcx) => {
   const { openCore } = core('index.cjs');
   const dir = sandbox();
   const op = await openCore({ dataDir: dir, caller: operatorCaller, embed: false });
+  tcx.after(() => Promise.resolve().then(() => op.shutdownOwner()));
   const cleanupAll = [];
   try {
     await op.becomeOwner();
