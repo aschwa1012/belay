@@ -29,9 +29,9 @@ before(async () => {
 });
 
 after(async () => {
-  for (const c of [worker, operator, orchB]) await c.close();
-  await orch.shutdownOwner();
-  await orch.close();
+  // Guarded: a before hook that failed part-way leaves some of these unset, and the owner must still be shut down.
+  for (const c of [worker, operator, orchB]) if (c) await c.close().catch(() => {});
+  if (orch) { await orch.shutdownOwner().catch(() => {}); await orch.close().catch(() => {}); }
   cleanup(dir);
 });
 
