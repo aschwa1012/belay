@@ -259,3 +259,10 @@ test('search text: "keyword matches only" is said only when the keyword half ran
   assert.match(none, /failed: keyword E_NO_INDEX/);
   assert.doesNotMatch(renderSearchText({ results: [], modes_run: ['keyword'], modes_failed: [] }, 'full'), /\*\*\*/);
 });
+
+test('search text: semantic ran and keyword failed is a partial result, not "no mode ran"', () => {
+  const { renderSearchText } = require('../../src/cli/memory-render.cjs');
+  const text = renderSearchText({ results: [], modes_run: ['semantic'], modes_failed: [{ mode: 'keyword', code: 'E_NO_INDEX' }] }, 'full');
+  assert.doesNotMatch(text, /NO SEARCH MODE RAN|nothing was searched|keyword matches only/);
+  assert.match(text, /keyword \(E_NO_INDEX\) failed; only semantic ran/);
+});

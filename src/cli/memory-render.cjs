@@ -269,11 +269,14 @@ function searchBanner(r) {
   const failed = r.modes_failed || [];
   if (!failed.length) return null;
   const ran = Array.isArray(r.modes_run) ? r.modes_run : null;
-  const names = failed.map(f => `${f.mode} (${f.code})`).join(' and ');
+  const named = failed.map(f => `${f.mode} (${f.code})`).join(' and ');
+  if (ran !== null && ran.length === 0) {
+    return `*** NO SEARCH MODE RAN (${named} failed): nothing was searched, so an empty list says nothing about whether such a memory exists ***`;
+  }
   if (ran === null || ran.includes('keyword')) {
     return failed.some(f => f.mode === 'semantic') ? '*** SEMANTIC SEARCH DID NOT RUN: these are keyword matches only, and an empty list does not mean there is no such memory ***' : null;
   }
-  return `*** NO SEARCH MODE RAN (${names} failed${ran.length ? `; ran: ${ran.join(', ')}` : ''}): nothing was searched, so an empty list says nothing about whether such a memory exists ***`;
+  return `*** ${named} failed; only ${ran.join(', ')} ran, so an empty list does not mean there is no such memory ***`;
 }
 
 // The warning, when there is one, is the first line of the text, as it is the first key of the JSON.
