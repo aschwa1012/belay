@@ -24,6 +24,12 @@ describe('notes held for the archive reviewer', () => {
     expect((await pane($)).text).toMatch(/3 notes held for review · oldest 2 runs · acme · oldest waited [0-9]h[0-9][0-9]m/) // 2h05m at the first render, the clock moves a little while it boots
   })
 
+  test('a run that tripped the circuit breaker is flagged on the held line, briefly', async ($, on) => {
+    const wd = await boot($, on, { notices: notices({ ...held(7, { acme: 7 }), oldest_at: T0 - 30000 }, { kind: 'run_disputed', ts: T0, run_id: RUN, disputed_run: 'r-breaker-9', project: 'acme', disputed: 7, limit: 5, command: 'belay memory review' }) })
+    await openPane($, wd)
+    expect((await pane($)).text).toContain(' · run r-breake disputed 7: review')
+  })
+
   test('the by-ground line says it too', async ($, on) => {
     const wd = await boot($, on, { notices: notices({ ...{ ...held(4), by_ground: { reported: 3, same_claim: 1 } }, oldest_at: T0 - 90000 }) })
     await openPane($, wd)

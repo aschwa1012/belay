@@ -200,7 +200,7 @@ export function normHeld(json: unknown): BelayHeld | null {
   const byProject: Record<string, number> = {}
   const byGround: Record<string, number> = {}
   let awaiting = 0
-  const reviews: BelayReview[] = []
+  const reviews: BelayReview[] = [], breakers: { runId: string; disputed: number }[] = []
   for (const raw of arr(obj(json)?.events)) {
     const e = obj(raw)
     if (!e) continue
@@ -212,6 +212,8 @@ export function normHeld(json: unknown): BelayHeld | null {
       for (const [k, v] of Object.entries(obj(e.by_project) ?? {})) if (num(v) !== null && k !== '') byProject[clean(k, 64)] = v as number
       for (const [k, v] of Object.entries(obj(e.by_ground) ?? {})) if (num(v) !== null && k !== '') byGround[clean(k, 40)] = v as number
       awaiting = Math.min(count, num(e.awaiting_operator) ?? 0)
+    } else if (e.kind === 'run_disputed') {
+      if (str(e.disputed_run) && breakers.length < 3) breakers.push({ runId: clean(str(e.disputed_run)!, 64), disputed: num(e.disputed) ?? 0 })
     } else if (e.kind === 'review_running' || e.kind === 'review_ended') {
       const project = str(e.project)
       if (!project) continue
@@ -220,7 +222,7 @@ export function normHeld(json: unknown): BelayHeld | null {
     }
   }
   if (count <= 0 && !reviews.length) return null
-  return { count: Math.max(0, count), unsupported, byProject, oldestAgeRuns, ...(oldestAt !== null && oldestAt > 0 ? { oldestAt } : {}), reviews, ...(Object.keys(byGround).length ? { byGround, awaiting } : {}) }
+  return { count: Math.max(0, count), unsupported, byProject, oldestAgeRuns, ...(oldestAt !== null && oldestAt > 0 ? { oldestAt } : {}), reviews, ...(Object.keys(byGround).length ? { byGround, awaiting } : {}), ...(breakers.length ? { breakers } : {}) }
 }
 
 // The review of a project that is in flight: the panel offers no button over it.
@@ -264,10 +266,11 @@ const GROUND_LABEL: Record<string, string> = { reported: 'reported wrong', repor
 
 // How long the oldest held note has waited, as a suffix, when belay reported when it was held (`now` is the panel's clock).
 const waitedFor = (h: BelayHeld, now?: number): string => (now !== undefined && h.oldestAt !== undefined ? ` · oldest waited ${dur(Math.max(0, now - h.oldestAt))}` : '')
+const flagFor = (h: BelayHeld): string => (h.breakers ?? []).map(b => ` · run ${b.runId.slice(0, 8)} disputed ${b.disputed}: review`).join('') // the breaker flag, ADR 0047 decision 9
 
 export function heldLine(h: BelayHeld, now?: number): string {
   if (h.count <= 0) return ''
-  const w = waitedFor(h, now)
+  const w = waitedFor(h, now) + flagFor(h)
   if (h.byGround && Object.keys(h.byGround).length) {
     const parts = new Map<string, number>()
     for (const [k, n] of Object.entries(h.byGround)) parts.set(GROUND_LABEL[k] ?? k, (parts.get(GROUND_LABEL[k] ?? k) ?? 0) + n)
