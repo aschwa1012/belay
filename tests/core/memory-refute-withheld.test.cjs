@@ -11,7 +11,7 @@ const { callerFor } = require('./helpers.cjs');
 let X;
 const LATER = 'r-xw-later';
 before(async () => {
-  X = await setup('r-xw');
+  X = await setup('r-xw', { held_breaker_share: 1 }); // a small project: the share would otherwise cap the run at one withheld note
   await X.call('run.attach', callerFor('orchestrator', { run_id: LATER }), { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true }) });
 });
 after(() => X.cleanup());

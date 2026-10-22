@@ -1,0 +1,155 @@
+'use strict';
+// held-breaker.test.cjs — ADR 0047 amendment (2026-10-22), decision 9: the circuit breaker is decided at report time, from the reporter's run. A run's
+// reports withhold their notes up to min(held_breaker_count, max(1, floor(held_breaker_share x live notes))); the report past that is still held but
+// stays visible with its warning, and one notice says the run disputed too much. The operator's reports are exempt. Real core, sandbox store.
+
+const { test, before, after } = require('node:test');
+const assert = require('node:assert');
+const { callerFor } = require('./helpers.cjs');
+const { setup } = require('./report-env.cjs');
+const Breaker = require('../../src/core/held-breaker.cjs');
+const { breakerEvents, renderText } = require('../../src/cli/cmd-notices.cjs');
+
+const DIM = 64;
+let n = 0;
+const vec = () => { const v = new Array(DIM).fill(0); v[DIM - 1] = 1; return v; };
+function liveNote(X, title) {
+  n += 1;
+  return X.store.storeIn({
+    namespace: 'project/acme', worker_id: 'w1', type: 'note', text: `${title} ${n} breakercase`, title: `${title} ${n}`,
+    body: { kind: 'lesson', basis: 'inferred', evidence: [], applies_to: [], subjects: [], model: 'm', state: 'live', seen_in: [], seen_total: 0, reported_wrong: [] },
+    embedding: vec(), embedding_model: 'fake', embedding_revision: 'r', dim: DIM, run_id: 'gone-run', task_id: null, source: 'model', written_by: 'worker:w1',
+  }).id;
+}
+const notes = (X, count) => Array.from({ length: count }, () => liveNote(X, 'live note'));
+const report = (X, caller, id, why = 'it is wrong') => X.call('memory.noteReport', caller, { note_id: id, why });
+const reader = (X, run = X.RUN) => callerFor('worker', { run_id: run, worker_id: 'w-reader' });
+const listed = async (X, caller, id) => (await X.call('memory.list', caller, { namespaces: ['project/acme'] })).rows.some((r) => r.id === id);
+const breakersOf = async (X) => (await X.call('memory.held', X.orch, { reports: true })).breakers;
+
+// The scenario every limit test shares: 40 live notes, the default limit of 5, one run reporting 7 notes. Returns each answer.
+async function sevenReports(X) {
+  const ids = notes(X, 40);
+  const outs = [];
+  for (let i = 0; i < 7; i += 1) outs.push(await report(X, X.orch, ids[i]));
+  return { ids, outs };
+}
+
+let A;
+before(async () => { A = await setup('brk-a'); });
+after(() => A.cleanup());
+
+test('B1: under the limit a report withholds; the (limit+1)th is held and visible; one notice; the proof says why', async () => {
+  const { ids, outs } = await sevenReports(A);
+  assert.deepStrictEqual(outs.slice(0, 5).map((o) => o.withheld), [true, true, true, true, true]);
+  assert.deepStrictEqual(outs.slice(0, 5).map((o) => o.breaker.count), [1, 2, 3, 4, 5]);
+  assert.strictEqual(outs[0].breaker.limit, 5);
+  assert.ok(outs[0].breaker.live >= 40);
+  assert.deepStrictEqual([outs[5].withheld, outs[5].state, outs[5].breaker.count, outs[5].breaker.limit], [false, 'held', 6, 5]);
+  assert.match(outs[5].withheld_why, /breaker: this run has disputed 6 notes, over its limit of 5/);
+  assert.strictEqual(outs[6].withheld, false);
+  // The hold and the report entry carry the decision; the note stays visible to a worker, a withheld one does not.
+  const h6 = A.activeHold(ids[5]);
+  assert.ok(h6, 'the sixth note is held');
+  assert.strictEqual(h6.b.reports[0].withhold, false);
+  assert.deepStrictEqual(h6.b.reports[0].breaker, { count: 6, limit: 5, live: outs[5].breaker.live });
+  assert.strictEqual(A.bodyOf(ids[5]).reported_wrong[0].withhold, false);
+  assert.strictEqual(A.activeHold(ids[0]).b.reports[0].withhold, true);
+  assert.strictEqual(await listed(A, reader(A), ids[0]), false, 'a withheld note is absent for a worker');
+  assert.strictEqual(await listed(A, reader(A), ids[5]), true, 'a past-limit note stays visible');
+  assert.strictEqual(await listed(A, reader(A), ids[6]), true);
+  // One notice for the run, whose count follows the run (7 now), not one per report.
+  const br = await breakersOf(A);
+  assert.deepStrictEqual(br.map((b) => [b.run_id, b.project, b.disputed, b.limit]), [['brk-a', 'acme', 7, 5]]);
+  const events = breakerEvents(br, 'brk-a');
+  assert.strictEqual(events.length, 1);
+  assert.strictEqual(events[0].kind, 'run_disputed');
+  assert.match(renderText(events), /run brk-a disputed 7 notes; review before trusting/);
+});
+
+test('B2: a later run starts fresh', async () => {
+  await A.call('run.attach', callerFor('orchestrator', { run_id: 'brk-b' }), { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true }) });
+  const o2 = callerFor('orchestrator', { run_id: 'brk-b' });
+  const out = await report(A, o2, notes(A, 1)[0]);
+  assert.deepStrictEqual([out.withheld, out.breaker.count], [true, 1]);
+  const br = await breakersOf(A);
+  assert.deepStrictEqual(br.map((b) => b.run_id), ['brk-a'], 'only the run that went over is named');
+});
+
+test('B3: the operator is exempt and does not count toward a run; a repeat is not counted twice', async () => {
+  const X = await setup('brk-c');
+  try {
+    const ids = notes(X, 40);
+    const outs = [];
+    for (let i = 0; i < 8; i += 1) outs.push(await report(X, { ...X.operator, peer_pid: 4242 }, ids[i]));
+    assert.ok(outs.every((o) => o.withheld === true && o.breaker === undefined), 'the operator is never over a limit');
+    assert.strictEqual((await breakersOf(X)).length, 0);
+    // The run's own count starts at zero: five distinct notes (one reported four times, on top of the operator's eight) all withhold.
+    const mine = ids.slice(10, 15);
+    for (let k = 0; k < 4; k += 1) assert.strictEqual((await report(X, X.orch, mine[0], `again ${k}`)).withheld, true);
+    for (const id of mine.slice(1)) assert.strictEqual((await report(X, X.orch, id)).withheld, true);
+    const sixth = await report(X, X.orch, ids[20]);
+    assert.deepStrictEqual([sixth.withheld, sixth.breaker.count], [false, 6]);
+    // A repeat on the note past the limit keeps its decision and the count does not move.
+    const again = await report(X, X.orch, ids[20], 'still wrong');
+    assert.deepStrictEqual([again.withheld, again.breaker.count], [false, 6]);
+    const fifth = await report(X, X.orch, mine[1], 'second look');
+    assert.strictEqual(fifth.withheld, true, 'a repeat on a withheld note stays withheld');
+  } finally { await X.cleanup(); }
+});
+
+test('B4: the share binds in a small project, and the limit is never below one note', async () => {
+  const X = await setup('brk-d');
+  try {
+    const ids = notes(X, 10); // floor(0.2 x 10) = 2 < 5
+    const outs = [];
+    for (let i = 0; i < 4; i += 1) outs.push(await report(X, X.orch, ids[i]));
+    assert.deepStrictEqual(outs.map((o) => o.withheld), [true, true, false, false]);
+    assert.strictEqual(outs[2].breaker.limit, 2);
+    assert.strictEqual(outs[2].breaker.live, 10);
+  } finally { await X.cleanup(); }
+  const Y = await setup('brk-e', { held_breaker_count: 50 });
+  try {
+    const ids = notes(Y, 3); // floor(0.2 x 3) = 0, raised to 1
+    const a = await report(Y, Y.orch, ids[0]);
+    const b = await report(Y, Y.orch, ids[1]);
+    assert.deepStrictEqual([a.withheld, a.breaker.limit, b.withheld], [true, 1, false]);
+    assert.strictEqual(Breaker.limitOf({ held_breaker_count: 5, held_breaker_share: 0.2 }, 3), 1);
+    assert.strictEqual(Breaker.limitOf({ held_breaker_count: 5, held_breaker_share: 0.2 }, 100), 5);
+    assert.strictEqual(Breaker.limitOf({ held_breaker_count: 50, held_breaker_share: 1 }, 7), 7);
+  } finally { await Y.cleanup(); }
+});
+
+test('B5: a hold released as correct frees the run\'s count; reads write nothing', async () => {
+  const X = await setup('brk-f');
+  try {
+    const ids = notes(X, 40);
+    for (let i = 0; i < 5; i += 1) await report(X, X.orch, ids[i]);
+    const h = X.activeHold(ids[0]);
+    X.store.patchBody(h.id, (b) => { b.state = 'released'; return b; });
+    assert.strictEqual((await report(X, X.orch, ids[5])).withheld, true, 'five held, one released: four count, so the next withholds');
+    const snap = () => JSON.stringify(X.store.p('SELECT COUNT(*) AS n, MAX(rowid) AS m, SUM(LENGTH(body)) AS b FROM memory_entries').get()) + JSON.stringify(X.store.p('SELECT COUNT(*) AS n FROM memory_event').get());
+    const before = snap();
+    await X.call('memory.held', X.orch, { reports: true });
+    await listed(X, reader(X), ids[1]);
+    breakerEvents((await breakersOf(X)), 'brk-f');
+    assert.strictEqual(snap(), before, 'a read of the notices, the held count and the notes wrote nothing');
+  } finally { await X.cleanup(); }
+});
+
+test('B6: mutation check — with the breaker removed the limit scenario fails', async () => {
+  const real = Breaker.decide;
+  Breaker.decide = () => ({ withhold: true, breaker: null, why: 'mutant' }); // the breaker taken out
+  const X = await setup('brk-g');
+  try {
+    const { outs } = await sevenReports(X);
+    assert.strictEqual(outs[5].withheld, true, 'without the breaker the sixth note is withheld');
+    assert.notStrictEqual(outs[5].withheld, false, 'which is exactly what B1 asserts against');
+    assert.strictEqual((await breakersOf(X)).length, 0, 'and no run is ever named');
+  } finally { Breaker.decide = real; await X.cleanup(); }
+  const Z = await setup('brk-h');
+  try {
+    const { outs } = await sevenReports(Z);
+    assert.strictEqual(outs[5].withheld, false, 'with the real breaker the sixth is past the limit');
+  } finally { await Z.cleanup(); }
+});
