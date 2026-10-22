@@ -175,7 +175,7 @@ test('path 2 reads the CURRENT mode of the run row: attach records the launch mo
   let c;
   try {
     const store = seedStore(dir);
-    tcx.after(() => Promise.resolve().then(() => store.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => store.db.isOpen !== false && store.close()));
     const E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: null, establishedBy: 'test' });
     await assert.rejects(E.handle('run.attach', { caller: orchestrator, adapter_pid: process.pid, embedder_mode: 'sometimes' }), (e) => e.code === 'E_ARGS');
     const attached = await E.handle('run.attach', { caller: orchestrator, adapter_pid: process.pid, project: 'acme' });
@@ -187,7 +187,7 @@ test('path 2 reads the CURRENT mode of the run row: attach records the launch mo
     await c.close(); c = null;
 
     const again = new Store(path.join(dir, 'memory.db'), { stamp: true });
-    tcx.after(() => Promise.resolve().then(() => again.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => again.db.isOpen !== false && again.close()));
     const E2 = new Engine({ dataDir: dir, store: again, getEmbedder: null, owner: null, establishedBy: 'test' });
     await assert.rejects(E2.handle('run.setEmbedderMode', { caller: orchestrator, mode: 'sometimes' }), (e) => e.code === 'E_ARGS');
     const switched = await E2.handle('run.setEmbedderMode', { caller: orchestrator, mode: 'keyword' });
@@ -201,7 +201,7 @@ test('path 2 reads the CURRENT mode of the run row: attach records the launch mo
     await c.close(); c = null;
 
     const third = new Store(path.join(dir, 'memory.db'), { stamp: true });
-    tcx.after(() => Promise.resolve().then(() => third.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => third.db.isOpen !== false && third.close()));
     await new Engine({ dataDir: dir, store: third, getEmbedder: null, owner: null, establishedBy: 'test' }).handle('run.setEmbedderMode', { caller: orchestrator, mode: 'off' });
     third.close();
     c = await openCore({ dataDir: dir, caller: orchestrator, embed: false });
@@ -215,7 +215,7 @@ test('path 2, an ended run is not a live run: the keyword fallback stays', async
   let c;
   try {
     const store = seedStore(dir);
-    tcx.after(() => Promise.resolve().then(() => store.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => store.db.isOpen !== false && store.close()));
     const E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: null, establishedBy: 'test' });
     await E.handle('run.attach', { caller: orchestrator, adapter_pid: process.pid, project: 'acme' });
     core('rows.cjs').append(store, 'run', { ...core('rows.cjs').current(store, 'run', 'r'), ended_at: Date.now(), exit_reason: 'test' }, 'test');
@@ -336,7 +336,7 @@ test('status.get counts the run\'s index_bound events, and belay status prints a
   const dir = sandbox();
   try {
     const store = seedStore(dir);
-    tcx.after(() => Promise.resolve().then(() => store.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => store.db.isOpen !== false && store.close()));
     const E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: null, establishedBy: 'test' });
     await E.handle('run.attach', { caller: orchestrator, adapter_pid: process.pid, project: 'acme' });
     assert.strictEqual((await E.handle('status.get', { caller: orchestrator })).run.index_bounds, undefined);

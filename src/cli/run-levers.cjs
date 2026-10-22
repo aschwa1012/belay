@@ -47,7 +47,7 @@ function cutoffRule(fixCutoff, timeoutMs, mode = 'headless') {
 //
 // Two settings traps (audit L23). A spec whose `memory` is an explicit null says "no memory block": every lever at its
 // default, the config's block not inherited (an absent `memory` inherits it; `{}` is an empty override and inherits too). And a spec that
-// turns `notes` off drops the levers it would inherit from the config that need notes (note_review, notes_reflection and the
+// turns `notes` off drops the levers it would inherit from the config that need notes (notes_reflection and the
 // rest), rather than being refused for levers it never wrote; `dropped` names them. A dependent the spec itself sets is still refused.
 function mergeMemory(specBlock, config) {
   if (specBlock === null) {

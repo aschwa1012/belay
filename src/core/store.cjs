@@ -71,6 +71,9 @@ class Store {
     } catch (e) { try { this.db.close(); } catch { /* already closed */ } throw e; }
     this._stmts = new Map();
     this._vectors = false; // true once memory_vectors is known to exist (it is made by the owner's open only)
+    // The engine installs `guard(op, id, detail)` (held-guard.cjs): every method below that changes a note's visibility or status calls it inside its
+    // own transaction, before its write. A store used without an engine has none.
+    this.guard = null;
     this.cache = new Map(); // namespace -> { rows: [{id, vec, ttl_at}], superseded: Set<id> }
   }
 
@@ -154,6 +157,7 @@ class Store {
       if (a.supersedes && !this.p('SELECT 1 FROM memory_entries WHERE id = ?').get(a.supersedes)) {
         throw err('E_SUPERSEDES', `the row this write supersedes (${a.supersedes}) is not in the store`, { supersedes: a.supersedes });
       }
+      if (a.supersedes && this.guard) this.guard('supersede', a.supersedes, { via: dup ? 'store_update' : 'store_insert' });
       const tags = a.tags ? JSON.stringify(a.tags) : null;
       const prov = a.provenance || null;
       const blob = vec ? Buffer.from(vec.buffer) : null;
@@ -206,7 +210,9 @@ class Store {
     if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
     let cur = {};
     try { cur = row.body ? JSON.parse(row.body) : {}; } catch { cur = {}; }
+    const before = this.guard ? JSON.stringify([cur.state, cur.promoted_to]) : null;
     const next = fn(cur) || cur;
+    if (this.guard && before !== JSON.stringify([next.state, next.promoted_to])) this.guard('body', id, { fields: 'state or promoted_to' });
     this.p('UPDATE memory_entries SET body = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(next), now(), id);
     MV.bump(this.db); // a changed `when` changes the template a row is embedded under, so a vector map built from it is stale
     return next;
@@ -216,6 +222,7 @@ class Store {
   setSupersedes(id, target) {
     const row = this.p('SELECT namespace FROM memory_entries WHERE id = ?').get(id);
     if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
+    if (target && this.guard) this.guard('supersede', target, { via: 'set_supersedes', by: id });
     this.p('UPDATE memory_entries SET supersedes = ?, updated_at = ? WHERE id = ?').run(target, now(), id);
     this.cache.delete(row.namespace);
   }
@@ -234,20 +241,29 @@ class Store {
 
   // ADR 0040 §2 memory.setStatus. One row, one transaction; the FTS trigger fires on title and text only,
   // so a status change leaves the keyword index alone.
-  setStatus(id, f) {
-    return this.tx(() => {
-      const row = this.p('SELECT status FROM memory_entries WHERE id = ?').get(id);
-      if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
-      this.p('UPDATE memory_entries SET status = ?, status_receipt = ?, status_by = ?, status_at = ? WHERE id = ?')
-        .run(f.status, f.receipt, f.by, f.at, id);
-      return { id, status: f.status, previous_status: row.status || 'unverified', status_receipt: f.receipt, status_by: f.by, status_at: f.at };
-    });
+  setStatus(id, f) { return this.tx(() => this.setStatusIn(id, f)); }
+
+  // The same write inside the caller's transaction (a review's verdict sets the status in the transaction that records its receipt).
+  setStatusIn(id, f) {
+    const row = this.p('SELECT status FROM memory_entries WHERE id = ?').get(id);
+    if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
+    if (this.guard) this.guard('status', id, { status: f.status });
+    this.p('UPDATE memory_entries SET status = ?, status_receipt = ?, status_by = ?, status_at = ? WHERE id = ?')
+      .run(f.status, f.receipt, f.by, f.at, id);
+    return { id, status: f.status, previous_status: row.status || 'unverified', status_receipt: f.receipt, status_by: f.by, status_at: f.at };
   }
 
   // ADR 0044 decision 2: a row's namespace is the only thing that changes, and its id stays. The keyword index is over
   // title and text and joins the namespace from this table, so it needs nothing; the vector caches are keyed by
   // namespace, so both are dropped and reloaded on the next search. Called inside the caller's transaction.
   moveRow(id, from, to) {
+    if (this.guard) {
+      if (String(from).startsWith('project/')) this.guard('move', id, { from, to });
+      // A row moved into the namespace of the row its own `supersedes` names hides that row again: a held target stays visible.
+      const s = this.p('SELECT supersedes FROM memory_entries WHERE id = ?').get(id);
+      const t = s && s.supersedes ? this.p('SELECT namespace FROM memory_entries WHERE id = ?').get(s.supersedes) : null;
+      if (t && t.namespace === to) this.guard('supersede', s.supersedes, { via: 'move', moved: id, to });
+    }
     const r = this.p('UPDATE memory_entries SET namespace = ? WHERE id = ? AND namespace = ?').run(to, id, from);
     if (!Number(r.changes)) throw err('E_NOT_FOUND', `no memory row ${id} in ${from}`, { id });
     this.cache.delete(from);
@@ -312,6 +328,7 @@ class Store {
     return this.tx(() => {
       const row = this.p('SELECT * FROM memory_entries WHERE id = ?').get(id);
       if (!row) return { id, deleted: false };
+      if (this.guard) this.guard('delete', id, {});
       this.p('DELETE FROM memory_entries WHERE id = ?').run(id);
       this.sweepVectors([row]);
       const c = this.cache.get(row.namespace);
@@ -323,9 +340,11 @@ class Store {
   sweep() {
     const t = now();
     return this.tx(() => {
-      const nss = this.p('SELECT DISTINCT namespace FROM memory_entries WHERE ttl_at IS NOT NULL AND ttl_at < ?').all(t).map(r => r.namespace);
-      const gone = this._hasVectors() ? this.p('SELECT * FROM memory_entries WHERE ttl_at IS NOT NULL AND ttl_at < ?').all(t) : [];
-      const r = this.p('DELETE FROM memory_entries WHERE ttl_at IS NOT NULL AND ttl_at < ?').run(t);
+      // A held note is never swept (no note carries a ttl_at today; if one ever does, its deadline waits while it is held).
+      const live = "ttl_at IS NOT NULL AND ttl_at < ? AND NOT (type = 'note' AND json_extract(body, '$.held') IS NOT NULL)";
+      const nss = this.p(`SELECT DISTINCT namespace FROM memory_entries WHERE ${live}`).all(t).map(r => r.namespace);
+      const gone = this._hasVectors() ? this.p(`SELECT * FROM memory_entries WHERE ${live}`).all(t) : [];
+      const r = this.p(`DELETE FROM memory_entries WHERE ${live}`).run(t);
       this.sweepVectors(gone);
       for (const n of nss) this.cache.delete(n);
       return { expired_deleted: Number(r.changes), namespaces: nss };

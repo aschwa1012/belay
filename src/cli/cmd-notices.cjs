@@ -204,7 +204,7 @@ function unembeddedEvents(u, runId) {
 // The standing count of notes held for the on-demand Opus archive reviewer (memory.held, a plain read), modelled on notes_unembedded.
 function heldEvents(h, runId) {
   if (!h || !(h.total > 0)) return [];
-  return [{ kind: 'notes_held', ts: num(h.newest_at), run_id: runId, count: h.total, unsupported: h.unsupported || 0, by_project: h.by_project || {}, oldest_age_runs: h.oldest_age_runs || 0, command: 'belay memory review', source: 'memory_entries rows of type held, state held' }];
+  return [{ kind: 'notes_held', ts: num(h.newest_at), run_id: runId, count: h.total, unsupported: h.unsupported || 0, by_project: h.by_project || {}, by_ground: h.by_ground || {}, awaiting_operator: h.awaiting_operator || 0, oldest_age_runs: h.oldest_age_runs || 0, command: 'belay memory review', source: 'memory_entries rows of type held, state held' }];
 }
 
 // The archive reviews (memory.reviewState, a plain read of the claim receipts): one event per project while its newest review runs, and
@@ -267,7 +267,7 @@ function summaryOf(e) {
     case 'notes_unembedded':
       return P.unembeddedText({ total: e.count, by_project: e.by_project });
     case 'notes_held':
-      return P.heldText({ total: e.count, unsupported: e.unsupported, by_project: e.by_project, oldest_age_runs: e.oldest_age_runs });
+      return P.heldText({ total: e.count, unsupported: e.unsupported, by_project: e.by_project, oldest_age_runs: e.oldest_age_runs, by_ground: e.by_ground, awaiting_operator: e.awaiting_operator });
     case 'review_running':
       return `archive review of ${P.v(e.project, 64)} ${e.pid_alive ? 'running' : 'INTERRUPTED (its process is gone; the next review takes the claim over)'}: pid ${e.pid}, job ${P.v(e.job, 80)}`;
     case 'review_ended':

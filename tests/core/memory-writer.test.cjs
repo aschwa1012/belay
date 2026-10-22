@@ -11,6 +11,7 @@ const { DatabaseSync } = require('node:sqlite');
 const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
 
 const { openCore } = core('index.cjs');
+const { teardown } = require('../helpers/teardown.cjs');
 const { Store } = core('store.cjs');
 const { SCHEMA_VERSION } = core('schema-stamp.cjs');
 
@@ -29,10 +30,15 @@ before(async () => {
 });
 
 after(async () => {
-  // Guarded: a before hook that failed part-way leaves some of these unset, and the owner must still be shut down.
-  for (const c of [worker, operator, orchB]) if (c) await c.close().catch(() => {});
-  if (orch) { await orch.shutdownOwner().catch(() => {}); await orch.close().catch(() => {}); }
-  cleanup(dir);
+  // Every step runs even if an earlier one fails (a before hook that failed part-way leaves some unset); the first failure is thrown.
+  await teardown(null, [
+    () => worker && worker.close(),
+    () => operator && operator.close(),
+    () => orchB && orchB.close(),
+    () => orch && orch.shutdownOwner(),
+    () => orch && orch.close(),
+    () => cleanup(dir),
+  ]);
 });
 
 test('a write names its writer by the channel it came on: worker, orchestrator, harness and operator', async () => {

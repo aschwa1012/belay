@@ -31,7 +31,7 @@ function leversOfRow(row) {
   if (raw == null) return defaultLevers();
   let obj;
   try { obj = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return defaultsUnread('the stored memory levers are not valid JSON'); }
-  const parsed = parseMemoryBlock(obj);
+  const parsed = parseMemoryBlock(obj, { stored: true }); // the removed note-review keys of an older run are dropped, never refused
   if (!parsed.error) return parsed.value;
   const plain = obj !== null && typeof obj === 'object' && !Array.isArray(obj);
   if (!plain) return defaultsUnread(parsed.error);

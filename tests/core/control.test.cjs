@@ -26,7 +26,7 @@ test('control: run.stop reaches the control the owner was constructed with, and 
     const before = listDataDir(dir);
 
     const op = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
-    tcx.after(() => Promise.resolve().then(() => op.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => op.close()));
     const result = await op.control('run.stop', { run_id: 'r1' });
     assert.deepStrictEqual(result, { echoed: 'r1', caller_role: 'operator' });
     assert.deepStrictEqual(listDataDir(dir), before, 'mode C created nothing');
@@ -45,7 +45,7 @@ test('control: a worker-role caller is refused E_ROLE, and an owner with no cont
     await orch.run.attach({ adapter_pid: process.pid });
 
     const worker = await openCore({ dataDir: dir, caller: callerFor('worker', { worker_id: 'w1' }), embed: false });
-    tcx.after(() => Promise.resolve().then(() => worker.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => worker.close()));
     await assert.rejects(worker.control('run.stop', { run_id: 'r1' }), (e) => {
       assert.strictEqual(e.code, 'E_ROLE');
       assert.deepStrictEqual(e.detail.allowed, ['operator']);
@@ -54,7 +54,7 @@ test('control: a worker-role caller is refused E_ROLE, and an owner with no cont
     await worker.close();
 
     const op = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
-    tcx.after(() => Promise.resolve().then(() => op.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => op.close()));
     await assert.rejects(op.control('run.stop', { run_id: 'r1' }), (e) => {
       assert.strictEqual(e.code, 'E_NOT_FOUND');
       assert.deepStrictEqual(e.detail.controls, []);
@@ -72,7 +72,7 @@ test('control: with no owner, control rejects E_NO_OWNER without dialling and cr
   try {
     const before = listDataDir(dir);
     const c = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
-    tcx.after(() => Promise.resolve().then(() => c.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => c.close()));
     const t0 = Date.now();
     await assert.rejects(c.control('run.stop', { run_id: 'r1' }), (e) => { assert.strictEqual(e.code, 'E_NO_OWNER'); return true; });
     // control() dials with elect:false and connectRetries:1, so a missing pipe fails at once. The bug the 3000 bound
@@ -84,7 +84,7 @@ test('control: with no owner, control rejects E_NO_OWNER without dialling and cr
     fs.mkdirSync(path.join(dir, 'owner.lock'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'owner.lock', 'owner.json'), JSON.stringify({ pid: deadPid(), pipe: 'x', listening: true, acquired_at: Date.now() }));
     const c2 = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
-    tcx.after(() => Promise.resolve().then(() => c2.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => c2.close()));
     const t1 = Date.now();
     await assert.rejects(c2.control('run.stop', { run_id: 'r1' }), (e) => { assert.strictEqual(e.code, 'E_NO_OWNER'); return true; });
     assert.ok(Date.now() - t1 < 3000, `control took ${Date.now() - t1} ms against a lock naming a dead pid`);
@@ -101,7 +101,7 @@ test('control: an owner.lock directory with no owner.json names no readable owne
     fs.mkdirSync(path.join(dir, 'owner.lock'), { recursive: true }); // no owner.json inside
     const before = listDataDir(dir);
     const c = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
-    tcx.after(() => Promise.resolve().then(() => c.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => c.close()));
     const t0 = Date.now();
     await assert.rejects(c.control('run.stop', { run_id: 'r1' }), (e) => {
       assert.strictEqual(e.code, 'E_NO_OWNER');
@@ -118,7 +118,7 @@ test('control: an owner.lock directory with no owner.json names no readable owne
 test("control: an owner stopping while a control is in flight still delivers that control's reply", async (tcx) => {
   const dir = sandbox();
   let orch = null;
-  tcx.after(() => Promise.resolve().then(() => orch.shutdownOwner()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => orch && orch.shutdownOwner()));
   try {
     orch = await openCore({
       dataDir: dir, caller: callerFor('orchestrator'), embed: false,
@@ -127,7 +127,7 @@ test("control: an owner stopping while a control is in flight still delivers tha
     await orch.run.attach({ adapter_pid: process.pid });
 
     const op = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
-    tcx.after(() => Promise.resolve().then(() => op.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => op.close()));
     const order = [];
     const controlPromise = op.control('run.stop', { run_id: 'r1' }).then((r) => { order.push('control'); return r; });
     await sleep(50);

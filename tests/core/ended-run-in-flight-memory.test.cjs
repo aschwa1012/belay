@@ -142,12 +142,15 @@ test('a report verdict whose citation check outlasts run.end is refused and writ
   const b = await work(c, w2, 'fixtures/unlisted.json was opened by the loader\n', { reported_wrong: [{ id, why: 'the loader reads unlisted fixtures' }] });
   const rt = await reviewTask(c, b.task, { report_verdicts: [{ id, verdict: 'upheld', cites: [cite('fixtures/unlisted.json was opened by the loader')], reason: 'the stream shows the file was opened' }] });
   const reviewEvents = events('note_review').length;
+  const holdsOf = () => store.p("SELECT COUNT(*) AS n FROM memory_entries WHERE type = 'held' AND json_extract(body, '$.note_id') = ?").get(id).n;
+  const heldBefore = holdsOf(); // the report itself held the note when it was made
   endDuringCheck(c);
   try {
     await captureBrief(call, c.orch, c.harness, { review_task_id: rt }); // the brief a run would have captured
     await ended(call('memory.noteVerdicts', c.harness, { review_task_id: rt }));
   } finally { CC.seam.afterCheck = null; }
-  assert.strictEqual(store.p("SELECT COUNT(*) AS n FROM memory_entries WHERE type = 'held' AND json_extract(body, '$.note_id') = ?").get(id).n, 0, 'no hold was written');
+  assert.strictEqual(holdsOf(), heldBefore, 'no hold was written');
+  assert.deepStrictEqual(store.p("SELECT json_extract(body, '$.report_verdicts') AS v FROM memory_entries WHERE type = 'held' AND json_extract(body, '$.note_id') = ?").get(id).v, '[]', 'and no verdict was recorded on it');
   assert.strictEqual(events('note_review').length, reviewEvents, 'no receipt was written');
 });
 

@@ -205,7 +205,7 @@ test('the built CLI refuses a review while the ended run\'s process still owns t
     const env = { ...process.env, BELAY_TEST_MODE: '1', BELAY_TEST_SKIP_EMBEDDER_WARMUP: '1' };
     const review = () => spawnSync(process.execPath, [CLI, 'memory', 'review', '--run', 'lc-apply', '--all', '--worktree', T.repo, '--data', T.dir, '--json'], { cwd: ROOT, windowsHide: true, encoding: 'utf8', env, timeout: 120000 });
     const core = await openCore({ dataDir: T.dir, caller: callerFor('operator', { run_id: 'lc-closing' }), embed: false });
-    tcx.after(() => Promise.resolve().then(() => core.shutdownOwner()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => core.shutdownOwner()));
     let owned = true;
     try {
       await core.becomeOwner(); // as belay run does

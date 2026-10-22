@@ -213,8 +213,9 @@ test('R2-1 lifecycle text is redacted before it is stored: a token in a reason, 
   // even a body that already holds a raw token shows redacted on the line
   const b = T.body(n); b.held.reason = `${TOKEN} raw in the body`; T.store.p('UPDATE memory_entries SET body = ? WHERE id = ?').run(JSON.stringify(b), n);
   assert.ok(!(await T.call(tool(), 'memory.index', {})).text.includes('ghp_a1B2'), 'the display redacts too');
-  // review reason and the release record
-  const rel = await review([{ id: n, verdict: 'release', reason: `fine, ${TOKEN}` }]);
+  T.store.patchBody(n, (b2) => { b2.held.reason = 'redacted for the next check'; return b2; }); // the planted raw token goes; an undecided hold keeps its pointer
+  // review reason and the review record
+  const rel = await review([{ id: n, verdict: 'undecided', reason: `fine, ${TOKEN}`, rev: 0 }]);
   assert.ok(!JSON.stringify(rel).includes(TOKEN) && !everywhere(n).includes(TOKEN));
   // dismiss: reason and a cited stream line
   const d = T.note('token dismiss target', { reported_wrong: [T.report()] });

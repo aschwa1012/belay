@@ -18,6 +18,7 @@ const P = require('../../src/run/process.cjs');
 const cmdStop = require('../../src/cli/cmd-stop.cjs');
 const cmdPause = require('../../src/cli/cmd-pause.cjs');
 const { start, withRun } = require('./run-interactive-helpers.cjs');
+const { teardown: runSteps } = require('../helpers/teardown.cjs');
 
 const { ROOT, sleep, waitUntil, currentRunRow, connectOrchestratorCore, releaseCore } = H;
 const FAKE_WORKER = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
@@ -31,13 +32,29 @@ const resumeCmd = (r, id = r.runId) => cmdPause.run({ command: 'resume', argv: [
 async function liveRun(dir, workerIds, extraEnv = {}, specOverrides = {}) {
   const exitFile = `${dir}/quit.flag`;
   const r = start(dir, { env: { FAKE_EXIT_FILE: exitFile, ...extraEnv }, specOverrides: { close_grace_ms: 1500, ...specOverrides } });
-  const rec = await waitUntil(() => r.record(), 15000);
-  assert.ok(rec, 'the stub never started');
-  const core = await connectOrchestratorCore(r.dataDir, r.runId);
-  const m = createRunManager({ core, dataDir: r.dataDir, runId: r.runId, paths: { claudeExe: FAKE_WORKER, userSettings: USER_SETTINGS } });
-  const control = createWorkerControl({ dataDir: r.dataDir, manager: m, pid: process.pid });
-  await control.listen();
+  let rec = null; let core = null; let m = null; let control = null;
   const pids = [];
+  // Every resource is registered as it is created, so a setup that fails part-way unwinds exactly what exists.
+  const teardown = async (bodyError) => {
+    fs.writeFileSync(exitFile, 'x');
+    await r.done.catch(() => {}); // the run's own exit, which a test may already have caused: not a teardown step
+    // Every step runs; the body's error wins, and a teardown failure on a passing body is thrown.
+    await runSteps(bodyError, [
+      () => control && control.close(),
+      () => m && m.shutdown(),
+      // ADR 0039: a bare pid is refused; the workers and the stub are this process's own descendants, so they
+      // are ended through that lineage (one snapshot, leaves first), never by a pid alone.
+      () => require('../crash.cjs').crashDescendants([...pids, rec && rec.pid].filter((p) => p && P.pidAlive(p))),
+      () => core && releaseCore(core),
+    ]);
+  };
+  try {
+  rec = await waitUntil(() => r.record(), 15000);
+  assert.ok(rec, 'the stub never started');
+  core = await connectOrchestratorCore(r.dataDir, r.runId);
+  m = createRunManager({ core, dataDir: r.dataDir, runId: r.runId, paths: { claudeExe: FAKE_WORKER, userSettings: USER_SETTINGS } });
+  control = createWorkerControl({ dataDir: r.dataDir, manager: m, pid: process.pid });
+  await control.listen();
   for (const id of workerIds) {
     const wt = `${dir}/${id}-wt`;
     fs.mkdirSync(wt, { recursive: true });
@@ -49,18 +66,10 @@ async function liveRun(dir, workerIds, extraEnv = {}, specOverrides = {}) {
     r, rec, core, m, control, pids,
     quit: () => fs.writeFileSync(exitFile, 'x'),
     state: async (id) => (await core.worker.get({ worker_id: id })).state,
-    async teardown() {
-      ctx.quit();
-      await r.done.catch(() => {});
-      try { await control.close(); } catch { /* best effort */ }
-      try { await m.shutdown(); } catch { /* best effort */ }
-      // ADR 0039: a bare pid is refused; the workers and the stub are this process's own descendants, so they
-      // are ended through that lineage (one snapshot, leaves first), never by a pid alone.
-      require('../crash.cjs').crashDescendants([...pids, rec.pid].filter((p) => p && P.pidAlive(p)));
-      await releaseCore(core);
-    },
+    teardown,
   };
   return ctx;
+  } catch (e) { await teardown(e); throw e; }
 }
 
 // ------------------------------------------------------------------ the run-start.json marker
@@ -87,6 +96,7 @@ test('marker: run-start.json is written after the launcher\'s own attach with ex
 
 test('pause: parks every live worker of a fake-claude interactive run, records the park set, and leaves the orchestrator alone', T, async (t) => withRun(t, async (dir) => {
   const c = await liveRun(dir, ['w1', 'w2']);
+  let bodyError = null;
   try {
     const res = await pauseCmd(c.r);
     assert.strictEqual(res.code, 0, res.text);
@@ -110,11 +120,12 @@ test('pause: parks every live worker of a fake-claude interactive run, records t
     // a second pause is answered, not repeated
     const again = await pauseCmd(c.r);
     assert.strictEqual(again.json.already, true);
-  } finally { await c.teardown(); }
+  } catch (e) { bodyError = e; throw e; } finally { await c.teardown(bodyError); }
 }));
 
 test('resume: relaunches exactly the parks the pause recorded, leaves a worker parked before the pause, and clears the row', T, async (t) => withRun(t, async (dir) => {
   const c = await liveRun(dir, ['w0', 'w1', 'w2']);
+  let bodyError = null;
   try {
     const pre = await pauseCmd(c.r, 'w0'); // parked by hand, before the run pause
     assert.strictEqual(pre.json.paused, true, pre.text);
@@ -136,11 +147,12 @@ test('resume: relaunches exactly the parks the pause recorded, leaves a worker p
     assert.ok(P.pidAlive(c.rec.pid), 'the orchestrator child died across the pause and resume');
     const nope = await resumeCmd(c.r);
     assert.strictEqual(nope.json.resumed, false, 'a resume of a run that is not paused');
-  } finally { await c.teardown(); }
+  } catch (e) { bodyError = e; throw e; } finally { await c.teardown(bodyError); }
 }));
 
 test('stop during a pause: belay stop ends the run and names the left-parked workers', T, async (t) => withRun(t, async (dir) => {
   const c = await liveRun(dir, ['w1', 'w2']);
+  let bodyError = null;
   try {
     assert.strictEqual((await pauseCmd(c.r)).json.paused, true);
     const stopped = await cmdStop.run({ argv: [c.r.runId], cwd: ROOT, dataDir: c.r.dataDir, json: true });
@@ -152,11 +164,12 @@ test('stop during a pause: belay stop ends the run and names the left-parked wor
     assert.match(res.json.ended_by, /^stopped by belay stop/);
     assert.deepStrictEqual([...res.json.workers_closed.left_parked].sort(), ['w1', 'w2']);
     assert.ok(currentRunRow(c.r.dataDir, c.r.runId).ended_at != null);
-  } finally { await c.teardown(); }
+  } catch (e) { bodyError = e; throw e; } finally { await c.teardown(bodyError); }
 }));
 
 test('quit during a pause: the normal close runs and the receipt lists the parked workers', T, async (t) => withRun(t, async (dir) => {
   const c = await liveRun(dir, ['w1', 'w2']);
+  let bodyError = null;
   try {
     assert.strictEqual((await pauseCmd(c.r)).json.paused, true);
     c.quit();
@@ -167,7 +180,7 @@ test('quit during a pause: the normal close runs and the receipt lists the parke
     assert.match(res.text, /left parked: w[12], w[12]/);
     assert.ok(currentRunRow(c.r.dataDir, c.r.runId).ended_at != null);
     assert.strictEqual(await c.state('w1'), 'paused', 'a parked worker is left parked, not rewritten');
-  } finally { await c.teardown(); }
+  } catch (e) { bodyError = e; throw e; } finally { await c.teardown(bodyError); }
 }));
 
 test('pause on a session that is not a belay run is still refused', T, async (t) => withRun(t, async (dir) => {
@@ -205,6 +218,7 @@ function wakeClient(r) {
 
 test('wake hold: no wake is published while the run is paused; the held wakes are delivered, in order, after the resume', T, async (t) => withRun(t, async (dir) => {
   const c = await liveRun(dir, ['w1', 'w2'], {}, { poll_ms: 100 });
+  let bodyError = null;
   const w = wakeClient(c.r);
   try {
     // let the workers' own start-up wakes settle before the pause
@@ -227,11 +241,12 @@ test('wake hold: no wake is published while the run is paused; the held wakes ar
     assert.strictEqual(Number(released[0].text.match(/(\d+) held event/)[1]), released.length - 1, 'the count names the events that follow');
     const seqs = released.slice(1).map((x) => Number(x.id.split(':').pop()));
     assert.deepStrictEqual(seqs, [...seqs].sort((a, b) => a - b), 'the held wakes were released out of order');
-  } finally { w.close(); await c.teardown(); }
+  } catch (e) { bodyError = e; throw e; } finally { w.close(); await c.teardown(bodyError); }
 }));
 
 test('pause: a stale paused_at on the row (from a crashed earlier epoch) does not make a pause answer already', T, async (t) => withRun(t, async (dir) => {
   const c = await liveRun(dir, ['w1']);
+  let bodyError = null;
   try {
     await c.core.run.setPaused({ paused: true, at: Date.now() - 60000, by: 'operator:1 (stale)' });
     const res = await pauseCmd(c.r);
@@ -240,5 +255,5 @@ test('pause: a stale paused_at on the row (from a crashed earlier epoch) does no
     assert.strictEqual(await c.state('w1'), 'paused');
     const again = await pauseCmd(c.r);
     assert.strictEqual(again.json.already, true);
-  } finally { await c.teardown(); }
+  } catch (e) { bodyError = e; throw e; } finally { await c.teardown(bodyError); }
 }));

@@ -32,7 +32,7 @@ test('an unsupported hold\'s file cite is read at the hold\'s own head, not at t
   git('-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-q', '-am', 'other worker');
   const other = git('rev-parse', 'HEAD');
   assert.notStrictEqual(other, T.head);
-  const r = await T.call(T.who.harness('apply'), 'memory.reviewApply', { verdicts: [{ id: n, verdict: 'verify', reason: 'the loader throws on unlisted names', cites: [T.cite] }], worktree: T.repo, head_sha: other });
+  const r = await T.call(T.who.harness('apply'), 'memory.reviewApply', { verdicts: [{ id: n, verdict: 'verify', reason: 'the loader throws on unlisted names', cites: [T.cite], shown_hash: require('../../src/core/note-brief-capture.cjs').hashOfRow(T.row(n)) }], worktree: T.repo, head_sha: other });
   assert.deepStrictEqual([r.counts.applied, r.counts.refused], [1, 0], JSON.stringify(r.refused));
   assert.strictEqual(T.body(n).unsupported.state, 'verified');
 });

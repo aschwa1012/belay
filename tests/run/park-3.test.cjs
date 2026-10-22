@@ -219,7 +219,7 @@ test('wait and shutdown: a stale record answers stale naming the row and the ada
   // Distinct fake adapter pids (fix round, pause.cjs:104): both managers run in this one test process
   // and would otherwise share the same real process.pid, hiding the very distinction this test is for.
   const m1 = mgr(sb, core, FAKE, 900001);
-  tcx.after(() => Promise.resolve().then(() => m1.shutdown()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => m1.shutdown()));
   let m2 = null;
   try {
     await m1.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
@@ -261,7 +261,7 @@ test('shutdown: a park in flight at shutdown completes as a park, the worker is 
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core, FAKE_WITH_CHILD);
-  tcx.after(() => Promise.resolve().then(() => m.shutdown()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()));
   const pidFile = path.join(sb.data, 'child.pid');
   process.env.FAKE_CHILD_PID_FILE = pidFile;
   try {

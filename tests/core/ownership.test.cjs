@@ -46,8 +46,8 @@ test('a write elects an owner in-process, and shutdownOwner is what stops it', a
   const dir = sandbox();
   try {
     const c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
-    tcx.after(() => Promise.resolve().then(() => c.shutdownOwner()).catch(() => {}));
-    tcx.after(() => Promise.resolve().then(() => c.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => c.shutdownOwner()));
+    tcx.after(() => Promise.resolve().then(() => c.close()));
     assert.strictEqual(c.isOwner(), false, 'openCore takes no lock');
     assert.strictEqual(c.ownerInfo(), null);
     assert.deepStrictEqual(listDataDir(dir), [], 'openCore creates no file');
@@ -75,7 +75,7 @@ test('a worker-role core never elects: no owner means E_NO_OWNER and no lock', a
   const dir = sandbox();
   try {
     const w = await openCore({ dataDir: dir, caller: callerFor('worker', { worker_id: 'w1' }), embed: false });
-    tcx.after(() => Promise.resolve().then(() => w.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => w.close()));
     await assert.rejects(w.memory.store({ text: 'nope', embedding: [1, 0], embedding_model: 'm', dim: 2 }), e => {
       assert.strictEqual(e.code, 'E_NO_OWNER');
       assert.strictEqual(e.detail.elect, false);
@@ -90,8 +90,8 @@ test('copy-then-read answers with no owner alive and leaves nothing behind', asy
   const dir = sandbox();
   try {
     const o = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
-    tcx.after(() => Promise.resolve().then(() => o.shutdownOwner()).catch(() => {}));
-    tcx.after(() => Promise.resolve().then(() => o.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => o.shutdownOwner()));
+    tcx.after(() => Promise.resolve().then(() => o.close()));
     await o.run.attach({ adapter_pid: process.pid });
     await o.memory.store({ namespace: 'ns', text: 'written while an owner existed', embedding: [1, 0], embedding_model: 'm', dim: 2 });
     await o.shutdownOwner();
@@ -102,7 +102,7 @@ test('copy-then-read answers with no owner alive and leaves nothing behind', asy
     const beforeMtime = fs.statSync(path.join(dir, 'memory.db')).mtimeMs;
 
     const reader = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
-    tcx.after(() => Promise.resolve().then(() => reader.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => reader.close()));
     const rows = await reader.memory.list({ namespace: 'ns' });
     assert.strictEqual(rows.rows.length, 1);
     assert.strictEqual(rows.rows[0].text, 'written while an owner existed');
@@ -126,8 +126,8 @@ test('every Core method is reachable over the pipe against an owner in another p
     assert.strictEqual(readOwnerLock(dir).pid, owner.child.pid);
 
     const orch = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
-    tcx.after(() => Promise.resolve().then(() => orch.shutdownOwner()).catch(() => {}));
-    tcx.after(() => Promise.resolve().then(() => orch.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => orch.shutdownOwner()));
+    tcx.after(() => Promise.resolve().then(() => orch.close()));
     const attached = await orch.run.attach({ adapter_pid: process.pid });
     assert.strictEqual(attached.run.epoch, 1);
     assert.strictEqual(orch.isOwner(), false, 'a live owner is used, never displaced');
@@ -137,7 +137,7 @@ test('every Core method is reachable over the pipe against an owner in another p
     const a = await orch.task.assign({ task_id: t.id, worker_id: 'w1' });
 
     const w = await openCore({ dataDir: dir, caller: callerFor('worker', { worker_id: 'w1' }), embed: false });
-    tcx.after(() => Promise.resolve().then(() => w.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => w.close()));
     const ck = await w.continuity.checkpoint({ task_id: t.id, summary: 'over the pipe', next_step: 'keep going' });
     assert.strictEqual(ck.source, 'worker');
     assert.strictEqual(ck.written_by, 'w1');
@@ -319,8 +319,8 @@ test('a read gives the owner 300 ms, and a search the owner must embed gives it 
   });
   try {
     const o = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
-    tcx.after(() => Promise.resolve().then(() => o.shutdownOwner()).catch(() => {}));
-    tcx.after(() => Promise.resolve().then(() => o.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => o.shutdownOwner()));
+    tcx.after(() => Promise.resolve().then(() => o.close()));
     await o.memory.store({ namespace: 'ns', text: 'a row from before the slow owner', embedding: [1, 0], embedding_model: 'm', dim: 2 });
     await o.shutdownOwner();
     await o.close();
@@ -330,7 +330,7 @@ test('a read gives the owner 300 ms, and a search the owner must embed gives it 
     fs.writeFileSync(path.join(dir, 'owner.lock', 'owner.json'), JSON.stringify({ pid: process.pid, pipe: pipeName(dir), listening: true, acquired_at: Date.now() }));
 
     const reader = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
-    tcx.after(() => Promise.resolve().then(() => reader.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => reader.close()));
     const t0 = Date.now();
     const listed = await reader.memory.list({ namespace: 'ns' });
     const listMs = Date.now() - t0;
@@ -420,8 +420,8 @@ test('a wedged owner times out instead of hanging, and a read falls back to the 
   try {
     // Give the sandbox a real store first, so the copy fallback has rows to return.
     const o = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
-    tcx.after(() => Promise.resolve().then(() => o.shutdownOwner()).catch(() => {}));
-    tcx.after(() => Promise.resolve().then(() => o.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => o.shutdownOwner()));
+    tcx.after(() => Promise.resolve().then(() => o.close()));
     await o.memory.store({ namespace: 'ns', text: 'row that predates the wedge', embedding: [1, 0], embedding_model: 'm', dim: 2 });
     await o.shutdownOwner();
     await o.close();
@@ -432,7 +432,7 @@ test('a wedged owner times out instead of hanging, and a read falls back to the 
     fs.writeFileSync(path.join(dir, 'owner.lock', 'owner.json'), JSON.stringify({ pid: process.pid, pipe: pipeName(dir), acquired_at: Date.now() }));
 
     const c = new Client(dir, { elect: false, connectRetries: 1 });
-    tcx.after(() => Promise.resolve().then(() => c.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => c.close()));
     await c.connect();
     const t0 = Date.now();
     await assert.rejects(c.call('ping', {}, { timeoutMs: 150 }), e => {
@@ -461,7 +461,7 @@ test('a wedged owner times out instead of hanging, and a read falls back to the 
     await c.close();
 
     const reader = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
-    tcx.after(() => Promise.resolve().then(() => reader.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => reader.close()));
     const rows = await reader.memory.list({ namespace: 'ns' });
     assert.strictEqual(rows.rows.length, 1, 'a timed-out owner falls back to copy-then-read, not to an error');
     const st = await reader.status.get({});

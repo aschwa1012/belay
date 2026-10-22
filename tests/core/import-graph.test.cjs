@@ -20,7 +20,7 @@ test('openCore and status.get never load the embedder module', async (tcx) => {
   const dir = sandbox();
   try {
     const c = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
-    tcx.after(() => Promise.resolve().then(() => c.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => c.close()));
     assert.deepStrictEqual(loaded(), [], 'openCore does not reach the embedder');
 
     const st = await c.status.get({});

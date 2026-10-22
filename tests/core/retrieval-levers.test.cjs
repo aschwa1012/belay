@@ -97,7 +97,7 @@ test('validation: each lever refuses a bad value and names the key', () => {
 test('validation: good values are accepted, including custom pairs, advanced agent types and a CPU reranker', () => {
   const ok = parse({
     profile: 'custom', embedder: 'Qwen/Qwen3-Embedding-8B-GGUF', reranker: 'ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF',
-    routing: { orchestrator: 'gpu-balanced', coder: { embedder: RP.NANO }, researcher: { embedder: RP.NANO, reranker: 'none' }, 'note-review': 'cpu-fast' },
+    routing: { orchestrator: 'gpu-balanced', coder: { embedder: RP.NANO }, researcher: { embedder: RP.NANO, reranker: 'none' }, 'scrubber': 'cpu-fast' },
     rerank_depth: 200, rerank_bound_ms: 600000, on_heavy_failure: 'pause', on_heavy_behind: 'fallback', search_log_cap_mb: 1, vram_headroom_gb: 0,
   });
   assert.strictEqual(ok.error, undefined);

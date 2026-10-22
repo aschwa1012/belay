@@ -54,6 +54,10 @@ const FLAGS = {
   '--approve': { key: 'approve', type: 'bool' },
   '--reject': { key: 'reject', type: 'bool' },
   '--badge': { key: 'badge', type: 'bool' },
+  '--awaiting': { key: 'awaiting', type: 'bool' },
+  '--archive': { key: 'archive', type: 'bool' },
+  '--release': { key: 'release', type: 'bool' },
+  '--reoffer': { key: 'reoffer', type: 'bool' },
 };
 
 const FILTER_FLAGS = ['--type', '--status', '--task', '--worker', '--since', '--namespace'];
@@ -77,6 +81,7 @@ const VERBS = {
   promote: { flags: ['--approve', '--reject', '--reason'], positional: [1, 1], usage: 'belay memory promote <note-id> (--approve | --reject) [--reason <text>]' },
   'search-log': { flags: ['--export', '--run', '--since', '--force'], positional: [0, 0], usage: 'belay memory search-log --export <file> [--run <id>] [--since <ms|iso>] [--force]' },
   menu: { flags: ['--badge'], positional: [0, 0], usage: 'belay memory menu [--badge]   (the facts the panel Memory menu shows: GPU, profiles, models, backlog; a read; --badge: only the backlog of the selected embedder)' },
+  held: { flags: ['--project', '--awaiting', '--archive', '--release', '--reoffer', '--reason'], positional: [0, 2], usage: 'belay memory held [--project p] [--awaiting]   |   belay memory held settle <note-id> (--archive | --release | --reoffer) --reason <text>' },
   archive: { flags: ['--ids', '--older-than', '--confirm', '--project'], positional: [1, 1], usage: 'belay memory archive purge (--ids a,b | --older-than <days>) --confirm [--project p]' },
 };
 
@@ -126,6 +131,22 @@ function checkResolve(opts, positional) {
   return {};
 }
 
+// held (the listing) or held settle <note-id> (--archive | --release | --reoffer) --reason <text>: checked before any store is opened.
+function checkHeld(opts, positional) {
+  const actions = ['archive', 'release', 'reoffer'].filter((a) => opts[a]);
+  if (positional[0] === undefined) {
+    if (actions.length || opts.reason !== undefined) return { error: 'belay memory held lists the held notes; --archive, --release, --reoffer and --reason belong to belay memory held settle <note-id>' };
+    return {};
+  }
+  if (positional[0] !== 'settle') return { error: `belay memory held takes no argument but settle <note-id>; got ${positional[0]}` };
+  if (positional[1] === undefined) return { error: 'belay memory held settle needs the note id' };
+  if (opts.awaiting) return { error: 'belay memory held settle takes no --awaiting' };
+  if (actions.length !== 1) return { error: 'belay memory held settle needs exactly one of --archive, --release or --reoffer' };
+  if (!(typeof opts.reason === 'string' && opts.reason.trim())) return { error: 'belay memory held settle needs --reason <text>: it is recorded' };
+  opts.action = actions[0];
+  return {};
+}
+
 function checkOpts(sub, opts, positional = []) {
   if (opts.mode !== undefined && !MODES.includes(opts.mode)) return { error: `--mode must be one of ${MODES.join(', ')}; got ${opts.mode}` };
   if (opts.status !== undefined && !STATUSES.includes(opts.status)) return { error: `--status must be one of ${STATUSES.join(', ')}; got ${opts.status}` };
@@ -158,6 +179,7 @@ function checkOpts(sub, opts, positional = []) {
   }
   if (sub === 'restore' && !opts.candidates && !opts.reason) return { error: 'belay memory restore needs --reason <text> (or --candidates to list the archived duplicates of a note)' };
   if (sub === 'resolve') return checkResolve(opts, positional);
+  if (sub === 'held') return checkHeld(opts, positional);
   if (sub === 'promote' && !!opts.approve === !!opts.reject) return { error: 'belay memory promote needs exactly one of --approve or --reject' };
   if (sub === 'archive') return checkPurge(opts);
   if (sub === 'search-log' && !opts.export) return { error: 'belay memory search-log needs --export <file>' };

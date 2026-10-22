@@ -127,7 +127,7 @@ test('review --all: runs on a queue below every trigger, applies the verdicts th
     await T.call(T.who.harness('apply'), 'memory.scrubApply', { scrub: [{ id: n, action: 'hold', kind: 'wrong', ground: 'report_confirmed', reason: 'the loader throws', cites: [T.cite] }], scope: [n], ...T.evidence });
     await T.endOthers('apply'); // the review waits for any other live run (audit D35)
     T.store.close();
-    const m = fakeManager(JSON.stringify({ verdicts: [{ id: n, verdict: 'release', reason: 'the code supports the note' }] }));
+    const m = fakeManager(JSON.stringify({ verdicts: [{ id: n, verdict: 'archive', reason: 'the code confirms the hold', cites: [T.cite] }] }));
     const r = await cmd(T, ['review', '--all', '--run', 'lc-apply', '--worktree', T.repo], { makeManager: async () => m });
     assert.strictEqual(r.code, 0, r.text);
     assert.deepStrictEqual([r.json.ran, r.json.trigger, r.json.result.counts.applied, m.spawned[0].model], [true, 'asked by hand', 1, 'claude-opus-5-5']);
@@ -188,7 +188,7 @@ test('without --run the newest ENDED run with notes on is used; a live run is re
     const { Engine } = require('../../src/core/engine.cjs');
     const { callerFor } = require('../core/helpers.cjs');
     const s2 = new Store(`${T.dir}/memory.db`, { stamp: true });
-    tcx.after(() => Promise.resolve().then(() => s2.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => s2.db.isOpen !== false && s2.close()));
     const E = new Engine({ dataDir: T.dir, store: s2, getEmbedder: null, owner: null, establishedBy: 'test' });
     await E.handle('run.end', { caller: callerFor('operator', { run_id: 'lc-apply' }), exit_reason: 'done' });
     s2.close();

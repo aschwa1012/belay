@@ -379,7 +379,9 @@ async function ask(manager, ctx, args) {
 
 // The jobs that finish a run's memory work (summaries, project copies, the ledger, wrap-ups): only when a
 // lever that feeds them is on. Called by shutdown once every worker's queue is drained.
-const JOB_LEVERS = (lv) => lv.summaries !== 'off' || lv.project_writes || lv.cost_ledger || lv.wrapup;
+// `notes` is one: the run-end sweep applies the verdicts of review tasks that ended without a turn path to apply them (a close that began first). It plans only
+// that sweep when notes is the only lever; no scrub or review child is started here.
+const JOB_LEVERS = (lv) => lv.summaries !== 'off' || lv.project_writes || lv.cost_ledger || lv.wrapup || !!lv.notes;
 async function runEnd(ctx) {
   const lv = await levers(ctx, null);
   if (!JOB_LEVERS(lv)) return;

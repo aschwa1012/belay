@@ -90,7 +90,7 @@ test('a wedged owner (live pid, no pipe): hybrid answers from the copy naming E_
   let c;
   try {
     const store = new Store(path.join(dir, 'memory.db'), { stamp: true });
-    tcx.after(() => Promise.resolve().then(() => store.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => store.db.isOpen !== false && store.close()));
     store.store({ namespace: 'run/r', worker_id: 'w', text: 'The owner pipe wedges when the loop blocks on CreateProcess' });
     store.close();
     // owner.json names this live process as the listening owner, and nothing serves the pipe.

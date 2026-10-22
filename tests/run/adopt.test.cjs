@@ -149,7 +149,7 @@ test('restarting an id no store row names is still E_NOT_FOUND', async (tcx) => 
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core);
-  tcx.after(() => Promise.resolve().then(() => m.shutdown()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()));
   await assert.rejects(
     () => m.restart({ worker_id: 'never-existed' }),
     (e) => {
@@ -207,7 +207,7 @@ test('a write failure after a relaunch still leaves no live child once shutdown 
   const core = createFakeCore();
   const first = mgr(sb, core);
   let second = null;
-  tcx.after(() => Promise.resolve().then(() => second.shutdown()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => second && second.shutdown()));
   let pid = null; let child = null;
   try {
     await first.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w-wfail', task_id: 't-wfail' });

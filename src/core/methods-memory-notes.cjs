@@ -21,7 +21,8 @@ const { search } = require('./memory-search.cjs');
 const { hashText } = require('./store.cjs');
 const { recordEventSync } = require('./methods-ledger.cjs');
 const { DEFAULTS } = require('./memory-levers.cjs');
-const { storedCosine } = require('./memory-facts.cjs');
+const { storedCosine, loadNote } = require('./memory-facts.cjs');
+const { redact } = require('./redact.cjs');
 
 const SEEN_MAX = 20; // body.seen_in is bounded; body.seen_total keeps the full count
 const WRONG_KEEP = 20;
@@ -39,12 +40,21 @@ function notesLevers(E, caller) {
   return o && o.notes === true ? { ...DEFAULTS, ...o } : null;
 }
 
-// A body with sightings and reports is kept under BODY_CEILING by dropping the oldest of those.
-function fitBody(b) {
-  while (size(b) > BODY_CEILING && ((b.seen_in || []).length || (b.reported_wrong || []).length)) {
-    if ((b.seen_in || []).length >= (b.reported_wrong || []).length) b.seen_in.shift(); else b.reported_wrong.shift();
+// A body with sightings and reports is kept under BODY_CEILING by dropping the oldest of those. `protect` is a report that was just submitted: it is
+// never dropped (a report the release claims as marked must still be on the note when its hold is written). When only that report and the bodies' own
+// optional payloads are left, the optional history goes first (rejections, dismissals, releases, restores, judgments, then the review's cites and reason).
+const OPTIONAL = ['report_rejected', 'dismissed', 'releases', 'restored', 'report_judgments'];
+function fitBody(b, protect = null, noteId = null) {
+  const droppable = () => (b.reported_wrong || []).findIndex((w) => w !== protect);
+  while (size(b) > BODY_CEILING && ((b.seen_in || []).length || droppable() >= 0)) {
+    if ((b.seen_in || []).length >= (b.reported_wrong || []).length || droppable() < 0) b.seen_in.shift(); else b.reported_wrong.splice(droppable(), 1);
   }
-  return b;
+  if (protect) {
+    for (const k of OPTIONAL) { if (size(b) <= BODY_CEILING) break; if (Array.isArray(b[k]) && b[k].length) b[k] = []; }
+    if (size(b) > BODY_CEILING && b.review && typeof b.review === 'object') b.review = { ...b.review, cites: [], reason: String(b.review.reason || '').slice(0, 120) };
+    if (size(b) > BODY_CEILING) throw err('E_NOTE_SHAPE', `note ${noteId || '(unnamed)'} is too large to keep one more report on it (its body is over ${BODY_CEILING} bytes even without its optional history); the release is refused and nothing was written. Shorten the report text (reported_wrong[].why) and call lease_release again; if the note's own review payload is the cause, ask the operator to trim it`, { max: BODY_CEILING, id: noteId });
+  }
+  return require('./report-marks.cjs').pruneSettled(b); // a settled key leaves only together with its report
 }
 
 // Live notes of the project that are close to this text, best first, at most `notes_match_n`. The semantic cosine
@@ -115,7 +125,8 @@ async function prepare(E, caller, args) {
   const project = M.projectOf(E, caller);
   if (!project) throw err('E_ARGS', 'lease.release: this run has no project, so there is nowhere to write a note', { field: 'notes' });
   const notes = NT.checkNotes(args.notes);
-  const wrong = NT.checkReportedWrong(args.reported_wrong);
+  // A report's reason is redacted once, here: the redacted text is the only one stored on the note and copied to the hold, shown in the index line and returned.
+  const wrong = NT.checkReportedWrong(args.reported_wrong).map(w => { const r = redact(w.why); return { ...w, why: r.text, redacted: Object.values(r.redactions || {}).reduce((a, b) => a + b, 0) }; });
   const memoryIds = NT.checkMemoryIds(args.memory_ids); // the note ids applied, or null when the field was not given
   // With the notes sink on the field is required ([] when none applied), as notes is. A second call on an already
   // released lease (the reflection turn) carries only notes and is exempt.
@@ -234,18 +245,33 @@ function commit(E, caller, prep, { task_id }) {
     });
     return { index: p.index, id: row.id, action: row.action, state: pending ? 'pending' : 'stored', namespace: ns, title: p.title, applies_to: p.applies, ...(pending ? { matches: p.matches } : {}), ...(p.prior.length ? { prior_verdicts: p.prior, held_back: 'this text is close to a claim already judged wrong (see prior_verdicts); the note waits in pending until you resolve it as new, knowing that' } : {}), ...(p.unembedded ? { embedded: false, embedder_failure: p.unembedded, note: 'stored without a vector (on_embedder_failure keyword): found by keyword search, and not compared with the other notes of the project' } : {}) };
   });
+  const RH = require('./memory-report-hold.cjs');
   const marked = prep.wrong.map(w => {
+    // The target is read again here, in the transaction: preparation awaited an embedding and a diff, and the note may have been archived,
+    // resolved, moved or purged meanwhile (and the reflection turn's second release comes through here too). A note that is no longer live in the
+    // project takes no mark and no hold.
+    const live = loadNote(E, w.id);
+    if (!live || live.type !== 'note' || live.namespace !== projectNs(prep.project)) {
+      return { id: w.id, skipped: 'not_live', state: live && live.type === 'note' ? live.namespace.split('/')[0] : 'missing' };
+    }
     const m = NT.SELF_REF.exec(w.replaced_by || '');
     // notes[i] names the row this call wrote; a duplicate is somebody else's row (or not a note), so it is never a replacement.
     const mine = m ? items[Number(m[1])] : null;
     const replacedBy = m ? (mine.state === 'stored' || mine.state === 'pending' ? mine.id : null) : w.replaced_by;
-    // The fact of a report, not a verdict: the scrubber decides (ADR 0047 decision 3). One report per writer per
-    // note, so a writer's repeat replaces its own and never pushes out another writer's.
+    // One report per writer per note, so a writer's repeat replaces its own and never pushes out another writer's. Each report gets the next
+    // number of the note's counter, which is its key.
+    let report = null;
     const next = E.store.patchBody(w.id, b => {
-      b.reported_wrong = [...(b.reported_wrong || []).filter(x => x.by !== by), { by, worker_id: caller.worker_id, task_id, run_id: caller.run_id, why: w.why, replaced_by: replacedBy, at: t }].slice(-WRONG_KEEP);
-      return fitBody(b);
+      const seq = (Number(b.report_seq) || 0) + 1;
+      b.report_seq = seq;
+      report = { by, worker_id: caller.worker_id, task_id, run_id: caller.run_id, why: w.why, replaced_by: replacedBy, at: t, seq };
+      b.reported_wrong = [...(b.reported_wrong || []).filter(x => x.by !== by), report].slice(-WRONG_KEEP);
+      return fitBody(b, report, w.id);
     });
-    return { id: w.id, marked: 'reported_wrong', reports: next.reported_wrong.length, replaced_by: replacedBy };
+    if (!next.reported_wrong.includes(report) && !next.reported_wrong.some(x => x.seq === report.seq)) throw err('E_NOTE_SHAPE', `the report on note ${w.id} could not be kept on it, so the release is refused`, { id: w.id });
+    // The note is held at once, in this transaction, for the archive review (the report itself keeps the worker's identity).
+    const held = RH.holdReported(E, caller, { project: prep.project, runId: caller.run_id, threshold: prep.lv.notes_match_threshold, headSha: require('./note-report-verdicts.cjs').headOf(E, task_id) }, loadNote(E, w.id), report);
+    return { id: w.id, marked: 'reported_wrong', reports: next.reported_wrong.length, replaced_by: replacedBy, ...(w.redacted ? { redacted: w.redacted } : {}), held };
   });
   const pending = items.filter(i => i.state === 'pending').length;
   return {
@@ -299,6 +325,9 @@ function liveTarget(E, caller, pending, project, x, i) {
   if ((r.status || 'unverified') === 'refuted') throw err('E_ARGS', `${at}: note ${x.of} is refuted`, { id: x.of });
   const gone = E.store.p('SELECT id FROM memory_entries WHERE supersedes = ? AND namespace = ?').get(x.of, r.namespace);
   if (gone) throw err('E_ARGS', `${at}: note ${x.of} was superseded by ${gone.id}; resolve against ${gone.id}`, { id: x.of, superseded_by: gone.id });
+  // A held note is hidden by nobody but the archive review and the operator: a refines or supersedes of it is refused here, naming the hold.
+  // (A repeat only adds a sighting and hides nothing, so it is allowed.)
+  if (x.resolve === 'supersedes' || x.resolve === 'refines') require('./held-guard.cjs').check(E, x.resolve, r.id, { resolution: x.resolve });
   if ((x.resolve === 'supersedes' || x.resolve === 'refines') && caller.role === 'worker' && r.status === 'verified') {
     throw err('E_ROLE', `${at}: note ${x.of} is verified, and a worker may not ${x.resolve === 'refines' ? 'refine' : 'supersede'} a verified note (a repeat of it is fine)`, { id: x.of, role: caller.role });
   }

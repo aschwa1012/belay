@@ -188,7 +188,7 @@ test('Core: the run process binds in process, a keyed orchestrator Core binds on
   const { openCore } = core('index.cjs');
   const dir = sandbox();
   const op = await openCore({ dataDir: dir, caller: operatorCaller, embed: false });
-  tcx.after(() => Promise.resolve().then(() => op.shutdownOwner()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => op.shutdownOwner()));
   const cleanupAll = [];
   try {
     await op.becomeOwner();

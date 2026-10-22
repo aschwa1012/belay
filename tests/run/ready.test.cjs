@@ -61,7 +61,7 @@ test('an init followed by exit 7 is E_NO_READY carrying exit_code 7, and the row
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core, FAKE_INIT_THEN_EXIT);
-  tcx.after(() => Promise.resolve().then(() => m.shutdown()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()));
   await assert.rejects(
     () => m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'wd', startup_timeout_ms: 8000 }),
     (e) => {
@@ -242,7 +242,7 @@ test('the ordinary fake, which reports belay connected, passes the same gate', a
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core, FAKE);
-  tcx.after(() => Promise.resolve().then(() => m.shutdown()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()));
   const row = await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'wok' });
   assert.equal(row.state, 'running');
   // ADR 0024, build step S2: the gate now also names the surface it verified (checkSurface's own
@@ -262,7 +262,7 @@ test('a Codex worker is ready only once its adapter log shows tools/list', async
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core, FAKE_CODEX);
-  tcx.after(() => Promise.resolve().then(() => m.shutdown()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()));
   const row = await m.spawn({ substrate: 'codex', worktree: sb.worktree, prompt: 'do it', worker_id: 'cx', startup_timeout_ms: 8000 });
   assert.equal(row.state, 'running');
   assert.equal(row.substrate, 'codex');
@@ -325,7 +325,7 @@ test('an unreadable user settings file fails the launch with E_ARGS naming the f
   const m = createRunManager({
     core, dataDir: sb.data, runId: 'run-ready', paths: { claudeExe: FAKE, userSettings: broken },
   });
-  tcx.after(() => Promise.resolve().then(() => m.shutdown()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()));
   // ADR 0007 §6 never degrades quietly: a settings file that cannot be parsed names no plugins, and
   // a worker settings file that disables nothing is the hygiene rule silently not applying.
   await assert.rejects(
@@ -345,7 +345,7 @@ test('an unreadable user settings file fails the launch with E_ARGS naming the f
     core, dataDir: sb.data, runId: 'run-ready',
     paths: { claudeExe: FAKE, userSettings: fwd(path.join(sb.root, 'no-such-settings.json')) },
   });
-  tcx.after(() => Promise.resolve().then(() => m2.shutdown()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => m2.shutdown()));
   const row = await m2.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'wq' });
   assert.equal(row.state, 'running');
   // ADR 0024, build step S2: writeFilesFor passes the worker's own cwd, so settings.json also carries

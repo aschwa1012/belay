@@ -1,7 +1,7 @@
 'use strict';
 // note-review-verdicts-k4.test.cjs — the verdict core of a note's review, against a real Engine and a real git repository:
 //   K4-1  a file cite is read from the working tree of a worker that has not committed (workers do not commit; the head is recorded at settle)
-//   K4-2  `confirmed` is refused for a note the reviewer was shown in part; `refuted` and the job route (which shows every field) are not
+//   K4-2  `confirmed` is refused for a note the reviewer was shown in part; `refuted` is not
 //   K4-3  a quote under six non-space characters must be a whole line
 //   K4-4  a note that copied a printed line into its saw does not make that line an echo; a result that shows the title still is one
 //   K4-5  a Codex worker's stream is evidence: command output and a non-belay MCP result count, prose and belay's own tools do not
@@ -60,6 +60,11 @@ async function written(w, marker, { stream, note = baseNote(marker), many = null
   for (const x of out.notes) assert.strictEqual(x.state, 'stored', JSON.stringify(x));
   await call('task.evaluate', orch, { task_id: t.id, worktree: dir });
   return { task: t.id, note: out.notes[0].id, notes: out.notes.map((x) => x.id) };
+}
+// The brief a reviewer of `taskId` would be shown (the job form of reviewBrief was removed): a throwaway review task over it.
+async function briefOf(taskId) {
+  const t = await call('task.create', orch, { spec: `brief probe ${++seq}`, depends_on: [taskId], acceptance: { verdict: true } });
+  return call('memory.reviewBrief', orch, { task_id: t.id });
 }
 async function review(r, taskId, verdicts) {
   await call('worker.write', orch, { id: r, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${r}`, last_event_at: Date.now() });
@@ -161,7 +166,7 @@ test('K4-2c: a note whose stored text is over the brief cap but whose every fiel
   assert.strictEqual(statusOf(w.note), 'verified');
 });
 
-test('K4-2b: a review task cannot confirm a note whose later evidence it was not shown, but can refute it; the job route confirms it whole', async () => {
+test('K4-2b: a review task cannot confirm a note whose later evidence it was not shown, but can refute it', async () => {
   const fat = baseNote('K5', { evidence: [1, 2, 3, 4].map((i) => ({ where: `src/part-${i}.js`, saw: `entry ${i} of the loader evidence` })) });
   const w = await written('w-k42', 'K5', { note: fat });
   const out = await run1(w, 'confirmed', [cite('fixtures/unlisted.json was never opened')]);
@@ -171,12 +176,6 @@ test('K4-2b: a review task cannot confirm a note whose later evidence it was not
   const refuted = await run1(w, 'refuted', [cite('fixtures/unlisted.json was never opened')]);
   assert.strictEqual(refuted.applied.length, 1, JSON.stringify(refuted.refused));
   assert.strictEqual(statusOf(w.note), 'refuted');
-  // The job route: the worker row is belay's, and the run shows the job every field.
-  const w2 = await written('w-k42b', 'K6', { note: baseNote('K6', { evidence: [1, 2, 3, 4].map((i) => ({ where: `src/part-${i}.js`, saw: `entry ${i} of the loader evidence` })) }) });
-  await call('worker.write', orch, { id: `notereview-${w2.task}`, substrate: 'claude-code', pid: process.pid, state: 'stopped', session_id: 's-job', last_event_at: Date.now() });
-  const job = await call('memory.noteVerdicts', harness, { job: { worker_id: `notereview-${w2.task}`, reviewed_task_id: w2.task }, verdicts: [verdict(w2.note, 'confirmed', [cite('fixtures/unlisted.json was never opened')])] });
-  assert.strictEqual(job.applied.length, 1, JSON.stringify(job.refused));
-  assert.strictEqual(statusOf(w2.note), 'verified');
 });
 
 // ---- K4-3 (D49) ------------------------------------------------------------------------------------------------------------
@@ -269,7 +268,7 @@ test('K4-13: a verdict on a note the review task brief did not list is refused, 
   const many = Array.from({ length: 9 }, (_, i) => baseNote(`K${100 + i}`)); // markers 100 to 108: no other note of this file has a vector near these
   const w = await written('w-k413m', 'K100', { many });
   assert.strictEqual(w.notes.length, 9);
-  const brief = await call('memory.reviewBrief', orch, { reviewed_task_id: w.task });
+  const brief = await briefOf(w.task);
   const tail = require('../../src/run/note-review-text.cjs').reviewerTail(brief, []);
   const order = brief.notes.map((n) => n.id); // the brief's own order (created, then id), which the notes written in one millisecond do not keep
   assert.deepStrictEqual(order.slice().sort(), w.notes.slice().sort());

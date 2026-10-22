@@ -1,0 +1,5 @@
+{
+  "comment": "A hold as an older release wrote it for an upheld report (ground report_confirmed, one report on the row, no rev, no reports list).",
+  "hold": { "state": "held", "kind": "wrong", "of": null, "ground": "report_confirmed", "reason": "upheld by a reviewer", "cites": [], "facts": { "trigger": "report_from_other_writer" }, "scrub": null, "reviews": [] },
+  "report": { "by": "worker:w-old", "why": "the loader reads unlisted fixtures", "replaced_by": null, "at": 4242 }
+}

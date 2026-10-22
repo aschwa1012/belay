@@ -22,7 +22,8 @@ const C = require('./lifecycle-common.cjs');
 const M = require('./methods-memory.cjs');
 const N = require('./methods-memory-notes.cjs');
 const { parse } = require('./memory-facts.cjs');
-const { standing, isRejected } = require('./report-marks.cjs');
+const { standing, isRejected, sameReport, reportKey } = require('./report-marks.cjs');
+const BC = require('./note-brief-capture.cjs');
 const { relationFacts, judgedPair } = require('./memory-relate.cjs');
 const { nominationsForScope, countFor } = require('./memory-nominate.cjs');
 const { openProposals } = require('./proposal-open.cjs');
@@ -50,6 +51,24 @@ function noteFacts(note) {
     seen_total: b.seen_total || 0,
   };
 }
+
+// The whole note, for an outcome that would verify it: the full title, when and text, every evidence entry with its full saw and where, applies_to and
+// subjects. The brief binds the hash of this projection (shown_hash) to the verdict, so a note changed since is not verified.
+function wholeNote(note) {
+  const b = note.b;
+  return { ...noteFacts(note), title: note.title, when: typeof b.when === 'string' ? b.when : null, text: note.text, evidence: Array.isArray(b.evidence) ? b.evidence : [], applies_to: b.applies_to || [], subjects: b.subjects || [] };
+}
+
+// The reports a hold carries, as the archive reviewer is shown them (a legacy report_confirmed hold carries its one report in `report`).
+function reportsOfHold(b, note) {
+  if (Array.isArray(b.reports)) return b.reports.map(w => ({ key: w.key || null, by: w.by, worker_id: w.worker_id || null, task_id: w.task_id || null, run_id: w.run_id || null, why: cut(w.why, 500), replaced_by: w.replaced_by || null, at: w.at, ...(w.self_report ? { self_report: true } : {}) }));
+  if (b.report) {
+    const w = (note.b.reported_wrong || []).find(x => x && x.task_id === b.report.task_id && x.at === b.report.at) || b.report;
+    return [{ key: reportKey(w), by: b.report.by, worker_id: w.worker_id || null, task_id: b.report.task_id || null, run_id: w.run_id || null, why: cut(b.report.why, 500), replaced_by: b.report.replaced_by || null, at: b.report.at, legacy: true }];
+  }
+  return [];
+}
+const adviceOf = list => (Array.isArray(list) ? list : []).map(v => ({ verdict: v.verdict, by: v.by, ref: v.ref, at: v.at, reason: cut(v.reason, 500), cites: v.cites || [], ...(v.report_key ? { report_key: v.report_key } : {}) }));
 
 // What the scrub receipts say about the ids: `owed` are ids an earlier scrub could not do and no later scrub has handled (the last event
 // naming the id decides; `unjudged` counts the times in a row a scrub's child gave the id no entry); `handled` maps an id a scrub of THIS
@@ -101,7 +120,7 @@ function streamsOf(E, ids) {
 function item(E, note, why) {
   const b = note.b;
   // A report a reviewer rejected is shown as such, with the reviewer's reason: it names no pair and opens no gate (report-marks.cjs).
-  const rejection = w => { const j = (b.report_rejected || []).find(x => x && x.task_id === w.task_id && x.report_at === w.at); return { rejected: true, rejected_by: (j && j.by) || null, rejected_reason: j ? cut(j.reason, 300) : null }; };
+  const rejection = w => { const j = (b.report_rejected || []).find(x => x && sameReport(x, w)); return { rejected: true, rejected_by: (j && j.by) || null, rejected_reason: j ? cut(j.reason, 300) : null }; };
   const reports = (b.reported_wrong || []).slice(-REPORTS_SHOWN).map(w => ({ ...(isRejected(b, w) ? rejection(w) : {}), by: w.by, worker_id: w.worker_id || null, task_id: w.task_id || null, run_id: w.run_id || null, why: cut(w.why, 500), replaced_by: w.replaced_by || null, at: w.at || null }));
   const matches = (b.matches || []).map(m => ({ id: m.id, similarity: m.similarity }));
   const related = [];
@@ -202,27 +221,41 @@ async function reviewQueue(E, caller, args) {
   if (!project) throw err('E_ARGS', 'memory.reviewQueue: this run has no project, so there is no held queue', { field: 'project' });
   const rows = E.store.p(`SELECT id, run_id, created_at, body FROM memory_entries WHERE namespace = ? AND type = 'held' AND written_by = 'harness'
     AND json_extract(body, '$.state') = 'held' ORDER BY created_at, id`).all(L.nsOf('held', project));
-  const held = [];
+  const held = [], awaiting = [];
   for (const r of rows) {
     const b = parse(r.body);
     const note = load(E, b.note_id);
     if (!note || note.namespace !== N.projectNs(project)) continue; // a hold whose note left the project is the apply-time refusal's business
+    const rev = Number(b.rev) || 0;
+    // A hold the reviewer answered undecided at this very revision waits for the operator: it is not offered again until something changes it (a bump) or the operator re-offers it.
+    if (b.undecided && Number(b.undecided.rev) === rev) { awaiting.push({ held_row: r.id, id: note.id, kind: b.kind, ground: b.ground || null, rev, marked_at: r.created_at, undecided: b.undecided }); continue; }
     const of = b.of ? load(E, b.of) : null;
     let waited = 0;
     try { waited = Number(E.store.p('SELECT COUNT(DISTINCT id) AS n FROM run WHERE project = ? AND COALESCE(started_at, written_at) > ?').get(project, r.created_at).n); } catch { waited = 0; }
+    const reportMade = b.ground === 'reported' || b.ground === 'report_confirmed';
+    const isUns = b.kind === 'unsupported';
+    const verifies = isUns || b.kind === 'wrong' || reportMade; // an outcome of this entry would verify the note: the reviewer is shown all of it
     held.push({
       // A duplicate that rests on a worker's report shows the reports naming the kept note, so same_claim is judged with the fact in front of it.
       ...(b.kind === 'duplicate' && b.of ? { duplicate_reports: (note.b.reported_wrong || []).filter(w => w && w.replaced_by === b.of).slice(0, REPORTS_SHOWN).map(w => ({ by: w.by, why: cut(w.why, 500), replaced_by: w.replaced_by })) } : {}),
-      held_row: r.id, id: note.id, kind: b.kind, of: b.of || null, ground: b.ground, reason: cut(b.reason, 500), cites: b.cites || [], facts: b.facts || null,
+      held_row: r.id, rev, id: note.id, kind: b.kind, of: b.of || null, ground: b.ground, reason: cut(b.reason, 500), cites: b.cites || [], facts: b.facts || null,
+      outcomes: isUns ? ['verify', 'refute', 'still_unsupported'] : ['archive', 'release', 'undecided'],
       run_id: b.run_id || r.run_id, head_sha: b.head_sha || null, marked_at: r.created_at, runs_waited: waited,
       target_review_verified: (note.status || 'unverified') === 'verified' && String(note.status_receipt || '').startsWith('review:'),
-      // A duplicate is judged on both notes in full, so their text is not cut.
-      note: b.kind === 'duplicate' ? { ...noteFacts(note), text: note.text } : noteFacts(note),
+      ...(reportMade ? {
+        reports: reportsOfHold(b, note), reports_total: Number(b.reports_total) || reportsOfHold(b, note).length, reports_dropped: Number(b.reports_dropped) || 0,
+        report_verdicts: adviceOf(b.report_verdicts), self_report: !!b.self_report, ...(b.prior_hold ? { prior_hold: b.prior_hold } : {}), ...(b.kind_history ? { kind_history: b.kind_history } : {}),
+        ...(note.b.matches ? { matches: note.b.matches } : {}),
+      } : {}),
+      ...(Array.isArray(b.note_verdicts) && b.note_verdicts.length ? { note_verdicts: adviceOf(b.note_verdicts) } : {}),
+      // A duplicate is judged on both notes in full, so their text is not cut; an entry whose outcome would verify the note carries all of it and its hash.
+      note: verifies ? wholeNote(note) : b.kind === 'duplicate' ? { ...noteFacts(note), text: note.text } : noteFacts(note),
+      ...(verifies ? { shown_hash: BC.hashOfRow(note) } : {}),
       of_note: of ? (b.kind === 'duplicate' ? { ...noteFacts(of), text: of.text } : noteFacts(of)) : null,
     });
   }
-  const counts = { count: held.length, max_runs_waited: held.reduce((m, h) => Math.max(m, h.runs_waited), 0), review_verified: held.filter(h => h.target_review_verified).length };
-  return { project, run_id: caller.run_id, held, counts };
+  const counts = { count: held.length, awaiting_operator: awaiting.length, max_runs_waited: held.reduce((m, h) => Math.max(m, h.runs_waited), 0), review_verified: held.filter(h => h.target_review_verified).length };
+  return { project, run_id: caller.run_id, held, awaiting_operator: awaiting, counts };
 }
 
 module.exports = { scrubScope, reviewQueue, noteFacts, scrubHistory };

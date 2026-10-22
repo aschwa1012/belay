@@ -48,7 +48,7 @@ test('a wedged owner: 8 reads in one process cost one dial and finish fast, each
     await new Promise(r => setTimeout(r, 700)); // now wedged
     unresponsive.reset();
     const c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
-    tcx.after(() => Promise.resolve().then(() => c.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => c.close()));
     const t0 = Date.now();
     const vias = [];
     const dials = await countDials(async () => {
@@ -103,7 +103,7 @@ test('writes ignore a read-timeout backoff: the write still dials, is sent and g
     unresponsive.reset();
     owner = await slowOwner(dir, () => 900);
     const c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
-    tcx.after(() => Promise.resolve().then(() => c.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => c.close()));
     await c.memory.list({}); // times out at 300 ms: backoff armed
     assert.ok(unresponsive.get(pipeName(dir), process.pid), 'the read armed the backoff');
     const dials = await countDials(async () => {
@@ -126,7 +126,7 @@ test('backoff: reads skip the dial for 10 s, re-dial once after it, and an answe
     unresponsive.setClock(() => now);
     owner = await slowOwner(dir, () => delay);
     const c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
-    tcx.after(() => Promise.resolve().then(() => c.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => c.close()));
     const dialsOf = fn => countDials(fn);
     assert.strictEqual(await dialsOf(() => c.memory.list({})), 1, 'first read dials and times out');
     now += 5000;
@@ -176,7 +176,7 @@ test('during the backoff: the status rung names the mark and its time and sends 
     unresponsive.reset();
     owner = await slowOwner(dir, () => 900);
     const c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
-    tcx.after(() => Promise.resolve().then(() => c.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => c.close()));
     await c.memory.list({}); // the answer times out: backoff armed
     const pings = () => owner.seen.filter(m => m === 'ping').length;
     const before = pings();
@@ -199,7 +199,7 @@ test('during the backoff a vector read still pings, and against a wedged owner f
     await new Promise(r => setTimeout(r, 700));
     unresponsive.reset();
     const c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
-    tcx.after(() => Promise.resolve().then(() => c.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => c.close()));
     await c.memory.list({}); // arms the backoff
     assert.ok(unresponsive.get(core('index.cjs').pipeName(dir), child.pid), 'backoff armed');
     for (const call of [() => c.memory.search({ query: 'which process?', mode: 'semantic' }), () => c.memory.store({ text: 'x' })]) {
@@ -228,7 +228,7 @@ test('a healthy owner: every read is dialled once and answered by the owner, nev
     child = await startOwner('owner-proc.cjs', dir);
     unresponsive.reset();
     const c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
-    tcx.after(() => Promise.resolve().then(() => c.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => c.close()));
     const dials = await countDials(async () => {
       for (let i = 0; i < 6; i += 1) {
         const s = await c.status.get({});
@@ -239,7 +239,7 @@ test('a healthy owner: every read is dialled once and answered by the owner, nev
     assert.strictEqual(dials, 1, 'one connection, kept for every read');
     await c.close();
     const k = new Client(dir, { elect: false, connectRetries: 1, caller: callerFor('orchestrator') });
-    tcx.after(() => Promise.resolve().then(() => k.shutdown()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => k.shutdown()));
     await k.connect();
     await k.shutdown();
   } finally {

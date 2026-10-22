@@ -54,6 +54,11 @@ async function written(w, marker, { stream = toolLines(PRINTED), many = null, no
   await raw('task.evaluate', orch, { task_id: t.id, worktree: dir });
   return { task: t.id, note: out.notes[0].id, notes: out.notes.map((x) => x.id) };
 }
+// The brief a reviewer of `taskId` would be shown (the job form of reviewBrief was removed): a throwaway review task over it.
+async function briefOf(taskId) {
+  const t = await raw('task.create', orch, { spec: `brief probe ${++seq}`, depends_on: [taskId], acceptance: { verdict: true } });
+  return raw('memory.reviewBrief', orch, { task_id: t.id });
+}
 async function review(r, taskId, verdicts) {
   await raw('worker.write', orch, { id: r, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${r}`, last_event_at: Date.now() });
   const t = await raw('task.create', orch, { spec: `review ${++seq}`, depends_on: [taskId], acceptance: { verdict: true } });
@@ -76,7 +81,7 @@ after(() => { store.close(); cleanup(dir); });
 test('C1a: a note the brief did not list stays unreviewed after another review confirmed one the brief did list', async () => {
   const many = Array.from({ length: 9 }, (_, i) => baseNote(`K${110 + i}`));
   const w = await written('w-c1a', 'K110', { many });
-  const order = (await raw('memory.reviewBrief', orch, { reviewed_task_id: w.task })).notes.map((n) => n.id);
+  const order = (await briefOf(w.task)).notes.map((n) => n.id);
   assert.strictEqual(order.length, 9);
   // Review 1's brief is rendered now: it lists the first eight. Its reviewer will answer for the eighth and the ninth.
   const r1 = await review('rev-c1a-1', w.task, [verdict(order[7], 'confirmed', [Q]), verdict(order[8], 'confirmed', [Q])]);
@@ -113,19 +118,6 @@ test('C1c: a review with no captured brief judges nothing, and only belay captur
   assert.strictEqual(statusOf(w.note), 'unverified');
   await assert.rejects(raw('memory.noteBriefCapture', orch, { review_task_id: r, notes: [{ id: w.note, hash: shownHash({}) }] }), (e) => e.code === 'E_ROLE');
   await assert.rejects(raw('memory.noteBriefCapture', harness, { review_task_id: r, notes: [{ id: w.note, hash: 'nothex' }] }), (e) => e.code === 'E_ARGS');
-});
-
-test('C1d: the job route judges the notes its notes file held, not a note written for the task since', async () => {
-  const w = await written('w-c1d', 'K122', { many: [baseNote('K122'), baseNote('K123')] });
-  const [a, b] = (await raw('memory.reviewBrief', orch, { reviewed_task_id: w.task })).notes;
-  const job = { worker_id: `notereview-${w.task}`, reviewed_task_id: w.task };
-  await raw('worker.write', orch, { id: job.worker_id, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's-job', last_event_at: Date.now() });
-  await raw('memory.noteBriefCapture', harness, { job, notes: [{ id: a.id, hash: shownHash(a) }] });
-  const out = await raw('memory.noteVerdicts', harness, { job, verdicts: [verdict(a.id, 'confirmed', [Q]), verdict(b.id, 'confirmed', [Q])] });
-  assert.deepStrictEqual(out.applied.map((x) => x.id), [a.id]);
-  assert.strictEqual(out.refused[0].id, b.id);
-  assert.strictEqual(out.refused[0].detail.reason, 'not_shown');
-  assert.strictEqual(statusOf(b.id), 'unverified');
 });
 
 // ---- C2 --------------------------------------------------------------------------------------------------------------------
