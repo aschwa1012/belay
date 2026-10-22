@@ -8,15 +8,18 @@
 
 const READ_MEMORY_VERBS = new Set(['search', 'list', 'show', 'timeline', 'stats', 'export', 'proposals']);
 
-// Verbs that are a read in one form and a write in another, judged on the same words the command's own parser reads
-// (cmd-memory-lifecycle.cjs writes(), cmd-memory-embed.cjs): `held` lists unless it settles, `restore --candidates` lists,
-// `embed --dry-run` only plans. Plain `embed`, `restore` and `held settle` stay writes.
-const READ_WHEN = {
-  held: (a) => !a.includes('settle'),
-  restore: (a) => a.includes('--candidates'),
-  embed: (a) => a.includes('--dry-run'),
-};
-const isMemoryRead = (argv) => READ_MEMORY_VERBS.has(argv[0]) || (Object.hasOwn(READ_WHEN, argv[0]) && READ_WHEN[argv[0]](argv.slice(1)));
+// Verbs that read in one form and write in another are judged by the command's own parser (memory-render parseArgs) and its own
+// write test (cmd-memory-lifecycle writes()), never by scanning tokens: `--reason --candidates` is a value, not the flag. Anything the
+// parser rejects is refused. `held` lists unless it settles, `restore --candidates` lists, `embed --dry-run` only plans.
+function isMemoryRead(argv) {
+  if (READ_MEMORY_VERBS.has(argv[0])) return true;
+  if (argv[0] !== 'held' && argv[0] !== 'restore' && argv[0] !== 'embed') return false;
+  const parsed = require('./memory-render.cjs').parseArgs(argv);
+  if (parsed.error) return false;
+  if (parsed.sub === 'embed') return parsed.opts.dryRun === true;
+  if (parsed.sub === 'restore' && !parsed.opts.candidates) return false;
+  return !require('./cmd-memory-lifecycle.cjs').writes(parsed);
+}
 
 // `mode` is the command's declared mode (R read-only, W store client, C run control). Returns a refusal message, or null.
 function workerRefusal({ name, mode, argv = [], fix = false, env = process.env }) {
