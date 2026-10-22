@@ -88,10 +88,11 @@ test('embedder: a store holding MiniLM rows and no identity loads MiniLM, never 
   });
 });
 
-test('embedder: the identity is one transaction, and only the exact legacy MiniLM shape adopts (m9)', async () => {
+test('embedder: the identity is one transaction, and only the exact legacy MiniLM shape adopts (m9)', async (tcx) => {
   const dir = sandbox();
   try {
     const s = new Store(path.join(dir, 'memory.db'));
+    tcx.after(() => Promise.resolve().then(() => s.close()).catch(() => {}));
     // A planted throw between keys leaves no identity key.
     assert.throws(() => I.writeMeta(s.db, [['embedding_model', 'x'], ['embedding_sha', Symbol('boom')]]));
     assert.deepStrictEqual(s.db.prepare('SELECT key FROM meta').all(), [], 'a failed write leaves no key');
