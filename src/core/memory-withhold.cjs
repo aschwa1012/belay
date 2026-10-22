@@ -68,7 +68,7 @@ function reviewerSees(E, caller, noteRow) {
     const project = String(noteRow.namespace).slice(8);
     for (const l of rows.leasesHeldBy(E.store, caller.worker_id)) {
       const t = rows.current(E.store, 'task', l.task_id);
-      if (!t || !t.acceptance || t.acceptance.verdict !== true) continue;
+      if (!t || t.run_id !== caller.run_id || !t.acceptance || t.acceptance.verdict !== true) continue;
       const deps = Array.isArray(t.depends_on) ? t.depends_on : [];
       if (RV.reportsAbout(E, deps, project).some((r) => r.note.id === noteRow.id)) return true;
     }
