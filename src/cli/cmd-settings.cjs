@@ -129,6 +129,7 @@ function writeSetting(found, key, rawValue, ctx) {
   const parsed = K.parseValue(key, rawValue);
   if (parsed.error) return usageError(parsed.error);
   const { value } = parsed;
+  const mappedFrom = parsed.mapped_from;
   if (found.found && found.parse_error) return fail(`refusing to write: ${found.parse_error}`, key);
 
   const old = row(found, key);
@@ -174,8 +175,10 @@ function writeSetting(found, key, rawValue, ctx) {
     new: { value: back.value, source: back.source },
     path: file,
     created,
+    ...(mappedFrom !== undefined ? { mapped_from: mappedFrom } : {}),
   };
   const text = `${key}: ${JSON.stringify(old.value)} (${old.source}) -> ${JSON.stringify(value)}\n`
+    + (mappedFrom !== undefined ? `${JSON.stringify(mappedFrom)} is the 0.2.0 name of ${JSON.stringify(value)}; wrote ${JSON.stringify(value)}\n` : '')
     + `${created ? 'created' : 'updated'} ${file}\n`;
   return { code: 0, text, json: receipt };
 }
