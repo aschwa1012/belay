@@ -32,9 +32,9 @@ before(async () => {
 });
 
 after(async () => {
-  await worker.close();
-  await orch.shutdownOwner();
-  await orch.close();
+  // Guarded: a before hook that failed part-way leaves some of these unset, and the owner must still be shut down.
+  if (worker) await worker.close().catch(() => {});
+  if (orch) { await orch.shutdownOwner().catch(() => {}); await orch.close().catch(() => {}); }
   cleanup(dir);
 });
 
