@@ -245,10 +245,16 @@ async function callCore(dotted, args) {
 async function callTool(name, args) {
   const route = routeOf(name);
   if (!route) throw fail('E_ARGS', `no such tool ${name}`, { tool: name });
-  if (!allows(opts.role, name, opts.workerId)) {
+  let notesOn = opts.role === 'worker' ? !!opts.notes : false;
+  // Only these two tools differ in a notes run; any other call must not cause the read of the run row (the attach row answers once the manager has attached).
+  if (opts.role === 'orchestrator' && (name === 'memory_verify' || name === 'memory_store')) { await knowledgeListed(); notesOn = knowledgeListed.notes(); }
+  if (opts.role === 'orchestrator' && notesOn && name === 'memory_verify') {
+    throw fail('E_ROLE', 'memory_verify is not available in a notes run: dispute a note with memory_report (it holds the note for the archive review)', { tool: name, role: opts.role });
+  }
+  if (!allows(opts.role, name, opts.workerId, { notes: notesOn })) {
     throw fail('E_ROLE', `${name} is not available in ${opts.role} role; it belongs to ${roleOf(name)}`, { tool: name, role: opts.role });
   }
-  validateArgs(name, args, { notes: opts.notes });
+  validateArgs(name, args, { notes: notesOn, role: opts.role });
   if (route.via === 'core') {
     const row = withDataNotice(route.method, await callCore(route.method, args));
     // The one place the adapter adds to a row, and it is additive: every field of the core's

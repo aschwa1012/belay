@@ -331,11 +331,12 @@ function toolsFor(role, { knowledge = false, workerId = null, notes = false, que
   if (role === 'orchestrator') {
     const all = knowledge ? BOTH.concat(ORCHESTRATOR, [KNOWLEDGE_TOOL]) : BOTH.concat(ORCHESTRATOR);
     const base = queries ? all : withoutQueries(all);
-    return notes ? base.concat([NOTES.SUMMARIES, NOTES.NOTE_REFUTATION, NOTES.MEMORY_REPORT]) : base;
+    // A notes run: a project memory_store is a note, and memory_verify is gone (notes are disputed by memory_report, never by a status).
+    return notes ? base.filter((t) => t.name !== 'memory_verify').map((t) => (t.name === 'memory_store' ? NOTES.memoryStoreNotes(t, 'orchestrator') : t)).concat([NOTES.SUMMARIES, NOTES.NOTE_REFUTATION, NOTES.MEMORY_REPORT]) : base;
   }
   if (isReviewJob(role, workerId)) return [];
   if (isKnowledgeAgent(role, workerId)) return BOTH.filter((t) => KNOWLEDGE_READ_TOOLS.includes(t.name));
-  if (role === 'worker') return notes ? NOTES.notesWorkerListing(BOTH.concat(WORKER)) : BOTH.concat(WORKER);
+  if (role === 'worker') return notes ? NOTES.notesWorkerListing(BOTH.concat(WORKER).map((t) => (t.name === 'memory_store' ? NOTES.memoryStoreNotes(t, 'worker') : t))) : BOTH.concat(WORKER);
   throw Object.assign(new Error(`unknown role ${role}`), { code: 'E_ROLE' });
 }
 
@@ -345,8 +346,10 @@ const permitBytes = () => Buffer.byteLength(JSON.stringify(PERMIT_TOOL), 'utf8')
 // undefined when the name is not a tool at all.
 const roleOf = (name) => (ROUTES[name] ? ROUTES[name].role : undefined);
 const routeOf = (name) => ROUTES[name];
-const allows = (role, name, workerId = null) => {
+// `notes` (the run has the notes lever on): the orchestrator is not given memory_verify, since a note is disputed by memory_report and never set by a status.
+const allows = (role, name, workerId = null, { notes = false } = {}) => {
   if (isReviewJob(role, workerId)) return false;
+  if (notes && role === 'orchestrator' && name === 'memory_verify') return false;
   if (isKnowledgeAgent(role, workerId)) return KNOWLEDGE_READ_TOOLS.includes(name);
   const r = roleOf(name);
   return r === 'both' || r === role;
@@ -358,7 +361,12 @@ const listingBytes = (role, opts) => Buffer.byteLength(JSON.stringify(toolsFor(r
 const BY_NAME = new Map();
 for (const t of BOTH.concat(ORCHESTRATOR, WORKER, [KNOWLEDGE_TOOL, NOTES.NOTE_RESOLVE, NOTES.SUMMARIES, NOTES.NOTE_REFUTATION, NOTES.MEMORY_REPORT])) BY_NAME.set(t.name, t);
 // `notes` (a notes run's worker adapter): lease_release is the schema that requires `notes`.
-const schemaOf = (name, notes = false) => (notes && name === 'lease_release' ? NOTES.LEASE_RELEASE : BY_NAME.get(name) || {}).inputSchema;
+// and memory_store is the schema that states a note's fields (the orchestrator's namespace text differs from a worker's).
+const schemaOf = (name, notes = false, role = 'worker') => {
+  if (notes && name === 'lease_release') return NOTES.LEASE_RELEASE.inputSchema;
+  if (notes && name === 'memory_store') return NOTES.memoryStoreNotes(BY_NAME.get(name), role).inputSchema;
+  return (BY_NAME.get(name) || {}).inputSchema;
+};
 
 // Optional arguments where an explicit null is refused, not read as absent: the core refuses it too
 // (ADR 0010 amendment 3), and the boundary must say the same thing before the call reaches it.
@@ -381,8 +389,8 @@ const MAX_IDS = 50;
 // property are checked here rather than left for the core to discover. Properties the schema does not
 // name are passed through untouched: the core owns what it accepts, and this is not a JSON Schema
 // implementation. Throws E_ARGS naming the field.
-function validateArgs(name, args, { notes = false } = {}) {
-  const schema = schemaOf(name, notes);
+function validateArgs(name, args, { notes = false, role = 'worker' } = {}) {
+  const schema = schemaOf(name, notes, role);
   if (!schema) return args;
   const a = args || {};
   const bad = (message, detail) => { throw Object.assign(new Error(message), { code: 'E_ARGS', detail }); };
