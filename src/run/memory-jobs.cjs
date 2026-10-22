@@ -126,6 +126,7 @@ async function usageJob(J, snap) {
 // The summary is written straight into the project (below) and observations stay in the run. A worker's own rows
 // move there when its task ends: `memory.promote` changes the namespace and keeps the id, and core decides which
 // rows qualify and records each move. This only names the candidates: the task's rows in the run, by this worker.
+// (ADR 0047 amendment of 2026-10-22: project_writes is refused together with notes, so promotion is unreachable in a notes run; it stays for runs with notes off.)
 const wantsProject = (lv) => !!(lv.project_writes && lv.project);
 async function ensurePromote(J, taskId, workerId) {
   const { s } = J;
