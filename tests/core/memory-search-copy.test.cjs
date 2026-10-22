@@ -26,12 +26,13 @@ async function seeded() {
   return { dir, a, b };
 }
 
-test('keyword search with no owner answers from the copy and leaves the live files untouched', async () => {
+test('keyword search with no owner answers from the copy and leaves the live files untouched', async (tcx) => {
   const { dir, a } = await seeded();
   try {
     const before = fingerprint(dir);
     assert.ok(before.length >= 1);
     const reader = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
+    tcx.after(() => Promise.resolve().then(() => reader.close()).catch(() => {}));
     const r = await reader.memory.search({ namespace: 'ns', query: 'E_OWNER_LOST', mode: 'keyword' });
     assert.deepStrictEqual(r.results.map(x => x.id), [a.id]);
     assert.deepStrictEqual(r.modes_run, ['keyword']);
@@ -50,14 +51,16 @@ test('keyword search with no owner answers from the copy and leaves the live fil
   } finally { cleanup(dir); }
 });
 
-test('a store with no keyword index gives E_NO_INDEX in modes_failed, never an empty no-match', async () => {
+test('a store with no keyword index gives E_NO_INDEX in modes_failed, never an empty no-match', async (tcx) => {
   const dir = sandbox();
   try {
     const s = new Store(path.join(dir, 'memory.db')); // not stamped: what an older core left behind
+    tcx.after(() => Promise.resolve().then(() => s.close()).catch(() => {}));
     s.db.prepare("INSERT INTO memory_entries(id, namespace, worker_id, type, text, text_hash, created_at, updated_at) VALUES ('old', 'ns', 'w', 'fact', 'an old row mentioning pidAlive', 'h', 1, 1)").run();
     s.close();
     const before = fingerprint(dir);
     const reader = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
+    tcx.after(() => Promise.resolve().then(() => reader.close()).catch(() => {}));
     const r = await reader.memory.search({ namespace: 'ns', query: 'pidAlive', mode: 'keyword' });
     assert.deepStrictEqual(r.results, []);
     assert.deepStrictEqual(r.modes_run, []);
@@ -72,15 +75,17 @@ test('a store with no keyword index gives E_NO_INDEX in modes_failed, never an e
     await reader.close();
     assert.deepStrictEqual(fingerprint(dir), before, 'the live file and its sidecars are unchanged');
     const raw = new Store(path.join(dir, 'memory.db'));
+    tcx.after(() => Promise.resolve().then(() => raw.close()).catch(() => {}));
     assert.strictEqual(raw.db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'memory_fts'").get().n, 0, 'a read never made the index');
     raw.close();
   } finally { cleanup(dir); }
 });
 
-test('a data dir with no store at all: keyword search says E_NO_INDEX and creates no file', async () => {
+test('a data dir with no store at all: keyword search says E_NO_INDEX and creates no file', async (tcx) => {
   const dir = sandbox();
   try {
     const reader = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
+    tcx.after(() => Promise.resolve().then(() => reader.close()).catch(() => {}));
     const r = await reader.memory.search({ namespace: 'ns', query: 'anything', mode: 'keyword' });
     assert.deepStrictEqual(r.results, []);
     assert.strictEqual(r.modes_failed[0].code, 'E_NO_INDEX');
