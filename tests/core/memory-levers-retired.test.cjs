@@ -12,6 +12,7 @@ const { parseLevers } = require('../../src/cli/run-levers.cjs');
 const { leversOfRow } = require('../../src/run/memory-levers.cjs');
 const settings = require('../../src/cli/cmd-settings.cjs');
 const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
+const { teardown } = require('../helpers/teardown.cjs');
 
 const MSG = /was removed \(2026-10-21\).*archive review.*Delete the key/;
 const BASE = { project: 'acme', notes: true };
@@ -45,6 +46,7 @@ test('a config memory block with a retired lever is refused with the config path
 
 test('belay settings: a truthy set leaves the config bytes unchanged, false says removed and writes nothing, get prints the message', async () => {
   const dir = sandbox();
+  let bodyError = null;
   try {
     const file = path.join(dir, 'belay.config.json');
     const bytes = `${JSON.stringify({ memory: { project: 'acme' } }, null, 2)}\n`;
@@ -63,7 +65,7 @@ test('belay settings: a truthy set leaves the config bytes unchanged, false says
     const got = await settings.run(ctx(['memory.note_review']));
     assert.strictEqual(got.code, 0);
     assert.match(got.text, MSG);
-  } finally { cleanup(dir); }
+  } catch (e) { bodyError = e === undefined ? new Error('undefined was thrown') : e; throw bodyError; } finally { await teardown(bodyError, [() => cleanup(dir)]); }
 });
 
 test('a run row written before the removal still reads: the three keys are dropped, notes and project kept', () => {
@@ -81,6 +83,7 @@ test('run.attach with a retired lever is E_ARGS and writes no run row', async ()
   const store = new Store(`${dir}/memory.db`, { stamp: true });
   const E = new Engine({ dataDir: dir, store, getEmbedder: async () => null, owner: null, establishedBy: 'test' });
   const orch = callerFor('orchestrator', { run_id: 'r-ret' });
+  let bodyError = null;
   try {
     const rowsOf = () => JSON.stringify(store.p('SELECT * FROM run').all());
     const before = rowsOf();
@@ -88,5 +91,5 @@ test('run.attach with a retired lever is E_ARGS and writes no run row', async ()
     assert.strictEqual(rowsOf(), before, 'no run row');
     const ok = await E.handle('run.attach', { caller: orch, adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ ...BASE, note_review: false }) });
     assert.ok(!String(ok.run.memory_levers).includes('note_review'), 'false is not recorded');
-  } finally { store.close(); cleanup(dir); }
+  } catch (e) { bodyError = e === undefined ? new Error('undefined was thrown') : e; throw bodyError; } finally { await teardown(bodyError, [() => store.close(), () => cleanup(dir)]); }
 });

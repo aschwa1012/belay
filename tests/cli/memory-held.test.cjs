@@ -9,6 +9,7 @@ const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const { Store } = require('../../src/core/store.cjs');
 const { ROOT, CLI, sandbox, cleanup } = require('./stop-helpers.cjs');
+const { teardown } = require('../helpers/teardown.cjs');
 
 const cli = (args, dataDir, json = true) => spawnSync(process.execPath, [CLI, 'memory', ...args, '--data', dataDir, ...(json ? ['--json'] : [])], { cwd: ROOT, windowsHide: true, encoding: 'utf8' });
 const listDir = (dir) => {
@@ -33,8 +34,9 @@ function plant(dataDir) {
   return out;
 }
 
-test('the listing is a read: it starts no owner, creates no file, changes no byte; --awaiting and --project filter', () => {
+test('the listing is a read: it starts no owner, creates no file, changes no byte; --awaiting and --project filter', async () => {
   const dir = sandbox();
+  let bodyError = null;
   try {
     const p = plant(dir);
     const before = digest(dir);
@@ -50,11 +52,12 @@ test('the listing is a read: it starts no owner, creates no file, changes no byt
     assert.match(text.stdout, /AWAITS YOU: cannot say/);
     assert.deepStrictEqual(digest(dir), before, 'no file created, no byte changed');
     assert.ok(!fs.existsSync(`${dir}/owner.lock`));
-  } finally { cleanup(dir); }
+  } catch (e) { bodyError = e === undefined ? new Error('undefined was thrown') : e; throw bodyError; } finally { await teardown(bodyError, [() => cleanup(dir)]); }
 });
 
-test('settle elects, writes, returns the rows it changed and leaves no owner behind', () => {
+test('settle elects, writes, returns the rows it changed and leaves no owner behind', async () => {
   const dir = sandbox();
+  let bodyError = null;
   try {
     const p = plant(dir);
     const r = cli(['held', 'settle', p.a, '--release', '--reason', 'the operator judged the report unfounded'], dir);
@@ -66,11 +69,12 @@ test('settle elects, writes, returns the rows it changed and leaves no owner beh
     assert.strictEqual(JSON.parse(r2.stdout).outcome, 'reoffered');
     const r3 = cli(['held', 'settle', p.b, '--archive', '--reason', 'wrong for good'], dir);
     assert.strictEqual(JSON.parse(r3.stdout).to, 'archive/acme');
-  } finally { cleanup(dir); }
+  } catch (e) { bodyError = e === undefined ? new Error('undefined was thrown') : e; throw bodyError; } finally { await teardown(bodyError, [() => cleanup(dir)]); }
 });
 
-test('every usage error exits 2 and prints the usage line', () => {
+test('every usage error exits 2 and prints the usage line', async () => {
   const dir = sandbox();
+  let bodyError = null;
   try {
     plant(dir);
     for (const args of [
@@ -81,5 +85,5 @@ test('every usage error exits 2 and prints the usage line', () => {
       assert.strictEqual(r.status, 2, args.join(' '));
       assert.match(r.stdout + r.stderr, /belay memory held/);
     }
-  } finally { cleanup(dir); }
+  } catch (e) { bodyError = e === undefined ? new Error('undefined was thrown') : e; throw bodyError; } finally { await teardown(bodyError, [() => cleanup(dir)]); }
 });

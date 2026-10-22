@@ -6,12 +6,16 @@
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const { setup } = require('./report-env.cjs');
+const { teardown } = require('../helpers/teardown.cjs');
 const F = require('../../src/core/memory-facts.cjs');
 const HG = require('../../src/core/held-guard.cjs');
 
 let X, X2;
-before(async () => { X = await setup('r-hold'); X2 = await setup('r-hold2', { notes_reflection: true }); });
-after(() => { X.cleanup(); X2.cleanup(); });
+before(async () => {
+  X = await setup('r-hold');
+  try { X2 = await setup('r-hold2', { notes_reflection: true }); } catch (e) { await X.cleanup(); throw e; }
+});
+after(() => teardown(null, [() => X.cleanup(), () => X2.cleanup()]));
 
 const hold = (id) => X.activeHold(id);
 const total = () => X.heldCount();

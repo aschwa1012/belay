@@ -6,6 +6,7 @@
 const fs = require('node:fs');
 const { execFileSync } = require('node:child_process');
 const { core, sandbox, cleanup, callerFor, capturingCall } = require('./helpers.cjs');
+const { teardown } = require('../helpers/teardown.cjs');
 
 const { Store } = core('store.cjs');
 const { Engine } = core('engine.cjs');
@@ -101,8 +102,9 @@ async function setup(RUN, levers = {}) {
   const heldCount = async () => (await call('memory.held', orch, {})).total;
   const UP = 'fixtures/unlisted.json was opened by the loader';
 
-  Object.assign(env, { stall, E, store, dir, repo, head, RUN, orch, harness, operator, worker, rawCall, call, rowOf, bodyOf, events, note, startTask, written, reported, briefOf, review, cite, rv, apply, heldRows, activeHold, heldCount, UP, embed, cleanup: () => { store.close(); cleanup(dir); cleanup(repo); } });
-  await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true, ...levers }) });
+  Object.assign(env, { stall, E, store, dir, repo, head, RUN, orch, harness, operator, worker, rawCall, call, rowOf, bodyOf, events, note, startTask, written, reported, briefOf, review, cite, rv, apply, heldRows, activeHold, heldCount, UP, embed, cleanup: () => teardown(null, [() => store.close(), () => cleanup(dir), () => cleanup(repo)]) });
+  // The store and both directories are registered for teardown now: a setup that fails here does not leak them.
+  try { await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true, ...levers }) }); } catch (e) { await teardown(e, [() => store.close(), () => cleanup(dir), () => cleanup(repo)]); throw e; }
   return env;
 }
 
