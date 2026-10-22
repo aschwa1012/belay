@@ -10,8 +10,9 @@ const ROOT = path.resolve(__dirname, '..', '..');
 const TEMPLATE = path.join(ROOT, 'src/run/prompts/orchestrator.md');
 
 test('orchestrator prompt: every mcp__belay__ tool name the template mentions is one tools.cjs lists', () => {
-  const text = fs.readFileSync(TEMPLATE, 'utf8');
-  assert.ok(text.split('\n').length < 120, 'the template stays under 120 lines');
+  const raw = fs.readFileSync(TEMPLATE, 'utf8');
+  const text = raw.replace(/\{\{\/?memory_(use|outcome)\}\}/g, ''); // as a run without notes renders it
+  assert.ok(raw.split('\n').length < 120, 'the template stays under 120 lines');
   const T = require(path.join(ROOT, 'src/mcp/tools.cjs'));
   const listed = new Set();
   for (const role of T.ROLES) for (const t of T.toolsFor(role)) listed.add(t.name);
@@ -55,7 +56,7 @@ const AMD6_LINES = {
 
 test('memory rules: the placeholder sits at the end of an existing line, and an empty substitution is the base prompt byte for byte', () => {
   for (const f of ['orchestrator.md', 'orchestrator-interactive.md']) {
-    let now = lf(fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8'));
+    let now = lf(fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8')).replace(/\{\{\/?memory_(use|outcome)\}\}/g, ''); // the notes markers (ADR 0047 amendment of 2026-10-22): a run without notes drops them
     const base = lf(fs.readFileSync(path.join(BASE_PROMPTS, f), 'utf8'));
     // ADR 0034 amendment 2: the interactive twin adds one paragraph (and its blank line) on the embedder-failure pause.
     if (f === 'orchestrator-interactive.md') {
@@ -122,4 +123,44 @@ test('both orchestrator prompts ask for 1 to 3 memory_queries only when the firs
   const spawn = T.toolsFor('orchestrator', { queries: true }).find((t) => t.name === 'worker_spawn');
   assert.ok(spawn.inputSchema.properties.memory_queries, 'worker_spawn lists memory_queries');
   assert.strictEqual(spawn.inputSchema.properties.memory_queries.type, 'array');
+});
+
+// ADR 0047 amendment of 2026-10-22, decision 7: a notes run renders the memory bullet as four points; a run without notes renders what it always did.
+const MARKERS = /\{\{\/?memory_(use|outcome)\}\}/g;
+const LV = require(path.join(ROOT, 'src/cli/run-levers.cjs'));
+const render = (f, memory_levers) => LV.substituteLevers(fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8').replace(/\r\n/g, '\n'), { max_fix_rounds: 2, fix_cutoff: 'cap-only', memory_levers, rules_text: fs.readFileSync(RULES, 'utf8') }, 0);
+
+test('notes render: the memory bullet is the four points, a run outcome is a summary, and every tool it names is on the notes listing', () => {
+  const T = require(path.join(ROOT, 'src/mcp/tools.cjs'));
+  const listed = new Set(T.toolsFor('orchestrator', { notes: true }).map((t) => t.name));
+  for (const f of ['orchestrator.md', 'orchestrator-interactive.md']) {
+    const on = render(f, { notes: true, rules: true });
+    const text = on.text;
+    assert.ok(!MARKERS.test(text) && !/\{\{/.test(text), `${f}: no marker or placeholder is left`);
+    assert.match(text, /Search before you plan[^\n]*memory_search[^\n]*no namespace/, `${f}: search with no namespace`);
+    assert.match(text, /Store a lesson a later run would trip on as a note[^\n]*memory_store[^\n]*namespace: "project"[^\n]*kind/, `${f}: lessons as notes`);
+    assert.match(text, /Record your decisions and the outcome with \`namespace: "summary"\`/, `${f}: outcomes to summary`);
+    assert.match(text, /Never tell a worker to write memory with \`memory_store\`[^\n]*notes[^\n]*lease_release/, `${f}: no worker memory_store`);
+    assert.ok(!/always with \`namespace: "project"\`/.test(text), `${f}: the always-project instruction is gone`);
+    assert.ok(!/store the outcome in memory/.test(text), `${f}: the outcome is recorded as a summary everywhere`);
+    assert.ok(!text.includes('mcp__belay__memory_verify') && !/memory_verify/.test(text), `${f}: memory_verify is not named`);
+    for (const n of new Set([...text.matchAll(/mcp__belay__([a-z_]+)/g)].map((m) => m[1]))) assert.ok(listed.has(n), `${f}: mcp__belay__${n} is not on the notes listing`);
+    assert.deepStrictEqual([on.substituted.memory_use, on.substituted.memory_outcome > 0], [1, true]);
+  }
+});
+
+test('notes off: the render is the template with only its markers dropped, byte for byte, with or without the rules', () => {
+  for (const f of ['orchestrator.md', 'orchestrator-interactive.md']) {
+    const raw = fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8').replace(/\r\n/g, '\n');
+    const plain = raw.replace(MARKERS, '').split('{{max_fix_rounds}}').join('2');
+    for (const lv of [undefined, { notes: false }, { notes: false, project: 'acme' }]) {
+      const off = LV.substituteLevers(raw, { max_fix_rounds: 2, fix_cutoff: 'cap-only', memory_levers: lv }, 0).text;
+      assert.strictEqual(off.includes('{{'), false, f);
+      const expect = plain.split('{{memory_rules}}').join('').split('{{memory_queries_line}}').join('').split('{{memory_report_line}}').join('');
+      assert.strictEqual(off.replace(/\n/g, ''), expect.split('{{fix_cutoff_rule}}').join(LV.cutoffRule('cap-only', 0, f === 'orchestrator.md' ? 'headless' : 'interactive')).replace(/\n/g, ''), `${f} ${JSON.stringify(lv)}`);
+    }
+    const withRules = render(f, { notes: false, rules: true }).text;
+    assert.ok(withRules.includes('mcp__belay__memory_verify'), `${f}: a run without notes keeps the memory_verify rule`);
+    assert.ok(!render(f, { notes: true, rules: true }).text.includes('memory_verify'), `${f}: a notes run drops it`);
+  }
 });

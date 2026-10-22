@@ -6,7 +6,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..', '..');
-const read = (f) => fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8').replace(/\r\n/g, '\n');
+// The templates are read as a run without notes renders them: the {{memory_use}} and {{memory_outcome}} markers (ADR 0047 amendment of 2026-10-22) are dropped and the text between them stays.
+const read = (f) => fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8').replace(/\r\n/g, '\n').replace(/\{\{\/?memory_(use|outcome)\}\}/g, '');
 const HEADLESS = read('orchestrator.md');
 const TWIN = read('orchestrator-interactive.md');
 const H = HEADLESS.split('\n');
