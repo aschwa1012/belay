@@ -18,7 +18,21 @@ const MEMORY_RULES_FILE = path.join(__dirname, '..', 'run', 'prompts', 'memory-r
 // The one sentence that asks the orchestrator for `memory_queries`. Its only reader is the first-message index
 // (memory-preface.cjs), so it is told to the orchestrator only when that lever is on; off, the placeholder is ''
 // and the prompt asks for nothing the run never reads.
-const MEMORY_REPORT_LINE = ' To dispute a note, use `mcp__belay__memory_report` (it holds the note for the archive review); never `memory_verify` refuted on a note.';
+const MEMORY_REPORT_LINE = ' To dispute a note, use `mcp__belay__memory_report` (it holds the note for the archive review).';
+// ADR 0047 amendment (2026-10-22), decision 7: in a notes run the orchestrator's memory bullet says four things, and a run outcome is a summary. The
+// template keeps the text a run without notes always had, between {{memory_use}} ... {{/memory_use}} (and {{memory_outcome}} ... {{/memory_outcome}}); a run
+// with notes replaces the span, a run without drops only the markers, so its prompt is byte for byte what it was.
+const MEMORY_USE_NOTES = [
+  "- Use belay's memory yourself.",
+  '  - Search before you plan: before you create any task, call `mcp__belay__memory_search` with a `query` on the brief\'s subject and no namespace (it searches the',
+  "    project's notes) and use what it returns in your plan and prompts (empty on a first run is normal).",
+  '  - Store a lesson a later run would trip on as a note: `mcp__belay__memory_store` with `namespace: "project"` and `kind`, `title`, `when`, `basis` (and `evidence`',
+  '    when you observed it).',
+  '  - Record your decisions and the outcome with `namespace: "summary"` (a `title` and `text`); they are found on demand with `mcp__belay__memory_summaries`.',
+  '  - Never tell a worker to write memory with `memory_store`: what it learns that is worth keeping goes in the `notes` of its `lease_release`.',
+].join('\n');
+const MEMORY_OUTCOME_NOTES = 'record the outcome with `namespace: "summary"`';
+const MEMORY_VERIFY_RULE = ' Use `mcp__belay__memory_verify` only with a receipt.'; // a notes run's orchestrator has no memory_verify
 const MEMORY_QUERIES_LINE = ' Also give 1 to 3 `memory_queries`: task lines (each under 160 bytes) naming the situations the worker will be in, such as "add a migration" or "dedupe email addresses", not the finding you expect it to make.';
 
 // The time-bound condition is observable only if the orchestrator is told the bound and can read elapsed time
@@ -205,18 +219,37 @@ function substituteLevers(text, levers, timeoutMs = 0, opts = {}) {
   // line endings matched to the prompt's; off, the placeholder becomes '' and the prompt is the base prompt.
   const on = !!(levers.memory_levers && levers.memory_levers.rules && levers.rules_text != null);
   const notesOn = !!(levers.memory_levers && levers.memory_levers.notes);
-  const r = withRule.split('{{memory_report_line}}');
+  const spans = { memory_use: 0, memory_outcome: 0 };
+  const span = (t, name, replacement) => {
+    const open = `{{${name}}}`, close = `{{/${name}}}`;
+    const parts = t.split(open);
+    let out = parts[0];
+    for (const rest of parts.slice(1)) {
+      const at = rest.indexOf(close);
+      if (at < 0) { out += rest; continue; } // an unclosed marker is left as written
+      spans[name] += 1;
+      out += (notesOn ? replacement : rest.slice(0, at)) + rest.slice(at + close.length);
+    }
+    return out;
+  };
+  const spanned = span(span(withRule, 'memory_use', MEMORY_USE_NOTES), 'memory_outcome', MEMORY_OUTCOME_NOTES);
+  const r = spanned.split('{{memory_report_line}}');
   const q = r.join(notesOn ? MEMORY_REPORT_LINE : '').split('{{memory_queries_line}}');
   const queriesOn = !!(levers.memory_levers && levers.memory_levers.first_message_index);
   const c = q.join(queriesOn ? MEMORY_QUERIES_LINE : '').split('{{memory_rules}}');
   let rules = '';
   if (on) {
     rules = matchEol(String(levers.rules_text).replace(TRAILING_EOL, ''), withRule);
+    if (notesOn) rules = rules.split(MEMORY_VERIFY_RULE).join('');
   }
   const substituted = { max_fix_rounds: a.length - 1, fix_cutoff_rule: b.length - 1 };
   if (on) substituted.memory_rules = c.length - 1;
   if (queriesOn) substituted.memory_queries_line = q.length - 1;
-  if (notesOn) substituted.memory_report_line = r.length - 1;
+  if (notesOn) {
+    substituted.memory_report_line = r.length - 1;
+    if (spans.memory_use) substituted.memory_use = spans.memory_use;
+    if (spans.memory_outcome) substituted.memory_outcome = spans.memory_outcome;
+  }
   return { text: c.join(rules), substituted };
 }
 

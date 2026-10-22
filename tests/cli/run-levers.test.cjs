@@ -171,7 +171,7 @@ test('template: the shipped orchestrator prompt has both placeholders and the fo
 test('memory levers: parseLevers omits the block when absent or all-default, and refuses each bad key and each missing prerequisite', () => {
   assert.deepStrictEqual(parseLevers({ memory: {} }), parseLevers({}));
   assert.deepStrictEqual(parseLevers({ memory: { redact: true, alpha: 0.3, summaries: 'off' } }), parseLevers({}));
-  const ok = parseLevers({ memory: { capture: true, observations: true, project: 'acme', project_writes: true, summaries: 'mechanical', index_bytes: 4096 } });
+  const ok = parseLevers({ memory: { capture: true, observations: true, project: 'acme', notes: false, project_writes: true, summaries: 'mechanical', index_bytes: 4096 } });
   assert.strictEqual(ok.memory_levers.project, 'acme');
   assert.strictEqual(ok.memory_levers.summaries, 'mechanical');
   assert.strictEqual(ok.memory_levers.redact, true, 'defaults are filled in');
@@ -186,10 +186,20 @@ test('memory levers: parseLevers omits the block when absent or all-default, and
     [{ observations: true }, /memory\.observations needs memory\.capture/],
     [{ project_writes: true }, /memory\.project_writes needs memory\.project/],
     [{ project: 'acme', project_writes: true, redact: false }, /memory\.redact false cannot be combined with memory\.project_writes true/],
+    [{ project: 'acme', project_writes: true }, /memory\.project_writes cannot be combined with memory\.notes.*notes: false/],
+    [{ project: 'acme', notes: true, project_writes: true }, /memory\.project_writes cannot be combined with memory\.notes/],
+    [{ held_visibility: 'hide' }, /memory\.held_visibility must be one of withhold, warn/],
+    [{ held_breaker_count: 0 }, /memory\.held_breaker_count/], [{ held_breaker_count: 501 }, /memory\.held_breaker_count/], [{ held_breaker_count: 1.5 }, /memory\.held_breaker_count/],
+    [{ held_breaker_share: 0 }, /memory\.held_breaker_share/], [{ held_breaker_share: 1.01 }, /memory\.held_breaker_share/], [{ held_breaker_share: '0.2' }, /memory\.held_breaker_share/],
     [{ capture: true, summaries: 'mechanical' }, /memory\.summaries "mechanical" needs memory\.observations/],
   ];
   for (const [block, re] of bad) assert.match(parseLevers({ memory: block }).error, re, JSON.stringify(block));
   assert.match(parseLevers({ memory: [] }).error, /memory must be an object/);
+  // the held-note levers: defaults, accepted bounds, and no prerequisite (inert without notes)
+  const dflt = parseLevers({ memory: { project: 'acme' } }).memory_levers;
+  assert.deepStrictEqual([dflt.held_visibility, dflt.held_breaker_count, dflt.held_breaker_share], ['withhold', 5, 0.2]);
+  const held = parseLevers({ memory: { notes: false, held_visibility: 'warn', held_breaker_count: 500, held_breaker_share: 1 } }).memory_levers;
+  assert.deepStrictEqual([held.held_visibility, held.held_breaker_count, held.held_breaker_share], ['warn', 500, 1]);
   for (const k of ['capture', 'cost_ledger', 'first_message_index', 'bottle', 'wrapup', 'knowledge_agent']) {
     assert.strictEqual(parseLevers({ memory: { [k]: true } }).memory_levers[k], true, k);
   }

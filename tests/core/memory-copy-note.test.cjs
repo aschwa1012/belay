@@ -15,7 +15,7 @@ const orch = () => T.who.tool('apply') && { ...T.who.tool('apply'), run_id: RUN 
 
 before(async () => {
   T = await setup();
-  await T.call(orch(), 'run.attach', { adapter_pid: process.pid, project: PROJECT, memory_levers: JSON.stringify({ project: PROJECT, notes: true, project_writes: true }) });
+  await T.call(orch(), 'run.attach', { adapter_pid: process.pid, project: PROJECT, memory_levers: JSON.stringify({ project: PROJECT, notes: false, project_writes: true }) });
 });
 
 async function verifyRunRowWithText(text) {

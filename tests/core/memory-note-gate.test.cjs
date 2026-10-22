@@ -184,10 +184,13 @@ test('only notes are gated, and the operator is not', async () => {
   const space = fresh();
   task('t-op', WRITER, 'assigned');
   const open = note(space, 'still open', { task_id: 't-op' });
-  const summary = note(space, 'a summary', { task_id: 't-op', type: 'summary' });
+  // A non-note row is not gated by the two-clock gate; in the project namespace of a notes run it is hidden by decision 4 of the 2026-10-22 amendment (memory-legacy-unreadable.test.cjs).
+  const elsewhere = 'run/gate-op';
+  const summary = note(elsewhere, 'a summary', { task_id: 't-op', type: 'summary' });
   const reader = await seen(orch(READER), space);
   assert.ok(!reader.search.includes(open));
-  assert.ok(reader.search.includes(summary) && reader.list.includes(summary), 'a non-note row is not gated');
+  const other = await seen(orch(READER), elsewhere);
+  assert.ok(other.search.includes(summary) && other.list.includes(summary), 'a non-note row is not gated');
   assert.deepStrictEqual(await everywhere(callerFor('operator'), space, open, { index: {} }), [false, true, true], 'the operator sees the open note in search and list (the index lists notes of a run, and the operator has none)');
   assert.strictEqual(G.sql(E, callerFor('operator')), null);
 });

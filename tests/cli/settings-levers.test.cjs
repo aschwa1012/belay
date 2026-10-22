@@ -321,3 +321,26 @@ test('settings: the 0.2.0 on_embedder_failure names are read and written as the 
     assert.strictEqual(cli(dir, ['settings', 'memory.on_embedder_failure', 'bogus']).code, 2);
   } finally { cleanup(dir); }
 });
+
+test('settings: the held-note levers round-trip, a bad value leaves the file unchanged, and project_writes beside notes is refused', () => {
+  const dir = project();
+  try {
+    writeConfig(dir, { memory: { project: 'acme' } });
+    for (const [k, v, want] of [['held_visibility', 'warn', 'warn'], ['held_breaker_count', '9', 9], ['held_breaker_share', '0.5', 0.5]]) {
+      const w = cli(dir, ['settings', `memory.${k}`, v]);
+      assert.strictEqual(w.code, 0, w.stderr);
+      assert.strictEqual(w.out.new.value, want, k);
+      assert.strictEqual(cli(dir, ['settings', `memory.${k}`]).out.value, want, k);
+    }
+    const before = fs.readFileSync(`${dir}/belay.config.json`, 'utf8');
+    for (const [k, v] of [['held_visibility', 'hide'], ['held_breaker_count', '501'], ['held_breaker_share', '0']]) {
+      assert.strictEqual(cli(dir, ['settings', `memory.${k}`, v]).code, 2, k);
+    }
+    const pw = cli(dir, ['settings', 'memory.project_writes', 'true']);
+    assert.strictEqual(pw.code, 2, 'project_writes with notes on by default is refused');
+    assert.match(`${pw.stderr}${pw.stdout}`, /notes: false/);
+    assert.strictEqual(fs.readFileSync(`${dir}/belay.config.json`, 'utf8'), before, 'the file is byte-identical after the refusals');
+    assert.deepStrictEqual(ML.TYPES.held_breaker_share, { type: 'number', min: 0, max: 1, minExclusive: true });
+    assert.deepStrictEqual(ML.TYPES.held_visibility, { type: 'enum', values: ['withhold', 'warn'] });
+  } finally { cleanup(dir); }
+});

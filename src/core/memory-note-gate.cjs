@@ -41,6 +41,30 @@ const SCOPE_COLS = ['namespace', 'task_id', 'worker_id', 'run_id'];
 
 const gated = (caller) => !!caller && (caller.role === 'worker' || caller.role === 'orchestrator');
 
+// ---- rows of the project that are not notes (ADR 0047 amendment of 2026-10-22, decision 4) ----------------------------------------------
+// In a run with `notes` on, a gated caller cannot read a row of `project/<p>` whose type is not `note`, on any route: such a row was written before
+// project writes became notes (or by the operator), nothing checked it, and it answers as if absent. The operator's command line is not gated and reads
+// it as before; a run with notes off reads it as before. The test reads the caller's own run row (a SELECT) and nothing else.
+function runNotesOn(E, caller) {
+  if (!caller || !caller.run_id) return false;
+  try {
+    const r = E.store.p('SELECT memory_levers FROM run WHERE id = ? ORDER BY seq DESC LIMIT 1').get(caller.run_id);
+    if (!r || r.memory_levers == null) return false;
+    const o = typeof r.memory_levers === 'string' ? JSON.parse(r.memory_levers) : r.memory_levers;
+    return !!o && typeof o === 'object' && o.notes === true;
+  } catch { return false; }
+}
+const legacyHidden = (E, caller) => gated(caller) && runNotesOn(E, caller);
+const legacySql = (alias = 'e') => `(substr(${alias}.namespace, 1, 8) <> 'project/' OR ${alias}.type = 'note')`;
+// A row ({ namespace, type }) that is such a row: the JS twin of legacySql, for a post-filter and a read by id.
+const isLegacy = (r) => !!r && typeof r.namespace === 'string' && r.namespace.startsWith('project/') && r.type !== 'note';
+// The ids of the legacy rows of one project namespace (the semantic scan subtracts them as it subtracts the notes the gate hides); null when none are hidden.
+function legacyIds(E, caller, ns) {
+  if (typeof ns !== 'string' || !ns.startsWith('project/') || !legacyHidden(E, caller)) return null;
+  const ids = E.store.p("SELECT id FROM memory_entries WHERE namespace = ? AND type <> 'note'").all(ns).map((r) => r.id);
+  return ids.length ? new Set(ids) : null;
+}
+
 const OPEN_RUNS = 'SELECT r.id FROM run r WHERE r.ended_at IS NULL AND r.seq = (SELECT MAX(seq) FROM run WHERE id = r.id)';
 
 // Refuses (E_ROLE, nothing read) a gated caller on the tool channel naming a lifecycle namespace. A caller with channel 'harness' and
@@ -120,7 +144,8 @@ function hiddenIds(E, caller, { includeSuperseded = false, body = false, ids = n
 function sql(E, caller, { alias = 'e', ...opts } = {}) {
   if (!gated(caller)) return null;
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(alias)) throw new Error('alias must be a plain SQL identifier');
-  return { where: `(${alias}.type <> 'note' OR ${alias}.id NOT IN (SELECT value FROM json_each(?)))`, params: [JSON.stringify(hiddenIds(E, caller, opts))] };
+  const notes = `(${alias}.type <> 'note' OR ${alias}.id NOT IN (SELECT value FROM json_each(?)))`;
+  return { where: legacyHidden(E, caller) ? `${notes} AND ${legacySql(alias)}` : notes, params: [JSON.stringify(hiddenIds(E, caller, opts))] };
 }
 
 // The gate joined to an existing filter ({ where, params }, where may be empty), body clauses included.
@@ -133,7 +158,8 @@ function and(filter, E, caller, opts) {
 // Whether the gate lets `caller` see row `id` (a row that is not a note, or a caller that is not gated, is visible).
 function visible(E, caller, id, opts) {
   if (!gated(caller)) return true;
+  if (legacyHidden(E, caller) && isLegacy(E.store.p('SELECT namespace, type FROM memory_entries WHERE id = ?').get(id))) return false;
   return hiddenIds(E, caller, { ...opts, ids: [id], body: true }).length === 0;
 }
 
-module.exports = { checkNamespaces, inLifecycle, lifecycleSql, LIFECYCLE_NS, hiddenIds, sql, and, bodySql, bodyLive, visible, gated };
+module.exports = { legacyHidden, legacySql, isLegacy, legacyIds, checkNamespaces, inLifecycle, lifecycleSql, LIFECYCLE_NS, hiddenIds, sql, and, bodySql, bodyLive, visible, gated };

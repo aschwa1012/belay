@@ -175,7 +175,8 @@ test('K4-2b: a review task cannot confirm a note whose later evidence it was not
   assert.deepStrictEqual(out.refused_open, [w.note], 'it stays under review');
   const refuted = await run1(w, 'refuted', [cite('fixtures/unlisted.json was never opened')]);
   assert.strictEqual(refuted.applied.length, 1, JSON.stringify(refuted.refused));
-  assert.strictEqual(statusOf(w.note), 'refuted');
+  assert.strictEqual(statusOf(w.note), 'unverified', 'a reviewer refutation is a report: the note is held and its status is left');
+  assert.ok(refuted.applied[0].held_row && refuted.applied[0].reported.seq === 1);
 });
 
 // ---- K4-3 (D49) ------------------------------------------------------------------------------------------------------------
@@ -209,7 +210,7 @@ test('K4-4: a faithful long saw does not make its own source line uncitable: con
   const bad = await written('w-k44b', 'K9', { stream, note: baseNote('K9', { title: 'the pager timeout is three thousand milliseconds', evidence: [{ where: 'src/pager.cjs', saw: LINE }] }) });
   const r = await run1(bad, 'refuted', [cite('const DEFAULT_TIMEOUT_MS = 30000;')]);
   assert.strictEqual(r.applied.length, 1, JSON.stringify(r.refused));
-  assert.strictEqual(statusOf(bad.note), 'refuted');
+  assert.strictEqual(statusOf(bad.note), 'unverified', 'held on a report, not refuted');
 });
 
 test('K4-4b: a result that lists the note\'s title, or holds a different own sentence beside the quote, is still an echo, with its own reason', () => {

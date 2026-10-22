@@ -16,7 +16,10 @@ test('without the flag the worker and orchestrator listings are what the notes c
   assert.strictEqual(tools.listingBytes('worker'), 4815);
   assert.strictEqual(tools.listingBytes('orchestrator'), 9870);
   assert.deepStrictEqual(tools.toolsFor('worker', { notes: false }), tools.toolsFor('worker'));
-  assert.deepStrictEqual(tools.toolsFor('orchestrator', { notes: true }).slice(0, -3), tools.toolsFor('orchestrator'), 'the orchestrator is given memory_summaries, memory_note_refutation and memory_report only (summaries-listing.test.cjs)');
+  // A notes run lists memory_store with the note's fields and not memory_verify, then memory_summaries, memory_note_refutation and memory_report (summaries-listing.test.cjs).
+  const ordinary = tools.toolsFor('orchestrator').filter((t) => t.name !== 'memory_verify');
+  assert.deepStrictEqual(tools.toolsFor('orchestrator', { notes: true }).slice(0, -3).map((t) => t.name), ordinary.map((t) => t.name));
+  assert.deepStrictEqual(tools.toolsFor('orchestrator', { notes: true }).slice(0, -3).filter((t) => t.name !== 'memory_store'), ordinary.filter((t) => t.name !== 'memory_store'));
 });
 
 test('with notes on the worker listing fits its 7,168 byte budget, every ordinary tool still listed, and carries the schema', () => {
@@ -79,11 +82,36 @@ test('over the wire: --notes lists the notes schema, no flag does not, and the o
   assert.ok(BIN);
 });
 
-test('the notes schema lists applies_to as an optional field (the worker\'s route to an unchanged file the note is about), and the notes-on worker listing keeps about 500 bytes of headroom', () => {
+test('the notes schema lists applies_to as an optional field (the worker\'s route to an unchanged file the note is about), and the notes-on worker listing is inside its budget', () => {
   const list = tools.toolsFor('worker', { notes: true });
   const items = list.find((t) => t.name === 'lease_release').inputSchema.properties.notes.items;
   assert.strictEqual(items.properties.applies_to.type, 'array');
   assert.ok(!items.required.includes('applies_to'));
-  assert.ok(tools.BUDGET.worker - bytes(list) >= 500, `${tools.BUDGET.worker - bytes(list)} bytes of headroom`);
+  // The project memory_store states a note's fields (ADR 0047 amendment of 2026-10-22), so the listing is within the ADR 0010 amendment 6 budget and no longer 500 bytes inside it.
+  assert.ok(bytes(list) <= tools.BUDGET.worker, `${bytes(list)} bytes`);
   assert.match(tools.toolsFor('orchestrator', { queries: true }).find((t) => t.name === 'worker_spawn').inputSchema.properties.memory_queries.description, /^Up to 4 task lines/);
+});
+
+test('over the wire: the orchestrator of a notes run lists no memory_verify and a call to it is E_ROLE naming memory_report; with notes off it is routed', async () => {
+  const fs = require('node:fs');
+  const FAKE = `${require('./rpc.cjs').ROOT}/tests/mcp/fake-core-knowledge.cjs`;
+  const run = async (levers) => {
+    const data = sandboxDir('nl-verify');
+    fs.writeFileSync(`${data}/memory.db`, '');
+    const a = launch({ data, env: { BELAY_FAKE_CORE: FAKE, BELAY_FAKE_LEVERS: levers } });
+    try {
+      await a.initialize();
+      const list = await a.list();
+      const res = await a.call('memory_verify', { id: 'n1', status: 'refuted', receipt: 'test:x' });
+      return { names: list.map((t) => t.name), res };
+    } finally { await a.close(); }
+  };
+  const on = await run(JSON.stringify({ project: 'acme', notes: true }));
+  assert.ok(!on.names.includes('memory_verify') && on.names.includes('memory_report'));
+  assert.strictEqual(on.res.isError, true);
+  assert.match(JSON.stringify(on.res), /E_ROLE/);
+  assert.match(JSON.stringify(on.res), /memory_report/);
+  const off = await run(JSON.stringify({ project: 'acme', notes: false }));
+  assert.ok(off.names.includes('memory_verify'));
+  assert.doesNotMatch(JSON.stringify(off.res), /dispute a note with memory_report/);
 });

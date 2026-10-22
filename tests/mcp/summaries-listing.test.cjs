@@ -27,7 +27,9 @@ test('notes on: the orchestrator lists memory_summaries inside the budget; off, 
   assert.strictEqual(bytes(off), 9870); // 9,829 before the paired write/search contract
   assert.deepStrictEqual(on.map((t) => t.name).slice(-3), ['memory_summaries', 'memory_note_refutation', 'memory_report']);
   assert.ok(bytes(on) <= tools.BUDGET.orchestrator);
-  assert.deepStrictEqual(on.slice(0, -3), off);
+  // memory_verify is unlisted and memory_store states a note (notes-listing.test.cjs)
+  assert.deepStrictEqual(on.slice(0, -3).map((t) => t.name), off.filter((t) => t.name !== 'memory_verify').map((t) => t.name));
+  assert.deepStrictEqual(on.slice(0, -3).filter((t) => t.name !== 'memory_store'), off.filter((t) => t.name !== 'memory_verify' && t.name !== 'memory_store'));
 });
 
 test('notes and knowledge_ask together list both tools, inside the budget', () => {

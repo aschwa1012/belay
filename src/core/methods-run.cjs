@@ -89,6 +89,16 @@ async function attach(E, caller, args) {
   const runId = caller.run_id;
   const t = Date.now();
   const prev = rows.current(E.store, 'run', runId);
+  // ADR 0041: the project is named by the spec and never derived, and it is named once. The run row's project column (what a caller's reach and the
+  // `project` alias resolve through) and the resolved levers' project must be the same name, else the orchestrator would write to one project while its
+  // levers describe another. Refused here, with nothing written.
+  if (resolvedLevers !== null) {
+    const effective = projectGiven ? args.project : (prev ? prev.project : null);
+    const leverProject = JSON.parse(resolvedLevers).project;
+    if (effective && effective !== leverProject) { // a project column that is unset stays unset: nothing can then resolve to a project
+      throw err('E_ARGS', `run.attach: the run's project is ${effective === null || effective === undefined ? 'not set' : JSON.stringify(effective)} and its memory levers name ${leverProject === null || leverProject === undefined ? 'no project' : JSON.stringify(leverProject)}; the spec names the project once (memory.project) and both must agree`, { project: effective || null, memory_project: leverProject || null });
+    }
+  }
   // ADR 0029 amendment 4 (proposed): an ended run stays ended. Only the run process (role operator, the launching attach of
   // a re-run) opens a new epoch over an ended one; the orchestrator's adapter, whose first core call can land after the
   // run closed, is refused. A refusal writes nothing, so the late caller reopens nothing and the run reads as ended.

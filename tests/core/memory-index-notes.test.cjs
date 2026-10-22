@@ -17,6 +17,8 @@ const RUNS = { on: 'rn-on', trust: 'rn-trust', over: 'rn-over', off: 'rn-off' };
 const orch = (k) => callerFor('orchestrator', { run_id: RUNS[k] });
 const call = (k, method, args = {}) => E.handle(method, { caller: orch(k), ...args });
 const index = (k, args = {}) => call(k, 'memory.index', args);
+// The run manager writes into other projects' spaces as the harness; the orchestrator's own tool writes only its project's.
+const viaHarness = (k, method, args = {}) => E.handle(method, { caller: { ...orch(k), channel: 'harness' }, ...args });
 
 before(async () => {
   dir = sandbox();
@@ -53,7 +55,7 @@ test('the index lists live notes only: not summaries, refuted, superseded or pen
   const old = note(space, 'old claim');
   const newer = note(space, 'its replacement');
   store.db.prepare('UPDATE memory_entries SET supersedes = ? WHERE id = ?').run(old, newer);
-  await call('on', 'memory.store', { namespace: space, text: 'a run summary', type: 'summary', embedding: [1, 0, 0], embedding_model: 'm', dim: 3 });
+  await viaHarness('on', 'memory.store', { namespace: space, text: 'a run summary', type: 'summary', embedding: [1, 0, 0], embedding_model: 'm', dim: 3 });
   const r = await index('on', { namespaces: [space] });
   assert.deepStrictEqual([...r.row_ids].sort(), [live, newer].sort());
   assert.ok(r.text.startsWith(N.HEADER_OFF) && r.text.endsWith('\nEND MEMORY'));
@@ -251,7 +253,7 @@ test('the receipt ids are the injected note ids (what in_index_beforehand reads)
 test('lever off: notes are not lasting rows, the old frame and the old bytes stand', async () => {
   const space = fresh();
   note(space, 'a note the old index does not list');
-  const sum = (await call('off', 'memory.store', { namespace: space, text: 'a summary', type: 'summary', embedding: [1, 0, 0], embedding_model: 'm', dim: 3 })).id;
+  const sum = (await viaHarness('off', 'memory.store', { namespace: space, text: 'a summary', type: 'summary', embedding: [1, 0, 0], embedding_model: 'm', dim: 3 })).id;
   const r = await index('off', { namespaces: [space] });
   assert.deepStrictEqual(r.row_ids, [sum]);
   assert.ok(!('notes' in r), 'no notes info on the old result');

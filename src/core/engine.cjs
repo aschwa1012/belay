@@ -335,6 +335,7 @@ class Engine {
     }
     const args = { ...p };
     delete args.caller;
+    if (method.startsWith('memory.')) require('./memory-reach.cjs').normalizeArgs(args); // one spelling per namespace before any routing or reach check
     if (spec.kind === 'write' && !ENDED_RUN_EXEMPT.has(method)) this.assertRunOpen(caller, method);
     const off = this.memoryOff(method);
     if (off === 'refuse') throw err('E_LEVER_OFF', `${method}: memory is off for this run (on_embedder_failure off, after an embedder failure), so nothing is read or written through it`, { lever: 'on_embedder_failure' });
