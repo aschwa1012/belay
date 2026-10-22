@@ -44,8 +44,8 @@ test('the operator (the run process) and an orchestrator over a live run still e
   const dir = sandbox();
   const spy = spyStarts();
   const orch = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
-  tcx.after(() => Promise.resolve().then(() => orch.shutdownOwner()).catch(() => {}));
-  tcx.after(() => Promise.resolve().then(() => orch.close()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => orch.shutdownOwner()));
+  tcx.after(() => Promise.resolve().then(() => orch.close()));
   let orchOpen = true;
   try {
     await orch.run.attach({ adapter_pid: process.pid });
