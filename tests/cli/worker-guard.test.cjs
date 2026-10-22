@@ -57,3 +57,10 @@ test('the built CLI: under the marker memory verify exits 1 and writes nothing; 
     assert.doesNotMatch(read.stderr, /BELAY_WORKER_ID/, 'a read command answers under the marker');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('the memory verbs that read in one form are not refused under the marker; their write forms are', () => {
+  const env = { BELAY_WORKER_ID: 'w-1' };
+  const refused = (argv) => /refused/.test(G.workerRefusal({ name: 'memory', mode: 'R', argv, env }) || '');
+  for (const argv of [['held'], ['held', '--awaiting'], ['held', '--project', 'p'], ['embed', '--dry-run'], ['embed', '--reembed', '--template', 'v2', '--dry-run'], ['restore', 'n1', '--candidates']]) assert.strictEqual(refused(argv), false, argv.join(' '));
+  for (const argv of [['held', 'settle', 'n1'], ['held', '--project', 'p', 'settle', 'n1'], ['embed'], ['embed', '--project', 'p'], ['restore', 'n1'], ['constructor']]) assert.strictEqual(refused(argv), true, argv.join(' '));
+});

@@ -8,6 +8,16 @@
 
 const READ_MEMORY_VERBS = new Set(['search', 'list', 'show', 'timeline', 'stats', 'export', 'proposals']);
 
+// Verbs that are a read in one form and a write in another, judged on the same words the command's own parser reads
+// (cmd-memory-lifecycle.cjs writes(), cmd-memory-embed.cjs): `held` lists unless it settles, `restore --candidates` lists,
+// `embed --dry-run` only plans. Plain `embed`, `restore` and `held settle` stay writes.
+const READ_WHEN = {
+  held: (a) => !a.includes('settle'),
+  restore: (a) => a.includes('--candidates'),
+  embed: (a) => a.includes('--dry-run'),
+};
+const isMemoryRead = (argv) => READ_MEMORY_VERBS.has(argv[0]) || (Object.hasOwn(READ_WHEN, argv[0]) && READ_WHEN[argv[0]](argv.slice(1)));
+
 // `mode` is the command's declared mode (R read-only, W store client, C run control). Returns a refusal message, or null.
 function workerRefusal({ name, mode, argv = [], fix = false, env = process.env }) {
   const id = env.BELAY_WORKER_ID;
@@ -15,7 +25,7 @@ function workerRefusal({ name, mode, argv = [], fix = false, env = process.env }
   let verb = null;
   if (mode !== 'R') verb = name;
   else if (name === 'doctor' && fix) verb = 'doctor --fix';
-  else if (name === 'memory' && !READ_MEMORY_VERBS.has(argv[0])) verb = `memory ${argv[0] === undefined ? '' : argv[0]}`.trim();
+  else if (name === 'memory' && !isMemoryRead(argv)) verb = `memory ${argv[0] === undefined ? '' : argv[0]}`.trim();
   if (!verb) return null;
   return `belay ${verb}: refused. This process runs inside worker ${id} (BELAY_WORKER_ID is set), and the CLI acts as the operator; `
     + 'a worker is not the operator. A worker reads and writes through its belay MCP tools. The read commands still answer.\n';
