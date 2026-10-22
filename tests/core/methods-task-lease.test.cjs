@@ -10,6 +10,7 @@ const { spawnSync } = require('node:child_process');
 const { core, sandbox, cleanup, callerFor, deadPid, sleep } = require('./helpers.cjs');
 
 const { openCore } = core('index.cjs');
+const { teardown } = require('../helpers/teardown.cjs');
 
 let dir, orch, worker, operator, wid = 'w1';
 
@@ -23,12 +24,14 @@ before(async () => {
 });
 
 after(async () => {
-  // Each step is tried on its own and each client is guarded: a before hook that failed part-way leaves some unset,
-  // and one failing close must not skip the owner's shutdown.
-  if (worker) await worker.close().catch(() => {});
-  if (operator) await operator.close().catch(() => {});
-  if (orch) { await orch.shutdownOwner().catch(() => {}); await orch.close().catch(() => {}); } // the only way to stop an owner; never a signal
-  cleanup(dir);
+  // Every step runs even if an earlier one fails (a before hook that failed part-way leaves some unset); the first failure is thrown.
+  await teardown(null, [
+    () => worker && worker.close(),
+    () => operator && operator.close(),
+    () => orch && orch.shutdownOwner(),
+    () => orch && orch.close(),
+    () => cleanup(dir),
+  ]);
 });
 
 const rejects = async (p, code) => {
