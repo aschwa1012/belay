@@ -19,7 +19,15 @@ const LEVERS = {
 const orch = (k) => callerFor('orchestrator', { run_id: RUNS[k] });
 const index = (k, args) => E.handle('memory.index', { caller: orch(k), ...args });
 let n = 0;
-const fresh = () => `project/rank-${++n}`;
+// A notes run reaches only its levers' project (ADR 0047 amendment of 2026-10-22), so each case points the runs at its own project.
+const fresh = () => {
+  const name = `rank-${++n}`;
+  for (const id of Object.values(RUNS)) {
+    const cur = require('./helpers.cjs').core('rows.cjs').current(store, 'run', id);
+    store.p('UPDATE run SET project = ?, memory_levers = ? WHERE id = ? AND seq = ?').run(name, JSON.stringify({ ...JSON.parse(cur.memory_levers), project: name }), id, cur.seq);
+  }
+  return `project/${name}`;
+};
 
 before(async () => {
   dir = sandbox();

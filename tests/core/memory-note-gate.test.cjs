@@ -17,7 +17,15 @@ const READER = 'rn-reader', WRITER = 'rn-writer';
 const orch = (run) => callerFor('orchestrator', { run_id: run });
 const call = (caller, method, args = {}) => E.handle(method, { caller, ...args });
 let n = 0;
-const fresh = () => `project/gate-${++n}`;
+// A notes run reaches only its levers' project (ADR 0047 amendment of 2026-10-22), so each case points the runs at its own project.
+const fresh = () => {
+  const name = `gate-${++n}`;
+  for (const id of [READER, WRITER]) {
+    const cur = rows.current(store, 'run', id);
+    store.p('UPDATE run SET project = ?, memory_levers = ? WHERE id = ? AND seq = ?').run(name, JSON.stringify({ ...JSON.parse(cur.memory_levers), project: name }), id, cur.seq);
+  }
+  return `project/${name}`;
+};
 
 before(async () => {
   dir = sandbox();
@@ -172,7 +180,8 @@ test('the lifecycle namespaces are refused to a tool-channel worker or orchestra
 
 test('a note with no task, written by the orchestrator in another open run, stays hidden until that run ends', async () => {
   const space = fresh();
-  await call(orch('rn-orch-open'), 'run.attach', { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true }) });
+  const pname = space.replace('project/', '');
+  await call(orch('rn-orch-open'), 'run.attach', { adapter_pid: process.pid, project: pname, memory_levers: JSON.stringify({ project: pname, notes: true }) });
   const id = note(space, 'orchestrator note', { run_id: 'rn-orch-open', task_id: null, worker_id: 'orchestrator' });
   assert.deepStrictEqual(await everywhere(orch(READER), space, id), NONE, 'its run is open');
   assert.deepStrictEqual(await everywhere(orch('rn-orch-open'), space, id), ALL, 'its own run sees it');
