@@ -48,7 +48,7 @@ test('shutdown: a turn_end arriving after shutdown writes nothing and elects no 
     core = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
     await core.run.attach({ adapter_pid: process.pid });
     const m = createRunManager({ core, dataDir, runId, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: USER_SETTINGS } });
-    tcx.after(() => Promise.resolve().then(() => m.shutdown()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => m.shutdown()));
     await m.spawn({ substrate: 'claude-code', worktree: wt, prompt: 'one', worker_id: 'w1' });
     const w = m._worker('w1');
 
@@ -100,7 +100,7 @@ test('shutdown through the manager: a late exit fill-in after shutdown elects no
     core = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
     await core.run.attach({ adapter_pid: process.pid });
     const m = createRunManager({ core, dataDir, runId, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: USER_SETTINGS } });
-    tcx.after(() => Promise.resolve().then(() => m.shutdown()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => m.shutdown()));
     await m.spawn({ substrate: 'claude-code', worktree: wt, prompt: 'one', worker_id: 'w1' });
     await m._waitTurn('w1', 8000);
     await m.pause({ worker_id: 'w1', by: 'operator:1' });
