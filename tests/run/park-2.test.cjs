@@ -404,5 +404,10 @@ test('park: a result timestamped before the interrupt is never counted as landin
     const r = await pausePromise;
     assert.strictEqual(r.paused, true);
     assert.deepStrictEqual(r.results_after_interrupt, [], 'a result timestamped before the interrupt must never be counted, however late its own processing runs');
-  } finally { await teardown({ m, sb }); }
+  } finally {
+    // Release the gate and restore the write first: a gated onTurnEnd holds the worker's queue, and shutdown waits on it.
+    core.worker.write = origWrite;
+    if (releaseGate) releaseGate();
+    await teardown({ m, sb });
+  }
 });
