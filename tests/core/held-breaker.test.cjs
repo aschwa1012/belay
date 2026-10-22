@@ -153,3 +153,40 @@ test('B6: mutation check — with the breaker removed the limit scenario fails',
     assert.strictEqual(outs[5].withheld, false, 'with the real breaker the sixth is past the limit');
   } finally { await Z.cleanup(); }
 });
+
+const attach = (X, run) => X.call('run.attach', callerFor('orchestrator', { run_id: run }), { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true, held_breaker_count: 1 }) });
+
+test('B7: another run\'s report is never overwritten, and the proof reflects what workers can see', async () => {
+  const X = await setup('brk-i', { held_breaker_count: 1 });
+  try {
+    await attach(X, 'brk-j');
+    const oB = callerFor('orchestrator', { run_id: 'brk-j' });
+    const [n1, x1] = notes(X, 40);
+    assert.strictEqual((await report(X, X.orch, n1)).withheld, true);
+    assert.strictEqual((await report(X, oB, x1)).withheld, true);
+    const over = await report(X, oB, n1, 'run B agrees');
+    assert.strictEqual(over.breaker.count, 2, 'B is over its limit of 1');
+    assert.strictEqual(over.withheld, true, 'but run A\'s report still withholds the note');
+    assert.match(over.withheld_why, /withheld by another report on the note/);
+    const reports = X.activeHold(n1).b.reports;
+    assert.deepStrictEqual(reports.map((r) => [r.run_id, r.withhold]).sort(), [['brk-i', true], ['brk-j', false]]);
+    assert.strictEqual(X.bodyOf(n1).reported_wrong.length, 2, 'both runs\' reports stand');
+    assert.strictEqual(await listed(X, reader(X, 'brk-i'), n1), false, 'workers still cannot see it');
+    // Within one run a repeat still replaces its own report.
+    await report(X, X.orch, n1, 'again');
+    assert.strictEqual(X.bodyOf(n1).reported_wrong.length, 2);
+  } finally { await X.cleanup(); }
+});
+
+test('B8: a repeat is decided again against the current count, never kept', async () => {
+  const X = await setup('brk-k', { held_breaker_count: 1 });
+  try {
+    const [n1, n2] = notes(X, 40);
+    assert.strictEqual((await report(X, X.orch, n1)).withheld, true);
+    await X.call('memory.heldSettle', X.operator, { id: n1, action: 'release', reason: 'checked: correct' });
+    assert.strictEqual((await report(X, X.orch, n2)).withheld, true);
+    const again = await report(X, X.orch, n1, 'wrong after all');
+    assert.deepStrictEqual([again.withheld, again.breaker.count, again.breaker.limit], [false, 2, 1]);
+    assert.strictEqual(await listed(X, reader(X), n1), true);
+  } finally { await X.cleanup(); }
+});
