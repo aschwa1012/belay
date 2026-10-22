@@ -14,10 +14,20 @@ const { err } = core('errors.cjs');
 async function setup() {
   const dir = sandbox();
   const host = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
-  await host.run.attach({ adapter_pid: process.pid });
-  assert.ok(host.owner, 'the first Core is the owner');
-  const remote = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
-  await remote.run.get({}); // a read; the first write below connects over the pipe
+  let remote = null;
+  try {
+    await host.run.attach({ adapter_pid: process.pid });
+    assert.ok(host.owner, 'the first Core is the owner');
+    remote = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
+    await remote.run.get({}); // a read; the first write below connects over the pipe
+  } catch (e) {
+    // A failed setup must not leave the owner or the client open: unwind what exists, then rethrow.
+    if (remote) await remote.close().catch(() => {});
+    await host.shutdownOwner().catch(() => {});
+    await host.close().catch(() => {});
+    cleanup(dir);
+    throw e;
+  }
   return { dir, host, remote };
 }
 
@@ -38,9 +48,9 @@ function dropFirstReplies(host, methods) {
 }
 
 async function teardown(ctx) {
-  await ctx.remote.close();
-  await ctx.host.shutdownOwner();
-  await ctx.host.close();
+  await ctx.remote.close().catch(() => {});
+  await ctx.host.shutdownOwner().catch(() => {});
+  await ctx.host.close().catch(() => {});
   cleanup(ctx.dir);
 }
 
