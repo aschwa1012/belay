@@ -16,7 +16,7 @@ test('without the flag the worker and orchestrator listings are what the notes c
   assert.strictEqual(tools.listingBytes('worker'), 4815);
   assert.strictEqual(tools.listingBytes('orchestrator'), 9870);
   assert.deepStrictEqual(tools.toolsFor('worker', { notes: false }), tools.toolsFor('worker'));
-  assert.deepStrictEqual(tools.toolsFor('orchestrator', { notes: true }).slice(0, -2), tools.toolsFor('orchestrator'), 'the orchestrator is given memory_summaries and memory_note_refutation only (summaries-listing.test.cjs)');
+  assert.deepStrictEqual(tools.toolsFor('orchestrator', { notes: true }).slice(0, -3), tools.toolsFor('orchestrator'), 'the orchestrator is given memory_summaries, memory_note_refutation and memory_report only (summaries-listing.test.cjs)');
 });
 
 test('with notes on the worker listing fits its 7,168 byte budget, every ordinary tool still listed, and carries the schema', () => {

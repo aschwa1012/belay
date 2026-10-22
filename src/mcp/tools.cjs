@@ -67,6 +67,8 @@ const ROUTES = {
   memory_summaries: { role: 'both', via: 'core', method: 'memory.summaries' },
   // Wave 4: the refuted-note wake carries ids; the reasons are read here. Orchestrator only.
   memory_note_refutation: { role: 'orchestrator', via: 'core', method: 'memory.noteRefutation' },
+  // The operator asks the orchestrator to mark a note incorrect: the same hold a worker's report makes. Listed with the notes lever.
+  memory_report: { role: 'orchestrator', via: 'core', method: 'memory.noteReport' },
   // build step 6d, ADR 0020 decisions 1 and 5: the worker adapter's own prompt tool (listed only for
   // an adapter launched with --permit, never through toolsFor, and hidden from the model — measured in
   // ADR 0020's evidence table) and the orchestrator's window and hand on the same channel.
@@ -329,7 +331,7 @@ function toolsFor(role, { knowledge = false, workerId = null, notes = false, que
   if (role === 'orchestrator') {
     const all = knowledge ? BOTH.concat(ORCHESTRATOR, [KNOWLEDGE_TOOL]) : BOTH.concat(ORCHESTRATOR);
     const base = queries ? all : withoutQueries(all);
-    return notes ? base.concat([NOTES.SUMMARIES, NOTES.NOTE_REFUTATION]) : base;
+    return notes ? base.concat([NOTES.SUMMARIES, NOTES.NOTE_REFUTATION, NOTES.MEMORY_REPORT]) : base;
   }
   if (isReviewJob(role, workerId)) return [];
   if (isKnowledgeAgent(role, workerId)) return BOTH.filter((t) => KNOWLEDGE_READ_TOOLS.includes(t.name));
@@ -354,7 +356,7 @@ const BUDGET = { orchestrator: 11264, worker: 7168, permit: 320 }; // ADR 0010 a
 const listingBytes = (role, opts) => Buffer.byteLength(JSON.stringify(toolsFor(role, opts)), 'utf8');
 
 const BY_NAME = new Map();
-for (const t of BOTH.concat(ORCHESTRATOR, WORKER, [KNOWLEDGE_TOOL, NOTES.NOTE_RESOLVE, NOTES.SUMMARIES, NOTES.NOTE_REFUTATION])) BY_NAME.set(t.name, t);
+for (const t of BOTH.concat(ORCHESTRATOR, WORKER, [KNOWLEDGE_TOOL, NOTES.NOTE_RESOLVE, NOTES.SUMMARIES, NOTES.NOTE_REFUTATION, NOTES.MEMORY_REPORT])) BY_NAME.set(t.name, t);
 // `notes` (a notes run's worker adapter): lease_release is the schema that requires `notes`.
 const schemaOf = (name, notes = false) => (notes && name === 'lease_release' ? NOTES.LEASE_RELEASE : BY_NAME.get(name) || {}).inputSchema;
 
