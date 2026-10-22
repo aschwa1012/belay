@@ -38,8 +38,8 @@ test('two client processes x 100 stores: acked equals rows, and integrity is ok'
 
     // Read the rows back through the owner, then reconcile in both directions (P3).
     const reader = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
-    tcx.after(() => Promise.resolve().then(() => reader.shutdownOwner()).catch(() => {}));
-    tcx.after(() => Promise.resolve().then(() => reader.close()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => reader.shutdownOwner()));
+    tcx.after(() => Promise.resolve().then(() => reader.close()));
     const rows = [];
     for (let offset = 0; offset < 2 * N + 50; offset += 200) {
       const page = await reader.memory.list({ namespace: 'run/a7', limit: 200, offset });
