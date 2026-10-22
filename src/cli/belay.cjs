@@ -209,6 +209,9 @@ async function finish(argv, code, io = { stdout: process.stdout, stderr: process
 
 if (require.main === module) {
   const argv = process.argv.slice(2);
+  // A reader that closes early (`| head`) makes the next write fail with EPIPE. That is not the command failing: drop the error
+  // (no stack trace) and keep the command's own exit code; every other stream error still surfaces.
+  for (const stream of [process.stdout, process.stderr]) stream.on('error', e => { if (!e || e.code !== 'EPIPE') throw e; });
   main(argv)
     .then(code => finish(argv, code))
     .catch(e => { process.stderr.write(`belay: ${(e && e.stack) || e}\n`); process.exitCode = 1; });
