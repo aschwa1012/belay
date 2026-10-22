@@ -66,8 +66,9 @@ for (const notes of [false, true]) {
       const state = { calls: [], shutDown: false, reached: null };
       const atStall = new Promise((r) => { state.reached = r; });
       let tail = null;
+      let held = null;
       try {
-        const held = stalled(op, state, target);
+        held = stalled(op, state, target);
         // A console whose budget is spent as soon as the stalled call is reached: whatever is awaited then is cut.
         const ce = { bound: async () => { await atStall; return TIMED_OUT; } };
         const jobs = { runEndJobs: (args) => { tail = MJ.runEndJobs(args); return tail; } };
@@ -83,6 +84,7 @@ for (const notes of [false, true]) {
         assert.strictEqual(op.isOwner(), false, 'no stray owner was elected');
         assert.ok(!fs.existsSync(path.join(dir, 'owner.lock')), 'no owner.lock came back');
       } finally {
+        if (held) held.release(); // a failed assertion above must not leave the stalled call, and so the tail, waiting forever
         if (tail) await tail.catch(() => {});
         if (op.isOwner()) await op.shutdownOwner();
         await op.close();
