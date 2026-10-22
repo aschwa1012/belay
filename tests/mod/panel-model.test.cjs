@@ -77,11 +77,12 @@ test('runningReview and reviewLine: only a live review blocks the button; an old
 
 test('reviewOutcome and reviewLine put a finished review in words, never raw JSON', () => {
   const r = { project: 'smoke', state: 'ok', pid: null, ts: 1, job: 'archreview-run-abc-lx3k9q2m' };
-  const t = 'ran as archreview-run-abc-lx3k9q2m: {"verdicts":1,"applied":1,"archived":1,"released":0,"undecided":0,"refused":0}';
-  assert.strictEqual(M.reviewOutcome(t), '1 verdict: 1 archived');
-  assert.strictEqual(M.reviewLine({ ...r, text: t }), 'archive review of smoke done · 1 verdict: 1 archived · job …lx3k9q2m');
-  assert.strictEqual(M.reviewOutcome('ran as j: {"verdicts":5,"archived":2,"released":1,"undecided":1,"refused":1}'), '5 verdicts: 2 archived, 1 released, 1 undecided, 1 refused');
+  const t = 'ran as archreview-run-abc-lx3k9q2m: {"verdicts":1,"applied":1,"refused":0,"undecided":0,"refused_stale":0}';
+  assert.strictEqual(M.reviewOutcome(t), '1 verdict: 1 applied');
+  assert.strictEqual(M.reviewLine({ ...r, text: t }), 'archive review of smoke done · 1 verdict: 1 applied · job …lx3k9q2m');
+  assert.strictEqual(M.reviewOutcome('ran as j: {"verdicts":5,"applied":2,"refused":1,"undecided":1,"refused_stale":1}'), '5 verdicts: 2 applied, 1 refused, 1 undecided, 1 stale');
   assert.strictEqual(M.reviewOutcome('ran as j: {"verdicts":0}'), '0 verdicts');
+assert.strictEqual(M.reviewOutcome('ran as j: {"verdicts":3,"applied":2,"refused":1,"undecided":0,"refused_stale":0}'), '3 verdicts: 2 applied, 1 refused');
   for (const x of [null, 'kept 3', 'ran as j: {nope}', 'nothing to do (x)']) assert.strictEqual(M.reviewOutcome(x), null, String(x));
   assert.strictEqual(M.reviewLine({ ...r, text: 'kept 3' }), 'archive review of smoke ended ok · kept 3');
 });

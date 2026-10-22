@@ -29,14 +29,15 @@ describe('agent names and the interactive orchestrator', () => {
     await openPane($, wd)
     const text = leaves(await (await pane($, 'terminal', 120)).ui.drawn()).join('|')
     expect(text).toContain('note-reviewer')
-    expect(text).toContain('a-very-long-age…')
+    expect(text).toContain('a-very-l…-indeed')
     expect(text).not.toContain('note-reviewe|')
   })
   test('interactive: the orchestrator row says interactive instead of ?, and has no cost mark of a number', async ($, on) => {
-    const wd = await boot($, on, { mode: 'interactive', noDisplay: true })
+    const wd = await boot($, on, { mode: 'interactive', noDisplay: true, orchNoCost: true })
     await openPane($, wd)
     const { text } = await pane($, 'terminal', 120)
     expect(text).toContain('interactive')
+    expect(text).toContain('n/a')
     expect(text).toMatch(/◇\s*orchestrator/)
   })
   test('no cost recorded yet says so', async ($, on) => {

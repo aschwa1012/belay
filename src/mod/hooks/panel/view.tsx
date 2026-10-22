@@ -41,7 +41,7 @@ const clip = clipCells
 const pad = (s: string, n: number): string => (s.length >= n ? s.slice(0, n) : s + ' '.repeat(n - s.length))
 
 // An agent name that does not fit is cut with an ellipsis, so the cut shows.
-const padName = (s: string, n: number): string => (s.length > n ? s.slice(0, Math.max(0, n - 1)) + '…' : pad(s, n))
+const padName = (s: string, n: number): string => (s.length > n ? s.slice(0, Math.ceil((n - 1) / 2)) + '…' + s.slice(s.length - Math.floor((n - 1) / 2)) : pad(s, n)) // a cut keeps the end, which tells archreview-… workers apart
 
 // 'claude-sonnet-5-5' -> 'sonnet'; anything else (codex) is shown as belay gave it.
 export function shortModel(m: string | null): string {

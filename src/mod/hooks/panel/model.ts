@@ -233,8 +233,7 @@ export function reviewOutcome(text: string | null): string | null {
   try { c = JSON.parse(m[1]!) as Record<string, unknown> } catch { return null }
   if (c === null || typeof c !== 'object') return null
   const n = (k: string): number => (typeof c[k] === 'number' && (c[k] as number) > 0 ? (c[k] as number) : 0)
-  const parts = ['archived', 'released', 'undecided', 'refused'].filter(k => n(k) > 0).map(k => `${n(k)} ${k}`)
-  if (!parts.length && n('applied') > 0) parts.push(`${n('applied')} applied`)
+  const parts = ['applied', 'refused', 'undecided', 'refused_stale'].filter(k => n(k) > 0).map(k => `${n(k)} ${k === 'refused_stale' ? 'stale' : k}`)
   const v = typeof c.verdicts === 'number' ? `${c.verdicts} verdict${c.verdicts === 1 ? '' : 's'}` : null
   return [v, parts.join(', ') || null].filter(Boolean).join(': ') || null
 }
