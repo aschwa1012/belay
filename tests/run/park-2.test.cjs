@@ -383,9 +383,10 @@ test('park: a result timestamped before the interrupt is never counted as landin
   const m = mgr(sb, core);
   let gateInstalled = false;
   let releaseGate = null;
+  let released = false; // set by teardown: a gate that arms after it must open at once
   const origWrite = core.worker.write.bind(core.worker);
   core.worker.write = async (r) => {
-    if (!gateInstalled && r.id === 'w1' && r.state === 'starting') { gateInstalled = true; const w0 = m._worker('w1'); w0.queue = w0.queue.then(() => new Promise((res) => { releaseGate = res; })); }
+    if (!gateInstalled && r.id === 'w1' && r.state === 'starting') { gateInstalled = true; const w0 = m._worker('w1'); w0.queue = w0.queue.then(() => new Promise((res) => { releaseGate = res; if (released) res(); })); }
     return origWrite(r);
   };
   try {
@@ -407,6 +408,7 @@ test('park: a result timestamped before the interrupt is never counted as landin
   } finally {
     // Release the gate and restore the write first: a gated onTurnEnd holds the worker's queue, and shutdown waits on it.
     core.worker.write = origWrite;
+    released = true;
     if (releaseGate) releaseGate();
     await teardown({ m, sb });
   }
