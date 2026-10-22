@@ -14,28 +14,52 @@ const { checkNamespaces } = require('./memory-note-gate.cjs');
 // The run's project name is the `project` column of its run row, which run.attach set from the spec's
 // `memory.project`. It is never derived from a folder, a cwd or a git remote. A store copy that predates the column,
 // a caller with no run and a run with no project are all "no project", not an error.
+// In a notes run the levers' project is the one the run may reach (ADR 0047 amendment of 2026-10-22): a run attached with its project column unset and levers
+// naming one reaches that project and no other, so the column's absence opens nothing. The column is never written from the levers.
 function projectOf(E, caller) {
   if (!caller || !caller.run_id) return null;
   try {
-    const r = E.store.p('SELECT project FROM run WHERE id = ? ORDER BY seq DESC LIMIT 1').get(caller.run_id);
-    return r && r.project ? r.project : null;
+    const r = E.store.p('SELECT project, memory_levers FROM run WHERE id = ? ORDER BY seq DESC LIMIT 1').get(caller.run_id);
+    if (!r) return null;
+    if (r.project) return r.project;
+    return notesProjectOf(r.memory_levers);
+  } catch { return null; }
+}
+function notesProjectOf(raw) {
+  if (raw == null) return null;
+  try { const o = typeof raw === 'string' ? JSON.parse(raw) : raw; return o && o.notes === true && typeof o.project === 'string' && o.project ? o.project : null; } catch { return null; }
+}
+// The project of a notes run (levers on), else null: the only one its worker and orchestrator reach, by read or by write.
+function notesProject(E, caller) {
+  if (!caller || (caller.role !== 'worker' && caller.role !== 'orchestrator') || caller.channel === 'harness' || !caller.run_id) return null;
+  try {
+    const r = E.store.p('SELECT memory_levers FROM run WHERE id = ? ORDER BY seq DESC LIMIT 1').get(caller.run_id);
+    return r ? notesProjectOf(r.memory_levers) : null;
   } catch { return null; }
 }
 
-// One spelling per namespace, applied once at the Core boundary (engine.cjs) before any routing or reach check (ADR 0047 amendment of 2026-10-22). A
-// spelling such as 'Project/acme', ' project', 'PROJECT' or 'project//acme' would otherwise miss the 'project' alias and the prefix tests that route a write
-// to the notes path. NFKC, backslashes to slashes, trimmed, runs of slashes collapsed, edge slashes dropped, and the first segment lower-cased; the rest is
-// lower-cased too for the namespaces belay names itself (their parts are lower-case by construction), and left alone for run/<id>, whose id may have capitals.
-const BELAY_NS = new Set(['project', 'summary', 'archive', 'held', 'pending', 'proposal', 'draft', 'nomination']);
+// One spelling per ROUTED namespace, applied once at the Core boundary (engine.cjs) before any routing or reach check (ADR 0047 amendment of 2026-10-22).
+// Only a namespace whose first segment IS one of belay's own routed prefixes or aliases is touched, whatever its spelling ('Project/acme', ' project', 'PROJECT',
+// 'project//acme', 'Run/x'): NFKC, control and zero-width characters dropped, backslash to slash, trim, runs of slashes collapsed, edge slashes dropped, the
+// prefix lower-cased, and the rest lower-cased for the namespaces belay names itself (their parts are lower-case by construction) but not for run/<id>, whose id
+// may have capitals. Every other namespace is returned byte for byte as given, so rows stored under any other spelling stay reachable by that spelling.
+// A first segment that is a look-alike of a routed prefix in another script (Cyrillic 'р' for 'p') is refused: it would be a second namespace that reads like a route.
+const ROUTED = new Set(['project', 'summary', 'run', 'archive', 'held', 'pending', 'proposal', 'draft', 'nomination']);
+const LOOKALIKE = { 'а': 'a', 'е': 'e', 'о': 'o', 'р': 'p', 'с': 'c', 'х': 'x', 'у': 'y', 'і': 'i', 'ѕ': 's', 'ј': 'j', 'ԁ': 'd', 'ո': 'n', 'ս': 'u', 'ɡ': 'g', 'ο': 'o', 'ρ': 'p', 'υ': 'u', 'ν': 'v', 'ι': 'i', 'ℓ': 'l', 'ꞵ': 'b', 'һ': 'h', 'ԛ': 'q', 'ᴅ': 'd', 'ꜱ': 's', 'ᴘ': 'p', 'ᴏ': 'o', 'ᴊ': 'j', 'ᴇ': 'e', 'ᴛ': 't', 'ᴍ': 'm', 'ʀ': 'r', 'ɴ': 'n', 'ʜ': 'h', 'ɪ': 'i', 'ᴜ': 'u', 'ᴄ': 'c', 'ᴀ': 'a' };
 function normalizeNamespace(ns) {
   if (typeof ns !== 'string') return ns;
-  let s = ns.normalize('NFKC').replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2060\ufeff]/g, '').split(String.fromCharCode(92)).join('/').trim();
-  s = s.replace(/\/+/g, '/').replace(/^\/|\/$/g, '');
-  const i = s.indexOf('/');
-  const head = (i < 0 ? s : s.slice(0, i)).trim().toLowerCase();
-  const tail = i < 0 ? '' : s.slice(i + 1).split('/').map((x) => x.trim()).join('/');
+  let t = ns.normalize('NFKC').replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2060\ufeff]/g, '').split(String.fromCharCode(92)).join('/').trim();
+  t = t.replace(/\/+/g, '/').replace(/^\/|\/$/g, '');
+  const i = t.indexOf('/');
+  const head = (i < 0 ? t : t.slice(0, i)).trim().toLowerCase();
+  if (/[^\u0000-\u007f]/.test(head)) {
+    const skeleton = [...head].map((c) => LOOKALIKE[c] || c).join('');
+    if (skeleton !== head && ROUTED.has(skeleton)) throw err('E_ARGS', `namespace ${JSON.stringify(ns)} starts with a look-alike of the routed prefix ${skeleton}; write it in plain letters`, { namespace: ns, prefix: skeleton });
+  }
+  if (!ROUTED.has(head)) return ns; // not a route: byte for byte as given
   if (i < 0) return head;
-  return BELAY_NS.has(head) ? `${head}/${tail.toLowerCase()}` : `${head}/${tail}`;
+  const tail = t.slice(i + 1).split('/').map((x) => x.trim()).join('/');
+  return head === 'run' ? `run/${tail}` : `${head}/${tail.toLowerCase()}`;
 }
 // Normalises the namespace-bearing arguments of a memory call in place (a copy of the caller's args).
 function normalizeArgs(args) {
@@ -79,6 +103,13 @@ function reachOf(E, caller) {
 // E_ROLE naming the first namespace outside the caller's reach; `verb` says what was attempted.
 function checkReach(E, caller, namespaces, verb) {
   if (verb === 'read') checkNamespaces(caller, namespaces); // the lifecycle namespaces are not for a tool-channel caller (memory-note-gate.cjs)
+  const mine = notesProject(E, caller);
+  if (mine) {
+    for (const ns of namespaces) {
+      const m = /^(project|summary)\/(.*)$/.exec(String(ns));
+      if (m && m[2] !== mine) throw err('E_ROLE', `a notes run reaches only its own project (${mine}); ${m[1]}/${m[2]} is another`, { namespace: ns, role: caller.role });
+    }
+  }
   const reach = reachOf(E, caller);
   if (!reach) return;
   for (const ns of namespaces) {
