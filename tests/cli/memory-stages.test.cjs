@@ -174,7 +174,7 @@ test('DEFAULTS: the stage levers are present with the agreed values', () => {
     [300, 0.1, 3, 3, 600, 2, 'claude-haiku-5-5', 'claude-opus-5-5']);
 });
 
-test('without --run the newest ENDED run with notes on is used; a live run is refused unless named', async () => {
+test('without --run the newest ENDED run with notes on is used; a live run is refused unless named', async (tcx) => {
   await planted(async (T) => {
     const p = pending(T, 'pending in the live run');
     T.store.close();
@@ -188,6 +188,7 @@ test('without --run the newest ENDED run with notes on is used; a live run is re
     const { Engine } = require('../../src/core/engine.cjs');
     const { callerFor } = require('../core/helpers.cjs');
     const s2 = new Store(`${T.dir}/memory.db`, { stamp: true });
+    tcx.after(() => Promise.resolve().then(() => s2.close()).catch(() => {}));
     const E = new Engine({ dataDir: T.dir, store: s2, getEmbedder: null, owner: null, establishedBy: 'test' });
     await E.handle('run.end', { caller: callerFor('operator', { run_id: 'lc-apply' }), exit_reason: 'done' });
     s2.close();
