@@ -246,3 +246,16 @@ test('doctor memory-index: absent before any owner has built the index, present 
     assert.match(c.evidence, /^absent \(no owner has opened this store/);
   } finally { cleanup(dir); }
 });
+
+test('search text: "keyword matches only" is said only when the keyword half ran; otherwise the line names what ran and what failed', () => {
+  const { renderSearchText } = require('../../src/cli/memory-render.cjs');
+  const sem = { mode: 'semantic', code: 'E_NO_EMBEDDER' };
+  const kw = { mode: 'keyword', code: 'E_NO_INDEX' };
+  const ranKeyword = renderSearchText({ results: [], modes_run: ['keyword'], modes_failed: [sem] }, 'full');
+  assert.match(ranKeyword, /keyword matches only/);
+  const none = renderSearchText({ results: [], modes_run: [], modes_failed: [sem, kw] }, 'full');
+  assert.doesNotMatch(none, /keyword matches only/);
+  assert.match(none, /NO SEARCH MODE RAN \(semantic \(E_NO_EMBEDDER\) and keyword \(E_NO_INDEX\) failed\)/);
+  assert.match(none, /failed: keyword E_NO_INDEX/);
+  assert.doesNotMatch(renderSearchText({ results: [], modes_run: ['keyword'], modes_failed: [] }, 'full'), /\*\*\*/);
+});
