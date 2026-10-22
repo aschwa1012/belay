@@ -88,13 +88,15 @@ test('row 2: restoring B, whose supersedes names a held A, would hide A again: r
   assert.strictEqual(r.restored, true);
 });
 
-test('row 5: the orchestrator\'s memory_verify refuted (test: receipt) on a held note is E_HELD; an unheld note is refuted as before; the operator may', async () => {
+test('row 5: the orchestrator\'s memory_verify refuted (test: receipt) on a note is a report, never a status (a held note keeps its hold); the operator may refute', async () => {
   const { id, hold } = await heldNote('guard verify');
-  const before = state(id);
-  await rejectsHeld(T.call(tool(), 'memory.setStatus', { id, status: 'refuted', receipt: 'test:npm test passed' }), id, hold, 'status');
-  assert.strictEqual(state(id), before);
+  const before = T.row(id);
+  const out = await T.call(tool(), 'memory.setStatus', { id, status: 'refuted', receipt: 'test:npm test passed' });
+  assert.deepStrictEqual([out.state, out.hold.merged, out.status === 'refuted'], ['held', hold, false], 'the scrubber hold is merged into one reported hold');
+  assert.deepStrictEqual([T.row(id).status, T.row(id).namespace, T.row(id).status_receipt], [before.status, before.namespace, before.status_receipt]);
   const free = T.note('guard verify free');
-  assert.strictEqual((await T.call(tool(), 'memory.setStatus', { id: free, status: 'refuted', receipt: 'test:npm test passed' })).status, 'refuted');
+  const rep = await T.call(tool(), 'memory.setStatus', { id: free, status: 'refuted', receipt: 'test:npm test passed' });
+  assert.deepStrictEqual([rep.state, rep.status === 'refuted'], ['held', false]);
   assert.strictEqual((await T.call(operator(), 'memory.setStatus', { id, status: 'refuted', receipt: 'test:the operator ran it' })).status, 'refuted');
 });
 

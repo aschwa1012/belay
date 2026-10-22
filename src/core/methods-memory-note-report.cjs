@@ -33,6 +33,11 @@ async function noteReport(E, caller, args) {
   C.allowKeys(args || {}, ['note_id', 'why', 'replaced_by'], 'memory.noteReport');
   const by = reporterOf(caller);
   if (!by) throw err('E_ROLE', 'memory.noteReport is the operator\'s command (belay memory report) and the orchestrator\'s tool (memory_report); a worker reports in its hand-back, and the run\'s close stages report nothing', { role: caller && caller.role, channel: (caller && caller.channel) || 'tool' });
+  return reportNote(E, caller, by, args, null);
+}
+
+// The body of a report, for a reporter already identified (`by`: from reporterOf, never from an argument). `cites` is the receipt a status route carries.
+async function reportNote(E, caller, by, args, cites) {
   if (!validId(args.note_id)) throw err('E_ARGS', 'memory.noteReport needs note_id, the id of a live note', { field: 'note_id' });
   if (typeof args.why !== 'string' || !args.why.trim() || Buffer.byteLength(args.why, 'utf8') > WHY_MAX) throw err('E_ARGS', `memory.noteReport needs why: a non-empty reason of at most ${WHY_MAX} bytes`, { field: 'why' });
   const rb = args.replaced_by === undefined || args.replaced_by === null ? null : args.replaced_by;
@@ -59,7 +64,7 @@ async function noteReport(E, caller, args) {
     // Read again inside the transaction: the note may have left the project since the first look.
     const live = loadNote(E, args.note_id);
     if (!live || live.type !== 'note' || live.namespace !== N.projectNs(project)) throw missing();
-    return reportIn(E, caller, { note: live.id, project, by, run_id: caller.run_id || null, why, replaced_by: rb, threshold, headSha: null, extra: by === 'operator' && Number.isInteger(caller.peer_pid) ? { operator_pid: caller.peer_pid } : null });
+    return reportIn(E, caller, { note: live.id, project, by, run_id: caller.run_id || null, why, replaced_by: rb, cites, threshold, headSha: null, extra: by === 'operator' && Number.isInteger(caller.peer_pid) ? { operator_pid: caller.peer_pid } : null });
   });
   E.noteWrite();
   const { report, held } = out;
@@ -74,4 +79,17 @@ async function noteReport(E, caller, args) {
   };
 }
 
-module.exports = { noteReport, reporterOf };
+// ADR 0047 amendment (2026-10-22), decision 5: the orchestrator's `refuted` on a note is a report with the receipt as its reason and cite. The status is
+// left as it was. `receipt` has passed the receipt checks of memory.setStatus. Returns the answer setStatus gives.
+async function reportByStatus(E, caller, id, receipt) {
+  let why = redact(NT.oneLine(String(receipt))).text;
+  while (Buffer.byteLength(why, 'utf8') > WHY_MAX) why = why.slice(0, -1);
+  const out = await reportNote(E, caller, 'orchestrator', { note_id: id, why }, [receipt]);
+  const row = out.row;
+  return {
+    id, status: row.status, receipt: row.status_receipt || null, reported: { seq: out.report.seq }, reported_by: out.reported_by, state: out.state,
+    ...(out.state === 'not_held' ? { reason: out.reason } : { hold: out.hold }), reports: out.reports, project: out.project,
+  };
+}
+
+module.exports = { noteReport, reporterOf, reportByStatus };

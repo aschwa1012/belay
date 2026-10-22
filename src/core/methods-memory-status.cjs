@@ -12,6 +12,7 @@ const fs = require('node:fs');
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 const { parseReceipt, STATUSES } = require('./memory-rows.cjs');
+const HG = require('./held-guard.cjs');
 
 const COPY_PREFIX = 'copy-of:';
 const GIT_BOUND_MS = 10000;
@@ -126,6 +127,12 @@ async function setStatus(E, caller, args) {
   if (!STATUSES.includes(status)) throw err('E_ARGS', `memory.setStatus status must be one of ${STATUSES.join(', ')}`, { field: 'status', value: status });
   const target = E.store.p('SELECT type FROM memory_entries WHERE id = ?').get(id);
   if (!target) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
+  // ADR 0047 amendment (2026-10-22), decision 5: in a notes run a note is disputed by a report, never by a status. Only the operator's own command sets
+  // a note's status; the orchestrator's `refuted` becomes a report (below, once its receipt has passed), and its `unverified` is refused because a
+  // reset could bring back a note an earlier verdict refuted.
+  const noteRoute = target.type === 'note' && !HG.explicitOperator(caller) && !!require('./methods-memory-notes.cjs').notesLevers(E, caller);
+  if (noteRoute && status === 'unverified') throw err('E_ROLE', `memory.setStatus: ${id} is a note, and in a notes run it is never reset to unverified; dispute it with memory_report`, { id, role: caller.role });
+  if (noteRoute && status === 'refuted' && !(caller.role === 'orchestrator' && caller.channel !== 'harness')) throw err('E_ROLE', `memory.setStatus: ${id} is a note, and only the orchestrator (as a report) or the operator refutes one`, { id, role: caller.role });
   let kept = null, check = null;
   if (status !== 'unverified') {
     // Before any write: a refused receipt changes nothing.
@@ -146,6 +153,7 @@ async function setStatus(E, caller, args) {
   // checkCommit awaited git: run.end may have committed meanwhile (audit D42). Checked in the tick of the first write. Once the status
   // has landed, its project copies follow it to the end (a copy must never keep a status its source lost), so they are not re-checked.
   E.assertRunOpen(caller, 'memory.setStatus');
+  if (noteRoute && status === 'refuted') return require('./methods-memory-note-report.cjs').reportByStatus(E, caller, id, kept);
   const at = Date.now();
   const out = E.store.setStatus(id, { status, receipt: kept, by: E.writtenBy(caller), at });
   E.noteWrite();
