@@ -26,6 +26,7 @@ RB.createBudget = (ms, now) => {
     within: (p) => (ends ? Promise.race([p, ends.then(() => RB.EARLY)]) : p),
   };
 };
+test.after(() => { RB.createBudget = realCreateBudget; }); // the seam is this file's alone: put the real budget back when it ends
 const { createRunManager } = require('../../src/run/index.cjs');
 const { createFakeCore } = require('./fake-core.cjs');
 const { cleanup } = require('../core/helpers.cjs');
