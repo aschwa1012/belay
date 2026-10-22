@@ -6,7 +6,7 @@
 // The reporting run comes from the caller (never the request). The operator's own reports (by 'operator') are exempt, and so is the archive review (it
 // holds nothing through a report). A repeat report is decided afresh. `n` is the count of distinct notes this run has reported and held with withholding on in the project, this one
 // included; the report withholds while n <= limit, so the (limit + 1)th note a run disputes is held and stays visible with its warning.
-// limit = min(held_breaker_count, max(1, floor(held_breaker_share x live notes))): the share is rounded down and never below one note.
+// limit = min(held_breaker_count, max(3, floor(held_breaker_share x live notes))): the share is rounded down and never below three notes (a held_breaker_count under 3 still wins).
 
 const { DEFAULTS } = require('./memory-levers.cjs');
 const { leversOf } = require('./methods-memory.cjs');
@@ -29,7 +29,7 @@ function otherHeldBy(E, project, runId, noteId) {
     AND EXISTS (SELECT 1 FROM json_each(h.body, '$.reports') r WHERE json_extract(r.value, '$.run_id') = ? AND json_extract(r.value, '$.by') <> 'operator' AND json_extract(r.value, '$.withhold') IS NOT 0)`).get(`held/${project}`, noteId, runId).n);
 }
 
-const limitOf = (lv, live) => Math.min(lv.held_breaker_count, Math.max(1, Math.floor(lv.held_breaker_share * live)));
+const limitOf = (lv, live) => Math.min(lv.held_breaker_count, Math.max(3, Math.floor(lv.held_breaker_share * live)));
 
 // p: { project, note (id), by, runId }.
 // Returns { withhold, breaker: { count, limit, live } | null, why }.

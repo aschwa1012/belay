@@ -1,6 +1,6 @@
 'use strict';
 // held-breaker.test.cjs — ADR 0047 amendment (2026-10-22), decision 9: the circuit breaker is decided at report time, from the reporter's run. A run's
-// reports withhold their notes up to min(held_breaker_count, max(1, floor(held_breaker_share x live notes))); the report past that is still held but
+// reports withhold their notes up to min(held_breaker_count, max(3, floor(held_breaker_share x live notes))); the report past that is still held but
 // stays visible with its warning, and one notice says the run disputed too much. The operator's reports are exempt. Real core, sandbox store.
 
 const { test, before, after } = require('node:test');
@@ -98,23 +98,25 @@ test('B3: the operator is exempt and does not count toward a run; a repeat is no
   } finally { await X.cleanup(); }
 });
 
-test('B4: the share binds in a small project, and the limit is never below one note', async () => {
+test('B4: the share binds in a small project, and the share part is never below three notes', async () => {
   const X = await setup('brk-d');
   try {
-    const ids = notes(X, 10); // floor(0.2 x 10) = 2 < 5
+    const ids = notes(X, 20); // floor(0.2 x 20) = 4 < 5
     const outs = [];
-    for (let i = 0; i < 4; i += 1) outs.push(await report(X, X.orch, ids[i]));
-    assert.deepStrictEqual(outs.map((o) => o.withheld), [true, true, false, false]);
-    assert.strictEqual(outs[2].breaker.limit, 2);
-    assert.strictEqual(outs[2].breaker.live, 10);
+    for (let i = 0; i < 5; i += 1) outs.push(await report(X, X.orch, ids[i]));
+    assert.deepStrictEqual(outs.map((o) => o.withheld), [true, true, true, true, false]);
+    assert.strictEqual(outs[4].breaker.limit, 4);
+    assert.strictEqual(outs[4].breaker.live, 20);
   } finally { await X.cleanup(); }
   const Y = await setup('brk-e', { held_breaker_count: 50 });
   try {
-    const ids = notes(Y, 3); // floor(0.2 x 3) = 0, raised to 1
-    const a = await report(Y, Y.orch, ids[0]);
-    const b = await report(Y, Y.orch, ids[1]);
-    assert.deepStrictEqual([a.withheld, a.breaker.limit, b.withheld], [true, 1, false]);
-    assert.strictEqual(Breaker.limitOf({ held_breaker_count: 5, held_breaker_share: 0.2 }, 3), 1);
+    const ids = notes(Y, 4); // floor(0.2 x 4) = 0, raised to 3
+    const outs = [];
+    for (let i = 0; i < 4; i += 1) outs.push(await report(Y, Y.orch, ids[i]));
+    assert.deepStrictEqual(outs.map((o) => o.withheld), [true, true, true, false]);
+    assert.strictEqual(outs[0].breaker.limit, 3);
+    assert.strictEqual(Breaker.limitOf({ held_breaker_count: 5, held_breaker_share: 0.2 }, 3), 3);
+    assert.strictEqual(Breaker.limitOf({ held_breaker_count: 2, held_breaker_share: 0.2 }, 3), 2, 'a count under 3 wins');
     assert.strictEqual(Breaker.limitOf({ held_breaker_count: 5, held_breaker_share: 0.2 }, 100), 5);
     assert.strictEqual(Breaker.limitOf({ held_breaker_count: 50, held_breaker_share: 1 }, 7), 7);
   } finally { await Y.cleanup(); }
