@@ -27,9 +27,10 @@ function mgr(sb, core) {
   });
 }
 
-test('wait answers at once for a worker whose turn already ended, and names what established it', async () => {
+test('wait answers at once for a worker whose turn already ended, and names what established it', async (tcx) => {
   const sb = sandbox();
   const m = mgr(sb, createFakeCore());
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()).catch(() => {}));
   await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hello', worker_id: 'w1' });
   await m._waitTurn('w1', 8000);
 
@@ -46,9 +47,10 @@ test('wait answers at once for a worker whose turn already ended, and names what
   await m.shutdown();
 });
 
-test('wait blocks on a worker mid-turn and returns the turn when it ends; a timeout is a result with the busy set', async () => {
+test('wait blocks on a worker mid-turn and returns the turn when it ends; a timeout is a result with the busy set', async (tcx) => {
   const sb = sandbox();
   const m = mgr(sb, createFakeCore());
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()).catch(() => {}));
   await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hello', worker_id: 'w2' });
   await m._waitTurn('w2', 8000);
 
@@ -72,9 +74,10 @@ test('wait blocks on a worker mid-turn and returns the turn when it ends; a time
   await m.shutdown();
 });
 
-test('wait on a stopped worker reports the exit and what established it', async () => {
+test('wait on a stopped worker reports the exit and what established it', async (tcx) => {
   const sb = sandbox();
   const m = mgr(sb, createFakeCore());
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()).catch(() => {}));
   await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hello', worker_id: 'w3' });
   await m._waitTurn('w3', 8000);
   await m.stop({ worker_id: 'w3', mode: 'graceful' });
@@ -87,9 +90,10 @@ test('wait on a stopped worker reports the exit and what established it', async 
   await m.shutdown();
 });
 
-test('wait blocking on a worker that dies mid-turn reports the death, its exit code and what established it', async () => {
+test('wait blocking on a worker that dies mid-turn reports the death, its exit code and what established it', async (tcx) => {
   const sb = sandbox();
   const m = mgr(sb, createFakeCore());
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()).catch(() => {}));
   const row = await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hello', worker_id: 'w5' });
   await m._waitTurn('w5', 8000);
   // Mid-turn, deterministically: the record's own flag, not a race against the fake's reply.
@@ -113,9 +117,10 @@ test('wait blocking on a worker that dies mid-turn reports the death, its exit c
   await m.shutdown();
 });
 
-test('a worker that died before the call answers at once as dead, already', async () => {
+test('a worker that died before the call answers at once as dead, already', async (tcx) => {
   const sb = sandbox();
   const m = mgr(sb, createFakeCore());
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()).catch(() => {}));
   const row = await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hello', worker_id: 'w6' });
   await m._waitTurn('w6', 8000);
   require('../crash.cjs').crash(m._worker('w6').child);
@@ -154,9 +159,10 @@ test('wait on a worker adopted from another session, still alive, echoes the row
   assert.equal(r.event, 'running', 'the store row still says running and the pid is alive; adopt() never settled it here');
 });
 
-test('a stop issued after a worker had already died on its own still answers dead, not stopped', async () => {
+test('a stop issued after a worker had already died on its own still answers dead, not stopped', async (tcx) => {
   const sb = sandbox();
   const m = mgr(sb, createFakeCore());
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()).catch(() => {}));
   const row = await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hello', worker_id: 'w8' });
   await m._waitTurn('w8', 8000);
   require('../crash.cjs').crash(m._worker('w8').child);
@@ -172,9 +178,10 @@ test('a stop issued after a worker had already died on its own still answers dea
   await m.shutdown();
 });
 
-test('wait with no worker ids watches every worker; refuses when none was launched or the id is unknown', async () => {
+test('wait with no worker ids watches every worker; refuses when none was launched or the id is unknown', async (tcx) => {
   const sb = sandbox();
   const m = mgr(sb, createFakeCore());
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()).catch(() => {}));
   await assert.rejects(m.wait({ timeout_ms: 100 }), (e) => e.code === 'E_ARGS');
   await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hello', worker_id: 'w4' });
   await m._waitTurn('w4', 8000);

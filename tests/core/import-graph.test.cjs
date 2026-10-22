@@ -11,7 +11,7 @@ const { core, sandbox, cleanup, callerFor, listDataDir } = require('./helpers.cj
 
 const loaded = () => Object.keys(require.cache).filter(k => k.toLowerCase().includes(`${path.sep}src${path.sep}core${path.sep}embedder.cjs`.toLowerCase()));
 
-test('openCore and status.get never load the embedder module', async () => {
+test('openCore and status.get never load the embedder module', async (tcx) => {
   assert.deepStrictEqual(loaded(), [], 'nothing has loaded the embedder before this test starts');
 
   const { openCore } = core('index.cjs');
@@ -20,6 +20,7 @@ test('openCore and status.get never load the embedder module', async () => {
   const dir = sandbox();
   try {
     const c = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
+    tcx.after(() => Promise.resolve().then(() => c.close()).catch(() => {}));
     assert.deepStrictEqual(loaded(), [], 'openCore does not reach the embedder');
 
     const st = await c.status.get({});

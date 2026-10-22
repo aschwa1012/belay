@@ -32,9 +32,9 @@ before(async () => {
 });
 
 after(async () => {
-  await worker.close();
-  await orch.shutdownOwner();
-  await orch.close();
+  // Guarded: a before hook that failed part-way leaves some of these unset, and the owner must still be shut down.
+  if (worker) await worker.close().catch(() => {});
+  if (orch) { await orch.shutdownOwner().catch(() => {}); await orch.close().catch(() => {}); }
   cleanup(dir);
 });
 
@@ -124,9 +124,10 @@ test('a briefing needs an id it can resolve, and resolves a worker through its l
   assert.strictEqual(l.task_id, taskId);
 });
 
-test('reading a briefing writes nothing to the data dir', async () => {
+test('reading a briefing writes nothing to the data dir', async (tcx) => {
   await orch.shutdownOwner();
   const reader = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
+  tcx.after(() => Promise.resolve().then(() => reader.close()).catch(() => {}));
   const before = listDataDir(dir);
   await reader.continuity.resumeLine({ task_id: taskId });
   await reader.continuity.resumeDoc({ task_id: taskId });

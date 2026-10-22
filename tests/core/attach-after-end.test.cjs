@@ -60,9 +60,11 @@ function lateAdapter(dataDir) { // async: the owner may live in this process, an
 }
 const counts = (dataDir) => readStoreCopy(dataDir, (db) => ({ runs: db.prepare('SELECT COUNT(*) AS n FROM run').get().n, workers: db.prepare('SELECT COUNT(*) AS n FROM worker').get().n }));
 
-test('a late orchestrator process after the owner shut down is not elected owner and writes nothing into the ended run', async () => {
+test('a late orchestrator process after the owner shut down is not elected owner and writes nothing into the ended run', async (tcx) => {
   const d = sandbox();
   const op = await openCore({ dataDir: d, caller: callerFor('operator'), embed: false });
+  tcx.after(() => Promise.resolve().then(() => op.shutdownOwner()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => op.close()).catch(() => {}));
   try {
     await op.run.attach({ adapter_pid: process.pid });
     await op.run.end({ exit_reason: 'test' });

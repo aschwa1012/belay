@@ -42,11 +42,12 @@ async function teardown({ client, control, m, sb }) {
   if (sb) cleanup(sb.data);
 }
 
-test('worker control: the pipe is named by the data dir hash and the adapter pid, refuses a caller that is not operator, refuses a method it does not serve naming the five, and answers nothing once closed', async () => {
+test('worker control: the pipe is named by the data dir hash and the adapter pid, refuses a caller that is not operator, refuses a method it does not serve naming the five, and answers nothing once closed', async (tcx) => {
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core);
   let control = null; let client = null;
+  tcx.after(() => Promise.resolve().then(() => control.close()).catch(() => {}));
   try {
     control = createWorkerControl({ dataDir: sb.data, manager: m });
     await control.listen();

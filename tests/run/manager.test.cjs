@@ -338,10 +338,11 @@ test('restart resumes inside the window and replaces outside it, and says the nu
   } finally { await teardown(m, sb); }
 });
 
-test('list reports the in-memory view and shutdown stops every worker and the owner', async () => {
+test('list reports the in-memory view and shutdown stops every worker and the owner', async (tcx) => {
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core);
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()).catch(() => {}));
   try {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'wa' });
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'wb' });

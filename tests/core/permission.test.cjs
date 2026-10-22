@@ -197,9 +197,10 @@ test('permission.wait: an already-decided row answers at once with already true;
   } finally { cleanup(dir2); }
 });
 
-test('permission.wait: an owner stopping settles every waiter, and the client sees E_OWNER_LOST, never a hang', async () => {
+test('permission.wait: an owner stopping settles every waiter, and the client sees E_OWNER_LOST, never a hang', async (tcx) => {
   const dir2 = sandbox();
   let orch2 = null;
+  tcx.after(() => Promise.resolve().then(() => orch2.shutdownOwner()).catch(() => {}));
   try {
     orch2 = await openCore({ dataDir: dir2, caller: callerFor('orchestrator'), embed: false });
     await orch2.run.attach({ adapter_pid: process.pid });

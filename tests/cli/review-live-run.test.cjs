@@ -194,7 +194,7 @@ test("the first life's pid, now holding the owner lock, does not make a re-run r
 // The same window without seams: this process stands in for `belay run` (it owns the real store owner and has ended its run, and the
 // run-end memory jobs it would be running are the gap), and the built CLI runs the review as a separate process. The real owner lock, the
 // real pid check and the run row's first epoch decide; the owner's shutdown call is what ends the window.
-test('the built CLI refuses a review while the ended run\'s process still owns the store, and proceeds once the owner is shut down', async () => {
+test('the built CLI refuses a review while the ended run\'s process still owns the store, and proceeds once the owner is shut down', async (tcx) => {
   const { spawnSync } = require('node:child_process');
   const { ROOT, CLI } = require('./stop-helpers.cjs');
   const { openCore } = require('../../src/core/index.cjs');
@@ -205,6 +205,7 @@ test('the built CLI refuses a review while the ended run\'s process still owns t
     const env = { ...process.env, BELAY_TEST_MODE: '1', BELAY_TEST_SKIP_EMBEDDER_WARMUP: '1' };
     const review = () => spawnSync(process.execPath, [CLI, 'memory', 'review', '--run', 'lc-apply', '--all', '--worktree', T.repo, '--data', T.dir, '--json'], { cwd: ROOT, windowsHide: true, encoding: 'utf8', env, timeout: 120000 });
     const core = await openCore({ dataDir: T.dir, caller: callerFor('operator', { run_id: 'lc-closing' }), embed: false });
+    tcx.after(() => Promise.resolve().then(() => core.shutdownOwner()).catch(() => {}));
     let owned = true;
     try {
       await core.becomeOwner(); // as belay run does

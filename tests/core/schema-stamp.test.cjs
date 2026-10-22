@@ -57,31 +57,36 @@ test('a plain Store open stamps nothing; the owner open stamps schema_version an
   } finally { cleanup(dir); }
 });
 
-test('an owner start on a legacy store (no stamp) stamps it and keeps its rows', async () => {
+test('an owner start on a legacy store (no stamp) stamps it and keeps its rows', async (tcx) => {
   const dir = sandbox();
   try {
     const f = path.join(dir, 'memory.db');
     const s = new Store(f);
+    tcx.after(() => Promise.resolve().then(() => s.close()).catch(() => {}));
     s.store({ namespace: 'n', worker_id: 'w', text: 'legacy row', embedding: vec(1), embedding_model: 'm', dim: 2 });
     s.close();
     const c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
+    tcx.after(() => Promise.resolve().then(() => c.shutdownOwner()).catch(() => {}));
+    tcx.after(() => Promise.resolve().then(() => c.close()).catch(() => {}));
     await c.memory.store({ namespace: 'n', text: 'new row', embedding: vec(2), embedding_model: 'm', dim: 2 });
     assert.strictEqual(metaOf(f).schema_version, String(SCHEMA_VERSION));
     await c.shutdownOwner();
     await c.close();
     const db = new DatabaseSync(f, { readOnly: true });
+    tcx.after(() => Promise.resolve().then(() => db.close()).catch(() => {}));
     assert.strictEqual(db.prepare('SELECT count(*) AS n FROM memory_entries').get().n, 2);
     db.close();
   } finally { cleanup(dir); }
 });
 
-test('a read of an unstamped store does not stamp it: the file and the directory are unchanged', async () => {
+test('a read of an unstamped store does not stamp it: the file and the directory are unchanged', async (tcx) => {
   const dir = sandbox();
   try {
     const f = path.join(dir, 'memory.db');
     new Store(f).close();
     const before = { sha: sha(f), ls: files(dir) };
     const c = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
+    tcx.after(() => Promise.resolve().then(() => c.close()).catch(() => {}));
     await c.memory.get({ id: 'nothing' });
     await c.close();
     assert.deepStrictEqual({ sha: sha(f), ls: files(dir) }, before);
@@ -89,12 +94,13 @@ test('a read of an unstamped store does not stamp it: the file and the directory
   } finally { cleanup(dir); }
 });
 
-test('a read of a store with a newer schema is refused E_SCHEMA_NEWER and writes nothing', async () => {
+test('a read of a store with a newer schema is refused E_SCHEMA_NEWER and writes nothing', async (tcx) => {
   const dir = sandbox();
   try {
     const f = newerStore(dir);
     const before = { sha: sha(f), ls: files(dir) };
     const c = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
+    tcx.after(() => Promise.resolve().then(() => c.close()).catch(() => {}));
     await assert.rejects(c.memory.get({ id: 'x' }), e => {
       assert.strictEqual(e.code, 'E_SCHEMA_NEWER');
       assert.strictEqual(e.detail.store_schema, String(SCHEMA_VERSION + 1));
@@ -108,12 +114,13 @@ test('a read of a store with a newer schema is refused E_SCHEMA_NEWER and writes
   } finally { cleanup(dir); }
 });
 
-test('an owner start on a newer store fails E_SCHEMA_NEWER, releases the lock and leaves the store untouched', async () => {
+test('an owner start on a newer store fails E_SCHEMA_NEWER, releases the lock and leaves the store untouched', async (tcx) => {
   const dir = sandbox();
   try {
     const f = newerStore(dir);
     const before = { sha: sha(f), ls: files(dir) };
     const c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
+    tcx.after(() => Promise.resolve().then(() => c.close()).catch(() => {}));
     await assert.rejects(c.memory.store({ namespace: 'n', text: 'x', embedding: vec(1), embedding_model: 'm', dim: 2 }), e => e.code === 'E_SCHEMA_NEWER');
     await c.close();
     assert.deepStrictEqual({ sha: sha(f), ls: files(dir) }, before, 'no row, no stamp downgrade, no lock directory left');

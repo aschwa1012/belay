@@ -78,6 +78,7 @@ for (const which of ['real stages', 'stage that writes a receipt after the stall
       assert.ok(!fs.existsSync(path.join(dir, 'owner.lock')), 'no owner.lock');
       if (which !== 'real stages') assert.deepStrictEqual(refusals, [{ refused: 'E_TIMEOUT' }], 'the stage saw its late receipt refused');
     } finally {
+      held.release();
       if (op.isOwner()) await op.shutdownOwner();
       await op.close();
       cleanup(dir);

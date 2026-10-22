@@ -87,6 +87,7 @@ test('turn memory (r-f2): shutdown with a store in flight completes within its b
     assert.deepStrictEqual(receipt.memory_gave_up, ['w1'], 'the queue it gave up on is named');
     assert.strictEqual(core.isOwner(), false, 'shutdown must leave no owner elected in this process');
   } finally {
+    if (m) await m.shutdown().catch(() => {}); // a failed assertion above must not leave the manager and its workers running
     if (core && core.isOwner()) await core.shutdownOwner().catch(() => {});
     try { fs.rmSync(sb, { recursive: true, force: true }); } catch { /* best effort */ }
   }
@@ -136,6 +137,7 @@ async function droppedAfterShutdown(tag, stopDelayMs) {
     assert.strictEqual(ctx.core.isOwner(), false, 'and no owner was elected');
     assert.ok(errs.some((e) => e && e.where === 'after-shutdown' && e.state === 'turn-memory'), `the drop is named: ${JSON.stringify(errs)}`);
   } finally {
+    if (hold.m) await hold.m.shutdown().catch(() => {}); // release the held first write and the workers even when an assertion failed
     if (ctx) { if (ctx.core.isOwner()) await ctx.core.shutdownOwner().catch(() => {}); try { fs.rmSync(ctx.sb, { recursive: true, force: true }); } catch { /* best effort */ } }
   }
 }
