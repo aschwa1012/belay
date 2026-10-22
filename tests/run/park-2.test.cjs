@@ -60,7 +60,7 @@ test('shutdown: a parked worker is left parked and named in left_parked, and a n
   const sb = sandbox();
   const core = createFakeCore();
   const m1 = mgr(sb, core);
-  tcx.after(() => Promise.resolve().then(() => m1.shutdown()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => m1.shutdown()));
   let m2 = null;
   try {
     await m1.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
@@ -350,7 +350,7 @@ test('shutdown: a failed resume write ends the relaunched child and leaves the w
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core);
-  tcx.after(() => Promise.resolve().then(() => m.shutdown()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()));
   try {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
     await m._waitTurn('w1', 8000);
