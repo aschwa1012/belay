@@ -195,12 +195,14 @@ test('a read-mode command waits for a retired owner before it ends the process, 
   assert.deepStrictEqual(exits, [0], 'no retired owner: the process ends at once');
   let stopOwner;
   retire.register(new Promise((r) => { stopOwner = r; }));
-  const ending = finishCommand(['memory', 'stats'], 0, io);
-  await new Promise((r) => setImmediate(r));
-  assert.deepStrictEqual(exits, [0], 'a retired owner is still serving: the process has not ended');
-  stopOwner();
-  await ending;
-  assert.deepStrictEqual(exits, [0, 0], 'the owner stopped, so the process ends');
+  try {
+    const ending = finishCommand(['memory', 'stats'], 0, io);
+    await new Promise((r) => setImmediate(r));
+    assert.deepStrictEqual(exits, [0], 'a retired owner is still serving: the process has not ended');
+    stopOwner();
+    await ending;
+    assert.deepStrictEqual(exits, [0, 0], 'the owner stopped, so the process ends');
+  } finally { stopOwner(); } // a failed assertion must not leave the synthetic retirement pending for a later retire.idle()
 });
 
 test('belay memory verify, run as a command over an owner it elected, defers to an attached client and says so on stderr', async () => {
