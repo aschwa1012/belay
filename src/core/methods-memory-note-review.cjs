@@ -132,6 +132,35 @@ function applyOneIn(E, caller, route, v, n) {
 }
 const applyOne = (E, caller, route, v, n) => E.store.tx(() => applyOneIn(E, caller, route, v, n));
 
+// ADR 0047 amendment (2026-10-22), decision 6: a task reviewer's `refuted` is a report on the note, made through the one shared report body, so the note is
+// held for the archive review and its status is left as it was. The verdict is recorded on the hold as advice (note_verdicts), as for a held note.
+// Only the archive review's cited outcome or the operator refutes a note; no note_refuted receipt is written because nothing was refuted.
+function reportByReview(E, caller, route, v, n) {
+  const project = String(n.namespace).replace('project/', '');
+  const key = `${route.keyBase}:${n.id}`;
+  return E.store.tx(() => {
+    // The receipt is read again here, after every await of the caller: the losing one of two applications of one review answers already and writes nothing.
+    const done = E.store.p("SELECT id FROM memory_event WHERE kind = 'note_review' AND ok = 1 AND key = ?").get(key);
+    if (done) return { already: true, event_id: done.id };
+    const live = loadNote(E, n.id);
+    if (!live || live.type !== 'note' || live.namespace !== `project/${project}`) throw bad(`note ${n.id} left project ${project} while this verdict was being checked`, { id: n.id });
+    const lv = require('./methods-memory-notes.cjs').notesLevers(E, caller);
+    const why = require('./redact.cjs').redact(v.reason).text;
+    const rep = require('./note-report-in.cjs').reportIn(E, caller, {
+      note: n.id, project, by: `worker:${route.reviewer}`, worker_id: route.reviewer, task_id: route.ref, run_id: caller.run_id || n.run_id, why, replaced_by: null, cites: v.cites.slice(0, 5),
+      threshold: lv ? lv.notes_match_threshold : require('./memory-levers.cjs').DEFAULTS.notes_match_threshold, headSha: RV.headOf(E, route.ref), refused: 'so this verdict is refused',
+    });
+    if (rep.held.skipped) throw bad(`note ${n.id} could not be held (${rep.held.skipped}), so the verdict is refused`, { id: n.id, reason: rep.held.skipped });
+    const at = Date.now();
+    RH.bumpHold(E, rep.held.row, (b) => {
+      b.note_verdicts = [...(b.note_verdicts || []), { verdict: v.verdict, by: route.reviewer, ref: route.ref, at, reason: v.reason, cites: v.cites }].slice(-20);
+      return b;
+    });
+    const ev = recordEventSync(E, caller, { kind: 'note_review', ok: true, run_id: caller.run_id || n.run_id, worker_id: route.reviewer, task_id: n.task_id, key, row_ids: [n.id], newest_row_id: n.id, message: `refuted: reported and held (row ${rep.held.row}); ${v.reason}`.slice(0, 300) });
+    return { id: n.id, verdict: 'refuted', applied: true, reported: { seq: rep.report.seq }, held_row: rep.held.row, status: n.status || 'unverified', event_id: ev.id };
+  });
+}
+
 // A task reviewer's note verdict on a note that is held for the archive review is ADVICE: it is recorded on the hold (which raises its revision, so
 // the archive reviewer is offered the hold again with it) and the note's status is left alone. Only the archive review's cited outcome verifies
 // or refutes a held note. Returns the applied entry, or null when the note is not held (the verdict is then applied as ever). One transaction.
@@ -189,7 +218,7 @@ async function noteVerdicts(E, caller, args) {
       E.assertRunOpen(caller, 'memory.noteVerdicts'); // the citation check awaited a file; a run that ended meanwhile takes no verdict (audit D42)
       const advice = adviceOnHold(E, caller, route, v, n);
       if (advice && advice.already) { out.already.push({ id: v.id, event_id: advice.event_id }); continue; }
-      const got = advice || (v.verdict === 'unsupported' ? require('./note-unsupported.cjs').queueUnsupported(E, caller, route, v, n) : applyOne(E, caller, route, v, n));
+      const got = advice || (v.verdict === 'unsupported' ? require('./note-unsupported.cjs').queueUnsupported(E, caller, route, v, n) : v.verdict === 'refuted' ? reportByReview(E, caller, route, v, n) : applyOne(E, caller, route, v, n));
       if (got.already) { out.already.push({ id: v.id, event_id: got.event_id }); continue; }
       out.applied.push(got);
     } catch (e) { if (e && e.detail && e.detail.run_ended) throw e; refuse(e, n); } // an ended run is not a refused verdict: nothing more is written
