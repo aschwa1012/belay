@@ -5,7 +5,7 @@ import type { Elements } from 'claude-code'
 import type { BelayAgent, BelayEntry, BelayNotice, BelayPanelSnap, BelayPanelUi } from '../../types/index'
 import {
   bandLines, cacheSegs, CONFIRM_MS, confirmLine, heldLine, reviewLine, reviewProject, runningReview, ctxSegs, dur, fitSegs, isLive, markSeg, markWidth, money, runLine, STATE_NAME, TONE, unseenNotices, bar,
-  memoryBandSegs, memoryFallbackSegs, type Seg,
+  memoryTitleSegs, memoryFallbackSegs, interactiveOrch, interactiveMark, type Seg,
 } from './model'
 import { cells, clipCells, cmdLines, wordWrap, wrapParts } from './wrap'
 
@@ -40,6 +40,9 @@ const clip = clipCells
 
 const pad = (s: string, n: number): string => (s.length >= n ? s.slice(0, n) : s + ' '.repeat(n - s.length))
 
+// An agent name that does not fit is cut with an ellipsis, so the cut shows.
+const padName = (s: string, n: number): string => (s.length > n ? s.slice(0, Math.max(0, n - 1)) + '…' : pad(s, n))
+
 // 'claude-sonnet-5-5' -> 'sonnet'; anything else (codex) is shown as belay gave it.
 export function shortModel(m: string | null): string {
   if (!m) return '—'
@@ -58,7 +61,7 @@ export function Band({ E, snap, ui, now, cols, act }: Ctx) {
   const toggle = cols >= 60 ? (ui.open ? '  ▾ panel' : '  ▸ panel') : (ui.open ? ' ▾' : ' ▸')
   return (
     <Box flexDirection="column">
-      {snap.memoryNotice && <Line E={E} w={cols} k="mn" segs={memoryBandSegs(snap.memoryNotice)} />}
+      {snap.memoryNotice && <MemoryNotice E={E} snap={snap} cols={cols} />}
       {lines.map((segs, i) => (
         <Box key={`band${i}`}>
           <Line E={E} segs={segs} k={`l${i}`} w={i === 0 ? cols - toggle.length : cols} />
@@ -90,7 +93,7 @@ function columns({ snap, cols }: Ctx): Cols {
   const s = snap.settings
   const longest = snap.agents.reduce((m, a) => Math.max(m, a.id.length), 0)
   const c: Cols = {
-    mark: markWidth(s.marks), agent: 0, id: Math.max(6, Math.min(12, longest)), model: true, task: 0,
+    mark: markWidth(s.marks), agent: 0, id: Math.max(6, Math.min(16, longest)), model: true, task: 0,
     ctx: s.context === 'figure' ? 4 : s.context === 'bar' ? 6 : 11, cache: s.cache === 'both' ? 11 : 5, cost: 7,
   }
   const kind = s.task === 'kind'
@@ -131,6 +134,7 @@ function kindOf(a: BelayAgent): string {
 // One readable label, never two cut fragments: the id and title when both fit, else the title alone (the id is in the
 // detail), else the id. The verdict and the permission mark are parts that drop whole from the end.
 function taskSegs(a: BelayAgent, snap: BelayPanelSnap, room: number): Seg[] {
+  if (interactiveOrch(a, snap)) return [{ t: 'interactive', dim: true }]
   if (a.role === 'orchestrator') return [{ t: snap.settings.task === 'kind' ? 'orch' : 'orchestrator', dim: true }]
   const perm = snap.notices.find(n => n.tone === 'permission' && n.agentId === a.id)
   const v = a.task && snap.notices.find(n => n.taskId === a.task!.id && (n.tone === 'holds' || n.tone === 'refuted'))
@@ -161,7 +165,7 @@ type DRow = { k: string; parts: string[]; sep: string; note?: Seg }
 function Detail({ E, a, snap, now, cols }: { E: Els; a: BelayAgent; snap: BelayPanelSnap; now: number; cols: number }) {
   const { Box } = E
   const rows: DRow[] = []
-  rows.push({ k: 'status', sep: ' · ', parts: [`${STATE_NAME[a.state]} — established by ${a.stateBy ?? 'not recorded'}`, a.pid !== null ? `pid ${a.pid}` : ''] })
+  rows.push({ k: 'status', sep: ' · ', parts: [interactiveOrch(a, snap) ? 'interactive — its words are in its own window' : `${STATE_NAME[a.state]} — established by ${a.stateBy ?? 'not recorded'}`, a.pid !== null ? `pid ${a.pid}` : ''] })
   const launch = [a.model, a.effort ? `effort ${a.effort}` : null, a.launchMode ? `mode ${a.launchMode}` : null, a.version ? `Claude Code ${a.version}` : null]
   rows.push({ k: 'launch', sep: ' · ', parts: launch.filter(Boolean).length ? launch.filter(Boolean) as string[] : ['not recorded'] })
   if (a.task) {
@@ -206,19 +210,20 @@ function AgentRow(c: Ctx & { a: BelayAgent; c: Cols }) {
   const cell = (key: string, width: number, segs: Seg[]) => (
     <Box key={key} width={width} flexShrink={0} marginRight={1}>{segs.map(s => <Text {...tp(s)}>{s.t}</Text>)}</Box>
   )
-  const mk = markSeg(a.state, snap.settings.marks)
+  const io = interactiveOrch(a, snap)
+  const mk = io ? interactiveMark(snap.settings.marks) : markSeg(a.state, snap.settings.marks)
   return (
     <Box key={`row-${a.id}`} flexDirection="column">
       <Box>
         {cell('m', w.mark, [mk])}
         <Box key="a" width={w.agent} flexShrink={0} marginRight={1}>
-          <Button key={`agent:${a.id}`} label={pad(a.id, w.id)} plain onPress={() => act.select(a.id)} />
+          <Button key={`agent:${a.id}`} label={padName(a.id, w.id)} plain onPress={() => act.select(a.id)} />
           {w.model ? <Text dimColor> {pad(shortModel(a.model), 7)}</Text> : null}
         </Box>
         {w.task > 0 && cell('t', w.task, taskSegs(a, snap, w.task))}
         {w.ctx > 0 && cell('x', w.ctx, ctxSegs(a, snap.settings))}
         {w.cache > 0 && cell('k', w.cache, cacheSegs(a, snap.settings, snap.fetchedAt, now))}
-        {cell('$', w.cost, [{ t: money(a.costUsd), dim: a.costUsd === null }])}
+        {cell('$', w.cost, [{ t: a.costUsd === null && io ? 'n/a' : money(a.costUsd), dim: a.costUsd === null }])}
       </Box>
       {ui.selected === a.id && <Detail E={E} a={a} snap={snap} now={now} cols={c.cols} />}
     </Box>
@@ -383,17 +388,17 @@ function Legend({ E, cols }: Ctx) {
   )
 }
 
-// The full notice, at the top of the pane while no memory.project is set: a title, why, and the exact fix.
-function MemoryNotice({ E, snap, cols }: Ctx) {
+// The compact notice, in the band and at the top of the pane while no memory.project is set: a title and one short line with the fix
+// (the full text is in the CLI).
+function MemoryNotice({ E, snap, cols }: { E: Els; snap: BelayPanelSnap; cols: number }) {
   const n = snap.memoryNotice
   if (!n) return null
   const { Box } = E
   const body = (t: string, k: string, dim = false) => wordWrap(t, cols - 2).map((l, i) => <Line E={E} w={cols} k={`${k}${i}`} segs={[{ t: `  ${l}`, dim }]} />)
   return (
     <Box flexDirection="column">
-      <Line E={E} w={cols} k="mnt" segs={[{ t: '▲ ', c: 'warning' }, { t: n.title, c: 'warning', bold: true }]} />
-      {body(n.why, 'mnw')}
-      {body(n.fix, 'mnf')}
+      <Line E={E} w={cols} k="mnt" segs={memoryTitleSegs(n)} />
+      {body(n.short, 'mns', true)}
     </Box>
   )
 }
@@ -417,7 +422,9 @@ export function Pane(c: Ctx) {
   if (snap.embedder) tasksLine.push({ t: '   embedder ', dim: true }, { t: snap.embedder, c: snap.embedder === 'ok' ? 'success' : 'warning' })
   const f = snap.footer
   const costLine: Seg[] = f
-    ? [{ t: money(f.totalCostUsd) }, { t: ` as of ${f.asOfMs ? new Date(f.asOfMs).toTimeString().slice(0, 5) : 'unknown'} · ${f.notRecorded} agent${f.notRecorded === 1 ? '' : 's'} unrecorded · moves when a turn ends`, dim: true }]
+    ? (f.totalCostUsd === null && !f.asOfMs
+      ? [{ t: `no cost recorded yet${f.notRecorded ? ` · ${f.notRecorded} agent${f.notRecorded === 1 ? '' : 's'} unrecorded` : ''}`, dim: true }]
+      : [{ t: money(f.totalCostUsd) }, { t: ` as of ${f.asOfMs ? new Date(f.asOfMs).toTimeString().slice(0, 5) : 'unknown'} · ${f.notRecorded} agent${f.notRecorded === 1 ? '' : 's'} unrecorded · moves when a turn ends`, dim: true }])
     : [{ t: 'cost not read', dim: true }]
   return (
     <Box flexDirection="column">

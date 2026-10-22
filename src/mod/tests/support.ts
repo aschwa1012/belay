@@ -47,7 +47,7 @@ export const TRANSCRIPT = {
 }
 
 export const DEFAULTS: Record<string, string> = { pane: 'docked', marks: 'shapes', cache: 'both', context: 'both', band: 'two-lines', task: 'kind' }
-export const NOTICE = { code: 'memory_project_unset', title: 'Memory is off for this project', why: 'Memory notes are on by default, but they are kept per project and belay never guesses a project name, so with none set nothing is saved or recalled.', fix: 'Add "memory": { "project": "<name>" } to belay.config.json (or to the run spec), or run: belay settings memory.project <name>. A name is lowercase letters, digits, dot, underscore or dash (^[a-z0-9][a-z0-9._-]{0,63}$). To turn notes off and silence this: belay settings memory.notes false.', config_line: '"memory": { "project": "<name>" }', name_rule: '^[a-z0-9][a-z0-9._-]{0,63}$' }
+export const NOTICE = { code: 'memory_project_unset', title: 'Memory is off for this project', why: 'Memory notes are on by default, but they are kept per project and belay never guesses a project name, so with none set nothing is saved or recalled.', short: 'set one: belay settings memory.project <name> · or turn notes off: belay settings memory.notes false', fix: 'Add "memory": { "project": "<name>" } to belay.config.json (or to the run spec), or run: belay settings memory.project <name>. A name is lowercase letters, digits, dot, underscore or dash (^[a-z0-9][a-z0-9._-]{0,63}$). To turn notes off and silence this: belay settings memory.notes false.', config_line: '"memory": { "project": "<name>" }', name_rule: '^[a-z0-9][a-z0-9._-]{0,63}$' }
 export const SETTINGS = (mod: Record<string, string> = {}, memoryNotice: unknown = null) => ({
   found: true, path: 'C:/x/belay.config.json', parse_error: null, memory_notice: memoryNotice,
   settings: Object.keys(DEFAULTS).map(k => ({ key: `mod.${k}`, value: mod[k] ?? DEFAULTS[k], source: 'default', allowed: [] })),
@@ -57,7 +57,7 @@ export type World = {
   file?: boolean; runFile?: unknown; repoCli?: boolean; watchId?: string
   mode?: string | null; mod?: Record<string, string>; notices?: unknown
   failAgents?: boolean; transcriptFail?: boolean; orchDisplay?: string; noDisplay?: boolean; noRun?: boolean
-  extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number; memoryNotice?: boolean
+  extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number; memoryNotice?: boolean; agentIds?: string[]; footer?: unknown
 }
 
 // The host beneath the plugin: a run file (or none), belay's read commands as fixtures, and a recorder
@@ -110,10 +110,11 @@ export function world(on: any, w: World) {
       return x
     })
     const extra = (w.extra ?? []).map(d => ({ id: `w-${d}`, role: null, model: 'claude-sonnet-5-5', state: d, display_state: d, display_state_established_by: `test ${d}`, context_pct: 5, cost_usd: null, task: null }))
+    const named = (w.agentIds ?? []).map(id => ({ id, role: null, model: 'claude-sonnet-5-5', state: 'running', display_state: 'running', display_state_established_by: 'test', context_pct: 5, cost_usd: 0.1, task: null }))
     const body: Record<string, unknown> = {
       agents: {
         run_id: w.noRun ? null : (w.runId ?? RUN), mode: 'mode' in w ? w.mode : 'headless', mode_source: 'test', started_at_ms: T0 - (w.startedAgo ?? 42 * 60000), paused_at_ms: w.paused ?? null, ended_at_ms: w.ended ?? null,
-        tasks: { done: 1, total: 3 }, max_fix_rounds: 'maxFix' in w ? w.maxFix : 2, memory_notice: w.memoryNotice ? NOTICE : null, agents: w.noRun ? [] : [...agents, ...extra], footer: FOOTER,
+        tasks: { done: 1, total: 3 }, max_fix_rounds: 'maxFix' in w ? w.maxFix : 2, memory_notice: w.memoryNotice ? NOTICE : null, agents: w.noRun ? [] : [...agents, ...extra, ...named], footer: 'footer' in w ? w.footer : FOOTER,
       },
       notices: w.notices ?? (w.longNotices ? LONG_NOTICES : NOTICES),
       transcript: w.nullTs ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.map(x => ({ ...x, ts: null })) } : w.manyTexts ? { run_id: RUN, entries: MANY } : w.toolsOnly ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.filter(x => x.kind !== 'text') } : w.longTranscript ? { run_id: RUN, entries: LONG_ENTRIES.slice(-Number(e.argv[e.argv.indexOf('--tail') + 1])) } : w.honorTail ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.slice(-Number(e.argv[e.argv.indexOf('--tail') + 1])) } : TRANSCRIPT,

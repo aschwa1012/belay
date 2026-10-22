@@ -272,3 +272,12 @@ test('readBatch commits to one source: the owner that answered first is never sw
     } finally { fs.copyFileSync = real; }
   } finally { cleanup(dir); }
 });
+
+test('a finished archive review is words, never raw JSON', () => {
+  const ev = (o) => ({ kind: 'review_ended', ts: 1, run_id: RUN, project: 'smoke', ok: true, code: null, job: 'archreview-run-n-abc', ...o });
+  const out = N.renderText([ev({ text: 'ran as archreview-run-n-abc: {"verdicts":1,"applied":1,"archived":1,"released":0,"undecided":0,"refused":0}' })]).replace(/\s+/g, ' ');
+  assert.ok(out.includes('archive review of smoke done: 1 verdict: 1 archived, job archreview-run-n-abc'), out);
+  assert.ok(!out.includes('{"verdicts"'), out);
+  const plain = N.renderText([ev({ text: 'nothing to do (x)' })]);
+  assert.ok(plain.includes('ended ok: nothing to do (x)'), plain);
+});

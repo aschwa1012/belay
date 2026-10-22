@@ -77,3 +77,12 @@ test('the read commands that show the notice load no embedder module', () => {
   const hit = Object.keys(require.cache).filter((k) => /[\/]src[\/]core[\/]embedder\.cjs$/i.test(k) || /transformers/i.test(k));
   assert.deepStrictEqual(hit, []);
 });
+
+test('every notice carries a compact one-line fix for the panel, from the same source as the full text', () => {
+  const n = N.noticeFor({});
+  assert.strictEqual(n.short, 'set one: belay settings memory.project <name> · or turn notes off: belay settings memory.notes false');
+  assert.ok(n.fix.includes('belay settings memory.project <name>') && n.fix.includes('belay settings memory.notes false'), 'the full fix names the same two commands');
+  const r = N.noticeFor({ project: 'acme', redact: false });
+  assert.ok(r.short.includes('redact') && r.short.includes('belay settings memory.notes false') && !r.short.includes('\n'));
+  for (const c of N.CODES) assert.ok(N.byCode(c).short.length < 120, c);
+});

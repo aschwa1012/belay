@@ -9,16 +9,18 @@ describe('memory is off notice', () => {
     await openPane($, wd)
     const { text } = await pane($)
     expect(text).toContain('Memory is off for this project')
-    expect(text).toContain('nothing is saved or recalled')
-    expect(text).toContain('"memory": { "project": "<name>" }')
+    expect(text).toContain('set one: belay settings memory.project <name>')
+    expect(text).toContain('belay settings memory.notes false')
+    expect(text).not.toContain('nothing is saved or recalled') // the full explanation is the CLI's
     expect(text.indexOf('Memory is off for this project')).toBeLessThan(text.search(/agents \d/))
   })
 
-  test('shown in the band as a one-line warning with the config line', async ($, on) => {
+  test('shown in the band as the title and the one short fix line', async ($, on) => {
     await boot($, on, { memoryNotice: true })
     const { text } = await band($)
     expect(text).toContain('Memory is off for this project')
-    expect(text).toContain('"memory": { "project": "<name>" }')
+    expect(text).toContain('set one: belay settings memory.project <name>')
+    expect(text).not.toContain('nothing is saved or recalled')
   })
 
   test('with no run the notice comes from the settings read and shows in the pane', async ($, on) => {

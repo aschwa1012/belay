@@ -53,15 +53,15 @@ export function parseMemoryNotice(json: unknown): BelayMemoryNotice | null {
   const n = obj(obj(json)?.memory_notice)
   const title = n && str(n.title), why = n && str(n.why), fix = n && str(n.fix)
   if (!n || !title || !why || !fix) return null
-  return { title: clean(title, 80), why: clean(why, 240), fix: clean(fix, 400), configLine: clean(str(n.config_line) ?? '"memory": { "project": "<name>" }', 80) }
+  return { title: clean(title, 80), why: clean(why, 240), fix: clean(fix, 400), configLine: clean(str(n.config_line) ?? '"memory": { "project": "<name>" }', 80), short: clean(str(n.short) ?? fix, 160) }
 }
 
 // The band's one-line warning and the plain-surface line for the notice (view.tsx draws exactly these).
-export function memoryBandSegs(n: BelayMemoryNotice): Seg[] {
-  return [{ t: '▲ ', c: 'warning' }, { t: n.title, c: 'warning', bold: true }, { t: ` · add ${n.configLine}`, dim: true }]
+export function memoryTitleSegs(n: BelayMemoryNotice): Seg[] {
+  return [{ t: '▲ ', c: 'warning' }, { t: n.title, c: 'warning', bold: true }]
 }
 export function memoryFallbackSegs(n: BelayMemoryNotice): Seg[] {
-  return [{ t: `▲ ${n.title}. ${n.fix}`, c: 'warning' }]
+  return [{ t: `▲ ${n.title}. ${n.short}`, c: 'warning' }]
 }
 
 // ---- agents -------------------------------------------------------------------------------------
@@ -167,7 +167,7 @@ export function normNotices(json: unknown): BelayNotice[] {
       const holds = e.verdict === 'holds' || (e.passed === true && e.verdict == null)
       const refuted = e.verdict === 'refuted' || (e.passed === false && e.executable !== false)
       if (!holds && !refuted) continue
-      mk(holds ? 'holds' : 'refuted', t, `review ${t} ${holds ? 'holds' : 'refuted'}${str(e.judged_by) ? ` · ${str(e.judged_by)}` : ''}`, t, null, null, t)
+      mk(holds ? 'holds' : 'refuted', t, `review ${holds ? 'holds' : 'refuted'}${str(e.judged_by) ? ` · ${str(e.judged_by)}` : ''}`, t.slice(0, 8), null, null, t)
     } else if (kind === 'run_paused') {
       mk('paused', str(e.run_id) ?? '?', `run paused${str(e.paused_by) ? ` by ${str(e.paused_by)}` : ''}`, str(e.run_id) ?? '', null, null)
     } else if (kind === 'notes_unembedded') {
@@ -214,7 +214,7 @@ export function normHeld(json: unknown): BelayHeld | null {
       const project = str(e.project)
       if (!project) continue
       const state: BelayReview['state'] = e.kind === 'review_running' ? (e.pid_alive === true ? 'running' : 'interrupted') : (e.ok === true ? 'ok' : 'failed')
-      reviews.push({ project: clean(project, 64), state, pid: num(e.pid), text: str(e.text) === null ? (str(e.code) === null ? null : clean(str(e.code)!, 40)) : clean(str(e.text)!, 240), ts: num(e.ts) })
+      reviews.push({ project: clean(project, 64), state, pid: num(e.pid), text: str(e.text) === null ? (str(e.code) === null ? null : clean(str(e.code)!, 40)) : clean(str(e.text)!, 240), ts: num(e.ts), job: str(e.job) })
     }
   }
   if (count <= 0 && !reviews.length) return null
@@ -225,12 +225,30 @@ export function normHeld(json: unknown): BelayHeld | null {
 export const runningReview = (h: BelayHeld, project: string | null): BelayReview | null =>
   h.reviews.find(r => r.state === 'running' && (project === null || r.project === project)) ?? null
 
+// belay's summary of a finished review is `ran as <job>: {"verdicts":1,"applied":1,...}`. Words for it, or null when it is not that.
+export function reviewOutcome(text: string | null): string | null {
+  const m = text && /^ran as \S+: (\{.*\})$/.exec(text)
+  if (!m) return null
+  let c: Record<string, unknown>
+  try { c = JSON.parse(m[1]!) as Record<string, unknown> } catch { return null }
+  if (c === null || typeof c !== 'object') return null
+  const n = (k: string): number => (typeof c[k] === 'number' && (c[k] as number) > 0 ? (c[k] as number) : 0)
+  const parts = ['archived', 'released', 'undecided', 'refused'].filter(k => n(k) > 0).map(k => `${n(k)} ${k}`)
+  if (!parts.length && n('applied') > 0) parts.push(`${n('applied')} applied`)
+  const v = typeof c.verdicts === 'number' ? `${c.verdicts} verdict${c.verdicts === 1 ? '' : 's'}` : null
+  return [v, parts.join(', ') || null].filter(Boolean).join(': ') || null
+}
+
 // The one line a review's state is shown as.
 // A running review is shown from a pid check; belay proves identity (pid and creation time) only where it takes the claim. An old claim says so.
 export const STALE_CLAIM_MS = 15 * 60 * 1000
 export function reviewLine(r: BelayReview, now: number | null = null): string {
   if (r.state === 'running') return `archive review of ${r.project} running${r.pid ? ` · pid ${r.pid}` : ''}${now !== null && r.ts !== null && now - r.ts > STALE_CLAIM_MS ? ' · pid check only, may be stale: a new review checks the process' : ''}`
   if (r.state === 'interrupted') return `archive review of ${r.project} INTERRUPTED · its process is gone; the next review takes over`
+  if (r.state === 'ok') {
+    const w = reviewOutcome(r.text)
+    if (w) return `archive review of ${r.project} done · ${w}${r.job ? ` · job ${r.job.length > 16 ? '…' + r.job.slice(-8) : r.job}` : ''}`
+  }
   return `archive review of ${r.project} ${r.state === 'ok' ? 'ended ok' : 'FAILED'}${r.text ? ` · ${r.text}` : ''}`
 }
 
@@ -369,6 +387,13 @@ export const markWidth = (m: BelaySettings['marks']): number => (m === 'words' ?
 
 // ---- run summary --------------------------------------------------------------------------------
 
+// In an interactive run the orchestrator is a person's own session: belay derives no state for it, and its words are in its own window.
+export const interactiveOrch = (a: BelayAgent, snap: BelayPanelSnap): boolean => a.role === 'orchestrator' && snap.mode === 'interactive' && a.state === 'unknown'
+export function interactiveMark(marks: BelaySettings['marks']): Seg {
+  if (marks === 'words') return { t: '[intv]', c: 'inactive' }
+  return { t: marks === 'colour' ? '●' : '◇', c: 'inactive' }
+}
+
 export const isLive = (a: BelayAgent): boolean => a.state !== 'done'
 export const isBusy = (a: BelayAgent): boolean => ['running', 'waiting', 'stalled', 'permission'].includes(a.state)
 
@@ -396,7 +421,7 @@ export function runLine(snap: BelayPanelSnap, now: number): Seg[] {
   const live = snap.agents.filter(isLive).length
   const busy = snap.agents.filter(isBusy).length
   const segs: Seg[] = [...runBrief(snap, now), { t: '  │  ', dim: true, brk: true }, { t: `${live} agents · ${busy} busy` }]
-  if (snap.footer) segs.push({ t: '  │  ', dim: true, brk: true }, { t: money(snap.footer.totalCostUsd) })
+  if (snap.footer) segs.push({ t: '  │  ', dim: true, brk: true }, snap.footer.totalCostUsd === null ? { t: 'no cost yet', dim: true } : { t: money(snap.footer.totalCostUsd) })
   if (snap.footer?.asOfMs) segs.push({ t: ` @${new Date(snap.footer.asOfMs).toTimeString().slice(0, 5)}`, dim: true })
   return segs
 }

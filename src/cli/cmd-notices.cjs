@@ -244,6 +244,20 @@ function ordered(events, since) {
 
 // ---- text ----------------------------------------------------------------------------------------
 
+// The summary of a finished archive review is `ran as <job>: {"verdicts":1,"applied":1,...}`; words for it, or null when it is not that.
+function reviewOutcome(text) {
+  const m = typeof text === 'string' && /^ran as \S+: (\{.*\})$/.exec(text);
+  if (!m) return null;
+  let c;
+  try { c = JSON.parse(m[1]); } catch { return null; }
+  if (!c || typeof c !== 'object') return null;
+  const n = (k) => (typeof c[k] === 'number' && c[k] > 0 ? c[k] : 0);
+  const parts = ['archived', 'released', 'undecided', 'refused'].filter((k) => n(k) > 0).map((k) => `${n(k)} ${k}`);
+  if (!parts.length && n('applied') > 0) parts.push(`${n('applied')} applied`);
+  const v = typeof c.verdicts === 'number' ? `${c.verdicts} verdict${c.verdicts === 1 ? '' : 's'}` : null;
+  return [v, parts.join(', ') || null].filter(Boolean).join(': ') || null;
+}
+
 function summaryOf(e) {
   const id = (label, x) => `${label} ${P.v(x, 60)}`;
   switch (e.kind) {
@@ -271,6 +285,7 @@ function summaryOf(e) {
     case 'review_running':
       return `archive review of ${P.v(e.project, 64)} ${e.pid_alive ? 'running' : 'INTERRUPTED (its process is gone; the next review takes the claim over)'}: pid ${e.pid}, job ${P.v(e.job, 80)}`;
     case 'review_ended':
+      if (e.ok && reviewOutcome(e.text)) return `archive review of ${P.v(e.project, 64)} done: ${reviewOutcome(e.text)}${e.job ? `, job ${P.v(e.job, 80)}` : ''}`;
       return `archive review of ${P.v(e.project, 64)} ${e.ok ? 'ended ok' : `FAILED ${P.v(e.code, 40)}`}${e.text ? `: ${P.v(e.text, 240)}` : ''}`;
     case 'reports_unjudged':
       return `${e.count} report${e.count === 1 ? '' : 's'} that a note is wrong with no verdict applied (${(e.note_ids || []).slice(0, 5).map((x) => P.v(x, 40)).join(', ')}): see belay memory proposals`;

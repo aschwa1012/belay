@@ -75,10 +75,30 @@ test('runningReview and reviewLine: only a live review blocks the button; an old
   assert.strictEqual(M.reviewLine({ ...r('failed'), text: 'E_ARGS' }), 'archive review of acme FAILED · E_ARGS');
 });
 
+test('reviewOutcome and reviewLine put a finished review in words, never raw JSON', () => {
+  const r = { project: 'smoke', state: 'ok', pid: null, ts: 1, job: 'archreview-run-abc-lx3k9q2m' };
+  const t = 'ran as archreview-run-abc-lx3k9q2m: {"verdicts":1,"applied":1,"archived":1,"released":0,"undecided":0,"refused":0}';
+  assert.strictEqual(M.reviewOutcome(t), '1 verdict: 1 archived');
+  assert.strictEqual(M.reviewLine({ ...r, text: t }), 'archive review of smoke done · 1 verdict: 1 archived · job …lx3k9q2m');
+  assert.strictEqual(M.reviewOutcome('ran as j: {"verdicts":5,"archived":2,"released":1,"undecided":1,"refused":1}'), '5 verdicts: 2 archived, 1 released, 1 undecided, 1 refused');
+  assert.strictEqual(M.reviewOutcome('ran as j: {"verdicts":0}'), '0 verdicts');
+  for (const x of [null, 'kept 3', 'ran as j: {nope}', 'nothing to do (x)']) assert.strictEqual(M.reviewOutcome(x), null, String(x));
+  assert.strictEqual(M.reviewLine({ ...r, text: 'kept 3' }), 'archive review of smoke ended ok · kept 3');
+});
+
+test('a review notice shows a short id once, the verdict and the reviewer', () => {
+  const id = 'ea6e2a67-1111-4222-8333-444455556666';
+  const [n] = M.normNotices({ events: [{ kind: 'review_verdict', ts: 1, task_id: id, verdict: 'holds', judged_by: 'note-reviewer' }] });
+  assert.strictEqual(n.text, 'review holds · note-reviewer');
+  assert.strictEqual(n.ids, 'ea6e2a67');
+  assert.ok(!n.text.includes(id) && !n.ids.includes(id));
+  assert.strictEqual(n.taskId, id, 'the full id stays on the row for matching');
+});
+
 test('parseMemoryNotice and buildSnapshot: the no-project notice rides the settings read, survives a failed read and goes when belay stops reporting it', async () => {
   const F = await loadPanelModule('fetch');
-  const notice = { title: 'Memory is off for this project', why: 'Notes are per project.', fix: 'Add "memory": { "project": "<name>" } to belay.config.json.', config_line: '"memory": { "project": "<name>" }' };
-  assert.deepStrictEqual(M.parseMemoryNotice({ memory_notice: notice }), { title: notice.title, why: notice.why, fix: notice.fix, configLine: notice.config_line });
+  const notice = { title: 'Memory is off for this project', why: 'Notes are per project.', fix: 'Add "memory": { "project": "<name>" } to belay.config.json.', config_line: '"memory": { "project": "<name>" }', short: 'set one: belay settings memory.project <name>' };
+  assert.deepStrictEqual(M.parseMemoryNotice({ memory_notice: notice }), { title: notice.title, why: notice.why, fix: notice.fix, configLine: notice.config_line, short: notice.short });
   for (const j of [null, {}, { memory_notice: null }, { memory_notice: { title: 'x' } }, { memory_notice: 'x' }]) assert.strictEqual(M.parseMemoryNotice(j), null, JSON.stringify(j));
   const parts = (settings, prev) => ({ watch: { runId: null, dataDir: null, cli: null, fixed: false }, prev, now: 1, agents: { json: { agents: [] } }, notices: null, transcript: null, settings });
   const on = F.buildSnapshot(parts({ json: { memory_notice: notice, settings: [] } }, null));
@@ -110,8 +130,9 @@ test('parseMemoryNotice and buildSnapshot: the no-project notice rides the setti
   assert.strictEqual(F.buildSnapshot(failedAgents(on, cfg)).memoryNotice.title, notice.title, 'no run selected: the config notice');
   // the band's warning line and the plain surfaces' line are built here, so a removed or reworded line fails
   const p = M.parseMemoryNotice({ memory_notice: notice });
-  assert.deepStrictEqual(M.memoryBandSegs(p).map((s) => s.t).join(''), '▲ Memory is off for this project · add "memory": { "project": "<name>" }');
-  assert.deepStrictEqual(M.memoryFallbackSegs(p), [{ t: `▲ ${notice.title}. ${notice.fix}`, c: 'warning' }]);
+  assert.strictEqual(M.memoryTitleSegs(p).map((s) => s.t).join(''), '▲ Memory is off for this project');
+  assert.strictEqual(p.short, 'set one: belay settings memory.project <name>');
+  assert.deepStrictEqual(M.memoryFallbackSegs(p), [{ t: `▲ ${notice.title}. ${p.short}`, c: 'warning' }]);
 });
 
 test('the held count is one count broken down by ground, with how many await the operator', () => {
