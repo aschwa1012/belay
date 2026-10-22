@@ -65,7 +65,8 @@ function namespacesOf(E, caller, args) {
 // A row a worker may not read is reported as not found, by id as by search: its existence is not the worker's to learn.
 const visible = (reach, r) => !reach || reach.has(r.namespace);
 // A read by explicit id also leaves out the lifecycle namespaces for a gated tool-channel caller (the orchestrator has no reach to stop it).
-const readable = (caller, reach, r) => visible(reach, r) && !gate.inLifecycle(caller, r.namespace);
+// ...and a row of the project that is not a note, for a gated caller in a notes run (`legacy`, from gate.legacyHidden).
+const readable = (caller, reach, r, legacy = false) => visible(reach, r) && !gate.inLifecycle(caller, r.namespace) && !(legacy && gate.isLegacy(r));
 
 const parseJson = s => { if (s == null) return null; try { return JSON.parse(s); } catch { return s; } };
 
@@ -126,8 +127,9 @@ async function semanticStage(E, caller, o, depth) {
       allowed = new Set(db.prepare(`SELECT e.id FROM memory_entries e WHERE e.namespace = ? AND ${o.filterSql.where}`).all(ns, ...o.filterSql.params).map(r => r.id));
     }
     const hidden = o.hidden; // the notes the gate hides (a small set): one lookup per row
+    const legacy = gate.legacyIds(E, caller, ns); // the project's rows that are not notes, hidden from a gated caller in a notes run
     for (const r of c.rows) {
-      if (!r.vec || (r.ttl_at && r.ttl_at < t) || (!o.includeSuperseded && c.superseded.has(r.id)) || (allowed && !allowed.has(r.id)) || (hidden && hidden.has(r.id))) continue;
+      if (!r.vec || (r.ttl_at && r.ttl_at < t) || (!o.includeSuperseded && c.superseded.has(r.id)) || (allowed && !allowed.has(r.id)) || (hidden && hidden.has(r.id)) || (legacy && legacy.has(r.id))) continue;
       scanned++;
       let s = 0;
       for (let d = 0; d < m.dim; d++) s += r.vec[d] * q[d];
@@ -205,7 +207,7 @@ function parseSearch(E, caller, args) {
   // route returns instead (bodyLive, below), so rows_considered still counts a promoted or pending note.
   const gateSql = gate.sql(E, caller, { includeSuperseded: true, namespaces });
   return {
-    gate: gateSql, hidden: gateSql ? new Set(JSON.parse(gateSql.params[0])) : null,
+    gate: gateSql, hidden: gateSql ? new Set(JSON.parse(gateSql.params[0])) : null, legacy: gate.legacyHidden(E, caller),
     mode, view: enumArg('view', args.view, VIEWS, 'full'), order, alpha, filter, filterSql: fsql,
     k: intArg('k', args.k, DEFAULT_PAGE, 1, K_MAX), offset: intArg('offset', args.offset, 0, 0, OFFSET_MAX),
     namespaces,
@@ -301,7 +303,7 @@ async function search(E, caller, args) {
   let rows = null;
   if (o.gate) { // the gate's body clauses (a promoted note, a pending state) on the rows the page is built from
     rows = rowsByIds(E, ranked.map(h => h.id));
-    ranked = ranked.filter(h => rows.has(h.id) && gate.bodyLive(rows.get(h.id)));
+    ranked = ranked.filter(h => rows.has(h.id) && gate.bodyLive(rows.get(h.id)) && !(o.legacy && gate.isLegacy(rows.get(h.id))));
   }
   let pool = ranked;
   if (o.order !== 'score') {
@@ -393,9 +395,10 @@ async function getMany(E, caller, args) {
   const view = enumArg('view', args.view, VIEWS, 'full');
   const reach = reachOf(E, caller);
   const rows = rowsByIds(E, [...new Set(ids)]);
+  const legacy = gate.legacyHidden(E, caller);
   const out = [], missing = [];
   for (const id of ids) {
-    const r = rows.has(id) && readable(caller, reach, rows.get(id)) ? rows.get(id) : null;
+    const r = rows.has(id) && readable(caller, reach, rows.get(id), legacy) ? rows.get(id) : null;
     if (r) out.push({ ...viewRow(r, view), found: true });
     else { out.push({ id, found: false }); if (!missing.includes(id)) missing.push(id); }
   }
@@ -408,7 +411,7 @@ async function get(E, caller, args) {
   const view = enumArg('view', args.view, VIEWS, 'full');
   // A read: a plain SELECT, so invariant 6 holds (retrieve() would stamp accessed_at).
   const got = E.store.db.prepare('SELECT * FROM memory_entries WHERE id = ?').get(args.id);
-  const r = got && readable(caller, reachOf(E, caller), got) ? got : null;
+  const r = got && readable(caller, reachOf(E, caller), got, gate.legacyHidden(E, caller)) ? got : null;
   return r ? { ...viewRow(r, view), found: true } : { id: args.id, found: false };
 }
 

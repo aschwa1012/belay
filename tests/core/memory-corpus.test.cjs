@@ -121,7 +121,7 @@ test('reading the corpus writes nothing and stamps no accessed_at', async () => 
 test('the module requires only read-safe modules', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'core', 'memory-corpus.cjs'), 'utf8');
   const reqs = [...src.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)].map(m => m[1]).filter(r => !r.startsWith('node:'));
-  assert.deepStrictEqual(reqs.sort(), ['./errors.cjs', './fit-budget.cjs', './memory-reach.cjs', './memory-rows.cjs']);
+  assert.deepStrictEqual(reqs.sort(), ['./errors.cjs', './fit-budget.cjs', './memory-note-gate.cjs', './memory-reach.cjs', './memory-rows.cjs']);
 });
 
 test('a row superseded only by a row of another namespace stays in this namespace\'s corpus, as in memory.index', async () => {
