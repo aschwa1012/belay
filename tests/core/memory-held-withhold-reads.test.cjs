@@ -85,6 +85,18 @@ test('a task reviewer whose brief lists the note\'s report still gets it; anothe
   assert.strictEqual((await call('memory.get', worker('w3'), { id })).withheld, true, 'the reporter is not the reviewer');
 });
 
+test('a reviewer of another run (the same worker id) does not get the note', async () => {
+  const writer = (await hand(worker('w1'), { notes: [note('K7')] })).out.notes[0];
+  const repTask = (await call('task.create', orch, { spec: 'the reporting task' })).id;
+  store.patchBody(writer.id, (b) => { b.reported_wrong = [{ task_id: repTask, by: 'worker:w3', worker_id: 'w3', why: 'wrong', at: 5, seq: 1 }]; return b; });
+  holdOn(writer.id, 'acme', { reports: [{ key: 'kx', seq: 1, by: 'worker:w3', worker_id: 'w3', task_id: repTask, why: 'wrong', at: 5 }] });
+  const rt = (await call('task.create', orch, { spec: 'review', depends_on: [repTask], acceptance: { verdict: true } })).id;
+  rows.append(store, 'lease', { id: `l2-${rt}`, task_id: rt, run_id: RUN, holder: 'rev1', holder_role: 'worker', granted_at: Date.now(), expires_at: Date.now() + 1e6, released_at: null }, 'rev1');
+  await call('run.attach', callerFor('orchestrator', { run_id: 'r-other' }), { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true }) });
+  assert.strictEqual((await call('memory.get', worker('rev1'), { id: writer.id })).found, true, 'its own run: the reviewer');
+  assert.strictEqual((await call('memory.get', worker('rev1', 'r-other'), { id: writer.id })).withheld, true, 'the same worker id in another run is nobody');
+});
+
 // ---- a restated claim ----------------------------------------------------------------------------------------------------
 
 test('a hand-back that restates a held note waits in pending with the hold named; a different note is stored; warn matches it as before', async () => {
@@ -98,6 +110,11 @@ test('a hand-back that restates a held note waits in pending with the hold named
   const other = (await hand(worker('w2'), { notes: [note('K5', { title: 'the K5 service retries twice' })] })).out.notes[0];
   assert.strictEqual(other.state, 'stored', 'a genuinely different note is untouched');
   assert.strictEqual(other.prior_verdicts, undefined);
+  for (const resolve of ['repeats', 'supersedes']) {
+    await assert.rejects(() => call('memory.noteResolve', worker('w2'), { resolutions: [{ id: again.id, resolve, of: first.id, ...(resolve === 'supersedes' ? { evidence: [{ where: 'src/K4.js', saw: 'x' }] } : {}) }] }), /held for review/);
+  }
+  assert.strictEqual(rowOf(again.id).namespace, 'pending/acme', 'a refused resolution leaves the note pending');
+  assert.deepStrictEqual(again.prior_verdicts.map((v) => v.id), [first.id], 'the hold stays named');
   const r = await call('memory.noteResolve', worker('w2'), { resolutions: [{ id: again.id, resolve: 'new' }] });
   assert.strictEqual(r.resolved[0].state, 'live', 'the writer resolves it knowing the hold');
   // warn: the held note is visible, so matching finds it as any live note
