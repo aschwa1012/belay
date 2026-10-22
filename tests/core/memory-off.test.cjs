@@ -148,11 +148,11 @@ test('under required an embedder failure names the choices and the resume comman
     await assert.rejects(call('memory.store', { namespace: 'n', text: 'needs a vector' }), (e) => e.code === 'E_MODEL_ABSENT'
       && /paused for an embedder failure/.test(e.message) && /keyword \(rank by keywords only\), off \(memory off for the run\), or stay paused/.test(e.message)
       && /belay resume \S+ --embedder keyword\|off/.test(e.message));
-    await assert.rejects(wcall('memory.store', { namespace: 'project/acme', text: 'a worker write' }), (e) => /paused for an embedder failure and this call was not written/.test(e.message)
+    await assert.rejects(wcall('memory.store', { namespace: `run/${RUN}`, text: 'a worker write' }), (e) => /paused for an embedder failure and this call was not written/.test(e.message)
       && /call it again/.test(e.message) && /Do not run belay commands/.test(e.message) && !/belay resume/.test(e.message) && !/ask the operator/i.test(e.message));
     ending = true;
     await assert.rejects(call('memory.store', { namespace: 'n', text: 'orchestrator while ending' }), (e) => /ENDING/.test(e.message) && !/paused for/.test(e.message) && !/belay resume/.test(e.message) && !/ask the operator/i.test(e.message));
-    await assert.rejects(wcall('memory.store', { namespace: 'project/acme', text: 'worker while ending' }), (e) => /ENDING/.test(e.message) && !/belay resume/.test(e.message));
+    await assert.rejects(wcall('memory.store', { namespace: `run/${RUN}`, text: 'worker while ending' }), (e) => /ENDING/.test(e.message) && !/belay resume/.test(e.message));
     ending = false;
     mode = 'keyword';
     await assert.rejects(call('memory.store', { namespace: 'n', text: 'needs a vector too' }), (e) => !/belay resume|ENDING|embedder failure and this call/.test(e.message));

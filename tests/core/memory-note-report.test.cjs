@@ -61,7 +61,7 @@ test('R3: a worker report on the note and the operator report share one hold; th
 });
 
 test('R4: a fact is E_ARGS "not a note"; an archived or missing row is not_live', async () => {
-  const f = await X.call('memory.store', X.orch, { namespace: 'project', type: 'fact', text: 'a plain fact about the build' });
+  const f = await X.call('memory.store', X.harness, { namespace: 'project', type: 'fact', text: 'a plain fact about the build' });
   await assert.rejects(report(op(), { note_id: f.id, why: 'x' }), (e) => e.code === 'E_ARGS' && /not a note/.test(e.message));
   const a = await X.written('w-a4', 'K4');
   await report(op(), { note_id: a.note, why: 'x' });

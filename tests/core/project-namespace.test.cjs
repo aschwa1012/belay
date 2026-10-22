@@ -70,7 +70,9 @@ test('a semantic search through the alias embeds once and reports the resolved n
 });
 
 test('an explicit project namespace and other names pass through untouched', async () => {
-  const w = await fresh(proj, { namespace: 'project/other' });
+  // The run manager (harness channel) writes where it is told; the orchestrator's own tool writes only its project's notes (ADR 0047 amendment of 2026-10-22).
+  await assert.rejects(fresh(proj, { namespace: 'project/other' }), (e) => e.code === 'E_ROLE');
+  const w = await fresh({ ...proj, channel: 'harness' }, { namespace: 'project/other' });
   assert.strictEqual(w.namespace, 'project/other');
   const d = await fresh(proj);
   assert.strictEqual(d.namespace, 'run/r-proj');

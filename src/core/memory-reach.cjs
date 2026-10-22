@@ -25,10 +25,26 @@ function projectOf(E, caller) {
 // In any namespace argument the literal "project" means `project/<run.project>` when the caller's run has a
 // project. With none it stays the literal namespace it has always been, so a run without a project reads and
 // writes exactly what it did before.
+// The alias `summary` is the orchestrator's alone (ADR 0047 amendment of 2026-10-22): it resolves to `summary/<project>`, where the run's decisions
+// and outcomes go. A worker's `summary` stays the literal namespace, which is outside its reach.
 function resolveNamespace(E, caller, ns) {
-  if (ns !== 'project') return ns;
+  if (ns !== 'project' && !(ns === 'summary' && caller && caller.role === 'orchestrator')) return ns;
   const p = projectOf(E, caller);
-  return p ? `project/${p}` : ns;
+  return p ? `${ns}/${p}` : ns;
+}
+
+// A WRITE by the orchestrator on the tool channel (its reads stay unlimited): not another project's notes, and not `summary/` except through the
+// alias, which names its own project's. The harness channel is not restricted (the run manager writes summaries and project copies).
+function checkOrchestratorWrite(E, caller, ns, named) {
+  if (!caller || caller.role !== 'orchestrator' || caller.channel === 'harness' || typeof ns !== 'string') return;
+  const p = projectOf(E, caller);
+  if (!p) return; // a run with no project has no notes and no alias to hold it to: the literal namespaces it has always had
+  if (ns.startsWith('project/') && ns !== `project/${p}`) {
+    throw err('E_ROLE', `the orchestrator writes only its own run's project (project/${p}); ${ns} is another`, { namespace: ns, role: caller.role });
+  }
+  if (ns.startsWith('summary/') && !(named === 'summary' && ns === `summary/${p}`)) {
+    throw err('E_ROLE', `the orchestrator writes a run outcome with namespace "summary" (summary/${p}); ${ns} named directly is refused`, { namespace: ns, role: caller.role });
+  }
 }
 
 // The set of namespaces a caller reaches, or null for no limit.
@@ -66,4 +82,4 @@ function runEmbedderMode(E, caller) {
   return { live: true, mode: EM.normalize(row.embedder_mode) || EM.normalize(lv && lv.on_embedder_failure) || EM.DEFAULT_MODE, source: 'row' };
 }
 
-module.exports = { runEmbedderMode, projectOf, resolveNamespace, reachOf, checkReach };
+module.exports = { runEmbedderMode, projectOf, resolveNamespace, reachOf, checkReach, checkOrchestratorWrite };

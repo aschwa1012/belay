@@ -102,10 +102,11 @@ test('row 8: an orchestrator memory.store that supersedes a held note is E_HELD 
   const { id, hold } = await heldNote('guard store');
   const count = () => T.store.p('SELECT COUNT(*) AS n FROM memory_entries').get().n;
   const n0 = count();
-  await rejectsHeld(T.call(tool(), 'memory.store', { namespace: NS, text: 'a replacement that hides the held note', supersedes: id, embed: false }), id, hold, 'supersede');
+  // A project write by the orchestrator is a note now and takes no supersedes, so the store-level guard is exercised on the run's own namespace.
+  await rejectsHeld(T.call(tool(), 'memory.store', { namespace: 'run/lc-apply', text: 'a replacement that hides the held note', supersedes: id, embed: false }), id, hold, 'supersede');
   assert.strictEqual(count(), n0, 'no row written');
   const free = T.note('guard store free');
-  const ok = await T.call(tool(), 'memory.store', { namespace: NS, text: 'a replacement of an unheld note', supersedes: free, embed: false });
+  const ok = await T.call(tool(), 'memory.store', { namespace: 'run/lc-apply', text: 'a replacement of an unheld note', supersedes: free, embed: false });
   assert.strictEqual(ok.action, 'inserted');
 });
 
@@ -116,7 +117,7 @@ test('row 9: a dedup update whose supersedes names a held note is E_HELD; a dedu
   await assert.rejects(T.call(tool(), 'memory.store', { namespace: 'run/lc-apply', text: 'guard dedup own row', supersedes: id, embed: false }), (e) => e.code === 'E_HELD' && e.detail.held_row === hold);
   assert.strictEqual(T.store.p('SELECT COUNT(*) AS n FROM memory_entries WHERE supersedes = ?').get(id).n, 0);
   const noteRow = T.row(id);
-  const unchanged = await T.call(tool(), 'memory.store', { namespace: NS, text: noteRow.text, embed: false });
+  const unchanged = await T.call(closeStages(), 'memory.store', { namespace: NS, text: noteRow.text, embed: false });
   assert.strictEqual(unchanged.action, 'unchanged');
   assert.strictEqual(T.row(id).body, noteRow.body, 'the note\'s body is untouched');
 });

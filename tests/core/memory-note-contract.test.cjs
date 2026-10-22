@@ -154,9 +154,9 @@ test('the keyword text is searched: the When: line, a subject and a derived path
 });
 
 test('every embedded row records its template: v1 for plain text, v2 for a new note; an unembedded row records none', async () => {
-  const stored = await call('memory.store', orch, { text: 'a plain fact about releases K9', namespace: 'project/acme', type: 'fact' });
+  const stored = await call('memory.store', { ...orch, channel: 'harness' }, { text: 'a plain fact about releases K9', namespace: 'project/acme', type: 'fact' });
   assert.strictEqual(rowOf(stored.id).text_template, 'v1');
-  const bare = await call('memory.store', orch, { text: 'a fact stored without a vector', namespace: 'project/acme', type: 'fact', embed: false });
+  const bare = await call('memory.store', { ...orch, channel: 'harness' }, { text: 'a fact stored without a vector', namespace: 'project/acme', type: 'fact', embed: false });
   assert.strictEqual(rowOf(bare.id).embedding, null);
   assert.strictEqual(rowOf(bare.id).text_template, null);
   const all = store.p("SELECT id, text_template FROM memory_entries WHERE embedding IS NOT NULL").all();

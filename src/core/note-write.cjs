@@ -190,4 +190,19 @@ function commitNotes(E, caller, prep, { task_id }) {
   return items;
 }
 
-module.exports = { prepareNotes, commitNotes, findMatches, priorVerdicts, fitBody, sightText, inIndexBeforehand, bodyOf, projectNs, pendingNs, SEEN_MAX, round3, size };
+// Note writes of one project run one at a time in this process (the store owner's): each checks its notes against the live ones before it writes, and
+// two that checked side by side would each find the other absent and store the same lesson twice. A worker's hand-back and a memory.store note of
+// one project share this chain.
+const tails = new Map();
+async function serialised(E, project, fn) {
+  if (!project) return fn();
+  const key = `${E.dataDir}|${project}`;
+  const prev = tails.get(key) || Promise.resolve();
+  const mine = prev.then(fn);
+  const tail = mine.then(() => {}, () => {});
+  tails.set(key, tail);
+  tail.then(() => { if (tails.get(key) === tail) tails.delete(key); });
+  return mine;
+}
+
+module.exports = { serialised, prepareNotes, commitNotes, findMatches, priorVerdicts, fitBody, sightText, inIndexBeforehand, bodyOf, projectNs, pendingNs, SEEN_MAX, round3, size };

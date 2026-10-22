@@ -90,7 +90,7 @@ test('the briefing reads the same lookup with the lever on, and has no such sect
 });
 
 test('a summary is redacted like a project row: the summary namespace is always scrubbed', async () => {
-  const r = await call('memory.store', orchOff, { namespace: 'summary/acme', type: 'summary', text: `token ${TOKEN} in a summary`, embed: false });
+  const r = await call('memory.store', { ...orchOff, channel: 'harness' }, { namespace: 'summary/acme', type: 'summary', text: `token ${TOKEN} in a summary`, embed: false });
   assert.ok(!rowText(r.id).includes(TOKEN));
 });
 function rowText(id) { return store.p('SELECT text FROM memory_entries WHERE id = ?').get(id).text; }

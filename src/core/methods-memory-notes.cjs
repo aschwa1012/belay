@@ -303,19 +303,10 @@ async function resolve(E, caller, args) {
   return out;
 }
 
-// Notes-bearing hand-backs of one project run one at a time in this process (the store owner's): each checks its notes against the live
-// ones before it writes, and two that checked side by side would each find the other absent and store the same lesson twice.
-const tails = new Map();
+// Notes-bearing hand-backs of one project run one at a time (note-write.cjs holds the chain, shared with memory.store notes).
 async function serialised(E, caller, args, fn) {
   const project = caller.role === 'worker' && args.notes !== undefined ? M.projectOf(E, caller) : null;
-  if (!project) return fn();
-  const key = `${E.dataDir}|${project}`;
-  const prev = tails.get(key) || Promise.resolve();
-  const mine = prev.then(fn);
-  const tail = mine.then(() => {}, () => {});
-  tails.set(key, tail);
-  tail.then(() => { if (tails.get(key) === tail) tails.delete(key); });
-  return mine;
+  return NW.serialised(E, project, fn);
 }
 
 module.exports = { serialised, prepare, commit, resolve, claimAfterRelease, notesLevers, findMatches, SEEN_MAX, fitBody, release, bodyOf, projectNs, pendingNs };
