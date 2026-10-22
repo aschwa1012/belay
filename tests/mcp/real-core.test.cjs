@@ -182,6 +182,8 @@ test('a second orchestrator adapter reconciles the previous epoch before its fir
     caller: { role: 'orchestrator', run_id: 'run-epoch', pid: process.pid },
     embed: false,
   });
+  t.after(() => Promise.resolve().then(() => owner.shutdownOwner()).catch(() => {}));
+  t.after(() => Promise.resolve().then(() => owner.close()).catch(() => {}));
   const first = await owner.run.attach({ adapter_pid: process.pid });
   assert.strictEqual(first.epoch, 1);
   assert.strictEqual(first.reattached, false, 'the first adapter on a fresh store is not a reattach');
@@ -300,9 +302,10 @@ test('the three worker-role tools refuse a non-holder with the codes ADR 0010 §
   assert.strictEqual(mineCk.structuredContent.worker_id, 'wk-holder', 'attributed to the argv identity');
 });
 
-test('the owner the orchestrator elected is released on stdin end, without a signal', async () => {
+test('the owner the orchestrator elected is released on stdin end, without a signal', async (tcx) => {
   const data = sandboxDir('real-owner');
   const a = real({ role: 'orchestrator', data });
+  tcx.after(() => Promise.resolve().then(() => a.close()).catch(() => {}));
   await a.initialize();
   // A write elects this process as owner for the life of the session.
   assert.strictEqual((await a.call('task_create', { spec: 'elect me' })).isError, false);
