@@ -38,12 +38,15 @@ function bumpHold(E, heldId, fn) {
   });
 }
 
+// One reporter: the same role or worker in the same run; the operator is one reporter everywhere. A later run's report never replaces an earlier run's.
+const sameReporter = (a, b) => a.by === b.by && (a.by === 'operator' || (a.run_id || null) === (b.run_id || null));
+
 const selfOnly = (reports) => reports.length > 0 && reports.every((r) => r.self_report);
 
 // Appends to an existing reported hold and classifies it again over its current reports (the newest report that names a passing replacement
 // decides). A change of kind or `of` replaces the hold's, keeps the earlier in kind_history, and moves the note's pointer in the same transaction.
 function appendTo(E, ctx, note, active, reports, newReport) {
-  const replaced = !!(newReport && (active.b.reports || []).some((r) => r.by === newReport.by)); // a reporter's repeat replaces its own
+  const replaced = !!(newReport && (active.b.reports || []).some((r) => sameReporter(r, newReport))); // a reporter's repeat replaces its own
   const rk = reportedKind(E, ctx.project, note, reports, ctx.threshold, active.b.prior_hold || null);
   const changed = rk.kind !== active.b.kind || (rk.of || null) !== (active.b.of || null);
   const next = bumpHold(E, active.id, (b) => {
@@ -97,4 +100,4 @@ function holdReported(E, caller, ctx, note, newReport) {
   return { row, kind: rk.kind, rev: 0, ...(merged ? { merged } : {}), ...(stale ? { replaced_stale_pointer: stale } : {}) };
 }
 
-module.exports = { holdReported, bumpHold, holdReportsOf, copyOf, REPORTS_KEEP };
+module.exports = { sameReporter, holdReported, bumpHold, holdReportsOf, copyOf, REPORTS_KEEP };
