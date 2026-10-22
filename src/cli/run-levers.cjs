@@ -18,6 +18,7 @@ const MEMORY_RULES_FILE = path.join(__dirname, '..', 'run', 'prompts', 'memory-r
 // The one sentence that asks the orchestrator for `memory_queries`. Its only reader is the first-message index
 // (memory-preface.cjs), so it is told to the orchestrator only when that lever is on; off, the placeholder is ''
 // and the prompt asks for nothing the run never reads.
+const MEMORY_REPORT_LINE = ' To dispute a note, use `mcp__belay__memory_report` (it holds the note for the archive review); never `memory_verify` refuted on a note.';
 const MEMORY_QUERIES_LINE = ' Also give 1 to 3 `memory_queries`: task lines (each under 160 bytes) naming the situations the worker will be in, such as "add a migration" or "dedupe email addresses", not the finding you expect it to make.';
 
 // The time-bound condition is observable only if the orchestrator is told the bound and can read elapsed time
@@ -203,7 +204,9 @@ function substituteLevers(text, levers, timeoutMs = 0, opts = {}) {
   // ADR 0040 decision 6: the rules text goes in only when memory.rules is on, trailing newline trimmed and
   // line endings matched to the prompt's; off, the placeholder becomes '' and the prompt is the base prompt.
   const on = !!(levers.memory_levers && levers.memory_levers.rules && levers.rules_text != null);
-  const q = withRule.split('{{memory_queries_line}}');
+  const notesOn = !!(levers.memory_levers && levers.memory_levers.notes);
+  const r = withRule.split('{{memory_report_line}}');
+  const q = r.join(notesOn ? MEMORY_REPORT_LINE : '').split('{{memory_queries_line}}');
   const queriesOn = !!(levers.memory_levers && levers.memory_levers.first_message_index);
   const c = q.join(queriesOn ? MEMORY_QUERIES_LINE : '').split('{{memory_rules}}');
   let rules = '';
@@ -213,6 +216,7 @@ function substituteLevers(text, levers, timeoutMs = 0, opts = {}) {
   const substituted = { max_fix_rounds: a.length - 1, fix_cutoff_rule: b.length - 1 };
   if (on) substituted.memory_rules = c.length - 1;
   if (queriesOn) substituted.memory_queries_line = q.length - 1;
+  if (notesOn) substituted.memory_report_line = r.length - 1;
   return { text: c.join(rules), substituted };
 }
 
@@ -234,4 +238,4 @@ async function countReviewRounds(core, runId) {
   }
 }
 
-module.exports = { MEMORY_QUERIES_LINE, mergeMemory, parseLevers, attachMemory, memoryText, substituteLevers, countReviewRounds, cutoffRule, FIX_CUTOFFS };
+module.exports = { MEMORY_REPORT_LINE, MEMORY_QUERIES_LINE, mergeMemory, parseLevers, attachMemory, memoryText, substituteLevers, countReviewRounds, cutoffRule, FIX_CUTOFFS };

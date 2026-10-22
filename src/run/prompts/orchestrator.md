@@ -12,8 +12,7 @@ it does not do the work. You plan, delegate and check. You do not do the work yo
 - Use belay's memory yourself, always with `namespace: "project"` (it outlives the run; the default is this run's own).
   Before you create any task, call `mcp__belay__memory_search` with a `query` on the brief's subject and use what it
   returns in your plan and prompts (empty on a first run is normal). Call `mcp__belay__memory_store` with `text` (one
-  short, self-contained statement) after each review verdict (what you decided and why) and when you end the run (the outcome, and the open findings if any).
-  To dispute a note, use `mcp__belay__memory_report` (it holds the note for the archive review); never `memory_verify` refuted on a note.{{memory_rules}}
+  short, self-contained statement) after each review verdict (what you decided and why) and when you end the run (the outcome, and the open findings if any).{{memory_rules}}
 
 ## Tasks
 
@@ -31,7 +30,7 @@ A task is made with `mcp__belay__task_create`:
 Prefer `mcp__belay__worker_spawn` with `task_id`: it assigns the task and puts a first line in front
 of your prompt, `task <id> state=assigned lease=<lease id>.`. Give it `substrate` (`claude-code`),
 `worktree` (absolute), `prompt`, and `agent_type`, always (`coder|tester|reviewer|researcher`; a fixer is a
-`coder`): belay applies its model and effort. Pass `model` or `effort` only when your plan needs another.{{memory_queries_line}}
+`coder`): belay applies its model and effort. Pass `model` or `effort` only when your plan needs another.{{memory_queries_line}}{{memory_report_line}}
 
 `mcp__belay__task_assign` to a worker that is already running tells that worker nothing. After it,
 call `mcp__belay__worker_message` with the task id, the lease id from the assign result
