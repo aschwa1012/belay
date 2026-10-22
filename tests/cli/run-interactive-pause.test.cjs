@@ -31,13 +31,26 @@ const resumeCmd = (r, id = r.runId) => cmdPause.run({ command: 'resume', argv: [
 async function liveRun(dir, workerIds, extraEnv = {}, specOverrides = {}) {
   const exitFile = `${dir}/quit.flag`;
   const r = start(dir, { env: { FAKE_EXIT_FILE: exitFile, ...extraEnv }, specOverrides: { close_grace_ms: 1500, ...specOverrides } });
-  const rec = await waitUntil(() => r.record(), 15000);
-  assert.ok(rec, 'the stub never started');
-  const core = await connectOrchestratorCore(r.dataDir, r.runId);
-  const m = createRunManager({ core, dataDir: r.dataDir, runId: r.runId, paths: { claudeExe: FAKE_WORKER, userSettings: USER_SETTINGS } });
-  const control = createWorkerControl({ dataDir: r.dataDir, manager: m, pid: process.pid });
-  await control.listen();
+  let rec = null; let core = null; let m = null; let control = null;
   const pids = [];
+  // Every resource is registered as it is created, so a setup that fails part-way unwinds exactly what exists.
+  const teardown = async () => {
+    fs.writeFileSync(exitFile, 'x');
+    await r.done.catch(() => {});
+    if (control) { try { await control.close(); } catch { /* best effort */ } }
+    if (m) { try { await m.shutdown(); } catch { /* best effort */ } }
+    // ADR 0039: a bare pid is refused; the workers and the stub are this process's own descendants, so they
+    // are ended through that lineage (one snapshot, leaves first), never by a pid alone.
+    try { require('../crash.cjs').crashDescendants([...pids, rec && rec.pid].filter((p) => p && P.pidAlive(p))); } catch { /* best effort */ }
+    if (core) await releaseCore(core);
+  };
+  try {
+  rec = await waitUntil(() => r.record(), 15000);
+  assert.ok(rec, 'the stub never started');
+  core = await connectOrchestratorCore(r.dataDir, r.runId);
+  m = createRunManager({ core, dataDir: r.dataDir, runId: r.runId, paths: { claudeExe: FAKE_WORKER, userSettings: USER_SETTINGS } });
+  control = createWorkerControl({ dataDir: r.dataDir, manager: m, pid: process.pid });
+  await control.listen();
   for (const id of workerIds) {
     const wt = `${dir}/${id}-wt`;
     fs.mkdirSync(wt, { recursive: true });
@@ -49,18 +62,10 @@ async function liveRun(dir, workerIds, extraEnv = {}, specOverrides = {}) {
     r, rec, core, m, control, pids,
     quit: () => fs.writeFileSync(exitFile, 'x'),
     state: async (id) => (await core.worker.get({ worker_id: id })).state,
-    async teardown() {
-      ctx.quit();
-      await r.done.catch(() => {});
-      try { await control.close(); } catch { /* best effort */ }
-      try { await m.shutdown(); } catch { /* best effort */ }
-      // ADR 0039: a bare pid is refused; the workers and the stub are this process's own descendants, so they
-      // are ended through that lineage (one snapshot, leaves first), never by a pid alone.
-      require('../crash.cjs').crashDescendants([...pids, rec.pid].filter((p) => p && P.pidAlive(p)));
-      await releaseCore(core);
-    },
+    teardown,
   };
   return ctx;
+  } catch (e) { await teardown().catch(() => {}); throw e; }
 }
 
 // ------------------------------------------------------------------ the run-start.json marker
