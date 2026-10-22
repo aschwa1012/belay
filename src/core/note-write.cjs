@@ -12,6 +12,7 @@ const M = require('./methods-memory.cjs');
 const { search } = require('./memory-search.cjs');
 const { hashText } = require('./store.cjs');
 const { storedCosine } = require('./memory-facts.cjs');
+const WH = require('./memory-withhold.cjs');
 
 
 const SEEN_MAX = 20; // body.seen_in is bounded; body.seen_total keeps the full count
@@ -46,7 +47,8 @@ function fitBody(b, protect = null, noteId = null) {
 // Only rows whose vector was made from the same template as `emb` are compared: the threshold was measured on v1 text and is
 // unvalidated on v2, and a v2 vector against a v1 one is not a like comparison. (`template` defaults to v2, the template of a new note.)
 async function findMatches(E, caller, project, emb, lv, template = NT.TEMPLATE_NEW) {
-  const out = await search(E, caller, {
+  // Matching decides duplicates and delivers nothing, so it sees the notes withheld from the writer too; a close one is named by priorVerdicts.
+  const out = await search(E, Object.assign({}, caller, { [WH.MATCHING]: true }), {
     namespace: projectNs(project), mode: 'semantic', view: 'full', k: Math.min(50, lv.notes_match_n * 5), min_score: lv.notes_match_threshold,
     query_embedding: emb.embedding, embedding_model: emb.embedding_model,
     filter: { types: ['note'], statuses: ['unverified', 'verified'] },
@@ -64,15 +66,19 @@ async function findMatches(E, caller, project, emb, lv, template = NT.TEMPLATE_N
 // repeats a refuted claim writes it live with no step and no warning. Each is compared by the stored cosine, as a relation is (same model,
 // dimension and text template), against the same threshold. A lookup, not a ranking: bounded, and it writes nothing.
 const PRIOR_MAX = 2000;
-function priorVerdicts(E, project, emb, lv, template = NT.TEMPLATE_NEW) {
+function priorVerdicts(E, project, emb, lv, template = NT.TEMPLATE_NEW, caller = null) {
+  // A note held on a report is withheld from the writer, so a restated claim would find no match and be stored live beside the hold: it is
+  // compared here too and the new note waits in pending (the writer resolves it as new, knowing that).
+  const heldIds = caller && WH.withholds(E, caller) ? WH.noteIds(E, ['e.namespace = ?'], [projectNs(project)]) : [];
   const q = { embedding: Buffer.from(Float32Array.from(emb.embedding).buffer), dim: emb.dim, embedding_model: emb.embedding_model, text_template: template };
   const rows = E.store.p(`SELECT id, namespace, title, status, status_receipt, embedding, embedding_model, dim, text_template, body FROM memory_entries
-    WHERE type = 'note' AND embedding IS NOT NULL AND ((namespace = ? AND status = 'refuted') OR (namespace = ? AND json_extract(body, '$.archived.kind') = 'wrong')) LIMIT ${PRIOR_MAX}`).all(projectNs(project), `archive/${project}`);
+    WHERE type = 'note' AND embedding IS NOT NULL AND ((namespace = ? AND status = 'refuted') OR (namespace = ? AND json_extract(body, '$.archived.kind') = 'wrong') OR id IN (SELECT value FROM json_each(?))) LIMIT ${PRIOR_MAX}`).all(projectNs(project), `archive/${project}`, JSON.stringify(heldIds));
   const out = [];
   for (const r of rows) {
     const cos = storedCosine(q, r);
     if (cos === null || cos < lv.notes_match_threshold) continue;
     const a = bodyOf(r).archived || {};
+    if (heldIds.includes(r.id)) { out.push({ id: r.id, title: r.title, verdict: 'held_for_review', similarity: round3(cos), receipt: null }); continue; }
     out.push(r.status === 'refuted'
       ? { id: r.id, title: r.title, verdict: 'refuted', similarity: round3(cos), receipt: r.status_receipt || null }
       : { id: r.id, title: r.title, verdict: 'archived_wrong', similarity: round3(cos), ground: a.ground || null, reason: typeof a.reason === 'string' ? a.reason.slice(0, 300) : null, at: a.at || null });
@@ -146,7 +152,7 @@ async function prepareNotes(E, caller, notes, { project, lv, worker }) {
       }
     }
     const matches = emb ? await findMatches(E, caller, project, emb, lv) : [];
-    const prior = emb ? priorVerdicts(E, project, emb, lv) : [];
+    const prior = emb ? priorVerdicts(E, project, emb, lv, NT.TEMPLATE_NEW, caller) : [];
     prepared.push({ index: i, kind: n.kind, basis: n.basis, title, text: s.text, body: s.body, redactions: s.redactions, emb: emb || {}, template: NT.TEMPLATE_NEW, applies: { ...ap.counts, ...(diff && diff.error ? { diff_error: diff.error } : {}) }, unembedded: embedFailed, matches, prior, model });
   }
 
@@ -185,7 +191,7 @@ function commitNotes(E, caller, prep, { task_id }) {
       embedding: p.emb.embedding, embedding_model: p.emb.embedding_model, embedding_revision: p.emb.embedding_revision, dim: p.emb.dim, text_template: p.template,
       run_id: caller.run_id, task_id, source: 'model', written_by: by,
     });
-    return { index: p.index, id: row.id, action: row.action, state: pending ? 'pending' : 'stored', namespace: ns, title: p.title, applies_to: p.applies, ...(pending ? { matches: p.matches } : {}), ...(p.prior.length ? { prior_verdicts: p.prior, held_back: 'this text is close to a claim already judged wrong (see prior_verdicts); the note waits in pending until you resolve it as new, knowing that' } : {}), ...(p.unembedded ? { embedded: false, embedder_failure: p.unembedded, note: 'stored without a vector (on_embedder_failure keyword): found by keyword search, and not compared with the other notes of the project' } : {}) };
+    return { index: p.index, id: row.id, action: row.action, state: pending ? 'pending' : 'stored', namespace: ns, title: p.title, applies_to: p.applies, ...(pending ? { matches: p.matches } : {}), ...(p.prior.length ? { prior_verdicts: p.prior, held_back: p.prior.some((x) => x.verdict === 'held_for_review') ? 'this text is close to a note that is held for review after a report that it is wrong (see prior_verdicts, verdict held_for_review); the note waits in pending until you resolve it as new, knowing that' : 'this text is close to a claim already judged wrong (see prior_verdicts); the note waits in pending until you resolve it as new, knowing that' } : {}), ...(p.unembedded ? { embedded: false, embedder_failure: p.unembedded, note: 'stored without a vector (on_embedder_failure keyword): found by keyword search, and not compared with the other notes of the project' } : {}) };
   });
   return items;
 }

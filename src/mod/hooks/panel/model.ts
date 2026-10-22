@@ -196,6 +196,7 @@ export function normHeld(json: unknown): BelayHeld | null {
   let count = 0
   let unsupported = 0
   let oldestAgeRuns = 0
+  let oldestAt: number | null = null
   const byProject: Record<string, number> = {}
   const byGround: Record<string, number> = {}
   let awaiting = 0
@@ -207,6 +208,7 @@ export function normHeld(json: unknown): BelayHeld | null {
       count = num(e.count) ?? 0
       unsupported = Math.min(count, num(e.unsupported) ?? 0)
       oldestAgeRuns = num(e.oldest_age_runs) ?? 0
+      oldestAt = num(e.oldest_at)
       for (const [k, v] of Object.entries(obj(e.by_project) ?? {})) if (num(v) !== null && k !== '') byProject[clean(k, 64)] = v as number
       for (const [k, v] of Object.entries(obj(e.by_ground) ?? {})) if (num(v) !== null && k !== '') byGround[clean(k, 40)] = v as number
       awaiting = Math.min(count, num(e.awaiting_operator) ?? 0)
@@ -218,7 +220,7 @@ export function normHeld(json: unknown): BelayHeld | null {
     }
   }
   if (count <= 0 && !reviews.length) return null
-  return { count: Math.max(0, count), unsupported, byProject, oldestAgeRuns, reviews, ...(Object.keys(byGround).length ? { byGround, awaiting } : {}) }
+  return { count: Math.max(0, count), unsupported, byProject, oldestAgeRuns, ...(oldestAt !== null && oldestAt > 0 ? { oldestAt } : {}), reviews, ...(Object.keys(byGround).length ? { byGround, awaiting } : {}) }
 }
 
 // The review of a project that is in flight: the panel offers no button over it.
@@ -260,18 +262,22 @@ export function reviewProject(h: BelayHeld | null): string | null {
 
 const GROUND_LABEL: Record<string, string> = { reported: 'reported wrong', report_confirmed: 'reported wrong', code_contradicts: 'wrong', refuted_review: 'wrong', same_claim: 'duplicate', replaced_by_newer: 'superseded', unsupported: 'unsupported', none: 'other' }
 
-export function heldLine(h: BelayHeld): string {
+// How long the oldest held note has waited, as a suffix, when belay reported when it was held (`now` is the panel's clock).
+const waitedFor = (h: BelayHeld, now?: number): string => (now !== undefined && h.oldestAt !== undefined ? ` · oldest waited ${dur(Math.max(0, now - h.oldestAt))}` : '')
+
+export function heldLine(h: BelayHeld, now?: number): string {
   if (h.count <= 0) return ''
+  const w = waitedFor(h, now)
   if (h.byGround && Object.keys(h.byGround).length) {
     const parts = new Map<string, number>()
     for (const [k, n] of Object.entries(h.byGround)) parts.set(GROUND_LABEL[k] ?? k, (parts.get(GROUND_LABEL[k] ?? k) ?? 0) + n)
     const a = h.awaiting ?? 0
-    return `${h.count} held: ${[...parts].map(([k, n]) => `${n} ${k}`).join(', ')}${a > 0 ? `; ${a} await${a === 1 ? 's' : ''} you` : ''}`
+    return `${h.count} held: ${[...parts].map(([k, n]) => `${n} ${k}`).join(', ')}${a > 0 ? `; ${a} await${a === 1 ? 's' : ''} you` : ''}${w}`
   }
   const names = Object.keys(h.byProject).sort()
   const warned = h.count - h.unsupported
-  if (h.unsupported > 0) return `${warned > 0 ? `${warned} held as wrong or duplicate · ` : ''}${h.unsupported} unsupported awaiting review · oldest ${h.oldestAgeRuns} run${h.oldestAgeRuns === 1 ? '' : 's'}${names.length ? ` · ${names.join(', ')}` : ''}`
-  return `${h.count} note${h.count === 1 ? '' : 's'} held for review · oldest ${h.oldestAgeRuns} run${h.oldestAgeRuns === 1 ? '' : 's'}${names.length ? ` · ${names.join(', ')}` : ''}`
+  if (h.unsupported > 0) return `${warned > 0 ? `${warned} held as wrong or duplicate · ` : ''}${h.unsupported} unsupported awaiting review · oldest ${h.oldestAgeRuns} run${h.oldestAgeRuns === 1 ? '' : 's'}${names.length ? ` · ${names.join(', ')}` : ''}${w}`
+  return `${h.count} note${h.count === 1 ? '' : 's'} held for review · oldest ${h.oldestAgeRuns} run${h.oldestAgeRuns === 1 ? '' : 's'}${names.length ? ` · ${names.join(', ')}` : ''}${w}`
 }
 
 export function confirmLine(h: BelayHeld, project: string): string {
