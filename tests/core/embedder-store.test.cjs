@@ -153,6 +153,7 @@ test('embedder: the owner answers its pipe within 250 ms while the model loads, 
     // between ticks of this timer, whether or not a ping happened to be in flight during it.
     let last = Date.now(), gap = 0;
     const beat = setInterval(() => { const now = Date.now(); gap = Math.max(gap, now - last); last = now; }, 20);
+    t.after(() => clearInterval(beat)); // a failed assertion below must not leave the timer holding the process open
     await c.memory.warm({}); // the run's warm-up: elects the owner and forks the child here, then returns
     await new Promise(r => setTimeout(r, 600)); // the fork's own stall is over before the watch begins; the load itself continues
     last = Date.now(); gap = 0;
@@ -182,6 +183,7 @@ test('embedder: the owner answers its pipe within 250 ms while the model loads, 
 test('embedder: the child process is ended by close() and by the owner stop, and never keeps a process alive', async t => {
   if (noVoyage) return t.skip(noVoyage);
   const e = new Embedder();
+  t.after(() => Promise.resolve().then(() => e.close()).catch(() => {})); // a failed assertion must not leave the embedder child running
   await e.load(null);
   assert.ok(e.child);
   await e.close();
@@ -199,6 +201,7 @@ test('embedder: a query is embedded with the query prompt through the owner, not
   if (noVoyage) return t.skip(noVoyage);
   const text = 'which process opens the sqlite file?';
   const ref = new Embedder();
+  t.after(() => Promise.resolve().then(() => ref.close()).catch(() => {}));
   await ref.load(null);
   const q = (await ref.embed(text, { as: 'query' })).embedding;
   const d = (await ref.embed(text, { as: 'document' })).embedding;
@@ -249,6 +252,7 @@ test('embedder: stopping an owner mid-embed exits 0 within 5 s and the embedder 
   const dir = sandbox();
   try {
     const child = spawn(process.execPath, [`${ROOT}/tests/core/fixtures/owner-embed-stop.cjs`, dir], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    t.after(() => { try { process.kill(child.pid, 0); process.kill(child.pid); } catch { /* already gone */ } }); // this test's own spawned child, by its exact pid
     const exited = new Promise(res => child.once('exit', (code, signal) => res({ code, signal, at: Date.now() })));
     let out = '', err = '', stoppingAt = null, info = null;
     child.stderr.on('data', d => { err += d; });
@@ -257,6 +261,7 @@ test('embedder: stopping an owner mid-embed exits 0 within 5 s and the embedder 
       for (const line of out.split('\n')) { if (line.includes('"stopping"') && !info) { info = JSON.parse(line); stoppingAt = Date.now(); } }
     });
     const killer = setTimeout(() => { try { process.kill(child.pid); } catch { /* gone */ } }, 120000);
+    t.after(() => clearTimeout(killer));
     const r = await exited;
     clearTimeout(killer);
     assert.ok(info, `the fixture never had an embed in flight: ${out} ${err}`);
