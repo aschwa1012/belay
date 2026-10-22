@@ -26,11 +26,12 @@ before(async () => {
 });
 
 after(async () => {
-  await w1.close();
-  await w2.close();
-  await operator.close();
-  await orch.shutdownOwner();
-  await orch.close();
+  // Each step is tried on its own and each client is guarded: a before hook that failed part-way leaves some unset,
+  // and one failing close must not skip the owner's shutdown.
+  if (w1) await w1.close().catch(() => {});
+  if (w2) await w2.close().catch(() => {});
+  if (operator) await operator.close().catch(() => {});
+  if (orch) { await orch.shutdownOwner().catch(() => {}); await orch.close().catch(() => {}); } // the only way to stop an owner; never a signal
   cleanup(dir);
 });
 
