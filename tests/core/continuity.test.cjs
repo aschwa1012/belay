@@ -8,6 +8,7 @@ const assert = require('node:assert');
 const { core, sandbox, cleanup, callerFor, listDataDir } = require('./helpers.cjs');
 
 const { openCore } = core('index.cjs');
+const { teardown } = require('../helpers/teardown.cjs');
 const LINE_MAX = 400;
 const DOC_MAX = 4096;
 
@@ -32,10 +33,13 @@ before(async () => {
 });
 
 after(async () => {
-  // Guarded: a before hook that failed part-way leaves some of these unset, and the owner must still be shut down.
-  if (worker) await worker.close().catch(() => {});
-  if (orch) { await orch.shutdownOwner().catch(() => {}); await orch.close().catch(() => {}); }
-  cleanup(dir);
+  // Every step runs even if an earlier one fails (a before hook that failed part-way leaves some unset); the first failure is thrown.
+  await teardown(null, [
+    () => worker && worker.close(),
+    () => orch && orch.shutdownOwner(),
+    () => orch && orch.close(),
+    () => cleanup(dir),
+  ]);
 });
 
 test('resumeLine names the task, its state, the lease and the store query, inside 400 bytes', async () => {
@@ -127,7 +131,7 @@ test('a briefing needs an id it can resolve, and resolves a worker through its l
 test('reading a briefing writes nothing to the data dir', async (tcx) => {
   await orch.shutdownOwner();
   const reader = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
-  tcx.after(() => Promise.resolve().then(() => reader.close()).catch(() => {}));
+  tcx.after(() => Promise.resolve().then(() => reader.close()));
   const before = listDataDir(dir);
   await reader.continuity.resumeLine({ task_id: taskId });
   await reader.continuity.resumeDoc({ task_id: taskId });
