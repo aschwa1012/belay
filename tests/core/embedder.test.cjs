@@ -18,6 +18,7 @@ optInModel();
 
 const { openCore } = core('index.cjs');
 const { Embedder } = core('embedder.cjs');
+const { teardown } = require('../helpers/teardown.cjs');
 const { Store } = core('store.cjs');
 const M = core('models.cjs');
 const K = core('model-cache.cjs');
@@ -41,10 +42,12 @@ const storeMeta = (dir, rows) => {
   s.close();
 };
 const metaOf = c => Object.fromEntries(c.owner.store.db.prepare('SELECT key, value FROM meta').all().map(r => [r.key, r.value]));
+// An Embedder that is closed when its test ends, however the test ends: a loaded one holds a child process.
+const mk = (t, ...args) => { const e = new Embedder(...args); t.after(() => Promise.resolve().then(() => e.close())); return e; };
 
 test('embedder: voyage-4-nano loads at 1024 dims and the canary is unit length', async t => {
   if (noVoyage) return t.skip(noVoyage);
-  const e = new Embedder();
+  const e = mk(t);
   const info = await e.load(null);
   assert.strictEqual(info.model, VOYAGE.id);
   assert.strictEqual(info.sha, VOYAGE.sha);
@@ -55,16 +58,16 @@ test('embedder: voyage-4-nano loads at 1024 dims and the canary is unit length',
   assert.match(info.library, /^\d+\.\d+\.\d+/);
   assert.ok(info.load_ms > 0);
   assert.strictEqual(info.canary_sha256.length, 64);
-  const again = await new Embedder().load({ embedding_model: info.model, embedding_sha: info.sha, embedding_dim: '1024', embedding_library: info.library, canary_vector: JSON.stringify(info.canary_vector) });
+  const again = await mk(t).load({ embedding_model: info.model, embedding_sha: info.sha, embedding_dim: '1024', embedding_library: info.library, canary_vector: JSON.stringify(info.canary_vector) });
   assert.strictEqual(again.adopted_canary, false);
   assert.strictEqual(again.library_changed, null, 'the same library twice is not a change');
-  const moved = await new Embedder().load({ embedding_model: info.model, embedding_library: '0.0.1', canary_vector: JSON.stringify(info.canary_vector) });
+  const moved = await mk(t).load({ embedding_model: info.model, embedding_library: '0.0.1', canary_vector: JSON.stringify(info.canary_vector) });
   assert.deepStrictEqual(moved.library_changed, { from: '0.0.1', to: info.library }, 'a library change on a passing cosine is reported, not refused');
 });
 
 test('embedder: a query and a document embed differently (the prompts are applied)', async t => {
   if (noVoyage) return t.skip(noVoyage);
-  const e = new Embedder();
+  const e = mk(t);
   await e.load(null);
   const text = 'which process opens the sqlite file?';
   const d = await e.embed(text);
@@ -82,6 +85,7 @@ test('embedder: the owner finds a stored row by a text query', async t => {
   if (noVoyage) return t.skip(noVoyage);
   const dir = sandbox();
   let c = null;
+  let bodyError = null;
   try {
     c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: true });
     const a = await c.memory.store({ namespace: 'sem', text: 'The store owner holds the only connection to the database file.' });
@@ -107,9 +111,9 @@ test('embedder: the owner finds a stored row by a text query', async t => {
     const info = (await c.memory.stats({})).owner.embedder;
     assert.strictEqual(info.dim, 1024);
     assert.strictEqual(info.canary_vector, undefined, 'stats does not carry the 1024-float canary');
-  } finally {
-    if (c) { await c.shutdownOwner(); await c.close(); }
-    cleanup(dir);
+  } catch (e) { bodyError = e; throw e; } finally {
+    // Every step runs; the body's error wins, and a teardown failure on a passing body is thrown.
+    await teardown(bodyError, [() => c && c.shutdownOwner(), () => c && c.close(), () => cleanup(dir)]);
   }
 });
 
@@ -118,7 +122,7 @@ test('embedder: a canary vector with cosine below 0.9999 is E_MODEL_CHANGED nami
   // A synthetic recorded canary: a unit vector no real embedding is near, so the cosine is far below the bound.
   const rotated = Array.from({ length: 1024 }, (_, i) => Math.sin(i * 12.9898) / Math.sqrt(512));
   const stored = { embedding_model: VOYAGE.id, embedding_sha: VOYAGE.sha, embedding_dim: '1024', canary_vector: JSON.stringify(rotated) };
-  await assert.rejects(new Embedder().load(stored), x => {
+  await assert.rejects(mk(t).load(stored), x => {
     assert.strictEqual(x.code, 'E_MODEL_CHANGED');
     assert.match(x.message, /cosine -?\d\.\d+/);
     assert.ok(x.detail.cosine < 0.9999);
@@ -128,6 +132,7 @@ test('embedder: a canary vector with cosine below 0.9999 is E_MODEL_CHANGED nami
   // Through the owner: the orchestration tables still work, only vector calls are refused, stickily.
   const dir = sandbox();
   let c = null;
+  let bodyError = null;
   try {
     storeMeta(dir, Object.entries({ ...stored, canary_sha256: '0'.repeat(64) }));
     c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: true });
@@ -145,33 +150,34 @@ test('embedder: a canary vector with cosine below 0.9999 is E_MODEL_CHANGED nami
     const row = await c.memory.store({ text: 'caller supplied', embedding: [1, 0], embedding_model: 'm', dim: 2 });
     assert.strictEqual(row.action, 'inserted', 'a caller-supplied vector needs no model');
     assert.strictEqual((await c.memory.stats({})).owner.embedder_error.code, 'E_MODEL_CHANGED', 'stats says why the store cannot embed');
-  } finally {
-    if (c) { await c.shutdownOwner(); await c.close(); }
-    cleanup(dir);
+  } catch (e) { bodyError = e; throw e; } finally {
+    // Every step runs; the body's error wins, and a teardown failure on a passing body is thrown.
+    await teardown(bodyError, [() => c && c.shutdownOwner(), () => c && c.close(), () => cleanup(dir)]);
   }
 });
 
 test('embedder: a store recorded with another model id is E_MODEL_CHANGED without embedding', async t => {
   // This one needs no model at all: the identity is refused before the package or the cache is touched.
-  const e = new Embedder({ model: M.DEFAULT_MODEL, cacheDir: path.join(os.tmpdir(), 'belay-no-such-cache') });
+  const e = mk(t, { model: M.DEFAULT_MODEL, cacheDir: path.join(os.tmpdir(), 'belay-no-such-cache') });
   await assert.rejects(e.load({ embedding_model: MINILM.id, embedding_dim: '384' }), x => {
     assert.strictEqual(x.code, 'E_MODEL_CHANGED');
     assert.ok(x.message.includes(MINILM.id) && x.message.includes(VOYAGE.id));
     return true;
   });
   assert.strictEqual(e.pipe, null, 'nothing was loaded, let alone embedded');
-  await assert.rejects(new Embedder().load({ embedding_model: VOYAGE.id, embedding_sha: 'a'.repeat(40) }), x => x.code === 'E_MODEL_CHANGED');
-  await assert.rejects(new Embedder().load({ embedding_model: VOYAGE.id, embedding_dim: '384' }), x => x.code === 'E_MODEL_CHANGED');
+  await assert.rejects(mk(t).load({ embedding_model: VOYAGE.id, embedding_sha: 'a'.repeat(40) }), x => x.code === 'E_MODEL_CHANGED');
+  await assert.rejects(mk(t).load({ embedding_model: VOYAGE.id, embedding_dim: '384' }), x => x.code === 'E_MODEL_CHANGED');
   // A store whose model this belay does not know is refused at the owner, with the same code.
   const dir = sandbox();
   let c = null;
+  let bodyError = null;
   try {
     storeMeta(dir, [['embedding_model', 'someone/else-model'], ['embedding_dim', '768'], ['canary_sha256', '0'.repeat(64)]]);
     c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: true });
     await assert.rejects(c.memory.store({ text: 'x' }), x => x.code === 'E_MODEL_CHANGED' && x.message.includes('someone/else-model'));
-  } finally {
-    if (c) { await c.shutdownOwner(); await c.close(); }
-    cleanup(dir);
+  } catch (e) { bodyError = e; throw e; } finally {
+    // Every step runs; the body's error wins, and a teardown failure on a passing body is thrown.
+    await teardown(bodyError, [() => c && c.shutdownOwner(), () => c && c.close(), () => cleanup(dir)]);
   }
 });
 
@@ -179,6 +185,7 @@ test('embedder: an older MiniLM store with only canary_sha256 adopts the canary 
   if (noMiniLM) return t.skip(noMiniLM);
   const dir = sandbox();
   let c = null;
+  let bodyError = null;
   try {
     storeMeta(dir, [['canary_sha256', '0b'.repeat(32)], ['embedding_model', MINILM.id], ['embedding_dim', '384']]);
     c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: true });
@@ -192,19 +199,19 @@ test('embedder: an older MiniLM store with only canary_sha256 adopts the canary 
     assert.strictEqual(JSON.parse(meta.canary_vector).length, 384, 'the current canary vector was adopted into meta');
     assert.strictEqual(meta.embedding_sha, MINILM.sha, 'the legacy shape adopts the full identity, in one transaction (review 1, M2)');
     assert.strictEqual(meta.embedding_library.length > 0, true);
-  } finally {
-    if (c) { await c.shutdownOwner(); await c.close(); }
-    cleanup(dir);
+  } catch (e) { bodyError = e; throw e; } finally {
+    // Every step runs; the body's error wins, and a teardown failure on a passing body is thrown.
+    await teardown(bodyError, [() => c && c.shutdownOwner(), () => c && c.close(), () => cleanup(dir)]);
   }
   // The same store opened with a different model is refused.
-  await assert.rejects(new Embedder({ model: M.DEFAULT_MODEL }).load({ canary_sha256: '0'.repeat(64), embedding_model: MINILM.id, embedding_dim: '384' }), x => x.code === 'E_MODEL_CHANGED');
-  const info = await new Embedder({ model: MINILM.id }).load({ canary_sha256: '0'.repeat(64), embedding_model: MINILM.id, embedding_dim: '384' });
+  await assert.rejects(mk(t, { model: M.DEFAULT_MODEL }).load({ canary_sha256: '0'.repeat(64), embedding_model: MINILM.id, embedding_dim: '384' }), x => x.code === 'E_MODEL_CHANGED');
+  const info = await mk(t, { model: MINILM.id }).load({ canary_sha256: '0'.repeat(64), embedding_model: MINILM.id, embedding_dim: '384' });
   assert.strictEqual(info.adopted_canary, true);
 });
 
 test('embedder: text past max_tokens, prompt included, is E_TOO_LONG', async t => {
   if (noVoyage) return t.skip(noVoyage);
-  const e = new Embedder();
+  const e = mk(t);
   await e.load(null);
   await assert.rejects(e.embed('word '.repeat(9000)), x => {
     assert.strictEqual(x.code, 'E_TOO_LONG');
@@ -234,7 +241,7 @@ test('an absent model is E_MODEL_ABSENT, naming the fetch verb and the missing p
   if (!K.packageDir()) return t.skip('the transformers package is not installed');
   const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-empty-cache-')).split('\\').join('/');
   try {
-    const e = new Embedder({ cacheDir: empty });
+    const e = mk(t, { cacheDir: empty });
     await assert.rejects(e.load(null), err => {
       assert.strictEqual(err.code, 'E_MODEL_ABSENT');
       assert.ok(err.message.includes(`belay embedder fetch --model ${VOYAGE.id}`));
@@ -250,6 +257,7 @@ test('an absent model or package fails the calls that need a vector, and only th
   // because a model file is missing. Regression for review-core round 1 item 3.
   const dir = sandbox();
   let c = null;
+  let bodyError = null;
   try {
     c = await openCore({
       dataDir: dir, caller: callerFor('orchestrator'), embed: true,
@@ -271,8 +279,8 @@ test('an absent model or package fails the calls that need a vector, and only th
     await assert.rejects(c.memory.search({ query: 'anything', mode: 'semantic' }), e => e.code === 'E_MODEL_ABSENT');
     const row = await c.memory.store({ text: 'caller supplied', embedding: [1, 0], embedding_model: 'm', dim: 2 });
     assert.strictEqual(row.action, 'inserted');
-  } finally {
-    if (c) { await c.shutdownOwner(); await c.close(); }
-    cleanup(dir);
+  } catch (e) { bodyError = e; throw e; } finally {
+    // Every step runs; the body's error wins, and a teardown failure on a passing body is thrown.
+    await teardown(bodyError, [() => c && c.shutdownOwner(), () => c && c.close(), () => cleanup(dir)]);
   }
 });

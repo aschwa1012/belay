@@ -213,12 +213,13 @@ test('stop: a starting row written by this adapter is not taken for another adap
 });
 
 // ---------------------------------------------------------------- (r5)
-test('wait and shutdown: a stale record answers stale naming the row and the adapter, and shutdown lists it under left_stale', async () => {
+test('wait and shutdown: a stale record answers stale naming the row and the adapter, and shutdown lists it under left_stale', async (tcx) => {
   const sb = sandbox();
   const core = createFakeCore();
   // Distinct fake adapter pids (fix round, pause.cjs:104): both managers run in this one test process
   // and would otherwise share the same real process.pid, hiding the very distinction this test is for.
   const m1 = mgr(sb, core, FAKE, 900001);
+  tcx.after(() => Promise.resolve().then(() => m1.shutdown()));
   let m2 = null;
   try {
     await m1.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
@@ -256,10 +257,11 @@ test('wait and shutdown: a stale record answers stale naming the row and the ada
 });
 
 // ---------------------------------------------------------------- (r6)
-test('shutdown: a park in flight at shutdown completes as a park, the worker is left parked and its row reads paused', async () => {
+test('shutdown: a park in flight at shutdown completes as a park, the worker is left parked and its row reads paused', async (tcx) => {
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core, FAKE_WITH_CHILD);
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()));
   const pidFile = path.join(sb.data, 'child.pid');
   process.env.FAKE_CHILD_PID_FILE = pidFile;
   try {

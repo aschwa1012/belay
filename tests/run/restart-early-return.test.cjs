@@ -10,6 +10,23 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+// The budget seam. manager.cjs destructures createBudget when it loads, so the wrap goes in first. A test sets `seam.ends` (a
+// promise: the budget ends when it resolves, however slow the stop was) or `seam.leftMs` (what is left once the relaunch has
+// finished). With neither set the real clock budget is used, so the other tests are unchanged.
+const RB = require('../../src/run/restart-budget.cjs');
+const seam = { ends: null, leftMs: null };
+const realCreateBudget = RB.createBudget;
+RB.createBudget = (ms, now) => {
+  const real = realCreateBudget(ms, now);
+  if (!seam.ends && seam.leftMs === null) return real;
+  const ends = seam.ends; const leftMs = seam.leftMs;
+  return {
+    ...real,
+    left: () => (leftMs === null ? real.left() : leftMs),
+    within: (p) => (ends ? Promise.race([p, ends.then(() => RB.EARLY)]) : p),
+  };
+};
+test.after(() => { RB.createBudget = realCreateBudget; }); // the seam is this file's alone: put the real budget back when it ends
 const { createRunManager } = require('../../src/run/index.cjs');
 const { createFakeCore } = require('./fake-core.cjs');
 const { cleanup } = require('../core/helpers.cjs');
@@ -37,16 +54,19 @@ function setup(prefix) {
 
 test('restart with a budget: a relaunch that is still being written when the budget ends returns not ready yet, and worker_wait sees the worker come up', async () => {
   const { data, worktree, core, m } = setup('belay-restart-early-a-');
+  let release = null;
   try {
     const first = await m.spawn({ substrate: 'claude-code', worktree, prompt: 'hello', worker_id: 'w1' });
     await m._waitTurn('w1', 8000);
     // The injected slow step: the relaunch's first row is held until the test releases it, as a slow stop would hold it.
-    let release = null;
     const held = new Promise((res) => { release = res; });
+    let budgetEnds = null;
+    seam.ends = new Promise((res) => { budgetEnds = res; });
     const write = core.worker.write.bind(core.worker);
     let armed = false;
     core.worker.write = async (row) => {
-      if (!armed && row.state === 'starting' && row.pid && row.pid !== first.pid) { armed = true; await held; }
+      // The budget ends at the moment the relaunch's first row is held, not at a clock time a slow stop could pass.
+      if (!armed && row.state === 'starting' && row.pid && row.pid !== first.pid) { armed = true; budgetEnds(); await held; }
       return write(row);
     };
     const r = await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 20000, mcp_budget_ms: 300 });
@@ -62,6 +82,8 @@ test('restart with a budget: a relaunch that is still being written when the bud
     assert.strictEqual(w.timed_out, false, JSON.stringify(w));
     assert.strictEqual(w.event, 'turn_end', JSON.stringify(w));
   } finally {
+    seam.ends = null;
+    if (release) release();
     try { await m.shutdown(); } catch { /* best effort */ }
     cleanup(data);
   }
@@ -76,6 +98,7 @@ test('restart with a budget: a first turn that does not end inside what is left 
     await m.spawn({ substrate: 'claude-code', worktree, prompt: 'hello', worker_id: 'w1' });
     await m._waitTurn('w1', 8000);
     fs.unlinkSync(gate); // the relaunched worker's answer is now held until the file exists
+    seam.leftMs = 300; // the relaunch finished; this much of the budget is left for the first turn, whatever the stop cost
     const r = await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 60000, mcp_budget_ms: 6000 });
     assert.strictEqual(r.first_turn_awaited, false, JSON.stringify(r));
     assert.strictEqual(r.status, 'not ready yet');
@@ -85,6 +108,7 @@ test('restart with a budget: a first turn that does not end inside what is left 
     const w = await m.wait({ worker_ids: ['w1'], timeout_ms: 20000 });
     assert.strictEqual(w.event, 'turn_end', JSON.stringify(w));
   } finally {
+    seam.leftMs = null;
     if (prev === undefined) delete process.env.FAKE_ANSWER_GATE_FILE; else process.env.FAKE_ANSWER_GATE_FILE = prev;
     try { await m.shutdown(); } catch { /* best effort */ }
     cleanup(data);
@@ -129,10 +153,11 @@ function holdOldStop(core, oldPid, fail) {
 
 test('restart: a budget that ends before launch() leaves a worker_wait that waits for the relaunch, never answers the old life\'s stop', async () => {
   const { data, worktree, core, m } = setup('belay-restart-early-d-');
+  let hold = null;
   try {
     const first = await m.spawn({ substrate: 'claude-code', worktree, prompt: 'hello', worker_id: 'w1' });
     await m._waitTurn('w1', 8000);
-    const hold = holdOldStop(core, first.pid, false);
+    hold = holdOldStop(core, first.pid, false);
     const r = await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 20000, mcp_budget_ms: 1500 });
     assert.strictEqual(r.restart_path, 'early_return', JSON.stringify(r));
     assert.strictEqual(r.relaunch_in_flight, true);
@@ -145,6 +170,7 @@ test('restart: a budget that ends before launch() leaves a worker_wait that wait
     assert.strictEqual(w.event, 'turn_end', JSON.stringify(w));
     assert.notStrictEqual(m._worker('w1').pid, first.pid, 'the answer is the new life\'s turn');
   } finally {
+    if (hold) hold.release();
     try { await m.shutdown(); } catch { /* best effort */ }
     cleanup(data);
   }
@@ -152,10 +178,11 @@ test('restart: a budget that ends before launch() leaves a worker_wait that wait
 
 test('restart: when the relaunch that outlived the budget fails, worker_wait answers that failure, not the old life\'s stop', async () => {
   const { data, worktree, core, m } = setup('belay-restart-early-e-');
+  let hold = null;
   try {
     const first = await m.spawn({ substrate: 'claude-code', worktree, prompt: 'hello', worker_id: 'w1' });
     await m._waitTurn('w1', 8000);
-    const hold = holdOldStop(core, first.pid, true);
+    hold = holdOldStop(core, first.pid, true);
     const r = await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 20000, mcp_budget_ms: 1500 });
     assert.strictEqual(r.restart_path, 'early_return', JSON.stringify(r));
     const waiting = m.wait({ worker_ids: ['w1'], timeout_ms: 30000 });
@@ -165,6 +192,7 @@ test('restart: when the relaunch that outlived the budget fails, worker_wait ans
     assert.match(w.established_by, /the relaunch failed: the stop row could not be written/);
     assert.strictEqual(w.error_code, 'E_SUBSTRATE');
   } finally {
+    if (hold) hold.release();
     try { await m.shutdown(); } catch { /* best effort */ }
     cleanup(data);
   }
@@ -172,11 +200,12 @@ test('restart: when the relaunch that outlived the budget fails, worker_wait ans
 
 test('worker_wait over several workers answers one that has already finished while another is still relaunching', async () => {
   const { data, worktree, core, m } = setup('belay-restart-early-f-');
+  let hold = null;
   try {
     const w1 = await m.spawn({ substrate: 'claude-code', worktree, prompt: 'hello', worker_id: 'w1' });
     await m.spawn({ substrate: 'claude-code', worktree, prompt: 'hello', worker_id: 'w2' });
     await m._waitTurn('w1', 8000); await m._waitTurn('w2', 8000);
-    const hold = holdOldStop(core, w1.pid, false);
+    hold = holdOldStop(core, w1.pid, false);
     const r = await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 20000, mcp_budget_ms: 1500 });
     assert.strictEqual(r.relaunch_in_flight, true, JSON.stringify(r));
     const w = await m.wait({ worker_ids: ['w1', 'w2'], timeout_ms: 30000 });
@@ -187,6 +216,7 @@ test('worker_wait over several workers answers one that has already finished whi
     const after = await m.wait({ worker_ids: ['w1'], timeout_ms: 30000 });
     assert.strictEqual(after.event, 'turn_end', JSON.stringify(after));
   } finally {
+    if (hold) hold.release();
     try { await m.shutdown(); } catch { /* best effort */ }
     cleanup(data);
   }
@@ -194,12 +224,13 @@ test('worker_wait over several workers answers one that has already finished whi
 
 test('worker_wait names the worker whose relaunch failed, not the first one relaunching', async () => {
   const { data, worktree, core, m } = setup('belay-restart-early-g-');
+  let hold1 = null; let hold2 = null;
   try {
     const w2 = await m.spawn({ substrate: 'claude-code', worktree, prompt: 'hello', worker_id: 'w2' });
     const w1 = await m.spawn({ substrate: 'claude-code', worktree, prompt: 'hello', worker_id: 'w1' });
     await m._waitTurn('w1', 8000); await m._waitTurn('w2', 8000);
-    const hold2 = holdOldStop(core, w2.pid, false); // w2's relaunch is listed first and does not fail
-    const hold1 = holdOldStop(core, w1.pid, true);  // w1's relaunch fails
+    hold2 = holdOldStop(core, w2.pid, false); // w2's relaunch is listed first and does not fail
+    hold1 = holdOldStop(core, w1.pid, true);  // w1's relaunch fails
     const r2 = await m.restart({ worker_id: 'w2', first_turn_timeout_ms: 20000, mcp_budget_ms: 1500 });
     const r1 = await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 20000, mcp_budget_ms: 1500 });
     assert.strictEqual(r2.relaunch_in_flight && r1.relaunch_in_flight, true);
@@ -210,6 +241,8 @@ test('worker_wait names the worker whose relaunch failed, not the first one rela
     assert.strictEqual(w.worker_id, 'w1', JSON.stringify(w));
     hold2.release();
   } finally {
+    if (hold1) hold1.release();
+    if (hold2) hold2.release();
     try { await m.shutdown(); } catch { /* best effort */ }
     cleanup(data);
   }

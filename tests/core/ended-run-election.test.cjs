@@ -40,10 +40,12 @@ test('an orchestrator over an ended run is refused E_SHUTDOWN without an owner e
   } finally { spy.restore(); if (orch.isOwner()) await orch.shutdownOwner(); await orch.close(); cleanup(dir); }
 });
 
-test('the operator (the run process) and an orchestrator over a live run still elect', async () => {
+test('the operator (the run process) and an orchestrator over a live run still elect', async (tcx) => {
   const dir = sandbox();
   const spy = spyStarts();
   const orch = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
+  tcx.after(() => Promise.resolve().then(() => orch.shutdownOwner()));
+  tcx.after(() => Promise.resolve().then(() => orch.close()));
   let orchOpen = true;
   try {
     await orch.run.attach({ adapter_pid: process.pid });

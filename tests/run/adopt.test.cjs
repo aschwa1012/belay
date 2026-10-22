@@ -145,10 +145,11 @@ test('adoption does not re-validate an inherited bad started_at: an adopted work
   }
 });
 
-test('restarting an id no store row names is still E_NOT_FOUND', async () => {
+test('restarting an id no store row names is still E_NOT_FOUND', async (tcx) => {
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core);
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()));
   await assert.rejects(
     () => m.restart({ worker_id: 'never-existed' }),
     (e) => {
@@ -201,11 +202,12 @@ test('stop and message reach a worker that exists only in the store', async () =
 // Build 12 A10: a write that fails after a relaunch must not leave the relaunched child alive past shutdown.
 // Before the fix, doStop's `stopping` write threw the same E_ARGS and the kill behind it never ran. ADR 0045 amendment 3 goes further:
 // the failed start ends its own child (it holds a bind), so the child is gone when the rejection arrives, not only once shutdown returns.
-test('a write failure after a relaunch still leaves no live child once shutdown returns', { timeout: 60000 }, async () => {
+test('a write failure after a relaunch still leaves no live child once shutdown returns', { timeout: 60000 }, async (tcx) => {
   const sb = sandbox();
   const core = createFakeCore();
   const first = mgr(sb, core);
   let second = null;
+  tcx.after(() => Promise.resolve().then(() => second && second.shutdown()));
   let pid = null; let child = null;
   try {
     await first.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w-wfail', task_id: 't-wfail' });

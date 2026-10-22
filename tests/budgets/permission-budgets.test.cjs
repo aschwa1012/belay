@@ -83,10 +83,12 @@ test('budgets: pending, approve and deny against a data dir that does not exist 
   } finally { cleanup(dir); }
 });
 
-test('budgets: pending, approve and deny against a dead store with no such request each add under 500 ms to the host floor, interleaved', async () => {
+test('budgets: pending, approve and deny against a dead store with no such request each add under 500 ms to the host floor, interleaved', async (tcx) => {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const plantCore = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: 'run-permission-budgets', pid: process.pid }, embed: false });
+  tcx.after(() => Promise.resolve().then(() => plantCore.shutdownOwner()));
+  tcx.after(() => Promise.resolve().then(() => plantCore.close()));
   await plantCore.run.attach({ adapter_pid: process.pid });
   await plantCore.shutdownOwner();
   await plantCore.close();
