@@ -18,6 +18,7 @@ optInModel();
 
 const { openCore } = core('index.cjs');
 const { Embedder } = core('embedder.cjs');
+const { teardown } = require('../helpers/teardown.cjs');
 const { Store } = core('store.cjs');
 const M = core('models.cjs');
 const K = core('model-cache.cjs');
@@ -42,7 +43,7 @@ const storeMeta = (dir, rows) => {
 };
 const metaOf = c => Object.fromEntries(c.owner.store.db.prepare('SELECT key, value FROM meta').all().map(r => [r.key, r.value]));
 // An Embedder that is closed when its test ends, however the test ends: a loaded one holds a child process.
-const mk = (t, ...args) => { const e = new Embedder(...args); t.after(() => Promise.resolve().then(() => e.close()).catch(() => {})); return e; };
+const mk = (t, ...args) => { const e = new Embedder(...args); t.after(() => Promise.resolve().then(() => e.close())); return e; };
 
 test('embedder: voyage-4-nano loads at 1024 dims and the canary is unit length', async t => {
   if (noVoyage) return t.skip(noVoyage);
@@ -84,6 +85,7 @@ test('embedder: the owner finds a stored row by a text query', async t => {
   if (noVoyage) return t.skip(noVoyage);
   const dir = sandbox();
   let c = null;
+  let bodyError = null;
   try {
     c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: true });
     const a = await c.memory.store({ namespace: 'sem', text: 'The store owner holds the only connection to the database file.' });
@@ -109,9 +111,9 @@ test('embedder: the owner finds a stored row by a text query', async t => {
     const info = (await c.memory.stats({})).owner.embedder;
     assert.strictEqual(info.dim, 1024);
     assert.strictEqual(info.canary_vector, undefined, 'stats does not carry the 1024-float canary');
-  } finally {
-    if (c) { await c.shutdownOwner().catch(() => {}); await c.close().catch(() => {}); } // each step on its own; never masks the body's failure
-    cleanup(dir);
+  } catch (e) { bodyError = e; throw e; } finally {
+    // Every step runs; the body's error wins, and a teardown failure on a passing body is thrown.
+    await teardown(bodyError, [() => c && c.shutdownOwner(), () => c && c.close(), () => cleanup(dir)]);
   }
 });
 
@@ -130,6 +132,7 @@ test('embedder: a canary vector with cosine below 0.9999 is E_MODEL_CHANGED nami
   // Through the owner: the orchestration tables still work, only vector calls are refused, stickily.
   const dir = sandbox();
   let c = null;
+  let bodyError = null;
   try {
     storeMeta(dir, Object.entries({ ...stored, canary_sha256: '0'.repeat(64) }));
     c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: true });
@@ -147,9 +150,9 @@ test('embedder: a canary vector with cosine below 0.9999 is E_MODEL_CHANGED nami
     const row = await c.memory.store({ text: 'caller supplied', embedding: [1, 0], embedding_model: 'm', dim: 2 });
     assert.strictEqual(row.action, 'inserted', 'a caller-supplied vector needs no model');
     assert.strictEqual((await c.memory.stats({})).owner.embedder_error.code, 'E_MODEL_CHANGED', 'stats says why the store cannot embed');
-  } finally {
-    if (c) { await c.shutdownOwner().catch(() => {}); await c.close().catch(() => {}); } // each step on its own; never masks the body's failure
-    cleanup(dir);
+  } catch (e) { bodyError = e; throw e; } finally {
+    // Every step runs; the body's error wins, and a teardown failure on a passing body is thrown.
+    await teardown(bodyError, [() => c && c.shutdownOwner(), () => c && c.close(), () => cleanup(dir)]);
   }
 });
 
@@ -167,13 +170,14 @@ test('embedder: a store recorded with another model id is E_MODEL_CHANGED withou
   // A store whose model this belay does not know is refused at the owner, with the same code.
   const dir = sandbox();
   let c = null;
+  let bodyError = null;
   try {
     storeMeta(dir, [['embedding_model', 'someone/else-model'], ['embedding_dim', '768'], ['canary_sha256', '0'.repeat(64)]]);
     c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: true });
     await assert.rejects(c.memory.store({ text: 'x' }), x => x.code === 'E_MODEL_CHANGED' && x.message.includes('someone/else-model'));
-  } finally {
-    if (c) { await c.shutdownOwner().catch(() => {}); await c.close().catch(() => {}); } // each step on its own; never masks the body's failure
-    cleanup(dir);
+  } catch (e) { bodyError = e; throw e; } finally {
+    // Every step runs; the body's error wins, and a teardown failure on a passing body is thrown.
+    await teardown(bodyError, [() => c && c.shutdownOwner(), () => c && c.close(), () => cleanup(dir)]);
   }
 });
 
@@ -181,6 +185,7 @@ test('embedder: an older MiniLM store with only canary_sha256 adopts the canary 
   if (noMiniLM) return t.skip(noMiniLM);
   const dir = sandbox();
   let c = null;
+  let bodyError = null;
   try {
     storeMeta(dir, [['canary_sha256', '0b'.repeat(32)], ['embedding_model', MINILM.id], ['embedding_dim', '384']]);
     c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: true });
@@ -194,9 +199,9 @@ test('embedder: an older MiniLM store with only canary_sha256 adopts the canary 
     assert.strictEqual(JSON.parse(meta.canary_vector).length, 384, 'the current canary vector was adopted into meta');
     assert.strictEqual(meta.embedding_sha, MINILM.sha, 'the legacy shape adopts the full identity, in one transaction (review 1, M2)');
     assert.strictEqual(meta.embedding_library.length > 0, true);
-  } finally {
-    if (c) { await c.shutdownOwner().catch(() => {}); await c.close().catch(() => {}); } // each step on its own; never masks the body's failure
-    cleanup(dir);
+  } catch (e) { bodyError = e; throw e; } finally {
+    // Every step runs; the body's error wins, and a teardown failure on a passing body is thrown.
+    await teardown(bodyError, [() => c && c.shutdownOwner(), () => c && c.close(), () => cleanup(dir)]);
   }
   // The same store opened with a different model is refused.
   await assert.rejects(mk(t, { model: M.DEFAULT_MODEL }).load({ canary_sha256: '0'.repeat(64), embedding_model: MINILM.id, embedding_dim: '384' }), x => x.code === 'E_MODEL_CHANGED');
@@ -252,6 +257,7 @@ test('an absent model or package fails the calls that need a vector, and only th
   // because a model file is missing. Regression for review-core round 1 item 3.
   const dir = sandbox();
   let c = null;
+  let bodyError = null;
   try {
     c = await openCore({
       dataDir: dir, caller: callerFor('orchestrator'), embed: true,
@@ -273,8 +279,8 @@ test('an absent model or package fails the calls that need a vector, and only th
     await assert.rejects(c.memory.search({ query: 'anything', mode: 'semantic' }), e => e.code === 'E_MODEL_ABSENT');
     const row = await c.memory.store({ text: 'caller supplied', embedding: [1, 0], embedding_model: 'm', dim: 2 });
     assert.strictEqual(row.action, 'inserted');
-  } finally {
-    if (c) { await c.shutdownOwner().catch(() => {}); await c.close().catch(() => {}); } // each step on its own; never masks the body's failure
-    cleanup(dir);
+  } catch (e) { bodyError = e; throw e; } finally {
+    // Every step runs; the body's error wins, and a teardown failure on a passing body is thrown.
+    await teardown(bodyError, [() => c && c.shutdownOwner(), () => c && c.close(), () => cleanup(dir)]);
   }
 });
