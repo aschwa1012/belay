@@ -13,24 +13,24 @@ let X;
 before(async () => { X = await setup('r-oprep'); });
 after(() => X.cleanup());
 
-const op = () => ({ ...X.operator, pid: 4242 });
+const op = () => ({ ...X.operator, peer_pid: 4242 });
 const report = (caller, args) => X.call('memory.noteReport', caller, args);
 const hold = (id) => X.activeHold(id);
 
-test('R1: the operator reports a live note: one hold, counted, harness-written, reporter operator:<pid>, proof returned', async () => {
+test('R1: the operator reports a live note: one hold, counted, harness-written, reporter operator, proof returned', async () => {
   const a = await X.written('w-a1', 'K1');
   const before = await X.heldCount();
   const out = await report(op(), { note_id: a.note, why: 'the operator saw it fail' });
-  assert.deepStrictEqual([out.state, out.reported_by, out.report.seq, out.reports], ['held', 'operator:4242', 1, 1]);
+  assert.deepStrictEqual([out.state, out.reported_by, out.report.seq, out.reports], ['held', 'operator', 1, 1]);
   const h = hold(a.note);
   assert.ok(h, 'one active hold');
   assert.deepStrictEqual([out.hold.row, out.held.id], [h.id, h.id]);
-  assert.deepStrictEqual([h.b.ground, h.b.kind, h.b.reports.length, h.b.reports[0].by], ['reported', 'wrong', 1, 'operator:4242']);
+  assert.deepStrictEqual([h.b.ground, h.b.kind, h.b.reports.length, h.b.reports[0].by], ['reported', 'wrong', 1, 'operator']);
   assert.strictEqual(X.rowOf(h.id).written_by, 'harness', 'the hold is written on the harness channel');
   assert.strictEqual(X.heldRows(a.note).length, 1);
   assert.strictEqual(await X.heldCount(), before + 1, 'counted in the held queue');
   assert.strictEqual(X.bodyOf(a.note).held.row, h.id);
-  assert.strictEqual(X.bodyOf(a.note).reported_wrong[0].by, 'operator:4242');
+  assert.strictEqual(X.bodyOf(a.note).reported_wrong[0].by, 'operator');
 });
 
 test('R2: a second reporter appends to the same hold; the same reporter again replaces its own report', async () => {
@@ -43,8 +43,8 @@ test('R2: a second reporter appends to the same hold; the same reporter again re
   const again = await report(op(), { note_id: a.note, why: 'a better reason' });
   assert.strictEqual(again.state, 'already_held');
   const reports = X.bodyOf(a.note).reported_wrong;
-  assert.deepStrictEqual(reports.map((r) => r.by).sort(), ['operator:4242', 'orchestrator']);
-  assert.strictEqual(reports.find((r) => r.by === 'operator:4242').why, 'a better reason');
+  assert.deepStrictEqual(reports.map((r) => r.by).sort(), ['operator', 'orchestrator']);
+  assert.strictEqual(reports.find((r) => r.by === 'operator').why, 'a better reason');
   assert.strictEqual(hold(a.note).b.reports.length, 2);
 });
 
@@ -55,7 +55,7 @@ test('R3: a worker report on the note and the operator report share one hold; th
   const out = await report(op(), { note_id: a.note, why: `leaked key ${key} in the text` });
   assert.strictEqual(out.state, 'already_held');
   assert.strictEqual(X.heldRows(a.note).length, 1);
-  assert.deepStrictEqual(hold(a.note).b.reports.map((r) => r.by).sort(), ['operator:4242', 'worker:w-b3']);
+  assert.deepStrictEqual(hold(a.note).b.reports.map((r) => r.by).sort(), ['operator', 'worker:w-b3']);
   assert.ok(!JSON.stringify(X.bodyOf(a.note)).includes('AAAAAAAAAAAA'), 'the reason is stored redacted');
   assert.ok(!JSON.stringify(hold(a.note).b).includes('AAAAAAAAAAAA'));
 });
@@ -106,7 +106,7 @@ test('R8: the archive review is offered the operator\'s report, and the operator
   const q = await X.call('memory.reviewQueue', X.harness, {});
   const entry = q.held.find((e) => e.id === a.note);
   assert.ok(entry, 'the held note is in the review queue');
-  assert.ok(JSON.stringify(entry).includes('operator:4242'), 'the entry carries the operator\'s report');
+  assert.ok(JSON.stringify(entry).includes('operator'), 'the entry carries the operator\'s report');
   const out = await X.call('memory.heldSettle', op(), { id: a.note, action: 'release', reason: 'judged unfounded' });
   assert.strictEqual(out.settled.count, 1);
   assert.strictEqual(hold(a.note), null);
@@ -136,4 +136,25 @@ test('R9: atomic: a fault in the hold leaves no mark; the mutation without the t
   mutated._compile(src.replace('E.store.tx(() => {', '((f) => f())(() => {'), file);
   const broken = await faultRun(mutated.exports.noteReport);
   assert.strictEqual(broken.marked, 1, 'without the transaction the mark survives the fault: the atomicity test would fail');
+});
+
+test('R10: a repeat by the operator replaces its own report: one reporter, reports_total 1, the latest reason wins; the pid is only a record', async () => {
+  const a = await X.written('w-a10', 'K10');
+  for (const [i, pid] of [[1, 111], [2, 222], [3, 333]]) await report({ ...X.operator, peer_pid: pid }, { note_id: a.note, why: `reason ${i}` });
+  const h = hold(a.note);
+  assert.deepStrictEqual([h.b.reports.length, h.b.reports_total, h.b.reports[0].why, h.b.reports[0].by], [1, 1, 'reason 3', 'operator']);
+  const r = X.bodyOf(a.note).reported_wrong;
+  assert.deepStrictEqual([r.length, r[0].operator_pid], [1, 333]);
+});
+
+test('R11: the owner\'s admission ignores a pid or peer_pid the request carries and records the checked peer\'s', async () => {
+  const { admit } = require('../../src/core/owner-admit.cjs');
+  const owner = { opts: { operatorCheck: async () => ({ ok: true, via: 'peer', peer: { pid: 777 } }) }, binds: { lookup: () => null } };
+  const req = { method: 'memory.noteReport', params: { caller: { role: 'operator', run_id: 'cli', pid: 1, peer_pid: 2 }, note_id: 'x', why: 'y' } };
+  const refusal = await admit(owner, { belayTransport: 'tcp' }, req);
+  assert.strictEqual(refusal, null);
+  assert.deepStrictEqual([req.params.caller.role, req.params.caller.peer_pid], ['operator', 777]);
+  const a = await X.written('w-a11', 'K11');
+  await report(req.params.caller, { note_id: a.note, why: 'checked' });
+  assert.deepStrictEqual([X.bodyOf(a.note).reported_wrong[0].by, X.bodyOf(a.note).reported_wrong[0].operator_pid], ['operator', 777]);
 });

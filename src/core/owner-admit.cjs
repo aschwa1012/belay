@@ -58,7 +58,8 @@ function admit(owner, c, req) {
   return Promise.resolve(owner.opts.operatorCheck({ conn: c, caller: sent, method: req.method })).then((v) => {
     if (!v || v.ok !== true) return open ? anonymous() : refuse('operator_check', `${req.method}: the operator check refused this connection${v && v.reason ? ` (${v.reason})` : ''}`);
     c.belayVia = v.via || 'peer';
-    params.caller = { ...sent, role: 'operator' };
+    const { peer_pid: forged, ...rest } = sent; // the checked peer's pid is the owner's finding, never the request's
+    params.caller = { ...rest, role: 'operator', ...(v.peer && Number.isInteger(v.peer.pid) ? { peer_pid: v.peer.pid } : {}) };
     return null;
   });
 }

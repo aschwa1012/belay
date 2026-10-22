@@ -37,7 +37,8 @@ test('report elects, holds the note, returns the proof (exit 0) and leaves no ow
     assert.strictEqual(r.status, 0, r.stdout + r.stderr);
     const j = JSON.parse(r.stdout);
     assert.deepStrictEqual([j.id, j.state, j.hold.kind, j.held.body.state, j.held.body.ground], [p.note, 'held', 'wrong', 'held', 'reported']);
-    assert.match(j.reported_by, /^operator:\d+$/);
+    assert.strictEqual(j.reported_by, 'operator');
+    assert.ok(Number.isInteger(j.row.body.reported_wrong[0].operator_pid), 'the checked pid is kept for the record');
     assert.strictEqual(j.held.written_by, 'harness');
     assert.ok(!fs.existsSync(`${dir}/owner.lock`), 'no owner left behind');
     const again = JSON.parse(cli(['report', p.note, '--reason', 'a better reason'], dir).stdout);
@@ -87,5 +88,15 @@ test('report inside a worker environment is refused by the built CLI (exit nonze
     assert.match(r.stdout + r.stderr, /refused/);
     const store = new Store(`${dir}/memory.db`, { stamp: true });
     try { assert.strictEqual(store.p("SELECT COUNT(*) AS n FROM memory_entries WHERE type = 'held'").get().n, 0); } finally { store.close(); }
+  });
+});
+
+test('three CLI reports on one note are one reporter: reports_total 1, the latest reason wins', async () => {
+  await withSandbox(async (dir) => {
+    const p = plant(dir);
+    let last;
+    for (const why of ['first', 'second', 'third']) { last = cli(['report', p.note, '--reason', why], dir); assert.strictEqual(last.status, 0, last.stdout + last.stderr); }
+    const j = JSON.parse(last.stdout);
+    assert.deepStrictEqual([j.reports, j.held.body.reports.length, j.held.body.reports_total, j.held.body.reports[0].why], [1, 1, 1, 'third']);
   });
 });

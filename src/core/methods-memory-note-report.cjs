@@ -5,8 +5,8 @@
 // harness channel for the hold row and the same one-report-per-reporter rule (a repeat replaces that reporter's report).
 //   Who: the explicit operator (`belay memory report`) and the orchestrator (the `memory_report` tool). Never a worker: workers report in their
 //        hand-back. Never the harness channel (the run's close stages).
-//   Identity: from the caller only (invariant 3). The operator is `operator:<pid>` (the pid of the process that opened the core as the operator),
-//        the orchestrator is `orchestrator`. Nothing in the arguments names a reporter.
+//   Identity: from the caller only (invariant 3). The operator is `operator`, the orchestrator is `orchestrator`; the operator's checked peer pid
+//        (`peer_pid`, set by the owner's check, never read from a request) is kept on the report as `operator_pid`, for the record only. Nothing in the arguments names a reporter.
 //   Proof (invariant 5): the report as written, the hold row (id, kind, rev) or `not_held` with the reason, and the rows as stored.
 
 const { err } = require('./errors.cjs');
@@ -23,9 +23,9 @@ const { redact } = require('./redact.cjs');
 const WHY_MAX = 500;
 const WRONG_KEEP = 20;
 
-// Who is reporting, from the caller alone. Returns null when the caller may not report.
+// Who is reporting: the role of the checked caller, nothing else, so one operator is one reporter. Returns null when the caller may not report.
 function reporterOf(caller) {
-  if (HG.explicitOperator(caller)) return Number.isInteger(caller.pid) ? `operator:${caller.pid}` : 'operator';
+  if (HG.explicitOperator(caller)) return 'operator';
   if (caller && caller.role === 'orchestrator' && caller.channel !== 'harness') return 'orchestrator';
   return null;
 }
@@ -65,7 +65,7 @@ async function noteReport(E, caller, args) {
     const next = E.store.patchBody(live.id, (b) => {
       const seq = (Number(b.report_seq) || 0) + 1;
       b.report_seq = seq;
-      report = { by, worker_id: null, task_id: null, run_id: caller.run_id || null, why, replaced_by: rb, at: t, seq };
+      report = { by, worker_id: null, task_id: null, run_id: caller.run_id || null, why, replaced_by: rb, at: t, seq, ...(by === 'operator' && Number.isInteger(caller.peer_pid) ? { operator_pid: caller.peer_pid } : {}) };
       b.reported_wrong = [...(b.reported_wrong || []).filter((x) => x.by !== by), report].slice(-WRONG_KEEP);
       return N.fitBody(b, report, live.id);
     });
