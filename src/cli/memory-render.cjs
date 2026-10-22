@@ -54,6 +54,7 @@ const FLAGS = {
   '--archive': { key: 'archive', type: 'bool' },
   '--release': { key: 'release', type: 'bool' },
   '--reoffer': { key: 'reoffer', type: 'bool' },
+  '--replaced-by': { key: 'replacedBy', type: 'one' },
 };
 
 const FILTER_FLAGS = ['--type', '--status', '--task', '--worker', '--since', '--namespace'];
@@ -76,6 +77,7 @@ const VERBS = {
   resolve: { flags: ['--evidence'], positional: [2, 3], usage: 'belay memory resolve <id> new   |   belay memory resolve <id> repeats <of>   |   belay memory resolve <id> supersedes <of> --evidence <text>' },
   promote: { flags: ['--approve', '--reject', '--reason'], positional: [1, 1], usage: 'belay memory promote <note-id> (--approve | --reject) [--reason <text>]' },
   held: { flags: ['--project', '--awaiting', '--archive', '--release', '--reoffer', '--reason'], positional: [0, 2], usage: 'belay memory held [--project p] [--awaiting]   |   belay memory held settle <note-id> (--archive | --release | --reoffer) --reason <text>' },
+  report: { flags: ['--reason', '--replaced-by'], positional: [1, 1], usage: 'belay memory report <note-id> --reason <text> [--replaced-by <note-id>]' },
   archive: { flags: ['--ids', '--older-than', '--confirm', '--project'], positional: [1, 1], usage: 'belay memory archive purge (--ids a,b | --older-than <days>) --confirm [--project p]' },
 };
 
@@ -141,6 +143,13 @@ function checkHeld(opts, positional) {
   return {};
 }
 
+// report <note-id> --reason <text> [--replaced-by <note-id>]: a note is reported with a reason, which is recorded.
+function checkReport(opts) {
+  if (!(typeof opts.reason === 'string' && opts.reason.trim())) return { error: 'belay memory report needs --reason <text>: it is recorded on the note and shown to the archive review' };
+  if (opts.replacedBy !== undefined && !opts.replacedBy.trim()) return { error: '--replaced-by needs a note id' };
+  return {};
+}
+
 function checkOpts(sub, opts, positional = []) {
   if (opts.mode !== undefined && !MODES.includes(opts.mode)) return { error: `--mode must be one of ${MODES.join(', ')}; got ${opts.mode}` };
   if (opts.status !== undefined && !STATUSES.includes(opts.status)) return { error: `--status must be one of ${STATUSES.join(', ')}; got ${opts.status}` };
@@ -172,6 +181,7 @@ function checkOpts(sub, opts, positional = []) {
     if (opts.namespaces && opts.namespaces.length > 1) return { error: 'belay memory import takes one --namespace, the default for rows that carry none' };
   }
   if (sub === 'restore' && !opts.candidates && !opts.reason) return { error: 'belay memory restore needs --reason <text> (or --candidates to list the archived duplicates of a note)' };
+  if (sub === 'report') return checkReport(opts);
   if (sub === 'resolve') return checkResolve(opts, positional);
   if (sub === 'held') return checkHeld(opts, positional);
   if (sub === 'promote' && !!opts.approve === !!opts.reject) return { error: 'belay memory promote needs exactly one of --approve or --reject' };
