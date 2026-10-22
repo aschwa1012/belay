@@ -41,10 +41,12 @@ const storeMeta = (dir, rows) => {
   s.close();
 };
 const metaOf = c => Object.fromEntries(c.owner.store.db.prepare('SELECT key, value FROM meta').all().map(r => [r.key, r.value]));
+// An Embedder that is closed when its test ends, however the test ends: a loaded one holds a child process.
+const mk = (t, ...args) => { const e = new Embedder(...args); t.after(() => Promise.resolve().then(() => e.close()).catch(() => {})); return e; };
 
 test('embedder: voyage-4-nano loads at 1024 dims and the canary is unit length', async t => {
   if (noVoyage) return t.skip(noVoyage);
-  const e = new Embedder();
+  const e = mk(t);
   const info = await e.load(null);
   assert.strictEqual(info.model, VOYAGE.id);
   assert.strictEqual(info.sha, VOYAGE.sha);
@@ -55,16 +57,16 @@ test('embedder: voyage-4-nano loads at 1024 dims and the canary is unit length',
   assert.match(info.library, /^\d+\.\d+\.\d+/);
   assert.ok(info.load_ms > 0);
   assert.strictEqual(info.canary_sha256.length, 64);
-  const again = await new Embedder().load({ embedding_model: info.model, embedding_sha: info.sha, embedding_dim: '1024', embedding_library: info.library, canary_vector: JSON.stringify(info.canary_vector) });
+  const again = await mk(t).load({ embedding_model: info.model, embedding_sha: info.sha, embedding_dim: '1024', embedding_library: info.library, canary_vector: JSON.stringify(info.canary_vector) });
   assert.strictEqual(again.adopted_canary, false);
   assert.strictEqual(again.library_changed, null, 'the same library twice is not a change');
-  const moved = await new Embedder().load({ embedding_model: info.model, embedding_library: '0.0.1', canary_vector: JSON.stringify(info.canary_vector) });
+  const moved = await mk(t).load({ embedding_model: info.model, embedding_library: '0.0.1', canary_vector: JSON.stringify(info.canary_vector) });
   assert.deepStrictEqual(moved.library_changed, { from: '0.0.1', to: info.library }, 'a library change on a passing cosine is reported, not refused');
 });
 
 test('embedder: a query and a document embed differently (the prompts are applied)', async t => {
   if (noVoyage) return t.skip(noVoyage);
-  const e = new Embedder();
+  const e = mk(t);
   await e.load(null);
   const text = 'which process opens the sqlite file?';
   const d = await e.embed(text);
@@ -118,7 +120,7 @@ test('embedder: a canary vector with cosine below 0.9999 is E_MODEL_CHANGED nami
   // A synthetic recorded canary: a unit vector no real embedding is near, so the cosine is far below the bound.
   const rotated = Array.from({ length: 1024 }, (_, i) => Math.sin(i * 12.9898) / Math.sqrt(512));
   const stored = { embedding_model: VOYAGE.id, embedding_sha: VOYAGE.sha, embedding_dim: '1024', canary_vector: JSON.stringify(rotated) };
-  await assert.rejects(new Embedder().load(stored), x => {
+  await assert.rejects(mk(t).load(stored), x => {
     assert.strictEqual(x.code, 'E_MODEL_CHANGED');
     assert.match(x.message, /cosine -?\d\.\d+/);
     assert.ok(x.detail.cosine < 0.9999);
@@ -153,15 +155,15 @@ test('embedder: a canary vector with cosine below 0.9999 is E_MODEL_CHANGED nami
 
 test('embedder: a store recorded with another model id is E_MODEL_CHANGED without embedding', async t => {
   // This one needs no model at all: the identity is refused before the package or the cache is touched.
-  const e = new Embedder({ model: M.DEFAULT_MODEL, cacheDir: path.join(os.tmpdir(), 'belay-no-such-cache') });
+  const e = mk(t, { model: M.DEFAULT_MODEL, cacheDir: path.join(os.tmpdir(), 'belay-no-such-cache') });
   await assert.rejects(e.load({ embedding_model: MINILM.id, embedding_dim: '384' }), x => {
     assert.strictEqual(x.code, 'E_MODEL_CHANGED');
     assert.ok(x.message.includes(MINILM.id) && x.message.includes(VOYAGE.id));
     return true;
   });
   assert.strictEqual(e.pipe, null, 'nothing was loaded, let alone embedded');
-  await assert.rejects(new Embedder().load({ embedding_model: VOYAGE.id, embedding_sha: 'a'.repeat(40) }), x => x.code === 'E_MODEL_CHANGED');
-  await assert.rejects(new Embedder().load({ embedding_model: VOYAGE.id, embedding_dim: '384' }), x => x.code === 'E_MODEL_CHANGED');
+  await assert.rejects(mk(t).load({ embedding_model: VOYAGE.id, embedding_sha: 'a'.repeat(40) }), x => x.code === 'E_MODEL_CHANGED');
+  await assert.rejects(mk(t).load({ embedding_model: VOYAGE.id, embedding_dim: '384' }), x => x.code === 'E_MODEL_CHANGED');
   // A store whose model this belay does not know is refused at the owner, with the same code.
   const dir = sandbox();
   let c = null;
@@ -197,14 +199,14 @@ test('embedder: an older MiniLM store with only canary_sha256 adopts the canary 
     cleanup(dir);
   }
   // The same store opened with a different model is refused.
-  await assert.rejects(new Embedder({ model: M.DEFAULT_MODEL }).load({ canary_sha256: '0'.repeat(64), embedding_model: MINILM.id, embedding_dim: '384' }), x => x.code === 'E_MODEL_CHANGED');
-  const info = await new Embedder({ model: MINILM.id }).load({ canary_sha256: '0'.repeat(64), embedding_model: MINILM.id, embedding_dim: '384' });
+  await assert.rejects(mk(t, { model: M.DEFAULT_MODEL }).load({ canary_sha256: '0'.repeat(64), embedding_model: MINILM.id, embedding_dim: '384' }), x => x.code === 'E_MODEL_CHANGED');
+  const info = await mk(t, { model: MINILM.id }).load({ canary_sha256: '0'.repeat(64), embedding_model: MINILM.id, embedding_dim: '384' });
   assert.strictEqual(info.adopted_canary, true);
 });
 
 test('embedder: text past max_tokens, prompt included, is E_TOO_LONG', async t => {
   if (noVoyage) return t.skip(noVoyage);
-  const e = new Embedder();
+  const e = mk(t);
   await e.load(null);
   await assert.rejects(e.embed('word '.repeat(9000)), x => {
     assert.strictEqual(x.code, 'E_TOO_LONG');
@@ -234,7 +236,7 @@ test('an absent model is E_MODEL_ABSENT, naming the fetch verb and the missing p
   if (!K.packageDir()) return t.skip('the transformers package is not installed');
   const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-empty-cache-')).split('\\').join('/');
   try {
-    const e = new Embedder({ cacheDir: empty });
+    const e = mk(t, { cacheDir: empty });
     await assert.rejects(e.load(null), err => {
       assert.strictEqual(err.code, 'E_MODEL_ABSENT');
       assert.ok(err.message.includes(`belay embedder fetch --model ${VOYAGE.id}`));
