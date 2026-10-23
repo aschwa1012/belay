@@ -94,7 +94,7 @@ function analyze(files) {
   }
   const spawns = where(procCalls.spawn), runs = where(procCalls.run);
   if (!spawns.every((s) => s.startsWith('hooks/wake/index.ts:'))) bad.push(`$.process.spawn is called from ${JSON.stringify(spawns)}; only the wake stream (hooks/wake/index.ts) may spawn`);
-  const want = ['hooks/panel/index.tsx:dispatchReview', 'hooks/panel/index.tsx:runJson'];
+  const want = ['hooks/panel/index.tsx:dispatchReview', 'hooks/panel/index.tsx:runJson', 'hooks/panel/index.tsx:settlePress'];
   if (JSON.stringify(runs) !== JSON.stringify(want)) bad.push(`$.process.run is called from ${JSON.stringify(runs)}; expected exactly ${JSON.stringify(want)}`);
 
   // 2. The launcher's pieces appear only where the chain says.
@@ -121,9 +121,32 @@ function analyze(files) {
   const okMember = members.length === 1 && members[0].f === 'hooks/panel/view.tsx' && /<Button key="review".*onPress=\{act\.review\}/.test(members[0].orig);
   if (!okMember) bad.push(`a \`.review\` member is used in ${JSON.stringify(where(members))}; only view.tsx's Button keyed review may (onPress={act.review})`);
 
+  // 3b. The settle write (the second and last): `belay memory held settle <id> --archive|--release|--reoffer --reason <x> --json [--data d]`.
+  // settleArgs (held.ts) builds exactly that array, settlePress (index.tsx) is its one caller and runs it, acts() has the one handler that calls
+  // settlePress, and view.tsx's SettleRow has the one Button that calls act.settle. Nothing else names any of them.
+  const held = info['hooks/panel/held.ts'];
+  if (!held || !/export const settleArgs = \(action: SettleAction, id: string, reason: string\): string\[\] => \['memory', 'held', 'settle', id, `--\$\{action\}`, '--reason', reason\]\s*\n/.test(held.text)) bad.push('settleArgs in hooks/panel/held.ts is not exactly the literal settle argv');
+  const sa = refs(/\bsettleArgs\b/g).filter((r) => !/^\s*import\b/.test(r.line) && !/^\s*(?:export\s+)?(?:async\s+)?(?:function|const)\s+settleArgs\b/.test(r.line));
+  if (JSON.stringify(where(sa)) !== JSON.stringify(['hooks/panel/index.tsx:settlePress']) || !sa.every((r) => /\$\.process\.run\(argvFor\(r\.cli, settleArgs\(action, id, reason\), watch\.dataDir\), \{ timeoutMs: START_TIMEOUT_MS, \.\.\.\(cwd \? \{ cwd \} : \{\}\) \}\)/.test(r.orig))) bad.push(`settleArgs is used in ${JSON.stringify(where(sa))}; only settlePress may run it, as argvFor(r.cli, settleArgs(action, id, reason), watch.dataDir)`);
+  const sp = refs(/\bsettlePress\b/g).filter((r) => !/function\s+settlePress/.test(r.line));
+  if (JSON.stringify(where(sp)) !== JSON.stringify(['hooks/panel/index.tsx:acts']) || !sp.every((r) => /^\s*settle:\s*\(action, id\)\s*=>\s*\{\s*void settlePress\(\$, action, id\)\s*\},?\s*$/.test(r.line))) bad.push(`settlePress is named in ${JSON.stringify(where(sp))}; only the \`settle\` handler of acts() may call it`);
+  const sm = refs(/\.\s*settle\b/g);
+  if (!(sm.length === 1 && sm[0].f === 'hooks/panel/view.tsx' && sm[0].owner === 'SettleRow' && /<Button key=\{`\$\{a\}-\$\{n\.id\}`\}.*onPress=\{\(\) => act\.settle\(a, n\.id\)\}/.test(sm[0].orig))) bad.push(`a \`.settle\` member is used in ${JSON.stringify(where(sm))}; only SettleRow's Button may (onPress={() => act.settle(a, n.id)})`);
+  for (const [f, o] of Object.entries(info)) {
+    if (f.startsWith('hooks/wake/')) continue;
+    for (const l of o.lits) {
+      if (!['settle', 'held'].includes(l.text)) continue;
+      const owner = ownerOf(o.its, l.at);
+      if (f === 'hooks/panel/held.ts' && owner === 'settleArgs') continue;
+      if (f === 'hooks/panel/index.tsx' && (owner === 'fetchSnapshot' || owner === 'AWAITING_READ') && l.text === 'held') continue;
+      if (/key=\s*$|startsWith\(\s*$/.test(o.text.slice(Math.max(0, l.at - 14), l.at))) continue;
+      bad.push(`${f}:${owner}: the string ${JSON.stringify(l.text)} appears outside the settle argv and the awaiting read`);
+    }
+  }
+
   // 4. Nothing outside the panel names the chain, and no module crosses between the wake and the panel.
   for (const [f, o] of Object.entries(info)) {
-    if (!f.startsWith('hooks/panel/') && /\b(dispatchReview|reviewPress|REVIEW_ARGS|START_FLAG)\b/.test(o.code)) bad.push(`${f} names the review launcher`);
+    if (!f.startsWith('hooks/panel/') && /\b(dispatchReview|reviewPress|REVIEW_ARGS|START_FLAG|settlePress|settleArgs)\b/.test(o.code)) bad.push(`${f} names the review launcher or the settle writer`);
     const imports = [...o.text.matchAll(/(?:from|import)\s*\(?\s*['"]([^'"]+)['"]/g)].map((m) => m[1]);
     if (f.startsWith('hooks/wake/') && imports.some((p) => /panel/.test(p))) bad.push(`${f} imports from the panel: ${imports.filter((p) => /panel/.test(p)).join(', ')}`);
     if (f.startsWith('hooks/panel/') && imports.some((p) => /wake/.test(p))) bad.push(`${f} imports from the wake: ${imports.filter((p) => /wake/.test(p)).join(', ')}`);
@@ -133,11 +156,11 @@ function analyze(files) {
   for (const r of refs(/\$\s*\.\s*(?:prompt\s*\.\s*submit|agent\s*\.\s*spawn|tool\s*\.\s*call|session\s*\.\s*append|fs\s*\.\s*(?:write|append|remove|rename|mkdir)\w*)\b/g).filter((r) => !r.f.startsWith('hooks/wake/'))) bad.push(`${r.f}:${r.owner}: a write or a model-facing call: ${r.line.trim().slice(0, 80)}`);
 
   // 6. The generic read helper runs reads only, and no spelling reaches the launcher's words or the host object by a computed name.
-  const READS = /^runJson\(\$,\s*cli,\s*\['(agents|notices|transcript|settings)'/;
+  const READS = /^runJson\(\$,\s*cli,\s*(?:\['(?:agents|notices|transcript|settings)'|\['memory', 'held', '--awaiting'\],)/;
   for (const [f, o] of Object.entries(info)) {
     for (const m of o.code.matchAll(/\brunJson\s*\(/g)) {
       if (/function\s+$/.test(o.code.slice(Math.max(0, m.index - 12), m.index))) continue;
-      if (!READS.test(o.text.slice(m.index, m.index + 80))) bad.push(`${f}:${ownerOf(o.its, m.index)}: runJson is called other than with a literal read verb (agents, notices, transcript, settings)`);
+      if (!READS.test(o.text.slice(m.index, m.index + 80))) bad.push(`${f}:${ownerOf(o.its, m.index)}: runJson is called other than with a literal read verb (agents, notices, transcript, settings, or memory held --awaiting)`);
     }
     if (f.startsWith('hooks/wake/')) continue;
     for (const m of o.code.matchAll(/\$\s*\[|\(\s*\$\s+as\b|=\s*\$\s*(?:as\b[^;\n]*)?(?:[;\n]|$)/g)) bad.push(`${f}:${ownerOf(o.its, m.index)}: the host object is reached by a computed member, a cast or an alias: ${o.text.slice(m.index, m.index + 30).trim()}`);
