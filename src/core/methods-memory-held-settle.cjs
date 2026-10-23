@@ -47,36 +47,45 @@ async function heldSettle(E, caller, args) {
   const held = { id: mine[0].id, namespace: mine[0].namespace, b: JSON.parse(mine[0].body) };
   const project = held.namespace.slice('held/'.length);
   const out = E.store.tx(() => {
-    // Compare-and-set (`if_awaiting`, the panel's flag): the hold is read again INSIDE this transaction, so a settle that landed after the caller last looked is seen.
-    // A re-offer clears `undecided` and leaves the hold active, so without this a second settle on the same note would still write.
-    if (args.if_awaiting === true) {
-      const cur = E.store.p('SELECT body FROM memory_entries WHERE id = ?').get(held.id);
-      const b = cur ? JSON.parse(cur.body) : null;
-      if (!b || b.state !== 'held' || !isAwaiting(b)) throw err('E_PRECONDITION', `the hold on note ${args.id} does not await the operator now (state ${b ? b.state : 'gone'}${b && b.state === 'held' ? ', not marked undecided' : ''}), so nothing was settled`, { id: args.id, awaiting: false, state: b ? b.state : null, held_row: held.id });
+    // The hold is read again INSIDE this transaction and the body of this call works from that read, not from the one before it: a settle that landed in between,
+    // from this or another process, is seen. With `if_awaiting` (the panel's flag) the call is a compare-and-set: it is refused unless the hold is still active AND awaits
+    // the operator. A re-offer clears `undecided` and leaves the hold active, so without the flag a second settle on the same note would still write.
+    const cur = E.store.p('SELECT body FROM memory_entries WHERE id = ?').get(held.id);
+    const fresh = cur ? JSON.parse(cur.body) : null;
+    const state = fresh ? fresh.state : null;
+    if (!fresh || state !== 'held') {
+      if (args.if_awaiting === true) throw err('E_PRECONDITION', `the hold on note ${args.id} is ${fresh ? state : 'gone'}, so nothing was settled`, { id: args.id, awaiting: false, state, held_row: held.id });
+      throw err('E_NOT_FOUND', `note ${args.id} has no active hold`, { id: args.id });
     }
+    if (args.if_awaiting === true && !isAwaiting(fresh)) {
+      const u = fresh.undecided && typeof fresh.undecided === 'object' ? fresh.undecided : null;
+      const why = u ? `undecided at revision ${u.rev}, but the hold is at revision ${fresh.rev == null ? 0 : fresh.rev} now` : 'not marked undecided';
+      throw err('E_PRECONDITION', `the hold on note ${args.id} does not await the operator (${why}), so nothing was settled`, { id: args.id, awaiting: false, state, rev: fresh.rev == null ? 0 : fresh.rev, undecided_rev: u ? (u.rev ?? null) : null, held_row: held.id });
+    }
+    const hold = { ...held, b: fresh };
     const at = Date.now();
     const receipt = `held-settle:${held.id}@${at.toString(36)}`;
     const note = loadNote(E, args.id);
     if (!note || note.namespace !== N.projectNs(project)) throw err('E_NOT_FOUND', `note ${args.id} is no longer a live note of project ${project}`, { id: args.id });
-    const isUns = held.b.kind === 'unsupported';
+    const isUns = hold.b.kind === 'unsupported';
     const entry = (outcome, extra = {}) => ({ receipt, at, by: 'operator', action: args.action, outcome, reason, ...extra });
     if (args.action === 'reoffer') {
-      if (!held.b.undecided) throw err('E_PRECONDITION', `the hold on note ${args.id} is not marked undecided, so there is nothing to re-offer (it is offered at the next review already)`, { id: args.id, held_row: held.id });
+      if (!hold.b.undecided) throw err('E_PRECONDITION', `the hold on note ${args.id} is not marked undecided, so there is nothing to re-offer (it is offered at the next review already)`, { id: args.id, held_row: held.id });
       R.record(E, held.id, entry('reoffered'), { undecided: null });
       return { id: args.id, action: 'reoffer', outcome: 'reoffered', receipt, held_row: held.id };
     }
     if (args.action === 'archive') {
       if (isUns) throw err('E_PRECONDITION', `note ${args.id} is queued as unsupported: it carries no warning, so there is nothing to archive it for; release it (still unsupported) or re-offer it`, { id: args.id });
-      const kept = held.b.kind === 'duplicate' && held.b.of ? loadNote(E, held.b.of) : (held.b.relation === 'refines' && held.b.of ? loadNote(E, held.b.of) : null);
+      const kept = hold.b.kind === 'duplicate' && hold.b.of ? loadNote(E, hold.b.of) : (hold.b.relation === 'refines' && hold.b.of ? loadNote(E, hold.b.of) : null);
       const done = archiveNote(E, project, note, {
-        kind: held.b.kind, of: held.b.of || null, ground: held.b.ground || null, reason, cites: [], run_id: held.b.run_id || null, head_sha: held.b.head_sha || null,
-        held_row: held.id, receipt, settled_by: 'operator', ...(held.b.relation ? { relation: held.b.relation, refines: held.b.relation === 'refines', via: held.b.relation } : {}),
+        kind: hold.b.kind, of: hold.b.of || null, ground: hold.b.ground || null, reason, cites: [], run_id: hold.b.run_id || null, head_sha: hold.b.head_sha || null,
+        held_row: held.id, receipt, settled_by: 'operator', ...(hold.b.relation ? { relation: hold.b.relation, refines: hold.b.relation === 'refines', via: hold.b.relation } : {}),
       }, kept);
       R.record(E, held.id, entry('archived', { to: done.to }), { state: 'archived', archived_at: done.at });
       return { id: args.id, action: 'archive', outcome: 'archived', receipt, to: done.to, history_moved: done.history_moved, replaced_also_archived: done.replaced_also_archived, held_row: held.id };
     }
     // release
-    const keys = isUns ? [] : reportKeys(note, held);
+    const keys = isUns ? [] : reportKeys(note, hold);
     R.record(E, held.id, entry(isUns ? 'still_unsupported' : 'released', { settled: keys }), { state: isUns ? 'still_unsupported' : 'released', settled_at: at });
     E.store.patchBody(args.id, (b) => {
       delete b.held;

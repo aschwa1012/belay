@@ -11,7 +11,12 @@ const ACTIVE = `h.type = 'held' AND h.namespace LIKE 'held/%' AND h.written_by =
   AND EXISTS (SELECT 1 FROM memory_entries n WHERE n.id = json_extract(h.body, '$.note_id') AND n.type = 'note' AND n.namespace = 'project/' || substr(h.namespace, 6))`;
 // The JS twin of AWAITING below, for one held row's body: the archive reviewer answered undecided at the hold's current revision. memory.heldSettle's
 // compare-and-set (`if_awaiting`) and the listing's awaiting_operator both use it.
-function isAwaiting(b) { return !!(b && b.undecided && b.undecided.rev != null && Number(b.undecided.rev) === (Number(b.rev) || 0)); }
+// Both revisions must be integers (the SQL compares JSON values of one type): a string, a float, null or a missing mark never awaits, so this is never looser than AWAITING.
+function isAwaiting(b) {
+  if (!b || !b.undecided || typeof b.undecided !== 'object') return false;
+  const rev = b.rev == null ? 0 : b.rev;
+  return Number.isInteger(b.undecided.rev) && Number.isInteger(rev) && b.undecided.rev === rev;
+}
 
 const AWAITING = "(json_extract(h.body, '$.undecided.rev') IS NOT NULL AND json_extract(h.body, '$.undecided.rev') = COALESCE(json_extract(h.body, '$.rev'), 0))";
 const parse = (t) => { try { return t ? JSON.parse(t) : {}; } catch { return {}; } };
@@ -186,4 +191,4 @@ async function held(E, caller, args = {}) {
   return { ...scoped, ...(listing ? listing : {}), ...(reviews ? { reviews } : {}), ...(args.reports ? { breakers: breakers(E.store).filter((b) => !project || b.project === project), unjudged_reports: unjudged(E.store).filter((r) => !project || r.project === project), stranded: stranded(E.store, project) } : {}) };
 }
 
-module.exports = { count, breakers, entries, unjudged, stranded, held, isAwaiting };
+module.exports = { count, breakers, entries, unjudged, stranded, held, isAwaiting, AWAITING };

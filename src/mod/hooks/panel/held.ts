@@ -207,6 +207,18 @@ export function settleEntryView(entry: { label: string; at: number; unknown?: tr
   return { label: entry.label, unknown: entry.unknown === true, pending: entry.pending === true }
 }
 
+// The settled map keeps at most `keep` entries, and drops only resolved ones (oldest first): an entry still pending or unknown is what keeps a note refused, so it
+// is never the one pruned, even if that leaves the map larger than `keep`. The entry just written is never dropped either.
+export function pruneSettled<T extends { pending?: true; unknown?: true }>(m: Record<string, T>, newest: string, keep = 20): Record<string, T> {
+  const out: Record<string, T> = { ...m }
+  let over = Object.keys(out).length - keep
+  for (const k of Object.keys(out)) {
+    if (over <= 0) break
+    if (k !== newest && out[k]!.pending !== true && out[k]!.unknown !== true) { delete out[k]; over -= 1 }
+  }
+  return out
+}
+
 // How a settle's toast reads as the row's own line.
 export function settleKind(line: string): { kind: 'ok' | 'unknown' | 'refused'; label: string } {
   if (line.startsWith('belay: outcome unknown')) return { kind: 'unknown', label: 'outcome unknown' }

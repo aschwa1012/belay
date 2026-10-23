@@ -18,7 +18,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On, Timer } from 'claude-code'
 import type { BelayPanelSettled, BelayPanelSnap, BelayPanelUi, BelayPanelWatch } from '../../types/index'
 import { argvFor, buildSnapshot, fatalSnapshot, fwd, launcherLine, isWindowsPath, needsRun, parseRan, parseRunFile, projectRootOf, repoCliGuess, type Ran, type RunFileRead } from './fetch'
-import { CONFIRM_MS, normHeld, reasonProblem, reviewProject, SETTLE_ACTIONS, SETTLE_UNKNOWN, PENDING_STALE_MS, settleArgs, settleKind, settleLine, settledActive, shortId, type SettleAction } from './held'
+import { CONFIRM_MS, normHeld, reasonProblem, reviewProject, SETTLE_ACTIONS, SETTLE_UNKNOWN, PENDING_STALE_MS, pruneSettled, settleArgs, settleKind, settleLine, settledActive, shortId, type SettleAction } from './held'
 import { DEFAULT_SETTINGS, DEFAULT_UI } from './model'
 import { Band, BandWaiting, Fallback, Pane, type Act, type Els } from './view'
 
@@ -355,7 +355,7 @@ async function recheckNote($: Host, id: string): Promise<void> {
 async function markSettled($: Host, id: string, line: string): Promise<void> {
   const at = await $.clock.now() // stamped after the process returned; the API has only the epoch clock (no monotonic one), so this is compared with fetchedAt in the same clock
   const k = settleKind(line)
-  await update($, settledA, m => Object.fromEntries([...Object.entries({ ...m, [id]: { label: k.label, at, ...(k.kind === 'unknown' ? { unknown: true as const } : {}) } }).slice(-20)]))
+  await update($, settledA, m => pruneSettled({ ...m, [id]: { label: k.label, at, ...(k.kind === 'unknown' ? { unknown: true as const } : {}) } }, id))
   lastFetchAt = 0
   $.ui.invalidate('ui.render')
 }

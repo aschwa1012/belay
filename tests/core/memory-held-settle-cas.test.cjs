@@ -67,6 +67,15 @@ test('C6: a hold whose undecided mark is for an older revision does not await th
   assert.ok(X.activeHold(a.note));
 });
 
+test('C7: the refusal says which way the hold does not await, with the revisions', async () => {
+  const never = await X.written('w-a17', 'K17');
+  await X.reported('w-b17', never.note);
+  await assert.rejects(settle({ id: never.note, action: 'release', reason: 'x', if_awaiting: true }), (e) => e.code === 'E_PRECONDITION' && /not marked undecided/.test(e.message) && e.detail.undecided_rev === null && e.detail.rev === 0 && e.detail.awaiting === false);
+  const old = await awaiting('w-a18', 'K18', 'w-b18');
+  X.store.patchBody(X.activeHold(old.note).id, (b) => { b.rev = (Number(b.rev) || 0) + 1; return b; });
+  await assert.rejects(settle({ id: old.note, action: 'release', reason: 'x', if_awaiting: true }), (e) => e.code === 'E_PRECONDITION' && /undecided at revision 0, but the hold is at revision 1/.test(e.message) && e.detail.undecided_rev === 0 && e.detail.rev === 1);
+});
+
 test('C5: two concurrent settles with if_awaiting give exactly one write', async () => {
   const a = await awaiting('w-a15', 'K15', 'w-b15');
   const rs = await Promise.allSettled([

@@ -205,3 +205,16 @@ test('tokensShort never renders 1000.0k', () => {
   assert.strictEqual(M.tokensShort(1234567), '1.2M');
   assert.strictEqual(M.tokensShort(847), '847');
 });
+
+test('pruneSettled drops only resolved entries, oldest first, and never the newest', () => {
+  const m = {};
+  for (let i = 0; i < 22; i += 1) m['n' + i] = i === 0 ? { label: 'u', at: 1, unknown: true } : i === 1 ? { label: 'p', at: 1, pending: true } : { label: 'ok', at: i };
+  const out = M.pruneSettled(m, 'n21');
+  assert.strictEqual(Object.keys(out).length, 20);
+  assert.ok(out.n0 && out.n1, 'an unknown and a pending entry are kept');
+  assert.ok(out.n21, 'the newest is kept');
+  assert.ok(!out.n2 && !out.n3, 'the oldest resolved ones went');
+  const all = {};
+  for (let i = 0; i < 25; i += 1) all['u' + i] = { label: 'u', at: i, unknown: true };
+  assert.strictEqual(Object.keys(M.pruneSettled(all, 'u24')).length, 25, 'nothing unresolved is ever dropped');
+});
