@@ -54,9 +54,11 @@ export function projectRootOf(dataDir: string): string {
 // Falls back to the first line of plain text. Never raw JSON.
 export function launcherLine(exitCode: number, stdout: string, stderr: string, project: string): string {
   const first = (s: string): string => (s.split('\n').map(l => l.trim()).find(l => l !== '') ?? '').slice(0, 160)
-  let j: Record<string, unknown> | null = null
-  try { const p: unknown = JSON.parse(stdout); if (p !== null && typeof p === 'object' && !Array.isArray(p)) j = p as Record<string, unknown> } catch { /* plain text */ }
-  const err = j && j.error !== null && typeof j.error === 'object' ? (j.error as Record<string, unknown>) : null
+  const asObj = (s: string): Record<string, unknown> | null => { try { const p: unknown = JSON.parse(s); return p !== null && typeof p === 'object' && !Array.isArray(p) ? (p as Record<string, unknown>) : null } catch { return null } }
+  // --json prints a receipt to stdout and an error to stderr (pretty-printed); a plain-text answer falls back to its first line.
+  const j = asObj(stdout)
+  const ej = asObj(stderr)
+  const err = j && j.error !== null && typeof j.error === 'object' ? (j.error as Record<string, unknown>) : ej && ej.error !== null && typeof ej.error === 'object' ? (ej.error as Record<string, unknown>) : null
   if (exitCode === 0 && j && j.started === true) return `belay: archive review of ${project} started: pid ${String(j.pid ?? '?')}, job ${String(j.job ?? '?')}`
   if (exitCode === 0 && j && j.ended !== undefined) return `belay: archive review of ${project} ended at once: ${first(JSON.stringify(j.ended))}`
   const said = err ? `${typeof err.code === 'string' ? `${err.code}: ` : ''}${typeof err.message === 'string' ? err.message.slice(0, 160) : ''}` : first(stdout.trim() ? stdout : stderr)

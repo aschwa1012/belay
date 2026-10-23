@@ -160,6 +160,32 @@ test('settleArgs keeps the reason one element, whatever it holds; settleLine sho
   const ok = JSON.stringify({ id: 'abcdef0123456789', action: 'archive', outcome: 'archived', receipt: 'held-settle:x@1' });
   assert.strictEqual(M.settleLine(0, ok, ''), 'belay: archive abcdef01: archived · receipt held-settle:x@1');
   assert.strictEqual(M.settleLine(1, JSON.stringify({ error: { code: 'E_STALE', message: 'moved' } }), ''), 'belay: the note was not settled (exit 1): E_STALE: moved');
-  assert.strictEqual(M.settleLine(2, '', 'boom\nmore'), 'belay: the note was not settled (exit 2): boom');
-  assert.match(M.settleLine(0, 'not json', ''), /not settled/);
+  assert.match(M.settleLine(2, '', 'boom'), /outcome unknown/);
+  assert.match(M.settleLine(0, 'not json', ''), /outcome unknown/);
+});
+
+test('settleLine: stdout receipt, stderr pretty error, and an unknown outcome for anything that may have committed', () => {
+  const pretty = (o) => JSON.stringify(o, null, 2);
+  const nf = pretty({ error: { code: 'E_NOT_FOUND', message: 'note x has no active hold', detail: { id: 'x' } } });
+  assert.strictEqual(M.settleLine(1, '', nf), 'belay: the note was not settled (exit 1): E_NOT_FOUND: note x has no active hold');
+  const unknown = 'belay: outcome unknown: re-read with belay memory held';
+  assert.strictEqual(M.settleLine(1, '', pretty({ error: { code: 'E_TIMEOUT', message: 'm' } })), `${unknown} (E_TIMEOUT)`);
+  assert.strictEqual(M.settleLine(1, '', pretty({ error: { code: 'E_OWNER_LOST', message: 'm', detail: { sent: true } } })), `${unknown} (E_OWNER_LOST)`);
+  assert.strictEqual(M.settleLine(1, '', pretty({ error: { code: 'E_OTHER', message: 'm', detail: { may_have_committed: true } } })), `${unknown} (E_OTHER)`);
+  assert.strictEqual(M.settleLine(1, '', 'boom'), `${unknown} (exit 1)`, 'output that is not a refusal is not a definite refusal');
+  assert.strictEqual(M.settleLine(0, 'x', ''), `${unknown} (exit 0)`);
+});
+
+test('reasonProblem: over 160 characters, or exactly a global option, is refused; anything else is not', () => {
+  assert.strictEqual(M.reasonProblem('x'.repeat(160)), null);
+  assert.match(M.reasonProblem('x'.repeat(161)), /161 characters; at most 160/);
+  for (const f of ['--json', '--fix', '--data', '--help', '-h']) assert.match(M.reasonProblem(f), /cannot be exactly/);
+  for (const ok of ['--json x', '-x', '--reason', 'json', '-h!']) assert.strictEqual(M.reasonProblem(ok), null, ok);
+});
+
+test('launcherLine reads the error the real CLI prints to stderr', async () => {
+  const F = await loadPanelModule('fetch');
+  const err = JSON.stringify({ error: { code: 'E_BUSY', message: 'a review is running', detail: {} } }, null, 2);
+  assert.strictEqual(F.launcherLine(1, '', err, 'acme'), 'belay: the review was not started (exit 1): E_BUSY: a review is running');
+  assert.strictEqual(F.launcherLine(1, '', 'plain words' + String.fromCharCode(10) + 'more', 'acme'), 'belay: the review was not started (exit 1): plain words');
 });
