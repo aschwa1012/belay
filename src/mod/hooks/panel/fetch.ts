@@ -5,7 +5,7 @@ import type { BelayAgent, BelayHeld, BelayPanelSnap, BelayPanelWatch } from '../
 import { countAwaiting, normAwaiting, normHeld } from './held'
 import { DEFAULT_SETTINGS, normAgents, normNotices, normTranscript, parseMemoryNotice, parseSettings, type AgentsRead } from './model'
 
-export type RunFile = { role: string; runId: string; dataDir: string; cli: string; node: string }
+export type RunFile = { role: string; runId: string; dataDir: string; cli: string; node: string; orchDir: string | null }
 export type RunFileRead = { file: RunFile } | { error: string }
 export type Ran = { json: unknown } | { error: string; timedOut?: true }
 
@@ -35,7 +35,7 @@ export function parseRunFile(text: string): RunFileRead {
   if (missing.length) return { error: `belay-run.json lacks ${missing.join('/')}` }
   if (j.role !== 'orchestrator') return { error: 'belay-run.json role must be "orchestrator"' }
   const s = (k: string): string => j[k] as string
-  return { file: { role: s('role'), runId: s('run_id'), dataDir: s('data_dir'), cli: s('belay_cli'), node: s('node') } }
+  return { file: { role: s('role'), runId: s('run_id'), dataDir: s('data_dir'), cli: s('belay_cli'), node: s('node'), orchDir: typeof j.orchestrator_dir === 'string' && j.orchestrator_dir !== '' ? j.orchestrator_dir : null } }
 }
 
 // A Windows path: there a bare `belay` is usually a .cmd shim, which cannot be started without a shell.

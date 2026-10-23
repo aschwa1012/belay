@@ -108,6 +108,13 @@ function writeRunStart(dir, runId, attachRow, startedAt, session = {}) {
   } catch (e) { return { path: file, written: false, error: (e && e.message) || String(e) }; }
 }
 
+// Every launch (headless and interactive) removes the marker before its own attach, so a marker from an earlier life of this run
+// id in the same orchestrator directory can never answer for this one; an interactive launch rewrites it after the attach. Exact
+// path; a missing file is fine, any other error is thrown (the caller fails the launch).
+function clearRunStart(dir) {
+  try { fs.unlinkSync(fwd(path.join(dir, 'run-start.json'))); } catch (e) { if (!e || e.code !== 'ENOENT') throw new Error(`run-start.json in ${dir} could not be removed before the attach: ${(e && e.message) || e}`); }
+}
+
 const pick = (o, ...keys) => { for (const k of keys) if (o && o[k] !== undefined) return o[k]; return null; };
 
 // What the launch actually got, read from the gate's facts (session file first, then the debug file).
@@ -320,7 +327,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
     if (!attached || attached.ok !== true) {
       state.attachFailure = (attached && attached.error) || 'attach refused';
       await killChild();
-    } else runStart = writeRunStart(written.dir, runId, attached.attach, Date.now(), { id: sessionId, file: sessionFile });
+    } else runStart = (deps.writeRunStart || writeRunStart)(written.dir, runId, attached.attach, Date.now(), { id: sessionId, file: sessionFile });
     try {
       gate = (deps.createGate || ((o) => surface().createInteractiveGate(o)))(gateOpts);
       watch('debug', gate.debug);
@@ -460,4 +467,4 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
 // The `--tools` value the launch passed (ADR 0024); recorded as requested, never as verified.
 function toolsRequested() { return require('./surface.cjs').CLAUDE_TOOLS.slice(); }
 
-module.exports = { runInteractiveOrchestrator, makeConsole, TIMED_OUT, FAST_CLOSE_BUDGET_MS };
+module.exports = { runInteractiveOrchestrator, clearRunStart, makeConsole, TIMED_OUT, FAST_CLOSE_BUDGET_MS };

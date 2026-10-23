@@ -17,7 +17,7 @@ const path = require('node:path');
 const C = require('./config.cjs');
 const L = require('../run/launch.cjs');
 const { runOrchestrator } = require('../run/orchestrator.cjs');
-const { runInteractiveOrchestrator, makeConsole } = require('../run/orchestrator-interactive.cjs');
+const { runInteractiveOrchestrator, clearRunStart, makeConsole } = require('../run/orchestrator-interactive.cjs');
 const RI = require('./run-interactive.cjs'); // ADR 0037: interactive mode's CLI helpers
 const { createStopControl } = require('../run/stop.cjs');
 const { createRunPauseControl } = require('../run/run-pause.cjs');
@@ -300,6 +300,7 @@ async function run(ctx) {
   const RID = require('./run-identity.cjs').createRunIdentity(process.pid);
   async function onAttached({ pid }) {
     try {
+      clearRunStart(orchestratorDir); // before this launch's attach: no marker of an earlier life of this run id survives
       RID.watchOrchestrator(pid); // ADR 0039: run-identity.cjs; the attach never waits on a snapshot
       attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
       return { ok: true, attach: attachRow };
