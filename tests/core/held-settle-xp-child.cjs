@@ -20,8 +20,18 @@ if (role === 'A') {
   store.tx = (fn) => { fs.writeFileSync(`${gate}/A-read`, ''); waitFor('B-done'); return orig(fn); };
 } else waitFor('A-read');
 
+if (role === 'B' && action === 'addreport') {
+  // another writer adds a report to the hold in the gap (what a report from a worker does): A must settle it too, so A must work from its own transaction's read
+  const row = store.p("SELECT id FROM memory_entries WHERE type = 'held' AND json_extract(body, '$.note_id') = ? AND json_extract(body, '$.state') = 'held'").get(note);
+  store.patchBody(row.id, (b) => { b.reports = [...(b.reports || []), { key: 's:9', by: 'worker:late', why: 'a later report', at: 9 }]; return b; });
+  console.log(JSON.stringify({ role, ok: true, outcome: 'report added' }));
+  fs.writeFileSync(`${gate}/B-done`, '');
+  store.close();
+  process.exit(0);
+}
+
 const args = { id: note, action, reason: `by ${role}`, ...(flag === 'flag' ? { if_awaiting: true } : {}) };
 E.handle('memory.heldSettle', { caller: callerFor('operator', { run_id: 'r-xp' }), ...args })
-  .then((r) => { console.log(JSON.stringify({ role, ok: true, outcome: r.outcome })); })
+  .then((r) => { console.log(JSON.stringify({ role, ok: true, outcome: r.outcome, settled: r.settled })); })
   .catch((e) => { console.log(JSON.stringify({ role, ok: false, code: e.code, detail: e.detail })); })
   .finally(() => { if (role === 'B') fs.writeFileSync(`${gate}/B-done`, ''); store.close(); });

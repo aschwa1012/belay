@@ -76,6 +76,14 @@ test('C7: the refusal says which way the hold does not await, with the revisions
   await assert.rejects(settle({ id: old.note, action: 'release', reason: 'x', if_awaiting: true }), (e) => e.code === 'E_PRECONDITION' && /undecided at revision 0, but the hold is at revision 1/.test(e.message) && e.detail.undecided_rev === 0 && e.detail.rev === 1);
 });
 
+test('C8: the review queue uses the same predicate: an undecided mark whose revision is a string is not awaiting, so the hold is offered again', async () => {
+  const a = await awaiting('w-a19', 'K19', 'w-b19');
+  assert.ok(!(await X.call('memory.reviewQueue', X.harness, {})).held.some((e) => e.id === a.note), 'awaiting: not offered');
+  X.store.patchBody(a.hold, (b) => { b.undecided = { ...b.undecided, rev: '0' }; return b; });
+  assert.ok((await X.call('memory.reviewQueue', X.harness, {})).held.some((e) => e.id === a.note), 'a string revision does not await: offered again');
+  await assert.rejects(settle({ id: a.note, action: 'release', reason: 'x', if_awaiting: true }), (e) => e.code === 'E_PRECONDITION');
+});
+
 test('C5: two concurrent settles with if_awaiting give exactly one write', async () => {
   const a = await awaiting('w-a15', 'K15', 'w-b15');
   const rs = await Promise.allSettled([

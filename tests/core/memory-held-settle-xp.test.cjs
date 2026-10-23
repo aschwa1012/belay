@@ -18,7 +18,7 @@ let X;
 before(async () => { X = await setup('r-xp'); });
 after(() => X.cleanup());
 
-async function race(flag, marker, w, wb) {
+async function race(flag, marker, w, wb, bAction = 'reoffer') {
   const a = await X.written(w, marker);
   await X.reported(wb, a.note);
   const h = X.activeHold(a.note);
@@ -32,7 +32,7 @@ async function race(flag, marker, w, wb) {
     p.on('exit', (code) => resolve({ role, code, res: out.split('\n').filter((l) => l.startsWith('{')).map((l) => JSON.parse(l))[0] || { raw: out } }));
   });
   try {
-    const [ra, rb] = await Promise.all([child('A', 'release'), child('B', 'reoffer')]);
+    const [ra, rb] = await Promise.all([child('A', 'release'), child('B', bAction)]);
     const row = X.store.p('SELECT body FROM memory_entries WHERE id = ?').get(h.id);
     return { ra, rb, hold: JSON.parse(row.body), note: a.note };
   } finally { fs.rmSync(gate, { recursive: true, force: true }); }
@@ -53,6 +53,13 @@ test('XP2: without the flag the same race lets A write (what the flag is for)', 
   assert.strictEqual(rb.res.ok, true, JSON.stringify(rb));
   assert.strictEqual(ra.res.ok, true, JSON.stringify(ra));
   assert.strictEqual(hold.state, 'released');
+});
+
+test('XP4: the settle works from the hold as its own transaction reads it: a report added in the gap is settled too', async () => {
+  const { ra } = await race('noflag', 'K23', 'w-a23', 'w-b23', 'addreport');
+  assert.strictEqual(ra.res.ok, true, JSON.stringify(ra));
+  assert.strictEqual(ra.res.outcome, 'released');
+  assert.deepStrictEqual(ra.res.settled.keys.slice().sort(), ['s:1', 's:9'], 'the report added in the gap is settled with the rest');
 });
 
 // ---- isAwaiting is never looser than the SQL ----
