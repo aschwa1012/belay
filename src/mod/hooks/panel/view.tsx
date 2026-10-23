@@ -4,9 +4,10 @@
 import type { Elements } from 'claude-code'
 import type { BelayAgent, BelayEntry, BelayNotice, BelayPanelSnap, BelayPanelUi } from '../../types/index'
 import {
-  bandLines, cacheSegs, CONFIRM_MS, confirmLine, heldLine, reviewLine, reviewProject, runningReview, ctxSegs, dur, fitSegs, isLive, markSeg, markWidth, money, runLine, STATE_NAME, TONE, unseenNotices, bar,
+  bandLines, cacheSegs, ctxSegs, dur, fitSegs, isLive, markSeg, markWidth, money, runLine, STATE_NAME, TONE, unseenNotices, bar,
   memoryTitleSegs, memoryFallbackSegs, interactiveOrch, interactiveMark, type Seg,
 } from './model'
+import { CONFIRM_MS, confirmLine, heldLine, reviewLine, reviewProject, runningReview } from './held'
 import { cells, clipCells, cmdLines, wordWrap, wrapParts } from './wrap'
 
 export type Els = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'>

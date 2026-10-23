@@ -2,7 +2,8 @@
 // index.tsx: the engine follows `$` only inside the file that declares the hooks.
 
 import type { BelayAgent, BelayPanelSnap, BelayPanelWatch } from '../../types/index'
-import { DEFAULT_SETTINGS, normAgents, normHeld, normNotices, normTranscript, parseMemoryNotice, parseSettings, type AgentsRead } from './model'
+import { normHeld } from './held'
+import { DEFAULT_SETTINGS, normAgents, normNotices, normTranscript, parseMemoryNotice, parseSettings, type AgentsRead } from './model'
 
 export type RunFile = { role: string; runId: string; dataDir: string; cli: string; node: string }
 export type RunFileRead = { file: RunFile } | { error: string }

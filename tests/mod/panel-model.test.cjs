@@ -6,7 +6,7 @@ const assert = require('node:assert');
 const { loadPanelModule } = require('./load-ts.cjs');
 
 let M;
-test.before(async () => { M = await loadPanelModule('model'); });
+test.before(async () => { M = { ...(await loadPanelModule('model')), ...(await loadPanelModule('held')) }; });
 
 const held = (count, byProject, extra = {}) => ({ kind: 'notes_held', count, by_project: byProject, oldest_age_runs: 2, unsupported: 0, ...extra });
 const H = (o = {}) => ({ count: 3, unsupported: 0, byProject: { acme: 3 }, oldestAgeRuns: 2, reviews: [], ...o });
