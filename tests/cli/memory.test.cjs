@@ -375,3 +375,11 @@ test('memory render: parseSince accepts epoch ms and ISO only; the stats text na
   assert.match(text, /fts: present=true version=1 rows=3/);
   assert.match(text, /unembedded: 1/);
 });
+
+test('belay help names every memory verb on the memory row, and every electing verb as electing', () => {
+  const row = require(CLI).usage().split(/\r?\n/).find((l) => /^\s+memory\s/.test(l));
+  assert.ok(row, 'help has a memory row');
+  const named = / R\s+memory (.*?):/.exec(row)[1].split('|').map((v) => v.split(' ')[0]);
+  for (const verb of Object.keys(RENDER.VERBS)) assert.ok(named.includes(verb), `help names memory ${verb}`);
+  for (const verb of ['report', 'held settle', 'review', 'scrub', 'resolve', 'promote']) assert.ok(row.includes(verb), `help says ${verb} elects an owner`);
+});

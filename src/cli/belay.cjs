@@ -24,6 +24,9 @@ const VERSION = '0.2.0';
 // The slice-3a surface. `mode` is the connection mode each command declares, exactly one, per
 // command table §1: R read-only, W store client, C run control. The remaining 18 commands of
 // command table §3 arrive in later slices and are deliberately absent rather than stubbed.
+// Static, so help loads no memory module; tests/cli/memory.test.cjs checks that it names every verb in memory-render's VERBS.
+const MEMORY_SUMMARY = 'memory search|list|show|timeline|verify|stats|export|import|embed|proposals|held|restore|report|archive purge|review|scrub|resolve|promote: reads answer from the store or its copy; semantic and hybrid search need a live owner; verify, import, embed, restore, report, purge, held settle, review, scrub, resolve and promote elect one (embed --dry-run only reads)';
+
 const COMMANDS = {
   help:   { mode: 'R', module: null,               summary: 'print this usage and exit' },
   config: { mode: 'R', module: './cmd-config.cjs', summary: 'print which config file is read, and effective values' },
@@ -40,7 +43,7 @@ const COMMANDS = {
   notices: { mode: 'R', module: './cmd-notices.cjs', summary: "a run's events from store rows: pending requests, dead or stopped workers, stalls, review verdicts, pause and end" },
   agents:  { mode: 'R', module: './cmd-agents.cjs',  summary: "the orchestrator and each worker: role, model, effort, state, context size, cost; the run cost meter" },
   'wake-stream': { mode: 'R', module: './cmd-wake-stream.cjs', summary: "wake-stream --run <id> --nonce <n>: print the interactive run's wake lines from its harness-owned pipe; exits on close or after 15 s of silence" },
-  memory:  { mode: 'R', module: './cmd-memory.cjs',  summary: 'memory search|list|show|timeline|verify|stats|export|import|embed|proposals|restore|report|archive purge: reads answer from the store or its copy; semantic and hybrid search need a live owner; verify, import, embed, restore, report and purge elect one (embed --dry-run only reads)' },
+  memory:  { mode: 'R', module: './cmd-memory.cjs',  summary: MEMORY_SUMMARY },
   usage:   { mode: 'R', module: './cmd-usage.cjs',   summary: 'usage [run-id] [--by task|worker|model|turn]: tokens and dollars per turn from the usage ledger; a turn with no dollars is not zero' },
   briefing: { mode: 'R', module: './cmd-briefing.cjs', summary: 'the resume line and orientation document for a worker or a task' },
   logs:    { mode: 'R', module: './cmd-logs.cjs',    summary: "a worker's stream.jsonl: path, byte offset, then the tail; -f follows, bounded" },
