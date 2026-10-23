@@ -18,7 +18,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On, Timer } from 'claude-code'
 import type { BelayPanelSnap, BelayPanelUi, BelayPanelWatch } from '../../types/index'
 import { argvFor, buildSnapshot, fatalSnapshot, fwd, launcherLine, isWindowsPath, parseRan, parseRunFile, projectRootOf, repoCliGuess, type Ran, type RunFileRead } from './fetch'
-import { CONFIRM_MS, normHeld, reviewProject, SETTLE_ACTIONS, settleArgs, settleConfirm, settleLine, settleVerb, shortId, type SettleAction } from './held'
+import { CONFIRM_MS, normHeld, reasonProblem, reviewProject, SETTLE_ACTIONS, SETTLE_UNKNOWN, settleArgs, settleConfirm, settleLine, settleVerb, shortId, type SettleAction } from './held'
 import { DEFAULT_SETTINGS, DEFAULT_UI } from './model'
 import { Band, BandWaiting, Fallback, Pane, type Act, type Els } from './view'
 
@@ -114,7 +114,7 @@ async function fetchSnapshot($: Host, watch: BelayPanelWatch, prev: BelayPanelSn
   const notices = await runJson($, cli, ['notices', ...runArg], watch.dataDir)
   if (timedOut(notices)) return cut(agents, notices, null, null)
   // The ids of the held notes that wait on the operator: one more read, only while the notices say some wait.
-  const awaiting = 'json' in notices && (normHeld(notices.json)?.awaiting ?? 0) > 0 ? await runJson($, cli, AWAITING_READ, watch.dataDir) : null
+  const awaiting = 'json' in notices && (normHeld(notices.json)?.awaiting ?? 0) > 0 ? await runJson($, cli, ['memory', 'held', '--awaiting'], watch.dataDir) : null
   if (timedOut(awaiting)) return cut(agents, notices, null, null, awaiting)
   const mode = watch.fixed ? 'interactive' : seen ? seen.mode : prev?.mode
   const tail = o.open ? TRANSCRIPT_TAIL.pane : TRANSCRIPT_TAIL.band
@@ -253,24 +253,31 @@ async function settlePress($: Host, action: SettleAction, id: string): Promise<v
   if (!SETTLE_ACTIONS.includes(action) || settling.has(id)) return
   const snap = await read($, snapA)
   if (!(snap?.held?.awaitingNotes ?? []).some(n => n.id === id)) return // only a note belay named as waiting on the operator
+  const watch0 = await read($, watchA)
   settling.add(id)
   try {
     let reason: string
     try { reason = (await $.ui.ask(`Why ${action} note ${shortId(id)}? Type the reason under Other.`, { options: [REASON_CANCEL, REASON_HINT], header: settleVerb(action).slice(0, 12) })).trim() } catch { return }
     if (reason === '' || reason === REASON_CANCEL || reason === REASON_HINT) return
+    const problem = reasonProblem(reason)
+    if (problem) { $.ui.toast(problem); return }
     let ok: string
     try { ok = await $.ui.ask(settleConfirm(action, id, reason), { options: [settleVerb(action), REASON_CANCEL], header: 'Confirm' }) } catch { return }
     if (ok !== settleVerb(action)) return
+    // The dialogs can stay open for minutes: the note and the watched run are checked again before anything is written.
     const watch = await read($, watchA)
     if (!watch || watch.error) { $.ui.toast('belay: no run is watched, so the note was not settled.'); return }
+    if (!watch0 || watch.runId !== watch0.runId || watch.dataDir !== watch0.dataDir || watch.cli !== watch0.cli || watch.node !== watch0.node) { $.ui.toast('belay: the watched run changed while you were answering, so the note was not settled.'); return }
+    const now = await read($, snapA)
+    if (!(now?.held?.awaitingNotes ?? []).some(n => n.id === id)) { $.ui.toast(`belay: note ${shortId(id)} no longer awaits you, so it was not settled.`); return }
     const r = await resolveCli($, watch)
     if ('error' in r) { $.ui.toast(`belay: the note was not settled: ${r.error}`); return }
     const cwd = watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null
     try {
       const res = await $.process.run(argvFor(r.cli, settleArgs(action, id, reason), watch.dataDir), { timeoutMs: START_TIMEOUT_MS, ...(cwd ? { cwd } : {}) })
       $.ui.toast(settleLine(res.exitCode, res.stdout, res.stderr))
-    } catch (err) {
-      $.ui.toast(`belay: the note was not settled: ${firstLine(err instanceof Error ? err.message : String(err)) || 'belay did not answer'}`)
+    } catch {
+      $.ui.toast(SETTLE_UNKNOWN) // the command was started and did not answer (a timeout included): it may have written
     }
   } finally { settling.delete(id) }
 }
