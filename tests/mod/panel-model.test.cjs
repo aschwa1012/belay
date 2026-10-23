@@ -147,8 +147,8 @@ test('the held count is one count broken down by ground, with how many await the
 
 test('normAwaiting: only entries that await the operator, capped, cleaned', () => {
   const e = (id, aw, extra = {}) => ({ note_id: id, project: 'acme', title: 'a\nb', awaiting_operator: aw, undecided: { reason: 'cannot say' }, ...extra });
-  const out = M.normAwaiting({ entries: [e('n1', true), e('n2', false), e('n3', true), e('n4', true), e('n5', true), { awaiting_operator: true }, null] });
-  assert.deepStrictEqual(out.map((n) => n.id), ['n1', 'n3', 'n4']);
+  const out = M.normAwaiting({ entries: [e('n1', true), e('n2', false), e('n3', true), e('n4', true), e('n5', true), e('n6', true), e('n7', true), { awaiting_operator: true }, null] });
+  assert.deepStrictEqual(out.map((n) => n.id), ['n1', 'n3', 'n4', 'n5', 'n6']);
   assert.deepStrictEqual(out[0], { id: 'n1', project: 'acme', title: 'a b', reason: 'cannot say' });
   assert.deepStrictEqual(M.normAwaiting(null), []);
 });

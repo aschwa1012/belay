@@ -81,7 +81,7 @@ function taskSegs(a: BelayAgent, snap: BelayPanelSnap, room: number): Seg[] {
 const ESTIMATE_BASIS = 'transcript, API rates'
 
 // An estimate shows as ≈$12.34; from $100 up the cents go (≈$123), so it still fits the cost column.
-const costText = (a: BelayAgent): string => (a.costUsd !== null && a.costBasis === ESTIMATE_BASIS ? (a.costUsd >= 100 ? `≈$${Math.round(a.costUsd)}` : `≈${money(a.costUsd)}`) : money(a.costUsd))
+const costText = (a: BelayAgent): string => (a.costUsd !== null && a.costBasis === ESTIMATE_BASIS ? (Number(a.costUsd.toFixed(2)) >= 100 ? `≈$${Math.round(a.costUsd)}` : `≈${money(a.costUsd)}`) : money(a.costUsd))
 
 const LABEL = 8
 

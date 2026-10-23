@@ -2,6 +2,7 @@
 
 import type { BelayAwaitingNote, BelayHeld, BelayReview } from '../../types/index'
 import { arr, clean, dur, num, obj, str } from './model'
+import { clusters } from './wrap'
 
 // The estimated cost of one archive review, once the batch study has produced one. Null until then: the confirm says so.
 export const REVIEW_COST_ESTIMATE_USD: number | null = null
@@ -126,7 +127,17 @@ export function confirmLine(h: BelayHeld, project: string): string {
 
 export type SettleAction = 'archive' | 'release' | 'reoffer'
 export const SETTLE_ACTIONS: readonly SettleAction[] = ['archive', 'release', 'reoffer']
-const SETTLE_SHOWN = 3 // notes listed with buttons at once; the rest are counted
+export const SETTLE_SHOWN = 5 // notes listed at once, one line each; the rest are counted
+export const REASON_CAP = 500 // the core's own cap on an undecided reason; the panel cuts nothing short of it
+// Cut to n whole grapheme clusters, ending in an ellipsis only when something was cut.
+const cutClusters = (s: string, n: number): string => { const g = clusters(s); return g.length > n ? g.slice(0, n - 1).join('') + '…' : s }
+
+// How many notes THIS read lists as waiting on the operator, uncapped: the panel shows the first few and counts the rest from this one read.
+export function countAwaiting(json: unknown): number {
+  let n = 0
+  for (const raw of arr(obj(json)?.entries)) { const e = obj(raw); if (e && str(e.note_id) && e.awaiting_operator === true) n += 1 }
+  return n
+}
 
 // `belay memory held --awaiting --json`: the notes waiting on the operator (a read). Ids and titles are belay's, still cleaned.
 export function normAwaiting(json: unknown): BelayAwaitingNote[] {
@@ -135,7 +146,7 @@ export function normAwaiting(json: unknown): BelayAwaitingNote[] {
     const e = obj(raw)
     const id = e ? str(e.note_id) : null
     if (!e || !id || e.awaiting_operator !== true || out.length >= SETTLE_SHOWN) continue
-    out.push({ id: clean(id, 64), project: clean(str(e.project) ?? '', 64), title: clean(str(e.title) ?? '', 60), reason: clean(str(obj(e.undecided)?.reason) ?? '', 240) })
+    out.push({ id: clean(id, 64), project: clean(str(e.project) ?? '', 64), title: cutClusters(clean(str(e.title) ?? '', 100000), REASON_CAP), reason: cutClusters(clean(str(obj(e.undecided)?.reason) ?? '', 100000), REASON_CAP) })
   }
   return out
 }
@@ -147,7 +158,9 @@ export const settleArgs = (action: SettleAction, id: string, reason: string): st
 
 export const settleVerb = (a: SettleAction): string => a[0]!.toUpperCase() + a.slice(1)
 // The confirm shows the reason exactly as it is sent (a reason over REASON_MAX is refused first, so nothing is cut).
-export const settleConfirm = (a: SettleAction, id: string, reason: string): string => `${settleVerb(a)} note ${shortId(id)}? reason: ${reason}`
+// Two notes can share an 8-character prefix, so every dialog names the note by its title as well.
+export const noteLabel = (id: string, title: string): string => `${shortId(id)}${title ? ` "${cutClusters(title, 40)}"` : ''}`
+export const settleConfirm = (a: SettleAction, id: string, reason: string, title = ''): string => `${settleVerb(a)} note ${noteLabel(id, title)}? reason: ${reason}`
 
 export const REASON_MAX = 160
 // belay strips its own global options out of the argv before any command sees it, so a reason that is exactly one of them never arrives.

@@ -34,7 +34,7 @@ describe('notes held for the archive reviewer', () => {
   test('the by-ground line says it too', async ($, on) => {
     const wd = await boot($, on, { notices: notices({ ...{ ...held(4), by_ground: { reported: 3, same_claim: 1 } }, oldest_at: T0 - 90000 }) })
     await openPane($, wd)
-    expect((await pane($)).text).toMatch(/MEMORY  4 held[sS]*3 reported wrong, 1 duplicate · oldest waited [0-9]m/)
+    expect((await pane($)).text).toMatch(/MEMORY  4 held[\s\S]*3 reported wrong, 1 duplicate · oldest waited [0-9]m/)
   })
 
   test('the unsupported line says it too', async ($, on) => {

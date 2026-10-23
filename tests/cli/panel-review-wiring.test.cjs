@@ -86,6 +86,8 @@ test('the check is not a tripwire: each way around it is found', () => {
     ['r.cli index assignment in dispatchReview', patched('hooks/panel/index.tsx', "  starting.add(project)\n", "  starting.add(project)\n  r.cli[0] = 'evil'\n"), /`r` or `r\.cli` is changed/],
     ['r reassigned in settlePress', patched('hooks/panel/index.tsx', "    const cwd = watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null\n    try {\n      const res = await $.process.run(argvFor(r.cli, settleArgs(", "    const cwd = watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null\n    r = { cli: ['x'] }\n    try {\n      const res = await $.process.run(argvFor(r.cli, settleArgs("), /`r` or `r\.cli` is changed|declared other than once|is not `const r/],
     ['r not from resolveCli in settlePress', patched('hooks/panel/index.tsx', "    const r = await resolveCli($, watch)\n    if ('error' in r) { $.ui.toast(`belay: the note was not settled", "    const r = { cli: ['x'] }\n    if ('error' in r) { $.ui.toast(`belay: the note was not settled"), /`r` is not `const r = await resolveCli/],
+    ['the note handler starts a read round', patched('hooks/panel/index.tsx', 'note: id => { void update', 'note: id => { void tick($); void update'), /tick is named in/],
+    ['the note handler runs a read', patched('hooks/panel/index.tsx', 'note: id => { void update', "note: id => { void runJson($, cli, ['agents'], null); void update"), /runJson is called outside fetchSnapshot/],
     ['REVIEW_ARGS used by the read helper', patched('hooks/panel/index.tsx', 'const res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS', 'const res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS'), null],
   ];
   for (const [name, fs2, re] of cases) {
