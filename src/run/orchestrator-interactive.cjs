@@ -96,13 +96,14 @@ function writeSystemPrompt(dir, instructions, promptText) {
 }
 
 // ADR 0037 wave 2: the launch marker src/cli/agents-derive.cjs `modeOf` reads. Written right after the launcher's own
-// run.attach (so `epoch` is the row's at that attach), interactive runs only. A failed write is recorded, never thrown.
-function writeRunStart(dir, runId, attachRow, startedAt) {
+// run.attach (so `epoch` is the row's at that attach), interactive runs only. `session_id` and `session_file` (the
+// expected transcript path, null when unknown) let `belay agents` read the orchestrator's usage while the run is live. A failed write is recorded, never thrown.
+function writeRunStart(dir, runId, attachRow, startedAt, session = {}) {
   const file = fwd(path.join(dir, 'run-start.json'));
   try {
     const epoch = attachRow && Number.isInteger(attachRow.epoch) ? attachRow.epoch : null;
     if (epoch === null) throw new Error('the attach returned no epoch');
-    fs.writeFileSync(file, `${JSON.stringify({ run_id: runId, epoch, mode: 'interactive', started_at: startedAt, launcher_pid: process.pid })}\n`);
+    fs.writeFileSync(file, `${JSON.stringify({ run_id: runId, epoch, mode: 'interactive', started_at: startedAt, launcher_pid: process.pid, session_id: session.id || null, session_file: session.file || null })}\n`);
     return { path: file, written: true, error: null };
   } catch (e) { return { path: file, written: false, error: (e && e.message) || String(e) }; }
 }
@@ -319,7 +320,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
     if (!attached || attached.ok !== true) {
       state.attachFailure = (attached && attached.error) || 'attach refused';
       await killChild();
-    } else runStart = writeRunStart(written.dir, runId, attached.attach, Date.now());
+    } else runStart = writeRunStart(written.dir, runId, attached.attach, Date.now(), { id: sessionId, file: sessionFile });
     try {
       gate = (deps.createGate || ((o) => surface().createInteractiveGate(o)))(gateOpts);
       watch('debug', gate.debug);

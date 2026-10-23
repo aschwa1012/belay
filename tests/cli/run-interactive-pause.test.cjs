@@ -74,14 +74,14 @@ async function liveRun(dir, workerIds, extraEnv = {}, specOverrides = {}) {
 
 // ------------------------------------------------------------------ the run-start.json marker
 
-test('marker: run-start.json is written after the launcher\'s own attach with exactly run_id, epoch, mode, started_at, launcher_pid', T, async (t) => withRun(t, async (dir) => {
+test('marker: run-start.json is written after the launcher\'s own attach with exactly run_id, epoch, mode, started_at, launcher_pid, session_id, session_file', T, async (t) => withRun(t, async (dir) => {
   const r = start(dir, { env: { FAKE_HOLD_MS: '1500' } });
   const res = await r.done;
   assert.strictEqual(res.code, 0, res.text);
   const file = `${r.orchestratorDir}/run-start.json`;
   assert.ok(fs.existsSync(file), 'no run-start.json');
   const m = JSON.parse(fs.readFileSync(file, 'utf8'));
-  assert.deepStrictEqual(Object.keys(m).sort(), ['epoch', 'launcher_pid', 'mode', 'run_id', 'started_at']);
+  assert.deepStrictEqual(Object.keys(m).sort(), ['epoch', 'launcher_pid', 'mode', 'run_id', 'session_file', 'session_id', 'started_at']);
   assert.strictEqual(m.run_id, r.runId);
   assert.strictEqual(m.mode, 'interactive');
   assert.strictEqual(m.launcher_pid, process.pid);
