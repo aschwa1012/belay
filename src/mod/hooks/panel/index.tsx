@@ -106,7 +106,7 @@ async function fetchSnapshot($: Host, watch: BelayPanelWatch, prev: BelayPanelSn
   const r = await resolveCli($, watch)
   if ('error' in r) return { snap: fatalSnapshot(r.error, watch.runId, o.now), timedOut: false }
   const cli = r.cli
-  const agents = await runJson($, cli, ['agents', ...(watch.runId ? [watch.runId] : [])], watch.dataDir)
+  const agents = await runJson($, cli, ['agents', ...(watch.runId ? [watch.runId] : []), ...(watch.orchDir ? ['--dir', watch.orchDir] : [])], watch.dataDir)
   const seen = 'json' in agents ? (agents.json as { run_id?: string; mode?: string }) : null
   const runId = watch.runId ?? seen?.run_id ?? prev?.runId ?? null
   const runArg = runId ? [runId] : []
@@ -189,7 +189,7 @@ function ensureTicker($: Host): void {
 }
 
 const sameWatch = (a: BelayPanelWatch | null, b: BelayPanelWatch): boolean =>
-  !!a && a.runId === b.runId && a.dataDir === b.dataDir && a.cli === b.cli && a.node === b.node && a.fixed === b.fixed && a.error === b.error
+  !!a && a.runId === b.runId && a.dataDir === b.dataDir && a.cli === b.cli && a.node === b.node && a.orchDir === b.orchDir && a.fixed === b.fixed && a.error === b.error
 
 // A repeated session.start (a hot reload) with an unchanged watch keeps the snapshot and the seen notices.
 async function watchRun($: Host, next: BelayPanelWatch): Promise<void> {
@@ -360,7 +360,7 @@ export function registerPanel(on: On): void {
       await watchRun($, { runId: null, dataDir: null, cli: null, node: null, error: rf.error, fixed: true })
       return next(e) // the error state: no commands are registered and nothing is read
     }
-    if (rf) await watchRun($, { runId: rf.file.runId, dataDir: rf.file.dataDir, cli: rf.file.cli, node: rf.file.node, error: null, fixed: true })
+    if (rf) await watchRun($, { runId: rf.file.runId, dataDir: rf.file.dataDir, cli: rf.file.cli, node: rf.file.node, orchDir: rf.file.orchDir, error: null, fixed: true })
     await $.command.register({ name: 'orch', description: "Toggle belay's panel for the watched run" })
     if (!rf) await $.command.register({ name: 'belay', description: 'Watch a belay run: watch [run-id] | unwatch', argumentHint: 'watch [run-id] | unwatch' })
     const w = await read($, watchA)

@@ -118,6 +118,8 @@ export type BelayPanelWatch = {
   dataDir: string | null
   cli: string | null
   node: string | null
+  /** The orchestrator's directory, from belay-run.json's orchestrator_dir: passed to `belay agents --dir` so it finds the launch marker. Absent when the file does not name it. */
+  orchDir?: string | null
   /** belay-run.json exists but is unusable. Nothing is read and nothing falls back. */
   error: string | null
   /** Bound by belay-run.json: the CLI is exactly [node, cli]; a lack of either is an error, not a fallback. */

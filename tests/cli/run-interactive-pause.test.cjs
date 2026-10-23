@@ -262,3 +262,31 @@ test('pause: a stale paused_at on the row (from a crashed earlier epoch) does no
     assert.strictEqual(again.json.already, true);
   } catch (e) { bodyError = e; throw e; } finally { await c.teardown(bodyError); }
 }));
+
+// ------------------------------------------------------------------ a marker belongs to one life of a run id
+
+const plantStale = (dir, runId) => {
+  fs.mkdirSync(`${dir}/orch`, { recursive: true });
+  fs.writeFileSync(`${dir}/orch/run-start.json`, JSON.stringify({ run_id: runId, epoch: 1, mode: 'interactive', started_at: 1, launcher_pid: 1, session_id: 'STALE', session_file: `${dir}/stale.jsonl` }));
+};
+
+test('marker: an interactive re-run replaces an earlier life\'s marker after its attach', T, async (t) => withRun(t, async (dir) => {
+  const runId = `stale-int-${process.pid}`;
+  plantStale(dir, runId);
+  const r = start(dir, { env: { FAKE_HOLD_MS: '1500' }, specOverrides: { run_id: runId } });
+  const res = await r.done;
+  assert.strictEqual(res.code, 0, res.text);
+  const m = JSON.parse(fs.readFileSync(`${r.orchestratorDir}/run-start.json`, 'utf8'));
+  assert.notStrictEqual(m.session_id, 'STALE');
+  assert.match(m.session_id, /^[0-9a-f-]{36}$/);
+}));
+
+test('marker: an interactive re-run whose marker write fails leaves no stale marker behind', T, async (t) => withRun(t, async (dir) => {
+  const runId = `stale-int-fail-${process.pid}`;
+  plantStale(dir, runId);
+  const r = start(dir, { env: { FAKE_HOLD_MS: '1500' }, specOverrides: { run_id: runId }, deps: { writeRunStart: (d) => ({ path: `${d}/run-start.json`, written: false, error: 'injected write failure' }) } });
+  const res = await r.done;
+  assert.strictEqual(res.code, 0, res.text);
+  assert.strictEqual(res.json.orchestrator.interactive.run_start.written, false);
+  assert.ok(!fs.existsSync(`${r.orchestratorDir}/run-start.json`), 'the earlier life\'s marker survived the launch');
+}));

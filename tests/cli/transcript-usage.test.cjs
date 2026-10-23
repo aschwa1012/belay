@@ -135,9 +135,9 @@ test('sessionFileOf: the launch marker names the file; another run or epoch does
   const d = tmp(t);
   const run = { id: 'r1', epoch: 2 };
   const opts = { projectsRoot: path.dirname(FIX) };
-  fs.writeFileSync(`${d}/run-start.json`, JSON.stringify({ run_id: 'r1', epoch: 2, session_id: 's', session_file: FIX }));
+  fs.writeFileSync(`${d}/run-start.json`, JSON.stringify({ run_id: 'r1', mode: 'interactive', epoch: 2, session_id: 's', session_file: FIX }));
   assert.strictEqual(sessionFileOf(d, run, opts).file, FIX);
-  assert.strictEqual(sessionFileOf(d, { id: 'r1', epoch: 3 }, opts).file, null);
+  assert.strictEqual(sessionFileOf(d, { id: 'r1', epoch: 1 }, opts).file, null);
   fs.rmSync(`${d}/run-start.json`);
   fs.writeFileSync(`${d}/run.json`, JSON.stringify({ run_id: 'r1', orchestrator: { interactive: { session_file: FIX } } }));
   assert.strictEqual(sessionFileOf(d, run, opts).file, FIX);
@@ -150,7 +150,7 @@ test('sessionFileOf: a marker pointing at a pipe is refused without a look at it
   fs.existsSync = (p) => { probed.push(String(p)); return real.exists(p); };
   fs.statSync = (p, ...a) => { probed.push(String(p)); return real.stat(p, ...a); };
   try {
-    fs.writeFileSync(`${d}/run-start.json`, JSON.stringify({ run_id: 'r1', epoch: 1, session_file: '//./pipe/planted.jsonl' }));
+    fs.writeFileSync(`${d}/run-start.json`, JSON.stringify({ run_id: 'r1', mode: 'interactive', epoch: 1, session_file: '//./pipe/planted.jsonl' }));
     probed.length = 0;
     const r = sessionFileOf(d, { id: 'r1', epoch: 1 }, { projectsRoot: path.join(d, 'projects') });
     assert.strictEqual(r.file, null);
@@ -162,7 +162,7 @@ test('sessionFileOf: a marker pointing at a pipe is refused without a look at it
 test('agents row: tokens from the transcript, "no rate" note for an unknown model, row untouched when no transcript', (t) => {
   const d = tmp(t);
   const opts = { projectsRoot: path.dirname(FIX) };
-  fs.writeFileSync(`${d}/run-start.json`, JSON.stringify({ run_id: 'r1', epoch: 1, session_file: FIX }));
+  fs.writeFileSync(`${d}/run-start.json`, JSON.stringify({ run_id: 'r1', mode: 'interactive', epoch: 1, session_file: FIX }));
   const row = { id: 'orchestrator', model: null, context_tokens: null, cost_usd: null };
   fillFromTranscript(row, d, { id: 'r1', epoch: 1 }, opts);
   assert.strictEqual(row.context_tokens, 1203);
@@ -180,7 +180,7 @@ test('agents row: tokens from the transcript, "no rate" note for an unknown mode
 
 test('agents row: a marker outside the projects directory gives n/a and says why', (t) => {
   const d = tmp(t);
-  fs.writeFileSync(`${d}/run-start.json`, JSON.stringify({ run_id: 'r1', epoch: 1, session_file: FIX }));
+  fs.writeFileSync(`${d}/run-start.json`, JSON.stringify({ run_id: 'r1', mode: 'interactive', epoch: 1, session_file: FIX }));
   const row = { context_tokens: null, cost_usd: null };
   fillFromTranscript(row, d, { id: 'r1', epoch: 1 }, { projectsRoot: path.join(d, 'elsewhere') });
   assert.strictEqual(row.context_tokens, null);
@@ -191,7 +191,7 @@ test('agents row: a priced model gets an estimated cost marked as transcript API
   const d = tmp(t);
   const f = path.join(d, 's.jsonl');
   fs.writeFileSync(f, one('claude-opus-5-5', TOK));
-  fs.writeFileSync(`${d}/run-start.json`, JSON.stringify({ run_id: 'r1', epoch: 1, session_file: f }));
+  fs.writeFileSync(`${d}/run-start.json`, JSON.stringify({ run_id: 'r1', mode: 'interactive', epoch: 1, session_file: f }));
   const row = { id: 'orchestrator', model: null, context_tokens: null, cost_usd: null };
   fillFromTranscript(row, d, { id: 'r1', epoch: 1 }, { projectsRoot: d });
   near(row.cost_usd, 0.101);
@@ -255,4 +255,101 @@ test('a link at the file itself (lstat says so) is refused before anything follo
     assert.match(u.refused, /is a link \(checked /);
   } finally { w.restore(); fs.lstatSync = realL; }
   assert.deepStrictEqual(w.calls.filter(([, p]) => p.includes('l.jsonl')), [], 'the link was followed');
+});
+
+// ---- the real epoch sequence, and the cache timer -------------------------------------------------
+
+const { openCore } = require('../../src/core/index.cjs');
+
+const tline = (id, model, ts, usage, extra = {}) => `${JSON.stringify({ type: 'assistant', uuid: `u-${id}-${ts}`, timestamp: ts, ...extra, message: { model, id, usage } })}\n`;
+const NOW = Date.parse('2026-10-23T12:00:00.000Z');
+
+test('the real sequence: the launcher attaches (epoch 1, the marker), the orchestrator adapter attaches (epoch 2), and the row still gets usage, cost and cache', async (t) => {
+  const d = tmp(t);
+  const dataDir = `${d}/.belay`;
+  const RUN = 'run-live';
+  const launcher = await openCore({ dataDir, caller: { role: 'operator', run_id: RUN, pid: process.pid }, embed: false });
+  let row;
+  try {
+    const first = await launcher.run.attach({ adapter_pid: process.pid });
+    assert.strictEqual(first.epoch ?? first.run.epoch, 1);
+    fs.writeFileSync(`${d}/run-start.json`, JSON.stringify({ run_id: RUN, epoch: 1, mode: 'interactive', started_at: 1, launcher_pid: 1, session_id: 's', session_file: path.join(d, 's.jsonl') }));
+    const adapter = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: RUN, pid: process.pid }, embed: false });
+    try {
+      const second = await adapter.run.attach({ adapter_pid: process.pid });
+      assert.strictEqual(second.epoch ?? second.run.epoch, 2, 'the adapter attach bumps the epoch past the marker');
+      row = (await adapter.run.list({})).runs.find((r) => r.id === RUN);
+    } finally { await adapter.close(); }
+  } finally { await launcher.shutdownOwner(); await launcher.close(); }
+  assert.strictEqual(row.epoch, 2);
+  fs.writeFileSync(path.join(d, 's.jsonl'), tline('m1', 'claude-opus-5-5', '2026-10-23T11:59:00.000Z', { input_tokens: 1000, output_tokens: 2000, cache_read_input_tokens: 10000, cache_creation_input_tokens: 8000, cache_creation: { ephemeral_5m_input_tokens: 3000, ephemeral_1h_input_tokens: 5000 } }));
+  const orch = { id: 'orchestrator', model: null, context_tokens: null, cost_usd: null };
+  fillFromTranscript(orch, d, row, { projectsRoot: d, now: NOW });
+  assert.strictEqual(orch.context_tokens, 19000);
+  near(orch.cost_usd, 0.101);
+  assert.strictEqual(orch.cache.state, 'warm');
+});
+
+test('a marker ahead of the row, or one that does not say interactive, is not this run\'s', (t) => {
+  const d = tmp(t);
+  const f = path.join(d, 's.jsonl');
+  fs.writeFileSync(f, tline('m1', 'claude-opus-5-5', '2026-10-23T11:59:00.000Z', { input_tokens: 1, output_tokens: 1 }));
+  const row = { id: 'r', epoch: 2 };
+  const put = (m) => fs.writeFileSync(`${d}/run-start.json`, JSON.stringify({ run_id: 'r', mode: 'interactive', session_file: f, ...m }));
+  put({ epoch: 2 }); assert.strictEqual(sessionFileOf(d, row, { projectsRoot: d }).file, f);
+  put({ epoch: 1 }); assert.strictEqual(sessionFileOf(d, row, { projectsRoot: d }).file, f);
+  put({ epoch: 3 }); assert.strictEqual(sessionFileOf(d, row, { projectsRoot: d }).file, null);
+  put({ epoch: 1, mode: 'headless' }); assert.strictEqual(sessionFileOf(d, row, { projectsRoot: d }).file, null);
+  put({ epoch: '1' }); assert.strictEqual(sessionFileOf(d, row, { projectsRoot: d }).file, null);
+  put({ epoch: 1, run_id: 'other' }); assert.strictEqual(sessionFileOf(d, row, { projectsRoot: d }).file, null);
+});
+
+const cacheOfLines = (t, text) => {
+  const d = tmp(t);
+  fs.writeFileSync(path.join(d, 's.jsonl'), text);
+  fs.writeFileSync(`${d}/run-start.json`, JSON.stringify({ run_id: 'r', epoch: 1, mode: 'interactive', session_file: path.join(d, 's.jsonl') }));
+  const orch = { id: 'orchestrator', model: null, context_tokens: null, cost_usd: null };
+  fillFromTranscript(orch, d, { id: 'r', epoch: 1 }, { projectsRoot: d, now: NOW });
+  return orch.cache;
+};
+const U = (cc, extra = {}) => ({ input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: cc ? (cc.ephemeral_1h_input_tokens || 0) + (cc.ephemeral_5m_input_tokens || 0) : 0, ...(cc ? { cache_creation: cc } : {}), ...extra });
+
+test('cache from the transcript: a 1h write is warm with 3600 s, named by the transcript and the field', (t) => {
+  const c = cacheOfLines(t, tline('m1', 'claude-opus-5-5', '2026-10-23T11:59:00.000Z', U({ ephemeral_1h_input_tokens: 100, ephemeral_5m_input_tokens: 0 })));
+  assert.strictEqual(c.ttl_s, 3600);
+  assert.strictEqual(c.state, 'warm');
+  assert.strictEqual(c.age_ms, 60000);
+  assert.strictEqual(c.left_ms, 3540000);
+  assert.strictEqual(c.last_request_at_ms, Date.parse('2026-10-23T11:59:00.000Z'));
+  assert.match(c.ttl_established_by, /message\.usage\.cache_creation\.ephemeral_1h_input_tokens=100 of the session transcript .*s\.jsonl/);
+});
+test('cache from the transcript: only 5m written gives 300 s', (t) => {
+  const c = cacheOfLines(t, tline('m1', 'claude-opus-5-5', '2026-10-23T11:59:00.000Z', U({ ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 50 })));
+  assert.strictEqual(c.ttl_s, 300);
+  assert.strictEqual(c.left_ms, 240000);
+  assert.match(c.ttl_established_by, /ephemeral_5m_input_tokens=50/);
+});
+test('cache from the transcript: no split means the lifetime stays unknown, never assumed', (t) => {
+  const c = cacheOfLines(t, tline('m1', 'claude-opus-5-5', '2026-10-23T11:59:00.000Z', U(null)));
+  assert.strictEqual(c.ttl_s, null);
+  assert.strictEqual(c.state, 'unknown');
+  assert.strictEqual(c.left_ms, null);
+  assert.strictEqual(c.last_request_at_ms, Date.parse('2026-10-23T11:59:00.000Z'));
+  assert.match(c.ttl_established_by, /lifetime is not assumed/);
+});
+test('cache from the transcript: an expired entry is cold', (t) => {
+  const c = cacheOfLines(t, tline('m1', 'claude-opus-5-5', '2026-10-23T09:00:00.000Z', U({ ephemeral_1h_input_tokens: 100, ephemeral_5m_input_tokens: 0 })));
+  assert.strictEqual(c.state, 'cold');
+  assert.ok(c.left_ms < 0);
+});
+test('cache from the transcript: the request time is the first line of the latest message; the lifetime is the latest writer, a later read-only message keeps it', (t) => {
+  const w = U({ ephemeral_1h_input_tokens: 100, ephemeral_5m_input_tokens: 0 });
+  const zero = U({ ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 0 });
+  const c = cacheOfLines(t,
+    tline('m1', 'claude-opus-5-5', '2026-10-23T11:00:00.000Z', w)
+    + tline('m2', 'claude-opus-5-5', '2026-10-23T11:58:00.000Z', zero)
+    + tline('m2', 'claude-opus-5-5', '2026-10-23T11:58:30.000Z', zero)
+    + tline('s1', 'claude-opus-5-5', '2026-10-23T11:59:50.000Z', w, { isSidechain: true }));
+  assert.strictEqual(c.last_request_at_ms, Date.parse('2026-10-23T11:58:00.000Z'), 'first line of m2, not the sidechain, not the later line of m2');
+  assert.strictEqual(c.ttl_s, 3600);
 });

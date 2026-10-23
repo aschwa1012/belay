@@ -187,6 +187,12 @@ function fillFromTranscript(orch, orchDir, run, opts = {}) {
   orch.transcript_path = file;
   if (!u.exists || !u.messages) return;
   orch.transcript_usage = { tokens: u.tokens, messages: u.messages };
+  // The same rule as a worker's stream (D.cacheOf), over the transcript: its latest message and latest cache-write split.
+  const fl = u.last_first_line;
+  orch.cache = D.cacheOf({ exists: true, bytes_read: u.bytes_read, first_assistant: fl, assistant: fl, split: u.split }, Number.isFinite(opts.now) ? opts.now : Date.now());
+  orch.cache.ttl_established_by = u.split
+    ? `${orch.cache.ttl_established_by} of the session transcript ${file}`
+    : `no assistant line of the session transcript ${file} has a non-zero message.usage.cache_creation split; the lifetime is not assumed`;
   orch.context_tokens = u.context_tokens;
   if (u.model_seen) { orch.model_seen = u.model_seen; if (orch.model == null) orch.model = u.model_seen; }
   if (u.cost_usd != null) {
@@ -326,7 +332,7 @@ async function run(ctx) {
     const { dir: orchDir, stream_path: orchStream } = P.orchestratorStreamPath(chosen.id, parsed.dir, ctx.cwd);
     const workers = everyWorker.filter((w) => w.run_id === chosen.id).map((w) => workerRow(w, tasksById, dataDir, { now, pending, leaseTaskOf }));
     const orchestrator = orchestratorRow(chosen, orchStream, now);
-    fillFromTranscript(orchestrator, orchDir, chosen);
+    fillFromTranscript(orchestrator, orchDir, chosen, { now });
     borrowWindow(orchestrator, workers);
     const agents = [orchestrator, ...workers];
     const runTasks = [...tasksById.values()];

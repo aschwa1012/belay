@@ -230,6 +230,24 @@ function analyze(files) {
       bad.push(`${f}:${owner}: the string ${JSON.stringify(l.text)} appears outside the launcher's declarations`);
     }
   }
+
+  // 7. (Where the value comes FROM is the other half, and it is pinned by the plugin test 'belay-run.json naming orchestrator_dir passes it to the
+  // agents read as --dir' in src/mod/tests/panel.test.ts: the argv's --dir equals belay-run.json's orchestrator_dir and is never data_dir.)
+  // The agents read may name the orchestrator's directory (`--dir`, so `belay agents` finds the launch marker of a run whose spec set
+  // orchestrator_dir), and only the watch's own, from belay-run.json: exactly one `--dir` literal exists in the mod, it is in the one agents
+  // call in fetchSnapshot, that call is the literal below, and inside fetchSnapshot `orchDir` is only ever `watch.orchDir`.
+  const AGENTS_CALL = "runJson($, cli, ['agents', ...(watch.runId ? [watch.runId] : []), ...(watch.orchDir ? ['--dir', watch.orchDir] : [])], watch.dataDir)";
+  const dirLits = [];
+  for (const [f, o] of Object.entries(info)) for (const l of o.lits) if (l.text === '--dir') dirLits.push(`${f}:${ownerOf(o.its, l.at)}`);
+  if (JSON.stringify(dirLits) !== JSON.stringify(['hooks/panel/index.tsx:fetchSnapshot'])) bad.push(`the string "--dir" appears in ${JSON.stringify(dirLits)}; it may appear once, in fetchSnapshot's agents read`);
+  const idx = info['hooks/panel/index.tsx'];
+  if (idx) {
+    const fs0 = idx.its.find((it) => it.name === 'fetchSnapshot');
+    const next = fs0 ? idx.its.find((it) => it.start > fs0.start) : null;
+    const body = fs0 ? idx.text.slice(fs0.start, next ? next.start : undefined) : '';
+    if (!body.includes(AGENTS_CALL)) bad.push('the agents read in fetchSnapshot is not exactly the literal call with --dir taken from watch.orchDir');
+    for (const m of body.matchAll(/\borchDir\b/g)) if (body.slice(Math.max(0, m.index - 6), m.index) !== 'watch.') bad.push('orchDir is used in fetchSnapshot other than as watch.orchDir');
+  }
   return bad;
 }
 
