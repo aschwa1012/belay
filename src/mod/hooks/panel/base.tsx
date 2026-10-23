@@ -1,12 +1,12 @@
 // Drawing primitives shared by the panel's views: the element and handler types, a line of segments, and the cell helpers.
 
 import type { Elements } from 'claude-code'
-import type { BelayPanelSnap, BelayPanelUi } from '../../types/index'
+import type { BelayPanelSettle, BelayPanelSnap, BelayPanelUi } from '../../types/index'
 import { fitSegs, type Seg } from './model'
 import { cells, clipCells } from './wrap'
 import type { SettleAction } from './held'
 
-export type Els = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'>
+export type Els = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button' | 'Input'>
 export type Act = {
   select: (id: string) => void
   legend: () => void
@@ -18,11 +18,18 @@ export type Act = {
   /** The memory line's one write action: the first press asks, the second dispatches (index.tsx). */
   review: () => void
   /** A held note that waits on the operator: ask for a reason, confirm, then settle it (index.tsx). */
+  /** A settle button of the open note: starts the reason stage. UI state only; it runs no process. */
   settle: (action: SettleAction, id: string) => void
+  /** The reason Input's Enter: checks the reason and moves to the confirm stage. Runs no process. */
+  reason: (value: string) => void
+  /** Cancel the pending settle. */
+  cancel: () => void
+  /** The confirm button of the pending settle: the only way to the write (index.tsx). */
+  commit: () => void
   /** Open an awaiting note's line (its reason and buttons), or close it when it is the open one. UI state only: runs no process. */
   note: (id: string) => void
 }
-export type Ctx = { E: Els; snap: BelayPanelSnap; ui: BelayPanelUi; now: number; cols: number; act: Act }
+export type Ctx = { E: Els; snap: BelayPanelSnap; ui: BelayPanelUi; now: number; cols: number; act: Act; pend: BelayPanelSettle | null }
 
 export const tp = (s: Seg): Record<string, unknown> => ({
   ...(s.c ? { color: s.c } : {}), ...(s.dim ? { dimColor: true } : {}), ...(s.bold ? { bold: true } : {}), wrap: 'truncate-end',

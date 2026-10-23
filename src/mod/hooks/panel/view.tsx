@@ -1,12 +1,12 @@
 // The panel's drawing: the band, the pane and a plain fallback. Colours are theme keys only. Nothing
 // here fetches, writes or submits: a press only calls one of the `Act` handlers the caller passes.
 
-import type { BelayAwaitingNote, BelayEntry, BelayMemoryNotice, BelayNotice, BelayPanelSnap } from '../../types/index'
+import type { BelayAwaitingNote, BelayEntry, BelayMemoryNotice, BelayNotice, BelayPanelSettle, BelayPanelSnap } from '../../types/index'
 import {
   bandLines, cacheSegs, ctxSegs, isLive, markSeg, money, runLine, TONE, unseenNotices, bar,
   memoryTitleSegs, memoryFallbackSegs, type Seg,
 } from './model'
-import { CONFIRM_MS, confirmLine, heldDetail, heldLine, reviewLine, reviewProject, runningReview, SETTLE_ACTIONS, shortId } from './held'
+import { CONFIRM_MS, confirmLine, heldDetail, heldLine, reviewLine, reviewProject, REASON_MAX, runningReview, SETTLE_ACTIONS, settleConfirm, shortId } from './held'
 import { cells, cmdLines, wordWrap, wrapHard } from './wrap'
 import { clip, INDENT, Line, Section, shortModel, tp, type Act, type Ctx, type Els } from './base'
 import { Table } from './table'
@@ -118,8 +118,9 @@ export function orchestratorItems(entries: BelayEntry[]): Item[] {
 
 // A note waiting on the operator, one line: a mark, its short id, the title and why the review could not decide. A press opens it (state
 // only, nothing runs): the whole title and the whole reason on their own lines, then archive / release / reoffer. Only an open note has buttons.
-function SettleRow({ E, cols, n, act, open }: { E: Els; cols: number; n: BelayAwaitingNote; act: Act; open: boolean }) {
-  const { Box, Text, Button } = E
+function SettleRow({ E, cols, n, act, open, pend }: { E: Els; cols: number; n: BelayAwaitingNote; act: Act; open: boolean; pend: BelayPanelSettle | null }) {
+  const { Box, Text, Button, Input } = E
+  const mine = open && pend && pend.id === n.id ? pend : null // this note's settle in progress: the reason Input, then the confirm
   const room = Math.max(0, cols - 4 - 8) // the attention mark, the open mark and the id
   const whole = (n.title ? ` "${n.title}"` : '') + (n.reason ? ` · ${n.reason}` : '')
   const fits = cells(whole) <= room
@@ -147,7 +148,22 @@ function SettleRow({ E, cols, n, act, open }: { E: Els; cols: number; n: BelayAw
       </Box>
       {open && n.title ? wrapHard(`"${n.title}"`, Math.max(8, cols - 2)).map((t, i) => <Line E={E} w={cols} k={`awt-${n.id}-${i}`} segs={[{ t: `  ${t}` }]} />) : null}
       {open && n.reason ? wrapHard(n.reason, Math.max(8, cols - 2)).map((t, i) => <Line E={E} w={cols} k={`awr-${n.id}-${i}`} segs={[{ t: `  ${t}`, dim: true }]} />) : null}
-      {open && rows.map((r, i) => <Box key={`awb-${n.id}-${i}`}>{r.map(a => <Button key={`${a}-${n.id}`} plain label={`  ▸ ${a}`} onPress={() => act.settle(a, n.id)} />)}</Box>)}
+      {mine && mine.stage === 'reason' ? (
+        <Box flexDirection="column" paddingLeft={2}>
+          <Input key={`reason:${n.id}`} label="reason: " placeholder={`why ${mine.action}? at most ${REASON_MAX} characters`} submitLabel="next" autoFocus onSubmit={v => act.reason(v)} />
+          <Button key={`cancel:${n.id}`} plain label="▸ cancel" onPress={act.cancel} />
+        </Box>
+      ) : null}
+      {mine && mine.stage === 'confirm' ? (
+        <Box flexDirection="column">
+          {wrapHard(settleConfirm(mine.action, n.id, mine.reason, n.title), Math.max(8, cols - 2)).map((t, i) => <Line E={E} w={cols} k={`awq-${n.id}-${i}`} segs={[{ t: `  ${t}`, c: ATTN }]} />)}
+          <Box>
+            <Button key={`commit:${n.id}`} plain label={`  ▸ ${mine.action} it`} onPress={act.commit} />
+            <Button key={`cancel:${n.id}`} plain label="  ▸ cancel" onPress={act.cancel} />
+          </Box>
+        </Box>
+      ) : null}
+      {open && !mine && rows.map((r, i) => <Box key={`awb-${n.id}-${i}`}>{r.map(a => <Button key={`${a}-${n.id}`} plain label={`  ▸ ${a}`} onPress={() => act.settle(a, n.id)} />)}</Box>)}
     </Box>
   )
 }
@@ -156,7 +172,7 @@ function SettleRow({ E, cols, n, act, open }: { E: Els; cols: number; n: BelayAw
 // the detail line, the awaiting notes with their buttons and the one review button. The first press of the review button turns the
 // line into a confirm; the second press (inside CONFIRM_MS) dispatches; the timeout or any other press cancels. This Button is the ONLY
 // caller of act.review, and act.review is the only way to the dispatch (index.tsx).
-function Held({ E, snap, ui, now, act, cols }: Ctx) {
+function Held({ E, snap, ui, now, act, cols, pend }: Ctx) {
   const { Button } = E
   const hd = snap.held
   const off = snap.memoryNotice
@@ -185,7 +201,7 @@ function Held({ E, snap, ui, now, act, cols }: Ctx) {
         return wrapHard(reviewLine(r, now), Math.max(8, inner - 2)).map((t, j) => <Line E={E} w={inner} k={`hr${i}-${j}`} segs={[{ t: j === 0 ? '◇ ' : '  ', c: bad ? 'error' : undefined, dim: !bad }, { t, c: bad ? 'error' : undefined }]} />)
       })}
       {hd && hd.count > 0 && wrapHard(asking && project ? confirmLine(hd, project) : heldDetail(hd, now), Math.max(8, inner)).map((t, i) => <Line E={E} w={inner} k={`hl${i}`} segs={[{ t, c: asking ? ATTN : undefined, dim: !asking }]} />)}
-      {notes.map(n => <SettleRow E={E} cols={inner} n={n} act={act} open={n.id === openId} />)}
+      {notes.map(n => <SettleRow E={E} cols={inner} n={n} act={act} open={n.id === openId} pend={pend} />)}
       {carriedAt !== null && <Line E={E} w={inner} k="awc" segs={[{ t: `list from ${hhmm(carriedAt)}`, dim: true }]} />}
       {more > 0 && wrapHard(`+${more} more · belay memory held --awaiting`, inner).map((t, i) => <Line E={E} w={inner} k={`awm${i}`} segs={[{ t, dim: true }]} />)}
       {hd && project !== null && !busy && <Button key="review" plain label={asking ? '  ▸ press again to dispatch · any other press cancels' : `  ▸ review the held notes${Object.keys(hd.byProject).length > 1 ? ` (${project} first)` : ''}`} onPress={act.review} />}

@@ -140,12 +140,23 @@ export type BelayPanelUi = {
   openNote?: string | null
 }
 
+/** A settle in progress, drawn inside the pane (the session has no AskUserQuestion). `reason`: the Input is asked; `confirm`: the exact reason is shown. `run` is the watch it started under. */
+export type BelayPanelSettle = {
+  id: string
+  action: 'archive' | 'release' | 'reoffer'
+  stage: 'reason' | 'confirm'
+  reason: string
+  title: string
+  run: { runId: string | null; dataDir: string | null; cli: string | null; node: string | null }
+}
+
 declare module 'claude-code' {
   interface PluginState {
     belay: {
       panelWatch: BelayPanelWatch | null
       panelSnap: BelayPanelSnap | null
       panelUi: BelayPanelUi
+      panelSettle: BelayPanelSettle | null
     }
   }
 }

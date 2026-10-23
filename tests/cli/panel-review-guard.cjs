@@ -148,9 +148,16 @@ function analyze(files) {
   }
 
   const sp = refs(/\bsettlePress\b/g).filter((r) => !/function\s+settlePress/.test(r.line));
-  if (JSON.stringify(where(sp)) !== JSON.stringify(['hooks/panel/index.tsx:acts']) || !sp.every((r) => /^\s*settle:\s*\(action, id\)\s*=>\s*\{\s*void settlePress\(\$, action, id\)\s*\},?\s*$/.test(r.line))) bad.push(`settlePress is named in ${JSON.stringify(where(sp))}; only the \`settle\` handler of acts() may call it`);
+  if (JSON.stringify(where(sp)) !== JSON.stringify(['hooks/panel/index.tsx:acts']) || !sp.every((r) => /^\s*commit:\s*\(\)\s*=>\s*\{\s*void settlePress\(\$\)\s*\},?\s*$/.test(r.line))) bad.push(`settlePress is named in ${JSON.stringify(where(sp))}; only the \`commit\` handler of acts() (the confirm button of the pending settle) may call it`);
   const sm = refs(/\.\s*settle\b/g);
   if (!(sm.length === 1 && sm[0].f === 'hooks/panel/view.tsx' && sm[0].owner === 'SettleRow' && /<Button key=\{`\$\{a\}-\$\{n\.id\}`\}.*onPress=\{\(\) => act\.settle\(a, n\.id\)\}/.test(sm[0].orig))) bad.push(`a \`.settle\` member is used in ${JSON.stringify(where(sm))}; only SettleRow's Button may (onPress={() => act.settle(a, n.id)})`);
+  // The confirm button is the only way to settlePress: one `.commit` member in the whole mod, SettleRow's Button keyed commit.
+  const cm = refs(/\.\s*commit\b/g);
+  if (!(cm.length === 1 && cm[0].f === 'hooks/panel/view.tsx' && cm[0].owner === 'SettleRow' && /<Button key=\{`commit:\$\{n\.id\}`\}.*onPress=\{act\.commit\}/.test(cm[0].orig))) bad.push(`a \`.commit\` member is used in ${JSON.stringify(where(cm))}; only SettleRow's Button keyed commit may (onPress={act.commit})`);
+  // The interactive orchestrator has no AskUserQuestion: nothing in the mod asks a dialog, and the tool is not named.
+  for (const [f, o] of Object.entries(info)) {
+    if (/\bui\s*\.\s*ask\b|\bask\s*\(\s*\{|AskUserQuestion/.test(o.code) || o.lits.some((l) => l.text === 'AskUserQuestion')) bad.push(`${f}: a dialog is asked (ui.ask or AskUserQuestion); the session has no such tool`);
+  }
   for (const [f, o] of Object.entries(info)) {
     if (f.startsWith('hooks/wake/')) continue;
     for (const l of o.lits) {

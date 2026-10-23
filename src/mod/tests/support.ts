@@ -61,9 +61,7 @@ export type World = {
   failAgents?: boolean; transcriptFail?: boolean; orchDisplay?: string; noDisplay?: boolean; noRun?: boolean
   extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number; memoryNotice?: boolean; orchNoCost?: boolean; orchBasis?: string; orchCost?: number; awaitingFail?: boolean; agentIds?: string[]; footer?: unknown
   /** Answers the dialogs give, in order (the reason, then the confirm); an empty queue dismisses. */
-  answers?: string[]
-  awaitingList?: unknown; /** Awaited by every dialog before it answers: a test changes the world, or holds a press open, while a question is up. */
-  onAsk?: (n: number) => Promise<void> | void
+  awaitingList?: unknown
   settleReject?: string
   settleOut?: { exitCode: number; stdout: string; stderr: string }
 }
@@ -82,14 +80,11 @@ export function world(on: any, w: World) {
   const stat = { active: 0, maxActive: 0 }
   const settled: string[][] = [] // every `memory held settle` the panel runs: only the settle buttons may run one
   const asked: string[] = [] // every dialog question
-  const queue = [...(w.answers ?? [])]
-  on('tool.call', { tool: 'AskUserQuestion' }, async ($: any, e: any) => {
-    const q = e.questions[0]
-    asked.push(q.question)
-    if (w.onAsk) await w.onAsk(asked.length)
-    const a = queue.shift()
-    if (a === undefined) return { deny: 'dismissed' }
-    return { result: { questions: e.questions, answers: { [q.question]: a } } }
+  // The real session has no AskUserQuestion (the interactive orchestrator is launched with --tools Read,Edit,Write,Glob,Grep,Bash): an ask is
+  // recorded and rejected as it is there, so a panel that asks a dialog cannot do its work in these tests.
+  on('tool.call', { tool: 'AskUserQuestion' }, ($: any, e: any) => {
+    asked.push(String(e.questions?.[0]?.question ?? ''))
+    return { deny: 'no tool named "AskUserQuestion"; the session has Bash, Edit, Glob, Grep, Read, Write' }
   })
   on('session.start', ($: any, e: any) => ({ cwd: e.cwd }))
   on('fs.exists', ($: any, e: any) => ({ value: e.path.endsWith('belay-run.json') ? (w.file ?? false) : (w.repoCli ?? true) }))

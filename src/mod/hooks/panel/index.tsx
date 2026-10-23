@@ -18,7 +18,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On, Timer } from 'claude-code'
 import type { BelayPanelSnap, BelayPanelUi, BelayPanelWatch } from '../../types/index'
 import { argvFor, buildSnapshot, fatalSnapshot, fwd, launcherLine, isWindowsPath, parseRan, parseRunFile, projectRootOf, repoCliGuess, type Ran, type RunFileRead } from './fetch'
-import { CONFIRM_MS, normHeld, reasonProblem, reviewProject, SETTLE_ACTIONS, SETTLE_UNKNOWN, settleArgs, settleConfirm, noteLabel, settleLine, settleVerb, shortId, type SettleAction } from './held'
+import { CONFIRM_MS, normHeld, reasonProblem, reviewProject, SETTLE_ACTIONS, SETTLE_UNKNOWN, settleArgs, settleLine, shortId, type SettleAction } from './held'
 import { DEFAULT_SETTINGS, DEFAULT_UI } from './model'
 import { Band, BandWaiting, Fallback, Pane, type Act, type Els } from './view'
 
@@ -26,6 +26,7 @@ const PANE = 'belay'
 const watchA = atom({ plugin: 'belay', key: 'panelWatch' } as const, null)
 const snapA = atom({ plugin: 'belay', key: 'panelSnap' } as const, null)
 const uiA = atom({ plugin: 'belay', key: 'panelUi' } as const, DEFAULT_UI)
+const settleA = atom({ plugin: 'belay', key: 'panelSettle' } as const, null)
 
 // A round starts this long after the previous round ENDS (a slow belay is never chased).
 const PANE_EVERY_MS = 4000
@@ -161,6 +162,8 @@ async function tick($: Host): Promise<void> {
         if (!watch.runId && snap.runId) await update($, watchA, w => (w && !w.runId ? { ...w, runId: snap.runId } : w))
         // While the panel is open, notices that arrive are seen as they arrive.
         if (ui.open) await update($, uiA, u => ({ ...u, seen: [...new Set([...u.seen, ...snap.notices.map(n => n.key)])].slice(-200) }))
+        // A pending settle whose note left the list, or whose run changed, is cleared.
+        await settleCheck($, snap, watch)
         // A note that has left the list closes.
         if (ui.openNote) await update($, uiA, u => (u.openNote && !(snap.held?.awaitingNotes ?? []).some(n => n.id === u.openNote) ? { ...u, openNote: null } : u))
         // A switch to above-prompt closes the docked pane. A switch to docked opens nothing from a timer:
@@ -244,33 +247,49 @@ async function reviewPress($: Host): Promise<void> {
   await update($, uiA, u => ({ ...u, confirm: { project, at: now } }))
 }
 
-// The settle buttons of a held note that waits on the operator. A press asks for a reason (the dialog's free text), then asks to confirm
-// with the reason in the question, and only then runs `belay memory held settle <id> --<action> --reason <text>`: a write, reachable only from
-// these buttons (view.tsx Held -> act.settle). The reason is one argv element. Nothing is run when either question is cancelled or dismissed.
-const REASON_CANCEL = 'Cancel'
-const REASON_HINT = 'Type the reason under Other'
-const settling = new Set<string>() // note ids whose settle is asking or running
+// The settle of a held note that waits on the operator, inside the pane (the interactive orchestrator has no AskUserQuestion, so nothing here asks
+// a dialog). Four steps, each a press of a drawn element:
+//   1. a settle button of the open note (view.tsx SettleRow -> act.settle -> settleStart) starts the reason stage: an Input and a cancel button;
+//   2. Enter in the Input (act.reason -> reasonSubmit) checks the reason and moves to the confirm stage, which shows the exact reason;
+//   3. the confirm button (act.confirm -> settlePress) is the ONLY way to the write: `belay memory held settle <id> --<action> --reason <text>`;
+//   4. cancel, closing or opening a note, the note leaving the list or a change of run clears the pending state (the settleA atom).
+// The reason is one argv element. Steps 1 and 2 and cancel run no process.
+const settling = new Set<string>() // note ids whose settle is running
 
-async function settlePress($: Host, action: SettleAction, id: string): Promise<void> {
-  if (!SETTLE_ACTIONS.includes(action) || settling.has(id)) return
+async function settleStart($: Host, action: SettleAction, id: string): Promise<void> {
+  if (!SETTLE_ACTIONS.includes(action)) { $.ui.toast(`belay: unknown action ${action}.`); return }
   const snap = await read($, snapA)
   const listed = (snap?.held?.awaitingNotes ?? []).find(n => n.id === id)
-  if (!listed) return // only a note belay named as waiting on the operator
-  const watch0 = await read($, watchA)
+  if (!listed) { $.ui.toast(`belay: note ${shortId(id)} no longer awaits you.`); return } // only a note belay named as waiting on the operator
+  const watch = await read($, watchA)
+  if (!watch || watch.error) { $.ui.toast('belay: no run is watched, so a note cannot be settled.'); return }
+  await update($, uiA, calm)
+  await update($, settleA, () => ({ id, action, stage: 'reason', reason: '', title: listed.title, run: { runId: watch.runId, dataDir: watch.dataDir, cli: watch.cli, node: watch.node } }))
+}
+
+// Enter in the reason Input. A reason that cannot be sent is toasted and the Input stays; a good one moves to the confirm stage. Nothing is run.
+async function reasonSubmit($: Host, value: string): Promise<void> {
+  const p = await read($, settleA)
+  if (!p || p.stage !== 'reason') { $.ui.toast('belay: no reason is being asked for.'); return }
+  const reason = value.trim()
+  if (reason === '') { $.ui.toast('belay: type a reason first, or press cancel.'); return }
+  const problem = reasonProblem(reason)
+  if (problem) { $.ui.toast(problem); return }
+  await update($, settleA, s => (s && s.id === p.id && s.stage === 'reason' ? { ...s, stage: 'confirm', reason } : s))
+}
+
+async function settlePress($: Host): Promise<void> {
+  const p = await read($, settleA)
+  if (!p || p.stage !== 'confirm') { $.ui.toast('belay: no settle is waiting for a confirm.'); return }
+  const { action, id, reason } = p
+  if (settling.has(id)) { $.ui.toast(`belay: note ${shortId(id)} is being settled.`); return }
   settling.add(id)
   try {
-    let reason: string
-    try { reason = (await $.ui.ask(`Why ${action} note ${noteLabel(id, listed.title)}? Type the reason under Other.`, { options: [REASON_CANCEL, REASON_HINT], header: settleVerb(action).slice(0, 12) })).trim() } catch { return }
-    if (reason === '' || reason === REASON_CANCEL || reason === REASON_HINT) return
-    const problem = reasonProblem(reason)
-    if (problem) { $.ui.toast(problem); return }
-    let ok: string
-    try { ok = await $.ui.ask(settleConfirm(action, id, reason, listed.title), { options: [settleVerb(action), REASON_CANCEL], header: 'Confirm' }) } catch { return }
-    if (ok !== settleVerb(action)) return
-    // The dialogs can stay open for minutes: the note and the watched run are checked again before anything is written.
+    await update($, settleA, () => null) // consumed: a second press of the button finds nothing
+    // The reason stage can stay open for minutes: the note and the watched run are checked again before anything is written.
     const watch = await read($, watchA)
     if (!watch || watch.error) { $.ui.toast('belay: no run is watched, so the note was not settled.'); return }
-    if (!watch0 || watch.runId !== watch0.runId || watch.dataDir !== watch0.dataDir || watch.cli !== watch0.cli || watch.node !== watch0.node) { $.ui.toast('belay: the watched run changed while you were answering, so the note was not settled.'); return }
+    if (watch.runId !== p.run.runId || watch.dataDir !== p.run.dataDir || watch.cli !== p.run.cli || watch.node !== p.run.node) { $.ui.toast('belay: the watched run changed since you started, so the note was not settled.'); return }
     const now = await read($, snapA)
     if (!(now?.held?.awaitingNotes ?? []).some(n => n.id === id)) { $.ui.toast(`belay: note ${shortId(id)} no longer awaits you, so it was not settled.`); return }
     const r = await resolveCli($, watch)
@@ -283,6 +302,17 @@ async function settlePress($: Host, action: SettleAction, id: string): Promise<v
       $.ui.toast(SETTLE_UNKNOWN) // the command was started and did not answer (a timeout included): it may have written
     }
   } finally { settling.delete(id) }
+}
+
+// A pending settle whose note has left the list, or whose run is no longer the watched one, is cleared, and the person is told.
+async function settleCheck($: Host, snap: BelayPanelSnap, watch: BelayPanelWatch): Promise<void> {
+  const p = await read($, settleA)
+  if (!p) return
+  const same = watch.runId === p.run.runId && watch.dataDir === p.run.dataDir && watch.cli === p.run.cli && watch.node === p.run.node
+  const listed = (snap.held?.awaitingNotes ?? []).some(n => n.id === p.id)
+  if (same && listed) return
+  await update($, settleA, () => null)
+  $.ui.toast(same ? `belay: note ${shortId(p.id)} no longer awaits you, so the settle was cleared.` : 'belay: the watched run changed, so the settle was cleared.')
 }
 
 // Every press that is not the review button cancels a pending confirm.
@@ -298,8 +328,11 @@ function acts($: Host): Act {
     close: () => { void update($, uiA, calm).then(() => setOpen($, false)) },
     toggle: () => { void update($, uiA, calm).then(() => read($, uiA)).then(u => setOpen($, !u.open)) },
     review: () => { void reviewPress($) },
-    settle: (action, id) => { void settlePress($, action, id) },
-    note: id => { void update($, uiA, u => ({ ...calm(u), openNote: u.openNote === id ? null : id })) },
+    settle: (action, id) => { void settleStart($, action, id) },
+    reason: value => { void reasonSubmit($, value) },
+    cancel: () => { void update($, settleA, () => null) },
+    commit: () => { void settlePress($) },
+    note: id => { void update($, settleA, () => null); void update($, uiA, u => ({ ...calm(u), openNote: u.openNote === id ? null : id })) }, // opening, switching or closing a note drops a pending settle
   }
 }
 
@@ -361,7 +394,7 @@ export function registerPanel(on: On): void {
     const now = await $.clock.now()
     if (!watch) return <Box><Text dimColor>No belay run is watched. /belay watch [run-id]</Text></Box>
     if (!snap) return <BandWaiting E={E} runId={watch.runId} errors={[]} cols={e.props.bodyColumns} />
-    const c = { E, snap, ui, now, cols: e.props.bodyColumns, act: acts($) }
+    const c = { E, snap, ui, now, cols: e.props.bodyColumns, act: acts($), pend: await read($, settleA) }
     return e.surface === 'terminal' ? <Pane {...c} /> : <Fallback {...c} />
   })
 
@@ -374,7 +407,7 @@ export function registerPanel(on: On): void {
     const ui = await read($, uiA)
     const now = await $.clock.now()
     if (!snap) return <BandWaiting E={E} runId={watch.runId} errors={[]} cols={e.props.bodyColumns} />
-    const c = { E, snap, ui, now, cols: e.props.bodyColumns, act: acts($) }
+    const c = { E, snap, ui, now, cols: e.props.bodyColumns, act: acts($), pend: await read($, settleA) }
     // Inline when the person chose above-prompt, or when the docked pane is not seated (a narrow terminal).
     const inline = ui.open && (snap.settings.pane === 'above-prompt' || !ui.placed)
     if (e.surface !== 'terminal') return inline ? <Fallback {...c} /> : <Band {...c} />
