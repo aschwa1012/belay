@@ -55,6 +55,20 @@ describe('the review acts for the watched run only when it must', () => {
     expect(wd.toasts.at(-1)).toContain('unknown')
     expect(wd.toasts.at(-1)).toContain('timed out')
   })
+  test('a live run whose close waits says so, with the CLI note', async ($, on) => {
+    const waits = { exitCode: 0, stdout: JSON.stringify({ started: true, project: 'acme', pid: 7, job: 'j', run_live: true, close_waits: true, closing_note: 'the close of this run waits for the review' }), stderr: '' }
+    const wd = await press($, on, { launchers: [waits] })
+    expect(wd.toasts.at(-1)).toContain('started: pid 7')
+    expect(wd.toasts.at(-1)).toContain("this run's close waits for it")
+    expect(wd.toasts.at(-1)).toContain('note: the close of this run waits for the review')
+    expect(wd.toasts.at(-1)).not.toContain('warning')
+  })
+  test('an older CLI closing_warning is still shown, and says nothing of waiting', async ($, on) => {
+    const old = { exitCode: 0, stdout: JSON.stringify({ started: true, project: 'acme', pid: 7, job: 'j', closing_warning: 'this run is live; its close cuts the review off' }), stderr: '' }
+    const wd = await press($, on, { launchers: [old] })
+    expect(wd.toasts.at(-1)).toContain('warning: this run is live; its close cuts the review off')
+    expect(wd.toasts.at(-1)).not.toContain('close waits')
+  })
   test('a warning the launcher returns is in the toast', async ($, on) => {
     const warned = { exitCode: 0, stdout: JSON.stringify({ started: true, project: 'acme', pid: 7, job: 'j', closing_warning: 'this run is live; its close cuts the review off' }), stderr: '' }
     const wd = await press($, on, { launchers: [warned] })
