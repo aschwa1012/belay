@@ -152,6 +152,9 @@ export type BelayPanelSettle = {
   run: { runId: string | null; dataDir: string | null; cli: string | null; node: string | null }
 }
 
+/** Notes settled in this panel, by id: what the row says, and when. The row's buttons stay hidden, and a new settle on the id is refused, until a read taken after `at` has caught up. */
+export type BelayPanelSettled = Record<string, { label: string; at: number }>
+
 declare module 'claude-code' {
   interface PluginState {
     belay: {
@@ -159,6 +162,7 @@ declare module 'claude-code' {
       panelSnap: BelayPanelSnap | null
       panelUi: BelayPanelUi
       panelSettle: BelayPanelSettle | null
+      panelSettled: BelayPanelSettled
     }
   }
 }
