@@ -1,54 +1,17 @@
 // The panel's drawing: the band, the pane and a plain fallback. Colours are theme keys only. Nothing
 // here fetches, writes or submits: a press only calls one of the `Act` handlers the caller passes.
 
-import type { Elements } from 'claude-code'
-import type { BelayAgent, BelayEntry, BelayNotice, BelayPanelSnap, BelayPanelUi } from '../../types/index'
+import type { BelayAwaitingNote, BelayEntry, BelayMemoryNotice, BelayNotice, BelayPanelSnap } from '../../types/index'
 import {
-  bandLines, cacheSegs, CONFIRM_MS, confirmLine, heldLine, reviewLine, reviewProject, runningReview, ctxSegs, dur, fitSegs, isLive, markSeg, markWidth, money, runLine, STATE_NAME, TONE, unseenNotices, bar,
-  memoryTitleSegs, memoryFallbackSegs, interactiveOrch, interactiveMark, type Seg,
+  bandLines, cacheSegs, ctxSegs, isLive, markSeg, money, runLine, TONE, unseenNotices, bar,
+  memoryTitleSegs, memoryFallbackSegs, type Seg,
 } from './model'
-import { cells, clipCells, cmdLines, wordWrap, wrapParts } from './wrap'
+import { CONFIRM_MS, confirmLine, heldDetail, heldLine, reviewLine, reviewProject, runningReview, SETTLE_ACTIONS, shortId } from './held'
+import { cells, cmdLines, wordWrap, wrapHard } from './wrap'
+import { clip, INDENT, Line, Section, shortModel, tp, type Act, type Ctx, type Els } from './base'
+import { Table } from './table'
 
-export type Els = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'>
-export type Act = {
-  select: (id: string) => void
-  legend: () => void
-  fold: () => void
-  group: (key: string) => void
-  seen: (key: string) => void
-  close: () => void
-  toggle: () => void
-  /** The memory line's one write action: the first press asks, the second dispatches (index.tsx). */
-  review: () => void
-}
-type Ctx = { E: Els; snap: BelayPanelSnap; ui: BelayPanelUi; now: number; cols: number; act: Act }
-
-const tp = (s: Seg): Record<string, unknown> => ({
-  ...(s.c ? { color: s.c } : {}), ...(s.dim ? { dimColor: true } : {}), ...(s.bold ? { bold: true } : {}), wrap: 'truncate-end',
-})
-
-// A line of segments. With a width, whole parts drop from the end and nothing inside is shrunk, so the
-// sum of the kept texts never exceeds the room and the flex row has nothing to squeeze.
-function Line({ E, segs, k, w }: { E: Els; segs: Seg[]; k: string; w?: number }) {
-  const { Box, Text } = E
-  const out = w === undefined ? segs : fitSegs(segs, Math.max(1, w))
-  return <Box key={k} flexShrink={0}>{out.map(s => <Text {...tp(s)}>{s.t}</Text>)}</Box>
-}
-
-// Cut a string to n cells (display width, not codepoints) with an ellipsis.
-const clip = clipCells
-
-const pad = (s: string, n: number): string => (s.length >= n ? s.slice(0, n) : s + ' '.repeat(n - s.length))
-
-// An agent name that does not fit is cut with an ellipsis, so the cut shows.
-const padName = (s: string, n: number): string => (s.length > n ? s.slice(0, Math.ceil((n - 1) / 2)) + '…' + s.slice(s.length - Math.floor((n - 1) / 2)) : pad(s, n)) // a cut keeps the end, which tells archreview-… workers apart
-
-// 'claude-sonnet-5-5' -> 'sonnet'; anything else (codex) is shown as belay gave it.
-export function shortModel(m: string | null): string {
-  if (!m) return '—'
-  const f = /(?:claude-)?(opus|sonnet|haiku|fable)/i.exec(m)
-  return f ? f[1]!.toLowerCase() : m
-}
+export type { Act, Els }
 
 // ---- the band ----------------------------------------------------------------------------------
 
@@ -85,176 +48,11 @@ export function BandWaiting({ E, runId, errors, cols = 80 }: { E: Els; runId: st
 
 // ---- the table ---------------------------------------------------------------------------------
 
-type Cols = { mark: number; agent: number; id: number; model: boolean; task: number; ctx: number; cache: number; cost: number }
-
-// Every cell is followed by one column of space. When the pane is narrow whole columns drop, the
-// least needed first: task, cache, context, the model name, then the id is cut. Nothing is squeezed.
-function columns({ snap, cols }: Ctx): Cols {
-  const s = snap.settings
-  const longest = snap.agents.reduce((m, a) => Math.max(m, a.id.length), 0)
-  const c: Cols = {
-    mark: markWidth(s.marks), agent: 0, id: Math.max(6, Math.min(16, longest)), model: true, task: 0,
-    ctx: s.context === 'figure' ? 4 : s.context === 'bar' ? 6 : 11, cache: s.cache === 'both' ? 11 : 5, cost: 7,
-  }
-  const kind = s.task === 'kind'
-  // `kind` is the cheapest column to keep: its label (`work`, `rev`, `research`) is reserved before the cache and the
-  // context are dropped, and grows to take the review verdict and the ▲ id when there is room. Only the label is kept last.
-  const labelW = kind ? Math.max(4, ...snap.agents.map(a => cells(taskSegs(a, snap, 99)[0]?.t ?? ''))) : 0
-  const fullW = kind ? Math.max(labelW, ...snap.agents.map(a => cells(taskSegs(a, snap, 99).map(x => x.t).join('')))) : 0
-  if (kind) c.task = fullW
-  const total = (): number => (c.mark + 1) + (c.id + (c.model ? 8 : 0) + 1) + (c.ctx ? c.ctx + 1 : 0) + (c.cache ? c.cache + 1 : 0) + (c.task ? c.task + 1 : 0) + (c.cost + 1)
-  const cacheW = c.cache
-  if (total() > cols) c.cache = 0
-  if (kind && total() > cols) { // the verdict and the ▲ drop before the context does, and give the cache back if it then fits
-    c.task = labelW
-    c.cache = cacheW
-    if (total() > cols) c.cache = 0
-  }
-  if (total() > cols) c.ctx = 0
-  if (total() > cols) c.model = false
-  if (total() > cols) c.task = 0
-  if (total() > cols) c.id = Math.max(3, c.id - (total() - cols))
-  c.agent = c.id + (c.model ? 8 : 0)
-  const t = cols - total() - 1
-  if (kind) { if (c.task) c.task = Math.min(fullW, c.task + Math.max(0, t + 1)) }
-  else c.task = s.task === 'off' || t < 8 ? 0 : t
-  return c
-}
-
-// The kind of work an agent is on, from its role: a reviewer is `rev`, a researcher `research`, a worker with no
-// role `work`. Any other role names itself.
-function kindOf(a: BelayAgent): string {
-  const r = (a.role ?? '').toLowerCase()
-  if (!r || r === 'coder' || r === 'worker') return 'work'
-  if (r.startsWith('review')) return 'rev'
-  if (r.startsWith('research')) return 'research'
-  return r
-}
-
-// One readable label, never two cut fragments: the id and title when both fit, else the title alone (the id is in the
-// detail), else the id. The verdict and the permission mark are parts that drop whole from the end.
-function taskSegs(a: BelayAgent, snap: BelayPanelSnap, room: number): Seg[] {
-  if (interactiveOrch(a, snap)) return [{ t: 'interactive', dim: true }]
-  if (a.role === 'orchestrator') return [{ t: snap.settings.task === 'kind' ? 'orch' : 'orchestrator', dim: true }]
-  const perm = snap.notices.find(n => n.tone === 'permission' && n.agentId === a.id)
-  const v = a.task && snap.notices.find(n => n.taskId === a.task!.id && (n.tone === 'holds' || n.tone === 'refuted'))
-  const tail: Seg[] = []
-  if (v) tail.push({ t: ' → ', brk: true }, { t: v.tone === 'holds' ? 'holds' : 'refuted', c: v.tone === 'holds' ? 'merged' : 'error' })
-  if (perm) tail.push({ t: ` ▲ ${perm.ids}`, c: 'permission', brk: true })
-  if (snap.settings.task === 'kind') {
-    // The kind label is kept last: the permission mark drops first, then the verdict. A request id is about 30 cells, so
-    // the mark stands alone here; the id and the commands are in the permission notice.
-    const kt: Seg[] = tail.map(x => (x.c === 'permission' ? { ...x, t: ' ▲' } : x))
-    return fitSegs([a.task ? { t: clip(kindOf(a), room) } : { t: '—', dim: true }, ...kt], room)
-  }
-  const kept = fitSegs([{ t: '' }, ...tail], Math.max(1, room - 6)).slice(1)
-  const label = Math.max(1, room - cells(kept.map(x => x.t).join('')))
-  if (!a.task) return fitSegs([{ t: 'no task', dim: true }, ...kept], room)
-  const id = a.task.id.slice(0, 8)
-  const title = (a.task.title ?? '').trim()
-  const both = title ? `${id} ${title}` : id
-  if (cells(both) <= label) return [...(title ? [{ t: id, dim: true }, { t: ` ${title}` }] : [{ t: id, dim: true }]), ...kept]
-  return [title ? { t: clip(title, label) } : { t: clip(id, label), dim: true }, ...kept]
-}
-
-const LABEL = 8
-
-// A detail row is a label and parts. The parts join with `sep` and wrap under the label instead of being cut.
-type DRow = { k: string; parts: string[]; sep: string; note?: Seg }
-
-function Detail({ E, a, snap, now, cols }: { E: Els; a: BelayAgent; snap: BelayPanelSnap; now: number; cols: number }) {
-  const { Box } = E
-  const rows: DRow[] = []
-  rows.push({ k: 'status', sep: ' · ', parts: [interactiveOrch(a, snap) ? 'interactive — its words are in its own window' : `${STATE_NAME[a.state]} — established by ${a.stateBy ?? 'not recorded'}`, a.pid !== null ? `pid ${a.pid}` : ''] })
-  const launch = [a.model, a.effort ? `effort ${a.effort}` : null, a.launchMode ? `mode ${a.launchMode}` : null, a.version ? `Claude Code ${a.version}` : null]
-  rows.push({ k: 'launch', sep: ' · ', parts: launch.filter(Boolean).length ? launch.filter(Boolean) as string[] : ['not recorded'] })
-  if (a.task) {
-    const src = a.task.title && a.task.titleSource ? (/spec/.test(a.task.titleSource) ? ' (from spec)' : ` (${a.task.titleSource})`) : ''
-    rows.push({ k: 'task', sep: ' ', parts: [`${a.task.id} ${a.task.title ?? ''}`.trim()], ...(src ? { note: { t: src, dim: true } } : {}) })
-  }
-  if (a.ctxTokens !== null) rows.push({ k: 'context', sep: ' ', parts: [`${a.ctxTokens.toLocaleString('en-US')} tokens${a.ctxWindow ? ` of ${a.ctxWindow.toLocaleString('en-US')}` : ' (window unknown)'}`] })
-  if (a.cache) {
-    const age = a.cache.ageMs !== null ? a.cache.ageMs + Math.max(0, now - snap.fetchedAt) : null
-    rows.push({ k: 'cache', sep: ' · ', parts: [`TTL ${a.cache.ttlS !== null ? dur(a.cache.ttlS * 1000) : 'unknown'}${a.cache.ttlBy ? `, read from ${a.cache.ttlBy}` : ''}`, age !== null ? `age ${dur(age, true)}` : ''] })
-  }
-  rows.push({ k: 'cost', sep: ' ', parts: [a.costUsd === null ? 'not yet recorded' : `${money(a.costUsd)}${a.costSource ? ` (${a.costSource})` : ''}`] })
-  rows.push({ k: 'logs', sep: ' ', parts: [`belay logs ${a.id}`] })
-  const room = Math.max(8, cols - 2 - LABEL)
-  const flush = cols - 2 // an id wider than the value room goes on its own line with the label's indent removed
-  return (
-    <Box flexDirection="column" paddingLeft={2} marginBottom={1}>
-      {rows.flatMap(r => {
-        const note = r.note ? cells(r.note.t) : 0
-        const lines = wrapParts(r.parts, r.sep, room).filter(t => t !== '')
-        // The note is counted: it shares the last line when it fits there, else it takes a line of its own.
-        const noteOwn = !!r.note && (lines.length === 0 || cells(lines[lines.length - 1]!) + note > (cells(lines[lines.length - 1]!) > room ? flush : room))
-        const out: { t: string; flush: boolean; note?: Seg }[] = lines.map((t, i) => ({ t, flush: cells(t) > room && cells(t) <= flush, ...(i === lines.length - 1 && r.note && !noteOwn ? { note: r.note } : {}) }))
-        if (!out.length) out.push({ t: '', flush: false })
-        if (out[0]!.flush) out.unshift({ t: '', flush: false }) // the label alone, its flush id on the next line
-        if (noteOwn) out.push({ t: '', flush: false, note: { ...r.note!, t: r.note!.t.trimStart() } })
-        return out.map((l, i) => {
-          const first = i === 0
-          const segs: Seg[] = l.flush ? [{ t: l.t }] : [{ t: pad(first ? r.k : '', LABEL), dim: true }, { t: l.t }]
-          if (l.note) segs.push(l.note)
-          return <Line E={E} k={`d-${a.id}-${r.k}-${i}`} segs={segs} w={cols - 2} />
-        })
-      })}
-    </Box>
-  )
-}
-
-function AgentRow(c: Ctx & { a: BelayAgent; c: Cols }) {
-  const { E, a, snap, ui, now, act } = c
-  const { Box, Text, Button } = E
-  const w = c.c
-  const cell = (key: string, width: number, segs: Seg[]) => (
-    <Box key={key} width={width} flexShrink={0} marginRight={1}>{segs.map(s => <Text {...tp(s)}>{s.t}</Text>)}</Box>
-  )
-  const io = interactiveOrch(a, snap)
-  const mk = io ? interactiveMark(snap.settings.marks) : markSeg(a.state, snap.settings.marks)
-  return (
-    <Box key={`row-${a.id}`} flexDirection="column">
-      <Box>
-        {cell('m', w.mark, [mk])}
-        <Box key="a" width={w.agent} flexShrink={0} marginRight={1}>
-          <Button key={`agent:${a.id}`} label={padName(a.id, w.id)} plain onPress={() => act.select(a.id)} />
-          {w.model ? <Text dimColor> {pad(shortModel(a.model), 7)}</Text> : null}
-        </Box>
-        {w.task > 0 && cell('t', w.task, taskSegs(a, snap, w.task))}
-        {w.ctx > 0 && cell('x', w.ctx, ctxSegs(a, snap.settings))}
-        {w.cache > 0 && cell('k', w.cache, cacheSegs(a, snap.settings, snap.fetchedAt, now))}
-        {cell('$', w.cost, [{ t: a.costUsd === null && io ? 'n/a' : money(a.costUsd), dim: a.costUsd === null }])}
-      </Box>
-      {ui.selected === a.id && <Detail E={E} a={a} snap={snap} now={now} cols={c.cols} />}
-    </Box>
-  )
-}
-
-function Table(c: Ctx) {
-  const { E, snap, ui, act, cols } = c
-  const { Box, Button } = E
-  const w = columns(c)
-  const live = snap.agents.filter(isLive)
-  const fin = snap.agents.filter(a => !isLive(a))
-  return (
-    <Box flexDirection="column">
-      <Box key="th">
-        <Box width={w.mark} marginRight={1}>{null}</Box>
-        <Line E={E} w={cols - w.mark - 1} k="th1" segs={[{ t: pad('agent', w.agent + 1), dim: true }, ...(w.task > 0 ? [{ t: pad('task', w.task + 1), dim: true }] : []),
-          ...(w.ctx > 0 ? [{ t: pad('ctx', w.ctx + 1), dim: true }] : []), ...(w.cache > 0 ? [{ t: pad('cache', w.cache + 1), dim: true }] : []), { t: 'cost', dim: true }]} />
-      </Box>
-      {live.map(a => <AgentRow {...c} a={a} c={w} />)}
-      {fin.length > 0 && (
-        <Button key="fold" plain dimColor label={`${ui.foldOpen ? '▾' : '▸'} ${fin.length} finished`} onPress={act.fold} />
-      )}
-      {ui.foldOpen && fin.map(a => <AgentRow {...c} a={a} c={w} />)}
-    </Box>
-  )
-}
 
 // ---- notices, orchestrator, legend -------------------------------------------------------------
 
 const hhmm = (ts: number | null): string => (ts === null ? '--:--' : new Date(ts).toTimeString().slice(0, 5))
+const ATTN = 'warning' // the one accent for what waits on the operator; a failure keeps `error`
 
 // The line under a notice. An id wider than the room beside the time moves out to the notice's own indent, whole.
 function IdLines({ E, ids, cols }: { E: Els; ids: string; cols: number }) {
@@ -263,31 +61,38 @@ function IdLines({ E, ids, cols }: { E: Els; ids: string; cols: number }) {
   return <Box paddingLeft={pl} flexShrink={0} flexDirection="column">{wordWrap(ids, cols - pl).map((t, i) => <Text key={`i${i}`} dimColor wrap="truncate-end">{clip(t, cols - pl)}</Text>)}</Box>
 }
 
+// Rows are drawn at the section's inner width. One line each: the id goes beside the text when both fit, and is left out when the
+// text already names it; only an id that does not fit beside the text takes the line under it.
 function Notices({ E, snap, ui, act, cols }: Ctx) {
   const { Box, Text, Button } = E
   const ordered = [...snap.notices].sort((a: BelayNotice, b: BelayNotice) => (b.ts ?? 0) - (a.ts ?? 0))
   const fresh = unseenNotices(ordered, ui).length
-  if (!ordered.length) return <Line E={E} w={cols} k="nn" segs={[{ t: 'notices', dim: true, bold: true }, { t: '  none', dim: true }]} />
+  const inner = cols - INDENT
+  if (!ordered.length) return <Section E={E} k="sn" title="NOTICES" cols={cols} summary={[{ t: 'none', dim: true }]} />
   return (
-    <Box flexDirection="column">
-      <Line E={E} w={cols} k="nh" segs={[{ t: 'notices', dim: true, bold: true }, ...(fresh ? [{ t: `  ${fresh} new`, c: 'warning' }] : [])]} />
+    <Section E={E} k="sn" title="NOTICES" cols={cols} summary={fresh ? [{ t: `${fresh} new`, c: ATTN }] : []}>
       {ordered.slice(0, 8).map(n => {
         const t = TONE[n.tone]
         const seen = ui.seen.includes(n.key)
+        const room = inner - 8
+        const fits = cells(n.text) <= room
+        const named = !n.ids || n.text.includes(n.ids)
+        const inline = fits && !named && cells(n.text) + 2 + cells(n.ids) <= room
         return (
           <Box key={`n-${n.key}`} flexDirection="column">
             <Box>
               <Box width={2} flexShrink={0}><Text color={t.color}>{t.glyph}</Text></Box>
               <Box width={6} flexShrink={0}><Text dimColor>{hhmm(n.ts)}</Text></Box>
-              <Button key={`notice:${n.key}`} label={clip(n.text, cols - 8)} plain dimColor={seen} onPress={() => act.seen(n.key)} />
+              <Button key={`notice:${n.key}`} label={clip(n.text, room)} plain dimColor={seen} onPress={() => act.seen(n.key)} />
+              {inline ? <Text dimColor>{`  ${n.ids}`}</Text> : null}
             </Box>
-            {n.ids ? <IdLines E={E} ids={n.ids} cols={cols} /> : null}
-            {n.cmd ? <Box paddingLeft={2} flexShrink={0} flexDirection="column">{cmdLines(n.cmd, cols - 2).map((t, i) => <Text key={`c${i}`} dimColor wrap="truncate-end">{clip(t, cols - 2)}</Text>)}</Box> : null}
+            {n.ids && !inline && !(fits && named) ? <IdLines E={E} ids={n.ids} cols={inner} /> : null}
+            {n.cmd ? <Box paddingLeft={2} flexShrink={0} flexDirection="column">{cmdLines(n.cmd, inner - 2).map((t, i) => <Text key={`c${i}`} dimColor wrap="truncate-end">{clip(t, inner - 2)}</Text>)}</Box> : null}
           </Box>
         )
       })}
-      {ordered.length > 8 && <Line E={E} w={cols} k="nm" segs={[{ t: `  and ${ordered.length - 8} older`, dim: true }]} />}
-    </Box>
+      {ordered.length > 8 && <Line E={E} w={inner} k="nm" segs={[{ t: `and ${ordered.length - 8} older`, dim: true }]} />}
+    </Section>
   )
 }
 
@@ -311,37 +116,93 @@ export function orchestratorItems(entries: BelayEntry[]): Item[] {
   return items.slice(from)
 }
 
-// The memory line: how many notes wait on the Opus archive reviewer, and the one button that dispatches it. The first press turns the
+// A note waiting on the operator, one line: a mark, its short id, the title and why the review could not decide. A press opens it (state
+// only, nothing runs): the whole title and the whole reason on their own lines, then archive / release / reoffer. Only an open note has buttons.
+function SettleRow({ E, cols, n, act, open }: { E: Els; cols: number; n: BelayAwaitingNote; act: Act; open: boolean }) {
+  const { Box, Text, Button } = E
+  const room = Math.max(0, cols - 4 - 8) // the attention mark, the open mark and the id
+  const whole = (n.title ? ` "${n.title}"` : '') + (n.reason ? ` · ${n.reason}` : '')
+  const fits = cells(whole) <= room
+  // Whole when it fits; otherwise the title takes at most 40% of the room (none under 9 cells) and the reason the rest, clipped with an ellipsis.
+  const title = fits ? (n.title ? ` "${n.title}"` : '') : n.title && room >= 9 ? ` "${clip(n.title, Math.max(6, Math.floor(room * 0.4)))}"` : ''
+  const left = room - cells(title)
+  const reason = n.reason && (fits || left >= 8) ? ` · ${fits ? n.reason : clip(n.reason, left - 3)}` : ''
+  const press = () => act.note(n.id)
+  // The buttons wrap onto more lines when three do not fit.
+  const rows: string[][] = [[]]
+  let w = 0
+  for (const a of SETTLE_ACTIONS) {
+    const lw = cells(`  ▸ ${a}`)
+    if (w > 0 && w + lw > cols) { rows.push([]); w = 0 }
+    rows[rows.length - 1]!.push(a)
+    w += lw
+  }
+  return (
+    <Box flexDirection="column" key={`aw-${n.id}`}>
+      <Box>
+        <Text color={ATTN}>▲ </Text>
+        <Button key={`note:${n.id}`} plain dimColor label={`${open ? '▾' : '▸'} ${shortId(n.id)}`} onPress={press} />
+        {title ? <Button key={`note-t:${n.id}`} plain label={title} onPress={press} /> : null}
+        {reason ? <Button key={`note-r:${n.id}`} plain dimColor label={reason} onPress={press} /> : null}
+      </Box>
+      {open && n.title ? wrapHard(`"${n.title}"`, Math.max(8, cols - 2)).map((t, i) => <Line E={E} w={cols} k={`awt-${n.id}-${i}`} segs={[{ t: `  ${t}` }]} />) : null}
+      {open && n.reason ? wrapHard(n.reason, Math.max(8, cols - 2)).map((t, i) => <Line E={E} w={cols} k={`awr-${n.id}-${i}`} segs={[{ t: `  ${t}`, dim: true }]} />) : null}
+      {open && rows.map((r, i) => <Box key={`awb-${n.id}-${i}`}>{r.map(a => <Button key={`${a}-${n.id}`} plain label={`  ▸ ${a}`} onPress={() => act.settle(a, n.id)} />)}</Box>)}
+    </Box>
+  )
+}
+
+// The memory section. Its heading carries the summary (how many are held, how many await the operator); under it the review lines,
+// the detail line, the awaiting notes with their buttons and the one review button. The first press of the review button turns the
 // line into a confirm; the second press (inside CONFIRM_MS) dispatches; the timeout or any other press cancels. This Button is the ONLY
 // caller of act.review, and act.review is the only way to the dispatch (index.tsx).
 function Held({ E, snap, ui, now, act, cols }: Ctx) {
-  const { Box, Button } = E
+  const { Button } = E
   const hd = snap.held
-  if (!hd) return null
+  const off = snap.memoryNotice
+  if (!hd && !off) return null
+  const inner = cols - INDENT
   const project = reviewProject(hd)
-  const busy = project !== null && runningReview(hd, project) !== null // a review of that project holds its claim: no second dispatch
+  const busy = hd !== null && project !== null && runningReview(hd, project) !== null // a review of that project holds its claim: no second dispatch
   const asking = !busy && !!ui.confirm && project !== null && ui.confirm.project === project && now - ui.confirm.at <= CONFIRM_MS
+  const awaiting = hd?.awaiting ?? 0
+  const notes = hd?.awaitingNotes ?? []
+  const openId = ui.openNote ?? null // one at a time; a note that leaves the list is closed by the fetch that drops it
+  const list = hd?.awaitingList
+  // The "+N more" count is the list's own: its total less the rows shown, from the one read. A list kept from an earlier round says when it was read instead.
+  const more = list && !list.carried ? Math.max(0, list.total - notes.length) : 0
+  const carriedAt = list?.carried && notes.length ? list.at : null
+  const summary: Seg[] = [
+    ...(off ? [{ t: 'off', c: ATTN } as Seg, ...(hd ? [{ t: ' · ', dim: true } as Seg] : [])] : []),
+    ...(hd ? [{ t: hd.count > 0 ? `${hd.count} held` : 'none held', dim: true } as Seg] : []),
+    ...(awaiting > 0 ? [{ t: ' · ', dim: true } as Seg, { t: `${awaiting} await${awaiting === 1 ? 's' : ''} you`, c: ATTN } as Seg] : []),
+  ]
   return (
-    <Box flexDirection="column">
-      {hd.reviews.map((r, i) => <Line E={E} w={cols} k={`hr${i}`} segs={[{ t: '◇ ', c: r.state === 'failed' || r.state === 'interrupted' ? 'error' : 'warning' }, { t: reviewLine(r, now), c: r.state === 'failed' || r.state === 'interrupted' ? 'error' : undefined }]} />)}
-      {hd.count > 0 && <Line E={E} w={cols} k="hl" segs={[{ t: '◇ ', c: 'warning' }, { t: asking && project ? confirmLine(hd, project) : heldLine(hd, now), c: asking ? 'warning' : undefined }]} />}
-      {project !== null && !busy && <Button key="review" plain label={asking ? '  ▸ press again to dispatch · any other press cancels' : `  ▸ review the held notes${Object.keys(hd.byProject).length > 1 ? ` (${project} first)` : ''}`} onPress={act.review} />}
-    </Box>
+    <Section E={E} k="sm" title="MEMORY" cols={cols} summary={summary}>
+      {off && <MemoryOff E={E} n={off} cols={inner} />}
+      {hd && hd.reviews.flatMap((r, i) => {
+        const bad = r.state === 'failed' || r.state === 'interrupted'
+        return wrapHard(reviewLine(r, now), Math.max(8, inner - 2)).map((t, j) => <Line E={E} w={inner} k={`hr${i}-${j}`} segs={[{ t: j === 0 ? '◇ ' : '  ', c: bad ? 'error' : undefined, dim: !bad }, { t, c: bad ? 'error' : undefined }]} />)
+      })}
+      {hd && hd.count > 0 && wrapHard(asking && project ? confirmLine(hd, project) : heldDetail(hd, now), Math.max(8, inner)).map((t, i) => <Line E={E} w={inner} k={`hl${i}`} segs={[{ t, c: asking ? ATTN : undefined, dim: !asking }]} />)}
+      {notes.map(n => <SettleRow E={E} cols={inner} n={n} act={act} open={n.id === openId} />)}
+      {carriedAt !== null && <Line E={E} w={inner} k="awc" segs={[{ t: `list from ${hhmm(carriedAt)}`, dim: true }]} />}
+      {more > 0 && wrapHard(`+${more} more · belay memory held --awaiting`, inner).map((t, i) => <Line E={E} w={inner} k={`awm${i}`} segs={[{ t, dim: true }]} />)}
+      {hd && project !== null && !busy && <Button key="review" plain label={asking ? '  ▸ press again to dispatch · any other press cancels' : `  ▸ review the held notes${Object.keys(hd.byProject).length > 1 ? ` (${project} first)` : ''}`} onPress={act.review} />}
+    </Section>
   )
 }
 
 function Orchestrator({ E, snap, ui, act, cols }: Ctx) {
   const { Box, Text, Button } = E
-  const head = <Line E={E} w={cols} k="oh" segs={[{ t: 'orchestrator', dim: true, bold: true }]} />
-  if (snap.mode === 'interactive') {
-    return <Box flexDirection="column">{head}<Line E={E} w={cols} k="oi" segs={[{ t: 'Interactive: its words are already in its own window.', dim: true }]} /></Box>
-  }
-  if (snap.mode !== 'headless') return <Box flexDirection="column">{head}<Line E={E} w={cols} k="ou" segs={[{ t: 'run mode unknown', dim: true }]} /></Box>
+  const inner = cols - INDENT
+  const note = (t: string, k: string) => <Section E={E} k="so" title="ORCHESTRATOR" cols={cols}>{wrapHard(t, inner).map((l, i) => <Line E={E} w={inner} k={`${k}${i}`} segs={[{ t: l, dim: true }]} />)}</Section>
+  if (snap.mode === 'interactive') return note('Interactive: its words are already in its own window.', 'oi')
+  if (snap.mode !== 'headless') return note('run mode unknown', 'ou')
   const entries = snap.transcript ?? []
-  if (!entries.length) return <Box flexDirection="column">{head}<Line E={E} w={cols} k="oe" segs={[{ t: snap.transcript === null ? 'no transcript read yet' : 'no lines yet', dim: true }]} /></Box>
+  if (!entries.length) return note(snap.transcript === null ? 'no transcript read yet' : 'no lines yet', 'oe')
   return (
-    <Box flexDirection="column">
-      {head}
+    <Section E={E} k="so" title="ORCHESTRATOR" cols={cols}>
       {orchestratorItems(entries).map((it, i) => {
         if (it.kind === 'text' || it.kind === 'line') {
           return (
@@ -359,12 +220,12 @@ function Orchestrator({ E, snap, ui, act, cols }: Ctx) {
           </Box>
         )
       })}
-    </Box>
+    </Section>
   )
 }
 
 function Legend({ E, cols }: Ctx) {
-  const { Box } = E
+  const inner = cols - INDENT
   const m: [string, string, string][] = [
     ['success', '●', 'running'], ['success', '◐', 'waiting inside a call'], ['inactive', '○', 'idle, no turn running'], ['warning', '◌', 'stalled, no event for 5 min'],
     ['permission', '▲', 'needs your approval'],
@@ -379,17 +240,15 @@ function Legend({ E, cols }: Ctx) {
     [{ t: 'purple', c: 'merged' }, { t: ' review holds', dim: true }],
   ]
   return (
-    <Box flexDirection="column" marginBottom={1}>
-      <Line E={E} w={cols} k="lg" segs={[{ t: 'legend · ? closes', dim: true, bold: true }]} />
-      {m.map(([col, g, t]) => <Line E={E} w={cols} k={`lg${g}`} segs={[{ t: g, c: col }, { t: ` ${t}`, dim: true }]} />)}
-      {c.map((s, i) => <Line E={E} w={cols} k={`lc${i}`} segs={s} />)}
-      <Line E={E} w={cols} k="lz" segs={[{ t: '@hh:mm cost is as of the last turn end · → command to act', dim: true }]} />
-    </Box>
+    <Section E={E} k="sl" title="LEGEND" cols={cols} summary={[{ t: '? closes', dim: true }]}>
+      {m.map(([col, g, t]) => <Line E={E} w={inner} k={`lg${g}${t}`} segs={[{ t: g, c: col }, { t: ` ${t}`, dim: true }]} />)}
+      {c.map((s, i) => <Line E={E} w={inner} k={`lc${i}`} segs={s} />)}
+      <Line E={E} w={inner} k="lz" segs={[{ t: '@hh:mm cost is as of the last turn end · → command to act', dim: true }]} />
+    </Section>
   )
 }
 
-// The compact notice, in the band and at the top of the pane while no memory.project is set: a title and one short line with the fix
-// (the full text is in the CLI).
+// The compact notice in the band, while no memory.project is set: a title and one short line with the fix (the full text is in the CLI).
 function MemoryNotice({ E, snap, cols }: { E: Els; snap: BelayPanelSnap; cols: number }) {
   const n = snap.memoryNotice
   if (!n) return null
@@ -400,6 +259,16 @@ function MemoryNotice({ E, snap, cols }: { E: Els; snap: BelayPanelSnap; cols: n
       <Line E={E} w={cols} k="mnt" segs={memoryTitleSegs(n)} />
       {body(n.short, 'mns', true)}
     </Box>
+  )
+}
+
+// The same notice in the pane's memory section: dim, the title and the fix command, nothing more.
+function MemoryOff({ E, n, cols }: { E: Els; n: BelayMemoryNotice; cols: number }) {
+  return (
+    <>
+      {wrapHard(n.title, Math.max(8, cols - 2)).map((l, i) => <Line E={E} w={cols} k={`mot${i}`} segs={[{ t: i === 0 ? '▲ ' : '  ', c: ATTN }, { t: l, c: ATTN, bold: true }]} />)}
+      {wrapHard(n.short, cols).map((l, i) => <Line E={E} w={cols} k={`mos${i}`} segs={[{ t: l, dim: true }]} />)}
+    </>
   )
 }
 
@@ -426,6 +295,8 @@ export function Pane(c: Ctx) {
       ? [{ t: `no cost recorded yet${f.notRecorded ? ` · ${f.notRecorded} agent${f.notRecorded === 1 ? '' : 's'} unrecorded` : ''}`, dim: true }]
       : [{ t: money(f.totalCostUsd) }, { t: ` as of ${f.asOfMs ? new Date(f.asOfMs).toTimeString().slice(0, 5) : 'unknown'} · ${f.notRecorded} agent${f.notRecorded === 1 ? '' : 's'} unrecorded · moves when a turn ends`, dim: true }])
     : [{ t: 'cost not read', dim: true }]
+  const inner = { ...c, cols: cols - INDENT }
+  const live = snap.agents.filter(isLive).length
   return (
     <Box flexDirection="column">
       <Box justifyContent="space-between">
@@ -435,17 +306,20 @@ export function Pane(c: Ctx) {
           <Button key="close" label=" ✕" plain dimColor onPress={act.close} />
         </Box>
       </Box>
-      <MemoryNotice {...c} />
-      {ui.legend && <Legend {...c} />}
+      <Line E={E} w={cols} k="pr" segs={[{ t: '─'.repeat(cols), dim: true }]} />
       {tasksLine.length > 0 && <Line E={E} w={cols} k="pt" segs={tasksLine} />}
       <Line E={E} w={cols} k="pc" segs={costLine} />
-      <Line E={E} w={cols} k="pa" segs={[{ t: `agents ${snap.agents.filter(isLive).length}`, dim: true, bold: true }]} />
-      {snap.agents.length ? <Table {...c} /> : <Line E={E} w={cols} k="pn" segs={[{ t: 'no agents read', dim: true }]} />}
+      {ui.legend && <Legend {...c} />}
+      <Section E={E} k="sa" title="AGENTS" cols={cols} summary={snap.agents.length ? [{ t: `${live} live`, dim: true }] : []}>
+        {snap.agents.length ? <Table {...inner} /> : <Line E={E} w={cols - INDENT} k="pn" segs={[{ t: 'no agents read', dim: true }]} />}
+      </Section>
+      {(snap.held || snap.memoryNotice) && <Held {...c} />}
       <Notices {...c} />
-      {snap.held && <Held {...c} />}
       <Orchestrator {...c} />
-      {snap.errors.map((e, i) => <Line E={E} w={cols} k={`pe${i}`} segs={[{ t: e, dim: true }]} />)}
-      <Line E={E} w={cols} k="pf" segs={[{ t: snap.held && snap.held.count > 0 ? 'read-only except the review button · /orch toggles' : 'read-only · /orch toggles', dim: true }]} />
+      <Box flexDirection="column" marginTop={1}>
+        {snap.errors.map((e, i) => <Line E={E} w={cols} k={`pe${i}`} segs={[{ t: e, dim: true }]} />)}
+        {wrapHard(snap.held && snap.held.count > 0 ? 'read-only except the review and settle buttons · /orch toggles' : 'read-only · /orch toggles', cols).map((t, i) => <Line E={E} w={cols} k={`pf${i}`} segs={[{ t, dim: true }]} />)}
+      </Box>
     </Box>
   )
 }

@@ -12,7 +12,7 @@ describe('memory is off notice', () => {
     expect(text).toContain('set one: belay settings memory.project <name>')
     expect(text).toContain('belay settings memory.notes false')
     expect(text).not.toContain('nothing is saved or recalled') // the full explanation is the CLI's
-    expect(text.indexOf('Memory is off for this project')).toBeLessThan(text.search(/agents \d/))
+    expect(text.indexOf('Memory is off for this project')).toBeGreaterThan(text.indexOf('AGENTS')) // the notice sits in the memory section, under the agents
   })
 
   test('shown in the band as the title and the one short fix line', async ($, on) => {

@@ -6,7 +6,7 @@ const assert = require('node:assert');
 const { loadPanelModule } = require('./load-ts.cjs');
 
 let M;
-test.before(async () => { M = await loadPanelModule('model'); });
+test.before(async () => { M = { ...(await loadPanelModule('model')), ...(await loadPanelModule('held')) }; });
 
 const held = (count, byProject, extra = {}) => ({ kind: 'notes_held', count, by_project: byProject, oldest_age_runs: 2, unsupported: 0, ...extra });
 const H = (o = {}) => ({ count: 3, unsupported: 0, byProject: { acme: 3 }, oldestAgeRuns: 2, reviews: [], ...o });
@@ -143,4 +143,56 @@ test('the held count is one count broken down by ground, with how many await the
   assert.strictEqual(M.heldLine(H({ count: 4, byGround: { reported: 2, report_confirmed: 1, unsupported: 1 }, awaiting: 2 })), '4 held: 3 reported wrong, 1 unsupported; 2 await you');
   assert.strictEqual(M.heldLine(H({ count: 1, byGround: { reported: 1 }, awaiting: 0 })), '1 held: 1 reported wrong');
   assert.strictEqual(M.normHeld({ events: [held(2, { acme: 2 })] }).byGround, undefined, 'without a breakdown the line is as before');
+});
+
+test('normAwaiting: only entries that await the operator, capped, cleaned', () => {
+  const e = (id, aw, extra = {}) => ({ note_id: id, project: 'acme', title: 'a\nb', awaiting_operator: aw, undecided: { reason: 'cannot say' }, ...extra });
+  const out = M.normAwaiting({ entries: [e('n1', true), e('n2', false), e('n3', true), e('n4', true), e('n5', true), e('n6', true), e('n7', true), { awaiting_operator: true }, null] });
+  assert.deepStrictEqual(out.map((n) => n.id), ['n1', 'n3', 'n4', 'n5', 'n6']);
+  assert.deepStrictEqual(out[0], { id: 'n1', project: 'acme', title: 'a b', reason: 'cannot say' });
+  assert.deepStrictEqual(M.normAwaiting(null), []);
+});
+
+test('settleArgs keeps the reason one element, whatever it holds; settleLine shows the proof or the error', () => {
+  for (const reason of ['two words', '-x', '--archive', 'it\'s "q"', '']) {
+    assert.deepStrictEqual(M.settleArgs('reoffer', 'n1', reason), ['memory', 'held', 'settle', 'n1', '--reoffer', '--reason', reason]);
+  }
+  const ok = JSON.stringify({ id: 'abcdef0123456789', action: 'archive', outcome: 'archived', receipt: 'held-settle:x@1' });
+  assert.strictEqual(M.settleLine(0, ok, ''), 'belay: archive abcdef01: archived · receipt held-settle:x@1');
+  assert.strictEqual(M.settleLine(1, JSON.stringify({ error: { code: 'E_STALE', message: 'moved' } }), ''), 'belay: the note was not settled (exit 1): E_STALE: moved');
+  assert.match(M.settleLine(2, '', 'boom'), /outcome unknown/);
+  assert.match(M.settleLine(0, 'not json', ''), /outcome unknown/);
+});
+
+test('settleLine: stdout receipt, stderr pretty error, and an unknown outcome for anything that may have committed', () => {
+  const pretty = (o) => JSON.stringify(o, null, 2);
+  const nf = pretty({ error: { code: 'E_NOT_FOUND', message: 'note x has no active hold', detail: { id: 'x' } } });
+  assert.strictEqual(M.settleLine(1, '', nf), 'belay: the note was not settled (exit 1): E_NOT_FOUND: note x has no active hold');
+  const unknown = 'belay: outcome unknown: re-read with belay memory held';
+  assert.strictEqual(M.settleLine(1, '', pretty({ error: { code: 'E_TIMEOUT', message: 'm' } })), `${unknown} (E_TIMEOUT)`);
+  assert.strictEqual(M.settleLine(1, '', pretty({ error: { code: 'E_OWNER_LOST', message: 'm', detail: { sent: true } } })), `${unknown} (E_OWNER_LOST)`);
+  assert.strictEqual(M.settleLine(1, '', pretty({ error: { code: 'E_OTHER', message: 'm', detail: { may_have_committed: true } } })), `${unknown} (E_OTHER)`);
+  assert.strictEqual(M.settleLine(1, '', 'boom'), `${unknown} (exit 1)`, 'output that is not a refusal is not a definite refusal');
+  assert.strictEqual(M.settleLine(0, 'x', ''), `${unknown} (exit 0)`);
+});
+
+test('reasonProblem: over 160 characters, or exactly a global option, is refused; anything else is not', () => {
+  assert.strictEqual(M.reasonProblem('x'.repeat(160)), null);
+  assert.match(M.reasonProblem('x'.repeat(161)), /161 characters; at most 160/);
+  for (const f of ['--json', '--fix', '--data', '--help', '-h']) assert.match(M.reasonProblem(f), /cannot be exactly/);
+  for (const ok of ['--json x', '-x', '--reason', 'json', '-h!']) assert.strictEqual(M.reasonProblem(ok), null, ok);
+});
+
+test('launcherLine reads the error the real CLI prints to stderr', async () => {
+  const F = await loadPanelModule('fetch');
+  const err = JSON.stringify({ error: { code: 'E_BUSY', message: 'a review is running', detail: {} } }, null, 2);
+  assert.strictEqual(F.launcherLine(1, '', err, 'acme'), 'belay: the review was not started (exit 1): E_BUSY: a review is running');
+  assert.strictEqual(F.launcherLine(1, '', 'plain words' + String.fromCharCode(10) + 'more', 'acme'), 'belay: the review was not started (exit 1): plain words');
+});
+
+test('a usage error ({"error": "<text>"}, exit 2) is a definite refusal with its message, in the settle and the launcher toasts', async () => {
+  const usage = JSON.stringify({ error: 'belay memory held settle needs exactly one of --archive, --release or --reoffer' });
+  assert.strictEqual(M.settleLine(2, '', usage), 'belay: the note was not settled (exit 2): belay memory held settle needs exactly one of --archive, --release or --reoffer');
+  const F = await loadPanelModule('fetch');
+  assert.strictEqual(F.launcherLine(2, '', JSON.stringify({ error: 'belay memory: bad flag' }, null, 2), 'acme'), 'belay: the review was not started (exit 2): belay memory: bad flag');
 });

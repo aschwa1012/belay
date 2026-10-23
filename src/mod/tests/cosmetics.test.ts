@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { boot, band, pane, openPane, leaves, RUN, T0 } from './support'
+import { boot, band, pane, openPane, leaves, words, RUN, T0 } from './support'
 
 // Cosmetic rules the operator saw in the GUI: a compact memory notice that wraps cleanly, a visible name cut, an interactive
 // orchestrator with a state word, and a cost line that says so when none is known.
@@ -40,6 +40,15 @@ describe('agent names and the interactive orchestrator', () => {
     expect(text).toContain('n/a')
     expect(text).toMatch(/◇\s*orchestrator/)
   })
+  for (const [basis, want] of [['transcript, API rates', '≈$1.84'], ['stream', '$1.84']] as const) {
+    test(`an orchestrator cost with basis "${basis}" shows ${want}; only the transcript estimate carries ≈`, async ($, on) => {
+      const wd = await boot($, on, { orchBasis: basis })
+      await openPane($, wd)
+      const text = words(await (await pane($, 'terminal', 120)).ui.drawn())
+      expect(text).toContain(want)
+      if (basis !== 'transcript, API rates') expect(text).not.toContain('≈')
+    })
+  }
   test('no cost recorded yet says so', async ($, on) => {
     const wd = await boot($, on, { footer: { agents: 1, total_cost_usd: null, cost_not_recorded: 1, as_of_ms: null, highest_context_pct: null } })
     await openPane($, wd)
