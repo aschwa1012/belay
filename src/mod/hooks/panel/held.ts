@@ -102,6 +102,21 @@ export function heldLine(h: BelayHeld, now?: number): string {
   return `${h.count} note${h.count === 1 ? '' : 's'} held for review · oldest ${h.oldestAgeRuns} run${h.oldestAgeRuns === 1 ? '' : 's'}${names.length ? ` · ${names.join(', ')}` : ''}${w}`
 }
 
+// The MEMORY section's detail line. The heading already says how many are held and how many await the operator, so this keeps what
+// the heading does not: the grounds, the oldest wait and the breaker flag. (heldLine is the plain surfaces' one line, count and all.)
+export function heldDetail(h: BelayHeld, now?: number): string {
+  if (h.count <= 0) return ''
+  const w = waitedFor(h, now) + flagFor(h)
+  if (h.byGround && Object.keys(h.byGround).length) {
+    const parts = new Map<string, number>()
+    for (const [k, n] of Object.entries(h.byGround)) parts.set(GROUND_LABEL[k] ?? k, (parts.get(GROUND_LABEL[k] ?? k) ?? 0) + n)
+    return `${[...parts].map(([k, n]) => `${n} ${k}`).join(', ')}${w}`
+  }
+  const names = Object.keys(h.byProject).sort()
+  if (h.unsupported > 0) return `${h.count - h.unsupported > 0 ? `${h.count - h.unsupported} wrong or duplicate · ` : ''}${h.unsupported} unsupported · oldest ${h.oldestAgeRuns} run${h.oldestAgeRuns === 1 ? '' : 's'}${names.length ? ` · ${names.join(', ')}` : ''}${w}`
+  return `oldest ${h.oldestAgeRuns} run${h.oldestAgeRuns === 1 ? '' : 's'}${names.length ? ` · ${names.join(', ')}` : ''}${w}`
+}
+
 export function confirmLine(h: BelayHeld, project: string): string {
   const cost = REVIEW_COST_ESTIMATE_USD === null ? 'cost: measured after first run' : `estimated cost $${REVIEW_COST_ESTIMATE_USD.toFixed(2)}`
   return `${h.byProject[project] ?? h.count} note${(h.byProject[project] ?? h.count) === 1 ? '' : 's'} held in ${project} · dispatch the Opus archive reviewer? ${cost}`
@@ -120,7 +135,7 @@ export function normAwaiting(json: unknown): BelayAwaitingNote[] {
     const e = obj(raw)
     const id = e ? str(e.note_id) : null
     if (!e || !id || e.awaiting_operator !== true || out.length >= SETTLE_SHOWN) continue
-    out.push({ id: clean(id, 64), project: clean(str(e.project) ?? '', 64), title: clean(str(e.title) ?? '', 60), reason: clean(str(obj(e.undecided)?.reason) ?? '', 80) })
+    out.push({ id: clean(id, 64), project: clean(str(e.project) ?? '', 64), title: clean(str(e.title) ?? '', 60), reason: clean(str(obj(e.undecided)?.reason) ?? '', 240) })
   }
   return out
 }

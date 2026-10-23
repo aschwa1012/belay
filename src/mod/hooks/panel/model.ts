@@ -95,7 +95,7 @@ function normAgent(raw: unknown): BelayAgent | null {
     stateRaw: rawState,
     stateBy: fromDisplay ? str(a.display_state_established_by) : null,
     ctxTokens: num(a.context_tokens), ctxWindow: num(a.context_window), ctxPct: num(a.context_pct),
-    costUsd: num(a.cost_usd), costSource: str(a.cost_source),
+    costUsd: num(a.cost_usd), costSource: str(a.cost_source), costBasis: str(a.cost_basis),
     cache: normCache(a.cache), task,
     launchMode: str(a.permission_mode) ?? str(a.launch_mode), version: str(a.claude_code_version) ?? str(a.version),
     pid: num(a.pid),
