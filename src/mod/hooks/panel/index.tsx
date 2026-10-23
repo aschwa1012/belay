@@ -197,6 +197,7 @@ async function watchRun($: Host, next: BelayPanelWatch): Promise<void> {
   if (sameWatch(cur, next)) { if (!next.error) ensureTicker($); return }
   await update($, watchA, () => next)
   await update($, uiA, u => ({ ...DEFAULT_UI, open: u.open, placed: u.placed }))
+  if (await read($, settleA)) { await update($, settleA, () => null); $.ui.toast('belay: the watched run changed, so the settle was cleared.') }
   if (next.error) {
     const now = await $.clock.now()
     await update($, snapA, () => fatalSnapshot(next.error as string, null, now))
@@ -255,6 +256,7 @@ async function reviewPress($: Host): Promise<void> {
 //   4. cancel, closing or opening a note, the note leaving the list or a change of run clears the pending state (the settleA atom).
 // The reason is one argv element. Steps 1 and 2 and cancel run no process.
 const settling = new Set<string>() // note ids whose settle is running
+const FOCUS_HINT = 'belay: press ctrl+x tab to type the reason (Esc gives the keys back)'
 
 async function settleStart($: Host, action: SettleAction, id: string): Promise<void> {
   if (!SETTLE_ACTIONS.includes(action)) { $.ui.toast(`belay: unknown action ${action}.`); return }
@@ -265,6 +267,21 @@ async function settleStart($: Host, action: SettleAction, id: string): Promise<v
   if (!watch || watch.error) { $.ui.toast('belay: no run is watched, so a note cannot be settled.'); return }
   await update($, uiA, calm)
   await update($, settleA, () => ({ id, action, stage: 'reason', reason: '', title: listed.title, run: { runId: watch.runId, dataDir: watch.dataDir, cli: watch.cli, node: watch.node } }))
+  void focusReason($, snap, id) // not awaited: the Input is drawn only after this press returns, and the ring can move to it only then
+}
+
+// The Input's autoFocus acts only when the pane holds the keyboard, and a click on a pane button does not give it. So the pane asks for the keys
+// (a request, not a grant) and the ring is moved to the Input. If either is refused the person is told how to take the keyboard themselves.
+async function focusReason($: Host, snap: BelayPanelSnap | null, id: string): Promise<void> {
+  const ui = await read($, uiA)
+  const inline = ui.open && ((snap?.settings ?? DEFAULT_SETTINGS).pane === 'above-prompt' || !ui.placed)
+  let refused = false
+  try {
+    if (ui.open && !inline) await $.ui.open({ id: PANE, title: 'belay', focus: true })
+    const r = await $.ui.focus({ requestId: inline ? 'above-prompt' : PANE, key: `reason:${id}` })
+    refused = !!r.deny
+  } catch { refused = true }
+  if (refused) $.ui.toast(FOCUS_HINT)
 }
 
 // Enter in the reason Input. A reason that cannot be sent is toasted and the Input stays; a good one moves to the confirm stage. Nothing is run.
@@ -278,9 +295,9 @@ async function reasonSubmit($: Host, value: string): Promise<void> {
   await update($, settleA, s => (s && s.id === p.id && s.stage === 'reason' ? { ...s, stage: 'confirm', reason } : s))
 }
 
-async function settlePress($: Host): Promise<void> {
+async function settlePress($: Host, pressed: string): Promise<void> {
   const p = await read($, settleA)
-  if (!p || p.stage !== 'confirm') { $.ui.toast('belay: no settle is waiting for a confirm.'); return }
+  if (!p || p.stage !== 'confirm' || p.id !== pressed) { $.ui.toast('belay: no settle is waiting for a confirm.'); return }
   const { action, id, reason } = p
   if (settling.has(id)) { $.ui.toast(`belay: note ${shortId(id)} is being settled.`); return }
   settling.add(id)
@@ -325,13 +342,13 @@ function acts($: Host): Act {
     fold: () => { void update($, uiA, u => ({ ...calm(u), foldOpen: !u.foldOpen })) },
     group: key => { void update($, uiA, u => ({ ...calm(u), groups: u.groups.includes(key) ? u.groups.filter(g => g !== key) : [...u.groups, key].slice(-50) })) },
     seen: key => { void update($, uiA, u => (u.seen.includes(key) && !u.confirm ? u : { ...calm(u), seen: u.seen.includes(key) ? u.seen : [...u.seen, key].slice(-200) })) },
-    close: () => { void update($, uiA, calm).then(() => setOpen($, false)) },
-    toggle: () => { void update($, uiA, calm).then(() => read($, uiA)).then(u => setOpen($, !u.open)) },
+    close: () => { void update($, settleA, () => null); void update($, uiA, calm).then(() => setOpen($, false)) },
+    toggle: () => { void update($, settleA, () => null); void update($, uiA, calm).then(() => read($, uiA)).then(u => setOpen($, !u.open)) },
     review: () => { void reviewPress($) },
     settle: (action, id) => { void settleStart($, action, id) },
     reason: value => { void reasonSubmit($, value) },
     cancel: () => { void update($, settleA, () => null) },
-    commit: () => { void settlePress($) },
+    commit: id => { void settlePress($, id) },
     note: id => { void update($, settleA, () => null); void update($, uiA, u => ({ ...calm(u), openNote: u.openNote === id ? null : id })) }, // opening, switching or closing a note drops a pending settle
   }
 }
@@ -394,7 +411,7 @@ export function registerPanel(on: On): void {
     const now = await $.clock.now()
     if (!watch) return <Box><Text dimColor>No belay run is watched. /belay watch [run-id]</Text></Box>
     if (!snap) return <BandWaiting E={E} runId={watch.runId} errors={[]} cols={e.props.bodyColumns} />
-    const c = { E, snap, ui, now, cols: e.props.bodyColumns, act: acts($), pend: await read($, settleA) }
+    const c = { E, snap, ui, now, cols: e.props.bodyColumns, act: acts($), pend: await read($, settleA), focused: e.props.isFocused }
     return e.surface === 'terminal' ? <Pane {...c} /> : <Fallback {...c} />
   })
 
@@ -407,7 +424,7 @@ export function registerPanel(on: On): void {
     const ui = await read($, uiA)
     const now = await $.clock.now()
     if (!snap) return <BandWaiting E={E} runId={watch.runId} errors={[]} cols={e.props.bodyColumns} />
-    const c = { E, snap, ui, now, cols: e.props.bodyColumns, act: acts($), pend: await read($, settleA) }
+    const c = { E, snap, ui, now, cols: e.props.bodyColumns, act: acts($), pend: await read($, settleA), focused: true } // the band has no focus prop: the hint is for the docked pane
     // Inline when the person chose above-prompt, or when the docked pane is not seated (a narrow terminal).
     const inline = ui.open && (snap.settings.pane === 'above-prompt' || !ui.placed)
     if (e.surface !== 'terminal') return inline ? <Fallback {...c} /> : <Band {...c} />

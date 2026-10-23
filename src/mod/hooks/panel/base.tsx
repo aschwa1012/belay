@@ -25,11 +25,11 @@ export type Act = {
   /** Cancel the pending settle. */
   cancel: () => void
   /** The confirm button of the pending settle: the only way to the write (index.tsx). */
-  commit: () => void
+  commit: (id: string) => void
   /** Open an awaiting note's line (its reason and buttons), or close it when it is the open one. UI state only: runs no process. */
   note: (id: string) => void
 }
-export type Ctx = { E: Els; snap: BelayPanelSnap; ui: BelayPanelUi; now: number; cols: number; act: Act; pend: BelayPanelSettle | null }
+export type Ctx = { E: Els; snap: BelayPanelSnap; ui: BelayPanelUi; now: number; cols: number; act: Act; pend: BelayPanelSettle | null; focused: boolean }
 
 export const tp = (s: Seg): Record<string, unknown> => ({
   ...(s.c ? { color: s.c } : {}), ...(s.dim ? { dimColor: true } : {}), ...(s.bold ? { bold: true } : {}), wrap: 'truncate-end',

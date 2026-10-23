@@ -322,3 +322,112 @@ describe('the pending stages wrap on a narrow pane', () => {
     })
   }
 })
+
+describe('the keyboard goes to the reason Input', () => {
+  // The kit has no bottom for a plugin's $.ui.focus (the engine's own implements it), so there the call is refused with "no implementation",
+  // which is the refusal path: the hint toast. What the kit can show is that the pane is asked for the keys (ui.open with focus) first.
+  test('starting a settle asks the docked pane for the keys, then tries to move the ring; a refusal toasts how to take the keyboard', async ($, on) => {
+    const wd = await boot($, on, { notices: waiting })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await ui.press({ key: OPEN })
+    const before = wd.openArgs.length
+    await ui.press({ key: KEY('archive') })
+    await later(wd, 50)
+    expect(wd.openArgs.slice(before).some(a => a.id === 'belay' && a.focus === true)).toBe(true)
+    expect(wd.toasts.at(-1)).toBe('belay: press ctrl+x tab to type the reason (Esc gives the keys back)')
+  })
+
+  test('the hint is drawn while the pane is not focused, and gone once it is', async ($, on) => {
+    const wd = await boot($, on, { notices: waiting })
+    await openPane($, wd)
+    const { ui } = await pane($, 'terminal', 200, false)
+    await ui.press({ key: OPEN })
+    await ui.press({ key: KEY('archive') })
+    expect(await drawnWords(ui)).toContain('press ctrl+x tab to type the reason (Esc gives the keys back)')
+  })
+  test('no hint when the pane has the keys', async ($, on) => {
+    const wd = await boot($, on, { notices: waiting })
+    await openPane($, wd)
+    const { ui } = await pane($, 'terminal', 200, true)
+    await ui.press({ key: OPEN })
+    await ui.press({ key: KEY('archive') })
+    expect(await drawnWords(ui)).not.toContain('ctrl+x tab')
+  })
+
+  test('the commit button never takes the focus on its own, and the Input is not re-seeded by a redraw', async ($, on) => {
+    const wd = await boot($, on, { notices: waiting })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await ui.press({ key: OPEN })
+    await ui.press({ key: KEY('archive') })
+    await later(wd, 6000) // several redraws and reads
+    const tree = JSON.stringify(await ui.drawn())
+    expect(tree).not.toContain('autoFocus":true,"label":"  ▸')
+    const input = tree.slice(tree.indexOf(INPUT) - 80, tree.indexOf(INPUT) + 400)
+    expect(input).not.toContain('"value"') // no value prop: the person's typing stands between redraws
+  })
+})
+
+describe('the rechecks inside the write are real, not just hidden by the UI', () => {
+  // The confirm press is held at its consuming write; the world changes; the write goes on. Only the rechecks inside settlePress stand between
+  // that and the command.
+  test('a watch that changes between the confirm press and the write settles nothing', async ($, on) => {
+    let release!: () => void
+    const gate = new Promise<void>(r => { release = r })
+    const wd = await boot($, on, { notices: waiting, settleGate: gate })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await toConfirm(ui, 'archive', 'because')
+    const pressed = ui.press({ key: COMMIT })
+    await later(wd, 50)
+    await cmd($, 'belay', 'watch r-other')
+    release()
+    await pressed
+    await later(wd, 100)
+    expect(wd.settled).toEqual([])
+    expect(wd.toasts.some(t => t === 'belay: the watched run changed since you started, so the note was not settled.')).toBe(true)
+  })
+  test('a note that leaves the list between the confirm press and the write settles nothing', async ($, on) => {
+    let release!: () => void
+    const gate = new Promise<void>(r => { release = r })
+    const wd = await boot($, on, { notices: waiting, settleGate: gate })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await toConfirm(ui, 'archive', 'because')
+    const pressed = ui.press({ key: COMMIT })
+    await later(wd, 50)
+    wd.w.notices = notices({ ...held, awaiting_operator: 0 })
+    await later(wd, 6000) // the panel reads belay again meanwhile
+    release()
+    await pressed
+    await later(wd, 100)
+    expect(wd.settled).toEqual([])
+    expect(wd.toasts.some(t => t === 'belay: note 08954ec7 no longer awaits you, so it was not settled.')).toBe(true)
+  })
+})
+
+describe('a pending settle is dropped when the panel closes or the run changes', () => {
+  test('closing the panel drops it', async ($, on) => {
+    const wd = await boot($, on, { notices: waiting })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await toConfirm(ui, 'archive', 'because')
+    await ui.press({ key: 'close' })
+    await later(wd, 100)
+    await cmd($, 'orch') // reopen
+    await later(wd, 2000)
+    await ui.press({ key: OPEN })
+    await expect(ui.press({ key: COMMIT })).rejects.toThrow() // nothing pending any more
+    expect(wd.settled).toEqual([])
+  })
+  test('a watch change drops it at once, with a toast', async ($, on) => {
+    const wd = await boot($, on, { notices: waiting })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await toConfirm(ui, 'archive', 'because')
+    await cmd($, 'belay', 'watch r-other')
+    expect(wd.toasts.some(t => t === 'belay: the watched run changed, so the settle was cleared.')).toBe(true)
+    expect(wd.settled).toEqual([])
+  })
+})

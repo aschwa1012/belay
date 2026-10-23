@@ -63,6 +63,8 @@ export type World = {
   /** Answers the dialogs give, in order (the reason, then the confirm); an empty queue dismisses. */
   awaitingList?: unknown
   settleReject?: string
+  /** Held at the settle's consuming write (the confirm press): the test changes the world meanwhile, then opens the gate. */
+  settleGate?: Promise<void>
   settleOut?: { exitCode: number; stdout: string; stderr: string }
 }
 
@@ -73,6 +75,7 @@ export function world(on: any, w: World) {
   const ran: string[][] = []
   const writes: string[] = []
   const opened: string[] = []
+  const openArgs: any[] = [] // every ui.open the panel makes, with its arguments
   const commands: string[] = []
   const toasts: string[] = []
   const spawned: string[][] = [] // every review launcher (`... memory review --project p --start`) the panel runs: only the review button may run one
@@ -92,7 +95,13 @@ export function world(on: any, w: World) {
   on('fs.write', ($: any, e: any) => { writes.push(e.path); return { value: undefined } })
   on('prompt.submit', () => { writes.push('prompt.submit'); return { value: undefined } })
   on('command.register', ($: any, e: any) => { commands.push(e.name); return { value: { command: e.name } } })
-  on('ui.open', ($: any, e: any) => { opened.push(e.id); return { value: { isPlaced: !w.noPlace } } })
+  on('ui.open', ($: any, e: any) => { opened.push(e.id); openArgs.push({ ...e }); return { value: { isPlaced: !w.noPlace } } })
+  // A seam on the settle write's consuming step: the write waits here, after the confirm press and before anything is rechecked.
+  let seamFired = false
+  on('state.set', { plugin: 'belay', key: 'panelSettle' }, async ($: any, e: any, next: any) => {
+    if (w.settleGate && !seamFired && e.value === null && e.previous && e.previous.stage === 'confirm') { seamFired = true; await w.settleGate }
+    return next(e)
+  })
   on('ui.close', () => ({ value: undefined }))
   on('ui.toast', ($: any, e: any) => { toasts.push(e.text); return { value: undefined } })
   on('process.run', async ($: any, e: any) => {
@@ -150,7 +159,7 @@ export function world(on: any, w: World) {
     if ((verb === 'agents' && w.failAgents) || (verb === 'transcript' && w.transcriptFail)) return { value: { exitCode: verb === 'agents' ? 3 : 4, stdout: '', stderr: 'boom' } }
     return { value: { exitCode: 0, stdout: JSON.stringify(body[verb]), stderr: '' } }
   })
-  return { clock, settled, asked, ran, writes, opened, commands, toasts, spawned, attempts, stat, w }
+  return { clock, openArgs, settled, asked, ran, writes, opened, commands, toasts, spawned, attempts, stat, w }
 }
 
 export const START = { cwd: '/x', surface: 'terminal', isInteractive: true } as const
@@ -195,8 +204,8 @@ export async function band($: any, surface = 'terminal', cols = 110) {
   const ui = await $.ui.mount({ plugin: 'belay', surface, component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: cols }, viewport: { columns: 110, rows: 40 } })
   return { ui, text: words(await ui.drawn()) }
 }
-export async function pane($: any, surface = 'terminal', cols = 200) {
-  const ui = await $.ui.mount({ plugin: 'belay', surface, component: 'Pane', requestId: 'belay', props: { ...PANE_PROPS, bodyColumns: cols }, viewport: { columns: 70, rows: 40 } })
+export async function pane($: any, surface = 'terminal', cols = 200, isFocused = false) {
+  const ui = await $.ui.mount({ plugin: 'belay', surface, component: 'Pane', requestId: 'belay', props: { ...PANE_PROPS, isFocused, bodyColumns: cols }, viewport: { columns: 70, rows: 40 } })
   return { ui, text: words(await ui.drawn()) }
 }
 export async function openPane($: any, wd: any) {

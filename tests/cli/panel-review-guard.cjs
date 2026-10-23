@@ -148,12 +148,39 @@ function analyze(files) {
   }
 
   const sp = refs(/\bsettlePress\b/g).filter((r) => !/function\s+settlePress/.test(r.line));
-  if (JSON.stringify(where(sp)) !== JSON.stringify(['hooks/panel/index.tsx:acts']) || !sp.every((r) => /^\s*commit:\s*\(\)\s*=>\s*\{\s*void settlePress\(\$\)\s*\},?\s*$/.test(r.line))) bad.push(`settlePress is named in ${JSON.stringify(where(sp))}; only the \`commit\` handler of acts() (the confirm button of the pending settle) may call it`);
+  if (JSON.stringify(where(sp)) !== JSON.stringify(['hooks/panel/index.tsx:acts']) || !sp.every((r) => /^\s*commit:\s*id\s*=>\s*\{\s*void settlePress\(\$, id\)\s*\},?\s*$/.test(r.line))) bad.push(`settlePress is named in ${JSON.stringify(where(sp))}; only the \`commit\` handler of acts() (the confirm button of the pending settle) may call it`);
   const sm = refs(/\.\s*settle\b/g);
   if (!(sm.length === 1 && sm[0].f === 'hooks/panel/view.tsx' && sm[0].owner === 'SettleRow' && /<Button key=\{`\$\{a\}-\$\{n\.id\}`\}.*onPress=\{\(\) => act\.settle\(a, n\.id\)\}/.test(sm[0].orig))) bad.push(`a \`.settle\` member is used in ${JSON.stringify(where(sm))}; only SettleRow's Button may (onPress={() => act.settle(a, n.id)})`);
   // The confirm button is the only way to settlePress: one `.commit` member in the whole mod, SettleRow's Button keyed commit.
   const cm = refs(/\.\s*commit\b/g);
-  if (!(cm.length === 1 && cm[0].f === 'hooks/panel/view.tsx' && cm[0].owner === 'SettleRow' && /<Button key=\{`commit:\$\{n\.id\}`\}.*onPress=\{act\.commit\}/.test(cm[0].orig))) bad.push(`a \`.commit\` member is used in ${JSON.stringify(where(cm))}; only SettleRow's Button keyed commit may (onPress={act.commit})`);
+  if (!(cm.length === 1 && cm[0].f === 'hooks/panel/view.tsx' && cm[0].owner === 'SettleRow' && /<Button key=\{`commit:\$\{n\.id\}`\}.*onPress=\{\(\) => act\.commit\(n\.id\)\}/.test(cm[0].orig))) bad.push(`a \`.commit\` member is used in ${JSON.stringify(where(cm))}; only SettleRow's Button keyed commit may (onPress={() => act.commit(n.id)})`);
+  // M2. `commit` and `review` are the two handlers that reach a write. As identifiers they appear only in the Act type, in the acts() lines and as the one
+  // `.member` of each pinned Button; as string literals `commit` never appears and `review` only where check 6 allows; and an Act is never destructured,
+  // indexed by name, spread or enumerated (Object.values/entries/keys/assign over it).
+  for (const name of ['commit', 'review']) {
+    const decl = new RegExp(String.raw`^\s*${name}:\s*\(`);
+    const handler = new RegExp(String.raw`^\s*${name}:\s*(?:\(\)|id)\s*=>\s*\{`);
+    for (const r of refs(new RegExp(String.raw`\b${name}\b`, 'g'))) {
+      if (r.f === 'hooks/panel/base.tsx' && decl.test(r.line)) continue;
+      if (r.f === 'hooks/panel/index.tsx' && r.owner === 'acts' && handler.test(r.line)) continue;
+      if (!new RegExp(String.raw`(?<![.\w])${name}\b`).test(r.line)) continue; // only the pinned `.member` uses remain on the line (checked above)
+      bad.push(`${r.f}:${r.owner}: \`${name}\` is named other than in the Act type, the acts() handler and the one pinned Button: ${r.line.trim().slice(0, 70)}`);
+    }
+  }
+  for (const [f, o] of Object.entries(info)) {
+    if (f.startsWith('hooks/wake/')) continue;
+    for (const l of o.lits) if (l.text === 'commit') bad.push(`${f}:${ownerOf(o.its, l.at)}: the string "commit" appears (an Act handler reached by name)`);
+    for (const m of o.code.matchAll(/\bObject\s*\.\s*(?:values|entries|keys|getOwnPropertyNames|getOwnPropertyDescriptors|assign|fromEntries)\s*\(\s*(?:act|acts)\b|\.\.\.\s*acts?\b|\bacts?\s*\[/g)) bad.push(`${f}:${ownerOf(o.its, m.index)}: an Act is enumerated, spread or indexed by name: ${o.text.slice(m.index, m.index + 40).trim()}`);
+  }
+  // S6. The pending settle is written in two places only: settleStart (stage 'reason', an empty reason) and reasonSubmit (stage 'confirm'); every other write clears it.
+  const ix = info['hooks/panel/index.tsx'];
+  if (ix) {
+    for (const m of ix.text.matchAll(/update\(\$, settleA, (?!\(\) => null)/g)) { const ow = ownerOf(ix.its, m.index); if (!['settleStart', 'reasonSubmit'].includes(ow)) bad.push(`hooks/panel/index.tsx:${ow}: settleA is written with a value outside settleStart and reasonSubmit`); }
+    for (const m of ix.text.matchAll(/stage:\s*'confirm'/g)) { const ow = ownerOf(ix.its, m.index); if (ow !== 'reasonSubmit') bad.push(`hooks/panel/index.tsx:${ow}: stage 'confirm' is written outside reasonSubmit`); }
+    const at = ix.its.findIndex((it) => it.name === 'settleStart');
+    const st = at < 0 ? '' : ix.text.slice(ix.its[at].start, ix.its[at + 1] ? ix.its[at + 1].start : undefined);
+    if (!/update\(\$, settleA, \(\) => \(\{ id, action, stage: 'reason', reason: '', title: listed\.title, /.test(st)) bad.push("settleStart does not write stage 'reason' with an empty reason");
+  }
   // The interactive orchestrator has no AskUserQuestion: nothing in the mod asks a dialog, and the tool is not named.
   for (const [f, o] of Object.entries(info)) {
     if (/\bui\s*\.\s*ask\b|\bask\s*\(\s*\{|AskUserQuestion/.test(o.code) || o.lits.some((l) => l.text === 'AskUserQuestion')) bad.push(`${f}: a dialog is asked (ui.ask or AskUserQuestion); the session has no such tool`);
