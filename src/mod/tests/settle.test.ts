@@ -39,7 +39,7 @@ describe('the settle buttons', () => {
       await ui.press({ key: OPEN }) // a note's buttons are drawn once its line is open
       await ui.press({ key: KEY(action) })
       await later(wd, 100)
-      expect(wd.asked[1]).toBe(`${verb} note 08954ec7? reason: ${reason}`)
+      expect(wd.asked[1]).toBe(`${verb} note 08954ec7 "pid poll note"? reason: ${reason}`)
       expect(wd.settled.length).toBe(1)
       const argv = wd.settled[0]!
       const tail = argv.slice(argv.indexOf('memory'))
@@ -221,7 +221,7 @@ describe('what is checked around the dialogs', () => {
     await ui.press({ key: OPEN }) // a note's buttons are drawn once its line is open
     await ui.press({ key: KEY('archive') })
     await later(wd, 100)
-    expect(wd.asked[1]).toBe(`Archive note 08954ec7? reason: ${reason}`)
+    expect(wd.asked[1]).toBe(`Archive note 08954ec7 "pid poll note"? reason: ${reason}`)
     expect(wd.settled[0]!.includes(reason)).toBe(true)
   })
 

@@ -74,7 +74,7 @@ export type BelayReview = { project: string; state: 'running' | 'interrupted' | 
 export type BelayAwaitingNote = { id: string; project: string; title: string; reason: string }
 
 /** Notes held for the on-demand Opus archive reviewer, from belay's `notes_held` notice, and the state of the project's review. */
-export type BelayHeld = { count: number; unsupported: number; byProject: Record<string, number>; oldestAgeRuns: number; oldestAt?: number; reviews: BelayReview[]; byGround?: Record<string, number>; awaiting?: number; awaitingNotes?: BelayAwaitingNote[]; breakers?: { runId: string; disputed: number }[] }
+export type BelayHeld = { count: number; unsupported: number; byProject: Record<string, number>; oldestAgeRuns: number; oldestAt?: number; reviews: BelayReview[]; byGround?: Record<string, number>; awaiting?: number; awaitingNotes?: BelayAwaitingNote[]; awaitingList?: { total: number; at: number; carried: boolean }; breakers?: { runId: string; disputed: number }[] }
 
 /** `belay settings`' memory_notice: notes are on by default but no memory.project is set, so memory is off. null once a project is set. */
 export type BelayMemoryNotice = { title: string; why: string; fix: string; configLine: string; short: string }

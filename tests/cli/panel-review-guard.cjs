@@ -174,12 +174,17 @@ function analyze(files) {
   // 5. The panel (everything but the wake, whose job is to inject text) writes no file and reaches no model, tool or session.
   for (const r of refs(/\$\s*\.\s*(?:prompt\s*\.\s*submit|agent\s*\.\s*spawn|tool\s*\.\s*call|session\s*\.\s*append|fs\s*\.\s*(?:write|append|remove|rename|mkdir)\w*)\b/g).filter((r) => !r.f.startsWith('hooks/wake/'))) bad.push(`${r.f}:${r.owner}: a write or a model-facing call: ${r.line.trim().slice(0, 80)}`);
 
+  // 5b. The poll round (tick) is started by the timer alone: a press must not start a read.
+  const tk = refs(/\btick\b/g).filter((r) => !/function\s+tick\b/.test(r.line));
+  if (JSON.stringify(where(tk)) !== JSON.stringify(['hooks/panel/index.tsx:ensureTicker']) || !tk.every((r) => /timer = \$\.clock\.every\(1000, \(\) => \{ void tick\(\$\) \}\)/.test(r.line))) bad.push(`tick is named in ${JSON.stringify(where(tk))}; only the timer in ensureTicker may start a round`);
+
   // 6. The generic read helper runs reads only, and no spelling reaches the launcher's words or the host object by a computed name.
   const READS = /^runJson\(\$,\s*cli,\s*(?:\['(?:agents|notices|transcript|settings)'|\['memory', 'held', '--awaiting'\],)/;
   for (const [f, o] of Object.entries(info)) {
     for (const m of o.code.matchAll(/\brunJson\s*\(/g)) {
       if (/function\s+$/.test(o.code.slice(Math.max(0, m.index - 12), m.index))) continue;
       if (!READS.test(o.text.slice(m.index, m.index + 80))) bad.push(`${f}:${ownerOf(o.its, m.index)}: runJson is called other than with a literal read verb (agents, notices, transcript, settings, or memory held --awaiting)`);
+      else if (ownerOf(o.its, m.index) !== 'fetchSnapshot') bad.push(`${f}:${ownerOf(o.its, m.index)}: runJson is called outside fetchSnapshot; a press runs no read`);
     }
     if (f.startsWith('hooks/wake/')) continue;
     for (const m of o.code.matchAll(/\$\s*\[|\(\s*\$\s+as\b|=\s*\$\s*(?:as\b[^;\n]*)?(?:[;\n]|$)/g)) bad.push(`${f}:${ownerOf(o.its, m.index)}: the host object is reached by a computed member, a cast or an alias: ${o.text.slice(m.index, m.index + 30).trim()}`);

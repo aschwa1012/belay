@@ -18,7 +18,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On, Timer } from 'claude-code'
 import type { BelayPanelSnap, BelayPanelUi, BelayPanelWatch } from '../../types/index'
 import { argvFor, buildSnapshot, fatalSnapshot, fwd, launcherLine, isWindowsPath, parseRan, parseRunFile, projectRootOf, repoCliGuess, type Ran, type RunFileRead } from './fetch'
-import { CONFIRM_MS, normHeld, reasonProblem, reviewProject, SETTLE_ACTIONS, SETTLE_UNKNOWN, settleArgs, settleConfirm, settleLine, settleVerb, shortId, type SettleAction } from './held'
+import { CONFIRM_MS, normHeld, reasonProblem, reviewProject, SETTLE_ACTIONS, SETTLE_UNKNOWN, settleArgs, settleConfirm, noteLabel, settleLine, settleVerb, shortId, type SettleAction } from './held'
 import { DEFAULT_SETTINGS, DEFAULT_UI } from './model'
 import { Band, BandWaiting, Fallback, Pane, type Act, type Els } from './view'
 
@@ -254,17 +254,18 @@ const settling = new Set<string>() // note ids whose settle is asking or running
 async function settlePress($: Host, action: SettleAction, id: string): Promise<void> {
   if (!SETTLE_ACTIONS.includes(action) || settling.has(id)) return
   const snap = await read($, snapA)
-  if (!(snap?.held?.awaitingNotes ?? []).some(n => n.id === id)) return // only a note belay named as waiting on the operator
+  const listed = (snap?.held?.awaitingNotes ?? []).find(n => n.id === id)
+  if (!listed) return // only a note belay named as waiting on the operator
   const watch0 = await read($, watchA)
   settling.add(id)
   try {
     let reason: string
-    try { reason = (await $.ui.ask(`Why ${action} note ${shortId(id)}? Type the reason under Other.`, { options: [REASON_CANCEL, REASON_HINT], header: settleVerb(action).slice(0, 12) })).trim() } catch { return }
+    try { reason = (await $.ui.ask(`Why ${action} note ${noteLabel(id, listed.title)}? Type the reason under Other.`, { options: [REASON_CANCEL, REASON_HINT], header: settleVerb(action).slice(0, 12) })).trim() } catch { return }
     if (reason === '' || reason === REASON_CANCEL || reason === REASON_HINT) return
     const problem = reasonProblem(reason)
     if (problem) { $.ui.toast(problem); return }
     let ok: string
-    try { ok = await $.ui.ask(settleConfirm(action, id, reason), { options: [settleVerb(action), REASON_CANCEL], header: 'Confirm' }) } catch { return }
+    try { ok = await $.ui.ask(settleConfirm(action, id, reason, listed.title), { options: [settleVerb(action), REASON_CANCEL], header: 'Confirm' }) } catch { return }
     if (ok !== settleVerb(action)) return
     // The dialogs can stay open for minutes: the note and the watched run are checked again before anything is written.
     const watch = await read($, watchA)

@@ -122,10 +122,11 @@ function SettleRow({ E, cols, n, act, open }: { E: Els; cols: number; n: BelayAw
   const { Box, Text, Button } = E
   const room = Math.max(0, cols - 4 - 8) // the attention mark, the open mark and the id
   const whole = (n.title ? ` "${n.title}"` : '') + (n.reason ? ` · ${n.reason}` : '')
-  // Whole when it fits; otherwise the title takes at most 40% of the room and the reason the rest, clipped with an ellipsis.
-  const title = cells(whole) <= room ? (n.title ? ` "${n.title}"` : '') : n.title ? ` "${clip(n.title, Math.max(6, Math.floor(room * 0.4)))}"` : ''
+  const fits = cells(whole) <= room
+  // Whole when it fits; otherwise the title takes at most 40% of the room (none under 9 cells) and the reason the rest, clipped with an ellipsis.
+  const title = fits ? (n.title ? ` "${n.title}"` : '') : n.title && room >= 9 ? ` "${clip(n.title, Math.max(6, Math.floor(room * 0.4)))}"` : ''
   const left = room - cells(title)
-  const reason = n.reason && left >= 8 ? ` · ${cells(whole) <= room ? n.reason : clip(n.reason, left - 3)}` : ''
+  const reason = n.reason && (fits || left >= 8) ? ` · ${fits ? n.reason : clip(n.reason, left - 3)}` : ''
   const press = () => act.note(n.id)
   // The buttons wrap onto more lines when three do not fit.
   const rows: string[][] = [[]]
@@ -166,8 +167,11 @@ function Held({ E, snap, ui, now, act, cols }: Ctx) {
   const asking = !busy && !!ui.confirm && project !== null && ui.confirm.project === project && now - ui.confirm.at <= CONFIRM_MS
   const awaiting = hd?.awaiting ?? 0
   const notes = hd?.awaitingNotes ?? []
-  const openId = notes.some(n => n.id === ui.openNote) ? ui.openNote : null // only one is open, and only while it is listed
-  const more = Math.max(0, awaiting - notes.length)
+  const openId = ui.openNote ?? null // one at a time; a note that leaves the list is closed by the fetch that drops it
+  const list = hd?.awaitingList
+  // The "+N more" count is the list's own: its total less the rows shown, from the one read. A list kept from an earlier round says when it was read instead.
+  const more = list && !list.carried ? Math.max(0, list.total - notes.length) : 0
+  const carriedAt = list?.carried && notes.length ? list.at : null
   const summary: Seg[] = [
     ...(off ? [{ t: 'off', c: ATTN } as Seg, ...(hd ? [{ t: ' · ', dim: true } as Seg] : [])] : []),
     ...(hd ? [{ t: hd.count > 0 ? `${hd.count} held` : 'none held', dim: true } as Seg] : []),
@@ -182,6 +186,7 @@ function Held({ E, snap, ui, now, act, cols }: Ctx) {
       })}
       {hd && hd.count > 0 && wrapHard(asking && project ? confirmLine(hd, project) : heldDetail(hd, now), Math.max(8, inner)).map((t, i) => <Line E={E} w={inner} k={`hl${i}`} segs={[{ t, c: asking ? ATTN : undefined, dim: !asking }]} />)}
       {notes.map(n => <SettleRow E={E} cols={inner} n={n} act={act} open={n.id === openId} />)}
+      {carriedAt !== null && <Line E={E} w={inner} k="awc" segs={[{ t: `list from ${hhmm(carriedAt)}`, dim: true }]} />}
       {more > 0 && wrapHard(`+${more} more · belay memory held --awaiting`, inner).map((t, i) => <Line E={E} w={inner} k={`awm${i}`} segs={[{ t, dim: true }]} />)}
       {hd && project !== null && !busy && <Button key="review" plain label={asking ? '  ▸ press again to dispatch · any other press cancels' : `  ▸ review the held notes${Object.keys(hd.byProject).length > 1 ? ` (${project} first)` : ''}`} onPress={act.review} />}
     </Section>

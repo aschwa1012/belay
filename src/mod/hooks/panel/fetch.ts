@@ -2,7 +2,7 @@
 // index.tsx: the engine follows `$` only inside the file that declares the hooks.
 
 import type { BelayAgent, BelayHeld, BelayPanelSnap, BelayPanelWatch } from '../../types/index'
-import { normAwaiting, normHeld } from './held'
+import { countAwaiting, normAwaiting, normHeld } from './held'
 import { DEFAULT_SETTINGS, normAgents, normNotices, normTranscript, parseMemoryNotice, parseSettings, type AgentsRead } from './model'
 
 export type RunFile = { role: string; runId: string; dataDir: string; cli: string; node: string }
@@ -109,11 +109,15 @@ function runStateOf(agents: BelayAgent[], stateRaw: string | null): BelayPanelSn
 }
 
 // The held line plus the ids of the notes that wait on the operator: this round's read, else the last round's while some still wait.
-function heldWith(h: BelayHeld | null, aw: unknown, prev: BelayHeld | null): BelayHeld | null {
+function heldWith(h: BelayHeld | null, aw: unknown, prev: BelayHeld | null, now: number): BelayHeld | null {
   if (!h) return h
   if (!(h.awaiting ?? 0)) { const { awaitingNotes: _gone, ...rest } = h; return rest }
-  const notes = aw !== undefined ? normAwaiting(aw) : (prev?.awaitingNotes ?? h.awaitingNotes ?? [])
-  return { ...h, awaitingNotes: notes }
+  // The list and its own total come from one read. A list carried over from an earlier round (this round's read failed) says so and keeps
+  // the total and the time of the read it came from; the heading's count is a different read and is never mixed into the list's.
+  if (aw !== undefined) return { ...h, awaitingNotes: normAwaiting(aw), awaitingList: { total: countAwaiting(aw), at: now, carried: false } }
+  const notes = prev?.awaitingNotes ?? h.awaitingNotes ?? []
+  const was = prev?.awaitingList
+  return { ...h, awaitingNotes: notes, ...(notes.length || was ? { awaitingList: { total: was?.total ?? notes.length, at: was?.at ?? now, carried: true } } : {}) }
 }
 
 export function buildSnapshot(p: Parts): BelayPanelSnap {
@@ -172,6 +176,6 @@ export function buildSnapshot(p: Parts): BelayPanelSnap {
     embedder: ag ? ag.embedder : (prev?.embedder ?? null),
     agents: ag ? ag.agents : (prev?.agents ?? []),
     footer: ag ? ag.footer : (prev?.footer ?? null),
-    notices, held: heldWith(nj !== undefined ? normHeld(nj) : (prev?.held ?? null), aw, prev?.held ?? null), transcript, settings, memoryNotice, errors,
+    notices, held: heldWith(nj !== undefined ? normHeld(nj) : (prev?.held ?? null), aw, prev?.held ?? null, p.now), transcript, settings, memoryNotice, errors,
   }
 }

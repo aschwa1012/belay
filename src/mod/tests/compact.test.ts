@@ -120,3 +120,104 @@ describe('the open note shows everything the core returned', () => {
     expect(flat(leaves(await ui.drawn()).join(' '))).toContain('narrow pane at all')
   })
 })
+
+describe('"+N more" comes from the list read alone', () => {
+  test('a heading of 7 over a list read of 3 shows 3 rows and no "+N more"', async ($, on) => {
+    const wd = await boot($, on, { notices: { run_id: RUN, events: [heldEv(7)] }, awaitingList: { total: 3, awaiting_operator: 3, entries: entries(3) } })
+    await openPane($, wd)
+    const rows = leaves(await (await pane($, 'terminal', 72)).ui.drawn())
+    expect(noteRows(rows)).toBe(3)
+    expect(flat(rows.join(' '))).toContain('7 await you') // the heading is the notices read
+    expect(flat(rows.join(' '))).not.toContain('more ·')
+  })
+  test('a heading of 3 over an empty list read shows no rows and no "+N more"', async ($, on) => {
+    const wd = await boot($, on, { notices: { run_id: RUN, events: [heldEv(3)] }, awaitingList: { total: 0, awaiting_operator: 0, entries: [] } })
+    await openPane($, wd)
+    const rows = leaves(await (await pane($, 'terminal', 72)).ui.drawn())
+    expect(noteRows(rows)).toBe(0)
+    expect(flat(rows.join(' '))).not.toContain('more ·')
+  })
+  test('a list read of 8 under a heading of 8 counts 3 more; the count is the list total less the rows shown', async ($, on) => {
+    const wd = await boot($, on, { notices: { run_id: RUN, events: [heldEv(20)] }, awaitingList: { total: 8, awaiting_operator: 8, entries: entries(8) } })
+    await openPane($, wd)
+    const rows = leaves(await (await pane($, 'terminal', 72)).ui.drawn())
+    expect(flat(rows.join(' '))).toContain('+3 more ·')
+  })
+  test('a list carried over from an earlier round says when it was read, and shows no "+N more"', async ($, on) => {
+    const wd = await boot($, on, world(5))
+    await openPane($, wd)
+    const { ui } = await pane($, 'terminal', 72)
+    expect(noteRows(leaves(await ui.drawn()))).toBe(5)
+    wd.w.awaitingFail = true
+    wd.w.notices = { run_id: RUN, events: [heldEv(3)] }
+    await later(wd, 6000)
+    const rows = leaves(await ui.drawn())
+    const text = flat(rows.join(' '))
+    expect(text).toContain('3 await you')
+    expect(noteRows(rows)).toBe(5) // the carried rows
+    expect(text).toMatch(/list from \d\d:\d\d/)
+    expect(text).not.toContain('more ·')
+  })
+})
+
+describe('what a note press may do', () => {
+  test('a press on a note runs no process at all', async ($, on) => {
+    const wd = await boot($, on, { ...world(3), answers: ['x', 'Archive'] })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    const ran = wd.ran.length
+    await ui.press({ key: key(1) })
+    await ui.press({ key: key(1) })
+    await wd.clock.settle()
+    expect(wd.ran.length).toBe(ran)
+    expect(wd.settled).toEqual([])
+    expect(wd.spawned).toEqual([])
+    expect(wd.asked).toEqual([])
+  })
+  test('a note press cancels a pending review confirm', async ($, on) => {
+    const wd = await boot($, on, { ...world(3), answers: [] })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await ui.press({ key: 'review' }) // asks
+    await ui.press({ key: key(1) }) // any other press cancels
+    await ui.press({ key: 'review' }) // so this asks again, it does not dispatch
+    await later(wd, 100)
+    expect(wd.spawned).toEqual([])
+  })
+})
+
+describe('the one-line row', () => {
+  test('a reason that fits is shown on the closed line even when it is short', async ($, on) => {
+    const wd = await boot($, on, world(1, () => 'ok', () => 't'))
+    await openPane($, wd)
+    const rows = leaves(await (await pane($, 'terminal', 30)).ui.drawn())
+    expect(rows.some(r => r.includes(' · ok'))).toBe(true)
+  })
+  test('on a very narrow pane the closed row is the id alone, never wider than the pane', async ($, on) => {
+    const wd = await boot($, on, world(1, () => 'a reason that is long', () => 'a long title here'))
+    await openPane($, wd)
+    const rows = leaves(await (await pane($, 'terminal', 20)).ui.drawn())
+    const i = rows.indexOf('▲ ')
+    expect(i).toBeGreaterThanOrEqual(0)
+    expect(rows.slice(i, i + 2).join('').length).toBeLessThanOrEqual(20) // the mark and the id
+    expect(rows[i + 2]!.startsWith(' "') || rows[i + 2]!.startsWith(' ·')).toBe(false) // no title, no reason after them
+  })
+})
+
+describe('two notes that share an 8-character prefix', () => {
+  test('the dialogs name the note by its title too', async ($, on) => {
+    const two = [
+      { note_id: 'aaaaaaaa-1111', project: 'acme', title: 'first twin', kind: 'wrong', ground: 'reported', awaiting_operator: true, undecided: { reason: 'r1' } },
+      { note_id: 'aaaaaaaa-2222', project: 'acme', title: 'second twin', kind: 'wrong', ground: 'reported', awaiting_operator: true, undecided: { reason: 'r2' } },
+    ]
+    const wd = await boot($, on, { notices: { run_id: RUN, events: [heldEv(2)] }, awaitingList: { total: 2, awaiting_operator: 2, entries: two }, answers: ['because', 'Archive'] })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await ui.press({ key: 'note:aaaaaaaa-2222' })
+    await ui.press({ key: 'archive-aaaaaaaa-2222' })
+    await later(wd, 100)
+    expect(wd.asked[0]).toContain('"second twin"')
+    expect(wd.asked[1]).toContain('"second twin"')
+    expect(wd.asked.join(' ')).not.toContain('first twin')
+  })
+})
