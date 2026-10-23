@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { T0, RUN, NOTE_ID, FULL_RUNFILE, START, boot, cmd, later, pane, openPane, words, leaves } from './support'
+import { T0, RUN, NOTE_ID, FULL_RUNFILE, START, boot, cmd, later, pane, openPane, words, leaves, band } from './support'
 
 // The settle flow inside the pane (the interactive orchestrator has no AskUserQuestion, so there is no dialog): a settle button of the open
 // note shows a reason Input, Enter shows the exact reason with a confirm button, and only that button runs `belay memory held settle`.
@@ -363,6 +363,8 @@ describe('the keyboard goes to the reason Input', () => {
     await ui.press({ key: KEY('archive') })
     await later(wd, 6000) // several redraws and reads
     const tree = JSON.stringify(await ui.drawn())
+    await ui.input({ key: INPUT, text: 'because' })
+    expect(JSON.stringify(await ui.drawn())).not.toContain('autoFocus') // at the confirm stage nothing asks for the focus: two Enters never commit
     expect(tree).not.toContain('autoFocus":true,"label":"  ▸')
     const input = tree.slice(tree.indexOf(INPUT) - 80, tree.indexOf(INPUT) + 400)
     expect(input).not.toContain('"value"') // no value prop: the person's typing stands between redraws
@@ -417,9 +419,20 @@ describe('a pending settle is dropped when the panel closes or the run changes',
     await later(wd, 100)
     await cmd($, 'orch') // reopen
     await later(wd, 2000)
-    await ui.press({ key: OPEN })
-    await expect(ui.press({ key: COMMIT })).rejects.toThrow() // nothing pending any more
+    expect(leaves(await ui.drawn())).not.toContain('  ▸ archive it') // the confirm stage did not survive the close (the note is still open)
     expect(wd.settled).toEqual([])
+  })
+  test('toggling the panel off and on drops it', async ($, on) => {
+    const wd = await boot($, on, { notices: waiting })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await toConfirm(ui, 'archive', 'because')
+    const b = await band($)
+    await b.ui.press({ key: 'open' }) // the band's toggle button closes the panel
+    await later(wd, 100)
+    await cmd($, 'orch') // and the command opens it again
+    await later(wd, 2000)
+    expect(leaves(await ui.drawn())).not.toContain('  ▸ archive it')
   })
   test('a watch change drops it at once, with a toast', async ($, on) => {
     const wd = await boot($, on, { notices: waiting })
