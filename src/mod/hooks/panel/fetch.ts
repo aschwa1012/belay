@@ -1,8 +1,8 @@
 // What the panel does with belay's answers, as pure functions. The commands themselves are run from
 // index.tsx: the engine follows `$` only inside the file that declares the hooks.
 
-import type { BelayAgent, BelayPanelSnap, BelayPanelWatch } from '../../types/index'
-import { normHeld } from './held'
+import type { BelayAgent, BelayHeld, BelayPanelSnap, BelayPanelWatch } from '../../types/index'
+import { normAwaiting, normHeld } from './held'
 import { DEFAULT_SETTINGS, normAgents, normNotices, normTranscript, parseMemoryNotice, parseSettings, type AgentsRead } from './model'
 
 export type RunFile = { role: string; runId: string; dataDir: string; cli: string; node: string }
@@ -90,6 +90,8 @@ export type Parts = {
   notices: Ran | null
   transcript: Ran | null
   settings: Ran | null
+  /** `belay memory held --awaiting`: read only while some held note waits on the operator. */
+  awaiting?: Ran | null
 }
 
 // The orchestrator's row in THIS successful agents read decides the run state; it is never carried over.
@@ -101,6 +103,14 @@ function runStateOf(agents: BelayAgent[], stateRaw: string | null): BelayPanelSn
   if (orch.state === 'dead') return 'dead'
   if (orch.state === 'unknown') return null
   return 'running'
+}
+
+// The held line plus the ids of the notes that wait on the operator: this round's read, else the last round's while some still wait.
+function heldWith(h: BelayHeld | null, aw: unknown, prev: BelayHeld | null): BelayHeld | null {
+  if (!h) return h
+  if (!(h.awaiting ?? 0)) { const { awaitingNotes: _gone, ...rest } = h; return rest }
+  const notes = aw !== undefined ? normAwaiting(aw) : (prev?.awaitingNotes ?? h.awaitingNotes ?? [])
+  return { ...h, awaitingNotes: notes }
 }
 
 export function buildSnapshot(p: Parts): BelayPanelSnap {
@@ -133,6 +143,7 @@ export function buildSnapshot(p: Parts): BelayPanelSnap {
       transcriptAt = p.now
     }
   }
+  const aw = take(p.awaiting ?? null)
   const sj = take(p.settings)
   const settings = sj !== undefined ? parseSettings(sj) : (prev?.settings ?? DEFAULT_SETTINGS)
   // The settings read sees the config file only. A run answers for itself (its launch recorded the notice, or none: notes on, notes
@@ -158,6 +169,6 @@ export function buildSnapshot(p: Parts): BelayPanelSnap {
     embedder: ag ? ag.embedder : (prev?.embedder ?? null),
     agents: ag ? ag.agents : (prev?.agents ?? []),
     footer: ag ? ag.footer : (prev?.footer ?? null),
-    notices, held: nj !== undefined ? normHeld(nj) : (prev?.held ?? null), transcript, settings, memoryNotice, errors,
+    notices, held: heldWith(nj !== undefined ? normHeld(nj) : (prev?.held ?? null), aw, prev?.held ?? null), transcript, settings, memoryNotice, errors,
   }
 }

@@ -1,6 +1,6 @@
 // The memory line's model: notes held for the archive reviewer and the state of its review, from belay's notices. Pure; no `$`.
 
-import type { BelayHeld, BelayReview } from '../../types/index'
+import type { BelayAwaitingNote, BelayHeld, BelayReview } from '../../types/index'
 import { arr, clean, dur, num, obj, str } from './model'
 
 // The estimated cost of one archive review, once the batch study has produced one. Null until then: the confirm says so.
@@ -105,4 +105,41 @@ export function heldLine(h: BelayHeld, now?: number): string {
 export function confirmLine(h: BelayHeld, project: string): string {
   const cost = REVIEW_COST_ESTIMATE_USD === null ? 'cost: measured after first run' : `estimated cost $${REVIEW_COST_ESTIMATE_USD.toFixed(2)}`
   return `${h.byProject[project] ?? h.count} note${(h.byProject[project] ?? h.count) === 1 ? '' : 's'} held in ${project} · dispatch the Opus archive reviewer? ${cost}`
+}
+
+// ---- the operator's settle of a note the archive review left undecided ------------------------------
+
+export type SettleAction = 'archive' | 'release' | 'reoffer'
+export const SETTLE_ACTIONS: readonly SettleAction[] = ['archive', 'release', 'reoffer']
+const SETTLE_SHOWN = 3 // notes listed with buttons at once; the rest are counted
+
+// `belay memory held --awaiting --json`: the notes waiting on the operator (a read). Ids and titles are belay's, still cleaned.
+export function normAwaiting(json: unknown): BelayAwaitingNote[] {
+  const out: BelayAwaitingNote[] = []
+  for (const raw of arr(obj(json)?.entries)) {
+    const e = obj(raw)
+    const id = e ? str(e.note_id) : null
+    if (!e || !id || e.awaiting_operator !== true || out.length >= SETTLE_SHOWN) continue
+    out.push({ id: clean(id, 64), project: clean(str(e.project) ?? '', 64), title: clean(str(e.title) ?? '', 60), reason: clean(str(obj(e.undecided)?.reason) ?? '', 80) })
+  }
+  return out
+}
+
+export const shortId = (id: string): string => id.slice(0, 8)
+
+// The argv tail of the settle write. The reason is ONE element, whatever it holds: belay's parser takes the element after --reason as the value.
+export const settleArgs = (action: SettleAction, id: string, reason: string): string[] => ['memory', 'held', 'settle', id, `--${action}`, '--reason', reason]
+
+export const settleVerb = (a: SettleAction): string => a[0]!.toUpperCase() + a.slice(1)
+export const settleConfirm = (a: SettleAction, id: string, reason: string): string => `${settleVerb(a)} note ${shortId(id)}? reason: ${clean(reason, 160)}`
+
+// What `belay memory held settle --json` printed, as one toast line: the id, the outcome and the receipt, or the error text.
+export function settleLine(exitCode: number, stdout: string, stderr: string): string {
+  const first = (s: string): string => (s.split('\n').map(l => l.trim()).find(l => l !== '') ?? '').slice(0, 160)
+  let j: Record<string, unknown> | null = null
+  try { j = obj(JSON.parse(stdout)) } catch { /* plain text */ }
+  const err = obj(j?.error)
+  if (exitCode === 0 && j && str(j.id) && str(j.outcome)) return `belay: ${clean(String(j.action ?? 'settled'), 20)} ${shortId(String(j.id))}: ${clean(String(j.outcome), 40)}${str(j.receipt) ? ` · receipt ${clean(String(j.receipt), 80)}` : ''}`
+  const said = err ? `${str(err.code) ? `${str(err.code)}: ` : ''}${clean(str(err.message) ?? '', 160)}` : first(stdout.trim() ? stdout : stderr)
+  return `belay: the note was not settled (exit ${exitCode})${said ? `: ${said}` : ''}`
 }

@@ -87,3 +87,16 @@ test('every usage error exits 2 and prints the usage line', async () => {
     }
   } catch (e) { bodyError = e === undefined ? new Error('undefined was thrown') : e; throw bodyError; } finally { await teardown(bodyError, [() => cleanup(dir)]); }
 });
+
+test('a reason that looks like a flag is the reason, not a flag (the panel passes it as one argv element)', async () => {
+  const dir = sandbox();
+  let bodyError = null;
+  try {
+    const p = plant(dir);
+    const r = cli(['held', 'settle', p.a, '--release', '--reason', '--archive -x'], dir);
+    assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+    const j = JSON.parse(r.stdout);
+    assert.deepStrictEqual([j.action, j.outcome], ['release', 'released']);
+    assert.ok(JSON.stringify(j).includes('--archive -x'), 'the reason is kept whole');
+  } catch (e) { bodyError = e === undefined ? new Error('undefined was thrown') : e; throw bodyError; } finally { await teardown(bodyError, [() => cleanup(dir)]); }
+});

@@ -18,7 +18,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On, Timer } from 'claude-code'
 import type { BelayPanelSnap, BelayPanelUi, BelayPanelWatch } from '../../types/index'
 import { argvFor, buildSnapshot, fatalSnapshot, fwd, launcherLine, isWindowsPath, parseRan, parseRunFile, projectRootOf, repoCliGuess, type Ran, type RunFileRead } from './fetch'
-import { CONFIRM_MS, reviewProject } from './held'
+import { CONFIRM_MS, normHeld, reviewProject, SETTLE_ACTIONS, settleArgs, settleConfirm, settleLine, settleVerb, shortId, type SettleAction } from './held'
 import { DEFAULT_SETTINGS, DEFAULT_UI } from './model'
 import { Band, BandWaiting, Fallback, Pane, type Act, type Els } from './view'
 
@@ -39,7 +39,8 @@ const BACKOFF_MAX_MS = 60000
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/
 const REVIEW_ARGS = ['memory', 'review', '--project'] // the one write the panel makes; the project follows, then START_FLAG
 const START_FLAG = '--start'
-const READ_VERBS = ['agents', 'notices', 'transcript', 'settings'] // the only commands runJson runs
+const READ_VERBS = ['agents', 'notices', 'transcript', 'settings'] // the only commands runJson runs ...
+const AWAITING_READ = ['memory', 'held', '--awaiting'] // ... and this one read, run only while a held note waits on the operator
 const START_TIMEOUT_MS = 40000 // the launcher waits up to 20 s for the claim
 const NO_CLI_WINDOWS = 'belay CLI not found: on Windows set belay_cli and node in belay-run.json, or load this plugin from <repo>/src/mod'
 
@@ -81,7 +82,7 @@ async function resolveCli($: Host, watch: BelayPanelWatch): Promise<Resolved> {
 // timeout, which the caller turns into a skipped round and a back-off; any other rejection is a command
 // that did not run.
 async function runJson($: Host, cli: string[], args: string[], dataDir: string | null, cwd: string | null = null): Promise<Ran> {
-  if (!READ_VERBS.includes(args[0] ?? '')) return { error: `belay ${args[0] ?? ''}: the read helper runs only ${READ_VERBS.join(', ')}` } // never a write, whatever called it
+  if (!READ_VERBS.includes(args[0] ?? '') && args.join(' ') !== AWAITING_READ.join(' ')) return { error: `belay ${args[0] ?? ''}: the read helper runs only ${READ_VERBS.join(', ')}` } // never a write, whatever called it
   const t0 = await $.clock.now()
   try {
     const r = await $.process.run(argvFor(cli, args, dataDir), { timeoutMs: COMMAND_TIMEOUT_MS, ...(cwd ? { cwd } : {}) })
@@ -108,16 +109,19 @@ async function fetchSnapshot($: Host, watch: BelayPanelWatch, prev: BelayPanelSn
   const seen = 'json' in agents ? (agents.json as { run_id?: string; mode?: string }) : null
   const runId = watch.runId ?? seen?.run_id ?? prev?.runId ?? null
   const runArg = runId ? [runId] : []
-  const cut = (a: Ran, n: Ran | null, t: Ran | null, s: Ran | null) => ({ snap: buildSnapshot({ watch, prev, now: o.now, agents: a, notices: n, transcript: t, settings: s }), timedOut: true })
+  const cut = (a: Ran, n: Ran | null, t: Ran | null, s: Ran | null, w: Ran | null = null) => ({ snap: buildSnapshot({ watch, prev, now: o.now, agents: a, notices: n, transcript: t, settings: s, awaiting: w }), timedOut: true })
   if (timedOut(agents)) return cut(agents, null, null, null)
   const notices = await runJson($, cli, ['notices', ...runArg], watch.dataDir)
   if (timedOut(notices)) return cut(agents, notices, null, null)
+  // The ids of the held notes that wait on the operator: one more read, only while the notices say some wait.
+  const awaiting = 'json' in notices && (normHeld(notices.json)?.awaiting ?? 0) > 0 ? await runJson($, cli, AWAITING_READ, watch.dataDir) : null
+  if (timedOut(awaiting)) return cut(agents, notices, null, null, awaiting)
   const mode = watch.fixed ? 'interactive' : seen ? seen.mode : prev?.mode
   const tail = o.open ? TRANSCRIPT_TAIL.pane : TRANSCRIPT_TAIL.band
   const transcript = mode === 'headless' ? await runJson($, cli, ['transcript', ...runArg, ...(tail === null ? [] : ['--tail', String(tail)])], watch.dataDir) : null
-  if (timedOut(transcript)) return cut(agents, notices, transcript, null)
+  if (timedOut(transcript)) return cut(agents, notices, transcript, null, awaiting)
   const settings = o.withSettings ? await runJson($, cli, ['settings'], watch.dataDir, watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null) : null
-  return { snap: buildSnapshot({ watch, prev, now: o.now, agents, notices, transcript, settings }), timedOut: timedOut(settings) }
+  return { snap: buildSnapshot({ watch, prev, now: o.now, agents, notices, transcript, settings, awaiting }), timedOut: timedOut(settings) }
 }
 
 // Open or close the docked pane. Only a person's action calls this (a command or a press), because an
@@ -238,6 +242,39 @@ async function reviewPress($: Host): Promise<void> {
   await update($, uiA, u => ({ ...u, confirm: { project, at: now } }))
 }
 
+// The settle buttons of a held note that waits on the operator. A press asks for a reason (the dialog's free text), then asks to confirm
+// with the reason in the question, and only then runs `belay memory held settle <id> --<action> --reason <text>`: a write, reachable only from
+// these buttons (view.tsx Held -> act.settle). The reason is one argv element. Nothing is run when either question is cancelled or dismissed.
+const REASON_CANCEL = 'Cancel'
+const REASON_HINT = 'Type the reason under Other'
+const settling = new Set<string>() // note ids whose settle is asking or running
+
+async function settlePress($: Host, action: SettleAction, id: string): Promise<void> {
+  if (!SETTLE_ACTIONS.includes(action) || settling.has(id)) return
+  const snap = await read($, snapA)
+  if (!(snap?.held?.awaitingNotes ?? []).some(n => n.id === id)) return // only a note belay named as waiting on the operator
+  settling.add(id)
+  try {
+    let reason: string
+    try { reason = (await $.ui.ask(`Why ${action} note ${shortId(id)}? Type the reason under Other.`, { options: [REASON_CANCEL, REASON_HINT], header: settleVerb(action).slice(0, 12) })).trim() } catch { return }
+    if (reason === '' || reason === REASON_CANCEL || reason === REASON_HINT) return
+    let ok: string
+    try { ok = await $.ui.ask(settleConfirm(action, id, reason), { options: [settleVerb(action), REASON_CANCEL], header: 'Confirm' }) } catch { return }
+    if (ok !== settleVerb(action)) return
+    const watch = await read($, watchA)
+    if (!watch || watch.error) { $.ui.toast('belay: no run is watched, so the note was not settled.'); return }
+    const r = await resolveCli($, watch)
+    if ('error' in r) { $.ui.toast(`belay: the note was not settled: ${r.error}`); return }
+    const cwd = watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null
+    try {
+      const res = await $.process.run(argvFor(r.cli, settleArgs(action, id, reason), watch.dataDir), { timeoutMs: START_TIMEOUT_MS, ...(cwd ? { cwd } : {}) })
+      $.ui.toast(settleLine(res.exitCode, res.stdout, res.stderr))
+    } catch (err) {
+      $.ui.toast(`belay: the note was not settled: ${firstLine(err instanceof Error ? err.message : String(err)) || 'belay did not answer'}`)
+    }
+  } finally { settling.delete(id) }
+}
+
 // Every press that is not the review button cancels a pending confirm.
 const calm = (u: BelayPanelUi): BelayPanelUi => (u.confirm ? { ...u, confirm: null } : u)
 
@@ -251,6 +288,7 @@ function acts($: Host): Act {
     close: () => { void update($, uiA, calm).then(() => setOpen($, false)) },
     toggle: () => { void update($, uiA, calm).then(() => read($, uiA)).then(u => setOpen($, !u.open)) },
     review: () => { void reviewPress($) },
+    settle: (action, id) => { void settlePress($, action, id) },
   }
 }
 

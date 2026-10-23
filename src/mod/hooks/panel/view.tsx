@@ -2,12 +2,12 @@
 // here fetches, writes or submits: a press only calls one of the `Act` handlers the caller passes.
 
 import type { Elements } from 'claude-code'
-import type { BelayAgent, BelayEntry, BelayNotice, BelayPanelSnap, BelayPanelUi } from '../../types/index'
+import type { BelayAgent, BelayAwaitingNote, BelayEntry, BelayNotice, BelayPanelSnap, BelayPanelUi } from '../../types/index'
 import {
   bandLines, cacheSegs, ctxSegs, dur, fitSegs, isLive, markSeg, markWidth, money, runLine, STATE_NAME, TONE, unseenNotices, bar,
   memoryTitleSegs, memoryFallbackSegs, interactiveOrch, interactiveMark, type Seg,
 } from './model'
-import { CONFIRM_MS, confirmLine, heldLine, reviewLine, reviewProject, runningReview } from './held'
+import { CONFIRM_MS, confirmLine, heldLine, reviewLine, reviewProject, runningReview, SETTLE_ACTIONS, shortId, type SettleAction } from './held'
 import { cells, clipCells, cmdLines, wordWrap, wrapParts } from './wrap'
 
 export type Els = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'>
@@ -21,6 +21,8 @@ export type Act = {
   toggle: () => void
   /** The memory line's one write action: the first press asks, the second dispatches (index.tsx). */
   review: () => void
+  /** A held note that waits on the operator: ask for a reason, confirm, then settle it (index.tsx). */
+  settle: (action: SettleAction, id: string) => void
 }
 type Ctx = { E: Els; snap: BelayPanelSnap; ui: BelayPanelUi; now: number; cols: number; act: Act }
 
@@ -315,6 +317,18 @@ export function orchestratorItems(entries: BelayEntry[]): Item[] {
 // The memory line: how many notes wait on the Opus archive reviewer, and the one button that dispatches it. The first press turns the
 // line into a confirm; the second press (inside CONFIRM_MS) dispatches; the timeout or any other press cancels. This Button is the ONLY
 // caller of act.review, and act.review is the only way to the dispatch (index.tsx).
+// A note waiting on the operator: its short id and why the review could not decide, then archive / release / reoffer.
+function SettleRow({ E, cols, n, act }: { E: Els; cols: number; n: BelayAwaitingNote; act: Act }) {
+  const { Box, Button } = E
+  const head = `  ${shortId(n.id)}${n.reason ? ` · ${n.reason}` : ''}`
+  return (
+    <Box flexDirection="column" key={`aw-${n.id}`}>
+      <Line E={E} w={cols} k={`awl-${n.id}`} segs={[{ t: head, dim: true }]} />
+      <Box>{SETTLE_ACTIONS.map(a => <Button key={`${a}-${n.id}`} plain label={`  ▸ ${a}`} onPress={() => act.settle(a, n.id)} />)}</Box>
+    </Box>
+  )
+}
+
 function Held({ E, snap, ui, now, act, cols }: Ctx) {
   const { Box, Button } = E
   const hd = snap.held
@@ -325,7 +339,8 @@ function Held({ E, snap, ui, now, act, cols }: Ctx) {
   return (
     <Box flexDirection="column">
       {hd.reviews.map((r, i) => <Line E={E} w={cols} k={`hr${i}`} segs={[{ t: '◇ ', c: r.state === 'failed' || r.state === 'interrupted' ? 'error' : 'warning' }, { t: reviewLine(r, now), c: r.state === 'failed' || r.state === 'interrupted' ? 'error' : undefined }]} />)}
-      {hd.count > 0 && <Line E={E} w={cols} k="hl" segs={[{ t: '◇ ', c: 'warning' }, { t: asking && project ? confirmLine(hd, project) : heldLine(hd, now), c: asking ? 'warning' : undefined }]} />}
+      {hd.count > 0 && wordWrap(asking && project ? confirmLine(hd, project) : heldLine(hd, now), Math.max(8, cols - 2)).map((t, i) => <Line E={E} w={cols} k={`hl${i}`} segs={[{ t: i === 0 ? '◇ ' : '  ', c: 'warning' }, { t, c: asking ? 'warning' : undefined }]} />)}
+      {(hd.awaitingNotes ?? []).map(n => <SettleRow E={E} cols={cols} n={n} act={act} />)}
       {project !== null && !busy && <Button key="review" plain label={asking ? '  ▸ press again to dispatch · any other press cancels' : `  ▸ review the held notes${Object.keys(hd.byProject).length > 1 ? ` (${project} first)` : ''}`} onPress={act.review} />}
     </Box>
   )

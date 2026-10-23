@@ -144,3 +144,22 @@ test('the held count is one count broken down by ground, with how many await the
   assert.strictEqual(M.heldLine(H({ count: 1, byGround: { reported: 1 }, awaiting: 0 })), '1 held: 1 reported wrong');
   assert.strictEqual(M.normHeld({ events: [held(2, { acme: 2 })] }).byGround, undefined, 'without a breakdown the line is as before');
 });
+
+test('normAwaiting: only entries that await the operator, capped, cleaned', () => {
+  const e = (id, aw, extra = {}) => ({ note_id: id, project: 'acme', title: 'a\nb', awaiting_operator: aw, undecided: { reason: 'cannot say' }, ...extra });
+  const out = M.normAwaiting({ entries: [e('n1', true), e('n2', false), e('n3', true), e('n4', true), e('n5', true), { awaiting_operator: true }, null] });
+  assert.deepStrictEqual(out.map((n) => n.id), ['n1', 'n3', 'n4']);
+  assert.deepStrictEqual(out[0], { id: 'n1', project: 'acme', title: 'a b', reason: 'cannot say' });
+  assert.deepStrictEqual(M.normAwaiting(null), []);
+});
+
+test('settleArgs keeps the reason one element, whatever it holds; settleLine shows the proof or the error', () => {
+  for (const reason of ['two words', '-x', '--archive', 'it\'s "q"', '']) {
+    assert.deepStrictEqual(M.settleArgs('reoffer', 'n1', reason), ['memory', 'held', 'settle', 'n1', '--reoffer', '--reason', reason]);
+  }
+  const ok = JSON.stringify({ id: 'abcdef0123456789', action: 'archive', outcome: 'archived', receipt: 'held-settle:x@1' });
+  assert.strictEqual(M.settleLine(0, ok, ''), 'belay: archive abcdef01: archived · receipt held-settle:x@1');
+  assert.strictEqual(M.settleLine(1, JSON.stringify({ error: { code: 'E_STALE', message: 'moved' } }), ''), 'belay: the note was not settled (exit 1): E_STALE: moved');
+  assert.strictEqual(M.settleLine(2, '', 'boom\nmore'), 'belay: the note was not settled (exit 2): boom');
+  assert.match(M.settleLine(0, 'not json', ''), /not settled/);
+});
