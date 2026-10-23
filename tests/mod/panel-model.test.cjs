@@ -189,3 +189,10 @@ test('launcherLine reads the error the real CLI prints to stderr', async () => {
   assert.strictEqual(F.launcherLine(1, '', err, 'acme'), 'belay: the review was not started (exit 1): E_BUSY: a review is running');
   assert.strictEqual(F.launcherLine(1, '', 'plain words' + String.fromCharCode(10) + 'more', 'acme'), 'belay: the review was not started (exit 1): plain words');
 });
+
+test('a usage error ({"error": "<text>"}, exit 2) is a definite refusal with its message, in the settle and the launcher toasts', async () => {
+  const usage = JSON.stringify({ error: 'belay memory held settle needs exactly one of --archive, --release or --reoffer' });
+  assert.strictEqual(M.settleLine(2, '', usage), 'belay: the note was not settled (exit 2): belay memory held settle needs exactly one of --archive, --release or --reoffer');
+  const F = await loadPanelModule('fetch');
+  assert.strictEqual(F.launcherLine(2, '', JSON.stringify({ error: 'belay memory: bad flag' }, null, 2), 'acme'), 'belay: the review was not started (exit 2): belay memory: bad flag');
+});
