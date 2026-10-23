@@ -158,9 +158,8 @@ export const settleArgs = (action: SettleAction, id: string, reason: string): st
 
 export const settleVerb = (a: SettleAction): string => a[0]!.toUpperCase() + a.slice(1)
 // The confirm shows the reason exactly as it is sent (a reason over REASON_MAX is refused first, so nothing is cut).
-// Two notes can share an 8-character prefix, so every dialog names the note by its title as well.
-export const noteLabel = (id: string, title: string): string => `${shortId(id)}${title ? ` "${cutClusters(title, 40)}"` : ''}`
-export const settleConfirm = (a: SettleAction, id: string, reason: string, title = ''): string => `${settleVerb(a)} note ${noteLabel(id, title)}? reason: ${reason}`
+// The confirm line names the note by its title and its short id (two notes can share a prefix) and shows the reason exactly as it is sent.
+export const settleConfirm = (a: SettleAction, id: string, reason: string, title = ''): string => `${settleVerb(a)} ${title ? `"${cutClusters(title, 40)}" ` : ''}(${shortId(id)})? reason: ${reason}`
 
 export const REASON_MAX = 160
 // belay strips its own global options out of the argv before any command sees it, so a reason that is exactly one of them never arrives.

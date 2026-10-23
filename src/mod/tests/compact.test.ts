@@ -62,7 +62,7 @@ describe('a press opens one note, and only the open note has buttons', () => {
   })
 
   test('a settle press on a closed note is impossible, and nothing is settled', async ($, on) => {
-    const wd = await boot($, on, { ...world(3), answers: ['because', 'Archive'] })
+    const wd = await boot($, on, world(3))
     await openPane($, wd)
     const { ui } = await pane($)
     await expect(ui.press({ key: `archive-${idOf(1)}` })).rejects.toThrow()
@@ -163,7 +163,7 @@ describe('"+N more" comes from the list read alone', () => {
 
 describe('what a note press may do', () => {
   test('a press on a note runs no process at all', async ($, on) => {
-    const wd = await boot($, on, { ...world(3), answers: ['x', 'Archive'] })
+    const wd = await boot($, on, world(3))
     await openPane($, wd)
     const { ui } = await pane($)
     const ran = wd.ran.length
@@ -176,7 +176,7 @@ describe('what a note press may do', () => {
     expect(wd.asked).toEqual([])
   })
   test('a note press cancels a pending review confirm', async ($, on) => {
-    const wd = await boot($, on, { ...world(3), answers: [] })
+    const wd = await boot($, on, world(3))
     await openPane($, wd)
     const { ui } = await pane($)
     await ui.press({ key: 'review' }) // asks
@@ -211,14 +211,31 @@ describe('two notes that share an 8-character prefix', () => {
       { note_id: 'aaaaaaaa-1111', project: 'acme', title: 'first twin', kind: 'wrong', ground: 'reported', awaiting_operator: true, undecided: { reason: 'r1' } },
       { note_id: 'aaaaaaaa-2222', project: 'acme', title: 'second twin', kind: 'wrong', ground: 'reported', awaiting_operator: true, undecided: { reason: 'r2' } },
     ]
-    const wd = await boot($, on, { notices: { run_id: RUN, events: [heldEv(2)] }, awaitingList: { total: 2, awaiting_operator: 2, entries: two }, answers: ['because', 'Archive'] })
+    const wd = await boot($, on, { notices: { run_id: RUN, events: [heldEv(2)] }, awaitingList: { total: 2, awaiting_operator: 2, entries: two } })
     await openPane($, wd)
     const { ui } = await pane($)
     await ui.press({ key: 'note:aaaaaaaa-2222' })
     await ui.press({ key: 'archive-aaaaaaaa-2222' })
-    await later(wd, 100)
-    expect(wd.asked[0]).toContain('"second twin"')
-    expect(wd.asked[1]).toContain('"second twin"')
-    expect(wd.asked.join(' ')).not.toContain('first twin')
+    await ui.input({ key: 'reason:aaaaaaaa-2222', text: 'because' })
+    const confirm = leaves(await ui.drawn()).find(l => l.includes('? reason:'))
+    expect(flat(confirm ?? '').trim()).toBe('Archive "second twin" (aaaaaaaa)? reason: because') // the title tells the twins apart
+  })
+})
+
+describe('opening another note mid-flow drops the pending settle', () => {
+  test('the Input of the first note is gone once the second is opened, and pressing the first again shows buttons', async ($, on) => {
+    const wd = await boot($, on, world(3))
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await ui.press({ key: key(1) })
+    await ui.press({ key: `archive-${idOf(1)}` })
+    await ui.input({ key: `reason:${idOf(1)}`, text: 'because' }) // the confirm stage of note 1
+    await ui.press({ key: key(2) })
+    await expect(ui.press({ key: `commit:${idOf(1)}` })).rejects.toThrow()
+    await ui.press({ key: key(1) })
+    await expect(ui.press({ key: `commit:${idOf(1)}` })).rejects.toThrow() // nothing pending any more
+    expect(await drawnButtons(ui)).toBe(1) // the plain three buttons
+    await later(wd, 50)
+    expect(wd.settled).toEqual([])
   })
 })
