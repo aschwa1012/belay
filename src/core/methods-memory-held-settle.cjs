@@ -55,11 +55,12 @@ async function heldSettle(E, caller, args) {
     const state = fresh ? fresh.state : null;
     if (!fresh || state !== 'held') {
       if (args.if_awaiting === true) throw err('E_PRECONDITION', `the hold on note ${args.id} is ${fresh ? state : 'gone'}, so nothing was settled`, { id: args.id, awaiting: false, state, held_row: held.id });
-      throw err('E_NOT_FOUND', `note ${args.id} has no active hold`, { id: args.id });
+      throw err('E_NOT_FOUND', `note ${args.id} has no active hold`, { id: args.id, state, held_row: held.id });
     }
     if (args.if_awaiting === true && !isAwaiting(fresh)) {
       const u = fresh.undecided && typeof fresh.undecided === 'object' ? fresh.undecided : null;
-      const why = u ? `undecided at revision ${u.rev}, but the hold is at revision ${fresh.rev == null ? 0 : fresh.rev} now` : 'not marked undecided';
+      const now = fresh.rev == null ? 0 : fresh.rev;
+      const why = !u ? 'not marked undecided' : Number.isInteger(u.rev) ? `undecided at revision ${u.rev}, but the hold is at revision ${now} now` : `undecided, but with no usable revision (${JSON.stringify(u.rev ?? null)}) to compare with revision ${now}`;
       throw err('E_PRECONDITION', `the hold on note ${args.id} does not await the operator (${why}), so nothing was settled`, { id: args.id, awaiting: false, state, rev: fresh.rev == null ? 0 : fresh.rev, undecided_rev: u ? (u.rev ?? null) : null, held_row: held.id });
     }
     const hold = { ...held, b: fresh };

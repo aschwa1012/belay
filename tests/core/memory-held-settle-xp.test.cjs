@@ -55,6 +55,22 @@ test('XP2: without the flag the same race lets A write (what the flag is for)', 
   assert.strictEqual(hold.state, 'released');
 });
 
+test('XP5: B releases in the gap: A with the flag is refused with the state of the hold, A without it finds no active hold', async () => {
+  const f = await race('flag', 'K24', 'w-a24', 'w-b24', 'release');
+  assert.strictEqual(f.rb.res.ok, true, JSON.stringify(f.rb));
+  assert.deepStrictEqual([f.ra.res.ok, f.ra.res.code, f.ra.res.detail.state, f.ra.res.detail.awaiting], [false, 'E_PRECONDITION', 'released', false], JSON.stringify(f.ra));
+  assert.strictEqual(f.hold.state, 'released');
+  const n = await race('noflag', 'K25', 'w-a25', 'w-b25', 'release');
+  assert.deepStrictEqual([n.ra.res.ok, n.ra.res.code, n.ra.res.detail.state, typeof n.ra.res.detail.held_row], [false, 'E_NOT_FOUND', 'released', 'string'], JSON.stringify(n.ra));
+});
+
+test('XP6: B archives in the gap: A with the flag is refused, and the hold stays archived', async () => {
+  const f = await race('flag', 'K26', 'w-a26', 'w-b26', 'archive');
+  assert.strictEqual(f.rb.res.ok, true, JSON.stringify(f.rb));
+  assert.deepStrictEqual([f.ra.res.ok, f.ra.res.code, f.ra.res.detail.state], [false, 'E_PRECONDITION', 'archived'], JSON.stringify(f.ra));
+  assert.strictEqual(f.hold.state, 'archived');
+});
+
 test('XP4: the settle works from the hold as its own transaction reads it: a report added in the gap is settled too', async () => {
   const { ra } = await race('noflag', 'K23', 'w-a23', 'w-b23', 'addreport');
   assert.strictEqual(ra.res.ok, true, JSON.stringify(ra));

@@ -84,6 +84,12 @@ test('C8: the review queue uses the same predicate: an undecided mark whose revi
   await assert.rejects(settle({ id: a.note, action: 'release', reason: 'x', if_awaiting: true }), (e) => e.code === 'E_PRECONDITION');
 });
 
+test('C9: an undecided mark with no usable revision gets its own wording, and never "revision undefined"', async () => {
+  const a = await awaiting('w-a20', 'K20', 'w-b20');
+  X.store.patchBody(a.hold, (b) => { b.undecided = { reason: 'cannot say' }; return b; });
+  await assert.rejects(settle({ id: a.note, action: 'release', reason: 'x', if_awaiting: true }), (e) => e.code === 'E_PRECONDITION' && /no usable revision/.test(e.message) && !/undefined/.test(e.message) && e.detail.undecided_rev === null);
+});
+
 test('C5: two concurrent settles with if_awaiting give exactly one write', async () => {
   const a = await awaiting('w-a15', 'K15', 'w-b15');
   const rs = await Promise.allSettled([
