@@ -125,6 +125,20 @@ test('the run-close trigger runs only with archive_review_auto; the default is o
   await drain();
 });
 
+test('the run-close reviewer yields to the operator\'s claimed review of the project (ADR 0052), and runs once the claim is released', async () => {
+  await drain();
+  for (let i = 0; i < 3; i += 1) await held(`claimed ${i}`);
+  const claim = (await T.call(T.who.operator('apply'), 'memory.reviewClaim', { project: 'lc', pid: process.pid, job: 'archreview-hand' })).claim;
+  const m = fakeManager(T, 'apply', json('verdicts', []));
+  const held1 = await review(m, { archive_review_auto: true }, { respectClaim: true });
+  assert.deepStrictEqual([held1.ran, held1.reason, m.spawned.length], [false, 'a review is running', 0]);
+  assert.match(held1.message, /claimed by pid \d+ \(job archreview-hand\)/);
+  await T.call(T.who.operator('apply'), 'memory.reviewRelease', { project: 'lc', claim_id: claim.id, ok: true, message: 'done' });
+  const free = await review(fakeManager(T, 'apply', json('verdicts', [])), { archive_review_auto: true }, { respectClaim: true });
+  assert.strictEqual(free.ran, true);
+  await drain();
+});
+
 test('a note the reviewer leaves out stays held and carries over; an undecided one stays held for the operator and is counted', async () => {
   await drain();
   const ids = [];
