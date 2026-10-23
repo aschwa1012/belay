@@ -56,6 +56,17 @@ test('C4: without the flag behaviour is unchanged: reoffer then archive writes',
   for (const bad of [1, 'yes', null]) await assert.rejects(settle({ id: a.note, action: 'archive', reason: 'x', if_awaiting: bad }), (e) => e.code === 'E_ARGS');
 });
 
+test('C6: a hold whose undecided mark is for an older revision does not await the operator: the flag refuses it, as the listing says', async () => {
+  const a = await awaiting('w-a16', 'K16', 'w-b16');
+  const row = X.activeHold(a.note);
+  // a later report moves the hold to a new revision: the reviewer's undecided answer was for the old one
+  X.store.patchBody(row.id, (b) => { b.rev = (Number(b.rev) || 0) + 1; return b; });
+  const listed = (await X.call('memory.held', op(), { list: true, awaiting: true })).entries.some((e) => e.note_id === a.note);
+  assert.strictEqual(listed, false, 'the listing does not call it awaiting');
+  await assert.rejects(settle({ id: a.note, action: 'archive', reason: 'x', if_awaiting: true }), (e) => e.code === 'E_PRECONDITION');
+  assert.ok(X.activeHold(a.note));
+});
+
 test('C5: two concurrent settles with if_awaiting give exactly one write', async () => {
   const a = await awaiting('w-a15', 'K15', 'w-b15');
   const rs = await Promise.allSettled([

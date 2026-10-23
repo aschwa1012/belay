@@ -610,7 +610,7 @@ describe('re-check is careful', () => {
     const { ui } = await pane($)
     await toConfirm(ui, 'archive', 'because')
     await ui.press({ key: COMMIT })
-    await later(wd, 100)
+    await later(wd, 1500) // the read the settle itself asked for has been made
     const before = wd.ran.length
     await ui.press({ key: 'recheck:' + NOTE_ID })
     await later(wd, 1100) // the pane's usual period is 4 s: only a reset brings a read this soon
