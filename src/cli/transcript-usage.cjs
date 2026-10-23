@@ -42,7 +42,7 @@ const ASSISTANT = '"type":"assistant"';
 const num = (x) => (typeof x === 'number' && Number.isFinite(x) ? x : 0);
 
 function newState() {
-  return { offset: 0, ids: new Map(), byModel: new Map(), last: null, messages: 0, usd: 0, unpriced: new Map(), assumed5m: 0 };
+  return { offset: 0, ids: new Map(), byModel: new Map(), last: null, split: null, messages: 0, usd: 0, unpriced: new Map(), assumed5m: 0 };
 }
 
 function addTo(st, model, u, sign) {
@@ -101,7 +101,16 @@ function takeLine(st, line, prices) {
     st.ids.set(id, m);
   } else st.messages += 1;
   book(st, m, 1);
-  if (j.isSidechain !== true) st.last = { model, context: u.input + u.cache_read + u.cache_creation };
+  if (j.isSidechain !== true) {
+    // The cache timer follows the stream rule (agents-derive.cjs cacheOf): the request time is the first line of the latest
+    // message (nearest the request), and the lifetime comes from the latest line of this orchestrator's own that wrote
+    // a non-zero 5m or 1h split. A message with no split never sets one.
+    const line = { timestamp: typeof j.timestamp === 'string' ? j.timestamp : null, uuid: typeof j.uuid === 'string' ? j.uuid : null };
+    const first = id !== null && st.last && st.last.id === id ? st.last.first : line;
+    st.last = { id, model, context: u.input + u.cache_read + u.cache_creation, first };
+    const sp = require('./agents-derive.cjs').splitOf(j);
+    if (sp) st.split = { ...sp, line };
+  }
   return true;
 }
 
@@ -192,11 +201,18 @@ function readUsage(file, prices = PRICES, opts = {}) {
     return {
       exists: true, refused: null, error: null, bytes_read, messages: st.messages,
       model_seen: st.last ? st.last.model : null, context_tokens: st.last ? st.last.context : null,
-      tokens: st.messages ? tokens : null, cost_usd: st.messages && !unpriced.length ? st.usd : null, unpriced_models: unpriced, cache_write_assumed_5m: st.assumed5m,
+      tokens: st.messages ? tokens : null, cost_usd: st.messages && !unpriced.length ? st.usd : null, unpriced_models: unpriced, last_first_line: st.last ? st.last.first : null, split: st.split, cache_write_assumed_5m: st.assumed5m,
     };
   } catch (e) {
     return { ...none, error: e.code || 'unreadable' };
   } finally { fs.closeSync(fd); }
+}
+
+// run-start.json is rewritten on every launch with the epoch of the launcher's own run.attach; the orchestrator's MCP
+// adapter then attaches and bumps the row's epoch, so a live interactive run's row is AHEAD of its marker. A marker is
+// this run's when it names the run, says interactive, and its epoch is an integer no later than the row's.
+function markerMatches(m, run) {
+  return !!m && m.run_id === run.id && m.mode === 'interactive' && Number.isInteger(m.epoch) && Number.isInteger(run.epoch) && m.epoch <= run.epoch;
 }
 
 function readSmall(file) {
@@ -204,7 +220,7 @@ function readSmall(file) {
 }
 
 // The session transcript of this run's interactive orchestrator: { file, refused }. Sources, in order: the launch
-// marker (run-start.json, this run and epoch: its session_file, else a search for its session_id), then the
+// marker (run-start.json, this run, see markerMatches: its session_file, else a search for its session_id), then the
 // closing receipt (run.json, this run: orchestrator.interactive.session_file). A path that fails `refusal` is
 // never looked at (not even for existence); `refused` lists why.
 function sessionFileOf(orchDir, run, opts = {}) {
@@ -212,7 +228,7 @@ function sessionFileOf(orchDir, run, opts = {}) {
   const refused = [];
   const ok = (f) => { const why = refusal(f, root); if (why) { refused.push(why); return false; } return fs.existsSync(f); };
   const m = readSmall(`${orchDir}/run-start.json`);
-  if (m && m.run_id === run.id && m.epoch === run.epoch) {
+  if (markerMatches(m, run)) {
     if (typeof m.session_file === 'string' && ok(m.session_file)) return { file: m.session_file, refused };
     if (typeof m.session_id === 'string' && /^[0-9A-Za-z-]{1,64}$/.test(m.session_id)) {
       try {
@@ -226,4 +242,4 @@ function sessionFileOf(orchDir, run, opts = {}) {
   return { file: typeof f === 'string' && ok(f) ? f : null, refused };
 }
 
-module.exports = { readUsage, sessionFileOf, projectsRootOf, PRICES };
+module.exports = { readUsage, sessionFileOf, projectsRootOf, markerMatches, PRICES };
