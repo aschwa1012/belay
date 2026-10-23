@@ -54,6 +54,7 @@ function appendTo(E, ctx, note, active, reports, newReport) {
     b.reports_total = (Number(b.reports_total) || (b.reports || []).length) + (replaced ? 0 : 1);
     b.reports_dropped = Math.max(0, b.reports_total - reports.length);
     b.self_report = selfOnly(reports);
+    if (replaced && newReport && newReport.why) b.reason = redact(String(newReport.why)).text.slice(0, 500); // the hold's reason follows a repeat, as its report does
     if (changed) {
       b.kind_history = [...(b.kind_history || []), { kind: b.kind, of: b.of || null, facts: b.facts || null, rev: Number(b.rev) || 0, at: Date.now() }].slice(-KIND_HISTORY_KEEP);
       b.kind = rk.kind; b.of = rk.of || null; b.facts = rk.facts;

@@ -143,6 +143,7 @@ test('R10: a repeat by the operator replaces its own report: one reporter, repor
   for (const [i, pid] of [[1, 111], [2, 222], [3, 333]]) await report({ ...X.operator, peer_pid: pid }, { note_id: a.note, why: `reason ${i}` });
   const h = hold(a.note);
   assert.deepStrictEqual([h.b.reports.length, h.b.reports_total, h.b.reports[0].why, h.b.reports[0].by], [1, 1, 'reason 3', 'operator']);
+  assert.strictEqual(h.b.reason, 'reason 3', 'the own reason of the hold follows the repeat');
   const r = X.bodyOf(a.note).reported_wrong;
   assert.deepStrictEqual([r.length, r[0].operator_pid], [1, 333]);
 });
