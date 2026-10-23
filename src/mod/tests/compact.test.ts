@@ -88,7 +88,7 @@ describe('a press opens one note, and only the open note has buttons', () => {
 
 describe('the open note shows everything the core returned', () => {
   const REASON = Array.from({ length: 60 }, (_, i) => `word${i}`).join(' ') // 600+ characters of words
-  const PATH = 'C:/work/demo-x/Projects/belay/docs/archives/memory-archives/deeply/nested/folder/file-name-that-is-long.md'
+  const PATH = 'D:/work/acme/services/ledger/reconciliation/deeply/nested/folder/file-name-that-is-long.md'
   for (const cols of [30, 40, 72]) {
     test(`a long reason is shown in full when open at ${cols} columns, cut only at the core's 500`, async ($, on) => {
       const wd = await boot($, on, world(1, () => REASON))
