@@ -223,10 +223,10 @@ describe('the pane', () => {
     await openPane($, wd)
     const { ui, text } = await pane($)
     for (const s of ['orchestrator', 'coder-1', '◌', '▲', '◐', '●', '7c9e6679', '▰', '61%', '$0.92', '$ —', 'cold', '▸ 1 finished']) expect(text).toContain(s)
-    expect(text.slice(0, text.indexOf('notices'))).not.toContain('coder-0')
+    expect(text.slice(0, text.indexOf('NOTICES'))).not.toContain('coder-0')
     await ui.press({ key: 'fold' })
     const open = words(await ui.drawn())
-    expect(open.slice(0, open.indexOf('notices'))).toContain('coder-0')
+    expect(open.slice(0, open.indexOf('NOTICES'))).toContain('coder-0')
     expect(wd.writes).toEqual([])
     expect(wd.ran.every(a => a.some(x => READ_VERBS.includes(x)))).toBe(true)
   })
@@ -241,7 +241,7 @@ describe('the pane', () => {
     const wd = await boot($, on, { noDisplay: true })
     await openPane($, wd)
     const t = (await pane($)).text
-    const table = t.slice(t.indexOf('agent'), t.indexOf('notices'))
+    const table = t.slice(t.indexOf('agent'), t.indexOf('NOTICES'))
     expect(table).toContain('?')
     expect(table).not.toContain('●')
     expect(table).not.toContain('◐')
@@ -263,9 +263,9 @@ describe('the pane', () => {
     const { ui, text } = await pane($)
     expect(text).not.toContain('legend')
     await ui.press({ key: 'legend' })
-    expect(words(await ui.drawn())).toContain('legend · ? closes')
+    expect(words(await ui.drawn())).toContain('LEGEND  ? closes')
     await ui.press({ key: 'legend' })
-    expect(words(await ui.drawn())).not.toContain('legend · ? closes')
+    expect(words(await ui.drawn())).not.toContain('LEGEND  ? closes')
   })
   test('a headless run shows the orchestrator words and the real tool line', async ($, on) => {
     const wd = await boot($, on)
@@ -288,14 +288,14 @@ describe('the pane', () => {
     const t = (await pane($)).text
     expect(t).toContain('[stal]')
     expect(t).toContain('[perm]')
-    expect(t.slice(0, t.indexOf('notices'))).not.toContain('◌')
+    expect(t.slice(0, t.indexOf('NOTICES'))).not.toContain('◌')
   })
   test('mod.cache and mod.context change the drawing', async ($, on) => {
     const wd = await boot($, on, { mod: { cache: 'countdown', context: 'figure' } })
     await openPane($, wd)
     const t = (await pane($)).text
     expect(t).toContain('61%')
-    expect(t.slice(t.indexOf('agent '), t.indexOf('notices'))).not.toContain('▰')
+    expect(t.slice(t.indexOf('agent '), t.indexOf('NOTICES'))).not.toContain('▰')
     expect(t).toContain('9m') // coder-1: 599999 ms left
   })
   test('docked: /orch opens the pane, a person closing it ends the panel', async ($, on) => {
@@ -398,7 +398,7 @@ describe('the agents shape of a8c466d', () => {
     await ui.press({ key: 'agent:coder-1' })
     await ui.press({ key: 'agent:coder-2' })
     const full = words(await ui.drawn())
-    const u = full.slice(full.indexOf('coder-2'), full.indexOf('notices'))
+    const u = full.slice(full.indexOf('coder-2'), full.indexOf('NOTICES'))
     expect(u).toContain('launch')
     expect(u).not.toContain('Claude Code')
     expect(u).not.toContain('pid ')
@@ -418,7 +418,7 @@ describe('the last review round', () => {
     const wd = await boot($, on, { mod: { task: 'title' } })
     await openPane($, wd)
     const { ui, text } = await pane($)
-    const table = text.slice(text.indexOf('agent '), text.indexOf('notices'))
+    const table = text.slice(text.indexOf('agent '), text.indexOf('NOTICES'))
     expect(table).toContain('7c9e6679 Fix the pid-poll')
     expect(table).not.toContain(TASK4)
     await ui.press({ key: 'agent:coder-1' })
@@ -480,7 +480,7 @@ describe('the last review round', () => {
     const wd = await boot($, on, { manyTexts: true })
     await openPane($, wd)
     const { ui, text } = await pane($)
-    const section = text.slice(text.indexOf('orchestrator', text.indexOf('notices')))
+    const section = text.slice(text.indexOf('ORCHESTRATOR'))
     for (const i of [5, 6, 7, 8, 9, 10, 11, 12]) expect(section).toContain(`Step ${i} is under way.`)
     expect(section).not.toContain('Step 4 is under way.')
     expect(section).toContain('LAST WORD') // a long text is shown in full

@@ -48,3 +48,19 @@ export function shortModel(m: string | null): string {
   const f = /(?:claude-)?(opus|sonnet|haiku|fable)/i.exec(m)
   return f ? f[1]!.toLowerCase() : m
 }
+
+// ---- sections ----------------------------------------------------------------------------------
+
+// Every block of the pane is a Section: one bold heading in caps, an optional dim summary beside it, one blank line above,
+// and its rows indented by one space. A caller draws the rows at `cols - 1`.
+export const INDENT = 1
+export function Section({ E, k, title, summary, cols, children }: { E: Els; k: string; title: string; summary?: Seg[]; cols: number; children?: unknown }) {
+  const { Box } = E
+  const head: Seg[] = [{ t: title, bold: true }, ...(summary && summary.length ? [{ t: '  ', brk: true } as Seg, ...summary] : [])]
+  return (
+    <Box key={k} flexDirection="column" marginTop={1}>
+      <Line E={E} w={cols} k={`${k}-h`} segs={head} />
+      {children ? <Box paddingLeft={INDENT} flexDirection="column">{children as never}</Box> : null}
+    </Box>
+  )
+}

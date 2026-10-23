@@ -82,7 +82,7 @@ const LABEL = 8
 // A detail row is a label and parts. The parts join with `sep` and wrap under the label instead of being cut.
 type DRow = { k: string; parts: string[]; sep: string; note?: Seg }
 
-function Detail({ E, a, snap, now, cols }: { E: Els; a: BelayAgent; snap: BelayPanelSnap; now: number; cols: number }) {
+function Detail({ E, a, snap, now, cols, last }: { E: Els; a: BelayAgent; snap: BelayPanelSnap; now: number; cols: number; last: boolean }) {
   const { Box } = E
   const rows: DRow[] = []
   rows.push({ k: 'status', sep: ' · ', parts: [interactiveOrch(a, snap) ? 'interactive — its words are in its own window' : `${STATE_NAME[a.state]} — established by ${a.stateBy ?? 'not recorded'}`, a.pid !== null ? `pid ${a.pid}` : ''] })
@@ -102,7 +102,7 @@ function Detail({ E, a, snap, now, cols }: { E: Els; a: BelayAgent; snap: BelayP
   const room = Math.max(8, cols - 2 - LABEL)
   const flush = cols - 2 // an id wider than the value room goes on its own line with the label's indent removed
   return (
-    <Box flexDirection="column" paddingLeft={2} marginBottom={1}>
+    <Box flexDirection="column" paddingLeft={2} marginBottom={last ? 0 : 1}>
       {rows.flatMap(r => {
         const note = r.note ? cells(r.note.t) : 0
         const lines = wrapParts(r.parts, r.sep, room).filter(t => t !== '')
@@ -123,12 +123,12 @@ function Detail({ E, a, snap, now, cols }: { E: Els; a: BelayAgent; snap: BelayP
   )
 }
 
-function AgentRow(c: Ctx & { a: BelayAgent; c: Cols }) {
+function AgentRow(c: Ctx & { a: BelayAgent; c: Cols; last: boolean }) {
   const { E, a, snap, ui, now, act } = c
   const { Box, Text, Button } = E
   const w = c.c
-  const cell = (key: string, width: number, segs: Seg[]) => (
-    <Box key={key} width={width} flexShrink={0} marginRight={1}>{segs.map(s => <Text {...tp(s)}>{s.t}</Text>)}</Box>
+  const cell = (key: string, width: number, segs: Seg[], end = false) => (
+    <Box key={key} width={width} flexShrink={0} marginRight={1} {...(end ? { justifyContent: 'flex-end' } : {})}>{segs.map(s => <Text {...tp(s)}>{s.t}</Text>)}</Box>
   )
   const io = interactiveOrch(a, snap)
   const mk = io ? interactiveMark(snap.settings.marks) : markSeg(a.state, snap.settings.marks)
@@ -143,9 +143,9 @@ function AgentRow(c: Ctx & { a: BelayAgent; c: Cols }) {
         {w.task > 0 && cell('t', w.task, taskSegs(a, snap, w.task))}
         {w.ctx > 0 && cell('x', w.ctx, ctxSegs(a, snap.settings))}
         {w.cache > 0 && cell('k', w.cache, cacheSegs(a, snap.settings, snap.fetchedAt, now))}
-        {cell('$', w.cost, [{ t: a.costUsd === null && io ? 'n/a' : money(a.costUsd), dim: a.costUsd === null }])}
+        {cell('$', w.cost, [{ t: a.costUsd === null && io ? 'n/a' : money(a.costUsd), dim: a.costUsd === null }], true)}
       </Box>
-      {ui.selected === a.id && <Detail E={E} a={a} snap={snap} now={now} cols={c.cols} />}
+      {ui.selected === a.id && <Detail E={E} a={a} snap={snap} now={now} cols={c.cols} last={c.last} />}
     </Box>
   )
 }
@@ -156,18 +156,20 @@ export function Table(c: Ctx) {
   const w = columns(c)
   const live = snap.agents.filter(isLive)
   const fin = snap.agents.filter(a => !isLive(a))
+  // The last row on show has no blank line under its opened detail: the next section brings its own.
+  const lastRow = fin.length > 0 && !ui.foldOpen ? null : [...live, ...(ui.foldOpen ? fin : [])].at(-1)
   return (
     <Box flexDirection="column">
       <Box key="th">
         <Box width={w.mark} marginRight={1}>{null}</Box>
         <Line E={E} w={cols - w.mark - 1} k="th1" segs={[{ t: pad('agent', w.agent + 1), dim: true }, ...(w.task > 0 ? [{ t: pad('task', w.task + 1), dim: true }] : []),
-          ...(w.ctx > 0 ? [{ t: pad('ctx', w.ctx + 1), dim: true }] : []), ...(w.cache > 0 ? [{ t: pad('cache', w.cache + 1), dim: true }] : []), { t: 'cost', dim: true }]} />
+          ...(w.ctx > 0 ? [{ t: pad('ctx', w.ctx + 1), dim: true }] : []), ...(w.cache > 0 ? [{ t: pad('cache', w.cache + 1), dim: true }] : []), { t: ' '.repeat(Math.max(0, w.cost - 4)) + 'cost', dim: true }]} />
       </Box>
-      {live.map(a => <AgentRow {...c} a={a} c={w} />)}
+      {live.map(a => <AgentRow {...c} a={a} c={w} last={a === lastRow} />)}
       {fin.length > 0 && (
         <Button key="fold" plain dimColor label={`${ui.foldOpen ? '▾' : '▸'} ${fin.length} finished`} onPress={act.fold} />
       )}
-      {ui.foldOpen && fin.map(a => <AgentRow {...c} a={a} c={w} />)}
+      {ui.foldOpen && fin.map(a => <AgentRow {...c} a={a} c={w} last={a === lastRow} />)}
     </Box>
   )
 }

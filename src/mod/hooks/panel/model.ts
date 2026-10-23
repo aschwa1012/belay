@@ -285,7 +285,7 @@ export function markSeg(state: BelayDisplayState, marks: BelaySettings['marks'])
   if (marks === 'words') return { t: `[${WORD[state]}]`, c }
   return { t: GLYPH[state], c }
 }
-export const markWidth = (m: BelaySettings['marks']): number => (m === 'words' ? 6 : 2)
+export const markWidth = (m: BelaySettings['marks']): number => (m === 'words' ? 6 : 1)
 
 // ---- run summary --------------------------------------------------------------------------------
 
