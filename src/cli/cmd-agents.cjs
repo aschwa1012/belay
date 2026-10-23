@@ -189,8 +189,10 @@ function fillFromTranscript(orch, orchDir, run, cache) {
   orch.transcript_usage = { tokens: u.tokens, messages: u.messages };
   orch.context_tokens = u.context_tokens;
   if (u.model_seen) { orch.model_seen = u.model_seen; if (orch.model == null) orch.model = u.model_seen; }
-  if (u.cost_usd != null) { orch.cost_usd = u.cost_usd; orch.cost_source = 'estimate from the session transcript'; }
-  else orch.cost_note = `no rate for ${u.unpriced_models.join(', ') || 'this model'}: tokens only`;
+  if (u.cost_usd != null) {
+    orch.cost_usd = u.cost_usd; orch.cost_source = 'estimate from the session transcript'; orch.cost_basis = 'transcript, API rates';
+    if (u.cache_write_assumed_5m) orch.cost_note = `${u.cache_write_assumed_5m} message(s) gave no 5m/1h cache-write split: all priced at the 5m rate`;
+  } else orch.cost_note = `no rate for ${u.unpriced_models.join(', ') || 'this model'}: tokens only`;
 }
 
 // An orchestrator with tokens and no result line of its own (the run is live: one turn, no result yet)
