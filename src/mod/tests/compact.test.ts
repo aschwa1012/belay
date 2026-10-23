@@ -144,10 +144,11 @@ describe('"+N more" comes from the list read alone', () => {
     expect(flat(rows.join(' '))).toContain('+3 more ·')
   })
   test('a list carried over from an earlier round says when it was read, and shows no "+N more"', async ($, on) => {
-    const wd = await boot($, on, world(5))
+    const wd = await boot($, on, world(8))
     await openPane($, wd)
     const { ui } = await pane($, 'terminal', 72)
     expect(noteRows(leaves(await ui.drawn()))).toBe(5)
+    expect(flat(leaves(await ui.drawn()).join(' '))).toContain('+3 more ·') // while the list is fresh
     wd.w.awaitingFail = true
     wd.w.notices = { run_id: RUN, events: [heldEv(3)] }
     await later(wd, 6000)
@@ -188,7 +189,7 @@ describe('what a note press may do', () => {
 
 describe('the one-line row', () => {
   test('a reason that fits is shown on the closed line even when it is short', async ($, on) => {
-    const wd = await boot($, on, world(1, () => 'ok', () => 't'))
+    const wd = await boot($, on, world(1, () => 'ok', () => 'abcdefghi')) // title and reason fill the 17 cells exactly
     await openPane($, wd)
     const rows = leaves(await (await pane($, 'terminal', 30)).ui.drawn())
     expect(rows.some(r => r.includes(' · ok'))).toBe(true)
