@@ -116,6 +116,18 @@ describe('the settle buttons', () => {
     await expect(ui.input({ key: INPUT, text: 'again' })).rejects.toThrow()
   })
 
+  test('a settle button cancels a pending review confirm', async ($, on) => {
+    const wd = await boot($, on, { notices: waiting })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await ui.press({ key: OPEN })
+    await ui.press({ key: 'review' }) // asks
+    await ui.press({ key: KEY('archive') }) // any other press cancels
+    await ui.press({ key: 'review' }) // so this asks again, it does not dispatch
+    await later(wd, 100)
+    expect(wd.spawned).toEqual([])
+  })
+
   test('a failure toasts the error text', async ($, on) => {
     const err = { error: { code: 'E_NOT_FOUND', message: 'note x has no active hold', detail: { id: 'x' } } }
     const wd = await boot($, on, { notices: waiting, settleOut: { exitCode: 1, stdout: '', stderr: JSON.stringify(err, null, 2) } })
