@@ -17,8 +17,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On, Timer } from 'claude-code'
 import type { BelayPanelSettled, BelayPanelSnap, BelayPanelUi, BelayPanelWatch } from '../../types/index'
-import { argvFor, buildSnapshot, fatalSnapshot, fwd, launcherLine, isWindowsPath, parseRan, parseRunFile, projectRootOf, repoCliGuess, type Ran, type RunFileRead } from './fetch'
-import { CONFIRM_MS, normHeld, reasonProblem, reviewProject, SETTLE_ACTIONS, SETTLE_UNKNOWN, settleArgs, settleKind, settleLine, settledActive, shortId, type SettleAction } from './held'
+import { argvFor, buildSnapshot, fatalSnapshot, fwd, launcherLine, isWindowsPath, needsRun, parseRan, parseRunFile, projectRootOf, repoCliGuess, type Ran, type RunFileRead } from './fetch'
+import { CONFIRM_MS, normHeld, reasonProblem, reviewProject, SETTLE_ACTIONS, SETTLE_UNKNOWN, PENDING_STALE_MS, pruneSettled, settleArgs, settleKind, settleLine, settledActive, shortId, type SettleAction } from './held'
 import { DEFAULT_SETTINGS, DEFAULT_UI } from './model'
 import { Band, BandWaiting, Fallback, Pane, type Act, type Els } from './view'
 
@@ -225,12 +225,18 @@ async function dispatchReview($: Host, project: string): Promise<void> {
   if (starting.has(project)) { $.ui.toast(`belay: an archive review of ${project} is being started.`); return }
   starting.add(project)
   const cwd = watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null
-  const runArg = watch.runId ? [RUN_FLAG, watch.runId] : []
+  // First without --run: the CLI chooses the newest ended run with notes on. Only if it says the one run with notes on is live (E_NOT_FOUND with live_run) is it
+  // asked again, once, with the watched run named.
+  const attempts: string[][] = [[], ...(watch.runId ? [[RUN_FLAG, watch.runId]] : [])]
   try {
-    const res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS, project, START_FLAG, ...runArg], watch.dataDir), { timeoutMs: START_TIMEOUT_MS, ...(cwd ? { cwd } : {}) })
+    let res = { exitCode: 1, stdout: '', stderr: '' }
+    for (const runArg of attempts) {
+      res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS, project, START_FLAG, ...runArg], watch.dataDir), { timeoutMs: START_TIMEOUT_MS, ...(cwd ? { cwd } : {}) })
+      if (!needsRun(res.exitCode, res.stdout, res.stderr, watch.runId)) break
+    }
     $.ui.toast(launcherLine(res.exitCode, res.stdout, res.stderr, project))
   } catch (err) {
-    $.ui.toast(`belay: the review was not started: ${firstLine(err instanceof Error ? err.message : String(err)) || 'the launcher did not answer'}`)
+    $.ui.toast(`belay: the review launcher did not answer (${firstLine(err instanceof Error ? err.message : String(err)) || 'no reason given'}): whether it started is unknown; the memory line shows a running review`)
   } finally { starting.delete(project) }
 }
 
@@ -260,6 +266,7 @@ async function reviewPress($: Host): Promise<void> {
 //   4. cancel, closing or opening a note, the note leaving the list or a change of run clears the pending state (the settleA atom).
 // The reason is one argv element. Steps 1 and 2 and cancel run no process.
 const settling = new Set<string>() // note ids whose settle is running
+let inlineFocused = false // the inline band has no focus prop: true only after a $.ui.focus on its Input was answered without a denial
 
 async function settleStart($: Host, action: SettleAction, id: string): Promise<void> {
   if (!SETTLE_ACTIONS.includes(action)) { $.ui.toast(`belay: unknown action ${action}.`); return }
@@ -268,7 +275,7 @@ async function settleStart($: Host, action: SettleAction, id: string): Promise<v
   if (!listed) { $.ui.toast(`belay: note ${shortId(id)} no longer awaits you.`); return } // only a note belay named as waiting on the operator
   const watch = await read($, watchA)
   if (!watch || watch.error) { $.ui.toast('belay: no run is watched, so a note cannot be settled.'); return }
-  if (settling.has(id) || settledActive((await read($, settledA))[id], snap)) { $.ui.toast(`belay: note ${shortId(id)} was just settled; wait for the next read before acting on it again.`); return }
+  if (settling.has(id) || settledActive((await read($, settledA))[id], snap, id)) { $.ui.toast(`belay: note ${shortId(id)} was just settled; wait for the next read before acting on it again.`); return }
   await update($, uiA, calm)
   await update($, settleA, () => ({ id, action, stage: 'reason', reason: '', title: listed.title, run: { runId: watch.runId, dataDir: watch.dataDir, cli: watch.cli, node: watch.node } }))
   void focusReason($, snap, id) // not awaited: the Input is drawn only after this press returns, and the ring can move to it only then
@@ -280,10 +287,11 @@ async function settleStart($: Host, action: SettleAction, id: string): Promise<v
 // to open, gets `$.ui.focus`. A refusal toasts nothing: the dim hint line in the reason stage, drawn while the pane is not focused, is the signal.
 async function focusReason($: Host, snap: BelayPanelSnap | null, id: string): Promise<void> {
   const ui = await read($, uiA)
+  inlineFocused = false
   if (!ui.open) return
   const inline = (snap?.settings ?? DEFAULT_SETTINGS).pane === 'above-prompt' || !ui.placed
   try {
-    if (inline) await $.ui.focus({ requestId: 'above-prompt', key: `reason:${id}` })
+    if (inline) { const r = await $.ui.focus({ requestId: 'above-prompt', key: `reason:${id}` }); inlineFocused = !r.deny; $.ui.invalidate('ui.render') }
     else await $.ui.open({ id: PANE, title: 'belay', focus: true })
   } catch { /* the hint line shows while the pane is not focused */ }
 }
@@ -304,7 +312,7 @@ async function settlePress($: Host, pressed: string): Promise<void> {
   if (!p || p.stage !== 'confirm' || p.id !== pressed) { $.ui.toast('belay: no settle is waiting for a confirm.'); return }
   const { action, id, reason } = p
   if (settling.has(id)) { $.ui.toast(`belay: note ${shortId(id)} is being settled.`); return }
-  if (settledActive((await read($, settledA))[id], await read($, snapA))) { await update($, settleA, () => null); $.ui.toast(`belay: note ${shortId(id)} was just settled; it was not settled again.`); return }
+  if (settledActive((await read($, settledA))[id], await read($, snapA), id)) { await update($, settleA, () => null); $.ui.toast(`belay: note ${shortId(id)} was just settled; it was not settled again.`); return }
   settling.add(id)
   try {
     await update($, settleA, () => null) // consumed: a second press of the button finds nothing
@@ -316,6 +324,9 @@ async function settlePress($: Host, pressed: string): Promise<void> {
     if (!(now?.held?.awaitingNotes ?? []).some(n => n.id === id)) { $.ui.toast(`belay: note ${shortId(id)} no longer awaits you, so it was not settled.`); return }
     const r = await resolveCli($, watch)
     if ('error' in r) { $.ui.toast(`belay: the note was not settled: ${r.error}`); return }
+    // Written BEFORE the process runs: a hot reload that drops this function mid-settle leaves the note refused, as an unknown outcome, not open to a second settle.
+    const t0 = await $.clock.now()
+    await update($, settledA, m => ({ ...m, [id]: { label: 'settling…', at: t0, pending: true as const } }))
     const cwd = watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null
     try {
       const res = await $.process.run(argvFor(r.cli, settleArgs(action, id, reason), watch.dataDir), { timeoutMs: START_TIMEOUT_MS, ...(cwd ? { cwd } : {}) })
@@ -329,11 +340,22 @@ async function settlePress($: Host, pressed: string): Promise<void> {
   } finally { settling.delete(id) }
 }
 
+// The operator looked (belay memory held) after an unknown outcome. The row is not opened at once: it is marked re-checking, stamped now, so only a read started after
+// this decides whether the note is still there; and not while a settle of it is still running.
+async function recheckNote($: Host, id: string): Promise<void> {
+  if (settling.has(id)) { $.ui.toast(`belay: note ${shortId(id)} is being settled; wait for it to finish.`); return }
+  const at = await $.clock.now()
+  await update($, settledA, m => (m[id] && (m[id]!.pending !== true || at - m[id]!.at > PENDING_STALE_MS) ? { ...m, [id]: { label: 're-checking', at } } : m))
+  lastFetchAt = 0
+  $.ui.invalidate('ui.render')
+}
+
 // Whatever the settle's outcome (written, unknown, refused), the note stays hidden and refused until a read taken after it has caught up: the snapshot the
 // rechecks read is the one from before the write, and a second settle on it would write twice. The next tick reads at once.
 async function markSettled($: Host, id: string, line: string): Promise<void> {
-  const at = await $.clock.now()
-  await update($, settledA, m => Object.fromEntries([...Object.entries({ ...m, [id]: { label: settleKind(line).label, at } }).slice(-20)]))
+  const at = await $.clock.now() // stamped after the process returned; the API has only the epoch clock (no monotonic one), so this is compared with fetchedAt in the same clock
+  const k = settleKind(line)
+  await update($, settledA, m => pruneSettled({ ...m, [id]: { label: k.label, at, ...(k.kind === 'unknown' ? { unknown: true as const } : {}) } }, id))
   lastFetchAt = 0
   $.ui.invalidate('ui.render')
 }
@@ -365,6 +387,7 @@ function acts($: Host): Act {
     settle: (action, id) => { void settleStart($, action, id) },
     reason: value => { void reasonSubmit($, value) },
     cancel: () => { void update($, settleA, () => null) },
+    recheck: id => { void recheckNote($, id) },
     commit: id => { void settlePress($, id) },
     note: id => { void update($, settleA, () => null); void update($, uiA, u => ({ ...calm(u), openNote: u.openNote === id ? null : id })) }, // opening, switching or closing a note drops a pending settle
   }
@@ -441,7 +464,7 @@ export function registerPanel(on: On): void {
     const ui = await read($, uiA)
     const now = await $.clock.now()
     if (!snap) return <BandWaiting E={E} runId={watch.runId} errors={[]} cols={e.props.bodyColumns} />
-    const c = { E, snap, ui, now, cols: e.props.bodyColumns, act: acts($), pend: await read($, settleA), focused: true, settled: await read($, settledA) } // the band has no focus prop: the hint is for the docked pane
+    const c = { E, snap, ui, now, cols: e.props.bodyColumns, act: acts($), pend: await read($, settleA), focused: inlineFocused, settled: await read($, settledA) } // the band has no focus prop: the hint is for the docked pane
     // Inline when the person chose above-prompt, or when the docked pane is not seated (a narrow terminal).
     const inline = ui.open && (snap.settings.pane === 'above-prompt' || !ui.placed)
     if (e.surface !== 'terminal') return inline ? <Fallback {...c} /> : <Band {...c} />

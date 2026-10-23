@@ -24,6 +24,8 @@ export type Act = {
   reason: (value: string) => void
   /** Cancel the pending settle. */
   cancel: () => void
+  /** The operator has checked an unknown outcome (belay memory held): the row may be acted on again. UI state only. */
+  recheck: (id: string) => void
   /** The confirm button of the pending settle: the only way to the write (index.tsx). */
   commit: (id: string) => void
   /** Open an awaiting note's line (its reason and buttons), or close it when it is the open one. UI state only: runs no process. */

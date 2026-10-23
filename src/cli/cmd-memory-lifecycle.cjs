@@ -89,11 +89,12 @@ async function restore(core, parsed) {
   return { code: 0, text: `restored ${res.id} to ${res.namespace}  reason: ${one(res.receipt.reason)}  at ${when(res.receipt.at)}${stays}\n`, json: res };
 }
 
-// belay memory held [--project p] [--awaiting]: one line per held note (a read). belay memory held settle <id> ...: the operator's settle (a write).
+// belay memory held [--project p] [--awaiting]: one line per held note (a read). belay memory held settle <id> ... [--if-awaiting]: the operator's settle (a write);
+// --if-awaiting settles only a hold that awaits the operator, checked in the write's own transaction (the panel always passes it).
 async function held(core, parsed) {
   const o = parsed.opts;
   if (parsed.positional[0] === 'settle') {
-    const res = await core.memory.heldSettle({ id: parsed.positional[1], action: o.action, reason: o.reason });
+    const res = await core.memory.heldSettle({ id: parsed.positional[1], action: o.action, reason: o.reason, ...(o.ifAwaiting ? { if_awaiting: true } : {}) });
     const changed = [`hold ${res.held_row}: ${res.held ? res.held.body.state : '?'}`, `note ${res.id}: ${res.row ? res.row.namespace : '?'}`];
     const extra = res.settled ? ` (${res.settled.count} report${res.settled.count === 1 ? '' : 's'} settled, the note not verified)` : '';
     return { code: 0, text: `${res.action} ${res.id}: ${res.outcome}${extra}  receipt: ${res.receipt}\n  ${changed.join('\n  ')}\n`, json: res };

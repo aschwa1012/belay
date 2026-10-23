@@ -9,18 +9,70 @@ const running = (pid_alive = true) => ({ kind: 'review_running', ts: T0, run_id:
 const ended = (ok: boolean, text: string) => ({ kind: 'review_ended', ts: T0, run_id: RUN, project: 'acme', ok, code: ok ? null : 'E_ARGS', text, job: 'archreview-r-1', claim_id: 'me-1' })
 const notices = (...events: unknown[]) => ({ run_id: RUN, events })
 
-describe('the review acts for the watched run', () => {
-  test('the launcher argv is exactly memory review --project p --start --run <watched run>', async ($, on) => {
-    const wd = await boot($, on, { notices: notices(held(3)) })
+describe('the review acts for the watched run only when it must', () => {
+  const started = { exitCode: 0, stdout: JSON.stringify({ started: true, project: 'acme', run_id: 'r-1', pid: 4242, job: 'archreview-r-1', claim_id: 'me-1' }), stderr: '' }
+  const notFound = (live: string | null) => ({ exitCode: 1, stdout: '', stderr: JSON.stringify({ error: { code: 'E_NOT_FOUND', message: 'the only run with notes on is live', live_run: live } }, null, 2) })
+  const press = async ($: any, on: any, w: object) => {
+    const wd = await boot($, on, { notices: notices(held(3)), ...w })
     await openPane($, wd)
     const { ui } = await pane($)
     await ui.press({ key: 'review' })
     await ui.press({ key: 'review' })
     await later(wd, 100)
+    return wd
+  }
+  const tail = (argv: string[]) => argv.slice(argv.indexOf('memory'))
+  test('the first launch has no --run, and nothing else when it answers', async ($, on) => {
+    const wd = await press($, on, { launchers: [started] })
     expect(wd.spawned.length).toBe(1)
-    const argv = wd.spawned[0]!
-    expect(argv.slice(argv.indexOf('memory'), argv.indexOf('memory') + 7)).toEqual(['memory', 'review', '--project', 'acme', '--start', '--run', RUN])
-    expect(argv.filter(a => a === '--run').length).toBe(1)
+    expect(tail(wd.spawned[0]!)).toEqual(['memory', 'review', '--project', 'acme', '--start', '--json'])
+  })
+  test('E_NOT_FOUND with live_run is retried once with --run <the watched run>', async ($, on) => {
+    const wd = await press($, on, { launchers: [notFound('r-7f3a'), started] })
+    expect(wd.spawned.length).toBe(2)
+    expect(tail(wd.spawned[0]!)).toEqual(['memory', 'review', '--project', 'acme', '--start', '--json'])
+    expect(tail(wd.spawned[1]!)).toEqual(['memory', 'review', '--project', 'acme', '--start', '--run', RUN, '--json'])
+    expect(wd.toasts.at(-1)).toContain('started: pid 4242')
+  })
+  test('the retry is made once: a second E_NOT_FOUND ends it with the refusal', async ($, on) => {
+    const wd = await press($, on, { launchers: [notFound('r-7f3a')] })
+    expect(wd.spawned.length).toBe(2)
+    expect(wd.toasts.at(-1)).toContain('E_NOT_FOUND')
+  })
+  test('E_NOT_FOUND without a live_run, and any other error, is not retried', async ($, on) => {
+    const a = await press($, on, { launchers: [notFound(null)] })
+    expect(a.spawned.length).toBe(1)
+    expect(a.toasts.at(-1)).toContain('the review was not started')
+  })
+  test('E_NOT_FOUND naming another live run is not retried: the refusal is shown as it is', async ($, on) => {
+    const wd = await press($, on, { launchers: [notFound('r-another')] })
+    expect(wd.spawned.length).toBe(1)
+    expect(wd.toasts.at(-1)).toContain('E_NOT_FOUND')
+  })
+  test('a rejected or timed-out first launch is not retried and says the outcome is unknown', async ($, on) => {
+    const wd = await press($, on, { launcherReject: 'timed out' })
+    expect(wd.spawned.length).toBe(1)
+    expect(wd.toasts.at(-1)).toContain('unknown')
+    expect(wd.toasts.at(-1)).toContain('timed out')
+  })
+  test('a live run whose close waits says so, with the CLI note', async ($, on) => {
+    const waits = { exitCode: 0, stdout: JSON.stringify({ started: true, project: 'acme', pid: 7, job: 'j', run_live: true, close_waits: true, closing_note: 'the close of this run waits for the review' }), stderr: '' }
+    const wd = await press($, on, { launchers: [waits] })
+    expect(wd.toasts.at(-1)).toContain('started: pid 7')
+    expect(wd.toasts.at(-1)).toContain("this run's close waits for it")
+    expect(wd.toasts.at(-1)).toContain('note: the close of this run waits for the review')
+    expect(wd.toasts.at(-1)).not.toContain('warning')
+  })
+  test('an older CLI closing_warning is still shown, and says nothing of waiting', async ($, on) => {
+    const old = { exitCode: 0, stdout: JSON.stringify({ started: true, project: 'acme', pid: 7, job: 'j', closing_warning: 'this run is live; its close cuts the review off' }), stderr: '' }
+    const wd = await press($, on, { launchers: [old] })
+    expect(wd.toasts.at(-1)).toContain('warning: this run is live; its close cuts the review off')
+    expect(wd.toasts.at(-1)).not.toContain('close waits')
+  })
+  test('a warning the launcher returns is in the toast', async ($, on) => {
+    const warned = { exitCode: 0, stdout: JSON.stringify({ started: true, project: 'acme', pid: 7, job: 'j', closing_warning: 'this run is live; its close cuts the review off' }), stderr: '' }
+    const wd = await press($, on, { launchers: [warned] })
+    expect(wd.toasts.at(-1)).toContain('warning: this run is live; its close cuts the review off')
   })
 })
 

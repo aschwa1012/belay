@@ -155,7 +155,7 @@ test('normAwaiting: only entries that await the operator, capped, cleaned', () =
 
 test('settleArgs keeps the reason one element, whatever it holds; settleLine shows the proof or the error', () => {
   for (const reason of ['two words', '-x', '--archive', 'it\'s "q"', '']) {
-    assert.deepStrictEqual(M.settleArgs('reoffer', 'n1', reason), ['memory', 'held', 'settle', 'n1', '--reoffer', '--reason', reason]);
+    assert.deepStrictEqual(M.settleArgs('reoffer', 'n1', reason), ['memory', 'held', 'settle', 'n1', '--reoffer', '--reason', reason, '--if-awaiting']);
   }
   const ok = JSON.stringify({ id: 'abcdef0123456789', action: 'archive', outcome: 'archived', receipt: 'held-settle:x@1' });
   assert.strictEqual(M.settleLine(0, ok, ''), 'belay: archive abcdef01: archived · receipt held-settle:x@1');
@@ -195,4 +195,26 @@ test('a usage error ({"error": "<text>"}, exit 2) is a definite refusal with its
   assert.strictEqual(M.settleLine(2, '', usage), 'belay: the note was not settled (exit 2): belay memory held settle needs exactly one of --archive, --release or --reoffer');
   const F = await loadPanelModule('fetch');
   assert.strictEqual(F.launcherLine(2, '', JSON.stringify({ error: 'belay memory: bad flag' }, null, 2), 'acme'), 'belay: the review was not started (exit 2): belay memory: bad flag');
+});
+
+test('tokensShort never renders 1000.0k', () => {
+  assert.strictEqual(M.tokensShort(18247), '18.2k');
+  assert.strictEqual(M.tokensShort(999949), '999.9k');
+  assert.strictEqual(M.tokensShort(999950), '1.0M');
+  assert.strictEqual(M.tokensShort(999999), '1.0M');
+  assert.strictEqual(M.tokensShort(1234567), '1.2M');
+  assert.strictEqual(M.tokensShort(847), '847');
+});
+
+test('pruneSettled drops only resolved entries, oldest first, and never the newest', () => {
+  const m = {};
+  for (let i = 0; i < 22; i += 1) m['n' + i] = i === 0 ? { label: 'u', at: 1, unknown: true } : i === 1 ? { label: 'p', at: 1, pending: true } : { label: 'ok', at: i };
+  const out = M.pruneSettled(m, 'n21');
+  assert.strictEqual(Object.keys(out).length, 20);
+  assert.ok(out.n0 && out.n1, 'an unknown and a pending entry are kept');
+  assert.ok(out.n21, 'the newest is kept');
+  assert.ok(!out.n2 && !out.n3, 'the oldest resolved ones went');
+  const all = {};
+  for (let i = 0; i < 25; i += 1) all['u' + i] = { label: 'u', at: i, unknown: true };
+  assert.strictEqual(Object.keys(M.pruneSettled(all, 'u24')).length, 25, 'nothing unresolved is ever dropped');
 });

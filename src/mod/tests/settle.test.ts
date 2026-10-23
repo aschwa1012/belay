@@ -13,7 +13,9 @@ const INPUT = `reason:${NOTE_ID}`
 const COMMIT = `commit:${NOTE_ID}`
 const CANCEL = `cancel:${NOTE_ID}`
 const flat = (s: string) => s.replace(/\s+/g, ' ')
-const ok = (action: string) => ({ exitCode: 0, stdout: JSON.stringify({ id: NOTE_ID, action, outcome: `${action}d`, receipt: 'held-settle:abc@1' }), stderr: '' })
+// The outcome words belay prints (archived, released, still_unsupported, reoffered), not the verb with a d.
+const OUT: Record<string, string> = { archive: 'archived', release: 'released', reoffer: 'reoffered' }
+const ok = (action: string, outcome = OUT[action]!) => ({ exitCode: 0, stdout: JSON.stringify({ id: NOTE_ID, action, outcome, receipt: 'held-settle:abc@1' }), stderr: '' })
 
 // open the note, press the action, type the reason in the Input and press Enter: the confirm stage
 async function toConfirm(ui: any, action: string, reason: string) {
@@ -57,8 +59,8 @@ describe('the settle buttons', () => {
       expect(wd.settled.length).toBe(1)
       const argv = wd.settled[0]!
       const tail = argv.slice(argv.indexOf('memory'))
-      expect(tail.slice(0, 8)).toEqual(['memory', 'held', 'settle', NOTE_ID, `--${action}`, '--reason', reason, '--json'])
-      expect(wd.toasts.at(-1)).toBe(`belay: ${action} 08954ec7: ${action}d · receipt held-settle:abc@1`)
+      expect(tail.slice(0, 9)).toEqual(['memory', 'held', 'settle', NOTE_ID, `--${action}`, '--reason', reason, '--if-awaiting', '--json'])
+      expect(wd.toasts.at(-1)).toBe(`belay: ${action} 08954ec7: ${OUT[action]} · receipt held-settle:abc@1`)
       expect(wd.asked).toEqual([]) // the session has no AskUserQuestion: nothing asks
       await expect(ui.press({ key: COMMIT })).rejects.toThrow() // consumed: a second press finds nothing
       expect(wd.settled.length).toBe(1)
@@ -465,7 +467,7 @@ describe('a settled note is hidden and refused until a read taken after the sett
     await ui.press({ key: COMMIT })
     await later(wd, 20) // not long enough for another read
     expect(wd.settled.length).toBe(1)
-    expect(await drawnWords(ui)).toContain('settled: reofferd')
+    expect(await drawnWords(ui)).toContain('settled: reoffered')
     await expect(ui.press({ key: KEY('archive') })).rejects.toThrow() // the buttons are gone
     expect(wd.settled.length).toBe(1)
   })
@@ -497,7 +499,7 @@ describe('a settled note is hidden and refused until a read taken after the sett
     await toConfirm(ui, 'reoffer', 'because')
     await ui.press({ key: COMMIT })
     await later(wd, 6000) // a fresh read follows, taken after the settle, and lists it again
-    expect(await drawnWords(ui)).not.toContain('settled: reofferd')
+    expect(await drawnWords(ui)).not.toContain('settled: reoffered')
     expect(words(await ui.drawn())).toContain('▸ archive')
   })
   test('once a newer read no longer lists the note the row is gone', async ($, on) => {
@@ -522,5 +524,96 @@ describe('a settled note is hidden and refused until a read taken after the sett
     await ui.press({ key: OPEN }).catch(() => undefined)
     await expect(ui.press({ key: KEY('archive') })).rejects.toThrow()
     expect(wd.settled.length).toBe(1)
+  })
+})
+
+describe('an unknown outcome keeps the row refused', () => {
+  test('a later read that still lists the note does not bring the buttons back; re-check does', async ($, on) => {
+    const wd = await boot($, on, { notices: waiting, settleReject: 'timed out' })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await toConfirm(ui, 'archive', 'because')
+    await ui.press({ key: COMMIT })
+    await later(wd, 6000) // reads follow, taken after the settle, and still list the note
+    expect(await drawnWords(ui)).toContain('outcome unknown')
+    await expect(ui.press({ key: KEY('release') })).rejects.toThrow()
+    await ui.press({ key: 'recheck:' + NOTE_ID }) // the operator has looked (belay memory held)
+    // not opened at once: stamped now, it waits for a read started after it, and an immediate settle is impossible
+    expect(await drawnWords(ui)).toContain('re-checking')
+    await expect(ui.press({ key: KEY('release') })).rejects.toThrow()
+    expect(wd.settled.length).toBe(1)
+    await later(wd, 6000) // a read taken after the re-check follows and still lists the note
+    expect(words(await ui.drawn())).toContain('▸ archive')
+  })
+  test('it clears by itself once a fresh read no longer lists the note', async ($, on) => {
+    const wd = await boot($, on, { notices: waiting, settleReject: 'timed out' })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await toConfirm(ui, 'archive', 'because')
+    await ui.press({ key: COMMIT })
+    wd.w.notices = notices({ ...held, awaiting_operator: 0 })
+    await later(wd, 6000)
+    expect(await drawnWords(ui)).not.toContain('08954ec7')
+  })
+  test('the entry exists while the process is still running (a reload mid-settle cannot start a second one)', async ($, on) => {
+    let release!: () => void
+    const hold = new Promise<void>(r => { release = r })
+    const wd = await boot($, on, { notices: waiting, settleHold: hold, settleOut: ok('archive') })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await toConfirm(ui, 'archive', 'because')
+    const pressed = ui.press({ key: COMMIT })
+    await later(wd, 50) // the process is in flight
+    expect(await drawnWords(ui)).toContain('settling…')
+    expect(leaves(await ui.drawn()).some(l => l.includes('re-check'))).toBe(false) // no re-check while it runs
+    await expect(ui.press({ key: 'recheck:' + NOTE_ID })).rejects.toThrow()
+    await expect(ui.press({ key: KEY('release') })).rejects.toThrow()
+    release()
+    await pressed
+    await later(wd, 50)
+    expect(await drawnWords(ui)).toContain('settled: archived') // stamped with the real outcome after the process returns
+    expect(wd.settled.length).toBe(1)
+  })
+})
+
+describe('the hint on the inline band', () => {
+  test('a pending reason shows the hint while focus was not confirmed moved', async ($, on) => {
+    const wd = await boot($, on, { notices: waiting, mod: { pane: 'above-prompt' } })
+    await openPane($, wd)
+    const b = await band($, 'terminal', 100)
+    await b.ui.press({ key: OPEN })
+    await b.ui.press({ key: KEY('archive') })
+    await later(wd, 50) // the kit cannot move a ring: the inline focus is not confirmed
+    expect(flat(words(await b.ui.drawn()))).toContain('press ctrl+x tab to type the reason')
+  })
+})
+
+describe('re-check is careful', () => {
+  test('a settle dropped by a reload (pending past the launcher bound) reads as unknown and can be re-checked', async ($, on) => {
+    let release!: () => void
+    const hold = new Promise<void>(r => { release = r })
+    const wd = await boot($, on, { notices: waiting, settleHold: hold, settleOut: ok('archive') })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await toConfirm(ui, 'archive', 'because')
+    const pressed = ui.press({ key: COMMIT })
+    await later(wd, 50000) // the process never answers within the bound
+    expect(await drawnWords(ui)).toContain('outcome unknown')
+    expect(leaves(await ui.drawn()).some(l => l.includes('re-check'))).toBe(true)
+    release()
+    await pressed
+    await later(wd, 200)
+  })
+  test('pressing re-check makes the next read come at once (it resets the fetch clock)', async ($, on) => {
+    const wd = await boot($, on, { notices: waiting, settleReject: 'timed out' })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await toConfirm(ui, 'archive', 'because')
+    await ui.press({ key: COMMIT })
+    await later(wd, 1500) // the read the settle itself asked for has been made
+    const before = wd.ran.length
+    await ui.press({ key: 'recheck:' + NOTE_ID })
+    await later(wd, 1100) // the pane's usual period is 4 s: only a reset brings a read this soon
+    expect(wd.ran.length).toBeGreaterThan(before)
   })
 })

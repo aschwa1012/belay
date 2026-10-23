@@ -59,11 +59,30 @@ export function launcherLine(exitCode: number, stdout: string, stderr: string, p
   const j = asObj(stdout)
   const ej = asObj(stderr)
   const err = j && j.error !== null && typeof j.error === 'object' ? (j.error as Record<string, unknown>) : ej && ej.error !== null && typeof ej.error === 'object' ? (ej.error as Record<string, unknown>) : null
-  if (exitCode === 0 && j && j.started === true) return `belay: archive review of ${project} started: pid ${String(j.pid ?? '?')}, job ${String(j.job ?? '?')}`
-  if (exitCode === 0 && j && j.ended !== undefined) return `belay: archive review of ${project} ended at once: ${first(JSON.stringify(j.ended))}`
+  // A review acting for a live run carries a note: `closing_note` (the close waits for the review), or `closing_warning` / `warning` from an older CLI (the close cuts it off).
+  const noteRaw = j && typeof j.closing_note === 'string' ? j.closing_note : null
+  const warnRaw = j && typeof j.closing_warning === 'string' ? j.closing_warning : j && typeof j.warning === 'string' ? j.warning : null
+  const clip = (x: string): string => x.replace(/\s+/g, ' ').slice(0, 200)
+  const waits = j && j.close_waits === true ? ` · this run's close waits for it` : ''
+  const warn = `${waits}${noteRaw ? ` · note: ${clip(noteRaw)}` : warnRaw ? ` · warning: ${clip(warnRaw)}` : ''}`
+  if (exitCode === 0 && j && j.started === true) return `belay: archive review of ${project} started: pid ${String(j.pid ?? '?')}, job ${String(j.job ?? '?')}${warn}`
+  if (exitCode === 0 && j && j.ended !== undefined) return `belay: archive review of ${project} ended at once: ${first(JSON.stringify(j.ended))}${warn}`
   const plainErr = typeof j?.error === 'string' ? j.error : typeof ej?.error === 'string' ? ej.error : null // a usage error prints {"error": "<text>"}
   const said = err ? `${typeof err.code === 'string' ? `${err.code}: ` : ''}${typeof err.message === 'string' ? err.message.slice(0, 160) : ''}` : plainErr !== null ? first(plainErr) : first(stdout.trim() ? stdout : stderr)
   return exitCode === 0 ? `belay: ${said || 'archive review started'}` : `belay: the review was not started (exit ${exitCode})${said ? `: ${said}` : ''}`
+}
+
+// The review launcher refuses with E_NOT_FOUND and `live_run` (a run id) when the only run with notes on is still live and it was not named (cmd-memory-stages.cjs).
+// That field, never the words, tells the panel to say which run it means. null when the launcher said anything else.
+export function needsRun(exitCode: number, stdout: string, stderr: string, runId: string | null): boolean {
+  if (exitCode === 0 || !runId) return false
+  for (const text of [stdout, stderr]) {
+    try {
+      const e = (JSON.parse(text) as { error?: { code?: unknown; live_run?: unknown } }).error
+      if (e && typeof e === 'object' && e.code === 'E_NOT_FOUND' && e.live_run === runId) return true // only the run the panel watches; another live run's refusal names that run and is shown as it is
+    } catch { /* not JSON */ }
+  }
+  return false
 }
 
 export const argvFor = (cli: string[], args: string[], dataDir: string | null): string[] =>
