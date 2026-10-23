@@ -121,9 +121,11 @@ export function orchestratorItems(entries: BelayEntry[]): Item[] {
 function SettleRow({ E, cols, n, act, open }: { E: Els; cols: number; n: BelayAwaitingNote; act: Act; open: boolean }) {
   const { Box, Text, Button } = E
   const room = Math.max(0, cols - 4 - 8) // the attention mark, the open mark and the id
-  const title = n.title ? ` "${clip(n.title, Math.max(6, Math.floor(room * 0.4)))}"` : ''
+  const whole = (n.title ? ` "${n.title}"` : '') + (n.reason ? ` · ${n.reason}` : '')
+  // Whole when it fits; otherwise the title takes at most 40% of the room and the reason the rest, clipped with an ellipsis.
+  const title = cells(whole) <= room ? (n.title ? ` "${n.title}"` : '') : n.title ? ` "${clip(n.title, Math.max(6, Math.floor(room * 0.4)))}"` : ''
   const left = room - cells(title)
-  const reason = n.reason && left >= 8 ? ` · ${clip(n.reason, left - 3)}` : ''
+  const reason = n.reason && left >= 8 ? ` · ${cells(whole) <= room ? n.reason : clip(n.reason, left - 3)}` : ''
   const press = () => act.note(n.id)
   // The buttons wrap onto more lines when three do not fit.
   const rows: string[][] = [[]]
