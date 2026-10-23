@@ -320,7 +320,7 @@ async function run(ctx) {
   let postFailure = null;
   let endedRow = null;
   let gotRun = null;
-  let shutdown = null;
+  let shutdown = null, reviewWait = null;
   let stopReceipt = null;
   let closed = null;
   let memoryEnd = null;
@@ -410,6 +410,8 @@ async function run(ctx) {
     // Owner.stop() itself (src/core/owner.cjs, item 1): it finishes clearing timers, destroying
     // connections, closing the server and releasing the lock even when the store fails to close, and
     // rethrows only once all of that is done. Nothing else is needed here.
+    // ADR 0052: an archive review attached to this owner (the panel's button during the run) is waited for first; Ctrl-C or a console close cuts it.
+    try { reviewWait = await require('./run-review-wait.cjs').waitForReviews({ core, fast: fastClose, ...((process.env.BELAY_TEST_MODE === '1' && ctx.reviewWaitDeps) || {}) }); } catch (e) { reviewWait = { outcome: 'error', error: (e && e.message) || String(e) }; }
     try {
       shutdown = await RI.within(ce, core.shutdownOwner(), 'the owner shutdown', { error: 'cut by the fast close deadline' }, (m) => { postFailure = chain(postFailure, 'fast close', m); }, RI.SHUTDOWN_RESERVE_MS);
     } catch (e) {
@@ -428,6 +430,7 @@ async function run(ctx) {
     owner_pid: process.pid,
     attach: attachRow ? { epoch: attachRow.epoch, reattached: attachRow.reattached } : null,
     ended: endedBlock,
+    ...(reviewWait ? { review_wait: reviewWait } : {}),
     shutdown,
   };
   const orchestratorBlock = partial ? partial.orchestrator : emptyOrchestratorBlock();
