@@ -197,7 +197,7 @@ test('budgets: config path, doctor and mcp status each add under 500 ms to the h
   assertGate(result);
 });
 
-test('budgets: status, workers, tasks, receipts, memory stats and reads (a hybrid search among them), usage, briefing, logs (with --memory too) and diff each add under 500 ms to the host floor, interleaved, on a dead store', () => {
+test('budgets: status, workers, tasks, receipts, memory stats and reads (held --awaiting, a hybrid search among them), usage, briefing, logs (with --memory too) and diff each add under 500 ms to the host floor, interleaved, on a dead store', () => {
   const result = interleaved({
     spawnFloor: makeSpawnFloor(),
     commands: {
@@ -213,6 +213,7 @@ test('budgets: status, workers, tasks, receipts, memory stats and reads (a hybri
       memory_list: () => timedCli(['memory', 'list', 'run-budgets', '--index', '--data', dataDir], {}, 0, dataDir),
       memory_show: () => timedCli(['memory', 'show', memoryId, '--data', dataDir], {}, 0, dataDir),
       memory_timeline: () => timedCli(['memory', 'timeline', memoryId, '--data', dataDir], {}, 0, dataDir),
+      memory_held_awaiting: () => timedCli(['memory', 'held', '--awaiting', '--data', dataDir], {}, 0, dataDir), // the panel's awaiting-notes read
       memory_export: () => timedCli(['memory', 'export', 'run-budgets', '--data', dataDir], {}, 0, dataDir),
       usage: () => timedCli(['usage', 'run-budgets', '--by', 'worker', '--data', dataDir], {}, 0, dataDir),
       briefing: () => timedCli(['briefing', 'w1', '--data', dataDir], {}, 0, dataDir),
