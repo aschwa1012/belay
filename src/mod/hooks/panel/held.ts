@@ -187,6 +187,22 @@ export function cliError(stdout: string, stderr: string): CliError | null {
   return null
 }
 
+// A note settled in this panel stays hidden (and refused) until a read taken after the settle shows what is left: the snapshot's own read time and,
+// while some note still awaits, the awaiting list's, must both be newer than the settle and not carried over from an earlier round.
+export function settledActive(entry: { at: number } | undefined, snap: { fetchedAt: number; held?: { awaitingList?: { at: number; carried: boolean } } | null } | null): boolean {
+  if (!entry) return false
+  if (!snap || !(snap.fetchedAt > entry.at)) return true
+  const list = snap.held?.awaitingList
+  return !!list && (list.carried || !(list.at > entry.at))
+}
+
+// How a settle's toast reads as the row's own line.
+export function settleKind(line: string): { kind: 'ok' | 'unknown' | 'refused'; label: string } {
+  if (line.startsWith('belay: outcome unknown')) return { kind: 'unknown', label: 'outcome unknown' }
+  if (line.includes('was not settled')) return { kind: 'refused', label: 'not settled' }
+  return { kind: 'ok', label: `settled: ${line.split(': ')[2]?.split(' · ')[0] ?? 'done'}` }
+}
+
 export const SETTLE_UNKNOWN = 'belay: outcome unknown: re-read with belay memory held'
 
 // What `belay memory held settle --json` printed, as one toast line. Only a definite refusal says "not settled": a timeout, a lost owner,

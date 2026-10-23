@@ -324,9 +324,9 @@ describe('the pending stages wrap on a narrow pane', () => {
 })
 
 describe('the keyboard goes to the reason Input', () => {
-  // The kit has no bottom for a plugin's $.ui.focus (the engine's own implements it), so there the call is refused with "no implementation",
-  // which is the refusal path: the hint toast. What the kit can show is that the pane is asked for the keys (ui.open with focus) first.
-  test('starting a settle asks the docked pane for the keys, then tries to move the ring; a refusal toasts how to take the keyboard', async ($, on) => {
+  // The docked pane is asked for the keys once (ui.open with focus puts the ring on the autoFocus Input). A second $.ui.focus on it is denied as
+  // redundant, so none is made, and no refusal ever toasts: the dim hint line is the signal.
+  test('starting a settle asks the docked pane for the keys once and toasts nothing about focus', async ($, on) => {
     const wd = await boot($, on, { notices: waiting })
     await openPane($, wd)
     const { ui } = await pane($)
@@ -334,8 +334,8 @@ describe('the keyboard goes to the reason Input', () => {
     const before = wd.openArgs.length
     await ui.press({ key: KEY('archive') })
     await later(wd, 50)
-    expect(wd.openArgs.slice(before).some(a => a.id === 'belay' && a.focus === true)).toBe(true)
-    expect(wd.toasts.at(-1)).toBe('belay: press ctrl+x tab to type the reason (Esc gives the keys back)')
+    expect(wd.openArgs.slice(before).filter(a => a.id === 'belay' && a.focus === true).length).toBe(1)
+    expect(wd.toasts.some(t => t.includes('ctrl+x') || t.includes('keys'))).toBe(false)
   })
 
   test('the hint is drawn while the pane is not focused, and gone once it is', async ($, on) => {
@@ -434,6 +434,17 @@ describe('a pending settle is dropped when the panel closes or the run changes',
     await later(wd, 2000)
     expect(leaves(await ui.drawn())).not.toContain('  ▸ archive it')
   })
+  test('the /orch command closing the panel drops it', async ($, on) => {
+    const wd = await boot($, on, { notices: waiting })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await toConfirm(ui, 'archive', 'because')
+    await cmd($, 'orch') // closes the panel
+    await later(wd, 100)
+    await cmd($, 'orch') // and opens it again
+    await later(wd, 2000)
+    expect(leaves(await ui.drawn())).not.toContain('  ▸ archive it')
+  })
   test('a watch change drops it at once, with a toast', async ($, on) => {
     const wd = await boot($, on, { notices: waiting })
     await openPane($, wd)
@@ -442,5 +453,74 @@ describe('a pending settle is dropped when the panel closes or the run changes',
     await cmd($, 'belay', 'watch r-other')
     expect(wd.toasts.some(t => t === 'belay: the watched run changed, so the settle was cleared.')).toBe(true)
     expect(wd.settled).toEqual([])
+  })
+})
+
+describe('a settled note is hidden and refused until a read taken after the settle', () => {
+  test('after a settle the row shows what happened, its buttons are gone, and no second settle can start', async ($, on) => {
+    const wd = await boot($, on, { notices: waiting, settleOut: ok('reoffer') })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await toConfirm(ui, 'reoffer', 'because')
+    await ui.press({ key: COMMIT })
+    await later(wd, 20) // not long enough for another read
+    expect(wd.settled.length).toBe(1)
+    expect(await drawnWords(ui)).toContain('settled: reofferd')
+    await expect(ui.press({ key: KEY('archive') })).rejects.toThrow() // the buttons are gone
+    expect(wd.settled.length).toBe(1)
+  })
+  test('an unknown outcome and a refusal hide the row too, with their own words', async ($, on) => {
+    const wd = await boot($, on, { notices: waiting, settleReject: 'timed out' })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await toConfirm(ui, 'archive', 'because')
+    await ui.press({ key: COMMIT })
+    await later(wd, 20)
+    expect(await drawnWords(ui)).toContain('outcome unknown')
+    await expect(ui.press({ key: KEY('release') })).rejects.toThrow()
+  })
+  test('a failed settle says "not settled" and hides the row', async ($, on) => {
+    const err = { error: { code: 'E_NOT_FOUND', message: 'note x has no active hold', detail: { id: 'x' } } }
+    const wd = await boot($, on, { notices: waiting, settleOut: { exitCode: 1, stdout: '', stderr: JSON.stringify(err) } })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await toConfirm(ui, 'archive', 'because')
+    await ui.press({ key: COMMIT })
+    await later(wd, 20)
+    expect(await drawnWords(ui)).toContain('not settled')
+    await expect(ui.press({ key: KEY('release') })).rejects.toThrow()
+  })
+  test('once a newer read still lists the note (it was reoffered) the buttons come back', async ($, on) => {
+    const wd = await boot($, on, { notices: waiting, settleOut: ok('reoffer') })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await toConfirm(ui, 'reoffer', 'because')
+    await ui.press({ key: COMMIT })
+    await later(wd, 6000) // a fresh read follows, taken after the settle, and lists it again
+    expect(await drawnWords(ui)).not.toContain('settled: reofferd')
+    expect(words(await ui.drawn())).toContain('▸ archive')
+  })
+  test('once a newer read no longer lists the note the row is gone', async ($, on) => {
+    const wd = await boot($, on, { notices: waiting, settleOut: ok('archive') })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await toConfirm(ui, 'archive', 'because')
+    await ui.press({ key: COMMIT })
+    wd.w.notices = notices({ ...held, awaiting_operator: 0 })
+    await later(wd, 6000)
+    expect(await drawnWords(ui)).not.toContain('08954ec7')
+  })
+  test('a second settle on the same note within the stale window is refused even if it is started by hand', async ($, on) => {
+    // The first settle is held at the write; the note's buttons are still drawn. A second action cannot start before the first has finished.
+    const wd = await boot($, on, { notices: waiting, settleOut: ok('reoffer') })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await toConfirm(ui, 'reoffer', 'one')
+    await ui.press({ key: COMMIT })
+    await later(wd, 20)
+    await ui.press({ key: OPEN }).catch(() => undefined) // closing and opening again does not bring the buttons back
+    await ui.press({ key: OPEN }).catch(() => undefined)
+    await expect(ui.press({ key: KEY('archive') })).rejects.toThrow()
+    expect(wd.settled.length).toBe(1)
   })
 })

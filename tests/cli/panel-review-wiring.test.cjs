@@ -78,7 +78,7 @@ test('the check is not a tripwire: each way around it is found', () => {
     ['the settle word in a new place', patched('hooks/panel/index.tsx', 'const firstLine =', "const W2 = ['settle', 'x']\nconst firstLine ="), /the string "settle" appears outside/],
     ['a top-level second settleArgs in index.tsx, import dropped', patched('hooks/panel/index.tsx', 'const firstLine =', "const settleArgs = (a: string, id: string, reason: string) => ['memory', 'archive', 'purge', id, reason]\nconst firstLine ="), /settleArgs is declared in/],
     ['a local settleArgs shadow inside settlePress', patched('hooks/panel/index.tsx', "    const cwd = watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null\n    try {\n      const res = await $.process.run(argvFor(r.cli, settleArgs(", "    const cwd = watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null\n    const settleArgs = (a: string, i: string, why: string) => ['memory', 'archive', 'purge', i, why]\n    try {\n      const res = await $.process.run(argvFor(r.cli, settleArgs("), /settleArgs is declared in/],
-    ['settleArgs not imported from held', patched('hooks/panel/index.tsx', 'settleArgs, settleLine', 'settleLine'), /does not import settleArgs/],
+    ['settleArgs not imported from held', patched('hooks/panel/index.tsx', 'settleArgs, settleKind', 'settleKind'), /does not import settleArgs/],
     ['a second argvFor in index.tsx', patched('hooks/panel/index.tsx', 'const firstLine =', "const argvFor = (cli: string[], a: string[]) => [...cli, ...a]\nconst firstLine ="), /argvFor is declared in/],
     ['a local argvFor shadow in settlePress', patched('hooks/panel/index.tsx', "    try {\n      const res = await $.process.run(argvFor(r.cli, settleArgs(", "    const argvFor = (cli: string[], a: string[], d: string | null) => [...cli, ...a]\n    try {\n      const res = await $.process.run(argvFor(r.cli, settleArgs("), /argvFor is declared in/],
     ['r.cli.splice in settlePress', patched('hooks/panel/index.tsx', "    const cwd = watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null\n    try {\n      const res = await $.process.run(argvFor(r.cli, settleArgs(", "    const cwd = watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null\n    r.cli.splice(1, 1, 'x')\n    try {\n      const res = await $.process.run(argvFor(r.cli, settleArgs("), /`r` or `r\.cli` is changed/],
@@ -107,6 +107,16 @@ test('the check is not a tripwire: each way around it is found', () => {
     ['a second --dir in a new helper', patched('hooks/panel/index.tsx', 'const firstLine =', "async function sneak7($: Host, cli: string[]) { await runJson($, cli, ['agents', '--dir', '/x'], null) }\nconst firstLine ="), /the string "--dir" appears in/],
     ['--dir reaches the settle writer', patched('hooks/panel/held.ts', "['memory', 'held', 'settle', id,", "['memory', 'held', 'settle', '--dir', id,"), /the string "--dir" appears in|settleArgs in hooks\/panel\/held\.ts is not exactly/],
     ['orchDir aliased inside fetchSnapshot', patched('hooks/panel/index.tsx', "  const cli = r.cli\n  const agents", "  const cli = r.cli\n  const od = { orchDir: '/x' }.orchDir\n  const agents"), /orchDir is used in fetchSnapshot other than as watch\.orchDir/],
+    ['an identifier spelled by escape', patched('hooks/panel/view.tsx', 'function Orchestrator(', 'const sneak20 = (act: Act) => { const { \\u0063ommit } = act; \\u0063ommit("x") }\nfunction Orchestrator('), /a \\u escape in code/],
+    ['Reflect over an Act', patched('hooks/panel/view.tsx', 'function Orchestrator(', "const sneak21 = (act: Act) => Reflect.get(act, 'com' + 'mit')\nfunction Orchestrator("), /Reflect is used/],
+    ['for...in over an Act', patched('hooks/panel/view.tsx', 'function Orchestrator(', 'const sneak22 = (act: Act) => { for (const k in act) void k }\nfunction Orchestrator('), /for\.\.\.in over an Act/],
+    ['Object.values over a ctx.act member', patched('hooks/panel/view.tsx', 'function Orchestrator(', 'const sneak23 = (c: Ctx) => Object.values(c.act)\nfunction Orchestrator('), /an Act is enumerated, spread or indexed/],
+    ['$.state in the panel', patched('hooks/panel/index.tsx', 'const firstLine =', "async function sneak24($: Host) { await $.state.set({ plugin: 'belay', key: 'x' } as never, 1) }\nconst firstLine ="), /\$\.state is used/],
+    ['the confirm stage written with double quotes', patched('hooks/panel/index.tsx', 'const firstLine =', 'async function sneak25($: Host) { await update ( $ , settleA , () => ({ id: "x", action: "archive", stage : "confirm", reason: "r", title: "", run: { runId: null, dataDir: null, cli: null, node: null } })) }\nconst firstLine ='), /stage 'confirm' is written outside reasonSubmit/],
+    ['the review argv gains an argument', patched('hooks/panel/index.tsx', 'START_FLAG, ...runArg]', "START_FLAG, ...runArg, '--all']"), /the review argv is not exactly/],
+    ['the review argv takes another run id', patched('hooks/panel/index.tsx', 'const runArg = watch.runId ? [RUN_FLAG, watch.runId] : []', 'const runArg = watch.runId ? [RUN_FLAG, project] : []'), /runArg is not exactly/],
+    ['--run spelled out elsewhere', patched('hooks/panel/index.tsx', 'const firstLine =', "const W3 = ['--run', 'x']\nconst firstLine ="), /--run/],
+    ['RUN_FLAG used elsewhere', patched('hooks/panel/index.tsx', 'const firstLine =', "const W4 = [RUN_FLAG, 'x']\nconst firstLine ="), /RUN_FLAG is named in/],
     ['REVIEW_ARGS used by the read helper', patched('hooks/panel/index.tsx', 'const res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS', 'const res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS'), null],
   ];
   for (const [name, fs2, re] of cases) {
@@ -119,5 +129,7 @@ test('the check is not a tripwire: each way around it is found', () => {
 test('the command the button runs is exactly belay memory review --project <p> --start', () => {
   assert.match(files['hooks/panel/index.tsx'], /const REVIEW_ARGS = \['memory', 'review', '--project'\]/);
   assert.match(files['hooks/panel/index.tsx'], /const START_FLAG = '--start'/);
-  assert.match(files['hooks/panel/index.tsx'], /\[\.\.\.REVIEW_ARGS, project, START_FLAG\]/);
+  assert.match(files['hooks/panel/index.tsx'], /const RUN_FLAG = '--run'/);
+  assert.match(files['hooks/panel/index.tsx'], /const runArg = watch\.runId \? \[RUN_FLAG, watch\.runId\] : \[\]/);
+  assert.match(files['hooks/panel/index.tsx'], /\[\.\.\.REVIEW_ARGS, project, START_FLAG, \.\.\.runArg\]/);
 });

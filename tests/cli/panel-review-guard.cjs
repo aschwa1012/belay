@@ -106,6 +106,7 @@ function analyze(files) {
   };
   only('REVIEW_ARGS', /\bREVIEW_ARGS\b/g, ['REVIEW_ARGS', 'dispatchReview'], 'hooks/panel/index.tsx'); // its declaration and its one use
   only('START_FLAG', /\bSTART_FLAG\b/g, ['START_FLAG', 'dispatchReview'], 'hooks/panel/index.tsx');
+  only('RUN_FLAG', /\bRUN_FLAG\b/g, ['RUN_FLAG', 'dispatchReview'], 'hooks/panel/index.tsx'); // the review's `--run <id>`: declared once, used once
   const disp = refs(/\bdispatchReview\b/g).filter((r) => !/function\s+dispatchReview/.test(r.line));
   if (JSON.stringify(where(disp)) !== JSON.stringify(['hooks/panel/index.tsx:reviewPress'])) bad.push(`dispatchReview is called from ${JSON.stringify(where(disp))}; only reviewPress may`);
   const press = refs(/\breviewPress\b/g).filter((r) => !/function\s+reviewPress/.test(r.line));
@@ -113,6 +114,14 @@ function analyze(files) {
     bad.push(`reviewPress is named in ${JSON.stringify(where(press))}; only the \`review\` handler of acts() may call it`);
   }
 
+  // 2b. The review's argv is exactly REVIEW_ARGS, the project, START_FLAG and, when the watch names a run, `--run <watch.runId>`: nothing else is added.
+  const di = info['hooks/panel/index.tsx'];
+  if (di) {
+    const k = di.its.findIndex((it) => it.name === 'dispatchReview');
+    const dtext = k < 0 ? '' : di.text.slice(di.its[k].start, di.its[k + 1] ? di.its[k + 1].start : undefined);
+    if (!/const runArg = watch\.runId \? \[RUN_FLAG, watch\.runId\] : \[\]/.test(dtext)) bad.push('dispatchReview: runArg is not exactly [RUN_FLAG, watch.runId] or nothing');
+    if (!/argvFor\(r\.cli, \[\.{3}REVIEW_ARGS, project, START_FLAG, \.{3}runArg\], watch\.dataDir\)/.test(dtext)) bad.push('dispatchReview: the review argv is not exactly [...REVIEW_ARGS, project, START_FLAG, ...runArg]');
+  }
   // 3. act.review (any spelling of a `review` member) is the onPress of one Button keyed review in view.tsx, and nowhere else.
   const members = refs(/\.\s*review\b/g);
   const brackets = [];
@@ -169,17 +178,21 @@ function analyze(files) {
   }
   for (const [f, o] of Object.entries(info)) {
     if (f.startsWith('hooks/wake/')) continue;
+    if (/\bReflect\s*\./.test(o.code)) bad.push(`${f}: Reflect is used (an Act handler could be reached by name)`);
+    for (const m of o.code.matchAll(/\bfor\s*\([^)]*\bin\s+(?:[\w$]+\s*\.\s*)*acts?\b/g)) bad.push(`${f}:${ownerOf(o.its, m.index)}: for...in over an Act`);
+    if (/[\w$]\\u(?:[0-9a-fA-F]|\{)|\\u(?:[0-9a-fA-F]{4}|\{[0-9a-fA-F]+\})[\w$]/.test(o.code.replace(/\[[^\]\n]*\]/g, ''))) bad.push(`${f}: a \\u escape in code (an identifier spelled by escape would hide a handler name)`);
+    for (const m of o.code.matchAll(/\$\s*\.\s*state\b/g)) bad.push(`${f}:${ownerOf(o.its, m.index)}: $.state is used; the panel reaches its state only through the atoms (read/update)`);
     for (const l of o.lits) if (l.text === 'commit') bad.push(`${f}:${ownerOf(o.its, l.at)}: the string "commit" appears (an Act handler reached by name)`);
-    for (const m of o.code.matchAll(/\bObject\s*\.\s*(?:values|entries|keys|getOwnPropertyNames|getOwnPropertyDescriptors|assign|fromEntries)\s*\(\s*(?:act|acts)\b|\.\.\.\s*acts?\b|\bacts?\s*\[/g)) bad.push(`${f}:${ownerOf(o.its, m.index)}: an Act is enumerated, spread or indexed by name: ${o.text.slice(m.index, m.index + 40).trim()}`);
+    for (const m of o.code.matchAll(/\bObject\s*\.\s*(?:values|entries|keys|getOwnPropertyNames|getOwnPropertyDescriptors|assign|fromEntries)\s*\(\s*(?:[\w$]+\s*\.\s*)*acts?\b|\.\.\.\s*acts?\b|\bacts?\s*\[/g)) bad.push(`${f}:${ownerOf(o.its, m.index)}: an Act is enumerated, spread or indexed by name: ${o.text.slice(m.index, m.index + 40).trim()}`);
   }
   // S6. The pending settle is written in two places only: settleStart (stage 'reason', an empty reason) and reasonSubmit (stage 'confirm'); every other write clears it.
   const ix = info['hooks/panel/index.tsx'];
   if (ix) {
-    for (const m of ix.text.matchAll(/update\(\$, settleA, (?!\(\) => null)/g)) { const ow = ownerOf(ix.its, m.index); if (!['settleStart', 'reasonSubmit'].includes(ow)) bad.push(`hooks/panel/index.tsx:${ow}: settleA is written with a value outside settleStart and reasonSubmit`); }
-    for (const m of ix.text.matchAll(/stage:\s*'confirm'/g)) { const ow = ownerOf(ix.its, m.index); if (ow !== 'reasonSubmit') bad.push(`hooks/panel/index.tsx:${ow}: stage 'confirm' is written outside reasonSubmit`); }
+    for (const m of ix.text.matchAll(/update\s*\(\s*\$\s*,\s*settleA\s*,(?!\s*\(\s*\)\s*=>\s*null)/g)) { const ow = ownerOf(ix.its, m.index); if (!['settleStart', 'reasonSubmit'].includes(ow)) bad.push(`hooks/panel/index.tsx:${ow}: settleA is written with a value outside settleStart and reasonSubmit`); }
+    for (const m of ix.text.matchAll(/stage\s*:\s*['"]confirm['"]/g)) { const ow = ownerOf(ix.its, m.index); if (ow !== 'reasonSubmit') bad.push(`hooks/panel/index.tsx:${ow}: stage 'confirm' is written outside reasonSubmit`); }
     const at = ix.its.findIndex((it) => it.name === 'settleStart');
     const st = at < 0 ? '' : ix.text.slice(ix.its[at].start, ix.its[at + 1] ? ix.its[at + 1].start : undefined);
-    if (!/update\(\$, settleA, \(\) => \(\{ id, action, stage: 'reason', reason: '', title: listed\.title, /.test(st)) bad.push("settleStart does not write stage 'reason' with an empty reason");
+    if (!/update\s*\(\s*\$\s*,\s*settleA\s*,\s*\(\s*\)\s*=>\s*\(\s*\{\s*id\s*,\s*action\s*,\s*stage\s*:\s*['"]reason['"]\s*,\s*reason\s*:\s*(?:''|"")\s*,\s*title\s*:\s*listed\.title\s*,/.test(st)) bad.push("settleStart does not write stage 'reason' with an empty reason");
   }
   // The interactive orchestrator has no AskUserQuestion: nothing in the mod asks a dialog, and the tool is not named.
   for (const [f, o] of Object.entries(info)) {
@@ -199,7 +212,7 @@ function analyze(files) {
 
   // 4. Nothing outside the panel names the chain, and no module crosses between the wake and the panel.
   for (const [f, o] of Object.entries(info)) {
-    if (!f.startsWith('hooks/panel/') && /\b(dispatchReview|reviewPress|REVIEW_ARGS|START_FLAG|settlePress|settleArgs)\b/.test(o.code)) bad.push(`${f} names the review launcher or the settle writer`);
+    if (!f.startsWith('hooks/panel/') && /\b(dispatchReview|reviewPress|REVIEW_ARGS|START_FLAG|RUN_FLAG|settlePress|settleArgs)\b/.test(o.code)) bad.push(`${f} names the review launcher or the settle writer`);
     const imports = [...o.text.matchAll(/(?:from|import)\s*\(?\s*['"]([^'"]+)['"]/g)].map((m) => m[1]);
     if (f.startsWith('hooks/wake/') && imports.some((p) => /panel/.test(p))) bad.push(`${f} imports from the panel: ${imports.filter((p) => /panel/.test(p)).join(', ')}`);
     if (f.startsWith('hooks/panel/') && imports.some((p) => /wake/.test(p))) bad.push(`${f} imports from the wake: ${imports.filter((p) => /wake/.test(p)).join(', ')}`);
@@ -223,9 +236,9 @@ function analyze(files) {
     if (f.startsWith('hooks/wake/')) continue;
     for (const m of o.code.matchAll(/\$\s*\[|\(\s*\$\s+as\b|=\s*\$\s*(?:as\b[^;\n]*)?(?:[;\n]|$)/g)) bad.push(`${f}:${ownerOf(o.its, m.index)}: the host object is reached by a computed member, a cast or an alias: ${o.text.slice(m.index, m.index + 30).trim()}`);
     for (const l of o.lits) {
-      if (!['review', '--start'].includes(l.text)) continue;
+      if (!['review', '--start', '--run'].includes(l.text)) continue;
       const owner = ownerOf(o.its, l.at), before = o.text.slice(Math.max(0, l.at - 14), l.at);
-      if (owner === 'REVIEW_ARGS' || owner === 'START_FLAG') continue;
+      if (owner === 'REVIEW_ARGS' || owner === 'START_FLAG' || owner === 'RUN_FLAG') continue;
       if (/key=\s*$/.test(before) || /startsWith\(\s*$/.test(before)) continue; // the Button's key, and a role-name test
       bad.push(`${f}:${owner}: the string ${JSON.stringify(l.text)} appears outside the launcher's declarations`);
     }

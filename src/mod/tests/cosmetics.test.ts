@@ -49,6 +49,17 @@ describe('agent names and the interactive orchestrator', () => {
       if (basis !== 'transcript, API rates') expect(text).not.toContain('≈')
     })
   }
+  for (const cols of [30, 40, 72]) {
+    test(`an orchestrator with a token count and no window shows the tokens, never a made-up percent, at ${cols} columns`, async ($, on) => {
+      const wd = await boot($, on, { orchTokensOnly: true })
+      await openPane($, wd)
+      const rows = leaves(await (await pane($, 'terminal', cols)).ui.drawn())
+      if (cols >= 72) expect(rows).toContain('18.2k') // the ctx column has room
+      expect(rows.some(r => r.includes('18247'))).toBe(false)
+      const i = rows.findIndex(r => r.trim() === 'orchestrator')
+      expect(rows.slice(i, i + 6).some(r => /^\d+%$/.test(r.trim()))).toBe(false) // no percent for the orchestrator row
+    })
+  }
   test('no cost recorded yet says so', async ($, on) => {
     const wd = await boot($, on, { footer: { agents: 1, total_cost_usd: null, cost_not_recorded: 1, as_of_ms: null, highest_context_pct: null } })
     await openPane($, wd)

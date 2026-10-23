@@ -9,6 +9,21 @@ const running = (pid_alive = true) => ({ kind: 'review_running', ts: T0, run_id:
 const ended = (ok: boolean, text: string) => ({ kind: 'review_ended', ts: T0, run_id: RUN, project: 'acme', ok, code: ok ? null : 'E_ARGS', text, job: 'archreview-r-1', claim_id: 'me-1' })
 const notices = (...events: unknown[]) => ({ run_id: RUN, events })
 
+describe('the review acts for the watched run', () => {
+  test('the launcher argv is exactly memory review --project p --start --run <watched run>', async ($, on) => {
+    const wd = await boot($, on, { notices: notices(held(3)) })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await ui.press({ key: 'review' })
+    await ui.press({ key: 'review' })
+    await later(wd, 100)
+    expect(wd.spawned.length).toBe(1)
+    const argv = wd.spawned[0]!
+    expect(argv.slice(argv.indexOf('memory'), argv.indexOf('memory') + 7)).toEqual(['memory', 'review', '--project', 'acme', '--start', '--run', RUN])
+    expect(argv.filter(a => a === '--run').length).toBe(1)
+  })
+})
+
 describe('notes held for the archive reviewer', () => {
   test('the count line names the count, the oldest wait in runs and the projects, and a clean store shows none', async ($, on) => {
     const wd = await boot($, on, { notices: notices(held(3)) })

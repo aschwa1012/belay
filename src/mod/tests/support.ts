@@ -59,7 +59,7 @@ export type World = {
   file?: boolean; runFile?: unknown; repoCli?: boolean; watchId?: string
   mode?: string | null; mod?: Record<string, string>; notices?: unknown
   failAgents?: boolean; transcriptFail?: boolean; orchDisplay?: string; noDisplay?: boolean; noRun?: boolean
-  extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number; memoryNotice?: boolean; orchNoCost?: boolean; orchBasis?: string; orchCost?: number; awaitingFail?: boolean; agentIds?: string[]; footer?: unknown
+  extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number; memoryNotice?: boolean; orchNoCost?: boolean; orchBasis?: string; orchTokensOnly?: boolean; orchCost?: number; awaitingFail?: boolean; agentIds?: string[]; footer?: unknown
   /** Answers the dialogs give, in order (the reason, then the confirm); an empty queue dismisses. */
   awaitingList?: unknown
   settleReject?: string
@@ -139,6 +139,7 @@ export function world(on: any, w: World) {
       if (a.id === 'orchestrator' && w.orchDisplay) x.display_state = w.orchDisplay
       if (a.id === 'orchestrator' && w.orchNoCost) x.cost_usd = null
       if (a.id === 'orchestrator' && w.orchCost !== undefined) x.cost_usd = w.orchCost
+      if (a.id === 'orchestrator' && w.orchTokensOnly) { x.context_tokens = 18247; x.context_window = null; x.context_pct = null }
       if (a.id === 'orchestrator' && w.orchBasis) x.cost_basis = w.orchBasis
       if (a.id === 'coder-2' && w.coder2Left !== undefined) x.cache = { ttl_s: 300, left_ms: w.coder2Left, state: 'warm' }
       if (a.id === 'coder-1' && w.coder1Title) x.task = { ...a.task, title: w.coder1Title }
