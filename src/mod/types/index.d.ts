@@ -27,6 +27,8 @@ export type BelayAgent = {
   ctxPct: number | null
   costUsd: number | null
   costSource: string | null
+  /** belay's word for how an estimated cost was made ("transcript, API rates"); null on every row today. */
+  costBasis: string | null
   cache: BelayCache | null
   task: { id: string; title: string | null; titleSource: string | null; source: string | null } | null
   launchMode: string | null
@@ -68,8 +70,11 @@ export type BelayPanelFooter = {
 /** The newest archive review of a project, from belay's `review_running` / `review_ended` notices (the review's store-level claim). */
 export type BelayReview = { project: string; state: 'running' | 'interrupted' | 'ok' | 'failed'; pid: number | null; text: string | null; ts: number | null; job?: string | null }
 
+/** A held note that waits on the operator (an archive review left it undecided), from `belay memory held --awaiting`. */
+export type BelayAwaitingNote = { id: string; project: string; title: string; reason: string }
+
 /** Notes held for the on-demand Opus archive reviewer, from belay's `notes_held` notice, and the state of the project's review. */
-export type BelayHeld = { count: number; unsupported: number; byProject: Record<string, number>; oldestAgeRuns: number; oldestAt?: number; reviews: BelayReview[]; byGround?: Record<string, number>; awaiting?: number; breakers?: { runId: string; disputed: number }[] }
+export type BelayHeld = { count: number; unsupported: number; byProject: Record<string, number>; oldestAgeRuns: number; oldestAt?: number; reviews: BelayReview[]; byGround?: Record<string, number>; awaiting?: number; awaitingNotes?: BelayAwaitingNote[]; awaitingList?: { total: number; at: number; carried: boolean }; breakers?: { runId: string; disputed: number }[] }
 
 /** `belay settings`' memory_notice: notes are on by default but no memory.project is set, so memory is off. null once a project is set. */
 export type BelayMemoryNotice = { title: string; why: string; fix: string; configLine: string; short: string }
@@ -131,6 +136,8 @@ export type BelayPanelUi = {
   seen: string[]
   /** The archive review button was pressed once: the project it would review and when. A second press inside CONFIRM_MS dispatches. */
   confirm: { project: string; at: number } | null
+  /** The id of the awaiting note whose reason and buttons are shown; one at a time. Pure UI state: pressing runs nothing. */
+  openNote?: string | null
 }
 
 declare module 'claude-code' {
