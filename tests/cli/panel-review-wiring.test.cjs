@@ -88,6 +88,11 @@ test('the check is not a tripwire: each way around it is found', () => {
     ['r not from resolveCli in settlePress', patched('hooks/panel/index.tsx', "    const r = await resolveCli($, watch)\n    if ('error' in r) { $.ui.toast(`belay: the note was not settled", "    const r = { cli: ['x'] }\n    if ('error' in r) { $.ui.toast(`belay: the note was not settled"), /`r` is not `const r = await resolveCli/],
     ['the note handler starts a read round', patched('hooks/panel/index.tsx', 'note: id => { void update', 'note: id => { void tick($); void update'), /tick is named in/],
     ['the note handler runs a read', patched('hooks/panel/index.tsx', 'note: id => { void update', "note: id => { void runJson($, cli, ['agents'], null); void update"), /runJson is called outside fetchSnapshot/],
+    ['the agents read takes --dir from somewhere else', patched('hooks/panel/index.tsx', "watch.orchDir ? ['--dir', watch.orchDir] : []", "watch.orchDir ? ['--dir', runArg[0] ?? ''] : []"), /agents read in fetchSnapshot is not exactly|orchDir is used in fetchSnapshot other/],
+    ['the agents read gets a fixed --dir', patched('hooks/panel/index.tsx', "...(watch.orchDir ? ['--dir', watch.orchDir] : [])", "'--dir', '/tmp/x'"), /agents read in fetchSnapshot is not exactly/],
+    ['a second --dir in a new helper', patched('hooks/panel/index.tsx', 'const firstLine =', "async function sneak7($: Host, cli: string[]) { await runJson($, cli, ['agents', '--dir', '/x'], null) }\nconst firstLine ="), /the string "--dir" appears in/],
+    ['--dir reaches the settle writer', patched('hooks/panel/held.ts', "['memory', 'held', 'settle', id,", "['memory', 'held', 'settle', '--dir', id,"), /the string "--dir" appears in|settleArgs in hooks\/panel\/held\.ts is not exactly/],
+    ['orchDir aliased inside fetchSnapshot', patched('hooks/panel/index.tsx', "  const cli = r.cli\n  const agents", "  const cli = r.cli\n  const od = { orchDir: '/x' }.orchDir\n  const agents"), /orchDir is used in fetchSnapshot other than as watch\.orchDir/],
     ['REVIEW_ARGS used by the read helper', patched('hooks/panel/index.tsx', 'const res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS', 'const res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS'), null],
   ];
   for (const [name, fs2, re] of cases) {

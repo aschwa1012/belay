@@ -16,6 +16,22 @@ describe('activation and reading', () => {
     expect(wd.commands).not.toContain('belay')
     expect(wd.writes).toEqual([])
   })
+  test('belay-run.json naming orchestrator_dir passes it to the agents read as --dir, and only to agents', async ($, on) => {
+    const wd = await boot($, on, { file: true, runFile: { ...FULL_RUNFILE, orchestrator_dir: 'C:/o/orch-dir/ops' } })
+    const agents = wd.ran.filter(a => a.includes('agents'))
+    expect(agents.length).toBeGreaterThan(0)
+    for (const a of agents) {
+      const i = a.indexOf('--dir')
+      expect(i).toBeGreaterThan(-1)
+      expect(a[i + 1]).toBe('C:/o/orch-dir/ops')
+      expect(a.indexOf(RUN)).toBeLessThan(i)
+    }
+    expect(wd.ran.filter(a => !a.includes('agents')).every(a => !a.includes('--dir'))).toBe(true)
+  })
+  test('without orchestrator_dir in belay-run.json the agents read carries no --dir', async ($, on) => {
+    const wd = await boot($, on, { file: true })
+    expect(wd.ran.filter(a => a.includes('agents')).every(a => !a.includes('--dir'))).toBe(true)
+  })
   for (const [name, runFile, message] of [
     ['lacks node', { ...FULL_RUNFILE, node: undefined }, 'belay-run.json lacks node'],
     ['lacks belay_cli', { ...FULL_RUNFILE, belay_cli: undefined }, 'belay-run.json lacks belay_cli'],
