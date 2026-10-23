@@ -128,6 +128,25 @@ function analyze(files) {
   if (!held || !/export const settleArgs = \(action: SettleAction, id: string, reason: string\): string\[\] => \['memory', 'held', 'settle', id, `--\$\{action\}`, '--reason', reason\]\s*\n/.test(held.text)) bad.push('settleArgs in hooks/panel/held.ts is not exactly the literal settle argv');
   const sa = refs(/\bsettleArgs\b/g).filter((r) => !/^\s*import\b/.test(r.line) && !/^\s*(?:export\s+)?(?:async\s+)?(?:function|const)\s+settleArgs\b/.test(r.line));
   if (JSON.stringify(where(sa)) !== JSON.stringify(['hooks/panel/index.tsx:settlePress']) || !sa.every((r) => /\$\.process\.run\(argvFor\(r\.cli, settleArgs\(action, id, reason\), watch\.dataDir\), \{ timeoutMs: START_TIMEOUT_MS, \.\.\.\(cwd \? \{ cwd \} : \{\}\) \}\)/.test(r.orig))) bad.push(`settleArgs is used in ${JSON.stringify(where(sa))}; only settlePress may run it, as argvFor(r.cli, settleArgs(action, id, reason), watch.dataDir)`);
+  // 3c. No second declaration of the argv builders: exactly one `settleArgs` (held.ts) and one `argvFor` (fetch.ts) exist in the whole mod, at the top level or
+  // as a local, and index.tsx imports each from its file. `r` in both write chains comes from `await resolveCli($, watch)` and is never changed.
+  const declOf = (name) => { const out = []; for (const [f, o] of Object.entries(info)) for (const m of o.code.matchAll(new RegExp(`\\b(?:function|const|let|var|class)\\s+${name}\\b|[({,]\\s*${name}\\s*[:=)]`, 'g'))) out.push(`${f}:${ownerOf(o.its, m.index)}`); return out; };
+  for (const [name, file] of [['settleArgs', 'hooks/panel/held.ts'], ['argvFor', 'hooks/panel/fetch.ts']]) {
+    const d = declOf(name);
+    if (d.length !== 1 || !d[0].startsWith(`${file}:`)) bad.push(`${name} is declared in ${JSON.stringify(d)}; exactly one declaration, in ${file}, is allowed`);
+    const mod = name === 'settleArgs' ? './held' : './fetch';
+    if (!info['hooks/panel/index.tsx'] || !new RegExp(`import\\s*(?:type\\s*)?\\{[^}]*\\b${name}\\b[^}]*\\}\\s*from\\s*'${mod.replace('.', '\\.')}'`).test(info['hooks/panel/index.tsx'].text)) bad.push(`hooks/panel/index.tsx does not import ${name} from '${mod}'`);
+  }
+  for (const [fn, o] of [['dispatchReview', info['hooks/panel/index.tsx']], ['settlePress', info['hooks/panel/index.tsx']]]) {
+    if (!o) continue;
+    const at = o.its.findIndex((it) => it.name === fn);
+    const body = at < 0 ? '' : o.code.slice(o.its[at].start, o.its[at + 1] ? o.its[at + 1].start : undefined);
+    const text = at < 0 ? '' : o.text.slice(o.its[at].start, o.its[at + 1] ? o.its[at + 1].start : undefined);
+    if (!/\bconst r = await resolveCli\(\$, watch\)/.test(text)) bad.push(`${fn}: \`r\` is not \`const r = await resolveCli($, watch)\``);
+    if ((body.match(/\bconst r\b|\blet r\b|\bvar r\b/g) || []).length !== 1) bad.push(`${fn}: \`r\` is declared other than once`);
+    if (/\br\s*(?:=(?!=)|\+=)|\br\s*\.\s*cli\s*(?:=(?!=)|\+=|\.\s*(?:splice|push|pop|shift|unshift|sort|reverse|fill|copyWithin|length\s*=)\b|\[[^\]]*\]\s*=(?!=))|\br\s*\.\s*cli\s*\[[^\]]*\]\s*=(?!=)|\bObject\s*\.\s*assign\(\s*r\b/.test(body.replace(/\bconst r = await/, 'const q = await'))) bad.push(`${fn}: \`r\` or \`r.cli\` is changed after resolveCli`);
+  }
+
   const sp = refs(/\bsettlePress\b/g).filter((r) => !/function\s+settlePress/.test(r.line));
   if (JSON.stringify(where(sp)) !== JSON.stringify(['hooks/panel/index.tsx:acts']) || !sp.every((r) => /^\s*settle:\s*\(action, id\)\s*=>\s*\{\s*void settlePress\(\$, action, id\)\s*\},?\s*$/.test(r.line))) bad.push(`settlePress is named in ${JSON.stringify(where(sp))}; only the \`settle\` handler of acts() may call it`);
   const sm = refs(/\.\s*settle\b/g);

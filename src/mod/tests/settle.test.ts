@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { T0, RUN, NOTE_ID, boot, cmd, later, pane, openPane } from './support'
+import { T0, RUN, NOTE_ID, FULL_RUNFILE, START, boot, cmd, later, pane, openPane } from './support'
 
 // The settle buttons: a held note that waits on the operator can be archived, released or reoffered from the panel. Each press asks for a
 // reason, asks to confirm, and only then runs `belay memory held settle`; the reason is one argv element.
@@ -155,6 +155,26 @@ describe('what is checked around the dialogs', () => {
     expect(wd.settled).toEqual([])
     expect(wd.toasts.at(-1)).toBe('belay: the watched run changed while you were answering, so the note was not settled.')
   })
+
+  for (const [field, value] of [['data_dir', 'C:/e/.belay'], ['belay_cli', 'C:/y/belay.cjs'], ['node', 'C:/m/node.exe']] as const) {
+    test(`a bound run whose ${field} changed while the dialogs were open is not settled against`, async ($, on) => {
+      let open!: () => void
+      const gate = new Promise<void>(r => { open = r })
+      const wd = await boot($, on, { file: true, notices: waiting, answers: ['because', 'Archive'], onAsk: n => (n === 2 ? gate : undefined) })
+      await openPane($, wd)
+      const { ui } = await pane($)
+      const pressed = ui.press({ key: KEY('archive') })
+      await later(wd, 100)
+      expect(wd.asked.length).toBe(2)
+      wd.w.runFile = { ...FULL_RUNFILE, [field]: value } // the same run, bound to another store, CLI or node
+      await $.session.start(START)
+      open()
+      await pressed
+      await later(wd, 100)
+      expect(wd.settled).toEqual([])
+      expect(wd.toasts.at(-1)).toBe('belay: the watched run changed while you were answering, so the note was not settled.')
+    })
+  }
 
   test('a press on a note the snapshot no longer lists asks nothing', async ($, on) => {
     const wd = await boot($, on, { notices: waiting, answers: ['because', 'Archive'] })

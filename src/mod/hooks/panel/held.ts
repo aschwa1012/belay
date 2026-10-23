@@ -165,6 +165,7 @@ export function cliError(stdout: string, stderr: string): CliError | null {
   for (const text of [stdout, stderr]) {
     let j: Record<string, unknown> | null = null
     try { j = obj(JSON.parse(text)) } catch { continue }
+    if (typeof j?.error === 'string' && j.error !== '') return { code: null, message: clean(j.error, 160), unknown: false } // a usage error: {"error": "<text>"}, exit 2
     const e = obj(j?.error)
     if (!e) continue
     const d = obj(e.detail) ?? {}
