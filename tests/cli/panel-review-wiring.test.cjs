@@ -69,7 +69,7 @@ test('the check is not a tripwire: each way around it is found', () => {
     ['settleArgs used by a second function', patched('hooks/panel/index.tsx', 'const firstLine =', "const sneakArgs = () => settleArgs('archive', 'x', 'y')\nconst firstLine ="), /settleArgs is used in/],
     ['settlePress runs another argv', patched('hooks/panel/index.tsx', 'argvFor(r.cli, settleArgs(action, id, reason), watch.dataDir)', "argvFor(r.cli, ['memory', 'review', '--start'], watch.dataDir)"), /settleArgs is used in|expected exactly|\$\.process\.run/],
     ['settleArgs gains a verb', patched('hooks/panel/held.ts', "['memory', 'held', 'settle', id,", "['memory', 'archive', 'purge', id,"), /settleArgs in hooks\/panel\/held\.ts is not exactly/],
-    ['settleArgs splits the reason', patched('hooks/panel/held.ts', "'--reason', reason]", "'--reason', ...reason.split(' ')]"), /settleArgs in hooks\/panel\/held\.ts is not exactly/],
+    ['settleArgs splits the reason', patched('hooks/panel/held.ts', "'--reason', reason, '--if-awaiting']", "'--reason', ...reason.split(' '), '--if-awaiting']"), /settleArgs in hooks\/panel\/held\.ts is not exactly/],
     ['a second act.settle use', patched('hooks/panel/view.tsx', 'function Orchestrator(', 'const sneaky2 = (act: Act) => act.settle(\'archive\', \'x\')\nfunction Orchestrator('), /a `\.settle` member is used/],
     ['the settle Button leaves SettleRow', patched('hooks/panel/view.tsx', 'function Held(', "const sneaky3 = (E: Els, act: Act) => <E.Button key={`${'a'}-${'b'}`} onPress={() => act.settle('archive', 'b')} />\nfunction Held("), /a `\.settle` member is used/],
     ['the wake names settlePress', patched('hooks/wake/index.ts', 'import', "const x = settlePress\nimport"), /names the review launcher or the settle writer/],
@@ -113,16 +113,22 @@ test('the check is not a tripwire: each way around it is found', () => {
     ['Object.values over a ctx.act member', patched('hooks/panel/view.tsx', 'function Orchestrator(', 'const sneak23 = (c: Ctx) => Object.values(c.act)\nfunction Orchestrator('), /an Act is enumerated, spread or indexed/],
     ['$.state in the panel', patched('hooks/panel/index.tsx', 'const firstLine =', "async function sneak24($: Host) { await $.state.set({ plugin: 'belay', key: 'x' } as never, 1) }\nconst firstLine ="), /\$\.state is used/],
     ['the confirm stage written with double quotes', patched('hooks/panel/index.tsx', 'const firstLine =', 'async function sneak25($: Host) { await update ( $ , settleA , () => ({ id: "x", action: "archive", stage : "confirm", reason: "r", title: "", run: { runId: null, dataDir: null, cli: null, node: null } })) }\nconst firstLine ='), /stage 'confirm' is written outside reasonSubmit/],
-    ['the review argv gains an argument', patched('hooks/panel/index.tsx', 'START_FLAG, ...runArg]', "START_FLAG, ...runArg, '--all']"), /the review argv is not exactly/],
+    ['the review argv gains an argument', patched('hooks/panel/index.tsx', 'START_FLAG, ...runArg]', "START_FLAG, ...runArg, '--all']"), /loop body is not exactly/],
     ['the review attempts name another run id', patched('hooks/panel/index.tsx', '[[RUN_FLAG, watch.runId]] : [])]', '[[RUN_FLAG, project]] : [])]'), /attempts is not exactly/],
     ['a copy of the attempts line in a comment', patched('hooks/panel/index.tsx', 'const attempts: string[][] = [[], ...(watch.runId ? [[RUN_FLAG, watch.runId]] : [])]', "const attempts: string[][] = [[RUN_FLAG, project]] // const attempts: string[][] = [[], ...(watch.runId ? [[RUN_FLAG, watch.runId]] : [])]"), /attempts is not exactly/],
     ['runArg is pushed to', patched('hooks/panel/index.tsx', '      res = await $.process.run(', "      runArg.push('--all')\n      res = await $.process.run("), /runArg or attempts is changed/],
     ['attempts is pushed to', patched('hooks/panel/index.tsx', '  try {\n    let res = {', "  attempts.push(['--all'])\n  try {\n    let res = {"), /runArg or attempts is changed/],
-    ['the review argv gains a spread', patched('hooks/panel/index.tsx', 'START_FLAG, ...runArg]', 'START_FLAG, ...runArg, ...attempts[0]!]'), /the review argv is not exactly/],
+    ['the review argv gains a spread', patched('hooks/panel/index.tsx', 'START_FLAG, ...runArg]', 'START_FLAG, ...runArg, ...attempts[0]!]'), /loop body is not exactly/],
     ['a second process.run in dispatchReview', patched('hooks/panel/index.tsx', '    $.ui.toast(launcherLine(res.exitCode', "    await $.process.run(['x'], {})\n    $.ui.toast(launcherLine(res.exitCode"), /not exactly one \$\.process\.run|process\.run is called from/],
-    ['the retry is not gated', patched('hooks/panel/index.tsx', 'if (!needsRun(res.exitCode, res.stdout, res.stderr)) break', 'if (res.exitCode === 0) break'), /not gated by needsRun/],
+    ['the retry is not gated', patched('hooks/panel/index.tsx', 'if (!needsRun(res.exitCode, res.stdout, res.stderr, watch.runId)) break', 'if (res.exitCode === 0) break'), /loop body is not exactly/],
     ['--run spelled out elsewhere', patched('hooks/panel/index.tsx', 'const firstLine =', "const W3 = ['--run', 'x']\nconst firstLine ="), /--run/],
     ['RUN_FLAG used elsewhere', patched('hooks/panel/index.tsx', 'const firstLine =', "const W4 = [RUN_FLAG, 'x']\nconst firstLine ="), /RUN_FLAG is named in/],
+    ['settleArgs loses --if-awaiting', patched('hooks/panel/held.ts', "'--reason', reason, '--if-awaiting']", "'--reason', reason]"), /settleArgs in hooks\/panel\/held\.ts is not exactly/],
+    ['settleArgs gains a second flag', patched('hooks/panel/held.ts', "'--reason', reason, '--if-awaiting']", "'--reason', reason, '--if-awaiting', '--all']"), /settleArgs in hooks\/panel\/held\.ts is not exactly/],
+    ['--if-awaiting spelled elsewhere', patched('hooks/panel/index.tsx', 'const firstLine =', "const W5 = ['--if-awaiting']\nconst firstLine ="), /--if-awaiting" appears outside settleArgs/],
+    ['an outer loop around the launcher loop', patched('hooks/panel/index.tsx', '    for (const runArg of attempts) {', '    for (let again = 0; again < 3; again += 1) for (const runArg of attempts) {'), /other than exactly one for loop|loop body is not exactly/],
+    ['continue on success', patched('hooks/panel/index.tsx', '      if (!needsRun(res.exitCode, res.stdout, res.stderr, watch.runId)) break', '      if (res.exitCode === 0) continue\n      if (!needsRun(res.exitCode, res.stdout, res.stderr, watch.runId)) break'), /continue|loop body is not exactly/],
+    ['the gate loses the watched run', patched('hooks/panel/index.tsx', 'needsRun(res.exitCode, res.stdout, res.stderr, watch.runId)', 'needsRun(res.exitCode, res.stdout, res.stderr, project)'), /loop body is not exactly/],
     ['REVIEW_ARGS used by the read helper', patched('hooks/panel/index.tsx', 'res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS', 'res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS'), null],
   ];
   for (const [name, fs2, re] of cases) {
@@ -138,5 +144,5 @@ test('the command the button runs is exactly belay memory review --project <p> -
   assert.match(files['hooks/panel/index.tsx'], /const RUN_FLAG = '--run'/);
   assert.match(files['hooks/panel/index.tsx'], /const attempts: string\[\]\[\] = \[\[\], \.\.\.\(watch\.runId \? \[\[RUN_FLAG, watch\.runId\]\] : \[\]\)\]/);
   assert.match(files['hooks/panel/index.tsx'], /\[\.\.\.REVIEW_ARGS, project, START_FLAG, \.\.\.runArg\]/);
-  assert.match(files['hooks/panel/index.tsx'], /if \(!needsRun\(res\.exitCode, res\.stdout, res\.stderr\)\) break/);
+  assert.match(files['hooks/panel/index.tsx'], /if \(!needsRun\(res\.exitCode, res\.stdout, res\.stderr, watch\.runId\)\) break/);
 });

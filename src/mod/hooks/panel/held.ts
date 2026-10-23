@@ -154,7 +154,7 @@ export function normAwaiting(json: unknown): BelayAwaitingNote[] {
 export const shortId = (id: string): string => id.slice(0, 8)
 
 // The argv tail of the settle write. The reason is ONE element, whatever it holds: belay's parser takes the element after --reason as the value.
-export const settleArgs = (action: SettleAction, id: string, reason: string): string[] => ['memory', 'held', 'settle', id, `--${action}`, '--reason', reason]
+export const settleArgs = (action: SettleAction, id: string, reason: string): string[] => ['memory', 'held', 'settle', id, `--${action}`, '--reason', reason, '--if-awaiting']
 
 export const settleVerb = (a: SettleAction): string => a[0]!.toUpperCase() + a.slice(1)
 // The confirm shows the reason exactly as it is sent (a reason over REASON_MAX is refused first, so nothing is cut).
@@ -191,12 +191,20 @@ export function cliError(stdout: string, stderr: string): CliError | null {
 // while some note still awaits, the awaiting list's, must both be newer than the settle and not carried over from an earlier round.
 // An unknown outcome is stricter: reads copy the db and may predate a write still queued, so a later read that still lists the note proves nothing. Such a row
 // stays refused until a fresh read no longer lists the note, or the operator presses re-check on it.
-export function settledActive(entry: { at: number; unknown?: true } | undefined, snap: { fetchedAt: number; held?: { awaitingList?: { at: number; carried: boolean }; awaitingNotes?: { id: string }[] } | null } | null, id: string): boolean {
+export function settledActive(entry: { at: number; unknown?: true; pending?: true } | undefined, snap: { fetchedAt: number; held?: { awaitingList?: { at: number; carried: boolean }; awaitingNotes?: { id: string }[] } | null } | null, id: string): boolean {
   if (!entry) return false
+  if (entry.pending === true) return true // the process is running (or was, when a reload dropped it): only the outcome, or re-check once it is unknown, ends this
   if (!snap || !(snap.fetchedAt > entry.at)) return true
   const list = snap.held?.awaitingList
   if (list && (list.carried || !(list.at > entry.at))) return true
   return entry.unknown === true && (snap.held?.awaitingNotes ?? []).some(n => n.id === id)
+}
+
+// A pending entry older than the launcher's own bound (40 s plus a margin) belongs to a settle a reload dropped: it reads as an unknown outcome, with re-check.
+export const PENDING_STALE_MS = 45_000
+export function settleEntryView(entry: { label: string; at: number; unknown?: true; pending?: true }, now: number): { label: string; unknown: boolean; pending: boolean } {
+  if (entry.pending === true && now - entry.at > PENDING_STALE_MS) return { label: 'outcome unknown', unknown: true, pending: false }
+  return { label: entry.label, unknown: entry.unknown === true, pending: entry.pending === true }
 }
 
 // How a settle's toast reads as the row's own line.

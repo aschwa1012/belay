@@ -18,7 +18,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On, Timer } from 'claude-code'
 import type { BelayPanelSettled, BelayPanelSnap, BelayPanelUi, BelayPanelWatch } from '../../types/index'
 import { argvFor, buildSnapshot, fatalSnapshot, fwd, launcherLine, isWindowsPath, needsRun, parseRan, parseRunFile, projectRootOf, repoCliGuess, type Ran, type RunFileRead } from './fetch'
-import { CONFIRM_MS, normHeld, reasonProblem, reviewProject, SETTLE_ACTIONS, SETTLE_UNKNOWN, settleArgs, settleKind, settleLine, settledActive, shortId, type SettleAction } from './held'
+import { CONFIRM_MS, normHeld, reasonProblem, reviewProject, SETTLE_ACTIONS, SETTLE_UNKNOWN, PENDING_STALE_MS, settleArgs, settleKind, settleLine, settledActive, shortId, type SettleAction } from './held'
 import { DEFAULT_SETTINGS, DEFAULT_UI } from './model'
 import { Band, BandWaiting, Fallback, Pane, type Act, type Els } from './view'
 
@@ -232,11 +232,11 @@ async function dispatchReview($: Host, project: string): Promise<void> {
     let res = { exitCode: 1, stdout: '', stderr: '' }
     for (const runArg of attempts) {
       res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS, project, START_FLAG, ...runArg], watch.dataDir), { timeoutMs: START_TIMEOUT_MS, ...(cwd ? { cwd } : {}) })
-      if (!needsRun(res.exitCode, res.stdout, res.stderr)) break
+      if (!needsRun(res.exitCode, res.stdout, res.stderr, watch.runId)) break
     }
     $.ui.toast(launcherLine(res.exitCode, res.stdout, res.stderr, project))
   } catch (err) {
-    $.ui.toast(`belay: the review was not started: ${firstLine(err instanceof Error ? err.message : String(err)) || 'the launcher did not answer'}`)
+    $.ui.toast(`belay: the review launcher did not answer (${firstLine(err instanceof Error ? err.message : String(err)) || 'no reason given'}): whether it started is unknown; the memory line shows a running review`)
   } finally { starting.delete(project) }
 }
 
@@ -266,7 +266,6 @@ async function reviewPress($: Host): Promise<void> {
 //   4. cancel, closing or opening a note, the note leaving the list or a change of run clears the pending state (the settleA atom).
 // The reason is one argv element. Steps 1 and 2 and cancel run no process.
 const settling = new Set<string>() // note ids whose settle is running
-const SETTLE_UNKNOWN_LABEL = 'outcome unknown'
 let inlineFocused = false // the inline band has no focus prop: true only after a $.ui.focus on its Input was answered without a denial
 
 async function settleStart($: Host, action: SettleAction, id: string): Promise<void> {
@@ -327,7 +326,7 @@ async function settlePress($: Host, pressed: string): Promise<void> {
     if ('error' in r) { $.ui.toast(`belay: the note was not settled: ${r.error}`); return }
     // Written BEFORE the process runs: a hot reload that drops this function mid-settle leaves the note refused, as an unknown outcome, not open to a second settle.
     const t0 = await $.clock.now()
-    await update($, settledA, m => ({ ...m, [id]: { label: SETTLE_UNKNOWN_LABEL, at: t0, unknown: true } }))
+    await update($, settledA, m => ({ ...m, [id]: { label: 'settling…', at: t0, pending: true as const } }))
     const cwd = watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null
     try {
       const res = await $.process.run(argvFor(r.cli, settleArgs(action, id, reason), watch.dataDir), { timeoutMs: START_TIMEOUT_MS, ...(cwd ? { cwd } : {}) })
@@ -339,6 +338,16 @@ async function settlePress($: Host, pressed: string): Promise<void> {
       await markSettled($, id, SETTLE_UNKNOWN)
     }
   } finally { settling.delete(id) }
+}
+
+// The operator looked (belay memory held) after an unknown outcome. The row is not opened at once: it is marked re-checking, stamped now, so only a read started after
+// this decides whether the note is still there; and not while a settle of it is still running.
+async function recheckNote($: Host, id: string): Promise<void> {
+  if (settling.has(id)) { $.ui.toast(`belay: note ${shortId(id)} is being settled; wait for it to finish.`); return }
+  const at = await $.clock.now()
+  await update($, settledA, m => (m[id] && (m[id]!.pending !== true || at - m[id]!.at > PENDING_STALE_MS) ? { ...m, [id]: { label: 're-checking', at } } : m))
+  lastFetchAt = 0
+  $.ui.invalidate('ui.render')
 }
 
 // Whatever the settle's outcome (written, unknown, refused), the note stays hidden and refused until a read taken after it has caught up: the snapshot the
@@ -378,7 +387,7 @@ function acts($: Host): Act {
     settle: (action, id) => { void settleStart($, action, id) },
     reason: value => { void reasonSubmit($, value) },
     cancel: () => { void update($, settleA, () => null) },
-    recheck: id => { void update($, settledA, m => Object.fromEntries(Object.entries(m).filter(([k]) => k !== id))); lastFetchAt = 0 },
+    recheck: id => { void recheckNote($, id) },
     commit: id => { void settlePress($, id) },
     note: id => { void update($, settleA, () => null); void update($, uiA, u => ({ ...calm(u), openNote: u.openNote === id ? null : id })) }, // opening, switching or closing a note drops a pending settle
   }

@@ -9,6 +9,10 @@ const ENTRIES_MAX = 200;
 // The same set count() counts: an active harness hold row whose note is still live in the project.
 const ACTIVE = `h.type = 'held' AND h.namespace LIKE 'held/%' AND h.written_by = 'harness' AND json_extract(h.body, '$.state') = 'held'
   AND EXISTS (SELECT 1 FROM memory_entries n WHERE n.id = json_extract(h.body, '$.note_id') AND n.type = 'note' AND n.namespace = 'project/' || substr(h.namespace, 6))`;
+// The JS twin of AWAITING below, for one held row's body: the archive reviewer answered undecided at the hold's current revision. memory.heldSettle's
+// compare-and-set (`if_awaiting`) and the listing's awaiting_operator both use it.
+function isAwaiting(b) { return !!(b && b.undecided && b.undecided.rev != null && Number(b.undecided.rev) === (Number(b.rev) || 0)); }
+
 const AWAITING = "(json_extract(h.body, '$.undecided.rev') IS NOT NULL AND json_extract(h.body, '$.undecided.rev') = COALESCE(json_extract(h.body, '$.rev'), 0))";
 const parse = (t) => { try { return t ? JSON.parse(t) : {}; } catch { return {}; } };
 
@@ -82,7 +86,7 @@ function entries(store, { projects = null, awaiting = false } = {}) {
     if (projects && !projects.includes(project)) continue;
     const b = parse(r.body);
     const rev = Number(b.rev) || 0;
-    const waiting = !!(b.undecided && Number(b.undecided.rev) === rev);
+    const waiting = isAwaiting(b);
     if (awaiting && !waiting) continue;
     let waited = 0;
     try { waited = Number(store.p('SELECT COUNT(DISTINCT id) AS n FROM run WHERE project = ? AND COALESCE(started_at, written_at) > ?').get(project, r.marked_at).n); } catch { /* no run table */ }
@@ -182,4 +186,4 @@ async function held(E, caller, args = {}) {
   return { ...scoped, ...(listing ? listing : {}), ...(reviews ? { reviews } : {}), ...(args.reports ? { breakers: breakers(E.store).filter((b) => !project || b.project === project), unjudged_reports: unjudged(E.store).filter((r) => !project || r.project === project), stranded: stranded(E.store, project) } : {}) };
 }
 
-module.exports = { count, breakers, entries, unjudged, stranded, held };
+module.exports = { count, breakers, entries, unjudged, stranded, held, isAwaiting };

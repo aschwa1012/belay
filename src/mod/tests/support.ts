@@ -64,6 +64,8 @@ export type World = {
   awaitingList?: unknown
   settleReject?: string
   /** The launcher's answers, one per start (the last one repeats). */
+  /** The launcher's process call itself fails (a timeout, a rejection). */
+  launcherReject?: string
   launchers?: { exitCode: number; stdout: string; stderr: string }[]
   /** Held inside the settle's process call: the test looks at the panel while the write is in flight. */
   settleHold?: Promise<void>
@@ -122,6 +124,7 @@ export function world(on: any, w: World) {
     }
     if (e.argv.includes('--start')) {
       spawned.push([...e.argv])
+      if (w.launcherReject) return { deny: w.launcherReject }
       if (w.launchers) return { value: w.launchers[Math.min(spawned.length - 1, w.launchers.length - 1)]! }
       return { value: w.launcher ?? { exitCode: 0, stdout: JSON.stringify({ started: true, project: 'acme', run_id: 'r-1', pid: 4242, job: 'archreview-r-1', claim_id: 'me-1' }), stderr: '' } }
     }

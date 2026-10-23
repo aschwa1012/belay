@@ -70,12 +70,12 @@ export function launcherLine(exitCode: number, stdout: string, stderr: string, p
 
 // The review launcher refuses with E_NOT_FOUND and `live_run` (a run id) when the only run with notes on is still live and it was not named (cmd-memory-stages.cjs).
 // That field, never the words, tells the panel to say which run it means. null when the launcher said anything else.
-export function needsRun(exitCode: number, stdout: string, stderr: string): boolean {
-  if (exitCode === 0) return false
+export function needsRun(exitCode: number, stdout: string, stderr: string, runId: string | null): boolean {
+  if (exitCode === 0 || !runId) return false
   for (const text of [stdout, stderr]) {
     try {
       const e = (JSON.parse(text) as { error?: { code?: unknown; live_run?: unknown } }).error
-      if (e && typeof e === 'object' && e.code === 'E_NOT_FOUND' && typeof e.live_run === 'string' && e.live_run !== '') return true
+      if (e && typeof e === 'object' && e.code === 'E_NOT_FOUND' && e.live_run === runId) return true // only the run the panel watches; another live run's refusal names that run and is shown as it is
     } catch { /* not JSON */ }
   }
   return false

@@ -20,6 +20,7 @@ const N = require('./methods-memory-notes.cjs');
 const { reportKey } = require('./report-marks.cjs');
 const { validId } = require('./memory-rows.cjs');
 const R = require('./memory-review-common.cjs');
+const { isAwaiting } = require('./notes-held.cjs');
 
 const ACTIONS = ['archive', 'release', 'reoffer'];
 
@@ -35,7 +36,8 @@ function reportKeys(note, held) {
 
 async function heldSettle(E, caller, args) {
   if (!HG.explicitOperator(caller)) throw err('E_ROLE', 'memory.heldSettle is the operator\'s own command (belay memory held settle): not a tool call, and not the run\'s close stages', { role: caller.role, channel: caller.channel || 'tool' });
-  C.allowKeys(args || {}, ['id', 'action', 'reason', 'project'], 'memory.heldSettle');
+  C.allowKeys(args || {}, ['id', 'action', 'reason', 'project', 'if_awaiting'], 'memory.heldSettle');
+  if (args.if_awaiting !== undefined && typeof args.if_awaiting !== 'boolean') throw err('E_ARGS', 'memory.heldSettle if_awaiting must be true or false', { field: 'if_awaiting' });
   if (!validId(args.id)) throw err('E_ARGS', 'memory.heldSettle needs the id of a held note', { field: 'id' });
   if (!ACTIONS.includes(args.action)) throw err('E_ARGS', `memory.heldSettle action must be one of ${ACTIONS.join(', ')}`, { field: 'action' });
   const reason = C.clean(L.checkText(args.reason, 'reason', 500, 'memory.heldSettle: ')).text;
@@ -45,6 +47,13 @@ async function heldSettle(E, caller, args) {
   const held = { id: mine[0].id, namespace: mine[0].namespace, b: JSON.parse(mine[0].body) };
   const project = held.namespace.slice('held/'.length);
   const out = E.store.tx(() => {
+    // Compare-and-set (`if_awaiting`, the panel's flag): the hold is read again INSIDE this transaction, so a settle that landed after the caller last looked is seen.
+    // A re-offer clears `undecided` and leaves the hold active, so without this a second settle on the same note would still write.
+    if (args.if_awaiting === true) {
+      const cur = E.store.p('SELECT body FROM memory_entries WHERE id = ?').get(held.id);
+      const b = cur ? JSON.parse(cur.body) : null;
+      if (!b || b.state !== 'held' || !isAwaiting(b)) throw err('E_PRECONDITION', `the hold on note ${args.id} does not await the operator now (state ${b ? b.state : 'gone'}${b && b.state === 'held' ? ', not marked undecided' : ''}), so nothing was settled`, { id: args.id, awaiting: false, state: b ? b.state : null, held_row: held.id });
+    }
     const at = Date.now();
     const receipt = `held-settle:${held.id}@${at.toString(36)}`;
     const note = loadNote(E, args.id);

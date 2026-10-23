@@ -72,6 +72,33 @@ test('settle elects, writes, returns the rows it changed and leaves no owner beh
   } catch (e) { bodyError = e === undefined ? new Error('undefined was thrown') : e; throw bodyError; } finally { await teardown(bodyError, [() => cleanup(dir)]); }
 });
 
+test('--if-awaiting settles only a hold that awaits the operator, checked in the write itself; without it nothing changes', async () => {
+  const dir = sandbox();
+  let bodyError = null;
+  try {
+    const p = plant(dir);
+    // a was never marked undecided: refused, and nothing is written (the same settle without the flag still works afterwards)
+    const no = cli(['held', 'settle', p.a, '--release', '--reason', 'r', '--if-awaiting'], dir);
+    assert.strictEqual(no.status, 1, no.stdout + no.stderr);
+    const e = JSON.parse(no.stderr || no.stdout).error;
+    assert.deepStrictEqual([e.code, e.detail.awaiting, e.detail.state], ['E_PRECONDITION', false, 'held']);
+    assert.ok(!fs.existsSync(dir + '/owner.lock'), 'no owner left behind');
+    // b awaits the operator: re-offer works with the flag, and then a second settle with the flag is refused (the re-offer cleared undecided)
+    const re = cli(['held', 'settle', p.b, '--reoffer', '--reason', 'look again', '--if-awaiting'], dir);
+    assert.strictEqual(re.status, 0, re.stdout + re.stderr);
+    assert.strictEqual(JSON.parse(re.stdout).outcome, 'reoffered');
+    const twice = cli(['held', 'settle', p.b, '--archive', '--reason', 'again', '--if-awaiting'], dir);
+    assert.strictEqual(twice.status, 1, twice.stdout + twice.stderr);
+    assert.strictEqual(JSON.parse(twice.stderr || twice.stdout).error.code, 'E_PRECONDITION');
+    // without the flag the core allows it, as before
+    const plain = cli(['held', 'settle', p.b, '--archive', '--reason', 'wrong for good'], dir);
+    assert.strictEqual(plain.status, 0, plain.stdout + plain.stderr);
+    assert.strictEqual(JSON.parse(plain.stdout).to, 'archive/acme');
+    const rel = cli(['held', 'settle', p.a, '--release', '--reason', 'r'], dir);
+    assert.strictEqual(rel.status, 0, rel.stdout + rel.stderr);
+  } catch (e) { bodyError = e === undefined ? new Error('undefined was thrown') : e; throw bodyError; } finally { await teardown(bodyError, [() => cleanup(dir)]); }
+});
+
 test('every usage error exits 2 and prints the usage line', async () => {
   const dir = sandbox();
   let bodyError = null;
@@ -79,7 +106,7 @@ test('every usage error exits 2 and prints the usage line', async () => {
     plant(dir);
     for (const args of [
       ['held', 'settle'], ['held', 'settle', 'x'], ['held', 'settle', 'x', '--release'], ['held', 'settle', 'x', '--release', '--archive', '--reason', 'r'],
-      ['held', 'bogus'], ['held', '--release'], ['held', '--reason', 'r'], ['held', 'settle', 'x', '--release', '--reason', 'r', '--awaiting'],
+      ['held', 'bogus'], ['held', '--release'], ['held', '--reason', 'r'], ['held', 'settle', 'x', '--release', '--reason', 'r', '--awaiting'], ['held', '--if-awaiting'],
     ]) {
       const r = cli(args, dir, false);
       assert.strictEqual(r.status, 2, args.join(' '));

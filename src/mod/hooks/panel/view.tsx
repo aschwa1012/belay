@@ -6,7 +6,7 @@ import {
   bandLines, cacheSegs, ctxSegs, isLive, markSeg, money, runLine, TONE, unseenNotices, bar,
   memoryTitleSegs, memoryFallbackSegs, type Seg,
 } from './model'
-import { CONFIRM_MS, confirmLine, heldDetail, heldLine, reviewLine, reviewProject, REASON_MAX, runningReview, SETTLE_ACTIONS, settleConfirm, settledActive, shortId } from './held'
+import { CONFIRM_MS, confirmLine, heldDetail, heldLine, reviewLine, reviewProject, REASON_MAX, runningReview, SETTLE_ACTIONS, settleConfirm, settleEntryView, settledActive, shortId } from './held'
 import { cells, cmdLines, wordWrap, wrapHard } from './wrap'
 import { clip, INDENT, Line, Section, shortModel, tp, type Act, type Ctx, type Els } from './base'
 import { Table } from './table'
@@ -118,7 +118,7 @@ export function orchestratorItems(entries: BelayEntry[]): Item[] {
 
 // A note waiting on the operator, one line: a mark, its short id, the title and why the review could not decide. A press opens it (state
 // only, nothing runs): the whole title and the whole reason on their own lines, then archive / release / reoffer. Only an open note has buttons.
-function SettleRow({ E, cols, n, act, open, pend, focused, done }: { E: Els; cols: number; n: BelayAwaitingNote; act: Act; open: boolean; pend: BelayPanelSettle | null; focused: boolean; done: { label: string; unknown: boolean } | null }) {
+function SettleRow({ E, cols, n, act, open, pend, focused, done }: { E: Els; cols: number; n: BelayAwaitingNote; act: Act; open: boolean; pend: BelayPanelSettle | null; focused: boolean; done: { label: string; unknown: boolean; pending: boolean } | null }) {
   const { Box, Text, Button, Input } = E
   const mine = open && pend && pend.id === n.id ? pend : null // this note's settle in progress: the reason Input, then the confirm
   const room = Math.max(0, cols - 4 - 8) // the attention mark, the open mark and the id
@@ -204,7 +204,7 @@ function Held({ E, snap, ui, now, act, cols, pend, focused, settled }: Ctx) {
         return wrapHard(reviewLine(r, now), Math.max(8, inner - 2)).map((t, j) => <Line E={E} w={inner} k={`hr${i}-${j}`} segs={[{ t: j === 0 ? '◇ ' : '  ', c: bad ? 'error' : undefined, dim: !bad }, { t, c: bad ? 'error' : undefined }]} />)
       })}
       {hd && hd.count > 0 && wrapHard(asking && project ? confirmLine(hd, project) : heldDetail(hd, now), Math.max(8, inner)).map((t, i) => <Line E={E} w={inner} k={`hl${i}`} segs={[{ t, c: asking ? ATTN : undefined, dim: !asking }]} />)}
-      {notes.map(n => <SettleRow E={E} cols={inner} n={n} act={act} open={n.id === openId} pend={pend} focused={focused} done={settledActive(settled[n.id], snap, n.id) ? { label: settled[n.id]!.label, unknown: settled[n.id]!.unknown === true } : null} />)}
+      {notes.map(n => <SettleRow E={E} cols={inner} n={n} act={act} open={n.id === openId} pend={pend} focused={focused} done={settledActive(settled[n.id], snap, n.id) ? settleEntryView(settled[n.id]!, now) : null} />)}
       {carriedAt !== null && <Line E={E} w={inner} k="awc" segs={[{ t: `list from ${hhmm(carriedAt)}`, dim: true }]} />}
       {more > 0 && wrapHard(`+${more} more · belay memory held --awaiting`, inner).map((t, i) => <Line E={E} w={inner} k={`awm${i}`} segs={[{ t, dim: true }]} />)}
       {hd && project !== null && !busy && <Button key="review" plain label={asking ? '  ▸ press again to dispatch · any other press cancels' : `  ▸ review the held notes${Object.keys(hd.byProject).length > 1 ? ` (${project} first)` : ''}`} onPress={act.review} />}

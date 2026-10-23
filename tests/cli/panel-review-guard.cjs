@@ -122,9 +122,12 @@ function analyze(files) {
     const k = di.its.findIndex((it) => it.name === 'dispatchReview');
     const dcode = k < 0 ? '' : di.code.slice(di.its[k].start, di.its[k + 1] ? di.its[k + 1].start : undefined);
     if (!/const attempts\s*:\s*string\[\]\[\]\s*=\s*\[\s*\[\s*\]\s*,\s*\.\.\.\(\s*watch\.runId\s*\?\s*\[\s*\[\s*RUN_FLAG\s*,\s*watch\.runId\s*\]\s*\]\s*:\s*\[\s*\]\s*\)\s*\]/.test(dcode) || (dcode.match(/\battempts\b\s*[:=]/g) || []).length !== 1) bad.push('dispatchReview: attempts is not exactly [[], ...(watch.runId ? [[RUN_FLAG, watch.runId]] : [])]');
-    if (!/for\s*\(\s*const runArg of attempts\s*\)/.test(dcode) || !/argvFor\(\s*r\.cli\s*,\s*\[\s*\.\.\.REVIEW_ARGS\s*,\s*project\s*,\s*START_FLAG\s*,\s*\.\.\.runArg\s*\]\s*,\s*watch\.dataDir\s*\)/.test(dcode)) bad.push('dispatchReview: the review argv is not exactly [...REVIEW_ARGS, project, START_FLAG, ...runArg] over attempts');
+    if ((dcode.match(/\bfor\b/g) || []).length !== 1 || /\b(?:continue|while|do|forEach|map|reduce)\b/.test(dcode)) bad.push('dispatchReview: it has other than exactly one for loop, or a continue/while/do/forEach');
+    const lm = /for\s*\(\s*const runArg of attempts\s*\)\s*\{([\s\S]*?)\n\s*\}\s*\n/.exec(dcode);
+    const lbody = lm ? lm[1].replace(/\s+/g, ' ').trim() : null;
+    const lwant = 'res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS, project, START_FLAG, ...runArg], watch.dataDir), { timeoutMs: START_TIMEOUT_MS, ...(cwd ? { cwd } : {}) }) if (!needsRun(res.exitCode, res.stdout, res.stderr, watch.runId)) break';
+    if (lbody !== lwant) bad.push('dispatchReview: the loop body is not exactly the one launcher call and the needsRun gate');
     if ((dcode.match(/\$\.process\.run\(/g) || []).length !== 1) bad.push('dispatchReview: there is not exactly one $.process.run');
-    if (!/if\s*\(\s*!needsRun\(\s*res\.exitCode\s*,\s*res\.stdout\s*,\s*res\.stderr\s*\)\s*\)\s*break/.test(dcode)) bad.push('dispatchReview: the retry is not gated by needsRun on the launcher answer');
     if (/\b(?:attempts|runArg)\s*(?:\.\s*(?:push|pop|shift|unshift|splice|sort|reverse|fill|copyWithin|length)\b|\[[^\]]*\]\s*=(?!=)|=(?!=))/.test(dcode)) bad.push('dispatchReview: runArg or attempts is changed after it is declared');
   }
   // 3. act.review (any spelling of a `review` member) is the onPress of one Button keyed review in view.tsx, and nowhere else.
@@ -139,7 +142,7 @@ function analyze(files) {
   // settleArgs (held.ts) builds exactly that array, settlePress (index.tsx) is its one caller and runs it, acts() has the one handler that calls
   // settlePress, and view.tsx's SettleRow has the one Button that calls act.settle. Nothing else names any of them.
   const held = info['hooks/panel/held.ts'];
-  if (!held || !/export const settleArgs = \(action: SettleAction, id: string, reason: string\): string\[\] => \['memory', 'held', 'settle', id, `--\$\{action\}`, '--reason', reason\]\s*\n/.test(held.text)) bad.push('settleArgs in hooks/panel/held.ts is not exactly the literal settle argv');
+  if (!held || !/export const settleArgs = \(action: SettleAction, id: string, reason: string\): string\[\] => \['memory', 'held', 'settle', id, `--\$\{action\}`, '--reason', reason, '--if-awaiting'\]\s*\n/.test(held.text)) bad.push('settleArgs in hooks/panel/held.ts is not exactly the literal settle argv');
   const sa = refs(/\bsettleArgs\b/g).filter((r) => !/^\s*import\b/.test(r.line) && !/^\s*(?:export\s+)?(?:async\s+)?(?:function|const)\s+settleArgs\b/.test(r.line));
   if (JSON.stringify(where(sa)) !== JSON.stringify(['hooks/panel/index.tsx:settlePress']) || !sa.every((r) => /\$\.process\.run\(argvFor\(r\.cli, settleArgs\(action, id, reason\), watch\.dataDir\), \{ timeoutMs: START_TIMEOUT_MS, \.\.\.\(cwd \? \{ cwd \} : \{\}\) \}\)/.test(r.orig))) bad.push(`settleArgs is used in ${JSON.stringify(where(sa))}; only settlePress may run it, as argvFor(r.cli, settleArgs(action, id, reason), watch.dataDir)`);
   // 3c. No second declaration of the argv builders: exactly one `settleArgs` (held.ts) and one `argvFor` (fetch.ts) exist in the whole mod, at the top level or
@@ -187,6 +190,7 @@ function analyze(files) {
     for (const m of o.code.matchAll(/\bfor\s*\([^)]*\bin\s+(?:[\w$]+\s*\.\s*)*acts?\b/g)) bad.push(`${f}:${ownerOf(o.its, m.index)}: for...in over an Act`);
     if (/[\w$]\\u(?:[0-9a-fA-F]|\{)|\\u(?:[0-9a-fA-F]{4}|\{[0-9a-fA-F]+\})[\w$]/.test(o.code.replace(/\[[^\]\n]*\]/g, ''))) bad.push(`${f}: a \\u escape in code (an identifier spelled by escape would hide a handler name)`);
     for (const m of o.code.matchAll(/\$\s*\.\s*state\b/g)) bad.push(`${f}:${ownerOf(o.its, m.index)}: $.state is used; the panel reaches its state only through the atoms (read/update)`);
+    for (const l of o.lits) if (l.text === '--if-awaiting' && !(f === 'hooks/panel/held.ts' && ownerOf(o.its, l.at) === 'settleArgs')) bad.push(`${f}:${ownerOf(o.its, l.at)}: the string "--if-awaiting" appears outside settleArgs`);
     for (const l of o.lits) if (l.text === 'commit') bad.push(`${f}:${ownerOf(o.its, l.at)}: the string "commit" appears (an Act handler reached by name)`);
     for (const m of o.code.matchAll(/\bObject\s*\.\s*(?:values|entries|keys|getOwnPropertyNames|getOwnPropertyDescriptors|assign|fromEntries)\s*\(\s*(?:[\w$]+\s*\.\s*)*acts?\b|\.\.\.\s*acts?\b|\bacts?\s*\[/g)) bad.push(`${f}:${ownerOf(o.its, m.index)}: an Act is enumerated, spread or indexed by name: ${o.text.slice(m.index, m.index + 40).trim()}`);
   }

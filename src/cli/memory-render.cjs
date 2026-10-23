@@ -51,6 +51,7 @@ const FLAGS = {
   '--approve': { key: 'approve', type: 'bool' },
   '--reject': { key: 'reject', type: 'bool' },
   '--awaiting': { key: 'awaiting', type: 'bool' },
+  '--if-awaiting': { key: 'ifAwaiting', type: 'bool' },
   '--archive': { key: 'archive', type: 'bool' },
   '--release': { key: 'release', type: 'bool' },
   '--reoffer': { key: 'reoffer', type: 'bool' },
@@ -76,7 +77,7 @@ const VERBS = {
   review: { flags: ['--run', '--project', '--worktree', '--all', '--start'], positional: [0, 0], usage: 'belay memory review [--project <p>] [--all] [--run <id>] [--worktree <dir>] [--start]' },
   resolve: { flags: ['--evidence'], positional: [2, 3], usage: 'belay memory resolve <id> new   |   belay memory resolve <id> repeats <of>   |   belay memory resolve <id> supersedes <of> --evidence <text>' },
   promote: { flags: ['--approve', '--reject', '--reason'], positional: [1, 1], usage: 'belay memory promote <note-id> (--approve | --reject) [--reason <text>]' },
-  held: { flags: ['--project', '--awaiting', '--archive', '--release', '--reoffer', '--reason'], positional: [0, 2], usage: 'belay memory held [--project p] [--awaiting]   |   belay memory held settle <note-id> (--archive | --release | --reoffer) --reason <text>' },
+  held: { flags: ['--project', '--awaiting', '--archive', '--release', '--reoffer', '--reason', '--if-awaiting'], positional: [0, 2], usage: 'belay memory held [--project p] [--awaiting]   |   belay memory held settle <note-id> (--archive | --release | --reoffer) --reason <text> [--if-awaiting]' },
   report: { flags: ['--reason', '--replaced-by'], positional: [1, 1], usage: 'belay memory report <note-id> --reason <text> [--replaced-by <note-id>]' },
   archive: { flags: ['--ids', '--older-than', '--confirm', '--project'], positional: [1, 1], usage: 'belay memory archive purge (--ids a,b | --older-than <days>) --confirm [--project p]' },
 };
@@ -131,6 +132,7 @@ function checkResolve(opts, positional) {
 function checkHeld(opts, positional) {
   const actions = ['archive', 'release', 'reoffer'].filter((a) => opts[a]);
   if (positional[0] === undefined) {
+    if (opts.ifAwaiting) return { error: 'belay memory held lists the held notes; --if-awaiting belongs to belay memory held settle <note-id>' };
     if (actions.length || opts.reason !== undefined) return { error: 'belay memory held lists the held notes; --archive, --release, --reoffer and --reason belong to belay memory held settle <note-id>' };
     return {};
   }

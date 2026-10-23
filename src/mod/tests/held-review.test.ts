@@ -44,6 +44,17 @@ describe('the review acts for the watched run only when it must', () => {
     expect(a.spawned.length).toBe(1)
     expect(a.toasts.at(-1)).toContain('the review was not started')
   })
+  test('E_NOT_FOUND naming another live run is not retried: the refusal is shown as it is', async ($, on) => {
+    const wd = await press($, on, { launchers: [notFound('r-another')] })
+    expect(wd.spawned.length).toBe(1)
+    expect(wd.toasts.at(-1)).toContain('E_NOT_FOUND')
+  })
+  test('a rejected or timed-out first launch is not retried and says the outcome is unknown', async ($, on) => {
+    const wd = await press($, on, { launcherReject: 'timed out' })
+    expect(wd.spawned.length).toBe(1)
+    expect(wd.toasts.at(-1)).toContain('unknown')
+    expect(wd.toasts.at(-1)).toContain('timed out')
+  })
   test('a warning the launcher returns is in the toast', async ($, on) => {
     const warned = { exitCode: 0, stdout: JSON.stringify({ started: true, project: 'acme', pid: 7, job: 'j', closing_warning: 'this run is live; its close cuts the review off' }), stderr: '' }
     const wd = await press($, on, { launchers: [warned] })

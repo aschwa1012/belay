@@ -155,7 +155,7 @@ test('normAwaiting: only entries that await the operator, capped, cleaned', () =
 
 test('settleArgs keeps the reason one element, whatever it holds; settleLine shows the proof or the error', () => {
   for (const reason of ['two words', '-x', '--archive', 'it\'s "q"', '']) {
-    assert.deepStrictEqual(M.settleArgs('reoffer', 'n1', reason), ['memory', 'held', 'settle', 'n1', '--reoffer', '--reason', reason]);
+    assert.deepStrictEqual(M.settleArgs('reoffer', 'n1', reason), ['memory', 'held', 'settle', 'n1', '--reoffer', '--reason', reason, '--if-awaiting']);
   }
   const ok = JSON.stringify({ id: 'abcdef0123456789', action: 'archive', outcome: 'archived', receipt: 'held-settle:x@1' });
   assert.strictEqual(M.settleLine(0, ok, ''), 'belay: archive abcdef01: archived · receipt held-settle:x@1');
