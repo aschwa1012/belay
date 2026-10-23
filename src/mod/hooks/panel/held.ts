@@ -2,6 +2,7 @@
 
 import type { BelayAwaitingNote, BelayHeld, BelayReview } from '../../types/index'
 import { arr, clean, dur, num, obj, str } from './model'
+import { clusters } from './wrap'
 
 // The estimated cost of one archive review, once the batch study has produced one. Null until then: the confirm says so.
 export const REVIEW_COST_ESTIMATE_USD: number | null = null
@@ -126,7 +127,10 @@ export function confirmLine(h: BelayHeld, project: string): string {
 
 export type SettleAction = 'archive' | 'release' | 'reoffer'
 export const SETTLE_ACTIONS: readonly SettleAction[] = ['archive', 'release', 'reoffer']
-const SETTLE_SHOWN = 3 // notes listed with buttons at once; the rest are counted
+export const SETTLE_SHOWN = 5 // notes listed at once, one line each; the rest are counted
+export const REASON_CAP = 500 // the core's own cap on an undecided reason; the panel cuts nothing short of it
+// Cut to n whole grapheme clusters, ending in an ellipsis only when something was cut.
+const cutClusters = (s: string, n: number): string => { const g = clusters(s); return g.length > n ? g.slice(0, n - 1).join('') + '…' : s }
 
 // `belay memory held --awaiting --json`: the notes waiting on the operator (a read). Ids and titles are belay's, still cleaned.
 export function normAwaiting(json: unknown): BelayAwaitingNote[] {
@@ -135,7 +139,7 @@ export function normAwaiting(json: unknown): BelayAwaitingNote[] {
     const e = obj(raw)
     const id = e ? str(e.note_id) : null
     if (!e || !id || e.awaiting_operator !== true || out.length >= SETTLE_SHOWN) continue
-    out.push({ id: clean(id, 64), project: clean(str(e.project) ?? '', 64), title: clean(str(e.title) ?? '', 60), reason: clean(str(obj(e.undecided)?.reason) ?? '', 240) })
+    out.push({ id: clean(id, 64), project: clean(str(e.project) ?? '', 64), title: cutClusters(clean(str(e.title) ?? '', 100000), REASON_CAP), reason: cutClusters(clean(str(obj(e.undecided)?.reason) ?? '', 100000), REASON_CAP) })
   }
   return out
 }

@@ -161,6 +161,8 @@ async function tick($: Host): Promise<void> {
         if (!watch.runId && snap.runId) await update($, watchA, w => (w && !w.runId ? { ...w, runId: snap.runId } : w))
         // While the panel is open, notices that arrive are seen as they arrive.
         if (ui.open) await update($, uiA, u => ({ ...u, seen: [...new Set([...u.seen, ...snap.notices.map(n => n.key)])].slice(-200) }))
+        // A note that has left the list closes.
+        if (ui.openNote) await update($, uiA, u => (u.openNote && !(snap.held?.awaitingNotes ?? []).some(n => n.id === u.openNote) ? { ...u, openNote: null } : u))
         // A switch to above-prompt closes the docked pane. A switch to docked opens nothing from a timer:
         // the panel stays inline until the person reopens it.
         if (ui.open && ui.placed && snap.settings.pane === 'above-prompt') {
@@ -296,6 +298,7 @@ function acts($: Host): Act {
     toggle: () => { void update($, uiA, calm).then(() => read($, uiA)).then(u => setOpen($, !u.open)) },
     review: () => { void reviewPress($) },
     settle: (action, id) => { void settlePress($, action, id) },
+    note: id => { void update($, uiA, u => ({ ...calm(u), openNote: u.openNote === id ? null : id })) },
   }
 }
 

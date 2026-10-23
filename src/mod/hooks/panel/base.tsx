@@ -19,6 +19,8 @@ export type Act = {
   review: () => void
   /** A held note that waits on the operator: ask for a reason, confirm, then settle it (index.tsx). */
   settle: (action: SettleAction, id: string) => void
+  /** Open an awaiting note's line (its reason and buttons), or close it when it is the open one. UI state only: runs no process. */
+  note: (id: string) => void
 }
 export type Ctx = { E: Els; snap: BelayPanelSnap; ui: BelayPanelUi; now: number; cols: number; act: Act }
 
@@ -60,7 +62,12 @@ export function packSegs(segs: Seg[], room: number): Seg[][] {
   let w = 0
   for (const s of segs) {
     const sw = cells(s.t)
-    if (w > 0 && w + sw > room) { out.push([]); w = 0 }
+    if (w > 0 && w + sw > room) {
+      const last = out[out.length - 1]!
+      if (last.length > 1 && last[last.length - 1]!.t.trim() === '·') last.pop() // a joiner left at the end of a line goes
+      out.push([])
+      w = 0
+    }
     if (w === 0 && s.t.trim() === '·') continue
     out[out.length - 1]!.push(s)
     w += sw

@@ -7,7 +7,7 @@ import {
   memoryTitleSegs, memoryFallbackSegs, type Seg,
 } from './model'
 import { CONFIRM_MS, confirmLine, heldDetail, heldLine, reviewLine, reviewProject, runningReview, SETTLE_ACTIONS, shortId } from './held'
-import { cells, cmdLines, wordWrap } from './wrap'
+import { cells, cmdLines, wordWrap, wrapHard } from './wrap'
 import { clip, INDENT, Line, Section, shortModel, tp, type Act, type Ctx, type Els } from './base'
 import { Table } from './table'
 
@@ -116,12 +116,16 @@ export function orchestratorItems(entries: BelayEntry[]): Item[] {
   return items.slice(from)
 }
 
-// A note waiting on the operator: its short id, title and why the review could not decide, then archive / release / reoffer.
-// The title drops whole when the row is narrow.
-function SettleRow({ E, cols, n, act }: { E: Els; cols: number; n: BelayAwaitingNote; act: Act }) {
-  const { Box, Button } = E
-  const segs: Seg[] = [{ t: '▲ ', c: ATTN }, { t: shortId(n.id), dim: true }, ...(n.title ? [{ t: ` "${n.title}"`, brk: true } as Seg] : [])]
-  // The reason is what the operator reads before choosing, so it is never dropped: its own dim lines, wrapped. The buttons wrap onto more lines when three do not fit.
+// A note waiting on the operator, one line: a mark, its short id, the title and why the review could not decide. A press opens it (state
+// only, nothing runs): the whole title and the whole reason on their own lines, then archive / release / reoffer. Only an open note has buttons.
+function SettleRow({ E, cols, n, act, open }: { E: Els; cols: number; n: BelayAwaitingNote; act: Act; open: boolean }) {
+  const { Box, Text, Button } = E
+  const room = Math.max(0, cols - 4 - 8) // the attention mark, the open mark and the id
+  const title = n.title ? ` "${clip(n.title, Math.max(6, Math.floor(room * 0.4)))}"` : ''
+  const left = room - cells(title)
+  const reason = n.reason && left >= 8 ? ` · ${clip(n.reason, left - 3)}` : ''
+  const press = () => act.note(n.id)
+  // The buttons wrap onto more lines when three do not fit.
   const rows: string[][] = [[]]
   let w = 0
   for (const a of SETTLE_ACTIONS) {
@@ -132,9 +136,15 @@ function SettleRow({ E, cols, n, act }: { E: Els; cols: number; n: BelayAwaiting
   }
   return (
     <Box flexDirection="column" key={`aw-${n.id}`}>
-      <Line E={E} w={cols} k={`awl-${n.id}`} segs={segs} />
-      {n.reason ? wordWrap(n.reason, Math.max(8, cols - 2)).map((t, i) => <Line E={E} w={cols} k={`awr-${n.id}-${i}`} segs={[{ t: `  ${t}`, dim: true }]} />) : null}
-      {rows.map((r, i) => <Box key={`awb-${n.id}-${i}`}>{r.map(a => <Button key={`${a}-${n.id}`} plain label={`  ▸ ${a}`} onPress={() => act.settle(a, n.id)} />)}</Box>)}
+      <Box>
+        <Text color={ATTN}>▲ </Text>
+        <Button key={`note:${n.id}`} plain dimColor label={`${open ? '▾' : '▸'} ${shortId(n.id)}`} onPress={press} />
+        {title ? <Button key={`note-t:${n.id}`} plain label={title} onPress={press} /> : null}
+        {reason ? <Button key={`note-r:${n.id}`} plain dimColor label={reason} onPress={press} /> : null}
+      </Box>
+      {open && n.title ? wrapHard(`"${n.title}"`, Math.max(8, cols - 2)).map((t, i) => <Line E={E} w={cols} k={`awt-${n.id}-${i}`} segs={[{ t: `  ${t}` }]} />) : null}
+      {open && n.reason ? wrapHard(n.reason, Math.max(8, cols - 2)).map((t, i) => <Line E={E} w={cols} k={`awr-${n.id}-${i}`} segs={[{ t: `  ${t}`, dim: true }]} />) : null}
+      {open && rows.map((r, i) => <Box key={`awb-${n.id}-${i}`}>{r.map(a => <Button key={`${a}-${n.id}`} plain label={`  ▸ ${a}`} onPress={() => act.settle(a, n.id)} />)}</Box>)}
     </Box>
   )
 }
@@ -153,6 +163,9 @@ function Held({ E, snap, ui, now, act, cols }: Ctx) {
   const busy = hd !== null && project !== null && runningReview(hd, project) !== null // a review of that project holds its claim: no second dispatch
   const asking = !busy && !!ui.confirm && project !== null && ui.confirm.project === project && now - ui.confirm.at <= CONFIRM_MS
   const awaiting = hd?.awaiting ?? 0
+  const notes = hd?.awaitingNotes ?? []
+  const openId = notes.some(n => n.id === ui.openNote) ? ui.openNote : null // only one is open, and only while it is listed
+  const more = Math.max(0, awaiting - notes.length)
   const summary: Seg[] = [
     ...(off ? [{ t: 'off', c: ATTN } as Seg, ...(hd ? [{ t: ' · ', dim: true } as Seg] : [])] : []),
     ...(hd ? [{ t: hd.count > 0 ? `${hd.count} held` : 'none held', dim: true } as Seg] : []),
@@ -161,12 +174,13 @@ function Held({ E, snap, ui, now, act, cols }: Ctx) {
   return (
     <Section E={E} k="sm" title="MEMORY" cols={cols} summary={summary}>
       {off && <MemoryOff E={E} n={off} cols={inner} />}
-      {hd && hd.reviews.map((r, i) => {
+      {hd && hd.reviews.flatMap((r, i) => {
         const bad = r.state === 'failed' || r.state === 'interrupted'
-        return <Line E={E} w={inner} k={`hr${i}`} segs={[{ t: '◇ ', c: bad ? 'error' : undefined, dim: !bad }, { t: reviewLine(r, now), c: bad ? 'error' : undefined }]} />
+        return wrapHard(reviewLine(r, now), Math.max(8, inner - 2)).map((t, j) => <Line E={E} w={inner} k={`hr${i}-${j}`} segs={[{ t: j === 0 ? '◇ ' : '  ', c: bad ? 'error' : undefined, dim: !bad }, { t, c: bad ? 'error' : undefined }]} />)
       })}
-      {hd && hd.count > 0 && wordWrap(asking && project ? confirmLine(hd, project) : heldDetail(hd, now), Math.max(8, inner)).map((t, i) => <Line E={E} w={inner} k={`hl${i}`} segs={[{ t, c: asking ? ATTN : undefined, dim: !asking }]} />)}
-      {hd && (hd.awaitingNotes ?? []).map(n => <SettleRow E={E} cols={inner} n={n} act={act} />)}
+      {hd && hd.count > 0 && wrapHard(asking && project ? confirmLine(hd, project) : heldDetail(hd, now), Math.max(8, inner)).map((t, i) => <Line E={E} w={inner} k={`hl${i}`} segs={[{ t, c: asking ? ATTN : undefined, dim: !asking }]} />)}
+      {notes.map(n => <SettleRow E={E} cols={inner} n={n} act={act} open={n.id === openId} />)}
+      {more > 0 && wrapHard(`+${more} more · belay memory held --awaiting`, inner).map((t, i) => <Line E={E} w={inner} k={`awm${i}`} segs={[{ t, dim: true }]} />)}
       {hd && project !== null && !busy && <Button key="review" plain label={asking ? '  ▸ press again to dispatch · any other press cancels' : `  ▸ review the held notes${Object.keys(hd.byProject).length > 1 ? ` (${project} first)` : ''}`} onPress={act.review} />}
     </Section>
   )
@@ -175,7 +189,7 @@ function Held({ E, snap, ui, now, act, cols }: Ctx) {
 function Orchestrator({ E, snap, ui, act, cols }: Ctx) {
   const { Box, Text, Button } = E
   const inner = cols - INDENT
-  const note = (t: string, k: string) => <Section E={E} k="so" title="ORCHESTRATOR" cols={cols}><Line E={E} w={inner} k={k} segs={[{ t, dim: true }]} /></Section>
+  const note = (t: string, k: string) => <Section E={E} k="so" title="ORCHESTRATOR" cols={cols}>{wrapHard(t, inner).map((l, i) => <Line E={E} w={inner} k={`${k}${i}`} segs={[{ t: l, dim: true }]} />)}</Section>
   if (snap.mode === 'interactive') return note('Interactive: its words are already in its own window.', 'oi')
   if (snap.mode !== 'headless') return note('run mode unknown', 'ou')
   const entries = snap.transcript ?? []
@@ -245,8 +259,8 @@ function MemoryNotice({ E, snap, cols }: { E: Els; snap: BelayPanelSnap; cols: n
 function MemoryOff({ E, n, cols }: { E: Els; n: BelayMemoryNotice; cols: number }) {
   return (
     <>
-      <Line E={E} w={cols} k="mot" segs={memoryTitleSegs(n)} />
-      {wordWrap(n.short, cols).map((l, i) => <Line E={E} w={cols} k={`mos${i}`} segs={[{ t: l, dim: true }]} />)}
+      {wrapHard(n.title, Math.max(8, cols - 2)).map((l, i) => <Line E={E} w={cols} k={`mot${i}`} segs={[{ t: i === 0 ? '▲ ' : '  ', c: ATTN }, { t: l, c: ATTN, bold: true }]} />)}
+      {wrapHard(n.short, cols).map((l, i) => <Line E={E} w={cols} k={`mos${i}`} segs={[{ t: l, dim: true }]} />)}
     </>
   )
 }
@@ -297,7 +311,7 @@ export function Pane(c: Ctx) {
       <Orchestrator {...c} />
       <Box flexDirection="column" marginTop={1}>
         {snap.errors.map((e, i) => <Line E={E} w={cols} k={`pe${i}`} segs={[{ t: e, dim: true }]} />)}
-        <Line E={E} w={cols} k="pf" segs={[{ t: snap.held && snap.held.count > 0 ? 'read-only except the review and settle buttons · /orch toggles' : 'read-only · /orch toggles', dim: true }]} />
+        {wrapHard(snap.held && snap.held.count > 0 ? 'read-only except the review and settle buttons · /orch toggles' : 'read-only · /orch toggles', cols).map((t, i) => <Line E={E} w={cols} k={`pf${i}`} segs={[{ t, dim: true }]} />)}
       </Box>
     </Box>
   )

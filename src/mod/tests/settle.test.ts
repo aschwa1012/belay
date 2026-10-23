@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { T0, RUN, NOTE_ID, FULL_RUNFILE, START, boot, cmd, later, pane, openPane } from './support'
+import { T0, RUN, NOTE_ID, FULL_RUNFILE, START, boot, cmd, later, pane, openPane, words } from './support'
 
 // The settle buttons: a held note that waits on the operator can be archived, released or reoffered from the panel. Each press asks for a
 // reason, asks to confirm, and only then runs `belay memory held settle`; the reason is one argv element.
@@ -7,14 +7,17 @@ const held = { kind: 'notes_held', ts: T0, run_id: RUN, count: 1, unsupported: 0
 const notices = (...events: unknown[]) => ({ run_id: RUN, events })
 const waiting = notices(held)
 const KEY = (a: string) => `${a}-${NOTE_ID}`
+const OPEN = `note:${NOTE_ID}`
 
 describe('the settle buttons', () => {
   test('a note that awaits the operator gets archive, release and reoffer; a held note that does not gets none', async ($, on) => {
     const wd = await boot($, on, { notices: waiting })
     await openPane($, wd)
-    const { text } = await pane($)
+    const { ui, text } = await pane($)
     expect(text).toContain('08954ec7')
-    for (const a of ['archive', 'release', 'reoffer']) expect(text).toContain(`▸ ${a}`)
+    expect(text).not.toContain('▸ archive') // closed: one line, no buttons
+    await ui.press({ key: OPEN })
+    for (const a of ['archive', 'release', 'reoffer']) expect(words(await ui.drawn())).toContain(`▸ ${a}`)
     expect(wd.ran.some(a => a.includes('--awaiting'))).toBe(true)
   })
 
@@ -33,6 +36,7 @@ describe('the settle buttons', () => {
       const wd = await boot($, on, { notices: waiting, answers: [reason, verb], settleOut: { exitCode: 0, stdout: JSON.stringify({ id: NOTE_ID, action, outcome: `${action}d`, receipt: 'held-settle:abc@1' }), stderr: '' } })
       await openPane($, wd)
       const { ui } = await pane($)
+      await ui.press({ key: OPEN }) // a note's buttons are drawn once its line is open
       await ui.press({ key: KEY(action) })
       await later(wd, 100)
       expect(wd.asked[1]).toBe(`${verb} note 08954ec7? reason: ${reason}`)
@@ -50,6 +54,7 @@ describe('the settle buttons', () => {
       const wd = await boot($, on, { notices: waiting, answers })
       await openPane($, wd)
       const { ui } = await pane($)
+      await ui.press({ key: OPEN }) // a note's buttons are drawn once its line is open
       await ui.press({ key: KEY('archive') })
       await later(wd, 100)
       expect(wd.settled).toEqual([])
@@ -61,6 +66,7 @@ describe('the settle buttons', () => {
     const wd = await boot($, on, { notices: waiting, answers: ['because', 'Release'], settleOut: { exitCode: 1, stdout: '', stderr: JSON.stringify(err, null, 2) } })
     await openPane($, wd)
     const { ui } = await pane($)
+    await ui.press({ key: OPEN }) // a note's buttons are drawn once its line is open
     await ui.press({ key: KEY('release') })
     await later(wd, 100)
     expect(wd.settled.length).toBe(1)
@@ -87,6 +93,7 @@ describe('the outcome of a write that may have committed is unknown, never "not 
       const wd = await boot($, on, { notices: waiting, answers: ['because', 'Archive'], settleOut: { exitCode: 1, stdout: '', stderr: JSON.stringify(body, null, 2) } })
       await openPane($, wd)
       const { ui } = await pane($)
+      await ui.press({ key: OPEN }) // a note's buttons are drawn once its line is open
       await ui.press({ key: KEY('archive') })
       await later(wd, 100)
       expect(wd.toasts.at(-1)).toBe(`belay: outcome unknown: re-read with belay memory held (${code})`)
@@ -96,6 +103,7 @@ describe('the outcome of a write that may have committed is unknown, never "not 
     const wd = await boot($, on, { notices: waiting, answers: ['because', 'Archive'], settleReject: 'timed out' })
     await openPane($, wd)
     const { ui } = await pane($)
+    await ui.press({ key: OPEN }) // a note's buttons are drawn once its line is open
     await ui.press({ key: KEY('archive') })
     await later(wd, 100)
     expect(wd.settled.length).toBe(1)
@@ -110,6 +118,7 @@ describe('what is checked around the dialogs', () => {
     const wd = await boot($, on, { notices: waiting, answers: ['because', 'Archive', 'again', 'Archive'], onAsk: n => (n === 1 ? gate : undefined) })
     await openPane($, wd)
     const { ui } = await pane($)
+    await ui.press({ key: OPEN }) // a note's buttons are drawn once its line is open
     const first = ui.press({ key: KEY('archive') })
     await later(wd, 50)
     const second = ui.press({ key: KEY('release') })
@@ -128,6 +137,7 @@ describe('what is checked around the dialogs', () => {
     const wd = await boot($, on, { notices: waiting, answers: ['because', 'Archive'], onAsk: n => (n === 2 ? gate : undefined) })
     await openPane($, wd)
     const { ui } = await pane($)
+    await ui.press({ key: OPEN }) // a note's buttons are drawn once its line is open
     const pressed = ui.press({ key: KEY('archive') })
     await later(wd, 100)
     expect(wd.asked.length).toBe(2) // the confirm is up
@@ -146,6 +156,7 @@ describe('what is checked around the dialogs', () => {
     const wd = await boot($, on, { notices: waiting, answers: ['because', 'Archive'], onAsk: n => (n === 2 ? gate : undefined) })
     await openPane($, wd)
     const { ui } = await pane($)
+    await ui.press({ key: OPEN }) // a note's buttons are drawn once its line is open
     const pressed = ui.press({ key: KEY('archive') })
     await later(wd, 100)
     await cmd($, 'belay', 'watch r-other')
@@ -163,6 +174,7 @@ describe('what is checked around the dialogs', () => {
       const wd = await boot($, on, { file: true, notices: waiting, answers: ['because', 'Archive'], onAsk: n => (n === 2 ? gate : undefined) })
       await openPane($, wd)
       const { ui } = await pane($)
+      await ui.press({ key: OPEN }) // a note's buttons are drawn once its line is open
       const pressed = ui.press({ key: KEY('archive') })
       await later(wd, 100)
       expect(wd.asked.length).toBe(2)
@@ -180,6 +192,7 @@ describe('what is checked around the dialogs', () => {
     const wd = await boot($, on, { notices: waiting, answers: ['because', 'Archive'] })
     await openPane($, wd)
     const { ui } = await pane($)
+    await ui.press({ key: OPEN })
     wd.w.notices = notices({ ...held, awaiting_operator: 0 })
     await later(wd, 6000)
     await ui.press({ key: KEY('archive') }).catch(() => undefined)
@@ -192,6 +205,7 @@ describe('what is checked around the dialogs', () => {
     const wd = await boot($, on, { notices: waiting, answers: ['x'.repeat(161), 'Archive'] })
     await openPane($, wd)
     const { ui } = await pane($)
+    await ui.press({ key: OPEN }) // a note's buttons are drawn once its line is open
     await ui.press({ key: KEY('archive') })
     await later(wd, 100)
     expect(wd.asked.length).toBe(1)
@@ -204,6 +218,7 @@ describe('what is checked around the dialogs', () => {
     const wd = await boot($, on, { notices: waiting, answers: [reason, 'Archive'] })
     await openPane($, wd)
     const { ui } = await pane($)
+    await ui.press({ key: OPEN }) // a note's buttons are drawn once its line is open
     await ui.press({ key: KEY('archive') })
     await later(wd, 100)
     expect(wd.asked[1]).toBe(`Archive note 08954ec7? reason: ${reason}`)
@@ -215,6 +230,7 @@ describe('what is checked around the dialogs', () => {
       const wd = await boot($, on, { notices: waiting, answers: [flag, 'Archive'] })
       await openPane($, wd)
       const { ui } = await pane($)
+      await ui.press({ key: OPEN }) // a note's buttons are drawn once its line is open
       await ui.press({ key: KEY('archive') })
       await later(wd, 100)
       expect(wd.settled).toEqual([])

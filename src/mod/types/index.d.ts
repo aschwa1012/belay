@@ -136,6 +136,8 @@ export type BelayPanelUi = {
   seen: string[]
   /** The archive review button was pressed once: the project it would review and when. A second press inside CONFIRM_MS dispatches. */
   confirm: { project: string; at: number } | null
+  /** The id of the awaiting note whose reason and buttons are shown; one at a time. Pure UI state: pressing runs nothing. */
+  openNote?: string | null
 }
 
 declare module 'claude-code' {

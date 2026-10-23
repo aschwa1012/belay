@@ -16,6 +16,7 @@ describe('the awaiting note keeps its reason', () => {
         const wd = await boot($, on, { notices: notices(heldEv(1, 1)), awaitingList: entry(LONG, title) })
         await openPane($, wd)
         const { ui } = await pane($, 'terminal', cols)
+        await ui.press({ key: `note:${NOTE_ID}` })
         const rows = leaves(await ui.drawn())
         expect(flat(rows.join(' '))).toContain(flat(LONG)) // every word of it, across the wrapped lines
         expect(rows.some(r => r.includes('08954ec7'))).toBe(true)
@@ -25,7 +26,9 @@ describe('the awaiting note keeps its reason', () => {
   test('the three settle buttons are whole at 30 columns', async ($, on) => {
     const wd = await boot($, on, { notices: notices(heldEv(1, 1)), awaitingList: entry('cannot say', 'x') })
     await openPane($, wd)
-    const rows = leaves(await (await pane($, 'terminal', 30)).ui.drawn())
+    const { ui } = await pane($, 'terminal', 30)
+    await ui.press({ key: `note:${NOTE_ID}` })
+    const rows = leaves(await ui.drawn())
     for (const a of ['archive', 'release', 'reoffer']) expect(rows).toContain(`  ▸ ${a}`)
   })
 })
@@ -58,5 +61,52 @@ describe('an estimated cost of $100 or more', () => {
     await openPane($, wd)
     const rows = leaves(await (await pane($, 'terminal', 72)).ui.drawn())
     expect(rows).toContain('≈$123')
+  })
+})
+
+describe('wrap, do not cut', () => {
+  for (const cols of [50, 56, 62]) {
+    test(`the footer wraps at ${cols} columns and no line is cut`, async ($, on) => {
+      const wd = await boot($, on, { notices: notices(heldEv(3, 1)) })
+      await openPane($, wd)
+      const rows = leaves(await (await pane($, 'terminal', cols)).ui.drawn())
+      const text = flat(rows.join(' '))
+      for (const w of ['read-only', 'except', 'review', 'settle', 'buttons', '/orch', 'toggles']) expect(text).toContain(w)
+      expect(rows.filter(r => r.includes('read-only') || r.includes('toggles')).some(r => r.endsWith('…'))).toBe(false)
+    })
+  }
+  test('the memory-off title, a failed review line and the interactive note wrap at 30 columns', async ($, on) => {
+    const bad = { kind: 'review_ended', ts: T0, run_id: RUN, project: 'acme', ok: false, code: 'E_ARGS', text: 'the launcher refused every argument it was given today', job: 'archreview-r-1', claim_id: 'me-1' }
+    const wd = await boot($, on, { notices: notices(heldEv(2, 0), bad), memoryNotice: true, mode: 'interactive' })
+    await openPane($, wd)
+    const rows = leaves(await (await pane($, 'terminal', 30)).ui.drawn())
+    const text = flat(rows.join(' '))
+    expect(text).toContain('Memory is off for this')
+    expect(text).toContain('project')
+    expect(text).toContain('it was given today')
+    expect(text).toContain('own window.')
+    expect(rows.some(r => r.endsWith('…') && /project|given|window/.test(r))).toBe(false)
+  })
+  test('a summary that has to wrap leaves no joiner at the end of a line', async ($, on) => {
+    const wd = await boot($, on, { notices: notices(heldEv(100, 99)) })
+    await openPane($, wd)
+    const rows = leaves(await (await pane($, 'terminal', 20)).ui.drawn())
+    expect(flat(rows.join(' '))).toContain('99 await you')
+    expect(rows.some(r => /^\s*·\s*$/.test(r) || /·\s*$/.test(r.trim()) && r.includes('held'))).toBe(false)
+  })
+})
+
+describe('an estimate that rounds up to $100', () => {
+  test('$99.995 shows as ≈$100, never ≈$100.00; $99.994 keeps its cents', async ($, on) => {
+    const wd = await boot($, on, { orchBasis: 'transcript, API rates', orchCost: 99.995 })
+    await openPane($, wd)
+    const rows = leaves(await (await pane($, 'terminal', 72)).ui.drawn())
+    expect(rows).toContain('≈$100')
+    expect(rows.some(r => r.includes('100.00'))).toBe(false)
+  })
+  test('$99.994 keeps its cents', async ($, on) => {
+    const wd = await boot($, on, { orchBasis: 'transcript, API rates', orchCost: 99.994 })
+    await openPane($, wd)
+    expect(leaves(await (await pane($, 'terminal', 72)).ui.drawn())).toContain('≈$99.99')
   })
 })
