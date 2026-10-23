@@ -197,7 +197,9 @@ function analyze(files) {
     }
   }
 
-  // 7. The agents read may name the orchestrator's directory (`--dir`, so `belay agents` finds the launch marker of a run whose spec set
+  // 7. (Where the value comes FROM is the other half, and it is pinned by the plugin test 'belay-run.json naming orchestrator_dir passes it to the
+  // agents read as --dir' in src/mod/tests/panel.test.ts: the argv's --dir equals belay-run.json's orchestrator_dir and is never data_dir.)
+  // The agents read may name the orchestrator's directory (`--dir`, so `belay agents` finds the launch marker of a run whose spec set
   // orchestrator_dir), and only the watch's own, from belay-run.json: exactly one `--dir` literal exists in the mod, it is in the one agents
   // call in fetchSnapshot, that call is the literal below, and inside fetchSnapshot `orchDir` is only ever `watch.orchDir`.
   const AGENTS_CALL = "runJson($, cli, ['agents', ...(watch.runId ? [watch.runId] : []), ...(watch.orchDir ? ['--dir', watch.orchDir] : [])], watch.dataDir)";

@@ -205,7 +205,7 @@ function streamStart(file) {
 // an orchestrator stream in that directory, only in epoch 1 (the stream is appended to across epochs and started_at is inherited), that began at or after the run row's started_at: headless. (4) Otherwise null, with the reason.
 function modeOf(orchDir, run, stream) {
   const marker = readJson(`${orchDir}/run-start.json`);
-  if (marker.state === 'ok' && require('./transcript-usage.cjs').markerMatches(marker.value, run)) return { mode: 'interactive', mode_source: `${orchDir}/run-start.json run_id ${run.id} epoch ${marker.value.epoch} (the row is at ${run.epoch}; the adapter's attach bumps it past the launcher's)` };
+  if (marker.state === 'ok' && require('./transcript-usage.cjs').markerMatches(marker.value, run)) return { mode: 'interactive', mode_source: `${orchDir}/run-start.json run_id ${run.id} epoch ${marker.value.epoch} (the row is at epoch ${run.epoch})` };
   const why = [marker.state === 'ok' ? `${orchDir}/run-start.json names another run or epoch` : marker.why];
   const rec = readJson(`${orchDir}/run.json`);
   if (rec.state === 'ok' && rec.value) {

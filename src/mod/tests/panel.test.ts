@@ -23,7 +23,9 @@ describe('activation and reading', () => {
     for (const a of agents) {
       const i = a.indexOf('--dir')
       expect(i).toBeGreaterThan(-1)
-      expect(a[i + 1]).toBe('C:/o/orch-dir/ops')
+      expect(a[i + 1]).toBe('C:/o/orch-dir/ops') // belay-run.json's orchestrator_dir, exactly
+      expect(a[i + 1]).not.toBe(FULL_RUNFILE.data_dir) // never the data dir
+      expect(a.filter(x => x === 'C:/o/orch-dir/ops')).toHaveLength(1)
       expect(a.indexOf(RUN)).toBeLessThan(i)
     }
     expect(wd.ran.filter(a => !a.includes('agents')).every(a => !a.includes('--dir'))).toBe(true)
