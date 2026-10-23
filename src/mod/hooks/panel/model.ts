@@ -257,7 +257,7 @@ export function cacheSegs(a: BelayAgent, s: BelaySettings, fetchedAt: number, no
 }
 
 // 18247 -> 18.2k, 1234567 -> 1.2M: the context in tokens, when belay knows the count but has no window to make a percentage of.
-export const tokensShort = (n: number): string => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n)))
+export const tokensShort = (n: number): string => (n >= 999_950 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n)))
 
 export function ctxSegs(a: BelayAgent, s: BelaySettings): Seg[] {
   if (a.ctxPct === null) return [a.ctxTokens !== null ? { t: tokensShort(a.ctxTokens), dim: true } : { t: '—', dim: true }]

@@ -114,10 +114,16 @@ test('the check is not a tripwire: each way around it is found', () => {
     ['$.state in the panel', patched('hooks/panel/index.tsx', 'const firstLine =', "async function sneak24($: Host) { await $.state.set({ plugin: 'belay', key: 'x' } as never, 1) }\nconst firstLine ="), /\$\.state is used/],
     ['the confirm stage written with double quotes', patched('hooks/panel/index.tsx', 'const firstLine =', 'async function sneak25($: Host) { await update ( $ , settleA , () => ({ id: "x", action: "archive", stage : "confirm", reason: "r", title: "", run: { runId: null, dataDir: null, cli: null, node: null } })) }\nconst firstLine ='), /stage 'confirm' is written outside reasonSubmit/],
     ['the review argv gains an argument', patched('hooks/panel/index.tsx', 'START_FLAG, ...runArg]', "START_FLAG, ...runArg, '--all']"), /the review argv is not exactly/],
-    ['the review argv takes another run id', patched('hooks/panel/index.tsx', 'const runArg = watch.runId ? [RUN_FLAG, watch.runId] : []', 'const runArg = watch.runId ? [RUN_FLAG, project] : []'), /runArg is not exactly/],
+    ['the review attempts name another run id', patched('hooks/panel/index.tsx', '[[RUN_FLAG, watch.runId]] : [])]', '[[RUN_FLAG, project]] : [])]'), /attempts is not exactly/],
+    ['a copy of the attempts line in a comment', patched('hooks/panel/index.tsx', 'const attempts: string[][] = [[], ...(watch.runId ? [[RUN_FLAG, watch.runId]] : [])]', "const attempts: string[][] = [[RUN_FLAG, project]] // const attempts: string[][] = [[], ...(watch.runId ? [[RUN_FLAG, watch.runId]] : [])]"), /attempts is not exactly/],
+    ['runArg is pushed to', patched('hooks/panel/index.tsx', '      res = await $.process.run(', "      runArg.push('--all')\n      res = await $.process.run("), /runArg or attempts is changed/],
+    ['attempts is pushed to', patched('hooks/panel/index.tsx', '  try {\n    let res = {', "  attempts.push(['--all'])\n  try {\n    let res = {"), /runArg or attempts is changed/],
+    ['the review argv gains a spread', patched('hooks/panel/index.tsx', 'START_FLAG, ...runArg]', 'START_FLAG, ...runArg, ...attempts[0]!]'), /the review argv is not exactly/],
+    ['a second process.run in dispatchReview', patched('hooks/panel/index.tsx', '    $.ui.toast(launcherLine(res.exitCode', "    await $.process.run(['x'], {})\n    $.ui.toast(launcherLine(res.exitCode"), /not exactly one \$\.process\.run|process\.run is called from/],
+    ['the retry is not gated', patched('hooks/panel/index.tsx', 'if (!needsRun(res.exitCode, res.stdout, res.stderr)) break', 'if (res.exitCode === 0) break'), /not gated by needsRun/],
     ['--run spelled out elsewhere', patched('hooks/panel/index.tsx', 'const firstLine =', "const W3 = ['--run', 'x']\nconst firstLine ="), /--run/],
     ['RUN_FLAG used elsewhere', patched('hooks/panel/index.tsx', 'const firstLine =', "const W4 = [RUN_FLAG, 'x']\nconst firstLine ="), /RUN_FLAG is named in/],
-    ['REVIEW_ARGS used by the read helper', patched('hooks/panel/index.tsx', 'const res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS', 'const res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS'), null],
+    ['REVIEW_ARGS used by the read helper', patched('hooks/panel/index.tsx', 'res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS', 'res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS'), null],
   ];
   for (const [name, fs2, re] of cases) {
     const found = analyze(fs2);
@@ -130,6 +136,7 @@ test('the command the button runs is exactly belay memory review --project <p> -
   assert.match(files['hooks/panel/index.tsx'], /const REVIEW_ARGS = \['memory', 'review', '--project'\]/);
   assert.match(files['hooks/panel/index.tsx'], /const START_FLAG = '--start'/);
   assert.match(files['hooks/panel/index.tsx'], /const RUN_FLAG = '--run'/);
-  assert.match(files['hooks/panel/index.tsx'], /const runArg = watch\.runId \? \[RUN_FLAG, watch\.runId\] : \[\]/);
+  assert.match(files['hooks/panel/index.tsx'], /const attempts: string\[\]\[\] = \[\[\], \.\.\.\(watch\.runId \? \[\[RUN_FLAG, watch\.runId\]\] : \[\]\)\]/);
   assert.match(files['hooks/panel/index.tsx'], /\[\.\.\.REVIEW_ARGS, project, START_FLAG, \.\.\.runArg\]/);
+  assert.match(files['hooks/panel/index.tsx'], /if \(!needsRun\(res\.exitCode, res\.stdout, res\.stderr\)\) break/);
 });

@@ -189,11 +189,14 @@ export function cliError(stdout: string, stderr: string): CliError | null {
 
 // A note settled in this panel stays hidden (and refused) until a read taken after the settle shows what is left: the snapshot's own read time and,
 // while some note still awaits, the awaiting list's, must both be newer than the settle and not carried over from an earlier round.
-export function settledActive(entry: { at: number } | undefined, snap: { fetchedAt: number; held?: { awaitingList?: { at: number; carried: boolean } } | null } | null): boolean {
+// An unknown outcome is stricter: reads copy the db and may predate a write still queued, so a later read that still lists the note proves nothing. Such a row
+// stays refused until a fresh read no longer lists the note, or the operator presses re-check on it.
+export function settledActive(entry: { at: number; unknown?: true } | undefined, snap: { fetchedAt: number; held?: { awaitingList?: { at: number; carried: boolean }; awaitingNotes?: { id: string }[] } | null } | null, id: string): boolean {
   if (!entry) return false
   if (!snap || !(snap.fetchedAt > entry.at)) return true
   const list = snap.held?.awaitingList
-  return !!list && (list.carried || !(list.at > entry.at))
+  if (list && (list.carried || !(list.at > entry.at))) return true
+  return entry.unknown === true && (snap.held?.awaitingNotes ?? []).some(n => n.id === id)
 }
 
 // How a settle's toast reads as the row's own line.

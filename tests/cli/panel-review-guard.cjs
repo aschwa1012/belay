@@ -114,13 +114,18 @@ function analyze(files) {
     bad.push(`reviewPress is named in ${JSON.stringify(where(press))}; only the \`review\` handler of acts() may call it`);
   }
 
-  // 2b. The review's argv is exactly REVIEW_ARGS, the project, START_FLAG and, when the watch names a run, `--run <watch.runId>`: nothing else is added.
+  // 2b. The review launcher's argv, checked on the MASKED code of dispatchReview (comments and strings blanked, so a copy in a comment counts for nothing): first
+  // [...REVIEW_ARGS, project, START_FLAG] with no run, then at most once more with `--run <watch.runId>` when the launcher said the one run with notes on is live.
+  // Exactly one $.process.run, the attempts list is declared once and never changed, and the retry is gated by needsRun on the launcher's own answer.
   const di = info['hooks/panel/index.tsx'];
   if (di) {
     const k = di.its.findIndex((it) => it.name === 'dispatchReview');
-    const dtext = k < 0 ? '' : di.text.slice(di.its[k].start, di.its[k + 1] ? di.its[k + 1].start : undefined);
-    if (!/const runArg = watch\.runId \? \[RUN_FLAG, watch\.runId\] : \[\]/.test(dtext)) bad.push('dispatchReview: runArg is not exactly [RUN_FLAG, watch.runId] or nothing');
-    if (!/argvFor\(r\.cli, \[\.{3}REVIEW_ARGS, project, START_FLAG, \.{3}runArg\], watch\.dataDir\)/.test(dtext)) bad.push('dispatchReview: the review argv is not exactly [...REVIEW_ARGS, project, START_FLAG, ...runArg]');
+    const dcode = k < 0 ? '' : di.code.slice(di.its[k].start, di.its[k + 1] ? di.its[k + 1].start : undefined);
+    if (!/const attempts\s*:\s*string\[\]\[\]\s*=\s*\[\s*\[\s*\]\s*,\s*\.\.\.\(\s*watch\.runId\s*\?\s*\[\s*\[\s*RUN_FLAG\s*,\s*watch\.runId\s*\]\s*\]\s*:\s*\[\s*\]\s*\)\s*\]/.test(dcode) || (dcode.match(/\battempts\b\s*[:=]/g) || []).length !== 1) bad.push('dispatchReview: attempts is not exactly [[], ...(watch.runId ? [[RUN_FLAG, watch.runId]] : [])]');
+    if (!/for\s*\(\s*const runArg of attempts\s*\)/.test(dcode) || !/argvFor\(\s*r\.cli\s*,\s*\[\s*\.\.\.REVIEW_ARGS\s*,\s*project\s*,\s*START_FLAG\s*,\s*\.\.\.runArg\s*\]\s*,\s*watch\.dataDir\s*\)/.test(dcode)) bad.push('dispatchReview: the review argv is not exactly [...REVIEW_ARGS, project, START_FLAG, ...runArg] over attempts');
+    if ((dcode.match(/\$\.process\.run\(/g) || []).length !== 1) bad.push('dispatchReview: there is not exactly one $.process.run');
+    if (!/if\s*\(\s*!needsRun\(\s*res\.exitCode\s*,\s*res\.stdout\s*,\s*res\.stderr\s*\)\s*\)\s*break/.test(dcode)) bad.push('dispatchReview: the retry is not gated by needsRun on the launcher answer');
+    if (/\b(?:attempts|runArg)\s*(?:\.\s*(?:push|pop|shift|unshift|splice|sort|reverse|fill|copyWithin|length)\b|\[[^\]]*\]\s*=(?!=)|=(?!=))/.test(dcode)) bad.push('dispatchReview: runArg or attempts is changed after it is declared');
   }
   // 3. act.review (any spelling of a `review` member) is the onPress of one Button keyed review in view.tsx, and nowhere else.
   const members = refs(/\.\s*review\b/g);

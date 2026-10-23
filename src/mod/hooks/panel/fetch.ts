@@ -59,11 +59,26 @@ export function launcherLine(exitCode: number, stdout: string, stderr: string, p
   const j = asObj(stdout)
   const ej = asObj(stderr)
   const err = j && j.error !== null && typeof j.error === 'object' ? (j.error as Record<string, unknown>) : ej && ej.error !== null && typeof ej.error === 'object' ? (ej.error as Record<string, unknown>) : null
-  if (exitCode === 0 && j && j.started === true) return `belay: archive review of ${project} started: pid ${String(j.pid ?? '?')}, job ${String(j.job ?? '?')}`
-  if (exitCode === 0 && j && j.ended !== undefined) return `belay: archive review of ${project} ended at once: ${first(JSON.stringify(j.ended))}`
+  const warnRaw = j && typeof j.closing_warning === 'string' ? j.closing_warning : j && typeof j.warning === 'string' ? j.warning : null // a review acting for a live run carries one
+  const warn = warnRaw ? ` · warning: ${warnRaw.replace(/\s+/g, ' ').slice(0, 200)}` : ''
+  if (exitCode === 0 && j && j.started === true) return `belay: archive review of ${project} started: pid ${String(j.pid ?? '?')}, job ${String(j.job ?? '?')}${warn}`
+  if (exitCode === 0 && j && j.ended !== undefined) return `belay: archive review of ${project} ended at once: ${first(JSON.stringify(j.ended))}${warn}`
   const plainErr = typeof j?.error === 'string' ? j.error : typeof ej?.error === 'string' ? ej.error : null // a usage error prints {"error": "<text>"}
   const said = err ? `${typeof err.code === 'string' ? `${err.code}: ` : ''}${typeof err.message === 'string' ? err.message.slice(0, 160) : ''}` : plainErr !== null ? first(plainErr) : first(stdout.trim() ? stdout : stderr)
   return exitCode === 0 ? `belay: ${said || 'archive review started'}` : `belay: the review was not started (exit ${exitCode})${said ? `: ${said}` : ''}`
+}
+
+// The review launcher refuses with E_NOT_FOUND and `live_run` (a run id) when the only run with notes on is still live and it was not named (cmd-memory-stages.cjs).
+// That field, never the words, tells the panel to say which run it means. null when the launcher said anything else.
+export function needsRun(exitCode: number, stdout: string, stderr: string): boolean {
+  if (exitCode === 0) return false
+  for (const text of [stdout, stderr]) {
+    try {
+      const e = (JSON.parse(text) as { error?: { code?: unknown; live_run?: unknown } }).error
+      if (e && typeof e === 'object' && e.code === 'E_NOT_FOUND' && typeof e.live_run === 'string' && e.live_run !== '') return true
+    } catch { /* not JSON */ }
+  }
+  return false
 }
 
 export const argvFor = (cli: string[], args: string[], dataDir: string | null): string[] =>

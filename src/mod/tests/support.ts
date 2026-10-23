@@ -63,6 +63,10 @@ export type World = {
   /** Answers the dialogs give, in order (the reason, then the confirm); an empty queue dismisses. */
   awaitingList?: unknown
   settleReject?: string
+  /** The launcher's answers, one per start (the last one repeats). */
+  launchers?: { exitCode: number; stdout: string; stderr: string }[]
+  /** Held inside the settle's process call: the test looks at the panel while the write is in flight. */
+  settleHold?: Promise<void>
   /** Held at the settle's consuming write (the confirm press): the test changes the world meanwhile, then opens the gate. */
   settleGate?: Promise<void>
   settleOut?: { exitCode: number; stdout: string; stderr: string }
@@ -107,6 +111,7 @@ export function world(on: any, w: World) {
   on('process.run', async ($: any, e: any) => {
     if (e.argv.includes('settle')) {
       settled.push([...e.argv])
+      if (w.settleHold) await w.settleHold
       if (w.settleReject) return { deny: w.settleReject }
       return { value: w.settleOut ?? { exitCode: 0, stdout: JSON.stringify({ id: e.argv[e.argv.indexOf('settle') + 1], action: 'archive', outcome: 'archived', receipt: 'held-settle:x@1' }), stderr: '' } }
     }
@@ -117,6 +122,7 @@ export function world(on: any, w: World) {
     }
     if (e.argv.includes('--start')) {
       spawned.push([...e.argv])
+      if (w.launchers) return { value: w.launchers[Math.min(spawned.length - 1, w.launchers.length - 1)]! }
       return { value: w.launcher ?? { exitCode: 0, stdout: JSON.stringify({ started: true, project: 'acme', run_id: 'r-1', pid: 4242, job: 'archreview-r-1', claim_id: 'me-1' }), stderr: '' } }
     }
     ran.push([...e.argv])

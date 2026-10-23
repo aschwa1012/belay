@@ -196,3 +196,12 @@ test('a usage error ({"error": "<text>"}, exit 2) is a definite refusal with its
   const F = await loadPanelModule('fetch');
   assert.strictEqual(F.launcherLine(2, '', JSON.stringify({ error: 'belay memory: bad flag' }, null, 2), 'acme'), 'belay: the review was not started (exit 2): belay memory: bad flag');
 });
+
+test('tokensShort never renders 1000.0k', () => {
+  assert.strictEqual(M.tokensShort(18247), '18.2k');
+  assert.strictEqual(M.tokensShort(999949), '999.9k');
+  assert.strictEqual(M.tokensShort(999950), '1.0M');
+  assert.strictEqual(M.tokensShort(999999), '1.0M');
+  assert.strictEqual(M.tokensShort(1234567), '1.2M');
+  assert.strictEqual(M.tokensShort(847), '847');
+});
