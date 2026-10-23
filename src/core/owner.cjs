@@ -270,6 +270,10 @@ class Owner {
     return { pid: process.pid, pipe: this.pipe, already: false, deferred: true, attached: now };
   }
 
+  // The run that owns this store is closing (ADR 0052): from now on memory.reviewClaim refuses, so the run's close, which waits for
+  // the reviews attached to it, cannot miss one claimed after it looked. In-process only; one-way for this owner's life.
+  closeReviewClaims(reason) { if (!this.reviewClaimsClosed) this.reviewClaimsClosed = { reason: String(reason || 'the run that owns the store is closing'), at: Date.now() }; return this.reviewClaimsClosed; }
+
   _conn(c) {
     this.conns.add(c);
     c.belayOpenedAt = Date.now();

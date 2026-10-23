@@ -76,6 +76,9 @@ async function reviewClaim(E, caller, args) {
   if (!Number.isInteger(a.pid) || a.pid <= 0) throw err('E_ARGS', 'memory.reviewClaim needs the pid of the process that will parent the review', { field: 'pid' });
   if (a.created !== undefined && a.created !== null && !Number.isFinite(a.created)) throw err('E_ARGS', 'created must be a creation time in ms, or absent', { field: 'created' });
   if (!isStr(a.job)) throw err('E_ARGS', 'memory.reviewClaim needs the job (worker) id the review will run as', { field: 'job' });
+  // ADR 0052: the run that owns the store is closing and waits only for the reviews claimed before it looked, so no new claim lands.
+  const closed = E.owner && E.owner.reviewClaimsClosed;
+  if (closed) throw err('E_BUSY', `no archive review can start now: ${closed.reason}; start it again once \`belay run\` has exited`, { project: a.project, reason: 'owner_closing', owner_pid: process.pid, since: closed.at });
   return E.store.tx(() => {
     const last = newest(E, a.project);
     let replaced = null;
