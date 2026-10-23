@@ -51,6 +51,9 @@ function heldManager(answer) {
 }
 // The child's spawn, or the review's own end if it never got that far (a refusal fails the test instead of hanging it).
 const spawnedOr = (m, review) => Promise.race([m.spawned.p, review.then((r) => assert.fail(`the review ended before its child spawned: ${r.text}`))]);
+// A wait that has not settled within `ms` fails the test in seconds, instead of hanging the file (a regression must not cost 240 s).
+const bounded = (p, ms, what) => { let t; return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => rej(new Error(`${what}: not settled within ${ms} ms`)), ms); })]).finally(() => clearTimeout(t)); };
+const SHORT_MS = 5000;
 const reviewState = (core) => core.memory.reviewState({ project: 'lc' }).then((r) => r.reviews.lc);
 
 test('a review started during a live run survives the run\'s close: the close waits, the review applies and releases, then the owner stops', async () => {
@@ -74,7 +77,7 @@ test('a review started during a live run survives the run\'s close: the close wa
     const r = await review;
     assert.strictEqual(r.code, 0, r.text);
     assert.deepStrictEqual([r.json.result.counts.applied, r.json.claim.released], [1, true]);
-    const w = await wait;
+    const w = await bounded(wait, SHORT_MS, 'the close after the review detached');
     assert.deepStrictEqual([w.outcome, w.waited_for.map((x) => x.project)], ['detached', ['lc']]);
     const after = await reviewState(runCore);
     assert.deepStrictEqual([after.state, after.release.ok], ['ended', true], 'the release landed before the owner stopped');
@@ -88,16 +91,41 @@ test('the close waits for nothing when no review is attached, and a console clos
     // A running claim whose process holds no connection to this owner (a CLI that died, or a review on another owner) is not waited for.
     await runCore.memory.reviewClaim({ project: 'lc', pid: process.pid, job: 'archreview-unattached' });
     assert.strictEqual((await reviewState(runCore)).state, 'running');
-    assert.strictEqual(await waitForReviews({ core: runCore, say: () => assert.fail('nothing to wait for') }), null);
+    const said = [];
+    assert.strictEqual(await bounded(waitForReviews({ core: runCore, say: (l) => said.push(l), pollMs: 20 }), SHORT_MS, 'an unattached claim'), null);
+    assert.deepStrictEqual(said, [], 'nothing to wait for, nothing said');
   });
   await planted(async (T, runCore) => {
     const m = heldManager(JSON.stringify({ verdicts: [] }));
     const review = cmd(T, ARGS.concat(['--worktree', T.repo]), { ...ME, makeManager: async () => m });
     await spawnedOr(m, review);
-    const w = await waitForReviews({ core: runCore, fast: { requested: () => true }, say: () => assert.fail('a cut wait says nothing'), pollMs: 20 });
-    assert.deepStrictEqual([w.outcome, w.waited_for.length], ['cut', 1]);
+    const said = [];
+    const w = await bounded(waitForReviews({ core: runCore, fast: { requested: () => true }, say: (l) => said.push(l), pollMs: 20 }), SHORT_MS, 'a wait under a console close');
+    assert.deepStrictEqual([w.outcome, w.cut_by, w.waited_for.length, said.length], ['cut', 'interrupt', 1, 0]);
     m.answer.resolve({ event: 'turn_end', is_error: false, timed_out: false });
     assert.strictEqual((await review).code, 0);
+  });
+});
+
+// A headless run has no console: a review CLI that is wedged (its pid alive, its socket open) must not hold the owner forever. The clock
+// seam jumps past the deadline once the close has said it waits; the deadline is the claim time plus review_wall_s plus the margin.
+test('a review that never detaches is cut at its deadline (review_wall_s plus the margin), the receipt and the message name it, and the close goes on', async () => {
+  await planted(async (T, runCore) => {
+    const { MARGIN_MS } = require('../../src/cli/run-review-wait.cjs');
+    const m = heldManager(JSON.stringify({ verdicts: [] }));
+    const review = cmd(T, ARGS.concat(['--worktree', T.repo]), { ...ME, makeManager: async () => m });
+    await spawnedOr(m, review);
+    const claim = (await reviewState(runCore)).claim;
+    let jump = 0;
+    const said = [];
+    const w = await bounded(waitForReviews({ core: runCore, clock: () => Date.now() + jump, say: (l) => { said.push(l); jump = 1e10; }, pollMs: 20 }), SHORT_MS, 'a wait past its deadline');
+    const wallS = require('../../src/core/memory-levers.cjs').DEFAULTS.review_wall_s; // lc-apply sets none
+    assert.deepStrictEqual([w.outcome, w.cut_by, w.deadline_at, w.waited_for[0].wall_s], ['cut', 'deadline', claim.at + wallS * 1000 + MARGIN_MS, wallS]);
+    assert.match(said[0], /at most until \S+ \(its review_wall_s \d+ s plus 120 s\)/);
+    assert.match(said[1], /archive review of lc \(pid \d+, job archreview-\S+\) is still attached past its deadline .*stopping the store owner now/);
+    assert.ok(runCore.isOwner(), 'the wait itself stops nothing: the close goes on to its own shutdown');
+    m.answer.resolve({ event: 'turn_end', is_error: false, timed_out: false });
+    await bounded(review, 30000, 'the review after the cut');
   });
 });
 
