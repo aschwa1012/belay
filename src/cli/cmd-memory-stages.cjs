@@ -5,9 +5,10 @@
 //   review [--project p] the Opus archive reviewer, ON DEMAND (the run-close trigger is off unless `archive_review_auto`), on the project's
 //                         held queue (every kind), ignoring the triggers. `--project` picks the newest ended run whose notes project it is.
 //                         It runs under a store-level claim (review-run.cjs): a second review of the project refuses while the first is
-//                         alive. It also refuses while a run other than the one it acts for is live, and while an ended run's process still
-//                         holds the store owner through its close (either would shut the owner under it). Acting for a live run by
-//                         `--run` is allowed on the operator's word, and the result carries a warning that the run's close will cut it off. `--start` launches it DETACHED and returns once the claim shows (the panel's button runs this).
+//                         alive. During another LIVE run it attaches to that run's owner, whose close waits for it (ADR 0052,
+//                         run-review-wait.cjs); it refuses only while an ended run's process still holds the store owner through its close.
+//                         Acting for a live run by `--run` is allowed on the operator's word, and the result carries a warning that the
+//                         run's worker close stops its child. `--start` launches it DETACHED and returns once the claim shows (the panel's button runs this).
 //   resolve <id> new | repeats <id> | supersedes <id> --evidence <text>
 //                         settle a pending note as the operator: memory.noteResolve's own logic (a repeat archives the pending row,
 //                         nothing is deleted). For a note whose run has ended and whose writer is gone.
@@ -35,16 +36,17 @@ async function chooseRun(core, wanted, project = null) {
   return { runId: null, live: live ? live.id : null };
 }
 
-// Audit D35: another run's close shuts the store owner down and destroys every connection, so a review (minutes long, and paid for)
-// started while a run other than the one it acts for is live can lose its calls (E_OWNER_LOST, outcome unknown) and leave a stray
-// owner behind that refuses the next `belay run`. It waits for that run to end. A run is live here by two facts, not one. Its
+// Audit D35, then ADR 0052: a run's close shuts the store owner down and destroys every connection, so a review (minutes long, and
+// paid for) cut by it loses its calls (E_OWNER_LOST, outcome unknown). Since ADR 0052 a LIVE run's close first stops taking review
+// claims and then waits while a claimed review's pid is attached to its owner, so a live run no longer refuses the review; only a
+// run already past that point (closing, below) does. A run is live here by two facts, not one. Its
 // adapter answers a pid check (`alive`), or it has no `ended_at` and the store owner is held by another live process: the
 // orchestrator's attach overwrites `adapter_pid` with the adapter's pid and the adapter exits before the close, so for the
 // whole close (stages, run.end, memory run end) the run reads as not alive while `belay run` still owns the store. An unended
 // run whose adapter is gone and whose owner is gone too is a crashed run and blocks nothing. The run it acts for is the
 // operator's own word (`--run`), live or not: it is how the operator acts on a live run's notes now, and the error that
 // suggests it says its close is still to come. That path is a known limit (audit D35's residual): when the run it acts for is live, its
-// close will shut the owner under the review, so the result carries a warning saying so (`closing_warning`) and nothing waits.
+// worker close stops every live worker row of the run, the review's child included, so the result carries a warning (`closing_warning`).
 // The closing rule below is the one exception to "never refused": it applies whichever run the review acts for. A listing that cannot be read blocks nothing: this guard adds no new failure.
 // `resolve` is not gated: it is one call of milliseconds, and a loss there is an explicit E_OWNER_LOST with the outcome named
 // unknown, never a silent one.
@@ -89,7 +91,7 @@ async function actedForLive(core, runId, dataDir, deps) {
     return !!(r && (r.alive || (r.ended_at == null && held)));
   } catch { return false; }
 }
-const CLOSING_WARNING = 'this run is live; its close will shut the store owner under this review and cut it off (outcome unknown). Let the run end first for a review that finishes.';
+const CLOSING_WARNING = 'this run is live; its close stops every live worker of the run, this review\'s child included, and cuts the review off. Let the run end first for a review that finishes.';
 function warned(res) {
   if (!res || typeof res !== 'object') return res;
   const text = typeof res.text === 'string' ? `warning: ${CLOSING_WARNING}
@@ -97,22 +99,14 @@ ${res.text}` : res.text;
   const json = res.json && typeof res.json === 'object' ? { ...res.json, closing_warning: CLOSING_WARNING } : res.json;
   return { ...res, text, json };
 }
-async function otherLiveRun(core, runId, dataDir, deps) {
-  let live = [], closing = [];
-  try {
-    const held = ownerHeldElsewhere(dataDir, deps);
-    const runs = (await core.run.list({})).runs || [];
-    live = runs.filter((r) => r.id !== runId && (r.alive || (r.ended_at == null && held)));
-    closing = (await closingRuns(runs, dataDir, deps)).filter((r) => !live.some((l) => l.id === r.id));
-  } catch { return null; }
-  if (!live.length && !closing.length) return null;
-  const all = [...live, ...closing];
-  const ids = all.map((r) => r.id).join(', ');
-  const message = live.length
-    ? `run ${live.map((r) => r.id).join(', ')} is live in this data dir; wait for it to end (or stop it) and try again, because its close would shut the store owner under this review${closing.length ? `; run ${closing.map((r) => r.id).join(', ')} is also closing` : ''}`
-    : `run ${ids} has ended but its process (pid ${closing[0].closing_pid}) still holds the store owner while it closes; wait for \`belay run\` to exit and try again, because its owner shutdown would cut this review off`;
+// A live run is not refused (ADR 0052: its close waits for this review). A closing one is: it has stopped taking review claims.
+async function closingRefusal(core, dataDir, deps) {
+  let closing = [];
+  try { closing = await closingRuns((await core.run.list({})).runs || [], dataDir, deps); } catch { return null; }
+  if (!closing.length) return null;
+  const message = `run ${closing.map((r) => r.id).join(', ')} has ended but its process (pid ${closing[0].closing_pid}) still holds the store owner while it closes; wait for \`belay run\` to exit and try again, because its owner shutdown would cut this review off`;
   return { code: 1, text: `belay memory review: ${one(message)}
-`, json: { error: { code: 'E_BUSY', message, live_runs: all.map((r) => r.id) } } };
+`, json: { error: { code: 'E_BUSY', message, live_runs: closing.map((r) => r.id) } } };
 }
 
 // The stage's own core: the operator, as the run it acts for. Returns { rc, lv, runId, dataDir } or { fail }.
@@ -159,7 +153,7 @@ async function runStage(which, core, parsed, ctx, found) {
   if (s.fail) return s.fail;
   if (which === 'review' && !s.project) { await release(s.rc); return { code: 1, text: 'belay memory review: the run has no project, so there is no held queue to review; pass --project <p>\n', json: { error: { code: 'E_ARGS', message: 'no project' } } }; }
   if (which === 'review') {
-    const busy = await otherLiveRun(core, s.runId, s.dataDir, (process.env.BELAY_TEST_MODE === '1' && ctx.stageDeps) || {});
+    const busy = await closingRefusal(core, s.dataDir, (process.env.BELAY_TEST_MODE === '1' && ctx.stageDeps) || {});
     if (busy) { await release(s.rc); return busy; }
   }
   const warn = which === 'review' && await actedForLive(core, s.runId, s.dataDir, (process.env.BELAY_TEST_MODE === '1' && ctx.stageDeps) || {});

@@ -69,6 +69,26 @@ const busy = (project, st, extra = '') => {
   return { code: 1, text: `belay memory review: ${one(message)}\n`, json: { error: { code: 'E_BUSY', message, project, claim: c } } };
 };
 
+// The release once more, through a new Core with the same identity (the CLI's own process, the run it acts for). Returns { release } or
+// { error }. If the first try did land, the claim is no longer open and the state read finds that release. Never throws.
+async function releaseAfresh({ s, ctx, rel }) {
+  const open = process.env.BELAY_TEST_MODE === '1' && ctx && typeof ctx.openCore === 'function' ? ctx.openCore : require('../core/index.cjs').openCore;
+  let c = null;
+  try {
+    c = await open({ dataDir: s.dataDir, caller: { role: 'operator', run_id: s.runId, pid: process.pid } });
+    try { return { release: (await c.memory.reviewRelease(rel)).release }; } catch (e) {
+      if (codeOf(e) !== 'E_BUSY') return { error: `${codeOf(e)}: ${e.message}` };
+      const st = ((await c.memory.reviewState({ project: rel.project })).reviews || {})[rel.project];
+      return st && st.state === 'ended' && st.release && st.release.claim_id === rel.claim_id ? { release: st.release } : { error: `${codeOf(e)}: ${e.message}` };
+    }
+  } catch (e) { return { error: `${codeOf(e)}: ${(e && e.message) || e}` }; } finally {
+    if (c) {
+      try { if (typeof c.isOwner === 'function' && c.isOwner()) await require('./release-owner.cjs').releaseOwnerOf(c); } catch { /* best effort */ }
+      try { await c.close(); } catch { /* best effort */ }
+    }
+  }
+}
+
 // Run the review under a claim. `s` is stageCore's answer, `common` the stage's arguments, `runReview` the stage.
 async function claimedReview({ s, project, ctx, common, runReview, renderStage }) {
   const D = depsOf(ctx);
@@ -96,6 +116,9 @@ async function claimedReview({ s, project, ctx, common, runReview, renderStage }
     claim = (await s.rc.memory.reviewClaim({ project, pid: process.pid, created: me ? me.created : null, image: me ? me.image : null, job: jobId, replaces })).claim;
   } catch (e) {
     if (codeOf(e) !== 'E_BUSY') throw e;
+    if (e.detail && e.detail.reason === 'owner_closing') { // ADR 0052: the run that owns the store is closing and takes no new review
+      return { code: 1, text: `belay memory review: ${one(e.message)}\n`, json: { error: { code: 'E_BUSY', message: e.message, project, reason: 'owner_closing', owner_pid: e.detail.owner_pid } } };
+    }
     return busy(project, { claim: e.detail && e.detail.claim }, '; another review took the claim first');
   }
   let interrupted = false;
@@ -113,10 +136,18 @@ async function claimedReview({ s, project, ctx, common, runReview, renderStage }
   if (sink.survivors.length) out.survivor = sink.survivors[0];
   const failed = !!out.error || sink.survivors.length > 0;
   const summary = out.error ? `${out.error.code}: ${out.error.message}` : out.ran ? `ran as ${out.job}: ${JSON.stringify(out.result && out.result.counts)}` : `nothing to do (${out.reason})`;
+  const rel = { project, claim_id: claim.id, ok: !failed, ...(failed ? { code: out.error ? out.error.code : 'E_SURVIVOR' } : {}), message: summary };
   let release = null;
   try {
-    release = (await s.rc.memory.reviewRelease({ project, claim_id: claim.id, ok: !failed, ...(failed ? { code: out.error ? out.error.code : 'E_SURVIVOR' } : {}), message: summary })).release;
-  } catch (e) { notes.push(`the claim ${claim.id} could not be released: ${codeOf(e)}: ${one(e.message)}`); }
+    release = (await s.rc.memory.reviewRelease(rel)).release;
+  } catch (e) {
+    // The owner this review used may be gone (a run's close cut it off: E_OWNER_LOST, outcome unknown). The outcome must still reach
+    // the operator (review_ended in the notices and the panel), so the release is tried once more through a fresh core, which dials
+    // whoever owns the store now or elects one; a release that did land the first time is found, not written twice.
+    const again = codeOf(e) === 'E_BUSY' ? {} : await releaseAfresh({ s, ctx, rel });
+    release = again.release || null;
+    if (!release) notes.push(`the claim ${claim.id} could not be released: ${codeOf(e)}: ${one(e.message)}${again.error ? `; again: ${one(again.error)}` : ''}`);
+  }
   const text = `${renderStage('review', out)}${notes.map((n) => `  ${one(n)}\n`).join('')}  claim: ${claim.id} (pid ${claim.pid}, job ${jobId})${release ? ' released' : ' NOT released'}\n`;
   return { code: failed ? 1 : 0, text, json: { run_id: s.runId, ...out, claim: { id: claim.id, project, pid: claim.pid, job: jobId, released: !!release, took_over: replaces }, ...(notes.length ? { notes } : {}) } };
 }
@@ -124,13 +155,25 @@ async function claimedReview({ s, project, ctx, common, runReview, renderStage }
 // ---- the detached launcher -----------------------------------------------------------------------------------------------
 
 // The real detach: the child belongs to no job of the caller's and has no console window; the caller can exit.
-function spawnDetached({ args, cwd }) {
-  const child = spawn(process.execPath, args, { detached: true, windowsHide: true, stdio: 'ignore', cwd, env: process.env });
+// Its output goes to `logFile` (when one could be opened), so a refusal before the claim can be quoted by the launcher.
+function spawnDetached({ args, cwd, logFile = null }) {
+  const fs = require('node:fs');
+  let fd = null;
+  try { if (logFile) { fs.mkdirSync(require('node:path').dirname(logFile), { recursive: true }); fd = fs.openSync(logFile, 'w'); } } catch { fd = null; }
+  let child;
+  try { child = spawn(process.execPath, args, { detached: true, windowsHide: true, stdio: fd === null ? 'ignore' : ['ignore', fd, fd], cwd, env: process.env }); } finally { if (fd !== null) { try { fs.closeSync(fd); } catch { /* the child holds its own handle */ } } }
   const exit = { code: undefined };
   child.once('exit', (code, signal) => { exit.code = code === null ? `signal ${signal}` : code; });
   child.once('error', (e) => { exit.code = `spawn error ${e.code || e.message}`; });
   child.unref();
   return { pid: child.pid, exited: () => exit.code };
+}
+
+// Where the detached review's own output goes: one file per project, rewritten by each launch (one review of a project at a time).
+const launchLogOf = (dataDir, project) => require('node:path').join(dataDir, 'reviews', `launch-${String(project).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80)}.log`);
+// What the child said last (its refusal), cut to 300 characters; '' when there is nothing to quote.
+function lastWords(file) {
+  try { return one(require('node:fs').readFileSync(file, 'utf8').trim()).slice(-300); } catch { return ''; }
 }
 
 // `belay memory review --project p --start`: check, launch detached, wait for the claim to show, print it, exit.
@@ -144,7 +187,8 @@ async function launch({ core, s, project, parsed, ctx, release }) {
   }
   const args = [process.argv[1], 'memory', 'review', '--project', project, '--run', s.runId, '--data', s.dataDir, ...(s.worktree ? ['--worktree', s.worktree] : []), ...(parsed.opts.all ? ['--all'] : [])];
   const startedAt = Date.now();
-  const child = D.spawnDetached({ args, cwd: s.worktree });
+  const logFile = launchLogOf(s.dataDir, project);
+  const child = D.spawnDetached({ args, cwd: s.worktree, logFile });
   if (!Number.isInteger(child.pid)) return { code: 1, text: 'belay memory review --start: the detached review did not start (no pid)\n', json: { error: { code: 'E_INTERNAL', message: 'no pid' } } };
   for (;;) {
     const st = ((await core.memory.reviewState({ project })).reviews || {})[project];
@@ -156,7 +200,8 @@ async function launch({ core, s, project, parsed, ctx, release }) {
     }
     const gone = child.exited();
     if (gone !== undefined) {
-      const message = `the detached review (pid ${child.pid}) exited (${gone}) before it took the claim; nothing was reviewed`;
+      const said = lastWords(logFile);
+      const message = `the detached review (pid ${child.pid}) exited (${gone}) before it took the claim; nothing was reviewed${said ? `: ${said}` : ''}`;
       return { code: 1, text: `belay memory review --start: ${message}\n`, json: { error: { code: 'E_INTERNAL', message, pid: child.pid } } };
     }
     if (Date.now() - startedAt > D.startWaitMs) {
