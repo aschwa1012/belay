@@ -102,6 +102,21 @@ export function heldLine(h: BelayHeld, now?: number): string {
   return `${h.count} note${h.count === 1 ? '' : 's'} held for review · oldest ${h.oldestAgeRuns} run${h.oldestAgeRuns === 1 ? '' : 's'}${names.length ? ` · ${names.join(', ')}` : ''}${w}`
 }
 
+// The MEMORY section's detail line. The heading already says how many are held and how many await the operator, so this keeps what
+// the heading does not: the grounds, the oldest wait and the breaker flag. (heldLine is the plain surfaces' one line, count and all.)
+export function heldDetail(h: BelayHeld, now?: number): string {
+  if (h.count <= 0) return ''
+  const w = waitedFor(h, now) + flagFor(h)
+  if (h.byGround && Object.keys(h.byGround).length) {
+    const parts = new Map<string, number>()
+    for (const [k, n] of Object.entries(h.byGround)) parts.set(GROUND_LABEL[k] ?? k, (parts.get(GROUND_LABEL[k] ?? k) ?? 0) + n)
+    return `${[...parts].map(([k, n]) => `${n} ${k}`).join(', ')}${w}`
+  }
+  const names = Object.keys(h.byProject).sort()
+  if (h.unsupported > 0) return heldLine(h, now)
+  return `oldest ${h.oldestAgeRuns} run${h.oldestAgeRuns === 1 ? '' : 's'}${names.length ? ` · ${names.join(', ')}` : ''}${w}`
+}
+
 export function confirmLine(h: BelayHeld, project: string): string {
   const cost = REVIEW_COST_ESTIMATE_USD === null ? 'cost: measured after first run' : `estimated cost $${REVIEW_COST_ESTIMATE_USD.toFixed(2)}`
   return `${h.byProject[project] ?? h.count} note${(h.byProject[project] ?? h.count) === 1 ? '' : 's'} held in ${project} · dispatch the Opus archive reviewer? ${cost}`

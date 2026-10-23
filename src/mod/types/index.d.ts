@@ -27,6 +27,8 @@ export type BelayAgent = {
   ctxPct: number | null
   costUsd: number | null
   costSource: string | null
+  /** belay's word for how an estimated cost was made ("transcript, API rates"); null on every row today. */
+  costBasis: string | null
   cache: BelayCache | null
   task: { id: string; title: string | null; titleSource: string | null; source: string | null } | null
   launchMode: string | null

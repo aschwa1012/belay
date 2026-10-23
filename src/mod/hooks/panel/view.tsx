@@ -6,7 +6,7 @@ import {
   bandLines, cacheSegs, ctxSegs, isLive, markSeg, money, runLine, TONE, unseenNotices, bar,
   memoryTitleSegs, memoryFallbackSegs, type Seg,
 } from './model'
-import { CONFIRM_MS, confirmLine, heldLine, reviewLine, reviewProject, runningReview, SETTLE_ACTIONS, shortId } from './held'
+import { CONFIRM_MS, confirmLine, heldDetail, heldLine, reviewLine, reviewProject, runningReview, SETTLE_ACTIONS, shortId } from './held'
 import { cells, cmdLines, wordWrap } from './wrap'
 import { clip, INDENT, Line, Section, shortModel, tp, type Act, type Ctx, type Els } from './base'
 import { Table } from './table'
@@ -154,7 +154,7 @@ function Held({ E, snap, ui, now, act, cols }: Ctx) {
         const bad = r.state === 'failed' || r.state === 'interrupted'
         return <Line E={E} w={inner} k={`hr${i}`} segs={[{ t: '◇ ', c: bad ? 'error' : undefined, dim: !bad }, { t: reviewLine(r, now), c: bad ? 'error' : undefined }]} />
       })}
-      {hd && hd.count > 0 && wordWrap(asking && project ? confirmLine(hd, project) : heldLine(hd, now), Math.max(8, inner)).map((t, i) => <Line E={E} w={inner} k={`hl${i}`} segs={[{ t, c: asking ? ATTN : undefined, dim: !asking }]} />)}
+      {hd && hd.count > 0 && wordWrap(asking && project ? confirmLine(hd, project) : heldDetail(hd, now), Math.max(8, inner)).map((t, i) => <Line E={E} w={inner} k={`hl${i}`} segs={[{ t, c: asking ? ATTN : undefined, dim: !asking }]} />)}
       {hd && (hd.awaitingNotes ?? []).map(n => <SettleRow E={E} cols={inner} n={n} act={act} />)}
       {hd && project !== null && !busy && <Button key="review" plain label={asking ? '  ▸ press again to dispatch · any other press cancels' : `  ▸ review the held notes${Object.keys(hd.byProject).length > 1 ? ` (${project} first)` : ''}`} onPress={act.review} />}
     </Section>
@@ -235,7 +235,7 @@ function MemoryOff({ E, n, cols }: { E: Els; n: BelayMemoryNotice; cols: number 
   return (
     <>
       <Line E={E} w={cols} k="mot" segs={[{ t: n.title, dim: true }]} />
-      {wordWrap(n.short, cols - 1).map((l, i) => <Line E={E} w={cols} k={`mos${i}`} segs={[{ t: ` ${l}`, dim: true }]} />)}
+      {wordWrap(n.short, cols).map((l, i) => <Line E={E} w={cols} k={`mos${i}`} segs={[{ t: l, dim: true }]} />)}
     </>
   )
 }

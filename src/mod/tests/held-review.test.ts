@@ -14,14 +14,15 @@ describe('notes held for the archive reviewer', () => {
     const wd = await boot($, on, { notices: notices(held(3)) })
     await openPane($, wd)
     const { text } = await pane($)
-    expect(text).toContain('3 notes held for review · oldest 2 runs · acme')
+    expect(text).toContain('MEMORY  3 held') // the heading carries the count
+    expect(text).toContain('oldest 2 runs · acme') // the detail line does not repeat it
     expect(text).toContain('review the held notes')
   })
 
   test('the plain line says how long the oldest held note has waited', async ($, on) => {
     const wd = await boot($, on, { notices: notices({ ...held(3), oldest_at: T0 - 2 * 3600000 + 5 * 60000 }) })
     await openPane($, wd)
-    expect((await pane($)).text).toMatch(/3 notes held for review · oldest 2 runs · acme · oldest waited [0-9]h[0-9][0-9]m/) // 2h05m at the first render, the clock moves a little while it boots
+    expect((await pane($)).text).toMatch(/oldest 2 runs · acme · oldest waited [0-9]h[0-9][0-9]m/) // 2h05m at the first render, the clock moves a little while it boots
   })
 
   test('a run that tripped the circuit breaker is flagged on the held line, briefly', async ($, on) => {
@@ -33,7 +34,7 @@ describe('notes held for the archive reviewer', () => {
   test('the by-ground line says it too', async ($, on) => {
     const wd = await boot($, on, { notices: notices({ ...{ ...held(4), by_ground: { reported: 3, same_claim: 1 } }, oldest_at: T0 - 90000 }) })
     await openPane($, wd)
-    expect((await pane($)).text).toMatch(/4 held: 3 reported wrong, 1 duplicate · oldest waited [0-9]m/)
+    expect((await pane($)).text).toMatch(/MEMORY  4 held[sS]*3 reported wrong, 1 duplicate · oldest waited [0-9]m/)
   })
 
   test('the unsupported line says it too', async ($, on) => {
@@ -101,7 +102,7 @@ describe('notes held for the archive reviewer', () => {
     await openPane($, wd)
     const { text } = await pane($)
     expect(text).toContain('archive review of acme running · pid 77')
-    expect(text).toContain('3 notes held for review')
+    expect(text).toContain('MEMORY  3 held')
     expect(text).not.toContain('review the held notes')
   })
 
@@ -183,7 +184,8 @@ describe('the held count is broken down by ground', () => {
   test('the line names the grounds and how many wait for the operator', async ($, on) => {
     const wd = await boot($, on, { notices: notices({ ...held(3), by_ground: { reported: 2, same_claim: 1 }, awaiting_operator: 1 }) })
     const text = (await pane($)).text
-    expect(text).toContain('3 held: 2 reported wrong, 1 duplicate; 1 awaits you')
+    expect(text).toContain('MEMORY  3 held · 1 awaits you') // the heading
+    expect(text).toContain('2 reported wrong, 1 duplicate') // the detail line
     void wd
   })
 })
