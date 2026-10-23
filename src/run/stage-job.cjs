@@ -28,14 +28,50 @@ function readTemplate(name) {
 const fill = (tpl, vars) => Object.entries(vars).reduce((s, [k, v]) => s.split(`{{${k}}}`).join(String(v)), tpl);
 
 // The child's answer: the JSON object in its last message, and the list under `key`. { list } or { error }.
+// Candidates, in order: the whole text; every fenced block, last first; every balanced top-level {...} object found by a string-aware
+// scan, last first. The first that parses and holds an array under `key` wins; an object without the key is never picked.
+// Bounded: only the last PARSE_SCAN_MAX characters are scanned and at most PARSE_TRIES candidates are tried.
+const PARSE_SCAN_MAX = 256 * 1024;
+const PARSE_TRIES = 200;
+// Balanced top-level objects that parse, in order. A '{' that never closes, or whose span does not parse (a stray brace in prose swallowed
+// it), is skipped and the scan restarts after it, at most PARSE_TRIES times.
+function jsonObjects(s) {
+  const out = [];
+  let from = 0, restarts = 0;
+  while (from < s.length) {
+    let depth = 0, start = -1, inStr = false, esc = false, i = from;
+    for (; i < s.length; i++) {
+      const c = s[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === '\\') esc = true;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"' && depth > 0) inStr = true;
+      else if (c === '{') { if (depth === 0) start = i; depth++; }
+      else if (c === '}' && depth > 0) {
+        depth--;
+        if (depth === 0) {
+          const t = s.slice(start, i + 1);
+          try { JSON.parse(t); out.push(t); } catch { depth = -1; break; } // a stray brace swallowed this one: rescan after its start
+        }
+      }
+    }
+    if (depth === 0 || start < 0 || ++restarts > PARSE_TRIES) break;
+    from = start + 1;
+  }
+  return out;
+}
 function parseList(text, key) {
   const raw = String(text || '').trim();
   if (!raw) return { error: 'the job ended its turn with no text' };
-  const tries = [raw];
-  const fence = /```(?:json)?\s*([\s\S]*?)```/.exec(raw);
-  if (fence) tries.push(fence[1]);
-  const a = raw.indexOf('{'), b = raw.lastIndexOf('}');
-  if (a !== -1 && b > a) tries.push(raw.slice(a, b + 1));
+  const scan = raw.length > PARSE_SCAN_MAX ? raw.slice(raw.length - PARSE_SCAN_MAX) : raw;
+  const fences = [];
+  const re = /```(?:json)?[ \t]*\r?\n?([\s\S]*?)```/g;
+  let m;
+  while ((m = re.exec(scan))) fences.push(m[1]);
+  const tries = [raw, ...fences.reverse(), ...jsonObjects(scan).reverse()].slice(0, PARSE_TRIES);
   for (const t of tries) {
     let j;
     try { j = JSON.parse(t); } catch { continue; }
