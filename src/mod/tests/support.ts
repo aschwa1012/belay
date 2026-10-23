@@ -62,7 +62,10 @@ export type World = {
   extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number; memoryNotice?: boolean; orchNoCost?: boolean; agentIds?: string[]; footer?: unknown
   /** Answers the dialogs give, in order (the reason, then the confirm); an empty queue dismisses. */
   answers?: string[]
-  awaitingList?: unknown; settleOut?: { exitCode: number; stdout: string; stderr: string }
+  awaitingList?: unknown; /** Awaited by every dialog before it answers: a test changes the world, or holds a press open, while a question is up. */
+  onAsk?: (n: number) => Promise<void> | void
+  settleReject?: string
+  settleOut?: { exitCode: number; stdout: string; stderr: string }
 }
 
 // The host beneath the plugin: a run file (or none), belay's read commands as fixtures, and a recorder
@@ -80,9 +83,10 @@ export function world(on: any, w: World) {
   const settled: string[][] = [] // every `memory held settle` the panel runs: only the settle buttons may run one
   const asked: string[] = [] // every dialog question
   const queue = [...(w.answers ?? [])]
-  on('tool.call', { tool: 'AskUserQuestion' }, ($: any, e: any) => {
+  on('tool.call', { tool: 'AskUserQuestion' }, async ($: any, e: any) => {
     const q = e.questions[0]
     asked.push(q.question)
+    if (w.onAsk) await w.onAsk(asked.length)
     const a = queue.shift()
     if (a === undefined) return { deny: 'dismissed' }
     return { result: { questions: e.questions, answers: { [q.question]: a } } }
@@ -99,6 +103,7 @@ export function world(on: any, w: World) {
   on('process.run', async ($: any, e: any) => {
     if (e.argv.includes('settle')) {
       settled.push([...e.argv])
+      if (w.settleReject) return { deny: w.settleReject }
       return { value: w.settleOut ?? { exitCode: 0, stdout: JSON.stringify({ id: e.argv[e.argv.indexOf('settle') + 1], action: 'archive', outcome: 'archived', receipt: 'held-settle:x@1' }), stderr: '' } }
     }
     if (e.argv.includes('--awaiting')) {

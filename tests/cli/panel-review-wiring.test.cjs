@@ -64,6 +64,18 @@ test('the check is not a tripwire: each way around it is found', () => {
     ['a computed host member', patched('hooks/panel/index.tsx', 'const firstLine =', "const sneak3 = ($: any) => { const k = 'pro' + 'cess'; return $[k].run(['x']) }\nconst firstLine ="), /reached by a computed member/],
     ['an alias of the host object', patched('hooks/panel/index.tsx', 'const firstLine =', 'async function sneak4($: any) { const h = $\n  return h }\nconst firstLine ='), /reached by a computed member, a cast or an alias/],
     ['the review word in a new place', patched('hooks/panel/index.tsx', 'const firstLine =', "const WORDS = ['review', 'x']\nconst firstLine ="), /the string "review" appears outside/],
+    ['a second caller of settlePress', patched('hooks/panel/index.tsx', 'const firstLine =', "async function other2($: Host) { await settlePress($, 'archive', 'x') }\nconst firstLine ="), /settlePress is named in/],
+    ['settlePress aliased in acts', patched('hooks/panel/index.tsx', '    settle: (action, id) => { void settlePress($, action, id) },', '    settle: (action, id) => { const go = settlePress; void go($, action, id) },'), /settlePress is named in/],
+    ['settleArgs used by a second function', patched('hooks/panel/index.tsx', 'const firstLine =', "const sneakArgs = () => settleArgs('archive', 'x', 'y')\nconst firstLine ="), /settleArgs is used in/],
+    ['settlePress runs another argv', patched('hooks/panel/index.tsx', 'argvFor(r.cli, settleArgs(action, id, reason), watch.dataDir)', "argvFor(r.cli, ['memory', 'review', '--start'], watch.dataDir)"), /settleArgs is used in|expected exactly|\$\.process\.run/],
+    ['settleArgs gains a verb', patched('hooks/panel/held.ts', "['memory', 'held', 'settle', id,", "['memory', 'archive', 'purge', id,"), /settleArgs in hooks\/panel\/held\.ts is not exactly/],
+    ['settleArgs splits the reason', patched('hooks/panel/held.ts', "'--reason', reason]", "'--reason', ...reason.split(' ')]"), /settleArgs in hooks\/panel\/held\.ts is not exactly/],
+    ['a second act.settle use', patched('hooks/panel/view.tsx', 'function Orchestrator(', 'const sneaky2 = (act: Act) => act.settle(\'archive\', \'x\')\nfunction Orchestrator('), /a `\.settle` member is used/],
+    ['the settle Button leaves SettleRow', patched('hooks/panel/view.tsx', 'function Held(', "const sneaky3 = (E: Els, act: Act) => <E.Button key={`${'a'}-${'b'}`} onPress={() => act.settle('archive', 'b')} />\nfunction Held("), /a `\.settle` member is used/],
+    ['the wake names settlePress', patched('hooks/wake/index.ts', 'import', "const x = settlePress\nimport"), /names the review launcher or the settle writer/],
+    ['runJson reads another memory verb', patched('hooks/panel/index.tsx', 'const firstLine =', "async function sneak5($: Host, cli: string[]) { await runJson($, cli, ['memory', 'held', 'settle'], null) }\nconst firstLine ="), /runJson is called other than with a literal read verb/],
+    ['runJson reads the awaiting list with a computed argv', patched('hooks/panel/index.tsx', 'const firstLine =', "async function sneak6($: Host, cli: string[]) { await runJson($, cli, AWAITING_READ, null) }\nconst firstLine ="), /runJson is called other than with a literal read verb/],
+    ['the settle word in a new place', patched('hooks/panel/index.tsx', 'const firstLine =', "const W2 = ['settle', 'x']\nconst firstLine ="), /the string "settle" appears outside/],
     ['REVIEW_ARGS used by the read helper', patched('hooks/panel/index.tsx', 'const res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS', 'const res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS'), null],
   ];
   for (const [name, fs2, re] of cases) {

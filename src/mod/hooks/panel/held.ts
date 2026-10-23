@@ -131,15 +131,43 @@ export const shortId = (id: string): string => id.slice(0, 8)
 export const settleArgs = (action: SettleAction, id: string, reason: string): string[] => ['memory', 'held', 'settle', id, `--${action}`, '--reason', reason]
 
 export const settleVerb = (a: SettleAction): string => a[0]!.toUpperCase() + a.slice(1)
-export const settleConfirm = (a: SettleAction, id: string, reason: string): string => `${settleVerb(a)} note ${shortId(id)}? reason: ${clean(reason, 160)}`
+// The confirm shows the reason exactly as it is sent (a reason over REASON_MAX is refused first, so nothing is cut).
+export const settleConfirm = (a: SettleAction, id: string, reason: string): string => `${settleVerb(a)} note ${shortId(id)}? reason: ${reason}`
 
-// What `belay memory held settle --json` printed, as one toast line: the id, the outcome and the receipt, or the error text.
+export const REASON_MAX = 160
+// belay strips its own global options out of the argv before any command sees it, so a reason that is exactly one of them never arrives.
+const GLOBAL_FLAGS = ['--json', '--fix', '--data', '--help', '-h']
+// null when the reason can be sent as it is; otherwise the toast that says why it is refused.
+export function reasonProblem(reason: string): string | null {
+  if (reason.length > REASON_MAX) return `belay: the reason is ${reason.length} characters; at most ${REASON_MAX}. Shorten it.`
+  if (GLOBAL_FLAGS.includes(reason)) return `belay: a reason cannot be exactly ${reason}: belay would read it as its own option. Add a word to it.`
+  return null
+}
+
+/** The error a belay command printed under --json: stdout, else stderr (the real CLI prints errors to stderr, pretty-printed). */
+export type CliError = { code: string | null; message: string; unknown: boolean }
+export function cliError(stdout: string, stderr: string): CliError | null {
+  for (const text of [stdout, stderr]) {
+    let j: Record<string, unknown> | null = null
+    try { j = obj(JSON.parse(text)) } catch { continue }
+    const e = obj(j?.error)
+    if (!e) continue
+    const d = obj(e.detail) ?? {}
+    const code = str(e.code)
+    return { code, message: clean(str(e.message) ?? '', 160), unknown: code === 'E_TIMEOUT' || code === 'E_OWNER_LOST' || d.may_have_committed === true || d.sent === true }
+  }
+  return null
+}
+
+export const SETTLE_UNKNOWN = 'belay: outcome unknown: re-read with belay memory held'
+
+// What `belay memory held settle --json` printed, as one toast line. Only a definite refusal says "not settled": a timeout, a lost owner,
+// anything that may have committed, or output that is not a receipt says the outcome is unknown (a write lost after it was sent is not re-run).
 export function settleLine(exitCode: number, stdout: string, stderr: string): string {
-  const first = (s: string): string => (s.split('\n').map(l => l.trim()).find(l => l !== '') ?? '').slice(0, 160)
   let j: Record<string, unknown> | null = null
-  try { j = obj(JSON.parse(stdout)) } catch { /* plain text */ }
-  const err = obj(j?.error)
+  try { j = obj(JSON.parse(stdout)) } catch { /* not a receipt */ }
   if (exitCode === 0 && j && str(j.id) && str(j.outcome)) return `belay: ${clean(String(j.action ?? 'settled'), 20)} ${shortId(String(j.id))}: ${clean(String(j.outcome), 40)}${str(j.receipt) ? ` · receipt ${clean(String(j.receipt), 80)}` : ''}`
-  const said = err ? `${str(err.code) ? `${str(err.code)}: ` : ''}${clean(str(err.message) ?? '', 160)}` : first(stdout.trim() ? stdout : stderr)
-  return `belay: the note was not settled (exit ${exitCode})${said ? `: ${said}` : ''}`
+  const err = cliError(stdout, stderr)
+  if (exitCode !== 0 && err && !err.unknown) return `belay: the note was not settled (exit ${exitCode}): ${err.code ? `${err.code}: ` : ''}${err.message}`
+  return `${SETTLE_UNKNOWN}${err?.code ? ` (${err.code})` : ` (exit ${exitCode})`}`
 }
