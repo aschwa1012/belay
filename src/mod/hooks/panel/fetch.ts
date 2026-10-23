@@ -61,7 +61,8 @@ export function launcherLine(exitCode: number, stdout: string, stderr: string, p
   const err = j && j.error !== null && typeof j.error === 'object' ? (j.error as Record<string, unknown>) : ej && ej.error !== null && typeof ej.error === 'object' ? (ej.error as Record<string, unknown>) : null
   if (exitCode === 0 && j && j.started === true) return `belay: archive review of ${project} started: pid ${String(j.pid ?? '?')}, job ${String(j.job ?? '?')}`
   if (exitCode === 0 && j && j.ended !== undefined) return `belay: archive review of ${project} ended at once: ${first(JSON.stringify(j.ended))}`
-  const said = err ? `${typeof err.code === 'string' ? `${err.code}: ` : ''}${typeof err.message === 'string' ? err.message.slice(0, 160) : ''}` : first(stdout.trim() ? stdout : stderr)
+  const plainErr = typeof j?.error === 'string' ? j.error : typeof ej?.error === 'string' ? ej.error : null // a usage error prints {"error": "<text>"}
+  const said = err ? `${typeof err.code === 'string' ? `${err.code}: ` : ''}${typeof err.message === 'string' ? err.message.slice(0, 160) : ''}` : plainErr !== null ? first(plainErr) : first(stdout.trim() ? stdout : stderr)
   return exitCode === 0 ? `belay: ${said || 'archive review started'}` : `belay: the review was not started (exit ${exitCode})${said ? `: ${said}` : ''}`
 }
 
