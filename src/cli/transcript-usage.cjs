@@ -15,12 +15,16 @@
 // "opus", or an unlisted id) shows its tokens and no dollars. The figures are API-rate estimates: a
 // subscription user pays nothing per token.
 //
-// Reading never writes (invariant 6): the file is opened 'r' and nothing is created beside it. A cache
-// (path -> byte offset, per-id usage, sums) is kept only when the caller passes one, i.e. in a process that
-// lives across reads; a cold read parses the whole file in 4 MB chunks. A line with no newline yet is
-// taken only if it parses as JSON, else left for the next read.
+// Reading never writes (invariant 6): the file is opened 'r' and nothing is created beside it. The whole file
+// is parsed in 4 MB chunks on every call. A line with no newline yet is taken only if it parses as JSON.
+//
+// What it cannot see: /clear starts a NEW session file that belay does not know and does not follow, so after a
+// /clear the figures stay those of the session belay launched. Compaction summaries and title calls are not
+// in the transcript, so the estimate undercounts slightly.
 
 const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 // Dollars per million tokens, keyed by the exact message.model. Source: Anthropic first-party rates in Claude
 // Code's bundled claude-api skill model table (cached 2026-10-06). A model with `tiers` is priced per message by
@@ -130,21 +134,50 @@ function advance(st, fd, size, prices) {
   return bytes;
 }
 
-// readUsage(file, cache?, prices?) -> { exists, error, bytes_read, messages, model_seen, context_tokens, tokens, cost_usd, unpriced_models }
-function readUsage(file, cache, prices = PRICES) {
-  const none = { exists: false, error: null, bytes_read: 0, messages: 0, model_seen: null, context_tokens: null, tokens: null, cost_usd: null, unpriced_models: [], cache_write_assumed_5m: 0 };
+// Where a session transcript may live: <CLAUDE_CONFIG_DIR or ~/.claude>/projects/. The path comes from a marker
+// file in a directory anyone may write, so it is checked before anything touches it: a name ending .jsonl,
+// lexically and then really (symlinks and junctions resolved) under the projects directory, and a regular file.
+// A named pipe (//./pipe/x) or a directory is never opened.
+function projectsRootOf(env = process.env, home = os.homedir()) {
+  return path.join((env && env.CLAUDE_CONFIG_DIR) || path.join(home, '.claude'), 'projects');
+}
+const norm = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
+const under = (root, file) => { const r = norm(path.resolve(root)); const f = norm(path.resolve(file)); return f.startsWith(r.endsWith(path.sep) ? r : r + path.sep); };
+
+// null when the path may be read, else the reason it may not. Opens nothing; the only filesystem calls are stat and
+// realpath, and only after the lexical checks, which refuse a pipe path before any call.
+function refusal(file, root) {
+  if (typeof file !== 'string' || !file) return 'no session file path';
+  if (!/\.jsonl$/i.test(file)) return 'the session file name does not end in .jsonl';
+  if (!under(root, file)) return 'the session file is not under the Claude projects directory';
+  let st;
+  try { st = fs.statSync(file); } catch (e) { return e.code === 'ENOENT' ? null : 'the session file cannot be examined'; }
+  if (!st.isFile()) return 'the session file is not a regular file';
+  try { if (!under(fs.realpathSync(root), fs.realpathSync(file))) return 'the session file resolves outside the Claude projects directory'; } catch { return 'the session file cannot be resolved'; }
+  return null;
+}
+
+// readUsage(file, prices?, { projectsRoot? }) -> { exists, refused, error, bytes_read, messages, model_seen, context_tokens, tokens, cost_usd, unpriced_models }
+// Every call parses the whole file (50 MB in about 55 ms): the panel starts a new process per poll, so a cache of
+// offsets would never be reused and there is none. Not followed: /clear starts a NEW session file that belay does not
+// know; the figures stay those of the session belay launched. Not in the transcript: compaction summaries and title
+// calls, so the estimate undercounts slightly.
+function readUsage(file, prices = PRICES, opts = {}) {
+  const none = { exists: false, refused: null, error: null, bytes_read: 0, messages: 0, model_seen: null, context_tokens: null, tokens: null, cost_usd: null, unpriced_models: [], cache_write_assumed_5m: 0 };
+  const why = refusal(file, opts.projectsRoot || projectsRootOf());
+  if (why) return { ...none, refused: why };
   let fd;
   try { fd = fs.openSync(file, 'r'); } catch (e) { return e.code === 'ENOENT' ? none : { ...none, error: e.code || 'unreadable' }; }
   try {
-    const size = fs.fstatSync(fd).size;
-    let st = cache && cache.get(file);
-    if (!st || size < st.offset) { st = newState(); if (cache) cache.set(file, st); }
-    const bytes_read = advance(st, fd, size, prices);
+    const fst = fs.fstatSync(fd);
+    if (!fst.isFile()) return { ...none, refused: 'the session file is not a regular file' };
+    const st = newState();
+    const bytes_read = advance(st, fd, fst.size, prices);
     const tokens = { input: 0, output: 0, cache_read: 0, cache_creation: 0 };
     for (const t of st.byModel.values()) { tokens.input += t.input; tokens.output += t.output; tokens.cache_read += t.cache_read; tokens.cache_creation += t.cache_creation; }
     const unpriced = [...st.unpriced.keys()];
     return {
-      exists: true, error: null, bytes_read, messages: st.messages,
+      exists: true, refused: null, error: null, bytes_read, messages: st.messages,
       model_seen: st.last ? st.last.model : null, context_tokens: st.last ? st.last.context : null,
       tokens: st.messages ? tokens : null, cost_usd: st.messages && !unpriced.length ? st.usd : null, unpriced_models: unpriced, cache_write_assumed_5m: st.assumed5m,
     };
@@ -157,23 +190,27 @@ function readSmall(file) {
   try { const st = fs.statSync(file); return st.isFile() && st.size <= 1024 * 1024 ? JSON.parse(fs.readFileSync(file, 'utf8')) : null; } catch { return null; }
 }
 
-// The session transcript of this run's interactive orchestrator, or null. Sources, in order: the launch
+// The session transcript of this run's interactive orchestrator: { file, refused }. Sources, in order: the launch
 // marker (run-start.json, this run and epoch: its session_file, else a search for its session_id), then the
-// closing receipt (run.json, this run: orchestrator.interactive.session_file).
-function sessionFileOf(orchDir, run, exists = fs.existsSync) {
+// closing receipt (run.json, this run: orchestrator.interactive.session_file). A path that fails `refusal` is
+// never looked at (not even for existence); `refused` lists why.
+function sessionFileOf(orchDir, run, opts = {}) {
+  const root = opts.projectsRoot || projectsRootOf();
+  const refused = [];
+  const ok = (f) => { const why = refusal(f, root); if (why) { refused.push(why); return false; } return fs.existsSync(f); };
   const m = readSmall(`${orchDir}/run-start.json`);
   if (m && m.run_id === run.id && m.epoch === run.epoch) {
-    if (typeof m.session_file === 'string' && exists(m.session_file)) return m.session_file;
-    if (typeof m.session_id === 'string' && m.session_id) {
+    if (typeof m.session_file === 'string' && ok(m.session_file)) return { file: m.session_file, refused };
+    if (typeof m.session_id === 'string' && /^[0-9A-Za-z-]{1,64}$/.test(m.session_id)) {
       try {
-        const found = require('../run/interactive-surface.cjs').findSessionFile({ cwd: '', sessionId: m.session_id, exists });
-        if (found) return found;
+        const found = require('../run/interactive-surface.cjs').findSessionFile({ projectsDir: opts.projectsRoot, cwd: '', sessionId: m.session_id });
+        if (found && ok(found)) return { file: found, refused };
       } catch { /* fall through to the receipt */ }
     }
   }
   const r = readSmall(`${orchDir}/run.json`);
   const f = r && r.run_id === run.id && r.orchestrator && r.orchestrator.interactive && r.orchestrator.interactive.session_file;
-  return typeof f === 'string' && exists(f) ? f : null;
+  return { file: typeof f === 'string' && ok(f) ? f : null, refused };
 }
 
-module.exports = { readUsage, sessionFileOf, PRICES };
+module.exports = { readUsage, sessionFileOf, projectsRootOf, PRICES };

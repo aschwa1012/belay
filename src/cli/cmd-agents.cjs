@@ -31,7 +31,6 @@ const TU = require('./transcript-usage.cjs');
 const USAGE = 'usage: belay agents [run-id] [--dir <orchestrator_dir>] [--data <dir>] [--json]\n';
 const TAIL_BYTES = 256 * 1024; // the first window; widened by 4x only while no assistant line of the agent's own is in it
 const TAIL_MAX_BYTES = 8 * 1024 * 1024;
-const TRANSCRIPT_CACHE = new Map(); // transcript path -> offset and sums; only a process that lives across reads gains from it
 
 function usageError(message) {
   return { code: 2, text: `belay agents: ${message}\n\n${USAGE}`, json: { error: message } };
@@ -179,20 +178,21 @@ function orchestratorRow(run, streamPath, now = Date.now()) {
 // An interactive orchestrator writes no stream: its usage is read from its session transcript (transcript-usage.cjs).
 // Only when its stream gave nothing. The dollar figure is an estimate from that transcript and exists only for a
 // model with a rate; otherwise the tokens are shown and the cost stays null with the reason in cost_source.
-function fillFromTranscript(orch, orchDir, run, cache) {
+function fillFromTranscript(orch, orchDir, run, opts = {}) {
   if (orch.context_tokens != null || orch.cost_usd != null) return;
-  const file = TU.sessionFileOf(orchDir, run);
-  if (!file) return;
-  const u = TU.readUsage(file, cache);
+  const { file, refused } = TU.sessionFileOf(orchDir, run, opts);
+  if (!file) { if (refused.length) orch.cost_note = `session transcript not read: ${refused[0]}`; return; }
+  const u = TU.readUsage(file, undefined, opts);
+  if (u.refused) { orch.cost_note = `session transcript not read: ${u.refused}`; return; }
   orch.transcript_path = file;
   if (!u.exists || !u.messages) return;
   orch.transcript_usage = { tokens: u.tokens, messages: u.messages };
   orch.context_tokens = u.context_tokens;
   if (u.model_seen) { orch.model_seen = u.model_seen; if (orch.model == null) orch.model = u.model_seen; }
   if (u.cost_usd != null) {
-    orch.cost_usd = u.cost_usd; orch.cost_source = 'estimate from the session transcript'; orch.cost_basis = 'transcript, API rates';
+    orch.cost_usd = u.cost_usd; orch.cost_source = 'estimate from the session transcript belay launched; /clear starts a new one that is not followed'; orch.cost_basis = 'transcript, API rates';
     if (u.cache_write_assumed_5m) orch.cost_note = `${u.cache_write_assumed_5m} message(s) gave no 5m/1h cache-write split: all priced at the 5m rate`;
-  } else orch.cost_note = `no rate for ${u.unpriced_models.join(', ') || 'this model'}: tokens only`;
+  } else orch.cost_note = `no rate for ${u.unpriced_models.join(', ') || 'this model'}: tokens only (from the session belay launched; /clear starts a new one that is not followed)`;
 }
 
 // An orchestrator with tokens and no result line of its own (the run is live: one turn, no result yet)
@@ -326,7 +326,7 @@ async function run(ctx) {
     const { dir: orchDir, stream_path: orchStream } = P.orchestratorStreamPath(chosen.id, parsed.dir, ctx.cwd);
     const workers = everyWorker.filter((w) => w.run_id === chosen.id).map((w) => workerRow(w, tasksById, dataDir, { now, pending, leaseTaskOf }));
     const orchestrator = orchestratorRow(chosen, orchStream, now);
-    fillFromTranscript(orchestrator, orchDir, chosen, TRANSCRIPT_CACHE);
+    fillFromTranscript(orchestrator, orchDir, chosen);
     borrowWindow(orchestrator, workers);
     const agents = [orchestrator, ...workers];
     const runTasks = [...tasksById.values()];

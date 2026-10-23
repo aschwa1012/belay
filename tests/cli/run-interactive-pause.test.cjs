@@ -87,6 +87,11 @@ test('marker: run-start.json is written after the launcher\'s own attach with ex
   assert.strictEqual(m.launcher_pid, process.pid);
   assert.strictEqual(m.epoch, res.json.store.attach.epoch, 'epoch is the run row\'s epoch at that attach');
   assert.ok(Number.isInteger(m.started_at));
+  const rec = r.record();
+  const sid = rec.argv[rec.argv.indexOf('--session-id') + 1];
+  assert.match(sid, /^[0-9a-f-]{36}$/);
+  assert.strictEqual(m.session_id, sid, 'the marker names the session the launch asked for');
+  assert.ok(typeof m.session_file === 'string' && m.session_file.replaceAll('\\', '/').endsWith(`/${sid}.jsonl`), String(m.session_file));
   assert.strictEqual(res.json.orchestrator.interactive.run_start.written, true);
   const row = currentRunRow(r.dataDir, r.runId);
   assert.ok(m.started_at >= row.started_at - 1, 'started_at precedes the run row');
