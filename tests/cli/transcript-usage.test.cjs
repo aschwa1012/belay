@@ -199,3 +199,60 @@ test('agents row: a priced model gets an estimated cost marked as transcript API
   assert.match(row.cost_source, /estimate/);
   assert.match(row.cost_source, /\/clear starts a new one that is not followed/);
 });
+
+// Record every call that could follow a link (stat, open, exists, read) with its path argument.
+function watchFollowers() {
+  const calls = [];
+  const names = ['statSync', 'openSync', 'existsSync', 'readFileSync'];
+  const real = Object.fromEntries(names.map((n) => [n, fs[n]]));
+  for (const n of names) fs[n] = (p, ...a) => { calls.push([n, String(p)]); return real[n](p, ...a); };
+  return { calls, restore: () => { for (const n of names) fs[n] = real[n]; } };
+}
+
+test('a link at the file or at its directory is refused and its target is never stat-ed, opened or read', (t) => {
+  const root = tmp(t);
+  const outside = tmp(t);
+  const target = path.join(outside, 's.jsonl');
+  fs.writeFileSync(target, asst('m1', 'test-model-a', [1, 1, 1, 1]));
+  fs.symlinkSync(outside, path.join(root, 'linkdir'), 'junction'); // a directory junction needs no privilege
+  const links = { dir: path.join(root, 'linkdir', 's.jsonl') };
+  try { fs.symlinkSync(target, path.join(root, 'link.jsonl'), 'file'); links.file = path.join(root, 'link.jsonl'); } catch { /* file symlinks need a privilege this host may not grant */ }
+  const w = watchFollowers();
+  try {
+    for (const [name, file] of Object.entries(links)) {
+      const u = readUsage(file, undefined, { projectsRoot: root });
+      assert.ok(u.refused, `${name} link was not refused`);
+      assert.ok(u.refused.includes(`checked ${root}`), u.refused);
+      assert.strictEqual(u.messages, 0);
+    }
+  } finally { w.restore(); }
+  assert.deepStrictEqual(w.calls.filter(([, p]) => p.includes('linkdir') || p.includes('link.jsonl') || p.includes(path.basename(outside))), [], 'a link or its target was followed');
+});
+
+test('the opened file must be the checked file: a different inode at open is refused', (t) => {
+  const root = tmp(t);
+  const f = path.join(root, 's.jsonl');
+  fs.writeFileSync(f, asst('m1', 'test-model-a', [1, 1, 1, 1]));
+  assert.strictEqual(readUsage(f, undefined, { projectsRoot: root }).messages, 1);
+  const real = fs.fstatSync;
+  fs.fstatSync = (fd, o) => { const s = real(fd, o); return o && o.bigint ? { ino: s.ino + 1n, dev: s.dev, isFile: () => true, size: s.size } : s; };
+  try {
+    const u = readUsage(f, undefined, { projectsRoot: root });
+    assert.match(u.refused, /changed between the check and the open/);
+    assert.strictEqual(u.messages, 0);
+  } finally { fs.fstatSync = real; }
+});
+
+test('a link at the file itself (lstat says so) is refused before anything follows it', (t) => {
+  const root = tmp(t);
+  const f = path.join(root, 'l.jsonl');
+  fs.writeFileSync(f, asst('m1', 'test-model-a', [1, 1, 1, 1]));
+  const realL = fs.lstatSync; // a file symlink needs a privilege some hosts lack, so lstat reports one for this path
+  fs.lstatSync = (p, ...a) => (path.resolve(String(p)) === path.resolve(f) ? { isSymbolicLink: () => true, isFile: () => false } : realL(p, ...a));
+  const w = watchFollowers();
+  try {
+    const u = readUsage(f, undefined, { projectsRoot: root });
+    assert.match(u.refused, /is a link \(checked /);
+  } finally { w.restore(); fs.lstatSync = realL; }
+  assert.deepStrictEqual(w.calls.filter(([, p]) => p.includes('l.jsonl')), [], 'the link was followed');
+});

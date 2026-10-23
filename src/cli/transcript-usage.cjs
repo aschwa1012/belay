@@ -144,16 +144,24 @@ function projectsRootOf(env = process.env, home = os.homedir()) {
 const norm = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
 const under = (root, file) => { const r = norm(path.resolve(root)); const f = norm(path.resolve(file)); return f.startsWith(r.endsWith(path.sep) ? r : r + path.sep); };
 
-// null when the path may be read, else the reason it may not. Opens nothing; the only filesystem calls are stat and
-// realpath, and only after the lexical checks, which refuse a pipe path before any call.
+// null when the path may be read, else the reason it may not (always naming the root it was checked against).
+// Opens nothing and follows no link: after the lexical checks, which refuse a pipe path before any filesystem call,
+// the only calls are realpath of the DIRECTORY (compared with the real root) and lstat of the file itself, which
+// does not follow it. A symlink or junction at the file is refused, so a link to a pipe is never stat-connected.
 function refusal(file, root) {
-  if (typeof file !== 'string' || !file) return 'no session file path';
-  if (!/\.jsonl$/i.test(file)) return 'the session file name does not end in .jsonl';
-  if (!under(root, file)) return 'the session file is not under the Claude projects directory';
+  const at = ` (checked ${root})`;
+  if (typeof file !== 'string' || !file) return `no session file path${at}`;
+  if (!/\.jsonl$/i.test(file)) return `the session file name does not end in .jsonl${at}`;
+  if (!under(root, file)) return `the session file is not under the Claude projects directory${at}`;
+  let dir;
+  try { dir = fs.realpathSync(path.dirname(file)); } catch (e) { return e.code === 'ENOENT' ? null : `the session file's directory cannot be resolved${at}`; }
+  let realRoot;
+  try { realRoot = fs.realpathSync(root); } catch { return `the projects directory cannot be resolved${at}`; }
+  if (!under(realRoot, path.join(dir, path.basename(file)))) return `the session file's directory resolves outside the Claude projects directory${at}`;
   let st;
-  try { st = fs.statSync(file); } catch (e) { return e.code === 'ENOENT' ? null : 'the session file cannot be examined'; }
-  if (!st.isFile()) return 'the session file is not a regular file';
-  try { if (!under(fs.realpathSync(root), fs.realpathSync(file))) return 'the session file resolves outside the Claude projects directory'; } catch { return 'the session file cannot be resolved'; }
+  try { st = fs.lstatSync(file); } catch (e) { return e.code === 'ENOENT' ? null : `the session file cannot be examined${at}`; }
+  if (st.isSymbolicLink()) return `the session file is a link${at}`;
+  if (!st.isFile()) return `the session file is not a regular file${at}`;
   return null;
 }
 
@@ -164,13 +172,18 @@ function refusal(file, root) {
 // calls, so the estimate undercounts slightly.
 function readUsage(file, prices = PRICES, opts = {}) {
   const none = { exists: false, refused: null, error: null, bytes_read: 0, messages: 0, model_seen: null, context_tokens: null, tokens: null, cost_usd: null, unpriced_models: [], cache_write_assumed_5m: 0 };
-  const why = refusal(file, opts.projectsRoot || projectsRootOf());
+  const root = opts.projectsRoot || projectsRootOf();
+  const why = refusal(file, root);
   if (why) return { ...none, refused: why };
   let fd;
   try { fd = fs.openSync(file, 'r'); } catch (e) { return e.code === 'ENOENT' ? none : { ...none, error: e.code || 'unreadable' }; }
   try {
     const fst = fs.fstatSync(fd);
     if (!fst.isFile()) return { ...none, refused: 'the session file is not a regular file' };
+    // The file opened is the file that was checked: the same device and inode as the real path, which is no link.
+    const same = fs.statSync(fs.realpathSync(file), { bigint: true });
+    const fsb = fs.fstatSync(fd, { bigint: true });
+    if (same.ino !== fsb.ino || same.dev !== fsb.dev) return { ...none, refused: `the session file changed between the check and the open (checked ${root})` };
     const st = newState();
     const bytes_read = advance(st, fd, fst.size, prices);
     const tokens = { input: 0, output: 0, cache_read: 0, cache_creation: 0 };
