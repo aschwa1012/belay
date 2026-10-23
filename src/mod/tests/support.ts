@@ -29,6 +29,8 @@ export const LONG_NOTICES = {
     { kind: 'worker_stopped', ts: T0 - 300000, run_id: RUN, worker_id: 'reviewer-1', exit_code: 0, exit_signal: null, death_established_by: null },
   ],
 }
+export const NOTE_ID = '08954ec7-c37a-4f36-9ff5-641811cc54f9'
+export const AWAITING = { total: 1, awaiting_operator: 1, entries: [{ note_id: NOTE_ID, project: 'acme', title: 'pid poll note', kind: 'wrong', ground: 'reported', awaiting_operator: true, undecided: { reason: 'cannot say' } }] }
 export const NOTICES = { run_id: RUN, events: EVENTS }
 const tool = (n: number) => ({ kind: 'tool', tool: 'mcp__belay__worker_wait', ids: { worker_id: `w-${n}` }, tool_use_id: `x${n}`, result: 'ok', error_code: null, ts: iso(T0 - 9000 + n * 100) })
 // Words, then five tool calls: the last entries hold no words.
@@ -58,6 +60,9 @@ export type World = {
   mode?: string | null; mod?: Record<string, string>; notices?: unknown
   failAgents?: boolean; transcriptFail?: boolean; orchDisplay?: string; noDisplay?: boolean; noRun?: boolean
   extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number; memoryNotice?: boolean; orchNoCost?: boolean; agentIds?: string[]; footer?: unknown
+  /** Answers the dialogs give, in order (the reason, then the confirm); an empty queue dismisses. */
+  answers?: string[]
+  awaitingList?: unknown; settleOut?: { exitCode: number; stdout: string; stderr: string }
 }
 
 // The host beneath the plugin: a run file (or none), belay's read commands as fixtures, and a recorder
@@ -72,6 +77,16 @@ export function world(on: any, w: World) {
   const spawned: string[][] = [] // every review launcher (`... memory review --project p --start`) the panel runs: only the review button may run one
   const attempts: { verb: string; t: number; timeoutMs: number; cwd?: string; argv: string[] }[] = []
   const stat = { active: 0, maxActive: 0 }
+  const settled: string[][] = [] // every `memory held settle` the panel runs: only the settle buttons may run one
+  const asked: string[] = [] // every dialog question
+  const queue = [...(w.answers ?? [])]
+  on('tool.call', { tool: 'AskUserQuestion' }, ($: any, e: any) => {
+    const q = e.questions[0]
+    asked.push(q.question)
+    const a = queue.shift()
+    if (a === undefined) return { deny: 'dismissed' }
+    return { result: { questions: e.questions, answers: { [q.question]: a } } }
+  })
   on('session.start', ($: any, e: any) => ({ cwd: e.cwd }))
   on('fs.exists', ($: any, e: any) => ({ value: e.path.endsWith('belay-run.json') ? (w.file ?? false) : (w.repoCli ?? true) }))
   on('fs.read', () => ({ value: typeof w.runFile === 'string' ? w.runFile : JSON.stringify(w.runFile ?? FULL_RUNFILE) }))
@@ -82,6 +97,14 @@ export function world(on: any, w: World) {
   on('ui.close', () => ({ value: undefined }))
   on('ui.toast', ($: any, e: any) => { toasts.push(e.text); return { value: undefined } })
   on('process.run', async ($: any, e: any) => {
+    if (e.argv.includes('settle')) {
+      settled.push([...e.argv])
+      return { value: w.settleOut ?? { exitCode: 0, stdout: JSON.stringify({ id: e.argv[e.argv.indexOf('settle') + 1], action: 'archive', outcome: 'archived', receipt: 'held-settle:x@1' }), stderr: '' } }
+    }
+    if (e.argv.includes('--awaiting')) {
+      ran.push([...e.argv])
+      return { value: { exitCode: 0, stdout: JSON.stringify(w.awaitingList ?? AWAITING), stderr: '' } }
+    }
     if (e.argv.includes('--start')) {
       spawned.push([...e.argv])
       return { value: w.launcher ?? { exitCode: 0, stdout: JSON.stringify({ started: true, project: 'acme', run_id: 'r-1', pid: 4242, job: 'archreview-r-1', claim_id: 'me-1' }), stderr: '' } }
@@ -124,7 +147,7 @@ export function world(on: any, w: World) {
     if ((verb === 'agents' && w.failAgents) || (verb === 'transcript' && w.transcriptFail)) return { value: { exitCode: verb === 'agents' ? 3 : 4, stdout: '', stderr: 'boom' } }
     return { value: { exitCode: 0, stdout: JSON.stringify(body[verb]), stderr: '' } }
   })
-  return { clock, ran, writes, opened, commands, toasts, spawned, attempts, stat, w }
+  return { clock, settled, asked, ran, writes, opened, commands, toasts, spawned, attempts, stat, w }
 }
 
 export const START = { cwd: '/x', surface: 'terminal', isInteractive: true } as const
