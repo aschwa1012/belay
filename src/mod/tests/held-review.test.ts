@@ -40,14 +40,14 @@ describe('notes held for the archive reviewer', () => {
   test('the unsupported line says it too', async ($, on) => {
     const wd = await boot($, on, { notices: notices({ ...held(3, { acme: 3 }, 3), oldest_at: T0 - 30000 }) })
     await openPane($, wd)
-    expect((await pane($)).text).toMatch(/3 unsupported awaiting review · oldest 2 runs · acme · oldest waited ([0-9]+s|[0-9]m)/)
+    expect((await pane($)).text).toMatch(/3 unsupported · oldest 2 runs · acme · oldest waited ([0-9]+s|[0-9]m)/)
   })
 
   test('unsupported notes are counted apart from the holds that carry a warning, and the same button reviews both', async ($, on) => {
     const wd = await boot($, on, { notices: notices(held(8, { acme: 8 }, 3)) })
     await openPane($, wd)
     const { text } = await pane($)
-    expect(text).toContain('5 held as wrong or duplicate · 3 unsupported awaiting review · oldest 2 runs · acme')
+    expect(text).toContain('5 wrong or duplicate · 3 unsupported · oldest 2 runs · acme')
     expect(text).toContain('review the held notes')
   })
 
@@ -55,7 +55,7 @@ describe('notes held for the archive reviewer', () => {
     const wd = await boot($, on, { notices: notices(held(3, { acme: 3 }, 3)) })
     await openPane($, wd)
     const { text } = await pane($)
-    expect(text).toContain('3 unsupported awaiting review · oldest 2 runs')
+    expect(text).toContain('3 unsupported · oldest 2 runs')
     expect(text).not.toContain('held as wrong')
   })
 

@@ -113,7 +113,7 @@ export function heldDetail(h: BelayHeld, now?: number): string {
     return `${[...parts].map(([k, n]) => `${n} ${k}`).join(', ')}${w}`
   }
   const names = Object.keys(h.byProject).sort()
-  if (h.unsupported > 0) return heldLine(h, now)
+  if (h.unsupported > 0) return `${h.count - h.unsupported > 0 ? `${h.count - h.unsupported} wrong or duplicate · ` : ''}${h.unsupported} unsupported · oldest ${h.oldestAgeRuns} run${h.oldestAgeRuns === 1 ? '' : 's'}${names.length ? ` · ${names.join(', ')}` : ''}${w}`
   return `oldest ${h.oldestAgeRuns} run${h.oldestAgeRuns === 1 ? '' : 's'}${names.length ? ` · ${names.join(', ')}` : ''}${w}`
 }
 
@@ -135,7 +135,7 @@ export function normAwaiting(json: unknown): BelayAwaitingNote[] {
     const e = obj(raw)
     const id = e ? str(e.note_id) : null
     if (!e || !id || e.awaiting_operator !== true || out.length >= SETTLE_SHOWN) continue
-    out.push({ id: clean(id, 64), project: clean(str(e.project) ?? '', 64), title: clean(str(e.title) ?? '', 60), reason: clean(str(obj(e.undecided)?.reason) ?? '', 80) })
+    out.push({ id: clean(id, 64), project: clean(str(e.project) ?? '', 64), title: clean(str(e.title) ?? '', 60), reason: clean(str(obj(e.undecided)?.reason) ?? '', 240) })
   }
   return out
 }

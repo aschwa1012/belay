@@ -117,14 +117,24 @@ export function orchestratorItems(entries: BelayEntry[]): Item[] {
 }
 
 // A note waiting on the operator: its short id, title and why the review could not decide, then archive / release / reoffer.
-// The title and the reason drop whole, the reason first, when the row is narrow.
+// The title drops whole when the row is narrow.
 function SettleRow({ E, cols, n, act }: { E: Els; cols: number; n: BelayAwaitingNote; act: Act }) {
   const { Box, Button } = E
-  const segs: Seg[] = [{ t: '▲ ', c: ATTN }, { t: shortId(n.id), dim: true }, ...(n.title ? [{ t: ` "${n.title}"`, brk: true } as Seg] : []), ...(n.reason ? [{ t: ` · ${n.reason}`, dim: true, brk: true } as Seg] : [])]
+  const segs: Seg[] = [{ t: '▲ ', c: ATTN }, { t: shortId(n.id), dim: true }, ...(n.title ? [{ t: ` "${n.title}"`, brk: true } as Seg] : [])]
+  // The reason is what the operator reads before choosing, so it is never dropped: its own dim lines, wrapped. The buttons wrap onto more lines when three do not fit.
+  const rows: string[][] = [[]]
+  let w = 0
+  for (const a of SETTLE_ACTIONS) {
+    const lw = cells(`  ▸ ${a}`)
+    if (w > 0 && w + lw > cols) { rows.push([]); w = 0 }
+    rows[rows.length - 1]!.push(a)
+    w += lw
+  }
   return (
     <Box flexDirection="column" key={`aw-${n.id}`}>
       <Line E={E} w={cols} k={`awl-${n.id}`} segs={segs} />
-      <Box>{SETTLE_ACTIONS.map(a => <Button key={`${a}-${n.id}`} plain label={`  ▸ ${a}`} onPress={() => act.settle(a, n.id)} />)}</Box>
+      {n.reason ? wordWrap(n.reason, Math.max(8, cols - 2)).map((t, i) => <Line E={E} w={cols} k={`awr-${n.id}-${i}`} segs={[{ t: `  ${t}`, dim: true }]} />) : null}
+      {rows.map((r, i) => <Box key={`awb-${n.id}-${i}`}>{r.map(a => <Button key={`${a}-${n.id}`} plain label={`  ▸ ${a}`} onPress={() => act.settle(a, n.id)} />)}</Box>)}
     </Box>
   )
 }
@@ -143,8 +153,9 @@ function Held({ E, snap, ui, now, act, cols }: Ctx) {
   const busy = hd !== null && project !== null && runningReview(hd, project) !== null // a review of that project holds its claim: no second dispatch
   const asking = !busy && !!ui.confirm && project !== null && ui.confirm.project === project && now - ui.confirm.at <= CONFIRM_MS
   const awaiting = hd?.awaiting ?? 0
-  const summary: Seg[] = !hd ? [{ t: 'off', dim: true }] : [
-    { t: hd.count > 0 ? `${hd.count} held` : 'none held', dim: true },
+  const summary: Seg[] = [
+    ...(off ? [{ t: 'off', c: ATTN } as Seg, ...(hd ? [{ t: ' · ', dim: true } as Seg] : [])] : []),
+    ...(hd ? [{ t: hd.count > 0 ? `${hd.count} held` : 'none held', dim: true } as Seg] : []),
     ...(awaiting > 0 ? [{ t: ' · ', dim: true } as Seg, { t: `${awaiting} await${awaiting === 1 ? 's' : ''} you`, c: ATTN } as Seg] : []),
   ]
   return (
@@ -234,7 +245,7 @@ function MemoryNotice({ E, snap, cols }: { E: Els; snap: BelayPanelSnap; cols: n
 function MemoryOff({ E, n, cols }: { E: Els; n: BelayMemoryNotice; cols: number }) {
   return (
     <>
-      <Line E={E} w={cols} k="mot" segs={[{ t: n.title, dim: true }]} />
+      <Line E={E} w={cols} k="mot" segs={memoryTitleSegs(n)} />
       {wordWrap(n.short, cols).map((l, i) => <Line E={E} w={cols} k={`mos${i}`} segs={[{ t: l, dim: true }]} />)}
     </>
   )
@@ -286,7 +297,7 @@ export function Pane(c: Ctx) {
       <Orchestrator {...c} />
       <Box flexDirection="column" marginTop={1}>
         {snap.errors.map((e, i) => <Line E={E} w={cols} k={`pe${i}`} segs={[{ t: e, dim: true }]} />)}
-        <Line E={E} w={cols} k="pf" segs={[{ t: snap.held && snap.held.count > 0 ? 'read-only except the review button · /orch toggles' : 'read-only · /orch toggles', dim: true }]} />
+        <Line E={E} w={cols} k="pf" segs={[{ t: snap.held && snap.held.count > 0 ? 'read-only except the review and settle buttons · /orch toggles' : 'read-only · /orch toggles', dim: true }]} />
       </Box>
     </Box>
   )

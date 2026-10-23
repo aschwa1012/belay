@@ -80,6 +80,9 @@ function taskSegs(a: BelayAgent, snap: BelayPanelSnap, room: number): Seg[] {
 // An estimate made from the transcript at API rates is marked with ≈; any other basis, or none, is drawn as a plain figure.
 const ESTIMATE_BASIS = 'transcript, API rates'
 
+// An estimate shows as ≈$12.34; from $100 up the cents go (≈$123), so it still fits the cost column.
+const costText = (a: BelayAgent): string => (a.costUsd !== null && a.costBasis === ESTIMATE_BASIS ? (a.costUsd >= 100 ? `≈$${Math.round(a.costUsd)}` : `≈${money(a.costUsd)}`) : money(a.costUsd))
+
 const LABEL = 8
 
 // A detail row is a label and parts. The parts join with `sep` and wrap under the label instead of being cut.
@@ -146,7 +149,7 @@ function AgentRow(c: Ctx & { a: BelayAgent; c: Cols; last: boolean }) {
         {w.task > 0 && cell('t', w.task, taskSegs(a, snap, w.task))}
         {w.ctx > 0 && cell('x', w.ctx, ctxSegs(a, snap.settings))}
         {w.cache > 0 && cell('k', w.cache, cacheSegs(a, snap.settings, snap.fetchedAt, now))}
-        {cell('$', w.cost, [{ t: a.costUsd === null && io ? 'n/a' : (a.costUsd !== null && a.costBasis === ESTIMATE_BASIS ? '≈' : '') + money(a.costUsd), dim: a.costUsd === null }], true)}
+        {cell('$', w.cost, [{ t: a.costUsd === null && io ? 'n/a' : costText(a), dim: a.costUsd === null }], true)}
       </Box>
       {ui.selected === a.id && <Detail E={E} a={a} snap={snap} now={now} cols={c.cols} last={c.last} />}
     </Box>

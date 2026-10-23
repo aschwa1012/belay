@@ -261,7 +261,7 @@ describe('the pane', () => {
     const wd = await boot($, on)
     await openPane($, wd)
     const { ui, text } = await pane($)
-    expect(text).not.toContain('legend')
+    expect(text).not.toContain('LEGEND')
     await ui.press({ key: 'legend' })
     expect(words(await ui.drawn())).toContain('LEGEND  ? closes')
     await ui.press({ key: 'legend' })
