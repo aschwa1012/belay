@@ -11,8 +11,9 @@
 // - The environment drops every inherited GIT_* variable (GIT_DIR, GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT inject
 //   config) and sets GIT_CONFIG_NOSYSTEM, GIT_ATTR_NOSYSTEM, GIT_OPTIONAL_LOCKS=0 (status refreshes no index: reading
 //   never writes, invariant 6), GIT_TERMINAL_PROMPT=0, GIT_NO_LAZY_FETCH=1 and a `cat` pager.
-// - `--no-pager` and belay's own `-c` settings: no fsmonitor program, no signature check (gpg), no pager, and no clean,
-//   smudge or process filter from the repository's own config (filterOverrides).
+// - `--no-pager` and belay's own `-c` settings: no fsmonitor program, no signature check (gpg), no pager, no index
+//   refresh by diff, no hooks, and no clean, smudge or process filter from the repository's own config (filterOverrides);
+//   submodules are not read (`--ignore-submodules=all`).
 // - `--no-ext-diff --no-textconv --no-color` on the ops that print diffs, then `--end-of-options` before the rev and
 //   `--` before the path, beside the validation below.
 // Output is bounded (MAX_OUT bytes, the rest counted and marked), and the call is bounded in time; a timeout ends the
@@ -21,15 +22,20 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const PROC = require('../core/process.cjs'); // killTree: a child handle and its verified descendants (ADR 0039)
 
 const OPS = ['status', 'log', 'diff', 'show'];
 const MAX_OUT = 16384;
 const STDERR_TAIL = 2048;
 const TIMEOUT_MS = 10000;
+const KILL_WAIT_MS = 5000; // a timed-out call waits this long at most for git's tree to be killed
 const LOG_N = 20;
 const LOG_MAX = 200;
 // belay's own options, before the subcommand; gitRead adds the filter overrides after them.
-const PRE = ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'log.showSignature=false', '-c', 'core.pager=cat'];
+// diff.autoRefreshIndex=false: GIT_OPTIONAL_LOCKS stops status's index refresh but not diff's, which writes the index and
+// runs a post-index-change hook; core.hooksPath names a directory that does not exist, so no hook runs at all.
+const NO_HOOKS = path.join(__dirname, 'no-hooks').split(path.sep).join('/');
+const PRE = ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'log.showSignature=false', '-c', 'core.pager=cat', '-c', 'diff.autoRefreshIndex=false', '-c', `core.hooksPath=${NO_HOOKS}`];
 const PRE_LEN = PRE.length;
 // One side of a rev: a ref name, a sha, HEAD~2, main@{1}, v1^{commit}. It cannot start with '-' (an option), and holds
 // no ':' (a blob path; Read reads files), no '..' (a range is split first), no space or control character.
@@ -66,11 +72,12 @@ function gitArgs({ op, rev = null, path: p = null, stat = false, n = null }) {
   const r = checkRev(rev, op);
   const pathspec = checkPath(p);
   if (stat !== undefined && stat !== null && typeof stat !== 'boolean') throw bad('git_read: stat must be a boolean', { field: 'stat' });
-  const quiet = ['--no-color', '--no-ext-diff', '--no-textconv'];
+  // A submodule is a repository of its own: its config could name filters belay has not switched off. None is read.
+  const quiet = ['--no-color', '--no-ext-diff', '--no-textconv', '--ignore-submodules=all'];
   let args;
   if (op === 'status') {
     if (r) throw bad('git_read: status takes no rev', { field: 'rev' });
-    args = ['status', '--porcelain=v1', '--branch', '--untracked-files=normal'];
+    args = ['status', '--porcelain=v1', '--branch', '--untracked-files=normal', '--ignore-submodules=all'];
   } else if (op === 'log') {
     args = ['log', ...quiet, '--no-show-signature', '--format=%H %aI %an%n    %s', '-n', String(checkN(n)), ...(stat ? ['--stat'] : [])];
   } else if (op === 'diff') {
@@ -111,6 +118,8 @@ function findGit(env = process.env) {
 
 function checkWorktree(dir) {
   if (typeof dir !== 'string' || !path.isAbsolute(dir)) throw bad('git_read: worktree must be an absolute path', { field: 'worktree', worktree: dir });
+  // A UNC or device path (//host/share, \\?\) would open a network connection or reach a device before git runs.
+  if (/^[\\/]{2}/.test(dir)) throw bad('git_read: worktree must be a local path, not a UNC or device path', { field: 'worktree', worktree: dir });
   let st = null;
   try { st = fs.statSync(dir); } catch { /* absent */ }
   if (!st || !st.isDirectory()) throw Object.assign(new Error(`git_read: the worktree ${dir} does not exist or is not a directory`), { code: 'E_NOT_FOUND', detail: { worktree: dir } });
@@ -135,52 +144,82 @@ async function resolveWorktree(args, { runWorktree = null, taskWorktree = null }
 }
 
 // One git process, bounded in output and time. Resolves { code, out, total, kept, errTail, ms } or rejects E_GIT for a
-// spawn failure or a timeout (the child is ended by its own handle).
-function run(git, argv, { cwd, env, timeoutMs, maxOut }) {
+// spawn failure or a timeout. On a timeout the pipes are destroyed (a filter or a submodule's git holding them open
+// cannot keep the call waiting), git and its verified descendants are killed by the child's own handle (ADR 0039), and
+// the call rejects once that kill answers, or after KILL_WAIT_MS, naming what was killed. `system`: read with the system config (filterOverrides' read of the system filters only).
+function run(git, argv, { cwd, env, timeoutMs, maxOut, system = false }) {
   const t0 = Date.now();
   return new Promise((resolve, reject) => {
-    const kept = []; let keptBytes = 0; let total = 0; let errTail = ''; let timedOut = false;
+    const kept = []; let keptBytes = 0; let total = 0; let errTail = ''; let settled = false;
     const spawnFail = (e) => Object.assign(new Error(`git_read: git could not be started (${e.code || e.message})`), { code: 'E_GIT', detail: { reason: 'spawn', argv } });
+    const childEnv = gitEnv(env);
+    if (system) delete childEnv.GIT_CONFIG_NOSYSTEM;
     let child;
     try {
-      child = spawn(git, argv, { cwd, env: gitEnv(env), windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+      child = spawn(git, argv, { cwd, env: childEnv, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (e) { reject(spawnFail(e)); return; }
-    const timer = setTimeout(() => { timedOut = true; child.kill(); }, timeoutMs);
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.stdout.destroy(); child.stderr.destroy();
+      // The kill is waited for, at most KILL_WAIT_MS, so the caller's answer comes after git and its descendants are gone.
+      const kill = PROC.killTree(child).then((k) => ({ ok: !!k.ok, killed: k.killed || [], skipped: k.skipped || [] }), (e) => ({ ok: false, error: e.code || e.message }));
+      const bound = new Promise((r) => { const t = setTimeout(() => r({ ok: false, error: `kill not finished in ${KILL_WAIT_MS} ms` }), KILL_WAIT_MS); if (t.unref) t.unref(); });
+      Promise.race([kill, bound]).then((k) => reject(Object.assign(new Error(`git_read: git timed out after ${timeoutMs} ms and was stopped`), { code: 'E_GIT', detail: { reason: 'timeout', argv, worktree: cwd, ms: Date.now() - t0, kill: k } })));
+    }, timeoutMs);
     child.stdout.on('data', (b) => {
       total += b.length;
       if (keptBytes < maxOut) { const part = b.subarray(0, maxOut - keptBytes); kept.push(part); keptBytes += part.length; }
     });
     child.stderr.on('data', (b) => { errTail = (errTail + b.toString('utf8')).slice(-STDERR_TAIL); });
-    child.on('error', (e) => { clearTimeout(timer); reject(spawnFail(e)); });
+    child.on('error', (e) => { clearTimeout(timer); if (!settled) { settled = true; reject(spawnFail(e)); } });
     child.on('close', (code, signal) => {
       clearTimeout(timer);
-      const ms = Date.now() - t0;
-      if (timedOut) return reject(Object.assign(new Error(`git_read: git timed out after ${timeoutMs} ms and was stopped`), { code: 'E_GIT', detail: { reason: 'timeout', argv, worktree: cwd, ms } }));
-      resolve({ code: code === null ? signal : code, out: Buffer.concat(kept), total, kept: keptBytes, errTail, ms });
+      if (settled) return;
+      settled = true;
+      resolve({ code: code === null ? signal : code, out: Buffer.concat(kept), total, kept: keptBytes, errTail, ms: Date.now() - t0 });
     });
   });
 }
 
+const checkFailed = (what, r) => Object.assign(new Error(`git_read: the filter check (${what}) exited ${r.code}: ${r.errTail.trim().split('\n').pop() || 'no stderr'}`), { code: 'E_GIT', detail: { reason: 'filter_check', exit_code: r.code, stderr: r.errTail } });
+const tooMany = () => Object.assign(new Error('git_read: the configuration names too many filter keys to check'), { code: 'E_GIT', detail: { reason: 'filter_check' } });
+const badKey = (k) => k.includes('=') || /[\x00-\x1f]/.test(k);
+
 // A clean or process filter named in the repository's own config runs on a plain `git status` of a stat-dirty file
-// (measured on Windows). The operator's global filters are kept (git-lfs
-// installs one there); every filter driver from another scope (local, worktree, an include of them) is switched off
-// with belay's own `-c`. A driver name git's `-c` cannot carry (one holding '=') refuses the read.
+// (measured on Windows). Every filter driver named outside the global and
+// system configs (local, worktree, an include of them) is switched off with belay's own `-c`; a driver name git's `-c`
+// cannot carry (one holding '=') refuses the read. The system config is not read (GIT_CONFIG_NOSYSTEM), so its filter
+// keys, which only an administrator writes (Git for Windows installs git-lfs there), are read on their own and passed
+// back as `-c`: without them a stat-dirty LFS file reads as changed. Submodules are not read at all
+// (`--ignore-submodules=all`), so a submodule's own config is never consulted.
 async function filterOverrides(git, cwd, env, timeoutMs) {
+  const out = [];
+  const sys = await run(git, ['--no-pager', 'config', '--system', '--null', '--get-regexp', '^filter\\.'], { cwd, env, timeoutMs, maxOut: 65536, system: true });
+  if (!(sys.code === 1 && sys.total === 0)) {
+    if (sys.code !== 0) throw checkFailed('git config --system', sys);
+    if (sys.total > sys.kept) throw tooMany();
+    for (const entry of sys.out.toString('utf8').split('\0').filter(Boolean)) {
+      const nl = entry.indexOf('\n');
+      const key = nl < 0 ? entry : entry.slice(0, nl);
+      if (badKey(key)) continue; // cannot be passed back; the filter stays absent, as NOSYSTEM leaves it
+      out.push('-c', nl < 0 ? key : `${key}=${entry.slice(nl + 1)}`);
+    }
+  }
   const r = await run(git, ['--no-pager', 'config', '--null', '--show-scope', '--name-only', '--get-regexp', '^filter\\.'], { cwd, env, timeoutMs, maxOut: 65536 });
-  if (r.code === 1 && r.total === 0) return []; // no filter key at all
-  if (r.code !== 0) throw Object.assign(new Error(`git_read: the filter check (git config) exited ${r.code}: ${r.errTail.trim().split('\n').pop() || 'no stderr'}`), { code: 'E_GIT', detail: { reason: 'filter_check', exit_code: r.code, stderr: r.errTail } });
-  if (r.total > r.kept) throw Object.assign(new Error('git_read: the repository names too many filter keys to check'), { code: 'E_GIT', detail: { reason: 'filter_check' } });
+  if (r.code === 1 && r.total === 0) return out; // no filter key outside the system config
+  if (r.code !== 0) throw checkFailed('git config', r);
+  if (r.total > r.kept) throw tooMany();
   const parts = r.out.toString('utf8').split('\0');
   const drivers = new Set();
   for (let i = 0; i + 1 < parts.length; i += 2) {
     const [scope, key] = [parts[i], parts[i + 1]];
-    if (scope === 'global') continue;
+    if (scope === 'global' || scope === 'system') continue;
     const m = /^filter\.(.+)\.[^.]+$/i.exec(key);
     if (m) drivers.add(m[1]);
   }
-  const out = [];
   for (const d of drivers) {
-    if (d.includes('=') || /[\x00-\x1f]/.test(d)) throw Object.assign(new Error(`git_read: the repository's filter driver ${JSON.stringify(d)} cannot be switched off, so the read is refused`), { code: 'E_GIT', detail: { reason: 'filter_name', driver: d } });
+    if (badKey(d)) throw Object.assign(new Error(`git_read: the repository's filter driver ${JSON.stringify(d)} cannot be switched off, so the read is refused`), { code: 'E_GIT', detail: { reason: 'filter_name', driver: d } });
     for (const k of ['clean', 'smudge', 'process']) out.push('-c', `filter.${d}.${k}=`);
     out.push('-c', `filter.${d}.required=false`);
   }

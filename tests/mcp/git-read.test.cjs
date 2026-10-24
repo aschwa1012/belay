@@ -10,6 +10,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const G = require('../../src/mcp/git-read.cjs');
+const PROC = require('../../src/core/process.cjs');
 const { launch, sandboxDir } = require('./rpc.cjs');
 
 const fwd = (p) => String(p).split('\\').join('/');
@@ -31,14 +32,18 @@ function repo(tag) {
 const rm = (d) => fs.rmSync(d, { recursive: true, force: true });
 
 test('gitArgs: belay\'s argv per op, the rev after --end-of-options and the path after --', () => {
-  const pre = ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'log.showSignature=false', '-c', 'core.pager=cat'];
-  assert.deepStrictEqual(G.gitArgs({ op: 'status' }), [...pre, 'status', '--porcelain=v1', '--branch', '--untracked-files=normal']);
+  const st = G.gitArgs({ op: 'status' });
+  const pre = st.slice(0, st.indexOf('status'));
+  for (const c of ['core.fsmonitor=false', 'log.showSignature=false', 'core.pager=cat', 'diff.autoRefreshIndex=false']) assert.strictEqual(pre[pre.indexOf(c) - 1], '-c', c);
+  const hooks = pre.find((x) => x.startsWith('core.hooksPath='));
+  assert.ok(hooks && !fs.existsSync(hooks.slice('core.hooksPath='.length)), 'hooks point at a directory that does not exist');
+  assert.deepStrictEqual(st.slice(st.indexOf('status')), ['status', '--porcelain=v1', '--branch', '--untracked-files=normal', '--ignore-submodules=all']);
   const log = G.gitArgs({ op: 'log', rev: 'main..HEAD', path: 'src', n: 5 });
   assert.deepStrictEqual(log.slice(log.indexOf('--end-of-options')), ['--end-of-options', 'main..HEAD', '--', 'src']);
   assert.strictEqual(log[log.indexOf('-n') + 1], '5');
   for (const op of ['log', 'diff', 'show']) {
     const a = G.gitArgs({ op, stat: true });
-    for (const f of ['--no-color', '--no-ext-diff', '--no-textconv', '--stat']) assert.ok(a.indexOf(f) >= 0 && a.indexOf(f) < a.indexOf('--end-of-options'), `${op} carries ${f} before the rev`);
+    for (const f of ['--no-color', '--no-ext-diff', '--no-textconv', '--ignore-submodules=all', '--stat']) assert.ok(a.indexOf(f) >= 0 && a.indexOf(f) < a.indexOf('--end-of-options'), `${op} carries ${f} before the rev`);
   }
   assert.deepStrictEqual(G.gitArgs({ op: 'show' }).slice(-2), ['--end-of-options', 'HEAD'], 'show defaults to HEAD');
   assert.strictEqual(G.gitArgs({ op: 'log' })[G.gitArgs({ op: 'log' }).indexOf('-n') + 1], '20', 'log defaults to 20');
@@ -107,20 +112,30 @@ test('the four ops read a real repository and return argv, exit code and output'
   } finally { rm(dir); }
 });
 
-test('reading never writes: status on a stat-dirty file leaves the index file untouched', async () => {
-  const { dir } = repo('nowrite');
+test('reading never writes: status and diff on a stat-dirty file leave the index untouched and run no hook', async () => {
+  const { dir, git } = repo('nowrite');
+  const hookDir = sandboxDir('git-hooks');
   try {
+    // A post-index-change hook, in .git/hooks and in a core.hooksPath the repository names: a diff that refreshed the index would run it.
+    const hook = `#!/bin/sh\necho ran >> "${fwd(path.join(hookDir, 'MARK'))}"\n`;
+    for (const d of [path.join(dir, '.git', 'hooks'), path.join(hookDir, 'h')]) { fs.mkdirSync(d, { recursive: true }); fs.writeFileSync(path.join(d, 'post-index-change'), hook, { mode: 0o755 }); }
     const index = path.join(dir, '.git', 'index');
     const f = path.join(dir, 'a.txt');
     const later = new Date(Date.now() + 5000);
     fs.utimesSync(f, later, later); // same content, new mtime: a plain `git status` would refresh and rewrite the index
     const before = { bytes: fs.readFileSync(index), mtime: fs.statSync(index).mtimeMs };
-    const st = await G.gitRead({ op: 'status', worktree: dir });
-    assert.doesNotMatch(st.out, /a\.txt/, 'content unchanged, so nothing is reported');
-    assert.ok(fs.readFileSync(index).equals(before.bytes), 'the index bytes are unchanged');
-    assert.strictEqual(fs.statSync(index).mtimeMs, before.mtime, 'and its mtime');
-    assert.ok(!fs.existsSync(path.join(dir, '.git', 'index.lock')));
-  } finally { rm(dir); }
+    for (const hooksPath of [null, fwd(path.join(hookDir, 'h'))]) {
+      if (hooksPath) git('config', 'core.hooksPath', hooksPath);
+      const st = await G.gitRead({ op: 'status', worktree: dir });
+      assert.doesNotMatch(st.out, /a\.txt/, 'content unchanged, so nothing is reported');
+      const df = await G.gitRead({ op: 'diff', worktree: dir });
+      assert.strictEqual(df.out, '', 'no change to show');
+      assert.ok(fs.readFileSync(index).equals(before.bytes), 'the index bytes are unchanged');
+      assert.strictEqual(fs.statSync(index).mtimeMs, before.mtime, 'and its mtime');
+      assert.ok(!fs.existsSync(path.join(dir, '.git', 'index.lock')));
+      assert.ok(!fs.existsSync(path.join(hookDir, 'MARK')), `no hook ran (hooksPath ${hooksPath})`);
+    }
+  } finally { rm(dir); rm(hookDir); }
 });
 
 test('a repository\'s config cannot make a read run a program: external diff, textconv, fsmonitor and pager', async () => {
@@ -171,6 +186,63 @@ test('a clean filter from the repository\'s config does not run; the operator\'s
   } finally { rm(dir); rm(marks); rm(home); }
 });
 
+test('a submodule is not read, so a clean filter in its own config does not run', async () => {
+  const sub = repo('sub');
+  const { dir, git } = repo('super');
+  const marks = sandboxDir('git-smarks');
+  try {
+    git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', fwd(sub.dir), 's');
+    git('commit', '-q', '-m', 'add s');
+    const script = fwd(path.join(marks, 'mark.cjs'));
+    fs.writeFileSync(script, "require('fs').appendFileSync(process.argv[2], 'ran'); process.stdin.pipe(process.stdout);\n");
+    const modCfg = path.join(dir, '.git', 'modules', 's', 'config');
+    fs.appendFileSync(modCfg, `[filter "evil"]\n\tclean = \\"${fwd(process.execPath)}\\" \\"${script}\\" \\"${fwd(path.join(marks, 'sub'))}\\"\n`);
+    fs.writeFileSync(path.join(dir, 's', '.gitattributes'), '* filter=evil\n');
+    const later = new Date(Date.now() + 5000);
+    fs.utimesSync(path.join(dir, 's', 'a.txt'), later, later);
+    for (const op of ['status', 'diff']) await G.gitRead({ op, worktree: dir });
+    assert.ok(!fs.existsSync(path.join(marks, 'sub')), 'the submodule\'s filter did not run');
+    execFileSync('git', ['status', '--porcelain'], { cwd: dir, env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' } });
+    assert.ok(fs.existsSync(path.join(marks, 'sub')), 'control: a plain git status runs it');
+  } finally { rm(dir); rm(sub.dir); rm(marks); }
+});
+
+test('a timeout ends the call within its bound, even when a filter holds git\'s pipes, and kills the filter', async () => {
+  const { dir, git } = repo('slow');
+  const marks = sandboxDir('git-slow');
+  const home = sandboxDir('git-slowhome');
+  try {
+    const script = fwd(path.join(marks, 'slow.cjs'));
+    fs.writeFileSync(script, "require('fs').writeFileSync(process.argv[2], String(process.pid)); setTimeout(() => {}, 120000);\n");
+    fs.writeFileSync(path.join(home, '.gitconfig'), `[filter "slow"]\n\tclean = \\"${fwd(process.execPath)}\\" \\"${script}\\" \\"${fwd(path.join(marks, 'pid'))}\\"\n`);
+    fs.writeFileSync(path.join(dir, '.gitattributes'), '*.txt filter=slow\n');
+    git('add', '.gitattributes');
+    git('commit', '-q', '-m', 'attrs');
+    const later = new Date(Date.now() + 5000);
+    fs.utimesSync(path.join(dir, 'a.txt'), later, later);
+    const env = { ...process.env, HOME: home, USERPROFILE: home };
+    const t0 = Date.now();
+    await assert.rejects(G.gitRead({ op: 'status', worktree: dir }, { env, timeoutMs: 3000 }), (e) => e.code === 'E_GIT' && e.detail.reason === 'timeout' && e.detail.kill.ok === true && e.detail.kill.killed.length >= 1);
+    const took = Date.now() - t0;
+    assert.ok(took < 3000 + 8000, `the call ended ${took} ms after it began, not when the filter let go`);
+    const pid = Number(fs.readFileSync(path.join(marks, 'pid'), 'utf8'));
+    assert.ok(Number.isInteger(pid) && pid > 0, 'the filter started');
+    assert.notStrictEqual(await PROC.waitPidGone(pid, { timeoutMs: 15000 }), null, 'and was killed with git');
+  } finally { for (const d of [dir, marks, home]) fs.rmSync(d, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); } // a killed process's cwd handle can outlive its pid briefly
+});
+
+test('the system config\'s filters (git-lfs) are passed back as -c, so NOSYSTEM does not drop them', async () => {
+  const { dir } = repo('sys');
+  try {
+    let listed = '';
+    try { listed = execFileSync('git', ['config', '--system', '--null', '--get-regexp', '^filter\\.'], { cwd: dir, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '' } }); } catch { /* none */ }
+    const want = listed.split('\0').filter(Boolean).map((e) => (e.includes('\n') ? e.replace('\n', '=') : e));
+    const st = await G.gitRead({ op: 'status', worktree: dir });
+    for (const w of want) assert.ok(st.argv.includes(w), `${w} is passed back`);
+    assert.strictEqual(st.argv.indexOf('status') > 0, true);
+  } finally { rm(dir); }
+});
+
 test('output is bounded and the truncation is marked with the real size', async () => {
   const { dir } = repo('big');
   try {
@@ -195,6 +267,7 @@ test('which directory: worktree, task_id through the lookup, the run default, an
     await code(G.gitRead({ op: 'status' }), 'E_ARGS');
     await code(G.gitRead({ op: 'status', worktree: dir, task_id: 't1' }), 'E_ARGS');
     await code(G.gitRead({ op: 'status', worktree: 'relative/dir' }), 'E_ARGS');
+    for (const unc of ['//host/share', '\\\\host\\share', '\\\\?\\C:\\x']) await code(G.gitRead({ op: 'status', worktree: unc }), 'E_ARGS');
     await code(G.gitRead({ op: 'status', worktree: fwd(path.join(dir, 'missing')) }), 'E_NOT_FOUND');
     const plain = sandboxDir('git-norepo');
     try {
