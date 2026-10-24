@@ -27,6 +27,8 @@ function summaryOf(row) {
 const unevaluated = (t, runId, workerId) => t.run_id === runId && t.state === 'released' && t.handoff && t.handoff.by === workerId
   && !(t.results && Number(t.results.evaluated_at) >= Number(t.handoff.at));
 
+// Why a hand-back's evaluation may not start: a lifecycle operation, a park or a stop holds the worker, or the run manager closes.
+const refused = (w, ctx) => !!(w.op || w.parkRequested || w.stopRequested || (ctx.shutdownFlags && (ctx.shutdownFlags.closing || ctx.shutdownFlags.closed)));
 const usable = (ctx) => !!(ctx.core && ctx.core.task && typeof ctx.core.task.evaluate === 'function' && typeof ctx.core.task.list === 'function');
 
 // Called in onTurnEnd before the turn is answered: the tasks this worker released with a hand-back that no evaluation has read,
@@ -39,6 +41,8 @@ async function notePending(w, ctx) {
     w.lastError = { where: 'release-eval.list', code: e && e.code, message: e && e.message };
     return null;
   }
+  // Announced only when it will run: not while an operation, a park or a stop holds the worker (startRelease refuses then too).
+  if (refused(w, ctx)) return null;
   const ids = tasks.filter((t) => unevaluated(t, ctx.runId, w.id)).map((t) => t.id);
   w.releaseIds = ids.length ? { turn: w.turns, ids } : null;
   return w.releaseIds;
@@ -46,9 +50,10 @@ async function notePending(w, ctx) {
 
 async function run(w, ctx, ev) {
   const core = ctx.core;
-  const mine = ev.task_ids.map((id) => ({ id }));
   const out = [];
-  for (const t of mine) {
+  // One evaluation at a time per worker, in order: a hand-back released while this runs joins ev.task_ids (startRelease).
+  for (ev.next = 0; ev.next < ev.task_ids.length; ev.next += 1) {
+    const t = { id: ev.task_ids[ev.next] };
     if (ev.cancelled) { out.push({ task_id: t.id, cancelled: true, by: ev.cancelled }); continue; }
     try {
       const row = await core.task.evaluate({ task_id: t.id, worktree: w.worktree, trigger: 'release', cancel_key: ev.key });
@@ -68,9 +73,14 @@ async function run(w, ctx, ev) {
 function startRelease(w, ctx) {
   const pending = w.releaseIds && w.releaseIds.turn === w.turns ? w.releaseIds.ids : null;
   w.releaseIds = null; // from here on w.evaluation (or nothing) is what is reported
-  if (!pending || w.evaluation || w.op || w.parkRequested || w.stopRequested || (ctx.shutdownFlags && (ctx.shutdownFlags.closing || ctx.shutdownFlags.closed))) return null;
-  if (!usable(ctx)) return null;
-  const ev = { key: `release:${w.id}:${crypto.randomUUID()}`, ctx, turn: w.turns, task_ids: pending, cancelled: null, promise: null };
+  if (!pending || refused(w, ctx) || !usable(ctx)) return null;
+  if (w.evaluation) { // a later hand-back waits behind the one being evaluated; a cancel cancels the whole chain
+    const ev = w.evaluation;
+    for (const id of pending) if (!ev.task_ids.includes(id)) ev.task_ids.push(id);
+    ev.turn = w.turns;
+    return ev;
+  }
+  const ev = { key: `release:${w.id}:${crypto.randomUUID()}`, ctx, turn: w.turns, task_ids: pending.slice(), next: 0, cancelled: null, promise: null };
   w.evaluation = ev; w.lastEvaluation = ev;
   ev.promise = run(w, ctx, ev).then((out) => { if (out && !ev.cancelled) { w.turnEvaluated = out; w.turnEvaluatedTurn = ev.turn; } return out; }, (e) => {
     w.lastError = { where: 'release-eval', code: e && e.code, message: e && e.message };
@@ -87,12 +97,12 @@ function cancelEvaluation(w, by) {
   ev.cancelled = by || 'a lifecycle operation';
   const t = ev.ctx.core && ev.ctx.core.task;
   if (t && typeof t.evaluateCancel === 'function') Promise.resolve().then(() => t.evaluateCancel({ cancel_key: ev.key, by: ev.cancelled })).catch(() => {});
-  return { cancelled: ev.task_ids, by: ev.cancelled };
+  return { cancelled: ev.task_ids.slice(ev.next || 0), by: ev.cancelled }; // the hand-backs not yet evaluated
 }
 
 // worker_wait's view of the last turn: what its release evaluation found, or the tasks it is still evaluating.
 function evalOf(w) {
-  if (w.evaluation && w.evaluation.turn === w.turns) return { evaluating: w.evaluation.task_ids || [] };
+  if (w.evaluation && w.evaluation.turn === w.turns) return { evaluating: w.evaluation.task_ids.slice(w.evaluation.next || 0) };
   if (w.releaseIds && w.releaseIds.turn === w.turns) return { evaluating: w.releaseIds.ids }; // about to start
   return w.turnEvaluated && w.turnEvaluatedTurn === w.turns ? { evaluated: w.turnEvaluated } : {};
 }

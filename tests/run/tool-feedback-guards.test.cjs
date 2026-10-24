@@ -146,3 +146,32 @@ test('an early cancel starts its evaluation cancelled, and an early cancel whose
   EC.pruneEarly(Date.now() + EC.EARLY_TTL_MS + 1);
   assert.strictEqual(EC.EARLY.has('k-stale'), false, 'expired');
 });
+
+test('a hand-back that will not be evaluated is not announced: notePending says nothing while an operation, a park or a stop holds the worker', async () => {
+  const tasks = [{ id: 't1', run_id: 'r', state: 'released', handoff: { by: 'w1', at: 1 }, results: null }];
+  const ctx = { runId: 'r', shutdownFlags: {}, core: { task: { list: async () => ({ tasks }), evaluate: async () => ({}) } } };
+  for (const over of [{ op: { name: 'stop' } }, { parkRequested: { at: 1 } }, { stopRequested: true }]) {
+    const w = { id: 'w1', turns: 2, ...over };
+    assert.strictEqual(await RE.notePending(w, ctx), null, JSON.stringify(over));
+    assert.strictEqual(w.releaseIds, null);
+  }
+  const w = { id: 'w1', turns: 2 };
+  assert.deepStrictEqual(await RE.notePending(w, ctx), { turn: 2, ids: ['t1'] });
+  assert.deepStrictEqual(RE.evalOf(w), { evaluating: ['t1'] }, 'announced, about to start');
+});
+
+test('startRelease puts a later hand-back behind the evaluation that runs, and evaluates both in order', async () => {
+  let releaseA;
+  const aDone = new Promise((r) => { releaseA = r; });
+  const order = [];
+  const ctx = { runId: 'r', shutdownFlags: {}, core: { task: { list: async () => ({ tasks: [] }), evaluate: async (a) => { order.push(a.task_id); if (a.task_id === 'tA') await aDone; return { id: a.task_id, state: 'done', results: { passed: true, executable: true, checks: [] } }; } } } };
+  const w = { id: 'w1', turns: 1, releaseIds: { turn: 1, ids: ['tA'] }, evaluation: null, worktree: '/w' };
+  const ev = RE.startRelease(w, ctx);
+  w.turns = 2; w.releaseIds = { turn: 2, ids: ['tB'] };
+  assert.strictEqual(RE.startRelease(w, ctx), ev, 'joined the running chain');
+  assert.deepStrictEqual(RE.evalOf(w), { evaluating: ['tA', 'tB'] });
+  releaseA();
+  const out = await ev.promise;
+  assert.deepStrictEqual([order, out.map((e) => e.task_id), w.turnEvaluatedTurn], [['tA', 'tB'], ['tA', 'tB'], 2]);
+  assert.deepStrictEqual(RE.evalOf(w), { evaluated: out });
+});

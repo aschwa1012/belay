@@ -148,3 +148,39 @@ test('stop_idle_on_done: the spec lever is a boolean, absent unless on, and reac
   assert.ok(args(true).includes('--stop-idle-on-done'));
   assert.ok(!args(false).includes('--stop-idle-on-done'));
 });
+
+test('F: a hand-back released while an earlier one is still being evaluated waits behind it and is evaluated; a stop cancels the whole chain', { timeout: 120000 }, async () => {
+  for (const stopMidway of [false, true]) {
+    const r = await releasedTurn((dir) => {
+      const gate = path.join(dir, 'a-gate').split(path.sep).join('/');
+      const pidFile = path.join(dir, 'a.pid').split(path.sep).join('/');
+      return { commands: [{ argv: [process.execPath, '-e', `const fs=require('fs');fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));const t=setInterval(()=>{if(fs.existsSync(${JSON.stringify(gate)})){clearInterval(t);process.exit(0);}},20);`], timeout_ms: 60000 }] };
+    }, { branch: 'a' }, {
+      during: async (m, w, dir) => {
+        await until(() => fs.existsSync(path.join(dir, 'a.pid'))); // A's evaluation is running, held by its gate
+        const { openCore: oc } = require('../../src/core/index.cjs');
+        const orch = await oc({ dataDir: dir, caller: callerFor('orchestrator', { run_id: RUN }), embed: false });
+        const wk = await oc({ dataDir: dir, caller: callerFor('worker', { worker_id: 'w1', run_id: RUN }), embed: false });
+        try {
+          const b = await orch.task.create({ spec: 'b', acceptance: PASS, files_owned: [] });
+          const asg = await orch.task.assign({ task_id: b.id, worker_id: 'w1' });
+          await wk.lease.release({ lease_id: asg.new_lease.id, reason: 'done', result: { branch: 'b' } });
+          await m.message({ worker_id: 'w1', text: 'next' });
+          const turn2 = await within(m.wait({ worker_ids: ['w1'], timeout_ms: 30000 }), 40000, 'turn 2');
+          const stop = stopMidway ? await within(m.stop({ worker_id: 'w1', mode: 'graceful' }), 30000, 'the stop') : null;
+          fs.writeFileSync(path.join(dir, 'a-gate'), 'go');
+          return { b: b.id, turn2, stop };
+        } finally { await wk.close(); await orch.close(); }
+      },
+    });
+    const { b, turn2, stop } = r.extra;
+    assert.ok(turn2.evaluating.includes(b), `turn 2 names B as evaluating: ${JSON.stringify(turn2.evaluating)}`);
+    if (!stopMidway) {
+      assert.deepStrictEqual(r.out.map((e) => [e.task_id, e.state]), [[r.row.id, 'done'], [b, 'done']], 'A then B, one at a time');
+      assert.deepStrictEqual(r.waited.evaluated.map((e) => e.task_id), [r.row.id, b]);
+    } else {
+      assert.deepStrictEqual(stop.cancelled_evaluation.task_ids, [r.row.id, b], 'the stop cancels A and the B waiting behind it');
+      assert.ok(r.out.every((e) => e.cancelled), JSON.stringify(r.out));
+    }
+  }
+});
