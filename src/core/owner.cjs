@@ -73,8 +73,11 @@ class Owner {
   // moments a client that read the lock would otherwise dial a pipe that is not there — on Windows a
   // connect to a missing pipe fails fast, but nothing in the lock said why, and the caller could not
   // tell a starting owner from a wedged one. Now it can, and it falls back to a copy or waits instead.
-  async start() {
-    const lock = acquireLock(this.dataDir, { pipe: this.pipe, listening: false, mode: this.mode });
+  // `staleToken`: a lock the caller showed is held by a reused pid (client.cjs), taken over although its pid is alive. The lock
+  // records this process's creation time when the caller knows it (opts.created), so a later check is exact.
+  async start({ staleToken = null } = {}) {
+    const created = Number.isFinite(this.opts.created) ? { created: this.opts.created } : {};
+    const lock = acquireLock(this.dataDir, { pipe: this.pipe, listening: false, mode: this.mode, ...created }, staleToken ? { staleToken } : {});
     if (!lock.won) {
       throw err('E_LOCKED', `the owner lock at ${this.dataDir} is held by pid ${lock.holder && lock.holder.pid}, which is alive`, { holder: lock.holder || null });
     }
