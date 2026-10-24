@@ -54,8 +54,9 @@ const lf = (s) => s.replace(/\r\n/g, '\n');
 // ADR 0054 rewrote the role rule (orchestrator.md 8-10, the twin 10-12) to name the surface and git_read, and line 4 (the
 // twin's 6) to say the code work is not the orchestrator's (the operator, 2026-10-24: it may edit records and trivial fixes).
 const AMD6_LINES = {
-  'orchestrator.md': [4, 8, 9, 10, 32, 33, 81],
-  'orchestrator-interactive.md': [6, 10, 11, 12, 34, 35, 52, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 78, 79, 85, 92, 98],
+  // ADR 0053: the worktree rule of thumb (orchestrator.md 116, the interactive twin 120 once its pause paragraph is taken out).
+  'orchestrator.md': [4, 8, 9, 10, 32, 33, 81, 116],
+  'orchestrator-interactive.md': [6, 10, 11, 12, 34, 35, 52, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 78, 79, 85, 92, 98, 120],
 };
 
 test('memory rules: the placeholder sits at the end of an existing line, and an empty substitution is the base prompt byte for byte', () => {
