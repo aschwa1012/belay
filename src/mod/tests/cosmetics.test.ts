@@ -114,7 +114,7 @@ describe('a dead review worker is a finished review', () => {
     await ui.press({ key: 'agent:' + ID })
     const d = flat(leaves(await ui.drawn()).join(' '))
     expect(d).toContain('outcome cut')
-    expect(d).toContain('belay worker rm ' + ID)
+    expect(d).toContain('clear belay worker rm ' + ID) // the detail's own clear row, not only the notice's command
   })
   test('without an exit code in the notice the outcome is "no answer"', async ($, on) => {
     const wd = await boot($, on, { deadReview: true })

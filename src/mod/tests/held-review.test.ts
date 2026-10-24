@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { T0, RUN, boot, cmd, later, pane, openPane, words } from './support'
+import { T0, RUN, boot, cmd, later, pane, openPane, words, colours } from './support'
 
 // The memory line and its one write action (ADR 0036 amendment, proposed): the Opus archive review, started only by two presses of the
 // button, through a short launcher that detaches the review so a reload of the panel cannot orphan it. These tests prove the line, the
@@ -178,6 +178,7 @@ describe('notes held for the archive reviewer', () => {
     await openPane($, wd)
     const a = await pane($)
     expect(a.text).toContain('cut off') // finished, dim, with its reason: not a red alert
+    expect(colours(await a.ui.drawn())).not.toContain('error')
     expect(a.text).toContain('review the held notes')
   })
 
