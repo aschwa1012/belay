@@ -1,7 +1,7 @@
 // What the panel does with belay's answers, as pure functions. The commands themselves are run from
 // index.tsx: the engine follows `$` only inside the file that declares the hooks.
 
-import type { BelayAgent, BelayHeld, BelayPanelSnap, BelayPanelWatch } from '../../types/index'
+import type { BelayAgent, BelayHeld, BelayReadIssue, BelayPanelSnap, BelayPanelWatch } from '../../types/index'
 import { countAwaiting, normAwaiting, normHeld } from './held'
 import { DEFAULT_SETTINGS, normAgents, normNotices, normTranscript, parseMemoryNotice, parseSettings, type AgentsRead } from './model'
 
@@ -100,7 +100,7 @@ export function fatalSnapshot(message: string, runId: string | null, now: number
   return {
     fetchedAt: now, runId, mode: null, runState: null, stale: false, fatal: message, transcriptOk: false, transcriptAt: null,
     startedAtMs: null, pausedAtMs: null, frozenAtMs: null, endedAtMs: null, tasks: null, maxFixRounds: null, embedder: null, agents: [], footer: null, notices: [], held: null, transcript: null,
-    settings: DEFAULT_SETTINGS, memoryNotice: null, errors: [],
+    settings: DEFAULT_SETTINGS, memoryNotice: null, errors: [], readIssues: [], goodAt: null,
   }
 }
 
@@ -142,20 +142,21 @@ function heldWith(h: BelayHeld | null, aw: unknown, prev: BelayHeld | null, now:
 export function buildSnapshot(p: Parts): BelayPanelSnap {
   const { prev } = p
   const errors: string[] = []
-  const take = (r: Ran | null): unknown => {
+  const readIssues: BelayReadIssue[] = [] // a read that timed out or failed: shown as the stale line, not as a raw error
+  const take = (r: Ran | null, verb: string): unknown => {
     if (!r) return undefined
-    if ('error' in r) { errors.push(r.error); return undefined }
+    if ('error' in r) { readIssues.push({ verb, timedOut: 'timedOut' in r }); return undefined }
     return r.json
   }
-  const aj = take(p.agents)
+  const aj = take(p.agents, 'agents')
   const ag: AgentsRead | null = aj !== undefined ? normAgents(aj) : null
   const stale = ag === null
   if (ag && ag.runId === null && p.watch.runId === null) errors.push('no belay run found (this session\'s directory has no belay store, or the store has no runs)')
-  const nj = take(p.notices) // null: the round was cut short by a timeout, so the earlier notices stand
+  const nj = take(p.notices, 'notices') // null: the round was cut short by a timeout, so the earlier notices stand
   const notices = nj !== undefined ? normNotices(nj) : (prev?.notices ?? [])
   // belay-run.json means this is the orchestrator's own window; otherwise the run's mode, null when unknown.
   const mode = p.watch.fixed ? 'interactive' : ag ? ag.mode : (prev?.mode ?? null)
-  const tj = take(p.transcript)
+  const tj = take(p.transcript, 'transcript')
   let transcript = mode === 'headless' ? (prev?.transcript ?? null) : null
   let transcriptOk = mode === 'headless' ? (prev?.transcriptOk ?? false) : false
   let transcriptAt = mode === 'headless' ? (prev?.transcriptAt ?? null) : null
@@ -169,8 +170,8 @@ export function buildSnapshot(p: Parts): BelayPanelSnap {
       transcriptAt = p.now
     }
   }
-  const aw = take(p.awaiting ?? null)
-  const sj = take(p.settings)
+  const aw = take(p.awaiting ?? null, 'awaiting list')
+  const sj = take(p.settings, 'settings')
   const settings = sj !== undefined ? parseSettings(sj) : (prev?.settings ?? DEFAULT_SETTINGS)
   // The settings read sees the config file only. A run answers for itself (its launch recorded the notice, or none: notes on, notes
   // off on purpose, memory null), whatever the config says now; the config's notice is for a panel with no run to read.
@@ -195,6 +196,6 @@ export function buildSnapshot(p: Parts): BelayPanelSnap {
     embedder: ag ? ag.embedder : (prev?.embedder ?? null),
     agents: ag ? ag.agents : (prev?.agents ?? []),
     footer: ag ? ag.footer : (prev?.footer ?? null),
-    notices, held: heldWith(nj !== undefined ? normHeld(nj) : (prev?.held ?? null), aw, prev?.held ?? null, p.now), transcript, settings, memoryNotice, errors,
+    notices, held: heldWith(nj !== undefined ? normHeld(nj) : (prev?.held ?? null), aw, prev?.held ?? null, p.now), transcript, settings, memoryNotice, errors, readIssues, goodAt: readIssues.length ? (prev?.goodAt ?? null) : p.now,
   }
 }

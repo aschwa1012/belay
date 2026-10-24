@@ -5,14 +5,14 @@ describe('a wedged belay', () => {
   const agentsAt = (wd: any) => wd.attempts.filter((a: any) => a.verb === 'agents').map((a: any) => a.t - T0)
   const gaps = (xs: number[]) => xs.slice(1).map((t, i) => t - xs[i]!)
 
-  test('every command has a hard 4 s timeout; on a timeout the round stops, the old data stays stale, one dim line says so', async ($, on) => {
+  test('every command has a hard 8 s timeout; on a timeout the round stops, the old data stays stale, one dim line says so', async ($, on) => {
     const wd = await boot($, on)
-    expect(wd.attempts.every(a => a.timeoutMs === 4000)).toBe(true)
+    expect(wd.attempts.every(a => a.timeoutMs === 8000)).toBe(true)
     const before = wd.attempts.filter(a => a.verb === 'notices').length
     wd.w.hang = 'agents'
     await later(wd, 5000)
     const t = (await band($)).text
-    expect(t).toContain('belay agents r-7f3a timed out (4 s)')
+    expect(t).toContain('reads slow (agents timed out)')
     expect(t).toContain('stale: last read failed')
     expect(t).not.toContain('● running')
     expect(t).toContain('4 agents') // the last data is kept
@@ -46,9 +46,9 @@ describe('a wedged belay', () => {
   })
 
   test('a timeout is recognised by the wait, not by the words of the error (mutant: recognised only by its text)', async ($, on) => {
-    const wd = await boot($, on, { rejectAfter: { verb: 'agents', ms: 4000, msg: 'spawn failed' } })
-    await later(wd, 6000)
-    expect((await band($)).text).toContain('belay agents r-7f3a timed out (4 s)')
+    const wd = await boot($, on, { rejectAfter: { verb: 'agents', ms: 8000, msg: 'spawn failed' } })
+    await later(wd, 10000)
+    expect((await band($)).text).toContain('reads slow (agents timed out)')
   })
 
   test('the next round starts 4 s after the last one ENDS with the pane open, 5 s with the band alone', async ($, on) => {

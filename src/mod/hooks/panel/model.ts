@@ -320,6 +320,17 @@ export function elapsedMs(snap: BelayPanelSnap, now: number): number | null {
   return (snap.endedAtMs ?? snap.pausedAtMs ?? snap.frozenAtMs ?? now) - snap.startedAtMs
 }
 
+// The dim line for a round whose reads did not all land: when the data was last all fresh, and which read timed out or failed.
+// null when every read of the latest round succeeded.
+export function staleLine(snap: BelayPanelSnap): string | null {
+  const bad = snap.readIssues ?? []
+  if (!bad.length) return null
+  const slow = bad.filter(i => i.timedOut).map(i => i.verb)
+  const failed = bad.filter(i => !i.timedOut).map(i => i.verb)
+  const what = [...(slow.length ? [`reads slow (${slow.join(', ')} timed out)`] : []), ...(failed.length ? [`${failed.join(', ')} failed`] : [])].join(' · ')
+  return snap.goodAt !== null ? `as of ${new Date(snap.goodAt).toTimeString().slice(0, 8)} · ${what}` : what
+}
+
 // The run line is parts: brand and id; state and elapsed; stale; agents; cost. A narrow width drops parts from the
 // END and never shrinks a kept one; the brand and id come first and stay whole while they fit.
 export function runBrief(snap: BelayPanelSnap, now: number): Seg[] {
