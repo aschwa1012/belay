@@ -32,7 +32,7 @@ function runLiveness(store) {
 
 // { holds, reason }: the reason names what established the answer, as the other derived rungs do.
 function holdOf(task, liveness) {
-  if (task.state === 'done') return { holds: false, reason: 'done' };
+  if (task.state === 'done' || task.state === 'cancelled') return { holds: false, reason: task.state }; // cancelled: ADR 0058
   if (!Array.isArray(task.files_owned) || !task.files_owned.length) return { holds: false, reason: 'no_files' };
   const r = liveness(task.run_id);
   return { holds: r.live, reason: r.reason };

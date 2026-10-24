@@ -46,7 +46,7 @@ const { POLL_MS } = require('./exit-hold.cjs');
 const now = () => Date.now();
 
 // `memoryLevers`: the run's levers when the caller holds the run row (ADR 0041); `worktree`: the run's (ADR 0043).
-function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = null, memoryLevers = null, worktree = null, agentDefaults = null }) {
+function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = null, memoryLevers = null, worktree = null, agentDefaults = null, stopIdleOnDone = false }) {
   if (!core) fail('E_ARGS', 'createRunManager needs a core');
   if (!dataDir) fail('E_ARGS', 'createRunManager needs a dataDir');
   if (!runId) fail('E_ARGS', 'createRunManager needs a runId');
@@ -70,7 +70,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
   // 6i-2 fix round (item 3, should-fix): `shutdownFlags` carried on ctx itself, so worker.cjs's onTurnEnd
   // (through turn-record.cjs) can gate its own checkpoint/memory write on it exactly as writeRow does.
-  const ctx = { core, runId, dataDir: root, adapterPid: paths.adapterPid || process.pid, writeRow: null, shutdownFlags, compactAt: compactAtTokens, memoryLevers, worktree };
+  const ctx = { core, runId, dataDir: root, adapterPid: paths.adapterPid || process.pid, writeRow: null, shutdownFlags, compactAt: compactAtTokens, memoryLevers, worktree, stopIdleOnDone: stopIdleOnDone === true }; // stopIdleOnDone: ADR 0058
   const writeRow = createWriteRow(ctx, shutdownFlags);
   ctx.writeRow = writeRow;
   ctx.message = (args) => message(args); // the memory jobs' reflection turn (ADR 0047); `message` is declared below
@@ -222,7 +222,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     let w; const dirExisted = fs.existsSync(L.workerDir(root, id)); // a directory this spawn creates is its own to remove if it fails before any row exists
     try {
       if (worker_id) await checkIdFree(core, root, id, runId); // inside the reservation, so two spawns of one id cannot both pass
-      if (task_id) await core.task.assign({ task_id, check_only: true });
+      if (task_id) await core.task.assign({ task_id, check_only: true, worker_id: id });
       w = W.newWorkerRecord({
         id, substrate, worktree, dataDir: root, taskId: task_id, model,
         allowedTools, permissionMode: permission_mode, sandbox,
@@ -298,7 +298,6 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       return doStop(w, mode, timeout_ms, { skipRowWrite: stale, treatPidAsDead: wasParked });
     }, { waitFor: ['pause', 'resume', 'restart'] });
   }
-
 
   // `workers` holds only what this process launched; an unknown id is looked up in the store rather
   // than refused (ADR 0009's A3 row), lazily, so touching no old id costs nothing and creates nothing.
@@ -455,7 +454,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     _waitExit: (id, ms) => W.waitExit(get(id), ms),
     _killSurvivor: (id) => (workers.has(id) ? LC.killSurvivor(workers.get(id), null) : null), // a child by its live handle and exact pid (lifecycle.cjs)
     _closing: () => shutdownFlags.closing, _closed: () => shutdownFlags.closed, // flipped by shutdown once every worker is stopped (lifecycle.cjs)
-    _flags: () => shutdownFlags,
+    _flags: () => shutdownFlags, idleStop: (row) => require('./idle-stop.cjs').stopIfIdleDone(manager, ctx, row), // ADR 0058: the stop_idle_on_done lever
   };
   ctx.manager = manager; // the memory jobs spawn the review job through it
   return manager;

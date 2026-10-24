@@ -190,7 +190,7 @@ function openRunManagerOnce() {
         // BELAY_FAKE_PATHS, honoured only when set, merges over it so a test can point the run
         // manager at a fake substrate binary without touching the environment the workers inherit.
         agentDefaults: opts.agentDefaults || null, // the config's agents block, resolved by belay run
-        compactAtTokens: opts.compactAt, worktree: opts.worktree || null, // ADR 0007 decision 3; ADR 0043 decision 1
+        compactAtTokens: opts.compactAt, worktree: opts.worktree || null, stopIdleOnDone: !!opts.stopIdleOnDone, // ADR 0007 decision 3; ADR 0043 decision 1; ADR 0058
         memoryLevers: attachedRun() ? require('../run/memory-levers.cjs').leversOfRow(attachedRun()) : null,
         paths: { mcpBinary: __filename.split(path.sep).join('/'), ...FAKE_PATHS },
       }))
@@ -242,6 +242,7 @@ async function callCore(dotted, args) {
   return fn(args);
 }
 
+const COMPOSE = require('./compose.cjs').createCompose({ callCore, manager: () => runManager, openManager: () => openRunManagerOnce(), dataDir: opts.dataDir });
 // ADR 0053 decision 6: worker_spawn's cwd defaults to the worktree belay made for task_id, and a different one is refused, so a
 // worker is never pointed past its task's own tree by a typo. Without a recorded worktree the call is as it was.
 async function spawnWorktree(args) {
@@ -290,6 +291,7 @@ async function callTool(name, args) {
     }
     return row;
   }
+  if (route.via === 'compose') return COMPOSE[route.method](args); // ADR 0058: a core write and the follow-up the prompt asked for
   if (route.via === 'briefing') {
     const [line, doc] = await Promise.all([callCore('continuity.resumeLine', args), callCore('continuity.resumeDoc', args)]);
     return { line, doc };
@@ -312,7 +314,7 @@ const text = (v) => ({ type: 'text', text: JSON.stringify(v) });
 function okResult(row) {
   // Every row passes through unchanged. MCP requires structuredContent to be an object; the contract
   // returns an object from every method, so the guard below should never fire.
-  const structured = (row !== null && typeof row === 'object' && !Array.isArray(row)) ? row : { result: row };
+  const structured = require('./compose.cjs').revOf((row !== null && typeof row === 'object' && !Array.isArray(row)) ? row : { result: row }); // seq is named rev (ADR 0058)
   return { content: [text(structured)], structuredContent: structured, isError: false };
 }
 

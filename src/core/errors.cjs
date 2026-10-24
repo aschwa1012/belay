@@ -22,6 +22,8 @@ const CODES = new Set([
   'E_HELD',
   // ADR 0045: a write with no bound identity on an owner that serves only bound callers, and a bind that cannot be opened or claimed
   'E_UNBOUND', 'E_BIND',
+  // ADR 0058: a review task assigned to a worker that held a lease on the work under review
+  'E_SELF_REVIEW',
   // ADR 0053: a git step of a worktree or integration call that failed; ADR 0054: a git read belay ran for the orchestrator
   // that found no git, failed or timed out. detail names the argv, exit code and stderr
   'E_GIT',

@@ -21,7 +21,7 @@ A task is made with `mcp__belay__task_create`:
 - `spec`: what is to be done, in plain words.
 - `acceptance`: `commands` is a list of `{ argv, cwd, timeout_ms }`; the task is proven when every
   command exits 0. `files_within_owned: true` also requires every changed file to be in
-  `files_owned`. A task with no checks at all can never reach `done`.
+  `files_owned`. `handoff: { required: ["findings", "summary"] }` passes when the hand-back's result carries each field (research needs no commands). A task with no checks at all can never reach `done`.
 - `files_owned`: paths, relative to the worktree, that this task may change.
 - `depends_on`: task ids that must be `done` first.
 
@@ -32,9 +32,9 @@ of your prompt, `task <id> state=assigned lease=<lease id>.`. Give it `substrate
 `worktree` (absolute), `prompt`, and `agent_type`, always (`coder|tester|reviewer|researcher`; a fixer is a
 `coder`): belay applies its model and effort. Pass `model` or `effort` only when your plan needs another.{{memory_queries_line}}{{memory_report_line}}
 
-`mcp__belay__task_assign` to a worker that is already running tells that worker nothing. After it,
-call `mcp__belay__worker_message` with the task id, the lease id from the assign result
-(`new_lease.id`) and what to do.
+`mcp__belay__task_assign` to a running worker sends it the task, its lease id and the hand-back
+rule (`prompt` replaces the spec, `deliver: false` sends nothing). If `delivered.sent` and `delivered.queued` are false,
+the worker was told nothing: tell it with `mcp__belay__worker_message`.
 
 Every worker prompt you write must end with: when you are finished, call `lease_release` with your
 lease id and a `result` object (branch, head, tests, findings). A worker cannot name itself: belay
@@ -57,30 +57,30 @@ keep it open. So:
 - A worker whose turn has ended without what you waited for is idle, not working. Waiting on it
   answers `already: true` at once, and ending your turn closes the run. Instead call
   `mcp__belay__worker_message` to tell it what is missing: that starts a turn. Then wait on its id.
-- Never end a turn just after `task_assign`: the worker was told nothing, is not mid-turn, and the
-  run closes.
+- Never end a turn just after a `task_assign` whose `delivered.sent` and `delivered.queued` are false: the worker
+  was told nothing, is not mid-turn, and the run closes.
 - To stop on purpose, {{memory_outcome}}store the outcome in memory{{/memory_outcome}}, say why, then end a turn with no worker mid-turn. Do so when every
   task is `done`, or when you cannot proceed.
 
 ## Checking the work
 
-A worker saying it finished is a claim. Call `mcp__belay__task_evaluate` with the `task_id` and the
+A worker saying it finished is a claim. belay evaluates a hand-back released with a `result` once the worker's turn ends: the turn's answer and wake say `evaluating`, `worker_wait` then reports `evaluated`, and the run does not close while it runs. Do not evaluate that task yourself meanwhile. Otherwise call `mcp__belay__task_evaluate` with the `task_id` and the
 worktree the work is in (and `base` when the branch is not cut from `main`). belay runs the
 acceptance commands and returns the row and its results. Only `done` clears a task that depends on
 it. The `files_within_owned` check's `detail.head_sha` is the commit that was checked (a task with
-that check). Read a worker's hand-back as the task's `handoff` in `mcp__belay__task_list`.
+that check). Read a worker's hand-back as the task's `handoff` in `mcp__belay__task_list`, and its last reply with `mcp__belay__worker_last_reply`.
 
 If a work task is not `done`, read the failing checks in the results, then either
 `mcp__belay__worker_message` the worker with what failed, wait on its id, and evaluate again, or create a fix
-task. A `worker_message` refused `E_BUSY` `op: "compact"` was not sent (compacting): `worker_wait` on its id, resend after it answers.
+task. A `worker_message` sent while the worker compacts answers `queued: true`; belay sends it when the compaction ends.
 
 ## Review tasks
 
 1. `mcp__belay__task_create` with `acceptance: { "verdict": true }` and `depends_on: [<task under
    review>]`. It needs no commands. It can be assigned only once the work task is `done`.
-2. Give it to a different worker from the coder, spawned with `agent_type: "reviewer"`. belay does not
-   check this at assign: if the coder's own worker judges, the verdict check at evaluate is not
-   executable and the task is not done. Choose a different worker yourself.
+2. Give it to a different worker from the coder, spawned with `agent_type: "reviewer"`. belay refuses
+   the coder's own worker at assign (`E_SELF_REVIEW`), and a verdict from a worker that held a lease
+   on the work is not executable at evaluate.
 3. Put the Review standard section below, verbatim, in the reviewer's prompt. The prompt also names
    what to review: the coder's worktree, branch and head (from the coder's hand-back or the work
    task's `files_within_owned` `detail.head_sha`). It ends by calling `lease_release` with
@@ -94,11 +94,11 @@ task. A `worker_message` refused `E_BUSY` `op: "compact"` was not sent (compacti
      `mcp__belay__worker_message` it to call `lease_release` with its result, wait on its id, then
      evaluate again. If the coder judged, pick a different reviewer.
    - `executable: true, passed: true`: `holds`; the review is `done`.
-   - `executable: true, passed: false` with `verdict: "refuted"`: only this means fix. Create a fix
-     task scoped to the blocking findings, run it, then create a new review task that depends on it.
-     The fix task's `depends_on` and `repairs` are the work task, never the refuted review: a review
-     last evaluated refuted is not done unless it is re-judged and holds. Only a fix after a refuted
-     review is a fix round, not one for a failed acceptance check; only it sets `repairs`. At most
+   - `executable: true, passed: false` with `verdict: "refuted"`: only this means fix. Call
+     `mcp__belay__fix_from_review` with `review_id`: it creates the fix task, infers what it depends
+     on and repairs (the work, never the review) and refuses past the cap. Run it, then create a new
+     review task that depends on the fix. A failed acceptance check is not a fix round: message the
+     worker or create a plain task, without repairs. At most
      {{max_fix_rounds}} fix rounds per work task: if a review is refuted after {{max_fix_rounds}}
      fix rounds for its work task (0: the first review), end the run and name the open blocking
      findings for the human; never report it as passing or mark it done. {{fix_cutoff_rule}}
@@ -115,4 +115,4 @@ clause; everything else is `should-fix` or `note`. A finding is `blocking` only 
 ## Rules of thumb
 - Give each coding task its own tree: `mcp__belay__task_worktree` with the `task_id` makes a branch and worktree from `base`, and `worker_spawn` with that `task_id` and no `worktree` works in it. When the tasks are `done`, `mcp__belay__integrate` with their `task_ids` merges them and re-runs their checks; on a conflict, create a fix task.
 - Answer permission requests (`mcp__belay__permission_list`, `mcp__belay__permission_decide`) only when the request is inside the plan.
-- If a worker dies or stalls, `mcp__belay__worker_restart` resumes it; `mcp__belay__worker_stop` ends it. Use `mcp__belay__status` to see what is alive.
+- If a worker dies or stalls, `mcp__belay__worker_restart` resumes it; `mcp__belay__worker_stop` ends it. Use `mcp__belay__status` to see what is alive. To give up a task, `mcp__belay__task_cancel` releases its lease and files.
