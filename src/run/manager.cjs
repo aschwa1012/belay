@@ -123,7 +123,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   }
   const launch = (w, o) => require('./bind-launch.cjs').launchBound({ core, runId, root, mcpPath, writeRow }, w, () => launchNow(w, o)); // ADR 0045: one launch of a worker at a time, its bind opened first
   async function launchNow(w, { resume = null, prompt = null } = {}) {
-    try { NM.checkLaunch(w); } catch (e) { await NM.refuseLaunch(ctx, w, e, P.pidAlive); } let args; // sync and first (Codex's check-then-spawn stays one tick); only a refusal awaits
+    try { NM.checkLaunch(w); } catch (e) { await NM.refuseLaunch(ctx, w, e, () => PI.pidLive(w)); } let args; // sync and first (Codex's check-then-spawn stays one tick); only a refusal awaits
     if (w.substrate === 'claude-code') {
       args = L.claudeLaunchArgv({
         workerId: w.id, mcpJsonPath: w.mcpJsonPath, settingsPath: w.workerSettingsPath,
@@ -296,11 +296,13 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     }
     // Codex: the previous process has exited by design, so a message is a new resume process
     // (ADR 0001 §4, ADR 0008 §6). Returns at once with the new pid; the turn lands later.
-    if (!w.sessionId) fail('E_SUBSTRATE', 'codex worker has no thread id to resume', { worker_id, substrate: w.substrate, state: w.state }); await holdForLaunch(w, core); // before the checks below: they and the spawn stay one tick, so two concurrent messages still start one process
-    // An adopted worker whose pid is still alive is a process a previous adapter owns. belay is not
+    if (!w.sessionId) fail('E_SUBSTRATE', 'codex worker has no thread id to resume', { worker_id, substrate: w.substrate, state: w.state });
+    const foreign = !w.child && await PI.verifiedLive(w); // by identity, never the pid number alone: an idle worker's pid is free for reuse
+    await holdForLaunch(w, core); // before the checks below: they and the spawn stay one tick, so two concurrent messages still start one process
+    // An adopted worker whose process is still alive is one a previous adapter owns. belay is not
     // its parent (invariant 1), so it cannot see that turn end, and starting a second process on
     // the same worktree is the one thing one-process-per-turn exists to prevent. Stop it first.
-    if (!w.child && w.pid && P.pidAlive(w.pid)) {
+    if (!w.child && foreign) {
       fail('E_SUBSTRATE', 'codex worker is a live process this adapter did not spawn, so it cannot be given a turn; stop it first', { worker_id, substrate: w.substrate, state: w.state, pid: w.pid, adopted: true });
     }
     if (w.child && P.pidAlive(w.pid)) {
@@ -356,9 +358,9 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     if (w.child && P.pidAlive(w.pid)) await doStop(w, 'graceful', 10000);
     // Fix round, should-fix finding: `skipDeadPidKill` (resume, pause.cjs) skips this branch — a park's own
     // pid is dead by construction, so treating it as a still-alive orphan risks killing a bystander that reused it.
-    else if (!skipDeadPidKill && !w.child && w.pid && P.pidAlive(w.pid)) {
-      w.adoptedKill = (await PI.killWorker(w)).tree;
-      await P.waitPidGone(w.pid, { timeoutMs: 5000 });
+    else if (!skipDeadPidKill && !w.child && PI.pidLive(w)) { // a record with no process by construction is never killed by its pid number
+      const kr = await PI.killWorker(w); w.adoptedKill = kr.tree;
+      if (!kr.refused) await P.waitPidGone(w.pid, { timeoutMs: 5000 });
     }
     w.stopRequested = false;
 
