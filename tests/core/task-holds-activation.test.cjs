@@ -112,7 +112,7 @@ test('ensureHold moves the ended run\'s task and its lease to the manager\'s liv
   await assert.rejects(b.task.create({ spec: 'clash', files_owned: ['ens/move/x.js'] }), code('E_FILES_OVERLAP'));
   const seq = (await b.task.get({ task_id: t.id })).seq;
   const again = await b.task.ensureHold({ task_id: t.id, worker_id: 'w-ens-move' });
-  assert.deepStrictEqual([again.held, again.rehomed, again.reason], [true, false, 'live']);
+  assert.deepStrictEqual([again.held, again.rehomed, again.reason], [true, false, 'run_live']);
   assert.strictEqual((await b.task.get({ task_id: t.id })).seq, seq, 'a task already held writes nothing');
 });
 
