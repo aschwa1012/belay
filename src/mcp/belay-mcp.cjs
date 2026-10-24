@@ -242,6 +242,18 @@ async function callCore(dotted, args) {
   return fn(args);
 }
 
+// git_read's task_id (ADR 0054 decision 2): the task row's own worktree when it records one (belay-owned worktrees,
+// ADR 0053), else the worktree of the newest worker row that names the task. Null when neither says.
+async function taskWorktree(taskId) {
+  const t = await callCore('task.get', { task_id: taskId });
+  const own = t && (t.worktree || (t.task && t.task.worktree));
+  if (typeof own === 'string' && own) return own;
+  const { workers = [] } = (await callCore('worker.list', {})) || {};
+  const mine = workers.filter((w) => w && w.task_id === taskId && typeof w.worktree === 'string' && w.worktree);
+  mine.sort((a, b) => (Number(b.started_at) || 0) - (Number(a.started_at) || 0));
+  return mine.length ? mine[0].worktree : null;
+}
+
 async function callTool(name, args) {
   const route = routeOf(name);
   if (!route) throw fail('E_ARGS', `no such tool ${name}`, { tool: name });
@@ -271,6 +283,7 @@ async function callTool(name, args) {
     const [line, doc] = await Promise.all([callCore('continuity.resumeLine', args), callCore('continuity.resumeDoc', args)]);
     return { line, doc };
   }
+  if (route.via === 'git') return require('./git-read.cjs').gitRead(args, { runWorktree: opts.worktree || null, taskWorktree });
   if (route.via === 'run') {
     const r = await openRunManagerOnce();
     if (typeof r[route.method] !== 'function') throw fail('E_INTERNAL', `the run manager exposes no method ${route.method}`, { method: route.method });

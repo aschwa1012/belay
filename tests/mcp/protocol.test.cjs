@@ -130,7 +130,7 @@ test('initialize answers without opening a store and leaves the data dir empty',
   assert.strictEqual(fs.existsSync(data), false, 'initialize created the data dir');
   assert.deepStrictEqual(fs.readdirSync(parent), [], 'initialize wrote into the sandbox');
   // tools/list is also answerable without a store.
-  assert.strictEqual((await a.list()).length, 21);
+  assert.strictEqual((await a.list()).length, 22); // 21 + ADR 0054 git_read
   assert.strictEqual(fs.existsSync(data), false, 'tools/list created the data dir');
 });
 
