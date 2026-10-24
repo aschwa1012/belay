@@ -40,3 +40,25 @@ test('a spawn refuses an id a row already has (any case, any run) or a directory
     assert.strictEqual(ok.id, 'fresh1');
   } finally { try { if (m) await m.shutdown(); } finally { try { await core.shutdownOwner(); } finally { await core.close(); cleanup(sb); } } }
 });
+
+test('two concurrent spawns of W1 and w1 in one run: exactly one succeeds and the other is E_ARGS', async () => {
+  const sb = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-wid-case-'));
+  const data = fwd(path.join(sb, 'data'));
+  const worktree = fwd(path.join(sb, 'wt'));
+  fs.mkdirSync(data, { recursive: true }); fs.mkdirSync(worktree, { recursive: true });
+  const runId = 'run-wid-case-' + process.pid;
+  const core = await openCore({ dataDir: data, caller: { role: 'orchestrator', run_id: runId, pid: process.pid }, embed: false });
+  let m = null;
+  try {
+    await core.run.attach({ adapter_pid: process.pid });
+    m = createRunManager({ core, dataDir: data, runId, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
+    const go = (id) => m.spawn({ substrate: 'claude-code', worktree, prompt: 'go', worker_id: id });
+    const r = await Promise.allSettled([go('W1'), go('w1')]);
+    const ok = r.filter((x) => x.status === 'fulfilled');
+    const bad = r.filter((x) => x.status === 'rejected');
+    assert.strictEqual(ok.length, 1, JSON.stringify(r.map((x) => x.status)));
+    assert.strictEqual(bad[0].reason.code, 'E_ARGS');
+    assert.match(bad[0].reason.message, /already exists/);
+    assert.strictEqual((await core.worker.list({})).workers.length, 1, 'one row');
+  } finally { try { if (m) await m.shutdown(); } finally { try { await core.shutdownOwner(); } finally { await core.close(); cleanup(sb); } } }
+});

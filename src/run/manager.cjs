@@ -218,7 +218,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const indexQueries = checkMemoryQueries(memory_queries);
 
     const id = worker_id || crypto.randomUUID();
-    if (workers.has(id) || pendingIds.has(id)) fail('E_ARGS', 'a worker with that id already exists in this run', { worker_id: id });
+    if ([...workers.keys(), ...pendingIds].some((k) => k.toLowerCase() === id.toLowerCase())) fail('E_ARGS', 'a worker with that id already exists in this run (ids compare without case: NTFS gives W1 and w1 one directory)', { worker_id: id });
     // ADR 0030 decision 4: ask the core whether the task can be assigned before anything is written, so a
     // refusal leaves no directory, no row, and the id free. Later refusals still take the write-dead path.
     // The id is reserved synchronously: the await below must not let a second spawn with it pass the check above.
