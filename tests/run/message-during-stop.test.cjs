@@ -108,3 +108,17 @@ test('a Codex message whose launch hold a restart overtakes is refused before it
   assert.deepEqual(got, { err: 'E_BUSY', op: 'restart' }, `got ${JSON.stringify(got)}`);
   assert.equal(w.launches, 2, 'one launch for the spawn and one for the restart, none for the message');
 });
+
+// Sent from inside the resume's `running` write: the park is cleared by then (an earlier write still reads paused, E_PAUSED), and the
+// resume still holds the slot until that write lands.
+test('a message during a resume is refused until the resume returns', async (t) => {
+  const { core, m, worktree, received } = setup(t, 'run-msgstop-resume');
+  await m.spawn({ substrate: 'claude-code', worktree, prompt: 'hello', worker_id: 'w1' });
+  await m._waitTurn('w1', 20000);
+  await m.pause({ worker_id: 'w1', by: 'operator:1' });
+  const answer = messageOnWrite(core, m, 'running', 'sent during the resume');
+  await m.resume({ worker_id: 'w1', by: 'operator:2' });
+  const got = await answer();
+  assert.deepEqual(got, { err: 'E_BUSY', op: 'resume' }, `got ${JSON.stringify(got)}`);
+  assert.ok(!received().includes('sent during the resume'));
+});
