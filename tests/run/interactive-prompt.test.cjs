@@ -67,7 +67,7 @@ test('interactive prompt: says what the mode is', () => {
     '  hand-back with `mcp__belay__task_list` or check its work with `task_evaluate`. Use',
     '  `mcp__belay__worker_wait` only as a check when no wake came for a worker you expected: pass',
     '  `worker_ids` and `timeout_ms: 5000`. A timeout means the worker is still working: end your turn',
-    '  again, although the tool\'s description says to call it again. Never call it in a loop.',
+    '  again. Never call it in a loop.',
     '  `already: true` means that worker\'s turn ended before your call, not that the work is done.',
     '- A worker whose turn has ended without what you waited for is idle, not working. Instead call',
     '  `mcp__belay__worker_message` to tell it what is missing: that starts a turn. Then end your turn.',
