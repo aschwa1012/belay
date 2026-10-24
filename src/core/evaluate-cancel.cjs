@@ -31,13 +31,16 @@ async function joinOrRun(E, args, run) {
 
 const LIVE = new Map(); // cancel_key -> the evaluation's cancel token, while its commands run
 // A cancel that arrives before its evaluation registered (the two calls race) is remembered, so that evaluation starts cancelled.
-const EARLY = new Map(); // cancel_key -> by
+const EARLY = new Map(); // cancel_key -> { by, at }; kept EARLY_TTL_MS, by then its evaluation has registered or never will
 const EARLY_MAX = 1000;
+const EARLY_TTL_MS = 600000;
+function pruneEarly(now = Date.now()) { for (const [k, v] of EARLY) { if (now - v.at > EARLY_TTL_MS) EARLY.delete(k); else break; } }
 
 function register(key) {
   if (typeof key !== 'string' || !key || key.length > 200) throw err('E_ARGS', 'task.evaluate cancel_key must be a non-empty string of at most 200 characters');
   const c = createCancel();
-  if (EARLY.has(key)) { c.cancelled = true; c.by = EARLY.get(key); EARLY.delete(key); return c; }
+  pruneEarly();
+  if (EARLY.has(key)) { c.cancelled = true; c.by = EARLY.get(key).by; EARLY.delete(key); return c; }
   LIVE.set(key, c);
   return c;
 }
@@ -50,7 +53,8 @@ const cancelled = (task, c) => err('E_BUSY', `the evaluation of task ${task.id} 
 async function evaluateCancel(E, caller, args) {
   const c = LIVE.get(args.cancel_key);
   if (!c) {
-    if (typeof args.cancel_key === 'string' && args.cancel_key) { EARLY.set(args.cancel_key, typeof args.by === 'string' ? args.by : null); if (EARLY.size > EARLY_MAX) EARLY.delete(EARLY.keys().next().value); }
+    pruneEarly();
+    if (typeof args.cancel_key === 'string' && args.cancel_key) { EARLY.set(args.cancel_key, { by: typeof args.by === 'string' ? args.by : null, at: Date.now() }); if (EARLY.size > EARLY_MAX) EARLY.delete(EARLY.keys().next().value); }
     return { cancel_key: args.cancel_key || null, cancelled: false, killed: [], remembered: true };
   }
   LIVE.delete(args.cancel_key);
@@ -58,4 +62,4 @@ async function evaluateCancel(E, caller, args) {
   return { cancel_key: args.cancel_key, cancelled: true, killed };
 }
 
-module.exports = { register, unregister, cancelled, evaluateCancel, joinOrRun, LIVE, EARLY, RUNNING };
+module.exports = { register, unregister, cancelled, evaluateCancel, joinOrRun, pruneEarly, LIVE, EARLY, RUNNING, EARLY_TTL_MS };
