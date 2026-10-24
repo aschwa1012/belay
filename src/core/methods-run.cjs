@@ -105,6 +105,11 @@ async function attach(E, caller, args) {
   if (prev && prev.ended_at != null && caller.role === 'orchestrator') {
     throw err('E_ARGS', `run ${runId} has already ended; an orchestrator adapter cannot reopen it`, { run_id: runId, ended_at: prev.ended_at, epoch: prev.epoch });
   }
+  // A second `belay run` on a run id whose first life is still going would take the run over. Only the run process (role operator)
+  // is refused, and only while the previous adapter's pid answers; a lapsed run (dead pid) still reattaches. Nothing is written.
+  if (prev && prev.ended_at == null && caller.role === 'operator' && Number(prev.adapter_pid) !== adapterPid && pidAlive(prev.adapter_pid)) {
+    throw err('E_RUN_LIVE', `run ${runId} is still live (adapter pid ${prev.adapter_pid}, epoch ${prev.epoch}); stop it first or choose another run id`, { run_id: runId, adapter_pid: prev.adapter_pid, epoch: prev.epoch });
+  }
   const epoch = prev ? Number(prev.epoch || 0) + 1 : 1;
   const by = E.writtenBy(caller);
 

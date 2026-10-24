@@ -25,6 +25,7 @@ const { callWorkerAdapter, pauseBoundMs, resumeBoundMs } = require('./adapter-pi
 const { closeRunWorkers, workersClosedBlock, finalizeCut } = require('./run-close.cjs');
 const { warmEmbedder, createEmbedderGuard } = require('../run/embedder-guard.cjs');
 const { RESUME_WARM_MS } = require('./embedder-bounds.cjs');
+const { liveRunRow, liveRunMessage } = require('./run-live-guard.cjs');
 const { attachMemory, memoryText, substituteLevers, countReviewRounds } = require('./run-levers.cjs');
 
 const fwd = (p) => String(p).split('\\').join('/');
@@ -273,6 +274,15 @@ async function run(ctx) {
     await core.close();
     const endedBy = `this process did not become the store owner for the run, so it refuses to hold the orchestrator: pid ${became.pid} already holds it`;
     const receipt = refusal(endedBy, became.pid, became.established_by);
+    return { code: 1, text: renderText(receipt), json: receipt };
+  }
+
+  const liveRun = await liveRunRow(core);
+  if (liveRun) {
+    let sd = null;
+    try { sd = await core.shutdownOwner(); } catch (e) { sd = { error: (e && e.message) || String(e) }; }
+    const receipt = refusal(liveRunMessage(parsed.runId, liveRun), process.pid, 'run.get showed an unended run with a live adapter');
+    receipt.store.shutdown = sd;
     return { code: 1, text: renderText(receipt), json: receipt };
   }
 
