@@ -18,7 +18,7 @@ const { isPathId } = require('../../src/core/path-id.cjs');
 
 const BS = String.fromCharCode(92); const BSRE = new RegExp(BS + BS, 'g'); // the host mangles backslashes in scripts
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(BSRE, '/');
-const BAD = ['../x', '..', 'a/../b', 'a/b', 'a' + BS + 'b', '..' + BS + 'x', '/etc/x', 'C:/x', 'C:' + BS + 'x', '.hidden', '-lead', 'a' + String.fromCharCode(0) + 'b', 'a b', '', 'x'.repeat(65), 'a..b'];
+const BAD = ['../x', '..', 'a/../b', 'a/b', 'a' + BS + 'b', '..' + BS + 'x', '/etc/x', 'C:/x', 'C:' + BS + 'x', '.hidden', '-lead', 'a' + String.fromCharCode(0) + 'b', 'a b', '', 'x'.repeat(65), 'a..b', 'w1.', 'CON', 'nul.txt', 'com1'];
 const GOOD = ['w1', 'wchk', 'knowledge-run-1', 'scrub-run-1-lx4k2', 'archreview-3f2a9c1e-aaaa-bbbb-cccc-1234567890ab-lx4k2', 'notereview-r-1', 'a.b_c-d', 'x'.repeat(64), '3f2a9c1e-aaaa-bbbb-cccc-1234567890ab'];
 
 test('the grammar accepts belay ids and refuses separators, drive paths, dot-leading, NUL and over-long ids', () => {
