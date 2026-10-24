@@ -22,7 +22,7 @@ const NOTE_PROPS = {
   basis: { type: 'string', enum: ['observed', 'inferred', 'relayed'] },
   evidence,
   applies_to: strs(),
-  subjects: strs(),
+  subjects: { ...strs(), maxItems: 3 }, // SUBJECTS_MAX in memory-notes.cjs (ADR 0057 decision 9)
 };
 
 const LEASE_RELEASE = {
@@ -84,7 +84,7 @@ const MEMORY_REPORT = {
 function memoryStoreNotes(ordinary, role) {
   const { required, ...schema } = ordinary.inputSchema;
   const properties = { ...schema.properties };
-  properties.namespace = str(`Default: this run. project: a note (kind, title, when, basis)${role === 'orchestrator' ? '. summary: run outcome' : ''}`);
+  properties.namespace = str(`Default: this run only. project: a lasting note (kind, title, when, basis)${role === 'orchestrator' ? '. summary: run outcome' : ''}`);
   const { title, ...rest } = NOTE_PROPS;
   return { ...ordinary, inputSchema: { ...schema, properties: { ...properties, ...rest, when: str('Task that would trip on it, max 160 bytes') } } };
 }

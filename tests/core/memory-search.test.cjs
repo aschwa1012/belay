@@ -118,7 +118,8 @@ test('alpha steers the fusion: 1 follows the semantic list, 0 the keyword list',
 test('the index view returns ids and titles only, with the fixed key set', async () => {
   const r = await call('memory.search', { namespace: 'n1', query: 'alpha', view: 'index', k: 2 });
   const h = r.results[0];
-  assert.deepStrictEqual(Object.keys(h).sort(), ['created_at', 'id', 'namespace', 'score', 'status', 'task_id', 'title', 'type', 'worker_id', 'written_by']);
+  // ADR 0057: a search's index row also carries its relevance (and low_relevance when below the floor).
+  assert.deepStrictEqual(Object.keys(h).filter(k => k !== 'low_relevance').sort(), ['created_at', 'id', 'namespace', 'relevance', 'score', 'status', 'task_id', 'title', 'type', 'worker_id', 'written_by']);
   assert.strictEqual(h.title, 'Retry policy');
   assert.strictEqual(r.results[1].title.length > 0, true, 'a null title is derived from the first line');
   assert.strictEqual(h.text, undefined);
@@ -163,7 +164,7 @@ test('multi-namespace search covers every namespace named and no other', async (
   await rejects(call('memory.search', { namespace: 'n1', namespaces: ['n2'], query: 'x' }), 'E_ARGS');
 });
 
-test('absence_established is true only after both modes ran over the stated scope and found nothing', async () => {
+test('absence_established is true only after both modes ran over the stated scope and nothing reached the floor', async () => {
   const none = await call('memory.search', { namespace: 'n1', query: 'zzzqqq', mode: 'hybrid', filter: { types: ['nothing'] } });
   assert.strictEqual(none.absence_established, true);
   assert.strictEqual(none.warning, null);
@@ -175,8 +176,9 @@ test('absence_established is true only after both modes ran over the stated scop
   }
   const found = await call('memory.search', { namespace: 'n1', query: 'pidAlive', mode: 'hybrid' });
   assert.strictEqual(found.absence_established, false, 'a non-empty result is not absence');
+  // ADR 0057 decision 4: the claim is about every scanned row, so an offset page of an empty scope still establishes it.
   const paged = await call('memory.search', { namespace: 'n1', query: 'zzzqqq', mode: 'hybrid', filter: { types: ['nothing'] }, offset: 3 });
-  assert.strictEqual(paged.absence_established, false, 'an offset page is not absence');
+  assert.strictEqual(paged.absence_established, true, 'an offset narrows the page, not the claim');
   const floor = await call('memory.search', { namespace: 'n1', query: 'alpha', mode: 'hybrid', min_score: 0.999, filter: { types: ['fact'] } });
   assert.strictEqual(floor.results.length, 0);
   assert.strictEqual(floor.absence_established, false, 'a score floor narrows the search');
@@ -261,7 +263,9 @@ test('a keyword search needs query text, and a store without the index says so',
     assert.strictEqual(r.searched.fts, false);
     assert.ok(r.warning.includes('E_NO_INDEX'));
     const hy = await e.handle('memory.search', { caller: orch, namespace: 'n', query: 'pidAlive', mode: 'hybrid', query_embedding: [1, 0, 0] });
-    assert.deepStrictEqual(hy.modes_failed.map(f => f.code).sort(), ['E_NO_INDEX']);
+    // ADR 0057 decision 5: the one in-scope row has no vector, so the semantic half saw nothing and is degraded, not run.
+    assert.deepStrictEqual(hy.modes_failed.map(f => f.code).sort(), ['E_NO_INDEX', 'E_NO_VECTORS']);
+    assert.deepStrictEqual(hy.modes_run, []);
     assert.strictEqual(hy.absence_established, false);
   } finally { s.close(); cleanup(bare); }
 });
