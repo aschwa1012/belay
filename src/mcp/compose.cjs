@@ -27,7 +27,7 @@ function compactSpawn(row, requested = null) {
 const launchedHere = (r, id) => !!(r && typeof r._worker === 'function' && r._worker(id));
 
 // `openManager()` opens the run manager when a tool needs one (spawn); `manager()` only reads whether it is open.
-function createCompose({ callCore, manager, openManager }) {
+function createCompose({ callCore, manager, openManager, dataDir = null }) {
   // task_assign: assign, then send the worker its task: the resume line (which names the lease), the orchestrator's
   // `prompt` or the task's spec, and the hand-back rule. `deliver: false` assigns only.
   async function assign(args) {
@@ -65,7 +65,10 @@ function createCompose({ callCore, manager, openManager }) {
     return view === 'debug' ? row : compactSpawn(row, rest.model);
   }
 
-  return { assign, evaluate, spawn };
+  // worker_last_reply (B11): read from the worker's recorded stream (last-reply.cjs); no core call, no write.
+  const lastReply = async (args) => require('./last-reply.cjs').read(dataDir, args.worker_id);
+
+  return { assign, evaluate, spawn, lastReply };
 }
 
 // ADR 0058 decision 10: a row's `seq` is its version in the store, not an order a model should reason about, so every tool answer

@@ -58,6 +58,7 @@ const ROUTES = {
   task_evaluate: { role: 'orchestrator', via: 'compose', method: 'evaluate' }, // ADR 0058: then stop_idle_on_done (compose.cjs)
   fix_from_review: { role: 'orchestrator', via: 'core', method: 'task.fixFromReview' }, // ADR 0058 decision 3
   task_cancel: { role: 'orchestrator', via: 'core', method: 'task.cancel' }, // ADR 0058 decision 7
+  worker_last_reply: { role: 'orchestrator', via: 'compose', method: 'lastReply' }, // ADR 0058 (B11): read from the recorded stream
   // ADR 0015: admitted to the surface, which is nineteen tools from that record. It is the only way
   // to wait in the deployment ADR 0009 §1 names first — an operator's own session, which belay
   // attaches to and therefore cannot wake, because it does not own that session's stdin.
@@ -198,6 +199,11 @@ const ORCHESTRATOR = [
     name: 'worker_message',
     description: 'Send text to a live worker. Returns the channel used, bytes written, pid and turn; while it compacts, channel queued, sent when that ends. Refuses, naming the substrate, when that substrate cannot take a message in its current state.',
     inputSchema: S({ worker_id: str(), text: str() }, ['worker_id', 'text']),
+  },
+  {
+    name: 'worker_last_reply',
+    description: 'The text a worker\'s last finished turn ended with, from the stream belay recorded (max 4 KB), marked as data. Refuses E_NOT_FOUND for a worker with no stream.',
+    inputSchema: S({ worker_id: str() }, ['worker_id']),
   },
   {
     name: 'worker_stop',

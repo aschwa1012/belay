@@ -60,4 +60,12 @@ test('task_assign sends the running worker its task, lease id and hand-back rule
   assert.strictEqual(loud.delivered.sent, true);
   ok(await a.call('worker_wait', { worker_ids: [w.id], timeout_ms: 20000 }), 'worker_wait');
   assert.ok(userTexts(data, w.id).some((x) => x.includes('do the second thing now') && !x.includes('Task: second')), 'the prompt is sent in place of the spec');
+
+  // B11: the last reply, read from the recorded stream, marked as data.
+  const last = ok(await a.call('worker_last_reply', { worker_id: w.id }), 'worker_last_reply');
+  assert.deepStrictEqual([last.found, last.truncated, last.is_error], [true, false, false]);
+  assert.match(last.text, /^echo: [^]*do the second thing now/);
+  assert.match(last.data_notice, /data/);
+  const none = await a.call('worker_last_reply', { worker_id: 'wk-nobody' });
+  assert.deepStrictEqual([none.isError, none.structuredContent.error], [true, 'E_NOT_FOUND']);
 });

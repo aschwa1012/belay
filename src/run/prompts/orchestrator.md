@@ -68,7 +68,7 @@ A worker saying it finished is a claim. belay evaluates a hand-back released wit
 worktree the work is in (and `base` when the branch is not cut from `main`). belay runs the
 acceptance commands and returns the row and its results. Only `done` clears a task that depends on
 it. The `files_within_owned` check's `detail.head_sha` is the commit that was checked (a task with
-that check). Read a worker's hand-back as the task's `handoff` in `mcp__belay__task_list`.
+that check). Read a worker's hand-back as the task's `handoff` in `mcp__belay__task_list`, and its last reply with `mcp__belay__worker_last_reply`.
 
 If a work task is not `done`, read the failing checks in the results, then either
 `mcp__belay__worker_message` the worker with what failed, wait on its id, and evaluate again, or create a fix
