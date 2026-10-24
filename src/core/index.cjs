@@ -299,7 +299,8 @@ class Core {
     const c = new Client(this.dataDir, { caller: this.caller, key: this.key, elect: false, connectRetries: 1, dialTimeoutMs: timeoutMs, callTimeoutMs: timeoutMs });
     try { await c.connect(); } catch (e) { return { ok: false, unresponsive: this._markIfTimeout(e, timeoutMs, lock, 'dial') }; }
     this.client = c;
-    try { const value = await c.call(method, params, { timeoutMs }); unresponsive.clearPipe(pipeName(this.dataDir)); return { ok: true, value }; }
+    // A read answered by the owner this Core released does not keep its connection (P2, as for a write in _ensureWriterOnce).
+    try { const value = await c.call(method, params, { timeoutMs }); unresponsive.clearPipe(pipeName(this.dataDir)); if (this._retiringOwner() && this.client === c && !c.pending.size) await this._dropClient(); return { ok: true, value }; }
     catch (e) {
       if (!isTransport(e)) throw e;
       const keep = await this._dropUnlessBusy(e);
@@ -393,6 +394,9 @@ class Core {
     // ADR 0051: once this Core has shut its owner down it never elects another by itself. A write that gets here after that is a
     // path that missed its close gate, and it fails naming the call instead of creating a stray owner. It may still dial an owner
     // somebody else holds, and becomeOwner() is the explicit way to elect again.
+    // Audit 0.3.1 P2: the owner this Core released is still serving its other clients. A write dialled to it from here would be
+    // a connection of this live process, which the owner counts as attached, so it would never stop while this Core lives.
+    if (this._retiringOwner()) throw err('E_SHUTDOWN', `${method || 'a write'} was refused: this process released the store owner, which is serving its last clients before it stops, and a write from here would keep it serving`, { method, data_dir: this.dataDir, retiring: true });
     const elect = this.caller.role !== 'worker' && !this.shutDown && !this.key; // a bound adapter never elects (ADR 0045 decision 2)
     const c = new Client(this.dataDir, {
       caller: this.caller,
@@ -410,6 +414,11 @@ class Core {
     if (c.owner) this.owner = c.owner;
   }
 
+  _retiringOwner() {
+    if (this._retiring && this._retiring.stopped) this._retiring = null;
+    return !!this._retiring;
+  }
+
   async _dropClient() {
     this._readBackoff = null;
     if (this.client) { const c = this.client; this.client = null; await c.close(); }
@@ -421,7 +430,7 @@ class Core {
   // calls this instead of letting the first ordinary write elect on its behalf.
   async becomeOwner() {
     if (this.caller.role === 'worker') throw err('E_ROLE', 'a worker never elects the store owner', { role: this.caller.role });
-    this.shutDown = false; // an explicit election
+    this.shutDown = false; this._retiring = null; // an explicit election
     await this._ensureWriter('becomeOwner');
     if (this.isOwner()) return { owner: true, pid: process.pid, established_by: 'won the lock' };
     // 5a-3: a bare connect succeeds on Windows even against a wedged owner, so ownerInfo() alone is
@@ -501,7 +510,7 @@ class Core {
     const o = this.owner;
     const r = await o.retire();
     // A deferral is a release all the same: the owner is retiring, so a later write here must not elect another one.
-    if (r.deferred) { this.owner = null; this.shutDown = true; await this._dropClient(); return { ...r, stopped: 'deferred' }; }
+    if (r.deferred) { this.owner = null; this.shutDown = true; this._retiring = o; await this._dropClient(); return { ...r, stopped: 'deferred' }; }
     this.owner = null; this.shutDown = true; // stopped now: like shutdownOwner(), a later write here must not elect another
     await this._dropClient();
     return { ...r, stopped: 'in-process' };
