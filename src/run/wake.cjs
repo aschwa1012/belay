@@ -25,7 +25,9 @@
 // before the caller's own 5a rule (a dead pid on a non-terminal row does not hold) applies to it.
 // orphanGraceMs, adapterAlive(pid): a row whose adapter is dead has no detector left to write its death, so it
 // is held only orphanGraceMs; without adapterAlive every row gets graceMs.
-function diffWorkers({ prev, rows, runId, nowMs, graceMs, orphanGraceMs = graceMs, adapterAlive = null }) {
+// sinceAt: the wall-clock ms the baseline began. A first-sight `dead` row whose exited_at is earlier is history (a run id run again,
+// a publisher started late); any other first-sight death is news. Null: every first-sight death of this run is news.
+function diffWorkers({ prev, rows, runId, nowMs, graceMs, orphanGraceMs = graceMs, adapterAlive = null, sinceAt = null }) {
   const next = { ...(prev || {}) };
   const events = [];
   const pending_deaths = [];
@@ -41,11 +43,14 @@ function diffWorkers({ prev, rows, runId, nowMs, graceMs, orphanGraceMs = graceM
       // a turn that ended between spawn and this poll is news, not history.
       // build step 6f, decision 3: a first-sight `paused` row is baselined silently too, same as
       // `stopped`/`dead` — a park this adapter never watched happen is history, not news.
-      if (row.state === 'stopped' || row.state === 'dead' || row.state === 'paused') {
+      // Audit R3: a `dead` row of this run that died after the baseline began is news too. worker_spawn returned at ready, so a
+      // worker that crashed (or was killed) before this poll is first seen dead, and its death and finished turns are owed a wake.
+      const deathIsNews = row.state === 'dead' && !(sinceAt != null && Number.isFinite(row.exited_at) && row.exited_at < sinceAt);
+      if ((row.state === 'stopped' || row.state === 'dead' || row.state === 'paused') && !deathIsNews) {
         next[row.id] = { turns, state: row.state };
         continue;
       }
-      base = { turns: 0, state: row.state };
+      base = { turns: 0, state: deathIsNews ? 'starting' : row.state };
       next[row.id] = base;
     }
     const justParked = base.state !== 'paused' && row.state === 'paused';

@@ -133,12 +133,12 @@ test('A8 task_create and task_assign return the task row and both leases', async
   });
 });
 
-test('A8 task_evaluate returns the task row with its results, and refuses a missing worktree or a non-string base at the boundary', async (t) => {
+test('A8 task_evaluate returns the task row with its results, and refuses a missing task_id or a non-string base at the boundary (worktree defaults in the core, ADR 0053)', async (t) => {
   await withRole('orchestrator', t, async (a, data) => {
     const e = assertOk(await a.call('task_evaluate', { task_id: 'task-1', worktree: data, base: 'main' }), 'task_evaluate');
     has(e, ['id', 'state', 'results'], 'task_evaluate');
     has(e.results, ['evaluated_at', 'executable', 'passed', 'checks'], 'task_evaluate results');
-    for (const [args, re] of [[{ task_id: 't' }, /needs worktree/], [{ worktree: data }, /needs task_id/], [{ task_id: 't', worktree: data, base: 7 }, /base must be string/]]) {
+    for (const [args, re] of [[{ worktree: data }, /needs task_id/], [{ task_id: 't', worktree: data, base: 7 }, /base must be string/]]) {
       const r = await a.call('task_evaluate', args);
       assert.strictEqual(r.isError, true, `task_evaluate ${JSON.stringify(args)}: expected a refusal`);
       assert.strictEqual(r.structuredContent.error, 'E_ARGS');

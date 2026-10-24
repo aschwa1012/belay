@@ -118,10 +118,10 @@ const raceFast = (p, fast, tick = null) => {
 // even when a fast close cuts the stage off). Returns the pid or null.
 async function reportSurvivor(manager, workerId, kill, sink) {
   const rec = manager._worker(workerId);
-  const P = require('./process.cjs');
-  if (!(rec && rec.pid && P.pidAlive(rec.pid))) return null;
+  const alive = () => !!rec && require('./pid-identity.cjs').pidLive(rec); // a settled child's pid number may already be another process's
+  if (!alive()) return null;
   await kill();
-  if (!P.pidAlive(rec.pid)) return null;
+  if (!alive()) return null;
   if (sink && Array.isArray(sink.survivors)) sink.survivors.push(rec.pid);
   return rec.pid;
 }

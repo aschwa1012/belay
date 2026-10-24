@@ -24,6 +24,8 @@ const CODES = new Set([
   'E_UNBOUND', 'E_BIND',
   // ADR 0058: a review task assigned to a worker that held a lease on the work under review
   'E_SELF_REVIEW',
+  // ADR 0053: a git step of a worktree or integration call that failed; detail names the argv, exit code and stderr
+  'E_GIT',
 ]);
 
 class CoreError extends Error {

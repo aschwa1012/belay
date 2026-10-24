@@ -162,6 +162,13 @@ const METHODS = {
   'task.fixFromReview': { roles: ORCH, kind: 'write', fn: lazy('./methods-task-fix.cjs', 'fixFromReview') },
   // ADR 0058 decision 7: give up on a task; its lease is released and its files are no longer held.
   'task.cancel': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-task-cancel.cjs', 'cancel') },
+  // ADR 0053: a worktree and branch per task, made and removed by belay, and the explicit merge-and-evaluate step.
+  'task.worktreeCreate': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-worktree.cjs', 'worktreeCreate') },
+  'task.worktreeRemove': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-worktree.cjs', 'worktreeRemove') },
+  'integration.merge': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-integration.cjs', 'merge') },
+  'integration.remove': { roles: ['operator'], kind: 'write', fn: lazy('./methods-integration.cjs', 'remove') },
+  'integration.list': { roles: ALL, kind: 'read', fn: lazy('./methods-integration.cjs', 'list') },
+  'integration.get': { roles: ALL, kind: 'read', fn: lazy('./methods-integration.cjs', 'get') },
 
   'lease.renew': { roles: ['worker'], kind: 'write', fn: task.renew },
   'lease.release': { roles: ['worker', 'operator'], kind: 'write', fn: task.release },

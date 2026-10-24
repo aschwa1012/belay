@@ -279,7 +279,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     const nowMs = Date.now() - t0;
     const { events, next, pending_deaths } = diffWorkers({
       prev: state.baseline, rows, runId, nowMs, graceMs: DEATH_GRACE_MS,
-      orphanGraceMs: ORPHAN_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid),
+      orphanGraceMs: ORPHAN_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid), sinceAt: t0,
     });
     state.baseline = next;
     for (const ev of (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()))).concat(await noteWatcher.poll())) writeWake(ev); // ADR 0058: a turn_end carries its release evaluation
