@@ -80,8 +80,10 @@ function usage() {
     '  -h, --help        print this usage',
     '  --                end options: every later word is an argument (message text, a deny reason)',
     '',
-    'Every command declares exactly one mode. A read-only command starts no process and',
-    'creates no file.',
+    'Every command declares one mode. Three are mixed: memory reads (R) and its write verbs',
+    '(verify, import, embed, restore, report, held settle, resolve, promote, archive, scrub,',
+    'review) are W; doctor --fix and settings <key> <value> write. A read-only command starts',
+    'no process and creates no file.',
     '',
   ].join('\n');
 }
