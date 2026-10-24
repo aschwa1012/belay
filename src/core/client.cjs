@@ -17,6 +17,7 @@ const { pipeName, readOwnerLock, pidAlive, holderReused } = require('./lock.cjs'
 const { WRITE_METHODS, METHODS } = require('./engine.cjs'); // the method table only; nothing here opens a store
 
 const VERIFY_OPERATOR_MS = 20000; // the operator check reads two tables of the host (netstat, a process snapshot); each has its own bound of 10 s
+const MAX_LINE_BYTES = 1024 * 1024; // the longest request line an owner reads (owner.cjs); a longer one is refused here, unsent
 const STARTING_GRACE_MS = 30000; // a lock still `listening: false` this long after it was taken is no longer an owner starting
 const GENUINE_HOLDERS = new Set(); // tokens of locks whose live pid a snapshot showed is the process that took them
 const sleep = ms => new Promise(r => { const t = setTimeout(r, ms); if (t.unref) t.unref(); });
@@ -274,6 +275,9 @@ class Client {
     const timeoutMs = opts.timeoutMs == null ? this.opts.callTimeoutMs : opts.timeoutMs;
     // ADR 0045 decision 2: a bound adapter's session key rides every request; the owner takes the caller from the bind it names.
     const wire = JSON.stringify({ id, method, params: encodeWire(params), ...(this.opts.key ? { key: this.opts.key } : {}) }) + '\n';
+    // Audit 0.3.1 P7: the owner would drop a longer line and close the connection, failing every call on it as a lost owner.
+    const bytes = Buffer.byteLength(wire);
+    if (bytes > MAX_LINE_BYTES) return Promise.reject(err('E_TOO_LONG', `${method} is ${bytes} bytes on the wire and the owner reads at most ${MAX_LINE_BYTES} bytes in one request; it was not sent`, { method, bytes, limit_bytes: MAX_LINE_BYTES, sent: false }));
     return new Promise((resolve, reject) => {
       // api.md §6: a deadline that fires says nothing about whether the owner ran the call. On a write
       // the owner may already have committed the row, and these tables are append-only, so a blind
@@ -316,4 +320,4 @@ class Client {
   }
 }
 
-module.exports = { Client, floatsToB64, encodeWire };
+module.exports = { Client, floatsToB64, encodeWire, MAX_LINE_BYTES };

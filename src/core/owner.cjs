@@ -21,7 +21,8 @@ const { pipeName, acquireLock, releaseLock, resolveDataDir } = lockApi;
 
 const RETIRE_POLL_MS = 500; // a retired owner re-checks its clients' pids this often
 const UNIDENTIFIED_GRACE_MS = 5000; // a connection that has sent nothing counts as attached for this long
-const MAX_LINE_BYTES = 1024 * 1024; // a peer that never sends a newline must not grow this buffer forever
+const { MAX_LINE_BYTES } = require('./client.cjs'); // a peer that never sends a newline must not grow this buffer forever
+const { StringDecoder } = require('node:string_decoder');
 
 function floatsFromB64(b64) {
   const buf = Buffer.from(b64, 'base64');
@@ -281,15 +282,23 @@ class Owner {
   _conn(c) {
     this.conns.add(c);
     c.belayOpenedAt = Date.now();
-    let buf = '';
+    let buf = '', over = false;
+    const dec = new StringDecoder('utf8');
     c.on('data', d => {
-      buf += d.toString('utf8');
-      if (buf.length > MAX_LINE_BYTES) { buf = ''; c.destroy(); return; }
+      if (over) return;
+      buf += dec.write(d);
       let i;
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i);
         buf = buf.slice(i + 1);
         if (line.trim()) this._dispatch(c, line);
+      }
+      // Only the unfinished line counts, in bytes: complete lines that arrive in one large chunk are served (audit 0.3.1 P7).
+      // One past the limit is answered before the connection closes, so the peer reads why instead of a lost owner.
+      if (Buffer.byteLength(buf) > MAX_LINE_BYTES) {
+        over = true; buf = '';
+        const why = { id: null, error: { code: 'E_TOO_LONG', message: `a request line is limited to ${MAX_LINE_BYTES} bytes and this one passed it without a newline; it was not parsed or run, and the connection is closed`, detail: { limit_bytes: MAX_LINE_BYTES } } };
+        c.end(JSON.stringify(why) + '\n', () => c.destroy());
       }
     });
     const gone = () => { this.conns.delete(c); if (this._retireCheck) this._retireCheck(); };
