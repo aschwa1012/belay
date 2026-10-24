@@ -87,9 +87,21 @@ async function adopt({ core, workerId, dataDir }) {
   // 6e-5 item 5: the row has no column for model/allowed_tools/permission_prompt, so a cross-adapter
   // relaunch used to fall back to this build's defaults; argv.json/mcp.json name what actually ran.
   const launchOpts = LC.readLaunchOptions(L.workerDir(dataDir, row.id));
+  // ADR 0024 amendment 4: the built-in tool list comes from the harness row, never from argv.json, which the worker can edit. The row wins
+  // when the two disagree. A row with no record (written before the column) is trusted only when argv.json does not show a narrowed list;
+  // if it does, the harness cannot tell a worker it narrowed from one the worker edited, so the adopt fails closed (a stop still goes through).
+  const S = require('./surface.cjs');
+  let rowTools = null; let toolsRefusal = null;
+  if (row.substrate === 'claude-code') {
+    if (row.tools != null) {
+      try { rowTools = S.narrowTools(row.tools); } catch (e) { toolsRefusal = Object.assign(new Error(`worker ${row.id}: the row's tools record is not a valid built-in list; a launch is refused (${e.message})`), { code: 'E_ARGS', detail: { worker_id: row.id, reason: 'tools_record_invalid' } }); }
+    } else if (launchOpts.tools != null) {
+      toolsRefusal = Object.assign(new Error(`worker ${row.id} has no tools record on its row, and its argv.json names a narrowed list; the harness cannot tell it from an edited file, so a launch is refused (stop is still allowed)`), { code: 'E_ARGS', detail: { worker_id: row.id, reason: 'tools_record_missing' } });
+    }
+  }
   const w = newWorkerRecord({
     id: row.id, substrate: row.substrate, worktree: row.worktree, dataDir, taskId: row.task_id,
-    model: launchOpts.model, allowedTools: launchOpts.allowedTools, tools: launchOpts.tools,
+    model: launchOpts.model, allowedTools: launchOpts.allowedTools, tools: rowTools,
     nativeMemory: row.native_memory || null, nativeMemoryAuth: row.native_memory_auth || null, trustRecord: true, // ADR 0024 amendment 3: from the harness row, never the worker files; a stop always goes through, an unusable value is refused at the next launch
     permissionMode: row.permission_mode_requested || null, sandbox: null,
     permissionPrompt: launchOpts.permissionPrompt, permitWaitMs: launchOpts.permitWaitMs || 600000,
@@ -106,6 +118,7 @@ async function adopt({ core, workerId, dataDir }) {
   w.baseError = row.base_error || null;
   w.headSha = row.head_sha || null;
   w.lastWrittenSeq = Number.isInteger(row.seq) ? row.seq : null; // the guard's basis for a later restating write
+  if (toolsRefusal) w.adoptRefusal = toolsRefusal; // checkLaunch (native-memory.cjs) throws it on every launch of a Claude Code record
   if (launchOpts.error) w.lastError = { where: 'adopt', ...launchOpts.error };
   w.sessionId = row.session_id || null;
   w.pid = Number.isInteger(row.pid) ? row.pid : null;
@@ -171,6 +184,7 @@ function rowOf(w, state, { runId, adapterPid }) {
     permission_mode_effective: w.permissionModeEffective, claude_code_version: w.claudeCodeVersion,
     effort_requested: w.effort || null, // ADR 0028 decision 3: the request, not the level the substrate used
     native_memory: w.nativeMemory || null, native_memory_auth: w.nativeMemoryAuth || null, // ADR 0024 amendment 3: the harness's record of the lever and of who opted in; a relaunch reads them here, and no write other than the spawn's own sets the second
+    ...(w.substrate !== 'claude-code' ? { tools: null } : w.adoptRefusal && w.adoptRefusal.detail && /^tools_record/.test(w.adoptRefusal.detail.reason || '') ? {} : { tools: w.tools || require('./surface.cjs').CLAUDE_TOOLS }), // a refused adopt writes no tools: its row keeps whatever it had, never the six // ADR 0024 amendment 4: the built-in list this worker runs with, on the row; a relaunch reads it here and never from argv.json
     memory_queries: Array.isArray(w.indexQueries) && w.indexQueries.length ? w.indexQueries : null, // the orchestrator's index queries, kept for a relaunch
     // 6e-5 item 3: `paused` dropped — a parked worker has no process, so it is never mid-turn.
     mid_turn: (state === 'starting' || state === 'running') && !w.turnEnded ? 1 : 0,
