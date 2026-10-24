@@ -61,6 +61,8 @@ async function create(E, caller, args) {
   if (acceptance != null && (typeof acceptance !== 'object' || Array.isArray(acceptance))) {
     throw err('E_ARGS', 'task.acceptance must be an object with optional commands and files_within_owned');
   }
+  const handoffShape = acceptance ? require('./handoff-check.cjs').shapeError(acceptance.handoff) : null; // ADR 0058 decision 6
+  if (handoffShape) throw err('E_ARGS', handoffShape);
   if (acceptance && acceptance.verdict !== undefined && acceptance.verdict !== true) {
     throw err('E_ARGS', 'task.acceptance.verdict must be true or absent: a review task is judged from a worker\'s handed-back verdict');
   }
@@ -276,6 +278,7 @@ async function evaluate(E, caller, args) {
     gate(fresh);
     const checks = [...commandChecks];
     if (fresh.acceptance && fresh.acceptance.verdict === true) checks.push(verdictCheck(E.store, fresh));
+    if (fresh.acceptance && fresh.acceptance.handoff) checks.push(require('./handoff-check.cjs').handoffCheck(E.store, fresh)); // ADR 0058 decision 6
     // Nothing checked is not the same as everything passed. A task with no acceptance criteria has no
     // executable evidence, so it can never reach `done` through this call.
     const executable = checks.length > 0 && checks.every(c => c.executable);

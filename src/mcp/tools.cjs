@@ -223,6 +223,7 @@ const ORCHESTRATOR = [
         },
         files_within_owned: bool(),
         verdict: { const: true },
+        handoff: S({ required: strs('Fields the hand-back result must carry') }),
       }),
       files_owned: strs('Paths relative to the worktree'),
       depends_on: strs('Task ids that must be done before this one can be assigned'),

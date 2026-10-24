@@ -86,3 +86,25 @@ test('fix_from_review: refuses a task that is not a review, a review not evaluat
   await rejects(orch.task.fixFromReview({ review_id: r.id }), 'E_PRECONDITION', /not last evaluated refuted/);
   await rejects(orch.task.fixFromReview({ review_id: 'no-such' }), 'E_NOT_FOUND');
 });
+
+test('handoff acceptance: a research task is done when its hand-back carries each required field, and not before', async () => {
+  const acceptance = { handoff: { required: ['findings', 'summary'] } };
+  for (const bad of [{ required: [] }, { required: 'findings' }, { required: [''] }, []]) {
+    await rejects(orch.task.create({ spec: 'bad', acceptance: { handoff: bad } }), 'E_ARGS', /handoff must be/);
+  }
+  const t = await orch.task.create({ spec: 'find out why', acceptance });
+  const none = await orch.task.evaluate({ task_id: t.id, worktree: dir });
+  const check = (row) => row.results.checks.find((c) => c.kind === 'handoff');
+  assert.deepStrictEqual([none.state, check(none).executable], ['open', false], 'no hand-back yet: not executable');
+  await handBack(t.id, 'r-1', { findings: [], summary: 'nothing found' });
+  const thin = await orch.task.evaluate({ task_id: t.id, worktree: dir });
+  assert.deepStrictEqual([thin.state, check(thin).executable, check(thin).passed, check(thin).detail.missing], ['released', true, false, ['findings']]);
+  // Reassigned, the old hand-back is stale until the new holder releases.
+  await worker('r-2');
+  await orch.task.assign({ task_id: t.id, worker_id: 'r-2' });
+  assert.match(check(await orch.task.evaluate({ task_id: t.id, worktree: dir })).detail.reason, /stale/);
+  const lease = (await orch.task.get({ task_id: t.id })).lease;
+  await workers.get('r-2').lease.release({ lease_id: lease.id, result: { findings: ['the cache key omits the locale'], summary: 'found it' } });
+  const ok = await orch.task.evaluate({ task_id: t.id, worktree: dir });
+  assert.deepStrictEqual([ok.state, check(ok).passed, check(ok).detail.by], ['done', true, 'r-2']);
+});
