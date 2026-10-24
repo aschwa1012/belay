@@ -151,3 +151,17 @@ test('a cancelled task is an ended task to the run-end memory jobs, the note rev
   for (const s of ['released', 'done', 'cancelled']) assert.ok(ENDED_TASK.has(s) && ENDED.has(s) && FINISHED.has(s) && REPORT_ENDED.has(s), s);
   for (const set of [ENDED_TASK, ENDED, FINISHED, REPORT_ENDED]) assert.ok(!set.has('assigned') && !set.has('open'));
 });
+
+test('a second evaluation of the same task and tree while one runs joins it: the commands run once', async () => {
+  const path = require('node:path');
+  const runs = path.join(dir, 'join-runs.txt').split(path.sep).join('/');
+  const slow = { commands: [{ argv: [process.execPath, '-e', `require('fs').appendFileSync(${JSON.stringify(runs)}, 'x'); setTimeout(() => {}, 1500)`], timeout_ms: 20000 }] };
+  const t = await orch.task.create({ spec: 'join', acceptance: slow });
+  await handBack(t.id, 'c-30');
+  const [a, b] = await Promise.all([orch.task.evaluate({ task_id: t.id, worktree: dir }), orch.task.evaluate({ task_id: t.id, worktree: dir })]);
+  assert.strictEqual(require('node:fs').readFileSync(runs, 'utf8'), 'x', 'the command ran once');
+  assert.deepStrictEqual([a.state, b.state], ['done', 'done']);
+  assert.strictEqual([a, b].filter((r) => r.joined_evaluation === true).length, 1, 'one call joined the other');
+  // Once it has finished, a new evaluation is not a join: done is final.
+  await rejects(orch.task.evaluate({ task_id: t.id, worktree: dir }), 'E_TASK_DONE');
+});

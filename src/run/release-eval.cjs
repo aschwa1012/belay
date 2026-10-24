@@ -27,16 +27,26 @@ function summaryOf(row) {
 const unevaluated = (t, runId, workerId) => t.run_id === runId && t.state === 'released' && t.handoff && t.handoff.by === workerId
   && !(t.results && Number(t.results.evaluated_at) >= Number(t.handoff.at));
 
-async function run(w, ctx, ev) {
-  const core = ctx.core;
+const usable = (ctx) => !!(ctx.core && ctx.core.task && typeof ctx.core.task.evaluate === 'function' && typeof ctx.core.task.list === 'function');
+
+// Called in onTurnEnd before the turn is answered: the tasks this worker released with a hand-back that no evaluation has read,
+// so the turn's answer can say `evaluating` (one read; no command runs here). Kept on the record for startRelease.
+async function notePending(w, ctx) {
+  w.releaseIds = null;
+  if (!usable(ctx) || (ctx.shutdownFlags && (ctx.shutdownFlags.closing || ctx.shutdownFlags.closed))) return null;
   let tasks;
-  try { tasks = ((await core.task.list({ states: ['released'] })) || {}).tasks || []; } catch (e) {
+  try { tasks = ((await ctx.core.task.list({ states: ['released'] })) || {}).tasks || []; } catch (e) {
     w.lastError = { where: 'release-eval.list', code: e && e.code, message: e && e.message };
     return null;
   }
-  const mine = tasks.filter((t) => unevaluated(t, ctx.runId, w.id));
-  ev.task_ids = mine.map((t) => t.id);
-  if (!mine.length) return null;
+  const ids = tasks.filter((t) => unevaluated(t, ctx.runId, w.id)).map((t) => t.id);
+  w.releaseIds = ids.length ? { turn: w.turns, ids } : null;
+  return w.releaseIds;
+}
+
+async function run(w, ctx, ev) {
+  const core = ctx.core;
+  const mine = ev.task_ids.map((id) => ({ id }));
   const out = [];
   for (const t of mine) {
     if (ev.cancelled) { out.push({ task_id: t.id, cancelled: true, by: ev.cancelled }); continue; }
@@ -56,10 +66,11 @@ async function run(w, ctx, ev) {
 // Called by onTurnEnd once the turn's row is written; not awaited. One evaluation per worker at a time, none while a lifecycle
 // operation, a park or a stop holds the worker, and none after the run manager closed.
 function startRelease(w, ctx) {
-  const core = ctx.core;
-  if (w.evaluation || w.op || w.parkRequested || w.stopRequested || (ctx.shutdownFlags && (ctx.shutdownFlags.closing || ctx.shutdownFlags.closed))) return null;
-  if (!core || !core.task || typeof core.task.evaluate !== 'function' || typeof core.task.list !== 'function') return null;
-  const ev = { key: `release:${w.id}:${crypto.randomUUID()}`, ctx, turn: w.turns, task_ids: null, cancelled: null, promise: null };
+  const pending = w.releaseIds && w.releaseIds.turn === w.turns ? w.releaseIds.ids : null;
+  w.releaseIds = null; // from here on w.evaluation (or nothing) is what is reported
+  if (!pending || w.evaluation || w.op || w.parkRequested || w.stopRequested || (ctx.shutdownFlags && (ctx.shutdownFlags.closing || ctx.shutdownFlags.closed))) return null;
+  if (!usable(ctx)) return null;
+  const ev = { key: `release:${w.id}:${crypto.randomUUID()}`, ctx, turn: w.turns, task_ids: pending, cancelled: null, promise: null };
   w.evaluation = ev; w.lastEvaluation = ev;
   ev.promise = run(w, ctx, ev).then((out) => { if (out && !ev.cancelled) { w.turnEvaluated = out; w.turnEvaluatedTurn = ev.turn; } return out; }, (e) => {
     w.lastError = { where: 'release-eval', code: e && e.code, message: e && e.message };
@@ -82,6 +93,7 @@ function cancelEvaluation(w, by) {
 // worker_wait's view of the last turn: what its release evaluation found, or the tasks it is still evaluating.
 function evalOf(w) {
   if (w.evaluation && w.evaluation.turn === w.turns) return { evaluating: w.evaluation.task_ids || [] };
+  if (w.releaseIds && w.releaseIds.turn === w.turns) return { evaluating: w.releaseIds.ids }; // about to start
   return w.turnEvaluated && w.turnEvaluatedTurn === w.turns ? { evaluated: w.turnEvaluated } : {};
 }
 
@@ -99,9 +111,12 @@ function clause(evs, room) {
 }
 
 // The turn_end wake with its clause, the whole cut to WAKE_TEXT_MAX: the clause gives way, never the head or the pointer.
-function turnEndText(head, tail, evs) {
+// `evaluating` (task ids still being evaluated) is a count and a pointer, so it fits where a list would not.
+function turnEndText(head, tail, evs, evaluating) {
   const room = WAKE_TEXT_MAX - Buffer.byteLength(head + tail, 'utf8');
-  return `${head}${evs && evs.length ? clause(evs, room) : ''}${tail}`;
+  const n = Array.isArray(evaluating) ? evaluating.length : 0;
+  const ing = n ? cut(` Evaluating ${n} hand-back${n === 1 ? '' : 's'} at release; worker_wait has the result.`, room) : '';
+  return `${head}${evs && evs.length ? clause(evs, room - Buffer.byteLength(ing, 'utf8')) : ''}${ing}${tail}`;
 }
 
 // For each turn_end wake: the release evaluations of that worker's tasks that have landed and were not reported, attached; those
@@ -116,12 +131,13 @@ async function enrichWakes(core, runId, events, seen) {
   const landed = (t) => t.results && t.results.trigger === 'release' && seen.get(t.id) !== t.results.evaluated_at && (!t.handoff || Number(t.results.evaluated_at) >= Number(t.handoff.at));
   for (const ev of events) {
     if (ev.event !== 'turn_end') continue;
-    const evs = [];
+    const evs = []; const ing = [];
     for (const t of tasks) {
       if (t.run_id !== runId || !t.handoff || t.handoff.by !== ev.worker_id) continue;
-      if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); evs.push(summaryOf(t)); } else if (unevaluated(t, runId, ev.worker_id)) pending.set(t.id, { worker_id: ev.worker_id, since: Date.now() });
+      if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); evs.push(summaryOf(t)); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: Date.now() }); ing.push(t.id); }
     }
     if (evs.length) ev.evaluated = evs;
+    if (ing.length) ev.evaluating = ing;
   }
   const out = [...events];
   for (const [id, p] of [...pending]) {
@@ -130,9 +146,18 @@ async function enrichWakes(core, runId, events, seen) {
       seen.set(id, t.results.evaluated_at); pending.delete(id);
       const text = cut(`belay: worker ${p.worker_id}'s hand-back:${clause([summaryOf(t)], WAKE_TEXT_MAX)}`, WAKE_TEXT_MAX);
       out.push({ event: 'evaluated', worker_id: `eval:${id}`, turn: 0, seq: t.results.evaluated_at, task_id: id, text });
-    } else if (!t || t.state !== 'released' || Date.now() - p.since > PENDING_MAX_MS) pending.delete(id);
+    } else if (!t || !unevaluated(t, runId, p.worker_id) || Date.now() - p.since > PENDING_MAX_MS) pending.delete(id);
   }
   return out;
 }
 
-module.exports = { startRelease, cancelEvaluation, evalOf, enrichWakes, clause, turnEndText, summaryOf, WAKE_TEXT_MAX, PENDING_MAX_MS };
+// The headless idle close (orchestrator.cjs) holds while a watched evaluation runs for a worker of this run that is still live:
+// a stopped or dead worker's evaluation was cancelled, so it holds nothing. Returns 'eval:<task id>' entries for the hold record.
+function evaluatingHolds(seen, rows, runId) {
+  const pending = seen && seen.pending;
+  if (!pending || !pending.size) return [];
+  const live = new Set((rows || []).filter((r) => r.run_id === runId && r.pid_alive === true && !['stopped', 'dead', 'paused'].includes(r.state)).map((r) => r.id));
+  return [...pending].filter(([, p]) => live.has(p.worker_id)).map(([id]) => `eval:${id}`);
+}
+
+module.exports = { notePending, evaluatingHolds, startRelease, cancelEvaluation, evalOf, enrichWakes, clause, turnEndText, summaryOf, WAKE_TEXT_MAX, PENDING_MAX_MS };

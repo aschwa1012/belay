@@ -52,3 +52,27 @@ test('a follow-up evaluated wake with a maximal clause is not cut by the mod', a
   assert.strictEqual(capText(text), text, 'the mod would cut this wake');
   assert.deepStrictEqual(await RE.enrichWakes(core, 'r', [], seen), [], 'one follow-up only');
 });
+
+test('a turn_end wake that names evaluations still running fits the budget, with or without landed results', async () => {
+  const { capText, byteLength } = await mod();
+  for (const worker_id of [UUID, LONG_ID]) {
+    for (const [evaluated, evaluating] of [[undefined, ['t1']], [undefined, Array.from({ length: 12 }, (_, i) => `t${i}`)], [evs(3), ['t9', 't10']]]) {
+      const text = wakeText({ worker_id, event: 'turn_end', turn: 99999, evaluated, evaluating });
+      assert.ok(byteLength(text) <= RE.WAKE_TEXT_MAX, `${byteLength(text)} bytes: ${text}`);
+      assert.strictEqual(capText(text), text);
+    }
+  }
+  assert.match(wakeText({ worker_id: 'w1', event: 'turn_end', turn: 2, evaluating: ['t1'] }), /Evaluating 1 hand-back at release; worker_wait has the result\./);
+});
+
+test('the headless idle close holds for a watched evaluation of a live worker of this run, and for nothing else', () => {
+  const seen = new Map();
+  seen.pending = new Map([['t1', { worker_id: 'w1', since: Date.now() }], ['t2', { worker_id: 'w2', since: Date.now() }], ['t3', { worker_id: 'w3', since: Date.now() }]]);
+  const rows = [
+    { id: 'w1', run_id: 'r', pid_alive: true, state: 'running' },
+    { id: 'w2', run_id: 'r', pid_alive: true, state: 'stopped' },
+    { id: 'w3', run_id: 'other', pid_alive: true, state: 'running' },
+  ];
+  assert.deepStrictEqual(RE.evaluatingHolds(seen, rows, 'r'), ['eval:t1']);
+  assert.deepStrictEqual(RE.evaluatingHolds(new Map(), rows, 'r'), []);
+});

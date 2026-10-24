@@ -6,6 +6,28 @@
 
 const { err } = require('./errors.cjs');
 const { createCancel } = require('./evaluate.cjs');
+const rows = require('./rows.cjs');
+
+// ADR 0058: one evaluation of a task in one worktree at a time. A second task.evaluate for the same task, worktree and base while
+// one runs joins it and answers its row (`joined_evaluation: true`), so the commands never run twice in one tree at once. If the
+// running one was cancelled, the joiner runs its own. Keyed in this owner process, where every evaluation runs.
+const RUNNING = new Map(); // task|worktree|base -> the row promise
+const norm = (p) => { const s = String(p).replace(/\\/g, '/').replace(/\/+$/, ''); return process.platform === 'win32' ? s.toLowerCase() : s; };
+async function joinOrRun(E, args, run) {
+  const task = args && args.task_id ? rows.current(E.store, 'task', args.task_id) : null;
+  let key = null;
+  try { const at = task ? require('./methods-worktree.cjs').evaluateTarget(task, args) : null; if (at) key = `${task.id}|${norm(at.worktree)}|${at.base || ''}`; } catch { /* run() refuses it, naming why */ }
+  if (!key) return run();
+  const cur = RUNNING.get(key);
+  if (cur) {
+    try { return { ...(await cur), joined_evaluation: true }; } catch (e) {
+      if (!(e && e.detail && e.detail.cancelled)) throw e; // the joined run's own refusal is this call's too
+    }
+  }
+  const p = run();
+  RUNNING.set(key, p);
+  try { return await p; } finally { if (RUNNING.get(key) === p) RUNNING.delete(key); }
+}
 
 const LIVE = new Map(); // cancel_key -> the evaluation's cancel token, while its commands run
 // A cancel that arrives before its evaluation registered (the two calls race) is remembered, so that evaluation starts cancelled.
@@ -36,4 +58,4 @@ async function evaluateCancel(E, caller, args) {
   return { cancel_key: args.cancel_key, cancelled: true, killed };
 }
 
-module.exports = { register, unregister, cancelled, evaluateCancel, LIVE, EARLY };
+module.exports = { register, unregister, cancelled, evaluateCancel, joinOrRun, LIVE, EARLY, RUNNING };

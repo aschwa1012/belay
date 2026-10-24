@@ -461,4 +461,5 @@ function heldLease(E, taskId, workerId) {
   return l;
 }
 
-module.exports = { create, assign, list, get, evaluate, renew, release, takeControl, view, heldLease, overlaps: holds.overlaps, findCycle, dependsOf, refutedReview, TASK_STATES };
+// ADR 0058: a second evaluation of the same task and tree while one runs joins it (evaluate-cancel.cjs joinOrRun).
+module.exports = { create, assign, list, get, evaluate: (E, caller, args) => require('./evaluate-cancel.cjs').joinOrRun(E, args, () => evaluate(E, caller, args)), renew, release, takeControl, view, heldLease, overlaps: holds.overlaps, findCycle, dependsOf, refutedReview, TASK_STATES };

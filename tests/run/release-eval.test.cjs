@@ -54,7 +54,7 @@ async function releasedTurn(acceptance, result, { stopIdleOnDone = false, during
       fs.writeFileSync(gate, 'go'); // the turn ends only now, after the release
       const atTurnEnd = await m.wait({ worker_ids: ['w1'], timeout_ms: 30000 });
       const w = m._worker('w1');
-      const ev = await until(() => w.lastEvaluation); // started once the turn's row is written
+      const ev = result ? await until(() => w.lastEvaluation) : { promise: Promise.resolve(w.lastEvaluation || null) }; // started once the turn's row is written; none without a hand-back
       const wakeAtTurnEnd = wakeText((await RE.enrichWakes(core, RUN, [{ worker_id: 'w1', event: 'turn_end', turn: 1 }], new Map()))[0]);
       const seen = new Map();
       await RE.enrichWakes(core, RUN, [{ worker_id: 'w1', event: 'turn_end', turn: 1 }], seen); // the poll that saw the turn end
@@ -79,6 +79,7 @@ async function releasedTurn(acceptance, result, { stopIdleOnDone = false, during
 test('a hand-back whose checks pass is evaluated after the turn, off its queue: done, and worker_wait and one wake say so', { timeout: 90000 }, async () => {
   const r = await releasedTurn(PASS, { branch: 'b', head: 'h' });
   assert.strictEqual(r.atTurnEnd.evaluated, undefined, 'the turn ended before its evaluation: worker_wait is not held for it');
+  assert.deepStrictEqual(r.atTurnEnd.evaluating, [r.row.id], 'the answer at turn end names the hand-back being evaluated');
   assert.deepStrictEqual([r.row.state, r.row.results.trigger], ['done', 'release']);
   assert.deepStrictEqual(r.waited.evaluated, [{ task_id: r.row.id, state: 'done', passed: true, executable: true, checks: 1, failing: [] }]);
   const all = [r.wakeAtTurnEnd, ...r.followUp.map((e) => e.text)].join('\n');
@@ -91,7 +92,7 @@ test('a hand-back whose checks fail is evaluated and stays released, naming the 
   assert.deepStrictEqual([r.row.state, r.row.results.passed, r.row.results.trigger], ['released', false, 'release']);
   assert.deepStrictEqual(r.waited.evaluated[0].failing, [`command ${process.execPath} -e process.exit(3) exit 3`]);
   const none = await releasedTurn(PASS, null);
-  assert.deepStrictEqual([none.row.state, none.row.results, none.out, none.waited.evaluated], ['released', null, null, undefined], 'a release with no result is the orchestrator\'s to evaluate');
+  assert.deepStrictEqual([none.row.state, none.row.results, none.out, none.waited.evaluated, none.atTurnEnd.evaluating], ['released', null, null, undefined, undefined], 'a release with no result is the orchestrator\'s to evaluate');
 });
 
 test('a stop during the evaluation does not wait for its command: the command is killed by its handle and nothing is written', { timeout: 120000 }, async () => {

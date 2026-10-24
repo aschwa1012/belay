@@ -127,7 +127,7 @@ function wakeText(event) {
   }
   // ADR 0058: the hand-back's evaluation, as facts, sized so the whole text fits the interactive wake budget.
   return require('./release-eval.cjs').turnEndText(`belay: worker ${event.worker_id} finished turn ${event.turn}.`,
-    ' What it did is in the store: task_list, briefing or memory_search.', event.evaluated);
+    ' What it did is in the store: task_list, briefing or memory_search.', event.evaluated, event.evaluating);
 }
 
 // A worker this run manager (via the orchestrator's own adapter) launched is mid-turn on the store's

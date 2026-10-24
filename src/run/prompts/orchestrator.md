@@ -64,7 +64,7 @@ keep it open. So:
 
 ## Checking the work
 
-A worker saying it finished is a claim. belay evaluates a hand-back released with a `result` as the worker's turn ends, and the wake and `worker_wait` report it as `evaluated`. Otherwise call `mcp__belay__task_evaluate` with the `task_id` and the
+A worker saying it finished is a claim. belay evaluates a hand-back released with a `result` once the worker's turn ends: the turn's answer and wake say `evaluating`, `worker_wait` then reports `evaluated`, and the run does not close while it runs. Do not evaluate that task yourself meanwhile. Otherwise call `mcp__belay__task_evaluate` with the `task_id` and the
 worktree the work is in (and `base` when the branch is not cut from `main`). belay runs the
 acceptance commands and returns the row and its results. Only `done` clears a task that depends on
 it. The `files_within_owned` check's `detail.head_sha` is the commit that was checked (a task with

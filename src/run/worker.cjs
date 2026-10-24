@@ -323,7 +323,7 @@ async function onTurnEnd(w, e, ctx) {
   // shutdown() elects no store owner through these two direct writes (probe-late-turn).
   const checkpointId = await TR.recordTurn(w, e, ctx, MEMORY_TEXT_MAX, DIGEST_KEEP);
   // build step 6e-4: a turn ending after the interrupt while a park is under way is reported paused.
-  w.pendingTurnEnd = null; // fix round, worker.cjs:317: this turn's own resolution is happening now; settle() may resolve turnWaiters via exit again for whatever comes next
+  w.pendingTurnEnd = null; await require('./release-eval.cjs').notePending(w, ctx); // ADR 0058: the answer names a hand-back to evaluate // fix round, worker.cjs:317: this turn's own resolution is happening now; settle() may resolve turnWaiters via exit again for whatever comes next
   for (const r of w.turnWaiters.splice(0)) {
     r({ usage: e.usage, checkpoint_id: checkpointId, is_error: e.is_error, paused: afterInterrupt, subtype: e.subtype });
   }
