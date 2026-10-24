@@ -21,10 +21,10 @@ function runLiveness(store) {
     if (memo.has(runId)) return memo.get(runId);
     const run = rows.current(store, 'run', runId);
     let v;
-    if (!run) v = { live: true, reason: 'live' };
+    if (!run) v = { live: true, reason: 'run_live' };
     else if (run.ended_at != null) v = { live: false, reason: 'run_ended' };
     else if (!pidAlive(run.adapter_pid)) v = { live: false, reason: 'run_dead' };
-    else v = { live: true, reason: 'live' };
+    else v = { live: true, reason: 'run_live' };
     memo.set(runId, v);
     return v;
   };
