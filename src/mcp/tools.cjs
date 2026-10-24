@@ -55,7 +55,7 @@ const ROUTES = {
   // ADR 0058: the assign, then the task sent to the worker (compose.cjs).
   task_assign: { role: 'orchestrator', via: 'compose', method: 'assign' },
   // ADR 0010 amendment 3: the only way an orchestrator over MCP can write `done` and clear a dependency.
-  task_evaluate: { role: 'orchestrator', via: 'core', method: 'task.evaluate' },
+  task_evaluate: { role: 'orchestrator', via: 'compose', method: 'evaluate' }, // ADR 0058: then stop_idle_on_done (compose.cjs)
   fix_from_review: { role: 'orchestrator', via: 'core', method: 'task.fixFromReview' }, // ADR 0058 decision 3
   task_cancel: { role: 'orchestrator', via: 'core', method: 'task.cancel' }, // ADR 0058 decision 7
   // ADR 0015: admitted to the surface, which is nineteen tools from that record. It is the only way

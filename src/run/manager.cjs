@@ -44,7 +44,7 @@ const { POLL_MS } = require('./exit-hold.cjs');
 const now = () => Date.now();
 
 // `memoryLevers`: the run's levers when the caller holds the run row (ADR 0041); `worktree`: the run's (ADR 0043).
-function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = null, memoryLevers = null, worktree = null, agentDefaults = null }) {
+function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = null, memoryLevers = null, worktree = null, agentDefaults = null, stopIdleOnDone = false }) {
   if (!core) fail('E_ARGS', 'createRunManager needs a core');
   if (!dataDir) fail('E_ARGS', 'createRunManager needs a dataDir');
   if (!runId) fail('E_ARGS', 'createRunManager needs a runId');
@@ -68,7 +68,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
   // 6i-2 fix round (item 3, should-fix): `shutdownFlags` carried on ctx itself, so worker.cjs's onTurnEnd
   // (through turn-record.cjs) can gate its own checkpoint/memory write on it exactly as writeRow does.
-  const ctx = { core, runId, dataDir: root, adapterPid: paths.adapterPid || process.pid, writeRow: null, shutdownFlags, compactAt: compactAtTokens, memoryLevers, worktree };
+  const ctx = { core, runId, dataDir: root, adapterPid: paths.adapterPid || process.pid, writeRow: null, shutdownFlags, compactAt: compactAtTokens, memoryLevers, worktree, stopIdleOnDone: stopIdleOnDone === true }; // stopIdleOnDone: ADR 0058
   const writeRow = createWriteRow(ctx, shutdownFlags);
   ctx.writeRow = writeRow;
   ctx.message = (args) => message(args); // the memory jobs' reflection turn (ADR 0047); `message` is declared below
@@ -491,7 +491,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     _waitExit: (id, ms) => W.waitExit(get(id), ms),
     _killSurvivor: (id) => (workers.has(id) ? LC.killSurvivor(workers.get(id), null) : null), // a child by its live handle and exact pid (lifecycle.cjs)
     _closing: () => shutdownFlags.closing, _closed: () => shutdownFlags.closed, // flipped by shutdown once every worker is stopped (lifecycle.cjs)
-    _flags: () => shutdownFlags,
+    _flags: () => shutdownFlags, idleStop: (row) => require('./idle-stop.cjs').stopIfIdleDone(manager, ctx, row), // ADR 0058: the stop_idle_on_done lever
   };
   ctx.manager = manager; // the memory jobs spawn the review job through it
   return manager;

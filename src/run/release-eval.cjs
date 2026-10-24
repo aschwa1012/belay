@@ -34,7 +34,12 @@ async function afterRelease(w, ctx) {
   if (!mine.length) return null;
   const out = [];
   for (const t of mine) {
-    try { out.push(summaryOf(await core.task.evaluate({ task_id: t.id, worktree: w.worktree, trigger: 'release' }))); } catch (e) {
+    try {
+      const row = await core.task.evaluate({ task_id: t.id, worktree: w.worktree, trigger: 'release' });
+      out.push(summaryOf(row));
+      // ADR 0058 decision 8: not awaited, since this runs inside the worker's queue; the stop waits for that queue itself.
+      if (row.state === 'done' && ctx.stopIdleOnDone && ctx.manager) { out[out.length - 1].stop_idle_on_done = true; w.idleStopping = ctx.manager.idleStop(row).then((r) => { if (r) w.idleStop = r; }, () => {}); }
+    } catch (e) {
       out.push({ task_id: t.id, error: (e && e.code) || 'E_INTERNAL', message: String((e && e.message) || e).slice(0, 200) });
     }
   }

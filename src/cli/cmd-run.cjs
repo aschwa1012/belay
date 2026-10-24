@@ -353,7 +353,7 @@ async function run(ctx) {
           model: parsed.model, allowedTools: parsed.allowedTools, effort: eff.effort, agentDefaults: parsed.agentDefaults,
           startupTimeoutMs: parsed.startup_timeout_ms, timeoutMs: parsed.timeout_ms,
           mcpToolTimeoutMs: parsed.mcp_tool_timeout_ms, pollMs: parsed.poll_ms,
-          closeGraceMs: parsed.close_grace_ms, compactAtTokens: parsed.levers.compact_at_tokens, // ADR 0007 decision 3
+          closeGraceMs: parsed.close_grace_ms, compactAtTokens: parsed.levers.compact_at_tokens, stopIdleOnDone: !!parsed.levers.stop_idle_on_done, // ADR 0007 decision 3; ADR 0058
           interactiveSurfaceMs: parsed.interactive_surface_ms, fullscreen: parsed.fullscreen,
           knowledgeAgent: !!(parsed.levers.memory_levers && parsed.levers.memory_levers.knowledge_agent),
           notes: !!(parsed.levers.memory_levers && parsed.levers.memory_levers.notes), // wave 4: the refuted-note wake reads receipts only for a notes run

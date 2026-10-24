@@ -30,7 +30,16 @@ function createCompose({ callCore, manager }) {
     }
   }
 
-  return { assign };
+  // task_evaluate: the evaluation, then (with the stop_idle_on_done lever) the stop of the worker whose hand-back made it done.
+  async function evaluate(args) {
+    const row = await callCore('task.evaluate', args);
+    const r = manager();
+    if (!row || row.state !== 'done' || !r || typeof r.idleStop !== 'function') return row;
+    const stop = await r.idleStop(row);
+    return stop ? { ...row, idle_stop: stop } : row;
+  }
+
+  return { assign, evaluate };
 }
 
 module.exports = { createCompose };

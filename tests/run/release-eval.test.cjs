@@ -19,7 +19,7 @@ const RUN = 'release-eval-run';
 const PASS = { commands: [{ argv: [process.execPath, '-e', 'process.exit(0)'], timeout_ms: 20000 }] };
 const FAIL = { commands: [{ argv: [process.execPath, '-e', 'process.exit(3)'], timeout_ms: 20000 }] };
 
-async function releasedTurn(acceptance, result) {
+async function releasedTurn(acceptance, result, { stopIdleOnDone = false } = {}) {
   const dir = sandbox();
   const gate = path.join(dir, 'gate').split(path.sep).join('/');
   const core = await openCore({ dataDir: dir, caller: callerFor('orchestrator', { run_id: RUN }), embed: false });
@@ -31,7 +31,7 @@ async function releasedTurn(acceptance, result) {
     const task = await core.task.create({ spec: 'do it', acceptance, files_owned: [] });
     const wt = path.join(dir, 'wt');
     fs.mkdirSync(wt, { recursive: true });
-    const m = createRunManager({ core: core.harness(), dataDir: dir, runId: RUN, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
+    const m = createRunManager({ core: core.harness(), dataDir: dir, runId: RUN, stopIdleOnDone, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
     try {
       await m.spawn({ substrate: 'claude-code', worktree: wt.split(path.sep).join('/'), prompt: 'one', worker_id: 'w1', task_id: task.id });
       const lease = (await core.task.get({ task_id: task.id })).lease;
@@ -42,7 +42,11 @@ async function releasedTurn(acceptance, result) {
       const row = await core.task.get({ task_id: task.id });
       const events = await RE.enrichWakes(core, RUN, [{ worker_id: 'w1', event: 'turn_end', turn: 1 }], new Map());
       const again = await RE.enrichWakes(core, RUN, [{ worker_id: 'w1', event: 'turn_end', turn: 2 }], new Map([[task.id, row.results && row.results.evaluated_at]]));
-      return { waited, row, wake: wakeText(events[0]), again: again[0] };
+      // ADR 0058 decision 8: with the lever on, a done task's idle worker is stopped once its turn's row is written.
+      const w = m._worker('w1');
+      const exited = stopIdleOnDone ? await m._waitExit('w1', 20000) : null;
+      await w.idleStopping; // the stop's own receipt
+      return { waited, row, wake: wakeText(events[0]), again: again[0], exited, idleStop: w.idleStop || null, state: w.state };
     } finally { try { await m.shutdown(); } catch { /* best effort */ } }
   } finally {
     if (saved === undefined) delete process.env.FAKE_ANSWER_GATE_FILE; else process.env.FAKE_ANSWER_GATE_FILE = saved;
@@ -78,4 +82,27 @@ test('the wake clause is cut to its bound', () => {
   const c = RE.clause(evs);
   assert.ok(Buffer.byteLength(c, 'utf8') <= RE.CLAUSE_MAX);
   assert.match(c, /\.\.\.$/);
+});
+
+test('stop_idle_on_done: a worker whose released task is evaluated done is stopped gracefully once idle; a failing one is left running', { timeout: 120000 }, async () => {
+  const done = await releasedTurn(PASS, { branch: 'b' }, { stopIdleOnDone: true });
+  assert.strictEqual(done.waited.evaluated[0].stop_idle_on_done, true);
+  assert.ok(done.exited, 'the worker process exited');
+  assert.deepStrictEqual([done.idleStop.stopped, done.idleStop.by, done.idleStop.receipt.graceful, done.state], [true, 'stop_idle_on_done', true, 'stopped']);
+  const failed = await releasedTurn(FAIL, { branch: 'b' }, { stopIdleOnDone: true });
+  assert.deepStrictEqual([failed.idleStop, failed.waited.evaluated[0].stop_idle_on_done, failed.state], [null, undefined, 'running']);
+  const off = await releasedTurn(PASS, { branch: 'b' });
+  assert.deepStrictEqual([off.idleStop, off.state], [null, 'running'], 'the lever is off by default');
+});
+
+test('stop_idle_on_done: the spec lever is a boolean, absent unless on, and reaches the orchestrator adapter argv', () => {
+  const { parseLevers } = require('../../src/cli/run-levers.cjs');
+  assert.strictEqual(parseLevers({ stop_idle_on_done: true }).stop_idle_on_done, true);
+  assert.ok(!('stop_idle_on_done' in parseLevers({})));
+  assert.ok(!('stop_idle_on_done' in parseLevers({ stop_idle_on_done: false })));
+  assert.match(parseLevers({ stop_idle_on_done: 'yes' }).error, /stop_idle_on_done must be true or false/);
+  const L = require('../../src/run/launch.cjs');
+  const args = (on) => L.orchestratorMcpConfig({ runId: 'r', dataDir: 'C:/d', mcpPath: 'm.cjs', stopIdleOnDone: on }).mcpServers.belay.args;
+  assert.ok(args(true).includes('--stop-idle-on-done'));
+  assert.ok(!args(false).includes('--stop-idle-on-done'));
 });

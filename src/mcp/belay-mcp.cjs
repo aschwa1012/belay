@@ -190,7 +190,7 @@ function openRunManagerOnce() {
         // BELAY_FAKE_PATHS, honoured only when set, merges over it so a test can point the run
         // manager at a fake substrate binary without touching the environment the workers inherit.
         agentDefaults: opts.agentDefaults || null, // the config's agents block, resolved by belay run
-        compactAtTokens: opts.compactAt, worktree: opts.worktree || null, // ADR 0007 decision 3; ADR 0043 decision 1
+        compactAtTokens: opts.compactAt, worktree: opts.worktree || null, stopIdleOnDone: !!opts.stopIdleOnDone, // ADR 0007 decision 3; ADR 0043 decision 1; ADR 0058
         memoryLevers: attachedRun() ? require('../run/memory-levers.cjs').leversOfRow(attachedRun()) : null,
         paths: { mcpBinary: __filename.split(path.sep).join('/'), ...FAKE_PATHS },
       }))
