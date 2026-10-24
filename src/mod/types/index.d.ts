@@ -111,7 +111,13 @@ export type BelayPanelSnap = {
   memoryNotice: BelayMemoryNotice | null
   /** One line per failing command: the command and its exit code. */
   errors: string[]
+  /** The reads of the latest round that timed out or failed (their data is from an earlier round). Empty when every read succeeded. */
+  readIssues: BelayReadIssue[]
+  /** When the last round with no read issue ended; null if none has yet. */
+  goodAt: number | null
 }
+
+export type BelayReadIssue = { verb: string; timedOut: boolean; /** The failure in words, clipped; empty for a timeout. */ text: string }
 
 export type BelayPanelWatch = {
   runId: string | null
