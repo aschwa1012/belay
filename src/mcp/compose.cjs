@@ -77,7 +77,23 @@ function createCompose({ callCore, manager, openManager, dataDir = null }) {
     return row && !hasCheck(row.acceptance) ? { ...row, warning: NO_CHECK } : row;
   }
 
-  return { assign, evaluate, spawn, lastReply, create };
+  // task_cancel: the cancel, then a short line to the worker whose lease it ended, when this session launched it.
+  async function cancel(args) {
+    const out = await callCore('task.cancel', args);
+    const l = out && out.released_lease;
+    if (!l || l.holder_role !== 'worker') return { ...out, notified: null };
+    const r = manager();
+    if (!launchedHere(r, l.holder)) return { ...out, notified: { sent: false, reason: `worker ${l.holder} was not launched by this session, so belay has no channel to it` } };
+    const text = `belay: task ${out.task.id} was cancelled${args && args.reason ? ` (${args.reason})` : ''}, and your lease ${l.id} on it has ended. Stop work on it; do not call lease_release for it.`;
+    try {
+      const m = await r.message({ worker_id: l.holder, text });
+      return { ...out, notified: { ...m, sent: !m.queued, queued: !!m.queued } };
+    } catch (e) {
+      return { ...out, notified: { sent: false, reason: `the task is cancelled but the worker was not told: ${e && e.message}`, error: (e && e.code) || 'E_INTERNAL' } };
+    }
+  }
+
+  return { assign, evaluate, spawn, lastReply, create, cancel };
 }
 
 // ADR 0058 decision 10: a row's `seq` is its version in the store, not an order a model should reason about, so every tool answer

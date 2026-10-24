@@ -57,7 +57,7 @@ const ROUTES = {
   // ADR 0010 amendment 3: the only way an orchestrator over MCP can write `done` and clear a dependency.
   task_evaluate: { role: 'orchestrator', via: 'compose', method: 'evaluate' }, // ADR 0058: then stop_idle_on_done (compose.cjs)
   fix_from_review: { role: 'orchestrator', via: 'core', method: 'task.fixFromReview' }, // ADR 0058 decision 3
-  task_cancel: { role: 'orchestrator', via: 'core', method: 'task.cancel' }, // ADR 0058 decision 7
+  task_cancel: { role: 'orchestrator', via: 'compose', method: 'cancel' }, // ADR 0058 decision 7: then the lease holder is told
   worker_last_reply: { role: 'orchestrator', via: 'compose', method: 'lastReply' }, // ADR 0058 (B11): read from the recorded stream
   // ADR 0053: a task's own worktree and branch (action remove routes to task.worktreeRemove, belay-mcp.cjs), and the merge step.
   task_worktree: { role: 'orchestrator', via: 'core', method: 'task.worktreeCreate' },
@@ -299,7 +299,7 @@ const ORCHESTRATOR = [
   },
   {
     name: 'task_cancel',
-    description: 'Give up on a task that is not done: releases its lease and its files_owned, state cancelled (final). Returns the task row and the released lease.',
+    description: 'Give up on a task that is not done: releases its lease and its files_owned, state cancelled (final), and tells the lease holder. Returns the task row, the released lease and notified.',
     inputSchema: S({ task_id: str(), reason: str() }, ['task_id']),
   },
   {

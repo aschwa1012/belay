@@ -39,3 +39,18 @@ test('task_assign reports a message held for a compaction as queued, not sent', 
   assert.deepStrictEqual([now.delivered.sent, now.delivered.queued, now.delivered.channel], [true, false, 'stdin']);
   assert.match(calls[0].text, /lease_release with lease_id L1/);
 });
+
+test('task_cancel tells the worker whose lease it ended, once, naming the task and the lease; a stranger is reported, not messaged', async () => {
+  const { createCompose } = require('../../src/mcp/compose.cjs');
+  const calls = [];
+  const out = (holder) => ({ task: { id: 't9', state: 'cancelled' }, released_lease: holder ? { id: 'L9', holder, holder_role: 'worker' } : null, files_released: [] });
+  const mgr = { _worker: (id) => (id === 'w9' ? {} : null), message: async (a) => { calls.push(a); return { worker_id: a.worker_id, channel: 'stdin', bytes: 1 }; } };
+  const c = (holder) => createCompose({ callCore: async () => out(holder), manager: () => mgr });
+  const told = await c('w9').cancel({ task_id: 't9', reason: 'the plan changed' });
+  assert.deepStrictEqual([told.task.state, told.notified.sent, calls.length], ['cancelled', true, 1]);
+  assert.match(calls[0].text, /task t9 was cancelled \(the plan changed\), and your lease L9 on it has ended/);
+  const stranger = await c('w-other').cancel({ task_id: 't9' });
+  assert.deepStrictEqual([stranger.notified.sent, calls.length], [false, 1]);
+  assert.match(stranger.notified.reason, /not launched by this session/);
+  assert.strictEqual((await c(null).cancel({ task_id: 't9' })).notified, null, 'no lease, nobody to tell');
+});
