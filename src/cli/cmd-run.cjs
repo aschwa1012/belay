@@ -132,15 +132,20 @@ async function run(ctx) {
   if (parsed.error) return usageError(parsed.error);
   eff.effort = parsed.effort; // --effort, else the config's agents.orchestrator.effort; parsed.agentSettings names which
   const mode = fl.interactive ? 'interactive' : parsed.mode; // ADR 0037 decision 1: the flag wins over the spec key
+  const BR = require('./run-brief.cjs');
+  if (parsed.briefText !== null) { // brief_file: belay's own template for this mode, the brief appended after the lever substitution
+    const t = BR.shippedTemplate(mode);
+    parsed.promptFile = t.file; parsed.promptText = t.text;
+  }
   const modeRefusal = RI.refusal(mode, parsed);
   if (modeRefusal) return usageError(modeRefusal);
   // ADR 0031: the counts say what the orchestrator was actually told; the receipt never claims a cap it was not.
   // An interactive run has no timeout (refused above), so its prompt is told none (L3).
-  parsed.promptWarnings = require('./run-prompt-check.cjs').checkPrompt({ promptText: parsed.promptText, promptFile: parsed.promptFile, mode, levers: parsed.levers, timeoutMs: parsed.timeout_ms }); // a stale copy of the template: a warning, never a refusal
+  parsed.promptWarnings = parsed.briefText !== null ? [] : require('./run-prompt-check.cjs').checkPrompt({ promptText: parsed.promptText, promptFile: parsed.promptFile, mode, levers: parsed.levers, timeoutMs: parsed.timeout_ms }); // a stale copy of the template: a warning, never a refusal
   const sub = mode === 'interactive'
     ? substituteLevers(parsed.promptText, parsed.levers, 0, { mode: 'interactive' })
     : substituteLevers(parsed.promptText, parsed.levers, parsed.timeout_ms);
-  parsed.promptText = sub.text;
+  parsed.promptText = parsed.briefText !== null ? BR.appendBrief(sub.text, parsed.briefText) : sub.text;
   parsed.levers.substituted = sub.substituted;
   const ce = mode === 'interactive' ? makeConsole() : null; // decision 6: the close can see a SIGHUP that arrives during it
   require('../run/exe-discovery.cjs').exportConfigured(found, C.effective); // config claude_exe/codex_exe reach every child

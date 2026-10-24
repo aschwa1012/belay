@@ -82,6 +82,7 @@ function createFakeCore({ runId = 'run-fake', resumeLineText = null, failing = {
         workerRows.get(r.id).push(written);
         return record('worker.write', r, written);
       },
+      async list() { return { workers: [...workerRows.keys()].map((id) => core.currentWorker(id)) }; },
       async get({ worker_id }) {
         maybeFail('worker.get');
         const cur = core.currentWorker(worker_id);
