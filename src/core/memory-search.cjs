@@ -97,6 +97,11 @@ function rowsByIds(E, ids) {
   return out;
 }
 
+// The ids among `ids` that another row of their namespace supersedes.
+function supersededAmong(E, ids) {
+  return new Set(E.store.db.prepare(`SELECT DISTINCT e.id FROM memory_entries e WHERE e.id IN (${marks(ids)}) AND EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND s.namespace = e.namespace)`).all(...ids).map(r => r.id));
+}
+
 // ---- the two stages ---------------------------------------------------------------------------------------
 
 async function queryVector(E, caller, o) {
@@ -314,6 +319,8 @@ async function search(E, caller, args) {
   const page = pool.slice(o.offset, o.offset + o.k);
   rows = rows || rowsByIds(E, page.map(h => h.id));
   const debug = o.view === 'full' || o.view === 'debug';
+  // A superseded row is on the page only with include_superseded; the compact view says which ones are, as it says what a row supersedes.
+  const replaced = o.includeSuperseded && o.view === 'compact' && page.length ? supersededAmong(E, page.map(h => h.id)) : null;
   const results = [];
   let below = 0;
   for (const h of page) {
@@ -322,7 +329,7 @@ async function search(E, caller, args) {
     const c = sem && cosine.has(h.id) ? cosine.get(h.id) : null;
     const rel = V.relevanceFields(c);
     if (rel.low_relevance) below++;
-    if (o.view === 'compact') { results.push(V.compactRow(r, c)); continue; }
+    if (o.view === 'compact') { results.push(V.compactRow(r, c, !!(replaced && replaced.has(r.id)))); continue; }
     const out = { ...viewRow(r, debug ? 'full' : 'index', h.score), ...(o.view === 'index' ? rel : {}) };
     if (debug) {
       out.score = h.score;
@@ -339,12 +346,13 @@ async function search(E, caller, args) {
   }
 
   // ADR 0057 decision 4: absence is "nothing relevant is known here". Both modes ran, the semantic scan covered every in-scope row (the
-  // keyword index sees every row; a row with no vector is named, and one left out establishes nothing), and no scanned row reaches the
-  // floor. offset and min_score narrow the page, never the claim, which is about every scanned row.
+  // keyword index sees every row; a row with no vector is named, and one left out establishes nothing), no scanned row reaches the floor,
+  // and the keyword half matched no row: a keyword hit can be the exact identifier the query names, whatever its cosine. offset and
+  // min_score narrow the page, never the claim, which is about every in-scope row.
   const unembedded = sem ? Math.max(0, considered - sem.scanned) : 0;
   let top = -Infinity;
   for (const v of cosine.values()) if (v > top) top = v;
-  const absence = ran.includes('semantic') && ran.includes('keyword') && unembedded === 0 && top < V.RELEVANCE_FLOOR;
+  const absence = ran.includes('semantic') && ran.includes('keyword') && unembedded === 0 && V.belowFloor(top) && kw.hits.length === 0;
   const out = { warning: V.warningFor(o, ran, failed, results, absence, unembedded, below), results, relevance: V.relevanceOf(sem, sem && sem.model) };
   if (below) out.below_floor = below;
   if (unembedded) out.rows_without_vector = unembedded;
