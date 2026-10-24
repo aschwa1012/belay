@@ -110,7 +110,9 @@ async function runKill(core, workerId) {
   const t0 = Date.now();
   const aliveBeforeSignal = pidAlive(w.pid); // before the kill: the identity check itself takes about a second
   // ADR 0039: the row's pid_created is the identity; a pid held by a different process is refused, not killed.
-  const kp = await P.killProcess(P.rowTarget(w)).catch((e) => ({ tree: { ok: false, terminated: 0, ms: 0, error: e && e.message }, pidKill: { signalled: false, error: 'EIDENTITY' }, identity: null, refused: { refused: 'identity', detail: e && e.message } }));
+  // The kill lock, as at every other kill site (ADR 0039 review): one kill per CLI process today, so it orders nothing yet, but a
+  // second kill site in this process can never interleave with this one.
+  const kp = await P.withKillLock(() => P.killProcess(P.rowTarget(w))).catch((e) => ({ tree: { ok: false, terminated: 0, ms: 0, error: e && e.message }, pidKill: { signalled: false, error: 'EIDENTITY' }, identity: null, refused: { refused: 'identity', detail: e && e.message } }));
   const { tree, pidKill } = kp;
   const goneAfterKill = await P.waitPidGone(w.pid, { timeoutMs: KILL_WAIT_MS });
   const ms_to_dead = goneAfterKill === null ? null : Date.now() - t0;
