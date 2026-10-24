@@ -140,8 +140,11 @@ async function doAsk(manager, ctx, state, args) {
     stand = await standing(manager, core, id);
     const held = manager._worker(id);
     if (held) checkTools(held, id);
-    // A row an earlier adapter left is relaunched with the launch options its argv.json names: check them first.
-    else if (stand === 'ended') checkTools({ tools: require('./lifecycle.cjs').readLaunchOptions(L.workerDir(ctx.dataDir, id)).tools }, id);
+    // A row an earlier adapter left is relaunched with the tool list its row records (ADR 0024 amendment 4); only a row written before that column falls back to argv.json.
+    else if (stand === 'ended') {
+      const row = await core.worker.get({ worker_id: id });
+      checkTools({ tools: Array.isArray(row.tools) ? require('./surface.cjs').narrowTools(row.tools) : require('./lifecycle.cjs').readLaunchOptions(L.workerDir(ctx.dataDir, id)).tools }, id);
+    }
     if (stand === 'live' && manager._worker(id).turnEnded === false) {
       // Mid-turn on an earlier question that timed out: wait that turn out; its answer is not this question's.
       const prior = await manager.wait({ worker_ids: [id], timeout_ms: left() });
@@ -151,7 +154,7 @@ async function doAsk(manager, ctx, state, args) {
     }
     if (stand === 'ended') {
       relaunch = await manager.restart({ worker_id: id, first_turn_timeout_ms: left() });
-      checkTools(manager._worker(id), id); // a row an earlier adapter left: its launch options come from argv.json
+      checkTools(manager._worker(id), id); // a row an earlier adapter left: its tool list comes from its row
       if (relaunch.first_turn_timed_out) fail('E_BUSY', 'the relaunched knowledge agent has not finished its first turn; ask again later', { worker_id: id, branch: relaunch.branch });
     }
   } catch (e) {

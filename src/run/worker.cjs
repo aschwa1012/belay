@@ -118,7 +118,7 @@ async function adopt({ core, workerId, dataDir }) {
   w.baseError = row.base_error || null;
   w.headSha = row.head_sha || null;
   w.lastWrittenSeq = Number.isInteger(row.seq) ? row.seq : null; // the guard's basis for a later restating write
-  if (toolsRefusal) w.adoptRefusal = toolsRefusal; // checkLaunch (native-memory.cjs) throws it on every launch of a Claude Code record
+  if (toolsRefusal) { w.toolsRefusal = toolsRefusal; w.toolsUnknown = true; } // never overwritten (forWorker sets adoptRefusal for other causes): checkLaunch throws the refusal on every launch, and rowOf writes no tools
   if (launchOpts.error) w.lastError = { where: 'adopt', ...launchOpts.error };
   w.sessionId = row.session_id || null;
   w.pid = Number.isInteger(row.pid) ? row.pid : null;
@@ -184,7 +184,7 @@ function rowOf(w, state, { runId, adapterPid }) {
     permission_mode_effective: w.permissionModeEffective, claude_code_version: w.claudeCodeVersion,
     effort_requested: w.effort || null, // ADR 0028 decision 3: the request, not the level the substrate used
     native_memory: w.nativeMemory || null, native_memory_auth: w.nativeMemoryAuth || null, // ADR 0024 amendment 3: the harness's record of the lever and of who opted in; a relaunch reads them here, and no write other than the spawn's own sets the second
-    ...(w.substrate !== 'claude-code' ? { tools: null } : w.adoptRefusal && w.adoptRefusal.detail && /^tools_record/.test(w.adoptRefusal.detail.reason || '') ? {} : { tools: w.tools || require('./surface.cjs').CLAUDE_TOOLS }), // a refused adopt writes no tools: its row keeps whatever it had, never the six // ADR 0024 amendment 4: the built-in list this worker runs with, on the row; a relaunch reads it here and never from argv.json
+    ...(w.substrate !== 'claude-code' ? { tools: null } : w.toolsUnknown ? {} : { tools: w.tools || require('./surface.cjs').CLAUDE_TOOLS }), // a refused adopt writes no tools: its row keeps whatever it had, never the six // ADR 0024 amendment 4: the built-in list this worker runs with, on the row; a relaunch reads it here and never from argv.json
     memory_queries: Array.isArray(w.indexQueries) && w.indexQueries.length ? w.indexQueries : null, // the orchestrator's index queries, kept for a relaunch
     // 6e-5 item 3: `paused` dropped — a parked worker has no process, so it is never mid-turn.
     mid_turn: (state === 'starting' || state === 'running') && !w.turnEnded ? 1 : 0,

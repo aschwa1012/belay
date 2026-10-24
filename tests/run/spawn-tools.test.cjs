@@ -52,8 +52,10 @@ test('mcp__belay stays in --allowedTools only, never in --tools', () => withMgr(
   assert.deepStrictEqual(args.slice(at + 1, at + 3), ['Read', 'mcp__belay']);
 }));
 
-test('omitted allowed_tools gives the full six, and naming all six is the same surface', () => withMgr(async ({ sb, m }) => {
+test('omitted allowed_tools gives the full six, and naming all six is the same surface', () => withMgr(async ({ sb, core, m }) => {
   const a = await spawn(m, sb, 'w-all');
+  const rows = core.rowsFor('w-all');
+  assert.deepStrictEqual(rows[rows.length - 1].tools, ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash'], 'the row of an un-narrowed Claude Code worker records all six');
   assert.deepStrictEqual(a.surface.builtins, SIX);
   assert.strictEqual(flag(argvOf(sb, 'w-all'), '--tools'), 'Read,Edit,Write,Glob,Grep,Bash');
   const b = await spawn(m, sb, 'w-six', { allowed_tools: ['Bash', 'Write', 'Edit', 'Grep', 'Glob', 'Read', 'mcp__belay'] });
@@ -98,7 +100,7 @@ test('a narrowed worker whose init reports an extra tool fails E_NO_READY', () =
   } finally { delete process.env.FAKE_SURFACE; }
 }));
 
-test('restart and pause/resume keep the narrowed list, and a cross-adapter reader recovers it from argv.json', () => withMgr(async ({ sb, m }) => {
+test('restart and pause/resume keep the narrowed list, and argv.json names it', () => withMgr(async ({ sb, m }) => {
   await spawn(m, sb, 'w-keep', { allowed_tools: ['Read', 'Grep', 'Glob', 'mcp__belay'] });
   const r = await m.restart({ worker_id: 'w-keep' });
   assert.deepStrictEqual(r.surface.builtins, ['Glob', 'Grep', 'Read']);
@@ -109,7 +111,7 @@ test('restart and pause/resume keep the narrowed list, and a cross-adapter reade
   const args = argvOf(sb, 'w-keep');
   assert.strictEqual(flag(args, '--tools'), 'Read,Glob,Grep');
   const lo = LC.readLaunchOptions(path.join(sb.data, 'workers', 'w-keep'));
-  assert.deepStrictEqual(lo.tools, ['Read', 'Glob', 'Grep'], 'adopt reads the narrowed list back');
+  assert.deepStrictEqual(lo.tools, ['Read', 'Glob', 'Grep'], 'argv.json records the narrowed list (a record, not the source an adopt trusts)');
   assert.deepStrictEqual(lo.allowedTools, ['Read', 'Grep', 'Glob', 'mcp__belay']);
 }));
 

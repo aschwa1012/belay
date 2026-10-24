@@ -36,7 +36,7 @@ async function ended(id, mutate) {
   if (mutate) mutate({ sb, core, id });
   return { sb, core, second: mgr(sb, core), first };
 }
-const done = async (...ms) => { for (const m of ms) await m.shutdown().catch(() => {}); };
+const done = async (...ms) => { for (const m of ms.filter(Boolean)) await m.shutdown().catch(() => {}); };
 
 const TAMPER = {
   'argv.json deleted': ({ sb, id }) => fs.rmSync(argvFile(sb, id)),
@@ -111,4 +111,24 @@ test('real core: the tools column round-trips as an array on the row, and surviv
     if (m) await m.shutdown();
     try { await core.shutdownOwner(); } finally { await core.close(); fs.rmSync(sb.root, { recursive: true, force: true }); }
   }
+});
+
+test('adopt: a native-memory denial overwriting adoptRefusal does not make the refused adopt write six, and a later manager still refuses', async () => {
+  const e = await ended('w-t', ({ sb, core, id }) => {
+    const row = lastRow(core, id);
+    delete row.tools; // a pre-column row of a narrowed worker
+    row.native_memory = path.join(sb.root, 'mem').split(path.sep).join('/'); row.native_memory_auth = null; // no grant: adoptDenied answers foreign_native_memory
+  });
+  let third = null;
+  try {
+    const before = e.core.rowsFor('w-t').length;
+    await assert.rejects(e.second.restart({ worker_id: 'w-t', first_turn_timeout_ms: SLOW }), (x) => x.code === 'E_ARGS');
+    const written = e.core.rowsFor('w-t').slice(before);
+    for (const row of written) assert.ok(row.tools == null, `a refused adopt wrote tools ${JSON.stringify(row.tools)}`);
+    // The denial is gone (a later run owns the folder); the tools record is still missing, so the next adopt refuses rather than widening.
+    delete lastRow(e.core, 'w-t').native_memory;
+    third = mgr(e.sb, e.core);
+    await assert.rejects(third.restart({ worker_id: 'w-t', first_turn_timeout_ms: SLOW }), (x) => x.code === 'E_ARGS' && /no tools record/.test(x.message));
+    assert.strictEqual(toolsFlag(e.sb, 'w-t'), 'Read,Grep');
+  } finally { await done(third, e.second, e.first); fs.rmSync(e.sb.root, { recursive: true, force: true }); }
 });
