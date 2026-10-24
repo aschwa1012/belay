@@ -220,7 +220,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     pendingIds.add(id);
     let w; const dirExisted = fs.existsSync(L.workerDir(root, id)); // a directory this spawn creates is its own to remove if it fails before any row exists
     try {
-      if (worker_id) await checkIdFree(core, root, id); // inside the reservation, so two spawns of one id cannot both pass
+      if (worker_id) await checkIdFree(core, root, id, runId); // inside the reservation, so two spawns of one id cannot both pass
       if (task_id) await core.task.assign({ task_id, check_only: true });
       w = W.newWorkerRecord({
         id, substrate, worktree, dataDir: root, taskId: task_id, model,
