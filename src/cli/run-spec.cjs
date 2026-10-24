@@ -29,6 +29,8 @@ const REQUIRED_KEYS = ['worktree', 'prompt_file'];
 // process is spawned (TASK.md step 1).
 // `opts.found` is the discovered config (default: discovered from cwd); `opts.effort` is `--effort`, which beats the
 // config's agents.orchestrator.effort.
+// Job ids are a prefix (up to 11), the run id, a hyphen and a base-36 time (up to 9): 40 keeps them inside the 64-character id grammar.
+const RUN_ID_MAX = 40;
 function parseSpec(specPath, cwd, opts = {}) {
   let raw;
   try { raw = fs.readFileSync(specPath, 'utf8'); }
@@ -92,7 +94,8 @@ function parseSpec(specPath, cwd, opts = {}) {
 
   const orch = AD.forOrchestrator(agents, { model: spec.model, effort: opts.effort || null, builtinModel: L.DEFAULT_ORCHESTRATOR_MODEL });
   const runId = spec.run_id ? String(spec.run_id) : crypto.randomUUID();
-  if (!isPathId(runId)) return { error: pathIdMessage('run_id', runId) }; // it names the orchestrator's temp directory and prefixes job worker ids
+  if (!isPathId(runId)) return { error: pathIdMessage('run_id', runId) };
+  if (runId.length > RUN_ID_MAX) return { error: `run_id ${JSON.stringify(runId.slice(0, 50))} is ${runId.length} characters and the limit is ${RUN_ID_MAX}: belay's own job worker ids carry it (archreview-<run_id>-<time>) and must stay within 64` }; // it names the orchestrator's temp directory and prefixes job worker ids
   return {
     specPath, worktree, promptFile, promptText, runId, levers,
     model: orch.model.value, effort: orch.effort.value, agentSettings: { orchestrator: orch }, agentDefaults: agents,
