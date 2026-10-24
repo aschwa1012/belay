@@ -5,6 +5,7 @@
 const fs = require('node:fs');
 const L = require('./launch.cjs');
 const { fail } = require('./errors.cjs');
+const { isJobId } = require('../core/job-ids.cjs');
 const { WORKER_STATES } = require('../core/schema.cjs');
 const { isPathId, pathIdMessage } = require('../core/path-id.cjs'); // pure
 
@@ -29,11 +30,13 @@ function checkMemoryQueries(list) {
 
 // NTFS is case-insensitive, so W1 and w1 share one directory, and another run's row of the same id would be restated. A caller-named id is fresh only when no row in the
 // store has it (any state, any run, compared without case) and no directory holds it. A restart, resume or adopt of the same row never comes through spawn.
+// A job or knowledge worker's id is the harness's: the model cannot name one (tools.cjs refuses the prefixes), and the harness makes the worker's directory (the corpus, the stage files) before the spawn.
+const harnessOwned = (id) => isJobId(id) || id.startsWith('knowledge-');
 async function checkIdFree(core, dataDir, id) {
   const lower = id.toLowerCase();
   const taken = ((await core.worker.list({ states: WORKER_STATES })).workers || []).find((r) => String(r.id).toLowerCase() === lower);
   if (taken) fail('E_ARGS', `worker_id ${JSON.stringify(id)} is taken: the store has a worker row ${JSON.stringify(taken.id)} (run ${taken.run_id}, ${taken.state}); choose another id`, { worker_id: id, existing_id: taken.id, existing_run_id: taken.run_id });
-  if (fs.existsSync(L.workerDir(dataDir, id))) fail('E_ARGS', `worker_id ${JSON.stringify(id)} is taken: its worker directory exists with no row; choose another id`, { worker_id: id });
+  if (!harnessOwned(id) && fs.existsSync(L.workerDir(dataDir, id))) fail('E_ARGS', `worker_id ${JSON.stringify(id)} is taken: its worker directory exists with no row; choose another id`, { worker_id: id });
 }
 
 function validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id, native_memory = null }) {
