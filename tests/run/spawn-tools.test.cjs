@@ -115,8 +115,16 @@ test('restart and pause/resume keep the narrowed list, and a cross-adapter reade
 
 test('Codex: a proper subset of built-ins is refused E_SUBSTRATE and a web tool E_ARGS, both with nothing written', () => withMgr(async ({ sb, core, m }) => {
   await assert.rejects(m.spawn({ substrate: 'codex', worktree: sb.worktree, prompt: 'hi', worker_id: 'c-narrow', allowed_tools: ['Read', 'Grep'] }),
-    (e) => e.code === 'E_SUBSTRATE' && /allowed_tools/.test(e.message));
+    (e) => e.code === 'E_SUBSTRATE' && /omit allowed_tools for a Codex worker; it cannot narrow Codex's tools/.test(e.message));
   await assert.rejects(m.spawn({ substrate: 'codex', worktree: sb.worktree, prompt: 'hi', worker_id: 'c-web', allowed_tools: ['WebFetch'] }), (e) => e.code === 'E_ARGS');
   assert.strictEqual(fs.existsSync(path.join(sb.data, 'workers', 'c-narrow')), false);
   assert.strictEqual(core.rowsFor('c-narrow').length, 0);
+}));
+
+test('an explicit tools argument (harness callers) wins over the built-ins derived from allowed_tools', () => withMgr(async ({ sb, m }) => {
+  const r = await spawn(m, sb, 'w-explicit', { allowed_tools: ['Read', 'mcp__belay'], tools: ['Read', 'Glob'] });
+  assert.strictEqual(flag(argvOf(sb, 'w-explicit'), '--tools'), 'Read,Glob');
+  assert.deepStrictEqual(r.surface.builtins, ['Glob', 'Read']);
+  // allowed_tools is still validated when tools is given
+  await assert.rejects(spawn(m, sb, 'w-explicit-bad', { allowed_tools: ['WebFetch'], tools: ['Read'] }), (e) => e.code === 'E_ARGS');
 }));

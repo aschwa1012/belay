@@ -200,7 +200,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     if (allowed_tools != null) {
       const narrowed = S.toolsFromAllowed(allowed_tools).tools;
       if (substrate === 'codex') {
-        if (narrowed) fail('E_SUBSTRATE', `allowed_tools cannot narrow a Codex worker's tools (it has no built-in tool list to narrow; allowed_tools has no effect there)`, { allowed_tools });
+        if (narrowed) fail('E_SUBSTRATE', `omit allowed_tools for a Codex worker; it cannot narrow Codex's tools (Codex has no built-in tool list to narrow)`, { allowed_tools });
       } else if (spawnTools == null) spawnTools = narrowed;
     }
     let model = modelArg; let effort = effortArg;
