@@ -103,6 +103,8 @@ function initEvent() {
     else if (FAKE_SURFACE === 'memory') ev.memory_paths = { auto: 'C:/fake/memory/' };
     // S2 fix round F1: a malformed (non-array) plugins field — checkSurface must refuse this, never throw.
     else if (FAKE_SURFACE === 'plugins-object') ev.plugins = {};
+    // ADR 0054: a binary that ignored --tools and reported the six built-ins a worker gets.
+    else if (FAKE_SURFACE === 'six-tools') ev.tools = ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash', ...ev.tools.filter((t) => t.startsWith('mcp__'))];
   }
   return ev;
 }

@@ -22,6 +22,8 @@ const CODES = new Set([
   'E_HELD',
   // ADR 0045: a write with no bound identity on an owner that serves only bound callers, and a bind that cannot be opened or claimed
   'E_UNBOUND', 'E_BIND',
+  // ADR 0054: a git read belay ran for the orchestrator found no git, failed or timed out
+  'E_GIT',
 ]);
 
 class CoreError extends Error {

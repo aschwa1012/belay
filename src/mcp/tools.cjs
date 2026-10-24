@@ -78,6 +78,8 @@ const ROUTES = {
   // ADR 0043 decision 1: listed only when the run's knowledge_agent lever is on (toolsFor's knowledge option);
   // with the lever off the manager refuses it E_LEVER_OFF, and the listing never mentions it.
   knowledge_ask: { role: 'orchestrator', via: 'run', method: 'ask' },
+  // ADR 0054 decision 2: the orchestrator has no shell; belay runs these git reads for it with its own argv (git-read.cjs).
+  git_read: { role: 'orchestrator', via: 'git', method: 'gitRead' },
 };
 
 const BOTH = [
@@ -262,6 +264,20 @@ const ORCHESTRATOR = [
       status: { type: 'string', enum: ['unverified', 'verified', 'refuted'] },
       receipt: str('checkpoint:id, task:id, memory:id, commit:sha or test:text; none for unverified'),
     }, ['id', 'status']),
+  },
+  {
+    // ADR 0054 decision 2. One tool with an op, not four: the listing pays for one schema.
+    name: 'git_read',
+    description: 'Read-only git, run by belay with fixed argv, in worktree, task_id\'s worktree or the run\'s. Returns argv, exit_code, out (16 KB max, truncated marked). Refuses a rev or path that could be an option.',
+    inputSchema: S({
+      op: { type: 'string', enum: ['status', 'log', 'diff', 'show'] },
+      worktree: str(),
+      task_id: str(),
+      rev: str('a..b for log/diff; one commit for show'),
+      path: str(),
+      stat: bool(),
+      n: int('log, default 20'),
+    }, ['op']),
   },
 ];
 
