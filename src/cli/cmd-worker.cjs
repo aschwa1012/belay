@@ -239,7 +239,7 @@ function parseStopRestartArgs(sub, rest) {
 function renderStopText(receipt) {
   if (!receipt.stopped) return `belay worker stop: ${receipt.reason}\n`;
   const exitVal = receipt.exit_code != null ? receipt.exit_code : receipt.exit_signal;
-  const how = receipt.killed ? 'killed' : (receipt.graceful ? 'graceful' : 'already gone');
+  const how = receipt.killed ? 'killed' : (receipt.graceful ? 'graceful' : (receipt.already_exited ? 'already exited, nothing stopped' : 'already gone'));
   return `worker ${receipt.worker_id} pid ${receipt.pid}: stopped, exit ${exitVal} after ${receipt.ms_to_exit} ms, ${how}; session ${receipt.session_id || 'none'} (${receipt.established_by})\n`;
 }
 
