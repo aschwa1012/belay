@@ -195,7 +195,8 @@ function openRunManagerOnce() {
         paths: { mcpBinary: __filename.split(path.sep).join('/'), ...FAKE_PATHS },
       }))
       .then(async (r) => {
-        const control = createWorkerControl({ dataDir: opts.dataDir, manager: r });
+        const adapterCore = await openCoreOnce(); // ADR 0045 decision 5: the pipe acts only on a ticket this adapter redeems with the owner
+        const control = createWorkerControl({ dataDir: opts.dataDir, manager: r, redeem: (a) => adapterCore.ticketRedeem(a) });
         await control.listen();
         runManager = r;
         workerControl = control;

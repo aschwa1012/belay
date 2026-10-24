@@ -5,7 +5,7 @@ process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP =
 // orchestrator (tests/cli/run-wake.test.cjs's scaffolding, shared via tests/cli/stop-helpers.cjs), and,
 // as tests/cli/pause.test.cjs does for the worker form, a real RunManager in this process attached as
 // the run's own worker adapter: `belay run`'s own onAttached writes the row's adapter_pid as its own
-// subprocess pid, so this test's worker adapter pipe binds to that pid (`createWorkerControl({ pid:
+// subprocess pid, so this test's worker adapter pipe binds to that pid (`createWorkerControl({ redeem: null, pid:
 // cliProc.proc.pid })`) — where run-pause.cjs's own pauseWorker/resumeWorker dial. --test-timeout=300000.
 
 const { test } = require('node:test');
@@ -52,7 +52,7 @@ async function startRun(dir, overrides, env) {
   const cliProc = runCli(specPath, dataDir, { BELAY_CLAUDE_EXE: FAKE_CLAUDE, ...env });
   const core = await connectOrchestratorCore(dataDir, runId);
   const m = createRunManager({ core, dataDir, runId, paths: { claudeExe: FAKE_CLAUDE, userSettings: USER_SETTINGS } });
-  const control = createWorkerControl({ dataDir, manager: m, pid: cliProc.proc.pid });
+  const control = createWorkerControl({ redeem: null, dataDir, manager: m, pid: cliProc.proc.pid });
   await control.listen();
   return { dataDir, runId, orchestratorDir, cliProc, core, m, control };
 }

@@ -456,6 +456,13 @@ class Core {
   async bindOpen(identity, { noExpiry = false } = {}) { return this._bind('bind.open', { identity, ...(noExpiry ? { no_expiry: true } : {}) }); }
   async bindStatus(bindId) { return this._bind('bind.status', { bind_id: bindId }); }
   async bindRevoke(bindId) { return this._bind('bind.revoke', { bind_id: bindId }); }
+  // ADR 0045 decision 5: a control-pipe ticket. issue: the operator, before it dials a worker adapter's pipe; redeem: the adapter.
+  async ticketIssue(args) { return this._ticket('ticket.issue', args); }
+  async ticketRedeem(args) { return this._ticket('ticket.redeem', args); }
+  async _ticket(method, params) {
+    if (!this.owner || this.owner.stopped) await this._ensureWriter(method);
+    return this.isOwner() ? this.owner.ticketCall(method, params, this.caller) : this.client.call(method, { ...params, caller: this.caller }, { timeoutMs: 10000 });
+  }
   async _bind(method, params) {
     if (!this.owner || this.owner.stopped) await this._ensureWriter(method);
     return this.isOwner() ? this.owner.bindCall(method, params, { role: 'operator', run_id: this.caller.run_id }) : this.client.call(method, { ...params, caller: this.caller }, { timeoutMs: 10000 });

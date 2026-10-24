@@ -50,6 +50,7 @@ class Owner {
     // unless opts.operatorCheck vouches for the connection. A keyed request is bound in either mode: its caller is the bind's.
     this.mode = this.opts.mode === 'bound' ? 'bound' : 'claimed';
     this.binds = new BindRegistry(this.dataDir, { ttlMs: this.opts.bindTtlMs });
+    this.tickets = require('./tickets.cjs').createTickets({ ttlMs: this.opts.ticketTtlMs }); // ADR 0045 decision 5: control-pipe tickets, memory only
     this.startedAt = Date.now();
     // ADR 0045 decision 4: a `bound` owner vouches for an operator by the operator's process (operator-check.cjs), unless the caller
     // brought its own check. Where the peer cannot be examined (not Windows) it has no check and fails closed.
@@ -321,6 +322,8 @@ class Owner {
 
   // ADR 0045 decision 2: open, read or revoke a bind (owner-admit.cjs).
   bindCall(method, params, caller) { return require('./owner-admit.cjs').bindCall(this, method, params, caller); }
+  // ADR 0045 decision 5: issue or redeem a control-pipe ticket (tickets.cjs). `caller` is the admitted identity.
+  ticketCall(method, params, caller) { return method === 'ticket.issue' ? this.tickets.issue(caller, params) : this.tickets.redeem(caller, params); }
 
   _serve(c, req) {
     // What the retirement check needs about this client; liveness is then a pid check, never the client's word (ADR 0051).
@@ -360,9 +363,10 @@ class Owner {
       return;
     }
     // ADR 0045 decision 2: the bind verbs are the owner's own, never the engine's (api.md §1).
-    if (req.method === 'bind.open' || req.method === 'bind.status' || req.method === 'bind.revoke') {
+    if (req.method === 'bind.open' || req.method === 'bind.status' || req.method === 'bind.revoke' || req.method === 'ticket.issue' || req.method === 'ticket.redeem') {
       const params = req.params || {};
-      Promise.resolve().then(() => this.bindCall(req.method, params, params.caller)).then(
+      const { caller, ...rest } = params;
+      Promise.resolve().then(() => (req.method.startsWith('ticket.') ? this.ticketCall(req.method, rest, caller) : this.bindCall(req.method, params, params.caller))).then(
         (result) => { if (!c.destroyed) c.write(JSON.stringify({ id: req.id, result }) + '\n'); },
         (e) => this._refuse(c, req, { code: e.code || 'E_INTERNAL', message: e.message, detail: e.detail }));
       return;

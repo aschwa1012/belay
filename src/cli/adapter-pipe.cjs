@@ -115,6 +115,17 @@ async function callWorkerAdapter(core, dataDir, { workerId, method, params, boun
   }
   ladder.push({ rung: 3, ok: true, established_by: `pidAlive(${run.adapter_pid})` });
 
+  // ADR 0045 decision 5: a ticket from the owner for this run, worker and verb, which the adapter redeems before it acts. On a bound
+  // owner it is issued only to a caller the operator check vouches for. A refusal ends the climb at rung 3; an issue is named on rung 3.
+  let ticket;
+  try {
+    ({ ticket } = await core.ticketIssue({ run_id: run.id, worker_id: workerId, verb: method.slice('worker.'.length) }));
+  } catch (e) {
+    ladder.push({ rung: 3, ok: false, established_by: `ticket.issue answered ${e.code || 'E_INTERNAL'}` });
+    return failure(workerId, ladder, last, `the owner issued no ticket for ${method} of ${workerId}: ${e.message}`, { code: e.code || 'E_INTERNAL', message: e.message, detail: e.detail });
+  }
+  ladder[ladder.length - 1].ticket = `ticket.issue for ${method} of ${workerId} in run ${run.id}`;
+
   // Rung 4: dial the adapter's own pipe. Rung 5: the bounded call. Closed in a `finally` on every path.
   const pipe = adapterPipeName(dataDir, run.adapter_pid);
   const client = new Client(dataDir, {
@@ -132,7 +143,7 @@ async function callWorkerAdapter(core, dataDir, { workerId, method, params, boun
 
     let result;
     try {
-      result = await client.call(method, params, { timeoutMs: boundMs });
+      result = await client.call(method, { ...params, ticket }, { timeoutMs: boundMs });
     } catch (e) {
       const reason = e.code === 'E_TIMEOUT'
         ? `the adapter did not answer ${method} within ${boundMs} ms; it may have acted, so re-read the row`

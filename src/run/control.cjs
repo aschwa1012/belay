@@ -14,7 +14,11 @@ const { adapterPipeName } = require('../core/lock.cjs');
 const MAX_LINE_BYTES = 1024 * 1024;
 const METHODS = ['worker.message', 'worker.stop', 'worker.restart', 'worker.pause', 'worker.resume'];
 
-function createWorkerControl({ dataDir, manager, pid = process.pid }) {
+// `redeem` (ADR 0045 decision 5): ({ ticket, worker_id, verb }) => a promise that rejects unless the owner redeems that ticket; the
+// adapter passes its core's ticketRedeem. `null` serves without tickets (tests that drive the manager directly); there is no default,
+// so a control that forgot it cannot be created.
+function createWorkerControl({ dataDir, manager, pid = process.pid, redeem }) {
+  if (redeem !== null && typeof redeem !== 'function') throw Object.assign(new Error('createWorkerControl needs redeem: the ticket check, or null to serve without one'), { code: 'E_ARGS' });
   const pipe = adapterPipeName(dataDir, pid);
   let server = null;
   const conns = new Set();
@@ -65,7 +69,7 @@ function createWorkerControl({ dataDir, manager, pid = process.pid }) {
       return;
     }
     const fnName = req.method.slice('worker.'.length);
-    const { caller, ...params } = req.params || {};
+    const { caller, ticket, ...params } = req.params || {};
     if (fnName === 'pause' || fnName === 'resume') {
       params.by = `${caller.role}:${caller.pid}${fnName === 'pause' && typeof params.reason === 'string' && params.reason ? ` [${params.reason}]` : ''}`; // ADR 0034: the run pause's cause
       delete params.reason;
@@ -73,7 +77,9 @@ function createWorkerControl({ dataDir, manager, pid = process.pid }) {
     // Fix round, should-fix finding: tracked from here, not from the reply write alone, so close()
     // actually waits out a manager call in flight (a stop still running its graceful close) instead
     // of returning at once because nothing had reached `write()` yet.
+    // The ticket is redeemed before the manager is called, so a refused one has done nothing.
     const p = Promise.resolve()
+      .then(() => (redeem ? redeem({ ticket, worker_id: params.worker_id, verb: fnName }) : null))
       .then(() => manager[fnName](params))
       .then((result) => write(c, JSON.stringify({ id: req.id, result }) + '\n'))
       .catch((e) => write(c, JSON.stringify({ id: req.id, error: { code: e.code || 'E_INTERNAL', message: e.message, detail: e.detail } }) + '\n'));
