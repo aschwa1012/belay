@@ -43,6 +43,8 @@ async function heldSettle(E, caller, args) {
   const reason = C.clean(L.checkText(args.reason, 'reason', 500, 'memory.heldSettle: ')).text;
   const rows = E.store.p("SELECT id, namespace, body FROM memory_entries WHERE type = 'held' AND written_by = 'harness' AND json_extract(body, '$.note_id') = ? AND json_extract(body, '$.state') = 'held' ORDER BY created_at DESC, rowid DESC").all(args.id);
   const mine = rows.filter((r) => !args.project || r.namespace === `held/${args.project}`);
+  // A compare-and-set that finds no hold to compare is a failed precondition (the in-transaction read below answers the same way), not a missing note.
+  if (!mine.length && args.if_awaiting === true) throw err('E_PRECONDITION', `note ${args.id} has no active hold${args.project ? ` in held/${args.project}` : ''}, so nothing was settled`, { id: args.id, awaiting: false, state: null });
   if (!mine.length) throw err('E_NOT_FOUND', `note ${args.id} has no active hold${args.project ? ` in held/${args.project}` : ''}`, { id: args.id });
   const held = { id: mine[0].id, namespace: mine[0].namespace, b: JSON.parse(mine[0].body) };
   const project = held.namespace.slice('held/'.length);
