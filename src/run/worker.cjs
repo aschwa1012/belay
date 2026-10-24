@@ -101,7 +101,7 @@ async function adopt({ core, workerId, dataDir }) {
   }
   const w = newWorkerRecord({
     id: row.id, substrate: row.substrate, worktree: row.worktree, dataDir, taskId: row.task_id,
-    model: launchOpts.model, allowedTools: launchOpts.allowedTools, tools: rowTools,
+    model: launchOpts.model, allowedTools: launchOpts.allowedTools, tools: rowTools, maxBudgetUsd: launchOpts.maxBudgetUsd, // the cost cap the last launch ran with (argv.json; the row has no column for it)
     nativeMemory: row.native_memory || null, nativeMemoryAuth: row.native_memory_auth || null, trustRecord: true, // ADR 0024 amendment 3: from the harness row, never the worker files; a stop always goes through, an unusable value is refused at the next launch
     permissionMode: row.permission_mode_requested || null, sandbox: null,
     permissionPrompt: launchOpts.permissionPrompt, permitWaitMs: launchOpts.permitWaitMs || 600000,
@@ -110,7 +110,6 @@ async function adopt({ core, workerId, dataDir }) {
   });
   // W2-3: every receipt column comes from the row; head_sha is asked of git again if the adopted worker later settles (SF1).
   w.indexQueries = Array.isArray(row.memory_queries) ? row.memory_queries : [];
-  w.maxBudgetUsd = launchOpts.maxBudgetUsd; // the cost cap the last launch ran with (argv.json; the row has no column for it)
   w.initModel = row.model || null;
   w.cacheReadTokens = row.cache_read_tokens || 0;
   w.cacheCreationTokens = row.cache_creation_tokens || 0;
