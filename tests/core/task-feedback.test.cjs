@@ -143,9 +143,11 @@ test('fix_from_review called again for the same review returns the open fix it m
   assert.strictEqual(first.existing, undefined);
 });
 
-test('a cancelled task is an ended task to the run-end memory jobs and the note review, as released and done are', () => {
+test('a cancelled task is an ended task to the run-end memory jobs, the note review, its facts and the report verdicts, as released and done are', () => {
   const { ENDED_TASK } = require('../../src/run/memory-jobs.cjs');
   const { ENDED } = require('../../src/run/note-review.cjs');
-  for (const s of ['released', 'done', 'cancelled']) assert.ok(ENDED_TASK.has(s) && ENDED.has(s), s);
-  assert.ok(!ENDED_TASK.has('assigned') && !ENDED.has('open'));
+  const { FINISHED } = require('../../src/core/note-review-facts.cjs');
+  const { ENDED_TASK: REPORT_ENDED } = require('../../src/core/note-report-verdicts.cjs');
+  for (const s of ['released', 'done', 'cancelled']) assert.ok(ENDED_TASK.has(s) && ENDED.has(s) && FINISHED.has(s) && REPORT_ENDED.has(s), s);
+  for (const set of [ENDED_TASK, ENDED, FINISHED, REPORT_ENDED]) assert.ok(!set.has('assigned') && !set.has('open'));
 });
