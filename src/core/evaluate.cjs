@@ -43,7 +43,8 @@ function resolveWindowsShim(argv, platform = process.platform, execPath = proces
 
 // `env`, when given, replaces the child's environment (git.cjs passes the owner's own plus its fixed git variables), and
 // `tail` raises the 2,000-character output cap for a caller that parses the whole output (`git worktree list`).
-function runCommand(argvGiven, cwd, timeoutMs, { env, tail = TAIL } = {}) {
+// `onChild(child)`, when given, is told the live child handle as soon as it is spawned (a cancel kills it by that handle).
+function runCommand(argvGiven, cwd, timeoutMs, { env, tail = TAIL, onChild } = {}) {
   return new Promise(resolve => {
     const t0 = Date.now();
     // A missing worktree or cwd is named as such: left to spawn it reads as ENOENT for the executable.
@@ -57,6 +58,7 @@ function runCommand(argvGiven, cwd, timeoutMs, { env, tail = TAIL } = {}) {
     } catch (e) {
       return resolve({ executable: false, exit_code: null, ms: Date.now() - t0, timed_out: false, stdout: '', stderr: '', spawn_error: e.code || e.message });
     }
+    if (onChild) onChild(child);
     let out = '', errText = '', settled = false, timedOut = false, killing = null, pipesDropped = false;
     const timer = setTimeout(() => { timedOut = true; killing = killTree(child); }, timeoutMs);
     timer.unref();
@@ -184,7 +186,16 @@ async function filesWithinOwned(worktree, filesOwned, base, baseSource) {
   };
 }
 
-async function runAcceptance(acceptance, worktree, filesOwned, { base, baseSource } = {}) {
+// A cancel token (ADR 0058): `cancel()` kills the command running now by its live child handle (exact identity, ADR 0039)
+// and skips the rest. Returns the kills' receipts.
+function createCancel() {
+  const live = new Set();
+  const c = { cancelled: false, by: null, live,
+    async cancel(by) { c.cancelled = true; c.by = by || null; return Promise.all([...live].map((child) => killTree(child))); } };
+  return c;
+}
+
+async function runAcceptance(acceptance, worktree, filesOwned, { base, baseSource, cancel = null } = {}) {
   const checks = [];
   const commands = (acceptance && Array.isArray(acceptance.commands)) ? acceptance.commands : [];
   for (const c of commands) {
@@ -192,16 +203,19 @@ async function runAcceptance(acceptance, worktree, filesOwned, { base, baseSourc
       checks.push({ kind: 'command', argv: c && c.argv, executable: false, exit_code: null, ms: 0, passed: false, detail: { reason: 'acceptance command argv must be a non-empty array of strings' } });
       continue;
     }
+    if (cancel && cancel.cancelled) break; // the caller discards the run
     const cwd = c.cwd ? path.resolve(worktree, c.cwd) : worktree;
-    const r = await runCommand(c.argv, cwd, Number(c.timeout_ms) > 0 ? Number(c.timeout_ms) : DEFAULT_COMMAND_TIMEOUT_MS);
+    let mine = null;
+    const r = await runCommand(c.argv, cwd, Number(c.timeout_ms) > 0 ? Number(c.timeout_ms) : DEFAULT_COMMAND_TIMEOUT_MS, cancel ? { onChild: (ch) => { mine = ch; cancel.live.add(ch); if (cancel.cancelled) killTree(ch); } } : {});
+    if (mine) cancel.live.delete(mine);
     checks.push({
       kind: 'command', argv: c.argv, executable: r.executable, exit_code: r.exit_code, ms: r.ms,
       passed: r.executable && r.exit_code === 0 && !r.timed_out,
       detail: { cwd, timed_out: r.timed_out, signal: r.signal || null, tree_kill: r.tree_kill || null, pipes_dropped: r.pipes_dropped || null, spawn_error: r.spawn_error || null, stdout_tail: r.stdout.slice(-400), stderr_tail: r.stderr.slice(-400) },
     });
   }
-  if (acceptance && acceptance.files_within_owned) checks.push(await filesWithinOwned(worktree, filesOwned, base, baseSource));
+  if (acceptance && acceptance.files_within_owned && !(cancel && cancel.cancelled)) checks.push(await filesWithinOwned(worktree, filesOwned, base, baseSource));
   return checks;
 }
 
-module.exports = { runAcceptance, runCommand, readOnlyGitEnv, resolveWindowsShim, filesWithinOwned, normalise, within, parsePorcelainZ, parseNameStatusZ, DEFAULT_BASE_REF, DEFAULT_COMMAND_TIMEOUT_MS };
+module.exports = { runAcceptance, createCancel, runCommand, readOnlyGitEnv, resolveWindowsShim, filesWithinOwned, normalise, within, parsePorcelainZ, parseNameStatusZ, DEFAULT_BASE_REF, DEFAULT_COMMAND_TIMEOUT_MS };

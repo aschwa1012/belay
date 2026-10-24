@@ -162,6 +162,8 @@ const METHODS = {
   'task.fixFromReview': { roles: ORCH, kind: 'write', fn: lazy('./methods-task-fix.cjs', 'fixFromReview') },
   // ADR 0058 decision 7: give up on a task; its lease is released and its files are no longer held.
   'task.cancel': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-task-cancel.cjs', 'cancel') },
+  // ADR 0058: cancel a release evaluation in flight in the owner, by its key; a write so that it runs where the commands run.
+  'task.evaluateCancel': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./evaluate-cancel.cjs', 'evaluateCancel') },
   // ADR 0053: a worktree and branch per task, made and removed by belay, and the explicit merge-and-evaluate step.
   'task.worktreeCreate': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-worktree.cjs', 'worktreeCreate') },
   'task.worktreeRemove': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-worktree.cjs', 'worktreeRemove') },

@@ -271,7 +271,11 @@ async function evaluate(E, caller, args) {
   // Lazy: verdict.cjs is loaded only when a write path needs it, never when a core is opened to read.
   const { verdictCheck } = require('./verdict.cjs');
   const at = require('./methods-worktree.cjs').evaluateTarget(task, args); // ADR 0053 decision 4: the recorded worktree and base
-  const commandChecks = await runAcceptance(task.acceptance, at.worktree, task.files_owned, at);
+  const EC = args.cancel_key !== undefined ? require('./evaluate-cancel.cjs') : null; // ADR 0058: a release evaluation can be cancelled
+  const cancel = EC ? EC.register(args.cancel_key) : null;
+  let commandChecks;
+  try { commandChecks = await runAcceptance(task.acceptance, at.worktree, task.files_owned, { ...at, cancel }); } finally { if (cancel) EC.unregister(args.cancel_key, cancel); }
+  if (cancel && cancel.cancelled) throw EC.cancelled(task, cancel);
   // The commands can run for minutes, so the row is read again inside the transaction that writes it: a
   // release that landed meanwhile (its handoff, its state) is what the verdict check reads and what the
   // written row carries forward (ADR 0025 decision 4).

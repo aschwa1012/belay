@@ -28,6 +28,7 @@ async function runOp(w, name, fn, { waitFor = [] } = {}) {
       fail('E_BUSY', `worker ${w.id} is busy with ${w.op.name}; retry when it returns`, { worker_id: w.id, op: w.op.name });
     }
   }
+  if (w.evaluation) require('./release-eval.cjs').cancelEvaluation(w, `${name} of worker ${w.id}`); // ADR 0058: never waits on acceptance commands
   const waitOn = w.op; // captured before the reservation below; null when nothing was in flight
   const p = (async () => {
     if (waitOn) await waitOn.promise.catch(() => {}); // its own errors are its caller's, not this op's

@@ -325,7 +325,7 @@ async function onTurnEnd(w, e, ctx) {
   // build step 6e-4: a turn ending after the interrupt while a park is under way is reported paused.
   w.pendingTurnEnd = null; // fix round, worker.cjs:317: this turn's own resolution is happening now; settle() may resolve turnWaiters via exit again for whatever comes next
   for (const r of w.turnWaiters.splice(0)) {
-    r({ usage: e.usage, checkpoint_id: checkpointId, is_error: e.is_error, paused: afterInterrupt, subtype: e.subtype, evaluated: w.turnEvaluated });
+    r({ usage: e.usage, checkpoint_id: checkpointId, is_error: e.is_error, paused: afterInterrupt, subtype: e.subtype });
   }
   // 6e-5 item 3: no row is written here while a park is under way — the exit handler's own write is the
   // only one a park ever produces, so the store never claims a non-live state for a still-live process.
@@ -340,7 +340,7 @@ async function onTurnEnd(w, e, ctx) {
   }
   // Review 3, finding F: the turn's memory write goes on the worker's own queue only now, after the
   // waiters and the row, and is not awaited (turn-record.cjs queueMemory).
-  TR.queueMemory(w, e, ctx, MEMORY_TEXT_MAX, checkpointId);
+  TR.queueMemory(w, e, ctx, MEMORY_TEXT_MAX, checkpointId); require('./release-eval.cjs').startRelease(w, ctx); // ADR 0058: a hand-back's evaluation, detached
   await CP.afterTurn(w, e, ctx, turnStarted); // between turns only; never awaits turnStarted (see compaction.cjs)
 }
 

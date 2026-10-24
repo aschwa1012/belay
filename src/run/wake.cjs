@@ -114,7 +114,7 @@ function diffWorkers({ prev, rows, runId, nowMs, graceMs, orphanGraceMs = graceM
 // No worker output, ever: the id, the turn and (for a death) the exit facts are the whole of it.
 // Both shapes stay comfortably under 400 bytes for any id this codebase generates.
 function wakeText(event) {
-  if (event.event === 'note_refuted' || event.event === 'scrub_alarm') return event.text; // note-wake.cjs: belay's own record, built from the core's facts
+  if (event.event === 'note_refuted' || event.event === 'scrub_alarm' || event.event === 'evaluated') return event.text; // evaluated: release-eval.cjs, facts only // note-wake.cjs: belay's own record, built from the core's facts
   if (event.event === 'death') {
     return `belay: worker ${event.worker_id} died during turn ${event.turn} ` +
       `(exit code ${event.exit_code}, signal ${event.exit_signal}, established by ${event.death_established_by}). ` +
@@ -125,8 +125,9 @@ function wakeText(event) {
     return `belay: worker ${event.worker_id} was paused by ${event.paused_by} during turn ${event.turn}; ` +
       `its process is parked and its session kept, and it takes no turn until the operator resumes it.`;
   }
-  return `belay: worker ${event.worker_id} finished turn ${event.turn}.${event.evaluated ? require('./release-eval.cjs').clause(event.evaluated) : ''} ` +
-    `What it did is in the store: task_list, briefing or memory_search.`; // ADR 0058: the hand-back's evaluation, as facts
+  // ADR 0058: the hand-back's evaluation, as facts, sized so the whole text fits the interactive wake budget.
+  return require('./release-eval.cjs').turnEndText(`belay: worker ${event.worker_id} finished turn ${event.turn}.`,
+    ' What it did is in the store: task_list, briefing or memory_search.', event.evaluated);
 }
 
 // A worker this run manager (via the orchestrator's own adapter) launched is mid-turn on the store's
