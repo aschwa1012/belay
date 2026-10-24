@@ -7,6 +7,8 @@
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const net = require('node:net');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const { core: coreOf, sandbox, cleanup, callerFor } = require('../core/helpers.cjs');
 const { openCore } = coreOf('index.cjs');
@@ -98,6 +100,15 @@ test('the CLI path: callWorkerAdapter gets a ticket and the adapter serves it', 
   assert.strictEqual(r.success, true, JSON.stringify(r).slice(0, 400));
   assert.match(r.ladder[2].ticket, /ticket.issue for worker.message of peer/);
   assert.deepStrictEqual(calls.map((c) => c.text), ['via cli']);
+});
+
+test('ticket.issue never elects: with no live owner it is E_NO_OWNER and no owner.lock is created', async () => {
+  const empty = sandbox();
+  const op = await openCore({ dataDir: empty, caller: callerFor('operator'), embed: false });
+  try {
+    await assert.rejects(op.ticketIssue({ run_id: RUN, worker_id: 'peer', verb: 'stop' }), (e) => e.code === 'E_NO_OWNER');
+    assert.strictEqual(fs.existsSync(path.join(empty, 'owner.lock')), false, 'an owner was elected');
+  } finally { await op.close(); cleanup(empty); }
 });
 
 test('a control without a ticket check cannot be created by accident', () => {

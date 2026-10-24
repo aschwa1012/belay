@@ -121,7 +121,7 @@ async function callWorkerAdapter(core, dataDir, { workerId, method, params, boun
   try {
     ({ ticket } = await core.ticketIssue({ run_id: run.id, worker_id: workerId, verb: method.slice('worker.'.length) }));
   } catch (e) {
-    ladder.push({ rung: 3, ok: false, established_by: `ticket.issue answered ${e.code || 'E_INTERNAL'}` });
+    ladder.push({ rung: 3, ok: false, established_by: `ticket.issue answered ${e.code || 'E_INTERNAL'}${e.code === 'E_NO_OWNER' ? ' (no live owner to issue it; nothing was elected)' : ''}` });
     return failure(workerId, ladder, last, `the owner issued no ticket for ${method} of ${workerId}: ${e.message}`, { code: e.code || 'E_INTERNAL', message: e.message, detail: e.detail });
   }
   ladder[ladder.length - 1].ticket = `ticket.issue for ${method} of ${workerId} in run ${run.id}`;
