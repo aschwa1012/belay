@@ -191,8 +191,9 @@ test('the knowledge launch narrows --tools to Read, Glob and Grep, and the surfa
   assert.strictEqual(wide.ok, false, 'the full list on a narrowed launch is a failed launch');
   assert.match(wide.reason, /extra built-in tool\(s\).*Edit/);
   assert.strictEqual(S.checkSurface(ready(['Read', 'Glob', 'Grep']), {}).ok, false, 'and a narrowed init on a full launch is too');
-  // Narrowing only: a tool outside ADR 0024's list, an empty list or a repeat is refused.
-  for (const bad of [['Read', 'WebFetch'], [], ['Read', 'Read'], 'Read']) assert.throws(() => S.narrowTools(bad), (e) => e.code === 'E_ARGS');
+  // Narrowing only: a tool outside ADR 0024's list and ADR 0054's web tools, an empty list or a repeat is refused.
+  for (const bad of [['Read', 'Task'], [], ['Read', 'Read'], 'Read']) assert.throws(() => S.narrowTools(bad), (e) => e.code === 'E_ARGS');
+  assert.deepStrictEqual(S.narrowTools(['Read', 'WebFetch']), ['Read', 'WebFetch'], 'a web tool is a list an agent type may have (ADR 0054)');
   assert.strictEqual(S.narrowTools([...S.CLAUDE_TOOLS]), null, 'the full list is the default');
 });
 

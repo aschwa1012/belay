@@ -15,7 +15,7 @@ test('the orchestrator lists worker_wait, next to the spawn it waits on', async 
   t.after(async () => { await a.close(); a.kill(); });
   await a.initialize();
   const names = (await a.list()).map((x) => x.name);
-  assert.equal(names.length, tools.toolsFor('orchestrator').length) // the count is pinned in schema-budget.test.cjs;
+  assert.equal(names.length, tools.toolsFor('orchestrator').length); // pinned in schema-budget.test.cjs
   assert.ok(names.includes('worker_wait'));
   assert.equal(names[names.indexOf('worker_spawn') + 1], 'worker_wait',
     'it reads beside worker_spawn: that call returns at ready, this one waits for what happens next');

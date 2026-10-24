@@ -130,7 +130,7 @@ test('initialize answers without opening a store and leaves the data dir empty',
   assert.strictEqual(fs.existsSync(data), false, 'initialize created the data dir');
   assert.deepStrictEqual(fs.readdirSync(parent), [], 'initialize wrote into the sandbox');
   // tools/list is also answerable without a store.
-  assert.strictEqual((await a.list()).length, require('../../src/mcp/tools.cjs').toolsFor('orchestrator').length);
+  assert.strictEqual((await a.list()).length, require('../../src/mcp/tools.cjs').toolsFor('orchestrator').length); // pinned in schema-budget.test.cjs
   assert.strictEqual(fs.existsSync(data), false, 'tools/list created the data dir');
 });
 

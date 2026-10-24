@@ -271,6 +271,8 @@ async function callTool(name, args) {
     throw fail('E_ROLE', `${name} is not available in ${opts.role} role; it belongs to ${roleOf(name)}`, { tool: name, role: opts.role });
   }
   validateArgs(name, args, { notes: notesOn, role: opts.role });
+  // ADR 0057 decision 1: a model's search answers the compact view unless it asks for debug or index; the Core API's default stays full.
+  if (name === 'memory_search' && args && typeof args === 'object' && args.view === undefined) args = { ...args, view: 'compact' };
   // ADR 0053: one tool, two core methods; `action` is the tool's, never the core's.
   if (name === 'task_worktree') {
     const { action, ...rest } = args || {};
@@ -294,6 +296,7 @@ async function callTool(name, args) {
     const [line, doc] = await Promise.all([callCore('continuity.resumeLine', args), callCore('continuity.resumeDoc', args)]);
     return { line, doc };
   }
+  if (route.via === 'git') { const G = require('./git-read.cjs'); return G.gitRead(args, { runWorktree: opts.worktree || null, taskWorktree: G.taskWorktreeVia(callCore) }); }
   if (route.via === 'run') {
     const r = await openRunManagerOnce();
     if (typeof r[route.method] !== 'function') throw fail('E_INTERNAL', `the run manager exposes no method ${route.method}`, { method: route.method });

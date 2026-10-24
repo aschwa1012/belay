@@ -86,6 +86,8 @@ const ROUTES = {
   // ADR 0043 decision 1: listed only when the run's knowledge_agent lever is on (toolsFor's knowledge option);
   // with the lever off the manager refuses it E_LEVER_OFF, and the listing never mentions it.
   knowledge_ask: { role: 'orchestrator', via: 'run', method: 'ask' },
+  // ADR 0054 decision 2: the orchestrator has no shell; belay runs these git reads for it with its own argv (git-read.cjs).
+  git_read: { role: 'orchestrator', via: 'git', method: 'gitRead' },
 };
 
 const BOTH = [
@@ -94,7 +96,7 @@ const BOTH = [
     description: 'Store one entry. Returns the row written: id, action, namespace, worker id. Refuses text past the embedder\'s window.',
     inputSchema: S({
       text: str('One self-contained statement'),
-      namespace: str('Defaults to this run; moved to the project when your task ends'),
+      namespace: str('Default: this run only; later runs see it only with project_writes on'),
       type: { type: 'string', enum: ['fact', 'episode', 'procedure'] },
       tags: strs(),
       provenance: str('Source, e.g. a path'),
@@ -110,7 +112,7 @@ const BOTH = [
   },
   {
     name: 'memory_search',
-    description: 'Search memory. Query with one short task line for what you will do, naming files or symbols; several short queries beat one long one. view index: ids and titles only. Result names modes_run, modes_failed, absence_established (true only if both ran and found nothing).',
+    description: 'Search memory. Query with one short task line for what you will do, naming files or symbols; several short queries beat one long one. view index: ids and titles only. Result names modes_run, modes_failed, absence_established (true only if both ran and none reached the relevance floor).',
     inputSchema: S({
       query: str(),
       namespace: str(),
@@ -118,7 +120,7 @@ const BOTH = [
       min_score: num(),
       include_superseded: bool(),
       mode: { type: 'string', enum: ['semantic', 'keyword', 'hybrid'] },
-      view: { type: 'string', enum: ['full', 'index'] },
+      view: { type: 'string', enum: ['debug', 'index'] },
       filter: { type: 'object' },
       order: { type: 'string', enum: ['score', 'newest', 'oldest'] },
       offset: int(),
@@ -176,7 +178,7 @@ const ORCHESTRATOR = [
       prompt: str('First message'),
       task_id: str('Assign this task once ready and prepend its resume line'),
       model: str(),
-      agent_type: { type: 'string', enum: WORKER_TYPES, description: 'Configured model and effort default' },
+      agent_type: { type: 'string', enum: WORKER_TYPES, description: 'Configured model, effort and tools' },
       effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
       memory_queries: strs('Up to 4 task lines naming the situations the worker will be in, each max 160 bytes'),
       allowed_tools: strs(),
@@ -311,6 +313,20 @@ const ORCHESTRATOR = [
       status: { type: 'string', enum: ['unverified', 'verified', 'refuted'] },
       receipt: str('checkpoint:id, task:id, memory:id, commit:sha or test:text; none for unverified'),
     }, ['id', 'status']),
+  },
+  {
+    // ADR 0054 decision 2. One tool with an op, not four: the listing pays for one schema.
+    name: 'git_read',
+    description: 'Read-only git, run by belay with fixed argv, in worktree, task_id\'s worktree or the run\'s. Returns argv, exit_code, out (16 KB max, truncated marked). Refuses a rev or path that could be an option.',
+    inputSchema: S({
+      op: { type: 'string', enum: ['status', 'log', 'diff', 'show'] },
+      worktree: str(),
+      task_id: str(),
+      rev: str('a..b for log/diff; one commit for show'),
+      path: str(),
+      stat: bool(),
+      n: int('log, default 20'),
+    }, ['op']),
   },
 ];
 

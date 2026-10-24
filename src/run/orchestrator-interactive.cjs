@@ -168,7 +168,6 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
   const bind = await require('./bind-launch.cjs').bindOrchestrator(core, runId, { interactive: true }); // ADR 0045 decision 2; no expiry, the trust dialog comes first
   const written = L.writeOrchestratorFiles({
     dir: orchestratorDir, runId, dataDir, mcpPath: L.mcpServerPath(), settingsPath: L.userSettingsPath(), cwd: worktree, compactAt: compactAtTokens,
-    knowledgeAgent: !!spec.knowledgeAgent, // ADR 0043 decision 1: --worktree only with the knowledge agent on
     agentDefaults: spec.agentDefaults || null, bind, stopIdleOnDone: !!spec.stopIdleOnDone, // ADR 0058
   });
   fs.writeFileSync(path.join(written.dir, 'prompt.txt'), promptText);
@@ -465,6 +464,6 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
 }
 
 // The `--tools` value the launch passed (ADR 0024); recorded as requested, never as verified.
-function toolsRequested() { return require('./surface.cjs').CLAUDE_TOOLS.slice(); }
+function toolsRequested() { return require('./surface.cjs').ORCHESTRATOR_TOOLS.slice(); }
 
 module.exports = { runInteractiveOrchestrator, clearRunStart, makeConsole, TIMED_OUT, FAST_CLOSE_BUDGET_MS };

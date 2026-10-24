@@ -20,6 +20,7 @@ const I = require('./instructions.cjs'); // ADR 0024 amendment 1: the spawn-time
 const { fail } = require('./errors.cjs');
 const { checkWorkerId, checkIdFree, validateSpawnArgs, checkMemoryQueries, discardUnstarted } = require('./spawn-args.cjs');
 const AD = require('./agent-defaults.cjs'); // the config's per-agent-type model and effort defaults
+const TP = require('./tool-policy.cjs'); // ADR 0054 decision 4: a worker type's tool list
 const MP = require('./memory-preface.cjs'); // ADR 0042: the first-message preface and the memory hooks
 const NM = require('./native-memory.cjs'); const NR = require('./note-review.cjs'); // NM: ADR 0024 amendment 3, the native_memory guards // wave 4: the notes' review (the reviewer's brief, the short review job)
 // build step 6c: `wait`, `decideBranch`, `restartFirstText` and the resume-window constants moved
@@ -196,20 +197,14 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       permission_prompt = false, permit_wait_ms = 600000, effort: effortArg = null, tools = null, agent_type = null, max_budget_usd = null, memory_queries = null, native_memory = null,
     } = opts || {};
     checkWorkerId(worker_id); // before anything else: the id is a path component
-    // allowed_tools narrows the built-in tool surface (`--tools`), not only the pre-approval. Checked first: a refusal writes nothing.
-    // An explicit `tools` (harness callers) wins. Codex has no built-in list to narrow: a proper subset is refused, the rest has no effect.
-    let spawnTools = tools;
-    if (allowed_tools != null) {
-      const narrowed = S.toolsFromAllowed(allowed_tools).tools;
-      if (substrate === 'codex') {
-        if (narrowed) fail('E_SUBSTRATE', `omit allowed_tools for a Codex worker; it cannot narrow Codex's tools (Codex has no built-in tool list to narrow)`, { allowed_tools });
-      } else if (spawnTools == null) spawnTools = narrowed;
-    }
+    // ADR 0054 decision 4: the agent type's tool list, narrowed by allowed_tools, is the surface (`--tools`); an explicit harness
+    // `tools` wins. Checked first: a refusal writes nothing. A Codex worker takes only the six (it has no list to narrow).
+    if (agent_type !== null && !AD.WORKER_TYPES.includes(agent_type)) fail('E_ARGS', `spawn agent_type must be one of ${AD.WORKER_TYPES.join(', ')}`, { agent_type });
+    const { tools: spawnTools, allowedTools } = TP.spawnSurface(agentDefaults, { substrate, agent_type, allowed_tools, tools, defaultAllowed: L.DEFAULT_ALLOWED_TOOLS });
     let model = modelArg; let effort = effortArg;
     let nativeMemory = MP.nativeMemory(ctx, substrate, worker_id, native_memory); if (nativeMemory && nativeMemory.then) nativeMemory = await nativeMemory; // sync unless the run's levers are still to be read (the worker record must exist in the same tick)
     let agent = null;
     if (agent_type !== null) {
-      if (!AD.WORKER_TYPES.includes(agent_type)) fail('E_ARGS', `spawn agent_type must be one of ${AD.WORKER_TYPES.join(', ')}`, { agent_type });
       // The configured default fills only what the caller left out; an explicit model or effort always wins.
       agent = AD.forWorker(agentDefaults, { agent_type, model: modelArg, effort: effortArg, substrate });
       model = agent.model.value;
@@ -230,7 +225,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       if (task_id) await core.task.assign({ task_id, check_only: true, worker_id: id });
       w = W.newWorkerRecord({
         id, substrate, worktree, dataDir: root, taskId: task_id, model,
-        allowedTools: allowed_tools, permissionMode: permission_mode, sandbox,
+        allowedTools, permissionMode: permission_mode, sandbox,
         permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort, tools: spawnTools, maxBudgetUsd: max_budget_usd, nativeMemory,
       });
       w.indexQueries = indexQueries; // the orchestrator's situation lines for this worker's memory index (memory.embedQuery extra_texts)

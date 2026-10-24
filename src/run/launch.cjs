@@ -309,7 +309,7 @@ function orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath = null, comp
   ];
   if (logPath) argv.push('--log', fwd(logPath));
   if (compactAt != null) argv.push('--compact-at', String(compactAt)); // ADR 0007 decision 3: the workers' lever
-  if (worktree) argv.push('--worktree', fwd(path.resolve(worktree))); // ADR 0043 decision 1: the knowledge agent's cwd
+  if (worktree) argv.push('--worktree', fwd(path.resolve(worktree))); // the run's worktree: the knowledge agent's cwd (ADR 0043 decision 1), git_read's default (ADR 0054)
   if (agentDefaultsPath) argv.push('--agent-defaults', fwd(agentDefaultsPath)); // the config's per-agent-type defaults; absent when none are set
   return stopIdleOnDone ? [...argv, '--stop-idle-on-done'] : argv; // ADR 0058: the run lever stop_idle_on_done; absent when off
 }
@@ -337,9 +337,9 @@ function assertOutsideDataDir(dir, dataDir) {
   return d;
 }
 
-// `knowledgeAgent`: the run's memory block turns the knowledge agent on, so the adapter is told the worktree (its
-// cwd). With the lever off the adapter's argv is the base one, byte for byte.
-function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, logPath = null, cwd = null, compactAt = null, knowledgeAgent = false, agentDefaults = null, bind = null, stopIdleOnDone = false }) {
+// The adapter is told the run's worktree (`cwd`): the knowledge agent's cwd (ADR 0043 decision 1) and git_read's default
+// directory (ADR 0054 decision 2). `knowledgeAgent` is accepted from older callers and no longer changes the argv.
+function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, logPath = null, cwd = null, compactAt = null, agentDefaults = null, bind = null, stopIdleOnDone = false }) {
   const outDir = assertOutsideDataDir(dir, dataDir);
   fs.mkdirSync(outDir, { recursive: true });
   const agentDefaultsPath = require('./agent-defaults.cjs').writeFile(outDir, agentDefaults); // null unless the config sets a worker type's default
@@ -347,7 +347,7 @@ function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, lo
   const orchSettingsPath = fwd(path.join(outDir, 'settings.json'));
   fs.writeFileSync(
     mcpJsonPath,
-    JSON.stringify(orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath, compactAt, worktree: knowledgeAgent ? cwd : null, agentDefaultsPath, bind, stopIdleOnDone }), null, 2) + '\n'
+    JSON.stringify(orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath, compactAt, worktree: cwd, agentDefaultsPath, bind, stopIdleOnDone }), null, 2) + '\n'
   );
   // Same hygiene as a worker (ADR 0007 §6): the operator's plugins and their hooks are disabled, so
   // the orchestrator's own context is not shaped by whatever is installed on the host. For the
@@ -385,8 +385,8 @@ function orchestratorLaunchArgv(opts) {
     fwd(mcpJsonPath),
     '--settings',
     fwd(settingsPath),
-    '--tools', // ADR 0024 decisions 1 to 3: the orchestrator gets the same list and treatment.
-    S.CLAUDE_TOOLS.join(','),
+    '--tools', // ADR 0024 decisions 1 to 3, with ADR 0054 decision 1's list (the six without Bash).
+    S.ORCHESTRATOR_TOOLS.join(','),
     S.SETTING_SOURCES_ARG,
   ];
   if (allowedTools && allowedTools.length) argv.push('--allowedTools', ...allowedTools);
@@ -425,8 +425,8 @@ function orchestratorInteractiveArgv(opts) {
     fwd(mcpJsonPath),
     '--settings',
     fwd(settingsPath),
-    '--tools',
-    S.CLAUDE_TOOLS.join(','),
+    '--tools', // ADR 0054 decision 1: the interactive orchestrator gets the same list, no Bash
+    S.ORCHESTRATOR_TOOLS.join(','),
     S.SETTING_SOURCES_ARG,
   ];
   if (allowedTools && allowedTools.length) argv.push('--allowedTools', ...allowedTools);
