@@ -101,3 +101,23 @@ test('belay run with both fields is exit 2 naming both, and nothing is created',
     assert.ok(!fs.existsSync(`${r.dir}/.belay`));
   } finally { cleanup(r.dir); }
 });
+
+test('brief_file resolves against the spec\'s directory, not the cwd, and an empty prompt_file counts as not given', () => {
+  const s = sandbox({ brief_file: 'b.md', prompt_file: '' }, { 'b.md': 'from the spec dir\n' });
+  try {
+    const p = parseSpec(s.specPath, os.tmpdir(), { found: NOCONF });
+    assert.strictEqual(p.error, undefined);
+    assert.strictEqual(p.briefFile, `${s.dir}/b.md`);
+    assert.strictEqual(p.briefText, 'from the spec dir\n');
+  } finally { cleanup(s.dir); }
+});
+
+test('belay run --interactive with brief_file: prompt.txt is the interactive template with the brief appended', () => {
+  const r = go({ brief_file: 'brief.md', memory: { notes: false } }, { 'brief.md': 'Interactive brief.\n' }, ['--interactive']);
+  try {
+    assert.strictEqual(r.status, 0, r.stderr.slice(-600));
+    const prompt = fs.readFileSync(`${r.dir}/orch/prompt.txt`, 'utf8');
+    assert.ok(prompt.startsWith(shippedTemplate('interactive').text.slice(0, 200)), 'starts with the interactive template');
+    assert.ok(prompt.endsWith(`${HEADING}\n\nInteractive brief.\n`), 'brief appended');
+  } finally { cleanup(r.dir); }
+});
