@@ -339,6 +339,12 @@ async function run(ctx) {
     const message = `no such data dir: ${dataDir}`;
     return { code: 1, text: `belay memory ${parsed.sub}: ${message}\n`, json: { error: { code: 'E_NOT_FOUND', message } } };
   }
+  // A verb that acts on rows already there finds none in a store that does not exist yet, so it is refused before an election would
+  // create that store. import makes rows, and embed with nothing to embed is answered by the core.
+  if ((parsed.sub === 'verify' || LC.writes(parsed)) && !fs.existsSync(path.join(dataDir, 'memory.db'))) {
+    const message = `no store at ${dataDir}/memory.db, so there is no row to ${parsed.sub}; nothing was written`;
+    return { code: 1, text: `belay memory ${parsed.sub}: ${message}\n`, json: { error: { code: 'E_NOT_FOUND', message } } };
+  }
 
   // A test may hand in a fake core. Production always uses the real one.
   const open = process.env.BELAY_TEST_MODE === '1' && typeof ctx.openCore === 'function' ? ctx.openCore : openCore;

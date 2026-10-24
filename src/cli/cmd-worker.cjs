@@ -307,6 +307,12 @@ async function runKillOrRm(ctx, sub, workerId) {
     };
     return { code: 1, text: renderRmText(receipt), json: receipt };
   }
+  // rm elects an owner to write, and an election in a data dir with no store creates one; with no store there is no row to forget.
+  if (sub === 'rm' && !fs.existsSync(path.join(dataDir, 'memory.db'))) {
+    const message = `no store at ${dataDir}/memory.db, so no worker row exists for ${workerId}; nothing was written`;
+    const receipt = { worker_id: workerId, forgotten: false, reason: message, error: { code: 'E_NOT_FOUND', message } };
+    return { code: 1, text: renderRmText(receipt), json: receipt };
+  }
 
   const core = await openCore({ dataDir, caller: { role: 'operator', run_id: 'cli', pid: process.pid } });
   try {
