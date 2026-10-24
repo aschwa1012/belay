@@ -7,8 +7,7 @@
 // with spoofed headers, and a researcher with the web tools and no shell has no reason to.
 //
 // Pure: it requires nothing, so `belay settings` and the adapter's argv check can load it on a read path (invariant 9).
-// Not yet called by RunManager.spawn: the integration step is named in ADR 0054 (it lands on the spawn path that
-// fix/spawn-tools changes, so it waits for that merge).
+// RunManager.spawn asks spawnSurface for a worker's --tools list and its extra pre-approvals before anything is written.
 
 const SIX = ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash']; // ADR 0024 decision 1; surface.cjs CLAUDE_TOOLS (a test pins the two equal)
 const WEB_TOOLS = ['WebFetch', 'WebSearch'];
@@ -66,8 +65,31 @@ function resolve(defaults, { agent_type = null, allowed_tools = null } = {}) {
   return { tools, source: ceiling.source, preapprove: tools.filter((t) => WEB_TOOLS.includes(t)) };
 }
 
-function fail(message, detail) {
-  return Object.assign(new Error(message), { code: 'E_ARGS', detail });
+function fail(message, detail, code = 'E_ARGS') {
+  return Object.assign(new Error(message), { code, detail });
 }
 
-module.exports = { SIX, WEB_TOOLS, POLICY_TOOLS, READ_ONLY, BUILTIN, checkList, forType, resolve };
+const isSix = (list) => list.length === SIX.length && SIX.every((t) => list.includes(t));
+
+// RunManager.spawn's whole tool decision. Returns { tools, allowedTools }: `tools` the narrowed --tools list (null for the
+// six, as surface.cjs narrowTools has it), `allowedTools` the --allowedTools list (null: the launch default) with the web
+// tools on the surface added. An explicit harness `tools` (the knowledge agent, the stage jobs) wins over the policy, and
+// `allowed_tools` is still checked against the policy. Throws before anything is written: E_ARGS from resolve, and
+// E_SUBSTRATE for a Codex worker whose list is not the six (Codex has no built-in list to narrow, and a Codex researcher
+// would have a shell).
+function spawnSurface(defaults, { substrate, agent_type = null, allowed_tools = null, tools = null, defaultAllowed = [] }) {
+  const policy = resolve(defaults, { agent_type, allowed_tools });
+  if (substrate === 'codex') {
+    if (!isSix(policy.tools)) {
+      if (allowed_tools != null) throw fail('omit allowed_tools for a Codex worker; it cannot narrow Codex\'s tools (Codex has no built-in tool list to narrow)', { allowed_tools }, 'E_SUBSTRATE');
+      throw fail(`a ${agent_type} worker's tools are ${policy.tools.join(', ')} (${policy.source}), and Codex has no built-in tool list to narrow to them; spawn it on claude-code, or set agents.${agent_type}.tools to the six`, { agent_type, tools: policy.tools, source: policy.source }, 'E_SUBSTRATE');
+    }
+    return { tools: null, allowedTools: allowed_tools };
+  }
+  if (tools != null) return { tools, allowedTools: allowed_tools };
+  const base = allowed_tools || defaultAllowed;
+  const extra = policy.preapprove.filter((t) => !base.includes(t));
+  return { tools: isSix(policy.tools) ? null : policy.tools, allowedTools: extra.length ? [...base, ...extra] : allowed_tools };
+}
+
+module.exports = { SIX, WEB_TOOLS, POLICY_TOOLS, READ_ONLY, BUILTIN, checkList, forType, resolve, spawnSurface };
