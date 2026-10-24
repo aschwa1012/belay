@@ -1,7 +1,8 @@
 'use strict';
 // message.cjs — worker_message, moved verbatim out of manager.cjs to keep that file under its line budget. A Claude Code worker takes
 // the text on its stdin; a Codex worker, whose previous process has exited by design, gets a new resume process. Refused E_BUSY while
-// a stop, restart or resume holds the worker (lifecycle.cjs).
+// a stop, restart or resume holds the worker (lifecycle.cjs). During a harness /compact a Claude Code message is queued (ADR 0058,
+// compaction.cjs queueIfCompacting), and only after those refusals: a message is never held for a worker that is being stopped.
 
 const P = require('./process.cjs');
 const PI = require('./pid-identity.cjs'); // ADR 0039
@@ -13,12 +14,15 @@ const { holdForLaunch } = require('./restart.cjs');
 const now = () => Date.now();
 
 function createMessage({ core, ctx, forWorker, refuseIfPaused, sendStdin, launch, guarded, writeRow }) {
-  return async function message({ worker_id, text }) {
+  return async function message({ worker_id, text: given }) {
+    let text = given;
     const w = await forWorker(worker_id);
     refuseIfPaused(w); LC.refuseMessageDuringOp(w);
     if (typeof text !== 'string' || !text) fail('E_ARGS', 'message needs text');
     if (w.substrate === 'claude-code') {
-      W.assertTakesMessage(w, fail, P.pidAlive); // live stdin, and no harness /compact in flight (E_BUSY)
+      const held = W.assertTakesMessage(w, fail, P.pidAlive, text); // live stdin; queued during a harness /compact (ADR 0058)
+      if (held && held.queued) return { worker_id, channel: 'queued', ...held, pid: w.pid, turn: w.turns + 1 };
+      if (held && held.flush) text = [...held.flush, text].join('\n\n'); // left queued behind an expired compaction: written first
       // A message starts a turn, mid-turn again until the next `result` (`launch` resets this per process).
       // 5b fix round, finding 4: the send runs INSIDE turnStarted, before its own await, so no window is
       // left between the liveness check above and the write for a death to land in.

@@ -159,7 +159,7 @@ test('template: the shipped orchestrator prompt has both placeholders and the fo
   assert.match(text, /Review standard section below, verbatim, in the reviewer's prompt/);
   assert.ok(!/Include this section/.test(text), 'the instruction is outside the section a reviewer receives');
   assert.match(text, /\(0: the first review\)/);
-  assert.match(text, /not one for a failed acceptance check/);
+  assert.match(text, /A failed acceptance check is not a fix round/); // ADR 0058: worded beside fix_from_review
   assert.ok(!/\bland\b/.test(text), 'no "land" wording');
   const done = substituteLevers(text, { max_fix_rounds: 2, fix_cutoff: 'orchestrator' }, 0);
   assert.ok(!done.text.includes('{{'), 'substitution leaves no placeholder');

@@ -1,0 +1,181 @@
+'use strict';
+// task-feedback.test.cjs — ADR 0058 in the core: what the orchestrator prompt asked the orchestrator to remember about tasks,
+// the store now does. Real core against a sandbox store, as handoff-verdict.test.cjs does.
+
+const { test, before, after } = require('node:test');
+const assert = require('node:assert');
+const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
+
+const { openCore } = core('index.cjs');
+
+let dir, orch;
+const workers = new Map();
+const PASS = { commands: [{ argv: [process.execPath, '-e', 'process.exit(0)'], timeout_ms: 20000 }] };
+
+before(async () => {
+  dir = sandbox();
+  orch = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
+  await orch.run.attach({ adapter_pid: process.pid, max_fix_rounds: 2 });
+});
+
+after(async () => {
+  for (const c of workers.values()) await c.close();
+  try { await orch.shutdownOwner(); } finally { await orch.close(); cleanup(dir); }
+});
+
+async function worker(id) {
+  if (workers.has(id)) return workers.get(id);
+  await orch.worker.write({ id, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${id}`, last_event_at: Date.now() });
+  const c = await openCore({ dataDir: dir, caller: callerFor('worker', { worker_id: id }), embed: false });
+  workers.set(id, c);
+  return c;
+}
+
+const rejects = async (p, code, re) => {
+  await assert.rejects(p, (e) => {
+    assert.strictEqual(e.code, code, `expected ${code}, got ${e.code}: ${e.message}`);
+    if (re) assert.match(e.message, re);
+    return true;
+  });
+};
+
+async function handBack(taskId, workerId, result) {
+  const w = await worker(workerId);
+  const a = await orch.task.assign({ task_id: taskId, worker_id: workerId });
+  return w.lease.release({ lease_id: a.new_lease.id, reason: 'done', ...(result ? { result } : {}) });
+}
+
+// Work task `t` done by `coder`, then a review over it refuted by `judge`.
+async function refutedReviewOf(t, coder, judge) {
+  await handBack(t.id, coder, { branch: 'b', head: 'h' });
+  assert.strictEqual((await orch.task.evaluate({ task_id: t.id, worktree: dir })).state, 'done');
+  const r = await orch.task.create({ spec: `review ${t.id}`, depends_on: [t.id], acceptance: { verdict: true } });
+  await handBack(r.id, judge, { verdict: 'refuted', summary: 'the retry never fires', findings: [{ severity: 'blocking', clause: 'a', note: 'retry' }] });
+  await orch.task.evaluate({ task_id: r.id, worktree: dir });
+  return r;
+}
+
+test('fix_from_review: the fix depends on and repairs the judged task, takes its acceptance and files, and quotes the findings', async () => {
+  const w = await orch.task.create({ spec: 'add the retry', acceptance: PASS, files_owned: ['src/retry.cjs'] });
+  const r = await refutedReviewOf(w, 'c-1', 'j-1');
+  const f = await orch.task.fixFromReview({ review_id: r.id });
+  assert.deepStrictEqual([f.state, f.depends_on, f.repairs, f.from_review], ['open', [w.id], w.id, r.id]);
+  assert.deepStrictEqual([f.acceptance, f.files_owned], [PASS, ['src/retry.cjs']]);
+  assert.match(f.spec, /the retry never fires/);
+  assert.match(f.spec, /"clause":"a"/);
+  // A fix of a fix depends on the fix the second review judged, and repairs the original work: one cap counts both.
+  const r2 = await refutedReviewOf(f, 'c-2', 'j-2');
+  const f2 = await orch.task.fixFromReview({ review_id: r2.id, spec: 'try again' });
+  assert.deepStrictEqual([f2.depends_on, f2.repairs, f2.spec], [[f.id], w.id, 'try again']);
+  // max_fix_rounds 2: the third round is refused and nothing is written.
+  const r3 = await refutedReviewOf(f2, 'c-3', 'j-3');
+  const before = (await orch.task.list({})).tasks.length;
+  await rejects(orch.task.fixFromReview({ review_id: r3.id }), 'E_FIX_ROUNDS', /max_fix_rounds is 2/);
+  assert.strictEqual((await orch.task.list({})).tasks.length, before);
+});
+
+test('fix_from_review: refuses a task that is not a review, a review not evaluated refuted, and an unknown id', async () => {
+  const w = await orch.task.create({ spec: 'plain work', acceptance: PASS });
+  await rejects(orch.task.fixFromReview({ review_id: w.id }), 'E_ARGS', /not a review task/);
+  await handBack(w.id, 'c-4');
+  await orch.task.evaluate({ task_id: w.id, worktree: dir });
+  const r = await orch.task.create({ spec: 'review', depends_on: [w.id], acceptance: { verdict: true } });
+  await rejects(orch.task.fixFromReview({ review_id: r.id }), 'E_PRECONDITION', /evaluate it first/);
+  await handBack(r.id, 'j-4', { verdict: 'holds', summary: 'fine' });
+  await orch.task.evaluate({ task_id: r.id, worktree: dir });
+  await rejects(orch.task.fixFromReview({ review_id: r.id }), 'E_PRECONDITION', /not last evaluated refuted/);
+  await rejects(orch.task.fixFromReview({ review_id: 'no-such' }), 'E_NOT_FOUND');
+});
+
+test('handoff acceptance: a research task is done when its hand-back carries each required field, and not before', async () => {
+  const acceptance = { handoff: { required: ['findings', 'summary'] } };
+  for (const bad of [{ required: [] }, { required: 'findings' }, { required: [''] }, []]) {
+    await rejects(orch.task.create({ spec: 'bad', acceptance: { handoff: bad } }), 'E_ARGS', /handoff must be/);
+  }
+  const t = await orch.task.create({ spec: 'find out why', acceptance });
+  const none = await orch.task.evaluate({ task_id: t.id, worktree: dir });
+  const check = (row) => row.results.checks.find((c) => c.kind === 'handoff');
+  assert.deepStrictEqual([none.state, check(none).executable], ['open', false], 'no hand-back yet: not executable');
+  await handBack(t.id, 'r-1', { findings: [], summary: 'nothing found' });
+  const thin = await orch.task.evaluate({ task_id: t.id, worktree: dir });
+  assert.deepStrictEqual([thin.state, check(thin).executable, check(thin).passed, check(thin).detail.missing], ['released', true, false, ['findings']]);
+  // Reassigned, the old hand-back is stale until the new holder releases.
+  await worker('r-2');
+  await orch.task.assign({ task_id: t.id, worker_id: 'r-2' });
+  assert.match(check(await orch.task.evaluate({ task_id: t.id, worktree: dir })).detail.reason, /stale/);
+  const lease = (await orch.task.get({ task_id: t.id })).lease;
+  await workers.get('r-2').lease.release({ lease_id: lease.id, result: { findings: ['the cache key omits the locale'], summary: 'found it' } });
+  const ok = await orch.task.evaluate({ task_id: t.id, worktree: dir });
+  assert.deepStrictEqual([ok.state, check(ok).passed, check(ok).detail.by], ['done', true, 'r-2']);
+});
+
+test('task.cancel releases the lease and the files, writes cancelled, and is final', async () => {
+  const t = await orch.task.create({ spec: 'touch a', files_owned: ['src/a.cjs'], acceptance: PASS });
+  await rejects(orch.task.create({ spec: 'clash', files_owned: ['src/a.cjs'] }), 'E_FILES_OVERLAP');
+  await worker('c-9');
+  const a = await orch.task.assign({ task_id: t.id, worker_id: 'c-9' });
+  const out = await orch.task.cancel({ task_id: t.id, reason: 'the plan changed' });
+  assert.deepStrictEqual([out.task.state, out.released_lease.id, out.files_released], ['cancelled', a.new_lease.id, ['src/a.cjs']]);
+  assert.ok(out.released_lease.released_at > 0);
+  assert.deepStrictEqual([out.task.results.cancelled.reason, out.task.results.cancelled.released_lease_id], ['the plan changed', a.new_lease.id]);
+  const view = await orch.task.get({ task_id: t.id });
+  assert.deepStrictEqual([view.holds_files, view.holds_reason, view.lease], [false, 'cancelled', null]);
+  assert.strictEqual((await orch.task.create({ spec: 'takes the file now', files_owned: ['src/a.cjs'] })).state, 'open');
+  await rejects(orch.task.assign({ task_id: t.id, worker_id: 'c-9' }), 'E_ARGS', /cancelled/);
+  await rejects(orch.task.evaluate({ task_id: t.id, worktree: dir }), 'E_ARGS', /cancelled/);
+  await rejects(orch.task.cancel({ task_id: t.id }), 'E_ARGS', /already cancelled/);
+  await rejects(workers.get('c-9').lease.release({ lease_id: a.new_lease.id, result: { x: 1 } }), 'E_ARGS', /already released/);
+  await rejects(orch.task.cancel({ task_id: 'nope' }), 'E_NOT_FOUND');
+  const d = await orch.task.create({ spec: 'quick', acceptance: PASS });
+  await handBack(d.id, 'c-9');
+  await orch.task.evaluate({ task_id: d.id, worktree: dir });
+  await rejects(orch.task.cancel({ task_id: d.id }), 'E_TASK_DONE');
+});
+
+test('fix_from_review called again for the same review returns the open fix it made, and spends no second round', async () => {
+  const w = await orch.task.create({ spec: 'idempotent work', acceptance: PASS });
+  const r = await refutedReviewOf(w, 'c-20', 'j-20');
+  const first = await orch.task.fixFromReview({ review_id: r.id });
+  const before = (await orch.task.list({})).tasks.length;
+  const again = await orch.task.fixFromReview({ review_id: r.id });
+  assert.deepStrictEqual([again.id, again.existing, again.from_review], [first.id, true, r.id]);
+  assert.strictEqual((await orch.task.list({})).tasks.length, before, 'nothing was written');
+  assert.strictEqual(first.existing, undefined);
+});
+
+test('a cancelled task is an ended task to the run-end memory jobs, the note review, its facts and the report verdicts, as released and done are', () => {
+  const { ENDED_TASK } = require('../../src/run/memory-jobs.cjs');
+  const { ENDED } = require('../../src/run/note-review.cjs');
+  const { FINISHED } = require('../../src/core/note-review-facts.cjs');
+  const { ENDED_TASK: REPORT_ENDED } = require('../../src/core/note-report-verdicts.cjs');
+  for (const s of ['released', 'done', 'cancelled']) assert.ok(ENDED_TASK.has(s) && ENDED.has(s) && FINISHED.has(s) && REPORT_ENDED.has(s), s);
+  for (const set of [ENDED_TASK, ENDED, FINISHED, REPORT_ENDED]) assert.ok(!set.has('assigned') && !set.has('open'));
+});
+
+test('a second evaluation of the same task and tree while one runs joins it: the commands run once', async () => {
+  const path = require('node:path');
+  const runs = path.join(dir, 'join-runs.txt').split(path.sep).join('/');
+  const slow = { commands: [{ argv: [process.execPath, '-e', `require('fs').appendFileSync(${JSON.stringify(runs)}, 'x'); setTimeout(() => {}, 1500)`], timeout_ms: 20000 }] };
+  const t = await orch.task.create({ spec: 'join', acceptance: slow });
+  await handBack(t.id, 'c-30');
+  let h;
+  const bound = new Promise((_, rej) => { h = setTimeout(() => rej(new Error('the two evaluations did not end within 30000 ms')), 30000); });
+  const [a, b] = await Promise.race([Promise.all([orch.task.evaluate({ task_id: t.id, worktree: dir }), orch.task.evaluate({ task_id: t.id, worktree: dir })]), bound]).finally(() => clearTimeout(h));
+  assert.strictEqual(require('node:fs').readFileSync(runs, 'utf8'), 'x', 'the command ran once');
+  assert.deepStrictEqual([a.state, b.state], ['done', 'done']);
+  assert.strictEqual([a, b].filter((r) => r.joined_evaluation === true).length, 1, 'one call joined the other');
+  // Once it has finished, a new evaluation is not a join: done is final.
+  await rejects(orch.task.evaluate({ task_id: t.id, worktree: dir }), 'E_TASK_DONE');
+});
+
+test('M19: task.cancel refuses the orchestrator while the operator holds the lease, and lets the operator cancel', async () => {
+  const operator = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
+  try {
+    const t = await orch.task.create({ spec: 'operator holds it', acceptance: PASS });
+    const held = await operator.lease.takeControl({ task_id: t.id });
+    await rejects(orch.task.cancel({ task_id: t.id }), 'E_OPERATOR_HOLDS', /operator holds lease/);
+    assert.strictEqual((await orch.task.get({ task_id: t.id })).state, 'assigned', 'nothing was written');
+    const out = await operator.task.cancel({ task_id: t.id, reason: 'operator gave it up' });
+    assert.deepStrictEqual([out.task.state, out.released_lease.id], ['cancelled', held.new_lease.id]);
+  } finally { await operator.close(); }
+});

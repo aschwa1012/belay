@@ -110,8 +110,11 @@ test('A4: two concurrent evaluates of one task: one done, one E_TASK_DONE, exact
     + `const n=fs.existsSync(d+'/g8.1.started')?2:1;fs.writeFileSync(d+'/g8.'+n+'.started','x');`
     + `const t=setInterval(()=>{if(fs.existsSync(${JSON.stringify(go)})){clearInterval(t);process.exit(0);}},20);`;
   const t = await orch.task.create({ spec: 'g8', acceptance: { commands: [{ argv: [process.execPath, '-e', script], timeout_ms: 60000 }] } });
+  // Two trees: evaluations of one task in one tree join (ADR 0058), so the race on the in-transaction gate needs two.
+  const other = path.join(dir, 'g8-other');
+  fs.mkdirSync(other, { recursive: true });
   const a = orch.task.evaluate({ task_id: t.id, worktree: dir }).then((v) => ({ v }), (e) => ({ e }));
-  const b = orch.task.evaluate({ task_id: t.id, worktree: dir }).then((v) => ({ v }), (e) => ({ e }));
+  const b = orch.task.evaluate({ task_id: t.id, worktree: other.split(path.sep).join('/') }).then((v) => ({ v }), (e) => ({ e }));
   const deadline = Date.now() + 30000;
   while (!(fs.existsSync(started(1)) && fs.existsSync(started(2)))) {
     assert.ok(Date.now() < deadline, 'both commands must start');

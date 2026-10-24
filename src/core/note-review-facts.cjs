@@ -9,7 +9,7 @@ const rows = require('./rows.cjs');
 const { shownTo } = require('./note-delivery.cjs');
 
 const NOTES_MAX = 50;
-const FINISHED = new Set(['done', 'released']);
+const FINISHED = new Set(['done', 'released', 'cancelled']); // cancelled: ADR 0058, task.cancel
 
 const parse = (t) => { try { return t ? JSON.parse(t) : {}; } catch { return {}; } };
 const COLS = 'id, namespace, title, status, task_id, written_by, run_id, body';
@@ -85,4 +85,4 @@ function refutedShownTo(E, taskIds) {
   return out;
 }
 
-module.exports = { refutationOf, notesUnderReview, refutedShownTo, citedBy };
+module.exports = { refutationOf, notesUnderReview, refutedShownTo, citedBy, FINISHED };
