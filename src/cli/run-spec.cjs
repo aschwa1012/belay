@@ -16,13 +16,15 @@ const AD = require('../run/agent-defaults.cjs');
 const fwd = (p) => String(p).split('\\').join('/');
 
 const KNOWN_KEYS = new Set([
-  'worktree', 'prompt_file', 'run_id', 'model', 'allowed_tools', 'orchestrator_dir',
+  'worktree', 'prompt_file', 'brief_file', 'run_id', 'model', 'allowed_tools', 'orchestrator_dir',
   'startup_timeout_ms', 'timeout_ms', 'mcp_tool_timeout_ms', 'poll_ms', 'close_grace_ms',
   'max_fix_rounds', 'fix_cutoff', 'on_embedder_failure', 'compact_at_tokens', 'memory', 'mode', 'interactive_surface_ms', 'fullscreen',
   'native_memory', 'handback_question', // eval-only (0.3.2 memory eval); parseLevers folds them into the run's memory levers
 
 ]);
-const REQUIRED_KEYS = ['worktree', 'prompt_file'];
+// Exactly one of prompt_file (a fully custom prompt) and brief_file (belay's template around the operator's brief) is also required.
+const REQUIRED_KEYS = ['worktree'];
+const PROMPT_KEYS = ['prompt_file', 'brief_file'];
 
 // All of it: usage errors here return before the data dir is created, the core is opened, or a
 // process is spawned (TASK.md step 1).
@@ -47,6 +49,10 @@ function parseSpec(specPath, cwd, opts = {}) {
     }
   }
 
+  const given = PROMPT_KEYS.filter((k) => spec[k] !== undefined && spec[k] !== null && spec[k] !== '');
+  if (given.length === 2) return { error: 'spec gives both "prompt_file" and "brief_file": use prompt_file for a fully custom prompt, or brief_file for the belay template around your brief, not both' };
+  if (given.length === 0) return { error: 'spec is missing "prompt_file" (a fully custom prompt) or "brief_file" (the belay template around your brief)' };
+
   const specDir = fwd(path.dirname(specPath));
   const resolveRel = (p) => (path.isAbsolute(String(p)) ? fwd(p) : fwd(path.resolve(specDir, String(p))));
 
@@ -55,10 +61,17 @@ function parseSpec(specPath, cwd, opts = {}) {
   try { wtStat = fs.statSync(worktree); } catch { return { error: `worktree ${worktree} does not exist` }; }
   if (!wtStat.isDirectory()) return { error: `worktree ${worktree} is not a directory` };
 
-  const promptFile = resolveRel(spec.prompt_file);
-  let promptText;
-  try { promptText = fs.readFileSync(promptFile, 'utf8'); }
-  catch (e) { return { error: `prompt_file ${promptFile} could not be read: ${e.message}` }; }
+  let promptFile = null, promptText = null, briefFile = null, briefText = null;
+  if (given[0] === 'brief_file') {
+    briefFile = resolveRel(spec.brief_file);
+    try { briefText = fs.readFileSync(briefFile, 'utf8'); }
+    catch (e) { return { error: `brief_file ${briefFile} could not be read: ${e.message}` }; }
+    if (!briefText.trim()) return { error: `brief_file ${briefFile} is empty` };
+  } else {
+    promptFile = resolveRel(spec.prompt_file);
+    try { promptText = fs.readFileSync(promptFile, 'utf8'); }
+    catch (e) { return { error: `prompt_file ${promptFile} could not be read: ${e.message}` }; }
+  }
 
   if (spec.allowed_tools !== undefined) {
     const at = spec.allowed_tools;
@@ -92,7 +105,7 @@ function parseSpec(specPath, cwd, opts = {}) {
   const orch = AD.forOrchestrator(agents, { model: spec.model, effort: opts.effort || null, builtinModel: L.DEFAULT_ORCHESTRATOR_MODEL });
   const runId = spec.run_id ? String(spec.run_id) : crypto.randomUUID();
   return {
-    specPath, worktree, promptFile, promptText, runId, levers,
+    specPath, worktree, promptFile, promptText, briefFile, briefText, runId, levers,
     model: orch.model.value, effort: orch.effort.value, agentSettings: { orchestrator: orch }, agentDefaults: agents,
     allowedTools: spec.allowed_tools === undefined ? null : spec.allowed_tools,
     orchestratorDirRaw: spec.orchestrator_dir ? resolveRel(spec.orchestrator_dir) : null,
