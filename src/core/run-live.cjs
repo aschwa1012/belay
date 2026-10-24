@@ -14,9 +14,16 @@ async function adapterState(row, { snapshot = null, platform = process.platform 
   const pid = Number(row.adapter_pid);
   if (!pidAlive(pid)) return { state: 'dead', detail: `pid ${pid} is not running` };
   if (platform !== 'win32') return { state: 'live', detail: `pid ${pid} is running (no creation time is read on this platform)` };
-  if (row.adapter_pid_created == null) return { state: 'unverifiable', detail: `pid ${pid} is running and the run recorded no creation time for it` };
   const snap = await ID.snapshotRetry({ attempts: 2, snapshot });
   if (!snap) return { state: 'unverifiable', detail: `pid ${pid} is running and the process snapshot could not be read` };
+  if (row.adapter_pid_created == null) {
+    // No creation time was recorded (the run's attach does not wait for the snapshot). A process created after the run's first attach cannot
+    // be the adapter that wrote the row; only one created before that stays undecided.
+    const e = snap.get(pid);
+    if (!e) return { state: 'dead', detail: `pid ${pid} is not in the process snapshot` };
+    if (e.created != null && row.started_at != null && e.created > Number(row.started_at)) return { state: 'dead', detail: `pid ${pid} was created at ${e.created}, after the run first attached at ${row.started_at}` };
+    return { state: 'unverifiable', detail: `pid ${pid} is running and the run recorded no creation time for it` };
+  }
   const c = ID.checkIdentity(pid, { created: Number(row.adapter_pid_created) }, snap);
   if (c.ok) return { state: 'live', detail: `pid ${pid} was created at ${c.identity.created}, as recorded` };
   if (c.kind === 'mismatch' || c.kind === 'absent') return { state: 'dead', detail: c.detail };

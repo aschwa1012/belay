@@ -32,3 +32,18 @@ test('the refusal names the pid and the other-run-id escape in each case', () =>
     assert.ok(m.includes(`pid ${process.pid}`) && m.includes('another run id'), m);
   }
 });
+
+test('a pid that exits between the liveness check and the snapshot is dead (absent from the snapshot)', async () => {
+  const none = async () => new Map();
+  assert.strictEqual((await adapterState({ ...mine, adapter_pid_created: 100 }, { snapshot: none, platform: 'win32' })).state, 'dead');
+  assert.strictEqual((await adapterState({ ...mine, adapter_pid_created: null, started_at: 50 }, { snapshot: none, platform: 'win32' })).state, 'dead');
+});
+
+test('no recorded creation time: a process created after the run first attached is dead; one created before stays unverifiable', async () => {
+  const row = { ...mine, adapter_pid_created: null, started_at: 1000 };
+  const after = await adapterState(row, { snapshot: snapOf(2000), platform: 'win32' });
+  assert.strictEqual(after.state, 'dead');
+  assert.match(after.detail, /after the run first attached/);
+  assert.strictEqual((await adapterState(row, { snapshot: snapOf(500), platform: 'win32' })).state, 'unverifiable');
+  assert.strictEqual((await adapterState({ ...row, started_at: null }, { snapshot: snapOf(2000), platform: 'win32' })).state, 'unverifiable', 'with no first-attach time nothing is decided');
+});

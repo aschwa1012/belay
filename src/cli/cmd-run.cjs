@@ -281,16 +281,13 @@ async function run(ctx) {
     const receipt = refusal(endedBy, became.pid, became.established_by);
     return { code: 1, text: renderText(receipt), json: receipt };
   }
-
   const liveRun = await liveRunRow(core);
-  if (liveRun) {
-    let sd = null;
-    try { sd = await core.shutdownOwner(); } catch (e) { sd = { error: (e && e.message) || String(e) }; }
+  if (liveRun) { // see run-live-guard.cjs
+    const sd = await core.shutdownOwner().catch((e) => ({ error: (e && e.message) || String(e) }));
     const receipt = refusal(liveRunMessage(parsed.runId, liveRun), process.pid, 'run.get showed an unended run with a live adapter');
-    receipt.store.shutdown = sd;
+    Object.assign(receipt.store, { shutdown: sd });
     return { code: 1, text: renderText(receipt), json: receipt };
   }
-
   // ADR 0034 decision 1: the model is loaded and its canary passed before the orchestrator or any worker exists,
   // so a run never starts on a host that cannot do what its memory tools promise. Nothing has been written.
   const skipped = warmupSkipped();
@@ -319,7 +316,7 @@ async function run(ctx) {
     try {
       clearRunStart(orchestratorDir); // before this launch's attach: no marker of an earlier life of this run id survives
       RID.watchOrchestrator(pid); // ADR 0039: run-identity.cjs; the attach never waits on a snapshot
-      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
+      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownCreated(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
       return { ok: true, attach: attachRow };
     } catch (e) {
       return { ok: false, error: (e && e.message) || String(e) };

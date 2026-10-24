@@ -61,3 +61,16 @@ test('run.attach: a recorded creation time that matches the pid is a live adapte
   assert.strictEqual(r.reattached, true, 'the pid now belongs to a process created at another time, so the run lapsed');
   await operator.run.end({ exit_reason: 'test' });
 });
+
+test('run.attach: a null creation time on the row, with the pid now a process born after the run began, is a reused pid and reattaches', { skip: process.platform !== 'win32' }, async () => {
+  await operator.run.attach({ adapter_pid: process.pid }); // as belay run writes it: no creation time yet (the first life)
+  await operator.run.end({ exit_reason: 'test' });
+  const other = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { windowsHide: true, stdio: 'ignore' });
+  try {
+    await operator.run.attach({ adapter_pid: other.pid }); // a new life whose row names a pid, recorded without a creation time
+    const row = (await operator.run.get()).run;
+    assert.strictEqual(row.adapter_pid_created, null);
+    const r = await operator.run.attach({ adapter_pid: process.pid });
+    assert.strictEqual(r.reattached, true);
+  } finally { other.kill(); await operator.run.end({ exit_reason: 'test' }); }
+});
