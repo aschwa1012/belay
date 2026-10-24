@@ -78,6 +78,7 @@ function usage() {
     '  --json            print machine-readable JSON instead of a table',
     '  --data <dir>      data directory (default: <cwd>/.belay)',
     '  -h, --help        print this usage',
+    '  --                end options: every later word is an argument (message text, a deny reason)',
     '',
     'Every command declares exactly one mode. A read-only command starts no process and',
     'creates no file.',
@@ -89,6 +90,7 @@ function usage() {
 //   run(ctx) -> Promise<{ code, text, json }>
 // where ctx = { argv, cwd, dataDir, json, fix, emit? }.
 //   argv    the arguments after the command name, flags already stripped
+//   literal null, or the index in argv where the words after a literal `--` begin (taken as given, never as options)
 //   cwd     absolute, forward slashes
 //   dataDir absolute, forward slashes; defaults to <cwd>/.belay
 //   dataDirGiven true only when --data was on the command line
@@ -106,11 +108,26 @@ function usage() {
 
 const fwd = p => String(p).split('\\').join('/');
 
+// Commands whose tail is free text, by how many positionals (the command name included) come before the text. A global flag
+// between two words of the text would silently change the text or the command, so it is refused; trailing --data and --json
+// stay the documented form, and a literal `--` ends option parsing: every word after it is text.
+const FREE_TEXT = { message: 2, deny: 2 };
+
 function parseGlobals(argv) {
   const rest = [];
-  const out = { json: false, fix: false, dataDir: null, help: false };
+  const out = { json: false, fix: false, dataDir: null, help: false, literal: null };
+  let afterText = null; // the first global flag seen once the free text had started
+  const textStarted = () => FREE_TEXT[rest[0]] !== undefined && rest.length > FREE_TEXT[rest[0]];
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
+    if (a === '--') { out.literal = rest.length; rest.push(...argv.slice(i + 1)); break; }
+    const global = a === '--json' || a === '--fix' || a === '-h' || a === '--help' || a === '--data';
+    if (global && textStarted()) {
+      if (a !== '--json' && a !== '--data') return { error: `${a} inside the text of belay ${rest[0]} is ambiguous; put options before the text, or end them with -- and quote the text` };
+      afterText = afterText || a;
+    } else if (!global && afterText) {
+      return { error: `${afterText} inside the text of belay ${rest[0]} would be taken as an option; put options before the text or after all of it, or end them with -- and quote the text` };
+    }
     if (a === '--json') { out.json = true; continue; }
     if (a === '--fix') { out.fix = true; continue; }
     if (a === '-h' || a === '--help') { out.help = true; continue; }
@@ -152,6 +169,7 @@ async function main(argv) {
   const cwd = fwd(process.cwd());
   const ctx = {
     argv: g.argv.slice(1),
+    literal: g.literal === null ? null : Math.max(0, g.literal - 1), // ctx.argv index where the words after `--` begin, or null
     cwd,
     dataDir: g.dataDir || `${cwd}/.belay`,
     dataDirGiven: !!g.dataDir,

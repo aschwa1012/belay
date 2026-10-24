@@ -14,7 +14,7 @@ const { callWorkerAdapter, messageBoundMs } = require('./adapter-pipe.cjs');
 function usageError(message) {
   return {
     code: 2,
-    text: `belay message: ${message}\n\nusage: belay message <worker-id> <text...> [--data <dir>] [--json]\n`,
+    text: `belay message: ${message}\n\nusage: belay message <worker-id> <text...> [--data <dir>] [--json]\n       text with an option word in it goes after --: belay message <worker-id> -- <text...>\n`,
     json: { error: message },
   };
 }
