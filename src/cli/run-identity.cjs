@@ -14,8 +14,6 @@ function createRunIdentity(ownPid) {
   return {
     // This process's creation time for run.attach, never waiting on the snapshot.
     ownNow() { return own(); },
-    // The same, but waits for one snapshot when the probe has nothing yet, so the run row carries a real creation time (a later run uses it to tell a reused pid).
-    async ownCreated() { return (await own()) ?? P.createdOf(process.pid, { kind: 'own-probe' }).then((x) => (x ? x.created : null), () => null); },
     watchOrchestrator(pid) { orchPid = pid; orch = P.createdOf(pid, { kind: 'spawn-read' }).catch(() => null); },
     // { pid, created } of the orchestrator this run spawned, or null when its creation time was never read (ADR 0029 amendment 4).
     async orchestratorRef() {

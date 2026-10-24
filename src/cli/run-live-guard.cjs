@@ -13,11 +13,11 @@ async function liveRunRow(core, assess = adapterState) {
     const r = got && got.run;
     if (!r || r.ended_at != null || Number(r.adapter_pid) === process.pid) return null;
     const a = await assess(r);
-    return a.state === 'dead' ? null : { row: r, assessment: a };
+    return a.state === 'live' ? { row: r, assessment: a } : null;
   } catch { /* no run row yet */ }
   return null;
 }
 
-function liveRunMessage(runId, hit) { return liveMessage(runId, hit.row, hit.assessment); }
+function liveRunMessage(runId, hit) { return liveMessage(runId, hit.row); }
 
 module.exports = { liveRunRow, liveRunMessage };

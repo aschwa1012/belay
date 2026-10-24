@@ -15,14 +15,15 @@ const CLI = `${ROOT}/src/cli/belay.cjs`;
 const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
 const { openCore } = require('../../src/core/index.cjs');
 
-test('run: a run id with a live adapter is refused, the run row is untouched and nothing is spawned', async () => {
+test('run: a run id with a verified live adapter is refused, the run row is untouched and nothing is spawned', { skip: process.platform !== 'win32' }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-run-live-')).split(path.sep).join('/');
   const dataDir = `${dir}/.belay`;
   const runId = 'live-run-id';
   try {
     // The first life: a row whose adapter pid is this test process, which answers.
     const seed = await openCore({ dataDir, caller: { role: 'operator', run_id: runId, pid: process.pid }, embed: false });
-    await seed.run.attach({ adapter_pid: process.pid });
+    const own = await require('../../src/core/proc-identity.cjs').createdOf(process.pid, { kind: 'test' });
+    await seed.run.attach({ adapter_pid: process.pid, adapter_pid_created: own && own.created });
     const before = await seed.run.get();
     await seed.shutdownOwner();
     await seed.close();
@@ -34,7 +35,7 @@ test('run: a run id with a live adapter is refused, the run row is untouched and
     const r = spawnSync(process.execPath, [CLI, 'run', `${dir}/spec.json`, '--data', dataDir, '--json'], { cwd: ROOT, env: { ...process.env, BELAY_CLAUDE_EXE: FAKE_CLAUDE }, encoding: 'utf8', windowsHide: true, timeout: 60000 });
     assert.strictEqual(r.status, 1, `stdout: ${r.stdout} stderr: ${r.stderr}`);
     const receipt = JSON.parse(r.stderr);
-    assert.ok(receipt.ended_by.startsWith(`run ${runId} may be held by a running adapter (pid ${process.pid}, epoch ${before.run.epoch})`), receipt.ended_by);
+    assert.ok(receipt.ended_by.startsWith(`run ${runId} is held by an adapter that is still running (pid ${process.pid}, epoch ${before.run.epoch})`), receipt.ended_by);
     assert.strictEqual(receipt.store.attach, null, 'no epoch was opened');
     assert.ok(!fs.existsSync(`${dir}/orch`), 'no orchestrator directory was created');
 
