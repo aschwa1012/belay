@@ -277,7 +277,8 @@ test('run: a bad memory block exits 2 before anything is created; a good one run
     const row = runRow(ok);
     assert.strictEqual(row.project, 'acme');
     assert.strictEqual(JSON.parse(row.memory_levers).capture, true);
-    assert.ok(!adapterArgs(ok).includes('--worktree'), 'the knowledge agent is off, so the adapter is not told the worktree');
+    // ADR 0054 decision 2 (intended): the adapter is always told the run's worktree, git_read's default, knowledge agent or not.
+    assert.strictEqual(adapterArgs(ok)[adapterArgs(ok).indexOf('--worktree') + 1], `${ok.dir}/wt`, 'the knowledge agent is off, and the adapter still gets the worktree');
   } finally { cleanup(ok.dir); }
   const plain = go('hi\n', {});
   try {
@@ -287,7 +288,7 @@ test('run: a bad memory block exits 2 before anything is created; a good one run
     const row = runRow(plain);
     assert.strictEqual(row.memory_levers, null);
     assert.strictEqual(row.project, null);
-    assert.ok(!adapterArgs(plain).includes('--worktree'), 'with every lever off the orchestrator mcp.json is the base one');
+    assert.strictEqual(adapterArgs(plain)[adapterArgs(plain).indexOf('--worktree') + 1], `${plain.dir}/wt`, 'with every lever off the adapter still gets the worktree (ADR 0054)');
   } finally { cleanup(plain.dir); }
   const ka = go('hi\n', { memory: { knowledge_agent: true } });
   try {
