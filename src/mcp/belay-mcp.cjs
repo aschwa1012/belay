@@ -242,7 +242,7 @@ async function callCore(dotted, args) {
   return fn(args);
 }
 
-const COMPOSE = require('./compose.cjs').createCompose({ callCore, manager: () => runManager });
+const COMPOSE = require('./compose.cjs').createCompose({ callCore, manager: () => runManager, openManager: () => openRunManagerOnce() });
 
 async function callTool(name, args) {
   const route = routeOf(name);

@@ -47,7 +47,7 @@ const ROUTES = {
   status: { role: 'both', via: 'core', method: 'status.get' },
   task_list: { role: 'both', via: 'core', method: 'task.list' },
   briefing: { role: 'both', via: 'briefing', method: 'continuity.resumeLine+resumeDoc' },
-  worker_spawn: { role: 'orchestrator', via: 'run', method: 'spawn' },
+  worker_spawn: { role: 'orchestrator', via: 'compose', method: 'spawn' }, // ADR 0058: the run manager's spawn, compact by default
   worker_message: { role: 'orchestrator', via: 'run', method: 'message' },
   worker_stop: { role: 'orchestrator', via: 'run', method: 'stop' },
   worker_restart: { role: 'orchestrator', via: 'run', method: 'restart' },
@@ -165,7 +165,7 @@ const BOTH = [
 const ORCHESTRATOR = [
   {
     name: 'worker_spawn',
-    description: 'Launch a real Claude Code or Codex process and wait for its ready event. Returns the worker row: id, substrate, pid, session id, argv hash, started_at, ready_ms. If no ready event arrives it fails with the exit code and stderr tail and writes the row dead, never running. Takes seconds.',
+    description: 'Launch a real Claude Code or Codex process and wait for its ready event. Returns id, substrate, pid, state, session id, worktree, model, effort, tools, ready_ms; view debug: the whole row and launch receipt. If no ready event arrives it fails with the exit code and stderr tail and writes the row dead, never running. Takes seconds.',
     inputSchema: S({
       substrate: { type: 'string', enum: ['claude-code', 'codex'] },
       worktree: str('Absolute path; the worker\'s cwd'),
@@ -179,6 +179,7 @@ const ORCHESTRATOR = [
       permission_mode: str(),
       startup_timeout_ms: int('default 60000'),
       worker_id: str('Otherwise generated'),
+      view: { type: 'string', enum: ['compact', 'debug'] },
     }, ['substrate', 'worktree', 'prompt']),
   },
   {

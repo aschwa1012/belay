@@ -4,10 +4,25 @@
 // reported beside the row with what happened, and its failure never undoes or hides the first.
 // `callCore(dotted, args)` is the adapter's own; `manager()` returns the run manager when this adapter has opened one.
 
+// worker_spawn's default answer (ADR 0058 decision 9): what the orchestrator acts on. The rest (surface, plugins, instruction
+// hashes, pid_created, argv_hash, token counters) is the receipt, behind view: "debug".
+const SPAWN_KEEP = ['id', 'substrate', 'pid', 'state', 'session_id', 'adapter_pid', 'worktree', 'task_id', 'started_at', 'ready_ms', 'model', 'permission_mode_effective'];
+function compactSpawn(row) {
+  if (!row || typeof row !== 'object') return row;
+  const out = {};
+  for (const k of SPAWN_KEEP) if (row[k] !== undefined) out[k] = row[k];
+  out.effort = row.agent && row.agent.effort ? row.agent.effort.value : (row.effort_requested ?? null);
+  const builtins = row.surface && row.surface.builtins;
+  out.tools = builtins != null ? builtins : (row.tools ?? null);
+  if (row.permission_mode_degraded) out.permission_mode_degraded = row.permission_mode_degraded;
+  return out;
+}
+
 // A worker this adapter launched is the only one it has a channel to: an adopted row's process belongs to another adapter.
 const launchedHere = (r, id) => !!(r && typeof r._worker === 'function' && r._worker(id));
 
-function createCompose({ callCore, manager }) {
+// `openManager()` opens the run manager when a tool needs one (spawn); `manager()` only reads whether it is open.
+function createCompose({ callCore, manager, openManager }) {
   // task_assign: assign, then send the worker its task: the resume line (which names the lease), the orchestrator's
   // `prompt` or the task's spec, and the hand-back rule. `deliver: false` assigns only.
   async function assign(args) {
@@ -39,7 +54,13 @@ function createCompose({ callCore, manager }) {
     return stop ? { ...row, idle_stop: stop } : row;
   }
 
-  return { assign, evaluate };
+  async function spawn(args) {
+    const { view = 'compact', ...rest } = args || {};
+    const row = await (await openManager()).spawn(rest);
+    return view === 'debug' ? row : compactSpawn(row);
+  }
+
+  return { assign, evaluate, spawn };
 }
 
-module.exports = { createCompose };
+module.exports = { createCompose, compactSpawn, SPAWN_KEEP };

@@ -36,6 +36,10 @@ const userTexts = (data, id) => fs.readFileSync(`${data}/workers/${id}/stream.js
 test('task_assign sends the running worker its task, lease id and hand-back rule, or the prompt given; deliver false assigns only', { timeout: 90000 }, async (t) => {
   const { a, data, worktree } = await started(t, 'fb-assign');
   const w = ok(await a.call('worker_spawn', { substrate: 'claude-code', worktree, prompt: 'stand by', worker_id: 'wk-a' }), 'worker_spawn');
+  // ADR 0058 decision 9: the compact answer by default; the receipt fields only with view debug.
+  assert.deepStrictEqual(Object.keys(w).filter((k) => ['surface', 'instructions', 'argv_hash', 'pid_created'].includes(k)), []);
+  assert.deepStrictEqual([w.id, w.state, w.worktree, typeof w.pid], ['wk-a', 'running', worktree, 'number']);
+  assert.ok('model' in w && 'effort' in w && 'tools' in w);
   ok(await a.call('worker_wait', { worker_ids: [w.id], timeout_ms: 20000 }), 'worker_wait');
 
   const task = ok(await a.call('task_create', { spec: 'rename the frobnicator', acceptance: { files_within_owned: true }, files_owned: [] }), 'task_create');

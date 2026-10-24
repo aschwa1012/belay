@@ -242,7 +242,7 @@ test('the run manager is handed this binary\'s own path as paths.mcpBinary', asy
   const a = launch({ role: 'orchestrator', data });
   t.after(async () => { await a.close(); a.kill(); });
   await a.initialize();
-  const r = await a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'go' });
+  const r = await a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'go', view: 'debug' });
   assert.strictEqual(r.isError, false);
   // api.md §1 leaves paths optional with a default resolved from src/run. The adapter passes its own
   // path instead, which is the one that is right when belay runs from another checkout.
