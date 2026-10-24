@@ -326,8 +326,8 @@ export function staleLine(snap: BelayPanelSnap): string | null {
   const bad = snap.readIssues ?? []
   if (!bad.length) return null
   const slow = bad.filter(i => i.timedOut).map(i => i.verb)
-  const failed = bad.filter(i => !i.timedOut).map(i => i.verb)
-  const what = [...(slow.length ? [`reads slow (${slow.join(', ')} timed out)`] : []), ...(failed.length ? [`${failed.join(', ')} failed`] : [])].join(' · ')
+  const failed = bad.filter(i => !i.timedOut).map(i => (i.text ? `${i.verb} failed: ${i.text}` : `${i.verb} failed`))
+  const what = [...(slow.length ? [`reads slow (${slow.join(', ')} timed out)`] : []), ...failed].join(' · ')
   return snap.goodAt !== null ? `as of ${new Date(snap.goodAt).toTimeString().slice(0, 8)} · ${what}` : what
 }
 

@@ -145,7 +145,7 @@ export function buildSnapshot(p: Parts): BelayPanelSnap {
   const readIssues: BelayReadIssue[] = [] // a read that timed out or failed: shown as the stale line, not as a raw error
   const take = (r: Ran | null, verb: string): unknown => {
     if (!r) return undefined
-    if ('error' in r) { readIssues.push({ verb, timedOut: 'timedOut' in r }); return undefined }
+    if ('error' in r) { readIssues.push({ verb, timedOut: 'timedOut' in r, text: 'timedOut' in r ? '' : r.error.split(/\s+/).filter(Boolean).join(' ').slice(0, 120) }); return undefined }
     return r.json
   }
   const aj = take(p.agents, 'agents')

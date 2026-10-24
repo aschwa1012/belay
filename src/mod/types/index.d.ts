@@ -117,7 +117,7 @@ export type BelayPanelSnap = {
   goodAt: number | null
 }
 
-export type BelayReadIssue = { verb: string; timedOut: boolean }
+export type BelayReadIssue = { verb: string; timedOut: boolean; /** The failure in words, clipped; empty for a timeout. */ text: string }
 
 export type BelayPanelWatch = {
   runId: string | null

@@ -66,6 +66,24 @@ for (const cols of [30, 40, 72]) {
   })
 }
 
+describe('a failed read says why; a timed-out one has no reason to give', () => {
+  test('the error text rides the stale line whole when the read failed, and is absent for a timeout', async ($, on) => {
+    const wd = await boot($, on)
+    wd.w.failAgents = true
+    await later(wd, 6000)
+    const f = flat((await band($, 'terminal', 30)).text)
+    expect(f).toContain(flat('agents failed: belay agents r-7f3a exit 3')) // wrapped at 30 columns, never cut
+    wd.w.failAgents = false
+    await later(wd, 6000)
+    wd.w.hang = 'agents'
+    await later(wd, 6000)
+    const t = flat((await band($, 'terminal', 30)).text)
+    expect(t).toContain('readsslow(agentstimedout)')
+    expect(t).not.toContain('failed:')
+    expect(t).not.toContain('exit')
+  })
+})
+
 describe('a slow read does not stack rounds', () => {
   test('rounds stay one at a time through a run of timeouts', async ($, on) => {
     const wd = await boot($, on, { slow: 2500, hang: 'notices' })
