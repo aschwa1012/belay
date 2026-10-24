@@ -70,7 +70,7 @@ const CALLER_FIELDS = ['text', 'namespace', 'type', 'tags', 'provenance', 'super
 const NOTE_FIELDS = ['kind', 'when', 'basis', 'evidence', 'applies_to', 'subjects'];
 const NOTE_REFUSED = ['text', 'type', 'tags', 'ttl_seconds', 'supersedes', 'provenance', 'body', 'embed'];
 const HARNESS_STORE_FIELDS = ['id', 'created_at', 'embedding', 'embedding_model', 'embedding_revision', 'dim'];
-const NOTE_BODY_KEYS = ['model', 'state', 'seen_in', 'seen_total', 'matches', 'reported_wrong', 'resolved', 'superseded_by'];
+const NOTE_BODY_KEYS = ['model', 'state', 'seen_in', 'seen_total', 'matches', 'reported_wrong', 'resolved', 'superseded_by', 'evidence_checked'];
 const TAGS_MAX = 32, TAG_MAX = 200, PROVENANCE_MAX = 512;
 // A worker's own rows in one run namespace: a model in a loop cannot fill the store.
 const WORKER_ROWS_MAX = 2000;
