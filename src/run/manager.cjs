@@ -12,6 +12,7 @@ const P = require('./process.cjs');
 const PI = require('./pid-identity.cjs'); // ADR 0039
 const W = require('./worker.cjs');
 const { createDoStop } = require('./do-stop.cjs'); // the stop sequence of one worker
+const { createMessage } = require('./message.cjs'); // worker_message: stdin for Claude Code, a resume process for Codex
 const { verifyReady } = require('./ready.cjs');
 const { rotateWireLog } = require('./wire-log.cjs');
 const S = require('./surface.cjs'); // ADR 0024, S2 fix round F4: the surface fields spawn/restart/resume return
@@ -123,7 +124,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   }
   const launch = (w, o) => require('./bind-launch.cjs').launchBound({ core, runId, root, mcpPath, writeRow }, w, () => launchNow(w, o)); // ADR 0045: one launch of a worker at a time, its bind opened first
   async function launchNow(w, { resume = null, prompt = null } = {}) {
-    try { NM.checkLaunch(w); } catch (e) { await NM.refuseLaunch(ctx, w, e, P.pidAlive); } let args; // sync and first (Codex's check-then-spawn stays one tick); only a refusal awaits
+    try { NM.checkLaunch(w); } catch (e) { await NM.refuseLaunch(ctx, w, e, () => PI.pidLive(w)); } let args; // sync and first (Codex's check-then-spawn stays one tick); only a refusal awaits
     if (w.substrate === 'claude-code') {
       args = L.claudeLaunchArgv({
         workerId: w.id, mcpJsonPath: w.mcpJsonPath, settingsPath: w.workerSettingsPath,
@@ -225,7 +226,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     pendingIds.add(id);
     let w; const dirExisted = fs.existsSync(L.workerDir(root, id)); // a directory this spawn creates is its own to remove if it fails before any row exists
     try {
-      if (worker_id) await checkIdFree(core, root, id); // inside the reservation, so two spawns of one id cannot both pass
+      if (worker_id) await checkIdFree(core, root, id, runId); // inside the reservation, so two spawns of one id cannot both pass
       if (task_id) await core.task.assign({ task_id, check_only: true });
       w = W.newWorkerRecord({
         id, substrate, worktree, dataDir: root, taskId: task_id, model,
@@ -292,39 +293,6 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     });
   }
 
-  async function message({ worker_id, text }) {
-    const w = await forWorker(worker_id);
-    PZ.refuseIfPaused(w);
-    if (typeof text !== 'string' || !text) fail('E_ARGS', 'message needs text');
-    if (w.substrate === 'claude-code') {
-      W.assertTakesMessage(w, fail, P.pidAlive); // live stdin, and no harness /compact in flight (E_BUSY)
-      // A message starts a turn, mid-turn again until the next `result` (`launch` resets this per process).
-      // 5b fix round, finding 4: the send runs INSIDE turnStarted, before its own await, so no window is
-      // left between the liveness check above and the write for a death to land in.
-      const { sent: bytes } = await W.turnStarted(w, ctx, () => sendStdin(w, text));
-      w.lastEventAt = now();
-      return { worker_id, channel: 'stdin', bytes, pid: w.pid, turn: w.turns + 1 };
-    }
-    // Codex: the previous process has exited by design, so a message is a new resume process
-    // (ADR 0001 §4, ADR 0008 §6). Returns at once with the new pid; the turn lands later.
-    if (!w.sessionId) fail('E_SUBSTRATE', 'codex worker has no thread id to resume', { worker_id, substrate: w.substrate, state: w.state }); await holdForLaunch(w, core); // before the checks below: they and the spawn stay one tick, so two concurrent messages still start one process
-    // An adopted worker whose pid is still alive is a process a previous adapter owns. belay is not
-    // its parent (invariant 1), so it cannot see that turn end, and starting a second process on
-    // the same worktree is the one thing one-process-per-turn exists to prevent. Stop it first.
-    if (!w.child && w.pid && P.pidAlive(w.pid)) {
-      fail('E_SUBSTRATE', 'codex worker is a live process this adapter did not spawn, so it cannot be given a turn; stop it first', { worker_id, substrate: w.substrate, state: w.state, pid: w.pid, adopted: true });
-    }
-    if (w.child && P.pidAlive(w.pid)) {
-      fail('E_SUBSTRATE', 'codex worker is mid-turn; one process per turn', { worker_id, substrate: w.substrate, state: w.state, pid: w.pid });
-    }
-    await launch(w, { resume: w.sessionId, prompt: text });
-    await guarded(w, async () => {
-      w.parser.noteStdinWrite();
-      await writeRow(w, 'running');
-    });
-    return { worker_id, channel: 'codex-resume', bytes: Buffer.byteLength(text, 'utf8'), pid: w.pid, turn: w.turns + 1 };
-  }
-
   // ADR 0023 amendment 2 decision 3: stop always wins, waiting out a pause, resume or restart in flight.
   // 6e-5/6e-6 (pause.cjs `clearParkForStop`): a stale park record is caught before any write, never overwritten.
   async function stop({ worker_id, mode = 'graceful', timeout_ms = 10000 }) {
@@ -367,9 +335,9 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     if (w.child && P.pidAlive(w.pid)) await doStop(w, 'graceful', 10000);
     // Fix round, should-fix finding: `skipDeadPidKill` (resume, pause.cjs) skips this branch — a park's own
     // pid is dead by construction, so treating it as a still-alive orphan risks killing a bystander that reused it.
-    else if (!skipDeadPidKill && !w.child && w.pid && P.pidAlive(w.pid)) {
-      w.adoptedKill = (await PI.killWorker(w)).tree;
-      await P.waitPidGone(w.pid, { timeoutMs: 5000 });
+    else if (!skipDeadPidKill && !w.child && PI.pidLive(w)) { // a record with no process by construction is never killed by its pid number
+      const kr = await PI.killWorker(w); w.adoptedKill = kr.tree;
+      if (!kr.refused) await P.waitPidGone(w.pid, { timeoutMs: 5000 });
     }
     w.stopRequested = false;
 
@@ -467,6 +435,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   const wait = createWait({ workers, get });
   // build step 6e-4 (ADR 0023 amendment 2): pause parks the worker; resume relaunches it through doRestart.
   const PZ = createPause({ core, forWorker, doStop, doRestart, runOp: LC.runOp, adapterPid: ctx.adapterPid, writeRow });
+  const message = createMessage({ core, ctx, forWorker, refuseIfPaused: PZ.refuseIfPaused, sendStdin, launch, guarded, writeRow });
 
   const list = () => LIST.listWorkers(workers);
 
