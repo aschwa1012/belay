@@ -6,7 +6,8 @@
 // pagers, external diff drivers and textconv filters all reach a write or a program from a "read".
 //
 // What belay fixes on every call:
-// - git is the absolute path found on PATH, never a name the child's cwd can answer (a planted git.exe in the worktree).
+// - git is the absolute path belay finds on PATH, skipping relative PATH entries, rather than a bare name left to the
+//   platform's search (a planted git.exe in the worktree was not picked up by Node 24 on this host either way).
 // - The environment drops every inherited GIT_* variable (GIT_DIR, GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT inject
 //   config) and sets GIT_CONFIG_NOSYSTEM, GIT_ATTR_NOSYSTEM, GIT_OPTIONAL_LOCKS=0 (status refreshes no index: reading
 //   never writes, invariant 6), GIT_TERMINAL_PROMPT=0, GIT_NO_LAZY_FETCH=1 and a `cat` pager.
@@ -94,7 +95,7 @@ function gitEnv(env = process.env) {
   return { ...out, GIT_CONFIG_NOSYSTEM: '1', GIT_ATTR_NOSYSTEM: '1', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', GIT_NO_LAZY_FETCH: '1', GIT_PAGER: 'cat', PAGER: 'cat' };
 }
 
-// git's absolute path from PATH, never the cwd: on Windows a bare name is looked up in the child's cwd first.
+// git's absolute path from the absolute PATH entries; never a relative entry and never the cwd.
 function findGit(env = process.env) {
   const win = process.platform === 'win32';
   const names = win ? ['git.exe', 'git.cmd'] : ['git'];

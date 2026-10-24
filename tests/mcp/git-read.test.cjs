@@ -68,7 +68,7 @@ test('gitEnv drops every inherited GIT_* variable and sets belay\'s own', () => 
   for (const [k, v] of Object.entries({ GIT_CONFIG_NOSYSTEM: '1', GIT_ATTR_NOSYSTEM: '1', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', GIT_NO_LAZY_FETCH: '1', GIT_PAGER: 'cat' })) assert.strictEqual(env[k], v, k);
 });
 
-test('findGit answers from PATH only, never a git planted in the cwd', () => {
+test('findGit answers from absolute PATH entries only, never the cwd', () => {
   const dir = sandboxDir('git-plant');
   try {
     fs.writeFileSync(path.join(dir, process.platform === 'win32' ? 'git.exe' : 'git'), 'not git');
