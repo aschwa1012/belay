@@ -98,5 +98,13 @@ test('C5: two concurrent settles with if_awaiting give exactly one write', async
     settle({ id: a.note, action: 'archive', reason: 'three', if_awaiting: true }),
   ]);
   assert.strictEqual(rs.filter((r) => r.status === 'fulfilled').length, 1, JSON.stringify(rs.map((r) => r.status === 'fulfilled' ? r.value.outcome : r.reason.code)));
-  for (const r of rs.filter((x) => x.status === 'rejected')) assert.ok(['E_PRECONDITION', 'E_NOT_FOUND'].includes(r.reason.code), r.reason.code);
+  for (const r of rs.filter((x) => x.status === 'rejected')) assert.strictEqual(r.reason.code, 'E_PRECONDITION');
+});
+
+test('C10: a note with no active hold is E_PRECONDITION with if_awaiting and E_NOT_FOUND without it', async () => {
+  const a = await awaiting('w-a30', 'K30', 'w-b30');
+  assert.strictEqual((await settle({ id: a.note, action: 'archive', reason: 'done', if_awaiting: true })).outcome, 'archived');
+  assert.strictEqual(X.activeHold(a.note), null);
+  await assert.rejects(settle({ id: a.note, action: 'archive', reason: 'again', if_awaiting: true }), (e) => e.code === 'E_PRECONDITION' && e.detail.awaiting === false && e.detail.state === null);
+  await assert.rejects(settle({ id: a.note, action: 'archive', reason: 'again' }), (e) => e.code === 'E_NOT_FOUND');
 });

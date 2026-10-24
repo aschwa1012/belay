@@ -96,6 +96,26 @@ test('help lists every command with its mode, and exits 0', () => {
   }
 });
 
+test('a command with --help prints that command\'s usage only, and creates no file', () => {
+  const dir = projectSandbox();
+  try {
+    const before = listFiles(dir);
+    for (const args of [['stop', '--help'], ['--help', 'stop'], ['stop', '-h']]) {
+      const r = cli(args, { cwd: dir });
+      assert.strictEqual(r.code, 0, `${JSON.stringify(args)}: ${r.stderr}`);
+      assert.match(r.stdout, /^usage: belay stop /);
+      assert.match(r.stdout, /stop a live run/);
+      assert.doesNotMatch(r.stdout, /commands \(mode/, 'not the global usage');
+    }
+    const mem = cli(['memory', '--help'], { cwd: dir });
+    assert.strictEqual(mem.code, 0);
+    assert.match(mem.stdout, /^usage: belay memory \[arguments\] \[options\]/);
+    assert.match(mem.stdout, /a verb in the line above may elect or write/, 'a command with verbs says its mode is the command\'s own');
+    assert.doesNotMatch(cli(['config', '--help'], { cwd: dir }).stdout, /a verb in the line above/);
+    assert.deepStrictEqual(listFiles(dir), before, 'command help created a file');
+  } finally { cleanup(dir); }
+});
+
 test('an unknown command is a usage error: exit 2, names it, prints usage', () => {
   const r = cli(['nosuchcommand']);
   assert.strictEqual(r.code, 2, 'usage errors exit 2');

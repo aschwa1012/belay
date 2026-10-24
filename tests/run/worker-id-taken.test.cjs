@@ -64,3 +64,45 @@ test('two concurrent spawns of W1 and w1 in one run: exactly one succeeds and th
     assert.strictEqual((await core.worker.list({})).workers.length, 1, 'one row');
   } finally { try { if (m) await m.shutdown(); } finally { try { await core.shutdownOwner(); } finally { await core.close(); cleanup(sb); } } }
 });
+
+test('a job or knowledge id whose directory the harness pre-created spawns, while the same for a model-named id is refused', async () => {
+  const sb = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-wid-job-'));
+  const data = fwd(path.join(sb, 'data'));
+  const worktree = fwd(path.join(sb, 'wt'));
+  fs.mkdirSync(data, { recursive: true }); fs.mkdirSync(worktree, { recursive: true });
+  const runId = 'run-wid-job-' + process.pid;
+  const core = await openCore({ dataDir: data, caller: { role: 'orchestrator', run_id: runId, pid: process.pid }, embed: false });
+  let m = null;
+  try {
+    await core.run.attach({ adapter_pid: process.pid });
+    m = createRunManager({ core, dataDir: data, runId, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
+    for (const id of ['archreview-lc-apply-lx4k2', 'scrub-r1-lx4k2', 'knowledge-r1']) {
+      fs.mkdirSync(path.join(data, 'workers', id), { recursive: true });
+      const row = await m.spawn({ substrate: 'claude-code', worktree, prompt: 'go', worker_id: id });
+      assert.strictEqual(row.id, id);
+    }
+    fs.mkdirSync(path.join(data, 'workers', 'plain'), { recursive: true });
+    await assert.rejects(m.spawn({ substrate: 'claude-code', worktree, prompt: 'go', worker_id: 'plain' }), (e) => /directory exists/.test(e.message));
+  } finally { try { if (m) await m.shutdown(); } finally { try { await core.shutdownOwner(); } finally { await core.close(); cleanup(sb); } } }
+});
+
+test('this run\'s own stopped or dead worker of the exact id may be spawned again; another run\'s stopped row, a case variant and a live row may not', async () => {
+  const sb = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-wid-reuse-'));
+  const data = fwd(path.join(sb, 'data'));
+  const worktree = fwd(path.join(sb, 'wt'));
+  fs.mkdirSync(data, { recursive: true }); fs.mkdirSync(worktree, { recursive: true });
+  const runId = 'run-wid-reuse-' + process.pid;
+  const core = await openCore({ dataDir: data, caller: { role: 'orchestrator', run_id: runId, pid: process.pid }, embed: false });
+  let m = null;
+  try {
+    await core.run.attach({ adapter_pid: process.pid });
+    m = createRunManager({ core, dataDir: data, runId, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
+    await core.worker.write({ id: 'mine', state: 'dead', substrate: 'claude-code' }); // this run's, no live process
+    await core.worker.write({ id: 'theirs', state: 'dead', substrate: 'claude-code', run_id: 'another-run' });
+    const refused = (id, re) => assert.rejects(m.spawn({ substrate: 'claude-code', worktree, prompt: 'go', worker_id: id }), (e) => e.code === 'E_ARGS' && re.test(e.message), id);
+    await refused('theirs', /taken/);
+    await refused('Mine', /taken/);
+    const again = await m.spawn({ substrate: 'claude-code', worktree, prompt: 'go', worker_id: 'mine' });
+    assert.strictEqual(again.id, 'mine');
+  } finally { try { if (m) await m.shutdown(); } finally { try { await core.shutdownOwner(); } finally { await core.close(); cleanup(sb); } } }
+});
