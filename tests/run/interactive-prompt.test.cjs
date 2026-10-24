@@ -109,7 +109,6 @@ test('interactive prompt: apart from three named ranges the twin equals orchestr
   // and the compaction retry gets a bounded wait.
   const WAKE_PHRASES = [
     ['wait on its id, and evaluate again', 'end your turn until its wake, and evaluate again'],
-    ['`worker_wait` on its id, resend after it answers.', '`worker_wait` on its id with `timeout_ms: 30000`, resend after it answers; if it times out, end your turn and resend on the next wake.'],
     ["When the reviewer's turn ends (wait on its id), call", "When the reviewer's wake comes (its turn ended), call"],
     ['with its result, wait on its id, then', 'with its result, end your turn until its wake, then'],
   ];

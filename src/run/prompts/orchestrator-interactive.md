@@ -78,7 +78,7 @@ that check). Read a worker's hand-back as the task's `handoff` in `mcp__belay__t
 
 If a work task is not `done`, read the failing checks in the results, then either
 `mcp__belay__worker_message` the worker with what failed, end your turn until its wake, and evaluate again, or create a fix
-task. A `worker_message` refused `E_BUSY` `op: "compact"` was not sent (compacting): `worker_wait` on its id with `timeout_ms: 30000`, resend after it answers; if it times out, end your turn and resend on the next wake.
+task. A `worker_message` sent while the worker compacts answers `queued: true`; belay sends it when the compaction ends.
 
 ## Review tasks
 

@@ -11,6 +11,8 @@ const P = require('./process.cjs');
 const { fail } = require('./errors.cjs');
 
 const now = () => Date.now();
+// ADR 0058: messages queued during a compaction that a pause, park or relaunch dropped are named in every answer about the worker.
+const dropped = (w) => (w.queuedDropped && w.queuedDropped.length ? { queued_dropped: w.queuedDropped } : {});
 
 function createWait({ workers, get }) {
   // ADR 0015 §1. Blocks until one of the named workers (or any worker this manager launched)
@@ -45,7 +47,7 @@ function createWait({ workers, get }) {
       established_by: w.settledState === 'paused'
         ? `${w.deathEstablishedBy}; parked by ${w.parkRequested ? w.parkRequested.by : 'unknown'} at ${w.parkRequested ? w.parkRequested.at : null}`
         : w.deathEstablishedBy,
-      exit_code: w.exitCode, exit_signal: w.exitSignal, turn: w.turns,
+      exit_code: w.exitCode, exit_signal: w.exitSignal, turn: w.turns, ...dropped(w),
     });
     // build step 6e-4: `v.paused` is onTurnEnd's own `!!w.parkRequested` at the turn's own end (worker.cjs);
     // a paused worker never reaches here through the already-finished path below, since it is always
@@ -59,7 +61,7 @@ function createWait({ workers, get }) {
           : 'result event on the worker stream',
         turn: w.turns,
         checkpoint_id: (v && v.checkpoint_id) || w.lastCheckpointId, is_error: !!(v && v.is_error),
-        usage: (v && v.usage) || w.lastTurnUsage || null,
+        usage: (v && v.usage) || w.lastTurnUsage || null, ...dropped(w),
       };
     };
     const done = (r) => ({ ...r, waited_ms: now() - t0, timed_out: false, watched: ids, ...capNote });

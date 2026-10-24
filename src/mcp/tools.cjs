@@ -194,7 +194,7 @@ const ORCHESTRATOR = [
   },
   {
     name: 'worker_message',
-    description: 'Send text to a live worker. Returns the channel used, bytes written, pid and turn. Refuses, naming the substrate, when that substrate cannot take a message in its current state.',
+    description: 'Send text to a live worker. Returns the channel used, bytes written, pid and turn; while it compacts, channel queued, sent when that ends. Refuses, naming the substrate, when that substrate cannot take a message in its current state.',
     inputSchema: S({ worker_id: str(), text: str() }, ['worker_id', 'text']),
   },
   {

@@ -297,7 +297,8 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     PZ.refuseIfPaused(w);
     if (typeof text !== 'string' || !text) fail('E_ARGS', 'message needs text');
     if (w.substrate === 'claude-code') {
-      W.assertTakesMessage(w, fail, P.pidAlive); // live stdin, and no harness /compact in flight (E_BUSY)
+      const held = W.assertTakesMessage(w, fail, P.pidAlive, text); // live stdin; queued during a harness /compact (ADR 0058)
+      if (held) { if (held.queued) return { worker_id, channel: 'queued', ...held, pid: w.pid, turn: w.turns + 1 }; text = [...held.flush, text].join('\n\n'); }
       // A message starts a turn, mid-turn again until the next `result` (`launch` resets this per process).
       // 5b fix round, finding 4: the send runs INSIDE turnStarted, before its own await, so no window is
       // left between the liveness check above and the write for a death to land in.
@@ -335,7 +336,6 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       return doStop(w, mode, timeout_ms, { skipRowWrite: stale, treatPidAsDead: wasParked });
     }, { waitFor: ['pause', 'resume', 'restart'] });
   }
-
 
   // `workers` holds only what this process launched; an unknown id is looked up in the store rather
   // than refused (ADR 0009's A3 row), lazily, so touching no old id costs nothing and creates nothing.

@@ -289,7 +289,7 @@ function noteToolResult(w, e) {
 // increments, and cost is set. Codex is one process per turn, so everything accumulates.
 async function onTurnEnd(w, e, ctx) {
   const { writeRow } = ctx;
-  if (CP.swallow(w, e, ctx)) { await CP.afterCompact(w, ctx); return; } // the harness's own /compact turn is not a worker turn
+  if (CP.swallow(w, e, ctx)) { await CP.afterCompact(w, ctx, turnStarted); return; } // the harness's own /compact turn is not a worker turn
   const u = e.usage || {};
   w.turns += 1;
   const n = (x) => (typeof x === 'number' ? x : 0);
@@ -497,11 +497,11 @@ function noteInit(w, ready) {
 
 // manager.message for a Claude Code worker, before it writes: a live stdin, and no harness /compact in flight
 // (E_BUSY, ADR 0007 decision 3: nothing is written or held, the caller retries after the compaction's turn ends).
-function assertTakesMessage(w, fail, pidAlive) {
+function assertTakesMessage(w, fail, pidAlive, text = '') { // null: write now; a queue receipt during a harness /compact (ADR 0058); { flush }: write those first
   if (!w.child || !w.child.stdin || w.child.stdin.destroyed || !pidAlive(w.pid)) {
     fail('E_SUBSTRATE', 'claude-code worker has no live stdin to take a message', { worker_id: w.id, substrate: w.substrate, state: w.state });
   }
-  CP.refuseIfCompacting(w, fail);
+  return CP.queueIfCompacting(w, text, fail);
 }
 
 module.exports = {
