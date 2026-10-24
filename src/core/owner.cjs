@@ -81,7 +81,8 @@ class Owner {
     if (!lock.won) {
       throw err('E_LOCKED', `the owner lock at ${this.dataDir} is held by pid ${lock.holder && lock.holder.pid}, which is alive`, { holder: lock.holder || null });
     }
-    this.lockDir = lock.lockDir;
+    this.lockDir = lock.lockDir; this.lockToken = lock.token;
+    lockApi.serving.add(lock.token); // a second election in this process now sees the lock as held (audit 0.3.1 C1)
     try {
       this.store = new Store(path.join(this.dataDir, 'memory.db'), { synchronous: this.opts.synchronous, stamp: true });
       this.store.heartbeat(process.pid, this.pipe, this.startedAt);
@@ -477,7 +478,7 @@ class Owner {
       catch (e) { record(e); resolve(); }
     });
     try { if (this.store) this.store.close(); } catch (e) { record(e); }
-    try { if (this.lockDir) releaseLock(this.lockDir); } catch (e) { record(e); }
+    try { if (this.lockDir) { lockApi.serving.delete(this.lockToken); releaseLock(this.lockDir, this.lockToken); } } catch (e) { record(e); }
     if (firstError) throw firstError;
     return { pid: process.pid, pipe: this.pipe, already: false };
   }

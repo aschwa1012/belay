@@ -373,7 +373,19 @@ class Core {
     }
   }
 
-  async _ensureWriter(method = null) {
+  // One election at a time per Core (audit 0.3.1 C1): two concurrent first writes each built a client and elected, and the second
+  // owner, refused the pipe, released the first one's lock. A caller that arrives while one is in flight waits for it and then
+  // looks again, so it finds the owner or client that call made (or, if it failed, makes its own attempt).
+  _ensureWriter(method = null) {
+    if (this._ensuring) return this._ensuring.then(() => this._ensureWriter(method), () => this._ensureWriter(method));
+    const p = this._ensureWriterOnce(method);
+    this._ensuring = p;
+    const clear = () => { if (this._ensuring === p) this._ensuring = null; };
+    p.then(clear, clear);
+    return p;
+  }
+
+  async _ensureWriterOnce(method) {
     if (this.owner && !this.owner.stopped) return;
     if (this.owner) this.owner = null;
     if (this.client && this.client.connected) return;

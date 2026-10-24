@@ -112,7 +112,7 @@ class Client {
   // caller's dial; one process snapshot, asked once per lock in this process (a genuine holder is remembered by its token).
   // { reused, why, own_created } or null when not asked.
   async _reusedHolder(holder) {
-    if (!holder || !holder.token || GENUINE_HOLDERS.has(holder.token)) return null;
+    if (!holder || !holder.token || holder.pid === process.pid || GENUINE_HOLDERS.has(holder.token)) return null; // this process's own owner is starting
     const merged = readOwnerLock(this.dataDir);
     const lock = merged && merged.token === holder.token ? merged : holder;
     if (lock.listening !== true && !(Number.isFinite(lock.acquired_at) && Date.now() - lock.acquired_at > STARTING_GRACE_MS)) return null;
