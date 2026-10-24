@@ -425,9 +425,9 @@ test('an absolute path in a title names the changed file once the worktree root 
 
 test('B10: a note\'s own applies_to paths carry the writer\'s role (an orchestrator\'s are not labelled worker), and the review text reads any role as the writer\'s', () => {
   const NP = require('../../src/core/note-paths.cjs');
-  const n = note('K40', { applies_to: ['docs/plan.md'] });
+  const n = note('K40', { applies_to: ['lib/plan.cjs'] });
   const o = NP.merge(n, null, null, 'orchestrator');
-  assert.deepStrictEqual([o.applies_to, o.applies_to_from], [['docs/plan.md', 'src/K40.js'], ['orchestrator', 'evidence']]);
+  assert.deepStrictEqual([o.applies_to, o.applies_to_from], [['lib/plan.cjs', 'src/K40.js'], ['orchestrator', 'evidence']]);
   assert.deepStrictEqual([o.counts.orchestrator, o.counts.worker, o.counts.evidence], [1, 0, 1]);
   assert.deepStrictEqual(NP.merge(n, null, null).applies_to_from, ['worker', 'evidence'], 'a worker\'s note is as it was');
   // The write path passes the caller's role (note-write.cjs prepareNotes).
