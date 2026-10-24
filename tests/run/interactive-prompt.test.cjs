@@ -28,7 +28,7 @@ const REPLACED = [
   'and when you end the run (the outcome',
   // amendment 6: the headless waiting rules
   'a timeout is a result: call it again',
-  'Never end a turn just after `task_assign`',
+  'Never end a turn just after a `task_assign` whose',
 ];
 // The same sentences as the default fix_cutoff substitution carries them (run-levers.cjs cutoffRule).
 const REPLACED_IN_RULE = [
@@ -71,7 +71,7 @@ test('interactive prompt: says what the mode is', () => {
     '  `already: true` means that worker\'s turn ended before your call, not that the work is done.',
     '- A worker whose turn has ended without what you waited for is idle, not working. Instead call',
     '  `mcp__belay__worker_message` to tell it what is missing: that starts a turn. Then end your turn.',
-    '- `task_assign` alone starts nothing and no wake follows it: send the `worker_message` above first.',
+    '- A `task_assign` whose `delivered.sent` is false started nothing and no wake follows: use `worker_message`.',
   ], 'the waiting bullets, pinned line for line');
   assert.match(TWIN, /`namespace: "project"`, tell the operator the result and any open blocking findings, and then wait for them/);
   // the no-wakes wording is one self-contained paragraph a later amendment can swap

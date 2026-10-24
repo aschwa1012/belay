@@ -32,8 +32,8 @@ const strs = (description) => {
   return a;
 };
 
-// name -> { role, via, method }. `via` is 'core' (a dotted Core method), 'run' (a RunManager method)
-// or 'briefing' (the one tool that composes two Core calls into { line, doc }).
+// name -> { role, via, method }. `via` is 'core' (a dotted Core method), 'run' (a RunManager method),
+// 'compose' (a core write and its follow-up, compose.cjs) or 'briefing' (the one tool that composes two Core calls into { line, doc }).
 const ROUTES = {
   memory_store: { role: 'both', via: 'core', method: 'memory.store' },
   memory_retrieve: { role: 'both', via: 'core', method: 'memory.get' },
@@ -52,7 +52,8 @@ const ROUTES = {
   worker_stop: { role: 'orchestrator', via: 'run', method: 'stop' },
   worker_restart: { role: 'orchestrator', via: 'run', method: 'restart' },
   task_create: { role: 'orchestrator', via: 'core', method: 'task.create' },
-  task_assign: { role: 'orchestrator', via: 'core', method: 'task.assign' },
+  // ADR 0058: the assign, then the task sent to the worker (compose.cjs).
+  task_assign: { role: 'orchestrator', via: 'compose', method: 'assign' },
   // ADR 0010 amendment 3: the only way an orchestrator over MCP can write `done` and clear a dependency.
   task_evaluate: { role: 'orchestrator', via: 'core', method: 'task.evaluate' },
   // ADR 0015: admitted to the surface, which is nineteen tools from that record. It is the only way
@@ -230,8 +231,8 @@ const ORCHESTRATOR = [
   },
   {
     name: 'task_assign',
-    description: 'Assign a task to a live worker and take a lease for it. Returns the old and new lease rows and the task row. Refuses when the operator holds the lease, when a dependency of the task is not done, naming it and its holder, or when the worker is not starting, running or idle.',
-    inputSchema: S({ task_id: str(), worker_id: str(), ttl_ms: int('default 600000') }, ['task_id', 'worker_id']),
+    description: 'Assign a task to a live worker, take a lease and send the worker the task, its lease id and the hand-back rule. Returns the old and new lease rows, the task row and delivered. Refuses when the operator holds the lease, when a dependency of the task is not done, naming it and its holder, or when the worker is not starting, running or idle.',
+    inputSchema: S({ task_id: str(), worker_id: str(), ttl_ms: int('default 600000'), prompt: str('Sent in place of the spec'), deliver: bool() }, ['task_id', 'worker_id']),
   },
   {
     // ADR 0020 decision 5: the orchestrator's window onto the permission channel, so a headless run

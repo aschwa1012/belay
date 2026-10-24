@@ -57,7 +57,7 @@ test('every tool has a route into exactly one Core or RunManager method', () => 
     for (const t of tools.toolsFor(role)) {
       const r = tools.routeOf(t.name);
       assert.ok(r, `${t.name} has a route`);
-      assert.ok(['core', 'run', 'briefing'].includes(r.via), `${t.name} via is core, run or briefing`);
+      assert.ok(['core', 'run', 'briefing', 'compose'].includes(r.via), `${t.name} via is core, run, briefing or compose`);
       assert.ok(typeof r.method === 'string' && r.method.length > 0, `${t.name} names a method`);
       assert.ok(t.description.length > 0 && t.inputSchema.type === 'object', `${t.name} has a description and an object schema`);
     }

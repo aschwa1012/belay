@@ -242,6 +242,8 @@ async function callCore(dotted, args) {
   return fn(args);
 }
 
+const COMPOSE = require('./compose.cjs').createCompose({ callCore, manager: () => runManager });
+
 async function callTool(name, args) {
   const route = routeOf(name);
   if (!route) throw fail('E_ARGS', `no such tool ${name}`, { tool: name });
@@ -267,6 +269,7 @@ async function callTool(name, args) {
     }
     return row;
   }
+  if (route.via === 'compose') return COMPOSE[route.method](args); // ADR 0058: a core write and the follow-up the prompt asked for
   if (route.via === 'briefing') {
     const [line, doc] = await Promise.all([callCore('continuity.resumeLine', args), callCore('continuity.resumeDoc', args)]);
     return { line, doc };
