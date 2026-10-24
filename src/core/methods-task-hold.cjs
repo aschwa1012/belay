@@ -46,7 +46,7 @@ async function ensureHold(E, caller, args) {
     const lease = rows.currentLeaseForTask(E.store, task.id);
     if (!lease || lease.released_at || lease.holder !== args.worker_id) return { ...base, held: false, reason: 'not_leased_to_worker' };
     const ownerRun = resolveOwner(E.store, task, caller.run_id, rows.current(E.store, 'worker', args.worker_id));
-    if (ownerRun === task.run_id && lease.run_id === ownerRun) return { ...base, held: true, reason: 'live' };
+    if (ownerRun === task.run_id && lease.run_id === ownerRun) return { ...base, held: true, reason: 'run_live' };
     const t = Date.now(), by = E.writtenBy(caller);
     const newLease = rows.append(E.store, 'lease', { ...lease, id: rows.newId(), run_id: ownerRun, supersedes: lease.id }, by, t);
     const row = rows.append(E.store, 'task', { ...task, run_id: ownerRun }, by, t);
