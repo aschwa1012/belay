@@ -34,7 +34,7 @@ test('run: a run id with a live adapter is refused, the run row is untouched and
     const r = spawnSync(process.execPath, [CLI, 'run', `${dir}/spec.json`, '--data', dataDir, '--json'], { cwd: ROOT, env: { ...process.env, BELAY_CLAUDE_EXE: FAKE_CLAUDE }, encoding: 'utf8', windowsHide: true, timeout: 60000 });
     assert.strictEqual(r.status, 1, `stdout: ${r.stdout} stderr: ${r.stderr}`);
     const receipt = JSON.parse(r.stderr);
-    assert.ok(receipt.ended_by.startsWith(`run ${runId} is still live (adapter pid ${process.pid}, epoch ${before.run.epoch})`), receipt.ended_by);
+    assert.ok(receipt.ended_by.startsWith(`run ${runId} may be held by a running adapter (pid ${process.pid}, epoch ${before.run.epoch})`), receipt.ended_by);
     assert.strictEqual(receipt.store.attach, null, 'no epoch was opened');
     assert.ok(!fs.existsSync(`${dir}/orch`), 'no orchestrator directory was created');
 

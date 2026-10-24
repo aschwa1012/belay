@@ -1,20 +1,23 @@
 'use strict';
-// A run id whose first life is still going is not ours to take over. The core refuses the attach too (E_RUN_LIVE); asking
-// before anything is spawned or cleared keeps the live run's files and orchestrator untouched.
-const { pidAlive } = require('../core/lock.cjs');
+// A run id whose adapter is still running is not ours to take over. The core refuses the attach too (E_RUN_LIVE); asking
+// before anything is spawned or cleared keeps the live run's files and orchestrator untouched. A plain second `belay run` is
+// already stopped by the owner election, so this catches an adapter left behind by a crash, and a pid that was reused (the
+// recorded creation time tells those apart; see src/core/run-live.cjs).
+const { adapterState, liveMessage } = require('../core/run-live.cjs');
 
-// The run row when it is unended, its adapter answers and it is not this process's own; else null (no row, unreadable: the attach decides).
-async function liveRunRow(core) {
+// { row, assessment } when the run is unended, its adapter is not this process and is live or unverifiable; else null (no row,
+// unreadable, a lapsed run: the attach decides).
+async function liveRunRow(core, assess = adapterState) {
   try {
     const got = await core.run.get();
     const r = got && got.run;
-    if (r && r.ended_at == null && Number(r.adapter_pid) !== process.pid && pidAlive(r.adapter_pid)) return r;
+    if (!r || r.ended_at != null || Number(r.adapter_pid) === process.pid) return null;
+    const a = await assess(r);
+    return a.state === 'dead' ? null : { row: r, assessment: a };
   } catch { /* no run row yet */ }
   return null;
 }
 
-function liveRunMessage(runId, row) {
-  return `run ${runId} is still live (adapter pid ${row.adapter_pid}, epoch ${row.epoch}); stop it first or choose another run id`;
-}
+function liveRunMessage(runId, hit) { return liveMessage(runId, hit.row, hit.assessment); }
 
 module.exports = { liveRunRow, liveRunMessage };

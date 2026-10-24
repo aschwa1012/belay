@@ -106,10 +106,12 @@ async function attach(E, caller, args) {
   if (prev && prev.ended_at != null && caller.role === 'orchestrator') {
     throw err('E_ARGS', `run ${runId} has already ended; an orchestrator adapter cannot reopen it`, { run_id: runId, ended_at: prev.ended_at, epoch: prev.epoch });
   }
-  // A second `belay run` on a run id whose first life is still going would take the run over. Only the run process (role operator)
-  // is refused, and only while the previous adapter's pid answers; a lapsed run (dead pid) still reattaches. Nothing is written.
-  if (prev && prev.ended_at == null && caller.role === 'operator' && Number(prev.adapter_pid) !== adapterPid && pidAlive(prev.adapter_pid)) {
-    throw err('E_RUN_LIVE', `run ${runId} is still live (adapter pid ${prev.adapter_pid}, epoch ${prev.epoch}); stop it first or choose another run id`, { run_id: runId, adapter_pid: prev.adapter_pid, epoch: prev.epoch });
+  // An operator attach (the run process) over an unended run whose recorded adapter is still that process is refused with nothing written.
+  // The pid alone is not enough: a crashed run's pid can be reused, so the recorded creation time decides; where it cannot, the refusal
+  // says so and names the pid. A lapsed run (pid gone, or another process now) still reattaches.
+  if (prev && prev.ended_at == null && caller.role === 'operator' && Number(prev.adapter_pid) !== adapterPid) {
+    const a = await require('./run-live.cjs').adapterState(prev);
+    if (a.state !== 'dead') throw err('E_RUN_LIVE', require('./run-live.cjs').liveMessage(runId, prev, a), { run_id: runId, adapter_pid: prev.adapter_pid, epoch: prev.epoch, adapter_state: a.state, detail: a.detail });
   }
   const epoch = prev ? Number(prev.epoch || 0) + 1 : 1;
   const by = E.writtenBy(caller);
