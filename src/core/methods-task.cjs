@@ -6,7 +6,6 @@
 
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
-const { isPathId, RULE: PATH_ID_RULE } = require('./path-ids.cjs');
 const { pidAlive } = require('./lock.cjs');
 const { DEFAULT_LEASE_TTL_MS, TASK_STATES } = require('./schema.cjs');
 const { runAcceptance } = require('./evaluate.cjs');
@@ -73,7 +72,6 @@ async function create(E, caller, args) {
     throw err('E_ARGS', 'task.repairs must be the id of the work task this fix task repairs');
   }
   const repairs = args.repairs == null ? null : args.repairs;
-  if (args.id != null && args.id !== '' && !isPathId(args.id)) throw err('E_ARGS', `task.create: a task id must be ${PATH_ID_RULE}`, { task_id: String(args.id).slice(0, 80), reason: 'id_shape' });
   const id = args.id || rows.newId();
   if (rows.current(E.store, 'task', id)) throw err('E_ARGS', `a task with id ${id} already exists in this store`, { task_id: id });
 

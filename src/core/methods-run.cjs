@@ -10,7 +10,6 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
-const { isPathId, RULE: PATH_ID_RULE } = require('./path-ids.cjs');
 const { pidAlive } = require('./lock.cjs');
 const { WORKER_STATES, SUBSTRATES } = require('./schema.cjs');
 const { resolveParks, parseRunRow, clearedPause, pauseFields } = require('./pause-parks.cjs');
@@ -90,7 +89,6 @@ async function attach(E, caller, args) {
   const runId = caller.run_id;
   const t = Date.now();
   const prev = rows.current(E.store, 'run', runId);
-  if (!prev && !isPathId(runId)) throw err('E_ARGS', `run.attach: a new run id must be ${PATH_ID_RULE}`, { run_id: String(runId).slice(0, 80), reason: 'id_shape' });
   // ADR 0041: the project is named by the spec and never derived, and it is named once. The run row's project column (what a caller's reach and the
   // `project` alias resolve through) and the resolved levers' project must be the same name, else the orchestrator would write to one project while its
   // levers describe another. Refused here, with nothing written.
@@ -381,7 +379,6 @@ async function writeWorker(E, caller, args) {
     if (run && run.ended_at != null) throw err('E_ARGS', `run ${caller.run_id} has already ended; worker ${args.id} was not written`, { run_id: caller.run_id, ended_at: run.ended_at, worker_id: args.id });
   }
   const prev = rows.current(E.store, 'worker', args.id);
-  if (!prev && !isPathId(args.id)) throw err('E_ARGS', `worker.write: a new worker id must be ${PATH_ID_RULE}`, { worker_id: args.id.slice(0, 80), reason: 'id_shape' });
   // W2-3 amendment 2 (B2): a restating write names the row it restates. This method has no await between this read
   // and the append below, so the check and the append are one step; a mismatch appends nothing and is not an error.
   if (args.expect_seq != null && (!prev || prev.seq !== args.expect_seq)) {

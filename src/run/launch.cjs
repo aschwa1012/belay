@@ -13,7 +13,6 @@ const crypto = require('node:crypto');
 // belay needs Claude Code 2.1.280 or later (ready.cjs MIN_CLAUDE_CODE_VERSION). The executable itself, not
 // the npm `claude.cmd` shim, since Node spawns no .cmd without a shell.
 const ED = require('./exe-discovery.cjs');
-const { checkPathId } = require('../core/path-ids.cjs');
 
 const MCP_SERVER_NAME = 'belay';
 // A test default only: production workers are Sonnet or Opus by role (ADR 0021 amendment 1).
@@ -59,7 +58,6 @@ function userSettingsPath() {
   return fwd(path.join(os.homedir(), '.claude', 'settings.json'));
 }
 function workerDir(dataDir, workerId) {
-  checkPathId('worker id', workerId); // the last line of defence: no worker path is ever joined from an id that could leave workers/
   return fwd(path.join(dataDir, 'workers', workerId));
 }
 function workerName(workerId) {

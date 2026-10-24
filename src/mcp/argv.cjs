@@ -9,7 +9,6 @@
 const path = require('node:path');
 const CP = require('../run/compaction.cjs'); // fs and path only; parses --compact-at
 const AD = require('../run/agent-defaults.cjs'); // pure; checks the --agent-defaults file
-const { isPathId, RULE: PATH_ID_RULE } = require('../core/path-ids.cjs'); // pure
 
 const VALUE_FLAGS = new Set(['--role', '--run', '--data', '--worker-id', '--log', '--permit-wait-ms', '--compact-at', '--worktree', '--agent-defaults', '--bind']);
 const BOOL_FLAGS = new Set(['--no-embed', '--experimental-worker-wait', '--permit', '--notes']);
@@ -77,9 +76,6 @@ function parseArgv(argv) {
   }
   if (!out.runId) die('--run <id> is required; a run id is part of this process\'s identity and cannot come from a request');
   if (out.role === 'worker' && !out.workerId) die('--worker-id <id> is required in worker role; a worker cannot name itself');
-  // Both ids become path segments (workers/<id>/, the run's directories), so both take the one id rule.
-  if (!isPathId(out.runId)) die(`--run must be ${PATH_ID_RULE}`);
-  if (out.workerId !== undefined && !isPathId(out.workerId)) die(`--worker-id must be ${PATH_ID_RULE}`);
   if (out.role === 'orchestrator' && out.workerId) die('--worker-id is not accepted in orchestrator role');
   if (out.permit && out.role === 'orchestrator') die('--permit is a worker adapter\'s flag');
   if (out.notes && out.role !== 'worker') die('--notes is a worker adapter\'s flag');

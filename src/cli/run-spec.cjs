@@ -12,7 +12,6 @@ const RI = require('./run-interactive.cjs');
 const { parseLevers } = require('./run-levers.cjs');
 const C = require('./config.cjs');
 const AD = require('../run/agent-defaults.cjs');
-const { isPathId, RULE: PATH_ID_RULE } = require('../core/path-ids.cjs');
 
 const fwd = (p) => String(p).split('\\').join('/');
 
@@ -104,7 +103,6 @@ function parseSpec(specPath, cwd, opts = {}) {
   if (modeKeys.error) return { error: modeKeys.error };
 
   const orch = AD.forOrchestrator(agents, { model: spec.model, effort: opts.effort || null, builtinModel: L.DEFAULT_ORCHESTRATOR_MODEL });
-  if (spec.run_id && !isPathId(String(spec.run_id))) return { error: `run_id must be ${PATH_ID_RULE}; it names the run's directories` };
   const runId = spec.run_id ? String(spec.run_id) : crypto.randomUUID();
   return {
     specPath, worktree, promptFile, promptText, briefFile, briefText, runId, levers,
