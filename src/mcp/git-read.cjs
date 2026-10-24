@@ -22,13 +22,14 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const PROC = require('../core/process.cjs'); // killTree: a child handle and its verified descendants (ADR 0039)
+const PROC = require('../core/process.cjs'); // killMany: verified targets from one snapshot (ADR 0039)
+const ID = require('../core/proc-identity.cjs'); // the process snapshot and the descendant walk
 
 const OPS = ['status', 'log', 'diff', 'show'];
 const MAX_OUT = 16384;
 const STDERR_TAIL = 2048;
 const TIMEOUT_MS = 10000;
-const KILL_WAIT_MS = 5000; // a timed-out call waits this long at most for git's tree to be killed
+const KILL_WAIT_MS = 15000; // a timed-out call waits this long at most for git's tree to be killed (two process snapshots; each took 2-4 s on a loaded host)
 const LOG_N = 20;
 const LOG_MAX = 200;
 // belay's own options, before the subcommand; gitRead adds the filter overrides after them.
@@ -145,8 +146,8 @@ async function resolveWorktree(args, { runWorktree = null, taskWorktree = null }
 
 // One git process, bounded in output and time. Resolves { code, out, total, kept, errTail, ms } or rejects E_GIT for a
 // spawn failure or a timeout. On a timeout the pipes are destroyed (a filter or a submodule's git holding them open
-// cannot keep the call waiting), git and its verified descendants are killed by the child's own handle (ADR 0039), and
-// the call rejects once that kill answers, or after KILL_WAIT_MS, naming what was killed. `system`: read with the system config (filterOverrides' read of the system filters only).
+// cannot keep the call waiting), git and its descendants are killed (killGitTree: the root by its handle, the rest by
+// identity, ADR 0039), and the call rejects once that kill answers, or after KILL_WAIT_MS, naming what was killed. `system`: read with the system config (filterOverrides' read of the system filters only).
 function run(git, argv, { cwd, env, timeoutMs, maxOut, system = false }) {
   const t0 = Date.now();
   return new Promise((resolve, reject) => {
@@ -163,7 +164,7 @@ function run(git, argv, { cwd, env, timeoutMs, maxOut, system = false }) {
       settled = true;
       child.stdout.destroy(); child.stderr.destroy();
       // The kill is waited for, at most KILL_WAIT_MS, so the caller's answer comes after git and its descendants are gone.
-      const kill = PROC.killTree(child).then((k) => ({ ok: !!k.ok, killed: k.killed || [], skipped: k.skipped || [] }), (e) => ({ ok: false, error: e.code || e.message }));
+      const kill = killGitTree(child).catch((e) => ({ ok: false, error: e.code || e.message }));
       const bound = new Promise((r) => { const t = setTimeout(() => r({ ok: false, error: `kill not finished in ${KILL_WAIT_MS} ms` }), KILL_WAIT_MS); if (t.unref) t.unref(); });
       Promise.race([kill, bound]).then((k) => reject(Object.assign(new Error(`git_read: git timed out after ${timeoutMs} ms and was stopped`), { code: 'E_GIT', detail: { reason: 'timeout', argv, worktree: cwd, ms: Date.now() - t0, kill: k } })));
     }, timeoutMs);
@@ -180,6 +181,34 @@ function run(git, argv, { cwd, env, timeoutMs, maxOut, system = false }) {
       resolve({ code: code === null ? signal : code, out: Buffer.concat(kept), total, kept: keptBytes, errTail, ms: Date.now() - t0 });
     });
   });
+}
+
+// A timed-out git and everything under it. PROC.killTree kills leaves first and the root last, and git starts the next
+// filter as soon as the first is killed, so a filter outlived the call (found in the timeout test). Here the root goes
+// first: one snapshot while it lives names its descendants and its creation time, the handle kills it (no more spawns),
+// the named descendants are killed by identity, and a second snapshot catches any child it started before it died
+// (parent pid the dead root's, created after it), with that child's own descendants.
+async function killGitTree(child) {
+  const pid = child.pid;
+  const snap1 = await ID.processSnapshot({ kind: 'kill' });
+  const root = snap1 && snap1.get(pid);
+  const first = snap1 ? ID.descendantsOf(pid, snap1).leavesFirst : [];
+  if (ID.handleLive(child)) child.kill();
+  const killed = [pid];
+  const a = await PROC.killMany(first, { snapshot: async () => snap1 }); // identities checked against the snapshot that named them
+  for (const r of a) if (r.killed) killed.push(r.pid);
+  if (!root || root.created == null) return { ok: !!snap1, killed, ...(snap1 ? {} : { error: 'process snapshot unreadable: descendants not killed' }) };
+  const snap2 = await ID.processSnapshot({ kind: 'kill' });
+  const late = [];
+  for (const c of ID.childrenOf(pid, root.created, snap2)) {
+    if (first.some((t) => t.pid === c)) continue;
+    const e = snap2.get(c);
+    late.push(...ID.descendantsOf(c, snap2).leavesFirst, { pid: c, created: e.created, image: e.image });
+  }
+  const b = await PROC.killMany(late, { snapshot: async () => snap2 });
+  for (const r of b) if (r.killed) killed.push(r.pid);
+  const refused = [...a, ...b].filter((r) => r.refused);
+  return { ok: refused.length === 0, killed, ...(refused.length ? { refused: refused.map((r) => ({ pid: r.pid, kind: r.kind })) } : {}) };
 }
 
 const checkFailed = (what, r) => Object.assign(new Error(`git_read: the filter check (${what}) exited ${r.code}: ${r.errTail.trim().split('\n').pop() || 'no stderr'}`), { code: 'E_GIT', detail: { reason: 'filter_check', exit_code: r.code, stderr: r.errTail } });

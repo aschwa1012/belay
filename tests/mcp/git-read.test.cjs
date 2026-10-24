@@ -224,7 +224,7 @@ test('a timeout ends the call within its bound, even when a filter holds git\'s 
     const t0 = Date.now();
     await assert.rejects(G.gitRead({ op: 'status', worktree: dir }, { env, timeoutMs: 3000 }), (e) => e.code === 'E_GIT' && e.detail.reason === 'timeout' && e.detail.kill.ok === true && e.detail.kill.killed.length >= 1);
     const took = Date.now() - t0;
-    assert.ok(took < 3000 + 8000, `the call ended ${took} ms after it began, not when the filter let go`);
+    assert.ok(took < 3000 + 15000 + 2000, `the call ended ${took} ms after it began, not when the filter let go`);
     const pid = Number(fs.readFileSync(path.join(marks, 'pid'), 'utf8'));
     assert.ok(Number.isInteger(pid) && pid > 0, 'the filter started');
     assert.notStrictEqual(await PROC.waitPidGone(pid, { timeoutMs: 15000 }), null, 'and was killed with git');
