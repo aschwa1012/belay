@@ -6,7 +6,8 @@
 // requires the embedder module; the one vector this file ever needs is the query's, asked of the engine's
 // getEmbedder() provider, which a read copy does not have. The honesty contract: a search names the modes
 // that ran and the modes that failed, and `absence_established` is true only when BOTH ran over the stated
-// namespaces and filter and found nothing. A weaker result carries a `warning`, the first key of the object.
+// namespaces and filter and no row reached the relevance floor (ADR 0057). A weaker result carries a `warning`, the
+// first key of the object. The result's shapes (compact, debug, index) and the floor are memory-search-view.cjs's.
 
 const { err } = require('./errors.cjs');
 const { BM25, DEFAULT_PAGE } = require('./fts-query.cjs');
@@ -19,12 +20,16 @@ const { toUnitF32 } = require('./store.cjs');
 const gate = require('./memory-note-gate.cjs');
 const W = require('./memory-withhold.cjs');
 const { notesDefaults } = require('./memory-search-scope.cjs');
+const V = require('./memory-search-view.cjs');
 const { nsFor, resolveNamespace, runAlpha, withEmbedding, reachOf, checkReach, runEmbedderMode } = require('./methods-memory.cjs');
 
 const MODES = ['semantic', 'keyword', 'hybrid'];
 const VIEWS = ['full', 'index'];
+// A search's views (ADR 0057): compact (memory_search's default, set by the tool), debug (the full rows; `full` is its old name and the
+// Core API's default, which the CLI and belay's own callers read), index (ids and titles).
+const SEARCH_VIEWS = ['compact', 'debug', 'full', 'index'];
 const SCOPES = ['task', 'worker', 'run', 'namespace'];
-const NS_MAX = 10, OFFSET_MAX = 1000, K_MAX = 100, ID_MAX = 50, SPAN_MAX = 50, LIST_MAX = 500, DEPTH_MAX = 1200;
+const NS_MAX = 10, OFFSET_MAX = 1000, K_MAX = 100, ID_MAX = 50, SPAN_MAX = 50, LIST_MAX = 500, LIST_TEXT = 200, DEPTH_MAX = 1200;
 // ADR 0040 amendment (hybrid default): rrf k=10, alpha 0.3, OR join, chosen by the second hybrid evaluation.
 const DEFAULT_ALPHA = HYBRID_ALPHA, RRF_K = HYBRID_K, DUP_THRESHOLD = 0.95;
 
@@ -108,6 +113,7 @@ async function semanticStage(E, caller, o, depth) {
   const { vec, model: qModel } = await queryVector(E, caller, o);
   const db = E.store.db;
   const scored = [];
+  const cos = new Map(); // every scanned row's cosine, below min_score too: a keyword-only hit's relevance and the absence claim read it
   let scanned = 0, model = null, dim = null;
   const t = Date.now();
   for (const ns of o.namespaces) {
@@ -134,11 +140,12 @@ async function semanticStage(E, caller, o, depth) {
       scanned++;
       let s = 0;
       for (let d = 0; d < m.dim; d++) s += r.vec[d] * q[d];
+      cos.set(r.id, s);
       if (s >= o.minScore) scored.push({ id: r.id, score: s });
     }
   }
   scored.sort((a, b) => b.score - a.score || (a.id < b.id ? -1 : 1));
-  return { hits: scored.slice(0, depth), scanned, model, dim, note: model ? undefined : 'namespace has no embedded rows' };
+  return { hits: scored.slice(0, depth), scanned, model, dim, cos };
 }
 
 const fail = (code, message) => ({ failed: { code, message } });
@@ -209,7 +216,7 @@ function parseSearch(E, caller, args) {
   const gateSql = gate.sql(E, caller, { includeSuperseded: true, namespaces });
   return {
     gate: gateSql, hidden: gateSql ? new Set(JSON.parse(gateSql.params[0])) : null,
-    mode, view: enumArg('view', args.view, VIEWS, 'full'), order, alpha, filter, filterSql: fsql,
+    mode, view: enumArg('view', args.view, SEARCH_VIEWS, 'full'), order, alpha, filter, filterSql: fsql,
     k: intArg('k', args.k, DEFAULT_PAGE, 1, K_MAX), offset: intArg('offset', args.offset, 0, 0, OFFSET_MAX),
     namespaces,
     query: typeof args.query === 'string' ? args.query : null,
@@ -217,21 +224,6 @@ function parseSearch(E, caller, args) {
     minScore: numArg('min_score', args.min_score, -1), dupThreshold: numArg('dup_threshold', args.dup_threshold, DUP_THRESHOLD),
     includeSuperseded: !!args.include_superseded, allowSlow: !!args.allow_slow,
   };
-}
-
-function warningFor(o, ran, failed, results, absence, unembedded) {
-  if (failed.length) {
-    const did = failed.map(f => `${f.mode} search did not run (${f.code})`).join('; ');
-    const what = ran.length ? `these are ${ran.join(' and ')} matches only` : 'nothing was searched';
-    return `${did}; ${what}; no match here does not mean no such memory`;
-  }
-  if (results.length) return null;
-  if (o.mode !== 'hybrid') {
-    return `${o.mode} search only; ${o.mode === 'semantic' ? 'keyword' : 'semantic'} search did not run; no match here does not mean no such memory`;
-  }
-  if (unembedded) return `${unembedded} in-scope row${unembedded === 1 ? ' has' : 's have'} no vector, so semantic search could not see ${unembedded === 1 ? 'it' : 'them'}; keyword search alone covers ${unembedded === 1 ? 'it' : 'them'}; no match here does not mean no such memory`;
-  if (!absence) return 'both modes ran but offset or min_score narrowed the result; an empty page does not mean no such memory';
-  return null;
 }
 
 // What a hybrid search does when its semantic half fails, by where it runs and what failed. In a run (a worker or the orchestrator of a
@@ -284,6 +276,13 @@ async function search(E, caller, args) {
       onSemanticFailure(E, caller, e);
       failed.push({ mode: 'semantic', code: asCode(e), message: e.message });
     }
+    // ADR 0057 decision 5: rows in scope and not one with a vector is a semantic half that saw nothing. It is degraded, not run. Not an
+    // embedder failure (nothing to resume), so no run is paused and no hybrid search refused; a semantic-mode search answers it too.
+    if (sem && sem.scanned === 0 && considered > 0) {
+      ran.pop();
+      failed.push({ mode: 'semantic', code: 'E_NO_VECTORS', message: `none of the ${considered} in-scope rows has a vector (written without the embedder, or in a namespace bound to no model), so semantic search had nothing to compare` });
+      sem = null;
+    }
   }
   if (o.mode !== 'semantic') {
     const r = keywordStage(E, o, depth, base);
@@ -291,9 +290,9 @@ async function search(E, caller, args) {
     else { kw = r; ran.push('keyword'); }
   }
 
-  // One ranked list of { id, score, cosine?, ranks? }.
+  // One ranked list of { id, score, ranks? }. A row's cosine, for every scanned row, is in sem.cos.
   let ranked, fusion = null;
-  const cosine = new Map(sem ? sem.hits.map(h => [h.id, h.score]) : []);
+  const cosine = sem ? sem.cos : new Map();
   if (sem && kw) {
     ranked = rrf(sem.hits, kw.hits, { alpha: o.alpha, k: RRF_K }).map(h => ({ id: h.id, score: h.score, ranks: h.ranks }));
     fusion = { method: 'rrf', alpha: o.alpha, k: RRF_K };
@@ -314,41 +313,51 @@ async function search(E, caller, args) {
   }
   const page = pool.slice(o.offset, o.offset + o.k);
   rows = rows || rowsByIds(E, page.map(h => h.id));
+  const debug = o.view === 'full' || o.view === 'debug';
   const results = [];
+  let below = 0;
   for (const h of page) {
     const r = rows.get(h.id);
     if (!r) continue; // deleted between the two reads
-    const out = viewRow(r, o.view, h.score);
-    if (o.view === 'full') {
+    const c = sem && cosine.has(h.id) ? cosine.get(h.id) : null;
+    const rel = V.relevanceFields(c);
+    if (rel.low_relevance) below++;
+    if (o.view === 'compact') { results.push(V.compactRow(r, c)); continue; }
+    const out = { ...viewRow(r, debug ? 'full' : 'index', h.score), ...(o.view === 'index' ? rel : {}) };
+    if (debug) {
       out.score = h.score;
+      Object.assign(out, rel);
       if (h.ranks) out.ranks = h.ranks;
-      if (cosine.has(h.id)) {
-        const cos = cosine.get(h.id);
-        out.near_duplicate = cos >= o.dupThreshold;
+      if (c !== null) {
+        out.near_duplicate = c >= o.dupThreshold;
         const veto = out.near_duplicate && o.query !== null ? dupVeto(o.query, r.text) : null;
         if (veto) { out.near_duplicate = false; out.near_duplicate_veto = veto; }
-        if (sem && kw) out.cosine = cos;
+        if (sem && kw) out.cosine = c;
       }
     }
     results.push(out);
   }
 
-  // Absence needs every in-scope row covered by BOTH modes. The keyword index sees every row; the semantic scan
-  // sees only rows with a vector in a namespace bound to a model, so the rows it did not scan are named, and a
-  // search that left any of them out establishes nothing (same ttl, superseded and filter predicates as `considered`).
+  // ADR 0057 decision 4: absence is "nothing relevant is known here". Both modes ran, the semantic scan covered every in-scope row (the
+  // keyword index sees every row; a row with no vector is named, and one left out establishes nothing), and no scanned row reaches the
+  // floor. offset and min_score narrow the page, never the claim, which is about every scanned row.
   const unembedded = sem ? Math.max(0, considered - sem.scanned) : 0;
-  const absence = ran.includes('semantic') && ran.includes('keyword') && unembedded === 0 && !results.length && !pool.length && o.offset === 0 && o.minScore <= -1;
-  const searched = { namespaces: o.namespaces, filter: o.filter, rows_considered: considered, fts: ftsReady(db) };
-  if (unembedded) searched.rows_without_vector = unembedded;
-  if (kw && kw.dropped.length) searched.keyword_terms_dropped = kw.dropped;
-  const out = {
-    warning: warningFor(o, ran, failed, results, absence, unembedded),
-    results,
-    scanned: sem ? sem.scanned : 0, model: sem ? sem.model : null, dim: sem ? sem.dim : null,
-  };
-  if (sem && sem.note) out.note = sem.note;
+  let top = -Infinity;
+  for (const v of cosine.values()) if (v > top) top = v;
+  const absence = ran.includes('semantic') && ran.includes('keyword') && unembedded === 0 && top < V.RELEVANCE_FLOOR;
+  const out = { warning: V.warningFor(o, ran, failed, results, absence, unembedded, below), results, relevance: V.relevanceOf(sem, sem && sem.model) };
+  if (below) out.below_floor = below;
+  if (unembedded) out.rows_without_vector = unembedded;
+  if (debug) {
+    const searched = { namespaces: o.namespaces, filter: o.filter, rows_considered: considered, fts: ftsReady(db) };
+    if (unembedded) searched.rows_without_vector = unembedded;
+    if (kw && kw.dropped.length) searched.keyword_terms_dropped = kw.dropped;
+    Object.assign(out, { scanned: sem ? sem.scanned : 0, model: sem ? sem.model : null, dim: sem ? sem.dim : null, score_kind: V.scoreKind(sem, kw) });
+    out.modes_run = ran; out.modes_failed = failed; out.absence_established = absence;
+    out.searched = searched; out.fusion = fusion;
+    return out;
+  }
   out.modes_run = ran; out.modes_failed = failed; out.absence_established = absence;
-  out.searched = searched; out.fusion = fusion;
   return out;
 }
 
@@ -426,7 +435,8 @@ async function list(E, caller, args) {
   const namespaces = namespacesOf(E, caller, args);
   const view = enumArg('view', args.view, VIEWS, 'full');
   const order = enumArg('order', args.order, ['newest', 'oldest'], 'newest');
-  const limit = Math.min(intArg('limit', args.limit, 50, 1, Number.MAX_SAFE_INTEGER), LIST_MAX);
+  const asked = intArg('limit', args.limit, 50, 1, Number.MAX_SAFE_INTEGER);
+  const limit = Math.min(asked, LIST_MAX);
   const offset = intArg('offset', args.offset, 0, 0, Number.MAX_SAFE_INTEGER);
   const f = args.filter == null ? {} : args.filter;
   const fsql = gate.and(filterSql(f, 'e'), E, caller, { namespaces });
@@ -435,17 +445,19 @@ async function list(E, caller, args) {
   const dir = order === 'newest' ? 'DESC' : 'ASC';
   const db = E.store.db;
   const total = db.prepare(`SELECT COUNT(*) AS n FROM memory_entries e WHERE ${where}`).get(...params).n;
-  const found = db.prepare(`SELECT e.id, e.namespace, e.worker_id, e.last_writer_id, e.written_by, e.type, substr(e.text, 1, 200) AS text,
+  const found = db.prepare(`SELECT e.id, e.namespace, e.worker_id, e.last_writer_id, e.written_by, e.type, substr(e.text, 1, ${LIST_TEXT}) AS text, length(e.text) > ${LIST_TEXT} AS text_cut,
     substr(e.text, 1, 2000) AS title_src, e.tags, e.provenance, e.supersedes, e.created_at, e.updated_at, e.ttl_at, e.title, e.status,
     e.status_receipt, e.status_by, e.status_at, e.run_id, e.task_id, e.turn, e.source, e.redactions
     FROM memory_entries e WHERE ${where} ORDER BY e.created_at ${dir}, e.id ${dir} LIMIT ? OFFSET ?`).all(...params, limit, offset);
   const rows = found.map(r => {
-    const { title_src: src, ...rest } = r;
+    const { title_src: src, text_cut: textCut, ...rest } = r;
     const title = r.title || deriveTitle(src);
     if (view === 'index') return indexRowOf({ ...rest, title });
-    return { ...rest, tags: parseJson(r.tags), redactions: parseJson(r.redactions), status: r.status || 'unverified', title };
+    return { ...rest, tags: parseJson(r.tags), redactions: parseJson(r.redactions), status: r.status || 'unverified', title, ...(textCut ? { text_truncated: true } : {}) };
   });
-  return { rows, total, searched: { namespaces, filter: f, rows_considered: total } };
+  // ADR 0057 decision 10 (C11): a page that is not the whole of it says so, and how to read on.
+  const more = offset + rows.length < total;
+  return { rows, total, ...(more ? { truncated: true, next_offset: offset + rows.length } : {}), ...(asked > LIST_MAX ? { limit_capped: LIST_MAX } : {}), searched: { namespaces, filter: f, rows_considered: total } };
 }
 
 // A hybrid search whose semantic half timed out in the owner's own process answers from its keyword half: this

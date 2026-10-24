@@ -60,6 +60,9 @@ test('routes: a worker reaches memory_timeline and the new search arguments, as 
   assert.strictEqual(tl.__caller.worker_id, 'wk-mem');
   const s = row(await w.call('memory_search', { query: 'pid', mode: 'keyword' }));
   assert.deepStrictEqual(s.modes_run, ['keyword']);
+  // ADR 0057 decision 1: a model's search is the compact view unless it names one; the Core API's own default stays full.
+  assert.strictEqual(s.__args.view, 'compact');
+  assert.strictEqual(row(await w.call('memory_search', { query: 'pid', view: 'debug' })).__args.view, 'debug');
 });
 
 test('role allows: memory_verify is the orchestrator\'s alone, memory_timeline is both roles\'', async (t) => {
@@ -118,7 +121,7 @@ test('memory_retrieve: id or ids, not neither, not both, ids bounded and typed',
 test('the new arguments are typed at the boundary', () => {
   const bad = (name, args, re) => assert.throws(() => tools.validateArgs(name, args), (e) => e.code === 'E_ARGS' && re.test(e.message));
   bad('memory_search', { query: 'x', mode: 'fuzzy' }, /mode must be one of semantic, keyword, hybrid/);
-  bad('memory_search', { query: 'x', view: 'brief' }, /view must be one of full, index/);
+  bad('memory_search', { query: 'x', view: 'brief' }, /view must be one of debug, index/);
   bad('memory_search', { query: 'x', order: 'random' }, /order must be one of score, newest, oldest/);
   bad('memory_search', { query: 'x', filter: ['fact'] }, /filter must be object/);
   bad('memory_search', { query: 'x', offset: 1.5 }, /offset must be integer/);

@@ -255,6 +255,8 @@ async function callTool(name, args) {
     throw fail('E_ROLE', `${name} is not available in ${opts.role} role; it belongs to ${roleOf(name)}`, { tool: name, role: opts.role });
   }
   validateArgs(name, args, { notes: notesOn, role: opts.role });
+  // ADR 0057 decision 1: a model's search answers the compact view unless it asks for debug or index; the Core API's default stays full.
+  if (name === 'memory_search' && args && typeof args === 'object' && args.view === undefined) args = { ...args, view: 'compact' };
   if (route.via === 'core') {
     const row = withDataNotice(route.method, await callCore(route.method, args));
     // The one place the adapter adds to a row, and it is additive: every field of the core's

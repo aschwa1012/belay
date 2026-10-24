@@ -1,0 +1,83 @@
+'use strict';
+// memory-search-view.cjs — what a memory search hands back (ADR 0057): the compact row, the one relevance score and its floor,
+// and the warning. Pure: no store, no embedder, so any read path may load it.
+//
+// `relevance` is the cosine between the query and the row whenever the search has a query vector, whatever the mode: a keyword-only
+// hit of a hybrid search takes its cosine from the same scan, so every row of a semantic or hybrid answer is on one scale. A keyword
+// search has no query vector and answers relevance null. The floor flags; it never cuts: cosine separates relevant from unrelated rows
+// only loosely on belay's own text (the measurement in ADR 0057), so a cut would hide relevant rows silently.
+// When a reranker serves the search (ADR 0050), it reports `by: 'rerank'` with its own floor; nothing else in the shape changes.
+
+const { deriveTitle } = require('./memory-rows.cjs');
+
+// voyage-4-nano, query against row; chosen by FLOOR.json (ADR 0057 Evidence).
+const RELEVANCE_FLOOR = 0.4;
+const HELD_REASON_MAX = 160;
+const round = x => Math.round(x * 10000) / 10000;
+
+const parse = s => { if (s == null) return null; if (typeof s === 'object') return s; try { return JSON.parse(s); } catch { return null; } };
+const cut = (s, n) => (Buffer.byteLength(s) <= n ? s : Buffer.from(s).subarray(0, n).toString('utf8').replace(/�+$/, ''));
+
+// The result's description of its relevance numbers.
+function relevanceOf(sem, model) {
+  if (!sem) return { by: 'none', why: 'no query vector: keyword search ranks by term match, which is not on the cosine scale' };
+  return { by: 'cosine', model: model || null, floor: RELEVANCE_FLOOR };
+}
+
+// The per-row relevance fields: { relevance, low_relevance? }.
+function relevanceFields(cosine) {
+  if (typeof cosine !== 'number') return { relevance: null };
+  const r = round(cosine);
+  return r < RELEVANCE_FLOOR ? { relevance: r, low_relevance: true } : { relevance: r };
+}
+
+// A note's evidence as the reader needs it, with `checked: true` on an entry belay verified when the note was written (ADR 0057 decision 7).
+function evidenceOf(body) {
+  const list = Array.isArray(body.evidence) ? body.evidence : [];
+  const checked = new Set((Array.isArray(body.evidence_checked) ? body.evidence_checked : []).filter(c => c && c.ok).map(c => c.index));
+  return list.map((e, i) => (checked.has(i) ? { ...e, checked: true } : e));
+}
+
+// The compact row (ADR 0057 decision 1): what an orchestrator acts on, and nothing it does not.
+function compactRow(r, cosine) {
+  const out = { id: r.id, type: r.type, title: r.title || deriveTitle(r.text), status: r.status || 'unverified', ...relevanceFields(cosine), created_at: r.created_at };
+  if (r.type !== 'note') { out.text = r.text; return out; }
+  const b = parse(r.body) || {};
+  if (b.kind) out.kind = b.kind;
+  if (b.when) out.when = b.when;
+  if (b.basis) out.basis = b.basis;
+  out.evidence = evidenceOf(b);
+  if (Array.isArray(b.applies_to) && b.applies_to.length) out.applies_to = b.applies_to;
+  if (b.held && typeof b.held === 'object') out.held = { kind: b.held.kind || null, reason: typeof b.held.reason === 'string' ? cut(b.held.reason, HELD_REASON_MAX) : null };
+  const reported = Array.isArray(b.reported_wrong) ? b.reported_wrong.length : 0;
+  if (reported) out.reported = reported;
+  return out;
+}
+
+// What a search's numbers mean, for the debug view: the fused score of the mode that ranked it.
+const scoreKind = (sem, kw) => (sem && kw ? 'rrf' : sem ? 'cosine' : kw ? 'bm25' : null);
+
+const plural = (n, one, many) => (n === 1 ? one : many);
+
+// The warning, first key of the result. Failures first; then rows the semantic scan could not see (with results or without, C4); then a
+// page whose every row is below the floor; then the reasons an empty page proves nothing.
+function warningFor(o, ran, failed, results, absence, unembedded, below) {
+  if (failed.length) {
+    const did = failed.map(f => `${f.mode} search did not run (${f.code})`).join('; ');
+    const what = ran.length ? `these are ${ran.join(' and ')} matches only` : 'nothing was searched';
+    return `${did}; ${what}; no match here does not mean no such memory`;
+  }
+  const gap = unembedded ? `${unembedded} in-scope ${plural(unembedded, 'row has', 'rows have')} no vector, so semantic search could not see ${plural(unembedded, 'it', 'them')}; keyword search alone covers ${plural(unembedded, 'it', 'them')}` : null;
+  if (results.length) {
+    const low = below && below === results.length ? `no result reaches the relevance floor (${RELEVANCE_FLOOR}); these are the nearest rows and are likely unrelated` : null;
+    return [gap, low].filter(Boolean).join('; ') || null;
+  }
+  if (o.mode !== 'hybrid') {
+    return `${o.mode} search only; ${o.mode === 'semantic' ? 'keyword' : 'semantic'} search did not run; no match here does not mean no such memory`;
+  }
+  if (gap) return `${gap}; no match here does not mean no such memory`;
+  if (!absence) return 'both modes ran but offset or min_score narrowed the result; an empty page does not mean no such memory';
+  return null;
+}
+
+module.exports = { RELEVANCE_FLOOR, relevanceOf, relevanceFields, compactRow, scoreKind, warningFor };
