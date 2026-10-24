@@ -51,8 +51,8 @@ const lf = (s) => s.replace(/\r\n/g, '\n');
 // The operator's 2026-10-15 ruling rewrote the two spawn lines of each prompt (agent_type always; no hand-passed effort); same treatment.
 // ADR 0058 rewrote the task_assign lines in place (the assign now delivers the task); same treatment.
 const AMD6_LINES = {
-  'orchestrator.md': [32, 33, 35, 36, 37, 60, 61, 75, 81, 82, 83, 97, 98, 99, 100, 101],
-  'orchestrator-interactive.md': [34, 35, 37, 38, 39, 52, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 78, 79, 85, 86, 87, 92, 98, 101, 102, 103, 104, 105],
+  'orchestrator.md': [32, 33, 35, 36, 37, 60, 61, 67, 75, 81, 82, 83, 97, 98, 99, 100, 101],
+  'orchestrator-interactive.md': [34, 35, 37, 38, 39, 52, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 71, 78, 79, 85, 86, 87, 92, 98, 101, 102, 103, 104, 105],
 };
 
 test('memory rules: the placeholder sits at the end of an existing line, and an empty substitution is the base prompt byte for byte', () => {

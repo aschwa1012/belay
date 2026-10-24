@@ -61,7 +61,7 @@ function createWait({ workers, get }) {
           : 'result event on the worker stream',
         turn: w.turns,
         checkpoint_id: (v && v.checkpoint_id) || w.lastCheckpointId, is_error: !!(v && v.is_error),
-        usage: (v && v.usage) || w.lastTurnUsage || null, ...dropped(w),
+        usage: (v && v.usage) || w.lastTurnUsage || null, ...dropped(w), ...(v && v.evaluated ? { evaluated: v.evaluated } : {}),
       };
     };
     const done = (r) => ({ ...r, waited_ms: now() - t0, timed_out: false, watched: ids, ...capNote });

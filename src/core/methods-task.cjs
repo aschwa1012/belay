@@ -252,6 +252,7 @@ async function evaluate(E, caller, args) {
   if (!args.task_id) throw err('E_ARGS', 'task.evaluate needs a task_id');
   if (!args.worktree || typeof args.worktree !== 'string') throw err('E_ARGS', 'task.evaluate needs the worktree the acceptance criteria run in');
   if (args.base !== undefined && (typeof args.base !== 'string' || !args.base)) throw err('E_ARGS', 'task.evaluate: base must be a non-empty string (a commit or ref)');
+  if (args.trigger !== undefined && args.trigger !== 'release') throw err('E_ARGS', 'task.evaluate: trigger is release (the run manager evaluating a hand-back, ADR 0058) or absent');
   const task = rows.current(E.store, 'task', args.task_id);
   if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.task_id}`, { task_id: args.task_id });
   // The same two gates assign applies, checked before any command runs and again inside the write's transaction. `done` is
@@ -280,7 +281,7 @@ async function evaluate(E, caller, args) {
     const executable = checks.length > 0 && checks.every(c => c.executable);
     const passed = checks.length > 0 && checks.every(c => c.passed);
     const results = {
-      evaluated_at: Date.now(), executable, passed, checks,
+      evaluated_at: Date.now(), executable, passed, checks, ...(args.trigger ? { trigger: args.trigger } : {}),
       ...(checks.length === 0 ? { note: 'the task declares no acceptance criteria, so nothing was executed and nothing is proven' } : {}),
     };
     return rows.append(E.store, 'task', {

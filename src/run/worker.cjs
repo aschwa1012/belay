@@ -325,7 +325,7 @@ async function onTurnEnd(w, e, ctx) {
   // build step 6e-4: a turn ending after the interrupt while a park is under way is reported paused.
   w.pendingTurnEnd = null; // fix round, worker.cjs:317: this turn's own resolution is happening now; settle() may resolve turnWaiters via exit again for whatever comes next
   for (const r of w.turnWaiters.splice(0)) {
-    r({ usage: e.usage, checkpoint_id: checkpointId, is_error: e.is_error, paused: afterInterrupt, subtype: e.subtype });
+    r({ usage: e.usage, checkpoint_id: checkpointId, is_error: e.is_error, paused: afterInterrupt, subtype: e.subtype, evaluated: w.turnEvaluated });
   }
   // 6e-5 item 3: no row is written here while a park is under way — the exit handler's own write is the
   // only one a park ever produces, so the store never claims a non-live state for a still-live process.

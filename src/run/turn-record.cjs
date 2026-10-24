@@ -39,6 +39,7 @@ async function recordTurn(w, e, ctx, memoryTextMax, digestKeep) {
       w.lastError = { where: 'continuity.checkpoint', code: err && err.code, message: err && err.message };
     }
   }
+  await require('./release-eval.cjs').afterRelease(w, ctx); // ADR 0058: a hand-back is evaluated before the turn's row (and its wake)
   return checkpointId;
 }
 

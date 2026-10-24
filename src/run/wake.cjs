@@ -120,8 +120,8 @@ function wakeText(event) {
     return `belay: worker ${event.worker_id} was paused by ${event.paused_by} during turn ${event.turn}; ` +
       `its process is parked and its session kept, and it takes no turn until the operator resumes it.`;
   }
-  return `belay: worker ${event.worker_id} finished turn ${event.turn}. ` +
-    `What it did is in the store: task_list, briefing or memory_search.`;
+  return `belay: worker ${event.worker_id} finished turn ${event.turn}.${event.evaluated ? require('./release-eval.cjs').clause(event.evaluated) : ''} ` +
+    `What it did is in the store: task_list, briefing or memory_search.`; // ADR 0058: the hand-back's evaluation, as facts
 }
 
 // A worker this run manager (via the orchestrator's own adapter) launched is mid-turn on the store's

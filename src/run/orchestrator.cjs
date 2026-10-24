@@ -282,7 +282,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       orphanGraceMs: ORPHAN_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid),
     });
     state.baseline = next;
-    for (const ev of events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))).concat(await noteWatcher.poll())) writeWake(ev);
+    for (const ev of (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()))).concat(await noteWatcher.poll())) writeWake(ev); // ADR 0058: a turn_end carries its release evaluation
     if (state.finishing) return; // a wake's own write may have found the child already gone
 
     if (state.idle) {
