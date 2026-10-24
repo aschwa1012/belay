@@ -205,6 +205,10 @@ const MIGRATIONS = [
   // restart, resume, park or adopt in another process, never the worker's argv.json, which the worker can edit. Null for Codex and for a row
   // written before the column.
   'ALTER TABLE worker ADD COLUMN tools TEXT',
+  // The cost cap (`--max-budget-usd`) and the model a worker was spawned with, beside `tools` and for the same reason: a relaunch in
+  // another process reads them here, never from argv.json, which the worker can edit. Null when not asked and on a row written before.
+  'ALTER TABLE worker ADD COLUMN max_budget_usd REAL',
+  'ALTER TABLE worker ADD COLUMN model_requested TEXT',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot
