@@ -223,9 +223,9 @@ test('worker stop, restart and message: each rung refuses naming the fact, creat
     const coreEnded = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: 'run-ended', pid: process.pid } });
     try {
       await coreEnded.run.attach({ adapter_pid: process.pid });
+      await coreEnded.worker.write({ id: 'w-ended', substrate: 'claude-code', pid: null, state: 'idle', run_id: 'run-ended', turns: 0, started_at: Date.now() }); // by its own run, before it ends
       await coreEnded.run.end({ exit_reason: 'test' });
     } finally { await coreEnded.close(); }
-    await core.worker.write({ id: 'w-ended', substrate: 'claude-code', pid: null, state: 'idle', run_id: 'run-ended', turns: 0, started_at: Date.now() });
     before = listRecursive(dataDir);
     nodesBefore = await ownChildCount();
     for (const v of verbs) {
@@ -241,8 +241,8 @@ test('worker stop, restart and message: each rung refuses naming the fact, creat
     // an adapter pid that is dead.
     const dead = deadPid();
     const coreDead = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: 'run-dead-adapter', pid: process.pid } });
-    try { await coreDead.run.attach({ adapter_pid: dead }); } finally { await coreDead.close(); }
-    await core.worker.write({ id: 'w-deadadapter', substrate: 'claude-code', pid: null, state: 'idle', run_id: 'run-dead-adapter', turns: 0, started_at: Date.now() });
+    // the row is written by its own run's orchestrator: an orchestrator writes its own run's rows only
+    try { await coreDead.run.attach({ adapter_pid: dead }); await coreDead.worker.write({ id: 'w-deadadapter', substrate: 'claude-code', pid: null, state: 'idle', run_id: 'run-dead-adapter', turns: 0, started_at: Date.now() }); } finally { await coreDead.close(); }
     before = listRecursive(dataDir);
     nodesBefore = await ownChildCount();
     for (const v of verbs) {
