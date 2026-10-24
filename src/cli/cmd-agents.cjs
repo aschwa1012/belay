@@ -314,37 +314,39 @@ async function run(ctx) {
 
   const core = await openCore({ dataDir, caller: { role: 'operator', run_id: parsed.runId || 'cli', pid: process.pid } });
   try {
-    const { chosen, source } = await P.chooseRun(core, parsed.runId);
-    if (!chosen) {
-      const message = parsed.runId ? `no run row exists for ${parsed.runId}` : 'no run rows exist';
-      if (!parsed.runId) {
-        const empty = { run_id: null, run_id_source: source, mode: null, mode_source: 'no run', started_at_ms: null, paused_at_ms: null, ended_at_ms: null, tasks: { done: 0, total: 0 }, max_fix_rounds: null, agents: [], footer: footerOf([]) };
-        return { code: 0, text: renderText(empty), json: empty };
+    return await core.readBatch(async () => { // one store copy for every read below
+      const { chosen, source } = await P.chooseRun(core, parsed.runId);
+      if (!chosen) {
+        const message = parsed.runId ? `no run row exists for ${parsed.runId}` : 'no run rows exist';
+        if (!parsed.runId) {
+          const empty = { run_id: null, run_id_source: source, mode: null, mode_source: 'no run', started_at_ms: null, paused_at_ms: null, ended_at_ms: null, tasks: { done: 0, total: 0 }, max_fix_rounds: null, agents: [], footer: footerOf([]) };
+          return { code: 0, text: renderText(empty), json: empty };
+        }
+        return { code: 1, text: `belay agents: ${P.clean(message)}\n`, json: { error: { code: 'E_NOT_FOUND', message, run_id: parsed.runId } } };
       }
-      return { code: 1, text: `belay agents: ${P.clean(message)}\n`, json: { error: { code: 'E_NOT_FOUND', message, run_id: parsed.runId } } };
-    }
-    const { workers: everyWorker } = await core.worker.list({ states: WORKER_STATES }); // `forgotten` rows keep their cost_usd: the money was spent
-    const { tasks: everyTask } = await core.task.list({});
-    const { requests: pendingReqs } = await core.permission.list({ run_id: chosen.id, states: ['pending'] });
-    const pending = new Set(pendingReqs.map((r) => r.worker_id));
-    const tasksById = new Map(everyTask.filter((t) => t.run_id === chosen.id).map((t) => [t.id, t]));
-    const leaseTaskOf = leaseTasksOf([...tasksById.values()]);
-    const { dir: orchDir, stream_path: orchStream } = P.orchestratorStreamPath(chosen.id, parsed.dir, ctx.cwd);
-    const workers = everyWorker.filter((w) => w.run_id === chosen.id).map((w) => workerRow(w, tasksById, dataDir, { now, pending, leaseTaskOf }));
-    const orchestrator = orchestratorRow(chosen, orchStream, now);
-    fillFromTranscript(orchestrator, orchDir, chosen, { now });
-    borrowWindow(orchestrator, workers);
-    const agents = [orchestrator, ...workers];
-    const runTasks = [...tasksById.values()];
-    const receipt = {
-      run_id: chosen.id, run_id_source: source, ...D.modeOf(orchDir, chosen, orchestrator.stream_exists ? D.streamStart(orchStream) : null),
-      started_at_ms: nn(chosen.started_at), paused_at_ms: nn(chosen.paused_at), ended_at_ms: nn(chosen.ended_at),
-      tasks: { done: runTasks.filter((t) => t.state === 'done').length, total: runTasks.length },
-      max_fix_rounds: nn(chosen.max_fix_rounds), // the run row records the limit, not the rounds used
-      memory_notice: require('../core/memory-notice.cjs').noticeForRun(chosen, null), // this run's own notice (or null): the panel shows it, never the config's
-      agents, footer: footerOf(agents), owner: core.ownerInfo(),
-    };
-    return { code: 0, text: renderText(receipt), json: receipt };
+      const { workers: everyWorker } = await core.worker.list({ states: WORKER_STATES }); // `forgotten` rows keep their cost_usd: the money was spent
+      const { tasks: everyTask } = await core.task.list({});
+      const { requests: pendingReqs } = await core.permission.list({ run_id: chosen.id, states: ['pending'] });
+      const pending = new Set(pendingReqs.map((r) => r.worker_id));
+      const tasksById = new Map(everyTask.filter((t) => t.run_id === chosen.id).map((t) => [t.id, t]));
+      const leaseTaskOf = leaseTasksOf([...tasksById.values()]);
+      const { dir: orchDir, stream_path: orchStream } = P.orchestratorStreamPath(chosen.id, parsed.dir, ctx.cwd);
+      const workers = everyWorker.filter((w) => w.run_id === chosen.id).map((w) => workerRow(w, tasksById, dataDir, { now, pending, leaseTaskOf }));
+      const orchestrator = orchestratorRow(chosen, orchStream, now);
+      fillFromTranscript(orchestrator, orchDir, chosen, { now });
+      borrowWindow(orchestrator, workers);
+      const agents = [orchestrator, ...workers];
+      const runTasks = [...tasksById.values()];
+      const receipt = {
+        run_id: chosen.id, run_id_source: source, ...D.modeOf(orchDir, chosen, orchestrator.stream_exists ? D.streamStart(orchStream) : null),
+        started_at_ms: nn(chosen.started_at), paused_at_ms: nn(chosen.paused_at), ended_at_ms: nn(chosen.ended_at),
+        tasks: { done: runTasks.filter((t) => t.state === 'done').length, total: runTasks.length },
+        max_fix_rounds: nn(chosen.max_fix_rounds), // the run row records the limit, not the rounds used
+        memory_notice: require('../core/memory-notice.cjs').noticeForRun(chosen, null), // this run's own notice (or null): the panel shows it, never the config's
+        agents, footer: footerOf(agents), owner: core.ownerInfo(),
+      };
+      return { code: 0, text: renderText(receipt), json: receipt };
+    });
   } catch (e) {
     return { code: 1, text: `belay agents: ${P.clean(e.message, 200)}\n`, json: { error: { code: e.code || 'E_INTERNAL', message: e.message } } };
   } finally {
