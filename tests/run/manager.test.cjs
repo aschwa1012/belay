@@ -298,6 +298,9 @@ test('stopping a worker that is already gone claims neither a graceful stop nor 
     assert.equal(s.killed, false);
     assert.equal(s.pid, row.pid);
     assert.equal(s.ms_to_exit, 0);
+    assert.equal(s.already_exited, true, 'the receipt says the worker had already exited');
+    assert.match(s.note, /had already exited .*nothing was stopped/);
+    assert.ok(s.state_before, 'and what its row said when the stop arrived');
     assert.equal(core.currentWorker('w9').state, 'dead', 'it died before the stop, so it is dead, not stopped');
   } finally { await teardown(m, sb); }
 });

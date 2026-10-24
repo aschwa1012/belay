@@ -25,8 +25,8 @@ const { callWorkerAdapter, pauseBoundMs, resumeBoundMs } = require('./adapter-pi
 const { closeRunWorkers, workersClosedBlock, finalizeCut } = require('./run-close.cjs');
 const { warmEmbedder, createEmbedderGuard } = require('../run/embedder-guard.cjs');
 const { RESUME_WARM_MS } = require('./embedder-bounds.cjs');
+const { liveRunRow, liveRunMessage } = require('./run-live-guard.cjs');
 const { attachMemory, memoryText, substituteLevers, countReviewRounds } = require('./run-levers.cjs');
-
 const fwd = (p) => String(p).split('\\').join('/');
 
 // BELAY_FAKE_CORE (test-only): same confinement as src/mcp/belay-mcp.cjs's own use of it — resolved
@@ -132,15 +132,20 @@ async function run(ctx) {
   if (parsed.error) return usageError(parsed.error);
   eff.effort = parsed.effort; // --effort, else the config's agents.orchestrator.effort; parsed.agentSettings names which
   const mode = fl.interactive ? 'interactive' : parsed.mode; // ADR 0037 decision 1: the flag wins over the spec key
+  const BR = require('./run-brief.cjs');
+  if (parsed.briefText !== null) { // brief_file: belay's own template for this mode, the brief appended after the lever substitution
+    const t = BR.shippedTemplate(mode);
+    parsed.promptFile = t.file; parsed.promptText = t.text;
+  }
   const modeRefusal = RI.refusal(mode, parsed);
   if (modeRefusal) return usageError(modeRefusal);
   // ADR 0031: the counts say what the orchestrator was actually told; the receipt never claims a cap it was not.
   // An interactive run has no timeout (refused above), so its prompt is told none (L3).
-  parsed.promptWarnings = require('./run-prompt-check.cjs').checkPrompt({ promptText: parsed.promptText, promptFile: parsed.promptFile, mode, levers: parsed.levers, timeoutMs: parsed.timeout_ms }); // a stale copy of the template: a warning, never a refusal
+  parsed.promptWarnings = parsed.briefText !== null ? [] : require('./run-prompt-check.cjs').checkPrompt({ promptText: parsed.promptText, promptFile: parsed.promptFile, mode, levers: parsed.levers, timeoutMs: parsed.timeout_ms }); // a stale copy of the template: a warning, never a refusal
   const sub = mode === 'interactive'
     ? substituteLevers(parsed.promptText, parsed.levers, 0, { mode: 'interactive' })
     : substituteLevers(parsed.promptText, parsed.levers, parsed.timeout_ms);
-  parsed.promptText = sub.text;
+  parsed.promptText = parsed.briefText !== null ? BR.appendBrief(sub.text, parsed.briefText) : sub.text;
   parsed.levers.substituted = sub.substituted;
   const ce = mode === 'interactive' ? makeConsole() : null; // decision 6: the close can see a SIGHUP that arrives during it
   require('../run/exe-discovery.cjs').exportConfigured(found, C.effective); // config claude_exe/codex_exe reach every child
@@ -275,7 +280,13 @@ async function run(ctx) {
     const receipt = refusal(endedBy, became.pid, became.established_by);
     return { code: 1, text: renderText(receipt), json: receipt };
   }
-
+  const liveRun = await liveRunRow(core);
+  if (liveRun) { // see run-live-guard.cjs
+    const sd = await core.shutdownOwner().catch((e) => ({ error: (e && e.message) || String(e) }));
+    const receipt = refusal(liveRunMessage(parsed.runId, liveRun), process.pid, 'run.get showed an unended run with a live adapter');
+    Object.assign(receipt.store, { shutdown: sd });
+    return { code: 1, text: renderText(receipt), json: receipt };
+  }
   // ADR 0034 decision 1: the model is loaded and its canary passed before the orchestrator or any worker exists,
   // so a run never starts on a host that cannot do what its memory tools promise. Nothing has been written.
   const skipped = warmupSkipped();
@@ -305,6 +316,7 @@ async function run(ctx) {
       clearRunStart(orchestratorDir); // before this launch's attach: no marker of an earlier life of this run id survives
       RID.watchOrchestrator(pid); // ADR 0039: run-identity.cjs; the attach never waits on a snapshot
       attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
+      for (const w of attachRow.warnings || []) process.stderr.write("belay run: warning: " + w + String.fromCharCode(10));
       return { ok: true, attach: attachRow };
     } catch (e) {
       return { ok: false, error: (e && e.message) || String(e) };
@@ -431,7 +443,7 @@ async function run(ctx) {
     : (endedRow ? { epoch: endedRow.epoch, ended_at: endedRow.ended_at, exit_reason: endedRow.exit_reason } : null);
   const storeBlock = {
     owner_pid: process.pid,
-    attach: attachRow ? { epoch: attachRow.epoch, reattached: attachRow.reattached } : null,
+    attach: attachRow ? { epoch: attachRow.epoch, reattached: attachRow.reattached, ...(attachRow.warnings ? { warnings: attachRow.warnings } : {}) } : null,
     ended: endedBlock,
     ...(reviewWait ? { review_wait: reviewWait } : {}),
     shutdown,

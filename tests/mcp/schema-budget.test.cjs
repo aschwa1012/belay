@@ -1,5 +1,5 @@
 // schema-budget.test.cjs — A5, the ADR 0010 §5 budget: the byte length of the `tools/list` result is
-// at most 11,264 bytes (ADR 0010 amendment 6) for the orchestrator role and 7,168 for the worker role. Measured twice: on the
+// at most 16,384 bytes (ADR 0010 amendment 6) for the orchestrator role and 7,168 for the worker role. Measured twice: on the
 // module directly, and on what a live child actually sends over the wire, because only the second is
 // what the orchestrator pays for. Every failure prints the number.
 'use strict';
@@ -15,7 +15,7 @@ const EXPECTED = {
     'memory_store', 'memory_retrieve', 'memory_search', 'memory_timeline', 'memory_list', 'memory_delete', 'memory_stats',
     'status', 'task_list', 'briefing',
     'worker_spawn', 'worker_wait', 'worker_message', 'worker_stop', 'worker_restart', 'task_create', 'task_assign',
-    'permission_list', 'permission_decide', 'task_evaluate', 'memory_verify',
+    'permission_list', 'permission_decide', 'task_evaluate', 'task_worktree', 'integrate', 'memory_verify',
   ],
   worker: [
     'memory_store', 'memory_retrieve', 'memory_search', 'memory_timeline', 'memory_list', 'memory_delete', 'memory_stats',
@@ -43,13 +43,13 @@ test('the twenty-four tools of ADR 0010 §2 as amended by ADR 0015, 0020, amendm
   // memory_timeline and memory_verify (permit itself is hidden from the model and never in this
   // listing, measured separately above).
   const names = new Set([...EXPECTED.orchestrator, ...EXPECTED.worker]);
-  assert.strictEqual(names.size, 24, 'twenty-four distinct tools');
+  assert.strictEqual(names.size, 26, 'twenty-six distinct tools (ADR 0053 adds task_worktree and integrate)');
   assert.deepStrictEqual(tools.toolsFor('orchestrator').map((t) => t.name), EXPECTED.orchestrator);
   assert.deepStrictEqual(tools.toolsFor('worker').map((t) => t.name), EXPECTED.worker);
-  assert.strictEqual(tools.toolsFor('orchestrator').length, 21);
+  assert.strictEqual(tools.toolsFor('orchestrator').length, 23);
   assert.strictEqual(tools.toolsFor('worker').length, 13);
   assert.strictEqual(tools.BUDGET.worker, 7168, 'ADR 0010 amendment 6 raised the worker budget to 7,168');
-  assert.strictEqual(tools.BUDGET.orchestrator, 11264, 'and the orchestrator budget to 11,264');
+  assert.strictEqual(tools.BUDGET.orchestrator, 16384, 'and amendment 9 raised the orchestrator budget to 16,384');
 });
 
 test('every tool has a route into exactly one Core or RunManager method', () => {

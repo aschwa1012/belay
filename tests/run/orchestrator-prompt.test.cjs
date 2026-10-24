@@ -50,8 +50,9 @@ const lf = (s) => s.replace(/\r\n/g, '\n');
 // interactive-prompt.test.cjs pins their new wording, so here they are taken from the base before comparing.
 // The operator's 2026-10-15 ruling rewrote the two spawn lines of each prompt (agent_type always; no hand-passed effort); same treatment.
 const AMD6_LINES = {
-  'orchestrator.md': [32, 33, 81],
-  'orchestrator-interactive.md': [34, 35, 52, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 78, 79, 85, 92, 98],
+  // ADR 0053: the worktree rule of thumb (orchestrator.md 116, the interactive twin 120 once its pause paragraph is taken out).
+  'orchestrator.md': [32, 33, 81, 116],
+  'orchestrator-interactive.md': [34, 35, 52, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 78, 79, 85, 92, 98, 120],
 };
 
 test('memory rules: the placeholder sits at the end of an existing line, and an empty substitution is the base prompt byte for byte', () => {

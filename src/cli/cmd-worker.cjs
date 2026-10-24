@@ -12,6 +12,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const C = require('./config.cjs');
+const { isPathId } = require('../core/path-id.cjs');
 const { openCore, pidAlive } = require('../core/index.cjs');
 const P = require('../core/process.cjs');
 const { DEATH_LAND_MS } = require('../core/exit-hold.cjs');
@@ -190,6 +191,7 @@ async function runRm(core, dataDir, workerId) {
   const workerDir = fwd(path.join(dataDir, 'workers', workerId));
   let onDisk;
   try {
+    if (!isPathId(workerId)) throw new Error('not a valid id'); // an older row's odd id is never joined into a path
     fs.statSync(workerDir);
     onDisk = { path: workerDir, exists: true, bytes: dirSize(workerDir) };
   } catch {
@@ -239,7 +241,7 @@ function parseStopRestartArgs(sub, rest) {
 function renderStopText(receipt) {
   if (!receipt.stopped) return `belay worker stop: ${receipt.reason}\n`;
   const exitVal = receipt.exit_code != null ? receipt.exit_code : receipt.exit_signal;
-  const how = receipt.killed ? 'killed' : (receipt.graceful ? 'graceful' : 'already gone');
+  const how = receipt.killed ? 'killed' : (receipt.graceful ? 'graceful' : (receipt.already_exited ? 'already exited, nothing stopped' : 'already gone'));
   return `worker ${receipt.worker_id} pid ${receipt.pid}: stopped, exit ${exitVal} after ${receipt.ms_to_exit} ms, ${how}; session ${receipt.session_id || 'none'} (${receipt.established_by})\n`;
 }
 
@@ -340,4 +342,4 @@ async function run(ctx) {
   return runStopOrRestart(ctx, sub, parsed);
 }
 
-module.exports = { run };
+module.exports = { run, renderStopText };
