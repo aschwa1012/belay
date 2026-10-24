@@ -142,6 +142,35 @@ test('a repository\'s config cannot make a read run a program: external diff, te
   } finally { rm(dir); rm(marks); }
 });
 
+test('a clean filter from the repository\'s config does not run; the operator\'s global one is kept', async () => {
+  const { dir, git } = repo('filter');
+  const marks = sandboxDir('git-fmarks');
+  const home = sandboxDir('git-home');
+  try {
+    const script = fwd(path.join(marks, 'mark.cjs'));
+    fs.writeFileSync(script, "require('fs').writeFileSync(process.argv[2], 'ran'); process.stdin.pipe(process.stdout);\n");
+    const cmd = (name) => `"${fwd(process.execPath)}" "${script}" "${fwd(path.join(marks, name))}"`;
+    fs.writeFileSync(path.join(dir, '.gitattributes'), '*.dat filter=evil\n*.keep filter=keep\n');
+    fs.writeFileSync(path.join(dir, 'a.dat'), 'x\n');
+    fs.writeFileSync(path.join(dir, 'b.keep'), 'y\n');
+    git('add', '.');
+    git('commit', '-q', '-m', 'filtered');
+    git('config', 'filter.evil.clean', cmd('local'));
+    git('config', 'filter.evil.required', 'true');
+    fs.writeFileSync(path.join(home, '.gitconfig'), `[filter "keep"]\n\tclean = ${cmd('global').replace(/"/g, '\\"')}\n`);
+    const later = new Date(Date.now() + 5000);
+    for (const n of ['a.dat', 'b.keep']) fs.utimesSync(path.join(dir, n), later, later);
+    const env = { ...process.env, HOME: home, USERPROFILE: home };
+    const st = await G.gitRead({ op: 'status', worktree: dir }, { env });
+    assert.ok(st.argv.includes('filter.evil.clean=') && st.argv.includes('filter.evil.required=false'), 'belay switched the local driver off');
+    assert.ok(!st.argv.some((x) => x.startsWith('filter.keep.')), 'and left the global one');
+    assert.ok(st.argv.indexOf('filter.evil.clean=') < st.argv.indexOf('status'), 'before the subcommand');
+    await G.gitRead({ op: 'diff', worktree: dir }, { env });
+    assert.ok(!fs.existsSync(path.join(marks, 'local')), 'the repository\'s clean filter did not run');
+    assert.ok(fs.existsSync(path.join(marks, 'global')), 'the operator\'s global filter ran, as it would for a plain git');
+  } finally { rm(dir); rm(marks); rm(home); }
+});
+
 test('output is bounded and the truncation is marked with the real size', async () => {
   const { dir } = repo('big');
   try {
@@ -169,7 +198,7 @@ test('which directory: worktree, task_id through the lookup, the run default, an
     await code(G.gitRead({ op: 'status', worktree: fwd(path.join(dir, 'missing')) }), 'E_NOT_FOUND');
     const plain = sandboxDir('git-norepo');
     try {
-      await assert.rejects(G.gitRead({ op: 'log', worktree: plain }, { env: { ...process.env, GIT_CEILING_DIRECTORIES: fwd(path.dirname(plain)) } }), (e) => e.code === 'E_GIT' && e.detail.reason === 'exit' && e.detail.exit_code !== 0);
+      await assert.rejects(G.gitRead({ op: 'log', worktree: plain }), (e) => e.code === 'E_GIT' && e.detail.reason === 'exit' && e.detail.exit_code !== 0);
     } finally { rm(plain); }
   } finally { rm(dir); }
 });
