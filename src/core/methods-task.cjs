@@ -249,7 +249,7 @@ async function get(E, caller, args) {
 
 async function evaluate(E, caller, args) {
   if (!args.task_id) throw err('E_ARGS', 'task.evaluate needs a task_id');
-  if (!args.worktree || typeof args.worktree !== 'string') throw err('E_ARGS', 'task.evaluate needs the worktree the acceptance criteria run in');
+  if (args.worktree !== undefined && (!args.worktree || typeof args.worktree !== 'string')) throw err('E_ARGS', 'task.evaluate needs the worktree the acceptance criteria run in');
   if (args.base !== undefined && (typeof args.base !== 'string' || !args.base)) throw err('E_ARGS', 'task.evaluate: base must be a non-empty string (a commit or ref)');
   const task = rows.current(E.store, 'task', args.task_id);
   if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.task_id}`, { task_id: args.task_id });
@@ -264,7 +264,8 @@ async function evaluate(E, caller, args) {
 
   // Lazy: verdict.cjs is loaded only when a write path needs it, never when a core is opened to read.
   const { verdictCheck } = require('./verdict.cjs');
-  const commandChecks = await runAcceptance(task.acceptance, args.worktree, task.files_owned, { base: args.base });
+  const at = require('./methods-worktree.cjs').evaluateTarget(task, args); // ADR 0053 decision 4: the recorded worktree and base
+  const commandChecks = await runAcceptance(task.acceptance, at.worktree, task.files_owned, at);
   // The commands can run for minutes, so the row is read again inside the transaction that writes it: a
   // release that landed meanwhile (its handoff, its state) is what the verdict check reads and what the
   // written row carries forward (ADR 0025 decision 4).
