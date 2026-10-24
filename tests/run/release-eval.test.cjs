@@ -30,6 +30,12 @@ async function until(fn, ms = 30000) {
   }
 }
 
+// A promise that must settle inside `ms`, or the test fails naming what did not end (never left to the runner's timeout).
+function within(p, ms, what) {
+  let h;
+  return Promise.race([p, new Promise((_, rej) => { h = setTimeout(() => rej(new Error(`${what} did not end within ${ms} ms`)), ms); })]).finally(() => clearTimeout(h));
+}
+
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
 // One turn in which the worker releases its task, then `during(m, w, ctx)` while the evaluation runs. Returns what was seen.
@@ -52,14 +58,14 @@ async function releasedTurn(acceptance, result, { stopIdleOnDone = false, during
       worker = await openCore({ dataDir: dir, caller: callerFor('worker', { worker_id: 'w1', run_id: RUN }), embed: false });
       await worker.lease.release({ lease_id: lease.id, reason: 'done', ...(result ? { result } : {}) });
       fs.writeFileSync(gate, 'go'); // the turn ends only now, after the release
-      const atTurnEnd = await m.wait({ worker_ids: ['w1'], timeout_ms: 30000 });
+      const atTurnEnd = await within(m.wait({ worker_ids: ['w1'], timeout_ms: 30000 }), 40000, 'the turn');
       const w = m._worker('w1');
       const ev = result ? await until(() => w.lastEvaluation) : { promise: Promise.resolve(w.lastEvaluation || null) }; // started once the turn's row is written; none without a hand-back
       const wakeAtTurnEnd = wakeText((await RE.enrichWakes(core, RUN, [{ worker_id: 'w1', event: 'turn_end', turn: 1 }], new Map()))[0]);
       const seen = new Map();
       await RE.enrichWakes(core, RUN, [{ worker_id: 'w1', event: 'turn_end', turn: 1 }], seen); // the poll that saw the turn end
       const extra = during ? await during(m, w, dir) : null;
-      const out = await ev.promise;
+      const out = await within(ev.promise, 60000, 'the release evaluation');
       const followUp = (await RE.enrichWakes(core, RUN, [], seen)).filter((e) => e.event === 'evaluated'); // a later poll
       const waited = await m.wait({ worker_ids: ['w1'], timeout_ms: 5000 }); // already: the turn ended, its evaluation landed
       const row = await core.task.get({ task_id: task.id });
@@ -98,14 +104,14 @@ test('a hand-back whose checks fail is evaluated and stays released, naming the 
 test('a stop during the evaluation does not wait for its command: the command is killed by its handle and nothing is written', { timeout: 120000 }, async () => {
   const slow = (dir) => {
     const pidFile = path.join(dir, 'cmd.pid').split(path.sep).join('/');
-    return { commands: [{ argv: [process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 120000)`], timeout_ms: 300000 }] };
+    return { commands: [{ argv: [process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 45000)`], timeout_ms: 300000 }] };
   };
   const r = await releasedTurn(slow, { branch: 'b' }, {
     during: async (m, w, dir) => {
       const pidFile = path.join(dir, 'cmd.pid');
       const pid = Number(await until(() => (fs.existsSync(pidFile) ? fs.readFileSync(pidFile, 'utf8') : null)));
       const t0 = Date.now();
-      const stopped = await m.stop({ worker_id: 'w1', mode: 'graceful' });
+      const stopped = await within(m.stop({ worker_id: 'w1', mode: 'graceful' }), 30000, 'the stop');
       const stopMs = Date.now() - t0;
       await until(() => !pidAlive(pid), 15000);
       return { pid, stopMs, stopped };

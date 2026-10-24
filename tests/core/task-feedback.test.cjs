@@ -158,10 +158,24 @@ test('a second evaluation of the same task and tree while one runs joins it: the
   const slow = { commands: [{ argv: [process.execPath, '-e', `require('fs').appendFileSync(${JSON.stringify(runs)}, 'x'); setTimeout(() => {}, 1500)`], timeout_ms: 20000 }] };
   const t = await orch.task.create({ spec: 'join', acceptance: slow });
   await handBack(t.id, 'c-30');
-  const [a, b] = await Promise.all([orch.task.evaluate({ task_id: t.id, worktree: dir }), orch.task.evaluate({ task_id: t.id, worktree: dir })]);
+  let h;
+  const bound = new Promise((_, rej) => { h = setTimeout(() => rej(new Error('the two evaluations did not end within 30000 ms')), 30000); });
+  const [a, b] = await Promise.race([Promise.all([orch.task.evaluate({ task_id: t.id, worktree: dir }), orch.task.evaluate({ task_id: t.id, worktree: dir })]), bound]).finally(() => clearTimeout(h));
   assert.strictEqual(require('node:fs').readFileSync(runs, 'utf8'), 'x', 'the command ran once');
   assert.deepStrictEqual([a.state, b.state], ['done', 'done']);
   assert.strictEqual([a, b].filter((r) => r.joined_evaluation === true).length, 1, 'one call joined the other');
   // Once it has finished, a new evaluation is not a join: done is final.
   await rejects(orch.task.evaluate({ task_id: t.id, worktree: dir }), 'E_TASK_DONE');
+});
+
+test('M19: task.cancel refuses the orchestrator while the operator holds the lease, and lets the operator cancel', async () => {
+  const operator = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
+  try {
+    const t = await orch.task.create({ spec: 'operator holds it', acceptance: PASS });
+    const held = await operator.lease.takeControl({ task_id: t.id });
+    await rejects(orch.task.cancel({ task_id: t.id }), 'E_OPERATOR_HOLDS', /operator holds lease/);
+    assert.strictEqual((await orch.task.get({ task_id: t.id })).state, 'assigned', 'nothing was written');
+    const out = await operator.task.cancel({ task_id: t.id, reason: 'operator gave it up' });
+    assert.deepStrictEqual([out.task.state, out.released_lease.id], ['cancelled', held.new_lease.id]);
+  } finally { await operator.close(); }
 });
