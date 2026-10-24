@@ -42,7 +42,7 @@ test('moving an ended run\'s task to a live run\'s worker gets no priority from 
   await assert.rejects(op.task.assign({ task_id: t.id, worker_id: 'w-act1' }), (e) => { code('E_FILES_OVERLAP')(e); assert.strictEqual(e.detail.other_task_id, mine.id); return true; });
   await assert.rejects(b.task.assign({ task_id: t.id, check_only: true }), code('E_FILES_OVERLAP'));
   assert.deepStrictEqual(await op.task.get({ task_id: t.id }), before, 'a refused assign wrote nothing');
-  assert.deepStrictEqual(await holdsOf(op, mine.id), [true, 'live', 'act1-c']);
+  assert.deepStrictEqual(await holdsOf(op, mine.id), [true, 'run_live', 'act1-c']);
 });
 
 test('a live run\'s task assigned to another live run\'s worker moves to that run, so ending the first run does not free its files', async () => {
@@ -55,7 +55,7 @@ test('a live run\'s task assigned to another live run\'s worker moves to that ru
   assert.strictEqual(r.task.run_id, 'act2-b');
   assert.strictEqual(r.new_lease.run_id, 'act2-b');
   await a.run.end({ exit_reason: 'test' });
-  assert.deepStrictEqual(await holdsOf(op, t.id), [true, 'live', 'act2-b']);
+  assert.deepStrictEqual(await holdsOf(op, t.id), [true, 'run_live', 'act2-b']);
   await assert.rejects(b.task.create({ spec: 'clash', files_owned: ['act2/x.js'] }), code('E_FILES_OVERLAP'));
 });
 
@@ -108,7 +108,7 @@ test('ensureHold moves the ended run\'s task and its lease to the manager\'s liv
   assert.strictEqual(r.task.run_id, 'ens-move-b');
   assert.strictEqual(r.new_lease.run_id, 'ens-move-b');
   assert.strictEqual(r.new_lease.holder, 'w-ens-move');
-  assert.deepStrictEqual(await holdsOf(b, t.id), [true, 'live', 'ens-move-b']);
+  assert.deepStrictEqual(await holdsOf(b, t.id), [true, 'run_live', 'ens-move-b']);
   await assert.rejects(b.task.create({ spec: 'clash', files_owned: ['ens/move/x.js'] }), code('E_FILES_OVERLAP'));
   const seq = (await b.task.get({ task_id: t.id })).seq;
   const again = await b.task.ensureHold({ task_id: t.id, worker_id: 'w-ens-move' });

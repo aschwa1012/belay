@@ -43,14 +43,14 @@ test('another live run\'s unfinished task still holds its files, and the refusal
     assert.strictEqual(e.detail.other_run_id, 'run-b');
     return true;
   });
-  assert.deepStrictEqual(await holdsOf(a, t.id), [true, 'live']);
+  assert.deepStrictEqual(await holdsOf(a, t.id), [true, 'run_live']);
 });
 
 test('a task of a run with no run row still holds (drivers and tests that never attach)', async () => {
   const c = await open('run-norow');
   const t = await c.task.create({ spec: 'norow', files_owned: ['norow/x'] });
   await overlapOf(a.task.create({ spec: 'clash', files_owned: ['norow/x'] }));
-  assert.deepStrictEqual(await holdsOf(a, t.id), [true, 'live']);
+  assert.deepStrictEqual(await holdsOf(a, t.id), [true, 'run_live']);
 });
 
 test('an ended run\'s open, assigned and released tasks stop holding, and the view says run_ended', async () => {
@@ -91,7 +91,7 @@ test('a done task and a task owning no files hold nothing, and say why', async (
   const t = await a.task.create({ spec: 'nofiles' });
   assert.deepStrictEqual(await holdsOf(a, t.id), [false, 'no_files']);
   const d = await a.task.create({ spec: 'done', files_owned: ['done/x'], acceptance: { commands: [{ argv: [process.execPath, '-e', 'process.exit(0)'], timeout_ms: 20000 }] } });
-  assert.deepStrictEqual(await holdsOf(a, d.id), [true, 'live']);
+  assert.deepStrictEqual(await holdsOf(a, d.id), [true, 'run_live']);
   assert.strictEqual((await a.task.evaluate({ task_id: d.id, worktree: dir })).state, 'done');
   assert.deepStrictEqual(await holdsOf(a, d.id), [false, 'done']);
   assert.strictEqual((await b.task.create({ spec: 'reuse', files_owned: ['done/x'] })).state, 'open');
@@ -107,7 +107,7 @@ test('a re-attached run holds again: attach names the overlap and assign refuses
   const op = await open('run-resume', 'operator'); // only the run process (role operator) opens a new epoch over an ended run
   const r = await op.run.attach({ adapter_pid: process.pid });
   assert.deepStrictEqual(r.overlaps, [{ task_id: old.id, other_task_id: mine.id, files: ['resume/x'] }]);
-  assert.deepStrictEqual(await holdsOf(c, old.id), [true, 'live']);
+  assert.deepStrictEqual(await holdsOf(c, old.id), [true, 'run_live']);
   await overlapOf(c.task.assign({ task_id: old.id, worker_id: 'wr' }));
   await overlapOf(c.task.assign({ task_id: old.id, check_only: true }));
   assert.strictEqual((await c.task.get({ task_id: old.id })).state, 'open', 'a refused assign wrote nothing');
@@ -198,7 +198,7 @@ test('an ended run\'s task does not take the priority a live run\'s task yields:
   await overlapOf(op.task.assign({ task_id: old.id, check_only: true }));
   await overlapOf(op.task.assign({ task_id: old.id, worker_id: 'w-ended-prio' }));
   assert.strictEqual((await op.task.get({ task_id: old.id })).state, 'open', 'a refused assign wrote nothing');
-  assert.deepStrictEqual(await holdsOf(op, live.id), [true, 'live']);
+  assert.deepStrictEqual(await holdsOf(op, live.id), [true, 'run_live']);
 });
 
 // Activation (ADR 0046 decision 1): every path that makes a task worked must establish its hold for a live run, or refuse.
@@ -220,7 +220,7 @@ test('an operator assigning an ended run\'s task to a live run\'s worker makes t
   const r = await op.task.assign({ task_id: t.id, worker_id: 'w-adopt' });
   assert.strictEqual(r.task.run_id, 'run-b');
   assert.strictEqual(r.new_lease.run_id, 'run-b');
-  assert.deepStrictEqual(await holdsOf(op, t.id), [true, 'live']);
+  assert.deepStrictEqual(await holdsOf(op, t.id), [true, 'run_live']);
   await overlapOf(b.task.create({ spec: 'clash', files_owned: ['adopt/x'] }));
 });
 
