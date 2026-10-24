@@ -143,7 +143,7 @@ async function doAsk(manager, ctx, state, args) {
     // A row an earlier adapter left is relaunched with the tool list its row records (ADR 0024 amendment 4); only a row written before that column falls back to argv.json.
     else if (stand === 'ended') {
       const row = await core.worker.get({ worker_id: id });
-      checkTools({ tools: Array.isArray(row.tools) ? require('./surface.cjs').narrowTools(row.tools) : require('./lifecycle.cjs').readLaunchOptions(L.workerDir(ctx.dataDir, id)).tools }, id);
+      checkTools({ tools: Array.isArray(row.tools) ? L.narrowTools(row.tools) : require('./lifecycle.cjs').readLaunchOptions(L.workerDir(ctx.dataDir, id)).tools }, id);
     }
     if (stand === 'live' && manager._worker(id).turnEnded === false) {
       // Mid-turn on an earlier question that timed out: wait that turn out; its answer is not this question's.
