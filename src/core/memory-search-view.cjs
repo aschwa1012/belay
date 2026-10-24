@@ -10,8 +10,10 @@
 
 const { deriveTitle } = require('./memory-rows.cjs');
 
-// voyage-4-nano, query against row; chosen by FLOOR.json (ADR 0057 Evidence).
-const RELEVANCE_FLOOR = 0.4;
+// voyage-4-nano, query against row, chosen by FLOOR.json (ADR 0057 Evidence): below 0.35 lie 42% of the pairs judged unrelated and 2.8% of
+// those judged highly relevant; "nothing reaches it" is wrong for 7.1% of answerable queries and holds for 29% of those with no answer.
+// Re-measure for another model or a reranker.
+const RELEVANCE_FLOOR = 0.35;
 const HELD_REASON_MAX = 160;
 const round = x => Math.round(x * 10000) / 10000;
 
