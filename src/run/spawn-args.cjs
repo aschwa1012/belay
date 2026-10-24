@@ -5,6 +5,12 @@
 const fs = require('node:fs');
 const L = require('./launch.cjs');
 const { fail } = require('./errors.cjs');
+const { isPathId, pathIdMessage } = require('../core/path-id.cjs'); // pure
+
+// A caller-named worker id becomes a directory under the data dir: refused before any file or row is written.
+function checkWorkerId(worker_id) {
+  if (worker_id !== null && worker_id !== undefined && !isPathId(worker_id)) fail('E_ARGS', `spawn ${pathIdMessage('worker_id', worker_id)}`, { field: 'worker_id' });
+}
 
 // memory_queries: up to 4 situation lines the orchestrator writes for the worker's memory index (each a `when`-shaped task line, at
 // most 160 bytes). Returns them trimmed, or [] when none were given.
@@ -21,6 +27,7 @@ function checkMemoryQueries(list) {
 }
 
 function validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id, native_memory = null }) {
+  checkWorkerId(worker_id);
   if (substrate !== 'claude-code' && substrate !== 'codex') fail('E_ARGS', 'substrate must be claude-code or codex', { substrate });
   if (!worktree) fail('E_ARGS', 'spawn needs a worktree');
   if (typeof prompt !== 'string' || !prompt) fail('E_ARGS', 'spawn needs a prompt');
@@ -51,4 +58,4 @@ async function discardUnstarted(workers, w, dirExisted) {
   if (!dirExisted) { try { fs.rmSync(w.dir, { recursive: true, force: true }); } catch { /* the original error is the one to report */ } }
 }
 
-module.exports = { discardUnstarted, validateSpawnArgs, checkMemoryQueries, QUERIES_MAX, QUERY_BYTES_MAX };
+module.exports = { checkWorkerId, discardUnstarted, validateSpawnArgs, checkMemoryQueries, QUERIES_MAX, QUERY_BYTES_MAX };

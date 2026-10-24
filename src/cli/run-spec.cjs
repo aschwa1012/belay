@@ -11,6 +11,7 @@ const L = require('../run/launch.cjs');
 const RI = require('./run-interactive.cjs');
 const { parseLevers } = require('./run-levers.cjs');
 const C = require('./config.cjs');
+const { isPathId, pathIdMessage } = require('../core/path-id.cjs');
 const AD = require('../run/agent-defaults.cjs');
 
 const fwd = (p) => String(p).split('\\').join('/');
@@ -91,6 +92,7 @@ function parseSpec(specPath, cwd, opts = {}) {
 
   const orch = AD.forOrchestrator(agents, { model: spec.model, effort: opts.effort || null, builtinModel: L.DEFAULT_ORCHESTRATOR_MODEL });
   const runId = spec.run_id ? String(spec.run_id) : crypto.randomUUID();
+  if (!isPathId(runId)) return { error: pathIdMessage('run_id', runId) }; // it names the orchestrator's temp directory and prefixes job worker ids
   return {
     specPath, worktree, promptFile, promptText, runId, levers,
     model: orch.model.value, effort: orch.effort.value, agentSettings: { orchestrator: orch }, agentDefaults: agents,
