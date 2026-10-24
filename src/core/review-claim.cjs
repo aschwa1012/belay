@@ -64,6 +64,19 @@ async function reviewState(E, caller, args = {}) {
   return { reviews };
 }
 
+// Audit 0.3.1 C7: whether the claim a taker names is still held, by the rule the shipped caller uses (src/cli/review-run.cjs
+// claimIsDead): gone when its pid does not answer a pid check, or when a process snapshot shows the pid created at another time
+// than the claim recorded. A live pid with no recorded time, or one the snapshot cannot read, cannot be shown to be another
+// process, so the claim stands. -> null when it is gone, or the reason it is still held. `createdOf` is a test seam.
+async function heldBy(claim, createdOf = (pid) => require('./proc-identity.cjs').createdOf(pid, { kind: 'review-claim' })) {
+  if (!claim.pid || !pidAlive(claim.pid)) return null;
+  if (claim.created == null) return `pid ${claim.pid} answers a pid check and the claim has no creation time`;
+  let got = null;
+  try { got = await createdOf(claim.pid); } catch { got = null; }
+  if (!got || got.created == null) return `pid ${claim.pid} answers a pid check and the process snapshot could not read its creation time`;
+  return got.created === claim.created ? `pid ${claim.pid} is the claimed process (created ${claim.created})` : null;
+}
+
 const operatorOnly = (caller, method) => {
   if (caller.role !== 'operator') throw err('E_ROLE', `${method} is the operator's: the review is started by the human's command or button`, { role: caller.role });
 };
@@ -79,6 +92,11 @@ async function reviewClaim(E, caller, args) {
   // ADR 0052: the run that owns the store is closing and waits only for the reviews claimed before it looked, so no new claim lands.
   const closed = E.owner && E.owner.reviewClaimsClosed;
   if (closed) throw err('E_BUSY', `no archive review can start now: ${closed.reason}; start it again once \`belay run\` has exited`, { project: a.project, reason: 'owner_closing', owner_pid: process.pid, since: closed.at });
+  // A takeover is checked against the holder's identity before the transaction (a snapshot is not taken inside one); the
+  // transaction then takes over only that same claim, by its id.
+  const named = a.replaces ? newest(E, a.project) : null;
+  const held = named && named.phase === 'claim' && named.id === a.replaces ? await heldBy(named, reviewClaim.createdOf) : null;
+  if (held) throw err('E_BUSY', `an archive review of ${a.project} is claimed by pid ${named.pid} (job ${named.job}, claim ${named.id}), which is still alive (${held}); it is not taken over`, { project: a.project, claim: named, reason: 'holder_alive', established_by: held });
   return E.store.tx(() => {
     const last = newest(E, a.project);
     let replaced = null;
