@@ -2,7 +2,7 @@
 // route each one takes into the Core API or the RunManager. `toolsFor(role)` returns exactly what `tools/list` sends for that role:
 // the ten both-role tools plus that role's own. ROUTES is kept separate from the schemas so that no
 // routing field is ever serialised into the listing, which is measured against the ADR 0010 §5 budget
-// (11,264 bytes orchestrator and 7,168 bytes worker since ADR 0010 amendment 6). Descriptions say what the tool returns as proof and
+// (16,384 bytes orchestrator since ADR 0010 amendment 9, 7,168 bytes worker since amendment 6). Descriptions say what the tool returns as proof and
 // when it refuses; nothing else, because every byte is a per-turn tax on the orchestrator's context.
 //
 // Two places where ADR 0010 disagrees with itself or with src/core/api.md, resolved in favour of the
@@ -356,7 +356,7 @@ const allows = (role, name, workerId = null, { notes = false } = {}) => {
   return r === 'both' || r === role;
 };
 
-const BUDGET = { orchestrator: 11264, worker: 7168, permit: 320 }; // ADR 0010 amendment 6: orchestrator 11 KB, worker 7 KB
+const BUDGET = { orchestrator: 16384, worker: 7168, permit: 320 }; // ADR 0010 amendment 9: orchestrator 16 KB, worker 7 KB
 const listingBytes = (role, opts) => Buffer.byteLength(JSON.stringify(toolsFor(role, opts)), 'utf8');
 
 const BY_NAME = new Map();
