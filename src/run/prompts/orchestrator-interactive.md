@@ -35,7 +35,7 @@ of your prompt, `task <id> state=assigned lease=<lease id>.`. Give it `substrate
 `coder`): belay applies its model and effort. Pass `model` or `effort` only when your plan needs another.{{memory_queries_line}}{{memory_report_line}}
 
 `mcp__belay__task_assign` to a running worker sends it the task, its lease id and the hand-back
-rule (`prompt` replaces the spec, `deliver: false` sends nothing). If `delivered.sent` is false,
+rule (`prompt` replaces the spec, `deliver: false` sends nothing). If `delivered.sent` and `delivered.queued` are false,
 the worker was told nothing: tell it with `mcp__belay__worker_message`.
 
 Every worker prompt you write must end with: when you are finished, call `lease_release` with your
@@ -64,7 +64,7 @@ So:
   `already: true` means that worker's turn ended before your call, not that the work is done.
 - A worker whose turn has ended without what you waited for is idle, not working. Instead call
   `mcp__belay__worker_message` to tell it what is missing: that starts a turn. Then end your turn.
-- A `task_assign` whose `delivered.sent` is false started nothing and no wake follows: use `worker_message`.
+- A `task_assign` whose `delivered.sent` and `delivered.queued` are false started nothing and no wake follows: use `worker_message`.
 - When every task is `done`, or when you stop on purpose, {{memory_outcome}}store the outcome in memory with
   `namespace: "project"`{{/memory_outcome}}, tell the operator the result and any open blocking findings, and then wait for them.
 
