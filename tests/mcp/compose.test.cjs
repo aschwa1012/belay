@@ -27,3 +27,15 @@ test('compactSpawn keeps what the orchestrator acts on and leaves the launch rec
   assert.deepStrictEqual([compactSpawn({ id: 'c', model: null }, 'm-1').model, compactSpawn({ id: 'c', model: null }).model_source], ['m-1', undefined]);
   assert.deepStrictEqual(compactSpawn({ id: 'w', effort_requested: 'low', tools: ['Bash'], permission_mode_degraded: true }), { id: 'w', effort: 'low', tools: ['Bash'], permission_mode_degraded: true });
 });
+
+test('task_assign reports a message held for a compaction as queued, not sent', async () => {
+  const { createCompose } = require('../../src/mcp/compose.cjs');
+  const calls = [];
+  const callCore = async (m, a) => (m === 'task.assign' ? { task: { id: a.task_id, spec: 'do it', state: 'assigned' }, new_lease: { id: 'L1' } } : { text: `task ${a.task_id} state=assigned lease=L1.` });
+  const reply = (queued) => ({ _worker: () => ({}), message: async (a) => { calls.push(a); return queued ? { worker_id: a.worker_id, channel: 'queued', queued: true, position: 1, bytes: 9 } : { worker_id: a.worker_id, channel: 'stdin', bytes: 9 }; } });
+  const held = await createCompose({ callCore, manager: () => reply(true) }).assign({ task_id: 't1', worker_id: 'w1' });
+  assert.deepStrictEqual([held.delivered.sent, held.delivered.queued, held.delivered.channel], [false, true, 'queued']);
+  const now = await createCompose({ callCore, manager: () => reply(false) }).assign({ task_id: 't1', worker_id: 'w1' });
+  assert.deepStrictEqual([now.delivered.sent, now.delivered.queued, now.delivered.channel], [true, false, 'stdin']);
+  assert.match(calls[0].text, /lease_release with lease_id L1/);
+});

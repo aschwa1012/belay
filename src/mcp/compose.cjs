@@ -47,7 +47,7 @@ function createCompose({ callCore, manager, openManager, dataDir = null }) {
     const text = `${head}\n\n${body}\n\nWhen you are finished, call lease_release with lease_id ${lease} and a result object (branch, head, tests, findings).`;
     try {
       const m = await r.message({ worker_id: coreArgs.worker_id, text });
-      return { ...out, delivered: { sent: true, ...m } };
+      return { ...out, delivered: { ...m, sent: !m.queued, queued: !!m.queued } }; // queued: held for a compaction, written when it ends
     } catch (e) {
       return not(`the task is assigned but the message was not sent: ${e && e.message}`, { error: (e && e.code) || 'E_INTERNAL' });
     }
