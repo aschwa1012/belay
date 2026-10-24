@@ -10,7 +10,7 @@ const { pidAlive } = require('./lock.cjs');
 const { DEFAULT_LEASE_TTL_MS, TASK_STATES } = require('./schema.cjs');
 const { runAcceptance } = require('./evaluate.cjs');
 const holds = require('./task-holds.cjs');
-const { filesOverlap, runNotLive, resolveOwner } = require('./methods-task-hold.cjs');
+const { filesOverlap, runNotLive, resolveOwner, assertNotOwnReview } = require('./methods-task-hold.cjs');
 
 // ADR 0025 decision 1: the most a worker may hand back on release, serialized.
 const HANDOFF_MAX_BYTES = 4096;
@@ -167,6 +167,7 @@ async function assign(E, caller, args) {
     // clear it (ADR 0013 §1). Only `done` opens the gate, and `done` is earned by executable evidence
     // (api.md §2), so a worker cannot talk its way past this by saying it finished.
     assertDependenciesDone(E, task);
+    assertNotOwnReview(E.store, task, args.worker_id); // with check_only too, when the spawn names its worker id
 
     // ADR 0046 decision 1: assigning makes a task hold its files, so another holding task, in any run, that overlaps them
     // refuses it. Inside one live run create already refused the overlap, so this fires for a re-attached run only: a task

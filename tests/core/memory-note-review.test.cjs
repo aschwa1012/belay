@@ -153,7 +153,11 @@ test('R5: a writer cannot review its own note, and neither can a worker that hel
   const w = await written('w-e', 'K6');
   // the writer reviews its own task's note through a review task it holds
   const t = await call('task.create', orch, { spec: 'self review', depends_on: [w.task], acceptance: { verdict: true } });
-  const a = await call('task.assign', orch, { task_id: t.id, worker_id: 'w-e' });
+  // Refused at assign since ADR 0058; built as a store from before that gate holds it, to check the independence rule behind it.
+  await assert.rejects(call('task.assign', orch, { task_id: t.id, worker_id: 'w-e' }), (e) => e.code === 'E_SELF_REVIEW');
+  await call('worker.write', orch, { id: 'stand-in', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's-stand-in', last_event_at: Date.now() });
+  const a = await call('task.assign', orch, { task_id: t.id, worker_id: 'stand-in' });
+  store.p('UPDATE lease SET holder = ? WHERE id = ?').run('w-e', a.new_lease.id);
   await call('lease.release', worker('w-e'), { lease_id: a.new_lease.id, notes: [], result: { verdict: 'holds', summary: 'ok', memory_verdicts: [verdict(w.note, 'confirmed', [cite('fixtures/unlisted.json was never opened')])] } });
   const out = await apply(t.id);
   assert.deepStrictEqual([out.applied.length, out.refused[0].code, out.refused[0].detail.reason], [0, 'E_ROLE', 'independence']);
