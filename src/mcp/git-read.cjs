@@ -34,8 +34,9 @@ const LOG_N = 20;
 const LOG_MAX = 200;
 // belay's own options, before the subcommand; gitRead adds the filter overrides after them.
 // diff.autoRefreshIndex=false: GIT_OPTIONAL_LOCKS stops status's index refresh but not diff's, which writes the index and
-// runs a post-index-change hook; core.hooksPath names a directory that does not exist, so no hook runs at all.
-const NO_HOOKS = path.join(__dirname, 'no-hooks').split(path.sep).join('/');
+// runs a post-index-change hook; core.hooksPath names a path under this file, which can never be a directory, so no
+// hook runs at all.
+const NO_HOOKS = `${__filename.split(path.sep).join('/')}/no-hooks`;
 const PRE = ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'log.showSignature=false', '-c', 'core.pager=cat', '-c', 'diff.autoRefreshIndex=false', '-c', `core.hooksPath=${NO_HOOKS}`];
 const PRE_LEN = PRE.length;
 // One side of a rev: a ref name, a sha, HEAD~2, main@{1}, v1^{commit}. It cannot start with '-' (an option), and holds
@@ -183,27 +184,34 @@ function run(git, argv, { cwd, env, timeoutMs, maxOut, system = false }) {
   });
 }
 
-// A timed-out git and everything under it. PROC.killTree kills leaves first and the root last, and git starts the next
-// filter as soon as the first is killed, so a filter outlived the call (found in the timeout test). Here the root goes
-// first: one snapshot while it lives names its descendants and its creation time, the handle kills it (no more spawns),
-// the named descendants are killed by identity, and a second snapshot catches any child it started before it died
-// (parent pid the dead root's, created after it), with that child's own descendants.
+// A timed-out git and everything under it, parents before children. A process killed while its parent lives lets the
+// parent start its next command (PROC.killTree kills leaves first: git started the next filter as soon as one died, and a
+// filter's sh its next sleep), so every parent goes first: one snapshot while git lives names the tree and each process's
+// creation time, the handle kills git, the named descendants are killed top-down by identity, and a second snapshot
+// catches any child a killed process started before it died (parent pid a killed one's, created after it), with that
+// child's own tree.
 async function killGitTree(child) {
   const pid = child.pid;
   const snap1 = await ID.processSnapshot({ kind: 'kill' });
   const root = snap1 && snap1.get(pid);
-  const first = snap1 ? ID.descendantsOf(pid, snap1).leavesFirst : [];
+  const first = snap1 ? ID.descendantsOf(pid, snap1).leavesFirst.reverse() : []; // top-down
   if (ID.handleLive(child)) child.kill();
   const killed = [pid];
   const a = await PROC.killMany(first, { snapshot: async () => snap1 }); // identities checked against the snapshot that named them
   for (const r of a) if (r.killed) killed.push(r.pid);
   if (!root || root.created == null) return { ok: !!snap1, killed, ...(snap1 ? {} : { error: 'process snapshot unreadable: descendants not killed' }) };
   const snap2 = await ID.processSnapshot({ kind: 'kill' });
+  const created = new Map([[pid, root.created], ...first.map((t) => [t.pid, t.created])]);
   const late = [];
-  for (const c of ID.childrenOf(pid, root.created, snap2)) {
-    if (first.some((t) => t.pid === c)) continue;
-    const e = snap2.get(c);
-    late.push(...ID.descendantsOf(c, snap2).leavesFirst, { pid: c, created: e.created, image: e.image });
+  const seen = new Set(created.keys());
+  for (const [p, c] of created) {
+    for (const k of ID.childrenOf(p, c, snap2)) {
+      if (seen.has(k)) continue;
+      seen.add(k);
+      const e = snap2.get(k);
+      late.push({ pid: k, created: e.created, image: e.image });
+      for (const d of ID.descendantsOf(k, snap2).leavesFirst.reverse()) if (!seen.has(d.pid)) { seen.add(d.pid); late.push(d); }
+    }
   }
   const b = await PROC.killMany(late, { snapshot: async () => snap2 });
   for (const r of b) if (r.killed) killed.push(r.pid);

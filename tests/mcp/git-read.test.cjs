@@ -207,13 +207,20 @@ test('a submodule is not read, so a clean filter in its own config does not run'
   } finally { rm(dir); rm(sub.dir); rm(marks); }
 });
 
-test('a timeout ends the call within its bound, even when a filter holds git\'s pipes, and kills the filter', async () => {
+test('a timeout ends the call within its bound, even when a filter holds git\'s pipes, and kills the filter and its steps', async () => {
   const { dir, git } = repo('slow');
   const marks = sandboxDir('git-slow');
   const home = sandboxDir('git-slowhome');
   try {
     const script = fwd(path.join(marks, 'slow.cjs'));
-    fs.writeFileSync(script, "require('fs').writeFileSync(process.argv[2], String(process.pid)); setTimeout(() => {}, 120000);\n");
+    // The filter runs a step and, when that step ends, the next one, as a filter's own shell would (review finding: a
+    // leaves-first kill let a parent start its next step). Each step writes its pid.
+    fs.writeFileSync(script, [
+      "const fs = require('fs'); const { spawn } = require('child_process'); const dir = require('path').dirname(process.argv[2]);",
+      "fs.writeFileSync(process.argv[2], String(process.pid));",
+      "const step = (n, ms, next) => { const c = spawn(process.execPath, ['-e', `require('fs').writeFileSync(${JSON.stringify(dir)} + '/step${n}', String(process.pid)); setTimeout(() => {}, ${ms})`], { stdio: 'ignore' }); c.on('exit', next); };",
+      "step(1, 60000, () => step(2, 120000, () => {}));",
+    ].join('\n') + '\n');
     fs.writeFileSync(path.join(home, '.gitconfig'), `[filter "slow"]\n\tclean = \\"${fwd(process.execPath)}\\" \\"${script}\\" \\"${fwd(path.join(marks, 'pid'))}\\"\n`);
     fs.writeFileSync(path.join(dir, '.gitattributes'), '*.txt filter=slow\n');
     git('add', '.gitattributes');
@@ -228,6 +235,9 @@ test('a timeout ends the call within its bound, even when a filter holds git\'s 
     const pid = Number(fs.readFileSync(path.join(marks, 'pid'), 'utf8'));
     assert.ok(Number.isInteger(pid) && pid > 0, 'the filter started');
     assert.notStrictEqual(await PROC.waitPidGone(pid, { timeoutMs: 15000 }), null, 'and was killed with git');
+    const step1 = Number(fs.readFileSync(path.join(marks, 'step1'), 'utf8'));
+    assert.notStrictEqual(await PROC.waitPidGone(step1, { timeoutMs: 15000 }), null, 'its running step too');
+    assert.ok(!fs.existsSync(path.join(marks, 'step2')), 'and it had no chance to start the next step');
   } finally { for (const d of [dir, marks, home]) fs.rmSync(d, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); } // a killed process's cwd handle can outlive its pid briefly
 });
 
