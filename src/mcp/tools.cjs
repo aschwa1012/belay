@@ -54,6 +54,9 @@ const ROUTES = {
   task_assign: { role: 'orchestrator', via: 'core', method: 'task.assign' },
   // ADR 0010 amendment 3: the only way an orchestrator over MCP can write `done` and clear a dependency.
   task_evaluate: { role: 'orchestrator', via: 'core', method: 'task.evaluate' },
+  // ADR 0053: a task's own worktree and branch (action remove routes to task.worktreeRemove, belay-mcp.cjs), and the merge step.
+  task_worktree: { role: 'orchestrator', via: 'core', method: 'task.worktreeCreate' },
+  integrate: { role: 'orchestrator', via: 'core', method: 'integration.merge' },
   // ADR 0015: admitted to the surface, which is nineteen tools from that record. It is the only way
   // to wait in the deployment ADR 0009 §1 names first — an operator's own session, which belay
   // attaches to and therefore cannot wake, because it does not own that session's stdin.
@@ -164,7 +167,7 @@ const ORCHESTRATOR = [
     description: 'Launch a real Claude Code or Codex process and wait for its ready event. Returns the worker row: id, substrate, pid, session id, argv hash, started_at, ready_ms. If no ready event arrives it fails with the exit code and stderr tail and writes the row dead, never running. Takes seconds.',
     inputSchema: S({
       substrate: { type: 'string', enum: ['claude-code', 'codex'] },
-      worktree: str('Absolute path; the worker\'s cwd'),
+      worktree: str('Absolute path; the worker\'s cwd. Default: task_id\'s worktree'),
       prompt: str('First message'),
       task_id: str('Assign this task once ready and prepend its resume line'),
       model: str(),
@@ -175,7 +178,7 @@ const ORCHESTRATOR = [
       permission_mode: str(),
       startup_timeout_ms: int('default 60000'),
       worker_id: str('Otherwise generated'),
-    }, ['substrate', 'worktree', 'prompt']),
+    }, ['substrate', 'prompt']),
   },
   {
     // ADR 0015. `worker_spawn` above returns at the ready event and the worker keeps running; this is
@@ -249,9 +252,33 @@ const ORCHESTRATOR = [
     description: 'Run a task\'s checks in worktree. Returns row and results; done (unblocks dependents) only if all pass.',
     inputSchema: S({
       task_id: str(),
-      worktree: str(),
-      base: str('Diff base; default merge-base main'),
-    }, ['task_id', 'worktree']),
+      worktree: str('Default: the task\'s worktree'),
+      base: str('Diff base; default the task\'s base, else merge-base main'),
+    }, ['task_id']),
+  },
+  {
+    // ADR 0053 decisions 2, 3 and 6.
+    name: 'task_worktree',
+    description: 'Create (default) or remove the task\'s own git worktree and branch belay/<task_id>, cut from base (default HEAD). Returns the task row with worktree. remove refuses a dirty tree unless force, or a live worker in it; keeps the branch unless delete_branch.',
+    inputSchema: S({
+      task_id: str(),
+      action: { type: 'string', enum: ['create', 'remove'] },
+      base: str(),
+      branch: str(),
+      force: bool(),
+      delete_branch: bool(),
+    }, ['task_id']),
+  },
+  {
+    // ADR 0053 decision 5.
+    name: 'integrate',
+    description: 'Merge done tasks\' branches in order into into (default belay/integrate/<run>), then re-run their checks there. Returns state, merged, checks, passed. A conflict is aborted, tree clean; conflict names task and files.',
+    inputSchema: S({
+      task_ids: strs(),
+      into: str(),
+      base: str('If into is new; default the tasks\' base'),
+      evaluate: bool(),
+    }, ['task_ids']),
   },
   {
     // ADR 0040 §4. A worker cannot verify a claim, so this is not on the worker listing.
