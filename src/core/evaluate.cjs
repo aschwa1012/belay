@@ -41,7 +41,9 @@ function resolveWindowsShim(argv, platform = process.platform, execPath = proces
   return exists(script) ? [execPath, script, ...argv.slice(1)] : argv;
 }
 
-function runCommand(argvGiven, cwd, timeoutMs) {
+// `env`, when given, replaces the child's environment (git.cjs passes the owner's own plus its fixed git variables), and
+// `tail` raises the 2,000-character output cap for a caller that parses the whole output (`git worktree list`).
+function runCommand(argvGiven, cwd, timeoutMs, { env, tail = TAIL } = {}) {
   return new Promise(resolve => {
     const t0 = Date.now();
     // A missing worktree or cwd is named as such: left to spawn it reads as ENOENT for the executable.
@@ -51,7 +53,7 @@ function runCommand(argvGiven, cwd, timeoutMs) {
     const argv = resolveWindowsShim(argvGiven);
     let child;
     try {
-      child = spawn(argv[0], argv.slice(1), { cwd, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      child = spawn(argv[0], argv.slice(1), { cwd, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], ...(env ? { env } : {}) });
     } catch (e) {
       return resolve({ executable: false, exit_code: null, ms: Date.now() - t0, timed_out: false, stdout: '', stderr: '', spawn_error: e.code || e.message });
     }
@@ -68,7 +70,7 @@ function runCommand(argvGiven, cwd, timeoutMs) {
       drop.unref();
       child.once('close', () => clearTimeout(drop));
     });
-    child.stdout.on('data', d => { if (out.length < TAIL) out += d.toString('utf8'); });
+    child.stdout.on('data', d => { if (out.length < tail) out += d.toString('utf8'); });
     child.stderr.on('data', d => { if (errText.length < TAIL) errText += d.toString('utf8'); });
     // The direct child's `close` arrives while the tree kill is still walking the tree, so the result waits
     // for the kill to report: a caller that reads `timed_out` must be able to trust that the tree is
@@ -79,10 +81,10 @@ function runCommand(argvGiven, cwd, timeoutMs) {
       clearTimeout(timer);
       Promise.resolve(killing).then(k => resolve({ ...r, tree_kill: k || null, ...(pipesDropped ? { pipes_dropped: 'the command exited but a process it started still held its output pipes; belay closed its ends after 2000 ms and left that process running' } : {}) }));
     };
-    child.on('error', e => finish({ executable: false, exit_code: null, ms: Date.now() - t0, timed_out: timedOut, stdout: out.slice(0, TAIL), stderr: errText.slice(0, TAIL), spawn_error: e.code || e.message }));
+    child.on('error', e => finish({ executable: false, exit_code: null, ms: Date.now() - t0, timed_out: timedOut, stdout: out.slice(0, tail), stderr: errText.slice(0, TAIL), spawn_error: e.code || e.message }));
     child.on('close', (code, signal) => finish({
       executable: true, exit_code: code, signal: signal || null, ms: Date.now() - t0, timed_out: timedOut,
-      stdout: out.slice(0, TAIL), stderr: errText.slice(0, TAIL),
+      stdout: out.slice(0, tail), stderr: errText.slice(0, TAIL), truncated: out.length >= tail,
     }));
   });
 }
@@ -143,35 +145,46 @@ async function resolveRefs(worktree, base) {
   return { ref, base_sha: b.stdout.trim(), head_sha: h.stdout.trim() };
 }
 
-async function filesWithinOwned(worktree, filesOwned, base) {
+// A `git status` refreshes and rewrites .git/index when it can take the lock; GIT_OPTIONAL_LOCKS=0 stops that, so judging a
+// worker's tree never writes to it (ADR 0053 check, finding 1). git.cjs builds its environment on this one.
+const readOnlyGitEnv = () => ({ ...process.env, GIT_OPTIONAL_LOCKS: '0' });
+
+// A changed set is judged whole or not at all: output past the cap would hide paths, so a truncated listing is not run.
+const LIST_TAIL = 4 * 1024 * 1024;
+
+// `baseSource` names where `base` came from (ADR 0053 decision 4): 'arg', 'recorded' (the task's worktree) or, with no base, 'default'.
+async function filesWithinOwned(worktree, filesOwned, base, baseSource) {
   const t0 = Date.now();
   // --untracked-files=all matters: by default git collapses a wholly untracked directory to one entry
   // ("src/"), which sits outside every owned path below it and would fail an ownership check the worker
   // actually respected. -z removes quoting, so odd paths need no unescaping.
-  const r = await runCommand(['git', 'status', '--porcelain', '-z', '--untracked-files=all'], worktree, 30000);
+  const r = await runCommand(['git', 'status', '--porcelain', '-z', '--untracked-files=all'], worktree, 30000, { tail: LIST_TAIL, env: readOnlyGitEnv() });
   if (!r.executable) {
     return { kind: 'files_within_owned', executable: false, ms: Date.now() - t0, passed: false, detail: { reason: 'git could not be run', error: r.spawn_error, worktree } };
   }
   if (r.exit_code !== 0) {
     return { kind: 'files_within_owned', executable: false, ms: Date.now() - t0, passed: false, detail: { reason: 'the worktree is not a git repository, so this check could not run', exit_code: r.exit_code, stderr: r.stderr.trim().slice(0, 400), worktree } };
   }
-  const notRun = (reason, extra) => ({ kind: 'files_within_owned', executable: false, ms: Date.now() - t0, passed: false, detail: { reason, ...extra, worktree } });
+  const source = base ? (baseSource || 'arg') : 'default';
+  const notRun = (reason, extra) => ({ kind: 'files_within_owned', executable: false, ms: Date.now() - t0, passed: false, detail: { reason, ...extra, base_source: source, worktree } });
+  if (r.truncated) return notRun(`git status listed more than ${LIST_TAIL} characters, so the changed set is not known whole`, {});
   // A commit leaves a clean tree, so the working tree alone judges nothing: the diff from the base to
   // HEAD is what a worker's committed work looks like (ADR 0010 amendment 3).
   const refs = await resolveRefs(worktree, base);
   if (refs.failed) return notRun(`the ref ${refs.failed} could not be resolved, so the changed set is unknown`, { base_ref: base || DEFAULT_BASE_REF, failed_ref: refs.failed, stderr: refs.stderr });
-  const d = await runCommand(['git', 'diff', '--name-status', '-z', '-M', refs.base_sha, 'HEAD'], worktree, 30000);
+  const d = await runCommand(['git', 'diff', '--name-status', '-z', '-M', refs.base_sha, 'HEAD'], worktree, 30000, { tail: LIST_TAIL, env: readOnlyGitEnv() });
   if (!d.executable || d.exit_code !== 0) return notRun('git diff from the base failed', { base_ref: refs.ref, base_sha: refs.base_sha, head_sha: refs.head_sha, exit_code: d.exit_code, stderr: (d.stderr || d.spawn_error || '').trim().slice(0, 400) });
+  if (d.truncated) return notRun(`git diff listed more than ${LIST_TAIL} characters, so the changed set is not known whole`, { base_ref: refs.ref, base_sha: refs.base_sha, head_sha: refs.head_sha });
   const owned = Array.isArray(filesOwned) ? filesOwned : [];
   const changed = [...new Set([...parseNameStatusZ(d.stdout), ...parsePorcelainZ(r.stdout)])].sort();
   const outside = changed.filter(p => !within(p, owned));
   return {
     kind: 'files_within_owned', executable: true, ms: Date.now() - t0, passed: outside.length === 0,
-    detail: { base_ref: refs.ref, base_sha: refs.base_sha, head_sha: refs.head_sha, empty_range: refs.base_sha === refs.head_sha, changed_count: changed.length, changed, outside, files_owned: owned },
+    detail: { base_ref: refs.ref, base_source: source, base_sha: refs.base_sha, head_sha: refs.head_sha, empty_range: refs.base_sha === refs.head_sha, changed_count: changed.length, changed, outside, files_owned: owned },
   };
 }
 
-async function runAcceptance(acceptance, worktree, filesOwned, { base } = {}) {
+async function runAcceptance(acceptance, worktree, filesOwned, { base, baseSource } = {}) {
   const checks = [];
   const commands = (acceptance && Array.isArray(acceptance.commands)) ? acceptance.commands : [];
   for (const c of commands) {
@@ -187,8 +200,8 @@ async function runAcceptance(acceptance, worktree, filesOwned, { base } = {}) {
       detail: { cwd, timed_out: r.timed_out, signal: r.signal || null, tree_kill: r.tree_kill || null, pipes_dropped: r.pipes_dropped || null, spawn_error: r.spawn_error || null, stdout_tail: r.stdout.slice(-400), stderr_tail: r.stderr.slice(-400) },
     });
   }
-  if (acceptance && acceptance.files_within_owned) checks.push(await filesWithinOwned(worktree, filesOwned, base));
+  if (acceptance && acceptance.files_within_owned) checks.push(await filesWithinOwned(worktree, filesOwned, base, baseSource));
   return checks;
 }
 
-module.exports = { runAcceptance, runCommand, resolveWindowsShim, filesWithinOwned, normalise, within, parsePorcelainZ, parseNameStatusZ, DEFAULT_BASE_REF, DEFAULT_COMMAND_TIMEOUT_MS };
+module.exports = { runAcceptance, runCommand, readOnlyGitEnv, resolveWindowsShim, filesWithinOwned, normalise, within, parsePorcelainZ, parseNameStatusZ, DEFAULT_BASE_REF, DEFAULT_COMMAND_TIMEOUT_MS };

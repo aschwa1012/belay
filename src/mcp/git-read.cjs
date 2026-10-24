@@ -263,6 +263,22 @@ async function filterOverrides(git, cwd, env, timeoutMs) {
   return out;
 }
 
+// git_read's task_id: the task row's own worktree when it records a live one (ADR 0053: { path, removed_at } on the task
+// view), else the worktree of the newest worker row that names the task. Null when neither says. `callCore(method, args)`
+// is the adapter's call into the core.
+function taskWorktreeVia(callCore) {
+  return async (taskId) => {
+    const t = await callCore('task.get', { task_id: taskId });
+    const rec = t && t.worktree;
+    const own = rec && typeof rec === 'object' ? (rec.path && !rec.removed_at ? rec.path : null) : (typeof rec === 'string' && rec ? rec : null);
+    if (own) return own;
+    const { workers = [] } = (await callCore('worker.list', {})) || {};
+    const mine = workers.filter((w) => w && w.task_id === taskId && typeof w.worktree === 'string' && w.worktree);
+    mine.sort((x, y) => (Number(y.started_at) || 0) - (Number(x.started_at) || 0));
+    return mine.length ? mine[0].worktree : null;
+  };
+}
+
 // Runs one read. Resolves the result, or rejects E_ARGS, E_NOT_FOUND or E_GIT (git missing, failed or timed out).
 async function gitRead(args, { runWorktree = null, taskWorktree = null, env = process.env, timeoutMs = TIMEOUT_MS, maxOut = MAX_OUT } = {}) {
   const a = args || {};
@@ -281,4 +297,4 @@ async function gitRead(args, { runWorktree = null, taskWorktree = null, env = pr
   return { op: a.op, worktree, worktree_from: from, argv: ['git', ...argv], exit_code: 0, ms: Date.now() - t0, bytes: r.total, truncated, out };
 }
 
-module.exports = { gitRead, gitArgs, gitEnv, findGit, resolveWorktree, OPS, MAX_OUT, TIMEOUT_MS };
+module.exports = { taskWorktreeVia, gitRead, gitArgs, gitEnv, findGit, resolveWorktree, OPS, MAX_OUT, TIMEOUT_MS };

@@ -16,8 +16,9 @@ function createDoStop({ ctx, writeRow }) {
     const pid = w.pid;
     w.stopRequested = true;
     w.stopCalls = (w.stopCalls || 0) + 1; // launchBound compares this across its bind await: a launch a stop overtook is abandoned
-    // Already gone, or a parked worker's dead-by-construction pid, never re-checked (fix round #2, :351).
-    if (!pid || treatPidAsDead || !P.pidAlive(pid)) {
+    // Already gone, or a parked worker's dead-by-construction pid, never re-checked (fix round #2, :351). A record with no process
+    // by construction (a settled death, an adopted terminal row) is gone whatever its pid number answers now: that pid may be reused.
+    if (!pid || treatPidAsDead || PI.noProcess(w) || !P.pidAlive(pid)) {
       const stateBefore = w.state;
       W.settleHeld(w, ctx, 'pid-check-on-stop'); await w.queue; // a death the poll still holds settles now
       const state = W.terminalState(w);
@@ -25,7 +26,7 @@ function createDoStop({ ctx, writeRow }) {
       if (!skipRowWrite && !['stopped', 'dead', 'idle'].includes(w.state)) await writeRow(w, state);
       return { worker_id, pid, exit_code: w.exitCode, exit_signal: w.exitSignal, ms_to_exit: 0, graceful: false, killed: false, session_id: w.sessionId, stale: skipRowWrite || undefined,
         // B9: nothing was stopped, because the process was already gone (a parked worker has no process by design, so it is not this).
-        ...(treatPidAsDead ? {} : { already_exited: true, state_before: stateBefore, note: `worker ${worker_id} had already exited${pid ? ` (pid ${pid} is not running)` : ' (it has no process)'}; nothing was stopped` }) };
+        ...(treatPidAsDead ? {} : { already_exited: true, state_before: stateBefore, note: `worker ${worker_id} had already exited${!pid ? ' (it has no process)' : P.pidAlive(pid) ? ` (its process ended; pid ${pid} now belongs to another process)` : ` (pid ${pid} is not running)`}; nothing was stopped` }) };
     }
     // Fix round (6f-2): pause.cjs's own step 1b already wrote this row `stopping` — never repeated here.
     if (w.state !== 'stopping') await writeRow(w, 'stopping');
@@ -52,7 +53,7 @@ function createDoStop({ ctx, writeRow }) {
     if (!w.child && !maybeLive && w.state !== W.terminalState(w)) await writeRow(w, W.terminalState(w));
     return {
       worker_id, pid, exit_code: w.exitCode, exit_signal: w.exitSignal,
-      ms_to_exit: (w.exitedAt || now()) - t0, graceful, killed, session_id: w.sessionId,
+      ms_to_exit: Math.max(0, (w.exitedAt || now()) - t0), graceful, killed, session_id: w.sessionId, // 0 when the exit came before the stop (an adopted row's old exited_at)
       tree_kill: w.treeKill || null, ...(refused ? { refused: refused.refused, kind: refused.kind, detail: refused.detail } : {}), ...(notKilled ? { descendants_not_killed: notKilled } : {}),
     };
   };

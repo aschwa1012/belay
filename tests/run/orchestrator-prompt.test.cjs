@@ -54,8 +54,9 @@ const lf = (s) => s.replace(/\r\n/g, '\n');
 // ADR 0054 rewrote the role rule (orchestrator.md 8-10, the twin 10-12) to name the surface and git_read, and line 4 (the
 // twin's 6) to say the code work is not the orchestrator's (the operator, 2026-10-24: it may edit records and trivial fixes).
 const AMD6_LINES = {
-  'orchestrator.md': [4, 8, 9, 10, 32, 33, 81],
-  'orchestrator-interactive.md': [6, 10, 11, 12, 34, 35, 52, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 78, 79, 85, 92, 98],
+  // ADR 0053: the worktree rule of thumb (orchestrator.md 116, the interactive twin 120 once its pause paragraph is taken out).
+  'orchestrator.md': [4, 8, 9, 10, 32, 33, 81, 116],
+  'orchestrator-interactive.md': [6, 10, 11, 12, 34, 35, 52, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 78, 79, 85, 92, 98, 120],
 };
 
 test('memory rules: the placeholder sits at the end of an existing line, and an empty substitution is the base prompt byte for byte', () => {
@@ -91,7 +92,7 @@ test('memory rules: the text stays within 1,200 bytes and carries each rule the 
   assert.match(text, /memory_timeline/, 'a timeline');
   assert.match(text, /memory_retrieve[^\n]*`ids`[^\n]*only/, 'full rows only for what matters');
   assert.match(text, /memory_ids/, 'cite ids');
-  assert.match(text, /`absence_established` is true only when both modes ran and found nothing[^\n]*`false` is normal on a populated scope[^\n]*modes_failed/, 'false is not read as not searched');
+  assert.match(text, /`absence_established` is true only when both modes ran and no row reached the relevance floor[^\n]*`false` is normal on a populated scope[^\n]*`low_relevance`[^\n]*modes_failed/, 'false is not read as not searched; a low_relevance row is likely unrelated (ADR 0057)');
   assert.doesNotMatch(text, /not searched properly yet/, 'the old, untrue reading is gone');
   assert.match(text, /`unverified` row as a claim/, 'an unverified row is never presented as fact');
   assert.match(text, /`refuted`/, 'refuted rows');
