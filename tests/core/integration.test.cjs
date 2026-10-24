@@ -33,7 +33,7 @@ const exists = (rel) => ({ argv: [process.execPath, '-e', `require('fs').accessS
 // A done task in its own worktree: `files` written and committed there, evaluated with `commands`.
 async function doneTask(repo, files, commands, extra = {}) {
   const t = await orch.task.create({ spec: `write ${Object.keys(files).join(', ')}`, acceptance: { commands }, ...extra });
-  const w = (await orch.task.worktreeCreate({ task_id: t.id, repo })).worktree;
+  const w = (await op.task.worktreeCreate({ task_id: t.id, repo })).worktree;
   for (const [rel, text] of Object.entries(files)) write(w.path, rel, text);
   commit(w.path, `task ${t.id}`);
   const row = await orch.task.evaluate({ task_id: t.id });
@@ -114,7 +114,7 @@ test('the default branch is merged into only when named, in its own checkout, an
 test('refusals: a task not done, a task with no branch, uncommitted work in a task tree, different bases with no base given', async () => {
   const repo = makeRepo(dir);
   const open = await orch.task.create({ spec: 'open', acceptance: { commands: [exists('x')] } });
-  await orch.task.worktreeCreate({ task_id: open.id, repo });
+  await op.task.worktreeCreate({ task_id: open.id, repo });
   await rejectsCode(orch.integration.merge({ task_ids: [open.id] }), 'E_PRECONDITION');
   const bare = await orch.task.create({ spec: 'bare', acceptance: { commands: [{ argv: [process.execPath, '-e', ''] }] } });
   await orch.task.evaluate({ task_id: bare.id, worktree: repo });
@@ -142,7 +142,7 @@ test('a command cwd inside the task\'s own worktree is moved to the same place i
   const own = `${path.dirname(repo)}/${path.basename(repo)}.worktrees/${id}`; // the default path, known before the tree exists
   const check = { argv: [process.execPath, '-e', "require('fs').accessSync('s.txt')"], cwd: `${own}/sub` };
   const t = await orch.task.create({ id, spec: 'sub', acceptance: { commands: [check] } });
-  const w = (await orch.task.worktreeCreate({ task_id: t.id, repo })).worktree;
+  const w = (await op.task.worktreeCreate({ task_id: t.id, repo })).worktree;
   assert.strictEqual(w.path, own);
   write(w.path, 'sub/s.txt', 's\n');
   commit(w.path, 'sub');

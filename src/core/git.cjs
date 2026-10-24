@@ -4,12 +4,13 @@
 // The environment is the owner's own with prompts and editors turned off, so no call can wait on a person.
 
 const { err } = require('./errors.cjs');
-const { runCommand, parsePorcelainZ } = require('./evaluate.cjs');
+const { runCommand, parsePorcelainZ, readOnlyGitEnv } = require('./evaluate.cjs');
 
 const GIT_TIMEOUT_MS = 120000; // a checkout of a large tree (this repository: about 10,800 files) takes seconds
 const LIST_TAIL = 4 * 1024 * 1024;
 
-const gitEnv = () => ({ ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_EDITOR: 'true', GIT_SEQUENCE_EDITOR: 'true', GIT_MERGE_AUTOEDIT: 'no' });
+// GIT_OPTIONAL_LOCKS=0: a `git status` takes no index lock and writes no refreshed index (reading never writes).
+const gitEnv = () => ({ ...readOnlyGitEnv(), GIT_TERMINAL_PROMPT: '0', GIT_EDITOR: 'true', GIT_SEQUENCE_EDITOR: 'true', GIT_MERGE_AUTOEDIT: 'no' });
 
 const fwd = (p) => String(p).split('\\').join('/');
 
@@ -58,7 +59,7 @@ async function branchExists(cwd, name) {
 // `git status --porcelain -z --untracked-files=all`: every changed or untracked path (ignored files excluded).
 async function dirtyPaths(cwd) {
   const out = await must(cwd, ['status', '--porcelain', '-z', '--untracked-files=all'], `the status of ${fwd(cwd)} could not be read`);
-  return out.split('\0').filter(Boolean).map((e) => e.slice(3)).filter((p) => p);
+  return parsePorcelainZ(out); // a rename or copy entry carries its original path as a second field
 }
 
 // `git worktree list --porcelain`: [{ path, head, branch }] with branch as the short name, or null when detached.

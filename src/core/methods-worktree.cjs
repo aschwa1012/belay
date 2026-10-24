@@ -29,6 +29,8 @@ function pathName(name, field) {
   if (!isPathId(name)) throw err('E_ARGS', `${pathIdMessage(field, name)}; it would name a worktree directory`, { [field]: name });
   return name;
 }
+// An optional argument sent as null is taken as absent, as the MCP boundary does for most tools.
+const present = (args) => Object.fromEntries(Object.entries(args || {}).filter(([, v]) => v !== null && v !== undefined));
 const active = (task) => (task && task.worktree && task.worktree.path && !task.worktree.removed_at ? task.worktree : null);
 
 function requireTask(E, id, method) {
@@ -38,16 +40,22 @@ function requireTask(E, id, method) {
   return t;
 }
 
-// The repository a call acts on: the argument, else the caller's run row's project_dir (the run's config directory).
+// The repository a call acts on: the argument, else the caller's run row's project_dir (the run's config directory). The
+// orchestrator is held to its run's repository: a repo whose top level is another one is refused (check finding 4), and a run
+// that records no project directory gives it none to act on. The operator may name any repository.
 async function repoOf(E, caller, repo, method) {
-  let dir = repo;
-  if (dir === undefined || dir === null) {
-    const run = rows.current(E.store, 'run', caller.run_id);
-    dir = run && run.project_dir;
-    if (!dir) throw err('E_ARGS', `${method} needs repo: run ${caller.run_id} records no project directory to default to`, { run_id: caller.run_id });
-  }
+  const run = rows.current(E.store, 'run', caller.run_id);
+  const own = run && run.project_dir;
+  if (caller.role !== 'operator' && !own) throw err('E_ARGS', `${method}: run ${caller.run_id} records no project directory, so the orchestrator has no repository to act on`, { run_id: caller.run_id });
+  const dir = repo === undefined ? own : repo;
+  if (!dir) throw err('E_ARGS', `${method} needs repo: run ${caller.run_id} records no project directory to default to`, { run_id: caller.run_id });
   if (typeof dir !== 'string' || !path.isAbsolute(dir)) throw err('E_ARGS', `${method}: repo must be an absolute path`, { repo: dir });
-  return G.toplevel(dir);
+  const top = await G.toplevel(dir);
+  if (caller.role !== 'operator' && repo !== undefined) {
+    const runTop = await G.toplevel(own);
+    if (!G.samePath(top, runTop)) throw err('E_ROLE', `${method}: ${top} is not this run's repository (${runTop}); another repository is the operator's to name`, { repo: top, run_repo: runTop });
+  }
+  return top;
 }
 
 function junctionList(junction) {
@@ -100,10 +108,33 @@ function unlinkJunctions(junctions) {
   return unlinked;
 }
 
-// A worker row that still works in `dir`: not terminal, and parked or alive by its pid.
+// A worker row that still works in `dir` or a directory under it: not terminal, and parked (no process, but its session will
+// resume there) or alive by its pid.
+const under = (p, dir) => { const a = G.fwd(p).replace(/\/+$/, ''), b = G.fwd(dir).replace(/\/+$/, ''); return G.samePath(a, b) || G.samePath(a.slice(0, b.length + 1), `${b}/`); };
 function liveWorkerIn(E, dir) {
-  return rows.currentAll(E.store, 'worker').find((w) => w.worktree && G.samePath(w.worktree, dir) && !TERMINAL_WORKER.has(w.state)
+  return rows.currentAll(E.store, 'worker').find((w) => w.worktree && under(w.worktree, dir) && !TERMINAL_WORKER.has(w.state)
     && (w.state === 'paused' || (w.pid != null && pidAlive(w.pid)))) || null;
+}
+
+// Every link in the tree that belay did not record (a worker's own junction, a package manager's symlink), found by lstat and
+// never followed. Each is unlinked before git removes the tree: an unlink takes the link alone and never its target, and a link
+// left in place stops git removing the directory (git exits 0 and leaves it). The .git file of a linked worktree is a file.
+function strayLinks(root, recorded) {
+  const known = new Set((recorded || []).map((j) => G.fwd(j.path).toLowerCase()));
+  const found = [], stack = [root];
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const d of entries) {
+      const p = G.fwd(path.join(dir, d.name));
+      let st;
+      try { st = fs.lstatSync(p); } catch { continue; }
+      if (st.isSymbolicLink()) { if (!known.has(p.toLowerCase())) found.push({ path: p }); continue; }
+      if (st.isDirectory() && d.name !== '.git') stack.push(p);
+    }
+  }
+  return found;
 }
 
 // Unlinks the junctions, removes the tree and (unless `keepBranch`, for a branch belay did not make) the branch; never throws,
@@ -120,7 +151,10 @@ async function rollback(top, rec, { keepBranch = false } = {}) {
 
 async function worktreeCreate(E, caller, args) {
   requireTask(E, args.task_id, 'task.worktreeCreate');
+  args = present(args);
   if (args.path !== undefined && caller.role !== 'operator') throw err('E_ROLE', 'task.worktreeCreate: an explicit path is the operator\'s; the orchestrator takes the default', { field: 'path' });
+  // A junction is a link out of the tree; only the operator names one (check finding 4). The orchestrator gets node_modules.
+  if (args.junction !== undefined && caller.role !== 'operator') throw err('E_ROLE', 'task.worktreeCreate: junction is the operator\'s; the orchestrator takes the default node_modules', { field: 'junction' });
   const junctions = junctionList(args.junction);
   return exclusive(`task:${args.task_id}`, `a worktree call for task ${args.task_id}`, async () => {
     const task = requireTask(E, args.task_id, 'task.worktreeCreate');
@@ -156,6 +190,7 @@ async function worktreeCreate(E, caller, args) {
 }
 
 async function worktreeRemove(E, caller, args) {
+  args = present(args);
   requireTask(E, args.task_id, 'task.worktreeRemove');
   for (const k of ['force', 'delete_branch']) if (args[k] !== undefined && typeof args[k] !== 'boolean') throw err('E_ARGS', `task.worktreeRemove: ${k} must be a boolean`, { field: k });
   return exclusive(`task:${args.task_id}`, `a worktree call for task ${args.task_id}`, async () => {
@@ -166,7 +201,7 @@ async function worktreeRemove(E, caller, args) {
     // No second run-open check here: the tree is already gone, and a row that still named it would be the false one.
     const row = E.store.tx(() => {
       const fresh = rows.current(E.store, 'task', task.id);
-      const done = { ...rec, removed_at: Date.now(), removed_by: E.writtenBy(caller), forced: out.forced, already_gone: out.already_gone, branch_deleted: out.branch_deleted };
+      const done = { ...rec, removed_at: Date.now(), removed_by: E.writtenBy(caller), forced: out.forced, already_gone: out.already_gone, branch_deleted: out.branch_deleted, leftover: out.leftover };
       return rows.append(E.store, 'task', { ...fresh, worktree: done }, E.writtenBy(caller), Date.now());
     });
     E.noteWrite();
@@ -180,15 +215,27 @@ async function removeTree(E, rec, args, what) {
   const w = liveWorkerIn(E, rec.path);
   if (w) throw err('E_WORKER_LIVE', `worker ${w.id} (${w.state}) works in ${rec.path}; stop it before removing ${what}'s worktree`, { worker_id: w.id, state: w.state, path: rec.path });
   checkJunctions(rec.junctions);
-  const out = { junctions_unlinked: [], forced: args.force === true, already_gone: false, branch_deleted: false };
+  const out = { junctions_unlinked: [], links_unlinked: [], forced: args.force === true, already_gone: false, leftover: false, branch_deleted: false };
+  const listed = async () => (await G.worktrees(rec.repo)).some((x) => G.samePath(x.path, rec.path));
   if (!fs.existsSync(rec.path)) {
     out.already_gone = true;
+  } else if (!(await listed())) {
+    // git no longer knows this tree (an earlier remove it could not finish): nothing git could do is left, so it is recorded.
+    out.leftover = true;
+    out.leftover_note = `git no longer lists ${rec.path} as a worktree; the directory is left on disk and belay deleted nothing`;
   } else {
     const dirty = await G.dirtyPaths(rec.path);
     if (dirty.length && args.force !== true) throw err('E_PRECONDITION', `${what}'s worktree has ${dirty.length} uncommitted path(s); commit them, or pass force to discard them`, { path: rec.path, dirty: dirty.slice(0, 50) });
     out.junctions_unlinked = unlinkJunctions(rec.junctions);
-    await G.must(rec.repo, ['worktree', 'remove', ...(args.force === true ? ['--force'] : []), '--', rec.path], `${what}'s worktree could not be removed`);
-    if (fs.existsSync(rec.path)) throw err('E_INTERNAL', `${rec.path} is still there after git removed the worktree`, { path: rec.path });
+    out.links_unlinked = unlinkJunctions(strayLinks(rec.path, rec.junctions));
+    const r = await G.run(rec.repo, ['worktree', 'remove', ...(args.force === true ? ['--force'] : []), '--', rec.path]);
+    // A failed remove that git still lists can be retried, so it is refused. One git has dropped (it deleted part of the tree,
+    // then a file it could not delete stopped it) can never be retried: the removal is recorded, and what was left is named.
+    if (!r.ok && (await listed())) throw G.failure(r, `${what}'s worktree could not be removed`);
+    if (fs.existsSync(rec.path)) {
+      out.leftover = true;
+      out.leftover_note = `git dropped the worktree but left ${rec.path} on disk${r.ok ? '' : ` (${r.stderr.split('\n')[0]})`}; belay deleted nothing more`;
+    }
   }
   if (args.delete_branch === true && rec.branch) {
     const r = await G.run(rec.repo, ['branch', '-d', '--', rec.branch]);
@@ -207,4 +254,4 @@ function evaluateTarget(task, args) {
   return rec ? { worktree, base: rec.base_sha, baseSource: 'recorded' } : { worktree, base: undefined, baseSource: undefined };
 }
 
-module.exports = { worktreeCreate, worktreeRemove, removeTree, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, exclusive, active, pathName, liveWorkerIn };
+module.exports = { worktreeCreate, worktreeRemove, removeTree, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, exclusive, active, present, pathName, liveWorkerIn, strayLinks };

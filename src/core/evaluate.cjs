@@ -145,6 +145,10 @@ async function resolveRefs(worktree, base) {
   return { ref, base_sha: b.stdout.trim(), head_sha: h.stdout.trim() };
 }
 
+// A `git status` refreshes and rewrites .git/index when it can take the lock; GIT_OPTIONAL_LOCKS=0 stops that, so judging a
+// worker's tree never writes to it (ADR 0053 check, finding 1). git.cjs builds its environment on this one.
+const readOnlyGitEnv = () => ({ ...process.env, GIT_OPTIONAL_LOCKS: '0' });
+
 // A changed set is judged whole or not at all: output past the cap would hide paths, so a truncated listing is not run.
 const LIST_TAIL = 4 * 1024 * 1024;
 
@@ -154,7 +158,7 @@ async function filesWithinOwned(worktree, filesOwned, base, baseSource) {
   // --untracked-files=all matters: by default git collapses a wholly untracked directory to one entry
   // ("src/"), which sits outside every owned path below it and would fail an ownership check the worker
   // actually respected. -z removes quoting, so odd paths need no unescaping.
-  const r = await runCommand(['git', 'status', '--porcelain', '-z', '--untracked-files=all'], worktree, 30000, { tail: LIST_TAIL });
+  const r = await runCommand(['git', 'status', '--porcelain', '-z', '--untracked-files=all'], worktree, 30000, { tail: LIST_TAIL, env: readOnlyGitEnv() });
   if (!r.executable) {
     return { kind: 'files_within_owned', executable: false, ms: Date.now() - t0, passed: false, detail: { reason: 'git could not be run', error: r.spawn_error, worktree } };
   }
@@ -168,7 +172,7 @@ async function filesWithinOwned(worktree, filesOwned, base, baseSource) {
   // HEAD is what a worker's committed work looks like (ADR 0010 amendment 3).
   const refs = await resolveRefs(worktree, base);
   if (refs.failed) return notRun(`the ref ${refs.failed} could not be resolved, so the changed set is unknown`, { base_ref: base || DEFAULT_BASE_REF, failed_ref: refs.failed, stderr: refs.stderr });
-  const d = await runCommand(['git', 'diff', '--name-status', '-z', '-M', refs.base_sha, 'HEAD'], worktree, 30000, { tail: LIST_TAIL });
+  const d = await runCommand(['git', 'diff', '--name-status', '-z', '-M', refs.base_sha, 'HEAD'], worktree, 30000, { tail: LIST_TAIL, env: readOnlyGitEnv() });
   if (!d.executable || d.exit_code !== 0) return notRun('git diff from the base failed', { base_ref: refs.ref, base_sha: refs.base_sha, head_sha: refs.head_sha, exit_code: d.exit_code, stderr: (d.stderr || d.spawn_error || '').trim().slice(0, 400) });
   if (d.truncated) return notRun(`git diff listed more than ${LIST_TAIL} characters, so the changed set is not known whole`, { base_ref: refs.ref, base_sha: refs.base_sha, head_sha: refs.head_sha });
   const owned = Array.isArray(filesOwned) ? filesOwned : [];
@@ -200,4 +204,4 @@ async function runAcceptance(acceptance, worktree, filesOwned, { base, baseSourc
   return checks;
 }
 
-module.exports = { runAcceptance, runCommand, resolveWindowsShim, filesWithinOwned, normalise, within, parsePorcelainZ, parseNameStatusZ, DEFAULT_BASE_REF, DEFAULT_COMMAND_TIMEOUT_MS };
+module.exports = { runAcceptance, runCommand, readOnlyGitEnv, resolveWindowsShim, filesWithinOwned, normalise, within, parsePorcelainZ, parseNameStatusZ, DEFAULT_BASE_REF, DEFAULT_COMMAND_TIMEOUT_MS };

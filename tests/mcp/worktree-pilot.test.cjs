@@ -18,9 +18,18 @@ const ok = (r) => { assert.strictEqual(r.isError, false, JSON.stringify(r.struct
 const refused = (r, code) => { assert.strictEqual(r.isError, true, 'expected a refusal'); const b = JSON.parse(r.content[0].text); assert.strictEqual(b.error, code, b.message); return b; };
 const same = (x, y) => String(x).replace(/\\/g, '/').toLowerCase() === String(y).replace(/\\/g, '/').toLowerCase();
 
+
+// The run records its project directory before the adapter attaches, as `belay run` does; the adapter's own attach carries it.
+async function recordProject(data, run, repo) {
+  const { openCore } = require('../../src/core/index.cjs');
+  const c = await openCore({ dataDir: data, caller: { role: 'operator', run_id: run, pid: process.pid }, embed: false });
+  try { await c.run.attach({ adapter_pid: process.pid, project_dir: repo }); } finally { await c.shutdownOwner(); await c.close(); }
+}
+
 test('pilot path: task, worktree, spawn by task_id, evaluate, integrate, remove, through tools only', { timeout: 300000 }, async (t) => {
   const box = sandboxDir('wt-pilot');
   const repo = makeRepo(box);
+  await recordProject(`${box}/data`, 'run-1', repo);
   const a = launch({
     role: 'orchestrator', data: `${box}/data`, fake: false, noEmbed: true,
     env: { BELAY_FAKE_PATHS: JSON.stringify({ claudeExe: FAKE_CLAUDE, codexExe: FAKE_CLAUDE, userSettings: USER_SETTINGS }) },

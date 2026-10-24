@@ -53,6 +53,9 @@ async function readTasks(E, ids) {
 async function integrationTree(E, repo, into, args, tasks) {
   const found = (await G.worktrees(repo)).find((w) => w.branch === into);
   if (found) {
+    // A worker working in that tree (or under it) would have the merge land under its edits (check finding 3).
+    const w = W.liveWorkerIn(E, found.path);
+    if (w) throw err('E_WORKER_LIVE', `worker ${w.id} (${w.state}) works in ${found.path}, where ${into} is checked out; belay does not merge under a live worker`, { worker_id: w.id, state: w.state, path: found.path });
     const d = await G.dirtyPaths(found.path);
     if (d.length) throw err('E_PRECONDITION', `${into} is checked out at ${found.path} with ${d.length} uncommitted path(s); belay merges only into a clean tree`, { path: found.path, dirty: d.slice(0, 50) });
     return { path: found.path, created: false, junctions: [] };
@@ -84,7 +87,9 @@ async function integrationTree(E, repo, into, args, tasks) {
 async function mergeOne(tree, task) {
   const b = task.worktree.branch;
   const sha = (await G.must(tree, ['rev-parse', '--verify', `refs/heads/${b}^{commit}`], `branch ${b} of task ${task.id} does not resolve`)).trim();
-  if ((await G.run(tree, ['merge-base', '--is-ancestor', sha, 'HEAD'])).ok) return { ok: true, task_id: task.id, branch: b, sha, already: true };
+  // A branch still at its recorded base holds no commit: it is contained already, and `empty` says why, so it is not read as merged work.
+  const empty = sha === task.worktree.base_sha;
+  if ((await G.run(tree, ['merge-base', '--is-ancestor', sha, 'HEAD'])).ok) return { ok: true, task_id: task.id, branch: b, sha, already: true, empty };
   const r = await G.run(tree, ['merge', '--no-ff', '--no-edit', '-m', `belay: merge task ${task.id} (${b})`, sha]);
   if (r.ok) return { ok: true, task_id: task.id, branch: b, sha, already: false, head_sha: (await G.must(tree, ['rev-parse', 'HEAD'], 'HEAD')).trim() };
   const u = await G.run(tree, ['diff', '--name-only', '--diff-filter=U', '-z']);
@@ -98,13 +103,15 @@ async function mergeOne(tree, task) {
   };
 }
 
-// A command's cwd inside the task's own worktree is moved to the same place in the integration tree.
+// A command's cwd inside the task's own worktree, or inside the repository's main checkout, is moved to the same place in the
+// integration tree; any other absolute cwd is kept as written.
 function cwdFor(c, task, tree) {
   if (!c.cwd) return tree;
   if (!path.isAbsolute(c.cwd)) return G.fwd(path.resolve(tree, c.cwd));
-  const own = task.worktree && task.worktree.path;
-  const rel = own ? path.relative(own, c.cwd) : null;
-  if (rel !== null && !rel.startsWith('..') && !path.isAbsolute(rel)) return G.fwd(path.join(tree, rel));
+  for (const root of [task.worktree && task.worktree.path, task.worktree && task.worktree.repo]) {
+    const rel = root ? path.relative(root, c.cwd) : null;
+    if (rel !== null && !rel.startsWith('..') && !path.isAbsolute(rel)) return G.fwd(path.join(tree, rel));
+  }
   return G.fwd(c.cwd);
 }
 
@@ -131,6 +138,7 @@ async function rerun(tasks, tree) {
 }
 
 async function merge(E, caller, args) {
+  args = W.present(args);
   checkArgs(args);
   const { tasks, repo } = await readTasks(E, args.task_ids);
   const into = await G.validBranch(repo, args.into === undefined ? `belay/integrate/${caller.run_id}` : args.into);
@@ -153,7 +161,7 @@ async function merge(E, caller, args) {
           if (conflict) { out.state = 'conflict'; out.conflict = rest; } else { out.state = 'failed'; out.error = { ...rest, message: `the merge of ${t.id} failed without a conflict: ${String(stderr).split('\n')[0]}`, stderr }; }
           break;
         }
-        out.merged.push({ task_id: m.task_id, branch: m.branch, sha: m.sha, already: m.already });
+        out.merged.push({ task_id: m.task_id, branch: m.branch, sha: m.sha, already: m.already, empty: !!m.empty });
       }
       out.head_sha = (await G.must(tree.path, ['rev-parse', 'HEAD'], 'HEAD of the integration tree')).trim();
       if (out.state === 'merged' && args.evaluate !== false) {
@@ -187,6 +195,7 @@ async function get(E, caller, args) {
 
 // Removes an integration worktree belay made (the branch stays: it is the integrated result).
 async function remove(E, caller, args) {
+  args = W.present(args);
   const cur = await get(E, caller, args);
   if (args.force !== undefined && typeof args.force !== 'boolean') throw err('E_ARGS', 'integration.remove: force must be a boolean', { field: 'force' });
   if (!cur.created_worktree) throw err('E_PRECONDITION', `integration ${cur.id} merged in ${cur.worktree}, a tree belay did not make, so belay does not remove it`, { id: cur.id, worktree: cur.worktree });

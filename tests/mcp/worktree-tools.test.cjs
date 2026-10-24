@@ -13,9 +13,18 @@ const { makeRepo, write, commit } = require('../core/worktree-helpers.cjs');
 const ok = (r) => { assert.strictEqual(r.isError, false, JSON.stringify(r.structuredContent || r.content)); return r.structuredContent; };
 const refused = (r, code) => { assert.strictEqual(r.isError, true, 'expected a refusal'); const b = JSON.parse(r.content[0].text); assert.strictEqual(b.error, code, b.message); return b; };
 
+
+// The run records its project directory before the adapter attaches, as `belay run` does; the adapter's own attach carries it.
+async function recordProject(data, run, repo) {
+  const { openCore } = require('../../src/core/index.cjs');
+  const c = await openCore({ dataDir: data, caller: { role: 'operator', run_id: run, pid: process.pid }, embed: false });
+  try { await c.run.attach({ adapter_pid: process.pid, project_dir: repo }); } finally { await c.shutdownOwner(); await c.close(); }
+}
+
 test('task_worktree, worker_spawn, task_evaluate and integrate drive one task from its own tree to a merged, re-checked branch', async (t) => {
   const box = sandboxDir('wt-tools');
   const repo = makeRepo(box);
+  await recordProject(`${box}/data`, 'run-1', repo);
   const a = launch({ role: 'orchestrator', data: `${box}/data`, fake: false });
   t.after(async () => { await a.close(); a.kill(); fs.rmSync(box, { recursive: true, force: true }); });
   await a.initialize();

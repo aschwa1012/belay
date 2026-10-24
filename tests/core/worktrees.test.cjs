@@ -12,16 +12,19 @@ const { makeRepo, git, write, commit, rejectsCode } = require('./worktree-helper
 
 const { openCore } = core('index.cjs');
 
-let dir, orch, repo;
+let dir, orch, op, repo;
 
 before(async () => {
   dir = sandbox();
   repo = makeRepo(dir);
   orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
   await orch.run.attach({ adapter_pid: process.pid, project_dir: repo });
+  // Another repository, a junction list and an explicit path are the operator's (check finding 4).
+  op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
 });
 
 after(async () => {
+  await op.close();
   await orch.shutdownOwner();
   await orch.close();
   cleanup(dir);
@@ -52,7 +55,7 @@ test('create records repo, path, branch and base, checks the branch out from the
 test('a junction git does not ignore is not made, and is named with the reason', async () => {
   const r2 = makeRepo(dir, { ignore: false });
   const t = await newTask();
-  const row = await orch.task.worktreeCreate({ task_id: t.id, repo: r2 });
+  const row = await op.task.worktreeCreate({ task_id: t.id, repo: r2 });
   assert.deepStrictEqual(row.worktree.junctions, []);
   assert.strictEqual(row.worktree.junctions_skipped[0].path, 'node_modules');
   assert.match(row.worktree.junctions_skipped[0].reason, /does not ignore/);
@@ -71,7 +74,8 @@ test('create refuses: a second worktree, a done task, an unknown task, a bad bra
   await rejectsCode(orch.task.worktreeCreate({ task_id: t2.id, base: '--all' }), 'E_ARGS');
   await rejectsCode(orch.task.worktreeCreate({ task_id: t2.id, branch: `belay/${t.id}` }), 'E_EXISTS');
   await rejectsCode(orch.task.worktreeCreate({ task_id: t2.id, path: `${dir}/elsewhere` }), 'E_ROLE');
-  await rejectsCode(orch.task.worktreeCreate({ task_id: t2.id, junction: ['../up'] }), 'E_ARGS');
+  await rejectsCode(op.task.worktreeCreate({ task_id: t2.id, junction: ['../up'] }), 'E_ARGS');
+  await rejectsCode(orch.task.worktreeCreate({ task_id: t2.id, junction: ['node_modules'] }), 'E_ROLE');
   assert.strictEqual((await orch.task.get({ task_id: t2.id })).worktree, null, 'nothing was recorded for the refused task');
   const done = await orch.task.create({ spec: 'already done', acceptance: { commands: [{ argv: [process.execPath, '-e', ''] }] } });
   assert.strictEqual((await orch.task.evaluate({ task_id: done.id, worktree: repo })).state, 'done');
@@ -159,7 +163,7 @@ test('a failure after git made the tree rolls it back: junctions unlinked, tree 
   write(r3, 'sub/x/y.txt', 'y\n');
   commit(r3, 'sub as a directory');
   const t = await newTask();
-  const e = await rejectsCode(orch.task.worktreeCreate({ task_id: t.id, repo: r3, base: fileBase, junction: ['node_modules', 'sub/x'] }), null);
+  const e = await rejectsCode(op.task.worktreeCreate({ task_id: t.id, repo: r3, base: fileBase, junction: ['node_modules', 'sub/x'] }), null);
   assert.strictEqual(e.detail.rollback.worktree_removed, true);
   assert.strictEqual(e.detail.rollback.branch_deleted, true);
   assert.strictEqual(e.detail.rollback.junctions.length, 1, 'the node_modules junction made before the failure was unlinked');
