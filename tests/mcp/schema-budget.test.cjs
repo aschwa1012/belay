@@ -13,9 +13,9 @@ const { launch, sandboxDir } = require('./rpc.cjs');
 const EXPECTED = {
   orchestrator: [
     'memory_store', 'memory_retrieve', 'memory_search', 'memory_timeline', 'memory_list', 'memory_delete', 'memory_stats',
-    'status', 'task_list', 'briefing',
-    'worker_spawn', 'worker_wait', 'worker_message', 'worker_stop', 'worker_restart', 'task_create', 'task_assign',
-    'permission_list', 'permission_decide', 'task_evaluate', 'memory_verify',
+    'status', 'task_list', 'briefing', 'worker_spawn', 'worker_wait', 'worker_message', 'worker_last_reply', 'worker_stop',
+    'worker_restart', 'task_create', 'task_assign', 'permission_list', 'permission_decide', 'task_evaluate', 'task_worktree',
+    'integrate', 'fix_from_review', 'task_cancel', 'memory_verify', 'git_read',
   ],
   worker: [
     'memory_store', 'memory_retrieve', 'memory_search', 'memory_timeline', 'memory_list', 'memory_delete', 'memory_stats',
@@ -38,15 +38,15 @@ test('A5 the module listing is inside the budget for both roles', () => {
   assert.ok(permitBytes <= tools.BUDGET.permit, `permit is ${permitBytes} bytes, over the ${tools.BUDGET.permit} byte budget`);
 });
 
-test('the twenty-four tools of ADR 0010 §2 as amended by ADR 0015, 0020, amendment 3 and ADR 0040 are split ten both, eleven orchestrator, three worker', () => {
+test('the twenty-five tools of ADR 0010 §2 as amended by ADR 0015, 0020, amendment 3, ADR 0040 and ADR 0054 are split ten both, twelve orchestrator, three worker', () => {
   // Nineteen until ADR 0020 admitted permission_list and permission_decide, twenty-one with ADR 0040's
-  // memory_timeline and memory_verify (permit itself is hidden from the model and never in this
+  // memory_timeline and memory_verify, twenty-two with ADR 0054's git_read (permit itself is hidden from the model and never in this
   // listing, measured separately above).
   const names = new Set([...EXPECTED.orchestrator, ...EXPECTED.worker]);
-  assert.strictEqual(names.size, 24, 'twenty-four distinct tools');
+  assert.strictEqual(names.size, 30, '30 distinct tools');
   assert.deepStrictEqual(tools.toolsFor('orchestrator').map((t) => t.name), EXPECTED.orchestrator);
   assert.deepStrictEqual(tools.toolsFor('worker').map((t) => t.name), EXPECTED.worker);
-  assert.strictEqual(tools.toolsFor('orchestrator').length, 21);
+  assert.strictEqual(tools.toolsFor('orchestrator').length, 27);
   assert.strictEqual(tools.toolsFor('worker').length, 13);
   assert.strictEqual(tools.BUDGET.worker, 7168, 'ADR 0010 amendment 6 raised the worker budget to 7,168');
   assert.strictEqual(tools.BUDGET.orchestrator, 16384, 'and amendment 9 raised the orchestrator budget to 16,384');
@@ -57,7 +57,7 @@ test('every tool has a route into exactly one Core or RunManager method', () => 
     for (const t of tools.toolsFor(role)) {
       const r = tools.routeOf(t.name);
       assert.ok(r, `${t.name} has a route`);
-      assert.ok(['core', 'run', 'briefing'].includes(r.via), `${t.name} via is core, run or briefing`);
+      assert.ok(['core', 'run', 'briefing', 'git', 'compose'].includes(r.via), `${t.name} via is core, run, briefing, git or compose`);
       assert.ok(typeof r.method === 'string' && r.method.length > 0, `${t.name} names a method`);
       assert.ok(t.description.length > 0 && t.inputSchema.type === 'object', `${t.name} has a description and an object schema`);
     }
@@ -65,6 +65,7 @@ test('every tool has a route into exactly one Core or RunManager method', () => 
   assert.strictEqual(tools.routeOf('status').method, 'status.get');
   assert.strictEqual(tools.routeOf('worker_stop').method, 'stop');
   assert.strictEqual(tools.routeOf('briefing').via, 'briefing');
+  assert.deepStrictEqual(tools.routeOf('git_read'), { role: 'orchestrator', via: 'git', method: 'gitRead' }, 'ADR 0054: run by the adapter itself, never the core');
 });
 
 test('unknown roles are refused rather than listed', () => {

@@ -271,3 +271,47 @@ test('orchestrator: a first init with memory_paths.auto aborts the run naming it
     cleanup(sb.data);
   }
 });
+
+// ------------------------------------------------------------------------- ADR 0054 decision 1
+
+async function orchestrate(sb, knob) {
+  const dataDir = fwd(path.join(sb.data, '.belay'));
+  fs.mkdirSync(dataDir, { recursive: true });
+  const core = createFakeCore();
+  core.worker = { ...core.worker, list: async () => ({ workers: [] }) };
+  const savedExe = process.env.BELAY_CLAUDE_EXE;
+  process.env.BELAY_CLAUDE_EXE = FAKE;
+  if (knob) process.env.FAKE_SURFACE = knob;
+  try {
+    return await runOrchestrator({
+      core, runId: `run-0054-${knob || 'clean'}`, dataDir,
+      spec: {
+        worktree: sb.worktree, promptText: 'hello', orchestratorDir: fwd(path.join(sb.data, 'orch')), model: 'claude-sonnet-5',
+        allowedTools: null, startupTimeoutMs: 8000, timeoutMs: 0, mcpToolTimeoutMs: 60000, pollMs: 100, closeGraceMs: 3000,
+      },
+      onAttached: async () => ({ ok: true }),
+    });
+  } finally {
+    if (savedExe === undefined) delete process.env.BELAY_CLAUDE_EXE; else process.env.BELAY_CLAUDE_EXE = savedExe;
+    clearKnobs();
+  }
+}
+
+test('orchestrator: launched with --tools Read,Glob,Grep,Edit,Write, and its surface evidence names exactly those', async () => {
+  const sb = sandbox();
+  try {
+    const result = await orchestrate(sb, null);
+    assert.deepStrictEqual(result.orchestrator.surface.builtins, ['Edit', 'Glob', 'Grep', 'Read', 'Write'], JSON.stringify(result.orchestrator.surface));
+    const argv = JSON.parse(fs.readFileSync(path.join(sb.data, 'orch', 'argv.json'), 'utf8')).spec.args;
+    assert.strictEqual(argv[argv.indexOf('--tools') + 1], 'Read,Glob,Grep,Edit,Write');
+  } finally { cleanup(sb.data); }
+});
+
+test('orchestrator: an init that reports Bash aborts the run, naming it', async () => {
+  const sb = sandbox();
+  try {
+    const result = await orchestrate(sb, 'six-tools');
+    assert.match(result.ended_by, /extra built-in tool\(s\) beyond ADR 0024's list: Bash(;|$)/, result.ended_by);
+    assert.equal(result.orchestrator.exit_code === 0, false, 'the orchestrator was killed, not let finish on its own');
+  } finally { cleanup(sb.data); }
+});

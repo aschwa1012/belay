@@ -100,7 +100,7 @@ test('A8 against the real core: task_create, task_list and briefing', async (t) 
   assert.match(c.id, /^[0-9a-f-]{36}$/, 'the id is a uuid the orchestrator can carry');
   assert.strictEqual(c.run_id, 'run-1', 'the run id comes from argv');
   assert.strictEqual(c.written_by, 'orchestrator', 'the row is attributed to the argv role');
-  assert.ok(typeof c.seq === 'number', 'every row carries seq');
+  assert.ok(typeof c.rev === 'number' && !('seq' in c), 'every row carries its version, named rev (ADR 0058)');
 
   const list = (await a.call('task_list', {})).structuredContent;
   assert.strictEqual(list.tasks.length, 1);
@@ -354,7 +354,8 @@ test('A8 with the embedder on: memory_store and memory_search take plain text', 
   assert.match(got.text, /identity from argv/);
 
   const t1 = Date.now();
-  const found = await a.call('memory_search', { query: 'where does the adapter get its identity?', k: 5 }, 110000);
+  // The debug view carries every field ADR 0010 §2 names; the tool's default is the compact view (ADR 0057), checked below.
+  const found = await a.call('memory_search', { query: 'where does the adapter get its identity?', k: 5, view: 'debug' }, 110000);
   assert.strictEqual(found.isError, false, `memory_search refused: ${JSON.stringify(found.structuredContent)}`);
   const s = found.structuredContent;
   for (const k of ['results', 'scanned', 'model', 'dim']) {
@@ -368,6 +369,12 @@ test('A8 with the embedder on: memory_store and memory_search take plain text', 
   }
   assert.ok(hit.score > 0, 'the result carries a score');
   console.log(`real memory_search: ${Date.now() - t1} ms, dim ${s.dim}, model ${s.model}, score ${hit.score.toFixed(3)}`);
+  const compact = (await a.call('memory_search', { query: 'where does the adapter get its identity?', k: 5 }, 110000)).structuredContent;
+  assert.strictEqual(compact.results[0].id, row.id);
+  assert.strictEqual(compact.relevance.by, 'cosine');
+  assert.strictEqual(typeof compact.results[0].relevance, 'number', 'the compact row carries its cosine');
+  assert.strictEqual(compact.scanned, undefined, 'the compact view leaves the scan facts to debug');
+  console.log(`real memory_search compact: relevance ${compact.results[0].relevance}, floor ${compact.relevance.floor}`);
 
   const del = (await a.call('memory_delete', { id: row.id })).structuredContent;
   assert.strictEqual(del.deleted, true, 'memory_delete reports the row it deleted');

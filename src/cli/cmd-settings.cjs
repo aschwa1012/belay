@@ -47,6 +47,7 @@ const USAGE = [
   `keys: ${K.MOD_NAMES.join(', ')}`,
   '      memory.<lever>   a memory lever, the default every run inherits (the run spec overrides it key by key)',
   '      agents.<type>.model | .effort | .codex_model   a default for coder, tester, reviewer, researcher or orchestrator;',
+  '      agents.<type>.tools   a worker type\'s tools, comma-separated; a spawn may narrow them, never widen them;',
   '          null returns a key to the built-in roster default; it cannot select the substrate\'s own default',
   '',
 ].join('\n');
@@ -165,7 +166,7 @@ function writeSetting(found, key, rawValue, ctx) {
   // The proof is a fresh read of the file just written, not the value we meant to write. From here the
   // file is on disk, so a failure says written: true.
   const back = K.effective(seams.discover(ctx.cwd), key);
-  if (back.value !== K.expectedValue(key, value) || back.source !== K.expectedSource(key, value, file)) {
+  if (JSON.stringify(back.value) !== JSON.stringify(K.expectedValue(key, value)) || back.source !== K.expectedSource(key, value, file)) {
     return fail(`wrote ${file} but reading it back gave ${JSON.stringify(back.value)} from ${back.source}`, key, { written: true, path: file });
   }
 

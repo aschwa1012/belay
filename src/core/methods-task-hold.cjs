@@ -58,4 +58,17 @@ async function ensureHold(E, caller, args) {
   return out;
 }
 
-module.exports = { filesOverlap, runNotLive, resolveOwner, ensureHold };
+// ADR 0058 decision 2: a review task (acceptance.verdict) is never assigned to a worker that held a lease on the work it
+// reviews (its depends_on and repairs). The verdict check refuses such a verdict at evaluate anyway (verdict.cjs); refusing
+// at assign saves the reviewer's whole turn. A worker id that is reused within a run is the same worker here, as there.
+function assertNotOwnReview(store, task, workerId) {
+  if (!workerId || !task.acceptance || task.acceptance.verdict !== true) return;
+  const under = [...(Array.isArray(task.depends_on) ? task.depends_on : []), ...(task.repairs ? [task.repairs] : [])];
+  const own = require('./verdict.cjs').heldLeaseOn(store, workerId, under);
+  if (own) {
+    throw err('E_SELF_REVIEW', `task ${task.id} is a review of ${own.task_id}, and worker ${workerId} held lease ${own.id} on it; a worker cannot judge its own work, so give the review to a different worker`,
+      { task_id: task.id, worker_id: workerId, reviewed_task_id: own.task_id, lease_id: own.id });
+  }
+}
+
+module.exports = { filesOverlap, runNotLive, resolveOwner, ensureHold, assertNotOwnReview };

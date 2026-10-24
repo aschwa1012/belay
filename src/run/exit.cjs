@@ -79,6 +79,8 @@ function settle(w, code, signal, establishedBy, ctx) {
   w.deathEstablishedBy = establishedBy;
   const state = terminalState(w);
   w.settledState = state; // fixed now; the fill-in branch above must not recompute or move this
+  // ADR 0058: a message queued during a compaction cannot reach a process that has gone; it is dropped on the record.
+  require('./compaction.cjs').dropQueued(w, `the worker process ended (${state}) before the compaction it waited on`);
   // design item 6, widened by build step 6i design item 7b (C11): any channel that finds the child still
   // attached races a turn still in the pipe — pid-poll settles a live-pid-gone record whose 'exit' event
   // has not fired yet, exactly the same race an exit-event can lose to a late-arriving result. Only an

@@ -28,6 +28,8 @@ async function runOp(w, name, fn, { waitFor = [] } = {}) {
       fail('E_BUSY', `worker ${w.id} is busy with ${w.op.name}; retry when it returns`, { worker_id: w.id, op: w.op.name });
     }
   }
+  // ADR 0058: a release evaluation in flight is cancelled first, never waited on, and the operation's receipt names it (invariant 5).
+  const ce = w.evaluation ? require('./release-eval.cjs').cancelEvaluation(w, `${name} of worker ${w.id}`) : null;
   const waitOn = w.op; // captured before the reservation below; null when nothing was in flight
   const p = (async () => {
     if (waitOn) await waitOn.promise.catch(() => {}); // its own errors are its caller's, not this op's
@@ -35,9 +37,19 @@ async function runOp(w, name, fn, { waitFor = [] } = {}) {
   })();
   w.op = { name, promise: p };
   try {
-    return await p;
+    const r = await p;
+    return ce && r && typeof r === 'object' && !Array.isArray(r) ? { ...r, cancelled_evaluation: { task_ids: ce.cancelled || [], by: ce.by } } : r;
   } finally {
     if (w.op && w.op.promise === p) w.op = null;
+  }
+}
+
+// A message never lands inside a stop, a restart or a resume: the process it would reach is being ended or replaced, and its
+// `running` row would follow the stop's `stopping` one. Checked at the call and again just before a Codex turn's launch.
+const MESSAGE_REFUSING_OPS = ['stop', 'restart', 'resume'];
+function refuseMessageDuringOp(w) {
+  if (w.op && MESSAGE_REFUSING_OPS.includes(w.op.name)) {
+    fail('E_BUSY', `worker ${w.id} is busy with ${w.op.name}, so it takes no message; retry when it returns`, { worker_id: w.id, op: w.op.name });
   }
 }
 
@@ -235,4 +247,4 @@ function readLaunchOptions(dir) {
   return out;
 }
 
-module.exports = { runOp, shutdown, readLaunchOptions, killSurvivor };
+module.exports = { runOp, refuseMessageDuringOp, shutdown, readLaunchOptions, killSurvivor };

@@ -101,7 +101,7 @@ async function adopt({ core, workerId, dataDir }) {
   }
   const w = newWorkerRecord({
     id: row.id, substrate: row.substrate, worktree: row.worktree, dataDir, taskId: row.task_id,
-    model: launchOpts.model, allowedTools: launchOpts.allowedTools, tools: rowTools,
+    model: row.model_requested || (row.model_requested === undefined ? launchOpts.model : null), allowedTools: launchOpts.allowedTools, tools: rowTools, maxBudgetUsd: row.max_budget_usd == null ? null : row.max_budget_usd, // ADR 0024 amendment 4: the cap and the model from the row, never argv.json (argv.json's model only for a row from before the column)
     nativeMemory: row.native_memory || null, nativeMemoryAuth: row.native_memory_auth || null, trustRecord: true, // ADR 0024 amendment 3: from the harness row, never the worker files; a stop always goes through, an unusable value is refused at the next launch
     permissionMode: row.permission_mode_requested || null, sandbox: null,
     permissionPrompt: launchOpts.permissionPrompt, permitWaitMs: launchOpts.permitWaitMs || 600000,
@@ -182,7 +182,7 @@ function rowOf(w, state, { runId, adapterPid }) {
     // ADR 0021 decision 3: set only by a launch this record made, so an adopted record claims nothing.
     permission_mode_requested: w.permissionModeEffective ? w.permissionMode : null,
     permission_mode_effective: w.permissionModeEffective, claude_code_version: w.claudeCodeVersion,
-    effort_requested: w.effort || null, // ADR 0028 decision 3: the request, not the level the substrate used
+    effort_requested: w.effort || null, max_budget_usd: w.maxBudgetUsd == null ? null : w.maxBudgetUsd, model_requested: w.model || null, // ADR 0028 decision 3: the request, not the level the substrate used
     native_memory: w.nativeMemory || null, native_memory_auth: w.nativeMemoryAuth || null, // ADR 0024 amendment 3: the harness's record of the lever and of who opted in; a relaunch reads them here, and no write other than the spawn's own sets the second
     ...(w.substrate !== 'claude-code' ? { tools: null } : w.toolsUnknown ? {} : { tools: w.tools || require('./surface.cjs').CLAUDE_TOOLS }), // a refused adopt writes no tools: its row keeps whatever it had, never the six // ADR 0024 amendment 4: the built-in list this worker runs with, on the row; a relaunch reads it here and never from argv.json
     memory_queries: Array.isArray(w.indexQueries) && w.indexQueries.length ? w.indexQueries : null, // the orchestrator's index queries, kept for a relaunch
@@ -289,7 +289,7 @@ function noteToolResult(w, e) {
 // increments, and cost is set. Codex is one process per turn, so everything accumulates.
 async function onTurnEnd(w, e, ctx) {
   const { writeRow } = ctx;
-  if (CP.swallow(w, e, ctx)) { await CP.afterCompact(w, ctx); return; } // the harness's own /compact turn is not a worker turn
+  if (CP.swallow(w, e, ctx)) { await CP.afterCompact(w, ctx, turnStarted); return; } // the harness's own /compact turn is not a worker turn
   const u = e.usage || {};
   w.turns += 1;
   const n = (x) => (typeof x === 'number' ? x : 0);
@@ -323,7 +323,7 @@ async function onTurnEnd(w, e, ctx) {
   // shutdown() elects no store owner through these two direct writes (probe-late-turn).
   const checkpointId = await TR.recordTurn(w, e, ctx, MEMORY_TEXT_MAX, DIGEST_KEEP);
   // build step 6e-4: a turn ending after the interrupt while a park is under way is reported paused.
-  w.pendingTurnEnd = null; // fix round, worker.cjs:317: this turn's own resolution is happening now; settle() may resolve turnWaiters via exit again for whatever comes next
+  w.pendingTurnEnd = null; await require('./release-eval.cjs').notePending(w, ctx); // ADR 0058: the answer names a hand-back to evaluate // fix round, worker.cjs:317: this turn's own resolution is happening now; settle() may resolve turnWaiters via exit again for whatever comes next
   for (const r of w.turnWaiters.splice(0)) {
     r({ usage: e.usage, checkpoint_id: checkpointId, is_error: e.is_error, paused: afterInterrupt, subtype: e.subtype });
   }
@@ -340,7 +340,7 @@ async function onTurnEnd(w, e, ctx) {
   }
   // Review 3, finding F: the turn's memory write goes on the worker's own queue only now, after the
   // waiters and the row, and is not awaited (turn-record.cjs queueMemory).
-  TR.queueMemory(w, e, ctx, MEMORY_TEXT_MAX, checkpointId);
+  TR.queueMemory(w, e, ctx, MEMORY_TEXT_MAX, checkpointId); require('./release-eval.cjs').startRelease(w, ctx); // ADR 0058: a hand-back's evaluation, detached
   await CP.afterTurn(w, e, ctx, turnStarted); // between turns only; never awaits turnStarted (see compaction.cjs)
 }
 
@@ -497,11 +497,11 @@ function noteInit(w, ready) {
 
 // manager.message for a Claude Code worker, before it writes: a live stdin, and no harness /compact in flight
 // (E_BUSY, ADR 0007 decision 3: nothing is written or held, the caller retries after the compaction's turn ends).
-function assertTakesMessage(w, fail, pidAlive) {
+function assertTakesMessage(w, fail, pidAlive, text = '') { // null: write now; a queue receipt during a harness /compact (ADR 0058); { flush }: write those first
   if (!w.child || !w.child.stdin || w.child.stdin.destroyed || !pidAlive(w.pid)) {
     fail('E_SUBSTRATE', 'claude-code worker has no live stdin to take a message', { worker_id: w.id, substrate: w.substrate, state: w.state });
   }
-  CP.refuseIfCompacting(w, fail);
+  return CP.queueIfCompacting(w, text, fail);
 }
 
 module.exports = {

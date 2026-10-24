@@ -16,6 +16,7 @@ const path = require('node:path');
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 const { validId } = require('./memory-rows.cjs');
+const ENDED_TASK = new Set(['done', 'released', 'cancelled']); // a task whose reports may be judged; cancelled: ADR 0058
 const CC = require('./memory-citations.cjs');
 const C = require('./lifecycle-common.cjs');
 const N = require('./methods-memory-notes.cjs');
@@ -101,7 +102,7 @@ function unjudgedReports(E, project) {
     const stale = !hold && b.held && b.held.row ? b.held.row : null;
     for (const w of b.reported_wrong || []) {
       const t = w && tasks.get(w.task_id);
-      if (!t || RM.isSettled(b, w) || judged(b, w) || !['done', 'released'].includes(t.state)) continue;
+      if (!t || RM.isSettled(b, w) || judged(b, w) || !ENDED_TASK.has(t.state)) continue;
       out.push({ id: n.id, title: n.title, task_id: w.task_id, run_id: w.run_id || null, by: w.by, why: w.why, at: w.at, report_key: RM.reportKey(w), ...(w.by === n.written_by ? { self_report: true } : {}), ...(stale ? { stale_pointer: stale } : {}) });
     }
   }
@@ -258,4 +259,4 @@ async function applyReportVerdicts(E, caller, route, list, project, out) {
   return res;
 }
 
-module.exports = { headOf, reportsAbout, unjudgedReports, applyReportVerdicts, validateReportVerdicts, openReports, REPORTS_MAX };
+module.exports = { headOf, reportsAbout, unjudgedReports, applyReportVerdicts, validateReportVerdicts, openReports, REPORTS_MAX, ENDED_TASK };

@@ -218,10 +218,14 @@ async function killProcessRaw(target, opts) {
 
 // The verified descendants of a pid as kill targets, from one snapshot: [{ pid, created, image }], leaves
 // first; [] when the snapshot is unreadable. For a caller that must kill them after something else ends the
-// parent (pause.cjs): the identity is taken before, and checked again by killMany after.
+// parent (pause.cjs): the identity is taken before, and checked again by killMany after. `expectCreated`: the root's
+// creation time; a root the snapshot shows with any other (the pid now belongs to another process) has no descendants of ours.
 async function descendantTargets(pid, opts = {}) {
   const { snap } = await acquire(opts);
-  return snap ? ID.descendantsOf(assertPid(pid), snap).leavesFirst : [];
+  if (!snap) return [];
+  const root = snap.get(assertPid(pid));
+  if (opts.expectCreated != null && !(root && root.created === opts.expectCreated)) return [];
+  return ID.descendantsOf(pid, snap).leavesFirst;
 }
 
 // Kill each target ({ pid, created, image }) that still has its identity, from one snapshot, in the order

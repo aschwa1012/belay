@@ -37,7 +37,7 @@ async function killTree(child) {
 // One output stream, kept within TAIL characters. `keep: 'head'` keeps the start (git's short answers, read whole). `keep: 'ends'`
 // keeps the first and last TAIL/2 characters with a marker naming what was cut between them, because an acceptance command's
 // verdict (the summary line, the failing assertion) is at its end (audit 0.3.1 C3). `bytes` counts everything the stream sent.
-function capture(keep) {
+function capture(keep, limit = TAIL) {
   const dec = new StringDecoder('utf8');
   const half = TAIL / 2;
   let head = '', tail = '', bytes = 0, chars = 0;
@@ -46,17 +46,16 @@ function capture(keep) {
       bytes += d.length;
       let s = dec.write(d);
       chars += s.length;
-      if (keep !== 'ends') { if (head.length < TAIL) head += s; return; }
+      if (keep !== 'ends') { if (head.length < limit) head += s; return; }
       if (head.length < half) { const take = half - head.length; head += s.slice(0, take); s = s.slice(take); }
       if (s) tail = (tail + s).slice(-half);
     },
     get bytes() { return bytes; },
+    get truncated() { return keep !== 'ends' ? head.length >= limit : chars > head.length + tail.length; },
     text() {
-      if (keep !== 'ends') return head.slice(0, TAIL);
+      if (keep !== 'ends') return head.slice(0, limit);
       const cut = chars - head.length - tail.length;
-      return cut > 0 ? `${head}
-[... ${cut} characters omitted ...]
-${tail}` : head + tail;
+      return cut > 0 ? [head, `[... ${cut} characters omitted ...]`, tail].join(String.fromCharCode(10)) : head + tail;
     },
   };
 }
@@ -73,7 +72,11 @@ function resolveWindowsShim(argv, platform = process.platform, execPath = proces
   return exists(script) ? [execPath, script, ...argv.slice(1)] : argv;
 }
 
-function runCommand(argvGiven, cwd, timeoutMs, { keep = 'head' } = {}) {
+// `env`, when given, replaces the child's environment (git.cjs passes the owner's own plus its fixed git variables), and
+// `tail` raises the 2,000-character output cap for a caller that parses the whole output (`git worktree list`).
+// `onChild(child)`, when given, is told the live child handle as soon as it is spawned (a cancel kills it by that handle).
+// `keep: 'ends'` keeps the head and the tail of each stream (an acceptance command; capture above).
+function runCommand(argvGiven, cwd, timeoutMs, { env, tail = TAIL, onChild, keep = 'head' } = {}) {
   return new Promise(resolve => {
     const t0 = Date.now();
     // A missing worktree or cwd is named as such: left to spawn it reads as ENOENT for the executable.
@@ -83,11 +86,12 @@ function runCommand(argvGiven, cwd, timeoutMs, { keep = 'head' } = {}) {
     const argv = resolveWindowsShim(argvGiven);
     let child;
     try {
-      child = spawn(argv[0], argv.slice(1), { cwd, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      child = spawn(argv[0], argv.slice(1), { cwd, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], ...(env ? { env } : {}) });
     } catch (e) {
       return resolve({ executable: false, exit_code: null, ms: Date.now() - t0, timed_out: false, stdout: '', stderr: '', spawn_error: e.code || e.message });
     }
-    const out = capture(keep), errText = capture(keep);
+    if (onChild) onChild(child);
+    const out = capture(keep, tail), errText = capture(keep);
     let settled = false, timedOut = false, killing = null, pipesDropped = false;
     const timer = setTimeout(() => { timedOut = true; killing = killTree(child); }, timeoutMs);
     timer.unref();
@@ -116,7 +120,7 @@ function runCommand(argvGiven, cwd, timeoutMs, { keep = 'head' } = {}) {
     child.on('error', e => finish({ executable: false, exit_code: null, ms: Date.now() - t0, timed_out: timedOut, stdout: out.text(), stderr: errText.text(), ...sizes(), spawn_error: e.code || e.message }));
     child.on('close', (code, signal) => finish({
       executable: true, exit_code: code, signal: signal || null, ms: Date.now() - t0, timed_out: timedOut,
-      stdout: out.text(), stderr: errText.text(), ...sizes(),
+      stdout: out.text(), stderr: errText.text(), ...sizes(), truncated: out.truncated,
     }));
   });
 }
@@ -177,35 +181,55 @@ async function resolveRefs(worktree, base) {
   return { ref, base_sha: b.stdout.trim(), head_sha: h.stdout.trim() };
 }
 
-async function filesWithinOwned(worktree, filesOwned, base) {
+// A `git status` refreshes and rewrites .git/index when it can take the lock; GIT_OPTIONAL_LOCKS=0 stops that, so judging a
+// worker's tree never writes to it (ADR 0053 check, finding 1). git.cjs builds its environment on this one.
+const readOnlyGitEnv = () => ({ ...process.env, GIT_OPTIONAL_LOCKS: '0' });
+
+// A changed set is judged whole or not at all: output past the cap would hide paths, so a truncated listing is not run.
+const LIST_TAIL = 4 * 1024 * 1024;
+
+// `baseSource` names where `base` came from (ADR 0053 decision 4): 'arg', 'recorded' (the task's worktree) or, with no base, 'default'.
+async function filesWithinOwned(worktree, filesOwned, base, baseSource) {
   const t0 = Date.now();
   // --untracked-files=all matters: by default git collapses a wholly untracked directory to one entry
   // ("src/"), which sits outside every owned path below it and would fail an ownership check the worker
   // actually respected. -z removes quoting, so odd paths need no unescaping.
-  const r = await runCommand(['git', 'status', '--porcelain', '-z', '--untracked-files=all'], worktree, 30000);
+  const r = await runCommand(['git', 'status', '--porcelain', '-z', '--untracked-files=all'], worktree, 30000, { tail: LIST_TAIL, env: readOnlyGitEnv() });
   if (!r.executable) {
     return { kind: 'files_within_owned', executable: false, ms: Date.now() - t0, passed: false, detail: { reason: 'git could not be run', error: r.spawn_error, worktree } };
   }
   if (r.exit_code !== 0) {
     return { kind: 'files_within_owned', executable: false, ms: Date.now() - t0, passed: false, detail: { reason: 'the worktree is not a git repository, so this check could not run', exit_code: r.exit_code, stderr: r.stderr.trim().slice(0, 400), worktree } };
   }
-  const notRun = (reason, extra) => ({ kind: 'files_within_owned', executable: false, ms: Date.now() - t0, passed: false, detail: { reason, ...extra, worktree } });
+  const source = base ? (baseSource || 'arg') : 'default';
+  const notRun = (reason, extra) => ({ kind: 'files_within_owned', executable: false, ms: Date.now() - t0, passed: false, detail: { reason, ...extra, base_source: source, worktree } });
+  if (r.truncated) return notRun(`git status listed more than ${LIST_TAIL} characters, so the changed set is not known whole`, {});
   // A commit leaves a clean tree, so the working tree alone judges nothing: the diff from the base to
   // HEAD is what a worker's committed work looks like (ADR 0010 amendment 3).
   const refs = await resolveRefs(worktree, base);
   if (refs.failed) return notRun(`the ref ${refs.failed} could not be resolved, so the changed set is unknown`, { base_ref: base || DEFAULT_BASE_REF, failed_ref: refs.failed, stderr: refs.stderr });
-  const d = await runCommand(['git', 'diff', '--name-status', '-z', '-M', refs.base_sha, 'HEAD'], worktree, 30000);
+  const d = await runCommand(['git', 'diff', '--name-status', '-z', '-M', refs.base_sha, 'HEAD'], worktree, 30000, { tail: LIST_TAIL, env: readOnlyGitEnv() });
   if (!d.executable || d.exit_code !== 0) return notRun('git diff from the base failed', { base_ref: refs.ref, base_sha: refs.base_sha, head_sha: refs.head_sha, exit_code: d.exit_code, stderr: (d.stderr || d.spawn_error || '').trim().slice(0, 400) });
+  if (d.truncated) return notRun(`git diff listed more than ${LIST_TAIL} characters, so the changed set is not known whole`, { base_ref: refs.ref, base_sha: refs.base_sha, head_sha: refs.head_sha });
   const owned = Array.isArray(filesOwned) ? filesOwned : [];
   const changed = [...new Set([...parseNameStatusZ(d.stdout), ...parsePorcelainZ(r.stdout)])].sort();
   const outside = changed.filter(p => !within(p, owned));
   return {
     kind: 'files_within_owned', executable: true, ms: Date.now() - t0, passed: outside.length === 0,
-    detail: { base_ref: refs.ref, base_sha: refs.base_sha, head_sha: refs.head_sha, empty_range: refs.base_sha === refs.head_sha, changed_count: changed.length, changed, outside, files_owned: owned },
+    detail: { base_ref: refs.ref, base_source: source, base_sha: refs.base_sha, head_sha: refs.head_sha, empty_range: refs.base_sha === refs.head_sha, changed_count: changed.length, changed, outside, files_owned: owned },
   };
 }
 
-async function runAcceptance(acceptance, worktree, filesOwned, { base, budgetMs = ACCEPTANCE_BUDGET_MS } = {}) {
+// A cancel token (ADR 0058): `cancel()` kills the command running now by its live child handle (exact identity, ADR 0039)
+// and skips the rest. Returns the kills' receipts.
+function createCancel() {
+  const live = new Set();
+  const c = { cancelled: false, by: null, live,
+    async cancel(by) { c.cancelled = true; c.by = by || null; return Promise.all([...live].map((child) => killTree(child))); } };
+  return c;
+}
+
+async function runAcceptance(acceptance, worktree, filesOwned, { base, baseSource, cancel = null, budgetMs = ACCEPTANCE_BUDGET_MS } = {}) {
   const checks = [];
   const until = Date.now() + budgetMs;
   const commands = (acceptance && Array.isArray(acceptance.commands)) ? acceptance.commands : [];
@@ -214,21 +238,24 @@ async function runAcceptance(acceptance, worktree, filesOwned, { base, budgetMs 
       checks.push({ kind: 'command', argv: c && c.argv, executable: false, exit_code: null, ms: 0, passed: false, detail: { reason: 'acceptance command argv must be a non-empty array of strings' } });
       continue;
     }
+    if (cancel && cancel.cancelled) break; // the caller discards the run
     const cwd = c.cwd ? path.resolve(worktree, c.cwd) : worktree;
     const left = until - Date.now(), own = Number(c.timeout_ms) > 0 ? Number(c.timeout_ms) : DEFAULT_COMMAND_TIMEOUT_MS;
     if (left <= 0) {
       checks.push({ kind: 'command', argv: c.argv, executable: false, exit_code: null, ms: 0, passed: false, detail: { cwd, reason: `not run: the evaluation's commands share a budget of ${budgetMs} ms and it was spent`, budget_ms: budgetMs } });
       continue;
     }
-    const r = await runCommand(c.argv, cwd, Math.min(own, left), { keep: 'ends' });
+    let mine = null;
+    const r = await runCommand(c.argv, cwd, Math.min(own, left), { keep: 'ends', ...(cancel ? { onChild: (ch) => { mine = ch; cancel.live.add(ch); if (cancel.cancelled) killTree(ch); } } : {}) });
+    if (mine) cancel.live.delete(mine);
     checks.push({
       kind: 'command', argv: c.argv, executable: r.executable, exit_code: r.exit_code, ms: r.ms,
       passed: r.executable && r.exit_code === 0 && !r.timed_out,
       detail: { cwd, timed_out: r.timed_out, signal: r.signal || null, tree_kill: r.tree_kill || null, pipes_dropped: r.pipes_dropped || null, spawn_error: r.spawn_error || null, stdout_tail: r.stdout.slice(-400), stderr_tail: r.stderr.slice(-400), stdout_bytes: r.stdout_bytes ?? null, stderr_bytes: r.stderr_bytes ?? null, ...(left < own ? { budget_capped_ms: left } : {}) },
     });
   }
-  if (acceptance && acceptance.files_within_owned) checks.push(await filesWithinOwned(worktree, filesOwned, base));
+  if (acceptance && acceptance.files_within_owned && !(cancel && cancel.cancelled)) checks.push(await filesWithinOwned(worktree, filesOwned, base, baseSource));
   return checks;
 }
 
-module.exports = { runAcceptance, runCommand, resolveWindowsShim, filesWithinOwned, normalise, within, parsePorcelainZ, parseNameStatusZ, DEFAULT_BASE_REF, DEFAULT_COMMAND_TIMEOUT_MS, ACCEPTANCE_BUDGET_MS };
+module.exports = { runAcceptance, createCancel, runCommand, readOnlyGitEnv, resolveWindowsShim, filesWithinOwned, normalise, within, parsePorcelainZ, parseNameStatusZ, DEFAULT_BASE_REF, DEFAULT_COMMAND_TIMEOUT_MS, ACCEPTANCE_BUDGET_MS };

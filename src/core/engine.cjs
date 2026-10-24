@@ -158,6 +158,19 @@ const METHODS = {
   'task.list': { roles: ALL, kind: 'read', fn: task.list },
   'task.get': { roles: ALL, kind: 'read', fn: task.get },
   'task.evaluate': { roles: ORCH, kind: 'write', fn: task.evaluate },
+  // ADR 0058 decision 3: the fix task a refuted review calls for, its repairs and depends_on inferred; written by task.create.
+  'task.fixFromReview': { roles: ORCH, kind: 'write', fn: lazy('./methods-task-fix.cjs', 'fixFromReview') },
+  // ADR 0058 decision 7: give up on a task; its lease is released and its files are no longer held.
+  'task.cancel': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-task-cancel.cjs', 'cancel') },
+  // ADR 0058: cancel a release evaluation in flight in the owner, by its key; a write so that it runs where the commands run.
+  'task.evaluateCancel': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./evaluate-cancel.cjs', 'evaluateCancel') },
+  // ADR 0053: a worktree and branch per task, made and removed by belay, and the explicit merge-and-evaluate step.
+  'task.worktreeCreate': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-worktree.cjs', 'worktreeCreate') },
+  'task.worktreeRemove': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-worktree.cjs', 'worktreeRemove') },
+  'integration.merge': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-integration.cjs', 'merge') },
+  'integration.remove': { roles: ['operator'], kind: 'write', fn: lazy('./methods-integration.cjs', 'remove') },
+  'integration.list': { roles: ALL, kind: 'read', fn: lazy('./methods-integration.cjs', 'list') },
+  'integration.get': { roles: ALL, kind: 'read', fn: lazy('./methods-integration.cjs', 'get') },
 
   'lease.renew': { roles: ['worker'], kind: 'write', fn: task.renew },
   'lease.release': { roles: ['worker', 'operator'], kind: 'write', fn: task.release },

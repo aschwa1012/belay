@@ -68,12 +68,12 @@ test('launch: both argv builders carry --tools and the one token --setting-sourc
   const orch = L.orchestratorLaunchArgv({ mcpJsonPath: 'm', settingsPath: 's' });
   const toolsAt4 = orch.indexOf('--tools');
   assert.ok(toolsAt4 >= 0);
-  assert.deepStrictEqual(orch.slice(toolsAt4, toolsAt4 + 3), ['--tools', 'Read,Edit,Write,Glob,Grep,Bash', '--setting-sources=']);
+  assert.deepStrictEqual(orch.slice(toolsAt4, toolsAt4 + 3), ['--tools', 'Read,Glob,Grep,Edit,Write', '--setting-sources='], 'ADR 0054 decision 1: the orchestrator has no shell');
 
   const orchResumed = L.orchestratorLaunchArgv({ mcpJsonPath: 'm', settingsPath: 's', resumeSessionId: 'sess-2' });
   const toolsAt5 = orchResumed.indexOf('--tools');
   assert.ok(toolsAt5 >= 0, 'an orchestrator resume must carry --tools too');
-  assert.deepStrictEqual(orchResumed.slice(toolsAt5, toolsAt5 + 3), ['--tools', 'Read,Edit,Write,Glob,Grep,Bash', '--setting-sources=']);
+  assert.deepStrictEqual(orchResumed.slice(toolsAt5, toolsAt5 + 3), ['--tools', 'Read,Glob,Grep,Edit,Write', '--setting-sources=']);
   assert.deepStrictEqual(orchResumed.slice(-2), ['--resume', 'sess-2']);
   for (const a of [fresh, resumed, withPrompt, orch, orchResumed]) assert.ok(!a.includes('--setting-sources'), 'no bare --setting-sources token');
 });

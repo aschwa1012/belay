@@ -19,7 +19,7 @@
 
 const path = require('node:path');
 
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 
 // The slice-3a surface. `mode` is the connection mode each command declares, exactly one, per
 // command table §1: R read-only, W store client, C run control. The remaining 18 commands of
@@ -58,6 +58,8 @@ const COMMANDS = {
   embedder: { mode: 'W', module: './cmd-embedder.cjs', summary: 'embedder fetch|verify [--model <id>]: fetch the embedding model into belay\'s cache (the only network use), or re-hash it against the table' },
   pause:   { mode: 'C', module: './cmd-pause.cjs', summary: "pause <worker-id|run-id>: park a worker over the adapter's pipe, or hold a run's wakes and park every live worker over the owner's pipe" },
   settings: { mode: 'W', module: './cmd-settings.cjs', summary: 'settings [<key> [<value>]]: the display settings, memory levers and per-agent defaults; with a value, writes the config file only' },
+  worktree: { mode: 'W', module: './cmd-worktree.cjs', summary: "worktree create|remove|merge <task-id>...: a task's own git worktree and branch from a recorded base, removed junction first; merge done tasks into an integration branch and re-run their checks" },
+  worktrees: { mode: 'R', module: './cmd-worktree.cjs', summary: "list the tasks' recorded worktrees and a run's integration rows" },
   resume:  { mode: 'C', module: './cmd-pause.cjs', summary: "resume <worker-id|run-id> [--message <text>]: relaunch a parked worker on its session, or resume a paused run and deliver its held wakes" },
 };
 
