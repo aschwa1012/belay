@@ -106,6 +106,18 @@ async function attach(E, caller, args) {
   if (prev && prev.ended_at != null && caller.role === 'orchestrator') {
     throw err('E_ARGS', `run ${runId} has already ended; an orchestrator adapter cannot reopen it`, { run_id: runId, ended_at: prev.ended_at, epoch: prev.epoch });
   }
+  // An operator attach (the run process) over an unended run whose recorded adapter is VERIFIED to be still that process (the pid answers and
+  // the recorded creation time matches) is refused with nothing written. Anything less (no creation time, an unreadable snapshot) lets the attach
+  // through with a warning, as before: a refusal that is wrong is worse than the takeover it guards against. The run's own orchestrator, whose MCP
+  // adapter may have attached first, is never the other life (same orchestrator_pid).
+  const warnings = [];
+  if (prev && prev.ended_at == null && caller.role === 'operator' && Number(prev.adapter_pid) !== adapterPid
+    && !(args.orchestrator_pid != null && Number(prev.orchestrator_pid) === Number(args.orchestrator_pid))) {
+    const RL = require('./run-live.cjs');
+    const a = await RL.adapterState(prev);
+    if (a.state === 'live') throw err('E_RUN_LIVE', RL.liveMessage(runId, prev), { run_id: runId, adapter_pid: prev.adapter_pid, epoch: prev.epoch, adapter_state: a.state, detail: a.detail });
+    if (a.state === 'unverifiable') warnings.push(RL.unverifiedWarning(runId, prev, a));
+  }
   const epoch = prev ? Number(prev.epoch || 0) + 1 : 1;
   const by = E.writtenBy(caller);
 
@@ -173,7 +185,7 @@ async function attach(E, caller, args) {
   E.noteWrite();
   // ADR 0046 decision 1: a re-attached run's unfinished tasks hold their files again; name any that now clash with another live run's.
   const overlaps = prev ? require('./task-holds.cjs').resumeOverlaps(E.store, runId) : [];
-  return { run, epoch, reattached: !!prev, previous: parseRunRow(prev), workers_marked_dead: marked, overlaps }; // item c
+  return { run, epoch, reattached: !!prev, previous: parseRunRow(prev), workers_marked_dead: marked, overlaps, ...(warnings.length ? { warnings } : {}) }; // item c
 }
 
 // build step 6f, ADR 0023 amendment 3 decision 4.1, extended by build step 6i-2 design item 1 (amendment
