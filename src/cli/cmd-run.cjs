@@ -136,6 +136,7 @@ async function run(ctx) {
   if (modeRefusal) return usageError(modeRefusal);
   // ADR 0031: the counts say what the orchestrator was actually told; the receipt never claims a cap it was not.
   // An interactive run has no timeout (refused above), so its prompt is told none (L3).
+  parsed.promptWarnings = require('./run-prompt-check.cjs').checkPrompt({ promptText: parsed.promptText, promptFile: parsed.promptFile, mode, levers: parsed.levers, timeoutMs: parsed.timeout_ms }); // a stale copy of the template: a warning, never a refusal
   const sub = mode === 'interactive'
     ? substituteLevers(parsed.promptText, parsed.levers, 0, { mode: 'interactive' })
     : substituteLevers(parsed.promptText, parsed.levers, parsed.timeout_ms);
@@ -146,6 +147,7 @@ async function run(ctx) {
   // The orchestrator is always Claude Code: a missing executable exits 1 (a host prerequisite, like the embedder) before any file is created.
   try { require('../run/exe-discovery.cjs').exeFor('claude'); } catch (e) { return { code: 1, text: `belay run: ${e.message}\n`, json: { error: e.message } }; }
   if (parsed.levers.memory_notice && !ctx.json) process.stderr.write(`${require('../core/memory-notice.cjs').noticeLines(parsed.levers.memory_notice, 'belay: ').join('\n')}\n`); // once, before anything launches; under --json stderr carries failure receipts, so the notice stays out of it
+  if (parsed.promptWarnings.length && !ctx.json) process.stderr.write(`${parsed.promptWarnings.map((w) => `belay: warning: ${w.message}`).join('\n')}\n`); // once; under --json the receipt's prompt_warnings carries it
   const dataDir = C.dataDirOf(found, ctx);
   const orchestratorDir = parsed.orchestratorDirRaw || fwd(path.join(os.tmpdir(), 'belay-run', parsed.runId));
   if (orchestratorDir === dataDir || orchestratorDir.startsWith(`${dataDir}/`)) {
@@ -259,7 +261,7 @@ async function run(ctx) {
     store: { owner_pid: ownerPid, attach: null, ended: null, shutdown: null, established_by: establishedBy },
     ended_by: endedBy, holds: [], polls: 0, wakes: [], wakes_suppressed: [], wakes_expired: [],
     wakes_held: [], pauses: [], stop: null, workers_closed: null,
-    levers: parsed.levers, agent_settings: parsed.agentSettings, embedder: null, embedder_failures: [], review_rounds: null, review_rounds_reason: 'the run never started', ms: Date.now() - t0, receipt_path: null,
+    levers: parsed.levers, prompt_warnings: parsed.promptWarnings, agent_settings: parsed.agentSettings, embedder: null, embedder_failures: [], review_rounds: null, review_rounds_reason: 'the run never started', ms: Date.now() - t0, receipt_path: null,
   });
   if (electionError) {
     await core.close().catch(() => {});
@@ -467,7 +469,7 @@ async function run(ctx) {
     ended_by: endedBy, holds, polls, wakes, wakes_suppressed: wakesSuppressed, wakes_expired: wakesExpired,
     wakes_held: wakesHeld, pauses,
     stop: stopReceipt, ms: Date.now() - t0, receipt_path: null,
-    levers: parsed.levers, on_embedder_failure_final: guard.mode(), memory_off: guard.memoryOff(), embedder: warm, embedder_failures: guard.events(), ...(embedBounds && embedBounds.length ? { embedder_bounds: embedBounds } : {}),
+    levers: parsed.levers, prompt_warnings: parsed.promptWarnings, on_embedder_failure_final: guard.mode(), memory_off: guard.memoryOff(), embedder: warm, embedder_failures: guard.events(), ...(embedBounds && embedBounds.length ? { embedder_bounds: embedBounds } : {}),
     review_rounds: reviewRounds.value, review_rounds_reason: reviewRounds.reason,
     workers_closed: closed ? workersClosedBlock(closed, endedRow ? (endedRow.workers_marked_dead || []) : null) : null,
     ...(closeStages ? { close_stages: closeStages } : {}), // only with notes on

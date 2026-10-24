@@ -56,7 +56,7 @@ const AMD6_LINES = {
 
 test('memory rules: the placeholder sits at the end of an existing line, and an empty substitution is the base prompt byte for byte', () => {
   for (const f of ['orchestrator.md', 'orchestrator-interactive.md']) {
-    let now = lf(fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8')).replace(/\{\{\/?memory_(use|outcome)\}\}/g, ''); // the notes markers (ADR 0047 amendment of 2026-10-22): a run without notes drops them
+    let now = lf(fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8')).replace(/\{\{\/?memory_(use|outcome)\}\}/g, '').replace(/ <!-- belay-prompt \d[\d.]* -->/, ''); // the 0.3.0 version marker is not base text; the notes markers (ADR 0047 amendment of 2026-10-22): a run without notes drops them
     const base = lf(fs.readFileSync(path.join(BASE_PROMPTS, f), 'utf8'));
     // ADR 0034 amendment 2: the interactive twin adds one paragraph (and its blank line) on the embedder-failure pause.
     if (f === 'orchestrator-interactive.md') {
