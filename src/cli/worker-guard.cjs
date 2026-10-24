@@ -11,7 +11,9 @@ const READ_MEMORY_VERBS = new Set(['search', 'list', 'show', 'timeline', 'stats'
 // Verbs that read in one form and write in another are judged by the command's own parser (memory-render parseArgs) and its own
 // write test (cmd-memory-lifecycle writes()), never by scanning tokens: `--reason --candidates` is a value, not the flag. Anything the
 // parser rejects is refused. `held` lists unless it settles, `restore --candidates` lists, `embed --dry-run` only plans.
+// `export --out <file>` writes that file as the operator, where the worker's own tools may not reach, so it is a write; to stdout it reads.
 function isMemoryRead(argv) {
+  if (argv[0] === 'export') { const parsed = require('./memory-render.cjs').parseArgs(argv); return !parsed.error && !parsed.opts.out; }
   if (READ_MEMORY_VERBS.has(argv[0])) return true;
   if (argv[0] !== 'held' && argv[0] !== 'restore' && argv[0] !== 'embed') return false;
   const parsed = require('./memory-render.cjs').parseArgs(argv);
@@ -26,7 +28,8 @@ function workerRefusal({ name, mode, argv = [], fix = false, env = process.env }
   const id = env.BELAY_WORKER_ID;
   if (typeof id !== 'string' || !id) return null;
   let verb = null;
-  if (mode !== 'R') verb = name;
+  if (name === 'settings') verb = argv.length >= 2 ? 'settings' : null; // mode W for its write form only: `settings` and `settings <key>` read the config
+  else if (mode !== 'R') verb = name;
   else if (name === 'doctor' && fix) verb = 'doctor --fix';
   else if (name === 'memory' && !isMemoryRead(argv)) verb = `memory ${argv[0] === undefined ? '' : argv[0]}`.trim();
   if (!verb) return null;

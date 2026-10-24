@@ -28,7 +28,7 @@ test('every command of mode W or C, and the memory write verbs, are refused unde
   const env = { BELAY_WORKER_ID: 'w-1' };
   for (const [name, spec] of Object.entries(COMMANDS)) {
     if (spec.mode === 'R') continue;
-    assert.match(G.workerRefusal({ name, mode: spec.mode, argv: [], env }) || '', /refused/, `${name} (mode ${spec.mode})`);
+    assert.match(G.workerRefusal({ name, mode: spec.mode, argv: name === 'settings' ? ['k', 'v'] : [], env }) || '', /refused/, `${name} (mode ${spec.mode})`);
   }
   for (const verb of ['verify', 'import', 'embed', 'restore', 'archive', 'promote', 'scrub', 'review', 'resolve', 'nonsense', undefined]) {
     assert.match(G.workerRefusal({ name: 'memory', mode: 'R', argv: verb === undefined ? [] : [verb], env }) || '', /refused/, `memory ${verb}`);
