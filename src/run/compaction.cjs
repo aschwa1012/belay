@@ -216,11 +216,14 @@ async function afterCompact(w, ctx, turnStarted) {
 // manager.message, before it writes: while the harness's /compact is in flight the message is queued and the receipt
 // returned (ADR 0058 decision 4), or refused E_BUSY when the queue is full. Returns null when nothing is in flight; an
 // expired flag is cleared, and anything left queued behind it is returned in `flush`, to go in front of this message.
+// While queued messages wait to be written (the compaction's turn has ended and its row is being written), a new message goes
+// behind them, so the order they were sent in is the order the worker reads them.
 function queueIfCompacting(w, text, fail) {
   const s = w.cp;
-  if (!s || !s.inflight) return null;
-  if (expired(s)) { s.inflight = null; const q = (s.queue || []).splice(0); return q.length ? { flush: q.map((m) => m.text) } : null; }
-  const since = new Date(s.inflight.at).toISOString();
+  const behind = !!(s && s.queue && s.queue.length);
+  if (!s || (!s.inflight && !behind)) return null;
+  if (s.inflight && expired(s)) { s.inflight = null; const q = (s.queue || []).splice(0); return q.length ? { flush: q.map((m) => m.text) } : null; }
+  const since = s.inflight ? new Date(s.inflight.at).toISOString() : null;
   const bytes = Buffer.byteLength(text, 'utf8');
   const q = s.queue || (s.queue = []);
   if (q.length >= QUEUE_MAX || q.reduce((a, m) => a + m.bytes, 0) + bytes > QUEUE_MAX_BYTES) {
@@ -228,7 +231,7 @@ function queueIfCompacting(w, text, fail) {
   }
   q.push({ text, bytes, at: Date.now() });
   logQueue(w, { event: 'queued', position: q.length, bytes });
-  return { queued: true, position: q.length, bytes, compaction_started_at: since, established_by: 'a harness /compact turn is in flight; written when its turn ends' };
+  return { queued: true, position: q.length, bytes, compaction_started_at: since, established_by: since ? 'a harness /compact turn is in flight; written when its turn ends' : 'messages queued during a compaction are still to be written; this one follows them' };
 }
 
 // Refuses E_BUSY while a compaction is in flight, for a caller that cannot queue. No-op when nothing is in flight.
@@ -257,7 +260,7 @@ async function afterTurn(w, e, ctx, turnStarted) {
   const s = state(w);
   settlePending(w, ctx);
   if (s.inflight) { // only reached for a turn end swallow() did not take (a park, or an end answering another write)
-    if (e.answers_write === s.inflight.idx || s.inflight.boundary || expired(s)) s.inflight = null;
+    if (e.answers_write === s.inflight.idx || s.inflight.boundary || expired(s)) { s.inflight = null; drainQueued(w, ctx, turnStarted); }
     return;
   }
   await refreshResume(w, ctx); // every turn end, so an automatic compaction injects a current line (ADR 0007 decision 2)

@@ -167,6 +167,32 @@ test('swallow: the compaction turn is accounted without being a turn, and S4: it
   assert.strictEqual(exp.cp.inflight, null);
 });
 
+test('ADR 0058: a message sent while the compaction turn row is still being written goes behind the queued ones, never ahead', async () => {
+  const fail = (code, msg, detail) => { throw Object.assign(new Error(msg), { code, detail }); };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-queue-order-'));
+  const writes = [];
+  let releaseRow;
+  const rowWritten = new Promise((r) => { releaseRow = r; });
+  const ctx = { compactAt: 100, shutdownFlags: {}, writeRow: () => rowWritten };
+  const w = {
+    ...swallowStub({ at: Date.now(), idx: 7, boundary: false }), dir,
+    child: { stdin: { destroyed: false, write: (l) => writes.push(JSON.parse(l).message.content[0].text) } },
+    settled: false, stopRequested: false, paused: null, parser: { noteStdinWrite: () => 8, writeIndex: 7 },
+  };
+  assert.strictEqual(CP.queueIfCompacting(w, 'A', fail).position, 1);
+  assert.strictEqual(CP.swallow(w, { usage: {}, answers_write: 7 }, ctx), true, 'the compaction turn ended');
+  assert.strictEqual(w.cp.inflight, null);
+  const after = CP.afterCompact(w, ctx, turnStarted); // awaits the row write before it drains
+  const b = CP.queueIfCompacting(w, 'B', fail);
+  assert.deepStrictEqual([b.queued, b.position, b.compaction_started_at], [true, 2, null], 'B waits behind A');
+  assert.deepStrictEqual(writes, [], 'nothing written before the row');
+  releaseRow();
+  await after;
+  assert.deepStrictEqual(writes, ['A\n\nB'], 'one turn, A then B');
+  assert.strictEqual(CP.queueIfCompacting(w, 'C', fail), null, 'with the queue written, a message goes straight through');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('ADR 0058: queueIfCompacting queues up to its bound, then refuses E_BUSY queue_full; an expired flag hands the queue back to flush', () => {
   const fail = (code, msg, detail) => { throw Object.assign(new Error(msg), { code, detail }); };
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-queue-'));
