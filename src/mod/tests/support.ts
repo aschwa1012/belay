@@ -59,7 +59,7 @@ export type World = {
   file?: boolean; runFile?: unknown; repoCli?: boolean; watchId?: string
   mode?: string | null; mod?: Record<string, string>; notices?: unknown
   failAgents?: boolean; transcriptFail?: boolean; orchDisplay?: string; noDisplay?: boolean; noRun?: boolean
-  extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number; memoryNotice?: boolean; orchNoCost?: boolean; orchBasis?: string; deadReview?: boolean; deadCoder?: boolean; orchTokensOnly?: boolean; orchCost?: number; awaitingFail?: boolean; agentIds?: string[]; footer?: unknown
+  extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number; memoryNotice?: boolean; orchNoCost?: boolean; orchBasis?: string; deadReview?: boolean; deadCoder?: boolean; orchTokensOnly?: boolean; orchCost?: number; awaitingFail?: boolean; awaitingHang?: boolean; agentIds?: string[]; footer?: unknown
   /** Answers the dialogs give, in order (the reason, then the confirm); an empty queue dismisses. */
   awaitingList?: unknown
   settleReject?: string
@@ -119,6 +119,7 @@ export function world(on: any, w: World) {
     }
     if (e.argv.includes('--awaiting')) {
       ran.push([...e.argv])
+      if (w.awaitingHang) return { deny: 'timed out' }
       if (w.awaitingFail) return { value: { exitCode: 3, stdout: '', stderr: 'boom' } }
       return { value: { exitCode: 0, stdout: JSON.stringify(w.awaitingList ?? AWAITING), stderr: '' } }
     }

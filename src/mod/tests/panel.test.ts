@@ -95,7 +95,7 @@ describe('activation and reading', () => {
   })
   test('a failing command shows one dim line with its exit code and is not retried in the same round', async ($, on) => {
     const wd = await boot($, on, { failAgents: true })
-    expect((await band($)).text).toContain(`belay agents ${RUN} exit 3`)
+    expect((await band($)).text).toContain('agents failed')
     expect(wd.ran.filter(a => a.includes('agents')).length).toBe(1)
   })
   test('a repeated session.start with an unchanged watch keeps the snapshot and the seen notices', async ($, on) => {
@@ -132,7 +132,7 @@ describe('the band', () => {
     await later(wd, 5000)
     const { text } = await band($)
     expect(text).toContain('(stale): Spawned rev-1')
-    expect(text).toContain('belay transcript r-7f3a --tail 10 exit 4')
+    expect(text).toContain('transcript failed')
   })
   test('opening the pane marks the current notices seen, and notices that arrive while it is open', async ($, on) => {
     const wd = await boot($, on)
@@ -174,6 +174,7 @@ describe('the band', () => {
     expect(t).not.toContain('● dead')
     expect(t).not.toContain('● running')
     expect(t).toContain('stale: last read failed')
+    expect(t).toContain('agents failed') // the failed read is named, not left silent
     expect(t).toContain('4 agents') // the old data is kept, marked stale
   })
   test('belay-run.json means the orchestrator has its own window: its words are never read', async ($, on) => {

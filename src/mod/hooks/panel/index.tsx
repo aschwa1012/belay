@@ -33,7 +33,7 @@ const settledA = atom({ plugin: 'belay', key: 'panelSettled' } as const, {} as B
 const PANE_EVERY_MS = 4000
 const BAND_EVERY_MS = 5000
 const SETTINGS_EVERY_MS = 10000
-const COMMAND_TIMEOUT_MS = 4000
+const COMMAND_TIMEOUT_MS = 8000 // the panel's patience under host load (reads of 3.5 to 4.8 s were seen), not a product budget
 // `belay transcript --tail N`: the band reads the last 10 entries (it shows the newest words among them), the pane the last 50. Null would read it all.
 const TRANSCRIPT_TAIL: { band: number | null; pane: number | null } = { band: 10, pane: 50 }
 const BACKOFF_FIRST_MS = 10000

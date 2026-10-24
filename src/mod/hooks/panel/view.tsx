@@ -4,7 +4,7 @@
 import type { BelayAwaitingNote, BelayEntry, BelayMemoryNotice, BelayNotice, BelayPanelSettle, BelayPanelSnap } from '../../types/index'
 import {
   bandLines, cacheSegs, ctxSegs, isLive, markSeg, money, runLine, TONE, unseenNotices, bar,
-  memoryTitleSegs, memoryFallbackSegs, type Seg,
+  memoryTitleSegs, memoryFallbackSegs, staleLine, type Seg,
 } from './model'
 import { CONFIRM_MS, confirmLine, heldDetail, heldLine, reviewLine, reviewProject, REASON_MAX, runningReview, SETTLE_ACTIONS, settleConfirm, settleEntryView, settledActive, shortId } from './held'
 import { cells, cmdLines, wordWrap, wrapHard } from './wrap'
@@ -20,6 +20,7 @@ export function Band({ E, snap, ui, now, cols, act }: Ctx) {
   if (snap.fatal) return <Line E={E} w={cols} k="fatal" segs={[{ t: 'belay ', c: 'claude', bold: true }, { t: snap.fatal, c: 'error' }]} />
   const lines = bandLines(snap, ui, now, cols)
   const err = snap.errors[0]
+  const stale = staleLine(snap)
   // The toggle shrinks to a bare mark on a narrow band so the run line keeps its room.
   const toggle = cols >= 60 ? (ui.open ? '  ▾ panel' : '  ▸ panel') : (ui.open ? ' ▾' : ' ▸')
   return (
@@ -31,6 +32,7 @@ export function Band({ E, snap, ui, now, cols, act }: Ctx) {
           {i === 0 && <Button key="open" label={toggle} plain dimColor onPress={act.toggle} />}
         </Box>
       ))}
+      {stale && wrapHard(stale, cols).map((t, i) => <Line E={E} w={cols} segs={[{ t, dim: true }]} k={`stale${i}`} />)}
       {err && <Line E={E} w={cols} segs={[{ t: err, dim: true }]} k="err" />}
     </Box>
   )
@@ -298,6 +300,7 @@ export function Pane(c: Ctx) {
   const { E, snap, ui, now, act, cols } = c
   const { Box, Button } = E
   const t = snap.tasks
+  const stale = staleLine(snap)
   if (snap.fatal) return <Line E={E} w={cols} k="fatal" segs={[{ t: 'belay ', c: 'claude', bold: true }, { t: snap.fatal, c: 'error' }]} />
   const tasksLine: Seg[] = []
   if (t) {
@@ -327,6 +330,7 @@ export function Pane(c: Ctx) {
         </Box>
       </Box>
       <Line E={E} w={cols} k="pr" segs={[{ t: '─'.repeat(cols), dim: true }]} />
+      {stale && wrapHard(stale, cols).map((t, i) => <Line E={E} w={cols} k={`pstale${i}`} segs={[{ t, dim: true }]} />)}
       {tasksLine.length > 0 && <Line E={E} w={cols} k="pt" segs={tasksLine} />}
       <Line E={E} w={cols} k="pc" segs={costLine} />
       {ui.legend && <Legend {...c} />}
@@ -361,6 +365,8 @@ export function Fallback(c: Ctx) {
   }
   for (const n of snap.notices) lines.push([{ t: `${TONE[n.tone].glyph} ${n.text}`, c: TONE[n.tone].color, dim: ui.seen.includes(n.key) }])
   if (snap.mode === 'headless') for (const e of (snap.transcript ?? []).slice(-5)) lines.push([{ t: e.text, dim: e.kind !== 'text' }])
+  const stale = staleLine(snap)
+  if (stale) lines.push([{ t: stale, dim: true }])
   for (const e of snap.errors) lines.push([{ t: e, dim: true }])
   return <Box flexDirection="column">{lines.map((s, i) => <Line E={E} w={cols} segs={s} k={`f${i}`} />)}</Box>
 }
