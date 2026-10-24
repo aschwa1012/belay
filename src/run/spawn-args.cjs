@@ -32,11 +32,14 @@ function checkMemoryQueries(list) {
 // store has it (any state, any run, compared without case) and no directory holds it. A restart, resume or adopt of the same row never comes through spawn.
 // A job or knowledge worker's id is the harness's: the model cannot name one (tools.cjs refuses the prefixes), and the harness makes the worker's directory (the corpus, the stage files) before the spawn.
 const harnessOwned = (id) => isJobId(id) || id.startsWith('knowledge-');
-async function checkIdFree(core, dataDir, id) {
+// One exception: this run's own stopped or dead worker of the exact same id has no live process, and the product re-spawns such an id in place (the row is restated, the directory reused).
+async function checkIdFree(core, dataDir, id, runId) {
   const lower = id.toLowerCase();
-  const taken = ((await core.worker.list({ states: WORKER_STATES })).workers || []).find((r) => String(r.id).toLowerCase() === lower);
+  const same = (r) => r.id === id && r.run_id === runId && (r.state === 'stopped' || r.state === 'dead');
+  const hits = ((await core.worker.list({ states: WORKER_STATES })).workers || []).filter((r) => String(r.id).toLowerCase() === lower);
+  const taken = hits.find((r) => !same(r));
   if (taken) fail('E_ARGS', `worker_id ${JSON.stringify(id)} is taken: the store has a worker row ${JSON.stringify(taken.id)} (run ${taken.run_id}, ${taken.state}); choose another id`, { worker_id: id, existing_id: taken.id, existing_run_id: taken.run_id });
-  if (!harnessOwned(id) && fs.existsSync(L.workerDir(dataDir, id))) fail('E_ARGS', `worker_id ${JSON.stringify(id)} is taken: its worker directory exists with no row; choose another id`, { worker_id: id });
+  if (!hits.length && !harnessOwned(id) && fs.existsSync(L.workerDir(dataDir, id))) fail('E_ARGS', `worker_id ${JSON.stringify(id)} is taken: its worker directory exists with no row; choose another id`, { worker_id: id });
 }
 
 function validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id, native_memory = null }) {
