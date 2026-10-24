@@ -16,6 +16,7 @@ const { resolveParks, parseRunRow, clearedPause, pauseFields } = require('./paus
 const { runCommand } = require('./evaluate.cjs');
 
 const { EFFORT_LEVELS } = require('./effort-levels.cjs');
+const { isPathId, pathIdMessage } = require('./path-id.cjs');
 const MN = require('./memory-notice.cjs'); // pure too
 const { parseMemoryBlock, EVAL_ONLY } = require('./memory-levers.cjs'); // pure: no requires, so the read path stays light
 
@@ -379,6 +380,8 @@ async function writeWorker(E, caller, args) {
     if (run && run.ended_at != null) throw err('E_ARGS', `run ${caller.run_id} has already ended; worker ${args.id} was not written`, { run_id: caller.run_id, ended_at: run.ended_at, worker_id: args.id });
   }
   const prev = rows.current(E.store, 'worker', args.id);
+  // The id is a directory under the data dir. A row that already exists is restated whatever its id (a store may hold an older one); a new row needs a valid id.
+  if (!prev && !isPathId(args.id)) throw err('E_ARGS', `worker.write: ${pathIdMessage('worker id', args.id)}`, { worker_id: String(args.id).slice(0, 80), field: 'worker_id' });
   // W2-3 amendment 2 (B2): a restating write names the row it restates. This method has no await between this read
   // and the append below, so the check and the append are one step; a mismatch appends nothing and is not an error.
   if (args.expect_seq != null && (!prev || prev.seq !== args.expect_seq)) {

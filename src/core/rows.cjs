@@ -15,7 +15,7 @@ const COLUMNS = {
     'permission_mode_requested', 'permission_mode_effective', 'claude_code_version',
     'paused_at', 'paused_by', 'park_turns',
     'model', 'cache_read_tokens', 'cache_creation_tokens', 'tool_calls', 'base_sha', 'head_sha',
-    'effort_requested', 'head_error', 'base_error', 'pid_created', 'pid_created_error', 'pid_image', 'memory_queries', 'native_memory', 'native_memory_auth'],
+    'effort_requested', 'head_error', 'base_error', 'pid_created', 'pid_created_error', 'pid_image', 'memory_queries', 'native_memory', 'native_memory_auth', 'tools'],
   task: ['id', 'run_id', 'spec', 'acceptance', 'files_owned', 'state', 'results', 'depends_on', 'handoff', 'repairs'],
   lease: ['id', 'task_id', 'run_id', 'holder', 'holder_role', 'granted_at', 'expires_at',
     'released_at', 'supersedes', 'ttl_ms'],
@@ -27,7 +27,7 @@ const COLUMNS = {
 
 // Text in SQLite, parsed objects on the wire (api.md §1).
 const JSON_COLUMNS = {
-  run: [], worker: ['memory_queries'], lease: [],
+  run: [], worker: ['memory_queries', 'tools'], lease: [],
   task: ['acceptance', 'files_owned', 'results', 'depends_on', 'handoff'],
   checkpoint: ['files_touched', 'tool_digest', 'stated'],
   // build step 6d: `input` stays a string on the wire, never parsed here. A truncated JSON text
