@@ -116,6 +116,25 @@ test('ensureHold moves the ended run\'s task and its lease to the manager\'s liv
   assert.strictEqual((await b.task.get({ task_id: t.id })).seq, seq, 'a task already held writes nothing');
 });
 
+test('a worker relaunched after a re-home still renews and releases the lease id it was given', async () => {
+  const a = await live('ens-keep-a');
+  await worker(a, 'w-ens-keep');
+  const t = await a.task.create({ spec: 'x', files_owned: ['ens/keep/x.js'] });
+  const given = (await a.task.assign({ task_id: t.id, worker_id: 'w-ens-keep' })).new_lease;
+  await a.run.end({ exit_reason: 'test' });
+  const b = await live('ens-keep-b');
+  const r = await b.task.ensureHold({ task_id: t.id, worker_id: 'w-ens-keep' });
+  assert.strictEqual(r.rehomed, true);
+  assert.strictEqual(r.new_lease.id, given.id, 'the lease keeps its id; only its run changes');
+  assert.strictEqual(r.new_lease.run_id, 'ens-keep-b');
+  const wc = await openCore({ dataDir: dir, caller: callerFor('worker', { run_id: 'ens-keep-b', worker_id: 'w-ens-keep' }), embed: false });
+  cores.push(wc);
+  const renewed = await wc.lease.renew({ lease_id: given.id });
+  assert.strictEqual(renewed.run_id, 'ens-keep-b', 'a renewal keeps the re-homed run');
+  const released = await wc.lease.release({ lease_id: given.id });
+  assert.ok(released, 'the worker hands back on its own lease id');
+});
+
 test('ensureHold writes nothing for a task not leased to the worker and a task owning no files, and says why', async () => {
   const a = await live('ens-skip-a');
   await worker(a, 'w-ens-skip');

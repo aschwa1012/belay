@@ -29,6 +29,12 @@ function makeRepo() {
 
 function makePlainDir() { return fwd(fs.mkdtempSync(path.join(os.tmpdir(), 'belay-close-plain-'))); }
 
+// A worker row of another run, written by that run's orchestrator (an orchestrator writes its own run's rows only).
+async function otherRun(ctx, row) {
+  const other = await openCore({ dataDir: ctx.dir, caller: callerFor('orchestrator', { run_id: row.run_id }), embed: false });
+  try { return await other.worker.write(row); } finally { await other.close(); }
+}
+
 async function setup() {
   const dir = sandbox();
   const orch = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
@@ -128,7 +134,7 @@ test('run.end closes only its own run: another run id\'s row is left alone', asy
   try {
     const { orch } = ctx;
     const dead = deadPid();
-    await orch.worker.write({ id: 'w-other', run_id: 'some-other-run', substrate: 'claude-code', pid: dead, state: 'stopping', started_at: Date.now() });
+    await otherRun(ctx, { id: 'w-other', run_id: 'some-other-run', substrate: 'claude-code', pid: dead, state: 'stopping', started_at: Date.now() });
     const ended = await orch.run.end({ exit_reason: 'test end' });
     assert.deepStrictEqual(ended.workers_marked_dead, []);
     assert.strictEqual((await orch.worker.get({ worker_id: 'w-other' })).state, 'stopping');
@@ -227,7 +233,7 @@ test('run.end leaves a terminal row that has a head, another run\'s row and a no
     const dead = deadPid();
     const t = Date.now();
     await orch.worker.write({ id: 'w-has', substrate: 'claude-code', pid: dead, state: 'stopped', worktree: repo.dir, head_sha: 'b'.repeat(40), exited_at: t, started_at: t });
-    await orch.worker.write({ id: 'w-other', run_id: 'some-other-run', substrate: 'claude-code', pid: dead, state: 'stopped', worktree: repo.dir, exited_at: t, started_at: t });
+    await otherRun(ctx, { id: 'w-other', run_id: 'some-other-run', substrate: 'claude-code', pid: dead, state: 'stopped', worktree: repo.dir, exited_at: t, started_at: t });
     await orch.worker.write({ id: 'w-paused', substrate: 'claude-code', pid: dead, state: 'paused', paused_at: t, paused_by: 'operator:1', worktree: repo.dir, started_at: t });
     const ids = ['w-has', 'w-other', 'w-paused'];
     const before = {};

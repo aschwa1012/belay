@@ -14,6 +14,7 @@
 'use strict';
 
 const { isJobId } = require('../run/job-prefixes.cjs'); // pure
+const { isPathId, pathIdMessage } = require('../core/path-id.cjs'); // pure
 const NOTES = require('./tools-notes.cjs'); // ADR 0047: the listing of a worker whose run has the notes lever on
 const { WORKER_TYPES } = require('../run/agent-defaults.cjs'); // pure; the agent_type enum
 const S = (properties, required) => {
@@ -377,7 +378,7 @@ const NO_NULL = { task_evaluate: ['base'] };
 // the core, never something a model says (invariant 3), so the boundary refuses them in either role,
 // by name, before the core sees them. The schema does not list them, which is why the listing does
 // not pay for them either.
-const HARNESS_ONLY = { memory_store: ['task_id', 'turn', 'source', 'embed', 'body', 'worker_id'], worker_spawn: ['native_memory'] }; // worker_spawn.native_memory: the eval driver's lever, set on RunManager.spawn only (ADR 0024 amendment 3)
+const HARNESS_ONLY = { memory_store: ['task_id', 'turn', 'source', 'embed', 'body', 'worker_id'], worker_spawn: ['native_memory', 'tools', 'sandbox', 'max_budget_usd'] }; // worker_spawn: native_memory is the eval driver's lever (ADR 0024 amendment 3); tools is the built-in list, which only allowed_tools may narrow (amendment 4); sandbox is a Codex worker's sandbox mode and max_budget_usd a job worker's spend cap, both the harness's. permission_prompt and permit_wait_ms stay open: ADR 0020 decision 1 makes the permission channel optional per spawn, and decision 5 has the orchestrator answer its requests
 // Tools that take exactly the properties their schema names: memory_store's row is written from its arguments, so an
 // unnamed one (an id, a created_at, a vector and its model) would reach the core as if the harness had chosen it.
 const CLOSED = new Set(['memory_store']);
@@ -403,6 +404,11 @@ function validateArgs(name, args, { notes = false, role = 'worker' } = {}) {
     const extra = Object.keys(a).find((k) => !Object.prototype.hasOwnProperty.call(schema.properties || {}, k));
     if (extra !== undefined) bad(`${name}: ${extra} is not one of its arguments`, { tool: name, field: extra, reason: 'unknown_field' });
   }
+  // A worker id becomes a directory under the data dir: every tool that names one refuses a bad id before anything is read or written.
+  for (const k of ['worker_id']) {
+    if (a[k] !== undefined && a[k] !== null && (schema.properties || {})[k] && !isPathId(a[k])) bad(`${name}: ${pathIdMessage(k, a[k])}`, { tool: name, field: k, reason: 'bad_id' });
+  }
+  if (Array.isArray(a.worker_ids) && a.worker_ids.some((x) => !isPathId(x))) bad(`${name}: worker_ids has an id that is not valid: use ${require('../core/path-id.cjs').PATH_ID_GRAMMAR}`, { tool: name, field: 'worker_ids', reason: 'bad_id' });
   if (name === 'worker_spawn' && typeof a.worker_id === 'string' && (a.worker_id.startsWith(RESERVED_WORKER_PREFIX) || isJobId(a.worker_id))) {
     bad(`worker_spawn: worker ids starting ${RESERVED_WORKER_PREFIX}, notereview-, scrub- or archreview- are reserved for belay's own workers`, { tool: name, field: 'worker_id', reason: 'reserved', prefix: RESERVED_WORKER_PREFIX });
   }

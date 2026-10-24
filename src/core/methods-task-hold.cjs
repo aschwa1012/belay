@@ -48,7 +48,9 @@ async function ensureHold(E, caller, args) {
     const ownerRun = resolveOwner(E.store, task, caller.run_id, rows.current(E.store, 'worker', args.worker_id));
     if (ownerRun === task.run_id && lease.run_id === ownerRun) return { ...base, held: true, reason: 'run_live' };
     const t = Date.now(), by = E.writtenBy(caller);
-    const newLease = rows.append(E.store, 'lease', { ...lease, id: rows.newId(), run_id: ownerRun, supersedes: lease.id }, by, t);
+    // The lease is restated under its own id with the new run, as a renewal restates it: the worker relaunched with --resume
+    // still holds that id, and a new one would make its own lease_release or lease_renew a superseded lease (audit 0.3.1 P1).
+    const newLease = rows.append(E.store, 'lease', { ...lease, run_id: ownerRun }, by, t);
     const row = rows.append(E.store, 'task', { ...task, run_id: ownerRun }, by, t);
     return { ...base, run_id: ownerRun, from_run_id: task.run_id, held: true, reason: 'rehomed', rehomed: true, task: row, new_lease: newLease };
   });

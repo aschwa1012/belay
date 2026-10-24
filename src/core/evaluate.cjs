@@ -8,9 +8,14 @@
 
 const { spawn } = require('node:child_process');
 const path = require('node:path');
+const { StringDecoder } = require('node:string_decoder');
 const PROC = require('./process.cjs');
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 120000;
+// The commands of one evaluation share this budget, inside the 600,000 ms a client waits for task.evaluate (index.cjs
+// EVALUATE_TIMEOUT_MS), leaving room for the git checks and the write. Without it a task whose command timeouts summed past
+// the client's wait was answered E_TIMEOUT "may have committed" and written done later (audit 0.3.1 P5).
+const ACCEPTANCE_BUDGET_MS = 540000;
 const TAIL = 2000;
 const DEFAULT_BASE_REF = 'main';
 // The default base resolves the branch, not the bare name: a worker's `git tag main` would win the bare name.
@@ -28,7 +33,34 @@ async function killTree(child) {
   return PROC.killTree(child).catch(e => ({ tool: 'process.kill', pid: child.pid || null, ok: false, error: e.code || e.message }));
 }
 
-function runCommand(argv, cwd, timeoutMs) {
+// One output stream, kept within TAIL characters. `keep: 'head'` keeps the start (git's short answers, read whole). `keep: 'ends'`
+// keeps the first and last TAIL/2 characters with a marker naming what was cut between them, because an acceptance command's
+// verdict (the summary line, the failing assertion) is at its end (audit 0.3.1 C3). `bytes` counts everything the stream sent.
+function capture(keep) {
+  const dec = new StringDecoder('utf8');
+  const half = TAIL / 2;
+  let head = '', tail = '', bytes = 0, chars = 0;
+  return {
+    add(d) {
+      bytes += d.length;
+      let s = dec.write(d);
+      chars += s.length;
+      if (keep !== 'ends') { if (head.length < TAIL) head += s; return; }
+      if (head.length < half) { const take = half - head.length; head += s.slice(0, take); s = s.slice(take); }
+      if (s) tail = (tail + s).slice(-half);
+    },
+    get bytes() { return bytes; },
+    text() {
+      if (keep !== 'ends') return head.slice(0, TAIL);
+      const cut = chars - head.length - tail.length;
+      return cut > 0 ? `${head}
+[... ${cut} characters omitted ...]
+${tail}` : head + tail;
+    },
+  };
+}
+
+function runCommand(argv, cwd, timeoutMs, { keep = 'head' } = {}) {
   return new Promise(resolve => {
     const t0 = Date.now();
     let child;
@@ -37,7 +69,8 @@ function runCommand(argv, cwd, timeoutMs) {
     } catch (e) {
       return resolve({ executable: false, exit_code: null, ms: Date.now() - t0, timed_out: false, stdout: '', stderr: '', spawn_error: e.code || e.message });
     }
-    let out = '', errText = '', settled = false, timedOut = false, killing = null, pipesDropped = false;
+    const out = capture(keep), errText = capture(keep);
+    let settled = false, timedOut = false, killing = null, pipesDropped = false;
     const timer = setTimeout(() => { timedOut = true; killing = killTree(child); }, timeoutMs);
     timer.unref();
     // ADR 0039: the exit, not the later close, ends the kill's right to fire (the pid may be reused from here on).
@@ -50,8 +83,9 @@ function runCommand(argv, cwd, timeoutMs) {
       drop.unref();
       child.once('close', () => clearTimeout(drop));
     });
-    child.stdout.on('data', d => { if (out.length < TAIL) out += d.toString('utf8'); });
-    child.stderr.on('data', d => { if (errText.length < TAIL) errText += d.toString('utf8'); });
+    child.stdout.on('data', d => out.add(d));
+    child.stderr.on('data', d => errText.add(d));
+    const sizes = () => (keep === 'ends' ? { stdout_bytes: out.bytes, stderr_bytes: errText.bytes } : {});
     // The direct child's `close` arrives while the tree kill is still walking the tree, so the result waits
     // for the kill to report: a caller that reads `timed_out` must be able to trust that the tree is
     // gone by the time it reads it, not merely that it was asked to go.
@@ -61,10 +95,10 @@ function runCommand(argv, cwd, timeoutMs) {
       clearTimeout(timer);
       Promise.resolve(killing).then(k => resolve({ ...r, tree_kill: k || null, ...(pipesDropped ? { pipes_dropped: 'the command exited but a process it started still held its output pipes; belay closed its ends after 2000 ms and left that process running' } : {}) }));
     };
-    child.on('error', e => finish({ executable: false, exit_code: null, ms: Date.now() - t0, timed_out: timedOut, stdout: out.slice(0, TAIL), stderr: errText.slice(0, TAIL), spawn_error: e.code || e.message }));
+    child.on('error', e => finish({ executable: false, exit_code: null, ms: Date.now() - t0, timed_out: timedOut, stdout: out.text(), stderr: errText.text(), ...sizes(), spawn_error: e.code || e.message }));
     child.on('close', (code, signal) => finish({
       executable: true, exit_code: code, signal: signal || null, ms: Date.now() - t0, timed_out: timedOut,
-      stdout: out.slice(0, TAIL), stderr: errText.slice(0, TAIL),
+      stdout: out.text(), stderr: errText.text(), ...sizes(),
     }));
   });
 }
@@ -153,8 +187,9 @@ async function filesWithinOwned(worktree, filesOwned, base) {
   };
 }
 
-async function runAcceptance(acceptance, worktree, filesOwned, { base } = {}) {
+async function runAcceptance(acceptance, worktree, filesOwned, { base, budgetMs = ACCEPTANCE_BUDGET_MS } = {}) {
   const checks = [];
+  const until = Date.now() + budgetMs;
   const commands = (acceptance && Array.isArray(acceptance.commands)) ? acceptance.commands : [];
   for (const c of commands) {
     if (!c || !Array.isArray(c.argv) || c.argv.length === 0 || c.argv.some(x => typeof x !== 'string')) {
@@ -162,15 +197,20 @@ async function runAcceptance(acceptance, worktree, filesOwned, { base } = {}) {
       continue;
     }
     const cwd = c.cwd ? path.resolve(worktree, c.cwd) : worktree;
-    const r = await runCommand(c.argv, cwd, Number(c.timeout_ms) > 0 ? Number(c.timeout_ms) : DEFAULT_COMMAND_TIMEOUT_MS);
+    const left = until - Date.now(), own = Number(c.timeout_ms) > 0 ? Number(c.timeout_ms) : DEFAULT_COMMAND_TIMEOUT_MS;
+    if (left <= 0) {
+      checks.push({ kind: 'command', argv: c.argv, executable: false, exit_code: null, ms: 0, passed: false, detail: { cwd, reason: `not run: the evaluation's commands share a budget of ${budgetMs} ms and it was spent`, budget_ms: budgetMs } });
+      continue;
+    }
+    const r = await runCommand(c.argv, cwd, Math.min(own, left), { keep: 'ends' });
     checks.push({
       kind: 'command', argv: c.argv, executable: r.executable, exit_code: r.exit_code, ms: r.ms,
       passed: r.executable && r.exit_code === 0 && !r.timed_out,
-      detail: { cwd, timed_out: r.timed_out, signal: r.signal || null, tree_kill: r.tree_kill || null, pipes_dropped: r.pipes_dropped || null, spawn_error: r.spawn_error || null, stdout_tail: r.stdout.slice(-400), stderr_tail: r.stderr.slice(-400) },
+      detail: { cwd, timed_out: r.timed_out, signal: r.signal || null, tree_kill: r.tree_kill || null, pipes_dropped: r.pipes_dropped || null, spawn_error: r.spawn_error || null, stdout_tail: r.stdout.slice(-400), stderr_tail: r.stderr.slice(-400), stdout_bytes: r.stdout_bytes ?? null, stderr_bytes: r.stderr_bytes ?? null, ...(left < own ? { budget_capped_ms: left } : {}) },
     });
   }
   if (acceptance && acceptance.files_within_owned) checks.push(await filesWithinOwned(worktree, filesOwned, base));
   return checks;
 }
 
-module.exports = { runAcceptance, runCommand, filesWithinOwned, normalise, within, parsePorcelainZ, parseNameStatusZ, DEFAULT_BASE_REF, DEFAULT_COMMAND_TIMEOUT_MS };
+module.exports = { runAcceptance, runCommand, filesWithinOwned, normalise, within, parsePorcelainZ, parseNameStatusZ, DEFAULT_BASE_REF, DEFAULT_COMMAND_TIMEOUT_MS, ACCEPTANCE_BUDGET_MS };
