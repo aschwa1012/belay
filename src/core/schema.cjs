@@ -220,7 +220,7 @@ const MEMORY_INDEXES = [
 // so every existing ordinal comparison (there are none today) would see it as the terminal-most state.
 // build step 6e: 'paused' is inserted after 'idle' (ADR 0023 decision 1); the list still ends 'forgotten'.
 const WORKER_STATES = ['starting', 'running', 'idle', 'paused', 'stopping', 'stopped', 'dead', 'forgotten'];
-const TASK_STATES = ['open', 'assigned', 'released', 'done'];
+const TASK_STATES = ['open', 'assigned', 'released', 'done', 'cancelled']; // cancelled: ADR 0058, task.cancel
 const SUBSTRATES = ['claude-code', 'codex'];
 const ROLES = ['orchestrator', 'worker', 'operator'];
 // build step 6d, ADR 0020 decision 2: the four states a permission row's `state` column takes.

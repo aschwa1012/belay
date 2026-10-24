@@ -159,6 +159,7 @@ async function assign(E, caller, args) {
     if (task.state === 'done') {
       throw err('E_TASK_DONE', `task ${args.task_id} is done, and done is written only by task.evaluate; assigning it would un-earn it and reopen its dependents' gate, so create a new task to redo the work`, { task_id: args.task_id, state: 'done' });
     }
+    if (task.state === 'cancelled') throw err('E_ARGS', `task ${args.task_id} was cancelled, which is final; create a new task to do the work`, { task_id: args.task_id, state: 'cancelled' });
 
     const old = rows.currentLeaseForTask(E.store, args.task_id);
     if (old && !old.released_at && old.holder_role === 'operator') {
@@ -262,6 +263,7 @@ async function evaluate(E, caller, args) {
   // rather than evaluated without `done`, because a task is not done while its dependency is open (ADR 0013 section 1).
   const gate = (t) => {
     if (t.state === 'done') throw err('E_TASK_DONE', `task ${t.id} is done, and done is final; create a new task to redo the work`, { task_id: t.id, state: 'done' });
+    if (t.state === 'cancelled') throw err('E_ARGS', `task ${t.id} was cancelled, which is final; there is nothing to evaluate`, { task_id: t.id, state: 'cancelled' });
     assertDependenciesDone(E, t);
   };
   E.store.tx(() => gate(rows.current(E.store, 'task', args.task_id) || task));

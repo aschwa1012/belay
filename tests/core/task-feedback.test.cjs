@@ -108,3 +108,26 @@ test('handoff acceptance: a research task is done when its hand-back carries eac
   const ok = await orch.task.evaluate({ task_id: t.id, worktree: dir });
   assert.deepStrictEqual([ok.state, check(ok).passed, check(ok).detail.by], ['done', true, 'r-2']);
 });
+
+test('task.cancel releases the lease and the files, writes cancelled, and is final', async () => {
+  const t = await orch.task.create({ spec: 'touch a', files_owned: ['src/a.cjs'], acceptance: PASS });
+  await rejects(orch.task.create({ spec: 'clash', files_owned: ['src/a.cjs'] }), 'E_FILES_OVERLAP');
+  await worker('c-9');
+  const a = await orch.task.assign({ task_id: t.id, worker_id: 'c-9' });
+  const out = await orch.task.cancel({ task_id: t.id, reason: 'the plan changed' });
+  assert.deepStrictEqual([out.task.state, out.released_lease.id, out.files_released], ['cancelled', a.new_lease.id, ['src/a.cjs']]);
+  assert.ok(out.released_lease.released_at > 0);
+  assert.deepStrictEqual([out.task.results.cancelled.reason, out.task.results.cancelled.released_lease_id], ['the plan changed', a.new_lease.id]);
+  const view = await orch.task.get({ task_id: t.id });
+  assert.deepStrictEqual([view.holds_files, view.holds_reason, view.lease], [false, 'cancelled', null]);
+  assert.strictEqual((await orch.task.create({ spec: 'takes the file now', files_owned: ['src/a.cjs'] })).state, 'open');
+  await rejects(orch.task.assign({ task_id: t.id, worker_id: 'c-9' }), 'E_ARGS', /cancelled/);
+  await rejects(orch.task.evaluate({ task_id: t.id, worktree: dir }), 'E_ARGS', /cancelled/);
+  await rejects(orch.task.cancel({ task_id: t.id }), 'E_ARGS', /already cancelled/);
+  await rejects(workers.get('c-9').lease.release({ lease_id: a.new_lease.id, result: { x: 1 } }), 'E_ARGS', /already released/);
+  await rejects(orch.task.cancel({ task_id: 'nope' }), 'E_NOT_FOUND');
+  const d = await orch.task.create({ spec: 'quick', acceptance: PASS });
+  await handBack(d.id, 'c-9');
+  await orch.task.evaluate({ task_id: d.id, worktree: dir });
+  await rejects(orch.task.cancel({ task_id: d.id }), 'E_TASK_DONE');
+});

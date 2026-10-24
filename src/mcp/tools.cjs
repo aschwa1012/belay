@@ -57,6 +57,7 @@ const ROUTES = {
   // ADR 0010 amendment 3: the only way an orchestrator over MCP can write `done` and clear a dependency.
   task_evaluate: { role: 'orchestrator', via: 'core', method: 'task.evaluate' },
   fix_from_review: { role: 'orchestrator', via: 'core', method: 'task.fixFromReview' }, // ADR 0058 decision 3
+  task_cancel: { role: 'orchestrator', via: 'core', method: 'task.cancel' }, // ADR 0058 decision 7
   // ADR 0015: admitted to the surface, which is nineteen tools from that record. It is the only way
   // to wait in the deployment ADR 0009 §1 names first — an operator's own session, which belay
   // attaches to and therefore cannot wake, because it does not own that session's stdin.
@@ -261,6 +262,11 @@ const ORCHESTRATOR = [
     name: 'fix_from_review',
     description: 'Create the fix task for a review evaluated refuted, with depends_on, repairs, acceptance and files_owned inferred and spec from its findings. Returns the task row. Refuses E_FIX_ROUNDS past max_fix_rounds.',
     inputSchema: S({ review_id: str(), spec: str('Default: from the findings'), repairs: str('Which task, if it judged several'), id: str() }, ['review_id']),
+  },
+  {
+    name: 'task_cancel',
+    description: 'Give up on a task that is not done: releases its lease and its files_owned, state cancelled (final). Returns the task row and the released lease.',
+    inputSchema: S({ task_id: str(), reason: str() }, ['task_id']),
   },
   {
     // ADR 0040 §4. A worker cannot verify a claim, so this is not on the worker listing.

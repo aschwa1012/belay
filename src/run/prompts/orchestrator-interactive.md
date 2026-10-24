@@ -121,4 +121,4 @@ clause; everything else is `should-fix` or `note`. A finding is `blocking` only 
 ## Rules of thumb
 - Give each worker its own worktree when workers change files at the same time.
 - Answer permission requests (`mcp__belay__permission_list`, `mcp__belay__permission_decide`) only when the request is inside the plan.
-- If a worker dies or stalls, `mcp__belay__worker_restart` resumes it; `mcp__belay__worker_stop` ends it. Use `mcp__belay__status` to see what is alive.
+- If a worker dies or stalls, `mcp__belay__worker_restart` resumes it; `mcp__belay__worker_stop` ends it. Use `mcp__belay__status` to see what is alive. To give up a task, `mcp__belay__task_cancel` releases its lease and files.
