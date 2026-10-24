@@ -200,7 +200,7 @@ function Held({ E, snap, ui, now, act, cols, pend, focused, settled }: Ctx) {
     <Section E={E} k="sm" title="MEMORY" cols={cols} summary={summary}>
       {off && <MemoryOff E={E} n={off} cols={inner} />}
       {hd && hd.reviews.flatMap((r, i) => {
-        const bad = r.state === 'failed' || r.state === 'interrupted'
+        const bad = r.state === 'failed' // a review cut off (its claimant gone) is finished, so dim; only a failed one with a reason is red
         return wrapHard(reviewLine(r, now), Math.max(8, inner - 2)).map((t, j) => <Line E={E} w={inner} k={`hr${i}-${j}`} segs={[{ t: j === 0 ? '◇ ' : '  ', c: bad ? 'error' : undefined, dim: !bad }, { t, c: bad ? 'error' : undefined }]} />)
       })}
       {hd && hd.count > 0 && wrapHard(asking && project ? confirmLine(hd, project) : heldDetail(hd, now), Math.max(8, inner)).map((t, i) => <Line E={E} w={inner} k={`hl${i}`} segs={[{ t, c: asking ? ATTN : undefined, dim: !asking }]} />)}
@@ -255,6 +255,7 @@ function Legend({ E, cols }: Ctx) {
   const c: Seg[][] = [
     [{ t: b.on, c: 'success' }, { t: b.off, dim: true }, { t: ' cache time left', dim: true }],
     [{ t: b.on, c: 'suggestion' }, { t: b.off, dim: true }, { t: ' context used', dim: true }],
+    [{ t: '18.2k · 2%', dim: false }, { t: ' context: tokens, and the share of the window when known', dim: true }],
     [{ t: 'amber', c: 'warning' }, { t: ' look soon', dim: true }], [{ t: 'red', c: 'error' }, { t: ' failed', dim: true }],
     [{ t: 'purple', c: 'merged' }, { t: ' review holds', dim: true }],
   ]

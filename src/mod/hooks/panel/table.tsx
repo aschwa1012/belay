@@ -1,11 +1,11 @@
 // The agent table: its columns, the task label, an opened agent's detail and the rows. Drawing only.
 
 import type { BelayAgent, BelayPanelSnap } from '../../types/index'
-import { cacheSegs, ctxSegs, dur, fitSegs, interactiveMark, interactiveOrch, isLive, markSeg, markWidth, money, STATE_NAME, type Seg } from './model'
+import { cacheSegs, ctxSegs, type CtxMode, dur, fitSegs, interactiveMark, interactiveOrch, isLive, isReviewWorker, markSeg, markWidth, money, STATE_NAME, type Seg } from './model'
 import { cells, clipCells, wrapParts } from './wrap'
 import { clip, Line, pad, padName, shortModel, tp, type Act, type Ctx, type Els } from './base'
 
-type Cols = { mark: number; agent: number; id: number; model: boolean; task: number; ctx: number; cache: number; cost: number }
+type Cols = { mark: number; agent: number; id: number; model: boolean; task: number; ctx: number; ctxMode: CtxMode; cache: number; cost: number }
 
 // Every cell is followed by one column of space. When the pane is narrow whole columns drop, the
 // least needed first: task, cache, context, the model name, then the id is cut. Nothing is squeezed.
@@ -14,7 +14,7 @@ function columns({ snap, cols }: Ctx): Cols {
   const longest = snap.agents.reduce((m, a) => Math.max(m, a.id.length), 0)
   const c: Cols = {
     mark: markWidth(s.marks), agent: 0, id: Math.max(6, Math.min(16, longest)), model: true, task: 0,
-    ctx: s.context === 'figure' ? 4 : s.context === 'bar' ? 6 : 11, cache: s.cache === 'both' ? 11 : 5, cost: 7,
+    ctx: 6, ctxMode: 'tokens', cache: s.cache === 'both' ? 11 : 5, cost: 7,
   }
   const kind = s.task === 'kind'
   // `kind` is the cheapest column to keep: its label (`work`, `rev`, `research`) is reserved before the cache and the
@@ -34,6 +34,18 @@ function columns({ snap, cols }: Ctx): Cols {
   if (total() > cols) c.model = false
   if (total() > cols) c.task = 0
   if (total() > cols) c.id = Math.max(3, c.id - (total() - cols))
+  // The column starts as the tokens alone and takes the percent (and the bar) only from room the task column does not want, so the percent is what goes first.
+  // What the task column still wants to show whole: the kind label with its verdict and mark, or the title (up to 24 cells). The tokens give way to that, and the
+  // percent gives way first.
+  const titleW = !kind && s.task !== 'off' ? Math.min(24, Math.max(8, ...snap.agents.map(a => cells(taskSegs(a, snap, 99).map(x => x.t).join(''))))) : 0
+  const want = kind ? Math.max(0, fullW - c.task) : titleW
+  if (c.ctx > 0 && cols - total() - 1 < want) c.ctx = 0
+  if (c.ctx > 0) {
+    const wide = s.context === 'both' ? 20 : 13
+    for (const [mode, w] of [['full', wide], ['mid', 13]] as const) {
+      if (w > c.ctx && cols - total() - 1 - want >= w - c.ctx) { c.ctx = w; c.ctxMode = mode; break }
+    }
+  }
   c.agent = c.id + (c.model ? 8 : 0)
   const t = cols - total() - 1
   if (kind) { if (c.task) c.task = Math.min(fullW, c.task + Math.max(0, t + 1)) }
@@ -53,9 +65,16 @@ function kindOf(a: BelayAgent): string {
 
 // One readable label, never two cut fragments: the id and title when both fit, else the title alone (the id is in the
 // detail), else the id. The verdict and the permission mark are parts that drop whole from the end.
+// How a dead review worker ended: cut (its process was ended with a non-zero exit, as when closing the run does), or no answer (it died without one).
+const reviewOutcome = (a: BelayAgent, snap: BelayPanelSnap): string => {
+  const n = snap.notices.find(x => x.kind === 'worker_dead' && x.agentId === a.id)
+  return n && /^exit [1-9]/.test(n.ids) ? 'cut' : 'no answer'
+}
+
 function taskSegs(a: BelayAgent, snap: BelayPanelSnap, room: number): Seg[] {
-  if (interactiveOrch(a, snap)) return [{ t: 'interactive', dim: true }]
-  if (a.role === 'orchestrator') return [{ t: snap.settings.task === 'kind' ? 'orch' : 'orchestrator', dim: true }]
+  if (interactiveOrch(a, snap)) return [{ t: clip('interactive', room), dim: true }]
+  if (a.state === 'dead' && isReviewWorker(a)) return [{ t: clip(reviewOutcome(a, snap), room), dim: true }]
+  if (a.role === 'orchestrator') return [{ t: clip(snap.settings.task === 'kind' ? 'orch' : 'orchestrator', room), dim: true }]
   const perm = snap.notices.find(n => n.tone === 'permission' && n.agentId === a.id)
   const v = a.task && snap.notices.find(n => n.taskId === a.task!.id && (n.tone === 'holds' || n.tone === 'refuted'))
   const tail: Seg[] = []
@@ -104,6 +123,10 @@ function Detail({ E, a, snap, now, cols, last }: { E: Els; a: BelayAgent; snap: 
     rows.push({ k: 'cache', sep: ' · ', parts: [`TTL ${a.cache.ttlS !== null ? dur(a.cache.ttlS * 1000) : 'unknown'}${a.cache.ttlBy ? `, read from ${a.cache.ttlBy}` : ''}`, age !== null ? `age ${dur(age, true)}` : ''] })
   }
   rows.push({ k: 'cost', sep: ' ', parts: [a.costUsd === null ? 'not yet recorded' : `${money(a.costUsd)}${a.costSource ? ` (${a.costSource})` : ''}`] })
+  if (a.state === 'dead' && isReviewWorker(a)) {
+    rows.unshift({ k: 'outcome', sep: ' · ', parts: [reviewOutcome(a, snap), a.stateBy ?? 'not recorded'] })
+    rows.push({ k: 'clear', sep: ' ', parts: [`belay worker rm ${a.id}`] })
+  }
   rows.push({ k: 'logs', sep: ' ', parts: [`belay logs ${a.id}`] })
   const room = Math.max(8, cols - 2 - LABEL)
   const flush = cols - 2 // an id wider than the value room goes on its own line with the label's indent removed
@@ -147,7 +170,7 @@ function AgentRow(c: Ctx & { a: BelayAgent; c: Cols; last: boolean }) {
           {w.model ? <Text dimColor> {pad(shortModel(a.model), 7)}</Text> : null}
         </Box>
         {w.task > 0 && cell('t', w.task, taskSegs(a, snap, w.task))}
-        {w.ctx > 0 && cell('x', w.ctx, ctxSegs(a, snap.settings))}
+        {w.ctx > 0 && cell('x', w.ctx, ctxSegs(a, snap.settings, w.ctxMode))}
         {w.cache > 0 && cell('k', w.cache, cacheSegs(a, snap.settings, snap.fetchedAt, now))}
         {cell('$', w.cost, [{ t: a.costUsd === null && io ? 'n/a' : costText(a), dim: a.costUsd === null }], true)}
       </Box>

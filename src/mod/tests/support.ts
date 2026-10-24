@@ -59,7 +59,7 @@ export type World = {
   file?: boolean; runFile?: unknown; repoCli?: boolean; watchId?: string
   mode?: string | null; mod?: Record<string, string>; notices?: unknown
   failAgents?: boolean; transcriptFail?: boolean; orchDisplay?: string; noDisplay?: boolean; noRun?: boolean
-  extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number; memoryNotice?: boolean; orchNoCost?: boolean; orchBasis?: string; orchTokensOnly?: boolean; orchCost?: number; awaitingFail?: boolean; agentIds?: string[]; footer?: unknown
+  extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number; memoryNotice?: boolean; orchNoCost?: boolean; orchBasis?: string; deadReview?: boolean; deadCoder?: boolean; orchTokensOnly?: boolean; orchCost?: number; awaitingFail?: boolean; agentIds?: string[]; footer?: unknown
   /** Answers the dialogs give, in order (the reason, then the confirm); an empty queue dismisses. */
   awaitingList?: unknown
   settleReject?: string
@@ -156,11 +156,12 @@ export function world(on: any, w: World) {
       return x
     })
     const extra = (w.extra ?? []).map(d => ({ id: `w-${d}`, role: null, model: 'claude-sonnet-5-5', state: d, display_state: d, display_state_established_by: `test ${d}`, context_pct: 5, cost_usd: null, task: null }))
+    const dead = [...(w.deadReview ? ['archreview-r-7f3a-mvln6h2p'] : []), ...(w.deadCoder ? ['coder-dead'] : [])].map(id => ({ id, role: null, model: 'claude-opus-5-5', state: 'dead', display_state: 'dead', display_state_established_by: 'worker row state dead, death_established_by exit-event', pid: 23184, context_pct: null, cost_usd: 0.12, task: null }))
     const named = (w.agentIds ?? []).map(id => ({ id, role: null, model: 'claude-sonnet-5-5', state: 'running', display_state: 'running', display_state_established_by: 'test', context_pct: 5, cost_usd: 0.1, task: null }))
     const body: Record<string, unknown> = {
       agents: {
         run_id: w.noRun ? null : (w.runId ?? RUN), mode: 'mode' in w ? w.mode : 'headless', mode_source: 'test', started_at_ms: T0 - (w.startedAgo ?? 42 * 60000), paused_at_ms: w.paused ?? null, ended_at_ms: w.ended ?? null,
-        tasks: { done: 1, total: 3 }, max_fix_rounds: 'maxFix' in w ? w.maxFix : 2, memory_notice: w.memoryNotice ? NOTICE : null, agents: w.noRun ? [] : [...agents, ...extra, ...named], footer: 'footer' in w ? w.footer : FOOTER,
+        tasks: { done: 1, total: 3 }, max_fix_rounds: 'maxFix' in w ? w.maxFix : 2, memory_notice: w.memoryNotice ? NOTICE : null, agents: w.noRun ? [] : [...agents, ...extra, ...named, ...dead], footer: 'footer' in w ? w.footer : FOOTER,
       },
       notices: w.notices ?? (w.longNotices ? LONG_NOTICES : NOTICES),
       transcript: w.nullTs ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.map(x => ({ ...x, ts: null })) } : w.manyTexts ? { run_id: RUN, entries: MANY } : w.toolsOnly ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.filter(x => x.kind !== 'text') } : w.longTranscript ? { run_id: RUN, entries: LONG_ENTRIES.slice(-Number(e.argv[e.argv.indexOf('--tail') + 1])) } : w.honorTail ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.slice(-Number(e.argv[e.argv.indexOf('--tail') + 1])) } : TRANSCRIPT,
