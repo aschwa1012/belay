@@ -450,4 +450,4 @@ function heldLease(E, taskId, workerId) {
   return l;
 }
 
-module.exports = { create, assign, list, get, evaluate, renew, release, takeControl, view, heldLease, overlaps: holds.overlaps, findCycle, dependsOf, TASK_STATES };
+module.exports = { create, assign, list, get, evaluate, renew, release, takeControl, view, heldLease, overlaps: holds.overlaps, findCycle, dependsOf, refutedReview, TASK_STATES };

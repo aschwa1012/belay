@@ -15,7 +15,7 @@ test('the orchestrator lists worker_wait, next to the spawn it waits on', async 
   t.after(async () => { await a.close(); a.kill(); });
   await a.initialize();
   const names = (await a.list()).map((x) => x.name);
-  assert.equal(names.length, 21);
+  assert.equal(names.length, tools.toolsFor('orchestrator').length) // the count is pinned in schema-budget.test.cjs;
   assert.ok(names.includes('worker_wait'));
   assert.equal(names[names.indexOf('worker_spawn') + 1], 'worker_wait',
     'it reads beside worker_spawn: that call returns at ready, this one waits for what happens next');
@@ -40,7 +40,7 @@ test('--experimental-worker-wait is still accepted, and changes nothing', async 
   const a = launch({ role: 'orchestrator', data: `${sandboxDir('wait-flag')}/store`, extra: ['--experimental-worker-wait'] });
   t.after(async () => { await a.close(); a.kill(); });
   await a.initialize();
-  assert.equal((await a.list()).length, 21);
+  assert.equal((await a.list()).length, tools.toolsFor('orchestrator').length);
 });
 
 test('the listing is inside the ADR 0010 §5 budget with the nineteenth tool on it', () => {

@@ -56,6 +56,7 @@ const ROUTES = {
   task_assign: { role: 'orchestrator', via: 'compose', method: 'assign' },
   // ADR 0010 amendment 3: the only way an orchestrator over MCP can write `done` and clear a dependency.
   task_evaluate: { role: 'orchestrator', via: 'core', method: 'task.evaluate' },
+  fix_from_review: { role: 'orchestrator', via: 'core', method: 'task.fixFromReview' }, // ADR 0058 decision 3
   // ADR 0015: admitted to the surface, which is nineteen tools from that record. It is the only way
   // to wait in the deployment ADR 0009 §1 names first — an operator's own session, which belay
   // attaches to and therefore cannot wake, because it does not own that session's stdin.
@@ -254,6 +255,11 @@ const ORCHESTRATOR = [
       worktree: str(),
       base: str('Diff base; default merge-base main'),
     }, ['task_id', 'worktree']),
+  },
+  {
+    name: 'fix_from_review',
+    description: 'Create the fix task for a review evaluated refuted, with depends_on, repairs, acceptance and files_owned inferred and spec from its findings. Returns the task row. Refuses E_FIX_ROUNDS past max_fix_rounds.',
+    inputSchema: S({ review_id: str(), spec: str('Default: from the findings'), repairs: str('Which task, if it judged several'), id: str() }, ['review_id']),
   },
   {
     // ADR 0040 §4. A worker cannot verify a claim, so this is not on the worker listing.

@@ -158,6 +158,8 @@ const METHODS = {
   'task.list': { roles: ALL, kind: 'read', fn: task.list },
   'task.get': { roles: ALL, kind: 'read', fn: task.get },
   'task.evaluate': { roles: ORCH, kind: 'write', fn: task.evaluate },
+  // ADR 0058 decision 3: the fix task a refuted review calls for, its repairs and depends_on inferred; written by task.create.
+  'task.fixFromReview': { roles: ORCH, kind: 'write', fn: lazy('./methods-task-fix.cjs', 'fixFromReview') },
 
   'lease.renew': { roles: ['worker'], kind: 'write', fn: task.renew },
   'lease.release': { roles: ['worker', 'operator'], kind: 'write', fn: task.release },

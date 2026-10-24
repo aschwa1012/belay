@@ -1,0 +1,55 @@
+'use strict';
+// methods-task-fix.cjs — task.fixFromReview (ADR 0058 decision 3): the fix task a refuted review calls for, with the fields
+// the orchestrator prompt used to spell out inferred from the store. The fix depends on the task the review judged (ADR 0030:
+// the work it fixes, never the review), repairs the original work task (a fix of a fix repairs the same work, so the rounds
+// count against one cap, ADR 0031 decision 6), and is written by task.create, which enforces max_fix_rounds (E_FIX_ROUNDS).
+
+const { err } = require('./errors.cjs');
+const rows = require('./rows.cjs');
+
+const SPEC_FINDINGS_MAX = 2000; // bytes of findings quoted into the default spec
+
+function verdictDetail(review) {
+  const checks = review.results && Array.isArray(review.results.checks) ? review.results.checks : [];
+  const v = checks.find((c) => c && c.kind === 'verdict');
+  return v && v.detail ? v.detail : {};
+}
+
+function defaultSpec(review, judged, detail) {
+  let findings = '';
+  if (Array.isArray(detail.findings) && detail.findings.length) {
+    findings = JSON.stringify(detail.findings);
+    if (Buffer.byteLength(findings, 'utf8') > SPEC_FINDINGS_MAX) findings = `${Buffer.from(findings, 'utf8').subarray(0, SPEC_FINDINGS_MAX).toString('utf8')}...`;
+  }
+  return `Fix the blocking findings of review ${review.id} on task ${judged.id} (${judged.spec}). The reviewer said: ${detail.summary || '(no summary)'}${findings ? ` Findings: ${findings}` : ''}`;
+}
+
+async function fixFromReview(E, caller, args) {
+  const T = require('./methods-task.cjs');
+  if (!args.review_id || typeof args.review_id !== 'string') throw err('E_ARGS', 'task.fixFromReview needs the review_id of a refuted review task');
+  const review = rows.current(E.store, 'task', args.review_id);
+  if (!review) throw err('E_NOT_FOUND', `no task row exists for ${args.review_id}`, { review_id: args.review_id });
+  if (!review.acceptance || review.acceptance.verdict !== true) throw err('E_ARGS', `task ${review.id} is not a review task (its acceptance has no verdict: true)`, { review_id: review.id });
+  if (!T.refutedReview(review)) {
+    throw err('E_PRECONDITION', `review ${review.id} was not last evaluated refuted (an executable verdict check that failed); evaluate it first, and fix only after a refuted review`, { review_id: review.id, state: review.state });
+  }
+  const under = Array.isArray(review.depends_on) ? review.depends_on : [];
+  const judgedId = under.length === 1 ? under[0] : args.repairs;
+  if (!judgedId || !under.includes(judgedId)) {
+    throw err('E_ARGS', `review ${review.id} judged ${under.length} tasks (${under.join(', ')}); name the one to fix as repairs`, { review_id: review.id, depends_on: under });
+  }
+  const judged = rows.current(E.store, 'task', judgedId);
+  if (!judged) throw err('E_NOT_FOUND', `review ${review.id} depends on ${judgedId}, which has no row in this store`, { review_id: review.id, missing: judgedId });
+  const repairs = judged.repairs || judged.id;
+  const row = await T.create(E, caller, {
+    spec: typeof args.spec === 'string' && args.spec.trim() ? args.spec : defaultSpec(review, judged, verdictDetail(review)),
+    acceptance: args.acceptance !== undefined ? args.acceptance : judged.acceptance,
+    files_owned: args.files_owned !== undefined ? args.files_owned : judged.files_owned,
+    depends_on: [judged.id],
+    repairs,
+    ...(args.id ? { id: args.id } : {}),
+  });
+  return { ...row, from_review: review.id };
+}
+
+module.exports = { fixFromReview };

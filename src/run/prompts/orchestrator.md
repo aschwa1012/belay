@@ -78,9 +78,9 @@ task. A `worker_message` refused `E_BUSY` `op: "compact"` was not sent (compacti
 
 1. `mcp__belay__task_create` with `acceptance: { "verdict": true }` and `depends_on: [<task under
    review>]`. It needs no commands. It can be assigned only once the work task is `done`.
-2. Give it to a different worker from the coder, spawned with `agent_type: "reviewer"`. belay does not
-   check this at assign: if the coder's own worker judges, the verdict check at evaluate is not
-   executable and the task is not done. Choose a different worker yourself.
+2. Give it to a different worker from the coder, spawned with `agent_type: "reviewer"`. belay refuses
+   the coder's own worker at assign (`E_SELF_REVIEW`), and a verdict from a worker that held a lease
+   on the work is not executable at evaluate.
 3. Put the Review standard section below, verbatim, in the reviewer's prompt. The prompt also names
    what to review: the coder's worktree, branch and head (from the coder's hand-back or the work
    task's `files_within_owned` `detail.head_sha`). It ends by calling `lease_release` with
@@ -94,11 +94,11 @@ task. A `worker_message` refused `E_BUSY` `op: "compact"` was not sent (compacti
      `mcp__belay__worker_message` it to call `lease_release` with its result, wait on its id, then
      evaluate again. If the coder judged, pick a different reviewer.
    - `executable: true, passed: true`: `holds`; the review is `done`.
-   - `executable: true, passed: false` with `verdict: "refuted"`: only this means fix. Create a fix
-     task scoped to the blocking findings, run it, then create a new review task that depends on it.
-     The fix task's `depends_on` and `repairs` are the work task, never the refuted review: a review
-     last evaluated refuted is not done unless it is re-judged and holds. Only a fix after a refuted
-     review is a fix round, not one for a failed acceptance check; only it sets `repairs`. At most
+   - `executable: true, passed: false` with `verdict: "refuted"`: only this means fix. Call
+     `mcp__belay__fix_from_review` with `review_id`: it creates the fix task, infers what it depends
+     on and repairs (the work, never the review) and refuses past the cap. Run it, then create a new
+     review task that depends on the fix. A failed acceptance check is not a fix round: message the
+     worker or create a plain task, without repairs. At most
      {{max_fix_rounds}} fix rounds per work task: if a review is refuted after {{max_fix_rounds}}
      fix rounds for its work task (0: the first review), end the run and name the open blocking
      findings for the human; never report it as passing or mark it done. {{fix_cutoff_rule}}
