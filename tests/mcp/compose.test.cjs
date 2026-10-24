@@ -20,6 +20,10 @@ test('compactSpawn keeps what the orchestrator acts on and leaves the launch rec
     agent: { effort: { value: 'high', source: 'agent_type' } }, input_tokens: 0, permission_mode_effective: 'auto',
   };
   const c = compactSpawn(full);
-  assert.deepStrictEqual(c, { id: 'w', substrate: 'claude-code', pid: 7, state: 'running', session_id: 's', adapter_pid: 1, worktree: '/w', task_id: null, started_at: 5, ready_ms: 9, model: 'claude-sonnet-5-5', permission_mode_effective: 'auto', effort: 'high', tools: ['Read'] });
+  assert.deepStrictEqual(c, { id: 'w', substrate: 'claude-code', pid: 7, state: 'running', session_id: 's', adapter_pid: 1, worktree: '/w', task_id: null, started_at: 5, ready_ms: 9, model: 'claude-sonnet-5-5', permission_mode_effective: 'auto', model_source: 'reported', effort: 'high', tools: ['Read'] });
+  // Codex reports no model: the requested one is named as requested (B5).
+  const codex = compactSpawn({ id: 'c', substrate: 'codex', model: null, agent: { model: { value: 'gpt-6.1-sol', source: 'agent_type' } } });
+  assert.deepStrictEqual([codex.model, codex.model_source], ['gpt-6.1-sol', 'requested']);
+  assert.deepStrictEqual([compactSpawn({ id: 'c', model: null }, 'm-1').model, compactSpawn({ id: 'c', model: null }).model_source], ['m-1', undefined]);
   assert.deepStrictEqual(compactSpawn({ id: 'w', effort_requested: 'low', tools: ['Bash'], permission_mode_degraded: true }), { id: 'w', effort: 'low', tools: ['Bash'], permission_mode_degraded: true });
 });

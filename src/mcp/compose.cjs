@@ -7,10 +7,15 @@
 // worker_spawn's default answer (ADR 0058 decision 9): what the orchestrator acts on. The rest (surface, plugins, instruction
 // hashes, pid_created, argv_hash, token counters) is the receipt, behind view: "debug".
 const SPAWN_KEEP = ['id', 'substrate', 'pid', 'state', 'session_id', 'adapter_pid', 'worktree', 'task_id', 'started_at', 'ready_ms', 'model', 'permission_mode_effective'];
-function compactSpawn(row) {
+// `requested` is the spawn's own model argument. Codex reports no model on its stream (B5), so its row has none: the
+// answer then names the model belay asked for, and says so in model_source.
+function compactSpawn(row, requested = null) {
   if (!row || typeof row !== 'object') return row;
   const out = {};
   for (const k of SPAWN_KEEP) if (row[k] !== undefined) out[k] = row[k];
+  const asked = (row.agent && row.agent.model && row.agent.model.value) || requested || null;
+  if (row.model != null) out.model_source = 'reported';
+  else if (asked) { out.model = asked; out.model_source = 'requested'; }
   out.effort = row.agent && row.agent.effort ? row.agent.effort.value : (row.effort_requested ?? null);
   const builtins = row.surface && row.surface.builtins;
   out.tools = builtins != null ? builtins : (row.tools ?? null);
@@ -57,7 +62,7 @@ function createCompose({ callCore, manager, openManager }) {
   async function spawn(args) {
     const { view = 'compact', ...rest } = args || {};
     const row = await (await openManager()).spawn(rest);
-    return view === 'debug' ? row : compactSpawn(row);
+    return view === 'debug' ? row : compactSpawn(row, rest.model);
   }
 
   return { assign, evaluate, spawn };
