@@ -54,3 +54,15 @@ test('task_cancel tells the worker whose lease it ended, once, naming the task a
   assert.match(stranger.notified.reason, /not launched by this session/);
   assert.strictEqual((await c(null).cancel({ task_id: 't9' })).notified, null, 'no lease, nobody to tell');
 });
+
+test('M24: task_assign to a worker this session did not launch assigns, sends nothing, and says why', async () => {
+  const { createCompose } = require('../../src/mcp/compose.cjs');
+  const sent = [];
+  const callCore = async (m, a) => (m === 'task.assign' ? { task: { id: a.task_id, spec: 'x', state: 'assigned' }, new_lease: { id: 'L2' } } : { text: 'line' });
+  const mgr = { _worker: (id) => (id === 'mine' ? {} : null), message: async (a) => { sent.push(a); return { channel: 'stdin', bytes: 1 }; } };
+  const out = await createCompose({ callCore, manager: () => mgr }).assign({ task_id: 't2', worker_id: 'adopted' });
+  assert.deepStrictEqual([out.task.state, out.delivered.sent, sent.length], ['assigned', false, 0]);
+  assert.match(out.delivered.reason, /not launched by this session/);
+  const none = await createCompose({ callCore, manager: () => null }).assign({ task_id: 't2', worker_id: 'mine' });
+  assert.deepStrictEqual([none.delivered.sent, sent.length], [false, 0], 'no run manager open: no channel either');
+});
