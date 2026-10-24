@@ -98,6 +98,7 @@ async function adopt({ core, workerId, dataDir }) {
   });
   // W2-3: every receipt column comes from the row; head_sha is asked of git again if the adopted worker later settles (SF1).
   w.indexQueries = Array.isArray(row.memory_queries) ? row.memory_queries : [];
+  w.maxBudgetUsd = launchOpts.maxBudgetUsd; // the cost cap the last launch ran with (argv.json; the row has no column for it)
   w.initModel = row.model || null;
   w.cacheReadTokens = row.cache_read_tokens || 0;
   w.cacheCreationTokens = row.cache_creation_tokens || 0;
