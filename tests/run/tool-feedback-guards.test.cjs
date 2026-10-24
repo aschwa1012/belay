@@ -175,3 +175,26 @@ test('startRelease puts a later hand-back behind the evaluation that runs, and e
   assert.deepStrictEqual([order, out.map((e) => e.task_id), w.turnEvaluatedTurn], [['tA', 'tB'], ['tA', 'tB'], 2]);
   assert.deepStrictEqual(RE.evalOf(w), { evaluated: out });
 });
+
+test('G: a hand-back released as the chain\'s loop ends, before the chain is cleared, starts a new chain and is evaluated', async () => {
+  const calls = [];
+  let resolveA;
+  const core = { task: {
+    list: async () => ({ tasks: [] }),
+    evaluate: (a) => { calls.push(a.task_id); return a.task_id === 'A' ? new Promise((r) => { resolveA = r; }) : Promise.resolve({ id: a.task_id, state: 'done', results: { passed: true, executable: true, checks: [] } }); },
+  } };
+  const ctx = { core, runId: 'r', shutdownFlags: {} };
+  const w = { id: 'w', worktree: 'C:/wt', turns: 1, releaseIds: { turn: 1, ids: ['A'] } };
+  const ev = RE.startRelease(w, ctx);
+  await new Promise((r) => setImmediate(r)); // evaluate(A) is in flight
+  resolveA({ id: 'A', state: 'done', results: { passed: true, executable: true, checks: [] } });
+  // The seam: the next turn's start runs in the microtask after A's answer, after the loop ended and before its .then clears w.evaluation.
+  let second = null;
+  await Promise.resolve().then(() => { w.turns = 2; w.releaseIds = { turn: 2, ids: ['B'] }; second = RE.startRelease(w, ctx); });
+  await ev.promise;
+  assert.ok(second && second !== ev, 'B started a chain of its own');
+  await second.promise;
+  assert.deepStrictEqual([calls, ev.task_ids, second.task_ids], [['A', 'B'], ['A'], ['B']]);
+  assert.deepStrictEqual(RE.evalOf(w).evaluated.map((e) => e.task_id), ['B'], 'turn 2 reports its own hand-back');
+  assert.strictEqual(w.evaluation, null);
+});

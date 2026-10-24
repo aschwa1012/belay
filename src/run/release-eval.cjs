@@ -65,6 +65,7 @@ async function run(w, ctx, ev) {
         : { task_id: t.id, error: (e && e.code) || 'E_INTERNAL', message: String((e && e.message) || e).slice(0, 200) });
     }
   }
+  ev.done = true; // in the same tick the loop ends: from here a later hand-back starts a new chain instead of joining this one
   return out;
 }
 
@@ -74,13 +75,13 @@ function startRelease(w, ctx) {
   const pending = w.releaseIds && w.releaseIds.turn === w.turns ? w.releaseIds.ids : null;
   w.releaseIds = null; // from here on w.evaluation (or nothing) is what is reported
   if (!pending || refused(w, ctx) || !usable(ctx)) return null;
-  if (w.evaluation) { // a later hand-back waits behind the one being evaluated; a cancel cancels the whole chain
+  if (w.evaluation && !w.evaluation.done) { // a later hand-back waits behind the one being evaluated; a cancel cancels the whole chain
     const ev = w.evaluation;
     for (const id of pending) if (!ev.task_ids.includes(id)) ev.task_ids.push(id);
     ev.turn = w.turns;
     return ev;
   }
-  const ev = { key: `release:${w.id}:${crypto.randomUUID()}`, ctx, turn: w.turns, task_ids: pending.slice(), next: 0, cancelled: null, promise: null };
+  const ev = { key: `release:${w.id}:${crypto.randomUUID()}`, ctx, turn: w.turns, task_ids: pending.slice(), next: 0, done: false, cancelled: null, promise: null };
   w.evaluation = ev; w.lastEvaluation = ev;
   ev.promise = run(w, ctx, ev).then((out) => { if (out && !ev.cancelled) { w.turnEvaluated = out; w.turnEvaluatedTurn = ev.turn; } return out; }, (e) => {
     w.lastError = { where: 'release-eval', code: e && e.code, message: e && e.message };
@@ -102,7 +103,7 @@ function cancelEvaluation(w, by) {
 
 // worker_wait's view of the last turn: what its release evaluation found, or the tasks it is still evaluating.
 function evalOf(w) {
-  if (w.evaluation && w.evaluation.turn === w.turns) return { evaluating: w.evaluation.task_ids.slice(w.evaluation.next || 0) };
+  if (w.evaluation && !w.evaluation.done && w.evaluation.turn === w.turns) return { evaluating: w.evaluation.task_ids.slice(w.evaluation.next || 0) };
   if (w.releaseIds && w.releaseIds.turn === w.turns) return { evaluating: w.releaseIds.ids }; // about to start
   return w.turnEvaluated && w.turnEvaluatedTurn === w.turns ? { evaluated: w.turnEvaluated } : {};
 }
