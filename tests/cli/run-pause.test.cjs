@@ -5,7 +5,7 @@ process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP =
 // orchestrator (tests/cli/run-wake.test.cjs's scaffolding, shared via tests/cli/stop-helpers.cjs), and,
 // as tests/cli/pause.test.cjs does for the worker form, a real RunManager in this process attached as
 // the run's own worker adapter: `belay run`'s own onAttached writes the row's adapter_pid as its own
-// subprocess pid, so this test's worker adapter pipe binds to that pid (`createWorkerControl({ redeem: null, pid:
+// subprocess pid, so this test's worker adapter pipe binds to that pid (`createWorkerControl({ pid:
 // cliProc.proc.pid })`) — where run-pause.cjs's own pauseWorker/resumeWorker dial. --test-timeout=300000.
 
 const { test } = require('node:test');
