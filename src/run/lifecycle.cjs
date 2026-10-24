@@ -41,6 +41,15 @@ async function runOp(w, name, fn, { waitFor = [] } = {}) {
   }
 }
 
+// A message never lands inside a stop, a restart or a resume: the process it would reach is being ended or replaced, and its
+// `running` row would follow the stop's `stopping` one. Checked at the call and again just before a Codex turn's launch.
+const MESSAGE_REFUSING_OPS = ['stop', 'restart', 'resume'];
+function refuseMessageDuringOp(w) {
+  if (w.op && MESSAGE_REFUSING_OPS.includes(w.op.name)) {
+    fail('E_BUSY', `worker ${w.id} is busy with ${w.op.name}, so it takes no message; retry when it returns`, { worker_id: w.id, op: w.op.name });
+  }
+}
+
 // build step 6e-5 design item 1 (review 2, manager.cjs:475): a graceful adapter exit must not turn every
 // parked worker into a stopped one — that defeated ADR 0023 amendment 2 decision 2's cross-adapter resume,
 // since a stop's row is 'stopped' and no later adapter can resume a stopped worker. A worker whose record
@@ -207,7 +216,7 @@ async function shutdown(workers, { stop, core, clearPoll, markClosed, markOwnerG
 // this build's bare defaults. The last launch's own argv.json (written by `launch`, manager.cjs) and
 // mcp.json name what actually ran; a read or parse failure is recorded on the result, never thrown.
 function readLaunchOptions(dir) {
-  const out = { model: null, allowedTools: null, tools: null, permissionPrompt: false, permitWaitMs: null, error: null };
+  const out = { model: null, allowedTools: null, tools: null, maxBudgetUsd: null, permissionPrompt: false, permitWaitMs: null, error: null };
   try {
     const argv = JSON.parse(fs.readFileSync(path.join(dir, 'argv.json'), 'utf8')).spec.args;
     const modelAt = argv.indexOf('--model');
@@ -219,6 +228,8 @@ function readLaunchOptions(dir) {
       out.allowedTools = tools;
     }
     out.permissionPrompt = argv.includes('--permission-prompt-tool');
+    const capAt = argv.indexOf('--max-budget-usd'); // a cost cap survives a cross-adapter relaunch
+    if (capAt >= 0 && Number(argv[capAt + 1]) > 0) out.maxBudgetUsd = Number(argv[capAt + 1]);
     const builtinsAt = argv.indexOf('--tools'); // ADR 0024: a narrowed list survives a cross-adapter relaunch
     if (builtinsAt >= 0) out.tools = require('./surface.cjs').narrowTools(String(argv[builtinsAt + 1]).split(','));
   } catch (e) {
@@ -235,4 +246,4 @@ function readLaunchOptions(dir) {
   return out;
 }
 
-module.exports = { runOp, shutdown, readLaunchOptions, killSurvivor };
+module.exports = { runOp, refuseMessageDuringOp, shutdown, readLaunchOptions, killSurvivor };

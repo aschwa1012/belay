@@ -83,7 +83,7 @@ function startWakePublisher({
       stats.polls += 1;
       if (stopped) return;
       if (list) {
-        const { events, next } = diffWorkers({ prev: baseline, rows: list.workers || [], runId, nowMs: now() - t0, graceMs: DEATH_GRACE_MS });
+        const { events, next } = diffWorkers({ prev: baseline, rows: list.workers || [], runId, nowMs: now() - t0, graceMs: DEATH_GRACE_MS, sinceAt: t0 });
         baseline = next;
         const byId = new Map((list.workers || []).map((w) => [w.id, w]));
         for (const nw of await noteWatcher.poll()) queue.push({ id: nw.id, text: nw.text, worker_id: nw.worker_id, event: nw.event, paused_at: null, paused_by: null });
