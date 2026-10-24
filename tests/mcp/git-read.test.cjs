@@ -265,6 +265,35 @@ test('output is bounded and the truncation is marked with the real size', async 
   } finally { rm(dir); }
 });
 
+test('taskWorktreeVia: a live belay worktree is the task\'s; a removed one is refused naming when; no record falls back to the newest worker', async () => {
+  const REMOVED = Date.UTC(2026, 9, 24, 12, 0, 0);
+  const tasks = {
+    live: { id: 'live', worktree: { repo: 'C:/r', path: 'C:/r.worktrees/live', branch: 'belay/live', removed_at: null } },
+    gone: { id: 'gone', worktree: { repo: 'C:/r', path: 'C:/r.worktrees/gone', branch: 'belay/gone', removed_at: REMOVED } },
+    plain: { id: 'plain', worktree: null },
+  };
+  const workers = [
+    { id: 'w-old', task_id: 'gone', worktree: 'C:/old-gone', started_at: 1 },
+    { id: 'w-a', task_id: 'plain', worktree: 'C:/wt-a', started_at: 5 },
+    { id: 'w-b', task_id: 'plain', worktree: 'C:/wt-b', started_at: 9 },
+  ];
+  const calls = [];
+  const callCore = async (method, args) => {
+    calls.push(method);
+    if (method === 'task.get') return tasks[args.task_id];
+    if (method === 'worker.list') return { workers };
+    throw new Error(method);
+  };
+  const lookup = G.taskWorktreeVia(callCore);
+  assert.strictEqual(await lookup('live'), 'C:/r.worktrees/live');
+  assert.ok(!calls.includes('worker.list'), 'a recorded worktree needs no worker rows');
+  await assert.rejects(lookup('gone'), (e) => e.code === 'E_NOT_FOUND' && e.message === "git_read: task gone's worktree was removed at 2026-10-24T12:00:00.000Z"
+    && e.detail.removed_at === REMOVED && e.detail.worktree === 'C:/r.worktrees/gone');
+  assert.strictEqual(await lookup('plain'), 'C:/wt-b', 'no belay worktree: the newest worker row naming the task');
+  // Through gitRead, a removed worktree is the call's refusal, not a read of an older tree.
+  await assert.rejects(G.gitRead({ op: 'status', task_id: 'gone' }, { taskWorktree: lookup }), (e) => e.code === 'E_NOT_FOUND' && /was removed at/.test(e.message));
+});
+
 test('which directory: worktree, task_id through the lookup, the run default, and each refusal', async () => {
   const { dir } = repo('where');
   try {

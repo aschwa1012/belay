@@ -263,14 +263,19 @@ async function filterOverrides(git, cwd, env, timeoutMs) {
   return out;
 }
 
-// git_read's task_id: the task row's own worktree when it records a live one (ADR 0053: { path, removed_at } on the task
-// view), else the worktree of the newest worker row that names the task. Null when neither says. `callCore(method, args)`
-// is the adapter's call into the core.
+// git_read's task_id: the task row's own worktree when it records one (ADR 0053: { path, removed_at } on the task view); a
+// removed one is refused E_NOT_FOUND naming when, never answered from an older worker row. A task with no belay worktree
+// falls back to the worktree of the newest worker row that names it. Null when neither says. `callCore(method, args)` is
+// the adapter's call into the core.
 function taskWorktreeVia(callCore) {
   return async (taskId) => {
     const t = await callCore('task.get', { task_id: taskId });
     const rec = t && t.worktree;
-    const own = rec && typeof rec === 'object' ? (rec.path && !rec.removed_at ? rec.path : null) : (typeof rec === 'string' && rec ? rec : null);
+    if (rec && typeof rec === 'object' && rec.removed_at != null) {
+      const at = Number.isFinite(Number(rec.removed_at)) ? new Date(Number(rec.removed_at)).toISOString() : String(rec.removed_at);
+      throw Object.assign(new Error(`git_read: task ${taskId}'s worktree was removed at ${at}`), { code: 'E_NOT_FOUND', detail: { task_id: taskId, worktree: rec.path || null, removed_at: rec.removed_at } });
+    }
+    const own = rec && typeof rec === 'object' ? (rec.path || null) : (typeof rec === 'string' && rec ? rec : null);
     if (own) return own;
     const { workers = [] } = (await callCore('worker.list', {})) || {};
     const mine = workers.filter((w) => w && w.task_id === taskId && typeof w.worktree === 'string' && w.worktree);
