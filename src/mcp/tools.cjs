@@ -171,7 +171,7 @@ const ORCHESTRATOR = [
       prompt: str('First message'),
       task_id: str('Assign this task once ready and prepend its resume line'),
       model: str(),
-      agent_type: { type: 'string', enum: WORKER_TYPES, description: 'Configured model and effort default' },
+      agent_type: { type: 'string', enum: WORKER_TYPES, description: 'Configured model, effort and tools' },
       effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
       memory_queries: strs('Up to 4 task lines naming the situations the worker will be in, each max 160 bytes'),
       allowed_tools: strs(),

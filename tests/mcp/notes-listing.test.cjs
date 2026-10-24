@@ -14,7 +14,7 @@ const bytes = (list) => Buffer.byteLength(JSON.stringify(list), 'utf8');
 test('without the flag the worker and orchestrator listings are what the notes contract left them', () => {
   // 4,965 and 9,829 before the paired write/search contract: its search guidance and memory_queries were added, and other descriptions trimmed to keep the notes-on worker listing 500 bytes inside its budget.
   assert.strictEqual(tools.listingBytes('worker'), 4815);
-  assert.strictEqual(tools.listingBytes('orchestrator'), 10502); // 9,900 before ADR 0054 git_read
+  assert.strictEqual(tools.listingBytes('orchestrator'), 10501); // 9,900 before ADR 0054 git_read
   assert.deepStrictEqual(tools.toolsFor('worker', { notes: false }), tools.toolsFor('worker'));
   // A notes run lists memory_store with the note's fields and not memory_verify, then memory_summaries, memory_note_refutation and memory_report (summaries-listing.test.cjs).
   const ordinary = tools.toolsFor('orchestrator').filter((t) => t.name !== 'memory_verify');
