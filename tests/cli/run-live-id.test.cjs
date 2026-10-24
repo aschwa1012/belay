@@ -47,3 +47,27 @@ test('run: a run id with a verified live adapter is refused, the run row is unto
     } finally { await check.shutdownOwner(); await check.close(); }
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('run: an adapter that cannot be verified does not stop the run, and the warning reaches stderr and the --json receipt', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-run-unverified-')).split(path.sep).join('/');
+  const dataDir = `${dir}/.belay`;
+  const runId = 'unverified-run-id';
+  const other = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { windowsHide: true, stdio: 'ignore' });
+  try {
+    const seed = await openCore({ dataDir, caller: { role: 'operator', run_id: runId, pid: process.pid }, embed: false });
+    await seed.run.attach({ adapter_pid: other.pid }); // a live pid, no recorded creation time
+    await seed.shutdownOwner();
+    await seed.close();
+
+    fs.mkdirSync(`${dir}/wt`, { recursive: true });
+    fs.writeFileSync(`${dir}/prompt.txt`, 'a prompt\n');
+    const spec = { worktree: `${dir}/wt`, prompt_file: `${dir}/prompt.txt`, run_id: runId, orchestrator_dir: `${dir}/orch`, poll_ms: 300, startup_timeout_ms: 20000, on_embedder_failure: 'continue' };
+    fs.writeFileSync(`${dir}/spec.json`, JSON.stringify(spec));
+    const r = spawnSync(process.execPath, [CLI, 'run', `${dir}/spec.json`, '--data', dataDir, '--json'], { cwd: ROOT, env: { ...process.env, BELAY_CLAUDE_EXE: FAKE_CLAUDE }, encoding: 'utf8', windowsHide: true, timeout: 90000 });
+    assert.strictEqual(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    assert.match(r.stderr, new RegExp(`belay run: warning: .*pid ${other.pid}.*could not be verified`));
+    const receipt = JSON.parse(r.stdout);
+    assert.strictEqual(receipt.store.attach.reattached, true);
+    assert.ok(Array.isArray(receipt.store.attach.warnings) && receipt.store.attach.warnings[0].includes(`pid ${other.pid}`), JSON.stringify(receipt.store.attach));
+  } finally { other.kill(); fs.rmSync(dir, { recursive: true, force: true }); }
+});

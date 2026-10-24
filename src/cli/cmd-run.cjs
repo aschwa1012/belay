@@ -443,7 +443,7 @@ async function run(ctx) {
     : (endedRow ? { epoch: endedRow.epoch, ended_at: endedRow.ended_at, exit_reason: endedRow.exit_reason } : null);
   const storeBlock = {
     owner_pid: process.pid,
-    attach: attachRow ? { epoch: attachRow.epoch, reattached: attachRow.reattached } : null,
+    attach: attachRow ? { epoch: attachRow.epoch, reattached: attachRow.reattached, ...(attachRow.warnings ? { warnings: attachRow.warnings } : {}) } : null,
     ended: endedBlock,
     ...(reviewWait ? { review_wait: reviewWait } : {}),
     shutdown,
