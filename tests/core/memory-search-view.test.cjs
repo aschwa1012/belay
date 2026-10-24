@@ -115,3 +115,64 @@ test('memory.list says when its page is not the whole, when it capped the limit,
   assert.strictEqual(capped.limit_capped, 500);
   assert.ok(capped.rows.every(r => r.text_truncated === undefined), 'a short text is whole');
 });
+
+// ---- the review's cases: a keyword hit, a mixed scope, the floor's exact edge, superseded rows --------------------------------------
+
+const putIn = (namespace, text, vec, extra = {}) => call('memory.store', { namespace, text, ...(vec ? { embedding: vec, embedding_model: 'm', dim: 3 } : { embed: false }), ...extra });
+
+test('the floor is 0.35, pinned by value', () => {
+  assert.strictEqual(RELEVANCE_FLOOR, 0.35);
+});
+
+test('an exact keyword hit blocks absence whatever its cosine', async () => {
+  await putIn('k', 'killByIdentity checks the pid creation time before it kills', [1, 0, 0]);
+  const r = await call('memory.search', { namespace: 'k', query: 'beta killByIdentity', view: 'compact' }); // the query embeds as [0,1,0]
+  assert.deepStrictEqual(r.modes_run, ['semantic', 'keyword']);
+  assert.strictEqual(r.results.length, 1);
+  assert.strictEqual(r.results[0].relevance, 0);
+  assert.strictEqual(r.results[0].low_relevance, true, 'far by cosine');
+  assert.strictEqual(r.absence_established, false, 'but the keyword half found the identifier the query names');
+});
+
+test('a mixed scope: absence needs every namespace covered and far, and one near row in either namespace denies it', async () => {
+  await putIn('mixA', 'ferries depart at noon', [0, 0, 1]);
+  await putIn('mixB', 'the harbour closes in winter', [0, 0, 1]);
+  const far = await call('memory.search', { namespaces: ['mixA', 'mixB'], query: 'alpha', view: 'compact' });
+  assert.strictEqual(far.results.length, 2);
+  assert.strictEqual(far.absence_established, true, 'both namespaces scanned, nothing near, no keyword hit');
+  await putIn('mixB', 'pier four has the ticket office', null); // a row the semantic scan cannot see
+  const gap = await call('memory.search', { namespaces: ['mixA', 'mixB'], query: 'alpha', view: 'compact' });
+  assert.strictEqual(gap.rows_without_vector, 1);
+  assert.strictEqual(gap.absence_established, false, 'an uncovered row in one namespace leaves the claim unmade');
+  await putIn('mixA2', 'ferries depart at noon', [0, 0, 1]);
+  await putIn('mixB2', 'retries need a backoff', [0.9, 0.1, 0]);
+  const near = await call('memory.search', { namespaces: ['mixA2', 'mixB2'], query: 'alpha', view: 'compact' });
+  assert.strictEqual(near.absence_established, false, 'the near row is in the second namespace');
+});
+
+test('at exactly the floor a row reaches it; just below, it does not, here and in the absence claim', async () => {
+  const at = Math.sqrt(1 - 0.35 * 0.35), below = Math.sqrt(1 - 0.3499 * 0.3499);
+  assert.deepStrictEqual(Object.keys(require('../../src/core/memory-search-view.cjs').relevanceFields(0.35)), ['relevance']);
+  assert.strictEqual(require('../../src/core/memory-search-view.cjs').relevanceFields(0.34994).low_relevance, true);
+  await putIn('edgeAt', 'ferries depart at noon', [0.35, at, 0]);
+  const r = await call('memory.search', { namespace: 'edgeAt', query: 'alpha', view: 'compact' });
+  assert.strictEqual(r.results[0].relevance, 0.35);
+  assert.strictEqual(r.results[0].low_relevance, undefined);
+  assert.strictEqual(r.absence_established, false, 'a row at the floor is something relevant');
+  await putIn('edgeBelow', 'ferries depart at noon', [0.3499, below, 0]);
+  const b = await call('memory.search', { namespace: 'edgeBelow', query: 'alpha', view: 'compact' });
+  assert.strictEqual(b.results[0].relevance, 0.3499);
+  assert.strictEqual(b.results[0].low_relevance, true);
+  assert.strictEqual(b.absence_established, true);
+});
+
+test('compact keeps supersedes, and marks a superseded row when include_superseded brings it back', async () => {
+  const old = await putIn('sup', 'the retry limit is three', [1, 0, 0]);
+  const neu = await putIn('sup', 'the retry limit is five', [1, 0, 0], { supersedes: old.id });
+  const live = await call('memory.search', { namespace: 'sup', query: 'alpha', view: 'compact' });
+  assert.deepStrictEqual(live.results.map(x => [x.id, x.supersedes, x.superseded]), [[neu.id, old.id, undefined]]);
+  const all = await call('memory.search', { namespace: 'sup', query: 'alpha', view: 'compact', include_superseded: true });
+  const o = all.results.find(x => x.id === old.id);
+  assert.strictEqual(o.superseded, true);
+  assert.strictEqual(all.results.find(x => x.id === neu.id).superseded, undefined);
+});

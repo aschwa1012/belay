@@ -10,7 +10,7 @@
 
 const { deriveTitle } = require('./memory-rows.cjs');
 
-// voyage-4-nano, query against row, chosen by FLOOR.json (ADR 0057 Evidence): below 0.35 lie 42% of the pairs judged unrelated and 2.8% of
+// voyage-4-nano, query against row, chosen by the measurement in ADR 0057 (Evidence): below 0.35 lie 42% of the pairs judged unrelated and 2.8% of
 // those judged highly relevant; "nothing reaches it" is wrong for 7.1% of answerable queries and holds for 29% of those with no answer.
 // Re-measure for another model or a reranker.
 const RELEVANCE_FLOOR = 0.35;
@@ -26,23 +26,29 @@ function relevanceOf(sem, model) {
   return { by: 'cosine', model: model || null, floor: RELEVANCE_FLOOR };
 }
 
+// Below the floor, on the number the reader is shown (four decimals): a row shown at exactly the floor reaches it, here and in the absence claim.
+const belowFloor = cosine => round(cosine) < RELEVANCE_FLOOR;
+
 // The per-row relevance fields: { relevance, low_relevance? }.
 function relevanceFields(cosine) {
   if (typeof cosine !== 'number') return { relevance: null };
   const r = round(cosine);
-  return r < RELEVANCE_FLOOR ? { relevance: r, low_relevance: true } : { relevance: r };
+  return belowFloor(cosine) ? { relevance: r, low_relevance: true } : { relevance: r };
 }
 
-// A note's evidence as the reader needs it, with `checked: true` on an entry belay verified when the note was written (ADR 0057 decision 7).
+// A note's evidence as the reader needs it, with `checked: true` on an entry belay verified when the note was written, and `passed`, whether the
+// evaluation it cites passed (ADR 0057 decision 7): a quote that is in the output of a failed run is still a true quote.
 function evidenceOf(body) {
   const list = Array.isArray(body.evidence) ? body.evidence : [];
-  const checked = new Set((Array.isArray(body.evidence_checked) ? body.evidence_checked : []).filter(c => c && c.ok).map(c => c.index));
-  return list.map((e, i) => (checked.has(i) ? { ...e, checked: true } : e));
+  const checked = new Map((Array.isArray(body.evidence_checked) ? body.evidence_checked : []).filter(c => c && c.ok).map(c => [c.index, c]));
+  return list.map((e, i) => (checked.has(i) ? { ...e, checked: true, passed: !!checked.get(i).passed } : e));
 }
 
 // The compact row (ADR 0057 decision 1): what an orchestrator acts on, and nothing it does not.
-function compactRow(r, cosine) {
+function compactRow(r, cosine, superseded = false) {
   const out = { id: r.id, type: r.type, title: r.title || deriveTitle(r.text), status: r.status || 'unverified', ...relevanceFields(cosine), created_at: r.created_at };
+  if (r.supersedes) out.supersedes = r.supersedes; // the row this one replaced
+  if (superseded) out.superseded = true; // replaced by a newer row (on the page only with include_superseded)
   if (r.type !== 'note') { out.text = r.text; return out; }
   const b = parse(r.body) || {};
   if (b.kind) out.kind = b.kind;
@@ -82,4 +88,4 @@ function warningFor(o, ran, failed, results, absence, unembedded, below) {
   return null;
 }
 
-module.exports = { RELEVANCE_FLOOR, relevanceOf, relevanceFields, compactRow, scoreKind, warningFor };
+module.exports = { RELEVANCE_FLOOR, belowFloor, relevanceOf, relevanceFields, compactRow, scoreKind, warningFor };

@@ -141,7 +141,7 @@ async function prepareNotes(E, caller, notes, { project, lv, worker }) {
     const s = M.scrub(true, { text: NT.keywordText({ ...n, applies_to: ap.applies_to }), title: n.title, body: { when: n.when, evidence: n.evidence, applies_to: ap.applies_to, applies_to_from: ap.applies_to_from, task_files: ap.task_files, task_files_from: 'diff', task_files_truncated: ap.task_files_truncated, ...(ap.ambiguous.length ? { applies_to_ambiguous: ap.ambiguous } : {}), subjects: n.subjects } });
     const checked = NT.checkNote({ ...n, title: s.title, when: s.body.when }, i);
     // ADR 0057 decision 7: an evidence entry that cites a task_evaluate result is checked against it now; one that fails refuses the write.
-    const evidenceChecked = EC.checkNoteEvidence(E, n.evidence, i);
+    const evidenceChecked = EC.checkNoteEvidence(E, caller, n.evidence, i);
     const title = checked.title;
     const embedTxt = NT.embedText({ title, when: checked.when }, NT.TEMPLATE_NEW); // what the vector is made from; the keyword text is s.text
     // Only what the worker wrote counts toward the limit; belay's derived fields (applies_to from the diff, task_files) are bounded by bytes in note-paths.cjs.

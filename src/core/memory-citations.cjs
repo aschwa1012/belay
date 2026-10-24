@@ -243,8 +243,9 @@ async function checkTaskCites(E, taskId, cites, note = null) {
   const failures = [];
   const fail = (index, where, reason) => failures.push({ index, where, reason });
   for (const [i, c] of cites.entries()) {
-    if (c.where.startsWith('evaluate:')) { // a task_evaluate result (ADR 0057 decision 7); lazy, evaluate-cite.cjs requires this module
-      const r = require('./evaluate-cite.cjs').check(E, c.where, c.quote);
+    if (c.where.startsWith('evaluate:')) { // a task_evaluate result of the judged task's run (ADR 0057 decision 7); lazy, evaluate-cite.cjs requires this module
+      const judged = rows.current(E.store, 'task', taskId);
+      const r = require('./evaluate-cite.cjs').check(E, c.where, c.quote, judged ? judged.run_id || '' : '');
       if (!r.ok) fail(i, c.where, r.reason);
       continue;
     }
