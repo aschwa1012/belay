@@ -163,7 +163,7 @@ export const settleConfirm = (a: SettleAction, id: string, reason: string, title
 
 export const REASON_MAX = 160
 // belay strips its own global options out of the argv before any command sees it, so a reason that is exactly one of them never arrives.
-const GLOBAL_FLAGS = ['--json', '--fix', '--data', '--help', '-h']
+const GLOBAL_FLAGS = ['--json', '--fix', '--data', '--help', '-h', '--'] // `--`: the end-of-options marker, refused too in case a command honours it
 // null when the reason can be sent as it is; otherwise the toast that says why it is refused.
 export function reasonProblem(reason: string): string | null {
   if (reason.length > REASON_MAX) return `belay: the reason is ${reason.length} characters; at most ${REASON_MAX}. Shorten it.`

@@ -78,7 +78,7 @@ function usage() {
     '  --json            print machine-readable JSON instead of a table',
     '  --data <dir>      data directory (default: <cwd>/.belay)',
     '  -h, --help        print this usage',
-    '  --                end options: every later word is an argument (message text, a deny reason)',
+    '  --                (message and deny) end options: every later word is text',
     '',
     'Every command declares one mode. Three are mixed: memory reads (R) and its write verbs',
     '(verify, import, embed, restore, report, held settle, resolve, promote, archive, scrub,',
@@ -127,7 +127,8 @@ const fwd = p => String(p).split('\\').join('/');
 
 // Commands whose tail is free text, by how many positionals (the command name included) come before the text. A global flag
 // between two words of the text would silently change the text or the command, so it is refused; trailing --data and --json
-// stay the documented form, and a literal `--` ends option parsing: every word after it is text.
+// stay the documented form, and a literal `--` ends option parsing: every word after it is text. For every other command `--` is an
+// ordinary argument, as it always was: a value that is exactly `--` (a settle reason) must not eat the flags after it.
 const FREE_TEXT = { message: 2, deny: 2 };
 
 function parseGlobals(argv) {
@@ -137,7 +138,7 @@ function parseGlobals(argv) {
   const textStarted = () => FREE_TEXT[rest[0]] !== undefined && rest.length > FREE_TEXT[rest[0]];
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
-    if (a === '--') { out.literal = rest.length; rest.push(...argv.slice(i + 1)); break; }
+    if (a === '--' && FREE_TEXT[rest[0]] !== undefined) { out.literal = rest.length; rest.push(...argv.slice(i + 1)); break; }
     const global = a === '--json' || a === '--fix' || a === '-h' || a === '--help' || a === '--data';
     if (global && textStarted()) {
       if (a !== '--json' && a !== '--data') return { error: `${a} inside the text of belay ${rest[0]} is ambiguous; put options before the text, or end them with -- and quote the text` };

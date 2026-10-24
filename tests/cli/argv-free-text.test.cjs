@@ -41,6 +41,9 @@ test('globals before the text and after all of it still parse; -- makes every la
   const lit = parseGlobals(['message', 'w1', '--data', 'd', '--', 'add', 'a', '--help', 'flag', '--json']);
   assert.strictEqual(lit.error, undefined);
   assert.deepStrictEqual([lit.help, lit.json, lit.argv, lit.literal], [false, false, ['message', 'w1', 'add', 'a', '--help', 'flag', '--json'], 2]);
+  // Only message and deny honour `--`: elsewhere it is an ordinary argument, so a settle reason of exactly `--` keeps the flag after it.
+  const settle = parseGlobals(['memory', 'held', 'settle', 'n1', '--archive', '--reason', '--', '--if-awaiting', '--json']);
+  assert.deepStrictEqual([settle.literal, settle.json, settle.argv], [null, true, ['memory', 'held', 'settle', 'n1', '--archive', '--reason', '--', '--if-awaiting']]);
   // Commands without free text are unchanged: a flag anywhere is still a global.
   const other = parseGlobals(['status', 'x', '--json', 'y']);
   assert.deepStrictEqual([other.error, other.json, other.argv], [undefined, true, ['status', 'x', 'y']]);
