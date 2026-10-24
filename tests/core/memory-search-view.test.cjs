@@ -27,7 +27,7 @@ before(async () => {
   rows.far = await put('Ferries depart at noon from pier four, a keywordonly marker', [0, 1, 0], { type: 'fact', created_at: 2000 });
   const body = {
     kind: 'gotcha', basis: 'observed', when: 'add a migration', evidence: [{ where: 'src/a.cjs', saw: 'one' }, { where: 'evaluate:T1@3', saw: 'passed' }],
-    evidence_checked: [{ index: 1, ok: true, by: 'evaluate' }], applies_to: ['src/a.cjs'], subjects: ['schema'],
+    evidence_checked: [{ index: 1, ok: true, by: 'evaluate', passed: true }], applies_to: ['src/a.cjs'], subjects: ['schema'],
     held: { row: 'h1', kind: 'wrong', reason: 'x'.repeat(400) }, reported_wrong: [{ id: 'r' }, { id: 's' }], seen_in: [], model: 'm',
   };
   rows.note = store.store({ namespace: 'n', worker_id: 'w1', type: 'note', text: 'Migrations need a version bump\nWhen: add a migration', title: 'Migrations need a version bump',
@@ -55,7 +55,7 @@ test('compact: a note shows kind, when, basis, evidence with its checked entry, 
   assert.strictEqual(n.kind, 'gotcha');
   assert.strictEqual(n.when, 'add a migration');
   assert.strictEqual(n.basis, 'observed');
-  assert.deepStrictEqual(n.evidence, [{ where: 'src/a.cjs', saw: 'one' }, { where: 'evaluate:T1@3', saw: 'passed', checked: true }]);
+  assert.deepStrictEqual(n.evidence, [{ where: 'src/a.cjs', saw: 'one' }, { where: 'evaluate:T1@3', saw: 'passed', checked: true, passed: true }]);
   assert.deepStrictEqual(n.applies_to, ['src/a.cjs']);
   assert.strictEqual(n.held.kind, 'wrong');
   assert.strictEqual(Buffer.byteLength(n.held.reason), 160);

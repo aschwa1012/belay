@@ -10,7 +10,7 @@ const rows = require('../../src/core/rows.cjs');
 const EC = require('../../src/core/evaluate-cite.cjs');
 
 // The printed line is built at run time, so the quote is in the command's output and nowhere in its argv.
-const PRINTS = 'console.log(["ok 14 suites", "212 tests passed"].join(", "))';
+const PRINTS = 'console.log(["ok 14 suites, 212 tests", "passed"].join(" "))';
 let X, task, rev, failTask, failRev;
 before(async () => {
   X = await setup('r-ec');
@@ -62,8 +62,9 @@ test('EC3: the argv is never evidence; a true quote from a failed run is checked
   assert.strictEqual(count(), before);
   const out = await X.call('memory.store', X.orch, { namespace: 'project', ...note(`evaluate:${failTask}@${failRev}`, '3 of 212 failed', 'five') });
   assert.strictEqual(X.bodyOf(out.id).evidence_checked[0].passed, false);
-  const s = await X.call('memory.search', X.orch, { query: 'suite runs clean five', mode: 'keyword', view: 'compact' });
-  assert.deepStrictEqual(s.results.find((r) => r.id === out.id).evidence[1], { where: `evaluate:${failTask}@${failRev}`, saw: '3 of 212 failed', checked: true, passed: false });
+  // The compact row of the note as written (it may wait in pending beside the earlier, similar notes, where a search does not reach).
+  const row = require('../../src/core/memory-search-view.cjs').compactRow(X.rowOf(out.id), null);
+  assert.deepStrictEqual(row.evidence[1], { where: `evaluate:${failTask}@${failRev}`, saw: '3 of 212 failed', checked: true, passed: false });
   const text = EC.renderResults({ passed: false, checks: [{ kind: 'command', argv: ['npm', 'test'], exit_code: 1, passed: false, detail: { stdout_tail: 'ok\nnot ok 3 - parses', stderr_tail: '' } }] });
   assert.strictEqual(text, 'ok\nnot ok 3 - parses', 'only what the commands printed');
   assert.strictEqual(EC.check(X.E, `evaluate:${task}@${rev}`, 'npm').ok, false);
