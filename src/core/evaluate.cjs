@@ -7,6 +7,7 @@
 // executable is never written `done`. Same for `files_within_owned` outside a git worktree.
 
 const { spawn } = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
 const PROC = require('./process.cjs');
 
@@ -28,11 +29,28 @@ async function killTree(child) {
   return PROC.killTree(child).catch(e => ({ tool: 'process.kill', pid: child.pid || null, ok: false, error: e.code || e.message }));
 }
 
+// On Windows `npm` and `npx` are .cmd shims, which a spawn without a shell cannot start (ENOENT for the bare name, EINVAL for the
+// .cmd). They are scripts run by the node that sits beside them, so the command is rewritten to that node and script. Anything
+// else, and a Windows install whose script is not where it is expected, is spawned as written.
+const NPM_SCRIPTS = { npm: 'npm-cli.js', npx: 'npx-cli.js' };
+function resolveWindowsShim(argv, platform = process.platform, execPath = process.execPath, exists = fs.existsSync) {
+  if (platform !== 'win32') return argv;
+  const name = String(argv[0]).toLowerCase().replace(/\.cmd$/, '');
+  if (!Object.hasOwn(NPM_SCRIPTS, name)) return argv; // a path such as ./npm is never a key, so it is the caller's own file
+  const script = path.join(path.dirname(execPath), 'node_modules', 'npm', 'bin', NPM_SCRIPTS[name]);
+  return exists(script) ? [execPath, script, ...argv.slice(1)] : argv;
+}
+
 // `env`, when given, replaces the child's environment (git.cjs passes the owner's own plus its fixed git variables), and
 // `tail` raises the 2,000-character output cap for a caller that parses the whole output (`git worktree list`).
-function runCommand(argv, cwd, timeoutMs, { env, tail = TAIL } = {}) {
+function runCommand(argvGiven, cwd, timeoutMs, { env, tail = TAIL } = {}) {
   return new Promise(resolve => {
     const t0 = Date.now();
+    // A missing worktree or cwd is named as such: left to spawn it reads as ENOENT for the executable.
+    if (cwd && !fs.existsSync(cwd)) {
+      return resolve({ executable: false, exit_code: null, ms: Date.now() - t0, timed_out: false, stdout: '', stderr: '', spawn_error: `cwd does not exist: ${cwd}` });
+    }
+    const argv = resolveWindowsShim(argvGiven);
     let child;
     try {
       child = spawn(argv[0], argv.slice(1), { cwd, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], ...(env ? { env } : {}) });
@@ -182,4 +200,4 @@ async function runAcceptance(acceptance, worktree, filesOwned, { base, baseSourc
   return checks;
 }
 
-module.exports = { runAcceptance, runCommand, filesWithinOwned, normalise, within, parsePorcelainZ, parseNameStatusZ, DEFAULT_BASE_REF, DEFAULT_COMMAND_TIMEOUT_MS };
+module.exports = { runAcceptance, runCommand, resolveWindowsShim, filesWithinOwned, normalise, within, parsePorcelainZ, parseNameStatusZ, DEFAULT_BASE_REF, DEFAULT_COMMAND_TIMEOUT_MS };
