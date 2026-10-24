@@ -17,7 +17,7 @@ const { rotateWireLog } = require('./wire-log.cjs');
 const S = require('./surface.cjs'); // ADR 0024, S2 fix round F4: the surface fields spawn/restart/resume return
 const I = require('./instructions.cjs'); // ADR 0024 amendment 1: the spawn-time CLAUDE.md copy
 const { fail } = require('./errors.cjs');
-const { checkWorkerId, validateSpawnArgs, checkMemoryQueries, discardUnstarted } = require('./spawn-args.cjs');
+const { checkWorkerId, checkIdFree, validateSpawnArgs, checkMemoryQueries, discardUnstarted } = require('./spawn-args.cjs');
 const AD = require('./agent-defaults.cjs'); // the config's per-agent-type model and effort defaults
 const MP = require('./memory-preface.cjs'); // ADR 0042: the first-message preface and the memory hooks
 const NM = require('./native-memory.cjs'); const NR = require('./note-review.cjs'); // NM: ADR 0024 amendment 3, the native_memory guards // wave 4: the notes' review (the reviewer's brief, the short review job)
@@ -225,6 +225,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     pendingIds.add(id);
     let w; const dirExisted = fs.existsSync(L.workerDir(root, id)); // a directory this spawn creates is its own to remove if it fails before any row exists
     try {
+      if (worker_id) await checkIdFree(core, root, id); // inside the reservation, so two spawns of one id cannot both pass
       if (task_id) await core.task.assign({ task_id, check_only: true });
       w = W.newWorkerRecord({
         id, substrate, worktree, dataDir: root, taskId: task_id, model,

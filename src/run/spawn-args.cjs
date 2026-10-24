@@ -5,6 +5,7 @@
 const fs = require('node:fs');
 const L = require('./launch.cjs');
 const { fail } = require('./errors.cjs');
+const { WORKER_STATES } = require('../core/schema.cjs');
 const { isPathId, pathIdMessage } = require('../core/path-id.cjs'); // pure
 
 // A caller-named worker id becomes a directory under the data dir: refused before any file or row is written.
@@ -24,6 +25,15 @@ function checkMemoryQueries(list) {
     if (Buffer.byteLength(t) > QUERY_BYTES_MAX) fail('E_ARGS', `spawn memory_queries[${i}] is ${Buffer.byteLength(t)} bytes and the limit is ${QUERY_BYTES_MAX}; word the task line shorter`, { field: 'memory_queries', index: i, max: QUERY_BYTES_MAX });
     return t;
   });
+}
+
+// NTFS is case-insensitive, so W1 and w1 share one directory, and another run's row of the same id would be restated. A caller-named id is fresh only when no row in the
+// store has it (any state, any run, compared without case) and no directory holds it. A restart, resume or adopt of the same row never comes through spawn.
+async function checkIdFree(core, dataDir, id) {
+  const lower = id.toLowerCase();
+  const taken = ((await core.worker.list({ states: WORKER_STATES })).workers || []).find((r) => String(r.id).toLowerCase() === lower);
+  if (taken) fail('E_ARGS', `worker_id ${JSON.stringify(id)} is taken: the store has a worker row ${JSON.stringify(taken.id)} (run ${taken.run_id}, ${taken.state}); choose another id`, { worker_id: id, existing_id: taken.id, existing_run_id: taken.run_id });
+  if (fs.existsSync(L.workerDir(dataDir, id))) fail('E_ARGS', `worker_id ${JSON.stringify(id)} is taken: its worker directory exists with no row; choose another id`, { worker_id: id });
 }
 
 function validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id, native_memory = null }) {
@@ -58,4 +68,4 @@ async function discardUnstarted(workers, w, dirExisted) {
   if (!dirExisted) { try { fs.rmSync(w.dir, { recursive: true, force: true }); } catch { /* the original error is the one to report */ } }
 }
 
-module.exports = { checkWorkerId, discardUnstarted, validateSpawnArgs, checkMemoryQueries, QUERIES_MAX, QUERY_BYTES_MAX };
+module.exports = { checkWorkerId, checkIdFree, discardUnstarted, validateSpawnArgs, checkMemoryQueries, QUERIES_MAX, QUERY_BYTES_MAX };
