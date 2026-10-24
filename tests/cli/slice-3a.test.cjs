@@ -107,6 +107,11 @@ test('a command with --help prints that command\'s usage only, and creates no fi
       assert.match(r.stdout, /stop a live run/);
       assert.doesNotMatch(r.stdout, /commands \(mode/, 'not the global usage');
     }
+    const mem = cli(['memory', '--help'], { cwd: dir });
+    assert.strictEqual(mem.code, 0);
+    assert.match(mem.stdout, /^usage: belay memory \[arguments\] \[options\]/);
+    assert.match(mem.stdout, /a verb in the line above may elect or write/, 'a command with verbs says its mode is the command\'s own');
+    assert.doesNotMatch(cli(['config', '--help'], { cwd: dir }).stdout, /a verb in the line above/);
     assert.deepStrictEqual(listFiles(dir), before, 'command help created a file');
   } finally { cleanup(dir); }
 });

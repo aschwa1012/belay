@@ -89,10 +89,12 @@ function usage() {
 function commandUsage(name) {
   const c = COMMANDS[name];
   return [
-    `usage: belay ${name} [options]   (mode ${c.mode})`,
+    `usage: belay ${name} [arguments] [options]   (mode ${c.mode})`,
     '',
     `  ${c.summary}`,
     '',
+    // A summary with verbs or arguments (| or <>) is the positional syntax; the mode is the command's own and a verb may differ.
+    ...(c.summary.includes('|') || c.summary.includes('<') ? ["The mode above is the command's own; a verb in the line above may elect or write where it says so.", ''] : []),
     'global options: --json, --data <dir>, -h/--help. `belay --help` lists every command.',
     '',
   ].join('\n');

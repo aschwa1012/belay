@@ -36,7 +36,7 @@ const NPM_SCRIPTS = { npm: 'npm-cli.js', npx: 'npx-cli.js' };
 function resolveWindowsShim(argv, platform = process.platform, execPath = process.execPath, exists = fs.existsSync) {
   if (platform !== 'win32') return argv;
   const name = String(argv[0]).toLowerCase().replace(/\.cmd$/, '');
-  if (!Object.hasOwn(NPM_SCRIPTS, name) || String(argv[0]).includes('/') || String(argv[0]).includes('\\')) return argv;
+  if (!Object.hasOwn(NPM_SCRIPTS, name)) return argv; // a path such as ./npm is never a key, so it is the caller's own file
   const script = path.join(path.dirname(execPath), 'node_modules', 'npm', 'bin', NPM_SCRIPTS[name]);
   return exists(script) ? [execPath, script, ...argv.slice(1)] : argv;
 }

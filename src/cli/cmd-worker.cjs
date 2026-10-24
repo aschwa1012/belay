@@ -342,4 +342,4 @@ async function run(ctx) {
   return runStopOrRestart(ctx, sub, parsed);
 }
 
-module.exports = { run };
+module.exports = { run, renderStopText };
