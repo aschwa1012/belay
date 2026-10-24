@@ -268,13 +268,19 @@ class Core {
     const timeoutMs = Math.max(this.readTimeoutMs, readTimeoutFor(method, params));
     await this._pingBeforeVector(method, params);
     if (this.client && this.client.connected) {
-      try { const value = await this.client.call(method, params, { timeoutMs }); unresponsive.clearPipe(pipeName(this.dataDir)); return { ok: true, value }; }
+      // A read that timed out while another call was outstanding on this client kept it (_dropUnlessBusy); until that backoff
+      // passes, reads go straight to the copy, as they would with no client.
+      const kept = this._readBackoff && readTimeoutFor(method, params) !== EMBEDDING_READ_TIMEOUT_MS ? unresponsive.get(this._readBackoff.pipe, this._readBackoff.owner_pid) : null;
+      if (kept) return { ok: false, unresponsive: kept };
+      try { const value = await this.client.call(method, params, { timeoutMs }); this._readBackoff = null; unresponsive.clearPipe(pipeName(this.dataDir)); return { ok: true, value }; }
       catch (e) {
         if (!isTransport(e)) throw e; // a refusal the owner computed is an answer, not a transport fault
-        await this._dropClient();
+        const keep = await this._dropUnlessBusy(e);
         const alive = this._aliveTimeout(method, params, e, timeoutMs);
         if (alive) throw alive;
-        return { ok: false, unresponsive: this._markIfTimeout(e, timeoutMs, undefined, 'answer') };
+        const m = this._markIfTimeout(e, timeoutMs, undefined, 'answer');
+        if (keep) this._readBackoff = m;
+        return { ok: false, unresponsive: m };
       }
     }
     // No dial at all unless a lock names a pid that is alive: this is what keeps status.get inside its
@@ -296,11 +302,23 @@ class Core {
     try { const value = await c.call(method, params, { timeoutMs }); unresponsive.clearPipe(pipeName(this.dataDir)); return { ok: true, value }; }
     catch (e) {
       if (!isTransport(e)) throw e;
-      await this._dropClient();
+      const keep = await this._dropUnlessBusy(e);
       const alive = this._aliveTimeout(method, params, e, timeoutMs);
       if (alive) throw alive;
-      return { ok: false, unresponsive: this._markIfTimeout(e, timeoutMs, lock, 'answer') };
+      const m = this._markIfTimeout(e, timeoutMs, lock, 'answer');
+      if (keep) this._readBackoff = m;
+      return { ok: false, unresponsive: m };
     }
+  }
+
+  // C5: a read that missed its bound says nothing about the other calls on the same connection. The client has already
+  // dropped the timed-out call, so while another call (a write) is outstanding the connection is kept and that call gets its
+  // own answer; closing it would fail the write E_OWNER_LOST although the owner commits it. A transport fault, or a timeout
+  // with nothing else outstanding, closes it as before. True when the client was kept.
+  async _dropUnlessBusy(e) {
+    if (e && e.code === 'E_TIMEOUT' && this.client && this.client.connected && this.client.pending.size > 0) return true;
+    await this._dropClient();
+    return false;
   }
 
   // One dial or answer timeout on a read backs the owner off for UNRESPONSIVE_BACKOFF_MS (unresponsive.cjs).
@@ -381,6 +399,7 @@ class Core {
   }
 
   async _dropClient() {
+    this._readBackoff = null;
     if (this.client) { const c = this.client; this.client = null; await c.close(); }
   }
 
