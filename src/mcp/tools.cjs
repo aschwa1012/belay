@@ -183,7 +183,7 @@ const ORCHESTRATOR = [
     // the caller's own tool timeout has to be the outer bound, and a refusal would lose the fact that
     // nothing had finished yet.
     name: 'worker_wait',
-    description: 'Block until one of the named workers, or any worker this session launched, finishes a turn or dies, or the timeout passes. Returns which worker, what happened, what established it, its turn and checkpoint id, and how long the call held. Timeout is a result. already: ended before it.',
+    description: 'Block until one of the named workers, or any worker this session launched, finishes a turn or dies, or the timeout passes. Returns which worker, what happened, what established it, its turn and checkpoint id, and how long the call held. timed_out is a result. already: turn ended earlier.',
     inputSchema: S({
       worker_ids: strs('Otherwise every worker this session launched'),
       timeout_ms: int('default 110000'),
@@ -205,7 +205,7 @@ const ORCHESTRATOR = [
   },
   {
     name: 'worker_restart',
-    description: 'Restart a worker from its last checkpoint. Returns which branch was taken, resume or replace, and why, the old and new pid, session id, checkpoint id and the first turn\'s usage. Past about 100 s it returns status "not ready yet" with first_turn_awaited false; it is still starting.',
+    description: 'Restart a worker from its last checkpoint. Returns which branch was taken, resume or replace, and why, the old and new pid, session id, checkpoint id and the first turn\'s usage. Past about 100 s it returns status "not ready yet" with first_turn_awaited false; the relaunch carries on.',
     inputSchema: S({ worker_id: str(), first_turn_timeout_ms: int('default 180000') }, ['worker_id']),
   },
   {
@@ -219,7 +219,7 @@ const ORCHESTRATOR = [
           items: S({ argv: strs(), cwd: str(), timeout_ms: int() }, ['argv']),
         },
         files_within_owned: bool(),
-        verdict: bool(),
+        verdict: { const: true },
       }),
       files_owned: strs('Paths relative to the worktree'),
       depends_on: strs('Task ids that must be done before this one can be assigned'),
