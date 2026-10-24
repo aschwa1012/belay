@@ -385,7 +385,7 @@ function orchestratorLaunchArgv(opts) {
     fwd(mcpJsonPath),
     '--settings',
     fwd(settingsPath),
-    '--tools', // ADR 0024 decisions 1 to 3, with ADR 0054 decision 1's read-only list.
+    '--tools', // ADR 0024 decisions 1 to 3, with ADR 0054 decision 1's list (the six without Bash).
     S.ORCHESTRATOR_TOOLS.join(','),
     S.SETTING_SOURCES_ARG,
   ];
@@ -425,7 +425,7 @@ function orchestratorInteractiveArgv(opts) {
     fwd(mcpJsonPath),
     '--settings',
     fwd(settingsPath),
-    '--tools', // ADR 0054 decision 1: the interactive orchestrator gets the same read-only list
+    '--tools', // ADR 0054 decision 1: the interactive orchestrator gets the same list, no Bash
     S.ORCHESTRATOR_TOOLS.join(','),
     S.SETTING_SOURCES_ARG,
   ];

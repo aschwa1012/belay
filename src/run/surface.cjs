@@ -14,10 +14,11 @@ const TP = require('./tool-policy.cjs'); // pure, requires nothing: the tools a 
 
 // ADR 0024 decisions 1 and 2: one positive list, every role, every launch (fresh or resume).
 const CLAUDE_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash'];
-// ADR 0054 decision 1 (amends ADR 0024 decision 2): the orchestrator reads and delegates. No Edit, Write or Bash: a change is
-// a worker's, and git reads go through belay's git_read. Headless launches are held to it by checkSurface; interactive ones
-// pass it and record it as requested (ADR 0037 decision 5: the built-in list cannot be read there).
-const ORCHESTRATOR_TOOLS = ['Read', 'Glob', 'Grep'];
+// ADR 0054 decision 1 (amends ADR 0024 decision 2; the operator, 2026-10-24): the orchestrator may edit and write files
+// (records, notes, small fixes) but runs no shell: no Bash, so git reads go through belay's git_read and real code work is a
+// worker's. Headless launches are held to the list by checkSurface; interactive ones pass it and record it as requested
+// (ADR 0037 decision 5: the built-in list cannot be read there).
+const ORCHESTRATOR_TOOLS = ['Read', 'Glob', 'Grep', 'Edit', 'Write'];
 // ADR 0024 decision 3 as replaced by amendment 1: no settings file is read except belay's own
 // `--settings`. ONE argv token, exactly the form the settings-sources probe measured; the two-token form
 // with an empty value was never measured. The worktree's CLAUDE.md arrives by instructions.cjs instead.

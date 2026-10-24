@@ -89,7 +89,7 @@ export function world(on: any, w: World) {
   const stat = { active: 0, maxActive: 0 }
   const settled: string[][] = [] // every `memory held settle` the panel runs: only the settle buttons may run one
   const asked: string[] = [] // every dialog question
-  // The real session has no AskUserQuestion (the interactive orchestrator is launched with --tools Read,Glob,Grep): an ask is
+  // The real session has no AskUserQuestion (the interactive orchestrator is launched with --tools Read,Glob,Grep,Edit,Write): an ask is
   // recorded and rejected as it is there, so a panel that asks a dialog cannot do its work in these tests.
   on('tool.call', { tool: 'AskUserQuestion' }, ($: any, e: any) => {
     asked.push(String(e.questions?.[0]?.question ?? ''))

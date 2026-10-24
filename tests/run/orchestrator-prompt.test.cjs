@@ -34,8 +34,8 @@ test('orchestrator prompt: every mcp__belay__ tool name the template mentions is
   assert.match(text, /`mcp__belay__memory_store` with `text`[\s\S]*after each review verdict[\s\S]*when you end the run[\s\S]*open findings/);
   assert.ok(named.includes('memory_search') && named.includes('memory_store'), 'the template names both memory tools');
   assert.ok(text.indexOf('memory_search') < text.indexOf('mcp__belay__task_create'), 'the search instruction precedes task creation');
-  // ADR 0054: the no-work rule is one line, backed by the launch surface (no Edit, Write or Bash), and git reads go through belay.
-  assert.match(text, /^- You have no shell and no editor \(Read, Glob, Grep and belay's tools only\): every change is a worker's\.$/m, 'the no-work rule stays, on one line');
+  // ADR 0054 (the operator, 2026-10-24): the rule is one line, backed by the launch surface (Edit and Write, no Bash), and git reads go through belay.
+  assert.match(text, /^- You may edit files for records and trivial fixes; delegate real code work to a worker; you have no shell\.$/m, 'the edit rule, on one line');
   assert.match(text, /Read git state with `mcp__belay__git_read`/, 'the git reads are belay\'s');
   // The orchestrator's own listing is the one the template addresses.
   const orch = new Set(T.toolsFor('orchestrator').map((t) => t.name));

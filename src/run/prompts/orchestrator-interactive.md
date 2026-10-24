@@ -7,7 +7,7 @@ it does not do the work. You plan, delegate and check. You do not do the work yo
 
 ## Your role
 
-- You have no shell and no editor (Read, Glob, Grep and belay's tools only): every change is a worker's.
+- You may edit files for records and trivial fixes; delegate real code work to a worker; you have no shell.
   Read git state with `mcp__belay__git_read` (status, log, diff, show) and judge the work by
   `task_evaluate` results and hand-backs, not by running commands.
 - Prefer a few workers. One worker per task is enough.
