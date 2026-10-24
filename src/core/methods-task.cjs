@@ -119,6 +119,23 @@ async function create(E, caller, args) {
   return row;
 }
 
+// The dependency gate shared by task.assign and task.evaluate: only `done` opens it (ADR 0013 §1, ADR 0030 decision 2).
+function assertDependenciesDone(E, task) {
+  for (const dep of dependsOf(task)) {
+    const d = rows.current(E.store, 'task', dep);
+    if (!d) throw err('E_NOT_FOUND', `task ${task.id} depends on ${dep}, which has no row in this store`, { task_id: task.id, missing_dependency: dep });
+    if (d.state === 'done') continue;
+    const dl = rows.currentLeaseForTask(E.store, dep);
+    const held = dl && !dl.released_at ? `${dl.holder_role} ${dl.holder}` : 'no one';
+    if (refutedReview(d)) {
+      throw err('E_DEPENDENCY_OPEN', `task ${task.id} depends on task ${dep}, a review whose last evaluation returned refuted; it is not done unless it is re-judged and holds. A fix task depends on the work it fixes, never on the review (ADR 0030)`,
+        { task_id: task.id, blocked_by: dep, dependency_state: d.state, dependency_verdict: 'refuted', holder: dl && !dl.released_at ? dl.holder : null, holder_role: dl && !dl.released_at ? dl.holder_role : null });
+    }
+    throw err('E_DEPENDENCY_OPEN', `task ${task.id} depends on task ${dep}, which is ${d.state} and held by ${held}; assign this task again once ${dep} is done`,
+      { task_id: task.id, blocked_by: dep, dependency_state: d.state, holder: dl && !dl.released_at ? dl.holder : null, holder_role: dl && !dl.released_at ? dl.holder_role : null });
+  }
+}
+
 async function assign(E, caller, args) {
   if (args.check_only !== undefined && typeof args.check_only !== 'boolean') throw err('E_ARGS', 'task.assign check_only must be a boolean');
   const checkOnly = args.check_only === true;
@@ -149,19 +166,7 @@ async function assign(E, caller, args) {
     // whichever worker was named, an open dependency is the answer, and the refusal names what would
     // clear it (ADR 0013 §1). Only `done` opens the gate, and `done` is earned by executable evidence
     // (api.md §2), so a worker cannot talk its way past this by saying it finished.
-    for (const dep of dependsOf(task)) {
-      const d = rows.current(E.store, 'task', dep);
-      if (!d) throw err('E_NOT_FOUND', `task ${task.id} depends on ${dep}, which has no row in this store`, { task_id: task.id, missing_dependency: dep });
-      if (d.state === 'done') continue;
-      const dl = rows.currentLeaseForTask(E.store, dep);
-      const held = dl && !dl.released_at ? `${dl.holder_role} ${dl.holder}` : 'no one';
-      if (refutedReview(d)) {
-        throw err('E_DEPENDENCY_OPEN', `task ${task.id} depends on task ${dep}, a review whose last evaluation returned refuted; it is not done unless it is re-judged and holds. A fix task depends on the work it fixes, never on the review (ADR 0030)`,
-          { task_id: task.id, blocked_by: dep, dependency_state: d.state, dependency_verdict: 'refuted', holder: dl && !dl.released_at ? dl.holder : null, holder_role: dl && !dl.released_at ? dl.holder_role : null });
-      }
-      throw err('E_DEPENDENCY_OPEN', `task ${task.id} depends on task ${dep}, which is ${d.state} and held by ${held}; assign this task again once ${dep} is done`,
-        { task_id: task.id, blocked_by: dep, dependency_state: d.state, holder: dl && !dl.released_at ? dl.holder : null, holder_role: dl && !dl.released_at ? dl.holder_role : null });
-    }
+    assertDependenciesDone(E, task);
 
     // ADR 0046 decision 1: assigning makes a task hold its files, so another holding task, in any run, that overlaps them
     // refuses it. Inside one live run create already refused the overlap, so this fires for a re-attached run only: a task
@@ -248,6 +253,14 @@ async function evaluate(E, caller, args) {
   if (args.base !== undefined && (typeof args.base !== 'string' || !args.base)) throw err('E_ARGS', 'task.evaluate: base must be a non-empty string (a commit or ref)');
   const task = rows.current(E.store, 'task', args.task_id);
   if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.task_id}`, { task_id: args.task_id });
+  // The same two gates assign applies, checked before any command runs and again inside the write's transaction. `done` is
+  // final: a re-run would overwrite its passing evidence, or keep `done` over failing results. An open dependency is refused
+  // rather than evaluated without `done`, because a task is not done while its dependency is open (ADR 0013 section 1).
+  const gate = (t) => {
+    if (t.state === 'done') throw err('E_TASK_DONE', `task ${t.id} is done, and done is final; create a new task to redo the work`, { task_id: t.id, state: 'done' });
+    assertDependenciesDone(E, t);
+  };
+  E.store.tx(() => gate(rows.current(E.store, 'task', args.task_id) || task));
 
   // Lazy: verdict.cjs is loaded only when a write path needs it, never when a core is opened to read.
   const { verdictCheck } = require('./verdict.cjs');
@@ -259,6 +272,7 @@ async function evaluate(E, caller, args) {
   const row = E.store.tx(() => {
     E.assertRunOpen(caller, 'task.evaluate'); // run.end may have committed while the commands ran (audit D42)
     const fresh = rows.current(E.store, 'task', args.task_id) || task;
+    gate(fresh);
     const checks = [...commandChecks];
     if (fresh.acceptance && fresh.acceptance.verdict === true) checks.push(verdictCheck(E.store, fresh));
     // Nothing checked is not the same as everything passed. A task with no acceptance criteria has no

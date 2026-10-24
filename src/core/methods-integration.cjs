@@ -57,7 +57,7 @@ async function integrationTree(E, repo, into, args, tasks) {
     if (d.length) throw err('E_PRECONDITION', `${into} is checked out at ${found.path} with ${d.length} uncommitted path(s); belay merges only into a clean tree`, { path: found.path, dirty: d.slice(0, 50) });
     return { path: found.path, created: false, junctions: [] };
   }
-  const wtPath = G.fwd(path.join(path.dirname(repo), `${path.basename(repo)}.worktrees`, `integrate-${W.slug(into.replace(/\//g, '-'))}`));
+  const wtPath = G.fwd(path.join(path.dirname(repo), `${path.basename(repo)}.worktrees`, W.pathName(`integrate-${into.replace(/\//g, '-')}`, 'into')));
   if (fs.existsSync(wtPath) && fs.readdirSync(wtPath).length) throw err('E_EXISTS', `${wtPath} exists and is not empty`, { path: wtPath });
   const existed = await G.branchExists(repo, into);
   if (existed) {
@@ -133,7 +133,7 @@ async function rerun(tasks, tree) {
 async function merge(E, caller, args) {
   checkArgs(args);
   const { tasks, repo } = await readTasks(E, args.task_ids);
-  const into = await G.validBranch(repo, args.into === undefined ? `belay/integrate/${W.slug(caller.run_id)}` : args.into);
+  const into = await G.validBranch(repo, args.into === undefined ? `belay/integrate/${caller.run_id}` : args.into);
   return W.exclusive(`integrate:${repo}:${into}`, `an integration into ${into}`, async () => {
     const tree = await integrationTree(E, repo, into, args, tasks);
     const by = E.writtenBy(caller);

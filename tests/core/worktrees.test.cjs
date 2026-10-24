@@ -176,3 +176,30 @@ test('a worker caller may not create or remove a worktree', async () => {
     await rejectsCode(w.task.worktreeRemove({ task_id: t.id }), 'E_ROLE');
   } finally { await w.close(); }
 });
+
+test('a task id that is not a path id gets no default tree: refused, never rewritten onto another name', async () => {
+  for (const id of ['has space', 'con', 'dot.', 'a/b']) {
+    const t = await orch.task.create({ id, spec: 'odd id' });
+    const e = await rejectsCode(orch.task.worktreeCreate({ task_id: t.id }), 'E_ARGS');
+    assert.match(e.message, /not a valid id/);
+  }
+});
+
+test('files_within_owned reads the whole change: a path outside the owned set past the first 2 KB of git output is seen', async () => {
+  const t = await orch.task.create({ spec: 'many files', files_owned: ['owned'], acceptance: { files_within_owned: true } });
+  const w = (await orch.task.worktreeCreate({ task_id: t.id })).worktree;
+  // 60 committed and 60 uncommitted owned paths of about 60 characters each: both listings run well past 2,000 characters,
+  // and the one path outside the owned set sorts after all of them.
+  const long = (i, tag) => `owned/${tag}-${String(i).padStart(3, '0')}-${'x'.repeat(48)}.txt`;
+  for (let i = 0; i < 60; i += 1) write(w.path, long(i, 'c'), 'c\n');
+  write(w.path, 'zzz-outside-committed.txt', 'out\n');
+  commit(w.path, 'many');
+  for (let i = 0; i < 60; i += 1) write(w.path, long(i, 'u'), 'u\n');
+  write(w.path, 'zzz-outside-loose.txt', 'out\n');
+  assert.ok(git(w.path, 'diff', '--name-only', w.base_sha, 'HEAD').length > 2000, 'the committed listing is longer than the old cut');
+  const c = (await orch.task.evaluate({ task_id: t.id })).results.checks.find((x) => x.kind === 'files_within_owned');
+  assert.strictEqual(c.executable, true);
+  assert.strictEqual(c.detail.changed_count, 122);
+  assert.deepStrictEqual(c.detail.outside, ['zzz-outside-committed.txt', 'zzz-outside-loose.txt']);
+  assert.strictEqual(c.passed, false);
+});

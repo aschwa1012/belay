@@ -10,6 +10,7 @@ const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 const { pidAlive } = require('./lock.cjs');
 const G = require('./git.cjs');
+const { isPathId, pathIdMessage } = require('./path-id.cjs');
 
 const DEFAULT_JUNCTIONS = ['node_modules'];
 const TERMINAL_WORKER = new Set(['stopped', 'dead', 'forgotten']);
@@ -22,7 +23,12 @@ async function exclusive(key, what, fn) {
   try { return await fn(); } finally { inFlight.delete(key); }
 }
 
-const slug = (id) => String(id).replace(/[^A-Za-z0-9._-]/g, '-').replace(/^[.-]+/, '').slice(0, 64) || 'task';
+// A name that becomes a path component must pass the one id grammar (path-id.cjs); it is refused, never rewritten, so two ids
+// can never be folded onto one tree.
+function pathName(name, field) {
+  if (!isPathId(name)) throw err('E_ARGS', `${pathIdMessage(field, name)}; it would name a worktree directory`, { [field]: name });
+  return name;
+}
 const active = (task) => (task && task.worktree && task.worktree.path && !task.worktree.removed_at ? task.worktree : null);
 
 function requireTask(E, id, method) {
@@ -124,9 +130,10 @@ async function worktreeCreate(E, caller, args) {
     const top = await repoOf(E, caller, args.repo, 'task.worktreeCreate');
     const baseRef = args.base === undefined ? 'HEAD' : args.base;
     const baseSha = await G.commitOf(top, baseRef);
-    const branch = await G.validBranch(top, args.branch === undefined ? `belay/${slug(task.id)}` : args.branch);
+    const dirName = args.path === undefined ? pathName(task.id, 'task_id') : null;
+    const branch = await G.validBranch(top, args.branch === undefined ? `belay/${task.id}` : args.branch);
     if (await G.branchExists(top, branch)) throw err('E_EXISTS', `branch ${branch} already exists; name another or remove it`, { branch });
-    const wtPath = G.fwd(args.path !== undefined ? path.resolve(args.path) : path.join(path.dirname(top), `${path.basename(top)}.worktrees`, slug(task.id)));
+    const wtPath = G.fwd(args.path !== undefined ? path.resolve(args.path) : path.join(path.dirname(top), `${path.basename(top)}.worktrees`, dirName));
     if (fs.existsSync(wtPath) && fs.readdirSync(wtPath).length) throw err('E_EXISTS', `${wtPath} exists and is not empty`, { path: wtPath });
     await G.must(top, ['worktree', 'add', '-b', branch, '--', wtPath, baseSha], `the worktree for task ${task.id} could not be added`);
     const rec = { repo: top, path: wtPath, branch, base_ref: baseRef, base_sha: baseSha, junctions: [], junctions_skipped: [], created_at: Date.now(), created_by: E.writtenBy(caller), removed_at: null };
@@ -200,4 +207,4 @@ function evaluateTarget(task, args) {
   return rec ? { worktree, base: rec.base_sha, baseSource: 'recorded' } : { worktree, base: undefined, baseSource: undefined };
 }
 
-module.exports = { worktreeCreate, worktreeRemove, removeTree, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, exclusive, active, slug, liveWorkerIn };
+module.exports = { worktreeCreate, worktreeRemove, removeTree, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, exclusive, active, pathName, liveWorkerIn };

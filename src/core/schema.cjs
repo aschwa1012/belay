@@ -210,6 +210,10 @@ const MIGRATIONS = [
   // there is none (notes on, notes explicitly off, or memory null). The levers cannot say it (a default block is stored as null, and an
   // explicit off looks like no project), so status and the panel read the run's own answer, never the current config's.
   'ALTER TABLE run ADD COLUMN memory_notice TEXT',
+  // The built-in tool list a Claude Code worker was launched with (JSON array; ADR 0024 amendment 4, proposed): the harness's record, read by a
+  // restart, resume, park or adopt in another process, never the worker's argv.json, which the worker can edit. Null for Codex and for a row
+  // written before the column.
+  'ALTER TABLE worker ADD COLUMN tools TEXT',
   // ADR 0053 decision 1: the worktree and branch belay made for the task, from a recorded base (JSON text, nullable), carried forward
   // by every later task row; task.evaluate judges from its base_sha.
   'ALTER TABLE task ADD COLUMN worktree TEXT',
