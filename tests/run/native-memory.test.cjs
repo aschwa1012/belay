@@ -382,7 +382,7 @@ test('adopt: a second manager relaunching the worker keeps the folder in setting
 
 test('worker_spawn: native_memory is harness-only, refused at the MCP boundary and absent from the listing', () => {
   const T = require('../../src/mcp/tools.cjs');
-  assert.deepStrictEqual(T.HARNESS_ONLY.worker_spawn, ['native_memory']);
+  assert.deepStrictEqual(T.HARNESS_ONLY.worker_spawn, ['native_memory', 'tools', 'sandbox', 'max_budget_usd']);
   for (const role of ['orchestrator']) {
     const spawnTool = T.toolsFor(role).find((t) => t.name === 'worker_spawn');
     assert.equal('native_memory' in spawnTool.inputSchema.properties, false, 'not listed, so it costs the listing no bytes');
