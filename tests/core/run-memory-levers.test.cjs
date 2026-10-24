@@ -39,8 +39,11 @@ test('run.attach refuses bad memory_levers and project with E_ARGS and writes no
 });
 
 test('run.attach records the levers and project, and a later attach without the keys inherits them', async () => {
-  const text = JSON.stringify({ capture: true, project: 'acme' });
-  const { run } = await orch.run.attach({ adapter_pid: process.pid, memory_levers: text, project: 'acme' });
+  const given = JSON.stringify({ capture: true, project: 'acme' });
+  const resolved = { ...require('../../src/core/memory-levers.cjs').parseMemoryBlock(JSON.parse(given)).value };
+  delete resolved.native_memory; delete resolved.handback_question; // eval-only levers a block did not name are not stored
+  const text = JSON.stringify(resolved); // stored resolved; eval-only levers the block did not name are omitted
+  const { run } = await orch.run.attach({ adapter_pid: process.pid, memory_levers: given, project: 'acme' });
   assert.strictEqual(run.memory_levers, text);
   assert.strictEqual(run.project, 'acme');
   const read = (await orch.run.get()).run;

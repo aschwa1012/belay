@@ -6,7 +6,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..', '..');
-const read = (f) => fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8').replace(/\r\n/g, '\n');
+// The templates are read as a run without notes renders them: the {{memory_use}} and {{memory_outcome}} markers (ADR 0047 amendment of 2026-10-22) are dropped and the text between them stays.
+const read = (f) => fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8').replace(/\r\n/g, '\n').replace(/\{\{\/?memory_(use|outcome)\}\}/g, '');
 const HEADLESS = read('orchestrator.md');
 const TWIN = read('orchestrator-interactive.md');
 const H = HEADLESS.split('\n');
@@ -25,6 +26,9 @@ const REPLACED = [
   'is not mid-turn, and the run closes.',
   'To stop on purpose, store the outcome in memory, say why, then end a turn with no worker mid-turn.',
   'and when you end the run (the outcome',
+  // amendment 6: the headless waiting rules
+  'a timeout is a result: call it again',
+  'Never end a turn just after `task_assign`',
 ];
 // The same sentences as the default fix_cutoff substitution carries them (run-levers.cjs cutoffRule).
 const REPLACED_IN_RULE = [
@@ -46,11 +50,29 @@ test('interactive prompt: each replaced headless sentence is in orchestrator.md 
 
 test('interactive prompt: says what the mode is', () => {
   assert.match(TWIN, /operator is present in this session/);
-  assert.match(TWIN, /belay wakes you with a short message when a worker's turn ends or a worker dies\. You may end your turn while workers run; `mcp__belay__worker_wait` still works if you want to block\./);
+  assert.match(TWIN, /belay wakes you with a short message when a worker's turn ends or a worker dies\. While workers are working, end your turn: the wake brings you back and names the worker\. Do not hold a turn open to wait\./);
   assert.ok(!/There are no wakes/.test(TWIN), 'the no-wakes claim is gone');
+  assert.match(flat(TWIN), /paused for an embedder failure, stop and ask the operator which of the three they want: `keyword`, `off`, or stay paused\. Then give them the exact `belay resume` command/);
   assert.match(TWIN, /Ending a turn does not end the run/);
   assert.match(TWIN, /the run ends when the operator quits the session/);
-  assert.match(TWIN, /Re-call it while workers are\s+mid-turn/);
+  // ADR 0037 amendment 6: the wake is how the orchestrator waits; worker_wait is a short check, never a loop
+  // (wait-loop probe: the old "re-call it" text held a turn 165 s in two waits, the new text none).
+  assert.ok(!/Re-call it/.test(TWIN), 'no instruction to re-call worker_wait');
+  assert.ok(!/wait on its id/.test(TWIN), 'no "wait on its id"');
+  assert.match(TWIN, /`timeout_ms: 5000`[^]*Never call it in a loop\./);
+  const iWait = T.indexOf('- After you start work (a spawn with a prompt, or a `worker_message`), end your turn, naming the');
+  assert.deepStrictEqual(T.slice(iWait, iWait + 10), [
+    '- After you start work (a spawn with a prompt, or a `worker_message`), end your turn, naming the',
+    '  workers you are waiting for so the operator can see it. When a wake names a worker, read its',
+    '  hand-back with `mcp__belay__task_list` or check its work with `task_evaluate`. Use',
+    '  `mcp__belay__worker_wait` only as a check when no wake came for a worker you expected: pass',
+    '  `worker_ids` and `timeout_ms: 5000`. A timeout means the worker is still working: end your turn',
+    '  again. Never call it in a loop.',
+    '  `already: true` means that worker\'s turn ended before your call, not that the work is done.',
+    '- A worker whose turn has ended without what you waited for is idle, not working. Instead call',
+    '  `mcp__belay__worker_message` to tell it what is missing: that starts a turn. Then end your turn.',
+    '- `task_assign` alone starts nothing and no wake follows it: send the `worker_message` above first.',
+  ], 'the waiting bullets, pinned line for line');
   assert.match(TWIN, /`namespace: "project"`, tell the operator the result and any open blocking findings, and then wait for them/);
   // the no-wakes wording is one self-contained paragraph a later amendment can swap
   const para = TWIN.split(/\n\n/).find((p) => p.startsWith('belay wakes you'));
@@ -72,6 +94,7 @@ test('interactive prompt: both lever placeholders are present and substituteLeve
 
 test('interactive prompt: apart from three named ranges the twin equals orchestrator.md line for line', () => {
   // Allowed differences: (1) the blank line and marker after the title; (2) the "When the run ends" section,
+  // (amendment 6: also the four wake phrases in headless lines 64-101, pinned below)
   // headless lines 45-63; (3) the fix-round cutoff sentence, headless lines 102-104.
   const iHead = T.indexOf('## When the run ends');
   const iCheck = T.indexOf('## Checking the work');
@@ -82,7 +105,17 @@ test('interactive prompt: apart from three named ranges the twin equals orchestr
   const l17 = H.slice(1, 44).map((l) => l.replace('and when you end the run (the outcome', 'and when you stop (the outcome'));
   assert.notDeepStrictEqual(l17, H.slice(1, 44), 'the substitution applied');
   assert.deepStrictEqual(T.slice(3, iHead), l17, 'headless lines 2-44, with the one phrase on line 17');
-  assert.deepStrictEqual(T.slice(iCheck - 1, iTail), H.slice(63, 101), 'headless lines 64-101');
+  // ADR 0037 amendment 6: in headless lines 64-101 each "wait on its id" becomes "end your turn until its wake",
+  // and the compaction retry gets a bounded wait.
+  const WAKE_PHRASES = [
+    ['wait on its id, and evaluate again', 'end your turn until its wake, and evaluate again'],
+    ['`worker_wait` on its id, resend after it answers.', '`worker_wait` on its id with `timeout_ms: 30000`, resend after it answers; if it times out, end your turn and resend on the next wake.'],
+    ["When the reviewer's turn ends (wait on its id), call", "When the reviewer's wake comes (its turn ended), call"],
+    ['with its result, wait on its id, then', 'with its result, end your turn until its wake, then'],
+  ];
+  const mid = H.slice(63, 101).map((l) => WAKE_PHRASES.reduce((s, [a, b]) => s.replace(a, b), l));
+  assert.strictEqual(mid.filter((l, i) => l !== H[63 + i]).length, WAKE_PHRASES.length, 'each phrase replaced once');
+  assert.deepStrictEqual(T.slice(iCheck - 1, iTail), mid, 'headless lines 64-101, with the wake phrases');
   assert.deepStrictEqual(T.slice(iTail + 3), H.slice(104), 'headless lines 105 to the end');
 });
 

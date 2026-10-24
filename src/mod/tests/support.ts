@@ -29,6 +29,8 @@ export const LONG_NOTICES = {
     { kind: 'worker_stopped', ts: T0 - 300000, run_id: RUN, worker_id: 'reviewer-1', exit_code: 0, exit_signal: null, death_established_by: null },
   ],
 }
+export const NOTE_ID = '08954ec7-c37a-4f36-9ff5-641811cc54f9'
+export const AWAITING = { total: 1, awaiting_operator: 1, entries: [{ note_id: NOTE_ID, project: 'acme', title: 'pid poll note', kind: 'wrong', ground: 'reported', awaiting_operator: true, undecided: { reason: 'cannot say' } }] }
 export const NOTICES = { run_id: RUN, events: EVENTS }
 const tool = (n: number) => ({ kind: 'tool', tool: 'mcp__belay__worker_wait', ids: { worker_id: `w-${n}` }, tool_use_id: `x${n}`, result: 'ok', error_code: null, ts: iso(T0 - 9000 + n * 100) })
 // Words, then five tool calls: the last entries hold no words.
@@ -47,8 +49,9 @@ export const TRANSCRIPT = {
 }
 
 export const DEFAULTS: Record<string, string> = { pane: 'docked', marks: 'shapes', cache: 'both', context: 'both', band: 'two-lines', task: 'kind' }
-export const SETTINGS = (mod: Record<string, string> = {}) => ({
-  found: true, path: 'C:/x/belay.config.json', parse_error: null,
+export const NOTICE = { code: 'memory_project_unset', title: 'Memory is off for this project', why: 'Memory notes are on by default, but they are kept per project and belay never guesses a project name, so with none set nothing is saved or recalled.', short: 'set one: belay settings memory.project <name> · or turn notes off: belay settings memory.notes false', fix: 'Add "memory": { "project": "<name>" } to belay.config.json (or to the run spec), or run: belay settings memory.project <name>. A name is lowercase letters, digits, dot, underscore or dash (^[a-z0-9][a-z0-9._-]{0,63}$). To turn notes off and silence this: belay settings memory.notes false.', config_line: '"memory": { "project": "<name>" }', name_rule: '^[a-z0-9][a-z0-9._-]{0,63}$' }
+export const SETTINGS = (mod: Record<string, string> = {}, memoryNotice: unknown = null) => ({
+  found: true, path: 'C:/x/belay.config.json', parse_error: null, memory_notice: memoryNotice,
   settings: Object.keys(DEFAULTS).map(k => ({ key: `mod.${k}`, value: mod[k] ?? DEFAULTS[k], source: 'default', allowed: [] })),
 })
 export const FULL_RUNFILE = { role: 'orchestrator', run_id: RUN, data_dir: 'C:/d/.belay', belay_cli: 'C:/x/belay.cjs', node: 'C:/n/node.exe' }
@@ -56,7 +59,19 @@ export type World = {
   file?: boolean; runFile?: unknown; repoCli?: boolean; watchId?: string
   mode?: string | null; mod?: Record<string, string>; notices?: unknown
   failAgents?: boolean; transcriptFail?: boolean; orchDisplay?: string; noDisplay?: boolean; noRun?: boolean
-  extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; longNotices?: boolean; noPlace?: boolean; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number
+  extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number; memoryNotice?: boolean; orchNoCost?: boolean; orchBasis?: string; deadReview?: boolean; deadCoder?: boolean; orchTokensOnly?: boolean; orchCost?: number; awaitingFail?: boolean; awaitingHang?: boolean; agentIds?: string[]; footer?: unknown
+  /** Answers the dialogs give, in order (the reason, then the confirm); an empty queue dismisses. */
+  awaitingList?: unknown
+  settleReject?: string
+  /** The launcher's answers, one per start (the last one repeats). */
+  /** The launcher's process call itself fails (a timeout, a rejection). */
+  launcherReject?: string
+  launchers?: { exitCode: number; stdout: string; stderr: string }[]
+  /** Held inside the settle's process call: the test looks at the panel while the write is in flight. */
+  settleHold?: Promise<void>
+  /** Held at the settle's consuming write (the confirm press): the test changes the world meanwhile, then opens the gate. */
+  settleGate?: Promise<void>
+  settleOut?: { exitCode: number; stdout: string; stderr: string }
 }
 
 // The host beneath the plugin: a run file (or none), belay's read commands as fixtures, and a recorder
@@ -66,20 +81,54 @@ export function world(on: any, w: World) {
   const ran: string[][] = []
   const writes: string[] = []
   const opened: string[] = []
+  const openArgs: any[] = [] // every ui.open the panel makes, with its arguments
   const commands: string[] = []
   const toasts: string[] = []
+  const spawned: string[][] = [] // every review launcher (`... memory review --project p --start`) the panel runs: only the review button may run one
   const attempts: { verb: string; t: number; timeoutMs: number; cwd?: string; argv: string[] }[] = []
   const stat = { active: 0, maxActive: 0 }
+  const settled: string[][] = [] // every `memory held settle` the panel runs: only the settle buttons may run one
+  const asked: string[] = [] // every dialog question
+  // The real session has no AskUserQuestion (the interactive orchestrator is launched with --tools Read,Edit,Write,Glob,Grep,Bash): an ask is
+  // recorded and rejected as it is there, so a panel that asks a dialog cannot do its work in these tests.
+  on('tool.call', { tool: 'AskUserQuestion' }, ($: any, e: any) => {
+    asked.push(String(e.questions?.[0]?.question ?? ''))
+    return { deny: 'no tool named "AskUserQuestion"; the session has Bash, Edit, Glob, Grep, Read, Write' }
+  })
   on('session.start', ($: any, e: any) => ({ cwd: e.cwd }))
   on('fs.exists', ($: any, e: any) => ({ value: e.path.endsWith('belay-run.json') ? (w.file ?? false) : (w.repoCli ?? true) }))
   on('fs.read', () => ({ value: typeof w.runFile === 'string' ? w.runFile : JSON.stringify(w.runFile ?? FULL_RUNFILE) }))
   on('fs.write', ($: any, e: any) => { writes.push(e.path); return { value: undefined } })
   on('prompt.submit', () => { writes.push('prompt.submit'); return { value: undefined } })
   on('command.register', ($: any, e: any) => { commands.push(e.name); return { value: { command: e.name } } })
-  on('ui.open', ($: any, e: any) => { opened.push(e.id); return { value: { isPlaced: !w.noPlace } } })
+  on('ui.open', ($: any, e: any) => { opened.push(e.id); openArgs.push({ ...e }); return { value: { isPlaced: !w.noPlace } } })
+  // A seam on the settle write's consuming step: the write waits here, after the confirm press and before anything is rechecked.
+  let seamFired = false
+  on('state.set', { plugin: 'belay', key: 'panelSettle' }, async ($: any, e: any, next: any) => {
+    if (w.settleGate && !seamFired && e.value === null && e.previous && e.previous.stage === 'confirm') { seamFired = true; await w.settleGate }
+    return next(e)
+  })
   on('ui.close', () => ({ value: undefined }))
   on('ui.toast', ($: any, e: any) => { toasts.push(e.text); return { value: undefined } })
   on('process.run', async ($: any, e: any) => {
+    if (e.argv.includes('settle')) {
+      settled.push([...e.argv])
+      if (w.settleHold) await w.settleHold
+      if (w.settleReject) return { deny: w.settleReject }
+      return { value: w.settleOut ?? { exitCode: 0, stdout: JSON.stringify({ id: e.argv[e.argv.indexOf('settle') + 1], action: 'archive', outcome: 'archived', receipt: 'held-settle:x@1' }), stderr: '' } }
+    }
+    if (e.argv.includes('--awaiting')) {
+      ran.push([...e.argv])
+      if (w.awaitingHang) return { deny: 'timed out' }
+      if (w.awaitingFail) return { value: { exitCode: 3, stdout: '', stderr: 'boom' } }
+      return { value: { exitCode: 0, stdout: JSON.stringify(w.awaitingList ?? AWAITING), stderr: '' } }
+    }
+    if (e.argv.includes('--start')) {
+      spawned.push([...e.argv])
+      if (w.launcherReject) return { deny: w.launcherReject }
+      if (w.launchers) return { value: w.launchers[Math.min(spawned.length - 1, w.launchers.length - 1)]! }
+      return { value: w.launcher ?? { exitCode: 0, stdout: JSON.stringify({ started: true, project: 'acme', run_id: 'r-1', pid: 4242, job: 'archreview-r-1', claim_id: 'me-1' }), stderr: '' } }
+    }
     ran.push([...e.argv])
     const verb = e.argv.find((a: string) => ['agents', 'notices', 'transcript', 'settings'].includes(a))
     attempts.push({ verb, t: clock.now(), timeoutMs: e.init?.timeoutMs, cwd: e.init?.cwd, argv: [...e.argv] })
@@ -98,25 +147,31 @@ export function world(on: any, w: World) {
     const agents = AGENTS.map(a => {
       const x: any = { ...a }
       if (a.id === 'orchestrator' && w.orchDisplay) x.display_state = w.orchDisplay
+      if (a.id === 'orchestrator' && w.orchNoCost) x.cost_usd = null
+      if (a.id === 'orchestrator' && w.orchCost !== undefined) x.cost_usd = w.orchCost
+      if (a.id === 'orchestrator' && w.orchTokensOnly) { x.context_tokens = 18247; x.context_window = null; x.context_pct = null }
+      if (a.id === 'orchestrator' && w.orchBasis) x.cost_basis = w.orchBasis
       if (a.id === 'coder-2' && w.coder2Left !== undefined) x.cache = { ttl_s: 300, left_ms: w.coder2Left, state: 'warm' }
       if (a.id === 'coder-1' && w.coder1Title) x.task = { ...a.task, title: w.coder1Title }
       if (w.noDisplay) delete x.display_state
       return x
     })
     const extra = (w.extra ?? []).map(d => ({ id: `w-${d}`, role: null, model: 'claude-sonnet-5-5', state: d, display_state: d, display_state_established_by: `test ${d}`, context_pct: 5, cost_usd: null, task: null }))
+    const dead = [...(w.deadReview ? ['archreview-r-7f3a-mvln6h2p'] : []), ...(w.deadCoder ? ['coder-dead'] : [])].map(id => ({ id, role: null, model: 'claude-opus-5-5', state: 'dead', display_state: 'dead', display_state_established_by: 'worker row state dead, death_established_by exit-event', pid: 23184, context_pct: null, cost_usd: 0.12, task: null }))
+    const named = (w.agentIds ?? []).map(id => ({ id, role: null, model: 'claude-sonnet-5-5', state: 'running', display_state: 'running', display_state_established_by: 'test', context_pct: 5, cost_usd: 0.1, task: null }))
     const body: Record<string, unknown> = {
       agents: {
         run_id: w.noRun ? null : (w.runId ?? RUN), mode: 'mode' in w ? w.mode : 'headless', mode_source: 'test', started_at_ms: T0 - (w.startedAgo ?? 42 * 60000), paused_at_ms: w.paused ?? null, ended_at_ms: w.ended ?? null,
-        tasks: { done: 1, total: 3 }, max_fix_rounds: 'maxFix' in w ? w.maxFix : 2, agents: w.noRun ? [] : [...agents, ...extra], footer: FOOTER,
+        tasks: { done: 1, total: 3 }, max_fix_rounds: 'maxFix' in w ? w.maxFix : 2, memory_notice: w.memoryNotice ? NOTICE : null, agents: w.noRun ? [] : [...agents, ...extra, ...named, ...dead], footer: 'footer' in w ? w.footer : FOOTER,
       },
       notices: w.notices ?? (w.longNotices ? LONG_NOTICES : NOTICES),
       transcript: w.nullTs ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.map(x => ({ ...x, ts: null })) } : w.manyTexts ? { run_id: RUN, entries: MANY } : w.toolsOnly ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.filter(x => x.kind !== 'text') } : w.longTranscript ? { run_id: RUN, entries: LONG_ENTRIES.slice(-Number(e.argv[e.argv.indexOf('--tail') + 1])) } : w.honorTail ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.slice(-Number(e.argv[e.argv.indexOf('--tail') + 1])) } : TRANSCRIPT,
-      settings: SETTINGS(w.mod),
+      settings: SETTINGS(w.mod, w.memoryNotice ? NOTICE : null),
     }
     if ((verb === 'agents' && w.failAgents) || (verb === 'transcript' && w.transcriptFail)) return { value: { exitCode: verb === 'agents' ? 3 : 4, stdout: '', stderr: 'boom' } }
     return { value: { exitCode: 0, stdout: JSON.stringify(body[verb]), stderr: '' } }
   })
-  return { clock, ran, writes, opened, commands, toasts, attempts, stat, w }
+  return { clock, openArgs, settled, asked, ran, writes, opened, commands, toasts, spawned, attempts, stat, w }
 }
 
 export const START = { cwd: '/x', surface: 'terminal', isInteractive: true } as const
@@ -161,8 +216,8 @@ export async function band($: any, surface = 'terminal', cols = 110) {
   const ui = await $.ui.mount({ plugin: 'belay', surface, component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: cols }, viewport: { columns: 110, rows: 40 } })
   return { ui, text: words(await ui.drawn()) }
 }
-export async function pane($: any, surface = 'terminal', cols = 200) {
-  const ui = await $.ui.mount({ plugin: 'belay', surface, component: 'Pane', requestId: 'belay', props: { ...PANE_PROPS, bodyColumns: cols }, viewport: { columns: 70, rows: 40 } })
+export async function pane($: any, surface = 'terminal', cols = 200, isFocused = false) {
+  const ui = await $.ui.mount({ plugin: 'belay', surface, component: 'Pane', requestId: 'belay', props: { ...PANE_PROPS, isFocused, bodyColumns: cols }, viewport: { columns: 70, rows: 40 } })
   return { ui, text: words(await ui.drawn()) }
 }
 export async function openPane($: any, wd: any) {

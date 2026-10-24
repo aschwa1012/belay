@@ -19,7 +19,7 @@ const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/\\/g, '/'
 const USER_SETTINGS = path.join(__dirname, 'fixtures', 'user-settings.json').replace(/\\/g, '/');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ADR 0039: a kill needs the creation time the manager restates about a second after spawn; an adopter acts long after that.
-const waitCreated = async (core, id) => { for (let i = 0; i < 100; i++) { const c = core.currentWorker(id); if (c && c.pid_created) return; await sleep(100); } throw new Error('pid_created never landed for ' + id); };
+const { waitCreated } = require('../helpers/created.cjs');
 
 function sandbox() {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-run-adopt-'));
@@ -145,10 +145,11 @@ test('adoption does not re-validate an inherited bad started_at: an adopted work
   }
 });
 
-test('restarting an id no store row names is still E_NOT_FOUND', async () => {
+test('restarting an id no store row names is still E_NOT_FOUND', async (tcx) => {
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core);
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()));
   await assert.rejects(
     () => m.restart({ worker_id: 'never-existed' }),
     (e) => {
@@ -199,12 +200,14 @@ test('stop and message reach a worker that exists only in the store', async () =
 });
 
 // Build 12 A10: a write that fails after a relaunch must not leave the relaunched child alive past shutdown.
-// Before the fix, doStop's `stopping` write threw the same E_ARGS and the kill behind it never ran.
-test('a write failure after a relaunch still leaves no live child once shutdown returns', { timeout: 60000 }, async () => {
+// Before the fix, doStop's `stopping` write threw the same E_ARGS and the kill behind it never ran. ADR 0045 amendment 3 goes further:
+// the failed start ends its own child (it holds a bind), so the child is gone when the rejection arrives, not only once shutdown returns.
+test('a write failure after a relaunch still leaves no live child once shutdown returns', { timeout: 60000 }, async (tcx) => {
   const sb = sandbox();
   const core = createFakeCore();
   const first = mgr(sb, core);
   let second = null;
+  tcx.after(() => Promise.resolve().then(() => second && second.shutdown()));
   let pid = null; let child = null;
   try {
     await first.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w-wfail', task_id: 't-wfail' });
@@ -217,16 +220,11 @@ test('a write failure after a relaunch still leaves no live child once shutdown 
     await assert.rejects(second.restart({ worker_id: 'w-wfail', first_turn_timeout_ms: SLOW }), (e) => e.code === 'E_ARGS');
     pid = second._worker('w-wfail').pid;
     child = second._worker('w-wfail').child; // ADR 0039: the live handle, for the safety net below
-    assert.ok(Number.isInteger(pid) && P.pidAlive(pid), 'the relaunched child is alive after the failed write');
+    assert.ok(Number.isInteger(pid), 'the relaunch started a child');
+    assert.notEqual(await P.waitPidGone(pid, { timeoutMs: 10000 }), null, 'the failed start ended the relaunched child by its exact pid');
 
-    const sd = await second.shutdown();
-    assert.equal(sd.stop_failed.length, 1);
-    assert.equal(sd.stop_failed[0].worker_id, 'w-wfail');
-    assert.equal(sd.stop_failed[0].code, 'E_ARGS');
-    assert.equal(sd.stop_failed[0].pid, pid);
-    assert.ok(Number.isInteger(sd.stop_failed[0].pid_gone_ms));
-    await P.waitPidGone(pid, { timeoutMs: 5000 });
-    assert.equal(P.pidAlive(pid), false, 'shutdown killed the relaunched child by its exact pid');
+    await second.shutdown();
+    assert.equal(P.pidAlive(pid), false, 'and nothing is alive once shutdown returns');
     core.worker.write = realWrite;
   } finally {
     if (child) require('../crash.cjs').crash(child); // the live handle, only if the assertion above failed

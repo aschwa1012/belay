@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // settings.test.cjs — `belay settings`, the panel's display settings (ADR 0036 amendment 1 §6).
 // Drives the built CLI as a subprocess with its cwd in a temporary sandbox project (a `.git` directory
 // marks the root so discovery stops there). Never the repository's own config.
@@ -36,7 +37,7 @@ test('settings: the list names every mod.* setting with its default, source and 
     const r = cli(dir, ['settings']);
     assert.strictEqual(r.code, 0);
     const by = Object.fromEntries(r.out.settings.map((s) => [s.key, s]));
-    assert.deepStrictEqual(Object.keys(by), ['mod.pane', 'mod.marks', 'mod.cache', 'mod.context', 'mod.band', 'mod.task']);
+    assert.deepStrictEqual(Object.keys(by).filter((k) => k.startsWith('mod.')), ['mod.pane', 'mod.marks', 'mod.cache', 'mod.context', 'mod.band', 'mod.task']);
     assert.strictEqual(by['mod.pane'].value, 'docked');
     assert.strictEqual(by['mod.marks'].value, 'shapes');
     assert.strictEqual(by['mod.cache'].value, 'both');

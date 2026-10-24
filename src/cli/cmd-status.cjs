@@ -43,7 +43,9 @@ function renderText(receipt) {
     else life = `not running: adapter pid ${r.adapter_pid} is not alive, and the run was never ended`;
     lines.push(`run: ${r.id} epoch ${r.epoch} ${life}`);
     // ADR 0034: a run paused by an embedder failure says so, with the worker, the call and the cause.
-    if (r.paused_at != null && r.ended_at == null) lines.push(`run paused at ${new Date(r.paused_at).toISOString()} by ${r.paused_by}${/embedder-failure [(]/.test(r.paused_by || '') ? ' (an embedder failure; fix the embedder, then belay resume)' : ''}`);
+    if (r.embed_bounds) lines.push(`embedder: ${r.embed_bounds} index-query embed${r.embed_bounds === 1 ? '' : 's'} hit the ${require('../core/spawn-bounds.cjs').SPAWN_EMBED_MS} ms spawn bound (E_EMBED_BOUND); those workers got a keyword-only index`);
+    if (r.index_bounds) lines.push(`index: ${r.index_bounds} first-message index${r.index_bounds === 1 ? '' : 'es'} hit the index bound (E_INDEX_BOUND): refused under on_embedder_failure required, or built without its vector lists otherwise; see belay events --kind index_bound`);
+    if (r.paused_at != null && r.ended_at == null) lines.push(`run paused at ${new Date(r.paused_at).toISOString()} by ${r.paused_by}${/embedder-failure [(]/.test(r.paused_by || '') ? ` (an embedder failure, on_embedder_failure required: fix the embedder and belay resume, or choose: belay resume ${r.id} --embedder keyword | --embedder off, which also saves the choice; belay settings memory.on_embedder_failure keyword | off saves it for later runs; or leave it paused)` : ''}`);
   }
   if (receipt.store) {
     const st = receipt.store;
@@ -51,6 +53,9 @@ function renderText(receipt) {
       ? 'store: schema 1, unstamped (written before the stamp existed)'
       : `store: schema ${st.schema_version}, last written by ${st.written_by || 'unknown'}`);
   }
+  if (receipt.notes_unembedded && receipt.notes_unembedded.total > 0) lines.push(require('./panel-common.cjs').unembeddedText(receipt.notes_unembedded));
+  if (receipt.notes_held && receipt.notes_held.total > 0) lines.push(require('./panel-common.cjs').heldText(receipt.notes_held));
+  if (receipt.memory_notice) lines.push(`warning: ${receipt.memory_notice.title}. ${receipt.memory_notice.why} ${receipt.memory_notice.fix}`);
   lines.push('');
   return lines.join('\n');
 }
@@ -68,8 +73,8 @@ async function run(ctx) {
   try {
     let runId = parsed.runId;
     let runIdSource = parsed.runId ? 'argument' : null;
+    const { runs } = await core.run.list({});
     if (!runId) {
-      const { runs } = await core.run.list({});
       if (runs.length) {
         // Fix round: run.list orders by the row most recently WRITTEN, not by which run is actually
         // alive — a run that ended a second ago can outrank one still running and never named. The
@@ -80,7 +85,8 @@ async function run(ctx) {
       } else runIdSource = 'none';
     }
     const st = await core.status.get(runId ? { run_id: runId } : {});
-    const receipt = { ...st, run_id_source: runIdSource };
+    const notice = require('../core/memory-notice.cjs').noticeForRun(runs.find(r => r.id === runId) || null, found); // a live run's own levers win over the config file
+    const receipt = { ...st, run_id_source: runIdSource, ...(notice ? { memory_notice: notice } : {}) };
     // Exit 0 whenever the ladder was read, whatever the verdict: a dead system is a valid answer.
     return { code: 0, text: renderText(receipt), json: receipt };
   } catch (e) {

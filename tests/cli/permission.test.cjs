@@ -139,13 +139,14 @@ test('approve: over the owner pipe the verdict row lands allowed with verdict_by
 
 // ================================================================ (u) deny
 
-test('deny: the reason is every positional after the id, the row reads denied with it, and the receipt discloses adapter_pid_alive false when nobody is waiting', async () => {
+test('deny: the reason is every positional after the id, the row reads denied with it, and the receipt discloses adapter_pid_alive false when nobody is waiting', async (tcx) => {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   let core = null;
   try {
     core = await setupOwner(dataDir, 'run-u');
     const wdead = await openCore({ dataDir, caller: { role: 'worker', worker_id: 'w-u1', run_id: 'run-u', pid: deadPid() }, embed: false });
+    tcx.after(() => Promise.resolve().then(() => wdead.close()));
     const id = 'perm-u1';
     await wdead.permission.request({ id, tool: 'Bash', input: null });
     await wdead.close();
@@ -164,7 +165,7 @@ test('deny: the reason is every positional after the id, the row reads denied wi
 
 // ================================================================ (v) refusals
 
-test('approve and deny: each refusal names the fact, creates nothing and elects nothing: no data dir, no owner (last carried), an unknown id, a row already decided, and the usage errors', async () => {
+test('approve and deny: each refusal names the fact, creates nothing and elects nothing: no data dir, no owner (last carried), an unknown id, a row already decided, and the usage errors', async (tcx) => {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   try {
@@ -179,6 +180,8 @@ test('approve and deny: each refusal names the fact, creates nothing and elects 
 
     // no owner: last is carried
     let core = await setupOwner(dataDir, 'run-v');
+    tcx.after(() => Promise.resolve().then(() => core.shutdownOwner()));
+    tcx.after(() => Promise.resolve().then(() => core.close()));
     await core.shutdownOwner();
     await core.close();
     core = null;
@@ -205,6 +208,7 @@ test('approve and deny: each refusal names the fact, creates nothing and elects 
 
       // a row already decided
       const w = await openCore({ dataDir, caller: { role: 'worker', worker_id: 'w-v1', run_id: 'run-v2', pid: process.pid }, embed: false });
+      tcx.after(() => Promise.resolve().then(() => w.close()));
       const id = 'perm-v1';
       await w.permission.request({ id, tool: 'Bash', input: null });
       await core.permission.decide({ id, verdict: 'allow' });

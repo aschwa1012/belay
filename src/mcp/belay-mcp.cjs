@@ -23,10 +23,11 @@ const { createLogWriter } = require('./log-writer.cjs');
 // path either.
 const { createWorkerControl } = require('../run/control.cjs');
 const { createKnowledgeGate } = require('./knowledge-gate.cjs');
+const { withDataNotice } = require('./data-notice.cjs'); // invariant 8: a result that holds a note names itself data
 const { parseArgv, die } = require('./argv.cjs'); // identity from argv only; moved out to keep this file short
 
 const SERVER_NAME = 'belay';
-const SERVER_VERSION = '0.2.0';
+const SERVER_VERSION = '0.3.0';
 const DEFAULT_PROTOCOL = '2025-06-18';
 
 const opts = parseArgv(process.argv.slice(2));
@@ -97,10 +98,13 @@ let runPromise = null;
 let attachPromise = null;
 let ATTACH = null;
 
+// ADR 0045 decision 2: the session key the owner handed this adapter at its bind. Memory only: never a file, the environment, a log or argv.
+let BIND_KEY = null;
+
 function openCoreOnce() {
   if (!corePromise) {
     corePromise = Promise.resolve()
-      .then(() => coreModule().openCore({ dataDir: opts.dataDir, caller: CALLER, embed: opts.embed }))
+      .then(() => coreModule().openCore({ dataDir: opts.dataDir, caller: CALLER, embed: opts.embed, ...(BIND_KEY ? { key: BIND_KEY } : {}) }))
       .then((c) => { core = c; return c; })
       .catch((e) => { corePromise = null; throw e; });
   }
@@ -175,7 +179,9 @@ function openRunManagerOnce() {
     runPromise = openCoreOnce()
       .then((c) => attachOnce(c).then(() => c))
       .then((c) => runModule().createRunManager({
-        core: c,
+        // ADR 0044 decision 6: the run manager writes memory on the harness channel, the tool router on the tool one.
+        // A fixture core has no channel to give.
+        core: typeof c.harness === 'function' ? c.harness() : c,
         dataDir: opts.dataDir,
         runId: opts.runId,
         // api.md §1: paths = { mcpBinary? }, defaulting to src/mcp/belay-mcp.cjs resolved from src/run.
@@ -183,6 +189,7 @@ function openRunManagerOnce() {
         // if belay is installed or run from another checkout, where the default would guess wrong.
         // BELAY_FAKE_PATHS, honoured only when set, merges over it so a test can point the run
         // manager at a fake substrate binary without touching the environment the workers inherit.
+        agentDefaults: opts.agentDefaults || null, // the config's agents block, resolved by belay run
         compactAtTokens: opts.compactAt, worktree: opts.worktree || null, // ADR 0007 decision 3; ADR 0043 decision 1
         memoryLevers: attachedRun() ? require('../run/memory-levers.cjs').leversOfRow(attachedRun()) : null,
         paths: { mcpBinary: __filename.split(path.sep).join('/'), ...FAKE_PATHS },
@@ -238,12 +245,18 @@ async function callCore(dotted, args) {
 async function callTool(name, args) {
   const route = routeOf(name);
   if (!route) throw fail('E_ARGS', `no such tool ${name}`, { tool: name });
-  if (!allows(opts.role, name, opts.workerId)) {
+  let notesOn = opts.role === 'worker' ? !!opts.notes : false;
+  // Only these two tools differ in a notes run; any other call must not cause the read of the run row (the attach row answers once the manager has attached).
+  if (opts.role === 'orchestrator' && (name === 'memory_verify' || name === 'memory_store')) { await knowledgeListed(); notesOn = knowledgeListed.notes(); }
+  if (opts.role === 'orchestrator' && notesOn && name === 'memory_verify') {
+    throw fail('E_ROLE', 'memory_verify is not available in a notes run: dispute a note with memory_report (it holds the note for the archive review)', { tool: name, role: opts.role });
+  }
+  if (!allows(opts.role, name, opts.workerId, { notes: notesOn })) {
     throw fail('E_ROLE', `${name} is not available in ${opts.role} role; it belongs to ${roleOf(name)}`, { tool: name, role: opts.role });
   }
-  validateArgs(name, args);
+  validateArgs(name, args, { notes: notesOn, role: opts.role });
   if (route.via === 'core') {
-    const row = await callCore(route.method, args);
+    const row = withDataNotice(route.method, await callCore(route.method, args));
     // The one place the adapter adds to a row, and it is additive: every field of the core's
     // status.get row (api.md §4) passes through untouched. run.attach happens inside the adapter, so
     // its result reaches no tool of its own, and a reattach that declared workers dead would
@@ -261,6 +274,8 @@ async function callTool(name, args) {
   if (route.via === 'run') {
     const r = await openRunManagerOnce();
     if (typeof r[route.method] !== 'function') throw fail('E_INTERNAL', `the run manager exposes no method ${route.method}`, { method: route.method });
+    // ADR 0048: a restart must answer inside MCP_TOOL_TIMEOUT (120 s); it may spend 100 s, then returns early (manager.restart).
+    if (name === 'worker_restart') return r[route.method]({ ...args, mcp_budget_ms: RESTART_MCP_BUDGET_MS });
     return r[route.method](args);
   }
   throw fail('E_INTERNAL', `tool ${name} has no route`, { tool: name });
@@ -331,7 +346,8 @@ async function handle(msg) {
   if (typeof method === 'string' && method.startsWith('notifications/')) return undefined;
   if (method === 'ping') return send({ jsonrpc: '2.0', id, result: {} });
   if (method === 'tools/list') {
-    const list = toolsFor(opts.role, { knowledge: await knowledgeListed(), workerId: opts.workerId }).concat(opts.permit ? [PERMIT_TOOL] : []);
+    const knowledge = await knowledgeListed(); // the one read of the run row; the notes lever comes from it
+    const list = toolsFor(opts.role, { knowledge, workerId: opts.workerId, notes: opts.role === 'worker' ? opts.notes : knowledgeListed.notes(), queries: knowledgeListed.queries() }).concat(opts.permit ? [PERMIT_TOOL] : []);
     return send({ jsonrpc: '2.0', id, result: { tools: list } });
   }
   if (method === 'tools/call') {
@@ -359,27 +375,52 @@ async function handle(msg) {
 // BELAY_KEEPALIVE_TICK_MS (a positive integer) overrides the 60 s tick of the lease keepalive; a test hook (ADR 0026).
 const keepalive = opts.role !== 'worker' ? null : require('./lease-keepalive.cjs').createKeepalive({
   call: callCore, workerId: opts.workerId, log: wlog, tickMs: Number(process.env.BELAY_KEEPALIVE_TICK_MS) });
-if (keepalive) keepalive.start();
 let buf = '';
 wlog('##', `start role=${opts.role} run=${opts.runId} worker=${opts.workerId || '-'} data=${opts.dataDir}`);
 
-process.stdin.on('data', (d) => {
-  buf += d.toString('utf8');
-  let i;
-  // Each request is handled as its own promise and never awaited here, so a worker_spawn that takes
-  // seconds cannot stop the loop from answering status (ADR 0010 consequences).
-  while ((i = buf.indexOf('\n')) >= 0) {
-    const line = buf.slice(0, i);
-    buf = buf.slice(i + 1);
-    if (!line.trim()) continue;
-    wlog('<<', line);
-    let m;
-    try { m = JSON.parse(line); } catch { wlog('!!', 'unparseable line'); continue; }
-    handle(m).catch((e) => process.stderr.write(`belay-mcp: handler error: ${e && e.message}\n`));
-  }
-});
+// ADR 0045 decision 2: with --bind the adapter claims its identity BEFORE it reads a byte of MCP, so `initialize` is answered only by a
+// bound adapter. The bind pipe's answer must agree with argv; anything else (no listener, a second claim, a different identity) ends this
+// process before the session sees a server, which Claude Code reports as belay not connected, and the launch is refused.
+function startServing() {
+  if (keepalive) keepalive.start();
+  process.stdin.on('data', (d) => {
+    buf += d.toString('utf8');
+    let i;
+    // Each request is handled as its own promise and never awaited here, so a worker_spawn that takes
+    // seconds cannot stop the loop from answering status (ADR 0010 consequences).
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i);
+      buf = buf.slice(i + 1);
+      if (!line.trim()) continue;
+      wlog('<<', line);
+      let m;
+      try { m = JSON.parse(line); } catch { wlog('!!', 'unparseable line'); continue; }
+      handle(m).catch((e) => process.stderr.write(`belay-mcp: handler error: ${e && e.message}\n`));
+    }
+  });
+}
+
+if (!opts.bind) startServing();
+else {
+  require('../core/bind.cjs').claimBind(opts.bind).then((b) => {
+    const c = b.caller || {};
+    if (!require('../core/bind.cjs').identityMatchesArgv(c, opts)) {
+      throw Object.assign(new Error(`the bind names ${JSON.stringify(c)}, which is not this adapter's argv identity`), { code: 'E_BIND' });
+    }
+    BIND_KEY = b.key;
+    wlog('##', `bound bind_id=${b.bind_id}`);
+    startServing();
+  }).catch((e) => {
+    wlog('!!', `bind failed: ${e && e.message}`);
+    process.stderr.write(`belay-mcp: ${e && e.code ? e.code + ': ' : ''}${e && e.message}\n`);
+    wlog.flushSync();
+    process.exit(3);
+  });
+}
 
 let closing = false;
+const RESTART_MCP_BUDGET_MS = 100000;
+
 async function shutdown() {
   if (closing) return;
   closing = true;
@@ -403,7 +444,10 @@ async function shutdown() {
       // Graceful stop of every worker, then core.shutdownOwner(). Never a signal.
       const res = await runManager.shutdown({});
       const stopped = (res && res.stopped) || [];
-      const line = `shutdown stopped=${stopped.length}${stopped.length ? ` [${stopped.join(', ')}]` : ''} ms=${res && res.ms}`;
+      // A verdict drain that was cut off or failed is named here (the review tasks still pending and what became of the receipt), never dropped.
+      const vd = res && res.verdict_drain;
+      const drainText = vd ? ` verdict_drain=[pending ${(vd.pending || []).join(', ') || 'none'}; receipt ${vd.receipt === 'written' ? 'written' : (vd.receipt && vd.receipt.error) || 'none'}${vd.error ? `; error ${vd.error}` : ''}]` : '';
+      const line = `shutdown stopped=${stopped.length}${stopped.length ? ` [${stopped.join(', ')}]` : ''} ms=${res && res.ms}${drainText}`;
       wlog('##', line);
       process.stderr.write(`belay-mcp: ${line}\n`);
     } else if (core) {

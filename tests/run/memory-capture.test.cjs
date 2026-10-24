@@ -124,7 +124,7 @@ test('observe over real parser output: files, commands by tool_use_id and the fa
 
 // ---- the observation row, through the manager ----
 
-test('one observation per turn: embed false, source harness, task_id, the turn row alongside, and an ok event', async () => {
+test('one row per turn: the observation is embedded, source harness, carries the turn tags, and no turn row is written', async () => {
   const core = memoryCore({ levers: ON });
   await run(core, async (m, sb) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1', task_id: 't1' });
@@ -135,18 +135,21 @@ test('one observation per turn: embed false, source harness, task_id, the turn r
     const o = obs[0];
     assert.strictEqual(o.body.kind, o.body.files_modified.length ? 'change' : o.body.kind, 'the class is kept in the body');
     assert.ok(['change', 'discovery', 'failure', 'turn'].includes(o.body.kind));
-    assert.strictEqual(o.embed, false);
+    assert.strictEqual(o.embed, undefined, 'embedded: it is the one embedded row of the turn');
+    assert.deepStrictEqual(o.tags, ['t1', 'w1', 'turn:1'], 'the turn tags');
+    assert.match(o.provenance, /^checkpoint:/, 'the turn provenance');
+    assert.strictEqual(o.body.v, 2);
     assert.strictEqual(o.source, 'harness');
     assert.strictEqual(o.task_id, 't1');
     assert.strictEqual(o.turn, 1);
     assert.strictEqual(o.worker_id, 'w1', 'the observation names the worker it is about');
-    assert.strictEqual(core.stores.find((s) => s.type === 'turn').worker_id, 'w1', 'and so does the turn row, with a lever on');
     assert.ok(o.title.startsWith('turn 1:') && /read input\.md/.test(o.title), o.title);
     assert.deepStrictEqual(o.body.files_read, ['input.md']);
     assert.strictEqual(o.body.tool_counts.Read, 1);
     assert.match(o.body.narrative, /^echo: /);
     assert.strictEqual(o.body.narrative_source, 'worker-stated');
-    assert.strictEqual(core.stores.filter((s) => s.type === 'turn').length, 1, 'the turn row is unchanged');
+    assert.strictEqual(core.stores.filter((s) => s.type === 'turn').length, 0, 'no turn row with observations on');
+    assert.ok(o.text.split(String.fromCharCode(10))[1].startsWith('worker-stated: echo: '), 'the narrative is on the line after the title');
     const ev = obsEvents(core)[0];
     assert.strictEqual(ev.ok, 1);
     assert.strictEqual(ev.worker_id, 'w1');
@@ -174,7 +177,7 @@ test('two turns give two observations, each with only its own events', async () 
   }, { FAKE_TOOL_USES: '3' });
 });
 
-test('a failed observation store is an ok 0 event with the code, is not retried, and the turn row still lands', async () => {
+test('a failed observation store is an ok 0 event with the code, is not retried, and the turn row is written as the lever-off path writes it', async () => {
   const core = memoryCore({ levers: ON, failStore: 'observation' });
   await run(core, async (m, sb) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
@@ -186,8 +189,11 @@ test('a failed observation store is an ok 0 event with the code, is not retried,
     assert.strictEqual(ev.ok, 0);
     assert.strictEqual(ev.code, 'E_OWNER_LOST');
     assert.strictEqual(ev.row_ids, undefined);
-    assert.strictEqual(core.memories.length, 1, 'only the turn row is stored');
-    assert.strictEqual(m._worker('w1').lastError.where, 'memory.store');
+    assert.strictEqual(core.memories.length, 1, 'the turn is not lost: the turn row stands in');
+    const t = core.stores.find((s) => s.type === 'turn');
+    assert.deepStrictEqual(Object.keys(t).sort(), ['provenance', 'tags', 'text', 'type', 'worker_id']);
+    assert.deepStrictEqual(t.tags, ['w1', 'turn:1']);
+    assert.match(t.text, /^echo: /);
   });
 });
 
@@ -217,7 +223,7 @@ test('a turn with no assistant text still gets its observation', async () => {
   assert.strictEqual(core.stores[0].turn, 4);
 });
 
-test('the jobs after a turn get the turn events, the turn row id and the observation id, only when a job lever is on', async () => {
+test('the jobs after a turn get the turn events and the observation id, only when a job lever is on', async () => {
   for (const [levers, expectCalls] of [[ON, 0], [{ ...ON, summaries: 'mechanical' }, 1], [{ capture: true, cost_ledger: true }, 1]]) {
     const seen = [];
     const core = memoryCore({ levers });
@@ -232,7 +238,8 @@ test('the jobs after a turn get the turn events, the turn row id and the observa
       assert.strictEqual(seen.length, expectCalls, JSON.stringify(levers));
       if (expectCalls) {
         assert.strictEqual(seen[0].turnEvents.length, 4, 'two tool_use and two tool_result');
-        assert.ok(seen[0].turnRowId, 'the turn row id is passed');
+        assert.strictEqual(seen[0].turnRowId, levers.observations ? null : seen[0].turnRowId, 'no turn row with observations on');
+        if (!levers.observations) assert.ok(seen[0].turnRowId, 'the turn row id is passed');
         if (levers.observations) assert.ok(seen[0].observationId, 'the observation id is passed'); else assert.strictEqual(seen[0].observationId, null);
       }
     }, { FAKE_TOOL_USES: '2' });

@@ -13,6 +13,7 @@ const path = require('node:path');
 const { fail } = require('./errors.cjs');
 const P = require('./process.cjs');
 const now = () => Date.now();
+const { NOTE_REVIEW_DRAIN_MS } = require('../core/spawn-bounds.cjs');
 
 // runOp(w, name, fn, { waitFor }). The slot is reserved synchronously, before `fn` ever runs and before
 // any `await` — a second call for the same `name` arriving in the same tick sees the reservation already
@@ -70,6 +71,7 @@ const parked = (w) => w.state === 'paused' && !w.child;
 // the store), and only then does the poll stop and the owner go — a write queued after this point (a
 // late `exit` event's own fill-in) finds the flag already flipped and elects nothing (write-row.cjs).
 const MEMORY_DRAIN_MS = 5000;
+const PAIRED_DRAIN_MS = 2000; // paired events already sent when the owner is about to go
 // 500 ms longer than head-lookup.cjs's TOTAL_MS, to cover the kill of a git that timed out at its own bound.
 const HEAD_DRAIN_MS = 5500;
 async function drainHeads(workers) {
@@ -96,19 +98,58 @@ async function killSurvivor(w, e) {
   const gone = await P.waitPidGone(pid, { timeoutMs: 5000 });
   return { worker_id: w.id, code: (e && e.code) || null, pid, pid_gone_ms: gone, tree_kill: w.treeKill || null };
 }
-async function shutdown(workers, { stop, core, clearPoll, markClosed, onDrained }) {
+// Each worker's memory queue, bounded by one MEMORY_DRAIN_MS per worker. Returns the ids that had not finished. The queue is
+// re-read until it stops changing, because a job on it appends the next link from inside the first. With `turns` the worker's own
+// `queue` is awaited first: a turn_end is queued there at the moment it is parsed (worker.cjs), and onTurnEnd creates the memory
+// queue only after its waiters and its row, so a close that follows the turn at once would otherwise find no memory queue yet.
+async function settleQueues(w, turns) {
+  if (turns) await w.queue.catch(() => {});
+  for (let q; q !== w.memoryQueue;) { q = w.memoryQueue; if (q) await q.catch(() => {}); }
+  return true;
+}
+async function drainMemoryQueues(workers, turns = false, boundMs = MEMORY_DRAIN_MS) {
+  const gaveUp = [];
+  await Promise.all([...workers.values()].filter((w) => turns || w.memoryQueue).map(async (w) => {
+    let timer = null;
+    const done = await Promise.race([settleQueues(w, turns), new Promise((res) => { timer = setTimeout(() => res(false), boundMs); })]);
+    clearTimeout(timer);
+    if (!done) { gaveUp.push(w.id); w.lastError = { where: 'shutdown', state: 'memory-queue-gave-up', bound_ms: boundMs }; }
+  }));
+  return gaveUp;
+}
+async function shutdown(workers, { stop, core, clearPoll, markClosed, markOwnerGone, onDrained, beforeStop, markClosing, drainBudgetMs }) {
+  // A review task's verdict application in flight finishes before any worker is stopped (beforeStop, bounded).
+  let queuesGaveUp = null;
+  // ONE budget (NOTE_REVIEW_DRAIN_MS) covers the first drain and the second: `belay run` gives the adapter that much and
+  // no more (run-close.cjs). The second drain keeps a floor of the budget so the receipts of jobs stopped below can still be written.
+  const budget = typeof drainBudgetMs === 'number' ? drainBudgetMs : NOTE_REVIEW_DRAIN_MS;
+  const floor = Math.min(2000, Math.floor(budget / 4));
+  const tBudget = now();
+  const left = (keep) => Math.max(0, budget - keep - (now() - tBudget));
+  // What the verdict drains left (review tasks whose verdicts were still being applied, and whether the receipt naming them was written) comes back on
+  // the result: a cut-off is never silent. A drain that throws is recorded as an error, never swallowed.
+  let verdictDrain = null;
+  const drain = async (ms) => {
+    try { const r = await beforeStop(ms); if (r && typeof r === 'object' && Array.isArray(r.pending)) verdictDrain = r; } catch (e) { verdictDrain = { ...(verdictDrain || { pending: [] }), error: String((e && e.message) || e).slice(0, 200) }; }
+  };
+  if (beforeStop) {
+    await drain(left(floor));
+    if (markClosing) markClosing(); // no verdict application starts past here
+  }
   const t0 = now();
   const stopped = [];
   const left_parked = [];
   const left_stale = [];
   const stop_failed = [];
-  for (const w of [...workers.values()]) {
-    if (w.staleSince) { left_stale.push(w.id); continue; }
-    if (parked(w)) { left_parked.push(w.id); continue; }
+  const seen = new Set();
+  const stopOne = async (w) => {
+    seen.add(w.id);
+    if (w.staleSince) { left_stale.push(w.id); return; }
+    if (parked(w)) { left_parked.push(w.id); return; }
     if (w.op && w.op.name === 'pause') {
       await w.op.promise.catch(() => {});
-      if (w.staleSince) { left_stale.push(w.id); continue; }
-      if (parked(w)) { left_parked.push(w.id); continue; }
+      if (w.staleSince) { left_stale.push(w.id); return; }
+      if (parked(w)) { left_parked.push(w.id); return; }
     }
     try {
       await stop({ worker_id: w.id, mode: 'graceful', timeout_ms: 10000 });
@@ -117,7 +158,12 @@ async function shutdown(workers, { stop, core, clearPoll, markClosed, onDrained 
       w.lastError = { where: 'shutdown', code: e && e.code, message: e && e.message };
       const k = await killSurvivor(w, e); if (k) stop_failed.push(k); // build 12 A10: a failed stop (its row write threw) must not leave the child alive
     }
-  }
+  };
+  for (const w of [...workers.values()]) await stopOne(w);
+  // A worker that joined the map while the loop ran (a review job whose spawn was already under way) is stopped too, until none is new.
+  for (let extra = [...workers.values()].filter((w) => !seen.has(w.id)); extra.length; extra = [...workers.values()].filter((w) => !seen.has(w.id))) for (const w of extra) await stopOne(w);
+  // Jobs stopped above write their receipts now, while the store is still open (and before the owner is marked gone).
+  if (beforeStop) await drain(left(0));
   // ADR 0029 amendment 2 item 4: a head follow-up is queued only once git answers, and markClosed turns every
   // later write away. Each worker's own queue is drained, its pending head request awaited, and its queue
   // drained again (the follow-up is on it by then), all inside one HEAD_DRAIN_MS bound, before the flag flips.
@@ -126,14 +172,11 @@ async function shutdown(workers, { stop, core, clearPoll, markClosed, onDrained 
   await Promise.all([...workers.values()].map((w) => w.queue.catch(() => {})));
   // Review 3, finding F: the turn memory writes (turn-record.cjs queueMemory) are off the turn path; a
   // write already in flight is given at most 5,000 ms to land before the core goes, and any queue still
-  // busy after that is named on the record. A write not yet started sees the closed flag and drops itself.
-  const gaveUp = [];
-  await Promise.all([...workers.values()].filter((w) => w.memoryQueue).map(async (w) => {
-    let timer = null;
-    const done = await Promise.race([w.memoryQueue.then(() => true, () => true), new Promise((res) => { timer = setTimeout(() => res(false), MEMORY_DRAIN_MS); })]);
-    clearTimeout(timer);
-    if (!done) { gaveUp.push(w.id); w.lastError = { where: 'shutdown', state: 'memory-queue-gave-up', bound_ms: MEMORY_DRAIN_MS }; }
-  }));
+  // busy after that is named on the record. A write not yet started sees the closed flag and drops itself;
+  // the event for a write already sent is kept until the owner goes (below).
+  // A queue that already used its bound before the review drain is named, not waited on a second time.
+  const gaveUp = queuesGaveUp ? [...queuesGaveUp] : [];
+  gaveUp.push(...await drainMemoryQueues(new Map([...workers].filter(([, w]) => !gaveUp.includes(w.id)))));
   // ADR 0041/0043: the run's end-of-run memory jobs run once every queue has drained and before the owner goes, so
   // their writes cannot re-elect one. They catch their own failures; this await never blocks the shutdown on one.
   if (onDrained) await onDrained().catch(() => {});
@@ -142,8 +185,21 @@ async function shutdown(workers, { stop, core, clearPoll, markClosed, onDrained 
   // would otherwise send the pipe `shutdown` to belay run's own store owner. A core with no isOwner is a
   // test double, which never holds one: the rule fails closed, as belay-mcp.cjs's own shutdown does.
   const holdsOwner = typeof core.isOwner === 'function' && core.isOwner();
+  // An event for a row already sent is kept until here; past this line none is sent. Those already sent get
+  // PAIRED_DRAIN_MS to land, and a macrotask, before the owner goes: a write begun after it would elect another.
+  let pairedGaveUp = 0;
+  if (markOwnerGone) {
+    const inflight = [...(markOwnerGone() || [])];
+    if (inflight.length) {
+      let timer = null;
+      const done = await Promise.race([Promise.allSettled(inflight).then(() => true), new Promise((res) => { timer = setTimeout(() => res(false), PAIRED_DRAIN_MS); })]);
+      clearTimeout(timer);
+      if (!done) pairedGaveUp = inflight.length;
+    }
+    await new Promise((res) => setImmediate(res));
+  }
   if (holdsOwner && typeof core.shutdownOwner === 'function') await core.shutdownOwner().catch(() => {});
-  return { stopped, left_parked, left_stale, stop_failed, memory_gave_up: gaveUp, ms: now() - t0 };
+  return { stopped, left_parked, left_stale, stop_failed, memory_gave_up: gaveUp, paired_gave_up: pairedGaveUp, ...(verdictDrain && (verdictDrain.pending.length || verdictDrain.error || (verdictDrain.receipt && verdictDrain.receipt !== 'written')) ? { verdict_drain: verdictDrain } : {}), ms: now() - t0 };
 }
 
 // build step 6e-5 design item 5 (review 1/2, worker.cjs's `adopt`): the worker row carries no column for
@@ -179,4 +235,4 @@ function readLaunchOptions(dir) {
   return out;
 }
 
-module.exports = { runOp, shutdown, readLaunchOptions };
+module.exports = { runOp, shutdown, readLaunchOptions, killSurvivor };

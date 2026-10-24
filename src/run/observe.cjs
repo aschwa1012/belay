@@ -1,4 +1,5 @@
 'use strict';
+const path = require('node:path');
 // observe.cjs — the mechanical observation builder (ADR 0041 §3). One observation per turn, never per tool
 // call. Pure and deterministic: no clock, no I/O, no model call. Every field is read off the turn's events
 // (captured shape, ADR 0041 §2) or the turn's final text; `facts` stays empty because a mechanical builder
@@ -7,6 +8,18 @@
 const NARRATIVE_MAX = 1200;
 const TITLE_MAX = 160;
 const TITLE_FILES = 3;
+// The stored body must stay under the store's 8,192 bytes once serialised, after redaction has had its say, and the
+// embedded text must fit the embedder's window whatever the turn did (a token is at least one byte, so a text of
+// at most TEXT_MAX bytes is at most TEXT_MAX tokens). Lists are bounded in steps (BOUNDS); the narrative is cut last.
+const BODY_TARGET = 6500;
+const TEXT_MAX = 6144;
+const BOUNDS = [
+  { cmdKeep: 30, cmdClip: 200, fileKeep: 50, pathClip: 200, toolKeep: 30 },
+  { cmdKeep: 30, cmdClip: 120, fileKeep: 25, pathClip: 160, toolKeep: 20 },
+  { cmdKeep: 15, cmdClip: 80, fileKeep: 10, pathClip: 120, toolKeep: 10 },
+  { cmdKeep: 5, cmdClip: 60, fileKeep: 5, pathClip: 100, toolKeep: 5 },
+  { cmdKeep: 0, cmdClip: 0, fileKeep: 0, pathClip: 80, toolKeep: 3 },
+];
 
 const READ_TOOLS = new Set(['Read', 'NotebookRead']);
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
@@ -25,6 +38,29 @@ function cutBytes(s, max) {
   // A cut that landed inside a surrogate pair leaves a lone high surrogate.
   if (out && /[\ud800-\udbff]$/.test(out)) out = out.slice(0, -1);
   return out;
+}
+
+// ADR 0044 decision 7: a path under the worktree root is stored relative to it, in forward slashes; a path
+// outside it stays absolute, in forward slashes, and so never matches a worktree-relative files_owned entry.
+// A Windows root (drive letter or UNC) compares without regard to case. A relative path is only normalised.
+// One spelling: forward slashes, a \\?\ long-path prefix dropped, '.' and '..' resolved, no trailing slash.
+function normPath(p) {
+  let f = String(p).replace(/\\/g, '/').replace(/^\/\/[?.]\//, '');
+  const unc = /^\/\/[^/]/.test(f);
+  f = path.posix.normalize(f);
+  if (unc && !f.startsWith('//')) f = '/' + f;
+  return f.length > 1 ? f.replace(/\/+$/, '') : f;
+}
+
+function relativeTo(p, root) {
+  const f = normPath(p);
+  if (typeof root !== 'string' || !root) return f;
+  const r = normPath(root);
+  const fold = /^([A-Za-z]:|\/\/)/.test(r);
+  const a = fold ? f.toLowerCase() : f;
+  const b = fold ? r.toLowerCase() : r;
+  if (a === b) return '.';
+  return a.startsWith(b.endsWith('/') ? b : b + '/') ? f.slice(b.endsWith('/') ? r.length : r.length + 1) : f;
 }
 
 const base = (p) => String(p).split(/[\\/]/).filter(Boolean).pop() || String(p);
@@ -46,7 +82,7 @@ function commandOf(e) {
   return raw ? null : undefined;
 }
 
-function scan(events) {
+function scan(events, root) {
   const filesRead = [];
   const filesModified = [];
   const toolCounts = {};
@@ -63,7 +99,8 @@ function scan(events) {
         commands.push({ tool_use_id: e.tool_use_id === undefined ? null : e.tool_use_id, command: cmd, exit_code: null, exit_code_source: null });
         if (e.tool_use_id) byUseId.set(e.tool_use_id, commands.length - 1);
       }
-      const p = argPath(e.args);
+      const argp = argPath(e.args);
+      const p = argp && relativeTo(argp, root);
       if (p && READ_TOOLS.has(e.tool)) pushUnique(filesRead, p);
       if (p && isEditTool(e.tool)) pushUnique(filesModified, p);
     } else if (e.kind === 'tool_result') {
@@ -75,11 +112,45 @@ function scan(events) {
       }
       const target = isEditTool(e.tool) ? filesModified : (READ_TOOLS.has(e.tool) ? filesRead : null);
       // A failed result names no file it changed (a failed Codex file_change lists what it tried).
-      if (target && !e.is_error) for (const p of filesOf(e)) pushUnique(target, p);
+      if (target && !e.is_error) for (const p of filesOf(e)) pushUnique(target, relativeTo(p, root));
     }
   }
   // A file that was modified is not also listed as merely read.
   return { filesRead: filesRead.filter((p) => !filesModified.includes(p)), filesModified, toolCounts, commands, errors };
+}
+
+// A string cut to `max` bytes ends in a marker saying how many bytes the cut took.
+function clip(v, max) {
+  if (typeof v !== 'string' || byteLength(v) <= max) return v;
+  const kept = cutBytes(v, Math.max(0, max - 16));
+  return `${kept}…[+${byteLength(v) - byteLength(kept)}b]`;
+}
+
+// The body at one bound: the newest `cmdKeep` commands, the first `fileKeep` of each file list, the `toolKeep`
+// most used tools; each clipped string carries a marker and every dropped item is counted, never silent.
+function bounded(body, b) {
+  const out = { ...body };
+  const cmds = body.commands.slice(Math.max(0, body.commands.length - b.cmdKeep));
+  out.commands = cmds.map((c) => ({ ...c, command: clip(c.command, b.cmdClip), tool_use_id: clip(c.tool_use_id, 64) }));
+  if (body.commands.length > cmds.length) out.commands_omitted = body.commands.length - cmds.length;
+  for (const k of ['files_read', 'files_modified']) {
+    out[k] = body[k].slice(0, b.fileKeep).map((f) => clip(f, b.pathClip));
+    if (body[k].length > out[k].length) out[`${k}_omitted`] = body[k].length - out[k].length;
+  }
+  const tools = Object.entries(body.tool_counts).sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1));
+  out.tool_counts = Object.fromEntries(tools.slice(0, b.toolKeep).map(([k, n]) => [clip(k, 64), n]));
+  if (tools.length > b.toolKeep) out.tool_counts_omitted = tools.length - b.toolKeep;
+  return out;
+}
+
+// Picks the first bound whose body fits with the whole narrative; only when none does is the narrative cut, last.
+function fitBody(body) {
+  const size = (o) => byteLength(JSON.stringify(o));
+  let out;
+  for (const b of BOUNDS) { out = bounded(body, b); if (size(out) <= BODY_TARGET) return out; }
+  const room = Math.max(0, byteLength(out.narrative) - (size(out) - BODY_TARGET) - 64);
+  out.narrative = clip(out.narrative, room);
+  return out;
 }
 
 function typeOf({ filesModified, filesRead, commands }) {
@@ -107,33 +178,38 @@ function titleOf(turn, { filesModified, filesRead, commands }) {
 
 function textOf(body, title) {
   const lines = [title];
+  // The narrative sits on the line after the title, so the vector (the row is the turn's only embedded row) is
+  // mostly about what the worker said; the files and commands follow (ADR 0044 decision 1).
+  if (body.narrative) lines.push(`worker-stated: ${body.narrative}`);
   if (body.files_modified.length) lines.push(`files modified: ${body.files_modified.join(', ')}`);
   if (body.files_read.length) lines.push(`files read: ${body.files_read.join(', ')}`);
   for (const c of body.commands) {
     lines.push(`command: ${c.command === null ? WITHHELD : c.command} -> exit ${c.exit_code === null ? 'unknown' : c.exit_code}${c.exit_code_source ? ` (${c.exit_code_source})` : ''}`);
   }
+  if (body.commands_omitted) lines.push(`commands omitted: ${body.commands_omitted}`);
   if (body.errors) lines.push(`tool errors: ${body.errors}`);
-  if (body.narrative) lines.push(`worker-stated: ${body.narrative}`);
-  return lines.join('\n');
+  const text = lines.join('\n');
+  return byteLength(text) <= TEXT_MAX ? text : `${cutBytes(text, TEXT_MAX - 40)}\n...[text cut to ${TEXT_MAX} bytes]`;
 }
 
-// buildObservation({ turn, worker_id, task_id, substrate, events, final_text }) → { title, type, body, text }. `type` is the class
+// buildObservation({ turn, worker_id, task_id, substrate, events, final_text, worktree }) → { title, type, body, text }. `type` is the class
 // (change, discovery, failure, turn); the stored row's type stays 'observation' and the class is kept as `body.kind`.
 // `worker_id`, `task_id` and `substrate` are the caller's tags for the stored row; they do not shape the
 // body, so the same turn under two ids yields the same observation.
 function buildObservation(input) {
-  const { turn, events, final_text: finalText } = input || {};
-  const c = scan(Array.isArray(events) ? events : []);
+  const { turn, events, final_text: finalText, worktree } = input || {};
+  const c = scan(Array.isArray(events) ? events : [], worktree);
   const kind = typeOf(c);
   const body = {
-    v: 1, kind, turn: turn === undefined ? null : turn,
+    v: 2, kind, turn: turn === undefined ? null : turn,
     files_read: c.filesRead, files_modified: c.filesModified,
     commands: c.commands, tool_counts: c.toolCounts, errors: c.errors,
     facts: [], narrative: cutBytes(typeof finalText === 'string' ? finalText : '', NARRATIVE_MAX),
     narrative_source: 'worker-stated',
   };
   const title = titleOf(body.turn === null ? '?' : body.turn, c);
-  return { title, type: kind, body, text: textOf(body, title) };
+  const stored = fitBody(body);
+  return { title, type: kind, body: stored, text: textOf(stored, title) };
 }
 
-module.exports = { buildObservation, NARRATIVE_MAX, TITLE_MAX };
+module.exports = { buildObservation, relativeTo, NARRATIVE_MAX, TITLE_MAX, BODY_TARGET, TEXT_MAX };

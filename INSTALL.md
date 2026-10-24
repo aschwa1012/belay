@@ -26,7 +26,7 @@ npm install -g github:aschwa1012/belay
 
 npm may print warnings about install scripts for `onnxruntime-node` and `protobufjs`. They come from the optional embedding library and are harmless.
 
-Once tagged releases exist, you can pin one by adding the tag, for example `npm install -g github:aschwa1012/belay#v0.1.0`.
+To pin a tagged release, add the tag, for example `npm install -g github:aschwa1012/belay#v0.3.0`.
 
 This installs the package `@aschwa1012/belay` and puts the `belay` command on your PATH. The installed files live under:
 
@@ -46,7 +46,7 @@ belay doctor
 
 At this point doctor will report the embedder model as missing, and, outside a project, the config and store as absent. That is expected.
 
-`belay doctor` also reports whether the store has its keyword index. It is built the first time a 0.2.0 run (or `belay memory verify`) opens an existing store. Until then the check says `absent`, and a keyword search says the index is missing.
+`belay doctor` also reports whether the store has its keyword index. It is built the first time a 0.2.0 or later run (or `belay memory verify`) opens an existing store. Until then the check says `absent`, and a keyword search says the index is missing.
 
 ### Finding Claude Code
 
@@ -94,6 +94,13 @@ belay doctor
 
 `belay init` writes `belay.config.json` (containing only `"data_dir": ".belay"`) and creates `.belay\`. It never overwrites an existing config and refuses your home directory. Add `.belay/` to your `.gitignore`.
 
+With no memory project named, `belay doctor` (and `belay run`, `status`, `settings` and the panel) says that memory notes are off for this project. To turn notes on (experimental; see the README's Notes section), name a project; to turn them off and silence the notice, set `memory.notes` to `false`:
+
+```powershell
+belay settings memory.project my-app     # lowercase letters, digits, dot, underscore or dash
+belay settings memory.notes false        # or: no notes, no notice
+```
+
 ### 2. The orchestrator prompt
 
 The orchestrator's instructions are a prompt file. belay ships two templates:
@@ -138,7 +145,7 @@ belay run belay-spec.json --interactive
 While it runs:
 
 - The **band** above the prompt shows the run, the agent count, the cost, and the newest notice or the orchestrator's latest line.
-- **`/orch`** toggles the side panel: each agent's state mark, model, task, context size, prompt-cache countdown and cost, and the run's notices.
+- **`/orch`** toggles the side panel: each agent's state mark, model, task, context size, prompt-cache countdown and cost (the orchestrator's cost is an estimate from Claude Code's session transcript, shown as ≈$; `/clear` starts a new transcript that is not followed), and the run's notices.
 - When a worker ends a turn or dies, belay wakes the orchestrator in the same session.
 - From a second terminal in the project: `belay agents`, `belay notices`, `belay status`, `belay pause <worker-id>`, `belay message <worker-id> "<text>"`, `belay take-control <task-id>`.
 
@@ -167,14 +174,18 @@ An unknown key is a usage error.
 | `close_grace_ms` | 10000 | Grace period when the run closes. |
 | `max_fix_rounds` | 2 | Fix rounds per task after a refuted review. |
 | `fix_cutoff` | `orchestrator` | `orchestrator` (may stop early under named conditions) or `cap-only`. |
-| `on_embedder_failure` | `stop` | `stop` (pause a headless run, stop an interactive one) or `continue`. |
+| `on_embedder_failure` | `required` | `required` (a failed embedder pauses the run), `keyword` (go on ranking by keywords only) or `off` (memory off for the run). The 0.2.0 values `stop` and `continue` are still accepted, as `required` and `keyword`. A run paused this way resumes with `belay resume <run-id> --embedder keyword\|off`, or plain `belay resume <run-id>` once the embedder is fixed. `--embedder` also writes the choice to the config file as `memory.on_embedder_failure`, so later runs inherit it. Also settable in the `memory` block or as a config default. |
 | `compact_at_tokens` | none | Optional compaction threshold for Claude Code workers. |
 | `mode` | `headless` | `headless` or `interactive` (`--interactive` wins). |
 | `interactive_surface_ms` | 15000 | How long the interactive launch check waits. |
 | `fullscreen` | true | Interactive only: Claude Code's fullscreen mode. |
-| `memory` | none | Optional block of memory levers, all off except `redact`. See the README section on memory. An unknown key or a bad value is a usage error. |
+| `memory` | none | Optional block of memory levers, over the config file's `memory` defaults. All are off except `redact`, and `notes`, which is on once `project` is named. See the README sections on memory and notes. An unknown key, a bad value or a removed lever (`note_review` true, `note_review_model`, `note_review_cost_cap_usd`) is a usage error. So is `project_writes` with notes on. `"memory": null` uses no memory levers and inherits none from the config. |
+
+Two further keys, `native_memory` and `handback_question`, exist for belay's own evaluations and are not supported. `native_memory` takes an absolute folder path (not `true`) and turns Claude Code's own auto memory back on for workers, which belay otherwise switches off.
 
 `belay run` also takes `--effort low|medium|high|xhigh|max` for the orchestrator.
+
+Workers' models and efforts come from the orchestrator's spawn call, then from the config file's `agents` block (`belay settings agents.reviewer.model claude-opus-5-5`, `agents.coder.effort`, `agents.<type>.codex_model` for Codex workers), then from built-in defaults: Sonnet 5.5 for coders and testers, Opus 5.5 at effort high for reviewers and researchers.
 
 ## Optional: watch a run from a second window
 
@@ -190,7 +201,7 @@ Start it from the project folder, so belay finds the store. Then, inside that se
 - `/orch` toggles the panel.
 - `/belay unwatch` stops watching.
 
-The panel is read-only: it runs belay's own read commands every few seconds and never writes the store or submits anything to the model. An interactive run needs none of this; it loads its own copy of the plugin.
+The panel runs belay's own read commands every few seconds and never writes the store or submits anything to the model, with two exceptions, both asked for by a button: the review button on its memory line, which takes two presses, starts `belay memory review` for the held notes; and the settle buttons on a note that awaits you, which ask for a reason, then a confirm, and only the confirm runs `belay memory held settle`. An interactive run needs none of this; it loads its own copy of the plugin.
 
 ## Updating
 
@@ -201,6 +212,21 @@ npm install -g github:aschwa1012/belay
 ```
 
 The embedding model stays in its cache and does not need fetching again unless a release changes it (`belay doctor` will say so). Stop any live run before updating.
+
+**From 0.2.0 to 0.3.0: back up `.belay\` first, and check your memory settings.**
+
+- The store keeps schema version 2; the first 0.3.0 run adds columns in place. Going back to 0.2.0 on the same store is not tested, so keep the backup if you might.
+- If your config or run spec already sets `memory.project`, notes are now on for those runs: workers are asked for notes, and a run with notes to check ends with a Haiku scrub capped at $0.10 and 300 s. Add `"notes": false` to the memory block to keep 0.2.0's behaviour.
+- With notes on, project memory works only as notes. A `memory_store` into the project by a worker or the orchestrator is written as a note and must carry a note's fields; the orchestrator's run outcomes go to `summary/<project>`. Rows already in the project that are not notes are no longer shown to workers or the orchestrator; `belay memory` commands still show them.
+- `project_writes` together with notes is refused, so a 0.2.0 config that sets `project_writes` and a project fails until it also sets `"notes": false`.
+- A note reported wrong is now left out of workers' reads until it is settled (`memory.held_visibility`, default `withhold`); set it to `warn` to keep it visible with its warning.
+- With no project set, a notice says memory notes are off; `belay settings memory.notes false` silences it.
+- `on_embedder_failure` takes `required`, `keyword` or `off`; the 0.2.0 values `stop` and `continue` are still accepted, as `required` and `keyword` (in the run spec, the memory block, the config file and `belay settings`). A failed embedder pauses the run, as 0.2.0's default `stop` did; what is new is that a worker's search inside the run fails instead of falling back to keyword search. `belay resume <run-id> --embedder keyword|off` writes its choice to the config file.
+- Commands that need the operator's authority take about 1 s longer, once per connection.
+- Keyword search matches any of the query's terms (0.2.0 required every term) and ranks by relevance; hybrid search and the index also drop common English stopwords and terms found in half the rows or more. The same query can return more rows, in a different order.
+- belay's write commands are refused when run inside a worker's environment, so a script a worker runs can no longer call, for example, `belay memory verify`.
+- Every write to a run that has ended is refused.
+- Copy the orchestrator prompt template again (`orchestrator-interactive.md` or `orchestrator.md`). Both changed: workers are now spawned with an `agent_type`, and the prompts cover notes. An old copy still runs, but its workers get no per-type defaults. From 0.3.0 the templates carry a `<!-- belay-prompt 0.3.0 -->` line, and `belay run` warns (on stderr, and in `prompt_warnings` in the run receipt) when your copy has no such line, an older one, or, with notes on, lacks a placeholder the notes need; the run still starts.
 
 **From 0.1.0 to 0.2.0: back up `.belay\` before the first 0.2.0 run.** That run upgrades an existing store to a new format (schema version 2): it adds columns and a keyword index. After the upgrade, **belay 0.1.0 can no longer open the store**; it refuses with a message to upgrade belay rather than risk writing rows the new version would misread. To go back to 0.1.0, restore your backup.
 
@@ -241,7 +267,8 @@ This closes the orchestrator, kills it and its workers by exact pid, and reports
 **A control command exits 1 when no run is alive.** Control commands act on a live run, so with no run alive they exit 1 and say why:
 
 - `stop`, `take-control`, `task assign`, `approve` and `deny` print `no live run: no owner.lock exists at …`.
-- `pause`, `resume`, `message` and `worker stop|kill|restart` report that there is no such worker, or no such data directory.
+- `pause`, `resume`, `message` and `worker stop|kill|restart` report that there is no such worker, or no such data directory. When the worker's run has ended, they say `run … ended at …`, and `worker kill` says the row is stopped and there is `nothing to kill`.
+- With no data directory at all, `stop` says the data dir does not exist instead of the `owner.lock` message.
 
 The error code (`E_NO_OWNER`) appears only with `--json`. Read commands still work when no run is alive. `belay status` shows whether a run and its owner are alive.
 

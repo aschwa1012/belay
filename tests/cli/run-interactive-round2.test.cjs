@@ -101,8 +101,9 @@ test('F3: a gate failure ends claude with killPid on its exact pid and never a t
 
 test('L6: a stop whose kill was not delivered (signalled false) sets no stop cause and ended_by tells what happened', async (t) => withRun(t, async (dir) => {
   const pidCalls = [];
-  const deps = { killPid: (target) => { pidCalls.push(target.pid); return { signalled: false }; } };
-  const r = start(dir, { env: { FAKE_HOLD_MS: '1500' }, deps });
+  // the stub quits when the stop tries its kill (the owner's check of the stop's caller takes longer than any fixed hold)
+  const deps = { killPid: (target) => { pidCalls.push(target.pid); require('node:fs').writeFileSync(`${dir}/quit`, ''); return { signalled: false }; } };
+  const r = start(dir, { env: { FAKE_EXIT_FILE: `${dir}/quit` }, deps });
   const rec = await waitUntil(() => r.record(), 15000);
   assert.ok(rec);
   assert.ok(await waitUntil(() => currentRunRow(r.dataDir, r.runId), 15000));
@@ -216,28 +217,7 @@ test('F7: after a SIGHUP a claude that does not exit is ended by its pid within 
 
 // ------------------------------------------------------------------ F8: wording and integers
 
-const failureEvent = (over = {}) => ({ worker: 'orchestrator', call: 'memory.store', code: 'E_TIMEOUT', cause: 'timeout', action: 'pause', pause: null, ...over });
-const linesFor = (events) => RI.embedderLines({ mode: 'interactive', embedder: null, embedder_failures: RI.interactiveEmbedder(() => {}).annotate(events) });
-
-test('F8: an embedder failure whose stop the fast close cut does not say "run continued"', () => {
-  const [line] = linesFor([failureEvent()]);
-  assert.ok(!/run continued/.test(line), line);
-  assert.match(line, /stop requested, not confirmed: the fast close cut the wait/);
-  const [fatal] = linesFor([failureEvent({ action: 'stop' })]);
-  assert.ok(!/run continued/.test(fatal), fatal);
-  const [cont] = linesFor([failureEvent({ action: 'continue' })]);
-  assert.match(cont, /run continued/, 'a lever of continue still says so');
-});
-
-test('F8: a stop refused because claude had already exited is not "run NOT ended"', () => {
-  const [line] = linesFor([failureEvent({ action: 'stop', stop: { ok: false, error: 'the run\'s orchestrator (pid 12) already exited: claude exited (code 0)' } })]);
-  assert.ok(!/run NOT ended/.test(line), line);
-  assert.match(line, /claude had already exited/);
-  const [other] = linesFor([failureEvent({ action: 'stop', stop: { ok: false, error: 'no orchestrator to stop yet' } })]);
-  assert.match(other, /run NOT ended: no orchestrator to stop yet/);
-});
-
-// N3: a headless run's wording is d226f9a's, byte for byte. The "already exited" branch is the interactive run's only.
+// N3: a headless run's wording is d226f9a's, byte for byte (an interactive run is paused by an embedder failure, never stopped).
 test('N3: the headless failure lines are d226f9a\'s wording exactly, "already exited" included', () => {
   const head = 'embedder failure: orchestrator, memory.store, E_TIMEOUT (timeout); ';
   const ev = (over) => ({ worker: 'orchestrator', call: 'memory.store', code: 'E_TIMEOUT', cause: 'timeout', ...over });

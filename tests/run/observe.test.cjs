@@ -71,7 +71,7 @@ test('body shape: facts stay empty, narrative is labelled and bounded, commands 
     use('Read', { file_path: 'a.cjs' }, 'r2'),
     ...bash('b1', 'npm test', 0, 'no-error'),
   ], { final_text: 'x'.repeat(NARRATIVE_MAX + 500) });
-  assert.strictEqual(o.body.v, 1);
+  assert.strictEqual(o.body.v, 2);
   assert.strictEqual(o.body.turn, 3);
   assert.deepStrictEqual(o.body.facts, []);
   assert.strictEqual(o.body.narrative_source, 'worker-stated');
@@ -83,6 +83,9 @@ test('body shape: facts stay empty, narrative is labelled and bounded, commands 
   assert.strictEqual(o.body.errors, 0);
   assert.match(o.text, /worker-stated: x+/);
   assert.match(o.text, /command: npm test -> exit 0 \(no-error\)/);
+  const lines = o.text.split(String.fromCharCode(10));
+  assert.match(lines[1], /^worker-stated: x+/, 'the narrative is the line after the title');
+  assert.ok(lines.indexOf(lines.find((l) => l.startsWith('files read:'))) > 1, 'the files follow it');
 });
 
 test('errors count failed tool results; a file modified is not also listed as read', () => {
@@ -176,4 +179,37 @@ test('a withheld command (capture without a redactor) never falls back to the ra
   assert.ok(!JSON.stringify(o).includes('auto-probe-ok'));
   const hand = build([use('Bash', { command: 'curl ' + secret }, 'b1', { command: null }), res('Bash', 'b1', { exit_code: 0, exit_code_source: 'reported' })]);
   assert.ok(!JSON.stringify(hand).includes(secret));
+});
+
+test('paths under the worktree are stored relative, in forward slashes; others stay absolute', () => {
+  const root = 'C:/Work/Temp/wt';
+  const edit = (p, id) => [use('Edit', { file_path: p }, id), res('Edit', id, { files: [p] })];
+  const b = build([
+    ...edit('C:\\Work\\Temp\\wt\\bin\\dispatch.cjs', 'e1'),
+    ...edit('c:/work/temp/WT/src/a.cjs', 'e2'),
+    ...edit('C:\\Work\\Temp\\other\\x.cjs', 'e3'),
+    ...edit('C:/Work/Temp/wt2/y.cjs', 'e4'),
+  ], { worktree: root });
+  assert.deepStrictEqual(b.body.files_modified, ['bin/dispatch.cjs', 'src/a.cjs', 'C:/Work/Temp/other/x.cjs', 'C:/Work/Temp/wt2/y.cjs']);
+  assert.ok(!b.text.includes('\\'), 'the text carries no backslash path');
+  // The same turn under a root that is spelled with backslashes gives the same body.
+  assert.deepStrictEqual(build([...edit('C:/Work/Temp/wt/bin/dispatch.cjs', 'e1')], { worktree: 'C:\\Work\\Temp\\wt\\' }).body.files_modified, ['bin/dispatch.cjs']);
+});
+
+test('a Codex patch path under the worktree is stored relative', () => {
+  const p = '/work/wt/src/b.cjs';
+  const events = [use('file_change', {}, 'c1'), res('file_change', 'c1', { files: [p, '/elsewhere/z.cjs'] })];
+  assert.deepStrictEqual(build(events, { worktree: '/work/wt' }).body.files_modified, ['src/b.cjs', '/elsewhere/z.cjs']);
+});
+
+test('a path is normalised before the under-root test', () => {
+  const { relativeTo } = require('../../src/run/observe.cjs');
+  const root = 'C:/T/wt';
+  assert.strictEqual(relativeTo('C:/T/wt/../wt2/x.js', root), 'C:/T/wt2/x.js', 'a dot-dot escape stays absolute');
+  assert.strictEqual(relativeTo('C:/T/wt/src/../a.js', root), 'a.js');
+  assert.strictEqual(relativeTo('./a.js', root), 'a.js');
+  assert.strictEqual(relativeTo('src/./b.js', root), 'src/b.js');
+  assert.strictEqual(relativeTo('\\\\?\\C:\\T\\wt\\src\\c.js', root), 'src/c.js', 'a long-path prefix is dropped');
+  assert.strictEqual(relativeTo('\\\\?\\C:\\T\\other\\c.js', root), 'C:/T/other/c.js');
+  assert.strictEqual(relativeTo('C:/T/wt/', root), '.');
 });

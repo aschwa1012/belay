@@ -47,9 +47,8 @@ async function killHung(child) {
 // a child would still be this process's own descendant when the count is taken right after the call
 // returns. Scoped to this process's own subtree, unlike a system-wide node.exe count, so it stays
 // truthful when other test files are spawning and killing node processes of their own at the same time.
-async function ownChildCount() {
-  return (await P.childPids(process.pid)).length;
-}
+// A snapshot's PowerShell is one of this process's children, so the count waits for the gate to be idle first (ADR 0048).
+const { ownChildCount } = require('../helpers/own-children.cjs'); // children created at or after this process (a reused pid's orphans are not its own)
 
 function cliSync(args, dataDir, extraEnv) {
   const r = spawnSync(process.execPath, [CLI, ...args, '--data', dataDir, '--json'], {
@@ -64,7 +63,7 @@ function cliSync(args, dataDir, extraEnv) {
 // (tests/cli/stop-helpers.cjs's connectOrchestratorCore waits for the run row; this is the same shape,
 // kept local so no CLI-test file needs to reach into tests/core/helpers.cjs).
 async function connectOrchestrator(dataDir, runId) {
-  const core = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
+  const core = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 15000 });
   const row = await waitUntil(async () => (await core.run.get()).run || null, 10000, 100);
   assert.ok(row, "the CLI's run row never appeared within 10,000 ms");
   return core;
@@ -122,7 +121,10 @@ test('take-control: against a live owner, takes the lease of an assigned task fr
     // runs before the holder check), matching what the note and the command table row now say.
     let displaced = null;
     try {
-      displaced = await openCore({ dataDir, caller: { role: 'worker', run_id: runId, worker_id: 'w1', pid: process.pid } });
+      // the run's owner serves bound callers (ADR 0045): w1 is a worker the way a launched one is, through a bind the run's orchestrator asks for
+      const opened = await core.bindOpen({ role: 'worker', run_id: runId, worker_id: 'w1' });
+      const claimed = await require('../../src/core/bind.cjs').claimBind(opened.pipe, { timeoutMs: 5000 });
+      displaced = await openCore({ dataDir, caller: { ...claimed.caller, pid: process.pid }, key: claimed.key });
       await assert.rejects(
         displaced.lease.renew({ lease_id: assign.new_lease.id }),
         (e) => { assert.strictEqual(e.code, 'E_LEASE_EXPIRED', `the displaced worker's renew must be E_LEASE_EXPIRED, got ${e.code}`); return true; },

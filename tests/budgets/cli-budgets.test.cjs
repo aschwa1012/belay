@@ -149,6 +149,8 @@ let memoryId = null;
 let projDir = null;
 let noStoreDir = null;
 let orchDir = null;
+let txDir = null; // an interactive run's orchestrator dir: a launch marker and no stream
+let txCfg = null; // the sandbox CLAUDE_CONFIG_DIR holding the ~10 MB transcript the marker names
 
 before(async () => {
   dir = sandbox();
@@ -162,6 +164,18 @@ before(async () => {
   orchDir = `${dir}/orch`;
   fs.mkdirSync(orchDir, { recursive: true });
   require('../helpers/synthetic-stream.cjs').writeSyntheticStream(`${orchDir}/stream.jsonl`);
+  // An interactive run's usage comes from its session transcript: the marker names a ~10 MB one under the sandbox
+  // CLAUDE_CONFIG_DIR/projects (the run row's epoch is what the marker must carry).
+  txDir = `${dir}/orch-interactive`;
+  txCfg = `${dir}/claude-config`;
+  fs.mkdirSync(txDir, { recursive: true });
+  fs.mkdirSync(`${txCfg}/projects/p`, { recursive: true });
+  const session = `${txCfg}/projects/p/s.jsonl`;
+  require('../helpers/synthetic-transcript.cjs').writeSyntheticTranscript(session, 10);
+  const core = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: 'run-budgets', pid: process.pid } });
+  let epoch;
+  try { epoch = (await core.run.list({})).runs.find((r) => r.id === 'run-budgets').epoch; } finally { await core.shutdownOwner(); await core.close(); }
+  fs.writeFileSync(`${txDir}/run-start.json`, JSON.stringify({ run_id: 'run-budgets', epoch, mode: 'interactive', started_at: 1, launcher_pid: 1, session_id: 's', session_file: session }));
 });
 
 after(() => {
@@ -197,7 +211,7 @@ test('budgets: config path, doctor and mcp status each add under 500 ms to the h
   assertGate(result);
 });
 
-test('budgets: status, workers, tasks, receipts, memory stats and reads (a hybrid search among them), usage, briefing, logs (with --memory too) and diff each add under 500 ms to the host floor, interleaved, on a dead store', () => {
+test('budgets: status, workers, tasks, receipts, memory stats and reads (held --awaiting, a hybrid search among them), usage, briefing, logs (with --memory too) and diff each add under 500 ms to the host floor, interleaved, on a dead store', () => {
   const result = interleaved({
     spawnFloor: makeSpawnFloor(),
     commands: {
@@ -213,6 +227,7 @@ test('budgets: status, workers, tasks, receipts, memory stats and reads (a hybri
       memory_list: () => timedCli(['memory', 'list', 'run-budgets', '--index', '--data', dataDir], {}, 0, dataDir),
       memory_show: () => timedCli(['memory', 'show', memoryId, '--data', dataDir], {}, 0, dataDir),
       memory_timeline: () => timedCli(['memory', 'timeline', memoryId, '--data', dataDir], {}, 0, dataDir),
+      memory_held_awaiting: () => timedCli(['memory', 'held', '--awaiting', '--data', dataDir], {}, 0, dataDir), // the panel's awaiting-notes read
       memory_export: () => timedCli(['memory', 'export', 'run-budgets', '--data', dataDir], {}, 0, dataDir),
       usage: () => timedCli(['usage', 'run-budgets', '--by', 'worker', '--data', dataDir], {}, 0, dataDir),
       briefing: () => timedCli(['briefing', 'w1', '--data', dataDir], {}, 0, dataDir),
@@ -238,6 +253,24 @@ test('budgets: transcript, notices and agents (ADR 0036 U1) each add under 500 m
     n: N,
   });
   report('panel_reads_dead_store', result);
+  assertGate(result);
+});
+
+// An interactive orchestrator's row reads its ~10 MB session transcript. The sample first proves the transcript was
+// read (context tokens present), so the gate cannot pass by measuring a refusal; the bound is the same as every read's.
+test('budgets: agents on an interactive run reading a ~10 MB session transcript adds under 500 ms to the host floor, interleaved', () => {
+  const env = { CLAUDE_CONFIG_DIR: txCfg };
+  const args = ['agents', 'run-budgets', '--dir', txDir, '--data', dataDir, '--json'];
+  const probe = spawnCli(args, { env });
+  assert.strictEqual(probe.status, 0, probe.stderr);
+  const orch = JSON.parse(probe.stdout).agents.find((a) => a.role === 'orchestrator');
+  assert.ok(orch.context_tokens > 0, `the transcript was not read: ${JSON.stringify({ n: orch.cost_note, p: orch.transcript_path })}`);
+  const result = interleaved({
+    spawnFloor: makeSpawnFloor({ env }),
+    commands: { agents_transcript: () => timedCli(args, { env }, 0, dataDir) },
+    n: N,
+  });
+  report('agents_interactive_transcript', result);
   assertGate(result);
 });
 

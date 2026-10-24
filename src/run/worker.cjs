@@ -15,8 +15,9 @@ const BG = require('./background.cjs'); // build step 6e-3: background-task trac
 const LC = require('./lifecycle.cjs'); // 6e-5: readLaunchOptions (design item 5)
 const EX = require('./exit.cjs'); // 6f-2 design items 6 and 9: terminalState, noteStoppedWhileSettled, settle
 const MC = require('./memory-capture.cjs'); // ADR 0041 decision 7: the turn's event buffer, lever-gated
+const NC = require('./note-chances.cjs'); // the notes sink record: what a worker was shown, sent to the core at task end
 const TR = require('./turn-record.cjs'); // 6i-2 fix round (item 3, should-fix): onTurnEnd's checkpoint/memory write, gated on shutdownFlags
-const { lookupSha } = require('./head-lookup.cjs'); // W2-3: base_sha at record creation, head_sha at settle (write-row.cjs)
+const HL = require('./head-lookup.cjs'); // W2-3: base_sha at record creation, head_sha at settle (write-row.cjs)
 const CP = require('./compaction.cjs'); // ADR 0007 decision 3: the compact_at_tokens lever (inert while ctx.compactAt is null)
 const PI = require('./pid-identity.cjs'); // ADR 0039: pid_created, read once at spawn
 
@@ -28,13 +29,13 @@ const EDIT_TOOLS = ['Edit', 'Write', 'NotebookEdit', 'MultiEdit'];
 const sha12 = (v) => crypto.createHash('sha256').update(JSON.stringify(v === undefined ? null : v)).digest('hex').slice(0, 12);
 const now = () => Date.now();
 
-function newWorkerRecord({ id, substrate, worktree, dataDir, taskId, model, allowedTools, permissionMode, sandbox, permissionPrompt = false, permitWaitMs = 600000, captureBase = true, effort = null, tools = null }) {
+function newWorkerRecord({ id, substrate, worktree, dataDir, taskId, model, allowedTools, permissionMode, sandbox, permissionPrompt = false, permitWaitMs = 600000, captureBase = true, effort = null, tools = null, maxBudgetUsd = null, nativeMemory = null, nativeMemoryAuth = null, trustRecord = false }) {
   const narrowed = L.narrowTools(tools); // ADR 0024: checked before the directory exists; null is the full list
   const dir = L.workerDir(dataDir, id);
   fs.mkdirSync(dir, { recursive: true });
   const w = {
     id, substrate, worktree: L.fwd(path.resolve(worktree)), dir, taskId: taskId || null,
-    model: model || null, effort: effort || null, tools: narrowed, allowedTools: allowedTools || L.DEFAULT_ALLOWED_TOOLS,
+    model: model || null, effort: effort || null, maxBudgetUsd, nativeMemory: nativeMemory == null ? null : trustRecord ? nativeMemory : require('./surface.cjs').checkNativeMemory(nativeMemory), nativeMemoryAuth, tools: narrowed, allowedTools: allowedTools || L.DEFAULT_ALLOWED_TOOLS,
     permissionMode: permissionMode || L.DEFAULT_PERMISSION_MODE, sandbox: sandbox || L.DEFAULT_CODEX_SANDBOX,
     // ADR 0021 decisions 3-4: what the last launch's system/init said it started with (noteInit); null
     // until a ready event carries it, always null for Codex.
@@ -71,7 +72,7 @@ function newWorkerRecord({ id, substrate, worktree, dataDir, taskId, model, allo
     initModel: null, cacheReadTokens: 0, cacheCreationTokens: 0, toolCalls: 0, baseSha: null, baseError: null, basePromise: null, headSha: null, headError: null, headPromise: null, headRequested: false, lastRowHadBase: null, ctx: null,
   };
   // Kept on the record (build 12 a2): shutdown awaits it like headPromise, so no git child of ours still has the worktree as its cwd when the run ends.
-  if (captureBase) w.basePromise = lookupSha(w.worktree).then(({ sha, reason }) => { w.baseSha = sha; w.baseError = sha ? null : reason; if (w.ctx) require('./write-row.cjs').restateBase(w, w.ctx); });
+  if (captureBase) w.basePromise = HL.lookupSha(w.worktree).then(({ sha, reason }) => { w.baseSha = sha; w.baseError = sha ? null : reason; if (w.ctx) require('./write-row.cjs').restateBase(w, w.ctx); });
   return w;
 }
 
@@ -86,15 +87,29 @@ async function adopt({ core, workerId, dataDir }) {
   // 6e-5 item 5: the row has no column for model/allowed_tools/permission_prompt, so a cross-adapter
   // relaunch used to fall back to this build's defaults; argv.json/mcp.json name what actually ran.
   const launchOpts = LC.readLaunchOptions(L.workerDir(dataDir, row.id));
+  // ADR 0024 amendment 4: the built-in tool list comes from the harness row, never from argv.json, which the worker can edit. The row wins
+  // when the two disagree. A row with no record (written before the column) is trusted only when argv.json does not show a narrowed list;
+  // if it does, the harness cannot tell a worker it narrowed from one the worker edited, so the adopt fails closed (a stop still goes through).
+  const S = require('./surface.cjs');
+  let rowTools = null; let toolsRefusal = null;
+  if (row.substrate === 'claude-code') {
+    if (row.tools != null) {
+      try { rowTools = S.narrowTools(row.tools); } catch (e) { toolsRefusal = Object.assign(new Error(`worker ${row.id}: the row's tools record is not a valid built-in list; a launch is refused (${e.message})`), { code: 'E_ARGS', detail: { worker_id: row.id, reason: 'tools_record_invalid' } }); }
+    } else if (launchOpts.tools != null) {
+      toolsRefusal = Object.assign(new Error(`worker ${row.id} has no tools record on its row, and its argv.json names a narrowed list; the harness cannot tell it from an edited file, so a launch is refused (stop is still allowed)`), { code: 'E_ARGS', detail: { worker_id: row.id, reason: 'tools_record_missing' } });
+    }
+  }
   const w = newWorkerRecord({
     id: row.id, substrate: row.substrate, worktree: row.worktree, dataDir, taskId: row.task_id,
-    model: launchOpts.model, allowedTools: launchOpts.allowedTools, tools: launchOpts.tools,
+    model: launchOpts.model, allowedTools: launchOpts.allowedTools, tools: rowTools,
+    nativeMemory: row.native_memory || null, nativeMemoryAuth: row.native_memory_auth || null, trustRecord: true, // ADR 0024 amendment 3: from the harness row, never the worker files; a stop always goes through, an unusable value is refused at the next launch
     permissionMode: row.permission_mode_requested || null, sandbox: null,
     permissionPrompt: launchOpts.permissionPrompt, permitWaitMs: launchOpts.permitWaitMs || 600000,
     effort: row.effort_requested || null, // ADR 0028 decision 2: a cross-adapter relaunch keeps the level
     captureBase: false, // W2-3: an adopted worker keeps the base_sha of its row
   });
   // W2-3: every receipt column comes from the row; head_sha is asked of git again if the adopted worker later settles (SF1).
+  w.indexQueries = Array.isArray(row.memory_queries) ? row.memory_queries : [];
   w.initModel = row.model || null;
   w.cacheReadTokens = row.cache_read_tokens || 0;
   w.cacheCreationTokens = row.cache_creation_tokens || 0;
@@ -103,6 +118,7 @@ async function adopt({ core, workerId, dataDir }) {
   w.baseError = row.base_error || null;
   w.headSha = row.head_sha || null;
   w.lastWrittenSeq = Number.isInteger(row.seq) ? row.seq : null; // the guard's basis for a later restating write
+  if (toolsRefusal) { w.toolsRefusal = toolsRefusal; w.toolsUnknown = true; } // never overwritten (forWorker sets adoptRefusal for other causes): checkLaunch throws the refusal on every launch, and rowOf writes no tools
   if (launchOpts.error) w.lastError = { where: 'adopt', ...launchOpts.error };
   w.sessionId = row.session_id || null;
   w.pid = Number.isInteger(row.pid) ? row.pid : null;
@@ -117,6 +133,7 @@ async function adopt({ core, workerId, dataDir }) {
   w.exitedAt = row.exited_at || null;
   w.exitCode = row.exit_code == null ? null : row.exit_code;
   w.exitSignal = row.exit_signal == null ? null : row.exit_signal;
+  w.convoLost = require('./convo-marker.cjs').present(w.dir); // a replacement whose boundary receipt was never stored: its next launch shows every row
   w.settled = true;
   w.deathEstablishedBy = 'adopted from the store, not seen exit by this adapter';
   // build step 6e-4: a park is a row fact, not an adapter's memory, so it can be resumed by the next
@@ -166,6 +183,9 @@ function rowOf(w, state, { runId, adapterPid }) {
     permission_mode_requested: w.permissionModeEffective ? w.permissionMode : null,
     permission_mode_effective: w.permissionModeEffective, claude_code_version: w.claudeCodeVersion,
     effort_requested: w.effort || null, // ADR 0028 decision 3: the request, not the level the substrate used
+    native_memory: w.nativeMemory || null, native_memory_auth: w.nativeMemoryAuth || null, // ADR 0024 amendment 3: the harness's record of the lever and of who opted in; a relaunch reads them here, and no write other than the spawn's own sets the second
+    ...(w.substrate !== 'claude-code' ? { tools: null } : w.toolsUnknown ? {} : { tools: w.tools || require('./surface.cjs').CLAUDE_TOOLS }), // a refused adopt writes no tools: its row keeps whatever it had, never the six // ADR 0024 amendment 4: the built-in list this worker runs with, on the row; a relaunch reads it here and never from argv.json
+    memory_queries: Array.isArray(w.indexQueries) && w.indexQueries.length ? w.indexQueries : null, // the orchestrator's index queries, kept for a relaunch
     // 6e-5 item 3: `paused` dropped — a parked worker has no process, so it is never mid-turn.
     mid_turn: (state === 'starting' || state === 'running') && !w.turnEnded ? 1 : 0,
     death_established_by: (state === 'stopped' || state === 'dead') ? w.deathEstablishedBy : null,
@@ -330,6 +350,8 @@ async function onTurnEnd(w, e, ctx) {
 const { terminalState, noteStoppedWhileSettled, settle } = EX;
 
 function attach(w, child, ctx) {
+  PI.registerSpawn(w, child, ctx.dataDir); // before anything else is touched: a refusal leaves the record as it was
+  w.launchFailed = false; // a new process is a new launch: the last one's failure no longer blocks its `running` row
   w.settledChild = null; // reset per launch; see the exit handler below
   w.ctx = ctx; w.headPromise = null; w.headSha = null; w.headError = null; w.headRequested = false; // W2-3: head_sha belongs to the life that is starting; captured again at its settle
   w.child = child;
@@ -345,6 +367,7 @@ function attach(w, child, ctx) {
       w.lastEventAt = e.at;
       CP.note(w, e, ctx);
       MC.onEvent(w, e, ctx.memoryLevers); // ADR 0041 decision 7
+      NC.onEvent(w, e, ctx);
       if (e.kind === 'ready') {
         w.sessionId = e.session_id || w.sessionId;
         if (e.model) w.initModel = e.model; // W2-3: what init reported, never the requested string

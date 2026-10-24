@@ -20,6 +20,7 @@ const wants = (lv) => !!(lv && lv.capture && (lv.observations || jobLevers(lv)))
 const jobLevers = (lv) => !!(lv && ((lv.summaries && lv.summaries !== 'off') || lv.project_writes || lv.cost_ledger || lv.wrapup));
 
 const closed = (ctx) => !!(ctx.shutdownFlags && ctx.shutdownFlags.closed);
+const ownerGone = (ctx) => !!(ctx.shutdownFlags && ctx.shutdownFlags.ownerGone);
 const codeOf = (e) => (e && typeof e.code === 'string' && e.code.startsWith('E_') ? e.code : 'E_INTERNAL');
 const noteError = (w, where, e) => { w.lastError = { where, code: e && e.code, message: e && e.message }; };
 
@@ -81,10 +82,29 @@ function shutDown(w, ctx, state) {
   return true;
 }
 
-async function record(ctx, w, fields) {
-  if (shutDown(w, ctx, 'turn-observation-event')) return false;
+// `paired` marks the event that names a row already sent: it is recorded after the flag closes and is dropped
+// only once the owner is gone (lifecycle.cjs), so a row that landed is never left without its event.
+// Runs a paired write and tracks it, so shutdown can wait for it to land before the owner goes. `fn` is called
+// at once, in the same tick as the ownerGone check, so a write that passed the check is always in the set.
+function pairedWrite(ctx, fn) {
+  const p = (async () => fn())();
+  const flags = ctx.shutdownFlags;
+  if (flags) {
+    const set = flags.paired || (flags.paired = new Set());
+    const rm = () => set.delete(p);
+    set.add(p);
+    p.then(rm, rm);
+  }
+  return p;
+}
+
+async function record(ctx, w, fields, paired = false) {
+  if (paired) {
+    if (ownerGone(ctx)) { w.lastError = { where: 'after-shutdown', state: 'turn-observation-event' }; return false; }
+  } else if (shutDown(w, ctx, 'turn-observation-event')) return false;
   try {
-    await ctx.core.memory.recordEvent({ worker_id: w.id, task_id: w.taskId || undefined, ...fields });
+    const send = () => ctx.core.memory.recordEvent({ worker_id: w.id, task_id: w.taskId || undefined, ...fields });
+    await (paired ? pairedWrite(ctx, send) : send());
     return true;
   } catch (err) {
     noteError(w, 'memory.recordEvent', err);
@@ -92,9 +112,10 @@ async function record(ctx, w, fields) {
   }
 }
 
-// The observation row for the turn (ADR 0041 decision 3): one per turn, `embed: false`, source `harness`.
-// A failure is a memory_event with ok 0 and its code, never retried. Returns the stored row, or null.
-async function storeObservation(w, e, ctx, p) {
+// The observation row for the turn (ADR 0041 decision 3, ADR 0044 decision 1): with the lever on it is the turn's
+// only row, so it carries the turn row's tags and provenance and is the one embedded row of the turn. Source
+// `harness`. A failure is a memory_event with ok 0 and its code, never retried. Returns the stored row, or null.
+async function storeObservation(w, e, ctx, p, extra = {}) {
   if (!p.levers.observations) return null;
   const snap = p.snap || snapshotOf(w, e);
   const turn = snap.turn;
@@ -103,14 +124,18 @@ async function storeObservation(w, e, ctx, p) {
     const { buildObservation } = require('./observe.cjs');
     obs = buildObservation({
       turn, worker_id: snap.workerId, task_id: snap.taskId, substrate: snap.substrate,
-      events: p.events, final_text: snap.finalText,
+      events: p.events, final_text: snap.finalText, worktree: w.worktree,
     });
   } catch (err) {
     noteError(w, 'memory.observe', err);
     await record(ctx, w, { kind: 'observation', ok: 0, code: codeOf(err), message: String((err && err.message) || err).slice(0, 300) });
     return null;
   }
-  const args = { type: 'observation', title: obs.title, text: obs.text, body: obs.body, embed: false, source: 'harness', turn };
+  const args = {
+    type: 'observation', title: obs.title, text: obs.text, body: obs.body, source: 'harness', turn,
+    tags: [snap.taskId, snap.workerId, 'turn:' + turn].filter(Boolean),
+    provenance: extra.checkpointId ? 'checkpoint:' + extra.checkpointId : 'worker:' + snap.workerId,
+  };
   if (snap.workerId) args.worker_id = snap.workerId; // the worker the row is about; the adapter writes it as the orchestrator
   if (snap.taskId) args.task_id = snap.taskId;
   if (shutDown(w, ctx, 'turn-observation')) return null;
@@ -119,7 +144,7 @@ async function storeObservation(w, e, ctx, p) {
     row = await ctx.core.memory.store(args);
   } catch (err) {
     noteError(w, 'memory.store', err);
-    await record(ctx, w, { kind: 'observation', ok: 0, code: codeOf(err), message: String((err && err.message) || err).slice(0, 300), dropped: p.dropped > 0 ? 1 : 0 });
+    await record(ctx, w, { kind: 'observation', ok: 0, code: codeOf(err), message: String((err && err.message) || err).slice(0, 300), dropped: p.dropped > 0 ? 1 : 0 }, true);
     return null;
   }
   const id = row && row.id;
@@ -127,7 +152,7 @@ async function storeObservation(w, e, ctx, p) {
     kind: 'observation', ok: 1, row_ids: id ? [id] : [], newest_row_id: id || undefined,
     bytes: Buffer.byteLength(obs.text, 'utf8'), sha256: crypto.createHash('sha256').update(obs.text).digest('hex'),
     dropped: p.dropped > 0 ? 1 : 0,
-  });
+  }, true);
   return row;
 }
 
@@ -146,8 +171,9 @@ async function afterTurn(w, ctx, p, extra) {
 // The whole after-turn memory work for a planned turn, in order: the observation, then the jobs.
 async function finish(w, e, ctx, p, extra) {
   if (shutDown(w, ctx, 'turn-memory')) return;
-  const row = await storeObservation(w, e, ctx, p);
+  const row = await storeObservation(w, e, ctx, p, extra);
   await afterTurn(w, ctx, p, { ...extra, observationId: row ? row.id : null });
+  return row;
 }
 
-module.exports = { onEvent, takeTurn, plan, finish, storeObservation, snapshotOf, MAX_TURN_EVENTS };
+module.exports = { pairedWrite, onEvent, takeTurn, plan, finish, storeObservation, snapshotOf, MAX_TURN_EVENTS };

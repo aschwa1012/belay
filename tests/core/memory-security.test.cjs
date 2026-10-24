@@ -41,7 +41,7 @@ before(async () => {
   store = new Store(`${dir}/memory.db`, { stamp: true });
   const getEmbedder = async () => ({ embed: async () => ({ embedding: [1, 0], embedding_model: 'fake', embedding_revision: 'r', dim: 2 }) });
   E = new Engine({ dataDir: dir, store, getEmbedder, owner: null, establishedBy: 'test' });
-  await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', project_writes: true }) });
+  await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', project_writes: true, notes: false }) });
   await call('run.attach', { ...orch, run_id: 'r2' }, { adapter_pid: process.pid });
 });
 after(() => { store.close(); cleanup(dir); });
@@ -99,7 +99,7 @@ test('a worker deletes or supersedes only its own unverified rows in its own run
 
 test('a worker reads only its run namespace and its project: other rows are refused or not found', async () => {
   const other = await call('memory.store', { ...orch, run_id: 'r2' }, { text: 'a row of run r2', embed: false });
-  const elsewhere = await call('memory.store', orch, { namespace: 'project/other', text: 'a row of another project', embed: false });
+  const elsewhere = await call('memory.store', { ...orch, channel: 'harness' }, { namespace: 'project/other', text: 'a row of another project', embed: false });
   for (const [m, a] of [['memory.search', { namespace: 'run/r2', query: 'row of run', mode: 'keyword' }], ['memory.list', { namespace: 'project/other' }], ['memory.index', { namespaces: ['run/r2'] }], ['memory.corpus', { project: 'other' }]]) {
     await refused(call(m, w2, a), 'E_ROLE');
   }

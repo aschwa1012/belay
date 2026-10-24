@@ -85,4 +85,36 @@ function contentText(content) {
   return content.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n');
 }
 
-module.exports = { WIDTH, STREAM_NAME, fwd, orchestratorStreamPath, chooseRun, clean, v, iso, money, wrapLine, contentText };
+// The count of notes stored without a vector, as one line with the command that embeds them. `u` is the core's
+// { total, by_project }; a project name is core-written but still goes through the sanitiser.
+function unembeddedText(u) {
+  const names = Object.keys(u.by_project || {}).sort();
+  const where = names.length === 1 ? ` --project ${clean(names[0], 64)}` : ' --project <p>';
+  const per = names.length > 1 ? ` (${names.map((p) => `${clean(p, 64)} ${u.by_project[p]}`).join(', ')})` : '';
+  return `${u.total} note${u.total === 1 ? '' : 's'} unembedded${per}: embed with belay memory embed${where}`;
+}
+
+// Notes held for the Opus archive reviewer: a count, the oldest wait in runs, the projects, and the command that dispatches it.
+const GROUND_LABEL = { reported: 'reported wrong', report_confirmed: 'reported wrong', code_contradicts: 'wrong', refuted_review: 'wrong', same_claim: 'duplicate', replaced_by_newer: 'superseded', unsupported: 'unsupported', none: 'other' };
+// "3 held: 2 reported wrong, 1 duplicate; 1 awaits you" when the count is broken down by ground; null when it is not.
+function heldBreakdown(h) {
+  const g = h.by_ground && typeof h.by_ground === 'object' ? h.by_ground : null;
+  if (!g || !Object.keys(g).length) return null;
+  const parts = new Map();
+  for (const [k, n] of Object.entries(g)) parts.set(GROUND_LABEL[k] || clean(k, 30), (parts.get(GROUND_LABEL[k] || clean(k, 30)) || 0) + Number(n));
+  const a = Number(h.awaiting_operator) || 0;
+  return `${h.total} held: ${[...parts].map(([k, n]) => `${n} ${k}`).join(', ')}${a > 0 ? `; ${a} await${a === 1 ? 's' : ''} you` : ''}`;
+}
+
+function heldText(h) {
+  const b = heldBreakdown(h);
+  if (b) return `${b}: review with belay memory review`;
+  const names = Object.keys(h.by_project || {}).sort();
+  const per = names.length > 1 ? ` (${names.map((p) => `${clean(p, 64)} ${h.by_project[p]}`).join(', ')})` : '';
+  const where = names.length === 1 ? ` --project ${clean(names[0], 64)}` : ' --project <p>';
+  const u = h.unsupported || 0;
+  if (u > 0) return `${h.total - u > 0 ? `${h.total - u} held as wrong or duplicate · ` : ''}${u} unsupported awaiting review${per}, oldest ${h.oldest_age_runs || 0} run${h.oldest_age_runs === 1 ? '' : 's'}: review with belay memory review${where}`;
+  return `${h.total} note${h.total === 1 ? '' : 's'} held for review${per}, oldest ${h.oldest_age_runs || 0} run${h.oldest_age_runs === 1 ? '' : 's'}: review with belay memory review${where}`;
+}
+
+module.exports = { unembeddedText, heldText, WIDTH, STREAM_NAME, fwd, orchestratorStreamPath, chooseRun, clean, v, iso, money, wrapLine, contentText };

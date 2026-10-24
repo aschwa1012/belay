@@ -3,8 +3,8 @@
 // (1) A later turn_end lands while an earlier turn's memory store (an embed) is still in flight: each turn's
 // observation and usage row must carry that turn's own numbers, snapshotted when it ended, never the counters
 // the record holds by the time the queued work runs. (2) Shutdown closes the flag while a turn store is in
-// flight: nothing after it may reach the core (a write would elect a new owner once the old one is stopped), and
-// the drop is named on the record.
+// flight: the row already sent keeps its paired event until the owner is gone, nothing else reaches the core (a
+// write would elect a new owner once the old one is stopped), and the drop is named on the record.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -22,7 +22,7 @@ function core({ turnStoreMs = 200, ctxRef }) {
     memory: {
       store: async (a) => {
         calls.push({ m: 'store', type: a.type, turn: a.turn, closed: ctxRef().shutdownFlags.closed });
-        if (a.type === 'turn') await sleep(turnStoreMs);
+        if (a.type === 'observation') await sleep(turnStoreMs); // with observations on the observation is the turn's only row
         n += 1;
         return { id: 'm' + n };
       },
@@ -65,7 +65,7 @@ test('a turn that ends while the previous turn store is in flight: each turn kee
 test('the observation text is the turn\'s own final text even when the record has moved on', async () => {
   const { ctx, c, w } = setup({ capture: true, observations: true });
   const texts = [];
-  c.memory.store = async (a) => { if (a.type === 'turn') await sleep(100); else texts.push([a.turn, a.text]); return { id: 'x' + a.type }; };
+  c.memory.store = async (a) => { if (a.turn === 1) await sleep(100); texts.push([a.turn, a.text]); return { id: 'x' + a.type }; };
   w.turns = 1; w.lastAssistantText = 'ALPHA';
   TR.queueMemory(w, { kind: 'turn_end', text: 'ALPHA' }, ctx, 4000, null);
   w.turns = 2; w.lastAssistantText = 'BRAVO';
@@ -76,15 +76,27 @@ test('the observation text is the turn\'s own final text even when the record ha
   assert.ok(texts[1][1].includes('BRAVO'));
 });
 
-test('shutdown during the turn store: no observation, event or job reaches the core afterwards, and the drop is named', async () => {
+test('shutdown during the turn store: the in-flight observation keeps its paired event, no job reaches the core, and the drop is named', async () => {
   const { ctx, c, w } = setup({ capture: true, observations: true, cost_ledger: true, wrapup: true }, { turnStoreMs: 300 });
   w.turns = 1; w.lastTurnUsage = { output_tokens: 5 }; w.costUsd = 0.01;
   TR.queueMemory(w, { kind: 'turn_end', text: 'hello' }, ctx, 4000, null);
   await sleep(20);
-  ctx.shutdownFlags.closed = true; // markClosed; the drain gives up after MEMORY_DRAIN_MS and the owner stops
+  ctx.shutdownFlags.closed = true; // markClosed; the owner has not gone, so a row already sent still gets its event
   await drain(w);
-  assert.deepStrictEqual(c.calls.map((x) => x.m), ['store'], 'only the turn store already in flight');
-  assert.ok(c.calls.every((x) => x.closed === false), 'nothing was sent after the flag closed');
+  assert.deepStrictEqual(c.calls.map((x) => x.m), ['store', 'recordEvent'], 'the observation already in flight and its event, nothing else');
+  assert.strictEqual(c.calls[0].closed, false, 'the store was sent before the flag closed');
+  assert.strictEqual(w.lastError.where, 'after-shutdown');
+});
+
+test('shutdown during the turn store once the owner is gone: the paired event is dropped too, and named', async () => {
+  const { ctx, c, w } = setup({ capture: true, observations: true, cost_ledger: true, wrapup: true }, { turnStoreMs: 300 });
+  w.turns = 1; w.lastTurnUsage = { output_tokens: 5 }; w.costUsd = 0.01;
+  TR.queueMemory(w, { kind: 'turn_end', text: 'hello' }, ctx, 4000, null);
+  await sleep(20);
+  ctx.shutdownFlags.closed = true;
+  ctx.shutdownFlags.ownerGone = true; // a write now could elect a new owner
+  await drain(w);
+  assert.deepStrictEqual(c.calls.map((x) => x.m), ['store'], 'only the observation store already in flight');
   assert.strictEqual(w.lastError.where, 'after-shutdown');
 });
 
@@ -94,6 +106,6 @@ test('shutdown between the observation and the jobs: the jobs send nothing', asy
   w.turns = 1; w.lastTurnUsage = { output_tokens: 5 }; w.costUsd = 0.01;
   TR.queueMemory(w, { kind: 'turn_end', text: 'hello' }, ctx, 4000, null);
   await drain(w);
-  assert.deepStrictEqual(c.calls.map((x) => x.m), ['store', 'store', 'recordEvent'], 'no usage row after the flag closed');
+  assert.deepStrictEqual(c.calls.map((x) => x.m), ['store', 'recordEvent'], 'no usage row after the flag closed');
   assert.deepStrictEqual(w.lastError, { where: 'after-shutdown', state: 'turn-memory-jobs' });
 });

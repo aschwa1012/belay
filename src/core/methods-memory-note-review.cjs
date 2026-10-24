@@ -1,0 +1,258 @@
+'use strict';
+// methods-memory-note-review.cjs — wave 4: a note is judged on its own by a reviewer other than its writer, and belay applies
+// the verdict (ADR 0044 decision 5, ADR 0047). Three methods:
+//   memory.noteVerdicts    harness only: applies `confirmed` / `refuted` / `unsupported` verdicts to notes, after the citation check
+//   memory.noteRefutation  read: what a refuted note's wake carries
+//   memory.reviewBrief     read: the notes a review task should judge, and the refuted notes its tasks' workers were shown
+//
+// One route reaches noteVerdicts, and the reviewer is never taken from the call's words:
+//   { review_task_id }                   a review task's own hand-back (`result.memory_verdicts`); the reviewer is the worker
+//                                        that handed it back, which belay proved when it took the lease
+// (The short note-review job and its `job` form were removed, 2026-10-21: both are E_ARGS.)
+// Each verdict is applied or refused on its own, and each outcome is a `note_review` receipt. `confirmed` sets status verified,
+// `refuted` sets refuted, both with the receipt `review:<ref>`, status_by harness, and the verdict, reason and cites go on the
+// note's body so a later reader can see why. The citation check is the one gate on meaning: a quote that is not in the reviewed
+// task's recorded evidence is `E_CITATION` and changes nothing. A writer never judges its own note, and neither does a worker
+// that held a lease on the note's task. A refuted note leaves the index, the corpus and a project search that filters status.
+
+const { err } = require('./errors.cjs');
+const rows = require('./rows.cjs');
+const { validId } = require('./memory-rows.cjs');
+const { projectOf } = require('./memory-reach.cjs');
+const { recordEventSync } = require('./methods-ledger.cjs');
+const CC = require('./memory-citations.cjs');
+const F = require('./note-review-facts.cjs');
+const { heldLeaseOn } = require('./verdict.cjs');
+const RV = require('./note-report-verdicts.cjs');
+const { hiddenParts } = require('./note-shown.cjs');
+const BC = require('./note-brief-capture.cjs');
+const { loadNote, isHeldNow, activeHoldOf } = require('./memory-facts.cjs');
+const RH = require('./memory-report-hold.cjs');
+
+const VERDICTS = ['confirmed', 'refuted', 'unsupported'];
+const REASON_MAX = 500;
+const VERDICTS_MAX = 50;
+const REF_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
+const ID_COLS = 'id, title, text, namespace, type, status, status_receipt, task_id, written_by, run_id, body';
+
+const bad = (message, detail) => err('E_ARGS', message, detail);
+const JOB_REMOVED = 'the note-review job was removed (2026-10-21): a report that a note is wrong now holds the note for the archive review, and the hand-back of a review task is the one route for note verdicts';
+const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+const parse = (t) => { try { return t ? JSON.parse(t) : {}; } catch { return {}; } };
+
+function guard(E, caller) {
+  if (caller.role === 'orchestrator' && caller.channel !== 'harness') {
+    throw err('E_ROLE', 'memory.noteVerdicts is belay\'s: the run manager applies a reviewer\'s verdicts, the orchestrator model cannot', { role: caller.role });
+  }
+}
+
+// The route: who reviewed, under what reference, which tasks' notes it may judge, and the verdicts as stated.
+function routeOf(E, args, caller) {
+  if (args.job !== undefined || args.verdicts !== undefined) throw bad(JOB_REMOVED);
+  if (args.review_task_id === undefined) throw bad('memory.noteVerdicts needs review_task_id');
+  {
+    const t = rows.current(E.store, 'task', args.review_task_id);
+    if (!t) throw err('E_NOT_FOUND', `no task ${args.review_task_id}`, { task_id: args.review_task_id });
+    if (!t.acceptance || t.acceptance.verdict !== true) throw bad(`task ${t.id} is not a review task (its acceptance has no verdict)`, { task_id: t.id });
+    const h = t.handoff;
+    const lease = h && typeof h.lease_id === 'string' ? rows.currentLeaseForTask(E.store, t.id) : null;
+    if (!h || !lease || lease.id !== h.lease_id || lease.released_at == null || lease.holder_role !== 'worker' || lease.holder !== h.by) {
+      throw bad(`task ${t.id} has no current released hand-back from a worker, so there is no reviewer to attribute verdicts to`, { task_id: t.id });
+    }
+    const r = h.result && isObj(h.result) ? h.result : null;
+    const list = r && r.memory_verdicts;
+    return { reviewer: h.by, ref: t.id, keyBase: `review:${t.id}@${h.at}`, attempt: lease.id, scope: Array.isArray(t.depends_on) ? t.depends_on : [], capped: true, verdicts: list === undefined ? null : list, reportVerdicts: r && r.report_verdicts !== undefined ? r.report_verdicts : null, task_id: t.id };
+  }
+}
+
+function shapeOne(v) {
+  if (!isObj(v)) throw bad('a verdict must be an object { id, verdict, cites, reason }');
+  for (const k of Object.keys(v)) if (!['id', 'verdict', 'cites', 'reason'].includes(k)) throw bad(`verdict.${k} is not a field; use id, verdict, cites, reason`);
+  if (!validId(v.id)) throw bad('verdict.id must be a note id');
+  if (!VERDICTS.includes(v.verdict)) throw bad(`verdict.verdict must be one of ${VERDICTS.join(', ')}`);
+  if (typeof v.reason !== 'string' || !v.reason.trim() || Buffer.byteLength(v.reason) > REASON_MAX) throw bad(`verdict.reason must be a non-empty string of at most ${REASON_MAX} bytes`);
+  // `unsupported` means no single place proves or disproves the note, so it needs a reason and takes cites only if there are some.
+  const none = v.verdict === 'unsupported' && (v.cites === undefined || (Array.isArray(v.cites) && !v.cites.length));
+  const c = none ? { cites: [] } : CC.checkShape(v.cites);
+  if (c.error) throw bad(`verdict.${c.error}`);
+  return { id: v.id, verdict: v.verdict, reason: v.reason.replace(/\s+/g, ' ').trim(), cites: c.cites };
+}
+
+const codeOf = (e) => (e && typeof e.code === 'string' && e.code.startsWith('E_') ? e.code : 'E_INTERNAL');
+
+// Checks that need the store but no file: the note, its place, the scope and independence. Returns the note row.
+function admit(E, caller, route, v) {
+  const n = E.store.p(`SELECT ${ID_COLS} FROM memory_entries WHERE id = ?`).get(v.id);
+  if (!n || n.type !== 'note') throw err('E_NOT_FOUND', `no note ${v.id}`, { id: v.id });
+  const project = caller.run_id ? projectOf(E, caller) : null;
+  if (n.namespace.startsWith('pending/')) throw bad(`note ${n.id} is pending, so it hides nothing and needs no review; its writer resolves it first`, { id: n.id });
+  if (project && n.namespace !== `project/${project}`) throw bad(`note ${n.id} is in ${n.namespace}, not in this run's project`, { id: n.id });
+  if (!route.scope.includes(n.task_id)) throw bad(`note ${n.id} was written for task ${n.task_id || 'none'}, which this review does not cover (${route.scope.join(', ') || 'no tasks'})`, { id: n.id, task_id: n.task_id });
+  if (n.written_by === `worker:${route.reviewer}`) throw err('E_ROLE', `worker ${route.reviewer} wrote note ${n.id} and cannot review it`, { id: n.id, reason: 'independence' });
+  // A reviewer judges only the notes its brief listed, as they stood then. The list was captured when the brief was rendered
+  // (note-brief-capture.cjs) and is read back here, never recomputed: a note written, reviewed or edited since is not in it.
+  if (!route.captured) throw bad(`no brief was captured for review ${route.ref}, so there is no record of the notes its reviewer was shown; the notes stay unreviewed for a later review`, { id: n.id, reason: 'not_shown' });
+  if (!route.captured.has(n.id)) throw bad(`note ${n.id} was not in the brief of review ${route.ref} (it listed ${route.captured.size} notes), so the reviewer was not shown it; it stays unreviewed for a later review`, { id: n.id, reason: 'not_shown' });
+  if (route.captured.get(n.id) !== BC.hashOfRow(n)) throw bad(`note ${n.id} changed after the brief of review ${route.ref} showed it, so the reviewer judged a different note; it stays unreviewed for a later review`, { id: n.id, reason: 'changed_since_shown' });
+  const held = heldLeaseOn(E.store, route.reviewer, [n.task_id]);
+  if (held) throw err('E_ROLE', `worker ${route.reviewer} held lease ${held.id} on task ${n.task_id}, which wrote note ${n.id}; a worker that did the work cannot review its notes`, { id: n.id, reason: 'independence', lease_id: held.id });
+  const status = n.status || 'unverified';
+  if (status === 'refuted' && v.verdict === 'confirmed') throw bad(`note ${n.id} is refuted; a refuted note is changed back only by the operator`, { id: n.id });
+  // A confirmed note is shown to later workers as reviewed, so it is confirmed only on what the reviewer saw. A review task's brief caps a note
+  // (note-shown.cjs).
+  if (v.verdict === 'confirmed' && route.capped) {
+    const hidden = hiddenParts({ text: n.text, when: parse(n.body).when, evidence: parse(n.body).evidence });
+    if (hidden.length) throw bad(`note ${n.id} was shown to the reviewer in part (${hidden.join('; ')}), so it cannot be confirmed; refute it on a value that was shown, or leave it unreviewed`, { id: n.id, reason: 'hidden_fields', hidden });
+  }
+  return n;
+}
+
+// Inside a transaction (the caller's): sets the status of a note on a confirmed or refuted verdict. The archive reviewer's verify and refute use it too.
+function applyOneIn(E, caller, route, v, n) {
+  const at = Date.now();
+  const receipt = `review:${route.ref}`;
+  const status = v.verdict === 'confirmed' ? 'verified' : 'refuted';
+  const common = { run_id: caller.run_id || n.run_id, worker_id: route.reviewer, task_id: n.task_id, key: `${route.keyBase}:${n.id}` };
+  {
+    // The status is read again inside the write: the citation check awaited a file, and another review may have landed since
+    // admit() looked. A refuted note is never confirmed back, and the answer's previous_status is what was really there.
+    // The receipt is read again here, after every await of the caller: the losing one of two applications of one review answers already and writes nothing.
+    const done = E.store.p("SELECT id FROM memory_event WHERE kind = 'note_review' AND ok = 1 AND key = ?").get(common.key);
+    if (done) return { id: n.id, verdict: v.verdict, already: true, event_id: done.id };
+    const cur = E.store.p('SELECT status FROM memory_entries WHERE id = ?').get(n.id);
+    if (!cur) throw err('E_NOT_FOUND', `no note ${n.id}`, { id: n.id });
+    const previous = cur.status || 'unverified';
+    if (previous === 'refuted' && v.verdict === 'confirmed') throw bad(`note ${n.id} was refuted while this verdict was being checked; a refuted note is changed back only by the operator`, { id: n.id });
+    E.store.setStatusIn(n.id, { status, receipt, by: E.memoryWriter(caller), at }); // through the store, so a held note's status is guarded (held-guard.cjs)
+    E.store.patchBody(n.id, (b) => { b.review = { verdict: v.verdict, by: route.reviewer, ref: route.ref, at, reason: v.reason, cites: v.cites }; return b; });
+    const ev = recordEventSync(E, caller, { kind: 'note_review', ok: true, ...common, row_ids: [n.id], newest_row_id: n.id, message: `${v.verdict}: ${v.reason}`.slice(0, 300) });
+    if (v.verdict === 'refuted') recordEventSync(E, caller, { kind: 'note_refuted', ok: true, ...common, key: `refuted:${n.id}`, row_ids: [n.id], newest_row_id: n.id, message: `note ${n.id} refuted by review ${route.ref}` });
+    return { id: n.id, verdict: v.verdict, applied: true, status, previous_status: previous, status_receipt: receipt, status_by: E.memoryWriter(caller), status_at: at, event_id: ev.id };
+  }
+}
+const applyOne = (E, caller, route, v, n) => E.store.tx(() => applyOneIn(E, caller, route, v, n));
+
+// ADR 0047 amendment (2026-10-22), decision 6: a task reviewer's `refuted` is a report on the note, made through the one shared report body, so the note is
+// held for the archive review and its status is left as it was. The verdict is recorded on the hold as advice (note_verdicts), as for a held note.
+// Only the archive review's cited outcome or the operator refutes a note; no note_refuted receipt is written because nothing was refuted.
+function reportByReview(E, caller, route, v, n) {
+  const project = String(n.namespace).replace('project/', '');
+  const key = `${route.keyBase}:${n.id}`;
+  return E.store.tx(() => {
+    // The receipt is read again here, after every await of the caller: the losing one of two applications of one review answers already and writes nothing.
+    const done = E.store.p("SELECT id FROM memory_event WHERE kind = 'note_review' AND ok = 1 AND key = ?").get(key);
+    if (done) return { already: true, event_id: done.id };
+    const live = loadNote(E, n.id);
+    if (!live || live.type !== 'note' || live.namespace !== `project/${project}`) throw bad(`note ${n.id} left project ${project} while this verdict was being checked`, { id: n.id });
+    const lv = require('./methods-memory-notes.cjs').notesLevers(E, caller);
+    const why = require('./redact.cjs').redact(v.reason).text;
+    const rep = require('./note-report-in.cjs').reportIn(E, caller, {
+      note: n.id, project, by: `worker:${route.reviewer}`, worker_id: route.reviewer, task_id: route.ref, run_id: caller.run_id || n.run_id, why, replaced_by: null, cites: v.cites.slice(0, 5),
+      threshold: lv ? lv.notes_match_threshold : require('./memory-levers.cjs').DEFAULTS.notes_match_threshold, headSha: RV.headOf(E, route.ref), refused: 'so this verdict is refused',
+    });
+    if (rep.held.skipped) throw bad(`note ${n.id} could not be held (${rep.held.skipped}), so the verdict is refused`, { id: n.id, reason: rep.held.skipped });
+    const at = Date.now();
+    RH.bumpHold(E, rep.held.row, (b) => {
+      b.note_verdicts = [...(b.note_verdicts || []), { verdict: v.verdict, by: route.reviewer, ref: route.ref, at, reason: v.reason, cites: v.cites }].slice(-20);
+      return b;
+    });
+    const ev = recordEventSync(E, caller, { kind: 'note_review', ok: true, run_id: caller.run_id || n.run_id, worker_id: route.reviewer, task_id: n.task_id, key, row_ids: [n.id], newest_row_id: n.id, message: `refuted: reported and held (row ${rep.held.row}); ${v.reason}`.slice(0, 300) });
+    return { id: n.id, verdict: 'refuted', applied: true, reported: { seq: rep.report.seq }, withheld: rep.withheld, withheld_why: rep.withheld_why, held_row: rep.held.row, status: n.status || 'unverified', event_id: ev.id };
+  });
+}
+
+// A task reviewer's note verdict on a note that is held for the archive review is ADVICE: it is recorded on the hold (which raises its revision, so
+// the archive reviewer is offered the hold again with it) and the note's status is left alone. Only the archive review's cited outcome verifies
+// or refutes a held note. Returns the applied entry, or null when the note is not held (the verdict is then applied as ever). One transaction.
+function adviceOnHold(E, caller, route, v, n) {
+  const project = String(n.namespace).replace(/^project\//, '');
+  const now = loadNote(E, n.id);
+  if (!now || !isHeldNow(E, now)) return null;
+  return E.store.tx(() => {
+    // The receipt is read again here, after the citation await: the losing one of two applications of one review answers already and writes nothing.
+    const done2 = E.store.p("SELECT id FROM memory_event WHERE kind = 'note_review' AND ok = 1 AND key = ?").get(`${route.keyBase}:${n.id}`);
+    if (done2) return { already: true, event_id: done2.id };
+    const hold = activeHoldOf(E, project, n.id);
+    if (!hold) return null; // a stale pointer only: the verdict is applied as ever (the guard still stands behind the status write)
+    const at = Date.now();
+    const next = RH.bumpHold(E, hold.id, (b) => {
+      b.note_verdicts = [...(b.note_verdicts || []), { verdict: v.verdict, by: route.reviewer, ref: route.ref, at, reason: v.reason, cites: v.cites }].slice(-20);
+      return b;
+    });
+    const ev = recordEventSync(E, caller, { kind: 'note_review', ok: true, run_id: caller.run_id || n.run_id, worker_id: route.reviewer, task_id: n.task_id, key: `${route.keyBase}:${n.id}`, row_ids: [n.id], newest_row_id: n.id, message: `${v.verdict} recorded as advice on held row ${hold.id}: ${v.reason}`.slice(0, 300) });
+    return { id: n.id, verdict: v.verdict, applied: true, advice: true, status: n.status || 'unverified', held_row: hold.id, rev: next.rev, event_id: ev.id };
+  });
+}
+
+async function noteVerdicts(E, caller, args) {
+  guard(E, caller);
+  const route = routeOf(E, args || {}, caller);
+  if (!REF_RE.test(route.ref)) throw bad(`review reference ${route.ref} is not a valid receipt reference`);
+  const out = { reviewer: route.reviewer, ref: route.ref, applied: [], refused: [], already: [], unjudged: [], refused_open: [] };
+  if (route.verdicts === null) { out.no_verdicts = true; }
+  else if (!Array.isArray(route.verdicts) || route.verdicts.length > VERDICTS_MAX) throw bad(`memory_verdicts must be an array of at most ${VERDICTS_MAX} verdicts`);
+  route.captured = BC.capturedFor(E, route.ref, route.attempt); // the brief's notes, as captured when it was rendered
+  RV.validateReportVerdicts(route.reportVerdicts); // all or nothing: a malformed report list is refused before any note verdict is written
+  const seen = new Set(), refusedIds = new Set();
+  for (const [index, raw] of (route.verdicts || []).entries()) {
+    const idOf = isObj(raw) && typeof raw.id === 'string' ? raw.id : null;
+    const refuse = (e, n) => {
+      E.assertRunOpen(caller, 'memory.noteVerdicts'); // a refusal receipt is a write: none after the run ended (audit D42)
+      const message = String(e.message).slice(0, 300);
+      if (idOf) refusedIds.add(idOf);
+      out.refused.push({ index, id: idOf, code: codeOf(e), message, ...(e.detail ? { detail: e.detail } : {}) });
+      try {
+        recordEventSync(E, caller, { kind: 'note_review', ok: false, code: codeOf(e), run_id: (n && n.run_id) || caller.run_id, worker_id: route.reviewer, task_id: (n && n.task_id) || undefined, key: `${route.keyBase}:${idOf || index}`, row_ids: idOf ? [idOf] : undefined, message });
+      } catch { /* the refusal itself is in the answer */ }
+    };
+    let n = null;
+    try {
+      const v = shapeOne(raw);
+      if (seen.has(v.id)) throw bad(`note ${v.id} has two verdicts in one review`, { id: v.id });
+      seen.add(v.id);
+      const done = E.store.p("SELECT id FROM memory_event WHERE kind = 'note_review' AND ok = 1 AND key = ?").get(`${route.keyBase}:${v.id}`);
+      if (done) { out.already.push({ id: v.id, event_id: done.id }); continue; }
+      n = admit(E, caller, route, v);
+      const chk = v.cites.length === 0 ? { ok: true } : await CC.checkTaskCites(E, n.task_id, v.cites, { title: n.title, when: parse(n.body).when, text: n.text, evidence: parse(n.body).evidence });
+      if (!chk.ok) throw err('E_CITATION', `note ${n.id}: ${chk.failures.length} of ${v.cites.length} cites are not in the evidence task ${n.task_id} recorded; the verdict is dropped (${chk.failures.map((f) => `cites[${f.index}] ${f.where}: ${f.reason}`).join(' | ')})`.slice(0, 600), { id: n.id, failures: chk.failures });
+      E.assertRunOpen(caller, 'memory.noteVerdicts'); // the citation check awaited a file; a run that ended meanwhile takes no verdict (audit D42)
+      const advice = adviceOnHold(E, caller, route, v, n);
+      if (advice && advice.already) { out.already.push({ id: v.id, event_id: advice.event_id }); continue; }
+      const got = advice || (v.verdict === 'unsupported' ? require('./note-unsupported.cjs').queueUnsupported(E, caller, route, v, n) : v.verdict === 'refuted' ? reportByReview(E, caller, route, v, n) : applyOne(E, caller, route, v, n));
+      if (got.already) { out.already.push({ id: v.id, event_id: got.event_id }); continue; }
+      out.applied.push(got);
+    } catch (e) { if (e && e.detail && e.detail.run_ended) throw e; refuse(e, n); } // an ended run is not a refused verdict: nothing more is written
+  }
+  if (out.applied.length) E.noteWrite();
+  const judged = new Set([...seen]);
+  const proj = caller.run_id ? projectOf(E, caller) : null;
+  // A note whose verdict was refused is counted once, in `refused`, never also in `unjudged`. It has no status change, so it stays under
+  // review and the next review is offered it again; `refused_open` names those ids so that does not depend on `unjudged`.
+  const under = F.notesUnderReview(E, route.scope, proj).map((x) => x.id);
+  out.refused_open = under.filter((id) => refusedIds.has(id));
+  out.unjudged = under.filter((id) => !judged.has(id) && !refusedIds.has(id));
+  await RV.applyReportVerdicts(E, caller, route, route.reportVerdicts, proj, out); // reports of "wrong" about other notes: upheld holds, rejected leaves a receipt
+  return out;
+}
+
+// The facts a refuted note's wake carries (note-review-facts.cjs). A read.
+async function noteRefutation(E, caller, args) {
+  if (!validId(args && args.note_id)) throw bad('memory.noteRefutation needs a note_id');
+  const r = F.refutationOf(E, args.note_id);
+  if (!r) throw err('E_NOT_FOUND', `no note ${args.note_id}`, { id: args.note_id });
+  return r;
+}
+
+// For a review task's brief: the notes to judge, and the refuted notes any worker of the reviewed tasks was shown. A read;
+// a task that is not a review task has neither.
+async function reviewBrief(E, caller, args) {
+  const proj = caller.run_id ? projectOf(E, caller) : null;
+  if (args && args.reviewed_task_id !== undefined) throw bad(JOB_REMOVED);
+  const t = rows.current(E.store, 'task', args && args.task_id);
+  if (!t) throw err('E_NOT_FOUND', `no task ${args && args.task_id}`, { task_id: args && args.task_id });
+  if (!t.acceptance || t.acceptance.verdict !== true) return { task_id: t.id, review: false, notes: [], refuted_shown: [], reports: [] };
+  const deps = Array.isArray(t.depends_on) ? t.depends_on : [];
+  return { task_id: t.id, review: true, reviewed_tasks: deps, notes: F.notesUnderReview(E, deps, proj), refuted_shown: F.refutedShownTo(E, deps), reports: RV.reportsAbout(E, deps, proj) };
+}
+
+module.exports = { noteVerdicts, noteRefutation, reviewBrief, applyOneIn, noteBriefCapture: BC.capture };

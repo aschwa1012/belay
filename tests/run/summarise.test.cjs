@@ -18,8 +18,8 @@ test('an empty input gives class empty, mechanical generator, no model', async (
   for (const input of [undefined, {}, { task: {}, observations: [], checkpoints: [], handoff: null }]) {
     const r = await summarise(input, { kind: 'mechanical' });
     assert.strictEqual(r.output_class, 'empty');
-    assert.deepStrictEqual(r.generator, { kind: 'mechanical', version: 1, model: null });
-    assert.deepStrictEqual(Object.keys(r.fields), FIELD_KEYS);
+    assert.deepStrictEqual(r.generator, { kind: 'mechanical', version: 2, model: null });
+    assert.deepStrictEqual([...Object.keys(r.fields)].sort(), [...FIELD_KEYS, 'final'].sort());
   }
   assert.strictEqual((await summarise({})).output_class, 'empty'); // kind defaults to mechanical
 });

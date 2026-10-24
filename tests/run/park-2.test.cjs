@@ -19,6 +19,7 @@ const { createRunManager } = require('../../src/run/index.cjs');
 const { createFakeCore, FakeCoreError } = require('./fake-core.cjs');
 const { cleanup } = require('../core/helpers.cjs');
 const P = require('../../src/run/process.cjs');
+const { SNAPSHOT_TIMEOUT_MS } = require('../../src/core/proc-identity.cjs');
 
 // A real, harmless process standing in for a pid Windows reused after the park's own process exited —
 // the same method the reviewer's own pid-reuse probe used (a live bystander at the recorded dead pid).
@@ -55,10 +56,11 @@ async function pollUntil(fn, ms) {
 }
 
 // ---------------------------------------------------------------- (q1)
-test('shutdown: a parked worker is left parked and named in left_parked, and a new adapter resumes it from the store', async () => {
+test('shutdown: a parked worker is left parked and named in left_parked, and a new adapter resumes it from the store', async (tcx) => {
   const sb = sandbox();
   const core = createFakeCore();
   const m1 = mgr(sb, core);
+  tcx.after(() => Promise.resolve().then(() => m1.shutdown()));
   let m2 = null;
   try {
     await m1.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
@@ -160,8 +162,12 @@ test('restart: the slot is released at the running row, so a stop during the fir
     const t0 = Date.now();
     const stopped = await m.stop({ worker_id: 'w1', mode: 'kill', timeout_ms: 5000 });
     const stopMs = Date.now() - t0;
-    // Waiting behind the first turn takes 20,000 ms (its timeout); 10,000 leaves a slow runner room.
-    assert.ok(stopMs < 10000, `stop took ${stopMs} ms, which suggests it waited behind restart's first turn`);
+    // Waiting behind the first turn takes 20,000 ms (its timeout); 10,000 leaves a slow runner room. The kill's own
+    // identity snapshot (ADR 0048, rule a) is not what this test is about: it is subtracted, and itself bounded by
+    // the most one caller can wait for a snapshot, one in flight and then its own.
+    const snapMs = (stopped.tree_kill && stopped.tree_kill.snapshot_ms) || 0;
+    assert.ok(snapMs <= 2 * SNAPSHOT_TIMEOUT_MS, `the kill's snapshot took ${snapMs} ms`);
+    assert.ok(stopMs - snapMs < 10000, `stop took ${stopMs} ms (${snapMs} ms of it the kill's snapshot), which suggests it waited behind restart's first turn`);
     assert.strictEqual(stopped.pid, m._worker('w1').pid);
     delete process.env.FAKE_ANSWER_DELAY_MS;
     const restarted = await restartP;
@@ -336,12 +342,15 @@ test('restart: a second restart issued while the first\'s own relaunch is still 
 });
 
 // ---------------------------------------------------------------- (lifecycle.cjs:65 fix)
-// A resume whose 'starting' row write failed leaves state 'paused' with a live child still attached;
-// shutdown's left_parked skip must never key on the state word alone (review, lifecycle.cjs:65).
-test('shutdown: a paused row with a live child from a failed resume write is stopped, not left parked', async () => {
+// A resume whose 'starting' row write failed used to leave state 'paused' with a live child still attached, and shutdown's left_parked
+// skip must never key on the state word alone (review, lifecycle.cjs:65). Since ADR 0045 amendment 3 a failed start ends its own child
+// (it holds a bind) and the worker goes back to parked, so shutdown finds a parked worker with no process: nothing is alive, and it is
+// listed as left parked, which it truly is.
+test('shutdown: a failed resume write ends the relaunched child and leaves the worker parked, with nothing alive', async (tcx) => {
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core);
+  tcx.after(() => Promise.resolve().then(() => m.shutdown()));
   try {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
     await m._waitTurn('w1', 8000);
@@ -355,13 +364,12 @@ test('shutdown: a paused row with a live child from a failed resume write is sto
     await assert.rejects(m.resume({ worker_id: 'w1', by: 'operator:2' }));
     core.worker.write = origWrite;
     const w = m._worker('w1');
-    assert.strictEqual(w.state, 'paused', 'the in-memory state must still read paused after the failed write');
-    assert.ok(w.child, 'the relaunch must have already attached a live child');
     const pid = w.pid;
+    assert.notStrictEqual(await P.waitPidGone(pid, { timeoutMs: 10000 }), null, 'the failed start must have ended the relaunched process');
+    assert.ok(await pollUntil(() => !w.child && w.state === 'paused', 5000), `the worker must read parked again (state ${w.state}, child ${!!w.child})`);
     const receipt = await m.shutdown();
-    assert.deepStrictEqual(receipt.left_parked, [], 'a worker with a live child must never be left parked');
-    assert.deepStrictEqual(receipt.stopped, ['w1']);
-    assert.strictEqual(P.pidAlive(pid), false, 'the live process must actually have been stopped');
+    assert.deepStrictEqual(receipt.left_parked, ['w1'], 'a parked worker with no process is left parked');
+    assert.strictEqual(P.pidAlive(pid), false, 'and nothing is alive');
   } finally { await teardown({ m, sb }); }
 });
 
@@ -375,9 +383,10 @@ test('park: a result timestamped before the interrupt is never counted as landin
   const m = mgr(sb, core);
   let gateInstalled = false;
   let releaseGate = null;
+  let released = false; // set by teardown: a gate that arms after it must open at once
   const origWrite = core.worker.write.bind(core.worker);
   core.worker.write = async (r) => {
-    if (!gateInstalled && r.id === 'w1' && r.state === 'starting') { gateInstalled = true; const w0 = m._worker('w1'); w0.queue = w0.queue.then(() => new Promise((res) => { releaseGate = res; })); }
+    if (!gateInstalled && r.id === 'w1' && r.state === 'starting') { gateInstalled = true; const w0 = m._worker('w1'); w0.queue = w0.queue.then(() => new Promise((res) => { releaseGate = res; if (released) res(); })); }
     return origWrite(r);
   };
   try {
@@ -396,5 +405,11 @@ test('park: a result timestamped before the interrupt is never counted as landin
     const r = await pausePromise;
     assert.strictEqual(r.paused, true);
     assert.deepStrictEqual(r.results_after_interrupt, [], 'a result timestamped before the interrupt must never be counted, however late its own processing runs');
-  } finally { await teardown({ m, sb }); }
+  } finally {
+    // Release the gate and restore the write first: a gated onTurnEnd holds the worker's queue, and shutdown waits on it.
+    core.worker.write = origWrite;
+    released = true;
+    if (releaseGate) releaseGate();
+    await teardown({ m, sb });
+  }
 });

@@ -105,6 +105,11 @@ CREATE INDEX IF NOT EXISTS ix_usage_run ON usage(run_id, seq);
 // `run.resume` can match by equality with it instead of comparing two processes' clocks.
 const MIGRATIONS = [
   'ALTER TABLE memory_entries ADD COLUMN last_writer_id TEXT',
+  // ADR 0044 decision 6: who wrote the row (`worker:<id>`, `orchestrator`, `harness` or `operator`), set by the core on
+  // insert and never changed. Null on a row written before the column, and read as unknown; nothing guesses it.
+  'ALTER TABLE memory_entries ADD COLUMN written_by TEXT',
+  // ADR 0044 decision 3: the first-message index looks up promoted rows by their `promote:<id>` key.
+  "CREATE INDEX IF NOT EXISTS ix_memory_event_promote ON memory_event(key) WHERE kind = 'project_write' AND ok = 1",
   'ALTER TABLE task ADD COLUMN depends_on TEXT',
   'ALTER TABLE worker ADD COLUMN mid_turn INTEGER',
   'ALTER TABLE worker ADD COLUMN death_established_by TEXT',
@@ -171,6 +176,35 @@ const MIGRATIONS = [
   // ADR 0041 decision 1: the run's memory levers as JSON text, and its project name; written by run.attach, carried forward.
   'ALTER TABLE run ADD COLUMN memory_levers TEXT',
   'ALTER TABLE run ADD COLUMN project TEXT',
+  // ADR 0034 amendment 1: the directory the run's belay.config.json lives in (or is created in), so a resume writes the operator's
+  // choice of embedder mode into the run's own project and never into whatever folder the CLI was run from.
+  'ALTER TABLE run ADD COLUMN project_dir TEXT',
+  // The template version of the text a row's vector was made from: v1 is the text as stored, v2 a note's title and When: line
+  // (memory-notes.cjs embedText). Null on a row embedded before the column, and read as v1. Set on every embedded row.
+  'ALTER TABLE memory_entries ADD COLUMN text_template TEXT',
+  // The orchestrator's memory_queries for a worker (JSON text, nullable), kept on its row so a relaunch or a resume in another
+  // process embeds the same index queries the spawn did.
+  'ALTER TABLE worker ADD COLUMN memory_queries TEXT',
+  // The run's CURRENT on_embedder_failure mode (required, keyword or off): written by run.attach at launch and by run.setEmbedderMode when a
+  // resume switches it, so a reader without the owner's guard (a copy fallback) sees the live mode. Null reads as the default, required.
+  'ALTER TABLE run ADD COLUMN embedder_mode TEXT',
+  // The harness's record of the eval-only native_memory lever (ADR 0024 amendment 3): the resolved folder, or null. A relaunch reads the lever
+  // from here and never from the worker's settings.json, which the worker can edit.
+  'ALTER TABLE worker ADD COLUMN native_memory TEXT',
+  // Who opted in to that folder (JSON text {run_id, lifetime}): set once by the spawn that took the lever and carried unchanged by every later row, so
+  // a refusal's or a stop's row (whose run_id is the writer's) never authorizes the next adopter. Null on a row written before the column.
+  'ALTER TABLE worker ADD COLUMN native_memory_auth TEXT',
+  // ADR 0046 decision 1: the epoch of the attach that revived a run whose previous adapter was dead with no run.end, carried by every later
+  // row of that life; null for a run that never lapsed. It lets "the run that is live now keeps the paths" order two lapsed runs without a clock.
+  'ALTER TABLE run ADD COLUMN revived_epoch INTEGER',
+  // The memory notice the launch resolved for this run: the code of the "notes would be on, but ..." notice (memory-notice.cjs), or null when
+  // there is none (notes on, notes explicitly off, or memory null). The levers cannot say it (a default block is stored as null, and an
+  // explicit off looks like no project), so status and the panel read the run's own answer, never the current config's.
+  'ALTER TABLE run ADD COLUMN memory_notice TEXT',
+  // The built-in tool list a Claude Code worker was launched with (JSON array; ADR 0024 amendment 4, proposed): the harness's record, read by a
+  // restart, resume, park or adopt in another process, never the worker's argv.json, which the worker can edit. Null for Codex and for a row
+  // written before the column.
+  'ALTER TABLE worker ADD COLUMN tools TEXT',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot
@@ -195,7 +229,9 @@ const DEFAULT_LEASE_TTL_MS = 600000;
 // ADR 0003 §2: exact cosine is 108 ms p95 at 100k rows, so the owner refuses above this without opt-in.
 const NAMESPACE_SCAN_CEILING = 50000;
 // ADR 0027 decision 7: the same scan cost at any width, so the row ceiling falls as dims rise (18,750 at 1024).
-const scanCeiling = dim => Math.floor(NAMESPACE_SCAN_CEILING * 384 / Math.max(1, dim));
+let ceilingOverride = null; // tests only: a lower row ceiling, so E_NAMESPACE_TOO_LARGE needs no 18,750 rows
+const scanCeiling = dim => (ceilingOverride !== null ? ceilingOverride : Math.floor(NAMESPACE_SCAN_CEILING * 384 / Math.max(1, dim)));
+const setScanCeilingForTest = n => { ceilingOverride = n; };
 
 function ensureSchema(db) {
   db.exec(MEMORY_SCHEMA);
@@ -208,5 +244,5 @@ function ensureSchema(db) {
 
 module.exports = {
   ensureSchema, MEMORY_SCHEMA, ORCHESTRATION_SCHEMA, MIGRATIONS, MEMORY_INDEXES,
-  WORKER_STATES, TASK_STATES, SUBSTRATES, ROLES, PERMISSION_STATES, DEFAULT_LEASE_TTL_MS, NAMESPACE_SCAN_CEILING, scanCeiling,
+  WORKER_STATES, TASK_STATES, SUBSTRATES, ROLES, PERMISSION_STATES, DEFAULT_LEASE_TTL_MS, NAMESPACE_SCAN_CEILING, scanCeiling, setScanCeilingForTest,
 };

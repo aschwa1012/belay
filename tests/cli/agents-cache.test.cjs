@@ -232,7 +232,11 @@ test('mode: the launcher marker names an interactive run; the receipt answers on
     put('run-start.json', { run_id: 'other-run', mode: 'interactive', started_at: 1, launcher_pid: 1 });
     assert.strictEqual(D.modeOf(dir, run1, fresh).mode, 'headless');
     put('run-start.json', { run_id: RUN, epoch: 1, mode: 'interactive', started_at: 1, launcher_pid: 1 });
-    assert.strictEqual(D.modeOf(dir, run, null).mode, null); // a marker of an earlier epoch of this run does not answer
+    assert.strictEqual(D.modeOf(dir, run, null).mode, 'interactive'); // the launcher's attach is epoch 1; the adapter's attach bumps the row past it
+    put('run-start.json', { run_id: RUN, epoch: 3, mode: 'interactive', started_at: 1, launcher_pid: 1 });
+    assert.strictEqual(D.modeOf(dir, run, null).mode, null); // a marker AHEAD of the row's epoch is not this run's
+    put('run-start.json', { run_id: RUN, epoch: 1, mode: 'headless', started_at: 1, launcher_pid: 1 });
+    assert.strictEqual(D.modeOf(dir, run, null).mode, null); // a marker that does not say interactive does not make it so
     put('run-start.json', { run_id: RUN, epoch: 2, mode: 'interactive', started_at: 1, launcher_pid: 1 });
     assert.strictEqual(D.modeOf(dir, run, null).mode, 'interactive');
     assert.match(D.modeOf(dir, run, null).mode_source, /run-start\.json run_id/);
@@ -407,7 +411,8 @@ test('mode: with epochs from the real core, epoch 2 reading epoch 1\'s appended 
     const row = async () => (await orch.run.list({})).runs.find((r) => r.id === RUN);
     const e1 = await row();
     await orch.run.end({ exit_reason: 'idle' });
-    await orch.run.attach({ adapter_pid: process.pid });
+    const runProc = await openCore({ dataDir, caller: { role: 'operator', run_id: RUN, pid: process.pid }, embed: false }); // only the run process reopens an ended run
+    try { await runProc.run.attach({ adapter_pid: process.pid }); } finally { await runProc.close(); }
     const e2 = await row();
     assert.strictEqual(e1.epoch, 1);
     assert.strictEqual(e2.epoch, 2);

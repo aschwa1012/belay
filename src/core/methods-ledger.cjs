@@ -12,7 +12,7 @@ const rows = require('./rows.cjs');
 const { redact } = require('./redact.cjs');
 
 const EVENT_KINDS = ['observation', 'summary', 'project_write', 'usage', 'index_injected', 'bottle', 'wrapup',
-  'corpus_primed', 'knowledge_ask'];
+  'corpus_primed', 'knowledge_ask', 'reflection', 'levers_unread', 'embed_bound', 'index_bound', 'notes_applied', 'note_chance', 'note_changed', 'archive_purge', 'note_matches', 'note_review', 'note_brief', 'note_refuted', 'review_job', 'scrub_job', 'scrub_owed', 'scrub_alarm', 'review_stage', 'stage_overrun', 'review_claim'];
 const SUBSTRATES = ['claude-code', 'codex'];
 const COST_BASES = ['delta-of-cumulative', 'delta-of-cumulative (new process)', 'none'];
 const GROUPS = ['task', 'worker', 'model', 'turn'];
@@ -60,7 +60,11 @@ function eventOut(r) {
 // memory.recordEvent — one receipt for one harness memory action. A failed action is recorded with
 // ok 0 and the code that failed it, never skipped (ADR 0041 decision 3). A wrap-up is once per
 // (run, key): the store's partial unique index decides, so the loser gets E_EXISTS naming the winner.
-async function recordEvent(E, caller, args) {
+async function recordEvent(E, caller, args) { return recordEventSync(E, caller, args); }
+
+// The same write with no await in it, so a caller already inside a store transaction (memory.promote) records its
+// event in that transaction: the move and its receipt commit together or not at all.
+function recordEventSync(E, caller, args) {
   if (!EVENT_KINDS.includes(args.kind)) {
     throw err('E_ARGS', `memory.recordEvent kind must be one of ${EVENT_KINDS.join(', ')}, and this call carried ${JSON.stringify(args.kind)}`);
   }
@@ -84,7 +88,7 @@ async function recordEvent(E, caller, args) {
     optStr(args.sha256, 'sha256'), ok, code, scrubMessage(E, caller, optStr(args.message, 'message')),
     args.dropped === undefined || args.dropped === null ? null : flag(args.dropped, 'dropped'),
     args.over_budget === undefined || args.over_budget === null ? null : flag(args.over_budget, 'over_budget'),
-    Date.now(), E.writtenBy(caller),
+    Date.now(), caller.channel === 'harness' ? 'harness' : E.writtenBy(caller), // ADR 0044: the run manager's events say harness
   ];
   const sql = `INSERT INTO memory_event(id, run_id, worker_id, task_id, kind, key, row_ids, newest_row_id, bytes,
     sha256, ok, code, message, dropped, over_budget, written_at, written_by) VALUES (${vals.map(() => '?').join(', ')})`;
@@ -204,4 +208,4 @@ async function usageList(E, caller, args) {
   return { groups: [...by].map(([k, rs]) => summarise(k, rs)), totals };
 }
 
-module.exports = { recordEvent, events, usageRecord, usageList, EVENT_KINDS };
+module.exports = { recordEvent, recordEventSync, events, usageRecord, usageList, EVENT_KINDS };

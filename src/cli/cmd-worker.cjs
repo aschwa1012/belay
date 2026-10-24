@@ -12,6 +12,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const C = require('./config.cjs');
+const { isPathId } = require('../core/path-id.cjs');
 const { openCore, pidAlive } = require('../core/index.cjs');
 const P = require('../core/process.cjs');
 const { DEATH_LAND_MS } = require('../core/exit-hold.cjs');
@@ -89,6 +90,17 @@ async function runKill(core, workerId) {
       worker_id: workerId, run_id: w.run_id, killed: false, row: w,
       reason: `row seq ${w.seq} claims ${w.state} but pid ${w.pid} is dead; nothing to kill; the next run.attach supersedes it`,
       established_by: `worker.get row seq ${w.seq} plus a pid check`,
+    };
+  }
+
+  // ADR 0045 decision 4: the signal below is this process's own, so the owner never sees it. A bound owner is asked whether it vouches
+  // for this process as the operator (the worker marker is only the stopgap; a worker's child with the marker removed is refused here).
+  const proof = await require('../core/operator-proof.cjs').operatorProof(core);
+  if (proof.verified === false) {
+    return {
+      worker_id: workerId, run_id: w.run_id, pid: w.pid, killed: false, row: w,
+      reason: `refused: the run's owner would not vouch for this process as the operator (${proof.via}); nothing was signalled`,
+      established_by: proof.via,
     };
   }
 
@@ -179,6 +191,7 @@ async function runRm(core, dataDir, workerId) {
   const workerDir = fwd(path.join(dataDir, 'workers', workerId));
   let onDisk;
   try {
+    if (!isPathId(workerId)) throw new Error('not a valid id'); // an older row's odd id is never joined into a path
     fs.statSync(workerDir);
     onDisk = { path: workerDir, exists: true, bytes: dirSize(workerDir) };
   } catch {
@@ -268,7 +281,7 @@ async function runStopOrRestart(ctx, sub, parsed) {
     return { code: success ? 0 : 1, text: render(receipt), json: receipt };
   } finally {
     // Never elects on this path (worker.get and run.list are reads), kept for symmetry with kill/rm.
-    if (core.isOwner()) { try { await core.shutdownOwner(); } catch { /* best effort */ } }
+    if (core.isOwner()) { try { await require('./release-owner.cjs').releaseOwnerOf(core); } catch { /* best effort */ } }
     await core.close();
   }
 }
@@ -303,7 +316,7 @@ async function runKillOrRm(ctx, sub, workerId) {
     // build step 6b, ADR 0019 decision 6: rm is mode W — with no owner alive this command's own
     // election won the lock, and its owner is shut down here so no owner.lock and no node process
     // outlives the command; kill never elects, so this is a no-op on that path.
-    if (core.isOwner()) { try { await core.shutdownOwner(); } catch { /* best effort */ } }
+    if (core.isOwner()) { try { await require('./release-owner.cjs').releaseOwnerOf(core); } catch { /* best effort */ } }
     await core.close();
   }
 }

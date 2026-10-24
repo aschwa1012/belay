@@ -1,8 +1,8 @@
 'use strict';
 // cmd-memory.cjs — `belay memory search|list|show|timeline|verify|stats|export|import` (ADR 0040 §5, ADR 0043 §3).
 // The read verbs, `export` among them, are mode R: they read state without writing anything and never
-// `mkdir owner.lock`. `verify` and `import` are mode W (they write rows, electing an owner on demand and
-// shutting it down again). Parsing and text
+// `mkdir owner.lock`. `verify`, `import` and `embed` are mode W (they write rows, electing an owner on demand and
+// shutting it down again; `embed --dry-run` only reads). Parsing and text
 // rendering live in memory-render.cjs; this file makes the core calls and maps outcomes to exit codes.
 //
 // A semantic or hybrid search needs a live owner to embed the query (api.md §3, invariant 9: "no read
@@ -310,7 +310,8 @@ async function doImport(core, parsed, read) {
   return { code: refused.length ? 1 : 0, text: R.renderImportText(result), json: result };
 }
 
-const VERB_FN = { export: doExport, import: doImport, search: doSearch, list: doList, show: doShow, timeline: doTimeline, verify: doVerify, stats: doStats };
+const LC = require('./cmd-memory-lifecycle.cjs');
+const VERB_FN = { ...LC.VERB_FN, embed: (...a) => require('./cmd-memory-embed.cjs').doEmbed(...a), export: doExport, import: doImport, search: doSearch, list: doList, show: doShow, timeline: doTimeline, verify: doVerify, stats: doStats };
 
 function failure(sub, e) {
   const code = e.code || 'E_INTERNAL';
@@ -334,23 +335,23 @@ async function run(ctx) {
   const dataDir = C.dataDirOf(found, ctx);
 
   // Mode W for verify, as for `worker rm`: it never creates the data dir.
-  if (parsed.sub === 'verify' && !fs.existsSync(dataDir)) {
+  if ((parsed.sub === 'verify' || parsed.sub === 'embed' || LC.writes(parsed)) && !fs.existsSync(dataDir)) {
     const message = `no such data dir: ${dataDir}`;
-    return { code: 1, text: `belay memory verify: ${message}\n`, json: { error: { code: 'E_NOT_FOUND', message } } };
+    return { code: 1, text: `belay memory ${parsed.sub}: ${message}\n`, json: { error: { code: 'E_NOT_FOUND', message } } };
   }
 
   // A test may hand in a fake core. Production always uses the real one.
   const open = process.env.BELAY_TEST_MODE === '1' && typeof ctx.openCore === 'function' ? ctx.openCore : openCore;
   const core = await open({ dataDir, caller: { role: 'operator', run_id: 'cli', pid: process.pid } });
   try {
-    return await VERB_FN[parsed.sub](core, parsed, parsed.sub === 'import' ? read : ctx);
+    return await VERB_FN[parsed.sub](core, parsed, parsed.sub === 'import' ? read : ctx, found);
   } catch (e) {
     return failure(parsed.sub, e);
   } finally {
-    // verify and import may have won the election; the owner is shut down here so no owner.lock and no node
+    // verify, import and embed may have won the election; the owner is shut down here so no owner.lock and no node
     // process outlives the command. A read verb never elects, so this is a no-op on their paths.
-    if ((parsed.sub === 'verify' || parsed.sub === 'import') && typeof core.isOwner === 'function' && core.isOwner()) {
-      try { await core.shutdownOwner(); } catch { /* best effort */ }
+    if ((parsed.sub === 'verify' || parsed.sub === 'import' || parsed.sub === 'embed' || LC.writes(parsed)) && typeof core.isOwner === 'function' && core.isOwner()) {
+      try { await require('./release-owner.cjs').releaseOwnerOf(core); } catch { /* best effort */ }
     }
     await core.close();
   }

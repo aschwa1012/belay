@@ -164,7 +164,7 @@ for (const cols of [71, 50]) {
     await openPane($, wd)
     const { ui } = await pane($, 'terminal', cols)
     const text = leaves(await ui.drawn()).join(' ')
-    if (cols === 71) { expect(text).toMatch(/rev\s+→\s+holds/); expect(text).toMatch(/work\s+→\s+refuted/) } else { expect(text).not.toMatch(/→\s+holds/); expect(text).toContain('review t-5 holds') }
+    if (cols === 71) { expect(text).toMatch(/rev\s+→\s+holds/); expect(text).toMatch(/work\s+→\s+refuted/) } else { expect(text).toContain('review holds · x'); expect(text).toContain('t-5') } // at 50 the tokens give way to the verdict: it now fits
   })
 }
 test('mod.task title keeps the verdict', async ($, on) => {

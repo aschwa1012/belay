@@ -10,6 +10,9 @@ const crypto = require('node:crypto');
 const L = require('../run/launch.cjs');
 const RI = require('./run-interactive.cjs');
 const { parseLevers } = require('./run-levers.cjs');
+const C = require('./config.cjs');
+const { isPathId, pathIdMessage } = require('../core/path-id.cjs');
+const AD = require('../run/agent-defaults.cjs');
 
 const fwd = (p) => String(p).split('\\').join('/');
 
@@ -17,12 +20,18 @@ const KNOWN_KEYS = new Set([
   'worktree', 'prompt_file', 'run_id', 'model', 'allowed_tools', 'orchestrator_dir',
   'startup_timeout_ms', 'timeout_ms', 'mcp_tool_timeout_ms', 'poll_ms', 'close_grace_ms',
   'max_fix_rounds', 'fix_cutoff', 'on_embedder_failure', 'compact_at_tokens', 'memory', 'mode', 'interactive_surface_ms', 'fullscreen',
+  'native_memory', 'handback_question', // eval-only (0.3.2 memory eval); parseLevers folds them into the run's memory levers
+
 ]);
 const REQUIRED_KEYS = ['worktree', 'prompt_file'];
 
 // All of it: usage errors here return before the data dir is created, the core is opened, or a
 // process is spawned (TASK.md step 1).
-function parseSpec(specPath, cwd) {
+// `opts.found` is the discovered config (default: discovered from cwd); `opts.effort` is `--effort`, which beats the
+// config's agents.orchestrator.effort.
+// Job ids are a prefix (up to 11), the run id, a hyphen and a base-36 time (up to 9): 40 keeps them inside the 64-character id grammar.
+const RUN_ID_MAX = 40;
+function parseSpec(specPath, cwd, opts = {}) {
   let raw;
   try { raw = fs.readFileSync(specPath, 'utf8'); }
   catch (e) { return { error: `could not read spec file ${specPath}: ${e.message}` }; }
@@ -74,15 +83,22 @@ function parseSpec(specPath, cwd) {
     numeric[key] = v;
   }
 
-  const levers = parseLevers(spec); // ADR 0031 decisions 3 and 5
+  const found = opts.found || C.discover(cwd);
+  if (found.found && found.parse_error) return { error: `refusing to start: ${found.parse_error}` }; // its memory and agents defaults cannot be read
+  const agents = AD.fromConfig(found);
+  if (agents.error) return { error: agents.error };
+  const levers = parseLevers(spec, { config: found.found ? { path: found.path, memory: found.config.memory } : null }); // ADR 0031 decisions 3 and 5
   if (levers.error) return { error: levers.error };
   const modeKeys = RI.parseModeKeys(spec); // ADR 0037 decision 1
   if (modeKeys.error) return { error: modeKeys.error };
 
+  const orch = AD.forOrchestrator(agents, { model: spec.model, effort: opts.effort || null, builtinModel: L.DEFAULT_ORCHESTRATOR_MODEL });
   const runId = spec.run_id ? String(spec.run_id) : crypto.randomUUID();
+  if (!isPathId(runId)) return { error: pathIdMessage('run_id', runId) };
+  if (runId.length > RUN_ID_MAX) return { error: `run_id ${JSON.stringify(runId.slice(0, 50))} is ${runId.length} characters and the limit is ${RUN_ID_MAX}: belay's own job worker ids carry it (archreview-<run_id>-<time>) and must stay within 64` }; // it names the orchestrator's temp directory and prefixes job worker ids
   return {
     specPath, worktree, promptFile, promptText, runId, levers,
-    model: spec.model || L.DEFAULT_ORCHESTRATOR_MODEL,
+    model: orch.model.value, effort: orch.effort.value, agentSettings: { orchestrator: orch }, agentDefaults: agents,
     allowedTools: spec.allowed_tools === undefined ? null : spec.allowed_tools,
     orchestratorDirRaw: spec.orchestrator_dir ? resolveRel(spec.orchestrator_dir) : null,
     ...numeric, ...modeKeys.fields,

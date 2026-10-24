@@ -8,13 +8,24 @@
 
 const path = require('node:path');
 const CP = require('../run/compaction.cjs'); // fs and path only; parses --compact-at
+const AD = require('../run/agent-defaults.cjs'); // pure; checks the --agent-defaults file
 
-const VALUE_FLAGS = new Set(['--role', '--run', '--data', '--worker-id', '--log', '--permit-wait-ms', '--compact-at', '--worktree']);
-const BOOL_FLAGS = new Set(['--no-embed', '--experimental-worker-wait', '--permit']);
+const VALUE_FLAGS = new Set(['--role', '--run', '--data', '--worker-id', '--log', '--permit-wait-ms', '--compact-at', '--worktree', '--agent-defaults', '--bind']);
+const BOOL_FLAGS = new Set(['--no-embed', '--experimental-worker-wait', '--permit', '--notes']);
 
 function die(reason) {
   process.stderr.write(`belay-mcp: ${reason}\n`);
   process.exit(2);
+}
+
+// The file belay run wrote beside the adapter's mcp.json: { path, types }. A file that cannot be read or checked is a
+// refusal at start, never a silent run without the defaults the operator configured.
+function readAgentDefaults(file) {
+  let parsed;
+  try { parsed = JSON.parse(require('node:fs').readFileSync(file, 'utf8')); } catch (e) { die(`--agent-defaults ${file} could not be read: ${e.message}`); }
+  const checked = AD.parseAgentsBlock(parsed && parsed.types);
+  if (checked.error) die(`--agent-defaults ${file}: ${checked.error}`);
+  return { path: parsed.path || null, types: checked.value };
 }
 
 function parseArgv(argv) {
@@ -36,6 +47,9 @@ function parseArgv(argv) {
     if (a === '--experimental-worker-wait') continue;
     // --permit is a worker adapter's flag; the role check runs once argv is fully parsed.
     if (a === '--permit') { out.permit = true; continue; }
+    // --notes (ADR 0047): the run has the notes lever on, so this worker adapter lists the notes fields. The run manager
+    // passes it from the run row; it changes what is listed, never who the caller is.
+    if (a === '--notes') { out.notes = true; continue; }
     if (BOOL_FLAGS.has(a)) continue;
     if (!VALUE_FLAGS.has(a)) die(`unknown argument ${a}`);
     const v = argv[i + 1];
@@ -46,6 +60,8 @@ function parseArgv(argv) {
     else if (a === '--data') out.dataDir = v;
     else if (a === '--worker-id') out.workerId = v;
     else if (a === '--log') out.logFile = v;
+    else if (a === '--bind') out.bind = v; // ADR 0045: the one-shot pipe this adapter claims its identity from, before it answers `initialize`
+    else if (a === '--agent-defaults') out.agentDefaults = readAgentDefaults(v); // the run's resolved config `agents` block, for worker_spawn's agent_type
     else if (a === '--worktree') out.worktree = path.resolve(v).split('\\').join('/'); // ADR 0043 decision 1: the run's worktree
     else if (a === '--compact-at') { // ADR 0007 decision 3: the run's compact_at_tokens, for the workers this manager spawns
       out.compactAt = CP.parseCompactAt(/^\d+$/.test(v) ? Number(v) : NaN).value;
@@ -62,7 +78,10 @@ function parseArgv(argv) {
   if (out.role === 'worker' && !out.workerId) die('--worker-id <id> is required in worker role; a worker cannot name itself');
   if (out.role === 'orchestrator' && out.workerId) die('--worker-id is not accepted in orchestrator role');
   if (out.permit && out.role === 'orchestrator') die('--permit is a worker adapter\'s flag');
+  if (out.notes && out.role !== 'worker') die('--notes is a worker adapter\'s flag');
+  if (out.agentDefaults && out.role !== 'orchestrator') die('--agent-defaults is an orchestrator adapter\'s flag');
   out.permit = !!out.permit;
+  out.notes = !!out.notes;
   if (out.permitWaitMs === undefined) out.permitWaitMs = 600000;
   const defaulted = !out.dataDir;
   out.dataDir = path.resolve(out.dataDir || path.join(process.cwd(), '.belay')).split('\\').join('/');

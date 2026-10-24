@@ -14,6 +14,21 @@
 //   run_ended           the run row's ended_at
 //   memory_wrapup       a wrap-up memory_event of the run (ADR 0043 decision 2): one per task and one per run, once
 //                       each because the store refuses a second (run, key)
+//   scrub_alarm         the run-close scrub took more notes out of sight (holds and archiving relations) than is normal (scrub_alarm_holds): look before the archive reviewer runs
+//   scrub_owed          items the run-close scrub did not reach (a crash, a timeout, a cost over the cap or the item cap); the next scrub takes them first
+//   stage_overrun       a run-close scrub or archive review that spent its cost cap: nothing was applied, the next attempt takes half the items, and the line names the lever to raise
+//   scrub_dropped       items a scrub child gave no entry in two scrubs: named here, and not offered again until a new report, sighting or nomination
+//   scrub_failed        a run-close scrub or archive review that failed, with its code
+//   notes_held          notes held for the on-demand Opus archive reviewer (a hold of any kind): `count` (every queued note), `unsupported` (the part with no warning), `by_project`, `oldest_age_runs`, `oldest_at` (when the oldest hold was marked), the command that dispatches it
+//   run_disputed        a run whose reports hit the circuit breaker (it disputed more notes than its limit): the run, project, `disputed` and `limit`; "run <id> disputed N notes; review before trusting"
+//   reports_unjudged    reports that a note is wrong with no verdict applied (the review or job may have run and left it out; a verdict applied is the only way off the list): listed for the operator
+//   notes_stranded      notes with an unsettled open scrub proposal or pending after their run ended (`count` is distinct notes): `count`, `open_proposals`, `pending`, `by_project`, `note_ids`
+//   review_running     an archive review of a project holds its claim (memory.reviewState): the pid, the job, the claim, and whether a pid check
+//                       answers; a claim whose process is gone says so (the next review takes it over)
+//   review_ended        the newest archive review of a project ended in the last 24 hours: ok, or the code that failed it, and its summary
+//   notes_unembedded    notes stored without a vector (on_embedder_failure keyword), in any project namespace: a count from
+//                       the rows, whatever the run. Only `belay memory embed` embeds them. Its ts is the newest such note's
+//                       creation time.
 
 const fs = require('node:fs');
 const C = require('./config.cjs');
@@ -130,7 +145,8 @@ function verdictEvents(tasks, runId) {
 function runEvents(run) {
   const out = [];
   if (run.paused_at != null && run.ended_at == null) {
-    out.push({ kind: 'run_paused', ts: num(run.paused_at), run_id: run.id, paused_by: run.paused_by ?? null, source: `run row seq ${run.seq}` });
+    const embedder = /embedder-failure [(]/.test(run.paused_by || '');
+    out.push({ kind: 'run_paused', ts: num(run.paused_at), run_id: run.id, paused_by: run.paused_by ?? null, ...(embedder ? { embedder_failure: true } : {}), source: `run row seq ${run.seq}` });
   }
   if (run.ended_at != null) {
     out.push({ kind: 'run_ended', ts: num(run.ended_at), run_id: run.id, exit_reason: run.exit_reason ?? null, source: `run row seq ${run.seq}` });
@@ -157,6 +173,70 @@ function wrapupEvents(events, runId) {
   return out;
 }
 
+// The run-close stages' receipts (the scrubber and the archive reviewer): the alarm, the owed items and a failed stage. A stage that
+// worked is a receipt in `belay memory proposals` and the store, not a notice.
+const STAGE_KINDS = ['scrub_alarm', 'scrub_owed', 'scrub_job', 'review_stage', 'stage_overrun'];
+function stageEvents(events, runId) {
+  // An owed receipt is shown only while an id it names is still owed: the last owed receipt for the id, with no later ok scrub_job.
+  const stillOwed = new Map();
+  events.forEach((e, i) => {
+    const ids = Array.isArray(e.row_ids) ? e.row_ids : [];
+    if (e.kind === 'scrub_owed' && e.code !== 'E_DROPPED') ids.forEach((id) => stillOwed.set(id, i));
+    else if (e.kind === 'scrub_owed') ids.forEach((id) => stillOwed.delete(id));
+    else if (e.kind === 'scrub_job' && e.ok) ids.forEach((id) => stillOwed.delete(id));
+  });
+  const out = [];
+  events.forEach((e, i) => {
+    const ok = !!e.ok;
+    if (e.kind === 'scrub_owed' && e.code !== 'E_DROPPED' && !(Array.isArray(e.row_ids) && e.row_ids.some((id) => stillOwed.get(id) === i))) return;
+    const kind = e.kind === 'scrub_alarm' ? 'scrub_alarm' : e.kind === 'scrub_owed' && e.code === 'E_DROPPED' ? 'scrub_dropped' : e.kind === 'scrub_owed' ? 'scrub_owed' : e.kind === 'stage_overrun' ? 'stage_overrun' : !ok ? 'scrub_failed' : null;
+    if (!kind) return;
+    out.push({ kind, ts: num(e.written_at), run_id: runId, stage: e.kind, ok, code: e.code ?? null, text: e.message ?? null, row_ids: e.row_ids ?? null, source: `memory_event ${e.id}` });
+  });
+  return out;
+}
+
+// The standing count of notes with no vector, one event while there are any (memory.unembedded, a plain read).
+function unembeddedEvents(u, runId) {
+  if (!u || !(u.total > 0)) return [];
+  return [{ kind: 'notes_unembedded', ts: num(u.newest_at), run_id: runId, count: u.total, by_project: u.by_project || {}, command: 'belay memory embed', source: 'memory_entries rows of type note with no vector' }];
+}
+
+// The standing count of notes held for the on-demand Opus archive reviewer (memory.held, a plain read), modelled on notes_unembedded.
+function heldEvents(h, runId) {
+  if (!h || !(h.total > 0)) return [];
+  return [{ kind: 'notes_held', ts: num(h.newest_at), run_id: runId, count: h.total, unsupported: h.unsupported || 0, by_project: h.by_project || {}, by_ground: h.by_ground || {}, awaiting_operator: h.awaiting_operator || 0, oldest_age_runs: h.oldest_age_runs || 0, oldest_at: num(h.oldest_at), command: 'belay memory review', source: 'memory_entries rows of type held, state held' }];
+}
+
+// A run whose reports tripped the circuit breaker (notes-held.cjs `breakers`): one event per run and project while its holds stand.
+function breakerEvents(list, runId) {
+  return (list || []).map((b) => ({ kind: 'run_disputed', ts: num(b.at), run_id: runId, disputed_run: b.run_id, project: b.project, disputed: b.disputed, limit: b.limit ?? null, command: 'belay memory review', source: 'held rows with a report the breaker did not withhold' }));
+}
+
+// The archive reviews (memory.reviewState, a plain read of the claim receipts): one event per project while its newest review runs, and
+// for REVIEW_SHOWN_MS after one ended. `pid_alive` is a pid check (not an identity proof); the launcher and the next review prove identity.
+const REVIEW_SHOWN_MS = 24 * 3600 * 1000;
+function reviewEvents(reviews, runId, now = Date.now()) {
+  const out = [];
+  for (const [project, st] of Object.entries((reviews && reviews.reviews) || {})) {
+    if (st.state === 'running' && st.claim) out.push({ kind: 'review_running', ts: num(st.claim.at), run_id: runId, project, pid: st.claim.pid, job: st.claim.job, claim_id: st.claim.id, pid_alive: !!st.pid_alive, source: st.established_by });
+    else if (st.state === 'ended' && st.release && now - (num(st.release.at) || 0) < REVIEW_SHOWN_MS) out.push({ kind: 'review_ended', ts: num(st.release.at), run_id: runId, project, ok: !!st.release.ok, code: st.release.code || null, text: st.release.summary || null, job: st.release.job, claim_id: st.claim ? st.claim.id : null, source: st.established_by });
+  }
+  return out;
+}
+
+// Reports of "wrong" with no verdict applied, one standing event while any exist (the operator looks: belay memory proposals).
+function unjudgedEvents(list, runId) {
+  if (!list || !list.length) return [];
+  return [{ kind: 'reports_unjudged', ts: Math.max(0, ...list.map((r) => num(r.at) || 0)) || null, run_id: runId, count: list.length, note_ids: list.slice(0, 20).map((r) => r.id), command: 'belay memory proposals', source: 'reported_wrong entries no verdict has been applied to' }];
+}
+
+// Work the default propose mode leaves for the operator (notes-held.cjs `stranded`): proposals whose mark is still unsettled and pending notes whose run ended; `count` is distinct notes.
+function strandedEvents(s, runId) {
+  if (!s || !(s.total > 0)) return [];
+  return [{ kind: 'notes_stranded', ts: num(s.newest_at), run_id: runId, count: s.total, open_proposals: s.open_proposals || 0, pending: s.pending || 0, by_project: s.by_project || {}, note_ids: s.note_ids || [], command: 'belay memory proposals', source: 'memory_entries rows: open proposals whose mark is unsettled, pending notes of ended runs' }];
+}
+
 // Oldest first; an event with no timestamp sorts last, and `--since` keeps it, since nothing proves it is old.
 function ordered(events, since) {
   const kept = since == null ? events : events.filter((e) => e.ts == null || e.ts >= since);
@@ -169,6 +249,19 @@ function ordered(events, since) {
 }
 
 // ---- text ----------------------------------------------------------------------------------------
+
+// The summary of a finished archive review is `ran as <job>: {"verdicts":1,"applied":1,...}`; words for it, or null when it is not that.
+function reviewOutcome(text) {
+  const m = typeof text === 'string' && /^ran as \S+: (\{.*\})$/.exec(text);
+  if (!m) return null;
+  let c;
+  try { c = JSON.parse(m[1]); } catch { return null; }
+  if (!c || typeof c !== 'object') return null;
+  const n = (k) => (typeof c[k] === 'number' && c[k] > 0 ? c[k] : 0);
+  const parts = ['applied', 'refused', 'undecided', 'refused_stale'].filter((k) => n(k) > 0).map((k) => `${n(k)} ${k === 'refused_stale' ? 'stale' : k}`);
+  const v = typeof c.verdicts === 'number' ? `${c.verdicts} verdict${c.verdicts === 1 ? '' : 's'}` : null;
+  return [v, parts.join(', ') || null].filter(Boolean).join(': ') || null;
+}
 
 function summaryOf(e) {
   const id = (label, x) => `${label} ${P.v(x, 60)}`;
@@ -184,8 +277,29 @@ function summaryOf(e) {
       return `${id('task', e.task_id)} verdict ${P.v(e.verdict, 20)} passed ${P.v(e.passed)} executable ${P.v(e.executable)} judged by ${P.v(e.judged_by, 60)}${e.reason ? ` reason ${P.v(e.reason, 120)}` : ''}`;
     case 'memory_wrapup':
       return `${id('key', e.key)} ${e.ok ? P.v(e.text, 600) : `failed ${P.v(e.code, 40)}`}`;
+    case 'scrub_alarm':
+    case 'scrub_owed':
+    case 'scrub_failed':
+    case 'scrub_dropped':
+    case 'stage_overrun':
+      return `${e.stage} ${e.code ? `failed ${P.v(e.code, 40)}: ` : ''}${P.v(e.text, 300)}${Array.isArray(e.row_ids) && e.row_ids.length ? ` (notes: ${e.row_ids.slice(0, 5).map((x) => P.v(x, 40)).join(', ')}${e.row_ids.length > 5 ? `, and ${e.row_ids.length - 5} more` : ''})` : ''}`;
+    case 'notes_unembedded':
+      return P.unembeddedText({ total: e.count, by_project: e.by_project });
+    case 'notes_held':
+      return P.heldText({ total: e.count, unsupported: e.unsupported, by_project: e.by_project, oldest_age_runs: e.oldest_age_runs, by_ground: e.by_ground, awaiting_operator: e.awaiting_operator });
+    case 'review_running':
+      return `archive review of ${P.v(e.project, 64)} ${e.pid_alive ? 'running' : 'INTERRUPTED (its process is gone; the next review takes the claim over)'}: pid ${e.pid}, job ${P.v(e.job, 80)}`;
+    case 'review_ended':
+      if (e.ok && reviewOutcome(e.text)) return `archive review of ${P.v(e.project, 64)} done: ${reviewOutcome(e.text)}${e.job ? `, job ${P.v(e.job, 80)}` : ''}`;
+      return `archive review of ${P.v(e.project, 64)} ${e.ok ? 'ended ok' : `FAILED ${P.v(e.code, 40)}`}${e.text ? `: ${P.v(e.text, 240)}` : ''}`;
+    case 'run_disputed':
+      return `${id('run', e.disputed_run)} disputed ${e.disputed} note${e.disputed === 1 ? '' : 's'}; review before trusting (project ${P.v(e.project, 64)}, over its limit of ${e.limit ?? 'n/a'}): see belay memory review`;
+    case 'reports_unjudged':
+      return `${e.count} report${e.count === 1 ? '' : 's'} that a note is wrong with no verdict applied (${(e.note_ids || []).slice(0, 5).map((x) => P.v(x, 40)).join(', ')}): see belay memory proposals`;
+    case 'notes_stranded':
+      return `${e.count} note${e.count === 1 ? '' : 's'} wait${e.count === 1 ? 's' : ''} on you (${e.open_proposals} open proposal${e.open_proposals === 1 ? '' : 's'}, ${e.pending} pending note${e.pending === 1 ? '' : 's'} of ended runs; ${(e.note_ids || []).slice(0, 5).map((x) => P.v(x, 40)).join(', ')}): see belay memory proposals; settle a pending note with belay memory resolve, or set memory.scrub_action to apply so a scrub settles a proposed pair`;
     case 'run_paused':
-      return `${id('run', e.run_id)} paused by ${P.v(e.paused_by, 60)}`;
+      return `${id('run', e.run_id)} paused by ${P.v(e.paused_by, e.embedder_failure ? 160 : 60)}${e.embedder_failure ? ` (an embedder failure, on_embedder_failure required: belay settings memory.on_embedder_failure keyword|off saves a choice for later runs, belay resume ${e.run_id} --embedder keyword|off resumes with one, or leave it paused)` : ''}`;
     default:
       return `${id('run', e.run_id)} ended, exit_reason ${P.v(e.exit_reason, 60)}`;
   }
@@ -209,11 +323,16 @@ async function run(ctx) {
 
   const core = await openCore({ dataDir, caller: { role: 'operator', run_id: parsed.runId || 'cli', pid: process.pid } });
   try {
+    return await core.readBatch(async () => { // one store copy for every read below
     const { chosen, source } = await P.chooseRun(core, parsed.runId);
+    const unembedded = await core.memory.unembedded({});
+    const heldNotes = await core.memory.held({ reports: true, reviews: true }).catch(() => null); // one read: counts, unjudged reports and review claims
+    const reviews = heldNotes && heldNotes.reviews ? { reviews: heldNotes.reviews } : null;
     if (!chosen) {
       if (!parsed.runId) {
-        const empty = { run_id: null, run_id_source: source, since: parsed.since, stall_ms: parsed.stallMs, events: [], count: 0 };
-        return { code: 0, text: renderText([]), json: empty };
+        const events = ordered([...unembeddedEvents(unembedded, null), ...heldEvents(heldNotes, null), ...breakerEvents(heldNotes && heldNotes.breakers, null), ...reviewEvents(reviews, null), ...unjudgedEvents(heldNotes && heldNotes.unjudged_reports, null), ...strandedEvents(heldNotes && heldNotes.stranded, null)], parsed.since);
+        const empty = { run_id: null, run_id_source: source, since: parsed.since, stall_ms: parsed.stallMs, events, count: events.length };
+        return { code: 0, text: renderText(events), json: empty };
       }
       const message = `no run row exists for ${parsed.runId}`;
       return { code: 1, text: `belay notices: ${P.clean(message)}\n`, json: { error: { code: 'E_NOT_FOUND', message, run_id: parsed.runId } } };
@@ -221,12 +340,19 @@ async function run(ctx) {
     const { requests } = await core.permission.list({ run_id: chosen.id, states: ['pending'] });
     const { workers } = await core.worker.list({});
     const { tasks } = await core.task.list({});
-    const { events: ledger } = await core.memory.events({ run_id: chosen.id, kinds: ['wrapup'] });
+    const { events: ledger } = await core.memory.events({ run_id: chosen.id, kinds: ['wrapup', ...STAGE_KINDS] });
     const events = ordered([
       ...permissionEvents(requests, chosen.id),
       ...workerEvents(workers.filter((w) => w.run_id === chosen.id), chosen.id, parsed.stallMs, dataDir),
       ...verdictEvents(tasks.filter((t) => t.run_id === chosen.id), chosen.id),
       ...wrapupEvents(ledger, chosen.id),
+      ...stageEvents(ledger, chosen.id),
+      ...unembeddedEvents(unembedded, chosen.id),
+      ...heldEvents(heldNotes, chosen.id),
+      ...breakerEvents(heldNotes && heldNotes.breakers, chosen.id),
+      ...reviewEvents(reviews, chosen.id),
+      ...unjudgedEvents(heldNotes && heldNotes.unjudged_reports, chosen.id),
+      ...strandedEvents(heldNotes && heldNotes.stranded, chosen.id),
       ...runEvents(chosen),
     ], parsed.since);
     const receipt = {
@@ -234,6 +360,7 @@ async function run(ctx) {
       events, count: events.length, owner: core.ownerInfo(),
     };
     return { code: 0, text: renderText(events), json: receipt };
+    });
   } catch (e) {
     return { code: 1, text: `belay notices: ${P.clean(e.message, 200)}\n`, json: { error: { code: e.code || 'E_INTERNAL', message: e.message } } };
   } finally {
@@ -241,4 +368,4 @@ async function run(ctx) {
   }
 }
 
-module.exports = { run, wrapupEvents, verdictEvents, runEvents, ordered, workerEvents, stallAge };
+module.exports = { run, heldEvents, breakerEvents, reviewEvents, unjudgedEvents, strandedEvents, stageEvents, wrapupEvents, verdictEvents, runEvents, ordered, workerEvents, stallAge, renderText };

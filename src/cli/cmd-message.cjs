@@ -52,7 +52,7 @@ async function run(ctx) {
     return { code: success ? 0 : 1, text: renderText(receipt), json: receipt };
   } finally {
     // Never elects on this path (worker.get and run.list are reads), kept for symmetry with the rest.
-    if (core.isOwner()) { try { await core.shutdownOwner(); } catch { /* best effort */ } }
+    if (core.isOwner()) { try { await require('./release-owner.cjs').releaseOwnerOf(core); } catch { /* best effort */ } }
     await core.close();
   }
 }

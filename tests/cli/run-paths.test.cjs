@@ -15,6 +15,7 @@ const { spawn, spawnSync } = require('node:child_process');
 
 const { openCore } = require('../../src/core/index.cjs');
 const P = require('../../src/run/process.cjs');
+const { SNAPSHOT_TIMEOUT_MS } = require('../../src/core/proc-identity.cjs');
 
 const ROOT = path.resolve(__dirname, '..', '..').split(path.sep).join('/');
 const CLI = `${ROOT}/src/cli/belay.cjs`;
@@ -100,7 +101,7 @@ test('run: a second run on a data dir another run owns is refused before any wri
   let testCore = null;
   let runB = null;
   try {
-    testCore = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
+    testCore = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 15000 });
     const row = await waitUntil(async () => {
       const got = await testCore.run.get();
       return got.run || null;
@@ -156,7 +157,7 @@ test('run: two turn ends in one chunk start one poll chain, holds are moments, a
   let testCore = null;
   let fakeWorker = null;
   try {
-    testCore = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
+    testCore = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 15000 });
     await waitUntil(async () => (await testCore.run.get()).run || null, 10000, 100);
 
     fakeWorker = spawn(process.execPath, [FAKE_CLAUDE], {
@@ -212,15 +213,20 @@ test('run: the orchestrator that ignores a closed stdin is killed after close_gr
     assert.ok(gotResult, `stream.jsonl at ${streamPath} never held a result line within 10,000 ms`);
     const turnEndAt = Date.now();
 
-    const exited = await waitForExit(runCliProc.proc, 9000);
-    assert.ok(exited, 'the CLI did not exit within 9,000 ms');
+    // A hang guard: the exact bound is asserted below, with the kill's snapshot subtracted (it is in the receipt).
+    const exited = await waitForExit(runCliProc.proc, 9000 + 2 * SNAPSHOT_TIMEOUT_MS);
+    assert.ok(exited, `the CLI did not exit within ${9000 + 2 * SNAPSHOT_TIMEOUT_MS} ms`);
     const totalMs = Date.now() - t0;
     const sinceTurnEnd = Date.now() - turnEndAt;
-    assert.ok(totalMs < 9000, `total run time ${totalMs} ms was not under 9,000 ms`);
-    assert.ok(sinceTurnEnd >= 1400 && sinceTurnEnd <= 6000, `time since the turn end (${sinceTurnEnd} ms) was not within [1,500, 6,000] ms of close_grace_ms 1,500`);
+    // ADR 0048, rule a: the orchestrator kill's own identity snapshot is not what this bound is about. It is read from
+    // the receipt below and subtracted; it is itself bounded by one caller's worst wait for a snapshot.
 
     assert.strictEqual(exited.code, 1, `expected exit 1, stdout: ${runCliProc.stdout}, stderr: ${runCliProc.stderr}`);
     const receipt = receiptOf(runCliProc, 1);
+    const snapMs = (receipt.orchestrator.kill && receipt.orchestrator.kill.snapshot_ms) || 0;
+    assert.ok(snapMs <= 2 * SNAPSHOT_TIMEOUT_MS, `the orchestrator kill's snapshot took ${snapMs} ms`);
+    assert.ok(sinceTurnEnd >= 1400 && sinceTurnEnd - snapMs <= 6000, `time since the turn end (${sinceTurnEnd} ms) was not within [1,500, 6,000] ms of close_grace_ms 1,500`);
+    assert.ok(totalMs - snapMs < 9000, `total run time ${totalMs} ms (${snapMs} ms of it the kill's snapshot) was not under 9,000 ms`);
     assert.match(receipt.ended_by, /stdin closed/);
     assert.strictEqual(receipt.orchestrator.killed_after_close, true);
     assert.notStrictEqual(receipt.orchestrator.exit_code, 0, 'a killed orchestrator must not report a clean exit code');
@@ -387,7 +393,7 @@ test("run: a starting row whose pid dies while the orchestrator is idle holds st
   let testCore = null;
   let planted = null;
   try {
-    testCore = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
+    testCore = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 15000 });
     await waitUntil(async () => (await testCore.run.get()).run || null, 10000, 100);
 
     planted = await plantHungWorker(testCore, wt, runId, 'w-dead-start');
@@ -434,7 +440,7 @@ test('run: a dead row landing inside the grace produces the death wake with the 
   let testCore = null;
   let planted = null;
   try {
-    testCore = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
+    testCore = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 15000 });
     await waitUntil(async () => (await testCore.run.get()).run || null, 10000, 100);
 
     planted = await plantHungWorker(testCore, wt, runId, 'w-dead-detected');

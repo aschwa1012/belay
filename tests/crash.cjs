@@ -1,4 +1,5 @@
 'use strict';
+require('./helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // crash.cjs — ADR 0039: the test plays the outside world, but it too may only kill what it can prove. belay's
 // kill API refuses a bare pid, and so does this. Three ways in, nothing else:
 //   - crash(handle): a child handle that is still live (exitCode and signalCode both null);
@@ -24,15 +25,17 @@ function snapshotSync() {
 }
 
 const noted = new Map(); // pid -> creation time, kept only while its handle was live when the read landed
+const reads = new Map(); // pid -> the read in flight, so a test waits on the real event, never a fixed sleep
+const noteSettled = (handle) => reads.get(handle && handle.pid) || Promise.resolve();
 
 function note(handle, { snapshot = ID.processSnapshot } = {}) { // `snapshot` is a test seam
   if (!handle || typeof handle !== 'object' || !Number.isInteger(handle.pid)) throw new TypeError('note() takes a live child handle, never a bare pid');
   if (!ID.handleLive(handle)) return handle;
   const pid = handle.pid;
-  snapshot().then((s) => {
+  reads.set(pid, snapshot().then((s) => {
     const e = s && s.get(pid);
     if (e && e.created != null && ID.handleLive(handle)) noted.set(pid, e.created); // discarded if the child exited meanwhile
-  }).catch(() => {});
+  }).catch(() => {}));
   return handle;
 }
 
@@ -55,11 +58,13 @@ function crash(target, created) {
 // crash(pid, created) by the async snapshot. For a test whose own process hosts the worker's run manager: the
 // synchronous snapshot holds that loop for about a second, so the manager's pid poll is overdue when the loop
 // resumes and settles the death (with no exit code) before the child's 'exit' event is read.
+// Resolves the time the signal was sent (truthy), or false. The snapshot before it can take seconds on a loaded
+// host, so a caller timing what follows the kill measures from this, not from the call.
 async function crashAsync(pid, created) {
   if (!Number.isInteger(pid) || pid <= 0 || created == null) return false;
   const s = await ID.snapshotRetry({ attempts: SNAPSHOT_ATTEMPTS }); const e = s && s.get(pid);
   if (!e || e.created !== created) return false;
-  try { process.kill(pid, 'SIGKILL'); return true; } catch { return false; }
+  try { process.kill(pid, 'SIGKILL'); return Date.now(); } catch { return false; }
 }
 
 // One snapshot, leaves first: killing a parent first would hide its children (their recorded parent is gone).
@@ -86,4 +91,4 @@ function noteDescendant(pid) {
   return true;
 }
 
-module.exports = { crash, crashAsync, note, crashDescendant, crashDescendants, noteDescendant, noted };
+module.exports = { crash, crashAsync, note, crashDescendant, crashDescendants, noteDescendant, noted, noteSettled };

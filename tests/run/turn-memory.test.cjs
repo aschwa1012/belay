@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // turn-memory.test.cjs — review 3 of build step E1, finding F. A turn's memory write is an embed (about
 // 0.5 s with voyage, seconds on an owner's first turn) and must not sit on the path the orchestrator's
 // wait and wake depend on. r-f1: with memory.store slowed by 3,000 ms the turn's waiter resolves and the
@@ -9,6 +10,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
+const { teardown } = require('../helpers/teardown.cjs');
 const os = require('node:os');
 const path = require('node:path');
 
@@ -68,6 +70,7 @@ test('turn memory (r-f2): shutdown with a store in flight completes within its b
   const { sb, dataDir, wt } = sandbox('f2');
   const runId = 'run-f2';
   let core, m;
+  let bodyError = null;
   try {
     core = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
     await core.run.attach({ adapter_pid: process.pid });
@@ -85,8 +88,9 @@ test('turn memory (r-f2): shutdown with a store in flight completes within its b
     assert.ok(ms < 20000, `shutdown took ${ms} ms with a 30,000 ms store in flight`);
     assert.deepStrictEqual(receipt.memory_gave_up, ['w1'], 'the queue it gave up on is named');
     assert.strictEqual(core.isOwner(), false, 'shutdown must leave no owner elected in this process');
-  } finally {
-    if (core && core.isOwner()) await core.shutdownOwner().catch(() => {});
+  } catch (e) { bodyError = e; throw e; } finally {
+    // A failed assertion above must not leave the manager and its workers running; every step runs, the body's error wins.
+    await teardown(bodyError, [() => m && m.shutdown(), () => core && core.isOwner() && core.shutdownOwner()]);
     try { fs.rmSync(sb, { recursive: true, force: true }); } catch { /* best effort */ }
   }
 });
@@ -116,6 +120,7 @@ async function droppedAfterShutdown(tag, stopDelayMs) {
   const starts = [];
   const hold = {};
   let ctx;
+  let bodyError = null;
   try {
     ctx = await twoTurns(tag, async (a) => {
       starts.push(turnOf(a));
@@ -134,8 +139,10 @@ async function droppedAfterShutdown(tag, stopDelayMs) {
     assert.deepStrictEqual(starts, ['turn:1'], 'the write queued before shutdown but started after it was dropped');
     assert.strictEqual(ctx.core.isOwner(), false, 'and no owner was elected');
     assert.ok(errs.some((e) => e && e.where === 'after-shutdown' && e.state === 'turn-memory'), `the drop is named: ${JSON.stringify(errs)}`);
-  } finally {
-    if (ctx) { if (ctx.core.isOwner()) await ctx.core.shutdownOwner().catch(() => {}); try { fs.rmSync(ctx.sb, { recursive: true, force: true }); } catch { /* best effort */ } }
+  } catch (e) { bodyError = e; throw e; } finally {
+    // Release the held first write and the workers even when an assertion failed; every step runs, the body's error wins.
+    await teardown(bodyError, [() => hold.m && hold.m.shutdown(), () => ctx && ctx.core.isOwner() && ctx.core.shutdownOwner()]);
+    if (ctx) { try { fs.rmSync(ctx.sb, { recursive: true, force: true }); } catch { /* best effort */ } }
   }
 }
 

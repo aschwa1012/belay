@@ -19,11 +19,14 @@
 
 const path = require('node:path');
 
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 
 // The slice-3a surface. `mode` is the connection mode each command declares, exactly one, per
 // command table §1: R read-only, W store client, C run control. The remaining 18 commands of
 // command table §3 arrive in later slices and are deliberately absent rather than stubbed.
+// Static, so help loads no memory module; tests/cli/memory.test.cjs checks that it names every verb in memory-render's VERBS.
+const MEMORY_SUMMARY = 'memory search|list|show|timeline|verify|stats|export|import|embed|proposals|held|restore|report|archive purge|review|scrub|resolve|promote: reads answer from the store or its copy; semantic and hybrid search need a live owner; verify, import, embed, restore, report, purge, held settle, review, scrub, resolve and promote elect one (embed --dry-run only reads)';
+
 const COMMANDS = {
   help:   { mode: 'R', module: null,               summary: 'print this usage and exit' },
   config: { mode: 'R', module: './cmd-config.cjs', summary: 'print which config file is read, and effective values' },
@@ -40,7 +43,7 @@ const COMMANDS = {
   notices: { mode: 'R', module: './cmd-notices.cjs', summary: "a run's events from store rows: pending requests, dead or stopped workers, stalls, review verdicts, pause and end" },
   agents:  { mode: 'R', module: './cmd-agents.cjs',  summary: "the orchestrator and each worker: role, model, effort, state, context size, cost; the run cost meter" },
   'wake-stream': { mode: 'R', module: './cmd-wake-stream.cjs', summary: "wake-stream --run <id> --nonce <n>: print the interactive run's wake lines from its harness-owned pipe; exits on close or after 15 s of silence" },
-  memory:  { mode: 'R', module: './cmd-memory.cjs',  summary: 'memory search|list|show|timeline|verify|stats|export|import: reads answer from the store or its copy; semantic and hybrid search need a live owner, verify and import elect one' },
+  memory:  { mode: 'R', module: './cmd-memory.cjs',  summary: MEMORY_SUMMARY },
   usage:   { mode: 'R', module: './cmd-usage.cjs',   summary: 'usage [run-id] [--by task|worker|model|turn]: tokens and dollars per turn from the usage ledger; a turn with no dollars is not zero' },
   briefing: { mode: 'R', module: './cmd-briefing.cjs', summary: 'the resume line and orientation document for a worker or a task' },
   logs:    { mode: 'R', module: './cmd-logs.cjs',    summary: "a worker's stream.jsonl: path, byte offset, then the tail; -f follows, bounded" },
@@ -54,7 +57,7 @@ const COMMANDS = {
   deny:    { mode: 'C', module: './cmd-decide.cjs', summary: 'deny <request-id> [reason...]: refuse one pending tool call over the owner pipe; the worker is told the reason' },
   embedder: { mode: 'W', module: './cmd-embedder.cjs', summary: 'embedder fetch|verify [--model <id>]: fetch the embedding model into belay\'s cache (the only network use), or re-hash it against the table' },
   pause:   { mode: 'C', module: './cmd-pause.cjs', summary: "pause <worker-id|run-id>: park a worker over the adapter's pipe, or hold a run's wakes and park every live worker over the owner's pipe" },
-  settings: { mode: 'W', module: './cmd-settings.cjs', summary: 'settings [<key> [<value>]]: the panel display settings; with a value, writes the config file only' },
+  settings: { mode: 'W', module: './cmd-settings.cjs', summary: 'settings [<key> [<value>]]: the display settings, memory levers and per-agent defaults; with a value, writes the config file only' },
   resume:  { mode: 'C', module: './cmd-pause.cjs', summary: "resume <worker-id|run-id> [--message <text>]: relaunch a parked worker on its session, or resume a paused run and deliver its held wakes" },
 };
 
@@ -159,6 +162,13 @@ async function main(argv) {
   // Defined only when --json is not given (the comment block above states the contract this serves).
   if (!ctx.json) ctx.emit = (text) => { process.stdout.write(text); };
 
+  // The identity-bind stopgap: a process in a worker's environment is not the operator (src/cli/worker-guard.cjs). One variable
+  // read on every path; the guard module loads only when the marker is there.
+  if (process.env.BELAY_WORKER_ID) {
+    const refused = require('./worker-guard.cjs').workerRefusal({ name, mode: spec.mode, argv: ctx.argv, fix: g.fix });
+    if (refused) { process.stderr.write(refused); return 1; }
+  }
+
   let result;
   try {
     // Lazy: the module is loaded only now, once its name has matched.
@@ -194,11 +204,17 @@ async function finish(argv, code, io = { stdout: process.stdout, stderr: process
   const spec = g.error ? null : COMMANDS[g.argv[0]];
   if (!spec || spec.mode !== 'R') return;
   await Promise.all([drained(io.stdout), drained(io.stderr)]);
+  // An owner this command released while another client was still attached keeps serving until the last one is gone (ADR 0051);
+  // exiting here would pull the store from under that client. Nothing is waited on when no owner was retired.
+  await require('../core/retire.cjs').idle();
   io.exit(code);
 }
 
 if (require.main === module) {
   const argv = process.argv.slice(2);
+  // A reader that closes early (`| head`) makes the next write fail with EPIPE. That is not the command failing: drop the error
+  // (no stack trace) and keep the command's own exit code; every other stream error still surfaces.
+  for (const stream of [process.stdout, process.stderr]) stream.on('error', e => { if (!e || e.code !== 'EPIPE') throw e; });
   main(argv)
     .then(code => finish(argv, code))
     .catch(e => { process.stderr.write(`belay: ${(e && e.stack) || e}\n`); process.exitCode = 1; });

@@ -39,7 +39,8 @@ function spyCore({ tasks = {}, workers = [], observations = [], fail = {}, hang 
     memory: {
       store: async (a) => { rec('memory.store', a); await gate('memory.store'); const id = `m${++n}`; rows.set(id, { id, ...a }); return { id, action: 'inserted' }; },
       get: async (a) => { rec('memory.get', a); await gate('memory.get'); const r = rows.get(a.id); if (!r) throw failing('E_NOT_FOUND'); return r; },
-      list: async (a) => { rec('memory.list', a); await gate('memory.list'); return { rows: observations, total: observations.length }; },
+      list: async (a) => { rec('memory.list', a); await gate('memory.list'); const off = a.offset || 0; return { rows: observations.slice(off, off + (a.limit || 50)).map((o) => { const { body, ...rest } = o; return rest; }), total: observations.length }; },
+      get_many: async (a) => { rec('memory.get_many', a); await gate('memory.get_many'); return { rows: a.ids.map((id) => observations.find((o) => o.id === id) || { id, found: false }) }; },
       recordEvent: async (a) => {
         rec('memory.recordEvent', a); await gate('memory.recordEvent');
         if (a.kind === 'wrapup' && a.ok !== false && events.some((e) => e.kind === 'wrapup' && e.key === a.key && e.ok)) throw failing('E_EXISTS', 'a wrapup event for this key already exists');
@@ -161,23 +162,19 @@ test('wrap-up: a task with no handoff, or a verdict that is not text, still gets
   assert.match(core.events.find((e) => e.kind === 'wrapup').message, /worker-stated verdict: holds/);
 });
 
-test('project copy of a summary carries the summary\'s own body, version 1 included, and the copy of a non-observation names the row', async () => {
+test('the summary written into the project carries its own body (version 2) and its project_write event names it', async () => {
   const core = spyCore({ tasks: { t1: releasedTask() }, observations: OBS });
-  core.rows.set('t9', { id: 't9', type: 'turn', text: 'x' });
   const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical', project: 'demo', project_writes: true }));
   const w = worker();
-  MJ.afterTurn(w, ctx, { observationId: 't9' }); await flush(w);
+  MJ.afterTurn(w, ctx, {}); await flush(w);
   const stores = methodsOf(core, 'memory.store').map((c) => c.args);
-  const summary = stores.find((a) => a.type === 'summary' && !a.namespace);
-  const copy = stores.find((a) => a.namespace === 'project/demo');
-  assert.strictEqual(summary.body.v, 1);
-  assert.deepStrictEqual(copy.body, summary.body);
-  assert.strictEqual(copy.title, summary.title);
-  assert.strictEqual(copy.text, summary.text);
-  const refused = core.events.find((e) => e.kind === 'project_write' && e.ok === 0);
-  assert.deepStrictEqual(refused.row_ids, ['t9']);
-  assert.strictEqual(refused.code, 'E_ARGS');
-  assert.match(refused.message, /row t9 is not an observation/);
+  assert.strictEqual(stores.length, 1);
+  assert.strictEqual(stores[0].namespace, 'project/demo');
+  assert.strictEqual(stores[0].body.v, 2);
+  assert.strictEqual(stores[0].text.startsWith(MJ.SUMMARY_LABEL), true);
+  const ev = core.events.find((e) => e.kind === 'project_write');
+  assert.deepStrictEqual([ev.ok, ev.worker_id, ev.task_id, ev.row_ids.length], [1, 'w1', 't1', 1]);
+  assert.match(ev.message, /^wrote m\d+ to project\/demo$/);
 });
 
 test('a failing usage write is an ok 0 usage event with E_INTERNAL for an uncoded error and the turn in its message', async () => {

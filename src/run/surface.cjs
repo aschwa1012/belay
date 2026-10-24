@@ -4,9 +4,10 @@
 // Everything ADR 0024 adds lives here: the positive tool list, the settings-source restriction, the
 // ancestor instruction-file excludes, the hygiene settings block, and the gate that reads a
 // system/init and refuses one whose surface differs. Pure: no process, no fs, no network. Invariant 9
-// (CLAUDE.md): no read path may import anything beyond node:path and node:crypto.
+// (CLAUDE.md): no read path may import anything beyond node:path, node:os (the home directory, for checkNativeMemory) and node:crypto.
 
 const path = require('node:path');
+const os = require('node:os');
 const crypto = require('node:crypto');
 
 // ADR 0024 decisions 1 and 2: one positive list, every role, every launch (fresh or resume).
@@ -56,9 +57,56 @@ function ancestorExcludes(cwd) {
 }
 
 // ADR 0024 decisions 4 and 5, one settings-file block.
-function hygieneSettings(cwd) {
-  return { claudeMdExcludes: ancestorExcludes(cwd), autoMemoryEnabled: false, autoDreamEnabled: false };
+// ADR 0024 amendment 3 (proposed): an eval-only `nativeMemory` directory turns Claude Code's own auto-memory on,
+// pointed at that folder. Off (null) is exactly what it was.
+function hygieneSettings(cwd, { nativeMemory = null } = {}) {
+  const off = { claudeMdExcludes: ancestorExcludes(cwd), autoMemoryEnabled: false, autoDreamEnabled: false }; // key order is part of the file: off is byte-identical to before the lever
+  if (nativeMemory == null) return off;
+  return { ...off, autoMemoryEnabled: true, autoMemoryDirectory: checkNativeMemory(nativeMemory) };
 }
+
+// The requested folder must be absolute and outside Claude Code's config directory (<home>/.claude and CLAUDE_CONFIG_DIR);
+// the RESOLVED form, forward-slashed, is what is stored, written to settings and compared at the ready gate. Refused as E_ARGS
+// otherwise. Inside that directory is where Claude Code's default memory folder lives (<config>/projects/<git root>/memory), so
+// the gate's equality check could not tell a folder it honoured from the fallback it takes on a malformed value (ADR 0024
+// amendment 3): the operator's real memory is never a valid ask. On Windows the path must be drive-rooted (a posix-rooted, UNC,
+// \\?\ or \\.\ path is refused), each segment loses its trailing dots and spaces the way Win32 does, then it is resolved and
+// compared case-insensitively. Junctions and 8.3 names are the file-system half of this guarantee (native-memory.cjs).
+const ABSRE = /^([A-Za-z]:[\\/]|\/)/;
+const WINABS = /^[A-Za-z]:[\\/]/;
+const CTLRE = /[\x00-\x1f]/;
+const WINBAD = /[<>"|?*]/;
+function win32Segments(p) { // trailing dots and spaces are stripped per segment by Win32; '.' and '..' stay navigation
+  return fwd(p).split('/').map((seg) => (seg === '.' || seg === '..' ? seg : seg.replace(/[. ]+$/, ''))).filter((seg) => seg !== '');
+}
+function resolveFolder(dir) {
+  const win = process.platform === 'win32';
+  const ok = typeof dir === 'string' && (win ? WINABS : ABSRE).test(dir) && CTLRE.test(dir) === false && !(win && (WINBAD.test(dir) || dir.indexOf(':', 2) >= 0 || fwd(dir).split('/').some((sg) => sg !== '.' && sg !== '..' && /^[. ]+$/.test(sg))));
+  if (!ok) throw Object.assign(new Error('native_memory must be an absolute directory path'), { code: 'E_ARGS', detail: { native_memory: dir } });
+  if (!win) return path.posix.resolve(fwd(dir));
+  const parts = win32Segments(dir);
+  return fwd(path.win32.resolve(parts[0] + '/', ...parts.slice(1)));
+}
+const lc = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
+const under = (n, c) => n === c || n.startsWith(c.replace(/\/+$/, '') + '/');
+function claudeConfigDirs() {
+  const dirs = [path.join(os.homedir(), '.claude')];
+  if (process.env.CLAUDE_CONFIG_DIR) dirs.push(process.env.CLAUDE_CONFIG_DIR);
+  return dirs.map((d) => fwd(path.resolve(d)));
+}
+function checkNativeMemory(dir) {
+  const folder = resolveFolder(dir);
+  if (claudeConfigDirs().some((c) => under(lc(folder), lc(c)))) {
+    throw Object.assign(new Error("native_memory must be outside Claude Code's config directory, where its default memory folder lives"), { code: 'E_ARGS', detail: { native_memory: dir, reason: 'claude_config_dir' } });
+  }
+  return folder;
+}
+
+// Two paths name the same folder: separators, case and a trailing slash do not matter (Windows).
+const sameDir = (a, b) => {
+  const n = (p) => fwd(p).replace(/\/+$/, '').toLowerCase();
+  return typeof a === 'string' && typeof b === 'string' && a !== '' && n(a) === n(b);
+};
 
 // ADR 0024 decisions 1 and 3: a launch may narrow the built-in list (the knowledge agent reads only), never widen it.
 // Returns null for the full list, or the narrowed list; anything else is refused before any file or row exists.
@@ -69,12 +117,34 @@ function narrowTools(tools) {
   return tools.length === CLAUDE_TOOLS.length ? null : [...tools];
 }
 
+// worker_spawn's `allowed_tools` (a permission pre-approval, `--allowedTools`) also decides the tool surface: its built-in names
+// become the worker's `--tools` list; `mcp__*` names stay pre-approval only. Returns { tools } (narrowTools' answer: null for all six,
+// else the narrowed list). Refused E_ARGS, before anything is written: a name that is neither a built-in nor `mcp__*` (web tools
+// are not available to workers in this release), a list with no built-in at all (the empty `--tools ""` surface has no live receipt), repeats.
+function toolsFromAllowed(allowed) {
+  if (!Array.isArray(allowed) || allowed.some((t) => typeof t !== 'string')) {
+    throw Object.assign(new Error('allowed_tools must be an array of strings'), { code: 'E_ARGS', detail: { allowed_tools: allowed } });
+  }
+  const foreign = allowed.filter((t) => !CLAUDE_TOOLS.includes(t) && !t.startsWith('mcp__'));
+  if (foreign.length) {
+    throw Object.assign(new Error(`allowed_tools names ${foreign.join(', ')}, which a worker cannot have: web tools are not available to workers in this release; allowed built-ins are ${CLAUDE_TOOLS.join(', ')}, plus mcp__* names`), { code: 'E_ARGS', detail: { allowed_tools: allowed, refused: foreign } });
+  }
+  const builtins = CLAUDE_TOOLS.filter((t) => allowed.includes(t)); // canonical order, repeats collapse
+  if (builtins.length === 0) {
+    throw Object.assign(new Error(`allowed_tools names no built-in tool (${CLAUDE_TOOLS.join(', ')}); a worker with no built-ins is not supported, so name at least one`), { code: 'E_ARGS', detail: { allowed_tools: allowed } });
+  }
+  return { tools: narrowTools(builtins) };
+}
+
 // ADR 0024 decision 6: the ready event reports the surface the worker actually got; a wrong surface
 // is a failed launch. Reads only `tools`, `plugins` and `memory_paths` off the ready event the parser
 // already built (parsers.cjs), never the raw system/init line.
 // `tools`: the narrowed built-in list this launch was given (launch.cjs narrowTools), checked exactly as the full
 // list is; null for the full list.
-function checkSurface(ready, { permissionPrompt = false, tools: wanted = null } = {}) {
+// `job`: the worker carries a reserved job id prefix (src/core/job-ids.cjs). Its adapter lists no belay tool by design, so the gate
+// expects none (ADR 0024 decision 6, amendment 2); the built-in check is unchanged and exact.
+// `nativeMemory`: the folder this launch asked Claude Code to use for its auto-memory (ADR 0024 amendment 3), or null.
+function checkSurface(ready, { permissionPrompt = false, tools: wanted = null, job = false, nativeMemory = null } = {}) {
   const tools = ready && ready.tools;
   if (!Array.isArray(tools)) {
     return {
@@ -102,7 +172,9 @@ function checkSurface(ready, { permissionPrompt = false, tools: wanted = null } 
   // mcp__belay__*, and at least one" — the adapter's own tool list is its business, and mcp_servers
   // (ready.cjs) already proves the connection, but an init naming none at all names no adapter.
   const belayTools = mcpTools.filter((t) => t.startsWith('mcp__belay__'));
-  if (belayTools.length === 0) reasons.push('no mcp__belay__* tool is listed (ADR 0024 decision 6 expects at least one)');
+  if (job) {
+    if (belayTools.length) reasons.push(`a job worker lists no belay tool, and this one lists: ${belayTools.join(', ')} (ADR 0024 decision 6, amendment 2)`);
+  } else if (belayTools.length === 0) reasons.push('no mcp__belay__* tool is listed (ADR 0024 decision 6 expects at least one)');
 
   if (permissionPrompt && mcpTools.includes('mcp__belay__permit')) {
     reasons.push('mcp__belay__permit is listed even though a permission-prompt tool was configured for this launch (ADR 0024 decision 7)');
@@ -128,7 +200,14 @@ function checkSurface(ready, { permissionPrompt = false, tools: wanted = null } 
   // refused, not only a truthy `.auto` (review 1 finding 2: {project:...}, a string, an array and
   // {auto:''} all passed the looser check).
   const memoryPaths = ready && ready.memory_paths;
-  if (memoryPaths !== null && memoryPaths !== undefined) {
+  if (nativeMemory != null) {
+    // Exact equality, nothing else: a malformed directory is ignored by Claude Code, which then falls back to the default
+    // projects/<git root>/memory folder, possibly the operator's real memory.
+    const keys = memoryPaths && typeof memoryPaths === 'object' && !Array.isArray(memoryPaths) ? Object.keys(memoryPaths) : null;
+    if (!keys) reasons.push(`memory_paths is absent, and this launch asked for native memory in ${nativeMemory}: ${JSON.stringify(memoryPaths === undefined ? null : memoryPaths)}`);
+    else if (keys.length !== 1 || keys[0] !== 'auto') reasons.push(`memory_paths must carry exactly {auto} for native memory, and carries ${JSON.stringify(memoryPaths)}`);
+    else if (!sameDir(memoryPaths.auto, nativeMemory)) reasons.push(`memory_paths.auto is ${JSON.stringify(memoryPaths.auto)}, and this launch asked for ${nativeMemory}`);
+  } else if (memoryPaths !== null && memoryPaths !== undefined) {
     if (memoryPaths && typeof memoryPaths === 'object' && 'auto' in memoryPaths) {
       reasons.push(`memory_paths.auto is set: ${memoryPaths.auto}`);
     } else {
@@ -163,4 +242,4 @@ function surfaceFields(evidence) {
   return { tools_hash: tools_hash ?? null, builtins: builtins ?? null, belay_tools: belay_tools ?? null, plugins: plugins ?? null };
 }
 
-module.exports = { CLAUDE_TOOLS, narrowTools, SETTING_SOURCES_ARG, ancestorExcludes, hygieneSettings, checkSurface, surfaceFields };
+module.exports = { checkNativeMemory, claudeConfigDirs, under, sameDir, CLAUDE_TOOLS, narrowTools, toolsFromAllowed, SETTING_SOURCES_ARG, ancestorExcludes, hygieneSettings, checkSurface, surfaceFields };

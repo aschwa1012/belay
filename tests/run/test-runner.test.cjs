@@ -10,7 +10,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const P = require('../../src/run/process.cjs');
-const { runPhase, runPhases } = require('../../scripts/test.cjs');
+const { runPhase, runPhases, concurrencyFromEnv } = require('../../scripts/test.cjs');
 
 const fwd = (p) => String(p).split(path.sep).join('/');
 const HANG = fwd(path.resolve(__dirname, 'fixtures', 'hang-fixture.cjs'));
@@ -129,13 +129,59 @@ test('stopFixturePids really stops a live fixture and its detached grandchild (A
   const env = { ...process.env, H1_PIDS_FILE: pidsFile }; delete env.NODE_TEST_CONTEXT;
   const holder = spawn(process.execPath, [HANG], { env, stdio: 'ignore', windowsHide: true });
   try {
-    for (let i = 0; i < 100 && !fs.existsSync(pidsFile); i++) await sleep(50);
-    assert.ok(fs.existsSync(pidsFile), 'the fixture never wrote its pids');
-    const pids = JSON.parse(fs.readFileSync(pidsFile, 'utf8'));
+    // The fixture writes the file in place, so it can exist before its content does: wait for a parseable file.
+    let pids = null;
+    for (let i = 0; i < 200 && !pids; i++) { try { pids = JSON.parse(fs.readFileSync(pidsFile, 'utf8')); } catch { await sleep(50); } }
+    assert.ok(pids, 'the fixture never wrote its pids');
     await sleep(300);
     assert.ok(P.pidAlive(pids.child) && P.pidAlive(pids.grandchild), 'both fixture pids start alive');
     stopFixturePids(pidsFile);
     assert.ok(await waitDead(pids.child, 5000), 'the fixture child is still alive');
     assert.ok(await waitDead(pids.grandchild, 5000), 'the fixture grandchild is still alive');
   } finally { if (holder.exitCode === null) holder.kill(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// A test directory that no phase glob names is a suite that never runs (the panel's tests were in none for a time).
+test('every tests/<dir> that holds a *.test.cjs file is named by a phase glob', () => {
+  const { PHASE1_GLOBS, PHASE2_GLOB } = require('../../scripts/test.cjs');
+  const named = new Set([...PHASE1_GLOBS, PHASE2_GLOB].map((g) => g.split('/')[1]));
+  const root = path.resolve(__dirname, '..');
+  const holds = (dir) => fs.readdirSync(dir, { withFileTypes: true }).some((e) => (e.isFile() && /\.test\.cjs$/.test(e.name)) || (e.isDirectory() && e.name !== 'fixtures' && holds(path.join(dir, e.name))));
+  const dirs = fs.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory() && holds(path.join(root, e.name))).map((e) => e.name);
+  assert.ok(dirs.includes('mod') && dirs.includes('core'), 'the scan sees the directories');
+  // acceptance rows run by `npm run test:acceptance`, not by a glob
+  assert.deepStrictEqual(dirs.filter((d) => !named.has(d) && d !== 'acceptance'), []);
+});
+
+// BELAY_TEST_CONCURRENCY: a fake spawn captures each phase's argv; no real test phase runs.
+function fakeSpawn(argvs) {
+  const { EventEmitter } = require('node:events');
+  return (_exe, argv) => { argvs.push(argv); const c = new EventEmitter(); c.pid = 0; c.exitCode = null; c.signalCode = null; setImmediate(() => { c.exitCode = 0; c.emit('exit', 0, null); c.emit('close', 0); }); return c; };
+}
+const flagOf = (argv) => argv.filter((a) => a.startsWith('--test-concurrency'));
+
+test('test-runner: a valid concurrency is passed to the node --test argv of both phases', async () => {
+  const argvs = [];
+  await runPhases({ globs1: ['a'], glob2: 'b', guard: false, concurrency: 3, spawnImpl: fakeSpawn(argvs) });
+  assert.strictEqual(argvs.length, 2);
+  for (const a of argvs) assert.deepStrictEqual(flagOf(a), ['--test-concurrency=3']);
+});
+
+test('test-runner: no concurrency means no flag on either phase', async () => {
+  const argvs = [];
+  await runPhases({ globs1: ['a'], glob2: 'b', guard: false, concurrency: null, spawnImpl: fakeSpawn(argvs) });
+  assert.strictEqual(argvs.length, 2);
+  for (const a of argvs) assert.deepStrictEqual(flagOf(a), []);
+});
+
+test('test-runner: BELAY_TEST_CONCURRENCY is read as a positive integer; anything else is ignored with a log line', () => {
+  const run = (v) => { const lines = []; const n = concurrencyFromEnv(v === undefined ? {} : { BELAY_TEST_CONCURRENCY: v }, (l) => lines.push(l)); return { n, lines }; };
+  assert.deepStrictEqual(run('4'), { n: 4, lines: [] });
+  assert.deepStrictEqual(run(undefined), { n: null, lines: [] });
+  for (const bad of ['0', '-1', 'abc', '1.5']) {
+    const r = run(bad);
+    assert.strictEqual(r.n, null, bad);
+    assert.strictEqual(r.lines.length, 1, bad);
+    assert.match(r.lines[0], /BELAY_TEST_CONCURRENCY.*ignored/, bad);
+  }
 });

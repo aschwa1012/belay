@@ -53,6 +53,7 @@ test('memory: search against a store with no live owner is refused E_NO_EMBEDDER
   try {
     await core.run.attach({ adapter_pid: process.pid });
     await core.task.create({ spec: 'planted per B5, so this file is sensitive to a task.create regression too' });
+    fs.writeFileSync(`${dir}/orch.gate`, '');
     await core.memory.store({ namespace: 'run/run-x', text: 'a stored row with a supplied vector', embedding: vec(1), embedding_model: 'fixture', dim: 384 });
   } finally {
     await core.shutdownOwner();
@@ -99,7 +100,7 @@ async function withLiveOwner(envExtra, body) {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, runId } = makeSpec(dir, { poll_ms: 300, close_grace_ms: 2000 });
-  const runCliProc = runCli(specPath, dataDir, { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '500', ...envExtra(dir) });
+  const runCliProc = runCli(specPath, dataDir, { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '500', FAKE_ANSWER_GATE_FILE: `${dir}/orch.gate`, ...envExtra(dir) }); // the first answer waits for the gate: the owner vouches for this test by its process, then binds it (ADR 0045)
   let core = null;
   let plantedProc = null;
   try {
@@ -373,4 +374,12 @@ test('memory render: parseSince accepts epoch ms and ISO only; the stats text na
   assert.match(text, /by_type: note=2 decision=1/);
   assert.match(text, /fts: present=true version=1 rows=3/);
   assert.match(text, /unembedded: 1/);
+});
+
+test('belay help names every memory verb on the memory row, and every electing verb as electing', () => {
+  const row = require(CLI).usage().split(/\r?\n/).find((l) => /^\s+memory\s/.test(l));
+  assert.ok(row, 'help has a memory row');
+  const named = / R\s+memory (.*?):/.exec(row)[1].split('|').map((v) => v.split(' ')[0]);
+  for (const verb of Object.keys(RENDER.VERBS)) assert.ok(named.includes(verb), `help names memory ${verb}`);
+  for (const verb of ['report', 'held settle', 'review', 'scrub', 'resolve', 'promote']) assert.ok(row.includes(verb), `help says ${verb} elects an owner`);
 });

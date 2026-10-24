@@ -13,10 +13,14 @@ const net = require('node:net');
 const path = require('node:path');
 const { Store } = require('./store.cjs');
 const { Engine } = require('./engine.cjs');
+const { BindRegistry } = require('./bind.cjs');
+const OperatorCheck = require('./operator-check.cjs');
 const { err } = require('./errors.cjs');
 const lockApi = require('./lock.cjs'); // markListening is called through it, so a test can make it fail
 const { pipeName, acquireLock, releaseLock, resolveDataDir } = lockApi;
 
+const RETIRE_POLL_MS = 500; // a retired owner re-checks its clients' pids this often
+const UNIDENTIFIED_GRACE_MS = 5000; // a connection that has sent nothing counts as attached for this long
 const MAX_LINE_BYTES = 1024 * 1024; // a peer that never sends a newline must not grow this buffer forever
 
 function floatsFromB64(b64) {
@@ -29,6 +33,7 @@ function decodeWire(p) {
   let out = p;
   if (typeof out.embedding_b64 === 'string') { out = { ...out, embedding: floatsFromB64(out.embedding_b64) }; delete out.embedding_b64; }
   if (typeof out.query_embedding_b64 === 'string') { out = { ...out, query_embedding: floatsFromB64(out.query_embedding_b64) }; delete out.query_embedding_b64; }
+  if (Array.isArray(out.query_embeddings)) out = { ...out, query_embeddings: out.query_embeddings.map((q) => (q && typeof q.vector_b64 === 'string' ? { ...q, vector: floatsFromB64(q.vector_b64), vector_b64: undefined } : q)) };
   return out;
 }
 
@@ -40,7 +45,17 @@ class Owner {
     this.dataDir = resolveDataDir(dataDir);
     this.opts = { synchronous: 'NORMAL', sweepMs: 5000, heartbeatMs: 1000, checkpointMs: 10000, idleMs: 3000, idleCheckMs: 1000, embed: true, exitOnShutdown: false, ...opts };
     this.pipe = pipeName(this.dataDir);
+    // ADR 0045 decision 7: `claimed` (the default) believes an unkeyed request's caller, as ADR 0012 decision 3 always did;
+    // `bound` serves an unkeyed request only as `anonymous` (the reads open to every role) and refuses its writes E_UNBOUND
+    // unless opts.operatorCheck vouches for the connection. A keyed request is bound in either mode: its caller is the bind's.
+    this.mode = this.opts.mode === 'bound' ? 'bound' : 'claimed';
+    this.binds = new BindRegistry(this.dataDir, { ttlMs: this.opts.bindTtlMs });
     this.startedAt = Date.now();
+    // ADR 0045 decision 4: a `bound` owner vouches for an operator by the operator's process (operator-check.cjs), unless the caller
+    // brought its own check. Where the peer cannot be examined (not Windows) it has no check and fails closed.
+    if (this.mode === 'bound' && typeof this.opts.operatorCheck !== 'function' && OperatorCheck.SUPPORTED) {
+      this.opts.operatorCheck = OperatorCheck.create({ startedAt: this.startedAt, spawned: () => this._spawnedProcesses(), provenance: (snap) => require('./spawn-provenance.cjs').refresh(snap), deps: this.opts.operatorCheckDeps });
+    }
     this.conns = new Set();
     this.counters = { calls: 0, errors: 0 };
     this.lastWriteAt = Date.now();
@@ -59,7 +74,7 @@ class Owner {
   // connect to a missing pipe fails fast, but nothing in the lock said why, and the caller could not
   // tell a starting owner from a wedged one. Now it can, and it falls back to a copy or waits instead.
   async start() {
-    const lock = acquireLock(this.dataDir, { pipe: this.pipe, listening: false });
+    const lock = acquireLock(this.dataDir, { pipe: this.pipe, listening: false, mode: this.mode });
     if (!lock.won) {
       throw err('E_LOCKED', `the owner lock at ${this.dataDir} is held by pid ${lock.holder && lock.holder.pid}, which is alive`, { holder: lock.holder || null });
     }
@@ -69,9 +84,10 @@ class Owner {
       this.store.heartbeat(process.pid, this.pipe, this.startedAt);
       this.engine = new Engine({ dataDir: this.dataDir, store: this.store, getEmbedder: () => this.getEmbedder(), owner: this, establishedBy: 'owner' });
       await this._listen();
+      if (this.mode === 'bound') { this.tcpServer = await require('./owner-tcp.cjs').listenTcp(this); this.tcpPort = this.tcpServer.address().port; }
       // An owner no reader can see as listening is never dialled, so serving on would hold the lock
       // for nothing. Not marked means not started: the whole start is undone and the caller told.
-      if (!lockApi.markListening(this.lockDir)) {
+      if (!lockApi.markListening(this.lockDir, Date.now(), this.tcpPort ? { tcp_port: this.tcpPort } : {})) {
         throw err('E_INTERNAL', `the owner at ${this.dataDir} could not publish that its pipe is listening, so it gave up the lock rather than hold it unreachable`, { data_dir: this.dataDir, lock_dir: this.lockDir, cause: 'listening marker not written' });
       }
       this.listening = true;
@@ -186,6 +202,23 @@ class Owner {
     });
   }
 
+  // ADR 0045 decision 4 (c): the processes belay spawned that an operator cannot be, from the store's worker rows. A row that names its
+  // process's creation time matches on pid and creation time; one that does not is counted only while it is a worker's latest
+  // row and claims life, so a dead row's recycled pid never refuses the operator. `opts.spawnedProcesses()` adds the run's own
+  // (the headless orchestrator, known only to the run process) and the machine-wide spawn register (spawn-register.cjs), which holds every store's.
+  _spawnedProcesses() {
+    const out = [];
+    try {
+      const live = require('./methods-run.cjs').LIFE_CLAIMING_STATES;
+      const db = this.store.db;
+      for (const r of db.prepare('SELECT DISTINCT pid, pid_created FROM worker WHERE pid IS NOT NULL AND pid_created IS NOT NULL').all()) out.push({ pid: r.pid, created: r.pid_created, kind: 'worker' });
+      for (const r of db.prepare('SELECT w.pid, w.state FROM worker w JOIN (SELECT id, MAX(seq) m FROM worker GROUP BY id) x ON w.id = x.id AND w.seq = x.m WHERE w.pid IS NOT NULL AND w.pid_created IS NULL').all()) if (live.has(r.state)) out.push({ pid: r.pid, created: null, kind: 'worker' });
+    } catch { /* a store that cannot be read has no workers to name; the chain rule still stands */ }
+    if (typeof this.opts.spawnedProcesses === 'function') { try { out.push(...this.opts.spawnedProcesses()); } catch { /* the run's own list is best effort */ } }
+    out.push(...require('./spawn-register.cjs').list()); // every harness on the machine, other stores' workers among them; unreadable throws, and the operator check refuses on it
+    return out;
+  }
+
   noteWrite() { this.lastWriteAt = Date.now(); this.idleTruncated = false; }
 
   _idleCheckpoint() {
@@ -194,8 +227,56 @@ class Owner {
     this.idleTruncated = true;
   }
 
+  // ---- retiring (ADR 0051) ------------------------------------------------------------------------------------------------
+  // The clients attached to this owner right now, each named by what establishes it: an open connection (the operating system
+  // closes it when its process dies) whose last caller either named no pid or named one that answers a pid check. A connection
+  // that has never sent a request counts only while it is young: a ping or a client about to call, not a socket that connected
+  // and said nothing. In-process users of this owner (the Core that elected it) hold no connection and are not listed.
+  attached() {
+    const out = [];
+    const t = Date.now();
+    for (const c of this.conns) {
+      if (c.destroyed) continue;
+      const pid = c.belayCaller && Number.isInteger(c.belayCaller.pid) ? c.belayCaller.pid : null;
+      if (!c.belayCaller) { if (t - c.belayOpenedAt < UNIDENTIFIED_GRACE_MS) out.push({ pid: null, via: 'open connection, no request yet' }); continue; }
+      if (pid === null) out.push({ pid: null, role: c.belayCaller.role || null, via: 'open connection, caller named no pid' });
+      else if (lockApi.pidAlive(pid)) out.push({ pid, role: c.belayCaller.role || null, via: 'open connection, pid check answers' });
+    }
+    return out;
+  }
+
+  // Release this owner for its own process: stop now when no other client is attached (the same stop() as ever), else keep
+  // serving and stop when the last one is gone. Resolves at once with what was done; the stop that follows a deferral is
+  // registered in retire.cjs so the process stays alive for it. Never a signal: the stop is stop().
+  async retire() {
+    if (this.stopped) return { pid: process.pid, pipe: this.pipe, already: true, deferred: false };
+    const now = this.attached();
+    if (!now.length) return { ...(await this.stop()), deferred: false };
+    if (!this.retiring) {
+      this.retiring = true;
+      const retire = require('./retire.cjs');
+      retire.register(new Promise((resolve) => {
+        const check = () => {
+          if (this.stopped) { clearInterval(timer); return resolve(); }
+          if (this.attached().length) return;
+          clearInterval(timer);
+          this.stop().then(resolve, resolve);
+        };
+        // The interval catches a client whose process died without its connection closing; a close wakes the check at once.
+        const timer = setInterval(check, RETIRE_POLL_MS);
+        this._retireCheck = check;
+      }));
+    }
+    return { pid: process.pid, pipe: this.pipe, already: false, deferred: true, attached: now };
+  }
+
+  // The run that owns this store is closing (ADR 0052): from now on memory.reviewClaim refuses, so the run's close, which waits for
+  // the reviews attached to it, cannot miss one claimed after it looked. In-process only; one-way for this owner's life.
+  closeReviewClaims(reason) { if (!this.reviewClaimsClosed) this.reviewClaimsClosed = { reason: String(reason || 'the run that owns the store is closing'), at: Date.now() }; return this.reviewClaimsClosed; }
+
   _conn(c) {
     this.conns.add(c);
+    c.belayOpenedAt = Date.now();
     let buf = '';
     c.on('data', d => {
       buf += d.toString('utf8');
@@ -207,8 +288,9 @@ class Owner {
         if (line.trim()) this._dispatch(c, line);
       }
     });
-    c.on('close', () => this.conns.delete(c));
-    c.on('error', () => this.conns.delete(c));
+    const gone = () => { this.conns.delete(c); if (this._retireCheck) this._retireCheck(); };
+    c.on('close', gone);
+    c.on('error', gone);
   }
 
   _dispatch(c, line) {
@@ -216,9 +298,37 @@ class Owner {
     try { req = JSON.parse(line); }
     catch { if (!c.destroyed) c.write(JSON.stringify({ id: null, error: { code: 'E_ARGS', message: 'the request line was not valid JSON' } }) + '\n'); return; }
     this.counters.calls++;
+    // A claimed owner with an unkeyed request is the path every existing client takes: it stays synchronous and unchanged.
+    if (req.key === undefined && this.mode !== 'bound') {
+      // claimed mode has no operator check, so there is no checked peer: a peer_pid in the request is dropped, never believed
+      const sent = req.params && req.params.caller;
+      if (sent && typeof sent === 'object' && 'peer_pid' in sent) { const { peer_pid: forged, ...rest } = sent; req.params.caller = rest; }
+      return this._serve(c, req);
+    }
+    let admitted;
+    try { admitted = this._admit(c, req); } catch (e) { admitted = { code: e.code || 'E_INTERNAL', message: e.message, detail: e.detail }; }
+    Promise.resolve(admitted)
+      .then((refusal) => (refusal ? this._refuse(c, req, refusal) : this._serve(c, req)))
+      .catch((e) => this._refuse(c, req, { code: e.code || 'E_INTERNAL', message: e.message, detail: e.detail }));
+  }
+
+  _refuse(c, req, { code, message, detail }) {
+    this.counters.errors++;
+    if (!c.destroyed) c.write(JSON.stringify({ id: req.id, error: { code, message, detail } }) + '\n');
+  }
+
+  _admit(c, req) { return require('./owner-admit.cjs').admit(this, c, req); } // ADR 0045 decisions 2 and 3
+
+  // ADR 0045 decision 2: open, read or revoke a bind (owner-admit.cjs).
+  bindCall(method, params, caller) { return require('./owner-admit.cjs').bindCall(this, method, params, caller); }
+
+  _serve(c, req) {
+    // What the retirement check needs about this client; liveness is then a pid check, never the client's word (ADR 0051).
+    const who = req.params && req.params.caller;
+    if (who && typeof who === 'object') c.belayCaller = { pid: Number.isInteger(who.pid) ? who.pid : null, role: typeof who.role === 'string' ? who.role : null };
 
     if (req.method === 'ping') {
-      const result = { pid: process.pid, pipe: this.pipe, uptime_ms: Date.now() - this.startedAt, calls: this.counters.calls, embedder: this.embedInfo || null };
+      const result = { pid: process.pid, pipe: this.pipe, uptime_ms: Date.now() - this.startedAt, calls: this.counters.calls, embedder: this.embedInfo || null, ...(c.belayVerified === undefined ? {} : { operator_verified: c.belayVerified }) };
       if (!c.destroyed) c.write(JSON.stringify({ id: req.id, result }) + '\n');
       return;
     }
@@ -247,6 +357,14 @@ class Owner {
       const payload = JSON.stringify({ id: req.id, result: { stopping: true, pid: process.pid, pipe: this.pipe } }) + '\n';
       const go = () => this.stop().then(() => { if (this.opts.exitOnShutdown) process.exit(0); }, () => { });
       if (c.destroyed) go(); else c.write(payload, go);
+      return;
+    }
+    // ADR 0045 decision 2: the bind verbs are the owner's own, never the engine's (api.md §1).
+    if (req.method === 'bind.open' || req.method === 'bind.status' || req.method === 'bind.revoke') {
+      const params = req.params || {};
+      Promise.resolve().then(() => this.bindCall(req.method, params, params.caller)).then(
+        (result) => { if (!c.destroyed) c.write(JSON.stringify({ id: req.id, result }) + '\n'); },
+        (e) => this._refuse(c, req, { code: e.code || 'E_INTERNAL', message: e.message, detail: e.detail }));
       return;
     }
     // build step 6f, ADR 0023 amendment 3 decision 4: run.pause and run.resume join run.stop as the
@@ -340,11 +458,16 @@ class Owner {
     // before the timers are cleared and the connections destroyed, so every registered waiter resolves
     // (a settle marker, never a verdict) before the socket it would have answered over is torn down.
     try { if (this.engine) this.engine.settleWaiters(); } catch (e) { record(e); }
+    try { this.binds.close(); } catch (e) { record(e); } // ADR 0045: an owner takes its keys with it
     try { for (const t of this.timers || []) clearInterval(t); } catch (e) { record(e); }
     // MF1: the embedder child process ends with the owner, even mid-load or mid-embed: `close` over IPC,
     // at most 2,000 ms of grace, then a kill by its exact pid (embedder.cjs close()).
     try { if (this.embedderObj) await this.embedderObj.close(); } catch (e) { record(e); }
     try { for (const c of this.conns) c.destroy(); this.conns.clear(); } catch (e) { record(e); }
+    await new Promise((resolve) => {
+      if (!this.tcpServer) return resolve();
+      try { this.tcpServer.close(() => resolve()); } catch (e) { record(e); resolve(); }
+    });
     await new Promise((resolve) => {
       if (!this.server) return resolve();
       try { this.server.close((closeErr) => { if (closeErr) record(closeErr); resolve(); }); }

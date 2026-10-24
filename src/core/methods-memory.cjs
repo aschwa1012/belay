@@ -8,21 +8,35 @@ const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 const { SOURCES, TYPE_RE, validId } = require('./memory-rows.cjs');
 const { redact, redactDeep } = require('./redact.cjs');
+const gate = require('./memory-note-gate.cjs');
 
 // ADR 0041 §5 and ADR 0040 §2: the project alias and a caller's reach live in memory-reach.cjs, a read module.
-const { projectOf, resolveNamespace, reachOf, checkReach } = require('./memory-reach.cjs');
+const { projectOf, resolveNamespace, reachOf, checkReach, checkOrchestratorWrite, runEmbedderMode } = require('./memory-reach.cjs');
 
 const nsFor = (E, caller, args) => resolveNamespace(E, caller, args.namespace) || `run/${caller.run_id}`;
 
 // ADR 0034 decision 2: an error out of the embedder phase goes to the owner's onEmbedderFailure hook (set by
 // `belay run`, which decides by detail.embedder === true whether it is an embedder failure), then is rethrown.
-function notifyEmbedderFailure(E, caller, call, error) {
+function notifyEmbedderFailure(E, caller, call, error, workerId) {
   const h = E.owner && E.owner.opts && E.owner.opts.onEmbedderFailure;
   if (typeof h !== 'function') return;
-  try { Promise.resolve(h({ caller, by: E.writtenBy(caller), call, error })).catch(() => {}); } catch { /* the hook is the run's, never the caller's */ }
+  try { Promise.resolve(h({ caller, by: E.writtenBy(caller), call, error, ...(workerId ? { worker_id: workerId } : {}) })).catch(() => {}); } catch { /* the hook is the run's, never the caller's */ }
 }
 
-async function withEmbedding(E, args, field, textField, caller) {
+// Under `required` in a run (an owner with a guard) an embedder failure pauses the run: the error is told what to do next, once.
+function adviseEmbedderFailure(E, caller, e) {
+  if (e && e.detail && e.detail.embedder === true && E.owner && E.owner.opts && typeof E.owner.opts.embedderMode === 'function' && E.embedderMode() === 'required' && !e.detail.advised) {
+    e.detail.advised = true;
+    const EMA = require('./embedder-mode.cjs'), o = E.owner.opts, worker = caller && caller.role === 'worker';
+    const ending = typeof o.runEnding === 'function' && o.runEnding(); // the guard is ENDING the run: read after it saw this failure
+    e.message = `${e.message} ${ending ? EMA.endingAdvice(e.code, worker) : worker ? EMA.workerPauseAdvice() : EMA.pauseAdvice(caller && caller.run_id)}`;
+  }
+  return e;
+}
+
+// `call` names the Core call for the hook (default: memory.store or memory.search by the field); `workerId` is the worker the
+// call is for when the caller is the run manager, which holds no worker identity of its own.
+async function withEmbedding(E, args, field, textField, caller, call, workerId) {
   if (args[field]) return args;
   try {
     // Loads on first use, and raises E_NO_EMBEDDER, E_MODEL_ABSENT or E_MODEL_CHANGED as the case may be.
@@ -33,7 +47,8 @@ async function withEmbedding(E, args, field, textField, caller) {
       ? { ...args, embedding: e.embedding, embedding_model: e.embedding_model, embedding_revision: e.embedding_revision, dim: e.dim }
       : { ...args, query_embedding: e.embedding, embedding_model: e.embedding_model };
   } catch (e) {
-    notifyEmbedderFailure(E, caller, field === 'embedding' ? 'memory.store' : 'memory.search', e);
+    notifyEmbedderFailure(E, caller, call || (field === 'embedding' ? 'memory.store' : 'memory.search'), e, workerId);
+    adviseEmbedderFailure(E, caller, e);
     throw e;
   }
 }
@@ -41,7 +56,7 @@ async function withEmbedding(E, args, field, textField, caller) {
 const TITLE_MAX = 160;
 const BODY_MAX = 8192;
 // Fields only the core sets (ADR 0040 §2): the run comes from argv, status from memory.setStatus.
-const CORE_SET = ['run_id', 'status', 'status_receipt', 'status_by', 'status_at', 'redactions', 'text_hash', 'last_writer_id'];
+const CORE_SET = ['run_id', 'status', 'status_receipt', 'status_by', 'status_at', 'redactions', 'text_hash', 'last_writer_id', 'written_by'];
 // Harness provenance: the orchestrator and the operator may pass these; from a worker they are refused (invariant 3).
 // `worker_id` names the worker a harness-written row is about (its observation, summary or turn row): the run
 // manager writes those rows as the orchestrator, and without it every one of them read as the orchestrator's.
@@ -51,7 +66,11 @@ const HARNESS_FIELDS = ['task_id', 'turn', 'source', 'worker_id'];
 // creation time and a vector are the harness's to choose: from a worker they would let a model pick a line of the
 // index, sit at the top of recency forever, or bind a fresh namespace to a model and dimension no real write matches.
 const CALLER_FIELDS = ['text', 'namespace', 'type', 'tags', 'provenance', 'supersedes', 'title', 'ttl_seconds', 'body', 'embed'];
+// The note contract's fields (ADR 0047): a project write by a worker or the orchestrator in a notes run is a note, stated in these.
+const NOTE_FIELDS = ['kind', 'when', 'basis', 'evidence', 'applies_to', 'subjects'];
+const NOTE_REFUSED = ['text', 'type', 'tags', 'ttl_seconds', 'supersedes', 'provenance', 'body', 'embed'];
 const HARNESS_STORE_FIELDS = ['id', 'created_at', 'embedding', 'embedding_model', 'embedding_revision', 'dim'];
+const NOTE_BODY_KEYS = ['model', 'state', 'seen_in', 'seen_total', 'matches', 'reported_wrong', 'resolved', 'superseded_by'];
 const TAGS_MAX = 32, TAG_MAX = 200, PROVENANCE_MAX = 512;
 // A worker's own rows in one run namespace: a model in a loop cannot fill the store.
 const WORKER_ROWS_MAX = 2000;
@@ -91,11 +110,16 @@ function checkWrite(caller, args) {
     for (const k of HARNESS_FIELDS.concat(HARNESS_STORE_FIELDS)) if (args[k] !== undefined) throw bad(`${k} is a harness field and a worker cannot set it`, k, { role: caller.role });
   }
   for (const k of Object.keys(args)) {
-    if (!CALLER_FIELDS.includes(k) && !HARNESS_FIELDS.includes(k) && !HARNESS_STORE_FIELDS.includes(k)) throw bad(`${k} is not a memory.store field`, k);
+    if (!CALLER_FIELDS.includes(k) && !NOTE_FIELDS.includes(k) && !HARNESS_FIELDS.includes(k) && !HARNESS_STORE_FIELDS.includes(k)) throw bad(`${k} is not a memory.store field`, k);
   }
   if (args.namespace != null && (typeof args.namespace !== 'string' || !args.namespace)) throw bad('namespace must be a non-empty string', 'namespace');
   if (args.id != null && !validId(args.id)) throw bad('id must be 1 to 128 letters, digits, dot, colon, dash or underscore, starting with a letter or digit', 'id');
   if (args.type != null && (typeof args.type !== 'string' || !TYPE_RE.test(args.type))) throw bad('type must be 1 to 32 lower-case letters, digits, dash or underscore, starting with a letter', 'type');
+  // ADR 0047: a note is written by the hand-back only. Its type and the fields belay keeps on it are never a caller's.
+  if (args.type === 'note') throw bad('type note is reserved for the notes path (the notes of lease_release), so memory.store cannot write one', 'type');
+  if (args.body != null && typeof args.body === 'object' && !Array.isArray(args.body)) {
+    for (const k of NOTE_BODY_KEYS) if (Object.prototype.hasOwnProperty.call(args.body, k)) throw bad(`body.${k} is a field belay keeps on a note and no caller may set it`, 'body');
+  }
   if (args.supersedes != null && !validId(args.supersedes)) throw bad('supersedes must be a row id', 'supersedes');
   if (args.created_at != null && !(Number.isSafeInteger(args.created_at) && args.created_at >= 0 && args.created_at <= Date.now() + 60000)) throw bad('created_at must be epoch milliseconds, not in the future', 'created_at');
   if (args.tags != null && (!Array.isArray(args.tags) || args.tags.length > TAGS_MAX || args.tags.some(t => typeof t !== 'string' || Buffer.byteLength(t) > TAG_MAX))) {
@@ -140,11 +164,59 @@ function checkOwnRow(E, caller, id, verb) {
   if (!own) throw err('E_ROLE', `a worker may ${verb} only its own unverified rows in its own run namespace; row ${id} is not one`, { id, role: caller.role });
 }
 
+// ADR 0047 amendment (2026-10-22): the notes levers of a worker or orchestrator on the tool channel whose write goes to `project/<p>`, else null. In
+// that case the write is a note, made through the hand-back's own functions.
+function noteModeOf(E, caller, namespace) {
+  if (!caller || (caller.role !== 'worker' && caller.role !== 'orchestrator') || caller.channel === 'harness') return null;
+  if (typeof namespace !== 'string' || !namespace.startsWith('project/')) return null;
+  return require('./methods-memory-notes.cjs').notesLevers(E, caller);
+}
+
+// A note written by memory.store: checked against the contract, matched against the project's notes, and written (or held pending) by commitNotes,
+// in the per-project order the hand-back uses. Returns the note item as written (invariant 5).
+async function storeNote(E, caller, args, namespace, lv) {
+  for (const k of NOTE_REFUSED.concat(HARNESS_FIELDS, HARNESS_STORE_FIELDS)) {
+    if (args[k] !== undefined) throw err('E_NOTE_SHAPE', `memory.store: ${k} is not a field of a note. A write to ${namespace} is a note here: pass kind, title, when, basis, evidence (with basis observed), and optionally applies_to and subjects`, { field: k, namespace });
+  }
+  const worker = caller.role === 'worker';
+  const task = worker ? derivedTask(E, caller) : null;
+  if (worker && !task) throw err('E_ARGS', 'memory.store: a note is written for the task you hold; or hand it back in lease_release notes', { field: 'namespace' });
+  const project = namespace.slice('project/'.length);
+  const NT = require('./memory-notes.cjs'), NW = require('./note-write.cjs');
+  const [note] = NT.checkNotes([Object.fromEntries(NOTE_FIELDS.concat('title').filter(k => args[k] !== undefined).map(k => [k, args[k]]))]);
+  return NW.serialised(E, project, async () => {
+    const workerRow = worker ? rows.current(E.store, 'worker', caller.worker_id) : null;
+    const prepared = await NW.prepareNotes(E, caller, [note], { project, lv, worker: workerRow });
+    const item = E.store.tx(() => {
+      E.assertRunOpen(caller, 'memory.store'); // the embedding was awaited above; run.end may have committed meanwhile (audit D42)
+      return NW.commitNotes(E, caller, { project, notes: prepared }, { task_id: task })[0];
+    });
+    E.noteWrite();
+    return { ...item, project, written_by: E.memoryWriter(caller), ...(item.state === 'pending' && worker ? { next: 'resolve it with memory_note_resolve: new, repeats <id>, or supersedes <id> with evidence' } : {}) };
+  });
+}
+
 async function store(E, caller, args) {
-  if (typeof args.text !== 'string' || !args.text.trim()) throw err('E_ARGS', 'memory.store needs non-empty text');
-  checkWrite(caller, args);
+  const named = args.namespace;
   const namespace = nsFor(E, caller, args);
+  const lv = noteModeOf(E, caller, namespace);
+  if (!lv && (typeof args.text !== 'string' || !args.text.trim())) throw err('E_ARGS', 'memory.store needs non-empty text');
+  checkWrite(caller, args);
   checkReach(E, caller, [namespace], 'write to');
+  checkOrchestratorWrite(E, caller, namespace, named);
+  if (isReserved(namespace)) throw err('E_ROLE', `namespace ${namespace} is the notes lifecycle's: only the harness writes there, and not through memory.store`, { namespace, role: caller.role });
+  if (lv) return storeNote(E, caller, args, namespace, lv);
+  const stated = NOTE_FIELDS.filter(k => args[k] !== undefined);
+  if (stated.length) {
+    const why = namespace.startsWith('project/') && caller.role !== 'operator' && caller.channel !== 'harness' ? 'E_LEVER_OFF' : 'E_ARGS';
+    throw err(why, `memory.store: ${stated.join(', ')} ${stated.length > 1 ? 'are' : 'is'} a note field; a note is written to the project of a run with the memory.notes lever on, by a worker or the orchestrator`, { field: stated[0], namespace, ...(why === 'E_LEVER_OFF' ? { lever: 'notes' } : {}) });
+  }
+  // The orchestrator's run outcome (alias `summary`): a row of type summary with a title, found by memory_summaries; nothing else rides on it.
+  if (named === 'summary' && caller.role === 'orchestrator' && caller.channel !== 'harness' && namespace.startsWith('summary/')) {
+    for (const k of ['supersedes', 'ttl_seconds', 'body']) if (args[k] !== undefined) throw bad(`${k} is not allowed on a run outcome written to summary`, k, { namespace });
+    if (typeof args.title !== 'string' || !args.title.trim()) throw bad('a run outcome written to summary needs a title (one line)', 'title', { namespace });
+    args = { ...args, type: 'summary' };
+  }
   if (args.supersedes != null) checkOwnRow(E, caller, args.supersedes, 'supersede');
   if (caller.role === 'worker') {
     const n = E.store.p('SELECT COUNT(*) AS n FROM memory_entries WHERE namespace = ? AND worker_id = ?').get(namespace, caller.worker_id).n;
@@ -152,7 +224,7 @@ async function store(E, caller, args) {
   }
   // A project namespace outlives the run and every later run reads it, so a write into it is always scrubbed,
   // whatever the run's redact lever says (ADR 0040 §3).
-  const s = scrub(redactOn(E, caller) || namespace.startsWith('project/'), args);
+  const s = scrub(redactOn(E, caller) || namespace.startsWith('project/') || namespace.startsWith('summary/'), args);
   // One line of at most 160 bytes: control characters become spaces, whitespace runs collapse, and the bound is on
   // what is stored (after redaction). A title is rendered in the index, so it carries no escape sequence.
   const title = s.title === null ? null : (s.title.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim() || null);
@@ -161,19 +233,31 @@ async function store(E, caller, args) {
   const { embed, task_id, turn, source, worker_id: harnessWorker, title: _title, body: _body, text: _text, ...rest } = args;
   const worker = caller.role === 'worker';
   const base = {
-    ...rest, tags: s.tags, provenance: s.provenance, namespace, worker_id: (!worker && harnessWorker) || E.writtenBy(caller), text: s.text, title, body: s.body, redactions: s.redactions,
+    ...rest, tags: s.tags, provenance: s.provenance, namespace, worker_id: (!worker && harnessWorker) || E.writtenBy(caller), text: s.text, title, body: s.body, redactions: s.redactions, written_by: E.memoryWriter(caller),
     run_id: caller.run_id, task_id: worker ? derivedTask(E, caller) : (task_id ?? null), turn: worker ? null : (turn ?? null),
     source: source || (caller.role === 'operator' ? 'operator' : 'model'),
   };
   const a = embed === false ? base : await withEmbedding(E, base, 'embedding', 'text', caller);
+  E.assertRunOpen(caller, 'memory.store'); // the embedding was awaited above; run.end may have committed meanwhile (audit D42)
   const row = E.store.store(a);
   E.noteWrite();
   return row;
 }
 
+// The notes lifecycle's namespaces belong to the harness: only its own writes put a row there (memory.store refuses
+// them), and a delete of anything in them, or of any note, is the operator's (the archive purge is the way out).
+const RESERVED_NS = ['archive/', 'held/', 'proposal/', 'draft/', 'nomination/'];
+const isReserved = ns => typeof ns === 'string' && RESERVED_NS.some(p => ns.startsWith(p));
+
 async function del(E, caller, args) {
   if (!args.id) throw err('E_ARGS', 'memory.delete needs an id');
   if (!validId(args.id)) throw err('E_ARGS', 'memory.delete id must be a row id', { field: 'id' });
+  // A row the caller cannot read is not found for it, in the same words as a missing id: no namespace leaks (a notes run hides the project's non-note rows).
+  if (gate.legacyHidden(E, caller) && gate.isLegacy(E.store.p('SELECT namespace, type FROM memory_entries WHERE id = ?').get(args.id))) return { id: args.id, deleted: false };
+  if (caller.role !== 'operator') {
+    const r = E.store.p('SELECT type, namespace FROM memory_entries WHERE id = ?').get(args.id);
+    if (r && (r.type === 'note' || isReserved(r.namespace))) throw err('E_ROLE', `row ${args.id} is a ${r.type === 'note' ? 'note' : `row of ${r.namespace.split('/')[0]}/`}, and only the operator deletes those (an archived note leaves only by the operator's purge)`, { id: args.id, role: caller.role });
+  }
   checkOwnRow(E, caller, args.id, 'delete');
   const r = E.store.delete(args.id);
   E.noteWrite();
@@ -204,4 +288,4 @@ async function warm(E, caller, args = {}) {
   return { state, pid: o && o.embedInfo ? o.embedInfo.pid : null, error: o && o.embedError ? o.embedError : null };
 }
 
-module.exports = { runAlpha, store, delete: del, stats, warm, nsFor, resolveNamespace, projectOf, withEmbedding, notifyEmbedderFailure, reachOf, checkReach, scrub };
+module.exports = { leversOf, runAlpha, store, delete: del, stats, warm, nsFor, resolveNamespace, projectOf, withEmbedding, notifyEmbedderFailure, adviseEmbedderFailure, reachOf, checkReach, runEmbedderMode, scrub };

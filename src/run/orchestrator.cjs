@@ -77,9 +77,10 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   } = spec;
 
   const mcpPath = L.mcpServerPath();
+  const bind = await require('./bind-launch.cjs').bindOrchestrator(core, runId); // ADR 0045 decision 2: the owner is this process's own, so the bind is in process
   const written = L.writeOrchestratorFiles({
     dir: orchestratorDir, runId, dataDir, mcpPath, settingsPath: L.userSettingsPath(), cwd: worktree, // ADR 0024
-    compactAt: compactAtTokens, knowledgeAgent: !!spec.knowledgeAgent, // ADR 0007 decision 3; ADR 0043 decision 1
+    compactAt: compactAtTokens, knowledgeAgent: !!spec.knowledgeAgent, agentDefaults: spec.agentDefaults || null, bind, // ADR 0007 decision 3; ADR 0043 decision 1
   });
   fs.writeFileSync(path.join(written.dir, 'prompt.txt'), promptText);
 
@@ -118,6 +119,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   let pollHandle = null;
   let pollInFlight = false; // 5a-2: at most one store read at a time, guard not a queue
   const holdRecorder = createHoldRecorder(); // wake.cjs (design item 9): moved out of this file
+  const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId, enabled: !!spec.notes }); // wave 4: a refuted note wakes the orchestrator (notes runs only)
   let readyTimer = null;
   let sigintHandler = null;
 
@@ -145,7 +147,8 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   async function killChild() {
     // ADR 0039: the handle first. A child whose exit was already observed is never killed by its pid.
     if (child.exitCode === null && child.signalCode === null && P.pidAlive(child.pid)) {
-      await P.killProcess(child).catch(() => null);
+      const r = await P.killProcess(child).catch(() => null);
+      state.kill = r ? { signalled_at: r.signalled_at || null, snapshot_ms: Number.isFinite(r.snapshot_ms) ? r.snapshot_ms : null } : null; // ADR 0048 decision 7: a test measures from the signal
     }
   }
 
@@ -228,7 +231,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     const rec = {
       at_ms: Date.now() - t0, worker_id: ev.worker_id, event: ev.event, turn: ev.turn,
       bytes: Buffer.byteLength(text, 'utf8'), orchestrator_idle_at_write: state.idle,
-      established_by: `worker.list row seq ${ev.seq} for the run`,
+      established_by: ev.event === 'note_refuted' || ev.event === 'scrub_alarm' ? `${ev.event} receipt seq ${ev.seq}` : `worker.list row seq ${ev.seq} for the run`,
     };
     if (ev.event === 'death') {
       rec.exit_code = ev.exit_code; rec.exit_signal = ev.exit_signal; rec.death_established_by = ev.death_established_by;
@@ -279,7 +282,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       orphanGraceMs: ORPHAN_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid),
     });
     state.baseline = next;
-    for (const ev of events) writeWake(ev);
+    for (const ev of events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))).concat(await noteWatcher.poll())) writeWake(ev);
     if (state.finishing) return; // a wake's own write may have found the child already gone
 
     if (state.idle) {
@@ -451,16 +454,20 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       if (!(await spawnedOk)) return; // the 'error' listener above has already settled the run
       if (state.finishing) return; // the child already exited while the spawn confirmation was in flight
 
-      // 5c item 4: a `belay stop` arriving earlier gets 'before-spawn', not a pid not yet ours.
-      // 6f, amendment 3 decision 4: `pause`/`resume`/`isPaused` join the hook for run-pause.cjs's own.
+      // 5c item 4: a `belay stop` arriving earlier gets 'before-spawn'. 6f: `pause`/`resume`/`isPaused` join the hook.
       if (stopControl) {
-        stopControl.attach({
-          pid: child.pid, exited: getExitFacts, stop: stopForControl,
-          pause: (by) => hold.pause(by), resume: (by, line) => hold.resume(by, line), isPaused: () => hold.isPaused(),
-          // 6f-2 design item 2 (run-pause.cjs:50): lets a run pause/resume refuse a run that is finishing
-          // for any reason — the timeout or idle rule closing stdin, a stop, or the orchestrator's own exit.
-          finishing: () => state.finishing, endedBy: () => state.endedBy,
-        });
+        try {
+          stopControl.attach({
+            pid: child.pid, exited: getExitFacts, stop: stopForControl,
+            pause: (by) => hold.pause(by), resume: (by, line) => hold.resume(by, line), isPaused: () => hold.isPaused(),
+            // 6f-2: lets a run pause/resume refuse a run that is finishing for any reason (run-pause.cjs:50)
+            finishing: () => state.finishing, endedBy: () => state.endedBy,
+          });
+        } catch (e) { // ADR 0045 decision 4: the hook records the orchestrator in the spawn register; one no owner can recognise must not run
+          if (state.finishing) return;
+          state.finishing = true; state.endedBy = `the orchestrator could not be recorded, so it was ended before its first prompt: ${(e && e.message) || e}`;
+          await killChild(); return;
+        }
       }
 
       let attached;

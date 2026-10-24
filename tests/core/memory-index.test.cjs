@@ -224,5 +224,19 @@ test('a worker may call it, and reading it writes nothing', async () => {
 test('the module requires nothing that reaches the embedder', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'core', 'memory-index.cjs'), 'utf8');
   const reqs = [...src.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1]).filter((r) => !r.startsWith('node:'));
-  assert.deepStrictEqual(reqs.sort(), ['./errors.cjs', './fit-budget.cjs', './memory-reach.cjs', './memory-relevance.cjs', './memory-rows.cjs', './rows.cjs']);
+  assert.deepStrictEqual(reqs.sort(), ['./errors.cjs', './fit-budget.cjs', './memory-index-notes.cjs', './memory-reach.cjs', './memory-relevance.cjs', './memory-rows.cjs', './memory-withhold.cjs', './rows.cjs']);
+});
+
+test('a worktree-relative observation path under files_owned ranks in tier 1; an absolute one does not', async () => {
+  const { buildObservation } = require('../../src/run/observe.cjs');
+  const ns = fresh();
+  const t = await call('task.create', { spec: 'relative', files_owned: ['src/relpath'] });
+  const obs = (file) => buildObservation({ turn: 1, events: [
+    { kind: 'tool_use', tool: 'Edit', args: { file_path: file }, tool_use_id: 'e' },
+    { kind: 'tool_result', tool: 'Edit', tool_use_id: 'e', is_error: false, files: [file] },
+  ], final_text: '', worktree: 'C:/tmp/wt' }).body;
+  const absolute = await row(ns, 'outside the worktree', { body: JSON.stringify(obs('C:/other/src/relpath/m.cjs')) }, { created_at: 900 });
+  const relative = await row(ns, 'inside the worktree', { body: JSON.stringify(obs('C:\\tmp\\wt\\src\\relpath\\m.cjs')) }, { created_at: 10 });
+  const r = await call('memory.index', { namespaces: [ns], task_id: t.id });
+  assert.deepStrictEqual(ids(r), [relative, absolute]);
 });

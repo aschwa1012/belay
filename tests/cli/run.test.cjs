@@ -16,9 +16,9 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn, spawnSync } = require('node:child_process');
 
-const { openCore } = require('../../src/core/index.cjs');
 const { releaseCore } = require('./stop-helpers.cjs');
 const P = require('../../src/run/process.cjs');
+const { SNAPSHOT_TIMEOUT_MS } = require('../../src/core/proc-identity.cjs');
 
 const ROOT = path.resolve(__dirname, '..', '..').split(path.sep).join('/');
 const CLI = `${ROOT}/src/cli/belay.cjs`;
@@ -152,12 +152,9 @@ test('run: the orchestrator is a child of the CLI, the run row is written, stdin
   let testCore = null;
   let fakeWorker = null;
   try {
-    testCore = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
-
-    const row = await waitUntil(async () => {
-      const got = await testCore.run.get();
-      return got.run || null;
-    }, 10000, 100);
+    // the run's owner serves bound callers (ADR 0045): the test is the orchestrator the way a run's is, through a bind the operator asks for
+    testCore = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 10000 });
+    const row = (await testCore.run.get()).run;
     assert.ok(row, 'the run row never appeared within 10,000 ms of the CLI spawning');
     assert.strictEqual(row.adapter_pid, cliProc.pid, "adapter_pid must be the CLI process's own pid");
     assert.ok(Number.isInteger(row.orchestrator_pid) && row.orchestrator_pid > 0, 'orchestrator_pid must be a positive integer');
@@ -187,7 +184,9 @@ test('run: the orchestrator is a child of the CLI, the run row is written, stdin
 
     require('../crash.cjs').crash(fakeWorker);
 
-    const exited = await waitForExit(cliProc, 4 * 500 + 5000);
+    // A hang guard, not a product bound: the receipt waits for the orchestrator's creation-time read, so the guard allows what one
+    // caller can wait for a snapshot (ADR 0048 decision 8, c) on top of the 4 holds and the close.
+    const exited = await waitForExit(cliProc, 4 * 500 + 5000 + 2 * SNAPSHOT_TIMEOUT_MS);
     assert.ok(exited, 'the CLI did not exit in time after the fake worker was killed');
     assert.strictEqual(exited.code, 0, `the CLI exited ${exited.code}, stderr: ${cliStderr.slice(-2000)}`);
 

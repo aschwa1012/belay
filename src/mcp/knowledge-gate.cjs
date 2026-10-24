@@ -17,12 +17,16 @@ const DEFAULT_BOUND_MS = 3000;
 
 function createKnowledgeGate({ role, runId, storeExists, openCore, log, boundMs = DEFAULT_BOUND_MS, attachedRun = () => null }) {
   let answer = null; // true or false once a read has answered; null until then
+  let notes = false; // ADR 0047: the same read also answers whether the run has the notes lever on
+  let indexOn = false; // and the first_message_index lever: the orchestrator's worker_spawn lists memory_queries only then
   let inflight = null;
 
   async function read() {
     const core = await openCore();
     const { leversFor } = require('../run/memory-levers.cjs'); // no requires of its own
     const levers = await leversFor(core, runId);
+    notes = levers.notes === true;
+    indexOn = levers.first_message_index === true;
     return levers.knowledge_agent === true;
   }
 
@@ -35,12 +39,15 @@ function createKnowledgeGate({ role, runId, storeExists, openCore, log, boundMs 
     return Promise.race([read(), limit]).finally(() => clearTimeout(timer));
   }
 
-  return async function knowledgeListed() {
+  async function knowledgeListed() {
     if (role !== 'orchestrator') return false;
     if (answer !== null) return answer;
     const row = attachedRun();
     if (row) {
-      answer = require('../run/memory-levers.cjs').leversOfRow(row).knowledge_agent === true;
+      const lv = require('../run/memory-levers.cjs').leversOfRow(row);
+      answer = lv.knowledge_agent === true;
+      notes = lv.notes === true;
+      indexOn = lv.first_message_index === true;
       return answer;
     }
     if (!storeExists()) return false;
@@ -56,7 +63,11 @@ function createKnowledgeGate({ role, runId, storeExists, openCore, log, boundMs 
         .finally(() => { inflight = null; });
     }
     return inflight;
-  };
+  }
+  // The notes lever from the same single read (the orchestrator lists memory_summaries only when it is on).
+  knowledgeListed.queries = () => indexOn; // likewise: the first-message index lever, false when the run row could not be read
+  knowledgeListed.notes = () => notes; // read after knowledgeListed() has answered; never a second read
+  return knowledgeListed;
 }
 
 module.exports = { createKnowledgeGate, DEFAULT_BOUND_MS };

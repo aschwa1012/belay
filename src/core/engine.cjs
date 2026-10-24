@@ -11,9 +11,11 @@
 const { err } = require('./errors.cjs');
 const { ROLES } = require('./schema.cjs');
 const { pidAlive, readOwnerLock, pipeName } = require('./lock.cjs');
+const { isJobId } = require('./job-ids.cjs');
 const memory = require('./methods-memory.cjs');
 const run = require('./methods-run.cjs');
 const task = require('./methods-task.cjs');
+const taskHold = require('./methods-task-hold.cjs');
 const continuity = require('./continuity.cjs');
 const status = require('./status.cjs');
 const diff = require('./methods-diff.cjs');
@@ -45,6 +47,14 @@ const ORCH = ['orchestrator'];
 // task.assign too, named below; every other orchestrator-only method is unaffected.
 const ORCH_OR_OPERATOR = ['orchestrator', 'operator'];
 
+// An operator on the harness channel may write a worker row only for a job of its own run (see 'worker.write').
+function jobRowGuard(E, caller, args) {
+  if (caller.role !== 'operator' || caller.channel !== 'harness' || !isJobId(args.id)) return false;
+  if (args.run_id !== undefined && args.run_id !== null && args.run_id !== caller.run_id) return false;
+  const prev = require('./rows.cjs').current(E.store, 'worker', args.id);
+  return !prev || prev.run_id === caller.run_id;
+}
+
 const METHODS = {
   'memory.store': { roles: ALL, kind: 'write', fn: memory.store },
   // ADR 0040 §2: the read methods live in memory-search.cjs (layered, filtered, hybrid, with the honesty contract).
@@ -57,15 +67,64 @@ const METHODS = {
   'memory.index': { roles: ALL, kind: 'read', fn: memoryIndex.index },
   'memory.corpus': { roles: ALL, kind: 'read', fn: lazy('./memory-corpus.cjs', 'corpus') },
   'memory.setStatus': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-status.cjs', 'setStatus') },
+  'memory.promote': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-promote.cjs', 'promote') },
+  // ADR 0047 decision 4: settles the pending notes a hand-back returned; the writer's own, or the orchestrator's or operator's.
+  'memory.noteResolve': { roles: ALL, kind: 'write', fn: lazy('./methods-memory-notes.cjs', 'resolve') },
+  // wave 4: a reviewer's per-note verdicts applied by belay after the citation check (harness channel only for the orchestrator role),
+  // and the two reads the refuted-note wake and a review's brief are built from.
+  'memory.noteVerdicts': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-note-review.cjs', 'noteVerdicts') },
+  'memory.noteRefutation': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-note-review.cjs', 'noteRefutation') },
+  'memory.noteBriefCapture': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-note-review.cjs', 'noteBriefCapture') },
+  'memory.reviewBrief': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-note-review.cjs', 'reviewBrief') },
+  // The notes lifecycle (scrub, review, archive). scrubApply and reviewApply are harness-channel calls (the check is inside);
+  // noteRestore is the orchestrator's or the operator's; archivePurge is the operator's alone; the two reads are SELECTs.
+  'memory.scrubApply': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-scrub.cjs', 'scrubApply') },
+  'memory.reviewApply': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-review.cjs', 'reviewApply') },
+  'memory.noteRestore': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-archive.cjs', 'noteRestore') },
+  'memory.archivePurge': { roles: ['operator'], kind: 'write', fn: lazy('./methods-memory-archive.cjs', 'archivePurge') },
+  'memory.scrubScope': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-stages.cjs', 'scrubScope') },
+  'memory.reviewQueue': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-stages.cjs', 'reviewQueue') },
+  // Promotion to an instruction file: nomination by code (harness channel); the operator's decision is `memory.notePromote { note_id, decision }`.
+  'memory.notePromote': { roles: ['operator'], kind: 'write', fn: lazy('./methods-memory-promote-note.cjs', 'promoteNote') },
+  'memory.nominate': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./memory-nominate.cjs', 'nominate') },
+  'memory.promotedCheck': { roles: ['operator'], kind: 'read', fn: lazy('./methods-memory-promote-note.cjs', 'promotedCheck') },
+  'memory.proposals': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-archive.cjs', 'proposals') },
+  'memory.archivedDuplicates': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./methods-memory-archive.cjs', 'archivedDuplicates') },
+  // ADR 0047 decision 1: run summaries found on demand; with the notes lever on they live in summary/<project>.
+  'memory.summaries': { roles: ALL, kind: 'read', fn: lazy('./memory-summaries.cjs', 'summaries') },
   'memory.recordEvent': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-ledger.cjs', 'recordEvent') },
   'memory.events': { roles: ALL, kind: 'read', fn: lazy('./methods-ledger.cjs', 'events') },
+  // The notes lifecycle's delivery, area and use facts (run's notes_sink lever): written at task end by the harness, read by note.
+  'memory.recordChances': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./memory-chances.cjs', 'recordChances') },
+  'memory.noteDeliveries': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./memory-chances.cjs', 'noteDeliveries') },
   'usage.record': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-ledger.cjs', 'usageRecord') },
   'usage.list': { roles: ALL, kind: 'read', fn: lazy('./methods-ledger.cjs', 'usageList') },
   'memory.delete': { roles: ALL, kind: 'write', fn: memory.delete },
   'memory.stats': { roles: ALL, kind: 'read', fn: memory.stats },
+  // The notes stored without a vector, counted (and listed on request) by a plain read; status, notices and the panel show the count.
+  'memory.unembedded': { roles: ALL, kind: 'read', fn: lazy('./notes-unembedded.cjs', 'unembedded') },
+  // The in-flight claim of an archive review (the panel's button, the hand command): one review of a project at a time, by process identity.
+  'memory.reviewClaim': { roles: ['operator'], kind: 'write', fn: lazy('./review-claim.cjs', 'reviewClaim') },
+  'memory.reviewRelease': { roles: ['operator'], kind: 'write', fn: lazy('./review-claim.cjs', 'reviewRelease') },
+  'memory.reviewState': { roles: ALL, kind: 'read', fn: lazy('./review-claim.cjs', 'reviewState') },
+  // The notes held for the Opus archive reviewer (a hold of any kind), counted by a plain read; status, notices and the panel show the count.
+  'memory.held': { roles: ALL, kind: 'read', fn: lazy('./notes-held.cjs', 'held') },
+  // The operator's own settlement of a held note (`belay memory held settle`): archive, release (reports settled, note not verified) or re-offer. The explicit operator only.
+  'memory.heldSettle': { roles: ['operator'], kind: 'write', fn: lazy('./methods-memory-held-settle.cjs', 'heldSettle') },
+  // A report that a note is wrong, by the operator (`belay memory report`) or the orchestrator (`memory_report`): marked on the note and held for the archive review in one transaction, as a worker's report is. Never a worker.
+  'memory.noteReport': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-memory-note-report.cjs', 'noteReport') },
+  // `belay memory embed --reembed`: which notes have a vector made from another template, and which of those can be rebuilt (a read).
+  'memory.retemplate': { roles: ['operator'], kind: 'read', fn: lazy('./notes-unembedded.cjs', 'retemplate') },
+  // The project's most used note subjects, for the hand-back question to offer a worker (a read; the run manager asks at spawn).
+  'memory.noteSubjects': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./memory-subjects.cjs', 'noteSubjects') },
+  // `belay memory embed`: one such note gets its vector and the near-duplicate check its hand-back skipped. The operator starts it; nothing else calls it.
+  'memory.embedNote': { roles: ['operator'], kind: 'write', fn: lazy('./methods-memory-embed.cjs', 'embedNote') },
   // build 12b E2: start the embedder child and its load ahead of first use (the run's warm-up), so the
   // fork stall and the cold load happen before agents talk to the owner. kind 'write' so it reaches the owner.
   'memory.warm': { roles: ALL, kind: 'write', fn: memory.warm },
+  // The first-message index's query vector, made by the owner's embedder (the path memory.search uses). kind 'write' only so the call
+  // reaches the owner, as memory.warm does; it writes nothing. Harness channel only (the run manager).
+  'memory.embedQuery': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-embed-query.cjs', 'embedQuery') },
 
   'status.get': { roles: ALL, kind: 'read', fn: status.get },
 
@@ -75,12 +134,16 @@ const METHODS = {
   // run.attach/run.end above — the run process itself writes it (role operator, belay run's own
   // identity), and it is read back through the ordinary run row.
   'run.setPaused': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.setPaused },
+  'run.setEmbedderMode': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.setEmbedderMode },
   'run.get': { roles: ALL, kind: 'read', fn: run.getRun },
   // build step 4a: every run's current row, so a CLI with no run id argument (belay status,
   // belay workers) has a way to find the current run at all.
   'run.list': { roles: ALL, kind: 'read', fn: run.listRuns },
 
-  'worker.write': { roles: ORCH, kind: 'write', fn: run.writeWorker },
+  // `harnessGuard(E, caller, args)`: the one write an operator on the harness channel (core.harness(), never a tool call) may make
+  // beyond its roles. The run process becomes the parent of the run-close stages' child and writes that child's rows, and only
+  // those: a reserved job id (scrub-, archreview-, notereview-) whose row, if one exists, belongs to the caller's own run.
+  'worker.write': { roles: ORCH, harnessGuard: jobRowGuard, kind: 'write', fn: run.writeWorker },
   'worker.get': { roles: ALL, kind: 'read', fn: run.getWorker },
   'worker.list': { roles: ALL, kind: 'read', fn: run.listWorkers },
   // build step 6b, ADR 0019 decision 6: operator only, the CLI's `worker rm` (mode W); no MCP tool.
@@ -90,6 +153,8 @@ const METHODS = {
   // build step 6a, ADR 0010 §4 amendment 1: opened to the operator as well (see the comment above
   // ORCH_OR_OPERATOR); the MCP adapter's task_assign tool stays orchestrator-only.
   'task.assign': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: task.assign },
+  // The run manager asks this before it relaunches a worker (restart, resume, a Codex turn): the task it holds is held for the manager's live run, or the relaunch is refused.
+  'task.ensureHold': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: taskHold.ensureHold },
   'task.list': { roles: ALL, kind: 'read', fn: task.list },
   'task.get': { roles: ALL, kind: 'read', fn: task.get },
   'task.evaluate': { roles: ORCH, kind: 'write', fn: task.evaluate },
@@ -99,6 +164,7 @@ const METHODS = {
   'lease.takeControl': { roles: ['operator'], kind: 'write', fn: task.takeControl },
 
   'continuity.checkpoint': { roles: ['worker', 'orchestrator'], kind: 'write', fn: continuity.checkpoint },
+  'continuity.lastCheckpoint': { roles: ALL, kind: 'read', fn: continuity.lastCheckpoint },
   'continuity.resumeLine': { roles: ALL, kind: 'read', fn: continuity.resumeLine },
   'continuity.resumeDoc': { roles: ALL, kind: 'read', fn: continuity.resumeDoc },
 
@@ -116,6 +182,9 @@ const METHODS = {
   'permission.wait': { roles: ['worker'], kind: 'wait', fn: permission.wait },
 };
 
+// The methods that read or write memory rows and are refused when the run's memory is off.
+const MEMORY_OFF_REFUSED = new Set(['memory.store', 'memory.delete', 'memory.search', 'memory.get', 'memory.list', 'memory.timeline', 'memory.get_many', 'memory.setStatus', 'memory.promote', 'memory.noteResolve', 'memory.embedNote', 'memory.corpus', 'memory.summaries']);
+
 const METHOD_NAMES = Object.keys(METHODS);
 const READ_METHODS = new Set(METHOD_NAMES.filter(m => METHODS[m].kind === 'read'));
 const WRITE_METHODS = new Set(METHOD_NAMES.filter(m => METHODS[m].kind === 'write'));
@@ -127,19 +196,33 @@ function validateCaller(caller) {
   if (caller.role === 'worker' && (typeof caller.worker_id !== 'string' || !caller.worker_id)) {
     throw err('E_ARGS', 'a worker-role caller must carry the worker_id it was launched with, because a worker cannot name itself');
   }
+  if (caller.channel !== undefined && caller.channel !== 'tool' && caller.channel !== 'harness') {
+    throw err('E_ARGS', `caller.channel must be tool or harness, and this call carried ${JSON.stringify(caller.channel)}`);
+  }
+  if (caller.channel === 'harness' && caller.role !== 'orchestrator' && caller.role !== 'operator') {
+    throw err('E_ARGS', 'the harness channel belongs to belay run: the run manager (the orchestrator adapter) and the run-end jobs (the run process)', { role: caller.role });
+  }
   return caller;
 }
+
+// Audit D42: an ended run takes no write from a process launched for it, orchestrator adapter or worker. The run process
+// (role operator) is not bound by this: it ends the run, then closes, scrubs and sweeps it. run.attach keeps its own refusal
+// (and the operator's re-run opens the next epoch), and run.end is not refused here: a repeated run.end is the run
+// process's own business (run.end sees the ended row itself).
+const ENDED_RUN_EXEMPT = new Set(['run.attach', 'run.end']);
 
 class Engine {
   // `owner` is set only when this engine belongs to the process that holds the lock; `establishedBy`
   // says how the rows behind a read were obtained ('owner', 'copy' or 'none').
-  constructor({ dataDir, store, getEmbedder = null, owner = null, establishedBy = 'copy', embedderFailure = null }) {
+  constructor({ dataDir, store, getEmbedder = null, owner = null, establishedBy = 'copy', embedderFailure = null, memoryOffFn = null }) {
     this.dataDir = dataDir;
     this.store = store;
     // A provider, not a loaded model: the embedding library is reached only by a call that needs a
     // vector, and an engine reading a copy of the store has no way to get one at all.
     this._getEmbedder = getEmbedder;
     this.owner = owner;
+    // The run's memory-off test for an engine with no owner (a copy-fallback read in the run process; ADR 0034 amendment 1).
+    this._memoryOffFn = memoryOffFn;
     this.establishedBy = establishedBy;
     // Why the owner could not be asked for a vector on this read ({ code, message }): set by a copy read that fell
     // back from a wedged or still-loading owner, so a hybrid search reports that cause and not "no embedder".
@@ -147,6 +230,26 @@ class Engine {
     // build step 6d: in-process waiters for `permission.wait`, keyed by permission id — meaningful only
     // on the live owner's engine; a copy's engine has an empty map and nothing to resolve.
     this.waiters = new Map();
+    // The held-note guard (held-guard.cjs): installed on the store, loaded on its first guarded write, so no read path loads it.
+    if (store && typeof store === 'object') store.guard = (op, id, detail) => require('./held-guard.cjs').check(this, op, id, detail);
+  }
+
+  // ADR 0034 amendment 1: under on_embedder_failure `off`, once an embedder failure has turned the run's memory off (the owner's
+  // `memoryOff()`, set by belay run), the memory methods that read or write rows refuse, and memory.index answers an empty block.
+  // The run's own receipts (memory.recordEvent, memory.events) and the ordinary run, task and worker methods are not memory.
+  memoryOff(method) {
+    const o = this.owner && this.owner.opts;
+    const test = o && typeof o.memoryOff === 'function' ? o.memoryOff : this._memoryOffFn;
+    if (typeof test !== 'function' || !test()) return null;
+    if (method === 'memory.index') return 'empty';
+    return MEMORY_OFF_REFUSED.has(method) ? 'refuse' : null;
+  }
+
+  // The run's on_embedder_failure mode as the owner's guard has it now, canonical; the default when none is set.
+  embedderMode() {
+    const o = this.owner && this.owner.opts;
+    const raw = o && typeof o.embedderMode === 'function' ? o.embedderMode() : null;
+    return raw === 'continue' ? 'keyword' : (raw === 'stop' || !raw) ? 'required' : raw; // the module that owns the mode names stay out of the read path's imports
   }
 
   addWaiter(id, resolve) {
@@ -194,6 +297,13 @@ class Engine {
   // role. api.md §3, memory defaults.
   writtenBy(caller) { return caller.role === 'worker' ? caller.worker_id : caller.role; }
 
+  // ADR 0044 decision 6: the writer a memory row records. The channel is set by the process that built the caller,
+  // never by an argument: the run manager's frozen harness caller is `harness`; a tool call is the model's role.
+  memoryWriter(caller) {
+    if (caller.channel === 'harness') return 'harness';
+    return caller.role === 'worker' ? `worker:${caller.worker_id}` : caller.role;
+  }
+
   noteWrite() { if (this.owner && this.owner.noteWrite) this.owner.noteWrite(); }
 
   ownerFact() {
@@ -203,16 +313,35 @@ class Engine {
     return { pid: lock.pid, pipe: lock.pipe || pipeName(this.dataDir), alive: pidAlive(lock.pid), established_by: 'owner.lock pid check' };
   }
 
+  // Audit D42: refuse a write from a process launched for a run that has ended. Dispatch checks it once, before the method
+  // runs; a method that awaits before it writes (task.evaluate's commands, a release's or a store's embedding) checks again,
+  // synchronously, in the same tick as its write, so a run.end that committed while it waited is seen. The run process
+  // (role operator) is never bound by it.
+  assertRunOpen(caller, method = 'write') {
+    if (caller.role === 'operator') return;
+    const run = require('./rows.cjs').current(this.store, 'run', caller.run_id);
+    if (run && run.ended_at != null) {
+      throw err('E_ARGS', `${method}: run ${caller.run_id} has already ended, so a ${caller.role} launched for it writes nothing; nothing was written`, { method, run_id: caller.run_id, ended_at: run.ended_at, role: caller.role, run_ended: true });
+    }
+  }
+
   async handle(method, params) {
     const spec = METHODS[method];
     if (!spec) throw err('E_ARGS', `${method} is not a Core API method`, { method });
     const p = params || {};
     const caller = validateCaller(p.caller);
-    if (!spec.roles.includes(caller.role)) {
+    if (!spec.roles.includes(caller.role) && !(spec.harnessGuard && spec.harnessGuard(this, caller, p))) {
       throw err('E_ROLE', `${method} is available to ${spec.roles.join(', ')} and this call came from role ${caller.role}`, { method, role: caller.role, allowed: spec.roles });
     }
     const args = { ...p };
     delete args.caller;
+    if (method.startsWith('memory.')) require('./memory-reach.cjs').normalizeArgs(args); // one spelling per namespace before any routing or reach check
+    if (spec.kind === 'write' && !ENDED_RUN_EXEMPT.has(method)) this.assertRunOpen(caller, method);
+    const off = this.memoryOff(method);
+    if (off === 'refuse') throw err('E_LEVER_OFF', `${method}: memory is off for this run (on_embedder_failure off, after an embedder failure), so nothing is read or written through it`, { lever: 'on_embedder_failure' });
+    if (off === 'empty') return { text: '', bytes: 0, row_ids: [], dropped: 0, over_budget: false, sha256: require('node:crypto').createHash('sha256').update('', 'utf8').digest('hex'), considered: 0, excluded_already_injected: 0, memory_off: true };
+    // A write method runs inside its caller's context (held-guard.cjs), which follows it across its awaits and reaches no other call.
+    if (spec.kind === 'write') return require('./held-guard.cjs').runAs(caller, () => spec.fn(this, caller, args));
     return spec.fn(this, caller, args);
   }
 }

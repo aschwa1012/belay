@@ -9,20 +9,24 @@
 // namespaces and filter and found nothing. A weaker result carries a `warning`, the first key of the object.
 
 const { err } = require('./errors.cjs');
-const { toMatch } = require('./fts-query.cjs');
-const { rrf } = require('./fusion.cjs');
+const { BM25, DEFAULT_PAGE } = require('./fts-query.cjs');
+const { pickTerms, orMatch } = require('./memory-relevance.cjs');
+const { rrf, HYBRID_ALPHA, HYBRID_K } = require('./fusion.cjs');
 const { deriveTitle, indexRowOf, dupVeto, filterSql } = require('./memory-rows.cjs');
 const { ftsReady } = require('./memory-schema.cjs');
 const { scanCeiling } = require('./schema.cjs');
 const { toUnitF32 } = require('./store.cjs');
-const { nsFor, resolveNamespace, runAlpha, withEmbedding, reachOf, checkReach } = require('./methods-memory.cjs');
+const gate = require('./memory-note-gate.cjs');
+const W = require('./memory-withhold.cjs');
+const { notesDefaults } = require('./memory-search-scope.cjs');
+const { nsFor, resolveNamespace, runAlpha, withEmbedding, reachOf, checkReach, runEmbedderMode } = require('./methods-memory.cjs');
 
 const MODES = ['semantic', 'keyword', 'hybrid'];
 const VIEWS = ['full', 'index'];
 const SCOPES = ['task', 'worker', 'run', 'namespace'];
 const NS_MAX = 10, OFFSET_MAX = 1000, K_MAX = 100, ID_MAX = 50, SPAN_MAX = 50, LIST_MAX = 500, DEPTH_MAX = 1200;
-// ADR 0040 amendment (hybrid default): rrf k=10, alpha 0.3, AND join, chosen by the second hybrid evaluation.
-const DEFAULT_ALPHA = 0.3, RRF_K = 10, DUP_THRESHOLD = 0.95;
+// ADR 0040 amendment (hybrid default): rrf k=10, alpha 0.3, OR join, chosen by the second hybrid evaluation.
+const DEFAULT_ALPHA = HYBRID_ALPHA, RRF_K = HYBRID_K, DUP_THRESHOLD = 0.95;
 
 const bad = (msg, field) => err('E_ARGS', msg, field ? { field } : undefined);
 const marks = list => list.map(() => '?').join(', ');
@@ -61,6 +65,9 @@ function namespacesOf(E, caller, args) {
 }
 // A row a worker may not read is reported as not found, by id as by search: its existence is not the worker's to learn.
 const visible = (reach, r) => !reach || reach.has(r.namespace);
+// A read by explicit id also leaves out the lifecycle namespaces for a gated tool-channel caller (the orchestrator has no reach to stop it).
+// ...and a row of the project that is not a note, for a gated caller in a notes run (`legacy`, from gate.legacyHidden).
+const readable = (caller, reach, r, legacy = false) => visible(reach, r) && !gate.inLifecycle(caller, r.namespace) && !(legacy && gate.isLegacy(r));
 
 const parseJson = s => { if (s == null) return null; try { return JSON.parse(s); } catch { return s; } };
 
@@ -69,7 +76,7 @@ const parseJson = s => { if (s == null) return null; try { return JSON.parse(s);
 function fullRow(r) {
   const { embedding, ...rest } = r;
   return {
-    ...rest, tags: parseJson(rest.tags), has_embedding: !!embedding,
+    ...rest, written_by: r.written_by ?? null, tags: parseJson(rest.tags), has_embedding: !!embedding,
     status: r.status || 'unverified', title: r.title || deriveTitle(r.text),
     body: parseJson(r.body), redactions: parseJson(r.redactions),
   };
@@ -120,8 +127,10 @@ async function semanticStage(E, caller, o, depth) {
     if (o.filterSql.where) {
       allowed = new Set(db.prepare(`SELECT e.id FROM memory_entries e WHERE e.namespace = ? AND ${o.filterSql.where}`).all(ns, ...o.filterSql.params).map(r => r.id));
     }
+    const hidden = o.hidden; // the notes the gate hides (a small set): one lookup per row
+    const legacy = gate.legacyIds(E, caller, ns); // the project's rows that are not notes, hidden from a gated caller in a notes run
     for (const r of c.rows) {
-      if (!r.vec || (r.ttl_at && r.ttl_at < t) || (!o.includeSuperseded && c.superseded.has(r.id)) || (allowed && !allowed.has(r.id))) continue;
+      if (!r.vec || (r.ttl_at && r.ttl_at < t) || (!o.includeSuperseded && c.superseded.has(r.id)) || (allowed && !allowed.has(r.id)) || (hidden && hidden.has(r.id)) || (legacy && legacy.has(r.id))) continue;
       scanned++;
       let s = 0;
       for (let d = 0; d < m.dim; d++) s += r.vec[d] * q[d];
@@ -135,19 +144,25 @@ async function semanticStage(E, caller, o, depth) {
 const fail = (code, message) => ({ failed: { code, message } });
 
 // FTS5 over title and text (trigram), restricted to the stated namespaces and filter, expired and superseded
-// rows excluded as the semantic scan excludes them. Never throws for a reason the caller can act on: the
-// result names it, so a missing index is "keyword did not run", never an empty list.
+// rows excluded as the semantic scan excludes them. The terms come from the one extractor memory.index also uses
+// (memory-relevance pickTerms): stopwords, too-short terms, terms in half the rows or more (zero IDF) and terms over
+// the cap are left out, and each is named with its reason in `dropped`. A row that matches only left-out terms matches
+// nothing. Never throws for a reason the caller can act on: the result names it, so a missing index is "keyword did not
+// run", never an empty list. A query whose every term was left out for being uninformative did not run either; one whose
+// informative terms sit in no row ran and found nothing.
 function keywordStage(E, o, depth, base) {
   const db = E.store.db;
   if (!ftsReady(db)) return fail('E_NO_INDEX', 'this store has no keyword index (it was never opened by a current owner, or this SQLite has no FTS5); keyword search did not run');
   if (typeof o.query !== 'string') return fail('E_QUERY_SHORT', 'a keyword search needs query text; only a vector was supplied');
-  const m = toMatch(o.query);
-  if (m.error) return fail('E_QUERY_SHORT', 'the query has no term of at least 3 characters, which the trigram index needs; keyword search did not run');
-  const used = new Set(m.match.slice(1, -1).split('" "'));
-  const dropped = [...new Set(o.query.split(/[\s"]+/).filter(Boolean))].filter(t => !used.has(t));
   try {
-    const rows = db.prepare(`SELECT e.id AS id, bm25(memory_fts) AS bm FROM memory_fts JOIN memory_entries e ON e.rowid = memory_fts.rowid
-      WHERE memory_fts MATCH ? AND ${base.where} ORDER BY bm25(memory_fts), e.created_at DESC, e.id LIMIT ?`).all(m.match, ...base.params, depth);
+    const { terms, dropped } = pickTerms(db, o.query, o.namespaces, { rows: false });
+    if (!terms.length && !dropped.some(d => d.reason === 'no-row')) {
+      const why = dropped.length ? dropped.map(d => `${d.term}: ${d.reason}`).join(', ') : 'the query has no words';
+      return fail('E_QUERY_SHORT', `the query has no term the keyword index can rank (${why}); keyword search did not run`);
+    }
+    if (!terms.length) return { hits: [], dropped };
+    const rows = db.prepare(`SELECT e.id AS id, ${BM25} AS bm FROM memory_fts JOIN memory_entries e ON e.rowid = memory_fts.rowid
+      WHERE memory_fts MATCH ? AND ${base.where} ORDER BY ${BM25}, e.created_at DESC, e.id LIMIT ?`).all(orMatch(terms.map(t => t.t)), ...base.params, depth);
     return { hits: rows.map(r => ({ id: r.id, score: -r.bm })), dropped };
   } catch (e) {
     return fail(/no such (table|column)|malformed/i.test(e.message) ? 'E_NO_INDEX' : 'E_INTERNAL', `the keyword index could not be read: ${e.message}`);
@@ -162,6 +177,7 @@ function baseWhere(o) {
   // whole namespace per outer row, which is quadratic (minutes, not milliseconds, at ten thousand rows).
   if (!o.includeSuperseded) where.push('NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND +s.namespace = e.namespace)');
   if (o.filterSql.where) { where.push(o.filterSql.where); params.push(...o.filterSql.params); }
+  if (o.gate) { where.push(o.gate.where); params.push(...o.gate.params); }
   return { where: where.join(' AND '), params };
 }
 
@@ -181,12 +197,21 @@ function parseSearch(E, caller, args) {
   const alpha = args.alpha === undefined ? (lever === null ? DEFAULT_ALPHA : lever) : args.alpha;
   if (typeof alpha !== 'number' || !(alpha >= 0 && alpha <= 1)) throw bad('alpha must be a number from 0 to 1', 'alpha');
   const order = enumArg('order', args.order, ['score', 'newest', 'oldest'], 'score');
-  const filter = args.filter == null ? {} : args.filter;
+  // A run with the notes lever on searches its project's notes unless the call names a scope (memory-search-scope.cjs).
+  const scoped = notesDefaults(E, caller, args, args.filter == null ? {} : args.filter);
+  const filter = scoped.filter;
+  // The notes gate (memory-note-gate.cjs) is kept apart from the caller's filter: the keyword stage and the count add it to their WHERE,
+  // the semantic stage subtracts the few rows it hides. Superseded rows are handled below (baseWhere, the cache), so the gate leaves them.
   const fsql = filterSql(filter, 'e');
+  const namespaces = namespacesOf(E, caller, scoped.args);
+  // Without the body clauses: they would scan every body of the namespace (about 55 ms at 10,000 notes). They are tested on the rows the
+  // route returns instead (bodyLive, below), so rows_considered still counts a promoted or pending note.
+  const gateSql = gate.sql(E, caller, { includeSuperseded: true, namespaces });
   return {
+    gate: gateSql, hidden: gateSql ? new Set(JSON.parse(gateSql.params[0])) : null,
     mode, view: enumArg('view', args.view, VIEWS, 'full'), order, alpha, filter, filterSql: fsql,
-    k: intArg('k', args.k, 10, 1, K_MAX), offset: intArg('offset', args.offset, 0, 0, OFFSET_MAX),
-    namespaces: namespacesOf(E, caller, args),
+    k: intArg('k', args.k, DEFAULT_PAGE, 1, K_MAX), offset: intArg('offset', args.offset, 0, 0, OFFSET_MAX),
+    namespaces,
     query: typeof args.query === 'string' ? args.query : null,
     queryEmbedding: args.query_embedding || null, embeddingModel: args.embedding_model || null,
     minScore: numArg('min_score', args.min_score, -1), dupThreshold: numArg('dup_threshold', args.dup_threshold, DUP_THRESHOLD),
@@ -209,6 +234,40 @@ function warningFor(o, ran, failed, results, absence, unembedded) {
   return null;
 }
 
+// What a hybrid search does when its semantic half fails, by where it runs and what failed. In a run (a worker or the orchestrator of a
+// LIVE run) under `required` it does not answer from keywords alone:
+//   - the copy fallback (no owner, no embedder: the owner was unreachable, not listening, backed off or timed out, quietly or with an
+//     error): refused E_SEMANTIC_REQUIRED naming the cause. This process has no guard, so nothing here can pause the run;
+//   - the owner's embedder failed (not found, load error, timeout): the guard heard of it in withEmbedding and paused the run, and the
+//     error it advised is rethrown;
+//   - anything else (a model mismatch, a dimension mismatch, a namespace over the scan ceiling): refused E_SEMANTIC_REQUIRED naming the
+//     cause, and the guard is NOT told, since a resume fixes none of them.
+// Under `keyword` the keyword answer stands and modes_failed names the cause; under `off` an embedder failure turned memory off and the call
+// is refused (E_LEVER_OFF). With no live run (the operator's CLI, a standalone owner) the keyword fallback stays.
+function onSemanticFailure(E, caller, e) {
+  const run = runEmbedderMode(E, caller);
+  if (!run.live) return;
+  const guarded = run.source === 'guard';
+  const embedderFailure = !!(e && e.detail && e.detail.embedder === true);
+  if (guarded && embedderFailure && E.memoryOff('memory.search') === 'refuse') {
+    throw err('E_LEVER_OFF', 'memory.search: memory is off for this run (on_embedder_failure off, after an embedder failure), so nothing is read or written through it', { lever: 'on_embedder_failure' });
+  }
+  if (run.mode === 'keyword') return;
+  if (run.mode === 'off') { // memory is off for a run in this mode once its semantic half fails, whatever failed: refused
+    throw err('E_LEVER_OFF', 'memory.search: memory is off for this run (on_embedder_failure off) and its semantic half cannot run (' + (E.embedderFailure ? E.embedderFailure.code : e.code) + '), so nothing is read through it', { lever: 'on_embedder_failure', cause: E.embedderFailure ? E.embedderFailure.code : e.code });
+  }
+  // required
+  if (guarded && embedderFailure) throw e; // already told to the guard and advised (withEmbedding)
+  const cause = guarded ? e : (E.embedderFailure ? E.embedderFailure : e);
+  const why = guarded && !embedderFailure ? 'the semantic half failed for a reason a resume does not fix'
+    : !guarded && !E.embedderFailure && e.code === 'E_EMBED_BOUND' ? 'the embedder of the owner did not answer in time'
+      : 'the store owner could not be asked for a vector (it was unreachable, not listening, backed off or too slow)';
+  const next = caller.role === 'worker'
+    ? 'Stop and wait: do not run belay commands; the operator will resume the run.'
+    : 'Tell the operator (belay status shows the run); fix the cause or switch the run with belay resume ' + caller.run_id + ' --embedder keyword|off.';
+  throw err('E_SEMANTIC_REQUIRED', 'memory.search hybrid could not run its semantic half: ' + why + ' (' + cause.code + ': ' + cause.message + '), and the run embedder mode is required, so no keyword-only answer is given. ' + next, { cause: cause.code, mode: run.mode, run_id: caller.run_id, guarded });
+}
+
 async function search(E, caller, args) {
   const o = parseSearch(E, caller, args);
   const depth = o.order === 'score' ? Math.min(Math.max((o.offset + o.k) * 3, 60), DEPTH_MAX) : DEPTH_MAX;
@@ -222,6 +281,7 @@ async function search(E, caller, args) {
     try { sem = await semanticStage(E, caller, o, depth); ran.push('semantic'); }
     catch (e) {
       if (o.mode === 'semantic') throw e; // unchanged: a semantic search that cannot run is refused by name
+      onSemanticFailure(E, caller, e);
       failed.push({ mode: 'semantic', code: asCode(e), message: e.message });
     }
   }
@@ -241,9 +301,14 @@ async function search(E, caller, args) {
   else if (kw) ranked = kw.hits.map(h => ({ id: h.id, score: h.score }));
   else ranked = [];
 
-  let pool = ranked, rows = null;
-  if (o.order !== 'score') {
+  let rows = null;
+  if (o.gate) { // the gate's body clauses (a promoted note, a pending state) on the rows the page is built from
     rows = rowsByIds(E, ranked.map(h => h.id));
+    ranked = ranked.filter(h => rows.has(h.id) && gate.bodyLive(rows.get(h.id))); // (the project's legacy rows never get here: the keyword WHERE and the semantic scan leave them out)
+  }
+  let pool = ranked;
+  if (o.order !== 'score') {
+    rows = rows || rowsByIds(E, ranked.map(h => h.id));
     const dir = o.order === 'newest' ? -1 : 1;
     pool = ranked.filter(h => rows.has(h.id)).sort((a, b) => dir * (rows.get(a.id).created_at - rows.get(b.id).created_at) || (a.id < b.id ? -1 : 1));
   }
@@ -298,19 +363,23 @@ async function timeline(E, caller, args) {
   const scope = enumArg('scope', args.scope, SCOPES, undefined);
   const reach = reachOf(E, caller);
   const anchor = E.store.db.prepare('SELECT * FROM memory_entries WHERE id = ?').get(args.anchor_id);
-  const a = anchor && visible(reach, anchor) ? anchor : null;
+  const a = anchor && visible(reach, anchor) && gate.visible(E, caller, anchor.id) ? anchor : null;
   if (!a) throw err('E_NOT_FOUND', `memory.timeline: there is no row ${args.anchor_id}`, { anchor_id: args.anchor_id });
+  checkReach(E, caller, [a.namespace], 'read'); // a lifecycle namespace is not for a tool-channel caller
   const use = scope || (a.task_id ? 'task' : 'namespace');
   const col = SCOPE_COLUMN[use];
   if (a[col] == null || a[col] === '') {
     throw bad(`the anchor has no ${col}, so scope ${use} names no rows; use scope namespace or another scope`, 'scope');
   }
   const key = a[col];
-  const live = '(ttl_at IS NULL OR ttl_at >= ?)';
   const within = reach ? ` AND namespace IN (${marks([...reach])})` : '';
+  // The notes gate, for the rows of this scope; and no lifecycle namespace for a tool-channel caller.
+  const g = gate.and({ where: '', params: [] }, E, caller, { scope: { col, val: key } });
+  const lc = gate.lifecycleSql(caller, 'e');
+  const extra = [g.where, lc].filter(Boolean).map(x => ` AND ${x}`).join('');
   const side = (cmp, dir, n) => (n === 0 ? [] : E.store.db.prepare(
-    `SELECT * FROM memory_entries WHERE ${col} = ? AND ${live}${within} AND (created_at ${cmp} ? OR (created_at = ? AND id ${cmp} ?)) ORDER BY created_at ${dir}, id ${dir} LIMIT ?`,
-  ).all(key, Date.now(), ...(reach ? [...reach] : []), a.created_at, a.created_at, a.id, n));
+    `SELECT e.* FROM memory_entries e WHERE e.${col} = ? AND (e.ttl_at IS NULL OR e.ttl_at >= ?)${within.replace('namespace', 'e.namespace')} AND (e.created_at ${cmp} ? OR (e.created_at = ? AND e.id ${cmp} ?))${extra} ORDER BY e.created_at ${dir}, e.id ${dir} LIMIT ?`,
+  ).all(key, Date.now(), ...(reach ? [...reach] : []), a.created_at, a.created_at, a.id, ...g.params, n));
   return {
     anchor: viewRow(a, view),
     before: side('<', 'DESC', before).reverse().map(r => viewRow(r, view)),
@@ -318,6 +387,9 @@ async function timeline(E, caller, args) {
     scope: use, scope_key: key,
   };
 }
+
+// The honest answer for a note that exists but is held on a report and withheld from this reader (ADR 0047 amendment, 2026-10-22).
+const withheldAnswer = (id) => ({ id, found: false, withheld: true, note: 'this note exists but is held for review after a report that it is wrong, and is withheld from workers until the review settles it' });
 
 async function getMany(E, caller, args) {
   const ids = args.ids;
@@ -327,13 +399,16 @@ async function getMany(E, caller, args) {
   const view = enumArg('view', args.view, VIEWS, 'full');
   const reach = reachOf(E, caller);
   const rows = rowsByIds(E, [...new Set(ids)]);
+  const legacy = gate.legacyHidden(E, caller);
   const out = [], missing = [];
+  const held = W.withheldAmong(E, caller, [...rows.values()].filter(r => readable(caller, reach, r)));
   for (const id of ids) {
-    const r = rows.has(id) && visible(reach, rows.get(id)) ? rows.get(id) : null;
-    if (r) out.push({ ...viewRow(r, view), found: true });
+    const r = rows.has(id) && readable(caller, reach, rows.get(id), legacy) ? rows.get(id) : null;
+    if (r && held.has(id)) { out.push(withheldAnswer(id)); if (!missing.includes(id)) missing.push(id); }
+    else if (r) out.push({ ...viewRow(r, view), found: true });
     else { out.push({ id, found: false }); if (!missing.includes(id)) missing.push(id); }
   }
-  return { rows: out, found: out.filter(r => r.found).length, missing };
+  return { rows: out, found: out.filter(r => r.found).length, missing, ...(held.size ? { withheld: [...held] } : {}) };
 }
 
 async function get(E, caller, args) {
@@ -342,7 +417,8 @@ async function get(E, caller, args) {
   const view = enumArg('view', args.view, VIEWS, 'full');
   // A read: a plain SELECT, so invariant 6 holds (retrieve() would stamp accessed_at).
   const got = E.store.db.prepare('SELECT * FROM memory_entries WHERE id = ?').get(args.id);
-  const r = got && visible(reachOf(E, caller), got) ? got : null;
+  const r = got && readable(caller, reachOf(E, caller), got, gate.legacyHidden(E, caller)) ? got : null;
+  if (r && W.withheldAmong(E, caller, [r]).size) return withheldAnswer(args.id);
   return r ? { ...viewRow(r, view), found: true } : { id: args.id, found: false };
 }
 
@@ -353,13 +429,13 @@ async function list(E, caller, args) {
   const limit = Math.min(intArg('limit', args.limit, 50, 1, Number.MAX_SAFE_INTEGER), LIST_MAX);
   const offset = intArg('offset', args.offset, 0, 0, Number.MAX_SAFE_INTEGER);
   const f = args.filter == null ? {} : args.filter;
-  const fsql = filterSql(f, 'e');
+  const fsql = gate.and(filterSql(f, 'e'), E, caller, { namespaces });
   const where = [`e.namespace IN (${marks(namespaces)})`, ...(fsql.where ? [fsql.where] : [])].join(' AND ');
   const params = [...namespaces, ...fsql.params];
   const dir = order === 'newest' ? 'DESC' : 'ASC';
   const db = E.store.db;
   const total = db.prepare(`SELECT COUNT(*) AS n FROM memory_entries e WHERE ${where}`).get(...params).n;
-  const found = db.prepare(`SELECT e.id, e.namespace, e.worker_id, e.last_writer_id, e.type, substr(e.text, 1, 200) AS text,
+  const found = db.prepare(`SELECT e.id, e.namespace, e.worker_id, e.last_writer_id, e.written_by, e.type, substr(e.text, 1, 200) AS text,
     substr(e.text, 1, 2000) AS title_src, e.tags, e.provenance, e.supersedes, e.created_at, e.updated_at, e.ttl_at, e.title, e.status,
     e.status_receipt, e.status_by, e.status_at, e.run_id, e.task_id, e.turn, e.source, e.redactions
     FROM memory_entries e WHERE ${where} ORDER BY e.created_at ${dir}, e.id ${dir} LIMIT ? OFFSET ?`).all(...params, limit, offset);
@@ -383,4 +459,4 @@ function withSemanticFailure(result, failure) {
   };
 }
 
-module.exports = { search, timeline, getMany, get, list, withSemanticFailure };
+module.exports = { onSemanticFailure, search, timeline, getMany, get, list, withSemanticFailure };

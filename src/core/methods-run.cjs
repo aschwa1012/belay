@@ -16,7 +16,9 @@ const { resolveParks, parseRunRow, clearedPause, pauseFields } = require('./paus
 const { runCommand } = require('./evaluate.cjs');
 
 const { EFFORT_LEVELS } = require('./effort-levels.cjs');
-const { parseMemoryBlock } = require('./memory-levers.cjs'); // pure: no requires, so the read path stays light
+const { isPathId, pathIdMessage } = require('./path-id.cjs');
+const MN = require('./memory-notice.cjs'); // pure too
+const { parseMemoryBlock, EVAL_ONLY } = require('./memory-levers.cjs'); // pure: no requires, so the read path stays light
 
 const PROJECT_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const fwd = (p) => String(p).replace(/\\/g, '/');
@@ -32,7 +34,7 @@ const ATTACH_SUSPECT = LIFE_CLAIMING_STATES;
 // Fix round for 6f (diff-scope): `rows.cjs` (unowned) lacks paused_at/paused_by in COLUMNS.run, so
 // rows.append would drop both. This local insert (its own shape, via exported bind/parseRow) adds them.
 function appendRun(E, values, writtenBy, at = Date.now()) {
-  const cols = [...rows.COLUMNS.run, 'paused_at', 'paused_by', 'pause_parks', 'memory_levers', 'project']; // item 1: 6th local column; ADR 0041 decision 1: the memory levers and the project
+  const cols = [...rows.COLUMNS.run, 'paused_at', 'paused_by', 'pause_parks', 'memory_levers', 'project', 'project_dir', 'embedder_mode', 'revived_epoch', 'memory_notice']; // item 1: 6th local column; ADR 0041 decision 1: the memory levers and the project
   const all = [...cols, 'written_at', 'written_by'];
   const sql = `INSERT INTO run(${all.join(', ')}) VALUES (${all.map(() => '?').join(', ')})`;
   const params = cols.map(c => rows.bind(values[c]));
@@ -58,6 +60,7 @@ async function attach(E, caller, args) {
   // ADR 0041 decision 1: the memory levers (the parsed block as JSON text) and the project name, written once by
   // the launching attach and carried forward like max_fix_rounds. The core is the boundary: bad values are refused.
   const leversGiven = args.memory_levers !== undefined;
+  let resolvedLevers = null; // the block as parseMemoryBlock resolves it, stored in place of the raw one
   if (leversGiven && args.memory_levers !== null) {
     let parsed = null;
     try { parsed = typeof args.memory_levers === 'string' ? JSON.parse(args.memory_levers) : null; } catch { /* refused below */ }
@@ -66,6 +69,19 @@ async function attach(E, caller, args) {
     }
     const checked = parseMemoryBlock(parsed);
     if (checked.error) throw err('E_ARGS', `run.attach memory_levers is not a valid memory block: ${checked.error}`, { memory_levers: args.memory_levers });
+    const resolved = { ...checked.value };
+    for (const k of EVAL_ONLY) if (!Object.prototype.hasOwnProperty.call(parsed, k)) delete resolved[k]; // an eval-only lever the block did not name is not recorded: a run without them keeps the row it always had
+    resolvedLevers = JSON.stringify(resolved); // resolve once: the core readers and the run manager then read the same levers
+  }
+  const noticeGiven = args.memory_notice !== undefined;
+  if (noticeGiven && args.memory_notice !== null && !MN.CODES.includes(args.memory_notice)) {
+    throw err('E_ARGS', `run.attach memory_notice must be null or one of ${MN.CODES.join(', ')}`, { memory_notice: args.memory_notice });
+  }
+  const modeGiven = args.embedder_mode !== undefined;
+  if (modeGiven && args.embedder_mode !== null && !require('./embedder-mode.cjs').normalize(args.embedder_mode)) throw err('E_ARGS', 'run.attach embedder_mode must be null, required, keyword or off', { embedder_mode: args.embedder_mode });
+  const dirGiven = args.project_dir !== undefined;
+  if (dirGiven && args.project_dir !== null && !(typeof args.project_dir === 'string' && args.project_dir.length > 0 && args.project_dir.length <= 1024)) {
+    throw err('E_ARGS', 'run.attach project_dir must be null or a directory path', { project_dir: args.project_dir });
   }
   const projectGiven = args.project !== undefined;
   if (projectGiven && args.project !== null && !(typeof args.project === 'string' && PROJECT_RE.test(args.project))) {
@@ -74,6 +90,22 @@ async function attach(E, caller, args) {
   const runId = caller.run_id;
   const t = Date.now();
   const prev = rows.current(E.store, 'run', runId);
+  // ADR 0041: the project is named by the spec and never derived, and it is named once. The run row's project column (what a caller's reach and the
+  // `project` alias resolve through) and the resolved levers' project must be the same name, else the orchestrator would write to one project while its
+  // levers describe another. Refused here, with nothing written.
+  if (resolvedLevers !== null) {
+    const effective = projectGiven ? args.project : (prev ? prev.project : null);
+    const leverProject = JSON.parse(resolvedLevers).project;
+    if (effective && effective !== leverProject) { // a project column that is unset stays unset: nothing can then resolve to a project
+      throw err('E_ARGS', `run.attach: the run's project is ${effective === null || effective === undefined ? 'not set' : JSON.stringify(effective)} and its memory levers name ${leverProject === null || leverProject === undefined ? 'no project' : JSON.stringify(leverProject)}; the spec names the project once (memory.project) and both must agree`, { project: effective || null, memory_project: leverProject || null });
+    }
+  }
+  // ADR 0029 amendment 4 (proposed): an ended run stays ended. Only the run process (role operator, the launching attach of
+  // a re-run) opens a new epoch over an ended one; the orchestrator's adapter, whose first core call can land after the
+  // run closed, is refused. A refusal writes nothing, so the late caller reopens nothing and the run reads as ended.
+  if (prev && prev.ended_at != null && caller.role === 'orchestrator') {
+    throw err('E_ARGS', `run ${runId} has already ended; an orchestrator adapter cannot reopen it`, { run_id: runId, ended_at: prev.ended_at, epoch: prev.epoch });
+  }
   const epoch = prev ? Number(prev.epoch || 0) + 1 : 1;
   const by = E.writtenBy(caller);
 
@@ -104,6 +136,12 @@ async function attach(E, caller, args) {
   // null already (run.end below), but a belated write reaching this rule any other way must not resurrect
   // a pause nothing holds on a new epoch of the same run id (probe `stale`).
   const carryPause = prev && prev.ended_at == null;
+  // ADR 0046 decision 1 (audit D36): an attach over an unended row whose adapter no longer answers revives a run that lapsed without a
+  // run.end, as a re-run over an ended row does, so its tasks queue behind a run that took its paths meanwhile. An attach while the previous
+  // adapter still answers (the orchestrator's adapter after the run process) is the same life and moves nothing.
+  // A reused pid reads as live, which fails towards keeping the old order, never towards a second owner.
+  const lapsed = !!(carryPause && !pidAlive(prev.adapter_pid));
+  const revivedEpoch = lapsed ? epoch : null; // an attach of a life that never lapsed writes null, which never moves a run's priority
   const run = appendRun(E, {
     id: runId,
     epoch,
@@ -125,11 +163,17 @@ async function attach(E, caller, args) {
     orch_effort_requested: effortGiven ? args.orch_effort_requested : (carryPause ? prev.orch_effort_requested : null),
     // ADR 0031 decision 6: the fix-round cap `belay run` launched with, same carry rule as the effort.
     max_fix_rounds: fixCapGiven ? args.max_fix_rounds : (carryPause ? prev.max_fix_rounds : null),
-    memory_levers: leversGiven ? args.memory_levers : (carryPause ? prev.memory_levers : null), // same carry rule
+    memory_levers: leversGiven ? (args.memory_levers === null ? null : resolvedLevers) : (carryPause ? prev.memory_levers : null), // same carry rule
     project: projectGiven ? args.project : (carryPause ? prev.project : null),
+    memory_notice: noticeGiven ? args.memory_notice : (carryPause ? prev.memory_notice : null), // same carry rule
+    project_dir: dirGiven ? args.project_dir : (carryPause ? prev.project_dir : null),
+    revived_epoch: revivedEpoch,
+    embedder_mode: modeGiven ? (args.embedder_mode === null ? null : require('./embedder-mode.cjs').normalize(args.embedder_mode)) : (carryPause ? prev.embedder_mode : null),
   }, by, t);
   E.noteWrite();
-  return { run, epoch, reattached: !!prev, previous: parseRunRow(prev), workers_marked_dead: marked }; // item c
+  // ADR 0046 decision 1: a re-attached run's unfinished tasks hold their files again; name any that now clash with another live run's.
+  const overlaps = prev ? require('./task-holds.cjs').resumeOverlaps(E.store, runId) : [];
+  return { run, epoch, reattached: !!prev, previous: parseRunRow(prev), workers_marked_dead: marked, overlaps }; // item c
 }
 
 // build step 6f, ADR 0023 amendment 3 decision 4.1, extended by build step 6i-2 design item 1 (amendment
@@ -146,6 +190,19 @@ async function setPaused(E, caller, args) {
   const pausedAt = Number.isInteger(args.at) ? args.at : t;
   const pausedBy = typeof args.by === 'string' && args.by ? args.by : E.writtenBy(caller);
   const row = appendRun(E, { ...prev, ...pauseFields(args.paused, pausedAt, pausedBy, parks) }, E.writtenBy(caller), t); // item e
+  E.noteWrite();
+  return row;
+}
+
+// The run's current on_embedder_failure mode, written to its row when a resume switches it (belay resume --embedder keyword|off), so a reader
+// with no owner guard (a copy fallback) sees the live mode. The guard in the run process stays the authority; this is its record.
+async function setEmbedderMode(E, caller, args) {
+  const mode = require('./embedder-mode.cjs').normalize(args.mode);
+  if (mode === null) throw err('E_ARGS', 'run.setEmbedderMode needs mode: required, keyword or off', { mode: args.mode });
+  const prev = rows.current(E.store, 'run', caller.run_id);
+  if (!prev) throw err('E_NOT_FOUND', `no run row exists for ${caller.run_id}`, { run_id: caller.run_id });
+  if (prev.ended_at != null) throw err('E_ARGS', `run ${caller.run_id} has already ended`, { run_id: caller.run_id, ended_at: prev.ended_at });
+  const row = appendRun(E, { ...prev, embedder_mode: mode }, E.writtenBy(caller));
   E.noteWrite();
   return row;
 }
@@ -242,6 +299,10 @@ async function end(E, caller, args) {
   const { out: usage, invalid } = usageColumns(args.usage);
   const prev = rows.current(E.store, 'run', caller.run_id);
   if (!prev) throw err('E_NOT_FOUND', `no run row exists for ${caller.run_id}, so there is nothing to end`, { run_id: caller.run_id });
+  // Audit D42: a run that has ended is ended once. A second end from a process launched for the run (the orchestrator role)
+  // answers with the row as it stands and writes nothing, so it cannot replace the ended_at, exit_reason or usage the run
+  // process recorded. The run process (role operator) closes its own run and keeps the whole call.
+  if (prev.ended_at != null && caller.role !== 'operator') return { ...parseRunRow(prev), workers_marked_dead: [], heads_filled: [], already_ended: true };
   const t = Date.now();
   // 6f-2 design item 4 (should-fix, methods-run.cjs:77, first review 1b): a pause ends with its run — the
   // ended row never claims one, so a re-run under the same run id starts its next epoch unpaused too
@@ -266,9 +327,35 @@ async function getRun(E, caller) {
 // argument to find the current run, because status.get and run.get both read the run named by
 // caller.run_id, fixed at openCore. `alive` is derived the same way status.get's run-alive rung
 // derives it: the row has not ended and its adapter_pid answers a pid check right now.
+//
+// `life_pids` is every distinct { pid, created } adapter pid the run's PRESENT life has recorded: the rows after the last ended row that a live
+// row follows, the current row included. A run id is reused (a re-run over an ended row, a spec that names its run id) and
+// an orchestrator's attach overwrites `adapter_pid` with an adapter that exits before the close, so neither the current row nor the
+// run id's first row ever names the process that still owns the store through the close; some row of the present life does (audit D35).
+// A reader matches the owner lock's pid (and creation time) against this list.
+function lifePids(hist) {
+  let start = 0;
+  // A life ends where an ended row is followed by a row that is not: the run process's own run.end appends a second ended row after
+  // the orchestrator's, and that pair is one close, not two lives.
+  for (let i = 0; i + 1 < hist.length; i++) if (hist[i].ended_at != null && hist[i + 1].ended_at == null) start = i + 1;
+  const seen = new Set(), out = [];
+  for (const r of hist.slice(start)) {
+    if (r.adapter_pid == null) continue;
+    const k = r.adapter_pid + ':' + r.adapter_pid_created;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push({ pid: r.adapter_pid, created: r.adapter_pid_created == null ? null : r.adapter_pid_created });
+  }
+  return out;
+}
 async function listRuns(E) {
+  const hist = new Map();
+  for (const r of E.store.p('SELECT id, seq, ended_at, adapter_pid, adapter_pid_created FROM run ORDER BY seq').all()) {
+    if (!hist.has(r.id)) hist.set(r.id, []);
+    hist.get(r.id).push(r);
+  }
   const runs = rows.currentAll(E.store, 'run')
-    .map(r => parseRunRow({ ...r, alive: !!(r.ended_at == null && pidAlive(r.adapter_pid)) }))
+    .map(r => parseRunRow({ ...r, alive: !!(r.ended_at == null && pidAlive(r.adapter_pid)), life_pids: lifePids(hist.get(r.id) || []) }))
     .sort((a, b) => b.seq - a.seq);
   return { runs };
 }
@@ -286,7 +373,15 @@ async function writeWorker(E, caller, args) {
   if (args.started_at != null && !Number.isSafeInteger(args.started_at)) {
     throw err('E_ARGS', `worker.write needs started_at for worker ${args.id} as a safe integer of epoch milliseconds, and this write carried ${typeof args.started_at === 'object' ? 'an object' : String(args.started_at).slice(0, 80)}`, { worker_id: args.id });
   }
+  // ADR 0029 amendment 4 (proposed): an ended run takes no worker write from its orchestrator adapter. Whatever the adapter was
+  // doing when the run closed (a worker_spawn in flight) writes nothing into it; run.end and the operator are not affected.
+  if (caller.role === 'orchestrator') {
+    const run = rows.current(E.store, 'run', caller.run_id);
+    if (run && run.ended_at != null) throw err('E_ARGS', `run ${caller.run_id} has already ended; worker ${args.id} was not written`, { run_id: caller.run_id, ended_at: run.ended_at, worker_id: args.id });
+  }
   const prev = rows.current(E.store, 'worker', args.id);
+  // The id is a directory under the data dir. A row that already exists is restated whatever its id (a store may hold an older one); a new row needs a valid id.
+  if (!prev && !isPathId(args.id)) throw err('E_ARGS', `worker.write: ${pathIdMessage('worker id', args.id)}`, { worker_id: String(args.id).slice(0, 80), field: 'worker_id' });
   // W2-3 amendment 2 (B2): a restating write names the row it restates. This method has no await between this read
   // and the append below, so the check and the append are one step; a mismatch appends nothing and is not an error.
   if (args.expect_seq != null && (!prev || prev.seq !== args.expect_seq)) {
@@ -401,4 +496,4 @@ async function forgetWorker(E, caller, args) {
   };
 }
 
-module.exports = { LIFE_CLAIMING_STATES, attach, end, getRun, listRuns, writeWorker, getWorker, listWorkers, forgetWorker, decorate, setPaused };
+module.exports = { LIFE_CLAIMING_STATES, attach, end, getRun, listRuns, writeWorker, getWorker, listWorkers, forgetWorker, decorate, setPaused, setEmbedderMode };

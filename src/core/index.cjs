@@ -19,7 +19,8 @@ const { Client } = require('./client.cjs');
 const { withCopy } = require('./copy-read.cjs');
 const { ping } = require('./ping.cjs');
 const unresponsive = require('./unresponsive.cjs');
-const { withSemanticFailure } = require('./memory-search.cjs');
+const { withSemanticFailure, onSemanticFailure } = require('./memory-search.cjs');
+const { notifyEmbedderFailure, adviseEmbedderFailure } = require('./methods-memory.cjs');
 
 const ELECTION_PING_TIMEOUT_MS = 300; // 5a-3: becomeOwner()'s refusal ping
 const READ_TIMEOUT_MS = 300;       // api.md §1: the bounded round trip before falling back to a copy
@@ -58,13 +59,17 @@ const warmLimit = params => Math.min(Number.isInteger(params.timeout_ms) && para
 // The limit a vector call has, whether it goes over the pipe or runs in this process; 0 for any other call.
 function vectorLimit(method, params) {
   if (method === 'memory.warm') return params.wait ? warmLimit(params) : 0;
-  const t = method === 'memory.search' ? readTimeoutFor(method, params) : method === 'memory.store' ? writeTimeoutFor(method, params) : 0;
+  const t = method === 'memory.search' ? readTimeoutFor(method, params) : method === 'memory.store' || method === 'lease.release' || method === 'memory.embedQuery' || method === 'memory.embedNote' ? writeTimeoutFor(method, params) : 0;
   return t === EMBEDDING_READ_TIMEOUT_MS ? t : 0;
 }
 
 function writeTimeoutFor(method, params) {
   if (method === 'task.evaluate') return EVALUATE_TIMEOUT_MS;
+  if (method === 'memory.embedQuery') return EMBEDDING_READ_TIMEOUT_MS; // one embed of the query, bounded like a search's
+  if (method === 'memory.embedNote') return EMBEDDING_READ_TIMEOUT_MS; // one note's embed and its comparison
   if (method === 'memory.store' && params.embed !== false && !params.embedding && !params.embedding_b64) return EMBEDDING_READ_TIMEOUT_MS; // embed: false needs no vector (ADR 0040)
+  // ADR 0047: a hand-back carrying notes embeds each one, so it has the vector limit; one without notes does not.
+  if (method === 'lease.release' && Array.isArray(params.notes) && params.notes.length) return EMBEDDING_READ_TIMEOUT_MS;
   if (method === 'memory.warm' && params.wait) return warmLimit(params) + 5000; // the engine's own limit, plus the round trip
   // build step 6d: permission.wait's own deadline is the caller's timeout_ms plus a 5,000 ms margin
   // for the round trip itself, so the client never times out before the engine's own bound would.
@@ -82,6 +87,7 @@ class Core {
   constructor(opts) {
     this.dataDir = resolveDataDir(opts.dataDir);
     this.caller = Object.freeze({ ...opts.caller });
+    this.key = typeof opts.key === 'string' && opts.key ? opts.key : null; // ADR 0045: a bound adapter's session key; sent on every request, never logged
     this.embed = opts.embed !== false;
     this.ownerOpts = opts.ownerOpts || {};
     this.vectorLimitMs = process.env.BELAY_TEST_MODE === '1' && Number.isInteger(opts.vectorLimitMs) && opts.vectorLimitMs > 0 ? opts.vectorLimitMs : 0; // a shorter in-process vector limit (tests only)
@@ -99,10 +105,32 @@ class Core {
   // arguments carried.
   handle(method, args) { return this._invoke(method, args); }
 
-  async _invoke(method, args) {
+  // ADR 0044 decision 6: the run manager's view of this Core. The same connection and owner, but every call carries
+  // the frozen caller with `channel: 'harness'`, so the core records its memory rows as `harness`. Only code that holds
+  // this Core object can ask for it: a tool call reaches `core[group][name]` and nothing else, and the caller is
+  // set here from the process's own identity, replacing any `caller` the arguments carried.
+  harness() {
+    if (this._harness) return this._harness;
+    if (this.caller.role === 'worker') throw err('E_ROLE', 'a worker has no harness channel', { role: this.caller.role });
+    const caller = Object.freeze({ ...this.caller, channel: 'harness' });
+    const view = { caller, get owner() { return self.owner; } };
+    const self = this;
+    for (const m of METHOD_NAMES) {
+      const [group, name] = m.split('.');
+      if (!view[group]) view[group] = {};
+      view[group][name] = args => self._invoke(m, args, caller);
+    }
+    for (const k of Object.getOwnPropertyNames(Core.prototype)) {
+      if (k !== 'constructor' && !k.startsWith('_') && k !== 'harness' && k !== 'handle' && typeof self[k] === 'function') view[k] = self[k].bind(self);
+    }
+    view.handle = (method, args) => self._invoke(method, args, caller);
+    return (this._harness = Object.freeze(view));
+  }
+
+  async _invoke(method, args, caller = this.caller) {
     const spec = METHODS[method];
     if (!spec) throw err('E_ARGS', `${method} is not a Core API method`, { method });
-    const params = { ...(args || {}), caller: this.caller };
+    const params = { ...(args || {}), caller };
     // memory.search's default mode (memory-search.cjs defaultMode), made explicit here so routing sees it.
     if (method === 'memory.search' && params.mode === undefined) params.mode = typeof params.query === 'string' ? 'hybrid' : 'semantic';
     if (this.owner && !this.owner.stopped) return this._local(method, params);
@@ -114,17 +142,27 @@ class Core {
   // adapter, belay run's warm-up) for the 600 s backstop. The limit ends the CALL; the load continues and
   // a retry joins it. Only a vector call has a limit; every other method returns as before.
   _local(method, params, capMs) {
+    // This process IS the owner and the caller is itself, so its own pid is the checked one (a peer_pid in the arguments is dropped).
+    const { peer_pid: forged, ...own } = params.caller || {};
+    if (params.caller) params = { ...params, caller: own.role === 'operator' ? { ...own, peer_pid: process.pid } : own };
     const run = this.owner.engine.handle(method, params);
     let limit = method === 'memory.warm' ? vectorLimit(method, params) : (vectorLimit(method, params) && this.vectorLimitMs) || vectorLimit(method, params);
     if (!limit) return run;
     if (capMs !== undefined && capMs < limit) limit = capMs; // a re-run gets only what its first attempt left
-    const writes = method === 'memory.store';
+    const writes = method === 'memory.store' || method === 'lease.release';
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         const e = err('E_TIMEOUT', method + ' did not finish within ' + limit + ' ms in this process (the owner); its embedder is still loading or embedding and the load continues, so ' + (writes ? 'RE-READ before retrying: the row is written when the load finishes' : 'a retry waits on the same load'), { method, timeout_ms: limit, in_process: true, ...(writes ? { may_have_committed: true } : {}) });
-        // A hybrid search still has its keyword half: answer from it, naming the timeout in modes_failed.
         if (method === 'memory.search' && params.mode === 'hybrid') {
-          this.owner.engine.handle(method, { ...params, mode: 'keyword' }).then(r => resolve(withSemanticFailure(r, e)), () => reject(e));
+          const engine = this.owner.engine;
+          // In a run the timeout is an embedder failure like any other (ADR 0034). With the run's guard it hears of it, and under `required` the
+          // search is REFUSED, not answered from its keyword half (the run pauses); under `off` memory is off. An owner with no guard that serves a
+          // LIVE run (its row says required, the default) refuses too. Keyword mode, or no run at all (a standalone owner), answers from the
+          // keyword half, naming the timeout in modes_failed.
+          const bound = err('E_EMBED_BOUND', 'memory.search hybrid: its semantic half did not finish within ' + limit + ' ms (the embedder of the owner is still loading or embedding and the load continues)', { embedder: true, cause: 'timeout', op: 'embed', method, timeout_ms: limit, in_process: true });
+          if (this.owner.opts && typeof this.owner.opts.embedderMode === 'function') notifyEmbedderFailure(engine, params.caller, 'memory.search', bound);
+          try { adviseEmbedderFailure(engine, params.caller, bound); onSemanticFailure(engine, params.caller, bound); } catch (refusal) { return reject(refusal); }
+          engine.handle(method, { ...params, mode: 'keyword' }).then(r => resolve(withSemanticFailure(r, e)), () => reject(e));
         } else reject(e);
       }, limit);
       run.then(v => { clearTimeout(timer); resolve(v); }, e => { clearTimeout(timer); reject(e); });
@@ -133,6 +171,10 @@ class Core {
 
   // ---- read: owner first, then copy-then-read ----------------------------
   async _read(method, params) {
+    const batch = this._batch;
+    // readBatch commits to ONE source at its first read. A batch on the copy never asks the owner again (it could show a newer row than
+    // the copy holds, and the next read would go back in time); a batch on the owner fails loudly if the owner stops answering.
+    if (batch && batch.source === 'copy') return this._readCopy(method, params, batch.fallback.note, batch.fallback.embedderFailure, batch);
     let viaOwner, embedderFailure = null;
     try { viaOwner = await this._tryOwner(method, params); }
     catch (e) {
@@ -142,8 +184,16 @@ class Core {
       embedderFailure = { code: e.code, message: e.message };
       viaOwner = { ok: false };
     }
-    if (viaOwner.ok) return viaOwner.value;
+    if (viaOwner.ok) { if (batch) batch.source = 'owner'; return viaOwner.value; }
+    if (batch && batch.source === 'owner') {
+      throw err('E_OWNER_LOST', `the owner answered an earlier read of this command and did not answer ${method}; the command's reads are not served from an older copy of the store, so run it again`, { method, ...(viaOwner.unresponsive ? { unresponsive: true } : {}) });
+    }
     const note = viaOwner.unresponsive ? unresponsive.describe(viaOwner.unresponsive) : null;
+    if (batch) { batch.source = 'copy'; batch.fallback = { note, embedderFailure }; }
+    return this._readCopy(method, params, note, embedderFailure, batch);
+  }
+
+  async _readCopy(method, params, note, embedderFailure, batch) {
     const { Store } = require('./store.cjs');
     // build step 6h design item 6: a data dir with no memory.db has nothing to copy, so `withCopy`'s
     // mkdtemp-then-copy-then-rm is pure overhead (and the throwaway file it built the engine over was
@@ -154,17 +204,37 @@ class Core {
     if (!fs.existsSync(path.join(this.dataDir, 'memory.db'))) {
       const store = new Store(':memory:');
       try {
-        const engine = new Engine({ dataDir: this.dataDir, store, getEmbedder: null, owner: null, establishedBy: 'none', embedderFailure });
+        const engine = new Engine({ dataDir: this.dataDir, store, getEmbedder: null, owner: null, establishedBy: 'none', embedderFailure, memoryOffFn: this.ownerOpts.memoryOff });
         return await engine.handle(method, params);
       } finally { try { store.close(); } catch { /* throwaway */ } }
+    }
+    const build = (dbPath, establishedBy, store) => new Engine({ dataDir: this.dataDir, store, getEmbedder: null, owner: null, establishedBy: note ? `${establishedBy}; ${note}` : establishedBy, embedderFailure, memoryOffFn: this.ownerOpts.memoryOff });
+    if (batch) { // the first read of the batch makes the one copy (one Store); each read gets its own Engine, so its note and embedderFailure are its own
+      if (!batch.store) batch.store = new Promise((resolve, reject) => {
+        batch.copy = withCopy(this.dataDir, async (dbPath, establishedBy) => {
+          const store = new Store(dbPath);
+          try { resolve({ store, establishedBy }); await batch.done; } finally { try { store.close(); } catch { /* throwaway copy */ } }
+        }).catch(reject);
+      });
+      const { store, establishedBy } = await batch.store;
+      return build(null, establishedBy, store).handle(method, params);
     }
     return withCopy(this.dataDir, async (dbPath, establishedBy) => {
       const store = new Store(dbPath);
       try {
-        const engine = new Engine({ dataDir: this.dataDir, store, getEmbedder: null, owner: null, establishedBy: note ? `${establishedBy}; ${note}` : establishedBy, embedderFailure });
-        return await engine.handle(method, params);
+        return await build(dbPath, establishedBy, store).handle(method, params);
       } finally { try { store.close(); } catch { /* throwaway copy */ } }
     });
+  }
+
+  // Run `fn()` with every read that has no owner to answer it served from ONE copy of the store (taken at the first such read, deleted
+  // when `fn` settles), not one copy per call. Reads an owner answers are unchanged. For read calls only; a write is not part of it.
+  async readBatch(fn) {
+    if (this._batch) return fn();
+    let finish;
+    const batch = this._batch = { source: null, fallback: null, store: null, copy: null, done: new Promise((r) => { finish = r; }) };
+    try { return await fn(); }
+    finally { this._batch = null; finish(); if (batch.copy) await batch.copy.catch(() => {}); }
   }
 
   // MF3-1 (invariants 4 and 7): liveness for the long vector bound comes from an ANSWER, never from a
@@ -220,7 +290,7 @@ class Core {
     // _pingBeforeVector's answered ping, so the mark does not apply to it.
     const marked = readTimeoutFor(method, params) === EMBEDDING_READ_TIMEOUT_MS ? null : unresponsive.get(lock.pipe || pipeName(this.dataDir), lock.pid);
     if (marked) return { ok: false, unresponsive: marked };
-    const c = new Client(this.dataDir, { caller: this.caller, elect: false, connectRetries: 1, dialTimeoutMs: timeoutMs, callTimeoutMs: timeoutMs });
+    const c = new Client(this.dataDir, { caller: this.caller, key: this.key, elect: false, connectRetries: 1, dialTimeoutMs: timeoutMs, callTimeoutMs: timeoutMs });
     try { await c.connect(); } catch (e) { return { ok: false, unresponsive: this._markIfTimeout(e, timeoutMs, lock, 'dial') }; }
     this.client = c;
     try { const value = await c.call(method, params, { timeoutMs }); unresponsive.clearPipe(pipeName(this.dataDir)); return { ok: true, value }; }
@@ -241,7 +311,7 @@ class Core {
 
   // ---- write: connect or elect -------------------------------------------
   async _write(method, params) {
-    await this._ensureWriter();
+    await this._ensureWriter(method);
     if (this.owner) return this._local(method, params);
     const timeoutMs = writeTimeoutFor(method, params);
     await this._pingBeforeVector(method, params);
@@ -267,7 +337,7 @@ class Core {
           throw err('E_OWNER_LOST', `the owner was lost after ${method} was sent; too little of its limit was left to re-run it, so re-read before retrying`, { method, sent: true, may_have_committed: true, outcome: 'unknown', rerun: 'skipped', left_ms: left });
         }
       }
-      await this._ensureWriter();
+      await this._ensureWriter(method);
       let result;
       try {
         result = this.owner ? await this._local(method, params, left) : await this.client.call(method, params, { timeoutMs: left === undefined ? timeoutMs : left });
@@ -285,19 +355,27 @@ class Core {
     }
   }
 
-  async _ensureWriter() {
+  async _ensureWriter(method = null) {
     if (this.owner && !this.owner.stopped) return;
     if (this.owner) this.owner = null;
     if (this.client && this.client.connected) return;
     await this._dropClient();
-    const elect = this.caller.role !== 'worker';
+    // ADR 0051: once this Core has shut its owner down it never elects another by itself. A write that gets here after that is a
+    // path that missed its close gate, and it fails naming the call instead of creating a stray owner. It may still dial an owner
+    // somebody else holds, and becomeOwner() is the explicit way to elect again.
+    const elect = this.caller.role !== 'worker' && !this.shutDown && !this.key; // a bound adapter never elects (ADR 0045 decision 2)
     const c = new Client(this.dataDir, {
       caller: this.caller,
+      key: this.key,
       elect,
       ownerOpts: { embed: this.embed, ...this.ownerOpts },
       callTimeoutMs: WRITE_TIMEOUT_MS,
     });
-    await c.connect(); // a worker with no owner lands here as E_NO_OWNER, having created nothing
+    try { await c.connect(); } // a worker with no owner lands here as E_NO_OWNER, having created nothing
+    catch (e) {
+      if (this.shutDown && e && e.code === 'E_NO_OWNER') throw err('E_SHUTDOWN', `${method || 'a write'} was refused: this process already shut the store owner down, and a write after that would elect a stray owner`, { method, data_dir: this.dataDir });
+      throw e;
+    }
     this.client = c;
     if (c.owner) this.owner = c.owner;
   }
@@ -312,7 +390,8 @@ class Core {
   // calls this instead of letting the first ordinary write elect on its behalf.
   async becomeOwner() {
     if (this.caller.role === 'worker') throw err('E_ROLE', 'a worker never elects the store owner', { role: this.caller.role });
-    await this._ensureWriter();
+    this.shutDown = false; // an explicit election
+    await this._ensureWriter('becomeOwner');
     if (this.isOwner()) return { owner: true, pid: process.pid, established_by: 'won the lock' };
     // 5a-3: a bare connect succeeds on Windows even against a wedged owner, so ownerInfo() alone is
     // not the bounded fact invariant 7 requires — ping it instead.
@@ -354,7 +433,7 @@ class Core {
     }
     if (!pidAlive(lock.pid)) throw err('E_NO_OWNER', `the lock names pid ${lock.pid}, which is dead`, { data_dir: this.dataDir, pid: lock.pid, method });
     if (lock.listening === false) throw err('E_NO_OWNER', `the owner at pid ${lock.pid} is not listening yet`, { data_dir: this.dataDir, pid: lock.pid, method });
-    const c = new Client(this.dataDir, { caller: this.caller, elect: false, connectRetries: 1, dialTimeoutMs: 1000, callTimeoutMs: timeoutMs });
+    const c = new Client(this.dataDir, { caller: this.caller, key: this.key, elect: false, connectRetries: 1, dialTimeoutMs: 1000, callTimeoutMs: timeoutMs });
     try { await c.connect(); }
     catch (e) { throw err('E_NO_OWNER', `connecting to the owner's pipe for ${method} failed: ${e.message}`, { data_dir: this.dataDir, pid: lock.pid, method }); }
     try { return await c.call(method, { ...params, caller: this.caller }, { timeoutMs }); }
@@ -372,19 +451,45 @@ class Core {
 
   async close() { await this._dropClient(); }
 
+  // ADR 0045 decision 2: ask the owner for a bind for a process about to be spawned (in the owner's own process: a direct call, the
+  // root of trust; over the pipe: gated on the caller's bound role, an orchestrator binding only a worker of its own run).
+  async bindOpen(identity, { noExpiry = false } = {}) { return this._bind('bind.open', { identity, ...(noExpiry ? { no_expiry: true } : {}) }); }
+  async bindStatus(bindId) { return this._bind('bind.status', { bind_id: bindId }); }
+  async bindRevoke(bindId) { return this._bind('bind.revoke', { bind_id: bindId }); }
+  async _bind(method, params) {
+    if (!this.owner || this.owner.stopped) await this._ensureWriter(method);
+    return this.isOwner() ? this.owner.bindCall(method, params, { role: 'operator', run_id: this.caller.run_id }) : this.client.call(method, { ...params, caller: this.caller }, { timeoutMs: 10000 });
+  }
+
+  // ADR 0051: a command that is done with the owner it elected, and is not the run that owns the store. With no other
+  // client attached it is shutdownOwner() exactly. With one attached it keeps the owner serving and stops it when the last
+  // client is gone (owner.cjs retire), so a client is never left with its store pulled out from under it. The result names
+  // which: `deferred: true` and the attached clients, or the stop's own receipt. A Core that holds no owner stops nothing.
+  async releaseOwner() {
+    if (!this.owner || this.owner.stopped) return { stopped: 'none', reason: 'this process holds no owner' };
+    const o = this.owner;
+    const r = await o.retire();
+    // A deferral is a release all the same: the owner is retiring, so a later write here must not elect another one.
+    if (r.deferred) { this.owner = null; this.shutDown = true; await this._dropClient(); return { ...r, stopped: 'deferred' }; }
+    this.owner = null; this.shutDown = true; // stopped now: like shutdownOwner(), a later write here must not elect another
+    await this._dropClient();
+    return { ...r, stopped: 'in-process' };
+  }
+
   // The only way to stop an owner (ADR 0002 §5): in-process stop() or the pipe's shutdown method.
   // Never a signal, because a Windows terminate skips the owner's handlers.
   async shutdownOwner() {
-    if (this.owner) { const o = this.owner; this.owner = null; const r = await o.stop(); await this._dropClient(); return { ...r, stopped: 'in-process' }; }
+    if (this.owner) { const o = this.owner; this.owner = null; this.shutDown = true; const r = await o.stop(); await this._dropClient(); return { ...r, stopped: 'in-process' }; }
     const lock = readOwnerLock(this.dataDir);
     if (!lock || !pidAlive(lock.pid)) { await this._dropClient(); return { stopped: 'none', reason: 'no live owner holds the lock' }; }
     if (!this.client || !this.client.connected) {
-      const c = new Client(this.dataDir, { caller: this.caller, elect: false, connectRetries: 1, dialTimeoutMs: 1000 });
+      const c = new Client(this.dataDir, { caller: this.caller, key: this.key, elect: false, connectRetries: 1, dialTimeoutMs: 1000 });
       try { await c.connect(); } catch { return { stopped: 'none', reason: 'the lock names a live pid but its pipe did not answer' }; }
       this.client = c;
     }
     const r = await this.client.shutdown();
     this.client = null;
+    this.shutDown = true;
     return r;
   }
 }

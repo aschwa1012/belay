@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // run-interactive-helpers.cjs — the scaffolding shared by run-interactive.test.cjs and
 // run-interactive-lifecycle.test.cjs: a spec writer, a fake of createInteractiveGate's contract
 // ({ debug, session, firstMessage, current(), stop() }), a fake argv builder, and `start`, which runs
@@ -78,7 +79,7 @@ function fakeArgv(captured, onCall) {
 const encodeCwd = (cwd) => cwd.replace(/[^a-zA-Z0-9]/g, '-');
 
 // Runs `belay run` in this process. Env is set for the call and restored after, never left behind.
-function start(dir, { env = {}, argv = [], gate = fakeGate(), captured = [], specOverrides = {}, prompt, deps = {}, onArgv } = {}) {
+function start(dir, { env = {}, argv = [], gate = fakeGate(), captured = [], specOverrides = {}, prompt, deps = {}, onArgv, cwd = ROOT, ctxExtra = {} } = {}) {
   const { specPath, wt, runId, orchestratorDir } = makeSpec(dir, specOverrides, prompt);
   const cfg = `${dir}/claude-config`;
   const dataDir = `${dir}/.belay`;
@@ -89,7 +90,7 @@ function start(dir, { env = {}, argv = [], gate = fakeGate(), captured = [], spe
   const saved = {};
   for (const [k, v] of Object.entries(set)) { saved[k] = process.env[k]; process.env[k] = v; }
   const ctx = {
-    argv: [specPath, ...argv], cwd: ROOT, dataDir, json: true,
+    argv: [specPath, ...argv], cwd, dataDir, json: true, ...ctxExtra,
     interactiveDeps: {
       argv: fakeArgv(captured, onArgv), createGate: gate.make,
       sessionFilePath: ({ cwd, sessionId }) => path.join(cfg, 'projects', encodeCwd(path.resolve(cwd)), `${sessionId}.jsonl`),

@@ -1,5 +1,5 @@
 // schema-budget.test.cjs — A5, the ADR 0010 §5 budget: the byte length of the `tools/list` result is
-// at most 10,240 bytes (ADR 0010 amendment 4) for the orchestrator role and 5,120 for the worker role (ADR 0040 §4). Measured twice: on the
+// at most 11,264 bytes (ADR 0010 amendment 6) for the orchestrator role and 7,168 for the worker role. Measured twice: on the
 // module directly, and on what a live child actually sends over the wire, because only the second is
 // what the orchestrator pays for. Every failure prints the number.
 'use strict';
@@ -48,8 +48,8 @@ test('the twenty-four tools of ADR 0010 §2 as amended by ADR 0015, 0020, amendm
   assert.deepStrictEqual(tools.toolsFor('worker').map((t) => t.name), EXPECTED.worker);
   assert.strictEqual(tools.toolsFor('orchestrator').length, 21);
   assert.strictEqual(tools.toolsFor('worker').length, 13);
-  assert.strictEqual(tools.BUDGET.worker, 5120, 'ADR 0040 §4 raised the worker budget from 4,096');
-  assert.strictEqual(tools.BUDGET.orchestrator, 10240, 'and left the orchestrator budget alone');
+  assert.strictEqual(tools.BUDGET.worker, 7168, 'ADR 0010 amendment 6 raised the worker budget to 7,168');
+  assert.strictEqual(tools.BUDGET.orchestrator, 11264, 'and the orchestrator budget to 11,264');
 });
 
 test('every tool has a route into exactly one Core or RunManager method', () => {

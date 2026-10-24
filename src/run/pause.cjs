@@ -61,7 +61,8 @@ function createPause({ core, forWorker, doStop, doRestart, runOp, adapterPid = p
     // stop of a paused worker clears them ahead of — reading it here raced a null `src` into a TypeError.
     const src = w.parkRequested || w.paused;
     if (src) {
-      fail('E_PAUSED', `worker ${w.id} is paused (by ${src.by} at ${src.at}); resume it first`,
+      const advice = /embedder-failure [(]/.test(String(src.by)) ? ` ${require('../core/embedder-mode.cjs').pauseAdvice(w.run_id)}` : '';
+      fail('E_PAUSED', `worker ${w.id} is paused (by ${src.by} at ${src.at}); resume it first${advice}`,
         { worker_id: w.id, paused_at: src.at, paused_by: src.by });
     } else if (w.state === 'paused') fail('E_PAUSED', `worker ${w.id} is paused; resume it first`, { worker_id: w.id }); // fix round #2, pause.cjs:81: a stale stop leaves w.state 'paused' after clearing parkRequested/paused
   }
@@ -150,7 +151,9 @@ function createPause({ core, forWorker, doStop, doRestart, runOp, adapterPid = p
 
     // Step 3: the descendants a graceful close is about to orphan, before it runs.
     // ADR 0039: each carries its creation time, taken now, and is verified again before any kill below.
+    const dt0 = now();
     const descendantTargets = await P.descendantTargets(w.pid).catch(() => []);
+    const descendantsSnapshotMs = now() - dt0;
     const descendants_before_close = descendantTargets.map((d) => d.pid);
 
     // Step 4: the existing graceful stop, its own exact-pid kill fallback. Direct, not the slot: this
@@ -176,6 +179,9 @@ function createPause({ core, forWorker, doStop, doRestart, runOp, adapterPid = p
       worker_id, paused: true, already: false, paused_at, paused_by: by, interrupted,
       interrupt, results_after_interrupt,
       background_tasks,
+      // ADR 0048: the time the park spent on identity snapshots (descendants, the stop's kill, the kills after the exit), so a caller
+      // timing what the park promises can leave it out.
+      snapshot_ms: descendantsSnapshotMs + ((stopReceipt.tree_kill && stopReceipt.tree_kill.snapshot_ms) || 0) + ((afterExit[0] && afterExit[0].snapshot_ms) || 0),
       exit: { graceful: stopReceipt.graceful, killed: stopReceipt.killed, exit_code: stopReceipt.exit_code, exit_signal: stopReceipt.exit_signal, ms_after_close: stopReceipt.ms_to_exit },
       descendants: { before_close: descendants_before_close, killed_after_exit, refused_after_exit, kills: afterExit.filter((k) => k.killed || k.refused) },
       session_id: w.sessionId, cache_deadline: cacheDeadlineFor(w), row,

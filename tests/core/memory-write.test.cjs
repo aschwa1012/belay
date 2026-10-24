@@ -134,15 +134,26 @@ test('the return adds status, title, run_id, task_id and redactions', async () =
   assert.deepStrictEqual([r.status, r.title, r.run_id, r.task_id, r.redactions], ['unverified', 'shape check', 'test-run', null, null]);
 });
 
-test('a dedup update by the row\'s own writer refreshes title and body but not status or provenance', async () => {
-  const first = await call('memory.store', orch, { text: 'dedup subject', embed: false, source: 'harness', task_id: 't-1' });
-  const again = await call('memory.store', orch, { text: 'dedup subject', title: 'now titled', body: { k: 1 }, embed: false, source: 'harness' });
+test('a dedup update by the rows own writer refreshes body and tags but keeps title, type, status and provenance', async () => {
+  const first = await call('memory.store', orch, { text: 'dedup subject', title: 'first title', type: 'decision', tags: ['a'], embed: false, source: 'harness', task_id: 't-1' });
+  const again = await call('memory.store', orch, { text: 'dedup subject', title: 'now titled', type: 'fact', tags: ['b'], body: { k: 1 }, embed: false, source: 'harness' });
   assert.strictEqual(again.action, 'updated');
   assert.strictEqual(again.id, first.id);
-  assert.strictEqual(again.title, 'now titled');
+  assert.strictEqual(again.title, 'first title');
   const row = dbRow(first.id);
-  assert.deepStrictEqual([row.status || 'unverified', row.source, row.task_id], ['unverified', 'harness', 't-1']);
+  assert.deepStrictEqual([row.status || 'unverified', row.source, row.task_id, row.type, row.title], ['unverified', 'harness', 't-1', 'decision', 'first title']);
   assert.deepStrictEqual(JSON.parse(row.body), { k: 1 });
+  assert.deepStrictEqual(JSON.parse(row.tags), ['b']);
+});
+
+test('a dedup update takes the new title only when the first title is null', () => {
+  const base = { namespace: 'run/test-run', worker_id: 'orchestrator', text: 'untitled subject' };
+  const first = store.store({ ...base, type: 'decision' });
+  assert.strictEqual(dbRow(first.id).title, null);
+  const again = store.store({ ...base, title: 'late title', type: 'fact' });
+  assert.strictEqual(again.action, 'updated');
+  const row = dbRow(first.id);
+  assert.deepStrictEqual([row.title, row.type], ['late title', 'decision']);
 });
 
 test('the same text from another writer, another source, or onto a verified row changes nothing', async () => {

@@ -33,6 +33,29 @@ const FLAGS = {
   '--namespace-map': { key: 'namespaceMaps', type: 'many' },
   '--no-embed': { key: 'noEmbed', type: 'bool' },
   '--all': { key: 'all', type: 'bool' },
+  '--reason': { key: 'reason', type: 'one' },
+  '--ids': { key: 'ids', type: 'one' },
+  '--older-than': { key: 'olderThan', type: 'one' },
+  '--confirm': { key: 'confirm', type: 'bool' },
+  '--project': { key: 'project', type: 'one' },
+  '--run': { key: 'run', type: 'one' },
+  '--worktree': { key: 'worktree', type: 'one' },
+  '--start': { key: 'start', type: 'bool' },
+  '--goal': { key: 'goal', type: 'one' },
+  '--summary': { key: 'summary', type: 'one' },
+  '--evidence': { key: 'evidence', type: 'one' },
+  '--dry-run': { key: 'dryRun', type: 'bool' },
+  '--reembed': { key: 'reembed', type: 'bool' },
+  '--template': { key: 'template', type: 'one' },
+  '--candidates': { key: 'candidates', type: 'bool' },
+  '--approve': { key: 'approve', type: 'bool' },
+  '--reject': { key: 'reject', type: 'bool' },
+  '--awaiting': { key: 'awaiting', type: 'bool' },
+  '--if-awaiting': { key: 'ifAwaiting', type: 'bool' },
+  '--archive': { key: 'archive', type: 'bool' },
+  '--release': { key: 'release', type: 'bool' },
+  '--reoffer': { key: 'reoffer', type: 'bool' },
+  '--replaced-by': { key: 'replacedBy', type: 'one' },
 };
 
 const FILTER_FLAGS = ['--type', '--status', '--task', '--worker', '--since', '--namespace'];
@@ -46,7 +69,17 @@ const VERBS = {
   verify: { flags: ['--status', '--receipt'], positional: [1, 1], usage: 'belay memory verify <id> --status verified|refuted|unverified --receipt <r>' },
   stats: { flags: [], positional: [0, 1], usage: 'belay memory stats [run-id]' },
   export: { flags: ['--namespace', '--since', '--out', '--all'], positional: [0, 1], usage: 'belay memory export [run-id] [--namespace ns]... [--since <ms|iso>] [--out <file>] [--all]' },
+  embed: { flags: ['--project', '--dry-run', '--reembed', '--template'], positional: [0, 0], usage: 'belay memory embed [--project <p>] [--dry-run] | belay memory embed --reembed --template v2 [--project <p>] [--dry-run]' },
   import: { flags: ['--namespace-map', '--namespace', '--no-embed'], positional: [1, 1], usage: 'belay memory import <file> [--namespace-map from=to]... [--namespace ns] [--no-embed]' },
+  proposals: { flags: ['--project', '--all'], positional: [0, 0], usage: 'belay memory proposals [--project p] [--all]' },
+  restore: { flags: ['--reason', '--candidates'], positional: [1, 1], usage: 'belay memory restore <id> --reason <text>   |   belay memory restore <id> --candidates' },
+  scrub: { flags: ['--run', '--worktree', '--goal', '--summary'], positional: [0, 0], usage: 'belay memory scrub [--run <id>] [--worktree <dir>] [--goal <text>] [--summary <text>]' },
+  review: { flags: ['--run', '--project', '--worktree', '--all', '--start'], positional: [0, 0], usage: 'belay memory review [--project <p>] [--all] [--run <id>] [--worktree <dir>] [--start]' },
+  resolve: { flags: ['--evidence'], positional: [2, 3], usage: 'belay memory resolve <id> new   |   belay memory resolve <id> repeats <of>   |   belay memory resolve <id> supersedes <of> --evidence <text>' },
+  promote: { flags: ['--approve', '--reject', '--reason'], positional: [1, 1], usage: 'belay memory promote <note-id> (--approve | --reject) [--reason <text>]' },
+  held: { flags: ['--project', '--awaiting', '--archive', '--release', '--reoffer', '--reason', '--if-awaiting'], positional: [0, 2], usage: 'belay memory held [--project p] [--awaiting]   |   belay memory held settle <note-id> (--archive | --release | --reoffer) --reason <text> [--if-awaiting]' },
+  report: { flags: ['--reason', '--replaced-by'], positional: [1, 1], usage: 'belay memory report <note-id> --reason <text> [--replaced-by <note-id>]' },
+  archive: { flags: ['--ids', '--older-than', '--confirm', '--project'], positional: [1, 1], usage: 'belay memory archive purge (--ids a,b | --older-than <days>) --confirm [--project p]' },
 };
 
 function usageText() {
@@ -69,7 +102,57 @@ function wholeNumber(name, v, min) {
   return { value: Number(v) };
 }
 
-function checkOpts(sub, opts) {
+// archive purge: exactly one selector, and --confirm. The sub-subcommand is the positional (checked by the caller).
+function checkPurge(opts) {
+  if ((opts.ids === undefined) === (opts.olderThan === undefined)) return { error: 'belay memory archive purge takes --ids a,b or --older-than <days>, one of them' };
+  if (opts.ids !== undefined) {
+    opts.idList = opts.ids.split(',').map(s => s.trim()).filter(Boolean);
+    if (!opts.idList.length) return { error: '--ids needs at least one note id' };
+  } else {
+    const days = Number(opts.olderThan);
+    if (!/^\d+(\.\d+)?$/.test(opts.olderThan) || !Number.isFinite(days)) return { error: `--older-than must be a number of days; got ${opts.olderThan}` };
+    opts.days = days;
+  }
+  if (!opts.confirm) return { error: 'belay memory archive purge removes rows for good: pass --confirm' };
+  return {};
+}
+
+// resolve <id> new | repeats <of> | supersedes <of> --evidence <text>: the shape memory.noteResolve takes, checked before any store is opened.
+function checkResolve(opts, positional) {
+  const [, how, of] = positional;
+  if (!['new', 'repeats', 'supersedes', 'refines'].includes(how)) return { error: `belay memory resolve takes new, repeats <of>, refines <of> or supersedes <of>; got ${how}` };
+  if (how === 'new' && of !== undefined) return { error: 'belay memory resolve <id> new takes no other note id' };
+  if (how !== 'new' && of === undefined) return { error: `belay memory resolve <id> ${how} needs the id of the live note it ${how}` };
+  if (how === 'supersedes' && !(typeof opts.evidence === 'string' && opts.evidence.trim())) return { error: 'belay memory resolve <id> supersedes needs --evidence <text>: what you saw that makes the older note wrong' };
+  if (how !== 'supersedes' && how !== 'refines' && opts.evidence !== undefined) return { error: `belay memory resolve <id> ${how} takes no --evidence (only supersedes and refines do)` };
+  return {};
+}
+
+// held (the listing) or held settle <note-id> (--archive | --release | --reoffer) --reason <text>: checked before any store is opened.
+function checkHeld(opts, positional) {
+  const actions = ['archive', 'release', 'reoffer'].filter((a) => opts[a]);
+  if (positional[0] === undefined) {
+    if (opts.ifAwaiting) return { error: 'belay memory held lists the held notes; --if-awaiting belongs to belay memory held settle <note-id>' };
+    if (actions.length || opts.reason !== undefined) return { error: 'belay memory held lists the held notes; --archive, --release, --reoffer and --reason belong to belay memory held settle <note-id>' };
+    return {};
+  }
+  if (positional[0] !== 'settle') return { error: `belay memory held takes no argument but settle <note-id>; got ${positional[0]}` };
+  if (positional[1] === undefined) return { error: 'belay memory held settle needs the note id' };
+  if (opts.awaiting) return { error: 'belay memory held settle takes no --awaiting' };
+  if (actions.length !== 1) return { error: 'belay memory held settle needs exactly one of --archive, --release or --reoffer' };
+  if (!(typeof opts.reason === 'string' && opts.reason.trim())) return { error: 'belay memory held settle needs --reason <text>: it is recorded' };
+  opts.action = actions[0];
+  return {};
+}
+
+// report <note-id> --reason <text> [--replaced-by <note-id>]: a note is reported with a reason, which is recorded.
+function checkReport(opts) {
+  if (!(typeof opts.reason === 'string' && opts.reason.trim())) return { error: 'belay memory report needs --reason <text>: it is recorded on the note and shown to the archive review' };
+  if (opts.replacedBy !== undefined && !opts.replacedBy.trim()) return { error: '--replaced-by needs a note id' };
+  return {};
+}
+
+function checkOpts(sub, opts, positional = []) {
   if (opts.mode !== undefined && !MODES.includes(opts.mode)) return { error: `--mode must be one of ${MODES.join(', ')}; got ${opts.mode}` };
   if (opts.status !== undefined && !STATUSES.includes(opts.status)) return { error: `--status must be one of ${STATUSES.join(', ')}; got ${opts.status}` };
   if (opts.scope !== undefined && !SCOPES.includes(opts.scope)) return { error: `--scope must be one of ${SCOPES.join(', ')}; got ${opts.scope}` };
@@ -85,6 +168,7 @@ function checkOpts(sub, opts) {
     if (r.error) return r;
     opts[key] = r.value;
   }
+  if (opts.project !== undefined && !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(opts.project)) return { error: `--project must be a project name (lower-case letters, digits, dot, dash, underscore; at most 64); got ${opts.project}` };
   if (opts.out !== undefined && !opts.out) return { error: '--out needs a file name' };
   if (sub === 'import') {
     const maps = new Map();
@@ -98,6 +182,12 @@ function checkOpts(sub, opts) {
     opts.nsMap = maps;
     if (opts.namespaces && opts.namespaces.length > 1) return { error: 'belay memory import takes one --namespace, the default for rows that carry none' };
   }
+  if (sub === 'restore' && !opts.candidates && !opts.reason) return { error: 'belay memory restore needs --reason <text> (or --candidates to list the archived duplicates of a note)' };
+  if (sub === 'report') return checkReport(opts);
+  if (sub === 'resolve') return checkResolve(opts, positional);
+  if (sub === 'held') return checkHeld(opts, positional);
+  if (sub === 'promote' && !!opts.approve === !!opts.reject) return { error: 'belay memory promote needs exactly one of --approve or --reject' };
+  if (sub === 'archive') return checkPurge(opts);
   if (sub === 'verify') {
     if (opts.status === undefined) return { error: 'belay memory verify needs --status verified|refuted|unverified' };
     if (opts.receipt === undefined && opts.status !== 'unverified') return { error: 'belay memory verify needs --receipt <r>: a status without evidence is refused' };
@@ -132,7 +222,7 @@ function parseArgs(argv) {
   if (positional.length < min || positional.length > max) {
     return { error: `belay memory ${sub} takes ${min === max ? min : `${min} to ${max}`} positional argument${max === 1 ? '' : 's'}; got ${positional.length}` };
   }
-  const checked = checkOpts(sub, opts);
+  const checked = checkOpts(sub, opts, positional);
   if (checked.error) return checked;
   return { sub, positional, opts };
 }
@@ -185,10 +275,28 @@ function rowCols(view, scored) {
     : [...lead, COL.status, COL.id, COL.namespace, COL.worker, COL.type, COL.text];
 }
 
+// The line above a search's results when a mode did not run, naming what ran and what failed: "keyword matches only" is true
+// only when the keyword half did run.
+function searchBanner(r) {
+  const failed = r.modes_failed || [];
+  if (!failed.length) return null;
+  const ran = Array.isArray(r.modes_run) ? r.modes_run : null;
+  const named = failed.map(f => `${f.mode} (${f.code})`).join(' and ');
+  if (ran !== null && ran.length === 0) {
+    return `*** NO SEARCH MODE RAN (${named} failed): nothing was searched, so an empty list says nothing about whether such a memory exists ***`;
+  }
+  if (ran === null || ran.includes('keyword')) {
+    return failed.some(f => f.mode === 'semantic') ? '*** SEMANTIC SEARCH DID NOT RUN: these are keyword matches only, and an empty list does not mean there is no such memory ***' : null;
+  }
+  return `*** ${named} failed; only ${ran.join(', ')} ran, so an empty list does not mean there is no such memory ***`;
+}
+
 // The warning, when there is one, is the first line of the text, as it is the first key of the JSON.
 function renderSearchText(r, view) {
   const out = [];
-  if (r.warning) out.push(r.warning);
+  if (r.warning) out.push(r.warning); // the warning stays the first line
+  const banner = searchBanner(r);
+  if (banner) out.push(banner);
   const results = r.results || [];
   if (!results.length) out.push(r.note ? r.note : '(no results)');
   else out.push(...table(rowCols(view, true), results), '');
@@ -214,7 +322,7 @@ function renderShowText(r) {
     out.push(`id: ${row.id}`, `title: ${dash(row.title)}`,
       `status: ${dash(row.status || 'unverified')}${row.status_receipt ? ` (receipt ${row.status_receipt})` : ''}`,
       `namespace: ${dash(row.namespace)}  type: ${dash(row.type)}  worker_id: ${dash(row.worker_id)}  task_id: ${dash(row.task_id)}  run_id: ${dash(row.run_id)}`,
-      `source: ${dash(row.source)}  created_at: ${dash(row.created_at)}`, '', block(row.text), '');
+      `source: ${dash(row.source)}  written_by: ${row.written_by == null ? 'unknown' : row.written_by}  created_at: ${dash(row.created_at)}`, '', block(row.text), '');
   }
   if ((r.missing || []).length) out.push(`missing: ${r.missing.map(dash).join(', ')}`);
   return `${out.join('\n')}\n`;

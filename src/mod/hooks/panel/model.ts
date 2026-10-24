@@ -4,7 +4,7 @@
 
 import type {
   BelayAgent, BelayCache, BelayDisplayState, BelayEntry, BelayNotice, BelayPanelFooter, BelayPanelSnap,
-  BelayPanelUi, BelaySettings,
+  BelayPanelUi, BelaySettings, BelayMemoryNotice,
 } from '../../types/index'
 import { cells, clipCells } from './wrap'
 
@@ -14,15 +14,15 @@ export type Seg = { t: string; c?: string; dim?: boolean; bold?: boolean; brk?: 
 export const DEFAULT_SETTINGS: BelaySettings = {
   pane: 'docked', marks: 'shapes', cache: 'both', context: 'both', band: 'two-lines', task: 'kind',
 }
-export const DEFAULT_UI: BelayPanelUi = { open: false, selected: null, legend: false, foldOpen: false, groups: [], placed: false, seen: [] }
+export const DEFAULT_UI: BelayPanelUi = { open: false, selected: null, legend: false, foldOpen: false, groups: [], placed: false, seen: [], confirm: null }
 
-const num = (x: unknown): number | null => (typeof x === 'number' && Number.isFinite(x) ? x : null)
-const str = (x: unknown): string | null => (typeof x === 'string' && x !== '' ? x : null)
-const obj = (x: unknown): Record<string, unknown> | null =>
+export const num = (x: unknown): number | null => (typeof x === 'number' && Number.isFinite(x) ? x : null)
+export const str = (x: unknown): string | null => (typeof x === 'string' && x !== '' ? x : null)
+export const obj = (x: unknown): Record<string, unknown> | null =>
   x !== null && typeof x === 'object' && !Array.isArray(x) ? (x as Record<string, unknown>) : null
-const arr = (x: unknown): unknown[] => (Array.isArray(x) ? x : [])
+export const arr = (x: unknown): unknown[] => (Array.isArray(x) ? x : [])
 // Control characters and line breaks never reach a Text: one line, one row.
-const clean = (s: string, cap = 200): string => {
+export const clean = (s: string, cap = 200): string => {
   const t = s.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').replace(/\s{2,}/g, ' ').trim()
   return t.length > cap ? t.slice(0, cap - 1) + '…' : t
 }
@@ -46,6 +46,22 @@ export function parseSettings(json: unknown): BelaySettings {
     if (name in ALLOWED && (ALLOWED[name] as readonly unknown[]).includes(o.value)) (out as Record<string, unknown>)[name] = o.value
   }
   return out
+}
+
+// `belay settings --json` carries `memory_notice` (null once a project is set). A malformed one is no notice.
+export function parseMemoryNotice(json: unknown): BelayMemoryNotice | null {
+  const n = obj(obj(json)?.memory_notice)
+  const title = n && str(n.title), why = n && str(n.why), fix = n && str(n.fix)
+  if (!n || !title || !why || !fix) return null
+  return { title: clean(title, 80), why: clean(why, 240), fix: clean(fix, 400), configLine: clean(str(n.config_line) ?? '"memory": { "project": "<name>" }', 80), short: clean(str(n.short) ?? fix, 160) }
+}
+
+// The band's one-line warning and the plain-surface line for the notice (view.tsx draws exactly these).
+export function memoryTitleSegs(n: BelayMemoryNotice): Seg[] {
+  return [{ t: '▲ ', c: 'warning' }, { t: n.title, c: 'warning', bold: true }]
+}
+export function memoryFallbackSegs(n: BelayMemoryNotice): Seg[] {
+  return [{ t: `▲ ${n.title}. ${n.short}`, c: 'warning' }]
 }
 
 // ---- agents -------------------------------------------------------------------------------------
@@ -79,7 +95,7 @@ function normAgent(raw: unknown): BelayAgent | null {
     stateRaw: rawState,
     stateBy: fromDisplay ? str(a.display_state_established_by) : null,
     ctxTokens: num(a.context_tokens), ctxWindow: num(a.context_window), ctxPct: num(a.context_pct),
-    costUsd: num(a.cost_usd), costSource: str(a.cost_source),
+    costUsd: num(a.cost_usd), costSource: str(a.cost_source), costBasis: str(a.cost_basis),
     cache: normCache(a.cache), task,
     launchMode: str(a.permission_mode) ?? str(a.launch_mode), version: str(a.claude_code_version) ?? str(a.version),
     pid: num(a.pid),
@@ -122,6 +138,7 @@ export const TONE: Record<BelayNotice['tone'], { glyph: string; color: string; r
   holds: { glyph: '✓', color: 'merged', rank: 5 },
   stopped: { glyph: '✓', color: 'inactive', rank: 6 },
   ended: { glyph: '✓', color: 'inactive', rank: 7 },
+  memory: { glyph: '◇', color: 'warning', rank: 8 },
 }
 
 export function normNotices(json: unknown): BelayNotice[] {
@@ -139,7 +156,8 @@ export function normNotices(json: unknown): BelayNotice[] {
       const r = str(e.request_id) ?? '?'
       mk('permission', r, `${r} · ${w ?? '?'} wants ${str(e.tool) ?? 'a tool'}`, r, `belay approve ${r}   ·   belay deny ${r}`)
     } else if (kind === 'worker_dead') {
-      mk('dead', w ?? '?', `${w} dead · established by ${str(e.death_established_by) ?? 'not recorded'}`, `exit ${e.exit_code ?? '?'}`, `belay logs ${w}`)
+      if (w && /^archreview-/.test(w)) mk('stopped', w, `${w} cut off before it answered`, `exit ${e.exit_code ?? '?'}`, `belay worker rm ${w}`) // a review's death is its outcome, not an alert
+      else mk('dead', w ?? '?', `${w} dead · established by ${str(e.death_established_by) ?? 'not recorded'}`, `exit ${e.exit_code ?? '?'}`, `belay logs ${w}`)
     } else if (kind === 'worker_stopped') {
       mk('stopped', w ?? '?', `${w} stopped`, `exit ${e.exit_code ?? '?'}`, `belay logs ${w}`)
     } else if (kind === 'worker_stalled') {
@@ -150,9 +168,14 @@ export function normNotices(json: unknown): BelayNotice[] {
       const holds = e.verdict === 'holds' || (e.passed === true && e.verdict == null)
       const refuted = e.verdict === 'refuted' || (e.passed === false && e.executable !== false)
       if (!holds && !refuted) continue
-      mk(holds ? 'holds' : 'refuted', t, `review ${t} ${holds ? 'holds' : 'refuted'}${str(e.judged_by) ? ` · ${str(e.judged_by)}` : ''}`, t, null, null, t)
+      mk(holds ? 'holds' : 'refuted', t, `review ${holds ? 'holds' : 'refuted'}${str(e.judged_by) ? ` · ${str(e.judged_by)}` : ''}`, t.slice(0, 8), null, null, t)
     } else if (kind === 'run_paused') {
       mk('paused', str(e.run_id) ?? '?', `run paused${str(e.paused_by) ? ` by ${str(e.paused_by)}` : ''}`, str(e.run_id) ?? '', null, null)
+    } else if (kind === 'notes_unembedded') {
+      const n = num(e.count) ?? 0
+      if (n <= 0) continue
+      const names = Object.keys(obj(e.by_project) ?? {}).sort()
+      mk('memory', String(n), `${n} note${n === 1 ? '' : 's'} unembedded`, names.join(' '), `belay memory embed --project ${names.length === 1 ? names[0] : '<p>'}`, null)
     } else if (kind === 'run_ended') {
       mk('ended', str(e.run_id) ?? '?', `run ended · ${str(e.exit_reason) ?? 'reason not recorded'}`, str(e.run_id) ?? '', null, null)
     }
@@ -234,15 +257,26 @@ export function cacheSegs(a: BelayAgent, s: BelaySettings, fetchedAt: number, no
   return barSegs.length ? [...barSegs, { t: ' ' }, { t: txt, c }] : [{ t: txt, c }]
 }
 
-export function ctxSegs(a: BelayAgent, s: BelaySettings): Seg[] {
-  if (a.ctxPct === null) return [{ t: '—', dim: true }]
-  const c = a.ctxPct > 75 ? 'warning' : 'suggestion'
-  const fig: Seg = { t: `${Math.round(a.ctxPct)}%` }
-  const b = bar(a.ctxPct / 100, 6)
+// 18247 -> 18.2k, 1234567 -> 1.2M: the context in tokens, when belay knows the count but has no window to make a percentage of.
+export const tokensShort = (n: number): string => (n >= 999_950 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n)))
+
+// The context column: the token count always, and the percent of the window when belay knows the window (`18.2k` or `18.2k · 2%`), so one rule reads the same for
+// every row. The bar, when the setting asks for it, is drawn only with a percent. `mode` is how much room the column has: `full` (the setting's own form), `mid`
+// (tokens and percent, no bar) or `tokens` (the narrow form: the percent and the bar are dropped first).
+export type CtxMode = 'full' | 'mid' | 'tokens'
+export function ctxSegs(a: BelayAgent, s: BelaySettings, mode: CtxMode = 'full'): Seg[] {
+  const tok: Seg | null = a.ctxTokens !== null ? { t: tokensShort(a.ctxTokens) } : null
+  const pct = a.ctxPct
+  if (pct === null) return [tok ?? { t: '—', dim: true }]
+  const fig: Seg = { t: `${Math.round(pct)}%` }
+  if (mode === 'tokens') return [tok ?? fig]
+  const c = pct > 75 ? 'warning' : 'suggestion'
+  const b = bar(pct / 100, 6)
   const barSegs: Seg[] = [{ t: b.on, c }, { t: b.off, dim: true }]
-  if (s.context === 'figure') return [fig]
-  if (s.context === 'bar') return barSegs
-  return [...barSegs, { t: ' ' }, fig]
+  const both: Seg[] = tok ? [tok, { t: ' · ', dim: true }, fig] : [fig]
+  if (mode === 'mid' || s.context === 'figure') return both
+  if (s.context === 'bar') return tok ? [...barSegs, { t: ' ' }, tok] : barSegs
+  return [...barSegs, { t: ' ' }, ...both]
 }
 
 // ---- marks --------------------------------------------------------------------------------------
@@ -263,17 +297,38 @@ export function markSeg(state: BelayDisplayState, marks: BelaySettings['marks'])
   if (marks === 'words') return { t: `[${WORD[state]}]`, c }
   return { t: GLYPH[state], c }
 }
-export const markWidth = (m: BelaySettings['marks']): number => (m === 'words' ? 6 : 2)
+export const markWidth = (m: BelaySettings['marks']): number => (m === 'words' ? 6 : 1)
 
 // ---- run summary --------------------------------------------------------------------------------
 
-export const isLive = (a: BelayAgent): boolean => a.state !== 'done'
+// In an interactive run the orchestrator is a person's own session: belay derives no state for it, and its words are in its own window.
+export const interactiveOrch = (a: BelayAgent, snap: BelayPanelSnap): boolean => a.role === 'orchestrator' && snap.mode === 'interactive' && a.state === 'unknown'
+export function interactiveMark(marks: BelaySettings['marks']): Seg {
+  if (marks === 'words') return { t: '[intv]', c: 'inactive' }
+  return { t: marks === 'colour' ? '●' : '◇', c: 'inactive' }
+}
+
+// A review worker (`archreview-…`) that died is a review that was cut, failed or abandoned: finished, with its outcome, not live. A dead coder or tester stays in the
+// live part because someone should look at it.
+export const isReviewWorker = (a: BelayAgent): boolean => /^archreview-/.test(a.id)
+export const isLive = (a: BelayAgent): boolean => a.state !== 'done' && !(a.state === 'dead' && isReviewWorker(a))
 export const isBusy = (a: BelayAgent): boolean => ['running', 'waiting', 'stalled', 'permission'].includes(a.state)
 
 // Elapsed run time: frozen at the end, at the pause while one is set, and where the orchestrator was first read dead.
 export function elapsedMs(snap: BelayPanelSnap, now: number): number | null {
   if (snap.startedAtMs === null) return null
   return (snap.endedAtMs ?? snap.pausedAtMs ?? snap.frozenAtMs ?? now) - snap.startedAtMs
+}
+
+// The dim line for a round whose reads did not all land: when the data was last all fresh, and which read timed out or failed.
+// null when every read of the latest round succeeded.
+export function staleLine(snap: BelayPanelSnap): string | null {
+  const bad = snap.readIssues ?? []
+  if (!bad.length) return null
+  const slow = bad.filter(i => i.timedOut).map(i => i.verb)
+  const failed = bad.filter(i => !i.timedOut).map(i => (i.text ? `${i.verb} failed: ${i.text}` : `${i.verb} failed`))
+  const what = [...(slow.length ? [`reads slow (${slow.join(', ')} timed out)`] : []), ...failed].join(' · ')
+  return snap.goodAt !== null ? `as of ${new Date(snap.goodAt).toTimeString().slice(0, 8)} · ${what}` : what
 }
 
 // The run line is parts: brand and id; state and elapsed; stale; agents; cost. A narrow width drops parts from the
@@ -294,7 +349,7 @@ export function runLine(snap: BelayPanelSnap, now: number): Seg[] {
   const live = snap.agents.filter(isLive).length
   const busy = snap.agents.filter(isBusy).length
   const segs: Seg[] = [...runBrief(snap, now), { t: '  │  ', dim: true, brk: true }, { t: `${live} agents · ${busy} busy` }]
-  if (snap.footer) segs.push({ t: '  │  ', dim: true, brk: true }, { t: money(snap.footer.totalCostUsd) })
+  if (snap.footer) segs.push({ t: '  │  ', dim: true, brk: true }, snap.footer.totalCostUsd === null ? { t: 'no cost yet', dim: true } : { t: money(snap.footer.totalCostUsd) })
   if (snap.footer?.asOfMs) segs.push({ t: ` @${new Date(snap.footer.asOfMs).toTimeString().slice(0, 5)}`, dim: true })
   return segs
 }

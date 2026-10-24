@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // A small in-memory stand-in for the core methods src/run calls, so the run module can be tested
 // before src/core lands. Only the seven methods the contract says the run manager uses:
 // worker.write, worker.get, task.assign, continuity.checkpoint, continuity.resumeLine,
@@ -81,6 +82,7 @@ function createFakeCore({ runId = 'run-fake', resumeLineText = null, failing = {
         workerRows.get(r.id).push(written);
         return record('worker.write', r, written);
       },
+      async list() { return { workers: [...workerRows.keys()].map((id) => core.currentWorker(id)) }; },
       async get({ worker_id }) {
         maybeFail('worker.get');
         const cur = core.currentWorker(worker_id);
@@ -99,6 +101,12 @@ function createFakeCore({ runId = 'run-fake', resumeLineText = null, failing = {
           last_checkpoint_id: mine.length ? mine[mine.length - 1].id : null,
         };
         return record('task.get', { task_id }, out);
+      },
+      // task.ensureHold: the relaunch check. 'task.ensureHold' in `failing` refuses it with that code, as the core's overlap and
+      // run-not-live refusals do; the fake holds everything otherwise.
+      async ensureHold({ task_id, worker_id }) {
+        maybeFail('task.ensureHold');
+        return record('task.ensureHold', { task_id, worker_id }, { task_id, run_id: runId, held: true, reason: 'run_live', rehomed: false });
       },
       async assign({ task_id, worker_id, ttl_ms = 600000, check_only = false }) {
         // 'task.assign:check' fails the check_only call (ADR 0030 decision 4) and writes nothing;

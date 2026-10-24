@@ -142,6 +142,10 @@ test('verdictEvents and runEvents: a verdict check becomes an event naming the v
   assert.strictEqual(ev[0].source, 'task rv1 results, verdict check');
 
   assert.deepStrictEqual(N.runEvents({ id: RUN, seq: 4, paused_at: 50, paused_by: 'operator:9', ended_at: null }).map((e) => [e.kind, e.ts, e.paused_by]), [['run_paused', 50, 'operator:9']]);
+  const embPause = N.runEvents({ id: RUN, seq: 4, paused_at: 50, paused_by: 'operator:9 [embedder-failure (orchestrator, memory.store, E_TIMEOUT, timeout)]', ended_at: null });
+  assert.strictEqual(embPause[0].embedder_failure, true);
+  const embText = N.renderText(embPause).replace(/\s+/g, ' ');
+  assert.match(embText, /embedder-failure \(orchestrator, memory\.store, E_TIMEOUT, timeout\)\] \(an embedder failure.*belay settings memory\.on_embedder_failure keyword\|off.*belay resume .* --embedder keyword\|off/);
   assert.deepStrictEqual(N.runEvents({ id: RUN, seq: 5, paused_at: null, ended_at: 70, exit_reason: 'idle' }).map((e) => [e.kind, e.ts]), [['run_ended', 70]]);
   assert.deepStrictEqual(N.runEvents({ id: RUN, seq: 6, paused_at: 50, ended_at: 70 }).map((e) => e.kind), ['run_ended'], 'a pause ends with its run');
 
@@ -177,4 +181,103 @@ test('notices: the stall age is the newer of the row and the stream mtime; a row
     assert.strictEqual(stalls.wc.last_event_age_source, 'row');
     assert.ok(cli([RUN], dataDir, { json: false }).stdout.includes('by stream mtime'));
   } finally { cleanup(dir); }
+});
+
+test('notices: a pending note of an ended run and an open proposal on it are one notes_stranded event, with and without a run', async (tcx) => {
+  const { Store } = require('../../src/core/store.cjs');
+  const dir = sandbox();
+  const dataDir = `${dir}/.belay`;
+  try {
+    await plant(dataDir);
+    assert.ok(!cli([RUN], dataDir).stdout.includes('notes_stranded'), 'nothing waits on the operator yet');
+    const store = new Store(`${dataDir}/memory.db`, { stamp: true });
+    tcx.after(() => Promise.resolve().then(() => store.db.isOpen !== false && store.close()));
+    const put = (ns, type, body, run_id) => store.storeIn({ namespace: ns, worker_id: 'w1', type, text: `${type} ${Math.random()}`, title: type, body, run_id, source: type === 'note' ? 'model' : 'harness', written_by: type === 'note' ? 'worker:w1' : 'harness' }).id;
+    const note = put('pending/acme', 'note', { kind: 'lesson', state: 'pending', seen_in: [], seen_total: 0 }, 'run-gone');
+    // the proposal records the note's key, as the scrub does; a row without one is stale (proposal-open.cjs)
+    const keys = require('../../src/core/proposal-open.cjs').keysFor({ store }, [note]);
+    put('proposal/acme', 'proposal', { state: 'open', note_id: note, entry: { id: note, action: 'resolve', resolve: 'new' }, keys }, 'run-gone');
+    store.close();
+    for (const argv of [[RUN], []]) {
+      const r = cli(argv, dataDir);
+      assert.strictEqual(r.status, 0, r.stderr);
+      const ev = JSON.parse(r.stdout).events.filter((e) => e.kind === 'notes_stranded');
+      assert.strictEqual(ev.length, 1, `argv ${argv}`);
+      assert.deepStrictEqual([ev[0].count, ev[0].open_proposals, ev[0].pending, ev[0].note_ids, ev[0].command], [1, 1, 1, [note], 'belay memory proposals']);
+    }
+    assert.ok(cli([RUN], dataDir, { json: false }).stdout.includes('1 note waits on you (1 open proposal, 1 pending note of ended runs'));
+  } finally { cleanup(dir); }
+});
+
+test('notices: with no run at all, a stranded note is still listed', () => {
+  const { Store } = require('../../src/core/store.cjs');
+  const dir = sandbox();
+  const dataDir = `${dir}/.belay`;
+  try {
+    fs.mkdirSync(dataDir, { recursive: true });
+    const store = new Store(`${dataDir}/memory.db`, { stamp: true });
+    store.storeIn({ namespace: 'pending/acme', worker_id: 'w1', type: 'note', text: 'stranded', title: 'stranded', body: { kind: 'lesson', state: 'pending', seen_in: [], seen_total: 0 }, run_id: 'run-gone', source: 'model', written_by: 'worker:w1' });
+    store.close();
+    const r = cli([], dataDir);
+    assert.strictEqual(r.status, 0, r.stderr);
+    const j = JSON.parse(r.stdout);
+    assert.strictEqual(j.run_id, null, 'no run exists');
+    assert.deepStrictEqual(j.events.map((e) => [e.kind, e.count, e.pending]), [['notes_stranded', 1, 1]]);
+  } finally { cleanup(dir); }
+});
+
+test('notices: every read of one command is served from a single copy of the store', async () => {
+  const dir = sandbox();
+  const dataDir = `${dir}/.belay`;
+  try {
+    await plant(dataDir);
+    const copies = [];
+    const real = fs.copyFileSync;
+    fs.copyFileSync = (src, ...rest) => { if (/memory\.db$/.test(String(src))) copies.push(String(src)); return real.call(fs, src, ...rest); };
+    let r;
+    try { r = await N.run({ argv: [RUN], cwd: ROOT, dataDir, dataDirGiven: true }); } finally { fs.copyFileSync = real; }
+    assert.strictEqual(r.code, 0, r.text);
+    assert.ok(r.json.events.length > 0);
+    assert.strictEqual(copies.length, 1, `one copy of memory.db, saw ${copies.length}`);
+  } finally { cleanup(dir); }
+});
+
+test('readBatch commits to one source: the owner that answered first is never swapped for an older copy, and a batch on the copy never asks the owner', async () => {
+  const dir = sandbox();
+  const dataDir = `${dir}/.belay`;
+  try {
+    await plant(dataDir);
+    const copies = [];
+    const real = fs.copyFileSync;
+    fs.copyFileSync = (src, ...rest) => { if (/memory\.db$/.test(String(src))) copies.push(String(src)); return real.call(fs, src, ...rest); };
+    try {
+      // Owner first: the second read finds no owner. It fails loudly, and no copy is made.
+      const a = await openCore({ dataDir, caller: { role: 'operator', run_id: RUN, pid: process.pid }, embed: false });
+      let n = 0;
+      a._tryOwner = async () => (++n === 1 ? { ok: true, value: { runs: [] } } : { ok: false });
+      try {
+        await assert.rejects(a.readBatch(async () => { await a.run.list({}); await a.worker.list({}); }), (e) => e.code === 'E_OWNER_LOST');
+        assert.strictEqual(copies.length, 0, 'no fallback copy');
+      } finally { await a.close(); }
+      // Copy first: the owner is asked once, then never, though it would now answer with a newer row.
+      const b = await openCore({ dataDir, caller: { role: 'operator', run_id: RUN, pid: process.pid }, embed: false });
+      let asked = 0;
+      b._tryOwner = async () => { asked += 1; return asked === 1 ? { ok: false } : { ok: true, value: { workers: ['newer'] } }; };
+      try {
+        const got = await b.readBatch(async () => [await b.run.list({}), await b.worker.list({}), await b.task.list({})]);
+        assert.strictEqual(asked, 1, 'the owner was asked only by the first read');
+        assert.ok(got[1].workers.length > 0 && got[1].workers.every((w) => w !== 'newer'), 'served from the copy');
+        assert.strictEqual(copies.length, 1);
+      } finally { await b.close(); }
+    } finally { fs.copyFileSync = real; }
+  } finally { cleanup(dir); }
+});
+
+test('a finished archive review is words, never raw JSON', () => {
+  const ev = (o) => ({ kind: 'review_ended', ts: 1, run_id: RUN, project: 'smoke', ok: true, code: null, job: 'archreview-run-n-abc', ...o });
+  const out = N.renderText([ev({ text: 'ran as archreview-run-n-abc: {"verdicts":1,"applied":1,"refused":0,"undecided":0,"refused_stale":0}' })]).replace(/\s+/g, ' ');
+  assert.ok(out.includes('archive review of smoke done: 1 verdict: 1 applied, job archreview-run-n-abc'), out);
+  assert.ok(!out.includes('{"verdicts"'), out);
+  const plain = N.renderText([ev({ text: 'nothing to do (x)' })]);
+  assert.ok(plain.includes('ended ok: nothing to do (x)'), plain);
 });

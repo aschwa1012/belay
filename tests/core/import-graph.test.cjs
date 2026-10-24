@@ -11,7 +11,7 @@ const { core, sandbox, cleanup, callerFor, listDataDir } = require('./helpers.cj
 
 const loaded = () => Object.keys(require.cache).filter(k => k.toLowerCase().includes(`${path.sep}src${path.sep}core${path.sep}embedder.cjs`.toLowerCase()));
 
-test('openCore and status.get never load the embedder module', async () => {
+test('openCore and status.get never load the embedder module', async (tcx) => {
   assert.deepStrictEqual(loaded(), [], 'nothing has loaded the embedder before this test starts');
 
   const { openCore } = core('index.cjs');
@@ -20,6 +20,7 @@ test('openCore and status.get never load the embedder module', async () => {
   const dir = sandbox();
   try {
     const c = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
+    tcx.after(() => Promise.resolve().then(() => c.close()));
     assert.deepStrictEqual(loaded(), [], 'openCore does not reach the embedder');
 
     const st = await c.status.get({});
@@ -46,7 +47,7 @@ test('model-cache.cjs requires only node built-ins, and models.cjs only the erro
 });
 
 test('the memory read modules require nothing but the error module', () => {
-  const allowed = { 'fts-query.cjs': [], 'fusion.cjs': ['./errors.cjs'], 'memory-rows.cjs': ['./errors.cjs'], 'memory-schema.cjs': [], 'fit-budget.cjs': [], 'memory-index.cjs': ['./errors.cjs', './fit-budget.cjs', './memory-reach.cjs', './memory-relevance.cjs', './memory-rows.cjs', './rows.cjs'], 'memory-relevance.cjs': ['./errors.cjs', './fts-query.cjs', './fusion.cjs', './memory-schema.cjs'], 'memory-corpus.cjs': ['./errors.cjs', './fit-budget.cjs', './memory-reach.cjs', './memory-rows.cjs'], 'memory-reach.cjs': ['./errors.cjs'] };
+  const allowed = { 'fts-query.cjs': [], 'fusion.cjs': ['./errors.cjs'], 'memory-rows.cjs': ['./errors.cjs'], 'memory-schema.cjs': [], 'fit-budget.cjs': [], 'memory-index.cjs': ['./errors.cjs', './fit-budget.cjs', './memory-index-notes.cjs', './memory-reach.cjs', './memory-relevance.cjs', './memory-rows.cjs', './memory-withhold.cjs', './rows.cjs'], 'memory-relevance.cjs': ['./errors.cjs', './fts-query.cjs', './fusion.cjs', './memory-schema.cjs', './stopwords-en.cjs'], 'stopwords-en.cjs': [], 'memory-corpus.cjs': ['./errors.cjs', './fit-budget.cjs', './memory-note-gate.cjs', './memory-reach.cjs', './memory-rows.cjs'], 'memory-reach.cjs': ['./embedder-mode.cjs', './errors.cjs', './memory-note-gate.cjs'], 'memory-index-notes.cjs': ['./errors.cjs', './fit-budget.cjs', './memory-index-rank.cjs', './memory-note-gate.cjs', './memory-notes.cjs', './memory-reach.cjs', './memory-relevance.cjs', './memory-rows.cjs', './redact.cjs', './report-marks.cjs', './rows.cjs'], 'memory-notes.cjs': ['./errors.cjs', './memory-rows.cjs'], 'memory-index-rank.cjs': ['./errors.cjs', './fusion.cjs', './memory-note-gate.cjs', './memory-relevance.cjs', './memory-schema.cjs', './schema.cjs', './store.cjs'], 'memory-note-gate.cjs': ['./errors.cjs', './memory-withhold.cjs'], 'report-marks.cjs': [] };
   for (const [name, want] of Object.entries(allowed)) assert.deepStrictEqual(requiresOf(path.join(SRC, 'core', name)).filter(r => !r.startsWith('node:')).sort(), [...want].sort(), name);
 });
 
@@ -96,7 +97,7 @@ test('the embedder is reachable, so the assertion above is about laziness and no
 });
 
 test('memory-search.cjs, the read path of the memory methods, requires no embedder', () => {
-  const want = ['./errors.cjs', './fts-query.cjs', './fusion.cjs', './memory-rows.cjs', './memory-schema.cjs', './methods-memory.cjs', './schema.cjs', './store.cjs'];
+  const want = ['./errors.cjs', './fts-query.cjs', './fusion.cjs', './memory-note-gate.cjs', './memory-relevance.cjs', './memory-rows.cjs', './memory-schema.cjs', './memory-search-scope.cjs', './memory-withhold.cjs', './methods-memory.cjs', './schema.cjs', './store.cjs'];
   assert.deepStrictEqual(requiresOf(path.join(SRC, 'core', 'memory-search.cjs')).filter(r => !r.startsWith('node:')).sort(), want);
   const engine = requiresOf(path.join(SRC, 'core', 'engine.cjs'));
   assert.ok(engine.includes('./memory-search.cjs'));

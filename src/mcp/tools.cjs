@@ -2,7 +2,7 @@
 // route each one takes into the Core API or the RunManager. `toolsFor(role)` returns exactly what `tools/list` sends for that role:
 // the ten both-role tools plus that role's own. ROUTES is kept separate from the schemas so that no
 // routing field is ever serialised into the listing, which is measured against the ADR 0010 §5 budget
-// (10,240 bytes orchestrator since ADR 0010 amendment 4, 5,120 bytes worker since ADR 0040 §4). Descriptions say what the tool returns as proof and
+// (11,264 bytes orchestrator and 7,168 bytes worker since ADR 0010 amendment 6). Descriptions say what the tool returns as proof and
 // when it refuses; nothing else, because every byte is a per-turn tax on the orchestrator's context.
 //
 // Two places where ADR 0010 disagrees with itself or with src/core/api.md, resolved in favour of the
@@ -13,6 +13,10 @@
 //     method, `stop({ worker_id, mode, timeout_ms })`. The contract wins; `mode` is required.
 'use strict';
 
+const { isJobId } = require('../run/job-prefixes.cjs'); // pure
+const { isPathId, pathIdMessage } = require('../core/path-id.cjs'); // pure
+const NOTES = require('./tools-notes.cjs'); // ADR 0047: the listing of a worker whose run has the notes lever on
+const { WORKER_TYPES } = require('../run/agent-defaults.cjs'); // pure; the agent_type enum
 const S = (properties, required) => {
   const s = { type: 'object', properties };
   if (required) s.required = required;
@@ -58,6 +62,14 @@ const ROUTES = {
   lease_renew: { role: 'worker', via: 'core', method: 'lease.renew' },
   lease_release: { role: 'worker', via: 'core', method: 'lease.release' },
   checkpoint_write: { role: 'worker', via: 'core', method: 'continuity.checkpoint' },
+  // ADR 0047 decision 4: listed only for a worker whose run has the notes lever on (tools-notes.cjs); the core refuses E_LEVER_OFF otherwise.
+  memory_note_resolve: { role: 'worker', via: 'core', method: 'memory.noteResolve' },
+  // ADR 0047 decision 1: listed for the orchestrator of a notes run only; callable by either role, the core refuses E_LEVER_OFF otherwise.
+  memory_summaries: { role: 'both', via: 'core', method: 'memory.summaries' },
+  // Wave 4: the refuted-note wake carries ids; the reasons are read here. Orchestrator only.
+  memory_note_refutation: { role: 'orchestrator', via: 'core', method: 'memory.noteRefutation' },
+  // The operator asks the orchestrator to mark a note incorrect: the same hold a worker's report makes. Listed with the notes lever.
+  memory_report: { role: 'orchestrator', via: 'core', method: 'memory.noteReport' },
   // build step 6d, ADR 0020 decisions 1 and 5: the worker adapter's own prompt tool (listed only for
   // an adapter launched with --permit, never through toolsFor, and hidden from the model — measured in
   // ADR 0020's evidence table) and the orchestrator's window and hand on the same channel.
@@ -72,10 +84,10 @@ const ROUTES = {
 const BOTH = [
   {
     name: 'memory_store',
-    description: 'Store one entry. Returns the row written: id, action inserted or updated, namespace, worker id. Refuses text past the embedder\'s window.',
+    description: 'Store one entry. Returns the row written: id, action, namespace, worker id. Refuses text past the embedder\'s window.',
     inputSchema: S({
       text: str('One self-contained statement'),
-      namespace: str('Defaults to this run'),
+      namespace: str('Defaults to this run; moved to the project when your task ends'),
       type: { type: 'string', enum: ['fact', 'episode', 'procedure'] },
       tags: strs(),
       provenance: str('Source, e.g. a path'),
@@ -86,14 +98,14 @@ const BOTH = [
   },
   {
     name: 'memory_retrieve',
-    description: 'Fetch entries by id, or by ids (at most 50). Returns the row without its vector, or found false; ids returns rows in the order asked and names the missing.',
+    description: 'Fetch entries by id, or by ids (max 50). Returns rows without vectors, or found false; ids keeps the order asked and names the missing.',
     inputSchema: S({ id: str(), ids: strs() }),
   },
   {
     name: 'memory_search',
-    description: 'Search memory; view index returns ids and titles only. Result names modes_run, modes_failed and absence_established; absence_established false means not searched fully.',
+    description: 'Search memory. Query with one short task line for what you will do, naming files or symbols; several short queries beat one long one. view index: ids and titles only. Result names modes_run, modes_failed, absence_established (true only if both ran and found nothing).',
     inputSchema: S({
-      query: str('Natural language'),
+      query: str(),
       namespace: str(),
       k: int('default 10'),
       min_score: num(),
@@ -107,7 +119,7 @@ const BOTH = [
   },
   {
     name: 'memory_timeline',
-    description: 'Entries around one entry, oldest first. Returns anchor, before, after, scope. Refuses an unknown anchor.',
+    description: 'Entries around one entry, oldest first: anchor, before, after, scope. Refuses an unknown anchor.',
     inputSchema: S({
       anchor_id: str(),
       before: int('default 5'),
@@ -117,7 +129,7 @@ const BOTH = [
   },
   {
     name: 'memory_list',
-    description: 'List recent entries in a namespace. Returns the rows.',
+    description: 'List recent entries in a namespace.',
     inputSchema: S({ namespace: str(), limit: int(), offset: int() }),
   },
   {
@@ -127,12 +139,12 @@ const BOTH = [
   },
   {
     name: 'memory_stats',
-    description: 'Row-derived counts plus the owner pid, pipe and whether it answered.',
+    description: 'Row counts plus the owner pid, pipe and whether it answered.',
     inputSchema: S({}),
   },
   {
     name: 'status',
-    description: 'The liveness ladder: every rung with whether it held and what established it, the run, and per worker pid_alive, last-event age, turns, tokens and cost. Never refuses; a dead system is a valid answer.',
+    description: 'The liveness ladder: each rung, whether it held and what established it, the run, and per worker pid_alive, last-event age, turns, tokens and cost. Never refuses.',
     inputSchema: S({ deep: bool('Also query the substrate registry; slower') }),
   },
   {
@@ -142,7 +154,7 @@ const BOTH = [
   },
   {
     name: 'briefing',
-    description: 'Resume material rebuilt from the store. Returns line, at most 400 bytes, and doc, at most 4096, with anything a worker said labelled unverified. Give worker_id or task_id.',
+    description: 'Resume material rebuilt from the store: line (max 400 bytes) and doc (max 4096), anything a worker said labelled unverified. Give worker_id or task_id.',
     inputSchema: S({ worker_id: str(), task_id: str() }),
   },
 ];
@@ -157,7 +169,9 @@ const ORCHESTRATOR = [
       prompt: str('First message'),
       task_id: str('Assign this task once ready and prepend its resume line'),
       model: str(),
+      agent_type: { type: 'string', enum: WORKER_TYPES, description: 'Configured model and effort default' },
       effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      memory_queries: strs('Up to 4 task lines naming the situations the worker will be in, each max 160 bytes'),
       allowed_tools: strs(),
       permission_mode: str(),
       startup_timeout_ms: int('default 60000'),
@@ -170,7 +184,7 @@ const ORCHESTRATOR = [
     // the caller's own tool timeout has to be the outer bound, and a refusal would lose the fact that
     // nothing had finished yet.
     name: 'worker_wait',
-    description: 'Block until one of the named workers, or any worker this session launched, finishes a turn or dies, or the timeout passes. Returns which worker, what happened, what established it, its turn and checkpoint id, and how long the call held. A timeout is a result, not an error: call it again.',
+    description: 'Block until one of the named workers, or any worker this session launched, finishes a turn or dies, or the timeout passes. Returns which worker, what happened, what established it, its turn and checkpoint id, and how long the call held. timed_out is a result. already: turn ended earlier.',
     inputSchema: S({
       worker_ids: strs('Otherwise every worker this session launched'),
       timeout_ms: int('default 110000'),
@@ -183,7 +197,7 @@ const ORCHESTRATOR = [
   },
   {
     name: 'worker_stop',
-    description: 'Stop a worker by its exact pid. Returns exit code, signal, ms to exit, whether it was graceful or killed, and the session id to resume from later.',
+    description: 'Stop a worker by its recorded pid. Returns exit code, signal, ms to exit, whether it was graceful or killed, and the session id to resume from later.',
     inputSchema: S({
       worker_id: str(),
       mode: { type: 'string', enum: ['graceful', 'kill'] },
@@ -192,7 +206,7 @@ const ORCHESTRATOR = [
   },
   {
     name: 'worker_restart',
-    description: 'Restart a worker from its last checkpoint. Returns which branch was taken, resume or replace, and why, the old and new pid, session id, checkpoint id and the first turn\'s usage.',
+    description: 'Restart a worker from its last checkpoint. Returns which branch was taken, resume or replace, and why, the old and new pid, session id, checkpoint id and the first turn\'s usage. Past about 100 s it returns status "not ready yet" with first_turn_awaited false; the relaunch carries on.',
     inputSchema: S({ worker_id: str(), first_turn_timeout_ms: int('default 180000') }, ['worker_id']),
   },
   {
@@ -206,6 +220,7 @@ const ORCHESTRATOR = [
           items: S({ argv: strs(), cwd: str(), timeout_ms: int() }, ['argv']),
         },
         files_within_owned: bool(),
+        verdict: { const: true },
       }),
       files_owned: strs('Paths relative to the worktree'),
       depends_on: strs('Task ids that must be done before this one can be assigned'),
@@ -254,7 +269,7 @@ const ORCHESTRATOR = [
 const WORKER = [
   {
     name: 'lease_renew',
-    description: 'Extend the lease you hold. Returns the lease row with its new expiry. Refuses if you are not the holder or it already expired.',
+    description: 'Extend your lease. Returns the lease row with its new expiry. Refuses if you are not the holder or it expired.',
     inputSchema: S({ lease_id: str() }, ['lease_id']),
   },
   {
@@ -264,7 +279,7 @@ const WORKER = [
   },
   {
     name: 'checkpoint_write',
-    description: 'Record what you did and what is next. Stored as your claim, not as fact. Returns the checkpoint row: turn, files touched, next step, open questions. Refuses unless you hold the task\'s current lease.',
+    description: 'Record what you did and what is next, as your claim. Returns the checkpoint row. Refuses unless you hold the task\'s current lease.',
     inputSchema: S({
       task_id: str(),
       turn: int(),
@@ -302,13 +317,28 @@ const PERMIT_TOOL = {
 // the memory read tools and nothing else: no store, no delete, no lease or checkpoint.
 const KNOWLEDGE_READ_TOOLS = ['memory_retrieve', 'memory_search', 'memory_timeline', 'memory_list', 'memory_stats'];
 const isKnowledgeAgent = (role, workerId) => role === 'worker' && typeof workerId === 'string' && workerId.startsWith('knowledge-');
+const isReviewJob = (role, workerId) => role === 'worker' && typeof workerId === 'string' && isJobId(workerId); // belay's read-only jobs (the note review job, the run-close scrubber and archive reviewer): it reads files and lists no belay tool
 
 // `knowledge` (orchestrator only) adds knowledge_ask; omitted or false, the listing is byte-for-byte what it was.
 // `workerId` (the adapter's argv) narrows the knowledge agent's listing to its read tools.
-function toolsFor(role, { knowledge = false, workerId = null } = {}) {
-  if (role === 'orchestrator') return knowledge ? BOTH.concat(ORCHESTRATOR, [KNOWLEDGE_TOOL]) : BOTH.concat(ORCHESTRATOR);
+// `queries` (orchestrator): whether worker_spawn lists `memory_queries`. They feed the first-message index only, so a run with that lever
+// off (the default) is not shown the field; a call that carries it is still accepted (the schema of validateArgs is the full one).
+const withoutQueries = (list) => list.map((t) => {
+  if (t.name !== 'worker_spawn') return t;
+  const { memory_queries, ...properties } = t.inputSchema.properties;
+  return { ...t, inputSchema: { ...t.inputSchema, properties } };
+});
+
+function toolsFor(role, { knowledge = false, workerId = null, notes = false, queries = false } = {}) {
+  if (role === 'orchestrator') {
+    const all = knowledge ? BOTH.concat(ORCHESTRATOR, [KNOWLEDGE_TOOL]) : BOTH.concat(ORCHESTRATOR);
+    const base = queries ? all : withoutQueries(all);
+    // A notes run: a project memory_store is a note, and memory_verify is gone (notes are disputed by memory_report, never by a status).
+    return notes ? base.filter((t) => t.name !== 'memory_verify').map((t) => (t.name === 'memory_store' ? NOTES.memoryStoreNotes(t, 'orchestrator') : t)).concat([NOTES.SUMMARIES, NOTES.NOTE_REFUTATION, NOTES.MEMORY_REPORT]) : base;
+  }
+  if (isReviewJob(role, workerId)) return [];
   if (isKnowledgeAgent(role, workerId)) return BOTH.filter((t) => KNOWLEDGE_READ_TOOLS.includes(t.name));
-  if (role === 'worker') return BOTH.concat(WORKER);
+  if (role === 'worker') return notes ? NOTES.notesWorkerListing(BOTH.concat(WORKER).map((t) => (t.name === 'memory_store' ? NOTES.memoryStoreNotes(t, 'worker') : t))) : BOTH.concat(WORKER);
   throw Object.assign(new Error(`unknown role ${role}`), { code: 'E_ROLE' });
 }
 
@@ -318,18 +348,27 @@ const permitBytes = () => Buffer.byteLength(JSON.stringify(PERMIT_TOOL), 'utf8')
 // undefined when the name is not a tool at all.
 const roleOf = (name) => (ROUTES[name] ? ROUTES[name].role : undefined);
 const routeOf = (name) => ROUTES[name];
-const allows = (role, name, workerId = null) => {
+// `notes` (the run has the notes lever on): the orchestrator is not given memory_verify, since a note is disputed by memory_report and never set by a status.
+const allows = (role, name, workerId = null, { notes = false } = {}) => {
+  if (isReviewJob(role, workerId)) return false;
+  if (notes && role === 'orchestrator' && name === 'memory_verify') return false;
   if (isKnowledgeAgent(role, workerId)) return KNOWLEDGE_READ_TOOLS.includes(name);
   const r = roleOf(name);
   return r === 'both' || r === role;
 };
 
-const BUDGET = { orchestrator: 10240, worker: 5120, permit: 320 }; // ADR 0010 amendment 4: orchestrator 10 KB; ADR 0040 §4: worker 5 KB
+const BUDGET = { orchestrator: 11264, worker: 7168, permit: 320 }; // ADR 0010 amendment 6: orchestrator 11 KB, worker 7 KB
 const listingBytes = (role, opts) => Buffer.byteLength(JSON.stringify(toolsFor(role, opts)), 'utf8');
 
 const BY_NAME = new Map();
-for (const t of BOTH.concat(ORCHESTRATOR, WORKER, [KNOWLEDGE_TOOL])) BY_NAME.set(t.name, t);
-const schemaOf = (name) => (BY_NAME.get(name) || {}).inputSchema;
+for (const t of BOTH.concat(ORCHESTRATOR, WORKER, [KNOWLEDGE_TOOL, NOTES.NOTE_RESOLVE, NOTES.SUMMARIES, NOTES.NOTE_REFUTATION, NOTES.MEMORY_REPORT])) BY_NAME.set(t.name, t);
+// `notes` (a notes run's worker adapter): lease_release is the schema that requires `notes`.
+// and memory_store is the schema that states a note's fields (the orchestrator's namespace text differs from a worker's).
+const schemaOf = (name, notes = false, role = 'worker') => {
+  if (notes && name === 'lease_release') return NOTES.LEASE_RELEASE.inputSchema;
+  if (notes && name === 'memory_store') return NOTES.memoryStoreNotes(BY_NAME.get(name), role).inputSchema;
+  return (BY_NAME.get(name) || {}).inputSchema;
+};
 
 // Optional arguments where an explicit null is refused, not read as absent: the core refuses it too
 // (ADR 0010 amendment 3), and the boundary must say the same thing before the call reaches it.
@@ -339,7 +378,7 @@ const NO_NULL = { task_evaluate: ['base'] };
 // the core, never something a model says (invariant 3), so the boundary refuses them in either role,
 // by name, before the core sees them. The schema does not list them, which is why the listing does
 // not pay for them either.
-const HARNESS_ONLY = { memory_store: ['task_id', 'turn', 'source', 'embed', 'body', 'worker_id'] };
+const HARNESS_ONLY = { memory_store: ['task_id', 'turn', 'source', 'embed', 'body', 'worker_id'], worker_spawn: ['native_memory', 'tools', 'sandbox', 'max_budget_usd'] }; // worker_spawn: native_memory is the eval driver's lever (ADR 0024 amendment 3); tools is the built-in list, which only allowed_tools may narrow (amendment 4); sandbox is a Codex worker's sandbox mode and max_budget_usd a job worker's spend cap, both the harness's. permission_prompt and permit_wait_ms stay open: ADR 0020 decision 1 makes the permission channel optional per spawn, and decision 5 has the orchestrator answer its requests
 // Tools that take exactly the properties their schema names: memory_store's row is written from its arguments, so an
 // unnamed one (an id, a created_at, a vector and its model) would reach the core as if the harness had chosen it.
 const CLOSED = new Set(['memory_store']);
@@ -352,8 +391,8 @@ const MAX_IDS = 50;
 // property are checked here rather than left for the core to discover. Properties the schema does not
 // name are passed through untouched: the core owns what it accepts, and this is not a JSON Schema
 // implementation. Throws E_ARGS naming the field.
-function validateArgs(name, args) {
-  const schema = schemaOf(name);
+function validateArgs(name, args, { notes = false, role = 'worker' } = {}) {
+  const schema = schemaOf(name, notes, role);
   if (!schema) return args;
   const a = args || {};
   const bad = (message, detail) => { throw Object.assign(new Error(message), { code: 'E_ARGS', detail }); };
@@ -365,8 +404,13 @@ function validateArgs(name, args) {
     const extra = Object.keys(a).find((k) => !Object.prototype.hasOwnProperty.call(schema.properties || {}, k));
     if (extra !== undefined) bad(`${name}: ${extra} is not one of its arguments`, { tool: name, field: extra, reason: 'unknown_field' });
   }
-  if (name === 'worker_spawn' && typeof a.worker_id === 'string' && a.worker_id.startsWith(RESERVED_WORKER_PREFIX)) {
-    bad(`worker_spawn: worker ids starting ${RESERVED_WORKER_PREFIX} are reserved for the knowledge agent`, { tool: name, field: 'worker_id', reason: 'reserved', prefix: RESERVED_WORKER_PREFIX });
+  // A worker id becomes a directory under the data dir: every tool that names one refuses a bad id before anything is read or written.
+  for (const k of ['worker_id']) {
+    if (a[k] !== undefined && a[k] !== null && (schema.properties || {})[k] && !isPathId(a[k])) bad(`${name}: ${pathIdMessage(k, a[k])}`, { tool: name, field: k, reason: 'bad_id' });
+  }
+  if (Array.isArray(a.worker_ids) && a.worker_ids.some((x) => !isPathId(x))) bad(`${name}: worker_ids has an id that is not valid: use ${require('../core/path-id.cjs').PATH_ID_GRAMMAR}`, { tool: name, field: 'worker_ids', reason: 'bad_id' });
+  if (name === 'worker_spawn' && typeof a.worker_id === 'string' && (a.worker_id.startsWith(RESERVED_WORKER_PREFIX) || isJobId(a.worker_id))) {
+    bad(`worker_spawn: worker ids starting ${RESERVED_WORKER_PREFIX}, notereview-, scrub- or archreview- are reserved for belay's own workers`, { tool: name, field: 'worker_id', reason: 'reserved', prefix: RESERVED_WORKER_PREFIX });
   }
   for (const k of schema.required || []) {
     if (a[k] === undefined || a[k] === null) bad(`${name} needs ${k}`, { tool: name, missing: k });

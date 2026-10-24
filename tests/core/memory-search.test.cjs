@@ -118,7 +118,7 @@ test('alpha steers the fusion: 1 follows the semantic list, 0 the keyword list',
 test('the index view returns ids and titles only, with the fixed key set', async () => {
   const r = await call('memory.search', { namespace: 'n1', query: 'alpha', view: 'index', k: 2 });
   const h = r.results[0];
-  assert.deepStrictEqual(Object.keys(h).sort(), ['created_at', 'id', 'namespace', 'score', 'status', 'task_id', 'title', 'type', 'worker_id']);
+  assert.deepStrictEqual(Object.keys(h).sort(), ['created_at', 'id', 'namespace', 'score', 'status', 'task_id', 'title', 'type', 'worker_id', 'written_by']);
   assert.strictEqual(h.title, 'Retry policy');
   assert.strictEqual(r.results[1].title.length > 0, true, 'a null title is derived from the first line');
   assert.strictEqual(h.text, undefined);
@@ -234,7 +234,7 @@ test('a query with no term of three characters is E_QUERY_SHORT by name, never a
   assert.strictEqual(h.absence_established, false);
   const mixed = await call('memory.search', { namespace: 'n1', query: 'ab pidAlive', mode: 'keyword' });
   assert.deepStrictEqual(ids(mixed), [rows.pid.id]);
-  assert.deepStrictEqual(mixed.searched.keyword_terms_dropped, ['ab'], 'a dropped short term is named');
+  assert.deepStrictEqual(mixed.searched.keyword_terms_dropped, [{ term: 'ab', reason: 'too-short' }], 'a dropped short term is named');
 });
 
 test('FTS syntax characters in a query are searched as text and cannot inject', async () => {

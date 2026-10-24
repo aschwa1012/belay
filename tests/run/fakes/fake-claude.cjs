@@ -17,6 +17,11 @@ if (process.env.FAKE_ORPHAN_CHILD === '1') {
   if (process.env.FAKE_CHILD_PID_FILE) fs.writeFileSync(process.env.FAKE_CHILD_PID_FILE, String(kid.pid));
 }
 
+// ADR 0045 (audit D06): FAKE_SPAWN_SCRIPT=<path> starts that script as an ordinary child of this process, the way a worker's Bash starts one.
+if (process.env.FAKE_SPAWN_SCRIPT) {
+  require('node:child_process').spawn(process.execPath, [process.env.FAKE_SPAWN_SCRIPT], { windowsHide: true, stdio: 'ignore' }).unref();
+}
+
 const SESSION = process.env.FAKE_SESSION_ID || 'fake-session-0000-0000-0000-000000000001';
 const EXTRA_INIT = process.env.FAKE_EXTRA_INIT === '1'; // simulate an inbound cross-session turn
 // 5b-2: the unsolicited turn's own init lands right after the answer it rides in on; its own
@@ -35,7 +40,7 @@ const HEARTBEAT_MS = Number(process.env.FAKE_HEARTBEAT_MS || 0);
 const MCP = process.env.FAKE_MCP || 'connected';
 // build step 6d: the smallest env echo a test can drive, to stderr so it never disturbs stream-json.
 if (process.env.FAKE_ECHO_MCP_TOOL_TIMEOUT === '1') {
-  process.stderr.write(`FAKE_ENV MCP_TOOL_TIMEOUT=${process.env.MCP_TOOL_TIMEOUT === undefined ? '(absent)' : process.env.MCP_TOOL_TIMEOUT}\n`);
+  process.stderr.write(`FAKE_ENV MCP_TOOL_TIMEOUT=${process.env.MCP_TOOL_TIMEOUT === undefined ? '(absent)' : process.env.MCP_TOOL_TIMEOUT} BELAY_WORKER_ID=${process.env.BELAY_WORKER_ID === undefined ? '(absent)' : process.env.BELAY_WORKER_ID}\n`);
 }
 // ADR 0021: the mode the session actually started in and the build's version, overridable by FAKE_PERMISSION_MODE.
 const modeAt = process.argv.indexOf('--permission-mode');
@@ -45,6 +50,21 @@ const VERSION = process.env.FAKE_CLAUDE_CODE_VERSION || '2.1.280-fake';
 // built-ins are exactly the comma-split `--tools` value (none if absent); its belay tools are the ones
 // it lists today, less `permit` when `--permission-prompt-tool` is on this launch (decision 7).
 const BELAY_TOOLS_TODAY = ['mcp__belay__memory_store'];
+// The MCP servers this launch was actually given (--mcp-config, a file; --strict-mcp-config means nothing else): the real binary
+// lists a server's tools only if the server is in that file, and the belay adapter lists none for a job worker (a reserved id prefix).
+function launchedBelay() {
+  const at = process.argv.indexOf('--mcp-config');
+  if (at < 0) return { present: true, job: false }; // a launch without a config file: the old behaviour
+  try {
+    const cfg = JSON.parse(require('node:fs').readFileSync(process.argv[at + 1], 'utf8'));
+    const srv = cfg && cfg.mcpServers && cfg.mcpServers.belay;
+    if (!srv) return { present: false, job: false };
+    const a = Array.isArray(srv.args) ? srv.args : [];
+    const wid = a.indexOf('--worker-id');
+    const id = wid >= 0 ? a[wid + 1] : null;
+    return { present: true, job: a[a.indexOf('--role') + 1] === 'worker' && typeof id === 'string' && require('../../../src/core/job-ids.cjs').isJobId(id) };
+  } catch { return { present: true, job: false }; }
+}
 function surfaceTools() {
   const idx = process.argv.indexOf('--tools');
   const builtins = idx >= 0 ? process.argv[idx + 1].split(',').filter(Boolean) : [];
@@ -53,6 +73,8 @@ function surfaceTools() {
   // follow that, never the reverse — before this it kept listing BELAY_TOOLS_TODAY even on FAKE_MCP
   // values other than 'connected', which masked the connection-vs-surface ordering defect.
   if (MCP !== 'connected') return builtins;
+  const lb = launchedBelay();
+  if (!lb.present || lb.job) return builtins;
   const permit = process.argv.includes('--permission-prompt-tool');
   const belay = permit ? BELAY_TOOLS_TODAY.filter((t) => t !== 'mcp__belay__permit') : BELAY_TOOLS_TODAY;
   return [...builtins, ...belay];
@@ -66,8 +88,15 @@ function initEvent() {
   const isResume = process.argv.includes('--resume');
   const ev = { type: 'system', subtype: 'init', session_id: SESSION, tools: surfaceTools(),
     permissionMode: PERMISSION_MODE, claude_code_version: VERSION, plugins: PLUGINS, model: MODEL };
+  // ADR 0024 amendment 3: FAKE_MEMORY_AUTO=echo reports the autoMemoryDirectory the launch's --settings file names (as Claude Code does
+  // when it honours it); any other value is reported as is; unset reports no memory_paths.
+  if (process.env.FAKE_MEMORY_AUTO) {
+    let auto = process.env.FAKE_MEMORY_AUTO;
+    if (auto === 'echo') { try { auto = JSON.parse(require('node:fs').readFileSync(process.argv[process.argv.indexOf('--settings') + 1], 'utf8')).autoMemoryDirectory; } catch (e) { auto = null; } }
+    if (auto !== null && auto !== undefined) ev.memory_paths = { auto };
+  }
   if (MCP === 'absent') return ev;
-  ev.mcp_servers = MCP === 'none' ? [] : [{ name: 'belay', status: MCP }];
+  ev.mcp_servers = MCP === 'none' || !launchedBelay().present ? [] : [{ name: 'belay', status: MCP }];
   if (FAKE_SURFACE && (!FAKE_SURFACE_ON_RESUME || isResume)) {
     if (FAKE_SURFACE === 'extra-tool') ev.tools = [...ev.tools, 'Task'];
     else if (FAKE_SURFACE === 'user-plugin') ev.plugins = [...ev.plugins, { name: 'example-plugin', path: 'user', source: 'example-plugin@example' }];
@@ -376,6 +405,9 @@ process.stdin.on('data', (d) => {
 // A worker that does not exit when its stdin closes: the wedged case ADR 0001 §5's graceful stop
 // has to time out on before belay kills it. Without this the fake always exits on stdin end and the
 // timeout branch is never reached.
-if (process.env.FAKE_IGNORE_STDIN_END === '1') setInterval(() => {}, 1000);
-else process.stdin.on('end', () => process.exit(0));
+// FAKE_STDIN_END_FILE: written when stdin closes, so a test waits on the close itself rather than a guess at when it came.
+if (process.env.FAKE_IGNORE_STDIN_END === '1') {
+  setInterval(() => {}, 1000);
+  if (process.env.FAKE_STDIN_END_FILE) process.stdin.on('end', () => { try { require('node:fs').writeFileSync(process.env.FAKE_STDIN_END_FILE, String(Date.now())); } catch { /* the test reports the missing file */ } });
+} else process.stdin.on('end', () => process.exit(0));
 process.stdin.resume();

@@ -60,6 +60,9 @@ class Store {
       }
     } catch (e) { try { this.db.close(); } catch { /* already closed */ } throw e; }
     this._stmts = new Map();
+    // The engine installs `guard(op, id, detail)` (held-guard.cjs): every method below that changes a note's visibility or status calls it inside its
+    // own transaction, before its write. A store used without an engine has none.
+    this.guard = null;
     this.cache = new Map(); // namespace -> { rows: [{id, vec, ttl_at}], superseded: Set<id> }
   }
 
@@ -72,17 +75,28 @@ class Store {
   tx(fn) {
     this.db.exec('BEGIN IMMEDIATE');
     try { const r = fn(); this.db.exec('COMMIT'); return r; }
-    catch (e) { try { this.db.exec('ROLLBACK'); } catch { /* already rolled back */ } throw e; }
+    catch (e) {
+      try { this.db.exec('ROLLBACK'); } catch { /* already rolled back */ }
+      // A write inside the transaction already put its row in the vector cache; the rollback took it out of the
+      // table, so the cache is dropped and reloads from the table on the next search (no phantom hit).
+      this.cache.clear();
+      throw e;
+    }
   }
 
   // ---- memory write path -------------------------------------------------
   // ADR 0040 §1-3. `title`, `body`, `redactions` (objects or text), and the harness provenance `run_id`,
   // `task_id`, `turn` and `source` are written as given: deriving them is the method's work (methods-memory.cjs),
   // and this layer trusts none of them to come from a caller. A dedup update (same namespace, same hash) refreshes
-  // title, body and redactions only where the new write has them, and never touches status or provenance:
-  // the row stays what it was first written as, verified or refuted included. Only the row's own writer, with the
-  // same source, updates an unverified row this way; every other hit returns the row unchanged (action 'unchanged').
-  store(a) {
+  // body and redactions only where the new write has them, keeps the row's first type and first title (a null title
+  // takes the new one), and never touches status or provenance: the row stays what it was first written as,
+  // verified or refuted included. `redactions` is one aggregate count over the whole write, so when the first
+  // title is kept it may still count redactions made in the discarded title; the counts are not split by field.
+  // Only the row's own writer, with the same source, updates an unverified row this way; every other hit returns
+  // the row unchanged (action 'unchanged').
+  // `storeIn` is the write without its own transaction, for a caller already inside one (a hand-back that stores
+  // notes in the transaction that releases the lease); `store` wraps it.
+  storeIn(a) {
     const ns = a.namespace, wid = a.worker_id;
     if (!ns || !wid || typeof a.text !== 'string' || !a.text.trim()) throw err('E_ARGS', 'memory.store needs a namespace, a worker id and non-empty text');
     if (a.embedding && !(a.embedding_model && a.dim)) throw err('E_ARGS', 'an embedding must arrive with its embedding_model and dim');
@@ -93,13 +107,17 @@ class Store {
     const body = asText(a.body);
     const redactions = a.redactions && typeof a.redactions === 'object' && !Object.keys(a.redactions).length ? null : asText(a.redactions);
     if (a.id != null && !validId(a.id)) throw err('E_ARGS', 'a row id must be 1 to 128 letters, digits, dot, colon, dash or underscore', { field: 'id' });
-    return this.tx(() => {
-      const dup = this.p('SELECT id, worker_id, source, text, status, title, run_id, task_id, redactions, embedding IS NOT NULL AS has_vec FROM memory_entries WHERE namespace = ? AND text_hash = ?').get(ns, th);
+    {
+      const dup = this.p('SELECT id, type, worker_id, source, text, status, title, run_id, task_id, redactions, written_by, embedding IS NOT NULL AS has_vec FROM memory_entries WHERE namespace = ? AND text_hash = ?').get(ns, th);
       // A dedup hit updates the row only for the writer that wrote it, with the same source, while it is still
       // unverified. Anyone else's row, and any verified or refuted row, is left exactly as it was and returned as
       // it stands: otherwise a writer that read a verified row could resend its text under a new title and type and
       // keep the verified status (ADR 0040 §1, dedup).
-      if (dup && !(dup.worker_id === wid && (dup.source || 'model') === (a.source || 'model') && (dup.status || 'unverified') === 'unverified')) {
+      // The row's writer must be the incoming writer too (ADR 0044 decision 6): a model cannot rewrite belay's row by
+      // resending its text. A row from before the column (written_by null) keeps the rule above alone.
+      const sameWriter = dup && (dup.written_by == null || a.written_by == null || dup.written_by === a.written_by);
+      // A note's body is belay's record (state, sightings, reports, evidence, model): a dedup hit on a note never rewrites it.
+      if (dup && (dup.type === 'note' || !(sameWriter && dup.worker_id === wid && (dup.source || 'model') === (a.source || 'model') && (dup.status || 'unverified') === 'unverified'))) {
         return this._unchanged(dup, ns, th);
       }
       let vec = null;
@@ -114,26 +132,27 @@ class Store {
       if (a.supersedes && !this.p('SELECT 1 FROM memory_entries WHERE id = ?').get(a.supersedes)) {
         throw err('E_SUPERSEDES', `the row this write supersedes (${a.supersedes}) is not in the store`, { supersedes: a.supersedes });
       }
+      if (a.supersedes && this.guard) this.guard('supersede', a.supersedes, { via: dup ? 'store_update' : 'store_insert' });
       const tags = a.tags ? JSON.stringify(a.tags) : null;
       const prov = a.provenance || null;
       const blob = vec ? Buffer.from(vec.buffer) : null;
       let id, action;
       if (dup) {
         id = dup.id; action = 'updated';
-        this.p(`UPDATE memory_entries SET last_writer_id = ?, type = ?, embedding = COALESCE(?, embedding),
+        this.p(`UPDATE memory_entries SET last_writer_id = ?, embedding = COALESCE(?, embedding), text_template = COALESCE(?, text_template),
                 tags = COALESCE(?, tags), provenance = COALESCE(?, provenance), supersedes = COALESCE(?, supersedes),
-                title = COALESCE(?, title), body = COALESCE(?, body), redactions = COALESCE(?, redactions),
+                title = COALESCE(title, ?), body = COALESCE(?, body), redactions = COALESCE(?, redactions),
                 updated_at = ?, ttl_at = ? WHERE id = ?`)
-          .run(wid, a.type || 'fact', blob, tags, prov, a.supersedes || null, title, body, redactions, t, ttl, id);
+          .run(wid, blob, blob ? (a.text_template || 'v1') : null, tags, prov, a.supersedes || null, title, body, redactions, t, ttl, id);
       } else {
         id = a.id || crypto.randomUUID(); action = 'inserted';
         this.p(`INSERT INTO memory_entries(id, namespace, worker_id, last_writer_id, type, text, text_hash, embedding,
                 embedding_model, embedding_revision, dim, tags, provenance, supersedes, created_at, updated_at, ttl_at,
-                title, body, redactions, run_id, task_id, turn, source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                title, body, redactions, run_id, task_id, turn, source, written_by, text_template)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
           .run(id, ns, wid, wid, a.type || 'fact', a.text, th, blob, a.embedding_model || null,
             a.embedding_revision || null, a.dim || null, tags, prov, a.supersedes || null, createdAt, createdAt, ttl,
-            title, body, redactions, a.run_id ?? null, a.task_id ?? null, a.turn ?? null, a.source ?? null);
+            title, body, redactions, a.run_id ?? null, a.task_id ?? null, a.turn ?? null, a.source ?? null, a.written_by ?? null, blob ? (a.text_template || 'v1') : null);
       }
       const c = this.cache.get(ns);
       if (c) {
@@ -142,15 +161,40 @@ class Store {
         if (i >= 0) c.rows[i] = row; else c.rows.push(row);
         if (a.supersedes) c.superseded.add(a.supersedes);
       }
-      const stored = this.p('SELECT status, title, run_id, task_id, turn, source, redactions, embedding IS NOT NULL AS has_vec FROM memory_entries WHERE id = ?').get(id);
+      const stored = this.p('SELECT written_by, status, title, run_id, task_id, turn, source, redactions, embedding IS NOT NULL AS has_vec FROM memory_entries WHERE id = ?').get(id);
       return {
         id, action, namespace: ns, text_hash: th, worker_id: dup ? dup.worker_id : wid,
-        last_writer_id: wid, created_at: dup ? undefined : createdAt, updated_at: t, ttl_at: ttl,
+        last_writer_id: wid, written_by: stored.written_by ?? null, created_at: dup ? undefined : createdAt, updated_at: t, ttl_at: ttl,
         status: stored.status || 'unverified', title: stored.title || deriveTitle(dup ? dup.text : a.text),
         run_id: stored.run_id, task_id: stored.task_id, turn: stored.turn, source: stored.source,
         redactions: stored.redactions ? JSON.parse(stored.redactions) : null, has_embedding: !!stored.has_vec,
       };
-    });
+    }
+  }
+
+  store(a) { return this.tx(() => this.storeIn(a)); }
+
+  // Rewrites one row's body through `fn(parsedBody)` (ADR 0047: a note's reported_wrong marks and sightings). Inside
+  // the caller's transaction; the keyword index is over title and text, so a body change leaves it alone.
+  patchBody(id, fn) {
+    const row = this.p('SELECT body FROM memory_entries WHERE id = ?').get(id);
+    if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
+    let cur = {};
+    try { cur = row.body ? JSON.parse(row.body) : {}; } catch { cur = {}; }
+    const before = this.guard ? JSON.stringify([cur.state, cur.promoted_to]) : null;
+    const next = fn(cur) || cur;
+    if (this.guard && before !== JSON.stringify([next.state, next.promoted_to])) this.guard('body', id, { fields: 'state or promoted_to' });
+    this.p('UPDATE memory_entries SET body = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(next), now(), id);
+    return next;
+  }
+
+  // Points a row at the row it replaces (ADR 0047 decision 4, supersedes). Inside the caller's transaction.
+  setSupersedes(id, target) {
+    const row = this.p('SELECT namespace FROM memory_entries WHERE id = ?').get(id);
+    if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
+    if (target && this.guard) this.guard('supersede', target, { via: 'set_supersedes', by: id });
+    this.p('UPDATE memory_entries SET supersedes = ?, updated_at = ? WHERE id = ?').run(target, now(), id);
+    this.cache.delete(row.namespace);
   }
 
   // The answer to a dedup hit that changed nothing: the row as it stands, named, so the caller has its id as proof.
@@ -158,8 +202,8 @@ class Store {
     const cur = this.p('SELECT * FROM memory_entries WHERE id = ?').get(dup.id);
     const status = cur.status || 'unverified';
     return {
-      id: cur.id, action: 'unchanged', unchanged_reason: status !== 'unverified' ? `the row is ${status}` : 'the row has another writer or source',
-      namespace: ns, text_hash: th, worker_id: cur.worker_id, last_writer_id: cur.last_writer_id, updated_at: cur.updated_at, ttl_at: cur.ttl_at,
+      id: cur.id, action: 'unchanged', unchanged_reason: cur.type === 'note' ? 'the row is a note, which memory.store never rewrites' : status !== 'unverified' ? `the row is ${status}` : 'the row has another writer or source',
+      namespace: ns, text_hash: th, worker_id: cur.worker_id, last_writer_id: cur.last_writer_id, written_by: cur.written_by ?? null, updated_at: cur.updated_at, ttl_at: cur.ttl_at,
       status, title: cur.title || deriveTitle(cur.text), run_id: cur.run_id, task_id: cur.task_id, turn: cur.turn, source: cur.source,
       redactions: cur.redactions ? JSON.parse(cur.redactions) : null, has_embedding: !!cur.embedding,
     };
@@ -167,20 +211,86 @@ class Store {
 
   // ADR 0040 §2 memory.setStatus. One row, one transaction; the FTS trigger fires on title and text only,
   // so a status change leaves the keyword index alone.
-  setStatus(id, f) {
-    return this.tx(() => {
-      const row = this.p('SELECT status FROM memory_entries WHERE id = ?').get(id);
-      if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
-      this.p('UPDATE memory_entries SET status = ?, status_receipt = ?, status_by = ?, status_at = ? WHERE id = ?')
-        .run(f.status, f.receipt, f.by, f.at, id);
-      return { id, status: f.status, previous_status: row.status || 'unverified', status_receipt: f.receipt, status_by: f.by, status_at: f.at };
-    });
+  setStatus(id, f) { return this.tx(() => this.setStatusIn(id, f)); }
+
+  // The same write inside the caller's transaction (a review's verdict sets the status in the transaction that records its receipt).
+  setStatusIn(id, f) {
+    const row = this.p('SELECT status FROM memory_entries WHERE id = ?').get(id);
+    if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
+    if (this.guard) this.guard('status', id, { status: f.status });
+    this.p('UPDATE memory_entries SET status = ?, status_receipt = ?, status_by = ?, status_at = ? WHERE id = ?')
+      .run(f.status, f.receipt, f.by, f.at, id);
+    return { id, status: f.status, previous_status: row.status || 'unverified', status_receipt: f.receipt, status_by: f.by, status_at: f.at };
+  }
+
+  // ADR 0044 decision 2: a row's namespace is the only thing that changes, and its id stays. The keyword index is over
+  // title and text and joins the namespace from this table, so it needs nothing; the vector caches are keyed by
+  // namespace, so both are dropped and reloaded on the next search. Called inside the caller's transaction.
+  moveRow(id, from, to) {
+    if (this.guard) {
+      if (String(from).startsWith('project/')) this.guard('move', id, { from, to });
+      // A row moved into the namespace of the row its own `supersedes` names hides that row again: a held target stays visible.
+      const s = this.p('SELECT supersedes FROM memory_entries WHERE id = ?').get(id);
+      const t = s && s.supersedes ? this.p('SELECT namespace FROM memory_entries WHERE id = ?').get(s.supersedes) : null;
+      if (t && t.namespace === to) this.guard('supersede', s.supersedes, { via: 'move', moved: id, to });
+    }
+    const r = this.p('UPDATE memory_entries SET namespace = ? WHERE id = ? AND namespace = ?').run(to, id, from);
+    if (!Number(r.changes)) throw err('E_NOT_FOUND', `no memory row ${id} in ${from}`, { id });
+    this.cache.delete(from);
+    this.cache.delete(to);
+  }
+
+  // Gives a row that has no vector its vector (`belay memory embed`, ADR 0047 notes written under on_embedder_failure
+  // keyword), binding the row's namespace to the model on first use like a write does. Only a row still without a vector is
+  // touched: false says another writer got there first. Inside the caller's transaction; the keyword index is unaffected.
+  setEmbedding(id, e) {
+    const row = this.p('SELECT namespace, embedding IS NULL AS bare FROM memory_entries WHERE id = ?').get(id);
+    if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
+    if (!Number(row.bare)) return false;
+    const m = this.p('SELECT embedding_model, dim FROM namespace_models WHERE namespace = ?').get(row.namespace);
+    if (!m) this.p('INSERT INTO namespace_models(namespace, embedding_model, dim) VALUES (?, ?, ?)').run(row.namespace, e.embedding_model, e.dim);
+    else if (m.embedding_model !== e.embedding_model || m.dim !== e.dim) {
+      throw err('E_MODEL', `namespace ${row.namespace} is bound to ${m.embedding_model}/${m.dim} and this vector is ${e.embedding_model}/${e.dim}`, { namespace: row.namespace, bound: m });
+    }
+    const vec = toUnitF32(e.embedding, e.dim);
+    this.p('UPDATE memory_entries SET embedding = ?, embedding_model = ?, embedding_revision = ?, dim = ?, text_template = ?, updated_at = ? WHERE id = ? AND embedding IS NULL')
+      .run(Buffer.from(vec.buffer), e.embedding_model, e.embedding_revision || null, e.dim, e.text_template || 'v1', now(), id);
+    this.cache.delete(row.namespace);
+    return true;
+  }
+
+  // A row whose text changed under a keyword-mode run: its vector was made from the old text, so it is dropped rather than kept stale, and
+  // the row records no template (belay memory embed later embeds it from its new text, as v2 where it has a when). Inside the caller's transaction.
+  clearEmbedding(id) {
+    const row = this.p('SELECT namespace FROM memory_entries WHERE id = ?').get(id);
+    if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
+    this.p('UPDATE memory_entries SET embedding = NULL, embedding_model = NULL, embedding_revision = NULL, dim = NULL, text_template = NULL WHERE id = ?').run(id);
+    this.cache.delete(row.namespace);
+  }
+
+  // `belay memory embed --reembed`: a row that has a vector gets a new one, made from another template of its text. The
+  // namespace's model binding is checked as setEmbedding does, so a vector of another model or dimension is refused. updated_at is left alone (a re-embed is not an edit). Inside
+  // the caller's transaction. Returns { template } (the template the row had), or false when the row has no vector.
+  replaceEmbedding(id, e) {
+    const row = this.p('SELECT namespace, embedding IS NOT NULL AS has, text_template FROM memory_entries WHERE id = ?').get(id);
+    if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
+    if (!Number(row.has)) return false;
+    const m = this.p('SELECT embedding_model, dim FROM namespace_models WHERE namespace = ?').get(row.namespace);
+    if (!m || m.embedding_model !== e.embedding_model || m.dim !== e.dim) {
+      throw err('E_MODEL', `namespace ${row.namespace} is bound to ${m ? `${m.embedding_model}/${m.dim}` : 'no model'} and this vector is ${e.embedding_model}/${e.dim}`, { namespace: row.namespace, bound: m || null });
+    }
+    const vec = toUnitF32(e.embedding, e.dim);
+    this.p('UPDATE memory_entries SET embedding = ?, embedding_revision = ?, text_template = ? WHERE id = ?')
+      .run(Buffer.from(vec.buffer), e.embedding_revision || null, e.text_template, id);
+    this.cache.delete(row.namespace);
+    return { template: row.text_template || 'v1' };
   }
 
   delete(id) {
     return this.tx(() => {
       const row = this.p('SELECT * FROM memory_entries WHERE id = ?').get(id);
       if (!row) return { id, deleted: false };
+      if (this.guard) this.guard('delete', id, {});
       this.p('DELETE FROM memory_entries WHERE id = ?').run(id);
       const c = this.cache.get(row.namespace);
       if (c) c.rows = c.rows.filter(r => r.id !== id);
@@ -191,8 +301,10 @@ class Store {
   sweep() {
     const t = now();
     return this.tx(() => {
-      const nss = this.p('SELECT DISTINCT namespace FROM memory_entries WHERE ttl_at IS NOT NULL AND ttl_at < ?').all(t).map(r => r.namespace);
-      const r = this.p('DELETE FROM memory_entries WHERE ttl_at IS NOT NULL AND ttl_at < ?').run(t);
+      // A held note is never swept (no note carries a ttl_at today; if one ever does, its deadline waits while it is held).
+      const live = "ttl_at IS NOT NULL AND ttl_at < ? AND NOT (type = 'note' AND json_extract(body, '$.held') IS NOT NULL)";
+      const nss = this.p(`SELECT DISTINCT namespace FROM memory_entries WHERE ${live}`).all(t).map(r => r.namespace);
+      const r = this.p(`DELETE FROM memory_entries WHERE ${live}`).run(t);
       for (const n of nss) this.cache.delete(n);
       return { expired_deleted: Number(r.changes), namespaces: nss };
     });
@@ -207,7 +319,7 @@ class Store {
   }
 
   list(a) {
-    return this.p(`SELECT id, namespace, worker_id, last_writer_id, type, substr(text, 1, 200) AS text, tags,
+    return this.p(`SELECT id, namespace, worker_id, last_writer_id, written_by, type, substr(text, 1, 200) AS text, tags,
                    provenance, supersedes, created_at, updated_at, ttl_at FROM memory_entries
                    WHERE namespace = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`)
       .all(a.namespace, Math.min(a.limit || 50, 500), a.offset || 0)

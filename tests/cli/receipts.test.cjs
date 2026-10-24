@@ -9,6 +9,7 @@ const fs = require('node:fs');
 const { spawn, spawnSync } = require('node:child_process');
 
 const { openCore } = require('../../src/core/index.cjs');
+const rows = require('../../src/core/rows.cjs');
 const { ROOT, CLI, sandbox, cleanup, listRecursive } = require('./stop-helpers.cjs');
 
 const PASS = { commands: [{ argv: [process.execPath, '-e', 'process.exit(0)'], timeout_ms: 20000 }] };
@@ -36,6 +37,10 @@ async function withOwner(dataDir, runId, role, fn, extra = {}) {
   const core = await openCore({ dataDir, caller: { role, run_id: runId, pid: process.pid, ...extra } });
   try { return await fn(core); } finally { await core.shutdownOwner(); await core.close(); }
 }
+
+// worker.write refuses an id outside the id grammar, but a store made before it can still hold one (a newline, 80 characters). The renderer is tested against such rows,
+// so the first row of each is planted through the store layer, as a legacy store would hold it; later writes to it restate the existing row and go through the core.
+function legacyWorker(core, values) { rows.append(core.owner.store, 'worker', values, 'test'); }
 
 // Run `runId`: an orchestrator that attached; w1 with a task it handed back `holds` and whose
 // acceptance check passed; w2 with a task whose acceptance check failed. `ended` closes the run with usage.
@@ -80,7 +85,7 @@ async function plant(dataDir, runId, { ended = true, bare = false, liveWorker = 
       await orch.worker.write({ id: 'w1', model: `sonnet\n${'worker FORGED  x'}\ntotals over 9 agents` });
       // A worker whose own id carries newlines hands a result back: the `by` and the id are both store text.
       const eid = 'w3\nworker FORGED  z';
-      await orch.worker.write({ id: eid, substrate: 'claude-code', pid: process.pid, state: 'running', started_at: t0 });
+      legacyWorker(orch, { id: eid, run_id: runId, substrate: 'claude-code', pid: process.pid, state: 'running', started_at: t0 });
       const t3 = await orch.task.create({ spec: 'evil by' });
       const a3 = await orch.task.assign({ task_id: t3.id, worker_id: eid });
       const c3 = await openCore({ dataDir, caller: { role: 'worker', worker_id: eid, run_id: runId, pid: process.pid } });
@@ -90,7 +95,7 @@ async function plant(dataDir, runId, { ended = true, bare = false, liveWorker = 
     if (wide) {
       await orch.worker.write({ id: 'w1', model: 'M'.repeat(80) });
       const lid = 'L'.repeat(80);
-      await orch.worker.write({ id: lid, substrate: 'claude-code', pid: process.pid, state: 'running', started_at: t0 });
+      legacyWorker(orch, { id: lid, run_id: runId, substrate: 'claude-code', pid: process.pid, state: 'running', started_at: t0 });
       const t4 = await orch.task.create({ spec: 'wide by' });
       const a4 = await orch.task.assign({ task_id: t4.id, worker_id: lid });
       const c4 = await openCore({ dataDir, caller: { role: 'worker', worker_id: lid, run_id: runId, pid: process.pid } });
@@ -250,7 +255,7 @@ test('receipts: reading creates no file and changes no byte in the data dir', gu
   // SF1: the same check while an owner is alive for the data dir. The owner's own checkpoint changes
   // memory.db bytes, so the comparison is the sorted file NAMES (as observe.test.cjs's checked()), and
   // the CLI is spawned asynchronously so this process's owner can answer it.
-  const orch = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: 'run-f', pid: process.pid } });
+  const orch = await openCore({ dataDir, caller: { role: 'operator', run_id: 'run-f', pid: process.pid } }); // the run process: only it reopens an ended run
   try {
     await orch.run.attach({ adapter_pid: process.pid });
     const names = () => listRecursive(dataDir);

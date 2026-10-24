@@ -8,6 +8,8 @@
 // was one `node --test` chain; this script adds only the two phase lines after both have run.
 // H1: each phase has a wall-clock bound (`--test-timeout` is per test and never fires for a hung
 // setup). On expiry the phase's child, held by a live handle, is stopped by exact pid with its tree.
+// BELAY_TEST_CONCURRENCY=N (a positive integer) is passed to both phases as `--test-concurrency=N`, capping how many test
+// files run at once; absent or invalid, no flag is passed (an invalid value is logged as ignored).
 // `npm run test:budgets` is unchanged and still runs the budgets glob alone.
 
 const fs = require('node:fs');
@@ -17,7 +19,7 @@ const { spawn } = require('node:child_process');
 const { killTree } = require('../src/core/process.cjs');
 
 const PHASE1_GLOBS = [
-  'tests/core/**/*.test.cjs', 'tests/run/**/*.test.cjs', 'tests/mcp/**/*.test.cjs', 'tests/cli/**/*.test.cjs',
+  'tests/core/**/*.test.cjs', 'tests/run/**/*.test.cjs', 'tests/mcp/**/*.test.cjs', 'tests/cli/**/*.test.cjs', 'tests/mod/**/*.test.cjs',
 ];
 const PHASE2_GLOB = 'tests/budgets/**/*.test.cjs';
 const PHASE1_TIMEOUT_MS = 1200000;
@@ -28,6 +30,15 @@ function bound(envName, dflt) {
   return Number.isFinite(n) && n > 0 ? n : dflt;
 }
 
+// A positive integer from the environment, or null. A set but invalid value is logged and ignored.
+function concurrencyFromEnv(env = process.env, log = console.log) {
+  const raw = env.BELAY_TEST_CONCURRENCY;
+  if (raw === undefined || raw === '') return null;
+  if (/^[1-9][0-9]*$/.test(String(raw).trim())) return Number(String(raw).trim());
+  log(`BELAY_TEST_CONCURRENCY=${JSON.stringify(raw)} ignored: not a positive integer`);
+  return null;
+}
+
 const CLOSE_WAIT_MS = 15000;
 // Loaded into every test-file process: removes the directories its test made with mkdtemp on exit.
 const TMP_HELPER = path.join(__dirname, '..', 'tests', 'helpers', 'tmp.cjs').split(path.sep).join('/');
@@ -36,9 +47,22 @@ const TMP_HELPER = path.join(__dirname, '..', 'tests', 'helpers', 'tmp.cjs').spl
 // test (tests/run/integration.test.cjs) makes it write and which is not belay's. `belay-snapshot` is the process
 // snapshot's own TEMP (src/core/proc-identity.cjs): only PowerShell probe files belong in it, and the next snapshot
 // sweeps those once stale, so they are counted on their own line; anything else in it is a leak.
-const KEPT = new Set(['belay-run', 'belay-ro', 'claude', 'belay-snapshot']);
+const KEPT = new Set(['belay-run', 'belay-ro', 'claude', 'belay-snapshot', 'belay-spawned']); // belay-spawned: the spawn register's DEFAULT directory (src/core/spawn-register.cjs); no test may write to it (tests/helpers/tmp.cjs gives every test process its own), so anything in it is a leak, reported below
 const PROBE_FILE = /^__PSScriptPolicyTest_/;
 const snapshotResidue = (scratch) => { try { return fs.readdirSync(path.join(scratch, 'belay-snapshot')).filter((c) => PROBE_FILE.test(c)).length; } catch { return 0; } };
+
+// Every file in the default spawn register's directory (and its exited/ tombstones), as relative names. A test that reaches the
+// machine-wide register shows up here: the register is the one place where one test's processes can be taken for another's.
+function registerEntries(dir) {
+  const out = [];
+  const walk = (d, prefix) => {
+    let names = [];
+    try { names = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of names) { if (e.isDirectory()) walk(path.join(d, e.name), prefix + e.name + '/'); else out.push(prefix + e.name); }
+  };
+  walk(dir, '');
+  return out;
+}
 
 // The tmp guard. The suite runs with TEMP/TMP/TMPDIR pointed at a scratch directory of its own, so every
 // entry found in it afterwards was left by this suite and nothing else (a snapshot diff of the shared temp
@@ -55,19 +79,20 @@ function leaked(scratch) {
       continue;
     }
     if (n === 'belay-ro') { try { for (const c of fs.readdirSync(path.join(scratch, n))) out.push(n + '/' + c); } catch { /* gone */ } }
+    if (n === 'belay-spawned') { for (const c of registerEntries(path.join(scratch, n))) out.push(n + '/' + c); }
     if (n === 'belay-snapshot') { try { for (const c of fs.readdirSync(path.join(scratch, n))) if (!PROBE_FILE.test(c)) out.push(n + '/' + c); } catch { /* gone */ } }
   }
   return out;
 }
 
 // Resolves { status, timed_out, ms, killed[, stop_failed] }. Never rejects. `killTreeImpl` is a test seam.
-function runPhase(globs, { timeoutMs, label = 'phase', killTreeImpl = killTree, env } = {}) {
+function runPhase(globs, { timeoutMs, label = 'phase', killTreeImpl = killTree, env, concurrency = null, spawnImpl = spawn } = {}) {
   return new Promise((resolve) => {
     const t0 = Date.now();
     let settled = false;
     let timer = null;
     let timedOut = false;
-    const child = spawn(process.execPath, ['--test', '--test-timeout=60000', '--require', TMP_HELPER, ...globs], { stdio: 'inherit', windowsHide: true, ...(env ? { env } : {}) });
+    const child = spawnImpl(process.execPath, ['--test', '--test-timeout=60000', ...(concurrency ? [`--test-concurrency=${concurrency}`] : []), '--require', TMP_HELPER, ...globs], { stdio: 'inherit', windowsHide: true, ...(env ? { env } : {}) });
     const closed = new Promise((r) => child.once('close', () => r(true)));
     const finish = (r) => { if (settled) return; settled = true; if (timer) clearTimeout(timer); resolve(r); };
     child.once('error', () => finish({ status: 1, timed_out: false, ms: Date.now() - t0, killed: null }));
@@ -99,7 +124,7 @@ function runPhase(globs, { timeoutMs, label = 'phase', killTreeImpl = killTree, 
 
 // Both phases in order. Phase 2 starts only after phase 1 has exited, and never when phase 1's tree could
 // not be stopped. Returns { p1, p2 (null when skipped), code }.
-async function runPhases({ globs1 = PHASE1_GLOBS, glob2 = PHASE2_GLOB, timeout1 = bound('BELAY_TEST_PHASE1_TIMEOUT_MS', PHASE1_TIMEOUT_MS), timeout2 = bound('BELAY_TEST_PHASE2_TIMEOUT_MS', PHASE2_TIMEOUT_MS), killTreeImpl, guard = true } = {}) {
+async function runPhases({ globs1 = PHASE1_GLOBS, glob2 = PHASE2_GLOB, timeout1 = bound('BELAY_TEST_PHASE1_TIMEOUT_MS', PHASE1_TIMEOUT_MS), timeout2 = bound('BELAY_TEST_PHASE2_TIMEOUT_MS', PHASE2_TIMEOUT_MS), killTreeImpl, guard = true, concurrency = concurrencyFromEnv(), spawnImpl } = {}) {
   // Review 3, finding F: phase 1 runs with an EMPTY model cache unless the caller has named one, because
   // the run path stores every turn's text and would otherwise load the 243 MB model in every owner. The
   // files that need the model opt back in (tests/core/helpers.cjs optInModel) by seeing the marker.
@@ -109,7 +134,7 @@ async function runPhases({ globs1 = PHASE1_GLOBS, glob2 = PHASE2_GLOB, timeout1 
   const emptyCache = named ? null : fs.mkdtempSync(path.join(os.tmpdir(), 'belay-phase1-no-models-')).split('\\').join('/');
   const env1 = named ? (scratch ? { ...process.env, ...tmpEnv } : undefined) : { ...process.env, ...tmpEnv, BELAY_MODEL_CACHE: emptyCache, BELAY_PHASE_EMPTY_CACHE: '1' };
   let p1;
-  try { p1 = await runPhase(globs1, { timeoutMs: timeout1, label: 'phase 1', killTreeImpl, env: env1 }); }
+  try { p1 = await runPhase(globs1, { timeoutMs: timeout1, label: 'phase 1', killTreeImpl, env: env1, concurrency, spawnImpl }); }
   finally { if (emptyCache) { try { fs.rmSync(emptyCache, { recursive: true, force: true }); } catch { /* best effort */ } } }
   const leak1 = scratch ? leaked(scratch) : [];
   let p2 = null;
@@ -117,7 +142,7 @@ async function runPhases({ globs1 = PHASE1_GLOBS, glob2 = PHASE2_GLOB, timeout1 
     console.log(`phase 1: exit ${p1.status} (stop failed)`);
     console.log('phase 2: not started (phase 1 could not be stopped)');
   } else {
-    p2 = await runPhase([glob2], { timeoutMs: timeout2, label: 'phase 2', killTreeImpl, env: scratch ? { ...process.env, ...tmpEnv } : undefined });
+    p2 = await runPhase([glob2], { timeoutMs: timeout2, label: 'phase 2', killTreeImpl, concurrency, spawnImpl, env: scratch ? { ...process.env, ...tmpEnv } : undefined });
     console.log(`phase 1: exit ${p1.status}`);
     console.log(`phase 2: exit ${p2.status}`);
   }
@@ -138,6 +163,6 @@ async function runPhases({ globs1 = PHASE1_GLOBS, glob2 = PHASE2_GLOB, timeout1 
 
 async function main() { process.exit((await runPhases()).code); }
 
-module.exports = { runPhase, runPhases, leaked, snapshotResidue, PHASE1_GLOBS, PHASE2_GLOB };
+module.exports = { concurrencyFromEnv, runPhase, runPhases, leaked, snapshotResidue, PHASE1_GLOBS, PHASE2_GLOB };
 
 if (require.main === module) main();

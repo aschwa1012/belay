@@ -13,6 +13,7 @@ const crypto = require('node:crypto');
 // belay needs Claude Code 2.1.280 or later (ready.cjs MIN_CLAUDE_CODE_VERSION). The executable itself, not
 // the npm `claude.cmd` shim, since Node spawns no .cmd without a shell.
 const ED = require('./exe-discovery.cjs');
+const { isPathId, pathIdMessage } = require('../core/path-id.cjs'); // pure
 
 const MCP_SERVER_NAME = 'belay';
 // A test default only: production workers are Sonnet or Opus by role (ADR 0021 amendment 1).
@@ -23,7 +24,7 @@ const DEFAULT_ALLOWED_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash', 
 // the ready event's `permission_mode` says which one it got (decision 3).
 const DEFAULT_PERMISSION_MODE = 'auto';
 // ADR 0028 decision 1: the levels `--effort` takes; a worker's level is a spawn argument.
-const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
+const { EFFORT_LEVELS, ORCHESTRATOR_MODEL } = require('./agent-defaults.cjs');
 const DEFAULT_CODEX_SANDBOX = 'workspace-write';
 const WORKER_NAME_PREFIX = 'belay-';
 
@@ -58,6 +59,7 @@ function userSettingsPath() {
   return fwd(path.join(os.homedir(), '.claude', 'settings.json'));
 }
 function workerDir(dataDir, workerId) {
+  if (!isPathId(workerId)) throw Object.assign(new Error(pathIdMessage('worker_id', workerId)), { code: 'E_ARGS', detail: { field: 'worker_id' } }); // the last guard: no caller joins an id into the data dir unchecked
   return fwd(path.join(dataDir, 'workers', workerId));
 }
 function workerName(workerId) {
@@ -75,7 +77,7 @@ function workerName(workerId) {
 // tools/list check reads the same file. The argv hash is over the substrate's own argv, which names
 // mcp.json by path and not by content, so adding `--log` here does not change it; a worker launched by
 // an older belay keeps the mcp.json its process already read, and a restart rewrites the file.
-function workerAdapterArgs({ workerId, runId, dataDir, mcpPath, logPath = null, permit = false, permitWaitMs = null }) {
+function workerAdapterArgs({ workerId, runId, dataDir, mcpPath, logPath = null, permit = false, permitWaitMs = null, notes = false }) {
   const argv = [
     mcpPath || mcpServerPath(),
     '--role',
@@ -93,17 +95,18 @@ function workerAdapterArgs({ workerId, runId, dataDir, mcpPath, logPath = null, 
     argv.push('--permit');
     if (typeof permitWaitMs === 'number') argv.push('--permit-wait-ms', String(permitWaitMs));
   }
+  if (notes) argv.push('--notes'); // ADR 0047: the run has the notes lever on; the adapter lists the notes fields
   if (logPath) argv.push('--log', fwd(logPath));
   return argv;
 }
 
-function mcpConfig({ workerId, runId, dataDir, mcpPath, logPath = null, permit = false, permitWaitMs = null }) {
+function mcpConfig({ workerId, runId, dataDir, mcpPath, logPath = null, permit = false, permitWaitMs = null, notes = false, bind = null }) {
   return {
     mcpServers: {
       [MCP_SERVER_NAME]: {
         type: 'stdio',
         command: fwd(process.execPath),
-        args: workerAdapterArgs({ workerId, runId, dataDir, mcpPath, logPath, permit, permitWaitMs }),
+        args: [...workerAdapterArgs({ workerId, runId, dataDir, mcpPath, logPath, permit, permitWaitMs, notes }), ...(bind ? ['--bind', bind] : [])], // ADR 0045: the one-shot pipe the adapter claims its identity from; a public name, never a secret
       },
     },
   };
@@ -139,24 +142,25 @@ function readEnabledPluginNames(settingsPath) {
 }
 
 // ADR 0024: a caller that passes `cwd` gets the hygiene block merged in; one that does not is unchanged.
-function workerSettings(pluginNames, { cwd } = {}) {
+function workerSettings(pluginNames, { cwd, nativeMemory = null } = {}) {
   const enabledPlugins = {};
   for (const n of pluginNames || []) enabledPlugins[n] = false;
   if (!cwd) return { enabledPlugins };
-  return { enabledPlugins, ...S.hygieneSettings(cwd) };
+  return { enabledPlugins, ...S.hygieneSettings(cwd, { nativeMemory }) };
 }
 
-function writeWorkerFiles({ dir, workerId, runId, dataDir, mcpPath, settingsPath, logPath = null, permit = false, permitWaitMs = null, cwd = null, compactAt = null }) {
+function writeWorkerFiles({ dir, workerId, runId, dataDir, mcpPath, settingsPath, logPath = null, permit = false, permitWaitMs = null, cwd = null, compactAt = null, notes = false, nativeMemory = null, bind = null }) {
+  if (nativeMemory != null) nativeMemory = require('./native-memory.cjs').prepareFolder(nativeMemory); // ADR 0024 amendment 3: eval-only; resolved, checked on disk before and after it is created
   fs.mkdirSync(dir, { recursive: true });
   const mcpJsonPath = fwd(path.join(dir, 'mcp.json'));
   const workerSettingsPath = fwd(path.join(dir, 'settings.json'));
   fs.writeFileSync(
     mcpJsonPath,
-    JSON.stringify(mcpConfig({ workerId, runId, dataDir, mcpPath, logPath, permit, permitWaitMs }), null, 2) + '\n'
+    JSON.stringify(mcpConfig({ workerId, runId, dataDir, mcpPath, logPath, permit, permitWaitMs, notes, bind }), null, 2) + '\n'
   );
   const plugins = readPluginConfig(settingsPath);
   const hooks = CP.hooksBlock({ dir, compactAt }); // null, and no `hooks` key at all, unless the lever is on
-  fs.writeFileSync(workerSettingsPath, JSON.stringify({ ...workerSettings(plugins.names, { cwd }), ...(hooks ? { hooks } : {}) }, null, 2) + '\n');
+  fs.writeFileSync(workerSettingsPath, JSON.stringify({ ...workerSettings(plugins.names, { cwd, nativeMemory }), ...(hooks ? { hooks } : {}) }, null, 2) + '\n');
   return { mcpJsonPath, settingsPath: workerSettingsPath, plugins };
 }
 
@@ -181,6 +185,7 @@ function claudeLaunchArgv(opts) {
     permissionPromptTool = false,
     effort = null,
     tools = null,
+    maxBudgetUsd = null,
   } = opts;
   const argv = [
     '-p',
@@ -207,6 +212,7 @@ function claudeLaunchArgv(opts) {
     permissionMode,
   ];
   if (effort) argv.push('--effort', effort); // ADR 0028: on every launch, a resume included
+  if (maxBudgetUsd) argv.push('--max-budget-usd', String(maxBudgetUsd)); // the review job's cost cap (a spawn argument)
   // build step 6d, ADR 0020 decision 1: the worker adapter's own prompt tool, named after the MCP
   // server (`belay`) as the adapter itself is configured under, and before the resume/system-prompt
   // flags, opt-in per spawn.
@@ -289,9 +295,9 @@ function codexResumeArgv(opts) {
 // it. So the caller supplies a directory outside the data dir and this refuses one inside, rather
 // than inventing an `orchestrator/` entry the contract does not have.
 // ADR 0021 amendment 4: the orchestrator is Opus 5.5. Sonnet 5 is retired.
-const DEFAULT_ORCHESTRATOR_MODEL = 'claude-opus-5-5';
+const DEFAULT_ORCHESTRATOR_MODEL = ORCHESTRATOR_MODEL;
 
-function orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath = null, compactAt = null, worktree = null }) {
+function orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath = null, compactAt = null, worktree = null, agentDefaultsPath = null }) {
   const argv = [
     mcpPath || mcpServerPath(),
     '--role',
@@ -304,16 +310,17 @@ function orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath = null, comp
   if (logPath) argv.push('--log', fwd(logPath));
   if (compactAt != null) argv.push('--compact-at', String(compactAt)); // ADR 0007 decision 3: the workers' lever
   if (worktree) argv.push('--worktree', fwd(path.resolve(worktree))); // ADR 0043 decision 1: the knowledge agent's cwd
+  if (agentDefaultsPath) argv.push('--agent-defaults', fwd(agentDefaultsPath)); // the config's per-agent-type defaults; absent when none are set
   return argv;
 }
 
-function orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath = null, compactAt = null, worktree = null }) {
+function orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath = null, compactAt = null, worktree = null, agentDefaultsPath = null, bind = null }) {
   return {
     mcpServers: {
       [MCP_SERVER_NAME]: {
         type: 'stdio',
         command: fwd(process.execPath),
-        args: orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath, compactAt, worktree }),
+        args: [...orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath, compactAt, worktree, agentDefaultsPath }), ...(bind ? ['--bind', bind] : [])], // ADR 0045
       },
     },
   };
@@ -332,14 +339,15 @@ function assertOutsideDataDir(dir, dataDir) {
 
 // `knowledgeAgent`: the run's memory block turns the knowledge agent on, so the adapter is told the worktree (its
 // cwd). With the lever off the adapter's argv is the base one, byte for byte.
-function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, logPath = null, cwd = null, compactAt = null, knowledgeAgent = false }) {
+function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, logPath = null, cwd = null, compactAt = null, knowledgeAgent = false, agentDefaults = null, bind = null }) {
   const outDir = assertOutsideDataDir(dir, dataDir);
   fs.mkdirSync(outDir, { recursive: true });
+  const agentDefaultsPath = require('./agent-defaults.cjs').writeFile(outDir, agentDefaults); // null unless the config sets a worker type's default
   const mcpJsonPath = fwd(path.join(outDir, 'mcp.json'));
   const orchSettingsPath = fwd(path.join(outDir, 'settings.json'));
   fs.writeFileSync(
     mcpJsonPath,
-    JSON.stringify(orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath, compactAt, worktree: knowledgeAgent ? cwd : null }), null, 2) + '\n'
+    JSON.stringify(orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath, compactAt, worktree: knowledgeAgent ? cwd : null, agentDefaultsPath, bind }), null, 2) + '\n'
   );
   // Same hygiene as a worker (ADR 0007 §6): the operator's plugins and their hooks are disabled, so
   // the orchestrator's own context is not shaped by whatever is installed on the host. For the

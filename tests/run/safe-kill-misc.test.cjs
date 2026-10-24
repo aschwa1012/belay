@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // safe-kill-misc.test.cjs — ADR 0039 review round: the creation time is discarded when the child exited before
 // the read, the fast-close kill is refused (and recorded) when the budget cannot pay for a fresh snapshot, and
 // the own-process probe never delays an attach.
@@ -46,20 +47,30 @@ test('run close, fast: with less budget than a snapshot takes the kill is refuse
   } finally { s.kill(); }
 });
 
-test('ownCreatedProbe: never waits for the snapshot, and has the answer once it is done', async (t) => {
+// ADR 0048 decision 8 (c). "Never waits" and "has the answer" are separate claims. The first is proved with a snapshot
+// that never resolves, so no real snapshot's speed can decide it; the second waits on the probe's own read settling.
+test('ownCreatedProbe: never waits for the snapshot (one that never resolves)', async () => {
+  let asked = 0;
+  const probe = ID.ownCreatedProbe(process.pid, { snapshot: () => { asked++; return new Promise(() => {}); } });
+  assert.strictEqual(await probe(), null, 'the probe must not block on the snapshot');
+  assert.strictEqual(await probe(), null);
+  assert.strictEqual(asked, 1, 'at most one read is in flight, however often the probe is asked');
+});
+
+test('ownCreatedProbe: a failed read is requested again on the next ask, never awaited, and the answer lands', async () => {
+  let asked = 0;
+  const probe = ID.ownCreatedProbe(process.pid, { snapshot: async () => { asked++; return asked === 1 ? null : new Map([[process.pid, { ppid: 0, created: 1234, image: 'node.exe' }]]); } });
+  await probe.whenSettled();                         // the first read settled, and failed
+  assert.strictEqual(await probe(), null, 'the failed read gives no answer, and this ask starts the re-read');
+  await probe.whenSettled();                         // the lazy re-read settled
+  assert.strictEqual(await probe(), 1234);
+  assert.strictEqual(asked, 2);
+});
+
+test('ownCreatedProbe: with the real snapshot the answer arrives once the read settles', async (t) => {
   if (process.platform !== 'win32') return t.skip('the CIM snapshot is Windows only');
   const probe = ID.ownCreatedProbe(process.pid);
-  // A probe that waited for the snapshot would come back with the answer; null right away proves it did not wait.
-  // No wall-clock bound: on a starved machine even a non-blocking await can take longer than any fixed figure.
-  const early = await probe();
-  assert.strictEqual(early, null, 'the probe must not block on the snapshot');
-  // Wait for the snapshot to finish, not for a fixed time: poll the probe, which turns non-null the moment the
-  // read is done. The bound is reached only on a hang (the snapshot itself times out well inside it).
-  const deadline = Date.now() + 90000;
   let later = null;
-  while (later === null && Date.now() < deadline) {
-    later = await probe();
-    if (later === null) await sleep(50);
-  }
-  assert.ok(Number.isFinite(later) && later < Date.now(), `the answer never arrived: ${String(later)}`);
+  for (let i = 0; i < 3 && later === null; i++) { await probe.whenSettled(); later = await probe(); }
+  assert.ok(Number.isFinite(later) && later < Date.now(), `precondition: the real snapshot could not read this process's creation time in 3 reads (got ${String(later)})`);
 });

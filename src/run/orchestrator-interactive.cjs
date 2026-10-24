@@ -30,7 +30,6 @@ const CONSOLE_SIGNALS = ['SIGINT', 'SIGBREAK', 'SIGHUP'];
 const GATE_COLLECT_MS = 2500; // how long this loop waits for the gate's halves once it has told the gate to stop
 const STOP_KILL_WAIT_MS = 5000; // the exit event after the stop's kill; a lost event must not hold the stop
 const STOP_SUFFIX = /; stdin closed$/;
-const SNAPSHOT_FRESH_MS = 250; // ADR 0039: a SIGHUP-time snapshot is reused only while it is this young; an older one proves nothing about now
 const FAST_CLOSE_BUDGET_MS = 3500; // decision 6: from a recorded SIGHUP the whole remaining close fits in this
 const TIMED_OUT = Symbol('fast close deadline');
 const PLUGIN_CHECK_MS = 5000; // how often the live copy is re-hashed while claude runs (amendment 5 decision 4)
@@ -44,11 +43,14 @@ function makeConsole() {
   const events = [];
   let hupSeen = false;
   let hupAt = null;
-  let hupSnapshot = null; let hupSnapshotAt = 0; let snapDone = true; let snapStartedAt = 0;
+  let hupSnapshot = null; let hupResult = null; // ADR 0048 decision 4: the SIGHUP's request to the gate, and its result once it lands
   // ADR 0039 follow-up: the run's worker close, registered by cmd-run. A fast close starts it inside the loop, before
   // the gate collect, so the kills get the budget; the CLI awaits the same promise after the loop. Started once.
   let earlyClose = null; let earlyReserve = COLLECT_RESERVE_MS; let early = null;
-  const startSnap = () => { snapDone = false; hupSnapshotAt = 0; snapStartedAt = Date.now(); hupSnapshot = P.processSnapshot().then((m) => { hupSnapshotAt = Date.now(); snapDone = true; return m; }); };
+  // A gate result, or a bare Map or null from a test's stand-in (trusted: startSeq Infinity).
+  const norm = (r) => (r && typeof r === 'object' && !(r instanceof Map) && 'snap' in r ? r : { snap: r || null, startSeq: Infinity, error: r ? null : 'unreadable' });
+  const usable = (r) => r.startSeq === Infinity || P.gate.fresh(r.startSeq);
+  const startSnap = () => { hupResult = null; const mine = Promise.resolve(P.snapshotShared({ kind: 'fast-close' })).then(norm); hupSnapshot = mine; mine.then((r) => { if (hupSnapshot === mine) hupResult = r; }); };
   let resolveHup = () => {};
   const whenHup = new Promise((r) => { resolveHup = r; });
   const t0 = Date.now();
@@ -78,10 +80,9 @@ function makeConsole() {
   }
   const setEarlyClose = (fn, reserve = COLLECT_RESERVE_MS) => { earlyClose = fn; earlyReserve = reserve; };
   const startEarlyClose = () => { if (!early && earlyClose) early = Promise.resolve().then(earlyClose); return early; };
-  return { events, install, dispose, setEarlyClose, startEarlyClose, earlyStarted: () => !!early, earlyReserve: () => earlyReserve, hupSeen: () => hupSeen, hupAt: () => hupAt, whenHup, leftMs, bound, snapshot: (since = 0) => { if (!hupSnapshot || snapStartedAt < since || (snapDone && Date.now() - hupSnapshotAt >= SNAPSHOT_FRESH_MS)) startSnap(); return hupSnapshot; },
-    // In flight, or taken within 250 ms: usable for the kills, unless it started before `since` (the last signal this
-    // process sent: it may show a process that has died since). refreshSnapshot starts a new one once the old is stale.
-    snapshotPending: (since = 0) => snapStartedAt >= since && (!snapDone || (!!hupSnapshot && Date.now() - hupSnapshotAt < SNAPSHOT_FRESH_MS)), refreshSnapshot: () => { if (hupSnapshot && snapDone && Date.now() - hupSnapshotAt >= SNAPSHOT_FRESH_MS) startSnap(); } };
+  return { events, install, dispose, setEarlyClose, startEarlyClose, earlyStarted: () => !!early, earlyReserve: () => earlyReserve, hupSeen: () => hupSeen, hupAt: () => hupAt, whenHup, leftMs, bound, snapshot: () => { if (!hupSnapshot || (hupResult && !usable(hupResult))) startSnap(); return hupSnapshot; },
+    // In flight, or landed and still usable (it started after this process's last signal): the kills can use it.
+    snapshotPending: () => !!hupSnapshot && (!hupResult || usable(hupResult)), refreshSnapshot: () => { if (hupSnapshot && hupResult && !usable(hupResult)) startSnap(); } };
 }
 
 // The one system prompt file (decision 3): the spawn-time CLAUDE.md copy, then the run's prompt.
@@ -95,15 +96,23 @@ function writeSystemPrompt(dir, instructions, promptText) {
 }
 
 // ADR 0037 wave 2: the launch marker src/cli/agents-derive.cjs `modeOf` reads. Written right after the launcher's own
-// run.attach (so `epoch` is the row's at that attach), interactive runs only. A failed write is recorded, never thrown.
-function writeRunStart(dir, runId, attachRow, startedAt) {
+// run.attach (so `epoch` is the row's at that attach), interactive runs only. `session_id` and `session_file` (the
+// expected transcript path, null when unknown) let `belay agents` read the orchestrator's usage while the run is live. A failed write is recorded, never thrown.
+function writeRunStart(dir, runId, attachRow, startedAt, session = {}) {
   const file = fwd(path.join(dir, 'run-start.json'));
   try {
     const epoch = attachRow && Number.isInteger(attachRow.epoch) ? attachRow.epoch : null;
     if (epoch === null) throw new Error('the attach returned no epoch');
-    fs.writeFileSync(file, `${JSON.stringify({ run_id: runId, epoch, mode: 'interactive', started_at: startedAt, launcher_pid: process.pid })}\n`);
+    fs.writeFileSync(file, `${JSON.stringify({ run_id: runId, epoch, mode: 'interactive', started_at: startedAt, launcher_pid: process.pid, session_id: session.id || null, session_file: session.file || null })}\n`);
     return { path: file, written: true, error: null };
   } catch (e) { return { path: file, written: false, error: (e && e.message) || String(e) }; }
+}
+
+// Every launch (headless and interactive) removes the marker before its own attach, so a marker from an earlier life of this run
+// id in the same orchestrator directory can never answer for this one; an interactive launch rewrites it after the attach. Exact
+// path; a missing file is fine, any other error is thrown (the caller fails the launch).
+function clearRunStart(dir) {
+  try { fs.unlinkSync(fwd(path.join(dir, 'run-start.json'))); } catch (e) { if (!e || e.code !== 'ENOENT') throw new Error(`run-start.json in ${dir} could not be removed before the attach: ${(e && e.message) || e}`); }
 }
 
 const pick = (o, ...keys) => { for (const k of keys) if (o && o[k] !== undefined) return o[k]; return null; };
@@ -156,9 +165,11 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
   const killPid = deps.killPid || P.killPid;
   const pidAlive = deps.pidAlive || P.pidAlive;
 
+  const bind = await require('./bind-launch.cjs').bindOrchestrator(core, runId, { interactive: true }); // ADR 0045 decision 2; no expiry, the trust dialog comes first
   const written = L.writeOrchestratorFiles({
     dir: orchestratorDir, runId, dataDir, mcpPath: L.mcpServerPath(), settingsPath: L.userSettingsPath(), cwd: worktree, compactAt: compactAtTokens,
     knowledgeAgent: !!spec.knowledgeAgent, // ADR 0043 decision 1: --worktree only with the knowledge agent on
+    agentDefaults: spec.agentDefaults || null, bind,
   });
   fs.writeFileSync(path.join(written.dir, 'prompt.txt'), promptText);
   const instructions = I.snapshotInstructions(worktree, written.dir);
@@ -231,7 +242,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
   if (core && core.worker && typeof core.worker.list === 'function') {
     try {
       const WP = require('./wake-pipe.cjs');
-      wakePub = WP.startWakePublisher({ core, runId, pipeName: deps.wakePipeName || WP.wakePipeName(dataDir, runId, wakeNonce), pollMs, isHeld: wakeHeld || deps.wakeHeld || (() => false), onRelease: wakeRelease || deps.wakeRelease || null });
+      wakePub = WP.startWakePublisher({ core, runId, notes: !!spec.notes, pipeName: deps.wakePipeName || WP.wakePipeName(dataDir, runId, wakeNonce), pollMs, isHeld: wakeHeld || deps.wakeHeld || (() => false), onRelease: wakeRelease || deps.wakeRelease || null });
       await wakePub.listening;
     } catch (e) {
       wakeFailure = `the wake pipe could not be opened (${(e && (e.code || e.message)) || e})`;
@@ -316,7 +327,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
     if (!attached || attached.ok !== true) {
       state.attachFailure = (attached && attached.error) || 'attach refused';
       await killChild();
-    } else runStart = writeRunStart(written.dir, runId, attached.attach, Date.now());
+    } else runStart = (deps.writeRunStart || writeRunStart)(written.dir, runId, attached.attach, Date.now(), { id: sessionId, file: sessionFile });
     try {
       gate = (deps.createGate || ((o) => surface().createInteractiveGate(o)))(gateOpts);
       watch('debug', gate.debug);
@@ -456,4 +467,4 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
 // The `--tools` value the launch passed (ADR 0024); recorded as requested, never as verified.
 function toolsRequested() { return require('./surface.cjs').CLAUDE_TOOLS.slice(); }
 
-module.exports = { runInteractiveOrchestrator, makeConsole, TIMED_OUT, FAST_CLOSE_BUDGET_MS };
+module.exports = { runInteractiveOrchestrator, clearRunStart, makeConsole, TIMED_OUT, FAST_CLOSE_BUDGET_MS };

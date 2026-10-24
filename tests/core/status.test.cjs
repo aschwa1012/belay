@@ -11,10 +11,11 @@ const { core, sandbox, cleanup, callerFor, listDataDir } = require('./helpers.cj
 const { openCore } = core('index.cjs');
 const RUNGS = ['configured', 'store-present', 'owner-alive', 'run-alive', 'worker-alive', 'worker-responsive'];
 
-test('a dead system is a valid answer, and every rung names what established it', async () => {
+test('a dead system is a valid answer, and every rung names what established it', async (tcx) => {
   const dir = sandbox();
   try {
     const c = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
+    tcx.after(() => Promise.resolve().then(() => c.close()));
     const st = await c.status.get({});
     assert.strictEqual(st.verdict, 'stopped');
     assert.strictEqual(st.data_dir, dir, 'the data dir is echoed back in the spelling the caller passed');
@@ -35,11 +36,13 @@ test('a dead system is a valid answer, and every rung names what established it'
   } finally { cleanup(dir); }
 });
 
-test('status.get stays inside its 100 ms budget with no owner alive, and creates no file', async () => {
+test('status.get stays inside its 100 ms budget with no owner alive, and creates no file', async (tcx) => {
   const dir = sandbox();
   try {
     // Give it a real store and rows, so the measured path is the copy-then-read one, not an empty dir.
     const o = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
+    tcx.after(() => Promise.resolve().then(() => o.shutdownOwner()));
+    tcx.after(() => Promise.resolve().then(() => o.close()));
     await o.run.attach({ adapter_pid: process.pid });
     await o.worker.write({ id: 'w1', substrate: 'claude-code', pid: process.pid, state: 'running' });
     for (let i = 0; i < 50; i++) await o.memory.store({ namespace: 'bulk', text: `row ${i}`, embedding: [i, 1], embedding_model: 'm', dim: 2 });
@@ -48,6 +51,7 @@ test('status.get stays inside its 100 ms budget with no owner alive, and creates
 
     const before = listDataDir(dir);
     const c = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
+    tcx.after(() => Promise.resolve().then(() => c.close()));
     const times = [];
     for (let i = 0; i < 5; i++) { const t0 = process.hrtime.bigint(); await c.status.get({}); times.push(Number(process.hrtime.bigint() - t0) / 1e6); }
     times.sort((a, b) => a - b);
@@ -175,7 +179,7 @@ test('status.get names another run when asked, and its worker projection carries
   }
 });
 
-test('any spelling of one data dir answers with the same canonical path', async () => {
+test('any spelling of one data dir answers with the same canonical path', async (tcx) => {
   // The property an orchestrator depends on is not "the string round-trips" but "one directory has one
   // answer, whatever spelling reached openCore". Equality against a forward-slashed fixture alone would
   // still hold for an implementation that echoed its argument back unchanged, which is wrong for a
@@ -189,6 +193,7 @@ test('any spelling of one data dir answers with the same canonical path', async 
     const answers = [];
     for (const spelling of [dir, native, dir + '/']) {
       const c = await openCore({ dataDir: spelling, caller: callerFor('operator'), embed: false });
+      tcx.after(() => Promise.resolve().then(() => c.close()));
       answers.push((await c.status.get({})).data_dir);
       await c.close();
     }
@@ -197,21 +202,25 @@ test('any spelling of one data dir answers with the same canonical path', async 
   } finally { cleanup(dir); }
 });
 
-test('status.get reports the store stamp from the copy it already reads, and null for an unstamped store', async () => {
+test('status.get reports the store stamp from the copy it already reads, and null for an unstamped store', async (tcx) => {
   const { SCHEMA_VERSION, writtenBy } = core('schema-stamp.cjs');
   const dir = sandbox();
   try {
     const none = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
+    tcx.after(() => Promise.resolve().then(() => none.close()));
     assert.strictEqual((await none.status.get({})).store, null, 'no store file, so no store block');
     await none.close();
 
     const o = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
+    tcx.after(() => Promise.resolve().then(() => o.shutdownOwner()));
+    tcx.after(() => Promise.resolve().then(() => o.close()));
     await o.run.attach({ adapter_pid: process.pid });
     await o.shutdownOwner();
     await o.close();
 
     const before = listDataDir(dir);
     const c = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
+    tcx.after(() => Promise.resolve().then(() => c.close()));
     const st = await c.status.get({});
     assert.strictEqual(st.established_by, 'copy');
     assert.deepStrictEqual(st.store, { schema_version: SCHEMA_VERSION, written_by: writtenBy() });

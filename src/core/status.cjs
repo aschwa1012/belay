@@ -13,6 +13,8 @@ const { pidAlive, readOwnerLock, pipeName } = require('./lock.cjs');
 const { ping } = require('./ping.cjs');
 const unresponsive = require('./unresponsive.cjs');
 const { metaGet } = require('./schema-stamp.cjs');
+const { count: unembeddedCount } = require('./notes-unembedded.cjs');
+const { count: heldCount } = require('./notes-held.cjs');
 
 const RESPONSIVE_WINDOW_MS = 30000;
 const OWNER_PING_TIMEOUT_MS = 300;
@@ -132,16 +134,25 @@ async function get(E, caller, args = {}) {
     } catch { /* a handle that cannot answer reports null, never a guess */ }
   }
 
+  // Notes stored without a vector (on_embedder_failure keyword). Nothing embeds them but `belay memory embed`; a plain read
+  // of the rows already open, none when the store is absent.
+  const notesUnembedded = storePresent ? unembeddedCount(E.store) : { total: 0, by_project: {}, newest_at: null };
+
+  // Notes held for the on-demand Opus archive reviewer (a hold of any kind): a plain read, none when the store is absent.
+  const notesHeld = storePresent ? heldCount(E.store) : { total: 0, by_project: {}, oldest_age_runs: 0 };
+
   return {
     verdict,
     data_dir: dataDir,
     store,
+    notes_unembedded: notesUnembedded,
+    notes_held: notesHeld,
     established_by: E.owner ? 'owner' : E.establishedBy,
     ms: Date.now() - t0,
     rungs,
     // Fix round: reuse runAdapterAlive (the run-alive rung's own fact) so this can't drift from it.
     run: runRow
-      ? { id: runRow.id, epoch: runRow.epoch, adapter_pid: runRow.adapter_pid, alive: runAdapterAlive, ended_at: runRow.ended_at, exit_reason: runRow.exit_reason, paused_at: runRow.paused_at == null ? null : runRow.paused_at, paused_by: runRow.paused_by == null ? null : runRow.paused_by }
+      ? { id: runRow.id, epoch: runRow.epoch, adapter_pid: runRow.adapter_pid, alive: runAdapterAlive, ended_at: runRow.ended_at, exit_reason: runRow.exit_reason, paused_at: runRow.paused_at == null ? null : runRow.paused_at, paused_by: runRow.paused_by == null ? null : runRow.paused_by, ...embedBoundsOf(E, runRow.id) }
       : null,
     // build step 6b: a forgotten row is hidden here too, the same rule worker.list's default carries.
     workers: allWorkers.filter(w => w.state !== 'forgotten').map(w => ({
@@ -153,6 +164,16 @@ async function get(E, caller, args = {}) {
       mid_turn: w.mid_turn, death_established_by: w.death_established_by,
     })),
   };
+}
+
+// The index-query embeds of this run that hit their bound (memory.embedQuery writes an `embed_bound` event for each call in which
+// one did), so a slow embedder shows at run level. Present only when there are any; a store with no such table says nothing.
+function embedBoundsOf(E, runId) {
+  try {
+    const count = (kind) => E.store.p("SELECT COUNT(*) AS n FROM memory_event WHERE run_id = ? AND kind = ?").get(runId, kind).n;
+    const n = count('embed_bound'), i = count('index_bound');
+    return { ...(n > 0 ? { embed_bounds: n } : {}), ...(i > 0 ? { index_bounds: i } : {}) };
+  } catch { return {}; }
 }
 
 module.exports = { get, RESPONSIVE_WINDOW_MS, OWNER_PING_TIMEOUT_MS };

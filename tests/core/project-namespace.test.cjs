@@ -26,8 +26,9 @@ before(async () => {
   dir = sandbox();
   store = new Store(`${dir}/memory.db`, { stamp: true });
   E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: null, establishedBy: 'test' });
-  const on = JSON.stringify({ project: 'acme', project_writes: true });
-  const off = JSON.stringify({ project: 'acme' });
+  // notes off: these cases are the project index and copy of a run without notes (with a project, notes now default on and list notes only)
+  const on = JSON.stringify({ project: 'acme', project_writes: true, notes: false });
+  const off = JSON.stringify({ project: 'acme', notes: false });
   await call('run.attach', proj, { adapter_pid: process.pid, project: 'acme', memory_levers: on });
   await call('run.attach', readOnly, { adapter_pid: process.pid, project: 'acme', memory_levers: off });
   await call('run.attach', none, { adapter_pid: process.pid });
@@ -69,7 +70,9 @@ test('a semantic search through the alias embeds once and reports the resolved n
 });
 
 test('an explicit project namespace and other names pass through untouched', async () => {
-  const w = await fresh(proj, { namespace: 'project/other' });
+  // The run manager (harness channel) writes where it is told; the orchestrator's own tool writes only its project's notes (ADR 0047 amendment of 2026-10-22).
+  await assert.rejects(fresh(proj, { namespace: 'project/other' }), (e) => e.code === 'E_ROLE');
+  const w = await fresh({ ...proj, channel: 'harness' }, { namespace: 'project/other' });
   assert.strictEqual(w.namespace, 'project/other');
   const d = await fresh(proj);
   assert.strictEqual(d.namespace, 'run/r-proj');
