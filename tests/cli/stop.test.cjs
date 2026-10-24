@@ -85,7 +85,7 @@ test("stop: the run waits for the stop's worker phase before it ends the run, at
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, runId, orchestratorDir } = makeSpec(dir, { poll_ms: 300 });
-  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '4000' };
+  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_GATE_FILE: `${dir}/answer.gate` };
   const runCliProc = runCli(specPath, dataDir, env);
   let core = null;
   let plantedProc = null;
@@ -102,6 +102,7 @@ test("stop: the run waits for the stop's worker phase before it ends the run, at
       id: 'w1', substrate: 'claude-code', pid: plantedPid, pid_image: 'node.exe', state: 'running',
       turns: 0, mid_turn: 1, started_at: Date.now(), worktree: workerWt,
     });
+    fs.writeFileSync(`${dir}/answer.gate`, 'go'); // the orchestrator's first turn may end now: its worker is mid-turn, so the run stays open
 
     const streamPath = `${orchestratorDir}/stream.jsonl`;
     const gotResult = await waitForFileLine(streamPath, '"type":"result"', 15000);
@@ -144,7 +145,9 @@ test('stop: a second stop while the first is in flight gets the same receipt', a
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const stdinEnd = `${dir}/stdin-end.txt`;
-  const { specPath, runId } = makeSpec(dir, { close_grace_ms: 3000 });
+  // The orchestrator ignores its stdin closing, so the first stop stays in flight for the whole close_grace_ms; that is far longer than the
+  // one pipe round trip the second call needs (its operator core is opened before the first stop starts).
+  const { specPath, runId } = makeSpec(dir, { close_grace_ms: 20000 });
   const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_IGNORE_STDIN_END: '1', FAKE_STDIN_END_FILE: stdinEnd };
   const runCliProc = runCli(specPath, dataDir, env);
   let op = null;
@@ -152,10 +155,10 @@ test('stop: a second stop while the first is in flight gets the same receipt', a
     const row = await waitUntil(() => currentRunRow(dataDir, runId), 15000, 100);
     assert.ok(row, 'the run row never appeared');
     await sleep(500);
+    op = await openCore({ dataDir, caller: { role: 'operator', run_id: runId, pid: process.pid } });
 
     const c1 = spawnStopAsync(dataDir, runId);
     assert.ok(await waitUntil(() => (fs.existsSync(stdinEnd) ? true : null), 30000, 20), 'the first stop never closed the orchestrator stdin');
-    op = await openCore({ dataDir, caller: { role: 'operator', run_id: runId, pid: process.pid } });
     const second = await op.control('run.stop', { run_id: runId }, { timeoutMs: 60000 });
     const r1 = await c1;
 
@@ -350,7 +353,7 @@ test('stop: a worker row of this run that is nobody\'s child is reported from it
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, runId, orchestratorDir } = makeSpec(dir, { poll_ms: 300, close_grace_ms: 2000 });
-  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '4000' };
+  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_GATE_FILE: `${dir}/answer.gate` };
   const runCliProc = runCli(specPath, dataDir, env);
   let core = null;
   let plantedProc = null;
@@ -367,6 +370,7 @@ test('stop: a worker row of this run that is nobody\'s child is reported from it
       id: 'w1', substrate: 'claude-code', pid: plantedPid, pid_image: 'node.exe', state: 'running',
       turns: 0, mid_turn: 1, started_at: Date.now(), worktree: workerWt,
     });
+    fs.writeFileSync(`${dir}/answer.gate`, 'go'); // the orchestrator's first turn may end now: its worker is mid-turn, so the run stays open
 
     const streamPath = `${orchestratorDir}/stream.jsonl`;
     const gotResult = await waitForFileLine(streamPath, '"type":"result"', 15000);
