@@ -85,6 +85,19 @@ function usage() {
   ].join('\n');
 }
 
+// Static as well: a command's own usage is its table row, so `belay stop --help` loads no module.
+function commandUsage(name) {
+  const c = COMMANDS[name];
+  return [
+    `usage: belay ${name} [options]   (mode ${c.mode})`,
+    '',
+    `  ${c.summary}`,
+    '',
+    'global options: --json, --data <dir>, -h/--help. `belay --help` lists every command.',
+    '',
+  ].join('\n');
+}
+
 // A command module exports:
 //   run(ctx) -> Promise<{ code, text, json }>
 // where ctx = { argv, cwd, dataDir, json, fix, emit? }.
@@ -138,6 +151,10 @@ async function main(argv) {
 
   // Help before anything else, so that `belay --help`, `belay help` and a bare `belay` all stay on
   // the static path and never load a command module.
+  if (g.help && name !== undefined && name !== 'help' && Object.hasOwn(COMMANDS, name)) {
+    process.stdout.write(commandUsage(name));
+    return 0;
+  }
   if (g.help || name === undefined || name === 'help') {
     process.stdout.write(usage());
     return 0;
@@ -220,4 +237,4 @@ if (require.main === module) {
     .catch(e => { process.stderr.write(`belay: ${(e && e.stack) || e}\n`); process.exitCode = 1; });
 }
 
-module.exports = { main, finish, usage, COMMANDS, parseGlobals, VERSION };
+module.exports = { main, finish, usage, commandUsage, COMMANDS, parseGlobals, VERSION };
