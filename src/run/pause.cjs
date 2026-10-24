@@ -244,6 +244,7 @@ function createPause({ core, forWorker, doStop, doRestart, runOp, adapterPid = p
     let resume_line_error = null;
     let sentBody = ''; // the actual first message sent, captured for text_bytes below
 
+    w.resumingFrom = p; // a start that fails goes back to this park, with its own facts (start-fail.cjs)
     const restartRes = await doRestart(w, {
       firstTextOverride: async (branch) => {
         if (branch !== 'resume') return undefined; // the replace branch uses restart's own replace text
@@ -265,7 +266,7 @@ function createPause({ core, forWorker, doStop, doRestart, runOp, adapterPid = p
       // before the row is written); treating it as a still-alive orphan risks killing a bystander that
       // reused the pid across a long park, on this same-adapter or a cross-adapter resume alike.
       skipDeadPidKill: true,
-    });
+    }).finally(() => { w.resumingFrom = null; });
 
     return {
       ...restartRes, resumed: true, resumed_by: by, paused_at, paused_by, paused_for_ms, interrupted,
