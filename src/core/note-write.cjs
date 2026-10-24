@@ -136,13 +136,13 @@ async function prepareNotes(E, caller, notes, { project, lv, worker }) {
   let embedFailed = null;
   for (const [i, n] of notes.entries()) {
     // Project rows are always scrubbed (ADR 0040 section 3); a title made longer by redaction is refused like any long one.
-    const ap = NP.merge(n, diff, worker && worker.worktree);
+    const ap = NP.merge(n, diff, worker && worker.worktree, caller.role); // the writer's own paths carry its role (B10)
     const s = M.scrub(true, { text: NT.keywordText({ ...n, applies_to: ap.applies_to }), title: n.title, body: { when: n.when, evidence: n.evidence, applies_to: ap.applies_to, applies_to_from: ap.applies_to_from, task_files: ap.task_files, task_files_from: 'diff', task_files_truncated: ap.task_files_truncated, ...(ap.ambiguous.length ? { applies_to_ambiguous: ap.ambiguous } : {}), subjects: n.subjects } });
     const checked = NT.checkNote({ ...n, title: s.title, when: s.body.when }, i);
     const title = checked.title;
     const embedTxt = NT.embedText({ title, when: checked.when }, NT.TEMPLATE_NEW); // what the vector is made from; the keyword text is s.text
     // Only what the worker wrote counts toward the limit; belay's derived fields (applies_to from the diff, task_files) are bounded by bytes in note-paths.cjs.
-    const written = { when: s.body.when, evidence: s.body.evidence, applies_to: s.body.applies_to.filter((_, k) => s.body.applies_to_from[k] === 'worker'), subjects: s.body.subjects };
+    const written = { when: s.body.when, evidence: s.body.evidence, applies_to: s.body.applies_to.filter((_, k) => s.body.applies_to_from[k] === caller.role), subjects: s.body.subjects };
     if (size(written) > NOTE_BODY_MAX) throw err('E_NOTE_SHAPE', `notes[${i}]: the when, evidence, applies_to and subjects you wrote come to ${size(written)} bytes and the limit is ${NOTE_BODY_MAX}`, { index: i, max: NOTE_BODY_MAX });
     let emb = null;
     if (!embedFailed) {
