@@ -86,7 +86,7 @@ const BOTH = [
     description: 'Store one entry. Returns the row written: id, action, namespace, worker id. Refuses text past the embedder\'s window.',
     inputSchema: S({
       text: str('One self-contained statement'),
-      namespace: str('Defaults to this run; moved to the project when your task ends'),
+      namespace: str('Default: this run only; later runs see it only with project_writes on'),
       type: { type: 'string', enum: ['fact', 'episode', 'procedure'] },
       tags: strs(),
       provenance: str('Source, e.g. a path'),
@@ -102,7 +102,7 @@ const BOTH = [
   },
   {
     name: 'memory_search',
-    description: 'Search memory. Query with one short task line for what you will do, naming files or symbols; several short queries beat one long one. view index: ids and titles only. Result names modes_run, modes_failed, absence_established (true only if both ran and found nothing).',
+    description: 'Search memory. Query with one short task line for what you will do, naming files or symbols; several short queries beat one long one. view index: ids and titles only. Result names modes_run, modes_failed, absence_established (true only if both ran and none reached the relevance floor).',
     inputSchema: S({
       query: str(),
       namespace: str(),
@@ -110,7 +110,7 @@ const BOTH = [
       min_score: num(),
       include_superseded: bool(),
       mode: { type: 'string', enum: ['semantic', 'keyword', 'hybrid'] },
-      view: { type: 'string', enum: ['full', 'index'] },
+      view: { type: 'string', enum: ['debug', 'index'] },
       filter: { type: 'object' },
       order: { type: 'string', enum: ['score', 'newest', 'oldest'] },
       offset: int(),

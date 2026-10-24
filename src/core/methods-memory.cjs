@@ -241,7 +241,18 @@ async function store(E, caller, args) {
   E.assertRunOpen(caller, 'memory.store'); // the embedding was awaited above; run.end may have committed meanwhile (audit D42)
   const row = E.store.store(a);
   E.noteWrite();
-  return row;
+  return withLasting(E, caller, namespace, row);
+}
+
+// ADR 0057 decision 8 (C8): the default namespace is the run's scratch. A model's write there, in a run with a project whose rows are not promoted
+// (project_writes off), is told so in the answer, with the way to keep a lesson; every other write answers the row alone, as before.
+function withLasting(E, caller, namespace, row) {
+  if (!caller || (caller.role !== 'worker' && caller.role !== 'orchestrator') || caller.channel === 'harness') return row;
+  if (namespace !== `run/${caller.run_id}` || !projectOf(E, caller)) return row;
+  const lv = leversOf(E, caller);
+  if (lv && lv.project_writes === true) return row;
+  const keep = lv && lv.notes === true ? '; to keep a lesson for later runs, write it to namespace project as a note (kind, title, when, basis)' : '';
+  return { ...row, lasting: false, note: `${namespace} is this run's scratch and later runs do not read it${keep}` };
 }
 
 // The notes lifecycle's namespaces belong to the harness: only its own writes put a row there (memory.store refuses

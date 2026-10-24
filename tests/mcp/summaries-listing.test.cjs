@@ -24,7 +24,7 @@ test('notes on: the orchestrator lists memory_summaries inside the budget; off, 
   const off = tools.toolsFor('orchestrator');
   const on = tools.toolsFor('orchestrator', { notes: true });
   console.log(`orchestrator listing: off ${bytes(off)}, notes on ${bytes(on)}, budget ${tools.BUDGET.orchestrator}`);
-  assert.strictEqual(bytes(off), 9900); // 9,829 before the paired write/search contract
+  assert.strictEqual(bytes(off), 9927); // 9,829 before the paired write/search contract
   assert.deepStrictEqual(on.map((t) => t.name).slice(-3), ['memory_summaries', 'memory_note_refutation', 'memory_report']);
   assert.ok(bytes(on) <= tools.BUDGET.orchestrator);
   // memory_verify is unlisted and memory_store states a note (notes-listing.test.cjs)
@@ -81,6 +81,6 @@ test('every combination, measured on the module and on the wire, is inside its b
     assert.deepStrictEqual(wire, mod, name);
     assert.ok(bytes(wire) <= tools.BUDGET[role], name);
   }
-  assert.strictEqual(bytes(rows[0][2]), 4815); // 4,965 before the paired write/search contract
-  assert.strictEqual(bytes(rows[2][2]), 9900);
+  assert.strictEqual(bytes(rows[0][2]), 4842); // 4,965 before the paired write/search contract
+  assert.strictEqual(bytes(rows[2][2]), 9927);
 });
