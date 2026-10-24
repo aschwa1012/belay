@@ -100,7 +100,7 @@ test('A8 against the real core: task_create, task_list and briefing', async (t) 
   assert.match(c.id, /^[0-9a-f-]{36}$/, 'the id is a uuid the orchestrator can carry');
   assert.strictEqual(c.run_id, 'run-1', 'the run id comes from argv');
   assert.strictEqual(c.written_by, 'orchestrator', 'the row is attributed to the argv role');
-  assert.ok(typeof c.seq === 'number', 'every row carries seq');
+  assert.ok(typeof c.rev === 'number' && !('seq' in c), 'every row carries its version, named rev (ADR 0058)');
 
   const list = (await a.call('task_list', {})).structuredContent;
   assert.strictEqual(list.tasks.length, 1);

@@ -291,7 +291,7 @@ const text = (v) => ({ type: 'text', text: JSON.stringify(v) });
 function okResult(row) {
   // Every row passes through unchanged. MCP requires structuredContent to be an object; the contract
   // returns an object from every method, so the guard below should never fire.
-  const structured = (row !== null && typeof row === 'object' && !Array.isArray(row)) ? row : { result: row };
+  const structured = require('./compose.cjs').revOf((row !== null && typeof row === 'object' && !Array.isArray(row)) ? row : { result: row }); // seq is named rev (ADR 0058)
   return { content: [text(structured)], structuredContent: structured, isError: false };
 }
 

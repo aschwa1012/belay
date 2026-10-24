@@ -63,4 +63,14 @@ function createCompose({ callCore, manager, openManager }) {
   return { assign, evaluate, spawn };
 }
 
-module.exports = { createCompose, compactSpawn, SPAWN_KEEP };
+// ADR 0058 decision 10: a row's `seq` is its version in the store, not an order a model should reason about, so every tool answer
+// names it `rev`. Applied to the answer only; the store and the core keep `seq`. A row that already has `rev` keeps both as they are.
+function revOf(v, depth = 0) {
+  if (depth > 12 || v === null || typeof v !== 'object') return v;
+  if (Array.isArray(v)) return v.map((x) => revOf(x, depth + 1));
+  const out = {};
+  for (const [k, x] of Object.entries(v)) out[k === 'seq' && !('rev' in v) ? 'rev' : k] = revOf(x, depth + 1);
+  return out;
+}
+
+module.exports = { createCompose, compactSpawn, revOf, SPAWN_KEEP };
