@@ -114,10 +114,17 @@ function openCoreOnce() {
 // build step 6d, ADR 0020 decision 1: only when launched with --permit; otherwise 'permit' is refused.
 const permit = opts.permit ? createPermit({ openCore: openCoreOnce, caller: CALLER, waitMs: opts.permitWaitMs, log: wlog }) : null;
 
-const ownCreatedNow = opts.role !== 'worker' ? require('../core/proc-identity.cjs').ownCreatedProbe(process.pid) : async () => null; // ADR 0039
+// ADR 0039: this adapter's own creation time, for run.attach. The process snapshot it reads is started when the client says it is
+// initialized (an MCP client sends that before any tool call), never at load: an adapter asked only initialize and tools/list
+// (`belay mcp status --deep`) starts no process.
+let ownCreatedProbe = null;
+const ownCreatedNow = () => {
+  if (!ownCreatedProbe) ownCreatedProbe = opts.role !== 'worker' ? require('../core/proc-identity.cjs').ownCreatedProbe(process.pid) : async () => null;
+  return ownCreatedProbe;
+};
 function attachOnce(c) {
   if (!attachPromise) {
-    attachPromise = ownCreatedNow().then((adapter_pid_created) => c.run.attach({ adapter_pid: process.pid, adapter_pid_created, orchestrator_pid: process.ppid }))
+    attachPromise = ownCreatedNow()().then((adapter_pid_created) => c.run.attach({ adapter_pid: process.pid, adapter_pid_created, orchestrator_pid: process.ppid }))
       .then((att) => {
         // Invariant 5 applied to the adapter's own calls: attach can declare workers dead, and a
         // reattach that did so silently would be a state change nobody can see. Recorded on both
@@ -344,6 +351,7 @@ async function handle(msg) {
     await permit.cancel(requestId);
     return undefined;
   }
+  if (method === 'notifications/initialized') { ownCreatedNow(); return undefined; }
   if (typeof method === 'string' && method.startsWith('notifications/')) return undefined;
   if (method === 'ping') return send({ jsonrpc: '2.0', id, result: {} });
   if (method === 'tools/list') {
