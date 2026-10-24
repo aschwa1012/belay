@@ -45,7 +45,7 @@ function createTickets({ now = Date.now, ttlMs = TTL_MS } = {}) {
     const entry = live.get(ticket);
     live.delete(ticket);
     const t = now();
-    if (!entry) throw refuse('it is unknown or already used');
+    if (!entry) throw refuse('it is unknown (the owner may have restarted since it was issued) or already used');
     if (entry.expires_at <= t) throw refuse(`it expired ${t - entry.expires_at} ms ago`);
     if (entry.run_id !== caller.run_id) throw refuse(`it was issued for run ${entry.run_id}, and this adapter serves run ${caller.run_id}`);
     if (entry.worker_id !== worker_id || entry.verb !== verb) throw refuse(`it was issued for ${entry.verb} of ${entry.worker_id}`);
