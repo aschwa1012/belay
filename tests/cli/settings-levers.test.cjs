@@ -49,8 +49,9 @@ test('settings: every memory lever is listed as memory.<key> with its default, d
       assert.ok(s.type, `${s.key} names its type`);
     }
     const agents = r.out.settings.filter((s) => s.key.startsWith('agents.'));
-    assert.deepStrictEqual(agents.map((s) => s.key).slice(0, 4), ['agents.coder.model', 'agents.coder.effort', 'agents.coder.codex_model', 'agents.tester.model']);
-    assert.strictEqual(agents.length, 14, 'four worker types with model, effort and codex_model, and the orchestrator with model and effort');
+    assert.deepStrictEqual(agents.map((s) => s.key).slice(0, 4), ['agents.coder.model', 'agents.coder.effort', 'agents.coder.codex_model', 'agents.coder.tools']);
+    assert.strictEqual(agents.length, 18, 'four worker types with model, effort, codex_model and tools (ADR 0054), and the orchestrator with model and effort');
+    assert.deepStrictEqual(agents.filter((s) => s.key.endsWith('.tools')).map((s) => [s.key, s.value.join(',')]), [['agents.coder.tools', 'Read,Edit,Write,Glob,Grep,Bash'], ['agents.tester.tools', 'Read,Edit,Write,Glob,Grep,Bash'], ['agents.reviewer.tools', 'Read,Edit,Write,Glob,Grep,Bash'], ['agents.researcher.tools', 'Read,Glob,Grep,WebFetch,WebSearch']], 'the built-in tool policy');
     assert.deepStrictEqual(agents.filter((s) => s.key.endsWith('codex_model')).map((s) => [s.key, s.value]), ['coder', 'tester', 'reviewer', 'researcher'].map((t) => [`agents.${t}.codex_model`, null]));
     assert.ok(agents.every((s) => s.source === 'default'));
     const by = Object.fromEntries(agents.map((s) => [s.key, s.value]));

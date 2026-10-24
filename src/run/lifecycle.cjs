@@ -41,6 +41,15 @@ async function runOp(w, name, fn, { waitFor = [] } = {}) {
   }
 }
 
+// A message never lands inside a stop, a restart or a resume: the process it would reach is being ended or replaced, and its
+// `running` row would follow the stop's `stopping` one. Checked at the call and again just before a Codex turn's launch.
+const MESSAGE_REFUSING_OPS = ['stop', 'restart', 'resume'];
+function refuseMessageDuringOp(w) {
+  if (w.op && MESSAGE_REFUSING_OPS.includes(w.op.name)) {
+    fail('E_BUSY', `worker ${w.id} is busy with ${w.op.name}, so it takes no message; retry when it returns`, { worker_id: w.id, op: w.op.name });
+  }
+}
+
 // build step 6e-5 design item 1 (review 2, manager.cjs:475): a graceful adapter exit must not turn every
 // parked worker into a stopped one — that defeated ADR 0023 amendment 2 decision 2's cross-adapter resume,
 // since a stop's row is 'stopped' and no later adapter can resume a stopped worker. A worker whose record
@@ -235,4 +244,4 @@ function readLaunchOptions(dir) {
   return out;
 }
 
-module.exports = { runOp, shutdown, readLaunchOptions, killSurvivor };
+module.exports = { runOp, refuseMessageDuringOp, shutdown, readLaunchOptions, killSurvivor };

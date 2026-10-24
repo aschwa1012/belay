@@ -250,6 +250,21 @@ async function callCore(dotted, args) {
   return fn(args);
 }
 
+// ADR 0053 decision 6: worker_spawn's cwd defaults to the worktree belay made for task_id, and a different one is refused, so a
+// worker is never pointed past its task's own tree by a typo. Without a recorded worktree the call is as it was.
+async function spawnWorktree(args) {
+  const a = args || {};
+  const rec = a.task_id ? ((await callCore('task.get', { task_id: a.task_id })) || {}).worktree : null;
+  const own = rec && rec.path && !rec.removed_at ? rec.path : null;
+  if (a.worktree === undefined || a.worktree === null) {
+    if (!own) throw fail('E_ARGS', `worker_spawn needs worktree: ${a.task_id ? `task ${a.task_id} has no belay worktree (task_worktree makes one)` : 'no task_id names one'}`, { tool: 'worker_spawn', missing: 'worktree' });
+    return { ...a, worktree: own };
+  }
+  const same = (x, y) => { const f = (p) => String(p).replace(/\\/g, '/').replace(/\/+$/, ''); return process.platform === 'win32' ? f(x).toLowerCase() === f(y).toLowerCase() : f(x) === f(y); };
+  if (own && !same(a.worktree, own)) throw fail('E_ARGS', `worker_spawn: task ${a.task_id} has its own worktree ${own}; omit worktree or pass that one`, { tool: 'worker_spawn', field: 'worktree', task_worktree: own });
+  return a;
+}
+
 async function callTool(name, args) {
   const route = routeOf(name);
   if (!route) throw fail('E_ARGS', `no such tool ${name}`, { tool: name });
@@ -263,6 +278,14 @@ async function callTool(name, args) {
     throw fail('E_ROLE', `${name} is not available in ${opts.role} role; it belongs to ${roleOf(name)}`, { tool: name, role: opts.role });
   }
   validateArgs(name, args, { notes: notesOn, role: opts.role });
+  // ADR 0057 decision 1: a model's search answers the compact view unless it asks for debug or index; the Core API's default stays full.
+  if (name === 'memory_search' && args && typeof args === 'object' && args.view === undefined) args = { ...args, view: 'compact' };
+  // ADR 0053: one tool, two core methods; `action` is the tool's, never the core's.
+  if (name === 'task_worktree') {
+    const { action, ...rest } = args || {};
+    return callCore(action === 'remove' ? 'task.worktreeRemove' : 'task.worktreeCreate', rest);
+  }
+  if (name === 'worker_spawn') args = await spawnWorktree(args);
   if (route.via === 'core') {
     const row = withDataNotice(route.method, await callCore(route.method, args));
     // The one place the adapter adds to a row, and it is additive: every field of the core's
@@ -279,6 +302,7 @@ async function callTool(name, args) {
     const [line, doc] = await Promise.all([callCore('continuity.resumeLine', args), callCore('continuity.resumeDoc', args)]);
     return { line, doc };
   }
+  if (route.via === 'git') { const G = require('./git-read.cjs'); return G.gitRead(args, { runWorktree: opts.worktree || null, taskWorktree: G.taskWorktreeVia(callCore) }); }
   if (route.via === 'run') {
     const r = await openRunManagerOnce();
     if (typeof r[route.method] !== 'function') throw fail('E_INTERNAL', `the run manager exposes no method ${route.method}`, { method: route.method });

@@ -55,6 +55,9 @@ const ROUTES = {
   task_assign: { role: 'orchestrator', via: 'core', method: 'task.assign' },
   // ADR 0010 amendment 3: the only way an orchestrator over MCP can write `done` and clear a dependency.
   task_evaluate: { role: 'orchestrator', via: 'core', method: 'task.evaluate' },
+  // ADR 0053: a task's own worktree and branch (action remove routes to task.worktreeRemove, belay-mcp.cjs), and the merge step.
+  task_worktree: { role: 'orchestrator', via: 'core', method: 'task.worktreeCreate' },
+  integrate: { role: 'orchestrator', via: 'core', method: 'integration.merge' },
   // ADR 0015: admitted to the surface, which is nineteen tools from that record. It is the only way
   // to wait in the deployment ADR 0009 §1 names first — an operator's own session, which belay
   // attaches to and therefore cannot wake, because it does not own that session's stdin.
@@ -79,6 +82,8 @@ const ROUTES = {
   // ADR 0043 decision 1: listed only when the run's knowledge_agent lever is on (toolsFor's knowledge option);
   // with the lever off the manager refuses it E_LEVER_OFF, and the listing never mentions it.
   knowledge_ask: { role: 'orchestrator', via: 'run', method: 'ask' },
+  // ADR 0054 decision 2: the orchestrator has no shell; belay runs these git reads for it with its own argv (git-read.cjs).
+  git_read: { role: 'orchestrator', via: 'git', method: 'gitRead' },
 };
 
 const BOTH = [
@@ -87,7 +92,7 @@ const BOTH = [
     description: 'Store one entry. Returns the row written: id, action, namespace, worker id. Refuses text past the embedder\'s window.',
     inputSchema: S({
       text: str('One self-contained statement'),
-      namespace: str('Defaults to this run; moved to the project when your task ends'),
+      namespace: str('Default: this run only; later runs see it only with project_writes on'),
       type: { type: 'string', enum: ['fact', 'episode', 'procedure'] },
       tags: strs(),
       provenance: str('Source, e.g. a path'),
@@ -103,7 +108,7 @@ const BOTH = [
   },
   {
     name: 'memory_search',
-    description: 'Search memory. Query with one short task line for what you will do, naming files or symbols; several short queries beat one long one. view index: ids and titles only. Result names modes_run, modes_failed, absence_established (true only if both ran and found nothing).',
+    description: 'Search memory. Query with one short task line for what you will do, naming files or symbols; several short queries beat one long one. view index: ids and titles only. Result names modes_run, modes_failed, absence_established (true only if both ran and none reached the relevance floor).',
     inputSchema: S({
       query: str(),
       namespace: str(),
@@ -111,7 +116,7 @@ const BOTH = [
       min_score: num(),
       include_superseded: bool(),
       mode: { type: 'string', enum: ['semantic', 'keyword', 'hybrid'] },
-      view: { type: 'string', enum: ['full', 'index'] },
+      view: { type: 'string', enum: ['debug', 'index'] },
       filter: { type: 'object' },
       order: { type: 'string', enum: ['score', 'newest', 'oldest'] },
       offset: int(),
@@ -165,18 +170,18 @@ const ORCHESTRATOR = [
     description: 'Launch a real Claude Code or Codex process and wait for its ready event. Returns the worker row: id, substrate, pid, session id, argv hash, started_at, ready_ms. If no ready event arrives it fails with the exit code and stderr tail and writes the row dead, never running. Takes seconds.',
     inputSchema: S({
       substrate: { type: 'string', enum: ['claude-code', 'codex'] },
-      worktree: str('Absolute path; the worker\'s cwd'),
+      worktree: str('Absolute path; the worker\'s cwd. Default: task_id\'s worktree'),
       prompt: str('First message'),
       task_id: str('Assign this task once ready and prepend its resume line'),
       model: str(),
-      agent_type: { type: 'string', enum: WORKER_TYPES, description: 'Configured model and effort default' },
+      agent_type: { type: 'string', enum: WORKER_TYPES, description: 'Configured model, effort and tools' },
       effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
       memory_queries: strs('Up to 4 task lines naming the situations the worker will be in, each max 160 bytes'),
       allowed_tools: strs(),
       permission_mode: str(),
       startup_timeout_ms: int('default 60000'),
       worker_id: str('Otherwise generated'),
-    }, ['substrate', 'worktree', 'prompt']),
+    }, ['substrate', 'prompt']),
   },
   {
     // ADR 0015. `worker_spawn` above returns at the ready event and the worker keeps running; this is
@@ -250,9 +255,33 @@ const ORCHESTRATOR = [
     description: 'Run a task\'s checks in worktree. Returns row and results; done (unblocks dependents) only if all pass.',
     inputSchema: S({
       task_id: str(),
-      worktree: str(),
-      base: str('Diff base; default merge-base main'),
-    }, ['task_id', 'worktree']),
+      worktree: str('Default: the task\'s worktree'),
+      base: str('Diff base; default the task\'s base, else merge-base main'),
+    }, ['task_id']),
+  },
+  {
+    // ADR 0053 decisions 2, 3 and 6.
+    name: 'task_worktree',
+    description: 'Create (default) or remove the task\'s own git worktree and branch belay/<task_id>, cut from base (default HEAD). Returns the task row with worktree. remove refuses a dirty tree unless force, or a live worker in it; keeps the branch unless delete_branch.',
+    inputSchema: S({
+      task_id: str(),
+      action: { type: 'string', enum: ['create', 'remove'] },
+      base: str(),
+      branch: str(),
+      force: bool(),
+      delete_branch: bool(),
+    }, ['task_id']),
+  },
+  {
+    // ADR 0053 decision 5.
+    name: 'integrate',
+    description: 'Merge done tasks\' branches in order into into (default belay/integrate/<run>), then re-run their checks there. Returns state, merged, checks, passed. A conflict is aborted, tree clean; conflict names task and files.',
+    inputSchema: S({
+      task_ids: strs(),
+      into: str(),
+      base: str('If into is new; default the tasks\' base'),
+      evaluate: bool(),
+    }, ['task_ids']),
   },
   {
     // ADR 0040 §4. A worker cannot verify a claim, so this is not on the worker listing.
@@ -263,6 +292,20 @@ const ORCHESTRATOR = [
       status: { type: 'string', enum: ['unverified', 'verified', 'refuted'] },
       receipt: str('checkpoint:id, task:id, memory:id, commit:sha or test:text; none for unverified'),
     }, ['id', 'status']),
+  },
+  {
+    // ADR 0054 decision 2. One tool with an op, not four: the listing pays for one schema.
+    name: 'git_read',
+    description: 'Read-only git, run by belay with fixed argv, in worktree, task_id\'s worktree or the run\'s. Returns argv, exit_code, out (16 KB max, truncated marked). Refuses a rev or path that could be an option.',
+    inputSchema: S({
+      op: { type: 'string', enum: ['status', 'log', 'diff', 'show'] },
+      worktree: str(),
+      task_id: str(),
+      rev: str('a..b for log/diff; one commit for show'),
+      path: str(),
+      stat: bool(),
+      n: int('log, default 20'),
+    }, ['op']),
   },
 ];
 

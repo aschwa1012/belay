@@ -80,7 +80,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   const bind = await require('./bind-launch.cjs').bindOrchestrator(core, runId); // ADR 0045 decision 2: the owner is this process's own, so the bind is in process
   const written = L.writeOrchestratorFiles({
     dir: orchestratorDir, runId, dataDir, mcpPath, settingsPath: L.userSettingsPath(), cwd: worktree, // ADR 0024
-    compactAt: compactAtTokens, knowledgeAgent: !!spec.knowledgeAgent, agentDefaults: spec.agentDefaults || null, bind, // ADR 0007 decision 3; ADR 0043 decision 1
+    compactAt: compactAtTokens, agentDefaults: spec.agentDefaults || null, bind, // ADR 0007 decision 3
   });
   fs.writeFileSync(path.join(written.dir, 'prompt.txt'), promptText);
 
@@ -279,7 +279,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     const nowMs = Date.now() - t0;
     const { events, next, pending_deaths } = diffWorkers({
       prev: state.baseline, rows, runId, nowMs, graceMs: DEATH_GRACE_MS,
-      orphanGraceMs: ORPHAN_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid),
+      orphanGraceMs: ORPHAN_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid), sinceAt: t0,
     });
     state.baseline = next;
     for (const ev of events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))).concat(await noteWatcher.poll())) writeWake(ev);
@@ -341,7 +341,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       // the Claude Code orchestrator: verifyReady's own `.then`/`.catch` are gone (nothing else used
       // them), and a turn ending before this line can no longer race it, because there is nothing left
       // to race — the whole check has already run by the time `pollOnce` is reached.
-      const gate = verifyClaudeReady({ substrate: 'claude-code' }, ev);
+      const gate = verifyClaudeReady({ substrate: 'claude-code', tools: S.ORCHESTRATOR_TOOLS }, ev); // ADR 0054 decision 1: held to its list, which has no Bash
       if (!gate.ok) {
         abortForReadyFailure(`the orchestrator's ready check failed (ADR 0001 §8): ${gate.reason}`);
         return;

@@ -34,7 +34,9 @@ test('orchestrator prompt: every mcp__belay__ tool name the template mentions is
   assert.match(text, /`mcp__belay__memory_store` with `text`[\s\S]*after each review verdict[\s\S]*when you end the run[\s\S]*open findings/);
   assert.ok(named.includes('memory_search') && named.includes('memory_store'), 'the template names both memory tools');
   assert.ok(text.indexOf('memory_search') < text.indexOf('mcp__belay__task_create'), 'the search instruction precedes task creation');
-  assert.match(text, /You use no Bash, Edit, Write or NotebookEdit at all/, 'the no-work rule stays');
+  // ADR 0054 (the operator, 2026-10-24): the rule is one line, backed by the launch surface (Edit and Write, no Bash), and git reads go through belay.
+  assert.match(text, /^- You may edit files for records and trivial fixes; delegate real code work to a worker; you have no shell\.$/m, 'the edit rule, on one line');
+  assert.match(text, /Read git state with `mcp__belay__git_read`/, 'the git reads are belay\'s');
   // The orchestrator's own listing is the one the template addresses.
   const orch = new Set(T.toolsFor('orchestrator').map((t) => t.name));
   for (const n of named) assert.ok(orch.has(n), `mcp__belay__${n} is not on the orchestrator's listing`);
@@ -49,9 +51,12 @@ const lf = (s) => s.replace(/\r\n/g, '\n');
 // ADR 0037 amendment 6 rewrote these 1-based lines of the interactive twin after 0.1.0 (the waiting text);
 // interactive-prompt.test.cjs pins their new wording, so here they are taken from the base before comparing.
 // The operator's 2026-10-15 ruling rewrote the two spawn lines of each prompt (agent_type always; no hand-passed effort); same treatment.
+// ADR 0054 rewrote the role rule (orchestrator.md 8-10, the twin 10-12) to name the surface and git_read, and line 4 (the
+// twin's 6) to say the code work is not the orchestrator's (the operator, 2026-10-24: it may edit records and trivial fixes).
 const AMD6_LINES = {
-  'orchestrator.md': [32, 33, 81],
-  'orchestrator-interactive.md': [34, 35, 52, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 78, 79, 85, 92, 98],
+  // ADR 0053: the worktree rule of thumb (orchestrator.md 116, the interactive twin 120 once its pause paragraph is taken out).
+  'orchestrator.md': [4, 8, 9, 10, 32, 33, 81, 116],
+  'orchestrator-interactive.md': [6, 10, 11, 12, 34, 35, 52, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 78, 79, 85, 92, 98, 120],
 };
 
 test('memory rules: the placeholder sits at the end of an existing line, and an empty substitution is the base prompt byte for byte', () => {
@@ -87,7 +92,7 @@ test('memory rules: the text stays within 1,200 bytes and carries each rule the 
   assert.match(text, /memory_timeline/, 'a timeline');
   assert.match(text, /memory_retrieve[^\n]*`ids`[^\n]*only/, 'full rows only for what matters');
   assert.match(text, /memory_ids/, 'cite ids');
-  assert.match(text, /`absence_established` is true only when both modes ran and found nothing[^\n]*`false` is normal on a populated scope[^\n]*modes_failed/, 'false is not read as not searched');
+  assert.match(text, /`absence_established` is true only when both modes ran and no row reached the relevance floor[^\n]*`false` is normal on a populated scope[^\n]*`low_relevance`[^\n]*modes_failed/, 'false is not read as not searched; a low_relevance row is likely unrelated (ADR 0057)');
   assert.doesNotMatch(text, /not searched properly yet/, 'the old, untrue reading is gone');
   assert.match(text, /`unverified` row as a claim/, 'an unverified row is never presented as fact');
   assert.match(text, /`refuted`/, 'refuted rows');
