@@ -183,11 +183,11 @@ test('ADR 0058: a message sent while the compaction turn row is still being writ
   assert.strictEqual(CP.swallow(w, { usage: {}, answers_write: 7 }, ctx), true, 'the compaction turn ended');
   assert.strictEqual(w.cp.inflight, null);
   const after = CP.afterCompact(w, ctx, turnStarted); // awaits the row write before it drains
-  const b = CP.queueIfCompacting(w, 'B', fail);
-  assert.deepStrictEqual([b.queued, b.position, b.compaction_started_at], [true, 2, null], 'B waits behind A');
-  assert.deepStrictEqual(writes, [], 'nothing written before the row');
-  releaseRow();
-  await after;
+  try {
+    const b = CP.queueIfCompacting(w, 'B', fail);
+    assert.deepStrictEqual([b && b.queued, b && b.position, b && b.compaction_started_at], [true, 2, null], 'B waits behind A');
+    assert.deepStrictEqual(writes, [], 'nothing written before the row');
+  } finally { releaseRow(); await after; } // the row is released whatever failed, so nothing is left pending
   assert.deepStrictEqual(writes, ['A\n\nB'], 'one turn, A then B');
   assert.strictEqual(CP.queueIfCompacting(w, 'C', fail), null, 'with the queue written, a message goes straight through');
   fs.rmSync(dir, { recursive: true, force: true });
