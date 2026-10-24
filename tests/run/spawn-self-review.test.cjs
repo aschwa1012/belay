@@ -23,11 +23,17 @@ test('a spawn of a review task under the coder\'s own worker id is refused E_SEL
   fs.mkdirSync(wt, { recursive: true });
   const core = await openCore({ dataDir: dir, caller: callerFor('orchestrator', { run_id: RUN }), embed: false });
   let coder = null;
+  const clients = [];
   try {
     await core.run.attach({ adapter_pid: process.pid });
     const work = await core.task.create({ spec: 'the work', acceptance: PASS, files_owned: [] });
     // The coder c1 works the task and hands it back (no result, so no release evaluation races the one below).
-    const m1 = createRunManager({ core: core.harness(), dataDir: dir, runId: RUN, paths });
+    // Each manager gets its own client of the store, so its shutdown leaves the test's owner serving (it stops only an owner it holds).
+    const client = () => openCore({ dataDir: dir, caller: callerFor('orchestrator', { run_id: RUN }), embed: false });
+    const c1 = await client();
+    clients.push(c1);
+    assert.strictEqual(c1.isOwner(), false, 'the test core holds the owner');
+    const m1 = createRunManager({ core: c1.harness(), dataDir: dir, runId: RUN, paths });
     try {
       await m1.spawn({ substrate: 'claude-code', worktree: wt, prompt: 'code it', worker_id: 'c1', task_id: work.id });
       const lease = (await core.task.get({ task_id: work.id })).lease;
@@ -39,7 +45,9 @@ test('a spawn of a review task under the coder\'s own worker id is refused E_SEL
     assert.strictEqual(stopped.state, 'stopped');
     const review = await core.task.create({ spec: 'review it', depends_on: [work.id], acceptance: { verdict: true } });
     // A later adapter of the same run: c1's id is free to reuse, but not to review its own work.
-    const m2 = createRunManager({ core: core.harness(), dataDir: dir, runId: RUN, paths });
+    const c2 = await client();
+    clients.push(c2);
+    const m2 = createRunManager({ core: c2.harness(), dataDir: dir, runId: RUN, paths });
     try {
       await assert.rejects(m2.spawn({ substrate: 'claude-code', worktree: wt, prompt: 'review it', worker_id: 'c1', task_id: review.id }),
         (e) => e.code === 'E_SELF_REVIEW' && e.detail.reviewed_task_id === work.id && e.detail.worker_id === 'c1');
@@ -51,6 +59,7 @@ test('a spawn of a review task under the coder\'s own worker id is refused E_SEL
     } finally { await m2.shutdown(); }
   } finally {
     if (coder) await coder.close();
+    for (const c of clients) await c.close().catch(() => {});
     try { await core.shutdownOwner(); } catch { /* best effort */ }
     await core.close();
     cleanup(dir);
