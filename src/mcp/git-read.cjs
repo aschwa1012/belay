@@ -224,7 +224,7 @@ const tooMany = () => Object.assign(new Error('git_read: the configuration names
 const badKey = (k) => k.includes('=') || /[\x00-\x1f]/.test(k);
 
 // A clean or process filter named in the repository's own config runs on a plain `git status` of a stat-dirty file
-// (measured on Windows). Every filter driver named outside the global and
+// (the ADR 0054 evidence). Every filter driver named outside the global and
 // system configs (local, worktree, an include of them) is switched off with belay's own `-c`; a driver name git's `-c`
 // cannot carry (one holding '=') refuses the read. The system config is not read (GIT_CONFIG_NOSYSTEM), so its filter
 // keys, which only an administrator writes (Git for Windows installs git-lfs there), are read on their own and passed

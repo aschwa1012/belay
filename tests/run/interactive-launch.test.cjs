@@ -23,7 +23,7 @@ test('interactive argv carries the hygiene flags, session id and debug file', ()
   assert.ok(a.includes('--strict-mcp-config'));
   assert.strictEqual(after(a, '--mcp-config'), 'C:/run/orch/mcp.json');
   assert.strictEqual(after(a, '--settings'), 'C:/run/orch/settings.json');
-  assert.strictEqual(after(a, '--tools'), 'Read,Glob,Grep'); // ADR 0054 decision 1: no Edit, Write or Bash
+  assert.strictEqual(after(a, '--tools'), 'Read,Glob,Grep,Edit,Write'); // ADR 0054 decision 1: no Bash
   assert.ok(a.includes('--setting-sources='));
   assert.strictEqual(after(a, '--permission-mode'), 'auto'); // ADR 0021 default
   assert.strictEqual(after(a, '--append-system-prompt-file'), 'C:/run/orch/append.md');
