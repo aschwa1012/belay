@@ -105,6 +105,7 @@ function verifySettings(settingsFile, record) {
 // settings.json at spawn time: the file can still change between this check and Claude Code's own read, and that window is not closed.
 function checkLaunch(w) {
   if (w.substrate !== 'claude-code') return;
+  if (w.toolsRefusal) throw w.toolsRefusal; // ADR 0024 amendment 4: the row has no usable tools record for this worker; separate from adoptRefusal, which another cause may overwrite
   if (w.adoptRefusal) throw w.adoptRefusal; // the adopt could not write this worker's files from a record the checker now refuses
   if (w.nativeMemory != null) prepareFolder(w.nativeMemory);
   const file = w.workerSettingsPath || fwd(path.join(w.dir, 'settings.json'));

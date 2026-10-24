@@ -12,6 +12,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const C = require('./config.cjs');
+const { isPathId } = require('../core/path-id.cjs');
 const { openCore, pidAlive } = require('../core/index.cjs');
 const P = require('../core/process.cjs');
 const { DEATH_LAND_MS } = require('../core/exit-hold.cjs');
@@ -190,6 +191,7 @@ async function runRm(core, dataDir, workerId) {
   const workerDir = fwd(path.join(dataDir, 'workers', workerId));
   let onDisk;
   try {
+    if (!isPathId(workerId)) throw new Error('not a valid id'); // an older row's odd id is never joined into a path
     fs.statSync(workerDir);
     onDisk = { path: workerDir, exists: true, bytes: dirSize(workerDir) };
   } catch {

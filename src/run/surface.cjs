@@ -121,6 +121,25 @@ function narrowTools(tools) {
   return tools.length === CLAUDE_TOOLS.length ? null : [...tools];
 }
 
+// worker_spawn's `allowed_tools` (a permission pre-approval, `--allowedTools`) also decides the tool surface: its built-in names
+// become the worker's `--tools` list; `mcp__*` names stay pre-approval only. Returns { tools } (narrowTools' answer: null for all six,
+// else the narrowed list). Refused E_ARGS, before anything is written: a name that is neither a built-in nor `mcp__*` (web tools
+// are not available to workers in this release), a list with no built-in at all (the empty `--tools ""` surface has no live receipt), repeats.
+function toolsFromAllowed(allowed) {
+  if (!Array.isArray(allowed) || allowed.some((t) => typeof t !== 'string')) {
+    throw Object.assign(new Error('allowed_tools must be an array of strings'), { code: 'E_ARGS', detail: { allowed_tools: allowed } });
+  }
+  const foreign = allowed.filter((t) => !CLAUDE_TOOLS.includes(t) && !t.startsWith('mcp__'));
+  if (foreign.length) {
+    throw Object.assign(new Error(`allowed_tools names ${foreign.join(', ')}, which a worker cannot have: web tools are not available to workers in this release; allowed built-ins are ${CLAUDE_TOOLS.join(', ')}, plus mcp__* names`), { code: 'E_ARGS', detail: { allowed_tools: allowed, refused: foreign } });
+  }
+  const builtins = CLAUDE_TOOLS.filter((t) => allowed.includes(t)); // canonical order, repeats collapse
+  if (builtins.length === 0) {
+    throw Object.assign(new Error(`allowed_tools names no built-in tool (${CLAUDE_TOOLS.join(', ')}); a worker with no built-ins is not supported, so name at least one`), { code: 'E_ARGS', detail: { allowed_tools: allowed } });
+  }
+  return { tools: narrowTools(builtins) };
+}
+
 // ADR 0024 decision 6: the ready event reports the surface the worker actually got; a wrong surface
 // is a failed launch. Reads only `tools`, `plugins` and `memory_paths` off the ready event the parser
 // already built (parsers.cjs), never the raw system/init line.
@@ -227,4 +246,4 @@ function surfaceFields(evidence) {
   return { tools_hash: tools_hash ?? null, builtins: builtins ?? null, belay_tools: belay_tools ?? null, plugins: plugins ?? null };
 }
 
-module.exports = { checkNativeMemory, claudeConfigDirs, under, sameDir, CLAUDE_TOOLS, ORCHESTRATOR_TOOLS, narrowTools, SETTING_SOURCES_ARG, ancestorExcludes, hygieneSettings, checkSurface, surfaceFields };
+module.exports = { checkNativeMemory, claudeConfigDirs, under, sameDir, CLAUDE_TOOLS, ORCHESTRATOR_TOOLS, narrowTools, toolsFromAllowed, SETTING_SOURCES_ARG, ancestorExcludes, hygieneSettings, checkSurface, surfaceFields };
