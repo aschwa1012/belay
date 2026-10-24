@@ -62,3 +62,25 @@ for (const [name, identity] of [
     assert.equal(cur.state, 'dead');
   });
 }
+
+// The same check on the Codex path: an `idle` Codex worker has no process between turns by design, so its
+// row's pid is free for reuse for as long as the worker idles. An adopting adapter (manager.cjs `message`)
+// reads the reused pid as "a live process this adapter did not spawn" and refuses every later turn.
+const FAKE_CODEX = fwd(path.join(__dirname, '..', 'run', 'fakes', 'fake-codex.cjs'));
+test('a message to an adopted idle Codex worker whose pid was reused starts its next turn', async (t) => {
+  const sb = sandbox();
+  const core = createFakeCore();
+  const other = await sleeper();
+  t.after(() => { try { other.kill(); } catch { /* gone */ } try { fs.rmSync(sb.root, { recursive: true, force: true }); } catch { /* tmp */ } });
+  await core.worker.write({
+    id: 'w-codex', run_id: 'run-new', substrate: 'codex', pid: other.pid, session_id: 'thread-old', adapter_pid: 1, state: 'idle',
+    worktree: sb.worktree, task_id: null, started_at: Date.now() - 60000, exited_at: Date.now() - 30000, exit_code: 0, exit_signal: null,
+    turns: 1, pid_created: 1000, pid_created_error: null, pid_image: 'node.exe',
+  });
+  const m = createRunManager({ core, dataDir: sb.data, runId: 'run-new', paths: { claudeExe: FAKE, codexExe: FAKE_CODEX, userSettings: USER_SETTINGS } });
+  t.after(() => m.shutdown().catch(() => {}));
+  const got = await m.message({ worker_id: 'w-codex', text: 'next turn' }).then((x) => ({ ok: x.channel }), (e) => ({ err: e.code, message: e.message }));
+  console.log(JSON.stringify({ case: 'codex idle, pid reused', got }));
+  assert.equal(other.exitCode, null);
+  assert.equal(got.ok, 'codex-resume', `the next turn must start; got ${JSON.stringify(got)}`);
+});
