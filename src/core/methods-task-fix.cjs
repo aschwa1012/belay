@@ -41,6 +41,12 @@ async function fixFromReview(E, caller, args) {
   const judged = rows.current(E.store, 'task', judgedId);
   if (!judged) throw err('E_NOT_FOUND', `review ${review.id} depends on ${judgedId}, which has no row in this store`, { review_id: review.id, missing: judgedId });
   const repairs = judged.repairs || judged.id;
+  // Called again for the same review, the fix it already made is returned, and no fix round is spent: an open fix task of this
+  // run that repairs the same work and depends on exactly the judged task.
+  const live = new Set(['open', 'assigned', 'released']);
+  const same = rows.currentAll(E.store, 'task').find((t) => t.run_id === caller.run_id && t.repairs === repairs && live.has(t.state)
+    && Array.isArray(t.depends_on) && t.depends_on.length === 1 && t.depends_on[0] === judged.id);
+  if (same) return { ...same, from_review: review.id, existing: true };
   const row = await T.create(E, caller, {
     spec: typeof args.spec === 'string' && args.spec.trim() ? args.spec : defaultSpec(review, judged, verdictDetail(review)),
     acceptance: args.acceptance !== undefined ? args.acceptance : judged.acceptance,

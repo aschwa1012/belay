@@ -131,3 +131,14 @@ test('task.cancel releases the lease and the files, writes cancelled, and is fin
   await orch.task.evaluate({ task_id: d.id, worktree: dir });
   await rejects(orch.task.cancel({ task_id: d.id }), 'E_TASK_DONE');
 });
+
+test('fix_from_review called again for the same review returns the open fix it made, and spends no second round', async () => {
+  const w = await orch.task.create({ spec: 'idempotent work', acceptance: PASS });
+  const r = await refutedReviewOf(w, 'c-20', 'j-20');
+  const first = await orch.task.fixFromReview({ review_id: r.id });
+  const before = (await orch.task.list({})).tasks.length;
+  const again = await orch.task.fixFromReview({ review_id: r.id });
+  assert.deepStrictEqual([again.id, again.existing, again.from_review], [first.id, true, r.id]);
+  assert.strictEqual((await orch.task.list({})).tasks.length, before, 'nothing was written');
+  assert.strictEqual(first.existing, undefined);
+});
