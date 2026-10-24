@@ -183,7 +183,7 @@ const ORCHESTRATOR = [
     // the caller's own tool timeout has to be the outer bound, and a refusal would lose the fact that
     // nothing had finished yet.
     name: 'worker_wait',
-    description: 'Block until one of the named workers, or any worker this session launched, finishes a turn or dies, or the timeout passes. Returns which worker, what happened, what established it, its turn and checkpoint id, and how long the call held. A timeout is a result, not an error: call it again.',
+    description: 'Block until one of the named workers, or any worker this session launched, finishes a turn or dies, or the timeout passes. Returns which worker, what happened, what established it, its turn and checkpoint id, and how long the call held. Timeout is a result. already: ended before it.',
     inputSchema: S({
       worker_ids: strs('Otherwise every worker this session launched'),
       timeout_ms: int('default 110000'),
@@ -196,7 +196,7 @@ const ORCHESTRATOR = [
   },
   {
     name: 'worker_stop',
-    description: 'Stop a worker by its exact pid. Returns exit code, signal, ms to exit, whether it was graceful or killed, and the session id to resume from later.',
+    description: 'Stop a worker by its recorded pid. Returns exit code, signal, ms to exit, whether it was graceful or killed, and the session id to resume from later.',
     inputSchema: S({
       worker_id: str(),
       mode: { type: 'string', enum: ['graceful', 'kill'] },
@@ -205,7 +205,7 @@ const ORCHESTRATOR = [
   },
   {
     name: 'worker_restart',
-    description: 'Restart a worker from its last checkpoint. Returns which branch was taken, resume or replace, and why, the old and new pid, session id, checkpoint id and the first turn\'s usage. Past about 100 s it returns status "not ready yet" with first_turn_awaited false; wait with worker_wait.',
+    description: 'Restart a worker from its last checkpoint. Returns which branch was taken, resume or replace, and why, the old and new pid, session id, checkpoint id and the first turn\'s usage. Past about 100 s it returns status "not ready yet" with first_turn_awaited false; it is still starting.',
     inputSchema: S({ worker_id: str(), first_turn_timeout_ms: int('default 180000') }, ['worker_id']),
   },
   {
@@ -219,6 +219,7 @@ const ORCHESTRATOR = [
           items: S({ argv: strs(), cwd: str(), timeout_ms: int() }, ['argv']),
         },
         files_within_owned: bool(),
+        verdict: bool(),
       }),
       files_owned: strs('Paths relative to the worktree'),
       depends_on: strs('Task ids that must be done before this one can be assigned'),
