@@ -80,6 +80,15 @@ CREATE TABLE IF NOT EXISTS usage (
   written_at INTEGER NOT NULL, written_by TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_usage_id ON usage(id, seq);
 CREATE INDEX IF NOT EXISTS ix_usage_run ON usage(run_id, seq);
+
+-- ADR 0053 decision 5: one row per state of an integration (merging, then conflict, failed or evaluated). Append-only like the
+-- tables above; the JSON columns are text in SQLite and parsed on the wire.
+CREATE TABLE IF NOT EXISTS integration (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL, run_id TEXT, repo TEXT, into_branch TEXT, worktree TEXT,
+  created_worktree INTEGER, base_sha TEXT, head_sha TEXT, state TEXT NOT NULL, task_ids TEXT, merged TEXT, conflict TEXT,
+  error TEXT, checks TEXT, passed INTEGER, junctions TEXT, removed_at INTEGER,
+  written_at INTEGER NOT NULL, written_by TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_integration_id ON integration(id, seq);
 `;
 
 // Additive columns so an existing data dir upgrades in place. First (session-3 hardening MS-5): on a
@@ -201,6 +210,9 @@ const MIGRATIONS = [
   // there is none (notes on, notes explicitly off, or memory null). The levers cannot say it (a default block is stored as null, and an
   // explicit off looks like no project), so status and the panel read the run's own answer, never the current config's.
   'ALTER TABLE run ADD COLUMN memory_notice TEXT',
+  // ADR 0053 decision 1: the worktree and branch belay made for the task, from a recorded base (JSON text, nullable), carried forward
+  // by every later task row; task.evaluate judges from its base_sha.
+  'ALTER TABLE task ADD COLUMN worktree TEXT',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot

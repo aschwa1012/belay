@@ -16,19 +16,23 @@ const COLUMNS = {
     'paused_at', 'paused_by', 'park_turns',
     'model', 'cache_read_tokens', 'cache_creation_tokens', 'tool_calls', 'base_sha', 'head_sha',
     'effort_requested', 'head_error', 'base_error', 'pid_created', 'pid_created_error', 'pid_image', 'memory_queries', 'native_memory', 'native_memory_auth'],
-  task: ['id', 'run_id', 'spec', 'acceptance', 'files_owned', 'state', 'results', 'depends_on', 'handoff', 'repairs'],
+  task: ['id', 'run_id', 'spec', 'acceptance', 'files_owned', 'state', 'results', 'depends_on', 'handoff', 'repairs', 'worktree'],
   lease: ['id', 'task_id', 'run_id', 'holder', 'holder_role', 'granted_at', 'expires_at',
     'released_at', 'supersedes', 'ttl_ms'],
   checkpoint: ['id', 'task_id', 'worker_id', 'run_id', 'turn', 'files_touched', 'tool_digest',
     'stated', 'source'],
   permission: ['id', 'run_id', 'worker_id', 'adapter_pid', 'tool', 'input', 'input_truncated',
     'input_sha256', 'state', 'verdict_by', 'reason', 'requested_at', 'decided_at'],
+  // ADR 0053 decision 5.
+  integration: ['id', 'run_id', 'repo', 'into_branch', 'worktree', 'created_worktree', 'base_sha', 'head_sha', 'state',
+    'task_ids', 'merged', 'conflict', 'error', 'checks', 'passed', 'junctions', 'removed_at'],
 };
 
 // Text in SQLite, parsed objects on the wire (api.md §1).
 const JSON_COLUMNS = {
   run: [], worker: ['memory_queries'], lease: [],
-  task: ['acceptance', 'files_owned', 'results', 'depends_on', 'handoff'],
+  task: ['acceptance', 'files_owned', 'results', 'depends_on', 'handoff', 'worktree'],
+  integration: ['task_ids', 'merged', 'conflict', 'error', 'checks', 'junctions'],
   checkpoint: ['files_touched', 'tool_digest', 'stated'],
   // build step 6d: `input` stays a string on the wire, never parsed here. A truncated JSON text
   // (input_truncated: 1) does not parse as JSON at all, and an operator reading `pending` needs to
