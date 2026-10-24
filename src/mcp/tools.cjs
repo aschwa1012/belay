@@ -14,6 +14,7 @@
 'use strict';
 
 const { isJobId } = require('../run/job-prefixes.cjs'); // pure
+const { isPathId, RULE: PATH_ID_RULE } = require('../core/path-ids.cjs'); // pure
 const NOTES = require('./tools-notes.cjs'); // ADR 0047: the listing of a worker whose run has the notes lever on
 const { WORKER_TYPES } = require('../run/agent-defaults.cjs'); // pure; the agent_type enum
 const S = (properties, required) => {
@@ -402,6 +403,10 @@ function validateArgs(name, args, { notes = false, role = 'worker' } = {}) {
   if (CLOSED.has(name)) {
     const extra = Object.keys(a).find((k) => !Object.prototype.hasOwnProperty.call(schema.properties || {}, k));
     if (extra !== undefined) bad(`${name}: ${extra} is not one of its arguments`, { tool: name, field: extra, reason: 'unknown_field' });
+  }
+  // A worker id is a path segment (workers/<id>/): one id rule, refused before any file.
+  if (name === 'worker_spawn' && a.worker_id !== undefined && a.worker_id !== null && !isPathId(a.worker_id)) {
+    bad(`worker_spawn: worker_id must be ${PATH_ID_RULE}`, { tool: name, field: 'worker_id', reason: 'id_shape' });
   }
   if (name === 'worker_spawn' && typeof a.worker_id === 'string' && (a.worker_id.startsWith(RESERVED_WORKER_PREFIX) || isJobId(a.worker_id))) {
     bad(`worker_spawn: worker ids starting ${RESERVED_WORKER_PREFIX}, notereview-, scrub- or archreview- are reserved for belay's own workers`, { tool: name, field: 'worker_id', reason: 'reserved', prefix: RESERVED_WORKER_PREFIX });

@@ -5,6 +5,7 @@
 const fs = require('node:fs');
 const L = require('./launch.cjs');
 const { fail } = require('./errors.cjs');
+const { checkPathId } = require('../core/path-ids.cjs');
 
 // memory_queries: up to 4 situation lines the orchestrator writes for the worker's memory index (each a `when`-shaped task line, at
 // most 160 bytes). Returns them trimmed, or [] when none were given.
@@ -21,6 +22,7 @@ function checkMemoryQueries(list) {
 }
 
 function validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id, native_memory = null }) {
+  if (worker_id !== null && worker_id !== undefined) { try { checkPathId('spawn worker_id', worker_id); } catch (e) { fail('E_ARGS', e.message, { worker_id: String(worker_id).slice(0, 80) }); } }
   if (substrate !== 'claude-code' && substrate !== 'codex') fail('E_ARGS', 'substrate must be claude-code or codex', { substrate });
   if (!worktree) fail('E_ARGS', 'spawn needs a worktree');
   if (typeof prompt !== 'string' || !prompt) fail('E_ARGS', 'spawn needs a prompt');
