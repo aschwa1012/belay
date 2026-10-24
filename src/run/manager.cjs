@@ -194,6 +194,15 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       permission_mode = null, startup_timeout_ms = 60000, worker_id = null, sandbox = null,
       permission_prompt = false, permit_wait_ms = 600000, effort: effortArg = null, tools = null, agent_type = null, max_budget_usd = null, memory_queries = null, native_memory = null,
     } = opts || {};
+    // allowed_tools narrows the built-in tool surface (`--tools`), not only the pre-approval. Checked first: a refusal writes nothing.
+    // An explicit `tools` (harness callers) wins. Codex has no built-in list to narrow: a proper subset is refused, the rest has no effect.
+    let spawnTools = tools;
+    if (allowed_tools != null) {
+      const narrowed = S.toolsFromAllowed(allowed_tools).tools;
+      if (substrate === 'codex') {
+        if (narrowed) fail('E_SUBSTRATE', `allowed_tools cannot narrow a Codex worker's tools (it has no built-in tool list to narrow; allowed_tools has no effect there)`, { allowed_tools });
+      } else if (spawnTools == null) spawnTools = narrowed;
+    }
     let model = modelArg; let effort = effortArg;
     let nativeMemory = MP.nativeMemory(ctx, substrate, worker_id, native_memory); if (nativeMemory && nativeMemory.then) nativeMemory = await nativeMemory; // sync unless the run's levers are still to be read (the worker record must exist in the same tick)
     let agent = null;
@@ -219,7 +228,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       w = W.newWorkerRecord({
         id, substrate, worktree, dataDir: root, taskId: task_id, model,
         allowedTools: allowed_tools, permissionMode: permission_mode, sandbox,
-        permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort, tools, maxBudgetUsd: max_budget_usd, nativeMemory,
+        permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort, tools: spawnTools, maxBudgetUsd: max_budget_usd, nativeMemory,
       });
       w.indexQueries = indexQueries; // the orchestrator's situation lines for this worker's memory index (memory.embedQuery extra_texts)
       workers.set(id, w);
