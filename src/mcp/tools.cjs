@@ -51,7 +51,7 @@ const ROUTES = {
   worker_message: { role: 'orchestrator', via: 'run', method: 'message' },
   worker_stop: { role: 'orchestrator', via: 'run', method: 'stop' },
   worker_restart: { role: 'orchestrator', via: 'run', method: 'restart' },
-  task_create: { role: 'orchestrator', via: 'core', method: 'task.create' },
+  task_create: { role: 'orchestrator', via: 'compose', method: 'create' }, // ADR 0058 (B4): warns when no check is declared
   // ADR 0058: the assign, then the task sent to the worker (compose.cjs).
   task_assign: { role: 'orchestrator', via: 'compose', method: 'assign' },
   // ADR 0010 amendment 3: the only way an orchestrator over MCP can write `done` and clear a dependency.

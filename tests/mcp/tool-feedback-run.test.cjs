@@ -43,6 +43,12 @@ test('task_assign sends the running worker its task, lease id and hand-back rule
   ok(await a.call('worker_wait', { worker_ids: [w.id], timeout_ms: 20000 }), 'worker_wait');
 
   const task = ok(await a.call('task_create', { spec: 'rename the frobnicator', acceptance: { files_within_owned: true }, files_owned: [] }), 'task_create');
+  assert.strictEqual(task.warning, undefined, 'a task with a check carries no warning');
+  // B4: a task with no check is written, and the answer says it can never be done.
+  for (const acceptance of [undefined, {}, { commands: [] }]) {
+    const bare = ok(await a.call('task_create', { spec: 'no checks', ...(acceptance ? { acceptance } : {}) }), 'task_create');
+    assert.deepStrictEqual([bare.state, /never mark it done/.test(bare.warning)], ['open', true]);
+  }
   const asg = ok(await a.call('task_assign', { task_id: task.id, worker_id: w.id }), 'task_assign');
   assert.strictEqual(asg.delivered.sent, true, JSON.stringify(asg.delivered));
   assert.strictEqual(asg.delivered.channel, 'stdin');

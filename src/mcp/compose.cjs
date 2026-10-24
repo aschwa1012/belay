@@ -23,6 +23,9 @@ function compactSpawn(row, requested = null) {
   return out;
 }
 
+const NO_CHECK = 'this task declares no acceptance check, so task_evaluate can never mark it done: give it commands, files_within_owned, verdict or handoff';
+const hasCheck = (a) => !!a && ((Array.isArray(a.commands) && a.commands.length > 0) || a.files_within_owned === true || a.verdict === true || !!a.handoff);
+
 // A worker this adapter launched is the only one it has a channel to: an adopted row's process belongs to another adapter.
 const launchedHere = (r, id) => !!(r && typeof r._worker === 'function' && r._worker(id));
 
@@ -68,7 +71,13 @@ function createCompose({ callCore, manager, openManager, dataDir = null }) {
   // worker_last_reply (B11): read from the worker's recorded stream (last-reply.cjs); no core call, no write.
   const lastReply = async (args) => require('./last-reply.cjs').read(dataDir, args.worker_id);
 
-  return { assign, evaluate, spawn, lastReply };
+  // task_create (B4): the row as written, with a warning when it declares no check, since such a task can never be done.
+  async function create(args) {
+    const row = await callCore('task.create', args);
+    return row && !hasCheck(row.acceptance) ? { ...row, warning: NO_CHECK } : row;
+  }
+
+  return { assign, evaluate, spawn, lastReply, create };
 }
 
 // ADR 0058 decision 10: a row's `seq` is its version in the store, not an order a model should reason about, so every tool answer
