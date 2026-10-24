@@ -70,7 +70,7 @@ test('runningReview and reviewLine: only a live review blocks the button; an old
   assert.strictEqual(M.reviewLine(r('running')), 'archive review of acme running · pid 77');
   assert.ok(M.reviewLine(r('running'), 1000 + M.STALE_CLAIM_MS + 1).includes('may be stale'));
   assert.ok(!M.reviewLine(r('running'), 1000 + M.STALE_CLAIM_MS).includes('may be stale'));
-  assert.ok(M.reviewLine(r('interrupted')).includes('INTERRUPTED'));
+  assert.ok(M.reviewLine(r('interrupted')).includes('cut off'));
   assert.strictEqual(M.reviewLine({ ...r('ok'), text: 'kept 3' }), 'archive review of acme ended ok · kept 3');
   assert.strictEqual(M.reviewLine({ ...r('failed'), text: 'E_ARGS' }), 'archive review of acme FAILED · E_ARGS');
 });
@@ -217,4 +217,24 @@ test('pruneSettled drops only resolved entries, oldest first, and never the newe
   const all = {};
   for (let i = 0; i < 25; i += 1) all['u' + i] = { label: 'u', at: i, unknown: true };
   assert.strictEqual(Object.keys(M.pruneSettled(all, 'u24')).length, 25, 'nothing unresolved is ever dropped');
+});
+
+test('ctxSegs: tokens always, the percent when the window is known, a percent never alone when tokens are known', () => {
+  const S = { context: 'figure' };
+  const text = (a, s = S, m) => M.ctxSegs(a, s, m).map((x) => x.t).join('');
+  assert.strictEqual(text({ ctxTokens: 18247, ctxPct: null }), '18.2k');
+  assert.strictEqual(text({ ctxTokens: 18247, ctxPct: 2 }), '18.2k · 2%');
+  assert.strictEqual(text({ ctxTokens: 610000, ctxPct: 60.6 }), '610.0k · 61%');
+  assert.strictEqual(text({ ctxTokens: 18247, ctxPct: 2 }, S, 'tokens'), '18.2k');
+  assert.strictEqual(text({ ctxTokens: null, ctxPct: 38 }), '38%');
+  assert.strictEqual(text({ ctxTokens: null, ctxPct: null }), '—');
+  assert.strictEqual(text({ ctxTokens: 18247, ctxPct: 2 }, { context: 'both' }, 'mid'), '18.2k · 2%');
+  assert.ok(text({ ctxTokens: 18247, ctxPct: 50 }, { context: 'both' }).startsWith('▰▰▰▱▱▱ 18.2k · 50%'));
+});
+
+test('a dead review worker is not live; a dead coder is', () => {
+  assert.strictEqual(M.isLive({ id: 'archreview-r-1-abc', state: 'dead' }), false);
+  assert.strictEqual(M.isLive({ id: 'coder-1', state: 'dead' }), true);
+  assert.strictEqual(M.isLive({ id: 'archreview-r-1-abc', state: 'running' }), true);
+  assert.strictEqual(M.isLive({ id: 'coder-1', state: 'done' }), false);
 });

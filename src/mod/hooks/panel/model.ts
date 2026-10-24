@@ -156,7 +156,8 @@ export function normNotices(json: unknown): BelayNotice[] {
       const r = str(e.request_id) ?? '?'
       mk('permission', r, `${r} · ${w ?? '?'} wants ${str(e.tool) ?? 'a tool'}`, r, `belay approve ${r}   ·   belay deny ${r}`)
     } else if (kind === 'worker_dead') {
-      mk('dead', w ?? '?', `${w} dead · established by ${str(e.death_established_by) ?? 'not recorded'}`, `exit ${e.exit_code ?? '?'}`, `belay logs ${w}`)
+      if (w && /^archreview-/.test(w)) mk('stopped', w, `${w} cut off before it answered`, `exit ${e.exit_code ?? '?'}`, `belay worker rm ${w}`) // a review's death is its outcome, not an alert
+      else mk('dead', w ?? '?', `${w} dead · established by ${str(e.death_established_by) ?? 'not recorded'}`, `exit ${e.exit_code ?? '?'}`, `belay logs ${w}`)
     } else if (kind === 'worker_stopped') {
       mk('stopped', w ?? '?', `${w} stopped`, `exit ${e.exit_code ?? '?'}`, `belay logs ${w}`)
     } else if (kind === 'worker_stalled') {
@@ -259,15 +260,23 @@ export function cacheSegs(a: BelayAgent, s: BelaySettings, fetchedAt: number, no
 // 18247 -> 18.2k, 1234567 -> 1.2M: the context in tokens, when belay knows the count but has no window to make a percentage of.
 export const tokensShort = (n: number): string => (n >= 999_950 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n)))
 
-export function ctxSegs(a: BelayAgent, s: BelaySettings): Seg[] {
-  if (a.ctxPct === null) return [a.ctxTokens !== null ? { t: tokensShort(a.ctxTokens), dim: true } : { t: '—', dim: true }]
-  const c = a.ctxPct > 75 ? 'warning' : 'suggestion'
-  const fig: Seg = { t: `${Math.round(a.ctxPct)}%` }
-  const b = bar(a.ctxPct / 100, 6)
+// The context column: the token count always, and the percent of the window when belay knows the window (`18.2k` or `18.2k · 2%`), so one rule reads the same for
+// every row. The bar, when the setting asks for it, is drawn only with a percent. `mode` is how much room the column has: `full` (the setting's own form), `mid`
+// (tokens and percent, no bar) or `tokens` (the narrow form: the percent and the bar are dropped first).
+export type CtxMode = 'full' | 'mid' | 'tokens'
+export function ctxSegs(a: BelayAgent, s: BelaySettings, mode: CtxMode = 'full'): Seg[] {
+  const tok: Seg | null = a.ctxTokens !== null ? { t: tokensShort(a.ctxTokens) } : null
+  const pct = a.ctxPct
+  if (pct === null) return [tok ?? { t: '—', dim: true }]
+  const fig: Seg = { t: `${Math.round(pct)}%` }
+  if (mode === 'tokens') return [tok ?? fig]
+  const c = pct > 75 ? 'warning' : 'suggestion'
+  const b = bar(pct / 100, 6)
   const barSegs: Seg[] = [{ t: b.on, c }, { t: b.off, dim: true }]
-  if (s.context === 'figure') return [fig]
-  if (s.context === 'bar') return barSegs
-  return [...barSegs, { t: ' ' }, fig]
+  const both: Seg[] = tok ? [tok, { t: ' · ', dim: true }, fig] : [fig]
+  if (mode === 'mid' || s.context === 'figure') return both
+  if (s.context === 'bar') return tok ? [...barSegs, { t: ' ' }, tok] : barSegs
+  return [...barSegs, { t: ' ' }, ...both]
 }
 
 // ---- marks --------------------------------------------------------------------------------------
@@ -299,7 +308,10 @@ export function interactiveMark(marks: BelaySettings['marks']): Seg {
   return { t: marks === 'colour' ? '●' : '◇', c: 'inactive' }
 }
 
-export const isLive = (a: BelayAgent): boolean => a.state !== 'done'
+// A review worker (`archreview-…`) that died is a review that was cut, failed or abandoned: finished, with its outcome, not live. A dead coder or tester stays in the
+// live part because someone should look at it.
+export const isReviewWorker = (a: BelayAgent): boolean => /^archreview-/.test(a.id)
+export const isLive = (a: BelayAgent): boolean => a.state !== 'done' && !(a.state === 'dead' && isReviewWorker(a))
 export const isBusy = (a: BelayAgent): boolean => ['running', 'waiting', 'stalled', 'permission'].includes(a.state)
 
 // Elapsed run time: frozen at the end, at the pause while one is set, and where the orchestrator was first read dead.

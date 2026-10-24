@@ -177,7 +177,7 @@ describe('notes held for the archive reviewer', () => {
     const wd = await boot($, on, { notices: notices(held(2), running(false)) })
     await openPane($, wd)
     const a = await pane($)
-    expect(a.text).toContain('INTERRUPTED')
+    expect(a.text).toContain('cut off') // finished, dim, with its reason: not a red alert
     expect(a.text).toContain('review the held notes')
   })
 

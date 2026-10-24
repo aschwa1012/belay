@@ -69,3 +69,80 @@ describe('agent names and the interactive orchestrator', () => {
   })
 })
 void RUN; void T0
+
+const flat = (s: string) => s.replace(/\s+/g, ' ')
+// ---- the context column: tokens always, the percent when the window is known ----
+describe('the context column reads the same for every row', () => {
+  for (const cols of [30, 40, 50, 72]) {
+    test(`tokens first, the percent only with room, and never a percent alone, at ${cols} columns`, async ($, on) => {
+      const wd = await boot($, on, { orchTokensOnly: true })
+      await openPane($, wd)
+      const { ui } = await pane($, 'terminal', cols)
+      const rows = leaves(await ui.drawn())
+      const hasTok = rows.includes('610.0k') // coder-1: tokens and a window
+      const hasPct = rows.includes('61%')
+      if (hasPct) expect(hasTok).toBe(true) // the percent never stands without its tokens
+      if (cols >= 72) { expect(hasTok && hasPct).toBe(true); expect(rows).toContain('18.2k') } // the orchestrator: tokens, no window, no made-up percent
+      if (cols <= 30) expect(hasPct).toBe(false) // narrow: the percent goes first
+      for (const r of rows) if (!r.startsWith('Spawned rev-1')) expect([...r].length, r).toBeLessThanOrEqual(cols)
+    })
+  }
+  test('the legend describes the column', async ($, on) => {
+    const wd = await boot($, on)
+    await openPane($, wd)
+    const { ui } = await pane($, 'terminal', 100)
+    await ui.press({ key: 'legend' })
+    expect(flat(words(await ui.drawn()))).toContain('18.2k · 2% context: tokens, and the share of the window when known')
+  })
+})
+
+// ---- a review that was cut, failed or abandoned is finished ----
+describe('a dead review worker is a finished review', () => {
+  const ID = 'archreview-r-7f3a-mvln6h2p'
+  const cut = { run_id: RUN, events: [{ kind: 'worker_dead', ts: T0 - 60000, run_id: RUN, worker_id: ID, exit_code: 1, exit_signal: null, death_established_by: 'exit-event' }] }
+  test('it is not live: it is counted under finished, with its outcome and the command to clear it', async ($, on) => {
+    const wd = await boot($, on, { deadReview: true, notices: cut })
+    await openPane($, wd)
+    const { ui } = await pane($, 'terminal', 100)
+    const t = flat(leaves(await ui.drawn()).join(' '))
+    expect(t).toContain('AGENTS 4 live') // the four live agents of the fixture; the dead review is not among them
+    expect(t).toContain('▸ 2 finished') // coder-0 and the review
+    await ui.press({ key: 'fold' })
+    const open = leaves(await ui.drawn())
+    expect(open.some(r => r.startsWith('archreview-r-7f3a'))).toBe(true)
+    expect(open).toContain('cut') // the outcome in the task column
+    await ui.press({ key: 'agent:' + ID })
+    const d = flat(leaves(await ui.drawn()).join(' '))
+    expect(d).toContain('outcome cut')
+    expect(d).toContain('belay worker rm ' + ID)
+  })
+  test('without an exit code in the notice the outcome is "no answer"', async ($, on) => {
+    const wd = await boot($, on, { deadReview: true })
+    await openPane($, wd)
+    const { ui } = await pane($, 'terminal', 100)
+    await ui.press({ key: 'fold' })
+    expect(leaves(await ui.drawn())).toContain('no answer')
+  })
+  test('its death is a finished notice, not a red alert, and the band does not count it', async ($, on) => {
+    const wd = await boot($, on, { deadReview: true, notices: cut })
+    await openPane($, wd)
+    const { ui, text } = await pane($, 'terminal', 100)
+    expect(text).toContain('cut off before it answered')
+    expect(flat(leaves(await ui.drawn()).join(' '))).not.toMatch(/✕\s*\d\d:\d\d/)
+    const b = await band($, 'terminal', 100)
+    expect(b.text).not.toContain(ID)
+  })
+  test('a dead coder is still live: someone should look at it', async ($, on) => {
+    const wd = await boot($, on, { deadCoder: true })
+    await openPane($, wd)
+    const { ui } = await pane($, 'terminal', 100)
+    expect(flat(leaves(await ui.drawn()).join(' '))).toContain('AGENTS 5 live')
+  })
+  test('at 30 columns nothing is wider than the pane', async ($, on) => {
+    const wd = await boot($, on, { deadReview: true, notices: cut })
+    await openPane($, wd)
+    const { ui } = await pane($, 'terminal', 30)
+    await ui.press({ key: 'fold' })
+    for (const r of leaves(await ui.drawn())) if (!r.startsWith('Spawned rev-1')) expect([...r].length, r).toBeLessThanOrEqual(30)
+  })
+})

@@ -67,7 +67,7 @@ export function reviewOutcome(text: string | null): string | null {
 export const STALE_CLAIM_MS = 15 * 60 * 1000
 export function reviewLine(r: BelayReview, now: number | null = null): string {
   if (r.state === 'running') return `archive review of ${r.project} running${r.pid ? ` · pid ${r.pid}` : ''}${now !== null && r.ts !== null && now - r.ts > STALE_CLAIM_MS ? ' · pid check only, may be stale: a new review checks the process' : ''}`
-  if (r.state === 'interrupted') return `archive review of ${r.project} INTERRUPTED · its process is gone; the next review takes over`
+  if (r.state === 'interrupted') return `archive review of ${r.project} cut off · its process is gone and it gave no answer; the next review takes over`
   if (r.state === 'ok') {
     const w = reviewOutcome(r.text)
     if (w) return `archive review of ${r.project} done · ${w}${r.job ? ` · job ${r.job.length > 16 ? '…' + r.job.slice(-8) : r.job}` : ''}`
