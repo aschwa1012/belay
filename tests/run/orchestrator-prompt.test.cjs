@@ -92,7 +92,7 @@ test('memory rules: the text stays within 1,200 bytes and carries each rule the 
   assert.match(text, /memory_timeline/, 'a timeline');
   assert.match(text, /memory_retrieve[^\n]*`ids`[^\n]*only/, 'full rows only for what matters');
   assert.match(text, /memory_ids/, 'cite ids');
-  assert.match(text, /`absence_established` is true only when both modes ran and found nothing[^\n]*`false` is normal on a populated scope[^\n]*modes_failed/, 'false is not read as not searched');
+  assert.match(text, /`absence_established` is true only when both modes ran and no row reached the relevance floor[^\n]*`false` is normal on a populated scope[^\n]*`low_relevance`[^\n]*modes_failed/, 'false is not read as not searched; a low_relevance row is likely unrelated (ADR 0057)');
   assert.doesNotMatch(text, /not searched properly yet/, 'the old, untrue reading is gone');
   assert.match(text, /`unverified` row as a claim/, 'an unverified row is never presented as fact');
   assert.match(text, /`refuted`/, 'refuted rows');

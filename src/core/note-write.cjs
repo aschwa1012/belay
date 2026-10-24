@@ -13,6 +13,7 @@ const { search } = require('./memory-search.cjs');
 const { hashText } = require('./store.cjs');
 const { storedCosine } = require('./memory-facts.cjs');
 const WH = require('./memory-withhold.cjs');
+const EC = require('./evaluate-cite.cjs');
 
 
 const SEEN_MAX = 20; // body.seen_in is bounded; body.seen_total keeps the full count
@@ -139,6 +140,8 @@ async function prepareNotes(E, caller, notes, { project, lv, worker }) {
     const ap = NP.merge(n, diff, worker && worker.worktree);
     const s = M.scrub(true, { text: NT.keywordText({ ...n, applies_to: ap.applies_to }), title: n.title, body: { when: n.when, evidence: n.evidence, applies_to: ap.applies_to, applies_to_from: ap.applies_to_from, task_files: ap.task_files, task_files_from: 'diff', task_files_truncated: ap.task_files_truncated, ...(ap.ambiguous.length ? { applies_to_ambiguous: ap.ambiguous } : {}), subjects: n.subjects } });
     const checked = NT.checkNote({ ...n, title: s.title, when: s.body.when }, i);
+    // ADR 0057 decision 7: an evidence entry that cites a task_evaluate result is checked against it now; one that fails refuses the write.
+    const evidenceChecked = EC.checkNoteEvidence(E, caller, n.evidence, i);
     const title = checked.title;
     const embedTxt = NT.embedText({ title, when: checked.when }, NT.TEMPLATE_NEW); // what the vector is made from; the keyword text is s.text
     // Only what the worker wrote counts toward the limit; belay's derived fields (applies_to from the diff, task_files) are bounded by bytes in note-paths.cjs.
@@ -153,7 +156,7 @@ async function prepareNotes(E, caller, notes, { project, lv, worker }) {
     }
     const matches = emb ? await findMatches(E, caller, project, emb, lv) : [];
     const prior = emb ? priorVerdicts(E, project, emb, lv, NT.TEMPLATE_NEW, caller) : [];
-    prepared.push({ index: i, kind: n.kind, basis: n.basis, title, text: s.text, body: s.body, redactions: s.redactions, emb: emb || {}, template: NT.TEMPLATE_NEW, applies: { ...ap.counts, ...(diff && diff.error ? { diff_error: diff.error } : {}) }, unembedded: embedFailed, matches, prior, model });
+    prepared.push({ index: i, evidenceChecked, kind: n.kind, basis: n.basis, title, text: s.text, body: s.body, redactions: s.redactions, emb: emb || {}, template: NT.TEMPLATE_NEW, applies: { ...ap.counts, ...(diff && diff.error ? { diff_error: diff.error } : {}) }, unembedded: embedFailed, matches, prior, model });
   }
 
   return prepared;
@@ -182,6 +185,7 @@ function commitNotes(E, caller, prep, { task_id }) {
     }
     const body = {
       kind: p.kind, basis: p.basis, when: p.body.when, evidence: p.body.evidence, applies_to: p.body.applies_to, applies_to_from: p.body.applies_to_from, task_files: p.body.task_files, task_files_from: p.body.task_files_from, task_files_truncated: p.body.task_files_truncated, ...(p.body.applies_to_ambiguous ? { applies_to_ambiguous: p.body.applies_to_ambiguous } : {}), subjects: p.body.subjects,
+      ...(p.evidenceChecked && p.evidenceChecked.length ? { evidence_checked: p.evidenceChecked } : {}),
       model: p.model, state: pending ? 'pending' : 'live', seen_in: [], seen_total: 0, reported_wrong: [],
       ...(p.matches.length ? { matches: p.matches } : {}),
       ...(p.prior.length ? { prior_verdicts: p.prior } : {}),
