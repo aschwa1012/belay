@@ -10,7 +10,7 @@ const { pidAlive } = require('./lock.cjs');
 const { DEFAULT_LEASE_TTL_MS, TASK_STATES } = require('./schema.cjs');
 const { runAcceptance } = require('./evaluate.cjs');
 const holds = require('./task-holds.cjs');
-const { filesOverlap, runNotLive, resolveOwner } = require('./methods-task-hold.cjs');
+const { filesOverlap, runNotLive, resolveOwner, assertNotOwnReview } = require('./methods-task-hold.cjs');
 
 // ADR 0025 decision 1: the most a worker may hand back on release, serialized.
 const HANDOFF_MAX_BYTES = 4096;
@@ -61,6 +61,8 @@ async function create(E, caller, args) {
   if (acceptance != null && (typeof acceptance !== 'object' || Array.isArray(acceptance))) {
     throw err('E_ARGS', 'task.acceptance must be an object with optional commands and files_within_owned');
   }
+  const handoffShape = acceptance ? require('./handoff-check.cjs').shapeError(acceptance.handoff) : null; // ADR 0058 decision 6
+  if (handoffShape) throw err('E_ARGS', handoffShape);
   if (acceptance && acceptance.verdict !== undefined && acceptance.verdict !== true) {
     throw err('E_ARGS', 'task.acceptance.verdict must be true or absent: a review task is judged from a worker\'s handed-back verdict');
   }
@@ -157,6 +159,7 @@ async function assign(E, caller, args) {
     if (task.state === 'done') {
       throw err('E_TASK_DONE', `task ${args.task_id} is done, and done is written only by task.evaluate; assigning it would un-earn it and reopen its dependents' gate, so create a new task to redo the work`, { task_id: args.task_id, state: 'done' });
     }
+    if (task.state === 'cancelled') throw err('E_ARGS', `task ${args.task_id} was cancelled, which is final; create a new task to do the work`, { task_id: args.task_id, state: 'cancelled' });
 
     const old = rows.currentLeaseForTask(E.store, args.task_id);
     if (old && !old.released_at && old.holder_role === 'operator') {
@@ -167,6 +170,7 @@ async function assign(E, caller, args) {
     // clear it (ADR 0013 §1). Only `done` opens the gate, and `done` is earned by executable evidence
     // (api.md §2), so a worker cannot talk its way past this by saying it finished.
     assertDependenciesDone(E, task);
+    assertNotOwnReview(E.store, task, args.worker_id); // with check_only too, when the spawn names its worker id
 
     // ADR 0046 decision 1: assigning makes a task hold its files, so another holding task, in any run, that overlaps them
     // refuses it. Inside one live run create already refused the overlap, so this fires for a re-attached run only: a task
@@ -249,8 +253,9 @@ async function get(E, caller, args) {
 
 async function evaluate(E, caller, args) {
   if (!args.task_id) throw err('E_ARGS', 'task.evaluate needs a task_id');
-  if (!args.worktree || typeof args.worktree !== 'string') throw err('E_ARGS', 'task.evaluate needs the worktree the acceptance criteria run in');
+  if (args.worktree !== undefined && (!args.worktree || typeof args.worktree !== 'string')) throw err('E_ARGS', 'task.evaluate needs the worktree the acceptance criteria run in');
   if (args.base !== undefined && (typeof args.base !== 'string' || !args.base)) throw err('E_ARGS', 'task.evaluate: base must be a non-empty string (a commit or ref)');
+  if (args.trigger !== undefined && args.trigger !== 'release') throw err('E_ARGS', 'task.evaluate: trigger is release (the run manager evaluating a hand-back, ADR 0058) or absent');
   const task = rows.current(E.store, 'task', args.task_id);
   if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.task_id}`, { task_id: args.task_id });
   // The same two gates assign applies, checked before any command runs and again inside the write's transaction. `done` is
@@ -258,13 +263,19 @@ async function evaluate(E, caller, args) {
   // rather than evaluated without `done`, because a task is not done while its dependency is open (ADR 0013 section 1).
   const gate = (t) => {
     if (t.state === 'done') throw err('E_TASK_DONE', `task ${t.id} is done, and done is final; create a new task to redo the work`, { task_id: t.id, state: 'done' });
+    if (t.state === 'cancelled') throw err('E_ARGS', `task ${t.id} was cancelled, which is final; there is nothing to evaluate`, { task_id: t.id, state: 'cancelled' });
     assertDependenciesDone(E, t);
   };
   E.store.tx(() => gate(rows.current(E.store, 'task', args.task_id) || task));
 
   // Lazy: verdict.cjs is loaded only when a write path needs it, never when a core is opened to read.
   const { verdictCheck } = require('./verdict.cjs');
-  const commandChecks = await runAcceptance(task.acceptance, args.worktree, task.files_owned, { base: args.base });
+  const at = require('./methods-worktree.cjs').evaluateTarget(task, args); // ADR 0053 decision 4: the recorded worktree and base
+  const EC = args.cancel_key !== undefined ? require('./evaluate-cancel.cjs') : null; // ADR 0058: a release evaluation can be cancelled
+  const cancel = EC ? EC.register(args.cancel_key) : null;
+  let commandChecks;
+  try { commandChecks = await runAcceptance(task.acceptance, at.worktree, task.files_owned, { ...at, cancel }); } finally { if (cancel) EC.unregister(args.cancel_key, cancel); }
+  if (cancel && cancel.cancelled) throw EC.cancelled(task, cancel);
   // The commands can run for minutes, so the row is read again inside the transaction that writes it: a
   // release that landed meanwhile (its handoff, its state) is what the verdict check reads and what the
   // written row carries forward (ADR 0025 decision 4).
@@ -274,12 +285,13 @@ async function evaluate(E, caller, args) {
     gate(fresh);
     const checks = [...commandChecks];
     if (fresh.acceptance && fresh.acceptance.verdict === true) checks.push(verdictCheck(E.store, fresh));
+    if (fresh.acceptance && fresh.acceptance.handoff) checks.push(require('./handoff-check.cjs').handoffCheck(E.store, fresh)); // ADR 0058 decision 6
     // Nothing checked is not the same as everything passed. A task with no acceptance criteria has no
     // executable evidence, so it can never reach `done` through this call.
     const executable = checks.length > 0 && checks.every(c => c.executable);
     const passed = checks.length > 0 && checks.every(c => c.passed);
     const results = {
-      evaluated_at: Date.now(), executable, passed, checks,
+      evaluated_at: Date.now(), executable, passed, checks, ...(args.trigger ? { trigger: args.trigger } : {}),
       ...(checks.length === 0 ? { note: 'the task declares no acceptance criteria, so nothing was executed and nothing is proven' } : {}),
     };
     return rows.append(E.store, 'task', {
@@ -449,4 +461,5 @@ function heldLease(E, taskId, workerId) {
   return l;
 }
 
-module.exports = { create, assign, list, get, evaluate, renew, release, takeControl, view, heldLease, overlaps: holds.overlaps, findCycle, dependsOf, TASK_STATES };
+// ADR 0058: a second evaluation of the same task and tree while one runs joins it (evaluate-cancel.cjs joinOrRun).
+module.exports = { create, assign, list, get, evaluate: (E, caller, args) => require('./evaluate-cancel.cjs').joinOrRun(E, args, () => evaluate(E, caller, args)), renew, release, takeControl, view, heldLease, overlaps: holds.overlaps, findCycle, dependsOf, refutedReview, TASK_STATES };

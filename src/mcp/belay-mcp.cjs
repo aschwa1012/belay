@@ -27,7 +27,7 @@ const { withDataNotice } = require('./data-notice.cjs'); // invariant 8: a resul
 const { parseArgv, die } = require('./argv.cjs'); // identity from argv only; moved out to keep this file short
 
 const SERVER_NAME = 'belay';
-const SERVER_VERSION = '0.2.0';
+const SERVER_VERSION = '0.3.0';
 const DEFAULT_PROTOCOL = '2025-06-18';
 
 const opts = parseArgv(process.argv.slice(2));
@@ -190,7 +190,7 @@ function openRunManagerOnce() {
         // BELAY_FAKE_PATHS, honoured only when set, merges over it so a test can point the run
         // manager at a fake substrate binary without touching the environment the workers inherit.
         agentDefaults: opts.agentDefaults || null, // the config's agents block, resolved by belay run
-        compactAtTokens: opts.compactAt, worktree: opts.worktree || null, // ADR 0007 decision 3; ADR 0043 decision 1
+        compactAtTokens: opts.compactAt, worktree: opts.worktree || null, stopIdleOnDone: !!opts.stopIdleOnDone, // ADR 0007 decision 3; ADR 0043 decision 1; ADR 0058
         memoryLevers: attachedRun() ? require('../run/memory-levers.cjs').leversOfRow(attachedRun()) : null,
         paths: { mcpBinary: __filename.split(path.sep).join('/'), ...FAKE_PATHS },
       }))
@@ -242,6 +242,22 @@ async function callCore(dotted, args) {
   return fn(args);
 }
 
+const COMPOSE = require('./compose.cjs').createCompose({ callCore, manager: () => runManager, openManager: () => openRunManagerOnce(), dataDir: opts.dataDir });
+// ADR 0053 decision 6: worker_spawn's cwd defaults to the worktree belay made for task_id, and a different one is refused, so a
+// worker is never pointed past its task's own tree by a typo. Without a recorded worktree the call is as it was.
+async function spawnWorktree(args) {
+  const a = args || {};
+  const rec = a.task_id ? ((await callCore('task.get', { task_id: a.task_id })) || {}).worktree : null;
+  const own = rec && rec.path && !rec.removed_at ? rec.path : null;
+  if (a.worktree === undefined || a.worktree === null) {
+    if (!own) throw fail('E_ARGS', `worker_spawn needs worktree: ${a.task_id ? `task ${a.task_id} has no belay worktree (task_worktree makes one)` : 'no task_id names one'}`, { tool: 'worker_spawn', missing: 'worktree' });
+    return { ...a, worktree: own };
+  }
+  const same = (x, y) => { const f = (p) => String(p).replace(/\\/g, '/').replace(/\/+$/, ''); return process.platform === 'win32' ? f(x).toLowerCase() === f(y).toLowerCase() : f(x) === f(y); };
+  if (own && !same(a.worktree, own)) throw fail('E_ARGS', `worker_spawn: task ${a.task_id} has its own worktree ${own}; omit worktree or pass that one`, { tool: 'worker_spawn', field: 'worktree', task_worktree: own });
+  return a;
+}
+
 async function callTool(name, args) {
   const route = routeOf(name);
   if (!route) throw fail('E_ARGS', `no such tool ${name}`, { tool: name });
@@ -255,6 +271,14 @@ async function callTool(name, args) {
     throw fail('E_ROLE', `${name} is not available in ${opts.role} role; it belongs to ${roleOf(name)}`, { tool: name, role: opts.role });
   }
   validateArgs(name, args, { notes: notesOn, role: opts.role });
+  // ADR 0057 decision 1: a model's search answers the compact view unless it asks for debug or index; the Core API's default stays full.
+  if (name === 'memory_search' && args && typeof args === 'object' && args.view === undefined) args = { ...args, view: 'compact' };
+  // ADR 0053: one tool, two core methods; `action` is the tool's, never the core's.
+  if (name === 'task_worktree') {
+    const { action, ...rest } = args || {};
+    return callCore(action === 'remove' ? 'task.worktreeRemove' : 'task.worktreeCreate', rest);
+  }
+  if (name === 'worker_spawn') args = await spawnWorktree(args);
   if (route.via === 'core') {
     const row = withDataNotice(route.method, await callCore(route.method, args));
     // The one place the adapter adds to a row, and it is additive: every field of the core's
@@ -267,10 +291,12 @@ async function callTool(name, args) {
     }
     return row;
   }
+  if (route.via === 'compose') return COMPOSE[route.method](args); // ADR 0058: a core write and the follow-up the prompt asked for
   if (route.via === 'briefing') {
     const [line, doc] = await Promise.all([callCore('continuity.resumeLine', args), callCore('continuity.resumeDoc', args)]);
     return { line, doc };
   }
+  if (route.via === 'git') { const G = require('./git-read.cjs'); return G.gitRead(args, { runWorktree: opts.worktree || null, taskWorktree: G.taskWorktreeVia(callCore) }); }
   if (route.via === 'run') {
     const r = await openRunManagerOnce();
     if (typeof r[route.method] !== 'function') throw fail('E_INTERNAL', `the run manager exposes no method ${route.method}`, { method: route.method });
@@ -288,7 +314,7 @@ const text = (v) => ({ type: 'text', text: JSON.stringify(v) });
 function okResult(row) {
   // Every row passes through unchanged. MCP requires structuredContent to be an object; the contract
   // returns an object from every method, so the guard below should never fire.
-  const structured = (row !== null && typeof row === 'object' && !Array.isArray(row)) ? row : { result: row };
+  const structured = require('./compose.cjs').revOf((row !== null && typeof row === 'object' && !Array.isArray(row)) ? row : { result: row }); // seq is named rev (ADR 0058)
   return { content: [text(structured)], structuredContent: structured, isError: false };
 }
 

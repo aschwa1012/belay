@@ -1,6 +1,6 @@
 {
   "name": "belay",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "belay's panel: a band above the prompt and a side pane that show a belay run's agents, notices and cost. Read-only.",
   "author": { "name": "belay" },
   "types": "./types/index.d.ts"

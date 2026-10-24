@@ -174,19 +174,17 @@ test('verdict: refuted is executable and failed, with summary and findings in de
   assert.deepStrictEqual(v.detail.findings[0], { n: 0, note: 'f' });
 });
 
-test('verdict: a judge who held a lease on the dependency is not executable, named', async () => {
+test('verdict: a judge who held a lease on the dependency is refused at assign (ADR 0058), named, and nothing is written', async () => {
   const { t, r } = await doneTaskAndReview('v7');
-  // coder-v7 (the worker who did the work under review) judges its own work
-  await handBack(r.id, 'coder-v7', { verdict: 'holds', summary: 'looks fine to me' });
-  const ev = await orch.task.evaluate({ task_id: r.id, worktree: dir });
-  assert.notStrictEqual(ev.state, 'done');
-  const v = byKind(ev, 'verdict');
-  assert.strictEqual(v.executable, false);
-  assert.strictEqual(v.passed, false);
-  assert.match(v.detail.reason, /coder-v7/);
-  assert.match(v.detail.reason, /own work/);
-  assert.match(v.detail.reason, new RegExp(t.id));
-  assert.strictEqual(ev.results.executable, false);
+  // coder-v7 (the worker who did the work under review) would judge its own work: refused before a lease is written
+  await worker('coder-v7');
+  await rejects(orch.task.assign({ task_id: r.id, worker_id: 'coder-v7' }), 'E_SELF_REVIEW', new RegExp(`${t.id}[^]*coder-v7[^]*own work`));
+  await rejects(orch.task.assign({ task_id: r.id, worker_id: 'coder-v7', check_only: true }), 'E_SELF_REVIEW');
+  const row = await orch.task.get({ task_id: r.id });
+  assert.deepStrictEqual([row.state, row.lease], ['open', null], 'no lease and no state change');
+  // A different worker may take it.
+  await worker('judge-v7');
+  assert.strictEqual((await orch.task.assign({ task_id: r.id, worker_id: 'judge-v7' })).task.state, 'assigned');
 });
 
 test('verdict: no depends_on, no handoff, a missing summary, or an unknown verdict is not executable, each named', async () => {
@@ -247,8 +245,9 @@ test('verdict: a verdict beside a failing command check does not reach done', as
 test('verdict: a hand-back from a superseded lease is not judged after the task is reassigned', async () => {
   const { r } = await doneTaskAndReview('v12');
   const { lease_id: oldLease } = await handBack(r.id, 'judge-v12', { verdict: 'holds', summary: 'holds' });
-  // the orchestrator reassigns the review to the author of the work under review
-  const again = await orch.task.assign({ task_id: r.id, worker_id: 'coder-v12' });
+  // the orchestrator reassigns the review to another judge
+  await worker('judge-v12b');
+  const again = await orch.task.assign({ task_id: r.id, worker_id: 'judge-v12b' });
   const ev = await orch.task.evaluate({ task_id: r.id, worktree: dir });
   assert.notStrictEqual(ev.state, 'done');
   const v = byKind(ev, 'verdict');

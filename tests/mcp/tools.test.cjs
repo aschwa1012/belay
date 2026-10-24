@@ -96,8 +96,12 @@ test('A8 briefing returns line and doc, both inside their byte ceilings', async 
 
 test('A8 the four worker tools return the process facts their proof columns name', async (t) => {
   await withRole('orchestrator', t, async (a, data) => {
-    const w = assertOk(await a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'go' }), 'worker_spawn');
+    const w = assertOk(await a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'go', view: 'debug' }), 'worker_spawn');
     has(w, ['id', 'substrate', 'pid', 'session_id', 'adapter_pid', 'argv_hash', 'started_at', 'state', 'ready_ms'], 'worker_spawn');
+    // ADR 0058: the default answer is the compact one, and nothing in it is invented.
+    const c = assertOk(await a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'go' }), 'worker_spawn');
+    has(c, ['id', 'substrate', 'pid', 'session_id', 'state', 'worktree', 'started_at', 'ready_ms', 'effort', 'tools'], 'worker_spawn compact');
+    for (const k of ['argv_hash', 'written_at', 'input_tokens', '__paths']) assert.ok(!(k in c), `the compact answer leaves out ${k}`);
     assert.strictEqual(w.state, 'running', 'a spawned worker is running only after its ready event');
 
     const m = assertOk(await a.call('worker_message', { worker_id: w.id, text: 'carry on' }), 'worker_message');
@@ -129,12 +133,12 @@ test('A8 task_create and task_assign return the task row and both leases', async
   });
 });
 
-test('A8 task_evaluate returns the task row with its results, and refuses a missing worktree or a non-string base at the boundary', async (t) => {
+test('A8 task_evaluate returns the task row with its results, and refuses a missing task_id or a non-string base at the boundary (worktree defaults in the core, ADR 0053)', async (t) => {
   await withRole('orchestrator', t, async (a, data) => {
     const e = assertOk(await a.call('task_evaluate', { task_id: 'task-1', worktree: data, base: 'main' }), 'task_evaluate');
     has(e, ['id', 'state', 'results'], 'task_evaluate');
     has(e.results, ['evaluated_at', 'executable', 'passed', 'checks'], 'task_evaluate results');
-    for (const [args, re] of [[{ task_id: 't' }, /needs worktree/], [{ worktree: data }, /needs task_id/], [{ task_id: 't', worktree: data, base: 7 }, /base must be string/]]) {
+    for (const [args, re] of [[{ worktree: data }, /needs task_id/], [{ task_id: 't', worktree: data, base: 7 }, /base must be string/]]) {
       const r = await a.call('task_evaluate', args);
       assert.strictEqual(r.isError, true, `task_evaluate ${JSON.stringify(args)}: expected a refusal`);
       assert.strictEqual(r.structuredContent.error, 'E_ARGS');
@@ -288,9 +292,9 @@ test('S11 worker_spawn takes effort: five levels in the listing, a bad level ref
     assert.strictEqual(bad.isError, true);
     assert.strictEqual(bad.structuredContent.error, 'E_ARGS');
     assert.match(bad.structuredContent.message, /effort/);
-    const w = assertOk(await a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'x', effort: 'xhigh' }), 'worker_spawn');
+    const w = assertOk(await a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'x', effort: 'xhigh', view: 'debug' }), 'worker_spawn');
     assert.strictEqual(w.__effort, 'xhigh', 'the manager received effort: xhigh');
-    assert.strictEqual(assertOk(await a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'x' }), 'worker_spawn').__effort, null);
+    assert.strictEqual(assertOk(await a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'x', view: 'debug' }), 'worker_spawn').__effort, null);
   });
 });
 

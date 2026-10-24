@@ -26,9 +26,10 @@ const hashOf = (events) => crypto.createHash('sha256').update(JSON.stringify(eve
 
 const OFF_HASHES = {
   'claude-stream.jsonl': ['claude-code', 'fb8f7e6c1bfb6390aa18b8b19666dc674d4142aedb13ed73ab0270fccafb9ada'],
-  'codex-stream.jsonl': ['codex', 'b997add34aa0aa029aaf7143695f9be853b8fd3a2ac28fdda15743422c75df75'],
+  // The two Codex hashes moved once, on purpose: ADR 0058 (B7) gives a command_execution tool_use its command as args.
+  'codex-stream.jsonl': ['codex', '59fc75485488a1f7cbc3fc5947cbca59767f3a863bf417b3e0b73f04510cb8ce'],
   'capture-claude.jsonl': ['claude-code', '0ed1c4c7d3d82ed8374efa30eae6f533654493779ef16c589281f8e1e7a0ba5f'],
-  'capture-codex.jsonl': ['codex', '388fa489c8f9cfe4fe13671d436b1bc3b24d6612a3a61bfbb6dead7b1618faf9'],
+  'capture-codex.jsonl': ['codex', 'a894732601a6b92e4c17b3965cee5955841c9eb9fff07b964339bfef87e6e07c'],
 };
 
 test('capture off (default, false, or an empty options object) leaves every fixture identical to the base parser', () => {

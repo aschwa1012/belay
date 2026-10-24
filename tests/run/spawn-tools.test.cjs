@@ -62,11 +62,11 @@ test('omitted allowed_tools gives the full six, and naming all six is the same s
   assert.deepStrictEqual(b.surface.builtins, SIX);
 }));
 
-test('a name that is neither a built-in nor mcp__* is refused E_ARGS with nothing written, naming web tools', () => withMgr(async ({ sb, core, m }) => {
-  for (const bad of [['Read', 'WebFetch'], ['WebSearch', 'Task', 'mcp__belay'], ['Read', 7]]) {
+test('a name past the default list (a web tool with no agent_type) or unknown is refused E_ARGS with nothing written', () => withMgr(async ({ sb, core, m }) => {
+  for (const [bad, re] of [[['Read', 'WebFetch'], /WebFetch, outside the default list/], [['WebSearch', 'Task', 'mcp__belay'], /Task, which no worker can have/], [['Read', 7], /array of strings/]]) {
     await assert.rejects(spawn(m, sb, 'w-web', { allowed_tools: bad }), (e) => {
       assert.strictEqual(e.code, 'E_ARGS');
-      if (typeof bad[1] === 'string') assert.match(e.message, /web tools are not available to workers in this release/);
+      assert.match(e.message, re);
       return true;
     });
   }
@@ -77,7 +77,7 @@ test('a name that is neither a built-in nor mcp__* is refused E_ARGS with nothin
 
 test('allowed_tools with no built-in (only mcp__belay, or empty) is refused E_ARGS with nothing written', () => withMgr(async ({ sb, core, m }) => {
   for (const bad of [['mcp__belay'], []]) {
-    await assert.rejects(spawn(m, sb, 'w-none', { allowed_tools: bad }), (e) => e.code === 'E_ARGS' && /no built-in tool/.test(e.message));
+    await assert.rejects(spawn(m, sb, 'w-none', { allowed_tools: bad }), (e) => e.code === 'E_ARGS' && /names no tool of the default list/.test(e.message));
   }
   assert.strictEqual(fs.existsSync(path.join(sb.data, 'workers', 'w-none')), false);
   assert.strictEqual(core.rowsFor('w-none').length, 0);

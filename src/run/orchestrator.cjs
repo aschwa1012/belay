@@ -80,7 +80,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   const bind = await require('./bind-launch.cjs').bindOrchestrator(core, runId); // ADR 0045 decision 2: the owner is this process's own, so the bind is in process
   const written = L.writeOrchestratorFiles({
     dir: orchestratorDir, runId, dataDir, mcpPath, settingsPath: L.userSettingsPath(), cwd: worktree, // ADR 0024
-    compactAt: compactAtTokens, knowledgeAgent: !!spec.knowledgeAgent, agentDefaults: spec.agentDefaults || null, bind, // ADR 0007 decision 3; ADR 0043 decision 1
+    compactAt: compactAtTokens, agentDefaults: spec.agentDefaults || null, bind, stopIdleOnDone: !!spec.stopIdleOnDone, // ADR 0007 decision 3; ADR 0058
   });
   fs.writeFileSync(path.join(written.dir, 'prompt.txt'), promptText);
 
@@ -231,7 +231,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     const rec = {
       at_ms: Date.now() - t0, worker_id: ev.worker_id, event: ev.event, turn: ev.turn,
       bytes: Buffer.byteLength(text, 'utf8'), orchestrator_idle_at_write: state.idle,
-      established_by: ev.event === 'note_refuted' || ev.event === 'scrub_alarm' ? `${ev.event} receipt seq ${ev.seq}` : `worker.list row seq ${ev.seq} for the run`,
+      established_by: ev.event === 'note_refuted' || ev.event === 'scrub_alarm' ? `${ev.event} receipt seq ${ev.seq}` : ev.event === 'evaluated' ? `task ${ev.task_id} results at ${ev.seq}` : `worker.list row seq ${ev.seq} for the run`,
     };
     if (ev.event === 'death') {
       rec.exit_code = ev.exit_code; rec.exit_signal = ev.exit_signal; rec.death_established_by = ev.death_established_by;
@@ -279,10 +279,10 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     const nowMs = Date.now() - t0;
     const { events, next, pending_deaths } = diffWorkers({
       prev: state.baseline, rows, runId, nowMs, graceMs: DEATH_GRACE_MS,
-      orphanGraceMs: ORPHAN_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid),
+      orphanGraceMs: ORPHAN_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid), sinceAt: t0,
     });
     state.baseline = next;
-    for (const ev of events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))).concat(await noteWatcher.poll())) writeWake(ev);
+    for (const ev of (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()))).concat(await noteWatcher.poll())) writeWake(ev); // ADR 0058: a turn_end carries its release evaluation
     if (state.finishing) return; // a wake's own write may have found the child already gone
 
     if (state.idle) {
@@ -296,7 +296,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       // not a pending death (the pid is alive) — the one gap review 2 found. An ordinary idle `running`
       // or `starting` worker (pid alive, no turn owed) is deliberately NOT held here: the idle-close rule
       // ends the run regardless of a live, merely-idle worker process, by design.
-      const live = rows.filter((w) => w.run_id === runId && w.state === 'stopping' && w.pid_alive === true).map((w) => w.id);
+      const live = rows.filter((w) => w.run_id === runId && w.state === 'stopping' && w.pid_alive === true).map((w) => w.id).concat(require('./release-eval.cjs').evaluatingHolds(state.evalSeen, rows, runId)); // ADR 0058: a release evaluation holds the close
       // 6f design item 5: the resume line carries no worker id, so awaitingWakeIds() alone never named
       // it; an idle orchestrator right after resume could otherwise close under that very write before
       // the resumed turn starts. Any write still unanswered, worker-tagged or not, holds the close.
@@ -341,7 +341,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       // the Claude Code orchestrator: verifyReady's own `.then`/`.catch` are gone (nothing else used
       // them), and a turn ending before this line can no longer race it, because there is nothing left
       // to race — the whole check has already run by the time `pollOnce` is reached.
-      const gate = verifyClaudeReady({ substrate: 'claude-code' }, ev);
+      const gate = verifyClaudeReady({ substrate: 'claude-code', tools: S.ORCHESTRATOR_TOOLS }, ev); // ADR 0054 decision 1: held to its list, which has no Bash
       if (!gate.ok) {
         abortForReadyFailure(`the orchestrator's ready check failed (ADR 0001 §8): ${gate.reason}`);
         return;

@@ -25,7 +25,9 @@
 // before the caller's own 5a rule (a dead pid on a non-terminal row does not hold) applies to it.
 // orphanGraceMs, adapterAlive(pid): a row whose adapter is dead has no detector left to write its death, so it
 // is held only orphanGraceMs; without adapterAlive every row gets graceMs.
-function diffWorkers({ prev, rows, runId, nowMs, graceMs, orphanGraceMs = graceMs, adapterAlive = null }) {
+// sinceAt: the wall-clock ms the baseline began. A first-sight `dead` row whose exited_at is earlier is history (a run id run again,
+// a publisher started late); any other first-sight death is news. Null: every first-sight death of this run is news.
+function diffWorkers({ prev, rows, runId, nowMs, graceMs, orphanGraceMs = graceMs, adapterAlive = null, sinceAt = null }) {
   const next = { ...(prev || {}) };
   const events = [];
   const pending_deaths = [];
@@ -41,11 +43,14 @@ function diffWorkers({ prev, rows, runId, nowMs, graceMs, orphanGraceMs = graceM
       // a turn that ended between spawn and this poll is news, not history.
       // build step 6f, decision 3: a first-sight `paused` row is baselined silently too, same as
       // `stopped`/`dead` — a park this adapter never watched happen is history, not news.
-      if (row.state === 'stopped' || row.state === 'dead' || row.state === 'paused') {
+      // Audit R3: a `dead` row of this run that died after the baseline began is news too. worker_spawn returned at ready, so a
+      // worker that crashed (or was killed) before this poll is first seen dead, and its death and finished turns are owed a wake.
+      const deathIsNews = row.state === 'dead' && !(sinceAt != null && Number.isFinite(row.exited_at) && row.exited_at < sinceAt);
+      if ((row.state === 'stopped' || row.state === 'dead' || row.state === 'paused') && !deathIsNews) {
         next[row.id] = { turns, state: row.state };
         continue;
       }
-      base = { turns: 0, state: row.state };
+      base = { turns: 0, state: deathIsNews ? 'starting' : row.state };
       next[row.id] = base;
     }
     const justParked = base.state !== 'paused' && row.state === 'paused';
@@ -109,7 +114,7 @@ function diffWorkers({ prev, rows, runId, nowMs, graceMs, orphanGraceMs = graceM
 // No worker output, ever: the id, the turn and (for a death) the exit facts are the whole of it.
 // Both shapes stay comfortably under 400 bytes for any id this codebase generates.
 function wakeText(event) {
-  if (event.event === 'note_refuted' || event.event === 'scrub_alarm') return event.text; // note-wake.cjs: belay's own record, built from the core's facts
+  if (event.event === 'note_refuted' || event.event === 'scrub_alarm' || event.event === 'evaluated') return event.text; // evaluated: release-eval.cjs, facts only // note-wake.cjs: belay's own record, built from the core's facts
   if (event.event === 'death') {
     return `belay: worker ${event.worker_id} died during turn ${event.turn} ` +
       `(exit code ${event.exit_code}, signal ${event.exit_signal}, established by ${event.death_established_by}). ` +
@@ -120,8 +125,9 @@ function wakeText(event) {
     return `belay: worker ${event.worker_id} was paused by ${event.paused_by} during turn ${event.turn}; ` +
       `its process is parked and its session kept, and it takes no turn until the operator resumes it.`;
   }
-  return `belay: worker ${event.worker_id} finished turn ${event.turn}. ` +
-    `What it did is in the store: task_list, briefing or memory_search.`;
+  // ADR 0058: the hand-back's evaluation, as facts, sized so the whole text fits the interactive wake budget.
+  return require('./release-eval.cjs').turnEndText(`belay: worker ${event.worker_id} finished turn ${event.turn}.`,
+    ' What it did is in the store: task_list, briefing or memory_search.', event.evaluated, event.evaluating);
 }
 
 // A worker this run manager (via the orchestrator's own adapter) launched is mid-turn on the store's

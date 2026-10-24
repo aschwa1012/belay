@@ -453,7 +453,9 @@ class Parser {
     }
 
     if (it && j.type === 'item.started' && (it.type === 'mcp_tool_call' || it.type === 'command_execution' || it.tool)) {
-      const f = { tool: it.tool || it.name || it.type, args: it.arguments == null ? {} : it.arguments };
+      // ADR 0058 (B7): a command_execution item carries its command, not arguments; reading only arguments gave every
+      // command the same {} and so the same args_sha256_12 in the tool digest.
+      const f = { tool: it.tool || it.name || it.type, args: it.arguments != null ? it.arguments : (it.command != null ? { command: it.command } : {}) };
       if (this.capture) {
         f.tool_use_id = it.id == null ? null : it.id;
         f.command = CF.commandOf(it, this.capture.redact);

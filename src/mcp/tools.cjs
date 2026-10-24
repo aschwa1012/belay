@@ -32,8 +32,8 @@ const strs = (description) => {
   return a;
 };
 
-// name -> { role, via, method }. `via` is 'core' (a dotted Core method), 'run' (a RunManager method)
-// or 'briefing' (the one tool that composes two Core calls into { line, doc }).
+// name -> { role, via, method }. `via` is 'core' (a dotted Core method), 'run' (a RunManager method),
+// 'compose' (a core write and its follow-up, compose.cjs) or 'briefing' (the one tool that composes two Core calls into { line, doc }).
 const ROUTES = {
   memory_store: { role: 'both', via: 'core', method: 'memory.store' },
   memory_retrieve: { role: 'both', via: 'core', method: 'memory.get' },
@@ -47,14 +47,21 @@ const ROUTES = {
   status: { role: 'both', via: 'core', method: 'status.get' },
   task_list: { role: 'both', via: 'core', method: 'task.list' },
   briefing: { role: 'both', via: 'briefing', method: 'continuity.resumeLine+resumeDoc' },
-  worker_spawn: { role: 'orchestrator', via: 'run', method: 'spawn' },
+  worker_spawn: { role: 'orchestrator', via: 'compose', method: 'spawn' }, // ADR 0058: the run manager's spawn, compact by default
   worker_message: { role: 'orchestrator', via: 'run', method: 'message' },
   worker_stop: { role: 'orchestrator', via: 'run', method: 'stop' },
   worker_restart: { role: 'orchestrator', via: 'run', method: 'restart' },
-  task_create: { role: 'orchestrator', via: 'core', method: 'task.create' },
-  task_assign: { role: 'orchestrator', via: 'core', method: 'task.assign' },
+  task_create: { role: 'orchestrator', via: 'compose', method: 'create' }, // ADR 0058 (B4): warns when no check is declared
+  // ADR 0058: the assign, then the task sent to the worker (compose.cjs).
+  task_assign: { role: 'orchestrator', via: 'compose', method: 'assign' },
   // ADR 0010 amendment 3: the only way an orchestrator over MCP can write `done` and clear a dependency.
-  task_evaluate: { role: 'orchestrator', via: 'core', method: 'task.evaluate' },
+  task_evaluate: { role: 'orchestrator', via: 'compose', method: 'evaluate' }, // ADR 0058: then stop_idle_on_done (compose.cjs)
+  fix_from_review: { role: 'orchestrator', via: 'core', method: 'task.fixFromReview' }, // ADR 0058 decision 3
+  task_cancel: { role: 'orchestrator', via: 'compose', method: 'cancel' }, // ADR 0058 decision 7: then the lease holder is told
+  worker_last_reply: { role: 'orchestrator', via: 'compose', method: 'lastReply' }, // ADR 0058 (B11): read from the recorded stream
+  // ADR 0053: a task's own worktree and branch (action remove routes to task.worktreeRemove, belay-mcp.cjs), and the merge step.
+  task_worktree: { role: 'orchestrator', via: 'core', method: 'task.worktreeCreate' },
+  integrate: { role: 'orchestrator', via: 'core', method: 'integration.merge' },
   // ADR 0015: admitted to the surface, which is nineteen tools from that record. It is the only way
   // to wait in the deployment ADR 0009 §1 names first — an operator's own session, which belay
   // attaches to and therefore cannot wake, because it does not own that session's stdin.
@@ -79,6 +86,8 @@ const ROUTES = {
   // ADR 0043 decision 1: listed only when the run's knowledge_agent lever is on (toolsFor's knowledge option);
   // with the lever off the manager refuses it E_LEVER_OFF, and the listing never mentions it.
   knowledge_ask: { role: 'orchestrator', via: 'run', method: 'ask' },
+  // ADR 0054 decision 2: the orchestrator has no shell; belay runs these git reads for it with its own argv (git-read.cjs).
+  git_read: { role: 'orchestrator', via: 'git', method: 'gitRead' },
 };
 
 const BOTH = [
@@ -87,7 +96,7 @@ const BOTH = [
     description: 'Store one entry. Returns the row written: id, action, namespace, worker id. Refuses text past the embedder\'s window.',
     inputSchema: S({
       text: str('One self-contained statement'),
-      namespace: str('Defaults to this run; moved to the project when your task ends'),
+      namespace: str('Default: this run only; later runs see it only with project_writes on'),
       type: { type: 'string', enum: ['fact', 'episode', 'procedure'] },
       tags: strs(),
       provenance: str('Source, e.g. a path'),
@@ -103,7 +112,7 @@ const BOTH = [
   },
   {
     name: 'memory_search',
-    description: 'Search memory. Query with one short task line for what you will do, naming files or symbols; several short queries beat one long one. view index: ids and titles only. Result names modes_run, modes_failed, absence_established (true only if both ran and found nothing).',
+    description: 'Search memory. Query with one short task line for what you will do, naming files or symbols; several short queries beat one long one. view index: ids and titles only. Result names modes_run, modes_failed, absence_established (true only if both ran and none reached the relevance floor).',
     inputSchema: S({
       query: str(),
       namespace: str(),
@@ -111,7 +120,7 @@ const BOTH = [
       min_score: num(),
       include_superseded: bool(),
       mode: { type: 'string', enum: ['semantic', 'keyword', 'hybrid'] },
-      view: { type: 'string', enum: ['full', 'index'] },
+      view: { type: 'string', enum: ['debug', 'index'] },
       filter: { type: 'object' },
       order: { type: 'string', enum: ['score', 'newest', 'oldest'] },
       offset: int(),
@@ -162,21 +171,22 @@ const BOTH = [
 const ORCHESTRATOR = [
   {
     name: 'worker_spawn',
-    description: 'Launch a real Claude Code or Codex process and wait for its ready event. Returns the worker row: id, substrate, pid, session id, argv hash, started_at, ready_ms. If no ready event arrives it fails with the exit code and stderr tail and writes the row dead, never running. Takes seconds.',
+    description: 'Launch a real Claude Code or Codex process and wait for its ready event. Returns id, substrate, pid, state, session id, worktree, model, effort, tools, ready_ms; view debug: the whole row and launch receipt. If no ready event arrives it fails with the exit code and stderr tail and writes the row dead, never running. Takes seconds.',
     inputSchema: S({
       substrate: { type: 'string', enum: ['claude-code', 'codex'] },
-      worktree: str('Absolute path; the worker\'s cwd'),
+      worktree: str('Absolute path; the worker\'s cwd. Default: task_id\'s worktree'),
       prompt: str('First message'),
       task_id: str('Assign this task once ready and prepend its resume line'),
       model: str(),
-      agent_type: { type: 'string', enum: WORKER_TYPES, description: 'Configured model and effort default' },
+      agent_type: { type: 'string', enum: WORKER_TYPES, description: 'Configured model, effort and tools' },
       effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
       memory_queries: strs('Up to 4 task lines naming the situations the worker will be in, each max 160 bytes'),
       allowed_tools: strs(),
       permission_mode: str(),
       startup_timeout_ms: int('default 60000'),
       worker_id: str('Otherwise generated'),
-    }, ['substrate', 'worktree', 'prompt']),
+      view: { type: 'string', enum: ['compact', 'debug'] },
+    }, ['substrate', 'prompt']),
   },
   {
     // ADR 0015. `worker_spawn` above returns at the ready event and the worker keeps running; this is
@@ -192,8 +202,13 @@ const ORCHESTRATOR = [
   },
   {
     name: 'worker_message',
-    description: 'Send text to a live worker. Returns the channel used, bytes written, pid and turn. Refuses, naming the substrate, when that substrate cannot take a message in its current state.',
+    description: 'Send text to a live worker. Returns the channel used, bytes written, pid and turn; while it compacts, channel queued, sent when that ends. Refuses, naming the substrate, when that substrate cannot take a message in its current state.',
     inputSchema: S({ worker_id: str(), text: str() }, ['worker_id', 'text']),
+  },
+  {
+    name: 'worker_last_reply',
+    description: 'The text a worker\'s last finished turn ended with, from the stream belay recorded (max 4 KB), marked as data. Refuses E_NOT_FOUND for a worker with no stream.',
+    inputSchema: S({ worker_id: str() }, ['worker_id']),
   },
   {
     name: 'worker_stop',
@@ -221,6 +236,7 @@ const ORCHESTRATOR = [
         },
         files_within_owned: bool(),
         verdict: { const: true },
+        handoff: S({ required: strs('Fields the hand-back result must carry') }),
       }),
       files_owned: strs('Paths relative to the worktree'),
       depends_on: strs('Task ids that must be done before this one can be assigned'),
@@ -230,8 +246,8 @@ const ORCHESTRATOR = [
   },
   {
     name: 'task_assign',
-    description: 'Assign a task to a live worker and take a lease for it. Returns the old and new lease rows and the task row. Refuses when the operator holds the lease, when a dependency of the task is not done, naming it and its holder, or when the worker is not starting, running or idle.',
-    inputSchema: S({ task_id: str(), worker_id: str(), ttl_ms: int('default 600000') }, ['task_id', 'worker_id']),
+    description: 'Assign a task to a live worker, take a lease and send the worker the task, its lease id and the hand-back rule. Returns the old and new lease rows, the task row and delivered. Refuses when the operator holds the lease, when a dependency of the task is not done, naming it and its holder, or when the worker is not starting, running or idle.',
+    inputSchema: S({ task_id: str(), worker_id: str(), ttl_ms: int('default 600000'), prompt: str('Sent in place of the spec'), deliver: bool() }, ['task_id', 'worker_id']),
   },
   {
     // ADR 0020 decision 5: the orchestrator's window onto the permission channel, so a headless run
@@ -250,9 +266,43 @@ const ORCHESTRATOR = [
     description: 'Run a task\'s checks in worktree. Returns row and results; done (unblocks dependents) only if all pass.',
     inputSchema: S({
       task_id: str(),
-      worktree: str(),
-      base: str('Diff base; default merge-base main'),
-    }, ['task_id', 'worktree']),
+      worktree: str('Default: the task\'s worktree'),
+      base: str('Diff base; default the task\'s base, else merge-base main'),
+    }, ['task_id']),
+  },
+  {
+    // ADR 0053 decisions 2, 3 and 6.
+    name: 'task_worktree',
+    description: 'Create (default) or remove the task\'s own git worktree and branch belay/<task_id>, cut from base (default HEAD). Returns the task row with worktree. remove refuses a dirty tree unless force, or a live worker in it; keeps the branch unless delete_branch.',
+    inputSchema: S({
+      task_id: str(),
+      action: { type: 'string', enum: ['create', 'remove'] },
+      base: str(),
+      branch: str(),
+      force: bool(),
+      delete_branch: bool(),
+    }, ['task_id']),
+  },
+  {
+    // ADR 0053 decision 5.
+    name: 'integrate',
+    description: 'Merge done tasks\' branches in order into into (default belay/integrate/<run>), then re-run their checks there. Returns state, merged, checks, passed. A conflict is aborted, tree clean; conflict names task and files.',
+    inputSchema: S({
+      task_ids: strs(),
+      into: str(),
+      base: str('If into is new; default the tasks\' base'),
+      evaluate: bool(),
+    }, ['task_ids']),
+  },
+  {
+    name: 'fix_from_review',
+    description: 'Create the fix task for a review evaluated refuted, with depends_on, repairs, acceptance and files_owned inferred and spec from its findings. Returns the task row. Refuses E_FIX_ROUNDS past max_fix_rounds.',
+    inputSchema: S({ review_id: str(), spec: str('Default: from the findings'), repairs: str('Which task, if it judged several'), id: str() }, ['review_id']),
+  },
+  {
+    name: 'task_cancel',
+    description: 'Give up on a task that is not done: releases its lease and its files_owned, state cancelled (final), and tells the lease holder. Returns the task row, the released lease and notified.',
+    inputSchema: S({ task_id: str(), reason: str() }, ['task_id']),
   },
   {
     // ADR 0040 §4. A worker cannot verify a claim, so this is not on the worker listing.
@@ -263,6 +313,20 @@ const ORCHESTRATOR = [
       status: { type: 'string', enum: ['unverified', 'verified', 'refuted'] },
       receipt: str('checkpoint:id, task:id, memory:id, commit:sha or test:text; none for unverified'),
     }, ['id', 'status']),
+  },
+  {
+    // ADR 0054 decision 2. One tool with an op, not four: the listing pays for one schema.
+    name: 'git_read',
+    description: 'Read-only git, run by belay with fixed argv, in worktree, task_id\'s worktree or the run\'s. Returns argv, exit_code, out (16 KB max, truncated marked). Refuses a rev or path that could be an option.',
+    inputSchema: S({
+      op: { type: 'string', enum: ['status', 'log', 'diff', 'show'] },
+      worktree: str(),
+      task_id: str(),
+      rev: str('a..b for log/diff; one commit for show'),
+      path: str(),
+      stat: bool(),
+      n: int('log, default 20'),
+    }, ['op']),
   },
 ];
 
@@ -378,7 +442,7 @@ const NO_NULL = { task_evaluate: ['base'] };
 // the core, never something a model says (invariant 3), so the boundary refuses them in either role,
 // by name, before the core sees them. The schema does not list them, which is why the listing does
 // not pay for them either.
-const HARNESS_ONLY = { memory_store: ['task_id', 'turn', 'source', 'embed', 'body', 'worker_id'], worker_spawn: ['native_memory', 'tools', 'sandbox', 'max_budget_usd'] }; // worker_spawn: native_memory is the eval driver's lever (ADR 0024 amendment 3); tools is the built-in list, which only allowed_tools may narrow (amendment 4); sandbox is a Codex worker's sandbox mode and max_budget_usd a job worker's spend cap, both the harness's. permission_prompt and permit_wait_ms stay open: ADR 0020 decision 1 makes the permission channel optional per spawn, and decision 5 has the orchestrator answer its requests
+const HARNESS_ONLY = { task_evaluate: ['trigger', 'cancel_key'], memory_store: ['task_id', 'turn', 'source', 'embed', 'body', 'worker_id'], worker_spawn: ['native_memory', 'tools', 'sandbox', 'max_budget_usd'] }; // worker_spawn: native_memory is the eval driver's lever (ADR 0024 amendment 3); tools is the built-in list, which only allowed_tools may narrow (amendment 4); sandbox is a Codex worker's sandbox mode and max_budget_usd a job worker's spend cap, both the harness's. permission_prompt and permit_wait_ms stay open: ADR 0020 decision 1 makes the permission channel optional per spawn, and decision 5 has the orchestrator answer its requests
 // Tools that take exactly the properties their schema names: memory_store's row is written from its arguments, so an
 // unnamed one (an id, a created_at, a vector and its model) would reach the core as if the harness had chosen it.
 const CLOSED = new Set(['memory_store']);
