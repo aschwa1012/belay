@@ -34,7 +34,9 @@ test('orchestrator prompt: every mcp__belay__ tool name the template mentions is
   assert.match(text, /`mcp__belay__memory_store` with `text`[\s\S]*after each review verdict[\s\S]*when you end the run[\s\S]*open findings/);
   assert.ok(named.includes('memory_search') && named.includes('memory_store'), 'the template names both memory tools');
   assert.ok(text.indexOf('memory_search') < text.indexOf('mcp__belay__task_create'), 'the search instruction precedes task creation');
-  assert.match(text, /You use no Bash, Edit, Write or NotebookEdit at all/, 'the no-work rule stays');
+  // ADR 0054: the no-work rule is one line, backed by the launch surface (no Edit, Write or Bash), and git reads go through belay.
+  assert.match(text, /^- You have no shell and no editor \(Read, Glob, Grep and belay's tools only\): every change is a worker's\.$/m, 'the no-work rule stays, on one line');
+  assert.match(text, /Read git state with `mcp__belay__git_read`/, 'the git reads are belay\'s');
   // The orchestrator's own listing is the one the template addresses.
   const orch = new Set(T.toolsFor('orchestrator').map((t) => t.name));
   for (const n of named) assert.ok(orch.has(n), `mcp__belay__${n} is not on the orchestrator's listing`);
@@ -49,9 +51,10 @@ const lf = (s) => s.replace(/\r\n/g, '\n');
 // ADR 0037 amendment 6 rewrote these 1-based lines of the interactive twin after 0.1.0 (the waiting text);
 // interactive-prompt.test.cjs pins their new wording, so here they are taken from the base before comparing.
 // The operator's 2026-10-15 ruling rewrote the two spawn lines of each prompt (agent_type always; no hand-passed effort); same treatment.
+// ADR 0054 rewrote the role rule (orchestrator.md 8-10, the twin 10-12) to name the surface and git_read.
 const AMD6_LINES = {
-  'orchestrator.md': [32, 33, 81],
-  'orchestrator-interactive.md': [34, 35, 52, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 78, 79, 85, 92, 98],
+  'orchestrator.md': [8, 9, 10, 32, 33, 81],
+  'orchestrator-interactive.md': [10, 11, 12, 34, 35, 52, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 78, 79, 85, 92, 98],
 };
 
 test('memory rules: the placeholder sits at the end of an existing line, and an empty substitution is the base prompt byte for byte', () => {
