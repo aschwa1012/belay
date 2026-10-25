@@ -225,6 +225,8 @@ const MIGRATIONS = [
   'ALTER TABLE task ADD COLUMN answers TEXT',
   // try-2 gap 3: the diff base the task's files_within_owned is judged from when task.evaluate names none (a release evaluation).
   'ALTER TABLE task ADD COLUMN base TEXT',
+  // ADR 0061 section 1: the acceptances (and specs) an amend replaced, oldest first (JSON text, nullable), carried by every later row.
+  'ALTER TABLE task ADD COLUMN amended TEXT',
   // ADR 0053 amendment 2: the process that runs an integration (its pid and start time), so a row a crash left `merging` reads stale.
   'ALTER TABLE integration ADD COLUMN owner_pid INTEGER',
   'ALTER TABLE integration ADD COLUMN owner_boot INTEGER',

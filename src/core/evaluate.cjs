@@ -255,7 +255,9 @@ function retriesError(acceptance) {
   return bad ? `task.acceptance.commands retries_on_fail must be an integer from 0 to ${RETRIES_MAX}` : null;
 }
 
-async function runAcceptance(acceptance, worktree, filesOwned, { base, baseSource, cancel = null, budgetMs = ACCEPTANCE_BUDGET_MS } = {}) {
+// `beside(t0, t1)` (ADR 0061 section 4 (b)): the evaluations that ran beside a command, as [{ task_id, overlap_ms }]; a check with
+// any records them as `concurrent`, so a flaky failure can be weighed against load.
+async function runAcceptance(acceptance, worktree, filesOwned, { base, baseSource, cancel = null, budgetMs = ACCEPTANCE_BUDGET_MS, beside = null } = {}) {
   const checks = [];
   const until = Date.now() + budgetMs;
   const commands = (acceptance && Array.isArray(acceptance.commands)) ? acceptance.commands : [];
@@ -278,6 +280,7 @@ async function runAcceptance(acceptance, worktree, filesOwned, { base, baseSourc
       return r;
     };
     const ok = (x) => x.executable && x.exit_code === 0 && !x.timed_out;
+    const t0 = Date.now();
     let r = await once(left);
     // ADR 0060 decision 2: a command that ran and failed is run again, up to retries_on_fail times while the budget lasts. One that
     // passes after a failure passes, and is marked flaky with every attempt kept; one that cannot run is never retried.
@@ -287,9 +290,10 @@ async function runAcceptance(acceptance, worktree, filesOwned, { base, baseSourc
       attempts.push(r);
     }
     const flaky = ok(r) && attempts.length > 1;
+    const concurrent = beside ? beside(t0, Date.now()) : [];
     checks.push({
       kind: 'command', argv: c.argv, executable: r.executable, exit_code: r.exit_code, ms: attempts.reduce((s, a) => s + a.ms, 0),
-      passed: ok(r), ...(flaky ? { flaky: true } : {}),
+      passed: ok(r), ...(flaky ? { flaky: true } : {}), ...(concurrent.length ? { concurrent } : {}),
       detail: { cwd, timed_out: r.timed_out, signal: r.signal || null, tree_kill: r.tree_kill || null, pipes_dropped: r.pipes_dropped || null, spawn_error: r.spawn_error || null, ...outputTails(r), stdout_bytes: r.stdout_bytes ?? null, stderr_bytes: r.stderr_bytes ?? null, ...(left < own ? { budget_capped_ms: left } : {}),
         ...(attempts.length > 1 ? { attempts: attempts.map((a) => ({ exit_code: a.exit_code, timed_out: a.timed_out, ms: a.ms, ...(ok(a) ? {} : { stderr_tail: a.stderr.slice(-200) }) })) } : {}) },
     });

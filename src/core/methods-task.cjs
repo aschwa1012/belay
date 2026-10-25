@@ -54,21 +54,15 @@ function findCycle(store, id, dependsOn) {
 }
 
 async function create(E, caller, args, own = {}) { // own: core-internal, task.fixFromReview's inherited worktree and answered reviews; no tool reaches it
+  const AM = require('./methods-task-amend.cjs'); // ADR 0061: amend revises an existing task; tree_of gives a new one another's tree
+  if (args.amend !== undefined) return AM.amend(E, caller, args);
   if (typeof args.spec !== 'string' || !args.spec.trim()) throw err('E_ARGS', 'task.create needs a spec describing the work');
   const filesOwned = args.files_owned == null ? null : args.files_owned;
   if (filesOwned != null && (!Array.isArray(filesOwned) || filesOwned.some(p => typeof p !== 'string'))) {
     throw err('E_ARGS', 'task.files_owned must be an array of worktree-relative path strings');
   }
   const acceptance = args.acceptance == null ? null : args.acceptance;
-  if (acceptance != null && (typeof acceptance !== 'object' || Array.isArray(acceptance))) {
-    throw err('E_ARGS', 'task.acceptance must be an object with optional commands and files_within_owned');
-  }
-  const handoffShape = acceptance ? require('./handoff-check.cjs').shapeError(acceptance.handoff) : null; // ADR 0058 decision 6
-  if (handoffShape) throw err('E_ARGS', handoffShape);
-  const retries = require('./evaluate.cjs').retriesError(acceptance); if (retries) throw err('E_ARGS', retries); // ADR 0060 decision 2
-  if (acceptance && acceptance.verdict !== undefined && acceptance.verdict !== true) {
-    throw err('E_ARGS', 'task.acceptance.verdict must be true or absent: a review task is judged from a worker\'s handed-back verdict');
-  }
+  AM.checkAcceptance(acceptance);
   const dependsOn = args.depends_on == null ? null : args.depends_on;
   if (dependsOn != null && (!Array.isArray(dependsOn) || dependsOn.some(d => typeof d !== 'string' || !d))) {
     throw err('E_ARGS', 'task.depends_on must be an array of task ids this task cannot be assigned before');
@@ -78,7 +72,9 @@ async function create(E, caller, args, own = {}) { // own: core-internal, task.f
   }
   const repairs = args.repairs == null ? null : args.repairs;
   const id = args.id || rows.newId();
-  if (rows.current(E.store, 'task', id)) throw err('E_ARGS', `a task with id ${id} already exists in this store; choose another id, or leave id out for a generated one`, { task_id: id });
+  if (rows.current(E.store, 'task', id)) throw err('E_ARGS', `a task with id ${id} already exists in this store; choose another id, leave id out for a generated one, or pass amend: true to revise its acceptance`, { task_id: id });
+  if (args.tree_of != null && own.worktree) throw err('E_ARGS', 'task.create tree_of: this task already inherits a tree');
+  const tree = args.tree_of != null ? AM.treeOf(E, args.tree_of) : own.worktree;
 
   const deps = dependsOn ? [...new Set(dependsOn)] : null;
   if (deps) {
@@ -123,7 +119,7 @@ async function create(E, caller, args, own = {}) { // own: core-internal, task.f
   const t = Date.now();
   const row = rows.append(E.store, 'task', {
     id, run_id: caller.run_id, spec: args.spec, acceptance, files_owned: filesOwned, state: 'open',
-    results: null, depends_on: deps, repairs, ...(own.worktree ? { worktree: own.worktree } : {}), ...(own.answers ? { answers: own.answers } : {}), ...(args.base != null ? { base: require('./methods-worktree.cjs').baseArg(args.base) } : {}),
+    results: null, depends_on: deps, repairs, ...(tree ? { worktree: tree } : {}), ...(own.answers ? { answers: own.answers } : {}), ...(args.base != null ? { base: require('./methods-worktree.cjs').baseArg(args.base) } : {}),
   }, E.writtenBy(caller), t);
   E.noteWrite();
   return overlaps.length ? { ...row, overlaps } : row;
@@ -259,7 +255,8 @@ function view(E, task, liveness, ctx) {
   const ck = rows.lastCheckpoint(E.store, task.id);
   const h = holds.holdOf(task, liveness || holds.runLiveness(E.store));
   const { integration, review } = derived.of(task, ctx || derived.context(E)); // beside `state`, derived on every read (task-derived.cjs)
-  return { ...task, holds_files: h.holds, holds_reason: h.reason, lease, holder_pid_alive: holderPidAlive, last_checkpoint_id: ck ? ck.id : null, last_checkpoint_at: ck ? ck.written_at : null, integration, review };
+  const stale = derived.handoffStale(task) ? { handoff_stale: true } : {}; // ADR 0061 section 3
+  return { ...task, holds_files: h.holds, holds_reason: h.reason, lease, holder_pid_alive: holderPidAlive, last_checkpoint_id: ck ? ck.id : null, last_checkpoint_at: ck ? ck.written_at : null, integration, review, ...stale };
 }
 
 async function list(E, caller, args) {
@@ -300,7 +297,7 @@ async function evaluate(E, caller, args) {
   const cancel = EC ? EC.register(args.cancel_key) : null;
   const J = require('./judged.cjs'), judged = await J.stateOf(task, at.worktree); // ADR 0060 decisions 4 and 6: what integrate may merge
   let commandChecks;
-  try { commandChecks = await runAcceptance(task.acceptance, at.worktree, task.files_owned, { ...at, cancel }); } finally { if (cancel) EC.unregister(args.cancel_key, cancel); }
+  try { commandChecks = await runAcceptance(task.acceptance, at.worktree, task.files_owned, { ...at, cancel, beside: (a, b) => require('./evaluate-cancel.cjs').during(task.id, a, b) }); } finally { if (cancel) EC.unregister(args.cancel_key, cancel); }
   if (cancel && cancel.cancelled) throw EC.cancelled(task, cancel);
   // The commands can run for minutes, so the row is read again inside the transaction that writes it: a
   // release that landed meanwhile (its handoff, its state) is what the verdict check reads and what the
@@ -309,6 +306,7 @@ async function evaluate(E, caller, args) {
     E.assertRunOpen(caller, 'task.evaluate'); // run.end may have committed while the commands ran (audit D42)
     const fresh = rows.current(E.store, 'task', args.task_id) || task;
     gate(fresh);
+    if ((fresh.amended || []).length !== (task.amended || []).length) throw err('E_BUSY', `task ${task.id}'s acceptance was amended while it was evaluated; nothing was written. Evaluate it again`, { op: 'evaluate', task_id: task.id, amended: true }); // ADR 0061
     const checks = [...commandChecks];
     if (fresh.acceptance && fresh.acceptance.verdict === true) checks.push(verdictCheck(E.store, fresh));
     if (fresh.acceptance && fresh.acceptance.handoff) checks.push(require('./handoff-check.cjs').handoffCheck(E.store, fresh)); // ADR 0058 decision 6
