@@ -84,11 +84,13 @@ test('viewed: task_evaluate, task_assign and task_cancel are compact; other tool
 test('integrate: the merge facts stay; the repository, junctions, base and a passing check\'s tails go', () => {
   const r = { id: 'i1', run_id: 'r', repo: 'C:/r', into_branch: 'belay/integrate/r', worktree: 'C:/r.worktrees/i', created_worktree: true, base_sha: 'b', head_sha: 'h',
     state: 'evaluated', task_ids: ['t1'], merged: [{ task_id: 't1', sha: 's' }], conflict: null, error: null, passed: false, junctions: [{ path: 'x' }], removed_at: null,
+    owner_pid: 4242, owner_boot: 1700000000000, stale: null, not_merged: [],
     checks: [{ argv: ['npm', 'test'], cwd: 'C:/r.worktrees/i', task_ids: ['t1'], passed: true, exit_code: 0, spawn_error: null, stdout_tail: TAIL, stderr_tail: '' },
       { argv: ['npm', 'run', 'lint'], cwd: 'C:/r.worktrees/i', task_ids: ['t1'], passed: false, exit_code: 2, spawn_error: null, stdout_tail: 'lint error', stderr_tail: '' }] };
   const c = V.integrate(r);
   assert.deepStrictEqual([c.id, c.state, c.into_branch, c.head_sha, c.worktree, c.merged, c.conflict, c.passed], ['i1', 'evaluated', 'belay/integrate/r', 'h', 'C:/r.worktrees/i', r.merged, null, false]);
-  for (const k of ['repo', 'junctions', 'base_sha', 'created_worktree']) assert.ok(!(k in c), k);
+  for (const k of ['repo', 'junctions', 'base_sha', 'created_worktree', 'owner_pid', 'owner_boot']) assert.ok(!(k in c), k);
+  assert.deepStrictEqual([c.stale, c.not_merged], [null, []], 'stale and not_merged stay');
   assert.deepStrictEqual(c.checks[0], { argv: ['npm', 'test'], task_ids: ['t1'], passed: true, exit_code: 0 });
   assert.strictEqual(c.checks[1].stdout_tail, 'lint error');
 });
