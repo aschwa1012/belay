@@ -164,3 +164,50 @@ test('a .gone- entry a crash left is swept under the identity its name records; 
     assert.ok(fs.existsSync(`${root}/${wrong}`), 'the mismatched entry stays');
   } finally { s.rm(); }
 });
+
+test('a worker directory swapped for a junction right after the check is caught at the remove: the identity was taken before the check', () => {
+  const s = sandbox();
+  RS.ensure(s.data, 'rX', 'run-L');
+  const wd = `${s.data}/workers/rX`;
+  const orig = SD.scratchDir;
+  SD.scratchDir = (d, id) => { const r = orig(d, id); if (id === 'rX') { SD.scratchDir = orig; fs.rmSync(wd, { recursive: true, force: true }); junction(wd, s.victim); } return r; };
+  try {
+    const out = RS.closeRun(s.data, 'run-L', {}).review_scratch;
+    assert.strictEqual(fs.readFileSync(`${s.victim}/scratch/precious2.txt`, 'utf8'), 'keep me', 'the victim is not deleted');
+    assert.deepStrictEqual(out.folders.map((f) => [f.worker_id, f.removed]), [['rX', false]]);
+    assert.match(out.folders[0].error, /changed between the check and the removal/);
+  } finally { SD.scratchDir = orig; unlinkAll(s, [wd]); }
+});
+
+test('a rename refused while a handle is open is tried a bounded number of times; a passing one removes, a lasting one is left and named', () => {
+  const s = sandbox();
+  const dir = RS.ensure(s.data, 'rB', 'run-L');
+  const real = fs.renameSync;
+  let calls = 0;
+  const busy = (n) => (from, to) => { calls += 1; if (calls <= n) throw Object.assign(new Error('busy'), { code: 'EPERM' }); return real(from, to); };
+  try {
+    fs.renameSync = busy(2);
+    const ok = RS.closeRun(s.data, 'run-L', {}).review_scratch;
+    assert.deepStrictEqual([ok.folders[0].removed, calls], [true, 3], 'two refusals, then the third try moves it');
+    const again = RS.ensure(s.data, 'rB', 'run-L');
+    assert.ok(again);
+    calls = 0;
+    fs.renameSync = busy(99);
+    const left = RS.closeRun(s.data, 'run-L', {}).review_scratch;
+    assert.deepStrictEqual([left.folders[0].removed, calls], [false, 3], 'three tries, then left');
+    assert.match(left.folders[0].error, /could not be moved aside \(EPERM\)/);
+    assert.ok(fs.existsSync(dir), 'left in place');
+  } finally { fs.renameSync = real; s.rm(); }
+});
+
+test('ensure takes the leftover folder\'s identity before its check too: a swap right after it deletes nothing', () => {
+  const s = sandbox();
+  RS.ensure(s.data, 'rE', 'run-L');
+  const wd = `${s.data}/workers/rE`;
+  const orig = SD.scratchDir;
+  SD.scratchDir = (d, id) => { const r = orig(d, id); if (id === 'rE') { SD.scratchDir = orig; fs.rmSync(wd, { recursive: true, force: true }); junction(wd, s.victim); } return r; };
+  try {
+    assert.strictEqual(RS.ensure(s.data, 'rE', 'run-M'), null, 'no folder is named');
+    assert.strictEqual(fs.readFileSync(`${s.victim}/scratch/precious2.txt`, 'utf8'), 'keep me');
+  } finally { SD.scratchDir = orig; unlinkAll(s, [wd]); }
+});

@@ -23,8 +23,21 @@ function removeChecked(dataDir, dir, id) {
   const root = SD.rootDir(dataDir);
   if (!root || !id) return { removed: false, bytes: 0, files: 0, error: 'not a real directory under a real workers folder, so it was left alone' };
   const gone = path.join(root, SD.goneName(id, crypto.randomUUID()));
-  try { fs.renameSync(dir, gone); } catch (e) { return { removed: false, bytes: 0, files: 0, error: `it could not be moved aside (${codeOf(e)}), so it was left alone` }; }
+  const moved = renameRetry(dir, gone);
+  if (moved !== true) return { removed: false, bytes: 0, files: 0, error: `it could not be moved aside (${moved}), so it was left alone` };
   return removeGone(gone, id, dir);
+}
+
+// An open handle (an editor, an indexer, a scanner) makes a rename fail for a moment on Windows: a few short tries, then the
+// code. True when it moved.
+const RENAME_TRIES = 3, RENAME_WAIT_MS = 100, BUSY = new Set(['EPERM', 'EBUSY', 'EACCES']);
+function renameRetry(from, to) {
+  for (let i = 1; ; i += 1) {
+    try { fs.renameSync(from, to); return true; } catch (e) {
+      if (i >= RENAME_TRIES || !BUSY.has(e && e.code)) return codeOf(e);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RENAME_WAIT_MS);
+    }
+  }
 }
 
 // The second half: `gone` is a renamed entry that should have identity `id`. `back` is where it came from (null for a sweep).
@@ -59,9 +72,10 @@ function ensure(dataDir, workerId, runId) {
   const dir = path.join(wd, 'scratch');
   try {
     if (fs.existsSync(dir) || isLink(dir)) {
+      const id0 = SD.identity(SD.scratchOf(dataDir, workerId)); // taken BEFORE the check: a swap after it cannot lend its identity
       const checked = SD.scratchDir(dataDir, workerId);
       if (!checked) return null; // a link where the folder goes: left alone, and no folder is named
-      if (!removeChecked(dataDir, checked, SD.identity(checked)).removed) return null;
+      if (!removeChecked(dataDir, checked, id0).removed) return null;
     }
     fs.mkdirSync(dir);
     const mark = path.join(wd, SD.RUN_MARK);
@@ -87,10 +101,11 @@ function closeRun(dataDir, runId, levers) {
   if (!ids.length && !swept.length) return {};
   const folders = [];
   for (const id of ids.sort()) {
+    const id0 = SD.identity(SD.scratchOf(dataDir, id)); // taken BEFORE the check, so a swap right after it is caught at the remove
     const dir = SD.scratchDir(dataDir, id);
     if (!dir) { folders.push({ worker_id: id, path: SD.scratchOf(dataDir, id), bytes: 0, files: 0, removed: false, error: 'not a real directory under the data directory\'s workers folder, so it was left alone' }); continue; }
     if (keep) { folders.push({ worker_id: id, path: dir, ...(SD.measure(dir) || { bytes: 0, files: 0 }), removed: false }); continue; }
-    folders.push({ worker_id: id, path: dir, ...removeChecked(dataDir, dir, SD.identity(dir)) });
+    folders.push({ worker_id: id, path: dir, ...removeChecked(dataDir, dir, id0) });
   }
   const gone = folders.filter((f) => f.removed);
   return { review_scratch: { kept: keep, folders, removed_folders: gone.length, removed_bytes: gone.reduce((n, f) => n + f.bytes, 0), ...(swept.length ? { swept } : {}) } };
@@ -103,4 +118,4 @@ function lines(receipt) {
   return [s.kept ? `review scratch: kept ${s.folders.length} folder(s) (keep_review_scratch)` : `review scratch: removed ${s.removed_folders} folder(s), ${s.removed_bytes} bytes`];
 }
 
-module.exports = { ensure, firstLine, closeRun, lines, removeChecked, sweep, scratchOf: SD.scratchOf, RUN_MARK: SD.RUN_MARK };
+module.exports = { ensure, firstLine, closeRun, lines, removeChecked, renameRetry, sweep, scratchOf: SD.scratchOf, RUN_MARK: SD.RUN_MARK };
