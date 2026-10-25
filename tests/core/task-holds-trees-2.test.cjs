@@ -77,3 +77,82 @@ test('the operator\'s take-control is judged as the shared tree: a shared-tree h
   await own(h);
   assert.deepStrictEqual(ids((await op.lease.takeControl({ task_id: g.id })).overlaps), [h.id]);
 });
+
+test('a check_only judges the task in the directory the spawn names', async () => {
+  const e = await task(['s4/e.js']);
+  const pe = await own(e);
+  const f = await task(['s4/e.js']); // shared, beside e's own tree
+  const into = await rejectsCode(orch.task.assign({ task_id: f.id, check_only: true, worktree: `${pe}/sub` }), 'E_FILES_OVERLAP');
+  assert.strictEqual(into.detail.other_task_id, e.id);
+  const ok = await orch.task.assign({ task_id: f.id, check_only: true, worktree: repo });
+  assert.deepStrictEqual([ok.assignable, ids(ok.overlaps)], [true, [e.id]]);
+  // A task with its own worktree and a spawn elsewhere gets the tree error, not a hold's remedy.
+  await rejectsCode(orch.task.assign({ task_id: e.id, check_only: true, worktree: repo }), 'E_PRECONDITION');
+});
+
+// Runs other than the orchestrator's, on the same store, for the resume and relaunch paths. Only the run process (role
+// operator) opens a new epoch over an ended run.
+const reopen = async (runId) => {
+  const c = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: runId, pid: process.pid }, embed: false });
+  try { return await c.run.attach({ adapter_pid: process.pid, project_dir: repo }); } finally { await c.close(); }
+};
+const runCore = async (runId) => {
+  const c = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator', { run_id: runId }), embed: false });
+  await c.run.attach({ adapter_pid: process.pid, project_dir: repo });
+  return c;
+};
+
+test('a resumed run\'s task in its own tree reports no overlap with a shared-tree task taken while it was ended', async () => {
+  const x = await runCore('m6-x');
+  try {
+    const a = await x.task.create({ spec: 'm6 a', files_owned: ['m6/a.js'], acceptance: { files_within_owned: true } });
+    const pa = (await x.task.worktreeCreate({ task_id: a.id })).worktree.path;
+    await x.worker.write({ id: 'm6-wa', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's-m6-wa', worktree: pa });
+    await x.task.assign({ task_id: a.id, worker_id: 'm6-wa' });
+    await x.run.end({ exit_reason: 'test' });
+    const b = await task(['m6/a.js']); // a holds nothing while its run is ended
+    await worker('m6-wb', repo);
+    await orch.task.assign({ task_id: b.id, worker_id: 'm6-wb' });
+    const back = await reopen('m6-x');
+    assert.deepStrictEqual(back.overlaps, [], 'a in its own tree and b in the shared one do not clash');
+  } finally { await x.close(); }
+});
+
+test('a relaunch that re-homes a task is judged in its worker\'s directory', async () => {
+  const p = await runCore('m7-p');
+  const q = await runCore('m7-q');
+  try {
+    const b = await p.task.create({ id: 'm7-b', spec: 'm7 b', files_owned: ['m7/b.js'], acceptance: { files_within_owned: true } });
+    const pb = (await p.task.worktreeCreate({ task_id: b.id })).worktree.path;
+    await p.run.end({ exit_reason: 'test' }); // b stops holding
+    const x = await q.task.create({ spec: 'm7 x', files_owned: ['m7/b.js'], acceptance: { files_within_owned: true } });
+    await q.worker.write({ id: 'm7-wx', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's-m7-wx', worktree: pb });
+    await q.task.assign({ task_id: x.id, worker_id: 'm7-wx' }); // x has no worktree; its worker runs in b's
+    await q.run.end({ exit_reason: 'test' });
+    await reopen('m7-p'); // b holds again
+    const e = await rejectsCode(orch.task.ensureHold({ task_id: x.id, worker_id: 'm7-wx' }), 'E_FILES_OVERLAP');
+    assert.strictEqual(e.detail.other_task_id, b.id);
+  } finally { await p.close(); await q.close(); }
+});
+
+// A worker row's directory is read on every check, never cached on the task: a row rewritten to another directory moves the
+// task's tree with it (the derived rule, invariant 4), whichever side of the comparison the task is on.
+test('a task\'s tree follows its holder\'s row: a holder moved out of the task\'s worktree is shared, one moved inside another tree clashes', async () => {
+  const a = await task(['rw/a.js']);
+  const pa = await own(a);
+  await worker('rw-wa', pa);
+  await orch.task.assign({ task_id: a.id, worker_id: 'rw-wa' });
+  await worker('rw-wa', repo); // a's holder now runs in the shared checkout
+  const e1 = await rejectsCode(task(['rw/a.js']), 'E_FILES_OVERLAP');
+  assert.strictEqual(e1.detail.other_task_id, a.id);
+
+  const e = await task(['rw/e.js']);
+  const pe = await own(e);
+  const f = await task(['rw/e.js']); // shared, beside e's own tree
+  await worker('rw-wf', repo);
+  await orch.task.assign({ task_id: f.id, worker_id: 'rw-wf' });
+  await worker('rw-wf', `${pe}/sub`); // f's holder now runs inside e's worktree
+  await worker('rw-we', pe);
+  const e2 = await rejectsCode(orch.task.assign({ task_id: e.id, worker_id: 'rw-we' }), 'E_FILES_OVERLAP');
+  assert.strictEqual(e2.detail.other_task_id, f.id);
+});
