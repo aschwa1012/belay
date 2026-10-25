@@ -19,7 +19,6 @@ const { WRITE_METHODS, METHODS } = require('./engine.cjs'); // the method table 
 const VERIFY_OPERATOR_MS = 20000; // the operator check reads two tables of the host (netstat, a process snapshot); each has its own bound of 10 s
 const MAX_LINE_BYTES = 1024 * 1024; // the longest request line an owner reads (owner.cjs); a longer one is refused here, unsent
 const STARTING_GRACE_MS = 30000; // a lock still `listening: false` this long after it was taken is no longer an owner starting
-const GENUINE_HOLDERS = new Set(); // tokens of locks whose live pid a snapshot showed is the process that took them
 const sleep = ms => new Promise(r => { const t = setTimeout(r, ms); if (t.unref) t.unref(); });
 
 // Embeddings travel as base64 float32, not as a JSON array of decimals: a 384-d vector is ~1.5 KB of
@@ -110,17 +109,17 @@ class Client {
 
   // Audit 0.3.1 C4: whether the live pid a lock names is the process that took it. Asked only of a lock whose owner should be
   // answering (it says it is listening, or it has been starting for longer than any start takes) and has not answered this
-  // caller's dial; one process snapshot, asked once per lock in this process (a genuine holder is remembered by its token).
+  // caller's dial; one process snapshot, asked once per lock per connect. A genuine verdict is not remembered past the connect:
+  // the holder it names may be ended without its handlers later and its pid reused, and only a fresh snapshot can tell.
   // { reused, why, own_created } or null when not asked.
   async _reusedHolder(holder) {
-    if (!holder || !holder.token || holder.pid === process.pid || GENUINE_HOLDERS.has(holder.token)) return null; // this process's own owner is starting
+    if (!holder || !holder.token || holder.pid === process.pid) return null; // this process's own owner is starting
     const merged = readOwnerLock(this.dataDir);
     const lock = merged && merged.token === holder.token ? merged : holder;
     if (lock.listening !== true && !(Number.isFinite(lock.acquired_at) && Date.now() - lock.acquired_at > STARTING_GRACE_MS)) return null;
     const ID = require('./proc-identity.cjs');
     const snap = await ID.processSnapshot({ kind: 'lock-holder' });
     const r = holderReused(lock, snap);
-    if (r.reused === false) GENUINE_HOLDERS.add(holder.token);
     const own = snap && snap.get(process.pid);
     return { ...r, own_created: own ? own.created : null };
   }
