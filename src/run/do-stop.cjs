@@ -31,7 +31,7 @@ function createDoStop({ ctx, writeRow }) {
     // Fix round (6f-2): pause.cjs's own step 1b already wrote this row `stopping` — never repeated here.
     if (w.state !== 'stopping') await writeRow(w, 'stopping');
     let graceful = false;
-    let killed = false; let refused = null; let notKilled = null;
+    let killed = false; let refused = null; let notKilled = null; let tree = null; // tree: this stop's own kill, never an earlier life's (w.treeKill)
     // Closing stdin needs a stdin: an adopted worker's pipes belong to the adapter that spawned it,
     // so there is nothing to close and the kill is the only channel left.
     if (mode === 'graceful' && w.substrate === 'claude-code' && w.child) {
@@ -40,7 +40,7 @@ function createDoStop({ ctx, writeRow }) {
     if (!graceful) {
       // The subtree first, then the exact pid as the backstop that produces the exit event (ADR 0011 §2).
       const kr = await PI.killWorker(w); // ADR 0039: `killed` is what the kill did, never what was attempted
-      w.treeKill = kr.tree; refused = kr.refused; notKilled = kr.descendants_not_killed; killed = !refused;
+      tree = kr.tree; w.treeKill = tree; refused = kr.refused; notKilled = kr.descendants_not_killed; killed = !refused;
       if (w.child) await W.waitExit(w, Math.max(2000, Math.min(timeout_ms, 10000)));
       else await P.waitPidGone(pid, { timeoutMs: Math.max(2000, Math.min(timeout_ms, 10000)) });
     }
@@ -54,7 +54,7 @@ function createDoStop({ ctx, writeRow }) {
     return {
       worker_id, pid, exit_code: w.exitCode, exit_signal: w.exitSignal,
       ms_to_exit: Math.max(0, (w.exitedAt || now()) - t0), graceful, killed, session_id: w.sessionId, // 0 when the exit came before the stop (an adopted row's old exited_at)
-      tree_kill: w.treeKill || null, ...(refused ? { refused: refused.refused, kind: refused.kind, detail: refused.detail } : {}), ...(notKilled ? { descendants_not_killed: notKilled } : {}),
+      tree_kill: tree || null, ...(refused ? { refused: refused.refused, kind: refused.kind, detail: refused.detail } : {}), ...(notKilled ? { descendants_not_killed: notKilled } : {}),
     };
   };
 }
