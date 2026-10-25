@@ -60,4 +60,34 @@ test('gap 4: while a release evaluation runs, one with another base is refused n
   assert.match(RE.clause([{ task_id: 'x', error: 'E_BUSY' }], 400), /task x not evaluated at release: another evaluation of it is running/);
 });
 
+test('gap 3: a task\'s own base judges files_within_owned when task.evaluate names none; a fix inherits it; a bad base is refused', async () => {
+  // Another task's file arrives on the branch first (a merge; here a plain commit), then the task's own change.
+  const twoCommits = (tree) => { write(tree, 'src/other.cjs', 'x\n'); commit(tree, 'other task'); write(tree, 'src/mine.cjs', 'y\n'); commit(tree, 'mine'); };
+  // Without a base the recorded tree base counts the other file.
+  let u = await orch.task.create({ spec: 'no base', acceptance: { files_within_owned: true }, files_owned: ['src/mine.cjs'] });
+  u = await orch.task.worktreeCreate({ task_id: u.id });
+  twoCommits(u.worktree.path);
+  await handBack(u.id, u.worktree.path);
+  const without = await orch.task.evaluate({ task_id: u.id, trigger: 'release', worktree: u.worktree.path });
+  assert.deepStrictEqual([without.state, without.results.checks[0].detail.outside], ['released', ['src/other.cjs']]);
+  // With the base on the row, the release evaluation (no base argument) judges from it.
+  let v = await orch.task.create({ spec: 'base on the row', acceptance: { files_within_owned: true }, files_owned: ['src/mine.cjs'], base: 'HEAD~1' });
+  v = await orch.task.worktreeCreate({ task_id: v.id });
+  twoCommits(v.worktree.path);
+  await handBack(v.id, v.worktree.path);
+  const rowBase = await orch.task.evaluate({ task_id: v.id, trigger: 'release', worktree: v.worktree.path });
+  const c = rowBase.results.checks[0];
+  assert.deepStrictEqual([rowBase.state, c.detail.base_source, c.detail.base_ref, c.detail.changed], ['done', 'task', 'HEAD~1', ['src/mine.cjs']]);
+  for (const bad of ['', '-x', 7]) await rejectsCode(orch.task.create({ spec: 'bad base', acceptance: { files_within_owned: true }, base: bad }), 'E_ARGS');
+  // A fix of it is judged from the same base.
+  const r = await orch.task.create({ spec: 'review', depends_on: [v.id], acceptance: { verdict: true } });
+  const id = `j-${++n}`;
+  await orch.worker.write({ id, substrate: 'claude-code', pid: process.pid, state: 'idle', session_id: `s-${id}`, last_event_at: Date.now(), worktree: dir });
+  const jw = await openCore({ dataDir: `${dir}/data`, caller: callerFor('worker', { worker_id: id }), embed: false });
+  workers.push(jw);
+  const a = await orch.task.assign({ task_id: r.id, worker_id: id });
+  await jw.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { verdict: 'refuted', summary: 's', findings: [] } });
+  await orch.task.evaluate({ task_id: r.id, worktree: dir });
+  assert.strictEqual((await orch.task.fixFromReview({ review_id: r.id })).base, 'HEAD~1');
+});
 

@@ -16,7 +16,7 @@ const COLUMNS = {
     'paused_at', 'paused_by', 'park_turns',
     'model', 'cache_read_tokens', 'cache_creation_tokens', 'tool_calls', 'base_sha', 'head_sha',
     'effort_requested', 'head_error', 'base_error', 'pid_created', 'pid_created_error', 'pid_image', 'memory_queries', 'native_memory', 'native_memory_auth', 'tools', 'max_budget_usd', 'model_requested', 'leases_released'],
-  task: ['id', 'run_id', 'spec', 'acceptance', 'files_owned', 'state', 'results', 'depends_on', 'handoff', 'repairs', 'worktree', 'answers'],
+  task: ['id', 'run_id', 'spec', 'acceptance', 'files_owned', 'state', 'results', 'depends_on', 'handoff', 'repairs', 'worktree', 'answers', 'base'],
   lease: ['id', 'task_id', 'run_id', 'holder', 'holder_role', 'granted_at', 'expires_at',
     'released_at', 'supersedes', 'ttl_ms', 'released_reason', 'tree'],
   checkpoint: ['id', 'task_id', 'worker_id', 'run_id', 'turn', 'files_touched', 'tool_digest',
