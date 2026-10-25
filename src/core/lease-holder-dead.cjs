@@ -29,6 +29,12 @@ function releaseForDeadHolder(store, workerId, by, t) {
   return released;
 }
 
+// Whether the worker still holds any current, unreleased worker lease (expired or not): what release_leases would release.
+function holdsAny(store, workerId) {
+  const taskIds = store.p("SELECT DISTINCT task_id FROM lease WHERE holder = ? AND holder_role = 'worker'").all(workerId).map((r) => r.task_id);
+  return taskIds.some((taskId) => { const l = rows.currentLeaseForTask(store, taskId); return !!l && l.released_at == null && l.holder === workerId && l.holder_role === 'worker'; });
+}
+
 // A worker's first dead row and the release of every lease it held, in one transaction: the row names what its death released
 // (`leases_released`, null when nothing), so the death wake can say so. `E` is the engine. Returns { row, released }.
 function appendDead(E, values, by, t) {
@@ -81,4 +87,4 @@ function reclaimForRestart(E, caller, task, workerId, ownerOf) {
   return { run_id: ownerRun, held: true, reason: 'regranted', regranted: true, lease_id: lease.id, new_lease: lease, task: row };
 }
 
-module.exports = { releaseForDeadHolder, appendDead, isLateHandback, lateReceipt, refuseSupersededDeath, reclaimForRestart, HOLDER_DEAD };
+module.exports = { releaseForDeadHolder, holdsAny, appendDead, isLateHandback, lateReceipt, refuseSupersededDeath, reclaimForRestart, HOLDER_DEAD };

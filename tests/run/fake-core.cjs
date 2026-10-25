@@ -77,6 +77,11 @@ function createFakeCore({ runId = 'run-fake', resumeLineText = null, failing = {
             { worker_id: r.id, pid: r.pid == null ? null : r.pid }
           );
         }
+        // Mirrors writeWorker: release_leases on a dead worker that holds no lease writes nothing (ADR 0026 amendment 2).
+        const cur = core.currentWorker(r.id);
+        if (r.release_leases && cur && cur.state === 'dead' && ![...leases.values()].some((l) => l.holder === r.id && !l.released_at)) {
+          return record('worker.write', r, { skipped: true, reason: 'nothing_to_release', current_seq: cur.seq });
+        }
         const written = { ...r, seq: ++seq, written_at: Date.now(), written_by: 'orchestrator' };
         if (!workerRows.has(r.id)) workerRows.set(r.id, []);
         workerRows.get(r.id).push(written);
