@@ -9,7 +9,8 @@ const PI = require('./pid-identity.cjs'); // ADR 0039
 const W = require('./worker.cjs');
 const LC = require('./lifecycle.cjs');
 const { fail } = require('./errors.cjs');
-const { holdForLaunch, reaskAfterDeath, leaseField, leaseNote } = require('./restart.cjs');
+const { holdForLaunch, leaseField, leaseNote } = require('./restart.cjs');
+const RG = require('./relaunch-guard.cjs'); // ADR 0026 amendment 2: a death during a relaunch keeps its lease
 
 const now = () => Date.now();
 
@@ -34,20 +35,23 @@ function createMessage({ core, ctx, forWorker, refuseIfPaused, sendStdin, launch
     // (ADR 0001 §4, ADR 0008 §6). Returns at once with the new pid; the turn lands later.
     if (!w.sessionId) fail('E_SUBSTRATE', 'codex worker has no thread id to resume', { worker_id, substrate: w.substrate, state: w.state });
     const foreign = !w.child && await PI.verifiedLive(w); // by identity, never the pid number alone: an idle worker's pid is free for reuse
-    await w.queue; // the previous turn's rows land before ensureHold answers (a dead row still queued would release the lease after it)
-    const mark = w.deathReleases || 0; let hold = await holdForLaunch(w, core);
-    await w.queue; hold = await reaskAfterDeath(w, core, hold, mark); // a death that settled after the ask: its row lands, then one more ask
-    LC.refuseMessageDuringOp(w); text += leaseNote(hold); // ADR 0026 amendment 2 // before the checks below: they and the spawn stay one tick, so two concurrent messages still start one process
-    // An adopted worker whose process is still alive is one a previous adapter owns. belay is not
-    // its parent (invariant 1), so it cannot see that turn end, and starting a second process on
-    // the same worktree is the one thing one-process-per-turn exists to prevent. Stop it first.
-    if (!w.child && foreign) {
-      fail('E_SUBSTRATE', 'codex worker is a live process this adapter did not spawn, so it cannot be given a turn; stop it first', { worker_id, substrate: w.substrate, state: w.state, pid: w.pid, adopted: true });
-    }
-    if (w.child && P.pidAlive(w.pid)) {
-      fail('E_SUBSTRATE', 'codex worker is mid-turn; one process per turn', { worker_id, substrate: w.substrate, state: w.state, pid: w.pid });
-    }
-    await launch(w, { resume: w.sessionId, prompt: text });
+    // ADR 0026 amendment 2 (proposed): from here until launch() has moved w.launches, a death of this worker keeps its lease.
+    const hold = await RG.relaunching(w, writeRow, async () => {
+      await w.queue; // the previous turn's rows land first (a death meanwhile keeps the lease: relaunch-guard.cjs)
+      const held = await holdForLaunch(w, core);
+      LC.refuseMessageDuringOp(w); text += leaseNote(held); // ADR 0026 amendment 2 // before the checks below: they and the spawn stay one tick, so two concurrent messages still start one process
+      // An adopted worker whose process is still alive is one a previous adapter owns. belay is not
+      // its parent (invariant 1), so it cannot see that turn end, and starting a second process on
+      // the same worktree is the one thing one-process-per-turn exists to prevent. Stop it first.
+      if (!w.child && foreign) {
+        fail('E_SUBSTRATE', 'codex worker is a live process this adapter did not spawn, so it cannot be given a turn; stop it first', { worker_id, substrate: w.substrate, state: w.state, pid: w.pid, adopted: true });
+      }
+      if (w.child && P.pidAlive(w.pid)) {
+        fail('E_SUBSTRATE', 'codex worker is mid-turn; one process per turn', { worker_id, substrate: w.substrate, state: w.state, pid: w.pid });
+      }
+      await launch(w, { resume: w.sessionId, prompt: text });
+      return held;
+    });
     await guarded(w, async () => {
       w.parser.noteStdinWrite();
       await writeRow(w, 'running');

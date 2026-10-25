@@ -114,13 +114,6 @@ async function holdForLaunch(w, core) {
   return w.taskId ? core.task.ensureHold({ task_id: w.taskId, worker_id: w.id }) : null;
 }
 
-// ADR 0026 amendment 2 decision 6: a death that settled after ensureHold was asked (`mark`, the record's count of dead rows that
-// released leases, taken before the ask) has released the lease that answer was about. Asked once more, after the queue drained,
-// so the answer the receipt and the first text use is the final one: granted back or lost. Never more than this one extra call.
-async function reaskAfterDeath(w, core, hold, mark) {
-  return (w.deathReleases || 0) !== mark ? holdForLaunch(w, core) : hold;
-}
-
 // What the relaunch's receipt says about the lease its death released: granted back, or lost. Empty otherwise.
 function leaseField(hold) {
   if (!hold || !(hold.regranted || hold.reason === 'lease_lost')) return {};
@@ -135,4 +128,4 @@ function leaseNote(hold) {
 Your lease ${hold.lease_id} on task ${hold.task_id} was released when your previous process died, and the task is now ${hold.task_state}${hold.current_holder ? `, leased to ${hold.current_holder}` : ''}. You hold no lease on it: do not hand it back (lease_release) or write checkpoints for it.`;
 }
 
-module.exports = { decideBranch, restartFirstText, holdForLaunch, reaskAfterDeath, leaseField, leaseNote, CLAUDE_RESUME_WINDOW_MS, CODEX_RESUME_WINDOW_MS };
+module.exports = { decideBranch, restartFirstText, holdForLaunch, leaseField, leaseNote, CLAUDE_RESUME_WINDOW_MS, CODEX_RESUME_WINDOW_MS };

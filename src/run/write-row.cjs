@@ -72,8 +72,11 @@ function createWriteRow(ctx, flags) {
     try {
       const row = W.rowOf(w, state, ctx);
       if (opts.guard && w.lastWrittenSeq != null) row.expect_seq = w.lastWrittenSeq;
-      // ADR 0026 amendment 1 (proposed): a death a restart settled on its way to relaunching this worker keeps its leases.
-      if (state === 'dead' && String(w.deathEstablishedBy).startsWith('pid-check-on-restart')) row.keep_leases = true;
+      // ADR 0026 amendments 1 and 2 (proposed): a death that lands while a relaunch of this worker is under way (w.relaunching, from its
+      // start until launch() has moved w.launches) keeps the leases the relaunch is about to work under, as one the restart settled does.
+      // A relaunch that then fails before it launched releases them by restating this row (opts.releaseLeases, relaunch-guard.cjs).
+      if (state === 'dead' && !opts.releaseLeases && (w.relaunching || String(w.deathEstablishedBy).startsWith('pid-check-on-restart'))) { row.keep_leases = true; w.keptDeath = true; }
+      if (state === 'dead' && opts.releaseLeases) row.release_leases = true;
       written = await ctx.core.worker.write(row);
     } catch (e) {
       if (state === 'running' && e && e.code === 'E_WORKER_NOT_LIVE') {
@@ -87,7 +90,6 @@ function createWriteRow(ctx, flags) {
       return written;
     }
     if (written && Number.isInteger(written.seq)) w.lastWrittenSeq = written.seq;
-    if (state === 'dead' && written && Array.isArray(written.leases_released) && written.leases_released.length) w.deathReleases = (w.deathReleases || 0) + 1; // ADR 0026 amendment 2: a relaunch re-asks after one
     w.state = state;
     return written;
   };
