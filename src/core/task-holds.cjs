@@ -58,18 +58,22 @@ function liveSince(store, runId) {
 
 // ADR 0059 decision 1: where a task writes. `own` is the path of its belay worktree (recorded, not removed) when the worker
 // working it works there; `loc` is the path known to be written in (that worker's worktree, else the recorded one) or null.
-// `worker` is the worker taking the task (null for none); left undefined, it is the holder of the task's unreleased lease.
+// `worker` is the worker taking the task (null for none, OPERATOR for the operator); left undefined, it is the holder of the
+// task's latest lease, released or not, since a released task's work stays where its last holder made it. The operator, and a
+// holder with no worker row, are judged as in the shared tree: belay does not know where they work.
+const SHARED = Object.freeze({ own: null, loc: null });
+const OPERATOR = Object.freeze({ operator: true });
 function treeOf(store, task, worker) {
   const wt = task.worktree && task.worktree.path && !task.worktree.removed_at ? task.worktree.path : null;
   let w = worker;
   if (w === undefined) {
     const l = rows.currentLeaseForTask(store, task.id);
-    w = l && !l.released_at && l.holder_role === 'worker' ? rows.current(store, 'worker', l.holder) : null;
+    w = !l ? null : l.holder_role === 'worker' ? (rows.current(store, 'worker', l.holder) || OPERATOR) : OPERATOR;
   }
+  if (w === OPERATOR) return SHARED;
   const cwd = w && typeof w.worktree === 'string' && w.worktree ? w.worktree : null;
   return { own: wt && (!cwd || samePath(cwd, wt)) ? wt : null, loc: cwd || wt };
 }
-const SHARED = Object.freeze({ own: null, loc: null });
 
 // Two tasks write in one tree when neither has its own (the shared tree, or a place not yet known), or when their known
 // locations are one path (a worker sent into another task's worktree).
@@ -135,4 +139,4 @@ function activationRun(store, task, candidateRunId) {
   return liveness(task.run_id).live ? task.run_id : null;
 }
 
-module.exports = { activationRun, resumeOverlaps, overlaps, runLiveness, holdOf, findClashes, scanOverlaps, acrossTrees, treeOf };
+module.exports = { activationRun, resumeOverlaps, overlaps, runLiveness, holdOf, findClashes, scanOverlaps, acrossTrees, treeOf, OPERATOR };
