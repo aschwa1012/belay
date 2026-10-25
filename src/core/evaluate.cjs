@@ -194,7 +194,8 @@ async function filesWithinOwned(worktree, filesOwned, base, baseSource) {
   // --untracked-files=all matters: by default git collapses a wholly untracked directory to one entry
   // ("src/"), which sits outside every owned path below it and would fail an ownership check the worker
   // actually respected. -z removes quoting, so odd paths need no unescaping.
-  const r = await runCommand(['git', 'status', '--porcelain', '-z', '--untracked-files=all'], worktree, 30000, { tail: LIST_TAIL, env: readOnlyGitEnv() });
+  // git-safe.cjs: belay's hardened argv and environment, so the repository's config (an fsmonitor, a filter) runs nothing.
+  const r = await require('./git-safe.cjs').safeGit(['status', '--porcelain', '-z', '--untracked-files=all'], worktree, 30000, { tail: LIST_TAIL });
   if (!r.executable) {
     return { kind: 'files_within_owned', executable: false, ms: Date.now() - t0, passed: false, detail: { reason: 'git could not be run', error: r.spawn_error, worktree } };
   }

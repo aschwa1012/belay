@@ -33,11 +33,8 @@ const KILL_WAIT_MS = 15000; // a timed-out call waits this long at most for git'
 const LOG_N = 20;
 const LOG_MAX = 200;
 // belay's own options, before the subcommand; gitRead adds the filter overrides after them.
-// diff.autoRefreshIndex=false: GIT_OPTIONAL_LOCKS stops status's index refresh but not diff's, which writes the index and
-// runs a post-index-change hook; core.hooksPath names a path under this file, which can never be a directory, so no
-// hook runs at all.
-const NO_HOOKS = `${__filename.split(path.sep).join('/')}/no-hooks`;
-const PRE = ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'log.showSignature=false', '-c', 'core.pager=cat', '-c', 'diff.autoRefreshIndex=false', '-c', `core.hooksPath=${NO_HOOKS}`];
+// (git-safe.cjs PRE: no fsmonitor program, no signature check, no pager, no index refresh by diff, no hooks.)
+const { PRE, gitEnv, findGit, filterOverrides } = require('../core/git-safe.cjs');
 const PRE_LEN = PRE.length;
 // One side of a rev: a ref name, a sha, HEAD~2, main@{1}, v1^{commit}. It cannot start with '-' (an option), and holds
 // no ':' (a blob path; Read reads files), no '..' (a range is split first), no space or control character.
@@ -95,27 +92,6 @@ function gitArgs({ op, rev = null, path: p = null, stat = false, n = null }) {
   }
   if (pathspec) args.push('--', pathspec);
   return [...PRE, ...args];
-}
-
-// The child's environment: the parent's without any GIT_* variable, plus belay's fixed ones.
-function gitEnv(env = process.env) {
-  const out = {};
-  for (const [k, v] of Object.entries(env)) if (!/^GIT_/i.test(k)) out[k] = v;
-  return { ...out, GIT_CONFIG_NOSYSTEM: '1', GIT_ATTR_NOSYSTEM: '1', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', GIT_NO_LAZY_FETCH: '1', GIT_PAGER: 'cat', PAGER: 'cat' };
-}
-
-// git's absolute path from the absolute PATH entries; never a relative entry and never the cwd.
-function findGit(env = process.env) {
-  const win = process.platform === 'win32';
-  const names = win ? ['git.exe', 'git.cmd'] : ['git'];
-  const dirs = String(env.PATH || env.Path || '').split(path.delimiter).filter((d) => d && path.isAbsolute(d));
-  for (const d of dirs) {
-    for (const n of names) {
-      const f = path.join(d, n);
-      try { if (fs.statSync(f).isFile()) return f; } catch { /* not here */ }
-    }
-  }
-  return null;
 }
 
 function checkWorktree(dir) {
@@ -219,49 +195,7 @@ async function killGitTree(child) {
   return { ok: refused.length === 0, killed, ...(refused.length ? { refused: refused.map((r) => ({ pid: r.pid, kind: r.kind })) } : {}) };
 }
 
-const checkFailed = (what, r) => Object.assign(new Error(`git_read: the filter check (${what}) exited ${r.code}: ${r.errTail.trim().split('\n').pop() || 'no stderr'}`), { code: 'E_GIT', detail: { reason: 'filter_check', exit_code: r.code, stderr: r.errTail } });
-const tooMany = () => Object.assign(new Error('git_read: the configuration names too many filter keys to check'), { code: 'E_GIT', detail: { reason: 'filter_check' } });
-const badKey = (k) => k.includes('=') || /[\x00-\x1f]/.test(k);
-
-// A clean or process filter named in the repository's own config runs on a plain `git status` of a stat-dirty file
-// (the ADR 0054 evidence). Every filter driver named outside the global and
-// system configs (local, worktree, an include of them) is switched off with belay's own `-c`; a driver name git's `-c`
-// cannot carry (one holding '=') refuses the read. The system config is not read (GIT_CONFIG_NOSYSTEM), so its filter
-// keys, which only an administrator writes (Git for Windows installs git-lfs there), are read on their own and passed
-// back as `-c`: without them a stat-dirty LFS file reads as changed. Submodules are not read at all
-// (`--ignore-submodules=all`), so a submodule's own config is never consulted.
-async function filterOverrides(git, cwd, env, timeoutMs) {
-  const out = [];
-  const sys = await run(git, ['--no-pager', 'config', '--system', '--null', '--get-regexp', '^filter\\.'], { cwd, env, timeoutMs, maxOut: 65536, system: true });
-  if (!(sys.code === 1 && sys.total === 0)) {
-    if (sys.code !== 0) throw checkFailed('git config --system', sys);
-    if (sys.total > sys.kept) throw tooMany();
-    for (const entry of sys.out.toString('utf8').split('\0').filter(Boolean)) {
-      const nl = entry.indexOf('\n');
-      const key = nl < 0 ? entry : entry.slice(0, nl);
-      if (badKey(key)) continue; // cannot be passed back; the filter stays absent, as NOSYSTEM leaves it
-      out.push('-c', nl < 0 ? key : `${key}=${entry.slice(nl + 1)}`);
-    }
-  }
-  const r = await run(git, ['--no-pager', 'config', '--null', '--show-scope', '--name-only', '--get-regexp', '^filter\\.'], { cwd, env, timeoutMs, maxOut: 65536 });
-  if (r.code === 1 && r.total === 0) return out; // no filter key outside the system config
-  if (r.code !== 0) throw checkFailed('git config', r);
-  if (r.total > r.kept) throw tooMany();
-  const parts = r.out.toString('utf8').split('\0');
-  const drivers = new Set();
-  for (let i = 0; i + 1 < parts.length; i += 2) {
-    const [scope, key] = [parts[i], parts[i + 1]];
-    if (scope === 'global' || scope === 'system') continue;
-    const m = /^filter\.(.+)\.[^.]+$/i.exec(key);
-    if (m) drivers.add(m[1]);
-  }
-  for (const d of drivers) {
-    if (badKey(d)) throw Object.assign(new Error(`git_read: the repository's filter driver ${JSON.stringify(d)} cannot be switched off, so the read is refused`), { code: 'E_GIT', detail: { reason: 'filter_name', driver: d } });
-    for (const k of ['clean', 'smudge', 'process']) out.push('-c', `filter.${d}.${k}=`);
-    out.push('-c', `filter.${d}.required=false`);
-  }
-  return out;
-}
+// The repository's filters are switched off by git-safe.cjs filterOverrides, given this file's runner.
 
 // git_read's task_id: the task row's own worktree when it records one (ADR 0053: { path, removed_at } on the task view); a
 // removed one is refused E_NOT_FOUND naming when, never answered from an older worker row. A task with no belay worktree
@@ -292,7 +226,7 @@ async function gitRead(args, { runWorktree = null, taskWorktree = null, env = pr
   const git = findGit(env);
   if (!git) throw Object.assign(new Error('git_read: git was not found on PATH'), { code: 'E_GIT', detail: { reason: 'no_git' } });
   const t0 = Date.now();
-  const filters = await filterOverrides(git, worktree, env, timeoutMs);
+  const filters = await filterOverrides(run, git, worktree, env, timeoutMs);
   const argv = [...base.slice(0, PRE_LEN), ...filters, ...base.slice(PRE_LEN)];
   const r = await run(git, argv, { cwd: worktree, env, timeoutMs, maxOut });
   if (r.code !== 0) throw Object.assign(new Error(`git_read: git ${a.op} exited ${r.code}: ${r.errTail.trim().split('\n').pop() || 'no stderr'}`), { code: 'E_GIT', detail: { reason: 'exit', exit_code: r.code, argv: ['git', ...argv], worktree, stderr: r.errTail } });

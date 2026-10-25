@@ -146,6 +146,9 @@ function parseLevers(spec, opts = {}) {
   // ADR 0058 decision 8: off by default, and absent from the levers (and the receipt) unless the spec turns it on.
   if (spec.stop_idle_on_done !== undefined && typeof spec.stop_idle_on_done !== 'boolean') return { error: 'stop_idle_on_done must be true or false' };
   if (spec.stop_idle_on_done === true) out.stop_idle_on_done = true;
+  // ADR 0054 amendment 1: the run close deletes the reviewers' scratch folders; this opt-in keeps them. Absent unless on.
+  if (spec.keep_review_scratch !== undefined && typeof spec.keep_review_scratch !== 'boolean') return { error: 'keep_review_scratch must be true or false' };
+  if (spec.keep_review_scratch === true) out.keep_review_scratch = true;
   // ADR 0041 decision 1: the memory block. Present on the result only when it differs from the defaults, so a
   // run without it has the levers, the receipt and the run row it always had.
   // The config's `memory` block is the project default under the spec's own (opts.config = { path, memory }).

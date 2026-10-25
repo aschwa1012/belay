@@ -42,13 +42,14 @@ async function recordTurn(w, e, ctx, memoryTextMax, digestKeep) {
   return checkpointId;
 }
 
-// The turn row. With a memory lever on it names the worker it is about (the adapter writes it as the orchestrator);
-// with every lever off it is the base row, byte for byte. A failure is named on the worker, never thrown.
-async function writeTurnRow(w, ctx, plan, text, turn, checkpointId) {
+// The turn row. The run manager writes it as the orchestrator, so it names the worker that took the turn, the turn's number
+// and its end time; the core fills task_id from the lease that worker held then (a worker given its task by task_assign, or
+// one that released its lease inside the turn, is still attributed). A failure is named on the worker, never thrown.
+async function writeTurnRow(w, ctx, text, turn, checkpointId, endedAt) {
   if (!text || (ctx.shutdownFlags && ctx.shutdownFlags.closed)) return null;
   try {
     return await ctx.core.memory.store({
-      text, type: 'turn', ...(plan ? { worker_id: w.id } : {}),
+      text, type: 'turn', worker_id: w.id, turn, created_at: endedAt,
       tags: [w.taskId, w.id, 'turn:' + turn].filter(Boolean),
       provenance: checkpointId ? 'checkpoint:' + checkpointId : 'worker:' + w.id,
     });
@@ -65,22 +66,23 @@ async function writeTurnRow(w, ctx, plan, text, turn, checkpointId) {
 // lifecycle.cjs's shutdown awaits every queue for at most 5,000 ms before it closes the core.
 function queueMemory(w, e, ctx, memoryTextMax, checkpointId) {
   const text = (e.text || w.lastAssistantText || '').slice(0, memoryTextMax);
-  const plan = MC.plan(w, e, ctx); // null with the capture and job levers off: then nothing below differs from base
+  const plan = MC.plan(w, e, ctx); // null with the capture and job levers off: then the turn row is the only write
   if ((!text && !plan) || (ctx.shutdownFlags && ctx.shutdownFlags.closed)) return;
   const turn = w.turns;
+  const endedAt = Date.now(); // the turn's end, read now: the write is queued, and a lease granted after it is the next task's
   w.memoryQueue = (w.memoryQueue || Promise.resolve()).then(async () => {
     if (ctx.shutdownFlags && ctx.shutdownFlags.closed) { w.lastError = { where: 'after-shutdown', state: 'turn-memory' }; return; }
     let turnRowId = null;
     // With observations on, the observation is the turn's only row (ADR 0044 decision 1): no turn row is written.
     if (text && !(plan && plan.levers.observations)) {
-      const row = await writeTurnRow(w, ctx, plan, text, turn, checkpointId);
+      const row = await writeTurnRow(w, ctx, text, turn, checkpointId, endedAt);
       turnRowId = (row && row.id) || null;
     }
     if (!plan) return;
     const obs = await MC.finish(w, e, ctx, plan, { checkpointId, turnRowId }); // the observation, then the jobs (ADR 0041 decisions 3, 7)
     // Safety net: a turn is never left with no row. If the observation did not land (its failure is already an ok 0
     // event), the turn row is written exactly as the lever-off path writes it.
-    if (plan.levers.observations && !obs) await writeTurnRow(w, ctx, plan, text, turn, checkpointId);
+    if (plan.levers.observations && !obs) await writeTurnRow(w, ctx, text, turn, checkpointId, endedAt);
   });
 }
 

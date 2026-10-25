@@ -18,7 +18,9 @@ const READ_ONLY = ['Read', 'Glob', 'Grep'];
 const BUILTIN = Object.freeze({
   coder: Object.freeze([...SIX]),
   tester: Object.freeze([...SIX]),
-  reviewer: Object.freeze([...SIX]), // keeps Write: on this host a probe script goes to disk, not through a Bash heredoc (ADR 0024 decision 1)
+  // ADR 0054 amendment 1 (the operator, 2026-10-25): a reviewer keeps the six. Removing Write never made it read-only (Bash
+  // writes), and its probes go to its scratch folder on disk; a change to the tree it judges is flagged at the hand-back.
+  reviewer: Object.freeze([...SIX]),
   researcher: Object.freeze([...READ_ONLY, ...WEB_TOOLS]),
 });
 

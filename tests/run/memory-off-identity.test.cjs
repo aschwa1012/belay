@@ -64,8 +64,8 @@ async function runScript(core, { handLevers = true, readDelayMs = null } = {}) {
     return {
       stdin,
       // every argument but `written_by`: the core sets that column from the channel (ADR 0044 decision 6), so the
-      // levers cannot change it and it is not compared
-      memoryCalls: core.calls.filter((c) => /^memory\./.test(c.method)).map((c) => { const { written_by: _w, ...args } = c.args; return { method: c.method, args: { ...args, provenance: String(args.provenance).replace(/[0-9a-f-]{36}/, '<id>') } }; }),
+      // levers cannot change it and it is not compared; nor is the turn's end time, a clock reading (its type is)
+      memoryCalls: core.calls.filter((c) => /^memory\./.test(c.method)).map((c) => { const { written_by: _w, ...args } = c.args; return { method: c.method, args: { ...args, provenance: String(args.provenance).replace(/[0-9a-f-]{36}/, '<id>'), ...('created_at' in args ? { created_at: typeof args.created_at } : {}) } }; }),
       allMethods: [...new Set(core.calls.map((c) => c.method))].sort(),
       states: core.rowsFor('w1').filter((r, i, rows) => !isPidRestatement(r, rows[i - 1])).map((r) => r.state),
       restated: core.rowsFor('w1').some((r, i, rows) => isPidRestatement(r, rows[i - 1])),
@@ -86,9 +86,11 @@ test('levers off: stdin bytes, memory store calls and rows equal the base build 
   // The base build's behaviour, stated outright so the comparison is not only against a copy of the same code.
   assert.deepStrictEqual(base.stdin, [`${RL}\n\none`, 'two']);
   assert.deepStrictEqual(base.memoryCalls.map((c) => c.method), ['memory.store', 'memory.store']);
+  assert.deepStrictEqual(base.memoryCalls.map((c) => c.args.turn), [1, 2]);
   for (const c of base.memoryCalls) {
-    assert.deepStrictEqual(Object.keys(c.args).sort(), ['provenance', 'tags', 'text', 'type']);
-    assert.strictEqual(c.args.type, 'turn');
+    // The turn row names the worker that took the turn, its number and its end; the core fills task_id from the lease.
+    assert.deepStrictEqual(Object.keys(c.args).sort(), ['created_at', 'provenance', 'tags', 'text', 'turn', 'type', 'worker_id']);
+    assert.deepStrictEqual([c.args.type, c.args.worker_id, c.args.created_at], ['turn', 'w1', 'number']);
   }
 
   const variants = {

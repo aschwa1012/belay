@@ -83,7 +83,7 @@ function renderText(receipt) {
     const rr = receipt.review_rounds === null ? `unknown (${receipt.review_rounds_reason})` : receipt.review_rounds;
     lines.push(`levers: max_fix_rounds ${receipt.levers.max_fix_rounds}, fix_cutoff ${receipt.levers.fix_cutoff}, on_embedder_failure ${receipt.levers.on_embedder_failure}${memoryText(receipt.levers)}; review_rounds: ${rr}`);
   }
-  lines.push(...RI.embedderLines(receipt));
+  lines.push(...RI.embedderLines(receipt), ...require('../run/review-scratch.cjs').lines(receipt)); // ADR 0054 amendment 1: what the close removed
   if (receipt.receipt_path) lines.push(`receipt: ${receipt.receipt_path}`);
   lines.push('');
   return lines.join('\n');
@@ -485,7 +485,7 @@ async function run(ctx) {
     review_rounds: reviewRounds.value, review_rounds_reason: reviewRounds.reason,
     workers_closed: closed ? workersClosedBlock(closed, endedRow ? (endedRow.workers_marked_dead || []) : null) : null,
     ...(closeStages ? { close_stages: closeStages } : {}), // only with notes on
-    ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), // only with a run-end memory lever on
+    ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), ...require('../run/review-scratch.cjs').closeRun(dataDir, parsed.runId, parsed.levers), // the run-end memory jobs; the reviewers' scratch removed (ADR 0054 amendment 1)
   };
   try {
     fs.writeFileSync(receiptPath, `${JSON.stringify({ ...receipt, receipt_path: receiptPath }, null, 2)}\n`);
