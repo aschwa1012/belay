@@ -148,3 +148,17 @@ test('a queued hold (a report past its run\'s breaker) is counted and listed apa
     assert.match(P.heldText({ ...j, by_ground: {} }), /^2 held, 1 queued for review/);
   } catch (e) { bodyError = e === undefined ? new Error('undefined was thrown') : e; throw bodyError; } finally { await teardown(bodyError, [() => cleanup(dir)]); }
 });
+
+test('belay status names an unreadable hold and the project it closes', async () => {
+  const dir = sandbox();
+  let bodyError = null;
+  try {
+    const store = new Store(`${dir}/memory.db`, { stamp: true });
+    store.storeIn({ namespace: 'project/acme', worker_id: 'w1', type: 'note', text: `a note ${Math.random()}`, title: 'a note', body: { state: 'live', kind: 'lesson', evidence: [] }, run_id: 'r1', source: 'harness', written_by: 'harness' });
+    store.storeIn({ namespace: 'held/acme', worker_id: 'w1', type: 'held', text: `held bad ${Math.random()}`, title: 'held bad', body: { state: 'held', note_id: 12345, kind: 'wrong', ground: 'reported', rev: 0 }, run_id: 'r1', source: 'harness', written_by: 'harness' });
+    store.close();
+    const r = spawnSync(process.execPath, [CLI, 'status', '--data', dir], { cwd: ROOT, windowsHide: true, encoding: 'utf8' });
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.match(r.stdout, /1 held row cannot be read; its note is withheld from workers \(closed\); every note of project acme is withheld from workers/);
+  } catch (e) { bodyError = e === undefined ? new Error('undefined was thrown') : e; throw bodyError; } finally { await teardown(bodyError, [() => cleanup(dir)]); }
+});

@@ -55,6 +55,7 @@ function renderText(receipt) {
   }
   if (receipt.notes_unembedded && receipt.notes_unembedded.total > 0) lines.push(require('./panel-common.cjs').unembeddedText(receipt.notes_unembedded));
   if (receipt.notes_held && receipt.notes_held.total > 0) lines.push(require('./panel-common.cjs').heldText(receipt.notes_held));
+  if (receipt.notes_held && receipt.notes_held.malformed > 0) lines.push(require('./panel-common.cjs').unreadableText({ count: receipt.notes_held.malformed, closed_projects: receipt.notes_held.closed_projects }));
   if (receipt.memory_notice) lines.push(`warning: ${receipt.memory_notice.title}. ${receipt.memory_notice.why} ${receipt.memory_notice.fix}`);
   lines.push('');
   return lines.join('\n');

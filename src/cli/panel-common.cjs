@@ -109,6 +109,14 @@ function heldBreakdown(h) {
   return `${h.total - q} held: ${[...parts].map(([k, n]) => `${n} ${k}`).join(', ')}${q > 0 ? `; ${q} queued past the breaker` : ''}${a > 0 ? `; ${a} await${a === 1 ? 's' : ''} you` : ''}`;
 }
 
+// Held rows the read filter cannot read: withheld closed, and, for one that names no note, every note of its project with it.
+function unreadableText(u) {
+  const closed = Array.isArray(u.closed_projects) ? u.closed_projects.map((p) => clean(p, 64)) : [];
+  const n = Number(u.count) || 0;
+  const whole = closed.length ? `; every note of project${closed.length === 1 ? '' : 's'} ${closed.join(', ')} is withheld from workers` : '';
+  return `${n} held row${n === 1 ? '' : 's'} cannot be read; ${n === 1 ? 'its note is' : 'their notes are'} withheld from workers (closed)${whole} until fixed or settled: see belay memory held`;
+}
+
 function heldText(h) {
   const b = heldBreakdown(h);
   if (b) return `${b}: review with belay memory review`;
@@ -121,4 +129,4 @@ function heldText(h) {
   return `${h.total} note${h.total === 1 ? '' : 's'} held for review${per}, oldest ${h.oldest_age_runs || 0} run${h.oldest_age_runs === 1 ? '' : 's'}: review with belay memory review${where}`;
 }
 
-module.exports = { unembeddedText, heldText, WIDTH, STREAM_NAME, fwd, orchestratorStreamPath, chooseRun, clean, v, iso, money, wrapLine, contentText };
+module.exports = { unembeddedText, unreadableText, heldText, WIDTH, STREAM_NAME, fwd, orchestratorStreamPath, chooseRun, clean, v, iso, money, wrapLine, contentText };
