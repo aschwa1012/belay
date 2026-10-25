@@ -8,7 +8,7 @@
 const rows = require('./rows.cjs');
 const { pidAlive } = require('./lock.cjs');
 const { normalise } = require('./evaluate.cjs');
-const { samePath } = require('./git.cjs');
+const { under } = require('./methods-worktree.cjs');
 
 function overlaps(a, b) {
   const x = normalise(a), y = normalise(b);
@@ -72,14 +72,14 @@ function treeOf(store, task, worker) {
   }
   if (w === OPERATOR) return SHARED;
   const cwd = w && typeof w.worktree === 'string' && w.worktree ? w.worktree : null;
-  return { own: wt && (!cwd || samePath(cwd, wt)) ? wt : null, loc: cwd || wt };
+  return { own: wt && (!cwd || under(cwd, wt)) ? wt : null, loc: cwd || wt };
 }
 
-// Two tasks write in one tree when neither has its own (the shared tree, or a place not yet known), or when their known
-// locations are one path (a worker sent into another task's worktree).
+// Two tasks write in one tree when neither has its own (the shared tree, or a place not yet known), or when one known location
+// is the other or lies under it (a worker sent into another task's worktree, or a directory inside it).
 function sameTree(a, b) {
   if (!a.own && !b.own) return true;
-  return !!(a.loc && b.loc && samePath(a.loc, b.loc));
+  return !!(a.loc && b.loc && (under(a.loc, b.loc) || under(b.loc, a.loc)));
 }
 
 // The holding tasks (other than `exceptId`) that overlap `files`, with the paths that clash, first match per task, each with

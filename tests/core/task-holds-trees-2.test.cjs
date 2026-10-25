@@ -44,3 +44,21 @@ test('a task whose latest lease is the operator\'s, even released, is judged as 
   const e = await rejectsCode(task(['b1/a.js']), 'E_FILES_OVERLAP');
   assert.strictEqual(e.detail.other_task_id, a.id);
 });
+
+test('a worker in a directory inside another task\'s worktree is in that tree, and so is one whose path differs only in case on Windows', async () => {
+  const a = await task(['s1/a.js']);
+  const pa = await own(a);
+  await worker('s1-wa', pa);
+  await orch.task.assign({ task_id: a.id, worker_id: 's1-wa' });
+  const b = await task(['s1/a.js']); // shared, beside a's own tree
+  assert.deepStrictEqual(ids(b.overlaps), [a.id]);
+  await worker('s1-wb', `${pa}/s1`);
+  const e = await rejectsCode(orch.task.assign({ task_id: b.id, worker_id: 's1-wb' }), 'E_FILES_OVERLAP');
+  assert.strictEqual(e.detail.other_task_id, a.id);
+  if (process.platform === 'win32') {
+    await worker('s1-wc', pa.toUpperCase());
+    await rejectsCode(orch.task.assign({ task_id: b.id, worker_id: 's1-wc' }), 'E_FILES_OVERLAP');
+  }
+  await worker('s1-wd', repo); // the shared checkout is another tree from a's
+  assert.deepStrictEqual(ids((await orch.task.assign({ task_id: b.id, worker_id: 's1-wd' })).overlaps), [a.id]);
+});
