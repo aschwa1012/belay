@@ -12,15 +12,15 @@ const C = require('./config.cjs');
 const USAGE = {
   worktree: 'usage: belay worktree create <task-id> [--base <ref>] [--branch <name>] [--repo <dir>] [--no-junction]\n'
     + '       belay worktree remove <task-id> [--force] [--delete-branch]\n'
-    + '       belay worktree remove --integration <id> [--force]\n'
-    + '       belay worktree merge <task-id>... [--into <branch>] [--base <ref>] [--no-evaluate]\n',
+    + '       belay worktree remove --integration <id> [--force] [--take-over]\n'
+    + '       belay worktree merge <task-id>... [--into <branch>] [--base <ref>] [--no-evaluate] [--take-over]\n',
   worktrees: 'usage: belay worktrees [run-id] [--all] [--data <dir>] [--json]\n',
 };
 
 const usageError = (command, message) => ({ code: 2, text: `belay ${command}: ${message}\n\n${USAGE[command]}`, json: { error: message } });
 
 const VALUE = new Set(['--base', '--branch', '--repo', '--into', '--integration']);
-const FLAG = new Set(['--force', '--delete-branch', '--no-evaluate', '--no-junction', '--all']);
+const FLAG = new Set(['--force', '--delete-branch', '--no-evaluate', '--no-junction', '--all', '--take-over']);
 
 function parse(argv) {
   const opts = {}, rest = [];
@@ -50,10 +50,13 @@ const wtLine = (t) => {
 function mergeText(r) {
   const head = `integration ${r.id} into ${r.into_branch} at ${r.worktree}: ${r.state}`;
   const merged = r.merged.map((m) => `  merged ${m.task_id} (${m.branch})${m.already ? ' already' : ''}`);
-  const tail = r.state === 'conflict' ? [`  conflict in task ${r.conflict.task_id}: ${r.conflict.files.join(', ')}; merge aborted, tree ${r.conflict.tree_clean ? 'clean' : 'NOT clean'}`]
-    : r.state === 'failed' ? [`  failed: ${r.error && r.error.message}`]
-      : r.checks ? [...r.checks.map((c) => `  ${c.passed ? 'pass' : 'FAIL'} ${c.argv.join(' ')} (${c.task_ids.join(',')})`), `  passed: ${r.passed}`] : [];
-  return [head, ...merged, ...tail, ''].join('\n');
+  const stop = r.state === 'conflict' ? [`  conflict in task ${r.conflict.task_id}: ${r.conflict.files.join(', ')}; merge aborted, tree ${r.conflict.tree_clean ? 'clean' : 'NOT clean'}`]
+    : r.state === 'failed' ? [`  failed: ${r.error && r.error.message}`] : [];
+  const missed = (r.not_merged || []).map((m) => `  not merged ${m.task_id} (${m.reason})`);
+  // A stopped integration still checks what landed before it, so the checks print whatever the state.
+  const checks = r.checks ? [...r.checks.map((c) => `  ${c.passed ? 'pass' : 'FAIL'} ${c.argv.join(' ')} (${c.task_ids.join(',')})`), `  passed: ${r.passed}`]
+    : r.merged.length && r.state !== 'merging' ? ['  merged work unchecked'] : [];
+  return [head, ...merged, ...stop, ...missed, ...checks, ''].join('\n');
 }
 
 async function write(ctx, core) {
@@ -73,7 +76,7 @@ async function write(ctx, core) {
     if (sub === 'remove') {
       if (opts.integration) {
         if (rest.length) return usageError('worktree', 'remove --integration takes no task id');
-        const row = await core.integration.remove({ id: opts.integration, ...(opts.force ? { force: true } : {}) });
+        const row = await core.integration.remove({ id: opts.integration, ...(opts.force ? { force: true } : {}), ...(opts['take-over'] ? { take_over: true } : {}) });
         return { code: 0, text: `integration ${row.id}: removed ${row.worktree}; branch ${row.into_branch} kept\n`, json: row };
       }
       if (rest.length !== 1) return usageError('worktree', 'remove needs exactly one task id');
@@ -84,7 +87,7 @@ async function write(ctx, core) {
     if (sub === 'merge') {
       if (!rest.length) return usageError('worktree', 'merge needs at least one task id');
       const row = await core.integration.merge({
-        task_ids: rest, ...(opts.into ? { into: opts.into } : {}), ...(opts.base ? { base: opts.base } : {}), ...(opts['no-evaluate'] ? { evaluate: false } : {}),
+        task_ids: rest, ...(opts.into ? { into: opts.into } : {}), ...(opts.base ? { base: opts.base } : {}), ...(opts['no-evaluate'] ? { evaluate: false } : {}), ...(opts['take-over'] ? { take_over: true } : {}),
       });
       const good = row.state === 'merged' || (row.state === 'evaluated' && row.passed === true);
       return { code: good ? 0 : 1, text: mergeText(row), json: row };

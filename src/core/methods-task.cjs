@@ -10,7 +10,8 @@ const { pidAlive } = require('./lock.cjs');
 const { DEFAULT_LEASE_TTL_MS, TASK_STATES } = require('./schema.cjs');
 const { runAcceptance } = require('./evaluate.cjs');
 const holds = require('./task-holds.cjs');
-const { filesOverlap, runNotLive, resolveOwner, assertNotOwnReview } = require('./methods-task-hold.cjs');
+const integrationState = require('./integration-state.cjs');
+const { filesOverlap, treeHint, runNotLive, resolveOwner, assertNotOwnReview } = require('./methods-task-hold.cjs');
 
 // ADR 0025 decision 1: the most a worker may hand back on release, serialized.
 const HANDOFF_MAX_BYTES = 4096;
@@ -106,10 +107,15 @@ async function create(E, caller, args) {
     }
   }
 
+  let overlaps = [];
   if (filesOwned && filesOwned.length) {
-    // ADR 0046 decision 1: only a task that holds its files (its run is live) can refuse this one.
-    const [first] = holds.findClashes(E.store, filesOwned, null);
-    if (first) throw filesOverlap(first);
+    // ADR 0046 decision 1: only a task that holds its files (its run is live) can refuse this one. ADR 0059 decision 4: a new
+    // task has no tree yet, so it is judged as shared, and only a holder in the shared tree refuses it; one in its own
+    // worktree is reported in `overlaps`.
+    const scan = holds.scanOverlaps(E.store, filesOwned, null);
+    const first = scan.find((c) => c.same_tree);
+    if (first) throw filesOverlap(first, treeHint(E.store, null));
+    overlaps = holds.acrossTrees(scan);
   }
 
   const t = Date.now();
@@ -118,7 +124,7 @@ async function create(E, caller, args) {
     results: null, depends_on: deps, repairs,
   }, E.writtenBy(caller), t);
   E.noteWrite();
-  return row;
+  return overlaps.length ? { ...row, overlaps } : row;
 }
 
 // The dependency gate shared by task.assign and task.evaluate: only `done` opens it (ADR 0013 §1, ADR 0030 decision 2).
@@ -145,6 +151,7 @@ async function assign(E, caller, args) {
   const checkOnly = args.check_only === true;
   if (!args.task_id || (!checkOnly && !args.worker_id)) throw err('E_ARGS', 'task.assign needs a task_id and a worker_id');
   if (args.worktree !== undefined && (!checkOnly || !args.worktree || typeof args.worktree !== 'string')) throw err('E_ARGS', 'task.assign worktree is the directory a spawn will run in, a non-empty string, and only with check_only');
+  const tree = await require('./review-tree.cjs').grantSnapshot(E, args); // ADR 0054 amendment 1: a review's tree at grant (git, so before the tx)
 
   // Every read this decision rests on happens inside the same BEGIN IMMEDIATE as the two writes it
   // authorises. Read outside it and the operator's take-control, or the worker's death, can land between
@@ -181,15 +188,21 @@ async function assign(E, caller, args) {
     // The hold belongs to a live run: a task whose own run has ended is taken over by the run of the worker that takes it
     // (the calling orchestrator's run for a check_only), and is refused when no live run can own it.
     const worker = checkOnly ? null : rows.current(E.store, 'worker', args.worker_id);
-    // A task that owns files moves to the run of the worker that takes it, and a move is a new claim: every overlapping holder refuses it.
-    const ownerRun = resolveOwner(E.store, task, checkOnly ? (caller.role === 'orchestrator' ? caller.run_id : null) : (worker && worker.run_id), worker);
-
     // ADR 0058 amendment: a worker runs in one directory for its whole life, so a task with its own worktree goes only to a
-    // worker that runs there. A check_only call checks the directory the spawn will run in, when it names one.
-    if (checkOnly) {
-      if (args.worktree !== undefined) require('./methods-worktree.cjs').assertTaskTree(task, args.worktree, "the spawn's worktree", SPAWN_THERE);
-      return { assignable: true, task_id: task.id };
-    }
+    // worker that runs there. A check_only call checks the directory the spawn will run in, when it names one. Checked before
+    // the hold, so a worker in the wrong tree is told that, not a hold's remedy (ADR 0059).
+    const { assertTaskTree } = require('./methods-worktree.cjs');
+    if (checkOnly && args.worktree !== undefined) assertTaskTree(task, args.worktree, "the spawn's worktree", SPAWN_THERE);
+    if (worker) assertTaskTree(task, worker.worktree, `worker ${args.worker_id}'s worktree`, SPAWN_THERE);
+    // ADR 0059: the tree the task will be worked in is the worker's, or for a check_only the spawn's directory when it names one.
+    const taker = checkOnly ? (typeof args.worktree === 'string' && args.worktree ? { worktree: args.worktree } : null) : worker;
+    // A task that owns files moves to the run of the worker that takes it, and a move is a new claim: every overlapping holder refuses it.
+    const overlaps = []; // ADR 0059 decision 3: the overlaps with tasks in other trees, which do not refuse
+    const ownerRun = resolveOwner(E.store, task, checkOnly ? (caller.role === 'orchestrator' ? caller.run_id : null) : (worker && worker.run_id), taker, overlaps);
+    const reported = overlaps.length ? { overlaps } : {};
+
+    // ADR 0030 decision 4: the task-side checks above are the whole of a check_only call; it writes nothing.
+    if (checkOnly) return { assignable: true, task_id: task.id, ...reported };
 
     if (!worker) throw err('E_WORKER_NOT_LIVE', `no worker row exists for ${args.worker_id}, so it cannot hold a lease`, { worker_id: args.worker_id });
     if (!LIVE_WORKER_STATES.has(worker.state)) {
@@ -206,7 +219,6 @@ async function assign(E, caller, args) {
         { worker_id: args.worker_id, state: worker.state, pid: worker.pid, pid_alive: false });
     }
 
-    require('./methods-worktree.cjs').assertTaskTree(task, worker.worktree, `worker ${args.worker_id}'s worktree`, SPAWN_THERE);
 
     // Build step 6a-2, design item 1: a lease belongs to its task's run, never the caller's — an
     // operator writing from the CLI (run_id 'cli') must not produce a lease no run's store.diff can see.
@@ -214,10 +226,10 @@ async function assign(E, caller, args) {
     const lease = rows.append(E.store, 'lease', {
       id: rows.newId(), task_id: args.task_id, run_id: ownerRun, holder: args.worker_id,
       holder_role: 'worker', granted_at: t, expires_at: t + ttlFrom(args), ttl_ms: ttlFrom(args), released_at: null,
-      supersedes: old ? old.id : null,
+      supersedes: old ? old.id : null, ...(tree ? { tree } : {}),
     }, by, t);
     const row = rows.append(E.store, 'task', { ...task, run_id: ownerRun, state: 'assigned' }, by, t);
-    return { task: row, old_lease: old, new_lease: lease, paused_worker: null };
+    return { task: row, old_lease: old, new_lease: tree ? require('./review-tree.cjs').shown(lease) : lease, paused_worker: null, ...reported };
   });
   if (!checkOnly) E.noteWrite();
   return out;
@@ -230,7 +242,7 @@ function refutedReview(d) {
   return checks.some(c => c && c.kind === 'verdict' && c.executable === true && c.passed === false);
 }
 
-function view(E, task, liveness) {
+function view(E, task, liveness, integrations) {
   const t = Date.now();
   const l = rows.currentLeaseForTask(E.store, task.id);
   let lease = null, holderPidAlive = null;
@@ -243,13 +255,16 @@ function view(E, task, liveness) {
   }
   const ck = rows.lastCheckpoint(E.store, task.id);
   const h = holds.holdOf(task, liveness || holds.runLiveness(E.store));
-  return { ...task, holds_files: h.holds, holds_reason: h.reason, lease, holder_pid_alive: holderPidAlive, last_checkpoint_id: ck ? ck.id : null, last_checkpoint_at: ck ? ck.written_at : null };
+  // ADR 0053 amendment 2: whether the task's branch landed is its own fact beside `state`, derived from the integration rows.
+  const integration = integrationState.ofTask(task, integrations || integrationState.newestFirst(E.store));
+  return { ...task, holds_files: h.holds, holds_reason: h.reason, lease, holder_pid_alive: holderPidAlive, last_checkpoint_id: ck ? ck.id : null, last_checkpoint_at: ck ? ck.written_at : null, integration };
 }
 
 async function list(E, caller, args) {
   const states = Array.isArray(args.states) && args.states.length ? new Set(args.states) : null;
   const liveness = holds.runLiveness(E.store);
-  const tasks = rows.currentAll(E.store, 'task').filter(t => !states || states.has(t.state)).map(t => view(E, t, liveness));
+  const integrations = integrationState.newestFirst(E.store);
+  const tasks = rows.currentAll(E.store, 'task').filter(t => !states || states.has(t.state)).map(t => view(E, t, liveness, integrations));
   return { tasks };
 }
 
@@ -385,6 +400,7 @@ async function releaseNow(E, caller, args) {
   // ADR 0034 amendment 1: under `off` the hand-back's notes are dropped and the lease still releases; the result says so.
   const dropped = got && got.dropped ? { notes_dropped: got.dropped } : null;
   const prep = dropped ? null : got;
+  const RT = require('./review-tree.cjs'), treeNow = await RT.releaseSnapshot(E, args); // ADR 0054 amendment 1: a review's tree at the hand-back
   const out = E.store.tx(() => {
     E.assertRunOpen(caller, 'lease.release'); // the notes were embedded above; run.end may have committed meanwhile (audit D42)
     // Releasing a superseded lease would destroy the current holder's live lease, so the currency rule
@@ -422,6 +438,7 @@ async function releaseNow(E, caller, args) {
       handoff = { result: args.result, by: caller.worker_id, lease_id: l.id, at: t };
       const missing = missingCitations(E, args.result);
       if (missing !== null) handoff.memory_ids_missing = missing;
+      if (l.tree) Object.assign(handoff, RT.handBack(E.dataDir, caller.worker_id, l.tree, treeNow)); // the tree's change and the scratch size
     }
     const row = rows.append(E.store, 'task', { ...task, state: task.state === 'done' ? 'done' : 'released', handoff }, by, t);
     const ck = rows.lastCheckpoint(E.store, l.task_id);
@@ -441,10 +458,15 @@ async function takeControl(E, caller, args) {
     if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.task_id}`, { task_id: args.task_id });
     // ADR 0046 decision 1: the operator's lease activates the task like an assignment does, so its files must be held by a
     // live run (the task's own: the operator has no run to re-home it to) and not yielded to one that is live now.
+    // ADR 0059: belay does not know where the operator works, so the operator is judged as in the shared tree, and the
+    // overlaps it lets through with tasks in their own worktrees are returned as `overlaps`.
+    let overlaps = [];
     if (task.state !== 'done' && Array.isArray(task.files_owned) && task.files_owned.length) {
       if (holds.activationRun(E.store, task, null) == null) throw runNotLive(task, null);
-      const [first] = holds.findClashes(E.store, task.files_owned, task.id, { run_id: task.run_id });
+      const scan = holds.scanOverlaps(E.store, task.files_owned, task.id, { run_id: task.run_id }, holds.treeOf(E.store, task, holds.OPERATOR));
+      const first = scan.find((c) => c.same_tree);
       if (first) throw filesOverlap(first);
+      overlaps = holds.acrossTrees(scan);
     }
     const old = rows.currentLeaseForTask(E.store, args.task_id);
     const t = Date.now(), by = E.writtenBy(caller);
@@ -455,7 +477,7 @@ async function takeControl(E, caller, args) {
     }, by, t);
     // `done` is the one state earned by executable evidence (api.md §2); take-control must not un-earn it.
     rows.append(E.store, 'task', { ...task, state: task.state === 'done' ? 'done' : 'assigned' }, by, t);
-    return { old_lease: old, new_lease: lease, paused_worker: null };
+    return { old_lease: old, new_lease: lease, paused_worker: null, ...(overlaps.length ? { overlaps } : {}) };
   });
   E.noteWrite();
   return out;
