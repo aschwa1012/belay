@@ -138,3 +138,45 @@ test('removing a shared tree: refused while the fix is unfinished, then recorded
   assert.ok(fNow.worktree.removed_at, 'the fix that shared the tree records it removed');
   assert.strictEqual(fNow.worktree.inherited_from, w.id);
 });
+
+// Work done in its own tree and refuted, with its fix created (open) on the same branch.
+async function workWithOpenFix(name) {
+  let w = await orch.task.create({ spec: `${name} work`, acceptance: { files_within_owned: true }, files_owned: [`src/${name}.cjs`] });
+  w = await orch.task.worktreeCreate({ task_id: w.id });
+  write(w.worktree.path, `src/${name}.cjs`, 'work\n');
+  commit(w.worktree.path, `${name} work`);
+  await handBack(w.id, `c-${name}`, w.worktree.path, { branch: w.worktree.branch });
+  assert.strictEqual((await orch.task.evaluate({ task_id: w.id })).state, 'done');
+  const r = await orch.task.create({ spec: `review ${name}`, depends_on: [w.id], acceptance: { verdict: true } });
+  await handBack(r.id, `j-${name}`, dir, { verdict: 'refuted', summary: 's', findings: [] });
+  await orch.task.evaluate({ task_id: r.id, worktree: dir });
+  return { w, f: await orch.task.fixFromReview({ review_id: r.id }) };
+}
+
+test('integrate refuses the done work while its fix, on the same branch, is open; once the fix is done both merge', async () => {
+  const { w, f } = await workWithOpenFix('land');
+  const e = await rejectsCode(orch.integration.merge({ task_ids: [w.id], into: 'int/land' }), 'E_PRECONDITION');
+  assert.ok(e.message.includes(`task ${f.id} (open)`), e.message);
+  assert.deepStrictEqual([e.detail.task_id, e.detail.open_task_id], [w.id, f.id]);
+  assert.strictEqual((await orch.integration.list({})).integrations.filter((i) => i.into_branch === 'int/land').length, 0, 'nothing was written');
+  // The fix commits on the shared branch and is judged done; now the work and the fix merge, the fix as already merged.
+  write(w.worktree.path, 'src/land.cjs', 'fixed\n');
+  commit(w.worktree.path, 'land fix');
+  await handBack(f.id, 'c-land', w.worktree.path, { branch: w.worktree.branch });
+  assert.strictEqual((await orch.task.evaluate({ task_id: f.id })).state, 'done');
+  const row = await orch.integration.merge({ task_ids: [w.id, f.id], into: 'int/land' });
+  assert.ok(['merged', 'evaluated'].includes(row.state), row.state);
+});
+
+test('two removals of one shared tree at once: one removes it, the other reports it already removed, in either order', async () => {
+  const { w, f } = await workWithOpenFix('twice');
+  await orch.task.cancel({ task_id: f.id });
+  await orch.worker.write({ id: 'c-twice', substrate: 'claude-code', pid: process.pid, state: 'stopped', session_id: 's-c-twice', last_event_at: Date.now(), worktree: w.worktree.path });
+  const [a, b] = await Promise.all([orch.task.worktreeRemove({ task_id: w.id }), orch.task.worktreeRemove({ task_id: f.id })]);
+  const [first, second] = a.removal.already ? [b, a] : [a, b];
+  assert.ok(first.worktree.removed_at && !first.removal.already, 'one call removes the tree');
+  assert.deepStrictEqual([second.removal.already, second.removal.removed_through, !!second.worktree.removed_at], [true, first.id, true]);
+  // Asked again afterwards, through either task: already removed, never a second git call or a refusal.
+  assert.strictEqual((await orch.task.worktreeRemove({ task_id: second.id })).removal.already, true);
+  assert.ok(!fs.existsSync(w.worktree.path));
+});

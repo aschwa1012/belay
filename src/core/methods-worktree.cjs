@@ -34,8 +34,18 @@ const present = (args) => Object.fromEntries(Object.entries(args || {}).filter((
 const active = (task) => (task && task.worktree && task.worktree.path && !task.worktree.removed_at ? task.worktree : null);
 
 const ENDED_TASK = new Set(['done', 'cancelled']);
+const removing = new Map(); // tree path (lower case) -> { task_id, done }: a task.worktreeRemove in flight
 // The other tasks whose recorded, not removed, tree is `dir`: a fix task and the work it fixes share one.
 const sharers = (E, id, dir) => rows.currentAll(E.store, 'task').filter((t) => t.id !== id && active(t) && G.samePath(active(t).path, dir));
+// The first other task that is not done or cancelled and shares `task`'s tree or its branch (a fix works on the work's branch, so
+// merging or removing either one takes the other's unreviewed commits with it), or null.
+function openSharer(E, task) {
+  const rec = task.worktree;
+  if (!rec || !rec.branch) return null;
+  const tree = active(task);
+  return rows.currentAll(E.store, 'task').find((t) => t.id !== task.id && !ENDED_TASK.has(t.state) && t.worktree && (
+    (t.worktree.branch === rec.branch && G.samePath(t.worktree.repo, rec.repo)) || (tree && active(t) && G.samePath(active(t).path, tree.path)))) || null;
+}
 
 function requireTask(E, id, method) {
   if (!id || typeof id !== 'string') throw err('E_ARGS', `${method} needs a task_id`);
@@ -211,23 +221,40 @@ async function worktreeRemove(E, caller, args) {
   requireTask(E, args.task_id, 'task.worktreeRemove');
   for (const k of ['force', 'delete_branch']) if (args[k] !== undefined && typeof args[k] !== 'boolean') throw err('E_ARGS', `task.worktreeRemove: ${k} must be a boolean`, { field: k });
   return exclusive(`task:${args.task_id}`, `a worktree call for task ${args.task_id}`, async () => {
-    const task = requireTask(E, args.task_id, 'task.worktreeRemove');
+    let task = requireTask(E, args.task_id, 'task.worktreeRemove');
+    const key = G.fwd(task.worktree && task.worktree.path ? task.worktree.path : '').toLowerCase();
+    // A sharer's removal of this same tree in flight is waited for: this call then reports it already removed, never a second git.
+    if (active(task) && removing.has(key)) {
+      const by = removing.get(key).task_id;
+      await removing.get(key).done.catch(() => {});
+      task = requireTask(E, args.task_id, 'task.worktreeRemove');
+      if (!active(task)) return { ...task, removal: { already: true, removed_through: by } };
+    }
+    // Removed already, through a task that shares the tree: the same answer, whichever call came first.
+    if (!active(task) && task.worktree && task.worktree.removed_through) return { ...task, removal: { already: true, removed_through: task.worktree.removed_through } };
     const rec = active(task);
     if (!rec) throw err('E_NOT_FOUND', `task ${task.id} has no belay worktree to remove`, { task_id: task.id, worktree: task.worktree || null });
-    // A fix task shares the tree of the work it fixes (task.fixFromReview): one still being worked keeps the tree.
-    const open = sharers(E, task.id, rec.path).find((t) => !ENDED_TASK.has(t.state));
-    if (open) throw err('E_PRECONDITION', `task ${open.id} (${open.state}) is worked in the same tree ${rec.path}; finish or cancel it first`, { task_id: open.id, state: open.state, path: rec.path });
-    const out = await removeTree(E, rec, args, `task ${task.id}`);
-    // No second run-open check here: the tree is already gone, and a row that still named it would be the false one.
-    const row = E.store.tx(() => {
-      const done = { ...rec, removed_at: Date.now(), removed_by: E.writtenBy(caller), forced: out.forced, already_gone: out.already_gone, branch_deleted: out.branch_deleted, leftover: out.leftover };
-      for (const s of sharers(E, task.id, rec.path)) rows.append(E.store, 'task', { ...s, worktree: { ...s.worktree, ...done, inherited_from: s.worktree.inherited_from } }, E.writtenBy(caller), Date.now());
-      const fresh = rows.current(E.store, 'task', task.id);
-      return rows.append(E.store, 'task', { ...fresh, worktree: done }, E.writtenBy(caller), Date.now());
-    });
-    E.noteWrite();
-    return { ...row, removal: out };
+    // A fix task shares the tree and branch of the work it fixes (task.fixFromReview): one still being worked keeps the tree.
+    const open = openSharer(E, task);
+    if (open) throw err('E_PRECONDITION', `task ${open.id} (${open.state}) is worked in the same tree or branch ${rec.path}; finish or cancel it first`, { task_id: open.id, state: open.state, path: rec.path });
+    let finish;
+    removing.set(key, { task_id: task.id, done: new Promise((r) => { finish = r; }) });
+    try { return await removeShared(E, caller, args, task, rec); } finally { removing.delete(key); finish(); }
   });
+}
+
+// Removes the tree and records the removal on the task and on every task that shares the tree.
+async function removeShared(E, caller, args, task, rec) {
+  const out = await removeTree(E, rec, args, `task ${task.id}`);
+  // No second run-open check here: the tree is already gone, and a row that still named it would be the false one.
+  const row = E.store.tx(() => {
+    const done = { ...rec, removed_at: Date.now(), removed_by: E.writtenBy(caller), forced: out.forced, already_gone: out.already_gone, branch_deleted: out.branch_deleted, leftover: out.leftover };
+    for (const s of sharers(E, task.id, rec.path)) rows.append(E.store, 'task', { ...s, worktree: { ...s.worktree, ...done, inherited_from: s.worktree.inherited_from, removed_through: task.id } }, E.writtenBy(caller), Date.now());
+    const fresh = rows.current(E.store, 'task', task.id);
+    return rows.append(E.store, 'task', { ...fresh, worktree: done }, E.writtenBy(caller), Date.now());
+  });
+  E.noteWrite();
+  return { ...row, removal: out };
 }
 
 // The shared removal (a task's tree, or an integration's): refuses a live worker in it and a dirty tree unless force,
@@ -286,4 +313,4 @@ function evaluateTarget(task, args) {
   return rec ? { worktree, base: rec.base_sha, baseSource: 'recorded' } : { worktree, base: undefined, baseSource: undefined };
 }
 
-module.exports = { worktreeCreate, worktreeRemove, removeTree, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, assertTaskTree, exclusive, active, present, pathName, liveWorkerIn, strayLinks, under };
+module.exports = { worktreeCreate, worktreeRemove, removeTree, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, assertTaskTree, openSharer, exclusive, active, present, pathName, liveWorkerIn, strayLinks, under };

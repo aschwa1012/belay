@@ -37,6 +37,11 @@ async function readTasks(E, ids) {
   if (notDone.length) throw err('E_PRECONDITION', `only done tasks are merged; not done: ${notDone.map((x) => `${x.task_id} (${x.state})`).join(', ')}`, { not_done: notDone });
   const noBranch = tasks.filter((t) => !t.worktree || !t.worktree.branch).map((t) => t.id);
   if (noBranch.length) throw err('E_PRECONDITION', `these tasks have no belay branch to merge: ${noBranch.join(', ')}`, { no_branch: noBranch });
+  // A fix task works on the branch of the work it fixes: merging the done work would take the open fix's unreviewed commits.
+  for (const t of tasks) {
+    const open = W.openSharer(E, t);
+    if (open) throw err('E_PRECONDITION', `task ${t.id}'s branch ${t.worktree.branch} is shared with task ${open.id} (${open.state}), which is not done; merge once it is done or cancelled`, { task_id: t.id, branch: t.worktree.branch, open_task_id: open.id, open_state: open.state });
+  }
   const repo = tasks[0].worktree.repo;
   const other = tasks.find((t) => !G.samePath(t.worktree.repo, repo));
   if (other) throw err('E_PRECONDITION', `task ${other.id}'s branch is in ${other.worktree.repo}, not ${repo}`, { task_id: other.id, repo: other.worktree.repo, expected: repo });
