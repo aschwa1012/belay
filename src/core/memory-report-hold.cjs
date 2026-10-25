@@ -71,6 +71,10 @@ function holdReported(E, caller, ctx, note, newReport) {
   if (!note || note.type !== 'note' || note.namespace !== N.projectNs(ctx.project)) return { skipped: 'not_live' };
   const reports = holdReportsOf(note);
   if (!reports.length) return { skipped: 'no_standing_report' };
+  // Past the breaker (ADR 0047 amendment of 2026-10-25, proposed): a hold is written, merged or added to only while some standing report on the
+  // note withholds, so a note in state held is always hidden from workers. A report written past its run's limit stays on the note, counted
+  // in the breaker notice and the unjudged reports, and holds nothing.
+  if (reports.every((r) => r.withhold === false)) return { skipped: 'breaker' };
   const active = activeHoldOf(E, ctx.project, note.id);
   if (active && active.b.ground === 'reported' && active.b.kind !== 'unsupported') return appendTo(E, ctx, note, active, reports, newReport);
 

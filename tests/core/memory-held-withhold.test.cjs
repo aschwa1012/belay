@@ -71,7 +71,7 @@ test('warn: the note stays visible to a worker, as before', async () => {
   assert.strictEqual(G.withholds(E, worker(RUNS.warn)), false);
 });
 
-test('a disputing hold of any ground hides its note; an unsupported row and a report past the breaker hide nothing', async () => {
+test('a disputing hold of any ground hides its note, even one an older store wrote past the breaker; an unsupported row hides nothing', async () => {
   // Widened 2026-10-25: a worker sees no held note. The scrubber's duplicate, superseded and wrong holds, and an older report_confirmed hold, withhold too.
   const a = note('duplicate hold'); hold(a, { kind: 'duplicate', ground: 'same_claim', reports: undefined });
   const b = note('unsupported hold'); hold(b, { kind: 'unsupported', ground: 'unsupported' });
@@ -80,8 +80,9 @@ test('a disputing hold of any ground hides its note; an unsupported row and a re
   const e = note('scrubber wrong hold'); hold(e, { ground: 'scrubber', reports: undefined });
   const f = note('confirmed hold'); hold(f, { ground: 'report_confirmed', reports: undefined });
   const g = note('write-time superseded hold'); hold(g, { kind: 'superseded', ground: 'replaced', reports: undefined });
-  for (const id of [b, c]) assert.deepStrictEqual(await seen(worker(RUNS.withhold), id), ALL);
-  for (const id of [a, d, e, f, g]) {
+  // Held means hidden (amendment of 2026-10-25): no report past the breaker writes a hold now, and a hold an older store wrote that way hides too.
+  assert.deepStrictEqual(await seen(worker(RUNS.withhold), b), ALL);
+  for (const id of [a, c, d, e, f, g]) {
     assert.deepStrictEqual(await seen(worker(RUNS.withhold), id), NONE);
     assert.deepStrictEqual(await seen(orch(RUNS.withhold), id), ALL);
     assert.deepStrictEqual(await seen(worker(RUNS.warn), id), ALL);

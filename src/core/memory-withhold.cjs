@@ -1,7 +1,7 @@
 'use strict';
 // memory-withhold.cjs — ADR 0047 amendments (2026-10-22, widened 2026-10-25): a WORKER whose run has memory.held_visibility 'withhold'
 // (the default) does not see a note under an active hold of kind wrong, superseded or duplicate (heldWithheld below); a hold on a report
-// withholds while any report on it still withholds (`withhold` not false). Released as correct, archived or settled, the hold leaves state 'held' and the note reappears at once;
+// is written only while a report on it withholds (`withhold` not false), so every such hold hides its note. Released as correct, archived or settled, the hold leaves state 'held' and the note reappears at once;
 // undecided keeps state 'held' and stays withheld. A read filter: SELECTs only, no model, nothing written (invariants 6 and 9).
 //
 // Who is withheld FROM is the recipient, never a request field. A worker's own tool call is its recipient; the run manager's injected
@@ -30,9 +30,8 @@ function recipientOf(E, caller) {
 }
 const withholds = (E, caller) => recipientOf(E, caller) !== null;
 
-// The active harness holds, by namespace range (alias h), and a reported hold's test that some report on it still withholds.
+// The active harness holds, by namespace range (alias h).
 const HELD_ROWS = `h.type = 'held' AND h.namespace >= 'held/' AND h.namespace < 'held0' AND h.written_by = 'harness' AND json_extract(h.body, '$.state') = 'held'`;
-const WITHHOLDING = `EXISTS (SELECT 1 FROM json_each(h.body, '$.reports') r WHERE json_extract(r.value, '$.withhold') IS NOT 0)`;
 
 const scan = (E, where) => {
   const out = new Map();
@@ -45,9 +44,10 @@ const scan = (E, where) => {
 };
 
 // Note id -> project for every hold that withholds its note from a worker (ADR 0047 amendment of 2026-10-25, proposed): a hold of kind
-// wrong, superseded or duplicate on any ground, except a reported hold whose every report was written past the breaker. An `unsupported`
-// row is a verification queue, not a dispute, and is not withheld.
-const heldWithheld = (E) => scan(E, `json_extract(h.body, '$.kind') IN ('wrong', 'superseded', 'duplicate') AND (json_extract(h.body, '$.ground') IS NOT 'reported' OR ${WITHHOLDING})`);
+// wrong, superseded or duplicate, on any ground. Held means hidden: a report past the breaker writes no hold (memory-report-hold.cjs), so
+// no reported hold needs its reports read here. An `unsupported` row is a verification queue, not a dispute, and is not withheld.
+const HIDING_KINDS = ['wrong', 'superseded', 'duplicate'];
+const heldWithheld = (E) => scan(E, `json_extract(h.body, '$.kind') IN (${HIDING_KINDS.map((k) => `'${k}'`).join(', ')})`);
 
 // The active hold of each note among `ids` whose note is live in its project, whoever reads (the orchestrator's and the operator's mark):
 // note id -> { kind, ground, reason }. An `unsupported` row is left out: such a note stays a normal unverified note for every reader, with no
@@ -109,4 +109,4 @@ function withheldAmong(E, caller, list) {
   return out;
 }
 
-module.exports = { WITHHOLD_FOR, MATCHING, withholds, withheldIds, withheldAmong, heldWithheld, holdsAmong, noteIds };
+module.exports = { WITHHOLD_FOR, MATCHING, HIDING_KINDS, withholds, withheldIds, withheldAmong, heldWithheld, holdsAmong, noteIds };

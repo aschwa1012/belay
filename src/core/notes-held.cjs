@@ -59,19 +59,23 @@ function count(store) {
   return { total, unsupported, by_project, unsupported_by_project, by_ground, by_ground_by_project, awaiting_operator, awaiting_by_project, age_by_project, oldest_age_runs: age, oldest_at: oldest, newest_at: newest };
 }
 
-// Runs whose reports hit the circuit breaker (ADR 0047 amendment, decision 9): an active reported hold with a report of the run that does not
-// withhold. `disputed` is the distinct notes of the project the run's reports hold now. A read of the rows, newest first.
+// Runs whose reports hit the circuit breaker (ADR 0047 amendment, decision 9): a standing report of the run, on a live note, that does not withhold.
+// Such a report holds nothing (amendment of 2026-10-25: held means hidden), so the reports are read on the notes, not on the holds. `disputed` is
+// the distinct live notes of the project with a standing report of the run, held or not. A read of the rows, newest first.
 function breakers(store) {
   const by = new Map();
   try {
-    for (const r of store.p(`SELECT substr(h.namespace, 6) AS p, h.created_at AS at, json_extract(h.body, '$.note_id') AS nid, json_extract(r.value, '$.run_id') AS run,
-        json_extract(r.value, '$.withhold') AS w, json_extract(r.value, '$.breaker.limit') AS lim FROM memory_entries h, json_each(h.body, '$.reports') r
-      WHERE ${ACTIVE} AND json_extract(h.body, '$.ground') = 'reported' AND json_extract(r.value, '$.run_id') IS NOT NULL AND json_extract(r.value, '$.by') <> 'operator'`).all()) {
-      const k = `${r.p}|${r.run}`;
-      const e = by.get(k) || { run_id: r.run, project: r.p, notes: new Set(), tripped: false, limit: null, at: 0 };
-      e.notes.add(r.nid);
-      if (r.w === 0) { e.tripped = true; e.at = Math.max(e.at, Number(r.at) || 0); if (r.lim != null) e.limit = Number(r.lim); }
-      by.set(k, e);
+    const { standing } = require('./report-marks.cjs');
+    for (const n of store.p(`SELECT id, substr(namespace, 9) AS p, body FROM memory_entries WHERE type = 'note' AND namespace >= 'project/' AND namespace < 'project0'
+      AND instr(body, 'reported_wrong') > 0 AND json_array_length(body, '$.reported_wrong') > 0`).all()) {
+      for (const r of standing(parse(n.body))) {
+        if (!r.run_id || r.by === 'operator') continue;
+        const k = `${n.p}|${r.run_id}`;
+        const e = by.get(k) || { run_id: r.run_id, project: n.p, notes: new Set(), tripped: false, limit: null, at: 0 };
+        e.notes.add(n.id);
+        if (r.withhold === false) { e.tripped = true; e.at = Math.max(e.at, Number(r.at) || 0); if (r.breaker && r.breaker.limit != null) e.limit = Number(r.breaker.limit); }
+        by.set(k, e);
+      }
     }
   } catch { return []; }
   return [...by.values()].filter((e) => e.tripped).sort((a, b) => b.at - a.at).map((e) => ({ run_id: e.run_id, project: e.project, disputed: e.notes.size, limit: e.limit, at: e.at }));

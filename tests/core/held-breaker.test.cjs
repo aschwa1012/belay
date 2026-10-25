@@ -6,7 +6,9 @@
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const { callerFor } = require('./helpers.cjs');
-const { setup } = require('./report-env.cjs');
+const env = require('./report-env.cjs');
+const { DEFAULTS } = require('../../src/core/memory-levers.cjs');
+const setup = (run, levers = {}) => env.setup(run, { held_breaker_count: DEFAULTS.held_breaker_count, held_breaker_share: DEFAULTS.held_breaker_share, ...levers }); // the default limit, which these tests test
 const Breaker = require('../../src/core/held-breaker.cjs');
 const { breakerEvents, renderText } = require('../../src/cli/cmd-notices.cjs');
 
@@ -39,21 +41,20 @@ let A;
 before(async () => { A = await setup('brk-a'); });
 after(() => A.cleanup());
 
-test('B1: under the limit a report withholds; the (limit+1)th is held and visible; one notice; the proof says why', async () => {
+test('B1: under the limit a report withholds; the (limit+1)th holds nothing and stays visible; one notice; the proof says why', async () => {
   const { ids, outs } = await sevenReports(A);
   assert.deepStrictEqual(outs.slice(0, 5).map((o) => o.withheld), [true, true, true, true, true]);
   assert.deepStrictEqual(outs.slice(0, 5).map((o) => o.breaker.count), [1, 2, 3, 4, 5]);
   assert.strictEqual(outs[0].breaker.limit, 5);
   assert.ok(outs[0].breaker.live >= 40);
-  assert.deepStrictEqual([outs[5].withheld, outs[5].state, outs[5].breaker.count, outs[5].breaker.limit], [false, 'held', 6, 5]);
-  assert.match(outs[5].withheld_why, /breaker: this run has disputed 6 notes, over its limit of 5/);
-  assert.strictEqual(outs[6].withheld, false);
-  // The hold and the report entry carry the decision; the note stays visible to a worker, a withheld one does not.
-  const h6 = A.activeHold(ids[5]);
-  assert.ok(h6, 'the sixth note is held');
-  assert.strictEqual(h6.b.reports[0].withhold, false);
-  assert.deepStrictEqual(h6.b.reports[0].breaker, { count: 6, limit: 5, live: outs[5].breaker.live });
+  // Held means hidden (amendment of 2026-10-25): past the limit the report is kept on the note and writes no hold.
+  assert.deepStrictEqual([outs[5].withheld, outs[5].state, outs[5].reason, outs[5].breaker.count, outs[5].breaker.limit], [false, 'not_held', 'breaker', 6, 5]);
+  assert.match(outs[5].withheld_why, /breaker: this run has disputed 6 notes, over its limit of 5; the note is not held/);
+  assert.deepStrictEqual([outs[6].withheld, outs[6].state], [false, 'not_held']);
+  // The report entry carries the decision; the note stays visible to a worker, a withheld one does not.
+  assert.strictEqual(A.activeHold(ids[5]), null, 'the sixth note is not held');
   assert.strictEqual(A.bodyOf(ids[5]).reported_wrong[0].withhold, false);
+  assert.deepStrictEqual(A.bodyOf(ids[5]).reported_wrong[0].breaker, { count: 6, limit: 5, live: outs[5].breaker.live });
   assert.strictEqual(A.activeHold(ids[0]).b.reports[0].withhold, true);
   assert.strictEqual(await listed(A, reader(A), ids[0]), false, 'a withheld note is absent for a worker');
   assert.strictEqual(await listed(A, reader(A), ids[5]), true, 'a past-limit note stays visible');
@@ -190,5 +191,27 @@ test('B8: a repeat is decided again against the current count, never kept', asyn
     const again = await report(X, X.orch, n1, 'wrong after all');
     assert.deepStrictEqual([again.withheld, again.breaker.count, again.breaker.limit], [false, 2, 1]);
     assert.strictEqual(await listed(X, reader(X), n1), true);
+  } finally { await X.cleanup(); }
+});
+
+test('B9: past the limit a reviewer\'s refuted still applies, holds nothing, and says so; a past-limit report never merges another hold away', async () => {
+  const X = await setup('brk-l', { held_breaker_count: 1 });
+  try {
+    const first = await X.written('w-l1', 'K1');
+    assert.strictEqual((await report(X, X.orch, first.note)).withheld, true, 'the run\'s one withholding report');
+    // A task reviewer's refuted is a report of the same run: past its limit it is kept and applied, with no hold behind it.
+    const a = await X.written('w-l2', 'K2');
+    const rt = await X.review('rev-l1', a.task, { memory_verdicts: [X.rv(a.note, 'refuted', [X.cite('the loader worked as the note says')], 'what the stream shows')] });
+    const got = (await X.apply(rt)).applied[0];
+    assert.deepStrictEqual([got.verdict, got.applied, got.held_row, got.not_held, got.withheld], ['refuted', true, null, 'breaker', false]);
+    assert.strictEqual(X.activeHold(a.note), null, 'held means hidden: no hold for a report past the breaker');
+    assert.strictEqual(X.bodyOf(a.note).reported_wrong[0].withhold, false);
+    // A note the scrubber held keeps that hold, and stays hidden, when a past-limit report arrives: nothing is merged into a hold that hides nothing.
+    const b = liveNote(X, 'scrubber held');
+    const s = X.store.storeIn({ namespace: 'held/acme', worker_id: 'harness', type: 'held', text: `held dup ${b}`, title: 'h', body: { state: 'held', note_id: b, kind: 'duplicate', of: first.note, ground: 'same_claim', reason: 'same claim', rev: 0 }, run_id: X.RUN, source: 'harness', written_by: 'harness' }).id;
+    const out = await report(X, X.orch, b, 'also wrong');
+    assert.deepStrictEqual([out.state, out.reason], ['not_held', 'breaker']);
+    assert.strictEqual(X.activeHold(b).id, s, 'the scrubber\'s hold stands, unmerged');
+    assert.strictEqual(await listed(X, reader(X), b), false, 'and the note stays hidden');
   } finally { await X.cleanup(); }
 });

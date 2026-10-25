@@ -35,14 +35,14 @@ function reportIn(E, caller, p) {
     throw err('E_NOTE_SHAPE', `the report on note ${p.note} could not be kept on it${p.refused ? `, ${p.refused}` : ''}`, { id: p.note });
   }
   const held = RH.holdReported(E, caller, { project: p.project, runId: p.run_id || null, threshold: p.threshold, headSha: p.headSha || null }, loadNote(E, p.note), report);
-  // Proof: withheld is the read filter's own rule applied to the hold as it stands now (a wrong or superseded hold with any report that withholds).
-  let withheld = false, why = `not held (${held.skipped}): nothing to withhold`;
+  // Proof: withheld is the read filter's own rule applied to the hold as it stands now (an active hold of a kind that hides its note).
+  let withheld = false, why = held.skipped === 'breaker' ? verdict.why : `not held (${held.skipped}): nothing to withhold`;
   if (!held.skipped) {
     const hold = require('./memory-facts.cjs').activeHoldOf(E, p.project, p.note);
-    const standing = hold && hold.b.ground === 'reported' && ['wrong', 'superseded'].includes(hold.b.kind) ? (hold.b.reports || []).filter((r) => r.withhold !== false) : [];
-    withheld = standing.length > 0;
-    const own = standing.some((r) => r.seq === report.seq && r.by === report.by);
-    why = !withheld ? `not withheld: ${verdict.withhold ? 'the hold is not of a kind that is withheld' : verdict.why}` : own ? verdict.why : `withheld by another report on the note (${standing[0].by}, run ${standing[0].run_id || 'none'}); this report: ${verdict.why}`;
+    withheld = !!hold && require('./memory-withhold.cjs').HIDING_KINDS.includes(hold.b.kind);
+    const other = withheld && !verdict.withhold ? (hold.b.reports || []).find((r) => r.withhold !== false) : null;
+    why = !withheld ? 'not withheld: the hold is not of a kind that is withheld' : verdict.withhold ? verdict.why
+      : `withheld by another report on the note (${other ? `${other.by}, run ${other.run_id || 'none'}` : 'its hold'}); this report: ${verdict.why}`;
   }
   return { report, reports: next.reported_wrong.length, held, withheld, withheld_why: why, breaker: verdict.breaker };
 }
