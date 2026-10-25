@@ -48,9 +48,13 @@ test('two tasks in their own worktrees own one file: both are created and assign
   const gb = await orch.task.assign({ task_id: b.id, worker_id: 'w-b' });
   assert.deepStrictEqual(ids(gb.overlaps), [a.id]);
   assert.strictEqual(gb.task.state, 'assigned');
-  // The operator's take-control works the task in its own tree too, so the other tree's holder does not refuse it.
+  // The operator is judged as the shared tree (belay does not know where it works), so b, in its own tree, does not refuse it.
   const op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
-  try { assert.strictEqual((await op.lease.takeControl({ task_id: a.id })).new_lease.holder, 'operator'); } finally { await op.close(); }
+  try {
+    const took = await op.lease.takeControl({ task_id: a.id });
+    assert.strictEqual(took.new_lease.holder, 'operator');
+    assert.deepStrictEqual(ids(took.overlaps), [b.id], 'the operator counts as the shared tree, beside b in its own');
+  } finally { await op.close(); }
   assert.ok(!('overlaps' in (await task(['lib/elsewhere.js']))), 'no overlap, no field');
 });
 

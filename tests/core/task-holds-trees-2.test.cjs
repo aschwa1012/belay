@@ -62,3 +62,18 @@ test('a worker in a directory inside another task\'s worktree is in that tree, a
   await worker('s1-wd', repo); // the shared checkout is another tree from a's
   assert.deepStrictEqual(ids((await orch.task.assign({ task_id: b.id, worker_id: 's1-wd' })).overlaps), [a.id]);
 });
+
+test('the operator\'s take-control is judged as the shared tree: a shared-tree holder refuses it, one in its own tree is reported', async () => {
+  const e = await task(['s2/e.js']);
+  await own(e);
+  const f = await task(['s2/f.js', 's2/e.js']); // shared, beside e's own tree
+  await worker('s2-wf', repo);
+  await orch.task.assign({ task_id: f.id, worker_id: 's2-wf' });
+  const r = await rejectsCode(op.lease.takeControl({ task_id: e.id }), 'E_FILES_OVERLAP');
+  assert.strictEqual(r.detail.other_task_id, f.id);
+  const g = await task(['s2/g.js']);
+  await own(g);
+  const h = await task(['s2/g.js']);
+  await own(h);
+  assert.deepStrictEqual(ids((await op.lease.takeControl({ task_id: g.id })).overlaps), [h.id]);
+});

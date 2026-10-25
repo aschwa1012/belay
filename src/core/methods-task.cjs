@@ -451,10 +451,15 @@ async function takeControl(E, caller, args) {
     if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.task_id}`, { task_id: args.task_id });
     // ADR 0046 decision 1: the operator's lease activates the task like an assignment does, so its files must be held by a
     // live run (the task's own: the operator has no run to re-home it to) and not yielded to one that is live now.
+    // ADR 0059: belay does not know where the operator works, so the operator is judged as in the shared tree, and the
+    // overlaps it lets through with tasks in their own worktrees are returned as `overlaps`.
+    let overlaps = [];
     if (task.state !== 'done' && Array.isArray(task.files_owned) && task.files_owned.length) {
       if (holds.activationRun(E.store, task, null) == null) throw runNotLive(task, null);
-      const [first] = holds.findClashes(E.store, task.files_owned, task.id, { run_id: task.run_id }, holds.treeOf(E.store, task, null));
+      const scan = holds.scanOverlaps(E.store, task.files_owned, task.id, { run_id: task.run_id }, holds.treeOf(E.store, task, holds.OPERATOR));
+      const first = scan.find((c) => c.same_tree);
       if (first) throw filesOverlap(first);
+      overlaps = holds.acrossTrees(scan);
     }
     const old = rows.currentLeaseForTask(E.store, args.task_id);
     const t = Date.now(), by = E.writtenBy(caller);
@@ -465,7 +470,7 @@ async function takeControl(E, caller, args) {
     }, by, t);
     // `done` is the one state earned by executable evidence (api.md §2); take-control must not un-earn it.
     rows.append(E.store, 'task', { ...task, state: task.state === 'done' ? 'done' : 'assigned' }, by, t);
-    return { old_lease: old, new_lease: lease, paused_worker: null };
+    return { old_lease: old, new_lease: lease, paused_worker: null, ...(overlaps.length ? { overlaps } : {}) };
   });
   E.noteWrite();
   return out;
