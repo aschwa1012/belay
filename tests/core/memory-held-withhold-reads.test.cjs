@@ -111,7 +111,7 @@ test('a hand-back that restates a held note waits in pending with the hold named
   assert.strictEqual(other.state, 'stored', 'a genuinely different note is untouched');
   assert.strictEqual(other.prior_verdicts, undefined);
   for (const resolve of ['repeats', 'supersedes']) {
-    await assert.rejects(() => call('memory.noteResolve', worker('w2'), { resolutions: [{ id: again.id, resolve, of: first.id, ...(resolve === 'supersedes' ? { evidence: [{ where: 'src/K4.js', saw: 'x' }] } : {}) }] }), /held for review/);
+    await assert.rejects(() => call('memory.noteResolve', worker('w2'), { resolutions: [{ id: again.id, resolve, of: first.id, ...(resolve === 'supersedes' ? { evidence: [{ where: 'src/K4.js', saw: 'x' }] } : {}) }] }), /held for review|held for the archive review/); // a supersedes meets the hold guard (E_HELD) first
   }
   assert.strictEqual(rowOf(again.id).namespace, 'pending/acme', 'a refused resolution leaves the note pending');
   assert.deepStrictEqual(again.prior_verdicts.map((v) => v.id), [first.id], 'the hold stays named');

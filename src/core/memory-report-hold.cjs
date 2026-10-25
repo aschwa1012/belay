@@ -11,6 +11,7 @@
 
 const { hold } = require('./methods-memory-scrub.cjs');
 const { reportedKind, loadNote, activeHoldOf } = require('./memory-facts.cjs');
+const { hidesNote } = require('./memory-withhold.cjs');
 const { unsettled, reportKey } = require('./report-marks.cjs');
 const { redact } = require('./redact.cjs');
 const N = require('./methods-memory-notes.cjs');
@@ -45,7 +46,7 @@ const selfOnly = (reports) => reports.length > 0 && reports.every((r) => r.self_
 
 // Appends to an existing reported hold and classifies it again over its current reports (the newest report that names a passing replacement
 // decides). A change of kind or `of` replaces the hold's, keeps the earlier in kind_history, and moves the note's pointer in the same transaction.
-function appendTo(E, ctx, note, active, reports, newReport) {
+function appendTo(E, ctx, note, active, reports, newReport, hides) {
   const replaced = !!(newReport && (active.b.reports || []).some((r) => sameReporter(r, newReport))); // a reporter's repeat replaces its own
   const rk = reportedKind(E, ctx.project, note, reports, ctx.threshold, active.b.prior_hold || null);
   const changed = rk.kind !== active.b.kind || (rk.of || null) !== (active.b.of || null);
@@ -54,6 +55,7 @@ function appendTo(E, ctx, note, active, reports, newReport) {
     b.reports_total = (Number(b.reports_total) || (b.reports || []).length) + (replaced ? 0 : 1);
     b.reports_dropped = Math.max(0, b.reports_total - reports.length);
     b.self_report = selfOnly(reports);
+    if (hides && b.state === 'queued') { b.state = 'held'; b.hides = true; } // a report that withholds turns a queued hold into one that hides
     if (replaced && newReport && newReport.why) b.reason = redact(String(newReport.why)).text.slice(0, 500); // the hold's reason follows a repeat, as its report does
     if (changed) {
       b.kind_history = [...(b.kind_history || []), { kind: b.kind, of: b.of || null, facts: b.facts || null, rev: Number(b.rev) || 0, at: Date.now() }].slice(-KIND_HISTORY_KEEP);
@@ -62,7 +64,7 @@ function appendTo(E, ctx, note, active, reports, newReport) {
     return b;
   });
   if (changed) E.store.patchBody(note.id, (b) => { if (b.held && b.held.row === active.id) { b.held.kind = rk.kind; b.held.of = rk.of || null; } return b; });
-  return { row: active.id, kind: next.kind, rev: next.rev, already_held: true, ...(changed ? { reclassified: true } : {}) };
+  return { row: active.id, kind: next.kind, rev: next.rev, already_held: true, state: next.state, ...(changed ? { reclassified: true } : {}) };
 }
 
 // ctx: { project, runId, threshold, headSha }; note: the note as loaded now (the new report is already on it); newReport: the report just marked.
@@ -72,7 +74,11 @@ function holdReported(E, caller, ctx, note, newReport) {
   const reports = holdReportsOf(note);
   if (!reports.length) return { skipped: 'no_standing_report' };
   const active = activeHoldOf(E, ctx.project, note.id);
-  if (active && active.b.ground === 'reported' && active.b.kind !== 'unsupported') return appendTo(E, ctx, note, active, reports, newReport);
+  // Held means hidden (ADR 0047 amendment of 2026-10-25, proposed). A hold is in state `held` while some standing report on it withholds, or
+  // while it takes over a hold that already hid the note; otherwise every report on it was written past its run's breaker, and it is `queued`:
+  // offered to the archive review like any hold, counted in the breaker notice, and hiding nothing.
+  const hides = reports.some((r) => r.withhold !== false) || (!!active && hidesNote(active.b));
+  if (active && active.b.ground === 'reported' && active.b.kind !== 'unsupported') return appendTo(E, ctx, note, active, reports, newReport, hides);
 
   // A new hold, or a merge of another into it. Every pointer decision is made here, so hold() never meets its own E_EXISTS guard.
   let prior = null, merged = null, stale = null;
@@ -90,7 +96,7 @@ function holdReported(E, caller, ctx, note, newReport) {
   const entry = { action: 'hold', kind: rk.kind, of: rk.of || null, ground: 'reported', reason: redact(String(why || 'reported wrong')).text.slice(0, 500), cites: [] };
   const hctx = {
     project: ctx.project, runId: ctx.runId, threshold: ctx.threshold, mode: 'report', evidence: { head_sha: ctx.headSha || null },
-    heldExtra: { reports, reports_total: reports.length, reports_dropped: 0, report_verdicts: [], self_report: selfOnly(reports), classified: rk.facts, ...(prior ? { prior_hold: prior } : {}), ...(stale ? { replaced_stale_pointer: stale } : {}), ...(ctx.extra || {}), rev: 0, scrub: null },
+    heldExtra: { state: hides ? 'held' : 'queued', ...(hides ? { hides: true } : {}), reports, reports_total: reports.length, reports_dropped: 0, report_verdicts: [], self_report: selfOnly(reports), classified: rk.facts, ...(prior ? { prior_hold: prior } : {}), ...(stale ? { replaced_stale_pointer: stale } : {}), ...(ctx.extra || {}), rev: 0, scrub: null },
   };
   const out = hold(E, { ...caller, channel: 'harness' }, hctx, entry, 0, [], { note: fresh, pending: false });
   const row = out.held.id;
@@ -98,7 +104,7 @@ function holdReported(E, caller, ctx, note, newReport) {
     bumpHold(E, merged, (b) => { b.state = 'merged'; b.merged_into = row; b.merged_at = Date.now(); return b; });
     if (note.b.unsupported && note.b.unsupported.state === 'open') E.store.patchBody(note.id, (b) => { b.unsupported = { ...b.unsupported, state: 'merged', merged_into: row }; return b; });
   }
-  return { row, kind: rk.kind, rev: 0, ...(merged ? { merged } : {}), ...(stale ? { replaced_stale_pointer: stale } : {}) };
+  return { row, kind: rk.kind, rev: 0, state: hides ? 'held' : 'queued', ...(merged ? { merged } : {}), ...(stale ? { replaced_stale_pointer: stale } : {}) };
 }
 
 module.exports = { sameReporter, holdReported, bumpHold, holdReportsOf, copyOf, REPORTS_KEEP };

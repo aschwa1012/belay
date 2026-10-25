@@ -55,10 +55,14 @@ async function findMatches(E, caller, project, emb, lv, template = NT.TEMPLATE_N
     filter: { types: ['note'], statuses: ['unverified', 'verified'] },
   });
   const ids = out.results.map(r => r.id);
+  // A match the writer is withheld from is named by id and verdict only: the writer learns its text is close to a note under review, never its claim.
+  const hidden = WH.withheldAmong(E, caller, out.results);
   const tpl = new Map(ids.length ? E.store.p(`SELECT id, COALESCE(text_template, 'v1') AS t FROM memory_entries WHERE id IN (${ids.map(() => '?').join(', ')})`).all(...ids).map(r => [r.id, r.t]) : []);
   return out.results
     .filter(r => typeof r.score === 'number' && r.score >= lv.notes_match_threshold && tpl.get(r.id) === template)
-    .map(r => ({ id: r.id, title: r.title, kind: r.body && r.body.kind, basis: r.body && r.body.basis, similarity: round3(r.score), template, embedding_model: emb.embedding_model, dim: emb.dim }))
+    .map(r => (hidden.has(r.id)
+      ? { id: r.id, verdict: 'held_for_review', similarity: round3(r.score), template, embedding_model: emb.embedding_model, dim: emb.dim }
+      : { id: r.id, title: r.title, kind: r.body && r.body.kind, basis: r.body && r.body.basis, similarity: round3(r.score), template, embedding_model: emb.embedding_model, dim: emb.dim }))
     .sort((a, b) => b.similarity - a.similarity || (a.id < b.id ? -1 : 1)).slice(0, lv.notes_match_n);
 }
 
@@ -68,8 +72,8 @@ async function findMatches(E, caller, project, emb, lv, template = NT.TEMPLATE_N
 // dimension and text template), against the same threshold. A lookup, not a ranking: bounded, and it writes nothing.
 const PRIOR_MAX = 2000;
 function priorVerdicts(E, project, emb, lv, template = NT.TEMPLATE_NEW, caller = null) {
-  // A note held on a report is withheld from the writer, so a restated claim would find no match and be stored live beside the hold: it is
-  // compared here too and the new note waits in pending (the writer resolves it as new, knowing that).
+  // A held note is withheld from the writer, so a restated claim would find no match and be stored live beside the hold: it is compared here
+  // too and the new note waits in pending (the writer resolves it as new, knowing that). It is named by id only: its title is the claim.
   const heldIds = caller && WH.withholds(E, caller) ? WH.noteIds(E, ['e.namespace = ?'], [projectNs(project)]) : [];
   const q = { embedding: Buffer.from(Float32Array.from(emb.embedding).buffer), dim: emb.dim, embedding_model: emb.embedding_model, text_template: template };
   const rows = E.store.p(`SELECT id, namespace, title, status, status_receipt, embedding, embedding_model, dim, text_template, body FROM memory_entries
@@ -79,7 +83,7 @@ function priorVerdicts(E, project, emb, lv, template = NT.TEMPLATE_NEW, caller =
     const cos = storedCosine(q, r);
     if (cos === null || cos < lv.notes_match_threshold) continue;
     const a = bodyOf(r).archived || {};
-    if (heldIds.includes(r.id)) { out.push({ id: r.id, title: r.title, verdict: 'held_for_review', similarity: round3(cos), receipt: null }); continue; }
+    if (heldIds.includes(r.id)) { out.push({ id: r.id, verdict: 'held_for_review', similarity: round3(cos), receipt: null }); continue; }
     out.push(r.status === 'refuted'
       ? { id: r.id, title: r.title, verdict: 'refuted', similarity: round3(cos), receipt: r.status_receipt || null }
       : { id: r.id, title: r.title, verdict: 'archived_wrong', similarity: round3(cos), ground: a.ground || null, reason: typeof a.reason === 'string' ? a.reason.slice(0, 300) : null, at: a.at || null });
@@ -195,7 +199,7 @@ function commitNotes(E, caller, prep, { task_id }) {
       embedding: p.emb.embedding, embedding_model: p.emb.embedding_model, embedding_revision: p.emb.embedding_revision, dim: p.emb.dim, text_template: p.template,
       run_id: caller.run_id, task_id, source: 'model', written_by: by,
     });
-    return { index: p.index, id: row.id, action: row.action, state: pending ? 'pending' : 'stored', namespace: ns, title: p.title, applies_to: p.applies, ...(pending ? { matches: p.matches } : {}), ...(p.prior.length ? { prior_verdicts: p.prior, held_back: p.prior.some((x) => x.verdict === 'held_for_review') ? 'this text is close to a note that is held for review after a report that it is wrong (see prior_verdicts, verdict held_for_review); the note waits in pending until you resolve it as new, knowing that' : 'this text is close to a claim already judged wrong (see prior_verdicts); the note waits in pending until you resolve it as new, knowing that' } : {}), ...(p.unembedded ? { embedded: false, embedder_failure: p.unembedded, note: 'stored without a vector (on_embedder_failure keyword): found by keyword search, and not compared with the other notes of the project' } : {}) };
+    return { index: p.index, id: row.id, action: row.action, state: pending ? 'pending' : 'stored', namespace: ns, title: p.title, applies_to: p.applies, ...(pending ? { matches: p.matches } : {}), ...(p.prior.length ? { prior_verdicts: p.prior, held_back: p.prior.some((x) => x.verdict === 'held_for_review') ? 'this text is close to a note that is held for review, disputed as wrong, superseded or a duplicate, and withheld from workers (see prior_verdicts, verdict held_for_review); the note waits in pending until you resolve it as new, knowing that' : 'this text is close to a claim already judged wrong (see prior_verdicts); the note waits in pending until you resolve it as new, knowing that' } : {}), ...(p.unembedded ? { embedded: false, embedder_failure: p.unembedded, note: 'stored without a vector (on_embedder_failure keyword): found by keyword search, and not compared with the other notes of the project' } : {}) };
   });
   return items;
 }

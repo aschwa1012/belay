@@ -165,7 +165,7 @@ async function proposals(E, caller, args) {
   C.allowKeys(args, ['project', 'all', 'root'], 'memory.proposals');
   if (args.root !== undefined && caller.role !== 'operator') throw err('E_ROLE', 'memory.proposals reads instruction files under root only for the operator', { role: caller.role });
   const project = projectScope(E, caller, args);
-  const heldWhere = args.all === true ? null : "json_extract(body, '$.state') = 'held'";
+  const heldWhere = args.all === true ? null : "json_extract(body, '$.state') IN ('held', 'queued')";
   const proposalRows = listNs(E, 'proposal', project), held = listNs(E, 'held', project, heldWhere), drafts = listNs(E, 'draft', project);
   // Nominations for promotion to an instruction file, each with its stored drafts; with the operator's root, whether each
   // draft's text is already in its target file and which promoted notes' text has been removed (a read; nothing changes).

@@ -257,7 +257,7 @@ function table(cols, rows) {
 const COL = {
   score: { head: 'score', cell: r => (typeof r.score === 'number' ? r.score.toFixed(4) : '-') },
   dup: { head: 'near_duplicate', cell: r => dash(r.near_duplicate) },
-  status: { head: 'status', cell: r => dash(r.status || 'unverified') },
+  status: { head: 'status', cell: r => dash(r.status || 'unverified') + (r.held ? ` held:${r.held.kind || '?'}` : '') },
   id: { head: 'id', cell: r => dash(r.id) },
   namespace: { head: 'namespace', cell: r => dash(r.namespace) },
   worker: { head: 'worker_id', cell: r => dash(r.worker_id) },

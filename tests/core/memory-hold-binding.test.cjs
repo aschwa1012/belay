@@ -96,6 +96,7 @@ test('B4: an archive on cites archives', async () => {
 test('B5: a release on cites that show the note correct verifies it, settles every report and ends the hold; without cites, with a failing cite, or with no shown_hash it is refused', async () => {
   const r = await reportedNote('w-a5', 'K5', 'w-b5');
   await X.reported('w-c5', r.note, 'second report');
+  const st0 = hold(r.note).b.state; // held, or queued once this file's run is past its breaker
   const e = await entryOf(r.note);
   assert.ok(e.shown_hash && e.outcomes.includes('undecided'));
   const base = { held_row: e.held_row, rev: e.rev, shown_hash: e.shown_hash };
@@ -106,7 +107,7 @@ test('B5: a release on cites that show the note correct verifies it, settles eve
   out = await apply([releaseV(r, { held_row: e.held_row, rev: e.rev })], [r.writerStream]);
   assert.strictEqual(out.refused[0].code, 'E_PRECONDITION', 'no shown_hash');
   assert.match(out.refused[0].message, /did not bind it/);
-  assert.strictEqual(hold(r.note).b.state, 'held');
+  assert.strictEqual(hold(r.note).b.state, st0, 'the hold stays as it was');
   assert.strictEqual(X.rowOf(r.note).status ?? 'unverified', 'unverified');
   out = await apply([releaseV(r, base)], [r.writerStream]);
   const a = out.applied[0];
@@ -121,22 +122,24 @@ test('B5: a release on cites that show the note correct verifies it, settles eve
 
 test('B6: a release of a refuted note, whose verification applyOneIn refuses, is refused and the hold stays', async () => {
   const r = await reportedNote('w-a6', 'K6', 'w-b6');
+  const st0 = hold(r.note).b.state;
   const e = await entryOf(r.note);
   X.store.p("UPDATE memory_entries SET status = 'refuted' WHERE id = ?").run(r.note);
   const out = await apply([releaseV(r, { held_row: e.held_row, rev: e.rev, shown_hash: require('../../src/core/note-brief-capture.cjs').hashOfRow(X.rowOf(r.note)) })], [r.writerStream]);
   assert.strictEqual(out.refused[0].code, 'E_PRECONDITION');
   assert.match(out.refused[0].message, /cannot be verified/);
-  assert.strictEqual(hold(r.note).b.state, 'held');
+  assert.strictEqual(hold(r.note).b.state, st0, 'the hold stays as it was');
 });
 
 test('B7: undecided leaves the hold held and counted, the warning on, and the entry out of the next queue (listed as awaiting the operator)', async () => {
   const r = await reportedNote('w-a7', 'K7', 'w-b7');
+  const st0 = hold(r.note).b.state;
   const n0 = await X.heldCount();
   const e = await entryOf(r.note);
   const out = await apply([{ id: r.note, verdict: 'undecided', reason: 'the evidence settles neither way', held_row: e.held_row, rev: e.rev }]);
   assert.deepStrictEqual([out.applied[0].outcome, out.applied[0].rev], ['undecided', 0], JSON.stringify(out.refused));
   const h = hold(r.note);
-  assert.deepStrictEqual([h.b.state, h.b.rev, h.b.undecided.rev, h.b.undecided.reason], ['held', 0, 0, 'the evidence settles neither way']);
+  assert.deepStrictEqual([h.b.state, h.b.rev, h.b.undecided.rev, h.b.undecided.reason], [st0, 0, 0, 'the evidence settles neither way']);
   assert.ok(X.bodyOf(r.note).held, 'the warning stays');
   assert.strictEqual(await X.heldCount(), n0, 'still counted');
   const q = await queue();

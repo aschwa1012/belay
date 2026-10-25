@@ -29,13 +29,15 @@ async function fixture(levers) {
   const plain = mk('plain lesson');
   const held = mk('held lesson');
   store.storeIn({ namespace: 'held/pf', worker_id: 'harness', type: 'held', text: 'h', title: 'h', body: { state: 'held', note_id: held, kind: 'wrong', ground: 'reported', reports: [{ key: 'k1', by: 'orchestrator', why: 'x', at: 1 }], rev: 1 }, run_id: 'gone-run', source: 'harness', written_by: 'harness' });
+  const dup = mk('duplicate lesson'); // a scrubber's hold, not a report: withheld too (2026-10-25)
+  store.storeIn({ namespace: 'held/pf', worker_id: 'harness', type: 'held', text: 'h dup', title: 'h', body: { state: 'held', note_id: dup, kind: 'duplicate', of: plain, ground: 'same_claim', rev: 0 }, run_id: 'gone-run', source: 'harness', written_by: 'harness' });
   const core = { memory: {
     events: async () => ({ events: [] }),
     recordEvent: async (a) => a,
     index: (a) => E.handle('memory.index', { caller: harness, ...a }), // what the manager's harness core does
   } };
   const ctx = { core, runId: 'pf-run', memoryLevers: { first_message_index: true, index_bytes: 1200, project: 'pf', notes: true } };
-  return { dir, store, ctx, plain, held, E, harness };
+  return { dir, store, ctx, plain, held, dup, E, harness };
 }
 
 test('a worker\'s injected index leaves out a note held on a report; the orchestrator\'s index and warn mode keep it', async () => {
@@ -45,8 +47,9 @@ test('a worker\'s injected index leaves out a note held on a report; the orchest
     const text = await MP.memoryPreface({ id: 'w-new', taskId: null }, f.ctx, PROMPT);
     assert.ok(text.includes(f.plain), 'the plain note is listed');
     assert.ok(!text.includes(f.held), 'the held note is withheld from the worker it is delivered to');
+    assert.ok(!text.includes(f.dup), 'a note the scrubber held as a duplicate is withheld too');
     const own = await f.E.handle('memory.index', { caller: f.harness, query: PROMPT }); // no worker named: the orchestrator's own index
-    assert.ok(own.row_ids.includes(f.held));
+    assert.ok(own.row_ids.includes(f.held) && own.row_ids.includes(f.dup));
     const warned = await MP.memoryPreface({ id: 'w-new', taskId: null }, w.ctx, PROMPT);
     assert.ok(warned.includes(w.held), 'warn keeps today\'s display');
     const knowledge = await f.E.handle('memory.index', { caller: f.harness, query: PROMPT, worker_id: 'knowledge-1' });
