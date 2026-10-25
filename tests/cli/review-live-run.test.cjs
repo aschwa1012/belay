@@ -104,7 +104,7 @@ test('an unended run with a dead adapter and no owner is a crashed run and block
   });
 });
 
-// The rest of the close window: `belay run` has set ended_at and is running the run-end memory jobs, and still owns the store. The
+// The rest of the close window: `belay run` has set ended_at and is running the run-end note jobs, and still owns the store. The
 // run's first epoch names that process (the orchestrator's attach overwrote the current row's adapter pid).
 async function endedByLauncher(T, launchPid, created = null, endApply = false) {
   await T.endOthers('apply');
@@ -193,7 +193,7 @@ test("the first life's pid, now holding the owner lock, does not make a re-run r
 });
 
 // The same window without seams: this process stands in for `belay run` (it owns the real store owner and has ended its run, and the
-// run-end memory jobs it would be running are the gap), and the built CLI runs the review as a separate process. The real owner lock, the
+// run-end note jobs it would be running are the gap), and the built CLI runs the review as a separate process. The real owner lock, the
 // real pid check and the run row's first epoch decide; the owner's shutdown call is what ends the window.
 test('the built CLI refuses a review while the ended run\'s process still owns the store, and proceeds once the owner is shut down', async (tcx) => {
   const { spawnSync } = require('node:child_process');
@@ -212,7 +212,7 @@ test('the built CLI refuses a review while the ended run\'s process still owns t
       await core.becomeOwner(); // as belay run does
       assert.strictEqual(core.isOwner(), true, 'this process is the store owner');
       await core.run.attach({ adapter_pid: process.pid, project: 'lc', memory_levers: JSON.stringify({ project: 'lc', notes: true }) });
-      await core.run.end({ exit_reason: 'test' }); // ended_at is set; the run-end memory jobs and the owner shutdown are still to come
+      await core.run.end({ exit_reason: 'test' }); // ended_at is set; the run-end note jobs and the owner shutdown are still to come
       const held = review();
       const j = JSON.parse(held.stdout || held.stderr);
       assert.strictEqual(held.status, 1, held.stdout + held.stderr);

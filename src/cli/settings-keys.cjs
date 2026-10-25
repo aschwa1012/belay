@@ -125,7 +125,7 @@ function effectiveNotes(found, out) {
   const cfg = found.found && found.config && found.config.memory;
   const block = cfg && typeof cfg === 'object' && !Array.isArray(cfg) ? cfg : {};
   const r = ML.parseMemoryBlock(block);
-  if (r.error) return { ...out, note: 'effective: off (the memory block is refused: ' + r.error + ')' };
+  if (r.error) return { ...out, note: 'effective: off (the notes block, memory, is refused: ' + r.error + ')' };
   const why = r.value.notes ? 'on, because memory.project is set' : block.redact === false ? 'off, because memory.redact is false' : 'off, because memory.project is not set';
   return { ...out, value: r.value.notes, note: 'effective: ' + why };
 }
@@ -140,7 +140,7 @@ function effective(found, key) {
   const stored = found.found ? storedAt(found.config, key) : { present: false };
   const out = {
     key, value: dflt, source: 'default', default: dflt, allowed: sh.allowed, type: sh.text,
-    describe: kindOf(key) === 'memory' ? 'memory lever: the default every run inherits; the run spec\'s memory block overrides it key by key'
+    describe: kindOf(key) === 'memory' ? 'notes lever: the default every run inherits; the run spec\'s memory block overrides it key by key'
       : fieldOf(key) === AD.TOOLS_FIELD ? 'the agent type\'s tools: a spawn of that type gets them, and its allowed_tools may narrow them, never widen them'
         : 'default for the agent type; an explicit model or effort always wins',
   };
