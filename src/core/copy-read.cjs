@@ -20,17 +20,41 @@ const SUFFIXES = ['', '-wal', '-shm'];
 const BUSY = new Set(['EBUSY', 'EPERM', 'EACCES']);
 const sleepSync = ms => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* no SAB */ } };
 
+// The copy reads the source through a plain Node open, never `copyFileSync`. On Windows CopyFileW opens
+// its source without write sharing, so an owner elected while a reader copies the store could not open it
+// for writing: SQLite fell back to read-only without saying so, and the owner's first write failed
+// "attempt to write a readonly database". Node opens every file with read, write and delete sharing, so
+// a reader copying this way never denies a writer. `onChunk` is a test seam, called after each chunk
+// while the source is still open.
+const CHUNK = 1 << 20;
+function copyShared(src, dst, onChunk) {
+  const fin = fs.openSync(src, 'r');
+  try {
+    const fout = fs.openSync(dst, 'w');
+    try {
+      const buf = Buffer.allocUnsafe(CHUNK);
+      for (let pos = 0; ;) {
+        const n = fs.readSync(fin, buf, 0, CHUNK, pos);
+        if (n === 0) break;
+        for (let off = 0; off < n;) off += fs.writeSync(fout, buf, off, n - off);
+        pos += n;
+        if (onChunk) onChunk(pos);
+      }
+    } finally { fs.closeSync(fout); }
+  } finally { fs.closeSync(fin); }
+}
+
 // A live owner holds `-shm` as a memory mapping, and on Windows a mapped file cannot always be copied:
-// `copyFileSync` fails EBUSY, intermittently, exactly when there is an owner worth reading around. That
+// the copy fails EBUSY, intermittently, exactly when there is an owner worth reading around. That
 // made a read of a busy store throw instead of answering, which is the one thing a read must never do.
 //
 // `-shm` is the WAL's shared index. SQLite states it holds no persistent content and rebuilds it from
 // the `-wal` on open, so a copy without it is still current: what carries the uncommitted frames is the
 // `-wal`, and that one is not mapped this way. So the two files that hold data are retried and then
 // raised, and `-shm` is retried and then left behind. Returns whether the file was copied.
-function copyWithRetry(src, dst, optional) {
+function copyWithRetry(src, dst, optional, onChunk) {
   for (let attempt = 0; attempt < 4; attempt++) {
-    try { fs.copyFileSync(src, dst); return true; }
+    try { copyShared(src, dst, onChunk); return true; }
     catch (e) {
       if (e.code === 'ENOENT') return false;
       if (!BUSY.has(e.code)) throw e;
@@ -82,4 +106,4 @@ async function withCopy(dataDir, fn) {
   }
 }
 
-module.exports = { withCopy, makeTmpDir, copyWithRetry, SUFFIXES };
+module.exports = { withCopy, makeTmpDir, copyWithRetry, copyShared, SUFFIXES };
