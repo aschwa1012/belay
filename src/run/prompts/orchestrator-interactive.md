@@ -78,7 +78,7 @@ that check). Read a worker's hand-back as the task's `handoff` in `mcp__belay__t
 
 If a work task is not `done`, read the failing checks in the results, then either
 `mcp__belay__worker_message` the worker with what failed, end your turn until its wake, and evaluate again, or create a fix
-task. A `worker_message` sent while the worker compacts answers `queued: true`; belay sends it when the compaction ends.
+task. A `worker_message` sent while the worker compacts answers `queued: true`; belay sends it when the compaction ends. A follow-up that needs a new hand-back (a rebase, a new head) is a `mcp__belay__task_assign` of the same task to the same worker, its `prompt` the follow-up, not a `worker_message`: a released lease takes no second result.
 
 ## Review tasks
 
