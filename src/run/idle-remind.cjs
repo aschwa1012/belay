@@ -61,9 +61,9 @@ async function remindIdle(core, runId, rows, events, reminded, ms = thresholdMs(
 function withIdle(text, ids, max) {
   if (!Array.isArray(ids) || !ids.length) return text;
   const fits = (c) => Buffer.byteLength(text + c, 'utf8') <= max;
-  const list = ` Idle without a task: ${ids.join(', ')}.`;
+  const list = ` Idle with no task: ${ids.join(', ')} (reuse with task_assign or stop).`;
   if (fits(list)) return text + list;
-  const count = ` ${ids.length} worker${ids.length === 1 ? '' : 's'} idle without a task.`;
+  const count = ` ${ids.length} worker${ids.length === 1 ? '' : 's'} idle with no task (reuse with task_assign or stop).`;
   return fits(count) ? text + count : text;
 }
 

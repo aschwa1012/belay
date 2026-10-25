@@ -38,7 +38,7 @@ test('a wake names the idle workers once per idle period, inside the interactive
   assert.deepStrictEqual(await IR.remindIdle(core, RUN, [row('idle')], [], reminded, 1000), [], 'no event, no wake');
   const [ev] = await IR.remindIdle(core, RUN, [row('idle')], [{ worker_id: 'w9', event: 'turn_end', turn: 2, seq: 1 }], reminded, 1000);
   const text = wakeText(ev);
-  assert.match(text, /Idle without a task: idle\.$/);
+  assert.match(text, /Idle with no task: idle \(reuse with task_assign or stop\)\.$/);
   assert.ok(Buffer.byteLength(text, 'utf8') <= WAKE_TEXT_MAX, `${Buffer.byteLength(text, 'utf8')} bytes`);
   const [again] = await IR.remindIdle(core, RUN, [row('idle')], [{ worker_id: 'w9', event: 'turn_end', turn: 3, seq: 2 }], reminded, 1000);
   assert.strictEqual(again.idle_without_task, undefined, 'the same idle period is named once');
@@ -46,7 +46,7 @@ test('a wake names the idle workers once per idle period, inside the interactive
   assert.deepStrictEqual(later.idle_without_task, ['idle'], 'a new idle period, after another turn, is named again');
   // Too many to list: the count; no room at all: the text is left as it was.
   const many = Array.from({ length: 12 }, (_, i) => `worker-with-a-long-id-${i}`);
-  assert.match(IR.withIdle('belay: x.', many, WAKE_TEXT_MAX), /12 workers idle without a task\.$/);
+  assert.match(IR.withIdle('belay: x.', many, WAKE_TEXT_MAX), /12 workers idle with no task \(reuse with task_assign or stop\)\.$/);
   const full = 'x'.repeat(WAKE_TEXT_MAX - 5);
   assert.strictEqual(IR.withIdle(full, ['a'], WAKE_TEXT_MAX), full);
 });
@@ -108,7 +108,7 @@ test('the interactive wake publisher carries the reminder on the next wake it pu
       sock.on('data', (d) => { buf += d.toString('utf8'); for (const l of buf.split('\n')) { try { const j = JSON.parse(l); if (j.id) resolve(j); } catch { /* partial */ } } });
     });
     const w = await got;
-    assert.match(w.text, /^belay: worker w1 finished turn 1\..* Idle without a task: idle\.$/, w.text);
+    assert.match(w.text, /^belay: worker w1 finished turn 1\..* Idle with no task: idle \(reuse with task_assign or stop\)\.$/, w.text);
     assert.ok(Buffer.byteLength(w.text, 'utf8') <= WAKE_TEXT_MAX);
   } finally {
     for (const [k, v] of [['BELAY_TEST_MODE', saved.mode], ['BELAY_IDLE_REMIND_MS', saved.ms]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
@@ -143,7 +143,7 @@ test('the headless orchestrator carries the reminder on the wake it writes to it
     const w1 = out.wakes.filter((w) => w.worker_id === 'w1');
     assert.strictEqual(w1.length, 1, JSON.stringify(out.wakes));
     const plain = wakeText({ worker_id: 'w1', event: 'turn_end', turn: 1 });
-    assert.strictEqual(w1[0].bytes, Buffer.byteLength(`${plain} Idle without a task: idle.`, 'utf8'), 'the wake written to stdin carried the reminder');
+    assert.strictEqual(w1[0].bytes, Buffer.byteLength(`${plain} Idle with no task: idle (reuse with task_assign or stop).`, 'utf8'), 'the wake written to stdin carried the reminder');
     assert.ok(w1[0].bytes <= WAKE_TEXT_MAX);
   } finally {
     for (const [k, v] of [['BELAY_CLAUDE_EXE', saved.exe], ['BELAY_TEST_MODE', saved.mode], ['BELAY_IDLE_REMIND_MS', saved.ms]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
