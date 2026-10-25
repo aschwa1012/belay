@@ -232,5 +232,10 @@ test('B9: past the limit a reviewer\'s refuted is queued and the archive review 
     const again = await report(X, callerFor('orchestrator', { run_id: 'brk-m' }), c, 'another run agrees');
     assert.deepStrictEqual([again.withheld, X.activeHold(c).b.state], [true, 'held']);
     assert.strictEqual(await listed(X, reader(X), c), false);
+    // Once held, held: the upgrade marks the hold `hides`, so when every report on it later stands past a breaker (here run B's own report,
+    // replaced as a repeat past its limit would leave it; a shrinking project can lower that limit) the note stays hidden.
+    assert.strictEqual(X.activeHold(c).b.hides, true);
+    X.store.patchBody(X.activeHold(c).id, (b) => { b.reports = b.reports.map((r) => ({ ...r, withhold: false })); return b; });
+    assert.strictEqual(await listed(X, reader(X), c), false, 'the note stays hidden');
   } finally { await X.cleanup(); }
 });

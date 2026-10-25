@@ -30,55 +30,93 @@ function recipientOf(E, caller) {
 }
 const withholds = (E, caller) => recipientOf(E, caller) !== null;
 
-// The active harness holds, by namespace range (alias h).
-const HELD_ROWS = `h.type = 'held' AND h.namespace >= 'held/' AND h.namespace < 'held0' AND h.written_by = 'harness' AND json_extract(h.body, '$.state') = 'held'`;
-
-const scan = (E, where) => {
-  const out = new Map();
-  let found = [];
-  try {
-    found = E.store.db.prepare(`SELECT json_extract(h.body, '$.note_id') AS nid, substr(h.namespace, 6) AS p FROM memory_entries h WHERE ${HELD_ROWS} AND ${where}`).all();
-  } catch { return out; }
-  for (const r of found) if (typeof r.nid === 'string') out.set(r.nid, r.p);
-  return out;
-};
+// The active harness holds in state held, by namespace range (alias h). A body that is not valid JSON is kept (CASE evaluates lazily, so no
+// json_extract ever meets it): the rule below judges it, closed.
+const HELD_ROWS = `h.type = 'held' AND h.namespace >= 'held/' AND h.namespace < 'held0' AND h.written_by = 'harness' AND CASE WHEN json_valid(h.body) THEN json_extract(h.body, '$.state') = 'held' ELSE 1 END`;
 
 // Note id -> project for every hold that withholds its note from a worker (ADR 0047 amendment of 2026-10-25, proposed): a hold in state held of
 // kind wrong, superseded or duplicate, on any ground. A report past the breaker now writes a `queued` hold, which this never reads. A reported
-// hold an older store wrote in state held with every report past the breaker still hides nothing: the clause below is that rule, read, with
-// no rewrite of the row. A reported hold this code writes in state held says so (`hides: true`): it may hide on a hold it took over, with every
+// hold an older store wrote in state held with every report past the breaker still hides nothing: `judge` keeps that rule, read, with no
+// rewrite of the row. A reported hold this code writes in state held says so (`hides: true`): it may hide on a hold it took over, with every
 // report past the breaker. An `unsupported` row is a verification queue, not a dispute, and is not withheld.
 const HIDING_KINDS = ['wrong', 'superseded', 'duplicate'];
-const WITHHOLDING = `EXISTS (SELECT 1 FROM json_each(h.body, '$.reports') r WHERE json_extract(r.value, '$.withhold') IS NOT 0)`;
-const heldWithheld = (E) => scan(E, `json_extract(h.body, '$.kind') IN (${HIDING_KINDS.map((k) => `'${k}'`).join(', ')}) AND (json_extract(h.body, '$.ground') IS NOT 'reported' OR json_extract(h.body, '$.hides') = 1 OR ${WITHHOLDING})`);
-// The same rule in JS, for one hold body (the report's proof).
-const hidesNote = (b) => !!b && b.state === 'held' && HIDING_KINDS.includes(b.kind) && (b.ground !== 'reported' || b.hides === true || (b.reports || []).some((r) => r && r.withhold !== false));
+
+// One hold body, judged in JS so that no shape of it can throw: { hides, malformed }. A body this rule cannot read (not an object, or a reported
+// hold whose reports are not a list of objects) fails CLOSED: it hides its note, and it is named as malformed so the operator is told.
+function judge(b) {
+  if (!b || typeof b !== 'object' || Array.isArray(b)) return { hides: true, malformed: true };
+  if (b.state !== 'held' || !HIDING_KINDS.includes(b.kind)) return { hides: false, malformed: false };
+  if (b.ground !== 'reported' || b.hides === true) return { hides: true, malformed: false };
+  if (b.reports !== undefined && (!Array.isArray(b.reports) || b.reports.some((r) => !r || typeof r !== 'object' || Array.isArray(r)))) return { hides: true, malformed: true };
+  return { hides: (b.reports || []).some((r) => r.withhold !== false), malformed: false };
+}
+const hidesNote = (b) => judge(b).hides;
+// A legacy past-breaker hold (state held, a hiding kind, ground reported, hiding nothing) is counted, listed and ranked as queued.
+const effectiveState = (b) => (b && b.state === 'held' && HIDING_KINDS.includes(b.kind) && b.ground === 'reported' && !judge(b).hides ? 'queued' : b && b.state);
+const parseBody = (t) => { try { const b = JSON.parse(t); return b && typeof b === 'object' && !Array.isArray(b) ? b : null; } catch { return null; } };
+const NOTE_ID = /"note_id"\s*:\s*"([^"\\]{1,128})"/; // a note id read from a body that is not JSON, to hide that note (closed)
+
+// Malformed holds are told on stderr (the owner's or the adapter's log) once per row and process: a read writes nothing to the store.
+const told = new Set();
+function tell(id, why) {
+  if (told.has(id)) return;
+  told.add(id);
+  try { process.stderr.write(`belay: held row ${id} cannot be read (${why}); its note is withheld from workers until the operator settles it\n`); } catch { /* no stderr */ }
+}
+
+// Note id -> project for every hold that withholds its note, and `closed`: the projects with a malformed hold whose note cannot be named, every
+// note of which is withheld. A query that fails outright returns { failed } and the caller withholds every note it reads.
+function heldWithheld(E) {
+  const out = new Map();
+  out.closed = new Set();
+  let found;
+  try {
+    found = E.store.db.prepare(`SELECT h.id AS id, substr(h.namespace, 6) AS p, h.body AS body FROM memory_entries h WHERE ${HELD_ROWS}`).all();
+  } catch (e) { out.failed = e; tell('(query)', e.message); return out; }
+  for (const r of found) {
+    const b = parseBody(r.body);
+    const j = judge(b);
+    if (!j.hides) continue;
+    const nid = b && typeof b.note_id === 'string' ? b.note_id : (NOTE_ID.exec(String(r.body || '')) || [])[1];
+    if (j.malformed) tell(r.id, b ? 'its reports are not a list of objects' : 'its body is not JSON');
+    if (typeof nid === 'string') out.set(nid, r.p);
+    else out.closed.add(r.p);
+  }
+  return out;
+}
 
 // The active hold of each note among `ids` whose note is live in its project, whoever reads (the orchestrator's and the operator's mark):
-// note id -> { kind, ground, reason }. An `unsupported` row is left out: such a note stays a normal unverified note for every reader, with no
-// mark and no demotion (note-unsupported.cjs). A read of the hold rows.
+// note id -> { kind, ground, reason }. Only a hold that hides its note is marked: an `unsupported` row and a hold that hides nothing (a legacy
+// hold past the breaker, shown as queued) leave the note a normal one for every reader, with no mark and no demotion (note-unsupported.cjs).
 function holdsAmong(E, ids) {
   const out = new Map();
   if (!ids.length) return out;
   let found = [];
   try {
-    found = E.store.db.prepare(`SELECT json_extract(h.body, '$.note_id') AS nid, json_extract(h.body, '$.kind') AS kind, json_extract(h.body, '$.ground') AS ground,
-      json_extract(h.body, '$.reason') AS reason FROM memory_entries h WHERE ${HELD_ROWS} AND json_extract(h.body, '$.kind') IS NOT 'unsupported' AND json_extract(h.body, '$.note_id') IN (SELECT value FROM json_each(?))
-      AND EXISTS (SELECT 1 FROM memory_entries n WHERE n.id = json_extract(h.body, '$.note_id') AND n.type = 'note' AND n.namespace = 'project/' || substr(h.namespace, 6))
+    found = E.store.db.prepare(`SELECT h.body AS body, substr(h.namespace, 6) AS p FROM memory_entries h WHERE ${HELD_ROWS}
+      AND CASE WHEN json_valid(h.body) THEN json_extract(h.body, '$.note_id') IN (SELECT value FROM json_each(?)) ELSE 0 END
       ORDER BY h.created_at, h.rowid`).all(JSON.stringify(ids));
   } catch { return out; }
-  for (const r of found) if (typeof r.nid === 'string') out.set(r.nid, { kind: r.kind || null, ground: r.ground || null, reason: typeof r.reason === 'string' ? r.reason : null });
+  const live = new Set();
+  try {
+    for (const r of E.store.db.prepare("SELECT id, namespace FROM memory_entries WHERE type = 'note' AND id IN (SELECT value FROM json_each(?))").all(JSON.stringify(ids))) live.add(`${r.namespace}|${r.id}`);
+  } catch { return out; }
+  for (const r of found) {
+    const b = parseBody(r.body);
+    if (!b || typeof b.note_id !== 'string' || !live.has(`project/${r.p}|${b.note_id}`) || !hidesNote(b)) continue;
+    out.set(b.note_id, { kind: b.kind || null, ground: b.ground || null, reason: typeof b.reason === 'string' ? b.reason : null });
+  }
   return out;
 }
 
-// The notes among the rows being read (`lim`/`lp`: the gate's bounds) that a hold withholds and that are live in their project.
+// The notes among the rows being read (`lim`/`lp`: the gate's bounds) that a hold withholds and that are live in their project. Closed on
+// failure: a hold query that fails, or a project with a malformed hold no note of which can be named, withholds every note it covers.
 function noteIds(E, lim = [], lp = [], held = heldWithheld(E)) {
-  if (!held.size) return [];
+  if (!held.size && !(held.closed && held.closed.size) && !held.failed) return [];
   const R = lim.length ? ` AND ${lim.join(' AND ')}` : '';
-  try {
-    return E.store.db.prepare(`SELECT e.id AS id, e.namespace AS ns FROM memory_entries e WHERE e.type = 'note' AND e.id IN (SELECT value FROM json_each(?))${R}`)
-      .all(JSON.stringify([...held.keys()]), ...lp).filter((r) => r.ns === `project/${held.get(r.id)}`).map((r) => r.id);
-  } catch { return []; }
+  const all = E.store.db.prepare(`SELECT e.id AS id, e.namespace AS ns FROM memory_entries e WHERE e.type = 'note'${held.failed ? '' : ' AND (e.id IN (SELECT value FROM json_each(?)) OR substr(e.namespace, 9) IN (SELECT value FROM json_each(?)))'}${R}`);
+  const got = held.failed ? all.all(...lp) : all.all(JSON.stringify([...held.keys()]), JSON.stringify([...(held.closed || [])]), ...lp);
+  return got.filter((r) => held.failed || r.ns === `project/${held.get(r.id)}` || (held.closed && held.closed.has(r.ns.slice(8)))).map((r) => r.id);
 }
 
 // What the gate hides from `caller` among the rows being read.
@@ -110,8 +148,9 @@ function withheldAmong(E, caller, list) {
   const notes = list.filter((r) => r && r.type === 'note');
   if (!notes.length) return out;
   const held = heldWithheld(E);
-  for (const r of notes) if (held.has(r.id) && r.namespace === `project/${held.get(r.id)}` && !reviewerSees(E, caller, r)) out.add(r.id);
+  const closed = (r) => held.failed || (held.closed.has(String(r.namespace).slice(8)) && String(r.namespace).startsWith('project/'));
+  for (const r of notes) if (((held.has(r.id) && r.namespace === `project/${held.get(r.id)}`) || closed(r)) && !reviewerSees(E, caller, r)) out.add(r.id);
   return out;
 }
 
-module.exports = { WITHHOLD_FOR, MATCHING, HIDING_KINDS, hidesNote, withholds, withheldIds, withheldAmong, heldWithheld, holdsAmong, noteIds };
+module.exports = { WITHHOLD_FOR, MATCHING, HIDING_KINDS, judge, hidesNote, effectiveState, parseBody, withholds, withheldIds, withheldAmong, heldWithheld, holdsAmong, noteIds };
