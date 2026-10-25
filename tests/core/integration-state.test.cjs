@@ -1,0 +1,141 @@
+'use strict';
+// integration-state.test.cjs — ADR 0053 amendment 2. An integration that stops (a conflict, or a merge that fails) still checks
+// what landed before it, so no merged work is left on `into` unchecked, and the row names each task that did not land and why.
+// A task's work state stays `done`; whether it landed is `integration` on task.list and task.get, derived from the rows.
+// Throwaway repositories under the sandbox only.
+
+const { test, before, after } = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
+const { makeRepo, git, write, commit } = require('./worktree-helpers.cjs');
+
+const { openCore } = core('index.cjs');
+
+let dir, orch, op;
+
+before(async () => {
+  dir = sandbox();
+  orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
+  await orch.run.attach({ adapter_pid: process.pid });
+  op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
+});
+
+after(async () => {
+  await op.close();
+  await orch.shutdownOwner();
+  await orch.close();
+  cleanup(dir);
+});
+
+const exists = (rel) => ({ argv: [process.execPath, '-e', `require('fs').accessSync(${JSON.stringify(rel)})`] });
+// Passes in either task's own tree, fails once both a.txt and b.txt are on one tree.
+const notBoth = { argv: [process.execPath, '-e', "const f=require('fs');process.exit(f.existsSync('a.txt')&&f.existsSync('b.txt')?1:0)"] };
+
+async function doneTask(repo, files, commands) {
+  const t = await orch.task.create({ spec: `write ${Object.keys(files).join(', ')}`, acceptance: { commands } });
+  const w = (await op.task.worktreeCreate({ task_id: t.id, repo })).worktree;
+  for (const [rel, text] of Object.entries(files)) write(w.path, rel, text);
+  commit(w.path, `task ${t.id}`);
+  const row = await orch.task.evaluate({ task_id: t.id });
+  assert.strictEqual(row.state, 'done', JSON.stringify(row.results));
+  return row;
+}
+
+const integ = async (id) => (await orch.task.get({ task_id: id })).integration;
+
+test('a conflict checks what landed before it: a failing check on that tree is recorded, and each task shows whether it landed', async () => {
+  const repo = makeRepo(dir);
+  const a = await doneTask(repo, { 'a.txt': 'a\n', 'base/keep.txt': 'from a\n' }, [notBoth]);
+  const a2 = await doneTask(repo, { 'b.txt': 'b\n' }, [notBoth]);
+  const b = await doneTask(repo, { 'base/keep.txt': 'from b\n' }, [exists('base/keep.txt')]);
+  const c = await doneTask(repo, { 'c.txt': 'c\n' }, [exists('c.txt')]);
+  assert.deepStrictEqual(await integ(a.id), { state: 'not_merged', into: null }, 'done and never integrated');
+
+  const row = await orch.integration.merge({ task_ids: [a.id, a2.id, b.id, c.id], into: 'int/stop' });
+  assert.strictEqual(row.state, 'conflict');
+  assert.strictEqual(row.conflict.task_id, b.id);
+  assert.deepStrictEqual(row.merged.map((m) => m.task_id), [a.id, a2.id]);
+  assert.deepStrictEqual(row.not_merged, [{ task_id: b.id, reason: 'conflict' }, { task_id: c.id, reason: 'not_tried' }]);
+  assert.strictEqual(row.passed, false, 'a and a2 merged together fail their shared check, and the row says so');
+  assert.deepStrictEqual(row.checks.map((ch) => [ch.task_ids, ch.exit_code]), [[[a.id, a2.id], 1]]);
+  assert.strictEqual(git(row.worktree, 'status', '--porcelain'), '', 'the checks ran on the tree the abort left clean');
+
+  const ia = await integ(a.id);
+  assert.deepStrictEqual(ia, { state: 'merged', id: row.id, into: 'int/stop', at: ia.at, head: row.head_sha, passed: false });
+  assert.ok(ia.at > 0);
+  assert.strictEqual((await integ(b.id)).state, 'conflict');
+  assert.strictEqual((await integ(c.id)).state, 'not_merged');
+  assert.strictEqual((await integ(c.id)).into, 'int/stop');
+  const listed = (await orch.task.list({})).tasks.find((t) => t.id === b.id);
+  assert.strictEqual(listed.state, 'done', 'the work state stays done');
+  assert.strictEqual(listed.integration.state, 'conflict', 'task.list carries the same fact as task.get');
+});
+
+test('evaluate: false leaves the landed work unchecked, and says so with checks null', async () => {
+  const repo = makeRepo(dir);
+  const a = await doneTask(repo, { 'base/keep.txt': 'from a\n' }, [exists('base/keep.txt')]);
+  const b = await doneTask(repo, { 'base/keep.txt': 'from b\n' }, [exists('base/keep.txt')]);
+  const row = await orch.integration.merge({ task_ids: [a.id, b.id], into: 'int/noeval', evaluate: false });
+  assert.strictEqual(row.state, 'conflict');
+  assert.strictEqual(row.checks, null);
+  assert.strictEqual(row.passed, null);
+  assert.strictEqual((await integ(a.id)).passed, null);
+  // The latest integration that names a task decides: b merged alone later reads merged, no longer conflict.
+  const later = await orch.integration.merge({ task_ids: [b.id], into: 'int/b-alone' });
+  assert.strictEqual(later.state, 'evaluated');
+  const ib = await integ(b.id);
+  assert.deepStrictEqual([ib.state, ib.into, ib.passed], ['merged', 'int/b-alone', true]);
+});
+
+test('a stopped merge that leaves the tree unclean runs no checks on it: the merged work is left with checks null', async () => {
+  const repo = makeRepo(dir);
+  // The hook leaves an untracked file behind and refuses, so the abort cannot leave the tree clean.
+  const hook = path.join(repo, '.git', 'hooks', 'pre-merge-commit');
+  fs.writeFileSync(hook, '#!/bin/sh\nif [ -f junk-trigger.txt ]; then echo x > junk.txt; exit 1; fi\n');
+  fs.chmodSync(hook, 0o755);
+  const a = await doneTask(repo, { 'a.txt': 'a\n' }, [exists('a.txt')]);
+  const b = await doneTask(repo, { 'junk-trigger.txt': 'x\n' }, [exists('junk-trigger.txt')]);
+  const row = await orch.integration.merge({ task_ids: [a.id, b.id], into: 'int/unclean' });
+  assert.strictEqual(row.state, 'failed', JSON.stringify(row.error));
+  assert.strictEqual(row.error.tree_clean, false);
+  assert.strictEqual(row.checks, null);
+  assert.strictEqual((await integ(a.id)).passed, null);
+});
+
+test('a merge that fails without a conflict checks what landed and names the task as failed', async () => {
+  const repo = makeRepo(dir);
+  // A pre-merge-commit hook that refuses any merge bringing in fail.txt: git's own refusal, not a conflict.
+  const hook = path.join(repo, '.git', 'hooks', 'pre-merge-commit');
+  fs.writeFileSync(hook, '#!/bin/sh\ntest ! -f fail.txt\n');
+  fs.chmodSync(hook, 0o755);
+  const a = await doneTask(repo, { 'a.txt': 'a\n' }, [exists('a.txt')]);
+  const b = await doneTask(repo, { 'fail.txt': 'x\n' }, [exists('fail.txt')]);
+  const row = await orch.integration.merge({ task_ids: [a.id, b.id], into: 'int/hook' });
+  assert.strictEqual(row.state, 'failed', JSON.stringify(row.error));
+  assert.strictEqual(row.error.task_id, b.id);
+  assert.strictEqual(row.error.tree_clean, true);
+  assert.deepStrictEqual(row.not_merged, [{ task_id: b.id, reason: 'failed' }]);
+  assert.strictEqual(row.passed, true);
+  assert.deepStrictEqual(row.checks.map((ch) => ch.task_ids), [[a.id]]);
+  assert.strictEqual((await integ(b.id)).state, 'failed');
+});
+
+test('a clean integration marks every task merged with the head and the passing checks; tasks with no branch have none', async () => {
+  const repo = makeRepo(dir);
+  const a = await doneTask(repo, { 'a.txt': 'a\n' }, [exists('a.txt')]);
+  const b = await doneTask(repo, { 'b.txt': 'b\n' }, [exists('b.txt')]);
+  const open = await orch.task.create({ spec: 'open', acceptance: { commands: [exists('x')] } });
+  await op.task.worktreeCreate({ task_id: open.id, repo });
+  const bare = await orch.task.create({ spec: 'bare', acceptance: { commands: [exists('x')] } });
+  const row = await orch.integration.merge({ task_ids: [a.id, b.id], into: 'int/ok' });
+  assert.strictEqual(row.state, 'evaluated');
+  assert.deepStrictEqual(row.not_merged, []);
+  for (const id of [a.id, b.id]) {
+    const i = await integ(id);
+    assert.deepStrictEqual([i.state, i.into, i.head, i.passed], ['merged', 'int/ok', row.head_sha, true]);
+  }
+  assert.strictEqual(await integ(open.id), null, 'not done and never named');
+  assert.strictEqual(await integ(bare.id), null, 'no belay branch');
+});

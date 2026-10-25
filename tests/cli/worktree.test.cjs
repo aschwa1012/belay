@@ -76,6 +76,11 @@ test('create, list, merge and remove a task\'s worktree from the CLI', async () 
   assert.strictEqual(merged.code, 0, merged.err);
   assert.match(merged.out, /: evaluated/);
   assert.match(merged.out, /passed: true/);
+  // `belay tasks` shows whether the task's branch landed beside its work state, in one cell.
+  const tasks = await belay(['tasks', '--all', '--data', data], repo);
+  assert.strictEqual(tasks.code, 0, tasks.err);
+  assert.match(tasks.out, /integration/);
+  assert.match(tasks.out, /merged:int\/cli:passed/);
 
   const removed = await belay(['worktree', 'remove', t.id, '--data', data], repo);
   assert.strictEqual(removed.code, 0, removed.err);
