@@ -34,7 +34,7 @@ function releaseForDeadHolder(store, workerId, by, t) {
 function appendDead(E, values, by, t) {
   return E.store.tx(() => {
     const released = releaseForDeadHolder(E.store, values.id, by, t);
-    const row = rows.append(E.store, 'worker', { ...values, leases_released: released.length ? released : null }, by, t);
+    const row = rows.append(E.store, 'worker', { ...values, leases_released: released.length ? released : (values.leases_released == null ? null : values.leases_released) }, by, t); // a restated death with nothing left to release keeps its record
     return { row, released };
   });
 }
