@@ -16,6 +16,24 @@ const rows = require('./rows.cjs');
 // evaluation runs.
 const RUNNING = new Map(); // task|worktree|base -> the row promise
 const BY_TASK = new Map(); // task id -> { key, worktree, base, trigger } of the evaluation running for it
+// ADR 0061 section 4 (b): the span of every evaluation this owner runs, kept while it runs and while an evaluation that began
+// before it ended still runs, so each command check can name the evaluations that ran beside it (`concurrent`, a label only).
+const SPANS = []; // { task_id, start, end }
+function during(taskId, t0, t1) {
+  const by = new Map();
+  for (const s of SPANS) {
+    const ms = s.task_id === taskId ? 0 : Math.min(t1, s.end == null ? t1 : s.end) - Math.max(t0, s.start);
+    if (ms > 0) by.set(s.task_id, (by.get(s.task_id) || 0) + ms);
+  }
+  return [...by].map(([task_id, overlap_ms]) => ({ task_id, overlap_ms }));
+}
+function endSpan(span) {
+  span.end = Date.now();
+  const from = Math.min(...SPANS.filter((s) => s.end == null).map((s) => s.start)); // Infinity when none runs
+  for (let i = SPANS.length - 1; i >= 0; i--) if (SPANS[i].end != null && SPANS[i].end < from) SPANS.splice(i, 1);
+}
+// The evaluation running for a task, as an E_BUSY names it; null when none runs (task.create amend refuses beside one).
+const runningFor = (id) => { const r = BY_TASK.get(id); return r ? { trigger: r.trigger, worktree: r.worktree, base: r.base } : null; };
 const norm = (p) => { const s = String(p).replace(/\\/g, '/').replace(/\/+$/, ''); return process.platform === 'win32' ? s.toLowerCase() : s; };
 async function joinOrRun(E, args, run) {
   const task = args && args.task_id ? rows.current(E.store, 'task', args.task_id) : null;
@@ -34,11 +52,14 @@ async function joinOrRun(E, args, run) {
       return joinOrRun(E, args, run); // look again: another joiner may already have started the re-run
     }
   }
+  const span = { task_id: task.id, start: Date.now(), end: null };
+  SPANS.push(span);
   const p = run();
   const mine = { key, worktree: norm(at.worktree), base: at.base || null, trigger: args.trigger || null };
   RUNNING.set(key, p);
   BY_TASK.set(task.id, mine);
   try { return await p; } finally {
+    endSpan(span);
     if (RUNNING.get(key) === p) RUNNING.delete(key);
     if (BY_TASK.get(task.id) === mine) BY_TASK.delete(task.id);
   }
@@ -77,4 +98,4 @@ async function evaluateCancel(E, caller, args) {
   return { cancel_key: args.cancel_key, cancelled: true, killed };
 }
 
-module.exports = { register, unregister, cancelled, evaluateCancel, joinOrRun, pruneEarly, LIVE, EARLY, RUNNING, EARLY_TTL_MS };
+module.exports = { register, unregister, cancelled, evaluateCancel, joinOrRun, pruneEarly, runningFor, during, LIVE, EARLY, RUNNING, SPANS, EARLY_TTL_MS };

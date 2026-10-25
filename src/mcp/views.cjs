@@ -10,7 +10,7 @@ const head = (s) => (typeof s !== 'string' ? s : s.length <= SPEC_HEAD ? s : `${
 // One line per check, as the release wake names them: `command npm test exit 1`, `files_within_owned`, `verdict`; a check that
 // timed out or is marked flaky says so, so neither fact is lost from a listing.
 const timedOut = (c) => c.timed_out === true || !!(c.detail && c.detail.timed_out === true);
-const label = (c) => `${c.kind === 'command' ? `command ${Array.isArray(c.argv) ? c.argv.slice(0, 3).join(' ') : '?'}${c.exit_code != null ? ` exit ${c.exit_code}` : ''}` : c.kind}${timedOut(c) ? ' timed out' : ''}${c.flaky ? ' flaky' : ''}`;
+const label = (c) => `${c.kind === 'command' ? `command ${Array.isArray(c.argv) ? c.argv.slice(0, 3).join(' ') : '?'}${c.exit_code != null ? ` exit ${c.exit_code}` : ''}` : c.kind}${timedOut(c) ? ' timed out' : ''}${c.flaky ? ' flaky' : ''}${Array.isArray(c.concurrent) && c.concurrent.length ? ' concurrent' : ''}`;
 
 // The fields of a check's detail that are receipts rather than reasons: where it ran, what was null, the full file lists.
 // `cwd` is the worktree the answer already names; a null says nothing. A passing check also loses what only a failure needs:
@@ -63,7 +63,7 @@ const SUMMARY_DROP = new Set(['run_id', 'written_at', 'written_by', 'files_owned
 // ones named, and the passing ones marked flaky named apart, since `failing` does not list them.
 function summaryResults(facts, checks) {
   const out = { passed: facts.passed, executable: facts.executable };
-  for (const k of ['trigger', 'flaky', 'timed_out', 'uncommitted']) if (facts[k] !== undefined && facts[k] !== null) out[k] = facts[k];
+  for (const k of ['trigger', 'flaky', 'timed_out', 'uncommitted', 'stale']) if (facts[k] !== undefined && facts[k] !== null) out[k] = facts[k];
   out.checks = checks.length;
   out.failing = checks.filter((c) => c && !c.passed).map(label);
   const flaky = checks.filter((c) => c && c.passed && c.flaky).map(label);
@@ -79,6 +79,7 @@ function compactTask(row, { detail = false } = {}) {
   for (const [k, v] of Object.entries(row)) if (!ROW_DROP.has(k) && (detail || !SUMMARY_DROP.has(k))) out[k] = v;
   // ADR 0060: `review` (where the work stands with its reviewers) is kept in both shapes; null, work no review names, is dropped.
   if (out.review === null) delete out.review;
+  if (Array.isArray(row.amended)) { if (!detail) out.amended = row.amended.length; } else delete out.amended; // ADR 0061: a listing counts the revisions, detail has them; none, nothing
   out.spec_head = head(row.spec);
   if (row.lease !== undefined) out.lease = leaseOf(row.lease);
   if (detail) { if (row.worktree !== undefined) out.worktree = worktreeOf(row.worktree); } else if (row.worktree && row.worktree.branch) out.branch = row.worktree.branch;
@@ -138,7 +139,7 @@ const CREATED_DROP = new Set(['spec', 'acceptance', 'files_owned', 'depends_on',
 function created(row) {
   if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
   const out = { id: row.id, seq: row.seq, state: row.state, spec_head: head(row.spec) };
-  for (const [k, v] of Object.entries(row)) if (!(k in out) && !CREATED_DROP.has(k)) out[k] = v;
+  for (const [k, v] of Object.entries(row)) if (!(k in out) && !CREATED_DROP.has(k) && !(k === 'amended' && v == null)) out[k] = v; // an amend's answer names what it replaced
   return out;
 }
 

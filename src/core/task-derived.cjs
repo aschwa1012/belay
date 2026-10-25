@@ -23,4 +23,14 @@ function of(task, ctx) {
   return { integration: integrationState.ofTask(task, ctx.integrations, peersOf(ctx, task)), review: reviewState.ofTask(task, ctx.reviews) };
 }
 
-module.exports = { context, of, peersOf };
+// ADR 0061 section 3: the hand-back names a `head` that is not the head the last results were judged at (a follow-up the
+// orchestrator evaluated itself, with no second hand-back). Either may be abbreviated, so one is compared as a prefix of the other.
+function handoffStale(task) {
+  const said = task.handoff && task.handoff.result && typeof task.handoff.result.head === 'string' ? task.handoff.result.head.trim().toLowerCase() : '';
+  const j = said ? require('./judged.cjs').judgedOf(task) : null; // the results' head, or the files check's on an older row
+  const judged = j && typeof j.head === 'string' ? j.head.toLowerCase() : '';
+  if (!/^[0-9a-f]{4,64}$/.test(said) || !judged) return false;
+  return !(judged.startsWith(said) || said.startsWith(judged));
+}
+
+module.exports = { context, of, peersOf, handoffStale };
