@@ -47,6 +47,11 @@ function createMessage({ core, ctx, forWorker, refuseIfPaused, sendStdin, launch
       if (!w.child && foreign) {
         fail('E_SUBSTRATE', 'codex worker is a live process this adapter did not spawn, so it cannot be given a turn; stop it first', { worker_id, substrate: w.substrate, state: w.state, pid: w.pid, adopted: true });
       }
+      // A Codex turn's end is written (`idle`) before its process exits, so a process still alive after its turn ended is exiting, not
+      // working: the refusal says so, and that a retry will go through. A process with no turn end yet is mid-turn.
+      if (w.child && P.pidAlive(w.pid) && w.turnEnded) {
+        fail('E_SUBSTRATE', `codex worker ${worker_id}'s previous turn is still exiting; retry in a moment`, { worker_id, substrate: w.substrate, state: w.state, pid: w.pid, exiting: true });
+      }
       if (w.child && P.pidAlive(w.pid)) {
         fail('E_SUBSTRATE', 'codex worker is mid-turn; one process per turn', { worker_id, substrate: w.substrate, state: w.state, pid: w.pid });
       }
