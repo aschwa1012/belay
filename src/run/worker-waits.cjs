@@ -52,11 +52,16 @@ const waitTurn = (w, ms) =>
 const waitExit = (w, ms) =>
   new Promise((res) => {
     if (w.settled) return res({ code: w.exitCode, signal: w.exitSignal, at: w.exitedAt });
-    const t = setTimeout(() => res(null), ms);
-    w.exitWaiters.push((v) => {
+    const r = (v) => {
       clearTimeout(t);
       res(v);
-    });
+    };
+    const t = setTimeout(() => {
+      const i = w.exitWaiters.indexOf(r);
+      if (i >= 0) w.exitWaiters.splice(i, 1);
+      res(null);
+    }, ms);
+    w.exitWaiters.push(r);
   });
 
 module.exports = { waitReady, waitTurn, waitExit, awaitExitCode, deathByPidCheck, PID_CHANNELS, EXIT_CODE_WAIT_MS };
