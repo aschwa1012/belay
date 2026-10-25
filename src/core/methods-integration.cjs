@@ -11,7 +11,7 @@ const rows = require('./rows.cjs');
 const G = require('./git.cjs');
 const W = require('./methods-worktree.cjs');
 const { runCommand, DEFAULT_COMMAND_TIMEOUT_MS } = require('./evaluate.cjs');
-const { notMerged, stale, BOOT } = require('./integration-state.cjs');
+const { notMerged, stale } = require('./integration-state.cjs');
 const { pidAlive } = require('./lock.cjs');
 const ID = require('./proc-identity.cjs');
 
@@ -25,32 +25,64 @@ const view = (r) => (r ? { ...r, created_worktree: r.created_worktree == null ? 
 // holds the in-process lock every merge into that branch holds. Another live pid may be an owner that was stopped without
 // exiting (the adapter outlives it) whose git is still running, so only a pid that is gone, or now names a process created at
 // another time than the row's `owner_boot` (a reused pid), is taken as gone. A creation time that cannot be read is not proof.
-// A row from before the columns names no process, and nothing could be waited on.
-const BOOT_SLACK_MS = 5000; // owner_boot is the process's own reckoning of its start, the snapshot the OS's
+// A row from before the columns names no process, and nothing could be waited on. `owner_boot`, and the time it is compared
+// with, both come from the process snapshot (createdOf), so no clock but the OS's creation times is involved.
+const BOOT_SLACK_MS = 5000;
+let ownCreated = null; // this process's creation time from the snapshot, cached once it has been read
+async function ownBoot() {
+  if (ownCreated == null) { const c = await ID.createdOf(process.pid).catch(() => null); if (c && c.created != null) ownCreated = c.created; }
+  return ownCreated;
+}
+
+// -> { gone, proven, why }. `proven` (when not gone): the pid runs as the process the row names, created when it records.
 async function ownerGone(r) {
   if (r.owner_pid == null) return { gone: true, why: 'the row names no process' };
   const pid = Number(r.owner_pid);
-  if (pid === process.pid) return { gone: true, why: Number(r.owner_boot) === BOOT ? 'this process wrote it, and no merge of it holds the lock' : 'its pid is now this process' };
+  if (pid === process.pid) return { gone: true, why: 'its pid is this process, which holds the lock, so no merge of it is running' };
   if (!pidAlive(pid)) return { gone: true, why: `pid ${pid} is not running` };
   const c = await ID.createdOf(pid).catch(() => null);
   if (c && r.owner_boot != null && Math.abs(c.created - Number(r.owner_boot)) > BOOT_SLACK_MS) return { gone: true, why: `pid ${pid} was created at ${c.created}, not at the row's ${r.owner_boot}` };
-  return { gone: false, why: c ? `pid ${pid} is running, created at ${c.created}` : `pid ${pid} is running and its creation time could not be read` };
+  if (c && r.owner_boot != null) return { gone: false, proven: true, why: `pid ${pid} is running, created at ${c.created} as the row records` };
+  return { gone: false, proven: false, why: c ? `pid ${pid} is running and the row recorded no creation time to match it` : `pid ${pid} is running and its creation time could not be read` };
 }
 
 // Called holding the one lock for `integrate:<repo>:<into>`, which every merge into that branch holds while it runs in this, the
 // only process that serves writes. A `merging` row for that branch whose process is gone (ownerGone) is closed `abandoned`
-// (what it merged before it ended is unknown, and unchecked), and the ids are returned; one whose process still runs refuses
-// the call E_BUSY, naming it, since its git may still be merging.
-async function abandonStale(E, caller, repo, into) {
+// (what it merged before it ended is unknown, and unchecked), and the ids are returned. One whose process is proven still to
+// run refuses the call E_BUSY, since its git may still be merging. One whose pid runs but is not proven to be that process
+// refuses too, unless the operator passes `take_over`: the pid may now belong to any process, so belay never suggests ending
+// it, and only a person who knows no merge is running may say so.
+async function abandonStale(E, caller, repo, into, takeOver = false) {
   const left = rows.currentAll(E.store, 'integration').filter((r) => r.state === 'merging' && r.into_branch === into && G.samePath(r.repo, repo));
   if (!left.length) return [];
+  const taken = new Map();
   for (const r of left) {
     const o = await ownerGone(r);
-    if (!o.gone) throw err('E_BUSY', `integration ${r.id} into ${into} is merging in pid ${r.owner_pid}, which is still running (${o.why}); wait for it, or end that process by its exact pid`, { id: r.id, owner_pid: r.owner_pid, owner_boot: r.owner_boot, why: o.why });
+    if (o.gone) continue;
+    const detail = { id: r.id, owner_pid: r.owner_pid, owner_boot: r.owner_boot, why: o.why, proven: o.proven };
+    if (o.proven) throw err('E_BUSY', `integration ${r.id} into ${into} is merging in pid ${r.owner_pid}, which is still running (${o.why}); wait for it to finish, or stop that belay owner`, detail);
+    if (!takeOver) throw err('E_BUSY', `integration ${r.id} into ${into} was merging in pid ${r.owner_pid}; that pid is running but is not proven to be the merge (${o.why}), so belay will not take the branch over on its own. If no merge into ${into} is running, the operator can pass --take-over`, detail);
+    taken.set(r.id, o.why);
   }
-  E.store.tx(() => { for (const r of left) rows.append(E.store, 'integration', { ...r, state: 'abandoned', error: { message: `abandoned: the process that ran this integration (pid ${r.owner_pid}) ended mid-merge; what it merged into ${into} is unrecorded and unchecked` } }, E.writtenBy(caller), Date.now()); });
+  E.store.tx(() => {
+    for (const r of left) {
+      const message = taken.has(r.id)
+        ? `abandoned by the operator's take-over: pid ${r.owner_pid} was not proven to be the merge (${taken.get(r.id)}); what it merged into ${into} is unrecorded and unchecked`
+        : `abandoned: the process that ran this integration (pid ${r.owner_pid}) ended mid-merge; what it merged into ${into} is unrecorded and unchecked`;
+      rows.append(E.store, 'integration', { ...r, state: 'abandoned', error: { message, taken_over: taken.has(r.id) } }, E.writtenBy(caller), Date.now());
+    }
+  });
   E.noteWrite();
   return left.map((r) => r.id);
+}
+
+// `take_over` closes a `merging` row whose pid runs but is not proven to be the merge. It is the operator's alone: the
+// orchestrator's tool does not list it, and core refuses it from any other role.
+function checkTakeOver(caller, args, method) {
+  if (args.take_over === undefined) return false;
+  if (typeof args.take_over !== 'boolean') throw err('E_ARGS', `${method}: take_over must be a boolean`, { field: 'take_over' });
+  if (args.take_over && caller.role !== 'operator') throw err('E_ROLE', `${method}: take_over is the operator's, never the ${caller.role}'s`, { field: 'take_over', role: caller.role });
+  return args.take_over;
 }
 
 function checkArgs(args) {
@@ -220,17 +252,18 @@ async function rerun(tasks, tree) {
 async function merge(E, caller, args) {
   args = W.present(args);
   checkArgs(args);
+  const takeOver = checkTakeOver(caller, args, 'integration.merge');
   const { tasks, repo } = await readTasks(E, args.task_ids);
   const into = await G.validBranch(repo, args.into === undefined ? `belay/integrate/${caller.run_id}` : args.into);
   return W.exclusive(`integrate:${repo}:${into}`, `an integration into ${into}`, async () => {
-    const abandoned = await abandonStale(E, caller, repo, into);
+    const abandoned = await abandonStale(E, caller, repo, into, takeOver);
     const tree = await integrationTree(E, repo, into, args, tasks, abandoned);
     const by = E.writtenBy(caller);
     const baseSha = (await G.must(tree.path, ['rev-parse', 'HEAD'], 'HEAD of the integration tree')).trim();
     const base = {
       id: rows.newId(), run_id: caller.run_id, repo, into_branch: into, worktree: tree.path, created_worktree: tree.created,
       base_sha: baseSha, head_sha: baseSha, task_ids: args.task_ids, merged: [], conflict: null, error: null, checks: null, passed: null, junctions: tree.junctions, removed_at: null,
-      owner_pid: process.pid, owner_boot: BOOT, // who runs it, so a row a crash leaves `merging` reads stale
+      owner_pid: process.pid, owner_boot: await ownBoot(), // who runs it, so a row a crash leaves `merging` reads stale
     };
     E.store.tx(() => { E.assertRunOpen(caller, 'integration.merge'); rows.append(E.store, 'integration', { ...base, state: 'merging' }, by, Date.now()); });
     E.noteWrite();
@@ -297,12 +330,13 @@ async function remove(E, caller, args) {
   args = W.present(args);
   const cur = await get(E, caller, args);
   if (args.force !== undefined && typeof args.force !== 'boolean') throw err('E_ARGS', 'integration.remove: force must be a boolean', { field: 'force' });
+  const takeOver = checkTakeOver(caller, args, 'integration.remove');
   if (!cur.created_worktree) throw err('E_PRECONDITION', `integration ${cur.id} merged in ${cur.worktree}, a tree belay did not make, so belay does not remove it`, { id: cur.id, worktree: cur.worktree });
   if (cur.removed_at) throw err('E_NOT_FOUND', `integration ${cur.id}'s worktree was removed at ${cur.removed_at}`, { id: cur.id });
   // A merge in flight holds this lock, so the call is refused E_BUSY; a `merging` row met inside it was left by a process that
   // ended, and is closed `abandoned` before its tree is removed.
   return W.exclusive(`integrate:${cur.repo}:${cur.into_branch}`, `an integration call for ${cur.into_branch}`, async () => {
-    if (cur.state === 'merging') await abandonStale(E, caller, cur.repo, cur.into_branch);
+    if (cur.state === 'merging') await abandonStale(E, caller, cur.repo, cur.into_branch, takeOver);
     const removal = await W.removeTree(E, { repo: cur.repo, path: cur.worktree, junctions: cur.junctions, branch: cur.into_branch }, { force: args.force }, `integration ${cur.id}`);
     const row = E.store.tx(() => rows.append(E.store, 'integration', { ...rows.current(E.store, 'integration', cur.id), removed_at: Date.now() }, E.writtenBy(caller), Date.now()));
     E.noteWrite();

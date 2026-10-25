@@ -152,6 +152,7 @@ async function assign(E, caller, args) {
   const checkOnly = args.check_only === true;
   if (!args.task_id || (!checkOnly && !args.worker_id)) throw err('E_ARGS', 'task.assign needs a task_id and a worker_id');
   if (args.worktree !== undefined && (!checkOnly || !args.worktree || typeof args.worktree !== 'string')) throw err('E_ARGS', 'task.assign worktree is the directory a spawn will run in, a non-empty string, and only with check_only');
+  const tree = await require('./review-tree.cjs').grantSnapshot(E, args); // ADR 0054 amendment 1: a review's tree at grant (git, so before the tx)
 
   // Every read this decision rests on happens inside the same BEGIN IMMEDIATE as the two writes it
   // authorises. Read outside it and the operator's take-control, or the worker's death, can land between
@@ -226,10 +227,10 @@ async function assign(E, caller, args) {
     const lease = rows.append(E.store, 'lease', {
       id: rows.newId(), task_id: args.task_id, run_id: ownerRun, holder: args.worker_id,
       holder_role: 'worker', granted_at: t, expires_at: t + ttlFrom(args), ttl_ms: ttlFrom(args), released_at: null,
-      supersedes: old ? old.id : null,
+      supersedes: old ? old.id : null, ...(tree ? { tree } : {}),
     }, by, t);
     const row = rows.append(E.store, 'task', { ...task, run_id: ownerRun, state: 'assigned' }, by, t);
-    return { task: row, old_lease: old, new_lease: lease, paused_worker: null, ...reported };
+    return { task: row, old_lease: old, new_lease: tree ? require('./review-tree.cjs').shown(lease) : lease, paused_worker: null, ...reported };
   });
   if (!checkOnly) E.noteWrite();
   return out;
@@ -402,6 +403,7 @@ async function releaseNow(E, caller, args) {
   // ADR 0034 amendment 1: under `off` the hand-back's notes are dropped and the lease still releases; the result says so.
   const dropped = got && got.dropped ? { notes_dropped: got.dropped } : null;
   const prep = dropped ? null : got;
+  const RT = require('./review-tree.cjs'), treeNow = await RT.releaseSnapshot(E, args); // ADR 0054 amendment 1: a review's tree at the hand-back
   const out = E.store.tx(() => {
     E.assertRunOpen(caller, 'lease.release'); // the notes were embedded above; run.end may have committed meanwhile (audit D42)
     // Releasing a superseded lease would destroy the current holder's live lease, so the currency rule
@@ -439,6 +441,7 @@ async function releaseNow(E, caller, args) {
       handoff = { result: args.result, by: caller.worker_id, lease_id: l.id, at: t };
       const missing = missingCitations(E, args.result);
       if (missing !== null) handoff.memory_ids_missing = missing;
+      if (l.tree) Object.assign(handoff, RT.handBack(E.dataDir, caller.worker_id, l.tree, treeNow)); // the tree's change and the scratch size
     }
     const row = rows.append(E.store, 'task', { ...task, state: task.state === 'done' ? 'done' : 'released', handoff }, by, t);
     const ck = rows.lastCheckpoint(E.store, l.task_id);

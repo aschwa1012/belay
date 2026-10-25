@@ -6,10 +6,6 @@
 const rows = require('./rows.cjs');
 const { pidAlive } = require('./lock.cjs');
 
-// This process's start, recorded on every row a merge writes beside its pid, so a `merging` row can be told from one a
-// process that has since ended left behind.
-const BOOT = Date.now() - Math.round(process.uptime() * 1000);
-
 // Each named task that did not land, and why: the conflict, a merge that failed, or not tried because the step stopped before
 // it. Null while the row is still `merging`, or `abandoned` (what it merged is unknown).
 function notMerged(r) {
@@ -91,4 +87,4 @@ function ofTask(task, newest, peers = []) {
   return others.length ? { ...main, elsewhere: others } : main;
 }
 
-module.exports = { BOOT, notMerged, stale, newestFirst, ofTask };
+module.exports = { notMerged, stale, newestFirst, ofTask };

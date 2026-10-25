@@ -226,6 +226,9 @@ const MIGRATIONS = [
   // ADR 0053 amendment 2: the process that runs an integration (its pid and start time), so a row a crash left `merging` reads stale.
   'ALTER TABLE integration ADD COLUMN owner_pid INTEGER',
   'ALTER TABLE integration ADD COLUMN owner_boot INTEGER',
+  // ADR 0054 amendment 1: a review lease's snapshot of the reviewer's tree at grant (JSON text, nullable), carried by every
+  // later row of the lease; lease.release compares it with the tree at the hand-back.
+  'ALTER TABLE lease ADD COLUMN tree TEXT',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot
