@@ -343,3 +343,18 @@ test('a worker bind admits the keepalive channel; an orchestrator bind does not'
   assert.strictEqual(admit(ownerWith({ role: 'orchestrator', run_id: 'r1' }), {}, orq), null);
   assert.strictEqual(orq.params.caller.channel, undefined, 'not carried for an orchestrator');
 });
+
+test('the keepalive view holds exactly task.list, worker.get and lease.renew; every other method is absent from it', async () => {
+  const { METHOD_NAMES } = require('../../src/core/engine.cjs');
+  const { KEEPALIVE_METHODS } = require('../../src/core/core-views.cjs');
+  const rc = await worker('rev-view', repo('view'));
+  const ka = rc.keepalive();
+  const has = (m) => { const [g, n] = m.split('.'); return !!(ka[g] && typeof ka[g][n] === 'function'); };
+  assert.deepStrictEqual(METHOD_NAMES.filter(has).sort(), ['lease.renew', 'task.list', 'worker.get']);
+  assert.deepStrictEqual([...KEEPALIVE_METHODS].sort(), ['lease.renew', 'task.list', 'worker.get']);
+  assert.deepStrictEqual(Object.keys(ka).sort(), ['caller', 'lease', 'task', 'worker'], 'no handle, no helper, no owner');
+  assert.strictEqual(ka.caller.channel, 'keepalive');
+  assert.throws(() => { ka.task.create = () => {}; }, TypeError, 'the groups are frozen');
+  assert.ok(Object.isFrozen(ka));
+  assert.throws(() => orch.keepalive(), (e) => e.code === 'E_ROLE');
+});
