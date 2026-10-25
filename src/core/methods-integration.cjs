@@ -11,6 +11,7 @@ const rows = require('./rows.cjs');
 const G = require('./git.cjs');
 const W = require('./methods-worktree.cjs');
 const J = require('./judged.cjs');
+const H = require('./git-hooks.cjs');
 const { runCommand, outputTails, DEFAULT_COMMAND_TIMEOUT_MS } = require('./evaluate.cjs');
 const { notMerged, stale } = require('./integration-state.cjs');
 const { pidAlive } = require('./lock.cjs');
@@ -20,7 +21,9 @@ const MAX_TASKS = 50;
 
 // `not_merged` and `left_out` (each merged branch head past what was judged, ADR 0060 decision 4) are derived from the row, never stored.
 const leftOut = (r) => { const l = (r.merged || []).filter((m) => m && m.left_out).map((m) => ({ task_id: m.task_id, ...m.left_out })); return l.length ? l : null; };
-const view = (r) => (r ? { ...r, created_worktree: r.created_worktree == null ? null : !!r.created_worktree, passed: r.passed == null ? null : !!r.passed, not_merged: notMerged(r), stale: stale(r), left_out: leftOut(r) } : null);
+// `hook_changed_tree` (a hook changed what a merge wrote, git-hooks.cjs) is the first merged entry that carries one.
+const hookChanged = (r) => { const m = (r.merged || []).find((x) => x && x.hook_changed_tree); return m ? { hook_changed_tree: m.hook_changed_tree } : {}; };
+const view = (r) => (r ? { ...r, ...hookChanged(r), created_worktree: r.created_worktree == null ? null : !!r.created_worktree, passed: r.passed == null ? null : !!r.passed, not_merged: notMerged(r), stale: stale(r), left_out: leftOut(r) } : null);
 
 // The process that wrote a `merging` row is gone, or is this one. A row this process wrote is not in flight, since the caller
 // holds the in-process lock every merge into that branch holds. Another live pid may be an owner that was stopped without
@@ -168,7 +171,7 @@ async function integrationTree(E, repo, into, args, tasks, abandoned = []) {
   if (fs.existsSync(wtPath) && fs.readdirSync(wtPath).length) throw err('E_EXISTS', `${wtPath} exists and is not empty`, { path: wtPath });
   const existed = await G.branchExists(repo, into);
   if (existed) {
-    await G.must(repo, ['worktree', 'add', '--', wtPath, into], `a worktree for ${into} could not be added`);
+    await H.mustAdd(repo, ['worktree', 'add', '--', wtPath, into], `a worktree for ${into} could not be added`, () => W.rollback(repo, { path: wtPath, branch: into, junctions: [] }, { keepBranch: true }));
   } else {
     let base;
     if (args.base !== undefined) base = await G.commitOf(repo, args.base);
@@ -177,7 +180,7 @@ async function integrationTree(E, repo, into, args, tasks, abandoned = []) {
       if (bases.length !== 1) throw err('E_ARGS', `the tasks were cut from ${bases.length} different bases, so ${into} needs a base: pass base (for example the default branch)`, { bases });
       base = bases[0];
     }
-    await G.must(repo, ['worktree', 'add', '-b', into, '--', wtPath, base], `the integration worktree for ${into} could not be added`);
+    await H.mustAdd(repo, ['worktree', 'add', '-b', into, '--', wtPath, base], `the integration worktree for ${into} could not be added`, () => W.rollback(repo, { path: wtPath, branch: into, junctions: [] }));
   }
   const made = [];
   try { await W.makeJunctions(repo, wtPath, W.junctionList(undefined), made); } catch (e) {
@@ -209,16 +212,22 @@ async function mergeOne(tree, task, target) {
   // A branch still at its recorded base holds no commit: it is contained already, and `empty` says why, so it is not read as merged work.
   const empty = sha === task.worktree.base_sha;
   if ((await G.run(tree, ['merge-base', '--is-ancestor', sha, 'HEAD'])).ok) return { ok: true, task_id: task.id, branch: b, sha, already: true, empty, ...facts };
-  const r = await G.run(tree, ['merge', '--no-ff', '--no-edit', '-m', `belay: merge task ${task.id} (${b})`, sha]);
-  if (r.ok) return { ok: true, task_id: task.id, branch: b, sha, already: false, ...facts, head_sha: (await G.must(tree, ['rev-parse', 'HEAD'], 'HEAD')).trim() };
+  const judgedTree = await H.expectedTree(tree, sha); // what the merge writes with no hook; a hook that differs is reported
+  const r = await H.runTraced(tree, ['merge', '--no-ff', '--no-edit', '-m', `belay: merge task ${task.id} (${b})`, sha]);
+  if (r.ok) {
+    const changed = await H.changedTree(tree, task.id, judgedTree);
+    return { ok: true, task_id: task.id, branch: b, sha, already: false, ...facts, ...(changed ? { hook_changed_tree: changed } : {}), head_sha: (await G.must(tree, ['rev-parse', 'HEAD'], 'HEAD')).trim() };
+  }
   const u = await G.run(tree, ['diff', '--name-only', '--diff-filter=U', '-z']);
   const files = u.ok ? u.stdout.split('\0').filter(Boolean) : [];
   const merging = (await G.run(tree, ['rev-parse', '-q', '--verify', 'MERGE_HEAD'])).ok;
   const abort = merging ? await G.run(tree, ['merge', '--abort']) : null;
   const left = await G.dirtyPaths(tree).catch(() => null);
+  const rej = files.length ? null : await H.rejection(tree, r); // a real conflict is a conflict, whatever hooks exist
   return {
     ok: false, conflict: files.length > 0, task_id: task.id, branch: b, sha, files,
     aborted: abort ? abort.ok : false, tree_clean: Array.isArray(left) && left.length === 0, stderr: r.stderr,
+    ...(rej ? { hook_rejected: { ...rej, stderr_tail: r.stderr_tail } } : {}),
   };
 }
 
@@ -283,10 +292,14 @@ async function merge(E, caller, args) {
         const m = await mergeOne(tree.path, t, targets.get(t.id));
         if (!m.ok) {
           const { ok, conflict, stderr, ...rest } = m;
-          if (conflict) { out.state = 'conflict'; out.conflict = rest; } else { out.state = 'failed'; out.error = { ...rest, message: `the merge of ${t.id} failed without a conflict: ${String(stderr).split('\n')[0]}`, stderr }; }
+          if (conflict) { out.state = 'conflict'; out.conflict = rest; } else {
+            const h = m.hook_rejected;
+            const message = h ? `${H.phrase(h, `the merge of task ${t.id}`)}${h.stderr_tail ? `: ${h.stderr_tail}` : ''}` : `the merge of ${t.id} failed without a conflict: ${String(stderr).split('\n')[0]}`;
+            out.state = 'failed'; out.error = { ...rest, message, stderr };
+          }
           break;
         }
-        out.merged.push({ task_id: m.task_id, branch: m.branch, sha: m.sha, already: m.already, empty: !!m.empty, judged_by: m.judged_by, covers: m.covers, ...(m.left_out ? { left_out: m.left_out } : {}) });
+        out.merged.push({ task_id: m.task_id, branch: m.branch, sha: m.sha, already: m.already, empty: !!m.empty, judged_by: m.judged_by, covers: m.covers, ...(m.left_out ? { left_out: m.left_out } : {}), ...(m.hook_changed_tree ? { hook_changed_tree: m.hook_changed_tree } : {}) });
         trying = null;
       }
     } catch (e) {

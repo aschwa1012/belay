@@ -21,7 +21,7 @@ async function run(cwd, args, { timeoutMs = GIT_TIMEOUT_MS, env = null } = {}) {
   const r = await runCommand(argv, cwd, timeoutMs, { env: { ...gitEnv(), ...(env || {}) }, tail: LIST_TAIL });
   return {
     ok: r.executable && r.exit_code === 0 && !r.timed_out && !r.truncated, exit_code: r.exit_code, timed_out: r.timed_out,
-    stdout: r.stdout, stderr: (r.stderr || r.spawn_error || '').trim().slice(0, 800), argv, cwd: fwd(cwd),
+    stdout: r.stdout, stderr: (r.stderr || r.spawn_error || '').trim().slice(0, 800), stderr_tail: (r.stderr || '').trim().slice(-800), argv, cwd: fwd(cwd),
   };
 }
 
