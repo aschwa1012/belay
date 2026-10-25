@@ -27,8 +27,12 @@ const sleepSync = ms => { try { Atomics.wait(new Int32Array(new SharedArrayBuffe
 // a reader copying this way never denies a writer. `onChunk` is a test seam, called after each chunk
 // while the source is still open.
 const CHUNK = 1 << 20;
+// Test seam: tests that count store copies set `hooks.copy(src, dst)`, called once per file whose copy has
+// opened its source. Product code never sets it.
+const hooks = { copy: null };
 function copyShared(src, dst, onChunk) {
   const fin = fs.openSync(src, 'r');
+  if (hooks.copy) hooks.copy(src, dst);
   try {
     const fout = fs.openSync(dst, 'w');
     try {
@@ -106,4 +110,4 @@ async function withCopy(dataDir, fn) {
   }
 }
 
-module.exports = { withCopy, makeTmpDir, copyWithRetry, copyShared, SUFFIXES };
+module.exports = { withCopy, makeTmpDir, copyWithRetry, copyShared, hooks, SUFFIXES };
