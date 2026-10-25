@@ -92,3 +92,15 @@ test('the operator\'s release settles the hold: the worker sees the note again a
   assert.deepStrictEqual([o.results[0].id, o.results[0].held], [a.note, undefined]);
   assert.strictEqual((await X.call('memory.held', X.orch, { project: 'acme', list: true })).entries.some((e) => e.note_id === a.note), false);
 });
+
+test('an unsupported row marks and demotes nothing, for a worker or the orchestrator', async () => {
+  const a = await X.written('w-g1', 'K51');
+  await X.written('w-g2', 'K52');
+  X.store.storeIn({ namespace: 'held/acme', worker_id: 'harness', type: 'held', text: `held unsupported ${a.note}`, title: 'h', body: { state: 'held', note_id: a.note, kind: 'unsupported', ground: 'unsupported', reason: 'no single place proves it', rev: 0 }, run_id: X.RUN, source: 'harness', written_by: 'harness' });
+  for (const who of [X.worker('w-g3'), X.orch]) {
+    const o = await X.call('memory.search', who, { namespaces: NS, query: 'K51 loader', view: 'compact', k: 50 });
+    assert.deepStrictEqual([o.results[0].id, o.results[0].held], [a.note, undefined], who.role);
+    const l = await X.call('memory.list', who, { namespaces: NS, limit: 500 });
+    assert.strictEqual(l.rows.find((x) => x.id === a.note).held, undefined, who.role);
+  }
+});

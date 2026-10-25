@@ -53,14 +53,15 @@ const heldReported = (E) => scan(E, `json_extract(h.body, '$.ground') = 'reporte
 const heldWithheld = (E) => scan(E, `json_extract(h.body, '$.kind') IN ('wrong', 'superseded', 'duplicate') AND (json_extract(h.body, '$.ground') IS NOT 'reported' OR ${WITHHOLDING})`);
 
 // The active hold of each note among `ids` whose note is live in its project, whoever reads (the orchestrator's and the operator's mark):
-// note id -> { kind, ground, reason }. Every kind, unsupported included. A read of the hold rows.
+// note id -> { kind, ground, reason }. An `unsupported` row is left out: such a note stays a normal unverified note for every reader, with no
+// mark and no demotion (note-unsupported.cjs). A read of the hold rows.
 function holdsAmong(E, ids) {
   const out = new Map();
   if (!ids.length) return out;
   let found = [];
   try {
     found = E.store.db.prepare(`SELECT json_extract(h.body, '$.note_id') AS nid, json_extract(h.body, '$.kind') AS kind, json_extract(h.body, '$.ground') AS ground,
-      json_extract(h.body, '$.reason') AS reason FROM memory_entries h WHERE ${HELD_ROWS} AND json_extract(h.body, '$.note_id') IN (SELECT value FROM json_each(?))
+      json_extract(h.body, '$.reason') AS reason FROM memory_entries h WHERE ${HELD_ROWS} AND json_extract(h.body, '$.kind') IS NOT 'unsupported' AND json_extract(h.body, '$.note_id') IN (SELECT value FROM json_each(?))
       AND EXISTS (SELECT 1 FROM memory_entries n WHERE n.id = json_extract(h.body, '$.note_id') AND n.type = 'note' AND n.namespace = 'project/' || substr(h.namespace, 6))
       ORDER BY h.created_at, h.rowid`).all(JSON.stringify(ids));
   } catch { return out; }
