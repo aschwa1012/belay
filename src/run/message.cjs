@@ -34,6 +34,7 @@ function createMessage({ core, ctx, forWorker, refuseIfPaused, sendStdin, launch
     // (ADR 0001 §4, ADR 0008 §6). Returns at once with the new pid; the turn lands later.
     if (!w.sessionId) fail('E_SUBSTRATE', 'codex worker has no thread id to resume', { worker_id, substrate: w.substrate, state: w.state });
     const foreign = !w.child && await PI.verifiedLive(w); // by identity, never the pid number alone: an idle worker's pid is free for reuse
+    await w.queue; // the previous turn's rows land before ensureHold answers (a dead row still queued would release the lease after it)
     const hold = await holdForLaunch(w, core); LC.refuseMessageDuringOp(w); text += leaseNote(hold); // ADR 0026 amendment 2 // before the checks below: they and the spawn stay one tick, so two concurrent messages still start one process
     // An adopted worker whose process is still alive is one a previous adapter owns. belay is not
     // its parent (invariant 1), so it cannot see that turn end, and starting a second process on

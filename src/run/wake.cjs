@@ -112,28 +112,29 @@ function diffWorkers({ prev, rows, runId, nowMs, graceMs, orphanGraceMs = graceM
   return { events, next, pending_deaths };
 }
 
-// ADR 0026 amendment 1 (proposed): the leases a death released, as facts, in what the interactive wake budget leaves after the
-// head and the pointer: "released lease L on task T", the task ids alone, or the count, the first that fits; '' when none does.
+// ADR 0026 amendments 1 and 2 (proposed): the leases a death released, as facts. Each task is open, unless the dead worker's own
+// hand-back still lands (amendment 2), which the store will then show as released. The clauses, most to least informative.
 const POINTER = ' Its rows are in the store: task_list, briefing.';
-function releasedClause(released, head) {
-  const room = require('./release-eval.cjs').WAKE_TEXT_MAX - Buffer.byteLength(head + POINTER, 'utf8');
+function releasedClauses(released) {
   const s = released.length > 1 ? 's' : '';
-  return [` Released ${released.map((r) => `lease ${r.lease_id} on task ${r.task_id}`).join(', ')}; open to assign.`,
-    ` Released its lease on task${s} ${released.map((r) => r.task_id).join(', ')}.`, ` Released ${released.length} lease${s}; task_list.`]
-    .find((c) => Buffer.byteLength(c, 'utf8') <= room) || '';
+  return [` Released lease${s} ${released.map((r) => `${r.lease_id} on task ${r.task_id}`).join(', ')}; open unless its hand-back lands.`,
+    ` Released its lease on task${s} ${released.map((r) => r.task_id).join(', ')}; open unless its hand-back lands.`,
+    ` Released ${released.length} lease${s}; open unless a hand-back lands.`];
 }
 
-// A death wake. When it released leases and the clause does not fit after the full head, the head drops what established the death
-// (the store's row keeps it) so the clause and the pointer both survive the interactive cap; with no room even then, it is as before.
+// A death wake, under the interactive cap. With leases released, the first fit wins: the full head with the lease and task ids,
+// then the head without what established the death (the store's row keeps it) with them, then the count after either head, so
+// the clause and the pointer both survive the cap. With no room even then, or nothing released, it is as before.
 function deathText(event) {
   const full = `belay: worker ${event.worker_id} died during turn ${event.turn} ` +
     `(exit code ${event.exit_code}, signal ${event.exit_signal}, established by ${event.death_established_by}).`;
   const released = Array.isArray(event.leases_released) && event.leases_released.length ? event.leases_released : null;
   if (released) {
-    for (const head of [full, `belay: worker ${event.worker_id} died during turn ${event.turn} (exit code ${event.exit_code}).`]) {
-      const c = releasedClause(released, head);
-      if (c) return head + c + POINTER;
-    }
+    const short = `belay: worker ${event.worker_id} died during turn ${event.turn} (exit code ${event.exit_code}).`;
+    const [ids, tasks, count] = releasedClauses(released);
+    const max = require('./release-eval.cjs').WAKE_TEXT_MAX;
+    const fit = [[full, ids], [full, tasks], [short, ids], [short, tasks], [full, count], [short, count]].find(([h, c]) => Buffer.byteLength(h + c + POINTER, 'utf8') <= max);
+    if (fit) return fit[0] + fit[1] + POINTER;
   }
   return full + POINTER;
 }

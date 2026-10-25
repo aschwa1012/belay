@@ -326,6 +326,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   async function doRestart(w, { firstTextOverride = null, appendMessage = null, awaitFirstTurn = true, first_turn_timeout_ms = 180000, onFirstText = null, skipDeadPidKill = false } = {}) {
     const worker_id = w.id;
     const old_pid = w.pid;
+    await w.queue; // the life before's rows land first: a dead row still queued would release the lease ensureHold is about to answer for
     const d = decideBranch(w); const hold = await holdForLaunch(w, core); // the task's files are held for this run, or nothing is touched; a death-released lease is granted back or reported
     W.settleHeld(w, ctx, 'pid-check-on-restart'); await w.queue; // a held death gets its dead row, and every row of the life before lands, before the relaunch
     if (w.child && P.pidAlive(w.pid)) await doStop(w, 'graceful', 10000);

@@ -148,11 +148,42 @@ test('a death wake that released leases keeps its clause and its pointer under t
   const id = '0f8b1c2e-1111-4222-8333-444455556666';
   const ev = (by, n) => ({ event: 'death', worker_id: 'coder-1', turn: 3, exit_code: 1, exit_signal: null, death_established_by: by, leases_released: Array.from({ length: n }, () => ({ lease_id: id, task_id: id })) });
   const long = 'run.end: pid 12345 not alive when the run ended; no adapter wrote its exit (ADR 0029)';
-  for (const [by, n, want] of [['exit-event', 1, /Released its lease on task /], ['exit-event', 3, /Released 3 leases; task_list\./], [long, 1, /Released lease 0f8b1c2e-1111-4222-8333-444455556666 on task /]]) {
+  for (const [by, n, want] of [['exit-event', 1, /Released its lease on task /], ['exit-event', 3, /Released 3 leases; open unless a hand-back lands\./], [long, 1, /Released its lease on task 0f8b1c2e-1111-4222-8333-444455556666; open unless its hand-back lands\./]]) {
     const text = wakeText(ev(by, n));
     assert.ok(Buffer.byteLength(text, 'utf8') <= 221, `${Buffer.byteLength(text, 'utf8')} bytes: ${text}`);
     assert.match(text, want);
     assert.match(text, /Its rows are in the store: task_list, briefing\.$/);
   }
   assert.ok(!wakeText(ev(long, 1)).includes('established by'), 'the long head gives way, the pointer stays');
+});
+
+test('a relaunch while the late look is reading the tasks starts no evaluation for the life that ended', async () => {
+  const LH = require('../../src/run/late-handback.cjs');
+  let answer;
+  const listed = new Promise((r) => { answer = r; });
+  const evaluated = [];
+  const ctx = { runId: RUN, core: { task: {
+    list: () => listed, // held: the look is in flight
+    evaluate: async (a) => { evaluated.push(a.task_id); return { id: a.task_id, state: 'done', results: {} }; },
+  } } };
+  const released = { id: 't9', run_id: RUN, state: 'released', handoff: { by: 'w9', at: 1 }, results: null };
+  const w = { id: 'w9', settled: true, settledState: 'dead', launches: 1, turns: 2, exitedAt: Date.now(), worktree: '/x' };
+  LH.check(w, ctx);
+  assert.strictEqual(w.lateHandback.busy, true, 'the look is in flight');
+  w.settled = false; w.launches = 2; // a restart relaunched the worker meanwhile
+  answer({ tasks: [released] });
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.deepStrictEqual([evaluated, w.evaluation || null], [[], null], 'nothing evaluated for the life that ended');
+
+  const w2 = { id: 'w9', settled: true, settledState: 'dead', launches: 1, turns: 2, exitedAt: Date.now(), worktree: '/x' };
+  let answer2; const listed2 = new Promise((r) => { answer2 = r; });
+  ctx.core.task.list = () => listed2;
+  LH.check(w2, ctx);
+  answer2({ tasks: [released] });
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.ok(w2.lastEvaluation, 'with no relaunch the same look starts the evaluation');
+  await w2.lastEvaluation.promise;
+  assert.deepStrictEqual(evaluated, ['t9']);
 });
