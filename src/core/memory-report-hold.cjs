@@ -11,7 +11,7 @@
 
 const { hold } = require('./methods-memory-scrub.cjs');
 const { reportedKind, loadNote, activeHoldOf } = require('./memory-facts.cjs');
-const { HIDING_KINDS } = require('./memory-withhold.cjs');
+const { hidesNote } = require('./memory-withhold.cjs');
 const { unsettled, reportKey } = require('./report-marks.cjs');
 const { redact } = require('./redact.cjs');
 const N = require('./methods-memory-notes.cjs');
@@ -55,7 +55,7 @@ function appendTo(E, ctx, note, active, reports, newReport, hides) {
     b.reports_total = (Number(b.reports_total) || (b.reports || []).length) + (replaced ? 0 : 1);
     b.reports_dropped = Math.max(0, b.reports_total - reports.length);
     b.self_report = selfOnly(reports);
-    if (hides && b.state === 'queued') b.state = 'held'; // a report that withholds turns a queued hold into one that hides
+    if (hides && b.state === 'queued') { b.state = 'held'; b.hides = true; } // a report that withholds turns a queued hold into one that hides
     if (replaced && newReport && newReport.why) b.reason = redact(String(newReport.why)).text.slice(0, 500); // the hold's reason follows a repeat, as its report does
     if (changed) {
       b.kind_history = [...(b.kind_history || []), { kind: b.kind, of: b.of || null, facts: b.facts || null, rev: Number(b.rev) || 0, at: Date.now() }].slice(-KIND_HISTORY_KEEP);
@@ -77,7 +77,7 @@ function holdReported(E, caller, ctx, note, newReport) {
   // Held means hidden (ADR 0047 amendment of 2026-10-25, proposed). A hold is in state `held` while some standing report on it withholds, or
   // while it takes over a hold that already hid the note; otherwise every report on it was written past its run's breaker, and it is `queued`:
   // offered to the archive review like any hold, counted in the breaker notice, and hiding nothing.
-  const hides = reports.some((r) => r.withhold !== false) || (!!active && active.b.state === 'held' && HIDING_KINDS.includes(active.b.kind));
+  const hides = reports.some((r) => r.withhold !== false) || (!!active && hidesNote(active.b));
   if (active && active.b.ground === 'reported' && active.b.kind !== 'unsupported') return appendTo(E, ctx, note, active, reports, newReport, hides);
 
   // A new hold, or a merge of another into it. Every pointer decision is made here, so hold() never meets its own E_EXISTS guard.
@@ -96,7 +96,7 @@ function holdReported(E, caller, ctx, note, newReport) {
   const entry = { action: 'hold', kind: rk.kind, of: rk.of || null, ground: 'reported', reason: redact(String(why || 'reported wrong')).text.slice(0, 500), cites: [] };
   const hctx = {
     project: ctx.project, runId: ctx.runId, threshold: ctx.threshold, mode: 'report', evidence: { head_sha: ctx.headSha || null },
-    heldExtra: { state: hides ? 'held' : 'queued', reports, reports_total: reports.length, reports_dropped: 0, report_verdicts: [], self_report: selfOnly(reports), classified: rk.facts, ...(prior ? { prior_hold: prior } : {}), ...(stale ? { replaced_stale_pointer: stale } : {}), ...(ctx.extra || {}), rev: 0, scrub: null },
+    heldExtra: { state: hides ? 'held' : 'queued', ...(hides ? { hides: true } : {}), reports, reports_total: reports.length, reports_dropped: 0, report_verdicts: [], self_report: selfOnly(reports), classified: rk.facts, ...(prior ? { prior_hold: prior } : {}), ...(stale ? { replaced_stale_pointer: stale } : {}), ...(ctx.extra || {}), rev: 0, scrub: null },
   };
   const out = hold(E, { ...caller, channel: 'harness' }, hctx, entry, 0, [], { note: fresh, pending: false });
   const row = out.held.id;

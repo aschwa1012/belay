@@ -39,7 +39,7 @@ function reportIn(E, caller, p) {
   let withheld = false, why = `not held (${held.skipped}): nothing to withhold`;
   if (!held.skipped) {
     const hold = require('./memory-facts.cjs').activeHoldOf(E, p.project, p.note);
-    withheld = !!hold && hold.b.state === 'held' && require('./memory-withhold.cjs').HIDING_KINDS.includes(hold.b.kind);
+    withheld = !!hold && require('./memory-withhold.cjs').hidesNote(hold.b);
     const other = withheld && !verdict.withhold ? (hold.b.reports || []).find((r) => r.withhold !== false) : null;
     why = !withheld ? (hold && hold.b.state === 'queued' ? verdict.why : 'not withheld: the hold is not of a kind that is withheld') : verdict.withhold ? verdict.why
       : `withheld by another report on the note (${other ? `${other.by}, run ${other.run_id || 'none'}` : 'its hold'}); this report: ${verdict.why}`;

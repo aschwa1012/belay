@@ -43,11 +43,16 @@ const scan = (E, where) => {
   return out;
 };
 
-// Note id -> project for every hold that withholds its note from a worker (ADR 0047 amendment of 2026-10-25, proposed): a hold of kind
-// wrong, superseded or duplicate, on any ground. Held means hidden: a report past the breaker writes no hold (memory-report-hold.cjs), so
-// no reported hold needs its reports read here. An `unsupported` row is a verification queue, not a dispute, and is not withheld.
+// Note id -> project for every hold that withholds its note from a worker (ADR 0047 amendment of 2026-10-25, proposed): a hold in state held of
+// kind wrong, superseded or duplicate, on any ground. A report past the breaker now writes a `queued` hold, which this never reads. A reported
+// hold an older store wrote in state held with every report past the breaker still hides nothing: the clause below is that rule, read, with
+// no rewrite of the row. A reported hold this code writes in state held says so (`hides: true`): it may hide on a hold it took over, with every
+// report past the breaker. An `unsupported` row is a verification queue, not a dispute, and is not withheld.
 const HIDING_KINDS = ['wrong', 'superseded', 'duplicate'];
-const heldWithheld = (E) => scan(E, `json_extract(h.body, '$.kind') IN (${HIDING_KINDS.map((k) => `'${k}'`).join(', ')})`);
+const WITHHOLDING = `EXISTS (SELECT 1 FROM json_each(h.body, '$.reports') r WHERE json_extract(r.value, '$.withhold') IS NOT 0)`;
+const heldWithheld = (E) => scan(E, `json_extract(h.body, '$.kind') IN (${HIDING_KINDS.map((k) => `'${k}'`).join(', ')}) AND (json_extract(h.body, '$.ground') IS NOT 'reported' OR json_extract(h.body, '$.hides') = 1 OR ${WITHHOLDING})`);
+// The same rule in JS, for one hold body (the report's proof).
+const hidesNote = (b) => !!b && b.state === 'held' && HIDING_KINDS.includes(b.kind) && (b.ground !== 'reported' || b.hides === true || (b.reports || []).some((r) => r && r.withhold !== false));
 
 // The active hold of each note among `ids` whose note is live in its project, whoever reads (the orchestrator's and the operator's mark):
 // note id -> { kind, ground, reason }. An `unsupported` row is left out: such a note stays a normal unverified note for every reader, with no
@@ -109,4 +114,4 @@ function withheldAmong(E, caller, list) {
   return out;
 }
 
-module.exports = { WITHHOLD_FOR, MATCHING, HIDING_KINDS, withholds, withheldIds, withheldAmong, heldWithheld, holdsAmong, noteIds };
+module.exports = { WITHHOLD_FOR, MATCHING, HIDING_KINDS, hidesNote, withholds, withheldIds, withheldAmong, heldWithheld, holdsAmong, noteIds };
