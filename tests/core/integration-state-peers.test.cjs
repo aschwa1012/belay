@@ -30,3 +30,11 @@ test('a peer\'s conflict says nothing about the task', () => {
   const rows = [conflict('i2', ['f'], 30)];
   assert.deepStrictEqual(S.ofTask(done('w', 10), rows, [done('f', 20)]), { state: 'not_merged', into: null });
 });
+
+test('a merge that records what its commit contains credits only those: a peer merged at a head without this task\'s judged head does not land it', () => {
+  const w = done('w', 10), f = done('f', 20);
+  const without = [{ ...merged('i3', ['f'], 30), merged: [{ task_id: 'f', covers: ['f'] }] }];
+  assert.deepStrictEqual(S.ofTask(w, without, [f]), { state: 'not_merged', into: null });
+  const withIt = [{ ...merged('i4', ['f'], 30), merged: [{ task_id: 'f', covers: ['w', 'f'] }] }];
+  assert.strictEqual(S.ofTask(w, withIt, [f]).via, 'f');
+});

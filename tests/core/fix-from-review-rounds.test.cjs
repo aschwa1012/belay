@@ -233,3 +233,55 @@ test('a shared branch lands as one: merging the fix marks the work merged, mergi
   await finishFix(b.w, f2, 'unit-b', 'fixed again\n');
   assert.deepStrictEqual(await integrationOf(f2.id), { state: 'not_merged', into: null });
 });
+
+const { git } = require('./worktree-helpers.cjs');
+const judgedHeadOf = async (id) => (await orch.task.get({ task_id: id })).results.head_sha;
+
+test('integrate merges the head the work was judged at: a cancelled fix\'s commit on the shared branch is left out and named', async () => {
+  const { w, f } = await workWithOpenFix('abandon');
+  const judged = await judgedHeadOf(w.id);
+  assert.strictEqual(judged, git(w.worktree.path, 'rev-parse', 'HEAD'), 'the evaluation recorded the head it judged');
+  write(w.worktree.path, 'src/abandon.cjs', 'ABANDONED FIX\n');
+  commit(w.worktree.path, 'abandoned fix');
+  const stray = git(w.worktree.path, 'rev-parse', 'HEAD');
+  await orch.task.cancel({ task_id: f.id });
+  const row = await orch.integration.merge({ task_ids: [w.id], into: 'int/abandon' });
+  const m = row.merged[0];
+  assert.deepStrictEqual([m.sha, m.judged_by, m.covers, m.left_out], [judged, w.id, [w.id], { branch: w.worktree.branch, head: stray, judged, commits: 1 }]);
+  assert.deepStrictEqual(row.left_out, [{ task_id: w.id, branch: w.worktree.branch, head: stray, judged, commits: 1 }]);
+  assert.strictEqual(git(row.worktree, 'show', 'HEAD:src/abandon.cjs'), 'work', 'the abandoned commit did not land');
+});
+
+test('a commit made after done, with no fix at all, is left out of the merge', async () => {
+  let t = await orch.task.create({ spec: 'late work', acceptance: { files_within_owned: true }, files_owned: ['src/late.cjs'] });
+  t = await orch.task.worktreeCreate({ task_id: t.id });
+  write(t.worktree.path, 'src/late.cjs', 'judged\n');
+  commit(t.worktree.path, 'late judged');
+  await handBack(t.id, 'c-late', t.worktree.path, { branch: t.worktree.branch });
+  assert.strictEqual((await orch.task.evaluate({ task_id: t.id })).state, 'done');
+  const judged = await judgedHeadOf(t.id);
+  write(t.worktree.path, 'src/late.cjs', 'after done\n');
+  commit(t.worktree.path, 'after done');
+  const row = await orch.integration.merge({ task_ids: [t.id], into: 'int/late' });
+  assert.deepStrictEqual([row.merged[0].sha, row.merged[0].left_out.commits], [judged, 1]);
+  assert.strictEqual(git(row.worktree, 'show', 'HEAD:src/late.cjs'), 'judged');
+});
+
+test('a done task that records no judged head is refused, naming the branch head; the work and a done fix merge the fix\'s head', async () => {
+  // Judged with its tree already removed, so its evaluation records no head (as a row from before the field would).
+  let t = await orch.task.create({ spec: 'headless work', acceptance: PASS });
+  t = await orch.task.worktreeCreate({ task_id: t.id });
+  write(t.worktree.path, 'src/headless.cjs', 'x\n');
+  commit(t.worktree.path, 'headless');
+  const tip = git(t.worktree.path, 'rev-parse', 'HEAD');
+  await orch.task.worktreeRemove({ task_id: t.id });
+  await handBack(t.id, 'c-headless', dir);
+  assert.strictEqual((await orch.task.evaluate({ task_id: t.id, worktree: dir })).results.head_sha, undefined);
+  const e = await rejectsCode(orch.integration.merge({ task_ids: [t.id], into: 'int/headless' }), 'E_PRECONDITION');
+  assert.deepStrictEqual([e.detail.task_id, e.detail.branch_head], [t.id, tip]);
+  // A shared branch merges the newest judged head among its done tasks, whichever of them is named.
+  const { w, f } = await workWithOpenFix('newest');
+  await finishFix(w, f, 'newest');
+  const row = await orch.integration.merge({ task_ids: [w.id], into: 'int/newest' });
+  assert.deepStrictEqual([row.merged[0].sha, row.merged[0].judged_by, row.merged[0].covers.sort(), row.left_out], [await judgedHeadOf(f.id), f.id, [w.id, f.id].sort(), null]);
+});

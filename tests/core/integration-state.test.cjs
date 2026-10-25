@@ -193,17 +193,15 @@ test('a merge that throws (a branch deleted) still checks what landed and names 
   assert.strictEqual((await integ(b.id)).state, 'failed');
 });
 
+// integrate merges the head a task was judged at (ADR 0060 decision 4), so a's own branch cannot later conflict on int/s; the
+// newer stop on that branch is c's, whose judged change conflicts with a's.
 test('a merge into a branch stays true against a newer stop on that branch or another, and a removal keeps its time', async () => {
   const repo = makeRepo(dir);
-  const a = await doneTask(repo, { 'a.txt': 'a\n' }, [exists('a.txt')]);
+  const a = await doneTask(repo, { 'a.txt': 'a\n', 'base/keep.txt': 'from a\n' }, [exists('a.txt')]);
   const c = await doneTask(repo, { 'base/keep.txt': 'from c\n' }, [exists('base/keep.txt')]);
   const first = await orch.integration.merge({ task_ids: [a.id], into: 'int/s' });
-  await orch.integration.merge({ task_ids: [c.id], into: 'int/s' });
-  // a's branch gains a commit that conflicts with c's change, already on int/s.
-  write(a.worktree.path, 'base/keep.txt', 'from a\n');
-  commit(a.worktree.path, 'a again');
-  const stop = await orch.integration.merge({ task_ids: [a.id], into: 'int/s' });
-  assert.strictEqual(stop.conflict.task_id, a.id);
+  const stop = await orch.integration.merge({ task_ids: [c.id], into: 'int/s' });
+  assert.strictEqual(stop.conflict.task_id, c.id);
   let ia = await integ(a.id);
   assert.deepStrictEqual([ia.state, ia.into, ia.id], ['merged', 'int/s', first.id], 'its merge into int/s stays true');
   const other = await orch.integration.merge({ task_ids: [c.id, a.id], into: 'int/s2' });

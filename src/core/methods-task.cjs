@@ -297,6 +297,7 @@ async function evaluate(E, caller, args) {
   const at = require('./methods-worktree.cjs').evaluateTarget(task, args); // ADR 0053 decision 4: the recorded worktree and base
   const EC = args.cancel_key !== undefined ? require('./evaluate-cancel.cjs') : null; // ADR 0058: a release evaluation can be cancelled
   const cancel = EC ? EC.register(args.cancel_key) : null;
+  const judgedHead = await require('./methods-worktree.cjs').headOf(task, at.worktree); // ADR 0060 decision 4: what integrate may merge
   let commandChecks;
   try { commandChecks = await runAcceptance(task.acceptance, at.worktree, task.files_owned, { ...at, cancel }); } finally { if (cancel) EC.unregister(args.cancel_key, cancel); }
   if (cancel && cancel.cancelled) throw EC.cancelled(task, cancel);
@@ -315,7 +316,7 @@ async function evaluate(E, caller, args) {
     const executable = checks.length > 0 && checks.every(c => c.executable);
     const passed = checks.length > 0 && checks.every(c => c.passed);
     const results = {
-      evaluated_at: Date.now(), executable, passed, checks, ...(args.trigger ? { trigger: args.trigger } : {}),
+      evaluated_at: Date.now(), executable, passed, checks, ...(args.trigger ? { trigger: args.trigger } : {}), ...(judgedHead ? { head_sha: judgedHead } : {}),
       ...(checks.some(c => c.flaky) ? { flaky: true } : {}), // ADR 0060 decision 2: a pass only on a retry is never silent
       ...(checks.length === 0 ? { note: 'the task declares no acceptance criteria, so nothing was executed and nothing is proven' } : {}),
     };

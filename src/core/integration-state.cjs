@@ -55,10 +55,11 @@ function factOf(r, id) {
 // integration has merged, stopped on or is merging is `not_merged` with `into: null`; a task with no belay branch, or not
 // done and never named, has none (null).
 //
-// A branch is one unit (ADR 0060 decision 3): a fix task works on the branch of the work it fixes, and a merge takes the branch's
-// tip, so a peer's merge (`peers`, the other tasks on the same branch) lands this task too, marked `via` the peer, when this
-// task was done before that merge was written. A task done after it (a later fix round) is not landed by it. Only a merge carries
-// over; a peer's conflict or failure says nothing about this task.
+// A branch is one unit (ADR 0060 decision 3): a fix task works on the branch of the work it fixes, so a peer's merge (`peers`, the
+// other tasks on the same branch) lands this task too, marked `via` the peer, when this task was done before that merge was
+// written and the merged commit contains the head this task was judged at (the merge's `covers`, decision 4; a row from before
+// `covers` goes by the time alone). A task done after it (a later fix round) is not landed by it. Only a merge carries over; a
+// peer's conflict or failure says nothing about this task.
 const landedBy = (task, r) => task.state === 'done' && task.results && Number(task.results.evaluated_at) <= Number(r.written_at);
 function factFor(r, task, peers) {
   const own = Array.isArray(r.task_ids) && r.task_ids.includes(task.id) ? factOf(r, task.id) : null;
@@ -66,7 +67,10 @@ function factFor(r, task, peers) {
   for (const p of peers) {
     if (!Array.isArray(r.task_ids) || !r.task_ids.includes(p.id)) continue;
     const f = factOf(r, p.id);
-    if (f && f.state === 'merged') return { ...f, via: p.id };
+    if (!f || f.state !== 'merged') continue;
+    const m = (r.merged || []).find((x) => x.task_id === p.id);
+    // The merge names what its commit contains (`covers`, ADR 0060 decision 4); a row from before it falls back to the time.
+    if (m && Array.isArray(m.covers) ? m.covers.includes(task.id) : true) return { ...f, via: p.id };
   }
   return own;
 }
