@@ -62,7 +62,7 @@ test('a turn_end wake that names evaluations still running fits the budget, with
       assert.strictEqual(capText(text), text);
     }
   }
-  assert.match(wakeText({ worker_id: 'w1', event: 'turn_end', turn: 2, evaluating: ['t1'] }), /Evaluating 1 hand-back at release; worker_wait has the result\./);
+  assert.match(wakeText({ worker_id: 'w1', event: 'turn_end', turn: 2, evaluating: ['t1'] }), /Evaluating 1 hand-back at release; a wake follows with the result\./);
 });
 
 test('the headless idle close holds for a watched evaluation of a live worker of this run, and for nothing else', () => {
