@@ -22,7 +22,8 @@ const refused = (fn, re) => assert.throws(fn, (e) => e.code === 'E_ARGS' && re.t
 test('the six are surface.cjs\'s list, and the built-in policy gives the researcher the web tools without Bash', () => {
   assert.deepStrictEqual(TP.SIX, S.CLAUDE_TOOLS);
   assert.deepStrictEqual(TP.forType(null, 'researcher').tools, ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch']);
-  for (const t of ['coder', 'tester', 'reviewer']) assert.deepStrictEqual(TP.forType(null, t).tools, S.CLAUDE_TOOLS, t);
+  assert.deepStrictEqual(TP.forType(null, 'reviewer').tools, ['Read', 'Glob', 'Grep', 'Bash'], 'a reviewer: no Edit or Write');
+  for (const t of ['coder', 'tester']) assert.deepStrictEqual(TP.forType(null, t).tools, S.CLAUDE_TOOLS, t);
   assert.deepStrictEqual(TP.forType(null, null), { tools: S.CLAUDE_TOOLS, source: 'default (no agent_type)' }, 'no type: the six, as before');
   for (const t of AD.WORKER_TYPES) assert.ok(TP.BUILTIN[t], `${t} has a built-in policy`);
 });

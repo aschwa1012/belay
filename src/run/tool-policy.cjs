@@ -18,7 +18,9 @@ const READ_ONLY = ['Read', 'Glob', 'Grep'];
 const BUILTIN = Object.freeze({
   coder: Object.freeze([...SIX]),
   tester: Object.freeze([...SIX]),
-  reviewer: Object.freeze([...SIX]), // keeps Write: on this host a probe script goes to disk, not through a Bash heredoc (ADR 0024 decision 1)
+  // ADR 0054 amendment 1: a reviewer judges a tree it must not change, so it has no Edit or Write; it keeps Bash to run the
+  // tests. Bash can still write: the prompt says the tree is read-only, and task.evaluate flags a tree that changed under it.
+  reviewer: Object.freeze([...READ_ONLY, 'Bash']),
   researcher: Object.freeze([...READ_ONLY, ...WEB_TOOLS]),
 });
 

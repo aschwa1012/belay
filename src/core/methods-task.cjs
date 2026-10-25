@@ -276,6 +276,10 @@ async function evaluate(E, caller, args) {
   let commandChecks;
   try { commandChecks = await runAcceptance(task.acceptance, at.worktree, task.files_owned, { ...at, cancel }); } finally { if (cancel) EC.unregister(args.cancel_key, cancel); }
   if (cancel && cancel.cancelled) throw EC.cancelled(task, cancel);
+  // ADR 0054 amendment 1: the tree of the reviewer who handed back, read before the transaction (git is slow); kept below
+  // only if the row the transaction reads still names that reviewer.
+  const judged = task.acceptance && task.acceptance.verdict === true ? (rows.current(E.store, 'task', args.task_id) || task).handoff : null;
+  const tree = judged && judged.by ? await require('./review-tree.cjs').reviewTree(rows.current(E.store, 'worker', judged.by)) : null;
   // The commands can run for minutes, so the row is read again inside the transaction that writes it: a
   // release that landed meanwhile (its handoff, its state) is what the verdict check reads and what the
   // written row carries forward (ADR 0025 decision 4).
@@ -284,7 +288,11 @@ async function evaluate(E, caller, args) {
     const fresh = rows.current(E.store, 'task', args.task_id) || task;
     gate(fresh);
     const checks = [...commandChecks];
-    if (fresh.acceptance && fresh.acceptance.verdict === true) checks.push(verdictCheck(E.store, fresh));
+    if (fresh.acceptance && fresh.acceptance.verdict === true) {
+      const v = verdictCheck(E.store, fresh);
+      if (tree && v.detail.judged_by === tree.worker_id) v.detail = { ...v.detail, tree, tree_changed: tree.changed };
+      checks.push(v);
+    }
     if (fresh.acceptance && fresh.acceptance.handoff) checks.push(require('./handoff-check.cjs').handoffCheck(E.store, fresh)); // ADR 0058 decision 6
     // Nothing checked is not the same as everything passed. A task with no acceptance criteria has no
     // executable evidence, so it can never reach `done` through this call.
