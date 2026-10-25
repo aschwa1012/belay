@@ -408,6 +408,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     });
     let p = w.restartInFlight;
     if (!p) {
+      RG.refuseIfRelaunching(w, 'restart'); // before runOp, which cancels an evaluation in flight: a refused restart has no effect (invariant 5)
       p = LC.runOp(w, 'restart', () => {
         PZ.refuseIfPaused(w);
         return doRestart(w, { first_turn_timeout_ms, awaitFirstTurn: false });
