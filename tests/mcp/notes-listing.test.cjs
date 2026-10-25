@@ -27,6 +27,9 @@ test('with notes on the worker listing fits its 7,168 byte budget, every ordinar
   const b = bytes(list);
   console.log(`worker listing, notes on: ${list.length} tools, ${b} bytes, budget ${tools.BUDGET.worker}, headroom ${tools.BUDGET.worker - b} (off: ${tools.listingBytes('worker')})`);
   assert.ok(b <= tools.BUDGET.worker, `${b} bytes is over the ${tools.BUDGET.worker} byte budget`);
+  assert.ok(b <= 7168, `${b} bytes is over 7,168, the worker budget of ADR 0010 amendment 6`); // not the constant alone, so raising it is seen here
+  // Pinned at its measured size (ADR 0010 amendment 10): 22 bytes are left, so any growth makes its author re-measure here.
+  assert.strictEqual(b, 7146, `the notes-on worker listing is ${b} bytes, not the 7,146 last measured; re-measure and re-pin with the amendment that changes it`);
   const lr = list.find((t) => t.name === 'lease_release');
   assert.deepStrictEqual(lr.inputSchema.required, ['lease_id', 'notes']);
   assert.strictEqual(lr.inputSchema.properties.notes.type, 'array');
