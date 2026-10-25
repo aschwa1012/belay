@@ -209,9 +209,11 @@ function validateCaller(caller) {
   if (caller.role === 'worker' && (typeof caller.worker_id !== 'string' || !caller.worker_id)) {
     throw err('E_ARGS', 'a worker-role caller must carry the worker_id it was launched with, because a worker cannot name itself');
   }
-  if (caller.channel !== undefined && caller.channel !== 'tool' && caller.channel !== 'harness') {
-    throw err('E_ARGS', `caller.channel must be tool or harness, and this call carried ${JSON.stringify(caller.channel)}`);
+  if (caller.channel !== undefined && caller.channel !== 'tool' && caller.channel !== 'harness' && caller.channel !== 'keepalive') {
+    throw err('E_ARGS', `caller.channel must be tool, harness or keepalive, and this call carried ${JSON.stringify(caller.channel)}`);
   }
+  // ADR 0054 amendment 1: the worker adapter's lease keep-alive (lease-keepalive.cjs), a timer of belay's, not the model.
+  if (caller.channel === 'keepalive' && caller.role !== 'worker') throw err('E_ARGS', 'the keepalive channel belongs to a worker adapter (its lease keep-alive)', { role: caller.role });
   if (caller.channel === 'harness' && caller.role !== 'orchestrator' && caller.role !== 'operator') {
     throw err('E_ARGS', 'the harness channel belongs to belay run: the run manager (the orchestrator adapter) and the run-end jobs (the run process)', { role: caller.role });
   }
@@ -230,6 +232,11 @@ class Engine {
   constructor({ dataDir, store, getEmbedder = null, owner = null, establishedBy = 'copy', embedderFailure = null, memoryOffFn = null }) {
     this.dataDir = dataDir;
     this.store = store;
+    // ADR 0054 amendment 1: when this engine last served each worker, in memory only (no store write per call), and when it
+    // started: a review grant's snapshot is late if its worker called the core between the grant and the attach, and its
+    // time is unknown if the grant came before this engine did.
+    this.startedAt = Date.now();
+    this.workerCalls = new Map();
     // A provider, not a loaded model: the embedding library is reached only by a call that needs a
     // vector, and an engine reading a copy of the store has no way to get one at all.
     this._getEmbedder = getEmbedder;
@@ -343,6 +350,13 @@ class Engine {
     if (!spec) throw err('E_ARGS', `${method} is not a Core API method`, { method });
     const p = params || {};
     const caller = validateCaller(p.caller);
+    // Stamped at the start and again at the finish, so a call that spans a grant counts; the adapter's keep-alive is not the model.
+    const stamp = caller.role === 'worker' && caller.worker_id && caller.channel !== 'keepalive' ? () => this.workerCalls.set(caller.worker_id, Date.now()) : null;
+    if (stamp) stamp();
+    try { return await this._dispatch(method, spec, caller, p); } finally { if (stamp) stamp(); }
+  }
+
+  async _dispatch(method, spec, caller, p) {
     if (!spec.roles.includes(caller.role) && !(spec.harnessGuard && spec.harnessGuard(this, caller, p))) {
       throw err('E_ROLE', `${method} is available to ${spec.roles.join(', ')} and this call came from role ${caller.role}`, { method, role: caller.role, allowed: spec.roles });
     }

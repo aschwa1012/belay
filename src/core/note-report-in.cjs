@@ -40,8 +40,8 @@ function reportIn(E, caller, p) {
   if (!held.skipped) {
     const hold = require('./memory-facts.cjs').activeHoldOf(E, p.project, p.note);
     withheld = !!hold && require('./memory-withhold.cjs').hidesNote(hold.b);
-    const other = withheld && !verdict.withhold ? (hold.b.reports || []).find((r) => r.withhold !== false) : null;
-    why = !withheld ? (hold && hold.b.state === 'queued' ? verdict.why : 'not withheld: the hold is not of a kind that is withheld') : verdict.withhold ? verdict.why
+    const other = withheld && !verdict.withhold && Array.isArray(hold.b.reports) ? hold.b.reports.find((r) => r && r.withhold !== false) : null;
+    why = !withheld ? (hold && require('./memory-withhold.cjs').effectiveState(hold.b) === 'queued' ? `queued: every report on its hold is past its run's breaker; this report: ${verdict.why}` : 'not withheld: the hold is not of a kind that is withheld') : verdict.withhold ? verdict.why
       : `withheld by another report on the note (${other ? `${other.by}, run ${other.run_id || 'none'}` : 'its hold'}); this report: ${verdict.why}`;
   }
   return { report, reports: next.reported_wrong.length, held, withheld, withheld_why: why, breaker: verdict.breaker };
