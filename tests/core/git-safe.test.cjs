@@ -71,3 +71,21 @@ test('an inherited GIT_DIR is dropped: the read is of the worktree, not the dire
     assert.strictEqual(GS.gitEnv({ GIT_DIR: 'x', git_work_tree: 'y', PATH: 'p' }).GIT_DIR, undefined);
   } finally { p.rm(); fs.rmSync(other, { recursive: true, force: true }); }
 });
+
+test('the system core keys that run nothing are passed back: fscache to every read; line endings and symlinks only to a content hash', async () => {
+  const seen = [];
+  const run = async (g, argv, opts) => {
+    seen.push({ argv, system: !!opts.system });
+    const out = Buffer.from(['core.fscache\ntrue', 'core.autocrlf\ntrue', 'core.symlinks\nfalse', 'core.safecrlf\nwarn'].join('\0') + '\0', 'utf8');
+    return { code: 0, out, total: out.length, kept: out.length, errTail: '' };
+  };
+  assert.deepStrictEqual(await GS.systemCoreKeys(run, 'git', '.', {}, 1000), ['-c', 'core.fscache=true']);
+  assert.deepStrictEqual(await GS.systemCoreKeys(run, 'git', '.', {}, 1000, { lineEndings: true }),
+    ['-c', 'core.fscache=true', '-c', 'core.autocrlf=true', '-c', 'core.symlinks=false', '-c', 'core.safecrlf=warn']);
+  assert.ok(seen.every((s) => s.system && s.argv.includes('--system')), 'read from the system config only');
+  const asked = new RegExp(seen[0].argv[seen[0].argv.length - 1]);
+  for (const k of ['core.fscache', 'core.autocrlf', 'core.eol', 'core.safecrlf', 'core.symlinks']) assert.ok(asked.test(k), `git config is asked for ${k}`);
+  assert.ok(!asked.test('core.fsmonitor') && !asked.test('core.hookspath'), 'never a key that runs a program');
+  const none = async () => ({ code: 1, out: Buffer.alloc(0), total: 0, kept: 0, errTail: '' });
+  assert.deepStrictEqual(await GS.systemCoreKeys(none, 'git', '.', {}, 1000, { lineEndings: true }), [], 'no key set: nothing passed');
+});

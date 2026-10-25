@@ -85,24 +85,28 @@ async function filterOverrides(run, git, cwd, env, timeoutMs) {
   return out;
 }
 
-// The system config's line-ending keys (core.autocrlf, core.eol, core.safecrlf), passed back as `-c` like its filter keys: a
-// read that hashes content (judged.cjs's add -A into a temporary index) must convert line endings as a commit will, and Git for
-// Windows sets core.autocrlf=true in its system config, which GIT_CONFIG_NOSYSTEM drops.
-async function systemLineEndings(run, git, cwd, env, timeoutMs) {
-  const sys = await run(git, ['--no-pager', 'config', '--system', '--null', '--get-regexp', '^core\\.(autocrlf|eol|safecrlf)$'], { cwd, env, timeoutMs, maxOut: 4096, system: true });
+// System config keys that run nothing, passed back as `-c` like its filter keys, since GIT_CONFIG_NOSYSTEM drops them. Every
+// read gets core.fscache (a cache switch Git for Windows sets there; without it a status of a large tree costs several times as
+// long). A read that hashes content (`lineEndings`: judged.cjs's add -A into a temporary index) also gets core.autocrlf,
+// core.eol, core.safecrlf and core.symlinks, so content hashes as a commit of it would (Git for Windows sets autocrlf=true).
+const CONTENT_KEYS = new Set(['core.autocrlf', 'core.eol', 'core.safecrlf', 'core.symlinks']);
+async function systemCoreKeys(run, git, cwd, env, timeoutMs, { lineEndings = false } = {}) {
+  const sys = await run(git, ['--no-pager', 'config', '--system', '--null', '--get-regexp', '^core\\.(fscache|autocrlf|eol|safecrlf|symlinks)$'], { cwd, env, timeoutMs, maxOut: 4096, system: true });
   if (sys.code === 1 && sys.total === 0) return [];
-  if (sys.code !== 0) throw checkFailed('git config --system core line endings', sys);
+  if (sys.code !== 0) throw checkFailed('git config --system core keys', sys);
   const out = [];
   for (const entry of sys.out.toString('utf8').split('\0').filter(Boolean)) {
     const nl = entry.indexOf('\n');
-    if (nl > 0 && !badKey(entry.slice(0, nl))) out.push('-c', `${entry.slice(0, nl)}=${entry.slice(nl + 1)}`);
+    const key = nl > 0 ? entry.slice(0, nl).toLowerCase() : null;
+    if (!key || badKey(key) || (CONTENT_KEYS.has(key) && !lineEndings)) continue;
+    out.push('-c', `${key}=${entry.slice(nl + 1)}`);
   }
   return out;
 }
 
 // The hardened setup for one worktree: git's path, the environment and the filter overrides, read once. A caller making several
 // reads of one tree (a review snapshot) prepares once and passes it to each safeGit. Resolves { git, env, filters } or { error }.
-// `lineEndings` also passes back the system line-ending keys (systemLineEndings), for a caller that hashes content.
+// It passes back the system core keys that run nothing (systemCoreKeys); `lineEndings` adds the content keys, for a caller that hashes content.
 async function prepare(cwd, timeoutMs, env = process.env, { lineEndings = false } = {}) {
   const { runCommand } = require('./evaluate.cjs'); // lazy: evaluate.cjs requires this module
   const git = findGit(env);
@@ -117,7 +121,7 @@ async function prepare(cwd, timeoutMs, env = process.env, { lineEndings = false 
   };
   try {
     const filters = await filterOverrides(run, git, cwd, env, timeoutMs);
-    return { git, env: base, filters: lineEndings ? [...filters, ...(await systemLineEndings(run, git, cwd, env, timeoutMs))] : filters };
+    return { git, env: base, filters: [...filters, ...(await systemCoreKeys(run, git, cwd, env, timeoutMs, { lineEndings }))] };
   } catch (e) { return { error: e.message }; }
 }
 
@@ -130,4 +134,4 @@ async function safeGit(args, cwd, timeoutMs, { tail, env = process.env, prepared
   return runCommand([p.git, ...PRE, ...p.filters, ...args], cwd, timeoutMs, { env: p.env, ...(tail ? { tail } : {}) });
 }
 
-module.exports = { PRE, NO_HOOKS, gitEnv, findGit, filterOverrides, systemLineEndings, prepare, safeGit };
+module.exports = { PRE, NO_HOOKS, gitEnv, findGit, filterOverrides, systemCoreKeys, prepare, safeGit };
