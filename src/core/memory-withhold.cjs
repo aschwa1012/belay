@@ -32,7 +32,8 @@ const withholds = (E, caller) => recipientOf(E, caller) !== null;
 
 // The active harness holds in state held, by namespace range (alias h). A body that is not valid JSON is kept (CASE evaluates lazily, so no
 // json_extract ever meets it): the rule below judges it, closed.
-const HELD_ROWS = `h.type = 'held' AND h.namespace >= 'held/' AND h.namespace < 'held0' AND h.written_by = 'harness' AND CASE WHEN json_valid(h.body) THEN json_extract(h.body, '$.state') = 'held' ELSE 1 END`;
+// A body that is valid JSON but not an object is kept too: judge() reads it as malformed and closes its project, so no held row leaves its note open.
+const HELD_ROWS = `h.type = 'held' AND h.namespace >= 'held/' AND h.namespace < 'held0' AND h.written_by = 'harness' AND CASE WHEN json_valid(h.body) AND json_type(h.body) = 'object' THEN json_extract(h.body, '$.state') = 'held' ELSE 1 END`;
 
 // Note id -> project for every hold that withholds its note from a worker (ADR 0047 amendment of 2026-10-25, proposed): a hold in state held of
 // kind wrong, superseded or duplicate, on any ground. A report past the breaker now writes a `queued` hold, which this never reads. A reported
@@ -75,8 +76,11 @@ function readHolds(db) {
     const b = parseBody(r.body);
     const j = judge(b);
     const named = b && typeof b.note_id === 'string' && b.note_id ? b.note_id : null;
-    const nid = named || (b ? null : (NOTE_ID.exec(String(r.body || '')) || [])[1] || null);
-    const why = !j.malformed ? null : !b ? 'its body is not JSON' : !named ? 'its note_id is not a non-empty string' : 'its reports are not a list of objects';
+    // A note id is read out of a body only when it is not JSON at all; valid JSON that is not an object names no note, so it closes its project.
+    let json = true;
+    if (!b) { try { JSON.parse(r.body); } catch { json = false; } }
+    const nid = named || (b || json ? null : (NOTE_ID.exec(String(r.body || '')) || [])[1] || null);
+    const why = !j.malformed ? null : !b ? (json ? 'its body is not a JSON object' : 'its body is not JSON') : !named ? 'its note_id is not a non-empty string' : 'its reports are not a list of objects';
     out.push({ id: r.id, project: r.p, note_id: nid, hides: j.hides, malformed: j.malformed, why });
   }
   return out;
@@ -88,13 +92,15 @@ function unreadable(db) {
 }
 
 // Note id -> project for every hold that withholds its note, and `closed`: the projects with a malformed hold whose note cannot be named, every
-// note of which is withheld. A query that fails outright returns { failed } and the caller withholds every note it reads. Memoized on the engine
-// until the store changes (this connection's total_changes() and SQLite's data_version, which counts other connections' commits).
+// note of which is withheld. A query that fails outright returns { failed } and the caller withholds every note it reads. Memoized on the store
+// until it changes (this connection's total_changes() and SQLite's data_version, which counts other connections' commits). Never inside a
+// transaction, whose writes a rollback can take back with the key unchanged; and Store.tx drops the memo when it rolls back.
 function heldWithheld(E) {
   const db = E.store.db;
   let key = null;
-  try { key = `${E.store.p('SELECT total_changes() AS c').get().c}|${E.store.p('PRAGMA data_version').get().data_version}`; } catch { key = null; }
-  if (key !== null && E[MEMO] && E[MEMO].key === key) return E[MEMO].value;
+  try { if (!db.isTransaction) key = `${E.store.p('SELECT total_changes() AS c').get().c}|${E.store.p('PRAGMA data_version').get().data_version}`; } catch { key = null; }
+  const memo = E.store.heldMemo;
+  if (key !== null && memo && memo.key === key) return memo.value;
   const out = new Map();
   out.closed = new Set();
   let holds;
@@ -105,10 +111,9 @@ function heldWithheld(E) {
     if (h.note_id) out.set(h.note_id, h.project);
     else out.closed.add(h.project);
   }
-  if (key !== null) E[MEMO] = { key, value: out };
+  if (key !== null) E.store.heldMemo = { key, value: out };
   return out;
 }
-const MEMO = Symbol('belay.heldWithheldMemo');
 
 // The active hold of each note among `ids` whose note is live in its project, whoever reads (the orchestrator's and the operator's mark):
 // note id -> { kind, ground, reason }. Only a hold that hides its note is marked: an `unsupported` row and a hold that hides nothing (a legacy
