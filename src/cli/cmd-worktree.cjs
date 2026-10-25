@@ -50,10 +50,13 @@ const wtLine = (t) => {
 function mergeText(r) {
   const head = `integration ${r.id} into ${r.into_branch} at ${r.worktree}: ${r.state}`;
   const merged = r.merged.map((m) => `  merged ${m.task_id} (${m.branch})${m.already ? ' already' : ''}`);
-  const tail = r.state === 'conflict' ? [`  conflict in task ${r.conflict.task_id}: ${r.conflict.files.join(', ')}; merge aborted, tree ${r.conflict.tree_clean ? 'clean' : 'NOT clean'}`]
-    : r.state === 'failed' ? [`  failed: ${r.error && r.error.message}`]
-      : r.checks ? [...r.checks.map((c) => `  ${c.passed ? 'pass' : 'FAIL'} ${c.argv.join(' ')} (${c.task_ids.join(',')})`), `  passed: ${r.passed}`] : [];
-  return [head, ...merged, ...tail, ''].join('\n');
+  const stop = r.state === 'conflict' ? [`  conflict in task ${r.conflict.task_id}: ${r.conflict.files.join(', ')}; merge aborted, tree ${r.conflict.tree_clean ? 'clean' : 'NOT clean'}`]
+    : r.state === 'failed' ? [`  failed: ${r.error && r.error.message}`] : [];
+  const missed = (r.not_merged || []).map((m) => `  not merged ${m.task_id} (${m.reason})`);
+  // A stopped integration still checks what landed before it, so the checks print whatever the state.
+  const checks = r.checks ? [...r.checks.map((c) => `  ${c.passed ? 'pass' : 'FAIL'} ${c.argv.join(' ')} (${c.task_ids.join(',')})`), `  passed: ${r.passed}`]
+    : r.merged.length && r.state !== 'merging' ? ['  merged work unchecked'] : [];
+  return [head, ...merged, ...stop, ...missed, ...checks, ''].join('\n');
 }
 
 async function write(ctx, core) {
