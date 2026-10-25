@@ -71,7 +71,7 @@ const NOTE_REFUTATION = {
   inputSchema: S({ note_id: str() }, ['note_id']),
 };
 
-// The operator's word that a note is wrong, passed on by the orchestrator (it holds the note for the archive review). Orchestrator only, listed with the notes lever.
+// A report that a note is wrong, on the operator's word or the orchestrator's own evidence (a task evaluation, the code), with the reason (it holds the note for the archive review). Orchestrator only, listed with the notes lever.
 const MEMORY_REPORT = {
   name: 'memory_report',
   description: 'Report a note wrong on the operator word or your own evidence (a task evaluation, the code); say why. Holds it for the archive review. Returns the hold row, or not_held with the reason.',

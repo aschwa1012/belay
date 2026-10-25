@@ -23,7 +23,7 @@ const MEMORY_REPORT_LINE = ' If a note is wrong, out of date or contradicted by 
 // template keeps the text a run without notes always had, between {{memory_use}} ... {{/memory_use}} (and {{memory_outcome}} ... {{/memory_outcome}}); a run
 // with notes replaces the span, a run without drops only the markers, so its prompt is byte for byte what it was.
 const MEMORY_USE_NOTES = [
-  "- Use belay's memory yourself.",
+  "- Use belay's notes yourself.",
   '  - Search before you plan: before you create any task, call `mcp__belay__memory_search` with a `query` on the brief\'s subject and no namespace (it searches the',
   "    project's notes) and use what it returns in your plan and prompts (empty on a first run is normal).",
   '  - Store a note only for what the code and the markdown of the project cannot tell the next run and it would trip on: `mcp__belay__memory_store` with `namespace: "project"`',
@@ -46,7 +46,7 @@ function cutoffRule(fixCutoff, timeoutMs, mode = 'headless') {
     : '';
   const interactive = mode === 'interactive';
   const surface = interactive
-    ? '(stop, store the outcome in memory, tell the operator the open blocking findings, then wait for them)'
+    ? '(stop, record the outcome, tell the operator the open blocking findings, then wait for them)'
     : '(end the run and name the open blocking findings for the human)';
   return `You may stop fix rounds before the cap, only towards stop-and-surface ${surface}, `
     + 'and only when one of these holds: the same blocking finding '

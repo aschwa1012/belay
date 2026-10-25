@@ -474,7 +474,7 @@ function withSemanticFailure(result, failure) {
   const { warning, ...rest } = result;
   const failed = { mode: 'semantic', code: failure.code, message: failure.message };
   return {
-    warning: `semantic search did not run (${failure.code}); these are keyword matches only; no match here does not mean no such memory`,
+    warning: `semantic search did not run (${failure.code}); these are keyword matches only; no match here does not mean no such entry`,
     ...rest, modes_failed: [failed, ...(rest.modes_failed || [])], absence_established: false,
   };
 }

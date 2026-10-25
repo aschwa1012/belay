@@ -46,7 +46,7 @@ describe('the memory heading', () => {
   test('memory off beside held notes says both in the heading', async ($, on) => {
     const wd = await boot($, on, { notices: notices(heldEv(3, 0)), memoryNotice: true })
     await openPane($, wd)
-    expect(flat(words(await (await pane($)).ui.drawn()))).toContain('MEMORY off · 3 held')
+    expect(flat(words(await (await pane($)).ui.drawn()))).toContain('NOTES off · 3 held')
   })
   test('the footer names the settle buttons too', async ($, on) => {
     const wd = await boot($, on, { notices: notices(heldEv(3, 1)) })

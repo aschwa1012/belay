@@ -299,7 +299,7 @@ describe('the held line keeps what the operator must act on', () => {
       const wd = await boot($, on, { notices: waiting })
       await openPane($, wd)
       const { text } = await pane($, 'terminal', cols)
-      expect(text).toMatch(/MEMORY {2}1 held · 1 awaits you(?!\.|…)/) // the whole clause, in the heading, whole at every width
+      expect(text).toMatch(/NOTES {2}1 held · 1 awaits you(?!\.|…)/) // the whole clause, in the heading, whole at every width
     })
   }
 })

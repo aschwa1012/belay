@@ -8,6 +8,7 @@
 const NAME_RULE = '^[a-z0-9][a-z0-9._-]{0,63}$';
 const CODE = 'memory_project_unset';
 const TITLE = 'Notes are on, but no project is set, so this run keeps no notes';
+const TITLE_NO_RUN = 'Notes are on, but no project is set, so no notes are kept';
 const WHY = 'Notes are on by default, but they are kept per project (memory.project) and belay never guesses a project name, so with none set nothing is saved or recalled.';
 const FIX_LINE = '"memory": { "project": "<name>" }';
 const FIX = `Add ${FIX_LINE} to belay.config.json (or to the run spec), or run: belay settings memory.project <name>. A name is lowercase letters, digits, dot, underscore or dash (${NAME_RULE}). To turn notes off and silence this: belay settings memory.notes false.`;
@@ -54,7 +55,8 @@ function noticeForRun(row, found) {
 
 // From a discovered config ({ found, config }), as `belay doctor` and `belay status` hold it.
 function noticeForConfig(found) {
-  return noticeFor(found && found.found && found.config ? found.config.memory : undefined);
+  const n = noticeFor(found && found.found && found.config ? found.config.memory : undefined);
+  return n && n.code === CODE ? { ...n, title: TITLE_NO_RUN } : n; // no run is named, so "this run" would point at nothing
 }
 
 // The notice as plain lines; `prefix` marks them on a stream.
