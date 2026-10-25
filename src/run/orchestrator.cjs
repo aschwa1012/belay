@@ -282,7 +282,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       orphanGraceMs: ORPHAN_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid), sinceAt: t0,
     });
     state.baseline = next;
-    for (const ev of (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()), { holdMs: require('./release-eval.cjs').holdMs() })).concat(await noteWatcher.poll())) writeWake(ev); // ADR 0058 and its amendment 2: a turn_end carries its release evaluation, held for it
+    for (const ev of await require('./idle-remind.cjs').remindIdle(core, runId, rows, (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()), { holdMs: require('./release-eval.cjs').holdMs() })).concat(await noteWatcher.poll()), state.idleReminded || (state.idleReminded = new Set()))) writeWake(ev); // ADR 0058 amendment 2: a turn_end carries its release evaluation; the idle-workers amendment: idle workers with no task, when there is room
     if (state.finishing) return; // a wake's own write may have found the child already gone
 
     if (state.idle) {

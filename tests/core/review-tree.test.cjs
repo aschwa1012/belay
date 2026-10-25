@@ -251,7 +251,7 @@ test('P0: a running reviewer that did not call the core in the window is not lat
   const wt = repo('p0');
   const w = await doneWork('p0', wt);
   const rc = await worker('rev-p0', wt);
-  await rc.task.list({});
+  await rc.task.list({}); { const t = Date.now(); while (Date.now() <= t) await new Promise((r) => setImmediate(r)); } // past its millisecond: the grant's own counts as late
   const quiet = await review(w, 'rev-p0', wt);
   assert.strictEqual(quiet.check.detail.tree.baseline_late, undefined);
   assert.strictEqual(quiet.check.detail.tree_changed, false);
@@ -278,4 +278,83 @@ test('lateBy: an engine that started after the grant cannot know the worker\'s c
   assert.deepStrictEqual(RT.lateBy({ store, startedAt: 1500, workerCalls: new Map([['w', 1200]]) }, lease), ['owner_changed']);
   assert.deepStrictEqual(RT.lateBy({ store, startedAt: 500, workerCalls: new Map([['w', 1200]]) }, lease), ['core_call']);
   assert.deepStrictEqual(RT.lateBy({ store, startedAt: 500, workerCalls: new Map([['w', 900]]) }, lease), [], 'a call before the grant is not late');
+});
+
+test('the adapter\'s keep-alive in the window is not late; the model\'s own task_list in the window is', async () => {
+  const wt = repo('ka');
+  const w = await doneWork('ka', wt);
+  const w2 = await doneWork('ka2', wt);
+  const rc = await worker('rev-ka', wt);
+  const assignIn = async (work, during) => {
+    const r = await orch.task.create({ spec: `review ${work.id}`, depends_on: [work.id], acceptance: { verdict: true } });
+    let a;
+    await withSnapshotSeam(during, async () => { a = await orch.task.assign({ task_id: r.id, worker_id: 'rev-ka' }); });
+    const lease = (await orch.task.get({ task_id: r.id })).lease;
+    await rc.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { verdict: 'holds', summary: 'judged' } });
+    return { r, lease_id: lease.id, check: (await orch.task.evaluate({ task_id: r.id, worktree: wt })).results.checks.find((c) => c.kind === 'verdict') };
+  };
+  const ka = await assignIn(w, async () => {
+    const ka = rc.keepalive();
+    await ka.task.list({});
+    const lease = ((await orch.task.list({})).tasks.find((t) => t.lease && t.lease.holder === 'rev-ka') || {}).lease;
+    if (lease) await ka.lease.renew({ lease_id: lease.id, ttl_ms: 60000 });
+  });
+  assert.strictEqual(ka.check.detail.tree.baseline_late, undefined, 'a keep-alive tick is belay\'s, not the model\'s');
+  const model = await assignIn(w2, async () => { await rc.task.list({}); });
+  assert.deepStrictEqual([model.check.detail.tree.baseline_late, model.check.detail.tree.baseline_late_by], [true, ['core_call']]);
+});
+
+test('a worker call is stamped at its finish too, so one that spans the grant counts; the keepalive channel is a worker\'s only', async () => {
+  const { Engine, METHODS, validateCaller } = require('../../src/core/engine.cjs');
+  const E = Object.create(Engine.prototype);
+  E.workerCalls = new Map();
+  const spec = METHODS['task.list'];
+  const realFn = spec.fn;
+  let open;
+  const gate = new Promise((r) => { open = r; });
+  spec.fn = async () => { await gate; return { tasks: [] }; };
+  try {
+    const caller = { role: 'worker', worker_id: 'ws', run_id: 'r1' };
+    const call = E.handle('task.list', { caller });
+    const atStart = E.workerCalls.get('ws');
+    assert.ok(atStart, 'stamped at the start');
+    while (Date.now() <= atStart) await new Promise((r) => setImmediate(r));
+    open();
+    await call;
+    assert.ok(E.workerCalls.get('ws') > atStart, 'stamped again at the finish');
+    E.workerCalls.clear();
+    await E.handle('task.list', { caller: { ...caller, channel: 'keepalive' } });
+    assert.strictEqual(E.workerCalls.has('ws'), false, 'the keep-alive is not stamped');
+  } finally { spec.fn = realFn; }
+  assert.throws(() => validateCaller({ role: 'orchestrator', run_id: 'r1', channel: 'keepalive' }), /keepalive channel belongs to a worker/);
+  const RT = require('../../src/core/review-tree.cjs');
+  const store = { p: () => ({ get: () => undefined, all: () => [] }) };
+  assert.deepStrictEqual(RT.lateBy({ store, startedAt: 500, workerCalls: new Map([['w', 1000]]) }, { granted_at: 1000, holder: 'w' }), ['core_call'], 'the grant\'s own millisecond counts');
+});
+
+test('a worker bind admits the keepalive channel; an orchestrator bind does not', () => {
+  const { admit } = require('../../src/core/owner-admit.cjs');
+  const ownerWith = (identity) => ({ binds: { lookup: () => ({ id: 'b1', identity }) } });
+  const req = () => ({ key: 'k', method: 'task.list', params: { caller: { channel: 'keepalive' } } });
+  const wr = req();
+  assert.strictEqual(admit(ownerWith({ role: 'worker', worker_id: 'w', run_id: 'r1' }), {}, wr), null);
+  assert.strictEqual(wr.params.caller.channel, 'keepalive');
+  const orq = req();
+  assert.strictEqual(admit(ownerWith({ role: 'orchestrator', run_id: 'r1' }), {}, orq), null);
+  assert.strictEqual(orq.params.caller.channel, undefined, 'not carried for an orchestrator');
+});
+
+test('the keepalive view holds exactly task.list, worker.get and lease.renew; every other method is absent from it', async () => {
+  const { METHOD_NAMES } = require('../../src/core/engine.cjs');
+  const { KEEPALIVE_METHODS } = require('../../src/core/core-views.cjs');
+  const rc = await worker('rev-view', repo('view'));
+  const ka = rc.keepalive();
+  const has = (m) => { const [g, n] = m.split('.'); return !!(ka[g] && typeof ka[g][n] === 'function'); };
+  assert.deepStrictEqual(METHOD_NAMES.filter(has).sort(), ['lease.renew', 'task.list', 'worker.get']);
+  assert.deepStrictEqual([...KEEPALIVE_METHODS].sort(), ['lease.renew', 'task.list', 'worker.get']);
+  assert.deepStrictEqual(Object.keys(ka).sort(), ['caller', 'lease', 'task', 'worker'], 'no handle, no helper, no owner');
+  assert.strictEqual(ka.caller.channel, 'keepalive');
+  assert.throws(() => { ka.task.create = () => {}; }, TypeError, 'the groups are frozen');
+  assert.ok(Object.isFrozen(ka));
+  assert.throws(() => orch.keepalive(), (e) => e.code === 'E_ROLE');
 });

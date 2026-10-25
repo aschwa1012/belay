@@ -139,7 +139,7 @@ async function afterGrant(E, caller, out, worktree) {
 function lateBy(E, l) {
   const store = E.store, since = Number(l.granted_at), id = l.holder, out = [];
   if (!(Number(E.startedAt) <= since)) out.push('owner_changed');
-  else if (E.workerCalls && Number(E.workerCalls.get(id)) > since) out.push('core_call');
+  else if (E.workerCalls && Number(E.workerCalls.get(id)) >= since) out.push('core_call'); // the same millisecond counts: the conservative side
   const w = rows.current(store, 'worker', id);
   if (w && Number(w.last_event_at) > since) out.push('last_event_at');
   const newer = (sql) => !!store.p(sql).get(id, since);
