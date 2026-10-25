@@ -14,6 +14,7 @@ const { pidAlive } = require('./lock.cjs');
 const { WORKER_STATES, SUBSTRATES } = require('./schema.cjs');
 const { resolveParks, parseRunRow, clearedPause, pauseFields } = require('./pause-parks.cjs');
 const { runCommand } = require('./evaluate.cjs');
+const { appendDead } = require('./lease-holder-dead.cjs'); // ADR 0026 amendment 1 (proposed)
 
 const { EFFORT_LEVELS } = require('./effort-levels.cjs');
 const { isPathId, pathIdMessage } = require('./path-id.cjs');
@@ -138,7 +139,7 @@ async function attach(E, caller, args) {
       // 6e-2, should-fix methods-run.cjs:45: a row the core itself appends over a paused row must not
       // inherit its paused_at/paused_by — this row is not itself paused, and api.md §2 promises both
       // null on every row that is not (writeWorker's own rule, unreachable here since this bypasses it).
-      rows.append(E.store, 'worker', { ...w, state: 'dead', exited_at: w.exited_at == null ? t : w.exited_at, paused_at: null, paused_by: null }, by, t);
+      appendDead(E, { ...w, state: 'dead', exited_at: w.exited_at == null ? t : w.exited_at, paused_at: null, paused_by: null }, by, t);
       marked.push(w.id);
     }
   }
@@ -274,14 +275,13 @@ async function closeEpochWorkers(E, runId, by) {
     if (!cur || cur.seq !== w.seq || (!codexIdle && pidAlive(cur.pid))) continue;
     // The head the row carries: git's answer, else the head the row already had (never overwritten with null).
     const headSha = head.sha == null ? (cur.head_sha == null ? null : cur.head_sha) : head.sha;
-    rows.append(E.store, 'worker', {
+    const { released } = appendDead(E, {
       ...cur, state: 'dead', exited_at: cur.exited_at == null ? t : cur.exited_at,
       death_established_by: codexIdle ? CODEX_IDLE_BY
         : `run.end: pid ${cur.pid} not alive when the run ended; no adapter wrote its exit (ADR 0029)`,
       head_sha: headSha, head_error: headSha != null ? null : (cur.head_error == null ? null : cur.head_error), paused_at: null, paused_by: null,
     }, by, t);
-    marked.push(head.error ? { worker_id: w.id, from_state: w.state, head_sha: headSha, head_error: head.error }
-      : { worker_id: w.id, from_state: w.state, head_sha: headSha });
+    marked.push({ worker_id: w.id, from_state: w.state, head_sha: headSha, ...(head.error ? { head_error: head.error } : {}), ...(released.length ? { leases_released: released } : {}) });
   }
   return marked;
 }
@@ -427,7 +427,10 @@ async function writeWorker(E, caller, args) {
     throw err('E_WORKER_NOT_LIVE', `worker ${args.id} cannot be written as ${merged.state} because pid ${merged.pid} is not alive`, { worker_id: args.id, pid: merged.pid == null ? null : merged.pid });
   }
   const t = Date.now();
-  const row = rows.append(E.store, 'worker', merged, E.writtenBy(caller), t);
+  // ADR 0026 amendment 1 (proposed): a first dead row releases the worker's leases unless a restart keeps them (keep_leases).
+  const firstDead = merged.state === 'dead' && !(prev && prev.state === 'dead');
+  merged.leases_released = firstDead || merged.state !== 'dead' ? null : prev.leases_released; // derived, never the caller's
+  const row = firstDead && args.keep_leases !== true ? appendDead(E, merged, E.writtenBy(caller), t).row : rows.append(E.store, 'worker', merged, E.writtenBy(caller), t);
   E.noteWrite();
   return row;
 }

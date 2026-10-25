@@ -72,6 +72,8 @@ function createWriteRow(ctx, flags) {
     try {
       const row = W.rowOf(w, state, ctx);
       if (opts.guard && w.lastWrittenSeq != null) row.expect_seq = w.lastWrittenSeq;
+      // ADR 0026 amendment 1 (proposed): a death a restart settled on its way to relaunching this worker keeps its leases.
+      if (state === 'dead' && String(w.deathEstablishedBy).startsWith('pid-check-on-restart')) row.keep_leases = true;
       written = await ctx.core.worker.write(row);
     } catch (e) {
       if (state === 'running' && e && e.code === 'E_WORKER_NOT_LIVE') {

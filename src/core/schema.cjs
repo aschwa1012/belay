@@ -221,6 +221,10 @@ const MIGRATIONS = [
   // ADR 0053 decision 1: the worktree and branch belay made for the task, from a recorded base (JSON text, nullable), carried forward
   // by every later task row; task.evaluate judges from its base_sha.
   'ALTER TABLE task ADD COLUMN worktree TEXT',
+  // ADR 0026 amendment 1 (proposed): `holder_dead` on the released row of a lease belay released because its holder died; null otherwise.
+  // The worker's first dead row names the leases that death released (JSON array of { lease_id, task_id }), for the death wake.
+  'ALTER TABLE lease ADD COLUMN released_reason TEXT',
+  'ALTER TABLE worker ADD COLUMN leases_released TEXT',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot
