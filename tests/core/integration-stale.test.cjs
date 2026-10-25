@@ -106,3 +106,86 @@ test('a removal of a stale merging row closes it abandoned and removes its tree'
   assert.strictEqual(out.state, 'abandoned');
   assert.ok(!fs.existsSync(left.worktree));
 });
+
+// A `merging` row whose recorded process is alive but is not the owner: an owner stopped without exiting, its git still
+// running. The row is written beside the owner as that process would have written it, with the holder's real creation time.
+test('a merging row whose process still runs refuses the merge and the removal E_BUSY, naming it; once it ends, the merge proceeds', async () => {
+  const { Store } = core('store.cjs');
+  const rows = core('rows.cjs');
+  const ID = core('proc-identity.cjs');
+  const { spawn } = require('node:child_process');
+  const dir = sandbox();
+  const orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
+  const op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
+  opened.push({ dir, cores: [orch, op] });
+  await orch.run.attach({ adapter_pid: process.pid });
+  const repo = makeRepo(dir);
+  const t = await orch.task.create({ spec: 'a', acceptance: { commands: [exists('a.txt')] } });
+  const w = (await op.task.worktreeCreate({ task_id: t.id, repo })).worktree;
+  write(w.path, 'a.txt', 'a\n');
+  commit(w.path, 'a');
+  assert.strictEqual((await orch.task.evaluate({ task_id: t.id })).state, 'done');
+
+  const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e9)'], { windowsHide: true, stdio: 'ignore' });
+  const holderExited = new Promise((r) => holder.once('exit', r));
+  try {
+    const c = await ID.createdOf(holder.pid);
+    assert.ok(c && c.created, 'the holder\'s creation time is readable');
+    const inject = (boot) => {
+      const s = new Store(`${dir}/data/memory.db`);
+      try {
+        return rows.append(s, 'integration', { id: rows.newId(), run_id: 'test-run', repo, into_branch: 'int/live', worktree: `${repo}.worktrees/integrate-int-live`, created_worktree: true, base_sha: w.base_sha, head_sha: w.base_sha, state: 'merging', task_ids: [t.id], merged: [], junctions: [], owner_pid: holder.pid, owner_boot: boot }, 'owner', Date.now());
+      } finally { s.close(); }
+    };
+    const live = inject(c.created);
+    const e = await rejectsCode(orch.integration.merge({ task_ids: [t.id], into: 'int/live' }), 'E_BUSY');
+    assert.match(e.message, new RegExp(`merging in pid ${holder.pid}, which is still running`));
+    assert.strictEqual(e.detail.id, live.id);
+    assert.strictEqual((await orch.integration.get({ id: live.id })).state, 'merging', 'a live holder\'s row is not closed');
+    await rejectsCode(op.integration.remove({ id: live.id, force: true }), 'E_BUSY');
+
+    holder.kill(); // this exact child
+    await holderExited;
+    const row = await orch.integration.merge({ task_ids: [t.id], into: 'int/live' });
+    assert.strictEqual(row.state, 'evaluated', JSON.stringify(row.error));
+    assert.strictEqual((await orch.integration.get({ id: live.id })).state, 'abandoned');
+  } finally {
+    if (holder.exitCode === null && holder.signalCode === null) { holder.kill(); await holderExited; }
+  }
+});
+
+test('a merging row whose pid now names a process created at another time is taken as gone', async () => {
+  const { Store } = core('store.cjs');
+  const rows = core('rows.cjs');
+  const ID = core('proc-identity.cjs');
+  const { spawn } = require('node:child_process');
+  const dir = sandbox();
+  const orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
+  const op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
+  opened.push({ dir, cores: [orch, op] });
+  await orch.run.attach({ adapter_pid: process.pid });
+  const repo = makeRepo(dir);
+  const t = await orch.task.create({ spec: 'a', acceptance: { commands: [exists('a.txt')] } });
+  const w = (await op.task.worktreeCreate({ task_id: t.id, repo })).worktree;
+  write(w.path, 'a.txt', 'a\n');
+  commit(w.path, 'a');
+  assert.strictEqual((await orch.task.evaluate({ task_id: t.id })).state, 'done');
+  const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e9)'], { windowsHide: true, stdio: 'ignore' });
+  const holderExited = new Promise((r) => holder.once('exit', r));
+  try {
+    const c = await ID.createdOf(holder.pid);
+    assert.ok(c && c.created);
+    const s = new Store(`${dir}/data/memory.db`);
+    let stale;
+    try {
+      // The row's process started a minute before the one that holds its pid now: the pid was reused.
+      stale = rows.append(s, 'integration', { id: rows.newId(), run_id: 'test-run', repo, into_branch: 'int/reused', worktree: `${repo}.worktrees/integrate-int-reused`, created_worktree: true, base_sha: w.base_sha, head_sha: w.base_sha, state: 'merging', task_ids: [t.id], merged: [], junctions: [], owner_pid: holder.pid, owner_boot: c.created - 60000 }, 'owner', Date.now());
+    } finally { s.close(); }
+    const row = await orch.integration.merge({ task_ids: [t.id], into: 'int/reused' });
+    assert.strictEqual(row.state, 'evaluated', JSON.stringify(row.error));
+    assert.strictEqual((await orch.integration.get({ id: stale.id })).state, 'abandoned');
+  } finally {
+    holder.kill();
+    await holderExited;
+  }
+});

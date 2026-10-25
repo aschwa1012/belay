@@ -12,18 +12,41 @@ const G = require('./git.cjs');
 const W = require('./methods-worktree.cjs');
 const { runCommand, DEFAULT_COMMAND_TIMEOUT_MS } = require('./evaluate.cjs');
 const { notMerged, stale, BOOT } = require('./integration-state.cjs');
+const { pidAlive } = require('./lock.cjs');
+const ID = require('./proc-identity.cjs');
 
 const MAX_TASKS = 50;
 
 // `not_merged` is derived from the row, never stored.
 const view = (r) => (r ? { ...r, created_worktree: r.created_worktree == null ? null : !!r.created_worktree, passed: r.passed == null ? null : !!r.passed, not_merged: notMerged(r), stale: stale(r) } : null);
 
+// The process that wrote a `merging` row is gone, or is this one. A row this process wrote is not in flight, since the caller
+// holds the in-process lock every merge into that branch holds. Another live pid may be an owner that was stopped without
+// exiting (the adapter outlives it) whose git is still running, so only a pid that is gone, or now names a process created at
+// another time than the row's `owner_boot` (a reused pid), is taken as gone. A creation time that cannot be read is not proof.
+// A row from before the columns names no process, and nothing could be waited on.
+const BOOT_SLACK_MS = 5000; // owner_boot is the process's own reckoning of its start, the snapshot the OS's
+async function ownerGone(r) {
+  if (r.owner_pid == null) return { gone: true, why: 'the row names no process' };
+  const pid = Number(r.owner_pid);
+  if (pid === process.pid) return { gone: true, why: Number(r.owner_boot) === BOOT ? 'this process wrote it, and no merge of it holds the lock' : 'its pid is now this process' };
+  if (!pidAlive(pid)) return { gone: true, why: `pid ${pid} is not running` };
+  const c = await ID.createdOf(pid).catch(() => null);
+  if (c && r.owner_boot != null && Math.abs(c.created - Number(r.owner_boot)) > BOOT_SLACK_MS) return { gone: true, why: `pid ${pid} was created at ${c.created}, not at the row's ${r.owner_boot}` };
+  return { gone: false, why: c ? `pid ${pid} is running, created at ${c.created}` : `pid ${pid} is running and its creation time could not be read` };
+}
+
 // Called holding the one lock for `integrate:<repo>:<into>`, which every merge into that branch holds while it runs in this, the
-// only process that serves writes: so any `merging` row for that branch is one a process that has ended left behind. Each is
-// closed `abandoned` (what it merged before it ended is unknown, and unchecked), and the ids are returned.
-function abandonStale(E, caller, repo, into) {
+// only process that serves writes. A `merging` row for that branch whose process is gone (ownerGone) is closed `abandoned`
+// (what it merged before it ended is unknown, and unchecked), and the ids are returned; one whose process still runs refuses
+// the call E_BUSY, naming it, since its git may still be merging.
+async function abandonStale(E, caller, repo, into) {
   const left = rows.currentAll(E.store, 'integration').filter((r) => r.state === 'merging' && r.into_branch === into && G.samePath(r.repo, repo));
   if (!left.length) return [];
+  for (const r of left) {
+    const o = await ownerGone(r);
+    if (!o.gone) throw err('E_BUSY', `integration ${r.id} into ${into} is merging in pid ${r.owner_pid}, which is still running (${o.why}); wait for it, or end that process by its exact pid`, { id: r.id, owner_pid: r.owner_pid, owner_boot: r.owner_boot, why: o.why });
+  }
   E.store.tx(() => { for (const r of left) rows.append(E.store, 'integration', { ...r, state: 'abandoned', error: { message: `abandoned: the process that ran this integration (pid ${r.owner_pid}) ended mid-merge; what it merged into ${into} is unrecorded and unchecked` } }, E.writtenBy(caller), Date.now()); });
   E.noteWrite();
   return left.map((r) => r.id);
@@ -160,7 +183,7 @@ async function merge(E, caller, args) {
   const { tasks, repo } = await readTasks(E, args.task_ids);
   const into = await G.validBranch(repo, args.into === undefined ? `belay/integrate/${caller.run_id}` : args.into);
   return W.exclusive(`integrate:${repo}:${into}`, `an integration into ${into}`, async () => {
-    const abandoned = abandonStale(E, caller, repo, into);
+    const abandoned = await abandonStale(E, caller, repo, into);
     const tree = await integrationTree(E, repo, into, args, tasks, abandoned);
     const by = E.writtenBy(caller);
     const baseSha = (await G.must(tree.path, ['rev-parse', 'HEAD'], 'HEAD of the integration tree')).trim();
@@ -239,7 +262,7 @@ async function remove(E, caller, args) {
   // A merge in flight holds this lock, so the call is refused E_BUSY; a `merging` row met inside it was left by a process that
   // ended, and is closed `abandoned` before its tree is removed.
   return W.exclusive(`integrate:${cur.repo}:${cur.into_branch}`, `an integration call for ${cur.into_branch}`, async () => {
-    if (cur.state === 'merging') abandonStale(E, caller, cur.repo, cur.into_branch);
+    if (cur.state === 'merging') await abandonStale(E, caller, cur.repo, cur.into_branch);
     const removal = await W.removeTree(E, { repo: cur.repo, path: cur.worktree, junctions: cur.junctions, branch: cur.into_branch }, { force: args.force }, `integration ${cur.id}`);
     const row = E.store.tx(() => rows.append(E.store, 'integration', { ...rows.current(E.store, 'integration', cur.id), removed_at: Date.now() }, E.writtenBy(caller), Date.now()));
     E.noteWrite();
