@@ -98,7 +98,7 @@ function unreadable(db) {
 function heldWithheld(E) {
   const db = E.store.db;
   let key = null;
-  try { if (!db.isTransaction) key = `${E.store.p('SELECT total_changes() AS c').get().c}|${E.store.p('PRAGMA data_version').get().data_version}`; } catch { key = null; }
+  try { if (db.isTransaction === false) key = `${E.store.p('SELECT total_changes() AS c').get().c}|${E.store.p('PRAGMA data_version').get().data_version}`; } catch { key = null; }
   const memo = E.store.heldMemo;
   if (key !== null && memo && memo.key === key) return memo.value;
   const out = new Map();

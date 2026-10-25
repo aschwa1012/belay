@@ -114,7 +114,7 @@ function unreadableText(u) {
   const closed = Array.isArray(u.closed_projects) ? u.closed_projects.map((p) => clean(p, 64)) : [];
   const n = Number(u.count) || 0;
   const rows = `${n} held row${n === 1 ? '' : 's'} cannot be read`;
-  if (closed.length) return `${rows}; every note of project${closed.length === 1 ? '' : 's'} ${closed.join(', ')} ${closed.length === 1 ? 'is' : 'are'} withheld from workers until fixed: see belay memory held`;
+  if (closed.length) return `${rows}; every note of project${closed.length === 1 ? '' : 's'} ${closed.join(', ')} is withheld from workers until fixed: see belay memory held`;
   return `${rows}; ${n === 1 ? 'its note is' : 'their notes are'} withheld from workers until fixed: see belay memory held`;
 }
 

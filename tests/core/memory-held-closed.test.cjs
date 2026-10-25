@@ -154,3 +154,21 @@ test('a transaction opened outside Store.tx and rolled back leaves no stale memo
   try { store.patchBody(h, (b) => { b.state = 'released'; return b; }); assert.strictEqual(W.heldWithheld(E).has(a), false); } finally { store.db.exec('ROLLBACK'); }
   assert.strictEqual(await listed(worker('hr'), 'hr', a), false, 'no memo was kept inside the transaction');
 });
+
+test('the unreadable line says "is" for one project or several', () => {
+  const P = require('../../src/cli/panel-common.cjs');
+  assert.strictEqual(P.unreadableText({ count: 2, closed_projects: ['acme', 'beta'] }), '2 held rows cannot be read; every note of projects acme, beta is withheld from workers until fixed: see belay memory held');
+  assert.strictEqual(P.unreadableText({ count: 1, closed_projects: ['acme'] }), '1 held row cannot be read; every note of project acme is withheld from workers until fixed: see belay memory held');
+});
+
+test('the memo is kept only when the connection says it is outside a transaction', () => {
+  const W = core('memory-withhold.cjs');
+  // A store whose binding cannot say whether a transaction is open (isTransaction undefined) gets no memo; one that says false does.
+  const standIn = (flag) => ({ store: { db: { isTransaction: flag, prepare: (sql) => store.db.prepare(sql) }, p: (sql) => store.p(sql), heldMemo: null } });
+  const unknown = standIn(undefined);
+  W.heldWithheld(unknown);
+  assert.strictEqual(unknown.store.heldMemo, null, 'no memo when the state is unknown');
+  const outside = standIn(false);
+  W.heldWithheld(outside);
+  assert.ok(outside.store.heldMemo, 'kept when the connection is known to be outside one');
+});
