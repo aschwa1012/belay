@@ -217,7 +217,7 @@ A run spec names its prompt with exactly one of two keys. `brief_file` is a path
 
 ## 5. RunManager (src/run), the orchestrator's half of the surface
 
-Every method returns the shape below or rejects with `CoreError`. Every write it makes goes through `core.worker.write`, `core.continuity.checkpoint` (harness source) and `core.memory.store` (each turn's final assistant text, first 1,200 chars, tags `[task_id, worker_id, 'turn:<n>']`, provenance `checkpoint:<id>`), so worker output is reachable through `memory.search` and `resumeDoc` without anyone reading the stream. With the memory levers on (ADRs 0041 to 0043, each off by default) it also writes the rows, receipts and files listed under "Memory behaviour" below; with all of them off it writes exactly the above.
+Every method returns the shape below or rejects with `CoreError`. Every write it makes goes through `core.worker.write`, `core.continuity.checkpoint` (harness source) and `core.memory.store` (each turn's final assistant text, first 1,200 chars, tags `[task_id, worker_id, 'turn:<n>']`, provenance `checkpoint:<id>`; the row names the worker as `worker_id`, the turn's number as `turn` and its end as `created_at`, and the core fills `task_id` from the newest lease that worker held, released or not, granted by then), so worker output is reachable through `memory.search` and `resumeDoc` without anyone reading the stream. With the memory levers on (ADRs 0041 to 0043, each off by default) it also writes the rows, receipts and files listed under "Memory behaviour" below; with all of them off it writes exactly the above.
 
 | Method | Args | Resolves to |
 |---|---|---|

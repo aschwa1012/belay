@@ -102,6 +102,15 @@ function leasesHeldBy(store, workerId, at = Date.now()) {
   return store.p(sql).all(workerId, at).map(r => parseRow('lease', r));
 }
 
+// The task a worker was working on at `at`: the task of its newest lease (in role worker, in this run) granted at or before
+// `at`, released or not, since a worker usually releases its lease inside the turn it finishes. null if it held none.
+function leaseTaskAt(store, workerId, runId, at) {
+  const sql = `SELECT task_id FROM lease WHERE holder = ? AND holder_role = 'worker' AND run_id IS ? AND granted_at <= ?
+               ORDER BY granted_at DESC, seq DESC LIMIT 1`;
+  const r = store.p(sql).get(workerId, runId == null ? null : runId, at);
+  return r ? r.task_id : null;
+}
+
 function lastCheckpoint(store, taskId, source) {
   const sql = source
     ? 'SELECT * FROM checkpoint WHERE task_id = ? AND source = ? ORDER BY seq DESC LIMIT 1'
@@ -114,5 +123,5 @@ const newId = () => crypto.randomUUID();
 
 module.exports = {
   COLUMNS, JSON_COLUMNS, bind, parseRow, append, current, currentAll, history,
-  currentLeaseForTask, leasesHeldBy, lastCheckpoint, newId,
+  currentLeaseForTask, leasesHeldBy, leaseTaskAt, lastCheckpoint, newId,
 };

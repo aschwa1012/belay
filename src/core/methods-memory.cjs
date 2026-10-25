@@ -232,9 +232,13 @@ async function store(E, caller, args) {
   if (s.body !== null && Buffer.byteLength(JSON.stringify(s.body)) > BODY_MAX) throw bad(`body is over ${BODY_MAX} bytes once serialised`, 'body', { max: BODY_MAX });
   const { embed, task_id, turn, source, worker_id: harnessWorker, title: _title, body: _body, text: _text, ...rest } = args;
   const worker = caller.role === 'worker';
+  // A harness turn row about a worker, with no task named: the task of the lease that worker held at the turn's end (its
+  // created_at), read from the lease rows, never from the worker. The run manager writes turn rows as the orchestrator.
+  const turnTask = !worker && harnessWorker && args.type === 'turn' && task_id === undefined
+    ? rows.leaseTaskAt(E.store, harnessWorker, caller.run_id, args.created_at ?? Date.now()) : undefined;
   const base = {
     ...rest, tags: s.tags, provenance: s.provenance, namespace, worker_id: (!worker && harnessWorker) || E.writtenBy(caller), text: s.text, title, body: s.body, redactions: s.redactions, written_by: E.memoryWriter(caller),
-    run_id: caller.run_id, task_id: worker ? derivedTask(E, caller) : (task_id ?? null), turn: worker ? null : (turn ?? null),
+    run_id: caller.run_id, task_id: worker ? derivedTask(E, caller) : (task_id ?? turnTask ?? null), turn: worker ? null : (turn ?? null),
     source: source || (caller.role === 'operator' ? 'operator' : 'model'),
   };
   const a = embed === false ? base : await withEmbedding(E, base, 'embedding', 'text', caller);
