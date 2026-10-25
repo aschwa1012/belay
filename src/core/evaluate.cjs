@@ -230,6 +230,15 @@ function createCancel() {
   return c;
 }
 
+// A command's retries_on_fail, as task.create admits it (retriesError); anything else runs it once.
+const RETRIES_MAX = 5;
+const retriesOf = (c) => (Number.isSafeInteger(c.retries_on_fail) && c.retries_on_fail > 0 ? Math.min(c.retries_on_fail, RETRIES_MAX) : 0);
+function retriesError(acceptance) {
+  const commands = acceptance && Array.isArray(acceptance.commands) ? acceptance.commands : [];
+  const bad = commands.find((c) => c && c.retries_on_fail != null && !(Number.isSafeInteger(c.retries_on_fail) && c.retries_on_fail >= 0 && c.retries_on_fail <= RETRIES_MAX));
+  return bad ? `task.acceptance.commands retries_on_fail must be an integer from 0 to ${RETRIES_MAX}` : null;
+}
+
 async function runAcceptance(acceptance, worktree, filesOwned, { base, baseSource, cancel = null, budgetMs = ACCEPTANCE_BUDGET_MS } = {}) {
   const checks = [];
   const until = Date.now() + budgetMs;
@@ -246,17 +255,31 @@ async function runAcceptance(acceptance, worktree, filesOwned, { base, baseSourc
       checks.push({ kind: 'command', argv: c.argv, executable: false, exit_code: null, ms: 0, passed: false, detail: { cwd, reason: `not run: the evaluation's commands share a budget of ${budgetMs} ms and it was spent`, budget_ms: budgetMs } });
       continue;
     }
-    let mine = null;
-    const r = await runCommand(c.argv, cwd, Math.min(own, left), { keep: 'ends', ...(cancel ? { onChild: (ch) => { mine = ch; cancel.live.add(ch); if (cancel.cancelled) killTree(ch); } } : {}) });
-    if (mine) cancel.live.delete(mine);
+    const once = async (room) => {
+      let mine = null;
+      const r = await runCommand(c.argv, cwd, Math.min(own, room), { keep: 'ends', ...(cancel ? { onChild: (ch) => { mine = ch; cancel.live.add(ch); if (cancel.cancelled) killTree(ch); } } : {}) });
+      if (mine) cancel.live.delete(mine);
+      return r;
+    };
+    const ok = (x) => x.executable && x.exit_code === 0 && !x.timed_out;
+    let r = await once(left);
+    // ADR 0060 decision 2: a command that ran and failed is run again, up to retries_on_fail times while the budget lasts. One that
+    // passes after a failure passes, and is marked flaky with every attempt kept; one that cannot run is never retried.
+    const attempts = [r];
+    for (let n = 0; n < retriesOf(c) && r.executable && !ok(r) && !(cancel && cancel.cancelled) && until - Date.now() > 0; n++) {
+      r = await once(until - Date.now());
+      attempts.push(r);
+    }
+    const flaky = ok(r) && attempts.length > 1;
     checks.push({
-      kind: 'command', argv: c.argv, executable: r.executable, exit_code: r.exit_code, ms: r.ms,
-      passed: r.executable && r.exit_code === 0 && !r.timed_out,
-      detail: { cwd, timed_out: r.timed_out, signal: r.signal || null, tree_kill: r.tree_kill || null, pipes_dropped: r.pipes_dropped || null, spawn_error: r.spawn_error || null, stdout_tail: r.stdout.slice(-400), stderr_tail: r.stderr.slice(-400), stdout_bytes: r.stdout_bytes ?? null, stderr_bytes: r.stderr_bytes ?? null, ...(left < own ? { budget_capped_ms: left } : {}) },
+      kind: 'command', argv: c.argv, executable: r.executable, exit_code: r.exit_code, ms: attempts.reduce((s, a) => s + a.ms, 0),
+      passed: ok(r), ...(flaky ? { flaky: true } : {}),
+      detail: { cwd, timed_out: r.timed_out, signal: r.signal || null, tree_kill: r.tree_kill || null, pipes_dropped: r.pipes_dropped || null, spawn_error: r.spawn_error || null, stdout_tail: r.stdout.slice(-400), stderr_tail: r.stderr.slice(-400), stdout_bytes: r.stdout_bytes ?? null, stderr_bytes: r.stderr_bytes ?? null, ...(left < own ? { budget_capped_ms: left } : {}),
+        ...(attempts.length > 1 ? { attempts: attempts.map((a) => ({ exit_code: a.exit_code, timed_out: a.timed_out, ms: a.ms, ...(ok(a) ? {} : { stderr_tail: a.stderr.slice(-200) }) })) } : {}) },
     });
   }
   if (acceptance && acceptance.files_within_owned && !(cancel && cancel.cancelled)) checks.push(await filesWithinOwned(worktree, filesOwned, base, baseSource));
   return checks;
 }
 
-module.exports = { runAcceptance, createCancel, runCommand, readOnlyGitEnv, resolveWindowsShim, filesWithinOwned, normalise, within, parsePorcelainZ, parseNameStatusZ, DEFAULT_BASE_REF, DEFAULT_COMMAND_TIMEOUT_MS, ACCEPTANCE_BUDGET_MS };
+module.exports = { runAcceptance, retriesError, createCancel, runCommand, readOnlyGitEnv, resolveWindowsShim, filesWithinOwned, normalise, within, parsePorcelainZ, parseNameStatusZ, DEFAULT_BASE_REF, DEFAULT_COMMAND_TIMEOUT_MS, ACCEPTANCE_BUDGET_MS };

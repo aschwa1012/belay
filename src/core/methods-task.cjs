@@ -11,7 +11,7 @@ const { DEFAULT_LEASE_TTL_MS, TASK_STATES } = require('./schema.cjs');
 const { runAcceptance } = require('./evaluate.cjs');
 const holds = require('./task-holds.cjs');
 const LHD = require('./lease-holder-dead.cjs'); // ADR 0026 amendments 1 and 2
-const integrationState = require('./integration-state.cjs');
+const derived = require('./task-derived.cjs');
 const { filesOverlap, treeHint, runNotLive, resolveOwner, assertNotOwnReview } = require('./methods-task-hold.cjs');
 
 // ADR 0025 decision 1: the most a worker may hand back on release, serialized.
@@ -53,7 +53,7 @@ function findCycle(store, id, dependsOn) {
   return walk(id);
 }
 
-async function create(E, caller, args) {
+async function create(E, caller, args, own = {}) { // own: core-internal, task.fixFromReview's inherited worktree and answered reviews; no tool reaches it
   if (typeof args.spec !== 'string' || !args.spec.trim()) throw err('E_ARGS', 'task.create needs a spec describing the work');
   const filesOwned = args.files_owned == null ? null : args.files_owned;
   if (filesOwned != null && (!Array.isArray(filesOwned) || filesOwned.some(p => typeof p !== 'string'))) {
@@ -65,6 +65,7 @@ async function create(E, caller, args) {
   }
   const handoffShape = acceptance ? require('./handoff-check.cjs').shapeError(acceptance.handoff) : null; // ADR 0058 decision 6
   if (handoffShape) throw err('E_ARGS', handoffShape);
+  const retries = require('./evaluate.cjs').retriesError(acceptance); if (retries) throw err('E_ARGS', retries); // ADR 0060 decision 2
   if (acceptance && acceptance.verdict !== undefined && acceptance.verdict !== true) {
     throw err('E_ARGS', 'task.acceptance.verdict must be true or absent: a review task is judged from a worker\'s handed-back verdict');
   }
@@ -122,7 +123,7 @@ async function create(E, caller, args) {
   const t = Date.now();
   const row = rows.append(E.store, 'task', {
     id, run_id: caller.run_id, spec: args.spec, acceptance, files_owned: filesOwned, state: 'open',
-    results: null, depends_on: deps, repairs,
+    results: null, depends_on: deps, repairs, ...(own.worktree ? { worktree: own.worktree } : {}), ...(own.answers ? { answers: own.answers } : {}),
   }, E.writtenBy(caller), t);
   E.noteWrite();
   return overlaps.length ? { ...row, overlaps } : row;
@@ -244,7 +245,7 @@ function refutedReview(d) {
   return checks.some(c => c && c.kind === 'verdict' && c.executable === true && c.passed === false);
 }
 
-function view(E, task, liveness, integrations) {
+function view(E, task, liveness, ctx) {
   const t = Date.now();
   const l = rows.currentLeaseForTask(E.store, task.id);
   let lease = null, holderPidAlive = null;
@@ -257,16 +258,14 @@ function view(E, task, liveness, integrations) {
   }
   const ck = rows.lastCheckpoint(E.store, task.id);
   const h = holds.holdOf(task, liveness || holds.runLiveness(E.store));
-  // ADR 0053 amendment 2: whether the task's branch landed is its own fact beside `state`, derived from the integration rows.
-  const integration = integrationState.ofTask(task, integrations || integrationState.newestFirst(E.store));
-  return { ...task, holds_files: h.holds, holds_reason: h.reason, lease, holder_pid_alive: holderPidAlive, last_checkpoint_id: ck ? ck.id : null, last_checkpoint_at: ck ? ck.written_at : null, integration };
+  const { integration, review } = derived.of(task, ctx || derived.context(E)); // beside `state`, derived on every read (task-derived.cjs)
+  return { ...task, holds_files: h.holds, holds_reason: h.reason, lease, holder_pid_alive: holderPidAlive, last_checkpoint_id: ck ? ck.id : null, last_checkpoint_at: ck ? ck.written_at : null, integration, review };
 }
 
 async function list(E, caller, args) {
   const states = Array.isArray(args.states) && args.states.length ? new Set(args.states) : null;
   const liveness = holds.runLiveness(E.store);
-  const integrations = integrationState.newestFirst(E.store);
-  const tasks = rows.currentAll(E.store, 'task').filter(t => !states || states.has(t.state)).map(t => view(E, t, liveness, integrations));
+  const ctx = derived.context(E), tasks = ctx.all.filter(t => !states || states.has(t.state)).map(t => view(E, t, liveness, ctx));
   return { tasks };
 }
 
@@ -299,6 +298,7 @@ async function evaluate(E, caller, args) {
   const at = require('./methods-worktree.cjs').evaluateTarget(task, args); // ADR 0053 decision 4: the recorded worktree and base
   const EC = args.cancel_key !== undefined ? require('./evaluate-cancel.cjs') : null; // ADR 0058: a release evaluation can be cancelled
   const cancel = EC ? EC.register(args.cancel_key) : null;
+  const J = require('./judged.cjs'), judged = await J.stateOf(task, at.worktree); // ADR 0060 decisions 4 and 6: what integrate may merge
   let commandChecks;
   try { commandChecks = await runAcceptance(task.acceptance, at.worktree, task.files_owned, { ...at, cancel }); } finally { if (cancel) EC.unregister(args.cancel_key, cancel); }
   if (cancel && cancel.cancelled) throw EC.cancelled(task, cancel);
@@ -317,7 +317,7 @@ async function evaluate(E, caller, args) {
     const executable = checks.length > 0 && checks.every(c => c.executable);
     const passed = checks.length > 0 && checks.every(c => c.passed);
     const results = {
-      evaluated_at: Date.now(), executable, passed, checks, ...(args.trigger ? { trigger: args.trigger } : {}),
+      evaluated_at: Date.now(), executable, passed, checks, ...(args.trigger ? { trigger: args.trigger } : {}), ...J.fields(judged), ...(checks.some(c => c.flaky) ? { flaky: true } : {}), // ADR 0060: what was judged (4, 6); a pass only on a retry is never silent (2)
       ...(checks.length === 0 ? { note: 'the task declares no acceptance criteria, so nothing was executed and nothing is proven' } : {}),
     };
     return rows.append(E.store, 'task', {
