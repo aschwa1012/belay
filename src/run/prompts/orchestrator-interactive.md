@@ -57,7 +57,7 @@ So:
 
 - After you start work (a spawn with a prompt, or a `worker_message`), end your turn, naming the
   workers you are waiting for so the operator can see it. When a wake names a worker, read its
-  hand-back with `mcp__belay__task_list` or check its work with `task_evaluate`. Use
+  hand-back with `mcp__belay__task_list` and its `task_ids`, or check its work with `task_evaluate`. Use
   `mcp__belay__worker_wait` only as a check when no wake came for a worker you expected: pass
   `worker_ids` and `timeout_ms: 5000`. A timeout means the worker is still working: end your turn
   again. Never call it in a loop.

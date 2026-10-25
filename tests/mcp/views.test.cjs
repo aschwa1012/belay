@@ -99,3 +99,29 @@ test('eight evaluated tasks list in under a fifth of their full rows', () => {
   const compact = Buffer.byteLength(JSON.stringify(V.taskList({ tasks })));
   assert.ok(compact * 5 < full, `${compact} of ${full} bytes`);
 });
+
+test('fields the views do not name pass through both shapes: integration and review, as another change may add them', () => {
+  const integration = { state: 'merged', into: 'belay/integrate/r', id: 'i1' };
+  const review = { task_id: 'rv1', verdict: 'holds' };
+  for (const shape of [V.compactTask(row({ integration, review })), V.compactTask(row({ integration, review }), { detail: true })]) {
+    assert.deepStrictEqual([shape.integration, shape.review], [integration, review]);
+  }
+});
+
+test('a listing keeps flaky and timed_out, at the results level and per check', () => {
+  const slow = { ...check(false), detail: { ...check(false).detail, timed_out: true } };
+  const flaky = { ...check(true), flaky: true };
+  const s = V.compactTask(row({ results: { evaluated_at: 7, executable: true, passed: false, flaky: true, timed_out: true, checks: [slow, flaky] } }));
+  assert.deepStrictEqual(s.results, { passed: false, executable: true, flaky: true, timed_out: true, checks: 2,
+    failing: ['command npm test exit 1 timed out'], flaky_checks: ['command npm test exit 0 flaky'] });
+  const d = V.compactTask(row({ results: { passed: false, checks: [slow, flaky] } }), { detail: true });
+  assert.deepStrictEqual([d.results.checks[0].detail.timed_out, d.results.checks[1].flaky], [true, true]);
+});
+
+test('task_ids naming no task answers not_found with those ids, in the compact and the debug view', async () => {
+  const run = async () => ({ tasks: [row()] });
+  const one = await V.viewed('task_list', { task_ids: ['t1', 'nope'] }, run);
+  assert.deepStrictEqual([one.tasks.map((t) => t.id), one.not_found], [['t1'], ['nope']]);
+  assert.strictEqual((await V.viewed('task_list', { task_ids: ['t1'] }, run)).not_found, undefined, 'absent when every id was found');
+  assert.deepStrictEqual((await V.viewed('task_list', { task_ids: ['gone'], view: 'debug' }, run)), { tasks: [], not_found: ['gone'] });
+});

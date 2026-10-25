@@ -7,8 +7,10 @@
 const SPEC_HEAD = 80;
 const head = (s) => (typeof s !== 'string' ? s : s.length <= SPEC_HEAD ? s : `${s.slice(0, SPEC_HEAD - 3)}...`);
 
-// One line per failing check, as the release wake names them: `command npm test exit 1`, `files_within_owned`, `verdict`.
-const label = (c) => (c.kind === 'command' ? `command ${Array.isArray(c.argv) ? c.argv.slice(0, 3).join(' ') : '?'}${c.exit_code != null ? ` exit ${c.exit_code}` : ''}` : c.kind);
+// One line per check, as the release wake names them: `command npm test exit 1`, `files_within_owned`, `verdict`; a check that
+// timed out or is marked flaky says so, so neither fact is lost from a listing.
+const timedOut = (c) => c.timed_out === true || !!(c.detail && c.detail.timed_out === true);
+const label = (c) => `${c.kind === 'command' ? `command ${Array.isArray(c.argv) ? c.argv.slice(0, 3).join(' ') : '?'}${c.exit_code != null ? ` exit ${c.exit_code}` : ''}` : c.kind}${timedOut(c) ? ' timed out' : ''}${c.flaky ? ' flaky' : ''}`;
 
 // The fields of a check's detail that are receipts rather than reasons: where it ran, what was null, the full file lists.
 // `cwd` is the worktree the answer already names; a null says nothing. A passing check also loses what only a failure needs:
@@ -40,6 +42,18 @@ const ROW_DROP = new Set(['acceptance', 'spec', 'results', 'handoff', 'lease', '
 // A listing row also leaves out what the task's own detail carries: its files, who wrote it, the reason for a hold.
 const SUMMARY_DROP = new Set(['run_id', 'written_at', 'written_by', 'files_owned', 'holds_reason']);
 
+// A listing's results: the verdict facts (`flaky` and `timed_out` too, when the core sets them), the checks counted, the failing
+// ones named, and the passing ones marked flaky named apart, since `failing` does not list them.
+function summaryResults(facts, checks) {
+  const out = { passed: facts.passed, executable: facts.executable };
+  for (const k of ['trigger', 'flaky', 'timed_out']) if (facts[k] !== undefined && facts[k] !== null) out[k] = facts[k];
+  out.checks = checks.length;
+  out.failing = checks.filter((c) => c && !c.passed).map(label);
+  const flaky = checks.filter((c) => c && c.passed && c.flaky).map(label);
+  if (flaky.length) out.flaky_checks = flaky;
+  return out;
+}
+
 // `detail`: the shape of one task the orchestrator is reading (task_evaluate's row, task_list with task_ids): the hand-back
 // whole and every check. Otherwise the row of a listing: the hand-back's field names and the checks counted, failing named.
 function compactTask(row, { detail = false } = {}) {
@@ -55,18 +69,24 @@ function compactTask(row, { detail = false } = {}) {
     const checks = Array.isArray(r.checks) ? r.checks : [];
     const { checks: _c, ...facts } = r;
     out.results = detail ? { ...facts, checks: checks.map(compactCheck) }
-      : { passed: facts.passed, executable: facts.executable, ...(facts.trigger ? { trigger: facts.trigger } : {}), checks: checks.length, failing: checks.filter((c) => c && !c.passed).map(label) };
+      : summaryResults(facts, checks);
   } else if (r !== undefined) out.results = r;
   return out;
+}
+
+// `task_ids` narrows a listing to those tasks; an id with no task (in the states asked for) is named in `not_found`.
+function narrow(answer, ids, shape) {
+  const want = new Set(ids);
+  const tasks = answer.tasks.filter((t) => want.has(t.id));
+  const found = new Set(tasks.map((t) => t.id));
+  const missing = [...want].filter((id) => !found.has(id));
+  return { ...answer, tasks: tasks.map(shape), ...(missing.length ? { not_found: missing } : {}) };
 }
 
 // task_list: summary rows; `task_ids` narrows the listing to those tasks and answers each in the detail shape.
 function taskList(answer, { task_ids = null } = {}) {
   if (!answer || !Array.isArray(answer.tasks)) return answer;
-  if (Array.isArray(task_ids) && task_ids.length) {
-    const want = new Set(task_ids);
-    return { ...answer, tasks: answer.tasks.filter((t) => want.has(t.id)).map((t) => compactTask(t, { detail: true })) };
-  }
+  if (Array.isArray(task_ids) && task_ids.length) return narrow(answer, task_ids, (t) => compactTask(t, { detail: true }));
   return { ...answer, tasks: answer.tasks.map((t) => compactTask(t)) };
 }
 
@@ -111,8 +131,7 @@ async function viewed(name, args, run) {
   const answer = await run(rest);
   if (view === 'debug') {
     if (!Array.isArray(ids) || !ids.length || !answer || !Array.isArray(answer.tasks)) return answer;
-    const want = new Set(ids);
-    return { ...answer, tasks: answer.tasks.filter((t) => want.has(t.id)) };
+    return narrow(answer, ids, (t) => t);
   }
   return name === 'task_list' ? taskList(answer, { task_ids: ids }) : shape(answer);
 }
