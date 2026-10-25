@@ -143,6 +143,9 @@ test('a merging row whose process still runs refuses the merge and the removal E
     assert.strictEqual(e.detail.id, live.id);
     assert.strictEqual((await orch.integration.get({ id: live.id })).state, 'merging', 'a live holder\'s row is not closed');
     await rejectsCode(op.integration.remove({ id: live.id, force: true }), 'E_BUSY');
+    // A proven live merge is never taken over, not even by the operator.
+    const kept = await rejectsCode(op.integration.merge({ task_ids: [t.id], into: 'int/live', take_over: true }), 'E_BUSY');
+    assert.strictEqual(kept.detail.proven, true);
 
     holder.kill(); // this exact child
     await holderExited;
@@ -188,4 +191,79 @@ test('a merging row whose pid now names a process created at another time is tak
     holder.kill();
     await holderExited;
   }
+});
+
+// A row whose pid runs but cannot be proven to be the merge: here it recorded no creation time, which reaches the same branch as
+// a creation time the snapshot cannot read. Nothing tells anyone to end that pid; only the operator may take the branch over.
+test('a merging row not proven to be its live pid refuses with no kill advice; the orchestrator cannot take over, the operator can', async () => {
+  const { Store } = core('store.cjs');
+  const rows = core('rows.cjs');
+  const { spawn } = require('node:child_process');
+  const dir = sandbox();
+  const orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
+  const op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
+  opened.push({ dir, cores: [orch, op] });
+  await orch.run.attach({ adapter_pid: process.pid });
+  const repo = makeRepo(dir);
+  const t = await orch.task.create({ spec: 'a', acceptance: { commands: [exists('a.txt')] } });
+  const w = (await op.task.worktreeCreate({ task_id: t.id, repo })).worktree;
+  write(w.path, 'a.txt', 'a\n');
+  commit(w.path, 'a');
+  assert.strictEqual((await orch.task.evaluate({ task_id: t.id })).state, 'done');
+  const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e9)'], { windowsHide: true, stdio: 'ignore' });
+  const holderExited = new Promise((r) => holder.once('exit', r));
+  try {
+    const s = new Store(`${dir}/data/memory.db`);
+    let unproven;
+    try {
+      unproven = rows.append(s, 'integration', { id: rows.newId(), run_id: 'test-run', repo, into_branch: 'int/unproven', worktree: `${repo}.worktrees/integrate-int-unproven`, created_worktree: true, base_sha: w.base_sha, head_sha: w.base_sha, state: 'merging', task_ids: [t.id], merged: [], junctions: [], owner_pid: holder.pid, owner_boot: null }, 'owner', Date.now());
+    } finally { s.close(); }
+    const e = await rejectsCode(orch.integration.merge({ task_ids: [t.id], into: 'int/unproven' }), 'E_BUSY');
+    assert.match(e.message, /is running but is not proven to be the merge/);
+    assert.match(e.message, /the operator can pass --take-over/);
+    assert.doesNotMatch(e.message, /end that process|kill/i, 'never advice to end a pid that may be any process');
+    assert.strictEqual(e.detail.proven, false);
+    await rejectsCode(op.integration.remove({ id: unproven.id, force: true }), 'E_BUSY');
+    await rejectsCode(orch.integration.merge({ task_ids: [t.id], into: 'int/unproven', take_over: true }), 'E_ROLE');
+    assert.strictEqual((await orch.integration.get({ id: unproven.id })).state, 'merging');
+
+    // The operator's hand: the built CLI's --take-over closes the row abandoned, marked taken over, and merges.
+    // Spawned, never spawnSync: the owner that serves the CLI's call lives in this process and must keep running.
+    const cli = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [path.resolve(__dirname, '..', '..', 'src', 'cli', 'belay.cjs'), 'worktree', 'merge', t.id, '--into', 'int/unproven', '--take-over', '--data', `${dir}/data`, '--json'], { cwd: repo, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '', stderr = '';
+      child.stdout.on('data', (d) => { stdout += d; });
+      child.stderr.on('data', (d) => { stderr += d; });
+      child.on('exit', (status) => resolve({ status, stdout, stderr }));
+    });
+    assert.strictEqual(cli.status, 0, cli.stderr);
+    assert.strictEqual(JSON.parse(cli.stdout).state, 'evaluated');
+    const closed = await orch.integration.get({ id: unproven.id });
+    assert.strictEqual(closed.state, 'abandoned');
+    assert.strictEqual(closed.error.taken_over, true);
+    assert.ok(holder.exitCode === null && holder.signalCode === null, 'the holder was left running');
+  } finally {
+    holder.kill();
+    await holderExited;
+  }
+});
+
+test('a merge records its owner start time from the process snapshot, the source the check compares it with', async () => {
+  const ID = core('proc-identity.cjs');
+  const dir = sandbox();
+  const orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
+  const op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
+  opened.push({ dir, cores: [orch, op] });
+  await orch.run.attach({ adapter_pid: process.pid });
+  const repo = makeRepo(dir);
+  const t = await orch.task.create({ spec: 'a', acceptance: { commands: [exists('a.txt')] } });
+  const w = (await op.task.worktreeCreate({ task_id: t.id, repo })).worktree;
+  write(w.path, 'a.txt', 'a\n');
+  commit(w.path, 'a');
+  assert.strictEqual((await orch.task.evaluate({ task_id: t.id })).state, 'done');
+  const row = await orch.integration.merge({ task_ids: [t.id], into: 'int/boot' });
+  const own = await ID.createdOf(process.pid);
+  assert.ok(own && own.created);
+  assert.strictEqual(row.owner_pid, process.pid);
+  assert.strictEqual(row.owner_boot, own.created);
 });
