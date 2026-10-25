@@ -96,9 +96,8 @@ test('a post-merge hook that amends the merge commit is reported with the files,
     'c=$(git commit-tree $(git write-tree) -p HEAD^1 -p HEAD^2 -m amended)', 'git update-ref HEAD $c', 'rm -f "$GIT_INDEX_FILE"',
   ]);
   const row = await orch.integration.merge({ task_ids: [a.id], into: 'int/rewrite' });
-  assert.notStrictEqual(row.state, 'failed', JSON.stringify(row.error));
+  assert.ok(row.hook_changed_tree, 'hook_changed_tree is on the result');
   const h = row.hook_changed_tree;
-  assert.ok(h, 'hook_changed_tree is on the result');
   assert.strictEqual(h.task_id, a.id);
   assert.deepStrictEqual(h.files, ['a.txt']);
   assert.deepStrictEqual(h.uncommitted_files, ['a.txt'], 'the work tree still holds the unamended file');
@@ -112,17 +111,43 @@ test('a post-merge hook that amends the merge commit is reported with the files,
   assert.strictEqual(j.tree_sha, git(t.worktree.path, 'rev-parse', 'HEAD^{tree}'));
 });
 
-test('a pre-merge-commit hook that edits a file leaves it uncommitted, and the report names it', async () => {
+test('a pre-merge-commit hook that edits a file leaves it uncommitted: reported, not evaluated, and the next integrate says a hook left it', async () => {
   const repo = makeRepo(dir);
   const a = await doneTask(repo, { 'a.txt': 'a\n' });
+  const b = await doneTask(repo, { 'b.txt': 'b\n' });
   hook(repo, 'pre-merge-commit', ['echo "stamped" >> a.txt']);
-  const row = await orch.integration.merge({ task_ids: [a.id], into: 'int/edit' });
-  assert.notStrictEqual(row.state, 'failed', JSON.stringify(row.error));
+  const row = await orch.integration.merge({ task_ids: [a.id, b.id], into: 'int/edit' });
   const h = row.hook_changed_tree;
   assert.ok(h);
   assert.deepStrictEqual(h.files, []);
   assert.deepStrictEqual(h.uncommitted_files, ['a.txt']);
+  assert.deepStrictEqual(h.hooks, ['pre-merge-commit']);
   assert.strictEqual(h.judged_tree, h.merged_tree);
+  assert.strictEqual(row.state, 'failed');
+  assert.strictEqual(row.checks, null, 'no check ran on a tree holding edits that never landed');
+  assert.strictEqual(row.passed, null);
+  assert.strictEqual(row.error.tree_clean, false);
+  assert.match(row.error.message, /your pre-merge-commit hook left uncommitted edits/);
+  assert.deepStrictEqual(row.merged.map((m) => m.task_id), [a.id], 'nothing more was merged on the dirty tree');
+  const e = await rejectsCode(orch.integration.merge({ task_ids: [b.id], into: 'int/edit' }), 'E_PRECONDITION');
+  assert.match(e.message, /a hook left them after integration /);
+});
+
+test('uncommitted tracked edits are reported as a hook edit only when a hook ran', async () => {
+  const repo = makeRepo(dir);
+  fs.appendFileSync(path.join(repo, 'base/keep.txt'), 'edit\n');
+  const tree = git(repo, 'rev-parse', 'HEAD^{tree}');
+  assert.strictEqual(await H.changedTree(repo, 't', tree, []), null);
+  const r = await H.changedTree(repo, 't', tree, [{ name: 'pre-merge-commit', exit_code: 0 }]);
+  assert.deepStrictEqual(r.uncommitted_files, ['base/keep.txt']);
+});
+
+test('trace events are keyed on session and child id, and the source holds no NUL byte', () => {
+  const ev = (o) => JSON.stringify(o);
+  const text = [ev({ event: 'child_start', sid: 'A', child_id: 1, child_class: 'hook', hook_name: 'x' }),
+    ev({ event: 'child_exit', sid: 'B', child_id: 1, code: 9 }), ev({ event: 'child_exit', sid: 'A', child_id: 1, code: 2 })].join('\n');
+  assert.deepStrictEqual(H.hooksIn(text), [{ name: 'x', exit_code: 2 }]);
+  assert.ok(!fs.readFileSync(path.join(__dirname, '../../src/core/git-hooks.cjs')).includes(0), 'git must not read the file as binary');
 });
 
 test('a real merge conflict is still a conflict when hooks exist', async () => {

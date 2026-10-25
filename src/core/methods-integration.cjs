@@ -162,8 +162,10 @@ async function integrationTree(E, repo, into, args, tasks, abandoned = []) {
     const d = await G.dirtyPaths(found.path);
     if (d.length) {
       // A tree an abandoned integration left mid-merge says how to get out, since nothing else will clear it.
+      const hookLeft = rows.currentAll(E.store, 'integration').find((r) => r.into_branch === into && G.samePath(r.worktree, found.path) && r.error && r.error.hook_left_uncommitted);
+      const why = hookLeft ? `; a hook left them after integration ${hookLeft.id} (${hookLeft.error.hook_left_uncommitted.slice(0, 5).join(', ')})` : '';
       const out = abandoned.length ? `; integration ${abandoned.join(', ')} was abandoned mid-merge here: run git merge --abort in ${found.path}, or remove the tree (belay worktree remove --integration <id> --force)` : '';
-      throw err('E_PRECONDITION', `${into} is checked out at ${found.path} with ${d.length} uncommitted path(s); belay merges only into a clean tree${out}`, { path: found.path, dirty: d.slice(0, 50), abandoned });
+      throw err('E_PRECONDITION', `${into} is checked out at ${found.path} with ${d.length} uncommitted path(s); belay merges only into a clean tree${why}${out}`, { path: found.path, dirty: d.slice(0, 50), abandoned });
     }
     return { path: found.path, created: false, junctions: [] };
   }
@@ -215,7 +217,7 @@ async function mergeOne(tree, task, target) {
   const judgedTree = await H.expectedTree(tree, sha); // what the merge writes with no hook; a hook that differs is reported
   const r = await H.runTraced(tree, ['merge', '--no-ff', '--no-edit', '-m', `belay: merge task ${task.id} (${b})`, sha]);
   if (r.ok) {
-    const changed = await H.changedTree(tree, task.id, judgedTree);
+    const changed = await H.changedTree(tree, task.id, judgedTree, r.hooks || []);
     return { ok: true, task_id: task.id, branch: b, sha, already: false, ...facts, ...(changed ? { hook_changed_tree: changed } : {}), head_sha: (await G.must(tree, ['rev-parse', 'HEAD'], 'HEAD')).trim() };
   }
   const u = await G.run(tree, ['diff', '--name-only', '--diff-filter=U', '-z']);
@@ -301,6 +303,12 @@ async function merge(E, caller, args) {
         }
         out.merged.push({ task_id: m.task_id, branch: m.branch, sha: m.sha, already: m.already, empty: !!m.empty, judged_by: m.judged_by, covers: m.covers, ...(m.left_out ? { left_out: m.left_out } : {}), ...(m.hook_changed_tree ? { hook_changed_tree: m.hook_changed_tree } : {}) });
         trying = null;
+        const left = m.hook_changed_tree && m.hook_changed_tree.uncommitted_files;
+        if (left) { // the merge went in, but its tree holds edits the commit does not: nothing more is merged or checked on it
+          out.state = 'failed';
+          out.error = { task_id: t.id, hook_left_uncommitted: left, message: `your ${m.hook_changed_tree.hooks.join(', ')} hook left uncommitted edits in ${tree.path} after merging task ${t.id} (${left.slice(0, 10).join(', ')}); the checks were not run on that tree, and it needs those edits committed or discarded`, tree_clean: false };
+          break;
+        }
       }
     } catch (e) {
       const left = await G.dirtyPaths(tree.path).catch(() => null);
