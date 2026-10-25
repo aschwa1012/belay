@@ -322,7 +322,14 @@ function assertTaskTree(task, dir, what, remedy) {
     { task_id: task.id, task_worktree: tree.path, worktree: G.fwd(dir) });
 }
 
-// task.evaluate's worktree and base (ADR 0053 decision 4): the arguments when given, else the task's recorded worktree and base.
+// A task's own diff base (task.create `base`, try-2 gap 3): a commit or ref, never an option.
+function baseArg(v) {
+  if (typeof v !== 'string' || !v.trim() || v.startsWith('-') || v.length > 200 || /[\u0000-\u001f\u007f]/.test(v)) throw err('E_ARGS', 'task.create base must be a commit or ref (a non-empty string of at most 200 characters, not starting with -, no control characters)', { field: 'base' });
+  return v;
+}
+
+// task.evaluate's worktree and base (ADR 0053 decision 4): the arguments when given, else the task's own `base` (gap 3), else its
+// recorded worktree's base.
 // A worktree argument that is not the task's recorded tree is refused (assertTaskTree), whoever passes it.
 function evaluateTarget(task, args) {
   const rec = task.worktree && task.worktree.base_sha ? task.worktree : null;
@@ -330,7 +337,8 @@ function evaluateTarget(task, args) {
   const worktree = args.worktree !== undefined ? args.worktree : (active(task) || {}).path;
   if (!worktree || typeof worktree !== 'string') throw err('E_ARGS', `task.evaluate needs the worktree the acceptance criteria run in; task ${task.id} has no belay worktree to default to: pass worktree, or give the task its own with task_worktree`, { task_id: task.id });
   if (args.base !== undefined) return { worktree, base: args.base, baseSource: 'arg' };
+  if (task.base) return { worktree, base: task.base, baseSource: 'task' };
   return rec ? { worktree, base: rec.base_sha, baseSource: 'recorded' } : { worktree, base: undefined, baseSource: undefined };
 }
 
-module.exports = { ownBoot, ownBootProbe, worktreeCreate, worktreeRemove, removeTree, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, assertTaskTree, openSharer, exclusive, active, present, pathName, liveWorkerIn, strayLinks, under };
+module.exports = { ownBoot, ownBootProbe, worktreeCreate, worktreeRemove, removeTree, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, baseArg, assertTaskTree, openSharer, exclusive, active, present, pathName, liveWorkerIn, strayLinks, under };

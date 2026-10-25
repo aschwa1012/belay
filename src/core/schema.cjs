@@ -223,6 +223,8 @@ const MIGRATIONS = [
   'ALTER TABLE task ADD COLUMN worktree TEXT',
   // ADR 0060 decision 5: the review ids a fix task answers (JSON text, nullable), written by task.fixFromReview.
   'ALTER TABLE task ADD COLUMN answers TEXT',
+  // try-2 gap 3: the diff base the task's files_within_owned is judged from when task.evaluate names none (a release evaluation).
+  'ALTER TABLE task ADD COLUMN base TEXT',
   // ADR 0053 amendment 2: the process that runs an integration (its pid and start time), so a row a crash left `merging` reads stale.
   'ALTER TABLE integration ADD COLUMN owner_pid INTEGER',
   'ALTER TABLE integration ADD COLUMN owner_boot INTEGER',
