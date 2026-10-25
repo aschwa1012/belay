@@ -94,7 +94,7 @@ const shown = (lease) => (lease.tree ? { ...lease, tree: { head: lease.tree.head
 function handBack(dataDir, workerId, grant, now) {
   const scratch = SD.facts(dataDir, workerId);
   // A review lease with no grant snapshot (the attach failed or was discarded) says so rather than carrying no tree at all.
-  const tree = !grant ? { changed: null, error: 'no grant snapshot was attached' } : now ? compare(grant, now) : null;
+  const tree = !grant ? { changed: null, error: 'no grant snapshot was attached' } : now ? compare(grant, now) : { changed: null, error: 'no hand-back snapshot' };
   return { ...(tree ? { tree } : {}), ...(scratch ? { scratch } : {}) };
 }
 
@@ -121,7 +121,7 @@ async function afterGrant(E, caller, out, worktree) {
     const kept = E.store.tx(() => {
       const cur = rows.currentLeaseForTask(E.store, lease.task_id);
       if (!cur || cur.id !== lease.id || cur.released_at != null || cur.holder !== lease.holder || cur.holder_role !== 'worker') return null;
-      const late = lateBy(E.store, cur);
+      const late = lateBy(E, cur);
       return rows.append(E.store, 'lease', { ...cur, tree: late.length ? { ...tree, baseline_late: true, baseline_late_by: late } : tree }, E.writtenBy(caller), t);
     });
     if (!kept) return out;
@@ -132,9 +132,14 @@ async function afterGrant(E, caller, out, worktree) {
   }
 }
 
-// What the worker did under lease `l` before the snapshot: the sources newer than its grant, by name.
-function lateBy(store, l) {
-  const since = Number(l.granted_at), id = l.holder, out = [];
+// What the worker did under lease `l` before the snapshot: the sources newer than its grant, by name. `core_call` is the
+// engine's in-memory time of the worker's last call: a worker learns of a grant before assign answers only by asking the core,
+// so one that wrote without calling since the grant was doing pre-review work, which the baseline absorbs. An engine that
+// started after the grant does not know, and says `owner_changed`.
+function lateBy(E, l) {
+  const store = E.store, since = Number(l.granted_at), id = l.holder, out = [];
+  if (!(Number(E.startedAt) <= since)) out.push('owner_changed');
+  else if (E.workerCalls && Number(E.workerCalls.get(id)) > since) out.push('core_call');
   const w = rows.current(store, 'worker', id);
   if (w && Number(w.last_event_at) > since) out.push('last_event_at');
   const newer = (sql) => !!store.p(sql).get(id, since);
@@ -148,7 +153,7 @@ function lateBy(store, l) {
 async function releaseSnapshot(E, args) {
   if (args.result === undefined || !args.lease_id) return null;
   const l = rows.current(E.store, 'lease', args.lease_id);
-  return l && l.tree && l.tree.worktree ? snapshot(l.tree.worktree) : null;
+  return l && l.tree && l.tree.worktree ? module.exports.snapshot(l.tree.worktree) : null;
 }
 
 module.exports = { snapshot, compare, grantTarget, afterGrant, lateBy, isReview, releaseSnapshot, shown, handBack, scratchFacts: SD.facts, ENTRIES_MAX, PATHS_MAX };
