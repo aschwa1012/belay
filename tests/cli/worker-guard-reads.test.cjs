@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // worker-guard-reads.test.cjs — under BELAY_WORKER_ID the guard refuses what writes and lets what reads answer: `settings` and
 // `settings <key>` read the config and answer; `settings <key> <value>` writes it and is refused; `memory export` to stdout reads,
 // `memory export --out <file>` writes that file as the operator and is refused, leaving no file. Built CLI, mkdtemp sandbox.

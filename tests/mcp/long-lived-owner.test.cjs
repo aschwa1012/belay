@@ -3,6 +3,7 @@
 // ownerOpts.longLived, and a worker adapter does not. Each opener runs as its own process against a fake core that records
 // the options it was called with.
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 
 const test = require('node:test');
 const assert = require('node:assert');

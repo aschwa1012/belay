@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // worktree-pilot.test.cjs — the pilot's path through tools alone (ADR 0053): an orchestrator with no shell makes two tasks, gives
 // each its own tree, spawns a real (fake-substrate) worker into each by task_id alone, is refused removing a tree a live worker
 // is in, stops the workers, evaluates each task from its recorded tree and base, integrates both, and removes the trees, the

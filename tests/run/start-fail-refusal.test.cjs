@@ -19,7 +19,8 @@ const refusal = (code = 'E_NATIVE_MEMORY_MISMATCH') => Object.assign(new Error('
 test('a transient failure inside the start of a resume parks the worker again and writes no dead row', async () => {
   const { w, rows, sf } = fixture();
   await assert.rejects(sf.guarded(w, async () => { throw Object.assign(new Error('simulated row write failure'), { code: 'E_TIMEOUT' }); }, { parkOnFailure: true }), (e) => e.code === 'E_TIMEOUT');
-  assert.strictEqual(w.parkRequested, 'start-failed');
+  assert.strictEqual(w.parkRequested && w.parkRequested.startFailed, true, 'parked again as a start that failed');
+  assert.deepStrictEqual(Object.keys(w.parkRequested).sort(), ['at', 'by', 'resultsSeen', 'startFailed'], 'every reader of a park expects { at, by }');
   assert.deepStrictEqual(rows, []);
   assert.strictEqual(w.state, 'paused');
 });
@@ -27,7 +28,7 @@ test('a transient failure inside the start of a resume parks the worker again an
 test('a guard refusal that surfaces inside the start settles dead even though the caller asked for parking (error code)', async () => {
   const { w, rows, sf } = fixture();
   await assert.rejects(sf.guarded(w, async () => { throw refusal(); }, { parkOnFailure: true }), (e) => e.code === 'E_NATIVE_MEMORY_MISMATCH');
-  assert.notStrictEqual(w.parkRequested, 'start-failed');
+  assert.ok(!(w.parkRequested && w.parkRequested.startFailed), 'a refusal is never parked as a failed start');
   assert.deepStrictEqual(rows, ['dead']);
   assert.strictEqual(w.state, 'dead');
 });
@@ -35,7 +36,7 @@ test('a guard refusal that surfaces inside the start settles dead even though th
 test('a worker the guard has already marked refused settles dead whatever the error is (flag)', async () => {
   const { w, rows, sf } = fixture({ nativeMemoryRefused: true });
   await assert.rejects(sf.guarded(w, async () => { throw Object.assign(new Error('anything'), { code: 'E_SUBSTRATE' }); }, { parkOnFailure: true }), (e) => e.code === 'E_SUBSTRATE');
-  assert.notStrictEqual(w.parkRequested, 'start-failed');
+  assert.ok(!(w.parkRequested && w.parkRequested.startFailed), 'a refusal is never parked as a failed start');
   assert.deepStrictEqual(rows, ['dead']);
 });
 

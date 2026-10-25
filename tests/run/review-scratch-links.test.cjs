@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // review-scratch-links.test.cjs — ADR 0054 amendment 1: the scratch folder's make, measure and delete never follow a link. A
 // worker directory planted as a junction to a folder outside the data directory (with a marker naming the run and a scratch/
 // inside it) is not read, measured or emptied; a scratch/ that is itself a junction is named and left alone and not measured;

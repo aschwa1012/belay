@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // worktree-tools.test.cjs — ADR 0053 decision 6 through the real adapter and the real core: task_worktree creates and removes a
 // task's tree, worker_spawn takes the task's tree when worktree is left out and refuses another one, task_evaluate defaults to
 // the recorded tree and base, and integrate merges and re-checks. The repository is a throwaway one in the test's sandbox.

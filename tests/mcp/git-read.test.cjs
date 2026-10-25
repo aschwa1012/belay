@@ -2,6 +2,7 @@
 // passes becomes an option; a repository's own config cannot make a read run a program or write; output is bounded and
 // marked; the adapter routes the tool for the orchestrator only. Every repository is a sandbox under the OS temp dir.
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 
 const test = require('node:test');
 const assert = require('node:assert');

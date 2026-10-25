@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // write-verb-no-store.test.cjs — a write verb that acts on a row already there (memory verify, report, resolve, promote, held settle,
 // restore, worker rm) finds none in a data dir that has no store yet, and is refused before its election would create the store.
 // The data dir is left exactly as it was: empty. Built CLI, mkdtemp sandbox, each child waited for.

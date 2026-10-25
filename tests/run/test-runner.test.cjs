@@ -17,6 +17,9 @@ const HANG = fwd(path.resolve(__dirname, 'fixtures', 'hang-fixture.cjs'));
 const PASS = fwd(path.resolve(__dirname, 'fixtures', 'pass-fixture.cjs'));
 const PROBE = fwd(path.resolve(__dirname, 'fixtures', 'runphase-probe.cjs'));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// A nested phase over the hang fixture fails on purpose; its output is discarded, so that failure line does not show among
+// the suite's own results. Every check reads runPhase's returned facts, never that output.
+const quiet = (cmd, args, o) => spawn(cmd, args, { ...o, stdio: 'ignore' });
 
 // The phase runs a nested `node --test`; inside this test file that would see NODE_TEST_CONTEXT and act
 // as a reporting child of ours, so the variable is removed for the nested run and restored after.
@@ -51,7 +54,7 @@ test('test-runner: a hung phase is stopped by exact pid, its tree included, with
   let pids = null;
   try {
     const t0 = Date.now();
-    const r = await withNestedEnv({ H1_PIDS_FILE: pidsFile }, () => runPhase([HANG], { timeoutMs: 2000 }));
+    const r = await withNestedEnv({ H1_PIDS_FILE: pidsFile }, () => runPhase([HANG], { timeoutMs: 2000, spawnImpl: quiet }));
     const took = Date.now() - t0;
     assert.strictEqual(r.timed_out, true, `the hung phase must report timed_out: ${JSON.stringify(r)}`);
     assert.strictEqual(r.status, 124);
@@ -99,7 +102,7 @@ test('test-runner: a phase whose tree could not be stopped reports stop_failed a
   const seen = [];
   const stub = async (target) => { seen.push(target); return { ok: false, error: 'stubbed killTree failure' }; };
   try {
-    const r = await withNestedEnv({ H1_PIDS_FILE: pidsFile }, () => runPhase([HANG], { timeoutMs: 1500, killTreeImpl: stub }));
+    const r = await withNestedEnv({ H1_PIDS_FILE: pidsFile }, () => runPhase([HANG], { timeoutMs: 1500, killTreeImpl: stub, spawnImpl: quiet }));
     assert.strictEqual(r.timed_out, true, JSON.stringify(r));
     assert.strictEqual(r.status, 124);
     assert.strictEqual(r.stop_failed, true, `a failed killTree must be reported: ${JSON.stringify(r)}`);
@@ -110,7 +113,7 @@ test('test-runner: a phase whose tree could not be stopped reports stop_failed a
 
     const dir2 = fwd(fs.mkdtempSync(path.join(os.tmpdir(), 'belay-h1-runner-')));
     try {
-      const all = await withNestedEnv({ H1_PIDS_FILE: `${dir2}/pids.json` }, () => runPhases({ globs1: [HANG], glob2: PASS, timeout1: 1500, timeout2: 60000, killTreeImpl: stub }));
+      const all = await withNestedEnv({ H1_PIDS_FILE: `${dir2}/pids.json` }, () => runPhases({ globs1: [HANG], glob2: PASS, timeout1: 1500, timeout2: 60000, killTreeImpl: stub, spawnImpl: quiet }));
       stopFixturePids(`${dir2}/pids.json`);
       assert.strictEqual(all.p1.stop_failed, true);
       assert.strictEqual(all.p2, null, 'phase 2 must not start when phase 1 could not be stopped');
