@@ -43,7 +43,8 @@ test('resolveWindowsShim: npm and npx become node plus the script beside node on
 test('npm resolves and runs where belay spawns commands, without a shell', { skip: process.platform !== 'win32' }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-npm-'));
   try {
-    const r = await runCommand(['npm', '--version'], dir, 60000);
+    // npm enables Node's compile cache, which defaults to <tmpdir>/node-compile-cache; it goes in this test's own dir instead.
+    const r = await runCommand(['npm', '--version'], dir, 60000, { env: { ...process.env, NODE_COMPILE_CACHE: path.join(dir, 'node-compile-cache') } });
     assert.strictEqual(r.executable, true, JSON.stringify(r));
     assert.strictEqual(r.exit_code, 0, JSON.stringify(r));
     assert.match(r.stdout.trim(), /^\d+\.\d+\.\d+/);
