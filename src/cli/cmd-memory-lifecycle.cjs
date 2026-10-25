@@ -53,9 +53,13 @@ async function proposals(core, parsed, ctx, found) {
   const args = { root: rootOf(ctx, found) };
   if (parsed.opts.project) args.project = parsed.opts.project;
   if (parsed.opts.all) args.all = true;
-  const res = await core.memory.proposals(args);
-  // Reports of "wrong" with no verdict applied (a review or job may have run and left the report out): listed for the operator.
-  try { if (core.memory && typeof core.memory.held === 'function') res.unjudged_reports = (await core.memory.held({ ...(args.project ? { project: args.project } : {}), reports: true })).unjudged_reports || []; } catch { /* the list is extra; the proposals stand */ }
+  const batch = typeof core.readBatch === 'function' ? (fn) => core.readBatch(fn) : (fn) => fn(); // one store copy for both reads
+  const res = await batch(async () => {
+    const r = await core.memory.proposals(args);
+    // Reports of "wrong" with no verdict applied (a review or job may have run and left the report out): listed for the operator.
+    try { if (core.memory && typeof core.memory.held === 'function') r.unjudged_reports = (await core.memory.held({ ...(args.project ? { project: args.project } : {}), reports: true })).unjudged_reports || []; } catch { /* the list is extra; the proposals stand */ }
+    return r;
+  });
   return { code: 0, text: renderProposals(res), json: res };
 }
 

@@ -429,7 +429,7 @@ test('worker control: worker.pause and worker.resume over the pipe take paused_b
   try {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
     await m._waitTurn('w1', 8000);
-    control = createWorkerControl({ dataDir: sb.data, manager: m });
+    control = createWorkerControl({ redeem: null, dataDir: sb.data, manager: m });
     await control.listen();
     client = new Client(sb.data, { pipe: control.pipe, elect: false });
     await client.connect();

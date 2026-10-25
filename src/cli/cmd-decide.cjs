@@ -11,7 +11,7 @@ const { openCore } = require('../core/index.cjs');
 function usageError(command, message) {
   const usage = command === 'approve'
     ? 'usage: belay approve <request-id> [--data <dir>] [--json]\n'
-    : 'usage: belay deny <request-id> [reason...] [--data <dir>] [--json]\n';
+    : 'usage: belay deny <request-id> [reason...] [--data <dir>] [--json]\n       a reason word that starts with - goes after --: belay deny <request-id> -- <reason...>\n';
   return { code: 2, text: `belay ${command}: ${message}\n\n${usage}`, json: { error: message } };
 }
 
@@ -46,8 +46,9 @@ async function waitWorkerAfter(core, workerId, decidedAt) {
 async function run(ctx) {
   const verdict = ctx.command === 'approve' ? 'allow' : 'deny';
   const positionals = [];
-  for (const a of ctx.argv) {
-    if (typeof a === 'string' && a.startsWith('-')) return usageError(ctx.command, `unknown option ${a}`);
+  for (const [i, a] of ctx.argv.entries()) {
+    const literal = ctx.literal != null && i >= ctx.literal && i > 0; // a reason word after `--` is text; the request id never is
+    if (!literal && typeof a === 'string' && a.startsWith('-')) return usageError(ctx.command, `unknown option ${a}`);
     positionals.push(a);
   }
   if (ctx.command === 'approve' && positionals.length !== 1) {

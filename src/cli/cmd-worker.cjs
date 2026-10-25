@@ -110,7 +110,9 @@ async function runKill(core, workerId) {
   const t0 = Date.now();
   const aliveBeforeSignal = pidAlive(w.pid); // before the kill: the identity check itself takes about a second
   // ADR 0039: the row's pid_created is the identity; a pid held by a different process is refused, not killed.
-  const kp = await P.killProcess(P.rowTarget(w)).catch((e) => ({ tree: { ok: false, terminated: 0, ms: 0, error: e && e.message }, pidKill: { signalled: false, error: 'EIDENTITY' }, identity: null, refused: { refused: 'identity', detail: e && e.message } }));
+  // The kill lock, as at every other kill site (ADR 0039 review): one kill per CLI process today, so it orders nothing yet, but a
+  // second kill site in this process can never interleave with this one.
+  const kp = await P.withKillLock(() => P.killProcess(P.rowTarget(w))).catch((e) => ({ tree: { ok: false, terminated: 0, ms: 0, error: e && e.message }, pidKill: { signalled: false, error: 'EIDENTITY' }, identity: null, refused: { refused: 'identity', detail: e && e.message } }));
   const { tree, pidKill } = kp;
   const goneAfterKill = await P.waitPidGone(w.pid, { timeoutMs: KILL_WAIT_MS });
   const ms_to_dead = goneAfterKill === null ? null : Date.now() - t0;
@@ -303,6 +305,12 @@ async function runKillOrRm(ctx, sub, workerId) {
       worker_id: workerId, forgotten: false, reason: `no such data dir: ${dataDir}`,
       error: { code: 'E_NOT_FOUND', message: `no such data dir: ${dataDir}` },
     };
+    return { code: 1, text: renderRmText(receipt), json: receipt };
+  }
+  // rm elects an owner to write, and an election in a data dir with no store creates one; with no store there is no row to forget.
+  if (sub === 'rm' && !fs.existsSync(path.join(dataDir, 'memory.db'))) {
+    const message = `no store at ${dataDir}/memory.db, so no worker row exists for ${workerId}; nothing was written`;
+    const receipt = { worker_id: workerId, forgotten: false, reason: message, error: { code: 'E_NOT_FOUND', message } };
     return { code: 1, text: renderRmText(receipt), json: receipt };
   }
 

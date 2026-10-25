@@ -68,7 +68,7 @@ async function setupOwnerAndManager(dataDir, runId, exe = FAKE_CLAUDE) {
   const core = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
   await core.run.attach({ adapter_pid: process.pid });
   const m = createRunManager({ core, dataDir, runId, paths: { claudeExe: exe, codexExe: FAKE_CODEX, userSettings: USER_SETTINGS } });
-  const control = createWorkerControl({ dataDir, manager: m });
+  const control = createWorkerControl({ redeem: null, dataDir, manager: m });
   await control.listen();
   return { core, m, control };
 }
