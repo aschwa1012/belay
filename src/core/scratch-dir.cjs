@@ -40,6 +40,12 @@ function under(p, root) {
   } catch { return false; }
 }
 
+// True when `parent` lists `name` with exactly that spelling. NTFS opens "R1" for a folder made as "r1", so a run id or a worker id
+// that matches a folder only by case is a different run or worker, never the folder that is there.
+function exactName(parent, name) {
+  try { return fs.readdirSync(parent).includes(String(name)); } catch { return false; }
+}
+
 // <data>/scratch when it is a real directory (not itself a link), else null.
 function rootDir(dataDir) {
   const root = scratchRoot(dataDir);
@@ -52,7 +58,7 @@ function runDir(dataDir, runId) {
   const root = rootDir(dataDir);
   if (!root) return null;
   const rd = path.join(root, String(runId));
-  return realDir(rd) && under(rd, root) ? rd : null;
+  return realDir(rd) && under(rd, root) && exactName(root, runId) ? rd : null;
 }
 
 // The scratch folder's path when it exists as a real directory inside a real run folder, else null.
@@ -61,7 +67,7 @@ function scratchDir(dataDir, runId, workerId) {
   const rd = runDir(dataDir, runId);
   if (!rd) return null;
   const dir = path.join(rd, String(workerId));
-  return realDir(dir) && under(dir, scratchRoot(dataDir)) ? fwd(dir) : null;
+  return realDir(dir) && under(dir, scratchRoot(dataDir)) && exactName(rd, workerId) ? fwd(dir) : null;
 }
 
 // Bytes and files under a checked folder, following no link; null when `dir` is not a real directory, or when it did not
@@ -100,4 +106,4 @@ function goneId(name) {
   return m ? { dev: BigInt(m[1]), ino: BigInt(m[2]) } : null;
 }
 
-module.exports = { SCRATCH_FLAG_BYTES, GONE, scratchRoot, scratchOf, isGone, segment, realDir, identity, sameId, under, rootDir, runDir, scratchDir, measure, facts, goneName, goneId };
+module.exports = { SCRATCH_FLAG_BYTES, GONE, scratchRoot, scratchOf, isGone, segment, realDir, identity, sameId, under, rootDir, runDir, scratchDir, exactName, measure, facts, goneName, goneId };

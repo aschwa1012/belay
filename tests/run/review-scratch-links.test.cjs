@@ -227,3 +227,57 @@ test('the scratch root is a real directory of its own: a file where it goes gets
     assert.strictEqual(fs.readFileSync(`${s.data}/scratch`, 'utf8'), 'not a directory');
   } finally { s.rm(); }
 });
+
+test('a run id that differs from a folder only by case is a different run: ensure reuses nothing and a close removes nothing, and names it', { skip: !win && 'needs a case-insensitive file system' }, () => {
+  const s = sandbox();
+  try {
+    const mine = RS.ensure(s.data, 'w1', 'r1');
+    fs.writeFileSync(`${mine}/probe.cjs`, 'keep');
+    assert.strictEqual(RS.ensure(s.data, 'w2', 'R1'), null, 'a case variant of a run folder is not reused');
+    assert.ok(!fs.existsSync(`${s.data}/scratch/r1/w2`), 'and nothing is made in it');
+    const out = RS.closeRun(s.data, 'R1', {}).review_scratch;
+    assert.deepStrictEqual([out.folders, out.removed_folders], [[], 0]);
+    assert.match(out.error, /differs from the run id "R1" only by case/);
+    assert.deepStrictEqual(RS.lines({ review_scratch: out }), [`review scratch: ${out.error}`]);
+    assert.strictEqual(fs.readFileSync(`${mine}/probe.cjs`, 'utf8'), 'keep', 'the other run\'s folder is whole');
+    assert.strictEqual(SD.scratchDir(s.data, 'r1', 'W1'), null, 'a case variant of a worker folder is not that folder');
+    assert.ok(SD.scratchDir(s.data, 'r1', 'w1'), 'the exact spelling still is');
+  } finally { s.rm(); }
+});
+
+test('ensure: a run folder swapped for a junction after its check names no folder and the victim keeps what it had', () => {
+  const s = sandbox();
+  fs.rmSync(`${s.victim}/rX`, { recursive: true });
+  const rd = `${s.data}/scratch/run-L`;
+  fs.mkdirSync(rd);
+  const orig = SD.runDir;
+  let n = 0;
+  SD.runDir = (d, run) => { const r = orig(d, run); if (n++ === 0) { fs.rmdirSync(rd); junction(rd, s.victim); } return r; };
+  try {
+    assert.strictEqual(RS.ensure(s.data, 'rX', 'run-L'), null, 'no folder is named');
+    assert.strictEqual(kept(s, 'rY'), 'keep me', 'the victim\'s own folders are untouched');
+    assert.strictEqual(fs.readFileSync(`${s.victim}/precious.txt`, 'utf8'), 'keep me too');
+  } finally { SD.runDir = orig; unlinkAll(s, [rd]); }
+});
+
+test('ensure: a swap between the mkdir and the re-check removes nothing, even an empty folder of the same name that was already in the victim', () => {
+  const s = sandbox();
+  fs.rmSync(`${s.victim}/rX`, { recursive: true });
+  fs.mkdirSync(`${s.victim}/rX`); // empty, pre-existing: the shape an identity read taken after the swap would take for its own
+  const rd = `${s.data}/scratch/run-L`;
+  fs.mkdirSync(rd);
+  const real = fs.mkdirSync;
+  const removed = [];
+  const realRmdir = fs.rmdirSync;
+  fs.mkdirSync = (p, ...a) => {
+    const r = real(p, ...a);
+    if (path.basename(String(p)) === 'rX') { fs.renameSync(rd, `${rd}.real`); junction(rd, s.victim); }
+    return r;
+  };
+  fs.rmdirSync = (p, ...a) => { removed.push(String(p)); return realRmdir(p, ...a); };
+  try {
+    assert.strictEqual(RS.ensure(s.data, 'rX', 'run-L'), null);
+    assert.ok(fs.existsSync(`${s.victim}/rX`), 'the victim\'s empty folder is still there');
+    assert.deepStrictEqual(removed, [], 'no rmdir was made');
+  } finally { fs.mkdirSync = real; fs.rmdirSync = realRmdir; unlinkAll(s, [rd]); }
+});
