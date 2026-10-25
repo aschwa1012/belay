@@ -169,7 +169,7 @@ const BOTH = [
   },
 ];
 
-// The orchestrator's task_list (ADR 0058 amendment 1): compact rows by default (views.cjs), one task's detail by task_ids,
+// The orchestrator's task_list (ADR 0058 amendment 3): compact rows by default (views.cjs), one task's detail by task_ids,
 // the core's rows with view debug. The worker's listing keeps the plain one above, so its bytes are unchanged.
 const ORCH_TASK_LIST = {
   name: 'task_list',

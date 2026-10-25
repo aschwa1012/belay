@@ -1,5 +1,5 @@
 'use strict';
-// release-eval-hold.test.cjs — ADR 0058 amendment 2: one wake per release. A turn_end whose hand-back is still being evaluated is
+// release-eval-hold.test.cjs — ADR 0058 amendment 4: one wake per release. A turn_end whose hand-back is still being evaluated is
 // held until the evaluation lands and goes out once, carrying the result; past the hold it goes out saying evaluating and the one
 // evaluated wake follows. Another event about the worker sends the held wake first. Fake task lists and a fake clock: no sleeps.
 

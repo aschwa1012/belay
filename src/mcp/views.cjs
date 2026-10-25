@@ -1,5 +1,5 @@
 'use strict';
-// views.cjs — the compact default answers of the orchestrator's task tools (ADR 0058 amendment 1). Every byte of an answer is
+// views.cjs — the compact default answers of the orchestrator's task tools (ADR 0058 amendment 3). Every byte of an answer is
 // read into the orchestrator's context, and a task row carries its full spec, its acceptance, its worktree record with the
 // junctions, and every check's output tails: about 2.9 KB a task once evaluated, so task_list grew by that for each task, on
 // every call. The default keeps what the orchestrator acts on; `view: "debug"` returns the core's rows unchanged. Pure.

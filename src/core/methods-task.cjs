@@ -190,7 +190,7 @@ async function assign(E, caller, args) {
     // The hold belongs to a live run: a task whose own run has ended is taken over by the run of the worker that takes it
     // (the calling orchestrator's run for a check_only), and is refused when no live run can own it.
     const worker = checkOnly ? null : rows.current(E.store, 'worker', args.worker_id);
-    // ADR 0058 amendment: a worker runs in one directory for its whole life, so a task with its own worktree goes only to a
+    // ADR 0058 amendment 1: a worker runs in one directory for its whole life, so a task with its own worktree goes only to a
     // worker that runs there. A check_only call checks the directory the spawn will run in, when it names one. Checked before
     // the hold, so a worker in the wrong tree is told that, not a hold's remedy (ADR 0059).
     const { assertTaskTree } = require('./methods-worktree.cjs');

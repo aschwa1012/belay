@@ -164,7 +164,7 @@ async function rollback(top, rec, { keepBranch = false } = {}) {
 }
 
 // A task that is leased or released has a worker already working, or its work handed back, in the worker's directory; a tree made
-// now would be one the work is not in, and its evaluation would judge it there (ADR 0058 amendment). Refused, naming the holder.
+// now would be one the work is not in, and its evaluation would judge it there (ADR 0058 amendment 1). Refused, naming the holder.
 function assertNotLeased(E, task) {
   const l = rows.currentLeaseForTask(E.store, task.id);
   const live = l && !l.released_at ? l : null;
@@ -313,7 +313,7 @@ async function removeTree(E, rec, args, what) {
   return out;
 }
 
-// A task with a belay worktree is worked and judged there and nowhere else (ADR 0058 amendment): a directory that is not that tree
+// A task with a belay worktree is worked and judged there and nowhere else (ADR 0058 amendment 1): a directory that is not that tree
 // is refused, naming both, because a worker writes where it runs and its directory cannot change once it is running.
 function assertTaskTree(task, dir, what, remedy) {
   const tree = active(task);

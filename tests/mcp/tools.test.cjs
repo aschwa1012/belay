@@ -79,7 +79,7 @@ test('A8 task_list returns lease holder, expiry and whether that holder is alive
     const row = r.tasks[0];
     has(row, ['id', 'spec_head', 'state', 'lease', 'holder_pid_alive', 'last_checkpoint_id', 'last_checkpoint_at'], 'task_list row');
     has(row.lease, ['id', 'holder', 'holder_role', 'expires_at', 'expired'], 'task_list lease');
-    // ADR 0058 amendment 1: the compact row is the default; view debug is the core's row, whole.
+    // ADR 0058 amendment 3: the compact row is the default; view debug is the core's row, whole.
     const full = assertOk(await a.call('task_list', { states: ['assigned'], view: 'debug' }), 'task_list debug').tasks[0];
     has(full, ['id', 'spec', 'state', 'lease', 'holder_pid_alive', 'last_checkpoint_id', 'last_checkpoint_at'], 'task_list debug row');
   });

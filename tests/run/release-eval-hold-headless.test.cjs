@@ -1,5 +1,5 @@
 'use strict';
-// release-eval-hold-headless.test.cjs — ADR 0058 amendment 2 in the headless orchestrator: a worker's turn ends with its
+// release-eval-hold-headless.test.cjs — ADR 0058 amendment 4 in the headless orchestrator: a worker's turn ends with its
 // hand-back still being evaluated, and the evaluation lands a few polls later. The orchestrator gets one wake for it (the
 // turn_end, carrying the result), never a turn_end and then an evaluated wake. Over the fakes: no Claude Code, no model.
 

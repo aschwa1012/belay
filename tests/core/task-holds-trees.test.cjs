@@ -95,7 +95,7 @@ test('a task with a worktree goes to no worker elsewhere (the tree error comes f
   await own(h);
   const i = await task(['moved/h.js']); // shared, beside h's own tree
   await worker('w-moved', repo);
-  // A worker in the shared checkout is refused for the tree, before the hold could name i (ADR 0059, after ADR 0058's amendment).
+  // A worker in the shared checkout is refused for the tree, before the hold could name i (ADR 0059, after ADR 0058 amendment 1).
   const e1 = await rejectsCode(orch.task.assign({ task_id: h.id, worker_id: 'w-moved' }), 'E_PRECONDITION');
   assert.strictEqual(e1.detail.task_id, h.id);
   await rejectsCode(orch.task.assign({ task_id: h.id, check_only: true, worktree: repo }), 'E_PRECONDITION');
