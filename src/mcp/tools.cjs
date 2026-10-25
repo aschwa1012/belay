@@ -235,7 +235,7 @@ const ORCHESTRATOR = [
   },
   {
     name: 'task_create',
-    description: 'Create a task with the checks that decide it is done, the files it owns and the tasks it must wait for. Returns the task row in state open. Refuses, naming the other task and the paths, when a file is already owned by a task that is not done in the same tree (warns if in another), and refuses a dependency that has no row.',
+    description: 'Create a task with the checks that decide it is done, the files it owns and the tasks it must wait for. Returns id, rev, state open, spec_head (view debug: whole row). Refuses, naming the other task and the paths, when a file is already owned by a task that is not done in the same tree (warns if in another), and refuses a dependency that has no row.',
     inputSchema: S({
       spec: str('What is to be done'),
       acceptance: S({
@@ -251,6 +251,7 @@ const ORCHESTRATOR = [
       depends_on: strs('Task ids that must be done before this one can be assigned'),
       repairs: str('A fix task: the id of the work task it repairs; capped by max_fix_rounds'),
       id: str(),
+      view: DEBUG,
     }, ['spec']),
   },
   {
@@ -283,7 +284,7 @@ const ORCHESTRATOR = [
   {
     // ADR 0053 decisions 2, 3 and 6.
     name: 'task_worktree',
-    description: 'Create (default) or remove the task\'s own git worktree and branch belay/<task_id>, cut from base (default HEAD). Returns the task row with worktree. remove refuses a dirty tree unless force, or a live worker in it; keeps the branch unless delete_branch.',
+    description: 'Create (default) or remove the task\'s own git worktree and branch belay/<task_id>, cut from base (default HEAD). Returns id, rev, state, spec_head, worktree (view debug: whole row). remove refuses a dirty tree unless force, or a live worker in it; keeps the branch unless delete_branch.',
     inputSchema: S({
       task_id: str(),
       action: { type: 'string', enum: ['create', 'remove'] },
@@ -291,6 +292,7 @@ const ORCHESTRATOR = [
       branch: str(),
       force: bool(),
       delete_branch: bool(),
+      view: DEBUG,
     }, ['task_id']),
   },
   {
@@ -328,7 +330,7 @@ const ORCHESTRATOR = [
   {
     // ADR 0054 decision 2. One tool with an op, not four: the listing pays for one schema.
     name: 'git_read',
-    description: 'Read-only git, run by belay with fixed argv, in worktree, task_id\'s worktree or the run\'s. Returns argv, exit_code, out (16 KB max, truncated marked). Refuses a rev or path that could be an option.',
+    description: 'Read-only git, run by belay with fixed argv, in worktree, task_id\'s worktree or the run\'s. Returns exit_code, out (16 KB max, truncated marked; view debug: argv too). Refuses a rev or path that could be an option.',
     inputSchema: S({
       op: { type: 'string', enum: ['status', 'log', 'diff', 'show'] },
       worktree: str(),
@@ -337,6 +339,7 @@ const ORCHESTRATOR = [
       path: str(),
       stat: bool(),
       n: int('log, default 20'),
+      view: DEBUG,
     }, ['op']),
   },
 ];

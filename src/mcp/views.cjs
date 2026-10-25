@@ -38,6 +38,22 @@ const leaseOf = (l) => (l && typeof l === 'object' ? { id: l.id, holder: l.holde
 const worktreeOf = (w) => (w && typeof w === 'object' ? { path: w.path, branch: w.branch, ...(w.inherited_from ? { inherited_from: w.inherited_from } : {}), ...(w.removed_at ? { removed_at: w.removed_at } : {}) } : w);
 const handoffFields = (h) => (h && typeof h === 'object' ? { by: h.by, at: h.at, fields: h.result && typeof h.result === 'object' ? Object.keys(h.result) : [] } : h);
 
+// One task's detail gives a review's hand-back once. The verdict check of the same hand-back (its lease) carries the summary,
+// the findings and the tree record verbatim, and the prompt reads them there; so the hand-back leaves out each one that is
+// equal in the check and names them in `in_verdict_check`. Whatever differs (findings cut to the check's maximum) stays.
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+function handoffOnce(h, checks) {
+  if (!h || typeof h !== 'object' || !h.result || typeof h.result !== 'object') return h;
+  const v = checks.find((c) => c && c.kind === 'verdict' && c.detail && c.detail.lease_id === h.lease_id);
+  if (!v) return h;
+  const result = { ...h.result };
+  const out = { ...h };
+  const moved = [];
+  for (const k of ['summary', 'findings']) if (k in result && same(result[k], v.detail[k])) { delete result[k]; moved.push(k); }
+  for (const k of ['tree', 'scratch']) if (k in out && same(out[k], v.detail[k])) { delete out[k]; moved.push(k); }
+  return moved.length ? { ...out, result, in_verdict_check: moved } : h;
+}
+
 // The row keys a compact answer drops or replaces. Anything else the core adds passes through, so a new field is never lost here.
 const ROW_DROP = new Set(['acceptance', 'spec', 'results', 'handoff', 'lease', 'worktree']);
 // A listing row also leaves out what the task's own detail carries: its files, who wrote it, the reason for a hold.
@@ -66,7 +82,8 @@ function compactTask(row, { detail = false } = {}) {
   out.spec_head = head(row.spec);
   if (row.lease !== undefined) out.lease = leaseOf(row.lease);
   if (detail) { if (row.worktree !== undefined) out.worktree = worktreeOf(row.worktree); } else if (row.worktree && row.worktree.branch) out.branch = row.worktree.branch;
-  if (row.handoff !== undefined) out.handoff = detail ? row.handoff : handoffFields(row.handoff);
+  const allChecks = row.results && Array.isArray(row.results.checks) ? row.results.checks : [];
+  if (row.handoff !== undefined) out.handoff = detail ? handoffOnce(row.handoff, allChecks) : handoffFields(row.handoff);
   const r = row.results;
   if (r && typeof r === 'object') {
     const checks = Array.isArray(r.checks) ? r.checks : [];
@@ -114,6 +131,32 @@ function integrate(row) {
 // task_assign and task_cancel answer with the task beside the leases: the task is the summary row.
 const withTask = (answer) => (answer && typeof answer === 'object' && answer.task && typeof answer.task === 'object' ? { ...answer, task: compactTask(answer.task) } : answer);
 
+// task_create: the new task's id, rev, state and spec head. The row's other columns are the caller's own arguments (spec,
+// acceptance, files, dependencies) or empty on a new task, so they are left out; anything else the core adds to the answer (a
+// `warning` for a task with no checks, `overlaps` for a file held by a task in another tree) stays.
+const CREATED_DROP = new Set(['spec', 'acceptance', 'files_owned', 'depends_on', 'repairs', 'answers', 'results', 'handoff', 'worktree', 'run_id', 'written_at', 'written_by']);
+function created(row) {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
+  const out = { id: row.id, seq: row.seq, state: row.state, spec_head: head(row.spec) };
+  for (const [k, v] of Object.entries(row)) if (!(k in out) && !CREATED_DROP.has(k)) out[k] = v;
+  return out;
+}
+
+// task_worktree: the task as task_create answers it, its tree (path, branch, base, any junction skipped) and a removal's receipt.
+function taskWorktree(row) {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
+  const w = row.worktree && typeof row.worktree === 'object' ? row.worktree : null;
+  const tree = w ? { ...worktreeOf(w), base_sha: w.base_sha, ...(Array.isArray(w.junctions_skipped) && w.junctions_skipped.length ? { junctions_skipped: w.junctions_skipped } : {}) } : w;
+  return { ...created(row), worktree: tree, ...(row.removal !== undefined ? { removal: row.removal } : {}) };
+}
+
+// git_read: belay's fixed argv is a receipt, not an answer; the output and its facts stay.
+const gitRead = (r) => {
+  if (!r || typeof r !== 'object' || Array.isArray(r)) return r;
+  const { argv, ...rest } = r;
+  return rest;
+};
+
 // The tools whose default answer is a view, and how. `view` and `task_ids` are the adapter's, never the core's: they are taken
 // off the arguments here, checked, and the call runs without them.
 // memory_report: the hold it made or joined, the hold's state, and what happened to the note (withheld or not, and why). The core's answer also
@@ -130,7 +173,7 @@ function memoryReport(a) {
   };
 }
 
-const VIEWED = { task_list: taskList, task_evaluate: taskEvaluate, integrate, task_assign: withTask, task_cancel: withTask, memory_report: memoryReport };
+const VIEWED = { task_list: taskList, task_evaluate: taskEvaluate, integrate, task_assign: withTask, task_cancel: withTask, task_create: created, task_worktree: taskWorktree, git_read: gitRead, memory_report: memoryReport };
 const isViewed = (name) => typeof name === 'string' && Object.prototype.hasOwnProperty.call(VIEWED, name);
 const bad = (message, detail) => Object.assign(new Error(message), { code: 'E_ARGS', detail });
 

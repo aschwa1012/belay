@@ -99,9 +99,9 @@ async function readTasks(E, ids) {
     return t;
   });
   const notDone = tasks.filter((t) => t.state !== 'done').map((t) => ({ task_id: t.id, state: t.state }));
-  if (notDone.length) throw err('E_PRECONDITION', `only done tasks are merged; not done: ${notDone.map((x) => `${x.task_id} (${x.state})`).join(', ')}`, { not_done: notDone });
+  if (notDone.length) throw err('E_PRECONDITION', `only done tasks are merged; not done: ${notDone.map((x) => `${x.task_id} (${x.state})`).join(', ')}. Leave them out, or merge once task_evaluate makes them done`, { not_done: notDone });
   const noBranch = tasks.filter((t) => !t.worktree || !t.worktree.branch).map((t) => t.id);
-  if (noBranch.length) throw err('E_PRECONDITION', `these tasks have no belay branch to merge: ${noBranch.join(', ')}`, { no_branch: noBranch });
+  if (noBranch.length) throw err('E_PRECONDITION', `these tasks have no belay branch to merge: ${noBranch.join(', ')}. integrate merges only tasks worked in their own tree (task_worktree before the coder starts); leave these out, their work is already where it was committed`, { no_branch: noBranch });
   // A fix task works on the branch of the work it fixes: merging the done work would take the open fix's unreviewed commits.
   for (const t of tasks) {
     const open = W.openSharer(E, t);
@@ -109,7 +109,7 @@ async function readTasks(E, ids) {
   }
   const repo = tasks[0].worktree.repo;
   const other = tasks.find((t) => !G.samePath(t.worktree.repo, repo));
-  if (other) throw err('E_PRECONDITION', `task ${other.id}'s branch is in ${other.worktree.repo}, not ${repo}`, { task_id: other.id, repo: other.worktree.repo, expected: repo });
+  if (other) throw err('E_PRECONDITION', `task ${other.id}'s branch is in ${other.worktree.repo}, not ${repo}; integrate each repository's tasks in a call of their own`, { task_id: other.id, repo: other.worktree.repo, expected: repo });
   const dirty = [];
   for (const t of tasks) {
     const a = W.active(t);
@@ -174,7 +174,7 @@ async function integrationTree(E, repo, into, args, tasks, abandoned = []) {
     if (args.base !== undefined) base = await G.commitOf(repo, args.base);
     else {
       const bases = [...new Set(tasks.map((t) => t.worktree.base_sha))];
-      if (bases.length !== 1) throw err('E_ARGS', `the tasks were cut from ${bases.length} different bases, so ${into} needs a base`, { bases });
+      if (bases.length !== 1) throw err('E_ARGS', `the tasks were cut from ${bases.length} different bases, so ${into} needs a base: pass base (for example the default branch)`, { bases });
       base = bases[0];
     }
     await G.must(repo, ['worktree', 'add', '-b', into, '--', wtPath, base], `the integration worktree for ${into} could not be added`);
@@ -193,7 +193,7 @@ async function integrationTree(E, repo, into, args, tasks, abandoned = []) {
 async function mergeOne(tree, task, target) {
   const b = task.worktree.branch;
   const tip = (await G.must(tree, ['rev-parse', '--verify', `refs/heads/${b}^{commit}`], `branch ${b} of task ${task.id} does not resolve`)).trim();
-  if (!target) throw err('E_PRECONDITION', `task ${task.id} has no judged commit on ${b}`, { task_id: task.id, branch: b });
+  if (!target) throw err('E_PRECONDITION', `task ${task.id} has no judged commit on ${b}; evaluate it on its branch first`, { task_id: task.id, branch: b });
   const { by, sha } = target;
   let leftOut = null;
   if (tip !== sha) {

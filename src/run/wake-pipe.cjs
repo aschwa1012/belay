@@ -89,7 +89,7 @@ function startWakePublisher({
         baseline = next;
         const byId = new Map((list.workers || []).map((w) => [w.id, w]));
         for (const nw of await noteWatcher.poll()) queue.push({ id: nw.id, text: nw.text, worker_id: nw.worker_id, event: nw.event, paused_at: null, paused_by: null });
-        const enriched = await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), evalSeen, { holdMs: require('./release-eval.cjs').holdMs(), now }); // ADR 0058 amendment 2: held for its evaluation
+        const enriched = await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), evalSeen, { holdMs: require('./release-eval.cjs').holdMs(), now }); // ADR 0058 amendment 4: held for its evaluation
         for (const ev of await require('./idle-remind.cjs').remindIdle(core, runId, list.workers || [], enriched, idleReminded)) { // ADR 0058, the idle-workers amendment
           const r = byId.get(ev.worker_id) || {};
           // paused_at and paused_by are the row's own pair at derivation: what a resume matches a park against (equality, no clocks)

@@ -9,7 +9,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
-const { makeRepo, git, write, commit } = require('./worktree-helpers.cjs');
+const { makeRepo, git, write, commit, rejectsCode } = require('./worktree-helpers.cjs');
 
 const { openCore } = core('index.cjs');
 
@@ -241,4 +241,23 @@ test('two integrations that overlap are ordered by when each began, not when eac
   const it = await integ(t.id);
   assert.deepStrictEqual([it.into, it.id], ['int/o2', late.id], 'the integration that began last leads');
   assert.deepStrictEqual(it.elsewhere, [{ into: 'int/o1', state: 'merged' }]);
+});
+
+test('integrate refusals say what to do next: a task not done, a task with no belay branch, tasks cut from different bases', async () => {
+  const repo = makeRepo(dir);
+  const open = await orch.task.create({ spec: 'open', acceptance: { commands: [exists('x')] } });
+  await op.task.worktreeCreate({ task_id: open.id, repo });
+  const notDone = await rejectsCode(orch.integration.merge({ task_ids: [open.id] }), 'E_PRECONDITION');
+  assert.match(notDone.message, /Leave them out, or merge once task_evaluate makes them done/);
+  const bare = await orch.task.create({ spec: 'bare', acceptance: { commands: [{ argv: [process.execPath, '-e', ''] }] } });
+  await orch.task.evaluate({ task_id: bare.id, worktree: repo });
+  const noBranch = await rejectsCode(orch.integration.merge({ task_ids: [bare.id] }), 'E_PRECONDITION');
+  assert.deepStrictEqual(noBranch.detail.no_branch, [bare.id]);
+  assert.match(noBranch.message, /task_worktree before the coder starts/);
+  const a = await doneTask(repo, { 'a.txt': 'a\n' }, [exists('a.txt')]);
+  write(repo, 'moved.txt', 'main moves\n');
+  commit(repo, 'main moves');
+  const b = await doneTask(repo, { 'b.txt': 'b\n' }, [exists('b.txt')]);
+  const bases = await rejectsCode(orch.integration.merge({ task_ids: [a.id, b.id], into: 'int/bases' }), 'E_ARGS');
+  assert.match(bases.message, /pass base/);
 });

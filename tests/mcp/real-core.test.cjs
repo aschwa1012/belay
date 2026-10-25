@@ -95,7 +95,8 @@ test('A8 against the real core: task_create, task_list and briefing', async (t) 
   t.after(async () => { await a.close(); a.kill(); });
   await a.initialize();
 
-  const c = (await a.call('task_create', { spec: 'a real task', files_owned: ['src/b.js'] })).structuredContent;
+  // view debug: the whole row, so its run id and author can be read (the default answer is id, rev, state and spec_head).
+  const c = (await a.call('task_create', { spec: 'a real task', files_owned: ['src/b.js'], view: 'debug' })).structuredContent;
   assert.strictEqual(c.state, 'open');
   assert.match(c.id, /^[0-9a-f-]{36}$/, 'the id is a uuid the orchestrator can carry');
   assert.strictEqual(c.run_id, 'run-1', 'the run id comes from argv');

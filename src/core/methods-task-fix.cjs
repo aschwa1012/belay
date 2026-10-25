@@ -70,7 +70,7 @@ async function fixFromReview(E, caller, args) {
   if (!args.review_id || typeof args.review_id !== 'string') throw err('E_ARGS', 'task.fixFromReview needs the review_id of a refuted review task');
   const review = rows.current(E.store, 'task', args.review_id);
   if (!review) throw err('E_NOT_FOUND', `no task row exists for ${args.review_id}`, { review_id: args.review_id });
-  if (!review.acceptance || review.acceptance.verdict !== true) throw err('E_ARGS', `task ${review.id} is not a review task (its acceptance has no verdict: true)`, { review_id: review.id });
+  if (!review.acceptance || review.acceptance.verdict !== true) throw err('E_ARGS', `task ${review.id} is not a review task (its acceptance has no verdict: true); pass the id of the review task that judged the work`, { review_id: review.id });
   if (!T.refutedReview(review)) {
     throw err('E_PRECONDITION', `review ${review.id} was not last evaluated refuted (an executable verdict check that failed); evaluate it first, and fix only after a refuted review`, { review_id: review.id, state: review.state });
   }
