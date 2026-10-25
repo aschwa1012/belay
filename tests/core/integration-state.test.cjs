@@ -193,22 +193,25 @@ test('a merge that throws (a branch deleted) still checks what landed and names 
   assert.strictEqual((await integ(b.id)).state, 'failed');
 });
 
-// integrate merges the head a task was judged at (ADR 0060 decision 4), so a's own branch cannot later conflict on int/s; the
-// newer stop on that branch is c's, whose judged change conflicts with a's.
+// integrate merges what a task was judged on (ADR 0060 decisions 4 and 6), so a's own later stop is a merge that fails: its
+// branch is deleted after the first merge.
 test('a merge into a branch stays true against a newer stop on that branch or another, and a removal keeps its time', async () => {
   const repo = makeRepo(dir);
-  const a = await doneTask(repo, { 'a.txt': 'a\n', 'base/keep.txt': 'from a\n' }, [exists('a.txt')]);
+  const a = await doneTask(repo, { 'a.txt': 'a\n' }, [exists('a.txt')]);
   const c = await doneTask(repo, { 'base/keep.txt': 'from c\n' }, [exists('base/keep.txt')]);
   const first = await orch.integration.merge({ task_ids: [a.id], into: 'int/s' });
-  const stop = await orch.integration.merge({ task_ids: [c.id], into: 'int/s' });
-  assert.strictEqual(stop.conflict.task_id, c.id);
+  await orch.integration.merge({ task_ids: [c.id], into: 'int/s' });
+  git(a.worktree.path, 'checkout', '-q', '--detach');
+  git(repo, 'branch', '-q', '-D', a.worktree.branch);
+  const stop = await orch.integration.merge({ task_ids: [a.id], into: 'int/s' });
+  assert.deepStrictEqual([stop.state, stop.error.task_id], ['failed', a.id]);
   let ia = await integ(a.id);
   assert.deepStrictEqual([ia.state, ia.into, ia.id], ['merged', 'int/s', first.id], 'its merge into int/s stays true');
   const other = await orch.integration.merge({ task_ids: [c.id, a.id], into: 'int/s2' });
-  assert.strictEqual(other.conflict.task_id, a.id);
+  assert.deepStrictEqual([other.state, other.error.task_id], ['failed', a.id]);
   ia = await integ(a.id);
-  assert.deepStrictEqual([ia.state, ia.into], ['merged', 'int/s'], 'a merge leads over a newer conflict elsewhere');
-  assert.deepStrictEqual(ia.elsewhere, [{ into: 'int/s2', state: 'conflict' }]);
+  assert.deepStrictEqual([ia.state, ia.into], ['merged', 'int/s'], 'a merge leads over a newer failure elsewhere');
+  assert.deepStrictEqual(ia.elsewhere, [{ into: 'int/s2', state: 'failed' }]);
   // Removing the tree of int/s2's integration appends a row, which neither moves nor re-times what it says.
   await op.integration.remove({ id: other.id, force: true });
   const ic = await integ(c.id);
