@@ -174,3 +174,21 @@ test('a task named but not tried keeps its earlier merge: a later stop on anothe
   assert.strictEqual(both.into, 'int/p2b', 'the newest merge leads');
   assert.deepStrictEqual(both.elsewhere, [{ into: 'int/p2', state: 'merged' }]);
 });
+
+test('a merge that throws (a branch deleted) still checks what landed and names the task failed', async () => {
+  const repo = makeRepo(dir);
+  const a = await doneTask(repo, { 'a.txt': 'a\n' }, [exists('a.txt')]);
+  const b = await doneTask(repo, { 'b.txt': 'b\n' }, [exists('b.txt')]);
+  await op.task.worktreeRemove({ task_id: b.id });
+  git(repo, 'branch', '-D', b.worktree.branch);
+  const row = await orch.integration.merge({ task_ids: [a.id, b.id], into: 'int/gone' });
+  assert.strictEqual(row.state, 'failed');
+  assert.strictEqual(row.error.code, 'E_GIT');
+  assert.strictEqual(row.error.task_id, b.id);
+  assert.strictEqual(row.error.tree_clean, true);
+  assert.deepStrictEqual(row.not_merged, [{ task_id: b.id, reason: 'failed' }]);
+  assert.strictEqual(row.passed, true);
+  assert.deepStrictEqual(row.checks.map((ch) => ch.task_ids), [[a.id]]);
+  assert.strictEqual(row.head_sha, git(row.worktree, 'rev-parse', 'HEAD'));
+  assert.strictEqual((await integ(b.id)).state, 'failed');
+});

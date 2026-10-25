@@ -155,8 +155,10 @@ async function merge(E, caller, args) {
     E.store.tx(() => { E.assertRunOpen(caller, 'integration.merge'); rows.append(E.store, 'integration', { ...base, state: 'merging' }, by, Date.now()); });
     E.noteWrite();
     const out = { ...base, state: 'merged' };
+    let trying = null; // the task whose merge is under way, so a throw (a branch deleted meanwhile) is blamed on it
     try {
       for (const t of tasks) {
+        trying = t;
         const m = await mergeOne(tree.path, t);
         if (!m.ok) {
           const { ok, conflict, stderr, ...rest } = m;
@@ -164,24 +166,32 @@ async function merge(E, caller, args) {
           break;
         }
         out.merged.push({ task_id: m.task_id, branch: m.branch, sha: m.sha, already: m.already, empty: !!m.empty });
+        trying = null;
       }
-      out.head_sha = (await G.must(tree.path, ['rev-parse', 'HEAD'], 'HEAD of the integration tree')).trim();
-      // What landed is checked even when the step stopped: a conflict or a failed merge keeps the merges before it on `into`,
-      // so their checks run on that tree (the abort left it clean) and the row keeps its stopped state. Only `evaluate: false`
-      // or a tree the abort did not leave clean leaves merged work unchecked, with checks null.
-      const stop = out.conflict || out.error;
-      if (args.evaluate !== false && out.merged.length && (!stop || stop.tree_clean === true)) {
-        const landed = new Set(out.merged.map((m) => m.task_id));
+    } catch (e) {
+      const left = await G.dirtyPaths(tree.path).catch(() => null);
+      out.state = 'failed';
+      out.error = { code: e.code || 'E_INTERNAL', message: e.message, detail: e.detail || null, task_id: trying ? trying.id : null, tree_clean: Array.isArray(left) && left.length === 0 };
+    }
+    const head = await G.run(tree.path, ['rev-parse', 'HEAD']);
+    if (head.ok) out.head_sha = head.stdout.trim();
+    // What landed is checked even when the step stopped: a conflict, a failed merge or a throw keeps the merges before it on
+    // `into`, so their checks run on that tree (when it is clean) and the row keeps its stopped state. Only `evaluate: false` or
+    // a tree that is not clean leaves merged work unchecked, with checks null.
+    const stop = out.conflict || out.error;
+    if (args.evaluate !== false && out.merged.length && (!stop || stop.tree_clean === true)) {
+      const landed = new Set(out.merged.map((m) => m.task_id));
+      try {
         out.checks = await rerun(tasks.filter((t) => landed.has(t.id)), tree.path);
         out.passed = out.checks.length > 0 ? out.checks.every((c) => c.passed) : null;
         if (!stop) {
           if (!out.checks.length) out.error = { message: 'the merged tasks declare no acceptance commands, so nothing was re-run and nothing is proven' };
           out.state = 'evaluated';
         }
+      } catch (e) {
+        out.checks = null; out.passed = null;
+        if (!stop) { out.state = 'failed'; out.error = { code: e.code || 'E_INTERNAL', message: `the checks could not be run: ${e.message}`, detail: e.detail || null }; }
       }
-    } catch (e) {
-      out.state = 'failed';
-      out.error = { code: e.code || 'E_INTERNAL', message: e.message, detail: e.detail || null };
     }
     // The merges have happened whatever the run did meanwhile, so the row that records them is written without a second run check.
     const row = E.store.tx(() => rows.append(E.store, 'integration', out, by, Date.now()));
