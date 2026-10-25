@@ -18,7 +18,7 @@ const MEMORY_RULES_FILE = path.join(__dirname, '..', 'run', 'prompts', 'memory-r
 // The one sentence that asks the orchestrator for `memory_queries`. Its only reader is the first-message index
 // (memory-preface.cjs), so it is told to the orchestrator only when that lever is on; off, the placeholder is ''
 // and the prompt asks for nothing the run never reads.
-const MEMORY_REPORT_LINE = ' To dispute a note, use `mcp__belay__memory_report` (it holds the note for the archive review).';
+const MEMORY_REPORT_LINE = ' If a note is wrong, out of date or contradicted by the evaluation of a task or the code, report it with `mcp__belay__memory_report` and say why (it holds the note for the archive review); you need not wait for the operator.';
 // ADR 0047 amendment (2026-10-22), decision 7: in a notes run the orchestrator's memory bullet says four things, and a run outcome is a summary. The
 // template keeps the text a run without notes always had, between {{memory_use}} ... {{/memory_use}} (and {{memory_outcome}} ... {{/memory_outcome}}); a run
 // with notes replaces the span, a run without drops only the markers, so its prompt is byte for byte what it was.
@@ -26,8 +26,8 @@ const MEMORY_USE_NOTES = [
   "- Use belay's memory yourself.",
   '  - Search before you plan: before you create any task, call `mcp__belay__memory_search` with a `query` on the brief\'s subject and no namespace (it searches the',
   "    project's notes) and use what it returns in your plan and prompts (empty on a first run is normal).",
-  '  - Store a lesson a later run would trip on as a note: `mcp__belay__memory_store` with `namespace: "project"` and `kind`, `title`, `when`, `basis` (and `evidence`',
-  '    when you observed it).',
+  '  - Store a note only for what the code and the markdown of the project cannot tell the next run and it would trip on: `mcp__belay__memory_store` with `namespace: "project"`',
+  '    and `kind`, `title`, `when`, `basis` (and `evidence` when you observed it). Nothing is the normal answer.',
   '  - Record your decisions and the outcome with `namespace: "summary"` (a `title` and `text`); they are found on demand with `mcp__belay__memory_summaries`.',
   '  - Never tell a worker to write memory with `memory_store`: what it learns that is worth keeping goes in the `notes` of its `lease_release`.',
 ].join('\n');

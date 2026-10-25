@@ -74,7 +74,7 @@ const NOTE_REFUTATION = {
 // The operator's word that a note is wrong, passed on by the orchestrator (it holds the note for the archive review). Orchestrator only, listed with the notes lever.
 const MEMORY_REPORT = {
   name: 'memory_report',
-  description: 'Report a note wrong when the operator says so; holds it for the archive review. Returns the hold row, or not_held with the reason.',
+  description: 'Report a note wrong on the operator word or your own evidence (a task evaluation, the code); say why. Holds it for the archive review. Returns the hold row, or not_held with the reason.',
   inputSchema: S({ note_id: str(), why: str(), replaced_by: str() }, ['note_id', 'why']),
 };
 
@@ -86,7 +86,7 @@ function memoryStoreNotes(ordinary, role) {
   const properties = { ...schema.properties };
   properties.namespace = str(`Default: this run only. project: a lasting note (kind, title, when, basis)${role === 'orchestrator' ? '. summary: run outcome' : ''}`);
   const { title, ...rest } = NOTE_PROPS;
-  return { ...ordinary, inputSchema: { ...schema, properties: { ...properties, ...rest, when: str('Task that would trip on it, max 160 bytes') } } };
+  return { ...ordinary, inputSchema: { ...schema, properties: { ...properties, ...rest, text: str('Not for project notes'), when: str('Task that would trip on it, max 160 bytes') } } };
 }
 
 module.exports = { memoryStoreNotes, LEASE_RELEASE, NOTE_RESOLVE, SUMMARIES, NOTE_REFUTATION, MEMORY_REPORT, notesWorkerListing };

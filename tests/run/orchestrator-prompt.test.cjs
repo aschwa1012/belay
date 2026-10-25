@@ -143,7 +143,7 @@ test('notes render: the memory bullet is the four points, a run outcome is a sum
     const text = on.text;
     assert.ok(!MARKERS.test(text) && !/\{\{/.test(text), `${f}: no marker or placeholder is left`);
     assert.match(text, /Search before you plan[^\n]*memory_search[^\n]*no namespace/, `${f}: search with no namespace`);
-    assert.match(text, /Store a lesson a later run would trip on as a note[^\n]*memory_store[^\n]*namespace: "project"[^\n]*kind/, `${f}: lessons as notes`);
+    assert.match(text, /Store a note only for what the code and the markdown of the project cannot tell[^\n]*memory_store[^\n]*namespace: "project"\s+and `kind`/, `${f}: notes, held to the bar`);
     assert.match(text, /Record your decisions and the outcome with \`namespace: "summary"\`/, `${f}: outcomes to summary`);
     assert.match(text, /Never tell a worker to write memory with \`memory_store\`[^\n]*notes[^\n]*lease_release/, `${f}: no worker memory_store`);
     assert.ok(!/always with \`namespace: "project"\`/.test(text), `${f}: the always-project instruction is gone`);
