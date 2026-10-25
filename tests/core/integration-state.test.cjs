@@ -67,7 +67,7 @@ test('a conflict checks what landed before it: a failing check on that tree is r
   assert.ok(ia.at > 0);
   assert.strictEqual((await integ(b.id)).state, 'conflict');
   assert.strictEqual((await integ(c.id)).state, 'not_merged');
-  assert.strictEqual((await integ(c.id)).into, 'int/stop');
+  assert.strictEqual((await integ(c.id)).into, null, 'named but not tried: the integration says nothing about c');
   const listed = (await orch.task.list({})).tasks.find((t) => t.id === b.id);
   assert.strictEqual(listed.state, 'done', 'the work state stays done');
   assert.strictEqual(listed.integration.state, 'conflict', 'task.list carries the same fact as task.get');
@@ -138,4 +138,39 @@ test('a clean integration marks every task merged with the head and the passing 
   }
   assert.strictEqual(await integ(open.id), null, 'not done and never named');
   assert.strictEqual(await integ(bare.id), null, 'no belay branch');
+});
+
+test('a removal does not make an older integration decide again: the order is when each integration began', async () => {
+  const repo = makeRepo(dir);
+  const a = await doneTask(repo, { 'a.txt': 'a\n' }, [exists('a.txt')]);
+  const first = await orch.integration.merge({ task_ids: [a.id], into: 'int/p1', evaluate: false });
+  assert.strictEqual((await integ(a.id)).passed, null);
+  const second = await orch.integration.merge({ task_ids: [a.id], into: 'int/p1' });
+  assert.strictEqual(second.passed, true);
+  await op.integration.remove({ id: first.id, force: true });
+  const ia = await integ(a.id);
+  assert.deepStrictEqual([ia.state, ia.id, ia.passed], ['merged', second.id, true], 'the removed first integration does not decide again');
+  assert.strictEqual(ia.at, second.written_at);
+});
+
+test('a task named but not tried keeps its earlier merge: a later stop on another task does not unmerge it', async () => {
+  const repo = makeRepo(dir);
+  const a = await doneTask(repo, { 'base/keep.txt': 'from a\n' }, [exists('base/keep.txt')]);
+  const b = await doneTask(repo, { 'base/keep.txt': 'from b\n' }, [exists('base/keep.txt')]);
+  const first = await orch.integration.merge({ task_ids: [a.id], into: 'int/p2' });
+  const row = await orch.integration.merge({ task_ids: [b.id, a.id], into: 'int/p2' });
+  assert.strictEqual(row.state, 'conflict');
+  assert.deepStrictEqual(row.not_merged, [{ task_id: b.id, reason: 'conflict' }, { task_id: a.id, reason: 'not_tried' }]);
+  const ia = await integ(a.id);
+  assert.deepStrictEqual([ia.state, ia.into, ia.id], ['merged', 'int/p2', first.id]);
+  assert.strictEqual(git(repo, 'merge-base', '--is-ancestor', a.worktree.branch, 'int/p2'), '', 'its commit is on int/p2');
+  // Another branch: a's merge there is reported beside it, and a conflict there does not hide the merge into int/p2.
+  const elsewhere = await orch.integration.merge({ task_ids: [a.id], into: 'int/p2b' });
+  assert.strictEqual(elsewhere.state, 'evaluated');
+  const ib = await integ(b.id);
+  assert.strictEqual(ib.state, 'conflict');
+  const both = await integ(a.id);
+  assert.strictEqual(both.state, 'merged');
+  assert.strictEqual(both.into, 'int/p2b', 'the newest merge leads');
+  assert.deepStrictEqual(both.elsewhere, [{ into: 'int/p2', state: 'merged' }]);
 });
