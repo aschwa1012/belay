@@ -8,6 +8,7 @@
 const rows = require('./rows.cjs');
 const { pidAlive } = require('./lock.cjs');
 const { normalise } = require('./evaluate.cjs');
+const { samePath } = require('./git.cjs');
 
 function overlaps(a, b) {
   const x = normalise(a), y = normalise(b);
@@ -55,10 +56,33 @@ function liveSince(store, runId) {
   return since;
 }
 
-// The holding tasks (other than `exceptId`) that overlap `files`, with the paths that clash, first match per task.
+// ADR 0059 decision 1: where a task writes. `own` is the path of its belay worktree (recorded, not removed) when the worker
+// working it works there; `loc` is the path known to be written in (that worker's worktree, else the recorded one) or null.
+// `worker` is the worker taking the task (null for none); left undefined, it is the holder of the task's unreleased lease.
+function treeOf(store, task, worker) {
+  const wt = task.worktree && task.worktree.path && !task.worktree.removed_at ? task.worktree.path : null;
+  let w = worker;
+  if (w === undefined) {
+    const l = rows.currentLeaseForTask(store, task.id);
+    w = l && !l.released_at && l.holder_role === 'worker' ? rows.current(store, 'worker', l.holder) : null;
+  }
+  const cwd = w && typeof w.worktree === 'string' && w.worktree ? w.worktree : null;
+  return { own: wt && (!cwd || samePath(cwd, wt)) ? wt : null, loc: cwd || wt };
+}
+const SHARED = Object.freeze({ own: null, loc: null });
+
+// Two tasks write in one tree when neither has its own (the shared tree, or a place not yet known), or when their known
+// locations are one path (a worker sent into another task's worktree).
+function sameTree(a, b) {
+  if (!a.own && !b.own) return true;
+  return !!(a.loc && b.loc && samePath(a.loc, b.loc));
+}
+
+// The holding tasks (other than `exceptId`) that overlap `files`, with the paths that clash, first match per task, each with
+// `same_tree` (ADR 0059): only an overlap in the same tree as `mine` (the asking task's treeOf; default the shared tree) gates.
 // `asker` ({ run_id }) is the run of the task being assigned: a holding task of another run that came back to life after
 // the asker's run did yields to it (ADR 0046 decision 1: the run that is live now keeps the paths), so it is skipped.
-function findClashes(store, files, exceptId, asker) {
+function scanOverlaps(store, files, exceptId, asker, mine = SHARED) {
   const liveness = runLiveness(store);
   // The yield is the live run's privilege: the asker's run must itself be live now, or it holds nothing to keep.
   const askerSince = asker && liveness(asker.run_id).live ? liveSince(store, asker.run_id) : null;
@@ -74,10 +98,17 @@ function findClashes(store, files, exceptId, asker) {
     if (other.id === exceptId || !holdOf(other, liveness).holds || yields(other.run_id)) continue;
     const clash = [];
     for (const mine of files) for (const theirs of other.files_owned) if (overlaps(mine, theirs)) clash.push(mine);
-    if (clash.length) out.push({ task: other, files: [...new Set(clash)] });
+    if (!clash.length) continue;
+    const theirs = treeOf(store, other);
+    out.push({ task: other, files: [...new Set(clash)], same_tree: sameTree(mine, theirs), worktree: theirs.own });
   }
   return out;
 }
+
+const findClashes = (...a) => scanOverlaps(...a).filter((c) => c.same_tree);
+
+// The overlaps ADR 0059 decision 2 let through, in the shape create and assign report them.
+const acrossTrees = (scan) => scan.filter((c) => !c.same_tree).map((c) => ({ task_id: c.task.id, run_id: c.task.run_id, files: c.files, worktree: c.worktree }));
 
 // ADR 0046 decision 1, resume: the tasks of `runId` that hold again once it is live, and the other live run's task each
 // one now overlaps. Read after the run's row is appended, so the run counts as live.
@@ -86,7 +117,7 @@ function resumeOverlaps(store, runId) {
   const out = [];
   for (const t of rows.currentAll(store, 'task')) {
     if (t.run_id !== runId || !holdOf(t, liveness).holds) continue;
-    for (const c of findClashes(store, t.files_owned, t.id)) out.push({ task_id: t.id, other_task_id: c.task.id, files: c.files });
+    for (const c of findClashes(store, t.files_owned, t.id, undefined, treeOf(store, t))) out.push({ task_id: t.id, other_task_id: c.task.id, files: c.files });
   }
   return out;
 }
@@ -104,4 +135,4 @@ function activationRun(store, task, candidateRunId) {
   return liveness(task.run_id).live ? task.run_id : null;
 }
 
-module.exports = { activationRun, resumeOverlaps, overlaps, runLiveness, holdOf, findClashes };
+module.exports = { activationRun, resumeOverlaps, overlaps, runLiveness, holdOf, findClashes, scanOverlaps, acrossTrees, treeOf };

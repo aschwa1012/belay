@@ -106,10 +106,15 @@ async function create(E, caller, args) {
     }
   }
 
+  let overlaps = [];
   if (filesOwned && filesOwned.length) {
-    // ADR 0046 decision 1: only a task that holds its files (its run is live) can refuse this one.
-    const [first] = holds.findClashes(E.store, filesOwned, null);
-    if (first) throw filesOverlap(first);
+    // ADR 0046 decision 1: only a task that holds its files (its run is live) can refuse this one. ADR 0059 decision 4: a new
+    // task has no tree yet, so it is judged as shared, and only a holder in the shared tree refuses it; one in its own
+    // worktree is reported in `overlaps`.
+    const scan = holds.scanOverlaps(E.store, filesOwned, null);
+    const first = scan.find((c) => c.same_tree);
+    if (first) throw filesOverlap(first, `if task ${first.task.id} is given its own worktree (task_worktree), this task can own the same paths`);
+    overlaps = holds.acrossTrees(scan);
   }
 
   const t = Date.now();
@@ -118,7 +123,7 @@ async function create(E, caller, args) {
     results: null, depends_on: deps, repairs,
   }, E.writtenBy(caller), t);
   E.noteWrite();
-  return row;
+  return overlaps.length ? { ...row, overlaps } : row;
 }
 
 // The dependency gate shared by task.assign and task.evaluate: only `done` opens it (ADR 0013 §1, ADR 0030 decision 2).
@@ -179,10 +184,12 @@ async function assign(E, caller, args) {
     // (the calling orchestrator's run for a check_only), and is refused when no live run can own it.
     const worker = checkOnly ? null : rows.current(E.store, 'worker', args.worker_id);
     // A task that owns files moves to the run of the worker that takes it, and a move is a new claim: every overlapping holder refuses it.
-    const ownerRun = resolveOwner(E.store, task, checkOnly ? (caller.role === 'orchestrator' ? caller.run_id : null) : (worker && worker.run_id), worker);
+    const overlaps = []; // ADR 0059 decision 3: the overlaps with tasks in other trees, which do not refuse
+    const ownerRun = resolveOwner(E.store, task, checkOnly ? (caller.role === 'orchestrator' ? caller.run_id : null) : (worker && worker.run_id), worker, overlaps);
+    const reported = overlaps.length ? { overlaps } : {};
 
     // ADR 0030 decision 4: the task-side checks above are the whole of a check_only call; it writes nothing.
-    if (checkOnly) return { assignable: true, task_id: task.id };
+    if (checkOnly) return { assignable: true, task_id: task.id, ...reported };
 
     if (!worker) throw err('E_WORKER_NOT_LIVE', `no worker row exists for ${args.worker_id}, so it cannot hold a lease`, { worker_id: args.worker_id });
     if (!LIVE_WORKER_STATES.has(worker.state)) {
@@ -208,7 +215,7 @@ async function assign(E, caller, args) {
       supersedes: old ? old.id : null,
     }, by, t);
     const row = rows.append(E.store, 'task', { ...task, run_id: ownerRun, state: 'assigned' }, by, t);
-    return { task: row, old_lease: old, new_lease: lease, paused_worker: null };
+    return { task: row, old_lease: old, new_lease: lease, paused_worker: null, ...reported };
   });
   if (!checkOnly) E.noteWrite();
   return out;
@@ -434,7 +441,7 @@ async function takeControl(E, caller, args) {
     // live run (the task's own: the operator has no run to re-home it to) and not yielded to one that is live now.
     if (task.state !== 'done' && Array.isArray(task.files_owned) && task.files_owned.length) {
       if (holds.activationRun(E.store, task, null) == null) throw runNotLive(task, null);
-      const [first] = holds.findClashes(E.store, task.files_owned, task.id, { run_id: task.run_id });
+      const [first] = holds.findClashes(E.store, task.files_owned, task.id, { run_id: task.run_id }, holds.treeOf(E.store, task, null));
       if (first) throw filesOverlap(first);
     }
     const old = rows.currentLeaseForTask(E.store, args.task_id);
