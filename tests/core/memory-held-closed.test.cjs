@@ -53,7 +53,7 @@ test('a hold whose reports are not a list of objects hides its note and only tha
   const N = require('../../src/cli/cmd-notices.cjs');
   const ev = N.heldEvents(c, null).find((e) => e.kind === 'holds_unreadable');
   assert.ok(ev && ev.count === c.malformed);
-  assert.ok(N.renderText([ev]).includes('held rows cannot be read; their notes are withheld from workers (closed)'));
+  assert.ok(N.renderText([ev]).replace(/\s+/g, ' ').includes('held rows cannot be read; their notes are withheld from workers until fixed'));
 });
 
 test('a hold body that is not JSON hides the note it names; one that names none closes its whole project, never others', async () => {
@@ -95,4 +95,80 @@ test('a 0.3.0 hold past the breaker is shown as queued: counted, listed, unmarke
   const out = await call(brk, 'memory.noteReport', { note_id: legacy, why: 'still wrong' });
   assert.deepStrictEqual([out.withheld, /^queued: every report on its hold is past its run's breaker/.test(out.withheld_why)], [false, true], out.withheld_why);
   assert.strictEqual(await listed(worker('hl'), 'hl', legacy), true, 'still visible');
+});
+
+test('a hold whose note_id is not a non-empty string closes its project loudly: counted, named in the notice, the status line and stderr', async () => {
+  await call(orch('hn'), 'run.attach', { adapter_pid: process.pid, project: 'hn', memory_levers: JSON.stringify({ project: 'hn', notes: true }) });
+  const plain = note('hn', 'plain in hn');
+  const h = hold('hn', { state: 'held', note_id: 12345, kind: 'wrong', ground: 'reported', reports: [{ key: 'k', by: 'orchestrator', why: 'x', at: 1 }], rev: 0 }); // the checker's probe
+  const lines = [];
+  const write = process.stderr.write;
+  process.stderr.write = (s, ...rest) => { lines.push(String(s)); return true; };
+  let seen;
+  try { seen = await listed(worker('hn'), 'hn', plain); } finally { process.stderr.write = write; }
+  assert.strictEqual(seen, false, 'closed: the whole project is withheld');
+  assert.ok(lines.some((l) => l.includes(h) && l.includes('every note of project hn is withheld from workers')), lines.join(''));
+  const c = await call(orch('hn'), 'memory.held', { project: 'hn' });
+  assert.deepStrictEqual([c.malformed, c.closed_projects], [1, ['hn']], 'counted though its note cannot be found');
+  const N = require('../../src/cli/cmd-notices.cjs');
+  const ev = N.heldEvents(c, null).find((e) => e.kind === 'holds_unreadable');
+  assert.ok(N.renderText([ev]).replace(/\s+/g, ' ').includes('every note of project hn is withheld from workers until fixed'));
+  const P = require('../../src/cli/panel-common.cjs');
+  assert.ok(P.unreadableText({ count: c.malformed, closed_projects: c.closed_projects }).includes('every note of project hn'));
+  store.db.prepare("UPDATE memory_entries SET body = '{\"state\":\"released\"}' WHERE id = ?").run(h);
+  assert.strictEqual(await listed(worker('hn'), 'hn', plain), true, 'open again once the row is settled');
+});
+
+test('the filter\'s memo never outlives a rolled-back transaction: a release taken back stays hidden, a hold taken back stays open', async () => {
+  await call(orch('hr'), 'run.attach', { adapter_pid: process.pid, project: 'hr', memory_levers: JSON.stringify({ project: 'hr', notes: true }) });
+  const W = core('memory-withhold.cjs');
+  const a = note('hr', 'held, released in a dead transaction');
+  const h = hold('hr', { state: 'held', note_id: a, kind: 'wrong', ground: 'reported', reports: [{ key: 'k', by: 'orchestrator', why: 'x', at: 1 }], rev: 0 });
+  assert.strictEqual(await listed(worker('hr'), 'hr', a), false);
+  // The checker's probe: release the hold inside a transaction, read the filter there, and throw.
+  assert.throws(() => store.tx(() => { store.patchBody(h, (b) => { b.state = 'released'; return b; }); assert.strictEqual(W.heldWithheld(E).has(a), false); throw new Error('rolled back'); }), /rolled back/);
+  assert.strictEqual(await listed(worker('hr'), 'hr', a), false, 'the release was taken back: the note stays hidden');
+  // The reverse: a hold written inside a transaction that rolls back hides nothing afterwards.
+  const b = note('hr', 'held in a dead transaction');
+  assert.strictEqual(await listed(worker('hr'), 'hr', b), true);
+  assert.throws(() => store.tx(() => { hold('hr', { state: 'held', note_id: b, kind: 'wrong', ground: 'scrubber', rev: 0 }); assert.strictEqual(W.heldWithheld(E).has(b), true); throw new Error('rolled back'); }), /rolled back/);
+  assert.strictEqual(await listed(worker('hr'), 'hr', b), true, 'the hold was taken back: the note is open');
+});
+
+test('a held row whose body is valid JSON but not an object closes its project', async () => {
+  await call(orch('hx'), 'run.attach', { adapter_pid: process.pid, project: 'hx', memory_levers: JSON.stringify({ project: 'hx', notes: true }) });
+  const plain = note('hx', 'plain in hx');
+  const h = hold('hx', { state: 'held', kind: 'wrong' });
+  store.db.prepare('UPDATE memory_entries SET body = ? WHERE id = ?').run(JSON.stringify([{ state: 'held', note_id: plain }]), h);
+  assert.strictEqual(await listed(worker('hx'), 'hx', plain), false, 'an array body never leaves its note open');
+  const c = await call(orch('hx'), 'memory.held', { project: 'hx' });
+  assert.deepStrictEqual([c.malformed, c.closed_projects], [1, ['hx']]);
+});
+
+test('a transaction opened outside Store.tx and rolled back leaves no stale memo either', async () => {
+  const W = core('memory-withhold.cjs');
+  const a = note('hr', 'held, released in a raw transaction');
+  const h = hold('hr', { state: 'held', note_id: a, kind: 'wrong', ground: 'scrubber', rev: 0 });
+  assert.strictEqual(await listed(worker('hr'), 'hr', a), false);
+  store.db.exec('BEGIN IMMEDIATE');
+  try { store.patchBody(h, (b) => { b.state = 'released'; return b; }); assert.strictEqual(W.heldWithheld(E).has(a), false); } finally { store.db.exec('ROLLBACK'); }
+  assert.strictEqual(await listed(worker('hr'), 'hr', a), false, 'no memo was kept inside the transaction');
+});
+
+test('the unreadable line says "is" for one project or several', () => {
+  const P = require('../../src/cli/panel-common.cjs');
+  assert.strictEqual(P.unreadableText({ count: 2, closed_projects: ['acme', 'beta'] }), '2 held rows cannot be read; every note of projects acme, beta is withheld from workers until fixed: see belay memory held');
+  assert.strictEqual(P.unreadableText({ count: 1, closed_projects: ['acme'] }), '1 held row cannot be read; every note of project acme is withheld from workers until fixed: see belay memory held');
+});
+
+test('the memo is kept only when the connection says it is outside a transaction', () => {
+  const W = core('memory-withhold.cjs');
+  // A store whose binding cannot say whether a transaction is open (isTransaction undefined) gets no memo; one that says false does.
+  const standIn = (flag) => ({ store: { db: { isTransaction: flag, prepare: (sql) => store.db.prepare(sql) }, p: (sql) => store.p(sql), heldMemo: null } });
+  const unknown = standIn(undefined);
+  W.heldWithheld(unknown);
+  assert.strictEqual(unknown.store.heldMemo, null, 'no memo when the state is unknown');
+  const outside = standIn(false);
+  W.heldWithheld(outside);
+  assert.ok(outside.store.heldMemo, 'kept when the connection is known to be outside one');
 });

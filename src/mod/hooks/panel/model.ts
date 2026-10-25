@@ -176,6 +176,12 @@ export function normNotices(json: unknown): BelayNotice[] {
       if (n <= 0) continue
       const names = Object.keys(obj(e.by_project) ?? {}).sort()
       mk('memory', String(n), `${n} note${n === 1 ? '' : 's'} unembedded`, names.join(' '), `belay memory embed --project ${names.length === 1 ? names[0] : '<p>'}`, null)
+    } else if (kind === 'holds_unreadable') {
+      // A held row the read filter cannot read: its note, or every note of its project, is withheld from workers closed until it is fixed.
+      const n = num(e.count) ?? 0
+      if (n <= 0) continue
+      const closed = arr(e.closed_projects).map(p => str(p)).filter((p): p is string => !!p).map(p => clean(p, 64))
+      mk('memory', String(n), `${n} held row${n === 1 ? '' : 's'} unreadable${closed.length ? ` · every note of ${closed.join(', ')} withheld` : ''}`, closed.join(' '), 'belay memory held', null)
     } else if (kind === 'run_ended') {
       mk('ended', str(e.run_id) ?? '?', `run ended · ${str(e.exit_reason) ?? 'reason not recorded'}`, str(e.run_id) ?? '', null, null)
     }

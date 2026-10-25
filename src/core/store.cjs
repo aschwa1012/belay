@@ -80,6 +80,7 @@ class Store {
       // A write inside the transaction already put its row in the vector cache; the rollback took it out of the
       // table, so the cache is dropped and reloads from the table on the next search (no phantom hit).
       this.cache.clear();
+      this.heldMemo = null; // the held-note filter's read (memory-withhold.cjs) may have seen the rolled-back writes
       throw e;
     }
   }

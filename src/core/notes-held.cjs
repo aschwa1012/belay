@@ -7,7 +7,8 @@
 const HELD_PREFIX = 'held/';
 const ENTRIES_MAX = 200;
 // The same set count() counts: an active harness hold row whose note is still live in the project.
-// A body that is not valid JSON is left out here (CASE evaluates lazily, so no json_extract meets it) and counted as malformed in count().
+// A body that is not valid JSON is left out here (CASE evaluates lazily, so no json_extract meets it); count() counts the malformed holds over the
+// read filter's own rows (memory-withhold.cjs unreadable), whether or not their note can be found.
 const ACTIVE = `h.type = 'held' AND h.namespace LIKE 'held/%' AND h.written_by = 'harness' AND CASE WHEN json_valid(h.body) THEN json_extract(h.body, '$.state') IN ('held', 'queued') ELSE 0 END
   AND EXISTS (SELECT 1 FROM memory_entries n WHERE n.id = json_extract(h.body, '$.note_id') AND n.type = 'note' AND n.namespace = 'project/' || substr(h.namespace, 6))`;
 // The JS twin of AWAITING below, for one held row's body: the archive reviewer answered undecided at the hold's current revision. memory.heldSettle's
@@ -34,9 +35,13 @@ function count(store) {
   const W = require('./memory-withhold.cjs');
   let rows = [], malformed = 0;
   try { rows = store.p(`SELECT h.namespace AS namespace, h.created_at AS at, h.body AS body FROM memory_entries h WHERE ${ACTIVE}`).all(); } catch { rows = []; }
-  const malformed_by_project = {};
-  const bad = (project) => { malformed += 1; malformed_by_project[project] = (malformed_by_project[project] || 0) + 1; };
-  try { for (const r of store.p(`SELECT h.namespace AS namespace FROM memory_entries h WHERE h.type = 'held' AND h.namespace LIKE 'held/%' AND h.written_by = 'harness' AND NOT json_valid(h.body)`).all()) bad(r.namespace.slice(HELD_PREFIX.length)); } catch { /* no table */ }
+  // The holds the read filter cannot read, as the filter itself reads them; one that names no note withholds its whole project from workers.
+  const malformed_by_project = {}, closed_projects = new Set();
+  for (const h of W.unreadable(store.db)) {
+    malformed += 1;
+    malformed_by_project[h.project] = (malformed_by_project[h.project] || 0) + 1;
+    if (!h.note_id) closed_projects.add(h.project);
+  }
   const by_project = {}, age_by_project = {}, unsupported_by_project = {}, queued_by_project = {};
   const by_ground = {}, queued_by_ground = {}, by_ground_by_project = {}, awaiting_by_project = {};
   const oldestOf = {};
@@ -44,7 +49,6 @@ function count(store) {
   for (const r of rows) {
     const project = r.namespace.slice(HELD_PREFIX.length);
     const b = W.parseBody(r.body) || {};
-    if (W.judge(b).malformed) bad(project);
     const isQueued = W.effectiveState(b) === 'queued';
     const g = typeof b.ground === 'string' ? b.ground : 'none';
     by_project[project] = (by_project[project] || 0) + 1;
@@ -63,7 +67,7 @@ function count(store) {
     try { age_by_project[project] = Number(store.p('SELECT COUNT(DISTINCT id) AS n FROM run WHERE project = ? AND COALESCE(started_at, written_at) > ?').get(project, at).n); } catch { /* no run table */ }
     age = Math.max(age, age_by_project[project]);
   }
-  return { total, held: total - queued, queued, queued_by_project, unsupported, malformed, malformed_by_project, by_project, unsupported_by_project, by_ground, queued_by_ground, by_ground_by_project, awaiting_operator, awaiting_by_project, age_by_project, oldest_age_runs: age, oldest_at: oldest, newest_at: newest };
+  return { total, held: total - queued, queued, queued_by_project, unsupported, malformed, malformed_by_project, closed_projects: [...closed_projects].sort(), by_project, unsupported_by_project, by_ground, queued_by_ground, by_ground_by_project, awaiting_operator, awaiting_by_project, age_by_project, oldest_age_runs: age, oldest_at: oldest, newest_at: newest };
 }
 
 // Runs whose reports hit the circuit breaker (ADR 0047 amendment, decision 9): a standing report of the run, on a live note, that does not withhold.
@@ -197,7 +201,7 @@ async function held(E, caller, args = {}) {
     listing = entries(E.store, { projects, awaiting: !!args.awaiting });
   }
   const pq = project ? c.queued_by_project[project] || 0 : 0;
-  const scoped = project ? { awaiting_operator: c.awaiting_by_project[project] || 0, by_ground: c.by_ground_by_project[project] || {}, total: c.by_project[project] || 0, held: (c.by_project[project] || 0) - pq, queued: pq, malformed: c.malformed_by_project[project] || 0, unsupported: c.unsupported_by_project[project] || 0, unsupported_by_project: c.unsupported_by_project[project] ? { [project]: c.unsupported_by_project[project] } : {}, by_project: c.by_project[project] ? { [project]: c.by_project[project] } : {}, oldest_age_runs: c.age_by_project[project] || 0, oldest_at: c.oldest_at, newest_at: c.newest_at } : c;
+  const scoped = project ? { awaiting_operator: c.awaiting_by_project[project] || 0, by_ground: c.by_ground_by_project[project] || {}, total: c.by_project[project] || 0, held: (c.by_project[project] || 0) - pq, queued: pq, malformed: c.malformed_by_project[project] || 0, closed_projects: c.closed_projects.filter((p) => p === project), unsupported: c.unsupported_by_project[project] || 0, unsupported_by_project: c.unsupported_by_project[project] ? { [project]: c.unsupported_by_project[project] } : {}, by_project: c.by_project[project] ? { [project]: c.by_project[project] } : {}, oldest_age_runs: c.age_by_project[project] || 0, oldest_at: c.oldest_at, newest_at: c.newest_at } : c;
   // One call (one copy of the store) answers notices: the counts, the unjudged reports and the archive reviews' claims.
   const reviews = args.reviews ? (await require('./review-claim.cjs').reviewState(E, caller, project ? { project } : {})).reviews : undefined;
   return { ...scoped, ...(listing ? listing : {}), ...(reviews ? { reviews } : {}), ...(args.reports ? { breakers: breakers(E.store).filter((b) => !project || b.project === project), unjudged_reports: unjudged(E.store).filter((r) => !project || r.project === project), stranded: stranded(E.store, project) } : {}) };
