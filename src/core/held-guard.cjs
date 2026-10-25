@@ -54,7 +54,7 @@ function check(E, op, id, detail = {}) {
   if (!row || row.type !== 'note' || !String(row.namespace).startsWith('project/')) return;
   const note = { ...row, b: parse(row.body) };
   if (!isHeldNow(E, note)) return;
-  const hold = E.store.p("SELECT id FROM memory_entries WHERE namespace = ? AND type = 'held' AND written_by = 'harness' AND json_extract(body, '$.note_id') = ? AND json_extract(body, '$.state') = 'held' ORDER BY created_at DESC LIMIT 1").get(`held/${row.namespace.slice(8)}`, id);
+  const hold = E.store.p("SELECT id FROM memory_entries WHERE namespace = ? AND type = 'held' AND written_by = 'harness' AND json_extract(body, '$.note_id') = ? AND json_extract(body, '$.state') IN ('held', 'queued') ORDER BY created_at DESC LIMIT 1").get(`held/${row.namespace.slice(8)}`, id);
   const heldRow = hold ? hold.id : (note.b.held ? note.b.held.row : null);
   throw err('E_HELD', `note ${id} is held for the archive review (row ${heldRow}); only the archive review or the operator settles it, so this ${op} is refused`, { id, held_row: heldRow, op, ...detail });
 }

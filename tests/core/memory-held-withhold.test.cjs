@@ -1,6 +1,6 @@
 'use strict';
-// memory-held-withhold.test.cjs — ADR 0047 amendment (2026-10-22): under memory.held_visibility 'withhold' (the default) a worker does not see a
-// note held on a report (ground reported, kind wrong or superseded) until it is settled; 'warn' keeps today's display; the orchestrator, the
+// memory-held-withhold.test.cjs — ADR 0047 amendments (2026-10-22, widened 2026-10-25): under memory.held_visibility 'withhold' (the default) a
+// worker does not see a note under a hold of kind wrong, superseded or duplicate until it is settled; 'warn' keeps today's display; the orchestrator, the
 // knowledge agent and the operator always see it. A read filter: the reads below change no row.
 
 const { test, before, after } = require('node:test');
@@ -71,13 +71,22 @@ test('warn: the note stays visible to a worker, as before', async () => {
   assert.strictEqual(G.withholds(E, worker(RUNS.warn)), false);
 });
 
-test('a hold of another ground or kind, or a report that does not withhold, hides nothing', async () => {
-  const a = note('duplicate hold'); hold(a, { kind: 'duplicate', ground: 'same_claim' });
+test('a disputing hold of any ground hides its note; a 0.3.0 hold written past the breaker and an unsupported row hide nothing', async () => {
+  // Widened 2026-10-25: a worker sees no held note. The scrubber's duplicate, superseded and wrong holds, and an older report_confirmed hold, withhold too.
+  const a = note('duplicate hold'); hold(a, { kind: 'duplicate', ground: 'same_claim', reports: undefined });
   const b = note('unsupported hold'); hold(b, { kind: 'unsupported', ground: 'unsupported' });
-  const c = note('breaker hold'); hold(c, { reports: [{ key: 'kc', by: 'worker:w9', why: 'x', at: 1, withhold: false }] });
+  // A 0.3.0 row: state held, ground reported, kind wrong, every report written past the breaker. Read as before, with no rewrite.
+  const c = note('breaker hold'); hold(c, { reports: [{ key: 'kc', seq: 1, by: 'worker:w9', run_id: 'r-old', why: 'x', at: 1, withhold: false, breaker: { count: 6, limit: 5, live: 40 } }, { key: 'kc2', seq: 2, by: 'orchestrator', run_id: 'r-old', why: 'y', at: 2, withhold: false, breaker: { count: 7, limit: 5, live: 40 } }] });
   const d = note('superseded hold'); hold(d, { kind: 'superseded' });
-  for (const id of [a, b, c]) assert.deepStrictEqual(await seen(worker(RUNS.withhold), id), ALL);
-  assert.deepStrictEqual(await seen(worker(RUNS.withhold), d), NONE);
+  const e = note('scrubber wrong hold'); hold(e, { ground: 'scrubber', reports: undefined });
+  const f = note('confirmed hold'); hold(f, { ground: 'report_confirmed', reports: undefined });
+  const g = note('write-time superseded hold'); hold(g, { kind: 'superseded', ground: 'replaced', reports: undefined });
+  for (const id of [b, c]) assert.deepStrictEqual(await seen(worker(RUNS.withhold), id), ALL);
+  for (const id of [a, d, e, f, g]) {
+    assert.deepStrictEqual(await seen(worker(RUNS.withhold), id), NONE);
+    assert.deepStrictEqual(await seen(orch(RUNS.withhold), id), ALL);
+    assert.deepStrictEqual(await seen(worker(RUNS.warn), id), ALL);
+  }
 });
 
 test('released as correct reappears at once; archived stays gone; undecided stays withheld', async () => {

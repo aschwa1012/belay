@@ -145,6 +145,8 @@ test('clause c: a pending state, a promoted note and a superseded note are not l
   const old = note(space, 'old', { task_id: 't-c' });
   const newer = note(space, 'newer', { task_id: 't-c', supersedes: old });
   const held = note(space, 'held', { task_id: 't-c', body: { held: { kind: 'wrong', reason: 'being checked', row: 'h1' } } });
+  // The warning line is read from the active hold row, not the note's pointer.
+  store.storeIn({ namespace: `held/${space.slice(8)}`, worker_id: 'harness', type: 'held', text: `held ${held}`, title: 'h', body: { state: 'held', note_id: held, kind: 'wrong', ground: 'scrubber', reason: 'being checked', rev: 0 }, run_id: 'gone', source: 'harness', written_by: 'harness' });
   for (const who of [orch(READER), orch(WRITER)]) {
     assert.deepStrictEqual(await everywhere(who, space, pending), NONE);
     assert.deepStrictEqual(await everywhere(who, space, promoted), NONE);

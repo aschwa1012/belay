@@ -108,7 +108,7 @@ async function setup(RUN, levers = {}) {
   const rv = (id, v, cites, reason = 'what the stream shows', report) => ({ id, ...(report ? { report } : {}), verdict: v, cites, reason });
   const apply = (reviewTask) => call('memory.noteVerdicts', harness, { review_task_id: reviewTask });
   const heldRows = (id) => store.p("SELECT id, body FROM memory_entries WHERE type = 'held' AND json_extract(body, '$.note_id') = ? ORDER BY created_at, rowid").all(id).map((r) => ({ id: r.id, b: JSON.parse(r.body) }));
-  const activeHold = (id) => heldRows(id).find((r) => r.b.state === 'held') || null;
+  const activeHold = (id) => heldRows(id).find((r) => r.b.state === 'held' || r.b.state === 'queued') || null; // an active hold hides (held) or only waits for review (queued)
   const heldCount = async () => (await call('memory.held', orch, {})).total;
   const UP = 'fixtures/unlisted.json was opened by the loader';
 

@@ -58,7 +58,7 @@ test('row 1: moving a held note out of project/ is refused; the operator\'s move
   assert.strictEqual(T.row(id).namespace, `archive/${PROJECT}`);
 });
 
-test('row 1 (resolve): a worker\'s or the orchestrator\'s refines of a held note is E_HELD naming the hold, and no row moved; a repeat still works', async () => {
+test('row 1 (resolve): a worker\'s or the orchestrator\'s refines of a held note is E_HELD naming the hold, and no row moved; a repeat is refused as held for review', async () => {
   const target = await heldNote('guard resolve target', { vec: A });
   const pend = (title, vec) => T.note(title, { ns: `pending/${PROJECT}`, vec, state: 'pending', matches: [{ id: target.id, similarity: 0.99, embedding_model: 'm', dim: 3, template: 'v1' }], written_by: 'worker:w1' });
   const p = pend('guard resolve pending refines', A_NEAR);
@@ -71,8 +71,9 @@ test('row 1 (resolve): a worker\'s or the orchestrator\'s refines of a held note
   assert.strictEqual(T.row(p2).supersedes, null);
   assert.strictEqual(await heldCount() >= 1, true, 'the hold is still counted');
   const p3 = T.note('guard resolve pending repeats', { ns: `pending/${PROJECT}`, vec: A_NEAR, state: 'pending', matches: [{ id: target.id, similarity: 0.99, embedding_model: 'm', dim: 3, template: 'v1' }], written_by: 'worker:w9', task_id: 'other-task' });
-  const rp = await T.call(tool(), 'memory.noteResolve', { resolutions: [{ id: p3, resolve: 'repeats', of: target.id }] });
-  assert.strictEqual(rp.resolved[0].resolved, 'repeats', 'a repeat adds a sighting and hides nothing');
+  // Widened 2026-10-25: any hold that withholds the note (here a report_confirmed wrong hold) refuses a repeat, as a reported hold always did.
+  await assert.rejects(T.call(tool(), 'memory.noteResolve', { resolutions: [{ id: p3, resolve: 'repeats', of: target.id }] }), (e) => e.code === 'E_ARGS' && e.detail.reason === 'held_for_review');
+  assert.strictEqual(T.row(p3).namespace, `pending/${PROJECT}`, 'the repeat waits in pending');
 });
 
 test('row 2: restoring B, whose supersedes names a held A, would hide A again: refused for the orchestrator, allowed for the operator', async () => {

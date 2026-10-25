@@ -104,8 +104,8 @@ async function held(core, parsed) {
     return { code: 0, text: `${res.action} ${res.id}: ${res.outcome}${extra}  receipt: ${res.receipt}\n  ${changed.join('\n  ')}\n`, json: res };
   }
   const res = await core.memory.held({ list: true, ...(o.project ? { project: o.project } : {}), ...(o.awaiting ? { awaiting: true } : {}) });
-  const lines = res.entries.map((e) => `${e.note_id}  ${e.kind}/${e.ground || 'none'}  rev ${e.rev}  ${e.reports} report${e.reports === 1 ? '' : 's'}${e.self_report ? ' (self)' : ''}  held ${e.runs_waited} run${e.runs_waited === 1 ? '' : 's'}${e.awaiting_operator ? `  AWAITS YOU: ${one(e.undecided && e.undecided.reason)}` : ''}  [${e.project}]  ${one(e.title)}`);
-  const head = `${res.total} held, ${res.awaiting_operator || 0} awaiting the operator${res.truncated ? ' (first 200 listed)' : ''}`;
+  const lines = res.entries.map((e) => `${e.note_id}  ${e.state || 'held'}  ${e.kind}/${e.ground || 'none'}  rev ${e.rev}  ${e.reports} report${e.reports === 1 ? '' : 's'}${e.self_report ? ' (self)' : ''}  held ${e.runs_waited} run${e.runs_waited === 1 ? '' : 's'}${e.awaiting_operator ? `  AWAITS YOU: ${one(e.undecided && e.undecided.reason)}` : ''}  [${e.project}]  ${one(e.title)}`);
+  const head = `${res.total - (res.queued || 0)} held${res.queued ? `, ${res.queued} queued` : ''}, ${res.awaiting_operator || 0} awaiting the operator${res.truncated ? ' (first 200 listed)' : ''}`;
   return { code: 0, text: `${head}\n${lines.join('\n')}${lines.length ? '\n' : ''}`, json: res };
 }
 

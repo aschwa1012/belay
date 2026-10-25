@@ -44,8 +44,9 @@ function evidenceOf(body) {
   return list.map((e, i) => (checked.has(i) ? { ...e, checked: true, passed: !!checked.get(i).passed } : e));
 }
 
-// The compact row (ADR 0057 decision 1): what an orchestrator acts on, and nothing it does not.
-function compactRow(r, cosine, superseded = false) {
+// The compact row (ADR 0057 decision 1): what an orchestrator acts on, and nothing it does not. `hold` is the note's active hold
+// ({ kind, reason }, from the hold row) or null; left undefined, the note's own pointer marks it.
+function compactRow(r, cosine, superseded = false, hold = undefined) {
   const out = { id: r.id, type: r.type, title: r.title || deriveTitle(r.text), status: r.status || 'unverified', ...relevanceFields(cosine), created_at: r.created_at };
   if (r.supersedes) out.supersedes = r.supersedes; // the row this one replaced
   if (superseded) out.superseded = true; // replaced by a newer row (on the page only with include_superseded)
@@ -56,11 +57,15 @@ function compactRow(r, cosine, superseded = false) {
   if (b.basis) out.basis = b.basis;
   out.evidence = evidenceOf(b);
   if (Array.isArray(b.applies_to) && b.applies_to.length) out.applies_to = b.applies_to;
-  if (b.held && typeof b.held === 'object') out.held = { kind: b.held.kind || null, reason: typeof b.held.reason === 'string' ? cut(b.held.reason, HELD_REASON_MAX) : null };
+  const h = hold === undefined ? (b.held && typeof b.held === 'object' ? b.held : null) : hold;
+  if (h) out.held = { kind: h.kind || null, reason: typeof h.reason === 'string' ? cut(h.reason, HELD_REASON_MAX) : null };
   const reported = Array.isArray(b.reported_wrong) ? b.reported_wrong.length : 0;
   if (reported) out.reported = reported;
   return out;
 }
+
+// A held note's mark on a debug or index search row and a list row: the hold's kind, ground and reason, the reason cut as on the compact row.
+const heldMark = h => ({ kind: h.kind || null, ground: h.ground || null, reason: typeof h.reason === 'string' ? cut(h.reason, HELD_REASON_MAX) : null });
 
 // What a search's numbers mean, for the debug view: the fused score of the mode that ranked it.
 const scoreKind = (sem, kw) => (sem && kw ? 'rrf' : sem ? 'cosine' : kw ? 'bm25' : null);
@@ -88,4 +93,4 @@ function warningFor(o, ran, failed, results, absence, unembedded, below) {
   return null;
 }
 
-module.exports = { RELEVANCE_FLOOR, belowFloor, relevanceOf, relevanceFields, compactRow, scoreKind, warningFor };
+module.exports = { RELEVANCE_FLOOR, HELD_REASON_MAX, belowFloor, relevanceOf, relevanceFields, compactRow, heldMark, scoreKind, warningFor };

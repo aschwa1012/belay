@@ -358,7 +358,7 @@ test('P20: a task reviewer\'s note verdict on a held note is advice on the hold:
   }
   assert.strictEqual(rowOf(a.note).status ?? 'unverified', 'unverified');
   const h1 = hold(a.note);
-  assert.deepStrictEqual([h1.b.note_verdicts.map((v) => v.verdict), h1.b.rev, h1.b.state], [['refuted', 'confirmed'], 2, 'held']);
+  assert.deepStrictEqual([h1.b.note_verdicts.map((v) => v.verdict), h1.b.rev, h1.b.state], [['refuted', 'confirmed'], 2, h0.b.state], 'advice leaves the state as written (queued once this file\'s run is past its breaker)');
   assert.strictEqual(events('note_refuted').filter((e) => e.key === `refuted:${a.note}`).length, 0, 'no wake: nothing was refuted');
   const free = await written('w-a25', 'K25');
   const ok = await apply(await review('rev-25', free.task, { memory_verdicts: [{ id: free.note, verdict: 'confirmed', cites: [cite('the loader worked as the note says')], reason: 'the stream shows it' }] }));

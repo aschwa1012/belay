@@ -310,6 +310,14 @@ async function search(E, caller, args) {
     rows = rowsByIds(E, ranked.map(h => h.id));
     ranked = ranked.filter(h => rows.has(h.id) && gate.bodyLive(rows.get(h.id))); // (the project's legacy rows never get here: the keyword WHERE and the semantic scan leave them out)
   }
+  // A held note (an active hold on it, whoever reads: a worker is withheld the disputed ones above) ranks below every note that is not held
+  // and reaches the relevance floor, and above the ones that do not; below the floor the same order holds. Every view marks it from its hold
+  // row, never from the note's own pointer, which can outlive its hold (ADR 0047 amendment of 2026-10-25). A row with no cosine is not below it.
+  const holds = W.holdsAmong(E, ranked.map(h => h.id));
+  if (holds.size && o.order === 'score') {
+    const tier = h => (sem && cosine.has(h.id) && V.belowFloor(cosine.get(h.id)) ? 2 : 0) + (holds.has(h.id) ? 1 : 0);
+    ranked = ranked.map((h, i) => ({ h, i, t: tier(h) })).sort((a, b) => a.t - b.t || a.i - b.i).map(x => x.h);
+  }
   let pool = ranked;
   if (o.order !== 'score') {
     rows = rows || rowsByIds(E, ranked.map(h => h.id));
@@ -329,8 +337,8 @@ async function search(E, caller, args) {
     const c = sem && cosine.has(h.id) ? cosine.get(h.id) : null;
     const rel = V.relevanceFields(c);
     if (rel.low_relevance) below++;
-    if (o.view === 'compact') { results.push(V.compactRow(r, c, !!(replaced && replaced.has(r.id)))); continue; }
-    const out = { ...viewRow(r, debug ? 'full' : 'index', h.score), ...(o.view === 'index' ? rel : {}) };
+    if (o.view === 'compact') { results.push(V.compactRow(r, c, !!(replaced && replaced.has(r.id)), holds.get(r.id) || null)); continue; }
+    const out = { ...viewRow(r, debug ? 'full' : 'index', h.score), ...(o.view === 'index' ? rel : {}), ...(holds.has(r.id) ? { held: V.heldMark(holds.get(r.id)) } : {}) };
     if (debug) {
       out.score = h.score;
       Object.assign(out, rel);
@@ -405,8 +413,8 @@ async function timeline(E, caller, args) {
   };
 }
 
-// The honest answer for a note that exists but is held on a report and withheld from this reader (ADR 0047 amendment, 2026-10-22).
-const withheldAnswer = (id) => ({ id, found: false, withheld: true, note: 'this note exists but is held for review after a report that it is wrong, and is withheld from workers until the review settles it' });
+// The honest answer for a note that exists but is held and withheld from this reader (ADR 0047 amendments, 2026-10-22 and 2026-10-25).
+const withheldAnswer = (id) => ({ id, found: false, withheld: true, note: 'this note exists but is held for review, disputed as wrong, superseded or a duplicate, and is withheld from workers until the review settles it' });
 
 async function getMany(E, caller, args) {
   const ids = args.ids;
@@ -463,6 +471,9 @@ async function list(E, caller, args) {
     if (view === 'index') return indexRowOf({ ...rest, title });
     return { ...rest, tags: parseJson(r.tags), redactions: parseJson(r.redactions), status: r.status || 'unverified', title, ...(textCut ? { text_truncated: true } : {}) };
   });
+  // A held note is marked from its hold row, in either view (ADR 0047 amendment of 2026-10-25); the list stays in time order.
+  const holds = W.holdsAmong(E, found.filter(r => r.type === 'note').map(r => r.id));
+  if (holds.size) for (const row of rows) if (holds.has(row.id)) row.held = V.heldMark(holds.get(row.id));
   // ADR 0057 decision 10 (C11): a page that is not the whole of it says so, and how to read on.
   const more = offset + rows.length < total;
   return { rows, total, ...(more ? { truncated: true, next_offset: offset + rows.length } : {}), ...(asked > LIST_MAX ? { limit_capped: LIST_MAX } : {}), searched: { namespaces, filter: f, rows_considered: total } };

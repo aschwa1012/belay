@@ -9,7 +9,7 @@ const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
 
 const { Engine } = core('engine.cjs');
 const { Store } = core('store.cjs');
-const { RELEVANCE_FLOOR } = core('memory-search-view.cjs');
+const { RELEVANCE_FLOOR, compactRow } = core('memory-search-view.cjs');
 
 const VEC = { alpha: [1, 0, 0], beta: [0, 1, 0] };
 const embedderFor = () => async () => ({ embed: async text => ({ embedding: VEC[String(text).split(' ')[0]] || [0, 0, 1], embedding_model: 'm', dim: 3 }) });
@@ -57,8 +57,11 @@ test('compact: a note shows kind, when, basis, evidence with its checked entry, 
   assert.strictEqual(n.basis, 'observed');
   assert.deepStrictEqual(n.evidence, [{ where: 'src/a.cjs', saw: 'one' }, { where: 'evaluate:T1@3', saw: 'passed', checked: true, passed: true }]);
   assert.deepStrictEqual(n.applies_to, ['src/a.cjs']);
-  assert.strictEqual(n.held.kind, 'wrong');
-  assert.strictEqual(Buffer.byteLength(n.held.reason), 160);
+  // The note's pointer names no active hold row, so the search marks nothing (the mark is the hold row's); given the hold, the reason is cut.
+  assert.strictEqual(n.held, undefined);
+  const marked = compactRow(store.p('SELECT * FROM memory_entries WHERE id = ?').get(rows.note.id), 0.8, false, { kind: 'wrong', reason: 'x'.repeat(400) });
+  assert.strictEqual(marked.held.kind, 'wrong');
+  assert.strictEqual(Buffer.byteLength(marked.held.reason), 160);
   assert.strictEqual(n.reported, 2);
   assert.strictEqual(n.relevance, 0.8);
   for (const k of ['text_hash', 'embedding_model', 'dim', 'text_template', 'body', 'ranks', 'cosine', 'near_duplicate']) assert.strictEqual(n[k], undefined, k);
