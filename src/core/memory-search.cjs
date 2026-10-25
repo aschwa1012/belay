@@ -310,10 +310,14 @@ async function search(E, caller, args) {
     rows = rowsByIds(E, ranked.map(h => h.id));
     ranked = ranked.filter(h => rows.has(h.id) && gate.bodyLive(rows.get(h.id))); // (the project's legacy rows never get here: the keyword WHERE and the semantic scan leave them out)
   }
-  // A held note (an active hold on it, whoever reads: a worker is withheld the disputed ones above) ranks below every note that is not held,
-  // and every view marks it from its hold row, never from the note's own pointer, which can outlive its hold (ADR 0047 amendment of 2026-10-25).
+  // A held note (an active hold on it, whoever reads: a worker is withheld the disputed ones above) ranks below every note that is not held
+  // and reaches the relevance floor, and above the ones that do not; below the floor the same order holds. Every view marks it from its hold
+  // row, never from the note's own pointer, which can outlive its hold (ADR 0047 amendment of 2026-10-25). A row with no cosine is not below it.
   const holds = W.holdsAmong(E, ranked.map(h => h.id));
-  if (holds.size && o.order === 'score') ranked = [...ranked.filter(h => !holds.has(h.id)), ...ranked.filter(h => holds.has(h.id))];
+  if (holds.size && o.order === 'score') {
+    const tier = h => (sem && cosine.has(h.id) && V.belowFloor(cosine.get(h.id)) ? 2 : 0) + (holds.has(h.id) ? 1 : 0);
+    ranked = ranked.map((h, i) => ({ h, i, t: tier(h) })).sort((a, b) => a.t - b.t || a.i - b.i).map(x => x.h);
+  }
   let pool = ranked;
   if (o.order !== 'score') {
     rows = rows || rowsByIds(E, ranked.map(h => h.id));
