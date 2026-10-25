@@ -35,6 +35,15 @@ function inheritedTree(judged) {
   return rec ? { ...rec, inherited_from: rec.inherited_from || judged.id } : null;
 }
 
+// The fix's files_owned: the judged task's by default. In a shared tree the files check judges the whole branch from the work's
+// base, so the work's files are changed files of the fix too: a set the caller names is joined to the judged task's, never
+// narrower (a narrower set would always fail files_within_owned). A malformed set is left for task.create to refuse.
+function ownedSet(given, judged, tree) {
+  if (given === undefined) return judged.files_owned;
+  if (!tree || !Array.isArray(given) || !Array.isArray(judged.files_owned)) return given;
+  return [...new Set([...judged.files_owned, ...given])];
+}
+
 async function fixFromReview(E, caller, args) {
   const T = require('./methods-task.cjs');
   if (!args.review_id || typeof args.review_id !== 'string') throw err('E_ARGS', 'task.fixFromReview needs the review_id of a refuted review task');
@@ -59,14 +68,15 @@ async function fixFromReview(E, caller, args) {
   const same = rows.currentAll(E.store, 'task').find((t) => t.run_id === caller.run_id && t.repairs === repairs && live.has(t.state)
     && Array.isArray(t.depends_on) && t.depends_on.length === 1 && t.depends_on[0] === judged.id);
   if (same) return { ...same, from_review: review.id, existing: true };
+  const tree = inheritedTree(judged);
   const row = await T.create(E, caller, {
     spec: typeof args.spec === 'string' && args.spec.trim() ? args.spec : defaultSpec(review, judged, original, verdictDetail(review)),
     acceptance: args.acceptance !== undefined ? args.acceptance : judged.acceptance,
-    files_owned: args.files_owned !== undefined ? args.files_owned : judged.files_owned,
+    files_owned: ownedSet(args.files_owned, judged, tree),
     depends_on: [judged.id],
     repairs,
     ...(args.id ? { id: args.id } : {}),
-  }, { worktree: inheritedTree(judged) });
+  }, { worktree: tree });
   return { ...row, from_review: review.id };
 }
 

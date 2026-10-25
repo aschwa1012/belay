@@ -180,3 +180,22 @@ test('two removals of one shared tree at once: one removes it, the other reports
   assert.strictEqual((await orch.task.worktreeRemove({ task_id: second.id })).removal.already, true);
   assert.ok(!fs.existsSync(w.worktree.path));
 });
+
+test('a fix in a shared tree that names fewer files owns the work\'s files too, so the branch it is judged on passes', async () => {
+  let w = await orch.task.create({ spec: 'narrow work', acceptance: { files_within_owned: true }, files_owned: ['src/narrow-a.cjs'] });
+  w = await orch.task.worktreeCreate({ task_id: w.id });
+  write(w.worktree.path, 'src/narrow-a.cjs', 'a\n');
+  commit(w.worktree.path, 'narrow a');
+  await handBack(w.id, 'c-narrow', w.worktree.path, { branch: w.worktree.branch });
+  assert.strictEqual((await orch.task.evaluate({ task_id: w.id })).state, 'done');
+  const r = await orch.task.create({ spec: 'review narrow', depends_on: [w.id], acceptance: { verdict: true } });
+  await handBack(r.id, 'j-narrow', dir, { verdict: 'refuted', summary: 's', findings: [] });
+  await orch.task.evaluate({ task_id: r.id, worktree: dir });
+  const f = await orch.task.fixFromReview({ review_id: r.id, files_owned: ['src/narrow-b.cjs'] });
+  assert.deepStrictEqual(f.files_owned, ['src/narrow-a.cjs', 'src/narrow-b.cjs']);
+  write(w.worktree.path, 'src/narrow-b.cjs', 'b\n');
+  commit(w.worktree.path, 'narrow b');
+  await handBack(f.id, 'c-narrow', w.worktree.path, { branch: w.worktree.branch });
+  const judged = await orch.task.evaluate({ task_id: f.id });
+  assert.strictEqual(judged.state, 'done', JSON.stringify(judged.results.checks));
+});
