@@ -226,7 +226,7 @@ const ORCHESTRATOR = [
   },
   {
     name: 'task_create',
-    description: 'Create a task with the checks that decide it is done, the files it owns and the tasks it must wait for. Returns the task row in state open. Refuses, naming the other task and the paths, when a file is already owned by a task that is not done, and refuses a dependency that has no row.',
+    description: 'Create a task with the checks that decide it is done, the files it owns and the tasks it must wait for. Returns the task row in state open. Refuses, naming the other task and the paths, when a file is already owned by a task that is not done in the same tree (warns if in another), and refuses a dependency that has no row.',
     inputSchema: S({
       spec: str('What is to be done'),
       acceptance: S({
@@ -361,7 +361,7 @@ const ROLES = ['orchestrator', 'worker'];
 // on, so a run without the lever pays no byte for it. Workers never get it; a worker asks through its result.
 const KNOWLEDGE_TOOL = {
   name: 'knowledge_ask',
-  description: 'Ask the run\'s knowledge agent about stored memory. Returns answer, cited ids with found and status, uncited_claims. Answers from memory only; unverified rows are marked. Refuses E_LEVER_OFF when the lever is off.',
+  description: 'Ask the run\'s knowledge agent about stored notes. Returns answer, cited ids with found and status, uncited_claims. Answers from notes only; unverified rows are marked. Refuses E_LEVER_OFF when the lever is off.',
   inputSchema: S({ question: str() }, ['question']),
 };
 

@@ -113,6 +113,6 @@ clause; everything else is `should-fix` or `note`. A finding is `blocking` only 
 - (d) causes a hang, data loss, an orphaned process or a security hole.
 
 ## Rules of thumb
-- Give each coding task its own tree: `mcp__belay__task_worktree` with the `task_id` makes a branch and worktree from `base`, and `worker_spawn` with that `task_id` and no `worktree` works in it. When the tasks are `done`, `mcp__belay__integrate` with their `task_ids` merges them and re-runs their checks; on a conflict, create a fix task.
+- Give each coding task its own tree: `mcp__belay__task_worktree` with the `task_id` makes a branch and worktree from `base`, and `worker_spawn` with that `task_id` and no `worktree` works in it. Make it right after `task_create`, before you create the next task on the same files: tasks in their own trees may own the same files, which `integrate` then merges. When the tasks are `done`, `mcp__belay__integrate` with their `task_ids` merges them and re-runs their checks; on a conflict, create a fix task.
 - Answer permission requests (`mcp__belay__permission_list`, `mcp__belay__permission_decide`) only when the request is inside the plan.
 - If a worker dies or stalls, `mcp__belay__worker_restart` resumes it; `mcp__belay__worker_stop` ends it. Use `mcp__belay__status` to see what is alive. To give up a task, `mcp__belay__task_cancel` releases its lease and files. Reuse an idle worker with `task_assign` for work in its own tree (its fix rounds: a fix shares the work's tree); spawn a new one for another tree; stop an idle worker with no next task.

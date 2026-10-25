@@ -153,6 +153,17 @@ async function rollback(top, rec, { keepBranch = false } = {}) {
   return out;
 }
 
+// A task that is leased or released has a worker already working, or its work handed back, in the worker's directory; a tree made
+// now would be one the work is not in, and its evaluation would judge it there (ADR 0058 amendment). Refused, naming the holder.
+function assertNotLeased(E, task) {
+  const l = rows.currentLeaseForTask(E.store, task.id);
+  const live = l && !l.released_at ? l : null;
+  if (!live && task.state !== 'assigned' && task.state !== 'released') return;
+  const who = live ? `${live.holder_role} ${live.holder} holds lease ${live.id} on it` : `it is ${task.state}${l && l.holder ? `, last held by ${l.holder_role} ${l.holder}` : ''}`;
+  throw err('E_PRECONDITION', `task ${task.id} gets no worktree once it is leased or released: ${who}, and that work is in the holder's directory; create a new task for work in a new tree`,
+    { task_id: task.id, state: task.state, holder: l ? l.holder : null, holder_role: l ? l.holder_role : null, lease_id: l ? l.id : null, lease_released: l ? !!l.released_at : null });
+}
+
 async function worktreeCreate(E, caller, args) {
   requireTask(E, args.task_id, 'task.worktreeCreate');
   args = present(args);
@@ -163,6 +174,7 @@ async function worktreeCreate(E, caller, args) {
   return exclusive(`task:${args.task_id}`, `a worktree call for task ${args.task_id}`, async () => {
     const task = requireTask(E, args.task_id, 'task.worktreeCreate');
     if (task.state === 'done') throw err('E_TASK_DONE', `task ${task.id} is done, so it gets no new worktree`, { task_id: task.id, state: 'done' });
+    assertNotLeased(E, task);
     const had = active(task);
     if (had) throw err('E_EXISTS', `task ${task.id} already has worktree ${had.path} on branch ${had.branch}`, { task_id: task.id, worktree: had });
     const top = await repoOf(E, caller, args.repo, 'task.worktreeCreate');
@@ -181,6 +193,7 @@ async function worktreeCreate(E, caller, args) {
         E.assertRunOpen(caller, 'task.worktreeCreate');
         const fresh = rows.current(E.store, 'task', task.id);
         if (fresh.state === 'done' || active(fresh)) throw err('E_EXISTS', `task ${task.id} changed while its worktree was made`, { task_id: task.id, state: fresh.state });
+        assertNotLeased(E, fresh); // an assign that landed while the tree was made
         return rows.append(E.store, 'task', { ...fresh, worktree: rec }, E.writtenBy(caller), Date.now());
       });
       E.noteWrite();
@@ -253,13 +266,24 @@ async function removeTree(E, rec, args, what) {
   return out;
 }
 
+// A task with a belay worktree is worked and judged there and nowhere else (ADR 0058 amendment): a directory that is not that tree
+// is refused, naming both, because a worker writes where it runs and its directory cannot change once it is running.
+function assertTaskTree(task, dir, what, remedy) {
+  const tree = active(task);
+  if (!tree || !dir || G.samePath(path.resolve(dir), path.resolve(tree.path))) return;
+  throw err('E_PRECONDITION', `task ${task.id} has its own worktree ${tree.path}, but ${what} is ${G.fwd(dir)}; ${remedy}`,
+    { task_id: task.id, task_worktree: tree.path, worktree: G.fwd(dir) });
+}
+
 // task.evaluate's worktree and base (ADR 0053 decision 4): the arguments when given, else the task's recorded worktree and base.
+// A worktree argument that is not the task's recorded tree is refused (assertTaskTree), whoever passes it.
 function evaluateTarget(task, args) {
   const rec = task.worktree && task.worktree.base_sha ? task.worktree : null;
+  if (args.worktree !== undefined) assertTaskTree(task, args.worktree, 'the worktree to evaluate in', 'leave worktree out to evaluate it in its own');
   const worktree = args.worktree !== undefined ? args.worktree : (active(task) || {}).path;
   if (!worktree || typeof worktree !== 'string') throw err('E_ARGS', `task.evaluate needs the worktree the acceptance criteria run in; task ${task.id} has no belay worktree to default to`, { task_id: task.id });
   if (args.base !== undefined) return { worktree, base: args.base, baseSource: 'arg' };
   return rec ? { worktree, base: rec.base_sha, baseSource: 'recorded' } : { worktree, base: undefined, baseSource: undefined };
 }
 
-module.exports = { worktreeCreate, worktreeRemove, removeTree, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, exclusive, active, present, pathName, liveWorkerIn, strayLinks };
+module.exports = { worktreeCreate, worktreeRemove, removeTree, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, assertTaskTree, exclusive, active, present, pathName, liveWorkerIn, strayLinks, under };
