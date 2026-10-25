@@ -50,7 +50,11 @@ function createCompose({ callCore, manager, openManager, dataDir = null }) {
     let head = `task ${coreArgs.task_id} state=assigned lease=${lease}.`;
     try { const rl = await callCore('continuity.resumeLine', { task_id: coreArgs.task_id }); if (rl && rl.text) head = rl.text; } catch { /* the short head above still names the lease */ }
     const body = typeof prompt === 'string' && prompt.trim() ? prompt : `Task: ${(out && out.task && out.task.spec) || ''}`;
-    const text = `${head}\n\n${body}\n\nWhen you are finished, call lease_release with lease_id ${lease} and a result object (branch, head, tests, findings).`;
+    // A coder or fixer in the task's own belay worktree commits before it hands back (integrate merges a commit of what was
+    // judged); a reviewer never commits in the tree it judges, so a review task's rule says nothing about committing.
+    const t = (out && out.task) || {};
+    const commits = !!(t.worktree && t.worktree.path && !t.worktree.removed_at) && !(t.acceptance && t.acceptance.verdict === true);
+    const text = `${head}\n\n${body}\n\nWhen you are finished, ${commits ? 'commit your work in your worktree, then ' : ''}call lease_release with lease_id ${lease} and a result object (branch, head, tests, findings).`;
     try {
       const m = await r.message({ worker_id: coreArgs.worker_id, text });
       return { ...out, delivered: { ...m, sent: !m.queued, queued: !!m.queued } }; // queued: held for a compaction, written when it ends

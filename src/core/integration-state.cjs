@@ -50,12 +50,35 @@ function factOf(r, id) {
 // newest other fact, and `elsewhere` lists the other branches' states when there are any. A done task with a branch that no
 // integration has merged, stopped on or is merging is `not_merged` with `into: null`; a task with no belay branch, or not
 // done and never named, has none (null).
-function ofTask(task, newest) {
+//
+// A branch is one unit (ADR 0060 decision 3): a fix task works on the branch of the work it fixes, so a peer's merge (`peers`, the
+// other tasks on the same branch) lands this task too, marked `via` the peer, when this task was done before that merge was
+// written and the merged commit contains the head this task was judged at (the merge's `covers`, decision 4; a row from before
+// `covers` goes by the time alone). A task done after it (a later fix round) is not landed by it. Only a merge carries over; a
+// peer's conflict or failure says nothing about this task.
+const landedBy = (task, r) => task.state === 'done' && task.results && Number(task.results.evaluated_at) <= Number(r.written_at);
+// The merge names what its commit contains (`covers`, ADR 0060 decision 4); a row from before it falls back to the time.
+const contains = (r, mergedId, task) => { const m = (r.merged || []).find((x) => x.task_id === mergedId); return m && Array.isArray(m.covers) ? m.covers.includes(task.id) : true; };
+function factFor(r, task, peers) {
+  let own = Array.isArray(r.task_ids) && r.task_ids.includes(task.id) ? factOf(r, task.id) : null;
+  // Its own entry counts as merged only when the merged commit contains what it was judged on: an `empty` or older commit did not
+  // land its change, whatever the entry says.
+  if (own && own.state === 'merged' && !contains(r, task.id, task)) own = null;
+  if ((own && own.state === 'merged') || !landedBy(task, r)) return own;
+  for (const p of peers) {
+    if (!Array.isArray(r.task_ids) || !r.task_ids.includes(p.id)) continue;
+    const f = factOf(r, p.id);
+    if (!f || f.state !== 'merged') continue;
+    if (contains(r, p.id, task)) return { ...f, via: p.id };
+  }
+  return own;
+}
+
+function ofTask(task, newest, peers = []) {
   if (!task.worktree || !task.worktree.branch) return null;
   const perInto = new Map();
   for (const r of newest) {
-    if (!Array.isArray(r.task_ids) || !r.task_ids.includes(task.id)) continue;
-    const f = factOf(r, task.id);
+    const f = factFor(r, task, peers);
     if (!f) continue;
     const cur = perInto.get(f.into);
     if (!cur || (cur.state !== 'merged' && f.state === 'merged')) perInto.set(f.into, f);

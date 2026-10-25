@@ -85,9 +85,25 @@ async function filterOverrides(run, git, cwd, env, timeoutMs) {
   return out;
 }
 
+// The system config's line-ending keys (core.autocrlf, core.eol, core.safecrlf), passed back as `-c` like its filter keys: a
+// read that hashes content (judged.cjs's add -A into a temporary index) must convert line endings as a commit will, and Git for
+// Windows sets core.autocrlf=true in its system config, which GIT_CONFIG_NOSYSTEM drops.
+async function systemLineEndings(run, git, cwd, env, timeoutMs) {
+  const sys = await run(git, ['--no-pager', 'config', '--system', '--null', '--get-regexp', '^core\\.(autocrlf|eol|safecrlf)$'], { cwd, env, timeoutMs, maxOut: 4096, system: true });
+  if (sys.code === 1 && sys.total === 0) return [];
+  if (sys.code !== 0) throw checkFailed('git config --system core line endings', sys);
+  const out = [];
+  for (const entry of sys.out.toString('utf8').split('\0').filter(Boolean)) {
+    const nl = entry.indexOf('\n');
+    if (nl > 0 && !badKey(entry.slice(0, nl))) out.push('-c', `${entry.slice(0, nl)}=${entry.slice(nl + 1)}`);
+  }
+  return out;
+}
+
 // The hardened setup for one worktree: git's path, the environment and the filter overrides, read once. A caller making several
 // reads of one tree (a review snapshot) prepares once and passes it to each safeGit. Resolves { git, env, filters } or { error }.
-async function prepare(cwd, timeoutMs, env = process.env) {
+// `lineEndings` also passes back the system line-ending keys (systemLineEndings), for a caller that hashes content.
+async function prepare(cwd, timeoutMs, env = process.env, { lineEndings = false } = {}) {
   const { runCommand } = require('./evaluate.cjs'); // lazy: evaluate.cjs requires this module
   const git = findGit(env);
   if (!git) return { error: 'git was not found on PATH' };
@@ -99,7 +115,10 @@ async function prepare(cwd, timeoutMs, env = process.env) {
     const out = Buffer.from(r.stdout || '', 'utf8');
     return { code: r.executable ? r.exit_code : -1, out, total: r.truncated ? out.length + 1 : out.length, kept: out.length, errTail: String(r.stderr || r.spawn_error || '') };
   };
-  try { return { git, env: base, filters: await filterOverrides(run, git, cwd, env, timeoutMs) }; } catch (e) { return { error: e.message }; }
+  try {
+    const filters = await filterOverrides(run, git, cwd, env, timeoutMs);
+    return { git, env: base, filters: lineEndings ? [...filters, ...(await systemLineEndings(run, git, cwd, env, timeoutMs))] : filters };
+  } catch (e) { return { error: e.message }; }
 }
 
 // One hardened git read for the core, through evaluate.cjs's runCommand: `args` follow belay's PRE and filter overrides.
@@ -111,4 +130,4 @@ async function safeGit(args, cwd, timeoutMs, { tail, env = process.env, prepared
   return runCommand([p.git, ...PRE, ...p.filters, ...args], cwd, timeoutMs, { env: p.env, ...(tail ? { tail } : {}) });
 }
 
-module.exports = { PRE, NO_HOOKS, gitEnv, findGit, filterOverrides, prepare, safeGit };
+module.exports = { PRE, NO_HOOKS, gitEnv, findGit, filterOverrides, systemLineEndings, prepare, safeGit };

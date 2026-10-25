@@ -241,7 +241,7 @@ const ORCHESTRATOR = [
       acceptance: S({
         commands: {
           type: 'array',
-          items: S({ argv: strs(), cwd: str(), timeout_ms: int() }, ['argv']),
+          items: S({ argv: strs(), cwd: str(), timeout_ms: int(), retries_on_fail: int('0-5; a pass after a fail is marked flaky') }, ['argv']),
         },
         files_within_owned: bool(),
         verdict: { const: true },
@@ -296,7 +296,7 @@ const ORCHESTRATOR = [
   {
     // ADR 0053 decision 5.
     name: 'integrate',
-    description: 'Merge done tasks\' branches in order into into (default belay/integrate/<run>), then re-run their checks there. Returns state, merged, not_merged, checks, passed (passing output cut; view debug: whole row). A conflict is aborted, tree clean; conflict names task and files; what merged before it is still checked. task_list gives each task\'s integration state.',
+    description: 'Merge done tasks\' branches, at the head each was judged at, in order into into (default belay/integrate/<run>), then re-run their checks there. Returns state, merged, not_merged, left_out (commits past it), checks, passed (passing output cut; view debug: whole row). A conflict is aborted, tree clean; conflict names task and files; what merged before it is still checked. task_list gives each task\'s integration state.',
     inputSchema: S({
       task_ids: strs(),
       into: str(),

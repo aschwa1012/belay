@@ -22,7 +22,7 @@ A task is made with `mcp__belay__task_create`:
 
 - `spec`: what is to be done, in plain words.
 - `acceptance`: `commands` is a list of `{ argv, cwd, timeout_ms }`; the task is proven when every
-  command exits 0. `files_within_owned: true` also requires every changed file to be in
+  command exits 0. A check you know is flaky takes `retries_on_fail` (at most 5): a pass on a retry is marked `flaky` in the results; treat it as a finding, not a clean pass. `files_within_owned: true` also requires every changed file to be in
   `files_owned`. `handoff: { required: ["findings", "summary"] }` passes when the hand-back's result carries each field (research needs no commands). A task with no checks at all can never reach `done`.
 - `files_owned`: paths, relative to the worktree, that this task may change.
 - `depends_on`: task ids that must be `done` first.
@@ -38,7 +38,7 @@ of your prompt, `task <id> state=assigned lease=<lease id>.`. Give it `substrate
 rule (`prompt` replaces the spec, `deliver: false` sends nothing). If `delivered.sent` and `delivered.queued` are false,
 the worker was told nothing: tell it with `mcp__belay__worker_message`.
 
-Every worker prompt you write must end with: when you are finished, call `lease_release` with your
+Every worker prompt you write must end with: when you are finished (a coder or fixer in its task's own worktree commits first; a reviewer never commits), call `lease_release` with your
 lease id and a `result` object (branch, head, tests, findings). A worker cannot name itself: belay
 knows it by its process, not by anything it says.
 
@@ -121,4 +121,4 @@ A review is `refuted` only if it has at least one blocking finding. Every blocki
 ## Rules of thumb
 - Give each coding task its own tree: `mcp__belay__task_worktree` with the `task_id` makes a branch and worktree from `base`, and `worker_spawn` with that `task_id` and no `worktree` works in it. Make it right after `task_create`, before you create the next task on the same files: tasks in their own trees may own the same files, which `integrate` then merges. When the tasks are `done`, `mcp__belay__integrate` with their `task_ids` merges them and re-runs their checks; on a conflict, create a fix task.
 - Answer permission requests (`mcp__belay__permission_list`, `mcp__belay__permission_decide`) only when the request is inside the plan.
-- If a worker dies or stalls, `mcp__belay__worker_restart` resumes it; `mcp__belay__worker_stop` ends it. Use `mcp__belay__status` to see what is alive. To give up a task, `mcp__belay__task_cancel` releases its lease and files.
+- If a worker dies or stalls, `mcp__belay__worker_restart` resumes it; `mcp__belay__worker_stop` ends it. Use `mcp__belay__status` to see what is alive. To give up a task, `mcp__belay__task_cancel` releases its lease and files. Reuse an idle worker with `task_assign` for work in its own tree (its fix rounds: a fix shares the work's tree); spawn a new one for another tree; stop an idle worker with no next task.

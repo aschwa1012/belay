@@ -10,6 +10,7 @@ const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 const G = require('./git.cjs');
 const W = require('./methods-worktree.cjs');
+const J = require('./judged.cjs');
 const { runCommand, DEFAULT_COMMAND_TIMEOUT_MS } = require('./evaluate.cjs');
 const { notMerged, stale } = require('./integration-state.cjs');
 const { pidAlive } = require('./lock.cjs');
@@ -17,8 +18,9 @@ const ID = require('./proc-identity.cjs');
 
 const MAX_TASKS = 50;
 
-// `not_merged` is derived from the row, never stored.
-const view = (r) => (r ? { ...r, created_worktree: r.created_worktree == null ? null : !!r.created_worktree, passed: r.passed == null ? null : !!r.passed, not_merged: notMerged(r), stale: stale(r) } : null);
+// `not_merged` and `left_out` (each merged branch head past what was judged, ADR 0060 decision 4) are derived from the row, never stored.
+const leftOut = (r) => { const l = (r.merged || []).filter((m) => m && m.left_out).map((m) => ({ task_id: m.task_id, ...m.left_out })); return l.length ? l : null; };
+const view = (r) => (r ? { ...r, created_worktree: r.created_worktree == null ? null : !!r.created_worktree, passed: r.passed == null ? null : !!r.passed, not_merged: notMerged(r), stale: stale(r), left_out: leftOut(r) } : null);
 
 // The process that wrote a `merging` row is gone, or is this one. A row this process wrote is not in flight, since the caller
 // holds the in-process lock every merge into that branch holds. Another live pid may be an owner that was stopped without
@@ -100,6 +102,11 @@ async function readTasks(E, ids) {
   if (notDone.length) throw err('E_PRECONDITION', `only done tasks are merged; not done: ${notDone.map((x) => `${x.task_id} (${x.state})`).join(', ')}`, { not_done: notDone });
   const noBranch = tasks.filter((t) => !t.worktree || !t.worktree.branch).map((t) => t.id);
   if (noBranch.length) throw err('E_PRECONDITION', `these tasks have no belay branch to merge: ${noBranch.join(', ')}`, { no_branch: noBranch });
+  // A fix task works on the branch of the work it fixes: merging the done work would take the open fix's unreviewed commits.
+  for (const t of tasks) {
+    const open = W.openSharer(E, t);
+    if (open) throw err('E_PRECONDITION', `task ${t.id}'s branch ${t.worktree.branch} is shared with task ${open.id} (${open.state}), which is not done; merge once it is done or cancelled`, { task_id: t.id, branch: t.worktree.branch, open_task_id: open.id, open_state: open.state });
+  }
   const repo = tasks[0].worktree.repo;
   const other = tasks.find((t) => !G.samePath(t.worktree.repo, repo));
   if (other) throw err('E_PRECONDITION', `task ${other.id}'s branch is in ${other.worktree.repo}, not ${repo}`, { task_id: other.id, repo: other.worktree.repo, expected: repo });
@@ -109,7 +116,37 @@ async function readTasks(E, ids) {
     if (a && fs.existsSync(a.path)) { const d = await G.dirtyPaths(a.path); if (d.length) dirty.push({ task_id: t.id, path: a.path, dirty: d.slice(0, 20) }); }
   }
   if (dirty.length) throw err('E_PRECONDITION', `a merge would leave uncommitted work behind in ${dirty.map((d) => d.task_id).join(', ')}; commit it first`, { dirty });
-  return { tasks, repo };
+  for (const t of tasks) {
+    if (J.judgedOf(t)) continue;
+    const h = await G.run(repo, ['rev-parse', '--verify', `refs/heads/${t.worktree.branch}^{commit}`]);
+    const head = h.ok ? h.stdout.trim() : null;
+    throw err('E_PRECONDITION', `task ${t.id} records nothing it was judged on (it was evaluated before belay recorded it), so belay cannot tell its work from what came after on ${t.worktree.branch} (head ${head || 'unresolved'}); judge the branch again as a new task`, { task_id: t.id, branch: t.worktree.branch, branch_head: head });
+  }
+  return { tasks, repo, targets: await targetsOf(E, tasks, repo) };
+}
+
+// ADR 0060 decisions 4 and 6: integrate merges what was judged. Each branch is merged at the commit that is the newest judgement
+// among the done tasks on it (judged.cjs commitOf: the newest commit whose tree is the judged content, or an old row's head), never
+// at a branch head past it. When no commit on the branch is that content (judged uncommitted and never committed as judged, or
+// committed with more changes), the merge is refused before anything is written. A branch that does not resolve is left to the
+// merge, which records it failed.
+async function targetsOf(E, tasks, repo) {
+  const targets = new Map();
+  for (const t of tasks) {
+    const on = J.onBranch(E, t);
+    const by = on[on.length - 1];
+    const h = await G.run(repo, ['rev-parse', '--verify', `refs/heads/${t.worktree.branch}^{commit}`]);
+    if (!h.ok || !by) continue;
+    const tip = h.stdout.trim();
+    const sha = await J.commitOf(repo, by, tip);
+    if (!sha) {
+      const j = J.judgedOf(by);
+      throw err('E_PRECONDITION', `no commit on ${t.worktree.branch} (head ${tip}) is what task ${by.id} was judged on (tree ${j.tree || j.head}); commit exactly the judged state, or merge it as a new task`,
+        { task_id: t.id, judged_by: by.id, judged_tree: j.tree, judged_head: j.head, branch: t.worktree.branch, branch_head: tip });
+    }
+    targets.set(t.id, { by, sha, tip, on });
+  }
+  return targets;
 }
 
 // The tree the merge happens in: where `into` is checked out (it must be clean), else a new integration worktree.
@@ -150,15 +187,30 @@ async function integrationTree(E, repo, into, args, tasks, abandoned = []) {
   return { path: wtPath, created: true, junctions: made };
 }
 
-// One merge. Returns { ok, ... } and on failure leaves the tree as it was before this merge.
-async function mergeOne(tree, task) {
+// One merge, of the commit that is the newest judgement on the task's branch (targetsOf). Returns { ok, ... } and on failure leaves
+// the tree as it was before this merge. `covers` is every done task on the branch whose judged commit the merged commit contains,
+// and `left_out` the branch head and the commits past the merged one, when there are any.
+async function mergeOne(tree, task, target) {
   const b = task.worktree.branch;
-  const sha = (await G.must(tree, ['rev-parse', '--verify', `refs/heads/${b}^{commit}`], `branch ${b} of task ${task.id} does not resolve`)).trim();
+  const tip = (await G.must(tree, ['rev-parse', '--verify', `refs/heads/${b}^{commit}`], `branch ${b} of task ${task.id} does not resolve`)).trim();
+  if (!target) throw err('E_PRECONDITION', `task ${task.id} has no judged commit on ${b}`, { task_id: task.id, branch: b });
+  const { by, sha } = target;
+  let leftOut = null;
+  if (tip !== sha) {
+    const n = await G.run(tree, ['rev-list', '--count', `${sha}..${tip}`]);
+    leftOut = { branch: b, head: tip, judged: sha, commits: n.ok ? Number(n.stdout.trim()) : null };
+  }
+  const covers = [];
+  for (const t of target.on) {
+    const c = await J.commitOf(tree, t, tip);
+    if (c && (await G.run(tree, ['merge-base', '--is-ancestor', c, sha])).ok) covers.push(t.id);
+  }
+  const facts = { judged_by: by.id, covers, ...(leftOut ? { left_out: leftOut } : {}) };
   // A branch still at its recorded base holds no commit: it is contained already, and `empty` says why, so it is not read as merged work.
   const empty = sha === task.worktree.base_sha;
-  if ((await G.run(tree, ['merge-base', '--is-ancestor', sha, 'HEAD'])).ok) return { ok: true, task_id: task.id, branch: b, sha, already: true, empty };
+  if ((await G.run(tree, ['merge-base', '--is-ancestor', sha, 'HEAD'])).ok) return { ok: true, task_id: task.id, branch: b, sha, already: true, empty, ...facts };
   const r = await G.run(tree, ['merge', '--no-ff', '--no-edit', '-m', `belay: merge task ${task.id} (${b})`, sha]);
-  if (r.ok) return { ok: true, task_id: task.id, branch: b, sha, already: false, head_sha: (await G.must(tree, ['rev-parse', 'HEAD'], 'HEAD')).trim() };
+  if (r.ok) return { ok: true, task_id: task.id, branch: b, sha, already: false, ...facts, head_sha: (await G.must(tree, ['rev-parse', 'HEAD'], 'HEAD')).trim() };
   const u = await G.run(tree, ['diff', '--name-only', '--diff-filter=U', '-z']);
   const files = u.ok ? u.stdout.split('\0').filter(Boolean) : [];
   const merging = (await G.run(tree, ['rev-parse', '-q', '--verify', 'MERGE_HEAD'])).ok;
@@ -209,7 +261,7 @@ async function merge(E, caller, args) {
   args = W.present(args);
   checkArgs(args);
   const takeOver = checkTakeOver(caller, args, 'integration.merge');
-  const { tasks, repo } = await readTasks(E, args.task_ids);
+  const { tasks, repo, targets } = await readTasks(E, args.task_ids);
   const into = await G.validBranch(repo, args.into === undefined ? `belay/integrate/${caller.run_id}` : args.into);
   return W.exclusive(`integrate:${repo}:${into}`, `an integration into ${into}`, async () => {
     const abandoned = await abandonStale(E, caller, repo, into, takeOver);
@@ -228,13 +280,13 @@ async function merge(E, caller, args) {
     try {
       for (const t of tasks) {
         trying = t;
-        const m = await mergeOne(tree.path, t);
+        const m = await mergeOne(tree.path, t, targets.get(t.id));
         if (!m.ok) {
           const { ok, conflict, stderr, ...rest } = m;
           if (conflict) { out.state = 'conflict'; out.conflict = rest; } else { out.state = 'failed'; out.error = { ...rest, message: `the merge of ${t.id} failed without a conflict: ${String(stderr).split('\n')[0]}`, stderr }; }
           break;
         }
-        out.merged.push({ task_id: m.task_id, branch: m.branch, sha: m.sha, already: m.already, empty: !!m.empty });
+        out.merged.push({ task_id: m.task_id, branch: m.branch, sha: m.sha, already: m.already, empty: !!m.empty, judged_by: m.judged_by, covers: m.covers, ...(m.left_out ? { left_out: m.left_out } : {}) });
         trying = null;
       }
     } catch (e) {

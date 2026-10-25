@@ -56,8 +56,8 @@ const lf = (s) => s.replace(/\r\n/g, '\n');
 const AMD6_LINES = {
   // ADR 0053: the worktree rule of thumb (orchestrator.md 116, the interactive twin 120 once its pause paragraph is taken out).
   // ADR 0054 amendment 1: the Review standard's first two lines (orchestrator.md 107-108, the twin 111-112) say the tree is read-only, and step 5 (orchestrator.md 91, the twin 95) calls a flagged review suspect.
-  'orchestrator.md': [4, 8, 9, 10, 24, 32, 33, 35, 36, 37, 60, 61, 67, 71, 75, 81, 82, 83, 91, 97, 98, 99, 100, 101, 107, 108, 116, 118],
-  'orchestrator-interactive.md': [6, 10, 11, 12, 26, 34, 35, 37, 38, 39, 52, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 71, 75, 78, 79, 85, 86, 87, 92, 95, 98, 101, 102, 103, 104, 105, 111, 112, 120, 122],
+  'orchestrator.md': [4, 8, 9, 10, 23, 24, 32, 33, 35, 36, 37, 39, 60, 61, 67, 71, 75, 81, 82, 83, 91, 97, 98, 99, 100, 101, 107, 108, 116, 118],
+  'orchestrator-interactive.md': [6, 10, 11, 12, 25, 26, 34, 35, 37, 38, 39, 41, 52, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 71, 75, 78, 79, 85, 86, 87, 92, 95, 98, 101, 102, 103, 104, 105, 111, 112, 120, 122],
 };
 
 test('memory rules: the placeholder sits at the end of an existing line, and an empty substitution is the base prompt byte for byte', () => {
