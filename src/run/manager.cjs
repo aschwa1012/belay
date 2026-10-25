@@ -327,6 +327,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   async function doRestart(w, { firstTextOverride = null, appendMessage = null, awaitFirstTurn = true, first_turn_timeout_ms = 180000, onFirstText = null, skipDeadPidKill = false } = {}) {
     const worker_id = w.id;
     const old_pid = w.pid;
+    RG.refuseIfRelaunching(w, 'restart'); // a Codex message's relaunch owns the window; this one waits its turn
     // ADR 0026 amendment 2 (proposed): from here until launch() has moved w.launches, a death of this worker keeps its lease.
     const { d, hold, firstText } = await RG.relaunching(w, writeRow, async () => {
       await w.queue; // the life before's rows land first (a death meanwhile keeps the lease: relaunch-guard.cjs)
