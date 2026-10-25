@@ -400,7 +400,7 @@ test('retitle under off: the resolve is refused by the memory-off gate, as every
   const id = await pendingNote('K4', 'the K4 loader also skips unlisted fixtures, again');
   const was = E._memoryOffFn;
   E._memoryOffFn = () => 'refuse';
-  try { await assert.rejects(resolveNew(id, 'the K9 loader reads fixtures from the index'), (e) => e.code === 'E_LEVER_OFF' || /memory is off/i.test(e.message)); } finally { E._memoryOffFn = was; }
+  try { await assert.rejects(resolveNew(id, 'the K9 loader reads fixtures from the index'), (e) => e.code === 'E_LEVER_OFF' || /notes are off/i.test(e.message)); } finally { E._memoryOffFn = was; }
   assert.strictEqual(rowOf(id).namespace, 'pending/acme');
 });
 

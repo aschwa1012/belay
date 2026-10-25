@@ -75,7 +75,7 @@ function warningFor(o, ran, failed, results, absence, unembedded, below) {
   if (failed.length) {
     const did = failed.map(f => `${f.mode} search did not run (${f.code})`).join('; ');
     const what = ran.length ? `these are ${ran.join(' and ')} matches only` : 'nothing was searched';
-    return `${did}; ${what}; no match here does not mean no such memory`;
+    return `${did}; ${what}; no match here does not mean no such entry`;
   }
   const gap = unembedded ? `${unembedded} in-scope ${plural(unembedded, 'row has', 'rows have')} no vector, so semantic search could not see ${plural(unembedded, 'it', 'them')}; keyword search alone covers ${plural(unembedded, 'it', 'them')}` : null;
   if (results.length) {
@@ -83,10 +83,10 @@ function warningFor(o, ran, failed, results, absence, unembedded, below) {
     return [gap, low].filter(Boolean).join('; ') || null;
   }
   if (o.mode !== 'hybrid') {
-    return `${o.mode} search only; ${o.mode === 'semantic' ? 'keyword' : 'semantic'} search did not run; no match here does not mean no such memory`;
+    return `${o.mode} search only; ${o.mode === 'semantic' ? 'keyword' : 'semantic'} search did not run; no match here does not mean no such entry`;
   }
-  if (gap) return `${gap}; no match here does not mean no such memory`;
-  if (!absence) return 'both modes ran but offset or min_score narrowed the result; an empty page does not mean no such memory';
+  if (gap) return `${gap}; no match here does not mean no such entry`;
+  if (!absence) return 'both modes ran but offset or min_score narrowed the result; an empty page does not mean no such entry';
   return null;
 }
 

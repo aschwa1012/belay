@@ -143,7 +143,7 @@ test('fix_from_review called again for the same review returns the open fix it m
   assert.strictEqual(first.existing, undefined);
 });
 
-test('a cancelled task is an ended task to the run-end memory jobs, the note review, its facts and the report verdicts, as released and done are', () => {
+test('a cancelled task is an ended task to the run-end note jobs, the note review, its facts and the report verdicts, as released and done are', () => {
   const { ENDED_TASK } = require('../../src/run/memory-jobs.cjs');
   const { ENDED } = require('../../src/run/note-review.cjs');
   const { FINISHED } = require('../../src/core/note-review-facts.cjs');

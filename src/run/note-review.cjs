@@ -27,7 +27,7 @@ function stateOf(ctx) {
 // nothing more (a write begun after the owner's shutdown would elect a stray one, invariant 2). A refusal is E_TIMEOUT, as in
 // memory-jobs call().
 function gated(J) {
-  return require('./gated-core.cjs').gatedCore(J.core, J.gate, 'the run-end memory jobs');
+  return require('./gated-core.cjs').gatedCore(J.core, J.gate, 'the run-end note jobs');
 }
 
 async function receipt(core, fields) {
