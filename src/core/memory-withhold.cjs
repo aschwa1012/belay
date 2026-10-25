@@ -44,9 +44,6 @@ const scan = (E, where) => {
   return out;
 };
 
-// Note id -> project for every active hold on a report that still withholds (a resolution against a disputed note is refused on it).
-const heldReported = (E) => scan(E, `json_extract(h.body, '$.ground') = 'reported' AND json_extract(h.body, '$.kind') IN ('wrong', 'superseded') AND ${WITHHOLDING}`);
-
 // Note id -> project for every hold that withholds its note from a worker (ADR 0047 amendment of 2026-10-25, proposed): a hold of kind
 // wrong, superseded or duplicate on any ground, except a reported hold whose every report was written past the breaker. An `unsupported`
 // row is a verification queue, not a dispute, and is not withheld.
@@ -112,4 +109,4 @@ function withheldAmong(E, caller, list) {
   return out;
 }
 
-module.exports = { WITHHOLD_FOR, MATCHING, withholds, withheldIds, withheldAmong, heldReported, heldWithheld, holdsAmong, noteIds };
+module.exports = { WITHHOLD_FOR, MATCHING, withholds, withheldIds, withheldAmong, heldWithheld, holdsAmong, noteIds };
