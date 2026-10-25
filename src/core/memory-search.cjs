@@ -363,6 +363,9 @@ async function search(E, caller, args) {
   const absence = ran.includes('semantic') && ran.includes('keyword') && unembedded === 0 && V.belowFloor(top) && kw.hits.length === 0;
   const out = { warning: V.warningFor(o, ran, failed, results, absence, unembedded, below), results, relevance: V.relevanceOf(sem, sem && sem.model) };
   if (below) out.below_floor = below;
+  // A held note pushed off the page by the notes ranked above it still matched: the orchestrator and the operator get its id and kind. Workers never do.
+  const heldOff = caller.role === 'worker' ? [] : pool.slice(o.offset + o.k).filter(h => holds.has(h.id)).map(h => ({ id: h.id, kind: holds.get(h.id).kind || null }));
+  if (heldOff.length) out.held_matches = heldOff;
   if (unembedded) out.rows_without_vector = unembedded;
   if (debug) {
     const searched = { namespaces: o.namespaces, filter: o.filter, rows_considered: considered, fts: ftsReady(db) };
