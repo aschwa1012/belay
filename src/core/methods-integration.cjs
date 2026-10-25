@@ -11,12 +11,23 @@ const rows = require('./rows.cjs');
 const G = require('./git.cjs');
 const W = require('./methods-worktree.cjs');
 const { runCommand, DEFAULT_COMMAND_TIMEOUT_MS } = require('./evaluate.cjs');
-const { notMerged } = require('./integration-state.cjs');
+const { notMerged, stale, BOOT } = require('./integration-state.cjs');
 
 const MAX_TASKS = 50;
 
 // `not_merged` is derived from the row, never stored.
-const view = (r) => (r ? { ...r, created_worktree: r.created_worktree == null ? null : !!r.created_worktree, passed: r.passed == null ? null : !!r.passed, not_merged: notMerged(r) } : null);
+const view = (r) => (r ? { ...r, created_worktree: r.created_worktree == null ? null : !!r.created_worktree, passed: r.passed == null ? null : !!r.passed, not_merged: notMerged(r), stale: stale(r) } : null);
+
+// Called holding the one lock for `integrate:<repo>:<into>`, which every merge into that branch holds while it runs in this, the
+// only process that serves writes: so any `merging` row for that branch is one a process that has ended left behind. Each is
+// closed `abandoned` (what it merged before it ended is unknown, and unchecked), and the ids are returned.
+function abandonStale(E, caller, repo, into) {
+  const left = rows.currentAll(E.store, 'integration').filter((r) => r.state === 'merging' && r.into_branch === into && G.samePath(r.repo, repo));
+  if (!left.length) return [];
+  E.store.tx(() => { for (const r of left) rows.append(E.store, 'integration', { ...r, state: 'abandoned', error: { message: `abandoned: the process that ran this integration (pid ${r.owner_pid}) ended mid-merge; what it merged into ${into} is unrecorded and unchecked` } }, E.writtenBy(caller), Date.now()); });
+  E.noteWrite();
+  return left.map((r) => r.id);
+}
 
 function checkArgs(args) {
   const ids = args.task_ids;
@@ -52,14 +63,18 @@ async function readTasks(E, ids) {
 }
 
 // The tree the merge happens in: where `into` is checked out (it must be clean), else a new integration worktree.
-async function integrationTree(E, repo, into, args, tasks) {
+async function integrationTree(E, repo, into, args, tasks, abandoned = []) {
   const found = (await G.worktrees(repo)).find((w) => w.branch === into);
   if (found) {
     // A worker working in that tree (or under it) would have the merge land under its edits (check finding 3).
     const w = W.liveWorkerIn(E, found.path);
     if (w) throw err('E_WORKER_LIVE', `worker ${w.id} (${w.state}) works in ${found.path}, where ${into} is checked out; belay does not merge under a live worker`, { worker_id: w.id, state: w.state, path: found.path });
     const d = await G.dirtyPaths(found.path);
-    if (d.length) throw err('E_PRECONDITION', `${into} is checked out at ${found.path} with ${d.length} uncommitted path(s); belay merges only into a clean tree`, { path: found.path, dirty: d.slice(0, 50) });
+    if (d.length) {
+      // A tree an abandoned integration left mid-merge says how to get out, since nothing else will clear it.
+      const out = abandoned.length ? `; integration ${abandoned.join(', ')} was abandoned mid-merge here: run git merge --abort in ${found.path}, or remove the tree (belay worktree remove --integration <id> --force)` : '';
+      throw err('E_PRECONDITION', `${into} is checked out at ${found.path} with ${d.length} uncommitted path(s); belay merges only into a clean tree${out}`, { path: found.path, dirty: d.slice(0, 50), abandoned });
+    }
     return { path: found.path, created: false, junctions: [] };
   }
   const wtPath = G.fwd(path.join(path.dirname(repo), `${path.basename(repo)}.worktrees`, W.pathName(`integrate-${into.replace(/\//g, '-')}`, 'into')));
@@ -145,12 +160,14 @@ async function merge(E, caller, args) {
   const { tasks, repo } = await readTasks(E, args.task_ids);
   const into = await G.validBranch(repo, args.into === undefined ? `belay/integrate/${caller.run_id}` : args.into);
   return W.exclusive(`integrate:${repo}:${into}`, `an integration into ${into}`, async () => {
-    const tree = await integrationTree(E, repo, into, args, tasks);
+    const abandoned = abandonStale(E, caller, repo, into);
+    const tree = await integrationTree(E, repo, into, args, tasks, abandoned);
     const by = E.writtenBy(caller);
     const baseSha = (await G.must(tree.path, ['rev-parse', 'HEAD'], 'HEAD of the integration tree')).trim();
     const base = {
       id: rows.newId(), run_id: caller.run_id, repo, into_branch: into, worktree: tree.path, created_worktree: tree.created,
       base_sha: baseSha, head_sha: baseSha, task_ids: args.task_ids, merged: [], conflict: null, error: null, checks: null, passed: null, junctions: tree.junctions, removed_at: null,
+      owner_pid: process.pid, owner_boot: BOOT, // who runs it, so a row a crash leaves `merging` reads stale
     };
     E.store.tx(() => { E.assertRunOpen(caller, 'integration.merge'); rows.append(E.store, 'integration', { ...base, state: 'merging' }, by, Date.now()); });
     E.noteWrite();
@@ -219,8 +236,10 @@ async function remove(E, caller, args) {
   if (args.force !== undefined && typeof args.force !== 'boolean') throw err('E_ARGS', 'integration.remove: force must be a boolean', { field: 'force' });
   if (!cur.created_worktree) throw err('E_PRECONDITION', `integration ${cur.id} merged in ${cur.worktree}, a tree belay did not make, so belay does not remove it`, { id: cur.id, worktree: cur.worktree });
   if (cur.removed_at) throw err('E_NOT_FOUND', `integration ${cur.id}'s worktree was removed at ${cur.removed_at}`, { id: cur.id });
-  if (cur.state === 'merging') throw err('E_BUSY', `integration ${cur.id} is still merging`, { id: cur.id });
+  // A merge in flight holds this lock, so the call is refused E_BUSY; a `merging` row met inside it was left by a process that
+  // ended, and is closed `abandoned` before its tree is removed.
   return W.exclusive(`integrate:${cur.repo}:${cur.into_branch}`, `an integration call for ${cur.into_branch}`, async () => {
+    if (cur.state === 'merging') abandonStale(E, caller, cur.repo, cur.into_branch);
     const removal = await W.removeTree(E, { repo: cur.repo, path: cur.worktree, junctions: cur.junctions, branch: cur.into_branch }, { force: args.force }, `integration ${cur.id}`);
     const row = E.store.tx(() => rows.append(E.store, 'integration', { ...rows.current(E.store, 'integration', cur.id), removed_at: Date.now() }, E.writtenBy(caller), Date.now()));
     E.noteWrite();

@@ -44,11 +44,11 @@ function specOf(t) {
 }
 
 // The core's integration fact in one cell: `state:into`, and for a merge whether the checks on the merged tree passed
-// (`unchecked` when none ran). `-` for a task with no belay branch.
+// (`unchecked` when none ran), or `stale` for a merge whose process is gone. `-` for a task with no belay branch.
 function integrationOf(t) {
   const i = t.integration;
   if (!i) return null;
-  const checks = i.state !== 'merged' ? '' : i.passed === true ? ':passed' : i.passed === false ? ':failed' : ':unchecked';
+  const checks = i.state === 'merging' ? (i.stale ? ':stale' : '') : i.state !== 'merged' ? '' : i.passed === true ? ':passed' : i.passed === false ? ':failed' : ':unchecked';
   return `${i.state}${i.into ? `:${i.into}` : ''}${checks}`;
 }
 

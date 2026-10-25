@@ -4,6 +4,12 @@
 // landed is this separate fact. No git and no write: task.list and task.get call it on whatever store they read.
 
 const rows = require('./rows.cjs');
+const { pidAlive } = require('./lock.cjs');
+
+// This process's start, recorded on every row a merge writes beside its pid, so a `merging` row can be told from one a
+// process that has since ended left behind.
+const BOOT = Date.now() - Math.round(process.uptime() * 1000);
+
 // Each named task that did not land, and why: the conflict, a merge that failed, or not tried because the step stopped before
 // it. Null while the row is still `merging`, or `abandoned` (what it merged is unknown).
 function notMerged(r) {
@@ -12,6 +18,14 @@ function notMerged(r) {
   const stop = (r.conflict && r.conflict.task_id) || (r.error && r.error.task_id) || null;
   return (r.task_ids || []).filter((id) => !landed.has(id))
     .map((task_id) => ({ task_id, reason: task_id !== stop ? 'not_tried' : r.conflict ? 'conflict' : 'failed' }));
+}
+
+// A `merging` row whose recorded process is gone. A read cannot tell a reused pid from the owner, so a live pid reads not stale;
+// the owner itself decides exactly, since it serves every merge under one lock per branch (methods-integration.cjs). Null when
+// the row records no process, or is not merging.
+function stale(r) {
+  if (r.state !== 'merging' || r.owner_pid == null) return null;
+  return !pidAlive(Number(r.owner_pid));
 }
 
 // One row per integration: its outcome (the last row before any removal, so a later `integration.remove` neither reorders it
@@ -29,7 +43,7 @@ function newestFirst(store) {
 function factOf(r, id) {
   const base = { id: r.id, into: r.into_branch, at: r.written_at };
   if ((r.merged || []).some((m) => m.task_id === id)) return { state: 'merged', ...base, head: r.head_sha, passed: r.passed == null ? null : !!r.passed };
-  if (r.state === 'merging') return { state: 'merging', ...base };
+  if (r.state === 'merging') return { state: 'merging', ...base, stale: stale(r) };
   if (r.state === 'abandoned') return { state: 'abandoned', ...base };
   const miss = (notMerged(r) || []).find((m) => m.task_id === id);
   return miss && miss.reason !== 'not_tried' ? { state: miss.reason, ...base } : null;
@@ -57,4 +71,4 @@ function ofTask(task, newest) {
   return others.length ? { ...main, elsewhere: others } : main;
 }
 
-module.exports = { notMerged, newestFirst, ofTask };
+module.exports = { BOOT, notMerged, stale, newestFirst, ofTask };
