@@ -229,3 +229,32 @@ test('a restart while a Codex message is relaunching the worker is refused E_BUS
   assert.strictEqual(out.r.channel, 'codex-resume');
   assert.deepStrictEqual([out.t.state, out.t.lease && out.t.lease.id, out.t.lease && out.t.lease.holder], ['assigned', out.lease.id, 'w1']);
 });
+
+test('a restart refused because a relaunch owns the window has no effect: an evaluation in flight keeps running', { timeout: 60000 }, async () => {
+  // Seam: the worker record says a relaunch is in flight and a release evaluation is running (both as the run manager sets them).
+  // The refusal must come before runOp, whose first act is to cancel that evaluation (invariant 5: a refused call writes nothing).
+  const os = require('node:os');
+  const { createFakeCore } = require('./fake-core.cjs');
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-refused-restart-')).split(path.sep).join('/');
+  fs.mkdirSync(`${d}/wt`, { recursive: true });
+  const core = createFakeCore();
+  const cancels = [];
+  core.task.evaluateCancel = async (a) => { cancels.push(a); return {}; };
+  const m = createRunManager({ core, dataDir: d, runId: 'run-rr', paths: { claudeExe: `${FAKES}/fake-claude.cjs`, codexExe: `${FAKES}/fake-claude.cjs`, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
+  try {
+    await m.spawn({ substrate: 'claude-code', worktree: `${d}/wt`, prompt: 'one', worker_id: 'rr' });
+    await m.wait({ worker_ids: ['rr'], timeout_ms: 30000 });
+    const w = m._worker('rr');
+    const ev = { key: 'release:rr:test', ctx: { core }, task_ids: ['t1'], next: 0, done: false, cancelled: null };
+    w.evaluation = ev;
+    w.relaunching = new Set([{}]); // a Codex message's relaunch, as relaunch-guard.cjs holds it
+    await assert.rejects(m.restart({ worker_id: 'rr', first_turn_timeout_ms: 8000 }), (e) => e.code === 'E_BUSY');
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(w.evaluation, ev, 'the evaluation is still the worker\'s');
+    assert.deepStrictEqual([ev.cancelled, cancels], [null, []], 'and nothing cancelled it');
+    w.relaunching = null; w.evaluation = null;
+  } finally {
+    await m.shutdown();
+    cleanup(d);
+  }
+});
