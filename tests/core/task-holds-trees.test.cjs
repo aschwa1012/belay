@@ -58,15 +58,18 @@ test('two tasks in their own worktrees own one file: both are created and assign
   assert.ok(!('overlaps' in (await task(['lib/elsewhere.js']))), 'no overlap, no field');
 });
 
-test('tasks in the shared tree still serialise, and the refusal says a worktree would lift it', async () => {
+test('tasks in the shared tree still serialise, and the refusal names only a remedy belay would accept', async () => {
   const c = await task(['shared/x.js']);
   const e = await rejectsCode(task(['shared/x.js']), 'E_FILES_OVERLAP');
   assert.strictEqual(e.detail.other_task_id, c.id);
   assert.match(e.message, /same tree/);
-  assert.match(e.message, new RegExp(`task ${c.id} is given its own worktree`));
+  assert.match(e.message, new RegExp(`give task ${c.id} its own worktree \\(task_worktree\\) first`));
   await worker('w-shared', repo);
   await orch.task.assign({ task_id: c.id, worker_id: 'w-shared' });
-  await rejectsCode(task(['shared/x.js/inner']), 'E_FILES_OVERLAP'); // an assigned holder in the shared tree, a nested path
+  // An assigned holder in the shared tree, a nested path: a leased task gets no worktree, so the hint says to wait instead.
+  const later = await rejectsCode(task(['shared/x.js/inner']), 'E_FILES_OVERLAP');
+  assert.match(later.message, new RegExp(`task ${c.id} is worked in this tree, so wait until it is done, or cancel it`));
+  assert.doesNotMatch(later.message, /task_worktree/);
 });
 
 test('mixed: a shared-tree task may overlap one in its own worktree, but not another shared one, nor enter that worktree', async () => {

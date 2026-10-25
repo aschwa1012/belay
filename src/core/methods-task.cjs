@@ -10,7 +10,7 @@ const { pidAlive } = require('./lock.cjs');
 const { DEFAULT_LEASE_TTL_MS, TASK_STATES } = require('./schema.cjs');
 const { runAcceptance } = require('./evaluate.cjs');
 const holds = require('./task-holds.cjs');
-const { filesOverlap, runNotLive, resolveOwner, assertNotOwnReview } = require('./methods-task-hold.cjs');
+const { filesOverlap, treeHint, runNotLive, resolveOwner, assertNotOwnReview } = require('./methods-task-hold.cjs');
 
 // ADR 0025 decision 1: the most a worker may hand back on release, serialized.
 const HANDOFF_MAX_BYTES = 4096;
@@ -113,7 +113,7 @@ async function create(E, caller, args) {
     // worktree is reported in `overlaps`.
     const scan = holds.scanOverlaps(E.store, filesOwned, null);
     const first = scan.find((c) => c.same_tree);
-    if (first) throw filesOverlap(first, `if task ${first.task.id} is given its own worktree (task_worktree), this task can own the same paths`);
+    if (first) throw filesOverlap(first, treeHint(E.store, null));
     overlaps = holds.acrossTrees(scan);
   }
 
