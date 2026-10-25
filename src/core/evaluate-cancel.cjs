@@ -8,25 +8,40 @@ const { err } = require('./errors.cjs');
 const { createCancel } = require('./evaluate.cjs');
 const rows = require('./rows.cjs');
 
-// ADR 0058: one evaluation of a task in one worktree at a time. A second task.evaluate for the same task, worktree and base while
-// one runs joins it and answers its row (`joined_evaluation: true`), so the commands never run twice in one tree at once. If the
-// running one was cancelled, the joiner runs its own. Keyed in this owner process, where every evaluation runs.
+// ADR 0058: one evaluation of a task at a time. A second task.evaluate for the same task, worktree and base while one runs joins it
+// and answers its row (`joined_evaluation: true`), so the commands never run twice in one tree at once. If the running one was
+// cancelled, the joiner runs its own. One for the same task with another worktree or base is refused E_BUSY naming the running one
+// (try-2 gap 4: a manual evaluation with a base raced the release evaluation, and both ran the suite at once); its result comes
+// as a wake and in task_list, and the call can be made again once it has landed. Keyed in this owner process, where every
+// evaluation runs.
 const RUNNING = new Map(); // task|worktree|base -> the row promise
+const BY_TASK = new Map(); // task id -> { key, worktree, base, trigger } of the evaluation running for it
 const norm = (p) => { const s = String(p).replace(/\\/g, '/').replace(/\/+$/, ''); return process.platform === 'win32' ? s.toLowerCase() : s; };
 async function joinOrRun(E, args, run) {
   const task = args && args.task_id ? rows.current(E.store, 'task', args.task_id) : null;
-  let key = null;
-  try { const at = task ? require('./methods-worktree.cjs').evaluateTarget(task, args) : null; if (at) key = `${task.id}|${norm(at.worktree)}|${at.base || ''}`; } catch { /* run() refuses it, naming why */ }
+  let key = null, at = null;
+  try { at = task ? require('./methods-worktree.cjs').evaluateTarget(task, args) : null; if (at) key = `${task.id}|${norm(at.worktree)}|${at.base || ''}`; } catch { /* run() refuses it, naming why */ }
   if (!key) return run();
   const cur = RUNNING.get(key);
+  const other = !cur && BY_TASK.get(task.id);
+  if (other) {
+    throw err('E_BUSY', `task ${task.id} is being evaluated already (${other.trigger === 'release' ? 'at release' : 'by another call'}, in ${other.worktree}${other.base ? `, base ${other.base}` : ''}); its result comes as a wake and in task_list. Evaluate again once it has landed`,
+      { op: 'evaluate', task_id: task.id, running: { trigger: other.trigger || null, worktree: other.worktree, base: other.base || null } });
+  }
   if (cur) {
     try { return { ...(await cur), joined_evaluation: true }; } catch (e) {
       if (!(e && e.detail && e.detail.cancelled)) throw e; // the joined run's own refusal is this call's too
+      return joinOrRun(E, args, run); // look again: another joiner may already have started the re-run
     }
   }
   const p = run();
+  const mine = { key, worktree: norm(at.worktree), base: at.base || null, trigger: args.trigger || null };
   RUNNING.set(key, p);
-  try { return await p; } finally { if (RUNNING.get(key) === p) RUNNING.delete(key); }
+  BY_TASK.set(task.id, mine);
+  try { return await p; } finally {
+    if (RUNNING.get(key) === p) RUNNING.delete(key);
+    if (BY_TASK.get(task.id) === mine) BY_TASK.delete(task.id);
+  }
 }
 
 const LIVE = new Map(); // cancel_key -> the evaluation's cancel token, while its commands run

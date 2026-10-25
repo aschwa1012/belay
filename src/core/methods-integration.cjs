@@ -11,7 +11,7 @@ const rows = require('./rows.cjs');
 const G = require('./git.cjs');
 const W = require('./methods-worktree.cjs');
 const J = require('./judged.cjs');
-const { runCommand, DEFAULT_COMMAND_TIMEOUT_MS } = require('./evaluate.cjs');
+const { runCommand, outputTails, DEFAULT_COMMAND_TIMEOUT_MS } = require('./evaluate.cjs');
 const { notMerged, stale } = require('./integration-state.cjs');
 const { pidAlive } = require('./lock.cjs');
 const ID = require('./proc-identity.cjs');
@@ -247,10 +247,10 @@ async function rerun(tasks, tree) {
   }
   const checks = [];
   for (const c of byKey.values()) {
-    const r = await runCommand(c.argv, c.cwd, c.timeout_ms);
+    const r = await runCommand(c.argv, c.cwd, c.timeout_ms, { keep: 'ends' }); // the ends and the failure section, as task.evaluate keeps
     checks.push({
       argv: c.argv, cwd: c.cwd, task_ids: c.task_ids, executable: r.executable, exit_code: r.exit_code, ms: r.ms, timed_out: r.timed_out,
-      passed: r.executable && r.exit_code === 0 && !r.timed_out, spawn_error: r.spawn_error || null, stdout_tail: r.stdout.slice(-400), stderr_tail: r.stderr.slice(-400),
+      passed: r.executable && r.exit_code === 0 && !r.timed_out, spawn_error: r.spawn_error || null, ...outputTails(r),
     });
   }
   return checks;

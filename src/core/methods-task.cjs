@@ -123,7 +123,7 @@ async function create(E, caller, args, own = {}) { // own: core-internal, task.f
   const t = Date.now();
   const row = rows.append(E.store, 'task', {
     id, run_id: caller.run_id, spec: args.spec, acceptance, files_owned: filesOwned, state: 'open',
-    results: null, depends_on: deps, repairs, ...(own.worktree ? { worktree: own.worktree } : {}), ...(own.answers ? { answers: own.answers } : {}),
+    results: null, depends_on: deps, repairs, ...(own.worktree ? { worktree: own.worktree } : {}), ...(own.answers ? { answers: own.answers } : {}), ...(args.base != null ? { base: require('./methods-worktree.cjs').baseArg(args.base) } : {}),
   }, E.writtenBy(caller), t);
   E.noteWrite();
   return overlaps.length ? { ...row, overlaps } : row;

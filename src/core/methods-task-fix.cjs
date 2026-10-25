@@ -94,6 +94,7 @@ async function fixFromReview(E, caller, args) {
     files_owned: ownedSet(args.files_owned, judged, tree),
     depends_on: [judged.id],
     repairs,
+    ...(judged.base ? { base: judged.base } : {}), // the same branch is judged from the same base
     ...(args.id ? { id: args.id } : {}),
   }, { worktree: tree, answers: refs.map((r) => r.id) });
   return { ...row, from_review: review.id };

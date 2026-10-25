@@ -250,6 +250,7 @@ const ORCHESTRATOR = [
       files_owned: strs('Paths relative to the worktree'),
       depends_on: strs('Task ids that must be done before this one can be assigned'),
       repairs: str('A fix task: the id of the work task it repairs; capped by max_fix_rounds'),
+      base: str('Diff base'),
       id: str(),
       view: DEBUG,
     }, ['spec']),
