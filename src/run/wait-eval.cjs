@@ -15,7 +15,7 @@ function evaluatingOf(w) {
 async function evaluationEnded(w) {
   for (let i = 0; i < 2 && evaluatingOf(w); i += 1) {
     const ev = w.evaluation;
-    if (ev && !ev.done && ev.promise) await ev.promise.catch(() => {});
+    if (ev && !ev.done && ev.promise) await Promise.race([ev.promise.catch(() => {}), ev.cancelSignal || new Promise(() => {})]);
     else await w.queue.catch(() => {});
   }
 }

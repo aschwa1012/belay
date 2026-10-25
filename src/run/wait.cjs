@@ -121,7 +121,9 @@ function createWait({ workers, get, core = null }) {
       ]));
     const winner = await Promise.race([
       ...ws.filter((w) => !evaluating.includes(w)).map(watch),
-      ...evaluating.map((w) => EV.evaluationEnded(w).then(() => ({ ...turnOf(w, null), already: true }))),
+      // The worker stays watched through the hold: its death, stop or park, and a turn begun or ended meanwhile, answer as they would
+      // without it. Once the evaluation ends the worker is looked at again, so a turn begun during the hold is not answered as the old one.
+      ...evaluating.map((w) => Promise.race([watch(w), EV.evaluationEnded(w).then(() => finishedOf(w) || watch(w))])),
       new Promise((res) => { const t = setTimeout(() => res(null), ms); if (t.unref) t.unref(); }),
     ]);
     if (winner && winner.event !== 'restart_failed' && 'exit_code' in winner && winner.exit_code == null && winner.exit_signal == null) {
@@ -129,9 +131,11 @@ function createWait({ workers, get, core = null }) {
       if (w) { await withCode(w); return done({ ...settledOf(w) }); }
     }
     if (winner) return done(winner);
+    // Only what is still in flight: a cancelled evaluation, or one that ended without an answer, is not listed with empty tasks.
+    const stillEvaluating = evaluating.map((w) => ({ worker_id: w.id, turn: w.turns, tasks: EV.evaluatingOf(w) })).filter((e) => e.tasks);
     return {
       worker_id: null, event: null, timed_out: true, waited_ms: now() - t0, watched: ids,
-      ...(evaluating.length ? { still_evaluating: evaluating.map((w) => ({ worker_id: w.id, turn: w.turns, tasks: EV.evaluatingOf(w) || [] })) } : {}),
+      ...(stillEvaluating.length ? { still_evaluating: stillEvaluating } : {}),
       busy: ws.filter((w) => !w.settled && !w.turnEnded).map((w) => ({
         worker_id: w.id, state: w.state, pid_alive: w.pid ? P.pidAlive(w.pid) : false,
         last_event_age_ms: w.lastEventAt ? now() - w.lastEventAt : null, turns: w.turns,

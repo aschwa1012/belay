@@ -64,3 +64,56 @@ test('a later worker_wait holds for the hand-back being evaluated and answers wi
     cleanup(dir);
   }
 });
+
+// The hold's own seams: a stub worker record whose evaluation is a promise the test settles, so every ordering below is forced.
+const { createWait } = require('../../src/run/wait.cjs');
+
+function deferred() { let res; const p = new Promise((r) => { res = r; }); return { p, res }; }
+function held({ id = 'w1' } = {}) {
+  const w = { id, turns: 1, turnEnded: true, settled: false, readyWaiters: [], turnWaiters: [], exitWaiters: [], queue: Promise.resolve(), launches: 1, state: 'running' };
+  const d = deferred();
+  const ev = { turn: 1, task_ids: ['T1'], next: 0, done: false, promise: null };
+  ev.promise = d.p.then((out) => { ev.done = true; w.turnEvaluated = out; w.turnEvaluatedTurn = ev.turn; return out; }).finally(() => { if (w.evaluation === ev) w.evaluation = null; });
+  w.evaluation = ev;
+  return { w, end: d.res };
+}
+const waitFor = (w) => { const m = new Map([[w.id, w]]); return createWait({ workers: m, get: (id) => m.get(id) }); };
+const settledTick = () => new Promise((r) => setImmediate(r));
+// Resolves with the wait's answer if it has come by the time the event loop has turned twice, else with the marker.
+async function answeredNow(p) { const NONE = Symbol('none'); let got = NONE; p.then((v) => { got = v; }); await settledTick(); await settledTick(); return got === NONE ? null : got; }
+
+test('a worker that dies during the hold is answered as its death while the evaluation still runs', { timeout: 20000 }, async () => {
+  const { w, end } = held();
+  const p = waitFor(w)({ worker_ids: ['w1'], timeout_ms: 10000 });
+  await settledTick();
+  Object.assign(w, { settled: true, settledState: 'dead', exitCode: 1, deathEstablishedBy: 'exit event' });
+  for (const r of w.exitWaiters.splice(0)) r({ code: 1 });
+  const early = await answeredNow(p);
+  end([{ task_id: 'T1', state: 'done' }]);
+  const got = await p;
+  assert.ok(early, 'the death is not held for the evaluation');
+  assert.deepStrictEqual([got.event, got.exit_code, got.already], ['dead', 1, undefined]);
+});
+
+test('a turn begun during the hold is not answered as the old turn, and one that ends is answered', { timeout: 20000 }, async () => {
+  const { w, end } = held();
+  const p = waitFor(w)({ worker_ids: ['w1'], timeout_ms: 10000 });
+  await settledTick();
+  w.turnEnded = false; // a message began turn 2
+  end([{ task_id: 'T1', state: 'done' }]);
+  assert.strictEqual(await answeredNow(p), null, 'the evaluation ending does not answer a worker mid-turn');
+  w.turns = 2; w.turnEnded = true;
+  for (const r of w.turnWaiters.splice(0)) r({ usage: null });
+  const got = await p;
+  assert.deepStrictEqual([got.event, got.turn, got.timed_out], ['turn_end', 2, false]);
+});
+
+test('a cancelled evaluation that never settles is not listed as still evaluating with no tasks', { timeout: 20000 }, async () => {
+  const { w } = held();
+  const p = waitFor(w)({ worker_ids: ['w1'], timeout_ms: 300 });
+  await settledTick();
+  w.evaluation = null; // cancelled by a lifecycle operation; its promise never settles
+  const got = await p;
+  assert.strictEqual(got.timed_out, true);
+  assert.strictEqual(got.still_evaluating, undefined);
+});
