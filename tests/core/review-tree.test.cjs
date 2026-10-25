@@ -165,3 +165,18 @@ test('a probe written in the reviewer\'s scratch folder does not flag; its size 
   assert.deepStrictEqual([large.check.detail.scratch_over_limit, large.check.detail.scratch.bytes], [true, 51 * 1024 * 1024]);
   assert.ok(fs.existsSync(path.join(big, 'big.bin')), 'nothing is cut');
 });
+
+test('a grant cancelled before its snapshot is attached keeps no snapshot: the attach reads the lease again and discards it', async () => {
+  const RT = require('../../src/core/review-tree.cjs');
+  const wt = repo('discard');
+  const w = await doneWork('discard', wt);
+  const r = await orch.task.create({ spec: 'review to be cancelled', depends_on: [w.id], acceptance: { verdict: true } });
+  await worker('rev-discard', wt);
+  const real = RT.snapshot;
+  RT.snapshot = async (dir) => { const s = await real(dir); await orch.task.cancel({ task_id: r.id, reason: 'cancelled before the snapshot landed' }); return s; };
+  let a;
+  try { a = await orch.task.assign({ task_id: r.id, worker_id: 'rev-discard' }); } finally { RT.snapshot = real; }
+  assert.ok(a.new_lease.tree == null, 'the answer carries no snapshot');
+  const lease = (await orch.task.get({ task_id: r.id })).lease;
+  assert.strictEqual(lease, null, 'the cancel released the lease');
+});

@@ -93,12 +93,29 @@ function handBack(dataDir, workerId, grant, now) {
   return { ...(grant && now ? { tree: compare(grant, now) } : {}), ...(scratch ? { scratch } : {}) };
 }
 
-// assign: the grant snapshot of a review task's assignee, or null (not a review, check_only, or no worker row).
-async function grantSnapshot(E, args) {
-  if (args.check_only === true || !args.task_id || !args.worker_id) return null;
-  if (!isReview(rows.current(E.store, 'task', args.task_id))) return null;
-  const w = rows.current(E.store, 'worker', args.worker_id);
-  return w && w.worktree ? snapshot(w.worktree) : null;
+// assign, inside its transaction: the worktree to snapshot for this grant (a review task's assignee's), or null. It reads
+// nothing: the task and worker rows are the ones the transaction already read.
+const grantTarget = (task, worker) => (isReview(task) && worker && worker.worktree ? worker.worktree : null);
+
+// assign, after its transaction committed and before it answers: the grant snapshot, written onto the lease in a transaction of
+// its own that reads the lease again and attaches the snapshot only if that lease is still the task's, unreleased and held by
+// the same worker (a take-over, a cancel or a fast release in between discards it). The snapshot is taken here, not before
+// the grant, because every read that authorises the grant belongs to its transaction (the contract test), and git cannot run
+// inside one; it is still before the grant is known to anyone: assign has not answered, so neither the spawn's first message
+// nor task_assign's delivery has reached the reviewer. Returns the answer with the lease shown as `shown` gives it.
+async function afterGrant(E, caller, out, worktree) {
+  const lease = out && out.new_lease;
+  if (!lease) return out;
+  const tree = await module.exports.snapshot(worktree); // through the export: the test seam for a change between the grant and here
+  const t = Date.now();
+  const kept = E.store.tx(() => {
+    const cur = rows.currentLeaseForTask(E.store, lease.task_id);
+    if (!cur || cur.id !== lease.id || cur.released_at != null || cur.holder !== lease.holder || cur.holder_role !== 'worker') return null;
+    return rows.append(E.store, 'lease', { ...cur, tree }, E.writtenBy(caller), t);
+  });
+  if (!kept) return out;
+  E.noteWrite();
+  return { ...out, new_lease: shown(kept) };
 }
 
 // release: the hand-back snapshot, taken in the worktree the grant snapshot was, or null when the lease carries none.
@@ -108,4 +125,4 @@ async function releaseSnapshot(E, args) {
   return l && l.tree && l.tree.worktree ? snapshot(l.tree.worktree) : null;
 }
 
-module.exports = { snapshot, compare, grantSnapshot, releaseSnapshot, shown, handBack, scratchFacts: SD.facts, ENTRIES_MAX, PATHS_MAX };
+module.exports = { snapshot, compare, grantTarget, afterGrant, releaseSnapshot, shown, handBack, scratchFacts: SD.facts, ENTRIES_MAX, PATHS_MAX };
