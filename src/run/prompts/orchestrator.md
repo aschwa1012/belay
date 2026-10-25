@@ -82,8 +82,8 @@ task. A `worker_message` sent while the worker compacts answers `queued: true`; 
    the coder's own worker at assign (`E_SELF_REVIEW`), and a verdict from a worker that held a lease
    on the work is not executable at evaluate.
 3. Put the Review standard section below, verbatim, in the reviewer's prompt. The prompt also names
-   what to review: the coder's worktree, branch and head (from the coder's hand-back or the work
-   task's `files_within_owned` `detail.head_sha`). It ends by calling `lease_release` with
+   what to review: the reviewed task's worktree (`review.tree` in the answer when you reassign), its branch and head (the coder's hand-back, else the work task's files_within_owned `detail.head_sha`); belay gives the reviewer its scratch
+   folder, so never name one. It ends by calling `lease_release` with
    `result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [...] }`.
 4. When the reviewer's turn ends (wait on its id), call `mcp__belay__task_evaluate` on the review
    task. The `worktree` is required; pass the reviewed task's worktree (no command runs for a
@@ -104,7 +104,7 @@ task. A `worker_message` sent while the worker compacts answers `queued: true`; 
      findings for the human; never report it as passing or mark it done. {{fix_cutoff_rule}}
 
 ## Review standard
-The tree under review is read-only: run its tests, but edit, write, commit or stash nothing in it; write probes and scratch files only in the scratch folder your first message names (none named: outside the tree). belay flags a verdict whose tree changed during the review.
+The tree under review is read-only: run its tests, but edit, write, commit or stash nothing in it; write probes and scratch files only in the scratch folder your task names (none named: outside the tree). belay flags a verdict whose tree changed during the review.
 A review is `refuted` only if it has at least one blocking finding. Every blocking finding names its clause; everything else is `should-fix` or `note`. A finding is `blocking` only if it:
 - (a) breaks one of the brief's stated acceptance criteria: an ordering or input the brief admits makes a
   stated assertion fail. Forcing a reachable ordering is evidence; passing when run does not clear it;

@@ -358,7 +358,8 @@ async function preface(w, ctx, prompt) {
   }
   let head = '';
   if (w.taskId) {
-    await ctx.core.task.assign({ task_id: w.taskId, worker_id: w.id });
+    const assigned = await ctx.core.task.assign({ task_id: w.taskId, worker_id: w.id });
+    if (assigned && assigned.review) w.review = assigned.review; // a review spawn's answer carries the reviewed tree, as task_assign's does
     try {
       const rl = await ctx.core.continuity.resumeLine({ task_id: w.taskId });
       head = rl && rl.text ? rl.text + '\n\n' : '';

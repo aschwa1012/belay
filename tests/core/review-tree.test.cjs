@@ -358,3 +358,129 @@ test('the keepalive view holds exactly task.list, worker.get and lease.renew; ev
   assert.ok(Object.isFrozen(ka));
   assert.throws(() => orch.keepalive(), (e) => e.code === 'E_ROLE');
 });
+
+test('a reviewer reassigned to another task\'s review watches the reviewed tree, not its cwd, and the answer says they differ', async () => {
+  const wtA = repo('reA');
+  const wtB = repo('reB');
+  const wA = await doneWork('reA', wtA);
+  const wB = await doneWork('reB', wtB);
+  const first = await review(wA, 'rev-move', wtA); // its cwd is tree A
+  assert.strictEqual(first.check.detail.tree_changed, false);
+  const r = await orch.task.create({ spec: 'review of B', depends_on: [wB.id], acceptance: { verdict: true } });
+  const rc = await worker('rev-move', wtA);
+  const a = await orch.task.assign({ task_id: r.id, worker_id: 'rev-move' });
+  assert.deepStrictEqual([a.review.tree, a.review.reviewed_task_id, a.review.cwd], [wtB, wB.id, wtA]);
+  assert.match(a.review.note, /the reviewer's cwd is not the reviewed tree; name .*repo-reB in its prompt/);
+  fs.writeFileSync(path.join(wtA, 'a.txt'), 'its own cwd, not judged\n');
+  fs.writeFileSync(path.join(wtB, 'a.txt'), 'the tree it judges\n');
+  await rc.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { verdict: 'holds', summary: 'judged' } });
+  const check = (await orch.task.evaluate({ task_id: r.id, worktree: wtB })).results.checks.find((c) => c.kind === 'verdict');
+  assert.strictEqual(check.detail.tree.worktree, wtB);
+  assert.deepStrictEqual([check.detail.tree_changed, check.detail.tree.changed_paths], [true, ['a.txt']]);
+});
+
+test('a review whose reviewed task records no tree: the answer and the verdict say the tree is not known, tree_changed null', async () => {
+  const t = await orch.task.create({ spec: 'work with no tree', acceptance: PASS });
+  await orch.worker.write({ id: 'coder-notree', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's-nt', last_event_at: Date.now() });
+  const cw = await openCore({ dataDir: dir, caller: callerFor('worker', { worker_id: 'coder-notree' }), embed: false });
+  cores.set('coder-notree', cw);
+  const a0 = await orch.task.assign({ task_id: t.id, worker_id: 'coder-notree' });
+  await cw.lease.release({ lease_id: a0.new_lease.id, reason: 'done' });
+  await orch.task.evaluate({ task_id: t.id, worktree: dir });
+  const wt = repo('notree');
+  const r = await orch.task.create({ spec: 'review of no tree', depends_on: [t.id], acceptance: { verdict: true } });
+  const rc = await worker('rev-notree', wt);
+  const a = await orch.task.assign({ task_id: r.id, worker_id: 'rev-notree' });
+  assert.strictEqual(a.review.tree, null);
+  assert.match(a.review.error, /no worktree on record at its grant/);
+  await rc.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { verdict: 'holds', summary: 'judged' } });
+  const check = (await orch.task.evaluate({ task_id: r.id, worktree: wt })).results.checks.find((c) => c.kind === 'verdict');
+  assert.strictEqual(check.detail.tree_changed, null);
+  assert.match(check.detail.tree.error, /no worktree on record at its grant/);
+});
+
+test('task_assign of a review: the answer carries the real scratch folder, made if the worker had none, and the delivered task names it', async () => {
+  const { createCompose } = require('../../src/mcp/compose.cjs');
+  const SD = require('../../src/core/scratch-dir.cjs');
+  const wt = repo('cmp');
+  const w = await doneWork('cmp', wt);
+  const r = await orch.task.create({ spec: 'review via task_assign', depends_on: [w.id], acceptance: { verdict: true } });
+  await worker('coder-type-reviewing', wt); // a worker of another type: no scratch folder yet
+  assert.strictEqual(SD.scratchDir(dir, 'coder-type-reviewing'), null);
+  let sent = null;
+  const fakeManager = { _worker: () => true, message: async ({ text }) => { sent = text; return {}; } };
+  const callCore = (dotted, args) => { const [g, n] = dotted.split('.'); return orch[g][n](args); };
+  const C = createCompose({ callCore, manager: () => fakeManager, openManager: async () => fakeManager, dataDir: dir, runId: 'test-run' });
+  const out = await C.assign({ task_id: r.id, worker_id: 'coder-type-reviewing', prompt: 'review it' });
+  const real = SD.scratchDir(dir, 'coder-type-reviewing');
+  assert.ok(real, 'made now');
+  assert.strictEqual(out.scratch, real);
+  assert.strictEqual(out.review.tree, wt);
+  assert.ok(sent.includes(`Your scratch folder, outside the tree under review: ${real}.`), sent);
+  const plain = await orch.task.create({ spec: 'not a review', acceptance: PASS });
+  const p = await C.assign({ task_id: plain.id, worker_id: 'coder-type-reviewing', deliver: false });
+  assert.strictEqual(p.scratch, undefined, 'only a review carries one');
+});
+
+// The reviewed tree is read inside the assign transaction from rows as they stood: a reused worker id or a removed worktree is
+// never followed to another tree, and says why.
+function reviewedTreeSandbox() {
+  const d = sandbox();
+  const { Engine } = core('engine.cjs'); const { Store } = core('store.cjs');
+  const store = new Store(path.join(d, 'memory.db'));
+  const E = new Engine({ dataDir: d, store, getEmbedder: null, owner: null, establishedBy: 'test' });
+  return { d, store, E, caller: callerFor('orchestrator'), RT: core('review-tree.cjs'), rows: core('rows.cjs') };
+}
+
+test('a coder id reused later in another tree: the review watches the tree the lease was granted in', async () => {
+  const { d, store, E, caller, RT } = reviewedTreeSandbox();
+  try {
+    const X = path.join(d, 'treeX'), Y = path.join(d, 'treeY');
+    fs.mkdirSync(X); fs.mkdirSync(Y);
+    await E.handle('worker.write', { caller, id: 'coder', substrate: 'claude-code', pid: process.pid, state: 'running', worktree: X });
+    const work = await E.handle('task.create', { caller, spec: 'work in X', acceptance: PASS });
+    const a0 = await E.handle('task.assign', { caller, task_id: work.id, worker_id: 'coder' });
+    await E.handle('lease.release', { caller: callerFor('worker', { worker_id: 'coder' }), lease_id: a0.new_lease.id, reason: 'done' });
+    await E.handle('task.evaluate', { caller, task_id: work.id, worktree: X });
+    await E.handle('worker.write', { caller, id: 'coder', substrate: 'claude-code', pid: process.pid, state: 'running', worktree: Y, task_id: null });
+    const review = await E.handle('task.create', { caller, spec: 'review', depends_on: [work.id], acceptance: { verdict: true } });
+    const got = store.tx(() => RT.reviewedTree(store, review));
+    assert.strictEqual(path.resolve(got.worktree), path.resolve(X), 'tree X, where the work was done');
+  } finally { store.close(); cleanup(d); }
+});
+
+test('no worker row at the grant, or one naming no worktree: the tree is null with an error, never a later row', () => {
+  const { d, store, RT, rows } = reviewedTreeSandbox();
+  try {
+    const wl = (id, holder, at, granted) => {
+      rows.append(store, 'task', { id, spec: 'x', state: 'done' }, 'test', at);
+      rows.append(store, 'lease', { id: 'L' + id, task_id: id, run_id: null, holder, holder_role: 'worker', granted_at: granted, expires_at: granted + 9, ttl_ms: 9, released_at: granted + 5, supersedes: null }, 'test', granted);
+    };
+    const base = { substrate: 'claude-code', state: 'dead' };
+    store.tx(() => {
+      rows.append(store, 'worker', { ...base, id: 'late', worktree: path.join(d, 'later') }, 'test', 500);
+      wl('t1', 'late', 100, 100);
+      rows.append(store, 'worker', { ...base, id: 'bare', worktree: null }, 'test', 50);
+      rows.append(store, 'worker', { ...base, id: 'bare', worktree: path.join(d, 'later') }, 'test', 500);
+      wl('t2', 'bare', 100, 100);
+    });
+    for (const id of ['t1', 't2']) {
+      const got = store.tx(() => RT.reviewedTree(store, { id: 'r' + id, depends_on: [id], acceptance: { verdict: true } }));
+      assert.strictEqual(got.worktree, null, id);
+      assert.match(got.error, /no worktree on record at its grant/, id);
+    }
+  } finally { store.close(); cleanup(d); }
+});
+
+test("the reviewed task's own worktree is removed: the tree is null and the error says so, not the same path from a row", async () => {
+  const { d, store, E, caller, RT, rows } = reviewedTreeSandbox();
+  try {
+    const X = path.join(d, 'gone');
+    await E.handle('worker.write', { caller, id: 'coder', substrate: 'claude-code', pid: process.pid, state: 'running', worktree: X });
+    store.tx(() => rows.append(store, 'task', { id: 'w', spec: 'x', state: 'done', worktree: { path: X, removed_at: Date.now() } }, 'test', Date.now()));
+    store.tx(() => rows.append(store, 'lease', { id: 'L1', task_id: 'w', run_id: null, holder: 'coder', holder_role: 'worker', granted_at: Date.now(), expires_at: Date.now() + 9, ttl_ms: 9, released_at: Date.now(), supersedes: null }, 'test', Date.now()));
+    const got = store.tx(() => RT.reviewedTree(store, { id: 'r', depends_on: ['w'], acceptance: { verdict: true } }));
+    assert.strictEqual(got.worktree, null);
+    assert.strictEqual(got.error, 'the reviewed worktree was removed');
+  } finally { store.close(); cleanup(d); }
+});

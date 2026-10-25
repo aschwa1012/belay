@@ -230,7 +230,7 @@ async function assign(E, caller, args) {
       holder_role: 'worker', granted_at: t, expires_at: t + ttlFrom(args), ttl_ms: ttlFrom(args), released_at: null,
       supersedes: old ? old.id : null,
     }, by, t);
-    snapAt = require('./review-tree.cjs').grantTarget(task, worker);
+    snapAt = require('./review-tree.cjs').grantTarget(E.store, task, worker);
     const row = rows.append(E.store, 'task', { ...task, run_id: ownerRun, state: 'assigned' }, by, t);
     return { task: row, old_lease: old, new_lease: lease, paused_worker: null, ...reported };
   });
