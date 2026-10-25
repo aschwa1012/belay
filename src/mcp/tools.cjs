@@ -255,7 +255,7 @@ const ORCHESTRATOR = [
       id: str(),
       amend: { type: 'boolean', description: 'Replace not-done task id\'s acceptance and spec' },
       view: DEBUG,
-    }, ['spec']),
+    }), // spec: required unless amend (validateArgs)
   },
   {
     name: 'task_assign',
@@ -499,6 +499,8 @@ function validateArgs(name, args, { notes = false, role = 'worker' } = {}) {
   for (const k of schema.required || []) {
     if (a[k] === undefined || a[k] === null) bad(`${name} needs ${k}`, { tool: name, missing: k });
   }
+  // ADR 0061: an amend keeps the task's spec unless it names a new one, so only a create needs it.
+  if (name === 'task_create' && a.amend !== true && (a.spec === undefined || a.spec === null)) bad('task_create needs spec', { tool: name, missing: 'spec' });
   if (name === 'memory_retrieve') {
     const hasId = a.id !== undefined && a.id !== null;
     const hasIds = a.ids !== undefined && a.ids !== null;
