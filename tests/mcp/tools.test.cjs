@@ -125,9 +125,13 @@ test('A8 the four worker tools return the process facts their proof columns name
 
 test('A8 task_create and task_assign return the task row and both leases', async (t) => {
   await withRole('orchestrator', t, async (a) => {
-    const c = assertOk(await a.call('task_create', { spec: 'do the thing', files_owned: ['src/a.js'], acceptance: { commands: [{ argv: ['node', '--test'] }], files_within_owned: true } }), 'task_create');
-    has(c, ['id', 'spec', 'acceptance', 'files_owned', 'state'], 'task_create');
-    assert.strictEqual(c.state, 'open');
+    const args = { spec: 'do the thing', files_owned: ['src/a.js'], acceptance: { commands: [{ argv: ['node', '--test'] }], files_within_owned: true } };
+    // The default answer is the new task's id, rev, state and spec head; view debug is the whole row.
+    const c = assertOk(await a.call('task_create', args), 'task_create');
+    assert.deepStrictEqual(Object.keys(c).sort(), ['id', 'rev', 'spec_head', 'state']);
+    assert.deepStrictEqual([c.state, c.spec_head], ['open', 'do the thing']);
+    const full = assertOk(await a.call('task_create', { ...args, view: 'debug' }), 'task_create');
+    has(full, ['id', 'spec', 'acceptance', 'files_owned', 'state'], 'task_create view debug');
 
     const asg = assertOk(await a.call('task_assign', { task_id: c.id, worker_id: 'wk-1' }), 'task_assign');
     has(asg, ['task', 'old_lease', 'new_lease', 'paused_worker'], 'task_assign');

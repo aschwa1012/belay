@@ -78,7 +78,7 @@ async function create(E, caller, args, own = {}) { // own: core-internal, task.f
   }
   const repairs = args.repairs == null ? null : args.repairs;
   const id = args.id || rows.newId();
-  if (rows.current(E.store, 'task', id)) throw err('E_ARGS', `a task with id ${id} already exists in this store`, { task_id: id });
+  if (rows.current(E.store, 'task', id)) throw err('E_ARGS', `a task with id ${id} already exists in this store; choose another id, or leave id out for a generated one`, { task_id: id });
 
   const deps = dependsOn ? [...new Set(dependsOn)] : null;
   if (deps) {
