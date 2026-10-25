@@ -199,3 +199,37 @@ test('a fix in a shared tree that names fewer files owns the work\'s files too, 
   const judged = await orch.task.evaluate({ task_id: f.id });
   assert.strictEqual(judged.state, 'done', JSON.stringify(judged.results.checks));
 });
+
+// The fix of workWithOpenFix commits on the shared branch and is judged done.
+async function finishFix(w, f, name, text = 'fixed\n') {
+  write(w.worktree.path, `src/${name}.cjs`, text);
+  commit(w.worktree.path, `${name} fix`);
+  await handBack(f.id, `c-${name}`, w.worktree.path, { branch: w.worktree.branch });
+  assert.strictEqual((await orch.task.evaluate({ task_id: f.id })).state, 'done');
+}
+const integrationOf = async (id) => (await orch.task.get({ task_id: id })).integration;
+
+test('a shared branch lands as one: merging the fix marks the work merged, merging the work marks the fix, and a later round is not', async () => {
+  const a = await workWithOpenFix('unit-a');
+  await finishFix(a.w, a.f, 'unit-a');
+  const ra = await orch.integration.merge({ task_ids: [a.f.id], into: 'int/unit-a' });
+  assert.deepStrictEqual([(await integrationOf(a.f.id)).state, (await integrationOf(a.f.id)).via], ['merged', undefined]);
+  const wa = await integrationOf(a.w.id);
+  assert.deepStrictEqual([wa.state, wa.via, wa.id, wa.into], ['merged', a.f.id, ra.id, 'int/unit-a'], 'the work landed with its fix');
+  const listed = (await orch.task.list({})).tasks.find((t) => t.id === a.w.id).integration;
+  assert.deepStrictEqual([listed.state, listed.via], ['merged', a.f.id], 'task.list says the same');
+
+  const b = await workWithOpenFix('unit-b');
+  await finishFix(b.w, b.f, 'unit-b');
+  await orch.integration.merge({ task_ids: [b.w.id], into: 'int/unit-b' });
+  const fb = await integrationOf(b.f.id);
+  assert.deepStrictEqual([fb.state, fb.via], ['merged', b.w.id], 'the fix, done before the merge, landed with the work');
+  // A second round after the merge: its fix is done after that merge, so the merge did not land it.
+  const r2 = await orch.task.create({ spec: 'review unit-b again', depends_on: [b.f.id], acceptance: { verdict: true } });
+  await handBack(r2.id, 'j-unit-b-2', dir, { verdict: 'refuted', summary: 's', findings: [] });
+  await orch.task.evaluate({ task_id: r2.id, worktree: dir });
+  const f2 = await orch.task.fixFromReview({ review_id: r2.id });
+  assert.strictEqual(await integrationOf(f2.id), null, 'an open fix has no integration');
+  await finishFix(b.w, f2, 'unit-b', 'fixed again\n');
+  assert.deepStrictEqual(await integrationOf(f2.id), { state: 'not_merged', into: null });
+});
