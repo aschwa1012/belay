@@ -127,3 +127,24 @@ test('a reason that looks like a flag is the reason, not a flag (the panel passe
     assert.ok(JSON.stringify(j).includes('--archive -x'), 'the reason is kept whole');
   } catch (e) { bodyError = e === undefined ? new Error('undefined was thrown') : e; throw bodyError; } finally { await teardown(bodyError, [() => cleanup(dir)]); }
 });
+
+test('a queued hold (a report past its run\'s breaker) is counted and listed apart from the held ones', async () => {
+  const dir = sandbox();
+  let bodyError = null;
+  try {
+    plant(dir);
+    const store = new Store(`${dir}/memory.db`, { stamp: true });
+    const n = store.storeIn({ namespace: 'project/acme', worker_id: 'w1', type: 'note', text: `queued note ${Math.random()}`, title: 'queued note', body: { state: 'live', kind: 'lesson', evidence: [], reported_wrong: [{ by: 'worker:w3', task_id: 't3', at: 6, why: 'wrong', seq: 1, withhold: false }], report_seq: 1 }, run_id: 'r1', source: 'harness', written_by: 'harness' }).id;
+    store.storeIn({ namespace: 'held/acme', worker_id: 'w1', type: 'held', text: `held queued ${Math.random()}`, title: 'held queued', body: { state: 'queued', note_id: n, kind: 'wrong', ground: 'reported', reason: 'wrong', rev: 0, reports: [{ key: 's:1', by: 'worker:w3', why: 'wrong', at: 6, withhold: false }], reports_total: 1, reviews: [] }, run_id: 'r1', source: 'harness', written_by: 'harness' });
+    store.close();
+    const j = JSON.parse(cli(['held'], dir).stdout);
+    assert.deepStrictEqual([j.total, j.held, j.queued, j.by_ground.reported, j.queued_by_ground.reported], [3, 2, 1, 2, 1]);
+    assert.strictEqual(j.entries.find((e) => e.note_id === n).state, 'queued');
+    const text = cli(['held'], dir, false).stdout;
+    assert.match(text, /2 held, 1 queued, 1 awaiting the operator/);
+    assert.match(text.split('\n').find((l) => l.startsWith(n)), new RegExp(`^${n}  queued  wrong/reported`));
+    const P = require('../../src/cli/panel-common.cjs');
+    assert.match(P.heldText(j), /^2 held: 2 reported wrong; 1 queued past the breaker; 1 awaits you/);
+    assert.match(P.heldText({ ...j, by_ground: {} }), /^2 held, 1 queued for review/);
+  } catch (e) { bodyError = e === undefined ? new Error('undefined was thrown') : e; throw bodyError; } finally { await teardown(bodyError, [() => cleanup(dir)]); }
+});

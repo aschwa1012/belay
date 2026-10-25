@@ -14,6 +14,7 @@ export const CONFIRM_MS = 8000
 // memory line, with the review button. null when there is neither a count nor a review to show.
 export function normHeld(json: unknown): BelayHeld | null {
   let count = 0
+  let queued = 0
   let unsupported = 0
   let oldestAgeRuns = 0
   let oldestAt: number | null = null
@@ -26,6 +27,7 @@ export function normHeld(json: unknown): BelayHeld | null {
     if (!e) continue
     if (e.kind === 'notes_held') {
       count = num(e.count) ?? 0
+      queued = Math.min(count, num(e.queued) ?? 0) // the part of the count past its run's breaker: reviewed, hiding nothing
       unsupported = Math.min(count, num(e.unsupported) ?? 0)
       oldestAgeRuns = num(e.oldest_age_runs) ?? 0
       oldestAt = num(e.oldest_at)
@@ -42,7 +44,7 @@ export function normHeld(json: unknown): BelayHeld | null {
     }
   }
   if (count <= 0 && !reviews.length) return null
-  return { count: Math.max(0, count), unsupported, byProject, oldestAgeRuns, ...(oldestAt !== null && oldestAt > 0 ? { oldestAt } : {}), reviews, ...(Object.keys(byGround).length ? { byGround, awaiting } : {}), ...(breakers.length ? { breakers } : {}) }
+  return { count: Math.max(0, count), ...(queued > 0 ? { queued } : {}), unsupported, byProject, oldestAgeRuns, ...(oldestAt !== null && oldestAt > 0 ? { oldestAt } : {}), reviews, ...(Object.keys(byGround).length ? { byGround, awaiting } : {}), ...(breakers.length ? { breakers } : {}) }
 }
 
 // The review of a project that is in flight: the panel offers no button over it.
@@ -88,6 +90,10 @@ const GROUND_LABEL: Record<string, string> = { reported: 'reported wrong', repor
 const waitedFor = (h: BelayHeld, now?: number): string => (now !== undefined && h.oldestAt !== undefined ? ` · oldest waited ${dur(Math.max(0, now - h.oldestAt))}` : '')
 const flagFor = (h: BelayHeld): string => (h.breakers ?? []).map(b => ` · run ${b.runId.slice(0, 8)} disputed ${b.disputed}: review`).join('') // the breaker flag, ADR 0047 decision 9
 
+// "N held, M queued": a queued note waits on the review like a held one but hides nothing (ADR 0047 amendment of 2026-10-25).
+export const heldCount = (h: BelayHeld): string => ((h.queued ?? 0) > 0 ? `${h.count - h.queued!} held, ${h.queued} queued` : `${h.count} held`)
+const queuedPart = (h: BelayHeld): string => ((h.queued ?? 0) > 0 ? `; ${h.queued} queued past the breaker` : '')
+
 export function heldLine(h: BelayHeld, now?: number): string {
   if (h.count <= 0) return ''
   const w = waitedFor(h, now) + flagFor(h)
@@ -95,11 +101,12 @@ export function heldLine(h: BelayHeld, now?: number): string {
     const parts = new Map<string, number>()
     for (const [k, n] of Object.entries(h.byGround)) parts.set(GROUND_LABEL[k] ?? k, (parts.get(GROUND_LABEL[k] ?? k) ?? 0) + n)
     const a = h.awaiting ?? 0
-    return `${h.count} held: ${[...parts].map(([k, n]) => `${n} ${k}`).join(', ')}${a > 0 ? `; ${a} await${a === 1 ? 's' : ''} you` : ''}${w}`
+    return `${h.count - (h.queued ?? 0)} held: ${[...parts].map(([k, n]) => `${n} ${k}`).join(', ')}${queuedPart(h)}${a > 0 ? `; ${a} await${a === 1 ? 's' : ''} you` : ''}${w}`
   }
   const names = Object.keys(h.byProject).sort()
   const warned = h.count - h.unsupported
   if (h.unsupported > 0) return `${warned > 0 ? `${warned} held as wrong or duplicate · ` : ''}${h.unsupported} unsupported awaiting review · oldest ${h.oldestAgeRuns} run${h.oldestAgeRuns === 1 ? '' : 's'}${names.length ? ` · ${names.join(', ')}` : ''}${w}`
+  if ((h.queued ?? 0) > 0) return `${heldCount(h)} for review · oldest ${h.oldestAgeRuns} run${h.oldestAgeRuns === 1 ? '' : 's'}${names.length ? ` · ${names.join(', ')}` : ''}${w}`
   return `${h.count} note${h.count === 1 ? '' : 's'} held for review · oldest ${h.oldestAgeRuns} run${h.oldestAgeRuns === 1 ? '' : 's'}${names.length ? ` · ${names.join(', ')}` : ''}${w}`
 }
 
@@ -111,10 +118,11 @@ export function heldDetail(h: BelayHeld, now?: number): string {
   if (h.byGround && Object.keys(h.byGround).length) {
     const parts = new Map<string, number>()
     for (const [k, n] of Object.entries(h.byGround)) parts.set(GROUND_LABEL[k] ?? k, (parts.get(GROUND_LABEL[k] ?? k) ?? 0) + n)
-    return `${[...parts].map(([k, n]) => `${n} ${k}`).join(', ')}${w}`
+    return `${[...parts].map(([k, n]) => `${n} ${k}`).join(', ')}${queuedPart(h)}${w}`
   }
   const names = Object.keys(h.byProject).sort()
   if (h.unsupported > 0) return `${h.count - h.unsupported > 0 ? `${h.count - h.unsupported} wrong or duplicate · ` : ''}${h.unsupported} unsupported · oldest ${h.oldestAgeRuns} run${h.oldestAgeRuns === 1 ? '' : 's'}${names.length ? ` · ${names.join(', ')}` : ''}${w}`
+  if ((h.queued ?? 0) > 0) return `${h.queued} queued past the breaker · oldest ${h.oldestAgeRuns} run${h.oldestAgeRuns === 1 ? '' : 's'}${names.length ? ` · ${names.join(', ')}` : ''}${w}`
   return `oldest ${h.oldestAgeRuns} run${h.oldestAgeRuns === 1 ? '' : 's'}${names.length ? ` · ${names.join(', ')}` : ''}${w}`
 }
 

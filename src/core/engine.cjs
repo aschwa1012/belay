@@ -230,6 +230,11 @@ class Engine {
   constructor({ dataDir, store, getEmbedder = null, owner = null, establishedBy = 'copy', embedderFailure = null, memoryOffFn = null }) {
     this.dataDir = dataDir;
     this.store = store;
+    // ADR 0054 amendment 1: when this engine last served each worker, in memory only (no store write per call), and when it
+    // started: a review grant's snapshot is late if its worker called the core between the grant and the attach, and its
+    // time is unknown if the grant came before this engine did.
+    this.startedAt = Date.now();
+    this.workerCalls = new Map();
     // A provider, not a loaded model: the embedding library is reached only by a call that needs a
     // vector, and an engine reading a copy of the store has no way to get one at all.
     this._getEmbedder = getEmbedder;
@@ -343,6 +348,7 @@ class Engine {
     if (!spec) throw err('E_ARGS', `${method} is not a Core API method`, { method });
     const p = params || {};
     const caller = validateCaller(p.caller);
+    if (caller.role === 'worker' && caller.worker_id) this.workerCalls.set(caller.worker_id, Date.now());
     if (!spec.roles.includes(caller.role) && !(spec.harnessGuard && spec.harnessGuard(this, caller, p))) {
       throw err('E_ROLE', `${method} is available to ${spec.roles.join(', ')} and this call came from role ${caller.role}`, { method, role: caller.role, allowed: spec.roles });
     }

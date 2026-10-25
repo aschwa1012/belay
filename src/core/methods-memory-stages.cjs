@@ -221,7 +221,7 @@ async function reviewQueue(E, caller, args) {
   const project = M.projectOf(E, caller);
   if (!project) throw err('E_ARGS', 'memory.reviewQueue: this run has no project, so there is no held queue', { field: 'project' });
   const rows = E.store.p(`SELECT id, run_id, created_at, body FROM memory_entries WHERE namespace = ? AND type = 'held' AND written_by = 'harness'
-    AND json_extract(body, '$.state') = 'held' ORDER BY created_at, id`).all(L.nsOf('held', project));
+    AND json_extract(body, '$.state') IN ('held', 'queued') ORDER BY created_at, id`).all(L.nsOf('held', project)); // a queued hold (past the breaker) is reviewed like any other
   const held = [], awaiting = [];
   for (const r of rows) {
     const b = parse(r.body);

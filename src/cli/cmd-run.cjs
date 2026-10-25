@@ -189,6 +189,7 @@ async function run(ctx) {
       // headless orchestrator is a model with Bash, so a process that descends from it is not the operator; the interactive one is
       // the human's own session (its plugin runs the CLI), so it is not listed. Where the peer cannot be examined the owner stays claimed.
       mode: require('../core/operator-check.cjs').SUPPORTED ? 'bound' : 'claimed',
+      longLived: true, // it serves the whole run, so it may start the snapshot probe a merge's owner_boot reads (ADR 0053 amendment 2)
       spawnedProcesses: () => require('../core/spawn-register.cjs').runSpawned(!!ce, hookBox.pid),
       controls: {
         'run.stop': (params) => stopControl.handle(params),

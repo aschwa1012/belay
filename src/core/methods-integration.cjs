@@ -26,14 +26,9 @@ const view = (r) => (r ? { ...r, created_worktree: r.created_worktree == null ? 
 // holds the in-process lock every merge into that branch holds. Another live pid may be an owner that was stopped without
 // exiting (the adapter outlives it) whose git is still running, so only a pid that is gone, or now names a process created at
 // another time than the row's `owner_boot` (a reused pid), is taken as gone. A creation time that cannot be read is not proof.
-// A row from before the columns names no process, and nothing could be waited on. `owner_boot`, and the time it is compared
-// with, both come from the process snapshot (createdOf), so no clock but the OS's creation times is involved.
+// A row from before the columns names no process, and nothing could be waited on. `owner_boot` (methods-worktree.cjs ownBoot),
+// and the time it is compared with, both come from the process snapshot, so no clock but the OS's creation times is involved.
 const BOOT_SLACK_MS = 5000;
-let ownCreated = null; // this process's creation time from the snapshot, cached once it has been read
-async function ownBoot() {
-  if (ownCreated == null) { const c = await ID.createdOf(process.pid).catch(() => null); if (c && c.created != null) ownCreated = c.created; }
-  return ownCreated;
-}
 
 // -> { gone, proven, why }. `proven` (when not gone): the pid runs as the process the row names, created when it records.
 async function ownerGone(r) {
@@ -262,6 +257,7 @@ async function rerun(tasks, tree) {
 }
 
 async function merge(E, caller, args) {
+  W.ownBootProbe(E);
   args = W.present(args);
   checkArgs(args);
   const takeOver = checkTakeOver(caller, args, 'integration.merge');
@@ -275,7 +271,7 @@ async function merge(E, caller, args) {
     const base = {
       id: rows.newId(), run_id: caller.run_id, repo, into_branch: into, worktree: tree.path, created_worktree: tree.created,
       base_sha: baseSha, head_sha: baseSha, task_ids: args.task_ids, merged: [], conflict: null, error: null, checks: null, passed: null, junctions: tree.junctions, removed_at: null,
-      owner_pid: process.pid, owner_boot: await ownBoot(), // who runs it, so a row a crash leaves `merging` reads stale
+      owner_pid: process.pid, owner_boot: await W.ownBoot(E), // who runs it, so a row a crash leaves `merging` reads stale
     };
     E.store.tx(() => { E.assertRunOpen(caller, 'integration.merge'); rows.append(E.store, 'integration', { ...base, state: 'merging' }, by, Date.now()); });
     E.noteWrite();
@@ -339,6 +335,7 @@ async function get(E, caller, args) {
 
 // Removes an integration worktree belay made (the branch stays: it is the integrated result).
 async function remove(E, caller, args) {
+  W.ownBootProbe(E);
   args = W.present(args);
   const cur = await get(E, caller, args);
   if (args.force !== undefined && typeof args.force !== 'boolean') throw err('E_ARGS', 'integration.remove: force must be a boolean', { field: 'force' });
