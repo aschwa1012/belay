@@ -13,8 +13,10 @@ const { fail } = require('./errors.cjs');
 const now = () => Date.now();
 // ADR 0058: messages queued during a compaction that a pause, park or relaunch dropped are named in every answer about the worker.
 const dropped = (w) => (w.queuedDropped && w.queuedDropped.length ? { queued_dropped: w.queuedDropped } : {});
+// The previous process's terminal row a relaunch overtook (exit.cjs lifeWrite): its exit facts, on the answers about this life only.
+const priorRow = (w) => (w.droppedRow && w.droppedRow.launch === w.launches ? { previous_row_dropped: w.droppedRow } : {});
 
-function createWait({ workers, get }) {
+function createWait({ workers, get, core = null }) {
   // ADR 0015 §1. Blocks until one of the named workers (or any worker this manager launched)
   // finishes a turn or dies, or the timeout passes. It is the same shape as `spawn`'s wait for the ready
   // event, pointed at the next event instead: a tool call that has not returned holds the orchestrator's
@@ -61,10 +63,12 @@ function createWait({ workers, get }) {
           : 'result event on the worker stream',
         turn: w.turns,
         checkpoint_id: (v && v.checkpoint_id) || w.lastCheckpointId, is_error: !!(v && v.is_error),
-        usage: (v && v.usage) || w.lastTurnUsage || null, ...dropped(w), ...require('./release-eval.cjs').evalOf(w), // ADR 0058: evaluated once it lands, evaluating while it runs
+        usage: (v && v.usage) || w.lastTurnUsage || null, ...dropped(w), ...priorRow(w), ...require('./release-eval.cjs').evalOf(w), // ADR 0058: evaluated once it lands, evaluating while it runs
       };
     };
-    const done = (r) => ({ ...r, waited_ms: now() - t0, timed_out: false, watched: ids, ...capNote });
+    // ADR 0058, the idle-workers amendment (proposed): every answer names the workers this manager launched that sit idle with no task.
+    const idleOf = async () => { const v = await require('./idle-remind.cjs').idleRecords(core, workers.values()); return v.length ? { idle_without_task: v } : {}; };
+    const done = async (r) => ({ ...r, waited_ms: now() - t0, timed_out: false, watched: ids, ...capNote, ...(await idleOf()) });
     // build step 6e-6 item 4 (carried item 4, wait.cjs:37): once clearParkForStop or checkNotStale
     // (pause.cjs) has found this record's own park belongs to a row another adapter now holds, every wait
     // answers `stale` at once, naming the row's own state and the adapter that now holds it — never the
@@ -125,7 +129,7 @@ function createWait({ workers, get }) {
         worker_id: w.id, state: w.state, pid_alive: w.pid ? P.pidAlive(w.pid) : false,
         last_event_age_ms: w.lastEventAt ? now() - w.lastEventAt : null, turns: w.turns,
       })),
-      ...capNote,
+      ...capNote, ...(await idleOf()),
     };
   };
 }
