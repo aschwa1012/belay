@@ -102,3 +102,75 @@ test('a task its worker already released stays released when that worker dies', 
   assert.strictEqual(row.leases_released, null, 'a lease the worker released itself is not released again');
   assert.strictEqual((await c.task.get({ task_id: t.id })).state, 'released');
 });
+
+const workerCore = async (runId, workerId) => {
+  const w = await openCore({ dataDir: dir, caller: callerFor('worker', { run_id: runId, worker_id: workerId }), embed: false });
+  cores.push(w);
+  return w;
+};
+const deadRow = (id) => ({ id, state: 'dead', pid: deadPid(), exit_code: 1, death_established_by: 'exit-event' });
+
+test('a hand-back that reaches the core after its holder\'s dead row is accepted as a release, and the receipt says why', async () => {
+  const { c, t, lease } = await leased('run-late', 'wl');
+  const w = await workerCore('run-late', 'wl');
+  await c.worker.write(deadRow('wl')); // the interleaving: the death lands first, the adapter's release after it
+  const out = await w.lease.release({ lease_id: lease.id, result: { summary: 'did it' } });
+  assert.deepStrictEqual([out.state, out.handoff.result, out.handoff.lease_id, out.lease_released_by], ['released', { summary: 'did it' }, lease.id, 'holder_dead']);
+  assert.match(out.note, /already released when its holder wl died/);
+  const task = await c.task.get({ task_id: t.id });
+  assert.deepStrictEqual([task.state, task.handoff.by], ['released', 'wl']);
+  await assert.rejects(w.lease.release({ lease_id: lease.id, result: { again: 1 } }), (e) => e.code === 'E_ARGS', 'accepted once: the task is no longer open');
+});
+
+test('a late hand-back on a task given to another worker since is refused, naming the death release and the new holder', async () => {
+  const { c, t, lease } = await leased('run-late2', 'wm');
+  const w = await workerCore('run-late2', 'wm');
+  await c.worker.write(deadRow('wm'));
+  await c.worker.write(live('wn'));
+  const next = (await c.task.assign({ task_id: t.id, worker_id: 'wn' })).new_lease;
+  await assert.rejects(w.lease.release({ lease_id: lease.id, result: { summary: 'late' } }), (e) => {
+    assert.strictEqual(e.code, 'E_LEASE_EXPIRED');
+    assert.match(e.message, /released when its holder wm died \(holder_dead\).*leased to worker wn/);
+    assert.deepStrictEqual([e.detail.superseded_by, e.detail.current_holder], [next.id, 'wn']);
+    return true;
+  });
+  const task = await c.task.get({ task_id: t.id });
+  assert.deepStrictEqual([task.state, task.handoff, task.lease.holder], ['assigned', null, 'wn']);
+});
+
+test('a relaunch of a worker whose death released its lease gets the same lease back while the task is open, and none otherwise', async () => {
+  const { c, t, lease } = await leased('run-re', 'wq');
+  await c.worker.write(deadRow('wq'));
+  const back = await c.task.ensureHold({ task_id: t.id, worker_id: 'wq' });
+  assert.deepStrictEqual([back.reason, back.regranted, back.lease_id], ['regranted', true, lease.id]);
+  const task = await c.task.get({ task_id: t.id });
+  assert.deepStrictEqual([task.state, task.lease.id, task.lease.holder], ['assigned', lease.id, 'wq'], 'the same lease id, so the relaunched worker can still renew and release it');
+  const w = await workerCore('run-re', 'wq');
+  await c.worker.write(live('wq'));
+  assert.strictEqual((await w.lease.renew({ lease_id: lease.id })).id, lease.id);
+
+  const o = await leased('run-re2', 'wr2');
+  await o.c.worker.write(deadRow('wr2'));
+  await o.c.worker.write(live('ws2'));
+  await o.c.task.assign({ task_id: o.t.id, worker_id: 'ws2' });
+  const lost = await o.c.task.ensureHold({ task_id: o.t.id, worker_id: 'wr2' });
+  assert.deepStrictEqual([lost.held, lost.reason, lost.lease_id, lost.task_state, lost.current_holder], [false, 'lease_lost', o.lease.id, 'assigned', 'worker ws2']);
+  assert.strictEqual((await o.c.task.get({ task_id: o.t.id })).lease.holder, 'ws2', 'nothing written: one live holder');
+
+  const d = await leased('run-re3', 'wt3');
+  await d.c.worker.write(deadRow('wt3'));
+  await d.c.task.cancel({ task_id: d.t.id, reason: 'not needed' });
+  const gone = await d.c.task.ensureHold({ task_id: d.t.id, worker_id: 'wt3' });
+  assert.deepStrictEqual([gone.reason, gone.task_state, gone.current_holder], ['lease_lost', 'cancelled', null]);
+});
+
+test('only a worker-role lease is released by its holder\'s death, never an operator\'s lease that shares the id', async () => {
+  const { c, t } = await leased('run-role', 'operator');
+  const op = await open('run-role', 'operator');
+  const taken = await op.lease.takeControl({ task_id: t.id }); // holder 'operator', role operator
+  assert.strictEqual(taken.new_lease.holder_role, 'operator');
+  const row = await c.worker.write(deadRow('operator')); // a worker whose id is the operator's holder name dies
+  assert.strictEqual(row.leases_released, null);
+  const task = await c.task.get({ task_id: t.id });
+  assert.deepStrictEqual([task.state, task.lease.id, task.lease.holder_role], ['assigned', taken.new_lease.id, 'operator']);
+});

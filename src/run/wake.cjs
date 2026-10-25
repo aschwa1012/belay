@@ -113,16 +113,29 @@ function diffWorkers({ prev, rows, runId, nowMs, graceMs, orphanGraceMs = graceM
 }
 
 // ADR 0026 amendment 1 (proposed): the leases a death released, as facts, in what the interactive wake budget leaves after the
-// head and the pointer: "released lease L on task T", or, short of room, the task ids alone. Empty when the death released nothing.
+// head and the pointer: "released lease L on task T", the task ids alone, or the count, the first that fits; '' when none does.
 const POINTER = ' Its rows are in the store: task_list, briefing.';
 function releasedClause(released, head) {
-  if (!Array.isArray(released) || !released.length) return '';
-  const { WAKE_TEXT_MAX } = require('./release-eval.cjs');
-  const room = WAKE_TEXT_MAX - Buffer.byteLength(head + POINTER, 'utf8');
-  const full = ` Released ${released.map((r) => `lease ${r.lease_id} on task ${r.task_id}`).join(', ')}; open to assign.`;
-  if (Buffer.byteLength(full, 'utf8') <= room) return full;
-  const short = ` Released its lease on task${released.length > 1 ? 's' : ''} ${released.map((r) => r.task_id).join(', ')}.`;
-  return Buffer.byteLength(short, 'utf8') <= room ? short : ` Released ${released.length} lease${released.length > 1 ? 's' : ''}; task_list.`;
+  const room = require('./release-eval.cjs').WAKE_TEXT_MAX - Buffer.byteLength(head + POINTER, 'utf8');
+  const s = released.length > 1 ? 's' : '';
+  return [` Released ${released.map((r) => `lease ${r.lease_id} on task ${r.task_id}`).join(', ')}; open to assign.`,
+    ` Released its lease on task${s} ${released.map((r) => r.task_id).join(', ')}.`, ` Released ${released.length} lease${s}; task_list.`]
+    .find((c) => Buffer.byteLength(c, 'utf8') <= room) || '';
+}
+
+// A death wake. When it released leases and the clause does not fit after the full head, the head drops what established the death
+// (the store's row keeps it) so the clause and the pointer both survive the interactive cap; with no room even then, it is as before.
+function deathText(event) {
+  const full = `belay: worker ${event.worker_id} died during turn ${event.turn} ` +
+    `(exit code ${event.exit_code}, signal ${event.exit_signal}, established by ${event.death_established_by}).`;
+  const released = Array.isArray(event.leases_released) && event.leases_released.length ? event.leases_released : null;
+  if (released) {
+    for (const head of [full, `belay: worker ${event.worker_id} died during turn ${event.turn} (exit code ${event.exit_code}).`]) {
+      const c = releasedClause(released, head);
+      if (c) return head + c + POINTER;
+    }
+  }
+  return full + POINTER;
 }
 
 // No worker output, ever: the id, the turn and (for a death) the exit facts are the whole of it.
@@ -134,11 +147,7 @@ function wakeText(event) {
 
 function baseText(event) {
   if (event.event === 'note_refuted' || event.event === 'scrub_alarm' || event.event === 'evaluated') return event.text; // evaluated: release-eval.cjs, facts only // note-wake.cjs: belay's own record, built from the core's facts
-  if (event.event === 'death') {
-    const head = `belay: worker ${event.worker_id} died during turn ${event.turn} ` +
-      `(exit code ${event.exit_code}, signal ${event.exit_signal}, established by ${event.death_established_by}).`;
-    return `${head}${releasedClause(event.leases_released, head)} Its rows are in the store: task_list, briefing.`;
-  }
+  if (event.event === 'death') return deathText(event);
   // build step 6f, decision 3's own words, ids and facts only (ADR 0015 §2): no worker output.
   if (event.event === 'paused') {
     return `belay: worker ${event.worker_id} was paused by ${event.paused_by} during turn ${event.turn}; ` +

@@ -9,7 +9,7 @@ const PI = require('./pid-identity.cjs'); // ADR 0039
 const W = require('./worker.cjs');
 const LC = require('./lifecycle.cjs');
 const { fail } = require('./errors.cjs');
-const { holdForLaunch } = require('./restart.cjs');
+const { holdForLaunch, leaseField, leaseNote } = require('./restart.cjs');
 
 const now = () => Date.now();
 
@@ -34,7 +34,7 @@ function createMessage({ core, ctx, forWorker, refuseIfPaused, sendStdin, launch
     // (ADR 0001 §4, ADR 0008 §6). Returns at once with the new pid; the turn lands later.
     if (!w.sessionId) fail('E_SUBSTRATE', 'codex worker has no thread id to resume', { worker_id, substrate: w.substrate, state: w.state });
     const foreign = !w.child && await PI.verifiedLive(w); // by identity, never the pid number alone: an idle worker's pid is free for reuse
-    await holdForLaunch(w, core); LC.refuseMessageDuringOp(w); // before the checks below: they and the spawn stay one tick, so two concurrent messages still start one process
+    const hold = await holdForLaunch(w, core); LC.refuseMessageDuringOp(w); text += leaseNote(hold); // ADR 0026 amendment 2 // before the checks below: they and the spawn stay one tick, so two concurrent messages still start one process
     // An adopted worker whose process is still alive is one a previous adapter owns. belay is not
     // its parent (invariant 1), so it cannot see that turn end, and starting a second process on
     // the same worktree is the one thing one-process-per-turn exists to prevent. Stop it first.
@@ -49,7 +49,7 @@ function createMessage({ core, ctx, forWorker, refuseIfPaused, sendStdin, launch
       w.parser.noteStdinWrite();
       await writeRow(w, 'running');
     });
-    return { worker_id, channel: 'codex-resume', bytes: Buffer.byteLength(text, 'utf8'), pid: w.pid, turn: w.turns + 1 };
+    return { worker_id, channel: 'codex-resume', bytes: Buffer.byteLength(text, 'utf8'), pid: w.pid, turn: w.turns + 1, ...leaseField(hold) };
   };
 }
 

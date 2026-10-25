@@ -61,6 +61,9 @@ async function ensureHold(E, caller, args) {
     const task = rows.current(E.store, 'task', args.task_id);
     if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.task_id}`, { task_id: args.task_id });
     const base = { task_id: task.id, run_id: task.run_id, rehomed: false };
+    // ADR 0026 amendment 2 (proposed): a worker whose death released its lease here gets it back, or is told it holds none.
+    const death = require('./lease-holder-dead.cjs').reclaimForRestart(E, caller, task, args.worker_id, (t) => resolveOwner(E.store, t, caller.run_id, rows.current(E.store, 'worker', args.worker_id)));
+    if (death) return { ...base, ...death };
     if (task.state === 'done') return { ...base, held: false, reason: 'done' };
     if (!Array.isArray(task.files_owned) || !task.files_owned.length) return { ...base, held: false, reason: 'no_files' };
     const lease = rows.currentLeaseForTask(E.store, task.id);
@@ -74,7 +77,7 @@ async function ensureHold(E, caller, args) {
     const row = rows.append(E.store, 'task', { ...task, run_id: ownerRun }, by, t);
     return { ...base, run_id: ownerRun, from_run_id: task.run_id, held: true, reason: 'rehomed', rehomed: true, task: row, new_lease: newLease };
   });
-  if (out.rehomed) E.noteWrite();
+  if (out.rehomed || out.regranted) E.noteWrite();
   return out;
 }
 

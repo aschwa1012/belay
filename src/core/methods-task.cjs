@@ -10,6 +10,7 @@ const { pidAlive } = require('./lock.cjs');
 const { DEFAULT_LEASE_TTL_MS, TASK_STATES } = require('./schema.cjs');
 const { runAcceptance } = require('./evaluate.cjs');
 const holds = require('./task-holds.cjs');
+const LHD = require('./lease-holder-dead.cjs'); // ADR 0026 amendments 1 and 2
 const { filesOverlap, treeHint, runNotLive, resolveOwner, assertNotOwnReview } = require('./methods-task-hold.cjs');
 
 // ADR 0025 decision 1: the most a worker may hand back on release, serialized.
@@ -400,6 +401,7 @@ async function releaseNow(E, caller, args) {
     // Releasing a superseded lease would destroy the current holder's live lease, so the currency rule
     // applies to the operator too; what the operator overrides is the holder check, not the rule that a
     // release acts on the lease the task actually has.
+    LHD.refuseSupersededDeath(E.store, args.lease_id); // ADR 0026 amendment 2: a death release the task has moved on from is named
     const l = requireCurrentLease(E, args.lease_id);
     if (caller.role === 'worker' && (l.holder !== caller.worker_id || l.holder_role !== 'worker')) {
       throw err('E_NOT_HOLDER', `lease ${l.id} is held by ${l.holder_role} ${l.holder}, and this call came from worker ${caller.worker_id}`, { lease_id: l.id, holder: l.holder, holder_role: l.holder_role });
@@ -410,12 +412,12 @@ async function releaseNow(E, caller, args) {
     if (task.state === 'done' && args.result !== undefined) {
       throw err('E_ARGS', `lease.release: task ${task.id} is done, so its hand-back cannot be replaced; release without a result`, { task_id: task.id });
     }
-    const t = Date.now(), by = E.writtenBy(caller);
-    if (dropped && l.released_at != null) {
+    const t = Date.now(), by = E.writtenBy(caller), late = LHD.isLateHandback(caller, l, task); // late: the holder's death released it first
+    if (dropped && l.released_at != null && !late) {
       // A second call on a released lease carries only notes, and they are dropped: nothing is written.
       return { ...task, last_checkpoint_id: (rows.lastCheckpoint(E.store, l.task_id) || {}).id || null, released_reason: args.reason || null, ...dropped };
     }
-    if (prep && l.released_at != null) {
+    if (prep && l.released_at != null && !late) {
       // A second call on a released lease only adds notes (the reflection turn): the release stands as it was written.
       if (args.result !== undefined) throw err('E_ARGS', `lease.release: lease ${l.id} was already released, so a second call may carry notes but not a new result`, { lease_id: l.id });
       NM.claimAfterRelease(E, caller, prep, l, task.id); // only with memory.notes_reflection, once per lease
@@ -423,10 +425,10 @@ async function releaseNow(E, caller, args) {
     }
     // Audit D44: with notes off nothing above handles a second call, and the release below would append another released
     // row and replace the hand-back it stands on. A released lease is released once; only the notes-only calls above return.
-    if (l.released_at != null) {
+    if (l.released_at != null && !late) {
       throw err('E_ARGS', `lease.release: lease ${l.id} was already released at ${l.released_at}, so a second release would replace its hand-back; nothing was written`, { lease_id: l.id, released_at: l.released_at });
     }
-    rows.append(E.store, 'lease', { ...l, released_at: t }, by, t);
+    if (!late) rows.append(E.store, 'lease', { ...l, released_at: t }, by, t);
     let handoff = task.handoff;
     if (args.result !== undefined) {
       handoff = { result: args.result, by: caller.worker_id, lease_id: l.id, at: t };
@@ -435,7 +437,7 @@ async function releaseNow(E, caller, args) {
     }
     const row = rows.append(E.store, 'task', { ...task, state: task.state === 'done' ? 'done' : 'released', handoff }, by, t);
     const ck = rows.lastCheckpoint(E.store, l.task_id);
-    return { ...row, last_checkpoint_id: ck ? ck.id : null, released_reason: args.reason || null, ...(prep ? NM.commit(E, caller, prep, { task_id: task.id }) : {}), ...(dropped || {}) };
+    return { ...row, last_checkpoint_id: ck ? ck.id : null, released_reason: args.reason || null, ...(prep ? NM.commit(E, caller, prep, { task_id: task.id }) : {}), ...(dropped || {}), ...(late ? LHD.lateReceipt(l) : {}) };
   });
   E.noteWrite();
   return out;

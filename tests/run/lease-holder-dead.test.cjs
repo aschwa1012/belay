@@ -72,3 +72,87 @@ test('the dead row a restart settles on its way to relaunching asks the core to 
   await writeRow(w('pid-check-on-restart'), 'stopped');
   assert.deepStrictEqual(sent.map((r) => r.keep_leases === true), [true, true, false, false]);
 });
+
+// One real core and run manager with worker w1 spawned on a task; `body(ctx)` runs, and everything is torn down after.
+async function withRun(acceptance, body) {
+  const dir = sandbox();
+  const core = await openCore({ dataDir: dir, caller: callerFor('orchestrator', { run_id: RUN }), embed: false });
+  const wt = path.join(dir, 'wt');
+  fs.mkdirSync(wt, { recursive: true });
+  let m = null; const extra = [];
+  try {
+    await core.run.attach({ adapter_pid: process.pid });
+    const task = await core.task.create({ spec: 'do it', files_owned: ['src/a.js'], ...(acceptance ? { acceptance } : {}) });
+    m = createRunManager({ core: core.harness(), dataDir: dir, runId: RUN, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
+    const spawn = (id, task_id) => m.spawn({ substrate: 'claude-code', worktree: fwd(wt), prompt: 'one', worker_id: id, task_id });
+    const row = await spawn('w1', task.id);
+    const lease = (await core.task.get({ task_id: task.id })).lease;
+    const kill = async () => { process.kill(row.pid); assert.ok(await m._waitExit('w1', 30000)); await m._worker('w1').queue; };
+    const workerCore = async (id) => { const c = await openCore({ dataDir: dir, caller: callerFor('worker', { worker_id: id, run_id: RUN }), embed: false }); extra.push(c); return c; };
+    return await body({ core, m, task, lease, kill, spawn, workerCore, dir });
+  } finally {
+    if (m) { try { await m.shutdown(); } catch { /* best effort */ } }
+    for (const c of extra) await c.close();
+    try { await core.shutdownOwner(); } catch { /* best effort */ }
+    await core.close();
+    cleanup(dir);
+  }
+}
+
+async function until(fn, ms = 30000) {
+  for (const end = Date.now() + ms; ;) {
+    const v = await fn();
+    if (v) return v;
+    if (Date.now() > end) throw new Error('timed out waiting');
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
+test('a hand-back that lands after the dead row is accepted and evaluated at release, though no turn of the worker ends', { timeout: 90000 }, async () => {
+  const PASS = { commands: [{ argv: [process.execPath, '-e', 'process.exit(0)'], timeout_ms: 20000 }] };
+  await withRun(PASS, async ({ core, m, task, lease, kill, workerCore }) => {
+    await kill(); // the dead row first; the worker's adapter, still alive for a moment, sends the hand-back after it
+    const out = await (await workerCore('w1')).lease.release({ lease_id: lease.id, result: { branch: 'b' } });
+    assert.deepStrictEqual([out.state, out.lease_released_by], ['released', 'holder_dead']);
+    const ev = await until(() => m._worker('w1').lastEvaluation); // started by the pid poll's late look, not by a turn end
+    await ev.promise;
+    const row = await core.task.get({ task_id: task.id });
+    assert.deepStrictEqual([row.state, row.results.trigger], ['done', 'release']);
+  });
+});
+
+test('a restart after a recorded death gets the lease back while the task is open, and the receipt says so', { timeout: 90000 }, async () => {
+  await withRun(null, async ({ core, m, task, lease, kill }) => {
+    await kill();
+    assert.strictEqual((await core.task.get({ task_id: task.id })).state, 'open');
+    const r = await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 });
+    assert.deepStrictEqual(r.lease, { task_id: task.id, lease_id: lease.id, regranted: true });
+    const t = await core.task.get({ task_id: task.id });
+    assert.deepStrictEqual([t.state, t.lease.id, t.lease.holder], ['assigned', lease.id, 'w1']);
+  });
+});
+
+test('a restart after the task went to another worker goes ahead holding no lease, and its first text says so', { timeout: 90000 }, async () => {
+  await withRun(null, async ({ core, m, task, lease, kill, spawn, dir }) => {
+    await kill();
+    await spawn('w2', task.id); // the orchestrator gave the task to another worker
+    const r = await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 });
+    assert.deepStrictEqual([r.lease.regranted, r.lease.lease_id, r.lease.task_state, r.lease.current_holder], [false, lease.id, 'assigned', 'worker w2']);
+    assert.strictEqual((await core.task.get({ task_id: task.id })).lease.holder, 'w2', 'one live holder');
+    const stream = fs.readFileSync(path.join(dir, 'workers', 'w1', 'stream.jsonl'), 'utf8');
+    assert.match(stream, /You hold no lease on it: do not hand it back/);
+  });
+});
+
+test('a death wake that released leases keeps its clause and its pointer under the interactive cap', () => {
+  const id = '0f8b1c2e-1111-4222-8333-444455556666';
+  const ev = (by, n) => ({ event: 'death', worker_id: 'coder-1', turn: 3, exit_code: 1, exit_signal: null, death_established_by: by, leases_released: Array.from({ length: n }, () => ({ lease_id: id, task_id: id })) });
+  const long = 'run.end: pid 12345 not alive when the run ended; no adapter wrote its exit (ADR 0029)';
+  for (const [by, n, want] of [['exit-event', 1, /Released its lease on task /], ['exit-event', 3, /Released 3 leases; task_list\./], [long, 1, /Released lease 0f8b1c2e-1111-4222-8333-444455556666 on task /]]) {
+    const text = wakeText(ev(by, n));
+    assert.ok(Buffer.byteLength(text, 'utf8') <= 221, `${Buffer.byteLength(text, 'utf8')} bytes: ${text}`);
+    assert.match(text, want);
+    assert.match(text, /Its rows are in the store: task_list, briefing\.$/);
+  }
+  assert.ok(!wakeText(ev(long, 1)).includes('established by'), 'the long head gives way, the pointer stays');
+});
