@@ -310,6 +310,10 @@ async function search(E, caller, args) {
     rows = rowsByIds(E, ranked.map(h => h.id));
     ranked = ranked.filter(h => rows.has(h.id) && gate.bodyLive(rows.get(h.id))); // (the project's legacy rows never get here: the keyword WHERE and the semantic scan leave them out)
   }
+  // A held note (an active hold on it, whoever reads: a worker is withheld the disputed ones above) ranks below every note that is not held,
+  // and every view marks it from its hold row, never from the note's own pointer, which can outlive its hold (ADR 0047 amendment of 2026-10-25).
+  const holds = W.holdsAmong(E, ranked.map(h => h.id));
+  if (holds.size && o.order === 'score') ranked = [...ranked.filter(h => !holds.has(h.id)), ...ranked.filter(h => holds.has(h.id))];
   let pool = ranked;
   if (o.order !== 'score') {
     rows = rows || rowsByIds(E, ranked.map(h => h.id));
@@ -329,8 +333,8 @@ async function search(E, caller, args) {
     const c = sem && cosine.has(h.id) ? cosine.get(h.id) : null;
     const rel = V.relevanceFields(c);
     if (rel.low_relevance) below++;
-    if (o.view === 'compact') { results.push(V.compactRow(r, c, !!(replaced && replaced.has(r.id)))); continue; }
-    const out = { ...viewRow(r, debug ? 'full' : 'index', h.score), ...(o.view === 'index' ? rel : {}) };
+    if (o.view === 'compact') { results.push(V.compactRow(r, c, !!(replaced && replaced.has(r.id)), holds.get(r.id) || null)); continue; }
+    const out = { ...viewRow(r, debug ? 'full' : 'index', h.score), ...(o.view === 'index' ? rel : {}), ...(holds.has(r.id) ? { held: holds.get(r.id) } : {}) };
     if (debug) {
       out.score = h.score;
       Object.assign(out, rel);
@@ -463,6 +467,9 @@ async function list(E, caller, args) {
     if (view === 'index') return indexRowOf({ ...rest, title });
     return { ...rest, tags: parseJson(r.tags), redactions: parseJson(r.redactions), status: r.status || 'unverified', title, ...(textCut ? { text_truncated: true } : {}) };
   });
+  // A held note is marked from its hold row, in either view (ADR 0047 amendment of 2026-10-25); the list stays in time order.
+  const holds = W.holdsAmong(E, found.filter(r => r.type === 'note').map(r => r.id));
+  if (holds.size) for (const row of rows) if (holds.has(row.id)) row.held = holds.get(row.id);
   // ADR 0057 decision 10 (C11): a page that is not the whole of it says so, and how to read on.
   const more = offset + rows.length < total;
   return { rows, total, ...(more ? { truncated: true, next_offset: offset + rows.length } : {}), ...(asked > LIST_MAX ? { limit_capped: LIST_MAX } : {}), searched: { namespaces, filter: f, rows_considered: total } };
