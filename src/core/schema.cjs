@@ -227,6 +227,10 @@ const MIGRATIONS = [
   // ADR 0054 amendment 1: a review lease's snapshot of the reviewer's tree at grant (JSON text, nullable), carried by every
   // later row of the lease; lease.release compares it with the tree at the hand-back.
   'ALTER TABLE lease ADD COLUMN tree TEXT',
+  // ADR 0026 amendment 1 (proposed): `holder_dead` on the released row of a lease belay released because its holder died; null otherwise.
+  // The worker's first dead row names the leases that death released (JSON array of { lease_id, task_id }), for the death wake.
+  'ALTER TABLE lease ADD COLUMN released_reason TEXT',
+  'ALTER TABLE worker ADD COLUMN leases_released TEXT',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot
