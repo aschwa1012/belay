@@ -229,9 +229,7 @@ async function assign(E, caller, args) {
       supersedes: old ? old.id : null, ...(tree ? { tree } : {}),
     }, by, t);
     const row = rows.append(E.store, 'task', { ...task, run_id: ownerRun, state: 'assigned' }, by, t);
-    // The grant snapshot stays on the lease row; the answer carries only its head and count, not every path.
-    const shown = lease.tree ? { ...lease, tree: { head: lease.tree.head, count: lease.tree.count, error: lease.tree.error } } : lease;
-    return { task: row, old_lease: old, new_lease: shown, paused_worker: null, ...reported };
+    return { task: row, old_lease: old, new_lease: tree ? require('./review-tree.cjs').shown(lease) : lease, paused_worker: null, ...reported };
   });
   if (!checkOnly) E.noteWrite();
   return out;
@@ -402,8 +400,7 @@ async function releaseNow(E, caller, args) {
   // ADR 0034 amendment 1: under `off` the hand-back's notes are dropped and the lease still releases; the result says so.
   const dropped = got && got.dropped ? { notes_dropped: got.dropped } : null;
   const prep = dropped ? null : got;
-  const RT = require('./review-tree.cjs');
-  const treeNow = await RT.releaseSnapshot(E, args); // ADR 0054 amendment 1: a review's tree at the hand-back
+  const RT = require('./review-tree.cjs'), treeNow = await RT.releaseSnapshot(E, args); // ADR 0054 amendment 1: a review's tree at the hand-back
   const out = E.store.tx(() => {
     E.assertRunOpen(caller, 'lease.release'); // the notes were embedded above; run.end may have committed meanwhile (audit D42)
     // Releasing a superseded lease would destroy the current holder's live lease, so the currency rule
@@ -441,9 +438,7 @@ async function releaseNow(E, caller, args) {
       handoff = { result: args.result, by: caller.worker_id, lease_id: l.id, at: t };
       const missing = missingCitations(E, args.result);
       if (missing !== null) handoff.memory_ids_missing = missing;
-      if (l.tree && treeNow) handoff.tree = RT.compare(l.tree, treeNow);
-      const scratch = l.tree ? RT.scratchFacts(E.dataDir, caller.worker_id) : null; // its size, flagged past 50 MB (ADR 0054 amendment 1)
-      if (scratch) handoff.scratch = scratch;
+      if (l.tree) Object.assign(handoff, RT.handBack(E.dataDir, caller.worker_id, l.tree, treeNow)); // the tree's change and the scratch size
     }
     const row = rows.append(E.store, 'task', { ...task, state: task.state === 'done' ? 'done' : 'released', handoff }, by, t);
     const ck = rows.lastCheckpoint(E.store, l.task_id);

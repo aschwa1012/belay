@@ -83,6 +83,16 @@ function compare(grant, now) {
 // The reviewer's scratch folder at the hand-back: scratch-dir.cjs, which reads nothing through a link.
 const SD = require('./scratch-dir.cjs');
 
+// The assign answer's lease: the grant snapshot stays on the row; the answer carries only its head and count, not every path.
+const shown = (lease) => (lease.tree ? { ...lease, tree: { head: lease.tree.head, count: lease.tree.count, error: lease.tree.error } } : lease);
+
+// release: what the hand-back gains for a review lease, `{ tree?, scratch? }`: the comparison with the grant snapshot, and the
+// reviewer's scratch folder's size (flagged past 50 MB, never cut).
+function handBack(dataDir, workerId, grant, now) {
+  const scratch = SD.facts(dataDir, workerId);
+  return { ...(grant && now ? { tree: compare(grant, now) } : {}), ...(scratch ? { scratch } : {}) };
+}
+
 // assign: the grant snapshot of a review task's assignee, or null (not a review, check_only, or no worker row).
 async function grantSnapshot(E, args) {
   if (args.check_only === true || !args.task_id || !args.worker_id) return null;
@@ -98,4 +108,4 @@ async function releaseSnapshot(E, args) {
   return l && l.tree && l.tree.worktree ? snapshot(l.tree.worktree) : null;
 }
 
-module.exports = { snapshot, compare, grantSnapshot, releaseSnapshot, scratchFacts: SD.facts, ENTRIES_MAX, PATHS_MAX };
+module.exports = { snapshot, compare, grantSnapshot, releaseSnapshot, shown, handBack, scratchFacts: SD.facts, ENTRIES_MAX, PATHS_MAX };
