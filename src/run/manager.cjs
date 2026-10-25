@@ -325,7 +325,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const worker_id = w.id;
     const old_pid = w.pid;
     const d = decideBranch(w); await holdForLaunch(w, core); // the task's files are held for this run, or nothing is touched
-    if (W.settleHeld(w, ctx, 'pid-check-on-restart')) await w.queue; // a held death gets its dead row before the relaunch
+    W.settleHeld(w, ctx, 'pid-check-on-restart'); await w.queue; // a held death gets its dead row, and every row of the life before lands, before the relaunch
     if (w.child && P.pidAlive(w.pid)) await doStop(w, 'graceful', 10000);
     // Fix round, should-fix finding: `skipDeadPidKill` (resume, pause.cjs) skips this branch — a park's own
     // pid is dead by construction, so treating it as a still-alive orphan risks killing a bystander that reused it.

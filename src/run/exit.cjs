@@ -57,10 +57,7 @@ function settle(w, code, signal, establishedBy, ctx) {
       w.deathEstablishedBy = w.deathEstablishedBy + '+' + establishedBy;
       // Fix round, should-fix finding: `w.settledState`, fixed at the first settle() call, not `w.state`
       // (which a queued write behind this one can still leave 'stopping'/'paused' racing settle's own).
-      const state = w.settledState;
-      w.queue = w.queue.then(() => ctx.writeRow(w, state)).catch((e) => {
-        w.lastError = { where: 'worker.write/exit-code', code: e && e.code, message: e && e.message };
-      });
+      lifeWrite(w, ctx, w.settledState, 'worker.write/exit-code');
     }
     return;
   }
@@ -100,8 +97,20 @@ function settle(w, code, signal, establishedBy, ctx) {
   }
   for (const r of w.exitWaiters.splice(0)) r({ code, signal, at: w.exitedAt, established_by: establishedBy });
   for (const r of w.readyWaiters.splice(0)) r(null);
-  w.queue = w.queue.then(() => ctx.writeRow(w, state)).catch((e) => {
-    w.lastError = { where: 'worker.write/exit', code: e && e.code, message: e && e.message };
+  lifeWrite(w, ctx, state, 'worker.write/exit');
+}
+
+// A terminal row belongs to the life that ended. Queued behind other writes, it can still be waiting when a restart has launched
+// the next life (`w.launches` moved, manager.cjs launchNow): written then, it would record the new life as dead, and the wake would
+// announce a death that did not happen. It is dropped and named on the record instead. The restart drains the queue before it
+// launches (manager.cjs doRestart), so the previous life's row normally lands first and this is the backstop.
+function lifeWrite(w, ctx, state, where) {
+  const launches = w.launches;
+  w.queue = w.queue.then(() => {
+    if (w.launches !== launches) { w.lastError = { where, state, dropped: 'a relaunch began before this row of the previous life was written' }; return null; }
+    return ctx.writeRow(w, state);
+  }).catch((e) => {
+    w.lastError = { where, code: e && e.code, message: e && e.message };
   });
 }
 
