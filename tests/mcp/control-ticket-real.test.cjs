@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // control-ticket-real.test.cjs — the real belay-mcp adapter's ticket wiring (ADR 0045 decision 5). A real orchestrator adapter (owner in its own process), a fake-claude worker,
 // then the built CLI's `belay message` (gets a ticket, the adapter redeems it) and a raw dialler with no ticket (refused).
 const test = require('node:test');

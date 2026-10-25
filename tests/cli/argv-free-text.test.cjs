@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // argv-free-text.test.cjs — `message <id> <text...>` and `deny <id> [reason...]` end in free text. A global flag between two words
 // of it is refused (exit 2) rather than taken out of the text; trailing --data and --json stay the documented form; a literal `--`
 // ends option parsing. `belay stop` refuses an unknown option as a usage error. The spawned cases run the built CLI with --data in

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // git-safe.test.cjs — the core's reads of a worker's tree (files_within_owned's status, the review tree snapshot) use the
 // same hardening as git_read: a repository whose config names an fsmonitor program and a clean filter runs neither, and an
 // inherited GIT_DIR does not redirect the read. The control shows the plant is live: a plain `git status` runs the program.
