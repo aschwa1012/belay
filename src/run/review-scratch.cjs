@@ -5,16 +5,53 @@
 // The run manager makes the folder at spawn and names it in the first message; the core records its size at the hand-back
 // (flagged past 50 MB, never cut); `belay run` deletes the run's scratch folders at close, unless the run lever
 // `keep_review_scratch` keeps them, and says in its receipt what it removed. Every path goes through the core's
-// scratch-dir.cjs checks, so a worker directory or folder that is a link (a junction) is never followed, emptied or
-// deleted. Never throws.
+// scratch-dir.cjs checks, and a delete never acts on a path it checked earlier: removeChecked renames the checked folder
+// into <data>/workers, then removes it only if it still has the identity the check saw. Never throws.
 
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const SD = require('../core/scratch-dir.cjs'); // one layout and one set of link checks, shared with the core's hand-back
 
-// The folder, made for this run (an older run's leftover under a reused id is emptied first). Returns its path, or null when
-// the worker directory is not a real directory under <data>/workers or the folder's place is taken by a link.
+const codeOf = (e) => (e && e.code) || String(e);
+
+// Removes `dir`, a folder whose identity `id` a check just took. It is renamed to <data>/workers/.gone-<dev>-<ino>-<uuid>,
+// measured there (the receipt's bytes are of what was moved, never of a path that could be swapped before the remove), and
+// removed only if the renamed entry is still a real directory with that identity. Otherwise it is renamed back if it can be,
+// and left alone. `{ removed, bytes, files, error? }`.
+function removeChecked(dataDir, dir, id) {
+  const root = SD.rootDir(dataDir);
+  if (!root || !id) return { removed: false, bytes: 0, files: 0, error: 'not a real directory under a real workers folder, so it was left alone' };
+  const gone = path.join(root, SD.goneName(id, crypto.randomUUID()));
+  try { fs.renameSync(dir, gone); } catch (e) { return { removed: false, bytes: 0, files: 0, error: `it could not be moved aside (${codeOf(e)}), so it was left alone` }; }
+  return removeGone(gone, id, dir);
+}
+
+// The second half: `gone` is a renamed entry that should have identity `id`. `back` is where it came from (null for a sweep).
+function removeGone(gone, id, back) {
+  const size = SD.measure(gone) || { bytes: 0, files: 0 };
+  if (!SD.sameId(SD.identity(gone), id)) {
+    let where = 'left where it was moved, ' + gone.split(path.sep).join('/');
+    if (back) { try { fs.renameSync(gone, back); where = 'moved back'; } catch { /* stays aside, named */ } }
+    return { removed: false, ...size, error: `it changed between the check and the removal (not the folder that was checked), so it was ${where}` };
+  }
+  try { fs.rmSync(gone, { recursive: true, force: true }); } catch (e) { return { removed: false, ...size, error: codeOf(e) }; }
+  return { removed: !fs.existsSync(gone), ...size };
+}
+
+// A `.gone-` entry a crash left between the rename and the remove: removed under the same identity rule, else named.
+function sweep(dataDir) {
+  const root = SD.rootDir(dataDir);
+  if (!root) return [];
+  let names = [];
+  try { names = fs.readdirSync(root).filter(SD.isGone); } catch { return []; }
+  return names.sort().map((n) => ({ entry: n, ...removeGone(path.join(root, n), SD.goneId(n), null) }));
+}
+
+// The folder, made for this run (an older run's leftover under a reused id is removed first, as at a close). Returns its
+// path, or null when the workers folder or the worker directory is not a real directory or the folder's place is a link.
 function ensure(dataDir, workerId, runId) {
+  if (SD.isGone(workerId)) return null;
   const own = path.join(SD.workersRoot(dataDir), String(workerId));
   try { if (!fs.existsSync(own) && !isLink(own)) fs.mkdirSync(own, { recursive: true }); } catch { return null; } // the run manager has made it; a caller with none gets one
   const wd = SD.workerDir(dataDir, workerId);
@@ -22,8 +59,9 @@ function ensure(dataDir, workerId, runId) {
   const dir = path.join(wd, 'scratch');
   try {
     if (fs.existsSync(dir) || isLink(dir)) {
-      if (!SD.scratchDir(dataDir, workerId)) return null; // a link where the folder goes: left alone, and no folder is named
-      fs.rmSync(dir, { recursive: true, force: true });
+      const checked = SD.scratchDir(dataDir, workerId);
+      if (!checked) return null; // a link where the folder goes: left alone, and no folder is named
+      if (!removeChecked(dataDir, checked, SD.identity(checked)).removed) return null;
     }
     fs.mkdirSync(dir);
     const mark = path.join(wd, SD.RUN_MARK);
@@ -38,30 +76,24 @@ function isLink(p) { try { return fs.lstatSync(p).isSymbolicLink(); } catch { re
 // The first message's line naming the folder.
 const firstLine = (dir) => `\n\nYour scratch folder, outside the tree under review: ${dir}. Write probes and scratch files only there.`;
 
-// Run close: remove every scratch folder this run made, or keep them with the lever. The receipt's `review_scratch` block,
-// or {} when the run made none. A worker directory or folder that fails the link checks is never touched; it is named.
+// Run close: remove every scratch folder this run made, or keep them with the lever, after sweeping `.gone-` leftovers. The
+// receipt's `review_scratch` block, or {} when there was nothing. A folder that fails a check is never touched; it is named.
+// The marker stays: deleting it would act on a path checked earlier, and a marker naming an ended run matches no later close.
 function closeRun(dataDir, runId, levers) {
   const keep = !!(levers && levers.keep_review_scratch === true);
+  const swept = sweep(dataDir);
   let ids = [];
-  try { ids = fs.readdirSync(SD.workersRoot(dataDir)).filter((id) => SD.markOf(dataDir, id) === String(runId)); } catch { return {}; }
-  if (!ids.length) return {};
+  try { ids = fs.readdirSync(SD.workersRoot(dataDir)).filter((id) => !SD.isGone(id) && SD.markOf(dataDir, id) === String(runId)); } catch { ids = []; }
+  if (!ids.length && !swept.length) return {};
   const folders = [];
   for (const id of ids.sort()) {
     const dir = SD.scratchDir(dataDir, id);
     if (!dir) { folders.push({ worker_id: id, path: SD.scratchOf(dataDir, id), bytes: 0, files: 0, removed: false, error: 'not a real directory under the data directory\'s workers folder, so it was left alone' }); continue; }
-    const size = SD.measure(dir);
-    let removed = false, error = null;
-    if (!keep) {
-      try {
-        fs.rmSync(dir, { recursive: true, force: true });
-        fs.rmSync(path.join(SD.workerDir(dataDir, id) || dir, SD.RUN_MARK), { force: true });
-        removed = !fs.existsSync(dir);
-      } catch (e) { error = (e && e.code) || String(e); }
-    }
-    folders.push({ worker_id: id, path: dir, ...size, removed, ...(error ? { error } : {}) });
+    if (keep) { folders.push({ worker_id: id, path: dir, ...(SD.measure(dir) || { bytes: 0, files: 0 }), removed: false }); continue; }
+    folders.push({ worker_id: id, path: dir, ...removeChecked(dataDir, dir, SD.identity(dir)) });
   }
   const gone = folders.filter((f) => f.removed);
-  return { review_scratch: { kept: keep, folders, removed_folders: gone.length, removed_bytes: gone.reduce((n, f) => n + f.bytes, 0) } };
+  return { review_scratch: { kept: keep, folders, removed_folders: gone.length, removed_bytes: gone.reduce((n, f) => n + f.bytes, 0), ...(swept.length ? { swept } : {}) } };
 }
 
 // The text receipt's line, when the run made scratch folders.
@@ -71,4 +103,4 @@ function lines(receipt) {
   return [s.kept ? `review scratch: kept ${s.folders.length} folder(s) (keep_review_scratch)` : `review scratch: removed ${s.removed_folders} folder(s), ${s.removed_bytes} bytes`];
 }
 
-module.exports = { ensure, firstLine, closeRun, lines, scratchOf: SD.scratchOf, RUN_MARK: SD.RUN_MARK };
+module.exports = { ensure, firstLine, closeRun, lines, removeChecked, sweep, scratchOf: SD.scratchOf, RUN_MARK: SD.RUN_MARK };
