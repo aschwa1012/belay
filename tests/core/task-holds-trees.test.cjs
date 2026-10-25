@@ -83,14 +83,15 @@ test('mixed: a shared-tree task may overlap one in its own worktree, but not ano
   assert.strictEqual(g.overlaps[0].worktree, pe);
 });
 
-test('a task with a worktree worked by a worker elsewhere is shared, and so is one whose worktree was removed', async () => {
+test('a task with a worktree goes to no worker elsewhere (the tree error comes first), and one whose worktree was removed is shared', async () => {
   const h = await task(['moved/h.js']);
   await own(h);
   const i = await task(['moved/h.js']); // shared, beside h's own tree
   await worker('w-moved', repo);
-  // h assigned to a worker in the shared checkout writes in the shared tree, where i holds the path.
-  const e1 = await rejectsCode(orch.task.assign({ task_id: h.id, worker_id: 'w-moved' }), 'E_FILES_OVERLAP');
-  assert.strictEqual(e1.detail.other_task_id, i.id);
+  // A worker in the shared checkout is refused for the tree, before the hold could name i (ADR 0059, after ADR 0058's amendment).
+  const e1 = await rejectsCode(orch.task.assign({ task_id: h.id, worker_id: 'w-moved' }), 'E_PRECONDITION');
+  assert.strictEqual(e1.detail.task_id, h.id);
+  await rejectsCode(orch.task.assign({ task_id: h.id, check_only: true, worktree: repo }), 'E_PRECONDITION');
   await orch.task.worktreeRemove({ task_id: h.id });
   const e2 = await rejectsCode(orch.task.assign({ task_id: h.id, worker_id: 'w-moved', check_only: true }), 'E_FILES_OVERLAP');
   assert.strictEqual(e2.detail.other_task_id, i.id);
