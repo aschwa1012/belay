@@ -6,7 +6,7 @@
 
 // worker_spawn's default answer (ADR 0058 decision 9): what the orchestrator acts on. The rest (surface, plugins, instruction
 // hashes, pid_created, argv_hash, token counters) is the receipt, behind view: "debug".
-const SPAWN_KEEP = ['id', 'substrate', 'pid', 'state', 'session_id', 'adapter_pid', 'worktree', 'task_id', 'started_at', 'ready_ms', 'model', 'permission_mode_effective'];
+const SPAWN_KEEP = ['id', 'substrate', 'pid', 'state', 'session_id', 'adapter_pid', 'worktree', 'task_id', 'started_at', 'ready_ms', 'model', 'permission_mode_effective', 'scratch'];
 // `requested` is the spawn's own model argument. Codex reports no model on its stream (B5), so its row has none: the
 // answer then names the model belay asked for, and says so in model_source.
 function compactSpawn(row, requested = null) {
@@ -35,13 +35,22 @@ const hasCheck = (a) => !!a && ((Array.isArray(a.commands) && a.commands.length 
 const launchedHere = (r, id) => !!(r && typeof r._worker === 'function' && r._worker(id));
 
 // `openManager()` opens the run manager when a tool needs one (spawn); `manager()` only reads whether it is open.
-function createCompose({ callCore, manager, openManager, dataDir = null }) {
+function createCompose({ callCore, manager, openManager, dataDir = null, runId = null }) {
+  // ADR 0054 amendment 1: a review task's answer carries the reviewer's real scratch folder, made now if the worker has none (a
+  // worker of another type given a review), so the orchestrator never names one of its own; the delivered task names it too.
+  function withScratch(raw, workerId) {
+    if (!raw || !raw.review || !dataDir || !workerId) return raw;
+    const RS = require('../run/review-scratch.cjs');
+    const scratch = require('../core/scratch-dir.cjs').scratchDir(dataDir, workerId) || RS.ensure(dataDir, workerId, runId);
+    return { ...raw, scratch: scratch || null };
+  }
+
   // task_assign: assign, then send the worker its task: the resume line (which names the lease), the orchestrator's
   // `prompt` or the task's spec, and the hand-back rule. `deliver: false` assigns only.
   async function assign(args) {
     const { prompt = null, deliver = true, ...coreArgs } = args || {};
     const raw = await callCore('task.assign', coreArgs);
-    const out = withWarnings(raw, raw && overlapWarning(raw.overlaps));
+    const out = withWarnings(withScratch(raw, coreArgs.worker_id), raw && overlapWarning(raw.overlaps));
     const not = (reason, extra) => ({ ...out, delivered: { sent: false, reason, ...extra } });
     if (deliver === false) return not('deliver was false');
     const r = manager();
@@ -54,7 +63,7 @@ function createCompose({ callCore, manager, openManager, dataDir = null }) {
     // judged); a reviewer never commits in the tree it judges, so a review task's rule says nothing about committing.
     const t = (out && out.task) || {};
     const commits = !!(t.worktree && t.worktree.path && !t.worktree.removed_at) && !(t.acceptance && t.acceptance.verdict === true);
-    const text = `${head}\n\n${body}\n\nWhen you are finished, ${commits ? 'commit your work in your worktree, then ' : ''}call lease_release with lease_id ${lease} and a result object (branch, head, tests, findings).`;
+    const text = `${head}\n\n${body}${out && out.scratch ? require('../run/review-scratch.cjs').firstLine(out.scratch) : ''}\n\nWhen you are finished, ${commits ? 'commit your work in your worktree, then ' : ''}call lease_release with lease_id ${lease} and a result object (branch, head, tests, findings).`;
     try {
       const m = await r.message({ worker_id: coreArgs.worker_id, text });
       return { ...out, delivered: { ...m, sent: !m.queued, queued: !!m.queued } }; // queued: held for a compaction, written when it ends

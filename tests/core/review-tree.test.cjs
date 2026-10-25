@@ -358,3 +358,66 @@ test('the keepalive view holds exactly task.list, worker.get and lease.renew; ev
   assert.ok(Object.isFrozen(ka));
   assert.throws(() => orch.keepalive(), (e) => e.code === 'E_ROLE');
 });
+
+test('a reviewer reassigned to another task\'s review watches the reviewed tree, not its cwd, and the answer says they differ', async () => {
+  const wtA = repo('reA');
+  const wtB = repo('reB');
+  const wA = await doneWork('reA', wtA);
+  const wB = await doneWork('reB', wtB);
+  const first = await review(wA, 'rev-move', wtA); // its cwd is tree A
+  assert.strictEqual(first.check.detail.tree_changed, false);
+  const r = await orch.task.create({ spec: 'review of B', depends_on: [wB.id], acceptance: { verdict: true } });
+  const rc = await worker('rev-move', wtA);
+  const a = await orch.task.assign({ task_id: r.id, worker_id: 'rev-move' });
+  assert.deepStrictEqual([a.review.tree, a.review.reviewed_task_id, a.review.cwd], [wtB, wB.id, wtA]);
+  assert.match(a.review.note, /the reviewer's cwd is not the reviewed tree; name .*repo-reB in its prompt/);
+  fs.writeFileSync(path.join(wtA, 'a.txt'), 'its own cwd, not judged\n');
+  fs.writeFileSync(path.join(wtB, 'a.txt'), 'the tree it judges\n');
+  await rc.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { verdict: 'holds', summary: 'judged' } });
+  const check = (await orch.task.evaluate({ task_id: r.id, worktree: wtB })).results.checks.find((c) => c.kind === 'verdict');
+  assert.strictEqual(check.detail.tree.worktree, wtB);
+  assert.deepStrictEqual([check.detail.tree_changed, check.detail.tree.changed_paths], [true, ['a.txt']]);
+});
+
+test('a review whose reviewed task records no tree: the answer and the verdict say the tree is not known, tree_changed null', async () => {
+  const t = await orch.task.create({ spec: 'work with no tree', acceptance: PASS });
+  await orch.worker.write({ id: 'coder-notree', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's-nt', last_event_at: Date.now() });
+  const cw = await openCore({ dataDir: dir, caller: callerFor('worker', { worker_id: 'coder-notree' }), embed: false });
+  cores.set('coder-notree', cw);
+  const a0 = await orch.task.assign({ task_id: t.id, worker_id: 'coder-notree' });
+  await cw.lease.release({ lease_id: a0.new_lease.id, reason: 'done' });
+  await orch.task.evaluate({ task_id: t.id, worktree: dir });
+  const wt = repo('notree');
+  const r = await orch.task.create({ spec: 'review of no tree', depends_on: [t.id], acceptance: { verdict: true } });
+  const rc = await worker('rev-notree', wt);
+  const a = await orch.task.assign({ task_id: r.id, worker_id: 'rev-notree' });
+  assert.strictEqual(a.review.tree, null);
+  assert.match(a.review.error, /no task under review records a worktree/);
+  await rc.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { verdict: 'holds', summary: 'judged' } });
+  const check = (await orch.task.evaluate({ task_id: r.id, worktree: wt })).results.checks.find((c) => c.kind === 'verdict');
+  assert.strictEqual(check.detail.tree_changed, null);
+  assert.match(check.detail.tree.error, /no task under review records a worktree/);
+});
+
+test('task_assign of a review: the answer carries the real scratch folder, made if the worker had none, and the delivered task names it', async () => {
+  const { createCompose } = require('../../src/mcp/compose.cjs');
+  const SD = require('../../src/core/scratch-dir.cjs');
+  const wt = repo('cmp');
+  const w = await doneWork('cmp', wt);
+  const r = await orch.task.create({ spec: 'review via task_assign', depends_on: [w.id], acceptance: { verdict: true } });
+  await worker('coder-type-reviewing', wt); // a worker of another type: no scratch folder yet
+  assert.strictEqual(SD.scratchDir(dir, 'coder-type-reviewing'), null);
+  let sent = null;
+  const fakeManager = { _worker: () => true, message: async ({ text }) => { sent = text; return {}; } };
+  const callCore = (dotted, args) => { const [g, n] = dotted.split('.'); return orch[g][n](args); };
+  const C = createCompose({ callCore, manager: () => fakeManager, openManager: async () => fakeManager, dataDir: dir, runId: 'test-run' });
+  const out = await C.assign({ task_id: r.id, worker_id: 'coder-type-reviewing', prompt: 'review it' });
+  const real = SD.scratchDir(dir, 'coder-type-reviewing');
+  assert.ok(real, 'made now');
+  assert.strictEqual(out.scratch, real);
+  assert.strictEqual(out.review.tree, wt);
+  assert.ok(sent.includes(`Your scratch folder, outside the tree under review: ${real}.`), sent);
+  const plain = await orch.task.create({ spec: 'not a review', acceptance: PASS });
+  const p = await C.assign({ task_id: plain.id, worker_id: 'coder-type-reviewing', deliver: false });
+  assert.strictEqual(p.scratch, undefined, 'only a review carries one');
+});

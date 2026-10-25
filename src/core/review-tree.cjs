@@ -94,13 +94,48 @@ const shown = (lease) => (lease.tree ? { ...lease, tree: { head: lease.tree.head
 function handBack(dataDir, workerId, grant, now) {
   const scratch = SD.facts(dataDir, workerId);
   // A review lease with no grant snapshot (the attach failed or was discarded) says so rather than carrying no tree at all.
-  const tree = !grant ? { changed: null, error: 'no grant snapshot was attached' } : now ? compare(grant, now) : { changed: null, error: 'no hand-back snapshot' };
+  const tree = !grant ? { changed: null, error: 'no grant snapshot was attached' }
+    : !grant.worktree ? { changed: null, error: grant.error || 'the reviewed tree is not known' } // never snapshotted: say why
+    : now ? compare(grant, now) : { changed: null, error: 'no hand-back snapshot' };
   return { ...(tree ? { tree } : {}), ...(scratch ? { scratch } : {}) };
 }
 
-// assign, inside its transaction: the worktree to snapshot for this grant (a review task's assignee's), or null. It reads
-// nothing: the task and worker rows are the ones the transaction already read.
-const grantTarget = (task, worker) => (isReview(task) && worker && worker.worktree ? worker.worktree : null);
+const norm = (p) => (typeof p === 'string' && p ? p.split('\\').join('/').replace(/\/+$/, '').toLowerCase() : null);
+
+// The tree a review judges: the worktree of the task it reviews (its depends_on), not the reviewer's cwd. A task's own belay
+// worktree (ADR 0053) when it has one and it is not removed, else the worktree of the worker that last held a lease on it
+// (the one that did the work), else the newest worker row that names the task. `{ worktree,
+// task_id }`, or `{ worktree: null, error }` when no reviewed task has a tree, or they are in more than one.
+function reviewedTree(store, task) {
+  const found = [];
+  for (const id of Array.isArray(task.depends_on) ? task.depends_on : []) {
+    const t = rows.current(store, 'task', id);
+    const rec = t && t.worktree && typeof t.worktree === 'object' ? t.worktree : null;
+    let wt = rec && rec.path && rec.removed_at == null ? rec.path : null;
+    if (!wt) {
+      const holder = store.p("SELECT holder FROM lease WHERE task_id = ? AND holder_role = 'worker' ORDER BY seq DESC LIMIT 1").get(id);
+      const w = holder ? rows.current(store, 'worker', holder.holder) : null;
+      wt = w && typeof w.worktree === 'string' && w.worktree ? w.worktree : null;
+    }
+    if (!wt) {
+      const named = rows.currentAll(store, 'worker').filter((w) => w.task_id === id && typeof w.worktree === 'string' && w.worktree);
+      named.sort((a, b) => (Number(b.started_at) || 0) - (Number(a.started_at) || 0));
+      wt = named.length ? named[0].worktree : null;
+    }
+    if (wt) found.push({ worktree: wt, task_id: id });
+  }
+  const trees = [...new Set(found.map((f) => norm(f.worktree)))];
+  if (!found.length) return { worktree: null, error: 'no task under review records a worktree, so the reviewed tree is not known' };
+  if (trees.length > 1) return { worktree: null, error: `the tasks under review are in ${trees.length} trees, so no one tree is the reviewed one` };
+  return found[0];
+}
+
+// assign, inside its transaction: what this grant snapshots, or null for a task that is not a review. It reads the reviewed
+// tasks' rows inside the same transaction. `cwd` is the reviewer's own directory, so the answer can say when they differ.
+function grantTarget(store, task, worker) {
+  if (!isReview(task) || !worker) return null;
+  return { ...reviewedTree(store, task), cwd: worker.worktree || null };
+}
 
 // assign, after its transaction committed and before it answers: the grant snapshot, written onto the lease in a transaction of
 // its own that reads the lease again and attaches the snapshot only if that lease is still the task's, unreleased and held by
@@ -112,11 +147,13 @@ const grantTarget = (task, worker) => (isReview(task) && worker && worker.worktr
 // hand-back of a lease with no snapshot says none was attached. `baseline_late` marks a snapshot taken after the worker had
 // already acted under the lease (its row's last event, a checkpoint, a permission request or a memory event newer than the
 // grant), read in the attach's own transaction.
-async function afterGrant(E, caller, out, worktree) {
+async function afterGrant(E, caller, out, target) {
   const lease = out && out.new_lease;
   if (!lease) return out;
+  const review = reviewBlock(E, lease.holder, target);
   try {
-    const tree = await module.exports.snapshot(worktree); // through the export: the test seam for a change between the grant and here
+    const tree = target.worktree ? await module.exports.snapshot(target.worktree) // through the export: the test seam for a change between the grant and here
+      : { worktree: null, head: null, at: Date.now(), error: target.error };
     const t = Date.now();
     const kept = E.store.tx(() => {
       const cur = rows.currentLeaseForTask(E.store, lease.task_id);
@@ -124,12 +161,23 @@ async function afterGrant(E, caller, out, worktree) {
       const late = lateBy(E, cur);
       return rows.append(E.store, 'lease', { ...cur, tree: late.length ? { ...tree, baseline_late: true, baseline_late_by: late } : tree }, E.writtenBy(caller), t);
     });
-    if (!kept) return out;
+    if (!kept) return { ...out, review };
     E.noteWrite();
-    return { ...out, new_lease: shown(kept) };
+    return { ...out, new_lease: shown(kept), review };
   } catch (e) {
-    return { ...out, new_lease: { ...lease, tree: { error: `the grant snapshot was not attached: ${(e && e.message) || e}` } } };
+    return { ...out, new_lease: { ...lease, tree: { error: `the grant snapshot was not attached: ${(e && e.message) || e}` } }, review };
   }
+}
+
+// The assign answer's `review`: the tree the review judges and the task it belongs to, and a note when the reviewer's cwd is
+// not that tree, so the orchestrator can name the tree in its prompt. (The scratch folder is the tool answer's, compose.cjs.)
+function reviewBlock(E, workerId, target) {
+  const differs = target.worktree && target.cwd && norm(target.worktree) !== norm(target.cwd);
+  return {
+    tree: target.worktree, reviewed_task_id: target.task_id || null, cwd: target.cwd,
+    ...(target.error ? { error: target.error } : {}),
+    ...(differs ? { note: `the reviewer's cwd is not the reviewed tree; name ${target.worktree} in its prompt` } : {}),
+  };
 }
 
 // What the worker did under lease `l` before the snapshot: the sources newer than its grant, by name. `core_call` is the
@@ -156,4 +204,4 @@ async function releaseSnapshot(E, args) {
   return l && l.tree && l.tree.worktree ? module.exports.snapshot(l.tree.worktree) : null;
 }
 
-module.exports = { snapshot, compare, grantTarget, afterGrant, lateBy, isReview, releaseSnapshot, shown, handBack, scratchFacts: SD.facts, ENTRIES_MAX, PATHS_MAX };
+module.exports = { snapshot, compare, reviewedTree, grantTarget, afterGrant, lateBy, isReview, releaseSnapshot, shown, handBack, scratchFacts: SD.facts, ENTRIES_MAX, PATHS_MAX };
