@@ -84,7 +84,8 @@ function startRelease(w, ctx) {
     ev.turn = w.turns;
     return ev;
   }
-  const ev = { key: `release:${w.id}:${crypto.randomUUID()}`, ctx, turn: w.turns, task_ids: pending.slice(), next: 0, done: false, cancelled: null, promise: null };
+  const ev = { key: `release:${w.id}:${crypto.randomUUID()}`, ctx, turn: w.turns, task_ids: pending.slice(), next: 0, done: false, cancelled: null, promise: null, cancelSignal: null };
+  ev.cancelSignal = new Promise((res) => { ev.signalCancel = res; }); // a wait holding on this evaluation stops holding when it is cancelled
   w.evaluation = ev; w.lastEvaluation = ev;
   ev.promise = run(w, ctx, ev).then((out) => { if (out && !ev.cancelled) { w.turnEvaluated = out; w.turnEvaluatedTurn = ev.turn; } return out; }, (e) => {
     w.lastError = { where: 'release-eval', code: e && e.code, message: e && e.message };
@@ -99,6 +100,7 @@ function cancelEvaluation(w, by) {
   if (!ev) return null;
   w.evaluation = null;
   ev.cancelled = by || 'a lifecycle operation';
+  if (ev.signalCancel) ev.signalCancel();
   const t = ev.ctx.core && ev.ctx.core.task;
   if (t && typeof t.evaluateCancel === 'function') Promise.resolve().then(() => t.evaluateCancel({ cancel_key: ev.key, by: ev.cancelled })).catch(() => {});
   return { cancelled: ev.task_ids.slice(ev.next || 0), by: ev.cancelled }; // the hand-backs not yet evaluated
