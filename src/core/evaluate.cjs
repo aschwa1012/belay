@@ -37,19 +37,25 @@ async function killTree(child) {
 // One output stream, kept within TAIL characters. `keep: 'head'` keeps the start (git's short answers, read whole). `keep: 'ends'`
 // keeps the first and last TAIL/2 characters with a marker naming what was cut between them, because an acceptance command's
 // verdict (the summary line, the failing assertion) is at its end (audit 0.3.1 C3). `bytes` counts everything the stream sent.
+// `keep: 'ends'` also keeps the test runner's failure section (from FAILING_MARK, at most SECTION characters) wherever it falls,
+// since a long one can start before the kept tail and its first lines name the failing tests (try-2 gap 10).
+const FAILING_MARK = '✖ failing tests:'; // node --test
+const SECTION = 600;
 function capture(keep, limit = TAIL) {
   const dec = new StringDecoder('utf8');
   const half = TAIL / 2;
-  let head = '', tail = '', bytes = 0, chars = 0;
+  let head = '', tail = '', bytes = 0, chars = 0, section = null, look = '';
   return {
     add(d) {
       bytes += d.length;
       let s = dec.write(d);
       chars += s.length;
       if (keep !== 'ends') { if (head.length < limit) head += s; return; }
+      if (section === null) { const j = look + s, i = j.indexOf(FAILING_MARK); if (i >= 0) section = j.slice(i, i + SECTION); look = j.slice(-FAILING_MARK.length); } else if (section.length < SECTION) section = (section + s).slice(0, SECTION);
       if (head.length < half) { const take = half - head.length; head += s.slice(0, take); s = s.slice(take); }
       if (s) tail = (tail + s).slice(-half);
     },
+    get section() { return section; },
     get bytes() { return bytes; },
     get truncated() { return keep !== 'ends' ? head.length >= limit : chars > head.length + tail.length; },
     text() {
@@ -107,7 +113,7 @@ function runCommand(argvGiven, cwd, timeoutMs, { env, tail = TAIL, onChild, keep
     });
     child.stdout.on('data', d => out.add(d));
     child.stderr.on('data', d => errText.add(d));
-    const sizes = () => (keep === 'ends' ? { stdout_bytes: out.bytes, stderr_bytes: errText.bytes } : {});
+    const sizes = () => (keep === 'ends' ? { stdout_bytes: out.bytes, stderr_bytes: errText.bytes, ...(out.section ? { stdout_failing: out.section } : {}) } : {});
     // The direct child's `close` arrives while the tree kill is still walking the tree, so the result waits
     // for the kill to report: a caller that reads `timed_out` must be able to trust that the tree is
     // gone by the time it reads it, not merely that it was asked to go.
@@ -123,6 +129,13 @@ function runCommand(argvGiven, cwd, timeoutMs, { env, tail = TAIL, onChild, keep
       stdout: out.text(), stderr: errText.text(), ...sizes(), truncated: out.truncated,
     }));
   });
+}
+
+// The tails a check reports, shared by task.evaluate and integration.merge: the last 400 characters of each stream, except that a
+// test runner's failure section (capture's `section`) replaces the stdout tail when the tail does not already show its start.
+function outputTails(r) {
+  const tail = String(r.stdout || '').slice(-400), sec = r.stdout_failing;
+  return { stdout_tail: sec && !tail.includes(FAILING_MARK) ? sec.slice(0, 400) : tail, stderr_tail: String(r.stderr || '').slice(-400) };
 }
 
 // Forward slashes everywhere, no trailing slash, no leading './'. Windows paths compare case-blind.
@@ -274,7 +287,7 @@ async function runAcceptance(acceptance, worktree, filesOwned, { base, baseSourc
     checks.push({
       kind: 'command', argv: c.argv, executable: r.executable, exit_code: r.exit_code, ms: attempts.reduce((s, a) => s + a.ms, 0),
       passed: ok(r), ...(flaky ? { flaky: true } : {}),
-      detail: { cwd, timed_out: r.timed_out, signal: r.signal || null, tree_kill: r.tree_kill || null, pipes_dropped: r.pipes_dropped || null, spawn_error: r.spawn_error || null, stdout_tail: r.stdout.slice(-400), stderr_tail: r.stderr.slice(-400), stdout_bytes: r.stdout_bytes ?? null, stderr_bytes: r.stderr_bytes ?? null, ...(left < own ? { budget_capped_ms: left } : {}),
+      detail: { cwd, timed_out: r.timed_out, signal: r.signal || null, tree_kill: r.tree_kill || null, pipes_dropped: r.pipes_dropped || null, spawn_error: r.spawn_error || null, ...outputTails(r), stdout_bytes: r.stdout_bytes ?? null, stderr_bytes: r.stderr_bytes ?? null, ...(left < own ? { budget_capped_ms: left } : {}),
         ...(attempts.length > 1 ? { attempts: attempts.map((a) => ({ exit_code: a.exit_code, timed_out: a.timed_out, ms: a.ms, ...(ok(a) ? {} : { stderr_tail: a.stderr.slice(-200) }) })) } : {}) },
     });
   }
@@ -282,4 +295,4 @@ async function runAcceptance(acceptance, worktree, filesOwned, { base, baseSourc
   return checks;
 }
 
-module.exports = { runAcceptance, retriesError, createCancel, runCommand, readOnlyGitEnv, resolveWindowsShim, filesWithinOwned, normalise, within, parsePorcelainZ, parseNameStatusZ, DEFAULT_BASE_REF, DEFAULT_COMMAND_TIMEOUT_MS, ACCEPTANCE_BUDGET_MS };
+module.exports = { outputTails, runAcceptance, retriesError, createCancel, runCommand, readOnlyGitEnv, resolveWindowsShim, filesWithinOwned, normalise, within, parsePorcelainZ, parseNameStatusZ, DEFAULT_BASE_REF, DEFAULT_COMMAND_TIMEOUT_MS, ACCEPTANCE_BUDGET_MS };

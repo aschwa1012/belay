@@ -91,3 +91,33 @@ test('gap 3: a task\'s own base judges files_within_owned when task.evaluate nam
   assert.strictEqual((await orch.task.fixFromReview({ review_id: r.id })).base, 'HEAD~1');
 });
 
+test('gap 10: the failing-test section survives a long output, in task.evaluate and in integrate\'s re-run alike', async () => {
+  const script = fwd(path.join(dir, 'suite.cjs'));
+  // Passes in the task's tree; in the integration tree it prints a long run, the failure section, then a long trace.
+  fs.writeFileSync(script, [
+    "const inInt = process.cwd().replace(/\\\\/g, '/').includes('integrate-');",
+    "if (!inInt && !process.env.FORCE_FAIL) process.exit(0);",
+    "for (let i = 0; i < 300; i++) console.log('✔ a passing test number ' + i + ' (1.2ms)');",
+    "console.log('ℹ tests 301'); console.log('ℹ fail 1');",
+    "console.log('✖ failing tests:'); console.log(''); console.log('test at test/x.test.js:1:1');",
+    "console.log('✖ the-broken-test-name (3.1ms)');",
+    "for (let i = 0; i < 100; i++) console.log('    at frame ' + i + ' (node:internal/some/long/path.js:1:1)');",
+    'process.exit(1);',
+  ].join('\n'));
+  const cmd = { argv: [process.execPath, script], timeout_ms: 60000 };
+  let t = await orch.task.create({ spec: 'suite', acceptance: { commands: [cmd] }, files_owned: ['src/suite.cjs'] });
+  t = await orch.task.worktreeCreate({ task_id: t.id });
+  write(t.worktree.path, 'src/suite.cjs', 's\n');
+  commit(t.worktree.path, 'suite');
+  await handBack(t.id, t.worktree.path);
+  assert.strictEqual((await orch.task.evaluate({ task_id: t.id })).state, 'done');
+  const row = await orch.integration.merge({ task_ids: [t.id], into: 'int/suite' });
+  assert.strictEqual(row.checks[0].passed, false);
+  assert.match(row.checks[0].stdout_tail, /✖ failing tests:[\s\S]*the-broken-test-name/);
+  // The same text through task.evaluate's capture keeps it too.
+  const { runCommand, outputTails } = require('../../src/core/evaluate.cjs');
+  const r = await runCommand([process.execPath, script], dir, 60000, { keep: 'ends', env: { ...process.env, FORCE_FAIL: '1' } });
+  assert.match(outputTails(r).stdout_tail, /^✖ failing tests:[\s\S]*the-broken-test-name/);
+  const short = outputTails({ stdout: 'ok\n✖ failing tests:\n✖ x', stdout_failing: '✖ failing tests:\n✖ x', stderr: '' });
+  assert.strictEqual(short.stdout_tail, 'ok\n✖ failing tests:\n✖ x', 'a section already in the tail leaves the tail as it was');
+});
