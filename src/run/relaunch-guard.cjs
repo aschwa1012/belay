@@ -14,21 +14,37 @@
 // and the core releases whatever the worker still holds. A relaunch that fails after launch() writes its own dead row
 // (start-fail.cjs) with the flag clear, which releases as normal.
 
+//
+// One relaunch owns the window. A second one (two Codex messages, a message and a restart) is refused E_BUSY before it enters
+// (refuseIfRelaunching, called in the same tick as the call that sets the flag). Behind that, each call holds its own token in
+// `w.relaunching` (a set, null when empty): it removes only its own, and its failure's restatement runs only if no relaunch is in
+// flight, no launch has happened since this call began, and the record is dead, so one relaunch's failure never releases another's
+// lease and never ends another's window.
+function refuseIfRelaunching(w, what) {
+  if (w.relaunching != null) {
+    const err = new Error(`worker ${w.id} is being relaunched, so it takes no ${what} now; retry when that relaunch returns`);
+    err.code = 'E_BUSY'; err.detail = { worker_id: w.id, relaunching: true };
+    throw err;
+  }
+}
+
 async function relaunching(w, writeRow, fn) {
-  w.relaunching = true;
+  const me = {}; const launches = w.launches;
+  (w.relaunching || (w.relaunching = new Set())).add(me);
+  const done = () => { if (w.relaunching && w.relaunching.delete(me) && !w.relaunching.size) w.relaunching = null; };
   let out;
   try {
     out = await fn();
   } catch (e) {
-    w.relaunching = false;
-    await (w.queue = w.queue.then(() => (w.state === 'dead' ? writeRow(w, 'dead', { releaseLeases: true }) : null)).catch((err) => {
+    done();
+    await (w.queue = w.queue.then(() => (w.relaunching == null && w.launches === launches && w.state === 'dead' ? writeRow(w, 'dead', { releaseLeases: true }) : null)).catch((err) => {
       w.lastError = { where: 'worker.write/relaunch-release', code: err && err.code, message: err && err.message };
     }));
     throw e;
   } finally {
-    w.relaunching = false;
+    done();
   }
   return out;
 }
 
-module.exports = { relaunching };
+module.exports = { relaunching, refuseIfRelaunching };

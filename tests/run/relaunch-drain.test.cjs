@@ -173,3 +173,59 @@ test('a resume that fails leaves the worker parked, and a parked worker keeps it
   assert.strictEqual(failed.error && failed.error.code, 'E_FILES_OVERLAP');
   assert.deepStrictEqual([failed.t.state, failed.t.lease && failed.t.lease.id, failed.t.lease && failed.t.lease.holder], ['assigned', failed.lease.id, 'w1']);
 });
+
+test('overlapping relaunches of one record: the one that fails neither clears the other\'s flag nor releases its lease', async () => {
+  // The checker's seam: A gets past its checks and waits to launch; B, overlapping, fails. Unit level, through the guard itself.
+  const RG = require('../../src/run/relaunch-guard.cjs');
+  const writes = [];
+  const w = { id: 'c1', state: 'dead', queue: Promise.resolve(), launches: 1 };
+  const writeRow = async (rec, state, opts = {}) => { writes.push({ state, opts }); return {}; };
+  let goA; const aGate = new Promise((r) => { goA = r; });
+  const A = RG.relaunching(w, writeRow, async () => { await aGate; w.launches += 1; return 'A launched'; });
+  const tokenA = w.relaunching;
+  const B = await RG.relaunching(w, writeRow, async () => { throw Object.assign(new Error('mid-turn'), { code: 'E_SUBSTRATE' }); }).catch((e) => e.code);
+  assert.strictEqual(B, 'E_SUBSTRATE');
+  assert.ok(w.relaunching != null, 'A still owns the window');
+  await w.queue;
+  assert.deepStrictEqual(writes, [], 'B released nothing: a relaunch was still in flight');
+  assert.throws(() => RG.refuseIfRelaunching(w, 'message'), (e) => e.code === 'E_BUSY');
+  goA();
+  assert.strictEqual(await A, 'A launched');
+  assert.strictEqual(w.relaunching, null, 'A cleared its own token');
+  assert.notStrictEqual(tokenA, null);
+
+  // A failure after another relaunch has launched restates nothing either: w.launches moved since it began.
+  const w2 = { id: 'c2', state: 'dead', queue: Promise.resolve(), launches: 1 };
+  let goC; const cGate = new Promise((r) => { goC = r; });
+  const C = RG.relaunching(w2, writeRow, async () => { await cGate; throw new Error('late failure'); }).catch((e) => e.message);
+  w2.relaunching = null; w2.launches += 1; // as if the window had been taken over and launched (the token check alone would pass)
+  goC();
+  assert.strictEqual(await C, 'late failure');
+  await w2.queue;
+  assert.deepStrictEqual(writes, [], 'no restate over a life launched since');
+});
+
+test('two concurrent messages to a dead Codex worker: one relaunches holding the lease, the other is refused E_BUSY', { timeout: 90000 }, async () => {
+  const out = await scenario('codex', async (m) => {
+    const a = m.message({ worker_id: 'w1', text: 'one' }).catch((e) => e);
+    const b = m.message({ worker_id: 'w1', text: 'two' }).catch((e) => e);
+    return Promise.all([a, b]);
+  }, { before: async (ctx) => { process.kill(ctx.pid); assert.ok(await ctx.m._waitExit('w1', 30000)); await ctx.w.queue; } });
+  const [a, b] = out.r;
+  const ok = [a, b].filter((x) => x && x.channel === 'codex-resume');
+  const busy = [a, b].filter((x) => x instanceof Error && x.code === 'E_BUSY');
+  assert.deepStrictEqual([ok.length, busy.length], [1, 1], JSON.stringify([a && (a.code || a.channel), b && (b.code || b.channel)]));
+  assert.deepStrictEqual(ok[0].lease, { task_id: out.t.id, lease_id: out.lease.id, regranted: true });
+  assert.deepStrictEqual([out.t.state, out.t.lease && out.t.lease.id, out.t.lease && out.t.lease.holder], ['assigned', out.lease.id, 'w1'], 'the refused one released nothing');
+});
+
+test('a restart while a Codex message is relaunching the worker is refused E_BUSY, and the message keeps its lease', { timeout: 90000 }, async () => {
+  let refused = null;
+  const out = await scenario('codex', (m) => m.message({ worker_id: 'w1', text: 'again' }), {
+    before: async (ctx) => { process.kill(ctx.pid); assert.ok(await ctx.m._waitExit('w1', 30000)); await ctx.w.queue; },
+    ask: async (ctx, ask) => { refused = await ctx.m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 }).then(() => null, (e) => e); return ask(); },
+  });
+  assert.strictEqual(refused && refused.code, 'E_BUSY');
+  assert.strictEqual(out.r.channel, 'codex-resume');
+  assert.deepStrictEqual([out.t.state, out.t.lease && out.t.lease.id, out.t.lease && out.t.lease.holder], ['assigned', out.lease.id, 'w1']);
+});

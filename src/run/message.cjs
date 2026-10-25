@@ -36,6 +36,7 @@ function createMessage({ core, ctx, forWorker, refuseIfPaused, sendStdin, launch
     if (!w.sessionId) fail('E_SUBSTRATE', 'codex worker has no thread id to resume', { worker_id, substrate: w.substrate, state: w.state });
     const foreign = !w.child && await PI.verifiedLive(w); // by identity, never the pid number alone: an idle worker's pid is free for reuse
     // ADR 0026 amendment 2 (proposed): from here until launch() has moved w.launches, a death of this worker keeps its lease.
+    LC.refuseMessageDuringOp(w); RG.refuseIfRelaunching(w, 'message'); // ADR 0026 amendment 2: one relaunch at a time, checked in the tick the flag is set
     const hold = await RG.relaunching(w, writeRow, async () => {
       await w.queue; // the previous turn's rows land first (a death meanwhile keeps the lease: relaunch-guard.cjs)
       const held = await holdForLaunch(w, core);
