@@ -226,7 +226,7 @@ const ORCHESTRATOR = [
   },
   {
     name: 'task_create',
-    description: 'Create a task with the checks that decide it is done, the files it owns and the tasks it must wait for. Returns the task row in state open. Refuses, naming the other task and the paths, when a file is already owned by a task that is not done, and refuses a dependency that has no row.',
+    description: 'Create a task with the checks that decide it is done, the files it owns and the tasks it must wait for. Returns the task row in state open. Refuses, naming the other task and the paths, when a file is already owned by a task that is not done in the same tree (warns if in another), and refuses a dependency that has no row.',
     inputSchema: S({
       spec: str('What is to be done'),
       acceptance: S({

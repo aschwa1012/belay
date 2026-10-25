@@ -278,4 +278,4 @@ function evaluateTarget(task, args) {
   return rec ? { worktree, base: rec.base_sha, baseSource: 'recorded' } : { worktree, base: undefined, baseSource: undefined };
 }
 
-module.exports = { worktreeCreate, worktreeRemove, removeTree, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, assertTaskTree, exclusive, active, present, pathName, liveWorkerIn, strayLinks };
+module.exports = { worktreeCreate, worktreeRemove, removeTree, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, assertTaskTree, exclusive, active, present, pathName, liveWorkerIn, strayLinks, under };

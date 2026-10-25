@@ -7,9 +7,24 @@ const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 const holds = require('./task-holds.cjs');
 
-function filesOverlap({ task, files }) {
-  return err('E_FILES_OVERLAP', `task ${task.id} is not done and already owns ${files.join(', ')}`, { other_task_id: task.id, other_run_id: task.run_id, files });
+// `hint` says how the clash could be lifted (ADR 0059 decision 4): two tasks in different trees do not refuse each other.
+function filesOverlap({ task, files }, hint) {
+  if (typeof hint === 'function') hint = hint(task);
+  return err('E_FILES_OVERLAP', `task ${task.id} is not done and already owns ${files.join(', ')} in the same tree${hint ? `; ${hint}` : ''}`, { other_task_id: task.id, other_run_id: task.run_id, files });
 }
+
+// A task can still be given a worktree when it has none and is open with no unreleased lease: task.worktreeCreate refuses a task
+// that is leased or released. The hint names only a remedy that would be accepted.
+function canTakeTree(store, t) {
+  if (!t || (t.worktree && t.worktree.path && !t.worktree.removed_at) || t.state !== 'open') return false;
+  const l = rows.currentLeaseForTask(store, t.id);
+  return !(l && !l.released_at);
+}
+const treeHint = (store, asker) => (holder) => {
+  const can = [asker, holder].filter((t) => canTakeTree(store, t)).map((t) => t.id);
+  return can.length ? `give task ${can.join(' or ')} its own worktree (task_worktree) first, and the two can own the same paths`
+    : `task ${holder.id} is worked in this tree, so wait until it is done, or cancel it`;
+};
 
 function runNotLive(task, worker) {
   return err('E_RUN_NOT_LIVE', `task ${task.id} owns files and its run ${task.run_id} is not live, and ${worker ? `worker ${worker.id}'s run ${worker.run_id} is not a live run that could hold them` : 'no live run was named to hold them'}; assigning it would leave its files unprotected, so close it and create the work again in a live run`,
@@ -21,13 +36,18 @@ function runNotLive(task, worker) {
 // as the run doing it), and a task moved to a run other than its own is a new claim on its paths: every holding task
 // that overlaps refuses it, with no priority for a run that was live longer. The incumbent's priority (a later revival
 // yields) applies only to a task that stays in its own run, which held those paths before the competing run revived.
-function resolveOwner(store, task, candidateRunId, worker) {
+// ADR 0059: only a holder in the same tree as `task` (worked by `worker`) refuses; the overlaps let through across trees are
+// pushed onto `report` when one is given.
+function resolveOwner(store, task, candidateRunId, worker, report) {
   if (!Array.isArray(task.files_owned) || !task.files_owned.length) return task.run_id;
   const ownerRun = holds.activationRun(store, task, candidateRunId);
   const moves = ownerRun != null && ownerRun !== task.run_id;
   const asker = moves ? null : { run_id: ownerRun == null ? task.run_id : ownerRun };
-  const [first] = holds.findClashes(store, task.files_owned, task.id, asker);
-  if (first) throw filesOverlap(first);
+  const mine = holds.treeOf(store, task, worker || null);
+  const scan = holds.scanOverlaps(store, task.files_owned, task.id, asker, mine);
+  const first = scan.find((c) => c.same_tree);
+  if (first) throw filesOverlap(first, treeHint(store, task));
+  if (report) report.push(...holds.acrossTrees(scan));
   if (ownerRun == null) throw runNotLive(task, worker);
   return ownerRun;
 }
@@ -71,4 +91,4 @@ function assertNotOwnReview(store, task, workerId) {
   }
 }
 
-module.exports = { filesOverlap, runNotLive, resolveOwner, ensureHold, assertNotOwnReview };
+module.exports = { filesOverlap, treeHint, runNotLive, resolveOwner, ensureHold, assertNotOwnReview };
