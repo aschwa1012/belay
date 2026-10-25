@@ -98,3 +98,55 @@ test('a fix whose review holds turns the whole chain to holds', async () => {
   const r2 = await judge(fix, 'holds');
   assert.deepStrictEqual(await reviewOf(w.id), { state: 'holds', review_id: r2.id, rounds: 1, rounds_left: 1 });
 });
+
+// A second review over the same task, judged by its own worker.
+async function verdict(r, v) {
+  await handBack(r.id, { verdict: v, summary: 's', findings: [] });
+  await orch.task.evaluate({ task_id: r.id, worktree: dir });
+}
+
+test('two reviewers: the decision made last decides, not the review made last, and a refutation no fix answers beats a holds', async () => {
+  // The later-created review holds first; the earlier one refutes after it: refuted.
+  const w = await orch.task.create({ spec: 'work d', acceptance: PASS });
+  await doneWork(w);
+  const r1 = await judge(w, null), r2 = await judge(w, null);
+  await verdict(r2, 'holds');
+  assert.deepStrictEqual(await reviewOf(w.id), { state: 'holds', review_id: r2.id, rounds: 0, rounds_left: 2 });
+  await verdict(r1, 'refuted');
+  assert.deepStrictEqual(await reviewOf(w.id), { state: 'refuted', review_id: r1.id, rounds: 0, rounds_left: 2 });
+  // A fix answers r1, and nothing has judged the fix yet: the last decision, r1's refutation, still reads, never r2's older holds.
+  await orch.task.fixFromReview({ review_id: r1.id });
+  assert.deepStrictEqual(await reviewOf(w.id), { state: 'refuted', review_id: r1.id, rounds: 1, rounds_left: 1 });
+  // The other order: refuted first, then a holds; no fix answers the refutation, so it still decides.
+  const v = await orch.task.create({ spec: 'work e', acceptance: PASS });
+  await doneWork(v);
+  const q1 = await judge(v, null), q2 = await judge(v, null);
+  await verdict(q1, 'refuted');
+  await verdict(q2, 'holds');
+  assert.deepStrictEqual(await reviewOf(v.id), { state: 'refuted', review_id: q1.id, rounds: 0, rounds_left: 2 });
+  // A fix answers it; a review of the fix that is under way reads pending, and once it holds the chain holds.
+  const fix = await orch.task.fixFromReview({ review_id: q1.id });
+  await doneWork(fix);
+  const q3 = await judge(fix, null);
+  assert.deepStrictEqual(await reviewOf(v.id), { state: 'pending', review_id: q3.id, rounds: 1, rounds_left: 1 });
+  await verdict(q3, 'holds');
+  assert.deepStrictEqual(await reviewOf(v.id), { state: 'holds', review_id: q3.id, rounds: 1, rounds_left: 1 });
+});
+
+test('rounds_left across runs: it is what the run of the newest fix would allow next, as task.create would answer', async () => {
+  const w = await orch.task.create({ spec: 'work f', acceptance: PASS });
+  await doneWork(w);
+  const f1 = await orch.task.fixFromReview({ review_id: (await judge(w, 'refuted')).id });
+  assert.deepStrictEqual(await reviewOf(w.id), { state: 'refuted', review_id: (await reviewOf(w.id)).review_id, rounds: 1, rounds_left: 1 });
+  // Another run, capped at 1, takes the next round: two rounds in all, none left in that run.
+  const other = await openCore({ dataDir: dir, caller: callerFor('orchestrator', { run_id: 'run-b' }), embed: false });
+  workers.set('run-b', other);
+  await other.run.attach({ adapter_pid: process.pid, max_fix_rounds: 1 });
+  await doneWork(f1);
+  const r2 = await judge(f1, 'refuted');
+  const f2 = await other.task.fixFromReview({ review_id: r2.id });
+  await doneWork(f2);
+  const r3 = await judge(f2, 'refuted');
+  assert.deepStrictEqual(await reviewOf(w.id), { state: 'refuted', review_id: r3.id, rounds: 2, rounds_left: 0 });
+  await assert.rejects(other.task.fixFromReview({ review_id: r3.id }), (e) => e.code === 'E_FIX_ROUNDS');
+});
