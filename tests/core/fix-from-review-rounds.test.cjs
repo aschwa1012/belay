@@ -299,7 +299,7 @@ async function judgedUncommitted(name) {
 
 test('work judged uncommitted: the evaluation says so, integrate refuses until it is committed as judged, then lands it', async () => {
   const t = await judgedUncommitted('dirty');
-  assert.deepStrictEqual([t.results.uncommitted, t.results.warning], [true, 'uncommitted changes: commit before integrate']);
+  assert.deepStrictEqual([t.results.uncommitted, t.results.uncommitted_paths, t.results.warning], [true, ['src/dirty.cjs'], 'uncommitted changes (src/dirty.cjs): commit before integrate']);
   assert.strictEqual(t.results.head_sha, t.worktree.base_sha, 'HEAD was still the base');
   assert.strictEqual(git(t.worktree.path, 'status', '--porcelain'), '?? src/', 'the real index is untouched: the file is still untracked');
   commit(t.worktree.path, 'dirty, committed as judged');
