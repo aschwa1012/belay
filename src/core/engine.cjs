@@ -351,7 +351,7 @@ class Engine {
     if (method.startsWith('memory.')) require('./memory-reach.cjs').normalizeArgs(args); // one spelling per namespace before any routing or reach check
     if (spec.kind === 'write' && !ENDED_RUN_EXEMPT.has(method)) this.assertRunOpen(caller, method);
     const off = this.memoryOff(method);
-    if (off === 'refuse') throw err('E_LEVER_OFF', `${method}: memory is off for this run (on_embedder_failure off, after an embedder failure), so nothing is read or written through it`, { lever: 'on_embedder_failure' });
+    if (off === 'refuse') throw err('E_LEVER_OFF', `${method}: notes are off for this run (on_embedder_failure off, after an embedder failure), so nothing is read or written through them`, { lever: 'on_embedder_failure' });
     if (off === 'empty') return { text: '', bytes: 0, row_ids: [], dropped: 0, over_budget: false, sha256: require('node:crypto').createHash('sha256').update('', 'utf8').digest('hex'), considered: 0, excluded_already_injected: 0, memory_off: true };
     // A write method runs inside its caller's context (held-guard.cjs), which follows it across its awaits and reaches no other call.
     if (spec.kind === 'write') return require('./held-guard.cjs').runAs(caller, () => spec.fn(this, caller, args));

@@ -15,7 +15,7 @@ const { spawnSync } = require('node:child_process');
 const ROOT = path.resolve(__dirname, '..', '..').split(path.sep).join('/');
 const CLI = `${ROOT}/src/cli/belay.cjs`;
 const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
-const TITLE = 'Memory is off for this project';
+const TITLE = 'Notes are on, but no project is set, so this run keeps no notes';
 const fwd = (p) => String(p).split(path.sep).join('/');
 const cli = (cwd, args, env = {}) => spawnSync(process.execPath, [CLI, ...args], { cwd, windowsHide: true, encoding: 'utf8', env: { ...process.env, ...env } });
 
@@ -39,7 +39,7 @@ function runWith(config, specMemory, extra = []) {
   return { dir, r, runId };
 }
 
-test('a run whose spec sets the project: status and agents say notes are on, not "Memory is off"; a run with no project still warns', () => {
+test('a run whose spec sets the project: status and agents say notes are on, not "Notes are on, but no project is set"; a run with no project still warns', () => {
   const on = runWith(null, { project: 'acme' });
   const off = runWith(null, undefined);
   try {

@@ -236,7 +236,7 @@ async function dispatchReview($: Host, project: string): Promise<void> {
     }
     $.ui.toast(launcherLine(res.exitCode, res.stdout, res.stderr, project))
   } catch (err) {
-    $.ui.toast(`belay: the review launcher did not answer (${firstLine(err instanceof Error ? err.message : String(err)) || 'no reason given'}): whether it started is unknown; the memory line shows a running review`)
+    $.ui.toast(`belay: the review launcher did not answer (${firstLine(err instanceof Error ? err.message : String(err)) || 'no reason given'}): whether it started is unknown; the notes line shows a running review`)
   } finally { starting.delete(project) }
 }
 

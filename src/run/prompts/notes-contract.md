@@ -1,7 +1,7 @@
 Notes for the next worker (belay). When you finish, `lease_release` takes `notes`. Answer this:
 {{question}}
 Notes are for a later worker who has not met what you met. They are found by matching that worker's task text against your note, so a note helps only if it is worded like that task. {{findings}}
-Write a note when you hit something the code or tests did not warn you about and the next person would hit it too. Do not note what you built, or what your diff already shows. `[]` is the normal answer: it is right when nothing surprised you.
+Write a note when you hit something the code, the tests or the project's markdown did not tell you and the next person would hit it too. Do not note what you built, or what your diff already shows. `[]` is the normal answer: it is right when nothing surprised you.
 Each note has a `kind` (lesson, flag, recurring or gotcha), a `basis` (observed, inferred or relayed) and, when observed, `evidence` as `{ where, saw }`: kept for checking; its paths also feed matching.
 - `title` (at most 160 bytes): the rule, in one sentence, with where it holds. State the rule, not a value that will change; mark a snapshot "as of <sha>" (made up: "the loader skips unlisted fixtures (12 as of abc123)", not "12 fixtures").
 - `when` (at most 160 bytes): the task that would trip on it, as a task line ("add a migration"). Use the words someone assigning that work would use, not the finding's.

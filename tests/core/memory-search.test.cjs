@@ -172,7 +172,7 @@ test('absence_established is true only after both modes ran over the stated scop
   for (const mode of ['semantic', 'keyword']) {
     const r = await call('memory.search', { namespace: 'n1', query: 'zzzqqq', mode, filter: { types: ['nothing'] } });
     assert.strictEqual(r.absence_established, false, `${mode} alone never establishes absence`);
-    assert.ok(r.warning && r.warning.includes('does not mean no such memory'));
+    assert.ok(r.warning && r.warning.includes('does not mean no such entry'));
   }
   const found = await call('memory.search', { namespace: 'n1', query: 'pidAlive', mode: 'hybrid' });
   assert.strictEqual(found.absence_established, false, 'a non-empty result is not absence');
@@ -189,12 +189,12 @@ test('warning is the first key of the result, and names what did not run', async
   const noEmbed = new Engine({ dataDir: dir, store, getEmbedder: null, owner: null, establishedBy: 'test' });
   const r = await noEmbed.handle('memory.search', { caller: orch, namespace: 'n1', query: 'pidAlive', mode: 'hybrid' });
   assert.strictEqual(Object.keys(r)[0], 'warning');
-  assert.strictEqual(r.warning, 'semantic search did not run (E_NO_EMBEDDER); these are keyword matches only; no match here does not mean no such memory');
+  assert.strictEqual(r.warning, 'semantic search did not run (E_NO_EMBEDDER); these are keyword matches only; no match here does not mean no such entry');
   const ok = await call('memory.search', { namespace: 'n1', query: 'pidAlive', mode: 'hybrid' });
   assert.strictEqual(Object.keys(ok)[0], 'warning');
   assert.strictEqual(ok.warning, null);
   const empty = await call('memory.search', { namespace: 'n1', query: 'zzzqqq', mode: 'keyword' });
-  assert.strictEqual(empty.warning, 'keyword search only; semantic search did not run; no match here does not mean no such memory');
+  assert.strictEqual(empty.warning, 'keyword search only; semantic search did not run; no match here does not mean no such entry');
 });
 
 test('hybrid with no embedder gives keyword results plus modes_failed; semantic still rejects', async () => {

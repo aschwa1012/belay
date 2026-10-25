@@ -197,7 +197,7 @@ async function offReceipt(ctx, w, emb, convo) {
 
 // What a worker is told when its first-message index was refused (E_INDEX_BOUND, E_SEMANTIC_REQUIRED): belay's own words, no note text.
 function noIndexNotice(e) {
-  return `NO MEMORY INDEX WAS INJECTED into this message: the index was refused (${codeOf(e)}: ${String((e && e.message) || e).slice(0, 240)}). This is not a pause and your task is unchanged. Use the memory_search tool to look for what the task may touch before you start, and do not assume that the project has no memory on it.`;
+  return `NO NOTE INDEX WAS INJECTED into this message: the index was refused (${codeOf(e)}: ${String((e && e.message) || e).slice(0, 240)}). This is not a pause and your task is unchanged. Use the memory_search tool to look for what the task may touch before you start, and do not assume that the project has no notes on it.`;
 }
 
 // The index text for this worker's launch, or '' (lever off, no rows, or a failed call). The event is the

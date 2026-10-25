@@ -139,7 +139,7 @@ test('interactive prompt: rendered through substituteLevers in interactive mode,
     for (const s of [...REPLACED, ...REPLACED_IN_RULE]) assert.ok(!flat(out).includes(flat(s)), `${fix_cutoff}/${timeout} still has: ${s}`);
     assert.ok(!/\bwhen you close\b/.test(out), 'no "when you close"');
     if (fix_cutoff === 'orchestrator') {
-      assert.ok(flat(out).includes('stop-and-surface (stop, store the outcome in memory, tell the operator the open blocking findings, then wait for them)'));
+      assert.ok(flat(out).includes('stop-and-surface (stop, record the outcome, tell the operator the open blocking findings, then wait for them)'));
       assert.ok(flat(out).includes('when you stop.'));
     }
   }

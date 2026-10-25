@@ -14,7 +14,8 @@ const { spawnSync } = require('node:child_process');
 const ROOT = path.resolve(__dirname, '..', '..').split(path.sep).join('/');
 const CLI = `${ROOT}/src/cli/belay.cjs`;
 const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
-const TITLE = 'Memory is off for this project';
+const TITLE = 'Notes are on, but no project is set, so this run keeps no notes';
+const TITLE_NO_RUN = 'Notes are on, but no project is set, so no notes are kept';
 const LINE = '"memory": { "project": "<name>" }';
 const fwd = (p) => String(p).split(path.sep).join('/');
 
@@ -36,15 +37,15 @@ for (const [name, config, shown] of [['no config', null, true], ['a config with 
       const st = JSON.parse(cli(dir, ['settings', '--json']).stdout);
       assert.strictEqual(!!st.memory_notice, shown);
       const text = cli(dir, ['settings']).stdout;
-      assert.strictEqual(text.includes(TITLE), shown);
+      assert.strictEqual(text.includes(TITLE_NO_RUN), shown);
       const dr = JSON.parse(cli(dir, ['doctor', '--json']).stdout);
       const row = dr.checks.find((c) => c.check === 'memory-project');
       assert.strictEqual(row.verdict, shown ? 'missing' : 'ok');
-      if (shown) { assert.ok(row.evidence.includes(TITLE)); assert.strictEqual(row.fix, LINE); }
+      if (shown) { assert.ok(row.evidence.includes(TITLE_NO_RUN)); assert.strictEqual(row.fix, LINE); }
       const stat = cli(dir, ['status', '--data', `${dir}/.belay`, '--json']);
       assert.strictEqual(stat.status, 0, stat.stderr);
       assert.strictEqual(!!JSON.parse(stat.stdout).memory_notice, shown);
-      assert.strictEqual(cli(dir, ['status', '--data', `${dir}/.belay`]).stdout.includes(TITLE), shown);
+      assert.strictEqual(cli(dir, ['status', '--data', `${dir}/.belay`]).stdout.includes(TITLE_NO_RUN), shown);
       assert.deepStrictEqual(fs.readdirSync(dir).sort(), before, 'reading created nothing');
     } finally { cleanup(dir); }
   });
@@ -66,7 +67,7 @@ test('run: the notice is printed once on stderr when there is no project, and th
     assert.strictEqual(r.status, 0, r.stderr);
     assert.strictEqual(count(r.stderr, TITLE), 1, r.stderr);
     assert.ok(r.stderr.includes(LINE));
-    assert.strictEqual(r.stdout.includes(TITLE), false, 'the receipt on stdout is unchanged');
+    assert.strictEqual(r.stdout.includes(TITLE_NO_RUN), false, 'the receipt on stdout is unchanged');
   } finally { cleanup(dir); }
 });
 

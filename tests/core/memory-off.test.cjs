@@ -35,7 +35,7 @@ test('with memory off: stores, searches and reads are refused by name, nothing i
   off = true;
   const rowsBefore = rowCount();
   for (const [m, a] of [['memory.store', { namespace: 'n', text: 'after off' }], ['memory.search', { namespace: 'n', query: 'x', mode: 'keyword' }], ['memory.list', { namespace: 'n' }], ['memory.get', { id: 'x' }]]) {
-    await assert.rejects(call(m, a), (e) => e.code === 'E_LEVER_OFF' && e.detail.lever === 'on_embedder_failure' && /memory is off for this run/.test(e.message), m);
+    await assert.rejects(call(m, a), (e) => e.code === 'E_LEVER_OFF' && e.detail.lever === 'on_embedder_failure' && /notes are off for this run/.test(e.message), m);
   }
   assert.strictEqual(rowCount(), rowsBefore, 'nothing was written');
   const idx = await call('memory.index', { namespaces: ['n'], query: 'row' });
@@ -83,7 +83,7 @@ test('under off a release drops its notes, says so, and still releases the lease
     const out = await wcall('lease.release', { lease_id: l.lease_id, notes: [note('K1'), note('K2')], reported_wrong: [] });
     assert.strictEqual(out.state, 'released');
     assert.deepStrictEqual([out.notes_dropped.notes, out.notes_dropped.reported_wrong], [2, 0]);
-    assert.match(out.notes_dropped.reason, /memory is off/);
+    assert.match(out.notes_dropped.reason, /notes are off/);
     assert.ok(!('notes' in out), 'no note was written');
     assert.strictEqual(noteRows(), before);
     assert.strictEqual((await E.handle('task.get', { caller: orch, task_id: l.task_id })).state, 'released');
@@ -146,7 +146,7 @@ test('under required an embedder failure names the choices and the resume comman
   try {
     mode = 'required';
     await assert.rejects(call('memory.store', { namespace: 'n', text: 'needs a vector' }), (e) => e.code === 'E_MODEL_ABSENT'
-      && /paused for an embedder failure/.test(e.message) && /keyword \(rank by keywords only\), off \(memory off for the run\), or stay paused/.test(e.message)
+      && /paused for an embedder failure/.test(e.message) && /keyword \(rank by keywords only\), off \(notes off for the run\), or stay paused/.test(e.message)
       && /belay resume \S+ --embedder keyword\|off/.test(e.message));
     await assert.rejects(wcall('memory.store', { namespace: `run/${RUN}`, text: 'a worker write' }), (e) => /paused for an embedder failure and this call was not written/.test(e.message)
       && /call it again/.test(e.message) && /Do not run belay commands/.test(e.message) && !/belay resume/.test(e.message) && !/ask the operator/i.test(e.message));

@@ -10,7 +10,7 @@ test('the notice holds when notes are on by default and no project is set', () =
   for (const block of [undefined, {}, { project: null }, { project: '' }, { notes_match_n: 2 }, 'x', []]) {
     const n = N.noticeFor(block);
     assert.ok(n, JSON.stringify(block));
-    assert.strictEqual(n.title, 'Memory is off for this project');
+    assert.strictEqual(n.title, 'Notes are on, but no project is set, so this run keeps no notes');
     assert.ok(n.fix.includes('"memory": { "project": "<name>" }'));
     assert.ok(n.fix.includes('belay settings memory.project <name>'));
     assert.ok(n.fix.includes(N.NAME_RULE));

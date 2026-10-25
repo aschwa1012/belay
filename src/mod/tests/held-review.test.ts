@@ -81,7 +81,7 @@ describe('notes held for the archive reviewer', () => {
     const wd = await boot($, on, { notices: notices(held(3)) })
     await openPane($, wd)
     const { text } = await pane($)
-    expect(text).toContain('MEMORY  3 held') // the heading carries the count
+    expect(text).toContain('NOTES  3 held') // the heading carries the count
     expect(text).toContain('oldest 2 runs · acme') // the detail line does not repeat it
     expect(text).toContain('review the held notes')
   })
@@ -101,7 +101,7 @@ describe('notes held for the archive reviewer', () => {
   test('the by-ground line says it too', async ($, on) => {
     const wd = await boot($, on, { notices: notices({ ...{ ...held(4), by_ground: { reported: 3, same_claim: 1 } }, oldest_at: T0 - 90000 }) })
     await openPane($, wd)
-    expect((await pane($)).text).toMatch(/MEMORY  4 held[\s\S]*3 reported wrong, 1 duplicate · oldest waited [0-9]m/)
+    expect((await pane($)).text).toMatch(/NOTES  4 held[\s\S]*3 reported wrong, 1 duplicate · oldest waited [0-9]m/)
   })
 
   test('the unsupported line says it too', async ($, on) => {
@@ -169,7 +169,7 @@ describe('notes held for the archive reviewer', () => {
     await openPane($, wd)
     const { text } = await pane($)
     expect(text).toContain('archive review of acme running · pid 77')
-    expect(text).toContain('MEMORY  3 held')
+    expect(text).toContain('NOTES  3 held')
     expect(text).not.toContain('review the held notes')
   })
 
@@ -252,7 +252,7 @@ describe('the held count is broken down by ground', () => {
   test('the line names the grounds and how many wait for the operator', async ($, on) => {
     const wd = await boot($, on, { notices: notices({ ...held(3), by_ground: { reported: 2, same_claim: 1 }, awaiting_operator: 1 }) })
     const text = (await pane($)).text
-    expect(text).toContain('MEMORY  3 held · 1 awaits you') // the heading
+    expect(text).toContain('NOTES  3 held · 1 awaits you') // the heading
     expect(text).toContain('2 reported wrong, 1 duplicate') // the detail line
     void wd
   })

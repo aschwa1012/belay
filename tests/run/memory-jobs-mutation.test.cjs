@@ -92,7 +92,7 @@ test('run end: the work is bounded at the total minus 500 ms, the give-up record
   assert.strictEqual(out.outcome, 'timeout');
   assert.deepStrictEqual(out.unfinished, ['summary:t1/w1', 'wrapup:task:t1', 'wrapup:run']);
   const gave = h.core.events.find((e) => e.key === 'run:gave-up');
-  assert.strictEqual(gave.message, 'run-end memory jobs stopped after 5500 ms; not done: summary:t1/w1, wrapup:task:t1, wrapup:run');
+  assert.strictEqual(gave.message, 'run-end note jobs stopped after 5500 ms; not done: summary:t1/w1, wrapup:task:t1, wrapup:run');
   assert.deepStrictEqual(h.ctx.runEndError, { where: 'memory-jobs.atRunEnd', code: 'E_TIMEOUT', message: 'gave up', unfinished: ['summary:t1/w1', 'wrapup:task:t1', 'wrapup:run'] });
 });
 
@@ -114,7 +114,7 @@ test('run end: a read that fails names the stage, the plain message and E_INTERN
   assert.deepStrictEqual(ctx.runEndError, { where: 'memory-jobs.atRunEnd', code: 'E_INTERNAL', message: 'failed at plan: store gone', unfinished: ['plan'] });
   const gave = core.events.find((e) => e.key === 'run:gave-up');
   assert.strictEqual(gave.code, 'E_INTERNAL');
-  assert.strictEqual(gave.message, 'run-end memory jobs failed at plan: store gone; not done: plan');
+  assert.strictEqual(gave.message, 'run-end note jobs failed at plan: store gone; not done: plan');
   const viaJobs = await MJ.runEndJobs({ core: spyCore({ fail: { 'task.list': 'E_OWNER_LOST' } }), runId: 'r1', levers: RUN_END });
   assert.strictEqual(viaJobs.outcome, 'error');
   assert.strictEqual(viaJobs.error.message, 'failed at plan: E_OWNER_LOST');

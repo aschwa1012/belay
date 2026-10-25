@@ -247,11 +247,11 @@ function onSemanticFailure(E, caller, e) {
   const guarded = run.source === 'guard';
   const embedderFailure = !!(e && e.detail && e.detail.embedder === true);
   if (guarded && embedderFailure && E.memoryOff('memory.search') === 'refuse') {
-    throw err('E_LEVER_OFF', 'memory.search: memory is off for this run (on_embedder_failure off, after an embedder failure), so nothing is read or written through it', { lever: 'on_embedder_failure' });
+    throw err('E_LEVER_OFF', 'memory.search: notes are off for this run (on_embedder_failure off, after an embedder failure), so nothing is read or written through them', { lever: 'on_embedder_failure' });
   }
   if (run.mode === 'keyword') return;
   if (run.mode === 'off') { // memory is off for a run in this mode once its semantic half fails, whatever failed: refused
-    throw err('E_LEVER_OFF', 'memory.search: memory is off for this run (on_embedder_failure off) and its semantic half cannot run (' + (E.embedderFailure ? E.embedderFailure.code : e.code) + '), so nothing is read through it', { lever: 'on_embedder_failure', cause: E.embedderFailure ? E.embedderFailure.code : e.code });
+    throw err('E_LEVER_OFF', 'memory.search: notes are off for this run (on_embedder_failure off) and its semantic half cannot run (' + (E.embedderFailure ? E.embedderFailure.code : e.code) + '), so nothing is read through it', { lever: 'on_embedder_failure', cause: E.embedderFailure ? E.embedderFailure.code : e.code });
   }
   // required
   if (guarded && embedderFailure) throw e; // already told to the guard and advised (withEmbedding)
@@ -474,7 +474,7 @@ function withSemanticFailure(result, failure) {
   const { warning, ...rest } = result;
   const failed = { mode: 'semantic', code: failure.code, message: failure.message };
   return {
-    warning: `semantic search did not run (${failure.code}); these are keyword matches only; no match here does not mean no such memory`,
+    warning: `semantic search did not run (${failure.code}); these are keyword matches only; no match here does not mean no such entry`,
     ...rest, modes_failed: [failed, ...(rest.modes_failed || [])], absence_established: false,
   };
 }

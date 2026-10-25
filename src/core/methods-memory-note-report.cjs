@@ -1,5 +1,5 @@
 'use strict';
-// methods-memory-note-report.cjs — memory.noteReport: the operator's (and, on the operator's word, the orchestrator's) report that a note is wrong
+// methods-memory-note-report.cjs — memory.noteReport: the operator's (and the orchestrator's, on the operator's word or on its own evidence) report that a note is wrong
 // (ADR 0047 amendment of 2026-10-21). It is a worker's `reported_wrong` entry made by another hand: the report is marked on the note and the note is held
 // for the archive review by `holdReported`, the one function a worker's release uses, in ONE transaction, with the same ground (`reported`), the same
 // harness channel for the hold row and the same one-report-per-reporter rule (a repeat replaces that reporter's report).
