@@ -60,9 +60,9 @@ function requireTask(E, id, method) {
 async function repoOf(E, caller, repo, method) {
   const run = rows.current(E.store, 'run', caller.run_id);
   const own = run && run.project_dir;
-  if (caller.role !== 'operator' && !own) throw err('E_ARGS', `${method}: run ${caller.run_id} records no project directory, so the orchestrator has no repository to act on`, { run_id: caller.run_id });
+  if (caller.role !== 'operator' && !own) throw err('E_ARGS', `${method}: run ${caller.run_id} records no project directory, so the orchestrator has no repository to act on; the operator starts belay run from the repository, beside its belay.config.json`, { run_id: caller.run_id });
   const dir = repo === undefined ? own : repo;
-  if (!dir) throw err('E_ARGS', `${method} needs repo: run ${caller.run_id} records no project directory to default to`, { run_id: caller.run_id });
+  if (!dir) throw err('E_ARGS', `${method} needs repo: run ${caller.run_id} records no project directory to default to; pass --repo <dir>`, { run_id: caller.run_id });
   if (typeof dir !== 'string' || !path.isAbsolute(dir)) throw err('E_ARGS', `${method}: repo must be an absolute path`, { repo: dir });
   const top = await G.toplevel(dir);
   if (caller.role !== 'operator' && repo !== undefined) {
@@ -328,7 +328,7 @@ function evaluateTarget(task, args) {
   const rec = task.worktree && task.worktree.base_sha ? task.worktree : null;
   if (args.worktree !== undefined) assertTaskTree(task, args.worktree, 'the worktree to evaluate in', 'leave worktree out to evaluate it in its own');
   const worktree = args.worktree !== undefined ? args.worktree : (active(task) || {}).path;
-  if (!worktree || typeof worktree !== 'string') throw err('E_ARGS', `task.evaluate needs the worktree the acceptance criteria run in; task ${task.id} has no belay worktree to default to`, { task_id: task.id });
+  if (!worktree || typeof worktree !== 'string') throw err('E_ARGS', `task.evaluate needs the worktree the acceptance criteria run in; task ${task.id} has no belay worktree to default to: pass worktree, or give the task its own with task_worktree`, { task_id: task.id });
   if (args.base !== undefined) return { worktree, base: args.base, baseSource: 'arg' };
   return rec ? { worktree, base: rec.base_sha, baseSource: 'recorded' } : { worktree, base: undefined, baseSource: undefined };
 }
