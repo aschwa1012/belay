@@ -47,7 +47,7 @@ const SUMMARY_DROP = new Set(['run_id', 'written_at', 'written_by', 'files_owned
 // ones named, and the passing ones marked flaky named apart, since `failing` does not list them.
 function summaryResults(facts, checks) {
   const out = { passed: facts.passed, executable: facts.executable };
-  for (const k of ['trigger', 'flaky', 'timed_out']) if (facts[k] !== undefined && facts[k] !== null) out[k] = facts[k];
+  for (const k of ['trigger', 'flaky', 'timed_out', 'uncommitted']) if (facts[k] !== undefined && facts[k] !== null) out[k] = facts[k];
   out.checks = checks.length;
   out.failing = checks.filter((c) => c && !c.passed).map(label);
   const flaky = checks.filter((c) => c && c.passed && c.flaky).map(label);

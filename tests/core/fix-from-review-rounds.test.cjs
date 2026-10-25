@@ -285,3 +285,38 @@ test('a done task that records no judged head is refused, naming the branch head
   const row = await orch.integration.merge({ task_ids: [w.id], into: 'int/newest' });
   assert.deepStrictEqual([row.merged[0].sha, row.merged[0].judged_by, row.merged[0].covers.sort(), row.left_out], [await judgedHeadOf(f.id), f.id, [w.id, f.id].sort(), null]);
 });
+
+// A task in its own tree whose judged change is left uncommitted at evaluation.
+async function judgedUncommitted(name) {
+  let t = await orch.task.create({ spec: `${name} work`, acceptance: { files_within_owned: true }, files_owned: [`src/${name}.cjs`] });
+  t = await orch.task.worktreeCreate({ task_id: t.id });
+  write(t.worktree.path, `src/${name}.cjs`, 'judged\n');
+  await handBack(t.id, `c-${name}`, t.worktree.path, { branch: t.worktree.branch });
+  const row = await orch.task.evaluate({ task_id: t.id });
+  assert.strictEqual(row.state, 'done');
+  return row;
+}
+
+test('work judged uncommitted: the evaluation says so, integrate refuses until it is committed as judged, then lands it', async () => {
+  const t = await judgedUncommitted('dirty');
+  assert.deepStrictEqual([t.results.uncommitted, t.results.warning], [true, 'uncommitted changes: commit before integrate']);
+  assert.strictEqual(t.results.head_sha, t.worktree.base_sha, 'HEAD was still the base');
+  assert.strictEqual(git(t.worktree.path, 'status', '--porcelain'), '?? src/', 'the real index is untouched: the file is still untracked');
+  commit(t.worktree.path, 'dirty, committed as judged');
+  const row = await orch.integration.merge({ task_ids: [t.id], into: 'int/dirty' });
+  assert.deepStrictEqual([row.merged[0].sha, row.merged[0].covers, row.left_out], [git(t.worktree.path, 'rev-parse', 'HEAD'), [t.id], null]);
+  assert.strictEqual(git(row.worktree, 'show', 'HEAD:src/dirty.cjs'), 'judged', 'the judged change landed');
+  assert.strictEqual((await orch.task.get({ task_id: t.id })).integration.state, 'merged');
+});
+
+test('a commit that differs from the judged state is refused, naming the judged tree, the branch head and the remedy', async () => {
+  const t = await judgedUncommitted('differs');
+  const e1 = await rejectsCode(orch.integration.merge({ task_ids: [t.id], into: 'int/differs' }), 'E_PRECONDITION');
+  assert.match(e1.message, /uncommitted work behind/, 'a dirty tree is refused first, as before');
+  write(t.worktree.path, 'src/differs.cjs', 'more than was judged\n');
+  commit(t.worktree.path, 'differs');
+  const e = await rejectsCode(orch.integration.merge({ task_ids: [t.id], into: 'int/differs' }), 'E_PRECONDITION');
+  assert.match(e.message, /commit exactly the judged state, or merge it as a new task/);
+  assert.deepStrictEqual([e.detail.judged_tree, e.detail.branch_head], [t.results.tree_sha, git(t.worktree.path, 'rev-parse', 'HEAD')]);
+  assert.strictEqual((await orch.integration.list({})).integrations.filter((i) => i.into_branch === 'int/differs').length, 0, 'nothing was written');
+});

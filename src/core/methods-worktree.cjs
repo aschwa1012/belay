@@ -302,15 +302,6 @@ function assertTaskTree(task, dir, what, remedy) {
     { task_id: task.id, task_worktree: tree.path, worktree: G.fwd(dir) });
 }
 
-// The commit a task is judged at (ADR 0060 decision 4): HEAD of its own recorded tree, read before its checks run, or null when it
-// is judged elsewhere or has no tree. integration.merge merges this, never a branch head past it.
-async function headOf(task, dir) {
-  const tree = active(task);
-  if (!tree || !dir || !G.samePath(path.resolve(dir), path.resolve(tree.path))) return null;
-  const r = await G.run(tree.path, ['rev-parse', '--verify', 'HEAD^{commit}']);
-  return r.ok ? r.stdout.trim() : null;
-}
-
 // task.evaluate's worktree and base (ADR 0053 decision 4): the arguments when given, else the task's recorded worktree and base.
 // A worktree argument that is not the task's recorded tree is refused (assertTaskTree), whoever passes it.
 function evaluateTarget(task, args) {
@@ -322,4 +313,4 @@ function evaluateTarget(task, args) {
   return rec ? { worktree, base: rec.base_sha, baseSource: 'recorded' } : { worktree, base: undefined, baseSource: undefined };
 }
 
-module.exports = { worktreeCreate, worktreeRemove, removeTree, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, assertTaskTree, openSharer, headOf, exclusive, active, present, pathName, liveWorkerIn, strayLinks, under };
+module.exports = { worktreeCreate, worktreeRemove, removeTree, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, assertTaskTree, openSharer, exclusive, active, present, pathName, liveWorkerIn, strayLinks, under };

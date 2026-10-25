@@ -112,3 +112,12 @@ test('the budget runs out mid-retry: a retry is cut to what is left, and none st
   const [h] = await runAcceptance({ commands: [{ argv: [process.execPath, '-e', 'setInterval(() => {}, 1e6)'], timeout_ms: 60000, retries_on_fail: 3 }] }, dir, null, { budgetMs: 1500 });
   assert.deepStrictEqual([h.detail.timed_out, h.detail.attempts], [true, undefined]);
 });
+
+test('ADR 0060 decision 6: the release wake and a listing say uncommitted changes; a committed pass says nothing more', () => {
+  const V = require('../../src/mcp/views.cjs');
+  const row = (results) => ({ id: 't-u', state: 'done', results: { evaluated_at: 1, executable: true, passed: true, checks: [], ...results } });
+  assert.match(RE.clause([RE.summaryOf(row({ uncommitted: true }))], 400), /passed, done; uncommitted changes: commit before integrate/);
+  assert.doesNotMatch(RE.clause([RE.summaryOf(row({}))], 400), /uncommitted/);
+  assert.strictEqual(V.compactTask(row({ uncommitted: true, warning: 'w' })).results.uncommitted, true);
+  assert.strictEqual(V.compactTask(row({ uncommitted: true, warning: 'w' }), { detail: true }).results.warning, 'w');
+});

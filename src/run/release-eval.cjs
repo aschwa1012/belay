@@ -24,7 +24,7 @@ const failedKinds = (row) => ((row.results && row.results.checks) || []).filter(
 
 function summaryOf(row) {
   const r = row.results || {};
-  return { task_id: row.id, state: row.state, passed: !!r.passed, executable: !!r.executable, checks: ((r.checks) || []).length, failing: failedKinds(row), ...(r.flaky ? { flaky: true } : {}) };
+  return { task_id: row.id, state: row.state, passed: !!r.passed, executable: !!r.executable, checks: ((r.checks) || []).length, failing: failedKinds(row), ...(r.flaky ? { flaky: true } : {}), ...(r.uncommitted ? { uncommitted: true } : {}) };
 }
 
 const unevaluated = (t, runId, workerId) => t.run_id === runId && t.state === 'released' && t.handoff && t.handoff.by === workerId
@@ -120,7 +120,7 @@ const cut = (s, max) => {
 // The evaluation clause, at most `room` bytes: " task T evaluated at release: passed, done." or "...: not done; failing: ...".
 function clause(evs, room) {
   const parts = evs.map((e) => (e.error ? `task ${e.task_id} could not be evaluated at release (${e.error})`
-    : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? (e.flaky ? 'passed on a retry (flaky), done' : 'passed, done') : `not done; failing: ${e.failing.join(', ') || 'no executable check'}`}`));
+    : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}` : `not done; failing: ${e.failing.join(', ') || 'no executable check'}`}`));
   return cut(` ${parts.join('; ')}.`, room);
 }
 
