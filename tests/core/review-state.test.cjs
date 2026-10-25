@@ -1,0 +1,100 @@
+'use strict';
+// review-state.test.cjs — ADR 0060 decision 1: task.list and task.get carry `review`, where the work stands with its reviewers,
+// derived from the review and fix task rows on every read. A work task stays `done` when its review is refuted; `review` is
+// what says so. Real core against a sandbox store.
+
+const { test, before, after } = require('node:test');
+const assert = require('node:assert');
+const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
+
+const { openCore } = core('index.cjs');
+
+let dir, orch;
+const workers = new Map();
+const PASS = { commands: [{ argv: [process.execPath, '-e', 'process.exit(0)'], timeout_ms: 20000 }] };
+
+before(async () => {
+  dir = sandbox();
+  orch = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
+  await orch.run.attach({ adapter_pid: process.pid, max_fix_rounds: 2 });
+});
+
+after(async () => {
+  for (const c of workers.values()) await c.close();
+  try { await orch.shutdownOwner(); } finally { await orch.close(); cleanup(dir); }
+});
+
+let k = 0;
+async function handBack(taskId, result) {
+  const id = `w-${++k}`;
+  await orch.worker.write({ id, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${id}`, last_event_at: Date.now() });
+  const w = await openCore({ dataDir: dir, caller: callerFor('worker', { worker_id: id }), embed: false });
+  workers.set(id, w);
+  const a = await orch.task.assign({ task_id: taskId, worker_id: id });
+  return w.lease.release({ lease_id: a.new_lease.id, reason: 'done', ...(result ? { result } : {}) });
+}
+
+async function doneWork(task) {
+  await handBack(task.id, { branch: 'b' });
+  assert.strictEqual((await orch.task.evaluate({ task_id: task.id, worktree: dir })).state, 'done');
+}
+
+async function judge(task, verdict) {
+  const r = await orch.task.create({ spec: `review ${task.id}`, depends_on: [task.id], acceptance: { verdict: true } });
+  if (verdict) {
+    await handBack(r.id, { verdict, summary: 's', findings: [] });
+    await orch.task.evaluate({ task_id: r.id, worktree: dir });
+  }
+  return r;
+}
+
+const reviewOf = async (id) => (await orch.task.get({ task_id: id })).review;
+const listed = async (id, states) => (await orch.task.list(states ? { states } : {})).tasks.find((t) => t.id === id).review;
+
+test('work with no review reads null; a review not yet judged reads pending; one that holds reads holds', async () => {
+  const w = await orch.task.create({ spec: 'work a', acceptance: PASS });
+  await doneWork(w);
+  assert.strictEqual(await reviewOf(w.id), null);
+  const r = await judge(w, null);
+  assert.deepStrictEqual(await reviewOf(w.id), { state: 'pending', review_id: r.id, rounds: 0, rounds_left: 2 });
+  assert.strictEqual(await reviewOf(r.id), null, 'a review task has no review of its own');
+  const r2 = await orch.task.create({ spec: 'second review', depends_on: [w.id], acceptance: { verdict: true } });
+  await orch.task.cancel({ task_id: r2.id });
+  // A hand-back with no summary is a verdict check that is not executable: still pending, never refuted.
+  await handBack(r.id, { verdict: 'refuted' });
+  await orch.task.evaluate({ task_id: r.id, worktree: dir });
+  assert.strictEqual((await reviewOf(w.id)).state, 'pending');
+  await handBack(r.id, { verdict: 'holds', summary: 'fine' });
+  await orch.task.evaluate({ task_id: r.id, worktree: dir });
+  assert.deepStrictEqual(await reviewOf(w.id), { state: 'holds', review_id: r.id, rounds: 0, rounds_left: 2 }, 'a cancelled later review judged nothing');
+});
+
+test('refuted three times with max_fix_rounds 2: the work stays done and reads refuted with no rounds left, on list and get alike', async () => {
+  const w = await orch.task.create({ spec: 'work b', acceptance: PASS });
+  await doneWork(w);
+  let r = await judge(w, 'refuted');
+  assert.deepStrictEqual(await reviewOf(w.id), { state: 'refuted', review_id: r.id, rounds: 0, rounds_left: 2 });
+  let fix;
+  for (let n = 1; n <= 2; n++) {
+    fix = await orch.task.fixFromReview({ review_id: r.id });
+    assert.deepStrictEqual(await reviewOf(w.id), { state: 'refuted', review_id: r.id, rounds: n, rounds_left: 2 - n }, `fix ${n} made, not yet reviewed`);
+    await doneWork(fix);
+    r = await judge(fix, 'refuted');
+  }
+  const want = { state: 'refuted', review_id: r.id, rounds: 2, rounds_left: 0 };
+  assert.strictEqual((await orch.task.get({ task_id: w.id })).state, 'done', 'the work task itself stays done');
+  assert.deepStrictEqual(await reviewOf(w.id), want);
+  assert.deepStrictEqual(await reviewOf(fix.id), want, 'a fix reads the same chain');
+  assert.deepStrictEqual(await listed(w.id), want);
+  assert.deepStrictEqual(await listed(w.id, ['done']), want, 'a state filter does not hide the reviews the state is derived from');
+});
+
+test('a fix whose review holds turns the whole chain to holds', async () => {
+  const w = await orch.task.create({ spec: 'work c', acceptance: PASS });
+  await doneWork(w);
+  const r = await judge(w, 'refuted');
+  const fix = await orch.task.fixFromReview({ review_id: r.id });
+  await doneWork(fix);
+  const r2 = await judge(fix, 'holds');
+  assert.deepStrictEqual(await reviewOf(w.id), { state: 'holds', review_id: r2.id, rounds: 1, rounds_left: 1 });
+});

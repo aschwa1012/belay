@@ -10,6 +10,7 @@ const { pidAlive } = require('./lock.cjs');
 const { DEFAULT_LEASE_TTL_MS, TASK_STATES } = require('./schema.cjs');
 const { runAcceptance } = require('./evaluate.cjs');
 const holds = require('./task-holds.cjs');
+const reviewState = require('./review-state.cjs');
 const { filesOverlap, runNotLive, resolveOwner, assertNotOwnReview } = require('./methods-task-hold.cjs');
 
 // ADR 0025 decision 1: the most a worker may hand back on release, serialized.
@@ -222,7 +223,7 @@ function refutedReview(d) {
   return checks.some(c => c && c.kind === 'verdict' && c.executable === true && c.passed === false);
 }
 
-function view(E, task, liveness) {
+function view(E, task, liveness, reviews) {
   const t = Date.now();
   const l = rows.currentLeaseForTask(E.store, task.id);
   let lease = null, holderPidAlive = null;
@@ -235,13 +236,17 @@ function view(E, task, liveness) {
   }
   const ck = rows.lastCheckpoint(E.store, task.id);
   const h = holds.holdOf(task, liveness || holds.runLiveness(E.store));
-  return { ...task, holds_files: h.holds, holds_reason: h.reason, lease, holder_pid_alive: holderPidAlive, last_checkpoint_id: ck ? ck.id : null, last_checkpoint_at: ck ? ck.written_at : null };
+  // ADR 0060: whether the work's review held is its own fact beside `state`, derived from the review and fix task rows.
+  const review = reviewState.ofTask(task, reviews || reviewState.index(E.store, rows.currentAll(E.store, 'task')));
+  return { ...task, holds_files: h.holds, holds_reason: h.reason, lease, holder_pid_alive: holderPidAlive, last_checkpoint_id: ck ? ck.id : null, last_checkpoint_at: ck ? ck.written_at : null, review };
 }
 
 async function list(E, caller, args) {
   const states = Array.isArray(args.states) && args.states.length ? new Set(args.states) : null;
   const liveness = holds.runLiveness(E.store);
-  const tasks = rows.currentAll(E.store, 'task').filter(t => !states || states.has(t.state)).map(t => view(E, t, liveness));
+  const all = rows.currentAll(E.store, 'task');
+  const reviews = reviewState.index(E.store, all);
+  const tasks = all.filter(t => !states || states.has(t.state)).map(t => view(E, t, liveness, reviews));
   return { tasks };
 }
 
