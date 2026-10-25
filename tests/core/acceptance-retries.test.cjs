@@ -93,3 +93,22 @@ test('task.create refuses a retries_on_fail that is not an integer from 0 to 5, 
   assert.strictEqual((await orch.task.list({})).tasks.length, before);
   assert.ok(await orch.task.create({ spec: 'ok', acceptance: { commands: [{ argv: ['x'], retries_on_fail: 0 }] } }));
 });
+
+test('the budget runs out mid-retry: a retry is cut to what is left, and none starts once it is spent', async () => {
+  const { runAcceptance } = require('./helpers.cjs').core('evaluate.cjs');
+  // Fails at once on its first attempt, then hangs: the retry is cut at the budget, and no third attempt follows.
+  const twoStep = path.join(dir, 'fail-then-hang.cjs');
+  fs.writeFileSync(twoStep, [
+    "const fs = require('fs'); const mark = process.argv[2];",
+    "if (!fs.existsSync(mark)) { fs.writeFileSync(mark, ''); process.exit(1); }",
+    'setInterval(() => {}, 1e6);',
+  ].join('\n'));
+  const [c] = await runAcceptance({ commands: [{ argv: [process.execPath, twoStep, path.join(dir, 'two-step-mark')], timeout_ms: 60000, retries_on_fail: 3 }] }, dir, null, { budgetMs: 1500 });
+  assert.deepStrictEqual(c.detail.attempts.map((a) => a.timed_out), [false, true]);
+  assert.strictEqual(c.detail.attempts[0].exit_code, 1);
+  assert.ok(c.ms < 30000, `cut at the budget, not the command's own 60 s: ${c.ms}`);
+  assert.deepStrictEqual([c.passed, c.flaky], [false, undefined]);
+  // A command that spends the whole budget on its first attempt is not retried at all.
+  const [h] = await runAcceptance({ commands: [{ argv: [process.execPath, '-e', 'setInterval(() => {}, 1e6)'], timeout_ms: 60000, retries_on_fail: 3 }] }, dir, null, { budgetMs: 1500 });
+  assert.deepStrictEqual([h.detail.timed_out, h.detail.attempts], [true, undefined]);
+});
