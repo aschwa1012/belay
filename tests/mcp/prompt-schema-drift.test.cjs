@@ -25,7 +25,7 @@ const ALL_NAMES = new Set(ALL_ON.concat(BASE).map((t) => t.name));
 // lease_release), a value (done), a branch name (main).
 const NOT_FIELDS = new Set(['done', 'lease_release', 'main']);
 // Per tool: the prompt names a result or a refusal detail beside the tool, not an input.
-const NOT_FIELDS_OF = { memory_store: new Set(['notes']), worker_message: new Set(['op', 'queued']), worker_spawn: new Set(['coder']), worker_wait: new Set(['already', 'evaluated', 'evaluating']), task_assign: new Set(['delivered']), memory_retrieve: new Set(['memory_ids']) };
+const NOT_FIELDS_OF = { memory_store: new Set(['notes']), worker_message: new Set(['op', 'queued']), worker_spawn: new Set(['coder']), worker_wait: new Set(['already', 'evaluated', 'evaluating']), task_assign: new Set(['delivered']), task_create: new Set(['flaky']), memory_retrieve: new Set(['memory_ids']) };
 
 // Marks: every `mcp__belay__<tool>` (the tool must exist) and every backticked bare name that is a listed tool.
 function marks(text) {
@@ -101,7 +101,10 @@ function hasFieldOrNested(listing, tool, key) {
   if (hasField(listing, tool, key)) return true;
   const t = listing.find((x) => x.name === tool);
   const props = (t && t.inputSchema && t.inputSchema.properties) || {};
-  return !key.includes('.') && Object.keys(props).some((k) => props[k].type === 'object' && hasField(listing, tool, `${k}.${key}`));
+  if (key.includes('.')) return false;
+  // or a property of the items of an array one object down (acceptance.commands[].retries_on_fail).
+  const itemHas = (o) => Object.values((o && o.properties) || {}).some((p) => p.type === 'array' && p.items && p.items.properties && p.items.properties[key]);
+  return Object.keys(props).some((k) => props[k].type === 'object' && (hasField(listing, tool, `${k}.${key}`) || itemHas(props[k])));
 }
 
 function check(label, text, listing, impliedTool) {
@@ -164,5 +167,5 @@ test('tripwire: invented fields appended to a prompt are caught, in both prompts
 test('A5 the largest orchestrator listing (every lever on) is pinned and inside the 16,384 byte budget', () => {
   const bytes = tools.listingBytes('orchestrator', { notes: true, knowledge: true, queries: true });
   assert.ok(bytes <= tools.BUDGET.orchestrator, `everything-on orchestrator listing is ${bytes} bytes, over ${tools.BUDGET.orchestrator} by ${bytes - tools.BUDGET.orchestrator}`);
-  assert.strictEqual(bytes, 14703, 'the everything-on orchestrator listing size is pinned; change this with the ADR 0010 amendment that changes it');
+  assert.strictEqual(bytes, 14797, 'the everything-on orchestrator listing size is pinned; change this with the ADR 0010 amendment that changes it');
 });

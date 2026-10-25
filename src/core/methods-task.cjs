@@ -65,6 +65,8 @@ async function create(E, caller, args, own = {}) {
   }
   const handoffShape = acceptance ? require('./handoff-check.cjs').shapeError(acceptance.handoff) : null; // ADR 0058 decision 6
   if (handoffShape) throw err('E_ARGS', handoffShape);
+  const retries = require('./evaluate.cjs').retriesError(acceptance); // ADR 0060 decision 2
+  if (retries) throw err('E_ARGS', retries);
   if (acceptance && acceptance.verdict !== undefined && acceptance.verdict !== true) {
     throw err('E_ARGS', 'task.acceptance.verdict must be true or absent: a review task is judged from a worker\'s handed-back verdict');
   }
@@ -298,6 +300,8 @@ async function evaluate(E, caller, args) {
     const passed = checks.length > 0 && checks.every(c => c.passed);
     const results = {
       evaluated_at: Date.now(), executable, passed, checks, ...(args.trigger ? { trigger: args.trigger } : {}),
+      // ADR 0060 decision 2: a command that passed only on a retry is never a silent pass.
+      ...(checks.some(c => c.flaky) ? { flaky: true } : {}),
       ...(checks.length === 0 ? { note: 'the task declares no acceptance criteria, so nothing was executed and nothing is proven' } : {}),
     };
     return rows.append(E.store, 'task', {

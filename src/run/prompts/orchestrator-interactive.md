@@ -22,7 +22,7 @@ A task is made with `mcp__belay__task_create`:
 
 - `spec`: what is to be done, in plain words.
 - `acceptance`: `commands` is a list of `{ argv, cwd, timeout_ms }`; the task is proven when every
-  command exits 0. `files_within_owned: true` also requires every changed file to be in
+  command exits 0. A check you know is flaky takes `retries_on_fail` (at most 5): a pass on a retry is marked `flaky` in the results; treat it as a finding, not a clean pass. `files_within_owned: true` also requires every changed file to be in
   `files_owned`. `handoff: { required: ["findings", "summary"] }` passes when the hand-back's result carries each field (research needs no commands). A task with no checks at all can never reach `done`.
 - `files_owned`: paths, relative to the worktree, that this task may change.
 - `depends_on`: task ids that must be `done` first.

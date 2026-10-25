@@ -232,7 +232,7 @@ const ORCHESTRATOR = [
       acceptance: S({
         commands: {
           type: 'array',
-          items: S({ argv: strs(), cwd: str(), timeout_ms: int() }, ['argv']),
+          items: S({ argv: strs(), cwd: str(), timeout_ms: int(), retries_on_fail: int('0-5; a pass after a fail is marked flaky') }, ['argv']),
         },
         files_within_owned: bool(),
         verdict: { const: true },
