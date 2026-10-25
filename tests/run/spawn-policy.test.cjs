@@ -88,15 +88,17 @@ test('Codex: a researcher is refused E_SUBSTRATE naming its list, with nothing w
 test('a reviewer keeps the six and gets a scratch folder outside its worktree, named in its first message; a coder gets none', async () => {
   await withMgr(async ({ sb, m }) => {
     const recv = path.join(sb.data, 'recv.jsonl');
-    const saved = process.env.FAKE_RECV_FILE;
+    const saved = process.env.FAKE_RECV_FILE; let spawned = null;
     process.env.FAKE_RECV_FILE = recv;
     try {
-      await spawn(m, sb, 'v1', { agent_type: 'reviewer' });
+      spawned = await spawn(m, sb, 'v1', { agent_type: 'reviewer' });
       await m._waitTurn('v1', 8000);
     } finally { if (saved === undefined) delete process.env.FAKE_RECV_FILE; else process.env.FAKE_RECV_FILE = saved; }
     assert.strictEqual(flag(argvOf(sb, 'v1'), '--tools'), 'Read,Edit,Write,Glob,Grep,Bash');
     const scratch = path.join(sb.data, 'workers', 'v1', 'scratch').split(path.sep).join('/');
     assert.ok(fs.statSync(scratch).isDirectory(), 'made at spawn');
+    assert.strictEqual(spawned.scratch, scratch, 'the spawn answer names it');
+    assert.strictEqual(require('../../src/mcp/compose.cjs').compactSpawn(spawned).scratch, scratch, 'and worker_spawn keeps it');
     assert.ok(!scratch.toLowerCase().startsWith(String(sb.worktree).toLowerCase() + '/'), 'outside the worktree');
     const first = JSON.parse(fs.readFileSync(recv, 'utf8').split(String.fromCharCode(10)).filter(Boolean)[0]).text;
     assert.ok(first.includes(`Your scratch folder, outside the tree under review: ${scratch}.`), first);
@@ -104,3 +106,14 @@ test('a reviewer keeps the six and gets a scratch folder outside its worktree, n
     assert.ok(!fs.existsSync(path.join(sb.data, 'workers', 'c9', 'scratch')), 'a coder has no scratch folder');
   });
 });
+
+test("a review spawn's answer carries the assign answer's review block, and worker_spawn keeps it; a coder's has none", () => withMgr(async ({ sb, core, m }) => {
+  const review = { tree: 'C:/t/x', reviewed_task_id: 'w1', cwd: sb.worktree };
+  const real = core.task.assign;
+  core.task.assign = async (a) => { const o = await real(a); return a.check_only ? o : { ...o, review }; };
+  const r = await spawn(m, sb, 'rv1', { agent_type: 'reviewer', task_id: 'rt1' });
+  assert.deepStrictEqual(r.review, review);
+  assert.deepStrictEqual(require('../../src/mcp/compose.cjs').compactSpawn(r).review, review);
+  const c = await spawn(m, sb, 'cv1', { agent_type: 'coder' });
+  assert.strictEqual(c.review, undefined);
+}));
