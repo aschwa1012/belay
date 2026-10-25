@@ -45,6 +45,8 @@ const HIDING_KINDS = ['wrong', 'superseded', 'duplicate'];
 // hold whose reports are not a list of objects) fails CLOSED: it hides its note, and it is named as malformed so the operator is told.
 function judge(b) {
   if (!b || typeof b !== 'object' || Array.isArray(b)) return { hides: true, malformed: true };
+  // A hold must name its note: one that does not cannot be matched to a note, so it closes its project (heldWithheld) and is named as malformed.
+  if (typeof b.note_id !== 'string' || !b.note_id) return { hides: b.state === 'held', malformed: true };
   if (b.state !== 'held' || !HIDING_KINDS.includes(b.kind)) return { hides: false, malformed: false };
   if (b.ground !== 'reported' || b.hides === true) return { hides: true, malformed: false };
   if (b.reports !== undefined && (!Array.isArray(b.reports) || b.reports.some((r) => !r || typeof r !== 'object' || Array.isArray(r)))) return { hides: true, malformed: true };
@@ -58,32 +60,55 @@ const NOTE_ID = /"note_id"\s*:\s*"([^"\\]{1,128})"/; // a note id read from a bo
 
 // Malformed holds are told on stderr (the owner's or the adapter's log) once per row and process: a read writes nothing to the store.
 const told = new Set();
-function tell(id, why) {
+function tell(id, why, project) {
   if (told.has(id)) return;
   told.add(id);
-  try { process.stderr.write(`belay: held row ${id} cannot be read (${why}); its note is withheld from workers until the operator settles it\n`); } catch { /* no stderr */ }
+  const what = project ? `every note of project ${project} is withheld from workers` : 'its note is withheld from workers';
+  try { process.stderr.write(`belay: held row ${id} cannot be read (${why}); ${what} until the operator settles it\n`); } catch { /* no stderr */ }
 }
 
-// Note id -> project for every hold that withholds its note, and `closed`: the projects with a malformed hold whose note cannot be named, every
-// note of which is withheld. A query that fails outright returns { failed } and the caller withholds every note it reads.
-function heldWithheld(E) {
-  const out = new Map();
-  out.closed = new Set();
-  let found;
-  try {
-    found = E.store.db.prepare(`SELECT h.id AS id, substr(h.namespace, 6) AS p, h.body AS body FROM memory_entries h WHERE ${HELD_ROWS}`).all();
-  } catch (e) { out.failed = e; tell('(query)', e.message); return out; }
-  for (const r of found) {
+// Every active hold in state held, judged: [{ id, project, note_id (null when none can be named), hides, malformed, why }]. One scan of the held rows by
+// namespace range; a body is parsed and judged in JS, so no shape of one can throw. Throws only when the query itself fails.
+function readHolds(db) {
+  const out = [];
+  for (const r of db.prepare(`SELECT h.id AS id, substr(h.namespace, 6) AS p, h.body AS body FROM memory_entries h WHERE ${HELD_ROWS}`).all()) {
     const b = parseBody(r.body);
     const j = judge(b);
-    if (!j.hides) continue;
-    const nid = b && typeof b.note_id === 'string' ? b.note_id : (NOTE_ID.exec(String(r.body || '')) || [])[1];
-    if (j.malformed) tell(r.id, b ? 'its reports are not a list of objects' : 'its body is not JSON');
-    if (typeof nid === 'string') out.set(nid, r.p);
-    else out.closed.add(r.p);
+    const named = b && typeof b.note_id === 'string' && b.note_id ? b.note_id : null;
+    const nid = named || (b ? null : (NOTE_ID.exec(String(r.body || '')) || [])[1] || null);
+    const why = !j.malformed ? null : !b ? 'its body is not JSON' : !named ? 'its note_id is not a non-empty string' : 'its reports are not a list of objects';
+    out.push({ id: r.id, project: r.p, note_id: nid, hides: j.hides, malformed: j.malformed, why });
   }
   return out;
 }
+
+// The malformed holds of the store, for the operator's count and notice: [{ id, project, note_id, why }]; [] when the query cannot run.
+function unreadable(db) {
+  try { return readHolds(db).filter((h) => h.malformed).map(({ id, project, note_id, why }) => ({ id, project, note_id, why })); } catch { return []; }
+}
+
+// Note id -> project for every hold that withholds its note, and `closed`: the projects with a malformed hold whose note cannot be named, every
+// note of which is withheld. A query that fails outright returns { failed } and the caller withholds every note it reads. Memoized on the engine
+// until the store changes (this connection's total_changes() and SQLite's data_version, which counts other connections' commits).
+function heldWithheld(E) {
+  const db = E.store.db;
+  let key = null;
+  try { key = `${E.store.p('SELECT total_changes() AS c').get().c}|${E.store.p('PRAGMA data_version').get().data_version}`; } catch { key = null; }
+  if (key !== null && E[MEMO] && E[MEMO].key === key) return E[MEMO].value;
+  const out = new Map();
+  out.closed = new Set();
+  let holds;
+  try { holds = readHolds(db); } catch (e) { out.failed = e; tell('(query)', e.message, null); return out; }
+  for (const h of holds) {
+    if (!h.hides) continue;
+    if (h.malformed) tell(h.id, h.why, h.note_id ? null : h.project);
+    if (h.note_id) out.set(h.note_id, h.project);
+    else out.closed.add(h.project);
+  }
+  if (key !== null) E[MEMO] = { key, value: out };
+  return out;
+}
+const MEMO = Symbol('belay.heldWithheldMemo');
 
 // The active hold of each note among `ids` whose note is live in its project, whoever reads (the orchestrator's and the operator's mark):
 // note id -> { kind, ground, reason }. Only a hold that hides its note is marked: an `unsupported` row and a hold that hides nothing (a legacy
@@ -153,4 +178,4 @@ function withheldAmong(E, caller, list) {
   return out;
 }
 
-module.exports = { WITHHOLD_FOR, MATCHING, HIDING_KINDS, judge, hidesNote, effectiveState, parseBody, withholds, withheldIds, withheldAmong, heldWithheld, holdsAmong, noteIds };
+module.exports = { WITHHOLD_FOR, MATCHING, HIDING_KINDS, judge, hidesNote, effectiveState, parseBody, withholds, withheldIds, withheldAmong, heldWithheld, holdsAmong, noteIds, unreadable };

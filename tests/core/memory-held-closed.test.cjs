@@ -96,3 +96,25 @@ test('a 0.3.0 hold past the breaker is shown as queued: counted, listed, unmarke
   assert.deepStrictEqual([out.withheld, /^queued: every report on its hold is past its run's breaker/.test(out.withheld_why)], [false, true], out.withheld_why);
   assert.strictEqual(await listed(worker('hl'), 'hl', legacy), true, 'still visible');
 });
+
+test('a hold whose note_id is not a non-empty string closes its project loudly: counted, named in the notice, the status line and stderr', async () => {
+  await call(orch('hn'), 'run.attach', { adapter_pid: process.pid, project: 'hn', memory_levers: JSON.stringify({ project: 'hn', notes: true }) });
+  const plain = note('hn', 'plain in hn');
+  const h = hold('hn', { state: 'held', note_id: 12345, kind: 'wrong', ground: 'reported', reports: [{ key: 'k', by: 'orchestrator', why: 'x', at: 1 }], rev: 0 }); // the checker's probe
+  const lines = [];
+  const write = process.stderr.write;
+  process.stderr.write = (s, ...rest) => { lines.push(String(s)); return true; };
+  let seen;
+  try { seen = await listed(worker('hn'), 'hn', plain); } finally { process.stderr.write = write; }
+  assert.strictEqual(seen, false, 'closed: the whole project is withheld');
+  assert.ok(lines.some((l) => l.includes(h) && l.includes('every note of project hn is withheld from workers')), lines.join(''));
+  const c = await call(orch('hn'), 'memory.held', { project: 'hn' });
+  assert.deepStrictEqual([c.malformed, c.closed_projects], [1, ['hn']], 'counted though its note cannot be found');
+  const N = require('../../src/cli/cmd-notices.cjs');
+  const ev = N.heldEvents(c, null).find((e) => e.kind === 'holds_unreadable');
+  assert.ok(N.renderText([ev]).includes('every note of project hn is withheld from workers'));
+  const P = require('../../src/cli/panel-common.cjs');
+  assert.ok(P.unreadableText({ count: c.malformed, closed_projects: c.closed_projects }).includes('every note of project hn'));
+  store.db.prepare("UPDATE memory_entries SET body = '{\"state\":\"released\"}' WHERE id = ?").run(h);
+  assert.strictEqual(await listed(worker('hn'), 'hn', plain), true, 'open again once the row is settled');
+});
