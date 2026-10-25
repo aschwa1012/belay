@@ -140,3 +140,56 @@ test('ADR 0060: review is kept in both shapes and dropped when null; a shared tr
   const d = V.compactTask(row({ results: { evaluated_at: 7, executable: true, passed: true, flaky: true, checks: [flaky] } }), { detail: true });
   assert.deepStrictEqual([d.results.flaky, d.results.checks[0].flaky, d.results.checks[0].detail.attempts], [true, true, attempts]);
 });
+
+// The lean replies (try-2 feedback, token cost): task_create and task_worktree answer the new task's id, rev, state and spec head
+// and its tree, not the spec back; one review's detail gives its hand-back once; git_read leaves out belay's own argv.
+test('task_create answers id, rev, state and the spec head; a hold warning stays; view debug is the core row', async () => {
+  const born = { seq: 12, id: 't9', run_id: 'r', spec: SPEC, acceptance: { commands: [{ argv: ['npm', 'test'] }] }, files_owned: ['a.js'], state: 'open', results: null, depends_on: [], handoff: null, repairs: null, worktree: null, written_at: 1, written_by: 'orchestrator' };
+  const c = await V.viewed('task_create', { spec: SPEC }, async () => born);
+  assert.deepStrictEqual(Object.keys(c), ['id', 'seq', 'state', 'spec_head']);
+  assert.deepStrictEqual([c.id, c.seq, c.state], ['t9', 12, 'open']);
+  assert.ok(c.spec_head.length <= V.SPEC_HEAD && c.spec_head.endsWith('...'));
+  const warned = await V.viewed('task_create', { spec: SPEC }, async () => ({ ...born, overlaps: [{ task_id: 't1', paths: ['a.js'] }] }));
+  assert.deepStrictEqual(warned.overlaps, [{ task_id: 't1', paths: ['a.js'] }], 'the other-tree hold warning stays');
+  const bare = await V.viewed('task_create', { spec: 'no checks' }, async () => ({ ...born, acceptance: {}, warning: 'this task has no checks, so belay will never mark it done' }));
+  assert.match(bare.warning, /never mark it done/, 'a warning the core adds stays');
+  assert.strictEqual(await V.viewed('task_create', { spec: SPEC, view: 'debug' }, async () => born), born);
+});
+
+test('task_worktree answers the task as task_create does, its tree with path, branch and base, and a removal\'s receipt', async () => {
+  const wt = { repo: 'C:/r', path: 'C:/r.worktrees/t1', branch: 'belay/t1', base_ref: 'HEAD', base_sha: 'b', junctions: [{ path: 'x', target: 'y' }], junctions_skipped: [], created_at: 1, created_by: 'orchestrator' };
+  const made = await V.viewed('task_worktree', { task_id: 't1' }, async () => ({ ...row({ state: 'open', results: null, handoff: null }), seq: 3, worktree: wt }));
+  assert.deepStrictEqual(made.worktree, { path: 'C:/r.worktrees/t1', branch: 'belay/t1', base_sha: 'b' });
+  assert.deepStrictEqual([made.id, made.seq, made.state, 'spec' in made, 'acceptance' in made], ['t1', 3, 'open', false, false]);
+  const skipped = V.VIEWED.task_worktree({ ...row(), worktree: { ...wt, junctions_skipped: [{ path: 'node_modules', reason: 'not ignored' }] } });
+  assert.deepStrictEqual(skipped.worktree.junctions_skipped, [{ path: 'node_modules', reason: 'not ignored' }], 'a skipped junction is named');
+  const removed = V.VIEWED.task_worktree({ ...row(), worktree: { ...wt, removed_at: 9 }, removal: { junctions_unlinked: ['x'], branch_deleted: false } });
+  assert.deepStrictEqual([removed.worktree.removed_at, removed.removal], [9, { junctions_unlinked: ['x'], branch_deleted: false }]);
+});
+
+test('one review\'s detail gives the hand-back once: what its verdict check carries verbatim is named, not repeated', () => {
+  const findings = [{ severity: 'blocking', where: 'lib/a.js:3', what: 'x'.repeat(300) }];
+  const tree = { changed: false, changed_paths: [] };
+  const h = { by: 'r1', at: 6, lease_id: 'l9', tree, result: { verdict: 'refuted', summary: 'the retry loses the last error', findings, extra: 'kept' } };
+  const v = { kind: 'verdict', executable: true, passed: false, ms: 1, detail: { verdict: 'refuted', summary: 'the retry loses the last error', findings, judged_by: 'r1', lease_id: 'l9', tree, tree_changed: false } };
+  const review = row({ acceptance: { verdict: true }, handoff: h, results: { executable: true, passed: false, checks: [v] } });
+  const d = V.taskList({ tasks: [review] }, { task_ids: ['t1'] }).tasks[0];
+  assert.deepStrictEqual(d.handoff.in_verdict_check, ['summary', 'findings', 'tree']);
+  assert.deepStrictEqual(d.handoff.result, { verdict: 'refuted', extra: 'kept' });
+  assert.deepStrictEqual(d.results.checks[0].detail, v.detail, 'the verdict check, which the prompt reads, keeps all of it');
+  assert.strictEqual(JSON.stringify(d).split('x'.repeat(300)).length - 1, 1, 'the findings appear once');
+  // A hand-back that differs from the check (another lease, or findings the check cut) keeps everything.
+  const other = V.taskList({ tasks: [row({ handoff: { ...h, lease_id: 'l8' }, results: { checks: [v] } })] }, { task_ids: ['t1'] }).tasks[0];
+  assert.deepStrictEqual(other.handoff, { ...h, lease_id: 'l8' });
+  const cut = V.taskEvaluate(row({ handoff: h, results: { checks: [{ ...v, detail: { ...v.detail, findings: [] } }] } }));
+  assert.deepStrictEqual(cut.handoff.result.findings, findings, 'findings that differ stay in the hand-back');
+  assert.deepStrictEqual(cut.handoff.in_verdict_check, ['summary', 'tree']);
+});
+
+test('git_read leaves out belay\'s argv; view debug keeps it', async () => {
+  const r = { op: 'log', worktree: 'C:/r', worktree_from: 'run', argv: ['git', '-c', 'core.fsmonitor=', '--no-pager', 'log', '-n', '5'], exit_code: 0, ms: 9, bytes: 40, truncated: false, out: 'abc subject\n' };
+  const c = await V.viewed('git_read', { op: 'log' }, async () => r);
+  assert.ok(!('argv' in c));
+  assert.deepStrictEqual(c, { op: 'log', worktree: 'C:/r', worktree_from: 'run', exit_code: 0, ms: 9, bytes: 40, truncated: false, out: 'abc subject\n' });
+  assert.strictEqual(await V.viewed('git_read', { op: 'log', view: 'debug' }, async () => r), r);
+});
