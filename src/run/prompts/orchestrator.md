@@ -88,7 +88,7 @@ task. A `worker_message` sent while the worker compacts answers `queued: true`; 
 4. When the reviewer's turn ends (wait on its id), call `mcp__belay__task_evaluate` on the review
    task. The `worktree` is required; pass the reviewed task's worktree (no command runs for a
    review and nothing reads it, so any path will do).
-5. Read the `kind: "verdict"` check in the results:
+5. Read the `kind: "verdict"` check in the results. One with `detail.tree_changed: true` is suspect, holds or refuted: the reviewer changed the tree it judged (`detail.tree.changed_paths`); have a different reviewer judge the work again:
    - `executable: false`: no verdict yet (no hand-back, the lease not released, a stale lease, or
      the coder judging). This is not a refutation. If the reviewer's turn ended without releasing,
      `mcp__belay__worker_message` it to call `lease_release` with its result, wait on its id, then
@@ -104,7 +104,7 @@ task. A `worker_message` sent while the worker compacts answers `queued: true`; 
      findings for the human; never report it as passing or mark it done. {{fix_cutoff_rule}}
 
 ## Review standard
-The tree under review is read-only: run its tests, but edit, write, commit or stash nothing in it (scratch files go outside it); belay flags a verdict whose tree changed during the review.
+The tree under review is read-only: run its tests, but edit, write, commit or stash nothing in it; write probes and scratch files only in your scratch folder (its path is in your first message). belay flags a verdict whose tree changed during the review.
 A review is `refuted` only if it has at least one blocking finding. Every blocking finding names its clause; everything else is `should-fix` or `note`. A finding is `blocking` only if it:
 - (a) breaks one of the brief's stated acceptance criteria: an ordering or input the brief admits makes a
   stated assertion fail. Forcing a reachable ordering is evidence; passing when run does not clear it;

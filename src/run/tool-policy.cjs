@@ -18,9 +18,9 @@ const READ_ONLY = ['Read', 'Glob', 'Grep'];
 const BUILTIN = Object.freeze({
   coder: Object.freeze([...SIX]),
   tester: Object.freeze([...SIX]),
-  // ADR 0054 amendment 1: a reviewer judges a tree it must not change, so it has no Edit or Write; it keeps Bash to run the
-  // tests. Bash can still write: the prompt says the tree is read-only, and task.evaluate flags a tree that changed under it.
-  reviewer: Object.freeze([...READ_ONLY, 'Bash']),
+  // ADR 0054 amendment 1 (the operator, 2026-10-25): a reviewer keeps the six. Removing Write never made it read-only (Bash
+  // writes), and its probes go to its scratch folder on disk; a change to the tree it judges is flagged at the hand-back.
+  reviewer: Object.freeze([...SIX]),
   researcher: Object.freeze([...READ_ONLY, ...WEB_TOOLS]),
 });
 

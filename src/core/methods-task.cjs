@@ -428,6 +428,8 @@ async function releaseNow(E, caller, args) {
       const missing = missingCitations(E, args.result);
       if (missing !== null) handoff.memory_ids_missing = missing;
       if (l.tree && treeNow) handoff.tree = RT.compare(l.tree, treeNow);
+      const scratch = l.tree ? RT.scratchFacts(E.dataDir, caller.worker_id) : null; // its size, flagged past 50 MB (ADR 0054 amendment 1)
+      if (scratch) handoff.scratch = scratch;
     }
     const row = rows.append(E.store, 'task', { ...task, state: task.state === 'done' ? 'done' : 'released', handoff }, by, t);
     const ck = rows.lastCheckpoint(E.store, l.task_id);

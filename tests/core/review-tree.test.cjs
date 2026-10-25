@@ -1,5 +1,5 @@
 'use strict';
-// review-tree.test.cjs — ADR 0054 amendment 1. A reviewer has no Edit or Write, but Bash can still write. belay snapshots the
+// review-tree.test.cjs — ADR 0054 amendment 1. A reviewer can write (Edit, Write, Bash). belay snapshots the
 // reviewer's worktree at the review lease's grant, again at the hand-back, and stores the comparison in the handoff, which
 // the verdict check shows (detail.tree, detail.tree_changed) without failing the verdict. Only a change made while the
 // review lease was held is flagged: never the coder's leftovers, a commit before the grant, or a fixer after the hand-back.
@@ -145,4 +145,21 @@ test('a hand-back with no result, or a lease that is not a review\'s, carries no
   const a2 = await orch.task.assign({ task_id: r.id, worker_id: 'rev-none' });
   const rel2 = await rc.lease.release({ lease_id: a2.new_lease.id, reason: 'no result yet' });
   assert.ok(!rel2.handoff, 'no hand-back, so no tree');
+});
+
+test('a probe written in the reviewer\'s scratch folder does not flag; its size is on the hand-back; past 50 MB it is flagged, never cut', async () => {
+  const RS = require('../../src/run/review-scratch.cjs');
+  const wt = repo('scratch');
+  const w = await doneWork('scratch', wt);
+  const scratch = RS.ensure(dir, 'rev-scratch', 'test-run');
+  const probe = await review(w, 'rev-scratch', wt, () => fs.writeFileSync(path.join(scratch, 'probe.cjs'), 'console.log("C:\\path")\n'));
+  assert.strictEqual(probe.check.detail.tree_changed, false, 'the scratch folder is outside the tree');
+  assert.deepStrictEqual([probe.check.detail.scratch.path, probe.check.detail.scratch.files, probe.check.detail.scratch_over_limit], [scratch, 1, false]);
+  assert.ok(probe.check.detail.scratch.bytes > 0);
+  const w2 = await doneWork('scratch2', wt);
+  const big = RS.ensure(dir, 'rev-big', 'test-run');
+  const large = await review(w2, 'rev-big', wt, () => { const fd = fs.openSync(path.join(big, 'big.bin'), 'w'); fs.ftruncateSync(fd, 51 * 1024 * 1024); fs.closeSync(fd); });
+  assert.strictEqual(large.check.passed, true, 'the size is a flag, not a refusal');
+  assert.deepStrictEqual([large.check.detail.scratch_over_limit, large.check.detail.scratch.bytes], [true, 51 * 1024 * 1024]);
+  assert.ok(fs.existsSync(path.join(big, 'big.bin')), 'nothing is cut');
 });

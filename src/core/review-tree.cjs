@@ -1,6 +1,6 @@
 'use strict';
-// review-tree.cjs — ADR 0054 amendment 1: did the reviewer change the tree it judged? A reviewer has no Edit or Write, but
-// its Bash can still write. So belay snapshots the reviewer's worktree when the review lease is granted (task.assign), keeps
+// review-tree.cjs — ADR 0054 amendment 1: did the reviewer change the tree it judged? A reviewer has Edit, Write and Bash,
+// and its probes belong in its scratch folder outside the tree. So belay snapshots the reviewer's worktree when the review lease is granted (task.assign), keeps
 // the snapshot on the lease row (`tree`), snapshots it again when the reviewer hands back (lease.release with a result), and
 // stores the comparison in the hand-back (`handoff.tree`). Only what changed between the two is flagged: the coder's
 // uncommitted leftovers, a commit made before the grant, and anything after the hand-back (a fixer starting) are not the
@@ -79,6 +79,32 @@ function compare(grant, now) {
   return out;
 }
 
+// The reviewer's scratch folder (<data>/workers/<id>/scratch, made by the run manager at spawn): its bytes and files, walked
+// without following links, flagged past SCRATCH_FLAG_BYTES and never cut. null when there is no folder.
+const SCRATCH_FLAG_BYTES = 50 * 1024 * 1024;
+const scratchOf = (dataDir, workerId) => path.join(String(dataDir), 'workers', String(workerId), 'scratch').split(path.sep).join('/');
+function measure(dir) {
+  let bytes = 0, files = 0;
+  const walk = (d) => {
+    let ents;
+    try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.isFile()) { try { bytes += fs.statSync(p).size; files += 1; } catch { /* gone */ } }
+    }
+  };
+  if (!fs.existsSync(dir)) return null;
+  walk(dir);
+  return { bytes, files };
+}
+function scratchFacts(dataDir, workerId) {
+  if (!dataDir || !workerId) return null;
+  const dir = scratchOf(dataDir, workerId);
+  const m = measure(dir);
+  return m ? { path: dir, ...m, over_limit: m.bytes > SCRATCH_FLAG_BYTES, limit_bytes: SCRATCH_FLAG_BYTES } : null;
+}
+
 // assign: the grant snapshot of a review task's assignee, or null (not a review, check_only, or no worker row).
 async function grantSnapshot(E, args) {
   if (args.check_only === true || !args.task_id || !args.worker_id) return null;
@@ -94,4 +120,4 @@ async function releaseSnapshot(E, args) {
   return l && l.tree && l.tree.worktree ? snapshot(l.tree.worktree) : null;
 }
 
-module.exports = { snapshot, compare, grantSnapshot, releaseSnapshot, ENTRIES_MAX, PATHS_MAX };
+module.exports = { snapshot, compare, grantSnapshot, releaseSnapshot, scratchOf, measure, scratchFacts, ENTRIES_MAX, PATHS_MAX, SCRATCH_FLAG_BYTES };

@@ -32,6 +32,7 @@ function verdictCheck(store, task) {
     depends_on: dependsOn,
     // ADR 0054 amendment 1: what changed in the reviewer's tree between the lease's grant and the hand-back (a flag, never a fail).
     ...(h && h.tree ? { tree: h.tree, tree_changed: h.tree.changed } : {}),
+    ...(h && h.scratch ? { scratch: h.scratch, scratch_over_limit: h.scratch.over_limit } : {}),
   };
   const notExecutable = (reason) => ({
     kind: 'verdict', executable: false, passed: false, ms: Date.now() - started, detail: { ...detail, reason },

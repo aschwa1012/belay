@@ -85,21 +85,22 @@ test('Codex: a researcher is refused E_SUBSTRATE naming its list, with nothing w
   assert.deepStrictEqual(TP.spawnSurface(null, { substrate: 'codex', agent_type: 'coder' }), { tools: null, allowedTools: null });
 }));
 
-test('a reviewer gets Read, Glob, Grep and Bash and no Edit or Write; the config can widen it to the six', async () => {
-  await withMgr(async ({ sb, core, m }) => {
-    const r = await spawn(m, sb, 'v1', { agent_type: 'reviewer' });
-    assert.strictEqual(flag(argvOf(sb, 'v1'), '--tools'), 'Read,Glob,Grep,Bash');
-    assert.deepStrictEqual(r.surface.builtins, ['Bash', 'Glob', 'Grep', 'Read'], 'the ready gate held the launch to the list');
-    const rows = core.rowsFor('v1');
-    assert.deepStrictEqual(rows[rows.length - 1].tools, ['Read', 'Glob', 'Grep', 'Bash'], 'the row keeps the list for a relaunch');
-    await assert.rejects(spawn(m, sb, 'v2', { agent_type: 'reviewer', allowed_tools: ['Read', 'Write'] }),
-      (e) => e.code === 'E_ARGS' && /Write, outside the reviewer list Read, Glob, Grep, Bash \(built-in policy for reviewer\)/.test(e.message));
-    assert.strictEqual(core.rowsFor('v2').length, 0, 'no row');
-    await assert.rejects(m.spawn({ substrate: 'codex', worktree: sb.worktree, prompt: 'hi', worker_id: 'v3', agent_type: 'reviewer' }),
-      (e) => e.code === 'E_SUBSTRATE' && /reviewer worker's tools are Read, Glob, Grep, Bash/.test(e.message), 'Codex has no list to narrow to');
-  });
+test('a reviewer keeps the six and gets a scratch folder outside its worktree, named in its first message; a coder gets none', async () => {
   await withMgr(async ({ sb, m }) => {
-    await spawn(m, sb, 'v4', { agent_type: 'reviewer' });
-    assert.strictEqual(flag(argvOf(sb, 'v4'), '--tools'), 'Read,Edit,Write,Glob,Grep,Bash', 'the config widened it to the six');
-  }, { path: 'C:/cfg/belay.config.json', types: { reviewer: { tools: ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash'] } } });
+    const recv = path.join(sb.data, 'recv.jsonl');
+    const saved = process.env.FAKE_RECV_FILE;
+    process.env.FAKE_RECV_FILE = recv;
+    try {
+      await spawn(m, sb, 'v1', { agent_type: 'reviewer' });
+      await m._waitTurn('v1', 8000);
+    } finally { if (saved === undefined) delete process.env.FAKE_RECV_FILE; else process.env.FAKE_RECV_FILE = saved; }
+    assert.strictEqual(flag(argvOf(sb, 'v1'), '--tools'), 'Read,Edit,Write,Glob,Grep,Bash');
+    const scratch = path.join(sb.data, 'workers', 'v1', 'scratch').split(path.sep).join('/');
+    assert.ok(fs.statSync(scratch).isDirectory(), 'made at spawn');
+    assert.ok(!scratch.toLowerCase().startsWith(String(sb.worktree).toLowerCase() + '/'), 'outside the worktree');
+    const first = JSON.parse(fs.readFileSync(recv, 'utf8').split(String.fromCharCode(10)).filter(Boolean)[0]).text;
+    assert.ok(first.includes(`Your scratch folder, outside the tree under review: ${scratch}.`), first);
+    await spawn(m, sb, 'c9', { agent_type: 'coder' });
+    assert.ok(!fs.existsSync(path.join(sb.data, 'workers', 'c9', 'scratch')), 'a coder has no scratch folder');
+  });
 });
