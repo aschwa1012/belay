@@ -25,14 +25,14 @@ const COLUMNS = {
     'input_sha256', 'state', 'verdict_by', 'reason', 'requested_at', 'decided_at'],
   // ADR 0053 decision 5.
   integration: ['id', 'run_id', 'repo', 'into_branch', 'worktree', 'created_worktree', 'base_sha', 'head_sha', 'state',
-    'task_ids', 'merged', 'conflict', 'error', 'checks', 'passed', 'junctions', 'removed_at', 'owner_pid', 'owner_boot'],
+    'task_ids', 'merged', 'conflict', 'error', 'checks', 'passed', 'junctions', 'removed_at', 'owner_pid', 'owner_boot', 'forced'],
 };
 
 // Text in SQLite, parsed objects on the wire (api.md §1).
 const JSON_COLUMNS = {
   run: [], worker: ['memory_queries', 'tools', 'leases_released'], lease: ['tree'],
   task: ['acceptance', 'files_owned', 'results', 'depends_on', 'handoff', 'worktree', 'answers', 'amended'],
-  integration: ['task_ids', 'merged', 'conflict', 'error', 'checks', 'junctions'],
+  integration: ['task_ids', 'merged', 'conflict', 'error', 'checks', 'junctions', 'forced'],
   checkpoint: ['files_touched', 'tool_digest', 'stated'],
   // build step 6d: `input` stays a string on the wire, never parsed here. A truncated JSON text
   // (input_truncated: 1) does not parse as JSON at all, and an operator reading `pending` needs to

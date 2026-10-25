@@ -17,6 +17,7 @@ const { pidAlive } = require('./lock.cjs');
 const ID = require('./proc-identity.cjs');
 
 const MAX_TASKS = 50;
+const MAX_REASON = 300;
 
 // `not_merged` and `left_out` (each merged branch head past what was judged, ADR 0060 decision 4) are derived from the row, never stored.
 const leftOut = (r) => { const l = (r.merged || []).filter((m) => m && m.left_out).map((m) => ({ task_id: m.task_id, ...m.left_out })); return l.length ? l : null; };
@@ -88,17 +89,22 @@ function checkArgs(args) {
   }
   if (new Set(ids).size !== ids.length) throw err('E_ARGS', 'integration.merge: task_ids names a task twice', { task_ids: ids });
   if (args.evaluate !== undefined && typeof args.evaluate !== 'boolean') throw err('E_ARGS', 'integration.merge: evaluate must be a boolean', { field: 'evaluate' });
+  if (args.force !== undefined && typeof args.force !== 'boolean') throw err('E_ARGS', 'integration.merge: force must be a boolean', { field: 'force' });
+  if (args.force === true && (typeof args.reason !== 'string' || !args.reason.trim() || args.reason.length > MAX_REASON)) {
+    throw err('E_ARGS', `integration.merge: force needs a reason, 1 to ${MAX_REASON} characters, saying why the failing or missing checks are expected`, { field: 'reason' });
+  }
   for (const k of ['into', 'base']) if (args[k] !== undefined && (typeof args[k] !== 'string' || !args[k])) throw err('E_ARGS', `integration.merge: ${k} must be a non-empty string`, { field: k });
 }
 
 // Every task done, with a recorded branch, in one repository, and its tree (if still there) clean.
-async function readTasks(E, ids) {
+async function readTasks(E, ids, force) {
   const tasks = ids.map((id) => {
     const t = rows.current(E.store, 'task', id);
     if (!t) throw err('E_NOT_FOUND', `no task row exists for ${id}`, { task_id: id });
     return t;
   });
-  const notDone = tasks.filter((t) => t.state !== 'done').map((t) => ({ task_id: t.id, state: t.state }));
+  // `force` (a merge past checks that failed or never passed) takes a task that is not done, but never a cancelled one: that is final.
+  const notDone = tasks.filter((t) => (force ? t.state === 'cancelled' : t.state !== 'done')).map((t) => ({ task_id: t.id, state: t.state }));
   if (notDone.length) throw err('E_PRECONDITION', `only done tasks are merged; not done: ${notDone.map((x) => `${x.task_id} (${x.state})`).join(', ')}. Leave them out, or merge once task_evaluate makes them done`, { not_done: notDone });
   const noBranch = tasks.filter((t) => !t.worktree || !t.worktree.branch).map((t) => t.id);
   if (noBranch.length) throw err('E_PRECONDITION', `these tasks have no belay branch to merge: ${noBranch.join(', ')}. integrate merges only tasks worked in their own tree (task_worktree before the coder starts); leave these out, their work is already where it was committed`, { no_branch: noBranch });
@@ -117,7 +123,7 @@ async function readTasks(E, ids) {
   }
   if (dirty.length) throw err('E_PRECONDITION', `a merge would leave uncommitted work behind in ${dirty.map((d) => d.task_id).join(', ')}; commit it first`, { dirty });
   for (const t of tasks) {
-    if (J.judgedOf(t)) continue;
+    if (J.judgedOf(t) || t.state !== 'done') continue; // a forced task not done may have been judged on nothing: its branch head is merged
     const h = await G.run(repo, ['rev-parse', '--verify', `refs/heads/${t.worktree.branch}^{commit}`]);
     const head = h.ok ? h.stdout.trim() : null;
     throw err('E_PRECONDITION', `task ${t.id} records nothing it was judged on (it was evaluated before belay recorded it), so belay cannot tell its work from what came after on ${t.worktree.branch} (head ${head || 'unresolved'}); judge the branch again as a new task`, { task_id: t.id, branch: t.worktree.branch, branch_head: head });
@@ -133,11 +139,14 @@ async function readTasks(E, ids) {
 async function targetsOf(E, tasks, repo) {
   const targets = new Map();
   for (const t of tasks) {
-    const on = J.onBranch(E, t);
+    const own = t.state !== 'done' && J.judgedOf(t) ? [t] : []; // a forced task not done is judged on what its own failing evaluation recorded
+    const on = [...J.onBranch(E, t), ...own].sort((a, b) => Number(a.results.evaluated_at) - Number(b.results.evaluated_at));
     const by = on[on.length - 1];
     const h = await G.run(repo, ['rev-parse', '--verify', `refs/heads/${t.worktree.branch}^{commit}`]);
-    if (!h.ok || !by) continue;
+    if (!h.ok) continue;
     const tip = h.stdout.trim();
+    if (t.state !== 'done' && !own.length) { targets.set(t.id, { by: null, sha: tip, tip, on: [], unjudged: true }); continue; }
+    if (!by) continue;
     const sha = await J.commitOf(repo, by, tip);
     if (!sha) {
       const j = J.judgedOf(by);
@@ -205,7 +214,8 @@ async function mergeOne(tree, task, target) {
     const c = await J.commitOf(tree, t, tip);
     if (c && (await G.run(tree, ['merge-base', '--is-ancestor', c, sha])).ok) covers.push(t.id);
   }
-  const facts = { judged_by: by.id, covers, ...(leftOut ? { left_out: leftOut } : {}) };
+  if (target.unjudged) covers.push(task.id);
+  const facts = { judged_by: by ? by.id : null, covers, ...(leftOut ? { left_out: leftOut } : {}) };
   // A branch still at its recorded base holds no commit: it is contained already, and `empty` says why, so it is not read as merged work.
   const empty = sha === task.worktree.base_sha;
   if ((await G.run(tree, ['merge-base', '--is-ancestor', sha, 'HEAD'])).ok) return { ok: true, task_id: task.id, branch: b, sha, already: true, empty, ...facts };
@@ -261,7 +271,8 @@ async function merge(E, caller, args) {
   args = W.present(args);
   checkArgs(args);
   const takeOver = checkTakeOver(caller, args, 'integration.merge');
-  const { tasks, repo, targets } = await readTasks(E, args.task_ids);
+  const force = args.force === true;
+  const { tasks, repo, targets } = await readTasks(E, args.task_ids, force);
   const into = await G.validBranch(repo, args.into === undefined ? `belay/integrate/${caller.run_id}` : args.into);
   return W.exclusive(`integrate:${repo}:${into}`, `an integration into ${into}`, async () => {
     const abandoned = await abandonStale(E, caller, repo, into, takeOver);
@@ -315,6 +326,15 @@ async function merge(E, caller, args) {
       }
     }
     // The merges have happened whatever the run did meanwhile, so the row that records them is written without a second run check.
+    // A forced merge says so on its row, only when force took effect: a task not done was merged, or a check failed.
+    if (force) {
+      const failing = (out.checks || []).filter((c) => !c.passed);
+      const unsettled = out.merged.filter((m) => tasks.find((t) => t.id === m.task_id).state !== 'done').map((m) => m.task_id);
+      if (unsettled.length || failing.length) {
+        out.forced = { by, at: Date.now(), reason: args.reason.trim(), task_ids: [...new Set([...unsettled, ...failing.flatMap((c) => c.task_ids)])],
+          failing: failing.map((c) => c.argv.slice(0, 4).join(' ').slice(0, 80)) };
+      }
+    }
     const row = E.store.tx(() => rows.append(E.store, 'integration', out, by, Date.now()));
     E.noteWrite();
     return view(row);
