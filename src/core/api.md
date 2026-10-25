@@ -35,7 +35,7 @@ worker     (seq, id, run_id, substrate 'claude-code'|'codex', pid, session_id, a
             mid_turn, death_established_by, permission_mode_requested, permission_mode_effective, claude_code_version,
             paused_at, paused_by, park_turns, model TEXT, cache_read_tokens INT, cache_creation_tokens INT, tool_calls INT, base_sha TEXT, head_sha TEXT, effort_requested TEXT, max_budget_usd REAL, model_requested TEXT, head_error TEXT, base_error TEXT, pid_created INT, pid_created_error TEXT, pid_image TEXT, written_at, written_by)
 task       (seq, id, run_id, spec, acceptance JSON, files_owned JSON, state, results JSON, depends_on JSON, handoff JSON, repairs, worktree JSON (ADR 0053), written_at, written_by)
-lease      (seq, id, task_id, run_id, holder, holder_role, granted_at, expires_at, released_at, supersedes, ttl_ms INT, written_at, written_by)
+lease      (seq, id, task_id, run_id, holder, holder_role, granted_at, expires_at, released_at, supersedes, ttl_ms INT, tree TEXT, written_at, written_by)
 checkpoint (seq, id, task_id, worker_id, run_id, turn, files_touched JSON, tool_digest JSON, stated JSON, source, written_at, written_by)
 permission (seq, id, run_id, worker_id, adapter_pid, tool, input, input_truncated, input_sha256, state,
             verdict_by, reason, requested_at, decided_at, written_at, written_by)

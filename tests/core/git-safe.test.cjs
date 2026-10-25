@@ -55,8 +55,8 @@ test('safeGit, files_within_owned and the review snapshot run no program from th
     assert.ok(EV.parsePorcelainZ(s.stdout).includes('a.txt'), 'the read still sees the change');
     const owned = await EV.filesWithinOwned(p.dir, ['a.txt', '.gitattributes'], 'HEAD', 'arg');
     assert.strictEqual(owned.executable, true, JSON.stringify(owned.detail));
-    const snap = await require('../../src/core/review-tree.cjs').reviewTree({ id: 'r', worktree: p.dir, base_sha: null });
-    assert.ok(snap.head_sha && snap.uncommitted_count >= 1, JSON.stringify(snap));
+    const snap = await require('../../src/core/review-tree.cjs').snapshot(p.dir);
+    assert.ok(snap.head && snap.count >= 1, JSON.stringify(snap));
     assert.deepStrictEqual(p.ran(), [], 'no configured program ran');
   } finally { p.rm(); }
 });
