@@ -199,7 +199,7 @@ function Held({ E, snap, ui, now, act, cols, pend, focused, settled }: Ctx) {
     ...(awaiting > 0 ? [{ t: ' · ', dim: true } as Seg, { t: `${awaiting} await${awaiting === 1 ? 's' : ''} you`, c: ATTN } as Seg] : []),
   ]
   return (
-    <Section E={E} k="sm" title="MEMORY" cols={cols} summary={summary}>
+    <Section E={E} k="sm" title="NOTES" cols={cols} summary={summary}>
       {off && <MemoryOff E={E} n={off} cols={inner} />}
       {hd && hd.reviews.flatMap((r, i) => {
         const bad = r.state === 'failed' // a review cut off (its claimant gone) is finished, so dim; only a failed one with a reason is red

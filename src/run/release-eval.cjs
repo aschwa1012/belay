@@ -15,6 +15,9 @@ const crypto = require('node:crypto');
 
 const WAKE_TEXT_MAX = 221;
 const PENDING_MAX_MS = 900000; // a watched evaluation that never lands (cancelled, or the owner gone) is forgotten after this
+// ADR 0058 amendment 2: how long a turn_end wake waits for its hand-backs' evaluation; BELAY_RELEASE_WAKE_HOLD_MS (ms) overrides it.
+const RELEASE_WAKE_HOLD_MS = 30000;
+const holdMs = () => (/^\d+$/.test(String(process.env.BELAY_RELEASE_WAKE_HOLD_MS || '').trim()) ? Number(process.env.BELAY_RELEASE_WAKE_HOLD_MS) : RELEASE_WAKE_HOLD_MS);
 
 const failedKinds = (row) => ((row.results && row.results.checks) || []).filter((c) => !c.passed)
   .map((c) => (c.kind === 'command' ? `command ${Array.isArray(c.argv) ? c.argv.slice(0, 3).join(' ') : '?'}${c.exit_code != null ? ` exit ${c.exit_code}` : ''}` : c.kind));
@@ -126,49 +129,91 @@ function clause(evs, room) {
 function turnEndText(head, tail, evs, evaluating) {
   const room = WAKE_TEXT_MAX - Buffer.byteLength(head + tail, 'utf8');
   const n = Array.isArray(evaluating) ? evaluating.length : 0;
-  const ing = n ? cut(` Evaluating ${n} hand-back${n === 1 ? '' : 's'} at release; worker_wait has the result.`, room) : '';
+  const ing = n ? cut(` Evaluating ${n} hand-back${n === 1 ? '' : 's'} at release; a wake follows with the result.`, room) : '';
   return `${head}${evs && evs.length ? clause(evs, room - Buffer.byteLength(ing, 'utf8')) : ''}${ing}${tail}`;
 }
 
 // For each turn_end wake: the release evaluations of that worker's tasks that have landed and were not reported, attached; those
-// still running are watched. Watched tasks whose evaluation landed since become one `evaluated` wake each. `seen` is the caller's
-// Map task_id -> evaluated_at, carried across polls (its `pending` holds the watched tasks). Tasks are read only when there is a
-// turn_end or something watched.
-async function enrichWakes(core, runId, events, seen) {
+// still running are watched. Watched tasks whose evaluation landed since become one `evaluated` wake per worker. `seen` is the
+// caller's Map task_id -> evaluated_at, carried across polls (its `pending` holds the watched tasks, its `held` the held wakes).
+// Tasks are read only when there is a turn_end, something watched or something held.
+//
+// ADR 0058 amendment 2: with `holdMs`, a turn_end whose hand-backs are still being evaluated is held until they land, so the result
+// rides on that one wake instead of a second; past `holdMs` it goes out saying `evaluating`, and one `evaluated` wake follows when
+// the result lands, so the result never waits on a call the orchestrator may not make. Any other event about the worker sends its
+// held wake first, so a worker's wakes keep their order. `holdMs` 0 holds nothing. `now` is the clock, for a test to set.
+async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.now } = {}) {
   const pending = seen.pending || (seen.pending = new Map());
-  if (!events.some((e) => e.event === 'turn_end') && !pending.size) return events;
-  let tasks;
-  try { tasks = ((await core.task.list({})) || {}).tasks || []; } catch { return events; }
+  const held = seen.held || (seen.held = new Map());
+  if (!events.some((e) => e.event === 'turn_end') && !pending.size && !held.size) return events;
+  let tasks = null;
+  try { tasks = ((await core.task.list({})) || {}).tasks || []; } catch { /* nothing is attached and nothing lands this poll */ }
+  if (!tasks) { const flushed = [...held.values()].map((h) => h.ev); held.clear(); return flushed.concat(events); }
+  const byId = new Map(tasks.map((t) => [t.id, t]));
   const landed = (t) => t.results && t.results.trigger === 'release' && seen.get(t.id) !== t.results.evaluated_at && (!t.handoff || Number(t.results.evaluated_at) >= Number(t.handoff.at));
+  const t0 = now();
+  const out = [];
+  // A held wake takes what has landed since; a hand-back no longer awaiting evaluation (cancelled, re-assigned) is dropped from it.
+  const settle = (h) => {
+    h.ids = h.ids.filter((id) => {
+      const t = byId.get(id);
+      if (t && landed(t)) { seen.set(id, t.results.evaluated_at); pending.delete(id); h.evs.push(summaryOf(t)); return false; }
+      if (!t || !unevaluated(t, runId, h.ev.worker_id)) { pending.delete(id); return false; }
+      return true;
+    });
+  };
+  const release = (wid) => {
+    const h = held.get(wid);
+    held.delete(wid);
+    settle(h);
+    if (h.evs.length) h.ev.evaluated = h.evs;
+    if (h.ids.length) h.ev.evaluating = h.ids; // still watched in `pending`: its result follows as one wake
+    out.push(h.ev);
+  };
   for (const ev of events) {
-    if (ev.event !== 'turn_end') continue;
+    if (held.has(ev.worker_id)) release(ev.worker_id);
+    if (ev.event !== 'turn_end') { out.push(ev); continue; }
     const evs = []; const ing = [];
     for (const t of tasks) {
       if (t.run_id !== runId || !t.handoff || t.handoff.by !== ev.worker_id) continue;
-      if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); evs.push(summaryOf(t)); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: Date.now() }); ing.push(t.id); }
+      if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); evs.push(summaryOf(t)); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: t0 }); ing.push(t.id); }
     }
+    if (ing.length && holdMs > 0) { held.set(ev.worker_id, { ev, evs, ids: ing, since: t0 }); continue; }
     if (evs.length) ev.evaluated = evs;
     if (ing.length) ev.evaluating = ing;
+    out.push(ev);
   }
-  const out = [...events];
+  for (const [wid, h] of [...held]) {
+    settle(h);
+    if (!h.ids.length || t0 - h.since >= holdMs) release(wid);
+  }
+  // A held wake's tasks were settled above, so what lands here belongs to a wake already sent.
+  const follow = new Map(); // worker id -> the summaries of its watched tasks that landed this poll
   for (const [id, p] of [...pending]) {
-    const t = tasks.find((x) => x.id === id);
+    const t = byId.get(id);
     if (t && landed(t)) {
       seen.set(id, t.results.evaluated_at); pending.delete(id);
-      const text = cut(`belay: worker ${p.worker_id}'s hand-back:${clause([summaryOf(t)], WAKE_TEXT_MAX)}`, WAKE_TEXT_MAX);
-      out.push({ event: 'evaluated', worker_id: `eval:${id}`, turn: 0, seq: t.results.evaluated_at, task_id: id, text });
-    } else if (!t || !unevaluated(t, runId, p.worker_id) || Date.now() - p.since > PENDING_MAX_MS) pending.delete(id);
+      if (!follow.has(p.worker_id)) follow.set(p.worker_id, []);
+      follow.get(p.worker_id).push(summaryOf(t));
+    } else if (!t || !unevaluated(t, runId, p.worker_id) || t0 - p.since > PENDING_MAX_MS) pending.delete(id);
+  }
+  for (const [wid, evs] of follow) {
+    const text = cut(`belay: worker ${wid}'s hand-back:${clause(evs, WAKE_TEXT_MAX)}`, WAKE_TEXT_MAX);
+    const seq = Math.max(...evs.map((e) => Number(seen.get(e.task_id)) || 0));
+    out.push({ event: 'evaluated', worker_id: `eval:${evs[0].task_id}`, turn: 0, seq, task_id: evs[0].task_id, ...(evs.length > 1 ? { task_ids: evs.map((e) => e.task_id) } : {}), text });
   }
   return out;
 }
 
 // The headless idle close (orchestrator.cjs) holds while a watched evaluation runs for a worker of this run that is still live:
-// a stopped or dead worker's evaluation was cancelled, so it holds nothing. Returns 'eval:<task id>' entries for the hold record.
+// a stopped or dead worker's evaluation was cancelled, so it holds nothing. Returns 'eval:<task id>' entries for the hold record,
+// and 'wake:<worker id>' for a turn_end wake still held (ADR 0058 amendment 2), whatever the worker's state: that hold is bounded.
 function evaluatingHolds(seen, rows, runId) {
   const pending = seen && seen.pending;
-  if (!pending || !pending.size) return [];
+  const held = [...((seen && seen.held) || new Map()).keys()].map((w) => `wake:${w}`); // a held turn_end wake holds the close too
+  if (!pending || !pending.size) return held;
   const live = new Set((rows || []).filter((r) => r.run_id === runId && r.pid_alive === true && !['stopped', 'dead', 'paused'].includes(r.state)).map((r) => r.id));
-  return [...pending].filter(([, p]) => live.has(p.worker_id)).map(([id]) => `eval:${id}`);
+  return [...pending].filter(([, p]) => live.has(p.worker_id)).map(([id]) => `eval:${id}`).concat(held);
 }
 
-module.exports = { unevaluated, notePending, evaluatingHolds, startRelease, cancelEvaluation, evalOf, enrichWakes, clause, turnEndText, summaryOf, WAKE_TEXT_MAX, PENDING_MAX_MS };
+module.exports = { unevaluated, notePending, evaluatingHolds, startRelease, cancelEvaluation, evalOf, enrichWakes, clause, turnEndText, summaryOf, holdMs, WAKE_TEXT_MAX, PENDING_MAX_MS, RELEASE_WAKE_HOLD_MS };

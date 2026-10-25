@@ -86,7 +86,7 @@ function renderText(result, sinceMs) {
     lines.push(...orchLines(t, result.tables));
   }
   const mc = result.counts.memory;
-  lines.push(`memory: ${mc.added} added, ${mc.updated} updated, ${mc.superseded} superseded, ${mc.expired} expired`);
+  lines.push(`entries: ${mc.added} added, ${mc.updated} updated, ${mc.superseded} superseded, ${mc.expired} expired`);
   lines.push(...memLines(result.tables));
   lines.push('');
   return lines.join('\n');

@@ -1,5 +1,5 @@
 'use strict';
-// idle-remind.test.cjs — ADR 0058 amendment 1 (proposed): worker_wait's answer and, when there is room, a wake name the workers
+// idle-remind.test.cjs — ADR 0058 amendment 3 (proposed): worker_wait's answer and, when there is room, a wake name the workers
 // left idle with no task. Pure checks of the selection and the text, then the real core and run manager with the fake substrate.
 // The threshold is a parameter here, and BELAY_IDLE_REMIND_MS (test mode only) for the run manager: nothing waits it out.
 

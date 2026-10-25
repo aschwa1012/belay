@@ -222,7 +222,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     let w; const dirExisted = fs.existsSync(L.workerDir(root, id)); // a directory this spawn creates is its own to remove if it fails before any row exists
     try {
       if (worker_id) await checkIdFree(core, root, id, runId); // inside the reservation, so two spawns of one id cannot both pass
-      if (task_id) await core.task.assign({ task_id, check_only: true, worker_id: id });
+      if (task_id) await core.task.assign({ task_id, check_only: true, worker_id: id, worktree: typeof worktree === 'string' ? L.fwd(path.resolve(worktree)) : worktree });
       w = W.newWorkerRecord({
         id, substrate, worktree, dataDir: root, taskId: task_id, model,
         allowedTools, permissionMode: permission_mode, sandbox,
@@ -426,7 +426,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     };
   }
 
-  const wait = createWait({ workers, get, core }); // core: the leases behind idle_without_task (ADR 0058 amendment 1)
+  const wait = createWait({ workers, get, core }); // core: the leases behind idle_without_task (ADR 0058 amendment 3)
   // build step 6e-4 (ADR 0023 amendment 2): pause parks the worker; resume relaunches it through doRestart.
   const PZ = createPause({ core, forWorker, doStop, doRestart, runOp: LC.runOp, adapterPid: ctx.adapterPid, writeRow });
   const message = createMessage({ core, ctx, forWorker, refuseIfPaused: PZ.refuseIfPaused, sendStdin, launch, guarded, writeRow });

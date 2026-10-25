@@ -24,6 +24,11 @@ function compactSpawn(row, requested = null) {
 }
 
 const NO_CHECK = 'this task declares no acceptance check, so task_evaluate can never mark it done: give it commands, files_within_owned, verdict or handoff';
+// ADR 0059 decision 3: an overlap with a task in another tree does not refuse, so the warning says where it will show.
+const overlapWarning = (o) => Array.isArray(o) && o.length
+  ? `these paths are also owned by ${o.map((x) => `task ${x.task_id} (${x.files.join(', ')})`).join(', ')} in another tree; integrate may stop on a conflict there`
+  : null;
+const withWarnings = (out, ...w) => { const l = w.filter(Boolean); return out && l.length ? { ...out, warning: l.join('; ') } : out; };
 const hasCheck = (a) => !!a && ((Array.isArray(a.commands) && a.commands.length > 0) || a.files_within_owned === true || a.verdict === true || !!a.handoff);
 
 // A worker this adapter launched is the only one it has a channel to: an adopted row's process belongs to another adapter.
@@ -35,7 +40,8 @@ function createCompose({ callCore, manager, openManager, dataDir = null }) {
   // `prompt` or the task's spec, and the hand-back rule. `deliver: false` assigns only.
   async function assign(args) {
     const { prompt = null, deliver = true, ...coreArgs } = args || {};
-    const out = await callCore('task.assign', coreArgs);
+    const raw = await callCore('task.assign', coreArgs);
+    const out = withWarnings(raw, raw && overlapWarning(raw.overlaps));
     const not = (reason, extra) => ({ ...out, delivered: { sent: false, reason, ...extra } });
     if (deliver === false) return not('deliver was false');
     const r = manager();
@@ -71,10 +77,11 @@ function createCompose({ callCore, manager, openManager, dataDir = null }) {
   // worker_last_reply (B11): read from the worker's recorded stream (last-reply.cjs); no core call, no write.
   const lastReply = async (args) => require('./last-reply.cjs').read(dataDir, args.worker_id);
 
-  // task_create (B4): the row as written, with a warning when it declares no check, since such a task can never be done.
+  // task_create (B4): the row as written, with a warning when it declares no check, since such a task can never be done, and
+  // (ADR 0059) when it owns paths a task in another tree owns too.
   async function create(args) {
     const row = await callCore('task.create', args);
-    return row && !hasCheck(row.acceptance) ? { ...row, warning: NO_CHECK } : row;
+    return withWarnings(row, row && !hasCheck(row.acceptance) && NO_CHECK, row && overlapWarning(row.overlaps));
   }
 
   // task_cancel: the cancel, then a short line to the worker whose lease it ended, when this session launched it.

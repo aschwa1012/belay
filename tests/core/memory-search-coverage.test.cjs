@@ -40,7 +40,7 @@ test('absence is not established while in-scope rows have no vector: the row cou
     assert.deepStrictEqual(r.modes_failed.map(f => [f.mode, f.code]), [['semantic', 'E_NO_VECTORS']]);
     assert.match(r.modes_failed[0].message, /none of the 2 in-scope rows has a vector/);
     assert.match(r.warning, /^semantic search did not run \(E_NO_VECTORS\); these are keyword matches only/);
-    assert.match(r.warning, /does not mean no such memory/);
+    assert.match(r.warning, /does not mean no such entry/);
     const sem = await search(E, { namespace: 'n', query: 'zzzqqq', mode: 'semantic' });
     assert.deepStrictEqual(sem.modes_run, [], 'a semantic search with nothing to see answers, degraded, rather than throwing');
     assert.strictEqual(sem.modes_failed[0].code, 'E_NO_VECTORS');
