@@ -155,7 +155,7 @@ test('template: the shipped orchestrator prompt has both placeholders and the fo
   }
   assert.match(text, /an ordering or input the brief admits makes a\s+stated assertion fail\. Forcing a reachable ordering is evidence; passing when run does not clear it;/, 'ADR 0031 amendment 1: clause (a)');
   assert.match(text, /names its\s+clause/);
-  assert.match(text, /## Review standard[^#]*The tree under review is read-only: run its tests, but edit, write, commit or stash nothing in it; write probes and scratch files only in your scratch folder/, 'ADR 0054 amendment 1: inside the section a reviewer receives');
+  assert.match(text, /## Review standard[^#]*The tree under review is read-only: run its tests, but edit, write, commit or stash nothing in it; write probes and scratch files only in the scratch folder your first message names/, 'ADR 0054 amendment 1: inside the section a reviewer receives');
   assert.match(text, /One with `detail.tree_changed: true` is suspect, holds or refuted/, 'ADR 0054 amendment 1: a flagged review is suspect');
   assert.match(text, /only if it has at least\s+one blocking finding/);
   assert.match(text, /Review standard section below, verbatim, in the reviewer's prompt/);

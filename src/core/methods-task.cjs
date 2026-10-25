@@ -149,8 +149,8 @@ async function assign(E, caller, args) {
   if (args.check_only !== undefined && typeof args.check_only !== 'boolean') throw err('E_ARGS', 'task.assign check_only must be a boolean');
   const checkOnly = args.check_only === true;
   if (!args.task_id || (!checkOnly && !args.worker_id)) throw err('E_ARGS', 'task.assign needs a task_id and a worker_id');
-  const tree = await require('./review-tree.cjs').grantSnapshot(E, args); // ADR 0054 amendment 1: a review's tree at grant (git, so before the tx)
   if (args.worktree !== undefined && (!checkOnly || !args.worktree || typeof args.worktree !== 'string')) throw err('E_ARGS', 'task.assign worktree is the directory a spawn will run in, a non-empty string, and only with check_only');
+  const tree = await require('./review-tree.cjs').grantSnapshot(E, args); // ADR 0054 amendment 1: a review's tree at grant (git, so before the tx)
 
   // Every read this decision rests on happens inside the same BEGIN IMMEDIATE as the two writes it
   // authorises. Read outside it and the operator's take-control, or the worker's death, can land between

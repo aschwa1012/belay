@@ -85,12 +85,12 @@ async function filterOverrides(run, git, cwd, env, timeoutMs) {
   return out;
 }
 
-// One hardened git read for the core, through evaluate.cjs's runCommand: `args` follow belay's PRE and filter overrides.
-// Resolves runCommand's shape; a missing git or a failed filter check is `executable: false` with `spawn_error` naming it.
-async function safeGit(args, cwd, timeoutMs, { tail, env = process.env } = {}) {
+// The hardened setup for one worktree: git's path, the environment and the filter overrides, read once. A caller making several
+// reads of one tree (a review snapshot) prepares once and passes it to each safeGit. Resolves { git, env, filters } or { error }.
+async function prepare(cwd, timeoutMs, env = process.env) {
   const { runCommand } = require('./evaluate.cjs'); // lazy: evaluate.cjs requires this module
   const git = findGit(env);
-  if (!git) return { executable: false, exit_code: null, stdout: '', stderr: '', spawn_error: 'git was not found on PATH' };
+  if (!git) return { error: 'git was not found on PATH' };
   const base = gitEnv(env);
   const run = async (g, argv, { cwd: c, timeoutMs: t, maxOut, system }) => {
     const e = { ...base };
@@ -99,11 +99,16 @@ async function safeGit(args, cwd, timeoutMs, { tail, env = process.env } = {}) {
     const out = Buffer.from(r.stdout || '', 'utf8');
     return { code: r.executable ? r.exit_code : -1, out, total: r.truncated ? out.length + 1 : out.length, kept: out.length, errTail: String(r.stderr || r.spawn_error || '') };
   };
-  let filters;
-  try { filters = await filterOverrides(run, git, cwd, env, timeoutMs); } catch (e) {
-    return { executable: false, exit_code: null, stdout: '', stderr: '', spawn_error: e.message };
-  }
-  return runCommand([git, ...PRE, ...filters, ...args], cwd, timeoutMs, { env: base, ...(tail ? { tail } : {}) });
+  try { return { git, env: base, filters: await filterOverrides(run, git, cwd, env, timeoutMs) }; } catch (e) { return { error: e.message }; }
 }
 
-module.exports = { PRE, NO_HOOKS, gitEnv, findGit, filterOverrides, safeGit };
+// One hardened git read for the core, through evaluate.cjs's runCommand: `args` follow belay's PRE and filter overrides.
+// Resolves runCommand's shape; a missing git or a failed filter check is `executable: false` with `spawn_error` naming it.
+async function safeGit(args, cwd, timeoutMs, { tail, env = process.env, prepared = null } = {}) {
+  const { runCommand } = require('./evaluate.cjs');
+  const p = prepared || await prepare(cwd, timeoutMs, env);
+  if (p.error) return { executable: false, exit_code: null, stdout: '', stderr: '', spawn_error: p.error };
+  return runCommand([p.git, ...PRE, ...p.filters, ...args], cwd, timeoutMs, { env: p.env, ...(tail ? { tail } : {}) });
+}
+
+module.exports = { PRE, NO_HOOKS, gitEnv, findGit, filterOverrides, prepare, safeGit };
