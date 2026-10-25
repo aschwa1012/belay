@@ -53,7 +53,7 @@ async function liveRun(dir, workerIds, extraEnv = {}, specOverrides = {}) {
   assert.ok(rec, 'the stub never started');
   core = await connectOrchestratorCore(r.dataDir, r.runId);
   m = createRunManager({ core, dataDir: r.dataDir, runId: r.runId, paths: { claudeExe: FAKE_WORKER, userSettings: USER_SETTINGS } });
-  control = createWorkerControl({ dataDir: r.dataDir, manager: m, pid: process.pid });
+  control = createWorkerControl({ redeem: null, dataDir: r.dataDir, manager: m, pid: process.pid });
   await control.listen();
   for (const id of workerIds) {
     const wt = `${dir}/${id}-wt`;

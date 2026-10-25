@@ -339,9 +339,16 @@ async function run(ctx) {
     const message = `no such data dir: ${dataDir}`;
     return { code: 1, text: `belay memory ${parsed.sub}: ${message}\n`, json: { error: { code: 'E_NOT_FOUND', message } } };
   }
+  // A verb that acts on rows already there finds none in a store that does not exist yet, so it is refused before an election would
+  // create that store. import makes rows, and embed with nothing to embed is answered by the core. A test's injected core is its store.
+  const injected = process.env.BELAY_TEST_MODE === '1' && typeof ctx.openCore === 'function';
+  if (!injected && (parsed.sub === 'verify' || LC.writes(parsed)) && !fs.existsSync(path.join(dataDir, 'memory.db'))) {
+    const message = `no store at ${dataDir}/memory.db, so there is no row to ${parsed.sub}; nothing was written`;
+    return { code: 1, text: `belay memory ${parsed.sub}: ${message}\n`, json: { error: { code: 'E_NOT_FOUND', message } } };
+  }
 
   // A test may hand in a fake core. Production always uses the real one.
-  const open = process.env.BELAY_TEST_MODE === '1' && typeof ctx.openCore === 'function' ? ctx.openCore : openCore;
+  const open = injected ? ctx.openCore : openCore;
   const core = await open({ dataDir, caller: { role: 'operator', run_id: 'cli', pid: process.pid } });
   try {
     return await VERB_FN[parsed.sub](core, parsed, parsed.sub === 'import' ? read : ctx, found);

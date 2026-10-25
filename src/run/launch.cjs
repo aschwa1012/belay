@@ -258,7 +258,7 @@ function codexLaunchArgv(opts) {
     ...codexMcpArgs(adapterArgs),
   ];
   if (model) argv.push('-m', model);
-  argv.push(prompt);
+  argv.push('--', prompt); // after `--` the text is the prompt: one that starts with `-` is not an option, and `review` or `resume` not a subcommand
   return argv;
 }
 
@@ -275,7 +275,7 @@ function codexResumeArgv(opts) {
     ...codexMcpArgs(adapterArgs),
   ];
   if (model) argv.push('-m', model);
-  argv.push(prompt);
+  argv.push('--', prompt);
   return argv;
 }
 

@@ -410,8 +410,9 @@ const permitBytes = () => Buffer.byteLength(JSON.stringify(PERMIT_TOOL), 'utf8')
 
 // Which role may call a tool, without building a listing. Returns 'both', 'orchestrator', 'worker', or
 // undefined when the name is not a tool at all.
-const roleOf = (name) => (ROUTES[name] ? ROUTES[name].role : undefined);
-const routeOf = (name) => ROUTES[name];
+// Own keys only: `constructor`, `toString` or `__proto__` is not a tool, however a plain object answers it.
+const routeOf = (name) => (typeof name === 'string' && Object.prototype.hasOwnProperty.call(ROUTES, name) ? ROUTES[name] : undefined);
+const roleOf = (name) => (routeOf(name) ? routeOf(name).role : undefined);
 // `notes` (the run has the notes lever on): the orchestrator is not given memory_verify, since a note is disputed by memory_report and never set by a status.
 const allows = (role, name, workerId = null, { notes = false } = {}) => {
   if (isReviewJob(role, workerId)) return false;

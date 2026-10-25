@@ -106,32 +106,34 @@ async function run(ctx) {
 
   const core = await openCore({ dataDir, caller: { role: 'operator', run_id: parsed.runId || 'cli', pid: process.pid } });
   try {
-    const { runs } = await core.run.list({});
-    let runId = null, runIdSource, sinceSource;
+    return await core.readBatch(async () => { // one store copy for run.list and store.diff
+      const { runs } = await core.run.list({});
+      let runId = null, runIdSource, sinceSource;
 
-    if (parsed.all) {
-      runIdSource = 'all';
-      if (sinceMs == null) { sinceMs = 0; sinceSource = 'epoch'; } else sinceSource = 'argument';
-    } else {
-      let chosen = null;
-      if (parsed.runId) {
-        runId = parsed.runId; runIdSource = 'argument';
-        chosen = runs.find(r => r.id === parsed.runId) || null;
-      } else if (runs.length) {
-        chosen = runs.find(r => r.alive) || runs[0];
-        runId = chosen.id; runIdSource = 'run.list';
+      if (parsed.all) {
+        runIdSource = 'all';
+        if (sinceMs == null) { sinceMs = 0; sinceSource = 'epoch'; } else sinceSource = 'argument';
       } else {
-        runIdSource = 'none';
+        let chosen = null;
+        if (parsed.runId) {
+          runId = parsed.runId; runIdSource = 'argument';
+          chosen = runs.find(r => r.id === parsed.runId) || null;
+        } else if (runs.length) {
+          chosen = runs.find(r => r.alive) || runs[0];
+          runId = chosen.id; runIdSource = 'run.list';
+        } else {
+          runIdSource = 'none';
+        }
+        if (sinceMs == null) {
+          if (chosen) { sinceMs = chosen.started_at; sinceSource = 'run started_at'; }
+          else { sinceMs = 0; sinceSource = 'epoch'; }
+        } else sinceSource = 'argument';
       }
-      if (sinceMs == null) {
-        if (chosen) { sinceMs = chosen.started_at; sinceSource = 'run started_at'; }
-        else { sinceMs = 0; sinceSource = 'epoch'; }
-      } else sinceSource = 'argument';
-    }
 
-    const result = await core.store.diff(parsed.all ? { since_ms: sinceMs } : { since_ms: sinceMs, run_id: runId });
-    const receipt = { ...result, run_id_source: runIdSource, since_source: sinceSource };
-    return { code: 0, text: renderText(result, sinceMs), json: receipt };
+      const result = await core.store.diff(parsed.all ? { since_ms: sinceMs } : { since_ms: sinceMs, run_id: runId });
+      const receipt = { ...result, run_id_source: runIdSource, since_source: sinceSource };
+      return { code: 0, text: renderText(result, sinceMs), json: receipt };
+    });
   } catch (e) {
     const detail = { code: e.code || 'E_INTERNAL', message: e.message };
     return { code: 1, text: `belay diff: ${e.message}\n`, json: { error: detail } };

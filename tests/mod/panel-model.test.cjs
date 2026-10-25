@@ -179,7 +179,7 @@ test('settleLine: stdout receipt, stderr pretty error, and an unknown outcome fo
 test('reasonProblem: over 160 characters, or exactly a global option, is refused; anything else is not', () => {
   assert.strictEqual(M.reasonProblem('x'.repeat(160)), null);
   assert.match(M.reasonProblem('x'.repeat(161)), /161 characters; at most 160/);
-  for (const f of ['--json', '--fix', '--data', '--help', '-h']) assert.match(M.reasonProblem(f), /cannot be exactly/);
+  for (const f of ['--json', '--fix', '--data', '--help', '-h', '--']) assert.match(M.reasonProblem(f), /cannot be exactly/);
   for (const ok of ['--json x', '-x', '--reason', 'json', '-h!']) assert.strictEqual(M.reasonProblem(ok), null, ok);
 });
 

@@ -49,7 +49,7 @@ test('worker control: the pipe is named by the data dir hash and the adapter pid
   let control = null; let client = null;
   tcx.after(() => Promise.resolve().then(() => control && control.close()));
   try {
-    control = createWorkerControl({ dataDir: sb.data, manager: m });
+    control = createWorkerControl({ redeem: null, dataDir: sb.data, manager: m });
     await control.listen();
     assert.strictEqual(control.pipe, adapterPipeName(sb.data, process.pid));
 
@@ -107,7 +107,7 @@ test('worker control: a stop over the pipe and the orchestrator\'s own stop of t
   PI.killWorker = (...a) => { kills += 1; return saved.killWorker(...a); };
   try {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
-    control = createWorkerControl({ dataDir: sb.data, manager: m });
+    control = createWorkerControl({ redeem: null, dataDir: sb.data, manager: m });
     await control.listen();
     client = new Client(sb.data, { pipe: control.pipe, elect: false });
     await client.connect();
@@ -149,7 +149,7 @@ test('worker control: two concurrent stops of a worker this manager never launch
       id: 'w-adopted', run_id: 'run-control-test', substrate: 'claude-code', pid: child.pid,
       state: 'running', worktree: sb.worktree, session_id: 'sess-adopted', turns: 0, started_at: Date.now(),
     });
-    control = createWorkerControl({ dataDir: sb.data, manager: m });
+    control = createWorkerControl({ redeem: null, dataDir: sb.data, manager: m });
     await control.listen();
     client = new Client(sb.data, { pipe: control.pipe, elect: false });
     await client.connect();
@@ -176,7 +176,7 @@ test('worker control: worker.message over the pipe writes the worker\'s stdin an
   try {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
     await m._waitTurn('w1', 8000);
-    control = createWorkerControl({ dataDir: sb.data, manager: m });
+    control = createWorkerControl({ redeem: null, dataDir: sb.data, manager: m });
     await control.listen();
     client = new Client(sb.data, { pipe: control.pipe, elect: false });
     await client.connect();
@@ -200,7 +200,7 @@ test('worker control: worker.restart over the pipe relaunches the worker with th
   try {
     const row = await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
     await m._waitTurn('w1', 8000);
-    control = createWorkerControl({ dataDir: sb.data, manager: m });
+    control = createWorkerControl({ redeem: null, dataDir: sb.data, manager: m });
     await control.listen();
     client = new Client(sb.data, { pipe: control.pipe, elect: false });
     await client.connect();
