@@ -35,6 +35,7 @@ function setup(specExtra, plant = true) {
   if (plant) {
     for (const [id, run] of [['rev-a', runId], ['rev-b', runId], ['rev-old', 'an-older-run']]) {
       const s = RS.ensure(data, id, run);
+      assert.ok(s, `scratch for ${id} was made`);
       fs.mkdirSync(`${s}/deep`, { recursive: true });
       fs.writeFileSync(`${s}/probe.cjs`, 'x'.repeat(100));
       fs.writeFileSync(`${s}/deep/out.txt`, 'y'.repeat(20));

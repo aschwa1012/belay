@@ -152,12 +152,14 @@ test('a probe written in the reviewer\'s scratch folder does not flag; its size 
   const wt = repo('scratch');
   const w = await doneWork('scratch', wt);
   const scratch = RS.ensure(dir, 'rev-scratch', 'test-run');
+  assert.ok(scratch, 'the scratch folder was made');
   const probe = await review(w, 'rev-scratch', wt, () => fs.writeFileSync(path.join(scratch, 'probe.cjs'), 'console.log("C:\\path")\n'));
   assert.strictEqual(probe.check.detail.tree_changed, false, 'the scratch folder is outside the tree');
   assert.deepStrictEqual([probe.check.detail.scratch.path, probe.check.detail.scratch.files, probe.check.detail.scratch_over_limit], [scratch, 1, false]);
   assert.ok(probe.check.detail.scratch.bytes > 0);
   const w2 = await doneWork('scratch2', wt);
   const big = RS.ensure(dir, 'rev-big', 'test-run');
+  assert.ok(big, 'the scratch folder was made');
   const large = await review(w2, 'rev-big', wt, () => { const fd = fs.openSync(path.join(big, 'big.bin'), 'w'); fs.ftruncateSync(fd, 51 * 1024 * 1024); fs.closeSync(fd); });
   assert.strictEqual(large.check.passed, true, 'the size is a flag, not a refusal');
   assert.deepStrictEqual([large.check.detail.scratch_over_limit, large.check.detail.scratch.bytes], [true, 51 * 1024 * 1024]);

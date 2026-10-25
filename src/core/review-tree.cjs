@@ -12,7 +12,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { safeGit } = require('./git-safe.cjs');
+const { safeGit, prepare } = require('./git-safe.cjs');
 const rows = require('./rows.cjs');
 
 const GIT_BOUND_MS = 15000;
@@ -30,11 +30,12 @@ function signature(worktree, xy, rel) {
 async function snapshot(worktree) {
   const out = { worktree, head: null, count: 0, hash: null, entries: null, at: Date.now(), error: null };
   if (!worktree || !fs.existsSync(String(worktree))) return { ...out, error: `worktree ${worktree} does not exist` };
-  const h = await safeGit(['rev-parse', 'HEAD'], String(worktree), GIT_BOUND_MS);
+  const prepared = await prepare(String(worktree), GIT_BOUND_MS); // the filter overrides, read once for both reads
+  const h = await safeGit(['rev-parse', 'HEAD'], String(worktree), GIT_BOUND_MS, { prepared });
   const sha = String(h.stdout || '').trim();
   if (h.executable && h.exit_code === 0 && /^[0-9a-f]{40,64}$/.test(sha)) out.head = sha;
   else out.error = `git rev-parse HEAD exited ${h.exit_code}: ${String(h.stderr || h.spawn_error || '').trim().slice(0, 160)}`;
-  const s = await safeGit(['status', '--porcelain', '-z', '--untracked-files=all', '--ignore-submodules=all'], String(worktree), GIT_BOUND_MS, { tail: LIST_TAIL });
+  const s = await safeGit(['status', '--porcelain', '-z', '--untracked-files=all', '--ignore-submodules=all'], String(worktree), GIT_BOUND_MS, { tail: LIST_TAIL, prepared });
   if (!s.executable || s.exit_code !== 0 || s.truncated) {
     out.error = `${out.error ? `${out.error}; ` : ''}git status ${s.truncated ? 'listed more than belay reads' : `exited ${s.exit_code}: ${String(s.stderr || s.spawn_error || '').trim().slice(0, 160)}`}`;
     return out;
@@ -79,31 +80,8 @@ function compare(grant, now) {
   return out;
 }
 
-// The reviewer's scratch folder (<data>/workers/<id>/scratch, made by the run manager at spawn): its bytes and files, walked
-// without following links, flagged past SCRATCH_FLAG_BYTES and never cut. null when there is no folder.
-const SCRATCH_FLAG_BYTES = 50 * 1024 * 1024;
-const scratchOf = (dataDir, workerId) => path.join(String(dataDir), 'workers', String(workerId), 'scratch').split(path.sep).join('/');
-function measure(dir) {
-  let bytes = 0, files = 0;
-  const walk = (d) => {
-    let ents;
-    try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
-    for (const e of ents) {
-      const p = path.join(d, e.name);
-      if (e.isDirectory()) walk(p);
-      else if (e.isFile()) { try { bytes += fs.statSync(p).size; files += 1; } catch { /* gone */ } }
-    }
-  };
-  if (!fs.existsSync(dir)) return null;
-  walk(dir);
-  return { bytes, files };
-}
-function scratchFacts(dataDir, workerId) {
-  if (!dataDir || !workerId) return null;
-  const dir = scratchOf(dataDir, workerId);
-  const m = measure(dir);
-  return m ? { path: dir, ...m, over_limit: m.bytes > SCRATCH_FLAG_BYTES, limit_bytes: SCRATCH_FLAG_BYTES } : null;
-}
+// The reviewer's scratch folder at the hand-back: scratch-dir.cjs, which reads nothing through a link.
+const SD = require('./scratch-dir.cjs');
 
 // assign: the grant snapshot of a review task's assignee, or null (not a review, check_only, or no worker row).
 async function grantSnapshot(E, args) {
@@ -120,4 +98,4 @@ async function releaseSnapshot(E, args) {
   return l && l.tree && l.tree.worktree ? snapshot(l.tree.worktree) : null;
 }
 
-module.exports = { snapshot, compare, grantSnapshot, releaseSnapshot, scratchOf, measure, scratchFacts, ENTRIES_MAX, PATHS_MAX, SCRATCH_FLAG_BYTES };
+module.exports = { snapshot, compare, grantSnapshot, releaseSnapshot, scratchFacts: SD.facts, ENTRIES_MAX, PATHS_MAX };
