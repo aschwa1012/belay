@@ -139,10 +139,13 @@ function assertDependenciesDone(E, task) {
   }
 }
 
+const SPAWN_THERE = "a worker cannot change its directory once it runs, so spawn a worker in the task's worktree";
+
 async function assign(E, caller, args) {
   if (args.check_only !== undefined && typeof args.check_only !== 'boolean') throw err('E_ARGS', 'task.assign check_only must be a boolean');
   const checkOnly = args.check_only === true;
   if (!args.task_id || (!checkOnly && !args.worker_id)) throw err('E_ARGS', 'task.assign needs a task_id and a worker_id');
+  if (args.worktree !== undefined && (!checkOnly || !args.worktree || typeof args.worktree !== 'string')) throw err('E_ARGS', 'task.assign worktree is the directory a spawn will run in, a non-empty string, and only with check_only');
 
   // Every read this decision rests on happens inside the same BEGIN IMMEDIATE as the two writes it
   // authorises. Read outside it and the operator's take-control, or the worker's death, can land between
@@ -182,8 +185,12 @@ async function assign(E, caller, args) {
     // A task that owns files moves to the run of the worker that takes it, and a move is a new claim: every overlapping holder refuses it.
     const ownerRun = resolveOwner(E.store, task, checkOnly ? (caller.role === 'orchestrator' ? caller.run_id : null) : (worker && worker.run_id), worker);
 
-    // ADR 0030 decision 4: the task-side checks above are the whole of a check_only call; it writes nothing.
-    if (checkOnly) return { assignable: true, task_id: task.id };
+    // ADR 0058 amendment: a worker runs in one directory for its whole life, so a task with its own worktree goes only to a
+    // worker that runs there. A check_only call checks the directory the spawn will run in, when it names one.
+    if (checkOnly) {
+      if (args.worktree !== undefined) require('./methods-worktree.cjs').assertTaskTree(task, args.worktree, "the spawn's worktree", SPAWN_THERE);
+      return { assignable: true, task_id: task.id };
+    }
 
     if (!worker) throw err('E_WORKER_NOT_LIVE', `no worker row exists for ${args.worker_id}, so it cannot hold a lease`, { worker_id: args.worker_id });
     if (!LIVE_WORKER_STATES.has(worker.state)) {
@@ -199,6 +206,8 @@ async function assign(E, caller, args) {
       throw err('E_WORKER_NOT_LIVE', `worker ${args.worker_id} claims state ${worker.state} but its pid ${worker.pid} is dead`,
         { worker_id: args.worker_id, state: worker.state, pid: worker.pid, pid_alive: false });
     }
+
+    require('./methods-worktree.cjs').assertTaskTree(task, worker.worktree, `worker ${args.worker_id}'s worktree`, SPAWN_THERE);
 
     // Build step 6a-2, design item 1: a lease belongs to its task's run, never the caller's — an
     // operator writing from the CLI (run_id 'cli') must not produce a lease no run's store.diff can see.
