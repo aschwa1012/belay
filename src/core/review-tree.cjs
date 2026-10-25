@@ -6,7 +6,8 @@
 // (the coder's leftovers), and a commit may be another worker's in a shared tree: the detail says so rather than guess.
 // Never throws. Loaded lazily by task.evaluate, a write path.
 
-const { runCommand, readOnlyGitEnv, parsePorcelainZ } = require('./evaluate.cjs');
+const { parsePorcelainZ } = require('./evaluate.cjs');
+const { safeGit } = require('./git-safe.cjs'); // no program from the repository's config runs
 
 const GIT_BOUND_MS = 15000;
 const PATHS_MAX = 20;
@@ -16,14 +17,13 @@ async function reviewTree(worker) {
   if (!worker) return null;
   const out = { worker_id: worker.id, worktree: worker.worktree || null, base_sha: worker.base_sha || null, head_sha: null, head_moved: null, uncommitted: [], uncommitted_count: 0, changed: false, error: null };
   if (!out.worktree) return { ...out, error: 'the reviewer\'s worker row names no worktree' };
-  const env = readOnlyGitEnv();
-  const h = await runCommand(['git', 'rev-parse', 'HEAD'], String(out.worktree), GIT_BOUND_MS, { env });
+  const h = await safeGit(['rev-parse', 'HEAD'], String(out.worktree), GIT_BOUND_MS);
   const sha = String(h.stdout || '').trim();
   if (h.executable && h.exit_code === 0 && /^[0-9a-f]{40,64}$/.test(sha)) out.head_sha = sha;
   else out.error = `git rev-parse HEAD exited ${h.exit_code}: ${String(h.stderr || h.spawn_error || '').trim().slice(0, 160)}`;
   if (out.head_sha && out.base_sha) out.head_moved = out.head_sha !== out.base_sha;
   else if (!out.base_sha && !out.error) out.error = 'the reviewer\'s worker row has no base_sha, so a commit during the review cannot be seen';
-  const s = await runCommand(['git', '--no-optional-locks', 'status', '--porcelain', '-z', '--untracked-files=all'], String(out.worktree), GIT_BOUND_MS, { env });
+  const s = await safeGit(['status', '--porcelain', '-z', '--untracked-files=all'], String(out.worktree), GIT_BOUND_MS);
   if (s.executable && s.exit_code === 0) {
     const paths = parsePorcelainZ(s.stdout);
     out.uncommitted_count = paths.length;
