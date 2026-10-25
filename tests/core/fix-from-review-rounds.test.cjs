@@ -320,3 +320,15 @@ test('a commit that differs from the judged state is refused, naming the judged 
   assert.deepStrictEqual([e.detail.judged_tree, e.detail.branch_head], [t.results.tree_sha, git(t.worktree.path, 'rev-parse', 'HEAD')]);
   assert.strictEqual((await orch.integration.list({})).integrations.filter((i) => i.into_branch === 'int/differs').length, 0, 'nothing was written');
 });
+
+test('a merged entry whose commit does not contain a task\'s judged change never reads merged for it (reset --hard)', async () => {
+  const { w, f } = await workWithOpenFix('reset');
+  // The branch is reset to its base, losing the work's judged commit; the fix then commits other content and is judged done.
+  git(w.worktree.path, 'reset', '-q', '--hard', w.worktree.base_sha);
+  await finishFix(w, f, 'reset', 'redone\n');
+  const row = await orch.integration.merge({ task_ids: [w.id], into: 'int/reset' });
+  assert.deepStrictEqual([row.merged[0].task_id, row.merged[0].judged_by, row.merged[0].covers], [w.id, f.id, [f.id]]);
+  assert.deepStrictEqual(await integrationOf(w.id), { state: 'not_merged', into: null }, 'the work\'s judged change did not land');
+  const fi = await integrationOf(f.id);
+  assert.deepStrictEqual([fi.state, fi.via], ['merged', w.id]);
+});

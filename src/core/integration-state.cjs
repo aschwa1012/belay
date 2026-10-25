@@ -57,16 +57,19 @@ function factOf(r, id) {
 // `covers` goes by the time alone). A task done after it (a later fix round) is not landed by it. Only a merge carries over; a
 // peer's conflict or failure says nothing about this task.
 const landedBy = (task, r) => task.state === 'done' && task.results && Number(task.results.evaluated_at) <= Number(r.written_at);
+// The merge names what its commit contains (`covers`, ADR 0060 decision 4); a row from before it falls back to the time.
+const contains = (r, mergedId, task) => { const m = (r.merged || []).find((x) => x.task_id === mergedId); return m && Array.isArray(m.covers) ? m.covers.includes(task.id) : true; };
 function factFor(r, task, peers) {
-  const own = Array.isArray(r.task_ids) && r.task_ids.includes(task.id) ? factOf(r, task.id) : null;
+  let own = Array.isArray(r.task_ids) && r.task_ids.includes(task.id) ? factOf(r, task.id) : null;
+  // Its own entry counts as merged only when the merged commit contains what it was judged on: an `empty` or older commit did not
+  // land its change, whatever the entry says.
+  if (own && own.state === 'merged' && !contains(r, task.id, task)) own = null;
   if ((own && own.state === 'merged') || !landedBy(task, r)) return own;
   for (const p of peers) {
     if (!Array.isArray(r.task_ids) || !r.task_ids.includes(p.id)) continue;
     const f = factOf(r, p.id);
     if (!f || f.state !== 'merged') continue;
-    const m = (r.merged || []).find((x) => x.task_id === p.id);
-    // The merge names what its commit contains (`covers`, ADR 0060 decision 4); a row from before it falls back to the time.
-    if (m && Array.isArray(m.covers) ? m.covers.includes(task.id) : true) return { ...f, via: p.id };
+    if (contains(r, p.id, task)) return { ...f, via: p.id };
   }
   return own;
 }
