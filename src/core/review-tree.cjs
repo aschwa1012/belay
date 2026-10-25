@@ -71,8 +71,11 @@ function compare(grant, now) {
       out.changed_paths = diff.slice(0, PATHS_MAX);
     } else out.changed_count = statusChanged ? null : 0;
   }
+  // A baseline taken after the worker had already acted under the lease cannot show what it did before: treated as changed.
+  if (grant.baseline_late) { out.baseline_late = true; out.baseline_late_by = grant.baseline_late_by || []; out.changed = true; }
   if (out.changed) {
     out.note = [
+      out.baseline_late ? `the grant snapshot was taken after the worker had acted under the lease (${out.baseline_late_by.join(', ')}), so a change before it cannot be seen` : null,
       out.head_moved ? `HEAD moved from ${grant.head.slice(0, 12)} to ${now.head.slice(0, 12)} while the review lease was held` : null,
       out.changed_count !== 0 ? `${out.changed_count === null ? 'some' : out.changed_count} uncommitted or untracked path(s) changed while the review lease was held` : null,
     ].filter(Boolean).join('; ');
@@ -90,7 +93,9 @@ const shown = (lease) => (lease.tree ? { ...lease, tree: { head: lease.tree.head
 // reviewer's scratch folder's size (flagged past 50 MB, never cut).
 function handBack(dataDir, workerId, grant, now) {
   const scratch = SD.facts(dataDir, workerId);
-  return { ...(grant && now ? { tree: compare(grant, now) } : {}), ...(scratch ? { scratch } : {}) };
+  // A review lease with no grant snapshot (the attach failed or was discarded) says so rather than carrying no tree at all.
+  const tree = !grant ? { changed: null, error: 'no grant snapshot was attached' } : now ? compare(grant, now) : { changed: null, error: 'no hand-back snapshot' };
+  return { ...(tree ? { tree } : {}), ...(scratch ? { scratch } : {}) };
 }
 
 // assign, inside its transaction: the worktree to snapshot for this grant (a review task's assignee's), or null. It reads
@@ -103,26 +108,52 @@ const grantTarget = (task, worker) => (isReview(task) && worker && worker.worktr
 // the grant, because every read that authorises the grant belongs to its transaction (the contract test), and git cannot run
 // inside one; it is still before the grant is known to anyone: assign has not answered, so neither the spawn's first message
 // nor task_assign's delivery has reached the reviewer. Returns the answer with the lease shown as `shown` gives it.
+// The grant is already committed when this runs, so a failure here never fails the assign: the answer names it, and the
+// hand-back of a lease with no snapshot says none was attached. `baseline_late` marks a snapshot taken after the worker had
+// already acted under the lease (its row's last event, a checkpoint, a permission request or a memory event newer than the
+// grant), read in the attach's own transaction.
 async function afterGrant(E, caller, out, worktree) {
   const lease = out && out.new_lease;
   if (!lease) return out;
-  const tree = await module.exports.snapshot(worktree); // through the export: the test seam for a change between the grant and here
-  const t = Date.now();
-  const kept = E.store.tx(() => {
-    const cur = rows.currentLeaseForTask(E.store, lease.task_id);
-    if (!cur || cur.id !== lease.id || cur.released_at != null || cur.holder !== lease.holder || cur.holder_role !== 'worker') return null;
-    return rows.append(E.store, 'lease', { ...cur, tree }, E.writtenBy(caller), t);
-  });
-  if (!kept) return out;
-  E.noteWrite();
-  return { ...out, new_lease: shown(kept) };
+  try {
+    const tree = await module.exports.snapshot(worktree); // through the export: the test seam for a change between the grant and here
+    const t = Date.now();
+    const kept = E.store.tx(() => {
+      const cur = rows.currentLeaseForTask(E.store, lease.task_id);
+      if (!cur || cur.id !== lease.id || cur.released_at != null || cur.holder !== lease.holder || cur.holder_role !== 'worker') return null;
+      const late = lateBy(E, cur);
+      return rows.append(E.store, 'lease', { ...cur, tree: late.length ? { ...tree, baseline_late: true, baseline_late_by: late } : tree }, E.writtenBy(caller), t);
+    });
+    if (!kept) return out;
+    E.noteWrite();
+    return { ...out, new_lease: shown(kept) };
+  } catch (e) {
+    return { ...out, new_lease: { ...lease, tree: { error: `the grant snapshot was not attached: ${(e && e.message) || e}` } } };
+  }
+}
+
+// What the worker did under lease `l` before the snapshot: the sources newer than its grant, by name. `core_call` is the
+// engine's in-memory time of the worker's last call: a worker learns of a grant before assign answers only by asking the core,
+// so one that wrote without calling since the grant was doing pre-review work, which the baseline absorbs. An engine that
+// started after the grant does not know, and says `owner_changed`.
+function lateBy(E, l) {
+  const store = E.store, since = Number(l.granted_at), id = l.holder, out = [];
+  if (!(Number(E.startedAt) <= since)) out.push('owner_changed');
+  else if (E.workerCalls && Number(E.workerCalls.get(id)) > since) out.push('core_call');
+  const w = rows.current(store, 'worker', id);
+  if (w && Number(w.last_event_at) > since) out.push('last_event_at');
+  const newer = (sql) => !!store.p(sql).get(id, since);
+  if (newer('SELECT 1 FROM checkpoint WHERE worker_id = ? AND written_at > ? LIMIT 1')) out.push('checkpoint');
+  if (newer('SELECT 1 FROM permission WHERE worker_id = ? AND requested_at > ? LIMIT 1')) out.push('permission');
+  if (newer('SELECT 1 FROM memory_event WHERE worker_id = ? AND written_at > ? LIMIT 1')) out.push('memory_event');
+  return out;
 }
 
 // release: the hand-back snapshot, taken in the worktree the grant snapshot was, or null when the lease carries none.
 async function releaseSnapshot(E, args) {
   if (args.result === undefined || !args.lease_id) return null;
   const l = rows.current(E.store, 'lease', args.lease_id);
-  return l && l.tree && l.tree.worktree ? snapshot(l.tree.worktree) : null;
+  return l && l.tree && l.tree.worktree ? module.exports.snapshot(l.tree.worktree) : null;
 }
 
-module.exports = { snapshot, compare, grantTarget, afterGrant, releaseSnapshot, shown, handBack, scratchFacts: SD.facts, ENTRIES_MAX, PATHS_MAX };
+module.exports = { snapshot, compare, grantTarget, afterGrant, lateBy, isReview, releaseSnapshot, shown, handBack, scratchFacts: SD.facts, ENTRIES_MAX, PATHS_MAX };

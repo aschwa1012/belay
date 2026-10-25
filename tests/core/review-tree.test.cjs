@@ -180,3 +180,102 @@ test('a grant cancelled before its snapshot is attached keeps no snapshot: the a
   const lease = (await orch.task.get({ task_id: r.id })).lease;
   assert.strictEqual(lease, null, 'the cancel released the lease');
 });
+
+// A seam on the snapshot (afterGrant calls it through the export): `during` runs after the grant committed, before the attach.
+async function withSnapshotSeam(during, fn) {
+  const RT = require('../../src/core/review-tree.cjs');
+  const real = RT.snapshot;
+  RT.snapshot = async (dir) => { const s = await real(dir); await during(); return s; };
+  try { return await fn(); } finally { RT.snapshot = real; }
+}
+
+test('a snapshot taken after the reviewer had already acted under the lease is baseline_late, and the hand-back counts it as changed', async () => {
+  const wt = repo('late');
+  const w = await doneWork('late', wt);
+  const r = await orch.task.create({ spec: 'late review', depends_on: [w.id], acceptance: { verdict: true } });
+  const rc = await worker('rev-late', wt);
+  let a;
+  await withSnapshotSeam(async () => {
+    await orch.worker.write({ id: 'rev-late', last_event_at: Date.now() + 5 });
+    const lease = (await orch.task.get({ task_id: r.id })).lease;
+    await rc.continuity.checkpoint({ task_id: r.id, worker_id: 'rev-late', turn: 1, files_touched: [], tool_digest: [], lease_id: lease && lease.id });
+  }, async () => { a = await orch.task.assign({ task_id: r.id, worker_id: 'rev-late' }); });
+  await rc.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { verdict: 'holds', summary: 'judged' } });
+  const check = (await orch.task.evaluate({ task_id: r.id, worktree: wt })).results.checks.find((c) => c.kind === 'verdict');
+  assert.strictEqual(check.detail.tree_changed, true, 'treated as changed although the tree did not change');
+  assert.strictEqual(check.detail.tree.baseline_late, true);
+  assert.ok(check.detail.tree.baseline_late_by.includes('last_event_at'), JSON.stringify(check.detail.tree.baseline_late_by));
+  assert.ok(check.detail.tree.baseline_late_by.includes('checkpoint'), JSON.stringify(check.detail.tree.baseline_late_by));
+  assert.match(check.detail.tree.note, /taken after the worker had acted under the lease/);
+  assert.strictEqual(check.passed, true, 'a flag, not a refusal');
+  const w2 = await doneWork('late2', wt);
+  const quiet = await review(w2, 'rev-late2', wt);
+  assert.strictEqual(quiet.check.detail.tree.baseline_late, undefined, 'a quiet grant is not late');
+});
+
+test('a snapshot that throws leaves the committed grant standing; the answer names the error and the hand-back says no snapshot was attached', async () => {
+  const RT = require('../../src/core/review-tree.cjs');
+  const wt = repo('throw');
+  const w = await doneWork('throw', wt);
+  const r = await orch.task.create({ spec: 'review with a failing snapshot', depends_on: [w.id], acceptance: { verdict: true } });
+  const rc = await worker('rev-throw', wt);
+  const real = RT.snapshot;
+  RT.snapshot = async () => { throw new Error('git vanished'); };
+  let a;
+  try { a = await orch.task.assign({ task_id: r.id, worker_id: 'rev-throw' }); } finally { RT.snapshot = real; }
+  assert.strictEqual(a.task.state, 'assigned', 'the grant stands');
+  assert.match(a.new_lease.tree.error, /not attached: git vanished/);
+  const rel = await rc.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { verdict: 'holds', summary: 'judged' } });
+  assert.deepStrictEqual(rel.handoff.tree, { changed: null, error: 'no grant snapshot was attached' });
+  const check = (await orch.task.evaluate({ task_id: r.id, worktree: wt })).results.checks.find((c) => c.kind === 'verdict');
+  assert.strictEqual(check.detail.tree_changed, null, 'unknown, not unchanged');
+});
+
+test('P1: a running reviewer that asks the core and writes between the grant and the attach leaves a core_call trace: baseline_late', async () => {
+  const wt = repo('p1');
+  const w = await doneWork('p1', wt);
+  const r = await orch.task.create({ spec: 'p1 review', depends_on: [w.id], acceptance: { verdict: true } });
+  const rc = await worker('rev-p1', wt);
+  await rc.task.list({}); // a running worker, busy before the grant: its earlier calls are not late
+  let a;
+  await withSnapshotSeam(async () => {
+    await rc.task.get({ task_id: r.id }); // it sees its lease before assign answers
+    fs.writeFileSync(path.join(wt, 'a.txt'), 'written before the baseline\n');
+  }, async () => { a = await orch.task.assign({ task_id: r.id, worker_id: 'rev-p1' }); });
+  await rc.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { verdict: 'holds', summary: 'judged' } });
+  const check = (await orch.task.evaluate({ task_id: r.id, worktree: wt })).results.checks.find((c) => c.kind === 'verdict');
+  assert.deepStrictEqual([check.detail.tree.baseline_late, check.detail.tree.baseline_late_by, check.detail.tree_changed], [true, ['core_call'], true]);
+});
+
+test('P0: a running reviewer that did not call the core in the window is not late', async () => {
+  const wt = repo('p0');
+  const w = await doneWork('p0', wt);
+  const rc = await worker('rev-p0', wt);
+  await rc.task.list({});
+  const quiet = await review(w, 'rev-p0', wt);
+  assert.strictEqual(quiet.check.detail.tree.baseline_late, undefined);
+  assert.strictEqual(quiet.check.detail.tree_changed, false);
+});
+
+test('a hand-back whose snapshot is not of the granted tree says there is no hand-back snapshot', async () => {
+  const RT = require('../../src/core/review-tree.cjs');
+  const wt = repo('p3');
+  const w = await doneWork('p3', wt);
+  const r = await orch.task.create({ spec: 'p3 review', depends_on: [w.id], acceptance: { verdict: true } });
+  const rc = await worker('rev-p3', wt);
+  const a = await orch.task.assign({ task_id: r.id, worker_id: 'rev-p3' });
+  const real = RT.snapshot;
+  RT.snapshot = async (dir) => ({ ...(await real(dir)), worktree: `${dir}-elsewhere` });
+  let rel;
+  try { rel = await rc.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { verdict: 'holds', summary: 'judged' } }); } finally { RT.snapshot = real; }
+  assert.deepStrictEqual(rel.handoff.tree, { changed: null, error: 'no hand-back snapshot' });
+});
+
+test('lateBy: an engine that started after the grant cannot know the worker\'s calls and says owner_changed', () => {
+  const RT = require('../../src/core/review-tree.cjs');
+  const store = { p: () => ({ get: () => undefined, all: () => [] }) }; // no worker row, no checkpoint, no permission, no event
+  const lease = { granted_at: 1000, holder: 'w' };
+  assert.deepStrictEqual(RT.lateBy({ store, startedAt: 1500, workerCalls: new Map([['w', 1200]]) }, lease), ['owner_changed']);
+  assert.deepStrictEqual(RT.lateBy({ store, startedAt: 500, workerCalls: new Map([['w', 1200]]) }, lease), ['core_call']);
+  assert.deepStrictEqual(RT.lateBy({ store, startedAt: 500, workerCalls: new Map([['w', 900]]) }, lease), [], 'a call before the grant is not late');
+});

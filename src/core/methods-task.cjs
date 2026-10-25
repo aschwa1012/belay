@@ -439,7 +439,7 @@ async function releaseNow(E, caller, args) {
       handoff = { result: args.result, by: caller.worker_id, lease_id: l.id, at: t };
       const missing = missingCitations(E, args.result);
       if (missing !== null) handoff.memory_ids_missing = missing;
-      if (l.tree) Object.assign(handoff, RT.handBack(E.dataDir, caller.worker_id, l.tree, treeNow && treeNow.worktree === l.tree.worktree ? treeNow : null)); // the tree's change and the scratch size
+      if (l.tree || RT.isReview(task)) Object.assign(handoff, RT.handBack(E.dataDir, caller.worker_id, l.tree, treeNow && treeNow.worktree === l.tree.worktree ? treeNow : null)); // the tree's change and the scratch size
     }
     const row = rows.append(E.store, 'task', { ...task, state: task.state === 'done' ? 'done' : 'released', handoff }, by, t);
     const ck = rows.lastCheckpoint(E.store, l.task_id);
