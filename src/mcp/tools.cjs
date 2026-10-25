@@ -26,6 +26,7 @@ const str = (description) => (description ? { type: 'string', description } : { 
 const int = (description) => (description ? { type: 'integer', description } : { type: 'integer' });
 const num = () => ({ type: 'number' });
 const bool = () => ({ type: 'boolean' });
+const DEBUG = { type: 'string', enum: ['debug'] };
 const strs = (description) => {
   const a = { type: 'array', items: { type: 'string' } };
   if (description) a.description = description;
@@ -168,6 +169,14 @@ const BOTH = [
   },
 ];
 
+// The orchestrator's task_list (ADR 0058 amendment 1): compact rows by default (views.cjs), one task's detail by task_ids,
+// the core's rows with view debug. The worker's listing keeps the plain one above, so its bytes are unchanged.
+const ORCH_TASK_LIST = {
+  name: 'task_list',
+  description: 'Tasks: id, state, rev, spec_head, depends_on, branch, lease, last results (failing named), hand-back field names. task_ids: those tasks with hand-back and checks whole. view debug: full rows.',
+  inputSchema: S({ states: strs('open, assigned, released, done or cancelled'), task_ids: strs(), view: DEBUG }),
+};
+
 const ORCHESTRATOR = [
   {
     name: 'worker_spawn',
@@ -246,7 +255,7 @@ const ORCHESTRATOR = [
   },
   {
     name: 'task_assign',
-    description: 'Assign a task to a live worker, take a lease and send the worker the task, its lease id and the hand-back rule. Returns the old and new lease rows, the task row and delivered. Refuses when the operator holds the lease, when a dependency of the task is not done, naming it and its holder, or when the worker is not starting, running or idle.',
+    description: 'Assign a task to a live worker, take a lease and send the worker the task, its lease id and the hand-back rule. Returns the old and new lease rows, the task\'s task_list row and delivered. Refuses when the operator holds the lease, when a dependency of the task is not done, naming it and its holder, or when the worker is not starting, running or idle.',
     inputSchema: S({ task_id: str(), worker_id: str(), ttl_ms: int('default 600000'), prompt: str('Sent in place of the spec'), deliver: bool() }, ['task_id', 'worker_id']),
   },
   {
@@ -263,11 +272,12 @@ const ORCHESTRATOR = [
   },
   {
     name: 'task_evaluate',
-    description: 'Run a task\'s checks in worktree. Returns row and results; done (unblocks dependents) only if all pass.',
+    description: 'Run a task\'s checks in worktree. Returns row and results (passing output cut; view debug: whole); done (unblocks dependents) only if all pass.',
     inputSchema: S({
       task_id: str(),
       worktree: str('Default: the task\'s worktree'),
       base: str('Diff base; default the task\'s base, else merge-base main'),
+      view: DEBUG,
     }, ['task_id']),
   },
   {
@@ -286,12 +296,13 @@ const ORCHESTRATOR = [
   {
     // ADR 0053 decision 5.
     name: 'integrate',
-    description: 'Merge done tasks\' branches in order into into (default belay/integrate/<run>), then re-run their checks there. Returns state, merged, checks, passed. A conflict is aborted, tree clean; conflict names task and files.',
+    description: 'Merge done tasks\' branches in order into into (default belay/integrate/<run>), then re-run their checks there. Returns state, merged, checks, passed (passing output cut; view debug: whole row). A conflict is aborted, tree clean; conflict names task and files.',
     inputSchema: S({
       task_ids: strs(),
       into: str(),
       base: str('If into is new; default the tasks\' base'),
       evaluate: bool(),
+      view: DEBUG,
     }, ['task_ids']),
   },
   {
@@ -301,7 +312,7 @@ const ORCHESTRATOR = [
   },
   {
     name: 'task_cancel',
-    description: 'Give up on a task that is not done: releases its lease and its files_owned, state cancelled (final), and tells the lease holder. Returns the task row, the released lease and notified.',
+    description: 'Give up on a task that is not done: releases its lease and its files_owned, state cancelled (final), and tells the lease holder. Returns the task\'s task_list row, the released lease and notified.',
     inputSchema: S({ task_id: str(), reason: str() }, ['task_id']),
   },
   {
@@ -395,7 +406,8 @@ const withoutQueries = (list) => list.map((t) => {
 
 function toolsFor(role, { knowledge = false, workerId = null, notes = false, queries = false } = {}) {
   if (role === 'orchestrator') {
-    const all = knowledge ? BOTH.concat(ORCHESTRATOR, [KNOWLEDGE_TOOL]) : BOTH.concat(ORCHESTRATOR);
+    const both = BOTH.map((t) => (t.name === 'task_list' ? ORCH_TASK_LIST : t));
+    const all = knowledge ? both.concat(ORCHESTRATOR, [KNOWLEDGE_TOOL]) : both.concat(ORCHESTRATOR);
     const base = queries ? all : withoutQueries(all);
     // A notes run: a project memory_store is a note, and memory_verify is gone (notes are disputed by memory_report, never by a status).
     return notes ? base.filter((t) => t.name !== 'memory_verify').map((t) => (t.name === 'memory_store' ? NOTES.memoryStoreNotes(t, 'orchestrator') : t)).concat([NOTES.SUMMARIES, NOTES.NOTE_REFUTATION, NOTES.MEMORY_REPORT]) : base;
@@ -432,6 +444,7 @@ for (const t of BOTH.concat(ORCHESTRATOR, WORKER, [KNOWLEDGE_TOOL, NOTES.NOTE_RE
 const schemaOf = (name, notes = false, role = 'worker') => {
   if (notes && name === 'lease_release') return NOTES.LEASE_RELEASE.inputSchema;
   if (notes && name === 'memory_store') return NOTES.memoryStoreNotes(BY_NAME.get(name), role).inputSchema;
+  if (role === 'orchestrator' && name === 'task_list') return ORCH_TASK_LIST.inputSchema;
   return (BY_NAME.get(name) || {}).inputSchema;
 };
 
