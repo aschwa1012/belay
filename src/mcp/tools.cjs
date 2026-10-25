@@ -361,7 +361,7 @@ const ROLES = ['orchestrator', 'worker'];
 // on, so a run without the lever pays no byte for it. Workers never get it; a worker asks through its result.
 const KNOWLEDGE_TOOL = {
   name: 'knowledge_ask',
-  description: 'Ask the run\'s knowledge agent about stored memory. Returns answer, cited ids with found and status, uncited_claims. Answers from memory only; unverified rows are marked. Refuses E_LEVER_OFF when the lever is off.',
+  description: 'Ask the run\'s knowledge agent about stored notes. Returns answer, cited ids with found and status, uncited_claims. Answers from notes only; unverified rows are marked. Refuses E_LEVER_OFF when the lever is off.',
   inputSchema: S({ question: str() }, ['question']),
 };
 
