@@ -409,8 +409,8 @@ async function timeline(E, caller, args) {
   };
 }
 
-// The honest answer for a note that exists but is held on a report and withheld from this reader (ADR 0047 amendment, 2026-10-22).
-const withheldAnswer = (id) => ({ id, found: false, withheld: true, note: 'this note exists but is held for review after a report that it is wrong, and is withheld from workers until the review settles it' });
+// The honest answer for a note that exists but is held and withheld from this reader (ADR 0047 amendments, 2026-10-22 and 2026-10-25).
+const withheldAnswer = (id) => ({ id, found: false, withheld: true, note: 'this note exists but is held for review, disputed as wrong, superseded or a duplicate, and is withheld from workers until the review settles it' });
 
 async function getMany(E, caller, args) {
   const ids = args.ids;

@@ -104,3 +104,20 @@ test('an unsupported row marks and demotes nothing, for a worker or the orchestr
     assert.strictEqual(l.rows.find((x) => x.id === a.note).held, undefined, who.role);
   }
 });
+
+test('a hand-back that restates a held note names it by id and verdict only, never its claim', async () => {
+  const a = await X.written('w-h1', 'K61');
+  X.store.storeIn({ namespace: 'held/acme', worker_id: 'harness', type: 'held', text: `held duplicate ${a.note}`, title: 'h', body: { state: 'held', note_id: a.note, kind: 'wrong', ground: 'scrubber', reason: 'the scrubber found it wrong', rev: 0 }, run_id: X.RUN, source: 'harness', written_by: 'harness' });
+  const s = await X.startTask('w-h2', 'the loader worked\n');
+  const out = await X.call('lease.release', X.worker('w-h2'), { lease_id: s.lease, notes: [{ ...X.note('K61'), title: 'a restated K61 claim, worded anew' }] });
+  const n = out.notes[0];
+  assert.strictEqual(n.state, 'pending', 'the restatement waits in pending');
+  const named = [...(n.matches || []), ...(n.prior_verdicts || [])].filter((m) => m.id === a.note);
+  assert.ok(named.length >= 1, 'the held note is named');
+  for (const m of named) {
+    assert.strictEqual(m.verdict, 'held_for_review');
+    for (const k of ['title', 'kind', 'basis', 'text', 'reason']) assert.strictEqual(m[k], undefined, k);
+  }
+  assert.ok(!JSON.stringify(out).includes(X.rowOf(a.note).title), 'the held claim\'s title is nowhere in the answer');
+  assert.doesNotMatch(n.held_back, /after a report/);
+});
