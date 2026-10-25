@@ -55,7 +55,11 @@ const answered = (r, fixes, ix) => fixes.some((f) => answersOf(f, ix).includes(r
 // 1. a refutation not answered (above) wins, the latest decided such one, over any holds;
 // 2. else a review created after the latest decision and not decided yet: pending, a newer judgement is under way;
 // 3. else the latest decision (by when it was made, not when the review was created); else (no review decided) pending.
+// Before all three (ADR 0061): a review whose results went stale under an amend is being judged again, so it decides, pending,
+// and an older holds does not.
 function deciding(reviews, fixes, ix) {
+  const stale = reviews.filter((r) => r.state !== 'done' && r.results && r.results.stale);
+  if (stale.length) return latest(stale, (r) => ix.born.get(r.id).s);
   const decided = reviews.filter((r) => verdictOf(r) !== 'pending');
   const open = decided.filter((r) => verdictOf(r) === 'refuted' && !answered(r, fixes, ix));
   if (open.length) return latest(open, decidedAt);

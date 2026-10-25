@@ -121,3 +121,32 @@ test('a review refuted and then amended is no refutation: no fix, no round spent
   assert.strictEqual(again.results.stale, undefined);
   assert.strictEqual((await orch.task.fixFromReview({ review_id: r.id })).repairs, w.id, 'the round is still there to spend');
 });
+
+test('amend keeps a task\'s kind: a work task cannot become a review, nor a review a work task; amend: false is a plain create', async () => {
+  const w = await orch.task.create({ spec: 'kind work', acceptance: PASS });
+  const e = await rejectsCode(orch.task.create({ id: w.id, amend: true, acceptance: { verdict: true } }), 'E_ARGS');
+  assert.strictEqual(e.detail.field, 'acceptance.verdict');
+  const r = await orch.task.create({ spec: 'kind review', depends_on: [w.id], acceptance: { verdict: true } });
+  await rejectsCode(orch.task.create({ id: r.id, amend: true, acceptance: PASS }), 'E_ARGS');
+  assert.deepStrictEqual([(await orch.task.get({ task_id: w.id })).amended, (await orch.task.get({ task_id: r.id })).amended], [null, null], 'nothing written');
+  const plain = await orch.task.create({ spec: 'amend false', amend: false, acceptance: PASS });
+  assert.deepStrictEqual([plain.state, plain.spec, plain.amended ?? null], ['open', 'amend false', null]);
+  await rejectsCode(orch.task.create({ id: w.id, spec: 'x', amend: false }), 'E_ARGS'); // an existing id is still refused
+  for (const id of [r.id, w.id, plain.id]) await orch.task.cancel({ task_id: id });
+});
+
+test('a stale review decides the work pending, over a later holds', async () => {
+  const w = await orch.task.create({ spec: 'panel work', acceptance: PASS });
+  await handBack(w.id, 'c-panel', dir);
+  assert.strictEqual((await orch.task.evaluate({ task_id: w.id, worktree: dir })).state, 'done');
+  const r2 = await orch.task.create({ spec: 'panel review 2', depends_on: [w.id], acceptance: { verdict: true } });
+  const r1 = await orch.task.create({ spec: 'panel review 1', depends_on: [w.id], acceptance: { verdict: true } });
+  await handBack(r2.id, 'j-panel-2', dir, { verdict: 'refuted', summary: 's', findings: [] });
+  await orch.task.evaluate({ task_id: r2.id, worktree: dir });
+  await handBack(r1.id, 'j-panel-1', dir, { verdict: 'holds', summary: 's', findings: [] });
+  assert.strictEqual((await orch.task.evaluate({ task_id: r1.id, worktree: dir })).state, 'done');
+  assert.strictEqual((await orch.task.get({ task_id: w.id })).review.state, 'refuted', 'the open refutation decides');
+  await orch.task.create({ id: r2.id, amend: true, acceptance: { verdict: true, handoff: { required: ['verdict'] } } });
+  const review = (await orch.task.get({ task_id: w.id })).review;
+  assert.deepStrictEqual([review.state, review.review_id], ['pending', r2.id], 'the stale review decides, pending; the older holds does not');
+});

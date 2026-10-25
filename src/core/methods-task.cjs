@@ -55,7 +55,7 @@ function findCycle(store, id, dependsOn) {
 
 async function create(E, caller, args, own = {}) { // own: core-internal, task.fixFromReview's inherited worktree and answered reviews; no tool reaches it
   const AM = require('./methods-task-amend.cjs'); // ADR 0061: amend revises an existing task; tree_of gives a new one another's tree
-  if (args.amend !== undefined) return AM.amend(E, caller, args);
+  if (args.amend !== undefined && args.amend !== false) return AM.amend(E, caller, args); // amend: false is a plain create
   const runTop = args.tree_of != null ? await AM.runRepo(E, caller) : null; // the only await: everything below is one turn
   if (typeof args.spec !== 'string' || !args.spec.trim()) throw err('E_ARGS', 'task.create needs a spec describing the work');
   const filesOwned = args.files_owned == null ? null : args.files_owned;

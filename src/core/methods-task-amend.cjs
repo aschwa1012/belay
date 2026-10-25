@@ -44,6 +44,11 @@ async function amend(E, caller, args) {
     if (l && l.released_at == null) {
       throw err('E_PRECONDITION', `task ${task.id} is held by ${l.holder_role} ${l.holder} on lease ${l.id}, who works to the acceptance it was given; amend it once the lease is released`, { task_id: task.id, lease_id: l.id, holder: l.holder, holder_role: l.holder_role });
     }
+    // A review is a review because its acceptance carries verdict: true (review-state isReview); an amend keeps the task's kind.
+    const isReview = (a) => !!(a && a.verdict === true);
+    if (isReview(args.acceptance) !== isReview(task.acceptance)) {
+      throw err('E_ARGS', `task ${task.id} is ${isReview(task.acceptance) ? 'a review (acceptance.verdict: true)' : 'not a review'}, and an amend cannot change that; create a new task for other work`, { task_id: task.id, field: 'acceptance.verdict' });
+    }
     const running = require('./evaluate-cancel.cjs').runningFor(task.id);
     if (running) {
       throw err('E_BUSY', `task ${task.id} is being evaluated against its current acceptance; amend it once that result has landed`, { op: 'evaluate', task_id: task.id, running });
