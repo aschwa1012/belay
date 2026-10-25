@@ -102,32 +102,27 @@ test('a not-done task still records a failing result and stays open (re-evaluati
   assert.strictEqual(r2.state, 'open');
 });
 
-test('A4: two concurrent evaluates of one task: one done, one E_TASK_DONE, exactly one done row (the in-transaction gate)', async () => {
+// Two evaluations of one task in two trees no longer race on the in-transaction gate: the second is refused at entry, E_BUSY
+// naming the running one (one evaluation of a task at a time, the try-2 gap 4 fix), and exactly one done row is written.
+test('A4: a second evaluate of one task in another tree while one runs is refused E_BUSY; exactly one done row', async () => {
   const go = path.join(dir, 'g8.go').split(path.sep).join('/');
-  const started = (n) => path.join(dir, `g8.${n}.started`).split(path.sep).join('/');
-  // Each run writes its own started marker (the first free name), then waits for the go-file.
-  const script = `const fs=require('fs');const d=${JSON.stringify(dir.split(path.sep).join('/'))};`
-    + `const n=fs.existsSync(d+'/g8.1.started')?2:1;fs.writeFileSync(d+'/g8.'+n+'.started','x');`
+  const started = path.join(dir, 'g8.1.started').split(path.sep).join('/');
+  const script = `const fs=require('fs');fs.writeFileSync(${JSON.stringify(started)},'x');`
     + `const t=setInterval(()=>{if(fs.existsSync(${JSON.stringify(go)})){clearInterval(t);process.exit(0);}},20);`;
   const t = await orch.task.create({ spec: 'g8', acceptance: { commands: [{ argv: [process.execPath, '-e', script], timeout_ms: 60000 }] } });
-  // Two trees: evaluations of one task in one tree join (ADR 0058), so the race on the in-transaction gate needs two.
   const other = path.join(dir, 'g8-other');
   fs.mkdirSync(other, { recursive: true });
-  const a = orch.task.evaluate({ task_id: t.id, worktree: dir }).then((v) => ({ v }), (e) => ({ e }));
-  const b = orch.task.evaluate({ task_id: t.id, worktree: other.split(path.sep).join('/') }).then((v) => ({ v }), (e) => ({ e }));
+  const a = orch.task.evaluate({ task_id: t.id, worktree: dir });
   const deadline = Date.now() + 30000;
-  while (!(fs.existsSync(started(1)) && fs.existsSync(started(2)))) {
-    assert.ok(Date.now() < deadline, 'both commands must start');
+  while (!fs.existsSync(started)) {
+    assert.ok(Date.now() < deadline, 'the first command must start');
     await new Promise((r) => setTimeout(r, 20));
   }
+  await assert.rejects(orch.task.evaluate({ task_id: t.id, worktree: other.split(path.sep).join('/') }), (e) => e.code === 'E_BUSY' && e.detail.task_id === t.id);
   fs.writeFileSync(go, 'go');
-  const out = await Promise.all([a, b]);
-  const ok = out.filter((o) => o.v), bad = out.filter((o) => o.e);
-  assert.strictEqual(ok.length, 1, JSON.stringify(out.map((o) => o.e && o.e.code)));
-  assert.strictEqual(ok[0].v.state, 'done');
-  assert.strictEqual(bad.length, 1);
-  assert.strictEqual(bad[0].e.code, 'E_TASK_DONE');
+  const v = await a;
+  assert.strictEqual(v.state, 'done');
   const final = await orch.task.get({ task_id: t.id });
   assert.strictEqual(final.state, 'done');
-  assert.strictEqual(final.seq, ok[0].v.seq, 'no later row was written over the done row');
+  assert.strictEqual(final.seq, v.seq, 'no later row was written over the done row');
 });

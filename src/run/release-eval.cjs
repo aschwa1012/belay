@@ -119,7 +119,8 @@ const cut = (s, max) => {
 
 // The evaluation clause, at most `room` bytes: " task T evaluated at release: passed, done." or "...: not done; failing: ...".
 function clause(evs, room) {
-  const parts = evs.map((e) => (e.error ? `task ${e.task_id} could not be evaluated at release (${e.error})`
+  const parts = evs.map((e) => (e.error === 'E_BUSY' ? `task ${e.task_id} not evaluated at release: another evaluation of it is running`
+    : e.error ? `task ${e.task_id} could not be evaluated at release (${e.error})`
     : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}` : `not done; failing: ${e.failing.join(', ') || 'no executable check'}`}`));
   return cut(` ${parts.join('; ')}.`, room);
 }
