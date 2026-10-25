@@ -96,7 +96,7 @@ function taskList(answer, { task_ids = null } = {}) {
 const taskEvaluate = (row) => compactTask(row, { detail: true });
 
 // integrate: the merge's facts and the re-run checks; the repository path, the junctions and the base are the receipt.
-const INTEGRATION_DROP = new Set(['repo', 'junctions', 'created_worktree', 'base_sha', 'written_at', 'written_by', 'run_id']);
+const INTEGRATION_DROP = new Set(['repo', 'junctions', 'created_worktree', 'base_sha', 'written_at', 'written_by', 'run_id', 'owner_pid', 'owner_boot']);
 function integrate(row) {
   if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
   const out = {};

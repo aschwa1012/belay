@@ -11,6 +11,7 @@ const { DEFAULT_LEASE_TTL_MS, TASK_STATES } = require('./schema.cjs');
 const { runAcceptance } = require('./evaluate.cjs');
 const holds = require('./task-holds.cjs');
 const reviewState = require('./review-state.cjs');
+const integrationState = require('./integration-state.cjs');
 const { filesOverlap, treeHint, runNotLive, resolveOwner, assertNotOwnReview } = require('./methods-task-hold.cjs');
 
 // ADR 0025 decision 1: the most a worker may hand back on release, serialized.
@@ -52,8 +53,7 @@ function findCycle(store, id, dependsOn) {
   return walk(id);
 }
 
-// `own` is core-internal and never reached from a tool's arguments: task.fixFromReview passes the judged task's worktree.
-async function create(E, caller, args, own = {}) {
+async function create(E, caller, args, own = {}) { // own: core-internal, task.fixFromReview's inherited worktree; no tool reaches it
   if (typeof args.spec !== 'string' || !args.spec.trim()) throw err('E_ARGS', 'task.create needs a spec describing the work');
   const filesOwned = args.files_owned == null ? null : args.files_owned;
   if (filesOwned != null && (!Array.isArray(filesOwned) || filesOwned.some(p => typeof p !== 'string'))) {
@@ -65,8 +65,7 @@ async function create(E, caller, args, own = {}) {
   }
   const handoffShape = acceptance ? require('./handoff-check.cjs').shapeError(acceptance.handoff) : null; // ADR 0058 decision 6
   if (handoffShape) throw err('E_ARGS', handoffShape);
-  const retries = require('./evaluate.cjs').retriesError(acceptance); // ADR 0060 decision 2
-  if (retries) throw err('E_ARGS', retries);
+  const retries = require('./evaluate.cjs').retriesError(acceptance); if (retries) throw err('E_ARGS', retries); // ADR 0060 decision 2
   if (acceptance && acceptance.verdict !== undefined && acceptance.verdict !== true) {
     throw err('E_ARGS', 'task.acceptance.verdict must be true or absent: a review task is judged from a worker\'s handed-back verdict');
   }
@@ -244,7 +243,7 @@ function refutedReview(d) {
   return checks.some(c => c && c.kind === 'verdict' && c.executable === true && c.passed === false);
 }
 
-function view(E, task, liveness, reviews) {
+function view(E, task, liveness, integrations, reviews) {
   const t = Date.now();
   const l = rows.currentLeaseForTask(E.store, task.id);
   let lease = null, holderPidAlive = null;
@@ -257,17 +256,19 @@ function view(E, task, liveness, reviews) {
   }
   const ck = rows.lastCheckpoint(E.store, task.id);
   const h = holds.holdOf(task, liveness || holds.runLiveness(E.store));
-  // ADR 0060: whether the work's review held is its own fact beside `state`, derived from the review and fix task rows.
+  // Beside `state`, derived on every read: whether the branch landed (ADR 0053 amendment 2, from the integration rows) and whether
+  // the work's review held (ADR 0060, from the review and fix task rows).
+  const integration = integrationState.ofTask(task, integrations || integrationState.newestFirst(E.store));
   const review = reviewState.ofTask(task, reviews || reviewState.index(E.store, rows.currentAll(E.store, 'task')));
-  return { ...task, holds_files: h.holds, holds_reason: h.reason, lease, holder_pid_alive: holderPidAlive, last_checkpoint_id: ck ? ck.id : null, last_checkpoint_at: ck ? ck.written_at : null, review };
+  return { ...task, holds_files: h.holds, holds_reason: h.reason, lease, holder_pid_alive: holderPidAlive, last_checkpoint_id: ck ? ck.id : null, last_checkpoint_at: ck ? ck.written_at : null, integration, review };
 }
 
 async function list(E, caller, args) {
   const states = Array.isArray(args.states) && args.states.length ? new Set(args.states) : null;
   const liveness = holds.runLiveness(E.store);
-  const all = rows.currentAll(E.store, 'task');
-  const reviews = reviewState.index(E.store, all);
-  const tasks = all.filter(t => !states || states.has(t.state)).map(t => view(E, t, liveness, reviews));
+  const integrations = integrationState.newestFirst(E.store);
+  const all = rows.currentAll(E.store, 'task'), reviews = reviewState.index(E.store, all);
+  const tasks = all.filter(t => !states || states.has(t.state)).map(t => view(E, t, liveness, integrations, reviews));
   return { tasks };
 }
 
@@ -319,8 +320,7 @@ async function evaluate(E, caller, args) {
     const passed = checks.length > 0 && checks.every(c => c.passed);
     const results = {
       evaluated_at: Date.now(), executable, passed, checks, ...(args.trigger ? { trigger: args.trigger } : {}),
-      // ADR 0060 decision 2: a command that passed only on a retry is never a silent pass.
-      ...(checks.some(c => c.flaky) ? { flaky: true } : {}),
+      ...(checks.some(c => c.flaky) ? { flaky: true } : {}), // ADR 0060 decision 2: a pass only on a retry is never silent
       ...(checks.length === 0 ? { note: 'the task declares no acceptance criteria, so nothing was executed and nothing is proven' } : {}),
     };
     return rows.append(E.store, 'task', {
