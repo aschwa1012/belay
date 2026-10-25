@@ -365,7 +365,11 @@ async function writeWorker(E, caller, args) {
   // ADR 0026 amendment 1 (proposed): a first dead row releases the worker's leases unless a restart keeps them (keep_leases).
   const firstDead = merged.state === 'dead' && !(prev && prev.state === 'dead');
   merged.leases_released = firstDead || merged.state !== 'dead' ? null : prev.leases_released; // derived, never the caller's
-  // release_leases (amendment 2): a relaunch that kept a death's leases and then failed restates that dead row to release them.
+  // release_leases (amendment 2): a relaunch that kept a death's leases and then failed restates that dead row to release them. A dead
+  // worker that holds nothing has nothing to release: nothing is written, and the answer says so (invariant 5).
+  if (args.release_leases === true && prev && prev.state === 'dead' && merged.state === 'dead' && !require('./lease-holder-dead.cjs').holdsAny(E.store, args.id)) {
+    return { skipped: true, reason: 'nothing_to_release', current_seq: prev.seq };
+  }
   const release = merged.state === 'dead' && (args.release_leases === true || (firstDead && args.keep_leases !== true));
   const row = release ? appendDead(E, merged, E.writtenBy(caller), t).row : rows.append(E.store, 'worker', merged, E.writtenBy(caller), t);
   E.noteWrite();

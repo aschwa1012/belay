@@ -202,5 +202,6 @@ test('release_leases on a dead row releases what the worker still holds, and kee
   assert.strictEqual(restated.release_leases, undefined, 'a directive, never a column');
   assert.deepStrictEqual([(await c.task.get({ task_id: t.id })).state, (await c.task.get({ task_id: t.id })).lease], ['open', null]);
   const again = await c.worker.write({ id: 'wz', state: 'dead', release_leases: true }); // nothing left to release
-  assert.deepStrictEqual(again.leases_released, restated.leases_released, 'the death\'s record stays on the row');
+  assert.deepStrictEqual(again, { skipped: true, reason: 'nothing_to_release', current_seq: restated.seq }, 'nothing is written');
+  assert.deepStrictEqual((await c.worker.get({ worker_id: 'wz' })).leases_released, restated.leases_released, 'the death\'s record stays on the row');
 });
