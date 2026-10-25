@@ -91,6 +91,7 @@ test('a restart that arrives while a Codex message holds its launch is refused, 
   await m.spawn({ substrate: 'codex', worktree, prompt: 'one turn', worker_id: 'w1', task_id: 't1' });
   const w = m._worker('w1');
   await m.wait({ worker_ids: ['w1'], timeout_ms: 20000 });
+  assert.ok(await m._waitExit('w1', 20000), 'the turn\'s process has exited (its idle row is written before the exit)');
   await w.queue;
   assert.equal(w.state, 'idle');
   const hold = core.task.ensureHold;
@@ -119,4 +120,18 @@ test('a message during a resume is refused until the resume returns', async (t) 
   const got = await answer();
   assert.deepEqual(got, { err: 'E_BUSY', op: 'resume' }, `got ${JSON.stringify(got)}`);
   assert.ok(!received().includes('sent during the resume'));
+});
+
+// The two Codex refusals for a process still alive, pinned. Seam: a hung turn (FAKE_CODEX_HANG) is a real mid-turn; the same record
+// with its turn end already parsed (`turnEnded`, set when the turn's result lands, before the process exits) is a turn still exiting.
+test('a Codex message to a live process says mid-turn during a turn, and still exiting once the turn has ended', async (t) => {
+  const { m, worktree } = setup(t, 'run-msgstop-texts', { FAKE_CODEX_HANG: '1' });
+  await m.spawn({ substrate: 'codex', worktree, prompt: 'one turn', worker_id: 'w1' });
+  const w = m._worker('w1');
+  const refusal = () => m.message({ worker_id: 'w1', text: 'again' }).then(() => null, (e) => ({ code: e.code, message: e.message, exiting: !!(e.detail && e.detail.exiting) }));
+  assert.deepStrictEqual(await refusal(), { code: 'E_SUBSTRATE', message: 'codex worker is mid-turn; one process per turn', exiting: false });
+  w.turnEnded = true; // its result has landed and the idle row is written; the process has not exited yet
+  assert.deepStrictEqual(await refusal(), { code: 'E_SUBSTRATE', message: "codex worker w1's previous turn is still exiting; retry in a moment", exiting: true });
+  process.kill(w.pid); // the exact pid belay spawned
+  assert.ok(await m._waitExit('w1', 20000));
 });
