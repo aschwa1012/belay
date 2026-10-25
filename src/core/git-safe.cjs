@@ -50,11 +50,18 @@ const badKey = (k) => k.includes('=') || /[\x00-\x1f]/.test(k);
 // of them) is switched off with belay's own `-c`; a driver name git's `-c` cannot carry (one holding '=') refuses the
 // read. The system config is not read (GIT_CONFIG_NOSYSTEM), so its filter keys, which only an administrator writes (Git
 // for Windows installs git-lfs there), are read on their own and passed back as `-c`: without them a stat-dirty LFS file
-// reads as changed. `run(git, argv, { cwd, env, timeoutMs, maxOut, system })` resolves `{ code, out: Buffer, total, kept,
-// errTail }`; `system: true` reads with the system config.
-async function filterOverrides(run, git, cwd, env, timeoutMs) {
+// reads as changed. The same system read takes the core keys that run nothing (CORE_KEYS), passed back the same way, since
+// GIT_CONFIG_NOSYSTEM drops them too: every read gets core.fscache (a cache switch Git for Windows sets there; without it a
+// status of a large tree costs several times as long), and a read that hashes content (`lineEndings`: judged.cjs's add -A
+// into a temporary index) also gets core.autocrlf, core.eol, core.safecrlf and core.symlinks, so content hashes as a commit of
+// it would. One read, so a prepare spawns two git config calls, as before the core keys; nothing is cached across calls, since
+// the system config can change under a long-lived owner. `run(git, argv, { cwd, env, timeoutMs, maxOut, system })` resolves
+// `{ code, out: Buffer, total, kept, errTail }`; `system: true` reads with the system config.
+const CONTENT_KEYS = new Set(['core.autocrlf', 'core.eol', 'core.safecrlf', 'core.symlinks']);
+const CORE_KEYS = new Set(['core.fscache', ...CONTENT_KEYS]);
+async function filterOverrides(run, git, cwd, env, timeoutMs, { lineEndings = false } = {}) {
   const out = [];
-  const sys = await run(git, ['--no-pager', 'config', '--system', '--null', '--get-regexp', '^filter\\.'], { cwd, env, timeoutMs, maxOut: 65536, system: true });
+  const sys = await run(git, ['--no-pager', 'config', '--system', '--null', '--get-regexp', '^(filter\\.|core\\.(fscache|autocrlf|eol|safecrlf|symlinks)$)'], { cwd, env, timeoutMs, maxOut: 65536, system: true });
   if (!(sys.code === 1 && sys.total === 0)) {
     if (sys.code !== 0) throw checkFailed('git config --system', sys);
     if (sys.total > sys.kept) throw tooMany();
@@ -62,7 +69,9 @@ async function filterOverrides(run, git, cwd, env, timeoutMs) {
       const nl = entry.indexOf('\n');
       const key = nl < 0 ? entry : entry.slice(0, nl);
       if (badKey(key)) continue; // cannot be passed back; the filter stays absent, as NOSYSTEM leaves it
-      out.push('-c', nl < 0 ? key : `${key}=${entry.slice(nl + 1)}`);
+      const core = key.toLowerCase();
+      if (CORE_KEYS.has(core) && (nl < 0 || (CONTENT_KEYS.has(core) && !lineEndings))) continue;
+      out.push('-c', nl < 0 ? key : `${CORE_KEYS.has(core) ? core : key}=${entry.slice(nl + 1)}`);
     }
   }
   const r = await run(git, ['--no-pager', 'config', '--null', '--show-scope', '--name-only', '--get-regexp', '^filter\\.'], { cwd, env, timeoutMs, maxOut: 65536 });
@@ -85,28 +94,9 @@ async function filterOverrides(run, git, cwd, env, timeoutMs) {
   return out;
 }
 
-// System config keys that run nothing, passed back as `-c` like its filter keys, since GIT_CONFIG_NOSYSTEM drops them. Every
-// read gets core.fscache (a cache switch Git for Windows sets there; without it a status of a large tree costs several times as
-// long). A read that hashes content (`lineEndings`: judged.cjs's add -A into a temporary index) also gets core.autocrlf,
-// core.eol, core.safecrlf and core.symlinks, so content hashes as a commit of it would (Git for Windows sets autocrlf=true).
-const CONTENT_KEYS = new Set(['core.autocrlf', 'core.eol', 'core.safecrlf', 'core.symlinks']);
-async function systemCoreKeys(run, git, cwd, env, timeoutMs, { lineEndings = false } = {}) {
-  const sys = await run(git, ['--no-pager', 'config', '--system', '--null', '--get-regexp', '^core\\.(fscache|autocrlf|eol|safecrlf|symlinks)$'], { cwd, env, timeoutMs, maxOut: 4096, system: true });
-  if (sys.code === 1 && sys.total === 0) return [];
-  if (sys.code !== 0) throw checkFailed('git config --system core keys', sys);
-  const out = [];
-  for (const entry of sys.out.toString('utf8').split('\0').filter(Boolean)) {
-    const nl = entry.indexOf('\n');
-    const key = nl > 0 ? entry.slice(0, nl).toLowerCase() : null;
-    if (!key || badKey(key) || (CONTENT_KEYS.has(key) && !lineEndings)) continue;
-    out.push('-c', `${key}=${entry.slice(nl + 1)}`);
-  }
-  return out;
-}
-
 // The hardened setup for one worktree: git's path, the environment and the filter overrides, read once. A caller making several
 // reads of one tree (a review snapshot) prepares once and passes it to each safeGit. Resolves { git, env, filters } or { error }.
-// It passes back the system core keys that run nothing (systemCoreKeys); `lineEndings` adds the content keys, for a caller that hashes content.
+// `lineEndings` adds the system content keys (filterOverrides), for a caller that hashes content.
 async function prepare(cwd, timeoutMs, env = process.env, { lineEndings = false } = {}) {
   const { runCommand } = require('./evaluate.cjs'); // lazy: evaluate.cjs requires this module
   const git = findGit(env);
@@ -120,8 +110,7 @@ async function prepare(cwd, timeoutMs, env = process.env, { lineEndings = false 
     return { code: r.executable ? r.exit_code : -1, out, total: r.truncated ? out.length + 1 : out.length, kept: out.length, errTail: String(r.stderr || r.spawn_error || '') };
   };
   try {
-    const filters = await filterOverrides(run, git, cwd, env, timeoutMs);
-    return { git, env: base, filters: [...filters, ...(await systemCoreKeys(run, git, cwd, env, timeoutMs, { lineEndings }))] };
+    return { git, env: base, filters: await filterOverrides(run, git, cwd, env, timeoutMs, { lineEndings }) };
   } catch (e) { return { error: e.message }; }
 }
 
@@ -134,4 +123,4 @@ async function safeGit(args, cwd, timeoutMs, { tail, env = process.env, prepared
   return runCommand([p.git, ...PRE, ...p.filters, ...args], cwd, timeoutMs, { env: p.env, ...(tail ? { tail } : {}) });
 }
 
-module.exports = { PRE, NO_HOOKS, gitEnv, findGit, filterOverrides, systemCoreKeys, prepare, safeGit };
+module.exports = { PRE, NO_HOOKS, gitEnv, findGit, filterOverrides, prepare, safeGit };
