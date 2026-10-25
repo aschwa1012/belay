@@ -149,6 +149,17 @@ async function rollback(top, rec, { keepBranch = false } = {}) {
   return out;
 }
 
+// A task that is leased or released has a worker already working, or its work handed back, in the worker's directory; a tree made
+// now would be one the work is not in, and its evaluation would judge it there (ADR 0058 amendment). Refused, naming the holder.
+function assertNotLeased(E, task) {
+  const l = rows.currentLeaseForTask(E.store, task.id);
+  const live = l && !l.released_at ? l : null;
+  if (!live && task.state !== 'assigned' && task.state !== 'released') return;
+  const who = live ? `${live.holder_role} ${live.holder} holds lease ${live.id} on it` : `it is ${task.state}${l && l.holder ? `, last held by ${l.holder_role} ${l.holder}` : ''}`;
+  throw err('E_PRECONDITION', `task ${task.id} gets no worktree once it is leased or released: ${who}, and that work is in the holder's directory; create a new task for work in a new tree`,
+    { task_id: task.id, state: task.state, holder: l ? l.holder : null, holder_role: l ? l.holder_role : null, lease_id: l ? l.id : null, lease_released: l ? !!l.released_at : null });
+}
+
 async function worktreeCreate(E, caller, args) {
   requireTask(E, args.task_id, 'task.worktreeCreate');
   args = present(args);
@@ -159,6 +170,7 @@ async function worktreeCreate(E, caller, args) {
   return exclusive(`task:${args.task_id}`, `a worktree call for task ${args.task_id}`, async () => {
     const task = requireTask(E, args.task_id, 'task.worktreeCreate');
     if (task.state === 'done') throw err('E_TASK_DONE', `task ${task.id} is done, so it gets no new worktree`, { task_id: task.id, state: 'done' });
+    assertNotLeased(E, task);
     const had = active(task);
     if (had) throw err('E_EXISTS', `task ${task.id} already has worktree ${had.path} on branch ${had.branch}`, { task_id: task.id, worktree: had });
     const top = await repoOf(E, caller, args.repo, 'task.worktreeCreate');
@@ -177,6 +189,7 @@ async function worktreeCreate(E, caller, args) {
         E.assertRunOpen(caller, 'task.worktreeCreate');
         const fresh = rows.current(E.store, 'task', task.id);
         if (fresh.state === 'done' || active(fresh)) throw err('E_EXISTS', `task ${task.id} changed while its worktree was made`, { task_id: task.id, state: fresh.state });
+        assertNotLeased(E, fresh); // an assign that landed while the tree was made
         return rows.append(E.store, 'task', { ...fresh, worktree: rec }, E.writtenBy(caller), Date.now());
       });
       E.noteWrite();
