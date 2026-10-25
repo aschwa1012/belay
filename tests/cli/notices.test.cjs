@@ -10,6 +10,7 @@ const { spawnSync } = require('node:child_process');
 
 const { openCore } = require('../../src/core/index.cjs');
 const N = require('../../src/cli/cmd-notices.cjs');
+const CR = require('../../src/core/copy-read.cjs'); // its copy hook counts the store copies a read makes
 const { ROOT, CLI, sandbox, cleanup } = require('./stop-helpers.cjs');
 
 const RUN = 'run-n';
@@ -232,10 +233,9 @@ test('notices: every read of one command is served from a single copy of the sto
   try {
     await plant(dataDir);
     const copies = [];
-    const real = fs.copyFileSync;
-    fs.copyFileSync = (src, ...rest) => { if (/memory\.db$/.test(String(src))) copies.push(String(src)); return real.call(fs, src, ...rest); };
+    CR.hooks.copy = (src) => { if (/memory\.db$/.test(String(src))) copies.push(String(src)); };
     let r;
-    try { r = await N.run({ argv: [RUN], cwd: ROOT, dataDir, dataDirGiven: true }); } finally { fs.copyFileSync = real; }
+    try { r = await N.run({ argv: [RUN], cwd: ROOT, dataDir, dataDirGiven: true }); } finally { CR.hooks.copy = null; }
     assert.strictEqual(r.code, 0, r.text);
     assert.ok(r.json.events.length > 0);
     assert.strictEqual(copies.length, 1, `one copy of memory.db, saw ${copies.length}`);
@@ -248,8 +248,7 @@ test('readBatch commits to one source: the owner that answered first is never sw
   try {
     await plant(dataDir);
     const copies = [];
-    const real = fs.copyFileSync;
-    fs.copyFileSync = (src, ...rest) => { if (/memory\.db$/.test(String(src))) copies.push(String(src)); return real.call(fs, src, ...rest); };
+    CR.hooks.copy = (src) => { if (/memory\.db$/.test(String(src))) copies.push(String(src)); };
     try {
       // Owner first: the second read finds no owner. It fails loudly, and no copy is made.
       const a = await openCore({ dataDir, caller: { role: 'operator', run_id: RUN, pid: process.pid }, embed: false });
@@ -269,7 +268,7 @@ test('readBatch commits to one source: the owner that answered first is never sw
         assert.ok(got[1].workers.length > 0 && got[1].workers.every((w) => w !== 'newer'), 'served from the copy');
         assert.strictEqual(copies.length, 1);
       } finally { await b.close(); }
-    } finally { fs.copyFileSync = real; }
+    } finally { CR.hooks.copy = null; }
   } finally { cleanup(dir); }
 });
 
