@@ -106,3 +106,14 @@ test('a reviewer keeps the six and gets a scratch folder outside its worktree, n
     assert.ok(!fs.existsSync(path.join(sb.data, 'workers', 'c9', 'scratch')), 'a coder has no scratch folder');
   });
 });
+
+test("a review spawn's answer carries the assign answer's review block, and worker_spawn keeps it; a coder's has none", () => withMgr(async ({ sb, core, m }) => {
+  const review = { tree: 'C:/t/x', reviewed_task_id: 'w1', cwd: sb.worktree };
+  const real = core.task.assign;
+  core.task.assign = async (a) => { const o = await real(a); return a.check_only ? o : { ...o, review }; };
+  const r = await spawn(m, sb, 'rv1', { agent_type: 'reviewer', task_id: 'rt1' });
+  assert.deepStrictEqual(r.review, review);
+  assert.deepStrictEqual(require('../../src/mcp/compose.cjs').compactSpawn(r).review, review);
+  const c = await spawn(m, sb, 'cv1', { agent_type: 'coder' });
+  assert.strictEqual(c.review, undefined);
+}));

@@ -103,27 +103,36 @@ function handBack(dataDir, workerId, grant, now) {
 const norm = (p) => (typeof p === 'string' && p ? p.split('\\').join('/').replace(/\/+$/, '').toLowerCase() : null);
 
 // The tree a review judges: the worktree of the task it reviews (its depends_on), not the reviewer's cwd. A task's own belay
-// worktree (ADR 0053) when it has one and it is not removed, else the worktree of the worker that last held a lease on it
-// (the one that did the work), else the newest worker row that names the task. `{ worktree,
-// task_id }`, or `{ worktree: null, error }` when no reviewed task has a tree, or they are in more than one.
-function reviewedTree(store, task) {
-  const found = [];
-  for (const id of Array.isArray(task.depends_on) ? task.depends_on : []) {
-    const t = rows.current(store, 'task', id);
-    const rec = t && t.worktree && typeof t.worktree === 'object' ? t.worktree : null;
-    let wt = rec && rec.path && rec.removed_at == null ? rec.path : null;
-    if (!wt) {
-      const holder = store.p("SELECT holder FROM lease WHERE task_id = ? AND holder_role = 'worker' ORDER BY seq DESC LIMIT 1").get(id);
-      const w = holder ? rows.current(store, 'worker', holder.holder) : null;
-      wt = w && typeof w.worktree === 'string' && w.worktree ? w.worktree : null;
-    }
-    if (!wt) {
-      const named = rows.currentAll(store, 'worker').filter((w) => w.task_id === id && typeof w.worktree === 'string' && w.worktree);
-      named.sort((a, b) => (Number(b.started_at) || 0) - (Number(a.started_at) || 0));
-      wt = named.length ? named[0].worktree : null;
-    }
-    if (wt) found.push({ worktree: wt, task_id: id });
+// worktree (ADR 0053) when it has one, else the worktree the worker that last held a lease on it had when the lease was
+// granted (its worker row as it stood then: an id can be reused later in another tree), else the newest worker row that names
+// the task. A task whose own worktree was removed, or whose last holder's row at the grant names none, is an error and not a
+// guess. `{ worktree, task_id }`, or `{ worktree: null, error }` when no reviewed task has a tree, or they are in more than one.
+function treeOf(store, id) {
+  const t = rows.current(store, 'task', id);
+  const rec = t && t.worktree && typeof t.worktree === 'object' ? t.worktree : null;
+  if (rec && rec.path) {
+    if (rec.removed_at != null) return { error: 'the reviewed worktree was removed' };
+    return { worktree: rec.path };
   }
+  const holder = store.p("SELECT holder, granted_at FROM lease WHERE task_id = ? AND holder_role = 'worker' ORDER BY seq DESC LIMIT 1").get(id);
+  if (holder) {
+    const at = rows.history(store, 'worker', holder.holder).filter((w) => Number(w.written_at) <= Number(holder.granted_at)).pop();
+    return at && typeof at.worktree === 'string' && at.worktree ? { worktree: at.worktree }
+      : { error: `the worker ${holder.holder} that held the reviewed task has no worktree on record at its grant` };
+  }
+  const named = rows.currentAll(store, 'worker').filter((w) => w.task_id === id && typeof w.worktree === 'string' && w.worktree);
+  named.sort((x, y) => (Number(y.started_at) || 0) - (Number(x.started_at) || 0));
+  return named.length ? { worktree: named[0].worktree } : {};
+}
+
+function reviewedTree(store, task) {
+  const found = [], errors = [];
+  for (const id of Array.isArray(task.depends_on) ? task.depends_on : []) {
+    const r = treeOf(store, id);
+    if (r.error) errors.push(r.error);
+    else if (r.worktree) found.push({ worktree: r.worktree, task_id: id });
+  }
+  if (errors.length) return { worktree: null, error: errors[0] };
   const trees = [...new Set(found.map((f) => norm(f.worktree)))];
   if (!found.length) return { worktree: null, error: 'no task under review records a worktree, so the reviewed tree is not known' };
   if (trees.length > 1) return { worktree: null, error: `the tasks under review are in ${trees.length} trees, so no one tree is the reviewed one` };

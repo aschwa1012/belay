@@ -88,8 +88,8 @@ task. A `worker_message` sent while the worker compacts answers `queued: true`; 
    the coder's own worker at assign (`E_SELF_REVIEW`), and a verdict from a worker that held a lease
    on the work is not executable at evaluate.
 3. Put the Review standard section below, verbatim, in the reviewer's prompt. The prompt also names
-   what to review: the tree in task_assign's `review.tree` (not the reviewer's cwd), branch and head (from
-   the coder's hand-back), and its scratch folder: the answer's `scratch`, never your own. It ends by calling `lease_release` with
+   what to review: the reviewed task's worktree (`review.tree` in the answer when you reassign), its branch and head (the coder's hand-back, else the work task's files_within_owned `detail.head_sha`); belay gives the reviewer its scratch
+   folder, so never name one. It ends by calling `lease_release` with
    `result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [...] }`.
 4. When the reviewer's wake comes (its turn ended), call `mcp__belay__task_evaluate` on the review
    task. The `worktree` is required; pass the reviewed task's worktree (no command runs for a

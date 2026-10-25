@@ -6,7 +6,7 @@
 
 // worker_spawn's default answer (ADR 0058 decision 9): what the orchestrator acts on. The rest (surface, plugins, instruction
 // hashes, pid_created, argv_hash, token counters) is the receipt, behind view: "debug".
-const SPAWN_KEEP = ['id', 'substrate', 'pid', 'state', 'session_id', 'adapter_pid', 'worktree', 'task_id', 'started_at', 'ready_ms', 'model', 'permission_mode_effective', 'scratch'];
+const SPAWN_KEEP = ['id', 'substrate', 'pid', 'state', 'session_id', 'adapter_pid', 'worktree', 'task_id', 'started_at', 'ready_ms', 'model', 'permission_mode_effective', 'scratch', 'review'];
 // `requested` is the spawn's own model argument. Codex reports no model on its stream (B5), so its row has none: the
 // answer then names the model belay asked for, and says so in model_source.
 function compactSpawn(row, requested = null) {
