@@ -50,7 +50,7 @@ function createCompose({ callCore, manager, openManager, dataDir = null }) {
     let head = `task ${coreArgs.task_id} state=assigned lease=${lease}.`;
     try { const rl = await callCore('continuity.resumeLine', { task_id: coreArgs.task_id }); if (rl && rl.text) head = rl.text; } catch { /* the short head above still names the lease */ }
     const body = typeof prompt === 'string' && prompt.trim() ? prompt : `Task: ${(out && out.task && out.task.spec) || ''}`;
-    const text = `${head}\n\n${body}\n\nWhen you are finished, call lease_release with lease_id ${lease} and a result object (branch, head, tests, findings).`;
+    const text = `${head}\n\n${body}\n\nWhen you are finished, commit your work in your worktree, then call lease_release with lease_id ${lease} and a result object (branch, head, tests, findings).`;
     try {
       const m = await r.message({ worker_id: coreArgs.worker_id, text });
       return { ...out, delivered: { ...m, sent: !m.queued, queued: !!m.queued } }; // queued: held for a compaction, written when it ends

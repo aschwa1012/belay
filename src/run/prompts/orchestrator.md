@@ -36,7 +36,7 @@ of your prompt, `task <id> state=assigned lease=<lease id>.`. Give it `substrate
 rule (`prompt` replaces the spec, `deliver: false` sends nothing). If `delivered.sent` and `delivered.queued` are false,
 the worker was told nothing: tell it with `mcp__belay__worker_message`.
 
-Every worker prompt you write must end with: when you are finished, call `lease_release` with your
+Every worker prompt you write must end with: when you are finished, commit your work in your worktree, then call `lease_release` with your
 lease id and a `result` object (branch, head, tests, findings). A worker cannot name itself: belay
 knows it by its process, not by anything it says.
 
