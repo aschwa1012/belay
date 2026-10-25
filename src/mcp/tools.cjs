@@ -173,7 +173,7 @@ const BOTH = [
 // the core's rows with view debug. The worker's listing keeps the plain one above, so its bytes are unchanged.
 const ORCH_TASK_LIST = {
   name: 'task_list',
-  description: 'Tasks: id, state, rev, spec_head, depends_on, branch, lease, last results (failing named), hand-back field names. task_ids: those tasks with hand-back and checks whole. view debug: full rows.',
+  description: 'Tasks: id, state, rev (row version), spec_head, depends_on, branch, lease, last results (failing named), hand-back field names. task_ids: those tasks with hand-back and checks whole. view debug: full rows.',
   inputSchema: S({ states: strs('open, assigned, released, done or cancelled'), task_ids: strs(), view: DEBUG }),
 };
 
@@ -251,9 +251,11 @@ const ORCHESTRATOR = [
       depends_on: strs('Task ids that must be done before this one can be assigned'),
       repairs: str('A fix task: the id of the work task it repairs; capped by max_fix_rounds'),
       base: str('Diff base'),
+      tree_of: str('Work in that task\'s worktree (a conflict fix)'),
       id: str(),
+      amend: { type: 'boolean', description: 'Replace not-done task id\'s acceptance and spec' },
       view: DEBUG,
-    }, ['spec']),
+    }), // spec: required unless amend (validateArgs)
   },
   {
     name: 'task_assign',
@@ -497,6 +499,8 @@ function validateArgs(name, args, { notes = false, role = 'worker' } = {}) {
   for (const k of schema.required || []) {
     if (a[k] === undefined || a[k] === null) bad(`${name} needs ${k}`, { tool: name, missing: k });
   }
+  // ADR 0061: an amend keeps the task's spec unless it names a new one, so only a create needs it.
+  if (name === 'task_create' && a.amend !== true && (a.spec === undefined || a.spec === null)) bad('task_create needs spec', { tool: name, missing: 'spec' });
   if (name === 'memory_retrieve') {
     const hasId = a.id !== undefined && a.id !== null;
     const hasIds = a.ids !== undefined && a.ids !== null;

@@ -36,6 +36,16 @@ const active = (task) => (task && task.worktree && task.worktree.path && !task.w
 
 const ENDED_TASK = new Set(['done', 'cancelled']);
 const removing = new Map(); // tree path (lower case) -> { task_id, done }: a task.worktreeRemove in flight
+// A task's tree as another task may inherit it (task.create tree_of, task.fixFromReview): null when there is none or it was
+// removed, E_BUSY while a task.worktreeRemove of it is in flight. The removal checked for open sharers before it began, so a task
+// given the tree now would be marked removed under it (ADR 0061). Synchronous, so the caller appends its row in the same turn.
+function inheritable(task) {
+  const rec = active(task);
+  if (!rec) return null;
+  const r = removing.get(G.fwd(rec.path).toLowerCase());
+  if (r) throw err('E_BUSY', `task ${task.id}'s worktree ${rec.path} is being removed (through task ${r.task_id}), so no task can be given it`, { op: 'worktree_remove', task_id: task.id, removing_through: r.task_id, path: rec.path });
+  return rec;
+}
 // The other tasks whose recorded, not removed, tree is `dir`: a fix task and the work it fixes share one.
 const sharers = (E, id, dir) => rows.currentAll(E.store, 'task').filter((t) => t.id !== id && active(t) && G.samePath(active(t).path, dir));
 // The first other task that is not done or cancelled and shares `task`'s tree or its branch (a fix works on the work's branch, so
@@ -342,4 +352,4 @@ function evaluateTarget(task, args) {
   return rec ? { worktree, base: rec.base_sha, baseSource: 'recorded' } : { worktree, base: undefined, baseSource: undefined };
 }
 
-module.exports = { ownBoot, ownBootProbe, worktreeCreate, worktreeRemove, removeTree, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, baseArg, assertTaskTree, openSharer, exclusive, active, present, pathName, liveWorkerIn, strayLinks, under };
+module.exports = { ownBoot, ownBootProbe, worktreeCreate, worktreeRemove, removeTree, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, baseArg, assertTaskTree, openSharer, exclusive, active, inheritable, present, pathName, liveWorkerIn, strayLinks, under };

@@ -52,7 +52,7 @@ function unanswered(E, caller, judged, review, repairs) {
 // can take the fix by task.assign, and the fix's files check judges the whole branch against the work's base. A removed tree
 // is not inherited. task.worktreeRemove records the removal on every task that shares the tree.
 function inheritedTree(judged) {
-  const rec = require('./methods-worktree.cjs').active(judged);
+  const rec = require('./methods-worktree.cjs').inheritable(judged);
   return rec ? { ...rec, inherited_from: rec.inherited_from || judged.id } : null;
 }
 
