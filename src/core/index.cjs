@@ -52,10 +52,13 @@ class Core {
   // the frozen caller with `channel: 'harness'`, so the core records its memory rows as `harness`. Only code that holds
   // this Core object can ask for it: a tool call reaches `core[group][name]` and nothing else, and the caller is
   // set here from the process's own identity, replacing any `caller` the arguments carried.
-  harness() {
-    if (this._harness) return this._harness;
-    if (this.caller.role === 'worker') throw err('E_ROLE', 'a worker has no harness channel', { role: this.caller.role });
-    const caller = Object.freeze({ ...this.caller, channel: 'harness' });
+  harness() { if (this.caller.role === 'worker') throw err('E_ROLE', 'a worker has no harness channel', { role: this.caller.role }); return this._view('harness'); }
+  // ADR 0054 amendment 1: the worker adapter's lease keep-alive view, so its timer's calls are told from the model's.
+  keepalive() { if (this.caller.role !== 'worker') throw err('E_ROLE', 'only a worker adapter has the keepalive channel', { role: this.caller.role }); return this._view('keepalive'); }
+  _view(channel) {
+    const key = `_${channel}`;
+    if (this[key]) return this[key];
+    const caller = Object.freeze({ ...this.caller, channel });
     const view = { caller, get owner() { return self.owner; } };
     const self = this;
     for (const m of METHOD_NAMES) {
@@ -64,10 +67,10 @@ class Core {
       view[group][name] = args => self._invoke(m, args, caller);
     }
     for (const k of Object.getOwnPropertyNames(Core.prototype)) {
-      if (k !== 'constructor' && !k.startsWith('_') && k !== 'harness' && k !== 'handle' && typeof self[k] === 'function') view[k] = self[k].bind(self);
+      if (k !== 'constructor' && !k.startsWith('_') && k !== 'harness' && k !== 'keepalive' && k !== 'handle' && typeof self[k] === 'function') view[k] = self[k].bind(self);
     }
     view.handle = (method, args) => self._invoke(method, args, caller);
-    return (this._harness = Object.freeze(view));
+    return (this[key] = Object.freeze(view));
   }
 
   async _invoke(method, args, caller = this.caller) {

@@ -244,9 +244,9 @@ const fail = (code, message, detail) => {
   return e;
 };
 
-async function callCore(dotted, args) {
+async function callCore(dotted, args, channel = null) {
   const c = await settleEpoch(await openCoreOnce());
-  const fn = resolveCoreMethod(c, dotted);
+  const fn = resolveCoreMethod(channel && typeof c.keepalive === 'function' ? c.keepalive() : c, dotted); // channel: the keep-alive's own (ADR 0054 amendment 1)
   if (!fn) throw fail('E_INTERNAL', `the core exposes no method ${dotted}`, { method: dotted });
   return fn(args);
 }
@@ -375,7 +375,7 @@ async function handle(msg) {
 
 // BELAY_KEEPALIVE_TICK_MS (a positive integer) overrides the 60 s tick of the lease keepalive; a test hook (ADR 0026).
 const keepalive = opts.role !== 'worker' ? null : require('./lease-keepalive.cjs').createKeepalive({
-  call: callCore, workerId: opts.workerId, log: wlog, tickMs: Number(process.env.BELAY_KEEPALIVE_TICK_MS) });
+  call: (m, a) => callCore(m, a, 'keepalive'), workerId: opts.workerId, log: wlog, tickMs: Number(process.env.BELAY_KEEPALIVE_TICK_MS) });
 let buf = '';
 wlog('##', `start role=${opts.role} run=${opts.runId} worker=${opts.workerId || '-'} data=${opts.dataDir}`);
 

@@ -69,6 +69,9 @@ test('keepalive: a real worker adapter with BELAY_KEEPALIVE_TICK_MS renews its w
     const latest = Math.max(...seen);
     assert.ok(latest > first.expires_at + 4000, `the lease was pushed only ${latest - first.expires_at} ms past its first expiry`);
     assert.strictEqual((await leaseOf(core, task.id)).ttl_ms, 4000, 'every renewal kept the granted length');
+    // ADR 0054 amendment 1: the keep-alive's task.list and lease.renew go on the keepalive channel, so the owner never counts them as
+    // the worker's own calls (a review grant's baseline would read them as the model reaching the core).
+    assert.strictEqual(core.owner.engine.workerCalls.has(W), false, 'the keep-alive calls are not the worker\'s');
     const logged =fs.readFileSync(log, 'utf8');
     assert.match(logged, /lease-keepalive .*"action":"renewed"/, 'the renewal is in the adapter\'s log');
 
