@@ -125,3 +125,16 @@ test('task_ids naming no task answers not_found with those ids, in the compact a
   assert.strictEqual((await V.viewed('task_list', { task_ids: ['t1'] }, run)).not_found, undefined, 'absent when every id was found');
   assert.deepStrictEqual((await V.viewed('task_list', { task_ids: ['gone'], view: 'debug' }, run)), { tasks: [], not_found: ['gone'] });
 });
+
+test('ADR 0060: review is kept in both shapes and dropped when null; a shared tree keeps inherited_from; a flaky pass keeps its attempts', () => {
+  const review = { state: 'refuted', review_id: 'r1', rounds: 2, rounds_left: 0 };
+  assert.deepStrictEqual([V.compactTask(row({ review })).review, V.compactTask(row({ review }), { detail: true }).review], [review, review]);
+  assert.ok(!('review' in V.compactTask(row({ review: null }))) && !('review' in V.compactTask(row({ review: null }), { detail: true })));
+  const shared = row({ worktree: { repo: 'C:/r', path: 'C:/r.worktrees/t0', branch: 'belay/t0', base_sha: 'b', inherited_from: 't0' } });
+  assert.deepStrictEqual(V.compactTask(shared, { detail: true }).worktree, { path: 'C:/r.worktrees/t0', branch: 'belay/t0', inherited_from: 't0' });
+  assert.deepStrictEqual(V.compactTask(row(), { detail: true }).worktree, { path: 'C:/r.worktrees/t1', branch: 'belay/t1' });
+  const attempts = [{ exit_code: 1, timed_out: false, ms: 5, stderr_tail: 'boom' }, { exit_code: 0, timed_out: false, ms: 6 }];
+  const flaky = { ...check(true), flaky: true, detail: { ...check(true).detail, attempts } };
+  const d = V.compactTask(row({ results: { evaluated_at: 7, executable: true, passed: true, flaky: true, checks: [flaky] } }), { detail: true });
+  assert.deepStrictEqual([d.results.flaky, d.results.checks[0].flaky, d.results.checks[0].detail.attempts], [true, true, attempts]);
+});

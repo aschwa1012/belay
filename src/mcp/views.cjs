@@ -34,7 +34,8 @@ function compactCheck(c) {
 }
 
 const leaseOf = (l) => (l && typeof l === 'object' ? { id: l.id, holder: l.holder, holder_role: l.holder_role, expires_at: l.expires_at, expired: l.expired } : l);
-const worktreeOf = (w) => (w && typeof w === 'object' ? { path: w.path, branch: w.branch, ...(w.removed_at ? { removed_at: w.removed_at } : {}) } : w);
+// `inherited_from` stays: it says a fix shares the tree of the work it fixes (task.fixFromReview), so its coder can be reused.
+const worktreeOf = (w) => (w && typeof w === 'object' ? { path: w.path, branch: w.branch, ...(w.inherited_from ? { inherited_from: w.inherited_from } : {}), ...(w.removed_at ? { removed_at: w.removed_at } : {}) } : w);
 const handoffFields = (h) => (h && typeof h === 'object' ? { by: h.by, at: h.at, fields: h.result && typeof h.result === 'object' ? Object.keys(h.result) : [] } : h);
 
 // The row keys a compact answer drops or replaces. Anything else the core adds passes through, so a new field is never lost here.
@@ -60,6 +61,8 @@ function compactTask(row, { detail = false } = {}) {
   if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
   const out = {};
   for (const [k, v] of Object.entries(row)) if (!ROW_DROP.has(k) && (detail || !SUMMARY_DROP.has(k))) out[k] = v;
+  // ADR 0060: `review` (where the work stands with its reviewers) is kept in both shapes; null, work no review names, is dropped.
+  if (out.review === null) delete out.review;
   out.spec_head = head(row.spec);
   if (row.lease !== undefined) out.lease = leaseOf(row.lease);
   if (detail) { if (row.worktree !== undefined) out.worktree = worktreeOf(row.worktree); } else if (row.worktree && row.worktree.branch) out.branch = row.worktree.branch;
