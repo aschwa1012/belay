@@ -363,7 +363,7 @@ async function handle(msg) {
       return send({ jsonrpc: '2.0', id, result });
     }
     try {
-      const row = opts.role === 'orchestrator' && require('./views.cjs').isViewed(name) ? await require('./views.cjs').viewed(name, args, (a) => callTool(name, a)) : await callTool(name, args); // ADR 0058 amendment 1: compact unless view debug
+      const row = opts.role === 'orchestrator' && require('./views.cjs').isViewed(name) ? await require('./views.cjs').viewed(name, args, (a) => callTool(name, a)) : await callTool(name, args); // ADR 0058 amendment 3: compact unless view debug
       return send({ jsonrpc: '2.0', id, result: okResult(row) });
     } catch (e) {
       return send({ jsonrpc: '2.0', id, result: errResult(e) });
