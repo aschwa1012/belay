@@ -95,15 +95,18 @@ test('a reviewer keeps the six and gets a scratch folder outside its worktree, n
       await m._waitTurn('v1', 8000);
     } finally { if (saved === undefined) delete process.env.FAKE_RECV_FILE; else process.env.FAKE_RECV_FILE = saved; }
     assert.strictEqual(flag(argvOf(sb, 'v1'), '--tools'), 'Read,Edit,Write,Glob,Grep,Bash');
-    const scratch = path.join(sb.data, 'workers', 'v1', 'scratch').split(path.sep).join('/');
+    const scratch = path.join(sb.data, 'scratch', 'run-spawn-policy', 'v1').split(path.sep).join('/');
     assert.ok(fs.statSync(scratch).isDirectory(), 'made at spawn');
     assert.strictEqual(spawned.scratch, scratch, 'the spawn answer names it');
     assert.strictEqual(require('../../src/mcp/compose.cjs').compactSpawn(spawned).scratch, scratch, 'and worker_spawn keeps it');
     assert.ok(!scratch.toLowerCase().startsWith(String(sb.worktree).toLowerCase() + '/'), 'outside the worktree');
+    const workers = (path.join(sb.data, 'workers').split(path.sep).join('/') + '/').toLowerCase();
+    assert.ok(!scratch.toLowerCase().startsWith(workers), 'and not inside <data>/workers, where the other workers transcripts are');
+    assert.deepStrictEqual(fs.readdirSync(path.join(sb.data, 'scratch')), ['run-spawn-policy'], 'the scratch root holds run folders only');
     const first = JSON.parse(fs.readFileSync(recv, 'utf8').split(String.fromCharCode(10)).filter(Boolean)[0]).text;
     assert.ok(first.includes(`Your scratch folder, outside the tree under review: ${scratch}.`), first);
     await spawn(m, sb, 'c9', { agent_type: 'coder' });
-    assert.ok(!fs.existsSync(path.join(sb.data, 'workers', 'c9', 'scratch')), 'a coder has no scratch folder');
+    assert.ok(!fs.existsSync(path.join(sb.data, 'scratch', 'run-spawn-policy', 'c9')), 'a coder has no scratch folder');
   });
 });
 

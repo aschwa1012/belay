@@ -91,8 +91,8 @@ const shown = (lease) => (lease.tree ? { ...lease, tree: { head: lease.tree.head
 
 // release: what the hand-back gains for a review lease, `{ tree?, scratch? }`: the comparison with the grant snapshot, and the
 // reviewer's scratch folder's size (flagged past 50 MB, never cut).
-function handBack(dataDir, workerId, grant, now) {
-  const scratch = SD.facts(dataDir, workerId);
+function handBack(dataDir, runId, workerId, grant, now) {
+  const scratch = SD.facts(dataDir, runId, workerId);
   // A review lease with no grant snapshot (the attach failed or was discarded) says so rather than carrying no tree at all.
   const tree = !grant ? { changed: null, error: 'no grant snapshot was attached' }
     : !grant.worktree ? { changed: null, error: grant.error || 'the reviewed tree is not known' } // never snapshotted: say why

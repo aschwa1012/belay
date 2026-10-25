@@ -64,8 +64,9 @@ test('run close deletes this run\'s scratch folders, whatever is in them, and th
     assert.deepStrictEqual(s.folders.map((f) => [f.worker_id, f.bytes, f.files, f.removed]), [['rev-a', 120, 2, true], ['rev-b', 120, 2, true]]);
     assert.deepStrictEqual([s.removed_folders, s.removed_bytes], [2, 240]);
     assert.deepStrictEqual(RS.lines(rec), ['review scratch: removed 2 folder(s), 240 bytes'], 'the text receipt line');
-    for (const id of ['rev-a', 'rev-b']) assert.ok(!fs.existsSync(`${r.data}/workers/${id}/scratch`), `${id} removed`);
-    assert.ok(fs.existsSync(`${r.data}/workers/rev-old/scratch/probe.cjs`), 'another run\'s folder is left alone');
+    for (const id of ['rev-a', 'rev-b']) assert.ok(!fs.existsSync(`${r.data}/scratch/${r.runId}/${id}`), `${id} removed`);
+    assert.ok(!fs.existsSync(`${r.data}/scratch/${r.runId}`), 'the run folder goes with them');
+    assert.ok(fs.existsSync(`${r.data}/scratch/an-older-run/rev-old/probe.cjs`), 'another run\'s folder is left alone');
   } finally { cleanup(r.dir); }
 });
 
@@ -76,7 +77,7 @@ test('with keep_review_scratch the folders stay and the receipt says so; a bad v
     const s = JSON.parse(r.stdout).review_scratch;
     assert.strictEqual(s.kept, true);
     assert.strictEqual(s.removed_folders, 0);
-    assert.ok(fs.existsSync(`${r.data}/workers/rev-a/scratch/deep/out.txt`), 'kept');
+    assert.ok(fs.existsSync(`${r.data}/scratch/${r.runId}/rev-a/deep/out.txt`), 'kept');
     assert.deepStrictEqual(RS.lines({ review_scratch: s }), ['review scratch: kept 2 folder(s) (keep_review_scratch)']);
   } finally { cleanup(r.dir); }
   const bad = setup({ keep_review_scratch: 'yes' }, false);
