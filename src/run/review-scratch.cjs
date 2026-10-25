@@ -81,7 +81,13 @@ function ensure(dataDir, workerId, runId) {
       if (!removeChecked(dataDir, checked, id0).removed) return null;
     }
     fs.mkdirSync(dir);
-    return SD.scratchDir(dataDir, runId, workerId);
+    const made = SD.identity(dir);
+    const checked = SD.scratchDir(dataDir, runId, workerId);
+    if (!checked) { // the run folder was swapped after its check: take back only what this call just made, by identity
+      if (made && SD.sameId(SD.identity(dir), made)) { try { fs.rmdirSync(dir); } catch { /* not empty: left, and no folder is named */ } }
+      return null;
+    }
+    return checked;
   } catch { return null; }
 }
 
@@ -97,6 +103,12 @@ function closeRun(dataDir, runId, levers) {
   const keep = !!(levers && levers.keep_review_scratch === true);
   const swept = sweep(dataDir);
   const rd = SD.runDir(dataDir, runId);
+  if (!rd && !swept.length && SD.segment(runId)) {
+    const root = SD.rootDir(dataDir);
+    let near = null;
+    try { near = root ? fs.readdirSync(root).find((n) => n.toLowerCase() === String(runId).toLowerCase() && n !== String(runId)) : null; } catch { near = null; }
+    if (near) return { review_scratch: { kept: !!(levers && levers.keep_review_scratch === true), folders: [], removed_folders: 0, removed_bytes: 0, error: `the scratch folder "${near}" differs from the run id "${runId}" only by case, so it was left alone` } };
+  }
   let ids = [];
   if (rd) { try { ids = fs.readdirSync(rd).filter(SD.segment); } catch { ids = []; } }
   if (!ids.length && !swept.length) return {};
@@ -117,6 +129,7 @@ function closeRun(dataDir, runId, levers) {
 function lines(receipt) {
   const s = receipt && receipt.review_scratch;
   if (!s) return [];
+  if (s.error) return [`review scratch: ${s.error}`];
   return [s.kept ? `review scratch: kept ${s.folders.length} folder(s) (keep_review_scratch)` : `review scratch: removed ${s.removed_folders} folder(s), ${s.removed_bytes} bytes`];
 }
 
