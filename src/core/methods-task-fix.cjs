@@ -15,16 +15,37 @@ function verdictDetail(review) {
   return v && v.detail ? v.detail : {};
 }
 
-// The work as first specified (the original task's spec, never a fix's, which would quote an earlier round) and only this
-// review's findings: a fix of a fix does not carry stale findings forward, and the spec does not grow with the rounds.
-function defaultSpec(review, judged, original, detail) {
-  let findings = '';
-  if (Array.isArray(detail.findings) && detail.findings.length) {
-    findings = JSON.stringify(detail.findings);
-    if (Buffer.byteLength(findings, 'utf8') > SPEC_FINDINGS_MAX) findings = `${Buffer.from(findings, 'utf8').subarray(0, SPEC_FINDINGS_MAX).toString('utf8')}...`;
-  }
+// The work as first specified (the original task's spec, never a fix's, which would quote an earlier round) and the findings of
+// the refutations this fix answers, all of them current (ADR 0060 decision 5): a fix of a fix carries no earlier round's spec or
+// findings, and the spec does not grow with the rounds. The findings share one byte cap.
+function defaultSpec(refs, judged, original) {
+  const room = Math.floor(SPEC_FINDINGS_MAX / refs.length);
+  const said = refs.map((r) => {
+    const detail = verdictDetail(r);
+    let findings = '';
+    if (Array.isArray(detail.findings) && detail.findings.length) {
+      findings = JSON.stringify(detail.findings);
+      if (Buffer.byteLength(findings, 'utf8') > room) findings = `${Buffer.from(findings, 'utf8').subarray(0, room).toString('utf8')}...`;
+    }
+    return `${refs.length > 1 ? `Review ${r.id} said` : 'The reviewer said'}: ${detail.summary || '(no summary)'}${findings ? ` Findings: ${findings}` : ''}`;
+  });
   const work = original.id === judged.id ? `(${original.spec})` : `(a fix of task ${original.id}: ${original.spec})`;
-  return `Fix the blocking findings of review ${review.id} on task ${judged.id} ${work}. The reviewer said: ${detail.summary || '(no summary)'}${findings ? ` Findings: ${findings}` : ''}`;
+  return `Fix the blocking findings of review ${refs.map((r) => r.id).join(', ')} on task ${judged.id} ${work}. ${said.join(' ')}`;
+}
+
+// ADR 0060 decision 5: the refutations of the judged task that no fix answers yet (a fix not cancelled whose answers name it),
+// oldest decision first, with the one asked for always among them; and whether a live fix of this run already answers it.
+function unanswered(E, caller, judged, review, repairs) {
+  const RS = require('./review-state.cjs');
+  const all = rows.currentAll(E.store, 'task');
+  const ix = RS.index(E.store, all);
+  const fixes = all.filter((t) => !RS.isReview(t) && t.repairs === repairs);
+  const live = new Set(['open', 'assigned', 'released']);
+  const existing = fixes.find((f) => f.run_id === caller.run_id && live.has(f.state) && RS.answersOf(f, ix).includes(review.id));
+  const covered = new Set(fixes.flatMap((f) => RS.answersOf(f, ix)));
+  const at = (r) => Number(r.results && r.results.evaluated_at) || 0;
+  const refs = (ix.reviewsOf.get(judged.id) || []).filter((r) => RS.verdictOf(r) === 'refuted' && (r.id === review.id || !covered.has(r.id))).sort((a, b) => at(a) - at(b));
+  return { refs, existing };
 }
 
 // The fix is worked in the judged task's tree, on its branch, from its base: the coder that did the work, idle in that tree,
@@ -62,21 +83,19 @@ async function fixFromReview(E, caller, args) {
   if (!judged) throw err('E_NOT_FOUND', `review ${review.id} depends on ${judgedId}, which has no row in this store`, { review_id: review.id, missing: judgedId });
   const repairs = judged.repairs || judged.id;
   const original = (judged.repairs && rows.current(E.store, 'task', judged.repairs)) || judged;
-  // Called again for the same review, the fix it already made is returned, and no fix round is spent: an open fix task of this
-  // run that repairs the same work and depends on exactly the judged task.
-  const live = new Set(['open', 'assigned', 'released']);
-  const same = rows.currentAll(E.store, 'task').find((t) => t.run_id === caller.run_id && t.repairs === repairs && live.has(t.state)
-    && Array.isArray(t.depends_on) && t.depends_on.length === 1 && t.depends_on[0] === judged.id);
-  if (same) return { ...same, from_review: review.id, existing: true };
+  // Called again for a review an open fix of this run already answers (the same review, or another refutation that fix took in),
+  // that fix is returned, and no fix round is spent. A refutation decided after the fix was made is not in it: it gets its own.
+  const { refs, existing } = unanswered(E, caller, judged, review, repairs);
+  if (existing) return { ...existing, from_review: review.id, existing: true };
   const tree = inheritedTree(judged);
   const row = await T.create(E, caller, {
-    spec: typeof args.spec === 'string' && args.spec.trim() ? args.spec : defaultSpec(review, judged, original, verdictDetail(review)),
+    spec: typeof args.spec === 'string' && args.spec.trim() ? args.spec : defaultSpec(refs, judged, original),
     acceptance: args.acceptance !== undefined ? args.acceptance : judged.acceptance,
     files_owned: ownedSet(args.files_owned, judged, tree),
     depends_on: [judged.id],
     repairs,
     ...(args.id ? { id: args.id } : {}),
-  }, { worktree: tree });
+  }, { worktree: tree, answers: refs.map((r) => r.id) });
   return { ...row, from_review: review.id };
 }
 

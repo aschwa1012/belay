@@ -52,7 +52,7 @@ function findCycle(store, id, dependsOn) {
   return walk(id);
 }
 
-async function create(E, caller, args, own = {}) { // own: core-internal, task.fixFromReview's inherited worktree; no tool reaches it
+async function create(E, caller, args, own = {}) { // own: core-internal, task.fixFromReview's inherited worktree and answered reviews; no tool reaches it
   if (typeof args.spec !== 'string' || !args.spec.trim()) throw err('E_ARGS', 'task.create needs a spec describing the work');
   const filesOwned = args.files_owned == null ? null : args.files_owned;
   if (filesOwned != null && (!Array.isArray(filesOwned) || filesOwned.some(p => typeof p !== 'string'))) {
@@ -122,7 +122,7 @@ async function create(E, caller, args, own = {}) { // own: core-internal, task.f
   const t = Date.now();
   const row = rows.append(E.store, 'task', {
     id, run_id: caller.run_id, spec: args.spec, acceptance, files_owned: filesOwned, state: 'open',
-    results: null, depends_on: deps, repairs, ...(own.worktree ? { worktree: own.worktree } : {}),
+    results: null, depends_on: deps, repairs, ...(own.worktree ? { worktree: own.worktree } : {}), ...(own.answers ? { answers: own.answers } : {}),
   }, E.writtenBy(caller), t);
   E.noteWrite();
   return overlaps.length ? { ...row, overlaps } : row;

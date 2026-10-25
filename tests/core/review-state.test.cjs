@@ -168,6 +168,40 @@ test('a panel: a refutation stands over a later holds, while its fix is open and
   assert.deepStrictEqual(await reviewOf(w.id), { state: 'refuted', review_id: b.id, rounds: 1, rounds_left: 1 }, 'the fix is open: b stands');
   await orch.task.cancel({ task_id: f.id });
   assert.deepStrictEqual(await reviewOf(w.id), { state: 'refuted', review_id: b.id, rounds: 1, rounds_left: 1 }, 'cancelled: b stands, and the round is spent');
+  // The next fix takes b in again with a new refutation c: the cancelled fix covered nothing.
+  const c = await judge(w, null);
+  await said(c, 'refuted', 'c-says');
+  const f2 = await orch.task.fixFromReview({ review_id: c.id });
+  assert.deepStrictEqual(f2.answers, [b.id, c.id]);
+});
+
+test('two refuters: one fix takes in both, either review returns it, and a refutation decided after the fix needs its own round', async () => {
+  const w = await orch.task.create({ spec: 'work h', acceptance: PASS });
+  await doneWork(w);
+  const r1 = await judge(w, null), r2 = await judge(w, null);
+  await said(r1, 'refuted', 'first-refuter');
+  await said(r2, 'refuted', 'second-refuter');
+  const f = await orch.task.fixFromReview({ review_id: r1.id });
+  assert.deepStrictEqual(f.answers, [r1.id, r2.id]);
+  assert.match(f.spec, /first-refuter-finding/);
+  assert.match(f.spec, /second-refuter-finding/);
+  const again = await orch.task.fixFromReview({ review_id: r2.id });
+  assert.deepStrictEqual([again.id, again.existing], [f.id, true], 'the second refuter is already in the open fix');
+  // A third refutation, decided after the fix was made, is not in it: while that fix is still open it gets a fix of its own.
+  const r3 = await judge(w, null);
+  await said(r3, 'refuted', 'late-refuter');
+  const f2 = await orch.task.fixFromReview({ review_id: r3.id });
+  assert.notStrictEqual(f2.id, f.id);
+  assert.deepStrictEqual([f2.existing, f2.answers], [undefined, [r3.id]]);
+  assert.doesNotMatch(f2.spec, /first-refuter|second-refuter/);
+  // f2's review holds: r3 is answered, but r1 and r2 are only f's to answer, and f is not reviewed yet.
+  await doneWork(f2);
+  await verdict(await judge(f2, null), 'holds');
+  assert.deepStrictEqual((await reviewOf(w.id)).state, 'refuted', 'f2 answers r3 only');
+  await doneWork(f);
+  const fr = await judge(f, null);
+  await verdict(fr, 'holds');
+  assert.deepStrictEqual(await reviewOf(w.id), { state: 'holds', review_id: fr.id, rounds: 2, rounds_left: 0 });
 });
 
 test('a refutation decided in the same millisecond a fix was made is not answered by it (a fix row from before answers)', () => {
