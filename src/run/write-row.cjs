@@ -87,6 +87,7 @@ function createWriteRow(ctx, flags) {
       return written;
     }
     if (written && Number.isInteger(written.seq)) w.lastWrittenSeq = written.seq;
+    if (state === 'dead' && written && Array.isArray(written.leases_released) && written.leases_released.length) w.deathReleases = (w.deathReleases || 0) + 1; // ADR 0026 amendment 2: a relaunch re-asks after one
     w.state = state;
     return written;
   };

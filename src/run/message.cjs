@@ -9,7 +9,7 @@ const PI = require('./pid-identity.cjs'); // ADR 0039
 const W = require('./worker.cjs');
 const LC = require('./lifecycle.cjs');
 const { fail } = require('./errors.cjs');
-const { holdForLaunch, leaseField, leaseNote } = require('./restart.cjs');
+const { holdForLaunch, reaskAfterDeath, leaseField, leaseNote } = require('./restart.cjs');
 
 const now = () => Date.now();
 
@@ -35,7 +35,9 @@ function createMessage({ core, ctx, forWorker, refuseIfPaused, sendStdin, launch
     if (!w.sessionId) fail('E_SUBSTRATE', 'codex worker has no thread id to resume', { worker_id, substrate: w.substrate, state: w.state });
     const foreign = !w.child && await PI.verifiedLive(w); // by identity, never the pid number alone: an idle worker's pid is free for reuse
     await w.queue; // the previous turn's rows land before ensureHold answers (a dead row still queued would release the lease after it)
-    const hold = await holdForLaunch(w, core); LC.refuseMessageDuringOp(w); text += leaseNote(hold); // ADR 0026 amendment 2 // before the checks below: they and the spawn stay one tick, so two concurrent messages still start one process
+    const mark = w.deathReleases || 0; let hold = await holdForLaunch(w, core);
+    await w.queue; hold = await reaskAfterDeath(w, core, hold, mark); // a death that settled after the ask: its row lands, then one more ask
+    LC.refuseMessageDuringOp(w); text += leaseNote(hold); // ADR 0026 amendment 2 // before the checks below: they and the spawn stay one tick, so two concurrent messages still start one process
     // An adopted worker whose process is still alive is one a previous adapter owns. belay is not
     // its parent (invariant 1), so it cannot see that turn end, and starting a second process on
     // the same worktree is the one thing one-process-per-turn exists to prevent. Stop it first.
