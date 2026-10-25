@@ -7,8 +7,8 @@
 
 const NAME_RULE = '^[a-z0-9][a-z0-9._-]{0,63}$';
 const CODE = 'memory_project_unset';
-const TITLE = 'Memory is off for this project';
-const WHY = 'Memory notes are on by default, but they are kept per project and belay never guesses a project name, so with none set nothing is saved or recalled.';
+const TITLE = 'Notes are on, but no project is set, so this run keeps no notes';
+const WHY = 'Notes are on by default, but they are kept per project (memory.project) and belay never guesses a project name, so with none set nothing is saved or recalled.';
 const FIX_LINE = '"memory": { "project": "<name>" }';
 const FIX = `Add ${FIX_LINE} to belay.config.json (or to the run spec), or run: belay settings memory.project <name>. A name is lowercase letters, digits, dot, underscore or dash (${NAME_RULE}). To turn notes off and silence this: belay settings memory.notes false.`;
 
@@ -16,8 +16,8 @@ const FIX = `Add ${FIX_LINE} to belay.config.json (or to the run spec), or run: 
 const SHORT = 'set one: belay settings memory.project <name> · or turn notes off: belay settings memory.notes false';
 
 const REDACT_CODE = 'memory_redact_off';
-const REDACT_TITLE = 'Memory notes are off: redaction is disabled';
-const REDACT_WHY = 'A memory block with memory.redact false never writes notes, because the project namespace outlives the run and must not hold unredacted text.';
+const REDACT_TITLE = 'Notes are off: redaction is disabled';
+const REDACT_WHY = 'With memory.redact false no notes are written, because the project namespace outlives the run and must not hold unredacted text.';
 const REDACT_SHORT = 'remove "redact": false from the memory block · or turn notes off: belay settings memory.notes false';
 const REDACT_LINE = '"memory": { "redact": true }';
 const REDACT_FIX = 'Remove "redact": false from the memory block (or set it to true) to have notes on with the project set. To silence this: belay settings memory.notes false.';

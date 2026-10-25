@@ -14,7 +14,7 @@ const { spawnSync } = require('node:child_process');
 const ROOT = path.resolve(__dirname, '..', '..').split(path.sep).join('/');
 const CLI = `${ROOT}/src/cli/belay.cjs`;
 const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
-const TITLE = 'Memory is off for this project';
+const TITLE = 'Notes are on, but no project is set, so this run keeps no notes';
 const LINE = '"memory": { "project": "<name>" }';
 const fwd = (p) => String(p).split(path.sep).join('/');
 

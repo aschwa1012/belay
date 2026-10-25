@@ -81,7 +81,7 @@ describe('wrap, do not cut', () => {
     await openPane($, wd)
     const rows = leaves(await (await pane($, 'terminal', 30)).ui.drawn())
     const text = flat(rows.join(' '))
-    expect(text).toContain('Memory is off for this')
+    expect(text).toContain('Notes are on, but no project is set')
     expect(text).toContain('project')
     expect(text).toContain('it was given today')
     expect(text).toContain('own window.')
