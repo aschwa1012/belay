@@ -19,8 +19,6 @@ const embed = async (text) => {
   return { embedding: v, embedding_model: 'fake', embedding_revision: 'r', dim: DIM };
 };
 
-// The breaker is raised to its maximum (count and share) by default: one run here reports many notes, and past the breaker a report holds nothing
-// (ADR 0047 amendment of 2026-10-25). The breaker's own tests pass the count they test.
 async function setup(RUN, levers = {}) {
   const env = {};
   const dir = sandbox(), repo = sandbox();
@@ -116,7 +114,7 @@ async function setup(RUN, levers = {}) {
 
   Object.assign(env, { stall, E, store, dir, repo, head, RUN, orch, harness, operator, worker, rawCall, call, rowOf, bodyOf, events, note, startTask, written, reported, briefOf, review, cite, rv, apply, heldRows, activeHold, heldCount, UP, embed, cleanup: () => teardown(null, [() => store.close(), () => cleanup(dir), () => cleanup(repo)]) });
   // The store and both directories are registered for teardown now: a setup that fails here does not leak them.
-  try { await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true, held_breaker_count: 500, held_breaker_share: 1, ...levers }) }); } catch (e) { await teardown(e, [() => store.close(), () => cleanup(dir), () => cleanup(repo)]); throw e; }
+  try { await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true, ...levers }) }); } catch (e) { await teardown(e, [() => store.close(), () => cleanup(dir), () => cleanup(repo)]); throw e; }
   return env;
 }
 

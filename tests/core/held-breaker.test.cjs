@@ -6,9 +6,7 @@
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const { callerFor } = require('./helpers.cjs');
-const env = require('./report-env.cjs');
-const { DEFAULTS } = require('../../src/core/memory-levers.cjs');
-const setup = (run, levers = {}) => env.setup(run, { held_breaker_count: DEFAULTS.held_breaker_count, held_breaker_share: DEFAULTS.held_breaker_share, ...levers }); // the default limit, which these tests test
+const { setup } = require('./report-env.cjs');
 const Breaker = require('../../src/core/held-breaker.cjs');
 const { breakerEvents, renderText } = require('../../src/cli/cmd-notices.cjs');
 
