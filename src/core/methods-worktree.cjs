@@ -160,7 +160,21 @@ function assertNotLeased(E, task) {
     { task_id: task.id, state: task.state, holder: l ? l.holder : null, holder_role: l ? l.holder_role : null, lease_id: l ? l.id : null, lease_released: l ? !!l.released_at : null });
 }
 
+// This process's creation time from the process snapshot, for an integration row's `owner_boot` (ADR 0053 amendment 2). The
+// probe never waits (ADR 0048 decision 3): the first worktree or integration call this owner serves starts it, so it has
+// normally settled before the first merge, which needs a task worktree first; a merge before then records null, as a
+// snapshot that cannot be read does. An owner told its own creation time at start uses that instead.
+let ownProbe = null;
+function ownBootProbe(E) {
+  const given = E && E.owner && E.owner.opts && Number.isFinite(E.owner.opts.created) ? E.owner.opts.created : null;
+  if (given != null) return async () => given;
+  if (!ownProbe) ownProbe = require('./proc-identity.cjs').ownCreatedProbe(process.pid);
+  return ownProbe;
+}
+const ownBoot = (E) => ownBootProbe(E)();
+
 async function worktreeCreate(E, caller, args) {
+  ownBootProbe(E);
   requireTask(E, args.task_id, 'task.worktreeCreate');
   args = present(args);
   if (args.path !== undefined && caller.role !== 'operator') throw err('E_ROLE', 'task.worktreeCreate: an explicit path is the operator\'s; the orchestrator takes the default', { field: 'path' });
@@ -203,6 +217,7 @@ async function worktreeCreate(E, caller, args) {
 }
 
 async function worktreeRemove(E, caller, args) {
+  ownBootProbe(E);
   args = present(args);
   requireTask(E, args.task_id, 'task.worktreeRemove');
   for (const k of ['force', 'delete_branch']) if (args[k] !== undefined && typeof args[k] !== 'boolean') throw err('E_ARGS', `task.worktreeRemove: ${k} must be a boolean`, { field: k });
@@ -278,4 +293,4 @@ function evaluateTarget(task, args) {
   return rec ? { worktree, base: rec.base_sha, baseSource: 'recorded' } : { worktree, base: undefined, baseSource: undefined };
 }
 
-module.exports = { worktreeCreate, worktreeRemove, removeTree, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, assertTaskTree, exclusive, active, present, pathName, liveWorkerIn, strayLinks, under };
+module.exports = { ownBoot, ownBootProbe, worktreeCreate, worktreeRemove, removeTree, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, assertTaskTree, exclusive, active, present, pathName, liveWorkerIn, strayLinks, under };
