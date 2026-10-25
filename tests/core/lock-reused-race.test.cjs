@@ -108,3 +108,42 @@ test('a holder once judged genuine is asked again after its pid could have been 
     await c1.close(); await c2.close(); await killChild(stand); cleanup(dir);
   }
 });
+
+// The per-connect snapshot costs seconds on Windows, so it must stay on the silent-holder path: a connect that an owner answers
+// (a read, a write, a writer's connect) takes none. The owner is a real second process, so the own-pid skip cannot hide a call.
+test('a connect that a live owner answers takes no lock-holder snapshot', { timeout: 120000 }, async () => {
+  const dir = sandbox();
+  const marker = path.join(dir, 'owner-up.json');
+  const OWNER = path.join(__dirname, '..', '..', 'src', 'core', 'owner.cjs');
+  const code = `const { Owner } = require(process.argv[1]); const o = new Owner(process.argv[2], { embed: false });
+o.start().then(() => { require('fs').writeFileSync(process.argv[3], '1'); process.stdin.resume(); process.stdin.on('end', () => o.stop().then(() => process.exit(0))); });`;
+  const owner = spawn(process.execPath, ['-e', code, OWNER, dir, marker], { stdio: ['pipe', 'ignore', 'inherit'], windowsHide: true });
+  const orig = ID.processSnapshot;
+  let asked = 0;
+  ID.processSnapshot = async (o = {}) => { if (o.kind === 'lock-holder') asked += 1; return orig(o); };
+  const { openCore } = core('index.cjs');
+  let orch = null, w = null;
+  try {
+    await new Promise((resolve, reject) => {
+      const t = setInterval(() => { if (fs.existsSync(marker)) { clearInterval(t); resolve(); } }, 20);
+      owner.once('exit', (c) => { clearInterval(t); reject(new Error(`the owner process exited ${c} before it served`)); });
+    });
+    orch = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
+    await orch.status.get({});
+    const t = await orch.task.create({ spec: 'through the live owner' });
+    assert.ok(t.id);
+    assert.ok(!orch.isOwner(), 'the write went to the owner in the other process');
+    await orch.status.get({});
+    w = new Client(dir, { caller: callerFor('orchestrator'), ownerOpts: { embed: false } });
+    await w.connect();
+    assert.ok(!w.becameOwner);
+    assert.strictEqual(asked, 0, 'no lock-holder snapshot on a connect the owner answered');
+  } finally {
+    ID.processSnapshot = orig;
+    if (w) await w.close();
+    if (orch) await orch.close();
+    owner.stdin.end();
+    await new Promise((r) => (owner.exitCode !== null ? r() : owner.once('exit', r)));
+    cleanup(dir);
+  }
+});
