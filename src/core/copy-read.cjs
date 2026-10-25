@@ -15,6 +15,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { sweep, PARENT } = require('./copy-sweep.cjs');
+const { err } = require('./errors.cjs');
 
 const SUFFIXES = ['', '-wal', '-shm'];
 const BUSY = new Set(['EBUSY', 'EPERM', 'EACCES']);
@@ -90,6 +91,16 @@ function makeTmpDir(parent, fsx = fs, sleep = sleepSync) {
   }
 }
 
+// A copy is only a snapshot if nothing wrote to the store while it was taken. A writer that checkpoints
+// (a TRUNCATE once the owner is idle, a last close that deletes the -wal) moves pages from the -wal into the
+// database file between two chunks, and the copy then holds old pages of one and new pages of the other: it
+// opens, queries run, and the answer matches neither state. So the size, mtime and identity of the three
+// files are read before and after the copy, and a copy over a change is discarded and taken again. Any
+// change retries, an appended -wal included: the exemption is not proven.
+const COPY_TRIES = 3;
+const stamp = p => { try { const st = fs.statSync(p, { bigint: true }); return `${st.size}:${st.mtimeNs}:${st.dev}:${st.ino}`; } catch { return 'absent'; } };
+const stampAll = src => SUFFIXES.map(suf => stamp(src + suf)).join('|');
+
 async function withCopy(dataDir, fn) {
   const src = path.join(dataDir, 'memory.db');
   // BELAY_RO_TMP_ROOT is a test-only override of the temp root.
@@ -98,12 +109,22 @@ async function withCopy(dataDir, fn) {
   const parent = path.join(root, PARENT);
   const tmpDir = makeTmpDir(parent);
   const dst = path.join(tmpDir, 'memory.db');
-  let present = false;
   try {
-    for (const suf of SUFFIXES) {
-      const copied = copyWithRetry(src + suf, dst + suf, suf === '-shm');
-      if (copied && suf === '') present = true;
+    let present = false, settled = false;
+    for (let attempt = 1; attempt <= COPY_TRIES && !settled; attempt++) {
+      const before = stampAll(src);
+      present = false;
+      for (const suf of SUFFIXES) {
+        const copied = copyWithRetry(src + suf, dst + suf, suf === '-shm');
+        if (copied && suf === '') present = true;
+      }
+      settled = stampAll(src) === before;
+      if (!settled) {
+        for (const suf of SUFFIXES) { try { fs.rmSync(dst + suf, { force: true }); } catch { /* removed with the dir */ } }
+        if (attempt < COPY_TRIES) sleepSync(5 * attempt);
+      }
     }
+    if (!settled) throw err('E_BUSY', `the store ${src} changed during each of ${COPY_TRIES} copies: a writer is checkpointing or committing; nothing was read, try again`, { db: src, reason: 'copy-changed', attempts: COPY_TRIES });
     return await fn(dst, present ? 'copy' : 'none');
   } finally {
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* temp dir, next boot clears it */ }
