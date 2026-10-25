@@ -27,7 +27,7 @@ const NM = require('./native-memory.cjs'); const NR = require('./note-review.cjs
 // verbatim into their own files (the 500-line rule); re-exported under the same names below.
 const { createWait } = require('./wait.cjs');
 const SENT = require('./sent-log.cjs'); // ADR 0042 decision 4: the record of what is written to a worker's stdin
-const { decideBranch, restartFirstText, holdForLaunch, CLAUDE_RESUME_WINDOW_MS, CODEX_RESUME_WINDOW_MS } = require('./restart.cjs');
+const { decideBranch, restartFirstText, holdForLaunch, leaseField, leaseNote, CLAUDE_RESUME_WINDOW_MS, CODEX_RESUME_WINDOW_MS } = require('./restart.cjs');
 // build step 6e-4: pause and resume (the park design, ADR 0023 amendment 2), and the one per-worker
 // operation slot pause, resume, restart and stop all share.
 const { createPause, INTERRUPT_TIMEOUT_MS, EXIT_TIMEOUT_MS } = require('./pause.cjs');
@@ -40,6 +40,7 @@ const { createStartFail } = require('./start-fail.cjs');
 const PARK_SETTLE_WAIT_MS = INTERRUPT_TIMEOUT_MS + EXIT_TIMEOUT_MS;
 const LIST = require('./list.cjs');
 const { EARLY, createBudget } = require('./restart-budget.cjs');
+const RG = require('./relaunch-guard.cjs'); // ADR 0026 amendment 2: a death during a relaunch keeps its lease
 const { waitTurnOrLanded } = require('./turn-wait.cjs'); // a turn that ended before the wait began is answered
 
 const { POLL_MS } = require('./exit-hold.cjs');
@@ -92,6 +93,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
         if (w.child && ['starting', 'running', 'stopping'].includes(w.state) && w.pid && !P.pidAlive(w.pid) && !W.holdForExitEvent(w)) {
           W.settle(w, w.exitCode, w.exitSignal, 'pid-poll', ctx); // after its bounded hold for the exit code
         }
+        require('./late-handback.cjs').check(w, ctx); // ADR 0026 amendment 2: a dead worker's hand-back is still evaluated
       }
     }, POLL_MS);
     if (poll.unref) poll.unref();
@@ -325,28 +327,33 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   async function doRestart(w, { firstTextOverride = null, appendMessage = null, awaitFirstTurn = true, first_turn_timeout_ms = 180000, onFirstText = null, skipDeadPidKill = false } = {}) {
     const worker_id = w.id;
     const old_pid = w.pid;
-    const d = decideBranch(w); await holdForLaunch(w, core); // the task's files are held for this run, or nothing is touched
-    if (W.settleHeld(w, ctx, 'pid-check-on-restart')) await w.queue; // a held death gets its dead row before the relaunch
-    if (w.child && P.pidAlive(w.pid)) await doStop(w, 'graceful', 10000);
-    // Fix round, should-fix finding: `skipDeadPidKill` (resume, pause.cjs) skips this branch — a park's own
-    // pid is dead by construction, so treating it as a still-alive orphan risks killing a bystander that reused it.
-    else if (!skipDeadPidKill && !w.child && PI.pidLive(w)) { // a record with no process by construction is never killed by its pid number
-      const kr = await PI.killWorker(w); w.adoptedKill = kr.tree;
-      if (!kr.refused) await P.waitPidGone(w.pid, { timeoutMs: 5000 });
-    }
-    w.stopRequested = false;
+    // ADR 0026 amendment 2 (proposed): from here until launch() has moved w.launches, a death of this worker keeps its lease.
+    const { d, hold, firstText } = await RG.relaunching(w, writeRow, async () => {
+      await w.queue; // the life before's rows land first (a death meanwhile keeps the lease: relaunch-guard.cjs)
+      const d = decideBranch(w); const hold = await holdForLaunch(w, core); // the task's files are held for this run, or nothing is touched; a death-released lease is granted back or reported
+      W.settleHeld(w, ctx, 'pid-check-on-restart'); await w.queue; // a held death gets its dead row, and every row of the life before lands, before the relaunch
+      if (w.child && P.pidAlive(w.pid)) await doStop(w, 'graceful', 10000);
+      // Fix round, should-fix finding: `skipDeadPidKill` (resume, pause.cjs) skips this branch — a park's own
+      // pid is dead by construction, so treating it as a still-alive orphan risks killing a bystander that reused it.
+      else if (!skipDeadPidKill && !w.child && PI.pidLive(w)) { // a record with no process by construction is never killed by its pid number
+        const kr = await PI.killWorker(w); w.adoptedKill = kr.tree;
+        if (!kr.refused) await P.waitPidGone(w.pid, { timeoutMs: 5000 });
+      }
+      w.stopRequested = false;
 
-    const overridden = firstTextOverride ? await firstTextOverride(d.branch) : undefined;
-    let firstText = overridden !== undefined ? overridden : await restartFirstText(w, d.branch, { core, ctx });
-    firstText = await MP.relaunch(w, ctx, firstText, { fresh: d.branch === 'replace', message: appendMessage }); // ADR 0042 decision 3: minus the rows already shown, only where that conversation still holds them
-    if (d.branch === 'replace') {
-      w.sessionId = null;
-      w.parser = createParser(w.substrate, MP.parserOpts(ctx));
-    }
-    if (onFirstText) onFirstText(firstText);
+      const overridden = firstTextOverride ? await firstTextOverride(d.branch) : undefined;
+      let firstText = overridden !== undefined ? overridden : await restartFirstText(w, d.branch, { core, ctx });
+      firstText = (await MP.relaunch(w, ctx, firstText, { fresh: d.branch === 'replace', message: appendMessage })) + leaseNote(hold); // ADR 0042 decision 3: minus the rows already shown, only where that conversation still holds them
+      if (d.branch === 'replace') {
+        w.sessionId = null;
+        w.parser = createParser(w.substrate, MP.parserOpts(ctx));
+      }
+      if (onFirstText) onFirstText(firstText);
 
-    const resume = d.branch === 'resume' ? w.sessionId : null;
-    await launch(w, w.substrate === 'claude-code' ? { resume } : { resume, prompt: firstText });
+      const resume = d.branch === 'resume' ? w.sessionId : null;
+      await launch(w, w.substrate === 'claude-code' ? { resume } : { resume, prompt: firstText });
+      return { d, hold, firstText };
+    });
     let init;
     await guarded(w, async () => {
       await writeRow(w, 'starting');
@@ -372,7 +379,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       session_id: w.sessionId, checkpoint_id: (turn && turn.checkpoint_id) || w.lastCheckpointId,
       first_turn_usage: turn ? turn.usage : null, first_turn_timed_out: awaitFirstTurn ? turn === null : null,
       permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions), // F4
-      worker: W.rowOf(w, w.state, ctx), first_turn_awaited: awaitFirstTurn,
+      worker: W.rowOf(w, w.state, ctx), first_turn_awaited: awaitFirstTurn, ...leaseField(hold),
     };
   }
 
@@ -427,7 +434,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     };
   }
 
-  const wait = createWait({ workers, get });
+  const wait = createWait({ workers, get, core }); // core: the leases behind idle_without_task (ADR 0058, the idle-workers amendment)
   // build step 6e-4 (ADR 0023 amendment 2): pause parks the worker; resume relaunches it through doRestart.
   const PZ = createPause({ core, forWorker, doStop, doRestart, runOp: LC.runOp, adapterPid: ctx.adapterPid, writeRow });
   const message = createMessage({ core, ctx, forWorker, refuseIfPaused: PZ.refuseIfPaused, sendStdin, launch, guarded, writeRow });

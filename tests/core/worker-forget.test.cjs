@@ -75,7 +75,7 @@ test('worker.forget: supersedes the row as forgotten, never a DELETE, and report
   const t = await orch.task.create({ spec: 'a task whose lease is left unreleased when its worker is forgotten' });
   await orch.worker.write({ id: 'w-lease', substrate: 'claude-code', pid: process.pid, state: 'starting' });
   const assign = await operator.task.assign({ task_id: t.id, worker_id: 'w-lease' });
-  await orch.worker.write({ id: 'w-lease', state: 'dead', pid: deadPid() });
+  await orch.worker.write({ id: 'w-lease', state: 'dead', pid: deadPid(), keep_leases: true }); // a death that released it would leave nothing to report
 
   const before2 = await orch.worker.get({ worker_id: 'w-lease' });
   const result = await operator.worker.forget({ worker_id: 'w-lease' });

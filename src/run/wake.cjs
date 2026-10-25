@@ -87,6 +87,7 @@ function diffWorkers({ prev, rows, runId, nowMs, graceMs, orphanGraceMs = graceM
         exit_code: row.exit_code == null ? null : row.exit_code,
         exit_signal: row.exit_signal == null ? null : row.exit_signal,
         death_established_by: row.death_established_by || null,
+        ...(Array.isArray(row.leases_released) && row.leases_released.length ? { leases_released: row.leases_released } : {}), // ADR 0026 amendment 1
       });
     }
     // `stopped` (the harness ended it on someone's instruction) produces no event, and every other
@@ -111,15 +112,43 @@ function diffWorkers({ prev, rows, runId, nowMs, graceMs, orphanGraceMs = graceM
   return { events, next, pending_deaths };
 }
 
+// ADR 0026 amendments 1 and 2 (proposed): the leases a death released, as facts. Each task is open, unless the dead worker's own
+// hand-back still lands (amendment 2), which the store will then show as released. The clauses, most to least informative.
+const POINTER = ' Its rows are in the store: task_list, briefing.';
+function releasedClauses(released) {
+  const s = released.length > 1 ? 's' : '';
+  return [` Released lease${s} ${released.map((r) => `${r.lease_id} on task ${r.task_id}`).join(', ')}; open unless its hand-back lands.`,
+    ` Released its lease on task${s} ${released.map((r) => r.task_id).join(', ')}; open unless its hand-back lands.`,
+    ` Released ${released.length} lease${s}; open unless a hand-back lands.`];
+}
+
+// A death wake, under the interactive cap. With leases released, the first fit wins: the full head with the lease and task ids,
+// then the head without what established the death (the store's row keeps it) with them, then the count after either head, so
+// the clause and the pointer both survive the cap. With no room even then, or nothing released, it is as before.
+function deathText(event) {
+  const full = `belay: worker ${event.worker_id} died during turn ${event.turn} ` +
+    `(exit code ${event.exit_code}, signal ${event.exit_signal}, established by ${event.death_established_by}).`;
+  const released = Array.isArray(event.leases_released) && event.leases_released.length ? event.leases_released : null;
+  if (released) {
+    const short = `belay: worker ${event.worker_id} died during turn ${event.turn} (exit code ${event.exit_code}).`;
+    const [ids, tasks, count] = releasedClauses(released);
+    const max = require('./release-eval.cjs').WAKE_TEXT_MAX;
+    const fit = [[full, ids], [full, tasks], [short, ids], [short, tasks], [full, count], [short, count]].find(([h, c]) => Buffer.byteLength(h + c + POINTER, 'utf8') <= max);
+    if (fit) return fit[0] + fit[1] + POINTER;
+  }
+  return full + POINTER;
+}
+
 // No worker output, ever: the id, the turn and (for a death) the exit facts are the whole of it.
 // Both shapes stay comfortably under 400 bytes for any id this codebase generates.
+// ADR 0058, the idle-workers amendment (proposed): a wake that carries `idle_without_task` (idle-remind.cjs) names those workers when there is room.
 function wakeText(event) {
+  return require('./idle-remind.cjs').withIdle(baseText(event), event.idle_without_task, require('./release-eval.cjs').WAKE_TEXT_MAX);
+}
+
+function baseText(event) {
   if (event.event === 'note_refuted' || event.event === 'scrub_alarm' || event.event === 'evaluated') return event.text; // evaluated: release-eval.cjs, facts only // note-wake.cjs: belay's own record, built from the core's facts
-  if (event.event === 'death') {
-    return `belay: worker ${event.worker_id} died during turn ${event.turn} ` +
-      `(exit code ${event.exit_code}, signal ${event.exit_signal}, established by ${event.death_established_by}). ` +
-      `Its rows are in the store: task_list, briefing.`;
-  }
+  if (event.event === 'death') return deathText(event);
   // build step 6f, decision 3's own words, ids and facts only (ADR 0015 §2): no worker output.
   if (event.event === 'paused') {
     return `belay: worker ${event.worker_id} was paused by ${event.paused_by} during turn ${event.turn}; ` +

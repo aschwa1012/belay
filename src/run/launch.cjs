@@ -7,7 +7,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const crypto = require('node:crypto');
 
 // Where the Claude Code and Codex CLI executables are found: exe-discovery.cjs (env, then config, then PATH).
 // belay needs Claude Code 2.1.280 or later (ready.cjs MIN_CLAUDE_CODE_VERSION). The executable itself, not
@@ -438,22 +437,8 @@ function orchestratorInteractiveArgv(opts) {
   return argv;
 }
 
-// ------------------------------------------------------------------- receipt
-
-// argv_hash is sha256 over `JSON.stringify({ exe, args, cwd })` — the exact bytes written to
-// argv.json's `spec` field, so a reader can recompute it from that file alone. Key order is fixed
-// here rather than taken from the caller's object.
-function argvHash(spec) {
-  const canonical = { exe: spec.exe, args: spec.args, cwd: spec.cwd };
-  return crypto.createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
-}
-
-function writeArgvJson(dir, spec) {
-  const argv_hash = argvHash(spec);
-  const body = { spec, argv_hash, written_at: Date.now() };
-  fs.writeFileSync(fwd(path.join(dir, 'argv.json')), JSON.stringify(body, null, 2) + '\n');
-  return argv_hash;
-}
+// The launch receipt (argv.json and its hash): argv-receipt.cjs.
+const { argvHash, writeArgvJson } = require('./argv-receipt.cjs');
 
 module.exports = {
   DEFAULT_CLAUDE_MODEL,
