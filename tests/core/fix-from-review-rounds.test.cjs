@@ -86,3 +86,55 @@ test('three fix rounds: each spec is the original spec plus only the latest revi
     judged = f;
   }
 });
+
+test('three fix rounds in a tree: each fix is worked in the work\'s tree, on its branch, by the same coder', async () => {
+  const SPEC = 'add the retry to src/retry.cjs';
+  let w = await orch.task.create({ spec: SPEC, acceptance: { files_within_owned: true }, files_owned: ['src/retry.cjs'] });
+  w = await orch.task.worktreeCreate({ task_id: w.id });
+  const tree = w.worktree;
+  let judged = w;
+  const fixes = [];
+  for (let n = 1; n <= 3; n++) {
+    const f = await orch.task.fixFromReview({ review_id: (await round(judged, n)).id });
+    assertSpec(f, n, SPEC, fixes);
+    // The work's own path, branch and base: the coder idle in it takes the fix, and the files check judges the whole branch.
+    assert.deepStrictEqual([f.worktree.path, f.worktree.branch, f.worktree.base_sha, f.worktree.inherited_from], [tree.path, tree.branch, tree.base_sha, w.id]);
+    fixes.push(f);
+    judged = f;
+  }
+  // The last fix, too, is taken by the same coder and judged in the shared tree; a fourth fix is past max_fix_rounds 3.
+  await rejectsCode(orch.task.fixFromReview({ review_id: (await round(judged, 4)).id }), 'E_FIX_ROUNDS');
+});
+
+test('a fix of work with no tree has no tree', async () => {
+  const plain = await orch.task.create({ spec: 'plain work', acceptance: PASS });
+  await handBack(plain.id, 'c-plain', dir);
+  await orch.task.evaluate({ task_id: plain.id, worktree: dir });
+  const r = await orch.task.create({ spec: 'review plain', depends_on: [plain.id], acceptance: { verdict: true } });
+  await handBack(r.id, 'j-plain', dir, { verdict: 'refuted', summary: 's', findings: [] });
+  await orch.task.evaluate({ task_id: r.id, worktree: dir });
+  assert.strictEqual((await orch.task.fixFromReview({ review_id: r.id })).worktree ?? null, null);
+});
+
+test('removing a shared tree: refused while the fix is unfinished, then recorded removed on both tasks', async () => {
+  let w = await orch.task.create({ spec: 'shared work', acceptance: { files_within_owned: true }, files_owned: ['src/shared.cjs'] });
+  w = await orch.task.worktreeCreate({ task_id: w.id });
+  write(w.worktree.path, 'src/shared.cjs', 'x\n');
+  commit(w.worktree.path, 'shared');
+  await handBack(w.id, 'c-shared', w.worktree.path, { branch: w.worktree.branch });
+  assert.strictEqual((await orch.task.evaluate({ task_id: w.id })).state, 'done');
+  const r = await orch.task.create({ spec: 'review shared', depends_on: [w.id], acceptance: { verdict: true } });
+  await handBack(r.id, 'j-shared', dir, { verdict: 'refuted', summary: 's', findings: [] });
+  await orch.task.evaluate({ task_id: r.id, worktree: dir });
+  const f = await orch.task.fixFromReview({ review_id: r.id });
+  await orch.worker.write({ id: 'c-shared', substrate: 'claude-code', pid: process.pid, state: 'stopped', session_id: 's-c-shared', last_event_at: Date.now(), worktree: w.worktree.path });
+  const e = await rejectsCode(orch.task.worktreeRemove({ task_id: w.id }), 'E_PRECONDITION');
+  assert.ok(e.message.includes(`task ${f.id} (open)`), e.message);
+  assert.ok(fs.existsSync(w.worktree.path), 'nothing was removed');
+  await orch.task.cancel({ task_id: f.id });
+  const out = await orch.task.worktreeRemove({ task_id: w.id });
+  assert.ok(out.worktree.removed_at);
+  const fNow = await orch.task.get({ task_id: f.id });
+  assert.ok(fNow.worktree.removed_at, 'the fix that shared the tree records it removed');
+  assert.strictEqual(fNow.worktree.inherited_from, w.id);
+});

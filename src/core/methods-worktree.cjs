@@ -33,6 +33,10 @@ function pathName(name, field) {
 const present = (args) => Object.fromEntries(Object.entries(args || {}).filter(([, v]) => v !== null && v !== undefined));
 const active = (task) => (task && task.worktree && task.worktree.path && !task.worktree.removed_at ? task.worktree : null);
 
+const ENDED_TASK = new Set(['done', 'cancelled']);
+// The other tasks whose recorded, not removed, tree is `dir`: a fix task and the work it fixes share one.
+const sharers = (E, id, dir) => rows.currentAll(E.store, 'task').filter((t) => t.id !== id && active(t) && G.samePath(active(t).path, dir));
+
 function requireTask(E, id, method) {
   if (!id || typeof id !== 'string') throw err('E_ARGS', `${method} needs a task_id`);
   const t = rows.current(E.store, 'task', id);
@@ -197,11 +201,15 @@ async function worktreeRemove(E, caller, args) {
     const task = requireTask(E, args.task_id, 'task.worktreeRemove');
     const rec = active(task);
     if (!rec) throw err('E_NOT_FOUND', `task ${task.id} has no belay worktree to remove`, { task_id: task.id, worktree: task.worktree || null });
+    // A fix task shares the tree of the work it fixes (task.fixFromReview): one still being worked keeps the tree.
+    const open = sharers(E, task.id, rec.path).find((t) => !ENDED_TASK.has(t.state));
+    if (open) throw err('E_PRECONDITION', `task ${open.id} (${open.state}) is worked in the same tree ${rec.path}; finish or cancel it first`, { task_id: open.id, state: open.state, path: rec.path });
     const out = await removeTree(E, rec, args, `task ${task.id}`);
     // No second run-open check here: the tree is already gone, and a row that still named it would be the false one.
     const row = E.store.tx(() => {
-      const fresh = rows.current(E.store, 'task', task.id);
       const done = { ...rec, removed_at: Date.now(), removed_by: E.writtenBy(caller), forced: out.forced, already_gone: out.already_gone, branch_deleted: out.branch_deleted, leftover: out.leftover };
+      for (const s of sharers(E, task.id, rec.path)) rows.append(E.store, 'task', { ...s, worktree: { ...s.worktree, ...done, inherited_from: s.worktree.inherited_from } }, E.writtenBy(caller), Date.now());
+      const fresh = rows.current(E.store, 'task', task.id);
       return rows.append(E.store, 'task', { ...fresh, worktree: done }, E.writtenBy(caller), Date.now());
     });
     E.noteWrite();

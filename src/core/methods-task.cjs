@@ -51,7 +51,8 @@ function findCycle(store, id, dependsOn) {
   return walk(id);
 }
 
-async function create(E, caller, args) {
+// `own` is core-internal and never reached from a tool's arguments: task.fixFromReview passes the judged task's worktree.
+async function create(E, caller, args, own = {}) {
   if (typeof args.spec !== 'string' || !args.spec.trim()) throw err('E_ARGS', 'task.create needs a spec describing the work');
   const filesOwned = args.files_owned == null ? null : args.files_owned;
   if (filesOwned != null && (!Array.isArray(filesOwned) || filesOwned.some(p => typeof p !== 'string'))) {
@@ -115,7 +116,7 @@ async function create(E, caller, args) {
   const t = Date.now();
   const row = rows.append(E.store, 'task', {
     id, run_id: caller.run_id, spec: args.spec, acceptance, files_owned: filesOwned, state: 'open',
-    results: null, depends_on: deps, repairs,
+    results: null, depends_on: deps, repairs, ...(own.worktree ? { worktree: own.worktree } : {}),
   }, E.writtenBy(caller), t);
   E.noteWrite();
   return row;

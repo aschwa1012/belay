@@ -27,6 +27,14 @@ function defaultSpec(review, judged, original, detail) {
   return `Fix the blocking findings of review ${review.id} on task ${judged.id} ${work}. The reviewer said: ${detail.summary || '(no summary)'}${findings ? ` Findings: ${findings}` : ''}`;
 }
 
+// The fix is worked in the judged task's tree, on its branch, from its base: the coder that did the work, idle in that tree,
+// can take the fix by task.assign, and the fix's files check judges the whole branch against the work's base. A removed tree
+// is not inherited. task.worktreeRemove records the removal on every task that shares the tree.
+function inheritedTree(judged) {
+  const rec = require('./methods-worktree.cjs').active(judged);
+  return rec ? { ...rec, inherited_from: rec.inherited_from || judged.id } : null;
+}
+
 async function fixFromReview(E, caller, args) {
   const T = require('./methods-task.cjs');
   if (!args.review_id || typeof args.review_id !== 'string') throw err('E_ARGS', 'task.fixFromReview needs the review_id of a refuted review task');
@@ -58,7 +66,7 @@ async function fixFromReview(E, caller, args) {
     depends_on: [judged.id],
     repairs,
     ...(args.id ? { id: args.id } : {}),
-  });
+  }, { worktree: inheritedTree(judged) });
   return { ...row, from_review: review.id };
 }
 
