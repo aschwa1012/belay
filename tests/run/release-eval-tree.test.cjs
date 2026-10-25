@@ -1,5 +1,5 @@
 'use strict';
-// release-eval-tree.test.cjs — ADR 0058 amendment (proposed): a task with its own worktree is worked and judged there. A reused
+// release-eval-tree.test.cjs — ADR 0058 amendment 1 (proposed): a task with its own worktree is worked and judged there. A reused
 // idle worker runs in the tree of its earlier task, and its directory cannot change, so task.assign refuses it a task with another
 // worktree, naming both paths; a spawn in the wrong tree is refused with nothing written; and task.evaluate refuses a worktree
 // argument that is not the task's (the release evaluation passes the worker's own directory), so a check never runs in the wrong

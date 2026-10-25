@@ -105,7 +105,7 @@ test('lease_release: a worker\'s result over MCP lands as handoff, and the orche
   const a = real({ role: 'orchestrator', run: 'run-lr', data });
   t.after(async () => { await a.close(); a.kill(); });
   await a.initialize();
-  // ADR 0058 amendment 1: a listing names the hand-back's fields; task_ids answers that task with the hand-back whole.
+  // ADR 0058 amendment 3: a listing names the hand-back's fields; task_ids answers that task with the hand-back whole.
   const summary = (await a.call('task_list', {})).structuredContent.tasks.find((x) => x.id === task.id);
   assert.deepStrictEqual([summary.handoff.by, summary.handoff.fields, summary.handoff.result], ['wk-lr', Object.keys(result), undefined]);
   const listed = (await a.call('task_list', { task_ids: [task.id] })).structuredContent.tasks;

@@ -1,5 +1,5 @@
 'use strict';
-// views.test.cjs — ADR 0058 amendment 1: the orchestrator's task answers are compact by default. A listing row keeps what the
+// views.test.cjs — ADR 0058 amendment 3: the orchestrator's task answers are compact by default. A listing row keeps what the
 // orchestrator acts on and drops the spec's body, the output tails and the receipts; one task's detail keeps the hand-back and
 // every failing check whole; view debug is the core's answer untouched. Pure: rows are built here, no store.
 

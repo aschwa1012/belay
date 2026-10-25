@@ -15,7 +15,7 @@ const crypto = require('node:crypto');
 
 const WAKE_TEXT_MAX = 221;
 const PENDING_MAX_MS = 900000; // a watched evaluation that never lands (cancelled, or the owner gone) is forgotten after this
-// ADR 0058 amendment 2: how long a turn_end wake waits for its hand-backs' evaluation; BELAY_RELEASE_WAKE_HOLD_MS (ms) overrides it.
+// ADR 0058 amendment 4: how long a turn_end wake waits for its hand-backs' evaluation; BELAY_RELEASE_WAKE_HOLD_MS (ms) overrides it.
 const RELEASE_WAKE_HOLD_MS = 30000;
 const holdMs = () => (/^\d+$/.test(String(process.env.BELAY_RELEASE_WAKE_HOLD_MS || '').trim()) ? Number(process.env.BELAY_RELEASE_WAKE_HOLD_MS) : RELEASE_WAKE_HOLD_MS);
 
@@ -138,7 +138,7 @@ function turnEndText(head, tail, evs, evaluating) {
 // caller's Map task_id -> evaluated_at, carried across polls (its `pending` holds the watched tasks, its `held` the held wakes).
 // Tasks are read only when there is a turn_end, something watched or something held.
 //
-// ADR 0058 amendment 2: with `holdMs`, a turn_end whose hand-backs are still being evaluated is held until they land, so the result
+// ADR 0058 amendment 4: with `holdMs`, a turn_end whose hand-backs are still being evaluated is held until they land, so the result
 // rides on that one wake instead of a second; past `holdMs` it goes out saying `evaluating`, and one `evaluated` wake follows when
 // the result lands, so the result never waits on a call the orchestrator may not make. Any other event about the worker sends its
 // held wake first, so a worker's wakes keep their order. `holdMs` 0 holds nothing. `now` is the clock, for a test to set.
@@ -207,7 +207,7 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
 
 // The headless idle close (orchestrator.cjs) holds while a watched evaluation runs for a worker of this run that is still live:
 // a stopped or dead worker's evaluation was cancelled, so it holds nothing. Returns 'eval:<task id>' entries for the hold record,
-// and 'wake:<worker id>' for a turn_end wake still held (ADR 0058 amendment 2), whatever the worker's state: that hold is bounded.
+// and 'wake:<worker id>' for a turn_end wake still held (ADR 0058 amendment 4), whatever the worker's state: that hold is bounded.
 function evaluatingHolds(seen, rows, runId) {
   const pending = seen && seen.pending;
   const held = [...((seen && seen.held) || new Map()).keys()].map((w) => `wake:${w}`); // a held turn_end wake holds the close too
