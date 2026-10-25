@@ -66,3 +66,18 @@ test('M24: task_assign to a worker this session did not launch assigns, sends no
   const none = await createCompose({ callCore, manager: () => null }).assign({ task_id: 't2', worker_id: 'mine' });
   assert.deepStrictEqual([none.delivered.sent, sent.length], [false, 0], 'no run manager open: no channel either');
 });
+
+test('task_assign tells a coder in the task\'s own worktree to commit first, and never a reviewer or a task with no tree', async () => {
+  const { createCompose } = require('../../src/mcp/compose.cjs');
+  const said = async (task) => {
+    const calls = [];
+    const callCore = async (m, a) => (m === 'task.assign' ? { task: { id: a.task_id, spec: 'do it', state: 'assigned', ...task }, new_lease: { id: 'L1' } } : { text: `task ${a.task_id} state=assigned lease=L1.` });
+    await createCompose({ callCore, manager: () => ({ _worker: () => ({}), message: async (a) => { calls.push(a); return { channel: 'stdin' }; } }) }).assign({ task_id: 't1', worker_id: 'w1' });
+    return calls[0].text;
+  };
+  const tree = { worktree: { path: 'C:/r.worktrees/t1', branch: 'belay/t1', removed_at: null } };
+  assert.match(await said(tree), /When you are finished, commit your work in your worktree, then call lease_release/);
+  assert.match(await said({ ...tree, acceptance: { verdict: true } }), /When you are finished, call lease_release/);
+  assert.match(await said({}), /When you are finished, call lease_release/);
+  assert.match(await said({ worktree: { ...tree.worktree, removed_at: 5 } }), /When you are finished, call lease_release/);
+});
