@@ -247,10 +247,10 @@ test('a merging row not proven to be its live pid refuses with no kill advice; t
   }
 });
 
-test('a merge records its owner start time from the process snapshot, the source the check compares it with', async () => {
+test('a long-lived owner records a merge\'s owner start time from the process snapshot, the source the check compares it with', async () => {
   const ID = core('proc-identity.cjs');
   const dir = sandbox();
-  const orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
+  const orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false, ownerOpts: { longLived: true } });
   const op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
   opened.push({ dir, cores: [orch, op] });
   await orch.run.attach({ adapter_pid: process.pid });
@@ -338,4 +338,41 @@ test('the first merge in a fresh process never waits on a slow process snapshot:
   assert.strictEqual(receipt.state, 'merged');
   assert.strictEqual(receipt.owner_boot, null, 'the probe had not settled, so no start time is recorded');
   assert.ok(receipt.merge_ms < 6000, `the merge took ${receipt.merge_ms} ms; it waited on the stalled snapshot`);
+});
+
+test('a CLI write owner starts no snapshot probe: worktree create exits promptly with the snapshot stalled, and its merge records no start time', async () => {
+  const { spawn } = require('node:child_process');
+  const dir = sandbox();
+  const orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
+  await orch.run.attach({ adapter_pid: process.pid });
+  const repo = makeRepo(dir);
+  const t = await orch.task.create({ spec: 'a', acceptance: { commands: [exists('a.txt')] } });
+  // No owner left running: the CLI elects its own, as a write from the operator's shell does.
+  await orch.shutdownOwner();
+  await orch.close();
+  opened.push({ dir, cores: [] });
+  const env = { ...process.env, BELAY_TEST_SNAPSHOT_STALL_MS: '8000' }; // every snapshot in it would take 8 s
+  const run = (args) => new Promise((resolve) => {
+    const t0 = Date.now();
+    const child = spawn(process.execPath, [path.resolve(__dirname, '..', '..', 'src', 'cli', 'belay.cjs'), ...args, '--data', `${dir}/data`, '--json'], { cwd: repo, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('exit', (status) => resolve({ status, stdout, stderr, ms: Date.now() - t0 }));
+  });
+  const made = await run(['worktree', 'create', t.id]);
+  assert.strictEqual(made.status, 0, made.stderr);
+  assert.ok(made.ms < 6000, `worktree create took ${made.ms} ms: it waited on the stalled snapshot`);
+  const w = JSON.parse(made.stdout).worktree;
+  write(w.path, 'a.txt', 'a\n');
+  commit(w.path, 'a');
+  // The CLI has no evaluate verb: evaluate through a core, then let its owner go so the CLI's merge elects its own again.
+  const c = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
+  assert.strictEqual((await c.task.evaluate({ task_id: t.id })).state, 'done');
+  await c.shutdownOwner();
+  await c.close();
+  const merged = await run(['worktree', 'merge', t.id, '--into', 'int/cli-owner']);
+  assert.strictEqual(merged.status, 0, merged.stderr);
+  assert.ok(merged.ms < 6000, `worktree merge took ${merged.ms} ms`);
+  assert.strictEqual(JSON.parse(merged.stdout).owner_boot, null, 'a CLI owner records no start time');
 });

@@ -15,7 +15,7 @@ const git = (cwd, ...a) => { const r = spawnSync('git', a, { cwd, encoding: 'utf
   git(repo, 'init', '-q', '-b', 'main'); git(repo, 'config', 'user.email', 't@example.com'); git(repo, 'config', 'user.name', 't');
   fs.writeFileSync(`${repo}/keep.txt`, 'k\n'); git(repo, 'add', '-A'); git(repo, 'commit', '-q', '-m', 'base');
   const top = git(repo, 'rev-parse', '--show-toplevel');
-  const orch = await openCore({ dataDir: `${base}/data`, caller: { role: 'orchestrator', run_id: 'r', pid: process.pid }, embed: false });
+  const orch = await openCore({ dataDir: `${base}/data`, caller: { role: 'orchestrator', run_id: 'r', pid: process.pid }, embed: false, ownerOpts: { longLived: true } }); // a long-lived owner starts the probe
   const op = await openCore({ dataDir: `${base}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
   await orch.run.attach({ adapter_pid: process.pid });
   const t = await orch.task.create({ spec: 'a', acceptance: { commands: [{ argv: [process.execPath, '-e', "require('fs').accessSync('a.txt')"] }] } });

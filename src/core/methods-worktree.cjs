@@ -163,11 +163,16 @@ function assertNotLeased(E, task) {
 // This process's creation time from the process snapshot, for an integration row's `owner_boot` (ADR 0053 amendment 2). The
 // probe never waits (ADR 0048 decision 3): the first worktree or integration call this owner serves starts it, so it has
 // normally settled before the first merge, which needs a task worktree first; a merge before then records null, as a
-// snapshot that cannot be read does. An owner told its own creation time at start uses that instead.
+// snapshot that cannot be read does. An owner told its own creation time at start uses that instead. Only a long-lived
+// owner (`ownerOpts.longLived`: the run's, or an orchestrator adapter's) starts the probe: its snapshot child holds the
+// event loop, so a CLI write's owner would wait for it before exiting (up to the snapshot timeout). Any other owner records
+// null, which a later check reads as not proven.
+const NO_BOOT = async () => null;
 let ownProbe = null;
 function ownBootProbe(E) {
-  const given = E && E.owner && E.owner.opts && Number.isFinite(E.owner.opts.created) ? E.owner.opts.created : null;
-  if (given != null) return async () => given;
+  const o = E && E.owner && E.owner.opts ? E.owner.opts : null;
+  if (o && Number.isFinite(o.created)) return async () => o.created;
+  if (!o || o.longLived !== true) return NO_BOOT;
   if (!ownProbe) ownProbe = require('./proc-identity.cjs').ownCreatedProbe(process.pid);
   return ownProbe;
 }
