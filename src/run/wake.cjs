@@ -127,7 +127,12 @@ function releasedClause(released, head) {
 
 // No worker output, ever: the id, the turn and (for a death) the exit facts are the whole of it.
 // Both shapes stay comfortably under 400 bytes for any id this codebase generates.
+// ADR 0058 amendment 1 (proposed): a wake that carries `idle_without_task` (idle-remind.cjs) names those workers when there is room.
 function wakeText(event) {
+  return require('./idle-remind.cjs').withIdle(baseText(event), event.idle_without_task, require('./release-eval.cjs').WAKE_TEXT_MAX);
+}
+
+function baseText(event) {
   if (event.event === 'note_refuted' || event.event === 'scrub_alarm' || event.event === 'evaluated') return event.text; // evaluated: release-eval.cjs, facts only // note-wake.cjs: belay's own record, built from the core's facts
   if (event.event === 'death') {
     const head = `belay: worker ${event.worker_id} died during turn ${event.turn} ` +
