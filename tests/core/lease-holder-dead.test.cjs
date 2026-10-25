@@ -192,3 +192,15 @@ test('a worker whose superseded lease was released by its death, on a task whose
   const back = await c.task.ensureHold({ task_id: t.id, worker_id: 'wa2' });
   assert.deepStrictEqual([back.reason, back.lease_id], ['regranted', l2.id], 'its last holder can still take it back');
 });
+
+test('release_leases on a dead row releases what the worker still holds, and keeps the death\'s record when nothing is left', async () => {
+  const { c, t, lease } = await leased('run-rel2', 'wz');
+  const first = await c.worker.write({ ...deadRow('wz'), keep_leases: true }); // a death a relaunch kept the lease for
+  assert.strictEqual(first.leases_released, null);
+  const restated = await c.worker.write({ id: 'wz', state: 'dead', release_leases: true });
+  assert.deepStrictEqual(restated.leases_released, [{ lease_id: lease.id, task_id: t.id }]);
+  assert.strictEqual(restated.release_leases, undefined, 'a directive, never a column');
+  assert.deepStrictEqual([(await c.task.get({ task_id: t.id })).state, (await c.task.get({ task_id: t.id })).lease], ['open', null]);
+  const again = await c.worker.write({ id: 'wz', state: 'dead', release_leases: true }); // nothing left to release
+  assert.deepStrictEqual(again.leases_released, restated.leases_released, 'the death\'s record stays on the row');
+});

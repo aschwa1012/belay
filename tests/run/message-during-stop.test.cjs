@@ -83,7 +83,10 @@ test('a message during a restart is refused, so the relaunched worker gets its r
 
 // The second check, after the launch hold: a Codex message that passed the first check waits on the task's hold, a restart takes the
 // slot meanwhile (its own hold is kept waiting until the message has answered), and the message must not then start a turn process.
-test('a Codex message whose launch hold a restart overtakes is refused before it starts a process', async (t) => {
+// ADR 0026 amendment 2: one relaunch owns the window. A restart that arrives while a Codex message is asking for its lease (the
+// message's relaunch is under way) is refused E_BUSY, and the message launches its turn; before, the restart took the slot and the
+// message was refused once its hold returned.
+test('a restart that arrives while a Codex message holds its launch is refused, and the message launches', async (t) => {
   const { core, m, worktree } = setup(t, 'run-msgstop-hold', { FAKE_CODEX_TURN_MS: '1500' });
   await m.spawn({ substrate: 'codex', worktree, prompt: 'one turn', worker_id: 'w1', task_id: 't1' });
   const w = m._worker('w1');
@@ -91,22 +94,17 @@ test('a Codex message whose launch hold a restart overtakes is refused before it
   await w.queue;
   assert.equal(w.state, 'idle');
   const hold = core.task.ensureHold;
-  let release; const released = new Promise((r) => { release = r; });
   let calls = 0; let restart = null;
   core.task.ensureHold = async (a) => {
     calls += 1;
-    if (calls === 1) { // the message's hold: let a restart take the slot before it returns
-      restart = m.restart({ worker_id: 'w1', first_turn_timeout_ms: 20000 }).catch((e) => e);
-      for (let i = 0; i < 1000 && !w.op; i += 1) await new Promise((r) => setImmediate(r));
-      assert.equal(w.op && w.op.name, 'restart');
-    } else if (calls === 2) await released; // the restart's own hold waits for the message's answer
+    if (calls === 1) restart = await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 20000 }).then(() => null, (e) => e); // during the message's hold
     return hold(a);
   };
-  const got = await m.message({ worker_id: 'w1', text: 'overtaken' }).then((x) => ({ ok: x.channel }), (e) => ({ err: e.code, op: e.detail && e.detail.op }));
-  release();
-  await restart;
-  assert.deepEqual(got, { err: 'E_BUSY', op: 'restart' }, `got ${JSON.stringify(got)}`);
-  assert.equal(w.launches, 2, 'one launch for the spawn and one for the restart, none for the message');
+  const got = await m.message({ worker_id: 'w1', text: 'not overtaken' }).then((x) => ({ ok: x.channel }), (e) => ({ err: e.code }));
+  assert.strictEqual(restart && restart.code, 'E_BUSY');
+  assert.deepEqual(got, { ok: 'codex-resume' }, `got ${JSON.stringify(got)}`);
+  assert.equal(calls, 1, 'the refused restart asked the core nothing');
+  assert.equal(w.launches, 2, 'one launch for the spawn and one for the message, none for the restart');
 });
 
 // Sent from inside the resume's `running` write: the park is cleared by then (an earlier write still reads paused, E_PAUSED), and the
