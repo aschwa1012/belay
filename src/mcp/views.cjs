@@ -116,7 +116,21 @@ const withTask = (answer) => (answer && typeof answer === 'object' && answer.tas
 
 // The tools whose default answer is a view, and how. `view` and `task_ids` are the adapter's, never the core's: they are taken
 // off the arguments here, checked, and the call runs without them.
-const VIEWED = { task_list: taskList, task_evaluate: taskEvaluate, integrate, task_assign: withTask, task_cancel: withTask };
+// memory_report: the hold it made or joined, the hold's state, and what happened to the note (withheld or not, and why). The core's answer also
+// carries the hold row and the note row whole, about 4 KB; view debug returns it unchanged.
+function memoryReport(a) {
+  if (!a || typeof a !== 'object') return a;
+  const h = a.held && typeof a.held === 'object' ? a.held : null;
+  const holdState = h && h.body && typeof h.body === 'object' ? h.body.state : undefined;
+  return {
+    id: a.id, state: a.state, ...(a.reason ? { reason: a.reason } : {}),
+    ...(a.hold ? { hold: { ...a.hold, ...(holdState ? { state: holdState } : {}) } } : {}),
+    withheld: a.withheld, withheld_why: a.withheld_why, report: a.report ? { seq: a.report.seq } : undefined, reports: a.reports,
+    ...(a.breaker ? { breaker: a.breaker } : {}), ...(a.redacted ? { redacted: a.redacted } : {}),
+  };
+}
+
+const VIEWED = { task_list: taskList, task_evaluate: taskEvaluate, integrate, task_assign: withTask, task_cancel: withTask, memory_report: memoryReport };
 const isViewed = (name) => typeof name === 'string' && Object.prototype.hasOwnProperty.call(VIEWED, name);
 const bad = (message, detail) => Object.assign(new Error(message), { code: 'E_ARGS', detail });
 
@@ -139,4 +153,4 @@ async function viewed(name, args, run) {
   return name === 'task_list' ? taskList(answer, { task_ids: ids }) : shape(answer);
 }
 
-module.exports = { compactTask, compactCheck, taskList, taskEvaluate, integrate, withTask, viewed, isViewed, VIEWED, SPEC_HEAD };
+module.exports = { compactTask, compactCheck, taskList, taskEvaluate, integrate, withTask, memoryReport, viewed, isViewed, VIEWED, SPEC_HEAD };

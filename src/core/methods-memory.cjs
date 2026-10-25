@@ -178,7 +178,7 @@ function noteModeOf(E, caller, namespace) {
 // in the per-project order the hand-back uses. Returns the note item as written (invariant 5).
 async function storeNote(E, caller, args, namespace, lv) {
   for (const k of NOTE_REFUSED.concat(HARNESS_FIELDS, HARNESS_STORE_FIELDS)) {
-    if (args[k] !== undefined) throw err('E_NOTE_SHAPE', `memory.store: ${k} is not a field of a note. A write to ${namespace} is a note here: pass kind, title, when, basis, evidence (with basis observed), and optionally applies_to and subjects`, { field: k, namespace });
+    if (args[k] !== undefined) throw err('E_NOTE_SHAPE', `memory.store: ${k} is not a field of a note. A write to ${namespace} is a note here: pass kind, title, when, basis, evidence (with basis observed), and optionally applies_to and subjects${k === 'supersedes' ? `. A note replaces another through review, not by naming it (ADR 0047): write the new note, and if it matches the old one it waits in pending to be resolved as supersedes${caller.role === 'orchestrator' ? '; or report the old one with memory_report replaced_by' : ' with memory_note_resolve'}` : ''}`, { field: k, namespace });
   }
   const worker = caller.role === 'worker';
   const task = worker ? derivedTask(E, caller) : null;
@@ -194,7 +194,10 @@ async function storeNote(E, caller, args, namespace, lv) {
       return NW.commitNotes(E, caller, { project, notes: prepared }, { task_id: task })[0];
     });
     E.noteWrite();
-    return { ...item, project, written_by: E.memoryWriter(caller), ...(item.state === 'pending' && worker ? { next: 'resolve it with memory_note_resolve: new, repeats <id>, or supersedes <id> with evidence' } : {}) };
+    // A pending note matched a note of the project at the match threshold (`matches` names each with its similarity): it may be a duplicate.
+    const next = item.state !== 'pending' ? null : worker ? 'resolve it with memory_note_resolve: new, repeats <id>, or supersedes <id> with evidence'
+      : 'it may duplicate the matches named here; it waits in pending for the run-close scrubber, or report the older note with memory_report replaced_by';
+    return { ...item, project, written_by: E.memoryWriter(caller), ...(next ? { next } : {}) };
   });
 }
 

@@ -74,8 +74,8 @@ const NOTE_REFUTATION = {
 // A report that a note is wrong, on the operator's word or the orchestrator's own evidence (a task evaluation, the code), with the reason (it holds the note for the archive review). Orchestrator only, listed with the notes lever.
 const MEMORY_REPORT = {
   name: 'memory_report',
-  description: 'Report a note wrong on the operator word or your own evidence (a task evaluation, the code); say why. Holds it for the archive review. Returns the hold row, or not_held with the reason.',
-  inputSchema: S({ note_id: str(), why: str(), replaced_by: str() }, ['note_id', 'why']),
+  description: 'Report a note wrong on the operator word or your own evidence (a task evaluation, the code); say why. Holds it for the archive review. Returns the hold id, its state and withheld, or not_held and why; view debug: rows.',
+  inputSchema: S({ note_id: str(), why: str(), replaced_by: str(), view: { type: 'string', enum: ['debug'] } }, ['note_id', 'why']),
 };
 
 // memory_store in a notes run (ADR 0047 amendment of 2026-10-22): a write to `project` is a note and states the note's fields; every other namespace is the
@@ -84,9 +84,10 @@ const MEMORY_REPORT = {
 function memoryStoreNotes(ordinary, role) {
   const { required, ...schema } = ordinary.inputSchema;
   const properties = { ...schema.properties };
-  properties.namespace = str(`Default: this run only. project: a lasting note (kind, title, when, basis)${role === 'orchestrator' ? '. summary: run outcome' : ''}`);
+  // A note takes its own fields only (methods-memory.cjs NOTE_REFUSED); the run-row fields are named here so a note writer does not try them.
+  properties.namespace = str(`Default: this run. project: a note (no text, type, tags, provenance, supersedes, ttl_seconds)${role === 'orchestrator' ? '. summary: run outcome' : ''}`);
   const { title, ...rest } = NOTE_PROPS;
-  return { ...ordinary, inputSchema: { ...schema, properties: { ...properties, ...rest, text: str('Not for project notes'), when: str('Task that would trip on it, max 160 bytes') } } };
+  return { ...ordinary, inputSchema: { ...schema, properties: { ...properties, ...rest, text: str(), when: str('Task that would trip on it, max 160 bytes') } } };
 }
 
 module.exports = { memoryStoreNotes, LEASE_RELEASE, NOTE_RESOLVE, SUMMARIES, NOTE_REFUTATION, MEMORY_REPORT, notesWorkerListing };
