@@ -9,6 +9,7 @@
 const W = require('./worker.cjs');
 const P = require('./process.cjs');
 const { fail } = require('./errors.cjs');
+const EV = require('./wait-eval.cjs'); // gap 9: a later wait holds for a release evaluation in flight
 
 const now = () => Date.now();
 // ADR 0058: messages queued during a compaction that a pause, park or relaunch dropped are named in every answer about the worker.
@@ -96,10 +97,14 @@ function createWait({ workers, get, core = null }) {
     // whichever comes first, a worker that has already finished or any relaunch (a failed one is the answer, naming its worker).
     const failedOf = (w, e) => ({ worker_id: w.id, event: 'restart_failed', established_by: `the relaunch failed: ${(e && e.message) || e}`, error_code: (e && e.code) || null, exit_code: w.exitCode, exit_signal: w.exitSignal, turn: w.turns });
     const finishedOf = (w) => (w.staleSince ? { ...staleOf(w), already: true } : w.settled ? { ...settledOf(w), already: true } : w.turnEnded ? { ...turnOf(w, null), already: true } : null);
+    // Gap 9 (ADR 0058's evaluation at release): a turn that already ended with its hand-back still being evaluated is not answered at
+    // once with `evaluating` again; the wait holds, within its own bound, until that evaluation ends, and answers with its result.
+    const evaluating = [];
     for (const w of ws) {
       if (w.restartInFlight) continue;
       if (w.staleSince) return done({ ...staleOf(w), already: true });
       if (w.settled) { if (w.exitCode == null && w.exitSignal == null) await withCode(w); return done({ ...settledOf(w), already: true }); }
+      if (w.turnEnded && EV.evaluatingOf(w)) { evaluating.push(w); continue; }
       if (w.turnEnded) return done({ ...turnOf(w, null), already: true });
     }
     const never = new Promise(() => {});
@@ -115,7 +120,8 @@ function createWait({ workers, get, core = null }) {
         W.waitExit(w, ms).then((v) => (v ? { ...settledOf(w) } : never)),
       ]));
     const winner = await Promise.race([
-      ...ws.map(watch),
+      ...ws.filter((w) => !evaluating.includes(w)).map(watch),
+      ...evaluating.map((w) => EV.evaluationEnded(w).then(() => ({ ...turnOf(w, null), already: true }))),
       new Promise((res) => { const t = setTimeout(() => res(null), ms); if (t.unref) t.unref(); }),
     ]);
     if (winner && winner.event !== 'restart_failed' && 'exit_code' in winner && winner.exit_code == null && winner.exit_signal == null) {
@@ -125,6 +131,7 @@ function createWait({ workers, get, core = null }) {
     if (winner) return done(winner);
     return {
       worker_id: null, event: null, timed_out: true, waited_ms: now() - t0, watched: ids,
+      ...(evaluating.length ? { still_evaluating: evaluating.map((w) => ({ worker_id: w.id, turn: w.turns, tasks: EV.evaluatingOf(w) || [] })) } : {}),
       busy: ws.filter((w) => !w.settled && !w.turnEnded).map((w) => ({
         worker_id: w.id, state: w.state, pid_alive: w.pid ? P.pidAlive(w.pid) : false,
         last_event_age_ms: w.lastEventAt ? now() - w.lastEventAt : null, turns: w.turns,
