@@ -78,7 +78,7 @@ test('gap 3: a task\'s own base judges files_within_owned when task.evaluate nam
   const rowBase = await orch.task.evaluate({ task_id: v.id, trigger: 'release', worktree: v.worktree.path });
   const c = rowBase.results.checks[0];
   assert.deepStrictEqual([rowBase.state, c.detail.base_source, c.detail.base_ref, c.detail.changed], ['done', 'task', 'HEAD~1', ['src/mine.cjs']]);
-  for (const bad of ['', '-x', 7]) await rejectsCode(orch.task.create({ spec: 'bad base', acceptance: { files_within_owned: true }, base: bad }), 'E_ARGS');
+  for (const bad of ['', '-x', 7, 'a\u0000b', 'a\nb', 'a\u007fb']) await rejectsCode(orch.task.create({ spec: 'bad base', acceptance: { files_within_owned: true }, base: bad }), 'E_ARGS');
   // A fix of it is judged from the same base.
   const r = await orch.task.create({ spec: 'review', depends_on: [v.id], acceptance: { verdict: true } });
   const id = `j-${++n}`;
@@ -118,6 +118,35 @@ test('gap 10: the failing-test section survives a long output, in task.evaluate 
   const { runCommand, outputTails } = require('../../src/core/evaluate.cjs');
   const r = await runCommand([process.execPath, script], dir, 60000, { keep: 'ends', env: { ...process.env, FORCE_FAIL: '1' } });
   assert.match(outputTails(r).stdout_tail, /^✖ failing tests:[\s\S]*the-broken-test-name/);
+  const keep = outputTails({ stdout: 'x'.repeat(2000) + '\n✖ failing tests:\n✖ y' + 'z'.repeat(600) + 'THE-END', stdout_failing: '✖ failing tests:\n✖ y' + 'z'.repeat(500), stderr: '' }).stdout_tail;
+  assert.ok(keep.length <= 400 && keep.endsWith('THE-END') && keep.startsWith('✖ failing tests:') && keep.includes('[... end of output ...]'), 'the section and the end of the output both stay within the cap');
   const short = outputTails({ stdout: 'ok\n✖ failing tests:\n✖ x', stdout_failing: '✖ failing tests:\n✖ x', stderr: '' });
   assert.strictEqual(short.stdout_tail, 'ok\n✖ failing tests:\n✖ x', 'a section already in the tail leaves the tail as it was');
+});
+
+test('two joiners of a cancelled evaluation run one re-run between them', async () => {
+  const EC = require('../../src/core/evaluate-cancel.cjs');
+  const rows = require('../../src/core/rows.cjs'), W = require('../../src/core/methods-worktree.cjs');
+  const { err } = require('../../src/core/errors.cjs');
+  const realCurrent = rows.current, realTarget = W.evaluateTarget;
+  rows.current = () => ({ id: 'race-t' });
+  W.evaluateTarget = () => ({ worktree: 'C:/w', base: 'abc', baseSource: 'task' });
+  try {
+    let running = 0, peak = 0;
+    const runs = [];
+    const mk = () => () => { running++; peak = Math.max(peak, running); return new Promise((res, rej) => runs.push({ res: (v) => { running--; res(v); }, rej: (e) => { running--; rej(e); } })); };
+    const first = EC.joinOrRun({}, { task_id: 'race-t', trigger: 'release' }, mk()).catch((e) => e);
+    const j1 = EC.joinOrRun({}, { task_id: 'race-t' }, mk());
+    const j2 = EC.joinOrRun({}, { task_id: 'race-t' }, mk());
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(runs.length, 1);
+    runs[0].rej(err('E_BUSY', 'cancelled', { cancelled: true }));
+    await first;
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(runs.length, 2, 'one re-run, not one per joiner');
+    assert.strictEqual(peak, 1);
+    runs[1].res({ id: 'race-t' });
+    const [a, b] = await Promise.all([j1, j2]);
+    assert.strictEqual(a.joined_evaluation === true || b.joined_evaluation === true, true);
+  } finally { rows.current = realCurrent; W.evaluateTarget = realTarget; }
 });

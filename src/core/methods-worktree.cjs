@@ -324,7 +324,7 @@ function assertTaskTree(task, dir, what, remedy) {
 
 // A task's own diff base (task.create `base`, try-2 gap 3): a commit or ref, never an option.
 function baseArg(v) {
-  if (typeof v !== 'string' || !v.trim() || v.startsWith('-') || v.length > 200) throw err('E_ARGS', 'task.create base must be a commit or ref (a non-empty string of at most 200 characters, not starting with -)', { field: 'base' });
+  if (typeof v !== 'string' || !v.trim() || v.startsWith('-') || v.length > 200 || /[\u0000-\u001f\u007f]/.test(v)) throw err('E_ARGS', 'task.create base must be a commit or ref (a non-empty string of at most 200 characters, not starting with -, no control characters)', { field: 'base' });
   return v;
 }
 

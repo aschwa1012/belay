@@ -132,10 +132,13 @@ function runCommand(argvGiven, cwd, timeoutMs, { env, tail = TAIL, onChild, keep
 }
 
 // The tails a check reports, shared by task.evaluate and integration.merge: the last 400 characters of each stream, except that a
-// test runner's failure section (capture's `section`) replaces the stdout tail when the tail does not already show its start.
+// test runner's failure section (capture's `section`) replaces the stdout tail when the tail does not already show its start; the
+// last 200 characters of the output stay after it, joined by a marker, so the end of the run is not lost (400 characters in all).
+const TAIL_JOIN = '\n[... end of output ...]\n';
 function outputTails(r) {
-  const tail = String(r.stdout || '').slice(-400), sec = r.stdout_failing;
-  return { stdout_tail: sec && !tail.includes(FAILING_MARK) ? sec.slice(0, 400) : tail, stderr_tail: String(r.stderr || '').slice(-400) };
+  const out = String(r.stdout || ''), tail = out.slice(-400), sec = r.stdout_failing;
+  const stdout_tail = sec && !tail.includes(FAILING_MARK) ? sec.slice(0, 400 - 200 - TAIL_JOIN.length) + TAIL_JOIN + out.slice(-200) : tail;
+  return { stdout_tail, stderr_tail: String(r.stderr || '').slice(-400) };
 }
 
 // Forward slashes everywhere, no trailing slash, no leading './'. Windows paths compare case-blind.

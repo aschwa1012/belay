@@ -31,6 +31,7 @@ async function joinOrRun(E, args, run) {
   if (cur) {
     try { return { ...(await cur), joined_evaluation: true }; } catch (e) {
       if (!(e && e.detail && e.detail.cancelled)) throw e; // the joined run's own refusal is this call's too
+      return joinOrRun(E, args, run); // look again: another joiner may already have started the re-run
     }
   }
   const p = run();
