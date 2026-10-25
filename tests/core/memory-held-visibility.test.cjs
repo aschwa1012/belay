@@ -134,3 +134,12 @@ test('a hand-back that restates a held note names it by id and verdict only, nev
   assert.ok(!JSON.stringify(out).includes(X.rowOf(a.note).title), 'the held claim\'s title is nowhere in the answer');
   assert.doesNotMatch(n.held_back, /after a report/);
 });
+
+test('a long hold reason is cut to the compact row\'s bound in every view', async () => {
+  const a = await X.written('w-i1', 'K9');
+  X.store.storeIn({ namespace: 'held/acme', worker_id: 'harness', type: 'held', text: `held long ${a.note}`, title: 'h', body: { state: 'held', note_id: a.note, kind: 'wrong', ground: 'scrubber', reason: 'y'.repeat(400), rev: 0 }, run_id: X.RUN, source: 'harness', written_by: 'harness' });
+  const marks = [];
+  for (const view of ['compact', 'debug', 'index']) marks.push((await X.call('memory.search', X.orch, { namespaces: NS, query: 'K9 loader', view, k: 50 })).results.find((x) => x.id === a.note).held);
+  for (const view of ['full', 'index']) marks.push((await X.call('memory.list', X.orch, { namespaces: NS, limit: 500, view })).rows.find((x) => x.id === a.note).held);
+  for (const m of marks) assert.strictEqual(Buffer.byteLength(m.reason), 160);
+});

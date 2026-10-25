@@ -28,6 +28,7 @@ const relevance = require('./memory-relevance.cjs');
 const rank = require('./memory-index-rank.cjs');
 const { checkReach, runEmbedderMode } = require('./memory-reach.cjs');
 const gate = require('./memory-note-gate.cjs');
+const W = require('./memory-withhold.cjs');
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 const { standing } = require('./report-marks.cjs');
@@ -152,7 +153,8 @@ function statusTag(r, trust) {
   return RECEIPT_KINDS.has(kind) ? `verified:${kind}` : 'verified';
 }
 
-function lineOf(r, body, trust, runId) {
+// `hold`: the note's active hold ({ kind, reason }, from its hold row) or null.
+function lineOf(r, body, trust, runId, hold) {
   const kind = KINDS.includes(body && body.kind) ? body.kind : 'note';
   const basis = BASES.includes(body && body.basis) ? body.basis : 'unstated';
   const ev = body && Array.isArray(body.evidence) && body.evidence[0] && typeof body.evidence[0].where === 'string' ? oneLine(body.evidence[0].where) : '';
@@ -163,10 +165,10 @@ function lineOf(r, body, trust, runId) {
     const why = cutBytes(oneLine(wrong[wrong.length - 1].why), WHY_SHOWN);
     out += wrong.length === 1 ? ` [a worker reported this wrong: ${why}]` : ` [${wrong.length} workers reported this wrong; latest: ${why}]`;
   }
-  // The notes lifecycle: a note held for archive carries a short warning in every later run until the reviewer settles it.
-  // Display only: it changes no rank and no order, and it is inside this line, so it is counted in the same budget.
-  if (body && body.held && typeof body.held.kind === 'string' && typeof body.held.reason === 'string' && oneLine(body.held.reason)) {
-    out += ` [held: ${oneLine(body.held.kind).slice(0, 12)}, ${cutBytes(oneLine(redactText(body.held.reason)), HELD_WHY_SHOWN)}]`;
+  // The notes lifecycle: a note held for archive carries a short warning, read from its hold row (never the note's own pointer, which can
+  // outlive the hold), until the reviewer settles it. It is inside this line, so it is counted in the same budget.
+  if (hold && typeof hold.kind === 'string' && typeof hold.reason === 'string' && oneLine(hold.reason)) {
+    out += ` [held: ${oneLine(hold.kind).slice(0, 12)}, ${cutBytes(oneLine(redactText(hold.reason)), HELD_WHY_SHOWN)}]`;
   }
   return out;
 }
@@ -244,6 +246,10 @@ async function index(E, caller, c) {
   const rel = { scores: rank.sunk(found, sel.scores, { lv, runId: caller.run_id }), info: sel.info }; // the sinking seam (a no-op today)
 
   const prep = prepareText(text);
+  // A held note ranks below every note that is not held and has some relevance, and above the ones with none, as a search ranks it below the
+  // floor (ADR 0047 amendment of 2026-10-25). A worker is withheld the disputed ones already; an unsupported row is no hold here.
+  const holds = W.holdsAmong(E, live.map((r) => r.id));
+  const heldTier = (x) => (x.rel > 0 ? 0 : 2) + (holds.has(x.r.id) ? 1 : 0);
   const ranked = live.map((r) => {
     const paths = ownedF.length ? pathsOf(r.b, norm) : [];
     const ps = paths.length ? pathScore(paths, ownedF, w.idf) : 0;
@@ -252,14 +258,14 @@ async function index(E, caller, c) {
     const fact = ps > 0 || hits > 0 || (paths.length > 0 && pathMatches(paths, ownedF));
     return { r, ps, hits, fact, tier: ps > 0 ? 1 : hits > 0 ? 2 : 3, rel: rel.scores.get(r.id) || 0 };
   }).sort((a, b) => (
-    (b.rel - a.rel) || (a.tier - b.tier) || (b.ps - a.ps) || (b.hits - a.hits)
+    (heldTier(a) - heldTier(b)) || (b.rel - a.rel) || (a.tier - b.tier) || (b.ps - a.ps) || (b.hits - a.hits)
     || ((b.r.status === 'verified') - (a.r.status === 'verified')) || (b.r.created_at - a.r.created_at)
     || (a.r.id < b.r.id ? -1 : a.r.id > b.r.id ? 1 : 0)
   ));
 
   const trust = lv.notes_trust_wording === true;
   const header = trust ? HEADER_ON : HEADER_OFF;
-  const items = ranked.map(({ r }, i) => ({ id: r.id, text: lineOf(r, r.b, trust, caller.run_id), priority: ranked.length - i }));
+  const items = ranked.map(({ r }, i) => ({ id: r.id, text: lineOf(r, r.b, trust, caller.run_id, holds.get(r.id) || null), priority: ranked.length - i }));
   const factIds = new Set(ranked.filter((x) => x.fact).map((x) => x.r.id));
   const run = (footer) => fit(items, { max_bytes: o.maxBytes, header, footer, drop_order: 'priority-then-oldest' });
   let fitted = run(FRAME.end);

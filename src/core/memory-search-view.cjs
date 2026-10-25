@@ -64,6 +64,9 @@ function compactRow(r, cosine, superseded = false, hold = undefined) {
   return out;
 }
 
+// A held note's mark on a debug or index search row and a list row: the hold's kind, ground and reason, the reason cut as on the compact row.
+const heldMark = h => ({ kind: h.kind || null, ground: h.ground || null, reason: typeof h.reason === 'string' ? cut(h.reason, HELD_REASON_MAX) : null });
+
 // What a search's numbers mean, for the debug view: the fused score of the mode that ranked it.
 const scoreKind = (sem, kw) => (sem && kw ? 'rrf' : sem ? 'cosine' : kw ? 'bm25' : null);
 
@@ -90,4 +93,4 @@ function warningFor(o, ran, failed, results, absence, unembedded, below) {
   return null;
 }
 
-module.exports = { RELEVANCE_FLOOR, belowFloor, relevanceOf, relevanceFields, compactRow, scoreKind, warningFor };
+module.exports = { RELEVANCE_FLOOR, HELD_REASON_MAX, belowFloor, relevanceOf, relevanceFields, compactRow, heldMark, scoreKind, warningFor };

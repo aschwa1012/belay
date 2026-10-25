@@ -338,7 +338,7 @@ async function search(E, caller, args) {
     const rel = V.relevanceFields(c);
     if (rel.low_relevance) below++;
     if (o.view === 'compact') { results.push(V.compactRow(r, c, !!(replaced && replaced.has(r.id)), holds.get(r.id) || null)); continue; }
-    const out = { ...viewRow(r, debug ? 'full' : 'index', h.score), ...(o.view === 'index' ? rel : {}), ...(holds.has(r.id) ? { held: holds.get(r.id) } : {}) };
+    const out = { ...viewRow(r, debug ? 'full' : 'index', h.score), ...(o.view === 'index' ? rel : {}), ...(holds.has(r.id) ? { held: V.heldMark(holds.get(r.id)) } : {}) };
     if (debug) {
       out.score = h.score;
       Object.assign(out, rel);
@@ -473,7 +473,7 @@ async function list(E, caller, args) {
   });
   // A held note is marked from its hold row, in either view (ADR 0047 amendment of 2026-10-25); the list stays in time order.
   const holds = W.holdsAmong(E, found.filter(r => r.type === 'note').map(r => r.id));
-  if (holds.size) for (const row of rows) if (holds.has(row.id)) row.held = holds.get(row.id);
+  if (holds.size) for (const row of rows) if (holds.has(row.id)) row.held = V.heldMark(holds.get(row.id));
   // ADR 0057 decision 10 (C11): a page that is not the whole of it says so, and how to read on.
   const more = offset + rows.length < total;
   return { rows, total, ...(more ? { truncated: true, next_offset: offset + rows.length } : {}), ...(asked > LIST_MAX ? { limit_capped: LIST_MAX } : {}), searched: { namespaces, filter: f, rows_considered: total } };
