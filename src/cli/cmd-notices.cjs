@@ -204,8 +204,10 @@ function unembeddedEvents(u, runId) {
 
 // The standing count of notes held for the on-demand Opus archive reviewer (memory.held, a plain read), modelled on notes_unembedded.
 function heldEvents(h, runId) {
-  if (!h || !(h.total > 0)) return [];
-  return [{ kind: 'notes_held', ts: num(h.newest_at), run_id: runId, count: h.total, queued: h.queued || 0, unsupported: h.unsupported || 0, by_project: h.by_project || {}, by_ground: h.by_ground || {}, awaiting_operator: h.awaiting_operator || 0, oldest_age_runs: h.oldest_age_runs || 0, oldest_at: num(h.oldest_at), command: 'belay memory review', source: 'memory_entries rows of type held, state held or queued' }];
+  // A held row the read filter cannot read is withheld from workers closed; the operator is told while one stands (memory.held `malformed`).
+  const bad = h && h.malformed > 0 ? [{ kind: 'holds_unreadable', ts: num(h.newest_at), run_id: runId, count: h.malformed, command: 'belay memory held', source: 'held rows whose body or reports the read filter cannot read' }] : [];
+  if (!h || !(h.total > 0)) return bad;
+  return [...bad, { kind: 'notes_held', ts: num(h.newest_at), run_id: runId, count: h.total, queued: h.queued || 0, unsupported: h.unsupported || 0, by_project: h.by_project || {}, by_ground: h.by_ground || {}, awaiting_operator: h.awaiting_operator || 0, oldest_age_runs: h.oldest_age_runs || 0, oldest_at: num(h.oldest_at), command: 'belay memory review', source: 'memory_entries rows of type held, state held or queued' }];
 }
 
 // A run whose reports tripped the circuit breaker (notes-held.cjs `breakers`): one event per run and project while its holds stand.
@@ -285,6 +287,8 @@ function summaryOf(e) {
       return `${e.stage} ${e.code ? `failed ${P.v(e.code, 40)}: ` : ''}${P.v(e.text, 300)}${Array.isArray(e.row_ids) && e.row_ids.length ? ` (notes: ${e.row_ids.slice(0, 5).map((x) => P.v(x, 40)).join(', ')}${e.row_ids.length > 5 ? `, and ${e.row_ids.length - 5} more` : ''})` : ''}`;
     case 'notes_unembedded':
       return P.unembeddedText({ total: e.count, by_project: e.by_project });
+    case 'holds_unreadable':
+      return `${e.count} held row${e.count === 1 ? '' : 's'} cannot be read; ${e.count === 1 ? 'its note is' : 'their notes are'} withheld from workers (closed) until fixed or settled: see belay memory held`;
     case 'notes_held':
       return P.heldText({ total: e.count, queued: e.queued, unsupported: e.unsupported, by_project: e.by_project, oldest_age_runs: e.oldest_age_runs, by_ground: e.by_ground, awaiting_operator: e.awaiting_operator });
     case 'review_running':
