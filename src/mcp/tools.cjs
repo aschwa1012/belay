@@ -296,7 +296,7 @@ const ORCHESTRATOR = [
   {
     // ADR 0053 decision 5.
     name: 'integrate',
-    description: 'Merge done tasks\' branches in order into into (default belay/integrate/<run>), then re-run their checks there. Returns state, merged, checks, passed (passing output cut; view debug: whole row). A conflict is aborted, tree clean; conflict names task and files.',
+    description: 'Merge done tasks\' branches in order into into (default belay/integrate/<run>), then re-run their checks there. Returns state, merged, not_merged, checks, passed (passing output cut; view debug: whole row). A conflict is aborted, tree clean; conflict names task and files; what merged before it is still checked. task_list gives each task\'s integration state.',
     inputSchema: S({
       task_ids: strs(),
       into: str(),

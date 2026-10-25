@@ -25,7 +25,7 @@ const COLUMNS = {
     'input_sha256', 'state', 'verdict_by', 'reason', 'requested_at', 'decided_at'],
   // ADR 0053 decision 5.
   integration: ['id', 'run_id', 'repo', 'into_branch', 'worktree', 'created_worktree', 'base_sha', 'head_sha', 'state',
-    'task_ids', 'merged', 'conflict', 'error', 'checks', 'passed', 'junctions', 'removed_at'],
+    'task_ids', 'merged', 'conflict', 'error', 'checks', 'passed', 'junctions', 'removed_at', 'owner_pid', 'owner_boot'],
 };
 
 // Text in SQLite, parsed objects on the wire (api.md §1).

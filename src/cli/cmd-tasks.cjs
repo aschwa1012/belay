@@ -33,7 +33,7 @@ function parseArgs(argv) {
 
 const COLUMNS = [
   'id', 'state', 'spec', 'lease_id', 'holder', 'holder_role', 'lease_expires_at', 'lease_expired',
-  'holder_pid_alive', 'holds_files', 'holds_reason', 'last_checkpoint_id', 'last_checkpoint_at', 'depends_on',
+  'holder_pid_alive', 'holds_files', 'holds_reason', 'last_checkpoint_id', 'last_checkpoint_at', 'depends_on', 'integration',
 ];
 
 // The first 60 characters of the spec, one line: newlines collapse to spaces before the cut, so a
@@ -43,8 +43,18 @@ function specOf(t) {
   return s.length > 60 ? s.slice(0, 60) : s;
 }
 
+// The core's integration fact in one cell: `state:into`, and for a merge whether the checks on the merged tree passed
+// (`unchecked` when none ran), or `stale` for a merge whose process is gone. `-` for a task with no belay branch.
+function integrationOf(t) {
+  const i = t.integration;
+  if (!i) return null;
+  const checks = i.state === 'merging' ? (i.stale ? ':stale' : '') : i.state !== 'merged' ? '' : i.passed === true ? ':passed' : i.passed === false ? ':failed' : ':unchecked';
+  return `${i.state}${i.into ? `:${i.into}` : ''}${checks}`;
+}
+
 function cell(t, c) {
   if (c === 'spec') return specOf(t);
+  if (c === 'integration') return integrationOf(t);
   if (c === 'lease_id') return t.lease ? t.lease.id : null;
   if (c === 'holder') return t.lease ? t.lease.holder : null;
   if (c === 'holder_role') return t.lease ? t.lease.holder_role : null;
