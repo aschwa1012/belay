@@ -159,6 +159,6 @@ test('belay status names an unreadable hold and the project it closes', async ()
     store.close();
     const r = spawnSync(process.execPath, [CLI, 'status', '--data', dir], { cwd: ROOT, windowsHide: true, encoding: 'utf8' });
     assert.strictEqual(r.status, 0, r.stderr);
-    assert.match(r.stdout, /1 held row cannot be read; its note is withheld from workers \(closed\); every note of project acme is withheld from workers/);
+    assert.ok(r.stdout.includes('1 held row cannot be read; every note of project acme is withheld from workers until fixed: see belay memory held'), r.stdout);
   } catch (e) { bodyError = e === undefined ? new Error('undefined was thrown') : e; throw bodyError; } finally { await teardown(bodyError, [() => cleanup(dir)]); }
 });

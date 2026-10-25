@@ -113,8 +113,9 @@ function heldBreakdown(h) {
 function unreadableText(u) {
   const closed = Array.isArray(u.closed_projects) ? u.closed_projects.map((p) => clean(p, 64)) : [];
   const n = Number(u.count) || 0;
-  const whole = closed.length ? `; every note of project${closed.length === 1 ? '' : 's'} ${closed.join(', ')} is withheld from workers` : '';
-  return `${n} held row${n === 1 ? '' : 's'} cannot be read; ${n === 1 ? 'its note is' : 'their notes are'} withheld from workers (closed)${whole} until fixed or settled: see belay memory held`;
+  const rows = `${n} held row${n === 1 ? '' : 's'} cannot be read`;
+  if (closed.length) return `${rows}; every note of project${closed.length === 1 ? '' : 's'} ${closed.join(', ')} ${closed.length === 1 ? 'is' : 'are'} withheld from workers until fixed: see belay memory held`;
+  return `${rows}; ${n === 1 ? 'its note is' : 'their notes are'} withheld from workers until fixed: see belay memory held`;
 }
 
 function heldText(h) {
