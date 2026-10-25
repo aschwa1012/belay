@@ -107,6 +107,14 @@ function createWait({ workers, get, core = null }) {
       if (w.turnEnded && EV.evaluatingOf(w)) { evaluating.push(w); continue; }
       if (w.turnEnded) return done({ ...turnOf(w, null), already: true });
     }
+    // The hold ended. A stop that cancelled the evaluation has not settled yet: answer as the stop will (its settled state), never as
+    // a finished turn. Any other cancel is named in the answer, so a caller can tell a cancelled evaluation from one that found nothing.
+    const afterHold = (w, ev) => {
+      if (w.stopRequested && !w.settled) return watch(w);
+      const r = finishedOf(w);
+      if (!r) return watch(w);
+      return ev && ev.cancelled && r.event === 'turn_end' ? { ...r, evaluation: 'cancelled' } : r;
+    };
     const never = new Promise(() => {});
     // build step 6e-6 item 2 (`settle`, worker.cjs): `waitTurn` now also resolves on the worker's own
     // exit (`v.exited`), for `restart`'s own first-turn wait; here that shape is routed through
@@ -123,7 +131,7 @@ function createWait({ workers, get, core = null }) {
       ...ws.filter((w) => !evaluating.includes(w)).map(watch),
       // The worker stays watched through the hold: its death, stop or park, and a turn begun or ended meanwhile, answer as they would
       // without it. Once the evaluation ends the worker is looked at again, so a turn begun during the hold is not answered as the old one.
-      ...evaluating.map((w) => Promise.race([watch(w), EV.evaluationEnded(w).then(() => finishedOf(w) || watch(w))])),
+      ...evaluating.map((w) => { const ev = w.evaluation; return Promise.race([watch(w), EV.evaluationEnded(w).then(() => afterHold(w, ev))]); }),
       new Promise((res) => { const t = setTimeout(() => res(null), ms); if (t.unref) t.unref(); }),
     ]);
     if (winner && winner.event !== 'restart_failed' && 'exit_code' in winner && winner.exit_code == null && winner.exit_signal == null) {
