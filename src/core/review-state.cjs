@@ -36,13 +36,27 @@ function index(store, tasks) {
 const decidedAt = (r) => Number(r.results && r.results.evaluated_at) || 0;
 const latest = (xs, at) => xs.reduce((a, b) => (at(b) > at(a) ? b : a));
 
-// Which review decides, by when each decision was made (its evaluation), not when the review was created:
-// 1. a refuted review decided after the newest fix was made (no fix answers it yet) wins, the latest such one, over any holds;
+// The refutations a fix answers: the review ids task.fixFromReview recorded on it (`answers`), else, for a fix written before
+// the field, the refutations of the task it depends on decided strictly before it was made (a tie in milliseconds is not an
+// answer, the conservative side). A cancelled fix answers nothing.
+function answersOf(fix, ix) {
+  if (fix.state === 'cancelled') return [];
+  if (Array.isArray(fix.answers)) return fix.answers;
+  const born = ix.born.get(fix.id).at;
+  return (fix.depends_on || []).flatMap((d) => ix.reviewsOf.get(d) || []).filter((r) => verdictOf(r) === 'refuted' && decidedAt(r) < born).map((r) => r.id);
+}
+
+// A refutation is answered only by a decision (holds or refuted) on a review of a fix, not cancelled, that answers it. A later
+// holds on the same work never answers it: with a panel, a refutation stands until a fix for it has been reviewed.
+const answered = (r, fixes, ix) => fixes.some((f) => answersOf(f, ix).includes(r.id) && (ix.reviewsOf.get(f.id) || []).some((x) => verdictOf(x) !== 'pending'));
+
+// Which review decides:
+// 1. a refutation not answered (above) wins, the latest decided such one, over any holds;
 // 2. else a review created after the latest decision and not decided yet: pending, a newer judgement is under way;
-// 3. else the latest decision; else (no review decided) pending.
-function deciding(reviews, newestFixAt, ix) {
+// 3. else the latest decision (by when it was made, not when the review was created); else (no review decided) pending.
+function deciding(reviews, fixes, ix) {
   const decided = reviews.filter((r) => verdictOf(r) !== 'pending');
-  const open = decided.filter((r) => verdictOf(r) === 'refuted' && decidedAt(r) > newestFixAt);
+  const open = decided.filter((r) => verdictOf(r) === 'refuted' && !answered(r, fixes, ix));
   if (open.length) return latest(open, decidedAt);
   const last = decided.length ? latest(decided, decidedAt) : null;
   const newer = reviews.filter((r) => verdictOf(r) === 'pending' && (!last || ix.born.get(r.id).at > decidedAt(last)));
@@ -59,11 +73,11 @@ function ofTask(task, ix) {
   const fixes = (ix.fixesOf.get(root) || []).slice().sort((a, b) => ix.born.get(a.id).s - ix.born.get(b.id).s);
   const reviews = [root, ...fixes.map((f) => f.id)].flatMap((id) => ix.reviewsOf.get(id) || []);
   if (!reviews.length) return null;
-  const last = deciding(reviews, fixes.length ? ix.born.get(fixes[fixes.length - 1].id).at : -1, ix);
+  const last = deciding(reviews, fixes, ix);
   const runId = fixes.length ? fixes[fixes.length - 1].run_id : task.run_id;
   const cap = ix.caps.has(runId) ? ix.caps.get(runId) : null;
   const used = fixes.filter((f) => f.run_id === runId).length;
   return { state: verdictOf(last), review_id: last.id, rounds: fixes.length, rounds_left: cap == null ? null : Math.max(0, cap - used) };
 }
 
-module.exports = { index, ofTask, verdictOf };
+module.exports = { index, ofTask, verdictOf, answersOf, isReview };

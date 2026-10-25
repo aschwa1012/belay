@@ -124,11 +124,12 @@ test('two reviewers: the decision made last decides, not the review made last, a
   await verdict(q1, 'refuted');
   await verdict(q2, 'holds');
   assert.deepStrictEqual(await reviewOf(v.id), { state: 'refuted', review_id: q1.id, rounds: 0, rounds_left: 2 });
-  // A fix answers it; a review of the fix that is under way reads pending, and once it holds the chain holds.
+  // A fix takes it on; the refutation stands while the fix's review is under way (only a decision on it answers), and once that
+  // review holds the chain holds.
   const fix = await orch.task.fixFromReview({ review_id: q1.id });
   await doneWork(fix);
   const q3 = await judge(fix, null);
-  assert.deepStrictEqual(await reviewOf(v.id), { state: 'pending', review_id: q3.id, rounds: 1, rounds_left: 1 });
+  assert.deepStrictEqual(await reviewOf(v.id), { state: 'refuted', review_id: q1.id, rounds: 1, rounds_left: 1 });
   await verdict(q3, 'holds');
   assert.deepStrictEqual(await reviewOf(v.id), { state: 'holds', review_id: q3.id, rounds: 1, rounds_left: 1 });
 });
@@ -149,4 +150,39 @@ test('rounds_left across runs: it is what the run of the newest fix would allow 
   const r3 = await judge(f2, 'refuted');
   assert.deepStrictEqual(await reviewOf(w.id), { state: 'refuted', review_id: r3.id, rounds: 2, rounds_left: 0 });
   await assert.rejects(other.task.fixFromReview({ review_id: r3.id }), (e) => e.code === 'E_FIX_ROUNDS');
+});
+
+async function said(r, v, summary) {
+  await handBack(r.id, { verdict: v, summary, findings: [{ severity: 'blocking', clause: 'a', note: `${summary}-finding` }] });
+  await orch.task.evaluate({ task_id: r.id, worktree: dir });
+}
+
+test('a panel: a refutation stands over a later holds, while its fix is open and after the fix is cancelled; a cancelled fix answers nothing', async () => {
+  const w = await orch.task.create({ spec: 'work g', acceptance: PASS });
+  await doneWork(w);
+  const b = await judge(w, null), a = await judge(w, null);
+  await said(b, 'refuted', 'b-says');
+  await said(a, 'holds', 'a-says');
+  assert.deepStrictEqual((await reviewOf(w.id)).state, 'refuted');
+  const f = await orch.task.fixFromReview({ review_id: b.id });
+  assert.deepStrictEqual(await reviewOf(w.id), { state: 'refuted', review_id: b.id, rounds: 1, rounds_left: 1 }, 'the fix is open: b stands');
+  await orch.task.cancel({ task_id: f.id });
+  assert.deepStrictEqual(await reviewOf(w.id), { state: 'refuted', review_id: b.id, rounds: 1, rounds_left: 1 }, 'cancelled: b stands, and the round is spent');
+});
+
+test('a refutation decided in the same millisecond a fix was made is not answered by it (a fix row from before answers)', () => {
+  const RS = require('../../src/core/review-state.cjs');
+  const done = { state: 'done', results: { evaluated_at: 50, checks: [] } };
+  const refuted = (id, dep, at) => ({ id, state: 'released', acceptance: { verdict: true }, depends_on: [dep], results: { evaluated_at: at, checks: [{ kind: 'verdict', executable: true, passed: false }] } });
+  const w = { id: 'w', state: 'done', run_id: 'r' };
+  const run = (fixBorn) => {
+    const r = refuted('rv', 'w', 100);
+    const f = { id: 'f', state: 'done', repairs: 'w', depends_on: ['w'], run_id: 'r' }; // no answers: a row from before the field
+    const fr = { id: 'fr', ...done, acceptance: { verdict: true }, depends_on: ['f'], results: { evaluated_at: 200, checks: [] } };
+    const ix = { born: new Map([['w', { s: 1, at: 1 }], ['rv', { s: 2, at: 2 }], ['f', { s: 3, at: fixBorn }], ['fr', { s: 4, at: 150 }]]),
+      reviewsOf: new Map([['w', [r]], ['f', [fr]]]), fixesOf: new Map([['w', [f]]]), caps: new Map() };
+    return RS.ofTask(w, ix).state;
+  };
+  assert.strictEqual(run(100), 'refuted', 'a tie is not an answer');
+  assert.strictEqual(run(101), 'holds', 'a fix made after the refutation, whose review held, answers it');
 });
