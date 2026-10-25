@@ -221,6 +221,12 @@ const MIGRATIONS = [
   // ADR 0053 decision 1: the worktree and branch belay made for the task, from a recorded base (JSON text, nullable), carried forward
   // by every later task row; task.evaluate judges from its base_sha.
   'ALTER TABLE task ADD COLUMN worktree TEXT',
+  // ADR 0053 amendment 2: the process that runs an integration (its pid and start time), so a row a crash left `merging` reads stale.
+  'ALTER TABLE integration ADD COLUMN owner_pid INTEGER',
+  'ALTER TABLE integration ADD COLUMN owner_boot INTEGER',
+  // ADR 0054 amendment 1: a review lease's snapshot of the reviewer's tree at grant (JSON text, nullable), carried by every
+  // later row of the lease; lease.release compares it with the tree at the hand-back.
+  'ALTER TABLE lease ADD COLUMN tree TEXT',
   // ADR 0026 amendment 1 (proposed): `holder_dead` on the released row of a lease belay released because its holder died; null otherwise.
   // The worker's first dead row names the leases that death released (JSON array of { lease_id, task_id }), for the death wake.
   'ALTER TABLE lease ADD COLUMN released_reason TEXT',

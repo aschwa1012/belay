@@ -84,3 +84,23 @@ test('Codex: a researcher is refused E_SUBSTRATE naming its list, with nothing w
   // A Codex coder's launch is agent-defaults-codex.test.cjs's; here only the policy's answer for it: no list, no extra pre-approval.
   assert.deepStrictEqual(TP.spawnSurface(null, { substrate: 'codex', agent_type: 'coder' }), { tools: null, allowedTools: null });
 }));
+
+test('a reviewer keeps the six and gets a scratch folder outside its worktree, named in its first message; a coder gets none', async () => {
+  await withMgr(async ({ sb, m }) => {
+    const recv = path.join(sb.data, 'recv.jsonl');
+    const saved = process.env.FAKE_RECV_FILE;
+    process.env.FAKE_RECV_FILE = recv;
+    try {
+      await spawn(m, sb, 'v1', { agent_type: 'reviewer' });
+      await m._waitTurn('v1', 8000);
+    } finally { if (saved === undefined) delete process.env.FAKE_RECV_FILE; else process.env.FAKE_RECV_FILE = saved; }
+    assert.strictEqual(flag(argvOf(sb, 'v1'), '--tools'), 'Read,Edit,Write,Glob,Grep,Bash');
+    const scratch = path.join(sb.data, 'workers', 'v1', 'scratch').split(path.sep).join('/');
+    assert.ok(fs.statSync(scratch).isDirectory(), 'made at spawn');
+    assert.ok(!scratch.toLowerCase().startsWith(String(sb.worktree).toLowerCase() + '/'), 'outside the worktree');
+    const first = JSON.parse(fs.readFileSync(recv, 'utf8').split(String.fromCharCode(10)).filter(Boolean)[0]).text;
+    assert.ok(first.includes(`Your scratch folder, outside the tree under review: ${scratch}.`), first);
+    await spawn(m, sb, 'c9', { agent_type: 'coder' });
+    assert.ok(!fs.existsSync(path.join(sb.data, 'workers', 'c9', 'scratch')), 'a coder has no scratch folder');
+  });
+});

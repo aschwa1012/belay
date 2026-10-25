@@ -91,7 +91,10 @@ test('a conflict stops the merge: aborted, the tree clean, the conflicting task 
   assert.strictEqual(row.conflict.aborted, true);
   assert.strictEqual(row.conflict.tree_clean, true);
   assert.deepStrictEqual(row.merged.map((m) => m.task_id), [a.task.id], 'c was not tried');
-  assert.strictEqual(row.checks, null, 'nothing is evaluated after a conflict');
+  assert.deepStrictEqual(row.not_merged, [{ task_id: b.task.id, reason: 'conflict' }, { task_id: c.task.id, reason: 'not_tried' }]);
+  // What landed before the conflict is checked, and only its own commands run: a's, never b's or c's.
+  assert.strictEqual(row.passed, true);
+  assert.deepStrictEqual(row.checks.map((ch) => ch.task_ids), [[a.task.id]]);
   assert.strictEqual(git(row.worktree, 'status', '--porcelain'), '');
   assert.strictEqual(fs.readFileSync(path.join(row.worktree, 'base/keep.txt'), 'utf8'), 'from a\n');
   assert.strictEqual(git(row.worktree, 'rev-parse', 'HEAD'), row.head_sha);
