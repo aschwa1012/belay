@@ -192,3 +192,52 @@ test('a merge that throws (a branch deleted) still checks what landed and names 
   assert.strictEqual(row.head_sha, git(row.worktree, 'rev-parse', 'HEAD'));
   assert.strictEqual((await integ(b.id)).state, 'failed');
 });
+
+test('a merge into a branch stays true against a newer stop on that branch or another, and a removal keeps its time', async () => {
+  const repo = makeRepo(dir);
+  const a = await doneTask(repo, { 'a.txt': 'a\n' }, [exists('a.txt')]);
+  const c = await doneTask(repo, { 'base/keep.txt': 'from c\n' }, [exists('base/keep.txt')]);
+  const first = await orch.integration.merge({ task_ids: [a.id], into: 'int/s' });
+  await orch.integration.merge({ task_ids: [c.id], into: 'int/s' });
+  // a's branch gains a commit that conflicts with c's change, already on int/s.
+  write(a.worktree.path, 'base/keep.txt', 'from a\n');
+  commit(a.worktree.path, 'a again');
+  const stop = await orch.integration.merge({ task_ids: [a.id], into: 'int/s' });
+  assert.strictEqual(stop.conflict.task_id, a.id);
+  let ia = await integ(a.id);
+  assert.deepStrictEqual([ia.state, ia.into, ia.id], ['merged', 'int/s', first.id], 'its merge into int/s stays true');
+  const other = await orch.integration.merge({ task_ids: [c.id, a.id], into: 'int/s2' });
+  assert.strictEqual(other.conflict.task_id, a.id);
+  ia = await integ(a.id);
+  assert.deepStrictEqual([ia.state, ia.into], ['merged', 'int/s'], 'a merge leads over a newer conflict elsewhere');
+  assert.deepStrictEqual(ia.elsewhere, [{ into: 'int/s2', state: 'conflict' }]);
+  // Removing the tree of int/s2's integration appends a row, which neither moves nor re-times what it says.
+  await op.integration.remove({ id: other.id, force: true });
+  const ic = await integ(c.id);
+  assert.deepStrictEqual([ic.into, ic.id, ic.at], ['int/s2', other.id, other.written_at]);
+});
+
+test('two integrations that overlap are ordered by when each began, not when each ended', async () => {
+  const repo = makeRepo(dir);
+  const marks = `${dir}/marks-overlap`;
+  fs.mkdirSync(marks);
+  // Holds any merge that brings in block.txt until released, then lets it through.
+  const hook = path.join(repo, '.git', 'hooks', 'pre-merge-commit');
+  fs.writeFileSync(hook, `#!/bin/sh\nif [ -f block.txt ]; then\n  echo > "${marks}/entered"\n  while [ ! -f "${marks}/release" ]; do sleep 0.1; done\nfi\n`);
+  fs.chmodSync(hook, 0o755);
+  const t = await doneTask(repo, { 't.txt': 't\n' }, [exists('t.txt')]);
+  const blk = await doneTask(repo, { 'block.txt': 'b\n' }, [exists('block.txt')]);
+  const early = orch.integration.merge({ task_ids: [t.id, blk.id], into: 'int/o1' });
+  const end = Date.now() + 60000;
+  while (!fs.existsSync(`${marks}/entered`)) {
+    if (Date.now() > end) throw new Error('the hook never held the merge');
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  const late = await orch.integration.merge({ task_ids: [t.id], into: 'int/o2' }); // begins second, ends first
+  fs.writeFileSync(`${marks}/release`, '');
+  const first = await early;
+  assert.strictEqual(first.state, 'evaluated');
+  const it = await integ(t.id);
+  assert.deepStrictEqual([it.into, it.id], ['int/o2', late.id], 'the integration that began last leads');
+  assert.deepStrictEqual(it.elsewhere, [{ into: 'int/o1', state: 'merged' }]);
+});
