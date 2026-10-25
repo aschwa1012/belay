@@ -41,7 +41,7 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
   function withScratch(raw, workerId) {
     if (!raw || !raw.review || !dataDir || !workerId) return raw;
     const RS = require('../run/review-scratch.cjs');
-    const scratch = require('../core/scratch-dir.cjs').scratchDir(dataDir, workerId) || RS.ensure(dataDir, workerId, runId);
+    const scratch = require('../core/scratch-dir.cjs').scratchDir(dataDir, runId, workerId) || RS.ensure(dataDir, workerId, runId);
     return { ...raw, scratch: scratch || null };
   }
 

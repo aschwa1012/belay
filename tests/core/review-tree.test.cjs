@@ -406,13 +406,13 @@ test('task_assign of a review: the answer carries the real scratch folder, made 
   const w = await doneWork('cmp', wt);
   const r = await orch.task.create({ spec: 'review via task_assign', depends_on: [w.id], acceptance: { verdict: true } });
   await worker('coder-type-reviewing', wt); // a worker of another type: no scratch folder yet
-  assert.strictEqual(SD.scratchDir(dir, 'coder-type-reviewing'), null);
+  assert.strictEqual(SD.scratchDir(dir, 'test-run', 'coder-type-reviewing'), null);
   let sent = null;
   const fakeManager = { _worker: () => true, message: async ({ text }) => { sent = text; return {}; } };
   const callCore = (dotted, args) => { const [g, n] = dotted.split('.'); return orch[g][n](args); };
   const C = createCompose({ callCore, manager: () => fakeManager, openManager: async () => fakeManager, dataDir: dir, runId: 'test-run' });
   const out = await C.assign({ task_id: r.id, worker_id: 'coder-type-reviewing', prompt: 'review it' });
-  const real = SD.scratchDir(dir, 'coder-type-reviewing');
+  const real = SD.scratchDir(dir, 'test-run', 'coder-type-reviewing');
   assert.ok(real, 'made now');
   assert.strictEqual(out.scratch, real);
   assert.strictEqual(out.review.tree, wt);
