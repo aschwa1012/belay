@@ -13,6 +13,8 @@ const { fail } = require('./errors.cjs');
 const now = () => Date.now();
 // ADR 0058: messages queued during a compaction that a pause, park or relaunch dropped are named in every answer about the worker.
 const dropped = (w) => (w.queuedDropped && w.queuedDropped.length ? { queued_dropped: w.queuedDropped } : {});
+// The previous process's terminal row a relaunch overtook (exit.cjs lifeWrite): its exit facts, on the answers about this life only.
+const priorRow = (w) => (w.droppedRow && w.droppedRow.launch === w.launches ? { previous_row_dropped: w.droppedRow } : {});
 
 function createWait({ workers, get, core = null }) {
   // ADR 0015 §1. Blocks until one of the named workers (or any worker this manager launched)
@@ -61,7 +63,7 @@ function createWait({ workers, get, core = null }) {
           : 'result event on the worker stream',
         turn: w.turns,
         checkpoint_id: (v && v.checkpoint_id) || w.lastCheckpointId, is_error: !!(v && v.is_error),
-        usage: (v && v.usage) || w.lastTurnUsage || null, ...dropped(w), ...require('./release-eval.cjs').evalOf(w), // ADR 0058: evaluated once it lands, evaluating while it runs
+        usage: (v && v.usage) || w.lastTurnUsage || null, ...dropped(w), ...priorRow(w), ...require('./release-eval.cjs').evalOf(w), // ADR 0058: evaluated once it lands, evaluating while it runs
       };
     };
     // ADR 0058 amendment 3 (proposed): every answer names the workers this manager launched that sit idle with no task.

@@ -103,11 +103,18 @@ function settle(w, code, signal, establishedBy, ctx) {
 // A terminal row belongs to the life that ended. Queued behind other writes, it can still be waiting when a restart has launched
 // the next life (`w.launches` moved, manager.cjs launchNow): written then, it would record the new life as dead, and the wake would
 // announce a death that did not happen. It is dropped and named on the record instead. The restart drains the queue before it
-// launches (manager.cjs doRestart), so the previous life's row normally lands first and this is the backstop.
+// launches (manager.cjs doRestart), so the previous life's row normally lands first and this is the backstop. A Codex turn's
+// message launches the next process without draining (one process per turn, message.cjs), so there the drop is the rule: its exit
+// facts are kept as `w.droppedRow` and the next turn's worker_wait answer carries them (wait.cjs).
 function lifeWrite(w, ctx, state, where) {
   const launches = w.launches;
+  const facts = { state, exit_code: w.exitCode, exit_signal: w.exitSignal, established_by: w.deathEstablishedBy };
   w.queue = w.queue.then(() => {
-    if (w.launches !== launches) { w.lastError = { where, state, dropped: 'a relaunch began before this row of the previous life was written' }; return null; }
+    if (w.launches !== launches) {
+      w.lastError = { where, state, dropped: 'a relaunch began before this row of the previous life was written' };
+      w.droppedRow = { ...facts, launch: w.launches };
+      return null;
+    }
     return ctx.writeRow(w, state);
   }).catch((e) => {
     w.lastError = { where, code: e && e.code, message: e && e.message };

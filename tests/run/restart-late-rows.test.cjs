@@ -78,3 +78,20 @@ test('a restart of a worker whose dead row is still queued records that death fi
     cleanup(d);
   }
 });
+
+test('a terminal row a relaunch overtook keeps its exit facts, and the next life\'s worker_wait answer carries them', async () => {
+  let open;
+  const gate = new Promise((r) => { open = r; });
+  const w = { ...record(gate), turns: 1, turnEnded: true, lastCheckpointId: null };
+  EX.settle(w, 3, null, 'exit-event', { writeRow: async () => ({}) });
+  w.launches += 1; // a Codex message launched the next turn's process without draining
+  open();
+  await w.queue;
+  assert.deepStrictEqual(w.droppedRow, { state: 'dead', exit_code: 3, exit_signal: null, established_by: 'exit-event', launch: 2 });
+  w.settled = false; w.child = {}; // the new process, between turns
+  const { createWait } = require('../../src/run/wait.cjs');
+  const ans = await createWait({ workers: new Map([['x', w]]), get: () => w })({ worker_ids: ['x'], timeout_ms: 1000 });
+  assert.deepStrictEqual([ans.event, ans.previous_row_dropped && ans.previous_row_dropped.exit_code], ['turn_end', 3]);
+  w.launches += 1;
+  assert.strictEqual((await createWait({ workers: new Map([['x', w]]), get: () => w })({ worker_ids: ['x'], timeout_ms: 1000 })).previous_row_dropped, undefined, 'only about the life right after it');
+});
