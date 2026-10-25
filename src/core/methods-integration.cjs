@@ -11,10 +11,12 @@ const rows = require('./rows.cjs');
 const G = require('./git.cjs');
 const W = require('./methods-worktree.cjs');
 const { runCommand, DEFAULT_COMMAND_TIMEOUT_MS } = require('./evaluate.cjs');
+const { notMerged } = require('./integration-state.cjs');
 
 const MAX_TASKS = 50;
 
-const view = (r) => (r ? { ...r, created_worktree: r.created_worktree == null ? null : !!r.created_worktree, passed: r.passed == null ? null : !!r.passed } : null);
+// `not_merged` is derived from the row, never stored.
+const view = (r) => (r ? { ...r, created_worktree: r.created_worktree == null ? null : !!r.created_worktree, passed: r.passed == null ? null : !!r.passed, not_merged: notMerged(r) } : null);
 
 function checkArgs(args) {
   const ids = args.task_ids;
@@ -164,11 +166,18 @@ async function merge(E, caller, args) {
         out.merged.push({ task_id: m.task_id, branch: m.branch, sha: m.sha, already: m.already, empty: !!m.empty });
       }
       out.head_sha = (await G.must(tree.path, ['rev-parse', 'HEAD'], 'HEAD of the integration tree')).trim();
-      if (out.state === 'merged' && args.evaluate !== false) {
-        out.checks = await rerun(tasks, tree.path);
+      // What landed is checked even when the step stopped: a conflict or a failed merge keeps the merges before it on `into`,
+      // so their checks run on that tree (the abort left it clean) and the row keeps its stopped state. Only `evaluate: false`
+      // or a tree the abort did not leave clean leaves merged work unchecked, with checks null.
+      const stop = out.conflict || out.error;
+      if (args.evaluate !== false && out.merged.length && (!stop || stop.tree_clean === true)) {
+        const landed = new Set(out.merged.map((m) => m.task_id));
+        out.checks = await rerun(tasks.filter((t) => landed.has(t.id)), tree.path);
         out.passed = out.checks.length > 0 ? out.checks.every((c) => c.passed) : null;
-        if (!out.checks.length) out.error = { message: 'the merged tasks declare no acceptance commands, so nothing was re-run and nothing is proven' };
-        out.state = 'evaluated';
+        if (!stop) {
+          if (!out.checks.length) out.error = { message: 'the merged tasks declare no acceptance commands, so nothing was re-run and nothing is proven' };
+          out.state = 'evaluated';
+        }
       }
     } catch (e) {
       out.state = 'failed';
