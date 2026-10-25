@@ -10,6 +10,7 @@ const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 const { pidAlive } = require('./lock.cjs');
 const G = require('./git.cjs');
+const H = require('./git-hooks.cjs');
 const { isPathId, pathIdMessage } = require('./path-id.cjs');
 
 const DEFAULT_JUNCTIONS = ['node_modules'];
@@ -224,7 +225,7 @@ async function worktreeCreate(E, caller, args) {
     if (await G.branchExists(top, branch)) throw err('E_EXISTS', `branch ${branch} already exists; name another or remove it`, { branch });
     const wtPath = G.fwd(args.path !== undefined ? path.resolve(args.path) : path.join(path.dirname(top), `${path.basename(top)}.worktrees`, dirName));
     if (fs.existsSync(wtPath) && fs.readdirSync(wtPath).length) throw err('E_EXISTS', `${wtPath} exists and is not empty`, { path: wtPath });
-    await G.must(top, ['worktree', 'add', '-b', branch, '--', wtPath, baseSha], `the worktree for task ${task.id} could not be added`);
+    await H.mustAdd(top, ['worktree', 'add', '-b', branch, '--', wtPath, baseSha], `the worktree for task ${task.id} could not be added`, () => rollback(top, { path: wtPath, branch, junctions: [] }));
     const rec = { repo: top, path: wtPath, branch, base_ref: baseRef, base_sha: baseSha, junctions: [], junctions_skipped: [], created_at: Date.now(), created_by: E.writtenBy(caller), removed_at: null };
     try {
       await makeJunctions(top, wtPath, junctions, rec.junctions, rec.junctions_skipped);
