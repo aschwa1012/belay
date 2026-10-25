@@ -39,6 +39,7 @@ test('two tasks in their own worktrees own one file: both are created and assign
   assert.deepStrictEqual(b.overlaps, [{ task_id: a.id, run_id: a.run_id, files: ['lib/registry.js'], worktree: pa }]);
   assert.strictEqual(b.state, 'open');
   const pb = await own(b);
+  assert.deepStrictEqual(ids((await orch.task.assign({ task_id: b.id, check_only: true })).overlaps), [a.id], 'check_only reports it too');
   await worker('w-a', pa);
   await worker('w-b', pb);
   const ga = await orch.task.assign({ task_id: a.id, worker_id: 'w-a' });
@@ -47,6 +48,9 @@ test('two tasks in their own worktrees own one file: both are created and assign
   const gb = await orch.task.assign({ task_id: b.id, worker_id: 'w-b' });
   assert.deepStrictEqual(ids(gb.overlaps), [a.id]);
   assert.strictEqual(gb.task.state, 'assigned');
+  // The operator's take-control works the task in its own tree too, so the other tree's holder does not refuse it.
+  const op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
+  try { assert.strictEqual((await op.lease.takeControl({ task_id: a.id })).new_lease.holder, 'operator'); } finally { await op.close(); }
   assert.ok(!('overlaps' in (await task(['lib/elsewhere.js']))), 'no overlap, no field');
 });
 
