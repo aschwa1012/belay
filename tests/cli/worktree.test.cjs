@@ -96,3 +96,48 @@ test('create, list, merge and remove a task\'s worktree from the CLI', async () 
   assert.strictEqual(gone.code, 0, gone.err);
   assert.ok(!fs.existsSync(int.worktree));
 });
+
+// A done task, its worktree made by the CLI in the repository it runs in, its files committed there.
+async function doneTask(files, commands) {
+  const t = await orch.task.create({ spec: Object.keys(files).join(','), acceptance: { commands } });
+  const w = (await belay(['worktree', 'create', t.id, '--data', data, '--json'], repo)).json.worktree;
+  for (const [rel, text] of Object.entries(files)) write(w.path, rel, text);
+  commit(w.path, t.id);
+  assert.strictEqual((await orch.task.evaluate({ task_id: t.id })).state, 'done');
+  return t;
+}
+
+test('the operator sees unchecked, failed and not merged work: in merge output and in belay tasks', async () => {
+  const keep = { argv: [process.execPath, '-e', "require('fs').accessSync('base/keep.txt')"] };
+  const a = await doneTask({ 'base/keep.txt': 'from a\n' }, [keep]);
+  const b = await doneTask({ 'base/keep.txt': 'from b\n' }, [keep]);
+  const stopped = await belay(['worktree', 'merge', a.id, b.id, '--into', 'int/cli-stop', '--no-evaluate', '--data', data], repo);
+  assert.strictEqual(stopped.code, 1); // a stopped merge exits 1, and its receipt goes to stderr
+  assert.ok(stopped.err.includes(`not merged ${b.id} (conflict)`), stopped.err);
+  assert.match(stopped.err, /merged work unchecked/);
+  const checked = await belay(['worktree', 'merge', a.id, b.id, '--into', 'int/cli-stop2', '--data', data], repo);
+  assert.strictEqual(checked.code, 1);
+  assert.match(checked.err, /pass .*\n {2}passed: true/, 'a stopped integration prints the checks of what landed');
+  assert.doesNotMatch(checked.err, /merged work unchecked/);
+
+  const notBoth = { argv: [process.execPath, '-e', "const f=require('fs');process.exit(f.existsSync('x.txt')&&f.existsSync('y.txt')?1:0)"] };
+  const x = await doneTask({ 'x.txt': 'x\n' }, [notBoth]);
+  const y = await doneTask({ 'y.txt': 'y\n' }, [notBoth]);
+  const failed = await belay(['worktree', 'merge', x.id, y.id, '--into', 'int/cli-fail', '--data', data], repo);
+  assert.strictEqual(failed.code, 1);
+
+  const listed = await belay(['tasks', '--all', '--data', data, '--json'], repo);
+  assert.strictEqual(listed.code, 0, listed.err);
+  const text = (await belay(['tasks', '--all', '--data', data], repo)).out;
+  const line = (id) => text.split('\n').find((l) => l.startsWith(id)) || '';
+  assert.match(line(a.id), /merged:int\/cli-stop2:passed/, 'the newest merge of a leads');
+  assert.match(line(b.id), /conflict:int\/cli-stop2/);
+  assert.match(line(x.id), /merged:int\/cli-fail:failed/);
+  const ia = listed.json.tasks.find((t) => t.id === a.id).integration;
+  assert.deepStrictEqual(ia.elsewhere, [{ into: 'int/cli-stop', state: 'merged' }]);
+  // a's merge into int/cli-stop was never checked: belay tasks says so when that is the newest merge.
+  const solo = await doneTask({ 'solo.txt': 's\n' }, [keep]);
+  await belay(['worktree', 'merge', solo.id, '--into', 'int/cli-solo', '--no-evaluate', '--data', data], repo);
+  const after = (await belay(['tasks', '--all', '--data', data], repo)).out;
+  assert.match(after.split('\n').find((l) => l.startsWith(solo.id)), /merged:int\/cli-solo:unchecked/);
+});
