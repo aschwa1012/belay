@@ -66,7 +66,7 @@ function createWait({ workers, get, core = null }) {
         usage: (v && v.usage) || w.lastTurnUsage || null, ...dropped(w), ...priorRow(w), ...require('./release-eval.cjs').evalOf(w), // ADR 0058: evaluated once it lands, evaluating while it runs
       };
     };
-    // ADR 0058 amendment 3 (proposed): every answer names the workers this manager launched that sit idle with no task.
+    // ADR 0058, the idle-workers amendment (proposed): every answer names the workers this manager launched that sit idle with no task.
     const idleOf = async () => { const v = await require('./idle-remind.cjs').idleRecords(core, workers.values()); return v.length ? { idle_without_task: v } : {}; };
     const done = async (r) => ({ ...r, waited_ms: now() - t0, timed_out: false, watched: ids, ...capNote, ...(await idleOf()) });
     // build step 6e-6 item 4 (carried item 4, wait.cjs:37): once clearParkForStop or checkNotStale

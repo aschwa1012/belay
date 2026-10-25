@@ -1,5 +1,5 @@
 'use strict';
-// idle-remind.cjs — ADR 0058 amendment 3 (proposed): nothing reminded the orchestrator of a worker it left idle with no task, so
+// idle-remind.cjs — ADR 0058, the idle-workers amendment (proposed): nothing reminded the orchestrator of a worker it left idle with no task, so
 // one ran on until someone asked. A worker is `idle_without_task` when its process is live, it is between turns, it has been so
 // for at least the reminder threshold, and it holds no unreleased worker lease. All four are derived (invariant 4): the record's
 // or the row's own state, a pid check, the last turn's or event's age, and the task rows' leases. belay's own jobs are never named.

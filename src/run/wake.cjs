@@ -140,7 +140,7 @@ function deathText(event) {
 
 // No worker output, ever: the id, the turn and (for a death) the exit facts are the whole of it.
 // Both shapes stay comfortably under 400 bytes for any id this codebase generates.
-// ADR 0058 amendment 3 (proposed): a wake that carries `idle_without_task` (idle-remind.cjs) names those workers when there is room.
+// ADR 0058, the idle-workers amendment (proposed): a wake that carries `idle_without_task` (idle-remind.cjs) names those workers when there is room.
 function wakeText(event) {
   return require('./idle-remind.cjs').withIdle(baseText(event), event.idle_without_task, require('./release-eval.cjs').WAKE_TEXT_MAX);
 }

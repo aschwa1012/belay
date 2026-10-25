@@ -427,7 +427,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     };
   }
 
-  const wait = createWait({ workers, get, core }); // core: the leases behind idle_without_task (ADR 0058 amendment 3)
+  const wait = createWait({ workers, get, core }); // core: the leases behind idle_without_task (ADR 0058, the idle-workers amendment)
   // build step 6e-4 (ADR 0023 amendment 2): pause parks the worker; resume relaunches it through doRestart.
   const PZ = createPause({ core, forWorker, doStop, doRestart, runOp: LC.runOp, adapterPid: ctx.adapterPid, writeRow });
   const message = createMessage({ core, ctx, forWorker, refuseIfPaused: PZ.refuseIfPaused, sendStdin, launch, guarded, writeRow });
