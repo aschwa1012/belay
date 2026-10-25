@@ -36,12 +36,12 @@ function reportIn(E, caller, p) {
   }
   const held = RH.holdReported(E, caller, { project: p.project, runId: p.run_id || null, threshold: p.threshold, headSha: p.headSha || null }, loadNote(E, p.note), report);
   // Proof: withheld is the read filter's own rule applied to the hold as it stands now (an active hold of a kind that hides its note).
-  let withheld = false, why = held.skipped === 'breaker' ? verdict.why : `not held (${held.skipped}): nothing to withhold`;
+  let withheld = false, why = `not held (${held.skipped}): nothing to withhold`;
   if (!held.skipped) {
     const hold = require('./memory-facts.cjs').activeHoldOf(E, p.project, p.note);
-    withheld = !!hold && require('./memory-withhold.cjs').HIDING_KINDS.includes(hold.b.kind);
+    withheld = !!hold && hold.b.state === 'held' && require('./memory-withhold.cjs').HIDING_KINDS.includes(hold.b.kind);
     const other = withheld && !verdict.withhold ? (hold.b.reports || []).find((r) => r.withhold !== false) : null;
-    why = !withheld ? 'not withheld: the hold is not of a kind that is withheld' : verdict.withhold ? verdict.why
+    why = !withheld ? (hold && hold.b.state === 'queued' ? verdict.why : 'not withheld: the hold is not of a kind that is withheld') : verdict.withhold ? verdict.why
       : `withheld by another report on the note (${other ? `${other.by}, run ${other.run_id || 'none'}` : 'its hold'}); this report: ${verdict.why}`;
   }
   return { report, reports: next.reported_wrong.length, held, withheld, withheld_why: why, breaker: verdict.breaker };

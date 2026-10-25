@@ -150,18 +150,14 @@ function reportByReview(E, caller, route, v, n) {
       note: n.id, project, by: `worker:${route.reviewer}`, worker_id: route.reviewer, task_id: route.ref, run_id: caller.run_id || n.run_id, why, replaced_by: null, cites: v.cites.slice(0, 5),
       threshold: lv ? lv.notes_match_threshold : require('./memory-levers.cjs').DEFAULTS.notes_match_threshold, headSha: RV.headOf(E, route.ref), refused: 'so this verdict is refused',
     });
-    // Past the run's breaker the report is kept and holds nothing (held means hidden); any other reason a note cannot be held refuses the verdict.
-    if (rep.held.skipped && rep.held.skipped !== 'breaker') throw bad(`note ${n.id} could not be held (${rep.held.skipped}), so the verdict is refused`, { id: n.id, reason: rep.held.skipped });
+    if (rep.held.skipped) throw bad(`note ${n.id} could not be held (${rep.held.skipped}), so the verdict is refused`, { id: n.id, reason: rep.held.skipped });
     const at = Date.now();
-    if (rep.held.row) {
-      RH.bumpHold(E, rep.held.row, (b) => {
-        b.note_verdicts = [...(b.note_verdicts || []), { verdict: v.verdict, by: route.reviewer, ref: route.ref, at, reason: v.reason, cites: v.cites }].slice(-20);
-        return b;
-      });
-    }
-    const what = rep.held.row ? `reported and held (row ${rep.held.row})` : 'reported, not held (the run is past its breaker)';
-    const ev = recordEventSync(E, caller, { kind: 'note_review', ok: true, run_id: caller.run_id || n.run_id, worker_id: route.reviewer, task_id: n.task_id, key, row_ids: [n.id], newest_row_id: n.id, message: `refuted: ${what}; ${v.reason}`.slice(0, 300) });
-    return { id: n.id, verdict: 'refuted', applied: true, reported: { seq: rep.report.seq }, withheld: rep.withheld, withheld_why: rep.withheld_why, held_row: rep.held.row || null, ...(rep.held.skipped ? { not_held: rep.held.skipped } : {}), status: n.status || 'unverified', event_id: ev.id };
+    RH.bumpHold(E, rep.held.row, (b) => {
+      b.note_verdicts = [...(b.note_verdicts || []), { verdict: v.verdict, by: route.reviewer, ref: route.ref, at, reason: v.reason, cites: v.cites }].slice(-20);
+      return b;
+    });
+    const ev = recordEventSync(E, caller, { kind: 'note_review', ok: true, run_id: caller.run_id || n.run_id, worker_id: route.reviewer, task_id: n.task_id, key, row_ids: [n.id], newest_row_id: n.id, message: `refuted: reported and held (row ${rep.held.row}); ${v.reason}`.slice(0, 300) });
+    return { id: n.id, verdict: 'refuted', applied: true, reported: { seq: rep.report.seq }, withheld: rep.withheld, withheld_why: rep.withheld_why, held_row: rep.held.row, status: n.status || 'unverified', event_id: ev.id };
   });
 }
 

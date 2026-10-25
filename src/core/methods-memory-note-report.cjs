@@ -70,7 +70,7 @@ async function reportNote(E, caller, by, args, cites) {
   const { report, held } = out;
   const proof = held.skipped
     ? { state: 'not_held', reason: held.skipped }
-    : { state: held.already_held ? 'already_held' : 'held', hold: { row: held.row, kind: held.kind, rev: held.rev, ...(held.merged ? { merged: held.merged } : {}), ...(held.reclassified ? { reclassified: true } : {}) } };
+    : { state: held.already_held ? 'already_held' : held.state === 'queued' ? 'queued' : 'held', hold: { row: held.row, kind: held.kind, rev: held.rev, ...(held.merged ? { merged: held.merged } : {}), ...(held.reclassified ? { reclassified: true } : {}) } };
   return {
     id: args.note_id, project, reported_by: by, ...proof, withheld: out.withheld, withheld_why: out.withheld_why, ...(out.breaker ? { breaker: out.breaker } : {}),
     report: { by: report.by, seq: report.seq, at: report.at, why: report.why, replaced_by: report.replaced_by },

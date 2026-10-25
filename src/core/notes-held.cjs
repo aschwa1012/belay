@@ -7,7 +7,7 @@
 const HELD_PREFIX = 'held/';
 const ENTRIES_MAX = 200;
 // The same set count() counts: an active harness hold row whose note is still live in the project.
-const ACTIVE = `h.type = 'held' AND h.namespace LIKE 'held/%' AND h.written_by = 'harness' AND json_extract(h.body, '$.state') = 'held'
+const ACTIVE = `h.type = 'held' AND h.namespace LIKE 'held/%' AND h.written_by = 'harness' AND json_extract(h.body, '$.state') IN ('held', 'queued')
   AND EXISTS (SELECT 1 FROM memory_entries n WHERE n.id = json_extract(h.body, '$.note_id') AND n.type = 'note' AND n.namespace = 'project/' || substr(h.namespace, 6))`;
 // The JS twin of AWAITING below, for one held row's body: the archive reviewer answered undecided at the hold's current revision. memory.heldSettle's
 // compare-and-set (`if_awaiting`) and the listing's awaiting_operator both use it.
@@ -29,7 +29,7 @@ function count(store) {
   let rows;
   try {
     rows = store.p(`SELECT h.namespace AS namespace, COUNT(*) AS n, SUM(CASE WHEN json_extract(h.body, '$.kind') = 'unsupported' THEN 1 ELSE 0 END) AS u, MIN(h.created_at) AS oldest, MAX(h.created_at) AS newest FROM memory_entries h
-      WHERE h.type = 'held' AND h.namespace LIKE 'held/%' AND h.written_by = 'harness' AND json_extract(h.body, '$.state') = 'held'
+      WHERE h.type = 'held' AND h.namespace LIKE 'held/%' AND h.written_by = 'harness' AND json_extract(h.body, '$.state') IN ('held', 'queued')
       AND EXISTS (SELECT 1 FROM memory_entries n WHERE n.id = json_extract(h.body, '$.note_id') AND n.type = 'note' AND n.namespace = 'project/' || substr(h.namespace, 6))
       GROUP BY h.namespace`).all();
   } catch { rows = []; }
@@ -100,7 +100,7 @@ function entries(store, { projects = null, awaiting = false } = {}) {
     let waited = 0;
     try { waited = Number(store.p('SELECT COUNT(DISTINCT id) AS n FROM run WHERE project = ? AND COALESCE(started_at, written_at) > ?').get(project, r.marked_at).n); } catch { /* no run table */ }
     out.push({
-      project, note_id: b.note_id, title: r.title, held_row: r.held_row, rev, kind: b.kind, ground: b.ground || null, of: b.of || null,
+      project, note_id: b.note_id, title: r.title, held_row: r.held_row, rev, state: b.state, kind: b.kind, ground: b.ground || null, of: b.of || null,
       reports: Array.isArray(b.reports) ? b.reports.length : (b.report ? 1 : 0), reports_total: Number(b.reports_total) || (Array.isArray(b.reports) ? b.reports.length : (b.report ? 1 : 0)), self_report: !!b.self_report,
       undecided: b.undecided ? { reason: b.undecided.reason, at: b.undecided.at, receipt: b.undecided.receipt } : null, awaiting_operator: waiting, marked_at: r.marked_at, runs_waited: waited,
     });

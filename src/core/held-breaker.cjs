@@ -5,7 +5,7 @@
 //
 // The reporting run comes from the caller (never the request). The operator's own reports (by 'operator') are exempt, and so is the archive review (it
 // holds nothing through a report). A repeat report is decided afresh. `n` is the count of distinct notes this run has reported and held with withholding on in the project, this one
-// included; the report withholds while n <= limit, so the (limit + 1)th note a run disputes is not held (2026-10-25: held means hidden) and stays visible.
+// included; the report withholds while n <= limit, so the (limit + 1)th note a run disputes is queued for the archive review and stays visible (2026-10-25: held means hidden).
 // limit = min(held_breaker_count, max(3, floor(held_breaker_share x live notes))): the share is rounded down and never below three notes (a held_breaker_count under 3 still wins).
 
 const { DEFAULTS } = require('./memory-levers.cjs');
@@ -43,7 +43,7 @@ function decide(E, p) {
   const limit = limitOf(lv, live);
   const withhold = count <= limit;
   const breaker = { count, limit, live };
-  return { withhold, breaker, why: withhold ? `${count} of at most ${limit} notes this run may withhold` : `breaker: this run has disputed ${count} notes, over its limit of ${limit}; the note is not held: the report stays on it, the breaker notice names the run, and workers still see the note` };
+  return { withhold, breaker, why: withhold ? `${count} of at most ${limit} notes this run may withhold` : `breaker: this run has disputed ${count} notes, over its limit of ${limit}; the report is queued for the archive review but hides nothing, and workers still see the note` };
 }
 
 module.exports = { decide, liveNotes, limitOf };
