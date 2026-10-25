@@ -6,7 +6,7 @@ import {
   bandLines, cacheSegs, ctxSegs, isLive, markSeg, money, runLine, TONE, unseenNotices, bar,
   memoryTitleSegs, memoryFallbackSegs, staleLine, type Seg,
 } from './model'
-import { CONFIRM_MS, confirmLine, heldDetail, heldLine, reviewLine, reviewProject, REASON_MAX, runningReview, SETTLE_ACTIONS, settleConfirm, settleEntryView, settledActive, shortId } from './held'
+import { CONFIRM_MS, confirmLine, heldCount, heldDetail, heldLine, reviewLine, reviewProject, REASON_MAX, runningReview, SETTLE_ACTIONS, settleConfirm, settleEntryView, settledActive, shortId } from './held'
 import { cells, cmdLines, wordWrap, wrapHard } from './wrap'
 import { clip, INDENT, Line, Section, shortModel, tp, type Act, type Ctx, type Els } from './base'
 import { Table } from './table'
@@ -195,7 +195,7 @@ function Held({ E, snap, ui, now, act, cols, pend, focused, settled }: Ctx) {
   const carriedAt = list?.carried && notes.length ? list.at : null
   const summary: Seg[] = [
     ...(off ? [{ t: 'off', c: ATTN } as Seg, ...(hd ? [{ t: ' · ', dim: true } as Seg] : [])] : []),
-    ...(hd ? [{ t: hd.count > 0 ? `${hd.count} held` : 'none held', dim: true } as Seg] : []),
+    ...(hd ? [{ t: hd.count > 0 ? heldCount(hd) : 'none held', dim: true } as Seg] : []),
     ...(awaiting > 0 ? [{ t: ' · ', dim: true } as Seg, { t: `${awaiting} await${awaiting === 1 ? 's' : ''} you`, c: ATTN } as Seg] : []),
   ]
   return (

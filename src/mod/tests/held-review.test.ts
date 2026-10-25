@@ -104,6 +104,18 @@ describe('notes held for the archive reviewer', () => {
     expect((await pane($)).text).toMatch(/NOTES  4 held[\s\S]*3 reported wrong, 1 duplicate · oldest waited [0-9]m/)
   })
 
+  test('queued notes (reports past the breaker, hiding nothing) are named apart from the held ones, in the heading and the detail', async ($, on) => {
+    const wd = await boot($, on, { notices: notices({ ...{ ...held(4), queued: 1, by_ground: { reported: 2, same_claim: 1 } }, oldest_at: T0 - 90000 }) })
+    await openPane($, wd)
+    expect((await pane($)).text).toMatch(/NOTES  3 held, 1 queued[\s\S]*2 reported wrong, 1 duplicate; 1 queued past the breaker · oldest waited [0-9]m/)
+  })
+
+  test('only queued notes: the heading and the detail say queued, not held', async ($, on) => {
+    const wd = await boot($, on, { notices: notices({ ...held(2), queued: 2, oldest_at: T0 - 90000 }) })
+    await openPane($, wd)
+    expect((await pane($)).text).toMatch(/NOTES  0 held, 2 queued[\s\S]*2 queued past the breaker · oldest 2 runs/)
+  })
+
   test('the unsupported line says it too', async ($, on) => {
     const wd = await boot($, on, { notices: notices({ ...held(3, { acme: 3 }, 3), oldest_at: T0 - 30000 }) })
     await openPane($, wd)

@@ -21,25 +21,27 @@ function isAwaiting(b) {
 const AWAITING = "(json_extract(h.body, '$.undecided.rev') IS NOT NULL AND json_extract(h.body, '$.undecided.rev') = COALESCE(json_extract(h.body, '$.rev'), 0))";
 const parse = (t) => { try { return t ? JSON.parse(t) : {}; } catch { return {}; } };
 
-// { total, unsupported, by_project: { <project>: n }, unsupported_by_project, oldest_age_runs, oldest_at, newest_at }. `total` counts every queued
-// note; `unsupported` is the part of it that carries no warning (a note a reviewer could not prove or disprove). A hold counts while its row is `held` and its note is
+// { total, held, queued, unsupported, by_project: { <project>: n }, unsupported_by_project, oldest_age_runs, oldest_at, newest_at }. `total` counts every
+// note waiting on the archive review; `held` the part in state held (hidden from workers when its kind hides), `queued` the part in state queued
+// (a report past its run's breaker, hiding nothing; ADR 0047 amendment of 2026-10-25), and `queued_by_project` that part per project; `unsupported` is the part of it that carries no warning (a note a reviewer could not prove or disprove). A hold counts while its row is `held` and its note is
 // still live in the project. A store whose table is absent has none. `oldest_age_runs` is the most runs of one project that started
 // after its oldest hold (what the review's `runs_waited` says).
 function count(store) {
   let rows;
   try {
-    rows = store.p(`SELECT h.namespace AS namespace, COUNT(*) AS n, SUM(CASE WHEN json_extract(h.body, '$.kind') = 'unsupported' THEN 1 ELSE 0 END) AS u, MIN(h.created_at) AS oldest, MAX(h.created_at) AS newest FROM memory_entries h
+    rows = store.p(`SELECT h.namespace AS namespace, COUNT(*) AS n, SUM(CASE WHEN json_extract(h.body, '$.kind') = 'unsupported' THEN 1 ELSE 0 END) AS u, SUM(CASE WHEN json_extract(h.body, '$.state') = 'queued' THEN 1 ELSE 0 END) AS q, MIN(h.created_at) AS oldest, MAX(h.created_at) AS newest FROM memory_entries h
       WHERE h.type = 'held' AND h.namespace LIKE 'held/%' AND h.written_by = 'harness' AND json_extract(h.body, '$.state') IN ('held', 'queued')
       AND EXISTS (SELECT 1 FROM memory_entries n WHERE n.id = json_extract(h.body, '$.note_id') AND n.type = 'note' AND n.namespace = 'project/' || substr(h.namespace, 6))
       GROUP BY h.namespace`).all();
   } catch { rows = []; }
-  const by_project = {}, age_by_project = {}, unsupported_by_project = {};
-  let total = 0, unsupported = 0, oldest = null, newest = null, age = 0;
+  const by_project = {}, age_by_project = {}, unsupported_by_project = {}, queued_by_project = {};
+  let total = 0, queued = 0, unsupported = 0, oldest = null, newest = null, age = 0;
   for (const r of rows) {
     const project = r.namespace.slice(HELD_PREFIX.length);
     by_project[project] = Number(r.n);
     total += Number(r.n);
     if (Number(r.u) > 0) { unsupported_by_project[project] = Number(r.u); unsupported += Number(r.u); }
+    if (Number(r.q) > 0) { queued_by_project[project] = Number(r.q); queued += Number(r.q); }
     if (r.oldest != null && (oldest === null || Number(r.oldest) < oldest)) oldest = Number(r.oldest);
     if (r.newest != null && (newest === null || Number(r.newest) > newest)) newest = Number(r.newest);
     age_by_project[project] = 0;
@@ -47,16 +49,18 @@ function count(store) {
     age = Math.max(age, age_by_project[project]);
   }
   // By ground (a reported hold, a scrubber's duplicate, an unsupported row...) and how many wait on the operator (the archive reviewer answered undecided at their revision).
-  const by_ground = {}, by_ground_by_project = {}, awaiting_by_project = {};
+  // `by_ground` counts the holds in state held and `queued_by_ground` those in state queued, so the two are shown apart.
+  const by_ground = {}, queued_by_ground = {}, by_ground_by_project = {}, awaiting_by_project = {};
   let awaiting_operator = 0;
   try {
-    for (const r of store.p(`SELECT substr(h.namespace, 6) AS p, COALESCE(json_extract(h.body, '$.ground'), 'none') AS g, COUNT(*) AS n, SUM(CASE WHEN ${AWAITING} THEN 1 ELSE 0 END) AS a FROM memory_entries h WHERE ${ACTIVE} GROUP BY h.namespace, g`).all()) {
-      by_ground[r.g] = (by_ground[r.g] || 0) + Number(r.n);
-      (by_ground_by_project[r.p] = by_ground_by_project[r.p] || {})[r.g] = Number(r.n);
+    for (const r of store.p(`SELECT substr(h.namespace, 6) AS p, COALESCE(json_extract(h.body, '$.ground'), 'none') AS g, json_extract(h.body, '$.state') AS s, COUNT(*) AS n, SUM(CASE WHEN ${AWAITING} THEN 1 ELSE 0 END) AS a FROM memory_entries h WHERE ${ACTIVE} GROUP BY h.namespace, g, s`).all()) {
+      const into = r.s === 'queued' ? queued_by_ground : by_ground;
+      into[r.g] = (into[r.g] || 0) + Number(r.n);
+      if (r.s !== 'queued') (by_ground_by_project[r.p] = by_ground_by_project[r.p] || {})[r.g] = Number(r.n);
       if (Number(r.a) > 0) { awaiting_operator += Number(r.a); awaiting_by_project[r.p] = (awaiting_by_project[r.p] || 0) + Number(r.a); }
     }
   } catch { /* no table */ }
-  return { total, unsupported, by_project, unsupported_by_project, by_ground, by_ground_by_project, awaiting_operator, awaiting_by_project, age_by_project, oldest_age_runs: age, oldest_at: oldest, newest_at: newest };
+  return { total, held: total - queued, queued, queued_by_project, unsupported, by_project, unsupported_by_project, by_ground, queued_by_ground, by_ground_by_project, awaiting_operator, awaiting_by_project, age_by_project, oldest_age_runs: age, oldest_at: oldest, newest_at: newest };
 }
 
 // Runs whose reports hit the circuit breaker (ADR 0047 amendment, decision 9): a standing report of the run, on a live note, that does not withhold.
@@ -189,7 +193,8 @@ async function held(E, caller, args = {}) {
     }
     listing = entries(E.store, { projects, awaiting: !!args.awaiting });
   }
-  const scoped = project ? { awaiting_operator: c.awaiting_by_project[project] || 0, by_ground: c.by_ground_by_project[project] || {}, total: c.by_project[project] || 0, unsupported: c.unsupported_by_project[project] || 0, unsupported_by_project: c.unsupported_by_project[project] ? { [project]: c.unsupported_by_project[project] } : {}, by_project: c.by_project[project] ? { [project]: c.by_project[project] } : {}, oldest_age_runs: c.age_by_project[project] || 0, oldest_at: c.oldest_at, newest_at: c.newest_at } : c;
+  const pq = project ? c.queued_by_project[project] || 0 : 0;
+  const scoped = project ? { awaiting_operator: c.awaiting_by_project[project] || 0, by_ground: c.by_ground_by_project[project] || {}, total: c.by_project[project] || 0, held: (c.by_project[project] || 0) - pq, queued: pq, unsupported: c.unsupported_by_project[project] || 0, unsupported_by_project: c.unsupported_by_project[project] ? { [project]: c.unsupported_by_project[project] } : {}, by_project: c.by_project[project] ? { [project]: c.by_project[project] } : {}, oldest_age_runs: c.age_by_project[project] || 0, oldest_at: c.oldest_at, newest_at: c.newest_at } : c;
   // One call (one copy of the store) answers notices: the counts, the unjudged reports and the archive reviews' claims.
   const reviews = args.reviews ? (await require('./review-claim.cjs').reviewState(E, caller, project ? { project } : {})).reviews : undefined;
   return { ...scoped, ...(listing ? listing : {}), ...(reviews ? { reviews } : {}), ...(args.reports ? { breakers: breakers(E.store).filter((b) => !project || b.project === project), unjudged_reports: unjudged(E.store).filter((r) => !project || r.project === project), stranded: stranded(E.store, project) } : {}) };
