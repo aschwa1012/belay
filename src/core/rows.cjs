@@ -103,11 +103,17 @@ function leasesHeldBy(store, workerId, at = Date.now()) {
 }
 
 // The task a worker was working on at `at`: the task of its newest lease (in role worker, in this run) granted at or before
-// `at`, released or not, since a worker usually releases its lease inside the turn it finishes. null if it held none.
+// `at`, released or not, since a worker usually releases its lease inside the turn it finishes. null if it held none, and
+// null when it holds two or more unreleased leases granted by then, as a worker's own memory row's task is (methods-memory.cjs
+// derivedTask): which of them the turn was about is not known.
 function leaseTaskAt(store, workerId, runId, at) {
+  const run = runId == null ? null : runId;
+  const live = `SELECT COUNT(*) AS n FROM lease l JOIN (SELECT id, MAX(seq) AS m FROM lease GROUP BY id) x ON l.seq = x.m
+                WHERE l.holder = ? AND l.holder_role = 'worker' AND l.run_id IS ? AND l.granted_at <= ? AND l.released_at IS NULL`;
+  if (store.p(live).get(workerId, run, at).n > 1) return null;
   const sql = `SELECT task_id FROM lease WHERE holder = ? AND holder_role = 'worker' AND run_id IS ? AND granted_at <= ?
                ORDER BY granted_at DESC, seq DESC LIMIT 1`;
-  const r = store.p(sql).get(workerId, runId == null ? null : runId, at);
+  const r = store.p(sql).get(workerId, run, at);
   return r ? r.task_id : null;
 }
 

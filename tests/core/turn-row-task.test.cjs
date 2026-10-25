@@ -73,3 +73,12 @@ test('a lease of the same worker id in another run is not this run\'s turn task'
   await clockPast(at);
   assert.strictEqual((await turnRow('tw3', 1)).task_id, t.id, 'the newer lease is another run\'s');
 });
+
+test('a worker holding two unreleased leases at the turn\'s end has no turn task, as its own rows have none', async () => {
+  await worker('tw4');
+  const a = await orch.task.create({ spec: 'first of two' });
+  const b = await orch.task.create({ spec: 'second of two' });
+  await orch.task.assign({ task_id: a.id, worker_id: 'tw4' });
+  await orch.task.assign({ task_id: b.id, worker_id: 'tw4' });
+  assert.strictEqual((await turnRow('tw4', 1)).task_id, null);
+});
