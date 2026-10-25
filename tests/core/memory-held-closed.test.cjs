@@ -144,3 +144,13 @@ test('a held row whose body is valid JSON but not an object closes its project',
   const c = await call(orch('hx'), 'memory.held', { project: 'hx' });
   assert.deepStrictEqual([c.malformed, c.closed_projects], [1, ['hx']]);
 });
+
+test('a transaction opened outside Store.tx and rolled back leaves no stale memo either', async () => {
+  const W = core('memory-withhold.cjs');
+  const a = note('hr', 'held, released in a raw transaction');
+  const h = hold('hr', { state: 'held', note_id: a, kind: 'wrong', ground: 'scrubber', rev: 0 });
+  assert.strictEqual(await listed(worker('hr'), 'hr', a), false);
+  store.db.exec('BEGIN IMMEDIATE');
+  try { store.patchBody(h, (b) => { b.state = 'released'; return b; }); assert.strictEqual(W.heldWithheld(E).has(a), false); } finally { store.db.exec('ROLLBACK'); }
+  assert.strictEqual(await listed(worker('hr'), 'hr', a), false, 'no memo was kept inside the transaction');
+});
