@@ -62,13 +62,20 @@ async function amend(E, caller, args) {
 // ADR 0061 section 2: `tree_of` names a task whose recorded tree the new task is worked in, exactly as task.fixFromReview gives
 // a fix the judged task's tree. A removed tree is not given. A conflict fix made this way does not use `repairs`, so it spends no
 // fix round; its own `base` (task.create base) is the base its evaluations default to.
-function treeOf(E, id) {
+// `runTop` is the run's repository (runRepo): a tree in another repository is the operator's to name (task.worktreeCreate's repoOf).
+function treeOf(E, id, runTop) {
   if (typeof id !== 'string' || !id) throw err('E_ARGS', 'task.create tree_of must be the id of a task whose worktree the new task is worked in');
   const src = rows.current(E.store, 'task', id);
   if (!src) throw err('E_NOT_FOUND', `task.create tree_of names ${id}, which has no row in this store`, { tree_of: id });
-  const rec = require('./methods-worktree.cjs').active(src);
+  const rec = require('./methods-worktree.cjs').inheritable(src);
   if (!rec) throw err('E_PRECONDITION', `task ${id} has no worktree${src.worktree && src.worktree.removed_at ? ' (it was removed)' : ''}, so there is no tree to work the new task in`, { tree_of: id });
+  if (!require('./git.cjs').samePath(rec.repo, runTop)) {
+    throw err('E_ROLE', `task.create tree_of: task ${id}'s worktree is in ${rec.repo}, not this run's repository (${runTop}); another repository is the operator's to name`, { tree_of: id, repo: rec.repo, run_repo: runTop });
+  }
   return { ...rec, inherited_from: rec.inherited_from || src.id };
 }
 
-module.exports = { amend, treeOf, checkAcceptance };
+// The run's repository for a tree_of check, read before task.create reads anything else (it runs git).
+const runRepo = (E, caller) => require('./methods-worktree.cjs').repoOf(E, caller, undefined, 'task.create tree_of');
+
+module.exports = { amend, treeOf, runRepo, checkAcceptance };

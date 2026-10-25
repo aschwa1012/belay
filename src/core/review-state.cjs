@@ -12,6 +12,7 @@ const verdictCheck = (t) => (t.results && Array.isArray(t.results.checks) ? t.re
 // What a review's last evaluation said: `holds` (it is done), `refuted` (an executable verdict that failed), else `pending`.
 function verdictOf(r) {
   if (r.state === 'done') return 'holds';
+  if (r.results && r.results.stale) return 'pending'; // ADR 0061: judged under an acceptance since amended, so not a verdict
   const v = verdictCheck(r);
   return v && v.executable === true && v.passed === false ? 'refuted' : 'pending';
 }

@@ -56,6 +56,7 @@ function findCycle(store, id, dependsOn) {
 async function create(E, caller, args, own = {}) { // own: core-internal, task.fixFromReview's inherited worktree and answered reviews; no tool reaches it
   const AM = require('./methods-task-amend.cjs'); // ADR 0061: amend revises an existing task; tree_of gives a new one another's tree
   if (args.amend !== undefined) return AM.amend(E, caller, args);
+  const runTop = args.tree_of != null ? await AM.runRepo(E, caller) : null; // the only await: everything below is one turn
   if (typeof args.spec !== 'string' || !args.spec.trim()) throw err('E_ARGS', 'task.create needs a spec describing the work');
   const filesOwned = args.files_owned == null ? null : args.files_owned;
   if (filesOwned != null && (!Array.isArray(filesOwned) || filesOwned.some(p => typeof p !== 'string'))) {
@@ -74,7 +75,7 @@ async function create(E, caller, args, own = {}) { // own: core-internal, task.f
   const id = args.id || rows.newId();
   if (rows.current(E.store, 'task', id)) throw err('E_ARGS', `a task with id ${id} already exists in this store; choose another id, leave id out for a generated one, or pass amend: true to revise its acceptance`, { task_id: id });
   if (args.tree_of != null && own.worktree) throw err('E_ARGS', 'task.create tree_of: this task already inherits a tree');
-  const tree = args.tree_of != null ? AM.treeOf(E, args.tree_of) : own.worktree;
+  const tree = args.tree_of != null ? AM.treeOf(E, args.tree_of, runTop) : own.worktree;
 
   const deps = dependsOn ? [...new Set(dependsOn)] : null;
   if (deps) {
@@ -110,7 +111,7 @@ async function create(E, caller, args, own = {}) { // own: core-internal, task.f
     // ADR 0046 decision 1: only a task that holds its files (its run is live) can refuse this one. ADR 0059 decision 4: a new
     // task has no tree yet, so it is judged as shared, and only a holder in the shared tree refuses it; one in its own
     // worktree is reported in `overlaps`.
-    const scan = holds.scanOverlaps(E.store, filesOwned, null);
+    const scan = holds.scanOverlaps(E.store, filesOwned, null, undefined, tree ? holds.treeOf(E.store, { worktree: tree }, null) : undefined); // an inherited tree is its own
     const first = scan.find((c) => c.same_tree);
     if (first) throw filesOverlap(first, treeHint(E.store, null));
     overlaps = holds.acrossTrees(scan);
@@ -236,7 +237,7 @@ async function assign(E, caller, args) {
 
 // ADR 0030 decision 2: a review task whose current evaluation carries an executable verdict check that failed.
 function refutedReview(d) {
-  if (!d || !d.acceptance || d.acceptance.verdict !== true) return false;
+  if (!d || !d.acceptance || d.acceptance.verdict !== true || (d.results && d.results.stale)) return false; // stale: judged under an amended acceptance
   const checks = d.results && Array.isArray(d.results.checks) ? d.results.checks : [];
   return checks.some(c => c && c.kind === 'verdict' && c.executable === true && c.passed === false);
 }
