@@ -23,7 +23,7 @@ function runResumeBoundMs(n, T) { return 2 * n * resumeBoundMs(T) + 30000 + 5000
 function usageError(command, message) {
   const usage = command === 'pause'
     ? 'usage: belay pause <worker-id|run-id> [--data <dir>] [--json]\n'
-    : 'usage: belay resume <worker-id|run-id> [--message <text>] [--embedder keyword|off] [--data <dir>] [--json]\n\n  --embedder keyword|off  (run form, a run paused by an embedder failure) choose how the run goes on: keyword ranks by keywords only,\n                          off turns memory off; the choice is also written to the config file as memory.on_embedder_failure\n';
+    : 'usage: belay resume <worker-id|run-id> [--message <text>] [--embedder keyword|off] [--data <dir>] [--json]\n\n  --embedder keyword|off  (run form, a run paused by an embedder failure) choose how the run goes on: keyword ranks by keywords only,\n                          off turns notes off; the choice is also written to the config file as memory.on_embedder_failure\n';
   return { code: 2, text: `belay ${command}: ${message}\n\n${usage}`, json: { error: message } };
 }
 
@@ -104,7 +104,7 @@ function renderRunResumeText(receipt) {
   const lines = [`run ${receipt.run_id} resumed after ${receipt.span_ms} ms`];
   if (receipt.embedder_choice) {
     const s = receipt.embedder_setting;
-    lines.push(`embedder: the run goes on as ${receipt.embedder_choice}${receipt.embedder_choice === 'off' ? ' (memory is off for the run)' : ' (keyword-only ranking)'}; ${s && s.path ? `written to ${s.path} as memory.on_embedder_failure (was ${s.old || 'unset'})` : `NOT written to the config file: ${s && s.error ? s.error.message : 'unknown'}`}`);
+    lines.push(`embedder: the run goes on as ${receipt.embedder_choice}${receipt.embedder_choice === 'off' ? ' (notes are off for the run)' : ' (keyword-only ranking)'}; ${s && s.path ? `written to ${s.path} as memory.on_embedder_failure (was ${s.old || 'unset'})` : `NOT written to the config file: ${s && s.error ? s.error.message : 'unknown'}`}`);
   }
   for (const w of receipt.workers_resumed || []) lines.push(`worker ${w.worker_id}: resumed`);
   for (const w of receipt.left_parked || []) {

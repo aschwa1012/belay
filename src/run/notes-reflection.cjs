@@ -17,7 +17,7 @@ async function reflect(J, { taskId, workerId }, event) {
   s.reflectDone.add(key); // once, whatever happens: a failed send is a receipt, not a retry loop
   const base = { kind: 'reflection', worker_id: workerId, task_id: taskId, key: `task:${taskId}` };
   if (typeof ctx.message !== 'function') {
-    await event(J, { ...base, ok: false, code: 'E_INTERNAL', message: 'the run manager gave the memory jobs no way to message a worker' });
+    await event(J, { ...base, ok: false, code: 'E_INTERNAL', message: 'the run manager gave the note jobs no way to message a worker' });
     return false;
   }
   try {

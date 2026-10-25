@@ -46,7 +46,7 @@ async function prepare(E, caller, args) {
   }
   // ADR 0034 amendment 1: with the run's memory off, a hand-back drops its notes and marks and still releases the lease.
   if (given && E.memoryOff('memory.store') === 'refuse') {
-    return { dropped: { reason: 'memory is off for this run (on_embedder_failure off, after an embedder failure), so the notes and reported_wrong were not written', notes: Array.isArray(args.notes) ? args.notes.length : 0, reported_wrong: Array.isArray(args.reported_wrong) ? args.reported_wrong.length : 0 } };
+    return { dropped: { reason: 'notes are off for this run (on_embedder_failure off, after an embedder failure), so the notes and reported_wrong were not written', notes: Array.isArray(args.notes) ? args.notes.length : 0, reported_wrong: Array.isArray(args.reported_wrong) ? args.reported_wrong.length : 0 } };
   }
   const lv = notesLevers(E, caller);
   if (!lv) {
