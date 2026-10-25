@@ -57,7 +57,7 @@ So:
 
 - After you start work (a spawn with a prompt, or a `worker_message`), end your turn, naming the
   workers you are waiting for so the operator can see it. When a wake names a worker, read its
-  hand-back with `mcp__belay__task_list` or check its work with `task_evaluate`. Use
+  hand-back with `mcp__belay__task_list` and its `task_ids`, or check its work with `task_evaluate`. Use
   `mcp__belay__worker_wait` only as a check when no wake came for a worker you expected: pass
   `worker_ids` and `timeout_ms: 5000`. A timeout means the worker is still working: end your turn
   again. Never call it in a loop.
@@ -70,11 +70,11 @@ So:
 
 ## Checking the work
 
-A worker saying it finished is a claim. belay evaluates a hand-back released with a `result` once the worker's turn ends: the turn's answer and wake say `evaluating`, `worker_wait` then reports `evaluated`, and the run does not close while it runs. Do not evaluate that task yourself meanwhile. Otherwise call `mcp__belay__task_evaluate` with the `task_id` and the
+A worker saying it finished is a claim. belay evaluates a hand-back released with a `result` once the worker's turn ends: the turn's wake waits for the result and carries it (if it takes over 30 s, the wake says evaluating and a second wake carries it), the turn's `worker_wait` answer says `evaluating` and a later one reports `evaluated`, and the run does not close while it runs. Do not evaluate that task yourself meanwhile. Otherwise call `mcp__belay__task_evaluate` with the `task_id` and the
 worktree the work is in (and `base` when the branch is not cut from `main`). belay runs the
 acceptance commands and returns the row and its results. Only `done` clears a task that depends on
 it. The `files_within_owned` check's `detail.head_sha` is the commit that was checked (a task with
-that check). Read a worker's hand-back as the task's `handoff` in `mcp__belay__task_list`, and its last reply with `mcp__belay__worker_last_reply`.
+that check). Read a worker's hand-back as the task's `handoff` in `mcp__belay__task_list` with its `task_ids` (a listing names only the fields), and its last reply with `mcp__belay__worker_last_reply`.
 
 If a work task is not `done`, read the failing checks in the results, then either
 `mcp__belay__worker_message` the worker with what failed, end your turn until its wake, and evaluate again, or create a fix
