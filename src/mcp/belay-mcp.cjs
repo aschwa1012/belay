@@ -104,7 +104,8 @@ let BIND_KEY = null;
 function openCoreOnce() {
   if (!corePromise) {
     corePromise = Promise.resolve()
-      .then(() => coreModule().openCore({ dataDir: opts.dataDir, caller: CALLER, embed: opts.embed, ...(BIND_KEY ? { key: BIND_KEY } : {}) }))
+      // An orchestrator adapter that elects the owner keeps it for the session, so its owner is long-lived (ADR 0053 amendment 2).
+      .then(() => coreModule().openCore({ dataDir: opts.dataDir, caller: CALLER, embed: opts.embed, ...(BIND_KEY ? { key: BIND_KEY } : {}), ...(CALLER.role === 'orchestrator' ? { ownerOpts: { longLived: true } } : {}) }))
       .then((c) => { core = c; return c; })
       .catch((e) => { corePromise = null; throw e; });
   }
