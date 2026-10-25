@@ -61,3 +61,15 @@ test('no lease: task_id null; an explicit task_id wins; a row of another type is
   assert.strictEqual(other.task_id, null, 'only a turn row is filled from the lease');
   assert.strictEqual((await turnRow('tw2', 3)).task_id, t.id);
 });
+
+test('a lease of the same worker id in another run is not this run\'s turn task', async () => {
+  const rows = require('../../src/core/rows.cjs');
+  await worker('tw3');
+  const t = await orch.task.create({ spec: 'this run' });
+  await orch.task.assign({ task_id: t.id, worker_id: 'tw3' });
+  await clockPast(Date.now());
+  const at = Date.now();
+  rows.append(orch.owner.store, 'lease', { id: rows.newId(), task_id: 'other-run-task', run_id: 'other-run', holder: 'tw3', holder_role: 'worker', granted_at: at, expires_at: at + 60000, ttl_ms: 60000, released_at: null, supersedes: null }, 'test', at);
+  await clockPast(at);
+  assert.strictEqual((await turnRow('tw3', 1)).task_id, t.id, 'the newer lease is another run\'s');
+});
