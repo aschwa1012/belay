@@ -245,7 +245,7 @@ test('a run id that differs from a folder only by case is a different run: ensur
   } finally { s.rm(); }
 });
 
-test('ensure: a run folder swapped for a junction after its check makes nothing in the victim, and removes only what this call made', () => {
+test('ensure: a run folder swapped for a junction after its check names no folder and the victim keeps what it had', () => {
   const s = sandbox();
   fs.rmSync(`${s.victim}/rX`, { recursive: true });
   const rd = `${s.data}/scratch/run-L`;
@@ -255,8 +255,29 @@ test('ensure: a run folder swapped for a junction after its check makes nothing 
   SD.runDir = (d, run) => { const r = orig(d, run); if (n++ === 0) { fs.rmdirSync(rd); junction(rd, s.victim); } return r; };
   try {
     assert.strictEqual(RS.ensure(s.data, 'rX', 'run-L'), null, 'no folder is named');
-    assert.ok(!fs.existsSync(`${s.victim}/rX`), 'the empty folder the mkdir made in the victim is taken back');
     assert.strictEqual(kept(s, 'rY'), 'keep me', 'the victim\'s own folders are untouched');
     assert.strictEqual(fs.readFileSync(`${s.victim}/precious.txt`, 'utf8'), 'keep me too');
   } finally { SD.runDir = orig; unlinkAll(s, [rd]); }
+});
+
+test('ensure: a swap between the mkdir and the re-check removes nothing, even an empty folder of the same name that was already in the victim', () => {
+  const s = sandbox();
+  fs.rmSync(`${s.victim}/rX`, { recursive: true });
+  fs.mkdirSync(`${s.victim}/rX`); // empty, pre-existing: the shape an identity read taken after the swap would take for its own
+  const rd = `${s.data}/scratch/run-L`;
+  fs.mkdirSync(rd);
+  const real = fs.mkdirSync;
+  const removed = [];
+  const realRmdir = fs.rmdirSync;
+  fs.mkdirSync = (p, ...a) => {
+    const r = real(p, ...a);
+    if (path.basename(String(p)) === 'rX') { fs.renameSync(rd, `${rd}.real`); junction(rd, s.victim); }
+    return r;
+  };
+  fs.rmdirSync = (p, ...a) => { removed.push(String(p)); return realRmdir(p, ...a); };
+  try {
+    assert.strictEqual(RS.ensure(s.data, 'rX', 'run-L'), null);
+    assert.ok(fs.existsSync(`${s.victim}/rX`), 'the victim\'s empty folder is still there');
+    assert.deepStrictEqual(removed, [], 'no rmdir was made');
+  } finally { fs.mkdirSync = real; fs.rmdirSync = realRmdir; unlinkAll(s, [rd]); }
 });

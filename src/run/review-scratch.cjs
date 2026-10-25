@@ -81,12 +81,8 @@ function ensure(dataDir, workerId, runId) {
       if (!removeChecked(dataDir, checked, id0).removed) return null;
     }
     fs.mkdirSync(dir);
-    const made = SD.identity(dir);
     const checked = SD.scratchDir(dataDir, runId, workerId);
-    if (!checked) { // the run folder was swapped after its check: take back only what this call just made, by identity
-      if (made && SD.sameId(SD.identity(dir), made)) { try { fs.rmdirSync(dir); } catch { /* not empty: left, and no folder is named */ } }
-      return null;
-    }
+    if (!checked) return null; // the run folder was swapped after its check: nothing is removed (the path may now be in another tree), and no folder is named
     return checked;
   } catch { return null; }
 }
