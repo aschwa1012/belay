@@ -245,6 +245,7 @@ function codexLaunchArgv(opts) {
     prompt,
     sandbox = DEFAULT_CODEX_SANDBOX,
     model = null,
+    scratchDir = null,
   } = opts;
   const argv = [
     'exec',
@@ -256,6 +257,7 @@ function codexLaunchArgv(opts) {
     sandbox,
     ...codexMcpArgs(adapterArgs),
   ];
+  if (scratchDir) argv.push('--add-dir', fwd(scratchDir)); // a reviewer's scratch folder lies outside the worktree, the only root workspace-write opens: add that one folder
   if (model) argv.push('-m', model);
   argv.push('--', prompt); // after `--` the text is the prompt: one that starts with `-` is not an option, and `review` or `resume` not a subcommand
   return argv;

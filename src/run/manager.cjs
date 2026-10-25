@@ -140,7 +140,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       args = L.codexResumeArgv({ threadId: resume, adapterArgs: w.adapterArgs, prompt, model: w.model });
     } else {
       args = L.codexLaunchArgv({
-        worktree: w.worktree, adapterArgs: w.adapterArgs, prompt, sandbox: w.sandbox, model: w.model,
+        worktree: w.worktree, adapterArgs: w.adapterArgs, prompt, sandbox: w.sandbox, model: w.model, scratchDir: w.scratchDir,
       });
     }
     const { command, prefixArgs } = L.resolveExe(exeFor(w.substrate));
@@ -236,6 +236,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     try { await MP.spawnLevers(ctx, w); w.nativeMemoryAuth = await NM.authorize(core, runId, w.nativeMemory); } catch (e) { await discardUnstarted(workers, w, dirExisted); throw e; } // ADR 0047: the levers are known before the files are written; with the first-message index off the row keeps no situation lines
     try { writeFilesFor(w); } catch (e) { await discardUnstarted(workers, w, dirExisted); throw e; } // no row, nothing launched: leave no record and no directory, so a corrected retry with the same id is free
     const scratch = agent_type === 'reviewer' ? require('./review-scratch.cjs').ensure(root, id, runId) : null; // ADR 0054 amendment 1: outside every worktree
+    w.scratchDir = scratch; // a Codex launch adds it as a writable root
     if (substrate === 'claude-code') w.instructions = I.snapshotInstructions(w.worktree, w.dir); // spawn only
 
     // The worker row comes first, with no pid yet: `task.assign` refuses a worker with no row, and the
