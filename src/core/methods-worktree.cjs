@@ -245,13 +245,24 @@ async function removeTree(E, rec, args, what) {
   return out;
 }
 
+// A task with a belay worktree is worked and judged there and nowhere else (ADR 0058 amendment): a directory that is not that tree
+// is refused, naming both, because a worker writes where it runs and its directory cannot change once it is running.
+function assertTaskTree(task, dir, what, remedy) {
+  const tree = active(task);
+  if (!tree || !dir || G.samePath(path.resolve(dir), path.resolve(tree.path))) return;
+  throw err('E_PRECONDITION', `task ${task.id} has its own worktree ${tree.path}, but ${what} is ${G.fwd(dir)}; ${remedy}`,
+    { task_id: task.id, task_worktree: tree.path, worktree: G.fwd(dir) });
+}
+
 // task.evaluate's worktree and base (ADR 0053 decision 4): the arguments when given, else the task's recorded worktree and base.
+// A worktree argument that is not the task's recorded tree is refused (assertTaskTree), whoever passes it.
 function evaluateTarget(task, args) {
   const rec = task.worktree && task.worktree.base_sha ? task.worktree : null;
+  if (args.worktree !== undefined) assertTaskTree(task, args.worktree, 'the worktree to evaluate in', 'leave worktree out to evaluate it in its own');
   const worktree = args.worktree !== undefined ? args.worktree : (active(task) || {}).path;
   if (!worktree || typeof worktree !== 'string') throw err('E_ARGS', `task.evaluate needs the worktree the acceptance criteria run in; task ${task.id} has no belay worktree to default to`, { task_id: task.id });
   if (args.base !== undefined) return { worktree, base: args.base, baseSource: 'arg' };
   return rec ? { worktree, base: rec.base_sha, baseSource: 'recorded' } : { worktree, base: undefined, baseSource: undefined };
 }
 
-module.exports = { worktreeCreate, worktreeRemove, removeTree, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, exclusive, active, present, pathName, liveWorkerIn, strayLinks };
+module.exports = { worktreeCreate, worktreeRemove, removeTree, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, assertTaskTree, exclusive, active, present, pathName, liveWorkerIn, strayLinks };
