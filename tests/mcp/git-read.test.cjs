@@ -336,3 +336,14 @@ test('over the wire: the orchestrator adapter runs git_read in its --worktree; a
   assert.ok(denied.isError);
   assert.strictEqual(denied.structuredContent.error, 'E_ROLE');
 });
+
+test('git_read gets the system core.fscache back, as every hardened read does, and never the content keys', async (t) => {
+  const sys = (() => { try { return execFileSync('git', ['config', '--system', '--get', 'core.fscache'], { encoding: 'utf8', windowsHide: true }).trim(); } catch { return null; } })();
+  const { dir } = repo('fscache');
+  try {
+    const r = await G.gitRead({ op: 'status', worktree: dir });
+    const keys = r.argv.filter((x, i, a) => a[i - 1] === '-c' && /^core\.(fscache|autocrlf|eol|safecrlf|symlinks)=/.test(x));
+    if (!sys) return t.skip('the system config sets no core.fscache');
+    assert.deepStrictEqual(keys, [`core.fscache=${sys}`]);
+  } finally { rm(dir); }
+});
