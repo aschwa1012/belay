@@ -65,6 +65,33 @@ test('task.assign does every read that authorises it inside the transaction that
   } finally { store.close(); cleanup(dir); }
 });
 
+// ADR 0054 amendment 1: a review task's grant also snapshots the reviewer's tree. The git read cannot run inside a transaction,
+// so it runs after the grant commits, and the snapshot is attached in a second transaction that reads the lease again. No
+// read or write of the task, the lease or the worker happens outside a transaction.
+test('task.assign of a review task reads nothing outside a transaction, and attaches the tree snapshot after the grant', async () => {
+  const dir = sandbox();
+  const store = recordingStore(path.join(dir, 'memory.db'));
+  try {
+    const E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: null, establishedBy: 'test' });
+    const caller = callerFor('orchestrator');
+    const wt = path.join(dir, 'tree');
+    fs.mkdirSync(wt);
+    await E.handle('worker.write', { caller, id: 'w1', substrate: 'claude-code', pid: process.pid, state: 'running', worktree: wt });
+    await E.handle('worker.write', { caller, id: 'w2', substrate: 'claude-code', pid: process.pid, state: 'running', worktree: wt });
+    const work = await E.handle('task.create', { caller, spec: 'the work', acceptance: { commands: [{ argv: [process.execPath, '-e', 'process.exit(0)'], timeout_ms: 20000 }] } });
+    const a0 = await E.handle('task.assign', { caller, task_id: work.id, worker_id: 'w1' });
+    await E.handle('lease.release', { caller: callerFor('worker', { worker_id: 'w1' }), lease_id: a0.new_lease.id, reason: 'done' });
+    assert.strictEqual((await E.handle('task.evaluate', { caller, task_id: work.id, worktree: wt })).state, 'done');
+    const review = await E.handle('task.create', { caller, spec: 'the review', depends_on: [work.id], acceptance: { verdict: true } });
+
+    store.seen.length = 0;
+    const a = await E.handle('task.assign', { caller, task_id: review.id, worker_id: 'w2' });
+    assert.ok(a.new_lease.tree, 'the snapshot is attached to the lease the answer names');
+    const touched = store.seen.filter(s => TOUCHES.test(s.sql));
+    assert.deepStrictEqual(touched.filter(s => !s.in_tx), [], 'the snapshot step reads and writes the lease inside its own transaction');
+  } finally { store.close(); cleanup(dir); }
+});
+
 test('a refused assign commits nothing at all', async () => {
   const dir = sandbox();
   const store = recordingStore(path.join(dir, 'memory.db'));
