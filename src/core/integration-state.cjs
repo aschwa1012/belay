@@ -38,7 +38,7 @@ function newestFirst(store) {
 // What one integration says about one task, or null when it says nothing (the task was named but not tried).
 function factOf(r, id) {
   const base = { id: r.id, into: r.into_branch, at: r.written_at };
-  const f = r.forced && Array.isArray(r.forced.task_ids) && r.forced.task_ids.includes(id) ? { forced: r.forced.reason, failing: r.forced.failing } : {}; // merged past checks that failed or never passed
+  const f = r.forced && Array.isArray(r.forced.task_ids) && r.forced.task_ids.includes(id) ? { forced: (r.forced.reasons && r.forced.reasons[id]) || r.forced.reason, failing: r.forced.failing } : {}; // merged past checks that failed or never passed
   if ((r.merged || []).some((m) => m.task_id === id)) return { state: 'merged', ...base, head: r.head_sha, passed: r.passed == null ? null : !!r.passed, ...f };
   if (r.state === 'merging') return { state: 'merging', ...base, stale: stale(r) };
   if (r.state === 'abandoned') return { state: 'abandoned', ...base };

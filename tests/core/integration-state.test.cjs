@@ -199,14 +199,14 @@ test('a merge into a branch stays true against a newer stop on that branch or an
   const repo = makeRepo(dir);
   const a = await doneTask(repo, { 'a.txt': 'a\n' }, [exists('a.txt')]);
   const c = await doneTask(repo, { 'base/keep.txt': 'from c\n' }, [exists('base/keep.txt')]);
-  const first = await orch.integration.merge({ task_ids: [a.id], into: 'int/s' });
-  await orch.integration.merge({ task_ids: [c.id], into: 'int/s' });
+  await orch.integration.merge({ task_ids: [a.id], into: 'int/s' });
+  const second = await orch.integration.merge({ task_ids: [c.id], into: 'int/s' }); // keeps a on the branch, so it names a too
   git(a.worktree.path, 'checkout', '-q', '--detach');
   git(repo, 'branch', '-q', '-D', a.worktree.branch);
   const stop = await orch.integration.merge({ task_ids: [a.id], into: 'int/s' });
   assert.deepStrictEqual([stop.state, stop.error.task_id], ['failed', a.id]);
   let ia = await integ(a.id);
-  assert.deepStrictEqual([ia.state, ia.into, ia.id], ['merged', 'int/s', first.id], 'its merge into int/s stays true');
+  assert.deepStrictEqual([ia.state, ia.into, ia.id], ['merged', 'int/s', second.id], 'its merge into int/s stays true, at the newest row that names it on the branch');
   const other = await orch.integration.merge({ task_ids: [c.id, a.id], into: 'int/s2' });
   assert.deepStrictEqual([other.state, other.error.task_id], ['failed', a.id]);
   ia = await integ(a.id);
