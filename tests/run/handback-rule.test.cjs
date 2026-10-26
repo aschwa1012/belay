@@ -105,3 +105,17 @@ test('the manager\'s reviewTail hands the brief of a task assigned to a live wor
     assert.strictEqual(await m.reviewTail({ worker_id: 'nobody', task_id: 'r2' }), '', 'a worker this manager does not hold has no brief');
   } finally { NR.reviewTail = real; await m.shutdown(); cleanup(sb.data); }
 });
+
+test('a worker spawned in a run with the permission_prompt lever on is launched with the permission channel; off, or an explicit false, it is not', async () => {
+  for (const [lever, arg, want] of [[true, undefined, true], [false, undefined, false], [true, false, false], [false, true, true]]) {
+    const sb = sandbox();
+    const m = createRunManager({ core: createFakeCore(), dataDir: sb.data, runId: 'run-pp', permissionPrompt: lever, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
+    try {
+      await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'p', worker_id: 'pp1', ...(arg === undefined ? {} : { permission_prompt: arg }) });
+      const w = m._worker('pp1');
+      assert.strictEqual(w.permissionPrompt, want, `lever ${lever}, argument ${arg}`);
+      const mcp = JSON.parse(fs.readFileSync(path.join(sb.data, 'workers', 'pp1', 'mcp.json'), 'utf8'));
+      assert.strictEqual(mcp.mcpServers.belay.args.includes('--permit'), want, 'the worker adapter is launched with --permit exactly then');
+    } finally { await m.shutdown(); cleanup(sb.data); }
+  }
+});

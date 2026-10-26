@@ -246,11 +246,18 @@ function leaseRelease(row, args) {
   const notes = Array.isArray(row.notes) ? row.notes : null;
   const out = { id: row.id, state: row.state, lease_id: (args && args.lease_id) || (row.handoff && row.handoff.lease_id) || null };
   if (notes) {
-    out.notes_written = notes.filter((n) => n && n.state === 'stored').length;
+    const stored = notes.filter((n) => n && n.state === 'stored');
+    out.notes_written = stored.length;
+    if (stored.length) out.notes_stored = stored.map((n) => ({ index: n.index, id: n.id })); // proof of what was written
+    const dup = notes.filter((n) => n && n.state === 'duplicate');
+    if (dup.length) out.notes_duplicate = dup; // not written, and the row each one repeats
     const pending = notes.filter((n) => n && n.state === 'pending');
     if (pending.length) { out.pending = row.pending !== undefined ? row.pending : pending.length; out.pending_notes = pending; }
     if (row.next !== undefined) out.next = row.next;
   }
+  // A report that was withheld (and why) or skipped (not a live note) is a fact the worker needs; a plain mark is not.
+  const wrong = Array.isArray(row.reported_wrong) ? row.reported_wrong.filter((w) => w && (w.skipped || w.withheld_why)) : [];
+  if (wrong.length) out.reported_wrong = wrong;
   if (row.memory_ids && typeof row.memory_ids === 'object') out.memory_ids = { recorded: row.memory_ids.recorded };
   if (row.handoff && Array.isArray(row.handoff.memory_ids_missing) && row.handoff.memory_ids_missing.length) out.memory_ids_missing = row.handoff.memory_ids_missing;
   for (const k of ['warning', 'notes_dropped', 'lease_released_by', 'note']) if (row[k] !== undefined && row[k] !== null) out[k] = row[k];
