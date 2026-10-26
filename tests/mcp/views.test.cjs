@@ -167,23 +167,52 @@ test('task_worktree answers the task as task_create does, its tree with path, br
   assert.deepStrictEqual([removed.worktree.removed_at, removed.removal], [9, { junctions_unlinked: ['x'], branch_deleted: false }]);
 });
 
-test('one review\'s detail gives the hand-back once: what its verdict check carries verbatim is named, not repeated', () => {
+test('one review detail shows the verdict beside its summary and findings once: the check names what the hand-back carries', () => {
   const findings = [{ severity: 'blocking', where: 'lib/a.js:3', what: 'x'.repeat(300) }];
   const tree = { changed: false, changed_paths: [] };
   const h = { by: 'r1', at: 6, lease_id: 'l9', tree, result: { verdict: 'refuted', summary: 'the retry loses the last error', findings, extra: 'kept' } };
   const v = { kind: 'verdict', executable: true, passed: false, ms: 1, detail: { verdict: 'refuted', summary: 'the retry loses the last error', findings, judged_by: 'r1', lease_id: 'l9', tree, tree_changed: false } };
   const review = row({ acceptance: { verdict: true }, handoff: h, results: { executable: true, passed: false, checks: [v] } });
   const d = V.taskList({ tasks: [review] }, { task_ids: ['t1'] }).tasks[0];
-  assert.deepStrictEqual(d.handoff.in_verdict_check, ['summary', 'findings', 'tree']);
-  assert.deepStrictEqual(d.handoff.result, { verdict: 'refuted', extra: 'kept' });
-  assert.deepStrictEqual(d.results.checks[0].detail, v.detail, 'the verdict check, which the prompt reads, keeps all of it');
+  assert.deepStrictEqual(d.handoff.result, h.result, 'the hand-back keeps the verdict, the summary and the findings together');
+  assert.deepStrictEqual(d.handoff.in_verdict_check, ['tree']);
+  const { in_handoff, ...rest } = d.results.checks[0].detail;
+  assert.deepStrictEqual(in_handoff, ['summary', 'findings']);
+  assert.deepStrictEqual(rest, { verdict: 'refuted', judged_by: 'r1', lease_id: 'l9', tree, tree_changed: false }, 'the check keeps its facts, with the tree record the prompt reads');
   assert.strictEqual(JSON.stringify(d).split('x'.repeat(300)).length - 1, 1, 'the findings appear once');
-  // A hand-back that differs from the check (another lease, or findings the check cut) keeps everything.
+  assert.strictEqual(v.detail.findings, findings, 'the core row is not changed');
+  // A hand-back that differs from the check (another lease, or findings the check cut) keeps everything in both.
   const other = V.taskList({ tasks: [row({ handoff: { ...h, lease_id: 'l8' }, results: { checks: [v] } })] }, { task_ids: ['t1'] }).tasks[0];
   assert.deepStrictEqual(other.handoff, { ...h, lease_id: 'l8' });
-  const cut = V.taskEvaluate(row({ handoff: h, results: { checks: [{ ...v, detail: { ...v.detail, findings: [] } }] } }));
+  assert.deepStrictEqual(other.results.checks[0].detail, v.detail);
+  const cutCheck = { ...v, detail: { ...v.detail, findings: [] } };
+  const cut = V.taskEvaluate(row({ handoff: h, results: { checks: [cutCheck] } }));
   assert.deepStrictEqual(cut.handoff.result.findings, findings, 'findings that differ stay in the hand-back');
-  assert.deepStrictEqual(cut.handoff.in_verdict_check, ['summary', 'tree']);
+  assert.deepStrictEqual(cut.results.checks[0].detail.findings, [], 'and in the check');
+  assert.deepStrictEqual(cut.results.checks[0].detail.in_handoff, ['summary']);
+});
+
+test('a listing row omits nulls, empty lists and holds_files false; the detail of a task keeps them', () => {
+  const bare = row({ depends_on: [], repairs: null, answers: null, base: null, holds_files: false, holder_pid_alive: null, last_checkpoint_id: null, last_checkpoint_at: null,
+    lease: null, integration: null, review: null, results: { evaluated_at: 7, executable: true, passed: true, trigger: 'release', checks: [owned(true)] } });
+  const s = V.compactTask(bare);
+  for (const k of ['depends_on', 'repairs', 'answers', 'base', 'holds_files', 'holder_pid_alive', 'last_checkpoint_id', 'last_checkpoint_at', 'lease', 'integration', 'review']) assert.ok(!(k in s), `${k} is left out`);
+  assert.ok(!('failing' in s.results), 'an empty failing list is left out');
+  assert.deepStrictEqual([s.id, s.state, s.future_field, s.results.passed, s.results.checks], ['t1', 'released', 'kept', true, 1]);
+  const kept = V.compactTask(row({ holds_files: true, depends_on: ['t0'], results: { executable: true, passed: false, checks: [check(false)] } }));
+  assert.deepStrictEqual([kept.holds_files, kept.depends_on, kept.results.failing], [true, ['t0'], ['command npm test exit 1']]);
+  const full = V.compactTask(bare, { detail: true });
+  for (const k of ['depends_on', 'repairs', 'holds_files', 'lease']) assert.ok(k in full, `detail keeps ${k}`);
+});
+
+test('a three-task listing costs fewer bytes than the same rows padded with their empty fields', () => {
+  const task = (id, over = {}) => row({ id, depends_on: null, repairs: null, answers: null, base: null, holds_files: false, holder_pid_alive: null, last_checkpoint_id: null, last_checkpoint_at: null,
+    lease: null, integration: null, review: null, state: 'done', results: { evaluated_at: 7, executable: true, passed: true, trigger: 'release', checks: [check(true), owned(true)] }, ...over });
+  const rows = [task('t1'), task('t2'), task('t3', { depends_on: ['t1'], holds_files: true })];
+  const lean = V.taskList({ tasks: rows }).tasks.map((t) => JSON.stringify(t).length);
+  const padded = V.taskList({ tasks: rows }).tasks.map((t) => JSON.stringify({ depends_on: null, repairs: null, answers: null, base: null, holds_files: false, holder_pid_alive: null, last_checkpoint_id: null, last_checkpoint_at: null, lease: null, integration: null, ...t, results: { ...t.results, failing: [] } }).length);
+  const sum = (a) => a.reduce((x, y) => x + y, 0);
+  assert.ok(sum(lean) + 100 < sum(padded), `${sum(lean)} bytes against ${sum(padded)} with the empty fields`);
 });
 
 test('git_read leaves out belay\'s argv; view debug keeps it', async () => {

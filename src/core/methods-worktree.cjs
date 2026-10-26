@@ -344,7 +344,7 @@ function baseArg(v) {
 // A worktree argument that is not the task's recorded tree is refused (assertTaskTree), whoever passes it.
 function evaluateTarget(task, args) {
   const rec = task.worktree && task.worktree.base_sha ? task.worktree : null;
-  if (args.worktree !== undefined) assertTaskTree(task, args.worktree, 'the worktree to evaluate in', 'leave worktree out to evaluate it in its own');
+  if (args.worktree !== undefined) assertTaskTree(task, args.worktree, 'the worktree to evaluate in', 'leave worktree out to evaluate it in its own (the merged head is checked by integrate, whose checks run on its tree; task_evaluate judges a task against its own base, so another tree is not that check)');
   const worktree = args.worktree !== undefined ? args.worktree : (active(task) || {}).path;
   if (!worktree || typeof worktree !== 'string') throw err('E_ARGS', `task.evaluate needs the worktree the acceptance criteria run in; task ${task.id} has no belay worktree to default to: pass worktree, or give the task its own with task_worktree`, { task_id: task.id });
   if (args.base !== undefined) return { worktree, base: args.base, baseSource: 'arg' };

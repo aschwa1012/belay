@@ -109,8 +109,7 @@ test('interactive prompt: apart from three named ranges the twin equals orchestr
   // and the compaction retry gets a bounded wait.
   const WAKE_PHRASES = [
     ['wait on its id, and evaluate again', 'end your turn until its wake, and evaluate again'],
-    ["When the reviewer's turn ends (wait on its id), call", "When the reviewer's wake comes (its turn ended), call"],
-    ['with its result, wait on its id, then', 'with its result, end your turn until its wake, then'],
+    ['with its result, wait on its id; that', 'with its result, end your turn until its wake; that'],
   ];
   const mid = H.slice(63, 101).map((l) => WAKE_PHRASES.reduce((s, [a, b]) => s.replace(a, b), l));
   assert.strictEqual(mid.filter((l, i) => l !== H[63 + i]).length, WAKE_PHRASES.length, 'each phrase replaced once');

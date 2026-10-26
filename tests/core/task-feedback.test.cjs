@@ -62,7 +62,8 @@ test('fix_from_review: the fix depends on and repairs the judged task, takes its
   assert.deepStrictEqual([f.state, f.depends_on, f.repairs, f.from_review], ['open', [w.id], w.id, r.id]);
   assert.deepStrictEqual([f.acceptance, f.files_owned], [PASS, ['src/retry.cjs']]);
   assert.match(f.spec, /the retry never fires/);
-  assert.match(f.spec, /"clause":"a"/);
+  assert.ok(f.spec.split('\n').includes('- [blocking, clause a] retry'), 'a finding is a plain line, not JSON');
+  assert.doesNotMatch(f.spec, /"clause"/);
   // A fix of a fix depends on the fix the second review judged, and repairs the original work: one cap counts both.
   const r2 = await refutedReviewOf(f, 'c-2', 'j-2');
   const f2 = await orch.task.fixFromReview({ review_id: r2.id, spec: 'try again' });
