@@ -102,6 +102,21 @@ function leasesHeldBy(store, workerId, at = Date.now()) {
   return store.p(sql).all(workerId, at).map(r => parseRow('lease', r));
 }
 
+// The task each worker is on now, derived on the read side from the leases (the worker row's task_id is set at spawn only, so a
+// reused worker would show its first task). One pass over each task's current lease row: a worker's newest lease that is unreleased
+// and unexpired wins, else its newest lease by seq, released or expired; a worker with none is absent and the caller falls back to
+// the row's task_id. `workerId` limits the scan to one holder.
+function workerTasks(store, workerId = null, at = Date.now()) {
+  const sql = `SELECT l.holder, l.task_id, l.released_at, l.expires_at FROM lease l JOIN (SELECT task_id, MAX(seq) AS m FROM lease GROUP BY task_id) x ON l.seq = x.m
+               WHERE l.holder_role = 'worker' AND l.holder ${workerId == null ? 'IS NOT NULL' : '= ?'} ORDER BY l.seq`;
+  const live = new Map(), newest = new Map();
+  for (const r of workerId == null ? store.p(sql).all() : store.p(sql).all(workerId)) {
+    newest.set(r.holder, r.task_id);
+    if (r.released_at == null && (r.expires_at == null || r.expires_at >= at)) live.set(r.holder, r.task_id);
+  }
+  return new Map([...newest, ...live]);
+}
+
 // The task a worker was working on at `at`: the task of its newest lease (in role worker, in this run) granted at or before
 // `at`, released or not, since a worker usually releases its lease inside the turn it finishes. null if it held none, and
 // null when it holds two or more unreleased leases granted by then, as a worker's own memory row's task is (methods-memory.cjs
@@ -129,5 +144,5 @@ const newId = () => crypto.randomUUID();
 
 module.exports = {
   COLUMNS, JSON_COLUMNS, bind, parseRow, append, current, currentAll, history,
-  currentLeaseForTask, leasesHeldBy, leaseTaskAt, lastCheckpoint, newId,
+  currentLeaseForTask, workerTasks, leasesHeldBy, leaseTaskAt, lastCheckpoint, newId,
 };

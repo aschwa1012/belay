@@ -63,7 +63,7 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
     // judged); a reviewer never commits in the tree it judges, so a review task's rule says nothing about committing.
     const t = (out && out.task) || {};
     const commits = !!(t.worktree && t.worktree.path && !t.worktree.removed_at) && !(t.acceptance && t.acceptance.verdict === true);
-    const text = `${head}\n\n${body}${out && out.scratch ? require('../run/review-scratch.cjs').firstLine(out.scratch) : ''}\n\nWhen you are finished, ${commits ? 'commit your work in your worktree, then ' : ''}call lease_release with lease_id ${lease} and a result object (branch, head, tests, findings).`;
+    const text = `${head}\n\n${body}${out && out.scratch ? require('../run/review-scratch.cjs').firstLine(out.scratch) : ''}${out && out.review ? require('../run/review-scratch.cjs').treeLine(out.review) : ''}\n\nWhen you are finished, ${commits ? 'commit your work in your worktree, then ' : ''}call lease_release with lease_id ${lease} and a result object (branch, head, tests, findings).`;
     try {
       const m = await r.message({ worker_id: coreArgs.worker_id, text });
       return { ...out, delivered: { ...m, sent: !m.queued, queued: !!m.queued } }; // queued: held for a compaction, written when it ends

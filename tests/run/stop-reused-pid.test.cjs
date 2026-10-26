@@ -80,7 +80,7 @@ for (const [name, identity] of [
     assert.equal(cur.run_id, 'run-old', 'a terminal row is never moved into the current run');
     assert.equal(r.killed, false);
     assert.ok(r.ms_to_exit >= 0, `ms_to_exit is never negative (got ${r.ms_to_exit})`);
-    assert.equal(m.list().workers.find((x) => x.id === id).pid_alive, false, 'list never reads the reused pid as the worker');
+    assert.equal((await m.list()).workers.find((x) => x.id === id).pid_alive, false, 'list never reads the reused pid as the worker');
   });
 }
 

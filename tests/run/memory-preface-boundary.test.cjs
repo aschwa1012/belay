@@ -258,7 +258,7 @@ test('a process that adopts the worker after a lost boundary write still shows e
     await m.stop({ worker_id: 'w1', mode: 'kill', timeout_ms: 8000 });
     const second = mgr(m._sb, core);
     try {
-      assert.deepStrictEqual(second.list().workers, [], 'the second process starts knowing no worker');
+      assert.deepStrictEqual((await second.list()).workers, [], 'the second process starts knowing no worker');
       assert.strictEqual((await second.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 })).branch, 'resume');
       assert.strictEqual(second._worker('w1').adopted !== undefined, true, 'the worker was adopted, not carried over');
       assert.deepStrictEqual(indexCalls(core).pop().args.exclude_ids, [], 'the adopter excludes nothing: this conversation never received what the old one saw');
