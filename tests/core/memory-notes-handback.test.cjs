@@ -257,7 +257,7 @@ test('a second call on a released lease adds notes and leaves the release as it 
   assert.strictEqual(again.notes[0].state, 'stored');
   assert.deepStrictEqual([rows(), taskRows()], [a, b], 'no new lease or task row');
   assert.deepStrictEqual(again.handoff, out.handoff);
-  await assert.rejects(call('lease.release', w, { lease_id: l.lease_id, result: { summary: 'second' }, notes: [] }), e => e.code === 'E_ARGS');
+  await assert.rejects(call('lease.release', w, { lease_id: l.lease_id, result: { summary: 'second' }, notes: [] }), e => e.code === 'E_ARGS' && /The orchestrator can take a new hand-back by assigning this task to you again \(task_assign\)/.test(e.message)); // the remedy is the orchestrator's: the error says so (wording audit)
 });
 
 test('an operator release cannot carry notes', async () => {

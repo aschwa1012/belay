@@ -39,7 +39,7 @@ test('a turn_end held for its evaluation goes out once, with the result, when th
   const out = await h.poll();
   assert.strictEqual(out.length, 1);
   assert.strictEqual(out[0].event, 'turn_end');
-  assert.match(wakeText(out[0]), /^belay: worker w1 finished turn 1\. task t1 evaluated at release: passed, done\. What it did/);
+  assert.match(wakeText(out[0]), /^belay: worker w1 finished turn 1\. task t1 evaluated at release: passed, done\.$/);
   assert.strictEqual(out[0].evaluating, undefined);
   h.s.t += 60000;
   assert.deepStrictEqual(await h.poll(), [], 'no second wake for the same release');
