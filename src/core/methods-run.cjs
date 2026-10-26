@@ -399,7 +399,8 @@ async function getWorker(E, caller, args) {
   const streamPath = streamPathOf(E.dataDir, args.worker_id);
   let streamBytes = null;
   try { streamBytes = fs.statSync(streamPath).size; } catch { streamBytes = null; }
-  return { ...decorate(w), stream_path: streamPath, stream_bytes: streamBytes };
+  const task = rows.workerTasks(E.store).get(w.id);
+  return { ...decorate(w), ...(task ? { task_id: task } : {}), stream_path: streamPath, stream_bytes: streamBytes };
 }
 
 async function listWorkers(E, caller, args) {
@@ -407,7 +408,8 @@ async function listWorkers(E, caller, args) {
   // build step 6b: a forgotten row is hidden from the default listing (it superseded a worker the
   // operator asked to forget), and shown only when the caller names 'forgotten' explicitly.
   const all = rows.currentAll(E.store, 'worker').filter(w => (states ? states.has(w.state) : w.state !== 'forgotten'));
-  return { workers: all.map(decorate) };
+  const tasks = rows.workerTasks(E.store); // the worker row's task_id is spawn-only: the current task is derived from the leases
+  return { workers: all.map(w => ({ ...decorate(w), ...(tasks.has(w.id) ? { task_id: tasks.get(w.id) } : {}) })) };
 }
 
 // build step 6b, design item 2: supersedes a dead worker's rows as 'forgotten', never a DELETE (api.md
