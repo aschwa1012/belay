@@ -160,6 +160,18 @@ test('a review task is refused with or without force, and nothing is written', a
   assert.strictEqual((await integrations()).length, before);
 });
 
+test('an idle coder in the tree does not block a forced merge of its not-done task', async () => {
+  const repo = makeRepo(dir);
+  const t = await work(repo, { 'i.txt': 'i' }, [exists('later.txt')]);
+  assert.notStrictEqual(t.state, 'done');
+  const tree = t.worktree.path;
+  await orch.worker.write({ id: `wk-${t.id}`, substrate: 'claude-code', pid: process.pid, state: 'idle', worktree: tree });
+  const row = await orch.integration.merge({ task_ids: [t.id], force: true, reason: 'later.txt comes with another task' });
+  assert.deepStrictEqual(row.merged.map((m) => m.task_id), [t.id]);
+  assert.deepStrictEqual(row.forced.task_ids, [t.id]);
+  await orch.worker.write({ id: `wk-${t.id}`, state: 'stopped', exited_at: Date.now() });
+});
+
 test('a task with a worker in its tree, or an unreleased lease, is not merged even forced', async () => {
   const repo = makeRepo(dir);
   const t = await work(repo, { 'w.txt': 'w\n' }, [exists('w.txt')], { evaluate: false });

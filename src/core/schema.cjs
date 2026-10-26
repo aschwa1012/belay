@@ -230,7 +230,7 @@ const MIGRATIONS = [
   // ADR 0053 amendment 2: the process that runs an integration (its pid and start time), so a row a crash left `merging` reads stale.
   'ALTER TABLE integration ADD COLUMN owner_pid INTEGER',
   'ALTER TABLE integration ADD COLUMN owner_boot INTEGER',
-  // ADR 0061, forced merge: who forced a merge past failing or missing checks, when, why, and what it forced (JSON text, nullable).
+  // ADR 0061, forced merge: who forced a merge of tasks not done, when, why, and what it forced (JSON text, nullable).
   'ALTER TABLE integration ADD COLUMN forced TEXT',
   // ADR 0054 amendment 1: a review lease's snapshot of the reviewer's tree at grant (JSON text, nullable), carried by every
   // later row of the lease; lease.release compares it with the tree at the hand-back.

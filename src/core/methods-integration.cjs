@@ -94,7 +94,7 @@ function checkArgs(args) {
   if (args.evaluate !== undefined && typeof args.evaluate !== 'boolean') throw err('E_ARGS', 'integration.merge: evaluate must be a boolean', { field: 'evaluate' });
   if (args.force !== undefined && typeof args.force !== 'boolean') throw err('E_ARGS', 'integration.merge: force must be a boolean', { field: 'force' });
   if (args.force === true && (typeof args.reason !== 'string' || !args.reason.trim() || args.reason.length > MAX_REASON)) {
-    throw err('E_ARGS', `integration.merge: force needs a reason, 1 to ${MAX_REASON} characters, saying why the failing or missing checks are expected`, { field: 'reason' });
+    throw err('E_ARGS', `integration.merge: force needs a reason, 1 to ${MAX_REASON} characters, saying why merging a task that is not done is expected`, { field: 'reason' });
   }
   for (const k of ['into', 'base']) if (args[k] !== undefined && (typeof args[k] !== 'string' || !args[k])) throw err('E_ARGS', `integration.merge: ${k} must be a non-empty string`, { field: k });
 }
@@ -114,10 +114,11 @@ async function readTasks(E, ids, force) {
   if (notDone.length) throw err('E_PRECONDITION', `only done tasks are merged; not done: ${notDone.map((x) => `${x.task_id} (${x.state})`).join(', ')}. Leave them out, or merge once task_evaluate makes them done`, { not_done: notDone });
   const noBranch = tasks.filter((t) => !t.worktree || !t.worktree.branch).map((t) => t.id);
   if (noBranch.length) throw err('E_PRECONDITION', `these tasks have no belay branch to merge: ${noBranch.join(', ')}. integrate merges only tasks worked in their own tree (task_worktree before the coder starts); leave these out, their work is already where it was committed`, { no_branch: noBranch });
-  // Even forced, a task still being worked is not merged: its head moves. A worker live or parked in its tree, or a lease not released.
+  // Even forced, a task still being worked is not merged: its head moves. A worker running a turn or parked in its tree, or a lease not released.
   for (const t of tasks.filter((x) => x.state !== 'done')) {
     const a = W.active(t);
-    const w = a && W.liveWorkerIn(E, a.path);
+    // An idle worker (its turn handed back) does not block: that is the state after a failed evaluation. Running, starting and parked do.
+    const w = a && rows.currentAll(E.store, 'worker').find((x) => x.worktree && W.under(x.worktree, a.path) && (x.state === 'paused' || (['running', 'starting'].includes(x.state) && x.pid != null && pidAlive(x.pid)))) || null;
     if (w) throw err('E_WORKER_LIVE', `worker ${w.id} (${w.state}) works in task ${t.id}'s tree ${a.path}; a task still being worked is not merged, even forced`, { task_id: t.id, worker_id: w.id, state: w.state });
     const l = rows.currentLeaseForTask(E.store, t.id);
     if (l && l.released_at == null) throw err('E_PRECONDITION', `task ${t.id} is leased to ${l.holder} and not released; a task still being worked is not merged, even forced`, { task_id: t.id, lease_id: l.id, holder: l.holder });
