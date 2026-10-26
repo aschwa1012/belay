@@ -332,3 +332,44 @@ test('a merged entry whose commit does not contain a task\'s judged change never
   const fi = await integrationOf(f.id);
   assert.deepStrictEqual([fi.state, fi.via], ['merged', w.id]);
 });
+
+test('the generated spec is plain text: the ask once with its task id, the summary, and one line per finding, no escaped JSON', async () => {
+  const SPEC = 'make the cache expire';
+  const w = await orch.task.create({ spec: SPEC, acceptance: PASS });
+  await handBack(w.id, 'plain-coder', dir, { branch: 'b', head: 'h' });
+  await orch.task.evaluate({ task_id: w.id, worktree: dir });
+  const r = await orch.task.create({ spec: 'review it', depends_on: [w.id], acceptance: { verdict: true } });
+  const findings = [
+    { file: 'src/cache.cjs', line: 12, severity: 'blocking', clause: 'a', what: 'expiry "never" fires' },
+    { severity: 'should-fix', note: 'rename x' },
+    'a bare string finding',
+    { severity: 'note', extra: { deep: 1 } },
+  ];
+  await handBack(r.id, 'judge-plain', dir, { verdict: 'refuted', summary: 'the expiry is dead code', findings });
+  await orch.task.evaluate({ task_id: r.id, worktree: dir });
+  const f = await orch.task.fixFromReview({ review_id: r.id });
+  const lines = f.spec.split('\n');
+  assert.strictEqual(lines[0], `Fix the blocking findings of review ${r.id} on task ${w.id} (original ask, task ${w.id}: ${SPEC}).`);
+  assert.strictEqual(lines[1], 'The reviewer said: the expiry is dead code');
+  assert.strictEqual(lines[2], 'Findings:');
+  assert.deepStrictEqual(lines.slice(3), [
+    '- src/cache.cjs:12 [blocking, clause a] expiry "never" fires',
+    '- [should-fix] rename x',
+    '- a bare string finding',
+    '- [note] extra: {"deep":1}',
+  ]);
+  assert.ok(!f.spec.includes('\\"') && !f.spec.includes('[{'), 'no escaped JSON in the spec');
+  assert.strictEqual(count(f.spec, SPEC), 1);
+});
+
+test('a long original ask is cut to a brief, and the findings share the byte cap', async () => {
+  const w = await orch.task.create({ spec: `ask ${'long '.repeat(200)}END`, acceptance: PASS });
+  await handBack(w.id, 'plain-coder', dir, { branch: 'b', head: 'h' });
+  await orch.task.evaluate({ task_id: w.id, worktree: dir });
+  const r = await orch.task.create({ spec: 'review it', depends_on: [w.id], acceptance: { verdict: true } });
+  await handBack(r.id, 'judge-long', dir, { verdict: 'refuted', summary: 's', findings: Array.from({ length: 40 }, (_, i) => ({ severity: 'blocking', file: `f${i}.js`, what: 'w'.repeat(50) })) });
+  await orch.task.evaluate({ task_id: r.id, worktree: dir });
+  const f = await orch.task.fixFromReview({ review_id: r.id });
+  assert.ok(!f.spec.includes('END') && f.spec.includes('...'), 'the ask is a brief');
+  assert.ok(Buffer.byteLength(f.spec) < 2000 + 600, `${Buffer.byteLength(f.spec)} bytes`);
+});

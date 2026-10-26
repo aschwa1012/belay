@@ -15,22 +15,44 @@ function verdictDetail(review) {
   return v && v.detail ? v.detail : {};
 }
 
+// A finding as one plain line: where (file:line), its severity and clause, then what. The core does not fix a finding's shape, so
+// the text is the first of the usual fields a reviewer writes (note, what, text, ...) and a finding with none is its other fields
+// as key: value pairs. A finding that is a bare string is that string.
+const WHAT = ['note', 'what', 'text', 'description', 'detail', 'message', 'summary', 'issue', 'finding'];
+const WHERE = ['file', 'path', 'location'];
+const scalar = (v) => (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') && String(v).trim() !== '';
+function findingLine(f) {
+  if (typeof f === 'string') return f.trim();
+  if (!f || typeof f !== 'object' || Array.isArray(f)) return JSON.stringify(f);
+  const used = new Set();
+  const pick = (keys) => { const k = keys.find((x) => scalar(f[x])); if (k) used.add(k); return k ? String(f[k]).trim() : ''; };
+  const file = pick(WHERE);
+  const line = scalar(f.line) ? (used.add('line'), String(f.line)) : '';
+  const tag = ['severity', 'clause'].filter((k) => scalar(f[k])).map((k) => (used.add(k), k === 'clause' ? `clause ${f[k]}` : String(f[k]))).join(', ');
+  let what = pick(WHAT);
+  if (!what) what = Object.keys(f).filter((k) => !used.has(k) && f[k] != null).map((k) => `${k}: ${scalar(f[k]) ? f[k] : JSON.stringify(f[k])}`).join('; ');
+  return [file ? `${file}${line ? `:${line}` : ''}` : '', tag ? `[${tag}]` : '', what].filter(Boolean).join(' ');
+}
+
+const ASK_MAX = 300; // characters of the original ask quoted: the fix names the task, the coder in its tree has the whole of it
+const brief = (t) => (typeof t === 'string' && t.length > ASK_MAX ? `${t.slice(0, ASK_MAX - 3)}...` : t);
+
 // The work as first specified (the original task's spec, never a fix's, which would quote an earlier round) and the findings of
 // the refutations this fix answers, all of them current (ADR 0060 decision 5): a fix of a fix carries no earlier round's spec or
-// findings, and the spec does not grow with the rounds. The findings share one byte cap.
+// findings, and the spec does not grow with the rounds. Plain text: the ask in a line naming its task, then each review's summary
+// and its findings one to a line. The findings share one byte cap.
 function defaultSpec(refs, judged, original) {
   const room = Math.floor(SPEC_FINDINGS_MAX / refs.length);
   const said = refs.map((r) => {
     const detail = verdictDetail(r);
-    let findings = '';
-    if (Array.isArray(detail.findings) && detail.findings.length) {
-      findings = JSON.stringify(detail.findings);
-      if (Buffer.byteLength(findings, 'utf8') > room) findings = `${Buffer.from(findings, 'utf8').subarray(0, room).toString('utf8')}...`;
-    }
-    return `${refs.length > 1 ? `Review ${r.id} said` : 'The reviewer said'}: ${detail.summary || '(no summary)'}${findings ? ` Findings: ${findings}` : ''}`;
+    const NL = '\n';
+    let lines = Array.isArray(detail.findings) ? detail.findings.map(findingLine).filter(Boolean).map((l) => `- ${l}`).join(NL) : '';
+    if (Buffer.byteLength(lines, 'utf8') > room) lines = `${Buffer.from(lines, 'utf8').subarray(0, room).toString('utf8')}...`;
+    return `${refs.length > 1 ? `Review ${r.id} said` : 'The reviewer said'}: ${detail.summary || '(no summary)'}${lines ? `${NL}Findings:${NL}${lines}` : ''}`;
   });
-  const work = original.id === judged.id ? `(${original.spec})` : `(a fix of task ${original.id}: ${original.spec})`;
-  return `Fix the blocking findings of review ${refs.map((r) => r.id).join(', ')} on task ${judged.id} ${work}. ${said.join(' ')}`;
+  const ask = `original ask, task ${original.id}: ${brief(original.spec)}`;
+  const work = original.id === judged.id ? `(${ask})` : `(a fix of task ${original.id}; ${ask})`;
+  return `Fix the blocking findings of review ${refs.map((r) => r.id).join(', ')} on task ${judged.id} ${work}.\n${said.join('\n')}`;
 }
 
 // ADR 0060 decision 5: the refutations of the judged task that no fix answers yet (a fix not cancelled whose answers name it),
