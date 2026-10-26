@@ -15,6 +15,7 @@ const H = require('./git-hooks.cjs');
 const { runCommand, outputTails, DEFAULT_COMMAND_TIMEOUT_MS } = require('./evaluate.cjs');
 const { notMerged, stale } = require('./integration-state.cjs');
 const { pidAlive } = require('./lock.cjs');
+const INC = require('./integration-incremental.cjs');
 const ID = require('./proc-identity.cjs');
 
 const MAX_TASKS = 50;
@@ -24,7 +25,9 @@ const MAX_REASON = 300;
 const leftOut = (r) => { const l = (r.merged || []).filter((m) => m && m.left_out).map((m) => ({ task_id: m.task_id, ...m.left_out })); return l.length ? l : null; };
 // `hook_changed_tree` (a hook changed what a merge wrote, git-hooks.cjs) is the first merged entry that carries one.
 const hookChanged = (r) => { const m = (r.merged || []).find((x) => x && x.hook_changed_tree); return m ? { hook_changed_tree: m.hook_changed_tree } : {}; };
-const view = (r) => (r ? { ...r, ...hookChanged(r), created_worktree: r.created_worktree == null ? null : !!r.created_worktree, passed: r.passed == null ? null : !!r.passed, not_merged: notMerged(r), stale: stale(r), left_out: leftOut(r) } : null);
+// `reused_checks` names each check that was not run because it passed at this very head (integration-incremental.cjs).
+const reusedOf = (r) => { const l = (r.checks || []).filter((c) => c && c.reused_from).map((c) => ({ argv: c.argv, reused_from: c.reused_from })); return l.length ? { reused_checks: l } : {}; };
+const view = (r) => (r ? { ...r, ...hookChanged(r), ...reusedOf(r), created_worktree: r.created_worktree == null ? null : !!r.created_worktree, passed: r.passed == null ? null : !!r.passed, not_merged: notMerged(r), stale: stale(r), left_out: leftOut(r) } : null);
 
 // The process that wrote a `merging` row is gone, or is this one. A row this process wrote is not in flight, since the caller
 // holds the in-process lock every merge into that branch holds. Another live pid may be an owner that was stopped without
@@ -267,7 +270,7 @@ function cwdFor(c, task, tree) {
   return G.fwd(c.cwd);
 }
 
-async function rerun(tasks, tree) {
+async function rerun(tasks, tree, reuse, head) {
   const byKey = new Map();
   for (const t of tasks) {
     for (const c of (t.acceptance && Array.isArray(t.acceptance.commands) ? t.acceptance.commands : [])) {
@@ -280,6 +283,8 @@ async function rerun(tasks, tree) {
   }
   const checks = [];
   for (const c of byKey.values()) {
+    const from = reuse(c.argv, c.cwd);
+    if (from) { checks.push({ argv: c.argv, cwd: c.cwd, task_ids: c.task_ids, reused_from: from, head_sha: head, passed: true }); continue; }
     const r = await runCommand(c.argv, c.cwd, c.timeout_ms, { keep: 'ends' }); // the ends and the failure section, as task.evaluate keeps
     checks.push({
       argv: c.argv, cwd: c.cwd, task_ids: c.task_ids, executable: r.executable, exit_code: r.exit_code, ms: r.ms, timed_out: r.timed_out,
@@ -302,14 +307,15 @@ async function merge(E, caller, args) {
     const tree = await integrationTree(E, repo, into, args, tasks, abandoned);
     const by = E.writtenBy(caller);
     const baseSha = (await G.must(tree.path, ['rev-parse', 'HEAD'], 'HEAD of the integration tree')).trim();
+    const carried = await INC.carriedOf(E, tree.path, repo, into, new Set(args.task_ids)); // tasks an earlier call left on the branch
     const base = {
       id: rows.newId(), run_id: caller.run_id, repo, into_branch: into, worktree: tree.path, created_worktree: tree.created,
-      base_sha: baseSha, head_sha: baseSha, task_ids: args.task_ids, merged: [], conflict: null, error: null, checks: null, passed: null, junctions: tree.junctions, removed_at: null,
+      base_sha: baseSha, head_sha: baseSha, task_ids: [...carried.entries.map((c) => c.task_id), ...args.task_ids], merged: [], conflict: null, error: null, checks: null, passed: null, junctions: tree.junctions, removed_at: null,
       owner_pid: process.pid, owner_boot: await W.ownBoot(E), // who runs it, so a row a crash leaves `merging` reads stale
     };
     E.store.tx(() => { E.assertRunOpen(caller, 'integration.merge'); rows.append(E.store, 'integration', { ...base, state: 'merging' }, by, Date.now()); });
     E.noteWrite();
-    const out = { ...base, state: 'merged' };
+    const out = { ...base, state: 'merged', merged: [...carried.entries] };
     let trying = null; // the task whose merge is under way, so a throw (a branch deleted meanwhile) is blamed on it
     try {
       for (const t of tasks) {
@@ -324,7 +330,7 @@ async function merge(E, caller, args) {
           }
           break;
         }
-        out.merged.push({ task_id: m.task_id, branch: m.branch, sha: m.sha, already: m.already, empty: !!m.empty, judged_by: m.judged_by, covers: m.covers, ...(m.left_out ? { left_out: m.left_out } : {}), ...(m.hook_changed_tree ? { hook_changed_tree: m.hook_changed_tree } : {}) });
+        out.merged.push({ task_id: m.task_id, branch: m.branch, sha: m.sha, already: m.already, by_this_call: !m.already, empty: !!m.empty, judged_by: m.judged_by, covers: m.covers, ...(m.left_out ? { left_out: m.left_out } : {}), ...(m.hook_changed_tree ? { hook_changed_tree: m.hook_changed_tree } : {}) });
         trying = null;
         const left = m.hook_changed_tree && m.hook_changed_tree.uncommitted_files;
         if (left) { // the merge went in, but its tree holds edits the commit does not: nothing more is merged or checked on it
@@ -347,7 +353,9 @@ async function merge(E, caller, args) {
     if (args.evaluate !== false && out.merged.length && (!stop || stop.tree_clean === true)) {
       const landed = new Set(out.merged.map((m) => m.task_id));
       try {
-        out.checks = await rerun(tasks.filter((t) => landed.has(t.id)), tree.path);
+        const older = carried.entries.map((c) => rows.current(E.store, 'task', c.task_id)).filter(Boolean);
+        const reuse = INC.reuseFor(E, repo, into, out.head_sha, (await G.dirtyPaths(tree.path)).length === 0);
+        out.checks = await rerun([...tasks, ...older].filter((t) => landed.has(t.id)), tree.path, reuse, out.head_sha);
         out.passed = out.checks.length > 0 ? out.checks.every((c) => c.passed) : null;
         if (!stop) {
           if (!out.checks.length) out.error = { message: 'the merged tasks declare no acceptance commands, so nothing was re-run and nothing is proven' };
@@ -361,14 +369,9 @@ async function merge(E, caller, args) {
     // The merges have happened whatever the run did meanwhile, so the row that records them is written without a second run check.
     // A forced merge says so on its row, and only for what force let in: the tasks merged that were not done, with the failing
     // checks among theirs. A done task is never marked, and with none merged that were not done the row is as without force.
-    if (force) {
-      const unsettled = out.merged.filter((m) => tasks.find((t) => t.id === m.task_id).state !== 'done').map((m) => m.task_id);
-      if (unsettled.length) {
-        const name = (c) => [path.basename(c.argv[0]), ...c.argv.slice(1, 4)].join(' ').slice(0, 80);
-        const failing = (out.checks || []).filter((c) => !c.passed && c.task_ids.some((id) => unsettled.includes(id))).map(name);
-        out.forced = { by, at: Date.now(), reason: args.reason.trim(), task_ids: unsettled, failing };
-      }
-    }
+    const name = (c) => [path.basename(c.argv[0]), ...c.argv.slice(1, 4)].join(' ').slice(0, 80);
+    const forced = INC.forcedOf({ by, args, tasks, merged: out.merged, checks: out.checks, carried, name });
+    if (forced) out.forced = forced;
     const row = E.store.tx(() => rows.append(E.store, 'integration', out, by, Date.now()));
     E.noteWrite();
     return view(row);
