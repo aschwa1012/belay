@@ -143,3 +143,58 @@ test('a store nothing writes to is copied once', async () => {
     assert.equal(r.copies, 1);
   } finally { done(st); }
 });
+
+// F1: a write inside one mtime tick leaves the same size and mtime. The test pins the mtime of the database
+// and its sidecars to a fixed instant before the copy and again after the writer, which is what a same-tick
+// write looks like to a stat.
+const pin = (st, t) => { for (const suf of ['', '-wal', '-shm']) { try { fs.utimesSync(st.p + suf, t, t); } catch { /* absent or mapped */ } } };
+const sizes = st => ['', '-wal'].map(s => { try { return fs.statSync(st.p + s).size; } catch { return -1; } }).join(',');
+
+test('a WAL restart and an in-place checkpoint that keep every size and mtime are still retried', async () => {
+  const st = makeStore();
+  try {
+    st.d.exec('PRAGMA wal_checkpoint(PASSIVE)'); // the database is current and the WAL is full-size and backfilled
+    const t = new Date(Date.now() - 60000); pin(st, t);
+    const probe = 'SELECT gen FROM t WHERE id IN (0, 1500, 3999) ORDER BY id';
+    const w = withWriterAt({ file: 'db', chunk: 1 }, () => {
+      const one = st.d.prepare('UPDATE t SET gen=? WHERE id=?');
+      const before = sizes(st);
+      st.d.exec('BEGIN'); one.run(101, 0); one.run(101, 3999); st.d.exec('COMMIT');
+      st.d.exec('PRAGMA wal_checkpoint(PASSIVE)');
+      st.d.exec('BEGIN'); one.run(102, 1500); st.d.exec('COMMIT'); // restarts the WAL again
+      pin(st, t);
+      assert.equal(sizes(st), before, 'the writer kept every size');
+    });
+    const copies = []; const inner = hooks.copy; hooks.copy = (src, dst) => { inner(src, dst); if (src === st.p) copies.push(src); };
+    let got;
+    try {
+      got = await withCopy(st.dir, async dbPath => { const c = new DatabaseSync(dbPath); try { return JSON.stringify(c.prepare(probe).all().map(r => r.gen)); } finally { c.close(); } });
+    } finally { w.restore(); }
+    assert.equal(w.fired(), 1);
+    assert.equal(copies.length, 2, 'the copy was taken again');
+    assert.equal(got, JSON.stringify(st.d.prepare(probe).all().map(r => r.gen)));
+  } finally { done(st); }
+});
+
+test('with no WAL the copy waits out the mtime tick after the last write, and a same-tick write is retried', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-copy-tick-'));
+  const p = path.join(dir, 'memory.db');
+  const d = new DatabaseSync(p);
+  try {
+    d.exec('PRAGMA journal_mode=DELETE; CREATE TABLE t(id INTEGER PRIMARY KEY, gen INTEGER, payload BLOB)');
+    d.exec('BEGIN'); const ins = d.prepare('INSERT INTO t VALUES(?,?,?)');
+    for (let i = 0; i < 3; i++) ins.run(i, 0, Buffer.alloc(1 << 20, 7));
+    d.exec('COMMIT');
+    assert.equal(fs.existsSync(p + '-wal'), false);
+    const opened = [];
+    const w = withWriterAt({ file: 'db', chunk: 1 }, () => d.exec('UPDATE t SET gen=gen+1'));
+    const inner = hooks.copy; hooks.copy = (src, dst) => { inner(src, dst); if (src === p) opened.push(Date.now() - fs.statSync(p).mtimeMs); };
+    let gens;
+    try {
+      gens = await withCopy(dir, async dbPath => { const c = new DatabaseSync(dbPath); try { return c.prepare('SELECT DISTINCT gen FROM t').all().map(r => r.gen).join(','); } finally { c.close(); } });
+    } finally { w.restore(); }
+    assert.ok(opened[0] >= 19, `the first attempt began ${opened[0]} ms after the last write`);
+    assert.equal(opened.length, 2, 'the in-place write during the copy forced a second copy');
+    assert.equal(gens, '1');
+  } finally { try { d.close(); } catch { /* closed */ } fs.rmSync(dir, { recursive: true, force: true }); }
+});

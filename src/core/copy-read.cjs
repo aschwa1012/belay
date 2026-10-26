@@ -98,8 +98,30 @@ function makeTmpDir(parent, fsx = fs, sleep = sleepSync) {
 // files are read before and after the copy, and a copy over a change is discarded and taken again. Any
 // change retries, an appended -wal included: the exemption is not proven.
 const COPY_TRIES = 3;
+// A file's mtime has a granularity (about 1.5 ms on NTFS, up to 15.6 ms on power saver), so two writes inside one
+// tick leave the same size and mtime. Two things cover that. The -wal header carries the checkpoint sequence and
+// both salts (bytes 12 to 24), which every WAL restart changes, so a restart-and-rewrite that kept every size is
+// seen. With no -wal at all the database file is written in place and there is no such header: the copy waits
+// until the files' newest mtime is a full window behind the clock, so any write during the copy lands on a
+// later tick and changes the stamp.
+const TICK_WINDOW_MS = 20;
 const stamp = p => { try { const st = fs.statSync(p, { bigint: true }); return `${st.size}:${st.mtimeNs}:${st.dev}:${st.ino}`; } catch { return 'absent'; } };
-const stampAll = src => SUFFIXES.map(suf => stamp(src + suf)).join('|');
+function walHeader(p) {
+  let fd;
+  try {
+    fd = fs.openSync(p, 'r');
+    const b = Buffer.alloc(12);
+    return b.toString('hex', 0, fs.readSync(fd, b, 0, 12, 12));
+  } catch { return 'absent'; } finally { if (fd !== undefined) try { fs.closeSync(fd); } catch { /* read-only handle */ } }
+}
+const stampAll = src => SUFFIXES.map(suf => stamp(src + suf)).join('|') + '|' + walHeader(src + '-wal');
+function settleTick(src) {
+  if (fs.existsSync(src + '-wal')) return;
+  let newest = 0;
+  for (const suf of SUFFIXES) { try { newest = Math.max(newest, fs.statSync(src + suf).mtimeMs); } catch { /* absent */ } }
+  const wait = Math.ceil(newest + TICK_WINDOW_MS - Date.now());
+  if (wait > 0) sleepSync(Math.min(wait, 2 * TICK_WINDOW_MS));
+}
 
 async function withCopy(dataDir, fn) {
   const src = path.join(dataDir, 'memory.db');
@@ -112,6 +134,7 @@ async function withCopy(dataDir, fn) {
   try {
     let present = false, settled = false;
     for (let attempt = 1; attempt <= COPY_TRIES && !settled; attempt++) {
+      settleTick(src);
       const before = stampAll(src);
       present = false;
       for (const suf of SUFFIXES) {
