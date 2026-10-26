@@ -56,8 +56,8 @@ const lf = (s) => s.replace(/\r\n/g, '\n');
 const AMD6_LINES = {
   // ADR 0053: the worktree rule of thumb (orchestrator.md 116, the interactive twin 120 once its pause paragraph is taken out).
   // ADR 0054 amendment 1: the Review standard's first two lines (orchestrator.md 107-108, the twin 111-112) say the tree is read-only, and step 5 (orchestrator.md 91, the twin 95) calls a flagged review suspect. Step 3 (orchestrator.md 85-86, the twin 89-90) names `review.tree` and the answer's `scratch`.
-  'orchestrator.md': [4, 8, 9, 10, 23, 24, 32, 33, 35, 36, 37, 39, 60, 61, 67, 71, 75, 81, 82, 83, 85, 86, 91, 97, 98, 99, 100, 101, 107, 108, 116, 118],
-  'orchestrator-interactive.md': [6, 10, 11, 12, 25, 26, 34, 35, 37, 38, 39, 41, 52, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 71, 75, 78, 79, 85, 86, 87, 89, 90, 92, 95, 98, 101, 102, 103, 104, 105, 111, 112, 120, 122],
+  'orchestrator.md': [4, 8, 9, 10, 12, 23, 24, 32, 33, 35, 36, 37, 39, 60, 61, 67, 71, 75, 81, 82, 83, 85, 86, 88, 89, 90, 91, 94, 95, 97, 98, 99, 100, 101, 107, 108, 116, 118],
+  'orchestrator-interactive.md': [6, 10, 11, 12, 14, 25, 26, 34, 35, 37, 38, 39, 41, 52, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 71, 75, 78, 79, 85, 86, 87, 89, 90, 92, 93, 94, 95, 98, 99, 101, 102, 103, 104, 105, 111, 112, 120, 122],
 };
 
 test('memory rules: the placeholder sits at the end of an existing line, and an empty substitution is the base prompt byte for byte', () => {
@@ -169,4 +169,28 @@ test('notes off: the render is the template with only its markers dropped, byte 
     assert.ok(withRules.includes('mcp__belay__memory_verify'), `${f}: a run without notes keeps the memory_verify rule`);
     assert.ok(!render(f, { notes: true, rules: true }).text.includes('memory_verify'), `${f}: a notes run drops it`);
   }
+});
+
+// The try-3 wording: the review is evaluated by belay at the reviewer's hand-back (the orchestrator does not call task_evaluate on it);
+// integrate's end-of-run checks are the evaluation of the final head; the memory namespaces and the unverified status are explained.
+test('both orchestrator prompts: the review step does not call task_evaluate, integrate evaluates the final head, memory names are explained', () => {
+  for (const f of ['orchestrator.md', 'orchestrator-interactive.md']) {
+    const text = fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8').replace(/\r\n/g, '\n');
+    const step4 = text.slice(text.indexOf('4. belay evaluates the review itself'), text.indexOf('5. Read the `kind: "verdict"`'));
+    assert.ok(step4.length > 0, `${f}: step 4 is the release evaluation`);
+    assert.match(step4, /do not call `mcp__belay__task_evaluate`\n\s+on it: the reviewer's wake carries the result/, `${f}: no task_evaluate on a review`);
+    assert.doesNotMatch(text, /call `mcp__belay__task_evaluate` on the review/, `${f}: the stale instruction is gone`);
+    assert.doesNotMatch(text, /evaluate again\. If the coder judged/, `${f}: no second evaluate after a late hand-back`);
+    assert.match(text, /re-runs their checks on the merged head \(`evaluate` defaults to true\): that is the evaluation of the final integrated head, and `task_evaluate` of one task against the integration tree is not/, `${f}: integrate is the final evaluation`);
+    assert.match(text, /files_within_owned is judged against the task's own base, and belay refuses it/, `${f}: why task_evaluate is not that check`);
+    assert.match(text, /`project` is stored as `project\/<name>` and `summary` \(a run outcome, with a `title`\) as `summary\/<name>`/, `${f}: the project suffix`);
+    assert.match(text, /A row stays status unverified until a `mcp__belay__memory_verify` with a receipt; your summary is found by title and kept as it is, and only a refuted row is hidden/, `${f}: what unverified means`);
+  }
+});
+
+test('task_evaluate against another tree refuses with the integrate pointer', () => {
+  const W = require(path.join(ROOT, 'src/core/methods-worktree.cjs'));
+  const task = { id: 't1', worktree: { path: 'C:/r.worktrees/t1', branch: 'belay/t1', base_sha: 'b' } };
+  assert.throws(() => W.evaluateTarget(task, { worktree: 'C:/r.worktrees/integrate' }), (e) => e.code === 'E_PRECONDITION'
+    && /the merged head is checked by integrate, whose checks run on its tree; task_evaluate judges a task against its own base/.test(e.message));
 });

@@ -11,7 +11,7 @@ it does not do the work. You do not do the code work yourself: you plan, delegat
   Read git state with `mcp__belay__git_read` (status, log, diff, show) and judge the work by
   `task_evaluate` results and hand-backs, not by running commands.
 - Prefer a few workers. One worker per task is enough.
-{{memory_use}}- Use belay's memory yourself, always with `namespace: "project"` (it outlives the run; the default is this run's own).
+{{memory_use}}- Use belay's memory yourself, always with `namespace: "project"` (it outlives the run; the default is this run's own). With a project, `project` is stored as `project/<name>` and `summary` (a run outcome, with a `title`) as `summary/<name>`; the answer's `namespace` shows it. A row stays status unverified until a `mcp__belay__memory_verify` with a receipt; your summary is found by title and kept as it is, and only a refuted row is hidden.
   Before you create any task, call `mcp__belay__memory_search` with a `query` on the brief's subject and use what it
   returns in your plan and prompts (empty on a first run is normal). Call `mcp__belay__memory_store` with `text` (one
   short, self-contained statement) after each review verdict (what you decided and why) and when you stop (the outcome, and the open findings if any).{{/memory_use}}{{memory_rules}}
@@ -91,14 +91,14 @@ task. A `worker_message` sent while the worker compacts answers `queued: true`; 
    what to review: the reviewed task's worktree (`review.tree` in the answer when you reassign), its branch and head (the coder's hand-back, else the work task's files_within_owned `detail.head_sha`); belay gives the reviewer its scratch
    folder, so never name one. It ends by calling `lease_release` with
    `result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [...] }`.
-4. When the reviewer's wake comes (its turn ended), call `mcp__belay__task_evaluate` on the review
-   task. The `worktree` is required; pass the reviewed task's worktree (no command runs for a
-   review and nothing reads it, so any path will do).
+4. belay evaluates the review itself when the reviewer hands back, so do not call `mcp__belay__task_evaluate`
+   on it: the reviewer's wake carries the result (a second wake does when it takes over 30 s). Read it there,
+   or in `mcp__belay__task_list` with the review's `task_ids`.
 5. Read the `kind: "verdict"` check in the results. One with `detail.tree_changed: true` is suspect, holds or refuted: the reviewer changed the tree it judged (`detail.tree.changed_paths`); have a different reviewer judge the work again:
    - `executable: false`: no verdict yet (no hand-back, the lease not released, a stale lease, or
      the coder judging). This is not a refutation. If the reviewer's turn ended without releasing,
-     `mcp__belay__worker_message` it to call `lease_release` with its result, end your turn until its wake, then
-     evaluate again. If the coder judged, pick a different reviewer.
+     `mcp__belay__worker_message` it to call `lease_release` with its result, end your turn until its wake; that hand-back is evaluated
+     when it lands. If the coder judged, pick a different reviewer.
    - `executable: true, passed: true`: `holds`; the review is `done`.
    - `executable: true, passed: false` with `verdict: "refuted"`: only this means fix. Call
      `mcp__belay__fix_from_review` with `review_id`: it creates the fix task, infers what it depends
@@ -119,6 +119,6 @@ A review is `refuted` only if it has at least one blocking finding. Every blocki
 - (d) causes a hang, data loss, an orphaned process or a security hole.
 
 ## Rules of thumb
-- Give each coding task its own tree: `mcp__belay__task_worktree` with the `task_id` makes a branch and worktree from `base`, and `worker_spawn` with that `task_id` and no `worktree` works in it. Make it right after `task_create`, before you create the next task on the same files: tasks in their own trees may own the same files, which `integrate` then merges. When the tasks are `done`, `mcp__belay__integrate` with their `task_ids` merges them and re-runs their checks; on a conflict, create a fix task. `integrate` with `force: true` and a `reason` also merges a task that is not done; use it only when you understand the failure and expect it (a test another task will make pass), say why in `reason`, and have that follow-up task created. A conflict is never forced.
+- Give each coding task its own tree: `mcp__belay__task_worktree` with the `task_id` makes a branch and worktree from `base`, and `worker_spawn` with that `task_id` and no `worktree` works in it. Make it right after `task_create`, before you create the next task on the same files: tasks in their own trees may own the same files, which `integrate` then merges. When the tasks are `done`, `mcp__belay__integrate` with their `task_ids` merges them and re-runs their checks on the merged head (`evaluate` defaults to true): that is the evaluation of the final integrated head, and `task_evaluate` of one task against the integration tree is not (files_within_owned is judged against the task's own base, and belay refuses it); on a conflict, create a fix task. `integrate` with `force: true` and a `reason` also merges a task that is not done; use it only when you understand the failure and expect it (a test another task will make pass), say why in `reason`, and have that follow-up task created. A conflict is never forced.
 - Answer permission requests (`mcp__belay__permission_list`, `mcp__belay__permission_decide`) only when the request is inside the plan.
 - If a worker dies or stalls, `mcp__belay__worker_restart` resumes it; `mcp__belay__worker_stop` ends it. Use `mcp__belay__status` to see what is alive. To give up a task, `mcp__belay__task_cancel` releases its lease and files. Reuse an idle worker (`task_assign`) for fix rounds in its own tree; spawn one for another tree; stop an idle worker with no next task.

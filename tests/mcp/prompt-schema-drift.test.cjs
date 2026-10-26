@@ -123,7 +123,7 @@ for (const f of ['orchestrator.md', 'orchestrator-interactive.md']) {
   test(`${f}: every tool and field the prompt names is in the orchestrator listing`, () => {
     const ps = check(f, read(f), BASE);
     for (const [t, k] of [['task_create', 'acceptance.verdict'], ['task_create', 'spec'], ['worker_spawn', 'substrate'], ['worker_spawn', 'agent_type'],
-      ['worker_spawn', 'worktree'], ['task_evaluate', 'worktree'], ['worker_wait', 'worker_ids'], ['memory_store', 'text']]) {
+      ['worker_spawn', 'worktree'], ['task_evaluate', 'task_id'], ['worker_wait', 'worker_ids'], ['memory_store', 'text']]) {
       assert.ok(has(ps, t, k), `the extraction finds ${t}.${k}`);
     }
   });
