@@ -21,26 +21,22 @@ A task is made with `mcp__belay__task_create`:
 - `spec`: what is to be done, in plain words.
 - `acceptance`: `commands` is a list of `{ argv, cwd, timeout_ms }`; the task is proven when every
   command exits 0. A known-flaky check takes `retries_on_fail`; treat a `flaky` pass as a finding. `files_within_owned: true` also requires every changed file to be in
-  `files_owned`. `handoff: { required: ["findings", "summary"] }` passes when the hand-back's result carries each field (research needs no commands). A task with no checks at all can never reach `done`.
+  `files_owned`. `handoff: { required: ["findings", "summary"] }` passes when the hand-back's result carries each field (research needs no commands).
 - `files_owned`: paths, relative to the worktree, that this task may change.
 - `depends_on`: task ids that must be `done` first.
 
 ## Handing a task to a worker
 
 Prefer `mcp__belay__worker_spawn` with `task_id`: it assigns the task and puts a first line in front
-of your prompt, `task <id> state=assigned lease=<lease id>.`. Give it `substrate` (`claude-code`),
-`worktree` (absolute), `prompt`, and `agent_type`, always (`coder|tester|reviewer|researcher`; a fixer is a
+of your prompt, `task <id> lease=<lease id>.`. Give it `substrate` (`claude-code`),
+`worktree` (absolute; omit it for a task with its own tree), `prompt`, and `agent_type`, always (`coder|tester|reviewer|researcher`; a fixer is a
 `coder`): belay applies its model and effort. Pass `model` or `effort` only when your plan needs another.{{memory_queries_line}}{{memory_report_line}}
 
 `mcp__belay__task_assign` to a running worker sends it the task, its lease id and the hand-back
 rule (`prompt` replaces the spec, `deliver: false` sends nothing). If `delivered.sent` and `delivered.queued` are false,
 the worker was told nothing: tell it with `mcp__belay__worker_message`.
 
-Every worker prompt you write must end with: when you are finished (a coder in its own tree commits first; a reviewer never does), call `lease_release` with your
-lease id and a `result` object (branch, head, tests, findings). A worker cannot name itself: belay
-knows it by its process, not by anything it says.
-
-A `worker_id` you choose can be used once per run, even when that spawn failed. To retry a failed spawn, pick a new id.
+belay ends a worker's first message with its lease id, the hand-back rule and the notes rule, and a reviewer's with the Review standard; do not repeat them.
 
 ## When the run ends
 
@@ -64,8 +60,7 @@ keep it open. So:
 
 ## Checking the work
 
-A worker saying it finished is a claim. belay evaluates a hand-back released with a `result` once the worker's turn ends: the turn's wake waits for the result and carries it (if it takes over 30 s, the wake says evaluating and a second wake carries it), the turn's `worker_wait` answer says `evaluating` and a later one reports `evaluated`, and the run does not close while it runs. Do not evaluate that task yourself meanwhile: belay refuses it (E_BUSY) until that result lands. Otherwise call `mcp__belay__task_evaluate` with the `task_id` and the
-worktree the work is in (and `base` when the branch is not cut from `main`). belay runs the
+A worker saying it finished is a claim. belay evaluates a hand-back released with a `result` once the worker's turn ends: the turn's wake waits for the result and carries it (if it takes over 30 s, the wake says evaluating and a second wake carries it), the turn's `worker_wait` answer says `evaluating` and a later one reports `evaluated`, and the run does not close while it runs. Otherwise call `mcp__belay__task_evaluate` with the `task_id` (a task with its own tree needs nothing else; otherwise pass `worktree`, and `base` when the branch is not cut from `main`). belay runs the
 acceptance commands and returns the row and its results. Only `done` clears a task that depends on
 it. The `files_within_owned` check's `detail.head_sha` is the commit that was checked (a task with
 that check). Read a worker's hand-back as the task's `handoff` in `mcp__belay__task_list` with its `task_ids` (a listing names only the fields), and its last reply with `mcp__belay__worker_last_reply`.
@@ -81,10 +76,9 @@ task. A `worker_message` sent while the worker compacts answers `queued: true`; 
 2. Give it to a different worker from the coder, spawned with `agent_type: "reviewer"`. belay refuses
    the coder's own worker at assign (`E_SELF_REVIEW`), and a verdict from a worker that held a lease
    on the work is not executable at evaluate.
-3. Put the Review standard section below, verbatim, in the reviewer's prompt. The prompt also names
+3. belay appends the Review standard and the verdict hand-back rule to the reviewer's first message; do not repeat them. Your prompt names
    what to review: the reviewed task's worktree (`review.tree` in the answer when you reassign), its branch and head (the coder's hand-back, else the work task's files_within_owned `detail.head_sha`); belay gives the reviewer its scratch
-   folder, so never name one. It ends by calling `lease_release` with
-   `result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [...] }`.
+   folder, so never name one.
 4. belay evaluates the review itself when the reviewer hands back, so do not call `mcp__belay__task_evaluate`
    on it: the reviewer's wake carries the result (a second wake does when it takes over 30 s). Read it there,
    or in `mcp__belay__task_list` with the review's `task_ids`. If the wake says it was not or could not be evaluated, or a stop, pause or park cut it short, call `mcp__belay__task_evaluate` on the review yourself with the reviewed task's worktree (nothing reads it, so any path will do).
@@ -103,16 +97,6 @@ task. A `worker_message` sent while the worker compacts answers `queued: true`; 
      fix rounds for its work task (0: the first review), end the run and name the open blocking
      findings for the human; never report it as passing or mark it done. {{fix_cutoff_rule}}
 
-## Review standard
-The tree under review is read-only: run its tests, but edit, write, commit or stash nothing in it; write probes and scratch files only in the scratch folder your task names (none named: outside the tree). belay flags a verdict whose tree changed during the review.
-A review is `refuted` only if it has at least one blocking finding. Every blocking finding names its clause; everything else is `should-fix` or `note`. A finding is `blocking` only if it:
-- (a) breaks one of the brief's stated acceptance criteria: an ordering or input the brief admits makes a
-  stated assertion fail. Forcing a reachable ordering is evidence; passing when run does not clear it;
-- (b) breaks an invariant in the repository's `CLAUDE.md`;
-- (c) is a regression: behaviour that worked at the base no longer works;
-- (d) causes a hang, data loss, an orphaned process or a security hole.
-
 ## Rules of thumb
-- Give each coding task its own tree: `mcp__belay__task_worktree` with the `task_id` makes a branch and worktree from `base`, and `worker_spawn` with that `task_id` and no `worktree` works in it. Make it right after `task_create`, before you create the next task on the same files: tasks in their own trees may own the same files, which `integrate` then merges. When the tasks are `done`, `mcp__belay__integrate` with their `task_ids` merges them and re-runs their checks on the merged head (`evaluate` defaults to true): that is the evaluation of the final integrated head, and `task_evaluate` of one task against the integration tree is not (files_within_owned is judged against the task's own base, and belay refuses it); on a conflict, create a fix task. `integrate` with `force: true` and a `reason` also merges a task that is not done; use it only when you understand the failure and expect it (a test another task will make pass), say why in `reason`, and have that follow-up task created. A conflict is never forced.
-- Answer permission requests (`mcp__belay__permission_list`, `mcp__belay__permission_decide`) only when the request is inside the plan.
-- If a worker dies or stalls, `mcp__belay__worker_restart` resumes it; `mcp__belay__worker_stop` ends it. Use `mcp__belay__status` to see what is alive. To give up a task, `mcp__belay__task_cancel` releases its lease and files. Reuse an idle worker (`task_assign`) for fix rounds in its own tree; spawn one for another tree; stop an idle worker with no next task.
+- Give each coding task its own tree: `mcp__belay__task_worktree` with the `task_id` makes a branch and worktree from `base`, and `worker_spawn` with that `task_id` and no `worktree` works in it. When the tasks are `done`, `mcp__belay__integrate` with their `task_ids` merges them and re-runs their checks on the merged head (`evaluate` defaults to true): that is the evaluation of the final integrated head; on a conflict, create a fix task. `integrate` with `force: true` and a `reason` also merges a task that is not done; use it only when you understand the failure and expect it (a test another task will make pass), say why in `reason`, and have that follow-up task created. A conflict is never forced.
+{{permission_line}}- If a worker dies or stalls, `mcp__belay__worker_restart` resumes it; `mcp__belay__worker_stop` ends it. Use `mcp__belay__status` to see what is alive. To give up a task, `mcp__belay__task_cancel` releases its lease and files. Reuse an idle worker (`task_assign`) for fix rounds in its own tree; spawn one for another tree; stop an idle worker with no next task.

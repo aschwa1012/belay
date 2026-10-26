@@ -52,7 +52,10 @@ test('interactive prompt: says what the mode is', () => {
   assert.match(TWIN, /operator is present in this session/);
   assert.match(TWIN, /belay wakes you with a short message when a worker's turn ends or a worker dies\. While workers are working, end your turn: the wake brings you back and names the worker\. Do not hold a turn open to wait\./);
   assert.ok(!/There are no wakes/.test(TWIN), 'the no-wakes claim is gone');
-  assert.match(flat(TWIN), /paused for an embedder failure, stop and ask the operator which of the three they want: `keyword`, `off`, or stay paused\. Then give them the exact `belay resume` command/);
+  // Wording audit: the embedder-failure pause is told by the error that reports it (pauseAdvice), not by a paragraph every request pays for.
+  assert.ok(!/paused for an embedder failure/.test(TWIN));
+  const advice = require(path.join(ROOT, 'src/core/embedder-mode.cjs')).pauseAdvice('run-1');
+  assert.match(advice, /Stop and ask the operator which they want: keyword .*, off .*, or stay paused\. Apply their choice with: belay resume run-1 --embedder keyword\|off/);
   assert.match(TWIN, /Ending a turn does not end the run/);
   assert.match(TWIN, /the run ends when the operator quits the session/);
   // ADR 0037 amendment 6: the wake is how the orchestrator waits; worker_wait is a short check, never a loop
@@ -64,15 +67,16 @@ test('interactive prompt: says what the mode is', () => {
   assert.deepStrictEqual(T.slice(iWait, iWait + 10), [
     '- After you start work (a spawn with a prompt, or a `worker_message`), end your turn, naming the',
     '  workers you are waiting for so the operator can see it. When a wake names a worker, read its',
-    '  hand-back with `mcp__belay__task_list` and its `task_ids`, or check its work with `task_evaluate`. Use',
+    '  hand-back with `mcp__belay__task_list` and its `task_ids`. Use',
     '  `mcp__belay__worker_wait` only as a check when no wake came for a worker you expected: pass',
     '  `worker_ids` and `timeout_ms: 5000`. A timeout means the worker is still working: end your turn',
     '  again. Never call it in a loop.',
     '  `already: true` means that worker\'s turn ended before your call, not that the work is done.',
     '- A worker whose turn has ended without what you waited for is idle, not working. Instead call',
     '  `mcp__belay__worker_message` to tell it what is missing: that starts a turn. Then end your turn.',
-    '- A `task_assign` whose `delivered.sent` and `delivered.queued` are false started nothing and no wake follows: use `worker_message`.',
+    '- When every task is `done`, or when you stop on purpose, store the outcome in memory with',
   ], 'the waiting bullets, pinned line for line');
+  assert.ok(!/check its work with `task_evaluate`/.test(TWIN), 'a hand-back with a result is evaluated at release; task_evaluate on a done task is refused (E_TASK_DONE)');
   assert.match(TWIN, /`namespace: "project"`, tell the operator the result and any open blocking findings, and then wait for them/);
   // the no-wakes wording is one self-contained paragraph a later amendment can swap
   const para = TWIN.split(/\n\n/).find((p) => p.startsWith('belay wakes you'));
@@ -92,29 +96,35 @@ test('interactive prompt: both lever placeholders are present and substituteLeve
   assert.match(r.text, /refuted after 3\s+fix rounds/);
 });
 
-test('interactive prompt: apart from three named ranges the twin equals orchestrator.md line for line', () => {
-  // Allowed differences: (1) the blank line and marker after the title; (2) the "When the run ends" section,
-  // (amendment 6: also the four wake phrases in headless lines 64-101, pinned below)
-  // headless lines 45-63; (3) the fix-round cutoff sentence, headless lines 102-104.
-  const iHead = T.indexOf('## When the run ends');
-  const iCheck = T.indexOf('## Checking the work');
-  const iTail = T.findIndex((l) => l.startsWith('     {{max_fix_rounds}} fix rounds per work task'));
-  assert.ok(iHead > 0 && iCheck > iHead && iTail > iCheck, 'sections found in order');
+test('interactive prompt: apart from three named ranges the twin equals orchestrator.md section for section', () => {
+  // Allowed differences: (1) the blank line and marker after the title; (2) the "When the run ends" section; (3) the fix-round
+  // cutoff sentence, the last three lines of "Review tasks"; and (amendment 6) the two wake phrases below. The sections are matched by
+  // heading, not by line number, so a line added to both prompts needs no edit here.
+  const sections = (L) => { const m = new Map(); let k = '(top)'; m.set(k, []); for (const l of L) { if (l.startsWith('## ')) { k = l; m.set(k, []); } m.get(k).push(l); } return m; };
+  const hs = sections(H), ts = sections(T);
+  assert.deepStrictEqual([...ts.keys()], [...hs.keys()], 'the same sections in the same order');
   assert.deepStrictEqual(T.slice(0, 3), [H[0], '', MARKER]);
-  // line 17 differs by one phrase ("when you end the run" -> "when you stop"): the run does not end here.
-  const l17 = H.slice(1, 44).map((l) => l.replace('and when you end the run (the outcome', 'and when you stop (the outcome'));
-  assert.notDeepStrictEqual(l17, H.slice(1, 44), 'the substitution applied');
-  assert.deepStrictEqual(T.slice(3, iHead), l17, 'headless lines 2-44, with the one phrase on line 17');
-  // ADR 0037 amendment 6: in headless lines 64-101 each "wait on its id" becomes "end your turn until its wake",
-  // and the compaction retry gets a bounded wait.
+  // The top, apart from the marker and its blank line.
+  assert.deepStrictEqual(ts.get('(top)').slice(4), hs.get('(top)').slice(2), 'the title block');
+  // "Your role" differs by one phrase ("when you end the run (the outcome" -> "when you stop (the outcome"): the run does not end here.
+  const role = hs.get('## Your role').map((l) => l.replace('and when you end the run (the outcome', 'and when you stop (the outcome'));
+  assert.notDeepStrictEqual(role, hs.get('## Your role'), 'the substitution applied');
+  assert.deepStrictEqual(ts.get('## Your role'), role);
+  for (const k of ['## Tasks', '## Handing a task to a worker', '## Rules of thumb']) assert.deepStrictEqual(ts.get(k), hs.get(k), k);
+  // ADR 0037 amendment 6: each "wait on its id" becomes "end your turn until its wake".
   const WAKE_PHRASES = [
     ['wait on its id, and evaluate again', 'end your turn until its wake, and evaluate again'],
     ['with its result, wait on its id; that', 'with its result, end your turn until its wake; that'],
   ];
-  const mid = H.slice(63, 101).map((l) => WAKE_PHRASES.reduce((s, [a, b]) => s.replace(a, b), l));
-  assert.strictEqual(mid.filter((l, i) => l !== H[63 + i]).length, WAKE_PHRASES.length, 'each phrase replaced once');
-  assert.deepStrictEqual(T.slice(iCheck - 1, iTail), mid, 'headless lines 64-101, with the wake phrases');
-  assert.deepStrictEqual(T.slice(iTail + 3), H.slice(104), 'headless lines 105 to the end');
+  const swap = (L) => L.map((l) => WAKE_PHRASES.reduce((x, [p, q]) => x.replace(p, q), l));
+  const checking = swap(hs.get('## Checking the work')), review = swap(hs.get('## Review tasks'));
+  assert.strictEqual(checking.concat(review).filter((l, i) => l !== hs.get('## Checking the work').concat(hs.get('## Review tasks'))[i]).length, WAKE_PHRASES.length, 'each phrase replaced once');
+  assert.deepStrictEqual(ts.get('## Checking the work'), checking);
+  const cut = (L) => L.findIndex((l) => l.startsWith('     {{max_fix_rounds}} fix rounds per work task'));
+  const iH = cut(review), iT = cut(ts.get('## Review tasks'));
+  assert.ok(iH > 0 && iH === iT, 'the cutoff sentence starts at the same line');
+  assert.deepStrictEqual(ts.get('## Review tasks').slice(0, iT), review.slice(0, iH), 'Review tasks up to the cutoff sentence');
+  assert.deepStrictEqual(ts.get('## Review tasks').slice(iT + 3), review.slice(iH + 3), 'and after it');
 });
 
 test('interactive prompt: the wakes paragraph stands alone and the bullet list is not split', () => {
