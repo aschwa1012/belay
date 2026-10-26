@@ -106,11 +106,22 @@ async function readTasks(E, ids, force) {
     if (!t) throw err('E_NOT_FOUND', `no task row exists for ${id}`, { task_id: id });
     return t;
   });
-  // `force` (a merge past checks that failed or never passed) takes a task that is not done, but never a cancelled one: that is final.
+  // A review task judges work and has none to merge, forced or not.
+  const reviews = tasks.filter((t) => t.acceptance && t.acceptance.verdict === true).map((t) => t.id);
+  if (reviews.length) throw err('E_PRECONDITION', `these are review tasks, which have no work to merge: ${reviews.join(', ')}; merge the work they judged`, { review_tasks: reviews });
+  // `force` (a merge past a task that is not done) takes a task that is not done, but never a cancelled one: that is final.
   const notDone = tasks.filter((t) => (force ? t.state === 'cancelled' : t.state !== 'done')).map((t) => ({ task_id: t.id, state: t.state }));
   if (notDone.length) throw err('E_PRECONDITION', `only done tasks are merged; not done: ${notDone.map((x) => `${x.task_id} (${x.state})`).join(', ')}. Leave them out, or merge once task_evaluate makes them done`, { not_done: notDone });
   const noBranch = tasks.filter((t) => !t.worktree || !t.worktree.branch).map((t) => t.id);
   if (noBranch.length) throw err('E_PRECONDITION', `these tasks have no belay branch to merge: ${noBranch.join(', ')}. integrate merges only tasks worked in their own tree (task_worktree before the coder starts); leave these out, their work is already where it was committed`, { no_branch: noBranch });
+  // Even forced, a task still being worked is not merged: its head moves. A worker live or parked in its tree, or a lease not released.
+  for (const t of tasks.filter((x) => x.state !== 'done')) {
+    const a = W.active(t);
+    const w = a && W.liveWorkerIn(E, a.path);
+    if (w) throw err('E_WORKER_LIVE', `worker ${w.id} (${w.state}) works in task ${t.id}'s tree ${a.path}; a task still being worked is not merged, even forced`, { task_id: t.id, worker_id: w.id, state: w.state });
+    const l = rows.currentLeaseForTask(E.store, t.id);
+    if (l && l.released_at == null) throw err('E_PRECONDITION', `task ${t.id} is leased to ${l.holder} and not released; a task still being worked is not merged, even forced`, { task_id: t.id, lease_id: l.id, holder: l.holder });
+  }
   // A fix task works on the branch of the work it fixes: merging the done work would take the open fix's unreviewed commits.
   for (const t of tasks) {
     const open = W.openSharer(E, t);
@@ -347,13 +358,14 @@ async function merge(E, caller, args) {
       }
     }
     // The merges have happened whatever the run did meanwhile, so the row that records them is written without a second run check.
-    // A forced merge says so on its row, only when force took effect: a task not done was merged, or a check failed.
+    // A forced merge says so on its row, and only for what force let in: the tasks merged that were not done, with the failing
+    // checks among theirs. A done task is never marked, and with none merged that were not done the row is as without force.
     if (force) {
-      const failing = (out.checks || []).filter((c) => !c.passed);
       const unsettled = out.merged.filter((m) => tasks.find((t) => t.id === m.task_id).state !== 'done').map((m) => m.task_id);
-      if (unsettled.length || failing.length) {
-        out.forced = { by, at: Date.now(), reason: args.reason.trim(), task_ids: [...new Set([...unsettled, ...failing.flatMap((c) => c.task_ids)])],
-          failing: failing.map((c) => c.argv.slice(0, 4).join(' ').slice(0, 80)) };
+      if (unsettled.length) {
+        const name = (c) => [path.basename(c.argv[0]), ...c.argv.slice(1, 4)].join(' ').slice(0, 80);
+        const failing = (out.checks || []).filter((c) => !c.passed && c.task_ids.some((id) => unsettled.includes(id))).map(name);
+        out.forced = { by, at: Date.now(), reason: args.reason.trim(), task_ids: unsettled, failing };
       }
     }
     const row = E.store.tx(() => rows.append(E.store, 'integration', out, by, Date.now()));

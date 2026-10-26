@@ -125,3 +125,55 @@ test('force given when nothing needs it behaves as without it and records no for
   assert.strictEqual(row.forced == null, true);
   assert.strictEqual((await orch.task.list({})).tasks.find((t) => t.id === a.id).integration.forced, undefined);
 });
+
+test('a done task whose merged-tree check fails is not marked forced: force only lifts the not-done gate', async () => {
+  const repo = makeRepo(dir);
+  const a = await work(repo, { 'a.txt': 'a\n' }, [exists('a.txt')]);
+  const b = await work(repo, { 'b.txt': 'b\n' }, [{ argv: [process.execPath, '-e', "if(require('fs').existsSync('a.txt'))process.exit(1)"] }]);
+  assert.strictEqual(b.state, 'done');
+  const row = await orch.integration.merge({ task_ids: [a.id, b.id], force: true, reason: 'not needed' });
+  assert.strictEqual(row.passed, false);
+  assert.strictEqual(row.forced == null, true);
+  assert.strictEqual((await orch.task.list({})).tasks.find((t) => t.id === b.id).integration.forced, undefined);
+});
+
+test('forced failing names are only the forced task\'s, and carry no executable directory', async () => {
+  const repo = makeRepo(dir);
+  const a = await work(repo, { 'a.txt': 'a\n' }, [{ argv: [process.execPath, '-e', "if(require('fs').existsSync('b.txt'))process.exit(1)"] }]);
+  const b = await work(repo, { 'b.txt': 'b\n' }, [exists('later.txt')]);
+  const row = await orch.integration.merge({ task_ids: [a.id, b.id], force: true, reason: 'later.txt comes later' });
+  assert.deepStrictEqual(row.forced.task_ids, [b.id]);
+  assert.strictEqual(row.forced.failing.length, 1, 'a done task\'s failing check is not listed');
+  assert.ok(row.forced.failing[0].startsWith(path.basename(process.execPath) + ' -e'), row.forced.failing[0]);
+  assert.ok(!row.forced.failing[0].includes(path.dirname(process.execPath)));
+});
+
+test('a review task is refused with or without force, and nothing is written', async () => {
+  const repo = makeRepo(dir);
+  const r = await orch.task.create({ spec: 'review', acceptance: { verdict: true } });
+  const w = (await op.task.worktreeCreate({ task_id: r.id, repo })).worktree;
+  write(w.path, 'probe.txt', 'p\n');
+  commit(w.path, 'review probe');
+  const before = (await integrations()).length;
+  await rejectsCode(orch.integration.merge({ task_ids: [r.id] }), 'E_PRECONDITION');
+  await rejectsCode(orch.integration.merge({ task_ids: [r.id], force: true, reason: 'x' }), 'E_PRECONDITION');
+  assert.strictEqual((await integrations()).length, before);
+});
+
+test('a task with a worker in its tree, or an unreleased lease, is not merged even forced', async () => {
+  const repo = makeRepo(dir);
+  const t = await work(repo, { 'w.txt': 'w\n' }, [exists('w.txt')], { evaluate: false });
+  const tree = (await orch.task.get({ task_id: t.id })).worktree.path;
+  const before = (await integrations()).length;
+
+  await orch.worker.write({ id: `wk-${t.id}`, substrate: 'claude-code', pid: process.pid, state: 'running', worktree: tree });
+  await rejectsCode(orch.integration.merge({ task_ids: [t.id], force: true, reason: 'x' }), 'E_WORKER_LIVE');
+  await orch.worker.write({ id: `wk-${t.id}`, state: 'stopped', exited_at: Date.now() });
+
+  const id = `wl-${t.id}`;
+  await orch.worker.write({ id, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${id}`, last_event_at: Date.now() });
+  const a = await orch.task.assign({ task_id: t.id, worker_id: id });
+  await rejectsCode(orch.integration.merge({ task_ids: [t.id], force: true, reason: 'x' }), 'E_PRECONDITION');
+  assert.strictEqual((await integrations()).length, before, 'nothing was written');
+  assert.ok(a.new_lease.id);
+});
