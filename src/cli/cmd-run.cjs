@@ -145,8 +145,7 @@ async function run(ctx) {
   const sub = mode === 'interactive'
     ? substituteLevers(parsed.promptText, parsed.levers, 0, { mode: 'interactive' })
     : substituteLevers(parsed.promptText, parsed.levers, parsed.timeout_ms);
-  const rendered = stripMarkers(sub.text); // the header markers were read above; the orchestrator is not shown them
-  parsed.promptText = parsed.briefText !== null ? BR.appendBrief(rendered, parsed.briefText) : rendered;
+  parsed.promptText = parsed.briefText !== null ? BR.appendBrief(stripMarkers(sub.text), parsed.briefText) : stripMarkers(sub.text); // the header markers were read above; the orchestrator is not shown them
   parsed.levers.substituted = sub.substituted;
   const ce = mode === 'interactive' ? makeConsole() : null; // decision 6: the close can see a SIGHUP that arrives during it
   require('../run/exe-discovery.cjs').exportConfigured(found, C.effective); // config claude_exe/codex_exe reach every child
