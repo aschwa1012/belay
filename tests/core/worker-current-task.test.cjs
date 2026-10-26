@@ -45,3 +45,21 @@ test('status.get, worker.list and worker.get show the newest assigned task of a 
   await orch.task.assign({ task_id: ids[2], worker_id: 'w-reuse' });
   assert.deepStrictEqual(await shown(), [ids[2], ids[2], ids[2]], 'the newest open lease wins over the older open one');
 });
+
+test('an unreleased lease past its expiry does not beat a newer lease: w1 shows t2', () => {
+  const path = require('node:path');
+  const { Store } = core('store.cjs');
+  const rows = core('rows.cjs');
+  const d = sandbox();
+  const s = new Store(path.join(d, 'memory.db'));
+  try {
+    const lease = (task_id, granted_at, expires_at, released_at) => rows.append(s, 'lease', { id: rows.newId(), task_id, run_id: 'r', holder: 'w1', holder_role: 'worker', granted_at, expires_at, ttl_ms: 1, released_at }, 'test', granted_at);
+    lease('t1', 1000, 2000, null); // expired, never released
+    assert.strictEqual(rows.workerTasks(s, 'w1', 5000).get('w1'), 't1', 'the only lease is the answer, expired or not');
+    lease('t2', 3000, 4000, 3500); // released
+    assert.strictEqual(rows.workerTasks(s, 'w1', 5000).get('w1'), 't2');
+    assert.strictEqual(rows.workerTasks(s, null, 5000).get('w1'), 't2');
+    lease('t3', 4500, 9000, null); // live again
+    assert.strictEqual(rows.workerTasks(s, 'w1', 5000).get('w1'), 't3');
+  } finally { s.close(); cleanup(d); }
+});

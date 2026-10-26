@@ -103,14 +103,18 @@ function leasesHeldBy(store, workerId, at = Date.now()) {
 }
 
 // The task each worker is on now, derived on the read side from the leases (the worker row's task_id is set at spawn only, so a
-// reused worker would show its first task). One pass over each task's current lease row: a worker's newest unreleased lease
-// wins, else its newest released one; a worker with neither is absent and the caller falls back to the row's task_id.
-function workerTasks(store) {
-  const sql = `SELECT l.holder, l.task_id, l.released_at FROM lease l JOIN (SELECT task_id, MAX(seq) AS m FROM lease GROUP BY task_id) x ON l.seq = x.m
-               WHERE l.holder_role = 'worker' AND l.holder IS NOT NULL ORDER BY l.seq`;
-  const open = new Map(), released = new Map();
-  for (const r of store.p(sql).all()) (r.released_at == null ? open : released).set(r.holder, r.task_id);
-  return new Map([...released, ...open]);
+// reused worker would show its first task). One pass over each task's current lease row: a worker's newest lease that is unreleased
+// and unexpired wins, else its newest lease by seq, released or expired; a worker with none is absent and the caller falls back to
+// the row's task_id. `workerId` limits the scan to one holder.
+function workerTasks(store, workerId = null, at = Date.now()) {
+  const sql = `SELECT l.holder, l.task_id, l.released_at, l.expires_at FROM lease l JOIN (SELECT task_id, MAX(seq) AS m FROM lease GROUP BY task_id) x ON l.seq = x.m
+               WHERE l.holder_role = 'worker' AND l.holder ${workerId == null ? 'IS NOT NULL' : '= ?'} ORDER BY l.seq`;
+  const live = new Map(), newest = new Map();
+  for (const r of workerId == null ? store.p(sql).all() : store.p(sql).all(workerId)) {
+    newest.set(r.holder, r.task_id);
+    if (r.released_at == null && (r.expires_at == null || r.expires_at >= at)) live.set(r.holder, r.task_id);
+  }
+  return new Map([...newest, ...live]);
 }
 
 // The task a worker was working on at `at`: the task of its newest lease (in role worker, in this run) granted at or before

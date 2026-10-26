@@ -399,7 +399,7 @@ async function getWorker(E, caller, args) {
   const streamPath = streamPathOf(E.dataDir, args.worker_id);
   let streamBytes = null;
   try { streamBytes = fs.statSync(streamPath).size; } catch { streamBytes = null; }
-  const task = rows.workerTasks(E.store).get(w.id);
+  const task = rows.workerTasks(E.store, w.id).get(w.id);
   return { ...decorate(w), ...(task ? { task_id: task } : {}), stream_path: streamPath, stream_bytes: streamBytes };
 }
 

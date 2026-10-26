@@ -55,7 +55,7 @@ test('a new adapter restarts a worker of a session that has ended', async () => 
 
     // A new adapter, which has never heard of this worker.
     second = mgr(sb, core);
-    assert.deepEqual(second.list().workers, [], 'the new manager starts with an empty view');
+    assert.deepEqual((await second.list()).workers, [], 'the new manager starts with an empty view');
 
     const r = await second.restart({ worker_id: 'w-a3', first_turn_timeout_ms: SLOW });
     assert.equal(r.branch, 'resume', 'the session id and last event came from the store: ' + r.reason);

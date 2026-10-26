@@ -339,7 +339,7 @@ test('an unreadable user settings file fails the launch with E_ARGS naming the f
     }
   );
   assert.equal(core.calls.length, 0, 'nothing was written and nothing was launched');
-  assert.equal(m.list().workers.filter((w) => w.pid).length, 0);
+  assert.equal((await m.list()).workers.filter((w) => w.pid).length, 0);
 
   // A file that simply does not exist names no plugin to disable and is not a failure.
   const m2 = createRunManager({
