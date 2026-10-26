@@ -38,20 +38,28 @@ const leaseOf = (l) => (l && typeof l === 'object' ? { id: l.id, holder: l.holde
 const worktreeOf = (w) => (w && typeof w === 'object' ? { path: w.path, branch: w.branch, ...(w.inherited_from ? { inherited_from: w.inherited_from } : {}), ...(w.removed_at ? { removed_at: w.removed_at } : {}) } : w);
 const handoffFields = (h) => (h && typeof h === 'object' ? { by: h.by, at: h.at, fields: h.result && typeof h.result === 'object' ? Object.keys(h.result) : [] } : h);
 
-// One task's detail gives a review's hand-back once. The verdict check of the same hand-back (its lease) carries the summary,
-// the findings and the tree record verbatim, and the prompt reads them there; so the hand-back leaves out each one that is
-// equal in the check and names them in `in_verdict_check`. Whatever differs (findings cut to the check's maximum) stays.
+// One task's detail gives a review's hand-back once, with the verdict beside its findings: the hand-back's result keeps
+// {verdict, summary, findings}, and the verdict check of the same hand-back (its lease), which carries the summary and the
+// findings verbatim, leaves each one that is equal out of its detail and names them in `in_handoff`. The tree record, which the
+// prompt reads in the check, is left out of the hand-back and named in its `in_verdict_check`. Whatever differs (findings cut to
+// the check's maximum) stays in both. Returns the hand-back and the checks as they are to be shown.
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function handoffOnce(h, checks) {
-  if (!h || typeof h !== 'object' || !h.result || typeof h.result !== 'object') return h;
-  const v = checks.find((c) => c && c.kind === 'verdict' && c.detail && c.detail.lease_id === h.lease_id);
-  if (!v) return h;
-  const result = { ...h.result };
+  if (!h || typeof h !== 'object' || !h.result || typeof h.result !== 'object') return { handoff: h, checks };
+  const at = checks.findIndex((c) => c && c.kind === 'verdict' && c.detail && c.detail.lease_id === h.lease_id);
+  if (at < 0) return { handoff: h, checks };
+  const v = checks[at];
+  const dup = ['summary', 'findings'].filter((k) => k in h.result && same(h.result[k], v.detail[k]));
   const out = { ...h };
   const moved = [];
-  for (const k of ['summary', 'findings']) if (k in result && same(result[k], v.detail[k])) { delete result[k]; moved.push(k); }
   for (const k of ['tree', 'scratch']) if (k in out && same(out[k], v.detail[k])) { delete out[k]; moved.push(k); }
-  return moved.length ? { ...out, result, in_verdict_check: moved } : h;
+  if (moved.length) out.in_verdict_check = moved;
+  if (!dup.length) return { handoff: moved.length ? out : h, checks };
+  const detail = { ...v.detail };
+  for (const k of dup) delete detail[k];
+  const shown = checks.slice();
+  shown[at] = { ...v, detail: { ...detail, in_handoff: dup } };
+  return { handoff: out, checks: shown };
 }
 
 // The row keys a compact answer drops or replaces. Anything else the core adds passes through, so a new field is never lost here.
@@ -71,6 +79,15 @@ function summaryResults(facts, checks) {
   return out;
 }
 
+// A listing row leaves out what says nothing: a null, an empty list, and `holds_files: false`. An absent `lease`, `depends_on`,
+// `repairs`, `answers`, `base`, `review` or `integration` is none; the task's own detail (task_ids) keeps every field.
+const empty = (v) => v === null || v === undefined || (Array.isArray(v) && v.length === 0);
+function lean(out) {
+  for (const k of Object.keys(out)) if (empty(out[k]) || (k === 'holds_files' && out[k] === false)) delete out[k];
+  if (out.results && typeof out.results === 'object' && empty(out.results.failing)) delete out.results.failing;
+  return out;
+}
+
 // `detail`: the shape of one task the orchestrator is reading (task_evaluate's row, task_list with task_ids): the hand-back
 // whole and every check. Otherwise the row of a listing: the hand-back's field names and the checks counted, failing named.
 function compactTask(row, { detail = false } = {}) {
@@ -83,16 +100,18 @@ function compactTask(row, { detail = false } = {}) {
   out.spec_head = head(row.spec);
   if (row.lease !== undefined) out.lease = leaseOf(row.lease);
   if (detail) { if (row.worktree !== undefined) out.worktree = worktreeOf(row.worktree); } else if (row.worktree && row.worktree.branch) out.branch = row.worktree.branch;
-  const allChecks = row.results && Array.isArray(row.results.checks) ? row.results.checks : [];
-  if (row.handoff !== undefined) out.handoff = detail ? handoffOnce(row.handoff, allChecks) : handoffFields(row.handoff);
+  let allChecks = row.results && Array.isArray(row.results.checks) ? row.results.checks : [];
+  if (row.handoff !== undefined) {
+    if (detail) { const once = handoffOnce(row.handoff, allChecks); out.handoff = once.handoff; allChecks = once.checks; } else out.handoff = handoffFields(row.handoff);
+  }
   const r = row.results;
   if (r && typeof r === 'object') {
-    const checks = Array.isArray(r.checks) ? r.checks : [];
+    const checks = Array.isArray(r.checks) ? (detail ? allChecks : r.checks) : [];
     const { checks: _c, ...facts } = r;
     out.results = detail ? { ...facts, checks: checks.map(compactCheck) }
       : summaryResults(facts, checks);
   } else if (r !== undefined) out.results = r;
-  return out;
+  return detail ? out : lean(out);
 }
 
 // `task_ids` narrows a listing to those tasks; an id with no task (in the states asked for) is named in `not_found`.

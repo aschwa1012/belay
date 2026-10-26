@@ -107,9 +107,7 @@ test('A8 against the real core: task_create, task_list and briefing', async (t) 
   assert.strictEqual(list.tasks.length, 1);
   const row = list.tasks[0];
   assert.strictEqual(row.id, c.id);
-  assert.strictEqual(row.lease, null, 'an unassigned task has no lease');
-  assert.strictEqual(row.holder_pid_alive, null);
-  assert.strictEqual(row.last_checkpoint_id, null);
+  for (const k of ['lease', 'holder_pid_alive', 'last_checkpoint_id']) assert.ok(!(k in row), `a listing row leaves out ${k} when it is null (an unassigned task has no lease)`);
 
   const b = (await a.call('briefing', { task_id: c.id })).structuredContent;
   assert.ok(b.line.bytes <= 400, `resume line is ${b.line.bytes} bytes`);
