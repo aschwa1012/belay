@@ -92,6 +92,13 @@ function isLink(p) { try { return fs.lstatSync(p).isSymbolicLink(); } catch { re
 // The first message's line naming the folder.
 const firstLine = (dir) => `\n\nYour scratch folder, outside the tree under review: ${dir}. Write probes and scratch files only there.`;
 
+// The line naming the tree a review judges when the reviewer's working directory is another: a reused reviewer, or one spawned
+// elsewhere, would otherwise read and run in its own cwd. `review` is the core's assign answer block ({ tree, cwd }).
+const flat = (d) => String(d).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+const sameDir = (a, b) => flat(a) === flat(b);
+const treeLine = (review) => review && review.tree && review.cwd && !sameDir(review.tree, review.cwd)
+  ? `\n\nReview the tree at ${review.tree} (your working directory is ${review.cwd}); cd there before you read or run anything.` : '';
+
 // Run close: remove every scratch folder this run made, or keep them with the lever, after sweeping `.gone-` leftovers. The
 // receipt's `review_scratch` block, or {} when there was nothing. A folder that fails a check is never touched; it is named.
 // The run's own (empty) folder is removed when every folder in it went; a non-empty one is never removed.
@@ -129,4 +136,4 @@ function lines(receipt) {
   return [s.kept ? `review scratch: kept ${s.folders.length} folder(s) (keep_review_scratch)` : `review scratch: removed ${s.removed_folders} folder(s), ${s.removed_bytes} bytes`];
 }
 
-module.exports = { ensure, firstLine, closeRun, lines, removeChecked, renameRetry, sweep, scratchOf: SD.scratchOf };
+module.exports = { ensure, firstLine, treeLine, closeRun, lines, removeChecked, renameRetry, sweep, scratchOf: SD.scratchOf };
