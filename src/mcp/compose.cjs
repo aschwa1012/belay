@@ -84,7 +84,22 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
   async function spawn(args) {
     const { view = 'compact', ...rest } = args || {};
     const row = await (await openManager()).spawn(rest);
-    return view === 'debug' ? row : compactSpawn(row, rest.model);
+    if (view === 'debug') return row;
+    const out = compactSpawn(row, rest.model);
+    const lease = row && row.task_id ? await leaseNote(row.task_id, row.id) : null;
+    return lease ? { ...out, lease } : out;
+  }
+
+  // The lease spawn made for a task: its id and `expires_at`, and how it is kept (ADR 0026). The worker's own adapter renews it
+  // each minute once under half its length remains, while the worker's row is running, its pid answers and its last event is
+  // younger than the lease is long; a worker that is parked, paused, stopped, dead or silent that long is not renewed. A read
+  // that fails leaves the answer without the field.
+  async function leaseNote(taskId, workerId) {
+    try {
+      const l = ((await callCore('task.get', { task_id: taskId })) || {}).lease;
+      if (!l || l.holder !== workerId) return null;
+      return { id: l.id, expires_at: l.expires_at, ttl_ms: l.ttl_ms, renewal: 'belay renews it while the worker runs and is active within ttl_ms; a paused, stopped, dead or silent worker is not renewed' };
+    } catch { return null; }
   }
 
   // worker_last_reply (B11): read from the worker's recorded stream (last-reply.cjs); no core call, no write.

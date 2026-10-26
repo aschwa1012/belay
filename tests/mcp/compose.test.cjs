@@ -81,3 +81,24 @@ test('task_assign tells a coder in the task\'s own worktree to commit first, and
   assert.match(await said({}), /When you are finished, call lease_release/);
   assert.match(await said({ worktree: { ...tree.worktree, removed_at: 5 } }), /When you are finished, call lease_release/);
 });
+
+test('worker_spawn with a task_id answers the lease it holds, its expires_at and how belay keeps it; no task, no lease field', async () => {
+  const { createCompose } = require('../../src/mcp/compose.cjs');
+  const row = { id: 'w1', substrate: 'claude-code', task_id: 't1', state: 'running' };
+  const lease = { id: 'L1', holder: 'w1', holder_role: 'worker', ttl_ms: 600000, expires_at: 1234 };
+  const asked = [];
+  const callCore = async (m, a) => { asked.push([m, a]); return { id: a.task_id, lease }; };
+  const c = createCompose({ callCore, openManager: async () => ({ spawn: async () => row }), manager: () => null });
+  const out = await c.spawn({ substrate: 'claude-code', prompt: 'p', task_id: 't1' });
+  assert.deepStrictEqual([out.lease.id, out.lease.expires_at, out.lease.ttl_ms], ['L1', 1234, 600000]);
+  assert.match(out.lease.renewal, /renews it while the worker runs/);
+  assert.deepStrictEqual(asked, [['task.get', { task_id: 't1' }]]);
+  // Another holder, a failed read, or no task: the answer is the compact row alone.
+  const other = createCompose({ callCore: async () => ({ lease: { ...lease, holder: 'w2' } }), openManager: async () => ({ spawn: async () => row }), manager: () => null });
+  assert.ok(!('lease' in await other.spawn({ substrate: 'claude-code', prompt: 'p', task_id: 't1' })));
+  const broken = createCompose({ callCore: async () => { throw new Error('x'); }, openManager: async () => ({ spawn: async () => row }), manager: () => null });
+  assert.strictEqual((await broken.spawn({ substrate: 'claude-code', prompt: 'p', task_id: 't1' })).id, 'w1');
+  const bare = createCompose({ callCore, openManager: async () => ({ spawn: async () => ({ id: 'w3' }) }), manager: () => null });
+  assert.ok(!('lease' in await bare.spawn({ substrate: 'claude-code', prompt: 'p' })));
+  assert.strictEqual(asked.length, 1, 'a spawn with no task reads no task');
+});
