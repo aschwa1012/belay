@@ -179,12 +179,13 @@ test('both orchestrator prompts: the review step does not call task_evaluate, in
     const step4 = text.slice(text.indexOf('4. belay evaluates the review itself'), text.indexOf('5. Read the `kind: "verdict"`'));
     assert.ok(step4.length > 0, `${f}: step 4 is the release evaluation`);
     assert.match(step4, /do not call `mcp__belay__task_evaluate`\n\s+on it: the reviewer's wake carries the result/, `${f}: no task_evaluate on a review`);
-    assert.doesNotMatch(text, /call `mcp__belay__task_evaluate` on the review/, `${f}: the stale instruction is gone`);
+    assert.match(step4, /not or could not be evaluated, or a stop, pause or park cut it short, call `mcp__belay__task_evaluate` on the review yourself with the reviewed task's worktree/, `${f}: the fallback when no release evaluation lands`);
+    assert.doesNotMatch(text, /reviewer's (turn ends \(wait on its id\)|wake comes \(its turn ended\)), call/, `${f}: the stale instruction is gone`);
     assert.doesNotMatch(text, /evaluate again\. If the coder judged/, `${f}: no second evaluate after a late hand-back`);
     assert.match(text, /re-runs their checks on the merged head \(`evaluate` defaults to true\): that is the evaluation of the final integrated head, and `task_evaluate` of one task against the integration tree is not/, `${f}: integrate is the final evaluation`);
     assert.match(text, /files_within_owned is judged against the task's own base, and belay refuses it/, `${f}: why task_evaluate is not that check`);
     assert.match(text, /`project` is stored as `project\/<name>` and `summary` \(a run outcome, with a `title`\) as `summary\/<name>`/, `${f}: the project suffix`);
-    assert.match(text, /A row stays status unverified until a `mcp__belay__memory_verify` with a receipt; your summary is found by title and kept as it is, and only a refuted row is hidden/, `${f}: what unverified means`);
+    assert.match(text, /A row stays status unverified until a `mcp__belay__memory_verify` with a receipt; your summary is found by title and kept as it is./, `${f}: what unverified means`);
   }
 });
 

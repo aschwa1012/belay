@@ -16,7 +16,7 @@ function verdictDetail(review) {
 }
 
 // A finding as one plain line: where (file:line), its severity and clause, then what. The core does not fix a finding's shape, so
-// the text is the first of the usual fields a reviewer writes (note, what, text, ...) and a finding with none is its other fields
+// the text is the first of the usual fields a reviewer writes (note, what, text, ...), followed by every other field (evidence, where, ...)
 // as key: value pairs. A finding that is a bare string is that string.
 const WHAT = ['note', 'what', 'text', 'description', 'detail', 'message', 'summary', 'issue', 'finding'];
 const WHERE = ['file', 'path', 'location'];
@@ -29,8 +29,10 @@ function findingLine(f) {
   const file = pick(WHERE);
   const line = scalar(f.line) ? (used.add('line'), String(f.line)) : '';
   const tag = ['severity', 'clause'].filter((k) => scalar(f[k])).map((k) => (used.add(k), k === 'clause' ? `clause ${f[k]}` : String(f[k]))).join(', ');
-  let what = pick(WHAT);
-  if (!what) what = Object.keys(f).filter((k) => !used.has(k) && f[k] != null).map((k) => `${k}: ${scalar(f[k]) ? f[k] : JSON.stringify(f[k])}`).join('; ');
+  const text = pick(WHAT);
+  // Every other field the reviewer gave (evidence, where, a probe) follows the text: none of it is dropped.
+  const rest = Object.keys(f).filter((k) => !used.has(k) && f[k] != null && f[k] !== '').map((k) => `${k}: ${scalar(f[k]) ? String(f[k]).trim() : JSON.stringify(f[k])}`).join('; ');
+  const what = text ? (rest ? `${text} -- ${rest}` : text) : rest;
   return [file ? `${file}${line ? `:${line}` : ''}` : '', tag ? `[${tag}]` : '', what].filter(Boolean).join(' ');
 }
 

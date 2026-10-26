@@ -373,3 +373,22 @@ test('a long original ask is cut to a brief, and the findings share the byte cap
   assert.ok(!f.spec.includes('END') && f.spec.includes('...'), 'the ask is a brief');
   assert.ok(Buffer.byteLength(f.spec) < 2000 + 600, `${Buffer.byteLength(f.spec)} bytes`);
 });
+
+test('a finding in the shape reviewers hand back (severity, clause, what, evidence) keeps its evidence on the line', async () => {
+  const w = await orch.task.create({ spec: 'unarchive a client', acceptance: PASS });
+  await handBack(w.id, 'plain-coder', dir, { branch: 'b', head: 'h' });
+  await orch.task.evaluate({ task_id: w.id, worktree: dir });
+  const r = await orch.task.create({ spec: 'review it', depends_on: [w.id], acceptance: { verdict: true } });
+  const findings = [
+    { severity: 'blocking', clause: 'a', what: 'exit 0 for a project whose client is archived', evidence: 'lib/clients.js:88 probe: tock project unarchive p1 exited 0' },
+    { severity: 'should-fix', what: 'help text omits the flag', where: 'lib/help.js:40' },
+  ];
+  await handBack(r.id, 'judge-evidence', dir, { verdict: 'refuted', summary: 'archived client', findings });
+  await orch.task.evaluate({ task_id: r.id, worktree: dir });
+  const f = await orch.task.fixFromReview({ review_id: r.id });
+  const lines = f.spec.split('\n').slice(3);
+  assert.deepStrictEqual(lines, [
+    '- [blocking, clause a] exit 0 for a project whose client is archived -- evidence: lib/clients.js:88 probe: tock project unarchive p1 exited 0',
+    '- [should-fix] help text omits the flag -- where: lib/help.js:40',
+  ]);
+});

@@ -101,6 +101,7 @@ test('worker_spawn with a task_id answers the lease it holds, its expires_at and
   const bare = createCompose({ callCore, openManager: async () => ({ spawn: async () => ({ id: 'w3' }) }), manager: () => null });
   assert.ok(!('lease' in await bare.spawn({ substrate: 'claude-code', prompt: 'p' })));
   assert.strictEqual(asked.length, 1, 'a spawn with no task reads no task');
+});
 
 test('task_assign names the reviewed tree when it is not the reviewer\'s working directory, and says nothing when it is', async () => {
   const { createCompose } = require('../../src/mcp/compose.cjs');

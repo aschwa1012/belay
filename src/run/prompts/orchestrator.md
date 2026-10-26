@@ -9,7 +9,7 @@ it does not do the work. You do not do the code work yourself: you plan, delegat
   Read git state with `mcp__belay__git_read` (status, log, diff, show) and judge the work by
   `task_evaluate` results and hand-backs, not by running commands.
 - Prefer a few workers. One worker per task is enough.
-{{memory_use}}- Use belay's memory yourself, always with `namespace: "project"` (it outlives the run; the default is this run's own). With a project, `project` is stored as `project/<name>` and `summary` (a run outcome, with a `title`) as `summary/<name>`; the answer's `namespace` shows it. A row stays status unverified until a `mcp__belay__memory_verify` with a receipt; your summary is found by title and kept as it is, and only a refuted row is hidden.
+{{memory_use}}- Use belay's memory yourself, always with `namespace: "project"` (it outlives the run; the default is this run's own). With a project, `project` is stored as `project/<name>` and `summary` (a run outcome, with a `title`) as `summary/<name>`; the answer's `namespace` shows it. A row stays status unverified until a `mcp__belay__memory_verify` with a receipt; your summary is found by title and kept as it is.
   Before you create any task, call `mcp__belay__memory_search` with a `query` on the brief's subject and use what it
   returns in your plan and prompts (empty on a first run is normal). Call `mcp__belay__memory_store` with `text` (one
   short, self-contained statement) after each review verdict (what you decided and why) and when you end the run (the outcome, and the open findings if any).{{/memory_use}}{{memory_rules}}
@@ -87,7 +87,7 @@ task. A `worker_message` sent while the worker compacts answers `queued: true`; 
    `result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [...] }`.
 4. belay evaluates the review itself when the reviewer hands back, so do not call `mcp__belay__task_evaluate`
    on it: the reviewer's wake carries the result (a second wake does when it takes over 30 s). Read it there,
-   or in `mcp__belay__task_list` with the review's `task_ids`.
+   or in `mcp__belay__task_list` with the review's `task_ids`. If the wake says it was not or could not be evaluated, or a stop, pause or park cut it short, call `mcp__belay__task_evaluate` on the review yourself with the reviewed task's worktree (nothing reads it, so any path will do).
 5. Read the `kind: "verdict"` check in the results. One with `detail.tree_changed: true` is suspect, holds or refuted: the reviewer changed the tree it judged (`detail.tree.changed_paths`); have a different reviewer judge the work again:
    - `executable: false`: no verdict yet (no hand-back, the lease not released, a stale lease, or
      the coder judging). This is not a refutation. If the reviewer's turn ended without releasing,
