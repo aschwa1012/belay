@@ -49,7 +49,8 @@ test('one task\'s detail keeps the hand-back whole and a failing check\'s tails,
   assert.deepStrictEqual([own.detail.head_sha, own.detail.base_source, own.detail.changed_count, own.detail.changed], ['h1', 'recorded', 2, undefined]);
   assert.deepStrictEqual(ownFail.detail.outside, ['b.js']);
   assert.deepStrictEqual(ownFail.detail.changed, ['a.js', 'b.js'], 'a failing check keeps its file list');
-  assert.deepStrictEqual(v, verdict, 'a verdict check is whole');
+  // A verdict check keeps its facts and drops its nulls (reason: null) and receipts.
+  assert.deepStrictEqual(v, { ...verdict, detail: { verdict: 'refuted', summary: 's', by: 'r1', findings: [{ severity: 'blocking' }] } }, 'a verdict check keeps what a finding rests on');
 });
 
 test('viewed: task_list compacts by default, task_ids narrows to the detail shape, view debug is the core answer', async () => {
@@ -74,7 +75,7 @@ test('viewed: task_evaluate, task_assign and task_cancel are compact; other tool
   assert.deepStrictEqual([ev.idle_stop, 'spec' in ev, ev.handoff.result.head], [{ stopped: true }, false, 'h1']);
   const as = await V.viewed('task_assign', { task_id: 't1', worker_id: 'w1' }, async () => ({ task: row(), new_lease: { id: 'l2' }, delivered: { sent: true } }));
   assert.deepStrictEqual([as.new_lease, as.delivered, 'spec' in as.task, as.task.id], [{ id: 'l2' }, { sent: true }, false, 't1']);
-  for (const name of ['status', '__proto__', 'constructor', 'toString']) {
+  for (const name of ['__proto__', 'constructor', 'toString']) {
     assert.strictEqual(V.isViewed(name), false, name);
     const same = { anything: 1 };
     assert.strictEqual(await V.viewed(name, { view: 'whatever' }, async () => same), same, name);
@@ -175,16 +176,21 @@ test('one review detail shows the verdict beside its summary and findings once: 
   const review = row({ acceptance: { verdict: true }, handoff: h, results: { executable: true, passed: false, checks: [v] } });
   const d = V.taskList({ tasks: [review] }, { task_ids: ['t1'] }).tasks[0];
   assert.deepStrictEqual(d.handoff.result, h.result, 'the hand-back keeps the verdict, the summary and the findings together');
-  assert.deepStrictEqual(d.handoff.in_verdict_check, ['tree']);
+  assert.ok(!('tree' in d.handoff) && !('in_verdict_check' in d.handoff), 'an unchanged tree is tree_changed false and no record, in the hand-back and in the check');
   const { in_handoff, ...rest } = d.results.checks[0].detail;
   assert.deepStrictEqual(in_handoff, ['summary', 'findings']);
-  assert.deepStrictEqual(rest, { verdict: 'refuted', judged_by: 'r1', lease_id: 'l9', tree, tree_changed: false }, 'the check keeps its facts, with the tree record the prompt reads');
+  assert.deepStrictEqual(rest, { verdict: 'refuted', tree_changed: false }, 'the check drops the lease, who judged and the tree record: receipts');
+  // A changed tree keeps its record, once, in the check: the prompt reads detail.tree.changed_paths.
+  const moved = { changed: true, changed_paths: ['lib/a.js'] };
+  const flagged = V.taskList({ tasks: [row({ acceptance: { verdict: true }, handoff: { ...h, tree: moved }, results: { executable: true, passed: false, checks: [{ ...v, detail: { ...v.detail, tree: moved, tree_changed: true } }] } })] }, { task_ids: ['t1'] }).tasks[0];
+  assert.deepStrictEqual(flagged.handoff.in_verdict_check, ['tree']);
+  assert.deepStrictEqual([flagged.results.checks[0].detail.tree, flagged.results.checks[0].detail.tree_changed], [moved, true]);
   assert.strictEqual(JSON.stringify(d).split('x'.repeat(300)).length - 1, 1, 'the findings appear once');
   assert.strictEqual(v.detail.findings, findings, 'the core row is not changed');
   // A hand-back that differs from the check (another lease, or findings the check cut) keeps everything in both.
   const other = V.taskList({ tasks: [row({ handoff: { ...h, lease_id: 'l8' }, results: { checks: [v] } })] }, { task_ids: ['t1'] }).tasks[0];
   assert.deepStrictEqual(other.handoff, { ...h, lease_id: 'l8' });
-  assert.deepStrictEqual(other.results.checks[0].detail, v.detail);
+  assert.deepStrictEqual(other.results.checks[0].detail, { verdict: 'refuted', summary: v.detail.summary, findings, tree_changed: false }, 'a check that is no hand-back twin still loses its receipts');
   const cutCheck = { ...v, detail: { ...v.detail, findings: [] } };
   const cut = V.taskEvaluate(row({ handoff: h, results: { checks: [cutCheck] } }));
   assert.deepStrictEqual(cut.handoff.result.findings, findings, 'findings that differ stay in the hand-back');
@@ -192,7 +198,7 @@ test('one review detail shows the verdict beside its summary and findings once: 
   assert.deepStrictEqual(cut.results.checks[0].detail.in_handoff, ['summary']);
 });
 
-test('a listing row omits nulls, empty lists and holds_files false; the detail of a task keeps them', () => {
+test('a listing row omits nulls, empty lists and holds_files false; the detail of a task omits nulls and empty lists too, and keeps a false', () => {
   const bare = row({ depends_on: [], repairs: null, answers: null, base: null, holds_files: false, holder_pid_alive: null, last_checkpoint_id: null, last_checkpoint_at: null,
     lease: null, integration: null, review: null, results: { evaluated_at: 7, executable: true, passed: true, trigger: 'release', checks: [owned(true)] } });
   const s = V.compactTask(bare);
@@ -202,7 +208,11 @@ test('a listing row omits nulls, empty lists and holds_files false; the detail o
   const kept = V.compactTask(row({ holds_files: true, depends_on: ['t0'], results: { executable: true, passed: false, checks: [check(false)] } }));
   assert.deepStrictEqual([kept.holds_files, kept.depends_on, kept.results.failing], [true, ['t0'], ['command npm test exit 1']]);
   const full = V.compactTask(bare, { detail: true });
-  for (const k of ['depends_on', 'repairs', 'holds_files', 'lease']) assert.ok(k in full, `detail keeps ${k}`);
+  for (const k of ['depends_on', 'repairs', 'answers', 'base', 'holder_pid_alive', 'last_checkpoint_id', 'last_checkpoint_at', 'lease', 'integration', 'review']) assert.ok(!(k in full), `detail leaves out ${k} when it is null or empty (wording audit)`);
+  assert.strictEqual(full.holds_files, false, 'a false that means something stays');
+  assert.deepStrictEqual([full.id, full.state, full.future_field], ['t1', 'released', 'kept']);
+  const some = V.compactTask(row({ depends_on: ['t0'], answers: null }), { detail: true });
+  assert.deepStrictEqual([some.depends_on, 'answers' in some, some.lease.id], [['t0'], false, 'l2']);
 });
 
 test('a three-task listing costs fewer bytes than the same rows padded with their empty fields', () => {
@@ -221,4 +231,45 @@ test('git_read leaves out belay\'s argv; view debug keeps it', async () => {
   assert.ok(!('argv' in c));
   assert.deepStrictEqual(c, { op: 'log', worktree: 'C:/r', worktree_from: 'run', exit_code: 0, ms: 9, bytes: 40, truncated: false, out: 'abc subject\n' });
   assert.strictEqual(await V.viewed('git_read', { op: 'log', view: 'debug' }, async () => r), r);
+});
+
+test('wording audit: a worker\'s lease_release answer is the task, its state, the lease and what it must act on, not the hand-back it just sent', () => {
+  const core = { ...row({ state: 'released' }), last_checkpoint_id: 'c1', released_reason: 'done', handoff: { by: 'w1', at: 6, lease_id: 'l1', result: { branch: 'b', head: 'h' }, tree: { changed: false }, scratch: { bytes: 4, limit_bytes: 9 }, memory_ids_missing: [] } };
+  const plain = V.leaseRelease(core, { lease_id: 'l1' });
+  assert.deepStrictEqual(plain, { id: 't1', state: 'released', lease_id: 'l1' });
+  assert.ok(Buffer.byteLength(JSON.stringify(plain)) < 80 && Buffer.byteLength(JSON.stringify(core)) > 1500, 'a few dozen bytes against the whole row');
+  // Notes: stored ones are counted; a pending one is shown whole, with the line that says what to do; the marks the worker made are not echoed.
+  const noted = V.leaseRelease({ ...core, notes: [{ index: 0, id: 'n1', state: 'stored', title: 'x' }, { index: 1, id: 'n2', state: 'pending', title: 'y', matches: [{ id: 'm9', similarity: 0.9 }] }, { index: 2, id: 'n3', state: 'duplicate' }],
+    reported_wrong: [{ id: 'z', marked: true }], pending: 1, next: 'settle n2 with memory_note_resolve', memory_ids: { ids: ['a'], recorded: true, event_id: 'e', seq: 3 } }, { lease_id: 'l1' });
+  assert.deepStrictEqual(noted, { id: 't1', state: 'released', lease_id: 'l1', notes_written: 1, pending: 1, pending_notes: [{ index: 1, id: 'n2', state: 'pending', title: 'y', matches: [{ id: 'm9', similarity: 0.9 }] }], next: 'settle n2 with memory_note_resolve', memory_ids: { recorded: true } });
+  // A warning, a dropped note set and a late hand-back are facts the worker needs.
+  const warned = V.leaseRelease({ ...core, warning: 'w', notes_dropped: 2, lease_released_by: 'holder_dead', note: 'late' }, { lease_id: 'l1' });
+  assert.deepStrictEqual([warned.warning, warned.notes_dropped, warned.lease_released_by, warned.note], ['w', 2, 'holder_dead', 'late']);
+  assert.deepStrictEqual(V.leaseRelease({ ...core, handoff: { ...core.handoff, memory_ids_missing: ['gone'] } }, { lease_id: 'l1' }).memory_ids_missing, ['gone'], 'a cited id with no row is named');
+  assert.strictEqual(V.leaseRelease(null, {}), null);
+});
+
+test('wording audit: status leaves out a notes_held that holds nothing, and keeps one that holds something or is malformed', () => {
+  const zero = { total: 0, queued: 0, unsupported: 0, malformed: 0, by_project: {}, oldest_age_runs: 0 };
+  const quiet = V.VIEWED.status({ verdict: 'alive', notes_held: zero, notes_unembedded: { total: 0 }, rungs: [] });
+  assert.ok(!('notes_held' in quiet) && quiet.verdict === 'alive' && 'notes_unembedded' in quiet);
+  assert.ok('notes_held' in V.VIEWED.status({ verdict: 'alive', notes_held: { ...zero, total: 2 } }));
+  assert.ok('notes_held' in V.VIEWED.status({ verdict: 'alive', notes_held: { ...zero, malformed: 1 } }));
+  assert.deepStrictEqual(V.VIEWED.status({ verdict: 'stopped' }), { verdict: 'stopped' });
+  assert.ok(V.isViewed('status'));
+});
+
+test('wording audit: task_assign shows the lease it took as a lease; fix_from_review answers as task_create does, plus what belay inferred', async () => {
+  const lease = { seq: 6, id: 'l2', task_id: 't1', run_id: 'r', holder: 'w1', holder_role: 'worker', granted_at: 1, expires_at: 9, ttl_ms: 8, released_at: null, supersedes: null, written_by: 'orchestrator', written_at: 1 };
+  const as = await V.viewed('task_assign', { task_id: 't1', worker_id: 'w1' }, async () => ({ task: row(), old_lease: null, new_lease: lease, delivered: { sent: true } }));
+  assert.deepStrictEqual(as.new_lease, { id: 'l2', holder: 'w1', holder_role: 'worker', expires_at: 9 });
+  assert.deepStrictEqual([as.old_lease, as.delivered], [null, { sent: true }]);
+  const cancelled = await V.viewed('task_cancel', { task_id: 't1' }, async () => ({ task: row(), released_lease: lease }));
+  assert.strictEqual(cancelled.released_lease, lease, 'task_cancel is unchanged');
+  const fixRow = { ...row({ id: 'fix1', state: 'open', results: null, handoff: null, worktree: { repo: 'C:/r', path: 'C:/r.worktrees/t1', junctions: [{ path: 'x' }] } }), seq: 4, repairs: 't1', depends_on: ['t1'], files_owned: ['a.js'], acceptance: { commands: [{ argv: ['npm', 'test'] }] } };
+  const fix = await V.viewed('fix_from_review', { review_id: 'r1' }, async () => fixRow);
+  assert.deepStrictEqual([fix.id, fix.seq, fix.state, fix.repairs, fix.depends_on, fix.files_owned], ['fix1', 4, 'open', 't1', ['t1'], ['a.js']]);
+  for (const k of ['spec', 'acceptance', 'worktree', 'results', 'handoff', 'run_id', 'written_by']) assert.ok(!(k in fix), `${k} is left out`);
+  assert.ok(Buffer.byteLength(JSON.stringify(fix)) < Buffer.byteLength(JSON.stringify(fixRow)) / 2);
+  assert.strictEqual(await V.viewed('fix_from_review', { review_id: 'r1', view: 'debug' }, async () => fixRow), fixRow);
 });

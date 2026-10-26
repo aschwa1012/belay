@@ -99,8 +99,8 @@ test('lease_release: a worker\'s result over MCP lands as handoff, and the orche
   const rel = await w.call('lease_release', { lease_id: lease.id, result });
   assert.strictEqual(rel.isError, false, JSON.stringify(rel.structuredContent));
   assert.strictEqual(rel.structuredContent.state, 'released');
-  assert.deepStrictEqual(rel.structuredContent.handoff.result, result);
-  assert.strictEqual(rel.structuredContent.handoff.by, 'wk-lr');
+  // The worker's own answer is compact: it does not echo the hand-back it just sent (wording audit); the orchestrator reads it below.
+  assert.deepStrictEqual(rel.structuredContent, { id: task.id, state: 'released', lease_id: lease.id });
 
   const a = real({ role: 'orchestrator', run: 'run-lr', data });
   t.after(async () => { await a.close(); a.kill(); });

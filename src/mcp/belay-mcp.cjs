@@ -348,7 +348,7 @@ async function handle(msg) {
   if (method === 'ping') return send({ jsonrpc: '2.0', id, result: {} });
   if (method === 'tools/list') {
     const knowledge = await knowledgeListed(); // the one read of the run row; the notes lever comes from it
-    const list = toolsFor(opts.role, { knowledge, workerId: opts.workerId, notes: opts.role === 'worker' ? opts.notes : knowledgeListed.notes(), queries: knowledgeListed.queries() }).concat(opts.permit ? [PERMIT_TOOL] : []);
+    const list = toolsFor(opts.role, { knowledge, workerId: opts.workerId, notes: opts.role === 'worker' ? opts.notes : knowledgeListed.notes(), queries: knowledgeListed.queries(), permissions: !!opts.permissionPrompt }).concat(opts.permit ? [PERMIT_TOOL] : []);
     return send({ jsonrpc: '2.0', id, result: { tools: list } });
   }
   if (method === 'tools/call') {
@@ -363,7 +363,7 @@ async function handle(msg) {
       return send({ jsonrpc: '2.0', id, result });
     }
     try {
-      const row = opts.role === 'orchestrator' && require('./views.cjs').isViewed(name) ? await require('./views.cjs').viewed(name, args, (a) => callTool(name, a)) : await callTool(name, args); // ADR 0058 amendment 3: compact unless view debug
+      const row = opts.role === 'orchestrator' && require('./views.cjs').isViewed(name) ? await require('./views.cjs').viewed(name, args, (a) => callTool(name, a)) : (opts.role === 'worker' && name === 'lease_release' ? require('./views.cjs').leaseRelease(await callTool(name, args), args) : await callTool(name, args)); // ADR 0058 amendment 3: compact unless view debug; a worker's lease_release answer is compact too
       return send({ jsonrpc: '2.0', id, result: okResult(row) });
     } catch (e) {
       return send({ jsonrpc: '2.0', id, result: errResult(e) });

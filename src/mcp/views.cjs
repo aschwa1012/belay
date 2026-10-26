@@ -18,13 +18,29 @@ const label = (c) => `${c.kind === 'command' ? `command ${Array.isArray(c.argv) 
 const DETAIL_DROP = new Set(['cwd']);
 const PASSED_DROP = new Set(['stdout_tail', 'stderr_tail', 'changed', 'files_owned']);
 
+// A verdict check's detail without its receipts: which lease and when the hand-back came, who judged, what it depended on, the scratch
+// folder's cap, and the tree record while the tree did not change (the prompt reads `tree.changed_paths` only when `tree_changed` is true).
+// Every fact a finding rests on stays; a false or a 0 that means something stays too.
+const VERDICT_RECEIPTS = new Set(['lease_id', 'handoff_at', 'judged_by', 'depends_on']);
+function verdictDetail(detail) {
+  const d = {};
+  for (const [k, v] of Object.entries(detail)) {
+    if (VERDICT_RECEIPTS.has(k) || v === null || v === undefined) continue; // an empty findings list is a fact (the check cut them, or there were none)
+    if (k === 'tree' && detail.tree_changed !== true) continue;
+    if (k === 'scratch' && v && typeof v === 'object' && !Array.isArray(v)) { const { limit_bytes, ...s } = v; d[k] = s; continue; }
+    d[k] = v;
+  }
+  return d;
+}
+
 // A check: kind, passed, executable, the command's argv and exit code, and its detail less the drops above. A failing check's
 // tails and lists stay, because they say why. A verdict or hand-back check keeps its detail whole: it is small, and the prompt
 // reads it.
 function compactCheck(c) {
   if (!c || typeof c !== 'object') return c;
   const { detail, ...rest } = c;
-  if (!detail || typeof detail !== 'object' || c.kind === 'verdict' || c.kind === 'handoff') return c;
+  if (c.kind === 'verdict') return detail && typeof detail === 'object' ? { ...rest, detail: verdictDetail(detail) } : c;
+  if (!detail || typeof detail !== 'object' || c.kind === 'handoff') return c;
   const d = {};
   for (const [k, v] of Object.entries(detail)) {
     if (DETAIL_DROP.has(k) || v === null || v === undefined || (c.passed && PASSED_DROP.has(k))) continue;
@@ -33,7 +49,7 @@ function compactCheck(c) {
   return { ...rest, detail: d };
 }
 
-const leaseOf = (l) => (l && typeof l === 'object' ? { id: l.id, holder: l.holder, holder_role: l.holder_role, expires_at: l.expires_at, expired: l.expired } : l);
+const leaseOf = (l) => (l && typeof l === 'object' ? Object.fromEntries(Object.entries({ id: l.id, holder: l.holder, holder_role: l.holder_role, expires_at: l.expires_at, expired: l.expired }).filter(([, v]) => v !== undefined)) : l);
 // `inherited_from` stays: it says a fix shares the tree of the work it fixes (task.fixFromReview), so its coder can be reused.
 const worktreeOf = (w) => (w && typeof w === 'object' ? { path: w.path, branch: w.branch, ...(w.inherited_from ? { inherited_from: w.inherited_from } : {}), ...(w.removed_at ? { removed_at: w.removed_at } : {}) } : w);
 const handoffFields = (h) => (h && typeof h === 'object' ? { by: h.by, at: h.at, fields: h.result && typeof h.result === 'object' ? Object.keys(h.result) : [] } : h);
@@ -52,7 +68,12 @@ function handoffOnce(h, checks) {
   const dup = ['summary', 'findings'].filter((k) => k in h.result && same(h.result[k], v.detail[k]));
   const out = { ...h };
   const moved = [];
-  for (const k of ['tree', 'scratch']) if (k in out && same(out[k], v.detail[k])) { delete out[k]; moved.push(k); }
+  // An unchanged tree is `tree_changed: false` and nothing more: the record is dropped from both (verdictDetail drops it from the check).
+  for (const k of ['tree', 'scratch']) {
+    if (!(k in out) || !same(out[k], v.detail[k])) continue;
+    delete out[k];
+    if (k !== 'tree' || v.detail.tree_changed === true) moved.push(k);
+  }
   if (moved.length) out.in_verdict_check = moved;
   if (!dup.length) return { handoff: moved.length ? out : h, checks };
   const detail = { ...v.detail };
@@ -111,7 +132,8 @@ function compactTask(row, { detail = false } = {}) {
     out.results = detail ? { ...facts, checks: checks.map(compactCheck) }
       : summaryResults(facts, checks);
   } else if (r !== undefined) out.results = r;
-  return detail ? out : lean(out);
+  if (detail) { for (const k of Object.keys(out)) if (empty(out[k])) delete out[k]; return out; } // a null or an empty list says nothing; a false or a 0 stays
+  return lean(out);
 }
 
 // `task_ids` narrows a listing to those tasks; an id with no task (in the states asked for) is named in `not_found`.
@@ -151,6 +173,20 @@ function integrate(row) {
 // task_assign and task_cancel answer with the task beside the leases: the task is the summary row.
 const withTask = (answer) => (answer && typeof answer === 'object' && answer.task && typeof answer.task === 'object' ? { ...answer, task: compactTask(answer.task) } : answer);
 
+// task_assign: the task as task_list shows it, and the lease taken as a lease (id, holder, expiry), not the stored row.
+const assignView = (answer) => {
+  const out = withTask(answer);
+  return out && typeof out === 'object' && out.new_lease && typeof out.new_lease === 'object' ? { ...out, new_lease: leaseOf(out.new_lease) } : out;
+};
+
+// status: a store with no note held says so by saying nothing (notes_held is 20 keys of zero otherwise).
+function statusView(answer) {
+  const h = answer && typeof answer === 'object' ? answer.notes_held : null;
+  if (!h || typeof h !== 'object' || h.total > 0 || h.malformed > 0) return answer;
+  const { notes_held, ...rest } = answer;
+  return rest;
+}
+
 // task_create: the new task's id, rev, state and spec head. The row's other columns are the caller's own arguments (spec,
 // acceptance, files, dependencies) or empty on a new task, so they are left out; anything else the core adds to the answer (a
 // `warning` for a task with no checks, `overlaps` for a file held by a task in another tree) stays.
@@ -159,6 +195,14 @@ function created(row) {
   if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
   const out = { id: row.id, seq: row.seq, state: row.state, spec_head: head(row.spec) };
   for (const [k, v] of Object.entries(row)) if (!(k in out) && !CREATED_DROP.has(k) && !(k === 'amended' && v == null)) out[k] = v; // an amend's answer names what it replaced
+  return out;
+}
+
+// fix_from_review: the task as task_create answers it, plus what belay inferred for it (the task it repairs, what it waits for, the
+// files it owns), since the orchestrator did not write those. The spec, acceptance and tree records are the findings' and the base's own.
+function fixCreated(row) {
+  const out = created(row);
+  if (out && row && typeof row === 'object') for (const k of ['repairs', 'depends_on', 'files_owned']) if (!empty(row[k])) out[k] = row[k];
   return out;
 }
 
@@ -193,7 +237,27 @@ function memoryReport(a) {
   };
 }
 
-const VIEWED = { task_list: taskList, task_evaluate: taskEvaluate, integrate, task_assign: withTask, task_cancel: withTask, task_create: created, task_worktree: taskWorktree, git_read: gitRead, memory_report: memoryReport };
+// lease_release (the worker's answer): the worker has just sent its own hand-back, so the row repeats what it wrote, with the spec,
+// the tree and scratch records and the reason a memory id was or was not recorded. What it acts on: the task's state, the lease
+// it released, the notes written, any pending note it must settle (whole, with its matches and the `next` line), what the core
+// recorded of its memory ids, and any warning. A second call that only adds notes answers the same way.
+function leaseRelease(row, args) {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
+  const notes = Array.isArray(row.notes) ? row.notes : null;
+  const out = { id: row.id, state: row.state, lease_id: (args && args.lease_id) || (row.handoff && row.handoff.lease_id) || null };
+  if (notes) {
+    out.notes_written = notes.filter((n) => n && n.state === 'stored').length;
+    const pending = notes.filter((n) => n && n.state === 'pending');
+    if (pending.length) { out.pending = row.pending !== undefined ? row.pending : pending.length; out.pending_notes = pending; }
+    if (row.next !== undefined) out.next = row.next;
+  }
+  if (row.memory_ids && typeof row.memory_ids === 'object') out.memory_ids = { recorded: row.memory_ids.recorded };
+  if (row.handoff && Array.isArray(row.handoff.memory_ids_missing) && row.handoff.memory_ids_missing.length) out.memory_ids_missing = row.handoff.memory_ids_missing;
+  for (const k of ['warning', 'notes_dropped', 'lease_released_by', 'note']) if (row[k] !== undefined && row[k] !== null) out[k] = row[k];
+  return out;
+}
+
+const VIEWED = { task_list: taskList, task_evaluate: taskEvaluate, integrate, task_assign: assignView, task_cancel: withTask, task_create: created, fix_from_review: fixCreated, status: statusView, task_worktree: taskWorktree, git_read: gitRead, memory_report: memoryReport };
 const isViewed = (name) => typeof name === 'string' && Object.prototype.hasOwnProperty.call(VIEWED, name);
 const bad = (message, detail) => Object.assign(new Error(message), { code: 'E_ARGS', detail });
 
@@ -216,4 +280,4 @@ async function viewed(name, args, run) {
   return name === 'task_list' ? taskList(answer, { task_ids: ids }) : shape(answer);
 }
 
-module.exports = { compactTask, compactCheck, taskList, taskEvaluate, integrate, withTask, memoryReport, viewed, isViewed, VIEWED, SPEC_HEAD };
+module.exports = { compactTask, compactCheck, taskList, taskEvaluate, integrate, withTask, memoryReport, leaseRelease, viewed, isViewed, VIEWED, SPEC_HEAD };
