@@ -198,3 +198,37 @@ test('with no WAL the copy waits out the mtime tick after the last write, and a 
     assert.equal(gens, '1');
   } finally { try { d.close(); } catch { /* closed */ } fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('with no WAL a write between the window wait and the stamp does not hide a second same-tick write', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-copy-tick2-'));
+  const p = path.join(dir, 'memory.db');
+  const d = new DatabaseSync(p);
+  const origStat = fs.statSync;
+  const TICK = 20;
+  try {
+    d.exec('PRAGMA journal_mode=DELETE; CREATE TABLE t(id INTEGER PRIMARY KEY, gen INTEGER, payload BLOB)');
+    d.exec('BEGIN'); const ins = d.prepare('INSERT INTO t VALUES(?,?,?)');
+    for (let i = 0; i < 3; i++) ins.run(i, 0, Buffer.alloc(1 << 20, 7));
+    d.exec('COMMIT');
+    d.exec('UPDATE t SET gen=gen+1'); // the first update grows the file; the writes under test keep its size
+    // A write is pinned to the same mtime as the one before it only when it lands inside one tick of it, which is
+    // what the filesystem would do.
+    let t = null, first = true;
+    const write = () => {
+      d.exec('UPDATE t SET gen=gen+1');
+      const now = Date.now();
+      if (t === null) t = now; else if (now - t < TICK) { /* same tick */ } else t = null;
+      if (t !== null) fs.utimesSync(p, new Date(t), new Date(t));
+      if (t === null) t = -1e9;
+    };
+    // The first write lands as the copy takes its first stamp of the database, the second after the first chunk.
+    fs.statSync = (q, o) => { if (first && o && o.bigint && String(q) === p) { first = false; write(); } return origStat(q, o); };
+    const w = withWriterAt({ file: 'db', chunk: 1 }, write);
+    let gens;
+    try {
+      gens = await withCopy(dir, async dbPath => { const c = new DatabaseSync(dbPath); try { return c.prepare('SELECT DISTINCT gen FROM t').all().map(r => r.gen).join(','); } finally { c.close(); } });
+    } finally { w.restore(); fs.statSync = origStat; }
+    assert.equal(gens, String(d.prepare('SELECT DISTINCT gen FROM t').get().gen));
+    assert.equal(gens, '3');
+  } finally { fs.statSync = origStat; try { d.close(); } catch { /* closed */ } fs.rmSync(dir, { recursive: true, force: true }); }
+});

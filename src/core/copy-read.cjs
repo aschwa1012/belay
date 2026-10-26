@@ -115,12 +115,21 @@ function walHeader(p) {
   } catch { return 'absent'; } finally { if (fd !== undefined) try { fs.closeSync(fd); } catch { /* read-only handle */ } }
 }
 const stampAll = src => SUFFIXES.map(suf => stamp(src + suf)).join('|') + '|' + walHeader(src + '-wal');
-function settleTick(src) {
-  if (fs.existsSync(src + '-wal')) return;
-  let newest = 0;
-  for (const suf of SUFFIXES) { try { newest = Math.max(newest, fs.statSync(src + suf).mtimeMs); } catch { /* absent */ } }
-  const wait = Math.ceil(newest + TICK_WINDOW_MS - Date.now());
-  if (wait > 0) sleepSync(Math.min(wait, 2 * TICK_WINDOW_MS));
+// The stamp the copy is judged against. With no -wal its own mtimes must already be a full window behind the
+// clock: a window checked before the stamp is not enough, since a write can land between the two and put the
+// stamp's mtime in the current tick, hiding a second write of the same size during the copy. So the stamp is
+// taken, and if it is too fresh the copy waits out the rest of the window and stamps again.
+function quietStamp(src) {
+  for (let i = 0; i < 4; i++) {
+    const key = stampAll(src);
+    if (key.endsWith('|absent') === false) return key; // a -wal exists: its header covers a same-tick restart
+    let newest = 0;
+    for (const suf of SUFFIXES) { try { newest = Math.max(newest, fs.statSync(src + suf).mtimeMs); } catch { /* absent */ } }
+    const wait = Math.ceil(newest + TICK_WINDOW_MS - Date.now());
+    if (wait <= 0) return key;
+    sleepSync(Math.min(wait, 2 * TICK_WINDOW_MS));
+  }
+  return null; // never went quiet: a writer is active
 }
 
 async function withCopy(dataDir, fn) {
@@ -134,8 +143,8 @@ async function withCopy(dataDir, fn) {
   try {
     let present = false, settled = false;
     for (let attempt = 1; attempt <= COPY_TRIES && !settled; attempt++) {
-      settleTick(src);
-      const before = stampAll(src);
+      const before = quietStamp(src);
+      if (before === null) { sleepSync(5 * attempt); continue; }
       present = false;
       for (const suf of SUFFIXES) {
         const copied = copyWithRetry(src + suf, dst + suf, suf === '-shm');
