@@ -80,7 +80,7 @@ test('A4: evaluating a done task is refused E_TASK_DONE and its results stay byt
   const done = await orch.task.evaluate({ task_id: t.id, worktree: dir });
   assert.strictEqual(done.state, 'done');
   const before = JSON.stringify(await orch.task.get({ task_id: t.id }));
-  const e = await rejects(orch.task.evaluate({ task_id: t.id, worktree: dir }), 'E_TASK_DONE', /done is final; create a new task to redo the work/);
+  const e = await rejects(orch.task.evaluate({ task_id: t.id, worktree: dir }), 'E_TASK_DONE', /is already done \(evaluated at \d+\); its results are in task_list with task_ids\. To redo the work, create a new task/);
   assert.strictEqual(e.detail.task_id, t.id);
   assert.strictEqual(JSON.stringify(await orch.task.get({ task_id: t.id })), before);
 });

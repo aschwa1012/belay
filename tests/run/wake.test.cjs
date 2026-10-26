@@ -123,7 +123,7 @@ test('diffWorkers: a row seen alive again clears pid_dead_seen_at_ms, and a firs
 
 test('wakeText: a turn_end message carries only the id, the turn and the fixed sentence, under 400 bytes, no worker output', () => {
   const text = wakeText({ worker_id: 'w-abc', event: 'turn_end', turn: 3, seq: 40 });
-  assert.equal(text, "belay: worker w-abc finished turn 3. What it did is in the store: task_list, briefing or memory_search.");
+  assert.equal(text, 'belay: worker w-abc finished turn 3.'); // the pointer to the store (task_list, briefing or memory_search) is gone: the prompt says where a hand-back is read
   assert.ok(Buffer.byteLength(text, 'utf8') < 400, `wake text is ${Buffer.byteLength(text, 'utf8')} bytes`);
 });
 

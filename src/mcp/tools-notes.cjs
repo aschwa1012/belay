@@ -27,7 +27,7 @@ const NOTE_PROPS = {
 
 const LEASE_RELEASE = {
   name: 'lease_release',
-  description: 'Release your lease; returns the released task row, refuses if not the holder. result (max 4KB): branch, head, tests, findings; a review sets verdict holds|refuted and summary. notes is required, [] for most tasks; settle pending notes with memory_note_resolve.',
+  description: 'Release your lease. Returns the task state, the notes written and any pending. result (max 4KB): branch, head, tests, findings; a review sets verdict holds|refuted and summary. notes is required, [] for most tasks; settle pending notes with memory_note_resolve.',
   inputSchema: S({
     lease_id: str(),
     reason: str(),

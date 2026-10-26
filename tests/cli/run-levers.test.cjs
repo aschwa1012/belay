@@ -149,17 +149,21 @@ test('template: the shipped orchestrator prompt has both placeholders and the fo
   const text = fs.readFileSync(`${ROOT}/src/run/prompts/orchestrator.md`, 'utf8');
   assert.strictEqual((text.match(/\{\{max_fix_rounds\}\}/g) || []).length, 2);
   assert.strictEqual((text.match(/\{\{fix_cutoff_rule\}\}/g) || []).length, 1);
-  assert.match(text, /## Review standard/);
+  // Wording audit: the Review standard is one source file that belay appends to a reviewer's first message (handback.cjs); the
+  // orchestrator prompt no longer carries it and the orchestrator no longer copies it into a prompt.
+  assert.ok(!/## Review standard/.test(text), 'the prompt does not carry the standard');
+  const standard = fs.readFileSync(`${ROOT}/src/run/prompts/review-standard.md`, 'utf8').replace(/\r\n/g, '\n');
+  assert.match(standard, /^## Review standard\n/);
   for (const c of ['(a) breaks one of the brief\'s stated acceptance criteria', '(b) breaks an invariant in the repository\'s `CLAUDE.md`', '(c) is a regression', '(d) causes a hang, data loss, an orphaned process or a security hole']) {
-    assert.ok(text.includes(c), c);
+    assert.ok(standard.includes(c), c);
   }
-  assert.match(text, /an ordering or input the brief admits makes a\s+stated assertion fail\. Forcing a reachable ordering is evidence; passing when run does not clear it;/, 'ADR 0031 amendment 1: clause (a)');
-  assert.match(text, /names its\s+clause/);
-  assert.match(text, /## Review standard[^#]*The tree under review is read-only: run its tests, but edit, write, commit or stash nothing in it; write probes and scratch files only in the scratch folder your task names/, 'ADR 0054 amendment 1: inside the section a reviewer receives');
+  assert.match(standard, /an ordering or input the brief admits makes a\s+stated assertion fail\. Forcing a reachable ordering is evidence; passing when run does not clear it;/, 'ADR 0031 amendment 1: clause (a)');
+  assert.match(standard, /names its\s+clause/);
+  assert.match(standard, /^## Review standard\nThe tree under review is read-only: run its tests, but edit, write, commit or stash nothing in it; write probes and scratch files only in the scratch folder your task names/, 'ADR 0054 amendment 1: inside the section a reviewer receives');
   assert.match(text, /One with `detail.tree_changed: true` is suspect, holds or refuted/, 'ADR 0054 amendment 1: a flagged review is suspect');
-  assert.match(text, /only if it has at least\s+one blocking finding/);
-  assert.match(text, /Review standard section below, verbatim, in the reviewer's prompt/);
-  assert.ok(!/Include this section/.test(text), 'the instruction is outside the section a reviewer receives');
+  assert.match(standard, /only if it has at least\s+one blocking finding/);
+  assert.match(text, /belay appends the Review standard and the verdict hand-back rule to the reviewer's first message; do not repeat them/);
+  assert.ok(!/verbatim, in the reviewer's prompt/.test(text), 'the orchestrator is not asked to copy it');
   assert.match(text, /\(0: the first review\)/);
   assert.match(text, /A failed acceptance check is not a fix round/); // ADR 0058: worded beside fix_from_review
   assert.ok(!/\bland\b/.test(text), 'no "land" wording');

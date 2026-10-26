@@ -17,7 +17,7 @@ const path = require('node:path');
 const { createRunManager } = require('../../src/run/index.cjs');
 const P = require('../../src/run/process.cjs');
 const { DEFAULTS, leversOfRow } = require('../../src/run/memory-levers.cjs');
-const { createFakeCore } = require('./fake-core.cjs');
+const { createFakeCore, handback } = require('./fake-core.cjs');
 const { memoryCore } = require('./fake-memory.cjs');
 const { cleanup } = require('../core/helpers.cjs');
 
@@ -84,7 +84,7 @@ async function runScript(core, { handLevers = true, readDelayMs = null } = {}) {
 test('levers off: stdin bytes, memory store calls and rows equal the base build on the fake-claude fixture', async () => {
   const base = await runScript(createFakeCore({ runId: 'run-fake', resumeLineText: RL }));
   // The base build's behaviour, stated outright so the comparison is not only against a copy of the same code.
-  assert.deepStrictEqual(base.stdin, [`${RL}\n\none`, 'two']);
+  assert.deepStrictEqual(base.stdin, [`${RL}\n\none${handback()}`, 'two']);
   assert.deepStrictEqual(base.memoryCalls.map((c) => c.method), ['memory.store', 'memory.store']);
   assert.deepStrictEqual(base.memoryCalls.map((c) => c.args.turn), [1, 2]);
   for (const c of base.memoryCalls) {
@@ -150,7 +150,7 @@ test('a manager handed its levers makes no core call at shutdown when nothing wa
 test('levers on is observably different (the identity test would notice): an observation store and an event appear', async () => {
   const core = memoryCore({ levers: { capture: true, observations: true }, resumeLineText: RL });
   const got = await runScript(core);
-  assert.deepStrictEqual(got.stdin, [`${RL}\n\none`, 'two'], 'the bytes on stdin do not change either way');
+  assert.deepStrictEqual(got.stdin, [`${RL}\n\none${handback()}`, 'two'], 'the bytes on stdin do not change either way');
   assert.strictEqual(got.memoryCalls.filter((c) => c.args.type === 'observation').length, 2);
   assert.strictEqual(core.events.filter((e) => e.kind === 'observation').length, 2);
 });

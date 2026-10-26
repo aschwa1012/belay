@@ -140,8 +140,8 @@ test('listing bytes for both roles are printed and inside the ADR 0040 §4 budge
     const bytes = tools.listingBytes(role);
     console.log(`ADR 0040 §4 ${role}: ${tools.toolsFor(role).length} tools, ${bytes} bytes, budget ${tools.BUDGET[role]}, headroom ${tools.BUDGET[role] - bytes}`);
     assert.ok(bytes <= tools.BUDGET[role], `${role} listing is ${bytes} bytes, over ${tools.BUDGET[role]}`);
-    // The worker was at 4,081 before this record; the orchestrator at 8,351.
-    assert.ok(bytes > (role === 'worker' ? 4081 : 8351), `${role} listing grew`);
+    // The worker was at 4,081 before this record (3,557 now that ADR 0010 amendment 14 took four tools off it); the orchestrator at 8,351.
+    assert.ok(bytes > (role === 'worker' ? 3500 : 8351), `${role} listing grew`);
     const a = await adapter(role, t);
     const wire = Buffer.byteLength(JSON.stringify(await a.list()), 'utf8');
     console.log(`ADR 0040 §4 ${role} over the wire: ${wire} bytes`);

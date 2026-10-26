@@ -29,13 +29,13 @@ test('a turn_end wake with a maximal evaluation clause is not cut by the mod, fo
       assert.ok(byteLength(text) <= RE.WAKE_TEXT_MAX, `${byteLength(text)} bytes: ${text}`);
       assert.strictEqual(capText(text), text, 'the mod would cut this wake');
       assert.ok(text.startsWith(`belay: worker ${worker_id} finished turn 99999.`), 'the head is never cut');
-      assert.ok(text.endsWith(' What it did is in the store: task_list, briefing or memory_search.'), 'the pointer is never cut');
+      assert.ok(!text.includes('What it did is in the store'), 'the pointer to a search that finds nothing is gone (wording audit)');
     }
   }
   // With room, the clause is whole; without, it is cut and says so.
   const short = wakeText({ worker_id: 'w1', event: 'turn_end', turn: 1, evaluated: [{ task_id: 't1', state: 'done', failing: [] }] });
-  assert.match(short, /task t1 evaluated at release: passed, done\. What it did/);
-  assert.match(wakeText({ worker_id: UUID, event: 'turn_end', turn: 3, evaluated: evs(6) }), /\.\.\. What it did/);
+  assert.match(short, /task t1 evaluated at release: passed, done\.$/);
+  assert.match(wakeText({ worker_id: UUID, event: 'turn_end', turn: 3, evaluated: evs(6) }), /\.\.\.$/);
 });
 
 test('a follow-up evaluated wake with a maximal clause is not cut by the mod', async () => {

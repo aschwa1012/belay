@@ -42,7 +42,7 @@ after(async () => {
   ]);
 });
 
-test('resumeLine names the task, its state, the lease and the store query, inside 400 bytes', async () => {
+test('resumeLine names the task, its state, the lease and the briefing, inside 400 bytes', async () => {
   const l = await orch.continuity.resumeLine({ task_id: taskId });
   assert.ok(l.bytes <= LINE_MAX, `${l.bytes} bytes exceeds the ${LINE_MAX}-byte hook budget`);
   assert.strictEqual(l.bytes, Buffer.byteLength(l.text, 'utf8'));
@@ -52,8 +52,16 @@ test('resumeLine names the task, its state, the lease and the store query, insid
   assert.ok(l.text.includes(taskId));
   assert.ok(l.text.includes('assigned'));
   assert.ok(l.text.includes(leaseId));
-  assert.ok(l.text.includes(`memory_search "${taskId}"`), 'the line must carry the query that recovers context');
+  assert.ok(l.text.endsWith(`Recover context: briefing task_id=${taskId}.`), 'a resume points to the briefing, which holds the context');
+  assert.ok(!l.text.includes('memory_search') && !l.text.includes('No worker-stated'), 'no search that cannot succeed, no claim about a checkpoint nobody asks for');
   assert.strictEqual(l.checkpoint_id, null, 'no checkpoint exists yet');
+});
+
+test('a first assignment sends only the task and its lease', async () => {
+  const l = await orch.continuity.resumeLine({ task_id: taskId, first: true });
+  assert.strictEqual(l.text, `task ${taskId} lease=${leaseId}.`);
+  assert.strictEqual(l.bytes, Buffer.byteLength(l.text, 'utf8'));
+  assert.strictEqual(l.lease_id, leaseId);
 });
 
 test('a worker-stated next step is carried and labelled, and an overlong one is truncated to fit', async () => {
@@ -69,7 +77,7 @@ test('a worker-stated next step is carried and labelled, and an overlong one is 
   l = await orch.continuity.resumeLine({ task_id: taskId });
   assert.ok(l.bytes <= LINE_MAX, `${l.bytes} bytes: an overlong claim must be truncated, never allowed to overflow`);
   assert.ok(l.text.includes('xxxxx'));
-  assert.ok(l.text.endsWith(`memory_search "${taskId}".`), 'truncation trims the claim, not the store query');
+  assert.ok(l.text.endsWith(`briefing task_id=${taskId}.`), 'truncation trims the claim, not the pointer to the briefing');
 });
 
 test('multi-byte text never splits a character or overflows the budget', async () => {
@@ -100,7 +108,7 @@ test('resumeDoc has the named sections, labels the unverified one, and stays ins
 
 test('the document carries the three orientation rules and truncation cannot drop them', async () => {
   const d = await orch.continuity.resumeDoc({ task_id: taskId });
-  for (const rule of ['cannot see your peers', 'task_list and memory_search', 'a peer answers with a claim']) {
+  for (const rule of ['cannot see your peers', 'Orient with task_list', 'a peer answers with a claim']) {
     assert.ok(d.text.includes(rule), `the brief states: ${rule} (ADR 0013 2)`);
   }
   // The rules are header, not a section, so the section budget can never eat them.

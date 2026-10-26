@@ -285,7 +285,7 @@ async function evaluate(E, caller, args) {
   // final: a re-run would overwrite its passing evidence, or keep `done` over failing results. An open dependency is refused
   // rather than evaluated without `done`, because a task is not done while its dependency is open (ADR 0013 section 1).
   const gate = (t) => {
-    if (t.state === 'done') throw err('E_TASK_DONE', `task ${t.id} is done, and done is final; create a new task to redo the work`, { task_id: t.id, state: 'done' });
+    if (t.state === 'done') throw err('E_TASK_DONE', `task ${t.id} is already done${t.results && t.results.evaluated_at ? ` (evaluated at ${t.results.evaluated_at})` : ''}; its results are in task_list with task_ids. To redo the work, create a new task`, { task_id: t.id, state: 'done' });
     if (t.state === 'cancelled') throw err('E_ARGS', `task ${t.id} was cancelled, which is final; there is nothing to evaluate`, { task_id: t.id, state: 'cancelled' });
     assertDependenciesDone(E, t);
   };
@@ -425,14 +425,14 @@ async function releaseNow(E, caller, args) {
     }
     if (prep && l.released_at != null && !late) {
       // A second call on a released lease only adds notes (the reflection turn): the release stands as it was written.
-      if (args.result !== undefined) throw err('E_ARGS', `lease.release: lease ${l.id} was already released, so a second call may carry notes but not a new result`, { lease_id: l.id });
+      if (args.result !== undefined) throw err('E_ARGS', `lease.release: lease ${l.id} was already released, so a second call may carry notes but not a new result. The orchestrator can take a new hand-back by assigning this task to you again (task_assign)`, { lease_id: l.id });
       NM.claimAfterRelease(E, caller, prep, l, task.id); // only with memory.notes_reflection, once per lease
       return { ...task, last_checkpoint_id: (rows.lastCheckpoint(E.store, l.task_id) || {}).id || null, released_reason: args.reason || null, ...NM.commit(E, caller, prep, { task_id: task.id }) };
     }
     // Audit D44: with notes off nothing above handles a second call, and the release below would append another released
     // row and replace the hand-back it stands on. A released lease is released once; only the notes-only calls above return.
     if (l.released_at != null && !late) {
-      throw err('E_ARGS', `lease.release: lease ${l.id} was already released at ${l.released_at}, so a second release would replace its hand-back; nothing was written`, { lease_id: l.id, released_at: l.released_at });
+      throw err('E_ARGS', `lease.release: lease ${l.id} was already released at ${l.released_at}, so a second release would replace its hand-back; nothing was written. The orchestrator can take a new hand-back by assigning this task to you again (task_assign)`, { lease_id: l.id, released_at: l.released_at });
     }
     if (!late) rows.append(E.store, 'lease', { ...l, released_at: t }, by, t);
     let handoff = task.handoff;

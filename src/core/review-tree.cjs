@@ -185,7 +185,7 @@ function reviewBlock(E, workerId, target) {
   return {
     tree: target.worktree, reviewed_task_id: target.task_id || null, cwd: target.cwd,
     ...(target.error ? { error: target.error } : {}),
-    ...(differs ? { note: `the reviewer's cwd is not the reviewed tree; name ${target.worktree} in its prompt` } : {}),
+    ...(differs ? { note: `the reviewer's cwd is not the reviewed tree; belay tells the reviewer to work in ${target.worktree}` } : {}),
   };
 }
 

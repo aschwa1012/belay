@@ -8,4 +8,3 @@ Each note has a `kind` (lesson, flag, recurring or gotcha), a `basis` (observed,
 - `subjects` (0 to 3): reuse a listed subject if one fits.
 {{subjects}}
 - If a note you were shown is wrong, out of date, or says the same as another note, name it in `reported_wrong` with its id, why, and `replaced_by` when there is one: `notes[<i>]` for a note in this hand-back, or the other note's id.
-- If the answer lists pending notes, settle each with `memory_note_resolve`: new, repeats an id, refines an id (same lesson plus a caveat), or supersedes an id with evidence.

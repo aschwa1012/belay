@@ -47,7 +47,7 @@ const { POLL_MS } = require('./exit-hold.cjs');
 const now = () => Date.now();
 
 // `memoryLevers`: the run's levers when the caller holds the run row (ADR 0041); `worktree`: the run's (ADR 0043).
-function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = null, memoryLevers = null, worktree = null, agentDefaults = null, stopIdleOnDone = false }) {
+function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = null, memoryLevers = null, worktree = null, agentDefaults = null, stopIdleOnDone = false, permissionPrompt = false }) {
   if (!core) fail('E_ARGS', 'createRunManager needs a core');
   if (!dataDir) fail('E_ARGS', 'createRunManager needs a dataDir');
   if (!runId) fail('E_ARGS', 'createRunManager needs a runId');
@@ -71,7 +71,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
   // 6i-2 fix round (item 3, should-fix): `shutdownFlags` carried on ctx itself, so worker.cjs's onTurnEnd
   // (through turn-record.cjs) can gate its own checkpoint/memory write on it exactly as writeRow does.
-  const ctx = { core, runId, dataDir: root, adapterPid: paths.adapterPid || process.pid, writeRow: null, shutdownFlags, compactAt: compactAtTokens, memoryLevers, worktree, stopIdleOnDone: stopIdleOnDone === true }; // stopIdleOnDone: ADR 0058
+  const ctx = { core, runId, dataDir: root, adapterPid: paths.adapterPid || process.pid, writeRow: null, shutdownFlags, compactAt: compactAtTokens, memoryLevers, worktree, stopIdleOnDone: stopIdleOnDone === true, permissionPrompt: permissionPrompt === true }; // stopIdleOnDone: ADR 0058; permissionPrompt: the run lever, the default of a Claude Code spawn's permission_prompt
   const writeRow = createWriteRow(ctx, shutdownFlags);
   ctx.writeRow = writeRow;
   ctx.message = (args) => message(args); // the memory jobs' reflection turn (ADR 0047); `message` is declared below
@@ -196,8 +196,9 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const {
       substrate, worktree, prompt, task_id = null, model: modelArg = null, allowed_tools = null,
       permission_mode = null, startup_timeout_ms = 60000, worker_id = null, sandbox = null,
-      permission_prompt = false, permit_wait_ms = 600000, effort: effortArg = null, tools = null, agent_type = null, max_budget_usd = null, memory_queries = null, native_memory = null,
+      permission_prompt: permissionArg, permit_wait_ms = 600000, effort: effortArg = null, tools = null, agent_type = null, max_budget_usd = null, memory_queries = null, native_memory = null,
     } = opts || {};
+    const permission_prompt = permissionArg !== undefined ? permissionArg : (ctx.permissionPrompt === true && substrate === 'claude-code'); // the run lever is the default; an explicit spawn argument wins
     checkWorkerId(worker_id); // before anything else: the id is a path component
     // ADR 0054 decision 4: the agent type's tool list, narrowed by allowed_tools, is the surface (`--tools`); an explicit harness
     // `tools` wins. Checked first: a refusal writes nothing. A Codex worker takes only the six (it has no list to narrow).
@@ -216,7 +217,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const indexQueries = checkMemoryQueries(memory_queries);
 
     const id = worker_id || crypto.randomUUID();
-    if ([...workers.keys(), ...pendingIds].some((k) => k.toLowerCase() === id.toLowerCase())) fail('E_ARGS', 'a worker with that id already exists in this run (ids compare without case: NTFS gives W1 and w1 one directory)', { worker_id: id });
+    if ([...workers.keys(), ...pendingIds].some((k) => k.toLowerCase() === id.toLowerCase())) fail('E_ARGS', 'a worker with that id already exists in this run (ids compare without case: NTFS gives W1 and w1 one directory). Choose another id: an id is used once per run, even by a spawn that failed', { worker_id: id });
     // ADR 0030 decision 4: ask the core whether the task can be assigned before anything is written, so a
     // refusal leaves no directory, no row, and the id free. Later refusals still take the write-dead path.
     // The id is reserved synchronously: the await below must not let a second spawn with it pass the check above.
@@ -245,7 +246,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     await writeRow(w, 'starting');
     let first;
     try {
-      first = NR.isJob(w.id) ? prompt : (await MP.preface(w, ctx, prompt)) + prompt + (scratch ? require('./review-scratch.cjs').firstLine(scratch) : '') + require('./review-scratch.cjs').treeLine(w.review) + (await MP.contractTail(ctx, w)) + (await NR.reviewTail(ctx, w)); // the resume line, then the memory index, against the `starting` row (ADR 0007 §2, 0042 §2)
+      first = NR.isJob(w.id) ? prompt : (await MP.preface(w, ctx, prompt)) + prompt + (scratch ? require('./review-scratch.cjs').firstLine(scratch) : '') + require('./review-scratch.cjs').treeLine(w.review) + (w.handbackRule || '') + (await MP.contractTail(ctx, w)) + (await NR.reviewTail(ctx, w)); // the resume line, then the memory index, against the `starting` row (ADR 0007 §2, 0042 §2)
     } catch (e) {
       // The task refused the assignment (an open dependency, ADR 0013 §1; the operator's lease; no such
       // task). Nothing has launched, so the `starting` row is written `dead` before the refusal is handed
@@ -461,6 +462,8 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     ask: (args) => MP.ask(manager, ctx, args), // ADR 0043 decision 1
     // Read-only handles for tests and for the CLI's own views. Neither writes.
     _worker: (id) => workers.get(id),
+    // The note-review brief for a verdict task assigned to this live worker (task_assign appends it, as a spawn does).
+    reviewTail: ({ worker_id, task_id }) => { const w = workers.get(worker_id); return w ? NR.reviewTail(ctx, { id: w.id, taskId: task_id, set lastError(v) { w.lastError = v; } }) : ''; },
     _waitTurn: (id, ms) => waitTurnOrLanded(get(id), ms),
     _waitExit: (id, ms) => W.waitExit(get(id), ms),
     _killSurvivor: (id) => (workers.has(id) ? LC.killSurvivor(workers.get(id), null) : null), // a child by its live handle and exact pid (lifecycle.cjs)

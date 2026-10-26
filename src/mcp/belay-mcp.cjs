@@ -198,7 +198,7 @@ function openRunManagerOnce() {
         // BELAY_FAKE_PATHS, honoured only when set, merges over it so a test can point the run
         // manager at a fake substrate binary without touching the environment the workers inherit.
         agentDefaults: opts.agentDefaults || null, // the config's agents block, resolved by belay run
-        compactAtTokens: opts.compactAt, worktree: opts.worktree || null, stopIdleOnDone: !!opts.stopIdleOnDone, // ADR 0007 decision 3; ADR 0043 decision 1; ADR 0058
+        compactAtTokens: opts.compactAt, worktree: opts.worktree || null, stopIdleOnDone: !!opts.stopIdleOnDone, permissionPrompt: !!opts.permissionPrompt, // ADR 0007 decision 3; ADR 0043 decision 1; ADR 0058
         memoryLevers: attachedRun() ? require('../run/memory-levers.cjs').leversOfRow(attachedRun()) : null,
         paths: { mcpBinary: __filename.split(path.sep).join('/'), ...FAKE_PATHS },
       }))
@@ -348,7 +348,7 @@ async function handle(msg) {
   if (method === 'ping') return send({ jsonrpc: '2.0', id, result: {} });
   if (method === 'tools/list') {
     const knowledge = await knowledgeListed(); // the one read of the run row; the notes lever comes from it
-    const list = toolsFor(opts.role, { knowledge, workerId: opts.workerId, notes: opts.role === 'worker' ? opts.notes : knowledgeListed.notes(), queries: knowledgeListed.queries() }).concat(opts.permit ? [PERMIT_TOOL] : []);
+    const list = toolsFor(opts.role, { knowledge, workerId: opts.workerId, notes: opts.role === 'worker' ? opts.notes : knowledgeListed.notes(), queries: knowledgeListed.queries(), permissions: !!opts.permissionPrompt }).concat(opts.permit ? [PERMIT_TOOL] : []);
     return send({ jsonrpc: '2.0', id, result: { tools: list } });
   }
   if (method === 'tools/call') {
@@ -363,7 +363,7 @@ async function handle(msg) {
       return send({ jsonrpc: '2.0', id, result });
     }
     try {
-      const row = opts.role === 'orchestrator' && require('./views.cjs').isViewed(name) ? await require('./views.cjs').viewed(name, args, (a) => callTool(name, a)) : await callTool(name, args); // ADR 0058 amendment 3: compact unless view debug
+      const row = opts.role === 'orchestrator' && require('./views.cjs').isViewed(name) ? await require('./views.cjs').viewed(name, args, (a) => callTool(name, a)) : (opts.role === 'worker' && name === 'lease_release' ? require('./views.cjs').leaseRelease(await callTool(name, args), args) : await callTool(name, args)); // ADR 0058 amendment 3: compact unless view debug; a worker's lease_release answer is compact too
       return send({ jsonrpc: '2.0', id, result: okResult(row) });
     } catch (e) {
       return send({ jsonrpc: '2.0', id, result: errResult(e) });

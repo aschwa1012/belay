@@ -5,7 +5,7 @@
 //   (a) the `<!-- belay-prompt X.Y.Z -->` line: missing, or older than the shipped template's;
 //   (b) with notes on, a placeholder the lever code substitutes in the shipped template and the copy lacks. The list is
 //       derived by running substituteLevers over both texts, so it follows the code, not a hand-kept list.
-// Pure but for reading the shipped template. The marker line stays in the prompt, as belay-mode does.
+// Pure but for reading the shipped template. The marker lines stay in the template file, which is where this reads them; belay strips them from the prompt it renders for the orchestrator.
 
 const fs = require('node:fs');
 const path = require('node:path');

@@ -19,6 +19,8 @@ const MEMORY_RULES_FILE = path.join(__dirname, '..', 'run', 'prompts', 'memory-r
 // (memory-preface.cjs), so it is told to the orchestrator only when that lever is on; off, the placeholder is ''
 // and the prompt asks for nothing the run never reads.
 const MEMORY_REPORT_LINE = ' If a note is wrong, out of date or contradicted by the evaluation of a task or the code, report it with `mcp__belay__memory_report` and say why (it holds the note for the archive review); you need not wait for the operator.';
+// The Rules of thumb line for a run with the permission channel on (run lever permission_prompt); '' otherwise.
+const PERMISSION_LINE = '- Answer permission requests (`mcp__belay__permission_list`, `mcp__belay__permission_decide`) only when the request is inside the plan.\n';
 // ADR 0047 amendment (2026-10-22), decision 7: in a notes run the orchestrator's memory bullet says four things, and a run outcome is a summary. The
 // template keeps the text a run without notes always had, between {{memory_use}} ... {{/memory_use}} (and {{memory_outcome}} ... {{/memory_outcome}}); a run
 // with notes replaces the span, a run without drops only the markers, so its prompt is byte for byte what it was.
@@ -146,6 +148,9 @@ function parseLevers(spec, opts = {}) {
   // ADR 0058 decision 8: off by default, and absent from the levers (and the receipt) unless the spec turns it on.
   if (spec.stop_idle_on_done !== undefined && typeof spec.stop_idle_on_done !== 'boolean') return { error: 'stop_idle_on_done must be true or false' };
   if (spec.stop_idle_on_done === true) out.stop_idle_on_done = true;
+  // ADR 0020 decision 1 as amended: the permission tools are listed to the orchestrator, and their prompt line given, only for a run that turns the channel on.
+  if (spec.permission_prompt !== undefined && typeof spec.permission_prompt !== 'boolean') return { error: 'permission_prompt must be true or false' };
+  if (spec.permission_prompt === true) out.permission_prompt = true;
   // ADR 0054 amendment 1: the run close deletes the reviewers' scratch folders; this opt-in keeps them. Absent unless on.
   if (spec.keep_review_scratch !== undefined && typeof spec.keep_review_scratch !== 'boolean') return { error: 'keep_review_scratch must be true or false' };
   if (spec.keep_review_scratch === true) out.keep_review_scratch = true;
@@ -216,6 +221,16 @@ function matchEol(text, prompt) {
 // A prompt without a placeholder passes through unchanged.
 // Returns { text, substituted: { max_fix_rounds, fix_cutoff_rule } }, the replacement counts.
 // `opts.mode` is 'headless' (default) or 'interactive'; it selects the wording of the cutoff rule only.
+// The template's header markers are for belay, not the model: `<!-- belay-prompt X.Y.Z -->` (run-prompt-check.cjs) and `<!-- belay-mode: ... -->`
+// (run-interactive.cjs) are read from the template or the operator's copy before this runs. The shipped title line that carries the first
+// is dropped whole; a copy's own title keeps its words and loses only the comment. Applied to the rendered prompt, never to the file.
+function stripMarkers(text) {
+  return String(text)
+    .replace(/^# Orchestrator prompt template[ \t]*<!--\s*belay-prompt\s+[\d.]+\s*-->[ \t]*\r?\n(\r?\n)?/, '')
+    .replace(/[ \t]*<!--\s*belay-prompt\s+[\d.]+\s*-->/, '')
+    .replace(/^[ \t]*<!--\s*belay-mode:[^>]*-->[ \t]*\r?\n(\r?\n)?/m, '');
+}
+
 function substituteLevers(text, levers, timeoutMs = 0, opts = {}) {
   const rule = cutoffRule(levers.fix_cutoff, timeoutMs, (opts && opts.mode) || 'headless');
   const a = String(text).split('{{max_fix_rounds}}');
@@ -242,7 +257,9 @@ function substituteLevers(text, levers, timeoutMs = 0, opts = {}) {
   const r = spanned.split('{{memory_report_line}}');
   const q = r.join(notesOn ? MEMORY_REPORT_LINE : '').split('{{memory_queries_line}}');
   const queriesOn = !!(levers.memory_levers && levers.memory_levers.first_message_index);
-  const c = q.join(queriesOn ? MEMORY_QUERIES_LINE : '').split('{{memory_rules}}');
+  const permOn = levers.permission_prompt === true;
+  const pl = q.join(queriesOn ? MEMORY_QUERIES_LINE : '').split('{{permission_line}}');
+  const c = pl.join(permOn ? PERMISSION_LINE : '').split('{{memory_rules}}');
   let rules = '';
   if (on) {
     rules = matchEol(String(levers.rules_text).replace(TRAILING_EOL, ''), withRule);
@@ -251,6 +268,7 @@ function substituteLevers(text, levers, timeoutMs = 0, opts = {}) {
   const substituted = { max_fix_rounds: a.length - 1, fix_cutoff_rule: b.length - 1 };
   if (on) substituted.memory_rules = c.length - 1;
   if (queriesOn) substituted.memory_queries_line = q.length - 1;
+  if (permOn) substituted.permission_line = pl.length - 1;
   if (notesOn) {
     substituted.memory_report_line = r.length - 1;
     if (spans.memory_use) substituted.memory_use = spans.memory_use;
@@ -277,4 +295,4 @@ async function countReviewRounds(core, runId) {
   }
 }
 
-module.exports = { MEMORY_REPORT_LINE, MEMORY_QUERIES_LINE, MEMORY_USE_NOTES, MEMORY_OUTCOME_NOTES, MEMORY_VERIFY_RULE, mergeMemory, parseLevers, attachMemory, memoryText, substituteLevers, countReviewRounds, cutoffRule, FIX_CUTOFFS };
+module.exports = { stripMarkers, MEMORY_REPORT_LINE, MEMORY_QUERIES_LINE, MEMORY_USE_NOTES, MEMORY_OUTCOME_NOTES, MEMORY_VERIFY_RULE, mergeMemory, parseLevers, attachMemory, memoryText, substituteLevers, countReviewRounds, cutoffRule, FIX_CUTOFFS };
