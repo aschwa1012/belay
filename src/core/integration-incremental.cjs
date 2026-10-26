@@ -6,15 +6,18 @@
 
 const rows = require('./rows.cjs');
 const G = require('./git.cjs');
+const J = require('./judged.cjs');
+const { newestFirst } = require('./integration-state.cjs');
 
-const keyOf = (argv, cwd) => JSON.stringify([argv, cwd]);
+// A check is the same command when its argv, cwd and time limit are. Rows are read oldest first by their first row, as
+// integration-state.cjs newestFirst orders them, so a later removal (a new version of an old row) moves none of them.
+const keyOf = (argv, cwd, timeout) => JSON.stringify([argv, cwd, timeout == null ? null : timeout]);
+const oldestFirst = (E) => newestFirst(E.store).reverse();
 
-// -> { entries: [merged entry], forced: Map(task_id -> { id, reason }) } for each task an earlier integration into `into` merged
+// -> { entries: [merged entry], forced: Map(task_id -> { id, reason }), notCarried: [{ task_id, reason }] } for each task an earlier integration into `into` merged
 // whose merged commit HEAD of `tree` contains, newest row winning. `skip` (the tasks of this call) are left to this call's own merge.
 async function carriedOf(E, tree, repo, into, skip) {
-  const prior = rows.currentAll(E.store, 'integration')
-    .filter((r) => r.into_branch === into && G.samePath(r.repo, repo) && Array.isArray(r.merged) && r.merged.length)
-    .sort((a, b) => Number(a.written_at) - Number(b.written_at));
+  const prior = oldestFirst(E).filter((r) => r.into_branch === into && G.samePath(r.repo, repo) && Array.isArray(r.merged) && r.merged.length);
   const found = new Map();
   const forced = new Map();
   const contained = new Map();
@@ -29,9 +32,20 @@ async function carriedOf(E, tree, repo, into, skip) {
     }
   }
   const entries = [];
+  const notCarried = [];
   for (const [task_id, { m, row }] of found) {
     let left = null;
     const tip = await G.run(tree, ['rev-parse', '--verify', `refs/heads/${m.branch}^{commit}`]);
+    // The commit integrate would merge for the task now is the newest judgement among the done tasks on its branch (a fix task
+    // judged since counts); when that is not the commit merged, the branch has moved on and the old one is not vouched for.
+    const t = rows.current(E.store, 'task', task_id);
+    if (t && t.worktree && tip.ok) {
+      const own = t.state !== 'done' && J.judgedOf(t) ? [t] : [];
+      const on = [...J.onBranch(E, t), ...own].sort((x, y) => Number(x.results.evaluated_at) - Number(y.results.evaluated_at));
+      const by = on[on.length - 1];
+      const now = by ? await J.commitOf(tree, by, tip.stdout.trim()) : m.sha;
+      if (now !== m.sha) { notCarried.push({ task_id, reason: now ? `judged again at ${now} (task ${by.id}); the branch holds ${m.sha}` : `its last judgement is no commit on ${m.branch}; the branch holds ${m.sha}` }); forced.delete(task_id); continue; }
+    }
     if (tip.ok && tip.stdout.trim() !== m.sha) {
       const n = await G.run(tree, ['rev-list', '--count', `${m.sha}..${tip.stdout.trim()}`]);
       left = { branch: m.branch, head: tip.stdout.trim(), judged: m.sha, commits: n.ok ? Number(n.stdout.trim()) : null };
@@ -41,7 +55,7 @@ async function carriedOf(E, tree, repo, into, skip) {
       judged_by: m.judged_by == null ? null : m.judged_by, covers: m.covers || [task_id], ...(left ? { left_out: left } : {}),
     });
   }
-  return { entries, forced };
+  return { entries, forced, notCarried };
 }
 
 // -> (argv, cwd) => the earlier check that passed at exactly `head` for that command, or null. A check that failed, timed out or
@@ -49,15 +63,13 @@ async function carriedOf(E, tree, repo, into, skip) {
 function reuseFor(E, repo, into, head, clean) {
   const passed = new Map();
   if (clean && head) {
-    const prior = rows.currentAll(E.store, 'integration')
-      .filter((r) => r.into_branch === into && G.samePath(r.repo, repo) && r.head_sha === head && Array.isArray(r.checks))
-      .sort((a, b) => Number(a.written_at) - Number(b.written_at));
+    const prior = oldestFirst(E).filter((r) => r.into_branch === into && G.samePath(r.repo, repo) && r.head_sha === head && Array.isArray(r.checks));
     for (const r of prior) for (const c of r.checks) {
-      if (c && c.passed === true && Array.isArray(c.argv)) passed.set(keyOf(c.argv, c.cwd), c.reused_from || r.id);
-      else if (c && Array.isArray(c.argv)) passed.delete(keyOf(c.argv, c.cwd));
+      if (c && c.passed === true && Array.isArray(c.argv)) passed.set(keyOf(c.argv, c.cwd, c.timeout_ms), c.reused_from || r.id);
+      else if (c && Array.isArray(c.argv)) passed.delete(keyOf(c.argv, c.cwd, c.timeout_ms));
     }
   }
-  return (argv, cwd) => passed.get(keyOf(argv, cwd)) || null;
+  return (argv, cwd, timeout) => passed.get(keyOf(argv, cwd, timeout)) || null;
 }
 
 // The `forced` record of a row: the not-done tasks this call let in, with those carried from earlier forced merges still on the
@@ -67,9 +79,11 @@ function forcedOf({ by, args, tasks, merged, checks, carried, name }) {
   const unsettled = merged.filter((m) => mine.has(m.task_id) && tasks.find((t) => t.id === m.task_id).state !== 'done').map((m) => m.task_id);
   const ids = [...new Set([...carried.forced.keys(), ...unsettled])];
   if (!ids.length) return null;
-  const reasons = [...new Set([...[...carried.forced.values()].map((f) => f.reason), ...(unsettled.length ? [args.reason.trim()] : [])])];
+  const reasons = {};
+  for (const [id, f] of carried.forced) reasons[id] = f.reason;
+  for (const id of unsettled) reasons[id] = args.reason.trim();
   const failing = (checks || []).filter((c) => !c.passed && c.task_ids.some((id) => ids.includes(id))).map(name);
-  return { by, at: Date.now(), reason: reasons.join(' | '), task_ids: ids, failing };
+  return { by, at: Date.now(), reason: unsettled.length ? args.reason.trim() : reasons[ids[ids.length - 1]], reasons, task_ids: ids, failing };
 }
 
 module.exports = { carriedOf, reuseFor, forcedOf, keyOf };

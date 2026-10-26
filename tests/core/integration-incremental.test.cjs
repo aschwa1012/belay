@@ -193,3 +193,77 @@ test('two integrates into one branch at once: one is refused, and the retry appe
   assert.ok(fs.existsSync(path.join(last.worktree, 'a.txt')) && fs.existsSync(path.join(last.worktree, 'b.txt')));
   assert.strictEqual(last.passed, true);
 });
+
+test('a task whose branch was judged again since it was merged is not carried at its old commit, and the answer names it', async () => {
+  const repo = makeRepo(dir), c = counterFile(), br = into();
+  const o2 = await openCore({ dataDir: `${dir}/data-fix`, caller: callerFor('orchestrator'), embed: false });
+  const op2 = await openCore({ dataDir: `${dir}/data-fix`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
+  try {
+    await o2.run.attach({ adapter_pid: process.pid, project_dir: repo });
+    const mk = async (files, commands, extra = {}) => {
+      const t = await o2.task.create({ spec: 'work', acceptance: { commands }, ...extra });
+      if (!extra.tree_of) await op2.task.worktreeCreate({ task_id: t.id, repo }).catch(() => null);
+      return t;
+    };
+    const a = await o2.task.create({ spec: 'a', acceptance: { commands: [check(c, 'a.txt')] } });
+    const wa = (await op2.task.worktreeCreate({ task_id: a.id, repo })).worktree.path;
+    write(wa, 'a.txt', 'a\n'); commit(wa, 'a');
+    assert.strictEqual((await o2.task.evaluate({ task_id: a.id })).state, 'done');
+    const b = await mk({}, [check(c, 'b.txt')]);
+    const wb = (await o2.task.get({ task_id: b.id })).worktree.path;
+    write(wb, 'b.txt', 'b\n'); commit(wb, 'b');
+    assert.strictEqual((await o2.task.evaluate({ task_id: b.id })).state, 'done');
+    const r1 = await o2.integration.merge({ task_ids: [a.id], into: br });
+    // done is final, so the work is judged again by a fix task worked in the same tree
+    const fix = await o2.task.create({ spec: 'amend a', acceptance: { commands: [check(c, 'a2.txt')] }, tree_of: a.id });
+    write(wa, 'a2.txt', 'more\n'); commit(wa, 'amend a');
+    assert.strictEqual((await o2.task.evaluate({ task_id: fix.id })).state, 'done');
+    const r2 = await o2.integration.merge({ task_ids: [b.id], into: br });
+    assert.deepStrictEqual(r2.task_ids, [b.id], 'a is not vouched for at the old commit');
+    assert.deepStrictEqual(r2.merged.map((m) => m.task_id), [b.id]);
+    assert.deepStrictEqual(r2.not_carried.map((x) => x.task_id), [a.id]);
+    assert.ok(r2.not_carried[0].reason.length > 0);
+    const ia = (await o2.task.list({})).tasks.find((t) => t.id === a.id).integration;
+    assert.strictEqual(ia.id, r1.id, 'the newest row does not report it merged');
+  } finally { await op2.close(); await o2.shutdownOwner(); await o2.close(); }
+});
+
+test('removing an old row does not reorder the history: a task no longer forced stays unforced', async () => {
+  const repo = makeRepo(dir), c = counterFile(), br = into();
+  const f = await work(repo, { 'f.txt': 'f\n' }, [check(c, 'later.txt')]);
+  const g = await work(repo, { 'g.txt': 'g\n' }, [check(c, 'g.txt')]);
+  const r1 = await orch.integration.merge({ task_ids: [f.id], into: br, force: true, reason: 'later.txt comes next' });
+  assert.deepStrictEqual(r1.forced.task_ids, [f.id]);
+  const wt = (await orch.task.get({ task_id: f.id })).worktree.path;
+  write(wt, 'later.txt', 'now\n');
+  commit(wt, 'add later');
+  assert.strictEqual((await orch.task.evaluate({ task_id: f.id })).state, 'done');
+  const r2 = await orch.integration.merge({ task_ids: [f.id], into: br });
+  assert.strictEqual(r2.forced, null, 'f is done now, and not marked');
+  await op.integration.remove({ id: r1.id, force: true }); // a new version of the oldest row, with the newest written_at
+  const r3 = await orch.integration.merge({ task_ids: [g.id], into: br });
+  assert.deepStrictEqual(r3.task_ids, [f.id, g.id]);
+  assert.strictEqual(r3.forced, null, 'the removed row did not become the newest word on f');
+});
+
+test('a check with another time limit is not the same command, and its reuse is refused', async () => {
+  const repo = makeRepo(dir), c = counterFile(), br = into();
+  const mk = async (timeout_ms) => {
+    const t = await orch.task.create({ spec: 'empty', acceptance: { commands: [{ ...check(c, 'base/keep.txt'), timeout_ms }] } });
+    await op.task.worktreeCreate({ task_id: t.id, repo });
+    return orch.task.evaluate({ task_id: t.id });
+  };
+  const x1 = await mk(30000), x2 = await mk(40000);
+  assert.strictEqual(x1.state, 'done');
+  assert.strictEqual(x2.state, 'done');
+  reset(c);
+  const r1 = await orch.integration.merge({ task_ids: [x1.id], into: br });
+  assert.strictEqual(runs(c), 1);
+  const r2 = await orch.integration.merge({ task_ids: [x2.id], into: br });
+  assert.strictEqual(r2.head_sha, r1.head_sha, 'an empty branch moves nothing');
+  assert.strictEqual(runs(c), 2, 'the same command with another time limit ran, though it passed at this head with 30000');
+  assert.deepStrictEqual(r2.checks.map((k) => [k.timeout_ms, !!k.reused_from]), [[40000, false]], 'one distinct command per call, run with one limit');
+  const r3 = await orch.integration.merge({ task_ids: [x2.id], into: br });
+  assert.strictEqual(runs(c), 2, 'the same limit at the same head is reused');
+  assert.deepStrictEqual(r3.checks.map((k) => [k.timeout_ms, k.reused_from]), [[40000, r2.id]]);
+});

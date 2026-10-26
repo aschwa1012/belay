@@ -283,11 +283,11 @@ async function rerun(tasks, tree, reuse, head) {
   }
   const checks = [];
   for (const c of byKey.values()) {
-    const from = reuse(c.argv, c.cwd);
-    if (from) { checks.push({ argv: c.argv, cwd: c.cwd, task_ids: c.task_ids, reused_from: from, head_sha: head, passed: true }); continue; }
+    const from = reuse(c.argv, c.cwd, c.timeout_ms);
+    if (from) { checks.push({ argv: c.argv, cwd: c.cwd, timeout_ms: c.timeout_ms, task_ids: c.task_ids, reused_from: from, head_sha: head, passed: true }); continue; }
     const r = await runCommand(c.argv, c.cwd, c.timeout_ms, { keep: 'ends' }); // the ends and the failure section, as task.evaluate keeps
     checks.push({
-      argv: c.argv, cwd: c.cwd, task_ids: c.task_ids, executable: r.executable, exit_code: r.exit_code, ms: r.ms, timed_out: r.timed_out,
+      argv: c.argv, cwd: c.cwd, timeout_ms: c.timeout_ms, task_ids: c.task_ids, executable: r.executable, exit_code: r.exit_code, ms: r.ms, timed_out: r.timed_out,
       passed: r.executable && r.exit_code === 0 && !r.timed_out, spawn_error: r.spawn_error || null, ...outputTails(r),
     });
   }
@@ -374,7 +374,7 @@ async function merge(E, caller, args) {
     if (forced) out.forced = forced;
     const row = E.store.tx(() => rows.append(E.store, 'integration', out, by, Date.now()));
     E.noteWrite();
-    return view(row);
+    return { ...view(row), ...(carried.notCarried.length ? { not_carried: carried.notCarried } : {}) }; // answered, not stored: a task left out is on no row
   });
 }
 
