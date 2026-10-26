@@ -298,7 +298,7 @@ function codexResumeArgv(opts) {
 // ADR 0021 amendment 4: the orchestrator is Opus 5.5. Sonnet 5 is retired.
 const DEFAULT_ORCHESTRATOR_MODEL = ORCHESTRATOR_MODEL;
 
-function orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath = null, compactAt = null, worktree = null, agentDefaultsPath = null, stopIdleOnDone = false }) {
+function orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath = null, compactAt = null, worktree = null, agentDefaultsPath = null, stopIdleOnDone = false, permissionPrompt = false }) {
   const argv = [
     mcpPath || mcpServerPath(),
     '--role',
@@ -312,16 +312,17 @@ function orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath = null, comp
   if (compactAt != null) argv.push('--compact-at', String(compactAt)); // ADR 0007 decision 3: the workers' lever
   if (worktree) argv.push('--worktree', fwd(path.resolve(worktree))); // the run's worktree: the knowledge agent's cwd (ADR 0043 decision 1), git_read's default (ADR 0054)
   if (agentDefaultsPath) argv.push('--agent-defaults', fwd(agentDefaultsPath)); // the config's per-agent-type defaults; absent when none are set
+  if (permissionPrompt) argv.push('--permission-prompt'); // the run lever permission_prompt: the adapter lists the permission tools; absent when off
   return stopIdleOnDone ? [...argv, '--stop-idle-on-done'] : argv; // ADR 0058: the run lever stop_idle_on_done; absent when off
 }
 
-function orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath = null, compactAt = null, worktree = null, agentDefaultsPath = null, bind = null, stopIdleOnDone = false }) {
+function orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath = null, compactAt = null, worktree = null, agentDefaultsPath = null, bind = null, stopIdleOnDone = false, permissionPrompt = false }) {
   return {
     mcpServers: {
       [MCP_SERVER_NAME]: {
         type: 'stdio',
         command: fwd(process.execPath),
-        args: [...orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath, compactAt, worktree, agentDefaultsPath, stopIdleOnDone }), ...(bind ? ['--bind', bind] : [])], // ADR 0045
+        args: [...orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath, compactAt, worktree, agentDefaultsPath, stopIdleOnDone, permissionPrompt }), ...(bind ? ['--bind', bind] : [])], // ADR 0045
       },
     },
   };
@@ -340,7 +341,7 @@ function assertOutsideDataDir(dir, dataDir) {
 
 // The adapter is told the run's worktree (`cwd`): the knowledge agent's cwd (ADR 0043 decision 1) and git_read's default
 // directory (ADR 0054 decision 2). `knowledgeAgent` is accepted from older callers and no longer changes the argv.
-function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, logPath = null, cwd = null, compactAt = null, agentDefaults = null, bind = null, stopIdleOnDone = false }) {
+function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, logPath = null, cwd = null, compactAt = null, agentDefaults = null, bind = null, stopIdleOnDone = false, permissionPrompt = false }) {
   const outDir = assertOutsideDataDir(dir, dataDir);
   fs.mkdirSync(outDir, { recursive: true });
   const agentDefaultsPath = require('./agent-defaults.cjs').writeFile(outDir, agentDefaults); // null unless the config sets a worker type's default
@@ -348,7 +349,7 @@ function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, lo
   const orchSettingsPath = fwd(path.join(outDir, 'settings.json'));
   fs.writeFileSync(
     mcpJsonPath,
-    JSON.stringify(orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath, compactAt, worktree: cwd, agentDefaultsPath, bind, stopIdleOnDone }), null, 2) + '\n'
+    JSON.stringify(orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath, compactAt, worktree: cwd, agentDefaultsPath, bind, stopIdleOnDone, permissionPrompt }), null, 2) + '\n'
   );
   // Same hygiene as a worker (ADR 0007 §6): the operator's plugins and their hooks are disabled, so
   // the orchestrator's own context is not shaped by whatever is installed on the host. For the

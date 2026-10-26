@@ -168,7 +168,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
   const bind = await require('./bind-launch.cjs').bindOrchestrator(core, runId, { interactive: true }); // ADR 0045 decision 2; no expiry, the trust dialog comes first
   const written = L.writeOrchestratorFiles({
     dir: orchestratorDir, runId, dataDir, mcpPath: L.mcpServerPath(), settingsPath: L.userSettingsPath(), cwd: worktree, compactAt: compactAtTokens,
-    agentDefaults: spec.agentDefaults || null, bind, stopIdleOnDone: !!spec.stopIdleOnDone, // ADR 0058
+    agentDefaults: spec.agentDefaults || null, bind, stopIdleOnDone: !!spec.stopIdleOnDone, permissionPrompt: !!spec.permissionPrompt, // ADR 0058
   });
   fs.writeFileSync(path.join(written.dir, 'prompt.txt'), promptText);
   const instructions = I.snapshotInstructions(worktree, written.dir);

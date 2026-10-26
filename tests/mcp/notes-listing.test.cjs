@@ -13,8 +13,8 @@ const bytes = (list) => Buffer.byteLength(JSON.stringify(list), 'utf8');
 
 test('without the flag the worker and orchestrator listings are what the notes contract left them', () => {
   // 4,965 and 9,829 before the paired write/search contract: its search guidance and memory_queries were added, and other descriptions trimmed to keep the notes-on worker listing 500 bytes inside its budget.
-  assert.strictEqual(tools.listingBytes('worker'), 4842);
-  assert.strictEqual(tools.listingBytes('orchestrator'), 14530); // 14,236 before the task_create amend and tree_of, 14,185 before the task_create base, 13,982 before the lean replies, 13,921 before ADR 0060 judged heads, 13,827 before ADR 0060, 13,728 before the integration state, 13,360 before the compact task views, 13,321 before ADR 0059, 9,900 before ADR 0053 and ADR 0054
+  assert.strictEqual(tools.listingBytes('worker'), 3557); // 4,842 before ADR 0010 amendment 14 took lease_renew, checkpoint_write, status and memory_stats off the worker listing and the wording audit cut the refusal clauses
+  assert.strictEqual(tools.listingBytes('orchestrator'), 13018); // 14,530 before the wording audit (permission tools unlisted without the run lever, refusal clauses cut), 14,236 before the task_create amend and tree_of, 14,185 before the task_create base, 13,982 before the lean replies, 13,921 before ADR 0060 judged heads, 13,827 before ADR 0060, 13,728 before the integration state, 13,360 before the compact task views, 13,321 before ADR 0059, 9,900 before ADR 0053 and ADR 0054
   assert.deepStrictEqual(tools.toolsFor('worker', { notes: false }), tools.toolsFor('worker'));
   // A notes run lists memory_store with the note's fields and not memory_verify, then memory_summaries, memory_note_refutation and memory_report (summaries-listing.test.cjs).
   const ordinary = tools.toolsFor('orchestrator').filter((t) => t.name !== 'memory_verify');
@@ -28,8 +28,8 @@ test('with notes on the worker listing fits its 7,168 byte budget, every ordinar
   console.log(`worker listing, notes on: ${list.length} tools, ${b} bytes, budget ${tools.BUDGET.worker}, headroom ${tools.BUDGET.worker - b} (off: ${tools.listingBytes('worker')})`);
   assert.ok(b <= tools.BUDGET.worker, `${b} bytes is over the ${tools.BUDGET.worker} byte budget`);
   assert.ok(b <= 7168, `${b} bytes is over 7,168, the worker budget of ADR 0010 amendment 6`); // not the constant alone, so raising it is seen here
-  // Pinned at its measured size (ADR 0010 amendment 10): 22 bytes are left, so any growth makes its author re-measure here.
-  assert.strictEqual(b, 7127, `the notes-on worker listing is ${b} bytes, not the 7,127 last measured; re-measure and re-pin with the amendment that changes it`);
+  // Pinned at its measured size (ADR 0010 amendment 10, re-measured by amendment 14; 7,127 before it): 1,253 bytes are left, so any growth makes its author re-measure here.
+  assert.strictEqual(b, 5915, `the notes-on worker listing is ${b} bytes, not the 5,915 last measured; re-measure and re-pin with the amendment that changes it`);
   const lr = list.find((t) => t.name === 'lease_release');
   assert.deepStrictEqual(lr.inputSchema.required, ['lease_id', 'notes']);
   assert.strictEqual(lr.inputSchema.properties.notes.type, 'array');
@@ -41,7 +41,7 @@ test('with notes on the worker listing fits its 7,168 byte budget, every ordinar
   assert.deepStrictEqual(lr.inputSchema.properties.reported_wrong.items.properties.replaced_by.type, ['string', 'null'], 'replaced_by is nullable');
   assert.ok(list.find((t) => t.name === 'memory_note_resolve').inputSchema.properties.resolutions.items.properties.title, 'resolve new takes a changed title');
   assert.ok(list.some((t) => t.name === 'memory_note_resolve'));
-  for (const kept of ['memory_store', 'memory_search', 'memory_retrieve', 'memory_timeline', 'lease_renew', 'checkpoint_write', 'briefing']) assert.ok(list.some((t) => t.name === kept), kept);
+  for (const kept of ['memory_store', 'memory_search', 'memory_retrieve', 'memory_timeline', 'lease_release', 'briefing']) assert.ok(list.some((t) => t.name === kept), kept);
   // ADR 0010 amendment 6: no tool is unlisted in a notes run; the notes listing is the ordinary one plus memory_note_resolve and memory_summaries
   const ordinary = tools.toolsFor('worker').map((t) => t.name);
   assert.deepStrictEqual(list.map((t) => t.name), [...ordinary, 'memory_note_resolve', 'memory_summaries']);

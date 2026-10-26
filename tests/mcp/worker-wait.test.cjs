@@ -26,7 +26,7 @@ test('a worker cannot wait on its peers, and the refusal names the role that can
   t.after(async () => { await w.close(); w.kill(); });
   await w.initialize();
   const names = (await w.list()).map((x) => x.name);
-  assert.equal(names.length, 13);
+  assert.equal(names.length, 9); // ADR 0010 amendment 14: lease_renew, checkpoint_write, status and memory_stats are off a worker's listing
   assert.ok(!names.includes('worker_wait'));
   const r = await w.call('worker_wait', {});
   assert.equal(r.isError, true);

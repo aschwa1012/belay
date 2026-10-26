@@ -241,10 +241,13 @@ test('permit: with no owner the call answers deny naming E_NO_OWNER and creates 
 // ================================================================ (n) the orchestrator's own tools
 
 test('permission_list and permission_decide: listed for the orchestrator after task_assign, routed to the core, refused E_ROLE for a worker, and the orchestrator listing stays under the orchestrator budget', async (t) => {
-  const names = REAL_TOOLS.toolsFor('orchestrator').map((x) => x.name);
+  const names = REAL_TOOLS.toolsFor('orchestrator', { permissions: true }).map((x) => x.name);
   assert.strictEqual(names[names.indexOf('task_assign') + 1], 'permission_list');
   assert.strictEqual(names[names.indexOf('task_assign') + 2], 'permission_decide');
-  assert.ok(REAL_TOOLS.listingBytes('orchestrator') <= REAL_TOOLS.BUDGET.orchestrator);
+  assert.ok(REAL_TOOLS.listingBytes('orchestrator', { permissions: true }) <= REAL_TOOLS.BUDGET.orchestrator);
+  // Wording audit (8a): a run that does not turn the permission channel on (run lever permission_prompt) is not shown them.
+  assert.ok(!REAL_TOOLS.toolsFor('orchestrator').some((x) => x.name.startsWith('permission_')));
+  assert.ok(!REAL_TOOLS.toolsFor('orchestrator', { notes: true, knowledge: true, queries: true }).some((x) => x.name.startsWith('permission_')));
 
   const data = sandboxDir('permit-n');
   const a = launch({ role: 'orchestrator', data }); // fake core, default

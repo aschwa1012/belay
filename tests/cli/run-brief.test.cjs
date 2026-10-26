@@ -11,6 +11,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { parseSpec } = require('../../src/cli/run-spec.cjs');
+const { stripMarkers } = require('../../src/cli/run-levers.cjs');
 const { appendBrief, shippedTemplate, HEADING } = require('../../src/cli/run-brief.cjs');
 
 const ROOT = path.resolve(__dirname, '..', '..').split(path.sep).join('/');
@@ -80,7 +81,8 @@ test('belay run with brief_file: the orchestrator is given belay\'s template wit
     assert.deepStrictEqual(rc.prompt_warnings || [], []);
     const prompt = fs.readFileSync(`${r.dir}/orch/prompt.txt`, 'utf8');
     const tpl = shippedTemplate('headless').text;
-    assert.ok(prompt.startsWith(tpl.slice(0, 200)), 'starts with the shipped template');
+    assert.ok(prompt.startsWith(stripMarkers(tpl).slice(0, 200)), 'starts with the shipped template, less its header markers (read by belay, not shown to the model)');
+    assert.ok(!prompt.includes('belay-prompt') && !prompt.includes('belay-mode'), 'no marker reaches the orchestrator');
     assert.ok(!/\{\{max_fix_rounds\}\}\s+fix rounds/.test(prompt.split(HEADING)[0]), 'template levers substituted');
     assert.ok(prompt.endsWith(`${HEADING}\n\nAdd the frobnicator.\n{{max_fix_rounds}} stays as written.\n`), 'brief appended, not substituted');
   } finally { cleanup(r.dir); }
@@ -117,7 +119,8 @@ test('belay run --interactive with brief_file: prompt.txt is the interactive tem
   try {
     assert.strictEqual(r.status, 0, r.stderr.slice(-600));
     const prompt = fs.readFileSync(`${r.dir}/orch/prompt.txt`, 'utf8');
-    assert.ok(prompt.startsWith(shippedTemplate('interactive').text.slice(0, 200)), 'starts with the interactive template');
+    assert.ok(prompt.startsWith(stripMarkers(shippedTemplate('interactive').text).slice(0, 200)), 'starts with the interactive template, less its header markers');
+    assert.ok(!prompt.includes('belay-prompt') && !prompt.includes('belay-mode'), 'neither the version nor the mode marker reaches the orchestrator');
     assert.ok(prompt.endsWith(`${HEADING}\n\nInteractive brief.\n`), 'brief appended');
   } finally { cleanup(r.dir); }
 });

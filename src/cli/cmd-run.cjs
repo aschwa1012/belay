@@ -26,7 +26,7 @@ const { closeRunWorkers, workersClosedBlock, finalizeCut } = require('./run-clos
 const { warmEmbedder, createEmbedderGuard } = require('../run/embedder-guard.cjs');
 const { RESUME_WARM_MS } = require('./embedder-bounds.cjs');
 const { liveRunRow, liveRunMessage } = require('./run-live-guard.cjs');
-const { attachMemory, memoryText, substituteLevers, countReviewRounds } = require('./run-levers.cjs');
+const { attachMemory, memoryText, substituteLevers, stripMarkers, countReviewRounds } = require('./run-levers.cjs');
 const fwd = (p) => String(p).split('\\').join('/');
 
 // BELAY_FAKE_CORE (test-only): same confinement as src/mcp/belay-mcp.cjs's own use of it — resolved
@@ -145,7 +145,8 @@ async function run(ctx) {
   const sub = mode === 'interactive'
     ? substituteLevers(parsed.promptText, parsed.levers, 0, { mode: 'interactive' })
     : substituteLevers(parsed.promptText, parsed.levers, parsed.timeout_ms);
-  parsed.promptText = parsed.briefText !== null ? BR.appendBrief(sub.text, parsed.briefText) : sub.text;
+  const rendered = stripMarkers(sub.text); // the header markers were read above; the orchestrator is not shown them
+  parsed.promptText = parsed.briefText !== null ? BR.appendBrief(rendered, parsed.briefText) : rendered;
   parsed.levers.substituted = sub.substituted;
   const ce = mode === 'interactive' ? makeConsole() : null; // decision 6: the close can see a SIGHUP that arrives during it
   require('../run/exe-discovery.cjs').exportConfigured(found, C.effective); // config claude_exe/codex_exe reach every child
@@ -354,7 +355,7 @@ async function run(ctx) {
           model: parsed.model, allowedTools: parsed.allowedTools, effort: eff.effort, agentDefaults: parsed.agentDefaults,
           startupTimeoutMs: parsed.startup_timeout_ms, timeoutMs: parsed.timeout_ms,
           mcpToolTimeoutMs: parsed.mcp_tool_timeout_ms, pollMs: parsed.poll_ms,
-          closeGraceMs: parsed.close_grace_ms, compactAtTokens: parsed.levers.compact_at_tokens, stopIdleOnDone: !!parsed.levers.stop_idle_on_done, // ADR 0007 decision 3; ADR 0058
+          closeGraceMs: parsed.close_grace_ms, compactAtTokens: parsed.levers.compact_at_tokens, stopIdleOnDone: !!parsed.levers.stop_idle_on_done, permissionPrompt: !!parsed.levers.permission_prompt, // ADR 0007 decision 3; ADR 0058; ADR 0020
           interactiveSurfaceMs: parsed.interactive_surface_ms, fullscreen: parsed.fullscreen,
           knowledgeAgent: !!(parsed.levers.memory_levers && parsed.levers.memory_levers.knowledge_agent),
           notes: !!(parsed.levers.memory_levers && parsed.levers.memory_levers.notes), // wave 4: the refuted-note wake reads receipts only for a notes run

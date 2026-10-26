@@ -115,7 +115,7 @@ test('A8 against the real core: task_create, task_list and briefing', async (t) 
   assert.strictEqual(b.line.bytes, Buffer.byteLength(b.line.text, 'utf8'), 'the byte count is the text\'s own');
   assert.strictEqual(b.line.task_state, 'open');
   assert.match(b.line.text, new RegExp(c.id), 'the line names the task id');
-  assert.match(b.line.text, /memory_search/, 'the line says how to recover context');
+  assert.match(b.line.text, /Recover context: briefing task_id=/, 'the line says how to recover context: the briefing, not a search that finds nothing');
   assert.match(b.doc.text, /unverified|stated by the worker/,
     'the doc labels a worker\'s claim as a claim (ADR 0010 §3)');
   console.log(`real briefing: line ${b.line.bytes} bytes, doc ${b.doc.bytes} bytes`);
@@ -161,7 +161,10 @@ test('a worker-role adapter carries its argv identity into the real core and nev
 
   // Reads still answer from a copy with no owner alive.
   assert.strictEqual((await a.call('memory_list', {})).isError, false, 'a read answers with no owner');
-  assert.strictEqual((await a.call('status', {})).isError, false);
+  assert.strictEqual((await a.call('task_list', {})).isError, false);
+  const st = await a.call('status', {}); // ADR 0010 amendment 14: status and memory_stats are the orchestrator's
+  assert.strictEqual(st.structuredContent.error, 'E_ROLE');
+  assert.strictEqual((await a.call('memory_stats', {})).structuredContent.error, 'E_ROLE');
 
   // Role gating is enforced by the adapter's listing and again by the core; the adapter's E_ROLE
   // comes first, so a worker never reaches an orchestrator method at all.
@@ -239,7 +242,7 @@ test('an orchestrator adapter with no store to attach to writes nothing and clai
 // surface against src/core; only the setup, which needs the orchestrator-only `worker.write` the
 // surface deliberately does not expose, touches the core directly. The test process is the owner, so
 // the worker adapters' writes travel the pipe exactly as they would under a live orchestrator.
-test('the three worker-role tools refuse a non-holder with the codes ADR 0010 §2 names', { timeout: 60000 }, async (t) => {
+test('the worker-role tool lease_release refuses a non-holder with the code ADR 0010 §2 names, and the removed tools are gone', { timeout: 60000 }, async (t) => {
   const data = sandboxDir('real-lease');
   const owner = await openCore({
     dataDir: data,
@@ -260,45 +263,31 @@ test('the three worker-role tools refuse a non-holder with the codes ADR 0010 §
   t.after(async () => { await other.close(); other.kill(); });
   await other.initialize();
 
-  const renew = await other.call('lease_renew', { lease_id: leaseId });
-  assert.strictEqual(renew.isError, true, 'a non-holder must not renew a lease');
-  assert.strictEqual(renew.structuredContent.error, 'E_NOT_HOLDER');
-  assert.match(renew.structuredContent.message, /wk-holder/, 'the message names who does hold it');
-  assert.match(renew.structuredContent.message, /wk-other/, 'and who asked');
-  assert.strictEqual(renew.structuredContent.detail.holder, 'wk-holder', 'the detail carries the holder');
-  assert.strictEqual(renew.structuredContent.detail.lease_id, leaseId);
-
   const release = await other.call('lease_release', { lease_id: leaseId, reason: 'not mine to give up' });
   assert.strictEqual(release.isError, true, 'a non-holder must not release a lease');
   assert.strictEqual(release.structuredContent.error, 'E_NOT_HOLDER');
   assert.match(release.structuredContent.message, /wk-holder/);
 
-  const ck = await other.call('checkpoint_write', { task_id: task.id, turn: 1, summary: 'I did a thing' });
-  assert.strictEqual(ck.isError, true, 'a worker with no lease must not check in against the task');
-  assert.strictEqual(ck.structuredContent.error, 'E_NO_LEASE');
-  assert.match(ck.structuredContent.message, /wk-other/, 'the message names the worker that has no lease');
-  assert.match(ck.structuredContent.message, new RegExp(task.id), 'and the task it has no lease on');
-  assert.strictEqual(ck.structuredContent.detail.task_id, task.id);
+  // ADR 0010 amendment 14: a worker no longer has lease_renew or checkpoint_write (the adapter renews its worker's lease itself).
+  for (const gone of ['lease_renew', 'checkpoint_write']) {
+    const r = await other.call(gone, {});
+    assert.strictEqual(r.isError, true, `${gone} is not a tool any more`);
+    assert.match(r.structuredContent.message, /no such tool/);
+  }
 
   // No success without effect, read the other way: the refusals wrote nothing.
   const after = await owner.task.get({ task_id: task.id });
   assert.strictEqual(after.state, 'assigned', 'a refused release must not have released the task');
-  assert.strictEqual(after.lease.id, leaseId, 'a refused renew must not have superseded the lease');
-  assert.strictEqual(after.last_checkpoint_id, null, 'a refused checkpoint wrote no row');
+  assert.strictEqual(after.lease.id, leaseId, 'a refused release must not have superseded the lease');
 
-  // The positive control: the same three calls from the holder's own adapter succeed, so the refusals
-  // above are about who asked, not about the plumbing between the adapter and the owner.
+  // The positive control: the same call from the holder's own adapter succeeds, so the refusal above is about who asked, not about
+  // the plumbing between the adapter and the owner. The answer is the compact one: state, lease id, nothing the worker just sent.
   const holder = real({ role: 'worker', data, workerId: 'wk-holder', run: 'run-1' });
   t.after(async () => { await holder.close(); holder.kill(); });
   await holder.initialize();
-  const mine = await holder.call('lease_renew', { lease_id: leaseId });
-  assert.strictEqual(mine.isError, false, `the holder's own renew refused: ${JSON.stringify(mine.structuredContent)}`);
-  assert.strictEqual(mine.structuredContent.id, leaseId, 'renew returns the lease row it extended');
-  assert.ok(mine.structuredContent.expires_at > assigned.new_lease.expires_at - 1, 'with a later expiry');
-  const mineCk = await holder.call('checkpoint_write', { task_id: task.id, turn: 1, summary: 'I did a thing', next_step: 'the next thing' });
-  assert.strictEqual(mineCk.isError, false, `the holder's own checkpoint refused: ${JSON.stringify(mineCk.structuredContent)}`);
-  assert.strictEqual(mineCk.structuredContent.source, 'worker', 'and it is recorded as the worker\'s claim');
-  assert.strictEqual(mineCk.structuredContent.worker_id, 'wk-holder', 'attributed to the argv identity');
+  const mine = await holder.call('lease_release', { lease_id: leaseId, result: { branch: 'b', head: 'abc', tests: 'ok', findings: [] } });
+  assert.strictEqual(mine.isError, false, `the holder's own release refused: ${JSON.stringify(mine.structuredContent)}`);
+  assert.deepStrictEqual(mine.structuredContent, { id: task.id, state: 'released', lease_id: leaseId });
 });
 
 test('the owner the orchestrator elected is released on stdin end, without a signal', async (tcx) => {
