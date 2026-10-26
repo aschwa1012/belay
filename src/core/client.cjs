@@ -129,7 +129,7 @@ class Client {
   }
 
   // The same question as _endedRun, asked of a throwaway copy of the store (invariant 6: a read copies, it never opens the live
-  // file), so nothing is started to ask it. A store that does not exist, or a copy that cannot be read, answers "not ended".
+  // file), so nothing is started to ask it. A store that does not exist, or a copy that cannot be read (E_BUSY included: a writer that never settles fails open here), answers "not ended".
   async _endedRunBeforeStart() {
     const caller = this.opts.caller;
     if (!caller || caller.role !== 'orchestrator' || !caller.run_id) return null;
