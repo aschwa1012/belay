@@ -6,6 +6,7 @@
 
 // worker_spawn's default answer (ADR 0058 decision 9): what the orchestrator acts on. The rest (surface, plugins, instruction
 // hashes, pid_created, argv_hash, token counters) is the receipt, behind view: "debug".
+const HB = require('../run/handback.cjs'); // pure but for reading the Review standard
 const SPAWN_KEEP = ['id', 'substrate', 'pid', 'state', 'session_id', 'adapter_pid', 'worktree', 'task_id', 'started_at', 'ready_ms', 'model', 'permission_mode_effective', 'scratch', 'review'];
 // `requested` is the spawn's own model argument. Codex reports no model on its stream (B5), so its row has none: the
 // answer then names the model belay asked for, and says so in model_source.
@@ -56,14 +57,14 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
     const r = manager();
     if (!launchedHere(r, coreArgs.worker_id)) return not(`worker ${coreArgs.worker_id} was not launched by this session, so belay has no channel to it; send the task with worker_message`);
     const lease = out && out.new_lease ? out.new_lease.id : null;
-    let head = `task ${coreArgs.task_id} state=assigned lease=${lease}.`;
-    try { const rl = await callCore('continuity.resumeLine', { task_id: coreArgs.task_id }); if (rl && rl.text) head = rl.text; } catch { /* the short head above still names the lease */ }
+    let head = `task ${coreArgs.task_id} lease=${lease}.`;
+    try { const rl = await callCore('continuity.resumeLine', { task_id: coreArgs.task_id, first: true }); if (rl && rl.text) head = rl.text; } catch { /* the short head above still names the lease */ }
     const body = typeof prompt === 'string' && prompt.trim() ? prompt : `Task: ${(out && out.task && out.task.spec) || ''}`;
-    // A coder or fixer in the task's own belay worktree commits before it hands back (integrate merges a commit of what was
-    // judged); a reviewer never commits in the tree it judges, so a review task's rule says nothing about committing.
-    const t = (out && out.task) || {};
-    const commits = !!(t.worktree && t.worktree.path && !t.worktree.removed_at) && !(t.acceptance && t.acceptance.verdict === true);
-    const text = `${head}\n\n${body}${out && out.scratch ? require('../run/review-scratch.cjs').firstLine(out.scratch) : ''}${out && out.review ? require('../run/review-scratch.cjs').treeLine(out.review) : ''}\n\nWhen you are finished, ${commits ? 'commit your work in your worktree, then ' : ''}call lease_release with lease_id ${lease} and a result object (branch, head, tests, findings).`;
+    // The hand-back rule closes the message (a verdict task's is verdict-shaped and carries the Review standard); a reused reviewer's
+    // note-review brief follows it, as at a spawn (handback.cjs, note-review.cjs).
+    let tail = '';
+    if (HB.isVerdict(out && out.task) && typeof r.reviewTail === 'function') { try { tail = (await r.reviewTail({ worker_id: coreArgs.worker_id, task_id: coreArgs.task_id })) || ''; } catch { tail = ''; } }
+    const text = `${head}\n\n${body}${out && out.scratch ? require('../run/review-scratch.cjs').firstLine(out.scratch) : ''}${out && out.review ? require('../run/review-scratch.cjs').treeLine(out.review) : ''}${HB.rule(out)}${tail}`;
     try {
       const m = await r.message({ worker_id: coreArgs.worker_id, text });
       return { ...out, delivered: { ...m, sent: !m.queued, queued: !!m.queued } }; // queued: held for a compaction, written when it ends

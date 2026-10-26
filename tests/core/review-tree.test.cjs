@@ -370,7 +370,7 @@ test('a reviewer reassigned to another task\'s review watches the reviewed tree,
   const rc = await worker('rev-move', wtA);
   const a = await orch.task.assign({ task_id: r.id, worker_id: 'rev-move' });
   assert.deepStrictEqual([a.review.tree, a.review.reviewed_task_id, a.review.cwd], [wtB, wB.id, wtA]);
-  assert.match(a.review.note, /the reviewer's cwd is not the reviewed tree; name .*repo-reB in its prompt/);
+  assert.match(a.review.note, /the reviewer's cwd is not the reviewed tree; belay tells the reviewer to work in .*repo-reB$/);
   fs.writeFileSync(path.join(wtA, 'a.txt'), 'its own cwd, not judged\n');
   fs.writeFileSync(path.join(wtB, 'a.txt'), 'the tree it judges\n');
   await rc.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { verdict: 'holds', summary: 'judged' } });

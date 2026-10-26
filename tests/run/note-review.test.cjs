@@ -215,3 +215,24 @@ test('N9d (review S-1): shutdown waits for a verdict application in flight befor
   await sd;
   assert.deepStrictEqual(order.slice(0, 3), ['job-start', 'job-done', 'stop']);
 });
+
+test('wording audit: task_assign of a review task to a live reviewer ends with the verdict rule, the Review standard and the brief of the notes to judge', async () => {
+  const { createCompose } = require('../../src/mcp/compose.cjs');
+  const w = await written('wr-ta');
+  await call('worker.write', orch, { id: 'rv-ta', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's-ta', last_event_at: Date.now() });
+  const t = await call('task.create', orch, { spec: 'review of wr-ta', depends_on: [w.task.id], acceptance: { verdict: true } });
+  const sent = [];
+  // The manager's own reviewTail does this: the note review with the worker's id and the task assigned.
+  const manager = { _worker: () => ({}), message: async (a) => { sent.push(a.text); return { worker_id: a.worker_id, channel: 'stdin', bytes: 1 }; }, reviewTail: ({ worker_id, task_id }) => NR.reviewTail(ctxFor(null), { id: worker_id, taskId: task_id }) };
+  const c = createCompose({ callCore: (m, a) => call(m, orch, a), manager: () => manager });
+  const out = await c.assign({ task_id: t.id, worker_id: 'rv-ta' });
+  assert.strictEqual(out.delivered.sent, true);
+  const text = sent[0];
+  const std = text.indexOf('## Review standard');
+  const brief = text.indexOf('NOTES TO JUDGE');
+  assert.ok(text.startsWith(`task ${t.id} lease=`), 'the first assignment line');
+  assert.ok(std > 0 && brief > std, 'the standard, then the brief');
+  assert.ok(text.includes(w.notes[0]), 'the brief lists the notes of the reviewed work');
+  assert.ok(text.includes('result: { "verdict": "holds" | "refuted"'), 'the verdict-shaped rule');
+  assert.ok(!text.includes('(branch, head, tests, findings)'));
+});

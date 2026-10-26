@@ -104,17 +104,20 @@ async function resumeLine(E, caller, args) {
   const leaseId = c.lease ? c.lease.id : (c.released ? c.released.id : null);
   const next = c.worker && c.worker.stated ? c.worker.stated.next_step : null;
 
+  // A first assignment (`first: true`) has nothing to recover: only the task and its lease. Any other caller is a resume
+  // (compaction, restart, pause), and the briefing holds the spec, acceptance and lease.
+  if (args && args.first === true) {
+    const text = `task ${task.id} lease=${leaseId || 'none'}.`;
+    return { text, bytes: Buffer.byteLength(text, 'utf8'), task_id: task.id, task_state: task.state, lease_id: leaseId, checkpoint_id: c.worker ? c.worker.id : (c.any ? c.any.id : null) };
+  }
   const head = `task ${task.id} state=${task.state} lease=${leaseId || 'none'}.`;
-  const tail = ` Recover context: memory_search "${task.id}".`;
+  const tail = ` Recover context: briefing task_id=${task.id}.`;
   const fixed = Buffer.byteLength(head, 'utf8') + Buffer.byteLength(tail, 'utf8');
-  let mid;
+  let mid = '';
   if (next && String(next).trim()) {
     const prefix = ' Next step (stated by the worker, unverified): ';
     const room = LINE_MAX - fixed - Buffer.byteLength(prefix, 'utf8') - 1;
     mid = room > 8 ? prefix + truncBytes(String(next).replace(/\s+/g, ' ').trim(), room) : '';
-  } else {
-    const none = ' No worker-stated next step on record.';
-    mid = fixed + Buffer.byteLength(none, 'utf8') <= LINE_MAX ? none : '';
   }
   let text = head + mid + tail;
   if (Buffer.byteLength(text, 'utf8') > LINE_MAX) text = truncBytes(text, LINE_MAX);
@@ -188,7 +191,7 @@ async function resumeDoc(E, caller, args) {
     + 'Derived from store rows only. Sections labelled "stated by the worker" are claims, not facts.\n\n'
     + '## how to orient\n'
     + 'You cannot see your peers and must not try to build a roster of them.\n'
-    + 'Orient with task_list and memory_search, which answer from the store.\n'
+    + 'Orient with task_list, which answers from the store.\n'
     + 'Never ask a peer or the orchestrator what state something is in: task_list answers with lease holders and pid liveness, a peer answers with a claim.\n\n';
   let text = truncBytes(header, DOC_MAX);
   const sections = [];

@@ -134,7 +134,9 @@ test('notes off, handback_question on: the question closes the message exactly o
   assert.ok(first.endsWith('or give it in your hand-back.'));
   assert.ok(first.includes('where this project keeps durable notes for later sessions') && !first.includes('CLAUDE.md'), 'the destination is no named file');
   assert.ok(first.includes('implement the thing'));
-  assert.ok(!first.includes('lease_release') && !first.includes('`notes`') && !first.includes('Notes for the next worker'));
+  // belay's own hand-back rule names lease_release once (handback.cjs); the note contract (`notes`, the notes question) is absent.
+  assert.equal(count(first, 'lease_release'), 1);
+  assert.ok(!first.includes('`notes`') && !first.includes('Notes for the next worker'));
   assert.ok(!first.includes('{{'));
 });
 

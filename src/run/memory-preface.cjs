@@ -360,8 +360,9 @@ async function preface(w, ctx, prompt) {
   if (w.taskId) {
     const assigned = await ctx.core.task.assign({ task_id: w.taskId, worker_id: w.id });
     if (assigned && assigned.review) w.review = assigned.review; // a review spawn's answer carries the reviewed tree, as task_assign's does
+    w.handbackRule = require('./handback.cjs').rule(assigned); // belay ends the first message with the hand-back rule (a verdict task's carries the Review standard), as task_assign does
     try {
-      const rl = await ctx.core.continuity.resumeLine({ task_id: w.taskId });
+      const rl = await ctx.core.continuity.resumeLine({ task_id: w.taskId, first: true });
       head = rl && rl.text ? rl.text + '\n\n' : '';
     } catch (e) {
       w.lastError = { where: 'continuity.resumeLine', code: e && e.code, message: e && e.message };

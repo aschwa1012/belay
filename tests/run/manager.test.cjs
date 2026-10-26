@@ -162,7 +162,22 @@ test('with a task id the lease is taken and the resume line leads the first mess
     assert.equal(core.callsTo('continuity.resumeLine').length, 1);
     const w = m._worker('w1');
     assert.ok(w.firstMessage.startsWith('RESUME-LINE task t9'));
-    assert.ok(w.firstMessage.endsWith('the task'));
+    assert.ok(w.firstMessage.includes('\n\nthe task'), 'the prompt follows the resume line');
+    assert.ok(w.firstMessage.endsWith('call lease_release with lease_id lease-1 and a result object (branch, head, tests, findings).'), 'belay closes the message with the hand-back rule naming the lease');
+  } finally { await teardown(m, sb); }
+});
+
+test('a worker id used twice in a run is refused with the remedy: choose another, an id is used once per run', async () => {
+  const sb = sandbox();
+  const m = mgr(sb, createFakeCore());
+  try {
+    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'dup-1' });
+    await assert.rejects(() => m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'two', worker_id: 'DUP-1' }), (e) => {
+      assert.strictEqual(e.code, 'E_ARGS');
+      assert.match(e.message, /a worker with that id already exists in this run/);
+      assert.match(e.message, /Choose another id: an id is used once per run, even by a spawn that failed/);
+      return true;
+    });
   } finally { await teardown(m, sb); }
 });
 
