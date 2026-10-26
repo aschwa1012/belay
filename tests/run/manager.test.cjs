@@ -349,7 +349,7 @@ test('list reports the in-memory view and shutdown stops every worker and the ow
   try {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'wa' });
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'wb' });
-    const l = m.list();
+    const l = await m.list();
     assert.equal(l.workers.length, 2);
     for (const w of l.workers) {
       assert.equal(w.state, 'running');
@@ -360,7 +360,7 @@ test('list reports the in-memory view and shutdown stops every worker and the ow
     assert.deepEqual(s.stopped.sort(), ['wa', 'wb']);
     assert.ok(s.ms >= 0);
     assert.equal(core.callsTo('shutdownOwner').length, 1);
-    for (const w of m.list().workers) assert.equal(w.pid_alive, false);
+    for (const w of (await m.list()).workers) assert.equal(w.pid_alive, false);
   } finally {
     // build step 6h fix round (blocking, FINDINGS.json line 382): only `cleanup(sb.data)` used to run
     // here, so a throw after either `m.spawn` above left both workers alive, holding the process open.

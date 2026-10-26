@@ -245,7 +245,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     await writeRow(w, 'starting');
     let first;
     try {
-      first = NR.isJob(w.id) ? prompt : (await MP.preface(w, ctx, prompt)) + prompt + (scratch ? require('./review-scratch.cjs').firstLine(scratch) : '') + (await MP.contractTail(ctx, w)) + (await NR.reviewTail(ctx, w)); // the resume line, then the memory index, against the `starting` row (ADR 0007 §2, 0042 §2)
+      first = NR.isJob(w.id) ? prompt : (await MP.preface(w, ctx, prompt)) + prompt + (scratch ? require('./review-scratch.cjs').firstLine(scratch) : '') + require('./review-scratch.cjs').treeLine(w.review) + (await MP.contractTail(ctx, w)) + (await NR.reviewTail(ctx, w)); // the resume line, then the memory index, against the `starting` row (ADR 0007 §2, 0042 §2)
     } catch (e) {
       // The task refused the assignment (an open dependency, ADR 0013 §1; the operator's lease; no such
       // task). Nothing has launched, so the `starting` row is written `dead` before the refusal is handed
@@ -442,7 +442,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   const PZ = createPause({ core, forWorker, doStop, doRestart, runOp: LC.runOp, adapterPid: ctx.adapterPid, writeRow });
   const message = createMessage({ core, ctx, forWorker, refuseIfPaused: PZ.refuseIfPaused, sendStdin, launch, guarded, writeRow });
 
-  const list = () => LIST.listWorkers(workers);
+  const list = () => LIST.listWorkers(workers, core);
 
   // build step 6e-5 design item 1: moved into lifecycle.cjs, verbatim apart from the left_parked skip.
   // build step 6i-2 design item 3 (R4): `markClosed` flips shutdownFlags only once every worker has

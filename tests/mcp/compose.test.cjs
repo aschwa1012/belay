@@ -81,3 +81,17 @@ test('task_assign tells a coder in the task\'s own worktree to commit first, and
   assert.match(await said({}), /When you are finished, call lease_release/);
   assert.match(await said({ worktree: { ...tree.worktree, removed_at: 5 } }), /When you are finished, call lease_release/);
 });
+
+test('task_assign names the reviewed tree when it is not the reviewer\'s working directory, and says nothing when it is', async () => {
+  const { createCompose } = require('../../src/mcp/compose.cjs');
+  const sent = [];
+  const run = async (review) => {
+    const callCore = async (m, a) => (m === 'task.assign' ? { task: { id: a.task_id, spec: 'judge', state: 'assigned' }, new_lease: { id: 'L2' }, review } : { text: 'head' });
+    const mgr = { _worker: () => ({}), message: async (a) => { sent.push(a.text); return { worker_id: a.worker_id, channel: 'stdin', bytes: 1 }; } };
+    await createCompose({ callCore, manager: () => mgr }).assign({ task_id: 't1', worker_id: 'r1' });
+    return sent[sent.length - 1];
+  };
+  assert.match(await run({ tree: 'C:/p/tree-b', cwd: 'C:/p/tree-a', reviewed_task_id: 't0' }), /Review the tree at C:\/p\/tree-b \(your working directory is C:\/p\/tree-a\); cd there before you read or run anything\./);
+  assert.doesNotMatch(await run({ tree: 'C:/p/tree-a', cwd: 'C:/P/TREE-A/', reviewed_task_id: 't0' }), /Review the tree at/);
+  assert.doesNotMatch(await run(undefined), /Review the tree at/);
+});
