@@ -154,7 +154,7 @@ const METHODS = {
   'task.create': { roles: ORCH, kind: 'write', fn: task.create },
   // build step 6a, ADR 0010 §4 amendment 1: opened to the operator as well (see the comment above
   // ORCH_OR_OPERATOR); the MCP adapter's task_assign tool stays orchestrator-only.
-  'task.assign': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: task.assign },
+  'task.assign': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: require('./paused-run.cjs').gate(task.assign) },
   // The run manager asks this before it relaunches a worker (restart, resume, a Codex turn): the task it holds is held for the manager's live run, or the relaunch is refused.
   'task.ensureHold': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: taskHold.ensureHold },
   'task.list': { roles: ALL, kind: 'read', fn: task.list },

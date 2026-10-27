@@ -2,10 +2,11 @@
 // memory-jobs.cjs — the memory work that follows a turn and the work that closes a run (ADR 0041 decisions
 // 4 to 6, ADR 0043 decision 2): a mechanical summary once per (task, worker), the worker's own rows moved to the project, usage rows from
 // the turn's own numbers, and a bounded wrap-up per task and per run.
-//
-// Every entry point reads the lever first and returns before it touches the core when the lever is off. Whatever runs is queued on the
-// worker's `memoryQueue` and never awaited on the turn path (the usage row of a ledger run goes ahead of it, below). A failed write is a
-// `memory_event` with ok 0 and the code, never silence. Summaries are stored as generated, labelled as such, never as the worker's own words.
+// Every entry point reads the lever first and returns before it touches the core when the lever is off, so a run with the levers at
+// their defaults makes no call here. Whatever runs is queued on the worker's existing `memoryQueue` and never awaited on the turn path
+// (a ledger run's usage row starts ahead of that queue, usage-early.cjs). A failed write is a `memory_event` with ok 0 and the code,
+// never silence and never a silent retry. Summaries are stored as generated, labelled as such, and never as the worker's own words;
+// the wrap-up text goes in `memory_event.message` (`belay notices` shows it).
 
 const crypto = require('node:crypto');
 const { fit } = require('../core/fit-budget.cjs');
@@ -57,8 +58,9 @@ async function leversOf(ctx, w) {
   try { return await require('./memory-preface.cjs').levers(ctx, w); } catch (e) { note(w, 'memory.levers', e); return defaultLevers(); }
 }
 
-// J: the job context. `gate.aborted` is set when atRunEnd gives up. `turnPath` marks a turn's jobs: once shutdown has closed the flag they send
-// nothing (the owner may be gone and a write would elect a new one here). The run-end jobs run before the owner stops, so they are not gated.
+// J: the job context. `gate.aborted` is set when atRunEnd gives up, so a step that has not started never does.
+// `turnPath` marks a turn's jobs: once shutdown has closed the flag they send nothing, because the owner may already be gone and a write would
+// elect a new one in this process. The run-end jobs run after the flag is closed and before the owner stops (lifecycle.cjs), so they are not gated.
 function jobCtx(ctx, lv, w, gate, turnPath = false) { return { ctx, core: ctx.core, lv, w, gate: gate || { aborted: false }, s: stateOf(ctx), turnPath }; }
 const SHUT = 'E_SHUTDOWN';
 // `paired` is the receipt of a row already sent: it waits for the owner going, not the closed flag.
@@ -350,9 +352,7 @@ function afterTurn(w, ctx, { turnEvents, checkpointId, snap: given = null } = {}
   if (closed(ctx)) { w.lastError = { where: 'after-shutdown', state: 'turn-memory-jobs' }; return; }
   if (ctx.memoryLevers && !anyJob(ctx.memoryLevers)) return;
   const snap = given || snapshotOf(w);
-  if (ctx.memoryLevers && ctx.memoryLevers.cost_ledger) { // a ledger run's usage row goes ahead of the memory queue (a budget reads it at once); usageJob writes a turn once
-    const u = (w.usageQueue = (w.usageQueue || Promise.resolve()).then(() => usageJob(jobCtx(ctx, ctx.memoryLevers, w, null, true), snap)).catch((e) => note(w, 'memory-jobs.usage', e)));
-    w.memoryQueue = (w.memoryQueue || Promise.resolve()).then(() => u);
+  w.memoryQueue = (w.memoryQueue || Promise.resolve()).then(() => u);
   }
   w.memoryQueue = (w.memoryQueue || Promise.resolve()).then(async () => {
     if (closed(ctx)) { w.lastError = { where: 'after-shutdown', state: 'turn-memory-jobs' }; return; }
@@ -496,4 +496,4 @@ async function runEndJobs({ core, runId, levers, boundMs = null, modules = null,
   return ctx.runEndError ? { ...got, error: ctx.runEndError } : got;
 }
 
-module.exports = { afterTurn, atRunEnd, runEndJobs, RUN_END_BOUND_MS, WRAPUP_MAX, SUMMARY_LABEL, NEW_PROCESS, ENDED_TASK };
+module.exports = { usageJob, jobCtx, afterTurn, atRunEnd, runEndJobs, RUN_END_BOUND_MS, WRAPUP_MAX, SUMMARY_LABEL, NEW_PROCESS, ENDED_TASK };

@@ -100,3 +100,20 @@ test('only the operator (the run process) writes the budget record', async () =>
   assert.deepStrictEqual(row.budget.events, [{ type: 'raise' }]);
   assert.strictEqual((await call('status.get', operator, {})).run.budget.limit_usd, 12);
 });
+
+test('an expired lease nobody renewed is not charged for a later turn', async () => {
+  rows.append(store, 'lease', { id: 'lold', task_id: 'tx', run_id: 'test-run', holder: 'w4', holder_role: 'worker', granted_at: 100, expires_at: 200, released_at: null, ttl_ms: 100 }, 'test', 100);
+  const t = await usage({ worker_id: 'w4', turn: 1, cost_usd: 0.1, cost_basis: 'delta-of-cumulative', turn_window: { since: 50, until: 5000 } });
+  assert.strictEqual(t.task_id, null);
+});
+
+test('a paused run starts no new work for the orchestrator, whatever paused it; the operator still can', async () => {
+  await call('task.create', orch, { id: 'tp', spec: 'p' });
+  await call('run.setPaused', operator, { paused: true, at: Date.now(), by: 'operator:1 [embedder-failure (x)]' });
+  await assert.rejects(call('task.assign', orch, { task_id: 'tp', worker_id: 'wp' }), (e) => e.code === 'E_PAUSED');
+  // the operator's assign and the orchestrator's check_only are not refused by the pause (they may fail for other reasons, never E_PAUSED)
+  for (const [who, a] of [[operator, { task_id: 'tp', worker_id: 'wp' }], [orch, { task_id: 'tp', worker_id: 'wp', check_only: true }]]) {
+    await call('task.assign', who, a).catch((e) => assert.notStrictEqual(e.code, 'E_PAUSED'));
+  }
+  await call('run.setPaused', operator, { paused: false });
+});

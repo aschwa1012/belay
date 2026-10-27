@@ -187,7 +187,7 @@ async function attach(E, caller, args) {
     memory_notice: noticeGiven ? args.memory_notice : (carryPause ? prev.memory_notice : null), // same carry rule
     project_dir: dirGiven ? args.project_dir : (carryPause ? prev.project_dir : null),
     revived_epoch: revivedEpoch,
-    budget_usd: args.budget_usd !== undefined ? args.budget_usd : (carryPause ? prev.budget_usd : null), // estimated-dollar limit (run-budget.cjs), same carry rule
+    budget_usd: require('./run-budget.cjs').attachLimit(args, prev, carryPause), // estimated-dollar limit; a raised limit survives a re-attach of the same life
     budget: carryPause ? prev.budget : null,
     embedder_mode: modeGiven ? (args.embedder_mode === null ? null : require('./embedder-mode.cjs').normalize(args.embedder_mode)) : (carryPause ? prev.embedder_mode : null),
   }, by, t);

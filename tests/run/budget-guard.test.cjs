@@ -7,12 +7,12 @@ const assert = require('node:assert');
 const { createBudgetGuard, wakeTextOf } = require('../../src/run/budget-guard.cjs');
 
 function spy({ run = 0, tasks = {}, unknown = 0 } = {}) {
-  const s = { run, tasks, unknown, pauses: [], written: [], budgetUsd: [] };
+  const s = { run, tasks, unknown, pauses: [], written: [], budgetUsd: [], pausedBy: null };
   const core = {
     usage: { spend: async (a) => ({ usd: a.task_id ? (s.tasks[a.task_id] || 0) : s.run, turns: 3, unknown_turns: s.unknown, first_seq: 1, last_seq: 9, per_worker: { w1: s.run }, per_task: s.tasks, unknown_workers: s.unknown ? [{ worker_id: 'cx', turns: s.unknown }] : [] }) },
-    run: { setBudget: async (a) => { if (a.budget) s.written.push(JSON.parse(JSON.stringify(a.budget))); if (a.budget_usd) s.budgetUsd.push(a.budget_usd); } },
+    run: { get: async () => ({ run: { paused_by: s.pausedBy } }), setBudget: async (a) => { if (a.budget) s.written.push(JSON.parse(JSON.stringify(a.budget))); if (a.budget_usd) s.budgetUsd.push(a.budget_usd); } },
   };
-  const out = { s, core, pauseRun: async (why) => { s.pauses.push(why); return { already: false }; } };
+  const out = { s, core, pauseRun: async (why) => { s.pauses.push(why); s.pausedBy = `operator:1 [${why}]`; return { already: false }; } };
   return out;
 }
 const mk = (o, extra = {}) => createBudgetGuard({ core: o.core, runId: 'r1', pauseRun: (w) => o.pauseRun(w), ...extra });
@@ -109,4 +109,61 @@ test('a resume of a budget pause needs a raise above the spend or an override; e
   await g.onUsage({});
   assert.strictEqual(o.s.pauses.length, 0, 'no second pause once overridden');
   assert.strictEqual(await g.authorizeResume({ paused_by: 'operator:1' }, op({})), null, 'not a budget pause: nothing to decide');
+});
+
+test('a pause already in flight that is not ours does not disable the guard; the next row pauses again', async () => {
+  const o = spy({ run: 9.5 });
+  o.pauseRun = async (why) => { o.s.pauses.push(why); o.s.pausedBy = 'operator:1'; return { already: false }; }; // pause() handed back someone else's pause
+  const g = mk(o, { runLimit: 10 });
+  await g.onUsage({});
+  assert.deepStrictEqual(g.takeWakes(), [], 'no wake, no record: the pause is not the budget one');
+  assert.strictEqual(g.state().open, null);
+  o.s.pausedBy = null; // the operator resumed
+  await g.onUsage({});
+  assert.strictEqual(o.s.pauses.length, 2, 'the guard checked again');
+});
+
+test('a resume that is not a budget resume clears the guard belief and checks the budget again soon', async () => {
+  const o = spy({ run: 9.5 });
+  const g = mk(o, { runLimit: 10 });
+  await g.onUsage({});
+  assert.notStrictEqual(g.state().open, null);
+  assert.strictEqual(await g.authorizeResume({ paused_by: 'operator:1' }, { caller: { role: 'operator', pid: 1 } }), null);
+  assert.strictEqual(g.state().open, null);
+  o.s.pausedBy = null;
+  await new Promise((r) => setTimeout(r, 1300)); // the guard's own one-second timer: the only real wait here
+  await g.settled();
+  assert.strictEqual(o.s.pauses.length, 2, 'still over its limit after the resume: paused again');
+});
+
+test('the same raise sent again after a resume that failed afterwards succeeds', async () => {
+  const paused = { paused_by: 'operator:1 [budget (run, $9.50 of $10.00 est.)]' };
+  const op = (extra) => ({ caller: { role: 'operator', pid: 7 }, ...extra });
+  const o = spy({ run: 9.5 });
+  const g = mk(o, { runLimit: 10 });
+  await g.onUsage({});
+  const first = await g.authorizeResume(paused, op({ budget: 20 }));
+  const again = await g.authorizeResume(paused, op({ budget: 20 }));
+  assert.strictEqual(again.new, first.new);
+  assert.strictEqual(o.s.budgetUsd.length, 1, 'recorded once');
+});
+
+test('the interactive wake asks the user and does not hand the session the raise command', async () => {
+  const t = wakeTextOf({ runId: 'r1', scope: 'run', spent: 9.5, limit: 10, unknown: false, interactive: true });
+  assert.match(t, /Ask your user/);
+  assert.doesNotMatch(t, /--budget|--over-budget/);
+  const o = spy({ run: 9.5 });
+  const g = mk(o, { runLimit: 10, interactive: true });
+  await g.onUsage({});
+  assert.match(g.takeWakes()[0].text, /Ask your user/);
+});
+
+test('a restarted run process loads the raised limit, the overrides and the task limits from the run row', async () => {
+  const o = spy({ run: 15, tasks: { t1: 3.5 } });
+  const g = mk(o, { runLimit: 10 });
+  g.loadAttach({ budget_usd: 20, budget: { events: [{ type: 'raise', scope: 'run', old: 10, new: 20 }], tasks: { t1: 3 }, overrides: { run: false, tasks: [] } } });
+  await g.onUsage({});
+  assert.deepStrictEqual(o.s.pauses, [], '15 of the raised 20 is under 90 percent');
+  await g.onUsage({ task_id: 't1' });
+  assert.deepStrictEqual(o.s.pauses, ['budget (task t1, $3.50 of $3.00 est.)'], 'the task limit survived the restart');
 });

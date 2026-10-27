@@ -200,6 +200,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     } = opts || {};
     const permission_prompt = permissionArg !== undefined ? permissionArg : (ctx.permissionPrompt === true && substrate === 'claude-code'); // the run lever is the default; an explicit spawn argument wins
     checkWorkerId(worker_id); // before anything else: the id is a path component
+    await require('./paused-gate.cjs').refuseSpawnIfPaused(ctx.core, ctx.runId); // a paused run starts no new work, whatever paused it
     // ADR 0054 decision 4: the agent type's tool list, narrowed by allowed_tools, is the surface (`--tools`); an explicit harness
     // `tools` wins. Checked first: a refusal writes nothing. A Codex worker takes only the six (it has no list to narrow).
     if (agent_type !== null && !AD.WORKER_TYPES.includes(agent_type)) fail('E_ARGS', `spawn agent_type must be one of ${AD.WORKER_TYPES.join(', ')}`, { agent_type });

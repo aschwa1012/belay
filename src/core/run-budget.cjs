@@ -36,6 +36,16 @@ function taskLimit(E, caller, args) {
   return args.budget_usd;
 }
 
+// run.attach: the spec's limit, unless this is the same unended life and an operator raised the limit at a resume (the record says so).
+function attachLimit(args, prev, carryPause) {
+  if (carryPause && prev && prev.budget_usd != null && args.budget_usd !== undefined) {
+    let rec = prev.budget;
+    if (typeof rec === 'string') { try { rec = JSON.parse(rec); } catch { rec = null; } }
+    if (rec && Array.isArray(rec.events) && rec.events.some((e) => e.type === 'raise' && e.scope === 'run')) return prev.budget_usd;
+  }
+  return args.budget_usd !== undefined ? args.budget_usd : (carryPause && prev ? prev.budget_usd : null);
+}
+
 // After a task row is written with a limit, tell the run process (the owner's guard), if there is one.
 function noteTask(E, caller, row) {
   const h = E.owner && E.owner.opts && E.owner.opts.onTaskBudget;
@@ -47,7 +57,7 @@ function noteTask(E, caller, row) {
 // (unreleased and granted by then); else the lease released last inside the turn's window; else none (the run alone).
 function turnTask(store, workerId, runId, since, until) {
   const held = store.p(`SELECT l.task_id FROM lease l JOIN (SELECT id, MAX(seq) AS m FROM lease GROUP BY id) x ON l.seq = x.m
-    WHERE l.holder = ? AND l.holder_role = 'worker' AND l.run_id IS ? AND l.released_at IS NULL AND l.granted_at <= ? ORDER BY l.granted_at DESC, l.seq DESC LIMIT 1`).get(workerId, runId, until);
+    WHERE l.holder = ? AND l.holder_role = 'worker' AND l.run_id IS ? AND l.released_at IS NULL AND l.granted_at <= ? AND (l.expires_at IS NULL OR l.expires_at >= ?) ORDER BY l.granted_at DESC, l.seq DESC LIMIT 1`).get(workerId, runId, until, until); // an expired lease nobody renewed was not held
   if (held) return held.task_id;
   const rel = store.p(`SELECT l.task_id FROM lease l JOIN (SELECT id, MAX(seq) AS m FROM lease GROUP BY id) x ON l.seq = x.m
     WHERE l.holder = ? AND l.holder_role = 'worker' AND l.run_id IS ? AND l.released_at IS NOT NULL AND l.released_at > ? AND l.released_at <= ? ORDER BY l.released_at DESC, l.seq DESC LIMIT 1`).get(workerId, runId, since, until);
@@ -120,4 +130,4 @@ function textOf(b) {
   return `${b.unknown_turns ? 'at least ' : ''}${m(b.spent_usd)} of ${m(b.limit_usd)} est. (${b.state})${b.unknown_turns ? `; ${b.unknown_turns} turn${b.unknown_turns === 1 ? '' : 's'} report no dollars` : ''}`;
 }
 
-module.exports = { SOFT_THRESHOLD, isLimit, checkLimit, ledgerOn, taskLimit, noteTask, turnTask, spendOf, detailOf, usageSpend, setBudget, statusBlock, blockOf, textOf };
+module.exports = { SOFT_THRESHOLD, isLimit, checkLimit, ledgerOn, taskLimit, attachLimit, noteTask, turnTask, spendOf, detailOf, usageSpend, setBudget, statusBlock, blockOf, textOf };
