@@ -54,76 +54,11 @@ function findCycle(store, id, dependsOn) {
 }
 
 async function create(E, caller, args, own = {}) { // own: core-internal, task.fixFromReview's inherited worktree and answered reviews; no tool reaches it
+  if (args.tasks !== undefined || (args.worktree != null && args.worktree !== false)) return require('./methods-task-batch.cjs').createWithTrees(E, caller, args, own); // ADR 0062: trees first, then every row in one transaction
   const AM = require('./methods-task-amend.cjs'); // ADR 0061: amend revises an existing task; tree_of gives a new one another's tree
-  if (args.amend !== undefined && args.amend !== false) return AM.amend(E, caller, args); // amend: false is a plain create
+  if (args.amend !== undefined && args.amend !== false) return AM.amend(E, caller, args);
   const runTop = args.tree_of != null ? await AM.runRepo(E, caller) : null; // the only await: everything below is one turn
-  if (typeof args.spec !== 'string' || !args.spec.trim()) throw err('E_ARGS', 'task.create needs a spec describing the work');
-  const filesOwned = args.files_owned == null ? null : args.files_owned;
-  if (filesOwned != null && (!Array.isArray(filesOwned) || filesOwned.some(p => typeof p !== 'string'))) {
-    throw err('E_ARGS', 'task.files_owned must be an array of worktree-relative path strings');
-  }
-  const acceptance = args.acceptance == null ? null : args.acceptance;
-  AM.checkAcceptance(acceptance);
-  const dependsOn = args.depends_on == null ? null : args.depends_on;
-  if (dependsOn != null && (!Array.isArray(dependsOn) || dependsOn.some(d => typeof d !== 'string' || !d))) {
-    throw err('E_ARGS', 'task.depends_on must be an array of task ids this task cannot be assigned before');
-  }
-  if (args.repairs != null && (typeof args.repairs !== 'string' || !args.repairs)) {
-    throw err('E_ARGS', 'task.repairs must be the id of the work task this fix task repairs');
-  }
-  const repairs = args.repairs == null ? null : args.repairs;
-  const id = args.id || rows.newId();
-  if (rows.current(E.store, 'task', id)) throw err('E_ARGS', `a task with id ${id} already exists in this store; choose another id, leave id out for a generated one, or pass amend: true to revise its acceptance`, { task_id: id });
-  if (args.tree_of != null && own.worktree) throw err('E_ARGS', 'task.create tree_of: this task already inherits a tree');
-  const tree = args.tree_of != null ? AM.treeOf(E, args.tree_of, runTop) : own.worktree;
-
-  const deps = dependsOn ? [...new Set(dependsOn)] : null;
-  if (deps) {
-    for (const dep of deps) {
-      if (!rows.current(E.store, 'task', dep)) {
-        throw err('E_NOT_FOUND', `task ${id} would depend on ${dep}, which has no row in this store, so nothing could ever mark it done`, { task_id: id, missing_dependency: dep });
-      }
-    }
-    const cycle = findCycle(E.store, id, deps);
-    if (cycle) {
-      throw err('E_DEPENDENCY_CYCLE', `these dependencies form a cycle, ${cycle.join(' -> ')}, and every task in it would refuse assignment for ever`, { task_id: id, cycle });
-    }
-  }
-
-  // ADR 0031 decision 6: a fix task names the work it repairs, and core refuses one past the run's cap.
-  // A run row with no cap (an operator's own session, a pre-lever store) is not enforced.
-  if (repairs) {
-    if (!rows.current(E.store, 'task', repairs)) {
-      throw err('E_NOT_FOUND', `task ${id} would repair ${repairs}, which has no row in this store`, { task_id: id, missing_repairs: repairs });
-    }
-    const run = rows.current(E.store, 'run', caller.run_id);
-    const cap = run && run.max_fix_rounds != null ? Number(run.max_fix_rounds) : null;
-    if (cap != null) {
-      const used = rows.currentAll(E.store, 'task').filter(o => o.repairs === repairs && o.run_id === caller.run_id).length;
-      if (used >= cap) {
-        throw err('E_FIX_ROUNDS', `task ${repairs} already has ${used} fix task${used === 1 ? '' : 's'} and this run's max_fix_rounds is ${cap}; nothing was written. End the run and name the open blocking findings for the human`, { task_id: id, repairs, fix_rounds_used: used, max_fix_rounds: cap });
-      }
-    }
-  }
-
-  let overlaps = [];
-  if (filesOwned && filesOwned.length) {
-    // ADR 0046 decision 1: only a task that holds its files (its run is live) can refuse this one. ADR 0059 decision 4: a new
-    // task has no tree yet, so it is judged as shared, and only a holder in the shared tree refuses it; one in its own
-    // worktree is reported in `overlaps`.
-    const scan = holds.scanOverlaps(E.store, filesOwned, null, undefined, tree ? holds.treeOf(E.store, { worktree: tree }, null) : undefined); // an inherited tree is its own
-    const first = scan.find((c) => c.same_tree);
-    if (first) throw filesOverlap(first, treeHint(E.store, null));
-    overlaps = holds.acrossTrees(scan);
-  }
-
-  const t = Date.now();
-  const row = rows.append(E.store, 'task', {
-    id, run_id: caller.run_id, spec: args.spec, acceptance, files_owned: filesOwned, state: 'open',
-    results: null, depends_on: deps, repairs, ...(tree ? { worktree: tree } : {}), ...(own.answers ? { answers: own.answers } : {}), ...(args.base != null ? { base: require('./methods-worktree.cjs').baseArg(args.base) } : {}),
-  }, E.writtenBy(caller), t);
-  E.noteWrite();
-  return overlaps.length ? { ...row, overlaps } : row;
+  return require('./methods-task-new.cjs').one(E, caller, args, own, runTop);
 }
 
 // The dependency gate shared by task.assign and task.evaluate: only `done` opens it (ADR 0013 §1, ADR 0030 decision 2).
