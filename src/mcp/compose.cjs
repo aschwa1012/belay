@@ -63,7 +63,7 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
     // note-review brief follows it, as at a spawn (handback.cjs, note-review.cjs).
     let tail = '';
     if (HB.isVerdict(out && out.task) && typeof r.reviewTail === 'function') { try { tail = (await r.reviewTail({ worker_id: coreArgs.worker_id, task_id: coreArgs.task_id })) || ''; } catch { tail = ''; } }
-    const text = `${head}\n\n${body}${out && out.scratch ? require('../run/review-scratch.cjs').firstLine(out.scratch) : ''}${out && out.review ? require('../run/review-scratch.cjs').treeLine(out.review) : ''}${HB.rule(out)}${tail}`;
+    const text = `${head}\n\n${body}${out && out.scratch ? require('../run/review-scratch.cjs').firstLine(out.scratch) : ''}${out && out.review ? require('../run/review-scratch.cjs').treeLine(out.review) : ''}${HB.rule(out, await HB.facts((id) => callCore('task.get', { task_id: id }), out))}${tail}`;
     try {
       const m = await r.message({ worker_id: coreArgs.worker_id, text });
       return { ...out, delivered: { ...m, sent: !m.queued, queued: !!m.queued } }; // queued: held for a compaction, written when it ends

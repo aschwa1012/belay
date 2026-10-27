@@ -361,7 +361,7 @@ async function preface(w, ctx, prompt) {
     const assigned = await ctx.core.task.assign({ task_id: w.taskId, worker_id: w.id });
     if (assigned && assigned.review) w.review = assigned.review; // a review spawn's answer carries the reviewed tree, as task_assign's does
     w.taskSpec = assigned && assigned.task && typeof assigned.task.spec === 'string' ? assigned.task.spec : ''; // belay sends the spec itself (manager.cjs), so the orchestrator's prompt is only added instructions
-    w.handbackRule = require('./handback.cjs').rule(assigned); // belay ends the first message with the hand-back rule (a verdict task's carries the Review standard), as task_assign does
+    w.handbackRule = require('./handback.cjs').rule(assigned, await require('./handback.cjs').facts((id) => ctx.core.task.get({ task_id: id }), assigned)); // belay ends the first message with the hand-back rule (a verdict task's carries the Review standard), as task_assign does
     try {
       const rl = await ctx.core.continuity.resumeLine({ task_id: w.taskId, first: true });
       head = rl && rl.text ? rl.text + '\n\n' : '';
