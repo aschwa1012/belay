@@ -16,9 +16,19 @@ const NAMED = 20;
 const ENDED = new Set(['done', 'cancelled']);
 const key = (p) => G.fwd(p).toLowerCase();
 
+// Runs whose sweep was told to stop (task.worktreeSweepCancel). Checked before each tree's git, so a cut leaves no tree half
+// done: the close that cut it waits for the call to settle before the store closes.
+const cancelRequested = new Set();
+async function cancel(E, caller, args) {
+  const runId = args.run_id === undefined ? caller.run_id : args.run_id;
+  if (typeof runId !== 'string' || !runId) throw err('E_ARGS', 'task.worktreeSweepCancel needs a run_id');
+  cancelRequested.add(runId);
+  return { run_id: runId, cancel_requested: true };
+}
+
 // Ignored paths in a tree other than the recorded junctions: what goes with the tree (build output, a local .env).
 async function ignoredPaths(rec) {
-  const r = await G.run(rec.path, ['status', '--porcelain', '-z', '--ignored', '--untracked-files=no']);
+  const r = await G.run(rec.path, ['status', '--porcelain', '-z', '--ignored=matching', '--untracked-files=normal']);
   if (!r.ok) return null;
   const links = new Set((rec.junctions || []).map((j) => key(j.path)));
   return r.stdout.split('\0').filter((l) => l.startsWith('!! ')).map((l) => l.slice(3))
@@ -34,7 +44,9 @@ async function keepReason(E, group, ctx) {
   if (w) return { reason: w.state === 'paused' ? 'parked_worker' : 'live_worker', detail: `worker ${w.id} (${w.state})` };
   const unproven = ctx.workers.find((x) => ctx.unproven.has(x.id) && x.worktree && W.under(x.worktree, rec.path));
   if (unproven) return { reason: 'kill_unproven', detail: `worker ${unproven.id} was not proven ended by the close` };
-  if (fs.existsSync(rec.path) && (await G.worktrees(rec.repo)).some((x) => G.samePath(x.path, rec.path))) {
+  if (!fs.existsSync(rec.path)) return { reason: 'already_gone', detail: 'the path is not on disk; belay worktree remove <task-id> records it' };
+  if (!(await G.worktrees(rec.repo)).some((x) => G.samePath(x.path, rec.path))) return { reason: 'not_listed', detail: 'the path is on disk but git no longer lists it as a worktree; belay deletes nothing and writes no row' };
+  {
     const dirty = await G.dirtyPaths(rec.path);
     if (dirty.length) return { reason: 'dirty', detail: `${dirty.length} uncommitted path(s)`, paths: dirty.slice(0, NAMED) };
     const head = await W.symbolicHead(rec.path);
@@ -72,13 +84,14 @@ async function removeOne(E, caller, g, base) {
   let head = null, ignored = null;
   if (fs.existsSync(g.rec.path)) { head = await G.commitOf(g.rec.path, 'HEAD'); ignored = await ignoredPaths(g.rec); }
   const row = await W.removeForSweep(E, caller, g.tasks[0]);
+  if (row && row.removal.leftover) return { failed: { ...base, code: 'LEFTOVER', error: row.removal.leftover_note, git_still_lists: false, leftover: true, row_recorded: false, remedy: 'belay worktree remove <task-id> once the tree is free' } };
   if (!row) return { kept: { ...base, reason: 'task_open', detail: 'the tree was removed by another call' } };
   const r = row.removal;
   const after = await G.run(g.rec.repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${g.rec.branch}`]);
   const branchAfter = after.ok ? after.stdout.trim() : null;
   const pathGone = !fs.existsSync(g.rec.path);
-  if (r.leftover || !pathGone || (head && branchAfter !== head)) {
-    return { failed: { ...base, code: r.leftover ? 'LEFTOVER' : 'E_PROOF', error: r.leftover_note || (pathGone ? 'the branch head is not the tree\'s head' : 'the path is still on disk'), git_still_lists: false, leftover: !!r.leftover, branch_head_after: branchAfter } };
+  if (!pathGone || (head && branchAfter !== head)) {
+    return { failed: { ...base, code: 'E_PROOF', error: (pathGone ? 'the branch head is not the tree\'s head' : 'the path is still on disk'), git_still_lists: false, leftover: false, branch_head_after: branchAfter } };
   }
   return { removed: { ...base, head, branch_head_after: branchAfter, path_gone: pathGone, junctions_unlinked: r.junctions_unlinked, links_unlinked: r.links_unlinked,
     ignored_removed: ignored ? { count: ignored.length, first: ignored.slice(0, NAMED) } : null, ms: Date.now() - t1 } };
@@ -101,12 +114,15 @@ async function sweep(E, caller, args) {
     groups.get(key(rec.path)).tasks.push(t);
   }
   const out = { removed: [], kept: [], failed: [], orphans: [], integration_kept: [], skipped: null, ms: 0 };
+  try {
   for (const g of groups.values()) {
     const base = { task_ids: g.tasks.map((t) => t.id), path: g.rec.path, branch: g.rec.branch };
+    if (cancelRequested.has(runId)) { out.skipped = 'interrupted'; out.kept.push({ ...base, reason: 'interrupted', detail: 'the close was cut before this tree' }); continue; }
     if (Date.now() - t0 >= budget) { out.skipped = 'budget'; out.kept.push({ ...base, reason: 'budget', detail: `the sweep's ${budget} ms ran out before this tree` }); continue; }
     try {
       const why = await keepReason(E, g, ctx);
       if (why) { out.kept.push({ ...base, ...why }); continue; }
+      if (cancelRequested.has(runId)) { out.skipped = 'interrupted'; out.kept.push({ ...base, reason: 'interrupted', detail: 'the close was cut before this tree' }); continue; }
       const r = await removeOne(E, caller, g, base);
       for (const k of ['removed', 'kept', 'failed']) if (r[k]) out[k].push(r[k]);
     } catch (e) {
@@ -114,6 +130,7 @@ async function sweep(E, caller, args) {
       out.failed.push({ ...base, code: e.code || 'E_INTERNAL', error: e.message, git_still_lists: listed, leftover: false });
     }
   }
+  } finally { cancelRequested.delete(runId); }
   for (const i of ctx.integrations) if (i.run_id === runId && i.worktree) out.integration_kept.push({ id: i.id, path: i.worktree, branch: i.into_branch });
   try {
     const repos = new Set([...groups.values()].map((g) => g.rec.repo));
@@ -126,4 +143,4 @@ async function sweep(E, caller, args) {
   return out;
 }
 
-module.exports = { sweep, SWEEP_BUDGET_MS };
+module.exports = { sweep, cancel, SWEEP_BUDGET_MS };

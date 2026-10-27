@@ -24,12 +24,35 @@ test('a fast close already requested skips the sweep', async () => {
   assert.strictEqual(called, 0);
 });
 
-test('Ctrl-C during the sweep cuts it and says so', async () => {
-  const never = new Promise(() => {});
-  const p = closeTrees({ core: null, runId: 'r', endedRow: ended, closed: null, ce: null, late() {}, deps: { sweep: () => never } });
+test('Ctrl-C during the sweep tells it to stop and returns only after the call settles, with what it did', async () => {
+  let settle, cancelled = 0, resolved = false;
+  const running = new Promise((r) => { settle = r; });
+  const deps = { sweep: () => running, cancel: () => { cancelled += 1; } };
+  const p = closeTrees({ core: null, runId: 'r', endedRow: ended, closed: null, ce: null, late() {}, deps }).then((v) => { resolved = true; return v; });
   await new Promise((r) => setImmediate(r));
   process.emit('SIGINT');
-  assert.strictEqual((await p).skipped, 'interrupted');
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(cancelled, 1, 'the sweep was told to stop');
+  assert.strictEqual(resolved, false, 'the close does not go on while a removal may be running');
+  settle({ ...block, removed: [{ task_ids: ['t'] }], skipped: 'interrupted' });
+  const r = await p;
+  assert.strictEqual(r.skipped, 'interrupted');
+  assert.strictEqual(r.removed.length, 1, 'what the sweep did before it stopped stays in the receipt');
+});
+
+test('a fast close during the sweep does the same and reports fast_close', async () => {
+  let settle, cut, cancelled = 0, resolved = false;
+  const running = new Promise((r) => { settle = r; });
+  const ce = { hupSeen: () => false, leftMs: () => 0, snapshot: null, snapshotPending: null, bound: (p) => Promise.race([p, new Promise((r) => { cut = r; })]) };
+  const p = closeTrees({ core: null, runId: 'r', endedRow: ended, closed: null, ce, late() {}, deps: { sweep: () => running, cancel: () => { cancelled += 1; } } }).then((v) => { resolved = true; return v; });
+  await new Promise((r) => setImmediate(r));
+  cut(require('../../src/run/orchestrator-interactive.cjs').TIMED_OUT);
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(cancelled, 1);
+  assert.strictEqual(resolved, false);
+  settle({ ...block, removed: [{}, {}] });
+  const r = await p;
+  assert.deepStrictEqual([r.skipped, r.removed.length], ['fast_close', 2]);
 });
 
 test('the workers the close did not prove ended go to the sweep, and a failing sweep is reported, never thrown', async () => {

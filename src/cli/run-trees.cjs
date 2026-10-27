@@ -6,6 +6,7 @@
 
 const RI = require('./run-interactive.cjs');
 
+const CUT = Symbol('cut');
 const empty = (skipped) => ({ removed: [], kept: [], failed: [], orphans: [], integration_kept: [], skipped, ms: 0 });
 
 // Worker ids the close did not prove ended: still alive after the kill, or a kill whose outcome is not `closed`.
@@ -28,10 +29,17 @@ async function closeTrees({ core, runId, endedRow, closed, ce, late, deps = {} }
   for (const sig of ['SIGINT', 'SIGBREAK']) process.on(sig, onInterrupt);
   try {
     const call = Promise.resolve().then(() => (deps.sweep || ((a) => core.task.worktreeSweep(a)))({ run_id: runId, unproven_workers: unprovenWorkers(closed) }));
-    const done = RI.within(ce, call, 'the task-tree sweep', 'cut', late);
-    const got = await Promise.race([done, stop.then(() => 'interrupted')]);
-    if (got === 'interrupted' || interrupted) { call.catch(() => {}); return empty('interrupted'); }
-    if (got === 'cut') { call.catch(() => {}); return empty('fast_close'); }
+    // A cut sweep exits no sooner than its call settles: the owner's store closes after this returns, and a removal still running
+    // would finish its git and then fail to record it. The call stops before its next tree once told to, so the wait is at most one
+    // tree's git. The fast close's late-message is not chained here: a cut sweep is named in `skipped`, never in the exit code.
+    const done = RI.within(ce, call, 'the task-tree sweep', CUT, () => {});
+    const got = await Promise.race([done, stop.then(() => CUT)]);
+    if (got === CUT || interrupted) {
+      const why = interrupted ? 'interrupted' : 'fast_close';
+      try { await Promise.resolve().then(() => (deps.cancel || ((a) => core.task.worktreeSweepCancel(a)))({ run_id: runId })); } catch { /* the call below still settles */ }
+      const settled = await call.catch(() => null);
+      return settled ? { ...settled, skipped: why } : empty(why);
+    }
     return got;
   } catch (e) {
     return { ...empty(null), error: (e && e.message) || String(e) };

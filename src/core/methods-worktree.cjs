@@ -277,6 +277,8 @@ async function worktreeRemove(E, caller, args) {
 // Removes the tree and records the removal on the task and on every task that shares the tree.
 async function removeShared(E, caller, args, task, rec) {
   const out = await removeTree(E, rec, args, `task ${task.id}`);
+  // The sweep leaves a tree git dropped but the disk kept as it is: the row still says it is there, so belay worktree remove can finish it.
+  if (args.noRecordLeftover === true && out.leftover) return { ...task, removal: out };
   // No second run-open check here: the tree is already gone, and a row that still named it would be the false one.
   const row = E.store.tx(() => {
     const done = { ...rec, removed_at: Date.now(), removed_by: E.writtenBy(caller), forced: out.forced, already_gone: out.already_gone, branch_deleted: out.branch_deleted, leftover: out.leftover };
@@ -314,7 +316,7 @@ async function removeForSweep(E, caller, task0) {
     const key = G.fwd(rec.path).toLowerCase();
     let finish;
     removing.set(key, { task_id: task.id, done: new Promise((r) => { finish = r; }) });
-    try { return await removeShared(E, caller, { force: false }, task, rec); } finally { removing.delete(key); finish(); }
+    try { return await removeShared(E, caller, { force: false, noRecordLeftover: true }, task, rec); } finally { removing.delete(key); finish(); }
   });
 }
 
