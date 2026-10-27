@@ -24,6 +24,7 @@ const rowCount = async () => (await orch.task.list({})).tasks.length;
 const treePath = (id) => `${path.dirname(repo).split('\\').join('/')}/${path.basename(repo)}.worktrees/${id}`;
 
 before(async () => {
+  process.env.BELAY_TEST_SEAMS = '1'; // the batch's seams are honoured only with this set
   dir = sandbox();
   repo = makeRepo(dir);
   orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
@@ -31,6 +32,7 @@ before(async () => {
 });
 
 after(async () => {
+  delete process.env.BELAY_TEST_SEAMS;
   BATCH.seam.afterTree = null;
   await orch.shutdownOwner();
   await orch.close();
@@ -151,7 +153,7 @@ test('explicit ids make a retry refuse E_EXISTS naming the leftover, and a forei
   const before0 = [trees(), branches(), await rowCount()];
   const e = await rejectsCode(orch.task.create({ tasks: ['orphan-1', 'orphan-2'].map((id) => ({ ...spec(), id, worktree: true })) }), 'E_EXISTS');
   assert.strictEqual(e.detail.branch, 'belay/orphan-2');
-  assert.deepStrictEqual(e.detail.rollback.map((r) => r.task_id), ['orphan-1'], 'only the tree this call made is removed');
+  assert.deepStrictEqual(e.detail.rollback, [], 'the git-only checks ran before any tree, so nothing was made to remove');
   assert.deepStrictEqual([trees(), branches(), await rowCount()], before0, 'the foreign branch is still there, and nothing else');
   assert.ok(branches().includes('belay/orphan-2'));
 });
@@ -216,4 +218,58 @@ test('the undo of a failed add removes only what the call made', async () => {
     await assert.rejects(H.mustAdd(repo, ['worktree', 'add', '-b', 'belay/foreign-a', '--', p, head], 'add', () => W.undoAdd(repo, { path: p, branch: 'belay/foreign-a' }, head)));
   } finally { fs.rmSync(path.join(repo, '.git', 'hooks', 'post-checkout')); }
   assert.ok(branches().includes('belay/foreign-a'));
+});
+
+test('a null tasks or worktree is absent: the single form answers a row, and an amend is not refused', async () => {
+  const one = await orch.task.create({ ...spec(), id: 'nul-1', tasks: null, worktree: null });
+  assert.strictEqual(one.id, 'nul-1');
+  assert.strictEqual(one.tasks, undefined, 'a row, not { tasks: [row] }');
+  const amended = await orch.task.create({ id: 'nul-1', amend: true, acceptance: { files_within_owned: true }, tasks: null });
+  assert.strictEqual(amended.id, 'nul-1');
+  assert.strictEqual(amended.amended.length, 1);
+});
+
+test('the git-only checks of every item run before any tree: a bad ref on item 3 makes nothing', async () => {
+  const before0 = [trees(), branches(), await rowCount()];
+  const e = await rejectsCode(orch.task.create({ tasks: [{ ...spec(), id: 'pp-1', worktree: true }, { ...spec(), id: 'pp-2', worktree: true }, { ...spec(), id: 'pp-3', worktree: 'no-such-ref-anywhere' }] }), null);
+  assert.ok(!e.detail || !e.detail.rollback || e.detail.rollback.length === 0, 'nothing was made to remove');
+  assert.deepStrictEqual([trees(), branches(), await rowCount()], before0);
+});
+
+test('the deadline: a call that would pass its budget stops before the next tree, removes the trees made and writes nothing', async () => {
+  const before0 = [trees(), branches(), await rowCount()];
+  let t = 0;
+  BATCH.seam.now = () => (t += 30000); // each look at the clock costs 30 s
+  BATCH.seam.budgetMs = 100000;
+  let e;
+  try { e = await rejectsCode(orch.task.create({ tasks: ['dl-1', 'dl-2', 'dl-3'].map((id) => ({ ...spec(), id, worktree: true })) }), 'E_TIMEOUT'); }
+  finally { BATCH.seam.now = null; BATCH.seam.budgetMs = null; }
+  assert.strictEqual(e.detail.trees_made, 1);
+  assert.strictEqual(e.detail.budget_ms, 100000);
+  assert.ok(e.detail.elapsed_ms + e.detail.margin_ms > e.detail.budget_ms);
+  assert.deepStrictEqual(e.detail.rollback.map((r) => r.task_id), ['dl-1']);
+  assert.ok(e.detail.rollback[0].path_gone);
+  assert.deepStrictEqual([trees(), branches(), await rowCount()], before0);
+});
+
+test('seams do nothing unless BELAY_TEST_SEAMS is set', async () => {
+  delete process.env.BELAY_TEST_SEAMS;
+  let called = false;
+  BATCH.seam.afterTree = async () => { called = true; };
+  try { await orch.task.create({ ...spec(), id: 'seam-off', worktree: true }); } finally { BATCH.seam.afterTree = null; process.env.BELAY_TEST_SEAMS = '1'; }
+  assert.strictEqual(called, false);
+});
+
+test('an add that failed and made nothing is reported as kept_foreign, never as left', async () => {
+  fs.writeFileSync(path.join(repo, '.git', 'hooks', 'reference-transaction'), '#!/bin/sh\nif [ "$1" = prepared ] && grep -q "belay/kp-2"; then echo refused >&2; exit 1; fi\nexit 0\n');
+  const before0 = [trees(), branches(), await rowCount()];
+  let e;
+  try { e = await rejectsCode(orch.task.create({ tasks: ['kp-1', 'kp-2'].map((id) => ({ ...spec(), id, worktree: true })) }), 'E_GIT'); }
+  finally { fs.rmSync(path.join(repo, '.git', 'hooks', 'reference-transaction')); }
+  const k = e.detail.rollback.find((r) => r.task_id === 'kp-2');
+  assert.ok(k && k.kept, JSON.stringify(e.detail.rollback));
+  assert.deepStrictEqual(e.detail.kept_foreign, [k.path]);
+  assert.strictEqual(e.detail.rollback_incomplete, undefined);
+  assert.strictEqual(e.detail.left, undefined);
+  assert.deepStrictEqual([trees(), branches(), await rowCount()], before0);
 });

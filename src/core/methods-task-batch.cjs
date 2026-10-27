@@ -14,11 +14,24 @@ const W = require('./methods-worktree.cjs');
 
 const MAX_ITEMS = 10;
 // Trees one call may make: each is a checkout, and the call must fit the adapter's tool timeout.
-const MAX_BATCH_TREES = 8;
+// Conservative until the time of one checkout is measured; the deadline below is the guard that holds either way.
+const MAX_BATCH_TREES = 4;
+const MARGIN_MS = 5000; // the least a further tree is assumed to need before its add is started
+const TOOL_BUDGET_MS = 120000 - 10000; // the adapter's default MCP tool timeout less 10 s
 const FIELDS = ['spec', 'acceptance', 'files_owned', 'depends_on', 'repairs', 'base', 'tree_of', 'id', 'worktree'];
 
-// A test seam: awaited after each tree is made, with its index and record, before the next tree and before the transaction.
-const seam = { afterTree: null };
+// A test seam, honoured only when BELAY_TEST_SEAMS=1: afterTree is awaited after each tree is made (index, record), before the next
+// tree and before the transaction; now is the clock; budgetMs replaces the call's time budget.
+const seam = { afterTree: null, now: null, budgetMs: null };
+const seamOn = () => process.env.BELAY_TEST_SEAMS === '1';
+const clock = () => (seamOn() && seam.now ? seam.now() : Date.now());
+
+// The time this call may spend: what the core client waits, and the adapter's tool timeout less 10 s (MCP_TOOL_TIMEOUT when the owner sees it).
+function budget() {
+  if (seamOn() && seam.budgetMs != null) return seam.budgetMs;
+  const t = parseInt(process.env.MCP_TOOL_TIMEOUT, 10);
+  return Math.min(require('./call-limits.cjs').writeTimeoutFor('task.create', { worktree: true }), Number.isInteger(t) && t > 10000 ? t - 10000 : TOOL_BUDGET_MS);
+}
 
 const DRY = Object.freeze({ dry: true }); // thrown inside the dry run's transaction so it rolls back
 
@@ -62,12 +75,18 @@ function writeAll(E, caller, list, trees, runTop) {
 
 // The steps of task.worktreeCreate up to and including the junctions, for a new task's tree. `made` gets the record as soon as
 // the add succeeds, so a failure after it still has the tree to remove.
-async function makeTree(E, caller, top, it, made, undone) {
+// The git-only checks for one item, with nothing made: its base commit, branch and path.
+async function checkTree(top, it) {
   const baseSha = await G.commitOf(top, it.tree);
   const branch = await G.validBranch(top, `belay/${it.id}`);
   if (await G.branchExists(top, branch)) throw err('E_EXISTS', `branch ${branch} already exists; an earlier call may have left it, so name another task id or remove it`, { branch, task_id: it.id });
   const wtPath = planned(top, it).path;
   if (fs.existsSync(wtPath) && fs.readdirSync(wtPath).length) throw err('E_EXISTS', `${wtPath} exists and is not empty`, { path: wtPath, task_id: it.id });
+  return { baseSha, branch, wtPath };
+}
+
+async function makeTree(E, caller, top, it, checked, made, undone) {
+  const { baseSha, branch, wtPath } = checked;
   await H.mustAdd(top, ['worktree', 'add', '-b', branch, '--', wtPath, baseSha], `the worktree for task ${it.id} could not be added`, async () => {
     const r = await W.undoAdd(top, { path: wtPath, branch }, baseSha);
     undone.push({ task_id: it.id, path: wtPath, branch, ...r });
@@ -87,12 +106,13 @@ async function removeMade(made, undone) {
     try { r = await W.rollback(m.top, m.rec); } catch (e) { r = { junctions: [], worktree_removed: false, branch_deleted: false, path_gone: !fs.existsSync(m.rec.path), error: e.message }; }
     receipts.push({ task_id: m.task_id, path: m.rec.path, branch: m.rec.branch, ...r });
   }
-  const left = receipts.filter((r) => !r.path_gone || r.error || r.junction_error);
-  return { receipts, left };
+  const kept = receipts.filter((r) => r.kept); // an add that made nothing: whatever is there is not belay's, so it is not "left"
+  const left = receipts.filter((r) => !r.kept && (!r.path_gone || r.error || r.junction_error));
+  return { receipts, left, kept };
 }
 
 async function createWithTrees(E, caller, args, own) {
-  const list = items(args), single = args.tasks === undefined;
+  const list = items(args), single = W.present(args).tasks === undefined;
   const wanted = list.filter((it) => it.tree);
   if (wanted.length > MAX_BATCH_TREES) throw err('E_ARGS', `task.create makes at most ${MAX_BATCH_TREES} trees in one call; ${wanted.length} were asked for`, { max: MAX_BATCH_TREES });
   if (new Set(list.map((it) => it.id)).size !== list.length) throw err('E_ARGS', 'task.create tasks: two items have the same id');
@@ -112,22 +132,32 @@ async function createWithTrees(E, caller, args, own) {
   } catch (e) { if (e !== DRY) throw e; }
 
   // 2. the lock for every new id, then 3. the trees.
+  const started = clock();
   return W.exclusiveAll(list.map((it) => `task:${it.id}`), 'a task.create for these ids', async () => {
     const made = [], undone = [];
     try {
-      const trees = list.map(() => null);
+      const trees = list.map(() => null), checked = list.map(() => null);
+      for (let i = 0; i < list.length; i++) if (list[i].tree) checked[i] = await checkTree(top, list[i]); // 3a. every git-only check, before any tree
+      const limit = budget();
+      let slowest = 0;
       for (let i = 0; i < list.length; i++) {
         if (!list[i].tree) continue;
-        trees[i] = await makeTree(E, caller, top, list[i], made, undone);
-        if (seam.afterTree) await seam.afterTree(i, trees[i]);
+        const at = clock(), elapsed = at - started, margin = Math.max(MARGIN_MS, slowest);
+        if (made.length && elapsed + margin > limit) {
+          throw err('E_TIMEOUT', `task.create stopped before the tree for ${list[i].id}: ${elapsed} ms spent, a further tree needs about ${margin} ms and the call has ${limit} ms; ${made.length} tree${made.length === 1 ? '' : 's'} made so far ${made.length === 1 ? 'is' : 'are'} removed and nothing was written. Create fewer tasks with trees in one call`,
+            { elapsed_ms: elapsed, margin_ms: margin, budget_ms: limit, trees_made: made.length, trees_wanted: wanted.length });
+        }
+        trees[i] = await makeTree(E, caller, top, list[i], checked[i], made, undone);
+        slowest = Math.max(slowest, clock() - at);
+        if (seamOn() && seam.afterTree) await seam.afterTree(i, trees[i]);
       }
       // 4. every row, one transaction, every check again on the store as it now is.
       const out = E.store.tx(() => { E.assertRunOpen(caller, 'task.create'); return writeAll(E, caller, list, trees, top); });
       E.noteWrite();
       return shape(out);
     } catch (e) {
-      const { receipts, left } = await removeMade(made, undone);
-      e.detail = { ...(e.detail || {}), rollback: receipts, ...(left.length ? { rollback_incomplete: true, left: left.map((r) => r.path) } : {}) };
+      const { receipts, left, kept } = await removeMade(made, undone);
+      e.detail = { ...(e.detail || {}), rollback: receipts, ...(left.length ? { rollback_incomplete: true, left: left.map((r) => r.path) } : {}), ...(kept.length ? { kept_foreign: kept.map((r) => r.path) } : {}) };
       throw e;
     }
   });

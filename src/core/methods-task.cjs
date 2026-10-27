@@ -53,7 +53,8 @@ function findCycle(store, id, dependsOn) {
   return walk(id);
 }
 
-async function create(E, caller, args, own = {}) { // own: core-internal, task.fixFromReview's inherited worktree and answered reviews; no tool reaches it
+async function create(E, caller, args, own = {}) {
+  if (args.tasks === null || args.worktree === null) { const { tasks, worktree, ...rest } = args; args = { ...rest, ...(tasks === null ? {} : { tasks }), ...(worktree === null ? {} : { worktree }) }; } // null is absent (ADR 0062) // own: core-internal, task.fixFromReview's inherited worktree and answered reviews; no tool reaches it
   if (args.tasks !== undefined || (args.worktree != null && args.worktree !== false)) return require('./methods-task-batch.cjs').createWithTrees(E, caller, args, own); // ADR 0062: trees first, then every row in one transaction
   const AM = require('./methods-task-amend.cjs'); // ADR 0061: amend revises an existing task; tree_of gives a new one another's tree
   if (args.amend !== undefined && args.amend !== false) return AM.amend(E, caller, args);
