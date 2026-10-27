@@ -16,7 +16,6 @@ const BUDGET_PAUSE = /\[budget [(]/;
 const usd = (n) => `$${(Math.round(n * 100) / 100).toFixed(2)}`;
 const isBudgetPause = (pausedBy) => BUDGET_PAUSE.test(String(pausedBy || ''));
 const argError = (message, detail) => Object.assign(new Error(message), { code: 'E_ARGS', detail });
-const RECHECK_MS = 1000;
 
 // The wake text: facts only, at most `max` bytes (the interactive wake budget). Longest form first. In an interactive run the
 // orchestrator is the user's own session: the text asks the user to decide and does not hand the session the raise command.
@@ -49,7 +48,6 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
   const pending = new Set();
   const wakes = [];
   let wakeSeq = 0;
-  let recheckTimer = null;
 
   const orchSpend = () => (interactive ? 0 : orch.base + orch.last);
   const active = () => limit != null || taskLimits.size > 0;
@@ -59,8 +57,13 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
   if (limit != null && typeof warn === 'function') warn('belay: this run has an estimated budget. Codex turns report no dollars, so they count as unknown (shown as "at least"), never as free; the run budget cannot bind a Codex-only run.\n');
 
   // A re-attach of the same life: what an earlier run process recorded (a raised limit, overrides, task limits) is kept, not reset.
-  function loadAttach(runRow) {
+  // The task limits come first from the task rows (task.budget_usd, which can be stale after a raise), read once and only when the run's
+  // ledger is on; the run row's budget record is applied on top and wins, as the live limit (status and the record read it).
+  async function loadAttach(runRow) {
     if (!runRow || typeof runRow !== 'object') return;
+    if (require('../core/run-budget.cjs').ledgerOn(runRow)) {
+      try { for (const t of ((await core.task.list({})) || {}).tasks || []) if (t.run_id === runId && t.budget_usd > 0) taskLimits.set(t.id, t.budget_usd); } catch { /* the record below still applies */ }
+    }
     const b = runRow.budget && typeof runRow.budget === 'object' ? runRow.budget : null;
     if (!b) return;
     Object.assign(rec, b);
@@ -90,9 +93,9 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
     // The pause is ours only if the row carries our reason. pause() hands back a pause already in flight, whoever started it; if that is
     // an operator's or the embedder guard's, it is theirs, the guard must not wait for a budget resume that will never come, and the
     // next row or resume checks again.
-    let now = null;
-    try { now = ((await core.run.get()) || {}).run || null; } catch { now = null; }
-    if (!ownPause(now)) { open = null; return; }
+    let now = null; let rowRead = true;
+    try { now = ((await core.run.get()) || {}).run || null; } catch { rowRead = false; } // the pause landed (pauseRun resolved): an unreadable row keeps the breach open and says so
+    if (rowRead && !ownPause(now)) { open = null; return; }
     // Measured again after the parks settled: the turns in flight when the threshold was crossed still added theirs.
     const detail = await core.usage.spend({ detail: true });
     const after = c.scope === 'task' ? (await core.usage.spend({ task_id: c.task_id })).usd : detail.usd + orchSpend();
@@ -100,7 +103,7 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
       type: 'pause', at: Date.now(), scope: c.scope, ...(c.task_id ? { task_id: c.task_id } : {}), limit: c.limit, spent: c.spent, spent_after_parks: after,
       first_seq: detail.first_seq, last_seq: detail.last_seq, per_worker: detail.per_worker, per_task: detail.per_task, unknown_turns: detail.unknown_turns, unknown_workers: detail.unknown_workers,
       orchestrator: interactive ? { counted: false, why: 'an interactive session is not counted; belay agents prices its transcript' } : { counted: true, usd: orchSpend() },
-      estimate: true,
+      estimate: true, ...(rowRead ? {} : { run_row_unreadable: true }),
     };
     rec.events.push(ev);
     await flush().catch(() => {});
@@ -132,17 +135,13 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
     return schedule(null);
   }
 
-  // Every resume that is not a budget resume: the guard's belief about an open breach is dropped, and the budget is checked again a
-  // moment later (once the resume has landed), so a run still over its limit pauses again instead of running free.
-  function recheckSoon() {
-    if (recheckTimer) clearTimeout(recheckTimer);
-    recheckTimer = setTimeout(() => { recheckTimer = null; for (const id of [null, ...taskLimits.keys()]) schedule(id); }, RECHECK_MS);
-    if (recheckTimer.unref) recheckTimer.unref();
-  }
+  // Called when a resume has settled (run-pause's afterResume): the budget is checked again, so a run still over its limit pauses again
+  // instead of running free. No timer: nothing outlives the run, and the check joins the guard's own chain (settled() waits for it).
+  function recheck() { for (const id of [null, ...taskLimits.keys()]) schedule(id); }
 
   // run-pause's beforeResume: a budget pause resumes only with a raised limit for what was breached, or an override. Recorded on the row.
   async function authorizeResume(row, params) {
-    if (!ownPause(row)) { open = null; lastAuth = null; if (active()) recheckSoon(); return null; }
+    if (!ownPause(row)) { open = null; lastAuth = null; return null; }
     const p = params || {};
     const who = `${(p.caller && p.caller.role) || 'operator'}:${(p.caller && p.caller.pid) || '?'}`;
     const b = open || lastAuth || { scope: 'run', task_id: null };
@@ -182,7 +181,7 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
   }
 
   return {
-    onUsage, onTaskBudget, noteOrchestratorCost, authorizeResume, loadAttach, active,
+    onUsage, onTaskBudget, noteOrchestratorCost, authorizeResume, loadAttach, recheck, active,
     // the one wake a budget pause sends, taken once; the orchestrator's launcher writes it past the run's hold
     takeWakes() { return wakes.splice(0).map((w) => ({ event: 'budget_pause', worker_id: `budget:${runId}`, turn: 0, seq: 0, id: w.id, text: w.text, unheld: true })); },
     settled: () => Promise.all([...pending]).then(() => undefined),

@@ -352,8 +352,6 @@ function afterTurn(w, ctx, { turnEvents, checkpointId, snap: given = null } = {}
   if (closed(ctx)) { w.lastError = { where: 'after-shutdown', state: 'turn-memory-jobs' }; return; }
   if (ctx.memoryLevers && !anyJob(ctx.memoryLevers)) return;
   const snap = given || snapshotOf(w);
-  w.memoryQueue = (w.memoryQueue || Promise.resolve()).then(() => u);
-  }
   w.memoryQueue = (w.memoryQueue || Promise.resolve()).then(async () => {
     if (closed(ctx)) { w.lastError = { where: 'after-shutdown', state: 'turn-memory-jobs' }; return; }
     try {

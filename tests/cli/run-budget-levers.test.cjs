@@ -42,3 +42,9 @@ test('a memory block already on keeps its levers and only gains the ledger', () 
   assert.strictEqual(l.memory_levers.capture, true);
   assert.strictEqual(l.memory_levers.cost_ledger, true);
 });
+
+test('a spec null is recorded as stated, so a restart does not read it as not stated', () => {
+  const l = parseLevers({ budget_usd: null }, { config: { path: '/p/belay.config.json', run: { budget_usd: 20 } } });
+  assert.strictEqual(l.budget_usd, undefined);
+  assert.strictEqual(l.budget_source, 'spec (off)');
+});

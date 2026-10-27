@@ -36,14 +36,17 @@ function taskLimit(E, caller, args) {
   return args.budget_usd;
 }
 
-// run.attach: the spec's limit, unless this is the same unended life and an operator raised the limit at a resume (the record says so).
+// run.attach: a limit the spec states (`budget_explicit`; null turns it off) is used as given. Otherwise (a config default, or an attach that
+// states none) an unended life keeps what an operator raised at a resume (the record says so) before the default applies.
 function attachLimit(args, prev, carryPause) {
-  if (carryPause && prev && prev.budget_usd != null && args.budget_usd !== undefined) {
+  if (args.budget_usd === undefined) return carryPause && prev ? prev.budget_usd : null;
+  if (args.budget_explicit === true) return args.budget_usd;
+  if (carryPause && prev && prev.budget_usd != null) {
     let rec = prev.budget;
     if (typeof rec === 'string') { try { rec = JSON.parse(rec); } catch { rec = null; } }
     if (rec && Array.isArray(rec.events) && rec.events.some((e) => e.type === 'raise' && e.scope === 'run')) return prev.budget_usd;
   }
-  return args.budget_usd !== undefined ? args.budget_usd : (carryPause && prev ? prev.budget_usd : null);
+  return args.budget_usd;
 }
 
 // After a task row is written with a limit, tell the run process (the owner's guard), if there is one.

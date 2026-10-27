@@ -12,6 +12,7 @@ function pausedMessage(run) {
 
 function refuseIfPaused(E, caller) {
   if (!caller || caller.role !== 'orchestrator' || !caller.run_id) return;
+  if (E.owner && E.owner.opts && E.owner.opts.gateOnPause === false) return; // an interactive run: the orchestrator is the user's own session
   const run = rows.current(E.store, 'run', caller.run_id);
   if (run && run.paused_at != null && run.ended_at == null) throw err('E_PAUSED', pausedMessage(run), { run_id: run.id, paused_by: run.paused_by, paused_at: run.paused_at });
 }

@@ -14,12 +14,12 @@ function applyBudget(out, spec, opts = {}) {
   let value, source = null;
   if (spec.budget_usd !== undefined) {
     if (spec.budget_usd !== null && !valid(spec.budget_usd)) return { error: 'budget_usd must be a positive number (the run\'s estimated spend limit in dollars) or null' };
-    value = spec.budget_usd; source = value === null ? null : 'spec';
+    value = spec.budget_usd; source = value === null ? 'spec (off)' : 'spec';
   } else if (opts.config && opts.config.run && opts.config.run.budget_usd !== undefined && opts.config.run.budget_usd !== null) {
     if (!valid(opts.config.run.budget_usd)) return { error: `run.budget_usd in ${opts.config.path} must be a positive number (estimated dollars)` };
     value = opts.config.run.budget_usd; source = opts.config.path;
   }
-  if (!valid(value)) return {};
+  if (!valid(value)) { if (source) out.budget_source = source; return {}; } // a spec null is recorded, so a restart does not read it as "not stated"
   out.budget_usd = value;
   out.budget_source = source;
   const have = out.memory_levers;

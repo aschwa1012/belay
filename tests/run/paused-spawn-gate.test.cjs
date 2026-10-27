@@ -7,6 +7,7 @@ const assert = require('node:assert');
 const { refuseSpawnIfPaused } = require('../../src/run/paused-gate.cjs');
 const UE = require('../../src/run/usage-early.cjs');
 
+process.env.BELAY_RUN_HEADLESS = '1'; // the run process sets it for a headless orchestrator's adapter
 const core = (role, run) => ({ caller: { role }, run: { get: async () => ({ run }) } });
 
 test('the orchestrator spawn is refused while paused, for a budget pause and for any other', async () => {
@@ -38,4 +39,10 @@ test('the usage row is written while the worker memory queue is still busy, and 
   release();
   await w.memoryQueue;
   assert.strictEqual(drained, true);
+});
+
+test('an interactive orchestrator (no headless marker) is not gated', async () => {
+  delete process.env.BELAY_RUN_HEADLESS;
+  try { await refuseSpawnIfPaused(core('orchestrator', { id: 'r', paused_at: 5, paused_by: 'x', ended_at: null }), 'r'); }
+  finally { process.env.BELAY_RUN_HEADLESS = '1'; }
 });

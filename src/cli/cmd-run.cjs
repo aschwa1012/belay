@@ -194,7 +194,7 @@ async function run(ctx) {
         'run.pause': (params) => runPauseControl.pause(params), 'run.resume': (params) => runPauseControl.resume(params),
       },
       onEmbedderFailure: (ev) => guard.onFailure(ev),
-      onUsageRecorded: (row) => budget.onUsage(row), onTaskBudget: (t) => budget.onTaskBudget(t), // run and task budgets (budget-guard.cjs): inert with no limit
+      gateOnPause: !ce, onUsageRecorded: (row) => budget.onUsage(row), onTaskBudget: (t) => budget.onTaskBudget(t), // run and task budgets (budget-guard.cjs): inert with no limit
       // read by memory.embedQuery and the owner's engine at each call, so the run manager knows what a failure means, and an
       // operator's choice at a resume (belay resume --embedder keyword|off) takes effect at once
       embedderMode: () => guard.mode(), memoryOff: () => guard.memoryOff(), runEnding: () => !!guard.fatal(),
@@ -205,7 +205,7 @@ async function run(ctx) {
     pauseSettled: () => runPauseControl.settled(),
   });
   runPauseControl = createRunPauseControl({
-    runId: parsed.runId, core, hook: hookBox, stopInFlight: () => stopControl.stopping(), interactive: !!ce,
+    runId: parsed.runId, core, hook: hookBox, stopInFlight: () => stopControl.stopping(), interactive: !!ce, afterResume: () => budget.recheck(),
     // ADR 0034 decision 2: resuming an embedder-failure pause re-attempts the load; a load that still fails keeps the run paused.
     // ADR 0034 amendment 1: the operator may choose at the resume (params.embedder): keyword or off. The choice sets the run's mode here
     // and the resume goes ahead without re-loading the model; with no choice the model is re-loaded, and a load that still fails keeps
@@ -316,8 +316,8 @@ async function run(ctx) {
     try {
       clearRunStart(orchestratorDir); // before this launch's attach: no marker of an earlier life of this run id survives
       RID.watchOrchestrator(pid); // ADR 0039: run-identity.cjs; the attach never waits on a snapshot
-      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, max_parallel_evaluations: parsed.levers.max_parallel_evaluations === undefined ? null : parsed.levers.max_parallel_evaluations, budget_usd: parsed.levers.budget_usd || null, project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
-      budget.loadAttach(attachRow.run); for (const w of attachRow.warnings || []) process.stderr.write("belay run: warning: " + w + String.fromCharCode(10));
+      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, max_parallel_evaluations: parsed.levers.max_parallel_evaluations === undefined ? null : parsed.levers.max_parallel_evaluations, budget_usd: parsed.levers.budget_usd || null, budget_explicit: /^spec/.test(parsed.levers.budget_source || ''), project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
+      await budget.loadAttach(attachRow.run); for (const w of attachRow.warnings || []) process.stderr.write("belay run: warning: " + w + String.fromCharCode(10));
       return { ok: true, attach: attachRow };
     } catch (e) {
       return { ok: false, error: (e && e.message) || String(e) };

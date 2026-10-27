@@ -117,3 +117,16 @@ test('a paused run starts no new work for the orchestrator, whatever paused it; 
   }
   await call('run.setPaused', operator, { paused: false });
 });
+
+test('an interactive run (the owner says it does not gate) leaves the orchestrator assign alone; attachLimit honours an explicit spec value', async () => {
+  await call('run.setPaused', operator, { paused: true, at: Date.now(), by: 'operator:1' });
+  fakeOwner.opts.gateOnPause = false;
+  try { await call('task.assign', orch, { task_id: 'tp', worker_id: 'wp' }).catch((e) => assert.notStrictEqual(e.code, 'E_PAUSED')); }
+  finally { delete fakeOwner.opts.gateOnPause; await call('run.setPaused', operator, { paused: false }); }
+  const prev = { budget_usd: 20, budget: JSON.stringify({ events: [{ type: 'raise', scope: 'run' }] }) };
+  assert.strictEqual(RB.attachLimit({ budget_usd: 10, budget_explicit: true }, prev, true), 10, 'the spec says so');
+  assert.strictEqual(RB.attachLimit({ budget_usd: null, budget_explicit: true }, prev, true), null, 'null turns it off');
+  assert.strictEqual(RB.attachLimit({ budget_usd: 10 }, prev, true), 20, 'a config default keeps the recorded raise');
+  assert.strictEqual(RB.attachLimit({ budget_usd: 10 }, prev, false), 10, 'a new life takes the default');
+  assert.strictEqual(RB.attachLimit({}, prev, true), 20, 'an attach that states none keeps it');
+});

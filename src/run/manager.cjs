@@ -400,6 +400,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   // relaunch carries on (the slot is released when it ends, and a failed one writes its own dead row), so the caller waits with
   // worker_wait as after a spawn. The CLI passes no budget and is unchanged.
   async function restart({ worker_id, first_turn_timeout_ms = 180000, mcp_budget_ms = null }) {
+    await require('./paused-gate.cjs').refuseSpawnIfPaused(ctx.core, ctx.runId); // a paused run starts no new work; a parked worker's resume is not a restart
     const bud = createBudget(mcp_budget_ms);
     const { budgeted, left, within } = bud;
     const w = await forWorker(worker_id);

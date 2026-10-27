@@ -20,7 +20,7 @@ function resumeWakeText(by, resumed, left, held) {
   return build(0).slice(0, 220);
 }
 
-function createRunPauseControl({ runId, core, hook, pauseWorker, resumeWorker, stopInFlight, beforeResume, interactive = false }) {
+function createRunPauseControl({ runId, core, hook, pauseWorker, resumeWorker, stopInFlight, beforeResume, afterResume, interactive = false }) {
   let inFlight = null; // { op: 'pause'|'resume', promise }
   // ADR 0037 wave 2 fix: an interactive run has no run-hold, so this process's own memory is the ground truth for
   // "paused" (a stale paused_at carried across a reattach does not count) and the wake publisher's hold.
@@ -236,7 +236,8 @@ function createRunPauseControl({ runId, core, hook, pauseWorker, resumeWorker, s
     if (inFlight && inFlight.op === 'resume') return inFlight.promise;
     const p = doResume(params);
     inFlight = { op: 'resume', promise: p };
-    p.then(() => { inFlight = null; }, () => { inFlight = null; });
+    const settle = () => { inFlight = null; if (typeof afterResume === 'function') { try { afterResume(); } catch { /* the caller's hook never fails a resume */ } } }; // afterResume: the budget guard checks again once the resume has landed
+    p.then(settle, settle);
     return p;
   }
 
