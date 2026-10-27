@@ -52,6 +52,7 @@ function inheritable(task) {
 async function assertTreeListed(task) {
   const rec = active(task);
   if (!rec || !rec.repo) return;
+  inheritable(task); // a removal in flight is E_BUSY first, before any git call that could wait on it
   let list;
   try { list = await G.worktrees(rec.repo); } catch { return; }
   const hit = list.find((x) => G.samePath(x.path, rec.path));
