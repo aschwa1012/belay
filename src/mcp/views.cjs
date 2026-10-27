@@ -86,7 +86,9 @@ function handoffOnce(h, checks) {
 // The row keys a compact answer drops or replaces. Anything else the core adds passes through, so a new field is never lost here.
 const ROW_DROP = new Set(['acceptance', 'spec', 'results', 'handoff', 'lease', 'worktree']);
 // A listing row also leaves out what the task's own detail carries: its files, who wrote it, the reason for a hold.
-const SUMMARY_DROP = new Set(['run_id', 'written_at', 'written_by', 'files_owned', 'holds_reason']);
+// A listing the orchestrator scans for what to do next also leaves out the row version (`seq`, shown as `rev` in detail), the last
+// checkpoint's id and time, and an integration's id and time: no tool takes any of them.
+const SUMMARY_DROP = new Set(['seq', 'run_id', 'written_at', 'written_by', 'files_owned', 'holds_reason', 'last_checkpoint_id', 'last_checkpoint_at']);
 
 // A listing's results: the verdict facts (`flaky` and `timed_out` too, when the core sets them), the checks counted, the failing
 // ones named, and the passing ones marked flaky named apart, since `failing` does not list them.
@@ -132,6 +134,7 @@ function compactTask(row, { detail = false } = {}) {
     out.results = detail ? { ...facts, checks: checks.map(compactCheck) }
       : summaryResults(facts, checks);
   } else if (r !== undefined) out.results = r;
+  if (!detail && out.integration && typeof out.integration === 'object') { const { id: _i, at: _a, ...i } = out.integration; out.integration = i.head ? { ...i, head: String(i.head).slice(0, 10) } : i; }
   if (detail) { for (const k of Object.keys(out)) if (empty(out[k])) delete out[k]; return out; } // a null or an empty list says nothing; a false or a 0 stays
   return lean(out);
 }
