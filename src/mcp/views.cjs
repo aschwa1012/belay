@@ -219,6 +219,8 @@ function created(row) {
 // task_create's answer to an amend: the task as created answers it, the NEW acceptance, and what it replaced under `replaced`,
 // so the old acceptance is not read as the current one.
 function amendedView(row) {
+  if (row && Array.isArray(row.tasks)) return { tasks: row.tasks.map(amendedView) }; // a batch, ADR 0062
+  if (row && row.worktree && row.worktree.path && !row.worktree.inherited_from && !row.worktree.removed_at) return taskWorktree(row); // a tree this call made
   const out = created(row);
   if (!out || typeof out !== 'object' || !Array.isArray(row.amended) || !row.amended.length) return out;
   const { amended, ...rest } = out;

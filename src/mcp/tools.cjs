@@ -233,7 +233,7 @@ const ORCHESTRATOR = [
   },
   {
     name: 'task_create',
-    description: 'Create a task with the checks that decide it is done, the files it owns and the tasks it must wait for. Returns id, rev, state open, spec_head (view debug: whole row).',
+    description: 'Create a task with the checks that decide it is done, the files it owns and the tasks it must wait for. Returns id, rev, state open, spec_head (view debug: whole row). worktree makes its tree first; tasks makes up to 10.',
     inputSchema: S({
       spec: str('What is to be done'),
       acceptance: S({
@@ -250,6 +250,8 @@ const ORCHESTRATOR = [
       repairs: str('A fix task: the id of the work task it repairs; capped by max_fix_rounds'),
       base: str('Diff base'),
       tree_of: str('Work in that task\'s worktree (a conflict fix)'),
+      worktree: { type: ['boolean', 'string'], description: 'Own tree: true from HEAD, or a base ref' },
+      tasks: { type: 'array', items: { type: 'object' }, description: 'Several, each with these fields; all or nothing' },
       id: str(),
       amend: { type: 'boolean', description: 'Replace not-done task id\'s acceptance and spec' },
       view: DEBUG,
@@ -489,7 +491,7 @@ function validateArgs(name, args, { notes = false, role = 'worker' } = {}) {
     if (a[k] === undefined || a[k] === null) bad(`${name} needs ${k}`, { tool: name, missing: k });
   }
   // ADR 0061: an amend keeps the task\'s spec unless it names a new one, so only a create needs it.
-  if (name === 'task_create' && a.amend !== true && (a.spec === undefined || a.spec === null)) bad('task_create needs spec', { tool: name, missing: 'spec' });
+  if (name === 'task_create' && a.amend !== true && a.tasks === undefined && (a.spec === undefined || a.spec === null)) bad('task_create needs spec', { tool: name, missing: 'spec' });
   if (name === 'memory_retrieve') {
     const hasId = a.id !== undefined && a.id !== null;
     const hasIds = a.ids !== undefined && a.ids !== null;
