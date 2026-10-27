@@ -113,6 +113,13 @@ test('integrate: only what this call merged is listed; the tasks of earlier rows
   assert.deepStrictEqual([none.carried, none.forced, none.not_carried], [undefined, undefined, undefined], 'nothing carried, nothing said');
 });
 
+test('integrate: a task already in HEAD within this call stays in merged, marked already, and is not counted carried', () => {
+  const m = (task_id, extra) => ({ task_id, branch: `belay/${task_id}`, sha: 'sha-shared', already: false, by_this_call: true, carried_from: null, empty: false, judged_by: null, covers: [task_id], ...extra });
+  const c = V.integrate({ id: 'i2', repo: 'C:/r', merged: [m('T'), m('F', { already: true })] });
+  assert.deepStrictEqual(c.merged.map((e) => [e.task_id, e.already]), [['T', undefined], ['F', true]]);
+  assert.strictEqual(c.carried, undefined);
+});
+
 test('integrate: view debug answers the whole row', async () => {
   const r = { id: 'i1', repo: 'C:/r', merged: [{ task_id: 't1', already: true, carried_from: 'i0' }] };
   assert.strictEqual(await V.viewed('integrate', { task_ids: ['t1'], view: 'debug' }, async () => r), r);

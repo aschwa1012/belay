@@ -27,8 +27,8 @@ A task is made with `mcp__belay__task_create`:
 
 ## Handing a task to a worker
 
-Prefer `mcp__belay__worker_spawn` with `task_id`: it assigns the task and sends the worker a first line, `task <id> lease=<lease id>.`; then the task's spec, `Task: <spec>`; then your `prompt`. Give it `substrate` (`claude-code`),
-`worktree` (absolute; omit it for a task with its own tree), `prompt`, and `agent_type`, always (`coder|tester|reviewer|researcher`; a fixer is a
+Prefer `mcp__belay__worker_spawn` with `task_id`: it assigns the task and sends the worker a first line, `task <id> lease=<lease id>.`; then the task's spec, `Task: <spec>`; then your `prompt`, if you give one. Give it `substrate` (`claude-code`),
+`worktree` (absolute; omit it for a task with its own tree), `prompt` (optional with `task_id`: extra instructions only), and `agent_type`, always (`coder|tester|reviewer|researcher`; a fixer is a
 `coder`): belay applies its model and effort. belay sends the spec itself: do not repeat it in `prompt`, which is for extra instructions only. Pass `model` or `effort` only when your plan needs another.{{memory_queries_line}}{{memory_report_line}}
 
 `mcp__belay__task_assign` to a running worker sends it the task, its lease id and the hand-back
@@ -66,7 +66,7 @@ that check). Read a worker's hand-back as the task's `handoff` in `mcp__belay__t
 
 If a work task is not `done`, read the failing checks in the results, then either
 `mcp__belay__worker_message` the worker with what failed, wait on its id, and evaluate again, or create a fix
-task. A `worker_message` sent while the worker compacts answers `queued: true`; belay sends it when the compaction ends. A follow-up that needs a new hand-back (a rebase, a new head) is a `mcp__belay__task_assign` of the same task to the same worker, its `prompt` the follow-up, not a `worker_message`: a released lease takes no second result.
+task. A `worker_message` sent while the worker compacts answers `queued: true`; belay sends it when the compaction ends. A follow-up that needs a new hand-back (a rebase, a new head) is a `mcp__belay__task_assign` of the same task to the same worker, its `prompt` the follow-up (sent after the task's spec), not a `worker_message`: a released lease takes no second result.
 
 ## Review tasks
 

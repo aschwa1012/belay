@@ -162,6 +162,7 @@ const checkName = (c) => (Array.isArray(c.argv) ? [c.argv[0] ? String(c.argv[0])
 function mergedEntry(m) {
   const e = { task_id: m.task_id, branch: m.branch, sha: m.sha };
   if (m.empty) e.empty = true;
+  if (m.already === true) e.already = true;
   if (m.judged_by != null) e.judged_by = m.judged_by;
   if (Array.isArray(m.covers) && m.covers.some((id) => id !== m.task_id)) e.covers = m.covers;
   return e; // left_out and hook_changed_tree are on the row's own fields
@@ -172,8 +173,8 @@ function integrate(row) {
   for (const [k, v] of Object.entries(row)) if (!INTEGRATION_DROP.has(k)) out[k] = v;
   if (Array.isArray(row.merged)) {
     const entries = row.merged.filter((m) => m && typeof m === 'object');
-    const carried = entries.filter((m) => m.already === true);
-    out.merged = entries.filter((m) => m.already !== true).map(mergedEntry);
+    const carried = entries.filter((m) => m.carried_from != null);
+    out.merged = entries.filter((m) => m.carried_from == null).map(mergedEntry);
     if (carried.length) out.carried = carried.length;
   }
   if (Array.isArray(row.checks)) {
