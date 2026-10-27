@@ -142,7 +142,7 @@ test('tree_of: a conflict fix is worked in the work\'s tree from its own base, s
   write(repo, 'src/c.cjs', 'theirs\n'); write(repo, 'src/other.cjs', 'other task\n');
   commit(repo, 'another task lands');
   const into = git(repo, 'rev-parse', 'HEAD');
-  const conflicted = await orch.integration.merge({ task_ids: [w.id], into: 'int/off', base: into });
+  const conflicted = await orch.integration.merge({ task_ids: [w.id], into: 'belay/integrate/off', base: into });
   assert.ok(JSON.stringify(conflicted).includes('conflict'), JSON.stringify(conflicted));
 
   await rejectsCode(orch.task.create({ spec: 'x', tree_of: 'no-such-task' }), 'E_NOT_FOUND');
@@ -170,7 +170,7 @@ test('tree_of: a conflict fix is worked in the work\'s tree from its own base, s
   assert.ok(noBase.results.checks[0].detail.outside.includes('src/other.cjs'), JSON.stringify(noBase.results.checks[0].detail));
   await orch.task.cancel({ task_id: g.id });
 
-  const landed = await orch.integration.merge({ task_ids: [f.id], into: 'int/off' });
+  const landed = await orch.integration.merge({ task_ids: [f.id], into: 'belay/integrate/off' });
   const m = landed.merged.find((x) => x.task_id === f.id);
   assert.ok(m && m.covers.includes(w.id) && m.covers.includes(f.id), JSON.stringify(landed.merged));
   // max_fix_rounds is 1 and no fix round was spent: a review fix of the work can still be made.

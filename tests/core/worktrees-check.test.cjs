@@ -105,7 +105,7 @@ test('finding 3: no merge into a tree where a live or parked worker works, at it
   await orch.worker.write({ id: parked, state: 'paused', pid: deadPid(), paused_at: Date.now(), paused_by: 'operator' }); // a park ends the process
   await rejectsCode(orch.integration.merge({ task_ids: [t.id], into: 'main' }), 'E_WORKER_LIVE');
   await orch.worker.write({ id: parked, state: 'stopped', exited_at: Date.now(), paused_at: null, paused_by: null });
-  assert.strictEqual((await orch.integration.merge({ task_ids: [t.id], into: 'main' })).state, 'evaluated');
+  assert.strictEqual((await op.integration.merge({ task_ids: [t.id], into: 'main' })).state, 'evaluated');
 });
 
 test('finding 3: removal refuses a parked worker and a worker in a subdirectory', async () => {
@@ -146,7 +146,7 @@ test('nits: null optional arguments are absent; an empty branch says so; a cwd u
   assert.strictEqual(w.branch, `belay/${t.id}`);
   assert.strictEqual(w.junctions.length, 1);
   assert.strictEqual((await orch.task.evaluate({ task_id: t.id })).state, 'done', 'nothing committed, nothing outside');
-  const row = await orch.integration.merge({ task_ids: [t.id], into: `int/empty-${n}`, base: null, evaluate: null });
+  const row = await orch.integration.merge({ task_ids: [t.id], into: `belay/integrate/empty-${n}`, base: null, evaluate: null });
   assert.deepStrictEqual(row.merged.map((m) => [m.already, m.empty]), [[true, true]]);
   assert.strictEqual(row.checks[0].cwd, `${row.worktree}/base`, 'the cwd in the main checkout runs in the integration tree');
   assert.strictEqual(row.passed, true);

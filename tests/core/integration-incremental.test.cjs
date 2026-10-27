@@ -42,7 +42,7 @@ async function work(repo, files, commands, { evaluate = true } = {}) {
   commit(w.path, `task ${t.id}`);
   return evaluate ? orch.task.evaluate({ task_id: t.id }) : orch.task.get({ task_id: t.id });
 }
-const into = () => `int/inc-${++n}`;
+const into = () => `belay/integrate/inc-${++n}`;
 const counterFile = () => path.join(dir, `counter-${++n}.txt`);
 
 test('T2 then T1 into one branch keeps T2 without re-listing it, and names every task on the branch', async () => {

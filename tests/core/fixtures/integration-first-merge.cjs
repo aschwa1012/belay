@@ -23,7 +23,7 @@ const git = (cwd, ...a) => { const r = spawnSync('git', a, { cwd, encoding: 'utf
   fs.writeFileSync(`${w.path}/a.txt`, 'a\n'); git(w.path, 'add', '-A'); git(w.path, 'commit', '-q', '-m', 'a');
   await orch.task.evaluate({ task_id: t.id });
   const t0 = process.hrtime.bigint();
-  const row = await orch.integration.merge({ task_ids: [t.id], into: 'int/receipt', evaluate: false });
+  const row = await orch.integration.merge({ task_ids: [t.id], into: 'belay/integrate/receipt', evaluate: false });
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   const receipt = { at: new Date().toISOString(), node: process.version, pid: process.pid, merge_ms: Math.round(ms), state: row.state, owner_boot: row.owner_boot };
   console.log(JSON.stringify(receipt));

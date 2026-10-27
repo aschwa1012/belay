@@ -88,7 +88,7 @@ test('with the system core.autocrlf=true, CRLF content judged uncommitted and th
     const left = await judged((tree) => write(tree, 'crlf.txt', crlf));
     assert.strictEqual(left.results.uncommitted, true);
     commit(left.worktree.path, 'crlf, committed as judged');
-    const row = await orch.integration.merge({ task_ids: [left.id], into: 'int/crlf' });
+    const row = await orch.integration.merge({ task_ids: [left.id], into: 'belay/integrate/crlf' });
     assert.ok(['merged', 'evaluated'].includes(row.state), row.state);
     assert.deepStrictEqual([row.merged[0].covers, row.left_out], [[left.id], null]);
     // Committed before it is judged: clean, nothing uncommitted.
