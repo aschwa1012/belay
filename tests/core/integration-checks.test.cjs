@@ -129,7 +129,7 @@ test('a forced merge records its integrate checks truthfully', async () => {
   assert.strictEqual(r.passed, false);
   assert.strictEqual(mine(r)[0].source, 'integrate');
   assert.ok(r.forced && r.forced.task_ids.includes(t.id));
-  assert.deepStrictEqual(r.forced.failing, [], 'an integrate check belongs to no task, so no forced task is blamed for it');
+  assert.strictEqual(r.forced.failing.length, 1, 'a failing integrate check is named among the forced row failing');
 });
 
 test('the compact view shows an integrate check by name, with its source', () => {
@@ -140,4 +140,50 @@ test('the compact view shows an integrate check by name, with its source', () =>
   assert.deepStrictEqual(c.checks[0], { check: 'npm test', passed: true, source: 'integrate' });
   assert.strictEqual(c.checks[1].check, 'npm run lint');
   assert.strictEqual(c.checks[1].source, 'integrate');
+});
+
+test('integrate checks run before the task re-runs, and a shared command keeps the max timeout with each declared one', async () => {
+  const { rerun } = require('../../src/core/methods-integration.cjs');
+  const tree = path.join(dir, 'rerun-tree');
+  fs.mkdirSync(tree, { recursive: true });
+  const ok = (tag) => [process.execPath, '-e', `0 /* ${tag} */`];
+  const task = (id, commands) => ({ id, acceptance: { commands } });
+  const out = await rerun([task('t1', [{ argv: ok('task') }, { argv: ok('both'), timeout_ms: 30000 }])], tree, () => null, 'h', null,
+    [{ argv: ok('first') }, { argv: ok('both'), cwd: '.', timeout_ms: 90000 }]);
+  assert.deepStrictEqual(out.map((c) => c.source || 'task'), ['integrate', 'integrate', 'task'], 'integrate commands first');
+  const both = out[1];
+  assert.deepStrictEqual([both.task_ids, both.timeout_ms, both.declared_timeout_ms], [['t1'], 90000, { task: 30000, integrate: 90000 }], '. and an omitted cwd are one key');
+  assert.strictEqual(out.length, 3);
+});
+
+test('a command cut short by the call budget carries budget_capped_ms, and one the budget has run out before is not_run', async () => {
+  const { rerun } = require('../../src/core/methods-integration.cjs');
+  const tree = path.join(dir, 'rerun-tree');
+  fs.mkdirSync(tree, { recursive: true });
+  const slow = [process.execPath, '-e', 'setTimeout(() => {}, 20000)'];
+  const out = await rerun([], tree, () => null, 'h', null, [{ argv: slow, timeout_ms: 600000 }, { argv: [process.execPath, '-e', '0'] }], Date.now() + 1500);
+  assert.strictEqual(out[0].timed_out, true);
+  assert.ok(out[0].budget_capped_ms > 0 && out[0].budget_capped_ms <= 1500, 'the cap is recorded');
+  assert.strictEqual(out[0].passed, false);
+  assert.strictEqual(out[1].passed, false);
+  assert.match(out[1].not_run, /share a budget/);
+  const none = await rerun([], tree, () => null, 'h', null, [{ argv: [process.execPath, '-e', '0'] }], Date.now() - 1);
+  assert.match(none[0].not_run, /budget/);
+});
+
+test('a task integration reflects only its own checks; integrate checks are reported apart, by name', async () => {
+  const repo = makeRepo(dir), br = into();
+  const a = await work(repo, { 'a.txt': 'a\n' });
+  const bad = { argv: [process.execPath, '-e', 'process.exit(1)'] };
+  const skipped = await orch.integration.merge({ task_ids: [a.id], into: br, evaluate: false, checks: [bad] });
+  assert.strictEqual(skipped.passed, false);
+  let fact = (await orch.task.list({})).tasks.find((t) => t.id === a.id).integration;
+  assert.strictEqual(fact.passed, null, 'its own checks did not run on that head');
+  assert.strictEqual(fact.checks_passed, false);
+  assert.strictEqual(fact.checks_failing.length, 1);
+  const full = await orch.integration.merge({ task_ids: [a.id], into: into(), checks: [bad] });
+  assert.strictEqual(full.passed, false);
+  fact = (await orch.task.list({})).tasks.find((t) => t.id === a.id).integration;
+  assert.strictEqual(fact.passed, true, 'the task own check passed');
+  assert.strictEqual(fact.checks_passed, false);
 });

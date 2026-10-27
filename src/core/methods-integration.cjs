@@ -14,7 +14,7 @@ const J = require('./judged.cjs');
 const H = require('./git-hooks.cjs');
 const { runCommand, outputTails, DEFAULT_COMMAND_TIMEOUT_MS, ACCEPTANCE_BUDGET_MS } = require('./evaluate.cjs');
 const { checkShape } = require('./integration-checks.cjs');
-const { notMerged, stale } = require('./integration-state.cjs');
+const { notMerged, stale, checkName } = require('./integration-state.cjs');
 const { pidAlive } = require('./lock.cjs');
 const INC = require('./integration-incremental.cjs');
 const ID = require('./proc-identity.cjs');
@@ -272,38 +272,47 @@ function cwdFor(c, task, tree) {
   return G.fwd(c.cwd);
 }
 
-// `extra` (the call's `checks`, integration-checks.cjs) run after the tasks' own commands, on this head only. A command a task also
-// declares runs once and is marked `source: 'integrate'` as well. All commands share the call's budget, ending at `until`.
+// `extra` (the call's `checks`, integration-checks.cjs) run first, so a check the call asked for is not starved by long task suites,
+// then the tasks' own commands, on this head only. A command a task also declares runs once and is marked `source: 'integrate'`
+// as well. All commands share the call's budget, ending at `until`.
+const keyCwd = (cwd) => G.fwd(path.resolve(cwd)); // `.`, an omitted cwd and the tree itself are one place
 async function rerun(tasks, tree, reuse, head, beside = null, extra = [], until = Infinity) {
   const byKey = new Map();
+  for (const e of extra) {
+    const cwd = e.cwd ? G.fwd(path.resolve(tree, e.cwd)) : tree;
+    const key = JSON.stringify([e.argv, keyCwd(cwd)]);
+    const timeout_ms = Number(e.timeout_ms) > 0 ? Number(e.timeout_ms) : DEFAULT_COMMAND_TIMEOUT_MS;
+    if (!byKey.has(key)) byKey.set(key, { argv: e.argv, cwd, timeout_ms, integrate_timeout_ms: timeout_ms, task_ids: [], source: 'integrate' });
+  }
   for (const t of tasks) {
     for (const c of (t.acceptance && Array.isArray(t.acceptance.commands) ? t.acceptance.commands : [])) {
       if (!c || !Array.isArray(c.argv) || !c.argv.length || c.argv.some((x) => typeof x !== 'string')) continue;
       const cwd = cwdFor(c, t, tree);
-      const key = JSON.stringify([c.argv, cwd]);
-      if (!byKey.has(key)) byKey.set(key, { argv: c.argv, cwd, timeout_ms: Number(c.timeout_ms) > 0 ? Number(c.timeout_ms) : DEFAULT_COMMAND_TIMEOUT_MS, task_ids: [] });
-      byKey.get(key).task_ids.push(t.id);
+      const key = JSON.stringify([c.argv, keyCwd(cwd)]);
+      const timeout_ms = Number(c.timeout_ms) > 0 ? Number(c.timeout_ms) : DEFAULT_COMMAND_TIMEOUT_MS;
+      const have = byKey.get(key);
+      if (!have) byKey.set(key, { argv: c.argv, cwd, timeout_ms, task_timeout_ms: timeout_ms, task_ids: [t.id] });
+      else {
+        have.task_timeout_ms = Math.max(have.task_timeout_ms || 0, timeout_ms);
+        have.timeout_ms = Math.max(have.timeout_ms, timeout_ms);
+        have.task_ids.push(t.id);
+      }
     }
-  }
-  for (const e of extra) {
-    const cwd = e.cwd ? G.fwd(path.resolve(tree, e.cwd)) : tree;
-    const key = JSON.stringify([e.argv, cwd]);
-    const timeout_ms = Number(e.timeout_ms) > 0 ? Number(e.timeout_ms) : DEFAULT_COMMAND_TIMEOUT_MS;
-    const have = byKey.get(key);
-    if (have) { have.source = 'integrate'; have.timeout_ms = Math.max(have.timeout_ms, timeout_ms); } else byKey.set(key, { argv: e.argv, cwd, timeout_ms, task_ids: [], source: 'integrate' });
   }
   const checks = [];
   for (const c of byKey.values()) {
-    const mark = c.source ? { source: c.source } : {};
+    const declared = c.source && c.task_timeout_ms && c.task_timeout_ms !== c.integrate_timeout_ms ? { declared_timeout_ms: { task: c.task_timeout_ms, integrate: c.integrate_timeout_ms } } : {}; // each source's own limit, whichever ran
+    const mark = { ...(c.source ? { source: c.source } : {}), ...declared };
     const from = reuse(c.argv, c.cwd, c.timeout_ms);
     if (from) { checks.push({ argv: c.argv, cwd: c.cwd, timeout_ms: c.timeout_ms, task_ids: c.task_ids, ...mark, reused_from: from, head_sha: head, passed: true }); continue; }
     const t0 = Date.now();
     if (until - t0 <= 0) { checks.push({ argv: c.argv, cwd: c.cwd, timeout_ms: c.timeout_ms, task_ids: c.task_ids, ...mark, executable: false, exit_code: null, ms: 0, timed_out: false, passed: false, not_run: `the call's commands share a budget of ${ACCEPTANCE_BUDGET_MS} ms and it was spent` }); continue; }
-    const r = await runCommand(c.argv, c.cwd, Math.min(c.timeout_ms, until - t0), { keep: 'ends' }); // the ends and the failure section, as task.evaluate keeps
+    const allowed = Math.min(c.timeout_ms, until - t0);
+    const r = await runCommand(c.argv, c.cwd, allowed, { keep: 'ends' }); // the ends and the failure section, as task.evaluate keeps
     const concurrent = beside ? beside(t0, Date.now()) : [];
     checks.push({
       argv: c.argv, cwd: c.cwd, timeout_ms: c.timeout_ms, task_ids: c.task_ids, ...mark, executable: r.executable, exit_code: r.exit_code, ms: r.ms, timed_out: r.timed_out,
-      passed: r.executable && r.exit_code === 0 && !r.timed_out, spawn_error: r.spawn_error || null, ...(concurrent.length ? { concurrent } : {}), ...outputTails(r),
+      passed: r.executable && r.exit_code === 0 && !r.timed_out, spawn_error: r.spawn_error || null, ...(allowed < c.timeout_ms ? { budget_capped_ms: allowed } : {}), ...(concurrent.length ? { concurrent } : {}), ...outputTails(r),
     });
   }
   return checks;
@@ -392,7 +401,7 @@ async function merge(E, caller, args) {
     // The merges have happened whatever the run did meanwhile, so the row that records them is written without a second run check.
     // A forced merge says so on its row, and only for what force let in: the tasks merged that were not done, with the failing
     // checks among theirs. A done task is never marked, and with none merged that were not done the row is as without force.
-    const name = (c) => [path.basename(c.argv[0]), ...c.argv.slice(1, 4)].join(' ').slice(0, 80);
+    const name = checkName;
     const forced = INC.forcedOf({ by, args, tasks, merged: out.merged, checks: out.checks, carried, name });
     if (forced) out.forced = forced;
     const row = E.store.tx(() => rows.append(E.store, 'integration', out, by, Date.now()));
@@ -434,4 +443,4 @@ async function remove(E, caller, args) {
   });
 }
 
-module.exports = { merge, list, get, remove };
+module.exports = { merge, list, get, remove, rerun };

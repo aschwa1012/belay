@@ -305,7 +305,7 @@ const ORCHESTRATOR = [
       into: str(),
       base: str('If into is new; default the tasks\' base'),
       evaluate: { type: 'boolean', description: 'false skips the tasks\' re-runs' },
-      checks: { type: 'array', items: S({ argv: strs(), cwd: str(), timeout_ms: int() }, ['argv']), description: 'Extra commands run on the merged head' },
+      checks: { type: 'array', items: S({ argv: strs(), cwd: str(), timeout_ms: int() }, ['argv']), description: 'Extra commands run on the merged head, before the tasks re-run; all the commands of the call share one 540 s budget' },
       force: bool(),
       reason: str(),
       view: DEBUG,
