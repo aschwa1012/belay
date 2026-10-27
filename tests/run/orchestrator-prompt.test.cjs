@@ -159,7 +159,7 @@ test('both orchestrator prompts: the review step does not call task_evaluate, in
     const text = fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8').replace(/\r\n/g, '\n');
     const step4 = text.slice(text.indexOf('4. belay evaluates the review itself'), text.indexOf('5. Read the `kind: "verdict"`'));
     assert.ok(step4.length > 0, `${f}: step 4 is the release evaluation`);
-    assert.match(step4, /do not call `mcp__belay__task_evaluate`\n\s+on it: the reviewer's wake carries the result/, `${f}: no task_evaluate on a review`);
+    assert.match(step4, /do not call `mcp__belay__task_evaluate`\n\s+on it: read the result in the reviewer's wake/, `${f}: no task_evaluate on a review`);
     assert.match(step4, /not or could not be evaluated, or a stop, pause or park cut it short, call `mcp__belay__task_evaluate` on the review yourself with the reviewed task's worktree/, `${f}: the fallback when no release evaluation lands`);
     assert.doesNotMatch(text, /reviewer's (turn ends \(wait on its id\)|wake comes \(its turn ended\)), call/, `${f}: the stale instruction is gone`);
     assert.doesNotMatch(text, /evaluate again\. If the coder judged/, `${f}: no second evaluate after a late hand-back`);
