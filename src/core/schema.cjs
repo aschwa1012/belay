@@ -229,6 +229,10 @@ const MIGRATIONS = [
   'ALTER TABLE task ADD COLUMN base TEXT',
   // ADR 0061 section 1: the acceptances (and specs) an amend replaced, oldest first (JSON text, nullable), carried by every later row.
   'ALTER TABLE task ADD COLUMN amended TEXT',
+  // ADR 0064 decision 1: the held review, the judged task and the work a follow-up task follows ({review_id, task_id, root}, JSON
+  // text, nullable), written only by task.fixFromReview in follow-up mode; and the run lever max_follow_ups beside max_fix_rounds.
+  'ALTER TABLE task ADD COLUMN follows_up TEXT',
+  'ALTER TABLE run ADD COLUMN max_follow_ups INTEGER',
   // ADR 0053 amendment 2: the process that runs an integration (its pid and start time), so a row a crash left `merging` reads stale.
   'ALTER TABLE integration ADD COLUMN owner_pid INTEGER',
   'ALTER TABLE integration ADD COLUMN owner_boot INTEGER',
