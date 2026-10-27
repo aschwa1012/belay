@@ -1,0 +1,102 @@
+'use strict';
+// run-budget.test.cjs — the store half of run and task budgets: off by default, the ledger sums, the task a turn is charged to,
+// Codex turns as unknown, the status block, and the hooks the run process sets. A real Engine over a real store.
+
+const { test, before, after } = require('node:test');
+const assert = require('node:assert');
+const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
+
+const { Engine } = core('engine.cjs');
+const { Store } = core('store.cjs');
+const rows = core('rows.cjs');
+const RB = core('run-budget.cjs');
+
+let dir, store, E;
+const seen = { usage: [], tasks: [] };
+const operator = callerFor('operator');
+const orch = callerFor('orchestrator');
+const call = (method, caller, args = {}) => E.handle(method, { caller, ...args });
+const fakeOwner = { opts: { onUsageRecorded: (r) => seen.usage.push(r), onTaskBudget: (t) => seen.tasks.push(t) }, noteWrite() {} };
+
+before(() => {
+  dir = sandbox();
+  store = new Store(`${dir}/memory.db`, { stamp: true });
+  E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: fakeOwner, establishedBy: 'test' });
+});
+after(() => { store.close(); cleanup(dir); });
+
+const attach = (extra = {}) => call('run.attach', operator, { adapter_pid: process.pid, ...extra });
+const lease = (id, task, holder, granted, released = null) => rows.append(store, 'lease', {
+  id, task_id: task, run_id: 'test-run', holder, holder_role: 'worker', granted_at: granted, expires_at: granted + 600000, released_at: released, ttl_ms: 600000,
+}, 'test', granted);
+const usage = (args) => call('usage.record', operator, { worker_id: 'w1', substrate: 'claude-code', ...args });
+
+test('off by default: no limit on the run row, no status block, no budget on a task, nothing recorded', async () => {
+  await attach();
+  const run = rows.current(store, 'run', 'test-run');
+  assert.strictEqual(run.budget_usd, null);
+  assert.strictEqual(run.budget, null);
+  assert.strictEqual((await call('status.get', operator, {})).run.budget, undefined);
+  const t = await call('task.create', orch, { spec: 'plain' });
+  assert.strictEqual(t.budget_usd, null);
+  assert.strictEqual(seen.tasks.length, 0, 'the task hook is not called for a task without a limit');
+});
+
+test('a task limit is refused while the run writes no usage ledger, and nothing is written', async () => {
+  const n = rows.currentAll(store, 'task').length;
+  await assert.rejects(call('task.create', orch, { spec: 'x', budget_usd: 1 }), (e) => e.code === 'E_ARGS' && /usage ledger/.test(e.message));
+  assert.strictEqual(rows.currentAll(store, 'task').length, n);
+});
+
+test('with a run limit: attach records it, status shows the estimate, task limits are accepted and reported to the hook', async () => {
+  await attach({ budget_usd: 10 });
+  assert.strictEqual(rows.current(store, 'run', 'test-run').budget_usd, 10);
+  await assert.rejects(attach({ budget_usd: -1 }), (e) => e.code === 'E_ARGS');
+  const t = await call('task.create', orch, { id: 'tb', spec: 'capped', budget_usd: 2 });
+  assert.strictEqual(t.budget_usd, 2);
+  assert.deepStrictEqual(seen.tasks.map((x) => [x.task_id, x.budget_usd]), [['tb', 2]]);
+  await assert.rejects(call('task.create', orch, { spec: 'bad', budget_usd: 0 }), (e) => e.code === 'E_ARGS');
+  const st = (await call('status.get', operator, {})).run.budget;
+  assert.deepStrictEqual([st.limit_usd, st.spent_usd, st.state, st.estimate], [10, 0, 'under', true]);
+});
+
+test('the run hook sees each row; the sums count dollars and keep Codex turns as unknown, never free', async () => {
+  await call('task.create', orch, { id: 'ta', spec: 'a' });
+  const r1 = await usage({ turn: 1, cost_usd: 1.5, cost_basis: 'delta-of-cumulative', task_id: 'ta' });
+  await usage({ worker_id: 'cx', substrate: 'codex', turn: 1, task_id: 'ta' });
+  assert.strictEqual(seen.usage.length, 2);
+  assert.strictEqual(seen.usage[0].id, r1.id);
+  const all = await call('usage.spend', operator, {});
+  assert.deepStrictEqual([all.usd, all.turns, all.unknown_turns], [1.5, 2, 1]);
+  const d = await call('usage.spend', operator, { detail: true });
+  assert.deepStrictEqual(d.unknown_workers, [{ worker_id: 'cx', turns: 1 }]);
+  assert.strictEqual(d.per_task.ta, 1.5);
+  const st = (await call('status.get', operator, {})).run.budget;
+  assert.strictEqual(st.unknown_turns, 1);
+  assert.match(RB.textOf(st), /^at least \$1\.50 of \$10\.00 est\. \(under\); 1 turn report no dollars$/);
+});
+
+test('a turn is charged to the task whose lease the worker held when it ended, one task per turn', async () => {
+  await call('task.create', orch, { id: 'tx', spec: 'x' });
+  await call('task.create', orch, { id: 'ty', spec: 'y' });
+  lease('lx', 'tx', 'w2', 1000, 2000); // released inside turn 1
+  lease('ly', 'ty', 'w2', 2500); // held at the end of turn 2
+  const t1 = await usage({ worker_id: 'w2', turn: 1, cost_usd: 0.1, cost_basis: 'delta-of-cumulative', turn_window: { since: 900, until: 2100 } });
+  assert.strictEqual(t1.task_id, 'tx', 'released within the turn: the lease released last');
+  const t2 = await usage({ worker_id: 'w2', turn: 2, cost_usd: 0.2, cost_basis: 'delta-of-cumulative', turn_window: { since: 2100, until: 3000 } });
+  assert.strictEqual(t2.task_id, 'ty', 'one worker, two tasks: the second turn goes to the second task');
+  lease('lz', 'tx', 'w3', 100, 150); // released before the window opened
+  const t3 = await usage({ worker_id: 'w3', turn: 1, cost_usd: 0.3, cost_basis: 'delta-of-cumulative', turn_window: { since: 500, until: 900 } });
+  assert.strictEqual(t3.task_id, null, 'no lease held and none released in the window: the run alone');
+  const per = await call('usage.spend', operator, { detail: true });
+  const sum = Object.values(per.per_task).reduce((a, b) => a + b, 0);
+  assert.ok(Math.abs(sum - per.usd) < 1e-9, 'task spends sum to the run\'s');
+});
+
+test('only the operator (the run process) writes the budget record', async () => {
+  await assert.rejects(call('run.setBudget', orch, { budget_usd: 99 }), (e) => e.code === 'E_ROLE');
+  const row = await call('run.setBudget', operator, { budget_usd: 12, budget: { events: [{ type: 'raise' }] } });
+  assert.strictEqual(row.budget_usd, 12);
+  assert.deepStrictEqual(row.budget.events, [{ type: 'raise' }]);
+  assert.strictEqual((await call('status.get', operator, {})).run.budget.limit_usd, 12);
+});
