@@ -43,14 +43,14 @@ test('Ctrl-C during the sweep tells it to stop and returns only after the call s
 test('a fast close during the sweep does the same and reports fast_close', async () => {
   let settle, cut, cancelled = 0, resolved = false;
   const running = new Promise((r) => { settle = r; });
-  const ce = { hupSeen: () => false, leftMs: () => 0, snapshot: null, snapshotPending: null, bound: (p) => Promise.race([p, new Promise((r) => { cut = r; })]) };
+  const ce = { hupSeen: () => false, leftMs: () => 60000, snapshot: null, snapshotPending: null, bound: (p) => Promise.race([p, new Promise((r) => { cut = r; })]) };
   const p = closeTrees({ core: null, runId: 'r', endedRow: ended, closed: null, ce, late() {}, deps: { sweep: () => running, cancel: () => { cancelled += 1; } } }).then((v) => { resolved = true; return v; });
   await new Promise((r) => setImmediate(r));
   cut(require('../../src/run/orchestrator-interactive.cjs').TIMED_OUT);
   await new Promise((r) => setImmediate(r));
   assert.strictEqual(cancelled, 1);
   assert.strictEqual(resolved, false);
-  settle({ ...block, removed: [{}, {}] });
+  settle({ ...block, removed: [{}, {}], skipped: 'interrupted' });
   const r = await p;
   assert.deepStrictEqual([r.skipped, r.removed.length], ['fast_close', 2]);
 });
