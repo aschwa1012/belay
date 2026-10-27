@@ -154,16 +154,33 @@ function taskList(answer, { task_ids = null } = {}) {
 
 const taskEvaluate = (row) => compactTask(row, { detail: true });
 
-// integrate: the merge's facts and the re-run checks; the repository path, the junctions and the base are the receipt.
-const INTEGRATION_DROP = new Set(['repo', 'junctions', 'created_worktree', 'base_sha', 'written_at', 'written_by', 'run_id', 'owner_pid', 'owner_boot']);
+// integrate (compact, the default): what this call merged, a count of the tasks carried from earlier rows on the same branch, the
+// conflict, the checks (a passing one by name, a reused one marked with the row that ran it, a failing one whole), `forced` and
+// `not_carried` when set. The repository path, the junctions and the base are the receipt (view debug: the whole row).
+const INTEGRATION_DROP = new Set(['repo', 'junctions', 'created_worktree', 'base_sha', 'written_at', 'written_by', 'run_id', 'owner_pid', 'owner_boot', 'reused_checks']);
+const checkName = (c) => (Array.isArray(c.argv) ? [c.argv[0] ? String(c.argv[0]).split(/[\\/]/).pop() : '', ...c.argv.slice(1, 4)].join(' ').slice(0, 80) : '');
+function mergedEntry(m) {
+  const e = { task_id: m.task_id, branch: m.branch, sha: m.sha };
+  if (m.empty) e.empty = true;
+  if (m.judged_by != null) e.judged_by = m.judged_by;
+  if (Array.isArray(m.covers) && m.covers.some((id) => id !== m.task_id)) e.covers = m.covers;
+  return e; // left_out and hook_changed_tree are on the row's own fields
+}
 function integrate(row) {
   if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
   const out = {};
   for (const [k, v] of Object.entries(row)) if (!INTEGRATION_DROP.has(k)) out[k] = v;
+  if (Array.isArray(row.merged)) {
+    const entries = row.merged.filter((m) => m && typeof m === 'object');
+    const carried = entries.filter((m) => m.already === true);
+    out.merged = entries.filter((m) => m.already !== true).map(mergedEntry);
+    if (carried.length) out.carried = carried.length;
+  }
   if (Array.isArray(row.checks)) {
     out.checks = row.checks.map(({ cwd, ...c }) => {
-      const k = {};
-      for (const [f, v] of Object.entries(c)) if (!(c.passed && (f === 'stdout_tail' || f === 'stderr_tail')) && !(v === null && f === 'spawn_error')) k[f] = v;
+      if (c.passed === true) return { check: checkName(c), passed: true, ...(c.task_ids ? { task_ids: c.task_ids } : {}), ...(c.reused_from ? { reused_from: c.reused_from } : {}) };
+      const k = { check: checkName(c) };
+      for (const [f, v] of Object.entries(c)) if (!(v === null && f === 'spawn_error')) k[f] = v;
       return k;
     });
   }

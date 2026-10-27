@@ -84,7 +84,7 @@ test('viewed: task_evaluate, task_assign and task_cancel are compact; other tool
 
 test('integrate: the merge facts stay; the repository, junctions, base and a passing check\'s tails go', () => {
   const r = { id: 'i1', run_id: 'r', repo: 'C:/r', into_branch: 'belay/integrate/r', worktree: 'C:/r.worktrees/i', created_worktree: true, base_sha: 'b', head_sha: 'h',
-    state: 'evaluated', task_ids: ['t1'], merged: [{ task_id: 't1', sha: 's' }], conflict: null, error: null, passed: false, junctions: [{ path: 'x' }], removed_at: null,
+    state: 'evaluated', task_ids: ['t1'], merged: [{ task_id: 't1', branch: 'belay/t1', sha: 's' }], conflict: null, error: null, passed: false, junctions: [{ path: 'x' }], removed_at: null,
     owner_pid: 4242, owner_boot: 1700000000000, stale: null, not_merged: [],
     checks: [{ argv: ['npm', 'test'], cwd: 'C:/r.worktrees/i', task_ids: ['t1'], passed: true, exit_code: 0, spawn_error: null, stdout_tail: TAIL, stderr_tail: '' },
       { argv: ['npm', 'run', 'lint'], cwd: 'C:/r.worktrees/i', task_ids: ['t1'], passed: false, exit_code: 2, spawn_error: null, stdout_tail: 'lint error', stderr_tail: '' }] };
@@ -92,8 +92,30 @@ test('integrate: the merge facts stay; the repository, junctions, base and a pas
   assert.deepStrictEqual([c.id, c.state, c.into_branch, c.head_sha, c.worktree, c.merged, c.conflict, c.passed], ['i1', 'evaluated', 'belay/integrate/r', 'h', 'C:/r.worktrees/i', r.merged, null, false]);
   for (const k of ['repo', 'junctions', 'base_sha', 'created_worktree', 'owner_pid', 'owner_boot']) assert.ok(!(k in c), k);
   assert.deepStrictEqual([c.stale, c.not_merged], [null, []], 'stale and not_merged stay');
-  assert.deepStrictEqual(c.checks[0], { argv: ['npm', 'test'], task_ids: ['t1'], passed: true, exit_code: 0 });
-  assert.strictEqual(c.checks[1].stdout_tail, 'lint error');
+  assert.deepStrictEqual(c.checks[0], { check: 'npm test', passed: true, task_ids: ['t1'] });
+  assert.deepStrictEqual([c.checks[1].check, c.checks[1].stdout_tail, c.checks[1].exit_code], ['npm run lint', 'lint error', 2], 'a failing check stays whole');
+});
+
+test('integrate: only what this call merged is listed; the tasks of earlier rows are a count, with the checks, forced and not_carried named', () => {
+  const entry = (task_id, extra) => ({ task_id, branch: `belay/${task_id}`, sha: `sha-${task_id}`, already: false, by_this_call: true, carried_from: null, empty: false, judged_by: null, covers: [task_id], ...extra });
+  const old = (task_id) => entry(task_id, { already: true, by_this_call: false, carried_from: 'i0', judged_by: 'rv-1' });
+  const r = { id: 'i2', state: 'evaluated', into_branch: 'belay/integrate/r', head_sha: 'h2', task_ids: ['t3'], conflict: null, passed: true, not_merged: [], left_out: null,
+    merged: [old('t1'), old('t2'), entry('t3', { judged_by: 'rv-3' })],
+    forced: { task_ids: ['t3'], reason: 'test lands later', failing: [] }, reused_checks: [{ argv: ['npm', 'test'], reused_from: 'i0' }], not_carried: [{ task_id: 't9', reason: 'judged again' }],
+    checks: [{ argv: ['C:/x/node.exe', '--test'], cwd: 'C:/w', passed: true, reused_from: 'i0', head_sha: 'h2' }, { argv: ['npm', 'run', 'lint'], cwd: 'C:/w', passed: true, exit_code: 0, stdout_tail: TAIL }] };
+  const c = V.integrate(r);
+  assert.deepStrictEqual(c.merged, [{ task_id: 't3', branch: 'belay/t3', sha: 'sha-t3', judged_by: 'rv-3' }], 'the merge of this call, without the carried-row bookkeeping');
+  assert.strictEqual(c.carried, 2);
+  assert.deepStrictEqual(c.checks, [{ check: 'node.exe --test', passed: true, reused_from: 'i0' }, { check: 'npm run lint', passed: true }]);
+  assert.deepStrictEqual([c.forced, c.not_carried, 'reused_checks' in c], [r.forced, r.not_carried, false]);
+  assert.ok(Buffer.byteLength(JSON.stringify(c)) < Buffer.byteLength(JSON.stringify(r)) * 0.7, 'smaller than the row');
+  const none = V.integrate({ ...r, merged: [entry('t3')], forced: undefined, not_carried: undefined });
+  assert.deepStrictEqual([none.carried, none.forced, none.not_carried], [undefined, undefined, undefined], 'nothing carried, nothing said');
+});
+
+test('integrate: view debug answers the whole row', async () => {
+  const r = { id: 'i1', repo: 'C:/r', merged: [{ task_id: 't1', already: true, carried_from: 'i0' }] };
+  assert.strictEqual(await V.viewed('integrate', { task_ids: ['t1'], view: 'debug' }, async () => r), r);
 });
 
 test('eight evaluated tasks list in under a fifth of their full rows', () => {
