@@ -1,5 +1,5 @@
 // schema-budget.test.cjs — A5, the ADR 0010 §5 budget: the byte length of the `tools/list` result is
-// at most 11,264 bytes (ADR 0010 amendment 6) for the orchestrator role and 7,168 for the worker role. Measured twice: on the
+// at most 16,384 bytes (ADR 0010 amendment 6) for the orchestrator role and 7,168 for the worker role. Measured twice: on the
 // module directly, and on what a live child actually sends over the wire, because only the second is
 // what the orchestrator pays for. Every failure prints the number.
 'use strict';
@@ -13,16 +13,19 @@ const { launch, sandboxDir } = require('./rpc.cjs');
 const EXPECTED = {
   orchestrator: [
     'memory_store', 'memory_retrieve', 'memory_search', 'memory_timeline', 'memory_list', 'memory_delete', 'memory_stats',
-    'status', 'task_list', 'briefing',
-    'worker_spawn', 'worker_wait', 'worker_message', 'worker_stop', 'worker_restart', 'task_create', 'task_assign',
-    'permission_list', 'permission_decide', 'task_evaluate', 'memory_verify',
+    'status', 'task_list', 'briefing', 'worker_spawn', 'worker_wait', 'worker_message', 'worker_last_reply', 'worker_stop',
+    'worker_restart', 'task_create', 'task_assign', 'task_evaluate', 'task_worktree',
+    'integrate', 'fix_from_review', 'task_cancel', 'memory_verify', 'git_read',
   ],
+  // ADR 0010 amendment 14: no lease_renew, checkpoint_write, status or memory_stats; the adapter renews the lease itself.
   worker: [
-    'memory_store', 'memory_retrieve', 'memory_search', 'memory_timeline', 'memory_list', 'memory_delete', 'memory_stats',
-    'status', 'task_list', 'briefing',
-    'lease_renew', 'lease_release', 'checkpoint_write',
+    'memory_store', 'memory_retrieve', 'memory_search', 'memory_timeline', 'memory_list', 'memory_delete',
+    'task_list', 'briefing',
+    'lease_release',
   ],
 };
+// Listed to the orchestrator only for a run that turns the permission channel on (run lever permission_prompt).
+const PERMISSION = ['permission_list', 'permission_decide'];
 
 test('A5 the module listing is inside the budget for both roles', () => {
   for (const role of ['orchestrator', 'worker']) {
@@ -38,18 +41,22 @@ test('A5 the module listing is inside the budget for both roles', () => {
   assert.ok(permitBytes <= tools.BUDGET.permit, `permit is ${permitBytes} bytes, over the ${tools.BUDGET.permit} byte budget`);
 });
 
-test('the twenty-four tools of ADR 0010 §2 as amended by ADR 0015, 0020, amendment 3 and ADR 0040 are split ten both, eleven orchestrator, three worker', () => {
+test('the tools of ADR 0010 §2 as amended by ADR 0015, 0020, amendment 3, ADR 0040, ADR 0054 and amendment 14: 25 for the orchestrator (27 with the permission channel), 9 for a worker', () => {
   // Nineteen until ADR 0020 admitted permission_list and permission_decide, twenty-one with ADR 0040's
-  // memory_timeline and memory_verify (permit itself is hidden from the model and never in this
+  // memory_timeline and memory_verify, twenty-two with ADR 0054's git_read (permit itself is hidden from the model and never in this
   // listing, measured separately above).
   const names = new Set([...EXPECTED.orchestrator, ...EXPECTED.worker]);
-  assert.strictEqual(names.size, 24, 'twenty-four distinct tools');
+  assert.strictEqual(names.size, 26, '26 distinct tools listed by default');
   assert.deepStrictEqual(tools.toolsFor('orchestrator').map((t) => t.name), EXPECTED.orchestrator);
   assert.deepStrictEqual(tools.toolsFor('worker').map((t) => t.name), EXPECTED.worker);
-  assert.strictEqual(tools.toolsFor('orchestrator').length, 21);
-  assert.strictEqual(tools.toolsFor('worker').length, 13);
+  assert.strictEqual(tools.toolsFor('orchestrator').length, 25);
+  assert.strictEqual(tools.toolsFor('worker').length, 9);
+  const withPermissions = tools.toolsFor('orchestrator', { permissions: true }).map((t) => t.name);
+  assert.strictEqual(withPermissions.length, 27);
+  assert.deepStrictEqual(withPermissions.filter((n) => PERMISSION.includes(n)), PERMISSION);
+  assert.deepStrictEqual(withPermissions.filter((n) => !PERMISSION.includes(n)), EXPECTED.orchestrator, 'the rest of the listing is the same, in the same order');
   assert.strictEqual(tools.BUDGET.worker, 7168, 'ADR 0010 amendment 6 raised the worker budget to 7,168');
-  assert.strictEqual(tools.BUDGET.orchestrator, 11264, 'and the orchestrator budget to 11,264');
+  assert.strictEqual(tools.BUDGET.orchestrator, 16384, 'and amendment 9 raised the orchestrator budget to 16,384');
 });
 
 test('every tool has a route into exactly one Core or RunManager method', () => {
@@ -57,7 +64,7 @@ test('every tool has a route into exactly one Core or RunManager method', () => 
     for (const t of tools.toolsFor(role)) {
       const r = tools.routeOf(t.name);
       assert.ok(r, `${t.name} has a route`);
-      assert.ok(['core', 'run', 'briefing'].includes(r.via), `${t.name} via is core, run or briefing`);
+      assert.ok(['core', 'run', 'briefing', 'git', 'compose'].includes(r.via), `${t.name} via is core, run, briefing, git or compose`);
       assert.ok(typeof r.method === 'string' && r.method.length > 0, `${t.name} names a method`);
       assert.ok(t.description.length > 0 && t.inputSchema.type === 'object', `${t.name} has a description and an object schema`);
     }
@@ -65,6 +72,7 @@ test('every tool has a route into exactly one Core or RunManager method', () => 
   assert.strictEqual(tools.routeOf('status').method, 'status.get');
   assert.strictEqual(tools.routeOf('worker_stop').method, 'stop');
   assert.strictEqual(tools.routeOf('briefing').via, 'briefing');
+  assert.deepStrictEqual(tools.routeOf('git_read'), { role: 'orchestrator', via: 'git', method: 'gitRead' }, 'ADR 0054: run by the adapter itself, never the core');
 });
 
 test('unknown roles are refused rather than listed', () => {

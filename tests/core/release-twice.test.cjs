@@ -25,7 +25,8 @@ after(async () => {
   cleanup(dir);
 });
 
-const refused = (p) => assert.rejects(p, (e) => { assert.strictEqual(e.code, 'E_ARGS', e.message); assert.match(e.message, /already released/); return true; });
+// Wording audit: the worker cannot fix a second release, so the error says who can, and how: the orchestrator assigns the task again.
+const refused = (p) => assert.rejects(p, (e) => { assert.strictEqual(e.code, 'E_ARGS', e.message); assert.match(e.message, /already released/); assert.match(e.message, /The orchestrator can take a new hand-back by assigning this task to you again \(task_assign\)/); return true; });
 
 test('a second release is refused and the first hand-back stands', async () => {
   const t = await orch.task.create({ spec: 'release me twice' });

@@ -17,7 +17,7 @@ const path = require('node:path');
 const C = require('./config.cjs');
 const L = require('../run/launch.cjs');
 const { runOrchestrator } = require('../run/orchestrator.cjs');
-const { runInteractiveOrchestrator, makeConsole } = require('../run/orchestrator-interactive.cjs');
+const { runInteractiveOrchestrator, clearRunStart, makeConsole } = require('../run/orchestrator-interactive.cjs');
 const RI = require('./run-interactive.cjs'); // ADR 0037: interactive mode's CLI helpers
 const { createStopControl } = require('../run/stop.cjs');
 const { createRunPauseControl } = require('../run/run-pause.cjs');
@@ -25,8 +25,8 @@ const { callWorkerAdapter, pauseBoundMs, resumeBoundMs } = require('./adapter-pi
 const { closeRunWorkers, workersClosedBlock, finalizeCut } = require('./run-close.cjs');
 const { warmEmbedder, createEmbedderGuard } = require('../run/embedder-guard.cjs');
 const { RESUME_WARM_MS } = require('./embedder-bounds.cjs');
-const { attachMemory, memoryText, substituteLevers, countReviewRounds } = require('./run-levers.cjs');
-
+const { liveRunRow, liveRunMessage } = require('./run-live-guard.cjs');
+const { attachMemory, memoryText, substituteLevers, stripMarkers, countReviewRounds } = require('./run-levers.cjs');
 const fwd = (p) => String(p).split('\\').join('/');
 
 // BELAY_FAKE_CORE (test-only): same confinement as src/mcp/belay-mcp.cjs's own use of it — resolved
@@ -53,41 +53,7 @@ const { parseSpec } = require('./run-spec.cjs'); // the spec's keys and their ch
 const { runCloseStages } = require('./run-close-stages.cjs'); // the scrubber and the archive reviewer, after the workers close and before run.end
 const { memoryRunEnd } = require('./run-memory-end.cjs'); // ADR 0043 decision 2: the run-end memory jobs, after the adapter
 
-// 5a-4 item 4: the two no-write paths (a refusal, an election failure) return before run.json is ever
-// attempted, so the old unconditional last line told an operator to go read a receipt that was never
-// written, in a directory that was never created. `receipt.receipt_path` is the path written, or
-// `null`, and the line prints only when it is not.
-function renderText(receipt) {
-  const lines = [
-    `run_id: ${receipt.run_id}`,
-    `orchestrator pid ${receipt.orchestrator.pid}, session ${receipt.orchestrator.session_id}, ${receipt.orchestrator.turns} turn(s)`,
-    `ended_by: ${receipt.ended_by}`,
-    `exit_code: ${receipt.orchestrator.exit_code}`,
-    `holds: ${receipt.holds.length}`,
-    `polls: ${receipt.polls}`,
-  ];
-  if (receipt.mode === 'interactive') lines.splice(1, 0, `mode: ${receipt.mode}`); // the headless text is unchanged
-  // 5c: named only when a `belay stop` actually ended this run — the operator's proof that the CLI
-  // exit they are looking at was an intervention, not the orchestrator ending on its own.
-  if (receipt.stop) lines.push(`stopped by: pid ${receipt.stop.caller_pid}`);
-  // ADR 0029: named only when the run itself closed a worker row or killed a process.
-  const wc = receipt.workers_closed;
-  if (wc && (wc.killed.length || (wc.marked_dead || []).length)) {
-    lines.push(`workers closed: ${wc.killed.length} killed, ${(wc.marked_dead || []).length} marked dead`);
-  }
-  if (receipt.mode === 'interactive' && wc && (wc.left_parked || []).length) lines.push(`left parked: ${wc.left_parked.join(', ')}`); // ADR 0023 amendment 5
-  const pl = receipt.mode === 'interactive' && receipt.orchestrator && receipt.orchestrator.interactive && receipt.orchestrator.interactive.plugin;
-  if (pl && pl.unreadable) lines.push('plugin copy unreadable at exit');
-  else if (pl && pl.unchanged === false) lines.push(`plugin copy changed after spawn: ${(pl.changed_files || []).join(', ') || 'unreadable'}`); // ADR 0037 amendment 5 decision 4
-  if (receipt.levers) {
-    const rr = receipt.review_rounds === null ? `unknown (${receipt.review_rounds_reason})` : receipt.review_rounds;
-    lines.push(`levers: max_fix_rounds ${receipt.levers.max_fix_rounds}, fix_cutoff ${receipt.levers.fix_cutoff}, on_embedder_failure ${receipt.levers.on_embedder_failure}${memoryText(receipt.levers)}; review_rounds: ${rr}`);
-  }
-  lines.push(...RI.embedderLines(receipt));
-  if (receipt.receipt_path) lines.push(`receipt: ${receipt.receipt_path}`);
-  lines.push('');
-  return lines.join('\n');
-}
+const { renderText } = require('./run-render.cjs'); // the receipt's text form
 
 // ADR 0034 decision 1. The one test-only skip: BELAY_TEST_SKIP_EMBEDDER_WARMUP=1, honoured only together with
 // BELAY_TEST_MODE=1. BELAY_CLAUDE_EXE is a production override and never skips it.
@@ -132,20 +98,27 @@ async function run(ctx) {
   if (parsed.error) return usageError(parsed.error);
   eff.effort = parsed.effort; // --effort, else the config's agents.orchestrator.effort; parsed.agentSettings names which
   const mode = fl.interactive ? 'interactive' : parsed.mode; // ADR 0037 decision 1: the flag wins over the spec key
+  const BR = require('./run-brief.cjs');
+  if (parsed.briefText !== null) { // brief_file: belay's own template for this mode, the brief appended after the lever substitution
+    const t = BR.shippedTemplate(mode);
+    parsed.promptFile = t.file; parsed.promptText = t.text;
+  }
   const modeRefusal = RI.refusal(mode, parsed);
   if (modeRefusal) return usageError(modeRefusal);
   // ADR 0031: the counts say what the orchestrator was actually told; the receipt never claims a cap it was not.
   // An interactive run has no timeout (refused above), so its prompt is told none (L3).
+  parsed.promptWarnings = parsed.briefText !== null ? [] : require('./run-prompt-check.cjs').checkPrompt({ promptText: parsed.promptText, promptFile: parsed.promptFile, mode, levers: parsed.levers, timeoutMs: parsed.timeout_ms }); // a stale copy of the template: a warning, never a refusal
   const sub = mode === 'interactive'
     ? substituteLevers(parsed.promptText, parsed.levers, 0, { mode: 'interactive' })
     : substituteLevers(parsed.promptText, parsed.levers, parsed.timeout_ms);
-  parsed.promptText = sub.text;
+  parsed.promptText = parsed.briefText !== null ? BR.appendBrief(stripMarkers(sub.text), parsed.briefText) : stripMarkers(sub.text); // the header markers were read above; the orchestrator is not shown them
   parsed.levers.substituted = sub.substituted;
   const ce = mode === 'interactive' ? makeConsole() : null; // decision 6: the close can see a SIGHUP that arrives during it
   require('../run/exe-discovery.cjs').exportConfigured(found, C.effective); // config claude_exe/codex_exe reach every child
   // The orchestrator is always Claude Code: a missing executable exits 1 (a host prerequisite, like the embedder) before any file is created.
   try { require('../run/exe-discovery.cjs').exeFor('claude'); } catch (e) { return { code: 1, text: `belay run: ${e.message}\n`, json: { error: e.message } }; }
   if (parsed.levers.memory_notice && !ctx.json) process.stderr.write(`${require('../core/memory-notice.cjs').noticeLines(parsed.levers.memory_notice, 'belay: ').join('\n')}\n`); // once, before anything launches; under --json stderr carries failure receipts, so the notice stays out of it
+  if (parsed.promptWarnings.length && !ctx.json) process.stderr.write(`${parsed.promptWarnings.map((w) => `belay: warning: ${w.message}`).join('\n')}\n`); // once; under --json the receipt's prompt_warnings carries it
   const dataDir = C.dataDirOf(found, ctx);
   const orchestratorDir = parsed.orchestratorDirRaw || fwd(path.join(os.tmpdir(), 'belay-run', parsed.runId));
   if (orchestratorDir === dataDir || orchestratorDir.startsWith(`${dataDir}/`)) {
@@ -182,6 +155,7 @@ async function run(ctx) {
       // headless orchestrator is a model with Bash, so a process that descends from it is not the operator; the interactive one is
       // the human's own session (its plugin runs the CLI), so it is not listed. Where the peer cannot be examined the owner stays claimed.
       mode: require('../core/operator-check.cjs').SUPPORTED ? 'bound' : 'claimed',
+      longLived: true, // it serves the whole run, so it may start the snapshot probe a merge's owner_boot reads (ADR 0053 amendment 2)
       spawnedProcesses: () => require('../core/spawn-register.cjs').runSpawned(!!ce, hookBox.pid),
       controls: {
         'run.stop': (params) => stopControl.handle(params),
@@ -259,7 +233,7 @@ async function run(ctx) {
     store: { owner_pid: ownerPid, attach: null, ended: null, shutdown: null, established_by: establishedBy },
     ended_by: endedBy, holds: [], polls: 0, wakes: [], wakes_suppressed: [], wakes_expired: [],
     wakes_held: [], pauses: [], stop: null, workers_closed: null,
-    levers: parsed.levers, agent_settings: parsed.agentSettings, embedder: null, embedder_failures: [], review_rounds: null, review_rounds_reason: 'the run never started', ms: Date.now() - t0, receipt_path: null,
+    levers: parsed.levers, prompt_warnings: parsed.promptWarnings, agent_settings: parsed.agentSettings, embedder: null, embedder_failures: [], review_rounds: null, review_rounds_reason: 'the run never started', ms: Date.now() - t0, receipt_path: null,
   });
   if (electionError) {
     await core.close().catch(() => {});
@@ -273,7 +247,13 @@ async function run(ctx) {
     const receipt = refusal(endedBy, became.pid, became.established_by);
     return { code: 1, text: renderText(receipt), json: receipt };
   }
-
+  const liveRun = await liveRunRow(core);
+  if (liveRun) { // see run-live-guard.cjs
+    const sd = await core.shutdownOwner().catch((e) => ({ error: (e && e.message) || String(e) }));
+    const receipt = refusal(liveRunMessage(parsed.runId, liveRun), process.pid, 'run.get showed an unended run with a live adapter');
+    Object.assign(receipt.store, { shutdown: sd });
+    return { code: 1, text: renderText(receipt), json: receipt };
+  }
   // ADR 0034 decision 1: the model is loaded and its canary passed before the orchestrator or any worker exists,
   // so a run never starts on a host that cannot do what its memory tools promise. Nothing has been written.
   const skipped = warmupSkipped();
@@ -301,8 +281,10 @@ async function run(ctx) {
   const RID = require('./run-identity.cjs').createRunIdentity(process.pid);
   async function onAttached({ pid }) {
     try {
+      clearRunStart(orchestratorDir); // before this launch's attach: no marker of an earlier life of this run id survives
       RID.watchOrchestrator(pid); // ADR 0039: run-identity.cjs; the attach never waits on a snapshot
-      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
+      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, max_parallel_evaluations: parsed.levers.max_parallel_evaluations === undefined ? null : parsed.levers.max_parallel_evaluations, project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
+      for (const w of attachRow.warnings || []) process.stderr.write("belay run: warning: " + w + String.fromCharCode(10));
       // ADR 0050: the routing is resolved once, here, before the orchestrator's first prompt (a heavy backlog is drained or fallen back from first).
       try {
         routingPin = await require('./run-routing.cjs').pinAtStart(core, { levers: parsed.levers, write: ctx.json ? null : (m) => process.stderr.write(m) }); // as the memory notice: under --json stderr carries failure receipts, so the progress goes into the receipt's retrieval block instead
@@ -325,7 +307,7 @@ async function run(ctx) {
   let postFailure = null;
   let endedRow = null;
   let gotRun = null;
-  let shutdown = null;
+  let shutdown = null, reviewWait = null;
   let stopReceipt = null;
   let closed = null;
   let memoryEnd = null;
@@ -343,7 +325,7 @@ async function run(ctx) {
           model: parsed.model, allowedTools: parsed.allowedTools, effort: eff.effort, agentDefaults: parsed.agentDefaults,
           startupTimeoutMs: parsed.startup_timeout_ms, timeoutMs: parsed.timeout_ms,
           mcpToolTimeoutMs: parsed.mcp_tool_timeout_ms, pollMs: parsed.poll_ms,
-          closeGraceMs: parsed.close_grace_ms, compactAtTokens: parsed.levers.compact_at_tokens, // ADR 0007 decision 3
+          closeGraceMs: parsed.close_grace_ms, compactAtTokens: parsed.levers.compact_at_tokens, stopIdleOnDone: !!parsed.levers.stop_idle_on_done, permissionPrompt: !!parsed.levers.permission_prompt, // ADR 0007 decision 3; ADR 0058; ADR 0020
           interactiveSurfaceMs: parsed.interactive_surface_ms, fullscreen: parsed.fullscreen,
           knowledgeAgent: !!(parsed.levers.memory_levers && parsed.levers.memory_levers.knowledge_agent),
           notes: !!(parsed.levers.memory_levers && parsed.levers.memory_levers.notes), // wave 4: the refuted-note wake reads receipts only for a notes run
@@ -415,6 +397,8 @@ async function run(ctx) {
     // Owner.stop() itself (src/core/owner.cjs, item 1): it finishes clearing timers, destroying
     // connections, closing the server and releasing the lock even when the store fails to close, and
     // rethrows only once all of that is done. Nothing else is needed here.
+    // ADR 0052: an archive review attached to this owner (the panel's button during the run) is waited for first; Ctrl-C or a console close cuts it.
+    try { reviewWait = await require('./run-review-wait.cjs').waitForReviews({ core, fast: fastClose, ...((process.env.BELAY_TEST_MODE === '1' && ctx.reviewWaitDeps) || {}) }); } catch (e) { reviewWait = { outcome: 'error', error: (e && e.message) || String(e) }; }
     try {
       shutdown = await RI.within(ce, core.shutdownOwner(), 'the owner shutdown', { error: 'cut by the fast close deadline' }, (m) => { postFailure = chain(postFailure, 'fast close', m); }, RI.SHUTDOWN_RESERVE_MS);
     } catch (e) {
@@ -431,8 +415,9 @@ async function run(ctx) {
     : (endedRow ? { epoch: endedRow.epoch, ended_at: endedRow.ended_at, exit_reason: endedRow.exit_reason } : null);
   const storeBlock = {
     owner_pid: process.pid,
-    attach: attachRow ? { epoch: attachRow.epoch, reattached: attachRow.reattached } : null,
+    attach: attachRow ? { epoch: attachRow.epoch, reattached: attachRow.reattached, ...(attachRow.warnings ? { warnings: attachRow.warnings } : {}) } : null,
     ended: endedBlock,
+    ...(reviewWait ? { review_wait: reviewWait } : {}),
     shutdown,
   };
   const orchestratorBlock = partial ? partial.orchestrator : emptyOrchestratorBlock();
@@ -468,12 +453,12 @@ async function run(ctx) {
     ended_by: endedBy, holds, polls, wakes, wakes_suppressed: wakesSuppressed, wakes_expired: wakesExpired,
     wakes_held: wakesHeld, pauses,
     stop: stopReceipt, ms: Date.now() - t0, receipt_path: null,
-    ...(routingPin ? { retrieval: { ...(require('../core/retrieval-view.cjs').describe(gotRun && gotRun.run && gotRun.run.retrieval_routing ? gotRun.run : { retrieval_routing: JSON.stringify(routingPin), epoch: gotRun && gotRun.run ? gotRun.run.epoch : null }) || { profile: routingPin.routing.run.profile, notices: routingPin.notices }), start_progress: routingPin.start_progress || [] } } : {}), // the pin as the row holds it at the end, so a fallback in force is in the receipt; under --json the start-up progress lines are here
-    levers: parsed.levers, on_embedder_failure_final: guard.mode(), memory_off: guard.memoryOff(), embedder: warm, embedder_failures: guard.events(), ...(embedBounds && embedBounds.length ? { embedder_bounds: embedBounds } : {}),
+    ...require('./run-routing.cjs').receiptBlock(routingPin, gotRun), // the pin as the row holds it at the end, so a fallback in force is in the receipt; under --json the start-up progress lines are here
+    levers: parsed.levers, prompt_warnings: parsed.promptWarnings, on_embedder_failure_final: guard.mode(), memory_off: guard.memoryOff(), embedder: warm, embedder_failures: guard.events(), ...(embedBounds && embedBounds.length ? { embedder_bounds: embedBounds } : {}),
     review_rounds: reviewRounds.value, review_rounds_reason: reviewRounds.reason,
     workers_closed: closed ? workersClosedBlock(closed, endedRow ? (endedRow.workers_marked_dead || []) : null) : null,
     ...(closeStages ? { close_stages: closeStages } : {}), // only with notes on
-    ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), // only with a run-end memory lever on
+    ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), ...require('../run/review-scratch.cjs').closeRun(dataDir, parsed.runId, parsed.levers), // the run-end memory jobs; the reviewers' scratch removed (ADR 0054 amendment 1)
   };
   try {
     fs.writeFileSync(receiptPath, `${JSON.stringify({ ...receipt, receipt_path: receiptPath }, null, 2)}\n`);

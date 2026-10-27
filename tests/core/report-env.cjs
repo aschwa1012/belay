@@ -28,15 +28,17 @@ async function setup(RUN, levers = {}) {
   const head = git('rev-parse', 'HEAD').trim();
   const store = new Store(`${dir}/memory.db`, { stamp: true });
   // A deterministic seam on the embedder: while a stall is set, an embedding waits until the test releases it (preparation of a hand-back awaits it).
-  const seam = { gate: null, reached: null };
-  const stallingEmbed = async (text) => { if (seam.gate) { if (seam.reached) seam.reached(); await seam.gate; } return embed(text); };
+  const seam = { gate: null, reached: null, waiting: 0 };
+  const stallingEmbed = async (text) => { if (seam.gate) { seam.waiting += 1; if (seam.reached) seam.reached(); await seam.gate; } return embed(text); };
   const E = new Engine({ dataDir: dir, store, getEmbedder: async () => ({ embed: stallingEmbed }), owner: null, establishedBy: 'test' });
   const stall = () => {
     let release, reached;
     seam.gate = new Promise((r) => { release = r; });
     const hit = new Promise((r) => { reached = r; });
     seam.reached = reached;
-    return { reached: hit, release: () => { seam.gate = null; seam.reached = null; release(); } };
+    seam.waiting = 0;
+    // `waiting()` is how many embeddings are held at the gate now: a write that is queued behind another has not reached it.
+    return { reached: hit, waiting: () => seam.waiting, release: () => { seam.gate = null; seam.reached = null; release(); } };
   };
   const orch = callerFor('orchestrator', { run_id: RUN });
   const harness = callerFor('orchestrator', { run_id: RUN, channel: 'harness' });
@@ -90,7 +92,15 @@ async function setup(RUN, levers = {}) {
   async function review(r, taskId, extra) {
     await call('worker.write', orch, { id: r, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${r}`, last_event_at: Date.now() });
     const t = await call('task.create', orch, { spec: `review ${++seq}`, depends_on: Array.isArray(taskId) ? taskId : [taskId], acceptance: { verdict: true } });
-    const a = await call('task.assign', orch, { task_id: t.id, worker_id: r });
+    const a = await call('task.assign', orch, { task_id: t.id, worker_id: r }).catch(async (e) => {
+      // A reviewer that held a lease on the work is refused at assign (ADR 0058); these tests check the independence rule behind
+      // it, so the self-review is built as a store from before that gate holds it: assigned to a stand-in, then the holder rewritten.
+      if (e.code !== 'E_SELF_REVIEW') throw e;
+      await call('worker.write', orch, { id: 'stand-in', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's-stand-in', last_event_at: Date.now() });
+      const got = await call('task.assign', orch, { task_id: t.id, worker_id: 'stand-in' });
+      store.p('UPDATE lease SET holder = ? WHERE id = ?').run(r, got.new_lease.id);
+      return got;
+    });
     await call('lease.release', worker(r), { lease_id: a.new_lease.id, notes: [], result: { verdict: 'holds', summary: 'ok', ...extra } });
     return t.id;
   }
@@ -98,7 +108,7 @@ async function setup(RUN, levers = {}) {
   const rv = (id, v, cites, reason = 'what the stream shows', report) => ({ id, ...(report ? { report } : {}), verdict: v, cites, reason });
   const apply = (reviewTask) => call('memory.noteVerdicts', harness, { review_task_id: reviewTask });
   const heldRows = (id) => store.p("SELECT id, body FROM memory_entries WHERE type = 'held' AND json_extract(body, '$.note_id') = ? ORDER BY created_at, rowid").all(id).map((r) => ({ id: r.id, b: JSON.parse(r.body) }));
-  const activeHold = (id) => heldRows(id).find((r) => r.b.state === 'held') || null;
+  const activeHold = (id) => heldRows(id).find((r) => r.b.state === 'held' || r.b.state === 'queued') || null; // an active hold hides (held) or only waits for review (queued)
   const heldCount = async () => (await call('memory.held', orch, {})).total;
   const UP = 'fixtures/unlisted.json was opened by the loader';
 

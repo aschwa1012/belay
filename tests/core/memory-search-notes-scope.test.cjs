@@ -60,12 +60,13 @@ test('notes on: a named namespace, namespaces or filter.types is kept as given',
   const run = await search('on', { namespace: `run/${RUNS.on}` });
   assert.deepStrictEqual(ids(run), [rows.runFact]);
   const project = await search('on', { namespace: 'project' });
-  assert.deepStrictEqual(ids(project), [rows.legacySummary, rows.note, rows.projectFact].sort(), 'an explicit namespace is not narrowed to notes');
+  // The scope is not narrowed to notes; the project's rows that are not notes are hidden by the reading gate (ADR 0047 amendment of 2026-10-22).
+  assert.deepStrictEqual(ids(project), [rows.note], 'an explicit namespace is not narrowed by the default scope; legacy rows are hidden');
   const many = await search('on', { namespaces: ['project/acme', `run/${RUNS.on}`] });
-  assert.deepStrictEqual(ids(many), [rows.legacySummary, rows.note, rows.projectFact, rows.runFact].sort());
+  assert.deepStrictEqual(ids(many), [rows.note, rows.runFact].sort());
   const typed = await search('on', { filter: { types: ['fact'] } });
   assert.deepStrictEqual(typed.searched.namespaces, ['project/acme']);
-  assert.deepStrictEqual(ids(typed), [rows.projectFact]);
+  assert.deepStrictEqual(ids(typed), [], 'a legacy fact of the project is hidden');
 });
 
 test('a malformed filter is still refused under the default, not replaced by it', async () => {

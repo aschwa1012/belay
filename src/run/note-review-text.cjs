@@ -38,7 +38,8 @@ const noteLine = (note) => {
   if (ev) parts.push(`writer-stated evidence (where: saw): ${ev}${n.evidence_not_shown ? `; (${n.evidence_not_shown} more evidence entries not shown)` : ''}`);
   // applies_to holds the writer's paths and paths belay added (found in the evidence or the diff); aligned with applies_to_from.
   const ap = Array.isArray(n.applies_to) ? n.applies_to : [], from = Array.isArray(n.applies_to_from) ? n.applies_to_from : [];
-  const byWriter = ap.filter((_, i) => !from[i] || from[i] === 'worker'), byBelay = ap.filter((_, i) => from[i] && from[i] !== 'worker');
+  const derived = (f) => f === 'evidence' || f === 'diff'; // anything else is the writer's role (worker, orchestrator or operator)
+  const byWriter = ap.filter((_, i) => !derived(from[i])), byBelay = ap.filter((_, i) => derived(from[i]));
   if (list(byWriter)) parts.push(`writer-stated applies_to: ${list(byWriter)}`);
   if (list(byBelay)) parts.push(`belay-derived applies_to (from the evidence or the diff, not stated by the writer): ${list(byBelay)}`);
   if (list(n.subjects)) parts.push(`writer-stated subjects: ${list(n.subjects)}`);

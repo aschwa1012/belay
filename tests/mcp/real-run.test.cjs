@@ -29,7 +29,7 @@ function realRun(data) {
   });
 }
 
-const spawnArgs = (worktree) => ({ substrate: 'claude-code', worktree, prompt: 'do the thing' });
+const spawnArgs = (worktree) => ({ substrate: 'claude-code', worktree, prompt: 'do the thing', view: 'debug' }); // the whole row (ADR 0058: compact is the default)
 
 test('A8 worker_spawn returns the row only after the substrate is ready', { timeout: 90000 }, async (t) => {
   const data = sandboxDir('real-run-spawn');

@@ -18,8 +18,9 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { killTree } = require('../src/core/process.cjs');
 
+// tests/acceptance/*.selftest.cjs are the acceptance rows' pure self-tests; the rows themselves run by npm run test:acceptance.
 const PHASE1_GLOBS = [
-  'tests/core/**/*.test.cjs', 'tests/run/**/*.test.cjs', 'tests/mcp/**/*.test.cjs', 'tests/cli/**/*.test.cjs', 'tests/mod/**/*.test.cjs',
+  'tests/core/**/*.test.cjs', 'tests/run/**/*.test.cjs', 'tests/mcp/**/*.test.cjs', 'tests/cli/**/*.test.cjs', 'tests/mod/**/*.test.cjs', 'tests/acceptance/*.selftest.cjs',
 ];
 const PHASE2_GLOB = 'tests/budgets/**/*.test.cjs';
 const PHASE1_TIMEOUT_MS = 1200000;

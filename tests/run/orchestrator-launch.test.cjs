@@ -78,7 +78,7 @@ test('writeOrchestratorFiles writes an mcp.json and a plugin-disabling settings.
   } finally { cleanup(dir); }
 });
 
-test('the adapter is told the worktree only when the knowledge agent is on; off, its argv is the base one', () => {
+test('the adapter is told the run worktree whenever it has one, with the knowledge agent on or off (ADR 0054: the default of git_read)', () => {
   const dir = sandbox();
   try {
     const dataDir = `${dir}/.belay`;
@@ -86,11 +86,11 @@ test('the adapter is told the worktree only when the knowledge agent is on; off,
     const argsOf = (r) => JSON.parse(fs.readFileSync(r.mcpJsonPath, 'utf8')).mcpServers.belay.args;
     const off = argsOf(launch.writeOrchestratorFiles({ dir: `${dir}/off`, runId: 'r', dataDir, mcpPath: MCP_BIN, settingsPath: null, cwd: wt }));
     const plain = argsOf(launch.writeOrchestratorFiles({ dir: `${dir}/plain`, runId: 'r', dataDir, mcpPath: MCP_BIN, settingsPath: null }));
-    assert.ok(!off.includes('--worktree'), 'a cwd alone adds nothing');
-    assert.deepStrictEqual(off, plain, 'with the lever off the argv equals one written with no cwd at all');
+    assert.ok(!plain.includes('--worktree'), 'no cwd, no --worktree');
+    assert.strictEqual(off[off.indexOf('--worktree') + 1], wt, 'a cwd alone is passed, lever off');
+    assert.deepStrictEqual(off.filter((a, i) => a !== '--worktree' && off[i - 1] !== '--worktree'), plain, 'and nothing else changes');
     const on = argsOf(launch.writeOrchestratorFiles({ dir: `${dir}/on`, runId: 'r', dataDir, mcpPath: MCP_BIN, settingsPath: null, cwd: wt, knowledgeAgent: true }));
-    assert.strictEqual(on[on.indexOf('--worktree') + 1], wt);
-    assert.deepStrictEqual(on.filter((a, i) => a !== '--worktree' && on[i - 1] !== '--worktree'), plain, 'and nothing else changes');
+    assert.deepStrictEqual(on, off, 'the knowledge lever no longer changes the argv');
   } finally { cleanup(dir); }
 });
 

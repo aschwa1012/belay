@@ -125,10 +125,32 @@ function targetOf(w) {
   return P.rowTarget({ pid: w.pid, pid_created: w.pidCreated, pid_created_error: w.pidCreatedError, pid_image: w.pidImage, substrate: w.substrate });
 }
 
+// A record with no process by construction: no child handle, and either this adapter settled its death or the row it was adopted
+// from reads a state that has none (a death, a stop, a park, a Codex worker between turns). Its pid number may belong to another
+// process by now, so no caller may read that pid's signal-0 answer as this worker's life (ADR 0039).
+const NO_PROCESS_STATES = new Set(['dead', 'stopped', 'paused', 'idle']);
+const noProcess = (w) => !w.child && (w.settledState != null || NO_PROCESS_STATES.has(w.state));
+
+// Liveness for a read path (no snapshot, invariant 9): false for a record with no process, else the pid check.
+const pidLive = (w) => !!w.pid && !noProcess(w) && P.pidAlive(w.pid);
+
+// Liveness for an intervention that acts on the answer: the handle when this adapter holds one, else the row's identity checked
+// against one snapshot. A mismatch or an absent pid is not this worker; a row with no creation time, or a snapshot that cannot be
+// read, proves nothing, so the worker may be alive.
+async function verifiedLive(w, { snapshot = () => P.snapshotShared({ kind: 'liveness' }) } = {}) {
+  if (!pidLive(w)) return false;
+  if (w.child && w.child.pid === w.pid) return ID.handleLive(w.child);
+  const t = targetOf(w);
+  if (t.created == null) return true;
+  const r = await snapshot();
+  const c = ID.checkIdentity(w.pid, t, r && r.snap);
+  return c.ok || c.kind === 'unverifiable';
+}
+
 // The kill sequence for a worker record (ADR 0039 decision 3): handle when live, else its row's identity.
 // -> { tree, pidKill, identity, refused, descendants_not_killed }; a refusal is a result, never a throw.
 async function killWorker(w) {
   return P.killProcess(targetOf(w)).catch((e) => ({ tree: null, pidKill: { signalled: false, error: 'EIDENTITY' }, identity: null, refused: { refused: 'identity', kind: 'unverifiable', detail: (e && e.message) || String(e) } }));
 }
 
-module.exports = { RETRY_SCHEDULE_MS, RETRY_EVERY_MS, killWorker, noteSpawn, registerSpawn, adoptFromRow, rowFields, targetOf };
+module.exports = { RETRY_SCHEDULE_MS, RETRY_EVERY_MS, killWorker, noteSpawn, registerSpawn, adoptFromRow, rowFields, targetOf, noProcess, pidLive, verifiedLive };

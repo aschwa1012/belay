@@ -2,8 +2,9 @@
 // proc-identity.cjs — ADR 0039 decisions 1 to 3. Proof that a pid is the process belay means.
 // `process.kill(pid, 0)` proves only that some process holds the pid; Windows reuses pids quickly.
 // So a kill carries an identity: a live child handle, or an expected creation time read once at
-// spawn. One CIM query (a snapshot of every process) is the only source of creation times. Only kill
-// paths call it; no read verb does (invariant 9).
+// spawn. One CIM query (a snapshot of every process) is the only source of creation times. Kill paths
+// call it, and so do write paths that record or check a process's identity: an attach's own-creation probe, and an
+// integration merge's owner (`owner_boot`, and the check of a `merging` row's pid). No read verb does (invariant 9).
 
 const { execFile } = require('node:child_process');
 const fs = require('node:fs');

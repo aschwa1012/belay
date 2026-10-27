@@ -53,9 +53,13 @@ async function proposals(core, parsed, ctx, found) {
   const args = { root: rootOf(ctx, found) };
   if (parsed.opts.project) args.project = parsed.opts.project;
   if (parsed.opts.all) args.all = true;
-  const res = await core.memory.proposals(args);
-  // Reports of "wrong" with no verdict applied (a review or job may have run and left the report out): listed for the operator.
-  try { if (core.memory && typeof core.memory.held === 'function') res.unjudged_reports = (await core.memory.held({ ...(args.project ? { project: args.project } : {}), reports: true })).unjudged_reports || []; } catch { /* the list is extra; the proposals stand */ }
+  const batch = typeof core.readBatch === 'function' ? (fn) => core.readBatch(fn) : (fn) => fn(); // one store copy for both reads
+  const res = await batch(async () => {
+    const r = await core.memory.proposals(args);
+    // Reports of "wrong" with no verdict applied (a review or job may have run and left the report out): listed for the operator.
+    try { if (core.memory && typeof core.memory.held === 'function') r.unjudged_reports = (await core.memory.held({ ...(args.project ? { project: args.project } : {}), reports: true })).unjudged_reports || []; } catch { /* the list is extra; the proposals stand */ }
+    return r;
+  });
   return { code: 0, text: renderProposals(res), json: res };
 }
 
@@ -89,19 +93,29 @@ async function restore(core, parsed) {
   return { code: 0, text: `restored ${res.id} to ${res.namespace}  reason: ${one(res.receipt.reason)}  at ${when(res.receipt.at)}${stays}\n`, json: res };
 }
 
-// belay memory held [--project p] [--awaiting]: one line per held note (a read). belay memory held settle <id> ...: the operator's settle (a write).
+// belay memory held [--project p] [--awaiting]: one line per held note (a read). belay memory held settle <id> ... [--if-awaiting]: the operator's settle (a write);
+// --if-awaiting settles only a hold that awaits the operator, checked in the write's own transaction (the panel always passes it).
 async function held(core, parsed) {
   const o = parsed.opts;
   if (parsed.positional[0] === 'settle') {
-    const res = await core.memory.heldSettle({ id: parsed.positional[1], action: o.action, reason: o.reason });
+    const res = await core.memory.heldSettle({ id: parsed.positional[1], action: o.action, reason: o.reason, ...(o.ifAwaiting ? { if_awaiting: true } : {}) });
     const changed = [`hold ${res.held_row}: ${res.held ? res.held.body.state : '?'}`, `note ${res.id}: ${res.row ? res.row.namespace : '?'}`];
     const extra = res.settled ? ` (${res.settled.count} report${res.settled.count === 1 ? '' : 's'} settled, the note not verified)` : '';
     return { code: 0, text: `${res.action} ${res.id}: ${res.outcome}${extra}  receipt: ${res.receipt}\n  ${changed.join('\n  ')}\n`, json: res };
   }
   const res = await core.memory.held({ list: true, ...(o.project ? { project: o.project } : {}), ...(o.awaiting ? { awaiting: true } : {}) });
-  const lines = res.entries.map((e) => `${e.note_id}  ${e.kind}/${e.ground || 'none'}  rev ${e.rev}  ${e.reports} report${e.reports === 1 ? '' : 's'}${e.self_report ? ' (self)' : ''}  held ${e.runs_waited} run${e.runs_waited === 1 ? '' : 's'}${e.awaiting_operator ? `  AWAITS YOU: ${one(e.undecided && e.undecided.reason)}` : ''}  [${e.project}]  ${one(e.title)}`);
-  const head = `${res.total} held, ${res.awaiting_operator || 0} awaiting the operator${res.truncated ? ' (first 200 listed)' : ''}`;
+  const lines = res.entries.map((e) => `${e.note_id}  ${e.state || 'held'}  ${e.kind}/${e.ground || 'none'}  rev ${e.rev}  ${e.reports} report${e.reports === 1 ? '' : 's'}${e.self_report ? ' (self)' : ''}  held ${e.runs_waited} run${e.runs_waited === 1 ? '' : 's'}${e.awaiting_operator ? `  AWAITS YOU: ${one(e.undecided && e.undecided.reason)}` : ''}  [${e.project}]  ${one(e.title)}`);
+  const head = `${res.total - (res.queued || 0)} held${res.queued ? `, ${res.queued} queued` : ''}, ${res.awaiting_operator || 0} awaiting the operator${res.truncated ? ' (first 200 listed)' : ''}`;
   return { code: 0, text: `${head}\n${lines.join('\n')}${lines.length ? '\n' : ''}`, json: res };
+}
+
+// belay memory report <note-id> --reason <text> [--replaced-by <note-id>]: the operator reports a note wrong; it is held for the archive review.
+async function report(core, parsed) {
+  const o = parsed.opts;
+  const res = await core.memory.noteReport({ note_id: parsed.positional[0], why: o.reason, ...(o.replacedBy ? { replaced_by: o.replacedBy } : {}) });
+  const hold = res.hold ? `hold ${res.hold.row} (${res.hold.kind}, rev ${res.hold.rev})${res.hold.merged ? `, merged ${res.hold.merged}` : ''}` : `not held (${res.reason})`;
+  const lines = [`reported ${res.id} wrong by ${res.reported_by}: ${res.state}, ${hold}`, `  report ${res.report.seq} at ${when(res.report.at)}${res.report.replaced_by ? `  replaced by ${res.report.replaced_by}` : ''}  (${res.reports} report${res.reports === 1 ? '' : 's'} on the note)`];
+  return { code: 0, text: `${lines.join('\n')}\n`, json: res };
 }
 
 async function archive(core, parsed) {
@@ -114,7 +128,7 @@ async function archive(core, parsed) {
   return { code: 0, text, json: res };
 }
 
-const WRITES = { held: p => p.positional[0] === 'settle', restore: p => !p.opts.candidates, archive: () => true, promote: () => true, scrub: () => true, review: () => true, resolve: () => true };
+const WRITES = { held: p => p.positional[0] === 'settle', restore: p => !p.opts.candidates, report: () => true, archive: () => true, promote: () => true, scrub: () => true, review: () => true, resolve: () => true };
 const writes = parsed => !!(WRITES[parsed.sub] && WRITES[parsed.sub](parsed));
 
-module.exports = { VERB_FN: { proposals, held, restore, archive, promote, ...require('./cmd-memory-stages.cjs').VERB_FN }, writes };
+module.exports = { VERB_FN: { proposals, held, restore, report, archive, promote, ...require('./cmd-memory-stages.cjs').VERB_FN }, writes };

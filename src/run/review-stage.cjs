@@ -103,7 +103,7 @@ async function withFiles(held, worktree, dir, ctx = {}) {
 }
 
 // opts: { core, runId, lv, dataDir, getManager, worktree, force, jobId }. Never throws; every outcome is a receipt and a returned fact.
-async function runReview({ core, runId, lv, dataDir, getManager, worktree = null, force = false, fast = null, log = null, sink = null, jobId: given = null }) {
+async function runReview({ core, runId, lv, dataDir, getManager, worktree = null, force = false, fast = null, log = null, sink = null, jobId: given = null, respectClaim = false }) {
   if (!lv || !lv.notes) return { ran: false, reason: 'notes off' };
   if (!force && !lv.archive_review_auto) return { ran: false, reason: 'archive_review_auto off' }; // on demand only: `belay memory review`, or the panel's button
   if (lv.scrub_action === 'off' && !force) return { ran: false, reason: 'scrub_action off' };
@@ -113,6 +113,11 @@ async function runReview({ core, runId, lv, dataDir, getManager, worktree = null
   if (fast && fast()) return { ran: false, reason: 'fast close', counts: q.counts }; // the marks stay held; the next review takes them
   const why = force ? 'asked by hand' : triggerOf(q.counts, lv);
   if (!why) return { ran: false, reason: 'below the triggers', counts: q.counts };
+  if (respectClaim) { // the run-close reviewer holds no claim, so it yields to the operator's claimed review of the project (ADR 0052)
+    let st = null;
+    try { st = ((await core.memory.reviewState({ project: q.project })).reviews || {})[q.project]; } catch { st = null; }
+    if (st && st.state === 'running' && st.pid_alive) return { ran: false, reason: 'a review is running', counts: q.counts, message: `the archive review of ${q.project} claimed by pid ${st.claim.pid} (job ${st.claim.job}) is running` };
+  }
   const limit = await J.attemptLimit(core, 'review', 'review_stage', q.held.length, q.project); // half of an overrun attempt, oldest first, down to 1
   const queued = q.held.slice(0, limit);
   const jobId = given || `${JOB_PREFIX}${runId}-${Date.now().toString(36)}`; // a caller that holds a claim names the job in it

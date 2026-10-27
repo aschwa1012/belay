@@ -8,6 +8,8 @@
 const C = require('./config.cjs');
 const ML = require('../core/memory-levers.cjs');
 const AD = require('../run/agent-defaults.cjs');
+const EM = require('../core/embedder-mode.cjs');
+const TP = require('../run/tool-policy.cjs'); // pure
 
 const MOD_NAMES = C.KEY_NAMES.filter((k) => C.KEYS[k].allowed);
 const MEMORY_NAMES = Object.keys(ML.DEFAULTS).filter((k) => !ML.EVAL_ONLY.includes(k)).map((k) => `memory.${k}`);
@@ -18,11 +20,19 @@ const kindOf = (key) => (MOD_NAMES.includes(key) ? 'mod' : key.startsWith('memor
 const leverOf = (key) => key.slice('memory.'.length);
 const fieldOf = (key) => key.slice(key.lastIndexOf('.') + 1);
 
+// memory.on_embedder_failure also takes the 0.2.0 names (stop, continue). Every reader and the writer map them with the one
+// function `belay run` uses (embedder-mode.cjs), so settings never disagrees with a run about the effective value.
+const isModeKey = (key) => key === 'memory.on_embedder_failure';
+// { value, from } when `raw` is a legacy name mapped to its current one; null otherwise.
+const legacyMap = (key, raw) => (isModeKey(key) && typeof raw === 'string' && EM.ALIASES[raw] !== undefined ? { value: EM.normalize(raw), from: raw } : null);
+const legacyNote = (m) => `${JSON.stringify(m.from)} is the 0.2.0 name of ${JSON.stringify(m.value)}; read as ${JSON.stringify(m.value)}`;
+
 // What a key accepts: { type, allowed (array or null), text (for the listing) }.
 function shape(key) {
   const kind = kindOf(key);
   if (kind === 'mod') return { type: 'enum', allowed: C.KEYS[key].allowed, text: C.KEYS[key].allowed.join(' | ') };
   if (kind === 'agents') {
+    if (fieldOf(key) === AD.TOOLS_FIELD) return { type: 'tools', allowed: null, text: `comma-separated tools from ${TP.POLICY_TOOLS.join(', ')} | null (the built-in policy)` };
     return fieldOf(key) === 'effort'
       ? { type: 'enum', allowed: [...AD.EFFORT_LEVELS, null], text: `${AD.EFFORT_LEVELS.join(' | ')} | null` }
       : { type: 'model', allowed: null, text: fieldOf(key) === AD.CODEX_FIELD ? 'a Codex model name | null (no default: the Codex config decides)' : 'a model name | null (no default)' };
@@ -41,6 +51,7 @@ function defaultOf(key) {
   if (kind === 'mod') return C.KEYS[key].default;
   if (kind === 'memory') return ML.DEFAULTS[leverOf(key)];
   if (key === 'agents.orchestrator.model') return AD.ORCHESTRATOR_MODEL;
+  if (fieldOf(key) === AD.TOOLS_FIELD) return [...TP.forType(null, key.split('.')[1]).tools]; // the built-in tool policy
   const built = AD.BUILTIN[key.split('.')[1]]; // the built-in roster default, which a stored null falls back to
   return built && built[fieldOf(key)] !== undefined ? built[fieldOf(key)] : null;
 }
@@ -54,6 +65,8 @@ function parseValue(key, raw) {
     return ok ? { value: raw } : { error: `${JSON.stringify(raw)} is not a value of ${key} (${sh.text})` };
   }
   const bad = (what) => ({ error: `${JSON.stringify(raw)} is not ${what} for ${key}` });
+  const legacy = legacyMap(key, raw);
+  if (legacy) return { value: legacy.value, mapped_from: legacy.from }; // written as the current name
   switch (sh.type) {
     case 'boolean': return raw === 'true' || raw === 'false' ? { value: raw === 'true' } : bad('true or false');
     case 'integer': return /^-?\d+$/.test(raw) ? { value: Number(raw) } : bad('an integer');
@@ -69,6 +82,11 @@ function parseValue(key, raw) {
       try { return { value: JSON.parse(raw) }; } catch { return bad('JSON'); }
     }
     case 'string': return { value: raw === 'null' && sh.nullable ? null : raw };
+    case 'tools': {
+      if (raw === 'null') return { value: null };
+      const c = TP.checkList(raw.split(',').map((t) => t.trim()).filter(Boolean), key);
+      return c.error ? { error: `${JSON.stringify(raw)} is not a value of ${key}: ${c.error}` } : { value: c.value };
+    }
     default: {
       if (raw === 'null' && sh.allowed.includes(null)) return { value: null };
       return sh.allowed.includes(raw) ? { value: raw }
@@ -90,6 +108,7 @@ function storedAt(config, key) {
 function checkStored(key, value) {
   if (kindOf(key) === 'agents') {
     if (value === null) return { ok: true, unset: true };
+    if (fieldOf(key) === AD.TOOLS_FIELD) { const c = TP.checkList(value, key); return c.error ? { ok: false, reason: c.error } : { ok: true }; }
     if (fieldOf(key) === 'effort') return AD.EFFORT_LEVELS.includes(value) ? { ok: true } : { ok: false, reason: `${JSON.stringify(value)} is not one of ${AD.EFFORT_LEVELS.join(', ')}` };
     if (!(typeof value === 'string' && value)) return { ok: false, reason: `${JSON.stringify(value)} is not a model name` };
     return fieldOf(key) === 'model' && AD.NOT_CLAUDE.test(value) ? { ok: false, reason: `${JSON.stringify(value)} is not a Claude model; a Codex model goes in ${key.replace(/model$/, AD.CODEX_FIELD)}` } : { ok: true };
@@ -97,7 +116,7 @@ function checkStored(key, value) {
   const block = { [leverOf(key)]: value };
   const t = typeof value;
   const s = ML.TYPES[leverOf(key)];
-  const typeOk = s.type === 'boolean' ? t === 'boolean' : s.type === 'string' ? (value === null ? !!s.nullable : t === 'string') : s.type === 'enum' ? s.values.includes(value) : s.type === 'json' ? (value === null ? !!s.nullable : t === 'object') : t === 'number';
+  const typeOk = s.type === 'boolean' ? t === 'boolean' : s.type === 'string' ? (value === null ? !!s.nullable : t === 'string') : s.type === 'enum' ? (isModeKey(key) ? EM.normalize(value) !== null : s.values.includes(value)) : s.type === 'json' ? (value === null ? !!s.nullable : t === 'object') : t === 'number';
   if (!typeOk) return { ok: false, reason: `${JSON.stringify(value)} is not ${shape(key).text}` };
   // Ranges and patterns are parseMemoryBlock's to judge; a prerequisite on another key is not this key's fault.
   const r = ML.parseMemoryBlock(block);
@@ -111,7 +130,7 @@ function effectiveNotes(found, out) {
   const cfg = found.found && found.config && found.config.memory;
   const block = cfg && typeof cfg === 'object' && !Array.isArray(cfg) ? cfg : {};
   const r = ML.parseMemoryBlock(block);
-  if (r.error) return { ...out, note: 'effective: off (the memory block is refused: ' + r.error + ')' };
+  if (r.error) return { ...out, note: 'effective: off (the notes block, memory, is refused: ' + r.error + ')' };
   const why = r.value.notes ? 'on, because memory.project is set' : block.redact === false ? 'off, because memory.redact is false' : 'off, because memory.project is not set';
   return { ...out, value: r.value.notes, note: 'effective: ' + why };
 }
@@ -126,14 +145,18 @@ function effective(found, key) {
   const stored = found.found ? storedAt(found.config, key) : { present: false };
   const out = {
     key, value: dflt, source: 'default', default: dflt, allowed: sh.allowed, type: sh.text,
-    describe: kindOf(key) === 'memory' ? 'memory lever: the default every run inherits; the run spec\'s memory block overrides it key by key' : 'default for the agent type; an explicit model or effort always wins',
+    describe: kindOf(key) === 'memory' ? 'notes lever: the default every run inherits; the run spec\'s memory block overrides it key by key'
+      : fieldOf(key) === AD.TOOLS_FIELD ? 'the agent type\'s tools: a spawn of that type gets them, and its allowed_tools may narrow them, never widen them'
+        : 'default for the agent type; an explicit model or effort always wins',
   };
   const withNote = (o) => (key === 'memory.notes' && o.source === 'default' ? effectiveNotes(found, o) : o);
   if (!stored.present) return withNote(out);
   const chk = checkStored(key, stored.value);
   if (!chk.ok) return { ...out, invalid: { stored: stored.value, reason: `${chk.reason}; the default ${JSON.stringify(dflt)} is used` } };
   if (chk.unset) return withNote(out);
-  return { ...out, value: stored.value, source: found.path };
+  const legacy = legacyMap(key, stored.value);
+  if (legacy) return { ...out, value: legacy.value, source: found.path, mapped_from: legacy.from, note: legacyNote(legacy) };
+  return { ...out, value: fieldOf(key) === AD.TOOLS_FIELD && kindOf(key) === 'agents' ? TP.checkList(stored.value).value : stored.value, source: found.path };
 }
 
 // A routing map as one readable line per agent type, for the listing: "orchestrator=gpu-balanced, reviewer=nano+Qwen3-Reranker-4B".

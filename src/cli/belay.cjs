@@ -19,11 +19,14 @@
 
 const path = require('node:path');
 
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 
 // The slice-3a surface. `mode` is the connection mode each command declares, exactly one, per
 // command table §1: R read-only, W store client, C run control. The remaining 18 commands of
 // command table §3 arrive in later slices and are deliberately absent rather than stubbed.
+// Static, so help loads no memory module; tests/cli/memory.test.cjs checks that it names every verb in memory-render's VERBS.
+const MEMORY_SUMMARY = 'memory search|list|show|timeline|verify|stats|export|import|embed|proposals|held|restore|report|archive purge|review|scrub|resolve|promote: reads answer from the store or its copy; semantic and hybrid search need a live owner; verify, import, embed, restore, report, purge, held settle, review, scrub, resolve and promote elect one (embed --dry-run only reads)';
+
 const COMMANDS = {
   help:   { mode: 'R', module: null,               summary: 'print this usage and exit' },
   config: { mode: 'R', module: './cmd-config.cjs', summary: 'print which config file is read, and effective values' },
@@ -40,7 +43,7 @@ const COMMANDS = {
   notices: { mode: 'R', module: './cmd-notices.cjs', summary: "a run's events from store rows: pending requests, dead or stopped workers, stalls, review verdicts, pause and end" },
   agents:  { mode: 'R', module: './cmd-agents.cjs',  summary: "the orchestrator and each worker: role, model, effort, state, context size, cost; the run cost meter" },
   'wake-stream': { mode: 'R', module: './cmd-wake-stream.cjs', summary: "wake-stream --run <id> --nonce <n>: print the interactive run's wake lines from its harness-owned pipe; exits on close or after 15 s of silence" },
-  memory:  { mode: 'R', module: './cmd-memory.cjs',  summary: 'memory search|list|show|timeline|verify|stats|export|import|embed|proposals|restore|archive purge: reads answer from the store or its copy; semantic and hybrid search need a live owner; verify, import, embed, restore and purge elect one (embed --dry-run only reads)' },
+  memory:  { mode: 'R', module: './cmd-memory.cjs',  summary: MEMORY_SUMMARY },
   usage:   { mode: 'R', module: './cmd-usage.cjs',   summary: 'usage [run-id] [--by task|worker|model|turn]: tokens and dollars per turn from the usage ledger; a turn with no dollars is not zero' },
   briefing: { mode: 'R', module: './cmd-briefing.cjs', summary: 'the resume line and orientation document for a worker or a task' },
   logs:    { mode: 'R', module: './cmd-logs.cjs',    summary: "a worker's stream.jsonl: path, byte offset, then the tail; -f follows, bounded" },
@@ -54,7 +57,9 @@ const COMMANDS = {
   deny:    { mode: 'C', module: './cmd-decide.cjs', summary: 'deny <request-id> [reason...]: refuse one pending tool call over the owner pipe; the worker is told the reason' },
   embedder: { mode: 'W', module: './cmd-embedder.cjs', summary: 'embedder fetch|verify|delete [--model <id>]: delete one nothing in this project settings or runs uses, or fetch the embedding model into belay\'s cache (the only network use), or re-hash it against the table' },
   pause:   { mode: 'C', module: './cmd-pause.cjs', summary: "pause <worker-id|run-id>: park a worker over the adapter's pipe, or hold a run's wakes and park every live worker over the owner's pipe" },
-  settings: { mode: 'W', module: './cmd-settings.cjs', summary: 'settings [<key> [<value>]]: the display settings, memory levers and per-agent defaults; with a value, writes the config file only' },
+  settings: { mode: 'W', module: './cmd-settings.cjs', summary: 'settings [<key> [<value>]]: the display settings, notes levers and per-agent defaults; with a value, writes the config file only' },
+  worktree: { mode: 'W', module: './cmd-worktree.cjs', summary: "worktree create|remove|merge <task-id>...: a task's own git worktree and branch from a recorded base, removed junction first; merge done tasks into an integration branch and re-run their checks" },
+  worktrees: { mode: 'R', module: './cmd-worktree.cjs', summary: "list the tasks' recorded worktrees and a run's integration rows" },
   resume:  { mode: 'C', module: './cmd-pause.cjs', summary: "resume <worker-id|run-id> [--message <text>]: relaunch a parked worker on its session, or resume a paused run and deliver its held wakes" },
 };
 
@@ -75,9 +80,27 @@ function usage() {
     '  --json            print machine-readable JSON instead of a table',
     '  --data <dir>      data directory (default: <cwd>/.belay)',
     '  -h, --help        print this usage',
+    '  --                (message and deny) end options: every later word is text',
     '',
-    'Every command declares exactly one mode. A read-only command starts no process and',
-    'creates no file.',
+    'Every command declares one mode. Three are mixed: memory reads (R) and its write verbs',
+    '(verify, import, embed, restore, report, held settle, resolve, promote, archive, scrub,',
+    'review) are W; doctor --fix and settings <key> <value> write. A read-only command starts',
+    'no process and creates no file.',
+    '',
+  ].join('\n');
+}
+
+// Static as well: a command's own usage is its table row, so `belay stop --help` loads no module.
+function commandUsage(name) {
+  const c = COMMANDS[name];
+  return [
+    `usage: belay ${name} [arguments] [options]   (mode ${c.mode})`,
+    '',
+    `  ${c.summary}`,
+    '',
+    // A summary with verbs or arguments (| or <>) is the positional syntax; the mode is the command's own and a verb may differ.
+    ...(c.summary.includes('|') || c.summary.includes('<') ? ["The mode above is the command's own; a verb in the line above may elect or write where it says so.", ''] : []),
+    'global options: --json, --data <dir>, -h/--help. `belay --help` lists every command.',
     '',
   ].join('\n');
 }
@@ -86,6 +109,7 @@ function usage() {
 //   run(ctx) -> Promise<{ code, text, json }>
 // where ctx = { argv, cwd, dataDir, json, fix, emit? }.
 //   argv    the arguments after the command name, flags already stripped
+//   literal null, or the index in argv where the words after a literal `--` begin (taken as given, never as options)
 //   cwd     absolute, forward slashes
 //   dataDir absolute, forward slashes; defaults to <cwd>/.belay
 //   dataDirGiven true only when --data was on the command line
@@ -103,11 +127,27 @@ function usage() {
 
 const fwd = p => String(p).split('\\').join('/');
 
+// Commands whose tail is free text, by how many positionals (the command name included) come before the text. A global flag
+// between two words of the text would silently change the text or the command, so it is refused; trailing --data and --json
+// stay the documented form, and a literal `--` ends option parsing: every word after it is text. For every other command `--` is an
+// ordinary argument, as it always was: a value that is exactly `--` (a settle reason) must not eat the flags after it.
+const FREE_TEXT = { message: 2, deny: 2 };
+
 function parseGlobals(argv) {
   const rest = [];
-  const out = { json: false, fix: false, dataDir: null, help: false };
+  const out = { json: false, fix: false, dataDir: null, help: false, literal: null };
+  let afterText = null; // the first global flag seen once the free text had started
+  const textStarted = () => FREE_TEXT[rest[0]] !== undefined && rest.length > FREE_TEXT[rest[0]];
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
+    if (a === '--' && FREE_TEXT[rest[0]] !== undefined) { out.literal = rest.length; rest.push(...argv.slice(i + 1)); break; }
+    const global = a === '--json' || a === '--fix' || a === '-h' || a === '--help' || a === '--data';
+    if (global && textStarted()) {
+      if (a !== '--json' && a !== '--data') return { error: `${a} inside the text of belay ${rest[0]} is ambiguous; put options before the text, or end them with -- and quote the text` };
+      afterText = afterText || a;
+    } else if (!global && afterText) {
+      return { error: `${afterText} inside the text of belay ${rest[0]} would be taken as an option; put options before the text or after all of it, or end them with -- and quote the text` };
+    }
     if (a === '--json') { out.json = true; continue; }
     if (a === '--fix') { out.fix = true; continue; }
     if (a === '-h' || a === '--help') { out.help = true; continue; }
@@ -135,6 +175,10 @@ async function main(argv) {
 
   // Help before anything else, so that `belay --help`, `belay help` and a bare `belay` all stay on
   // the static path and never load a command module.
+  if (g.help && name !== undefined && name !== 'help' && Object.hasOwn(COMMANDS, name)) {
+    process.stdout.write(commandUsage(name));
+    return 0;
+  }
   if (g.help || name === undefined || name === 'help') {
     process.stdout.write(usage());
     return 0;
@@ -149,6 +193,7 @@ async function main(argv) {
   const cwd = fwd(process.cwd());
   const ctx = {
     argv: g.argv.slice(1),
+    literal: g.literal === null ? null : Math.max(0, g.literal - 1), // ctx.argv index where the words after `--` begin, or null
     cwd,
     dataDir: g.dataDir || `${cwd}/.belay`,
     dataDirGiven: !!g.dataDir,
@@ -209,9 +254,12 @@ async function finish(argv, code, io = { stdout: process.stdout, stderr: process
 
 if (require.main === module) {
   const argv = process.argv.slice(2);
+  // A reader that closes early (`| head`) makes the next write fail with EPIPE. That is not the command failing: drop the error
+  // (no stack trace) and keep the command's own exit code; every other stream error still surfaces.
+  for (const stream of [process.stdout, process.stderr]) stream.on('error', e => { if (!e || e.code !== 'EPIPE') throw e; });
   main(argv)
     .then(code => finish(argv, code))
     .catch(e => { process.stderr.write(`belay: ${(e && e.stack) || e}\n`); process.exitCode = 1; });
 }
 
-module.exports = { main, finish, usage, COMMANDS, parseGlobals, VERSION };
+module.exports = { main, finish, usage, commandUsage, COMMANDS, parseGlobals, VERSION };

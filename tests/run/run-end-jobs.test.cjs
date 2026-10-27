@@ -1,5 +1,5 @@
 'use strict';
-// run-end-jobs.test.cjs — ADR 0043 decision 2: the run-end memory jobs as `belay run` runs them, after the
+// run-end-jobs.test.cjs — ADR 0043 decision 2: the run-end note jobs as `belay run` runs them, after the
 // orchestrator's adapter has closed, against the store `belay run` owns (memory-jobs.cjs runEndJobs, called from
 // src/cli/run-memory-end.cjs). On a real store: the jobs need nothing but the store's rows; they are idempotent
 // with a partial run the adapter got through before Claude Code ended it; a failure leaves a `run:gave-up` event

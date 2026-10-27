@@ -257,7 +257,7 @@ test('a second call on a released lease adds notes and leaves the release as it 
   assert.strictEqual(again.notes[0].state, 'stored');
   assert.deepStrictEqual([rows(), taskRows()], [a, b], 'no new lease or task row');
   assert.deepStrictEqual(again.handoff, out.handoff);
-  await assert.rejects(call('lease.release', w, { lease_id: l.lease_id, result: { summary: 'second' }, notes: [] }), e => e.code === 'E_ARGS');
+  await assert.rejects(call('lease.release', w, { lease_id: l.lease_id, result: { summary: 'second' }, notes: [] }), e => e.code === 'E_ARGS' && /The orchestrator can take a new hand-back by assigning this task to you again \(task_assign\)/.test(e.message)); // the remedy is the orchestrator's: the error says so (wording audit)
 });
 
 test('an operator release cannot carry notes', async () => {
@@ -276,8 +276,8 @@ test('B2: memory.store cannot write a note or a note\'s fields, for any caller',
     await assert.rejects(call('memory.store', caller, { namespace: caller.role === 'worker' ? `run/${RUN}` : 'project/acme', type: 'note', text: 'a forged note K20' }), e => e.code === 'E_ARGS' && /reserved/.test(e.message), caller.role);
   }
   for (const k of ['model', 'state', 'seen_in', 'seen_total', 'matches', 'reported_wrong']) {
-    await assert.rejects(call('memory.store', orch, { namespace: 'project/acme', type: 'fact', text: `a fact with a forged ${k} K21`, body: { [k]: 'x' } }), e => e.code === 'E_ARGS' && new RegExp(k).test(e.message), k);
+    await assert.rejects(call('memory.store', orch, { namespace: `run/${RUN}`, type: 'fact', text: `a fact with a forged ${k} K21`, body: { [k]: 'x' } }), e => e.code === 'E_ARGS' && new RegExp(k).test(e.message), k);
   }
-  const ok = await call('memory.store', orch, { namespace: 'project/acme', type: 'fact', text: 'an ordinary fact with a body K22', body: { v: 1 }, embed: false });
+  const ok = await call('memory.store', orch, { namespace: `run/${RUN}`, type: 'fact', text: 'an ordinary fact with a body K22', body: { v: 1 }, embed: false });
   assert.ok(ok.id);
 });

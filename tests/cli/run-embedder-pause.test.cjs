@@ -42,7 +42,7 @@ async function start(dir, fixedFile, extraEnv = {}, withWorker = true, runCwd = 
   }, runCwd);
   const core = await connectOrchestratorCore(dataDir, runId);
   const m = createRunManager({ core, dataDir, runId, paths: { claudeExe: FAKE_CLAUDE, userSettings: USER_SETTINGS } });
-  const control = createWorkerControl({ dataDir, manager: m, pid: cliProc.proc.pid });
+  const control = createWorkerControl({ redeem: null, dataDir, manager: m, pid: cliProc.proc.pid });
   await control.listen();
   if (!withWorker) return { dataDir, runId, cliProc, core, m, control, pids: [] }; // n = 0 parked workers: the CLI's resume bound is its smallest
   const wt = `${dir}/w1-wt`;

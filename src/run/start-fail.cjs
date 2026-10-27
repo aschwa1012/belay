@@ -24,7 +24,11 @@ function createStartFail({ core, writeRow }) {
     const step = async (fn) => { if (!quiet) return fn(); try { return await fn(); } catch { return undefined; } };
     w.launchFailed = true; // a turn end mid-teardown must not write a `running` row for a start that failed
     if (park && refusedByGuard(w, cause)) park = false;
-    if (park) w.parkRequested = 'start-failed';
+    if (park) { // back to the park this resume started from, its own facts kept: every reader of a park expects { at, by }
+      const p = w.resumingFrom || { at: null, by: null };
+      w.parkRequested = { at: p.at, by: p.by, resultsSeen: [], startFailed: true };
+      w.paused = w.resumingFrom || null;
+    }
     const bind = await BL.revokeBind(core, w);
     if (!w.settled && w.pid) {
       await step(async () => { w.treeKill = (await PI.killWorker(w)).tree; await W.waitExit(w, 5000); });

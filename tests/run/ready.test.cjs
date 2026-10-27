@@ -126,6 +126,7 @@ test('a worker that dies between its ready event and the running write is E_NO_R
   process.env.FAKE_CODEX_HANG = '1';
   try {
     const pending = m.spawn({ substrate: 'codex', worktree: sb.worktree, prompt: 'go', worker_id: 'cz', startup_timeout_ms: 20000 });
+    await until(() => m._worker('cz'), 8000, 'the spawn to register the worker'); // the id check reads the store first, so the record is not there on the same tick
     const w = m._worker('cz');
     await until(() => w.readyAt && w.pid, 8000, 'the worker to report thread.started');
 
@@ -338,7 +339,7 @@ test('an unreadable user settings file fails the launch with E_ARGS naming the f
     }
   );
   assert.equal(core.calls.length, 0, 'nothing was written and nothing was launched');
-  assert.equal(m.list().workers.filter((w) => w.pid).length, 0);
+  assert.equal((await m.list()).workers.filter((w) => w.pid).length, 0);
 
   // A file that simply does not exist names no plugin to disable and is not a failure.
   const m2 = createRunManager({

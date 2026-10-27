@@ -23,7 +23,8 @@ const LEVERS = {
 
 const A = [1, 0, 0], A_NEAR = [0.99, 0.141, 0], B = [0, 1, 0];
 
-async function setup() {
+// `opts.levers` adds levers to named runs: { plain: { search_log: true } } (the search log is off by default).
+async function setup(opts = {}) {
   const dir = sandbox();
   const store = new Store(`${dir}/memory.db`, { stamp: true });
   const E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: null, establishedBy: 'test' });
@@ -38,7 +39,7 @@ async function setup() {
   const heldShape = args => Array.isArray(args.scrub) && args.scrub.some(e => e && (e.action === 'hold' || e.action === 'dismiss'));
   const call = (caller, method, args = {}) => (method === 'memory.scrubApply' && heldShape(args)
     ? require('../../src/core/methods-memory-scrub.cjs').holdApply(E, caller, args) : E.handle(method, { caller, ...args }));
-  for (const k of Object.keys(RUNS)) await call(who.tool(k), 'run.attach', { adapter_pid: process.pid, project: PROJECT, memory_levers: JSON.stringify(LEVERS[k]) });
+  for (const k of Object.keys(RUNS)) await call(who.tool(k), 'run.attach', { adapter_pid: process.pid, project: PROJECT, memory_levers: JSON.stringify({ ...LEVERS[k], ...((opts.levers || {})[k] || {}) }) });
   let n = 0;
   // A note as the hand-back would have stored it: type note, body state, stored vector. created_at orders them.
   function note(title, over = {}) {

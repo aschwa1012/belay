@@ -14,24 +14,27 @@ const S = (properties, required) => {
 };
 const evidence = { type: 'array', items: S({ where: str(), saw: str() }) };
 
+// The note's own fields, as a hand-back and a project memory_store both state them (ADR 0047). One definition, so the two schemas cannot drift.
+const NOTE_PROPS = {
+  kind: { type: 'string', enum: ['lesson', 'flag', 'recurring', 'gotcha'] },
+  title: str('Claim, max 160 bytes'),
+  when: str('Task that would trip on it, as a task line, max 160 bytes'),
+  basis: { type: 'string', enum: ['observed', 'inferred', 'relayed'] },
+  evidence,
+  applies_to: strs(),
+  subjects: { ...strs(), maxItems: 3 }, // SUBJECTS_MAX in memory-notes.cjs (ADR 0057 decision 9)
+};
+
 const LEASE_RELEASE = {
   name: 'lease_release',
-  description: 'Release your lease; returns the released task row, refuses if not the holder. result (max 4KB): branch, head, tests, findings; a review sets verdict holds|refuted and summary. notes is required, [] for most tasks; settle pending notes with memory_note_resolve.',
+  description: 'Release your lease. Returns the task state, the notes written and any pending. result (max 4KB): branch, head, tests, findings; a review sets verdict holds|refuted and summary. notes is required, [] for most tasks; settle pending notes with memory_note_resolve.',
   inputSchema: S({
     lease_id: str(),
     reason: str(),
     result: { type: 'object' },
     notes: {
       type: 'array',
-      items: S({
-        kind: { type: 'string', enum: ['lesson', 'flag', 'recurring', 'gotcha'] },
-        title: str('Claim, max 160 bytes'),
-        when: str('Task that would trip on it, as a task line, max 160 bytes'),
-        basis: { type: 'string', enum: ['observed', 'inferred', 'relayed'] },
-        evidence,
-        applies_to: strs(),
-        subjects: strs(),
-      }, ['kind', 'title', 'when', 'basis']),
+      items: S(NOTE_PROPS, ['kind', 'title', 'when', 'basis']),
     },
     reported_wrong: { type: 'array', items: S({ id: str(), why: str(), replaced_by: { type: ['string', 'null'], description: 'notes[i] or id' } }, ['id', 'why']) },
     memory_ids: { type: 'array', items: { type: 'string' }, description: 'Ids of notes you applied; required when the run records note use, [] if none' },
@@ -68,4 +71,23 @@ const NOTE_REFUTATION = {
   inputSchema: S({ note_id: str() }, ['note_id']),
 };
 
-module.exports = { LEASE_RELEASE, NOTE_RESOLVE, SUMMARIES, NOTE_REFUTATION, notesWorkerListing };
+// A report that a note is wrong, on the operator's word or the orchestrator's own evidence (a task evaluation, the code), with the reason (it holds the note for the archive review). Orchestrator only, listed with the notes lever.
+const MEMORY_REPORT = {
+  name: 'memory_report',
+  description: 'Report a note wrong on the operator word or your own evidence (a task evaluation, the code); say why. Holds it for the archive review. Returns the hold id, its state and withheld, or not_held and why; view debug: rows.',
+  inputSchema: S({ note_id: str(), why: str(), replaced_by: str(), view: { type: 'string', enum: ['debug'] } }, ['note_id', 'why']),
+};
+
+// memory_store in a notes run (ADR 0047 amendment of 2026-10-22): a write to `project` is a note and states the note's fields; every other namespace is the
+// ordinary row. Nothing is required by the schema, since a note has no `text` and a row has no `kind`; the core names what is missing. `ordinary` is the
+// ordinary listing's memory_store, so the two share every property they have in common. The orchestrator's namespace also takes `summary`, its run outcome.
+function memoryStoreNotes(ordinary, role) {
+  const { required, ...schema } = ordinary.inputSchema;
+  const properties = { ...schema.properties };
+  // A note takes its own fields only (methods-memory.cjs NOTE_REFUSED); the run-row fields are named here so a note writer does not try them.
+  properties.namespace = str(`Default: this run. project: a note, which takes only kind, title, when, basis, evidence, applies_to, subjects${role === 'orchestrator' ? '. summary: a run outcome, which needs title and text' : ''}`);
+  const { title, ...rest } = NOTE_PROPS;
+  return { ...ordinary, inputSchema: { ...schema, properties: { ...properties, ...rest, text: str(), when: str('Task that would trip on it, max 160 bytes') } } };
+}
+
+module.exports = { memoryStoreNotes, LEASE_RELEASE, NOTE_RESOLVE, SUMMARIES, NOTE_REFUTATION, MEMORY_REPORT, notesWorkerListing };

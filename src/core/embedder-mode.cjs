@@ -26,7 +26,7 @@ const describe = () => `${MODES.join(', ')} (the old values stop and continue ar
 
 // What to tell the orchestrator (and so the operator) when a run is paused for an embedder failure. One text for every place that
 // refuses or fails a call because of it (a memory call, a worker tool on a parked worker, a refused spawn).
-const pauseAdvice = (runId) => `The run is paused for an embedder failure (on_embedder_failure required). Stop and ask the operator which they want: keyword (rank by keywords only), off (memory off for the run), or stay paused. Apply their choice with: belay resume ${runId || '<run>'} --embedder keyword|off, or, after the embedder is fixed, belay resume ${runId || '<run>'}.`;
+const pauseAdvice = (runId) => `The run is paused for an embedder failure (on_embedder_failure required). Stop and ask the operator which they want: keyword (rank by keywords only), off (notes off for the run), or stay paused. Apply their choice with: belay resume ${runId || '<run>'} --embedder keyword|off, or, after the embedder is fixed, belay resume ${runId || '<run>'}.`;
 
 // A worker is told something else: it is not the one who chooses, and it must not run belay commands.
 const workerPauseAdvice = () => 'The run is paused for an embedder failure and this call was not written. Stop and wait: you will be resumed. After the resume, call it again (hand back again). Do not run belay commands.';

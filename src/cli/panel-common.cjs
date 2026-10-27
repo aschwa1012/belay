@@ -94,16 +94,28 @@ function unembeddedText(u) {
   return `${u.total} note${u.total === 1 ? '' : 's'} unembedded${per}: embed with belay memory embed${where}`;
 }
 
-// Notes held for the Opus archive reviewer: a count, the oldest wait in runs, the projects, and the command that dispatches it.
+// Notes held for the Opus archive reviewer: a count, the oldest wait in runs, the projects, and the command that dispatches it. `queued` is the part
+// of the count that hides nothing (a report past its run's breaker), named apart: "3 held, 1 queued".
+const heldCount = (h) => { const q = Number(h.queued) || 0; return q > 0 ? `${h.total - q} held, ${q} queued` : `${h.total} held`; };
 const GROUND_LABEL = { reported: 'reported wrong', report_confirmed: 'reported wrong', code_contradicts: 'wrong', refuted_review: 'wrong', same_claim: 'duplicate', replaced_by_newer: 'superseded', unsupported: 'unsupported', none: 'other' };
-// "3 held: 2 reported wrong, 1 duplicate; 1 awaits you" when the count is broken down by ground; null when it is not.
+// "3 held: 2 reported wrong, 1 duplicate; 1 queued past the breaker; 1 awaits you" when the count is broken down by ground; null when it is not.
 function heldBreakdown(h) {
   const g = h.by_ground && typeof h.by_ground === 'object' ? h.by_ground : null;
   if (!g || !Object.keys(g).length) return null;
   const parts = new Map();
   for (const [k, n] of Object.entries(g)) parts.set(GROUND_LABEL[k] || clean(k, 30), (parts.get(GROUND_LABEL[k] || clean(k, 30)) || 0) + Number(n));
   const a = Number(h.awaiting_operator) || 0;
-  return `${h.total} held: ${[...parts].map(([k, n]) => `${n} ${k}`).join(', ')}${a > 0 ? `; ${a} await${a === 1 ? 's' : ''} you` : ''}`;
+  const q = Number(h.queued) || 0;
+  return `${h.total - q} held: ${[...parts].map(([k, n]) => `${n} ${k}`).join(', ')}${q > 0 ? `; ${q} queued past the breaker` : ''}${a > 0 ? `; ${a} await${a === 1 ? 's' : ''} you` : ''}`;
+}
+
+// Held rows the read filter cannot read: withheld closed, and, for one that names no note, every note of its project with it.
+function unreadableText(u) {
+  const closed = Array.isArray(u.closed_projects) ? u.closed_projects.map((p) => clean(p, 64)) : [];
+  const n = Number(u.count) || 0;
+  const rows = `${n} held row${n === 1 ? '' : 's'} cannot be read`;
+  if (closed.length) return `${rows}; every note of project${closed.length === 1 ? '' : 's'} ${closed.join(', ')} is withheld from workers until fixed: see belay memory held`;
+  return `${rows}; ${n === 1 ? 'its note is' : 'their notes are'} withheld from workers until fixed: see belay memory held`;
 }
 
 function heldText(h) {
@@ -114,7 +126,8 @@ function heldText(h) {
   const where = names.length === 1 ? ` --project ${clean(names[0], 64)}` : ' --project <p>';
   const u = h.unsupported || 0;
   if (u > 0) return `${h.total - u > 0 ? `${h.total - u} held as wrong or duplicate · ` : ''}${u} unsupported awaiting review${per}, oldest ${h.oldest_age_runs || 0} run${h.oldest_age_runs === 1 ? '' : 's'}: review with belay memory review${where}`;
+  if (Number(h.queued) > 0) return `${heldCount(h)} for review${per}, oldest ${h.oldest_age_runs || 0} run${h.oldest_age_runs === 1 ? '' : 's'}: review with belay memory review${where}`;
   return `${h.total} note${h.total === 1 ? '' : 's'} held for review${per}, oldest ${h.oldest_age_runs || 0} run${h.oldest_age_runs === 1 ? '' : 's'}: review with belay memory review${where}`;
 }
 
-module.exports = { unembeddedText, heldText, WIDTH, STREAM_NAME, fwd, orchestratorStreamPath, chooseRun, clean, v, iso, money, wrapLine, contentText };
+module.exports = { unembeddedText, unreadableText, heldText, WIDTH, STREAM_NAME, fwd, orchestratorStreamPath, chooseRun, clean, v, iso, money, wrapLine, contentText };

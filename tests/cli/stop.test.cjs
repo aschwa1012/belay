@@ -14,6 +14,7 @@ const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 
 const P = require('../../src/run/process.cjs');
+const { openCore } = require('../../src/core/index.cjs');
 const {
   sleep, sandbox, cleanup, waitUntil, waitForFileLine, waitForExit, makeSpec, runCli, receiptOf,
   connectOrchestratorCore, currentRunRow, listRecursive, runStopSync, spawnStopAsync, releaseCore,
@@ -84,7 +85,7 @@ test("stop: the run waits for the stop's worker phase before it ends the run, at
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, runId, orchestratorDir } = makeSpec(dir, { poll_ms: 300 });
-  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '4000' };
+  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_GATE_FILE: `${dir}/answer.gate` };
   const runCliProc = runCli(specPath, dataDir, env);
   let core = null;
   let plantedProc = null;
@@ -101,6 +102,7 @@ test("stop: the run waits for the stop's worker phase before it ends the run, at
       id: 'w1', substrate: 'claude-code', pid: plantedPid, pid_image: 'node.exe', state: 'running',
       turns: 0, mid_turn: 1, started_at: Date.now(), worktree: workerWt,
     });
+    fs.writeFileSync(`${dir}/answer.gate`, 'go'); // the orchestrator's first turn may end now: its worker is mid-turn, so the run stays open
 
     const streamPath = `${orchestratorDir}/stream.jsonl`;
     const gotResult = await waitForFileLine(streamPath, '"type":"result"', 15000);
@@ -135,29 +137,38 @@ test("stop: the run waits for the stop's worker phase before it ends the run, at
   }
 });
 
+// The second call is made in this process, once the first stop is observably in flight (the orchestrator saw its stdin close), not
+// by a second CLI process started on a timer: under load that process can reach the owner after the first stop has finished, which
+// is the designed E_NOT_FOUND `ended` answer (the next test) and not an in-flight join. Exit codes and the orchestrator block are
+// compared, not the two calls' wall clocks, which differ by whatever delay the second caller had.
 test('stop: a second stop while the first is in flight gets the same receipt', async () => {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
-  const { specPath, runId } = makeSpec(dir, { close_grace_ms: 3000 });
-  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_IGNORE_STDIN_END: '1' };
+  const stdinEnd = `${dir}/stdin-end.txt`;
+  // The orchestrator ignores its stdin closing, so the first stop stays in flight for the whole close_grace_ms; that is far longer than the
+  // one pipe round trip the second call needs (its operator core is opened before the first stop starts).
+  const { specPath, runId } = makeSpec(dir, { close_grace_ms: 20000 });
+  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_IGNORE_STDIN_END: '1', FAKE_STDIN_END_FILE: stdinEnd };
   const runCliProc = runCli(specPath, dataDir, env);
+  let op = null;
   try {
     const row = await waitUntil(() => currentRunRow(dataDir, runId), 15000, 100);
     assert.ok(row, 'the run row never appeared');
     await sleep(500);
+    op = await openCore({ dataDir, caller: { role: 'operator', run_id: runId, pid: process.pid } });
 
     const c1 = spawnStopAsync(dataDir, runId);
-    await sleep(200);
-    const c2 = spawnStopAsync(dataDir, runId);
-    const [r1, r2] = await Promise.all([c1, c2]);
+    assert.ok(await waitUntil(() => (fs.existsSync(stdinEnd) ? true : null), 30000, 20), 'the first stop never closed the orchestrator stdin');
+    const second = await op.control('run.stop', { run_id: runId }, { timeoutMs: 60000 });
+    const r1 = await c1;
 
     assert.strictEqual(r1.status, 0, `stop 1: ${r1.stdout} / ${r1.stderr}`);
-    assert.strictEqual(r2.status, 0, `stop 2: ${r2.stdout} / ${r2.stderr}`);
-    assert.ok(r1.receipt && r2.receipt, 'one of the two stop receipts failed to parse');
-    assert.strictEqual(r1.receipt.orchestrator.pid, r2.receipt.orchestrator.pid);
+    assert.ok(r1.receipt && second, 'one of the two stop receipts is missing');
+    assert.strictEqual(r1.receipt.orchestrator.pid, second.orchestrator.pid);
     assert.strictEqual(r1.receipt.orchestrator.graceful, false);
-    assert.strictEqual(r2.receipt.orchestrator.graceful, false);
-    assert.ok(Math.abs(r1.receipt.ms - r2.receipt.ms) <= 3500, `ms too far apart: ${r1.receipt.ms} vs ${r2.receipt.ms}`);
+    assert.strictEqual(second.orchestrator.graceful, false);
+    assert.strictEqual(r1.receipt.orchestrator.exit_code, second.orchestrator.exit_code);
+    assert.strictEqual(r1.receipt.orchestrator.ms_to_exit, second.orchestrator.ms_to_exit, 'the second call got the first stop\'s receipt');
 
     const exited = await waitForExit(runCliProc.proc, 15000);
     assert.ok(exited, 'the CLI run did not exit');
@@ -165,6 +176,7 @@ test('stop: a second stop while the first is in flight gets the same receipt', a
     const runReceipt = receiptOf(runCliProc, 1);
     assert.strictEqual(runReceipt.orchestrator.killed_after_close, true);
   } finally {
+    await releaseCore(op);
     if (runCliProc.proc.exitCode === null) { try { await P.killTree(runCliProc.proc); } catch { /* best effort */ } }
     cleanup(dir);
   }
@@ -341,7 +353,7 @@ test('stop: a worker row of this run that is nobody\'s child is reported from it
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, runId, orchestratorDir } = makeSpec(dir, { poll_ms: 300, close_grace_ms: 2000 });
-  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '4000' };
+  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_GATE_FILE: `${dir}/answer.gate` };
   const runCliProc = runCli(specPath, dataDir, env);
   let core = null;
   let plantedProc = null;
@@ -358,6 +370,7 @@ test('stop: a worker row of this run that is nobody\'s child is reported from it
       id: 'w1', substrate: 'claude-code', pid: plantedPid, pid_image: 'node.exe', state: 'running',
       turns: 0, mid_turn: 1, started_at: Date.now(), worktree: workerWt,
     });
+    fs.writeFileSync(`${dir}/answer.gate`, 'go'); // the orchestrator's first turn may end now: its worker is mid-turn, so the run stays open
 
     const streamPath = `${orchestratorDir}/stream.jsonl`;
     const gotResult = await waitForFileLine(streamPath, '"type":"result"', 15000);

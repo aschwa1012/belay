@@ -55,9 +55,11 @@ const FLAGS = {
   '--reject': { key: 'reject', type: 'bool' },
   '--badge': { key: 'badge', type: 'bool' },
   '--awaiting': { key: 'awaiting', type: 'bool' },
+  '--if-awaiting': { key: 'ifAwaiting', type: 'bool' },
   '--archive': { key: 'archive', type: 'bool' },
   '--release': { key: 'release', type: 'bool' },
   '--reoffer': { key: 'reoffer', type: 'bool' },
+  '--replaced-by': { key: 'replacedBy', type: 'one' },
 };
 
 const FILTER_FLAGS = ['--type', '--status', '--task', '--worker', '--since', '--namespace'];
@@ -81,7 +83,8 @@ const VERBS = {
   promote: { flags: ['--approve', '--reject', '--reason'], positional: [1, 1], usage: 'belay memory promote <note-id> (--approve | --reject) [--reason <text>]' },
   'search-log': { flags: ['--export', '--run', '--since', '--force'], positional: [0, 0], usage: 'belay memory search-log --export <file> [--run <id>] [--since <ms|iso>] [--force]' },
   menu: { flags: ['--badge'], positional: [0, 0], usage: 'belay memory menu [--badge]   (the facts the panel Memory menu shows: GPU, profiles, models, backlog; a read; --badge: only the backlog of the selected embedder)' },
-  held: { flags: ['--project', '--awaiting', '--archive', '--release', '--reoffer', '--reason'], positional: [0, 2], usage: 'belay memory held [--project p] [--awaiting]   |   belay memory held settle <note-id> (--archive | --release | --reoffer) --reason <text>' },
+  held: { flags: ['--project', '--awaiting', '--archive', '--release', '--reoffer', '--reason', '--if-awaiting'], positional: [0, 2], usage: 'belay memory held [--project p] [--awaiting]   |   belay memory held settle <note-id> (--archive | --release | --reoffer) --reason <text> [--if-awaiting]' },
+  report: { flags: ['--reason', '--replaced-by'], positional: [1, 1], usage: 'belay memory report <note-id> --reason <text> [--replaced-by <note-id>]' },
   archive: { flags: ['--ids', '--older-than', '--confirm', '--project'], positional: [1, 1], usage: 'belay memory archive purge (--ids a,b | --older-than <days>) --confirm [--project p]' },
 };
 
@@ -135,6 +138,7 @@ function checkResolve(opts, positional) {
 function checkHeld(opts, positional) {
   const actions = ['archive', 'release', 'reoffer'].filter((a) => opts[a]);
   if (positional[0] === undefined) {
+    if (opts.ifAwaiting) return { error: 'belay memory held lists the held notes; --if-awaiting belongs to belay memory held settle <note-id>' };
     if (actions.length || opts.reason !== undefined) return { error: 'belay memory held lists the held notes; --archive, --release, --reoffer and --reason belong to belay memory held settle <note-id>' };
     return {};
   }
@@ -144,6 +148,13 @@ function checkHeld(opts, positional) {
   if (actions.length !== 1) return { error: 'belay memory held settle needs exactly one of --archive, --release or --reoffer' };
   if (!(typeof opts.reason === 'string' && opts.reason.trim())) return { error: 'belay memory held settle needs --reason <text>: it is recorded' };
   opts.action = actions[0];
+  return {};
+}
+
+// report <note-id> --reason <text> [--replaced-by <note-id>]: a note is reported with a reason, which is recorded.
+function checkReport(opts) {
+  if (!(typeof opts.reason === 'string' && opts.reason.trim())) return { error: 'belay memory report needs --reason <text>: it is recorded on the note and shown to the archive review' };
+  if (opts.replacedBy !== undefined && !opts.replacedBy.trim()) return { error: '--replaced-by needs a note id' };
   return {};
 }
 
@@ -178,6 +189,7 @@ function checkOpts(sub, opts, positional = []) {
     if (opts.namespaces && opts.namespaces.length > 1) return { error: 'belay memory import takes one --namespace, the default for rows that carry none' };
   }
   if (sub === 'restore' && !opts.candidates && !opts.reason) return { error: 'belay memory restore needs --reason <text> (or --candidates to list the archived duplicates of a note)' };
+  if (sub === 'report') return checkReport(opts);
   if (sub === 'resolve') return checkResolve(opts, positional);
   if (sub === 'held') return checkHeld(opts, positional);
   if (sub === 'promote' && !!opts.approve === !!opts.reject) return { error: 'belay memory promote needs exactly one of --approve or --reject' };
@@ -252,7 +264,7 @@ function table(cols, rows) {
 const COL = {
   score: { head: 'score', cell: r => (typeof r.score === 'number' ? r.score.toFixed(4) : '-') },
   dup: { head: 'near_duplicate', cell: r => dash(r.near_duplicate) },
-  status: { head: 'status', cell: r => dash(r.status || 'unverified') },
+  status: { head: 'status', cell: r => dash(r.status || 'unverified') + (r.held ? ` held:${r.held.kind || '?'}` : '') },
   id: { head: 'id', cell: r => dash(r.id) },
   namespace: { head: 'namespace', cell: r => dash(r.namespace) },
   worker: { head: 'worker_id', cell: r => dash(r.worker_id) },
@@ -270,11 +282,28 @@ function rowCols(view, scored) {
     : [...lead, COL.status, COL.id, COL.namespace, COL.worker, COL.type, COL.text];
 }
 
+// The line above a search's results when a mode did not run, naming what ran and what failed: "keyword matches only" is true
+// only when the keyword half did run.
+function searchBanner(r) {
+  const failed = r.modes_failed || [];
+  if (!failed.length) return null;
+  const ran = Array.isArray(r.modes_run) ? r.modes_run : null;
+  const named = failed.map(f => `${f.mode} (${f.code})`).join(' and ');
+  if (ran !== null && ran.length === 0) {
+    return `*** NO SEARCH MODE RAN (${named} failed): nothing was searched, so an empty list says nothing about whether such a memory exists ***`;
+  }
+  if (ran === null || ran.includes('keyword')) {
+    return failed.some(f => f.mode === 'semantic') ? '*** SEMANTIC SEARCH DID NOT RUN: these are keyword matches only, and an empty list does not mean there is no such entry ***' : null;
+  }
+  return `*** ${named} failed; only ${ran.join(', ')} ran, so an empty list does not mean there is no such entry ***`;
+}
+
 // The warning, when there is one, is the first line of the text, as it is the first key of the JSON.
 function renderSearchText(r, view) {
   const out = [];
   if (r.warning) out.push(r.warning); // the warning stays the first line
-  if ((r.modes_failed || []).some(f => f.mode === 'semantic')) out.push('*** SEMANTIC SEARCH DID NOT RUN: these are keyword matches only, and an empty list does not mean there is no such memory ***');
+  const banner = searchBanner(r);
+  if (banner) out.push(banner);
   const results = r.results || [];
   if (!results.length) out.push(r.note ? r.note : '(no results)');
   else out.push(...table(rowCols(view, true), results), '');

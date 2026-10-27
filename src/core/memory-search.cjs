@@ -6,7 +6,8 @@
 // requires the embedder module; the one vector this file ever needs is the query's, asked of the engine's
 // getEmbedder() provider, which a read copy does not have. The honesty contract: a search names the modes
 // that ran and the modes that failed, and `absence_established` is true only when BOTH ran over the stated
-// namespaces and filter and found nothing. A weaker result carries a `warning`, the first key of the object.
+// namespaces and filter and no row reached the relevance floor (ADR 0057). A weaker result carries a `warning`, the
+// first key of the object. The result's shapes (compact, debug, index) and the floor are memory-search-view.cjs's.
 
 const { err } = require('./errors.cjs');
 const { BM25, DEFAULT_PAGE } = require('./fts-query.cjs');
@@ -14,19 +15,22 @@ const { pickTerms, orMatch } = require('./memory-relevance.cjs');
 const { rrf, HYBRID_ALPHA, HYBRID_K } = require('./fusion.cjs');
 const { deriveTitle, indexRowOf, dupVeto, filterSql } = require('./memory-rows.cjs');
 const { ftsReady } = require('./memory-schema.cjs');
-const { scanCeiling } = require('./schema.cjs');
-const { toUnitF32 } = require('./store.cjs');
 const gate = require('./memory-note-gate.cjs');
 const ST = require('./search-tier.cjs');
-const HE = require('./heavy-embed.cjs');
 const HB = require('./heavy-behind.cjs');
+const W = require('./memory-withhold.cjs');
 const { notesDefaults } = require('./memory-search-scope.cjs');
-const { nsFor, resolveNamespace, runAlpha, withEmbedding, reachOf, checkReach, runEmbedderMode } = require('./methods-memory.cjs');
+const V = require('./memory-search-view.cjs');
+const { semanticStage } = require('./search-semantic.cjs'); // the query vector and the cosine scan
+const { nsFor, resolveNamespace, runAlpha, reachOf, checkReach, runEmbedderMode } = require('./methods-memory.cjs');
 
 const MODES = ['semantic', 'keyword', 'hybrid'];
 const VIEWS = ['full', 'index'];
+// A search's views (ADR 0057): compact (memory_search's default, set by the tool), debug (the full rows; `full` is its old name and the
+// Core API's default, which the CLI and belay's own callers read), index (ids and titles).
+const SEARCH_VIEWS = ['compact', 'debug', 'full', 'index'];
 const SCOPES = ['task', 'worker', 'run', 'namespace'];
-const NS_MAX = 10, OFFSET_MAX = 1000, K_MAX = 100, ID_MAX = 50, SPAN_MAX = 50, LIST_MAX = 500, DEPTH_MAX = 1200;
+const NS_MAX = 10, OFFSET_MAX = 1000, K_MAX = 100, ID_MAX = 50, SPAN_MAX = 50, LIST_MAX = 500, LIST_TEXT = 200, DEPTH_MAX = 1200;
 // ADR 0040 amendment (hybrid default): rrf k=10, alpha 0.3, OR join, chosen by the second hybrid evaluation.
 const DEFAULT_ALPHA = HYBRID_ALPHA, RRF_K = HYBRID_K, DUP_THRESHOLD = 0.95;
 
@@ -68,7 +72,8 @@ function namespacesOf(E, caller, args) {
 // A row a worker may not read is reported as not found, by id as by search: its existence is not the worker's to learn.
 const visible = (reach, r) => !reach || reach.has(r.namespace);
 // A read by explicit id also leaves out the lifecycle namespaces for a gated tool-channel caller (the orchestrator has no reach to stop it).
-const readable = (caller, reach, r) => visible(reach, r) && !gate.inLifecycle(caller, r.namespace);
+// ...and a row of the project that is not a note, for a gated caller in a notes run (`legacy`, from gate.legacyHidden).
+const readable = (caller, reach, r, legacy = false) => visible(reach, r) && !gate.inLifecycle(caller, r.namespace) && !(legacy && gate.isLegacy(r));
 
 const parseJson = s => { if (s == null) return null; try { return JSON.parse(s); } catch { return s; } };
 
@@ -93,50 +98,12 @@ function rowsByIds(E, ids) {
   return out;
 }
 
+// The ids among `ids` that another row of their namespace supersedes.
+function supersededAmong(E, ids) {
+  return new Set(E.store.db.prepare(`SELECT DISTINCT e.id FROM memory_entries e WHERE e.id IN (${marks(ids)}) AND EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND s.namespace = e.namespace)`).all(...ids).map(r => r.id));
+}
+
 // ---- the two stages ---------------------------------------------------------------------------------------
-
-async function queryVector(E, caller, o, lv) {
-  if (o.queryEmbedding) return { vec: o.queryEmbedding, model: o.embeddingModel || null };
-  // A heavy tier's query is embedded by the owner's heavy embed provider (heavy-embed.cjs); a failure is decided by on_heavy_failure.
-  if (!ST.isNano(o.tier)) {
-    const h = await HE.queryVector(E, caller, o, lv);
-    if (h.vec) return h;
-    o.tier = h.fallback.tier; o.tierFallback = h.fallback; // served on the fallback profile, and the answer says so
-  }
-  // The shared embedding phase: loads on first use, raises E_NO_EMBEDDER, E_MODEL_ABSENT or E_MODEL_CHANGED, and
-  // reports a failure to the ADR 0034 hook. A keyword stage never reaches this.
-  const e = await withEmbedding(E, { query: o.query }, 'query_embedding', 'query', caller);
-  return { vec: e.query_embedding, model: e.embedding_model };
-}
-
-// Exact cosine over the tier's cached unit vectors (search-tier.cjs candidates) of every stated namespace, restricted to the filter.
-// Returns the best `depth` hits best first. The scan ceiling, the model binding and the dimension are enforced as before.
-async function semanticStage(E, caller, o, depth, lv) {
-  const { vec, model: qModel } = await queryVector(E, caller, o, lv);
-  const scored = [];
-  let scanned = 0, model = null, dim = null;
-  for (const ns of o.namespaces) {
-    const m = ST.binding(E, o.tier, ns);
-    if (!m) continue;
-    if (qModel && qModel !== m.embedding_model) {
-      throw err('E_MODEL', `the query was embedded with ${qModel} but namespace ${ns} is bound to ${m.embedding_model}`, { namespace: ns, bound: m.embedding_model });
-    }
-    model = model || m.embedding_model; dim = dim || m.dim;
-    const q = toUnitF32(vec, m.dim);
-    const total = ST.countRows(E, ns), ceiling = scanCeiling(m.dim);
-    if (total > ceiling && !o.allowSlow) {
-      throw err('E_NAMESPACE_TOO_LARGE', `namespace ${ns} holds ${total} rows, above the ${ceiling}-row exact-scan ceiling; pass allow_slow to scan it anyway`, { namespace: ns, rows: total, ceiling });
-    }
-    for (const r of ST.candidates(E, o.tier, ns, m, o)) {
-      scanned++;
-      let s = 0;
-      for (let d = 0; d < m.dim; d++) s += r.vec[d] * q[d];
-      if (s >= o.minScore) scored.push({ id: r.id, score: s });
-    }
-  }
-  scored.sort((a, b) => b.score - a.score || (a.id < b.id ? -1 : 1));
-  return { hits: scored.slice(0, depth), scanned, model, dim, note: model ? undefined : 'namespace has no embedded rows' };
-}
 
 const fail = (code, message) => ({ failed: { code, message } });
 
@@ -206,7 +173,7 @@ function parseSearch(E, caller, args) {
   const gateSql = gate.sql(E, caller, { includeSuperseded: true, namespaces });
   return {
     gate: gateSql, hidden: gateSql ? new Set(JSON.parse(gateSql.params[0])) : null,
-    mode, view: enumArg('view', args.view, VIEWS, 'full'), order, alpha, filter, filterSql: fsql,
+    mode, view: enumArg('view', args.view, SEARCH_VIEWS, 'full'), order, alpha, filter, filterSql: fsql,
     k: intArg('k', args.k, DEFAULT_PAGE, 1, K_MAX), offset: intArg('offset', args.offset, 0, 0, OFFSET_MAX),
     namespaces,
     query: typeof args.query === 'string' ? args.query : null,
@@ -214,21 +181,6 @@ function parseSearch(E, caller, args) {
     minScore: numArg('min_score', args.min_score, -1), dupThreshold: numArg('dup_threshold', args.dup_threshold, DUP_THRESHOLD),
     includeSuperseded: !!args.include_superseded, allowSlow: !!args.allow_slow,
   };
-}
-
-function warningFor(o, ran, failed, results, absence, unembedded) {
-  if (failed.length) {
-    const did = failed.map(f => `${f.mode} search did not run (${f.code})`).join('; ');
-    const what = ran.length ? `these are ${ran.join(' and ')} matches only` : 'nothing was searched';
-    return `${did}; ${what}; no match here does not mean no such memory`;
-  }
-  if (results.length) return null;
-  if (o.mode !== 'hybrid') {
-    return `${o.mode} search only; ${o.mode === 'semantic' ? 'keyword' : 'semantic'} search did not run; no match here does not mean no such memory`;
-  }
-  if (unembedded) return `${unembedded} in-scope row${unembedded === 1 ? ' has' : 's have'} no vector, so semantic search could not see ${unembedded === 1 ? 'it' : 'them'}; keyword search alone covers ${unembedded === 1 ? 'it' : 'them'}; no match here does not mean no such memory`;
-  if (!absence) return 'both modes ran but offset or min_score narrowed the result; an empty page does not mean no such memory';
-  return null;
 }
 
 // What a hybrid search does when its semantic half fails, by where it runs and what failed. In a run (a worker or the orchestrator of a
@@ -247,11 +199,11 @@ function onSemanticFailure(E, caller, e) {
   const guarded = run.source === 'guard';
   const embedderFailure = !!(e && e.detail && e.detail.embedder === true);
   if (guarded && embedderFailure && E.memoryOff('memory.search') === 'refuse') {
-    throw err('E_LEVER_OFF', 'memory.search: memory is off for this run (on_embedder_failure off, after an embedder failure), so nothing is read or written through it', { lever: 'on_embedder_failure' });
+    throw err('E_LEVER_OFF', 'memory.search: notes are off for this run (on_embedder_failure off, after an embedder failure), so nothing is read or written through them', { lever: 'on_embedder_failure' });
   }
   if (run.mode === 'keyword') return;
   if (run.mode === 'off') { // memory is off for a run in this mode once its semantic half fails, whatever failed: refused
-    throw err('E_LEVER_OFF', 'memory.search: memory is off for this run (on_embedder_failure off) and its semantic half cannot run (' + (E.embedderFailure ? E.embedderFailure.code : e.code) + '), so nothing is read through it', { lever: 'on_embedder_failure', cause: E.embedderFailure ? E.embedderFailure.code : e.code });
+    throw err('E_LEVER_OFF', 'memory.search: notes are off for this run (on_embedder_failure off) and its semantic half cannot run (' + (E.embedderFailure ? E.embedderFailure.code : e.code) + '), so nothing is read through it', { lever: 'on_embedder_failure', cause: E.embedderFailure ? E.embedderFailure.code : e.code });
   }
   // required
   if (guarded && embedderFailure) throw e; // already told to the guard and advised (withEmbedding)
@@ -271,11 +223,14 @@ function onSemanticFailure(E, caller, e) {
 async function search(E, caller, args, internal = {}) {
   const t0 = Date.now(), ms = {};
   const o = parseSearch(E, caller, args);
+  // A supplied query vector is searched on the tier whose embedder made it: one that does not name the pinned heavy embedder is nano's (the
+  // hand-back's duplicate check passes the note's nano vector), and a heavy tier would refuse it as another model's vector.
   o.tier = internal.tier || ST.tierFor(E, caller);
+  if (!internal.tier && o.queryEmbedding && !ST.isNano(o.tier) && o.embeddingModel !== o.tier.embedder) o.tier = ST.NANO_TIER;
   o.t0 = t0;
   const lv = ST.leversOfSearch(E, caller, internal.levers);
   // A heavy tier never serves a partial index. Mid-run on a pinned tier the rows behind are caught up inline or the search is served on nano (heavy-behind.cjs); elsewhere it refuses by name.
-  if (o.mode !== 'keyword') await HB.guard(E, caller, o, lv, () => ST.assertServable(E, o.tier, o.namespaces));
+  if (o.mode !== 'keyword') await HB.guard(E, caller, o, lv, () => ST.assertServable(E, o.tier, o.namespaces, caller.role !== 'worker'));
   const depth = o.order === 'score' ? Math.min(Math.max((o.offset + o.k) * 3, 60), DEPTH_MAX) : DEPTH_MAX;
   const base = baseWhere(o);
   const db = E.store.db;
@@ -292,6 +247,13 @@ async function search(E, caller, args, internal = {}) {
       failed.push({ mode: 'semantic', code: asCode(e), message: e.message });
     }
     ms.semantic = Date.now() - ts;
+    // ADR 0057 decision 5: rows in scope and not one with a vector is a semantic half that saw nothing. It is degraded, not run. Not an
+    // embedder failure (nothing to resume), so no run is paused and no hybrid search refused; a semantic-mode search answers it too.
+    if (sem && sem.scanned === 0 && considered > 0) {
+      ran.pop();
+      failed.push({ mode: 'semantic', code: 'E_NO_VECTORS', message: `none of the ${considered} in-scope rows has a vector (written without the embedder, or in a namespace bound to no model), so semantic search had nothing to compare` });
+      sem = null;
+    }
   }
   // A heavy tier that failed (this search, or earlier in the run: the fallback is on the run row) is said in EVERY answer served on the fallback profile.
   const tierFb = o.tierFallback || (o.tier.source === 'fallback' && o.tier.fallback_cause ? { cause: o.tier.fallback_cause } : null);
@@ -304,9 +266,13 @@ async function search(E, caller, args, internal = {}) {
     else { kw = r; ran.push('keyword'); }
   }
 
-  // One ranked list of { id, score, cosine?, ranks? }.
+  // The relevance floor was measured on nano (ADR 0057: re-measure for another model). A heavy embedder's cosine has no floor until it is
+  // measured: no row is marked below it and no absence is claimed. Read after the semantic stage, which may have fallen back to nano.
+  const floor = ST.isNano(o.tier) ? V.RELEVANCE_FLOOR : null;
+
+  // One ranked list of { id, score, ranks? }. A row's cosine, for every scanned row, is in sem.cos.
   let ranked, fusion = null;
-  const cosine = new Map(sem ? sem.hits.map(h => [h.id, h.score]) : []);
+  const cosine = sem ? sem.cos : new Map();
   if (sem && kw) {
     ranked = rrf(sem.hits, kw.hits, { alpha: o.alpha, k: RRF_K }).map(h => ({ id: h.id, score: h.score, ranks: h.ranks }));
     fusion = { method: 'rrf', alpha: o.alpha, k: RRF_K };
@@ -317,12 +283,21 @@ async function search(E, caller, args, internal = {}) {
   let rows = null;
   if (o.gate) { // the gate's body clauses (a promoted note, a pending state) on the rows the page is built from
     rows = rowsByIds(E, ranked.map(h => h.id));
-    ranked = ranked.filter(h => rows.has(h.id) && gate.bodyLive(rows.get(h.id)));
+    ranked = ranked.filter(h => rows.has(h.id) && gate.bodyLive(rows.get(h.id))); // (the project's legacy rows never get here: the keyword WHERE and the semantic scan leave them out)
   }
-  // The rerank stage (a tier with a reranker): the top of the fused list reordered by the provider, fusion rank as the tiebreak.
+  // A held note (an active hold on it, whoever reads: a worker is withheld the disputed ones above) ranks below every note that is not held
+  // and reaches the relevance floor, and above the ones that do not; below the floor the same order holds. Every view marks it from its hold
+  // row, never from the note's own pointer, which can outlive its hold (ADR 0047 amendment of 2026-10-25). A row with no cosine is not below it.
+  const holds = W.holdsAmong(E, ranked.map(h => h.id));
+  const band = h => (sem && cosine.has(h.id) && V.belowFloor(cosine.get(h.id), floor) ? 2 : 0) + (holds.has(h.id) ? 1 : 0);
+  const byBand = list => list.map((h, i) => ({ h, i, t: band(h) })).sort((a, b) => a.t - b.t || a.i - b.i).map(x => x.h);
+  const banded = holds.size > 0 && o.order === 'score';
+  if (banded) ranked = byBand(ranked);
+  // The rerank stage (a tier with a reranker): the top of the fused list reordered by the provider, fusion rank as the tiebreak. The reranker
+  // orders within a band, never across one: a held note stays below every note that is not held, as above (a stable sort of the reranked list).
   const fused = ranked, tr = Date.now();
   const rr = await ST.rerankHead(E, caller, o, ranked, ids => rows || rowsByIds(E, ids), lv);
-  ranked = rr.ranked;
+  ranked = banded && rr.info ? byBand(rr.ranked) : rr.ranked;
   if (rr.info) ms.rerank = Date.now() - tr;
   let pool = ranked;
   if (o.order !== 'score') {
@@ -332,42 +307,49 @@ async function search(E, caller, args, internal = {}) {
   }
   const page = pool.slice(o.offset, o.offset + o.k);
   rows = rows || rowsByIds(E, page.map(h => h.id));
+  const debug = o.view === 'full' || o.view === 'debug';
+  // A superseded row is on the page only with include_superseded; the compact view says which ones are, as it says what a row supersedes.
+  const replaced = o.includeSuperseded && o.view === 'compact' && page.length ? supersededAmong(E, page.map(h => h.id)) : null;
   const results = [];
+  let below = 0;
   for (const h of page) {
     const r = rows.get(h.id);
     if (!r) continue; // deleted between the two reads
-    const out = viewRow(r, o.view, h.score);
-    if (o.view === 'full') {
+    const c = sem && cosine.has(h.id) ? cosine.get(h.id) : null;
+    const rel = V.relevanceFields(c, floor);
+    if (rel.low_relevance) below++;
+    if (o.view === 'compact') { results.push(V.compactRow(r, c, !!(replaced && replaced.has(r.id)), holds.get(r.id) || null, floor)); continue; }
+    const out = { ...viewRow(r, debug ? 'full' : 'index', h.score), ...(o.view === 'index' ? rel : {}), ...(holds.has(r.id) ? { held: V.heldMark(holds.get(r.id)) } : {}) };
+    if (debug) {
       out.score = h.score;
       if (h.rerank_score !== undefined) out.rerank_score = h.rerank_score;
+      Object.assign(out, rel);
       if (h.ranks) out.ranks = h.ranks;
-      if (cosine.has(h.id)) {
-        const cos = cosine.get(h.id);
-        out.near_duplicate = cos >= o.dupThreshold;
+      if (c !== null) {
+        out.near_duplicate = c >= o.dupThreshold;
         const veto = out.near_duplicate && o.query !== null ? dupVeto(o.query, r.text) : null;
         if (veto) { out.near_duplicate = false; out.near_duplicate_veto = veto; }
-        if (sem && kw) out.cosine = cos;
+        if (sem && kw) out.cosine = c;
       }
     }
     results.push(out);
   }
 
-  // Absence needs every in-scope row covered by BOTH modes. The keyword index sees every row; the semantic scan
-  // sees only rows with a vector in a namespace bound to a model, so the rows it did not scan are named, and a
-  // search that left any of them out establishes nothing (same ttl, superseded and filter predicates as `considered`).
+  // ADR 0057 decision 4: absence is "nothing relevant is known here". Both modes ran, the semantic scan covered every in-scope row (the
+  // keyword index sees every row; a row with no vector is named, and one left out establishes nothing), no scanned row reaches the floor,
+  // and the keyword half matched no row: a keyword hit can be the exact identifier the query names, whatever its cosine. offset and
+  // min_score narrow the page, never the claim, which is about every in-scope row.
   const unembedded = sem ? Math.max(0, considered - sem.scanned) : 0;
-  const absence = ran.includes('semantic') && ran.includes('keyword') && unembedded === 0 && !results.length && !pool.length && o.offset === 0 && o.minScore <= -1;
-  const searched = { namespaces: o.namespaces, filter: o.filter, rows_considered: considered, fts: ftsReady(db) };
-  if (unembedded) searched.rows_without_vector = unembedded;
-  if (kw && kw.dropped.length) searched.keyword_terms_dropped = kw.dropped;
-  const out = {
-    warning: warningFor(o, ran, failed, results, absence, unembedded),
-    results,
-    scanned: sem ? sem.scanned : 0, model: sem ? sem.model : null, dim: sem ? sem.dim : null,
-  };
-  if (sem && sem.note) out.note = sem.note;
-  out.modes_run = rr.info && rr.info.ran ? [...ran, 'rerank'] : ran; out.modes_failed = failed; out.absence_established = absence;
-  out.searched = searched; out.fusion = fusion;
+  let top = -Infinity;
+  for (const v of cosine.values()) if (v > top) top = v;
+  // The floor is measured for nano only (ADR 0057), so a heavy tier, which has no floor, never establishes absence.
+  const absence = floor !== null && ran.includes('semantic') && ran.includes('keyword') && unembedded === 0 && V.belowFloor(top, floor) && kw.hits.length === 0;
+  const out = { warning: V.warningFor(o, ran, failed, results, absence, unembedded, below, floor), results, relevance: V.relevanceOf(sem, sem && sem.model, floor) };
+  if (below) out.below_floor = below;
+  // A held note pushed off the page by the notes ranked above it still matched: the orchestrator and the operator get its id and kind. Workers never do.
+  const heldOff = caller.role === 'worker' ? [] : pool.slice(o.offset + o.k).filter(h => holds.has(h.id)).map(h => ({ id: h.id, kind: holds.get(h.id).kind || null }));
+  if (heldOff.length) out.held_matches = heldOff;
+  if (unembedded) out.rows_without_vector = unembedded;
   if (rr.info || !ST.isNano(o.tier)) { const { profile, embedder, reranker, device } = o.tier; out.tier = { profile, embedder, reranker, device }; }
   if (rr.info) out.rerank = rr.info;
   if (tierFb) out.tier_fallback = HB.answerOf(tierFb, o.tier);
@@ -375,14 +357,25 @@ async function search(E, caller, args, internal = {}) {
     failed.push(rr.failed);
     out.warning = [`rerank did not run (${rr.failed.code}${rr.info.cause.reason ? `: ${rr.info.cause.reason}` : ''}); the results are in fusion order, not reranked`, out.warning].filter(Boolean).join('; ');
   }
+  const modesRun = rr.info && rr.info.ran ? [...ran, 'rerank'] : ran;
   ms.total = Date.now() - t0;
-  // Only the store owner logs, and only the run that answered: a copy writes nothing (invariant 6), an internal search asked not to, and a
-  // run the in-process timeout abandoned (index.cjs re-runs it as keyword) leaves the log to the re-run.
+  // Only with the search_log lever on (off by default), only the store owner, and only the run that answered: a copy writes nothing (invariant 6),
+  // an internal search asked not to, and a run the in-process timeout abandoned (index.cjs re-runs it as keyword) leaves the log to the re-run.
   const abandoned = args[Symbol.for('belay.search.abandoned')];
-  if (E.owner && internal.log !== false && !(abandoned && abandoned.abandoned)) {
+  if (lv.search_log && E.owner && internal.log !== false && !(abandoned && abandoned.abandoned)) {
     ST.logSearch(E, caller, { kind: 'search', tier: o.tier, query: o.query, mode: o.mode, namespaces: o.namespaces, k: o.k, offset: o.offset, ms, capMb: lv.search_log_cap_mb,
       ranks: ST.rankRecord(fused, ranked, Math.max(lv.rerank_depth, o.k), o.order), fallback: failed.length ? { failed } : null });
   }
+  if (debug) {
+    const searched = { namespaces: o.namespaces, filter: o.filter, rows_considered: considered, fts: ftsReady(db) };
+    if (unembedded) searched.rows_without_vector = unembedded;
+    if (kw && kw.dropped.length) searched.keyword_terms_dropped = kw.dropped;
+    Object.assign(out, { scanned: sem ? sem.scanned : 0, model: sem ? sem.model : null, dim: sem ? sem.dim : null, score_kind: V.scoreKind(sem, kw) });
+    out.modes_run = modesRun; out.modes_failed = failed; out.absence_established = absence;
+    out.searched = searched; out.fusion = fusion;
+    return out;
+  }
+  out.modes_run = modesRun; out.modes_failed = failed; out.absence_established = absence;
   return out;
 }
 
@@ -422,6 +415,9 @@ async function timeline(E, caller, args) {
   };
 }
 
+// The honest answer for a note that exists but is held and withheld from this reader (ADR 0047 amendments, 2026-10-22 and 2026-10-25).
+const withheldAnswer = (id) => ({ id, found: false, withheld: true, note: 'this note exists but is held for review, disputed as wrong, superseded or a duplicate, and is withheld from workers until the review settles it' });
+
 async function getMany(E, caller, args) {
   const ids = args.ids;
   if (!Array.isArray(ids) || !ids.length || ids.length > ID_MAX || ids.some(x => typeof x !== 'string' || !x)) {
@@ -430,13 +426,16 @@ async function getMany(E, caller, args) {
   const view = enumArg('view', args.view, VIEWS, 'full');
   const reach = reachOf(E, caller);
   const rows = rowsByIds(E, [...new Set(ids)]);
+  const legacy = gate.legacyHidden(E, caller);
   const out = [], missing = [];
+  const held = W.withheldAmong(E, caller, [...rows.values()].filter(r => readable(caller, reach, r)));
   for (const id of ids) {
-    const r = rows.has(id) && readable(caller, reach, rows.get(id)) ? rows.get(id) : null;
-    if (r) out.push({ ...viewRow(r, view), found: true });
+    const r = rows.has(id) && readable(caller, reach, rows.get(id), legacy) ? rows.get(id) : null;
+    if (r && held.has(id)) { out.push(withheldAnswer(id)); if (!missing.includes(id)) missing.push(id); }
+    else if (r) out.push({ ...viewRow(r, view), found: true });
     else { out.push({ id, found: false }); if (!missing.includes(id)) missing.push(id); }
   }
-  return { rows: out, found: out.filter(r => r.found).length, missing };
+  return { rows: out, found: out.filter(r => r.found).length, missing, ...(held.size ? { withheld: [...held] } : {}) };
 }
 
 async function get(E, caller, args) {
@@ -445,7 +444,8 @@ async function get(E, caller, args) {
   const view = enumArg('view', args.view, VIEWS, 'full');
   // A read: a plain SELECT, so invariant 6 holds (retrieve() would stamp accessed_at).
   const got = E.store.db.prepare('SELECT * FROM memory_entries WHERE id = ?').get(args.id);
-  const r = got && readable(caller, reachOf(E, caller), got) ? got : null;
+  const r = got && readable(caller, reachOf(E, caller), got, gate.legacyHidden(E, caller)) ? got : null;
+  if (r && W.withheldAmong(E, caller, [r]).size) return withheldAnswer(args.id);
   return r ? { ...viewRow(r, view), found: true } : { id: args.id, found: false };
 }
 
@@ -453,7 +453,8 @@ async function list(E, caller, args) {
   const namespaces = namespacesOf(E, caller, args);
   const view = enumArg('view', args.view, VIEWS, 'full');
   const order = enumArg('order', args.order, ['newest', 'oldest'], 'newest');
-  const limit = Math.min(intArg('limit', args.limit, 50, 1, Number.MAX_SAFE_INTEGER), LIST_MAX);
+  const asked = intArg('limit', args.limit, 50, 1, Number.MAX_SAFE_INTEGER);
+  const limit = Math.min(asked, LIST_MAX);
   const offset = intArg('offset', args.offset, 0, 0, Number.MAX_SAFE_INTEGER);
   const f = args.filter == null ? {} : args.filter;
   const fsql = gate.and(filterSql(f, 'e'), E, caller, { namespaces });
@@ -462,17 +463,22 @@ async function list(E, caller, args) {
   const dir = order === 'newest' ? 'DESC' : 'ASC';
   const db = E.store.db;
   const total = db.prepare(`SELECT COUNT(*) AS n FROM memory_entries e WHERE ${where}`).get(...params).n;
-  const found = db.prepare(`SELECT e.id, e.namespace, e.worker_id, e.last_writer_id, e.written_by, e.type, substr(e.text, 1, 200) AS text,
+  const found = db.prepare(`SELECT e.id, e.namespace, e.worker_id, e.last_writer_id, e.written_by, e.type, substr(e.text, 1, ${LIST_TEXT}) AS text, length(e.text) > ${LIST_TEXT} AS text_cut,
     substr(e.text, 1, 2000) AS title_src, e.tags, e.provenance, e.supersedes, e.created_at, e.updated_at, e.ttl_at, e.title, e.status,
     e.status_receipt, e.status_by, e.status_at, e.run_id, e.task_id, e.turn, e.source, e.redactions
     FROM memory_entries e WHERE ${where} ORDER BY e.created_at ${dir}, e.id ${dir} LIMIT ? OFFSET ?`).all(...params, limit, offset);
   const rows = found.map(r => {
-    const { title_src: src, ...rest } = r;
+    const { title_src: src, text_cut: textCut, ...rest } = r;
     const title = r.title || deriveTitle(src);
     if (view === 'index') return indexRowOf({ ...rest, title });
-    return { ...rest, tags: parseJson(r.tags), redactions: parseJson(r.redactions), status: r.status || 'unverified', title };
+    return { ...rest, tags: parseJson(r.tags), redactions: parseJson(r.redactions), status: r.status || 'unverified', title, ...(textCut ? { text_truncated: true } : {}) };
   });
-  return { rows, total, searched: { namespaces, filter: f, rows_considered: total } };
+  // A held note is marked from its hold row, in either view (ADR 0047 amendment of 2026-10-25); the list stays in time order.
+  const holds = W.holdsAmong(E, found.filter(r => r.type === 'note').map(r => r.id));
+  if (holds.size) for (const row of rows) if (holds.has(row.id)) row.held = V.heldMark(holds.get(row.id));
+  // ADR 0057 decision 10 (C11): a page that is not the whole of it says so, and how to read on.
+  const more = offset + rows.length < total;
+  return { rows, total, ...(more ? { truncated: true, next_offset: offset + rows.length } : {}), ...(asked > LIST_MAX ? { limit_capped: LIST_MAX } : {}), searched: { namespaces, filter: f, rows_considered: total } };
 }
 
 // A hybrid search whose semantic half timed out in the owner's own process answers from its keyword half: this
@@ -481,7 +487,7 @@ function withSemanticFailure(result, failure) {
   const { warning, ...rest } = result;
   const failed = { mode: 'semantic', code: failure.code, message: failure.message };
   return {
-    warning: `semantic search did not run (${failure.code}); these are keyword matches only; no match here does not mean no such memory`,
+    warning: `semantic search did not run (${failure.code}); these are keyword matches only; no match here does not mean no such entry`,
     ...rest, modes_failed: [failed, ...(rest.modes_failed || [])], absence_established: false,
   };
 }

@@ -28,7 +28,7 @@ async function memoryRunEnd({ core, runId, levers, ce = null, late = () => {}, j
   // have not yet started is sent, and no write can reach the store after the shutdown that follows (it would elect a new owner).
   const gate = { aborted: false, cut: false };
   const cutLate = (m) => { gate.aborted = true; gate.cut = true; late(m); };
-  return RI.within(ce, MJ.runEndJobs({ core: core.harness ? core.harness() : core, runId, levers: lv, gate }), 'the run-end memory jobs', { outcome: 'cut' }, cutLate, RI.END_RESERVE_MS);
+  return RI.within(ce, MJ.runEndJobs({ core: core.harness ? core.harness() : core, runId, levers: lv, gate }), 'the run-end note jobs', { outcome: 'cut' }, cutLate, RI.END_RESERVE_MS);
 }
 
 module.exports = { memoryRunEnd };

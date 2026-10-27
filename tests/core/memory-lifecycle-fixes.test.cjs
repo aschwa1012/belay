@@ -172,28 +172,34 @@ test('#13 the purge writes a ledger row, and a failed purge leaves no file behin
   assert.deepStrictEqual([ev.key, JSON.parse(ev.row_ids).sort()], [r.path, [a, b].sort()]);
 });
 
-test('#8 a held note shows a short warning in the index, and a long reason cannot push anything out of the budget', async () => {
-  const mkHeld = (title, reason) => { const id = T.note(title); const b = T.body(id); b.held = { row: 'h', kind: 'duplicate', of: 'x', reason, run_id: 'r', at: 1 }; T.store.p('UPDATE memory_entries SET body = ? WHERE id = ?').run(JSON.stringify(b), id); return id; };
-  const idx = async () => T.call(tool(), 'memory.index', {});
-  const base = await idx();
+test('#8 a held note shows a short warning in the index, from its hold row, ranks after the notes not held, and a long reason takes no more room', async () => {
+  // The warning is read from the hold row (ADR 0047 amendment of 2026-10-25), so each note here gets a real active hold.
+  const holdOf = (id, kind, reason) => T.store.storeIn({ namespace: `held/${PROJECT}`, worker_id: 'harness', type: 'held', text: `held ${kind} ${id}`, title: 'h', body: { state: 'held', note_id: id, kind, ground: 'scrubber', reason, rev: 0 }, run_id: 'r', source: 'harness', written_by: 'harness' }).id;
+  const idx = async () => T.call(tool(), 'memory.index', { max_bytes: 4096 });
   const ids = Array.from({ length: 8 }, (_, i) => T.note(`bulk note ${i} about turnstile`));
-  const plain = await idx();
-  const setReason = reason => { for (const id of ids) { const b = T.body(id); b.held = { row: 'h', kind: 'wrong', of: null, reason, run_id: 'r', at: 1 }; T.store.p('UPDATE memory_entries SET body = ? WHERE id = ?').run(JSON.stringify(b), id); } };
-  setReason('z'.repeat(60));
+  const holds = ids.map((id) => holdOf(id, 'wrong', 'z'.repeat(60)));
+  const setReason = reason => { for (const h of holds) T.store.patchBody(h, (b) => { b.reason = reason; return b; }); };
   const atCap = await idx();
   setReason('z'.repeat(4000));
   const heldIdx = await idx();
   assert.deepStrictEqual(heldIdx.row_ids, atCap.row_ids, 'a 4000-byte reason takes no more room than one at the cut: nothing more is pushed out');
   assert.strictEqual(heldIdx.bytes, atCap.bytes);
-  assert.deepStrictEqual(heldIdx.row_ids, plain.row_ids.slice(0, heldIdx.row_ids.length), 'the warning changes no rank and no order (the longer lines only fit fewer, from the end)');
-  assert.ok(heldIdx.bytes <= 1200, `inside the index budget: ${heldIdx.bytes}`);
-  const shown = heldIdx.row_ids.find(id => ids.includes(id));
-  const line = heldIdx.text.split('\n').find(l => l.includes(shown));
+  assert.ok(heldIdx.bytes <= 4096, `inside the index budget: ${heldIdx.bytes}`);
+  const lines = heldIdx.text.split('\n').filter((l) => l.startsWith('- '));
+  const first = lines.findIndex((l) => l.includes('[held: '));
+  assert.ok(first >= 0, 'a held note is shown');
+  assert.ok(lines.slice(first).every((l) => l.includes('[held: ')), 'no note that is not held ranks after a held one (every note here has the same relevance)');
+  const line = lines[first];
   assert.match(line, /\[held: wrong, z+(\.\.\.)?\]/);
-  assert.ok(Buffer.byteLength(line) - Buffer.byteLength(plain.text.split('\n').find(l => l.includes(shown))) <= 90, 'the reason is cut to about 60 bytes');
-  assert.ok(base.row_ids.length >= 0);
-  const one = mkHeld('single held', 'duplicate of another note about the same thing');
-  assert.match((await idx()).text, new RegExp(`${one}.*\\[held: duplicate, duplicate of another note`));
+  assert.ok(Buffer.byteLength(line.slice(line.indexOf('[held: '))) <= 90, 'the reason is cut to about 60 bytes');
+  // A pointer with no active hold behind it shows nothing; a duplicate hold shows its reason.
+  const stale = T.note('stale pointer note');
+  T.store.patchBody(stale, (b) => { b.held = { row: 'gone', kind: 'wrong', reason: 'stale', run_id: 'r', at: 1 }; return b; });
+  const one = T.note('single held');
+  holdOf(one, 'duplicate', 'duplicate of another note about the same thing');
+  const after = (await idx()).text;
+  assert.ok((after.split('\n').find((l) => l.includes(one)) || '').includes('[held: duplicate, duplicate of another note'));
+  assert.doesNotMatch(after.split('\n').find((l) => l.includes(stale)) || '', /\[held: /);
 });
 
 const TOKEN = 'ghp_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8';
@@ -207,7 +213,7 @@ test('R2-1 lifecycle text is redacted before it is stored: a token in a reason, 
   assert.ok(!JSON.stringify(h).includes(TOKEN) && !JSON.stringify(r).includes(TOKEN), 'the held row and the result');
   assert.ok(!everywhere(n).includes(TOKEN), 'the note body');
   assert.ok(h.body.scrub.redacted >= 1, 'the redactions are counted');
-  const idx = await T.call(tool(), 'memory.index', {});
+  const idx = await T.call(tool(), 'memory.index', { max_bytes: 4096 }); // a held note ranks last (ADR 0047 amendment of 2026-10-25), so room is given
   assert.ok(!idx.text.includes(TOKEN) && !idx.text.includes('ghp_a1B2'), 'the index line');
   assert.match(idx.text.split('\n').find(l => l.includes(n)), /\[held: wrong, /);
   // even a body that already holds a raw token shows redacted on the line

@@ -68,7 +68,7 @@ const turnStarted = (w, ctx, send) => { const sent = send(); w.turnEnded = false
 
 // ---- fix round 1 (review-1.md)
 
-test('BL1: a message during a harness /compact is refused E_BUSY and written nowhere; after its turn ends it is accepted', async () => {
+test('BL1, ADR 0058: a message during a harness /compact is queued, written nowhere until its turn ends, then delivered as the next turn', async () => {
   const sb = sandbox();
   const recv = `${sb.data}/recv.jsonl`;
   const core = createFakeCore();
@@ -79,29 +79,25 @@ test('BL1: a message during a harness /compact is refused E_BUSY and written now
       // No turn wait here: a wait that starts once the harness's /compact is sent waits the compaction out (it is
       // invisible as a turn), which on a slow host ate the window this test needs. The /compact arriving is the signal.
       await until(() => lines(recv).some((r) => r.text.startsWith('/compact')));
-      await assert.rejects(m.message({ worker_id: 'wb', text: 'two' }), (e) => {
-        assert.strictEqual(e.code, 'E_BUSY');
-        assert.strictEqual(e.detail.op, 'compact');
-        assert.match(e.detail.compaction_started_at, /^\d{4}-\d\d-\d\dT/);
-        assert.match(e.message, /compacting.*started .*retry/);
-        return true;
-      });
-      assert.ok(!lines(recv).some((r) => r.text === 'two'), 'nothing written');
+      const q = await m.message({ worker_id: 'wb', text: 'two' });
+      assert.deepStrictEqual([q.channel, q.queued, q.position, q.bytes, q.turn], ['queued', true, 1, 3, 2]);
+      assert.match(q.compaction_started_at, /^\d{4}-\d\d-\d\dT/);
+      const q2 = await m.message({ worker_id: 'wb', text: 'three' });
+      assert.strictEqual(q2.position, 2);
+      assert.ok(!lines(recv).some((r) => r.text.includes('two')), 'nothing written while the compaction runs');
       assert.strictEqual((await core.worker.get({ worker_id: 'wb' })).turns, 1, 'the row never counted the compaction');
-      const res = await m.wait({ worker_ids: ['wb'], timeout_ms: 8000 }); // invisible as a turn: the last real turn
-      assert.strictEqual(res.event, 'turn_end');
-      assert.strictEqual(res.turn, 1);
-      await until(() => records(sb, 'wb').length === 1);
-      const ok = await m.message({ worker_id: 'wb', text: 'two' });
-      assert.strictEqual(ok.channel, 'stdin');
-      assert.strictEqual(ok.turn, 2, 'the compaction was no turn');
-      await until(() => lines(recv).some((r) => r.text === 'two'));
-      assert.deepStrictEqual(lines(recv).map((r) => r.text).filter((t) => !t.startsWith('/compact')), ['one', 'two']);
+      // A waiter is the queued message's: it is answered by that turn, not by the last one before the compaction.
+      const res = await m.wait({ worker_ids: ['wb'], timeout_ms: 20000 });
+      assert.deepStrictEqual([res.event, res.turn], ['turn_end', 2]);
+      assert.strictEqual(records(sb, 'wb').length >= 1, true);
+      assert.deepStrictEqual(lines(recv).map((r) => r.text).filter((t) => !t.startsWith('/compact')).slice(0, 2), ['one', 'two\n\nthree'], 'delivered as one turn, in order');
+      const log = lines(`${sb.data}/workers/wb/queued-messages.jsonl`).map((r) => r.event);
+      assert.deepStrictEqual(log, ['queued', 'queued', 'delivered']);
     });
   } finally { await teardown(m, sb); }
 });
 
-test('BL1: a pause during a harness /compact leaves no stranded state: resume works and messages go straight through', async () => {
+test('BL1, ADR 0058: a pause during a harness /compact drops the queued message on the record; resume works and messages go straight through', async () => {
   const sb = sandbox();
   const recv = `${sb.data}/recv.jsonl`;
   const m = mgr(sb, createFakeCore(), 1000);
@@ -111,8 +107,12 @@ test('BL1: a pause during a harness /compact leaves no stranded state: resume wo
       // No turn wait here: a wait that starts once the harness's /compact is sent waits the compaction out (it is
       // invisible as a turn), which on a slow host ate the window this test needs. The /compact arriving is the signal.
       await until(() => lines(recv).some((r) => r.text.startsWith('/compact')));
-      await assert.rejects(m.message({ worker_id: 'wp', text: 'A' }), (e) => e.code === 'E_BUSY');
+      assert.strictEqual((await m.message({ worker_id: 'wp', text: 'A' })).queued, true);
       await m.pause({ worker_id: 'wp', by: 'operator:1' });
+      const dropped = m._worker('wp').queuedDropped;
+      assert.deepStrictEqual(dropped.map((d) => [d.event, d.count, d.bytes]), [['dropped', 1, 1]]);
+      assert.match(dropped[0].reason, /pause|relaunched|could not take/);
+      assert.deepStrictEqual((await m.wait({ worker_ids: ['wp'], timeout_ms: 5000 })).queued_dropped, dropped, 'worker_wait names the dropped message');
       await assert.rejects(m.message({ worker_id: 'wp', text: 'A' }), (e) => e.code === 'E_PAUSED');
       await m.resume({ worker_id: 'wp', by: 'operator:1' });
       // The resumed turn's context is still over the threshold, so the harness may start a new /compact as that turn
@@ -120,14 +120,12 @@ test('BL1: a pause during a harness /compact leaves no stranded state: resume wo
       // once any compaction has ended: retry only that refusal, inside a bound.
       let b = null;
       for (const end = Date.now() + 30000; !b;) {
-        try { b = await m.message({ worker_id: 'wp', text: 'B' }); } catch (e) {
-          if (e.code !== 'E_BUSY' || !e.detail || e.detail.op !== 'compact' || Date.now() > end) throw e;
-          await new Promise((r) => setTimeout(r, 50));
-        }
+        b = await m.message({ worker_id: 'wp', text: 'B' }); // queued if a new compaction is in flight: delivered when it ends
+        if (Date.now() > end) throw new Error('no message accepted');
       }
-      assert.strictEqual(b.channel, 'stdin');
+      assert.ok(['stdin', 'queued'].includes(b.channel));
       await until(() => lines(recv).some((r) => r.text === 'B'));
-      assert.ok(!lines(recv).some((r) => r.text === 'A'), 'the refused message was never delivered, now or later');
+      assert.ok(!lines(recv).some((r) => r.text === 'A'), 'the dropped message was never delivered, now or later');
     });
   } finally { await teardown(m, sb); }
 });
@@ -167,6 +165,50 @@ test('swallow: the compaction turn is accounted without being a turn, and S4: it
   const exp = { id: 'x', turns: 1, cp: { inflight: { at: 1 } } };
   CP.refuseIfCompacting(exp, fail);
   assert.strictEqual(exp.cp.inflight, null);
+});
+
+test('ADR 0058: a message sent while the compaction turn row is still being written goes behind the queued ones, never ahead', async () => {
+  const fail = (code, msg, detail) => { throw Object.assign(new Error(msg), { code, detail }); };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-queue-order-'));
+  const writes = [];
+  let releaseRow;
+  const rowWritten = new Promise((r) => { releaseRow = r; });
+  const ctx = { compactAt: 100, shutdownFlags: {}, writeRow: () => rowWritten };
+  const w = {
+    ...swallowStub({ at: Date.now(), idx: 7, boundary: false }), dir,
+    child: { stdin: { destroyed: false, write: (l) => writes.push(JSON.parse(l).message.content[0].text) } },
+    settled: false, stopRequested: false, paused: null, parser: { noteStdinWrite: () => 8, writeIndex: 7 },
+  };
+  assert.strictEqual(CP.queueIfCompacting(w, 'A', fail).position, 1);
+  assert.strictEqual(CP.swallow(w, { usage: {}, answers_write: 7 }, ctx), true, 'the compaction turn ended');
+  assert.strictEqual(w.cp.inflight, null);
+  const after = CP.afterCompact(w, ctx, turnStarted); // awaits the row write before it drains
+  try {
+    const b = CP.queueIfCompacting(w, 'B', fail);
+    assert.deepStrictEqual([b && b.queued, b && b.position, b && b.compaction_started_at], [true, 2, null], 'B waits behind A');
+    assert.deepStrictEqual(writes, [], 'nothing written before the row');
+  } finally { releaseRow(); await after; } // the row is released whatever failed, so nothing is left pending
+  assert.deepStrictEqual(writes, ['A\n\nB'], 'one turn, A then B');
+  assert.strictEqual(CP.queueIfCompacting(w, 'C', fail), null, 'with the queue written, a message goes straight through');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('ADR 0058: queueIfCompacting queues up to its bound, then refuses E_BUSY queue_full; an expired flag hands the queue back to flush', () => {
+  const fail = (code, msg, detail) => { throw Object.assign(new Error(msg), { code, detail }); };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-queue-'));
+  assert.strictEqual(CP.queueIfCompacting({ id: 'x', dir, cp: { inflight: null } }, 'a', fail), null, 'nothing in flight: write now');
+  const w = { id: 'x', dir, cp: { inflight: { at: Date.now() } } };
+  for (let i = 1; i <= 8; i++) assert.strictEqual(CP.queueIfCompacting(w, `m${i}`, fail).position, i);
+  assert.throws(() => CP.queueIfCompacting(w, 'm9', fail), (e) => e.code === 'E_BUSY' && e.detail.queue_full === true && e.detail.queued === 8);
+  const big = { id: 'y', dir, cp: { inflight: { at: Date.now() } } };
+  assert.throws(() => CP.queueIfCompacting(big, 'x'.repeat(65537), fail), (e) => e.code === 'E_BUSY' && e.detail.queue_full === true);
+  w.cp.inflight.at = 1; // past INFLIGHT_MAX_MS
+  const back = CP.queueIfCompacting(w, 'late', fail);
+  assert.deepStrictEqual(back.flush, ['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8']);
+  assert.deepStrictEqual([w.cp.inflight, w.cp.queue.length], [null, 0]);
+  CP.dropQueued(w, 'nothing queued'); // a no-op on an empty queue
+  assert.strictEqual(w.queuedDropped, undefined);
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('SF-b: the harness compaction own end is swallowed by its write index: under a park, and past the 5-minute expiry', () => {

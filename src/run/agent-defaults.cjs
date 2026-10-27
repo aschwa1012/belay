@@ -1,10 +1,13 @@
 'use strict';
 // agent-defaults.cjs — the config file's `agents` block: a default model and effort per agent type, and for the
-// orchestrator. Pure (it requires nothing), so `belay settings` can list it without loading the run manager.
+// orchestrator, and a worker type's tool list (ADR 0054 decision 4). Pure (it requires only tool-policy.cjs, which
+// requires nothing), so `belay settings` can list it without loading the run manager.
 //
 // These are defaults only. A model or effort given explicitly (a worker_spawn argument, the run spec's `model`,
 // `belay run --effort`) always wins, and an unset default means no default: the launch is what it was before.
 // Every resolution names where the value came from, so a receipt never shows a bare model.
+
+const TP = require('./tool-policy.cjs'); // pure
 
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']; // ADR 0028 decision 1; launch.cjs re-exports
 const WORKER_TYPES = ['coder', 'tester', 'reviewer', 'researcher'];
@@ -13,7 +16,9 @@ const FIELDS = ['model', 'effort'];
 // A worker type (not the orchestrator, which is always Claude Code) may also name the model its Codex workers use. It is a field apart from
 // `model`, which is a Claude Code roster model: a Codex spawn never takes `model`, and a Claude Code spawn never takes `codex_model`.
 const CODEX_FIELD = 'codex_model';
-const fieldsOf = (type) => (type === 'orchestrator' ? FIELDS : [...FIELDS, CODEX_FIELD]);
+// ADR 0054 decision 4: a worker type's tool list (its ceiling and default). The orchestrator's list is fixed by decision 1.
+const TOOLS_FIELD = 'tools';
+const fieldsOf = (type) => (type === 'orchestrator' ? FIELDS : [...FIELDS, CODEX_FIELD, TOOLS_FIELD]);
 const NOT_CLAUDE = /^(gpt|codex|o[0-9])/i; // a Codex model named under `model` would be passed to Claude Code coders
 const ORCHESTRATOR_MODEL = 'claude-opus-5-5'; // ADR 0021 amendment 4; launch.cjs's DEFAULT_ORCHESTRATOR_MODEL. The orchestrator has no built-in effort.
 
@@ -38,6 +43,12 @@ function parseAgentsBlock(block) {
     for (const [f, v] of Object.entries(fields)) {
       if (!fieldsOf(type).includes(f)) return { error: `agents.${type}.${f} is not a setting (known: ${fieldsOf(type).join(', ')})` };
       if (v === null) continue;
+      if (f === TOOLS_FIELD) {
+        const c = TP.checkList(v, `agents.${type}.tools`);
+        if (c.error) return { error: c.error };
+        (value[type] = value[type] || {})[f] = c.value;
+        continue;
+      }
       if ((f === 'model' || f === CODEX_FIELD) && !(typeof v === 'string' && v.length > 0)) return { error: `agents.${type}.${f} must be a non-empty string or null` };
       if (f === 'model' && NOT_CLAUDE.test(v)) return { error: `agents.${type}.model ${JSON.stringify(v)} is not a Claude model: Claude Code workers would be launched with it; a Codex model goes in agents.${type}.${CODEX_FIELD}` };
       if (f === 'effort' && !EFFORT_LEVELS.includes(v)) return { error: `agents.${type}.effort must be one of ${EFFORT_LEVELS.join(', ')} or null` };
@@ -99,4 +110,4 @@ function writeFile(dir, defaults) {
   return file;
 }
 
-module.exports = { CODEX_FIELD, fieldsOf, NOT_CLAUDE, ORCHESTRATOR_MODEL, BUILTIN, forOrchestrator, writeFile, EFFORT_LEVELS, WORKER_TYPES, AGENT_KEYS, FIELDS, parseAgentsBlock, fromConfig, pick, forWorker };
+module.exports = { CODEX_FIELD, TOOLS_FIELD, fieldsOf, NOT_CLAUDE, ORCHESTRATOR_MODEL, BUILTIN, forOrchestrator, writeFile, EFFORT_LEVELS, WORKER_TYPES, AGENT_KEYS, FIELDS, parseAgentsBlock, fromConfig, pick, forWorker };

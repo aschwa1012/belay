@@ -149,17 +149,23 @@ test('template: the shipped orchestrator prompt has both placeholders and the fo
   const text = fs.readFileSync(`${ROOT}/src/run/prompts/orchestrator.md`, 'utf8');
   assert.strictEqual((text.match(/\{\{max_fix_rounds\}\}/g) || []).length, 2);
   assert.strictEqual((text.match(/\{\{fix_cutoff_rule\}\}/g) || []).length, 1);
-  assert.match(text, /## Review standard/);
+  // Wording audit: the Review standard is one source file that belay appends to a reviewer's first message (handback.cjs); the
+  // orchestrator prompt no longer carries it and the orchestrator no longer copies it into a prompt.
+  assert.ok(!/## Review standard/.test(text), 'the prompt does not carry the standard');
+  const standard = fs.readFileSync(`${ROOT}/src/run/prompts/review-standard.md`, 'utf8').replace(/\r\n/g, '\n');
+  assert.match(standard, /^## Review standard\n/);
   for (const c of ['(a) breaks one of the brief\'s stated acceptance criteria', '(b) breaks an invariant in the repository\'s `CLAUDE.md`', '(c) is a regression', '(d) causes a hang, data loss, an orphaned process or a security hole']) {
-    assert.ok(text.includes(c), c);
+    assert.ok(standard.includes(c), c);
   }
-  assert.match(text, /an ordering or input the brief admits makes a\s+stated assertion fail\. Forcing a reachable ordering is evidence; passing when run does not clear it;/, 'ADR 0031 amendment 1: clause (a)');
-  assert.match(text, /names its\s+clause/);
-  assert.match(text, /only if it has at least\s+one blocking finding/);
-  assert.match(text, /Review standard section below, verbatim, in the reviewer's prompt/);
-  assert.ok(!/Include this section/.test(text), 'the instruction is outside the section a reviewer receives');
+  assert.match(standard, /an ordering or input the brief admits makes a\s+stated assertion fail\. Forcing a reachable ordering is evidence; passing when run does not clear it;/, 'ADR 0031 amendment 1: clause (a)');
+  assert.match(standard, /names its\s+clause/);
+  assert.match(standard, /^## Review standard\nThe tree under review is read-only: run its tests, but edit, write, commit or stash nothing in it; write probes and scratch files only in the scratch folder your task names/, 'ADR 0054 amendment 1: inside the section a reviewer receives');
+  assert.match(text, /One with `detail.tree_changed: true` is suspect, holds or refuted/, 'ADR 0054 amendment 1: a flagged review is suspect');
+  assert.match(standard, /only if it has at least\s+one blocking finding/);
+  assert.match(text, /belay appends the Review standard and the verdict hand-back rule to the reviewer's first message; do not repeat them/);
+  assert.ok(!/verbatim, in the reviewer's prompt/.test(text), 'the orchestrator is not asked to copy it');
   assert.match(text, /\(0: the first review\)/);
-  assert.match(text, /not one for a failed acceptance check/);
+  assert.match(text, /A failed acceptance check is not a fix round/); // ADR 0058: worded beside fix_from_review
   assert.ok(!/\bland\b/.test(text), 'no "land" wording');
   const done = substituteLevers(text, { max_fix_rounds: 2, fix_cutoff: 'orchestrator' }, 0);
   assert.ok(!done.text.includes('{{'), 'substitution leaves no placeholder');
@@ -171,7 +177,7 @@ test('template: the shipped orchestrator prompt has both placeholders and the fo
 test('memory levers: parseLevers omits the block when absent or all-default, and refuses each bad key and each missing prerequisite', () => {
   assert.deepStrictEqual(parseLevers({ memory: {} }), parseLevers({}));
   assert.deepStrictEqual(parseLevers({ memory: { redact: true, alpha: 0.3, summaries: 'off' } }), parseLevers({}));
-  const ok = parseLevers({ memory: { capture: true, observations: true, project: 'acme', project_writes: true, summaries: 'mechanical', index_bytes: 4096 } });
+  const ok = parseLevers({ memory: { capture: true, observations: true, project: 'acme', notes: false, project_writes: true, summaries: 'mechanical', index_bytes: 4096 } });
   assert.strictEqual(ok.memory_levers.project, 'acme');
   assert.strictEqual(ok.memory_levers.summaries, 'mechanical');
   assert.strictEqual(ok.memory_levers.redact, true, 'defaults are filled in');
@@ -186,10 +192,20 @@ test('memory levers: parseLevers omits the block when absent or all-default, and
     [{ observations: true }, /memory\.observations needs memory\.capture/],
     [{ project_writes: true }, /memory\.project_writes needs memory\.project/],
     [{ project: 'acme', project_writes: true, redact: false }, /memory\.redact false cannot be combined with memory\.project_writes true/],
+    [{ project: 'acme', project_writes: true }, /memory\.project_writes cannot be combined with memory\.notes.*notes: false/],
+    [{ project: 'acme', notes: true, project_writes: true }, /memory\.project_writes cannot be combined with memory\.notes/],
+    [{ held_visibility: 'hide' }, /memory\.held_visibility must be one of withhold, warn/],
+    [{ held_breaker_count: 0 }, /memory\.held_breaker_count/], [{ held_breaker_count: 501 }, /memory\.held_breaker_count/], [{ held_breaker_count: 1.5 }, /memory\.held_breaker_count/],
+    [{ held_breaker_share: 0 }, /memory\.held_breaker_share/], [{ held_breaker_share: 1.01 }, /memory\.held_breaker_share/], [{ held_breaker_share: '0.2' }, /memory\.held_breaker_share/],
     [{ capture: true, summaries: 'mechanical' }, /memory\.summaries "mechanical" needs memory\.observations/],
   ];
   for (const [block, re] of bad) assert.match(parseLevers({ memory: block }).error, re, JSON.stringify(block));
   assert.match(parseLevers({ memory: [] }).error, /memory must be an object/);
+  // the held-note levers: defaults, accepted bounds, and no prerequisite (inert without notes)
+  const dflt = parseLevers({ memory: { project: 'acme' } }).memory_levers;
+  assert.deepStrictEqual([dflt.held_visibility, dflt.held_breaker_count, dflt.held_breaker_share], ['withhold', 5, 0.2]);
+  const held = parseLevers({ memory: { notes: false, held_visibility: 'warn', held_breaker_count: 500, held_breaker_share: 1 } }).memory_levers;
+  assert.deepStrictEqual([held.held_visibility, held.held_breaker_count, held.held_breaker_share], ['warn', 500, 1]);
   for (const k of ['capture', 'cost_ledger', 'first_message_index', 'bottle', 'wrapup', 'knowledge_agent']) {
     assert.strictEqual(parseLevers({ memory: { [k]: true } }).memory_levers[k], true, k);
   }
@@ -267,7 +283,8 @@ test('run: a bad memory block exits 2 before anything is created; a good one run
     const row = runRow(ok);
     assert.strictEqual(row.project, 'acme');
     assert.strictEqual(JSON.parse(row.memory_levers).capture, true);
-    assert.ok(!adapterArgs(ok).includes('--worktree'), 'the knowledge agent is off, so the adapter is not told the worktree');
+    // ADR 0054 decision 2 (intended): the adapter is always told the run's worktree, git_read's default, knowledge agent or not.
+    assert.strictEqual(adapterArgs(ok)[adapterArgs(ok).indexOf('--worktree') + 1], `${ok.dir}/wt`, 'the knowledge agent is off, and the adapter still gets the worktree');
   } finally { cleanup(ok.dir); }
   const plain = go('hi\n', {});
   try {
@@ -277,7 +294,7 @@ test('run: a bad memory block exits 2 before anything is created; a good one run
     const row = runRow(plain);
     assert.strictEqual(row.memory_levers, null);
     assert.strictEqual(row.project, null);
-    assert.ok(!adapterArgs(plain).includes('--worktree'), 'with every lever off the orchestrator mcp.json is the base one');
+    assert.strictEqual(adapterArgs(plain)[adapterArgs(plain).indexOf('--worktree') + 1], `${plain.dir}/wt`, 'with every lever off the adapter still gets the worktree (ADR 0054)');
   } finally { cleanup(plain.dir); }
   const ka = go('hi\n', { memory: { knowledge_agent: true } });
   try {

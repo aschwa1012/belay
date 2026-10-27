@@ -1,6 +1,6 @@
 {
   "name": "@aschwa1012/belay",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Orchestration substrate: runs Claude Code and Codex CLI sessions as worker processes, coordinates them through a shared store, and lets one human watch and intervene.",
   "keywords": [
     "claude-code",

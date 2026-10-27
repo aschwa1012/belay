@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { T0, RUN, boot, cmd, later, pane, openPane, words } from './support'
+import { T0, RUN, boot, cmd, later, pane, openPane, words, colours } from './support'
 
 // The memory line and its one write action (ADR 0036 amendment, proposed): the Opus archive review, started only by two presses of the
 // button, through a short launcher that detaches the review so a reload of the panel cannot orphan it. These tests prove the line, the
@@ -9,20 +9,124 @@ const running = (pid_alive = true) => ({ kind: 'review_running', ts: T0, run_id:
 const ended = (ok: boolean, text: string) => ({ kind: 'review_ended', ts: T0, run_id: RUN, project: 'acme', ok, code: ok ? null : 'E_ARGS', text, job: 'archreview-r-1', claim_id: 'me-1' })
 const notices = (...events: unknown[]) => ({ run_id: RUN, events })
 
+describe('the review acts for the watched run only when it must', () => {
+  const started = { exitCode: 0, stdout: JSON.stringify({ started: true, project: 'acme', run_id: 'r-1', pid: 4242, job: 'archreview-r-1', claim_id: 'me-1' }), stderr: '' }
+  const notFound = (live: string | null) => ({ exitCode: 1, stdout: '', stderr: JSON.stringify({ error: { code: 'E_NOT_FOUND', message: 'the only run with notes on is live', live_run: live } }, null, 2) })
+  const press = async ($: any, on: any, w: object) => {
+    const wd = await boot($, on, { notices: notices(held(3)), ...w })
+    await openPane($, wd)
+    const { ui } = await pane($)
+    await ui.press({ key: 'review' })
+    await ui.press({ key: 'review' })
+    await later(wd, 100)
+    return wd
+  }
+  const tail = (argv: string[]) => argv.slice(argv.indexOf('memory'))
+  test('the first launch has no --run, and nothing else when it answers', async ($, on) => {
+    const wd = await press($, on, { launchers: [started] })
+    expect(wd.spawned.length).toBe(1)
+    expect(tail(wd.spawned[0]!)).toEqual(['memory', 'review', '--project', 'acme', '--start', '--json'])
+  })
+  test('E_NOT_FOUND with live_run is retried once with --run <the watched run>', async ($, on) => {
+    const wd = await press($, on, { launchers: [notFound('r-7f3a'), started] })
+    expect(wd.spawned.length).toBe(2)
+    expect(tail(wd.spawned[0]!)).toEqual(['memory', 'review', '--project', 'acme', '--start', '--json'])
+    expect(tail(wd.spawned[1]!)).toEqual(['memory', 'review', '--project', 'acme', '--start', '--run', RUN, '--json'])
+    expect(wd.toasts.at(-1)).toContain('started: pid 4242')
+  })
+  test('the retry is made once: a second E_NOT_FOUND ends it with the refusal', async ($, on) => {
+    const wd = await press($, on, { launchers: [notFound('r-7f3a')] })
+    expect(wd.spawned.length).toBe(2)
+    expect(wd.toasts.at(-1)).toContain('E_NOT_FOUND')
+  })
+  test('E_NOT_FOUND without a live_run, and any other error, is not retried', async ($, on) => {
+    const a = await press($, on, { launchers: [notFound(null)] })
+    expect(a.spawned.length).toBe(1)
+    expect(a.toasts.at(-1)).toContain('the review was not started')
+  })
+  test('E_NOT_FOUND naming another live run is not retried: the refusal is shown as it is', async ($, on) => {
+    const wd = await press($, on, { launchers: [notFound('r-another')] })
+    expect(wd.spawned.length).toBe(1)
+    expect(wd.toasts.at(-1)).toContain('E_NOT_FOUND')
+  })
+  test('a rejected or timed-out first launch is not retried and says the outcome is unknown', async ($, on) => {
+    const wd = await press($, on, { launcherReject: 'timed out' })
+    expect(wd.spawned.length).toBe(1)
+    expect(wd.toasts.at(-1)).toContain('unknown')
+    expect(wd.toasts.at(-1)).toContain('timed out')
+  })
+  test('a live run whose close waits says so, with the CLI note', async ($, on) => {
+    const waits = { exitCode: 0, stdout: JSON.stringify({ started: true, project: 'acme', pid: 7, job: 'j', run_live: true, close_waits: true, closing_note: 'the close of this run waits for the review' }), stderr: '' }
+    const wd = await press($, on, { launchers: [waits] })
+    expect(wd.toasts.at(-1)).toContain('started: pid 7')
+    expect(wd.toasts.at(-1)).toContain("this run's close waits for it")
+    expect(wd.toasts.at(-1)).toContain('note: the close of this run waits for the review')
+    expect(wd.toasts.at(-1)).not.toContain('warning')
+  })
+  test('an older CLI closing_warning is still shown, and says nothing of waiting', async ($, on) => {
+    const old = { exitCode: 0, stdout: JSON.stringify({ started: true, project: 'acme', pid: 7, job: 'j', closing_warning: 'this run is live; its close cuts the review off' }), stderr: '' }
+    const wd = await press($, on, { launchers: [old] })
+    expect(wd.toasts.at(-1)).toContain('warning: this run is live; its close cuts the review off')
+    expect(wd.toasts.at(-1)).not.toContain('close waits')
+  })
+  test('a warning the launcher returns is in the toast', async ($, on) => {
+    const warned = { exitCode: 0, stdout: JSON.stringify({ started: true, project: 'acme', pid: 7, job: 'j', closing_warning: 'this run is live; its close cuts the review off' }), stderr: '' }
+    const wd = await press($, on, { launchers: [warned] })
+    expect(wd.toasts.at(-1)).toContain('warning: this run is live; its close cuts the review off')
+  })
+})
+
 describe('notes held for the archive reviewer', () => {
   test('the count line names the count, the oldest wait in runs and the projects, and a clean store shows none', async ($, on) => {
     const wd = await boot($, on, { notices: notices(held(3)) })
     await openPane($, wd)
     const { text } = await pane($)
-    expect(text).toContain('3 notes held for review · oldest 2 runs · acme')
+    expect(text).toContain('NOTES  3 held') // the heading carries the count
+    expect(text).toContain('oldest 2 runs · acme') // the detail line does not repeat it
     expect(text).toContain('review the held notes')
+  })
+
+  test('the plain line says how long the oldest held note has waited', async ($, on) => {
+    const wd = await boot($, on, { notices: notices({ ...held(3), oldest_at: T0 - 2 * 3600000 + 5 * 60000 }) })
+    await openPane($, wd)
+    expect((await pane($)).text).toMatch(/oldest 2 runs · acme · oldest waited [0-9]h[0-9][0-9]m/) // 2h05m at the first render, the clock moves a little while it boots
+  })
+
+  test('a run that tripped the circuit breaker is flagged on the held line, briefly', async ($, on) => {
+    const wd = await boot($, on, { notices: notices({ ...held(7, { acme: 7 }), oldest_at: T0 - 30000 }, { kind: 'run_disputed', ts: T0, run_id: RUN, disputed_run: 'r-breaker-9', project: 'acme', disputed: 7, limit: 5, command: 'belay memory review' }) })
+    await openPane($, wd)
+    expect((await pane($)).text).toContain(' · run r-breake disputed 7: review')
+  })
+
+  test('the by-ground line says it too', async ($, on) => {
+    const wd = await boot($, on, { notices: notices({ ...{ ...held(4), by_ground: { reported: 3, same_claim: 1 } }, oldest_at: T0 - 90000 }) })
+    await openPane($, wd)
+    expect((await pane($)).text).toMatch(/NOTES  4 held[\s\S]*3 reported wrong, 1 duplicate · oldest waited [0-9]m/)
+  })
+
+  test('queued notes (reports past the breaker, hiding nothing) are named apart from the held ones, in the heading and the detail', async ($, on) => {
+    const wd = await boot($, on, { notices: notices({ ...{ ...held(4), queued: 1, by_ground: { reported: 2, same_claim: 1 } }, oldest_at: T0 - 90000 }) })
+    await openPane($, wd)
+    expect((await pane($)).text).toMatch(/NOTES  3 held, 1 queued[\s\S]*2 reported wrong, 1 duplicate; 1 queued past the breaker · oldest waited [0-9]m/)
+  })
+
+  test('only queued notes: the heading and the detail say queued, not held', async ($, on) => {
+    const wd = await boot($, on, { notices: notices({ ...held(2), queued: 2, oldest_at: T0 - 90000 }) })
+    await openPane($, wd)
+    expect((await pane($)).text).toMatch(/NOTES  0 held, 2 queued[\s\S]*2 queued past the breaker · oldest 2 runs/)
+  })
+
+  test('the unsupported line says it too', async ($, on) => {
+    const wd = await boot($, on, { notices: notices({ ...held(3, { acme: 3 }, 3), oldest_at: T0 - 30000 }) })
+    await openPane($, wd)
+    expect((await pane($)).text).toMatch(/3 unsupported · oldest 2 runs · acme · oldest waited ([0-9]+s|[0-9]m)/)
   })
 
   test('unsupported notes are counted apart from the holds that carry a warning, and the same button reviews both', async ($, on) => {
     const wd = await boot($, on, { notices: notices(held(8, { acme: 8 }, 3)) })
     await openPane($, wd)
     const { text } = await pane($)
-    expect(text).toContain('5 held as wrong or duplicate · 3 unsupported awaiting review · oldest 2 runs · acme')
+    expect(text).toContain('5 wrong or duplicate · 3 unsupported · oldest 2 runs · acme')
     expect(text).toContain('review the held notes')
   })
 
@@ -30,7 +134,7 @@ describe('notes held for the archive reviewer', () => {
     const wd = await boot($, on, { notices: notices(held(3, { acme: 3 }, 3)) })
     await openPane($, wd)
     const { text } = await pane($)
-    expect(text).toContain('3 unsupported awaiting review · oldest 2 runs')
+    expect(text).toContain('3 unsupported · oldest 2 runs')
     expect(text).not.toContain('held as wrong')
   })
 
@@ -77,7 +181,7 @@ describe('notes held for the archive reviewer', () => {
     await openPane($, wd)
     const { text } = await pane($)
     expect(text).toContain('archive review of acme running · pid 77')
-    expect(text).toContain('3 notes held for review')
+    expect(text).toContain('NOTES  3 held')
     expect(text).not.toContain('review the held notes')
   })
 
@@ -85,7 +189,8 @@ describe('notes held for the archive reviewer', () => {
     const wd = await boot($, on, { notices: notices(held(2), running(false)) })
     await openPane($, wd)
     const a = await pane($)
-    expect(a.text).toContain('INTERRUPTED')
+    expect(a.text).toContain('cut off') // finished, dim, with its reason: not a red alert
+    expect(colours(await a.ui.drawn())).not.toContain('error')
     expect(a.text).toContain('review the held notes')
   })
 
@@ -99,7 +204,8 @@ describe('notes held for the archive reviewer', () => {
     const wd = await boot($, on, { notices: notices(ended(true, 'ran as archreview-r-1: {"applied":3}')) })
     await openPane($, wd)
     const { text } = await pane($)
-    expect(text).toContain('archive review of acme ended ok · ran as archreview-r-1')
+    expect(text).toContain('archive review of acme done · 3 applied · job archreview-r-1')
+    expect(text).not.toContain('{"applied"')
     expect(text).not.toContain('held for review')
     expect(text).not.toContain('review the held notes')
   })
@@ -158,7 +264,8 @@ describe('the held count is broken down by ground', () => {
   test('the line names the grounds and how many wait for the operator', async ($, on) => {
     const wd = await boot($, on, { notices: notices({ ...held(3), by_ground: { reported: 2, same_claim: 1 }, awaiting_operator: 1 }) })
     const text = (await pane($)).text
-    expect(text).toContain('3 held: 2 reported wrong, 1 duplicate; 1 awaits you')
+    expect(text).toContain('NOTES  3 held · 1 awaits you') // the heading
+    expect(text).toContain('2 reported wrong, 1 duplicate') // the detail line
     void wd
   })
 })

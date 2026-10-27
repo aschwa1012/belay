@@ -13,9 +13,11 @@ const rows = require('./rows.cjs');
 const { pidAlive } = require('./lock.cjs');
 const { WORKER_STATES, SUBSTRATES } = require('./schema.cjs');
 const { resolveParks, parseRunRow, clearedPause, pauseFields } = require('./pause-parks.cjs');
-const { runCommand } = require('./evaluate.cjs');
+const { closeEpochWorkers, fillMissingHeads } = require('./run-close-rows.cjs'); // ADR 0029: run.end's close of its workers' rows
+const { appendDead } = require('./lease-holder-dead.cjs'); // ADR 0026 amendment 1 (proposed)
 
 const { EFFORT_LEVELS } = require('./effort-levels.cjs');
+const { isPathId, pathIdMessage } = require('./path-id.cjs');
 const MN = require('./memory-notice.cjs'); // pure too
 const { parseMemoryBlock, EVAL_ONLY } = require('./memory-levers.cjs'); // pure: no requires, so the read path stays light
 
@@ -56,6 +58,10 @@ async function attach(E, caller, args) {
   if (fixCapGiven && args.max_fix_rounds !== null && !(Number.isSafeInteger(args.max_fix_rounds) && args.max_fix_rounds >= 0)) {
     throw err('E_ARGS', 'run.attach max_fix_rounds must be null or a non-negative integer', { max_fix_rounds: args.max_fix_rounds });
   }
+  const parallelGiven = args.max_parallel_evaluations !== undefined;
+  if (parallelGiven && args.max_parallel_evaluations !== null && !(Number.isSafeInteger(args.max_parallel_evaluations) && args.max_parallel_evaluations > 0)) {
+    throw err('E_ARGS', 'run.attach max_parallel_evaluations must be null or a positive integer', { max_parallel_evaluations: args.max_parallel_evaluations });
+  }
   // ADR 0041 decision 1: the memory levers (the parsed block as JSON text) and the project name, written once by
   // the launching attach and carried forward like max_fix_rounds. The core is the boundary: bad values are refused.
   const leversGiven = args.memory_levers !== undefined;
@@ -89,11 +95,33 @@ async function attach(E, caller, args) {
   const runId = caller.run_id;
   const t = Date.now();
   const prev = rows.current(E.store, 'run', runId);
+  // ADR 0041: the project is named by the spec and never derived, and it is named once. The run row's project column (what a caller's reach and the
+  // `project` alias resolve through) and the resolved levers' project must be the same name, else the orchestrator would write to one project while its
+  // levers describe another. Refused here, with nothing written.
+  if (resolvedLevers !== null) {
+    const effective = projectGiven ? args.project : (prev ? prev.project : null);
+    const leverProject = JSON.parse(resolvedLevers).project;
+    if (effective && effective !== leverProject) { // a project column that is unset stays unset: nothing can then resolve to a project
+      throw err('E_ARGS', `run.attach: the run's project is ${effective === null || effective === undefined ? 'not set' : JSON.stringify(effective)} and its memory levers name ${leverProject === null || leverProject === undefined ? 'no project' : JSON.stringify(leverProject)}; the spec names the project once (memory.project) and both must agree`, { project: effective || null, memory_project: leverProject || null });
+    }
+  }
   // ADR 0029 amendment 4 (proposed): an ended run stays ended. Only the run process (role operator, the launching attach of
   // a re-run) opens a new epoch over an ended one; the orchestrator's adapter, whose first core call can land after the
   // run closed, is refused. A refusal writes nothing, so the late caller reopens nothing and the run reads as ended.
   if (prev && prev.ended_at != null && caller.role === 'orchestrator') {
     throw err('E_ARGS', `run ${runId} has already ended; an orchestrator adapter cannot reopen it`, { run_id: runId, ended_at: prev.ended_at, epoch: prev.epoch });
+  }
+  // An operator attach (the run process) over an unended run whose recorded adapter is VERIFIED to be still that process (the pid answers and
+  // the recorded creation time matches) is refused with nothing written. Anything less (no creation time, an unreadable snapshot) lets the attach
+  // through with a warning, as before: a refusal that is wrong is worse than the takeover it guards against. The run's own orchestrator, whose MCP
+  // adapter may have attached first, is never the other life (same orchestrator_pid).
+  const warnings = [];
+  if (prev && prev.ended_at == null && caller.role === 'operator' && Number(prev.adapter_pid) !== adapterPid
+    && !(args.orchestrator_pid != null && Number(prev.orchestrator_pid) === Number(args.orchestrator_pid))) {
+    const RL = require('./run-live.cjs');
+    const a = await RL.adapterState(prev);
+    if (a.state === 'live') throw err('E_RUN_LIVE', RL.liveMessage(runId, prev), { run_id: runId, adapter_pid: prev.adapter_pid, epoch: prev.epoch, adapter_state: a.state, detail: a.detail });
+    if (a.state === 'unverifiable') warnings.push(RL.unverifiedWarning(runId, prev, a));
   }
   const epoch = prev ? Number(prev.epoch || 0) + 1 : 1;
   const by = E.writtenBy(caller);
@@ -115,7 +143,7 @@ async function attach(E, caller, args) {
       // 6e-2, should-fix methods-run.cjs:45: a row the core itself appends over a paused row must not
       // inherit its paused_at/paused_by — this row is not itself paused, and api.md §2 promises both
       // null on every row that is not (writeWorker's own rule, unreachable here since this bypasses it).
-      rows.append(E.store, 'worker', { ...w, state: 'dead', exited_at: w.exited_at == null ? t : w.exited_at, paused_at: null, paused_by: null }, by, t);
+      appendDead(E, { ...w, state: 'dead', exited_at: w.exited_at == null ? t : w.exited_at, paused_at: null, paused_by: null }, by, t);
       marked.push(w.id);
     }
   }
@@ -152,6 +180,7 @@ async function attach(E, caller, args) {
     orch_effort_requested: effortGiven ? args.orch_effort_requested : (carryPause ? prev.orch_effort_requested : null),
     // ADR 0031 decision 6: the fix-round cap `belay run` launched with, same carry rule as the effort.
     max_fix_rounds: fixCapGiven ? args.max_fix_rounds : (carryPause ? prev.max_fix_rounds : null),
+    max_parallel_evaluations: parallelGiven ? args.max_parallel_evaluations : (carryPause ? prev.max_parallel_evaluations : null), // same carry rule
     memory_levers: leversGiven ? (args.memory_levers === null ? null : resolvedLevers) : (carryPause ? prev.memory_levers : null), // same carry rule
     project: projectGiven ? args.project : (carryPause ? prev.project : null),
     memory_notice: noticeGiven ? args.memory_notice : (carryPause ? prev.memory_notice : null), // same carry rule
@@ -163,7 +192,7 @@ async function attach(E, caller, args) {
   E.noteWrite();
   // ADR 0046 decision 1: a re-attached run's unfinished tasks hold their files again; name any that now clash with another live run's.
   const overlaps = prev ? require('./task-holds.cjs').resumeOverlaps(E.store, runId) : [];
-  return { run, epoch, reattached: !!prev, previous: parseRunRow(prev), workers_marked_dead: marked, overlaps }; // item c
+  return { run, epoch, reattached: !!prev, previous: parseRunRow(prev), workers_marked_dead: marked, overlaps, ...(warnings.length ? { warnings } : {}) }; // item c
 }
 
 // build step 6f, ADR 0023 amendment 3 decision 4.1, extended by build step 6i-2 design item 1 (amendment
@@ -218,72 +247,6 @@ function usageColumns(usage) {
   return { out, invalid };
 }
 
-// ADR 0029 decision 1: HEAD of a worker's worktree, bounded, argv with no shell. Never throws.
-const HEAD_BOUND_MS = 5000;
-async function headOf(worktree) {
-  if (!worktree) return { sha: null, error: 'the worker row names no worktree' };
-  if (!fs.existsSync(String(worktree))) return { sha: null, error: `worktree ${worktree} does not exist` };
-  const r = await runCommand(['git', 'rev-parse', 'HEAD'], String(worktree), HEAD_BOUND_MS);
-  if (!r.executable) return { sha: null, error: `git could not be run: ${r.spawn_error}` };
-  if (r.timed_out) return { sha: null, error: `git rev-parse HEAD timed out after ${HEAD_BOUND_MS} ms` };
-  const sha = String(r.stdout || '').trim();
-  if (r.exit_code !== 0 || !/^[0-9a-f]{40,64}$/.test(sha)) {
-    return { sha: null, error: `git rev-parse HEAD in ${worktree} exited ${r.exit_code}: ${String(r.stderr || '').trim().slice(0, 200)}` };
-  }
-  return { sha, error: null };
-}
-
-// ADR 0029 decision 1 and amendment 1 item 1: the ending epoch's own workers, closed by the rule run.attach
-// applies to the previous one. A claim is dead only by a pid check (invariant 4), except a Codex `idle`
-// row: its process exits between turns by design (api.md §2), so its pid proves nothing and the row is
-// closed with the run whatever the pid says. The row is re-read after the git call and nothing is written
-// over one that moved on, or (for a pid-checked row) whose pid came back, in the meantime.
-const CODEX_IDLE_BY = 'run.end: a Codex worker between turns has no process by design; its run ended (ADR 0029)';
-const isCodexIdle = (w) => w.substrate === 'codex' && w.state === 'idle';
-async function closeEpochWorkers(E, runId, by) {
-  const marked = [];
-  const t = Date.now();
-  for (const w of rows.currentAll(E.store, 'worker')) {
-    if (w.run_id !== runId || !LIFE_CLAIMING_STATES.has(w.state)) continue;
-    const codexIdle = isCodexIdle(w);
-    if (!codexIdle && pidAlive(w.pid)) continue;
-    const head = await headOf(w.worktree);
-    const cur = rows.current(E.store, 'worker', w.id);
-    if (!cur || cur.seq !== w.seq || (!codexIdle && pidAlive(cur.pid))) continue;
-    // The head the row carries: git's answer, else the head the row already had (never overwritten with null).
-    const headSha = head.sha == null ? (cur.head_sha == null ? null : cur.head_sha) : head.sha;
-    rows.append(E.store, 'worker', {
-      ...cur, state: 'dead', exited_at: cur.exited_at == null ? t : cur.exited_at,
-      death_established_by: codexIdle ? CODEX_IDLE_BY
-        : `run.end: pid ${cur.pid} not alive when the run ended; no adapter wrote its exit (ADR 0029)`,
-      head_sha: headSha, head_error: headSha != null ? null : (cur.head_error == null ? null : cur.head_error), paused_at: null, paused_by: null,
-    }, by, t);
-    marked.push(head.error ? { worker_id: w.id, from_state: w.state, head_sha: headSha, head_error: head.error }
-      : { worker_id: w.id, from_state: w.state, head_sha: headSha });
-  }
-  return marked;
-}
-
-// ADR 0029 amendment 2: a terminal (stopped or dead) row of the run that has a worktree and no head gets one
-// appended row restating it with the worktree's head. Nothing but head_sha changes. Same seq re-read guard as
-// closeEpochWorkers; git failing appends nothing and the entry names why. Rows closeEpochWorkers just wrote
-// already carry a head (or a git error it reported) and are skipped, so nothing is double-written.
-async function fillMissingHeads(E, runId, by, skip) {
-  const filled = [];
-  const t = Date.now();
-  for (const w of rows.currentAll(E.store, 'worker')) {
-    if (w.run_id !== runId || (w.state !== 'stopped' && w.state !== 'dead')) continue;
-    if (w.head_sha != null || !w.worktree || skip.has(w.id)) continue;
-    const head = await headOf(w.worktree);
-    if (head.sha == null) { filled.push({ worker_id: w.id, state: w.state, head_sha: null, head_error: head.error }); continue; }
-    const cur = rows.current(E.store, 'worker', w.id);
-    if (!cur || cur.seq !== w.seq) continue;
-    rows.append(E.store, 'worker', { ...cur, head_sha: head.sha, head_error: null }, by, t);
-    filled.push({ worker_id: w.id, state: w.state, head_sha: head.sha });
-  }
-  return filled;
-}
-
 async function end(E, caller, args) {
   if (!args.exit_reason) throw err('E_ARGS', 'run.end needs an exit_reason naming why the run ended');
   const { out: usage, invalid } = usageColumns(args.usage);
@@ -299,7 +262,7 @@ async function end(E, caller, args) {
   // (run.attach's own `carryPause` above), and `belay pause` never answers `already: true` over nothing.
   const row = appendRun(E, { ...prev, ended_at: t, exit_reason: String(args.exit_reason), ...usage, ...clearedPause() }, E.writtenBy(caller), t); // item e
   E.noteWrite();
-  const workersMarkedDead = await closeEpochWorkers(E, caller.run_id, E.writtenBy(caller));
+  const workersMarkedDead = await closeEpochWorkers(E, caller.run_id, E.writtenBy(caller), LIFE_CLAIMING_STATES);
   const headsFilled = await fillMissingHeads(E, caller.run_id, E.writtenBy(caller), new Set(workersMarkedDead.map(m => m.worker_id)));
   if (workersMarkedDead.length || headsFilled.some(h => h.head_sha != null)) E.noteWrite();
   const out = { ...row, workers_marked_dead: workersMarkedDead, heads_filled: headsFilled };
@@ -370,11 +333,14 @@ async function writeWorker(E, caller, args) {
     if (run && run.ended_at != null) throw err('E_ARGS', `run ${caller.run_id} has already ended; worker ${args.id} was not written`, { run_id: caller.run_id, ended_at: run.ended_at, worker_id: args.id });
   }
   const prev = rows.current(E.store, 'worker', args.id);
+  // The id is a directory under the data dir. A row that already exists is restated whatever its id (a store may hold an older one); a new row needs a valid id.
+  if (!prev && !isPathId(args.id)) throw err('E_ARGS', `worker.write: ${pathIdMessage('worker id', args.id)}`, { worker_id: String(args.id).slice(0, 80), field: 'worker_id' });
   // W2-3 amendment 2 (B2): a restating write names the row it restates. This method has no await between this read
   // and the append below, so the check and the append are one step; a mismatch appends nothing and is not an error.
   if (args.expect_seq != null && (!prev || prev.seq !== args.expect_seq)) {
     return { skipped: true, reason: 'superseded', current_seq: prev ? prev.seq : null };
   }
+  if (caller.role === 'orchestrator') require('./worker-run-guard.cjs').refuseOtherRun(E, caller, args, prev); // its own run's rows only (audit 0.3.1 P6)
   const merged = { ...(prev || {}), ...args };
   merged.run_id = merged.run_id || caller.run_id;
   if (!merged.state || !WORKER_STATES.includes(merged.state)) {
@@ -402,7 +368,16 @@ async function writeWorker(E, caller, args) {
     throw err('E_WORKER_NOT_LIVE', `worker ${args.id} cannot be written as ${merged.state} because pid ${merged.pid} is not alive`, { worker_id: args.id, pid: merged.pid == null ? null : merged.pid });
   }
   const t = Date.now();
-  const row = rows.append(E.store, 'worker', merged, E.writtenBy(caller), t);
+  // ADR 0026 amendment 1 (proposed): a first dead row releases the worker's leases unless a restart keeps them (keep_leases).
+  const firstDead = merged.state === 'dead' && !(prev && prev.state === 'dead');
+  merged.leases_released = firstDead || merged.state !== 'dead' ? null : prev.leases_released; // derived, never the caller's
+  // release_leases (amendment 2): a relaunch that kept a death's leases and then failed restates that dead row to release them. A dead
+  // worker that holds nothing has nothing to release: nothing is written, and the answer says so (invariant 5).
+  if (args.release_leases === true && prev && prev.state === 'dead' && merged.state === 'dead' && !require('./lease-holder-dead.cjs').holdsAny(E.store, args.id)) {
+    return { skipped: true, reason: 'nothing_to_release', current_seq: prev.seq };
+  }
+  const release = merged.state === 'dead' && (args.release_leases === true || (firstDead && args.keep_leases !== true));
+  const row = release ? appendDead(E, merged, E.writtenBy(caller), t).row : rows.append(E.store, 'worker', merged, E.writtenBy(caller), t);
   E.noteWrite();
   return row;
 }
@@ -430,7 +405,8 @@ async function getWorker(E, caller, args) {
   const streamPath = streamPathOf(E.dataDir, args.worker_id);
   let streamBytes = null;
   try { streamBytes = fs.statSync(streamPath).size; } catch { streamBytes = null; }
-  return { ...decorate(w), stream_path: streamPath, stream_bytes: streamBytes };
+  const task = rows.workerTasks(E.store, w.id).get(w.id);
+  return { ...decorate(w), ...(task ? { task_id: task } : {}), stream_path: streamPath, stream_bytes: streamBytes };
 }
 
 async function listWorkers(E, caller, args) {
@@ -438,7 +414,8 @@ async function listWorkers(E, caller, args) {
   // build step 6b: a forgotten row is hidden from the default listing (it superseded a worker the
   // operator asked to forget), and shown only when the caller names 'forgotten' explicitly.
   const all = rows.currentAll(E.store, 'worker').filter(w => (states ? states.has(w.state) : w.state !== 'forgotten'));
-  return { workers: all.map(decorate) };
+  const tasks = rows.workerTasks(E.store); // the worker row's task_id is spawn-only: the current task is derived from the leases
+  return { workers: all.map(w => ({ ...decorate(w), ...(tasks.has(w.id) ? { task_id: tasks.get(w.id) } : {}) })) };
 }
 
 // build step 6b, design item 2: supersedes a dead worker's rows as 'forgotten', never a DELETE (api.md

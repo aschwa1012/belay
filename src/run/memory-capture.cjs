@@ -17,7 +17,7 @@ const MAX_TURN_EVENTS = 4000;
 const batches = new WeakMap(); // turn_end event -> { events, dropped }
 
 const wants = (lv) => !!(lv && lv.capture && (lv.observations || jobLevers(lv)));
-const jobLevers = (lv) => !!(lv && ((lv.summaries && lv.summaries !== 'off') || lv.project_writes || lv.cost_ledger || lv.wrapup));
+const jobLevers = (lv) => !!(lv && ((lv.summaries && lv.summaries !== 'off') || lv.project_writes || lv.cost_ledger || lv.wrapup || lv.notes)); // notes: a review task's verdicts are applied at its turn end, and the reflection turn runs, with no other job lever on
 
 const closed = (ctx) => !!(ctx.shutdownFlags && ctx.shutdownFlags.closed);
 const ownerGone = (ctx) => !!(ctx.shutdownFlags && ctx.shutdownFlags.ownerGone);

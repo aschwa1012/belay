@@ -46,11 +46,12 @@ test('a launch rotates a worker adapter.log that is at the threshold, before it 
   const m = mgr(sb, createFakeCore());
   try {
     const dir = path.join(sb.data, 'workers', 'wr');
-    fs.mkdirSync(dir, { recursive: true });
+    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hello', worker_id: 'wr' }); // a caller-named id needs a fresh directory, so the log is planted after the first life and the second launch is a restart
+    await m.stop({ worker_id: 'wr', mode: 'kill', timeout_ms: 8000 });
     const old = 'x'.repeat(ROTATE_AT);
     fs.writeFileSync(path.join(dir, 'adapter.log'), old);
     fs.writeFileSync(path.join(dir, 'adapter.log.1'), 'an older rotation');
-    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hello', worker_id: 'wr' });
+    await m.restart({ worker_id: 'wr' });
     assert.equal(fs.readFileSync(path.join(dir, 'adapter.log.1'), 'utf8'), old, '.1 holds the large file, replacing the older .1');
     const live = path.join(dir, 'adapter.log');
     assert.ok(!fs.existsSync(live) || fs.statSync(live).size < 64 * 1024, 'the live file starts fresh');

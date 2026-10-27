@@ -218,8 +218,10 @@ test('the built CLI: --start launches a real detached review that outlives the l
     const env = { ...process.env, BELAY_TEST_MODE: '1', BELAY_CLAUDE_EXE: FAKE, BELAY_TEST_SKIP_EMBEDDER_WARMUP: '1' };
     const r = spawnSync(process.execPath, [CLI, 'memory', 'review', '--project', 'lc', '--run', RUN, '--worktree', T.repo, '--start', '--data', T.dir, '--json'], { cwd: ROOT, windowsHide: true, encoding: 'utf8', env, timeout: 120000 });
     const j = JSON.parse(r.stdout || r.stderr);
-    assert.strictEqual(r.status, 0, r.stderr + r.stdout);
-    assert.ok(j.started === true || j.ended, JSON.stringify(j));
+    // The fake executable is fast enough that the review can end before the launcher looks: then the launch
+    // reports it ended at once, with the review's own failure, and exits 1.
+    if (j.ended) assert.deepStrictEqual([r.status, j.ended.ok, j.ended.code], [1, false, 'E_ARGS'], r.stderr + r.stdout);
+    else assert.deepStrictEqual([r.status, j.started], [0, true], r.stderr + r.stdout);
     assert.notStrictEqual(j.pid, process.pid);
     // The launcher is gone; the detached CLI releases the claim when its review ends. Wait for that real event.
     const t0 = Date.now();
@@ -274,6 +276,8 @@ test('notices and status count unsupported notes apart from the holds that carry
   const N = require('../../src/cli/cmd-notices.cjs');
   const ev = N.heldEvents({ total: 8, unsupported: 3, by_project: { acme: 8 }, oldest_age_runs: 2, newest_at: 1 }, 'r-1');
   assert.deepStrictEqual([ev[0].count, ev[0].unsupported], [8, 3]);
+  assert.strictEqual(ev[0].oldest_at, null); // no time given: none claimed
+  assert.strictEqual(N.heldEvents({ total: 1, oldest_at: 1234, newest_at: 2000 }, 'r-1')[0].oldest_at, 1234); // the panel's wait comes from this
   assert.match(N.renderText(ev).split(/\s+/).join(' '), /5 held as wrong or duplicate · 3 unsupported awaiting review, oldest 2 runs/);
   assert.match(require('../../src/cli/panel-common.cjs').heldText({ total: 3, unsupported: 3, by_project: { acme: 3 }, oldest_age_runs: 1 }), /^3 unsupported awaiting review, oldest 1 run:/);
 });

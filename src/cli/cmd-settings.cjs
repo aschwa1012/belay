@@ -48,8 +48,9 @@ const USAGE = [
   '          would produce, and either all are written (in one rename) or none',
   '',
   `keys: ${K.MOD_NAMES.join(', ')}`,
-  '      memory.<lever>   a memory lever, the default every run inherits (the run spec overrides it key by key)',
+  '      memory.<lever>   a notes lever (memory.*), the default every run inherits (the run spec overrides it key by key)',
   '      agents.<type>.model | .effort | .codex_model   a default for coder, tester, reviewer, researcher or orchestrator;',
+  '      agents.<type>.tools   a worker type\'s tools, comma-separated; a spawn may narrow them, never widen them;',
   '          null returns a key to the built-in roster default; it cannot select the substrate\'s own default',
   '',
 ].join('\n');
@@ -133,6 +134,7 @@ function writeSetting(found, key, rawValue, ctx) {
   const parsed = K.parseValue(key, rawValue);
   if (parsed.error) return usageError(parsed.error);
   const { value } = parsed;
+  const mappedFrom = parsed.mapped_from;
   if (found.found && found.parse_error) return fail(`refusing to write: ${found.parse_error}`, key);
 
   const old = row(found, key);
@@ -178,8 +180,10 @@ function writeSetting(found, key, rawValue, ctx) {
     new: { value: back.value, source: back.source },
     path: file,
     created,
+    ...(mappedFrom !== undefined ? { mapped_from: mappedFrom } : {}),
   };
   const text = `${key}: ${JSON.stringify(old.value)} (${old.source}) -> ${JSON.stringify(value)}\n`
+    + (mappedFrom !== undefined ? `${JSON.stringify(mappedFrom)} is the 0.2.0 name of ${JSON.stringify(value)}; wrote ${JSON.stringify(value)}\n` : '')
     + `${created ? 'created' : 'updated'} ${file}\n`;
   return { code: 0, text, json: receipt };
 }

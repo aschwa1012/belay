@@ -9,6 +9,7 @@ const fs = require('node:fs');
 const { spawn, spawnSync } = require('node:child_process');
 
 const { openCore } = require('../../src/core/index.cjs');
+const rows = require('../../src/core/rows.cjs');
 const { ROOT, CLI, sandbox, cleanup, listRecursive } = require('./stop-helpers.cjs');
 
 const PASS = { commands: [{ argv: [process.execPath, '-e', 'process.exit(0)'], timeout_ms: 20000 }] };
@@ -37,18 +38,22 @@ async function withOwner(dataDir, runId, role, fn, extra = {}) {
   try { return await fn(core); } finally { await core.shutdownOwner(); await core.close(); }
 }
 
+// worker.write refuses an id outside the id grammar, but a store made before it can still hold one (a newline, 80 characters). The renderer is tested against such rows,
+// so the first row of each is planted through the store layer, as a legacy store would hold it; later writes to it restate the existing row and go through the core.
+function legacyWorker(core, values) { rows.append(core.owner.store, 'worker', values, 'test'); }
+
 // Run `runId`: an orchestrator that attached; w1 with a task it handed back `holds` and whose
 // acceptance check passed; w2 with a task whose acceptance check failed. `ended` closes the run with usage.
 // `bare` leaves every usage column of w2 and the run unrecorded.
-async function plant(dataDir, runId, { ended = true, bare = false, liveWorker = false, adapterPid = process.pid, forget = false, evil = false, wide = false, c1 = false, spoof = false } = {}) {
+async function plant(dataDir, runId, { ended = true, bare = false, liveWorker = false, adapterPid = process.pid, forget = false, evil = false, wide = false, c1 = false, spoof = false, w1 = 'w1', w2 = 'w2' } = {}) {
   await withOwner(dataDir, runId, 'orchestrator', async (orch) => {
     await orch.run.attach({ adapter_pid: adapterPid });
     const t0 = Date.now() - 60000;
-    await orch.worker.write({ id: 'w1', substrate: 'claude-code', pid: process.pid, state: 'running', started_at: t0, model: 'sonnet-5.5' });
+    await orch.worker.write({ id: w1, substrate: 'claude-code', pid: process.pid, state: 'running', started_at: t0, model: 'sonnet-5.5' });
     const eight = { commands: [...Array(7).fill(PASS.commands[0]), FAIL.commands[0]] };
     const t1 = await orch.task.create({ spec: 'first task', acceptance: wide ? eight : PASS });
-    const a = await orch.task.assign({ task_id: t1.id, worker_id: 'w1' });
-    const wc = await openCore({ dataDir, caller: { role: 'worker', worker_id: 'w1', run_id: runId, pid: process.pid } });
+    const a = await orch.task.assign({ task_id: t1.id, worker_id: w1 });
+    const wc = await openCore({ dataDir, caller: { role: 'worker', worker_id: w1, run_id: runId, pid: process.pid } });
     const fake = 'holds\nworker FORGED  claude-code  state stopped  cost $0\ntotals over 1 agents  cost $0';
     try {
       const result = evil ? { verdict: fake, summary: `summary\r\n${fake}` }
@@ -58,29 +63,29 @@ async function plant(dataDir, runId, { ended = true, bare = false, liveWorker = 
     } finally { await wc.close(); }
     await orch.task.evaluate({ task_id: t1.id, worktree: dataDir.replace(/\/[^/]*$/, '') });
     await orch.worker.write({
-      id: 'w1', state: 'stopped', exited_at: t0 + 42000, exit_code: 0, task_id: t1.id, turns: 5,
+      id: w1, state: 'stopped', exited_at: t0 + 42000, exit_code: 0, task_id: t1.id, turns: 5,
       input_tokens: 1000, output_tokens: 200, cache_read_tokens: 5000, cache_creation_tokens: 300, cost_usd: 0.25, tool_calls: 17,
       base_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40),
     });
     const t2 = await orch.task.create({ spec: 'second task', acceptance: FAIL });
     await orch.task.evaluate({ task_id: t2.id, worktree: dataDir.replace(/\/[^/]*$/, '') });
     if (liveWorker) {
-      await orch.worker.write({ id: 'w2', substrate: 'codex', pid: process.pid, state: 'running', started_at: t0, task_id: t2.id });
+      await orch.worker.write({ id: w2, substrate: 'codex', pid: process.pid, state: 'running', started_at: t0, task_id: t2.id });
     } else {
       await orch.worker.write({
-        id: 'w2', substrate: 'codex', pid: process.pid, state: 'running', started_at: t0,
+        id: w2, substrate: 'codex', pid: process.pid, state: 'running', started_at: t0,
       });
       await orch.worker.write({
-        id: 'w2', state: 'dead', exited_at: t0 + 10000, exit_code: 1, task_id: t2.id,
+        id: w2, state: 'dead', exited_at: t0 + 10000, exit_code: 1, task_id: t2.id,
         ...(bare ? {} : { turns: 2, input_tokens: 400, output_tokens: 50, cache_read_tokens: 0, cache_creation_tokens: 0, cost_usd: 0.05, tool_calls: 3 }),
       });
     }
     await orch.task.create({ spec: 'nobody ran this' });
     if (evil) {
-      await orch.worker.write({ id: 'w1', model: `sonnet\n${'worker FORGED  x'}\ntotals over 9 agents` });
+      await orch.worker.write({ id: w1, model: `sonnet\n${'worker FORGED  x'}\ntotals over 9 agents` });
       // A worker whose own id carries newlines hands a result back: the `by` and the id are both store text.
       const eid = 'w3\nworker FORGED  z';
-      await orch.worker.write({ id: eid, substrate: 'claude-code', pid: process.pid, state: 'running', started_at: t0 });
+      legacyWorker(orch, { id: eid, run_id: runId, substrate: 'claude-code', pid: process.pid, state: 'running', started_at: t0 });
       const t3 = await orch.task.create({ spec: 'evil by' });
       const a3 = await orch.task.assign({ task_id: t3.id, worker_id: eid });
       const c3 = await openCore({ dataDir, caller: { role: 'worker', worker_id: eid, run_id: runId, pid: process.pid } });
@@ -88,9 +93,9 @@ async function plant(dataDir, runId, { ended = true, bare = false, liveWorker = 
       await orch.worker.write({ id: eid, state: 'stopped', exited_at: t0 + 5, task_id: t3.id });
     }
     if (wide) {
-      await orch.worker.write({ id: 'w1', model: 'M'.repeat(80) });
+      await orch.worker.write({ id: w1, model: 'M'.repeat(80) });
       const lid = 'L'.repeat(80);
-      await orch.worker.write({ id: lid, substrate: 'claude-code', pid: process.pid, state: 'running', started_at: t0 });
+      legacyWorker(orch, { id: lid, run_id: runId, substrate: 'claude-code', pid: process.pid, state: 'running', started_at: t0 });
       const t4 = await orch.task.create({ spec: 'wide by' });
       const a4 = await orch.task.assign({ task_id: t4.id, worker_id: lid });
       const c4 = await openCore({ dataDir, caller: { role: 'worker', worker_id: lid, run_id: runId, pid: process.pid } });
@@ -99,11 +104,11 @@ async function plant(dataDir, runId, { ended = true, bare = false, liveWorker = 
     }
     if (c1) {
       // 79 characters then an emoji at the 80 cap; C1 controls and a bidi override in a sha.
-      await orch.worker.write({ id: 'w1', model: `${'e'.repeat(79)}\u{1F600}tail`, head_sha: 'x\u0085y\u009b2Jz‮w' });
+      await orch.worker.write({ id: w1, model: `${'e'.repeat(79)}\u{1F600}tail`, head_sha: 'x\u0085y\u009b2Jz‮w' });
     }
     if (forget) {
       const op = await openCore({ dataDir, caller: { role: 'operator', run_id: runId, pid: process.pid } });
-      try { await op.worker.forget({ worker_id: 'w2' }); } finally { await op.close(); }
+      try { await op.worker.forget({ worker_id: w2 }); } finally { await op.close(); }
     }
     if (ended) {
       await orch.run.end({
@@ -213,7 +218,7 @@ test('receipts: a live worker and a live run have wall_ms null and live true', g
 
 test('receipts: with no run id the alive run is chosen, and run_id_source says so', guarded(async (dir, dataDir) => {
   await plant(dataDir, 'run-old-alive', { ended: false });
-  await plant(dataDir, 'run-new-ended', { ended: true });
+  await plant(dataDir, 'run-new-ended', { ended: true, w1: 'w1-new', w2: 'w2-new' });
   const j = JSON.parse(receipts([], dataDir).stdout);
   assert.strictEqual(j.run_id, 'run-old-alive', 'the alive run wins over the newer ended one');
   assert.strictEqual(j.run_id_source, 'run.list');

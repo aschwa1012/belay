@@ -320,12 +320,12 @@ test('an index that dropped its vector lists, or was refused for its work, write
   assert.deepStrictEqual(detail(ev).dropped, ['vector lists']);
   const refused = makeCore({ embed: okEmbed, index: async () => { const e = new Error('over the fixed work cap'); e.code = 'E_INDEX_BOUND'; throw e; } });
   const notice = await MP.memoryPreface(W(), ctxOf(refused.core), PROMPT);
-  assert.match(notice, /^NO MEMORY INDEX WAS INJECTED/, 'the first message says so plainly');
+  assert.match(notice, /^NO NOTE INDEX WAS INJECTED/, 'the first message says so plainly');
   assert.match(notice, /E_INDEX_BOUND: over the fixed work cap/, 'and why');
   assert.match(notice, /memory_search/, 'and what to do');
   assert.match(notice, /not a pause/);
   const semantic = makeCore({ embed: okEmbed, index: async () => { const e = new Error('a query vector could not be compared (E_MODEL: x)'); e.code = 'E_SEMANTIC_REQUIRED'; throw e; } });
-  assert.match(await MP.memoryPreface(W(), ctxOf(semantic.core), PROMPT), /^NO MEMORY INDEX WAS INJECTED.*E_SEMANTIC_REQUIRED/);
+  assert.match(await MP.memoryPreface(W(), ctxOf(semantic.core), PROMPT), /^NO NOTE INDEX WAS INJECTED.*E_SEMANTIC_REQUIRED/);
   const sev = semantic.events.find((e) => e.kind === 'index_bound');
   assert.ok(sev && sev.code === 'E_SEMANTIC_REQUIRED' && detail(sev).refused === true, 'counted by status as well');
   const other = makeCore({ embed: okEmbed, index: async () => { throw new Error('boom'); } });

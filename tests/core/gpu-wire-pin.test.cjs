@@ -44,7 +44,7 @@ test('a run with the default levers pins nothing and stays on nano', async () =>
 });
 
 test('the probe runs for the routing GPU models, the routing is recorded, and each agent type gets its tier from its process-bound identity', async () => {
-  await attach('pin-a', { project: 'pina', profile: 'gpu-rerank-fast', routing: { orchestrator: 'gpu-rerank', reviewer: 'cpu-fast' } });
+  await attach('pin-a', { project: 'pina', profile: 'gpu-rerank-fast', routing: { orchestrator: 'gpu-rerank', reviewer: 'cpu-fast' }, search_log: true }); // the log is off by default; the index test below reads it
   const r = await pin('pin-a');
   assert.strictEqual(r.pinned, true);
   assert.strictEqual(r.probe.ok, true);

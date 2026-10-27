@@ -58,7 +58,7 @@ test('row 1: moving a held note out of project/ is refused; the operator\'s move
   assert.strictEqual(T.row(id).namespace, `archive/${PROJECT}`);
 });
 
-test('row 1 (resolve): a worker\'s or the orchestrator\'s refines of a held note is E_HELD naming the hold, and no row moved; a repeat still works', async () => {
+test('row 1 (resolve): a worker\'s or the orchestrator\'s refines of a held note is E_HELD naming the hold, and no row moved; a repeat is refused as held for review', async () => {
   const target = await heldNote('guard resolve target', { vec: A });
   const pend = (title, vec) => T.note(title, { ns: `pending/${PROJECT}`, vec, state: 'pending', matches: [{ id: target.id, similarity: 0.99, embedding_model: 'm', dim: 3, template: 'v1' }], written_by: 'worker:w1' });
   const p = pend('guard resolve pending refines', A_NEAR);
@@ -71,8 +71,9 @@ test('row 1 (resolve): a worker\'s or the orchestrator\'s refines of a held note
   assert.strictEqual(T.row(p2).supersedes, null);
   assert.strictEqual(await heldCount() >= 1, true, 'the hold is still counted');
   const p3 = T.note('guard resolve pending repeats', { ns: `pending/${PROJECT}`, vec: A_NEAR, state: 'pending', matches: [{ id: target.id, similarity: 0.99, embedding_model: 'm', dim: 3, template: 'v1' }], written_by: 'worker:w9', task_id: 'other-task' });
-  const rp = await T.call(tool(), 'memory.noteResolve', { resolutions: [{ id: p3, resolve: 'repeats', of: target.id }] });
-  assert.strictEqual(rp.resolved[0].resolved, 'repeats', 'a repeat adds a sighting and hides nothing');
+  // Widened 2026-10-25: any hold that withholds the note (here a report_confirmed wrong hold) refuses a repeat, as a reported hold always did.
+  await assert.rejects(T.call(tool(), 'memory.noteResolve', { resolutions: [{ id: p3, resolve: 'repeats', of: target.id }] }), (e) => e.code === 'E_ARGS' && e.detail.reason === 'held_for_review');
+  assert.strictEqual(T.row(p3).namespace, `pending/${PROJECT}`, 'the repeat waits in pending');
 });
 
 test('row 2: restoring B, whose supersedes names a held A, would hide A again: refused for the orchestrator, allowed for the operator', async () => {
@@ -88,13 +89,15 @@ test('row 2: restoring B, whose supersedes names a held A, would hide A again: r
   assert.strictEqual(r.restored, true);
 });
 
-test('row 5: the orchestrator\'s memory_verify refuted (test: receipt) on a held note is E_HELD; an unheld note is refuted as before; the operator may', async () => {
+test('row 5: the orchestrator\'s memory_verify refuted (test: receipt) on a note is a report, never a status (a held note keeps its hold); the operator may refute', async () => {
   const { id, hold } = await heldNote('guard verify');
-  const before = state(id);
-  await rejectsHeld(T.call(tool(), 'memory.setStatus', { id, status: 'refuted', receipt: 'test:npm test passed' }), id, hold, 'status');
-  assert.strictEqual(state(id), before);
+  const before = T.row(id);
+  const out = await T.call(tool(), 'memory.setStatus', { id, status: 'refuted', receipt: 'test:npm test passed' });
+  assert.deepStrictEqual([out.state, out.hold.merged, out.status === 'refuted'], ['held', hold, false], 'the scrubber hold is merged into one reported hold');
+  assert.deepStrictEqual([T.row(id).status, T.row(id).namespace, T.row(id).status_receipt], [before.status, before.namespace, before.status_receipt]);
   const free = T.note('guard verify free');
-  assert.strictEqual((await T.call(tool(), 'memory.setStatus', { id: free, status: 'refuted', receipt: 'test:npm test passed' })).status, 'refuted');
+  const rep = await T.call(tool(), 'memory.setStatus', { id: free, status: 'refuted', receipt: 'test:npm test passed' });
+  assert.deepStrictEqual([rep.state, rep.status === 'refuted'], ['held', false]);
   assert.strictEqual((await T.call(operator(), 'memory.setStatus', { id, status: 'refuted', receipt: 'test:the operator ran it' })).status, 'refuted');
 });
 
@@ -102,10 +105,11 @@ test('row 8: an orchestrator memory.store that supersedes a held note is E_HELD 
   const { id, hold } = await heldNote('guard store');
   const count = () => T.store.p('SELECT COUNT(*) AS n FROM memory_entries').get().n;
   const n0 = count();
-  await rejectsHeld(T.call(tool(), 'memory.store', { namespace: NS, text: 'a replacement that hides the held note', supersedes: id, embed: false }), id, hold, 'supersede');
+  // A project write by the orchestrator is a note now and takes no supersedes, so the store-level guard is exercised on the run's own namespace.
+  await rejectsHeld(T.call(tool(), 'memory.store', { namespace: 'run/lc-apply', text: 'a replacement that hides the held note', supersedes: id, embed: false }), id, hold, 'supersede');
   assert.strictEqual(count(), n0, 'no row written');
   const free = T.note('guard store free');
-  const ok = await T.call(tool(), 'memory.store', { namespace: NS, text: 'a replacement of an unheld note', supersedes: free, embed: false });
+  const ok = await T.call(tool(), 'memory.store', { namespace: 'run/lc-apply', text: 'a replacement of an unheld note', supersedes: free, embed: false });
   assert.strictEqual(ok.action, 'inserted');
 });
 
@@ -116,7 +120,7 @@ test('row 9: a dedup update whose supersedes names a held note is E_HELD; a dedu
   await assert.rejects(T.call(tool(), 'memory.store', { namespace: 'run/lc-apply', text: 'guard dedup own row', supersedes: id, embed: false }), (e) => e.code === 'E_HELD' && e.detail.held_row === hold);
   assert.strictEqual(T.store.p('SELECT COUNT(*) AS n FROM memory_entries WHERE supersedes = ?').get(id).n, 0);
   const noteRow = T.row(id);
-  const unchanged = await T.call(tool(), 'memory.store', { namespace: NS, text: noteRow.text, embed: false });
+  const unchanged = await T.call(closeStages(), 'memory.store', { namespace: NS, text: noteRow.text, embed: false });
   assert.strictEqual(unchanged.action, 'unchanged');
   assert.strictEqual(T.row(id).body, noteRow.body, 'the note\'s body is untouched');
 });

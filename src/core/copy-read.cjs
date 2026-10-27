@@ -15,22 +15,51 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { sweep, PARENT } = require('./copy-sweep.cjs');
+const { err } = require('./errors.cjs');
 
 const SUFFIXES = ['', '-wal', '-shm'];
 const BUSY = new Set(['EBUSY', 'EPERM', 'EACCES']);
 const sleepSync = ms => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* no SAB */ } };
 
+// The copy reads the source through a plain Node open, never `copyFileSync`. On Windows CopyFileW opens
+// its source without write sharing, so an owner elected while a reader copies the store could not open it
+// for writing: SQLite fell back to read-only without saying so, and the owner's first write failed
+// "attempt to write a readonly database". Node opens every file with read, write and delete sharing, so
+// a reader copying this way never denies a writer. `onChunk` is a test seam, called after each chunk
+// while the source is still open.
+const CHUNK = 1 << 20;
+// Test seam: tests that count store copies set `hooks.copy(src, dst)`, called once per file whose copy has
+// opened its source. Product code never sets it.
+const hooks = { copy: null };
+function copyShared(src, dst, onChunk) {
+  const fin = fs.openSync(src, 'r');
+  if (hooks.copy) hooks.copy(src, dst);
+  try {
+    const fout = fs.openSync(dst, 'w');
+    try {
+      const buf = Buffer.allocUnsafe(CHUNK);
+      for (let pos = 0; ;) {
+        const n = fs.readSync(fin, buf, 0, CHUNK, pos);
+        if (n === 0) break;
+        for (let off = 0; off < n;) off += fs.writeSync(fout, buf, off, n - off);
+        pos += n;
+        if (onChunk) onChunk(pos);
+      }
+    } finally { fs.closeSync(fout); }
+  } finally { fs.closeSync(fin); }
+}
+
 // A live owner holds `-shm` as a memory mapping, and on Windows a mapped file cannot always be copied:
-// `copyFileSync` fails EBUSY, intermittently, exactly when there is an owner worth reading around. That
+// the copy fails EBUSY, intermittently, exactly when there is an owner worth reading around. That
 // made a read of a busy store throw instead of answering, which is the one thing a read must never do.
 //
 // `-shm` is the WAL's shared index. SQLite states it holds no persistent content and rebuilds it from
 // the `-wal` on open, so a copy without it is still current: what carries the uncommitted frames is the
 // `-wal`, and that one is not mapped this way. So the two files that hold data are retried and then
 // raised, and `-shm` is retried and then left behind. Returns whether the file was copied.
-function copyWithRetry(src, dst, optional) {
+function copyWithRetry(src, dst, optional, onChunk) {
   for (let attempt = 0; attempt < 4; attempt++) {
-    try { fs.copyFileSync(src, dst); return true; }
+    try { copyShared(src, dst, onChunk); return true; }
     catch (e) {
       if (e.code === 'ENOENT') return false;
       if (!BUSY.has(e.code)) throw e;
@@ -62,6 +91,47 @@ function makeTmpDir(parent, fsx = fs, sleep = sleepSync) {
   }
 }
 
+// A copy is only a snapshot if nothing wrote to the store while it was taken. A writer that checkpoints
+// (a TRUNCATE once the owner is idle, a last close that deletes the -wal) moves pages from the -wal into the
+// database file between two chunks, and the copy then holds old pages of one and new pages of the other: it
+// opens, queries run, and the answer matches neither state. So the size, mtime and identity of the three
+// files are read before and after the copy, and a copy over a change is discarded and taken again. Any
+// change retries, an appended -wal included: the exemption is not proven.
+const COPY_TRIES = 3;
+// A file's mtime has a granularity (about 1.5 ms on NTFS, up to 15.6 ms on power saver), so two writes inside one
+// tick leave the same size and mtime. Two things cover that. The -wal header carries the checkpoint sequence and
+// both salts (bytes 12 to 24), which every WAL restart changes, so a restart-and-rewrite that kept every size is
+// seen. With no -wal at all the database file is written in place and there is no such header: the copy waits
+// until the files' newest mtime is a full window behind the clock, so any write during the copy lands on a
+// later tick and changes the stamp.
+const TICK_WINDOW_MS = 20;
+const stamp = p => { try { const st = fs.statSync(p, { bigint: true }); return `${st.size}:${st.mtimeNs}:${st.dev}:${st.ino}`; } catch { return 'absent'; } };
+function walHeader(p) {
+  let fd;
+  try {
+    fd = fs.openSync(p, 'r');
+    const b = Buffer.alloc(12);
+    return b.toString('hex', 0, fs.readSync(fd, b, 0, 12, 12));
+  } catch { return 'absent'; } finally { if (fd !== undefined) try { fs.closeSync(fd); } catch { /* read-only handle */ } }
+}
+const stampAll = src => SUFFIXES.map(suf => stamp(src + suf)).join('|') + '|' + walHeader(src + '-wal');
+// The stamp the copy is judged against. With no -wal its own mtimes must already be a full window behind the
+// clock: a window checked before the stamp is not enough, since a write can land between the two and put the
+// stamp's mtime in the current tick, hiding a second write of the same size during the copy. So the stamp is
+// taken, and if it is too fresh the copy waits out the rest of the window and stamps again.
+function quietStamp(src) {
+  for (let i = 0; i < 4; i++) {
+    const key = stampAll(src);
+    if (key.endsWith('|absent') === false) return key; // a -wal exists: its header covers a same-tick restart
+    let newest = 0;
+    for (const suf of SUFFIXES) { try { newest = Math.max(newest, fs.statSync(src + suf).mtimeMs); } catch { /* absent */ } }
+    const wait = Math.ceil(newest + TICK_WINDOW_MS - Date.now());
+    if (wait <= 0) return key;
+    sleepSync(Math.min(wait, 2 * TICK_WINDOW_MS));
+  }
+  return null; // never went quiet: a writer is active
+}
+
 async function withCopy(dataDir, fn) {
   const src = path.join(dataDir, 'memory.db');
   // BELAY_RO_TMP_ROOT is a test-only override of the temp root.
@@ -70,16 +140,27 @@ async function withCopy(dataDir, fn) {
   const parent = path.join(root, PARENT);
   const tmpDir = makeTmpDir(parent);
   const dst = path.join(tmpDir, 'memory.db');
-  let present = false;
   try {
-    for (const suf of SUFFIXES) {
-      const copied = copyWithRetry(src + suf, dst + suf, suf === '-shm');
-      if (copied && suf === '') present = true;
+    let present = false, settled = false;
+    for (let attempt = 1; attempt <= COPY_TRIES && !settled; attempt++) {
+      const before = quietStamp(src);
+      if (before === null) { sleepSync(5 * attempt); continue; }
+      present = false;
+      for (const suf of SUFFIXES) {
+        const copied = copyWithRetry(src + suf, dst + suf, suf === '-shm');
+        if (copied && suf === '') present = true;
+      }
+      settled = stampAll(src) === before;
+      if (!settled) {
+        for (const suf of SUFFIXES) { try { fs.rmSync(dst + suf, { force: true }); } catch { /* removed with the dir */ } }
+        if (attempt < COPY_TRIES) sleepSync(5 * attempt);
+      }
     }
+    if (!settled) throw err('E_BUSY', `the store ${src} changed during each of ${COPY_TRIES} copies: a writer is checkpointing or committing; nothing was read, try again`, { db: src, reason: 'copy-changed', attempts: COPY_TRIES });
     return await fn(dst, present ? 'copy' : 'none');
   } finally {
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* temp dir, next boot clears it */ }
   }
 }
 
-module.exports = { withCopy, makeTmpDir, copyWithRetry, SUFFIXES };
+module.exports = { withCopy, makeTmpDir, copyWithRetry, copyShared, hooks, SUFFIXES };

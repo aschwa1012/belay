@@ -54,6 +54,12 @@ async function written(w, n = 1) {
 const spawnLog = () => { const m = { spawned: [] }; m.spawn = async (a) => { m.spawned.push(a); return {}; }; return m; };
 const ctxFor = (manager, lv = LV) => ({ core, runId: RUN, dataDir: dir, memoryLevers: lv, worktree: dir, manager });
 const J = (ctx, lv = LV) => ({ ctx, core, lv, w: null, gate: { aborted: false }, s: {}, turnPath: false });
+// A note refuted as the archive review's cited outcome leaves it (status, receipt, review on the body, note_review and note_refuted receipts): the state the wake tests start from.
+function refuteViaArchive(ids, ref, reviewer = 'archive') {
+  for (const id of ids) {
+    store.tx(() => coreMod('methods-memory-note-review.cjs').applyOneIn(E, harness, { ref, keyBase: `review:${ref}@0`, reviewer }, { verdict: 'refuted', reason: 'the stream shows it', cites: [{ where: 'stream', quote: STREAM_LINE }] }, rowOf(id)));
+  }
+}
 const verdictsFor = (ids, v = 'confirmed') => JSON.stringify({ memory_verdicts: ids.map((id) => ({ id, verdict: v, cites: [{ where: 'stream', quote: STREAM_LINE }], reason: 'the stream shows it' })) });
 
 before(async () => {
@@ -88,8 +94,35 @@ test('N5: a review task\'s ended hand-back is applied by the manager (the review
   const m = spawnLog();
   await NR.onTaskEnded(J(ctxFor(m)), await call('task.get', orch, { task_id: r.id }));
   assert.strictEqual(m.spawned.length, 0);
-  assert.strictEqual(rowOf(w.notes[0]).status, 'refuted');
-  assert.strictEqual(rowOf(w.notes[0]).status_receipt, `review:${r.id}`);
+  // A task reviewer's refuted is a report (ADR 0047 amendment of 2026-10-22): the note is held for the archive review and its status is left as it was.
+  assert.notStrictEqual(rowOf(w.notes[0]).status, 'refuted');
+  assert.strictEqual(rowOf(w.notes[0]).status_receipt, null);
+  const held = store.p("SELECT body FROM memory_entries WHERE type = 'held' AND json_extract(body, '$.note_id') = ?").all(w.notes[0]).map((x) => JSON.parse(x.body));
+  assert.deepStrictEqual(held.map((h) => [h.ground, h.state, h.note_verdicts[0].by]), [['reported', 'held', 'rv-5']]);
+});
+
+test('N5b: with only the notes lever on, a reviewer\'s turn end applies its confirmed verdict: the note is verified before the run ends', async () => {
+  const MC = require('../../src/run/memory-capture.cjs');
+  const w = await written('wr-5b');
+  await call('worker.write', orch, { id: 'rv-5b', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's', last_event_at: Date.now() });
+  const r = await call('task.create', orch, { spec: 'review', depends_on: [w.task.id], acceptance: { verdict: true } });
+  const a = await call('task.assign', orch, { task_id: r.id, worker_id: 'rv-5b' });
+  await call('lease.release', worker('rv-5b'), { lease_id: a.new_lease.id, notes: [], result: { verdict: 'holds', summary: 'ok', ...JSON.parse(verdictsFor([w.notes[0]])) } });
+  const ctx = ctxFor(null);
+  await NR.reviewTail(ctx, { id: 'rv-5b', taskId: r.id });
+  assert.strictEqual(rowOf(w.notes[0]).status || 'unverified', 'unverified');
+  // The worker's turn_end, as the manager plans it: summaries off, capture off, no project writes, so only notes asks for work.
+  const lv = { ...LV, summaries: 'off', capture: false, observations: false, project_writes: false, cost_ledger: false, wrapup: false, notes_reflection: false };
+  const wk = { id: 'rv-5b', taskId: r.id, substrate: 'claude-code', turns: 1, costUsd: 0, pid: process.pid, memoryQueue: null };
+  const e = { kind: 'turn_end', text: 'done' };
+  const c2 = { ...ctx, memoryLevers: lv };
+  const p = MC.plan(wk, e, c2);
+  assert.ok(p, 'the notes lever alone plans the turn\'s memory work');
+  await MC.finish(wk, e, c2, p, {});
+  await wk.memoryQueue;
+  await NR.drainVerdicts(c2, 10000);
+  assert.strictEqual(rowOf(w.notes[0]).status, 'verified', JSON.stringify(wk.lastError || null));
+  assert.strictEqual(events('note_review').filter((x) => x.key.endsWith(`:${w.notes[0]}`)).length, 1);
 });
 
 test('N7: a review task\'s brief lists the notes to judge, the verdict shape, the streams, and any refuted note a reviewed worker was shown', async () => {
@@ -98,10 +131,7 @@ test('N7: a review task\'s brief lists the notes to judge, the verdict shape, th
   await call('memory.recordEvent', harness, { kind: 'index_injected', ok: true, worker_id: 'wr-7', task_id: w.task.id, row_ids: [bad.notes[0]], bytes: 5, sha256: 'z' });
   await call('worker.write', orch, { id: 'rv-7x', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's', last_event_at: Date.now() });
   const rt = await call('task.create', orch, { spec: 'rr', depends_on: [bad.task.id], acceptance: { verdict: true } });
-  const a = await call('task.assign', orch, { task_id: rt.id, worker_id: 'rv-7x' });
-  await call('lease.release', worker('rv-7x'), { lease_id: a.new_lease.id, notes: [], result: { verdict: 'holds', summary: 's', memory_verdicts: JSON.parse(verdictsFor([bad.notes[0]], 'refuted')).memory_verdicts } });
-  await NR.reviewTail(ctxFor(null), { id: 'rv-7x', taskId: rt.id });
-  await NR.applyHandback(J(ctxFor(null)), await call('task.get', orch, { task_id: rt.id }));
+  refuteViaArchive([bad.notes[0]], rt.id, 'rv-7x');
   const t = await call('task.create', orch, { spec: 'review of w', depends_on: [w.task.id], acceptance: { verdict: true } });
   const text = await NR.reviewTail(ctxFor(null), { id: 'rv-7', taskId: t.id });
   assert.match(text, /NOTES TO JUDGE/);
@@ -133,14 +163,10 @@ test('N7b: a brief that lists no note is still captured, empty, for the lease it
   assert.deepStrictEqual(cap.map((e) => JSON.parse(e.row_ids)), [[]], 'an empty capture, bound to the lease');
 });
 
-// A review task of `w` hands back refuting `ids`; the manager applies it. Returns the review task id.
+// The notes `ids` of `w` are refuted as the archive review leaves them, under a review task id. Returns that id.
 async function refuteByReview(w, ids, rid) {
-  await call('worker.write', orch, { id: rid, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's', last_event_at: Date.now() });
   const r = await call('task.create', orch, { spec: 'review for refuting', depends_on: [w.task.id], acceptance: { verdict: true } });
-  const a = await call('task.assign', orch, { task_id: r.id, worker_id: rid });
-  await call('lease.release', worker(rid), { lease_id: a.new_lease.id, notes: [], result: { verdict: 'holds', summary: 's', memory_verdicts: JSON.parse(verdictsFor(ids, 'refuted')).memory_verdicts } });
-  await NR.reviewTail(ctxFor(null), { id: rid, taskId: r.id });
-  await NR.onTaskEnded(J(ctxFor(spawnLog())), await call('task.get', orch, { task_id: r.id }));
+  refuteViaArchive(ids, r.id, rid);
   return r.id;
 }
 
@@ -212,4 +238,25 @@ test('N9d (review S-1): shutdown waits for a verdict application in flight befor
   release();
   await sd;
   assert.deepStrictEqual(order.slice(0, 3), ['job-start', 'job-done', 'stop']);
+});
+
+test('wording audit: task_assign of a review task to a live reviewer ends with the verdict rule, the Review standard and the brief of the notes to judge', async () => {
+  const { createCompose } = require('../../src/mcp/compose.cjs');
+  const w = await written('wr-ta');
+  await call('worker.write', orch, { id: 'rv-ta', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's-ta', last_event_at: Date.now() });
+  const t = await call('task.create', orch, { spec: 'review of wr-ta', depends_on: [w.task.id], acceptance: { verdict: true } });
+  const sent = [];
+  // The manager's own reviewTail does this: the note review with the worker's id and the task assigned.
+  const manager = { _worker: () => ({}), message: async (a) => { sent.push(a.text); return { worker_id: a.worker_id, channel: 'stdin', bytes: 1 }; }, reviewTail: ({ worker_id, task_id }) => NR.reviewTail(ctxFor(null), { id: worker_id, taskId: task_id }) };
+  const c = createCompose({ callCore: (m, a) => call(m, orch, a), manager: () => manager });
+  const out = await c.assign({ task_id: t.id, worker_id: 'rv-ta' });
+  assert.strictEqual(out.delivered.sent, true);
+  const text = sent[0];
+  const std = text.indexOf('## Review standard');
+  const brief = text.indexOf('NOTES TO JUDGE');
+  assert.ok(text.startsWith(`task ${t.id} lease=`), 'the first assignment line');
+  assert.ok(std > 0 && brief > std, 'the standard, then the brief');
+  assert.ok(text.includes(w.notes[0]), 'the brief lists the notes of the reviewed work');
+  assert.ok(text.includes('result: { "verdict": "holds" | "refuted"'), 'the verdict-shaped rule');
+  assert.ok(!text.includes('(branch, head, tests, findings)'));
 });

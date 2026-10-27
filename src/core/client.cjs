@@ -13,10 +13,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const net = require('node:net');
 const { err } = require('./errors.cjs');
-const { pipeName, readOwnerLock, pidAlive } = require('./lock.cjs');
+const { pipeName, readOwnerLock, pidAlive, holderReused } = require('./lock.cjs');
 const { WRITE_METHODS, METHODS } = require('./engine.cjs'); // the method table only; nothing here opens a store
 
 const VERIFY_OPERATOR_MS = 20000; // the operator check reads two tables of the host (netstat, a process snapshot); each has its own bound of 10 s
+const MAX_LINE_BYTES = 1024 * 1024; // the longest request line an owner reads (owner.cjs); a longer one is refused here, unsent
+const STARTING_GRACE_MS = 30000; // a lock still `listening: false` this long after it was taken is no longer an owner starting
 const sleep = ms => new Promise(r => { const t = setTimeout(r, ms); if (t.unref) t.unref(); });
 
 // Embeddings travel as base64 float32, not as a JSON array of decimals: a 384-d vector is ~1.5 KB of
@@ -58,7 +60,7 @@ class Client {
   get connected() { return !!this.sock && !this.sock.destroyed; }
 
   async connect() {
-    let preChecked = false;
+    let preChecked = false, holder = null, asked = null;
     for (let i = 0; i < this.opts.connectRetries; i++) {
       try { await this._dial(this.opts.dialTimeoutMs); return this; }
       catch { /* no owner answered; maybe elect, maybe wait for whoever is starting */ }
@@ -71,22 +73,55 @@ class Client {
           const gone = await this._endedRunBeforeStart();
           if (gone) throw this._notMadeOwner(gone);
         }
-        const { Owner } = require('./owner.cjs');
-        const o = new Owner(this.dataDir, this.opts.ownerOpts);
-        try {
-          await o.start();
-          // ADR 0029 amendment 4 (proposed): a process in the orchestrator role that wins the election over a run that has
-          // already ended is a late adapter. It would be a stray owner that writes into the ended run, and the per-Core
-          // E_SHUTDOWN guard cannot see it (another process shut the owner down). It gives the lock back and fails.
-          const ended = this._endedRun(o);
-          if (ended) { await o.stop(); throw this._notMadeOwner(ended); }
-          this.owner = o; this.becameOwner = true; return this;
+        try { if (await this._startOwner(this.opts.ownerOpts)) return this; }
+        catch (e) {
+          if (e.code !== 'E_LOCKED') throw e; // someone else is the owner; dial again
+          holder = (e.detail && e.detail.holder) || holder;
+          // A holder that should be answering and is not: its pid may now be another process (audit 0.3.1 C4).
+          const r = holder && holder.token !== asked ? await this._reusedHolder(holder) : null; // once per lock per connect
+          if (holder) asked = holder.token;
+          if (r && r.reused) {
+            try { if (await this._startOwner({ ...this.opts.ownerOpts, ...(Number.isFinite(r.own_created) ? { created: r.own_created } : {}) }, holder.token)) return this; }
+            catch (e2) { if (e2.code !== 'E_LOCKED') throw e2; }
+          }
         }
-        catch (e) { if (e.code !== 'E_LOCKED') throw e; } // someone else is the owner; dial again
       }
       if (i < this.opts.connectRetries - 1) await sleep(this.opts.retryMs);
     }
+    if (this.opts.elect && holder) {
+      throw err('E_NO_OWNER', `no owner answered at ${this.pipe}, and the owner lock is held by pid ${holder.pid}, which is alive, so this caller could not elect one`, { data_dir: this.dataDir, pipe: this.pipe, elect: true, holder: { pid: holder.pid, acquired_at: holder.acquired_at, listening: holder.listening } });
+    }
     throw err('E_NO_OWNER', `no owner answered at ${this.pipe} and this caller may not elect one`, { data_dir: this.dataDir, pipe: this.pipe, elect: !!this.opts.elect });
+  }
+
+  // True once this process is the owner. ADR 0029 amendment 4 (proposed): a process in the orchestrator role that wins the
+  // election over a run that has already ended is a late adapter. It would be a stray owner that writes into the ended run, and
+  // the per-Core E_SHUTDOWN guard cannot see it (another process shut the owner down). It gives the lock back and fails.
+  async _startOwner(ownerOpts, staleToken = null) {
+    const { Owner } = require('./owner.cjs');
+    const o = new Owner(this.dataDir, ownerOpts);
+    await o.start(staleToken ? { staleToken } : undefined);
+    const ended = this._endedRun(o);
+    if (ended) { await o.stop(); throw this._notMadeOwner(ended); }
+    this.owner = o; this.becameOwner = true;
+    return true;
+  }
+
+  // Audit 0.3.1 C4: whether the live pid a lock names is the process that took it. Asked only of a lock whose owner should be
+  // answering (it says it is listening, or it has been starting for longer than any start takes) and has not answered this
+  // caller's dial; one process snapshot, asked once per lock per connect. A genuine verdict is not remembered past the connect:
+  // the holder it names may be ended without its handlers later and its pid reused, and only a fresh snapshot can tell.
+  // { reused, why, own_created } or null when not asked.
+  async _reusedHolder(holder) {
+    if (!holder || !holder.token || holder.pid === process.pid) return null; // this process's own owner is starting
+    const merged = readOwnerLock(this.dataDir);
+    const lock = merged && merged.token === holder.token ? merged : holder;
+    if (lock.listening !== true && !(Number.isFinite(lock.acquired_at) && Date.now() - lock.acquired_at > STARTING_GRACE_MS)) return null;
+    const ID = require('./proc-identity.cjs');
+    const snap = await ID.processSnapshot({ kind: 'lock-holder' });
+    const r = holderReused(lock, snap);
+    const own = snap && snap.get(process.pid);
+    return { ...r, own_created: own ? own.created : null };
   }
 
   _notMadeOwner(ended) {
@@ -94,7 +129,7 @@ class Client {
   }
 
   // The same question as _endedRun, asked of a throwaway copy of the store (invariant 6: a read copies, it never opens the live
-  // file), so nothing is started to ask it. A store that does not exist, or a copy that cannot be read, answers "not ended".
+  // file), so nothing is started to ask it. A store that does not exist, or a copy that cannot be read (E_BUSY included: a writer that never settles fails open here), answers "not ended".
   async _endedRunBeforeStart() {
     const caller = this.opts.caller;
     if (!caller || caller.role !== 'orchestrator' || !caller.run_id) return null;
@@ -239,6 +274,9 @@ class Client {
     const timeoutMs = opts.timeoutMs == null ? this.opts.callTimeoutMs : opts.timeoutMs;
     // ADR 0045 decision 2: a bound adapter's session key rides every request; the owner takes the caller from the bind it names.
     const wire = JSON.stringify({ id, method, params: encodeWire(params), ...(this.opts.key ? { key: this.opts.key } : {}) }) + '\n';
+    // Audit 0.3.1 P7: the owner would drop a longer line and close the connection, failing every call on it as a lost owner.
+    const bytes = Buffer.byteLength(wire);
+    if (bytes > MAX_LINE_BYTES) return Promise.reject(err('E_TOO_LONG', `${method} is ${bytes} bytes on the wire and the owner reads at most ${MAX_LINE_BYTES} bytes in one request; it was not sent`, { method, bytes, limit_bytes: MAX_LINE_BYTES, sent: false }));
     return new Promise((resolve, reject) => {
       // api.md §6: a deadline that fires says nothing about whether the owner ran the call. On a write
       // the owner may already have committed the row, and these tables are append-only, so a blind
@@ -281,4 +319,4 @@ class Client {
   }
 }
 
-module.exports = { Client, floatsToB64, encodeWire };
+module.exports = { Client, floatsToB64, encodeWire, MAX_LINE_BYTES };

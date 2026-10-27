@@ -14,6 +14,7 @@
 //   memory.reviewQueue  the project's held queue for the Opus reviewer: each open hold with both notes, the age in runs and whether
 //                       the note it stands against was verified by a review. The stage decides from these facts when to run.
 
+const { isAwaiting } = require('./notes-held.cjs');
 const fs = require('node:fs');
 const path = require('node:path');
 const { err } = require('./errors.cjs');
@@ -220,7 +221,7 @@ async function reviewQueue(E, caller, args) {
   const project = M.projectOf(E, caller);
   if (!project) throw err('E_ARGS', 'memory.reviewQueue: this run has no project, so there is no held queue', { field: 'project' });
   const rows = E.store.p(`SELECT id, run_id, created_at, body FROM memory_entries WHERE namespace = ? AND type = 'held' AND written_by = 'harness'
-    AND json_extract(body, '$.state') = 'held' ORDER BY created_at, id`).all(L.nsOf('held', project));
+    AND json_extract(body, '$.state') IN ('held', 'queued') ORDER BY created_at, id`).all(L.nsOf('held', project)); // a queued hold (past the breaker) is reviewed like any other
   const held = [], awaiting = [];
   for (const r of rows) {
     const b = parse(r.body);
@@ -228,7 +229,7 @@ async function reviewQueue(E, caller, args) {
     if (!note || note.namespace !== N.projectNs(project)) continue; // a hold whose note left the project is the apply-time refusal's business
     const rev = Number(b.rev) || 0;
     // A hold the reviewer answered undecided at this very revision waits for the operator: it is not offered again until something changes it (a bump) or the operator re-offers it.
-    if (b.undecided && Number(b.undecided.rev) === rev) { awaiting.push({ held_row: r.id, id: note.id, kind: b.kind, ground: b.ground || null, rev, marked_at: r.created_at, undecided: b.undecided }); continue; }
+    if (isAwaiting(b)) { awaiting.push({ held_row: r.id, id: note.id, kind: b.kind, ground: b.ground || null, rev, marked_at: r.created_at, undecided: b.undecided }); continue; }
     const of = b.of ? load(E, b.of) : null;
     let waited = 0;
     try { waited = Number(E.store.p('SELECT COUNT(DISTINCT id) AS n FROM run WHERE project = ? AND COALESCE(started_at, written_at) > ?').get(project, r.created_at).n); } catch { waited = 0; }

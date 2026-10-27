@@ -16,6 +16,24 @@ describe('activation and reading', () => {
     expect(wd.commands).not.toContain('belay')
     expect(wd.writes).toEqual([])
   })
+  test('belay-run.json naming orchestrator_dir passes it to the agents read as --dir, and only to agents', async ($, on) => {
+    const wd = await boot($, on, { file: true, runFile: { ...FULL_RUNFILE, orchestrator_dir: 'C:/o/orch-dir/ops' } })
+    const agents = wd.ran.filter(a => a.includes('agents'))
+    expect(agents.length).toBeGreaterThan(0)
+    for (const a of agents) {
+      const i = a.indexOf('--dir')
+      expect(i).toBeGreaterThan(-1)
+      expect(a[i + 1]).toBe('C:/o/orch-dir/ops') // belay-run.json's orchestrator_dir, exactly
+      expect(a[i + 1]).not.toBe(FULL_RUNFILE.data_dir) // never the data dir
+      expect(a.filter(x => x === 'C:/o/orch-dir/ops')).toHaveLength(1)
+      expect(a.indexOf(RUN)).toBeLessThan(i)
+    }
+    expect(wd.ran.filter(a => !a.includes('agents')).every(a => !a.includes('--dir'))).toBe(true)
+  })
+  test('without orchestrator_dir in belay-run.json the agents read carries no --dir', async ($, on) => {
+    const wd = await boot($, on, { file: true })
+    expect(wd.ran.filter(a => a.includes('agents')).every(a => !a.includes('--dir'))).toBe(true)
+  })
   for (const [name, runFile, message] of [
     ['lacks node', { ...FULL_RUNFILE, node: undefined }, 'belay-run.json lacks node'],
     ['lacks belay_cli', { ...FULL_RUNFILE, belay_cli: undefined }, 'belay-run.json lacks belay_cli'],
@@ -77,7 +95,7 @@ describe('activation and reading', () => {
   })
   test('a failing command shows one dim line with its exit code and is not retried in the same round', async ($, on) => {
     const wd = await boot($, on, { failAgents: true })
-    expect((await band($)).text).toContain(`belay agents ${RUN} exit 3`)
+    expect((await band($)).text).toContain('agents failed')
     expect(wd.ran.filter(a => a.includes('agents')).length).toBe(1)
   })
   test('a repeated session.start with an unchanged watch keeps the snapshot and the seen notices', async ($, on) => {
@@ -114,7 +132,7 @@ describe('the band', () => {
     await later(wd, 5000)
     const { text } = await band($)
     expect(text).toContain('(stale): Spawned rev-1')
-    expect(text).toContain('belay transcript r-7f3a --tail 10 exit 4')
+    expect(text).toContain('transcript failed')
   })
   test('opening the pane marks the current notices seen, and notices that arrive while it is open', async ($, on) => {
     const wd = await boot($, on)
@@ -156,6 +174,7 @@ describe('the band', () => {
     expect(t).not.toContain('● dead')
     expect(t).not.toContain('● running')
     expect(t).toContain('stale: last read failed')
+    expect(t).toContain('agents failed') // the failed read is named, not left silent
     expect(t).toContain('4 agents') // the old data is kept, marked stale
   })
   test('belay-run.json means the orchestrator has its own window: its words are never read', async ($, on) => {
@@ -223,10 +242,10 @@ describe('the pane', () => {
     await openPane($, wd)
     const { ui, text } = await pane($)
     for (const s of ['orchestrator', 'coder-1', '◌', '▲', '◐', '●', '7c9e6679', '▰', '61%', '$0.92', '$ —', 'cold', '▸ 1 finished']) expect(text).toContain(s)
-    expect(text.slice(0, text.indexOf('notices'))).not.toContain('coder-0')
+    expect(text.slice(0, text.indexOf('NOTICES'))).not.toContain('coder-0')
     await ui.press({ key: 'fold' })
     const open = words(await ui.drawn())
-    expect(open.slice(0, open.indexOf('notices'))).toContain('coder-0')
+    expect(open.slice(0, open.indexOf('NOTICES'))).toContain('coder-0')
     expect(wd.writes).toEqual([])
     expect(wd.ran.every(a => a.some(x => READ_VERBS.includes(x)))).toBe(true)
   })
@@ -241,7 +260,7 @@ describe('the pane', () => {
     const wd = await boot($, on, { noDisplay: true })
     await openPane($, wd)
     const t = (await pane($)).text
-    const table = t.slice(t.indexOf('agent'), t.indexOf('notices'))
+    const table = t.slice(t.indexOf('agent'), t.indexOf('NOTICES'))
     expect(table).toContain('?')
     expect(table).not.toContain('●')
     expect(table).not.toContain('◐')
@@ -261,11 +280,11 @@ describe('the pane', () => {
     const wd = await boot($, on)
     await openPane($, wd)
     const { ui, text } = await pane($)
-    expect(text).not.toContain('legend')
+    expect(text).not.toContain('LEGEND')
     await ui.press({ key: 'legend' })
-    expect(words(await ui.drawn())).toContain('legend · ? closes')
+    expect(words(await ui.drawn())).toContain('LEGEND  ? closes')
     await ui.press({ key: 'legend' })
-    expect(words(await ui.drawn())).not.toContain('legend · ? closes')
+    expect(words(await ui.drawn())).not.toContain('LEGEND  ? closes')
   })
   test('a headless run shows the orchestrator words and the real tool line', async ($, on) => {
     const wd = await boot($, on)
@@ -288,14 +307,14 @@ describe('the pane', () => {
     const t = (await pane($)).text
     expect(t).toContain('[stal]')
     expect(t).toContain('[perm]')
-    expect(t.slice(0, t.indexOf('notices'))).not.toContain('◌')
+    expect(t.slice(0, t.indexOf('NOTICES'))).not.toContain('◌')
   })
   test('mod.cache and mod.context change the drawing', async ($, on) => {
     const wd = await boot($, on, { mod: { cache: 'countdown', context: 'figure' } })
     await openPane($, wd)
     const t = (await pane($)).text
     expect(t).toContain('61%')
-    expect(t.slice(t.indexOf('agent '), t.indexOf('notices'))).not.toContain('▰')
+    expect(t.slice(t.indexOf('agent '), t.indexOf('NOTICES'))).not.toContain('▰')
     expect(t).toContain('9m') // coder-1: 599999 ms left
   })
   test('docked: /orch opens the pane, a person closing it ends the panel', async ($, on) => {
@@ -398,7 +417,7 @@ describe('the agents shape of a8c466d', () => {
     await ui.press({ key: 'agent:coder-1' })
     await ui.press({ key: 'agent:coder-2' })
     const full = words(await ui.drawn())
-    const u = full.slice(full.indexOf('coder-2'), full.indexOf('notices'))
+    const u = full.slice(full.indexOf('coder-2'), full.indexOf('NOTICES'))
     expect(u).toContain('launch')
     expect(u).not.toContain('Claude Code')
     expect(u).not.toContain('pid ')
@@ -418,7 +437,7 @@ describe('the last review round', () => {
     const wd = await boot($, on, { mod: { task: 'title' } })
     await openPane($, wd)
     const { ui, text } = await pane($)
-    const table = text.slice(text.indexOf('agent '), text.indexOf('notices'))
+    const table = text.slice(text.indexOf('agent '), text.indexOf('NOTICES'))
     expect(table).toContain('7c9e6679 Fix the pid-poll')
     expect(table).not.toContain(TASK4)
     await ui.press({ key: 'agent:coder-1' })
@@ -480,7 +499,7 @@ describe('the last review round', () => {
     const wd = await boot($, on, { manyTexts: true })
     await openPane($, wd)
     const { ui, text } = await pane($)
-    const section = text.slice(text.indexOf('orchestrator', text.indexOf('notices')))
+    const section = text.slice(text.indexOf('ORCHESTRATOR'))
     for (const i of [5, 6, 7, 8, 9, 10, 11, 12]) expect(section).toContain(`Step ${i} is under way.`)
     expect(section).not.toContain('Step 4 is under way.')
     expect(section).toContain('LAST WORD') // a long text is shown in full

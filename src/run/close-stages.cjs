@@ -36,7 +36,8 @@ async function closeStages({ core, runId, levers, dataDir, worktree = null, goal
   if (sweep && !(fast && fast())) { try { out.sweep = await sweep(); } catch (e) { out.sweep = { ran: false, message: String(e && e.message).slice(0, 200) }; } }
   try { out.scrub = await runScrub({ core, runId, lv, dataDir, getManager, worktree, goal, summary, fast, log, sink }); } catch (e) { out.scrub = { ran: false, reason: 'stage crashed', message: String(e && e.message).slice(0, 200) }; }
   if (review) {
-    try { out.review = await runReview({ core, runId, lv, dataDir, getManager, worktree, fast, log, sink }); } catch (e) { out.review = { ran: false, reason: 'stage crashed', message: String(e && e.message).slice(0, 200) }; }
+    // ADR 0052: the operator's review may be running beside this run (the panel's button); the automatic one does not start a second reviewer.
+    try { out.review = await runReview({ core, runId, lv, dataDir, getManager, worktree, fast, log, sink, respectClaim: true }); } catch (e) { out.review = { ran: false, reason: 'stage crashed', message: String(e && e.message).slice(0, 200) }; }
   }
   return out;
 }

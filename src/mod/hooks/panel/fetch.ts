@@ -1,10 +1,11 @@
 // What the panel does with belay's answers, as pure functions. The commands themselves are run from
 // index.tsx: the engine follows `$` only inside the file that declares the hooks.
 
-import type { BelayAgent, BelayPanelSnap, BelayPanelWatch } from '../../types/index'
-import { DEFAULT_SETTINGS, normAgents, normHeld, normNotices, normTranscript, parseMemoryNotice, parseSettings, heavyConfigured, type AgentsRead } from './model'
+import type { BelayAgent, BelayHeld, BelayReadIssue, BelayPanelSnap, BelayPanelWatch } from '../../types/index'
+import { countAwaiting, normAwaiting, normHeld } from './held'
+import { DEFAULT_SETTINGS, normAgents, normNotices, normTranscript, parseMemoryNotice, parseSettings, heavyConfigured, type AgentsRead } from './model'
 
-export type RunFile = { role: string; runId: string; dataDir: string; cli: string; node: string }
+export type RunFile = { role: string; runId: string; dataDir: string; cli: string; node: string; orchDir: string | null }
 export type RunFileRead = { file: RunFile } | { error: string }
 export type Ran = { json: unknown } | { error: string; timedOut?: true }
 
@@ -34,7 +35,7 @@ export function parseRunFile(text: string): RunFileRead {
   if (missing.length) return { error: `belay-run.json lacks ${missing.join('/')}` }
   if (j.role !== 'orchestrator') return { error: 'belay-run.json role must be "orchestrator"' }
   const s = (k: string): string => j[k] as string
-  return { file: { role: s('role'), runId: s('run_id'), dataDir: s('data_dir'), cli: s('belay_cli'), node: s('node') } }
+  return { file: { role: s('role'), runId: s('run_id'), dataDir: s('data_dir'), cli: s('belay_cli'), node: s('node'), orchDir: typeof j.orchestrator_dir === 'string' && j.orchestrator_dir !== '' ? j.orchestrator_dir : null } }
 }
 
 // A Windows path: there a bare `belay` is usually a .cmd shim, which cannot be started without a shell.
@@ -53,13 +54,35 @@ export function projectRootOf(dataDir: string): string {
 // Falls back to the first line of plain text. Never raw JSON.
 export function launcherLine(exitCode: number, stdout: string, stderr: string, project: string): string {
   const first = (s: string): string => (s.split('\n').map(l => l.trim()).find(l => l !== '') ?? '').slice(0, 160)
-  let j: Record<string, unknown> | null = null
-  try { const p: unknown = JSON.parse(stdout); if (p !== null && typeof p === 'object' && !Array.isArray(p)) j = p as Record<string, unknown> } catch { /* plain text */ }
-  const err = j && j.error !== null && typeof j.error === 'object' ? (j.error as Record<string, unknown>) : null
-  if (exitCode === 0 && j && j.started === true) return `belay: archive review of ${project} started: pid ${String(j.pid ?? '?')}, job ${String(j.job ?? '?')}`
-  if (exitCode === 0 && j && j.ended !== undefined) return `belay: archive review of ${project} ended at once: ${first(JSON.stringify(j.ended))}`
-  const said = err ? `${typeof err.code === 'string' ? `${err.code}: ` : ''}${typeof err.message === 'string' ? err.message.slice(0, 160) : ''}` : first(stdout.trim() ? stdout : stderr)
+  const asObj = (s: string): Record<string, unknown> | null => { try { const p: unknown = JSON.parse(s); return p !== null && typeof p === 'object' && !Array.isArray(p) ? (p as Record<string, unknown>) : null } catch { return null } }
+  // --json prints a receipt to stdout and an error to stderr (pretty-printed); a plain-text answer falls back to its first line.
+  const j = asObj(stdout)
+  const ej = asObj(stderr)
+  const err = j && j.error !== null && typeof j.error === 'object' ? (j.error as Record<string, unknown>) : ej && ej.error !== null && typeof ej.error === 'object' ? (ej.error as Record<string, unknown>) : null
+  // A review acting for a live run carries a note: `closing_note` (the close waits for the review), or `closing_warning` / `warning` from an older CLI (the close cuts it off).
+  const noteRaw = j && typeof j.closing_note === 'string' ? j.closing_note : null
+  const warnRaw = j && typeof j.closing_warning === 'string' ? j.closing_warning : j && typeof j.warning === 'string' ? j.warning : null
+  const clip = (x: string): string => x.replace(/\s+/g, ' ').slice(0, 200)
+  const waits = j && j.close_waits === true ? ` · this run's close waits for it` : ''
+  const warn = `${waits}${noteRaw ? ` · note: ${clip(noteRaw)}` : warnRaw ? ` · warning: ${clip(warnRaw)}` : ''}`
+  if (exitCode === 0 && j && j.started === true) return `belay: archive review of ${project} started: pid ${String(j.pid ?? '?')}, job ${String(j.job ?? '?')}${warn}`
+  if (exitCode === 0 && j && j.ended !== undefined) return `belay: archive review of ${project} ended at once: ${first(JSON.stringify(j.ended))}${warn}`
+  const plainErr = typeof j?.error === 'string' ? j.error : typeof ej?.error === 'string' ? ej.error : null // a usage error prints {"error": "<text>"}
+  const said = err ? `${typeof err.code === 'string' ? `${err.code}: ` : ''}${typeof err.message === 'string' ? err.message.slice(0, 160) : ''}` : plainErr !== null ? first(plainErr) : first(stdout.trim() ? stdout : stderr)
   return exitCode === 0 ? `belay: ${said || 'archive review started'}` : `belay: the review was not started (exit ${exitCode})${said ? `: ${said}` : ''}`
+}
+
+// The review launcher refuses with E_NOT_FOUND and `live_run` (a run id) when the only run with notes on is still live and it was not named (cmd-memory-stages.cjs).
+// That field, never the words, tells the panel to say which run it means. null when the launcher said anything else.
+export function needsRun(exitCode: number, stdout: string, stderr: string, runId: string | null): boolean {
+  if (exitCode === 0 || !runId) return false
+  for (const text of [stdout, stderr]) {
+    try {
+      const e = (JSON.parse(text) as { error?: { code?: unknown; live_run?: unknown } }).error
+      if (e && typeof e === 'object' && e.code === 'E_NOT_FOUND' && e.live_run === runId) return true // only the run the panel watches; another live run's refusal names that run and is shown as it is
+    } catch { /* not JSON */ }
+  }
+  return false
 }
 
 export const argvFor = (cli: string[], args: string[], dataDir: string | null): string[] =>
@@ -77,7 +100,7 @@ export function fatalSnapshot(message: string, runId: string | null, now: number
   return {
     fetchedAt: now, runId, mode: null, runState: null, stale: false, fatal: message, transcriptOk: false, transcriptAt: null,
     startedAtMs: null, pausedAtMs: null, frozenAtMs: null, endedAtMs: null, tasks: null, maxFixRounds: null, embedder: null, agents: [], footer: null, notices: [], held: null, transcript: null,
-    settings: DEFAULT_SETTINGS, memoryNotice: null, memWanted: false, errors: [],
+    settings: DEFAULT_SETTINGS, memoryNotice: null, memWanted: false, errors: [], readIssues: [], goodAt: null,
   }
 }
 
@@ -89,6 +112,8 @@ export type Parts = {
   notices: Ran | null
   transcript: Ran | null
   settings: Ran | null
+  /** `belay memory held --awaiting`: read only while some held note waits on the operator. */
+  awaiting?: Ran | null
 }
 
 // The orchestrator's row in THIS successful agents read decides the run state; it is never carried over.
@@ -102,23 +127,36 @@ function runStateOf(agents: BelayAgent[], stateRaw: string | null): BelayPanelSn
   return 'running'
 }
 
+// The held line plus the ids of the notes that wait on the operator: this round's read, else the last round's while some still wait.
+function heldWith(h: BelayHeld | null, aw: unknown, prev: BelayHeld | null, now: number): BelayHeld | null {
+  if (!h) return h
+  if (!(h.awaiting ?? 0)) { const { awaitingNotes: _gone, ...rest } = h; return rest }
+  // The list and its own total come from one read. A list carried over from an earlier round (this round's read failed) says so and keeps
+  // the total and the time of the read it came from; the heading's count is a different read and is never mixed into the list's.
+  if (aw !== undefined) return { ...h, awaitingNotes: normAwaiting(aw), awaitingList: { total: countAwaiting(aw), at: now, carried: false } }
+  const notes = prev?.awaitingNotes ?? h.awaitingNotes ?? []
+  const was = prev?.awaitingList
+  return { ...h, awaitingNotes: notes, ...(notes.length || was ? { awaitingList: { total: was?.total ?? notes.length, at: was?.at ?? now, carried: true } } : {}) }
+}
+
 export function buildSnapshot(p: Parts): BelayPanelSnap {
   const { prev } = p
   const errors: string[] = []
-  const take = (r: Ran | null): unknown => {
+  const readIssues: BelayReadIssue[] = [] // a read that timed out or failed: shown as the stale line, not as a raw error
+  const take = (r: Ran | null, verb: string): unknown => {
     if (!r) return undefined
-    if ('error' in r) { errors.push(r.error); return undefined }
+    if ('error' in r) { readIssues.push({ verb, timedOut: 'timedOut' in r, text: 'timedOut' in r ? '' : r.error.split(/\s+/).filter(Boolean).join(' ').slice(0, 120) }); return undefined }
     return r.json
   }
-  const aj = take(p.agents)
+  const aj = take(p.agents, 'agents')
   const ag: AgentsRead | null = aj !== undefined ? normAgents(aj) : null
   const stale = ag === null
   if (ag && ag.runId === null && p.watch.runId === null) errors.push('no belay run found (this session\'s directory has no belay store, or the store has no runs)')
-  const nj = take(p.notices) // null: the round was cut short by a timeout, so the earlier notices stand
+  const nj = take(p.notices, 'notices') // null: the round was cut short by a timeout, so the earlier notices stand
   const notices = nj !== undefined ? normNotices(nj) : (prev?.notices ?? [])
   // belay-run.json means this is the orchestrator's own window; otherwise the run's mode, null when unknown.
   const mode = p.watch.fixed ? 'interactive' : ag ? ag.mode : (prev?.mode ?? null)
-  const tj = take(p.transcript)
+  const tj = take(p.transcript, 'transcript')
   let transcript = mode === 'headless' ? (prev?.transcript ?? null) : null
   let transcriptOk = mode === 'headless' ? (prev?.transcriptOk ?? false) : false
   let transcriptAt = mode === 'headless' ? (prev?.transcriptAt ?? null) : null
@@ -132,7 +170,8 @@ export function buildSnapshot(p: Parts): BelayPanelSnap {
       transcriptAt = p.now
     }
   }
-  const sj = take(p.settings)
+  const aw = take(p.awaiting ?? null, 'awaiting list')
+  const sj = take(p.settings, 'settings')
   const settings = sj !== undefined ? parseSettings(sj) : (prev?.settings ?? DEFAULT_SETTINGS)
   // The settings read sees the config file only. A run answers for itself (its launch recorded the notice, or none: notes on, notes
   // off on purpose, memory null), whatever the config says now; the config's notice is for a panel with no run to read.
@@ -157,7 +196,7 @@ export function buildSnapshot(p: Parts): BelayPanelSnap {
     embedder: ag ? ag.embedder : (prev?.embedder ?? null),
     agents: ag ? ag.agents : (prev?.agents ?? []),
     footer: ag ? ag.footer : (prev?.footer ?? null),
-    notices, held: nj !== undefined ? normHeld(nj) : (prev?.held ?? null), transcript, settings, memoryNotice,
-    memWanted: sj !== undefined ? heavyConfigured(sj) : (prev?.memWanted ?? false), errors,
+    notices, held: heldWith(nj !== undefined ? normHeld(nj) : (prev?.held ?? null), aw, prev?.held ?? null, p.now), transcript, settings, memoryNotice,
+    memWanted: sj !== undefined ? heavyConfigured(sj) : (prev?.memWanted ?? false), errors, readIssues, goodAt: readIssues.length ? (prev?.goodAt ?? null) : p.now,
   }
 }

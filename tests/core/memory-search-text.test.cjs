@@ -26,17 +26,32 @@ async function withStore(fn) {
 const put = (E, text, v) => E.handle('memory.store', { caller: orch, namespace: 'n', text, embedding: v, embedding_model: 'm', dim: 3 });
 const search = (E, args) => E.handle('memory.search', { caller: orch, namespace: 'n', query_embedding: [1, 0, 0], embedding_model: 'm', ...args });
 
-test('on a populated scope both modes run, nothing is wrong, and absence_established is false', async () => {
+test('on a populated scope with a row near the query both modes run, nothing is wrong, and absence_established is false', async () => {
+  await withStore(async (E) => {
+    await put(E, 'Ferries depart at noon from pier four', [0, 1, 0]);
+    await put(E, 'Rotate the API key every quarter', [0.9, 0.1, 0]);
+    const r = await search(E, { query: 'quokka sighting' });
+    assert.deepStrictEqual(r.modes_run.sort(), ['keyword', 'semantic']);
+    assert.deepStrictEqual(r.modes_failed, []);
+    assert.strictEqual(r.warning, null, 'a clean search with a relevant row carries no warning');
+    assert.strictEqual(r.absence_established, false);
+    assert.deepStrictEqual(r.results.map((x) => !!x.low_relevance), [false, true], 'the far row is flagged, not dropped');
+  });
+});
+
+// ADR 0057 decision 4: every row far from the query is no relevant memory. The rows still come back, flagged, and the warning says so.
+test('on a populated scope with no row near the query, absence_established is true and every row is flagged', async () => {
   await withStore(async (E) => {
     await put(E, 'Ferries depart at noon from pier four', [0, 1, 0]);
     await put(E, 'Rotate the API key every quarter', [0, 0, 1]);
     await put(E, 'Unrelated vector row about caching', [0, 0.6, 0.8]);
     const r = await search(E, { query: 'quokka sighting' });
     assert.deepStrictEqual(r.modes_run.sort(), ['keyword', 'semantic']);
-    assert.deepStrictEqual(r.modes_failed, []);
-    assert.strictEqual(r.warning, null, 'a clean search carries no warning');
-    assert.ok(r.results.length > 0, 'the semantic half returns the unrelated rows');
-    assert.strictEqual(r.absence_established, false);
+    assert.strictEqual(r.results.length, 3, 'the semantic half still returns the nearest rows');
+    assert.ok(r.results.every((x) => x.low_relevance === true));
+    assert.strictEqual(r.below_floor, 3);
+    assert.match(r.warning, /^no result reaches the relevance floor/);
+    assert.strictEqual(r.absence_established, true);
   });
 });
 
@@ -53,7 +68,7 @@ test('absence_established is true only when both modes ran and the scope held no
 test('the tool description says what the flag is, not that false means not searched', () => {
   const d = T.toolsFor('worker').find((t) => t.name === 'memory_search').description;
   assert.doesNotMatch(d, /not searched/);
-  assert.match(d, /absence_established \(true only if both ran and found nothing\)/);
+  assert.match(d, /absence_established \(true only if both ran and none reached the relevance floor/);
 });
 
 test('the rules text and the index footer say the same', () => {
