@@ -38,6 +38,13 @@ test('amend accepts a repeated files_owned and depends_on, and refuses a changed
   assert.strictEqual((await orch.task.get({ task_id: t.id })).amended.length, 1, 'the refused amend wrote nothing');
 });
 
+test('a repeated files_owned or depends_on in another order is the same set, a no-op', async () => {
+  const d1 = await orch.task.create({ spec: 'd1', acceptance: PASS }), d2 = await orch.task.create({ spec: 'd2', acceptance: PASS });
+  const t = await orch.task.create({ id: 'noop-set', spec: 'work', files_owned: ['set/a.js', 'set/b.js'], depends_on: [d1.id, d2.id], acceptance: FAIL });
+  const a = await orch.task.create({ id: t.id, amend: true, acceptance: PASS, files_owned: ['set/b.js', 'set/a.js'], depends_on: [d2.id, d1.id], spec: 'work' });
+  assert.strictEqual(a.amended.length, 1);
+});
+
 test('the busy refusal says to retry once the result lands', async () => {
   const started = fwd(path.join(dir, 'started')), gate = fwd(path.join(dir, 'gate'));
   const argv = [process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(started)}, ''); const t = setInterval(() => { if (require('fs').existsSync(${JSON.stringify(gate)})) clearInterval(t); }, 20);`];

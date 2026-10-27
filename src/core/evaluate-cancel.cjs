@@ -27,12 +27,23 @@ function during(taskId, t0, t1) {
   }
   return [...by].map(([task_id, overlap_ms]) => ({ task_id, overlap_ms }));
 }
+// Marks an evaluation as running from now; the returned function ends the span. An integration re-run takes one too (ADR 0061 section 4 (b)).
+function beginSpan(taskId) {
+  const span = { task_id: taskId, start: Date.now(), end: null };
+  SPANS.push(span);
+  return () => endSpan(span);
+}
 function endSpan(span) {
   span.end = Date.now();
   const from = Math.min(...SPANS.filter((s) => s.end == null).map((s) => s.start)); // Infinity when none runs
   for (let i = SPANS.length - 1; i >= 0; i--) if (SPANS[i].end != null && SPANS[i].end < from) SPANS.splice(i, 1);
 }
 // The evaluation running for a task, as an E_BUSY names it; null when none runs (task.create amend refuses beside one).
+// A task whose evaluation waits for a slot, as { ahead } (the evaluations before it); null when it is not waiting (amend refuses beside one).
+function queuedFor(id) {
+  const i = GATE.waiting.findIndex((w) => w.task && w.task.id === id);
+  return i < 0 ? null : { ahead: GATE.active + i };
+}
 const runningFor = (id) => { const r = BY_TASK.get(id); return r ? { trigger: r.trigger, worktree: r.worktree, base: r.base } : null; };
 const norm = (p) => { const s = String(p).replace(/\\/g, '/').replace(/\/+$/, ''); return process.platform === 'win32' ? s.toLowerCase() : s; };
 async function joinOrRun(E, args, run) {
@@ -55,9 +66,8 @@ async function joinOrRun(E, args, run) {
   const limit = limitFor(E, task.run_id);
   const p = (async () => {
     const slot = await acquire(limit, { cancelKey: args.cancel_key, task }); // queued evaluations are registered below, so a second call for the same task and tree joins this one
-    const span = { task_id: task.id, start: Date.now(), end: null };
-    SPANS.push(span);
-    try { return await run(slot.queued); } finally { endSpan(span); slot.release(); }
+    const end = beginSpan(task.id);
+    try { return await run(slot.queued); } finally { end(); slot.release(); }
   })();
   const mine = { key, worktree: norm(at.worktree), base: at.base || null, trigger: args.trigger || null };
   RUNNING.set(key, p);
@@ -70,19 +80,34 @@ async function joinOrRun(E, args, run) {
 
 // The run lever max_parallel_evaluations: at most N evaluations run at once in this owner, a task.evaluate (release-time or called) and an
 // integration re-run alike; the others wait here in arrival order. Unset (null) gates nothing, which is the behaviour without the lever.
-const GATE = { active: 0, waiting: [] }; // waiting: { limit, grant, reject, key, task, at }
+const GATE = { active: 0, waiting: [] }; // waiting: { limit, grant, reject, key, task, at, timer }
+// How long a call may wait for a slot. The 540 s command budget (evaluate.cjs ACCEPTANCE_BUDGET_MS) is what is left after the wait, so wait plus run
+// is inside 540 s and the client's 600 s wait (call-limits.cjs EVALUATE_TIMEOUT_MS) never ends first with the outcome unknown. 240 s leaves a
+// queued evaluation at least 300 s to run; one that reaches it is refused E_BUSY { queued: true } with nothing run and nothing written. A
+// release-time evaluation is bound the same way: it is a call over the same client, and its refusal reaches the orchestrator in the wake.
+const WAIT = { maxMs: 240000 };
+const budgetAfter = (waitedMs, total) => Math.max(0, total - Math.max(0, Number(waitedMs) || 0));
 function pump() {
   while (GATE.waiting.length && GATE.active < GATE.waiting[0].limit) { const w = GATE.waiting.shift(); GATE.active += 1; w.grant(); }
 }
 // -> Promise of { release(), queued: null | { ahead, waited_ms } }. `ahead` counts the evaluations running or queued when this one queued.
-function acquire(limit, { cancelKey = null, task = null } = {}) {
+function acquire(limit, { cancelKey = null, task = null, op = 'evaluation' } = {}) {
   if (limit == null) return Promise.resolve({ release() {}, queued: null });
   let held = false;
   const slot = () => ({ release() { if (held) return; held = true; GATE.active -= 1; pump(); } });
   if (GATE.active < limit && !GATE.waiting.length) { GATE.active += 1; return Promise.resolve({ ...slot(), queued: null }); }
   const ahead = GATE.active + GATE.waiting.length;
   return new Promise((resolve, reject) => {
-    const w = { limit, key: cancelKey, task, reject, at: Date.now(), grant: () => resolve({ ...slot(), queued: { ahead, waited_ms: Date.now() - w.at } }) };
+    const w = { limit, key: cancelKey, task, reject, at: Date.now(), grant: () => { clearTimeout(w.timer); resolve({ ...slot(), queued: { ahead, waited_ms: Date.now() - w.at } }); } };
+    w.timer = setTimeout(() => { // the bound: out of the queue, nothing run, nothing written
+      const i = GATE.waiting.indexOf(w);
+      if (i < 0) return;
+      GATE.waiting.splice(i, 1);
+      const waited_ms = Date.now() - w.at;
+      reject(err('E_BUSY', `this ${op} waited ${Math.round(waited_ms / 1000)} s for a slot behind ${ahead} other evaluation${ahead === 1 ? '' : 's'} (the run allows only max_parallel_evaluations at once) and was not run; nothing was written. Call it again once the running evaluations have finished`,
+        { op: 'evaluate', queued: true, ahead, waited_ms, ...(task ? { task_id: task.id } : {}) }));
+    }, WAIT.maxMs);
+    if (w.timer.unref) w.timer.unref();
     GATE.waiting.push(w);
   });
 }
@@ -118,6 +143,7 @@ async function evaluateCancel(E, caller, args) {
   const qi = typeof args.cancel_key === 'string' && args.cancel_key ? GATE.waiting.findIndex((w) => w.key === args.cancel_key) : -1;
   if (qi >= 0) { // still waiting for a slot: it leaves the queue and its evaluation ends cancelled, having run nothing
     const [w] = GATE.waiting.splice(qi, 1);
+    clearTimeout(w.timer);
     w.reject(cancelled(w.task, { by: typeof args.by === 'string' ? args.by : null }));
     return { cancel_key: args.cancel_key, cancelled: true, killed: [], queued: true };
   }
@@ -132,4 +158,4 @@ async function evaluateCancel(E, caller, args) {
   return { cancel_key: args.cancel_key, cancelled: true, killed };
 }
 
-module.exports = { acquire, limitFor, GATE, register, unregister, cancelled, evaluateCancel, joinOrRun, pruneEarly, runningFor, during, LIVE, EARLY, RUNNING, SPANS, EARLY_TTL_MS };
+module.exports = { WAIT, budgetAfter, beginSpan, queuedFor, acquire, limitFor, GATE, register, unregister, cancelled, evaluateCancel, joinOrRun, pruneEarly, runningFor, during, LIVE, EARLY, RUNNING, SPANS, EARLY_TTL_MS };

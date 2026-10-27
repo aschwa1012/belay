@@ -270,7 +270,7 @@ function cwdFor(c, task, tree) {
   return G.fwd(c.cwd);
 }
 
-async function rerun(tasks, tree, reuse, head) {
+async function rerun(tasks, tree, reuse, head, beside = null) {
   const byKey = new Map();
   for (const t of tasks) {
     for (const c of (t.acceptance && Array.isArray(t.acceptance.commands) ? t.acceptance.commands : [])) {
@@ -285,10 +285,12 @@ async function rerun(tasks, tree, reuse, head) {
   for (const c of byKey.values()) {
     const from = reuse(c.argv, c.cwd, c.timeout_ms);
     if (from) { checks.push({ argv: c.argv, cwd: c.cwd, timeout_ms: c.timeout_ms, task_ids: c.task_ids, reused_from: from, head_sha: head, passed: true }); continue; }
+    const t0 = Date.now();
     const r = await runCommand(c.argv, c.cwd, c.timeout_ms, { keep: 'ends' }); // the ends and the failure section, as task.evaluate keeps
+    const concurrent = beside ? beside(t0, Date.now()) : [];
     checks.push({
       argv: c.argv, cwd: c.cwd, timeout_ms: c.timeout_ms, task_ids: c.task_ids, executable: r.executable, exit_code: r.exit_code, ms: r.ms, timed_out: r.timed_out,
-      passed: r.executable && r.exit_code === 0 && !r.timed_out, spawn_error: r.spawn_error || null, ...outputTails(r),
+      passed: r.executable && r.exit_code === 0 && !r.timed_out, spawn_error: r.spawn_error || null, ...(concurrent.length ? { concurrent } : {}), ...outputTails(r),
     });
   }
   return checks;
@@ -302,7 +304,12 @@ async function merge(E, caller, args) {
   const force = args.force === true;
   const { tasks, repo, targets } = await readTasks(E, args.task_ids, force);
   const into = await G.validBranch(repo, args.into === undefined ? `belay/integrate/${caller.run_id}` : args.into);
-  return W.exclusive(`integrate:${repo}:${into}`, `an integration into ${into}`, async () => {
+  // The re-run counts toward the run's max_parallel_evaluations, and its slot is taken here, before the branch lock and before any merge: a call
+  // that waits too long is refused E_BUSY { queued: true } with the branch untouched, and the lock is never held while waiting (evaluate-cancel.cjs WAIT).
+  const EC = require('./evaluate-cancel.cjs');
+  const slot = args.evaluate === false ? null : await EC.acquire(EC.limitFor(E, caller.run_id), { op: 'integrate' });
+  try {
+  return await W.exclusive(`integrate:${repo}:${into}`, `an integration into ${into}`, async () => {
     const abandoned = await abandonStale(E, caller, repo, into, takeOver);
     const tree = await integrationTree(E, repo, into, args, tasks, abandoned);
     const by = E.writtenBy(caller);
@@ -355,10 +362,8 @@ async function merge(E, caller, args) {
       try {
         const older = carried.entries.map((c) => rows.current(E.store, 'task', c.task_id)).filter(Boolean);
         const reuse = INC.reuseFor(E, repo, into, out.head_sha, (await G.dirtyPaths(tree.path)).length === 0);
-        // The re-run counts toward the run's max_parallel_evaluations: it runs the same suites, so it takes a slot like an evaluation.
-        const EC = require('./evaluate-cancel.cjs');
-        const slot = await EC.acquire(EC.limitFor(E, caller.run_id), {});
-        try { out.checks = await rerun([...tasks, ...older].filter((t) => landed.has(t.id)), tree.path, reuse, out.head_sha); } finally { slot.release(); }
+        const endSpan = EC.beginSpan(`integration ${base.id}`); // ADR 0061 section 4 (b): it ran beside the evaluations that overlapped it, and they beside it
+        try { out.checks = await rerun([...tasks, ...older].filter((t) => landed.has(t.id)), tree.path, reuse, out.head_sha, (a, b) => EC.during(`integration ${base.id}`, a, b)); } finally { endSpan(); }
         out.passed = out.checks.length > 0 ? out.checks.every((c) => c.passed) : null;
         if (!stop) {
           if (!out.checks.length) out.error = { message: 'the merged tasks declare no acceptance commands, so nothing was re-run and nothing is proven' };
@@ -379,6 +384,7 @@ async function merge(E, caller, args) {
     E.noteWrite();
     return { ...view(row), ...(carried.notCarried.length ? { not_carried: carried.notCarried } : {}) }; // answered, not stored: a task left out is on no row
   });
+  } finally { if (slot) slot.release(); }
 }
 
 async function list(E, caller, args) {

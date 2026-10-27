@@ -8,7 +8,7 @@ const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 const { pidAlive } = require('./lock.cjs');
 const { DEFAULT_LEASE_TTL_MS, TASK_STATES } = require('./schema.cjs');
-const { runAcceptance } = require('./evaluate.cjs');
+const { runAcceptance, ACCEPTANCE_BUDGET_MS } = require('./evaluate.cjs');
 const holds = require('./task-holds.cjs');
 const LHD = require('./lease-holder-dead.cjs'); // ADR 0026 amendments 1 and 2
 const derived = require('./task-derived.cjs');
@@ -298,7 +298,7 @@ async function evaluate(E, caller, args, queued = null) {
   const cancel = EC ? EC.register(args.cancel_key) : null;
   const J = require('./judged.cjs'), judged = await J.stateOf(task, at.worktree); // ADR 0060 decisions 4 and 6: what integrate may merge
   let commandChecks;
-  try { commandChecks = await runAcceptance(task.acceptance, at.worktree, task.files_owned, { ...at, cancel, beside: (a, b) => require('./evaluate-cancel.cjs').during(task.id, a, b) }); } finally { if (cancel) EC.unregister(args.cancel_key, cancel); }
+  try { commandChecks = await runAcceptance(task.acceptance, at.worktree, task.files_owned, { ...at, cancel, budgetMs: require('./evaluate-cancel.cjs').budgetAfter(queued && queued.waited_ms, ACCEPTANCE_BUDGET_MS), beside: (a, b) => require('./evaluate-cancel.cjs').during(task.id, a, b) }); } finally { if (cancel) EC.unregister(args.cancel_key, cancel); }
   if (cancel && cancel.cancelled) throw EC.cancelled(task, cancel);
   // The commands can run for minutes, so the row is read again inside the transaction that writes it: a
   // release that landed meanwhile (its handoff, its state) is what the verdict check reads and what the

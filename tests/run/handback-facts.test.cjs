@@ -33,3 +33,12 @@ test('nothing is said without results, with stale results, for a work task, or w
   assert.strictEqual(await HB.facts(getter({ w1: { results: results() } }), { task: { id: 'c', depends_on: ['w1'], acceptance: {} }, new_lease: { id: 'l' } }), '');
   assert.strictEqual(HB.rule({ task: { id: 'c', acceptance: {} }, new_lease: { id: 'l' } }).includes("belay's acceptance"), false);
 });
+
+test('a result with no head is not stated; one judged at another head than the tree now has says so', async () => {
+  assert.strictEqual(await HB.facts(getter({ w1: { results: results({ head_sha: undefined }) } }), assigned), '');
+  const moved = { ...assigned, new_lease: { id: 'l', tree: { head: '9999999999999999' } } };
+  const f = await HB.facts(getter({ w1: { results: results() } }), moved);
+  assert.ok(f.includes('passed at abcdef012345; the tree is now at 999999999999 (node --test'));
+  const same = { ...assigned, new_lease: { id: 'l', tree: { head: 'abcdef0123456789ffff' } } };
+  assert.ok(!/the tree is now/.test(await HB.facts(getter({ w1: { results: results() } }), same)), 'a head that matches (as a prefix) adds nothing');
+});

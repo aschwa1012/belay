@@ -49,6 +49,7 @@ test('a stop that still times out says why and names the processes it killed', {
     assert.strictEqual(r.graceful, false, JSON.stringify(r));
     assert.strictEqual(r.killed, true);
     assert.ok(r.graceful_timed_out_ms >= 1400, String(r.graceful_timed_out_ms));
+    assert.ok(r.graceful_timed_out_ms < 2000, `the background phase comes out of timeout_ms, not on top of it: ${r.graceful_timed_out_ms}`);
     assert.deepStrictEqual(r.blocked_by.map((t) => t.task_id), ['bgtask_1']);
     assert.ok(r.blocked_by[0].description, 'the task is described');
     const k = r.killed_processes.find((p) => p.pid === pid);

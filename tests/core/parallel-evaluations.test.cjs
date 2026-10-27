@@ -151,7 +151,7 @@ test('an integration re-run counts toward N: it waits for a free slot', async ()
   const rh = hold.evaluate();
   await until(() => hold.started());
   const merging = orch.integration.merge({ task_ids: [t.id] });
-  await until(() => EC.GATE.waiting.length === 1); // the merge is done; its re-run waits behind the evaluation
+  await until(() => EC.GATE.waiting.length === 1); // the integration waits for its slot before it merges anything, behind the evaluation
   hold.open();
   await rh;
   const row = await merging;

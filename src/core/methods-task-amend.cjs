@@ -23,7 +23,9 @@ function checkAcceptance(acceptance) {
 // tree stay as created, so a field beside these is refused when it would change, and ignored when it repeats the task's own value.
 const AMEND_FIELDS = new Set(['id', 'amend', 'spec', 'acceptance', 'view']);
 const ROW_FIELDS = ['files_owned', 'depends_on', 'repairs', 'base']; // the fields a task row holds to compare a repeated value against
-const norm = (v) => (v == null || (Array.isArray(v) && v.length === 0) ? null : JSON.stringify(v));
+// depends_on and files_owned are sets: the same members in another order repeat the task's own value.
+const SETS = new Set(['depends_on', 'files_owned']);
+const norm = (v, k) => (v == null || (Array.isArray(v) && v.length === 0) ? null : JSON.stringify(SETS.has(k) && Array.isArray(v) ? [...new Set(v)].sort() : v));
 
 // task.create { id, amend: true, acceptance, spec? } -> the task row as amended. The old acceptance (and spec, when it changes)
 // is kept in `amended: [{ at, by, acceptance, spec? }]`, and the last results stay, marked `stale`, so no check run under the
@@ -39,7 +41,7 @@ async function amend(E, caller, args) {
     const task = rows.current(E.store, 'task', args.id);
     if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.id}, so there is nothing to amend; leave amend out to create it`, { task_id: args.id });
     // A field beside the revision that repeats the task's own value is a no-op; one that would change it is refused, by name.
-    const extra = Object.keys(args).filter((k) => args[k] !== undefined && !AMEND_FIELDS.has(k) && !(ROW_FIELDS.includes(k) && norm(args[k]) === norm(task[k])));
+    const extra = Object.keys(args).filter((k) => args[k] !== undefined && !AMEND_FIELDS.has(k) && !(ROW_FIELDS.includes(k) && norm(args[k], k) === norm(task[k], k)));
     if (extra.length) throw err('E_ARGS', `task.create amend revises acceptance and spec only; ${extra.join(', ')} cannot change on an existing task`, { task_id: args.id, fields: extra });
     if (task.state === 'done') throw err('E_TASK_DONE', `task ${task.id} is done, and done is final; its acceptance cannot change under it. Create a new task to redo the work`, { task_id: task.id, state: 'done' });
     if (task.state === 'cancelled') throw err('E_ARGS', `task ${task.id} was cancelled, which is final; create a new task to do the work`, { task_id: task.id, state: 'cancelled' });
@@ -52,9 +54,14 @@ async function amend(E, caller, args) {
     if (isReview(args.acceptance) !== isReview(task.acceptance)) {
       throw err('E_ARGS', `task ${task.id} is ${isReview(task.acceptance) ? 'a review (acceptance.verdict: true)' : 'not a review'}, and an amend cannot change that; create a new task for other work`, { task_id: task.id, field: 'acceptance.verdict' });
     }
-    const running = require('./evaluate-cancel.cjs').runningFor(task.id);
+    const EC = require('./evaluate-cancel.cjs');
+    const queued = EC.queuedFor(task.id);
+    if (queued) { // it has not started: the acceptance it will read is still the current one, so it is named as waiting, not as running
+      throw err('E_BUSY', `task ${task.id} has an evaluation waiting for a slot behind ${queued.ahead} other${queued.ahead === 1 ? '' : 's'} (max_parallel_evaluations); it would read the acceptance as it is now. Amend once that evaluation has run or been refused after its wait, and retry then`, { op: 'evaluate', task_id: task.id, queued: true, ahead: queued.ahead });
+    }
+    const running = EC.runningFor(task.id);
     if (running) {
-      throw err('E_BUSY', `task ${task.id} is being evaluated against its current acceptance; amend it again once that result has landed (retry then)`, { op: 'evaluate', task_id: task.id, running });
+      throw err('E_BUSY', `task ${task.id} is being evaluated against its current acceptance; amend it once that result has landed (retry then)`, { op: 'evaluate', task_id: task.id, running });
     }
     const t = Date.now(), by = E.writtenBy(caller);
     const spec = args.spec !== undefined && args.spec !== task.spec ? args.spec : null;
