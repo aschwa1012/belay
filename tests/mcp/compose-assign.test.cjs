@@ -44,7 +44,7 @@ test('a verdict task gets the verdict-shaped rule and the Review standard, and n
   const h = harness({ acceptance: { verdict: true }, worktree: TREE });
   await h.c.assign({ task_id: 'r1', worker_id: 'rv' });
   const text = h.sent[0];
-  assert.ok(text.includes('call lease_release with lease_id L1 and result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [...] }.'));
+  assert.ok(text.includes('call lease_release with lease_id L1 and result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [{ "severity": "blocking|should-fix|note", "title": "..." }] }.'));
   assert.ok(text.endsWith(STANDARD));
   assert.ok(!text.includes('(branch, head, tests, findings)') && !text.includes('commit your work'));
 });

@@ -31,7 +31,7 @@ test('the rule for a work task names the lease and the result shape; in the task
 
 test('the rule for a verdict task has the verdict shape and carries the Review standard, from its one file', () => {
   const r = HB.rule(assigned({ id: 'r1', acceptance: { verdict: true } }, 'L9'));
-  assert.ok(r.startsWith('\n\nWhen you are finished, call lease_release with lease_id L9 and result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [...] }.\n\n## Review standard\n'));
+  assert.ok(r.startsWith('\n\nWhen you are finished, call lease_release with lease_id L9 and result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [{ "severity": "blocking|should-fix|note", "title": "..." }] }.\n\n## Review standard\n'));
   assert.ok(r.endsWith(STANDARD), 'the standard is the file\'s text, verbatim');
   assert.ok(!r.includes('(branch, head, tests, findings)'), 'not the work task\'s shape');
   assert.ok(STANDARD.includes('(a) breaks one of the brief\'s stated acceptance criteria') && STANDARD.includes('(d) causes a hang, data loss, an orphaned process or a security hole'));
@@ -88,7 +88,7 @@ test('a spawn ends the first message with the rule: the resume line, the prompt,
 test('a spawn for a verdict task ends with the verdict rule and the Review standard, so the orchestrator copies neither', async () => {
   const first = await firstMessage({ id: 't1', acceptance: { verdict: true } }, { agent_type: 'reviewer' });
   assert.ok(first.startsWith('task t1 lease=lease-1.\n\nthe brief'));
-  assert.ok(first.includes('\n\nWhen you are finished, call lease_release with lease_id lease-1 and result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [...] }.\n\n## Review standard\n'));
+  assert.ok(first.includes('\n\nWhen you are finished, call lease_release with lease_id lease-1 and result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [{ "severity": "blocking|should-fix|note", "title": "..." }] }.\n\n## Review standard\n'));
   assert.ok(first.endsWith(STANDARD));
   assert.strictEqual(first.split('## Review standard').length - 1, 1, 'once');
 });
