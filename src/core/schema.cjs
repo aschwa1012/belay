@@ -234,6 +234,17 @@ const MIGRATIONS = [
   'ALTER TABLE integration ADD COLUMN owner_boot INTEGER',
   // ADR 0061, forced merge: who forced a merge of tasks not done, when, why, and what it forced (JSON text, nullable).
   'ALTER TABLE integration ADD COLUMN forced TEXT',
+  // A merge into a branch the user owns: the run's merge_into setting and its mode (set by the launching attach, operator only), the permission
+  // row's kind (null reads as substrate), and the proof columns an integration row into a user branch carries.
+  'ALTER TABLE run ADD COLUMN merge_into TEXT',
+  'ALTER TABLE run ADD COLUMN run_mode TEXT',
+  'ALTER TABLE permission ADD COLUMN kind TEXT',
+  'ALTER TABLE integration ADD COLUMN target TEXT',
+  'ALTER TABLE integration ADD COLUMN head_before TEXT',
+  'ALTER TABLE integration ADD COLUMN head_after TEXT',
+  'ALTER TABLE integration ADD COLUMN applied TEXT',
+  'ALTER TABLE integration ADD COLUMN approver TEXT',
+  'ALTER TABLE integration ADD COLUMN prepared TEXT',
   // ADR 0054 amendment 1: a review lease's snapshot of the reviewer's tree at grant (JSON text, nullable), carried by every
   // later row of the lease; lease.release compares it with the tree at the hand-back.
   'ALTER TABLE lease ADD COLUMN tree TEXT',
