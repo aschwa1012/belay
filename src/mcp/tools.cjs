@@ -171,7 +171,7 @@ const BOTH = [
 // the core's rows with view debug. The worker's listing keeps the plain one above, so its bytes are unchanged.
 const ORCH_TASK_LIST = {
   name: 'task_list',
-  description: 'Tasks: id, state, rev (row version), spec_head, depends_on, branch, lease, last results (failing named), hand-back field names. task_ids: those tasks with hand-back and checks whole. view debug: full rows.',
+  description: 'Tasks: id, state, spec_head, depends_on, branch, lease, last results (failing named), hand-back field names. task_ids: those tasks with hand-back and checks whole. view debug: full rows.',
   inputSchema: S({ states: strs('open, assigned, released, done or cancelled'), task_ids: strs(), view: DEBUG }),
 };
 

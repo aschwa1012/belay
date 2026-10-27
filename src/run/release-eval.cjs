@@ -225,4 +225,4 @@ function evaluatingHolds(seen, rows, runId) {
   return [...pending].filter(([, p]) => live.has(p.worker_id)).map(([id]) => `eval:${id}`).concat(held);
 }
 
-module.exports = { unevaluated, notePending, evaluatingHolds, startRelease, cancelEvaluation, evalOf, enrichWakes, clause, turnEndText, summaryOf, holdMs, WAKE_TEXT_MAX, PENDING_MAX_MS, RELEASE_WAKE_HOLD_MS };
+module.exports = { unevaluated, notePending, evaluatingHolds, startRelease, cancelEvaluation, evalOf, enrichWakes, clause, turnEndText, summaryOf, cut, holdMs, WAKE_TEXT_MAX, PENDING_MAX_MS, RELEASE_WAKE_HOLD_MS };
