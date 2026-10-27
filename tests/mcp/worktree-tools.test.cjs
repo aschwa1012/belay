@@ -84,3 +84,19 @@ test('worker_spawn for a review task starts the reviewer in the reviewed task\'s
   assert.match(text, /E_DEPENDENCY_OPEN/, "past the worktree stage, the spawn stops at the open dependency (nothing launched)");
   assert.ok(!/needs worktree|reviews no task|trees, so no one tree/.test(text), `the reviewed tree ${made.worktree.path} was not resolved: ${text}`);
 });
+
+test('worker_spawn for a review whose reviewed tree was removed says the tree was removed, not that there is none', async (t) => {
+  const box = sandboxDir('wt-review-removed');
+  const repo = makeRepo(box);
+  await recordProject(`${box}/data`, 'run-1', repo);
+  const a = launch({ role: 'orchestrator', data: `${box}/data`, fake: false });
+  t.after(async () => { await a.close(); a.kill(); fs.rmSync(box, { recursive: true, force: true }); });
+  await a.initialize();
+  const work = ok(await a.call('task_create', { spec: 'write a.txt', files_owned: ['a.txt'], acceptance: { files_within_owned: true } }));
+  ok(await a.call('task_worktree', { task_id: work.id, repo }, 60000));
+  ok(await a.call('task_worktree', { task_id: work.id, action: 'remove' }, 60000));
+  const rv = ok(await a.call('task_create', { id: 'rv-removed', spec: 'review it', depends_on: [work.id], acceptance: { verdict: true } }));
+  const b = refused(await a.call('worker_spawn', { substrate: 'claude-code', prompt: 'x', task_id: rv.id }), 'E_ARGS');
+  assert.match(b.message, /was removed, so there is no tree to start the reviewer in/);
+  assert.ok(!/reviews no task/.test(b.message));
+});
