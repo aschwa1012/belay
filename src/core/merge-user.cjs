@@ -128,14 +128,15 @@ async function mergeIntoUser(E, caller, args, c) {
   else if (out.applied === 'prepared') out.merged = [];
   if (out.conflict) out.conflict = { ...out.conflict, unapplied: unapplied() };
   if (out.applied !== 'none') await dropPrepared(repo, E, into, id, merged, by, fold); // earlier prepared merges this head contains
-  let removal = null;
+  let removal = null, removedAt = null;
   try {
     removal = await W.removeTree(E, { repo, path: tree.path, junctions: tree.junctions, branch: null }, { force: true }, `integration ${id}`);
-    out.removed_at = removal.leftover ? null : Date.now();
+    removedAt = removal.leftover ? null : Date.now();
   } catch (e) {
     out.error = { ...(out.error || {}), tree_not_removed: `${tree.path} could not be removed (${e.message}); belay worktree remove --integration ${id} will` };
   }
-  const row = E.store.tx(() => rows.append(E.store, 'integration', out, by, Date.now()));
+  // The outcome row first, then the row that records the tree's removal over it (as integration.remove does), so the outcome is what the task facts read.
+  const row = E.store.tx(() => { const o = rows.append(E.store, 'integration', out, by, Date.now()); return removedAt ? rows.append(E.store, 'integration', { ...o, removed_at: removedAt }, by, Date.now()) : o; });
   E.noteWrite();
   return { ...view(row), checked: ran, ...(ran ? {} : { note: 'no checks ran' }), merge_commits: entries.map((m) => m.head_sha).filter(Boolean), ...(removal ? { removal } : {}) };
 }

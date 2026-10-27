@@ -81,7 +81,7 @@ test('create, list, merge and remove a task\'s worktree from the CLI', async () 
   const tasks = await belay(['tasks', '--all', '--data', data], repo);
   assert.strictEqual(tasks.code, 0, tasks.err);
   assert.match(tasks.out, /integration/);
-  assert.match(tasks.out, /merged:int\/cli:passed/);
+  assert.match(tasks.out, /merged:belay\/integrate\/cli:passed/);
 
   const removed = await belay(['worktree', 'remove', t.id, '--data', data], repo);
   assert.strictEqual(removed.code, 0, removed.err);
@@ -131,14 +131,14 @@ test('the operator sees unchecked, failed and not merged work: in merge output a
   assert.strictEqual(listed.code, 0, listed.err);
   const text = (await belay(['tasks', '--all', '--data', data], repo)).out;
   const line = (id) => text.split('\n').find((l) => l.startsWith(id)) || '';
-  assert.match(line(a.id), /merged:int\/cli-stop2:passed/, 'the newest merge of a leads');
-  assert.match(line(b.id), /conflict:int\/cli-stop2/);
-  assert.match(line(x.id), /merged:int\/cli-fail:failed/);
+  assert.match(line(a.id), /merged:belay\/integrate\/cli-stop2:passed/, 'the newest merge of a leads');
+  assert.match(line(b.id), /conflict:belay\/integrate\/cli-stop2/);
+  assert.match(line(x.id), /merged:belay\/integrate\/cli-fail:failed/);
   const ia = listed.json.tasks.find((t) => t.id === a.id).integration;
   assert.deepStrictEqual(ia.elsewhere, [{ into: 'belay/integrate/cli-stop', state: 'merged' }]);
   // a's merge into int/cli-stop was never checked: belay tasks says so when that is the newest merge.
   const solo = await doneTask({ 'solo.txt': 's\n' }, [keep]);
   await belay(['worktree', 'merge', solo.id, '--into', 'belay/integrate/cli-solo', '--no-evaluate', '--data', data], repo);
   const after = (await belay(['tasks', '--all', '--data', data], repo)).out;
-  assert.match(after.split('\n').find((l) => l.startsWith(solo.id)), /merged:int\/cli-solo:unchecked/);
+  assert.match(after.split('\n').find((l) => l.startsWith(solo.id)), /merged:belay\/integrate\/cli-solo:unchecked/);
 });
