@@ -160,13 +160,23 @@ test('a prepared merge keeps a ref; a newer merge into the branch or removing th
   assert.ok(has(first.prepared.ref));
   const second = await s.orch.integration.merge({ task_ids: [b.id], into: 'main' });
   assert.ok(has(second.prepared.ref));
-  assert.ok(!has(first.prepared.ref), 'the superseded prepared ref is gone');
+  assert.ok(has(first.prepared.ref), 'a prepared merge that the newer one does not contain is kept: the user may still take it');
+  assert.ok(!(await s.orch.integration.get({ id: first.id })).prepared.deleted_at);
+  git(repo, 'merge', '--ff-only', first.prepared.sha); // the user takes the first
+  const c = await doneTask(s, repo, { 'c.txt': 'c\n' }, [exists('c.txt')]);
+  const third = await s.orch.integration.merge({ task_ids: [c.id], into: 'main' });
+  assert.ok(has(third.prepared.ref));
+  assert.ok(!has(first.prepared.ref), 'a merge that contains the first one drops its ref');
   assert.ok((await s.orch.integration.get({ id: first.id })).prepared.deleted_at);
+  assert.ok(has(second.prepared.ref), 'the second is not contained, so it stays');
+  assert.strictEqual((await s.orch.integration.get({ id: first.id })).prepared.deleted_at !== undefined, true);
   const left = await require('../../src/cli/run-prepared.cjs').left(s.orch, 'test-run');
-  assert.deepStrictEqual(left.prepared_left.map((p) => [p.integration_id, p.ref]), [[second.id, second.prepared.ref]]);
-  const removed = await s.op.integration.remove({ id: second.id });
-  assert.strictEqual(removed.prepared_ref_deleted, true);
-  assert.ok(!has(second.prepared.ref));
+  assert.deepStrictEqual(left.prepared_left.map((p) => p.integration_id).sort(), [second.id, third.id].sort());
+  for (const r of [second, third]) {
+    const removed = await s.op.integration.remove({ id: r.id });
+    assert.strictEqual(removed.prepared_ref_deleted, true);
+    assert.ok(!has(r.prepared.ref));
+  }
   assert.deepStrictEqual(await require('../../src/cli/run-prepared.cjs').left(s.orch, 'test-run'), {});
   assert.ok(!fs.existsSync(second.worktree));
 });

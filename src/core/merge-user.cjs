@@ -29,12 +29,14 @@ async function addTree(repo, id, at) {
   return { path: wtPath, junctions: made };
 }
 
-// An earlier prepared merge into the same branch is superseded by a newer one (or by one that landed): its ref is deleted, and the row says so.
-async function dropPrepared(repo, E, into, keepId) {
+// An earlier prepared merge into the same branch is dropped only once the new head contains it (the user took it, or this merge
+// carries it): a prepared merge the new head does not contain may still be wanted, and its ref is the only thing keeping it.
+async function dropPrepared(repo, E, into, keepId, newHead, by, fold = (x) => x) {
   for (const r of rows.currentAll(E.store, 'integration')) {
-    if (r.id === keepId || r.target !== 'user' || r.into_branch !== into || !r.prepared || !r.prepared.ref || r.prepared.deleted_at || !G.samePath(r.repo, repo)) continue;
+    if (r.id === keepId || r.target !== 'user' || !r.into_branch || fold(r.into_branch) !== fold(into) || !r.prepared || !r.prepared.ref || r.prepared.deleted_at || !G.samePath(r.repo, repo)) continue;
+    if (!(await G.run(repo, ['merge-base', '--is-ancestor', r.prepared.sha, newHead])).ok) continue;
     const d = await G.run(repo, ['update-ref', '-d', r.prepared.ref]);
-    if (d.ok) E.store.tx(() => rows.append(E.store, 'integration', { ...r, prepared: { ...r.prepared, deleted_at: Date.now(), deleted_why: 'superseded' } }, E.writtenBy({ role: 'operator', pid: process.pid }), Date.now()));
+    if (d.ok) E.store.tx(() => rows.append(E.store, 'integration', { ...r, prepared: { ...r.prepared, deleted_at: Date.now(), deleted_why: 'contained in a later head' } }, by, Date.now()));
   }
 }
 
@@ -125,7 +127,7 @@ async function mergeIntoUser(E, caller, args, c) {
   if (landed || (out.state === 'evaluated' && out.applied === 'none' && !out.error)) out.merged = entries; // nothing the branch lacks: what it already holds
   else if (out.applied === 'prepared') out.merged = [];
   if (out.conflict) out.conflict = { ...out.conflict, unapplied: unapplied() };
-  if (out.applied !== 'none') await dropPrepared(repo, E, into, id); // an earlier prepared merge for this branch is superseded
+  if (out.applied !== 'none') await dropPrepared(repo, E, into, id, merged, by, fold); // earlier prepared merges this head contains
   let removal = null;
   try {
     removal = await W.removeTree(E, { repo, path: tree.path, junctions: tree.junctions, branch: null }, { force: true }, `integration ${id}`);
