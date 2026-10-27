@@ -119,7 +119,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   let pollHandle = null;
   let pollInFlight = false; // 5a-2: at most one store read at a time, guard not a queue
   const holdRecorder = createHoldRecorder(); // wake.cjs (design item 9): moved out of this file
-  const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId, enabled: !!spec.notes }); // wave 4: a refuted note wakes the orchestrator (notes runs only)
+  const callWatcher = require('./call-wake.cjs').createCallWatcher({ core, runId }); const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId, enabled: !!spec.notes }); // wave 4: a refuted note wakes the orchestrator (notes runs only)
   let readyTimer = null;
   let sigintHandler = null;
 
@@ -282,7 +282,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       orphanGraceMs: ORPHAN_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid), sinceAt: t0,
     });
     state.baseline = next;
-    for (const ev of (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()), { holdMs: require('./release-eval.cjs').holdMs() })).concat(await noteWatcher.poll())) writeWake(ev); // ADR 0058 amendment 4: a turn_end carries its release evaluation
+    for (const ev of (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()), { holdMs: require('./release-eval.cjs').holdMs() })).concat(await noteWatcher.poll(), await callWatcher.poll())) writeWake(ev); // ADR 0058 amendment 4: a turn_end carries its release evaluation
     if (state.finishing) return; // a wake's own write may have found the child already gone
 
     if (state.idle) {
@@ -296,7 +296,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       // not a pending death (the pid is alive) — the one gap review 2 found. An ordinary idle `running`
       // or `starting` worker (pid alive, no turn owed) is deliberately NOT held here: the idle-close rule
       // ends the run regardless of a live, merely-idle worker process, by design.
-      const live = rows.filter((w) => w.run_id === runId && w.state === 'stopping' && w.pid_alive === true).map((w) => w.id).concat(require('./release-eval.cjs').evaluatingHolds(state.evalSeen, rows, runId)); // ADR 0058: a release evaluation holds the close
+      const live = rows.filter((w) => w.run_id === runId && w.state === 'stopping' && w.pid_alive === true).map((w) => w.id).concat(require('./release-eval.cjs').evaluatingHolds(state.evalSeen, rows, runId)).concat(callWatcher.holds()); // ADR 0058: a release evaluation holds the close, and so does a detached integrate or task_evaluate
       // 6f design item 5: the resume line carries no worker id, so awaitingWakeIds() alone never named
       // it; an idle orchestrator right after resume could otherwise close under that very write before
       // the resumed turn starts. Any write still unanswered, worker-tagged or not, holds the close.

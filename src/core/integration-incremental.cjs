@@ -82,7 +82,7 @@ function forcedOf({ by, args, tasks, merged, checks, carried, name }) {
   const reasons = {};
   for (const [id, f] of carried.forced) reasons[id] = f.reason;
   for (const id of unsettled) reasons[id] = args.reason.trim();
-  const failing = (checks || []).filter((c) => !c.passed && c.task_ids.some((id) => ids.includes(id))).map(name);
+  const failing = (checks || []).filter((c) => !c.passed && (c.source === 'integrate' || c.task_ids.some((id) => ids.includes(id)))).map(name);
   return { by, at: Date.now(), reason: unsettled.length ? args.reason.trim() : reasons[ids[ids.length - 1]], reasons, task_ids: ids, failing };
 }
 

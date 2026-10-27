@@ -171,7 +171,7 @@ const BOTH = [
 // the core's rows with view debug. The worker's listing keeps the plain one above, so its bytes are unchanged.
 const ORCH_TASK_LIST = {
   name: 'task_list',
-  description: 'Tasks: id, state, rev (row version), spec_head, depends_on, branch, lease, last results (failing named), hand-back field names. task_ids: those tasks with hand-back and checks whole. view debug: full rows.',
+  description: 'Tasks: id, state, spec_head, depends_on, branch, lease, last results (failing named), hand-back field names. task_ids: those tasks with hand-back and checks whole. view debug: full rows.',
   inputSchema: S({ states: strs('open, assigned, released, done or cancelled'), task_ids: strs(), view: DEBUG }),
 };
 
@@ -304,7 +304,8 @@ const ORCHESTRATOR = [
       task_ids: strs(),
       into: str(),
       base: str('If into is new; default the tasks\' base'),
-      evaluate: bool(),
+      evaluate: { type: 'boolean', description: 'false skips the tasks\' re-runs' },
+      checks: { type: 'array', items: S({ argv: strs(), cwd: str(), timeout_ms: int() }, ['argv']), description: 'Extra commands run on the merged head, before the tasks re-run; all the commands of the call share one 540 s budget' },
       force: bool(),
       reason: str(),
       view: DEBUG,

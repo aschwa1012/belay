@@ -12,7 +12,7 @@ const rows = require('./rows.cjs');
 const { redact } = require('./redact.cjs');
 
 const EVENT_KINDS = ['observation', 'summary', 'project_write', 'usage', 'index_injected', 'bottle', 'wrapup',
-  'corpus_primed', 'knowledge_ask', 'reflection', 'levers_unread', 'embed_bound', 'index_bound', 'notes_applied', 'note_chance', 'note_changed', 'archive_purge', 'note_matches', 'note_review', 'note_brief', 'note_refuted', 'review_job', 'scrub_job', 'scrub_owed', 'scrub_alarm', 'review_stage', 'stage_overrun', 'review_claim', 'search', 'index'];
+  'corpus_primed', 'knowledge_ask', 'reflection', 'levers_unread', 'embed_bound', 'index_bound', 'notes_applied', 'note_chance', 'note_changed', 'archive_purge', 'note_matches', 'note_review', 'note_brief', 'note_refuted', 'review_job', 'scrub_job', 'scrub_owed', 'scrub_alarm', 'review_stage', 'stage_overrun', 'review_claim', 'call_detached', 'call_ended', 'search', 'index'];
 // Written only by the owner's search log (search-log.cjs passes opts.searchLog); no caller may record them.
 const SEARCH_LOG_KINDS = ['search', 'index'];
 const SUBSTRATES = ['claude-code', 'codex'];
