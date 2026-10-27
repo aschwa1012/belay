@@ -12,7 +12,8 @@ const G = require('./git.cjs');
 const W = require('./methods-worktree.cjs');
 const J = require('./judged.cjs');
 const H = require('./git-hooks.cjs');
-const { runCommand, outputTails, DEFAULT_COMMAND_TIMEOUT_MS } = require('./evaluate.cjs');
+const { runCommand, outputTails, DEFAULT_COMMAND_TIMEOUT_MS, ACCEPTANCE_BUDGET_MS } = require('./evaluate.cjs');
+const { checkShape } = require('./integration-checks.cjs');
 const { notMerged, stale } = require('./integration-state.cjs');
 const { pidAlive } = require('./lock.cjs');
 const INC = require('./integration-incremental.cjs');
@@ -95,6 +96,7 @@ function checkArgs(args) {
   }
   if (new Set(ids).size !== ids.length) throw err('E_ARGS', 'integration.merge: task_ids names a task twice', { task_ids: ids });
   if (args.evaluate !== undefined && typeof args.evaluate !== 'boolean') throw err('E_ARGS', 'integration.merge: evaluate must be a boolean', { field: 'evaluate' });
+  checkShape(args.checks);
   if (args.force !== undefined && typeof args.force !== 'boolean') throw err('E_ARGS', 'integration.merge: force must be a boolean', { field: 'force' });
   if (args.force === true && (typeof args.reason !== 'string' || !args.reason.trim() || args.reason.length > MAX_REASON)) {
     throw err('E_ARGS', `integration.merge: force needs a reason, 1 to ${MAX_REASON} characters, saying why merging a task that is not done is expected`, { field: 'reason' });
@@ -270,7 +272,9 @@ function cwdFor(c, task, tree) {
   return G.fwd(c.cwd);
 }
 
-async function rerun(tasks, tree, reuse, head, beside = null) {
+// `extra` (the call's `checks`, integration-checks.cjs) run after the tasks' own commands, on this head only. A command a task also
+// declares runs once and is marked `source: 'integrate'` as well. All commands share the call's budget, ending at `until`.
+async function rerun(tasks, tree, reuse, head, beside = null, extra = [], until = Infinity) {
   const byKey = new Map();
   for (const t of tasks) {
     for (const c of (t.acceptance && Array.isArray(t.acceptance.commands) ? t.acceptance.commands : [])) {
@@ -281,15 +285,24 @@ async function rerun(tasks, tree, reuse, head, beside = null) {
       byKey.get(key).task_ids.push(t.id);
     }
   }
+  for (const e of extra) {
+    const cwd = e.cwd ? G.fwd(path.resolve(tree, e.cwd)) : tree;
+    const key = JSON.stringify([e.argv, cwd]);
+    const timeout_ms = Number(e.timeout_ms) > 0 ? Number(e.timeout_ms) : DEFAULT_COMMAND_TIMEOUT_MS;
+    const have = byKey.get(key);
+    if (have) { have.source = 'integrate'; have.timeout_ms = Math.max(have.timeout_ms, timeout_ms); } else byKey.set(key, { argv: e.argv, cwd, timeout_ms, task_ids: [], source: 'integrate' });
+  }
   const checks = [];
   for (const c of byKey.values()) {
+    const mark = c.source ? { source: c.source } : {};
     const from = reuse(c.argv, c.cwd, c.timeout_ms);
-    if (from) { checks.push({ argv: c.argv, cwd: c.cwd, timeout_ms: c.timeout_ms, task_ids: c.task_ids, reused_from: from, head_sha: head, passed: true }); continue; }
+    if (from) { checks.push({ argv: c.argv, cwd: c.cwd, timeout_ms: c.timeout_ms, task_ids: c.task_ids, ...mark, reused_from: from, head_sha: head, passed: true }); continue; }
     const t0 = Date.now();
-    const r = await runCommand(c.argv, c.cwd, c.timeout_ms, { keep: 'ends' }); // the ends and the failure section, as task.evaluate keeps
+    if (until - t0 <= 0) { checks.push({ argv: c.argv, cwd: c.cwd, timeout_ms: c.timeout_ms, task_ids: c.task_ids, ...mark, executable: false, exit_code: null, ms: 0, timed_out: false, passed: false, not_run: `the call's commands share a budget of ${ACCEPTANCE_BUDGET_MS} ms and it was spent` }); continue; }
+    const r = await runCommand(c.argv, c.cwd, Math.min(c.timeout_ms, until - t0), { keep: 'ends' }); // the ends and the failure section, as task.evaluate keeps
     const concurrent = beside ? beside(t0, Date.now()) : [];
     checks.push({
-      argv: c.argv, cwd: c.cwd, timeout_ms: c.timeout_ms, task_ids: c.task_ids, executable: r.executable, exit_code: r.exit_code, ms: r.ms, timed_out: r.timed_out,
+      argv: c.argv, cwd: c.cwd, timeout_ms: c.timeout_ms, task_ids: c.task_ids, ...mark, executable: r.executable, exit_code: r.exit_code, ms: r.ms, timed_out: r.timed_out,
       passed: r.executable && r.exit_code === 0 && !r.timed_out, spawn_error: r.spawn_error || null, ...(concurrent.length ? { concurrent } : {}), ...outputTails(r),
     });
   }
@@ -307,7 +320,9 @@ async function merge(E, caller, args) {
   // The re-run counts toward the run's max_parallel_evaluations, and its slot is taken here, before the branch lock and before any merge: a call
   // that waits too long is refused E_BUSY { queued: true } with the branch untouched, and the lock is never held while waiting (evaluate-cancel.cjs WAIT).
   const EC = require('./evaluate-cancel.cjs');
-  const slot = args.evaluate === false ? null : await EC.acquire(EC.limitFor(E, caller.run_id), { op: 'integrate' });
+  const t0call = Date.now();
+  const extra = args.checks || []; // shape checked in checkArgs
+  const slot = args.evaluate === false && !extra.length ? null : await EC.acquire(EC.limitFor(E, caller.run_id), { op: 'integrate' });
   try {
   return await W.exclusive(`integrate:${repo}:${into}`, `an integration into ${into}`, async () => {
     const abandoned = await abandonStale(E, caller, repo, into, takeOver);
@@ -357,13 +372,13 @@ async function merge(E, caller, args) {
     // `into`, so their checks run on that tree (when it is clean) and the row keeps its stopped state. Only `evaluate: false` or
     // a tree that is not clean leaves merged work unchecked, with checks null.
     const stop = out.conflict || out.error;
-    if (args.evaluate !== false && out.merged.length && (!stop || stop.tree_clean === true)) {
+    if ((args.evaluate !== false || extra.length) && out.merged.length && (!stop || stop.tree_clean === true)) {
       const landed = new Set(out.merged.map((m) => m.task_id));
       try {
         const older = carried.entries.map((c) => rows.current(E.store, 'task', c.task_id)).filter(Boolean);
         const reuse = INC.reuseFor(E, repo, into, out.head_sha, (await G.dirtyPaths(tree.path)).length === 0);
         const endSpan = EC.beginSpan(`integration ${base.id}`); // ADR 0061 section 4 (b): it ran beside the evaluations that overlapped it, and they beside it
-        try { out.checks = await rerun([...tasks, ...older].filter((t) => landed.has(t.id)), tree.path, reuse, out.head_sha, (a, b) => EC.during(`integration ${base.id}`, a, b)); } finally { endSpan(); }
+        try { out.checks = await rerun(args.evaluate === false ? [] : [...tasks, ...older].filter((t) => landed.has(t.id)), tree.path, reuse, out.head_sha, (a, b) => EC.during(`integration ${base.id}`, a, b), extra, t0call + ACCEPTANCE_BUDGET_MS); } finally { endSpan(); }
         out.passed = out.checks.length > 0 ? out.checks.every((c) => c.passed) : null;
         if (!stop) {
           if (!out.checks.length) out.error = { message: 'the merged tasks declare no acceptance commands, so nothing was re-run and nothing is proven' };
