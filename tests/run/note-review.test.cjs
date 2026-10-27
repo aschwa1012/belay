@@ -101,6 +101,30 @@ test('N5: a review task\'s ended hand-back is applied by the manager (the review
   assert.deepStrictEqual(held.map((h) => [h.ground, h.state, h.note_verdicts[0].by]), [['reported', 'held', 'rv-5']]);
 });
 
+test('N5b: with only the notes lever on, a reviewer\'s turn end applies its confirmed verdict: the note is verified before the run ends', async () => {
+  const MC = require('../../src/run/memory-capture.cjs');
+  const w = await written('wr-5b');
+  await call('worker.write', orch, { id: 'rv-5b', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's', last_event_at: Date.now() });
+  const r = await call('task.create', orch, { spec: 'review', depends_on: [w.task.id], acceptance: { verdict: true } });
+  const a = await call('task.assign', orch, { task_id: r.id, worker_id: 'rv-5b' });
+  await call('lease.release', worker('rv-5b'), { lease_id: a.new_lease.id, notes: [], result: { verdict: 'holds', summary: 'ok', ...JSON.parse(verdictsFor([w.notes[0]])) } });
+  const ctx = ctxFor(null);
+  await NR.reviewTail(ctx, { id: 'rv-5b', taskId: r.id });
+  assert.strictEqual(rowOf(w.notes[0]).status || 'unverified', 'unverified');
+  // The worker's turn_end, as the manager plans it: summaries off, capture off, no project writes, so only notes asks for work.
+  const lv = { ...LV, summaries: 'off', capture: false, observations: false, project_writes: false, cost_ledger: false, wrapup: false, notes_reflection: false };
+  const wk = { id: 'rv-5b', taskId: r.id, substrate: 'claude-code', turns: 1, costUsd: 0, pid: process.pid, memoryQueue: null };
+  const e = { kind: 'turn_end', text: 'done' };
+  const c2 = { ...ctx, memoryLevers: lv };
+  const p = MC.plan(wk, e, c2);
+  assert.ok(p, 'the notes lever alone plans the turn\'s memory work');
+  await MC.finish(wk, e, c2, p, {});
+  await wk.memoryQueue;
+  await NR.drainVerdicts(c2, 10000);
+  assert.strictEqual(rowOf(w.notes[0]).status, 'verified', JSON.stringify(wk.lastError || null));
+  assert.strictEqual(events('note_review').filter((x) => x.key.endsWith(`:${w.notes[0]}`)).length, 1);
+});
+
 test('N7: a review task\'s brief lists the notes to judge, the verdict shape, the streams, and any refuted note a reviewed worker was shown', async () => {
   const w = await written('wr-7');
   const bad = await written('wr-7bad');
