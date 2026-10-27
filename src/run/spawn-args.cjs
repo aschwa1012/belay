@@ -42,11 +42,11 @@ async function checkIdFree(core, dataDir, id, runId) {
   if (!hits.length && !harnessOwned(id) && fs.existsSync(L.workerDir(dataDir, id))) fail('E_ARGS', `worker_id ${JSON.stringify(id)} is taken: its worker directory exists with no row; choose another id`, { worker_id: id });
 }
 
-function validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id, native_memory = null }) {
+function validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id, native_memory = null, task_id = null }) {
   checkWorkerId(worker_id);
   if (substrate !== 'claude-code' && substrate !== 'codex') fail('E_ARGS', 'substrate must be claude-code or codex', { substrate });
   if (!worktree) fail('E_ARGS', 'spawn needs a worktree');
-  if (typeof prompt !== 'string' || !prompt) fail('E_ARGS', 'spawn needs a prompt');
+  if (task_id ? prompt != null && typeof prompt !== 'string' : typeof prompt !== 'string' || !prompt) fail('E_ARGS', 'spawn needs a prompt (optional only with a task_id: belay sends the task\'s spec)');
   if (typeof permission_prompt !== 'boolean') fail('E_ARGS', 'spawn permission_prompt must be a boolean', { permission_prompt });
   if (!Number.isInteger(permit_wait_ms) || permit_wait_ms <= 0) fail('E_ARGS', 'spawn permit_wait_ms must be a positive integer', { permit_wait_ms });
   if (effort !== null && !L.EFFORT_LEVELS.includes(effort)) fail('E_ARGS', `spawn effort must be one of ${L.EFFORT_LEVELS.join(', ')} (ADR 0028)`, { effort });

@@ -66,6 +66,18 @@ async function firstMessage(task, spawnArgs = {}) {
   } finally { await m.shutdown(); cleanup(sb.data); }
 }
 
+test('a spawn with a task sends its spec after the resume line, then the prompt as added instructions, then the rule; no prompt is fine', async () => {
+  const task = { id: 't1', spec: 'rename the frobnicator', acceptance: { commands: [{ argv: ['x'] }] } };
+  const RULE = 'When you are finished, call lease_release with lease_id lease-1 and a result object (branch, head, tests, findings).';
+  assert.strictEqual(await firstMessage(task), `task t1 lease=lease-1.\n\nTask: rename the frobnicator\n\nthe brief\n\n${RULE}`);
+  assert.strictEqual(await firstMessage(task, { prompt: undefined }), `task t1 lease=lease-1.\n\nTask: rename the frobnicator\n\n${RULE}`);
+  const sb = sandbox();
+  const m = createRunManager({ core: createFakeCore(), dataDir: sb.data, runId: 'run-hb', paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
+  try {
+    await assert.rejects(m.spawn({ substrate: 'claude-code', worktree: sb.worktree, worker_id: 'w3' }), /spawn needs a prompt/, 'without a task a prompt is still required');
+  } finally { await m.shutdown(); cleanup(sb.data); }
+});
+
 test('a spawn ends the first message with the rule: the resume line, the prompt, then the hand-back rule', async () => {
   assert.strictEqual(await firstMessage({ id: 't1', acceptance: { commands: [{ argv: ['x'] }] } }),
     'task t1 lease=lease-1.\n\nthe brief\n\nWhen you are finished, call lease_release with lease_id lease-1 and a result object (branch, head, tests, findings).');

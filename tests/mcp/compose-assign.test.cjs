@@ -34,10 +34,10 @@ test('a first assignment sends only the task and its lease, then the task, then 
   assert.strictEqual(h.sent[0], 'task t1 lease=L1.\n\nTask: do it\n\nWhen you are finished, call lease_release with lease_id L1 and a result object (branch, head, tests, findings).');
 });
 
-test('a coder in its own tree is told to commit first; the orchestrator\'s prompt replaces the spec', async () => {
+test('a coder in its own tree is told to commit first; the orchestrator\'s prompt is added after the spec', async () => {
   const h = harness({ worktree: TREE });
   await h.c.assign({ task_id: 't1', worker_id: 'w1', prompt: 'rebase it' });
-  assert.ok(h.sent[0].startsWith('task t1 lease=L1.\n\nrebase it\n\nWhen you are finished, commit your work in your worktree, then call lease_release'));
+  assert.ok(h.sent[0].startsWith('task t1 lease=L1.\n\nTask: do it\n\nrebase it\n\nWhen you are finished, commit your work in your worktree, then call lease_release'));
 });
 
 test('a verdict task gets the verdict-shaped rule and the Review standard, and never the work shape', async () => {
