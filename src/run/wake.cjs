@@ -141,12 +141,8 @@ function deathText(event) {
 
 // No worker output, ever: the id, the turn and (for a death) the exit facts are the whole of it.
 // Both shapes stay comfortably under 400 bytes for any id this codebase generates.
-// ADR 0058, the idle-workers amendment (proposed): a wake that carries `idle_without_task` (idle-remind.cjs) names those workers when there is room.
+// A wake never names idle workers: worker_wait's answer does (idle-remind.cjs).
 function wakeText(event) {
-  return require('./idle-remind.cjs').withIdle(baseText(event), event.idle_without_task, require('./release-eval.cjs').WAKE_TEXT_MAX);
-}
-
-function baseText(event) {
   if (event.event === 'note_refuted' || event.event === 'scrub_alarm' || event.event === 'evaluated') return event.text; // evaluated: release-eval.cjs, facts only // note-wake.cjs: belay's own record, built from the core's facts
   if (event.event === 'death') return deathText(event);
   // build step 6f, decision 3's own words, ids and facts only (ADR 0015 §2): no worker output.

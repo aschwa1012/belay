@@ -19,9 +19,9 @@ const flat = (s) => s.replace(/\s+/g, ' ');
 const REPLACED = [
   'The run ends when you end a turn while no worker is mid-turn.',
   'A live worker that is idle does not keep it open.',
-  'Or end your turn; belay wakes you with a message when a worker\'s turn ends or a worker dies.',
-  'That wake exists only when belay started you with `belay run`, and only while some worker is mid-turn.',
-  'Do not poll in a loop.',
+  'either end your turn (belay wakes you with a message when a worker\'s turn ends or a worker dies;',
+  'that wake exists only when belay started you with `belay run`, and only while some worker is mid-turn',
+  'do not poll in a loop',
   'and ending your turn closes the run.',
   'is not mid-turn, and the run closes.',
   'To stop on purpose, store the outcome in memory, say why, then end a turn with no worker mid-turn.',
@@ -50,7 +50,7 @@ test('interactive prompt: each replaced headless sentence is in orchestrator.md 
 
 test('interactive prompt: says what the mode is', () => {
   assert.match(TWIN, /operator is present in this session/);
-  assert.match(TWIN, /belay wakes you with a short message when a worker's turn ends or a worker dies\. While workers are working, end your turn: the wake brings you back and names the worker\. Do not hold a turn open to wait\./);
+  assert.match(TWIN, /belay wakes you with a short message when a worker's turn ends or a worker dies\. While workers are working, end your turn; do not hold one open to wait\./);
   assert.ok(!/There are no wakes/.test(TWIN), 'the no-wakes claim is gone');
   // Wording audit: the embedder-failure pause is told by the error that reports it (pauseAdvice), not by a paragraph every request pays for.
   assert.ok(!/paused for an embedder failure/.test(TWIN));
@@ -63,10 +63,10 @@ test('interactive prompt: says what the mode is', () => {
   assert.ok(!/Re-call it/.test(TWIN), 'no instruction to re-call worker_wait');
   assert.ok(!/wait on its id/.test(TWIN), 'no "wait on its id"');
   assert.match(TWIN, /`timeout_ms: 5000`[^]*Never call it in a loop\./);
-  const iWait = T.indexOf('- After you start work (a spawn with a prompt, or a `worker_message`), end your turn, naming the');
+  const iWait = T.indexOf('- After you start work (a spawn with a prompt, or a `worker_message`), name the workers you are');
   assert.deepStrictEqual(T.slice(iWait, iWait + 10), [
-    '- After you start work (a spawn with a prompt, or a `worker_message`), end your turn, naming the',
-    '  workers you are waiting for so the operator can see it. When a wake names a worker, read its',
+    '- After you start work (a spawn with a prompt, or a `worker_message`), name the workers you are',
+    '  waiting for so the operator can see it. When a wake names a worker, read its',
     '  hand-back with `mcp__belay__task_list` and its `task_ids`. Use',
     '  `mcp__belay__worker_wait` only as a check when no wake came for a worker you expected: pass',
     '  `worker_ids` and `timeout_ms: 5000`. A timeout means the worker is still working: end your turn',

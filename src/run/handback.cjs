@@ -18,18 +18,39 @@ function reviewStandard() {
 
 const isVerdict = (task) => !!(task && task.acceptance && task.acceptance.verdict === true);
 
+// One fact line per task a verdict task depends on: belay's own acceptance result from that task's latest results, at the head
+// they were judged on. A result marked stale (judged under an acceptance since amended) is not stated. A fact only.
+// `getTask(id)` reads a task row; a task that cannot be read, or has no results, adds nothing.
+const SHOWN = 3, NAME_MAX = 60;
+const nameOf = (c) => (c.kind === 'command' && Array.isArray(c.argv) ? c.argv.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(' ') : String(c.kind || '')).slice(0, NAME_MAX);
+async function facts(getTask, assigned) {
+  const task = assigned && assigned.task;
+  if (!isVerdict(task) || !Array.isArray(task.depends_on) || typeof getTask !== 'function') return '';
+  const lines = [];
+  for (const id of task.depends_on) {
+    let t = null;
+    try { t = await getTask(id); } catch { t = null; }
+    const r = t && t.results;
+    if (!r || typeof r !== 'object' || r.stale || !Array.isArray(r.checks) || !r.checks.length) continue;
+    const names = r.checks.slice(0, SHOWN).map(nameOf).join('; ') + (r.checks.length > SHOWN ? `; and ${r.checks.length - SHOWN} more` : '');
+    const at = r.head_sha ? ` at ${String(r.head_sha).slice(0, 12)}` : '';
+    lines.push(`belay's acceptance checks for ${id} ${r.passed === true ? 'passed' : 'did not pass'}${at} (${names}).`);
+  }
+  return lines.length ? `\n\n${lines.join('\n')}` : '';
+}
+
 // The rule for the task in this assign answer, or '' when there is no lease to name. A coder or fixer in the task's own belay
 // worktree commits before it hands back (integrate merges a commit of what was judged); a reviewer never commits in the tree it
 // judges, and hands back a verdict.
-function rule(assigned) {
+function rule(assigned, fact = '') {
   const lease = assigned && assigned.new_lease ? assigned.new_lease.id : null;
   if (!lease) return '';
   const task = assigned.task || {};
   if (isVerdict(task)) {
-    return `\n\nWhen you are finished, call lease_release with lease_id ${lease} and result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [...] }.\n\n${reviewStandard()}`;
+    return `\n\nWhen you are finished, call lease_release with lease_id ${lease} and result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [...] }.${fact}\n\n${reviewStandard()}`;
   }
   const commits = !!(task.worktree && task.worktree.path && !task.worktree.removed_at);
   return `\n\nWhen you are finished, ${commits ? 'commit your work in your worktree, then ' : ''}call lease_release with lease_id ${lease} and a result object (branch, head, tests, findings).`;
 }
 
-module.exports = { rule, reviewStandard, isVerdict, STANDARD_FILE };
+module.exports = { rule, facts, reviewStandard, isVerdict, STANDARD_FILE };

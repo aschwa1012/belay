@@ -23,11 +23,15 @@ test('a note refuses the run-row fields by name, and a supersedes refusal says h
     && /replaces another through review/.test(e.message) && /memory_report replaced_by/.test(e.message));
 });
 
-test('the listing names the fields a note does not take, for the worker and the orchestrator', () => {
+test('the listing names exactly the fields a note takes, for the worker and the orchestrator', () => {
   for (const role of ['worker', 'orchestrator']) {
     const ms = tools.toolsFor(role, { notes: true }).find((t) => t.name === 'memory_store');
     const ns = ms.inputSchema.properties.namespace.description;
-    for (const k of ['text', 'type', 'tags', 'provenance', 'supersedes', 'ttl_seconds']) assert.ok(ns.includes(k), `${role}: ${k} named in ${ns}`);
+    const m = /a note, which takes only ([a-z_, ]+)/.exec(ns);
+    assert.ok(m, `${role}: the note's fields are named in ${ns}`);
+    const named = m[1].split(',').map((s) => s.trim());
+    for (const k of ['kind', 'title', 'when', 'basis', 'evidence', 'applies_to', 'subjects']) assert.ok(named.includes(k), `${role}: ${k} named in ${ns}`);
+    for (const k of ['text', 'type', 'tags', 'provenance', 'supersedes', 'ttl_seconds']) assert.ok(!named.includes(k), `${role}: ${k} is not offered for a note in ${ns}`);
   }
 });
 
