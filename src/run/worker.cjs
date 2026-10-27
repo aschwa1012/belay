@@ -310,6 +310,7 @@ async function onTurnEnd(w, e, ctx) {
   }
   w.lastTurnUsage = e.usage;
   w.turnEnded = true;
+  w.turnSince = w.lastTurnEndAt || 0; // the previous turn's end: this turn's window opens there
   w.lastTurnEndAt = now(); // the pause's cache-deadline receipt's own basis
   // build step 6e-4: every result subtype seen after the park's own interrupt is recorded, in order, so
   // doPause (pause.cjs) can tell whether the interrupt cut a turn off, without waiting on this turn.

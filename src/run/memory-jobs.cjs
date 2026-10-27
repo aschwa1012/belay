@@ -2,12 +2,11 @@
 // memory-jobs.cjs — the memory work that follows a turn and the work that closes a run (ADR 0041 decisions
 // 4 to 6, ADR 0043 decision 2): a mechanical summary once per (task, worker), the worker's own rows moved to the project, usage rows from
 // the turn's own numbers, and a bounded wrap-up per task and per run.
-//
-// Every entry point reads the lever first and returns before it touches the core when the lever is off, so a
-// run with the levers at their defaults makes no call here. Whatever runs is queued on the worker's existing
-// `memoryQueue` and never awaited on the turn path. A failed write is a `memory_event` with ok 0 and the
-// code, never silence and never a silent retry. Summaries are stored as generated, labelled as such, and
-// never as the worker's own words; the wrap-up text goes in `memory_event.message` (`belay notices` shows it).
+// Every entry point reads the lever first and returns before it touches the core when the lever is off, so a run with the levers at
+// their defaults makes no call here. Whatever runs is queued on the worker's existing `memoryQueue` and never awaited on the turn path
+// (a ledger run's usage row starts ahead of that queue, usage-early.cjs). A failed write is a `memory_event` with ok 0 and the code,
+// never silence and never a silent retry. Summaries are stored as generated, labelled as such, and never as the worker's own words;
+// the wrap-up text goes in `memory_event.message` (`belay notices` shows it).
 
 const crypto = require('node:crypto');
 const { fit } = require('../core/fit-budget.cjs');
@@ -60,9 +59,8 @@ async function leversOf(ctx, w) {
 }
 
 // J: the job context. `gate.aborted` is set when atRunEnd gives up, so a step that has not started never does.
-// `turnPath` marks a turn's jobs: once shutdown has closed the flag they send nothing, because the owner may
-// already be gone and a write would elect a new one in this process. The run-end jobs run after the flag is
-// closed and before the owner stops (lifecycle.cjs), so they are not turn-path work and are not gated on it.
+// `turnPath` marks a turn's jobs: once shutdown has closed the flag they send nothing, because the owner may already be gone and a write would
+// elect a new one in this process. The run-end jobs run after the flag is closed and before the owner stops (lifecycle.cjs), so they are not gated.
 function jobCtx(ctx, lv, w, gate, turnPath = false) { return { ctx, core: ctx.core, lv, w, gate: gate || { aborted: false }, s: stateOf(ctx), turnPath }; }
 const SHUT = 'E_SHUTDOWN';
 // `paired` is the receipt of a row already sent: it waits for the owner going, not the closed flag.
@@ -107,12 +105,12 @@ function costOf(w, snap) {
 async function usageJob(J, snap) {
   const w = J.w;
   const t = w.memoryJobs || (w.memoryJobs = { pid: null, lastCost: 0, seen: false, lastTurn: 0 });
-  if (snap.turn <= t.lastTurn) return; // one row per turn
+  if (snap.turn <= t.lastTurn || snap.turn === t.tried) return; t.tried = snap.turn; // one attempt and one row per turn, never a silent retry
   const c = costOf(w, snap);
   let sent = false;
   try {
     await call(J, () => { sent = true; return J.core.usage.record({
-      worker_id: snap.workerId, task_id: snap.taskId || undefined, turn: snap.turn, substrate: snap.substrate,
+      worker_id: snap.workerId, ...(snap.until ? { turn_window: { since: snap.since || 0, until: snap.until }, at: snap.until } : { task_id: snap.taskId || undefined }), turn: snap.turn, substrate: snap.substrate, // the task is the lease the worker held at the turn's end (core)
       model: snap.model || undefined, ...tokensOf(snap), cost_usd: c.cost_usd, cost_basis: c.cost_basis,
     }); });
     t.lastTurn = snap.turn;
@@ -496,4 +494,4 @@ async function runEndJobs({ core, runId, levers, boundMs = null, modules = null,
   return ctx.runEndError ? { ...got, error: ctx.runEndError } : got;
 }
 
-module.exports = { afterTurn, atRunEnd, runEndJobs, RUN_END_BOUND_MS, WRAPUP_MAX, SUMMARY_LABEL, NEW_PROCESS, ENDED_TASK };
+module.exports = { usageJob, jobCtx, afterTurn, atRunEnd, runEndJobs, RUN_END_BOUND_MS, WRAPUP_MAX, SUMMARY_LABEL, NEW_PROCESS, ENDED_TASK };

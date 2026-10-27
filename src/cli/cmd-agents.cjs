@@ -298,6 +298,7 @@ function renderText(rc) {
   const f = rc.footer;
   const total = f.total_cost_usd == null ? 'not recorded' : P.money(f.total_cost_usd);
   lines.push(`run cost ${total} over ${f.agents} agents, ${f.cost_not_recorded} with cost not recorded, as of ${P.iso(f.as_of_ms)}`);
+  if (rc.budget) lines.push(`budget ${require('../core/run-budget.cjs').textOf(rc.budget)}`);
   lines.push('');
   return lines.join('\n');
 }
@@ -344,6 +345,7 @@ async function run(ctx) {
         max_fix_rounds: nn(chosen.max_fix_rounds), // the run row records the limit, not the rounds used
         memory_notice: require('../core/memory-notice.cjs').noticeForRun(chosen, null), // this run's own notice (or null): the panel shows it, never the config's
         agents, footer: footerOf(agents), owner: core.ownerInfo(),
+        ...(chosen.budget_usd != null ? { budget: require('../core/run-budget.cjs').blockOf(chosen, await core.usage.spend({ run_id: chosen.id })) } : {}), // estimated spend beside its limit; no query for a run without one
       };
       return { code: 0, text: renderText(receipt), json: receipt };
     });
