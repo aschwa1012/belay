@@ -9,7 +9,7 @@ const S = require('../../src/core/integration-state.cjs');
 
 const tree = { repo: 'C:/r', path: 'C:/r.worktrees/w', branch: 'belay/w' };
 const done = (id, at) => ({ id, state: 'done', worktree: tree, results: { evaluated_at: at } });
-const merged = (id, ids, at) => ({ id, state: 'evaluated', into_branch: 'int/x', written_at: at, task_ids: ids, merged: ids.map((t) => ({ task_id: t })), head_sha: 'h', passed: true });
+const merged = (id, ids, at) => ({ id, state: 'evaluated', into_branch: 'int/x', written_at: at, task_ids: ids, merged: ids.map((t) => ({ task_id: t })), head_sha: 'h', passed: true, checks: ids.map((t) => ({ argv: ['t'], task_ids: [t], passed: true })) });
 const conflict = (id, ids, at) => ({ id, state: 'conflict', into_branch: 'int/y', written_at: at, task_ids: ids, merged: [], conflict: { task_id: ids[0] } });
 
 test('a peer\'s merge lands a task done before it, via the peer; its own merge needs no via', () => {

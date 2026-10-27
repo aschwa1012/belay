@@ -182,7 +182,7 @@ function integrate(row) {
   }
   if (Array.isArray(row.checks)) {
     out.checks = row.checks.map(({ cwd, ...c }) => {
-      if (c.passed === true) return { check: checkName(c), passed: true, ...(c.task_ids ? { task_ids: c.task_ids } : {}), ...(c.reused_from ? { reused_from: c.reused_from } : {}) };
+      if (c.passed === true) return { check: checkName(c), passed: true, ...(c.task_ids && c.task_ids.length ? { task_ids: c.task_ids } : {}), ...(c.source ? { source: c.source } : {}), ...(c.reused_from ? { reused_from: c.reused_from } : {}) };
       const k = { check: checkName(c) };
       for (const [f, v] of Object.entries(c)) if (!(v === null && f === 'spawn_error')) k[f] = v;
       return k;
