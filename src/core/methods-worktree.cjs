@@ -46,6 +46,18 @@ function inheritable(task) {
   if (r) throw err('E_BUSY', `task ${task.id}'s worktree ${rec.path} is being removed (through task ${r.task_id}), so no task can be given it`, { op: 'worktree_remove', task_id: task.id, removing_through: r.task_id, path: rec.path });
   return rec;
 }
+// A task's recorded tree must still be one git lists, at that path, on that branch, before it is handed to another task: a sweep cut
+// mid-removal, or a leftover directory, leaves a row that names a tree that is not one. Refused, with nothing handed out. A
+// repository git cannot list is not proof the tree is gone, so it is trusted as before.
+async function assertTreeListed(task) {
+  const rec = active(task);
+  if (!rec || !rec.repo) return;
+  let list;
+  try { list = await G.worktrees(rec.repo); } catch { return; }
+  const hit = list.find((x) => G.samePath(x.path, rec.path));
+  if (hit && (!rec.branch || hit.branch === rec.branch) && fs.existsSync(rec.path)) return;
+  throw err('E_PRECONDITION', `task ${task.id} has the recorded worktree ${rec.path}, which is not a worktree of ${rec.branch} that git lists now (a removal was cut or left it); belay worktree remove ${task.id} records its removal, then task_worktree makes a new tree`, { task_id: task.id, path: rec.path, branch: rec.branch, tree_gone: true });
+}
 // The other tasks whose recorded, not removed, tree is `dir`: a fix task and the work it fixes share one.
 const sharers = (E, id, dir) => rows.currentAll(E.store, 'task').filter((t) => t.id !== id && active(t) && G.samePath(active(t).path, dir));
 // The first other task that is not done or cancelled and shares `task`'s tree or its branch (a fix works on the work's branch, so
@@ -385,4 +397,4 @@ function evaluateTarget(task, args) {
   return rec ? { worktree, base: rec.base_sha, baseSource: 'recorded' } : { worktree, base: undefined, baseSource: undefined };
 }
 
-module.exports = { ownBoot, ownBootProbe, worktreeCreate, worktreeRemove, removeTree, removeForSweep, symbolicHead, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, baseArg, assertTaskTree, openSharer, exclusive, active, inheritable, present, pathName, liveWorkerIn, strayLinks, under };
+module.exports = { ownBoot, ownBootProbe, worktreeCreate, worktreeRemove, removeTree, removeForSweep, symbolicHead, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, baseArg, assertTaskTree, openSharer, exclusive, active, inheritable, assertTreeListed, present, pathName, liveWorkerIn, strayLinks, under };

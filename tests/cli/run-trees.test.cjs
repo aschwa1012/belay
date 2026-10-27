@@ -74,3 +74,32 @@ test('the text lines: a summary, each failure with its path, each orphan, and no
   assert.deepStrictEqual(l, ['worktrees: removed 1, kept 2, failed 1', 'worktree not removed: C:/t/x (E_GIT: locked)', 'worktree recorded by no row: C:/t/o (belay/o)']);
   assert.deepStrictEqual(lines({ worktrees_closed: { ...block, skipped: 'fast_close' } }), ['worktrees: not swept (fast_close)']);
 });
+
+test('a sweep that finished before the cut was seen is not called interrupted', async () => {
+  let settle;
+  const running = new Promise((r) => { settle = r; });
+  const deps = { sweep: () => running, cancel: () => { settle({ ...block, removed: [{}] }); return { cancel_requested: false, in_flight: null }; } };
+  const p = closeTrees({ core: null, runId: 'r', endedRow: ended, closed: null, ce: null, late() {}, deps });
+  await new Promise((r) => setImmediate(r));
+  process.emit('SIGINT');
+  const r = await p;
+  assert.deepStrictEqual([r.skipped, r.removed.length], [null, 1]);
+});
+
+test('a cut whose sweep does not settle within the fast close time returns possibly_unrecorded naming the tree in flight', async () => {
+  let cut;
+  const ce = { hupSeen: () => false, leftMs: () => 30, snapshot: null, snapshotPending: null, bound: (p) => Promise.race([p, new Promise((r) => { cut = r; })]) };
+  const p = closeTrees({ core: null, runId: 'r', endedRow: ended, closed: null, ce, late() {}, deps: { sweep: () => new Promise(() => {}), cancel: () => ({ cancel_requested: true, in_flight: 'C:/t/x' }) } });
+  await new Promise((r) => setImmediate(r));
+  cut(require('../../src/run/orchestrator-interactive.cjs').TIMED_OUT);
+  const r = await p;
+  assert.deepStrictEqual([r.skipped, r.possibly_unrecorded], ['fast_close', ['C:/t/x']]);
+  assert.deepStrictEqual(lines({ worktrees_closed: r }), ['worktrees: not swept (fast_close)', 'worktree possibly removed but not recorded: C:/t/x']);
+});
+
+test('the sweep is given the fast close time as its deadline when one is running', async () => {
+  const ce = { hupSeen: () => false, leftMs: () => 1234, snapshot: null, snapshotPending: null, bound: (p) => p };
+  let seen = null;
+  await closeTrees({ core: null, runId: 'r', endedRow: ended, closed: null, ce, late() {}, deps: { sweep: (a) => { seen = a; return block; } } });
+  assert.strictEqual(seen.deadline_ms, 1234);
+});

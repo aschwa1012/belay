@@ -58,6 +58,7 @@ test('a cancel while a removal is in flight lets that tree finish, leaves the ne
     await inGit; // the first removal is inside git, held
     const c = await call('task.worktreeSweepCancel', { run_id: 'test-run' }, op());
     assert.strictEqual(c.cancel_requested, true);
+    assert.strictEqual(c.in_flight, a.w.path, 'the cancel names the tree whose git is held');
     release();
     out = await running;
   } finally { G.run = real; release(); }
@@ -75,7 +76,7 @@ test('the receipt counts the ignored files that go with a tree', async () => {
   write(w.path, 'build/out.log', 'x\n');
   await end(id);
   const r = entryFor((await sweep()).removed, id);
-  assert.strictEqual(r.ignored_removed.count, 1);
+  assert.strictEqual(r.ignored_removed.paths, 1);
   assert.deepStrictEqual(r.ignored_removed.first, ['build/out.log']);
 });
 
@@ -111,4 +112,58 @@ test('a tree git dropped but the disk kept is failed as LEFTOVER, its row stays 
   assert.strictEqual(rows.current(store, 'task', id).worktree.removed_at, null, 'the row says the tree is still there');
   const row = await call('task.worktreeRemove', { task_id: id }, op());
   assert.ok(row.worktree.removed_at, 'the operator\'s later remove is not E_NOT_FOUND');
+});
+
+test('a cancel with no sweep running sets nothing, so a stale flag cannot stop the next sweep', async () => {
+  const a = await treeTask();
+  await end(a.id);
+  const c = await call('task.worktreeSweepCancel', { run_id: 'test-run' }, op());
+  assert.deepStrictEqual([c.cancel_requested, c.in_flight], [false, null]);
+  const out = await sweep();
+  assert.strictEqual(out.skipped, null);
+  assert.ok(entryFor(out.removed, a.id));
+});
+
+test('a deadline too short for another removal keeps the tree as deadline and starts no git on it', async () => {
+  const a = await treeTask();
+  await end(a.id);
+  const out = await sweep({ deadline_ms: 1 });
+  assert.strictEqual(out.skipped, 'deadline');
+  assert.strictEqual(entryFor(out.kept, a.id).reason, 'deadline');
+  assert.ok(fs.existsSync(a.w.path) && rows.current(store, 'task', a.id).worktree.removed_at === null);
+  assert.ok(entryFor((await sweep({ deadline_ms: 600000 })).removed, a.id), 'a deadline that fits removes it');
+});
+
+test('the cancel names the tree whose git is in flight', async () => {
+  const a = await treeTask();
+  await end(a.id);
+  const real = G.run;
+  let entered, release;
+  const inGit = new Promise((r) => { entered = r; });
+  const hold = new Promise((r) => { release = r; });
+  let held = false;
+  G.run = async (cwd, args, opts) => {
+    if (!held && args[0] === 'worktree' && args[1] === 'remove') { held = true; entered(); await hold; }
+    return real(cwd, args, opts);
+  };
+  try {
+    const running = sweep();
+    await inGit;
+    const c = await call('task.worktreeSweepCancel', { run_id: 'test-run' }, op());
+    assert.strictEqual(c.in_flight, a.w.path);
+    release();
+    await running;
+  } finally { G.run = real; release(); }
+});
+
+test('a recorded tree git does not list is not handed to a new task (tree_of), with nothing written', async () => {
+  const a = await treeTask();
+  fs.rmSync(path.join(repo, '.git', 'worktrees', path.basename(a.w.path)), { recursive: true, force: true });
+  const before = rows.currentAll(store, 'task').length;
+  let e;
+  try { await call('task.create', { spec: 'inherit it', tree_of: a.id }); } catch (x) { e = x; }
+  assert.ok(e, 'refused');
+  assert.strictEqual(e.code, 'E_PRECONDITION');
+  assert.strictEqual(e.detail.tree_gone, true);
+  assert.strictEqual(rows.currentAll(store, 'task').length, before);
 });

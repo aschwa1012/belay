@@ -57,6 +57,7 @@ async function create(E, caller, args, own = {}) { // own: core-internal, task.f
   const AM = require('./methods-task-amend.cjs'); // ADR 0061: amend revises an existing task; tree_of gives a new one another's tree
   if (args.amend !== undefined && args.amend !== false) return AM.amend(E, caller, args); // amend: false is a plain create
   const runTop = args.tree_of != null ? await AM.runRepo(E, caller) : null; // the only await: everything below is one turn
+  if (args.tree_of != null && typeof args.tree_of === 'string') { const src = rows.current(E.store, 'task', args.tree_of); if (src) await require('./methods-worktree.cjs').assertTreeListed(src); } // a tree the sweep was cut inside is not handed out
   if (typeof args.spec !== 'string' || !args.spec.trim()) throw err('E_ARGS', 'task.create needs a spec describing the work');
   const filesOwned = args.files_owned == null ? null : args.files_owned;
   if (filesOwned != null && (!Array.isArray(filesOwned) || filesOwned.some(p => typeof p !== 'string'))) {

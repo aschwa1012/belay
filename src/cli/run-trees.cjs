@@ -7,6 +7,7 @@
 const RI = require('./run-interactive.cjs');
 
 const CUT = Symbol('cut');
+const TIMEOUT = Symbol('timeout');
 const empty = (skipped) => ({ removed: [], kept: [], failed: [], orphans: [], integration_kept: [], skipped, ms: 0 });
 
 // Worker ids the close did not prove ended: still alive after the kill, or a kill whose outcome is not `closed`.
@@ -18,7 +19,7 @@ function unprovenWorkers(closed) {
 }
 
 // Returns the `worktrees_closed` block. `endedRow` is run.end's answer (null when it failed); `ce` the console (interactive)
-// or null; `late(message)` is told when the fast close cut the sweep.
+// or null. `late` is unused on purpose: a cut sweep is named in `skipped` and never changes the exit code.
 async function closeTrees({ core, runId, endedRow, closed, ce, late, deps = {} }) {
   if (!endedRow || endedRow.ended_at == null) return empty('run_end_failed');
   const fast = RI.fastOf(ce);
@@ -28,7 +29,8 @@ async function closeTrees({ core, runId, endedRow, closed, ce, late, deps = {} }
   const onInterrupt = () => { interrupted = true; wake(); };
   for (const sig of ['SIGINT', 'SIGBREAK']) process.on(sig, onInterrupt);
   try {
-    const call = Promise.resolve().then(() => (deps.sweep || ((a) => core.task.worktreeSweep(a)))({ run_id: runId, unproven_workers: unprovenWorkers(closed) }));
+    const left = ce ? ce.leftMs(RI.SHUTDOWN_RESERVE_MS) : Infinity; // the fast close's time for the steps after this one
+    const call = Promise.resolve().then(() => (deps.sweep || ((a) => core.task.worktreeSweep(a)))({ run_id: runId, unproven_workers: unprovenWorkers(closed), ...(Number.isFinite(left) ? { deadline_ms: left } : {}) }));
     // A cut sweep exits no sooner than its call settles: the owner's store closes after this returns, and a removal still running
     // would finish its git and then fail to record it. The call stops before its next tree once told to, so the wait is at most one
     // tree's git. The fast close's late-message is not chained here: a cut sweep is named in `skipped`, never in the exit code.
@@ -36,9 +38,17 @@ async function closeTrees({ core, runId, endedRow, closed, ce, late, deps = {} }
     const got = await Promise.race([done, stop.then(() => CUT)]);
     if (got === CUT || interrupted) {
       const why = interrupted ? 'interrupted' : 'fast_close';
-      try { await Promise.resolve().then(() => (deps.cancel || ((a) => core.task.worktreeSweepCancel(a)))({ run_id: runId })); } catch { /* the call below still settles */ }
-      const settled = await call.catch(() => null);
-      return settled ? { ...settled, skipped: why } : empty(why);
+      let inFlight = null;
+      try { inFlight = (await Promise.resolve().then(() => (deps.cancel || ((a) => core.task.worktreeSweepCancel(a)))({ run_id: runId }))).in_flight || null; } catch { /* the wait below still bounds it */ }
+      // The wait ends with the fast close's time. A removal still in flight then may finish after the store is gone and leave the tree
+      // removed with its row active: it is named here, and a recorded tree is checked against git before it is handed out.
+      const budget = ce ? ce.leftMs(RI.SHUTDOWN_RESERVE_MS) : Infinity;
+      let timer = null;
+      const outcome = await Promise.race([call.catch(() => null), new Promise((r) => { if (Number.isFinite(budget)) timer = setTimeout(() => r(TIMEOUT), budget); })]);
+      clearTimeout(timer);
+      if (outcome === TIMEOUT) return { ...empty(why), possibly_unrecorded: inFlight ? [inFlight] : [] };
+      // A sweep that finished before the cut was seen is not called interrupted.
+      return outcome ? { ...outcome, skipped: outcome.skipped === 'interrupted' ? why : outcome.skipped } : empty(why);
     }
     return got;
   } catch (e) {
@@ -50,11 +60,12 @@ async function closeTrees({ core, runId, endedRow, closed, ce, late, deps = {} }
 function lines(receipt) {
   const w = receipt.worktrees_closed;
   if (!w) return [];
-  if (w.skipped && w.skipped !== 'budget' && !w.removed.length) return [`worktrees: not swept (${w.skipped})`];
+  const maybe = (w.possibly_unrecorded || []).map((p) => `worktree possibly removed but not recorded: ${p}`);
+  if (w.skipped && w.skipped !== 'budget' && !w.removed.length) return [`worktrees: not swept (${w.skipped})`, ...maybe];
   if (w.error) return [`worktrees: sweep failed (${w.error})`];
   if (!w.removed.length && !w.kept.length && !w.failed.length && !w.orphans.length) return [];
   return [`worktrees: removed ${w.removed.length}, kept ${w.kept.length}, failed ${w.failed.length}`,
-    ...w.failed.map((f) => `worktree not removed: ${f.path} (${f.code}: ${f.error})`),
+    ...w.failed.map((f) => `worktree not removed: ${f.path} (${f.code}: ${f.error})${f.remedy ? `; ${f.remedy}` : ''}`),
     ...w.orphans.map((o) => `worktree recorded by no row: ${o.path} (${o.branch})`)];
 }
 

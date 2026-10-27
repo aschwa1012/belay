@@ -111,6 +111,7 @@ async function fixFromReview(E, caller, args) {
   // that fix is returned, and no fix round is spent. A refutation decided after the fix was made is not in it: it gets its own.
   const { refs, existing } = unanswered(E, caller, judged, review, repairs);
   if (existing) return { ...existing, from_review: review.id, existing: true };
+  await require('./methods-worktree.cjs').assertTreeListed(judged);
   const tree = inheritedTree(judged);
   const row = await T.create(E, caller, {
     spec: typeof args.spec === 'string' && args.spec.trim() ? args.spec : defaultSpec(refs, judged, original),

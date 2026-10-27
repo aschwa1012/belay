@@ -19,11 +19,15 @@ const key = (p) => G.fwd(p).toLowerCase();
 // Runs whose sweep was told to stop (task.worktreeSweepCancel). Checked before each tree's git, so a cut leaves no tree half
 // done: the close that cut it waits for the call to settle before the store closes.
 const cancelRequested = new Set();
+const running = new Map(); // run id -> { path }: a sweep in this process, and the tree whose git is in flight
+const EXPECT_TREE_MS = 2000; // what one tree's removal is expected to take until a slower one has been seen
+// A cancel with no sweep running sets nothing, so a stale flag cannot stop a later sweep. in_flight is the tree whose git is running.
 async function cancel(E, caller, args) {
   const runId = args.run_id === undefined ? caller.run_id : args.run_id;
   if (typeof runId !== 'string' || !runId) throw err('E_ARGS', 'task.worktreeSweepCancel needs a run_id');
-  cancelRequested.add(runId);
-  return { run_id: runId, cancel_requested: true };
+  const r = running.get(runId);
+  if (r) cancelRequested.add(runId);
+  return { run_id: runId, cancel_requested: !!r, in_flight: r ? r.path : null };
 }
 
 // Ignored paths in a tree other than the recorded junctions: what goes with the tree (build output, a local .env).
@@ -84,7 +88,7 @@ async function removeOne(E, caller, g, base) {
   let head = null, ignored = null;
   if (fs.existsSync(g.rec.path)) { head = await G.commitOf(g.rec.path, 'HEAD'); ignored = await ignoredPaths(g.rec); }
   const row = await W.removeForSweep(E, caller, g.tasks[0]);
-  if (row && row.removal.leftover) return { failed: { ...base, code: 'LEFTOVER', error: row.removal.leftover_note, git_still_lists: false, leftover: true, row_recorded: false, remedy: 'belay worktree remove <task-id> once the tree is free' } };
+  if (row && row.removal.leftover) return { failed: { ...base, code: 'LEFTOVER', error: row.removal.leftover_note, git_still_lists: false, leftover: true, row_recorded: false, remedy: 'belay worktree remove <task-id> records the removal; delete the directory by hand' } };
   if (!row) return { kept: { ...base, reason: 'task_open', detail: 'the tree was removed by another call' } };
   const r = row.removal;
   const after = await G.run(g.rec.repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${g.rec.branch}`]);
@@ -94,14 +98,16 @@ async function removeOne(E, caller, g, base) {
     return { failed: { ...base, code: 'E_PROOF', error: (pathGone ? 'the branch head is not the tree\'s head' : 'the path is still on disk'), git_still_lists: false, leftover: false, branch_head_after: branchAfter } };
   }
   return { removed: { ...base, head, branch_head_after: branchAfter, path_gone: pathGone, junctions_unlinked: r.junctions_unlinked, links_unlinked: r.links_unlinked,
-    ignored_removed: ignored ? { count: ignored.length, first: ignored.slice(0, NAMED) } : null, ms: Date.now() - t1 } };
+    ignored_removed: ignored ? { paths: ignored.length, first: ignored.slice(0, NAMED) } : null, ms: Date.now() - t1 } };
 }
 
 async function sweep(E, caller, args) {
   const runId = args.run_id === undefined ? caller.run_id : args.run_id;
   if (typeof runId !== 'string' || !runId) throw err('E_ARGS', 'task.worktreeSweep needs a run_id');
   if (args.unproven_workers !== undefined && !(Array.isArray(args.unproven_workers) && args.unproven_workers.every((s) => typeof s === 'string'))) throw err('E_ARGS', 'task.worktreeSweep: unproven_workers must be an array of worker ids', { field: 'unproven_workers' });
+  if (args.deadline_ms !== undefined && !(Number.isFinite(args.deadline_ms) && args.deadline_ms >= 0)) throw err('E_ARGS', 'task.worktreeSweep: deadline_ms must be a non-negative number', { field: 'deadline_ms' });
   const t0 = Date.now();
+  let slowest = EXPECT_TREE_MS;
   const budget = Number.isFinite(args.budget_ms) ? args.budget_ms : SWEEP_BUDGET_MS;
   const allTasks = rows.currentAll(E.store, 'task');
   const allIntegrations = rows.currentAll(E.store, 'integration');
@@ -114,23 +120,29 @@ async function sweep(E, caller, args) {
     groups.get(key(rec.path)).tasks.push(t);
   }
   const out = { removed: [], kept: [], failed: [], orphans: [], integration_kept: [], skipped: null, ms: 0 };
+  const mine = { path: null };
+  running.set(runId, mine);
   try {
   for (const g of groups.values()) {
     const base = { task_ids: g.tasks.map((t) => t.id), path: g.rec.path, branch: g.rec.branch };
     if (cancelRequested.has(runId)) { out.skipped = 'interrupted'; out.kept.push({ ...base, reason: 'interrupted', detail: 'the close was cut before this tree' }); continue; }
+    if (args.deadline_ms !== undefined && Date.now() - t0 + slowest > args.deadline_ms) { out.skipped = 'deadline'; out.kept.push({ ...base, reason: 'deadline', detail: `the close has ${args.deadline_ms} ms left, which does not fit another removal` }); continue; }
     if (Date.now() - t0 >= budget) { out.skipped = 'budget'; out.kept.push({ ...base, reason: 'budget', detail: `the sweep's ${budget} ms ran out before this tree` }); continue; }
     try {
       const why = await keepReason(E, g, ctx);
       if (why) { out.kept.push({ ...base, ...why }); continue; }
       if (cancelRequested.has(runId)) { out.skipped = 'interrupted'; out.kept.push({ ...base, reason: 'interrupted', detail: 'the close was cut before this tree' }); continue; }
-      const r = await removeOne(E, caller, g, base);
+      mine.path = g.rec.path;
+      const t1 = Date.now();
+      let r;
+      try { r = await removeOne(E, caller, g, base); } finally { mine.path = null; slowest = Math.max(slowest, Date.now() - t1); }
       for (const k of ['removed', 'kept', 'failed']) if (r[k]) out[k].push(r[k]);
     } catch (e) {
       const listed = await G.worktrees(g.rec.repo).then((l) => l.some((x) => G.samePath(x.path, g.rec.path))).catch(() => null);
       out.failed.push({ ...base, code: e.code || 'E_INTERNAL', error: e.message, git_still_lists: listed, leftover: false });
     }
   }
-  } finally { cancelRequested.delete(runId); }
+  } finally { cancelRequested.delete(runId); running.delete(runId); }
   for (const i of ctx.integrations) if (i.run_id === runId && i.worktree) out.integration_kept.push({ id: i.id, path: i.worktree, branch: i.into_branch });
   try {
     const repos = new Set([...groups.values()].map((g) => g.rec.repo));
