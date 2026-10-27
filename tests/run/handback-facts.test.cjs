@@ -15,7 +15,7 @@ test('a verdict task gets one fact line per reviewed task, with the head and the
   const f = await HB.facts(getter({ w1: { id: 'w1', results: results() } }), assigned);
   assert.strictEqual(f, "\n\nbelay's acceptance checks for w1 passed at abcdef012345 (node --test; files_within_owned).");
   const msg = HB.rule(assigned, f);
-  assert.match(msg, /findings": \[\{ "severity": "blocking\|should-fix\|note", "title": "\.\.\." \}\] \}\.\n\nbelay's acceptance checks for w1 passed/);
+  assert.match(msg, /findings": \[\{ "severity": "blocking\|should-fix\|note", "title": "\.\.\.", \.\.\. \}\] \}\.\n\nbelay's acceptance checks for w1 passed/);
   assert.ok(msg.indexOf("belay's acceptance") < msg.indexOf(HB.reviewStandard().slice(0, 40)), 'before the Review standard');
   assert.ok(!/re-?run|do not run|need not/i.test(f), 'a fact only');
 });
