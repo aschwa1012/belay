@@ -6,6 +6,9 @@
 const P = require('./process.cjs');
 const PI = require('./pid-identity.cjs'); // ADR 0039
 const W = require('./worker.cjs');
+const BG = require('./background.cjs');
+
+const BG_STOP_MS = 3000; // the most a graceful stop spends asking Claude Code to stop its open background tasks before it closes stdin
 
 const now = () => Date.now();
 
@@ -31,13 +34,18 @@ function createDoStop({ ctx, writeRow }) {
     // Fix round (6f-2): pause.cjs's own step 1b already wrote this row `stopping` — never repeated here.
     if (w.state !== 'stopping') await writeRow(w, 'stopping');
     let graceful = false;
+    let bgStops = []; let gracefulTimedOutMs = null; let blockedBy = null;
     let killed = false; let refused = null; let notKilled = null; let tree = null; // tree: this stop's own kill, never an earlier life's (w.treeKill)
     // Closing stdin needs a stdin: an adopted worker's pipes belong to the adapter that spawned it,
     // so there is nothing to close and the kill is the only channel left.
     if (mode === 'graceful' && w.substrate === 'claude-code' && w.child) {
-      graceful = (await P.gracefulStop(w.child, timeout_ms)).graceful;
+      // A worker that holds a background task (a hung shell) may not exit on stdin close, so those tasks are stopped first, as a park does.
+      bgStops = await BG.stopTasks(w, { boundMs: Math.min(BG_STOP_MS, Math.floor(timeout_ms / 2)) }).catch(() => []);
+      const g = await P.gracefulStop(w.child, timeout_ms);
+      graceful = g.graceful; if (!graceful) gracefulTimedOutMs = g.ms;
     }
     if (!graceful) {
+      if (gracefulTimedOutMs != null) blockedBy = BG.runningTasks(w).map((t) => ({ task_id: t.task_id, description: t.description })); // what still held the worker open when the wait ran out
       // The subtree first, then the exact pid as the backstop that produces the exit event (ADR 0011 §2).
       const kr = await PI.killWorker(w); // ADR 0039: `killed` is what the kill did, never what was attempted
       tree = kr.tree; w.treeKill = tree; refused = kr.refused; notKilled = kr.descendants_not_killed; killed = !refused;
@@ -54,7 +62,9 @@ function createDoStop({ ctx, writeRow }) {
     return {
       worker_id, pid, exit_code: w.exitCode, exit_signal: w.exitSignal,
       ms_to_exit: Math.max(0, (w.exitedAt || now()) - t0), graceful, killed, session_id: w.sessionId, // 0 when the exit came before the stop (an adopted row's old exited_at)
-      tree_kill: tree || null, ...(refused ? { refused: refused.refused, kind: refused.kind, detail: refused.detail } : {}), ...(notKilled ? { descendants_not_killed: notKilled } : {}),
+      ...(bgStops.length ? { background_tasks_stopped: bgStops.map((s) => ({ task_id: s.task_id, description: s.description, status_after: s.status_after })) } : {}),
+      ...(gracefulTimedOutMs != null ? { graceful_timed_out_ms: gracefulTimedOutMs, blocked_by: blockedBy } : {}),
+      tree_kill: tree || null, ...(tree && tree.killed_processes ? { killed_processes: tree.killed_processes } : {}), ...(refused ? { refused: refused.refused, kind: refused.kind, detail: refused.detail } : {}), ...(notKilled ? { descendants_not_killed: notKilled } : {}),
     };
   };
 }

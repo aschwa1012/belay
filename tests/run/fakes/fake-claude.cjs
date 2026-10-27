@@ -411,5 +411,9 @@ process.stdin.on('data', (d) => {
 if (process.env.FAKE_IGNORE_STDIN_END === '1') {
   setInterval(() => {}, 1000);
   if (process.env.FAKE_STDIN_END_FILE) process.stdin.on('end', () => { try { require('node:fs').writeFileSync(process.env.FAKE_STDIN_END_FILE, String(Date.now())); } catch { /* the test reports the missing file */ } });
-} else process.stdin.on('end', () => process.exit(0));
+} else process.stdin.on('end', () => {
+  // FAKE_BG_BLOCKS_EXIT=1: a worker holding an open background task does not exit on stdin close (the hung shell of a real session).
+  if (process.env.FAKE_BG_BLOCKS_EXIT === '1' && runningBgList().length) return;
+  process.exit(0);
+});
 process.stdin.resume();
