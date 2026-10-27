@@ -132,7 +132,13 @@ function clause(evs, room) {
     : e.error === 'E_BUSY' ? `task ${e.task_id} not evaluated at release: another evaluation of it is running`
     : e.error ? `task ${e.task_id} could not be evaluated at release (${e.error})`
     : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}` : `not done; failing: ${e.failing.join(', ') || 'no executable check'}`}`); }
-  if (evs.some((e) => e.review)) { const body = reviewWake.render(parts, evs, room - 2); if (body) return ` ${body}.`; }
+  if (evs.some((e) => e.review)) {
+    const body = reviewWake.render(parts, evs, room - 2);
+    if (body) return ` ${body}.`;
+    // Even the bare clauses do not fit: they are cut, but a review's findings and changed tree are still said.
+    const flags = reviewWake.flagsOf(evs);
+    return `${cut(` ${parts.join('; ')}`, room - 1 - Buffer.byteLength(flags, 'utf8'))}${flags}.`;
+  }
   return cut(` ${parts.join('; ')}.`, room);
 }
 
