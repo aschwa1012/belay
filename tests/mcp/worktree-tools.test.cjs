@@ -37,6 +37,7 @@ test('task_worktree, worker_spawn, task_evaluate and integrate drive one task fr
   // The adapter's run has no project directory, so the repository is named (an argument the listing does not advertise).
   const made = ok(await a.call('task_worktree', { task_id: task.id, repo }, 60000));
   const w = made.worktree;
+  assert.strictEqual(made.base, w.base_sha, 'the reply names the base the tree was made from, not a null');
   assert.strictEqual(w.branch, `belay/${task.id}`);
   assert.ok(fs.existsSync(w.path));
 
@@ -60,4 +61,26 @@ test('task_worktree, worker_spawn, task_evaluate and integrate drive one task fr
   assert.ok(removed.worktree.removed_at > 0);
   assert.ok(!fs.existsSync(w.path));
   refused(await a.call('task_worktree', { task_id: task.id, action: 'drop' }), 'E_ARGS');
+});
+
+test('worker_spawn for a review task starts the reviewer in the reviewed task\'s tree, and says why when there is none', async (t) => {
+  const box = sandboxDir('wt-review');
+  const repo = makeRepo(box);
+  await recordProject(`${box}/data`, 'run-1', repo);
+  const a = launch({ role: 'orchestrator', data: `${box}/data`, fake: false });
+  t.after(async () => { await a.close(); a.kill(); fs.rmSync(box, { recursive: true, force: true }); });
+  await a.initialize();
+  const work = ok(await a.call('task_create', { spec: 'write a.txt', files_owned: ['a.txt'], acceptance: { files_within_owned: true } }));
+  const bare = ok(await a.call('task_create', { spec: 'no tree', files_owned: ['b.txt'], acceptance: { files_within_owned: true } }));
+  const rv = ok(await a.call('task_create', { id: 'rv-bare', spec: 'review it', depends_on: [bare.id], acceptance: { verdict: true } }));
+  const gone = refused(await a.call('worker_spawn', { substrate: 'claude-code', prompt: 'x', task_id: rv.id }), 'E_ARGS');
+  assert.match(gone.message, /reviews no task that has a belay worktree/);
+  assert.strictEqual(gone.detail.missing, 'worktree');
+
+  const made = ok(await a.call('task_worktree', { task_id: work.id, repo }, 60000));
+  const rw = ok(await a.call('task_create', { id: 'rv-work', spec: 'review it', depends_on: [work.id], acceptance: { verdict: true } }));
+  const r = await a.call('worker_spawn', { substrate: 'claude-code', prompt: 'x', task_id: rw.id });
+  const text = JSON.stringify(r.structuredContent || r.content);
+  assert.match(text, /E_DEPENDENCY_OPEN/, "past the worktree stage, the spawn stops at the open dependency (nothing launched)");
+  assert.ok(!/needs worktree|reviews no task|trees, so no one tree/.test(text), `the reviewed tree ${made.worktree.path} was not resolved: ${text}`);
 });
