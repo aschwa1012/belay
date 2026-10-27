@@ -1,8 +1,9 @@
 'use strict';
 // methods-follow-up.cjs — ADR 0064: a follow-up is a task made for a held review's should-fix findings. It is not a fix round: it
 // carries no `repairs` and no `answers`, so max_fix_rounds never counts it and it never answers a refutation. Its own record is
-// `follows_up: { review_id, task_id, root }`, written only here, and its own cap is the run's max_follow_ups, counted per root work.
-// It depends on the judged task and inherits its tree, but nothing waits on it: the judged task stays done and integrable.
+// `follows_up: { review_id, review_ids, task_id, root }`, written only here, and its own cap is the run's max_follow_ups, counted
+// per root work. It depends on the judged task and works in a tree of its own, cut from the judged head, so nothing shares a branch
+// with the work it follows: the judged task stays done and integrable, and a fix of the follow-up gates only the follow-up.
 
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
@@ -14,22 +15,44 @@ const LIVE = new Set(['open', 'assigned', 'released']);
 // that says should-fix counts. A bare string, or a finding with no severity, is not one.
 const shouldFix = (f) => !!f && typeof f === 'object' && !Array.isArray(f) && typeof f.severity === 'string' && f.severity.toLowerCase().replace(/[\s_-]/g, '') === 'shouldfix';
 
-function defaultSpec(F, review, judged, findings) {
-  let lines = findings.map(F.findingLine).filter(Boolean).map((l) => `- ${l}`).join('\n');
-  if (Buffer.byteLength(lines, 'utf8') > FINDINGS_MAX) lines = `${Buffer.from(lines, 'utf8').subarray(0, FINDINGS_MAX).toString('utf8')}...`;
-  const detail = F.verdictDetail(review);
-  return `Follow up on review ${review.id} of task ${judged.id}. Task ${judged.id} is done and can be integrated without this task; this one covers the review's should-fix findings (original ask, task ${judged.id}: ${F.brief(judged.spec)}).\n${detail.summary ? `The reviewer said: ${detail.summary}\n` : ''}Findings:\n${lines}`;
+function defaultSpec(F, quoted, judged) {
+  const room = Math.floor(FINDINGS_MAX / quoted.length);
+  const said = quoted.map(({ review, findings }) => {
+    let lines = findings.map(F.findingLine).filter(Boolean).map((l) => `- ${l}`).join('\n');
+    if (Buffer.byteLength(lines, 'utf8') > room) lines = `${Buffer.from(lines, 'utf8').subarray(0, room).toString('utf8')}...`;
+    const detail = F.verdictDetail(review);
+    return `Review ${review.id}${detail.summary ? ` said: ${detail.summary}` : ''}\nFindings:\n${lines}`;
+  });
+  const ids = quoted.map((q) => q.review.id).join(', ');
+  return `Follow up on ${quoted.length > 1 ? 'reviews' : 'review'} ${ids} of task ${judged.id}. Task ${judged.id} is done and can be integrated without this task; this one covers the should-fix findings (original ask, task ${judged.id}: ${F.brief(judged.spec)}).\n${said.join('\n')}`;
 }
 
-const rootOf = (judged) => (judged.follows_up && judged.follows_up.root) || judged.repairs || judged.id;
+// The work a follow-up counts against, resolved through the whole chain: a follow-up's recorded root, else the work a fix repairs
+// (a fix of a follow-up resolves to that follow-up's root), else the task itself. So every descendant counts against one work.
+function rootOf(E, judged) {
+  let t = judged;
+  for (let i = 0; t && i < 100; i++) {
+    if (t.follows_up && t.follows_up.root) return t.follows_up.root;
+    if (!t.repairs) return t.id;
+    t = rows.current(E.store, 'task', t.repairs);
+  }
+  return judged.id;
+}
+
+const reviewIdsOf = (t) => (Array.isArray(t.follows_up.review_ids) ? t.follows_up.review_ids : [t.follows_up.review_id]);
+// An open follow-up of this run for this judged task that already covers the review (the idempotency key).
+const openFor = (E, runId, taskId, reviewId) => rows.currentAll(E.store, 'task').find((t) => t.follows_up && t.follows_up.task_id === taskId && t.run_id === runId && LIVE.has(t.state) && reviewIdsOf(t).includes(reviewId)) || null;
 
 // The tasks of this run that follow up `root`, cancelled ones included.
 const usedFor = (E, runId, root) => rows.currentAll(E.store, 'task').filter((t) => t.follows_up && t.follows_up.root === root && t.run_id === runId).length;
 const capOf = (E, runId) => { const run = rows.current(E.store, 'run', runId); return run && run.max_follow_ups != null ? Number(run.max_follow_ups) : null; };
 
-// Decision 5: called by task.create for a task that follows up; refuses past the run's cap, writing nothing. A run row with no
-// value (an operator's own session, an older store) is not enforced.
+// Called by task.create for a task that follows up, in the turn that writes it: a follow-up already open for the review is
+// reported (E_EXISTS naming it, so the caller returns it), then the cap (decision 5), writing nothing. A run row with no value
+// (an operator's own session, an older store) is not enforced.
 function checkCap(E, caller, id, fu) {
+  const open = openFor(E, caller.run_id, fu.task_id, fu.review_id);
+  if (open) throw err('E_EXISTS', `a follow-up for review ${fu.review_id} is already open: ${open.id}`, { follow_up_existing: open.id });
   const cap = capOf(E, caller.run_id);
   if (cap == null) return;
   const used = usedFor(E, caller.run_id, fu.root);
@@ -57,30 +80,47 @@ async function followUp(E, caller, args) {
   if (!judged) throw err('E_NOT_FOUND', `review ${review.id} depends on ${judgedId}, which has no row in this store`, { review_id: review.id, missing: judgedId });
   if (judged.state !== 'done') throw err('E_PRECONDITION', `task ${judged.id} is ${judged.state}, not done; a follow-up follows work that is done`, { review_id: review.id, task_id: judged.id, state: judged.state });
   const all = rows.currentAll(E.store, 'task');
-  const stands = RS.ofTask(judged, RS.index(E.store, all));
+  const ix = RS.index(E.store, all);
+  const stands = RS.ofTask(judged, ix);
   if (stands && stands.state !== 'holds') {
     throw err('E_PRECONDITION', `the work's review is ${stands.state}, decided by review ${stands.review_id}; that review decides before this one. Fix or re-judge first`, { review_id: review.id, task_id: judged.id, deciding_review: stands.review_id, state: stands.state });
   }
-  const root = rootOf(judged), cap = capOf(E, caller.run_id);
-  const left = (extra) => (cap == null ? null : Math.max(0, cap - usedFor(E, caller.run_id, root) - extra));
-  const existing = all.find((t) => t.follows_up && t.follows_up.review_id === review.id && t.follows_up.task_id === judged.id && t.run_id === caller.run_id && LIVE.has(t.state));
-  if (existing) return { ...existing, from_review: review.id, existing: true, follow_ups_left: left(0) };
+  const root = rootOf(E, judged), cap = capOf(E, caller.run_id);
+  const left = () => (cap == null ? null : Math.max(0, cap - usedFor(E, caller.run_id, root)));
+  const reply = (row, extra) => ({ ...row, from_review: review.id, ...extra, follow_ups_left: left() });
+  const open = openFor(E, caller.run_id, judged.id, review.id);
+  if (open) return reply(open, { existing: true });
+  // Every held review of this work that no follow-up covers yet is quoted, so another reviewer's findings are not dropped.
+  const covered = new Set(all.filter((t) => t.follows_up && t.state !== 'cancelled' && t.follows_up.task_id === judged.id).flatMap(reviewIdsOf));
+  const others = (ix.reviewsOf.get(judged.id) || []).filter((r) => r.id !== review.id && RS.verdictOf(r) === 'holds' && !covered.has(r.id));
+  const findingsOf = (r) => (Array.isArray(F.verdictDetail(r).findings) ? F.verdictDetail(r).findings : []).filter(shouldFix);
+  const quoted = [review, ...others].map((r) => ({ review: r, findings: findingsOf(r) })).filter((q) => q.findings.length);
   let spec = typeof args.spec === 'string' && args.spec.trim() ? args.spec : null;
   if (!spec) {
-    const findings = (Array.isArray(F.verdictDetail(review).findings) ? F.verdictDetail(review).findings : []).filter(shouldFix);
-    if (!findings.length) throw err('E_ARGS', `review ${review.id} lists no should-fix finding; pass spec to say what the follow-up is for`, { review_id: review.id });
-    spec = defaultSpec(F, review, judged, findings);
+    if (!quoted.length) throw err('E_ARGS', `review ${review.id} lists no should-fix finding; pass spec to say what the follow-up is for`, { review_id: review.id });
+    spec = defaultSpec(F, quoted, judged);
   }
-  const tree = F.inheritedTree(judged);
-  const row = await T.create(E, caller, {
-    spec,
-    acceptance: args.acceptance !== undefined ? args.acceptance : judged.acceptance,
-    files_owned: F.ownedSet(args.files_owned, judged, tree),
-    depends_on: [judged.id],
-    ...(judged.base ? { base: judged.base } : {}),
-    ...(args.id ? { id: args.id } : {}),
-  }, { worktree: tree, follows_up: { review_id: review.id, task_id: judged.id, root } });
-  return { ...row, from_review: review.id, follow_ups_left: left(0) };
+  const reviewIds = [review.id, ...quoted.map((q) => q.review.id).filter((id) => id !== review.id)];
+  // Its own tree and branch, cut from the head the work was judged at (the tree-making of task.create, removed again if the write is refused).
+  const rec = F.inheritedTree(judged);
+  const cut = rec ? (judged.results && judged.results.head_sha) || rec.branch : null;
+  let row;
+  try {
+    row = await T.create(E, caller, {
+      spec,
+      acceptance: args.acceptance !== undefined ? args.acceptance : judged.acceptance,
+      files_owned: F.ownedSet(args.files_owned, judged, rec),
+      depends_on: [judged.id],
+      ...(cut ? { worktree: cut } : {}),
+      ...(args.id ? { id: args.id } : {}),
+    }, { follows_up: { review_id: review.id, review_ids: reviewIds, task_id: judged.id, root } });
+  } catch (e) {
+    const id = e && e.code === 'E_EXISTS' && e.detail && e.detail.follow_up_existing;
+    const again = id && rows.current(E.store, 'task', id);
+    if (again) return reply(again, { existing: true });
+    throw e;
+  }
+  return reply(row, {});
 }
 
 module.exports = { followUp, checkCap, shouldFix, rootOf };

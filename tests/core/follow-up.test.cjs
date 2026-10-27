@@ -61,14 +61,14 @@ async function ctx(levers) {
   return { dir, repo, orch, handBack, done, review, reviewOf, count };
 }
 
-test('a hold gives a follow-up in the work\'s tree that is no fix round: no repairs, no answers, rounds unchanged', async () => {
+test('a hold gives a follow-up in a tree of its own that is no fix round: no repairs, no answers, rounds unchanged', async () => {
   const c = await ctx({ max_fix_rounds: 2, max_follow_ups: 1 });
   const w = await c.done('add the retry', { tree: true });
   const r = await c.review(w, 'holds', [SHOULD, BLOCKING, NOTE, 'a bare string']);
   const f = await c.orch.task.fixFromReview({ review_id: r.id, follow_up: true });
-  assert.deepStrictEqual(f.follows_up, { review_id: r.id, task_id: w.id, root: w.id });
+  assert.deepStrictEqual(f.follows_up, { review_id: r.id, review_ids: [r.id], task_id: w.id, root: w.id });
   assert.deepStrictEqual([f.depends_on, f.repairs ?? null, f.answers ?? null, f.from_review, f.follow_ups_left], [[w.id], null, null, r.id, 0]);
-  assert.deepStrictEqual([f.worktree.path, f.worktree.branch, f.worktree.base_sha, f.worktree.inherited_from], [w.worktree.path, w.worktree.branch, w.worktree.base_sha, w.id]);
+  assert.deepStrictEqual([f.worktree.branch, f.worktree.base_sha, f.worktree.inherited_from ?? null], [`belay/${f.id}`, (await c.orch.task.get({ task_id: w.id })).results.head_sha, null], 'its own branch, cut from the judged head');
   assert.deepStrictEqual([f.files_owned, f.acceptance], [w.files_owned, w.acceptance]);
   assert.match(f.spec, /the retry has no test/);
   assert.match(f.spec, /can be integrated without this task/);
@@ -83,18 +83,74 @@ test('a hold gives a follow-up in the work\'s tree that is no fix round: no repa
   assert.deepStrictEqual(row.find((t) => t.id === w.id).review.follow_ups, [{ id: f.id, state: 'open' }]);
 });
 
-test('the work still integrates while the follow-up is open, and the follow-up\'s commit is left out', async () => {
+test('the work still integrates while the follow-up is open: its own branch is not merged, its dirty tree does not matter', async () => {
   const c = await ctx({ max_fix_rounds: 2, max_follow_ups: 1 });
   const w = await c.done('integrable work', { tree: true });
   const judged = (await c.orch.task.get({ task_id: w.id })).results.head_sha;
   const r = await c.review(w, 'holds', [SHOULD]);
   const f = await c.orch.task.fixFromReview({ review_id: r.id, follow_up: true });
-  write(w.worktree.path, w.files_owned[0], 'follow-up work\n');
-  commit(w.worktree.path, 'follow-up work');
-  const row = await c.orch.integration.merge({ task_ids: [w.id], into: 'int/follow' });
-  assert.deepStrictEqual([row.merged[0].sha, row.merged[0].left_out.commits], [judged, 1]);
-  assert.strictEqual(git(row.worktree, 'show', `HEAD:${w.files_owned[0]}`), 'work', 'the follow-up\'s commit did not land');
-  assert.strictEqual((await c.orch.task.get({ task_id: f.id })).state, 'open');
+  write(f.worktree.path, w.files_owned[0], 'follow-up work\n');
+  commit(f.worktree.path, 'follow-up work');
+  write(f.worktree.path, 'src/scratch.cjs', 'uncommitted\n'); // the follow-up's tree is dirty: it is not the work's tree
+  const rowW = await c.orch.integration.merge({ task_ids: [w.id], into: 'int/work' });
+  assert.deepStrictEqual([rowW.merged[0].sha, rowW.merged[0].left_out ?? null], [judged, null]);
+  assert.strictEqual(git(rowW.worktree, 'show', `HEAD:${w.files_owned[0]}`), 'work', 'the follow-up\'s commit did not land with the work');
+  const got = await c.orch.task.get({ task_id: w.id });
+  assert.deepStrictEqual([got.state, got.review.state], ['done', 'holds']);
+});
+
+test('a done follow-up integrates on its own; the work\'s tree can be removed while another follow-up is live', async () => {
+  const c = await ctx({ max_fix_rounds: 2, max_follow_ups: 1 });
+  const w = await c.done('own tree work', { tree: true });
+  const judged = (await c.orch.task.get({ task_id: w.id })).results.head_sha;
+  const r = await c.review(w, 'holds', [SHOULD]);
+  const f = await c.orch.task.fixFromReview({ review_id: r.id, follow_up: true });
+  // Its own tree and branch, cut from the head the work was judged at, and not inherited.
+  assert.deepStrictEqual([f.worktree.branch, f.worktree.base_sha, f.worktree.inherited_from ?? null], [`belay/${f.id}`, judged, null]);
+  assert.notStrictEqual(f.worktree.path, w.worktree.path);
+  write(f.worktree.path, w.files_owned[0], 'follow-up work\n');
+  commit(f.worktree.path, 'follow-up work');
+  await c.handBack(f.id, { branch: 'b' }, f.worktree.path);
+  assert.strictEqual((await c.orch.task.evaluate({ task_id: f.id })).state, 'done');
+  const rowF = await c.orch.integration.merge({ task_ids: [f.id], into: 'int/follow' });
+  assert.strictEqual(git(rowF.worktree, 'show', `HEAD:${w.files_owned[0]}`), 'follow-up work');
+  // The work's tree goes while its follow-up stays: a live follow-up holds only its own tree.
+  const g = await c.done('second work', { tree: true });
+  const gf = await c.orch.task.fixFromReview({ review_id: (await c.review(g, 'holds', [SHOULD])).id, follow_up: true });
+  await c.orch.task.worktreeRemove({ task_id: g.id });
+  assert.ok(require('node:fs').existsSync(gf.worktree.path), 'the live follow-up kept its own tree');
+});
+
+test('the cap cannot be walked around through a fix of a follow-up: every descendant counts against the original work', async () => {
+  const c = await ctx({ max_fix_rounds: 2, max_follow_ups: 2 });
+  const w = await c.done('chain root');
+  const fu1 = await c.orch.task.fixFromReview({ review_id: (await c.review(w, 'holds', [SHOULD])).id, follow_up: true });
+  await c.handBack(fu1.id, { branch: 'b' });
+  assert.strictEqual((await c.orch.task.evaluate({ task_id: fu1.id, worktree: c.dir })).state, 'done');
+  const fix1 = await c.orch.task.fixFromReview({ review_id: (await c.review(fu1, 'refuted', [BLOCKING])).id });
+  assert.strictEqual(fix1.repairs, fu1.id);
+  await c.handBack(fix1.id, { branch: 'b' });
+  assert.strictEqual((await c.orch.task.evaluate({ task_id: fix1.id, worktree: c.dir })).state, 'done');
+  const fu2 = await c.orch.task.fixFromReview({ review_id: (await c.review(fix1, 'holds', [SHOULD])).id, follow_up: true });
+  assert.deepStrictEqual([fu2.follows_up.root, fu2.follow_ups_left], [w.id, 0], 'the follow-up of a fix of a follow-up counts against the original work');
+  await c.handBack(fu2.id, { branch: 'b' });
+  assert.strictEqual((await c.orch.task.evaluate({ task_id: fu2.id, worktree: c.dir })).state, 'done');
+  const e = await rejectsCode(c.orch.task.fixFromReview({ review_id: (await c.review(fu2, 'holds', [SHOULD])).id, follow_up: true }), 'E_FOLLOW_UPS');
+  assert.deepStrictEqual([e.detail.root, e.detail.used], [w.id, 2]);
+});
+
+test('several held reviews of one work: the follow-up quotes every uncovered review, and a call for another of them returns it', async () => {
+  const c = await ctx({ max_fix_rounds: 2, max_follow_ups: 1 });
+  const w = await c.done('two reviewers');
+  const r1 = await c.review(w, 'holds', [{ ...SHOULD, note: 'first reviewer gap' }]);
+  const r2 = await c.review(w, 'holds', [{ ...SHOULD, note: 'second reviewer gap' }]);
+  const f = await c.orch.task.fixFromReview({ review_id: r1.id, follow_up: true });
+  assert.match(f.spec, /first reviewer gap/);
+  assert.match(f.spec, /second reviewer gap/);
+  assert.deepStrictEqual([f.follows_up.review_id, f.follows_up.review_ids.slice().sort()], [r1.id, [r1.id, r2.id].sort()]);
+  const n = await c.count();
+  const again = await c.orch.task.fixFromReview({ review_id: r2.id, follow_up: true });
+  assert.deepStrictEqual([again.id, again.existing, await c.count()], [f.id, true, n], 'not E_FOLLOW_UPS: the second review\'s findings are already in it');
 });
 
 test('a follow-up does not spend a fix round: with max_fix_rounds used up one is still made, and a refutation still hits E_FIX_ROUNDS', async () => {
@@ -111,7 +167,7 @@ test('a follow-up does not spend a fix round: with max_fix_rounds used up one is
   const r3 = await c.review(judged, 'holds', [SHOULD]);
   assert.deepStrictEqual(await c.reviewOf(w.id), { state: 'holds', review_id: r3.id, rounds: 2, rounds_left: 0 });
   const f = await c.orch.task.fixFromReview({ review_id: r3.id, follow_up: true });
-  assert.deepStrictEqual(f.follows_up, { review_id: r3.id, task_id: judged.id, root: w.id });
+  assert.deepStrictEqual(f.follows_up, { review_id: r3.id, review_ids: [r3.id], task_id: judged.id, root: w.id });
   const after = await c.reviewOf(w.id);
   assert.deepStrictEqual([after.rounds, after.rounds_left, after.follow_ups_left], [2, 0, 0]);
   // A later refutation of the follow-up's own work is a fix of the follow-up, counted for the follow-up and not the original.

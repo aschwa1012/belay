@@ -68,9 +68,9 @@ function planned(top, it) {
 }
 
 // Every item's checks and append, in order, so a later item sees the earlier ones as rows. Call it inside a transaction.
-function writeAll(E, caller, list, trees, runTop) {
+function writeAll(E, caller, list, trees, runTop, own = {}) {
   const N = require('./methods-task-new.cjs');
-  return list.map((it, i) => N.one(E, caller, { ...it.args, id: it.id }, trees[i] ? { worktree: trees[i] } : {}, runTop));
+  return list.map((it, i) => N.one(E, caller, { ...it.args, id: it.id }, { ...(own.follows_up && list.length === 1 ? { follows_up: own.follows_up } : {}), ...(trees[i] ? { worktree: trees[i] } : {}) }, runTop)); // own.follows_up: a follow-up with its own tree (ADR 0064)
 }
 
 // The steps of task.worktreeCreate up to and including the junctions, for a new task's tree. `made` gets the record as soon as
@@ -121,14 +121,14 @@ async function createWithTrees(E, caller, args, own) {
   const shape = (written) => (single ? written[0] : { tasks: written });
 
   if (!wanted.length) { // nothing to make: one transaction, all or nothing
-    const out = E.store.tx(() => { E.assertRunOpen(caller, 'task.create'); return writeAll(E, caller, list, list.map(() => null), top); });
+    const out = E.store.tx(() => { E.assertRunOpen(caller, 'task.create'); return writeAll(E, caller, list, list.map(() => null), top, own); });
     E.noteWrite();
     return shape(out);
   }
 
   // 1. every check, with no git: the real writes in a transaction that is rolled back.
   try {
-    E.store.tx(() => { E.assertRunOpen(caller, 'task.create'); writeAll(E, caller, list, list.map((it) => (it.tree ? planned(top, it) : null)), top); throw DRY; });
+    E.store.tx(() => { E.assertRunOpen(caller, 'task.create'); writeAll(E, caller, list, list.map((it) => (it.tree ? planned(top, it) : null)), top, own); throw DRY; });
   } catch (e) { if (e !== DRY) throw e; }
 
   // 2. the lock for every new id, then 3. the trees.
@@ -152,7 +152,7 @@ async function createWithTrees(E, caller, args, own) {
         if (seamOn() && seam.afterTree) await seam.afterTree(i, trees[i]);
       }
       // 4. every row, one transaction, every check again on the store as it now is.
-      const out = E.store.tx(() => { E.assertRunOpen(caller, 'task.create'); return writeAll(E, caller, list, trees, top); });
+      const out = E.store.tx(() => { E.assertRunOpen(caller, 'task.create'); return writeAll(E, caller, list, trees, top, own); });
       E.noteWrite();
       return shape(out);
     } catch (e) {

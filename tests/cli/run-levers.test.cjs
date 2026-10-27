@@ -128,7 +128,7 @@ test('run: the receipt carries levers and review_rounds (this run\'s verdict tas
   const t = go('hi\n', {}, { BELAY_FAKE_CORE: FAKE_TASKS, FAKE_TASKS_MODE: 'reject', NO_JSON: '1' });
   try {
     assert.strictEqual(t.status, 0, t.stderr.slice(-600));
-    assert.match(t.stdout, /levers: max_fix_rounds 2, fix_cutoff orchestrator, on_embedder_failure keyword; review_rounds: unknown \(task\.list failed: .*PROBE/);
+    assert.match(t.stdout, /levers: max_fix_rounds 2, max_follow_ups 1, fix_cutoff orchestrator, on_embedder_failure keyword; review_rounds: unknown \(task\.list failed: .*PROBE/);
   } finally { cleanup(t.dir); }
 
   const r = go('hi\n', {}, { BELAY_FAKE_CORE: FAKE_TASKS, FAKE_TASKS_MODE: 'reject' });
