@@ -11,6 +11,7 @@ const MN = require('../core/memory-notice.cjs'); // pure; the shared wording of 
 
 const FIX_CUTOFFS = ['orchestrator', 'cap-only'];
 const DEFAULT_MAX_FIX_ROUNDS = 2;
+const DEFAULT_MAX_FOLLOW_UPS = 1; // ADR 0064 decision 5; 0 refuses every follow-up
 const DEFAULT_FIX_CUTOFF = 'orchestrator';
 const EM = require('../core/embedder-mode.cjs');
 const DEFAULT_ON_EMBEDDER_FAILURE = EM.DEFAULT_MODE; // ADR 0034 decision 2, amendment 1
@@ -121,6 +122,12 @@ function parseLevers(spec, opts = {}) {
     }
     maxFixRounds = v;
   }
+  let maxFollowUps = DEFAULT_MAX_FOLLOW_UPS;
+  if (spec.max_follow_ups !== undefined) {
+    const v = spec.max_follow_ups;
+    if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0) return { error: 'max_follow_ups must be a non-negative integer' };
+    maxFollowUps = v;
+  }
   let fixCutoff = DEFAULT_FIX_CUTOFF;
   if (spec.fix_cutoff !== undefined) {
     if (!FIX_CUTOFFS.includes(spec.fix_cutoff)) {
@@ -141,7 +148,7 @@ function parseLevers(spec, opts = {}) {
   } else if (spec.memory !== null && opts.config && opts.config.memory && opts.config.memory.on_embedder_failure !== undefined) { // an explicit `memory: null` inherits nothing from the config
     onEmbedderFailure = EM.normalize(opts.config.memory.on_embedder_failure) || DEFAULT_ON_EMBEDDER_FAILURE; // a bad config value is refused by parseMemoryBlock below
   }
-  const out = { max_fix_rounds: maxFixRounds, fix_cutoff: fixCutoff, on_embedder_failure: onEmbedderFailure };
+  const out = { max_fix_rounds: maxFixRounds, max_follow_ups: maxFollowUps, fix_cutoff: fixCutoff, on_embedder_failure: onEmbedderFailure };
   const ca = CP.parseCompactAt(spec.compact_at_tokens);
   if (ca.error) return { error: ca.error };
   if (ca.value !== null) out.compact_at_tokens = ca.value;

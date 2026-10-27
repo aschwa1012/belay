@@ -58,11 +58,12 @@ function inheritable(task) {
 const sharers = (E, id, dir) => rows.currentAll(E.store, 'task').filter((t) => t.id !== id && active(t) && G.samePath(active(t).path, dir));
 // The first other task that is not done or cancelled and shares `task`'s tree or its branch (a fix works on the work's branch, so
 // merging or removing either one takes the other's unreviewed commits with it), or null.
-function openSharer(E, task) {
+// `skipFollowUps`: integrate does not wait for a follow-up (it merges the judged head, so a follow-up's commits are left out); a tree removal still does.
+function openSharer(E, task, { skipFollowUps = false } = {}) {
   const rec = task.worktree;
   if (!rec || !rec.branch) return null;
   const tree = active(task);
-  return rows.currentAll(E.store, 'task').find((t) => t.id !== task.id && !ENDED_TASK.has(t.state) && t.worktree && (
+  return rows.currentAll(E.store, 'task').find((t) => t.id !== task.id && !ENDED_TASK.has(t.state) && !(skipFollowUps && t.follows_up) && t.worktree && (
     (t.worktree.branch === rec.branch && G.samePath(t.worktree.repo, rec.repo)) || (tree && active(t) && G.samePath(active(t).path, tree.path)))) || null;
 }
 

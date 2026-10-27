@@ -11,6 +11,7 @@ const { filesOverlap, treeHint } = require('./methods-task-hold.cjs');
 // `runTop` is the run's repository, read by the caller when tree_of is given. `own.worktree` is a tree the caller made or inherited.
 function one(E, caller, args, own, runTop) {
   const AM = require('./methods-task-amend.cjs');
+  if (args.follows_up !== undefined) throw err('E_ARGS', 'task.follows_up is written only by fix_from_review with follow_up: true; a caller cannot set it', { field: 'follows_up' }); // ADR 0064 decision 1
   if (typeof args.spec !== 'string' || !args.spec.trim()) throw err('E_ARGS', 'task.create needs a spec describing the work');
   const filesOwned = args.files_owned == null ? null : args.files_owned;
   if (filesOwned != null && (!Array.isArray(filesOwned) || filesOwned.some(p => typeof p !== 'string'))) {
@@ -60,6 +61,8 @@ function one(E, caller, args, own, runTop) {
     }
   }
 
+  if (own.follows_up) require('./methods-follow-up.cjs').checkCap(E, caller, id, own.follows_up); // ADR 0064 decision 5: its own cap, never a fix round
+
   let overlaps = [];
   if (filesOwned && filesOwned.length) {
     // ADR 0046 decision 1: only a task that holds its files (its run is live) can refuse this one. ADR 0059 decision 4: a new
@@ -74,7 +77,7 @@ function one(E, caller, args, own, runTop) {
   const t = Date.now();
   const row = rows.append(E.store, 'task', {
     id, run_id: caller.run_id, spec: args.spec, acceptance, files_owned: filesOwned, state: 'open',
-    results: null, depends_on: deps, repairs, ...(tree ? { worktree: tree } : {}), ...(own.answers ? { answers: own.answers } : {}), ...(args.base != null ? { base: require('./methods-worktree.cjs').baseArg(args.base) } : {}),
+    results: null, depends_on: deps, repairs, ...(tree ? { worktree: tree } : {}), ...(own.answers ? { answers: own.answers } : {}), ...(own.follows_up ? { follows_up: own.follows_up } : {}), ...(args.base != null ? { base: require('./methods-worktree.cjs').baseArg(args.base) } : {}),
   }, E.writtenBy(caller), t);
   E.noteWrite();
   return overlaps.length ? { ...row, overlaps } : row;

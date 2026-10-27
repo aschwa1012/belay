@@ -316,7 +316,7 @@ async function run(ctx) {
     try {
       clearRunStart(orchestratorDir); // before this launch's attach: no marker of an earlier life of this run id survives
       RID.watchOrchestrator(pid); // ADR 0039: run-identity.cjs; the attach never waits on a snapshot
-      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, max_parallel_evaluations: parsed.levers.max_parallel_evaluations === undefined ? null : parsed.levers.max_parallel_evaluations, project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
+      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, max_follow_ups: parsed.levers.max_follow_ups, max_parallel_evaluations: parsed.levers.max_parallel_evaluations === undefined ? null : parsed.levers.max_parallel_evaluations, project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
       for (const w of attachRow.warnings || []) process.stderr.write("belay run: warning: " + w + String.fromCharCode(10));
       return { ok: true, attach: attachRow };
     } catch (e) {

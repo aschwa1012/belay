@@ -315,7 +315,7 @@ const ORCHESTRATOR = [
   {
     name: 'fix_from_review',
     description: 'Create the fix task for a review evaluated refuted, with depends_on, repairs, acceptance and files_owned inferred and spec from its findings. Returns id, rev, state, spec_head, repairs, depends_on, files_owned (view debug: whole row).',
-    inputSchema: S({ review_id: str(), spec: str('Default: from the findings'), repairs: str('Which task, if it judged several'), id: str(), view: DEBUG }, ['review_id']),
+    inputSchema: S({ review_id: str(), spec: str('Default: from the findings'), repairs: str('Which task, if it judged several'), follow_up: { type: 'boolean', description: "A task for a held review's should-fix findings; not a fix round" }, id: str(), view: DEBUG }, ['review_id']),
   },
   {
     name: 'task_cancel',

@@ -128,7 +128,7 @@ async function readTasks(E, ids, force) {
   }
   // A fix task works on the branch of the work it fixes: merging the done work would take the open fix's unreviewed commits.
   for (const t of tasks) {
-    const open = W.openSharer(E, t);
+    const open = W.openSharer(E, t, { skipFollowUps: true }); // ADR 0064 decision 3: a follow-up never gates the work it follows
     if (open) throw err('E_PRECONDITION', `task ${t.id}'s branch ${t.worktree.branch} is shared with task ${open.id} (${open.state}), which is not done; merge once it is done or cancelled`, { task_id: t.id, branch: t.worktree.branch, open_task_id: open.id, open_state: open.state });
   }
   const repo = tasks[0].worktree.repo;

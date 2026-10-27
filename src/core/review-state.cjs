@@ -22,16 +22,19 @@ function verdictOf(r) {
 function index(store, tasks) {
   // SQLite takes the bare written_at from the row MIN(seq) chose: the first row's.
   const born = new Map(store.p('SELECT id, MIN(seq) AS s, written_at AS at FROM task GROUP BY id').all().map((r) => [r.id, { s: r.s, at: Number(r.at) }]));
-  const reviewsOf = new Map(), fixesOf = new Map();
+  const reviewsOf = new Map(), fixesOf = new Map(), followsOf = new Map();
   // A cancelled review judged nothing; a cancelled fix still spent its round, as task.create counts it.
   for (const t of tasks) {
     if (isReview(t)) {
       if (t.state === 'cancelled') continue;
       for (const d of t.depends_on || []) (reviewsOf.get(d) || reviewsOf.set(d, []).get(d)).push(t);
-    } else if (t.repairs) (fixesOf.get(t.repairs) || fixesOf.set(t.repairs, []).get(t.repairs)).push(t);
+    } else if (t.follows_up && t.follows_up.root) (followsOf.get(t.follows_up.root) || followsOf.set(t.follows_up.root, []).get(t.follows_up.root)).push(t); // ADR 0064: counted by its own cap, never a fix
+    else if (t.repairs) (fixesOf.get(t.repairs) || fixesOf.set(t.repairs, []).get(t.repairs)).push(t);
   }
-  const caps = new Map(rows.currentAll(store, 'run').map((r) => [r.id, r.max_fix_rounds == null ? null : Number(r.max_fix_rounds)]));
-  return { born, reviewsOf, fixesOf, caps };
+  const runs = rows.currentAll(store, 'run');
+  const caps = new Map(runs.map((r) => [r.id, r.max_fix_rounds == null ? null : Number(r.max_fix_rounds)]));
+  const followCaps = new Map(runs.map((r) => [r.id, r.max_follow_ups == null ? null : Number(r.max_follow_ups)]));
+  return { born, reviewsOf, fixesOf, followsOf, caps, followCaps };
 }
 
 const decidedAt = (r) => Number(r.results && r.results.evaluated_at) || 0;
@@ -82,7 +85,14 @@ function ofTask(task, ix) {
   const runId = fixes.length ? fixes[fixes.length - 1].run_id : task.run_id;
   const cap = ix.caps.has(runId) ? ix.caps.get(runId) : null;
   const used = fixes.filter((f) => f.run_id === runId).length;
-  return { state: verdictOf(last), review_id: last.id, rounds: fixes.length, rounds_left: cap == null ? null : Math.max(0, cap - used) };
+  const out = { state: verdictOf(last), review_id: last.id, rounds: fixes.length, rounds_left: cap == null ? null : Math.max(0, cap - used) };
+  const follows = (ix.followsOf.get(root) || []).slice().sort((a, b) => ix.born.get(a.id).s - ix.born.get(b.id).s);
+  if (follows.length) { // ADR 0064 decision 6: beside the fix rounds, never in them
+    const fCap = ix.followCaps.has(follows[follows.length - 1].run_id) ? ix.followCaps.get(follows[follows.length - 1].run_id) : null;
+    out.follow_ups = follows.map((f) => ({ id: f.id, state: f.state }));
+    out.follow_ups_left = fCap == null ? null : Math.max(0, fCap - follows.filter((f) => f.run_id === follows[follows.length - 1].run_id).length);
+  }
+  return out;
 }
 
 module.exports = { index, ofTask, verdictOf, answersOf, isReview };
