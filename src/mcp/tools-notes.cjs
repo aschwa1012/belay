@@ -85,7 +85,7 @@ function memoryStoreNotes(ordinary, role) {
   const { required, ...schema } = ordinary.inputSchema;
   const properties = { ...schema.properties };
   // A note takes its own fields only (methods-memory.cjs NOTE_REFUSED); the run-row fields are named here so a note writer does not try them.
-  properties.namespace = str(`Default: this run. project: a note (no text, type, tags, provenance, supersedes, ttl_seconds)${role === 'orchestrator' ? '. summary: run outcome' : ''}`);
+  properties.namespace = str(`Default: this run. project: a note, which takes only kind, title, when, basis, evidence, applies_to, subjects${role === 'orchestrator' ? '. summary: a run outcome, which needs title and text' : ''}`);
   const { title, ...rest } = NOTE_PROPS;
   return { ...ordinary, inputSchema: { ...schema, properties: { ...properties, ...rest, text: str(), when: str('Task that would trip on it, max 160 bytes') } } };
 }

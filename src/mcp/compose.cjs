@@ -27,7 +27,7 @@ function compactSpawn(row, requested = null) {
 const NO_CHECK = 'this task declares no acceptance check, so task_evaluate can never mark it done: give it commands, files_within_owned, verdict or handoff';
 // ADR 0059 decision 3: an overlap with a task in another tree does not refuse, so the warning says where it will show.
 const overlapWarning = (o) => Array.isArray(o) && o.length
-  ? `these paths are also owned by ${o.map((x) => `task ${x.task_id} (${x.files.join(', ')})`).join(', ')} in another tree; integrate may stop on a conflict there`
+  ? `these paths are also owned by ${o.map((x) => `task ${x.task_id} (${x.files.join(', ')})`).join(', ')} in another tree; a conflict at integrate happens only where the edits touch`
   : null;
 const withWarnings = (out, ...w) => { const l = w.filter(Boolean); return out && l.length ? { ...out, warning: l.join('; ') } : out; };
 const hasCheck = (a) => !!a && ((Array.isArray(a.commands) && a.commands.length > 0) || a.files_within_owned === true || a.verdict === true || !!a.handoff);
@@ -46,8 +46,7 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
     return { ...raw, scratch: scratch || null };
   }
 
-  // task_assign: assign, then send the worker its task: the resume line (which names the lease), the orchestrator's
-  // `prompt` or the task's spec, and the hand-back rule. `deliver: false` assigns only.
+  // task_assign: assign, then send the worker its task: the resume line (which names the lease), `Task: <spec>` with the orchestrator's `prompt` added after it, and the hand-back rule. `deliver: false` assigns only.
   async function assign(args) {
     const { prompt = null, deliver = true, ...coreArgs } = args || {};
     const raw = await callCore('task.assign', coreArgs);
@@ -59,7 +58,7 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
     const lease = out && out.new_lease ? out.new_lease.id : null;
     let head = `task ${coreArgs.task_id} lease=${lease}.`;
     try { const rl = await callCore('continuity.resumeLine', { task_id: coreArgs.task_id, first: true }); if (rl && rl.text) head = rl.text; } catch { /* the short head above still names the lease */ }
-    const body = typeof prompt === 'string' && prompt.trim() ? prompt : `Task: ${(out && out.task && out.task.spec) || ''}`;
+    const body = require('../run/task-body.cjs').body(out && out.task && out.task.spec, prompt) || 'Task: ';
     // The hand-back rule closes the message (a verdict task's is verdict-shaped and carries the Review standard); a reused reviewer's
     // note-review brief follows it, as at a spawn (handback.cjs, note-review.cjs).
     let tail = '';

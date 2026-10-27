@@ -65,7 +65,7 @@ test('task_assign sends the running worker its task, lease id and hand-back rule
   const loud = ok(await a.call('task_assign', { task_id: t2.id, worker_id: w.id, prompt: 'do the second thing now' }), 'task_assign');
   assert.strictEqual(loud.delivered.sent, true);
   ok(await a.call('worker_wait', { worker_ids: [w.id], timeout_ms: 20000 }), 'worker_wait');
-  assert.ok(userTexts(data, w.id).some((x) => x.includes('do the second thing now') && !x.includes('Task: second')), 'the prompt is sent in place of the spec');
+  assert.ok(userTexts(data, w.id).some((x) => x.includes('Task: second\n\ndo the second thing now')), 'the prompt is added after the spec');
 
   // B11: the last reply, read from the recorded stream, marked as data.
   const last = ok(await a.call('worker_last_reply', { worker_id: w.id }), 'worker_last_reply');

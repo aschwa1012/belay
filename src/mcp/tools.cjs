@@ -182,8 +182,8 @@ const ORCHESTRATOR = [
     inputSchema: S({
       substrate: { type: 'string', enum: ['claude-code', 'codex'] },
       worktree: str('Absolute path; the worker\'s cwd. Default: task_id\'s worktree'),
-      prompt: str('First message'),
-      task_id: str('Assign this task once ready and prepend its resume line'),
+      prompt: str('Without task_id, the first message. With it, instructions added after the task\'s spec'),
+      task_id: str('Assign this task once ready; belay sends its resume line, then its spec'),
       model: str(),
       agent_type: { type: 'string', enum: WORKER_TYPES, description: 'Configured model, effort and tools' },
       effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
@@ -193,7 +193,7 @@ const ORCHESTRATOR = [
       startup_timeout_ms: int('default 60000'),
       worker_id: str('Otherwise generated'),
       view: { type: 'string', enum: ['compact', 'debug'] },
-    }, ['substrate', 'prompt']),
+    }, ['substrate']),
   },
   {
     // ADR 0015. `worker_spawn` above returns at the ready event and the worker keeps running; this is
@@ -258,7 +258,7 @@ const ORCHESTRATOR = [
   {
     name: 'task_assign',
     description: 'Assign a task to a live worker, take a lease and send the worker the task, its lease id and the hand-back rule. Returns the old lease row, the new lease (id, holder, expires_at), the task\'s task_list row and delivered.',
-    inputSchema: S({ task_id: str(), worker_id: str(), ttl_ms: int('default 600000'), prompt: str('Sent in place of the spec'), deliver: bool() }, ['task_id', 'worker_id']),
+    inputSchema: S({ task_id: str(), worker_id: str(), ttl_ms: int('default 600000'), prompt: str('Instructions added after the task\'s spec'), deliver: bool() }, ['task_id', 'worker_id']),
   },
   {
     // ADR 0020 decision 5: the orchestrator's window onto the permission channel, so a headless run
@@ -488,7 +488,7 @@ function validateArgs(name, args, { notes = false, role = 'worker' } = {}) {
   for (const k of schema.required || []) {
     if (a[k] === undefined || a[k] === null) bad(`${name} needs ${k}`, { tool: name, missing: k });
   }
-  // ADR 0061: an amend keeps the task's spec unless it names a new one, so only a create needs it.
+  // ADR 0061: an amend keeps the task\'s spec unless it names a new one, so only a create needs it.
   if (name === 'task_create' && a.amend !== true && (a.spec === undefined || a.spec === null)) bad('task_create needs spec', { tool: name, missing: 'spec' });
   if (name === 'memory_retrieve') {
     const hasId = a.id !== undefined && a.id !== null;

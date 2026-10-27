@@ -27,13 +27,12 @@ A task is made with `mcp__belay__task_create`:
 
 ## Handing a task to a worker
 
-Prefer `mcp__belay__worker_spawn` with `task_id`: it assigns the task and puts a first line in front
-of your prompt, `task <id> lease=<lease id>.`. Give it `substrate` (`claude-code`),
+Prefer `mcp__belay__worker_spawn` with `task_id`: it assigns the task and sends the worker a first line, `task <id> lease=<lease id>.`; then the task's spec, `Task: <spec>`; then your `prompt`. Give it `substrate` (`claude-code`),
 `worktree` (absolute; omit it for a task with its own tree), `prompt`, and `agent_type`, always (`coder|tester|reviewer|researcher`; a fixer is a
-`coder`): belay applies its model and effort. Pass `model` or `effort` only when your plan needs another.{{memory_queries_line}}{{memory_report_line}}
+`coder`): belay applies its model and effort. belay sends the spec itself: do not repeat it in `prompt`, which is for extra instructions only. Pass `model` or `effort` only when your plan needs another.{{memory_queries_line}}{{memory_report_line}}
 
 `mcp__belay__task_assign` to a running worker sends it the task, its lease id and the hand-back
-rule (`prompt` replaces the spec, `deliver: false` sends nothing). If `delivered.sent` and `delivered.queued` are false,
+rule (`prompt` is added after the spec, `deliver: false` sends nothing). If `delivered.sent` and `delivered.queued` are false,
 the worker was told nothing: tell it with `mcp__belay__worker_message`.
 
 belay ends a worker's first message with its lease id, the hand-back rule and the notes rule, and a reviewer's with the Review standard; do not repeat them.
@@ -98,5 +97,5 @@ task. A `worker_message` sent while the worker compacts answers `queued: true`; 
      findings for the human; never report it as passing or mark it done. {{fix_cutoff_rule}}
 
 ## Rules of thumb
-- Give each coding task its own tree: `mcp__belay__task_worktree` with the `task_id` makes a branch and worktree from `base`, and `worker_spawn` with that `task_id` and no `worktree` works in it. When the tasks are `done`, `mcp__belay__integrate` with their `task_ids` merges them and re-runs their checks on the merged head (`evaluate` defaults to true): that is the evaluation of the final integrated head; on a conflict, create a fix task. `integrate` with `force: true` and a `reason` also merges a task that is not done; use it only when you understand the failure and expect it (a test another task will make pass), say why in `reason`, and have that follow-up task created. A conflict is never forced.
+- Give each coding task its own tree, and make it right after `task_create`, before you create the next task on the same files: `mcp__belay__task_worktree` with the `task_id` makes a branch and worktree from `base`, and `worker_spawn` with that `task_id` and no `worktree` works in it. When the tasks are `done`, `mcp__belay__integrate` with their `task_ids` merges them and re-runs their checks on the merged head (`evaluate` defaults to true): that is the evaluation of the final integrated head; on a conflict, create a fix task. `integrate` with `force: true` and a `reason` also merges a task that is not done; use it only when you understand the failure and expect it (a test another task will make pass), say why in `reason`, and have that follow-up task created. A conflict is never forced.
 {{permission_line}}- If a worker dies or stalls, `mcp__belay__worker_restart` resumes it; `mcp__belay__worker_stop` ends it. Use `mcp__belay__status` to see what is alive. To give up a task, `mcp__belay__task_cancel` releases its lease and files. Reuse an idle worker (`task_assign`) for fix rounds in its own tree; spawn one for another tree; stop an idle worker with no next task.

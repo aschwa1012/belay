@@ -129,7 +129,7 @@ test('the MCP tools turn the overlaps into a warning, beside the no-check warnin
   const c = createCompose({ callCore, manager: () => null });
   const made = await c.create({ spec: 'x' });
   assert.match(made.warning, /declares no acceptance check/);
-  assert.match(made.warning, /task t-other \(lib\/registry\.js\) in another tree; integrate may stop on a conflict there/);
+  assert.match(made.warning, /task t-other \(lib\/registry\.js\) in another tree; a conflict at integrate happens only where the edits touch/);
   const got = await c.assign({ task_id: 't1', worker_id: 'w1', deliver: false });
   assert.match(got.warning, /task t-other/);
   const plain = await createCompose({ callCore: async () => ({ id: 't2', acceptance: { files_within_owned: true } }), manager: () => null }).create({ spec: 'y' });
