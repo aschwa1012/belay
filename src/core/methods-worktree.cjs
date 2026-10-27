@@ -288,6 +288,36 @@ async function removeShared(E, caller, args, task, rec) {
   return { ...row, removal: out };
 }
 
+// git's name for what a tree has checked out (the full ref), or null when HEAD is detached.
+async function symbolicHead(dir) {
+  const r = await G.run(dir, ['symbolic-ref', '-q', 'HEAD']);
+  return r.ok ? r.stdout.trim() : null;
+}
+
+// A tree whose HEAD is off its recorded branch may hold commits no branch reaches, so removing it would drop them (ADR 0065).
+async function assertOnBranch(rec, what) {
+  const head = await symbolicHead(rec.path);
+  if (head === `refs/heads/${rec.branch}` && await G.branchExists(rec.repo, rec.branch)) return;
+  const now = head ? `on ${head}` : 'detached';
+  throw err('E_PRECONDITION', `${what}'s worktree is not on its branch ${rec.branch} (HEAD is ${now}), so removing it could drop commits no branch reaches; move it back to the branch, or pass force`, { path: rec.path, branch: rec.branch, head: head || null });
+}
+
+// task.worktreeSweep's removal of one task's tree (ADR 0065): the same exclusion and record as task.worktreeRemove, without force.
+// Null when the task has no tree to remove now.
+async function removeForSweep(E, caller, task0) {
+  return exclusive(`task:${task0.id}`, `a worktree call for task ${task0.id}`, async () => {
+    const task = requireTask(E, task0.id, 'task.worktreeSweep');
+    const rec = active(task);
+    if (!rec) return null;
+    const open = openSharer(E, task);
+    if (open) throw err('E_PRECONDITION', `task ${open.id} (${open.state}) is worked in the same tree or branch ${rec.path}`, { task_id: open.id, state: open.state, path: rec.path });
+    const key = G.fwd(rec.path).toLowerCase();
+    let finish;
+    removing.set(key, { task_id: task.id, done: new Promise((r) => { finish = r; }) });
+    try { return await removeShared(E, caller, { force: false }, task, rec); } finally { removing.delete(key); finish(); }
+  });
+}
+
 // The shared removal (a task's tree, or an integration's): refuses a live worker in it and a dirty tree unless force,
 // unlinks the junctions, removes the tree, and with delete_branch deletes the branch the safe way.
 async function removeTree(E, rec, args, what) {
@@ -305,6 +335,7 @@ async function removeTree(E, rec, args, what) {
   } else {
     const dirty = await G.dirtyPaths(rec.path);
     if (dirty.length && args.force !== true) throw err('E_PRECONDITION', `${what}'s worktree has ${dirty.length} uncommitted path(s); commit them, or pass force to discard them`, { path: rec.path, dirty: dirty.slice(0, 50) });
+    if (rec.branch && args.force !== true) await assertOnBranch(rec, what);
     out.junctions_unlinked = unlinkJunctions(rec.junctions);
     out.links_unlinked = unlinkJunctions(strayLinks(rec.path, rec.junctions));
     const r = await G.run(rec.repo, ['worktree', 'remove', ...(args.force === true ? ['--force'] : []), '--', rec.path]);
@@ -352,4 +383,4 @@ function evaluateTarget(task, args) {
   return rec ? { worktree, base: rec.base_sha, baseSource: 'recorded' } : { worktree, base: undefined, baseSource: undefined };
 }
 
-module.exports = { ownBoot, ownBootProbe, worktreeCreate, worktreeRemove, removeTree, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, baseArg, assertTaskTree, openSharer, exclusive, active, inheritable, present, pathName, liveWorkerIn, strayLinks, under };
+module.exports = { ownBoot, ownBootProbe, worktreeCreate, worktreeRemove, removeTree, removeForSweep, symbolicHead, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, baseArg, assertTaskTree, openSharer, exclusive, active, inheritable, present, pathName, liveWorkerIn, strayLinks, under };

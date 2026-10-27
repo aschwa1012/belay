@@ -167,6 +167,8 @@ const METHODS = {
   // ADR 0053: a worktree and branch per task, made and removed by belay, and the explicit merge-and-evaluate step.
   'task.worktreeCreate': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-worktree.cjs', 'worktreeCreate') },
   'task.worktreeRemove': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-worktree.cjs', 'worktreeRemove') },
+  // ADR 0065: the run's close removes the task trees it can prove finished; the operator's only, with no MCP tool.
+  'task.worktreeSweep': { roles: ['operator'], kind: 'write', fn: lazy('./methods-worktree-sweep.cjs', 'sweep') },
   'integration.merge': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-integration.cjs', 'merge') },
   'integration.remove': { roles: ['operator'], kind: 'write', fn: lazy('./methods-integration.cjs', 'remove') },
   'integration.list': { roles: ALL, kind: 'read', fn: lazy('./methods-integration.cjs', 'list') },
