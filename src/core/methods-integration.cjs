@@ -306,10 +306,12 @@ async function merge(E, caller, args) {
   const { tasks, repo, targets } = await readTasks(E, args.task_ids, force);
   const into = await G.validBranch(repo, args.into === undefined ? `belay/integrate/${caller.run_id}` : args.into);
   // A branch the user owns (ADR 0067): approval first (read-only, and before any slot or tree), then belay merges on a detached HEAD.
-  const userBranch = MUG.isUserBranch(E, repo, into);
+  const fold = await MUG.folder(repo);
+  await MUG.refuseVariant(repo, into, fold); // another spelling of an existing branch is that branch, on a host with case-insensitive refs
+  const userBranch = MUG.isUserBranch(E, repo, into, caller.run_id, fold);
   if (userBranch) {
     if (force) throw err('E_PRECONDITION', `force is not accepted for ${into}, a branch the user owns: work that is not done does not go onto it through belay`, { into });
-    const g = MUG.authorize(E, caller, args, MUG.requestOf(repo, into, args.task_ids, targets, await MUG.placement(E, repo, into, args, tasks)));
+    const g = MUG.authorize(E, caller, args, MUG.requestOf(repo, into, args.task_ids, targets, await MUG.placement(E, repo, into, args, tasks, fold), args, tasks));
     if (g.response) return g.response;
   }
   // The re-run counts toward the run's max_parallel_evaluations, and its slot is taken here, before the branch lock and before any merge: a call
@@ -317,12 +319,12 @@ async function merge(E, caller, args) {
   const EC = require('./evaluate-cancel.cjs');
   const slot = args.evaluate === false ? null : await EC.acquire(EC.limitFor(E, caller.run_id), { op: 'integrate' });
   try {
-  return await W.exclusive(`integrate:${repo}:${into}`, `an integration into ${into}`, async () => {
+  return await W.exclusive(`integrate:${repo}:${fold(into)}`, `an integration into ${into}`, async () => {
     if (userBranch) { // approved above; the branch may have moved since, and an approval is for one head
-      const place = await MUG.placement(E, repo, into, args, tasks);
-      const g = MUG.authorize(E, caller, args, MUG.requestOf(repo, into, args.task_ids, targets, place));
+      const place = await MUG.placement(E, repo, into, args, tasks, fold);
+      const g = MUG.authorize(E, caller, args, MUG.requestOf(repo, into, args.task_ids, targets, place, args, tasks));
       if (g.response) return g.response;
-      return require('./merge-user.cjs').mergeIntoUser(E, caller, args, { repo, into, tasks, targets, place, approver: g.approver, takeOver, view, mergeOne, rerun, abandonStale });
+      return require('./merge-user.cjs').mergeIntoUser(E, caller, args, { repo, into, tasks, targets, place, approver: g.approver, takeOver, fold, view, mergeOne, rerun, abandonStale });
     }
     const abandoned = await abandonStale(E, caller, repo, into, takeOver);
     const tree = await integrationTree(E, repo, into, args, tasks, abandoned);
@@ -420,6 +422,14 @@ async function remove(E, caller, args) {
   const cur = await get(E, caller, args);
   if (args.force !== undefined && typeof args.force !== 'boolean') throw err('E_ARGS', 'integration.remove: force must be a boolean', { field: 'force' });
   const takeOver = checkTakeOver(caller, args, 'integration.remove');
+  // A merge prepared for the user (ADR 0067): removing the integration deletes the ref that keeps its commit.
+  if (cur.prepared && cur.prepared.ref && !cur.prepared.deleted_at) {
+    const d = await G.run(cur.repo, ['update-ref', '-d', cur.prepared.ref]);
+    if (!d.ok) throw err('E_GIT', `the prepared ref ${cur.prepared.ref} could not be deleted: ${d.stderr}`, { ref: cur.prepared.ref });
+    const row = E.store.tx(() => rows.append(E.store, 'integration', { ...rows.current(E.store, 'integration', cur.id), prepared: { ...cur.prepared, deleted_at: Date.now(), deleted_why: 'removed' } }, E.writtenBy(caller), Date.now()));
+    E.noteWrite();
+    if (cur.removed_at) return { ...view(row), prepared_ref_deleted: true };
+  }
   if (!cur.created_worktree) throw err('E_PRECONDITION', `integration ${cur.id} merged in ${cur.worktree}, a tree belay did not make, so belay does not remove it`, { id: cur.id, worktree: cur.worktree });
   if (cur.removed_at) throw err('E_NOT_FOUND', `integration ${cur.id}'s worktree was removed at ${cur.removed_at}`, { id: cur.id });
   // A merge in flight holds this lock, so the call is refused E_BUSY; a `merging` row met inside it was left by a process that

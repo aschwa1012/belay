@@ -485,7 +485,7 @@ async function run(ctx) {
     levers: parsed.levers, prompt_warnings: parsed.promptWarnings, on_embedder_failure_final: guard.mode(), memory_off: guard.memoryOff(), embedder: warm, embedder_failures: guard.events(), ...(embedBounds && embedBounds.length ? { embedder_bounds: embedBounds } : {}),
     review_rounds: reviewRounds.value, review_rounds_reason: reviewRounds.reason,
     workers_closed: closed ? workersClosedBlock(closed, endedRow ? (endedRow.workers_marked_dead || []) : null) : null,
-    ...(closeStages ? { close_stages: closeStages } : {}), // only with notes on
+    ...(closeStages ? { close_stages: closeStages } : {}), ...(await require('./run-prepared.cjs').left(core, parsed.runId)), // close_stages only with notes on; prepared_left: merges kept for the user
     ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), ...require('../run/review-scratch.cjs').closeRun(dataDir, parsed.runId, parsed.levers), // the run-end memory jobs; the reviewers' scratch removed (ADR 0054 amendment 1)
   };
   try {

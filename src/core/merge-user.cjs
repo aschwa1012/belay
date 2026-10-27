@@ -29,9 +29,19 @@ async function addTree(repo, id, at) {
   return { path: wtPath, junctions: made };
 }
 
+// An earlier prepared merge into the same branch is superseded by a newer one (or by one that landed): its ref is deleted, and the row says so.
+async function dropPrepared(repo, E, into, keepId) {
+  for (const r of rows.currentAll(E.store, 'integration')) {
+    if (r.id === keepId || r.target !== 'user' || r.into_branch !== into || !r.prepared || !r.prepared.ref || r.prepared.deleted_at || !G.samePath(r.repo, repo)) continue;
+    const d = await G.run(repo, ['update-ref', '-d', r.prepared.ref]);
+    if (d.ok) E.store.tx(() => rows.append(E.store, 'integration', { ...r, prepared: { ...r.prepared, deleted_at: Date.now(), deleted_why: 'superseded' } }, E.writtenBy({ role: 'operator', pid: process.pid }), Date.now()));
+  }
+}
+
 // -> { row, ... } the row written, as the caller returns it. `c` carries what the caller has already settled.
 async function mergeIntoUser(E, caller, args, c) {
   const { repo, into, tasks, targets, place, approver, takeOver, view, mergeOne, rerun, abandonStale } = c;
+  const fold = c.fold || ((x) => x);
   const by = E.writtenBy(caller);
   await abandonStale(E, caller, repo, into, takeOver);
   const start = place.head || place.base;
@@ -96,7 +106,8 @@ async function mergeIntoUser(E, caller, args, c) {
       out.error = { message: `a check failed on the merged head ${merged}; ${into} was not moved`, merge_head: merged, unapplied: unapplied() };
     } else {
       if (!ran) out.error = { message: `applied unchecked: ${args.evaluate === false ? 'evaluate was false' : 'the merged tasks declare no acceptance commands'}, so nothing is proven` };
-      const checkedOut = (await G.worktrees(repo)).find((w) => w.branch === into);
+      // The last look before the move: the branch may have been checked out since the placement was read. What happens between this look and the update-ref is not closed by a lock (git has none for it); the compare-and-swap is what catches a branch that moved.
+      const checkedOut = (await G.worktrees(repo)).find((w) => w.branch && fold(w.branch) === fold(into));
       if (checkedOut) {
         // Not merged in the user's checkout: kept under a ref of belay's own, for the user to take.
         const ref = `refs/belay/prepared/${id}`;
@@ -114,6 +125,7 @@ async function mergeIntoUser(E, caller, args, c) {
   if (landed || (out.state === 'evaluated' && out.applied === 'none' && !out.error)) out.merged = entries; // nothing the branch lacks: what it already holds
   else if (out.applied === 'prepared') out.merged = [];
   if (out.conflict) out.conflict = { ...out.conflict, unapplied: unapplied() };
+  if (out.applied !== 'none') await dropPrepared(repo, E, into, id); // an earlier prepared merge for this branch is superseded
   let removal = null;
   try {
     removal = await W.removeTree(E, { repo, path: tree.path, junctions: tree.junctions, branch: null }, { force: true }, `integration ${id}`);
@@ -123,7 +135,7 @@ async function mergeIntoUser(E, caller, args, c) {
   }
   const row = E.store.tx(() => rows.append(E.store, 'integration', out, by, Date.now()));
   E.noteWrite();
-  return { ...view(row), merge_commits: entries.map((m) => m.head_sha).filter(Boolean), ...(removal ? { removal } : {}) };
+  return { ...view(row), checked: ran, ...(ran ? {} : { note: 'no checks ran' }), merge_commits: entries.map((m) => m.head_sha).filter(Boolean), ...(removal ? { removal } : {}) };
 }
 
-module.exports = { mergeIntoUser };
+module.exports = { mergeIntoUser, dropPrepared };
