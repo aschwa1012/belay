@@ -86,9 +86,9 @@ function ofTask(task, ix) {
   const cap = ix.caps.has(runId) ? ix.caps.get(runId) : null;
   const used = fixes.filter((f) => f.run_id === runId).length;
   const out = { state: verdictOf(last), review_id: last.id, rounds: fixes.length, rounds_left: cap == null ? null : Math.max(0, cap - used) };
-  const follows = (ix.followsOf.get(root) || []).slice().sort((a, b) => ix.born.get(a.id).s - ix.born.get(b.id).s);
+  const follows = ((ix.followsOf && ix.followsOf.get(root)) || []).slice().sort((a, b) => ix.born.get(a.id).s - ix.born.get(b.id).s);
   if (follows.length) { // ADR 0064 decision 6: beside the fix rounds, never in them
-    const fCap = ix.followCaps.has(follows[follows.length - 1].run_id) ? ix.followCaps.get(follows[follows.length - 1].run_id) : null;
+    const fCap = ix.followCaps && ix.followCaps.has(follows[follows.length - 1].run_id) ? ix.followCaps.get(follows[follows.length - 1].run_id) : null;
     out.follow_ups = follows.map((f) => ({ id: f.id, state: f.state }));
     out.follow_ups_left = fCap == null ? null : Math.max(0, fCap - follows.filter((f) => f.run_id === follows[follows.length - 1].run_id).length);
   }

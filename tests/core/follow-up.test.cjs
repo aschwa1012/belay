@@ -117,6 +117,7 @@ test('a done follow-up integrates on its own; the work\'s tree can be removed wh
   // The work's tree goes while its follow-up stays: a live follow-up holds only its own tree.
   const g = await c.done('second work', { tree: true });
   const gf = await c.orch.task.fixFromReview({ review_id: (await c.review(g, 'holds', [SHOULD])).id, follow_up: true });
+  for (const wk of (await c.orch.worker.list({})).workers.filter((x) => x.worktree === g.worktree.path)) await c.orch.worker.write({ id: wk.id, state: 'stopped', exited_at: Date.now() }); // the coder that handed g back is idle in its tree
   await c.orch.task.worktreeRemove({ task_id: g.id });
   assert.ok(require('node:fs').existsSync(gf.worktree.path), 'the live follow-up kept its own tree');
 });
