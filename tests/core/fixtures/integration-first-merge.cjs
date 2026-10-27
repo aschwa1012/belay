@@ -18,12 +18,13 @@ const git = (cwd, ...a) => { const r = spawnSync('git', a, { cwd, encoding: 'utf
   const orch = await openCore({ dataDir: `${base}/data`, caller: { role: 'orchestrator', run_id: 'r', pid: process.pid }, embed: false, ownerOpts: { longLived: true } }); // a long-lived owner starts the probe
   const op = await openCore({ dataDir: `${base}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
   await orch.run.attach({ adapter_pid: process.pid });
+  await require('../worktree-helpers.cjs').stageRuns(`${base}/data`, ['receipt']);
   const t = await orch.task.create({ spec: 'a', acceptance: { commands: [{ argv: [process.execPath, '-e', "require('fs').accessSync('a.txt')"] }] } });
   const w = (await op.task.worktreeCreate({ task_id: t.id, repo: top, junction: [] })).worktree;
   fs.writeFileSync(`${w.path}/a.txt`, 'a\n'); git(w.path, 'add', '-A'); git(w.path, 'commit', '-q', '-m', 'a');
   await orch.task.evaluate({ task_id: t.id });
   const t0 = process.hrtime.bigint();
-  const row = await orch.integration.merge({ task_ids: [t.id], into: 'int/receipt', evaluate: false });
+  const row = await orch.integration.merge({ task_ids: [t.id], into: 'belay/integrate/receipt', evaluate: false });
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   const receipt = { at: new Date().toISOString(), node: process.version, pid: process.pid, merge_ms: Math.round(ms), state: row.state, owner_boot: row.owner_boot };
   console.log(JSON.stringify(receipt));

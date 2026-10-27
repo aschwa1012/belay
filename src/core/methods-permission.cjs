@@ -40,7 +40,7 @@ async function request(E, caller, args) {
   const row = rows.append(E.store, 'permission', {
     id: args.id, run_id: caller.run_id, worker_id: caller.worker_id, adapter_pid: caller.pid,
     tool: args.tool, input, input_truncated: truncated ? 1 : 0, input_sha256,
-    state: 'pending', verdict_by: null, reason: null, requested_at: t, decided_at: null,
+    state: 'pending', verdict_by: null, reason: null, requested_at: t, decided_at: null, kind: 'substrate',
   }, E.writtenBy(caller), t);
   E.noteWrite();
   return row;
@@ -98,6 +98,8 @@ async function decide(E, caller, args) {
     const current = currentOf(E, args.id);
     if (!current) throw err('E_NOT_FOUND', `no permission row with id ${args.id}`, { id: args.id });
     if (caller.role === 'worker') checkRole(caller, verdict, current);
+    // Only the operator decides a request belay itself raised (a merge into the user's branch): the orchestrator that asked cannot answer it.
+    if (current.kind === 'merge' && caller.role !== 'operator') throw err('E_ROLE', `permission row ${args.id} asks for a merge into the user's branch; only the operator decides it`, { id: args.id, kind: 'merge', role: caller.role });
     if (current.state !== 'pending') {
       throw err('E_ARGS', `permission row ${args.id} is already ${current.state}, not pending`, { id: args.id, state: current.state, seq: current.seq });
     }

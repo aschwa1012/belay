@@ -157,6 +157,9 @@ function parseLevers(spec, opts = {}) {
   // ADR 0020 decision 1 as amended: the permission tools are listed to the orchestrator, and their prompt line given, only for a run that turns the channel on.
   if (spec.permission_prompt !== undefined && typeof spec.permission_prompt !== 'boolean') return { error: 'permission_prompt must be true or false' };
   if (spec.permission_prompt === true) out.permission_prompt = true;
+  // Merging into a branch the user owns: "ask" (the default; absent from the levers unless the spec says it) or "allowed". Fixed for the run.
+  if (spec.merge_into !== undefined && spec.merge_into !== 'ask' && spec.merge_into !== 'allowed') return { error: 'merge_into must be "ask" or "allowed"' };
+  if (spec.merge_into !== undefined) out.merge_into = spec.merge_into;
   // ADR 0054 amendment 1: the run close deletes the reviewers' scratch folders; this opt-in keeps them. Absent unless on.
   if (spec.keep_review_scratch !== undefined && typeof spec.keep_review_scratch !== 'boolean') return { error: 'keep_review_scratch must be true or false' };
   if (spec.keep_review_scratch === true) out.keep_review_scratch = true;
