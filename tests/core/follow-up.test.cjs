@@ -307,3 +307,22 @@ test('the run lever: parsed with a default of 1, 0 allowed, bad values refused, 
   assert.strictEqual((await c.orch.run.attach({ adapter_pid: process.pid, max_follow_ups: 3 })).run.max_follow_ups, 3);
   await rejectsCode(c.orch.run.attach({ adapter_pid: process.pid, max_follow_ups: -1 }), 'E_ARGS');
 });
+
+test('work judged with uncommitted changes: the follow-up is refused until the judged state is committed, then it starts from that commit', async () => {
+  const c = await ctx({ max_fix_rounds: 2, max_follow_ups: 1 });
+  let w = await c.orch.task.create({ spec: 'dirty work', acceptance: { files_within_owned: true }, files_owned: ['src/dirty.cjs'] });
+  w = await c.orch.task.worktreeCreate({ task_id: w.id });
+  write(w.worktree.path, 'src/dirty.cjs', 'judged\n'); // judged uncommitted
+  await c.handBack(w.id, { branch: 'b' }, w.worktree.path);
+  assert.strictEqual((await c.orch.task.evaluate({ task_id: w.id })).state, 'done');
+  const r = await c.review(w, 'holds', [SHOULD]);
+  const n = await c.count();
+  const e = await rejectsCode(c.orch.task.fixFromReview({ review_id: r.id, follow_up: true }), 'E_PRECONDITION');
+  assert.match(e.message, /commit exactly the judged state/);
+  assert.strictEqual(await c.count(), n, 'nothing was written');
+  commit(w.worktree.path, 'the judged state');
+  const sha = git(w.worktree.path, 'rev-parse', 'HEAD');
+  const f = await c.orch.task.fixFromReview({ review_id: r.id, follow_up: true });
+  assert.strictEqual(f.worktree.base_sha, sha);
+  assert.strictEqual(git(f.worktree.path, 'show', 'HEAD:src/dirty.cjs'), 'judged');
+});

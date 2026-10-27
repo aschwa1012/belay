@@ -31,12 +31,14 @@ function defaultSpec(F, quoted, judged) {
 // (a fix of a follow-up resolves to that follow-up's root), else the task itself. So every descendant counts against one work.
 function rootOf(E, judged) {
   let t = judged;
-  for (let i = 0; t && i < 100; i++) {
+  for (let i = 0; i < 100; i++) {
     if (t.follows_up && t.follows_up.root) return t.follows_up.root;
     if (!t.repairs) return t.id;
-    t = rows.current(E.store, 'task', t.repairs);
+    const next = rows.current(E.store, 'task', t.repairs);
+    if (!next) throw err('E_NOT_FOUND', `task ${t.id} repairs ${t.repairs}, which has no row in this store`, { task_id: t.id, missing_repairs: t.repairs });
+    t = next;
   }
-  return judged.id;
+  throw err('E_PRECONDITION', `the repairs chain of task ${judged.id} does not end in 100 steps; it may loop, so no root work can be named`, { task_id: judged.id });
 }
 
 const reviewIdsOf = (t) => (Array.isArray(t.follows_up.review_ids) ? t.follows_up.review_ids : [t.follows_up.review_id]);
@@ -59,6 +61,18 @@ function checkCap(E, caller, id, fu) {
   if (used >= cap) {
     throw err('E_FOLLOW_UPS', `work ${fu.root} already has ${used} follow-up${used === 1 ? '' : 's'} and this run's max_follow_ups is ${cap}; nothing was written. Use task_create for work that should not be counted, or leave the findings open`, { task_id: id, root: fu.root, used, max_follow_ups: cap });
   }
+}
+
+// The commit the work was judged at, where integrate merges it (judged.commitOf from the branch tip), never the head an evaluation
+// stood on: a work judged with uncommitted changes has no such commit until it is committed as judged.
+async function judgedCommit(judged, rec) {
+  const G = require('./git.cjs'), J = require('./judged.cjs');
+  const tip = await G.run(rec.repo, ['rev-parse', '--verify', `refs/heads/${rec.branch}^{commit}`]);
+  const sha = tip.ok && J.judgedOf(judged) ? await J.commitOf(rec.repo, judged, tip.stdout.trim()) : null;
+  if (!sha) {
+    throw err('E_PRECONDITION', `no commit on ${rec.branch} is what task ${judged.id} was judged on; commit exactly the judged state in its tree, then call again`, { task_id: judged.id, branch: rec.branch, branch_head: tip.ok ? tip.stdout.trim() : null });
+  }
+  return sha;
 }
 
 async function followUp(E, caller, args) {
@@ -103,7 +117,7 @@ async function followUp(E, caller, args) {
   const reviewIds = [review.id, ...quoted.map((q) => q.review.id).filter((id) => id !== review.id)];
   // Its own tree and branch, cut from the head the work was judged at (the tree-making of task.create, removed again if the write is refused).
   const rec = F.inheritedTree(judged);
-  const cut = rec ? (judged.results && judged.results.head_sha) || rec.branch : null;
+  const cut = rec ? await judgedCommit(judged, rec) : null;
   let row;
   try {
     row = await T.create(E, caller, {
@@ -117,7 +131,8 @@ async function followUp(E, caller, args) {
   } catch (e) {
     const id = e && e.code === 'E_EXISTS' && e.detail && e.detail.follow_up_existing;
     const again = id && rows.current(E.store, 'task', id);
-    if (again) return reply(again, { existing: true });
+    const d = (e && e.detail) || {};
+    if (again) return reply(again, { existing: true, ...(d.rollback_incomplete ? { rollback_incomplete: true, left: d.left } : {}), ...(d.rollback ? { rollback: d.rollback } : {}) });
     throw e;
   }
   return reply(row, {});
