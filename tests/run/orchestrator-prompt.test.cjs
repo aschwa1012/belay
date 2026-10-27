@@ -163,7 +163,7 @@ test('both orchestrator prompts: the review step does not call task_evaluate, in
     assert.match(step4, /not or could not be evaluated, or a stop, pause or park cut it short, call `mcp__belay__task_evaluate` on the review yourself with the reviewed task's worktree/, `${f}: the fallback when no release evaluation lands`);
     assert.doesNotMatch(text, /reviewer's (turn ends \(wait on its id\)|wake comes \(its turn ended\)), call/, `${f}: the stale instruction is gone`);
     assert.doesNotMatch(text, /evaluate again\. If the coder judged/, `${f}: no second evaluate after a late hand-back`);
-    assert.match(text, /re-runs their checks on the merged head \(`evaluate` defaults to true\): that is the evaluation of the final integrated head; on a conflict/, `${f}: integrate is the final evaluation`);
+    assert.match(text, /merges them and, unless you pass `evaluate: false`, re-runs their checks on the merged head; `checks` adds commands to run on that head only \(for example the full suite\)\. You choose when what runs: per merge, at the end, or both;/, `${f}: integrate re-runs checks unless evaluate is false, and takes checks`);
     assert.ok(!/files_within_owned is judged against the task's own base/.test(text), `${f}: why task_evaluate is not that check is the refusal's own text (task_evaluate against another tree, below)`);
     assert.ok(!/belay refuses it \(E_BUSY\)/.test(text), `${f}: a task_evaluate of the same task and tree joins the release evaluation; E_BUSY is only another tree or base`);
     assert.match(text, /`project` is stored as `project\/<name>` and `summary` \(a run outcome, with a `title`\) as `summary\/<name>`/, `${f}: the project suffix`);
