@@ -299,7 +299,7 @@ const ORCHESTRATOR = [
   {
     // ADR 0053 decision 5.
     name: 'integrate',
-    description: 'Merge done tasks\' branches, at the head each was judged at, in order into into (default belay/integrate/<run>), then re-run their checks there. Returns state, merged (what this call merged), carried (count from earlier rows), not_merged, left_out (commits past it), checks (reused ones marked), passed, forced, not_carried (passing output cut; view debug: whole row). A conflict is aborted, tree clean; conflict names task and files; what merged before it is still checked. task_list gives each task\'s integration state. force with reason also merges tasks not done, recorded as forced. A run with max_parallel_evaluations may queue the re-run; E_BUSY queued: refused before any merge, call again.',
+    description: 'Merge done tasks\' branches, at the head each was judged at, in order into into (default belay/integrate/<run>), then re-run their checks there. Returns state, merged (what this call merged), carried (count from earlier rows), not_merged, left_out (commits past it), checks (reused ones marked), passed, forced, not_carried (passing output cut; view debug: whole row). A conflict is aborted, tree clean; conflict names task and files; what merged before it is still checked. task_list gives each task\'s integration state. force with reason also merges tasks not done, recorded as forced. A run with max_parallel_evaluations may queue the re-run; E_BUSY queued: refused before any merge, call again. into may name a user branch; if the run asks first, approved_in_chat (interactive) or approval (awaiting_approval id).',
     inputSchema: S({
       task_ids: strs(),
       into: str(),
@@ -307,6 +307,8 @@ const ORCHESTRATOR = [
       evaluate: bool(),
       force: bool(),
       reason: str(),
+      approved_in_chat: bool(),
+      approval: str(),
       view: DEBUG,
     }, ['task_ids']),
   },
