@@ -37,3 +37,33 @@ test('a failure after the early answer is not an unhandled rejection', async () 
   fail(new Error('late'));
   await new Promise((r) => setImmediate(r));
 });
+
+test('the receipt names started_at, says a wake carries the result, and points at task_list with task_ids', () => {
+  const { receipt } = require('../../src/mcp/call-budget.cjs');
+  const r = receipt('integrate', { task_ids: ['a', 'b'] }, 110000, 12345);
+  assert.strictEqual(r.started_at, 12345);
+  assert.match(r.note, /A wake will carry the result/);
+  assert.match(r.note, /task_list \{ task_ids: \["a","b"\] \}/);
+  assert.ok(!/integration rows/.test(r.note));
+  assert.match(r.note, /a task that had earlier results keeps them/);
+  assert.match(receipt('task_evaluate', { task_id: 't' }, 1000).note, /evaluated_at/);
+});
+
+test('the hooks run after the budget passes, detached before ended, and never when the call answers in time', async () => {
+  const env = { MCP_TOOL_TIMEOUT: '11000' };
+  const seen = [];
+  const hooks = { detached: async (i) => { seen.push(['detached', i.tool, typeof i.started_at]); }, ended: async (i) => { seen.push(['ended', i.row ? 'row' : 'error']); } };
+  assert.deepStrictEqual(await withinBudget('integrate', {}, Promise.resolve({ state: 'merged' }), env, hooks), { state: 'merged' });
+  let finish;
+  const slow = new Promise((res) => { finish = res; });
+  assert.strictEqual((await withinBudget('integrate', { task_ids: ['a'] }, slow, env, hooks)).state, 'still_running');
+  finish({ id: 'i1' });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepStrictEqual(seen, [['detached', 'integrate', 'number'], ['ended', 'row']]);
+  let fail;
+  const failing = new Promise((_, rej) => { fail = rej; });
+  const broke = { detached: async () => { throw new Error('ledger down'); }, ended: async () => { throw new Error('ledger down'); } };
+  assert.strictEqual((await withinBudget('task_evaluate', { task_id: 't' }, failing, env, broke)).state, 'still_running');
+  fail(new Error('late'));
+  await new Promise((r) => setTimeout(r, 20));
+});

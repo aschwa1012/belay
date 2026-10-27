@@ -255,13 +255,22 @@ const COMPOSE = require('./compose.cjs').createCompose({ callCore, manager: () =
 // ADR 0053 decision 6: worker_spawn's cwd defaults to the worktree belay made for task_id, and a different one is refused, so a
 // worker is never pointed past its task's own tree by a typo. Without a recorded worktree the call is as it was.
 async function reviewedWorktree(task) {
-  const paths = new Set();
+  const paths = new Set(), removed = [], foreign = [];
+  const norm = (p) => { const x = String(p).replace(/\\/g, '/').replace(/\/+$/, ''); return process.platform === 'win32' ? x.toLowerCase() : x; };
+  const run = ((await callCore('run.get', {})) || {}).run;
+  const project = norm((run && run.project_dir) || '');
   for (const id of Array.isArray(task.depends_on) ? task.depends_on : []) {
     const w = ((await callCore('task.get', { task_id: id })) || {}).worktree;
-    if (w && w.path && !w.removed_at) paths.add(w.path);
+    if (!w || !w.path) continue;
+    if (w.removed_at) { removed.push(id); continue; }
+    if (project && w.repo && norm(w.repo) !== project && !project.startsWith(`${norm(w.repo)}/`)) { foreign.push(id); continue; } // task.create tree_of's rule: only this run's repository
+    paths.add(w.path);
   }
   if (paths.size === 1) return { path: [...paths][0] };
-  return { error: paths.size ? `the tasks under review are in ${paths.size} trees, so no one tree is the reviewed one` : `review task ${task.id} reviews no task that has a belay worktree` };
+  if (foreign.length && !paths.size) return { code: 'E_ROLE', error: `the tree of task ${foreign.join(', ')} is not in this run's repository; another repository is the operator's to name` };
+  if (paths.size) return { error: `the tasks under review are in ${paths.size} trees, so no one tree is the reviewed one` };
+  if (removed.length) return { error: `the tree of task ${removed.join(', ')} under review was removed, so there is no tree to start the reviewer in` };
+  return { error: `review task ${task.id} reviews no task that has a belay worktree` };
 }
 async function spawnWorktree(args) {
   const a = args || {};
@@ -272,7 +281,7 @@ async function spawnWorktree(args) {
     // A review task has no tree of its own: the reviewer starts in the tree of the task under review (the prompt says belay resolves it).
     const reviewed = !own && task.acceptance && task.acceptance.verdict === true ? await reviewedWorktree(task) : null;
     if (reviewed && reviewed.path) return { ...a, worktree: reviewed.path };
-    if (reviewed) throw fail('E_ARGS', `worker_spawn: ${reviewed.error}; pass worktree: the tree the review judges`, { tool: 'worker_spawn', missing: 'worktree', task_id: a.task_id });
+    if (reviewed) throw fail(reviewed.code || 'E_ARGS', `worker_spawn: ${reviewed.error}${reviewed.code ? '' : '; pass worktree: the tree the review judges'}`, { tool: 'worker_spawn', missing: 'worktree', task_id: a.task_id });
     if (!own) throw fail('E_ARGS', `worker_spawn needs worktree: ${a.task_id ? `task ${a.task_id} has no belay worktree (task_worktree makes one)` : 'no task_id names one'}`, { tool: 'worker_spawn', missing: 'worktree' });
     return { ...a, worktree: own };
   }
@@ -380,7 +389,7 @@ async function handle(msg) {
       return send({ jsonrpc: '2.0', id, result });
     }
     try {
-      const row = await require('./call-budget.cjs').withinBudget(name, args, (async () => opts.role === 'orchestrator' && require('./views.cjs').isViewed(name) ? await require('./views.cjs').viewed(name, args, (a) => callTool(name, a)) : (opts.role === 'worker' && name === 'lease_release' ? require('./views.cjs').leaseRelease(await callTool(name, args), args) : await callTool(name, args)))()); // ADR 0058 amendment 3: compact unless view debug; a worker's lease_release answer is compact too // call-budget.cjs: integrate and task_evaluate answer before the client's tool timeout
+      const row = await require('./call-budget.cjs').withinBudget(name, args, (async () => opts.role === 'orchestrator' && require('./views.cjs').isViewed(name) ? await require('./views.cjs').viewed(name, args, (a) => callTool(name, a)) : (opts.role === 'worker' && name === 'lease_release' ? require('./views.cjs').leaseRelease(await callTool(name, args), args) : await callTool(name, args)))(), process.env, opts.role === 'orchestrator' ? require('./call-hooks.cjs').callHooks(callCore) : null); // ADR 0058 amendment 3: compact unless view debug; a worker's lease_release answer is compact too // call-budget.cjs: integrate and task_evaluate answer before the client's tool timeout
       return send({ jsonrpc: '2.0', id, result: okResult(row) });
     } catch (e) {
       return send({ jsonrpc: '2.0', id, result: errResult(e) });

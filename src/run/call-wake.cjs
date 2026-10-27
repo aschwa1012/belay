@@ -1,0 +1,57 @@
+'use strict';
+// call-wake.cjs — an `integrate` or `task_evaluate` the orchestrator started that answered `still_running` (src/mcp/call-budget.cjs)
+// is treated like a release evaluation (release-eval.cjs): while it runs it holds the headless run open, and when it ends the
+// orchestrator is woken with its result, as facts only: the task ids, passed or failed, the failing checks and the conflict.
+// The adapter that holds the call writes two run-ledger events (src/mcp/call-hooks.cjs), the same cross-process mechanism the
+// refuted-note wake reads (note-wake.cjs); the result itself is read from the store here, never taken from the event.
+// A call whose adapter died before it ended is forgotten after PENDING_MAX_MS, and releases its hold.
+
+const RE = require('./release-eval.cjs');
+
+const parse = (m) => { try { const v = JSON.parse(m); return v && typeof v === 'object' ? v : {}; } catch { return {}; } };
+const checkName = (c) => (Array.isArray(c.argv) ? c.argv.slice(0, 3).join(' ') : c.kind || '?');
+const ids = (a) => (a.length > 3 ? `${a.slice(0, 3).join(', ')} and ${a.length - 3} more` : a.join(', '));
+
+async function resultText(core, tool, taskIds, ended, startedAt) {
+  const of = `${tool} of ${ids(taskIds) || 'no task'}`;
+  if (!(ended.ok === 1 || ended.ok === true)) return `belay: ${of} failed: ${ended.code || 'error'}${parse(ended.message).error ? `, ${parse(ended.message).error}` : ''}; nothing was written for it.`;
+  try {
+    if (tool === 'integrate') {
+      const r = await core.integration.get({ id: ended.newest_row_id });
+      const failing = (Array.isArray(r.checks) ? r.checks : []).filter((c) => c.passed === false).map(checkName);
+      const c = r.conflict;
+      return `belay: ${of} ended: ${r.state}${c ? `; conflict on task ${c.task_id}${Array.isArray(c.files) ? ` (${c.files.length} file${c.files.length === 1 ? '' : 's'})` : ''}` : ''}${failing.length ? `; failing: ${failing.join(', ')}` : r.passed === true ? '; checks passed' : ''}.`;
+    }
+    const row = await core.task.get({ task_id: taskIds[0] });
+    const s = RE.summaryOf(row);
+    if (!(row.results && Number(row.results.evaluated_at) >= startedAt)) return `belay: ${of} ended with no new result; the task is ${row.state}.`;
+    return `belay: ${of} ended: ${s.state === 'done' ? 'passed, done' : `not done; failing: ${s.failing.join(', ') || 'no executable check'}`}.`;
+  } catch { return `belay: ${of} ended; read it with task_list { task_ids }.`; }
+}
+
+function createCallWatcher({ core, runId, now = Date.now }) {
+  const seen = new Set(); // event ids taken in
+  const open = new Map(); // key -> { tool, task_ids, started_at }
+  async function poll() {
+    let evs;
+    try { evs = ((await core.memory.events({ run_id: runId, kinds: ['call_detached', 'call_ended'] })) || {}).events || []; } catch { return []; }
+    const out = [];
+    for (const ev of evs) {
+      if (seen.has(ev.id)) continue;
+      seen.add(ev.id);
+      const m = parse(ev.message);
+      const taskIds = Array.isArray(ev.row_ids) ? ev.row_ids : [];
+      if (ev.kind === 'call_detached') { open.set(ev.key, { tool: m.tool, task_ids: taskIds, started_at: Number(m.started_at) || now() }); continue; }
+      const call = open.get(ev.key) || { tool: m.tool, task_ids: taskIds, started_at: Number(m.started_at) || 0 };
+      open.delete(ev.key);
+      const text = RE.cut(await resultText(core, call.tool, call.task_ids, ev, call.started_at), RE.WAKE_TEXT_MAX);
+      out.push({ event: 'evaluated', worker_id: `call:${ev.key}`, turn: 0, seq: ev.seq, task_id: call.task_ids[0], ...(call.task_ids.length > 1 ? { task_ids: call.task_ids } : {}), text });
+    }
+    return out;
+  }
+  // The headless idle close holds while a detached call runs, bounded by PENDING_MAX_MS from its start.
+  const holds = () => [...open].filter(([, c]) => now() - c.started_at <= RE.PENDING_MAX_MS).map(([k]) => `call:${k}`);
+  return { poll, holds };
+}
+
+module.exports = { createCallWatcher };
