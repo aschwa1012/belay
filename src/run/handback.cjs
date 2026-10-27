@@ -27,14 +27,16 @@ async function facts(getTask, assigned) {
   const task = assigned && assigned.task;
   if (!isVerdict(task) || !Array.isArray(task.depends_on) || typeof getTask !== 'function') return '';
   const lines = [];
+  const current = assigned.new_lease && assigned.new_lease.tree && assigned.new_lease.tree.head; // the reviewed tree's head when the lease was granted
   for (const id of task.depends_on) {
     let t = null;
     try { t = await getTask(id); } catch { t = null; }
     const r = t && t.results;
-    if (!r || typeof r !== 'object' || r.stale || !Array.isArray(r.checks) || !r.checks.length) continue;
+    if (!r || typeof r !== 'object' || r.stale || !Array.isArray(r.checks) || !r.checks.length || !r.head_sha) continue; // no head, no fact: it cannot be said what the result was judged at
     const names = r.checks.slice(0, SHOWN).map(nameOf).join('; ') + (r.checks.length > SHOWN ? `; and ${r.checks.length - SHOWN} more` : '');
-    const at = r.head_sha ? ` at ${String(r.head_sha).slice(0, 12)}` : '';
-    lines.push(`belay's acceptance checks for ${id} ${r.passed === true ? 'passed' : 'did not pass'}${at} (${names}).`);
+    const judged = String(r.head_sha), now = current ? String(current) : '';
+    const moved = now && !now.startsWith(judged) && !judged.startsWith(now) ? `; the tree is now at ${now.slice(0, 12)}` : ''; // the reviewer judges the tree as it is now
+    lines.push(`belay's acceptance checks for ${id} ${r.passed === true ? 'passed' : 'did not pass'} at ${judged.slice(0, 12)}${moved} (${names}).`);
   }
   return lines.length ? `\n\n${lines.join('\n')}` : '';
 }

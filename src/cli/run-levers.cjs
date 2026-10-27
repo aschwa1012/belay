@@ -148,6 +148,12 @@ function parseLevers(spec, opts = {}) {
   // ADR 0058 decision 8: off by default, and absent from the levers (and the receipt) unless the spec turns it on.
   if (spec.stop_idle_on_done !== undefined && typeof spec.stop_idle_on_done !== 'boolean') return { error: 'stop_idle_on_done must be true or false' };
   if (spec.stop_idle_on_done === true) out.stop_idle_on_done = true;
+  // The most task evaluations (release-time, called, and integration re-runs) the store owner runs at once; absent unless set, so a run without it has the receipt it always had.
+  if (spec.max_parallel_evaluations !== undefined) {
+    const v = spec.max_parallel_evaluations;
+    if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 1) return { error: 'max_parallel_evaluations must be a positive integer' };
+    out.max_parallel_evaluations = v;
+  }
   // ADR 0020 decision 1 as amended: the permission tools are listed to the orchestrator, and their prompt line given, only for a run that turns the channel on.
   if (spec.permission_prompt !== undefined && typeof spec.permission_prompt !== 'boolean') return { error: 'permission_prompt must be true or false' };
   if (spec.permission_prompt === true) out.permission_prompt = true;

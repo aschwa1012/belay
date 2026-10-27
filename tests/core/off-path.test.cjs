@@ -223,7 +223,7 @@ test('concurrent: each command check names the evaluations that ran beside it; o
   assert.strictEqual(alone.results.checks[0].concurrent, undefined);
   const V = require('../../src/mcp/views.cjs');
   const failing = V.compactTask({ ...ra, results: { ...ra.results, passed: false, checks: [{ ...ra.results.checks[0], passed: false, exit_code: 1 }] } }).results.failing;
-  assert.deepStrictEqual(failing, ['command ' + ra.results.checks[0].argv.slice(0, 3).join(' ') + ' exit 1 concurrent'], 'a listing says a failing check ran beside another');
+  assert.deepStrictEqual(failing, ['command ' + ra.results.checks[0].argv.slice(0, 3).join(' ') + ' exit 1 (ran beside 1 other evaluation)'], 'a listing says a failing check ran beside another');
   // A listing counts the revisions of an amended task and keeps the stale mark of its results.
   const listed = V.compactTask({ ...ra, amended: [{}, {}], results: { ...ra.results, stale: 'acceptance amended' } });
   assert.deepStrictEqual([listed.amended, listed.results.stale], [2, 'acceptance amended']);

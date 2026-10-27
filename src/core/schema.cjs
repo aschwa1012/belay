@@ -160,6 +160,8 @@ const MIGRATIONS = [
   // ADR 0031 decision 6 (build 12 wave 2): the run's `max_fix_rounds` lever, written by `run.attach`, and the
   // task a fix task repairs, written by `task.create`, so core can refuse a fix task past the cap.
   'ALTER TABLE run ADD COLUMN max_fix_rounds INTEGER',
+  // The run lever max_parallel_evaluations (null: unlimited): at most this many task evaluations run at once in the owner.
+  'ALTER TABLE run ADD COLUMN max_parallel_evaluations INTEGER',
   'ALTER TABLE task ADD COLUMN repairs TEXT',
   // Why a worker row has no base_sha when every base lookup attempt failed (null otherwise); mirrors head_error.
   'ALTER TABLE worker ADD COLUMN base_error TEXT',

@@ -40,9 +40,12 @@ function createDoStop({ ctx, writeRow }) {
     // so there is nothing to close and the kill is the only channel left.
     if (mode === 'graceful' && w.substrate === 'claude-code' && w.child) {
       // A worker that holds a background task (a hung shell) may not exit on stdin close, so those tasks are stopped first, as a park does.
+      // The whole graceful phase stays within timeout_ms: the background stop comes out of it, and the wait for the exit gets what is left.
+      const tb = now();
       bgStops = await BG.stopTasks(w, { boundMs: Math.min(BG_STOP_MS, Math.floor(timeout_ms / 2)) }).catch(() => []);
-      const g = await P.gracefulStop(w.child, timeout_ms);
-      graceful = g.graceful; if (!graceful) gracefulTimedOutMs = g.ms;
+      const bgMs = now() - tb;
+      const g = await P.gracefulStop(w.child, Math.max(1, timeout_ms - bgMs));
+      graceful = g.graceful; if (!graceful) gracefulTimedOutMs = bgMs + g.ms; // the total spent
     }
     if (!graceful) {
       if (gracefulTimedOutMs != null) blockedBy = BG.runningTasks(w).map((t) => ({ task_id: t.task_id, description: t.description })); // what still held the worker open when the wait ran out
@@ -63,7 +66,7 @@ function createDoStop({ ctx, writeRow }) {
       worker_id, pid, exit_code: w.exitCode, exit_signal: w.exitSignal,
       ms_to_exit: Math.max(0, (w.exitedAt || now()) - t0), graceful, killed, session_id: w.sessionId, // 0 when the exit came before the stop (an adopted row's old exited_at)
       ...(bgStops.length ? { background_tasks_stopped: bgStops.map((s) => ({ task_id: s.task_id, description: s.description, status_after: s.status_after })) } : {}),
-      ...(gracefulTimedOutMs != null ? { graceful_timed_out_ms: gracefulTimedOutMs, blocked_by: blockedBy } : {}),
+      ...(gracefulTimedOutMs != null ? { graceful_timed_out_ms: gracefulTimedOutMs, ...(blockedBy && blockedBy.length ? { blocked_by: blockedBy } : {}) } : {}),
       tree_kill: tree || null, ...(tree && tree.killed_processes ? { killed_processes: tree.killed_processes } : {}), ...(refused ? { refused: refused.refused, kind: refused.kind, detail: refused.detail } : {}), ...(notKilled ? { descendants_not_killed: notKilled } : {}),
     };
   };

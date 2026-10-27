@@ -10,7 +10,7 @@ const head = (s) => (typeof s !== 'string' ? s : s.length <= SPEC_HEAD ? s : `${
 // One line per check, as the release wake names them: `command npm test exit 1`, `files_within_owned`, `verdict`; a check that
 // timed out or is marked flaky says so, so neither fact is lost from a listing.
 const timedOut = (c) => c.timed_out === true || !!(c.detail && c.detail.timed_out === true);
-const label = (c) => `${c.kind === 'command' ? `command ${Array.isArray(c.argv) ? c.argv.slice(0, 3).join(' ') : '?'}${c.exit_code != null ? ` exit ${c.exit_code}` : ''}` : c.kind}${timedOut(c) ? ' timed out' : ''}${c.flaky ? ' flaky' : ''}${Array.isArray(c.concurrent) && c.concurrent.length ? ' concurrent' : ''}`;
+const label = (c) => `${c.kind === 'command' ? `command ${Array.isArray(c.argv) ? c.argv.slice(0, 3).join(' ') : '?'}${c.exit_code != null ? ` exit ${c.exit_code}` : ''}` : c.kind}${timedOut(c) ? ' timed out' : ''}${c.flaky ? ' flaky' : ''}${Array.isArray(c.concurrent) && c.concurrent.length ? ` (ran beside ${c.concurrent.length} other evaluation${c.concurrent.length === 1 ? '' : 's'})` : ''}`;
 
 // The fields of a check's detail that are receipts rather than reasons: where it ran, what was null, the full file lists.
 // `cwd` is the worktree the answer already names; a null says nothing. A passing check also loses what only a failure needs:

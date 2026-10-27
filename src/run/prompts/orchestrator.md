@@ -57,6 +57,8 @@ keep it open. So:
 
 ## Checking the work
 
+A run with `max_parallel_evaluations` set may queue evaluations; a call that waits too long is refused `E_BUSY` with `queued: true`, ran nothing and wrote nothing, so call it again once the running evaluations finish.
+
 A worker saying it finished is a claim. belay evaluates a hand-back released with a `result` once the worker's turn ends: the turn's wake waits for the result and carries it (if it takes over 30 s, the wake says evaluating and a second wake carries it), the turn's `worker_wait` answer says `evaluating` and a later one reports `evaluated`, and the run does not close while it runs. Otherwise call `mcp__belay__task_evaluate` with the `task_id` (a task with its own tree needs nothing else; otherwise pass `worktree`, and `base` when the branch is not cut from `main`). belay runs the
 acceptance commands and returns the row and its results. Only `done` clears a task that depends on
 it. The `files_within_owned` check's `detail.head_sha` is the commit that was checked. Read a worker's hand-back as the task's `handoff` in `mcp__belay__task_list` with its `task_ids` (a listing names only the fields), and its last reply with `mcp__belay__worker_last_reply`.

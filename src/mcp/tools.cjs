@@ -274,7 +274,7 @@ const ORCHESTRATOR = [
   },
   {
     name: 'task_evaluate',
-    description: 'Run a task\'s checks in worktree. Returns row and results (passing output cut; view debug: whole); done (unblocks dependents) only if all pass.',
+    description: 'Run a task\'s checks in worktree. Returns row and results (passing output cut; view debug: whole); done (unblocks dependents) only if all pass. A run with max_parallel_evaluations may queue it; E_BUSY queued: waited too long, nothing run, call again.',
     inputSchema: S({
       task_id: str(),
       worktree: str('Default: the task\'s worktree'),
@@ -299,7 +299,7 @@ const ORCHESTRATOR = [
   {
     // ADR 0053 decision 5.
     name: 'integrate',
-    description: 'Merge done tasks\' branches, at the head each was judged at, in order into into (default belay/integrate/<run>), then re-run their checks there. Returns state, merged (what this call merged), carried (count from earlier rows), not_merged, left_out (commits past it), checks (reused ones marked), passed, forced, not_carried (passing output cut; view debug: whole row). A conflict is aborted, tree clean; conflict names task and files; what merged before it is still checked. task_list gives each task\'s integration state. force with reason also merges tasks not done, recorded as forced.',
+    description: 'Merge done tasks\' branches, at the head each was judged at, in order into into (default belay/integrate/<run>), then re-run their checks there. Returns state, merged (what this call merged), carried (count from earlier rows), not_merged, left_out (commits past it), checks (reused ones marked), passed, forced, not_carried (passing output cut; view debug: whole row). A conflict is aborted, tree clean; conflict names task and files; what merged before it is still checked. task_list gives each task\'s integration state. force with reason also merges tasks not done, recorded as forced. A run with max_parallel_evaluations may queue the re-run; E_BUSY queued: refused before any merge, call again.',
     inputSchema: S({
       task_ids: strs(),
       into: str(),
