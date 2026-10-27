@@ -128,6 +128,34 @@ test('an enormous spec is truncated to fit rather than overflowing', async () =>
   assert.ok(l.bytes <= LINE_MAX);
 });
 
+test('a briefing that fits the budget cuts nothing: a 900 byte spec arrives whole', async () => {
+  const spec = `${'Write the week view. '.repeat(40)}END-OF-SPEC`.slice(-900);
+  const t = await orch.task.create({ spec, files_owned: ['lib/week.js'] });
+  await orch.task.assign({ task_id: t.id, worker_id: wid });
+  const d = await orch.continuity.resumeDoc({ task_id: t.id });
+  assert.ok(d.bytes < 2000, `${d.bytes} bytes: the whole document is well inside the budget`);
+  assert.ok(d.text.includes(spec), 'the spec is whole, to its last words');
+  assert.ok(!d.text.includes('truncated'), 'nothing says it was cut');
+  assert.ok(d.sections.every((s) => !s.includes('(truncated)')), d.sections.join(', '));
+});
+
+test('an oversized briefing keeps the short sections whole and cuts only the ones over their share', async () => {
+  const t = await orch.task.create({ spec: 'S'.repeat(20000), files_owned: ['big/other'] });
+  await orch.task.assign({ task_id: t.id, worker_id: wid });
+  const d = await orch.continuity.resumeDoc({ task_id: t.id });
+  assert.ok(d.bytes <= DOC_MAX);
+  assert.deepStrictEqual(d.sections.filter((s) => s.includes('(truncated)')), ['spec (truncated)']);
+  assert.ok(d.text.includes('- big/other') && d.text.includes('held by'), 'the files and the lease are whole');
+});
+
+test('shares: sections under the fair share keep their size, the rest split what remains', () => {
+  const { shares } = core('continuity.cjs');
+  assert.deepStrictEqual(shares([10, 20, 5000], 1000), [10, 20, 970]);
+  assert.deepStrictEqual(shares([300, 300, 300], 1000), [300, 300, 300]);
+  assert.deepStrictEqual(shares([900, 900, 50], 1000), [475, 475, 50]);
+  assert.deepStrictEqual(shares([5, 5], 0), [0, 0]);
+});
+
 test('a briefing needs an id it can resolve, and resolves a worker through its lease', async () => {
   await assert.rejects(orch.continuity.resumeLine({}), e => e.code === 'E_ARGS');
   await assert.rejects(orch.continuity.resumeDoc({ task_id: 'no-such-task' }), e => e.code === 'E_NOT_FOUND');
