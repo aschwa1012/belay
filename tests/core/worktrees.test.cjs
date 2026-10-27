@@ -62,6 +62,14 @@ test('a junction git does not ignore is not made, and is named with the reason',
   assert.ok(!fs.existsSync(path.join(row.worktree.path, 'node_modules')), 'no link left behind');
 });
 
+test('a repository with no node_modules has nothing to link, so the tree records and names no skipped junction', async () => {
+  const r3 = makeRepo(dir);
+  fs.rmSync(path.join(r3, 'node_modules'), { recursive: true, force: true });
+  const t = await newTask();
+  const row = await op.task.worktreeCreate({ task_id: t.id, repo: r3 });
+  assert.deepStrictEqual([row.worktree.junctions, row.worktree.junctions_skipped], [[], []]);
+});
+
 test('create refuses: a second worktree, a done task, an unknown task, a bad branch, an unknown base, an existing branch, a path from the orchestrator', async () => {
   const t = await newTask();
   await orch.task.worktreeCreate({ task_id: t.id });

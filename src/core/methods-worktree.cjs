@@ -91,12 +91,12 @@ function junctionList(junction) {
   return list;
 }
 
-// Makes each junction (a directory symlink off Windows) whose source exists, keeps it only if git ignores it in the new tree.
+// Makes each junction (a directory symlink off Windows) whose source exists (one whose source is absent is left out, unrecorded), keeps it only if git ignores it in the new tree.
 // `made` is filled as each link is made, so a failure part way leaves the caller's rollback a full list to unlink.
 async function makeJunctions(top, wtPath, list, made = [], skipped = []) {
   for (const rel of list) {
     const target = path.join(top, rel), link = path.join(wtPath, rel);
-    if (!fs.existsSync(target)) { skipped.push({ path: rel, reason: 'the repository has no such directory' }); continue; }
+    if (!fs.existsSync(target)) continue; // nothing to link: not a skip worth recording, so the reply stays silent about it
     if (fs.existsSync(link)) { skipped.push({ path: rel, reason: 'the worktree already has this path from git' }); continue; }
     fs.mkdirSync(path.dirname(link), { recursive: true });
     fs.symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir');
