@@ -1,5 +1,258 @@
 # Changelog
 
+## 0.3.2
+
+Retrieval profiles: memory search can rerank its candidates with a cross-encoder
+on the CPU, or embed and rerank on a GPU, chosen per run and per agent type.
+The default is unchanged: cpu-fast, the same search as 0.3.1.
+
+Upgrade warning (from 0.3.1)
+- no default changes: with no retrieval setting, a run searches exactly as
+  0.3.1 did (voyage-4-nano, keyword and semantic fused, no reranker)
+- the first start after the upgrade fills a vector cache from the vectors
+  already stored, inside the store owner's start: about 25 ms for a few
+  hundred notes, about 1 s at 10,000 rows, several seconds beyond that. It
+  runs again after a 0.3.1 belay writes to the same store. A command that
+  connects during a start of more than about 5 s can fail with E_NO_OWNER;
+  run it again
+- the panel can now write settings: the Memory menu saves profile, routing
+  and model choices to the config file (as belay settings does)
+- the store keeps schema version 2; the first 0.3.2 start adds a table and
+  two columns in place. Going back to 0.3.1 on the same store is not
+  tested: back up .belay\ first
+
+Added
+- retrieval profiles (memory.profile): cpu-fast (the default, no reranker),
+  cpu-rerank-light and cpu-rerank (a CPU cross-encoder reranks the top 50
+  candidates), gpu-rerank-fast and gpu-rerank (a GPU reranker),
+  gpu-balanced and gpu-recall-max (a GPU embedder and a GPU reranker), and
+  custom (memory.embedder and memory.reranker). memory.profile_cpu is the
+  profile a run takes when no usable GPU is found
+- per-agent-type routing (memory.routing, memory.routing_cpu): reviewers,
+  coders or the orchestrator can search with different models
+- the GPU models run on llama.cpp with Vulkan, an opt-in install into
+  belay's cache: belay embedder fetch --gpu installs the pinned runtime,
+  belay embedder fetch --gpu --model <id> a GPU model, and
+  belay embedder fetch --reranker <id> a CPU reranker. Nothing GPU-related
+  is installed or loaded unless a profile asks for it. belay embedder
+  delete removes a model nothing in the project uses
+- the routing is pinned once at run start and recorded on the run. A GPU
+  routing is checked against free VRAM (memory.vram_headroom_gb, default
+  0.75) before anything loads
+- loud fallback (memory.on_heavy_failure): fallback (the default) moves the
+  run to the CPU profile and says so in one notice; pause turns the
+  failure into an error instead (at run start, the run does not start). A search caught by an owner stopping is answered once
+  from the fallback tier, labelled
+- memory.on_heavy_behind: when a GPU embedder has notes left to embed at
+  run start, wait (the default) embeds them first (belay memory embed
+  --model <id> does the same by hand); fallback runs on voyage-4-nano for
+  that run and keeps the reranker
+- the reranker warms up at run start. While it loads, a search returns the
+  fused order marked as warming instead of waiting. Each warm-up is
+  recorded and shown in belay status, the run receipt and belay agents; it
+  never wakes the orchestrator. A reranker whose process is gone is warmed
+  again, and a failed warm-up is retried once
+- the panel shows one line per retrieval model with its state, and the
+  Memory menu (Profiles, Routing and Models tabs) to change them. belay
+  memory menu offers the same from the command line
+- long notices and menu text wrap to the pane instead of being cut off
+- the search log (memory.search_log, off by default): records each search's
+  query, candidates and reranked order for evaluating retrieval, capped at
+  memory.search_log_cap_mb (500 MB, oldest runs pruned first). It keeps
+  query text in the store, which is why it is off. belay memory search-log
+  --export writes it out
+- a vector cache keyed by model, revision, dimensions and text template,
+  so a note embedded once by a model is not embedded again
+
+Fixed
+- a worker process seen dead stays dead for the rest of the run, so a process id the system reuses cannot make it look alive again; the wake
+  carries the same fact, an orphan whose id may have been reused is checked once in the background, and a starting worker whose
+  process is gone is not restated
+- after a restart or a crash during a run, belay could mistake the
+  system's own processes for ones its workers spawned, and then refuse
+  every operator command that needs the operator check (memory search,
+  notices and others) from any terminal, with a generic error. A spawn
+  record from before the current boot is now ignored, every recorded
+  lifetime ends at most 60 s after its process was last seen alive, the
+  headless orchestrator's record is refreshed while it runs, and a run
+  closes only the records of its own workers. Records left by an earlier
+  belay close at their write time plus 60 s on the first start
+
+Measured
+- three real runs on 2026-10-30, one per device mix: a CPU reranker, a GPU
+  embedder with a CPU reranker, and a GPU embedder with a GPU reranker.
+  In each, every search had its candidates reranked by the expected model,
+  and GPU memory stayed within the estimate (2,622 and 5,372 MiB against
+  estimates of 2,629 and 5,411 MiB)
+- not measured: whether reranking or a GPU embedder gives better results
+  than cpu-fast. The default stays cpu-fast until that is measured
+
+Known limits
+- the GPU models of a run share one child process; if it fails, every GPU
+  role falls back together
+- on an 8 GB card the larger GPU profiles leave little room: other
+  programs using the GPU can make the start-of-run check refuse, and the
+  run then takes its CPU profile
+- the warming state (a search served while the reranker loads) has been
+  seen only in tests, not in a real run
+- GPU retrieval is tested on one NVIDIA laptop GPU with Vulkan
+- Windows only
+- the panel's Models menu does not download: its download entry shows the
+  command to run in a terminal, and for a GPU model it leaves out the
+  runtime step (run belay embedder fetch --gpu first). Clearer wording
+  comes in 0.3.3
+- choosing a profile in the panel saves it for the next run; a live run
+  keeps the profile it started with, and a run spec that sets
+  memory.profile overrides the config. The panel does not yet say so
+- belay memory menu lists rerankers by short name, but belay embedder
+  fetch --reranker takes the full id (for example
+  Alibaba-NLP/gte-reranker-modernbert-base), and belay embedder delete
+  takes the model id alone, without --gpu or --model
+- a spec or config file saved with a byte order mark (Windows PowerShell's
+  Set-Content -Encoding utf8 writes one) is refused as invalid JSON; save
+  it as UTF-8 without a BOM
+- a rare race when an orchestrator exits at the moment belay writes to it
+  can end the run with a broken-pipe error; fixed in 0.3.3
+- if the process that refreshes a spawn record is killed while the spawned
+  process keeps running, that process's later children can pass the
+  operator check once 60 s have gone by
+
+## 0.3.1
+
+Parallel work: belay now gives each task its own git worktree and branch,
+merges finished work into an integration branch and checks the merged
+result, so one run can work on many tasks at once.
+
+Upgrade warning (from 0.3.0)
+- fix rounds are no longer capped by max_fix_rounds. Past it, a new fix
+  task carries a notice to the orchestrator instead of being refused. The
+  only refusal is the new fix_hard_cap: 5 by default for a run with no
+  timeout_ms, none for a run with one. Set "fix_hard_cap": 2 in the run
+  spec to keep 0.3.0's limit
+- the orchestrator can merge into any branch it names, your checked-out
+  branch included, with no approval step. Keep work on the integration
+  branch and merge it into your own branches yourself (see Known limits)
+- copy the orchestrator prompt template again, or switch the spec to
+  brief_file (below). Both templates changed (worktrees, integrate, fix
+  rounds, reuse of workers); they now carry <!-- belay-prompt 0.3.1 -->,
+  and belay run warns when your copy is older
+- researcher workers get Read, Glob, Grep, WebFetch and WebSearch, and no
+  shell. Coders, testers and reviewers keep the six tools. Change a type's
+  list with agents.<type>.tools in the config file
+- shell commands that stop processes by name (taskkill /IM, Stop-Process
+  -Name, pkill and the like) are refused for workers and for a headless
+  orchestrator; stop a process by its exact pid
+- a headless orchestrator has a shell, but belay commands it runs are
+  refused as the operator; the interactive orchestrator acts as you
+- workers are no longer shown lease_renew, checkpoint_write, status or
+  memory_stats (no worker called them; the adapter renews leases itself).
+  permission_list and permission_decide are shown to the orchestrator only
+  when the run spec sets "permission_prompt": true
+- a review task is refused to a worker that held a lease on the work it
+  reviews
+- a message to a worker is refused as busy while that worker is being
+  stopped, restarted or resumed
+- the orchestrator's task tools and worker_spawn answer with compact rows
+  by default (view: "debug" gives the full row); memory_search answers in a
+  compact view with one relevance figure, and flags results below a
+  measured relevance floor
+- belay run removes each finished, clean task worktree when the run ends,
+  and reports the ones it kept
+- the store keeps schema version 2; the first 0.3.1 run adds a table and
+  columns in place. Going back to 0.3.0 on the same store is not tested:
+  back up .belay\ first
+
+Added
+- a worktree and branch per task: the orchestrator's task_worktree makes,
+  removes and reports one from a recorded base, and spawns, checks and
+  reviews default to the task's own tree. Tasks in separate worktrees may
+  own the same files; belay reports the overlap. From the command line:
+  belay worktree create|remove|merge and belay worktrees
+- integrate: merges each finished task into an integration branch at the
+  commit that was judged, never past it, checks the merged head, and
+  reports conflicts, what landed and what was left out. It can run extra
+  checks of its own on the merged head (integrate checks), and can force a
+  merge past failing checks with a stated reason, which is recorded
+- run lever max_parallel_evaluations: caps how many task checks run at
+  once; the rest wait for a slot
+- belay checks a worker's hand-back as its turn ends and puts the result
+  in the orchestrator's wake; fix_from_review makes the fix task for a
+  refuted review; task_cancel; worker_last_reply; git_read, read-only git
+  that belay runs for the orchestrator
+- brief_file in the run spec: belay wraps your brief in its own current
+  template, so an upgrade refreshes the prompt
+- cost estimates: a worker killed in the middle of a turn has that turn's
+  cost estimated from its stream, labelled as an estimate and kept apart
+  from the cost Claude Code reported; belay agents and belay receipts show
+  both
+- check history: each task's check commands and how they changed between
+  rounds, in the integrate answer and the run-end summary
+- fix-round notice: past max_fix_rounds, the fix task's answer, the
+  refuted review's wake and task_list carry the round count
+- the orchestrator's shell: Read, Glob, Grep, Edit, Write and Bash, plus
+  git_read. At the close belay ends what the orchestrator's shell left
+  running, by exact pid, never belay's own processes or workers
+- tool lists per worker type (agents.<type>.tools); a spawn may narrow its
+  type's list, never widen it
+- reviewers write their probes to a scratch folder per run, outside every
+  worktree, and a change to the tree under review is flagged at the
+  hand-back; keep_review_scratch keeps the folders after the run
+- stop_idle_on_done stops a worker once its task is done and it is idle
+
+Fixed
+- a hand-back missing a field the task requires is refused, naming the
+  missing fields, and the worker is told the required fields up front
+- a worker killed mid-turn no longer shows that turn as free (see cost
+  estimates)
+- a check that finds every evaluation slot taken now waits for one instead
+  of being refused
+- task worktrees were left behind at the end of a run: clean ones are now
+  removed, and before the close a headless orchestrator is told once which
+  trees would be kept as dirty or off their branch
+- a shell command that stops processes by name could reach any process on
+  the machine, belay's own store owner included: such commands are refused
+- a reused process id could be read as a live worker, run, merge or store
+  owner: belay now checks the process creation time it recorded
+- a store owner that is stopping finishes the calls it accepted and sends
+  their replies, and turns new ones away so the client re-runs them
+- a read copy taken while the owner writes is retried for a time budget;
+  a torn copy is detected and taken again instead of giving a wrong answer;
+  and a copy no longer stops an owner from writing (an owner elected during
+  a copy could open the store read-only)
+- a git trace file left in the temp folder by a belay process that died
+  mid-merge is swept by a later belay process: only belay's own file
+  names, only for a process that is gone, and only after 10 minutes
+- a task branch named as another spelling of an existing branch (Main for
+  main) is refused; on Windows it could move your branch
+- many smaller fixes to waits, wakes, restarts, leases and messages, found
+  in trial runs. belay's own tests that failed only under load were fixed,
+  not excluded
+
+Measured
+- the same 10 tickets of a small command-line product, run in parallel by
+  0.3.1 twice: about 1 h each (59 and 64 min) against about 5 h done one
+  ticket at a time on a 0.3.0-era build, at about 35 to 45% lower cost
+  ($18.68 and $16.20 against $28.31). Both runs met the pre-registered
+  quality bar: hidden regression tests passed at 0.914 and 0.919 against
+  the sequential run's 0.928 (the bar allowed 0.05 less), and 5 of 9
+  scored tickets passed all their own tests, as in the sequential run
+
+Known limits
+- four 0.3.1 fixes are covered by tests but not yet exercised in a live
+  run: the fix-round notice, the refusal of a hand-back missing required
+  fields, the kill-by-name guard and the pre-close tree notice
+- belay does not sandbox workers. A worker acts with your permissions, and
+  a program it runs can write anywhere you can. In one trial run a
+  reviewer ran the product under test with an empty home setting, and the
+  product wrote into the real user's configuration folder (the reviewer
+  noticed and restored it)
+- merges into your own branches have no approval step yet
+- the kill-by-name guard matches command text; a command assembled at run
+  time can slip past it
+- a resumed Codex reviewer loses its scratch folder as a writable root
+- the orchestrator's restraint (plan and delegate, not do the work) is a
+  prompt rule; it has a shell
+
 ## 0.3.0
 
 Notes: short facts a worker hands back at the end of a task, kept in the
