@@ -153,7 +153,7 @@ async function get(E, caller, args = {}) {
     rungs,
     // Fix round: reuse runAdapterAlive (the run-alive rung's own fact) so this can't drift from it.
     run: runRow
-      ? { id: runRow.id, epoch: runRow.epoch, adapter_pid: runRow.adapter_pid, alive: runAdapterAlive, ended_at: runRow.ended_at, exit_reason: runRow.exit_reason, paused_at: runRow.paused_at == null ? null : runRow.paused_at, paused_by: runRow.paused_by == null ? null : runRow.paused_by, ...embedBoundsOf(E, runRow.id) }
+      ? { id: runRow.id, epoch: runRow.epoch, adapter_pid: runRow.adapter_pid, alive: runAdapterAlive, ended_at: runRow.ended_at, exit_reason: runRow.exit_reason, paused_at: runRow.paused_at == null ? null : runRow.paused_at, paused_by: runRow.paused_by == null ? null : runRow.paused_by, ...embedBoundsOf(E, runRow.id), ...(runRow.budget_usd != null ? { budget: require('./run-budget.cjs').statusBlock(E.store, runRow) } : {}) }
       : null,
     // build step 6b: a forgotten row is hidden here too, the same rule worker.list's default carries.
     workers: allWorkers.filter(w => w.state !== 'forgotten').map(w => ({

@@ -249,6 +249,7 @@ const ORCHESTRATOR = [
       depends_on: strs('Task ids that must be done before this one can be assigned'),
       repairs: str('A fix task: the id of the work task it repairs; capped by max_fix_rounds'),
       base: str('Diff base'),
+      budget_usd: num(),
       tree_of: str('Work in that task\'s worktree (a conflict fix)'),
       id: str(),
       amend: { type: 'boolean', description: 'Replace not-done task id\'s acceptance and spec' },

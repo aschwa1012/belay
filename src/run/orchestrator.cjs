@@ -231,14 +231,14 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     const rec = {
       at_ms: Date.now() - t0, worker_id: ev.worker_id, event: ev.event, turn: ev.turn,
       bytes: Buffer.byteLength(text, 'utf8'), orchestrator_idle_at_write: state.idle,
-      established_by: ev.event === 'note_refuted' || ev.event === 'scrub_alarm' ? `${ev.event} receipt seq ${ev.seq}` : ev.event === 'evaluated' ? `task ${ev.task_id} results at ${ev.seq}` : `worker.list row seq ${ev.seq} for the run`,
+      established_by: ev.event === 'note_refuted' || ev.event === 'scrub_alarm' ? `${ev.event} receipt seq ${ev.seq}` : ev.event === 'budget_pause' ? 'the budget guard' : ev.event === 'evaluated' ? `task ${ev.task_id} results at ${ev.seq}` : `worker.list row seq ${ev.seq} for the run`,
     };
     if (ev.event === 'death') {
       rec.exit_code = ev.exit_code; rec.exit_signal = ev.exit_signal; rec.death_established_by = ev.death_established_by;
     }
     if (ev.event === 'paused') rec.paused_by = ev.paused_by;
     if (ev.turns_skipped) rec.turns_skipped = ev.turns_skipped;
-    if (hold.holdWake(rec)) return; // 6f design item 2: held while paused, never suppressed
+    if (!ev.unheld && hold.holdWake(rec)) return; // 6f design item 2: held while paused, never suppressed; the budget pause's own wake is the one not held
     writeStdinLine(text, ev.worker_id, rec);
     state.wakes.push(rec);
   }
@@ -282,7 +282,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       orphanGraceMs: ORPHAN_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid), sinceAt: t0,
     });
     state.baseline = next;
-    for (const ev of (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()), { holdMs: require('./release-eval.cjs').holdMs() })).concat(await noteWatcher.poll())) writeWake(ev); // ADR 0058 amendment 4: a turn_end carries its release evaluation
+    for (const ev of (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()), { holdMs: require('./release-eval.cjs').holdMs() })).concat(await noteWatcher.poll(), spec.budgetWake ? spec.budgetWake.takeWakes() : [])) writeWake(ev); // ADR 0058 amendment 4: a turn_end carries its release evaluation
     if (state.finishing) return; // a wake's own write may have found the child already gone
 
     if (state.idle) {
@@ -360,7 +360,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     }
     if (ev.kind === 'control_response') { hold.onControlResponse(ev); return; } // 6f amendment 3 decision 4.3
     if (ev.kind === 'turn_end') {
-      state.turns += 1; usage.onTurnEnd(ev);
+      state.turns += 1; usage.onTurnEnd(ev); if (spec.budgetWake) spec.budgetWake.noteOrchestratorCost(usage.snapshot().orch_cost_usd); // a budgeted run counts the orchestrator's cost
       hold.onTurnEnd(ev); // 6f: lets an in-flight run-pause interrupt see the turn it ended
 
       // 5b-2: the parser now names exactly which write this turn answers, by the order of

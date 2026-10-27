@@ -98,6 +98,7 @@ const METHODS = {
   'memory.recordChances': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./memory-chances.cjs', 'recordChances') },
   'memory.noteDeliveries': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./memory-chances.cjs', 'noteDeliveries') },
   'usage.record': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-ledger.cjs', 'usageRecord') },
+  'usage.spend': { roles: ALL, kind: 'read', fn: lazy('./run-budget.cjs', 'usageSpend') },
   'usage.list': { roles: ALL, kind: 'read', fn: lazy('./methods-ledger.cjs', 'usageList') },
   'memory.delete': { roles: ALL, kind: 'write', fn: memory.delete },
   'memory.stats': { roles: ALL, kind: 'read', fn: memory.stats },
@@ -135,6 +136,7 @@ const METHODS = {
   // identity), and it is read back through the ordinary run row.
   'run.setPaused': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.setPaused },
   'run.setEmbedderMode': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.setEmbedderMode },
+  'run.setBudget': { roles: ['operator'], kind: 'write', fn: lazy('./run-budget.cjs', 'setBudget') },
   'run.get': { roles: ALL, kind: 'read', fn: run.getRun },
   // build step 4a: every run's current row, so a CLI with no run id argument (belay status,
   // belay workers) has a way to find the current run at all.

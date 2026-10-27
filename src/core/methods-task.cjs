@@ -118,11 +118,12 @@ async function create(E, caller, args, own = {}) { // own: core-internal, task.f
   }
 
   const t = Date.now();
+  const RB = require('./run-budget.cjs'), budget = RB.taskLimit(E, caller, args); // estimated-dollar limit; null when none
   const row = rows.append(E.store, 'task', {
-    id, run_id: caller.run_id, spec: args.spec, acceptance, files_owned: filesOwned, state: 'open',
+    id, run_id: caller.run_id, spec: args.spec, acceptance, files_owned: filesOwned, state: 'open', ...(budget ? { budget_usd: budget } : {}),
     results: null, depends_on: deps, repairs, ...(tree ? { worktree: tree } : {}), ...(own.answers ? { answers: own.answers } : {}), ...(args.base != null ? { base: require('./methods-worktree.cjs').baseArg(args.base) } : {}),
   }, E.writtenBy(caller), t);
-  E.noteWrite();
+  E.noteWrite(); if (budget) RB.noteTask(E, caller, row);
   return overlaps.length ? { ...row, overlaps } : row;
 }
 

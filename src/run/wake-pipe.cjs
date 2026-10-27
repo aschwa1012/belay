@@ -36,7 +36,7 @@ function wakePipeName(dataDir, runId, nonce) {
 const wakeId = (runId, ev) => `${runId}:${ev.worker_id}:${ev.event}:${ev.turn}:${ev.seq}`;
 
 function startWakePublisher({
-  core, runId, notes = false, pipeName, pollMs = 1000, isHeld = () => false, onRelease = null, heartbeatMs = HEARTBEAT_MS, now = () => Date.now(),
+  core, runId, notes = false, budgetWake = null, pipeName, pollMs = 1000, isHeld = () => false, onRelease = null, heartbeatMs = HEARTBEAT_MS, now = () => Date.now(),
 }) {
   if (!core || !core.worker || typeof core.worker.list !== 'function') throw new Error('startWakePublisher: core.worker.list is required');
   if (!runId) throw new Error('startWakePublisher: runId is required');
@@ -95,6 +95,7 @@ function startWakePublisher({
           queue.push({ id: wakeId(runId, ev), text: wakeText(ev), worker_id: ev.worker_id, event: ev.event, paused_at: r.paused_at == null ? null : r.paused_at, paused_by: ev.paused_by || r.paused_by || null });
         }
       }
+      if (budgetWake) for (const bw of budgetWake.takeWakes()) publish({ id: bw.id, text: bw.text }); // the budget pause's own wake is the one a hold does not keep back
       stats.held_max = Math.max(stats.held_max, queue.length);
       let held = false;
       try { held = !!isHeld(); } catch { held = true; } // an unreadable hold keeps wakes back, never releases them
