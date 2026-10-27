@@ -17,6 +17,7 @@ function usageError(command, message) {
 
 function renderText(receipt, command) {
   if (!receipt.decided) return `belay ${command}: ${receipt.reason}\n`;
+  if (receipt.merge_request) return `request ${receipt.id} (a merge into ${JSON.parse(receipt.request.input).into}, run ${receipt.request.run_id}): ${receipt.verdict.state}${receipt.verdict.reason ? ` (${receipt.verdict.reason})` : ''}; the orchestrator's next integrate call with approval "${receipt.id}" ${receipt.verdict.state === 'allowed' ? 'goes ahead' : 'is refused'}\n`;
   const reasonPart = receipt.verdict.reason ? ` (${receipt.verdict.reason})` : '';
   const alive = receipt.adapter_pid_alive ? 'alive' : 'dead';
   const moved = receipt.worker_after_moved
@@ -85,7 +86,8 @@ async function run(ctx) {
     }
     const ms = Date.now() - t0;
 
-    const after = await waitWorkerAfter(core, result.request.worker_id, result.verdict.decided_at);
+    const merge = result.request.kind === 'merge'; // belay's own request, for a merge into the user's branch: no worker waits on it
+    const after = merge ? { moved: false, waited_ms: 0, error: null } : await waitWorkerAfter(core, result.request.worker_id, result.verdict.decided_at);
     // The core's own shape (request, verdict row, adapter_pid_alive) kept as it answered, plus what
     // the CLI adds: id, decided, the worker and run id from the request row (never an argument), and
     // worker_after — never a `verdict` string field that would shadow the core's verdict row.
@@ -93,7 +95,7 @@ async function run(ctx) {
       ...result, id, decided: true, worker_id: result.request.worker_id, run_id: result.request.run_id,
       worker_after: after, worker_after_moved: after.moved, worker_after_waited_ms: after.waited_ms,
       worker_after_error: after.error,
-      established_by: `permission.decide over the owner pipe answered in ${ms} ms`,
+      merge_request: merge, established_by: `permission.decide over the owner pipe answered in ${ms} ms`,
     };
     return { code: 0, text: renderText(receipt, ctx.command), json: receipt };
   } finally {

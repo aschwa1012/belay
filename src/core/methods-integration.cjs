@@ -17,6 +17,7 @@ const { notMerged, stale } = require('./integration-state.cjs');
 const { pidAlive } = require('./lock.cjs');
 const INC = require('./integration-incremental.cjs');
 const ID = require('./proc-identity.cjs');
+const MUG = require('./merge-user-gate.cjs');
 
 const MAX_TASKS = 50;
 const MAX_REASON = 300;
@@ -304,12 +305,25 @@ async function merge(E, caller, args) {
   const force = args.force === true;
   const { tasks, repo, targets } = await readTasks(E, args.task_ids, force);
   const into = await G.validBranch(repo, args.into === undefined ? `belay/integrate/${caller.run_id}` : args.into);
+  // A branch the user owns (ADR 0067): approval first (read-only, and before any slot or tree), then belay merges on a detached HEAD.
+  const userBranch = MUG.isUserBranch(E, repo, into);
+  if (userBranch) {
+    if (force) throw err('E_PRECONDITION', `force is not accepted for ${into}, a branch the user owns: work that is not done does not go onto it through belay`, { into });
+    const g = MUG.authorize(E, caller, args, MUG.requestOf(repo, into, args.task_ids, targets, await MUG.placement(E, repo, into, args, tasks)));
+    if (g.response) return g.response;
+  }
   // The re-run counts toward the run's max_parallel_evaluations, and its slot is taken here, before the branch lock and before any merge: a call
   // that waits too long is refused E_BUSY { queued: true } with the branch untouched, and the lock is never held while waiting (evaluate-cancel.cjs WAIT).
   const EC = require('./evaluate-cancel.cjs');
   const slot = args.evaluate === false ? null : await EC.acquire(EC.limitFor(E, caller.run_id), { op: 'integrate' });
   try {
   return await W.exclusive(`integrate:${repo}:${into}`, `an integration into ${into}`, async () => {
+    if (userBranch) { // approved above; the branch may have moved since, and an approval is for one head
+      const place = await MUG.placement(E, repo, into, args, tasks);
+      const g = MUG.authorize(E, caller, args, MUG.requestOf(repo, into, args.task_ids, targets, place));
+      if (g.response) return g.response;
+      return require('./merge-user.cjs').mergeIntoUser(E, caller, args, { repo, into, tasks, targets, place, approver: g.approver, takeOver, view, mergeOne, rerun, abandonStale });
+    }
     const abandoned = await abandonStale(E, caller, repo, into, takeOver);
     const tree = await integrationTree(E, repo, into, args, tasks, abandoned);
     const by = E.writtenBy(caller);
