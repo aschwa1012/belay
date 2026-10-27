@@ -9,7 +9,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { core, sandbox, cleanup, callerFor } = require('../core/helpers.cjs');
-const { makeRepo, write, commit } = require('../core/worktree-helpers.cjs');
+const { makeRepo, write, commit, stageRuns } = require('../core/worktree-helpers.cjs');
 
 const { openCore } = core('index.cjs');
 const BIN = path.resolve(__dirname, '..', '..', 'src', 'cli', 'belay.cjs');
@@ -32,6 +32,7 @@ before(async () => {
   repo = makeRepo(dir);
   orch = await openCore({ dataDir: data, caller: callerFor('orchestrator'), embed: false });
   await orch.run.attach({ adapter_pid: process.pid });
+  await stageRuns(data, ["cli", "cli-fail", "cli-solo", "cli-stop", "cli-stop2"]);
 });
 
 after(async () => {

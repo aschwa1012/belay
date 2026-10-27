@@ -169,8 +169,8 @@ test('what counts as a user branch is read from the task rows and the integratio
   const named = await s.orch.integration.merge({ task_ids: [done.id], into: 'belay/not-an-integration-branch' });
   assert.strictEqual(named.state, 'awaiting_approval', 'a prefix is a name anyone can type');
   const E = { store: { p: () => ({ all: () => [] }) } };
-  assert.strictEqual(MUG.isUserBranch(E, repo, 'belay/integrate/any-run'), false);
-  assert.strictEqual(MUG.isUserBranch(E, repo, 'main'), true);
+  assert.strictEqual(MUG.isUserBranch(E, repo, 'belay/integrate/any-run', 'any-run'), false);
+  assert.strictEqual(MUG.isUserBranch(E, repo, 'main', 'any-run'), true);
 });
 
 test('a checked-out dirty branch is refused before any request is raised', async () => {

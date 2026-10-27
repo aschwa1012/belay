@@ -11,7 +11,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
-const { makeRepo, git, write, commit } = require('./worktree-helpers.cjs');
+const { makeRepo, git, write, commit, stageRuns } = require('./worktree-helpers.cjs');
 
 const { openCore } = core('index.cjs');
 const PASS = { commands: [{ argv: [process.execPath, '-e', 'process.exit(0)'], timeout_ms: 20000 }] };
@@ -27,6 +27,7 @@ before(async () => {
   fs.mkdirSync(marks);
   orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
   await orch.run.attach({ adapter_pid: process.pid, project_dir: repo });
+  await stageRuns(`${dir}/data`, ["crlf"]);
 });
 
 after(async () => {

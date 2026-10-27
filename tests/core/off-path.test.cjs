@@ -11,7 +11,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
-const { makeRepo, git, write, commit, rejectsCode } = require('./worktree-helpers.cjs');
+const { makeRepo, git, write, commit, rejectsCode, stageRuns } = require('./worktree-helpers.cjs');
 
 const { openCore } = core('index.cjs');
 const fwd = (p) => p.split('\\').join('/');
@@ -26,6 +26,7 @@ before(async () => {
   repo = makeRepo(dir);
   orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
   await orch.run.attach({ adapter_pid: process.pid, project_dir: repo, max_fix_rounds: 1 });
+  await stageRuns(`${dir}/data`, ["off"]);
 });
 
 after(async () => {

@@ -48,4 +48,14 @@ async function rejectsCode(promise, code) {
   return got;
 }
 
-module.exports = { git, write, commit, makeRepo, rejectsCode };
+// A staging branch belay treats as its own is belay/integrate/<run id> for a run the store knows: this registers a run per name
+// (an operator attach for it), so a test can stage on belay/integrate/<name> and keep the persistent tree it asserts on.
+async function stageRuns(dataDir, names) {
+  const { openCore } = require('./helpers.cjs').core('index.cjs');
+  for (const name of names) {
+    const c = await openCore({ dataDir, caller: { role: 'operator', run_id: name, pid: process.pid }, embed: false });
+    try { await c.run.attach({ adapter_pid: process.pid }); } finally { await c.close(); }
+  }
+}
+
+module.exports = { git, write, commit, makeRepo, rejectsCode, stageRuns };

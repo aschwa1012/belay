@@ -9,7 +9,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const { core, sandbox, cleanup, callerFor, deadPid } = require('./helpers.cjs');
-const { makeRepo, git, write, commit, rejectsCode } = require('./worktree-helpers.cjs');
+const { makeRepo, git, write, commit, rejectsCode, stageRuns } = require('./worktree-helpers.cjs');
 
 const { openCore } = core('index.cjs');
 const G = core('git.cjs');
@@ -21,6 +21,7 @@ before(async () => {
   repo = makeRepo(dir);
   orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
   await orch.run.attach({ adapter_pid: process.pid, project_dir: repo });
+  await stageRuns(`${dir}/data`, ["empty-1", "empty-2", "empty-3", "empty-4", "empty-5", "empty-6", "empty-7", "empty-8", "empty-9", "empty-10", "empty-11", "empty-12", "empty-13", "empty-14", "empty-15", "empty-16", "empty-17", "empty-18", "empty-19", "empty-20", "empty-21", "empty-22", "empty-23", "empty-24", "empty-25", "empty-26", "empty-27", "empty-28", "empty-29", "empty-30", "empty-31", "empty-32", "empty-33", "empty-34", "empty-35", "empty-36", "empty-37", "empty-38", "empty-39", "empty-40", "empty-41", "empty-42", "empty-43", "empty-44", "empty-45", "empty-46", "empty-47", "empty-48", "empty-49", "empty-50", "empty-51", "empty-52", "empty-53", "empty-54", "empty-55", "empty-56", "empty-57", "empty-58", "empty-59", "empty-60"]);
   op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
 });
 

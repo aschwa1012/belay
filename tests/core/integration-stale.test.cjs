@@ -10,7 +10,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const { core, sandbox, cleanup, callerFor, startOwnerProcess, stopOwnerProcesses } = require('./helpers.cjs');
-const { makeRepo, git, write, commit, rejectsCode } = require('./worktree-helpers.cjs');
+const { makeRepo, git, write, commit, rejectsCode, stageRuns } = require('./worktree-helpers.cjs');
 
 const { openCore } = core('index.cjs');
 const opened = [];
@@ -42,6 +42,7 @@ async function crashMidMerge(into) {
   const op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
   opened.push({ dir, cores: [orch, op] });
   await orch.run.attach({ adapter_pid: process.pid });
+  await stageRuns(`${dir}/data`, ["boot", "cli-owner", "crash", "crash2", "live", "reused", "rm", "unproven"]);
   const repo = makeRepo(dir);
   const marks = `${dir}/marks`;
   fs.mkdirSync(marks);
@@ -118,6 +119,7 @@ test('a merging row whose process still runs refuses the merge and the removal E
   const op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
   opened.push({ dir, cores: [orch, op] });
   await orch.run.attach({ adapter_pid: process.pid });
+  await stageRuns(`${dir}/data`, ["boot", "cli-owner", "crash", "crash2", "live", "reused", "rm", "unproven"]);
   const repo = makeRepo(dir);
   const t = await orch.task.create({ spec: 'a', acceptance: { commands: [exists('a.txt')] } });
   const w = (await op.task.worktreeCreate({ task_id: t.id, repo })).worktree;
@@ -166,6 +168,7 @@ test('a merging row whose pid now names a process created at another time is tak
   const op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
   opened.push({ dir, cores: [orch, op] });
   await orch.run.attach({ adapter_pid: process.pid });
+  await stageRuns(`${dir}/data`, ["boot", "cli-owner", "crash", "crash2", "live", "reused", "rm", "unproven"]);
   const repo = makeRepo(dir);
   const t = await orch.task.create({ spec: 'a', acceptance: { commands: [exists('a.txt')] } });
   const w = (await op.task.worktreeCreate({ task_id: t.id, repo })).worktree;
@@ -203,6 +206,7 @@ test('a merging row not proven to be its live pid refuses with no kill advice; t
   const op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
   opened.push({ dir, cores: [orch, op] });
   await orch.run.attach({ adapter_pid: process.pid });
+  await stageRuns(`${dir}/data`, ["boot", "cli-owner", "crash", "crash2", "live", "reused", "rm", "unproven"]);
   const repo = makeRepo(dir);
   const t = await orch.task.create({ spec: 'a', acceptance: { commands: [exists('a.txt')] } });
   const w = (await op.task.worktreeCreate({ task_id: t.id, repo })).worktree;
@@ -254,6 +258,7 @@ test('a long-lived owner records a merge\'s owner start time from the process sn
   const op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
   opened.push({ dir, cores: [orch, op] });
   await orch.run.attach({ adapter_pid: process.pid });
+  await stageRuns(`${dir}/data`, ["boot", "cli-owner", "crash", "crash2", "live", "reused", "rm", "unproven"]);
   const repo = makeRepo(dir);
   const t = await orch.task.create({ spec: 'a', acceptance: { commands: [exists('a.txt')] } });
   const w = (await op.task.worktreeCreate({ task_id: t.id, repo })).worktree;
@@ -288,6 +293,7 @@ test('the operator\'s worktree remove --integration --take-over closes an unprov
   const op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
   opened.push({ dir, cores: [orch, op] });
   await orch.run.attach({ adapter_pid: process.pid });
+  await stageRuns(`${dir}/data`, ["boot", "cli-owner", "crash", "crash2", "live", "reused", "rm", "unproven"]);
   const repo = makeRepo(dir);
   const t = await orch.task.create({ spec: 'a', acceptance: { commands: [exists('a.txt')] } });
   const w = (await op.task.worktreeCreate({ task_id: t.id, repo })).worktree;
@@ -345,6 +351,7 @@ test('a CLI write owner starts no snapshot probe: worktree create exits promptly
   const dir = sandbox();
   const orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
   await orch.run.attach({ adapter_pid: process.pid });
+  await stageRuns(`${dir}/data`, ["boot", "cli-owner", "crash", "crash2", "live", "reused", "rm", "unproven"]);
   const repo = makeRepo(dir);
   const t = await orch.task.create({ spec: 'a', acceptance: { commands: [exists('a.txt')] } });
   // No owner left running: the CLI elects its own, as a write from the operator's shell does.

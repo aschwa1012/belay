@@ -8,7 +8,7 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
-const { makeRepo, write, commit, rejectsCode } = require('./worktree-helpers.cjs');
+const { makeRepo, write, commit, rejectsCode, stageRuns } = require('./worktree-helpers.cjs');
 
 const { openCore } = core('index.cjs');
 
@@ -21,6 +21,7 @@ before(async () => {
   repo = makeRepo(dir);
   orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
   await orch.run.attach({ adapter_pid: process.pid, project_dir: repo, max_fix_rounds: 3 });
+  await stageRuns(`${dir}/data`, ["abandon", "differs", "dirty", "headless", "land", "late", "newest", "reset", "unit-a", "unit-b"]);
 });
 
 after(async () => {
