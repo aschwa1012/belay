@@ -94,7 +94,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   const argvHash = L.writeArgvJson(written.dir, { exe: command, args: fullArgs, cwd: worktree });
 
   const env = L.buildEnv(process.env, { substrate: 'claude-code', cwd: worktree });
-  env.MCP_TOOL_TIMEOUT = String(mcpToolTimeoutMs); env.BELAY_RUN_HEADLESS = '1'; // the orchestrator's adapter inherits it: a paused run refuses a headless orchestrator's new work (paused-gate.cjs)
+  env.MCP_TOOL_TIMEOUT = String(mcpToolTimeoutMs);
 
   const child = P.spawnWorker({ exe: command, args: fullArgs, cwd: worktree, env, stdin: 'pipe' });
 

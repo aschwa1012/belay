@@ -1,25 +1,31 @@
 'use strict';
-// paused-spawn-gate.test.cjs — a paused run starts no new work: the orchestrator's worker_spawn is refused E_PAUSED while the run's row
-// says paused (any reason), the operator's spawn is not, and a usage row starts ahead of a slow memory queue.
+// paused-spawn-gate.test.cjs — the run manager asks the core before an orchestrator's spawn or restart (the core refuses E_PAUSED while the
+// run is paused, unless the owner says the orchestrator is not gated); the operator is not asked. Also: a usage row starts ahead of a
+// slow memory queue.
 
 const test = require('node:test');
 const assert = require('node:assert');
 const { refuseSpawnIfPaused } = require('../../src/run/paused-gate.cjs');
 const UE = require('../../src/run/usage-early.cjs');
 
-process.env.BELAY_RUN_HEADLESS = '1'; // the run process sets it for a headless orchestrator's adapter
-const core = (role, run) => ({ caller: { role }, run: { get: async () => ({ run }) } });
+const core = (role, answer) => { const c = { asked: 0, caller: { role }, run: { assertNotPaused: async () => { c.asked += 1; return answer(); } } }; return c; };
+const paused = () => { throw Object.assign(new Error('paused'), { code: 'E_PAUSED', detail: { run_id: 'r' } }); };
 
-test('the orchestrator spawn is refused while paused, for a budget pause and for any other', async () => {
-  for (const paused_by of ['operator:1 [budget (run, $9.00 of $10.00 est.)]', 'operator:1', 'operator:1 [embedder-failure (w)]']) {
-    await assert.rejects(refuseSpawnIfPaused(core('orchestrator', { id: 'r', paused_at: 5, paused_by, ended_at: null }), 'r'), (e) => e.code === 'E_PAUSED' && e.detail.run_id === 'r');
-  }
+test('the orchestrator spawn is asked of the core, and the core refusal reaches the caller', async () => {
+  await assert.rejects(refuseSpawnIfPaused(core('orchestrator', paused), 'r'), (e) => e.code === 'E_PAUSED');
+  const ok = core('orchestrator', async () => ({ paused: false }));
+  await refuseSpawnIfPaused(ok, 'r');
+  assert.strictEqual(ok.asked, 1);
 });
 
-test('an unpaused run, an ended run and the operator spawn are not refused', async () => {
-  await refuseSpawnIfPaused(core('orchestrator', { id: 'r', paused_at: null, ended_at: null }), 'r');
-  await refuseSpawnIfPaused(core('orchestrator', { id: 'r', paused_at: 5, ended_at: 9 }), 'r');
-  await refuseSpawnIfPaused(core('operator', { id: 'r', paused_at: 5, paused_by: 'x', ended_at: null }), 'r');
+test('the operator spawn is not asked', async () => {
+  const c = core('operator', paused);
+  await refuseSpawnIfPaused(c, 'r');
+  assert.strictEqual(c.asked, 0);
+});
+
+test('a core that cannot answer fails the spawn closed, not open', async () => {
+  await assert.rejects(refuseSpawnIfPaused(core('orchestrator', () => { throw Object.assign(new Error('no owner'), { code: 'E_NO_OWNER' }); }), 'r'), (e) => e.code === 'E_NO_OWNER');
 });
 
 test('the usage row is written while the worker memory queue is still busy, and the queue still waits for it', async () => {
@@ -39,10 +45,4 @@ test('the usage row is written while the worker memory queue is still busy, and 
   release();
   await w.memoryQueue;
   assert.strictEqual(drained, true);
-});
-
-test('an interactive orchestrator (no headless marker) is not gated', async () => {
-  delete process.env.BELAY_RUN_HEADLESS;
-  try { await refuseSpawnIfPaused(core('orchestrator', { id: 'r', paused_at: 5, paused_by: 'x', ended_at: null }), 'r'); }
-  finally { process.env.BELAY_RUN_HEADLESS = '1'; }
 });

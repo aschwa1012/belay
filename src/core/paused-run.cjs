@@ -23,4 +23,8 @@ const gate = (fn) => (E, caller, args) => {
   return fn(E, caller, args);
 };
 
-module.exports = { refuseIfPaused, gate, pausedMessage };
+// run.assertNotPaused: the run manager's check before it spawns or restarts a worker. A write-kind call so it always reaches the owner,
+// which holds the one fact (gateOnPause) that says whether this run's orchestrator is gated. Writes nothing.
+async function assertNotPaused(E, caller) { refuseIfPaused(E, caller); return { paused: false }; }
+
+module.exports = { refuseIfPaused, gate, pausedMessage, assertNotPaused };

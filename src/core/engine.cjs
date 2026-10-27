@@ -136,6 +136,7 @@ const METHODS = {
   // identity), and it is read back through the ordinary run row.
   'run.setPaused': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.setPaused },
   'run.setEmbedderMode': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.setEmbedderMode },
+  'run.assertNotPaused': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./paused-run.cjs', 'assertNotPaused') },
   'run.setBudget': { roles: ['operator'], kind: 'write', fn: lazy('./run-budget.cjs', 'setBudget') },
   'run.get': { roles: ALL, kind: 'read', fn: run.getRun },
   // build step 4a: every run's current row, so a CLI with no run id argument (belay status,

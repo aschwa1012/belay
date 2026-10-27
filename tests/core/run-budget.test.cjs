@@ -130,3 +130,14 @@ test('an interactive run (the owner says it does not gate) leaves the orchestrat
   assert.strictEqual(RB.attachLimit({ budget_usd: 10 }, prev, false), 10, 'a new life takes the default');
   assert.strictEqual(RB.attachLimit({}, prev, true), 20, 'an attach that states none keeps it');
 });
+
+test('run.assertNotPaused refuses the orchestrator while paused and lets the operator and an ungated run through', async () => {
+  await call('run.setPaused', operator, { paused: true, at: Date.now(), by: 'operator:1' });
+  try {
+    await assert.rejects(call('run.assertNotPaused', orch, {}), (e) => e.code === 'E_PAUSED');
+    assert.deepStrictEqual(await call('run.assertNotPaused', operator, {}), { paused: false });
+    fakeOwner.opts.gateOnPause = false;
+    assert.deepStrictEqual(await call('run.assertNotPaused', orch, {}), { paused: false });
+  } finally { delete fakeOwner.opts.gateOnPause; await call('run.setPaused', operator, { paused: false }); }
+  assert.deepStrictEqual(await call('run.assertNotPaused', orch, {}), { paused: false });
+});
