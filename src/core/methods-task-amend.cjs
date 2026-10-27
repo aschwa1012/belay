@@ -20,8 +20,10 @@ function checkAcceptance(acceptance) {
 }
 
 // ADR 0061 section 1: an amend revises what decides the task is done, nothing else. Its files, dependencies, repairs, base and
-// tree stay as created, so a field beside these is refused rather than ignored.
+// tree stay as created, so a field beside these is refused when it would change, and ignored when it repeats the task's own value.
 const AMEND_FIELDS = new Set(['id', 'amend', 'spec', 'acceptance', 'view']);
+const ROW_FIELDS = ['files_owned', 'depends_on', 'repairs', 'base']; // the fields a task row holds to compare a repeated value against
+const norm = (v) => (v == null || (Array.isArray(v) && v.length === 0) ? null : JSON.stringify(v));
 
 // task.create { id, amend: true, acceptance, spec? } -> the task row as amended. The old acceptance (and spec, when it changes)
 // is kept in `amended: [{ at, by, acceptance, spec? }]`, and the last results stay, marked `stale`, so no check run under the
@@ -30,14 +32,15 @@ const AMEND_FIELDS = new Set(['id', 'amend', 'spec', 'acceptance', 'view']);
 async function amend(E, caller, args) {
   if (args.amend !== true) throw err('E_ARGS', 'task.create amend must be true or absent');
   if (typeof args.id !== 'string' || !args.id) throw err('E_ARGS', 'task.create amend needs the id of the task whose acceptance it revises');
-  const extra = Object.keys(args).filter((k) => args[k] !== undefined && !AMEND_FIELDS.has(k));
-  if (extra.length) throw err('E_ARGS', `task.create amend revises acceptance and spec only; ${extra.join(', ')} cannot change on an existing task`, { task_id: args.id, fields: extra });
   if (args.acceptance == null) throw err('E_ARGS', 'task.create amend needs the acceptance that replaces the task\'s own', { task_id: args.id });
   checkAcceptance(args.acceptance);
   if (args.spec !== undefined && (typeof args.spec !== 'string' || !args.spec.trim())) throw err('E_ARGS', 'task.create amend: spec, when given, must describe the work');
   const out = E.store.tx(() => {
     const task = rows.current(E.store, 'task', args.id);
     if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.id}, so there is nothing to amend; leave amend out to create it`, { task_id: args.id });
+    // A field beside the revision that repeats the task's own value is a no-op; one that would change it is refused, by name.
+    const extra = Object.keys(args).filter((k) => args[k] !== undefined && !AMEND_FIELDS.has(k) && !(ROW_FIELDS.includes(k) && norm(args[k]) === norm(task[k])));
+    if (extra.length) throw err('E_ARGS', `task.create amend revises acceptance and spec only; ${extra.join(', ')} cannot change on an existing task`, { task_id: args.id, fields: extra });
     if (task.state === 'done') throw err('E_TASK_DONE', `task ${task.id} is done, and done is final; its acceptance cannot change under it. Create a new task to redo the work`, { task_id: task.id, state: 'done' });
     if (task.state === 'cancelled') throw err('E_ARGS', `task ${task.id} was cancelled, which is final; create a new task to do the work`, { task_id: task.id, state: 'cancelled' });
     const l = rows.currentLeaseForTask(E.store, task.id);
@@ -51,7 +54,7 @@ async function amend(E, caller, args) {
     }
     const running = require('./evaluate-cancel.cjs').runningFor(task.id);
     if (running) {
-      throw err('E_BUSY', `task ${task.id} is being evaluated against its current acceptance; amend it once that result has landed`, { op: 'evaluate', task_id: task.id, running });
+      throw err('E_BUSY', `task ${task.id} is being evaluated against its current acceptance; amend it again once that result has landed (retry then)`, { op: 'evaluate', task_id: task.id, running });
     }
     const t = Date.now(), by = E.writtenBy(caller);
     const spec = args.spec !== undefined && args.spec !== task.spec ? args.spec : null;

@@ -216,6 +216,15 @@ function created(row) {
   return out;
 }
 
+// task_create's answer to an amend: the task as created answers it, the NEW acceptance, and what it replaced under `replaced`,
+// so the old acceptance is not read as the current one.
+function amendedView(row) {
+  const out = created(row);
+  if (!out || typeof out !== 'object' || !Array.isArray(row.amended) || !row.amended.length) return out;
+  const { amended, ...rest } = out;
+  return { ...rest, acceptance: row.acceptance, replaced: amended };
+}
+
 // fix_from_review: the task as task_create answers it, plus what belay inferred for it (the task it repairs, what it waits for, the
 // files it owns), since the orchestrator did not write those. The spec, acceptance and tree records are the findings' and the base's own.
 function fixCreated(row) {
@@ -282,7 +291,7 @@ function leaseRelease(row, args) {
   return out;
 }
 
-const VIEWED = { task_list: taskList, task_evaluate: taskEvaluate, integrate, task_assign: assignView, task_cancel: withTask, task_create: created, fix_from_review: fixCreated, status: statusView, task_worktree: taskWorktree, git_read: gitRead, memory_report: memoryReport };
+const VIEWED = { task_list: taskList, task_evaluate: taskEvaluate, integrate, task_assign: assignView, task_cancel: withTask, task_create: amendedView, fix_from_review: fixCreated, status: statusView, task_worktree: taskWorktree, git_read: gitRead, memory_report: memoryReport };
 const isViewed = (name) => typeof name === 'string' && Object.prototype.hasOwnProperty.call(VIEWED, name);
 const bad = (message, detail) => Object.assign(new Error(message), { code: 'E_ARGS', detail });
 
