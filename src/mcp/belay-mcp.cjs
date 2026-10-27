@@ -289,7 +289,7 @@ async function callTool(name, args) {
   }
   if (name === 'worker_spawn') args = await spawnWorktree(args);
   if (route.via === 'core') {
-    const row = withDataNotice(route.method, await callCore(route.method, args));
+    const row = require('./store-reply.cjs').explain(route.method, withDataNotice(route.method, await callCore(route.method, args)));
     // The one place the adapter adds to a row, and it is additive: every field of the core's
     // status.get row (api.md §4) passes through untouched. run.attach happens inside the adapter, so
     // its result reaches no tool of its own, and a reattach that declared workers dead would
