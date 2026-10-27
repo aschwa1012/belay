@@ -274,7 +274,7 @@ async function get(E, caller, args) {
   return view(E, t);
 }
 
-async function evaluate(E, caller, args) {
+async function evaluate(E, caller, args, queued = null) {
   if (!args.task_id) throw err('E_ARGS', 'task.evaluate needs a task_id');
   if (args.worktree !== undefined && (!args.worktree || typeof args.worktree !== 'string')) throw err('E_ARGS', 'task.evaluate needs the worktree the acceptance criteria run in');
   if (args.base !== undefined && (typeof args.base !== 'string' || !args.base)) throw err('E_ARGS', 'task.evaluate: base must be a non-empty string (a commit or ref)');
@@ -316,7 +316,7 @@ async function evaluate(E, caller, args) {
     const executable = checks.length > 0 && checks.every(c => c.executable);
     const passed = checks.length > 0 && checks.every(c => c.passed);
     const results = {
-      evaluated_at: Date.now(), executable, passed, checks, ...(args.trigger ? { trigger: args.trigger } : {}), ...J.fields(judged), ...(checks.some(c => c.flaky) ? { flaky: true } : {}), // ADR 0060: what was judged (4, 6); a pass only on a retry is never silent (2)
+      evaluated_at: Date.now(), executable, passed, checks, ...(args.trigger ? { trigger: args.trigger } : {}), ...(queued ? { queued } : {}), ...J.fields(judged), ...(checks.some(c => c.flaky) ? { flaky: true } : {}), // ADR 0060: what was judged (4, 6); a pass only on a retry is never silent (2)
       ...(checks.length === 0 ? { note: 'the task declares no acceptance criteria, so nothing was executed and nothing is proven' } : {}),
     };
     return rows.append(E.store, 'task', {
@@ -495,4 +495,4 @@ function heldLease(E, taskId, workerId) {
 }
 
 // ADR 0058: a second evaluation of the same task and tree while one runs joins it (evaluate-cancel.cjs joinOrRun).
-module.exports = { create, assign, list, get, evaluate: (E, caller, args) => require('./evaluate-cancel.cjs').joinOrRun(E, args, () => evaluate(E, caller, args)), renew, release, takeControl, view, heldLease, overlaps: holds.overlaps, findCycle, dependsOf, refutedReview, TASK_STATES };
+module.exports = { create, assign, list, get, evaluate: (E, caller, args) => require('./evaluate-cancel.cjs').joinOrRun(E, args, (queued) => evaluate(E, caller, args, queued)), renew, release, takeControl, view, heldLease, overlaps: holds.overlaps, findCycle, dependsOf, refutedReview, TASK_STATES };

@@ -19,12 +19,14 @@ const PENDING_MAX_MS = 900000; // a watched evaluation that never lands (cancell
 const RELEASE_WAKE_HOLD_MS = 30000;
 const holdMs = () => (/^\d+$/.test(String(process.env.BELAY_RELEASE_WAKE_HOLD_MS || '').trim()) ? Number(process.env.BELAY_RELEASE_WAKE_HOLD_MS) : RELEASE_WAKE_HOLD_MS);
 
+// A failing command that ran beside other evaluations says so: a failure under load is not read as the code's alone.
+const beside = (c) => { const n = Array.isArray(c.concurrent) ? c.concurrent.length : 0; return n ? ` (ran beside ${n} other evaluation${n === 1 ? '' : 's'})` : ''; };
 const failedKinds = (row) => ((row.results && row.results.checks) || []).filter((c) => !c.passed)
-  .map((c) => (c.kind === 'command' ? `command ${Array.isArray(c.argv) ? c.argv.slice(0, 3).join(' ') : '?'}${c.exit_code != null ? ` exit ${c.exit_code}` : ''}` : c.kind));
+  .map((c) => (c.kind === 'command' ? `command ${Array.isArray(c.argv) ? c.argv.slice(0, 3).join(' ') : '?'}${c.exit_code != null ? ` exit ${c.exit_code}` : ''}${beside(c)}` : c.kind));
 
 function summaryOf(row) {
   const r = row.results || {};
-  return { task_id: row.id, state: row.state, passed: !!r.passed, executable: !!r.executable, checks: ((r.checks) || []).length, failing: failedKinds(row), ...(r.flaky ? { flaky: true } : {}), ...(r.uncommitted ? { uncommitted: true } : {}) };
+  return { task_id: row.id, state: row.state, passed: !!r.passed, executable: !!r.executable, checks: ((r.checks) || []).length, failing: failedKinds(row), ...(r.flaky ? { flaky: true } : {}), ...(r.uncommitted ? { uncommitted: true } : {}), ...(r.queued ? { queued: r.queued } : {}) };
 }
 
 const unevaluated = (t, runId, workerId) => t.run_id === runId && t.state === 'released' && t.handoff && t.handoff.by === workerId
@@ -121,9 +123,12 @@ const cut = (s, max) => {
 
 // The evaluation clause, at most `room` bytes: " task T evaluated at release: passed, done." or "...: not done; failing: ...".
 function clause(evs, room) {
-  const parts = evs.map((e) => (e.error === 'E_BUSY' ? `task ${e.task_id} not evaluated at release: another evaluation of it is running`
+  // An evaluation that waited for a slot (max_parallel_evaluations) says so: queued behind `ahead` others, `waited_ms` before it ran.
+  const waited = (e) => (e.queued ? ` (queued behind ${e.queued.ahead}, waited ${Math.round(e.queued.waited_ms / 1000)} s)` : '');
+  const parts = evs.map((e) => `${one(e)}${waited(e)}`);
+  function one(e) { return (e.error === 'E_BUSY' ? `task ${e.task_id} not evaluated at release: another evaluation of it is running`
     : e.error ? `task ${e.task_id} could not be evaluated at release (${e.error})`
-    : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}` : `not done; failing: ${e.failing.join(', ') || 'no executable check'}`}`));
+    : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}` : `not done; failing: ${e.failing.join(', ') || 'no executable check'}`}`); }
   return cut(` ${parts.join('; ')}.`, room);
 }
 

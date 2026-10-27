@@ -8,7 +8,7 @@ const crypto = require('node:crypto');
 const COLUMNS = {
   run: ['id', 'epoch', 'orchestrator_pid', 'adapter_pid', 'started_at', 'ended_at', 'exit_reason',
     'orch_model', 'orch_input_tokens', 'orch_output_tokens', 'orch_cache_read_tokens', 'orch_cache_creation_tokens',
-    'orch_cost_usd', 'orch_turns', 'orch_effort_requested', 'max_fix_rounds', 'adapter_pid_created'],
+    'orch_cost_usd', 'orch_turns', 'orch_effort_requested', 'max_fix_rounds', 'adapter_pid_created', 'max_parallel_evaluations'],
   worker: ['id', 'run_id', 'substrate', 'pid', 'session_id', 'adapter_pid', 'argv_hash', 'state',
     'worktree', 'task_id', 'started_at', 'exited_at', 'exit_code', 'exit_signal', 'turns',
     'input_tokens', 'output_tokens', 'cost_usd', 'last_event_at', 'mid_turn', 'death_established_by',

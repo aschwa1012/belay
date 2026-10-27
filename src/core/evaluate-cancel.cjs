@@ -52,17 +52,45 @@ async function joinOrRun(E, args, run) {
       return joinOrRun(E, args, run); // look again: another joiner may already have started the re-run
     }
   }
-  const span = { task_id: task.id, start: Date.now(), end: null };
-  SPANS.push(span);
-  const p = run();
+  const limit = limitFor(E, task.run_id);
+  const p = (async () => {
+    const slot = await acquire(limit, { cancelKey: args.cancel_key, task }); // queued evaluations are registered below, so a second call for the same task and tree joins this one
+    const span = { task_id: task.id, start: Date.now(), end: null };
+    SPANS.push(span);
+    try { return await run(slot.queued); } finally { endSpan(span); slot.release(); }
+  })();
   const mine = { key, worktree: norm(at.worktree), base: at.base || null, trigger: args.trigger || null };
   RUNNING.set(key, p);
   BY_TASK.set(task.id, mine);
   try { return await p; } finally {
-    endSpan(span);
     if (RUNNING.get(key) === p) RUNNING.delete(key);
     if (BY_TASK.get(task.id) === mine) BY_TASK.delete(task.id);
   }
+}
+
+// The run lever max_parallel_evaluations: at most N evaluations run at once in this owner, a task.evaluate (release-time or called) and an
+// integration re-run alike; the others wait here in arrival order. Unset (null) gates nothing, which is the behaviour without the lever.
+const GATE = { active: 0, waiting: [] }; // waiting: { limit, grant, reject, key, task, at }
+function pump() {
+  while (GATE.waiting.length && GATE.active < GATE.waiting[0].limit) { const w = GATE.waiting.shift(); GATE.active += 1; w.grant(); }
+}
+// -> Promise of { release(), queued: null | { ahead, waited_ms } }. `ahead` counts the evaluations running or queued when this one queued.
+function acquire(limit, { cancelKey = null, task = null } = {}) {
+  if (limit == null) return Promise.resolve({ release() {}, queued: null });
+  let held = false;
+  const slot = () => ({ release() { if (held) return; held = true; GATE.active -= 1; pump(); } });
+  if (GATE.active < limit && !GATE.waiting.length) { GATE.active += 1; return Promise.resolve({ ...slot(), queued: null }); }
+  const ahead = GATE.active + GATE.waiting.length;
+  return new Promise((resolve, reject) => {
+    const w = { limit, key: cancelKey, task, reject, at: Date.now(), grant: () => resolve({ ...slot(), queued: { ahead, waited_ms: Date.now() - w.at } }) };
+    GATE.waiting.push(w);
+  });
+}
+// The lever for a run: a positive integer, else null (unlimited).
+function limitFor(E, runId) {
+  const run = runId ? rows.current(E.store, 'run', runId) : null;
+  const n = run ? Number(run.max_parallel_evaluations) : NaN;
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
 const LIVE = new Map(); // cancel_key -> the evaluation's cancel token, while its commands run
@@ -87,6 +115,12 @@ const cancelled = (task, c) => err('E_BUSY', `the evaluation of task ${task.id} 
 
 // task.evaluateCancel { cancel_key, by? } -> { cancel_key, cancelled, killed }. An unknown key (already finished) is cancelled: false.
 async function evaluateCancel(E, caller, args) {
+  const qi = typeof args.cancel_key === 'string' && args.cancel_key ? GATE.waiting.findIndex((w) => w.key === args.cancel_key) : -1;
+  if (qi >= 0) { // still waiting for a slot: it leaves the queue and its evaluation ends cancelled, having run nothing
+    const [w] = GATE.waiting.splice(qi, 1);
+    w.reject(cancelled(w.task, { by: typeof args.by === 'string' ? args.by : null }));
+    return { cancel_key: args.cancel_key, cancelled: true, killed: [], queued: true };
+  }
   const c = LIVE.get(args.cancel_key);
   if (!c) {
     pruneEarly();
@@ -98,4 +132,4 @@ async function evaluateCancel(E, caller, args) {
   return { cancel_key: args.cancel_key, cancelled: true, killed };
 }
 
-module.exports = { register, unregister, cancelled, evaluateCancel, joinOrRun, pruneEarly, runningFor, during, LIVE, EARLY, RUNNING, SPANS, EARLY_TTL_MS };
+module.exports = { acquire, limitFor, GATE, register, unregister, cancelled, evaluateCancel, joinOrRun, pruneEarly, runningFor, during, LIVE, EARLY, RUNNING, SPANS, EARLY_TTL_MS };

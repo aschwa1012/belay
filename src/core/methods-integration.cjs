@@ -355,7 +355,10 @@ async function merge(E, caller, args) {
       try {
         const older = carried.entries.map((c) => rows.current(E.store, 'task', c.task_id)).filter(Boolean);
         const reuse = INC.reuseFor(E, repo, into, out.head_sha, (await G.dirtyPaths(tree.path)).length === 0);
-        out.checks = await rerun([...tasks, ...older].filter((t) => landed.has(t.id)), tree.path, reuse, out.head_sha);
+        // The re-run counts toward the run's max_parallel_evaluations: it runs the same suites, so it takes a slot like an evaluation.
+        const EC = require('./evaluate-cancel.cjs');
+        const slot = await EC.acquire(EC.limitFor(E, caller.run_id), {});
+        try { out.checks = await rerun([...tasks, ...older].filter((t) => landed.has(t.id)), tree.path, reuse, out.head_sha); } finally { slot.release(); }
         out.passed = out.checks.length > 0 ? out.checks.every((c) => c.passed) : null;
         if (!stop) {
           if (!out.checks.length) out.error = { message: 'the merged tasks declare no acceptance commands, so nothing was re-run and nothing is proven' };
