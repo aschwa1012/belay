@@ -52,7 +52,7 @@ test('a budgeted run pauses at 90 percent, wakes the orchestrator once, and resu
     const budget = JSON.parse(row.budget);
     const ev = budget.events.find((e) => e.type === 'pause');
     assert.strictEqual(ev.estimate, true);
-    assert.strictEqual(ev.spent_after_parks, 9.5);
+    assert.ok(Math.abs(ev.spent_after_parks - 9.5) < 0.05, `about 9.5 (the headless orchestrator's own cost is counted): ${ev.spent_after_parks}`);
 
     const refused = await cli(['resume', runId], dataDir);
     assert.notStrictEqual(refused.status, 0);
