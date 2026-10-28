@@ -56,6 +56,11 @@ function noteTask(E, caller, row) {
   try { h({ task_id: row.id, run_id: caller.run_id, budget_usd: row.budget_usd }); } catch { /* the hook is the run's, never the caller's */ }
 }
 
+// After rows are written (and, in a batch, the transaction has committed): tell the run process of each row that carries a limit.
+function noteRows(E, caller, written) {
+  for (const r of [].concat(written || [])) if (r && r.budget_usd) noteTask(E, caller, r);
+}
+
 // The task a turn is charged to (one task per turn, never two): the newest lease the worker held when the turn ended
 // (unreleased and granted by then); else the lease released last inside the turn's window; else none (the run alone).
 function turnTask(store, workerId, runId, since, until) {
@@ -135,4 +140,4 @@ function textOf(b) {
   return `${b.unknown_turns ? 'at least ' : ''}${m(b.spent_usd)} of ${m(b.limit_usd)} reported${orch} (${b.state})${b.unknown_turns ? `; ${b.unknown_turns} turn${b.unknown_turns === 1 ? '' : 's'} report no dollars` : ''}`;
 }
 
-module.exports = { SOFT_THRESHOLD, isLimit, checkLimit, ledgerOn, taskLimit, attachLimit, noteTask, turnTask, spendOf, detailOf, usageSpend, setBudget, statusBlock, blockOf, textOf };
+module.exports = { SOFT_THRESHOLD, isLimit, checkLimit, ledgerOn, taskLimit, attachLimit, noteTask, noteRows, turnTask, spendOf, detailOf, usageSpend, setBudget, statusBlock, blockOf, textOf };

@@ -56,6 +56,12 @@ test('with a run limit: attach records it, status shows the block, task limits a
   assert.strictEqual(t.budget_usd, 2);
   assert.deepStrictEqual(seen.tasks.map((x) => [x.task_id, x.budget_usd]), [['tb', 2]]);
   await assert.rejects(call('task.create', orch, { spec: 'bad', budget_usd: 0 }), (e) => e.code === 'E_ARGS');
+  const before = seen.tasks.length;
+  const batch = await call('task.create', orch, { tasks: [{ id: 'tb1', spec: 'one', budget_usd: 3 }, { id: 'tb2', spec: 'two' }] });
+  assert.strictEqual(batch.tasks.length, 2);
+  assert.deepStrictEqual(seen.tasks.slice(before).map((x) => [x.task_id, x.budget_usd]), [['tb1', 3]], 'a batch item with a limit reaches the hook once, after the batch is written');
+  await assert.rejects(call('task.create', orch, { tasks: [{ id: 'tb3', spec: 'ok', budget_usd: 1 }, { id: 'tb4', spec: 'bad', budget_usd: 0 }] }), (e) => e.code === 'E_ARGS');
+  assert.strictEqual(seen.tasks.length, before + 1, 'a refused batch tells the hook nothing');
   const st = (await call('status.get', operator, {})).run.budget;
   assert.deepStrictEqual([st.limit_usd, st.spent_usd, st.state, st.basis], [10, 0, 'under', 'reported']);
 });
