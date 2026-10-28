@@ -137,14 +137,11 @@ async function run(ctx) {
   fs.mkdirSync(dataDir, { recursive: true });
 
   const t0 = Date.now();
-  // 5c design item 5: `stopControl` is a `let` bound only after openCore, so the arrow below is
-  // late-bound — no owner exists until the election, and the election has not even started here, so
-  // no control can arrive before `stopControl` is assigned two lines down.
-  // 6f, ADR 0023 amendment 3 decision 4: `runPauseControl` (src/run/run-pause.cjs) joins it the same
-  // way, registered as `run.pause`/`run.resume`. `hookBox` is the one `{ pid, exited, stop, pause,
-  // resume }` object orchestrator.cjs attaches once the child is spawned; both controls need it, so
-  // the `attach` handed to `runOrchestrator` (below) fans out to both instead of `stopControl` alone.
-  let stopControl, runPauseControl, guard;
+  // 5c design item 5: `stopControl` is a `let` bound only after openCore, so the arrow below is late-bound: no owner exists until
+  // the election, so no control can arrive before it is assigned.
+  // ADR 0023 amendment 3 decision 4: `runPauseControl` (run-pause.cjs) joins it, registered as `run.pause`/`run.resume`. `hookBox` is the
+  // one `{ pid, exited, stop, pause, resume }` object orchestrator.cjs attaches once the child is spawned; the `attach` handed to `runOrchestrator` fans out to both.
+  let stopControl, runPauseControl, guard, budget;
   const hookBox = {};
   // The headless orchestrator is recorded in the machine-wide spawn register, so another store's owner refuses its descendants too.
   // A register that cannot be written throws: the orchestrator runner ends the child before its first prompt (a launch that fails open
@@ -171,6 +168,7 @@ async function run(ctx) {
         'run.pause': (params) => runPauseControl.pause(params), 'run.resume': (params) => runPauseControl.resume(params),
       },
       onEmbedderFailure: (ev) => guard.onFailure(ev),
+      gateOnPause: !ce, onUsageRecorded: (row) => budget.onUsage(row), onTaskBudget: (t) => budget.onTaskBudget(t), // run and task budgets (budget-guard.cjs): inert with no limit
       // read by memory.embedQuery and the owner's engine at each call, so the run manager knows what a failure means, and an
       // operator's choice at a resume (belay resume --embedder keyword|off) takes effect at once
       embedderMode: () => guard.mode(), memoryOff: () => guard.memoryOff(), runEnding: () => !!guard.fatal(),
@@ -181,12 +179,13 @@ async function run(ctx) {
     pauseSettled: () => runPauseControl.settled(),
   });
   runPauseControl = createRunPauseControl({
-    runId: parsed.runId, core, hook: hookBox, stopInFlight: () => stopControl.stopping(), interactive: !!ce,
+    runId: parsed.runId, core, hook: hookBox, stopInFlight: () => stopControl.stopping(), interactive: !!ce, afterResume: () => budget.recheck(),
     // ADR 0034 decision 2: resuming an embedder-failure pause re-attempts the load; a load that still fails keeps the run paused.
     // ADR 0034 amendment 1: the operator may choose at the resume (params.embedder): keyword or off. The choice sets the run's mode here
     // and the resume goes ahead without re-loading the model; with no choice the model is re-loaded, and a load that still fails keeps
     // the run paused.
     beforeResume: async (row, params) => {
+      await budget.authorizeResume(row, params); // a budget pause resumes only with a raised limit or an override
       if (!/embedder-failure [(]/.test(row.paused_by || '')) return;
       const choice = params && params.embedder != null ? require('../core/embedder-mode.cjs').normalize(params.embedder) : null;
       if (params && params.embedder != null && (choice === null || choice === 'required')) {
@@ -216,6 +215,7 @@ async function run(ctx) {
     mode: parsed.levers.on_embedder_failure, stopRun, interactive: !!ce, // an interactive run is never ended by an embedder failure: it pauses (ADR 0034 amendment 2)
     pauseRun: (why) => runPauseControl.pause({ run_id: parsed.runId, caller: opCaller }, why),
   });
+  budget = require('../run/budget-guard.cjs').createBudgetGuard({ core, runId: parsed.runId, runLimit: parsed.levers.budget_usd || null, source: parsed.levers.budget_source || null, interactive: !!ce, warn: ctx.json ? null : (m) => process.stderr.write(m), pauseRun: (why) => runPauseControl.pause({ run_id: parsed.runId, caller: opCaller }, why) });
   if (ce && ctx.interactiveDeps && ctx.interactiveDeps.onGuard) ctx.interactiveDeps.onGuard(guard); // test seam
   const attachHook = { attach: (h) => { stopControl.attach(h); Object.assign(hookBox, h); if (!ce) registerOrchestrator(h.pid); } };
 
@@ -290,20 +290,17 @@ async function run(ctx) {
     try {
       clearRunStart(orchestratorDir); // before this launch's attach: no marker of an earlier life of this run id survives
       RID.watchOrchestrator(pid); // ADR 0039: run-identity.cjs; the attach never waits on a snapshot
-      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, fix_hard_cap: parsed.levers.fix_hard_cap, fix_hard_cap_source: parsed.levers.fix_hard_cap_source, max_parallel_evaluations: parsed.levers.max_parallel_evaluations === undefined ? null : parsed.levers.max_parallel_evaluations, project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
-      for (const w of attachRow.warnings || []) process.stderr.write("belay run: warning: " + w + String.fromCharCode(10));
+      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, fix_hard_cap: parsed.levers.fix_hard_cap, fix_hard_cap_source: parsed.levers.fix_hard_cap_source, max_parallel_evaluations: parsed.levers.max_parallel_evaluations === undefined ? null : parsed.levers.max_parallel_evaluations, budget_usd: parsed.levers.budget_usd || null, budget_explicit: /^spec/.test(parsed.levers.budget_source || ''), project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
+      await budget.loadAttach(attachRow.run); for (const w of attachRow.warnings || []) process.stderr.write("belay run: warning: " + w + String.fromCharCode(10));
       return { ok: true, attach: attachRow };
     } catch (e) {
       return { ok: false, error: (e && e.message) || String(e) };
     }
   }
 
-  // Everything from here to shutdownOwner() runs inside a `finally`, unconditionally, and every step
-  // is caught rather than left to propagate (5a-2's blocking fix): a throw becomes `crashedBy` and a
-  // full receipt, exit 1. 5a-3 item 2 (should-fix): that left `crashedBy` discarded whenever the loop
-  // itself returned cleanly — a run.end/run.get/shutdownOwner failure AFTER a clean run reported exit
-  // 0 with the happy stdin-close sentence and no mention that a write failed. `postFailure` is that
-  // case, chained onto `partial.ended_by` rather than replacing it, and it always forces exit 1.
+  // Everything from here to shutdownOwner() runs inside a `finally`, unconditionally, and every step is caught (5a-2): a throw becomes
+  // `crashedBy` and a full receipt, exit 1. `postFailure` is a run.end/run.get/shutdownOwner failure AFTER a clean run (5a-3 item 2),
+  // chained onto `partial.ended_by` rather than replacing it, and it always forces exit 1.
   const chain = (prev, what, msg) => (prev ? `${prev}; then ${what}: ${msg}` : `${what}: ${msg}`);
   let partial = null;
   let crashedBy = null;
@@ -333,6 +330,7 @@ async function run(ctx) {
           interactiveSurfaceMs: parsed.interactive_surface_ms, fullscreen: parsed.fullscreen,
           knowledgeAgent: !!(parsed.levers.memory_levers && parsed.levers.memory_levers.knowledge_agent),
           notes: !!(parsed.levers.memory_levers && parsed.levers.memory_levers.notes), // wave 4: the refuted-note wake reads receipts only for a notes run
+          budgetWake: budget, // the budget pause's own wake, written past the run's hold; the headless orchestrator's cost feeds the guard
         },
         onAttached, stopControl: attachHook, console: ce, print: RI.printer(ctx), deps: ctx.interactiveDeps,
         wakeRelease: ce ? () => runPauseControl.takeResume() : undefined,
@@ -349,6 +347,7 @@ async function run(ctx) {
     const late = (m) => { postFailure = chain(postFailure, 'fast close', m); };
     stopReceipt = await RI.within(ce, stopControl.settled(), 'the stop', null, late);
     RI.applyConsole(partial, ce);
+    await RI.within(ce, budget.settled(), "the budget guard's pending check", undefined, late);
     await RI.within(ce, guard.settled(), "the embedder guard's pending stop", undefined, late); // ADR 0034: a failure's stop still in flight is part of the receipt
 
     // Step 9 (5a-2 design): run.end only when an attach landed a row; then run.get(), taking the

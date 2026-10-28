@@ -245,6 +245,10 @@ const MIGRATIONS = [
   // The worker's first dead row names the leases that death released (JSON array of { lease_id, task_id }), for the death wake.
   'ALTER TABLE lease ADD COLUMN released_reason TEXT',
   'ALTER TABLE worker ADD COLUMN leases_released TEXT',
+  // The spend budget (USD) of a run and of a task, and the run's budget record (JSON text: pauses, raises and overrides). Null when none.
+  'ALTER TABLE run ADD COLUMN budget_usd REAL',
+  'ALTER TABLE run ADD COLUMN budget TEXT',
+  'ALTER TABLE task ADD COLUMN budget_usd REAL',
   // ADR 0068 (proposed): a stopped or dead row whose life ended with no `result` event carries what its stream's last turn cost,
   // priced from the per-message usage (JSON text), and `cost_source` names it; both null when the row's figures were all reported.
   // The estimate has its own columns: cost_usd and the token columns stay what Claude Code reported.

@@ -213,6 +213,8 @@ function parseLevers(spec, opts = {}) {
   const off = spec.memory === null || (spec.memory === undefined && !!opts.config && opts.config.memory === null);
   Object.defineProperty(out, 'memory_notice', { value: MN.noticeFor(off ? null : merged.block), enumerable: false });
   if (merged.dropped) out.memory_dropped = merged.dropped; // config levers a spec's `notes: false` left out, so the receipt says what did not apply
+  const bud = require('./run-budget-levers.cjs').applyBudget(out, spec, opts); // the run's dollar budget; turns the usage ledger on
+  if (bud.error) return bud;
   return out;
 }
 

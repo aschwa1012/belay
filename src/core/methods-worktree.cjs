@@ -24,6 +24,14 @@ async function exclusive(key, what, fn) {
   try { return await fn(); } finally { inFlight.delete(key); }
 }
 
+// Several keys at once, all or none: a key already held refuses the call before anything is taken (task.create with trees).
+async function exclusiveAll(keys, what, fn) {
+  const held = keys.find((k) => inFlight.has(k));
+  if (held !== undefined) throw err('E_BUSY', `${what} is already in flight (${held}); nothing was done`, { key: held });
+  for (const k of keys) inFlight.add(k);
+  try { return await fn(); } finally { for (const k of keys) inFlight.delete(k); }
+}
+
 // A name that becomes a path component must pass the one id grammar (path-id.cjs); it is refused, never rewritten, so two ids
 // can never be folded onto one tree.
 function pathName(name, field) {
@@ -179,12 +187,26 @@ function strayLinks(root, recorded) {
 // returns what happened.
 async function rollback(top, rec, { keepBranch = false } = {}) {
   const out = { junctions: [], worktree_removed: false, branch_deleted: false };
-  try { out.junctions = unlinkJunctions(rec.junctions); } catch (e) { out.junction_error = e.message; return out; }
+  // path_gone is the directory's own fact: git can exit non-zero after deleting part of a tree, or zero and leave one behind.
+  const done = () => { out.path_gone = !fs.existsSync(rec.path); return out; };
+  try { out.junctions = unlinkJunctions(rec.junctions); } catch (e) { out.junction_error = e.message; return done(); }
   const r = await G.run(top, ['worktree', 'remove', '--force', '--', rec.path]);
   out.worktree_removed = r.ok;
   if (!r.ok) out.worktree_error = r.stderr;
   else if (!keepBranch) out.branch_deleted = (await G.run(top, ['branch', '-D', '--', rec.branch])).ok;
-  return out;
+  return done();
+}
+
+// The undo of a `worktree add` that failed. Only what this call provably made is removed: git lists a worktree at the path, on
+// the branch, at the base commit. A failed add that made nothing (the branch or the path appeared between the check and the add)
+// leaves whatever is there alone, and the receipt says so.
+async function undoAdd(top, rec, baseSha) {
+  let listed = null;
+  try { listed = (await G.worktrees(top)).find((x) => G.samePath(x.path, rec.path)) || null; } catch { /* unreadable: nothing is proven */ }
+  if (!listed || listed.branch !== rec.branch || listed.head !== baseSha) {
+    return { junctions: [], worktree_removed: false, branch_deleted: false, path_gone: !fs.existsSync(rec.path), kept: `git lists no worktree at ${rec.path} on branch ${rec.branch} at the base, so belay made none and removed nothing` };
+  }
+  return rollback(top, { ...rec, junctions: [] });
 }
 
 // A task that is leased or released has a worker already working, or its work handed back, in the worker's directory; a tree made
@@ -238,7 +260,7 @@ async function worktreeCreate(E, caller, args) {
     if (await G.branchExists(top, branch)) throw err('E_EXISTS', `branch ${branch} already exists; name another or remove it`, { branch });
     const wtPath = G.fwd(args.path !== undefined ? path.resolve(args.path) : path.join(path.dirname(top), `${path.basename(top)}.worktrees`, dirName));
     if (fs.existsSync(wtPath) && fs.readdirSync(wtPath).length) throw err('E_EXISTS', `${wtPath} exists and is not empty`, { path: wtPath });
-    await H.mustAdd(top, ['worktree', 'add', '-b', branch, '--', wtPath, baseSha], `the worktree for task ${task.id} could not be added`, () => rollback(top, { path: wtPath, branch, junctions: [] }));
+    await H.mustAdd(top, ['worktree', 'add', '-b', branch, '--', wtPath, baseSha], `the worktree for task ${task.id} could not be added`, () => undoAdd(top, { path: wtPath, branch }, baseSha));
     const rec = { repo: top, path: wtPath, branch, base_ref: baseRef, base_sha: baseSha, junctions: [], junctions_skipped: [], created_at: Date.now(), created_by: E.writtenBy(caller), removed_at: null };
     try {
       await makeJunctions(top, wtPath, junctions, rec.junctions, rec.junctions_skipped);
@@ -398,4 +420,4 @@ function evaluateTarget(task, args) {
   return rec ? { worktree, base: rec.base_sha, baseSource: 'recorded' } : { worktree, base: undefined, baseSource: undefined };
 }
 
-module.exports = { ownBoot, ownBootProbe, worktreeCreate, worktreeRemove, removeTree, removeForSweep, symbolicHead, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, baseArg, assertTaskTree, openSharer, exclusive, active, inheritable, assertTreeListed, present, pathName, liveWorkerIn, strayLinks, under };
+module.exports = { exclusiveAll, undoAdd, ownBoot, ownBootProbe, worktreeCreate, worktreeRemove, removeTree, removeForSweep, symbolicHead, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, baseArg, assertTaskTree, openSharer, exclusive, active, inheritable, assertTreeListed, present, pathName, liveWorkerIn, strayLinks, under };
