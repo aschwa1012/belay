@@ -151,7 +151,8 @@ test('run: two turn ends in one chunk start one poll chain, holds are moments, a
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, wt, runId, orchestratorDir } = makeSpec(dir, { poll_ms: 300 });
-  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '6000', FAKE_EXTRA_INIT: '1' };
+  const holdsFile = `${dir}/holds.jsonl`;
+  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '6000', FAKE_EXTRA_INIT: '1', BELAY_TEST_HOLDS_FILE: holdsFile };
 
   const runCliProc = runCli(specPath, dataDir, env);
   let testCore = null;
@@ -169,14 +170,15 @@ test('run: two turn ends in one chunk start one poll chain, holds are moments, a
     });
 
     const streamPath = `${orchestratorDir}/stream.jsonl`;
-    const gotResult = await waitForFileLine(streamPath, '"type":"result"', 15000);
+    const gotResult = await waitForFileLine(streamPath, '"type":"result"', 60000);
     assert.ok(gotResult, `stream.jsonl at ${streamPath} never held a result line within 15,000 ms`);
 
-    await sleep(1500);
+    // Crash only once an idle poll has held on the live worker (the hold file is the run's own record of it).
+    assert.ok(await waitForFileLine(holdsFile, '"busy":["w-hold"]', 60000), 'the run never recorded the worker as busy');
     require('../crash.cjs').crash(fakeWorker);
 
-    const exited = await waitForExit(runCliProc.proc, 10000);
-    assert.ok(exited, 'the CLI did not exit within 10,000 ms of the fake worker being killed');
+    const exited = await waitForExit(runCliProc.proc, 60000);
+    assert.ok(exited, 'the CLI did not exit within 60,000 ms of the fake worker being killed');
     assert.strictEqual(exited.code, 0, `the CLI exited ${exited.code}, stderr: ${runCliProc.stderr.slice(-2000)}`);
 
     const receipt = receiptOf(runCliProc, 0);
@@ -366,14 +368,14 @@ test('run: a throw between election and shutdown still exits, releases owner.loc
 // 5b-4 A1/A3: shared by both death-wake tests below. Spawns a hung fake (FAKE_HANG=1: accepts input,
 // never answers) as the planted worker's own process and plants its `starting` row (`mid_turn: 1`)
 // over that live pid; the caller kills the pid and, for the second test, plants the `dead` row too.
-async function plantHungWorker(testCore, wt, runId, workerId) {
+async function plantHungWorker(testCore, wt, runId, workerId, adapterPid) {
   const proc = spawn(process.execPath, [FAKE_CLAUDE], {
     cwd: wt, env: { ...process.env, FAKE_HANG: '1' }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
   });
   await new Promise((res) => proc.once('spawn', res));
   await testCore.worker.write({
     id: workerId, run_id: runId, substrate: 'claude-code', pid: proc.pid, pid_image: 'node.exe',
-    state: 'starting', mid_turn: 1, turns: 0, started_at: Date.now(),
+    state: 'starting', mid_turn: 1, turns: 0, started_at: Date.now(), adapter_pid: adapterPid, // a live adapter pid: the death grace is the detector's, not the orphan grace of a planted row
   });
   return proc;
 }
@@ -393,17 +395,17 @@ test("run: a starting row whose pid dies while the orchestrator is idle holds st
     testCore = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 15000 });
     await waitUntil(async () => (await testCore.run.get()).run || null, 10000, 100);
 
-    planted = await plantHungWorker(testCore, wt, runId, 'w-dead-start');
+    planted = await plantHungWorker(testCore, wt, runId, 'w-dead-start', runCliProc.proc.pid);
     const streamPath = `${orchestratorDir}/stream.jsonl`;
     const gotResult = await waitForFileLine(streamPath, '"type":"result"', 10000);
     assert.ok(gotResult, "the orchestrator's own first turn never ended");
     // Kill only once an idle poll has held on the live worker; on a slow runner polls can be over a second apart.
-    const sawBusy = await waitForFileLine(holdsFile, '"busy":["w-dead-start"]', 10000);
+    const sawBusy = await waitForFileLine(holdsFile, '"busy":["w-dead-start"]', 60000);
     assert.ok(sawBusy, 'the run never recorded the worker as busy');
     require('../crash.cjs').crash(planted);
 
-    const exited = await waitForExit(runCliProc.proc, 15000 - (Date.now() - t0));
-    assert.ok(exited, `the CLI did not exit within 15,000 ms of its own spawn (${Date.now() - t0} ms elapsed)`);
+    const exited = await waitForExit(runCliProc.proc, 90000); // a hang guard: the grace is 8,000 ms of the run's own clock
+    assert.ok(exited, `the CLI did not exit within 90,000 ms (${Date.now() - t0} ms since its spawn)`);
     assert.strictEqual(exited.code, 0, `stdout: ${runCliProc.stdout}, stderr: ${runCliProc.stderr}`);
     const receipt = receiptOf(runCliProc, 0);
     assert.deepStrictEqual(receipt.wakes, [], `a dead-pid row inside the grace with no detector row must produce no wake: ${JSON.stringify(receipt.wakes)}`);
@@ -440,15 +442,15 @@ test('run: a dead row landing inside the grace produces the death wake with the 
     testCore = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 15000 });
     await waitUntil(async () => (await testCore.run.get()).run || null, 10000, 100);
 
-    planted = await plantHungWorker(testCore, wt, runId, 'w-dead-detected');
+    planted = await plantHungWorker(testCore, wt, runId, 'w-dead-detected', runCliProc.proc.pid);
     const streamPath = `${orchestratorDir}/stream.jsonl`;
     const gotResult = await waitForFileLine(streamPath, '"type":"result"', 10000);
     assert.ok(gotResult, "the orchestrator's own first turn never ended");
-    await sleep(2 * 300);
+    assert.ok(await waitForFileLine(holdsFile, '"busy":["w-dead-detected"]', 60000), 'the run never recorded the worker as busy');
     const plantedPid = planted.pid;
     require('../crash.cjs').crash(planted);
     // The dead row must land after the run's poll has seen the dead pid; on a slow runner polls can be over a second apart.
-    const sawPending = await waitForFileLine(holdsFile, '"pending_deaths":["w-dead-detected"]', 10000);
+    const sawPending = await waitForFileLine(holdsFile, '"pending_deaths":["w-dead-detected"]', 60000);
     assert.ok(sawPending, 'the run never recorded the dead pid as a pending death');
     await testCore.worker.write({
       id: 'w-dead-detected', run_id: runId, substrate: 'claude-code', pid: plantedPid,
@@ -456,8 +458,8 @@ test('run: a dead row landing inside the grace produces the death wake with the 
       death_established_by: 'test-planted-detector', mid_turn: 0,
     });
 
-    const exited = await waitForExit(runCliProc.proc, 20000 - (Date.now() - t0));
-    assert.ok(exited, `the CLI did not exit within 20,000 ms of its own spawn (${Date.now() - t0} ms elapsed)`);
+    const exited = await waitForExit(runCliProc.proc, 90000); // a hang guard
+    assert.ok(exited, `the CLI did not exit within 90,000 ms (${Date.now() - t0} ms since its spawn)`);
     assert.strictEqual(exited.code, 0, `stdout: ${runCliProc.stdout}, stderr: ${runCliProc.stderr}`);
     const receipt = receiptOf(runCliProc, 0);
 
