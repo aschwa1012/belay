@@ -60,3 +60,49 @@ test('a real memory.reviewRelease whose owner is stopped right after its commit 
   assert.ok(released.release, 'the release call answered although the owner stopped right after committing it');
   await stopping;
 });
+
+// A call that arrives once stop() has begun must not run: it could commit after stop() took the list of calls to answer, and its
+// reply would be destroyed. It is refused with the answer a client re-runs (E_OWNER_LOST, sent: false).
+test('a call arriving after stop() has begun is refused as not run, and never reaches the engine', async (t) => {
+  const { owner, info } = await started(t);
+  let ran = 0;
+  owner.engine.handle = async () => { ran++; return { committed: true }; };
+  let release;
+  owner.inFlightControls.add(new Promise((res) => { release = res; })); // keeps stop() waiting, as a slow run.stop reply would
+  const sock = net.connect(info.pipe);
+  await new Promise((res, rej) => { sock.once('connect', res); sock.once('error', rej); });
+  sock.setEncoding('utf8');
+  const stopping = owner.stop();
+  const line = await new Promise((res) => {
+    let got = '';
+    sock.on('data', (d) => { got += d; const i = got.indexOf('\n'); if (i >= 0) res(got.slice(0, i)); });
+    sock.write(JSON.stringify({ id: 7, method: 'task.create', params: { caller: { role: 'orchestrator', pid: process.pid }, spec: 'late' } }) + '\n');
+  });
+  sock.destroy();
+  release();
+  await stopping;
+  const reply = JSON.parse(line);
+  assert.equal(reply.error.code, 'E_OWNER_LOST');
+  assert.equal(reply.error.detail.sent, false);
+  assert.equal(reply.error.detail.owner_stopping, true);
+  assert.equal(ran, 0, 'the refused call was not run');
+});
+
+test('a write that raced a stopping owner is re-run once by the client against the next owner, and committed exactly once', async (t) => {
+  const { dir, owner } = await started(t);
+  const c = await openCore({ dataDir: dir, caller: callerFor('orchestrator', { run_id: 'r-stop-retry' }), embed: false });
+  t.after(async () => { try { await c.shutdownOwner(); } catch { /* none */ } try { await c.close(); } catch { /* closed */ } });
+  await c.task.create({ spec: 'warm-up: this client is connected to the first owner' });
+  let release;
+  owner.inFlightControls.add(new Promise((res) => { release = res; }));
+  const refuse = owner._refuse.bind(owner);
+  let refused = 0;
+  owner._refuse = (conn, req, why) => { refused++; refuse(conn, req, why); release(); }; // the stop may finish once the call was refused
+  const stopping = owner.stop();
+  const made = await c.task.create({ spec: 'raced the stop' });
+  await stopping;
+  assert.ok(refused >= 1, 'the first owner refused the call while it was stopping');
+  assert.ok(made.id, 'the client re-ran the call and got the row');
+  const tasks = (await c.task.list({})).tasks || [];
+  assert.equal(tasks.filter((x) => x.spec === 'raced the stop').length, 1, 'committed exactly once');
+});
