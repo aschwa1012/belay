@@ -236,6 +236,8 @@ async function worktreeCreate(E, caller, args) {
     const dirName = args.path === undefined ? pathName(task.id, 'task_id') : null;
     const branch = await G.validBranch(top, args.branch === undefined ? `belay/${task.id}` : args.branch);
     if (await G.branchExists(top, branch)) throw err('E_EXISTS', `branch ${branch} already exists; name another or remove it`, { branch });
+    const variant = await G.branchVariant(top, branch);
+    if (variant) throw err('E_EXISTS', `branch ${branch} is another spelling of the existing branch ${variant}, and refs compare equal on some hosts; name another`, { branch, existing: variant });
     const wtPath = G.fwd(args.path !== undefined ? path.resolve(args.path) : path.join(path.dirname(top), `${path.basename(top)}.worktrees`, dirName));
     if (fs.existsSync(wtPath) && fs.readdirSync(wtPath).length) throw err('E_EXISTS', `${wtPath} exists and is not empty`, { path: wtPath });
     await H.mustAdd(top, ['worktree', 'add', '-b', branch, '--', wtPath, baseSha], `the worktree for task ${task.id} could not be added`, () => rollback(top, { path: wtPath, branch, junctions: [] }));
