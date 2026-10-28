@@ -2,8 +2,8 @@
 // core-budgets.test.cjs — the budgets that are measured in process (or inside one fresh child), in the shape of ADR 0018
 // amendment 1. They used to sit in the functional suites (tests/core/status.test.cjs, tests/core/redact.test.cjs,
 // tests/cli/slice-3a.test.cjs), where `node --test` runs fifteen files at once, so a median taken under that load failed on
-// a busy host without a product change. `npm test` runs this directory in its own sequential phase, with nothing else of
-// belay's running.
+// a busy host without a product change. `npm test` runs this directory in its own phase, after the functional suites:
+// the budget files in it run beside each other, but no functional suite runs then.
 // Each gate samples interleaved: one floor sample (the same timing bracket around an empty body) immediately before every
 // subject sample, n rounds, and the assertion is the minimum subject sample above the minimum floor sample. The raw
 // wall-clock numbers (min, median, every sample) are printed and written to receipts/core-last.json beside each gate and
