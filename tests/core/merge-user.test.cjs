@@ -162,10 +162,14 @@ test('what counts as a user branch is read from the task rows and the integratio
   const open = await s.orch.task.create({ spec: 'x', acceptance: { commands: [exists('x')] } });
   const wt = (await s.op.task.worktreeCreate({ task_id: open.id, repo })).worktree;
   const done = await doneTask(s, repo, { 'q.txt': 'q\n' }, [exists('q.txt')]);
-  // A branch some task row records as its own is belay's: merging into it needs no approval.
-  const staged = await s.orch.integration.merge({ task_ids: [done.id], into: wt.branch });
+  const other = await doneTask(s, repo, { 'r.txt': 'r' }, [exists('r.txt')]);
+  // A branch a judged task row records as its own, and still holds that task's judged commit, is belay's: merging into it needs no approval.
+  const staged = await s.orch.integration.merge({ task_ids: [other.id], into: done.worktree.branch });
   assert.notStrictEqual(staged.state, 'awaiting_approval');
   assert.strictEqual(staged.target, null);
+  // A task never judged records nothing to prove its branch by, so that branch asks.
+  const unjudged = await s.orch.integration.merge({ task_ids: [done.id], into: wt.branch });
+  assert.strictEqual(unjudged.state, 'awaiting_approval');
   const named = await s.orch.integration.merge({ task_ids: [done.id], into: 'belay/not-an-integration-branch' });
   assert.strictEqual(named.state, 'awaiting_approval', 'a prefix is a name anyone can type');
   const E = { store: { p: () => ({ all: () => [] }) } };
