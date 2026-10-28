@@ -8,6 +8,7 @@
 const C = require('./config.cjs');
 const { openCore } = require('../core/index.cjs');
 const { WORKER_STATES } = require('../core/schema.cjs');
+const RCK = require('./run-checks.cjs'); // ADR 0069: the integrate calls' own checks
 const CP = require('../run/compaction.cjs'); // fs and path only: summarize() reads a worker's compactions.jsonl
 
 const USAGE = 'usage: belay receipts [run-id] [--data <dir>] [--json]\n';
@@ -42,9 +43,9 @@ function checkView(c) {
   return { kind: c.kind, executable: nn(c.executable), passed: nn(c.passed), ms: nn(c.ms) };
 }
 
-function taskView(t, since = null) {
+function taskView(t, since = null, byId = null) {
   const checks = t.results && Array.isArray(t.results.checks) ? t.results.checks : [];
-  return { id: t.id, state: t.state, checks: checks.map(checkView), check_history: require('../core/check-history.cjs').forReceipt(t, since) }; // ADR 0069: the commands and their changes
+  return { id: t.id, state: t.state, checks: checks.map(checkView), check_history: require('../core/check-history.cjs').forReceipt(t, since, t.repairs && byId ? byId.get(t.repairs) : null) }; // ADR 0069: the commands and their changes
 }
 
 function handoffView(h) {
@@ -74,9 +75,9 @@ function compactionsOf(dataDir, id) {
   return c ? { compactions: c } : {};
 }
 
-function workerView(w, tasksById, dataDir, since = null) {
+function workerView(w, tasksById, dataDir, since = null) { // a task's check history is shown whole: a line is never clipped, only wrapped
   const t = w.task_id ? tasksById.get(w.task_id) : null;
-  const task = t ? { ...taskView(t, since), handoff: handoffView(t.handoff) } : null;
+  const task = t ? { ...taskView(t, since, tasksById), handoff: handoffView(t.handoff) } : null;
   return {
     id: w.id, substrate: nn(w.substrate), state: nn(w.state), model: nn(w.model), turns: nn(w.turns),
     input_tokens: nn(w.input_tokens), output_tokens: nn(w.output_tokens),
@@ -206,15 +207,16 @@ function renderText(rc) {
     if (w.task) {
       lines.push(`  task ${v(w.task.id)} (${v(w.task.state)})`);
       lines.push(`  checks ${checksText(w.task.checks)}`);
-      if (w.task.check_history) lines.push(`  ${clean(require('../core/check-history.cjs').line(w.task.check_history), 300)}`);
+      if (w.task.check_history) lines.push(`  ${clean(require('../core/check-history.cjs').line(w.task.check_history), Infinity)}`);
       if (w.task.handoff) lines.push(...handoffLines(w.task.handoff)); else lines.push('  handoff none');
     } else lines.push('  task none');
   }
   if (!rc.workers.length) lines.push('(no workers)');
   for (const t of rc.unassigned_tasks) {
     lines.push(`unassigned task ${v(t.id)} (${v(t.state)})  checks ${checksText(t.checks)}`);
-    if (t.check_history) lines.push(`  ${clean(require('../core/check-history.cjs').line(t.check_history), 300)}`);
+    if (t.check_history) lines.push(`  ${clean(require('../core/check-history.cjs').line(t.check_history), Infinity)}`);
   }
+  for (const i of rc.integrate_checks || []) lines.push(RCK.integrateLine(i));
   const t = rc.totals;
   const miss = SUM_FIELDS.filter(f => t.not_recorded[f] > 0).map(f => `${f} ${t.not_recorded[f]}`).join(', ');
   lines.push(`totals over ${t.agents} agents  cost ${money(t.cost_usd)}  tools ${v(t.tool_calls)}`);
@@ -268,7 +270,8 @@ async function run(ctx) {
       run_id: chosen.id, run_id_source: source,
       run: { started_at: nn(chosen.started_at), ended_at: nn(chosen.ended_at), exit_reason: nn(chosen.exit_reason), alive: !!chosen.alive, paused_at: nn(chosen.paused_at), paused_by: nn(chosen.paused_by) },
       orchestrator, workers,
-      unassigned_tasks: tasks.filter(t => !assigned.has(t.id)).map((t) => taskView(t, chosen.started_at)),
+      unassigned_tasks: tasks.filter(t => !assigned.has(t.id)).map((t) => taskView(t, chosen.started_at, tasksById)),
+      integrate_checks: RCK.integrateChecksOf((await core.integration.list({ run_id: chosen.id })).integrations, chosen.id),
       totals: totalsOf(orchestrator, workers), owner,
     };
     return { code: 0, text: renderText(receipt), json: receipt };

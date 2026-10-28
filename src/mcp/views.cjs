@@ -158,7 +158,8 @@ function taskList(answer, { task_ids = null } = {}) {
 const taskEvaluate = (row) => compactTask(row, { detail: true });
 
 // integrate (compact, the default): what this call merged, a count of the tasks carried from earlier rows on the same branch, the
-// conflict, the checks (a passing one by name, a reused one marked with the row that ran it, a failing one whole), `forced` and
+// conflict, `task_checks` (a line for each task this call merged, and for any task on the branch whose checks changed: an amend or a
+// fix that differs from the task it repairs), the checks (a passing one by name, a reused one marked with the row that ran it, a failing one whole), `forced` and
 // `not_carried` when set. The repository path, the junctions and the base are the receipt (view debug: the whole row).
 const INTEGRATION_DROP = new Set(['repo', 'junctions', 'created_worktree', 'base_sha', 'written_at', 'written_by', 'run_id', 'owner_pid', 'owner_boot', 'reused_checks']);
 const checkName = (c) => (Array.isArray(c.argv) ? [c.argv[0] ? String(c.argv[0]).split(/[\\/]/).pop() : '', ...c.argv.slice(1, 4)].join(' ').slice(0, 80) : '');
@@ -179,6 +180,11 @@ function integrate(row) {
     const carried = entries.filter((m) => m.carried_from != null);
     out.merged = entries.filter((m) => m.carried_from == null).map(mergedEntry);
     if (carried.length) out.carried = carried.length;
+  }
+  if (Array.isArray(row.task_checks)) {
+    const own = (Array.isArray(row.merged) ? row.merged : []).filter((m) => m && m.carried_from == null).map((m) => m.task_id);
+    const kept = row.task_checks.filter((l) => l.includes(' -> ') || own.some((id) => String(l).startsWith(`${id} checks`)));
+    if (kept.length) out.task_checks = kept; else delete out.task_checks;
   }
   if (Array.isArray(row.checks)) {
     out.checks = row.checks.map(({ cwd, ...c }) => {

@@ -486,7 +486,7 @@ async function run(ctx) {
     review_rounds: reviewRounds.value, review_rounds_reason: reviewRounds.reason,
     workers_closed: closed ? workersClosedBlock(closed, endedRow ? (endedRow.workers_marked_dead || []) : null) : null,
     ...(closeStages ? { close_stages: closeStages } : {}), // only with notes on
-    ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), ...(treesClosed ? { worktrees_closed: treesClosed } : {}), ...(taskChecks ? { task_checks: taskChecks } : {}), ...require('../run/review-scratch.cjs').closeRun(dataDir, parsed.runId, parsed.levers), // the run-end memory jobs; the reviewers' scratch removed (ADR 0054 amendment 1)
+    ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), ...(treesClosed ? { worktrees_closed: treesClosed } : {}), ...(taskChecks || {}), ...require('../run/review-scratch.cjs').closeRun(dataDir, parsed.runId, parsed.levers), // the run-end memory jobs; the reviewers' scratch removed (ADR 0054 amendment 1)
   };
   try {
     fs.writeFileSync(receiptPath, `${JSON.stringify({ ...receipt, receipt_path: receiptPath }, null, 2)}\n`);

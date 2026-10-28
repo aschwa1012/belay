@@ -127,3 +127,71 @@ test('an amend is refused on a done task, so a merged task\'s history is final',
   const a = await work(repo, { 'a.txt': 'a\n' }, [exists('a.txt')]);
   await assert.rejects(orch.task.create({ id: a.id, amend: true, acceptance: { commands: [never] } }), (e) => e.code === 'E_TASK_DONE');
 });
+
+test('argv[0] is shortened at either slash', () => {
+  const bs = String.fromCharCode(92);
+  assert.deepStrictEqual(CH.lines(acc(cmd(`C:${bs}Program Files${bs}nodejs${bs}node.exe`, '--test'))), ['node.exe --test']);
+  assert.deepStrictEqual(CH.lines(acc(cmd('C:/Program Files/nodejs/node.exe', '--test'))), ['node.exe --test']);
+  assert.deepStrictEqual(CH.lines(acc(cmd('node', 'a "b" c'))), ['node "a \\"b\\" c"'], 'an inner quote is escaped');
+});
+
+test('an amend before the run began, or with no time, is named by its instant in the integrate wording and in a receipt', () => {
+  const task = { id: 'T1', acceptance: acc(cmd('b')), amended: [{ at: 500, by: 'o', acceptance: acc(cmd('a')) }] };
+  const a = CH.line(CH.historyOf(task), 1000), b = CH.line(CH.forReceipt(task, 1000));
+  assert.strictEqual(a, b);
+  assert.match(a, /amended at 1970-01-01T00:00:00\.500Z/);
+  const none = { id: 'T2', acceptance: acc(cmd('b')), amended: [{ by: 'o', acceptance: acc(cmd('a')) }] };
+  assert.strictEqual(CH.line(CH.forReceipt(none, 1000)), 'T2 checks: a -> b (amended at an unrecorded time)');
+  assert.strictEqual(CH.forReceipt(task, 1000).changes[0].after_ms, undefined);
+  assert.strictEqual(CH.forReceipt({ ...task, amended: [{ at: 1000 + 90000, by: 'o', acceptance: acc(cmd('a')) }] }, 1000).changes[0].after_ms, 90000);
+});
+
+test('a timeout that changes alone is no change', () => {
+  const task = { id: 'T1', acceptance: { commands: [{ argv: ['a'], timeout_ms: 90000 }] }, amended: [{ at: 1, by: 'o', acceptance: { commands: [{ argv: ['a'], timeout_ms: 1000 }] } }] };
+  assert.deepStrictEqual(CH.historyOf(task).changes, []);
+});
+
+test('a fix task whose checks differ from the task it repairs is shown against it', () => {
+  const repaired = { id: 'T28', acceptance: acc(cmd('node', '--test')) };
+  const fix = { id: 'T28-fix', repairs: 'T28', acceptance: acc(cmd('node', '--test', '--test-skip-pattern=parallel writers')) };
+  assert.strictEqual(CH.line(CH.historyOf(fix, repaired)), 'T28-fix checks (repairs T28): node --test -> node --test --test-skip-pattern="parallel writers"');
+  assert.strictEqual(CH.line(CH.historyOf({ ...fix, acceptance: repaired.acceptance }, repaired)), 'T28-fix checks: node --test', 'the same checks show alone');
+  assert.strictEqual(CH.line(CH.historyOf(fix, null)), 'T28-fix checks: node --test --test-skip-pattern="parallel writers"', 'with the repaired task unknown there is nothing to compare');
+  const amended = { ...fix, amended: [{ at: 5, by: 'o', acceptance: fix.acceptance }], acceptance: acc(cmd('node', '--test', '--test-skip-pattern=other')) };
+  assert.match(CH.line(CH.historyOf(amended, repaired), 0), /^T28-fix checks \(repairs T28\): node --test -> .*parallel writers"?, then -> .*other \(amended under a minute in\)$/);
+  assert.strictEqual(CH.forReceipt(fix, 0, repaired).repairs, 'T28');
+});
+
+test('integrate answer: a fix task made with different checks is shown against the task it repairs', async () => {
+  const repo = makeRepo(dir);
+  const a = await work(repo, { 'a.txt': 'a\n' }, [exists('a.txt')]);
+  const fix = await orch.task.create({ id: `${a.id}-fix`, spec: 'fix', repairs: a.id, acceptance: { commands: [exists('a.txt'), never] } });
+  const g = await orch.task.get({ task_id: fix.id });
+  assert.strictEqual(g.repairs, a.id);
+  const T = require('../../src/core/integration-task-checks.cjs');
+  const fakeRow = { run_id: g.run_id, merged: [{ task_id: fix.id }] };
+  const out = T.withTaskChecks({ store: orch.owner.store }, fakeRow);
+  assert.ok(out.task_checks[0].startsWith(`${fix.id} checks (repairs ${a.id}): `) && out.task_checks[0].includes(' -> '), out.task_checks[0]);
+});
+
+test('the integrate view lists this call\'s own tasks and any task whose checks changed, not every carried task', () => {
+  const V = require('../../src/mcp/views.cjs');
+  const row = {
+    id: 'i', state: 'evaluated',
+    merged: [{ task_id: 'T1', carried_from: 'p' }, { task_id: 'T2', carried_from: 'p' }, { task_id: 'T3', carried_from: 'p' }, { task_id: 'T4', carried_from: null }],
+    task_checks: ['T1 checks: node --test', 'T2 checks: a -> node --test (amended 5 min in)', 'T3 checks: node --test', 'T4 checks: node --test'],
+  };
+  assert.deepStrictEqual(V.integrate(row).task_checks, ['T2 checks: a -> node --test (amended 5 min in)', 'T4 checks: node --test']);
+  assert.strictEqual('task_checks' in V.integrate({ ...row, merged: [{ task_id: 'T1', carried_from: 'p' }], task_checks: ['T1 checks: x'] }), false, 'nothing of this call and nothing changed: nothing');
+});
+
+test('bytes: the 10th of ten integrates into one branch costs about what the 1st does', async () => {
+  const V = require('../../src/mcp/views.cjs');
+  const lines = [];
+  for (let i = 1; i <= 10; i += 1) lines.push(`T${i} checks: node --test --test-name-pattern=this-is-a-realistic-length-pattern-${i}`);
+  const row = (k) => ({ id: `i${k}`, state: 'evaluated', merged: lines.slice(0, k).map((l, i) => ({ task_id: `T${i + 1}`, carried_from: i + 1 < k ? 'p' : null })), task_checks: lines.slice(0, k) });
+  const full = (k) => JSON.stringify({ ...V.integrate(row(k)), task_checks: row(k).task_checks }).length;
+  const now = (k) => JSON.stringify(V.integrate(row(k))).length;
+  console.log(`integrate view bytes, 1st / 10th call: full list ${full(1)} / ${full(10)}, this call and changed only ${now(1)} / ${now(10)}`);
+  assert.ok(now(10) <= now(1) + 20);
+});

@@ -15,7 +15,7 @@ function withTaskChecks(E, row) {
     if (!m || typeof m.task_id !== 'string' || seen.has(m.task_id)) continue;
     seen.add(m.task_id);
     const t = rows.current(E.store, 'task', m.task_id);
-    if (t) out.push(CH.line(CH.historyOf(t), since));
+    if (t) out.push(CH.line(CH.historyOf(t, t.repairs ? rows.current(E.store, 'task', t.repairs) : null), since));
   }
   return out.length ? { ...row, task_checks: out } : row;
 }
