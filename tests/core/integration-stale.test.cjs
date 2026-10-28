@@ -192,6 +192,46 @@ test('a merging row whose pid now names a process created at another time is tak
   }
 });
 
+// The creation time is exact (ADR 0039): a pid reused within seconds of the row's `owner_boot` is another process. The snapshot
+// is stubbed so the reused pid is created 3 s after the row's time, inside any slack, which no real host can arrange on demand.
+test('a merging row whose pid names a process created 3 s after the row owner_boot is taken as gone', async () => {
+  const { Store } = core('store.cjs');
+  const rows = core('rows.cjs');
+  const ID = core('proc-identity.cjs');
+  const { spawn } = require('node:child_process');
+  const dir = sandbox();
+  const orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
+  const op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
+  opened.push({ dir, cores: [orch, op] });
+  await orch.run.attach({ adapter_pid: process.pid });
+  const repo = makeRepo(dir);
+  const t = await orch.task.create({ spec: 'a', acceptance: { commands: [exists('a.txt')] } });
+  const w = (await op.task.worktreeCreate({ task_id: t.id, repo })).worktree;
+  write(w.path, 'a.txt', 'a\n');
+  commit(w.path, 'a');
+  assert.strictEqual((await orch.task.evaluate({ task_id: t.id })).state, 'done');
+  const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e9)'], { windowsHide: true, stdio: 'ignore' });
+  const holderExited = new Promise((r) => holder.once('exit', r));
+  const realCreatedOf = ID.createdOf;
+  try {
+    const c = await ID.createdOf(holder.pid);
+    assert.ok(c && c.created);
+    const s = new Store(`${dir}/data/memory.db`);
+    let stale;
+    try {
+      stale = rows.append(s, 'integration', { id: rows.newId(), run_id: 'test-run', repo, into_branch: 'int/near', worktree: `${repo}.worktrees/integrate-int-near`, created_worktree: true, base_sha: w.base_sha, head_sha: w.base_sha, state: 'merging', task_ids: [t.id], merged: [], junctions: [], owner_pid: holder.pid, owner_boot: c.created - 3000 }, 'owner', Date.now());
+    } finally { s.close(); }
+    ID.createdOf = async (pid, o) => (pid === holder.pid ? { created: c.created, image: c.image } : realCreatedOf(pid, o));
+    const row = await orch.integration.merge({ task_ids: [t.id], into: 'int/near' });
+    assert.strictEqual(row.state, 'evaluated', JSON.stringify(row.error));
+    assert.strictEqual((await orch.integration.get({ id: stale.id })).state, 'abandoned');
+  } finally {
+    ID.createdOf = realCreatedOf;
+    holder.kill();
+    await holderExited;
+  }
+});
+
 // A row whose pid runs but cannot be proven to be the merge: here it recorded no creation time, which reaches the same branch as
 // a creation time the snapshot cannot read. Nothing tells anyone to end that pid; only the operator may take the branch over.
 test('a merging row not proven to be its live pid refuses with no kill advice; the orchestrator cannot take over, the operator can', async () => {
