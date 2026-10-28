@@ -30,16 +30,18 @@ const missingFields = (required, result) => {
   return required.filter((k) => !filled(r[k]));
 };
 
-// ADR 0058 decision 6 (amendment): a release whose result lacks a field the task's `acceptance.handoff.required` declares is refused,
-// naming the fields, and nothing is written; the worker adds them and releases again. The same rule as the evaluation's handoff check.
-// A release with no result and a `reason` is a stand-down (the worker hands nothing back and says why) and is let through.
+// ADR 0058 amendment 6: a release whose result lacks a field the task's `acceptance.handoff.required` declares is refused, naming the
+// fields, and nothing is written; the worker adds them and releases again. The same rule as the evaluation's handoff check.
+// A release with no result and a `reason` is a stand-down: it is let through and this returns the (bounded) reason, which the
+// release records as the task's hand-back (`stood_down`), so the orchestrator sees it. Returns null when nothing is declared or met.
+const REASON_MAX = 300;
 function requireFields(task, args) {
   const req = task.acceptance && task.acceptance.handoff && task.acceptance.handoff.required;
-  if (!Array.isArray(req) || !req.length) return;
-  if (args.result === undefined && typeof args.reason === 'string' && args.reason.trim()) return;
+  if (!Array.isArray(req) || !req.length) return null;
+  if (args.result === undefined && typeof args.reason === 'string' && args.reason.trim()) return args.reason.trim().slice(0, REASON_MAX);
   const missing = missingFields(req, args.result);
-  if (!missing.length) return;
-  throw err('E_ARGS', `lease.release: task ${task.id} requires a result carrying ${req.join(', ')} (each non-empty); yours lacks ${missing.join(', ')}. Nothing was released or written: call lease_release again with the missing fields${args.result === undefined ? ' in result' : ''}`, { task_id: task.id, required: req, missing });
+  if (!missing.length) return null;
+  throw err('E_ARGS', `lease.release: task ${task.id} requires a result carrying ${req.join(', ')} (each non-empty); yours lacks ${missing.join(', ')}. Nothing was released or written: call lease_release again with the missing fields${args.result === undefined ? ' in result, or give a reason and no result to stand down' : ''}`, { task_id: task.id, required: req, missing });
 }
 
 // `store` is read for the task's current lease: only the hand-back of that lease, once released, counts (as for a verdict).

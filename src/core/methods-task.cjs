@@ -418,7 +418,7 @@ async function releaseNow(E, caller, args) {
     // ADR 0025 amendment 1: a release never un-earns `done`, and cannot replace the verdict it rests on.
     if (task.state === 'done' && args.result !== undefined) throw err('E_ARGS', `lease.release: task ${task.id} is done, so its hand-back cannot be replaced; release without a result`, { task_id: task.id });
     const t = Date.now(), by = E.writtenBy(caller), late = LHD.isLateHandback(caller, l, task); // late: the holder's death released it first
-    if (caller.role === 'worker' && task.state !== 'done' && (l.released_at == null || late)) require('./handoff-check.cjs').requireFields(task, args); // the task's own declared fields, before anything is written
+    const stood = caller.role === 'worker' && task.state !== 'done' && (l.released_at == null || late) ? require('./handoff-check.cjs').requireFields(task, args) : null; // the task's own declared fields, before anything is written; a stand-down's reason
     if (dropped && l.released_at != null && !late) {
       // A second call on a released lease carries only notes, and they are dropped: nothing is written.
       return { ...task, last_checkpoint_id: (rows.lastCheckpoint(E.store, l.task_id) || {}).id || null, released_reason: args.reason || null, ...dropped };
@@ -434,14 +434,14 @@ async function releaseNow(E, caller, args) {
     if (l.released_at != null && !late) {
       throw err('E_ARGS', `lease.release: lease ${l.id} was already released at ${l.released_at}, so a second release would replace its hand-back; nothing was written. The orchestrator can take a new hand-back by assigning this task to you again (task_assign)`, { lease_id: l.id, released_at: l.released_at });
     }
-    if (!late) rows.append(E.store, 'lease', { ...l, released_at: t }, by, t);
+    if (!late) rows.append(E.store, 'lease', { ...l, released_at: t, ...(stood ? { released_reason: stood } : {}) }, by, t);
     let handoff = task.handoff;
     if (args.result !== undefined) {
       handoff = { result: args.result, by: caller.worker_id, lease_id: l.id, at: t };
       const missing = missingCitations(E, args.result);
       if (missing !== null) handoff.memory_ids_missing = missing;
       if (l.tree || RT.isReview(task)) Object.assign(handoff, RT.handBack(E.dataDir, caller.run_id, caller.worker_id, l.tree, treeNow && treeNow.worktree === l.tree.worktree ? treeNow : null)); // the tree's change and the scratch size
-    }
+    } else if (stood) handoff = { result: null, by: caller.worker_id, lease_id: l.id, at: t, stood_down: stood }; // replaces any earlier hand-back: this lease handed back nothing
     const row = rows.append(E.store, 'task', { ...task, state: task.state === 'done' ? 'done' : 'released', handoff }, by, t);
     const ck = rows.lastCheckpoint(E.store, l.task_id);
     return { ...row, last_checkpoint_id: ck ? ck.id : null, released_reason: args.reason || null, ...(prep ? NM.commit(E, caller, prep, { task_id: task.id }) : {}), ...(dropped || {}), ...(late ? LHD.lateReceipt(l) : {}) };

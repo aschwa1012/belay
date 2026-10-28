@@ -86,3 +86,23 @@ test('the evaluation and the release agree: a result the release accepts passes 
   assert.strictEqual(c.passed, true);
   assert.deepStrictEqual(c.detail.missing, []);
 });
+
+test('a stand-down is recorded: the reason on the lease and the task, replacing an earlier hand-back', async () => {
+  const { t, w, lease } = await start('g');
+  await w.lease.release({ lease_id: lease, result: { head: 'abc', tests: ['t'], summary: 's' } });
+  const a2 = await orch.task.assign({ task_id: t.id, worker_id: 'w-g' });
+  const row = await w.lease.release({ lease_id: a2.new_lease.id, reason: 'cannot build on this host' });
+  assert.deepStrictEqual([row.state, row.handoff.result, row.handoff.stood_down, row.handoff.lease_id], ['released', null, 'cannot build on this host', a2.new_lease.id]);
+  assert.strictEqual(row.released_reason, 'cannot build on this host');
+  const V = require('../../src/mcp/views.cjs');
+  const view = V.compactTask ? V.compactTask(await orch.task.get({ task_id: t.id })) : null;
+  if (view) assert.strictEqual(view.handoff.stood_down, 'cannot build on this host');
+});
+
+test('a refused late hand-back leaves the task open', async () => {
+  const { t, w, lease } = await start('h');
+  await orch.worker.write({ id: 'w-h', substrate: 'claude-code', pid: process.pid, state: 'dead', session_id: 's-w-h', last_event_at: Date.now() });
+  const before = (await orch.task.get({ task_id: t.id })).state;
+  await refused(w.lease.release({ lease_id: lease, result: { head: 'abc' } }), ['tests', 'summary']);
+  assert.strictEqual((await orch.task.get({ task_id: t.id })).state, before);
+});
