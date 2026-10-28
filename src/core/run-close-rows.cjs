@@ -49,7 +49,7 @@ async function closeEpochWorkers(E, runId, by, lifeClaiming) {
         : `run.end: pid ${cur.pid} not alive when the run ended; no adapter wrote its exit (ADR 0029)`,
       head_sha: headSha, head_error: headSha != null ? null : (cur.head_error == null ? null : cur.head_error), paused_at: null, paused_by: null,
     };
-    require('./cost-estimate.cjs').apply(E.dataDir, cur, values, {}); // no adapter wrote this life's end: its unreported last turn comes from the stream
+    require('./cost-estimate.cjs').apply(E.dataDir, values); // no adapter wrote this life's end: its unreported last turn comes from the stream
     const { released } = appendDead(E, values, by, t);
     marked.push({ worker_id: w.id, from_state: w.state, head_sha: headSha, ...(head.error ? { head_error: head.error } : {}), ...(released.length ? { leases_released: released } : {}) });
   }

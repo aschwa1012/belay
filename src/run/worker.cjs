@@ -44,7 +44,7 @@ function newWorkerRecord({ id, substrate, worktree, dataDir, taskId, model, allo
     streamPath: L.fwd(path.join(dir, 'stream.jsonl')), stderrPath: L.fwd(path.join(dir, 'stderr.txt')),
     parser: createParser(substrate), child: null, pid: null, sessionId: null, state: 'starting',
     startedAt: now(), readyAt: null, exitedAt: null, exitCode: null, exitSignal: null,
-    turns: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, lastEventAt: null, contextTokens: null,
+    turns: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, costBase: 0, lastEventAt: null, contextTokens: null,
     digest: [], filesTouched: new Set(), stderr: '', argvHash: null, lastAssistantText: '',
     lastCheckpointId: null, lastTurnUsage: null, turnEnded: false, stopRequested: false, settled: false,
     readyWaiters: [], turnWaiters: [], exitWaiters: [], queue: Promise.resolve(), launches: 0,
@@ -111,12 +111,8 @@ async function adopt({ core, workerId, dataDir }) {
   // W2-3: every receipt column comes from the row; head_sha is asked of git again if the adopted worker later settles (SF1).
   w.indexQueries = Array.isArray(row.memory_queries) ? row.memory_queries : [];
   w.initModel = row.model || null;
-  // A stopped or dead row may carry an estimate for a turn that never reported (ADR 0062, proposed): this record counts only
-  // what was reported, so the core can add the estimate again, once, to the next terminal row.
-  const est = require('../core/cost-estimate.cjs').estimateOf(row) || {};
-  const less = (x, k) => Math.max(0, (x || 0) - (typeof est[k] === 'number' ? est[k] : 0));
-  w.cacheReadTokens = less(row.cache_read_tokens, 'cache_read_tokens');
-  w.cacheCreationTokens = less(row.cache_creation_tokens, 'cache_creation_tokens');
+  w.cacheReadTokens = row.cache_read_tokens || 0;
+  w.cacheCreationTokens = row.cache_creation_tokens || 0;
   w.toolCalls = row.tool_calls || 0;
   w.baseSha = row.base_sha || null;
   w.baseError = row.base_error || null;
@@ -131,9 +127,10 @@ async function adopt({ core, workerId, dataDir }) {
   w.startedAt = row.started_at || w.startedAt;
   w.lastEventAt = row.last_event_at || null;
   w.turns = row.turns || 0;
-  w.inputTokens = less(row.input_tokens, 'input_tokens');
-  w.outputTokens = less(row.output_tokens, 'output_tokens');
-  w.costUsd = less(row.cost_usd, 'usd');
+  w.inputTokens = row.input_tokens || 0;
+  w.outputTokens = row.output_tokens || 0;
+  w.costUsd = row.cost_usd || 0;
+  w.costBase = row.cost_base || 0; // reported cost of the lives before this session (a fresh session's total starts at zero)
   w.exitedAt = row.exited_at || null;
   w.exitCode = row.exit_code == null ? null : row.exit_code;
   w.exitSignal = row.exit_signal == null ? null : row.exit_signal;
@@ -181,7 +178,7 @@ function rowOf(w, state, { runId, adapterPid }) {
     // An inherited started_at that is not a safe integer is left out, so the core keeps it rather than refusing this write (api.md: an inherited value is never checked).
     ...(Number.isSafeInteger(w.startedAt) ? { started_at: w.startedAt } : {}),
     exited_at: w.exitedAt, exit_code: w.exitCode, exit_signal: w.exitSignal,
-    turns: w.turns, input_tokens: w.inputTokens, output_tokens: w.outputTokens, cost_usd: w.costUsd,
+    turns: w.turns, input_tokens: w.inputTokens, output_tokens: w.outputTokens, cost_usd: w.costUsd, cost_base: w.costBase || 0,
     last_event_at: w.lastEventAt,
     // ADR 0021 decision 3: set only by a launch this record made, so an adopted record claims nothing.
     permission_mode_requested: w.permissionModeEffective ? w.permissionMode : null,
@@ -309,7 +306,7 @@ async function onTurnEnd(w, e, ctx) {
   }
   w.outputTokens += n(u.output_tokens);
   if (w.substrate === 'claude-code') {
-    if (typeof e.cost_usd === 'number') w.costUsd = e.cost_usd;
+    if (typeof e.cost_usd === 'number') w.costUsd = (w.costBase || 0) + e.cost_usd; // the session's cumulative total, on top of what earlier sessions reported
     w.iterationsLastTurn = typeof e.num_turns === 'number' ? e.num_turns : null;
   }
   w.lastTurnUsage = e.usage;

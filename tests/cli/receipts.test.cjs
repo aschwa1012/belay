@@ -428,9 +428,9 @@ test('receipts: a worker killed with no result event shows its estimated cost, l
   });
   const j = JSON.parse(receipts([], dataDir).stdout);
   const w = j.workers.find((x) => x.id === 'wk');
-  assert.deepStrictEqual([w.cost_usd, w.cost_source, w.cost_estimate.usd, w.cost_estimate.messages], [3.2, 'transcript_estimate', 3.2, 1]);
-  assert.deepStrictEqual([j.totals.cost_estimated_usd, j.totals.cost_estimated_workers], [3.2, 1]);
+  assert.deepStrictEqual([w.cost_usd, w.cost_source, w.cost_estimate.usd, w.cost_estimate.messages, w.cost_combined_usd], [0, 'transcript_estimate', 3.2, 1, 3.2]);
+  assert.deepStrictEqual([j.totals.cost_usd, j.totals.cost_estimated_usd, j.totals.cost_combined_usd, j.totals.cost_estimated_workers], [0, 3.2, 3.2, 1]);
   const text = receipts([], dataDir, { json: false }).stdout;
-  assert.match(text, /cost \$3\.2 \(\$3\.2 of it estimated from the stream: no result event\)/);
-  assert.match(text, /cost \$3\.2 \(\$3\.2 of it estimated from the streams of 1 worker, no result event\)/);
+  assert.match(text, /cost \$0\.0000 reported \+ \$3\.2 estimated from the stream \(1 message no result line reported\) = \$3\.2/);
+  assert.match(text, /totals over 2 agents\s+cost \$0\.0000 reported,\s+\$3\.2 estimated from the streams of 1 worker \(messages no result line reported\), \$3\.2 combined/);
 }));
