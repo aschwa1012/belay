@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect } from 'claude-code/testing'
+import { test } from './support'
 import { band, boot, leaves, openPane, pane, squeezed, words } from './support'
 
 const LONG_RUN = 'render-20261008061234-abcdef'

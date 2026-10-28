@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect } from 'claude-code/testing'
+import { test } from './support'
 import { T0, RUN, boot, cmd, later, pane, openPane, words, colours } from './support'
 
 // The memory line and its one write action (ADR 0036 amendment, proposed): the Opus archive review, started only by two presses of the
