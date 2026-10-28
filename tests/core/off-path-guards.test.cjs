@@ -20,7 +20,7 @@ before(async () => {
   dir = sandbox();
   repo = makeRepo(dir);
   orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
-  await orch.run.attach({ adapter_pid: process.pid, project_dir: repo, max_fix_rounds: 1 });
+  await orch.run.attach({ adapter_pid: process.pid, project_dir: repo, fix_hard_cap: 1 });
   op = await openCore({ dataDir: `${dir}/data`, caller: callerFor('operator'), embed: false });
 });
 

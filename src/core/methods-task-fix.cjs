@@ -2,7 +2,7 @@
 // methods-task-fix.cjs — task.fixFromReview (ADR 0058 decision 3): the fix task a refuted review calls for, with the fields
 // the orchestrator prompt used to spell out inferred from the store. The fix depends on the task the review judged (ADR 0030:
 // the work it fixes, never the review), repairs the original work task (a fix of a fix repairs the same work, so the rounds
-// count against one cap, ADR 0031 decision 6), and is written by task.create, which enforces max_fix_rounds (E_FIX_ROUNDS).
+// count against one cap, ADR 0031 decision 6), and is written by task.create, which refuses past fix_hard_cap (E_FIX_ROUNDS) and returns a fix_notice past max_fix_rounds.
 
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
@@ -109,9 +109,15 @@ async function fixFromReview(E, caller, args) {
   const original = (judged.repairs && rows.current(E.store, 'task', judged.repairs)) || judged;
   // Called again for a review an open fix of this run already answers (the same review, or another refutation that fix took in),
   // that fix is returned, and no fix round is spent. A refutation decided after the fix was made is not in it: it gets its own.
-  const { refs, existing } = unanswered(E, caller, judged, review, repairs);
+  let { refs, existing } = unanswered(E, caller, judged, review, repairs);
   if (existing) return { ...existing, from_review: review.id, existing: true };
-  const tree = inheritedTree(judged);
+  await require('./methods-worktree.cjs').assertTreeListed(judged);
+  // The await let other calls run: another fix for this review may have been written, and the judged row's tree may have been
+  // removed. Read both again; nothing awaits between here and the task row's write.
+  const judgedNow = rows.current(E.store, 'task', judgedId) || judged;
+  ({ refs, existing } = unanswered(E, caller, judgedNow, review, repairs));
+  if (existing) return { ...existing, from_review: review.id, existing: true };
+  const tree = inheritedTree(judgedNow);
   const row = await T.create(E, caller, {
     spec: typeof args.spec === 'string' && args.spec.trim() ? args.spec : defaultSpec(refs, judged, original),
     acceptance: args.acceptance !== undefined ? args.acceptance : judged.acceptance,

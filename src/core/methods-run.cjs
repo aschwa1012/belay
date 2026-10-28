@@ -58,6 +58,14 @@ async function attach(E, caller, args) {
   if (fixCapGiven && args.max_fix_rounds !== null && !(Number.isSafeInteger(args.max_fix_rounds) && args.max_fix_rounds >= 0)) {
     throw err('E_ARGS', 'run.attach max_fix_rounds must be null or a non-negative integer', { max_fix_rounds: args.max_fix_rounds });
   }
+  const hardCapGiven = args.fix_hard_cap !== undefined;
+  if (hardCapGiven && args.fix_hard_cap !== null && !(Number.isSafeInteger(args.fix_hard_cap) && args.fix_hard_cap >= 0)) {
+    throw err('E_ARGS', 'run.attach fix_hard_cap must be null or a non-negative integer', { fix_hard_cap: args.fix_hard_cap });
+  }
+  const hardSrcGiven = args.fix_hard_cap_source !== undefined;
+  if (hardSrcGiven && args.fix_hard_cap_source !== null && (typeof args.fix_hard_cap_source !== 'string' || args.fix_hard_cap_source.length > 80)) {
+    throw err('E_ARGS', 'run.attach fix_hard_cap_source must be null or a short string', { fix_hard_cap_source: args.fix_hard_cap_source });
+  }
   const parallelGiven = args.max_parallel_evaluations !== undefined;
   if (parallelGiven && args.max_parallel_evaluations !== null && !(Number.isSafeInteger(args.max_parallel_evaluations) && args.max_parallel_evaluations > 0)) {
     throw err('E_ARGS', 'run.attach max_parallel_evaluations must be null or a positive integer', { max_parallel_evaluations: args.max_parallel_evaluations });
@@ -143,7 +151,8 @@ async function attach(E, caller, args) {
       // 6e-2, should-fix methods-run.cjs:45: a row the core itself appends over a paused row must not
       // inherit its paused_at/paused_by — this row is not itself paused, and api.md §2 promises both
       // null on every row that is not (writeWorker's own rule, unreachable here since this bypasses it).
-      appendDead(E, { ...w, state: 'dead', exited_at: w.exited_at == null ? t : w.exited_at, paused_at: null, paused_by: null }, by, t);
+      // ADR 0068 (proposed): the adapter that crashed wrote no end for this life, so its unreported turns are estimated here as run.end does.
+      appendDead(E, require('./cost-estimate.cjs').apply(E.dataDir, { ...w, state: 'dead', exited_at: w.exited_at == null ? t : w.exited_at, paused_at: null, paused_by: null }), by, t);
       marked.push(w.id);
     }
   }
@@ -180,6 +189,8 @@ async function attach(E, caller, args) {
     orch_effort_requested: effortGiven ? args.orch_effort_requested : (carryPause ? prev.orch_effort_requested : null),
     // ADR 0031 decision 6: the fix-round cap `belay run` launched with, same carry rule as the effort.
     max_fix_rounds: fixCapGiven ? args.max_fix_rounds : (carryPause ? prev.max_fix_rounds : null),
+    fix_hard_cap_source: hardSrcGiven ? args.fix_hard_cap_source : (carryPause ? prev.fix_hard_cap_source : null),
+    fix_hard_cap: hardCapGiven ? args.fix_hard_cap : (carryPause ? prev.fix_hard_cap : null), // same carry rule
     max_parallel_evaluations: parallelGiven ? args.max_parallel_evaluations : (carryPause ? prev.max_parallel_evaluations : null), // same carry rule
     memory_levers: leversGiven ? (args.memory_levers === null ? null : resolvedLevers) : (carryPause ? prev.memory_levers : null), // same carry rule
     project: projectGiven ? args.project : (carryPause ? prev.project : null),
@@ -366,6 +377,7 @@ async function writeWorker(E, caller, args) {
   if (merged.state === 'running' && !pidAlive(merged.pid)) {
     throw err('E_WORKER_NOT_LIVE', `worker ${args.id} cannot be written as ${merged.state} because pid ${merged.pid} is not alive`, { worker_id: args.id, pid: merged.pid == null ? null : merged.pid });
   }
+  require('./cost-estimate.cjs').apply(E.dataDir, merged); // a stopped or dead row's unreported last turn, from its stream
   const t = Date.now();
   // ADR 0026 amendment 1 (proposed): a first dead row releases the worker's leases unless a restart keeps them (keep_leases).
   const firstDead = merged.state === 'dead' && !(prev && prev.state === 'dead');

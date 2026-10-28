@@ -178,3 +178,24 @@ test('the review key worker_wait carries stays small: four titles a severity and
   assert.strictEqual(rv.blocking.titles.length, 4);
   assert.ok(B(JSON.stringify(rv)) < 700, String(B(JSON.stringify(rv))));
 });
+
+test('a refuted review of work at its fix rounds: the rounds fact stays whole beside the verdict and titles, uuid ids, long worker id', async () => {
+  const { capText } = await mod();
+  const WORK = '1c2d3e4f-0000-4000-8000-aaaaaaaaaaaa';
+  for (const hard of [null, 5]) {
+    for (const worker of ['reviewer-1', `w${'x'.repeat(63)}`]) {
+      for (const n of [0, 1, 3, 30]) {
+        const fs = Array.from({ length: n }, (_, i) => f(i % 2 ? 'should-fix' : 'blocking', `a title of about thirty-three ${i}`));
+        const row = { ...reviewRow(UUID, 'refuted', fs), run_id: 'r', depends_on: [WORK], handoff: { by: worker, at: 1 } };
+        row.results.checks.push(...['node a.js', 'node b.js'].map((x) => ({ kind: 'command', passed: false, argv: x.split(' '), exit_code: 1 })));
+        const work = { id: WORK, run_id: 'r', state: 'done', review: { state: 'refuted', rounds: 2, fix_rounds_used: 2, max_fix_rounds: 2, ...(hard ? { fix_hard_cap: hard } : {}) } };
+        const seen = new Map(); seen.pending = new Map([[UUID, { worker_id: worker, since: Date.now() }]]);
+        const t = wakeText((await RE.enrichWakes({ task: { list: async () => ({ tasks: [row, work] }) } }, 'r', [], seen))[0]);
+        assert.ok(B(t) <= RE.WAKE_TEXT_MAX && capText(t) === t, `${B(t)}: ${t}`);
+        assert.ok(t.includes(`fix rounds 2 of max 2${hard ? `, hard cap ${hard}` : ''}`), t);
+        if (n) assert.match(t, /findings|blocking/);
+        if (process.env.BELAY_SHOW_WAKES) console.log(B(t), t);
+      }
+    }
+  }
+});

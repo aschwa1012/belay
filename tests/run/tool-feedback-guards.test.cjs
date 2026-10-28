@@ -188,9 +188,12 @@ test('G: a hand-back released as the chain\'s loop ends, before the chain is cle
   const ev = RE.startRelease(w, ctx);
   await new Promise((r) => setImmediate(r)); // evaluate(A) is in flight
   resolveA({ id: 'A', state: 'done', results: { passed: true, executable: true, checks: [] } });
-  // The seam: the next turn's start runs in the microtask after A's answer, after the loop ended and before its .then clears w.evaluation.
+  // The seam: the next turn's start runs after the loop ended (ev.done) and before the promise's .then clears w.evaluation. It is gated on
+  // ev.done itself, not on a count of microtasks, so the awaits run() makes per task (workOf, recordFailure) do not move it.
   let second = null;
-  await Promise.resolve().then(() => { w.turns = 2; w.releaseIds = { turn: 2, ids: ['B'] }; second = RE.startRelease(w, ctx); });
+  for (let i = 0; i < 1000 && !ev.done; i += 1) await Promise.resolve();
+  assert.ok(ev.done && w.evaluation === ev, 'the window is open: the loop ended and the chain is not yet cleared');
+  w.turns = 2; w.releaseIds = { turn: 2, ids: ['B'] }; second = RE.startRelease(w, ctx);
   await ev.promise;
   assert.ok(second && second !== ev, 'B started a chain of its own');
   await second.promise;

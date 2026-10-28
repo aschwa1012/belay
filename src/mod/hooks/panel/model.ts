@@ -102,7 +102,7 @@ function normAgent(raw: unknown): BelayAgent | null {
   }
 }
 
-export type AgentsRead = Pick<BelayPanelSnap, 'runId' | 'mode' | 'startedAtMs' | 'pausedAtMs' | 'endedAtMs' | 'tasks' | 'maxFixRounds' | 'embedder' | 'agents' | 'footer'>
+export type AgentsRead = Pick<BelayPanelSnap, 'runId' | 'mode' | 'startedAtMs' | 'pausedAtMs' | 'endedAtMs' | 'tasks' | 'maxFixRounds' | 'fixHardCap' | 'fixHardCapSource' | 'embedder' | 'agents' | 'footer'>
 
 // Only belay's two words count; anything else is an unknown mode.
 const modeOf = (m: string | null): 'headless' | 'interactive' | null => (m === 'headless' || m === 'interactive' ? m : null)
@@ -122,7 +122,7 @@ export function normAgents(json: unknown): AgentsRead {
   return {
     runId: str(j.run_id), mode: modeOf(str(j.mode) ?? str(run.mode)),
     startedAtMs: num(j.started_at_ms), pausedAtMs: num(j.paused_at_ms), endedAtMs: num(j.ended_at_ms),
-    tasks, maxFixRounds: num(j.max_fix_rounds),
+    tasks, maxFixRounds: num(j.max_fix_rounds), fixHardCap: num(j.fix_hard_cap), fixHardCapSource: str(j.fix_hard_cap_source),
     embedder: str(j.embedder) ?? str(run.embedder), agents, footer,
   }
 }

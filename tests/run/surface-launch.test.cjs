@@ -297,21 +297,21 @@ async function orchestrate(sb, knob) {
   }
 }
 
-test('orchestrator: launched with --tools Read,Glob,Grep,Edit,Write, and its surface evidence names exactly those', async () => {
+test('orchestrator: launched with --tools Read,Glob,Grep,Edit,Write,Bash, and its surface evidence names exactly those', async () => {
   const sb = sandbox();
   try {
     const result = await orchestrate(sb, null);
-    assert.deepStrictEqual(result.orchestrator.surface.builtins, ['Edit', 'Glob', 'Grep', 'Read', 'Write'], JSON.stringify(result.orchestrator.surface));
+    assert.deepStrictEqual(result.orchestrator.surface.builtins, ['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write'], JSON.stringify(result.orchestrator.surface));
     const argv = JSON.parse(fs.readFileSync(path.join(sb.data, 'orch', 'argv.json'), 'utf8')).spec.args;
-    assert.strictEqual(argv[argv.indexOf('--tools') + 1], 'Read,Glob,Grep,Edit,Write');
+    assert.strictEqual(argv[argv.indexOf('--tools') + 1], 'Read,Glob,Grep,Edit,Write,Bash');
   } finally { cleanup(sb.data); }
 });
 
-test('orchestrator: an init that reports Bash aborts the run, naming it', async () => {
+test('orchestrator: an init that reports a tool beyond the list aborts the run, naming it', async () => {
   const sb = sandbox();
   try {
-    const result = await orchestrate(sb, 'six-tools');
-    assert.match(result.ended_by, /extra built-in tool\(s\) beyond ADR 0024's list: Bash(;|$)/, result.ended_by);
+    const result = await orchestrate(sb, 'extra-tool');
+    assert.match(result.ended_by, /extra built-in tool\(s\) beyond ADR 0024's list: Task(;|$)/, result.ended_by);
     assert.equal(result.orchestrator.exit_code === 0, false, 'the orchestrator was killed, not let finish on its own');
   } finally { cleanup(sb.data); }
 });
