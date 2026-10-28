@@ -20,6 +20,11 @@ const { cleanup } = require('../core/helpers.cjs');
 
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').split(path.sep).join('/');
 
+const waitFor = async (fn, what, ms = 60000) => {
+  const end = Date.now() + ms; // a hang guard, never the assertion
+  while (!fn()) { if (Date.now() > end) throw new Error('timed out waiting for ' + what); await new Promise((r) => setTimeout(r, 25)); }
+};
+
 const record = (queue) => ({ id: 'x', substrate: 'claude-code', launches: 1, queue, child: null, settled: false, turnWaiters: [], exitWaiters: [], readyWaiters: [] });
 
 test('a terminal row still queued when the next life launches is dropped and named, never written over the new life', async () => {
@@ -56,6 +61,10 @@ test('a restart of a worker whose dead row is still queued records that death fi
     const row = await m.spawn({ substrate: 'claude-code', worktree: `${d}/wt`, prompt: 'one', worker_id: 'lr' });
     await m.wait({ worker_ids: ['lr'], timeout_ms: 30000 }); // its first turn: the worker is idle
     const w = m._worker('lr');
+    // The creation-time read (about a second) restates the current state once when it lands (src/run/write-row.cjs).
+    // Let it land and drain before the gate goes in, or that extra row is queued among the ones this test orders.
+    await w.pidCreatedPromise; // its restate is queued when this settles
+    await waitFor(() => w.pidCreated != null || w.pidCreatedError, 'the creation-time read to resolve');
     await w.queue;
     const baseline = diffWorkers({ prev: {}, rows: (await core.worker.list({})).workers, runId: 'run-lr', nowMs: 0, graceMs: 0 }).next;
     // The seam: another write holds the queue, so the death's own row is queued behind it.
