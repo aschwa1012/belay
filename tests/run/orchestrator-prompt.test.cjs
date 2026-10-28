@@ -38,7 +38,7 @@ test('orchestrator prompt: every mcp__belay__ tool name the template mentions is
   assert.doesNotMatch(text, /no shell/i, 'the prompt no longer says the orchestrator has no shell');
   assert.match(text, /^- You may edit files and run shell commands; real code work is best delegated to a worker\. Prefer belay's tools for belay's work: they leave receipts and carry the run's authority\./m, 'the shell rule, on one line');
   assert.match(text, /`mcp__belay__git_read` \(status, log, diff, show\) reads git state/, "the git reads are belay's");
-  assert.match(text, /A `belay` CLI call from your shell is not the operator, and is refused as the operator\./, 'the headless template says its CLI calls are not the operator');
+  assert.match(text, /A belay CLI call from your shell is not the operator, and is refused as the operator\./, 'the headless template says its CLI calls are not the operator');
   const interactive = fs.readFileSync(path.join(ROOT, 'src/run/prompts/orchestrator-interactive.md'), 'utf8');
   assert.doesNotMatch(interactive, /no shell/i);
   assert.doesNotMatch(interactive, /not the operator/, "the interactive orchestrator is the operator's own session");
