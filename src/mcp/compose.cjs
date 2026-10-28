@@ -52,8 +52,10 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
     const raw = await callCore('task.assign', coreArgs);
     const out = withWarnings(withScratch(raw, coreArgs.worker_id), raw && overlapWarning(raw.overlaps));
     const not = (reason, extra) => ({ ...out, delivered: { sent: false, reason, ...extra } });
-    if (deliver === false) return not('deliver was false');
     const r = manager();
+    const rule = HB.rule(out, await HB.facts((id) => callCore('task.get', { task_id: id }), out)); // the hand-back rule for this task, sent below and kept for the worker
+    if (launchedHere(r, coreArgs.worker_id) && typeof r.retask === 'function') r.retask({ worker_id: coreArgs.worker_id, task_id: coreArgs.task_id, spec: out && out.task && out.task.spec, review: out && out.review, rule }); // the worker's current task follows the assignment, delivered or not
+    if (deliver === false) return not('deliver was false');
     if (!launchedHere(r, coreArgs.worker_id)) return not(`worker ${coreArgs.worker_id} was not launched by this session, so belay has no channel to it; send the task with worker_message`);
     const lease = out && out.new_lease ? out.new_lease.id : null;
     let head = `task ${coreArgs.task_id} lease=${lease}.`;
@@ -63,7 +65,7 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
     // note-review brief follows it, as at a spawn (handback.cjs, note-review.cjs).
     let tail = '';
     if (HB.isVerdict(out && out.task) && typeof r.reviewTail === 'function') { try { tail = (await r.reviewTail({ worker_id: coreArgs.worker_id, task_id: coreArgs.task_id })) || ''; } catch { tail = ''; } }
-    const text = `${head}\n\n${body}${out && out.scratch ? require('../run/review-scratch.cjs').firstLine(out.scratch) : ''}${out && out.review ? require('../run/review-scratch.cjs').treeLine(out.review) : ''}${HB.rule(out, await HB.facts((id) => callCore('task.get', { task_id: id }), out))}${tail}`;
+    const text = `${head}\n\n${body}${out && out.scratch ? require('../run/review-scratch.cjs').firstLine(out.scratch) : ''}${out && out.review ? require('../run/review-scratch.cjs').treeLine(out.review) : ''}${rule}${tail}`;
     try {
       const m = await r.message({ worker_id: coreArgs.worker_id, text });
       return { ...out, delivered: { ...m, sent: !m.queued, queued: !!m.queued } }; // queued: held for a compaction, written when it ends

@@ -85,7 +85,7 @@ const ROUTES = {
   // ADR 0043 decision 1: listed only when the run's knowledge_agent lever is on (toolsFor's knowledge option);
   // with the lever off the manager refuses it E_LEVER_OFF, and the listing never mentions it.
   knowledge_ask: { role: 'orchestrator', via: 'run', method: 'ask' },
-  // ADR 0054 decision 2: the orchestrator has no shell; belay runs these git reads for it with its own argv (git-read.cjs).
+  // ADR 0054 decision 2: belay runs these git reads with its own argv (git-read.cjs); the orchestrator's shell is the alternative.
   git_read: { role: 'orchestrator', via: 'git', method: 'gitRead' },
 };
 
@@ -171,7 +171,7 @@ const BOTH = [
 // the core's rows with view debug. The worker's listing keeps the plain one above, so its bytes are unchanged.
 const ORCH_TASK_LIST = {
   name: 'task_list',
-  description: 'Tasks: id, state, rev (row version), spec_head, depends_on, branch, lease, last results (failing named), hand-back field names. task_ids: those tasks with hand-back and checks whole. view debug: full rows.',
+  description: 'Tasks: id, state, spec_head, depends_on, branch, lease, last results (failing named), hand-back field names. task_ids: those tasks with hand-back and checks whole. view debug: full rows.',
   inputSchema: S({ states: strs('open, assigned, released, done or cancelled'), task_ids: strs(), view: DEBUG }),
 };
 
@@ -247,7 +247,7 @@ const ORCHESTRATOR = [
       }),
       files_owned: strs('Paths relative to the worktree'),
       depends_on: strs('Task ids that must be done before this one can be assigned'),
-      repairs: str('A fix task: the id of the work task it repairs; capped by max_fix_rounds'),
+      repairs: str('A fix task: the id of the work task it repairs; past max_fix_rounds the answer carries fix_notice'),
       base: str('Diff base'),
       tree_of: str('Work in that task\'s worktree (a conflict fix)'),
       worktree: { type: ['boolean', 'string'], description: 'Own tree: true from HEAD, or a base ref' },
@@ -306,7 +306,8 @@ const ORCHESTRATOR = [
       task_ids: strs(),
       into: str(),
       base: str('If into is new; default the tasks\' base'),
-      evaluate: bool(),
+      evaluate: { type: 'boolean', description: 'false skips the tasks\' re-runs' },
+      checks: { type: 'array', items: S({ argv: strs(), cwd: str(), timeout_ms: int() }, ['argv']), description: 'Extra commands run on the merged head, before the tasks re-run; all the commands of the call share one 540 s budget' },
       force: bool(),
       reason: str(),
       view: DEBUG,
@@ -314,7 +315,7 @@ const ORCHESTRATOR = [
   },
   {
     name: 'fix_from_review',
-    description: 'Create the fix task for a review evaluated refuted, with depends_on, repairs, acceptance and files_owned inferred and spec from its findings. Returns id, rev, state, spec_head, repairs, depends_on, files_owned (view debug: whole row).',
+    description: 'Create the fix task for a review evaluated refuted, with depends_on, repairs, acceptance and files_owned inferred and spec from its findings. Returns id, rev, state, spec_head, repairs, depends_on, files_owned, fix_notice past max_fix_rounds (view debug: whole row).',
     inputSchema: S({ review_id: str(), spec: str('Default: from the findings'), repairs: str('Which task, if it judged several'), id: str(), view: DEBUG }, ['review_id']),
   },
   {

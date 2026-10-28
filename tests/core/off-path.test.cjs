@@ -25,7 +25,7 @@ before(async () => {
   dir = sandbox();
   repo = makeRepo(dir);
   orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
-  await orch.run.attach({ adapter_pid: process.pid, project_dir: repo, max_fix_rounds: 1 });
+  await orch.run.attach({ adapter_pid: process.pid, project_dir: repo, fix_hard_cap: 1 });
 });
 
 after(async () => {
@@ -173,7 +173,7 @@ test('tree_of: a conflict fix is worked in the work\'s tree from its own base, s
   const landed = await orch.integration.merge({ task_ids: [f.id], into: 'int/off' });
   const m = landed.merged.find((x) => x.task_id === f.id);
   assert.ok(m && m.covers.includes(w.id) && m.covers.includes(f.id), JSON.stringify(landed.merged));
-  // max_fix_rounds is 1 and no fix round was spent: a review fix of the work can still be made.
+  // fix_hard_cap is 1 and no fix round was spent: a review fix of the work can still be made.
   assert.strictEqual((await orch.task.create({ spec: 'a review fix', repairs: w.id, acceptance: PASS })).repairs, w.id);
 });
 
