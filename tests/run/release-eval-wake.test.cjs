@@ -76,3 +76,25 @@ test('the headless idle close holds for a watched evaluation of a live worker of
   assert.deepStrictEqual(RE.evaluatingHolds(seen, rows, 'r'), ['eval:t1']);
   assert.deepStrictEqual(RE.evaluatingHolds(new Map(), rows, 'r'), []);
 });
+
+test('a refuted review\'s follow-up wake names the work\'s fix rounds in this run and max_fix_rounds, inside the budget', async () => {
+  const { capText, byteLength } = await mod();
+  const verdict = { kind: 'verdict', executable: true, passed: false };
+  const review = { id: `${UUID}`, run_id: 'r', state: 'released', depends_on: ['work1'], handoff: { by: LONG_ID, at: 1 }, results: { trigger: 'release', evaluated_at: 2, passed: false, executable: true, checks: [verdict] } };
+  const work = { id: 'work1', run_id: 'r', state: 'done', review: { state: 'refuted', rounds: 2, fix_rounds_used: 2, max_fix_rounds: 2 } };
+  const core = { task: { list: async () => ({ tasks: [review, work] }) } };
+  const seen = new Map();
+  seen.pending = new Map([[review.id, { worker_id: LONG_ID, since: Date.now() }]]);
+  const out = await RE.enrichWakes(core, 'r', [], seen);
+  const worst = wakeText(out[0]);
+  assert.ok(byteLength(worst) <= RE.WAKE_TEXT_MAX && capText(worst) === worst, 'even cut, it fits');
+  const s1 = new Map(); s1.pending = new Map([[review.id, { worker_id: 'w1', since: Date.now() }]]);
+  const text = wakeText((await RE.enrichWakes(core, 'r', [], s1))[0]);
+  assert.match(text, /work work1: fix rounds used in this run 2, max_fix_rounds 2/);
+  assert.ok(byteLength(text) <= RE.WAKE_TEXT_MAX && capText(text) === text, text);
+  // a run that sets no max_fix_rounds, or a review that holds, says nothing about rounds
+  const none = { ...work, review: { ...work.review, max_fix_rounds: null } };
+  const s2 = new Map(); s2.pending = new Map([[review.id, { worker_id: 'w1', since: Date.now() }]]);
+  const out2 = await RE.enrichWakes({ task: { list: async () => ({ tasks: [review, none] }) } }, 'r', [], s2);
+  assert.ok(!/fix round/.test(wakeText(out2[0])));
+});

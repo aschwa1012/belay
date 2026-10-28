@@ -48,8 +48,10 @@ async function judge(task, verdict) {
   return r;
 }
 
-const reviewOf = async (id) => (await orch.task.get({ task_id: id })).review;
-const listed = async (id, states) => (await orch.task.list(states ? { states } : {})).tasks.find((t) => t.id === id).review;
+const facts = ({ fix_rounds_used, max_fix_rounds, ...rest }) => rest; // the two fix-round facts are pinned in their own test
+const reviewOf = async (id) => { const r = (await orch.task.get({ task_id: id })).review; return r && facts(r); };
+const reviewFull = async (id) => (await orch.task.get({ task_id: id })).review;
+const listed = async (id, states) => facts((await orch.task.list(states ? { states } : {})).tasks.find((t) => t.id === id).review);
 
 test('work with no review reads null; a review not yet judged reads pending; one that holds reads holds', async () => {
   const w = await orch.task.create({ spec: 'work a', acceptance: PASS });
@@ -214,9 +216,20 @@ test('a refutation decided in the same millisecond a fix was made is not answere
     const f = { id: 'f', state: 'done', repairs: 'w', depends_on: ['w'], run_id: 'r' }; // no answers: a row from before the field
     const fr = { id: 'fr', ...done, acceptance: { verdict: true }, depends_on: ['f'], results: { evaluated_at: 200, checks: [] } };
     const ix = { born: new Map([['w', { s: 1, at: 1 }], ['rv', { s: 2, at: 2 }], ['f', { s: 3, at: fixBorn }], ['fr', { s: 4, at: 150 }]]),
-      reviewsOf: new Map([['w', [r]], ['f', [fr]]]), fixesOf: new Map([['w', [f]]]), caps: new Map() };
+      reviewsOf: new Map([['w', [r]], ['f', [fr]]]), fixesOf: new Map([['w', [f]]]), caps: new Map(), notice: new Map() };
     return RS.ofTask(w, ix).state;
   };
   assert.strictEqual(run(100), 'refuted', 'a tie is not an answer');
   assert.strictEqual(run(101), 'holds', 'a fix made after the refutation, whose review held, answers it');
+});
+
+test('the review carries the fix rounds this run has used and the run max_fix_rounds (null when the run sets none)', async () => {
+  const w = await orch.task.create({ spec: 'work facts', acceptance: PASS });
+  await doneWork(w);
+  const r = await judge(w, 'refuted');
+  assert.deepStrictEqual([(await reviewFull(w.id)).fix_rounds_used, (await reviewFull(w.id)).max_fix_rounds], [0, null], 'this file attaches a hard cap only');
+  await orch.run.attach({ adapter_pid: process.pid, max_fix_rounds: 1, fix_hard_cap: 2 });
+  await orch.task.fixFromReview({ review_id: r.id });
+  const got = await reviewFull(w.id);
+  assert.deepStrictEqual([got.fix_rounds_used, got.max_fix_rounds, got.rounds], [1, 1, 1]);
 });

@@ -104,7 +104,7 @@ async function create(E, caller, args, own = {}) { // own: core-internal, task.f
     if (hard != null && used >= hard) {
       throw err('E_FIX_ROUNDS', `task ${repairs} already has ${used} fix task${used === 1 ? '' : 's'} and this run's fix_hard_cap is ${hard}; nothing was written`, { task_id: id, repairs, fix_rounds_used: used, fix_hard_cap: hard });
     }
-    if (cap != null && used >= cap) fixNotice = `task ${repairs} now has ${used + 1} fix tasks, past max_fix_rounds ${cap}`;
+    if (cap != null && used >= cap) fixNotice = `task ${repairs} now has ${used + 1} fix task${used === 0 ? '' : 's'} in this run, past max_fix_rounds ${cap}`;
   }
 
   let overlaps = [];

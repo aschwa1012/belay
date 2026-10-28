@@ -31,7 +31,8 @@ function index(store, tasks) {
     } else if (t.repairs) (fixesOf.get(t.repairs) || fixesOf.set(t.repairs, []).get(t.repairs)).push(t);
   }
   const caps = new Map(rows.currentAll(store, 'run').map((r) => [r.id, r.fix_hard_cap == null ? null : Number(r.fix_hard_cap)]));
-  return { born, reviewsOf, fixesOf, caps };
+  const notice = new Map(rows.currentAll(store, 'run').map((r) => [r.id, r.max_fix_rounds == null ? null : Number(r.max_fix_rounds)]));
+  return { born, reviewsOf, fixesOf, caps, notice };
 }
 
 const decidedAt = (r) => Number(r.results && r.results.evaluated_at) || 0;
@@ -69,7 +70,7 @@ function deciding(reviews, fixes, ix) {
   return last || latest(reviews, (r) => ix.born.get(r.id).s);
 }
 
-// `{ state: holds|refuted|pending, review_id, rounds, rounds_left }` for a work task or one of its fixes, from the review over the
+// `{ state: holds|refuted|pending, review_id, rounds, rounds_left, fix_rounds_used, max_fix_rounds }` (the last two: the fix tasks this run made for the work, and the run's notice threshold) for a work task or one of its fixes, from the review over the
 // chain that decides (deciding); null for work no review has named (a review task, unless something reviews it). `rounds` is the
 // fix tasks made for the work; `rounds_left` is what its run's fix_hard_cap allows beyond them (null with no hard cap, the default), so
 // `refuted` with 0 left is work whose review failed with no fix round to spend.
@@ -82,7 +83,7 @@ function ofTask(task, ix) {
   const runId = fixes.length ? fixes[fixes.length - 1].run_id : task.run_id;
   const cap = ix.caps.has(runId) ? ix.caps.get(runId) : null;
   const used = fixes.filter((f) => f.run_id === runId).length;
-  return { state: verdictOf(last), review_id: last.id, rounds: fixes.length, rounds_left: cap == null ? null : Math.max(0, cap - used) };
+  return { state: verdictOf(last), review_id: last.id, rounds: fixes.length, rounds_left: cap == null ? null : Math.max(0, cap - used), fix_rounds_used: used, max_fix_rounds: ix.notice.has(runId) ? ix.notice.get(runId) : null };
 }
 
 module.exports = { index, ofTask, verdictOf, answersOf, isReview };

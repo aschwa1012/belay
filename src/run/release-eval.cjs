@@ -24,9 +24,19 @@ const beside = (c) => { const n = Array.isArray(c.concurrent) ? c.concurrent.len
 const failedKinds = (row) => ((row.results && row.results.checks) || []).filter((c) => !c.passed)
   .map((c) => (c.kind === 'command' ? `command ${Array.isArray(c.argv) ? c.argv.slice(0, 3).join(' ') : '?'}${c.exit_code != null ? ` exit ${c.exit_code}` : ''}${beside(c)}` : c.kind));
 
-function summaryOf(row) {
+// A refuted review's wake names the fix rounds the reviewed work has used in this run and the run's max_fix_rounds, read from the work's derived `review` (facts, so the orchestrator sees the count before it asks for another fix).
+function fixRoundsOf(row, byId) {
   const r = row.results || {};
-  return { task_id: row.id, state: row.state, passed: !!r.passed, executable: !!r.executable, checks: ((r.checks) || []).length, failing: failedKinds(row), ...(r.flaky ? { flaky: true } : {}), ...(r.uncommitted ? { uncommitted: true } : {}), ...(r.queued ? { queued: r.queued } : {}) };
+  const dep = byId && Array.isArray(row.depends_on) && row.depends_on.length === 1 ? byId.get(row.depends_on[0]) : null;
+  const rv = dep && dep.review;
+  if (!rv || r.passed || !r.executable || !(r.checks || []).some((c) => c.kind === 'verdict') || rv.max_fix_rounds == null) return null;
+  return { work: dep.id, used: rv.fix_rounds_used, max: rv.max_fix_rounds };
+}
+
+function summaryOf(row, byId) {
+  const r = row.results || {};
+  const fr = fixRoundsOf(row, byId);
+  return { task_id: row.id, state: row.state, passed: !!r.passed, executable: !!r.executable, checks: ((r.checks) || []).length, failing: failedKinds(row), ...(r.flaky ? { flaky: true } : {}), ...(r.uncommitted ? { uncommitted: true } : {}), ...(r.queued ? { queued: r.queued } : {}), ...(fr ? { fix_rounds: fr } : {}) };
 }
 
 const unevaluated = (t, runId, workerId) => t.run_id === runId && t.state === 'released' && t.handoff && t.handoff.by === workerId
@@ -139,7 +149,7 @@ function clause(evs, room) {
   const parts = evs.map((e) => `${one(e)}${waited(e)}`);
   function one(e) { return (e.error === 'E_BUSY' ? `task ${e.task_id} not evaluated at release: another evaluation of it is running`
     : e.error ? `task ${e.task_id} could not be evaluated at release (${e.error}); call task_evaluate to run it`
-    : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}` : `not done; failing: ${e.failing.join(', ') || 'no executable check'}`}`); }
+    : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}` : `not done; failing: ${e.failing.join(', ') || 'no executable check'}${e.fix_rounds ? `; work ${e.fix_rounds.work}: fix rounds used in this run ${e.fix_rounds.used}, max_fix_rounds ${e.fix_rounds.max}` : ''}`}`); }
   return cut(` ${parts.join('; ')}.`, room);
 }
 
@@ -184,7 +194,7 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
   const settle = (h) => {
     h.ids = h.ids.filter((id) => {
       const t = byId.get(id);
-      if (t && landed(t)) { seen.set(id, t.results.evaluated_at); pending.delete(id); h.evs.push(summaryOf(t)); return false; }
+      if (t && landed(t)) { seen.set(id, t.results.evaluated_at); pending.delete(id); h.evs.push(summaryOf(t, byId)); return false; }
       const f = t && unevaluated(t, runId, h.ev.worker_id) && failedOf(t, h.ev.turn);
       if (f) { pending.delete(id); const s = failure(f); if (s) h.evs.push(s); return false; }
       if (!t || !unevaluated(t, runId, h.ev.worker_id)) { pending.delete(id); return false; }
@@ -205,7 +215,7 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     const evs = []; const ing = [];
     for (const t of tasks) {
       if (t.run_id !== runId || !t.handoff || t.handoff.by !== ev.worker_id) continue;
-      if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); evs.push(summaryOf(t)); } else if (unevaluated(t, runId, ev.worker_id) && failedOf(t, ev.turn)) { const s = failure(failedOf(t, ev.turn)); if (s) evs.push(s); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: t0, turn: ev.turn }); ing.push(t.id); }
+      if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); evs.push(summaryOf(t, byId)); } else if (unevaluated(t, runId, ev.worker_id) && failedOf(t, ev.turn)) { const s = failure(failedOf(t, ev.turn)); if (s) evs.push(s); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: t0, turn: ev.turn }); ing.push(t.id); }
     }
     if (ing.length && holdMs > 0) { held.set(ev.worker_id, { ev, evs, ids: ing, since: t0 }); continue; }
     if (evs.length) ev.evaluated = evs;
@@ -223,7 +233,7 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     if (t && landed(t)) {
       seen.set(id, t.results.evaluated_at); pending.delete(id);
       if (!follow.has(p.worker_id)) follow.set(p.worker_id, []);
-      follow.get(p.worker_id).push(summaryOf(t));
+      follow.get(p.worker_id).push(summaryOf(t, byId));
     } else if (t && unevaluated(t, runId, p.worker_id) && failedOf(t, p.turn)) {
       pending.delete(id);
       const s = failure(failedOf(t, p.turn));

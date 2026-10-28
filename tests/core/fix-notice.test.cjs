@@ -28,14 +28,14 @@ test('the default (2): no notice for the first two fixes, then one on each later
   const work = await orch.task.create({ spec: 'work' });
   const got = await notices(work, 4);
   assert.deepStrictEqual(got.slice(0, 2), [undefined, undefined]);
-  assert.strictEqual(got[2], `task ${work.id} now has 3 fix tasks, past max_fix_rounds 2`);
-  assert.strictEqual(got[3], `task ${work.id} now has 4 fix tasks, past max_fix_rounds 2`);
+  assert.strictEqual(got[2], `task ${work.id} now has 3 fix tasks in this run, past max_fix_rounds 2`);
+  assert.strictEqual(got[3], `task ${work.id} now has 4 fix tasks in this run, past max_fix_rounds 2`);
 });
 
 test('max_fix_rounds 0: the first fix carries the notice', async () => {
   await orch.run.attach({ adapter_pid: process.pid, max_fix_rounds: 0 });
   const work = await orch.task.create({ spec: 'w0' });
-  assert.match((await orch.task.create({ spec: 'f', repairs: work.id })).fix_notice, /now has 1 fix tasks, past max_fix_rounds 0/);
+  assert.match((await orch.task.create({ spec: 'f', repairs: work.id })).fix_notice, /now has 1 fix task in this run, past max_fix_rounds 0/);
 });
 
 test('a hard cap refuses with nothing written; the notice still comes below it', async () => {

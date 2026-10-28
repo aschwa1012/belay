@@ -92,7 +92,7 @@ task. A `worker_message` sent while the worker compacts answers `queued: true`; 
      review task that depends on the fix. A failed acceptance check is not a fix round: message the
      worker or create a plain task, without repairs. The fix-round limit is
      {{max_fix_rounds}} per work task: after {{max_fix_rounds}} fix rounds belay still creates the fix, and its answer carries a
-     `fix_notice` with the count; whether one more round will do is your judgement. If you stop, end the run and name the open blocking
+     `fix_notice` with the count; whether one more round will do is your judgement. If you stop, cancel the fix task just made with `mcp__belay__task_cancel` (an open one holds its files), then end the run and name the open blocking
      findings for the human; never report it as passing or mark it done. {{fix_cutoff_rule}}
 
 ## Rules of thumb

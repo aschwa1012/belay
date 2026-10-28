@@ -24,7 +24,7 @@ test('notes on: the orchestrator lists memory_summaries inside the budget; off, 
   const off = tools.toolsFor('orchestrator');
   const on = tools.toolsFor('orchestrator', { notes: true });
   console.log(`orchestrator listing: off ${bytes(off)}, notes on ${bytes(on)}, budget ${tools.BUDGET.orchestrator}`);
-  assert.strictEqual(bytes(off), 13784); // 13,803 before task_list stopped naming rev, 13,725 before the integrate-check budget wording, 13,431 before integrate checks, 13,213 before the queued-evaluation wording, 13,018 before the follow-up wording, 14,530 before the wording audit, 14,236 before the task_create amend and tree_of, 14,185 before the task_create base, 13,982 before the lean replies, 13,921 before ADR 0060 judged heads, 13,827 before ADR 0060, 13,728 before the integration state, 13,360 before the compact task views, 13,321 before ADR 0059, 9,900 before ADR 0053 and ADR 0054, 9,829 before the paired write/search contract
+  assert.strictEqual(bytes(off), 13841); // 13,784 before the fix_notice wording, 13,803 before task_list stopped naming rev, 13,725 before the integrate-check budget wording, 13,431 before integrate checks, 13,213 before the queued-evaluation wording, 13,018 before the follow-up wording, 14,530 before the wording audit, 14,236 before the task_create amend and tree_of, 14,185 before the task_create base, 13,982 before the lean replies, 13,921 before ADR 0060 judged heads, 13,827 before ADR 0060, 13,728 before the integration state, 13,360 before the compact task views, 13,321 before ADR 0059, 9,900 before ADR 0053 and ADR 0054, 9,829 before the paired write/search contract
   assert.deepStrictEqual(on.map((t) => t.name).slice(-3), ['memory_summaries', 'memory_note_refutation', 'memory_report']);
   assert.ok(bytes(on) <= tools.BUDGET.orchestrator);
   // memory_verify is unlisted and memory_store states a note (notes-listing.test.cjs)
@@ -83,7 +83,7 @@ test('every combination, measured on the module and on the wire, is inside its b
     assert.ok(bytes(wire) <= tools.BUDGET[role], name);
   }
   assert.strictEqual(bytes(rows[0][2]), 3557); // 4,842 before ADR 0010 amendment 14; 4,965 before the paired write/search contract
-  assert.strictEqual(bytes(rows[2][2]), 13784);
+  assert.strictEqual(bytes(rows[2][2]), 13841);
   assert.ok(!rows[2][2].some((t) => t.name === 'permission_list' || t.name === 'permission_decide'), 'the permission tools are unlisted without the run lever');
   assert.deepStrictEqual(rows[6][2].map((t) => t.name).filter((n) => n.startsWith('permission_')), ['permission_list', 'permission_decide'], 'and listed with it');
 });
