@@ -11,6 +11,7 @@ const WRITE_TIMEOUT_MS = 30000;
 const REPING_BEFORE_LOST_MS = 2000; // E2: a live pid that missed the first ping gets one longer chance (a fork on its loop stalls it 80-365 ms)
 const PING_BEFORE_VECTOR_MS = 300; // MF3-1: the liveness ping a vector call sends before waiting its long bound
 const EVALUATE_TIMEOUT_MS = 600000; // task.evaluate runs the acceptance commands inside the owner
+const RELEASE_EVALUATE_TIMEOUT_MS = 12 * 3600000; // a release evaluation may queue for a slot without bound (max_parallel_evaluations), then runs its own budget
 const WORKTREE_TIMEOUT_MS = 300000; // ADR 0053: a checkout of a large tree, its junctions, and the row
 
 // 5a-3 fix round (blocking): owner.json is rewritten non-atomically at the moment a loser's connect
@@ -47,6 +48,7 @@ function vectorLimit(method, params) {
 }
 
 function writeTimeoutFor(method, params) {
+  if (method === 'task.evaluate' && params && params.trigger === 'release') return RELEASE_EVALUATE_TIMEOUT_MS;
   if (method === 'task.evaluate' || method === 'integration.merge') return EVALUATE_TIMEOUT_MS; // ADR 0053: a merge re-runs acceptance commands
   if (method === 'task.worktreeCreate' || method === 'task.worktreeRemove' || method === 'task.worktreeSweep' || method === 'integration.remove') return WORKTREE_TIMEOUT_MS;
   if (method === 'memory.embedQuery') return EMBEDDING_READ_TIMEOUT_MS; // one embed of the query, bounded like a search's
@@ -67,4 +69,4 @@ function writeTimeoutFor(method, params) {
 const RERUN_SAFE_AFTER_SEND = new Set(['memory.store', 'permission.wait']);
 const MIN_RERUN_LEFT_MS = 1000; // a memory.store re-run needs at least this much of its first limit left, or it is not re-run
 
-module.exports = { ELECTION_PING_TIMEOUT_MS, READ_TIMEOUT_MS, EMBEDDING_READ_TIMEOUT_MS, WRITE_TIMEOUT_MS, REPING_BEFORE_LOST_MS, PING_BEFORE_VECTOR_MS, EVALUATE_TIMEOUT_MS, rereadOwnerPid, rereadOwnerLock, readTimeoutFor, warmLimit, vectorLimit, writeTimeoutFor, RERUN_SAFE_AFTER_SEND, MIN_RERUN_LEFT_MS };
+module.exports = { ELECTION_PING_TIMEOUT_MS, READ_TIMEOUT_MS, EMBEDDING_READ_TIMEOUT_MS, WRITE_TIMEOUT_MS, REPING_BEFORE_LOST_MS, PING_BEFORE_VECTOR_MS, EVALUATE_TIMEOUT_MS, RELEASE_EVALUATE_TIMEOUT_MS, rereadOwnerPid, rereadOwnerLock, readTimeoutFor, warmLimit, vectorLimit, writeTimeoutFor, RERUN_SAFE_AFTER_SEND, MIN_RERUN_LEFT_MS };
