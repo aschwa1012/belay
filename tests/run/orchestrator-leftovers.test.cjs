@@ -1,6 +1,7 @@
 'use strict';
-// orchestrator-leftovers.test.cjs — ADR 0054 amendment 2: what a headless orchestrator's shell left running is ended at the close,
-// by exact pid after its identity is checked again; a process that is not its descendant, or whose pid no longer matches, is not.
+// orchestrator-leftovers.test.cjs — ADR 0054 amendment 2: what a headless orchestrator's shell left running is ended once the run's
+// own close is done, by exact pid after its identity is checked again. The orchestrator's MCP adapter, the workers belay spawned
+// (the spawn register) and their subtrees are belay's own and are never taken.
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -10,6 +11,7 @@ const { spawn } = require('node:child_process');
 
 const { runOrchestrator } = require('../../src/run/orchestrator.cjs');
 const { createLeftovers } = require('../../src/run/orchestrator-leftovers.cjs');
+const SR = require('../../src/core/spawn-register.cjs');
 const { createFakeCore } = require('./fake-core.cjs');
 const { cleanup } = require('../core/helpers.cjs');
 const P = require('../../src/run/process.cjs');
@@ -28,57 +30,98 @@ async function pidFrom(file, ms = 8000) {
   throw new Error(`no pid in ${file}`);
 }
 
-test('a process the orchestrator\'s shell started is ended at the close; an unrelated process is not', async () => {
+const KNOBS = ['BELAY_CLAUDE_EXE', 'BELAY_SPAWN_REGISTRY', 'FAKE_ORPHAN_CHILD', 'FAKE_CHILD_PID_FILE', 'FAKE_ADAPTER_CHILD', 'FAKE_ADAPTER_PIDFILE', 'FAKE_WORKER_PIDFILE', 'FAKE_SIBLING_CHILD'];
+
+test("at the close the shell's stray process is ended; the adapter, a spawned worker and their subtrees are not", async () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-leftovers-'));
   fs.mkdirSync(path.join(d, 'wt'));
   const dataDir = fwd(path.join(d, '.belay'));
   fs.mkdirSync(dataDir, { recursive: true });
-  const kidFile = path.join(d, 'kid.pid');
-  const otherFile = path.join(d, 'other.pid');
-  const other = spawn(process.execPath, [HELPER], { stdio: 'ignore', windowsHide: true, env: { ...process.env, FAKE_HELPER_PIDFILE: otherFile } });
-  const saved = { exe: process.env.BELAY_CLAUDE_EXE, orphan: process.env.FAKE_ORPHAN_CHILD, pf: process.env.FAKE_CHILD_PID_FILE };
-  process.env.BELAY_CLAUDE_EXE = FAKE; process.env.FAKE_ORPHAN_CHILD = '1'; process.env.FAKE_CHILD_PID_FILE = kidFile; // a detached child, as the fake's own knob makes it: it survives the fake's exit
-  let kid = null;
+  const f = (n) => path.join(d, n);
+  const saved = Object.fromEntries(KNOBS.map((k) => [k, process.env[k]]));
+  Object.assign(process.env, {
+    BELAY_CLAUDE_EXE: FAKE, BELAY_SPAWN_REGISTRY: f('registry'),
+    FAKE_ORPHAN_CHILD: '1', FAKE_CHILD_PID_FILE: f('stray.pid'), // the shell's own background process
+    FAKE_ADAPTER_CHILD: '1', FAKE_ADAPTER_PIDFILE: f('adapter.pid'), FAKE_WORKER_PIDFILE: f('adapters-worker.pid'), // the adapter, and the worker it spawned
+    FAKE_SIBLING_CHILD: f('registered.pid'), // a worker the spawn register names, outside the adapter's subtree
+  });
+  const kids = [];
+  const other = spawn(process.execPath, [HELPER], { stdio: 'ignore', windowsHide: true, env: { ...process.env, FAKE_HELPER_PIDFILE: f('other.pid') } });
   try {
-    await pidFrom(otherFile);
     const core = createFakeCore();
     core.worker = { ...core.worker, list: async () => ({ workers: [] }) };
+    // The run row names the adapter the way the real one attaches: its pid and creation time, read when the close asks.
+    core.run = { ...core.run, get: async () => {
+      const pid = await pidFrom(f('adapter.pid'));
+      const c = await P.createdOf(pid);
+      return { run: { adapter_pid: pid, adapter_pid_created: c && c.created } };
+    } };
+    // The register names the sibling once its pid is known, as the adapter's spawn would; reading the register is what the close does.
+    const registerSibling = async () => { const pid = await pidFrom(f('registered.pid')); SR.register({ pid, kind: 'worker', dataDir, workerId: 'w-registered', created: (await P.createdOf(pid)).created }); };
+    const getRun = core.run.get;
+    core.run.get = async () => { await registerSibling(); return getRun(); };
     const result = await runOrchestrator({
       core, runId: 'run-leftovers', dataDir,
       spec: { worktree: fwd(path.join(d, 'wt')), promptText: 'hello', orchestratorDir: fwd(path.join(d, 'orch')), model: 'claude-sonnet-5', allowedTools: null, startupTimeoutMs: 8000, timeoutMs: 0, mcpToolTimeoutMs: 60000, pollMs: 100, closeGraceMs: 3000 },
       onAttached: async () => ({ ok: true }),
     });
-    kid = await pidFrom(kidFile);
-    assert.ok(result.leftovers, 'the result names what was found: ' + JSON.stringify(result));
-    assert.ok(result.leftovers.found.includes(kid) && !result.leftovers.found.includes(other.pid), "the shell's process is found, the unrelated one is not");
-    assert.ok(result.leftovers.killed.includes(kid), 'and ended by its pid: ' + JSON.stringify(result.leftovers));
-    assert.strictEqual(P.pidAlive(kid), false, 'the shell\'s process is gone when the run is reported over');
-    assert.strictEqual(P.pidAlive(other.pid), true, 'a process that is not its descendant is left alone');
+    const stray = await pidFrom(f('stray.pid'));
+    const adapter = await pidFrom(f('adapter.pid'));
+    const adaptersWorker = await pidFrom(f('adapters-worker.pid'));
+    const registered = await pidFrom(f('registered.pid'));
+    kids.push(stray, adapter, adaptersWorker, registered);
+    assert.strictEqual(P.pidAlive(stray), true, "nothing is ended before the run's own close is done");
+    assert.strictEqual(typeof result.endLeftovers, 'function');
+    assert.strictEqual(Object.keys(result).includes('endLeftovers'), false, 'and the function is not part of the receipt');
+
+    const l = await result.endLeftovers();
+    assert.ok(l.found.includes(stray) && l.killed.includes(stray), "the shell's process is found and ended by its pid: " + JSON.stringify(l));
+    for (const [name, pid] of [['the adapter', adapter], ["the adapter's worker", adaptersWorker], ['the registered worker', registered], ['an unrelated process', other.pid]]) {
+      assert.ok(!l.found.includes(pid), `${name} is not taken`);
+      assert.strictEqual(P.pidAlive(pid), true, `${name} is still running`);
+    }
+    assert.strictEqual(P.pidAlive(stray), false);
   } finally {
-    for (const [k, v] of [['BELAY_CLAUDE_EXE', saved.exe], ['FAKE_ORPHAN_CHILD', saved.orphan], ['FAKE_CHILD_PID_FILE', saved.pf]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
-    if (kid && P.pidAlive(kid)) { try { process.kill(kid, 'SIGKILL'); } catch { /* gone */ } }
-    try { process.kill(other.pid, 'SIGKILL'); } catch { /* gone */ }
+    for (const k of KNOBS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+    for (const pid of [...kids, other.pid]) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
     cleanup(d);
   }
 });
 
-test('a recorded descendant whose pid now belongs to another process (a different creation time) is refused, not killed', async () => {
+test('a captured descendant whose pid now belongs to another process (a different creation time) is refused, not killed', async () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-leftovers-'));
   const pidFile = path.join(d, 'p.pid');
   const stranger = spawn(process.execPath, [HELPER], { stdio: 'ignore', windowsHide: true, env: { ...process.env, FAKE_HELPER_PIDFILE: pidFile } });
   try {
     await pidFrom(pidFile);
     const real = await P.createdOf(stranger.pid);
-    assert.ok(real && real.created != null, 'the stranger\'s creation time is readable');
-    const parent = { pid: process.pid, exitCode: null, signalCode: null };
-    const fakeP = { createdOf: async () => ({ created: 1 }), descendantTargets: async () => [{ pid: stranger.pid, created: real.created - 60000, image: real.image }], killMany: (t) => P.killMany(t) };
-    const state = {};
-    const l = createLeftovers({ child: parent, P: fakeP, state });
+    assert.ok(real && real.created != null, "the stranger's creation time is readable");
+    // The capture sees the stranger as a child of the orchestrator with an earlier creation time than it really has: the pid was reused.
+    const snap = new Map([[process.pid, { created: 1, ppid: null }], [stranger.pid, { created: real.created - 60000, ppid: process.pid, image: real.image }]]);
+    snap.get(stranger.pid).created = Math.max(2, real.created - 60000);
+    const fakeP = { snapshotShared: async () => ({ snap }), killMany: (t) => P.killMany(t) };
+    const l = createLeftovers({ child: { pid: process.pid, exitCode: null, signalCode: null }, P: fakeP, state: {}, owned: async () => ({ adapterKnown: true, list: [] }) });
     await l.capture();
     const r = await l.end();
+    assert.deepStrictEqual(r.found, [stranger.pid]);
     assert.deepStrictEqual(r.killed, []);
     assert.strictEqual(r.refused.length, 1);
-    assert.strictEqual(r.refused[0].pid, stranger.pid);
     assert.strictEqual(P.pidAlive(stranger.pid), true, 'the process that took the pid is untouched');
   } finally { try { process.kill(stranger.pid, 'SIGKILL'); } catch { /* gone */ } cleanup(d); }
+});
+
+test('with no adapter named in the run row, or the owned processes unreadable, nothing is taken and the receipt says why', async () => {
+  const child = { pid: process.pid, exitCode: null, signalCode: null };
+  const snap = new Map([[process.pid, { created: 5, ppid: null }], [900001, { created: 6, ppid: process.pid, image: 'node.exe' }]]);
+  const killed = [];
+  const fakeP = { snapshotShared: async () => ({ snap }), killMany: async (t) => { killed.push(...t); return []; } };
+  const l = createLeftovers({ child, P: fakeP, state: {}, owned: async () => ({ adapterKnown: false, list: [] }) });
+  await l.capture();
+  const r = await l.end();
+  assert.deepStrictEqual(r.found, []);
+  assert.match(r.not_taken, /names no adapter/);
+  const l2 = createLeftovers({ child, P: fakeP, state: {}, owned: async () => { throw new Error('boom'); } });
+  await l2.capture();
+  assert.match((await l2.end()).not_taken, /could not be read: boom/);
+  assert.deepStrictEqual(killed, []);
 });

@@ -1,36 +1,62 @@
 'use strict';
 // orchestrator-leftovers.cjs — the processes a headless orchestrator's shell started and left running (a backgrounded test run, a
 // dev server, a `claude -p`). A graceful close orphans them, and they would outlive the run (invariant 1). Before the close ends the
-// orchestrator, its verified descendants are taken from one snapshot (pause.cjs does the same for a worker); once it has exited,
-// each is ended by its exact pid after its creation time and image are checked again, so a pid that has since been reused by
-// another process is refused (ADR 0039; BELAY_KILL_LOG logs each attempt). Never a tree kill by name or by taskkill /T.
+// orchestrator, its descendants are taken from one snapshot (pause.cjs does the same for a worker), minus everything belay owns:
+// the orchestrator's MCP adapter (the run row's adapter_pid with its creation time) and every process in the spawn register
+// (the workers it spawned), each with its whole subtree. Those have their own close (ADR 0029; run-close.cjs). The rest is ended by
+// exact pid, after the run's own close has finished, once its creation time and image are checked again (killMany, ADR 0039: a
+// pid that now belongs to another process is refused; BELAY_KILL_LOG logs each attempt; never taskkill /T, never a name).
+// Fails closed: without a run row that names the adapter, or if the owned processes cannot be read, nothing is taken.
 // The interactive orchestrator's close is the human's, and its descendants are the console's, so it does not use this.
 const IDENTITY = require('../core/proc-identity.cjs');
 
-function createLeftovers({ child, P, state }) {
+// -> { adapterKnown, list: [{ pid, created }] } of the processes belay owns; throws when they cannot be read.
+async function ownedProcesses(core) {
+  const row = ((await core.run.get()) || {}).run || {};
+  const list = require('../core/spawn-register.cjs').list().map((r) => ({ pid: r.pid, created: r.created }));
+  const adapterKnown = Number.isInteger(row.adapter_pid) && row.adapter_pid_created != null;
+  if (Number.isInteger(row.adapter_pid)) list.push({ pid: row.adapter_pid, created: row.adapter_pid_created == null ? null : row.adapter_pid_created });
+  return { adapterKnown, list };
+}
+
+function createLeftovers({ child, P, state, core, owned = () => ownedProcesses(core) }) {
   let taking = null; // the one capture, started by the first close
   let targets = [];
+  let why = null;
   async function take() {
     if (!IDENTITY.handleLive(child)) return; // an exit already seen: its pid may belong to another process now
-    const root = await P.createdOf(child.pid).catch(() => null);
-    if (!root) return; // the root's identity is unknown, so its children are not known to be ours
-    targets = await P.descendantTargets(child.pid, { expectCreated: root.created }).catch(() => []);
+    const { snap } = await P.snapshotShared({ kind: 'orchestrator-leftovers' }).catch(() => ({ snap: null }));
+    const root = snap && snap.get(child.pid);
+    if (!root || root.created == null) { why = 'the orchestrator\'s own identity could not be read'; return; }
+    let own;
+    try { own = await owned(); } catch (e) { why = `the processes belay owns could not be read: ${(e && e.message) || e}`; return; }
+    if (!own.adapterKnown) { why = 'the run row names no adapter, so the processes belay owns cannot be told from the shell\'s'; return; }
+    const skip = new Set();
+    for (const o of own.list) {
+      const e = snap.get(o.pid);
+      if (!e || (o.created != null && e.created !== o.created)) continue; // gone, or the pid now belongs to another process
+      skip.add(o.pid);
+      for (const d of IDENTITY.descendantsOf(o.pid, snap).leavesFirst) skip.add(d.pid);
+    }
+    targets = IDENTITY.descendantsOf(child.pid, snap).leavesFirst.filter((t) => !skip.has(t.pid));
   }
   return {
     // Resolves once the descendants are recorded; call it before the orchestrator's stdin is closed. Idempotent.
     capture() { if (!taking) taking = take(); return taking; },
-    // After the orchestrator has exited (or been killed): end what is still alive. -> the receipt, also kept as state.leftovers.
+    // After the orchestrator has exited and the run's own close has finished: end what is still alive.
     async end() {
+      if (state.leftovers) return state.leftovers;
       if (taking) await taking;
       const results = targets.length ? await P.killMany(targets).catch(() => []) : [];
       state.leftovers = {
         found: targets.map((t) => t.pid),
         killed: results.filter((r) => r.killed).map((r) => r.pid),
         refused: results.filter((r) => r.refused).map((r) => ({ pid: r.pid, kind: r.kind || null, detail: r.detail || null })),
+        ...(why ? { not_taken: why } : {}),
       };
       return state.leftovers;
     },
   };
 }
 
-module.exports = { createLeftovers };
+module.exports = { createLeftovers, ownedProcesses };

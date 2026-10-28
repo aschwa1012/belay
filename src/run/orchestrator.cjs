@@ -118,7 +118,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   let pollHandle = null;
   let pollInFlight = false; // 5a-2: at most one store read at a time, guard not a queue
   const holdRecorder = createHoldRecorder(); // wake.cjs (design item 9): moved out of this file
-  const leftovers = require('./orchestrator-leftovers.cjs').createLeftovers({ child, P, state }); // ADR 0054 amendment 2
+  const leftovers = require('./orchestrator-leftovers.cjs').createLeftovers({ child, P, state, core }); // ADR 0054 amendment 2
   const preClose = require('./pre-close-wake.cjs').createPreCloseNotice({ core, runId }); // ADR 0065 amendment 1
   const callWatcher = require('./call-wake.cjs').createCallWatcher({ core, runId });
   const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId, enabled: !!spec.notes }); // wave 4: a refuted note wakes the orchestrator (notes runs only)
@@ -388,12 +388,14 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       try { fs.closeSync(streamFd); } catch { /* already closed */ }
       try { fs.closeSync(stderrFd); } catch { /* already closed */ }
       expireStalePendingWrites();
-      resolve({
+      const out = {
         orchestrator: orchestratorBlock(), ended_by: state.endedBy, holds: state.holds, polls: state.polls,
         wakes: state.wakes, wakes_suppressed: state.wakesSuppressed, wakes_expired: state.wakesExpired,
         wakes_held: hold.wakesHeld, pauses: hold.pauses, // 6f design item 2
-        ...(state.leftovers && state.leftovers.found.length ? { leftovers: state.leftovers } : {}),
-      });
+      };
+      // ADR 0054 amendment 2: the caller ends what the shell left running once the run's own close is done (not part of the receipt).
+      Object.defineProperty(out, 'endLeftovers', { value: () => leftovers.end() });
+      resolve(out);
     }
 
     // 5a-2: a spawn failure (the exe missing, a stale BELAY_CLAUDE_EXE) used to crash the whole
@@ -424,7 +426,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
           ? 'the orchestrator exited on its own before any close condition was reached'
           : 'the orchestrator exited before a ready event verified the belay MCP server (ADR 0001 §8)';
       }
-      leftovers.end().then(settle, settle); // its shell's survivors are ended before the run is reported over
+      settle();
     });
     child.once('exit', noteExit); // after the listener above: state is already settled by the time this runs
 

@@ -315,6 +315,7 @@ async function run(ctx) {
   let closed = null;
   let memoryEnd = null, treesClosed = null, taskChecks = null;
   let closeStages = null;
+  let leftovers = null; // ADR 0054 amendment 2: what the orchestrator's shell left running, and what was done about it
   let reviewRounds = { value: null, reason: 'the run was never attached, so no tasks were read' };
   // ADR 0039 follow-up: one worker close (ADR 0029); a fast close runs it inside the loop, before the gate collect.
   const fastClose = RI.fastOf(ce);
@@ -370,6 +371,11 @@ async function run(ctx) {
           failClose(closed.still_alive.map((w) => `worker ${w.worker_id} pid ${w.pid} is still alive after its kill${w.manual ? ` (${w.manual})` : ''}`).join(', '));
         }
       } catch (e) { failClose((e && e.message) || String(e)); }
+      // ADR 0054 amendment 2: only now, with the adapter waited for and the workers closed, is what the orchestrator's shell left running ended.
+      if (partial && typeof partial.endLeftovers === 'function') {
+        try { leftovers = await partial.endLeftovers(); if (leftovers.refused.length) failClose(`could not end ${leftovers.refused.map((r) => r.pid).join(', ')} left by the orchestrator's shell: ${leftovers.refused[0].detail}`); }
+        catch (e) { failClose(`the orchestrator's shell leftovers: ${(e && e.message) || e}`); }
+      }
       RI.applyConsole(partial, ce); // a SIGHUP during the close
       // Ctrl-C (SIGINT, SIGBREAK on Windows) during the stages is a console close: no stage spawns, a running child is killed by its exact pid.
       let interrupted = false;
@@ -454,7 +460,7 @@ async function run(ctx) {
     run_id: parsed.runId, mode, data_dir: dataDir, spec_path: specPath, orchestrator_dir: orchestratorDir,
     orchestrator: { ...orchestratorBlock, ...(await RID.orchestratorFacts()) }, store: storeBlock, orch_effort_requested: eff.effort, agent_settings: parsed.agentSettings, // ADR 0028 (SF3); ADR 0039 pid_created
     ended_by: endedBy, holds, polls, wakes, wakes_suppressed: wakesSuppressed, wakes_expired: wakesExpired,
-    wakes_held: wakesHeld, pauses,
+    wakes_held: wakesHeld, pauses, ...(leftovers && (leftovers.found.length || leftovers.not_taken) ? { orchestrator_leftovers: leftovers } : {}),
     stop: stopReceipt, ms: Date.now() - t0, receipt_path: null,
     levers: parsed.levers, prompt_warnings: parsed.promptWarnings, on_embedder_failure_final: guard.mode(), memory_off: guard.memoryOff(), embedder: warm, embedder_failures: guard.events(), ...(embedBounds && embedBounds.length ? { embedder_bounds: embedBounds } : {}),
     review_rounds: reviewRounds.value, review_rounds_reason: reviewRounds.reason,

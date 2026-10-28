@@ -17,6 +17,16 @@ if (process.env.FAKE_ORPHAN_CHILD === '1') {
   if (process.env.FAKE_CHILD_PID_FILE) fs.writeFileSync(process.env.FAKE_CHILD_PID_FILE, String(kid.pid));
 }
 
+// ADR 0054 amendment 2: FAKE_ADAPTER_CHILD=1 starts a detached stand-in for the orchestrator's MCP adapter (helper-adapter.cjs, which starts
+// a worker of its own); FAKE_SIBLING_CHILD=<pidfile> starts a detached child that writes its pid there (a process the spawn register may name).
+const KID_OPTS = { windowsHide: true, stdio: 'ignore', detached: true };
+if (process.env.FAKE_ADAPTER_CHILD === '1') {
+  require('node:child_process').spawn(process.execPath, [require('node:path').join(__dirname, 'helper-adapter.cjs')], KID_OPTS).unref();
+}
+if (process.env.FAKE_SIBLING_CHILD) {
+  require('node:child_process').spawn(process.execPath, [require('node:path').join(__dirname, 'helper-sleeper.cjs')], { ...KID_OPTS, env: { ...process.env, FAKE_HELPER_PIDFILE: process.env.FAKE_SIBLING_CHILD } }).unref();
+}
+
 // ADR 0045 (audit D06): FAKE_SPAWN_SCRIPT=<path> starts that script as an ordinary child of this process, the way a worker's Bash starts one.
 if (process.env.FAKE_SPAWN_SCRIPT) {
   require('node:child_process').spawn(process.execPath, [process.env.FAKE_SPAWN_SCRIPT], { windowsHide: true, stdio: 'ignore' }).unref();
