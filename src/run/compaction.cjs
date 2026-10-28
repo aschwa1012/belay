@@ -157,7 +157,7 @@ function swallow(w, e, ctx) {
   const n = (x) => (typeof x === 'number' ? x : 0);
   w.inputTokens += n(u.input_tokens); w.outputTokens += n(u.output_tokens);
   w.cacheReadTokens += n(u.cache_read_input_tokens); w.cacheCreationTokens += n(u.cache_creation_input_tokens);
-  if (typeof e.cost_usd === 'number') w.costUsd = e.cost_usd;
+  if (typeof e.cost_usd === 'number') w.costUsd = (w.costBase || 0) + e.cost_usd;
   w.turnEnded = true; w.lastTurnEndAt = Date.now(); w.pendingTurnEnd = null;
   // A park reads the results after its interrupt (pause.cjs doPause): a compaction cut short is one of them.
   const afterInterrupt = !!(w.parkRequested && e.at >= w.parkRequested.interruptAt);

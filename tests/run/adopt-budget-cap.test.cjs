@@ -82,3 +82,15 @@ test('a worker spawned without a cap has none on its row, and an adopted relaunc
   await second.restart({ worker_id: 'w-nocap', first_turn_timeout_ms: 20000 });
   assert.equal(flag(argvOf(d, 'w-nocap'), '--max-budget-usd'), null);
 });
+
+test('adopt: a dead row keeps its reported cost and tokens whole, and its cost base; the estimate is not folded in', async () => {
+  const { adopt } = require('../../src/run/worker.cjs');
+  const row = {
+    id: 'wd', run_id: 'run-est', substrate: 'claude-code', state: 'dead', pid: null, worktree: '/tmp/x', turns: 1, cost_usd: 4.2, cost_base: 1.5, input_tokens: 110, output_tokens: 60,
+    cache_read_tokens: 1000, cache_creation_tokens: 7, cost_source: 'transcript_estimate',
+    cost_estimate: { source: 'transcript_estimate', usd: 1.2, input_tokens: 10, output_tokens: 20, cache_read_tokens: 300, cache_creation_tokens: 7 },
+  };
+  const core = { worker: { async get() { return row; } } };
+  const w = await adopt({ core, workerId: 'wd', dataDir: fwd(os.tmpdir()) });
+  assert.deepStrictEqual([w.costUsd, w.costBase, w.inputTokens, w.outputTokens, w.cacheReadTokens, w.cacheCreationTokens], [4.2, 1.5, 110, 60, 1000, 7]);
+});

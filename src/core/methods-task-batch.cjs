@@ -118,6 +118,10 @@ async function createWithTrees(E, caller, args, own) {
   if (new Set(list.map((it) => it.id)).size !== list.length) throw err('E_ARGS', 'task.create tasks: two items have the same id');
   const needsRepo = wanted.length || list.some((it) => it.args.tree_of != null);
   const top = needsRepo ? await W.repoOf(E, caller, undefined, 'task.create') : null; // the first await: the rest of the checks are one turn
+  for (const it of list) { // a tree the sweep was cut inside is not handed out
+    const src = typeof it.args.tree_of === 'string' ? rows.current(E.store, 'task', it.args.tree_of) : null;
+    if (src) await W.assertTreeListed(src);
+  }
   const shape = (written) => (single ? written[0] : { tasks: written });
 
   if (!wanted.length) { // nothing to make: one transaction, all or nothing
