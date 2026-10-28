@@ -74,3 +74,54 @@ test('a tree dirtied between the check and the removal is kept dirty with its pa
   assert.strictEqual(entryFor(out.failed, id), undefined);
   assert.ok(fs.existsSync(w.path));
 });
+
+test('close_pending: a live worker the close will end does not hide a dirty or off-branch tree, and the real sweep is unchanged', async () => {
+  const dirty = await treeTask();
+  write(dirty.w.path, 'wip.txt', 'x\n');
+  const off = await treeTask();
+  git(off.w.path, 'checkout', '-q', '--detach');
+  const clean = await treeTask();
+  const parked = await treeTask();
+  write(parked.w.path, 'wip.txt', 'x\n');
+  for (const [name, t] of [['cp-dirty', dirty], ['cp-off', off], ['cp-clean', clean]]) {
+    await call('worker.write', { id: name, substrate: 'claude-code', pid: process.pid, state: 'running', worktree: t.w.path });
+  }
+  await call('worker.write', { id: 'cp-parked', substrate: 'claude-code', pid: null, state: 'paused', paused_by: 'test', paused_at: Date.now(), worktree: parked.w.path });
+  const plain = await sweep({ dry_run: true });
+  assert.strictEqual(entryFor(plain.kept, dirty.id).reason, 'live_worker', 'without close_pending the live worker still keeps it');
+  const out = await sweep({ dry_run: true, close_pending: true });
+  assert.deepStrictEqual([entryFor(out.kept, dirty.id).reason, entryFor(out.kept, dirty.id).paths], ['dirty', ['wip.txt']]);
+  assert.strictEqual(entryFor(out.kept, off.id).reason, 'head_off_branch');
+  assert.ok(entryFor(out.would_remove, clean.id), JSON.stringify(out));
+  assert.strictEqual(entryFor(out.kept, parked.id).reason, 'parked_worker', 'a parked worker holds the close, so it still keeps its tree');
+  const real = await sweep();
+  assert.strictEqual(entryFor(real.kept, dirty.id).reason, 'live_worker');
+  assert.strictEqual(entryFor(real.kept, clean.id).reason, 'live_worker');
+  for (const bad of [{ close_pending: true }, { dry_run: true, close_pending: 'yes' }]) await rejectsCode(sweep(bad), 'E_ARGS');
+  for (const n of ['cp-dirty', 'cp-off', 'cp-clean', 'cp-parked']) await call('worker.write', { id: n, substrate: 'claude-code', pid: null, state: 'dead' });
+});
+
+test('the pre-close notice over a real plan: an idle worker in a dirty or off-branch tree is named, a clean tree is not', async () => {
+  const { createPreCloseNotice } = require('../../src/run/pre-close-wake.cjs');
+  const mine = new Set(); // earlier tests leave trees in this run: the plan is the real one, narrowed to this test's tasks
+  const notice = (runId) => createPreCloseNotice({ core: { task: { worktreeSweep: async (a) => { const p = await call('task.worktreeSweep', a, op()); return { ...p, kept: p.kept.filter((k) => k.task_ids.some((i) => mine.has(i))) }; } } }, runId });
+  const mk = async (runId, prep) => {
+    const t = await call('task.create', { spec: `pc ${++n}`, files_owned: [`p${n}`] });
+    await call('run.attach', { adapter_pid: process.pid, project_dir: repo, run_id: runId }).catch(() => {});
+    const row = await call('task.worktreeCreate', { task_id: t.id, repo }, op());
+    await call('task.cancel', { task_id: t.id, reason: 'pre-close test' });
+    prep(row.worktree.path);
+    await call('worker.write', { id: `pc-${n}`, substrate: 'claude-code', pid: process.pid, state: 'running', worktree: row.worktree.path });
+    mine.add(t.id);
+    return { id: t.id, path: row.worktree.path, wid: `pc-${n}` };
+  };
+  const a = await mk('test-run', (p) => write(p, 'wip.txt', 'x\n'));
+  const b = await mk('test-run', (p) => git(p, 'checkout', '-q', '--detach'));
+  const c = await mk('test-run', () => {});
+  const r = await notice('test-run').check();
+  assert.ok(r.ran && r.wake, JSON.stringify(r));
+  assert.match(r.wake.text, /wip\.txt/);
+  assert.ok(r.wake.text.includes(a.path) && r.wake.text.includes(b.path), r.wake.text);
+  assert.ok(!r.wake.text.includes(c.path), 'a clean tree with an idle worker is not named');
+  for (const x of [a, b, c]) await call('worker.write', { id: x.wid, substrate: 'claude-code', pid: null, state: 'dead' });
+});

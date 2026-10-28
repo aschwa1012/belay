@@ -45,7 +45,8 @@ async function keepReason(E, group, ctx) {
   const open = group.tasks.find((t) => !ENDED.has(t.state)) || W.openSharer(E, group.tasks[0]);
   if (open) return { reason: 'task_open', detail: `task ${open.id} is ${open.state}` };
   const w = W.liveWorkerIn(E, rec.path);
-  if (w) return { reason: w.state === 'paused' ? 'parked_worker' : 'live_worker', detail: `worker ${w.id} (${w.state})` };
+  // A dry run for a close that is pending judges the rest as if the close had ended the worker that is alive but not parked.
+  if (w && !(ctx.closePending && w.state !== 'paused')) return { reason: w.state === 'paused' ? 'parked_worker' : 'live_worker', detail: `worker ${w.id} (${w.state})` };
   const unproven = ctx.workers.find((x) => ctx.unproven.has(x.id) && x.worktree && W.under(x.worktree, rec.path));
   if (unproven) return { reason: 'kill_unproven', detail: `worker ${unproven.id} was not proven ended by the close` };
   if (!fs.existsSync(rec.path)) return { reason: 'already_gone', detail: 'the path is not on disk; belay worktree remove <task-id> records it' };
@@ -122,12 +123,13 @@ async function sweep(E, caller, args) {
   if (typeof runId !== 'string' || !runId) throw err('E_ARGS', 'task.worktreeSweep needs a run_id');
   if (args.unproven_workers !== undefined && !(Array.isArray(args.unproven_workers) && args.unproven_workers.every((s) => typeof s === 'string'))) throw err('E_ARGS', 'task.worktreeSweep: unproven_workers must be an array of worker ids', { field: 'unproven_workers' });
   if (args.deadline_ms !== undefined && !(Number.isFinite(args.deadline_ms) && args.deadline_ms >= 0)) throw err('E_ARGS', 'task.worktreeSweep: deadline_ms must be a non-negative number', { field: 'deadline_ms' });
+  if (args.close_pending !== undefined && !(args.close_pending === true && args.dry_run === true)) throw err('E_ARGS', 'task.worktreeSweep: close_pending is true and only with dry_run', { field: 'close_pending' });
   const t0 = Date.now();
   let slowest = EXPECT_TREE_MS;
   const budget = Number.isFinite(args.budget_ms) ? args.budget_ms : SWEEP_BUDGET_MS;
   const allTasks = rows.currentAll(E.store, 'task');
   const allIntegrations = rows.currentAll(E.store, 'integration');
-  const ctx = { runId, allTasks, integrations: allIntegrations.filter((i) => !i.removed_at), workers: rows.currentAll(E.store, 'worker'), unproven: new Set(args.unproven_workers || []), liveness: holds.runLiveness(E.store) };
+  const ctx = { runId, allTasks, integrations: allIntegrations.filter((i) => !i.removed_at), workers: rows.currentAll(E.store, 'worker'), unproven: new Set(args.unproven_workers || []), closePending: args.close_pending === true, liveness: holds.runLiveness(E.store) };
   const groups = new Map();
   for (const t of allTasks) {
     const rec = t.run_id === runId ? W.active(t) : null;
