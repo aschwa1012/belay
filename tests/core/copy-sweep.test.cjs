@@ -29,7 +29,7 @@ function legacy(root, name, ageMs) {
   return p;
 }
 // A pid that is certainly dead: a child that has exited.
-const deadPid = () => spawnSync(process.execPath, ['-e', '0']).pid;
+const { deadPid } = require('../helpers/dead-pid.cjs');
 const MIN = 60 * 1000, DAY = 24 * 60 * MIN;
 
 test('dead-pid entry older than 60 s is removed; live-pid, fresh and own entries are kept', () => {
