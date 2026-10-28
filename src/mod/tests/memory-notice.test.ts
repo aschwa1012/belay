@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect } from 'claude-code/testing'
+import { test } from './support'
 import { boot, band, openPane, pane } from './support'
 
 // The no-project notice (notes are on by default, memory.project unset): a title, one sentence why and the exact fix at the top of the
