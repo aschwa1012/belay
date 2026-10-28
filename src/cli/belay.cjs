@@ -25,7 +25,7 @@ const VERSION = '0.3.0';
 // command table §1: R read-only, W store client, C run control. The remaining 18 commands of
 // command table §3 arrive in later slices and are deliberately absent rather than stubbed.
 // Static, so help loads no memory module; tests/cli/memory.test.cjs checks that it names every verb in memory-render's VERBS.
-const MEMORY_SUMMARY = 'memory search|list|show|timeline|verify|stats|export|import|embed|proposals|held|restore|report|archive purge|review|scrub|resolve|promote: reads answer from the store or its copy; semantic and hybrid search need a live owner; verify, import, embed, restore, report, purge, held settle, review, scrub, resolve and promote elect one (embed --dry-run only reads)';
+const MEMORY_SUMMARY = 'memory search|list|show|timeline|verify|stats|export|import|embed|proposals|held|restore|report|archive purge|review|scrub|resolve|promote|search-log|menu: reads answer from the store or its copy; semantic and hybrid search need a live owner; verify, import, embed, restore, report, purge, held settle, review, scrub, resolve and promote elect one (embed --dry-run only reads)';
 
 const COMMANDS = {
   help:   { mode: 'R', module: null,               summary: 'print this usage and exit' },
