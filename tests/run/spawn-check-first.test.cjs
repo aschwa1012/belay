@@ -121,7 +121,18 @@ test('two concurrent spawns with one worker_id and a task_id: one wins, the othe
     const waited = await m.wait({ worker_ids: ['wrace'], timeout_ms: 8000 });
     assert.strictEqual(waited.timed_out, false, 'the winner\'s first turn never ended');
     await m._worker('wrace').queue;
-    assert.deepStrictEqual(fake.rowsFor('wrace').map((r) => r.state), ['starting', 'starting', 'running', 'running']);
+    // The contract: a pidless 'starting' row first, the pid-carrying row before any 'running', the turn
+    // end's 'running' restate last. The number of 'starting' rows is not asserted: the pid_created restate
+    // (src/run/write-row.cjs) adds one when the creation-time read lands before ready.
+    const rows = fake.rowsFor('wrace');
+    const states = rows.map((r) => r.state);
+    const firstRunning = states.indexOf('running');
+    assert.strictEqual(states[0], 'starting');
+    assert.strictEqual(rows[0].pid, null, 'the first row has no pid yet');
+    assert.ok(firstRunning > 0 && states.slice(0, firstRunning).every((st) => st === 'starting'), 'only starting rows precede the first running one');
+    assert.ok(rows.slice(0, firstRunning).some((r) => r.pid > 0), 'the pid-carrying row exists before running');
+    assert.ok(states.filter((st) => st === 'running').length >= 2, 'the turn end restated running');
+    assert.strictEqual(states[states.length - 1], 'running');
   } finally {
     try { await m.shutdown(); } finally {
       // A regressed reservation leaves a child the manager no longer tracks; stop each recorded pid by its exact pid.
