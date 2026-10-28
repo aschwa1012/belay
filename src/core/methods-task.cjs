@@ -102,7 +102,7 @@ async function create(E, caller, args, own = {}) { // own: core-internal, task.f
     const cap = run && run.max_fix_rounds != null ? Number(run.max_fix_rounds) : null;
     const used = rows.currentAll(E.store, 'task').filter(o => o.repairs === repairs && o.run_id === caller.run_id).length;
     if (hard != null && used >= hard) {
-      throw err('E_FIX_ROUNDS', `task ${repairs} already has ${used} fix task${used === 1 ? '' : 's'} and this run's fix_hard_cap is ${hard}${run.fix_hard_cap_source ? ` (${run.fix_hard_cap_source})` : ''}; nothing was written`, { task_id: id, repairs, fix_rounds_used: used, fix_hard_cap: hard, fix_hard_cap_source: run.fix_hard_cap_source || null });
+      throw err('E_FIX_ROUNDS', `task ${repairs} already has ${used} fix task${used === 1 ? '' : 's'} and this run's fix_hard_cap is ${hard}${run.fix_hard_cap_source ? ` (${run.fix_hard_cap_source})` : ''}; no further fix task can be created for it in this run, and nothing was written`, { task_id: id, repairs, fix_rounds_used: used, fix_hard_cap: hard, fix_hard_cap_source: run.fix_hard_cap_source || null });
     }
     if (cap != null && used >= cap) fixNotice = `task ${repairs} now has ${used + 1} fix task${used === 0 ? '' : 's'} in this run, past max_fix_rounds ${cap}`;
   }

@@ -125,12 +125,14 @@ function parseLevers(spec, opts = {}) {
   }
   // ADR 0031 amendment 3: the user's fix_hard_cap wins (null says no cap); unset, a run with no time bound (timeout_ms 0, the default) gets
   // DEFAULT_FIX_HARD_CAP and a run with a timeout gets none. The source is recorded beside the cap.
+  // The time bound is run-spec.cjs's parsed number when it is given (a numeric string counts), else the raw key, 0 when absent.
+  const timeoutMs = opts.timeoutMs !== undefined ? opts.timeoutMs : (spec.timeout_ms === undefined ? 0 : Number(spec.timeout_ms));
   let fixHardCap = null, fixHardCapSource = null;
   if (spec.fix_hard_cap !== undefined) {
     const v = spec.fix_hard_cap;
     if (v !== null && (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0)) return { error: 'fix_hard_cap must be a non-negative integer, or null for no cap' };
     fixHardCap = v; fixHardCapSource = 'run spec';
-  } else if (!spec.timeout_ms) { fixHardCap = DEFAULT_FIX_HARD_CAP; fixHardCapSource = HARD_CAP_DEFAULT_SOURCE; }
+  } else if (!(timeoutMs > 0)) { fixHardCap = DEFAULT_FIX_HARD_CAP; fixHardCapSource = HARD_CAP_DEFAULT_SOURCE; }
   let fixCutoff = DEFAULT_FIX_CUTOFF;
   if (spec.fix_cutoff !== undefined) {
     if (!FIX_CUTOFFS.includes(spec.fix_cutoff)) {

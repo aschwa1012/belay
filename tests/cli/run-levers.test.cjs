@@ -321,3 +321,21 @@ test('levers: fix_hard_cap defaults to 5 without a run timeout and to none with 
   assert.strictEqual(parseLevers({ fix_hard_cap: 0 }).fix_hard_cap, 0);
   for (const bad of [-1, 1.5, '3']) assert.match(parseLevers({ fix_hard_cap: bad }).error, /fix_hard_cap must be a non-negative integer, or null/);
 });
+
+test('levers: the default hard cap decides from the parsed timeout, so a numeric string counts like the number', () => {
+  const { parseSpec } = require('../../src/cli/run-spec.cjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-levers-ts-'));
+  try {
+    fs.writeFileSync(`${dir}/p.txt`, 'hi\n');
+    const levers = (t) => {
+      fs.writeFileSync(`${dir}/spec.json`, JSON.stringify({ worktree: dir, prompt_file: `${dir}/p.txt`, timeout_ms: t }));
+      const r = parseSpec(`${dir}/spec.json`, dir);
+      assert.ok(!r.error, r.error);
+      return [r.levers.fix_hard_cap, r.levers.fix_hard_cap_source];
+    };
+    assert.deepStrictEqual(levers('0'), [5, 'default, no run timeout']);
+    assert.deepStrictEqual(levers(0), [5, 'default, no run timeout']);
+    assert.deepStrictEqual(levers('21600000'), [null, null]);
+    assert.deepStrictEqual(levers(21600000), [null, null]);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
