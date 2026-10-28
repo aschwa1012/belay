@@ -245,3 +245,9 @@ test('normAgents: the fix-round notice threshold and the hard cap are read apart
   assert.strictEqual(a.fixHardCap, null);
   assert.strictEqual(M.normAgents({ max_fix_rounds: 2, fix_hard_cap: 5, agents: [] }).fixHardCap, 5);
 });
+
+test('normAgents: the hard cap source is read beside the cap', () => {
+  const a = M.normAgents({ max_fix_rounds: 2, fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', agents: [] });
+  assert.deepStrictEqual([a.fixHardCap, a.fixHardCapSource], [5, 'default, no run timeout']);
+  assert.strictEqual(M.normAgents({ agents: [] }).fixHardCapSource, null);
+});

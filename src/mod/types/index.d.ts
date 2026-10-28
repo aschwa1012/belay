@@ -101,6 +101,7 @@ export type BelayPanelSnap = {
   /** The run row records the limit, not the rounds used. */
   maxFixRounds: number | null
   fixHardCap: number | null
+  fixHardCapSource: string | null
   embedder: string | null
   agents: BelayAgent[]
   footer: BelayPanelFooter | null

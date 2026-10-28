@@ -11,6 +11,8 @@ const MN = require('../core/memory-notice.cjs'); // pure; the shared wording of 
 
 const FIX_CUTOFFS = ['orchestrator', 'cap-only'];
 const DEFAULT_MAX_FIX_ROUNDS = 2;
+const DEFAULT_FIX_HARD_CAP = 5; // ADR 0031 amendment 3: the safety net of a run with no time bound; a run with a timeout is notice-only
+const HARD_CAP_DEFAULT_SOURCE = 'default, no run timeout';
 const DEFAULT_FIX_CUTOFF = 'orchestrator';
 const EM = require('../core/embedder-mode.cjs');
 const DEFAULT_ON_EMBEDDER_FAILURE = EM.DEFAULT_MODE; // ADR 0034 decision 2, amendment 1
@@ -110,7 +112,7 @@ function evalKeys(spec) {
   return { fold: Object.keys(fold).length ? fold : null };
 }
 
-// Returns { max_fix_rounds, fix_cutoff, on_embedder_failure[, fix_hard_cap, compact_at_tokens] } or { error }. `compact_at_tokens` (ADR 0007 decision 3,
+// Returns { max_fix_rounds, fix_cutoff, on_embedder_failure, fix_hard_cap, fix_hard_cap_source[, compact_at_tokens] } or { error }. `compact_at_tokens` (ADR 0007 decision 3,
 // null by default) is present only when set, so a run without it has the receipt it always had.
 function parseLevers(spec, opts = {}) {
   let maxFixRounds = DEFAULT_MAX_FIX_ROUNDS;
@@ -121,13 +123,14 @@ function parseLevers(spec, opts = {}) {
     }
     maxFixRounds = v;
   }
-  // ADR 0031 amendment 3: a refusal only where the user declares one. Unset, no fix task is refused.
-  let fixHardCap = null;
+  // ADR 0031 amendment 3: the user's fix_hard_cap wins (null says no cap); unset, a run with no time bound (timeout_ms 0, the default) gets
+  // DEFAULT_FIX_HARD_CAP and a run with a timeout gets none. The source is recorded beside the cap.
+  let fixHardCap = null, fixHardCapSource = null;
   if (spec.fix_hard_cap !== undefined) {
     const v = spec.fix_hard_cap;
-    if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0) return { error: 'fix_hard_cap must be a non-negative integer' };
-    fixHardCap = v;
-  }
+    if (v !== null && (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0)) return { error: 'fix_hard_cap must be a non-negative integer, or null for no cap' };
+    fixHardCap = v; fixHardCapSource = 'run spec';
+  } else if (!spec.timeout_ms) { fixHardCap = DEFAULT_FIX_HARD_CAP; fixHardCapSource = HARD_CAP_DEFAULT_SOURCE; }
   let fixCutoff = DEFAULT_FIX_CUTOFF;
   if (spec.fix_cutoff !== undefined) {
     if (!FIX_CUTOFFS.includes(spec.fix_cutoff)) {
@@ -149,7 +152,7 @@ function parseLevers(spec, opts = {}) {
     onEmbedderFailure = EM.normalize(opts.config.memory.on_embedder_failure) || DEFAULT_ON_EMBEDDER_FAILURE; // a bad config value is refused by parseMemoryBlock below
   }
   const out = { max_fix_rounds: maxFixRounds, fix_cutoff: fixCutoff, on_embedder_failure: onEmbedderFailure };
-  if (fixHardCap !== null) out.fix_hard_cap = fixHardCap; // absent unless set, so a run without it has the receipt it always had
+  out.fix_hard_cap = fixHardCap; out.fix_hard_cap_source = fixHardCapSource; // null: no cap
   const ca = CP.parseCompactAt(spec.compact_at_tokens);
   if (ca.error) return { error: ca.error };
   if (ca.value !== null) out.compact_at_tokens = ca.value;

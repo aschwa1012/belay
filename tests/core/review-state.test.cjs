@@ -48,7 +48,7 @@ async function judge(task, verdict) {
   return r;
 }
 
-const facts = ({ fix_rounds_used, max_fix_rounds, ...rest }) => rest; // the two fix-round facts are pinned in their own test
+const facts = ({ fix_rounds_used, max_fix_rounds, fix_hard_cap, fix_hard_cap_source, ...rest }) => rest; // the two fix-round facts are pinned in their own test
 const reviewOf = async (id) => { const r = (await orch.task.get({ task_id: id })).review; return r && facts(r); };
 const reviewFull = async (id) => (await orch.task.get({ task_id: id })).review;
 const listed = async (id, states) => facts((await orch.task.list(states ? { states } : {})).tasks.find((t) => t.id === id).review);
@@ -232,4 +232,13 @@ test('the review carries the fix rounds this run has used and the run max_fix_ro
   await orch.task.fixFromReview({ review_id: r.id });
   const got = await reviewFull(w.id);
   assert.deepStrictEqual([got.fix_rounds_used, got.max_fix_rounds, got.rounds], [1, 1, 1]);
+});
+
+test('the review names the hard cap and where it came from', async () => {
+  await orch.run.attach({ adapter_pid: process.pid, max_fix_rounds: 2, fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout' });
+  const w = await orch.task.create({ spec: 'work cap source', acceptance: PASS });
+  await doneWork(w);
+  await judge(w, 'refuted');
+  const got = await reviewFull(w.id);
+  assert.deepStrictEqual([got.fix_hard_cap, got.fix_hard_cap_source, got.rounds_left], [5, 'default, no run timeout', 5]);
 });

@@ -89,6 +89,11 @@ test('a refuted review wakes and the worker_wait answer carry the work fix round
   const text = wakeText((await RE.enrichWakes(core, 'r', [], seen))[0]);
   assert.match(text, /not done; fix rounds 2 of max 2; failing: /, text);
   assert.ok(byteLength(text) <= RE.WAKE_TEXT_MAX && capText(text) === text, text);
+  const capped = { ...work, review: { ...work.review, fix_hard_cap: 5 } };
+  const s3 = new Map(); s3.pending = new Map([[review.id, { worker_id: WID, since: Date.now() }]]);
+  const withCap = wakeText((await RE.enrichWakes({ task: { list: async () => ({ tasks: [review, capped] }) } }, 'r', [], s3))[0]);
+  assert.match(withCap, /fix rounds 2 of max 2, hard cap 5; failing: /, withCap);
+  assert.ok(byteLength(withCap) <= RE.WAKE_TEXT_MAX && capText(withCap) === withCap);
   // a run that sets no max_fix_rounds says nothing about rounds
   const none = { ...work, review: { ...work.review, max_fix_rounds: null } };
   const s2 = new Map(); s2.pending = new Map([[review.id, { worker_id: WID, since: Date.now() }]]);
@@ -98,5 +103,5 @@ test('a refuted review wakes and the worker_wait answer carry the work fix round
   const ctx = { runId: 'r', core: { task: { list: async () => ({ tasks: [] }), get: async () => work, evaluate: async () => review } } };
   const ev = RE.startRelease(w, ctx);
   await ev.promise;
-  assert.deepStrictEqual(RE.evalOf(w).evaluated[0].fix_rounds, { work: WORK, used: 2, max: 2 });
+  assert.deepStrictEqual(RE.evalOf(w).evaluated[0].fix_rounds, { work: WORK, used: 2, max: 2, hard: null });
 });

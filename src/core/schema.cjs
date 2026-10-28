@@ -162,6 +162,8 @@ const MIGRATIONS = [
   'ALTER TABLE run ADD COLUMN max_fix_rounds INTEGER',
   // The run's `fix_hard_cap` (null: none): the one case a fix task is refused. `max_fix_rounds` is only a notice threshold.
   'ALTER TABLE run ADD COLUMN fix_hard_cap INTEGER',
+  // Where the effective hard cap came from ('run spec' or 'default, no run timeout'); null with no cap.
+  'ALTER TABLE run ADD COLUMN fix_hard_cap_source TEXT',
   // The run lever max_parallel_evaluations (null: unlimited): at most this many task evaluations run at once in the owner.
   'ALTER TABLE run ADD COLUMN max_parallel_evaluations INTEGER',
   'ALTER TABLE task ADD COLUMN repairs TEXT',

@@ -311,7 +311,7 @@ export function Pane(c: Ctx) {
     } else tasksLine.push({ t: `${t.held} held by agents` })
   }
   if (snap.maxFixRounds !== null) tasksLine.push({ t: '   fix rounds ', dim: true }, { t: `notice at ${snap.maxFixRounds}` }) // the rounds used are not recorded, so no used count
-  if (snap.fixHardCap !== null) tasksLine.push({ t: '   hard cap ', dim: true }, { t: String(snap.fixHardCap) })
+  if (snap.fixHardCap !== null) tasksLine.push({ t: '   hard cap ', dim: true }, { t: `${snap.fixHardCap}${snap.fixHardCapSource ? ` (${snap.fixHardCapSource})` : ''}` })
   if (snap.embedder) tasksLine.push({ t: '   embedder ', dim: true }, { t: snap.embedder, c: snap.embedder === 'ok' ? 'success' : 'warning' })
   const f = snap.footer
   const costLine: Seg[] = f

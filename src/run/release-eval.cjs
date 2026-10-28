@@ -30,7 +30,7 @@ function fixRoundsOf(row, byId) {
   const dep = byId && Array.isArray(row.depends_on) && row.depends_on.length === 1 ? byId.get(row.depends_on[0]) : null;
   const rv = dep && dep.review;
   if (!rv || r.passed || !r.executable || !(r.checks || []).some((c) => c.kind === 'verdict') || rv.max_fix_rounds == null) return null;
-  return { work: dep.id, used: rv.fix_rounds_used, max: rv.max_fix_rounds };
+  return { work: dep.id, used: rv.fix_rounds_used, max: rv.max_fix_rounds, hard: rv.fix_hard_cap == null ? null : rv.fix_hard_cap };
 }
 
 // The work a refuted review judged, read for the turn's own summary (worker_wait): a Map of that one task, or null.
@@ -156,7 +156,7 @@ function clause(evs, room) {
   const parts = evs.map((e) => `${one(e)}${waited(e)}`);
   function one(e) { return (e.error === 'E_BUSY' ? `task ${e.task_id} not evaluated at release: another evaluation of it is running`
     : e.error ? `task ${e.task_id} could not be evaluated at release (${e.error}); call task_evaluate to run it`
-    : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}` : `not done${e.fix_rounds ? `; fix rounds ${e.fix_rounds.used} of max ${e.fix_rounds.max}` : ''}; failing: ${e.failing.join(', ') || 'no executable check'}`}`); }
+    : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}` : `not done${e.fix_rounds ? `; fix rounds ${e.fix_rounds.used} of max ${e.fix_rounds.max}${e.fix_rounds.hard == null ? '' : `, hard cap ${e.fix_rounds.hard}`}` : ''}; failing: ${e.failing.join(', ') || 'no executable check'}`}`); }
   return cut(` ${parts.join('; ')}.`, room);
 }
 
