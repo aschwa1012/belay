@@ -9,6 +9,7 @@
 // wall-clock numbers (min, median, every sample) are printed and written to receipts/core-last.json beside each gate and
 // never asserted. The bounds are the ones the suites had: status.get 100 ms, the usage text 50 ms, redact 20 ms for 64 KB.
 
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
