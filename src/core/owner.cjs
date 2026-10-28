@@ -380,9 +380,16 @@ class Owner {
     if (req.method === 'bind.open' || req.method === 'bind.status' || req.method === 'bind.revoke' || req.method === 'ticket.issue' || req.method === 'ticket.redeem') {
       const params = req.params || {};
       const { caller, ...rest } = params;
-      Promise.resolve().then(() => (req.method.startsWith('ticket.') ? this.ticketCall(req.method, rest, caller) : this.bindCall(req.method, params, params.caller))).then(
+      // Like an engine call: once the owner is stopping a bind or ticket call is not run (sent: false, so the client re-dials), and
+      // one served before that is in inFlightCalls, so stop() lets its reply be written before it destroys the connection.
+      if (this.stopped) {
+        return this._refuse(c, req, { code: 'E_OWNER_LOST', message: `the store owner is stopping, so ${req.method} was not run; the client re-runs it against the next owner`, detail: { method: req.method, sent: false, owner_stopping: true } });
+      }
+      const call = Promise.resolve().then(() => (req.method.startsWith('ticket.') ? this.ticketCall(req.method, rest, caller) : this.bindCall(req.method, params, params.caller))).then(
         (result) => { if (!c.destroyed) c.write(JSON.stringify({ id: req.id, result }) + '\n'); },
         (e) => this._refuse(c, req, { code: e.code || 'E_INTERNAL', message: e.message, detail: e.detail }));
+      this.inFlightCalls.add(call);
+      call.finally(() => this.inFlightCalls.delete(call));
       return;
     }
     // build step 6f, ADR 0023 amendment 3 decision 4: run.pause and run.resume join run.stop as the
