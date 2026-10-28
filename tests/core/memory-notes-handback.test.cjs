@@ -83,6 +83,16 @@ test('lever on: notes is required, [] is valid and writes nothing', async () => 
   assert.strictEqual(store.count(), before);
 });
 
+test('a release refused for a required hand-back field writes no notes and leaves the lease held', async () => {
+  const w = worker('w2');
+  const t = await call('task.create', orch, { spec: `job ${++seq}`, acceptance: { handoff: { required: ['summary'] } } });
+  const a = await call('task.assign', orch, { task_id: t.id, worker_id: 'w2' });
+  const before = store.count();
+  await assert.rejects(call('lease.release', w, { lease_id: a.new_lease.id, result: { head: 'x' }, notes: [note('K7')] }), e => e.code === 'E_ARGS' && e.detail.missing[0] === 'summary');
+  assert.strictEqual(store.count(), before, 'no note and no row written');
+  assert.strictEqual((await call('task.get', orch, { task_id: t.id })).state, 'assigned');
+});
+
 test('a note is stored as a typed row in the project, with the writer and model from belay, not from the note', async () => {
   const w = worker('w1');
   const { l, out } = await hand(w, { notes: [note('K1')] });

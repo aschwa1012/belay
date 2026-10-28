@@ -183,7 +183,7 @@ test('receipts: --json carries every field of design item 2, null where a column
   assert.strictEqual(w2.task.handoff, null);
   assert.strictEqual(w2.task.checks[0].passed, false);
   assert.strictEqual(j.unassigned_tasks.length, 1);
-  assert.deepStrictEqual(Object.keys(j.unassigned_tasks[0]).sort(), ['checks', 'id', 'state']);
+  assert.deepStrictEqual(Object.keys(j.unassigned_tasks[0]).sort(), ['check_history', 'checks', 'id', 'state']);
   assert.ok('owner' in j);
   const text = receipts(['run-b'], dataDir, { json: false }).stdout;
   assert.match(text, /^worker w2  codex .*\n.*\n  in not recorded  out not recorded/m);
@@ -414,4 +414,39 @@ test('receipts: an empty-string run id is exit 2 with the usage', guarded(async 
   const r = receipts([''], dataDir, { json: false });
   assert.strictEqual(r.status, 2, `${r.stdout} / ${r.stderr}`);
   assert.match(r.stdout + r.stderr, /usage: belay receipts/);
+}));
+
+test('receipts: a worker killed with no result event shows its estimated cost, labelled, and the totals say how much was estimated', guarded(async (dir, dataDir) => {
+  const msgLine = JSON.stringify({ type: 'assistant', message: { id: 'm1', model: 'claude-sonnet-5-5', usage: { input_tokens: 1000000, output_tokens: 100000, cache_read_input_tokens: 1000000, cache_creation_input_tokens: 0 } } });
+  await withOwner(dataDir, 'run-est', 'orchestrator', async (orch) => {
+    await orch.run.attach({ adapter_pid: process.pid });
+    fs.mkdirSync(`${dataDir}/workers/wk`, { recursive: true });
+    fs.writeFileSync(`${dataDir}/workers/wk/stream.jsonl`, `${msgLine}\n`);
+    await orch.worker.write({ id: 'wk', substrate: 'claude-code', pid: process.pid, state: 'running', started_at: Date.now() - 1000, cost_usd: 0, turns: 0 });
+    await orch.worker.write({ id: 'wk', state: 'dead', pid: 2147483000, exit_code: 1, death_established_by: 'test', cost_usd: 0, turns: 0 });
+    await orch.run.end({ exit_reason: 'idle' });
+  });
+  const j = JSON.parse(receipts([], dataDir).stdout);
+  const w = j.workers.find((x) => x.id === 'wk');
+  assert.deepStrictEqual([w.cost_usd, w.cost_source, w.cost_estimate.usd, w.cost_estimate.messages, w.cost_combined_usd], [0, 'transcript_estimate', 3.2, 1, 3.2]);
+  assert.deepStrictEqual([j.totals.cost_usd, j.totals.cost_estimated_usd, j.totals.cost_combined_usd, j.totals.cost_estimated_workers], [0, 3.2, 3.2, 1]);
+  const text = receipts([], dataDir, { json: false }).stdout;
+  assert.match(text, /cost \$0\.0000 reported \+ \$3\.2 estimated from the stream \(1 message no result line reported\) = \$3\.2/);
+  assert.match(text, /totals over 2 agents\s+cost \$0\.0000 reported,\s+\$3\.2 estimated from the streams of 1 worker \(messages no result line reported\), \$3\.2 combined/);
+}));
+
+test('receipts: an estimate whose stream tail lay beyond the scan window says so instead of printing nothing', guarded(async (dir, dataDir) => {
+  const pad = JSON.stringify({ type: 'user', pad: 'x'.repeat(1024 * 1024) });
+  await withOwner(dataDir, 'run-trunc', 'orchestrator', async (orch) => {
+    await orch.run.attach({ adapter_pid: process.pid });
+    fs.mkdirSync(`${dataDir}/workers/wt`, { recursive: true });
+    const head = [JSON.stringify({ type: 'system', subtype: 'init', session_id: 's' }), JSON.stringify({ type: 'result', total_cost_usd: 1 })];
+    fs.writeFileSync(`${dataDir}/workers/wt/stream.jsonl`, head.concat(Array(17).fill(pad)).join('\n') + '\n');
+    await orch.worker.write({ id: 'wt', substrate: 'claude-code', pid: process.pid, state: 'running', started_at: Date.now() - 1000, cost_usd: 1, turns: 1 });
+    await orch.worker.write({ id: 'wt', state: 'dead', pid: 2147483000, exit_code: 1, death_established_by: 'test', cost_usd: 1, turns: 1 });
+    await orch.run.end({ exit_reason: 'idle' });
+  });
+  const text = receipts([], dataDir, { json: false }).stdout;
+  assert.match(text, /not estimated: stream tail over 16 MB/);
+  assert.strictEqual(JSON.parse(receipts([], dataDir).stdout).workers.find((x) => x.id === 'wt').cost_estimate.truncated, true);
 }));

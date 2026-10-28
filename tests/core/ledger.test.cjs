@@ -211,3 +211,17 @@ test('recordEvent scrubs the message as a stored row is scrubbed, and keeps it a
   assert.strictEqual(kept.message, said, 'the run asked for text as written');
   assert.strictEqual((await call('memory.recordEvent', orch, { kind: 'bottle' })).message, null, 'no message stays null');
 });
+
+test('the call_detached and call_ended kinds are written by the orchestrator adapter and read back with their task ids and result row', async () => {
+  const { callHooks } = require('../../src/mcp/call-hooks.cjs');
+  const hooks = callHooks((method, args) => call(method, orch, args));
+  const info = { tool: 'integrate', args: { task_ids: ['t-a', 't-b'] }, started_at: 77 };
+  await hooks.detached(info);
+  await hooks.ended({ ...info, row: { id: 'int-1' } });
+  const failed = callHooks((method, args) => call(method, orch, args));
+  await failed.ended({ tool: 'task_evaluate', args: { task_id: 't-c' }, started_at: 78, error: Object.assign(new Error('waited too long'), { code: 'E_BUSY' }) });
+  const evs = (await call('memory.events', worker, { kinds: ['call_detached', 'call_ended'] })).events;
+  assert.deepStrictEqual(evs.map((e) => [e.kind, e.ok, e.code, e.row_ids, e.newest_row_id]), [
+    ['call_detached', 1, null, ['t-a', 't-b'], null], ['call_ended', 1, null, ['t-a', 't-b'], 'int-1'], ['call_ended', 0, 'E_BUSY', ['t-c'], null]]);
+  assert.strictEqual(evs[0].key, evs[1].key, 'the two events of one call share its key');
+});
