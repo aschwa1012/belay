@@ -103,8 +103,7 @@ function ofTask(task, ix) {
   const fRun = follows.length ? follows[follows.length - 1].run_id : runId;
   const fCap = ix.followCaps && ix.followCaps.has(fRun) ? ix.followCaps.get(fRun) : null;
   if (follows.length) out.follow_ups = follows.map((f) => ({ id: f.id, state: f.state }));
-  if (fCap != null || follows.length) out.follow_ups_left = fCap == null ? null : Math.max(0, fCap - follows.filter((f) => f.run_id === fRun).length);
-  if (fCap != null) out.max_follow_ups = fCap;
+  if (follows.length || (fCap != null && out.state === 'holds')) out.follow_ups_left = fCap == null ? null : Math.max(0, fCap - follows.filter((f) => f.run_id === fRun).length);
   if (fRoot !== root) out.follow_ups_count_against = fRoot;
 
   return out;

@@ -316,8 +316,8 @@ const ORCHESTRATOR = [
   },
   {
     name: 'fix_from_review',
-    description: 'Create the fix task for a review evaluated refuted, with depends_on, repairs, acceptance and files_owned inferred and spec from its findings. Returns id, rev, state, spec_head, repairs, depends_on, files_owned, fix_notice past max_fix_rounds. With follow_up: true, for a review that held: a follow-up task for its should-fix findings in a tree of its own, not a fix round; the reply adds follow_ups_left, and E_FOLLOW_UPS past max_follow_ups (view debug: whole row).',
-    inputSchema: S({ review_id: str(), spec: str('Default: from the findings'), repairs: str('Which task, if it judged several'), follow_up: { type: 'boolean', description: "A task for a held review's should-fix findings; not a fix round" }, id: str(), view: DEBUG }, ['review_id']),
+    description: 'Create the fix task for a review evaluated refuted, with depends_on, repairs, acceptance and files_owned inferred and spec from its findings. Returns id, rev, state, spec_head, repairs, depends_on, files_owned, fix_notice past max_fix_rounds. With follow_up: true, for a review that held: a follow-up task for its should-fix findings in a tree of its own, not a fix round; E_FOLLOW_UPS past max_follow_ups (view debug: whole row).',
+    inputSchema: S({ review_id: str(), spec: str('Default: from the findings'), repairs: str('Which task, if it judged several'), follow_up: { type: 'boolean' }, id: str(), view: DEBUG }, ['review_id']),
   },
   {
     name: 'task_cancel',
