@@ -249,6 +249,7 @@ const ORCHESTRATOR = [
       depends_on: strs('Task ids that must be done before this one can be assigned'),
       repairs: str('A fix task: the id of the work task it repairs; past max_fix_rounds the answer carries fix_notice'),
       base: str('Diff base'),
+      budget_usd: { type: 'number', description: 'USD limit; needs the ledger' },
       tree_of: str('Work in that task\'s worktree (a conflict fix)'),
       worktree: { type: ['boolean', 'string'], description: 'Own tree: true from HEAD, or a base ref' },
       tasks: { type: 'array', items: { type: 'object' }, description: 'Several, each with these fields; all or nothing' },

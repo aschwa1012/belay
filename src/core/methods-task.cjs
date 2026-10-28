@@ -60,7 +60,9 @@ async function create(E, caller, args, own = {}) {
   if (args.amend !== undefined && args.amend !== false) return AM.amend(E, caller, args);
   const runTop = args.tree_of != null ? await AM.runRepo(E, caller) : null; // the only await: everything below is one turn
   if (args.tree_of != null && typeof args.tree_of === 'string') { const src = rows.current(E.store, 'task', args.tree_of); if (src) await require('./methods-worktree.cjs').assertTreeListed(src); } // a tree the sweep was cut inside is not handed out
-  return require('./methods-task-new.cjs').one(E, caller, args, own, runTop);
+  const made = require('./methods-task-new.cjs').one(E, caller, args, own, runTop);
+  require('./run-budget.cjs').noteRows(E, caller, made); // the run process learns of a task limit once the row is written
+  return made;
 }
 
 // The dependency gate shared by task.assign and task.evaluate: only `done` opens it (ADR 0013 §1, ADR 0030 decision 2).
