@@ -13,6 +13,7 @@ const { spawnSync } = require('node:child_process');
 
 const { createRunManager } = require('../../src/run/index.cjs');
 const CP = require('../../src/run/compaction.cjs');
+const { PROCESS_LINE } = require('../../src/run/task-body.cjs');
 const L = require('../../src/run/launch.cjs');
 const { createParser } = require('../../src/run/parsers.cjs');
 const { parseLevers } = require('../../src/cli/run-levers.cjs');
@@ -72,7 +73,7 @@ test('lever null: no hooks key, no hook files, no /compact however large the con
     });
     const settings = JSON.parse(fs.readFileSync(`${sb.data}/workers/wn/settings.json`, 'utf8'));
     assert.deepStrictEqual(Object.keys(settings.hooks), ['PreToolUse'], 'the kill guard only, no compaction hooks');
-    assert.deepStrictEqual(lines(recv).map((r) => r.text), ['one', 'two'], 'only the two messages the caller sent');
+    assert.deepStrictEqual(lines(recv).map((r) => r.text), ['one' + PROCESS_LINE, 'two'], 'only the two messages the caller sent (a spawn ends its first message with the process line)');
     for (const f of [CP.RECORDS_LOG, CP.HOOKS_LOG, CP.RESUME_FILE]) assert.ok(!fs.existsSync(`${sb.data}/workers/wn/${f}`), f);
   } finally { await teardown(m, sb); }
 });

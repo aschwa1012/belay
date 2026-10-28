@@ -345,10 +345,11 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       w.stopRequested = false;
 
       const overridden = firstTextOverride ? await firstTextOverride(d.branch) : undefined;
-      let firstText = overridden !== undefined ? overridden : await restartFirstText(w, d.branch, { core, ctx });
+      let firstText = overridden !== undefined ? overridden : await restartFirstText(w, d.branch, { core, ctx, hold });
       firstText = (await MP.relaunch(w, ctx, firstText, { fresh: d.branch === 'replace', message: appendMessage })) + leaseNote(hold); // ADR 0042 decision 3: minus the rows already shown, only where that conversation still holds them
       if (d.branch === 'replace') {
         w.sessionId = null;
+        w.costBase = w.costUsd; // a fresh session's total_cost_usd starts at zero: what the earlier sessions reported stays in the row
         w.parser = createParser(w.substrate, MP.parserOpts(ctx));
       }
       if (onFirstText) onFirstText(firstText);
@@ -462,6 +463,14 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     ask: (args) => MP.ask(manager, ctx, args), // ADR 0043 decision 1
     // Read-only handles for tests and for the CLI's own views. Neither writes.
     _worker: (id) => workers.get(id),
+    // A task_assign to this live worker: the task it holds now. Restart, park-resume, death handling, the memory records and the worker
+    // row read `taskId`, so it follows the assignment (the spawn's task is no longer the worker's).
+    retask: ({ worker_id, task_id, spec, review, rule }) => {
+      const w = workers.get(worker_id);
+      if (!w || !task_id) return false;
+      w.taskId = task_id; w.taskSpec = typeof spec === 'string' ? spec : ''; w.review = review || null; w.handbackRule = rule || '';
+      return true;
+    },
     // The note-review brief for a verdict task assigned to this live worker (task_assign appends it, as a spawn does).
     reviewTail: ({ worker_id, task_id }) => { const w = workers.get(worker_id); return w ? NR.reviewTail(ctx, { id: w.id, taskId: task_id, set lastError(v) { w.lastError = v; } }) : ''; },
     _waitTurn: (id, ms) => waitTurnOrLanded(get(id), ms),

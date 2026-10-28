@@ -143,7 +143,8 @@ async function attach(E, caller, args) {
       // 6e-2, should-fix methods-run.cjs:45: a row the core itself appends over a paused row must not
       // inherit its paused_at/paused_by — this row is not itself paused, and api.md §2 promises both
       // null on every row that is not (writeWorker's own rule, unreachable here since this bypasses it).
-      appendDead(E, { ...w, state: 'dead', exited_at: w.exited_at == null ? t : w.exited_at, paused_at: null, paused_by: null }, by, t);
+      // ADR 0068 (proposed): the adapter that crashed wrote no end for this life, so its unreported turns are estimated here as run.end does.
+      appendDead(E, require('./cost-estimate.cjs').apply(E.dataDir, { ...w, state: 'dead', exited_at: w.exited_at == null ? t : w.exited_at, paused_at: null, paused_by: null }), by, t);
       marked.push(w.id);
     }
   }
@@ -366,6 +367,7 @@ async function writeWorker(E, caller, args) {
   if (merged.state === 'running' && !pidAlive(merged.pid)) {
     throw err('E_WORKER_NOT_LIVE', `worker ${args.id} cannot be written as ${merged.state} because pid ${merged.pid} is not alive`, { worker_id: args.id, pid: merged.pid == null ? null : merged.pid });
   }
+  require('./cost-estimate.cjs').apply(E.dataDir, merged); // a stopped or dead row's unreported last turn, from its stream
   const t = Date.now();
   // ADR 0026 amendment 1 (proposed): a first dead row releases the worker's leases unless a restart keeps them (keep_leases).
   const firstDead = merged.state === 'dead' && !(prev && prev.state === 'dead');

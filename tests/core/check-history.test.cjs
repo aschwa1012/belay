@@ -179,6 +179,7 @@ test('the integrate view lists this call\'s own tasks and any task whose checks 
   const row = {
     id: 'i', state: 'evaluated',
     merged: [{ task_id: 'T1', carried_from: 'p' }, { task_id: 'T2', carried_from: 'p' }, { task_id: 'T3', carried_from: 'p' }, { task_id: 'T4', carried_from: null }],
+    task_checks_changed: ['T2'],
     task_checks: ['T1 checks: node --test', 'T2 checks: a -> node --test (amended 5 min in)', 'T3 checks: node --test', 'T4 checks: node --test'],
   };
   assert.deepStrictEqual(V.integrate(row).task_checks, ['T2 checks: a -> node --test (amended 5 min in)', 'T4 checks: node --test']);
