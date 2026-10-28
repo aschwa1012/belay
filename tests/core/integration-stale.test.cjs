@@ -192,6 +192,46 @@ test('a merging row whose pid now names a process created at another time is tak
   }
 });
 
+// The creation time is exact (ADR 0039): a pid reused within seconds of the row's `owner_boot` is another process. The snapshot
+// is stubbed so the reused pid is created 3 s after the row's time, inside any slack, which no real host can arrange on demand.
+test('a merging row whose pid names a process created 3 s after the row owner_boot is taken as gone', async () => {
+  const { Store } = core('store.cjs');
+  const rows = core('rows.cjs');
+  const ID = core('proc-identity.cjs');
+  const { spawn } = require('node:child_process');
+  const dir = sandbox();
+  const orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
+  const op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
+  opened.push({ dir, cores: [orch, op] });
+  await orch.run.attach({ adapter_pid: process.pid });
+  const repo = makeRepo(dir);
+  const t = await orch.task.create({ spec: 'a', acceptance: { commands: [exists('a.txt')] } });
+  const w = (await op.task.worktreeCreate({ task_id: t.id, repo })).worktree;
+  write(w.path, 'a.txt', 'a\n');
+  commit(w.path, 'a');
+  assert.strictEqual((await orch.task.evaluate({ task_id: t.id })).state, 'done');
+  const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e9)'], { windowsHide: true, stdio: 'ignore' });
+  const holderExited = new Promise((r) => holder.once('exit', r));
+  const realCreatedOf = ID.createdOf;
+  try {
+    const c = await ID.createdOf(holder.pid);
+    assert.ok(c && c.created);
+    const s = new Store(`${dir}/data/memory.db`);
+    let stale;
+    try {
+      stale = rows.append(s, 'integration', { id: rows.newId(), run_id: 'test-run', repo, into_branch: 'int/near', worktree: `${repo}.worktrees/integrate-int-near`, created_worktree: true, base_sha: w.base_sha, head_sha: w.base_sha, state: 'merging', task_ids: [t.id], merged: [], junctions: [], owner_pid: holder.pid, owner_boot: c.created - 3000 }, 'owner', Date.now());
+    } finally { s.close(); }
+    ID.createdOf = async (pid, o) => (pid === holder.pid ? { created: c.created, image: c.image } : realCreatedOf(pid, o));
+    const row = await orch.integration.merge({ task_ids: [t.id], into: 'int/near' });
+    assert.strictEqual(row.state, 'evaluated', JSON.stringify(row.error));
+    assert.strictEqual((await orch.integration.get({ id: stale.id })).state, 'abandoned');
+  } finally {
+    ID.createdOf = realCreatedOf;
+    holder.kill();
+    await holderExited;
+  }
+});
+
 // A row whose pid runs but cannot be proven to be the merge: here it recorded no creation time, which reaches the same branch as
 // a creation time the snapshot cannot read. Nothing tells anyone to end that pid; only the operator may take the branch over.
 test('a merging row not proven to be its live pid refuses with no kill advice; the orchestrator cannot take over, the operator can', async () => {
@@ -336,8 +376,8 @@ test('the first merge in a fresh process never waits on a slow process snapshot:
   assert.strictEqual(r.status, 0, r.stderr);
   const receipt = JSON.parse(r.stdout.trim().split('\n').pop());
   assert.strictEqual(receipt.state, 'merged');
-  assert.strictEqual(receipt.owner_boot, null, 'the probe had not settled, so no start time is recorded');
-  assert.ok(receipt.merge_ms < 6000, `the merge took ${receipt.merge_ms} ms; it waited on the stalled snapshot`);
+  // The fact, not a clock: a merge that had awaited the stalled snapshot (it succeeds after 8 s) would have recorded the start time.
+  assert.strictEqual(receipt.owner_boot, null, `the probe had not settled, so no start time is recorded (the merge took ${receipt.merge_ms} ms)`);
 });
 
 test('a CLI write owner starts no snapshot probe: worktree create exits promptly with the snapshot stalled, and its merge records no start time', async () => {
@@ -351,7 +391,8 @@ test('a CLI write owner starts no snapshot probe: worktree create exits promptly
   await orch.shutdownOwner();
   await orch.close();
   opened.push({ dir, cores: [] });
-  const env = { ...process.env, BELAY_TEST_SNAPSHOT_STALL_MS: '8000' }; // every snapshot in it would take 8 s
+  const snapLog = `${dir}/snapshots.log`; // every snapshot a process takes appends a line (ADR 0048 decision 6)
+  const env = { ...process.env, BELAY_TEST_SNAPSHOT_STALL_MS: '8000', BELAY_SNAPSHOT_LOG: snapLog }; // every snapshot in it would take 8 s
   const run = (args) => new Promise((resolve) => {
     const t0 = Date.now();
     const child = spawn(process.execPath, [path.resolve(__dirname, '..', '..', 'src', 'cli', 'belay.cjs'), ...args, '--data', `${dir}/data`, '--json'], { cwd: repo, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -362,7 +403,7 @@ test('a CLI write owner starts no snapshot probe: worktree create exits promptly
   });
   const made = await run(['worktree', 'create', t.id]);
   assert.strictEqual(made.status, 0, made.stderr);
-  assert.ok(made.ms < 6000, `worktree create took ${made.ms} ms: it waited on the stalled snapshot`);
+  assert.ok(!fs.existsSync(snapLog), `worktree create took a process snapshot (${made.ms} ms): ${fs.existsSync(snapLog) && fs.readFileSync(snapLog, 'utf8')}`);
   const w = JSON.parse(made.stdout).worktree;
   write(w.path, 'a.txt', 'a\n');
   commit(w.path, 'a');
@@ -373,6 +414,6 @@ test('a CLI write owner starts no snapshot probe: worktree create exits promptly
   await c.close();
   const merged = await run(['worktree', 'merge', t.id, '--into', 'int/cli-owner']);
   assert.strictEqual(merged.status, 0, merged.stderr);
-  assert.ok(merged.ms < 6000, `worktree merge took ${merged.ms} ms`);
+  assert.ok(!fs.existsSync(snapLog), `worktree merge took a process snapshot (${merged.ms} ms)`);
   assert.strictEqual(JSON.parse(merged.stdout).owner_boot, null, 'a CLI owner records no start time');
 });

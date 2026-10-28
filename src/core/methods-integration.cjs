@@ -33,10 +33,9 @@ const view = (r) => (r ? { ...r, ...hookChanged(r), ...reusedOf(r), created_work
 // The process that wrote a `merging` row is gone, or is this one. A row this process wrote is not in flight, since the caller
 // holds the in-process lock every merge into that branch holds. Another live pid may be an owner that was stopped without
 // exiting (the adapter outlives it) whose git is still running, so only a pid that is gone, or now names a process created at
-// another time than the row's `owner_boot` (a reused pid), is taken as gone. A creation time that cannot be read is not proof.
+// another time than the row's `owner_boot` (a reused pid; the times are exact, ADR 0039), is taken as gone. A creation time that cannot be read is not proof.
 // A row from before the columns names no process, and nothing could be waited on. `owner_boot` (methods-worktree.cjs ownBoot),
 // and the time it is compared with, both come from the process snapshot, so no clock but the OS's creation times is involved.
-const BOOT_SLACK_MS = 5000;
 
 // -> { gone, proven, why }. `proven` (when not gone): the pid runs as the process the row names, created when it records.
 async function ownerGone(r) {
@@ -45,7 +44,7 @@ async function ownerGone(r) {
   if (pid === process.pid) return { gone: true, why: 'its pid is this process, which holds the lock, so no merge of it is running' };
   if (!pidAlive(pid)) return { gone: true, why: `pid ${pid} is not running` };
   const c = await ID.createdOf(pid).catch(() => null);
-  if (c && r.owner_boot != null && Math.abs(c.created - Number(r.owner_boot)) > BOOT_SLACK_MS) return { gone: true, why: `pid ${pid} was created at ${c.created}, not at the row's ${r.owner_boot}` };
+  if (c && r.owner_boot != null && c.created !== Number(r.owner_boot)) return { gone: true, why: `pid ${pid} was created at ${c.created}, not at the row's ${r.owner_boot}` };
   if (c && r.owner_boot != null) return { gone: false, proven: true, why: `pid ${pid} is running, created at ${c.created} as the row records` };
   return { gone: false, proven: false, why: c ? `pid ${pid} is running and the row recorded no creation time to match it` : `pid ${pid} is running and its creation time could not be read` };
 }
