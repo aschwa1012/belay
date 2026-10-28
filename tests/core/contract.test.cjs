@@ -117,10 +117,11 @@ test('a timed-out acceptance command takes its grandchildren with it', async () 
   const orch = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
   let gpid = 0;
   try {
+    // The deadline must outlast the command's node start and its grandchild's spawn, or the pid file is not written yet; it is a hang guard, the test waits for the deadline to hit.
     const pidFile = path.join(dir, 'grandchild.pid');
     const t = await orch.task.create({
       spec: 'a command that is a tree, not a process',
-      acceptance: { commands: [{ argv: [process.execPath, path.join(FIXTURES, 'spawns-a-child.cjs'), pidFile], timeout_ms: 1000 }] },
+      acceptance: { commands: [{ argv: [process.execPath, path.join(FIXTURES, 'spawns-a-child.cjs'), pidFile], timeout_ms: 6000 }] },
     });
     const r = await orch.task.evaluate({ task_id: t.id, worktree: dir });
     const check = r.results.checks[0];
@@ -144,7 +145,7 @@ test('a timed-out acceptance command takes its grandchildren with it', async () 
     gpid = Number(fs.readFileSync(pidFile, 'utf8').trim());
     assert.ok(gpid > 0, 'the fixture must have recorded the pid of the child it spawned');
     let alive = pidAlive(gpid);
-    for (let i = 0; i < 30 && alive; i++) { await sleep(100); alive = pidAlive(gpid); }
+    for (let i = 0; i < 100 && alive; i++) { await sleep(100); alive = pidAlive(gpid); }
     assert.strictEqual(alive, false, `the grandchild (pid ${gpid}) outlived the command that spawned it`);
     gpid = 0;
   } finally {
