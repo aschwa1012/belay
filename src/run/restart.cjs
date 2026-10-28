@@ -111,15 +111,20 @@ async function restartFirstText(w, branch, { core, ctx, hold }) {
 async function currentRule(w, core, hold) {
   if (!w.taskId || (hold && hold.reason === 'lease_lost')) return '';
   try {
-    const mine = (t) => t && t.lease && t.lease.holder === w.id && t.lease.holder_role === 'worker' && !t.lease.released_at;
-    let task = null;
-    if (core.task && typeof core.task.list === 'function') task = (((await core.task.list({})) || {}).tasks || []).filter(mine).pop() || null;
-    if (!task) { const t = await core.task.get({ task_id: w.taskId }); task = mine(t) ? t : null; }
+    const task = (await heldTask(w, core)) || heldBy(w, await core.task.get({ task_id: w.taskId }));
     if (!task) return '';
     const full = (await core.task.get({ task_id: task.id })) || task;
     const HB = require('./handback.cjs'), assigned = { task: full, new_lease: full.lease };
     return HB.rule(assigned, await HB.facts((id) => core.task.get({ task_id: id }), assigned));
   } catch { return ''; }
+}
+
+// The task this worker holds, derived from its lease (invariant 4), not from what was remembered at spawn: a task_assign through the CLI,
+// from another adapter, or to an adopted record leaves `w.taskId` behind. A held lease implies `assigned`. Null when it holds none.
+const heldBy = (w, t) => (t && t.lease && t.lease.holder === w.id && t.lease.holder_role === 'worker' && !t.lease.released_at ? t : null);
+async function heldTask(w, core) {
+  if (!core.task || typeof core.task.list !== 'function') return null;
+  try { return (((await core.task.list({ states: ['assigned'] })) || {}).tasks || []).filter((t) => heldBy(w, t)).pop() || null; } catch { return null; }
 }
 
 // ADR 0046 decision 1: a worker launched again (restart, resume, a Codex turn) may have been adopted from a run that has
@@ -128,6 +133,8 @@ async function currentRule(w, core, hold) {
 // Returns ensureHold's answer (null without a task). ADR 0026 amendment 2: a worker whose death released its lease gets it back
 // (`regranted`) when nobody has been given the task since, and is otherwise told it holds none (`lease_lost`).
 async function holdForLaunch(w, core) {
+  const held = await heldTask(w, core);
+  if (held && held.id !== w.taskId) w.taskId = held.id; // the record follows the lease before anything reads it (the first text, the bottle, the hold)
   return w.taskId ? core.task.ensureHold({ task_id: w.taskId, worker_id: w.id }) : null;
 }
 

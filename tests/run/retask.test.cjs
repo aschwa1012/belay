@@ -64,3 +64,16 @@ test('reassigned, then parked and resumed: the resume line is the new task\'s', 
     assert.ok(asked.length && asked.every((t) => t === 't2'), JSON.stringify(asked));
   });
 });
+
+test('assigned through the core, not compose: a restart derives the held task from the lease, in the hold and the resume line', async () => {
+  await withWorker(async ({ m, core }) => {
+    core.task.list = async () => ({ tasks: [{ id: 't2', state: 'assigned', lease: { id: 'L2', holder: 'w1', holder_role: 'worker' } }, { id: 't1', state: 'assigned', lease: { id: 'L1', holder: 'w9', holder_role: 'worker' } }] });
+    const holds = core.callsTo('task.ensureHold').length, lines = core.callsTo('continuity.resumeLine').length;
+    assert.strictEqual(m._worker('w1').taskId, 't1', 'the record was not told');
+    await m.restart({ worker_id: 'w1' });
+    assert.deepStrictEqual(core.callsTo('task.ensureHold').slice(holds).map((c) => c.args.task_id), ['t2']);
+    const asked = core.callsTo('continuity.resumeLine').slice(lines).map((c) => c.args.task_id).filter(Boolean);
+    assert.ok(asked.length && asked.every((t) => t === 't2'), JSON.stringify(asked));
+    assert.strictEqual(m._worker('w1').taskId, 't2');
+  });
+});
