@@ -48,6 +48,9 @@ async function isUserBranch(E, repo, into, runId, fold = (s) => s) {
   const claims = rows.currentAll(E.store, 'task').filter((t) => t.worktree && t.worktree.branch && !t.worktree.branch_deleted && t.worktree.repo && J.judgedOf(t)
     && fold(t.worktree.branch) === fold(into) && G.samePath(t.worktree.repo, repo));
   for (const t of claims) {
+    // A task judged on nothing (its judged tree is the tree it was cut from, or its judged head is its base) proves no branch: any branch holding the base would match.
+    const j = J.judgedOf(t), baseTree = (await G.run(repo, ['rev-parse', '--verify', '--quiet', `${t.worktree.base_sha}^{tree}`])).stdout.trim();
+    if (j.head === t.worktree.base_sha || (j.tree && j.tree === baseTree)) continue;
     if (await J.commitOf(repo, t, `refs/heads/${into}`)) return false;
   }
   return true;
