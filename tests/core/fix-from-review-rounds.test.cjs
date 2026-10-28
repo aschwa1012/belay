@@ -393,3 +393,14 @@ test('a finding in the shape reviewers hand back (severity, clause, what, eviden
     '- [should-fix] help text omits the flag -- where: lib/help.js:40',
   ]);
 });
+
+test('a finding with a title reads as its title, with the detail after it', async () => {
+  const w = await orch.task.create({ spec: 'titled findings', acceptance: PASS });
+  await handBack(w.id, 'plain-coder', dir, { branch: 'b', head: 'h' });
+  await orch.task.evaluate({ task_id: w.id, worktree: dir });
+  const r = await orch.task.create({ spec: 'review it', depends_on: [w.id], acceptance: { verdict: true } });
+  await handBack(r.id, 'judge-title', dir, { verdict: 'refuted', summary: 's', findings: [{ severity: 'blocking', title: 'expiry never fires', where: 'src/c.cjs:3' }, { severity: 'should-fix', title: 'rename x', detail: 'the old name is kept' }] });
+  await orch.task.evaluate({ task_id: r.id, worktree: dir });
+  const f = await orch.task.fixFromReview({ review_id: r.id });
+  assert.deepStrictEqual(f.spec.split('\n').slice(3), ['- [blocking] expiry never fires -- where: src/c.cjs:3', '- [should-fix] rename x -- detail: the old name is kept']);
+});

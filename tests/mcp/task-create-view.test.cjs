@@ -34,3 +34,12 @@ test('tasks stands in for spec at the boundary; the listing declares worktree an
   const props = tools.schemaOf('task_create').properties;
   assert.ok(props.worktree && props.tasks);
 });
+
+test('fix_from_review with follow_up answers the follow-up\'s own tree, follow_ups_left and the task it waits for; an inherited fix tree stays out', async () => {
+  const fu = row('f', { depends_on: ['w'], files_owned: ['src/a.cjs'], worktree: tree, follows_up: { review_id: 'rv', task_id: 'w', root: 'w' }, from_review: 'rv', follow_ups_left: 0 });
+  const out = await views.viewed('fix_from_review', { review_id: 'rv', follow_up: true }, async () => fu);
+  assert.deepStrictEqual(out.worktree, { path: '/r.worktrees/a', branch: 'belay/a', base_sha: 'abc', junctions_skipped: tree.junctions_skipped });
+  assert.deepStrictEqual([out.depends_on, out.files_owned, out.follow_ups_left, out.from_review], [['w'], ['src/a.cjs'], 0, 'rv']);
+  const fix = await views.viewed('fix_from_review', { review_id: 'rv' }, async () => row('g', { repairs: 'w', worktree: { ...tree, inherited_from: 'w' } }));
+  assert.strictEqual(fix.worktree, undefined);
+});

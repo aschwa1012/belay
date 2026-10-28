@@ -6,12 +6,13 @@
 // A stop, pause, restart or resume (lifecycle.cjs runOp, and so the run's shutdown) cancels it first: the owner kills the command
 // running by its live child handle and the evaluation writes nothing (core evaluate-cancel.cjs). Nothing waits on the cancel.
 //
-// `enrichWakes` is the wake side, facts only (task, state, which checks failed), never the worker's words (ADR 0015 section 2). A
+// `enrichWakes` is the wake side, facts only (task, state, which checks failed), never the worker's words, except a review's verdict, counts, finding titles and a cut summary (review-wake.cjs; ADR 0015 section 2). A
 // turn_end wake carries the result if it has landed; otherwise the task is watched and a later poll sends one `evaluated` wake.
 // Every wake text is cut to WAKE_TEXT_MAX, the interactive mod's own text budget (src/mod/hooks/wake/core.mjs maxTextBytes: 226 B
 // less the plugin name), so the mod never cuts it and the headless line stays inside the 400-byte hook budget (invariant 9).
 
 const crypto = require('node:crypto');
+const reviewWake = require('./review-wake.cjs');
 
 const WAKE_TEXT_MAX = 221;
 const PENDING_MAX_MS = 900000; // a watched evaluation that never lands (cancelled, or the owner gone) is forgotten after this, unless its worker is live: a release evaluation may queue for a slot and then run 540 s
@@ -43,7 +44,8 @@ async function workOf(core, row) {
 function summaryOf(row, byId) {
   const r = row.results || {};
   const fr = fixRoundsOf(row, byId);
-  return { task_id: row.id, state: row.state, passed: !!r.passed, executable: !!r.executable, checks: ((r.checks) || []).length, failing: failedKinds(row), ...(r.flaky ? { flaky: true } : {}), ...(r.uncommitted ? { uncommitted: true } : {}), ...(r.queued ? { queued: r.queued } : {}), ...(fr ? { fix_rounds: fr } : {}) };
+  const review = reviewWake.reviewOf(row); // a review whose verdict check was executable: its facts ride on the wake (review-wake.cjs)
+  return { task_id: row.id, state: row.state, passed: !!r.passed, executable: !!r.executable, checks: ((r.checks) || []).length, failing: failedKinds(row), ...(review ? { review } : {}), ...(r.flaky ? { flaky: true } : {}), ...(r.uncommitted ? { uncommitted: true } : {}), ...(r.queued ? { queued: r.queued } : {}), ...(fr ? { fix_rounds: fr } : {}) };
 }
 
 const unevaluated = (t, runId, workerId) => t.run_id === runId && t.state === 'released' && t.handoff && t.handoff.by === workerId && !t.handoff.stood_down
@@ -158,6 +160,13 @@ function clause(evs, room) {
     : e.error === 'E_BUSY' ? `task ${e.task_id} not evaluated at release: another evaluation of it is running`
     : e.error ? `task ${e.task_id} could not be evaluated at release (${e.error}); call task_evaluate to run it`
     : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}` : `not done${e.fix_rounds ? `; fix rounds ${e.fix_rounds.used} of max ${e.fix_rounds.max}${e.fix_rounds.hard == null ? '' : `, hard cap ${e.fix_rounds.hard}`}` : ''}; failing: ${e.failing.join(', ') || 'no executable check'}`}`); }
+  if (evs.some((e) => e.review)) {
+    const body = reviewWake.render(parts, evs, room - 2);
+    if (body) return ` ${body}.`;
+    // Even the bare clauses do not fit: they are cut, but a review's findings and changed tree are still said.
+    const flags = reviewWake.flagsOf(evs);
+    return `${cut(` ${parts.join('; ')}`, room - 1 - Buffer.byteLength(flags, 'utf8'))}${flags}.`;
+  }
   return cut(` ${parts.join('; ')}.`, room);
 }
 
@@ -250,7 +259,8 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     } else if (!t || !unevaluated(t, runId, p.worker_id) || (t0 - p.since > PENDING_MAX_MS && !(liveWorkers && liveWorkers.has(p.worker_id)))) pending.delete(id);
   }
   for (const [wid, evs] of follow) {
-    const text = cut(`belay: worker ${wid}'s hand-back:${clause(evs, WAKE_TEXT_MAX)}`, WAKE_TEXT_MAX);
+    const head = `belay: worker ${wid}'s hand-back:`;
+    const text = cut(`${head}${clause(evs, WAKE_TEXT_MAX - Buffer.byteLength(head, 'utf8'))}`, WAKE_TEXT_MAX);
     const seq = Math.max(...evs.map((e) => Number(seen.get(e.task_id)) || Number(e.seq) || 0));
     out.push({ event: 'evaluated', worker_id: `eval:${evs[0].task_id}`, turn: 0, seq, task_id: evs[0].task_id, ...(evs.length > 1 ? { task_ids: evs.map((e) => e.task_id) } : {}), text });
   }

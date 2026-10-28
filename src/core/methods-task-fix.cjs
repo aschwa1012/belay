@@ -18,7 +18,7 @@ function verdictDetail(review) {
 // A finding as one plain line: where (file:line), its severity and clause, then what. The core does not fix a finding's shape, so
 // the text is the first of the usual fields a reviewer writes (note, what, text, ...), followed by every other field (evidence, where, ...)
 // as key: value pairs. A finding that is a bare string is that string.
-const WHAT = ['note', 'what', 'text', 'description', 'detail', 'message', 'summary', 'issue', 'finding'];
+const WHAT = ['title', 'note', 'what', 'text', 'description', 'detail', 'message', 'summary', 'issue', 'finding'];
 const WHERE = ['file', 'path', 'location'];
 const scalar = (v) => (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') && String(v).trim() !== '';
 function findingLine(f) {
@@ -91,6 +91,8 @@ function ownedSet(given, judged, tree) {
 
 async function fixFromReview(E, caller, args) {
   const T = require('./methods-task.cjs');
+  if (args.follow_up !== undefined && typeof args.follow_up !== 'boolean') throw err('E_ARGS', 'task.fixFromReview follow_up must be a boolean');
+  if (args.follow_up === true) return require('./methods-follow-up.cjs').followUp(E, caller, args); // ADR 0064: a held review's should-fix findings, not a fix round
   if (!args.review_id || typeof args.review_id !== 'string') throw err('E_ARGS', 'task.fixFromReview needs the review_id of a refuted review task');
   const review = rows.current(E.store, 'task', args.review_id);
   if (!review) throw err('E_NOT_FOUND', `no task row exists for ${args.review_id}`, { review_id: args.review_id });
@@ -130,4 +132,4 @@ async function fixFromReview(E, caller, args) {
   return { ...row, from_review: review.id };
 }
 
-module.exports = { fixFromReview };
+module.exports = { fixFromReview, findingLine, verdictDetail, inheritedTree, ownedSet, brief };

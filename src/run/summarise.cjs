@@ -94,6 +94,7 @@ function bodyOf(o) {
 function statedText(v) {
   if (typeof v === 'string') return v.trim();
   if (Array.isArray(v)) return v.map(statedText).filter(Boolean).join('; ');
+  if (v && typeof v === 'object') return ['title', 'detail'].map((k) => (typeof v[k] === 'string' ? v[k].trim() : '')).filter(Boolean).join(': '); // a finding object: its title, then its detail
   return '';
 }
 // Words a worker or a row wrote go into the summary on one line each: the summary text is rendered line by line
