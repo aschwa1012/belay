@@ -11,6 +11,7 @@ const { makeRepo, git, write, commit } = require('./worktree-helpers.cjs');
 const { openCore } = core('index.cjs');
 const G = core('git.cjs');
 const W = core('methods-worktree.cjs');
+const R = core('rows.cjs');
 const dir = sandbox();
 const opened = [];
 let seq = 0;
@@ -128,4 +129,38 @@ test('a task branch deleted outside belay and recreated from other history is th
   git(repo, 'update-ref', `refs/heads/${t.branch}`, sha);
   const re = await s.orch.integration.merge({ task_ids: [u.id], into: t.branch });
   assert.strictEqual(re.state, 'awaiting_approval', 'the recreated name asks first');
+});
+
+test('a task branch deleted and recreated from main, which holds the base of the task but not its work, belongs to the user', async () => {
+  const s = await scenario();
+  const repo = makeRepo(dir);
+  const t = await doneTask(s, repo, { 'a.txt': 'a' });
+  const u = await doneTask(s, repo, { 'u.txt': 'u' });
+  git(repo, 'worktree', 'remove', '--force', t.path);
+  git(repo, 'branch', '-D', t.branch);
+  git(repo, 'branch', t.branch, 'main');
+  const re = await s.orch.integration.merge({ task_ids: [u.id], into: t.branch });
+  assert.strictEqual(re.state, 'awaiting_approval', 'the recreated name asks first');
+});
+
+test('a throw after the branch moved records the move: the row says what is true', async () => {
+  const s = await scenario({ setting: 'allowed' });
+  const repo = makeRepo(dir);
+  const t = await doneTask(s, repo, { 'a.txt': 'a' });
+  git(repo, 'branch', 'feature/g');
+  const before = git(repo, 'rev-parse', 'feature/g');
+  const keepRun = G.run, keepAll = R.currentAll;
+  let moved = false;
+  G.run = async (cwd, args, ...rest) => { const r = await keepRun(cwd, args, ...rest); if (r.ok && args[0] === 'update-ref' && args.includes('refs/heads/feature/g')) moved = true; return r; };
+  R.currentAll = (...a) => { if (moved) { moved = false; throw new Error('injected store failure'); } return keepAll(...a); };
+  let e;
+  try { e = await s.orch.integration.merge({ task_ids: [t.id], into: 'feature/g' }).then(() => null, (x) => x); } finally { G.run = keepRun; R.currentAll = keepAll; }
+  assert.ok(e, 'the call threw');
+  const after = git(repo, 'rev-parse', 'feature/g');
+  assert.notStrictEqual(after, before, 'the branch did move');
+  const row = (await s.op.integration.list({})).integrations.find((r) => r.state === 'failed');
+  assert.ok(row, 'a failed row was written');
+  assert.strictEqual(row.head_after, after);
+  assert.strictEqual(row.applied, 'ref');
+  assert.strictEqual(trees(repo), 2, 'only the main checkout and the task tree remain');
 });

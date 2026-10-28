@@ -145,7 +145,20 @@ async function mergeIntoUser(E, caller, args, c) {
   return { ...view(row), checked: ran, ...(ran ? {} : { note: 'no checks ran' }), merge_commits: entries.map((m) => m.head_sha).filter(Boolean), ...(removal ? { removal } : {}) };
   } catch (e) { // a throw outside the guarded steps: the temporary tree and the open `merging` row do not outlive the call
     if (!treeGone) { try { await W.removeTree(E, { repo, path: tree.path, junctions: tree.junctions, branch: null }, { force: true }, `integration ${id}`); } catch (_) { /* the error below is the one reported */ } }
-    if (wrote) { try { E.store.tx(() => rows.append(E.store, 'integration', { ...wrote, state: 'failed', error: { code: e.code || 'E_INTERNAL', message: e.message } }, by, Date.now())); } catch (_) { /* the store may be closing */ } }
+    if (wrote) { // what is true now, read back: the branch and the prepared ref may have moved before the throw
+      try {
+        const cur = await G.run(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${into}^{commit}`]);
+        const now = cur.ok ? cur.stdout.trim() : null;
+        const pr = await G.run(repo, ['rev-parse', '--verify', '--quiet', `refs/belay/prepared/${id}^{commit}`]);
+        const kept = pr.ok ? pr.stdout.trim() : null;
+        const moved = now !== (place.head || null);
+        const facts = {
+          head_after: now, applied: kept ? 'prepared' : moved ? 'ref' : 'none',
+          ...(kept ? { prepared: { sha: kept, ref: `refs/belay/prepared/${id}`, checkout: null, ff_command: `git merge --ff-only ${kept}`, task_ids: [...args.task_ids], merge_commits: [], into_head: place.head } } : {}),
+        };
+        E.store.tx(() => rows.append(E.store, 'integration', { ...wrote, ...facts, state: 'failed', error: { code: e.code || 'E_INTERNAL', message: `${e.message}${moved || kept ? ` (after ${kept ? 'the merge was kept under its prepared ref' : `${into} moved`})` : ''}` } }, by, Date.now()));
+      } catch (_) { /* the store may be closing */ }
+    }
     throw e;
   }
 }

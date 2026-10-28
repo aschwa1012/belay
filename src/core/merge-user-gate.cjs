@@ -13,6 +13,7 @@ const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 const G = require('./git.cjs');
 const W = require('./methods-worktree.cjs');
+const J = require('./judged.cjs');
 
 const STAGING = /^belay\/integrate\/(.+)$/;
 
@@ -37,16 +38,17 @@ async function refuseVariant(repo, into, fold) {
   if (same) throw err('E_ARGS', `${into} is another spelling of the existing branch ${same}, and refs compare equal on this host; name it as ${same}`, { into, existing: same });
 }
 
-// A task row's branch is belay's only for the repository the row names, and only while the branch still exists and still contains the commit the task
-// was cut from: a branch belay made and the user deleted outside belay, then recreated under the same name from unrelated history, is the user's. (A branch
-// recreated from a commit that includes the task's base still reads as belay's: the store records no branch tip to tell those apart.)
+// A task row's branch is belay's only for the repository the row names, and only while the branch still holds the commit the task was judged on (the
+// task's recorded head or tree, found on the branch). A task with no judged record claims nothing: that branch is treated as the user's and asks. A branch
+// belay made and the user deleted outside belay, then recreated from main or other history, does not hold that commit, so it is the user's. What remains: a
+// user who merged the task's work into their own history and recreated the name from it holds the judged commit, and reads as belay's.
 async function isUserBranch(E, repo, into, runId, fold = (s) => s) {
   const m = STAGING.exec(into);
   if (m && (fold(m[1]) === fold(runId) || rows.current(E.store, 'run', m[1]))) return false;
-  const claims = rows.currentAll(E.store, 'task').filter((t) => t.worktree && t.worktree.branch && !t.worktree.branch_deleted && t.worktree.repo && t.worktree.base_sha
+  const claims = rows.currentAll(E.store, 'task').filter((t) => t.worktree && t.worktree.branch && !t.worktree.branch_deleted && t.worktree.repo && J.judgedOf(t)
     && fold(t.worktree.branch) === fold(into) && G.samePath(t.worktree.repo, repo));
   for (const t of claims) {
-    if ((await G.run(repo, ['merge-base', '--is-ancestor', t.worktree.base_sha, `refs/heads/${into}`])).ok) return false;
+    if (await J.commitOf(repo, t, `refs/heads/${into}`)) return false;
   }
   return true;
 }
