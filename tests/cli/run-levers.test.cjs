@@ -42,9 +42,9 @@ function go(prompt, specExtra, envExtra = {}) {
 }
 
 test('levers: parseLevers defaults and validation', () => {
-  assert.deepStrictEqual(parseLevers({}), { max_fix_rounds: 2, fix_cutoff: 'orchestrator', on_embedder_failure: 'required' });
-  assert.deepStrictEqual(parseLevers({ max_fix_rounds: 0, fix_cutoff: 'cap-only' }), { max_fix_rounds: 0, fix_cutoff: 'cap-only', on_embedder_failure: 'required' });
-  assert.deepStrictEqual(parseLevers({ max_fix_rounds: 5 }), { max_fix_rounds: 5, fix_cutoff: 'orchestrator', on_embedder_failure: 'required' });
+  assert.deepStrictEqual(parseLevers({}), { max_fix_rounds: 2, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', on_embedder_failure: 'required' });
+  assert.deepStrictEqual(parseLevers({ max_fix_rounds: 0, fix_cutoff: 'cap-only' }), { max_fix_rounds: 0, fix_cutoff: 'cap-only', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', on_embedder_failure: 'required' });
+  assert.deepStrictEqual(parseLevers({ max_fix_rounds: 5 }), { max_fix_rounds: 5, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', on_embedder_failure: 'required' });
   for (const bad of [-1, 1.5, '2', null, NaN, Infinity, 2 ** 60, true, [], {}]) {
     assert.match(parseLevers({ max_fix_rounds: bad }).error, /max_fix_rounds must be a non-negative integer/, String(bad));
   }
@@ -56,13 +56,13 @@ test('levers: parseLevers defaults and validation', () => {
 test('levers: substituteLevers replaces every placeholder, counts them, and passes a plain prompt through', () => {
   const lv = { max_fix_rounds: 3, fix_cutoff: 'cap-only' };
   const out = substituteLevers('a {{max_fix_rounds}} b {{max_fix_rounds}} c {{fix_cutoff_rule}} d', lv, 0);
-  assert.strictEqual(out.text, 'a 3 b 3 c Do not stop fix rounds before the cap. d');
+  assert.strictEqual(out.text, 'a 3 b 3 c Do not stop fix rounds before the fix-round limit. d');
   assert.deepStrictEqual(out.substituted, { max_fix_rounds: 2, fix_cutoff_rule: 1 });
   const plain = substituteLevers('no placeholders here\n', lv, 0);
   assert.strictEqual(plain.text, 'no placeholders here\n');
   assert.deepStrictEqual(plain.substituted, { max_fix_rounds: 0, fix_cutoff_rule: 0 });
   const orch = substituteLevers('{{fix_cutoff_rule}}', { max_fix_rounds: 2, fix_cutoff: 'orchestrator' }, 600000).text;
-  for (const part of ['survived a fix round', 'new regression', 'outside the task', 'stop-and-surface', 'never report a refuted step as passing',
+  for (const part of ['survived a fix round', 'new regression', 'outside the task', 'stop-and-surface', 'report a refuted step as passing',
     'the run\'s time bound (600000 ms from its start) is near, judged from the waited_ms your worker_wait answers report']) {
     assert.ok(orch.includes(part), `the orchestrator rule names "${part}"`);
   }
@@ -84,7 +84,7 @@ test('run: bad max_fix_rounds and fix_cutoff exit 2 before anything is created; 
   const ok = go('hi\n', { max_fix_rounds: 0, fix_cutoff: 'cap-only' });
   try {
     assert.strictEqual(ok.status, 0, ok.stderr.slice(-600));
-    assert.deepStrictEqual(JSON.parse(ok.stdout).levers, { max_fix_rounds: 0, fix_cutoff: 'cap-only', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 0, fix_cutoff_rule: 0 } });
+    assert.deepStrictEqual(JSON.parse(ok.stdout).levers, { max_fix_rounds: 0, fix_cutoff: 'cap-only', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 0, fix_cutoff_rule: 0 } });
   } finally { cleanup(ok.dir); }
 });
 
@@ -93,16 +93,16 @@ test('run: the orchestrator receives the prompt with both placeholders substitut
   const a = go(tpl, { max_fix_rounds: 4, fix_cutoff: 'cap-only' });
   try {
     assert.strictEqual(a.status, 0, a.stderr.slice(-600));
-    assert.strictEqual(fs.readFileSync(`${a.orchDir}/prompt.txt`, 'utf8'), 'cap 4 rounds. Do not stop fix rounds before the cap. again 4\n');
+    assert.strictEqual(fs.readFileSync(`${a.orchDir}/prompt.txt`, 'utf8'), 'cap 4 rounds. Do not stop fix rounds before the fix-round limit. again 4\n');
   } finally { cleanup(a.dir); }
 
   const b = go(tpl, {});
   try {
     assert.strictEqual(b.status, 0, b.stderr.slice(-600));
     const text = fs.readFileSync(`${b.orchDir}/prompt.txt`, 'utf8');
-    assert.ok(text.startsWith('cap 2 rounds. You may stop fix rounds before the cap'), text);
+    assert.ok(text.startsWith('cap 2 rounds. You may stop fix rounds before the fix-round limit'), text);
     assert.ok(!text.includes('{{'), 'no placeholder is left');
-    assert.deepStrictEqual(JSON.parse(b.stdout).levers, { max_fix_rounds: 2, fix_cutoff: 'orchestrator', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 2, fix_cutoff_rule: 1 } });
+    assert.deepStrictEqual(JSON.parse(b.stdout).levers, { max_fix_rounds: 2, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 2, fix_cutoff_rule: 1 } });
     assert.match(text, /The run has no time bound\./, 'timeout_ms defaults to 0');
   } finally { cleanup(b.dir); }
 
@@ -119,7 +119,7 @@ test('run: the receipt carries levers and review_rounds (this run\'s verdict tas
   try {
     assert.strictEqual(a.status, 0, a.stderr.slice(-600));
     const rc = JSON.parse(a.stdout);
-    assert.deepStrictEqual(rc.levers, { max_fix_rounds: 1, fix_cutoff: 'orchestrator', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 0, fix_cutoff_rule: 0 } });
+    assert.deepStrictEqual(rc.levers, { max_fix_rounds: 1, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 0, fix_cutoff_rule: 0 } });
     assert.strictEqual(rc.review_rounds, 2, 'two review tasks of this run; the work task and the other run\'s review are not counted');
     assert.strictEqual(rc.review_rounds_reason, null);
     assert.strictEqual(JSON.parse(fs.readFileSync(`${a.orchDir}/run.json`, 'utf8')).review_rounds, 2, 'run.json agrees');
@@ -128,7 +128,7 @@ test('run: the receipt carries levers and review_rounds (this run\'s verdict tas
   const t = go('hi\n', {}, { BELAY_FAKE_CORE: FAKE_TASKS, FAKE_TASKS_MODE: 'reject', NO_JSON: '1' });
   try {
     assert.strictEqual(t.status, 0, t.stderr.slice(-600));
-    assert.match(t.stdout, /levers: max_fix_rounds 2, fix_cutoff orchestrator, on_embedder_failure keyword; review_rounds: unknown \(task\.list failed: .*PROBE/);
+    assert.match(t.stdout, /levers: max_fix_rounds 2, fix_hard_cap 5 \(default, no run timeout\), fix_cutoff orchestrator, on_embedder_failure keyword; review_rounds: unknown \(task\.list failed: .*PROBE/);
   } finally { cleanup(t.dir); }
 
   const r = go('hi\n', {}, { BELAY_FAKE_CORE: FAKE_TASKS, FAKE_TASKS_MODE: 'reject' });
@@ -164,7 +164,7 @@ test('template: the shipped orchestrator prompt has both placeholders and the fo
   assert.match(standard, /only if it has at least\s+one blocking finding/);
   assert.match(text, /belay appends the Review standard and the verdict hand-back rule to the reviewer's first message; do not repeat them/);
   assert.ok(!/verbatim, in the reviewer's prompt/.test(text), 'the orchestrator is not asked to copy it');
-  assert.match(text, /\(0: the first review\)/);
+  assert.match(text, /answer carries a\s+`fix_notice` with the count/);
   assert.match(text, /A failed acceptance check is not a fix round/); // ADR 0058: worded beside fix_from_review
   assert.ok(!/\bland\b/.test(text), 'no "land" wording');
   const done = substituteLevers(text, { max_fix_rounds: 2, fix_cutoff: 'orchestrator' }, 0);
@@ -308,3 +308,16 @@ test('run: a bad memory block exits 2 before anything is created; a good one run
 function adapterArgs(r) {
   return JSON.parse(fs.readFileSync(`${r.orchDir}/mcp.json`, 'utf8')).mcpServers.belay.args;
 }
+
+test('levers: fix_hard_cap defaults to 5 without a run timeout and to none with one; an explicit value (or null) always wins', () => {
+  const src = 'default, no run timeout';
+  assert.deepStrictEqual([parseLevers({}).fix_hard_cap, parseLevers({}).fix_hard_cap_source], [5, src]);
+  assert.deepStrictEqual([parseLevers({ timeout_ms: 0 }).fix_hard_cap, parseLevers({ timeout_ms: 0 }).fix_hard_cap_source], [5, src]);
+  assert.deepStrictEqual([parseLevers({ timeout_ms: 600000 }).fix_hard_cap, parseLevers({ timeout_ms: 600000 }).fix_hard_cap_source], [null, null]);
+  for (const t of [0, 600000]) {
+    assert.deepStrictEqual([parseLevers({ timeout_ms: t, fix_hard_cap: 4 }).fix_hard_cap, parseLevers({ timeout_ms: t, fix_hard_cap: 4 }).fix_hard_cap_source], [4, 'run spec']);
+    assert.deepStrictEqual([parseLevers({ timeout_ms: t, fix_hard_cap: null }).fix_hard_cap, parseLevers({ timeout_ms: t, fix_hard_cap: null }).fix_hard_cap_source], [null, 'run spec'], 'null says no cap');
+  }
+  assert.strictEqual(parseLevers({ fix_hard_cap: 0 }).fix_hard_cap, 0);
+  for (const bad of [-1, 1.5, '3']) assert.match(parseLevers({ fix_hard_cap: bad }).error, /fix_hard_cap must be a non-negative integer, or null/);
+});

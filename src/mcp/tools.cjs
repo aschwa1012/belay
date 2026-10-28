@@ -247,7 +247,7 @@ const ORCHESTRATOR = [
       }),
       files_owned: strs('Paths relative to the worktree'),
       depends_on: strs('Task ids that must be done before this one can be assigned'),
-      repairs: str('A fix task: the id of the work task it repairs; capped by max_fix_rounds'),
+      repairs: str('A fix task: the id of the work task it repairs; past max_fix_rounds the answer carries fix_notice'),
       base: str('Diff base'),
       tree_of: str('Work in that task\'s worktree (a conflict fix)'),
       id: str(),
@@ -313,7 +313,7 @@ const ORCHESTRATOR = [
   },
   {
     name: 'fix_from_review',
-    description: 'Create the fix task for a review evaluated refuted, with depends_on, repairs, acceptance and files_owned inferred and spec from its findings. Returns id, rev, state, spec_head, repairs, depends_on, files_owned (view debug: whole row).',
+    description: 'Create the fix task for a review evaluated refuted, with depends_on, repairs, acceptance and files_owned inferred and spec from its findings. Returns id, rev, state, spec_head, repairs, depends_on, files_owned, fix_notice past max_fix_rounds (view debug: whole row).',
     inputSchema: S({ review_id: str(), spec: str('Default: from the findings'), repairs: str('Which task, if it judged several'), id: str(), view: DEBUG }, ['review_id']),
   },
   {

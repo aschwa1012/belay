@@ -88,11 +88,11 @@ task. A `worker_message` sent while the worker compacts answers `queued: true`; 
    - `executable: true, passed: true`: `holds`; the review is `done`.
    - `executable: true, passed: false` with `verdict: "refuted"`: only this means fix. Call
      `mcp__belay__fix_from_review` with `review_id`: it creates the fix task, infers what it depends
-     on and repairs (the work, never the review) and refuses past the cap. Run it, then create a new
+     on and repairs (the work, never the review). Run it, then create a new
      review task that depends on the fix. A failed acceptance check is not a fix round: message the
-     worker or create a plain task, without repairs. At most
-     {{max_fix_rounds}} fix rounds per work task: if a review is refuted after {{max_fix_rounds}}
-     fix rounds for its work task (0: the first review), end the run and name the open blocking
+     worker or create a plain task, without repairs. The fix-round limit is
+     {{max_fix_rounds}} per work task: after {{max_fix_rounds}} fix rounds belay still creates the fix, and its answer carries a
+     `fix_notice` with the count; whether one more round will do is your judgement. If you stop, if you made a fix task, cancel it with `mcp__belay__task_cancel` (an open one holds its files), then end the run and name the open blocking
      findings for the human; never report it as passing or mark it done. {{fix_cutoff_rule}}
 
 ## Rules of thumb

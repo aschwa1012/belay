@@ -11,6 +11,8 @@ const MN = require('../core/memory-notice.cjs'); // pure; the shared wording of 
 
 const FIX_CUTOFFS = ['orchestrator', 'cap-only'];
 const DEFAULT_MAX_FIX_ROUNDS = 2;
+const DEFAULT_FIX_HARD_CAP = 5; // ADR 0031 amendment 3: the safety net of a run with no time bound; a run with a timeout is notice-only
+const HARD_CAP_DEFAULT_SOURCE = 'default, no run timeout';
 const DEFAULT_FIX_CUTOFF = 'orchestrator';
 const EM = require('../core/embedder-mode.cjs');
 const DEFAULT_ON_EMBEDDER_FAILURE = EM.DEFAULT_MODE; // ADR 0034 decision 2, amendment 1
@@ -42,7 +44,7 @@ const MEMORY_QUERIES_LINE = ' Also give 1 to 3 `memory_queries`: task lines (eac
 // `mode` is 'headless' (the default, byte-identical to before) or 'interactive' (ADR 0037 decision 4: the run
 // does not end, so stop-and-surface is stop, store, tell the operator, then wait).
 function cutoffRule(fixCutoff, timeoutMs, mode = 'headless') {
-  if (fixCutoff === 'cap-only') return 'Do not stop fix rounds before the cap.';
+  if (fixCutoff === 'cap-only') return 'Do not stop fix rounds before the fix-round limit.';
   const timeCond = timeoutMs > 0
     ? `; the run's time bound (${timeoutMs} ms from its start) is near, judged from the waited_ms your worker_wait answers report`
     : '';
@@ -50,11 +52,11 @@ function cutoffRule(fixCutoff, timeoutMs, mode = 'headless') {
   const surface = interactive
     ? '(stop, record the outcome, tell the operator the open blocking findings, then wait for them)'
     : '(end the run and name the open blocking findings for the human)';
-  return `You may stop fix rounds before the cap, only towards stop-and-surface ${surface}, `
+  return `You may stop fix rounds before the fix-round limit, only towards stop-and-surface ${surface}, `
     + 'and only when one of these holds: the same blocking finding '
     + 'survived a fix round; a fix round introduced a new regression; the fix needs files outside the task\'s '
     + `owned set${timeCond}. Name the condition and its evidence when you ${interactive ? 'stop' : 'close'}. Never `
-    + 'extend past the cap and never report a refuted step as passing or mark it done.'
+    + 'report a refuted step as passing or mark it done.'
     + (timeoutMs > 0 ? '' : ' The run has no time bound.');
 }
 
@@ -110,7 +112,7 @@ function evalKeys(spec) {
   return { fold: Object.keys(fold).length ? fold : null };
 }
 
-// Returns { max_fix_rounds, fix_cutoff, on_embedder_failure[, compact_at_tokens] } or { error }. `compact_at_tokens` (ADR 0007 decision 3,
+// Returns { max_fix_rounds, fix_cutoff, on_embedder_failure, fix_hard_cap, fix_hard_cap_source[, compact_at_tokens] } or { error }. `compact_at_tokens` (ADR 0007 decision 3,
 // null by default) is present only when set, so a run without it has the receipt it always had.
 function parseLevers(spec, opts = {}) {
   let maxFixRounds = DEFAULT_MAX_FIX_ROUNDS;
@@ -121,6 +123,14 @@ function parseLevers(spec, opts = {}) {
     }
     maxFixRounds = v;
   }
+  // ADR 0031 amendment 3: the user's fix_hard_cap wins (null says no cap); unset, a run with no time bound (timeout_ms 0, the default) gets
+  // DEFAULT_FIX_HARD_CAP and a run with a timeout gets none. The source is recorded beside the cap.
+  let fixHardCap = null, fixHardCapSource = null;
+  if (spec.fix_hard_cap !== undefined) {
+    const v = spec.fix_hard_cap;
+    if (v !== null && (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0)) return { error: 'fix_hard_cap must be a non-negative integer, or null for no cap' };
+    fixHardCap = v; fixHardCapSource = 'run spec';
+  } else if (!spec.timeout_ms) { fixHardCap = DEFAULT_FIX_HARD_CAP; fixHardCapSource = HARD_CAP_DEFAULT_SOURCE; }
   let fixCutoff = DEFAULT_FIX_CUTOFF;
   if (spec.fix_cutoff !== undefined) {
     if (!FIX_CUTOFFS.includes(spec.fix_cutoff)) {
@@ -142,6 +152,7 @@ function parseLevers(spec, opts = {}) {
     onEmbedderFailure = EM.normalize(opts.config.memory.on_embedder_failure) || DEFAULT_ON_EMBEDDER_FAILURE; // a bad config value is refused by parseMemoryBlock below
   }
   const out = { max_fix_rounds: maxFixRounds, fix_cutoff: fixCutoff, on_embedder_failure: onEmbedderFailure };
+  out.fix_hard_cap = fixHardCap; out.fix_hard_cap_source = fixHardCapSource; // null: no cap
   const ca = CP.parseCompactAt(spec.compact_at_tokens);
   if (ca.error) return { error: ca.error };
   if (ca.value !== null) out.compact_at_tokens = ca.value;
