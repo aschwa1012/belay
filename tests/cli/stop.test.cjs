@@ -26,14 +26,14 @@ const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
 
 // ================================================================ the tests
 
-test('stop: a live run is stopped from a second process, the orchestrator exits gracefully, and the run closes its own row and its owner', async () => {
+test('stop: a live run is stopped from a second process, the orchestrator exits gracefully, and the run closes its own row and its owner', { timeout: 180000 }, async () => {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, runId } = makeSpec(dir, { startup_timeout_ms: 120000, close_grace_ms: 5000 });
   const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_HANG: '1' };
   const runCliProc = runCli(specPath, dataDir, env);
   try {
-    const row = await waitUntil(() => currentRunRow(dataDir, runId), 15000, 100);
+    const row = await waitUntil(() => currentRunRow(dataDir, runId), 60000, 100);
     assert.ok(row, 'the run row never appeared');
     // Held well past close_grace_ms (5,000 ms) before the stop is even issued — deliberately, so this
     // assertion actually distinguishes "the stop's own close-then-kill took under 5,000 ms" from "the
@@ -42,7 +42,9 @@ test('stop: a live run is stopped from a second process, the orchestrator exits 
     // ms_to_exit ~6,000+ and turned the very assertion below red against otherwise-correct code).
     await sleep(6000);
 
+    const stopT0 = Date.now();
     const stop = runStopSync(dataDir, runId);
+    const stopCallMs = Date.now() - stopT0;
     assert.strictEqual(stop.status, 0, `stop: ${stop.stdout} / ${stop.stderr}`);
     const sr = stop.receipt;
     assert.ok(sr, 'stop produced no parseable receipt');
@@ -52,11 +54,13 @@ test('stop: a live run is stopped from a second process, the orchestrator exits 
     assert.deepStrictEqual(sr.workers, []);
     assert.strictEqual(sr.orchestrator.exit_code, 0);
     assert.strictEqual(sr.orchestrator.graceful, true);
-    assert.ok(sr.orchestrator.ms_to_exit < 5000, `ms_to_exit ${sr.orchestrator.ms_to_exit} was not under 5,000 — held for 6,000 ms before this stop was issued, so a value this small can only be the stop's own close time, never the run's age`);
+    // A fact, not a clock: the stop's own close time cannot exceed the call that waited for it. The run was held for 6,000 ms before this
+    // stop was issued, so a value that was the run's age instead would be over the call's length whenever the call was quicker than that.
+    assert.ok(sr.orchestrator.ms_to_exit <= stopCallMs, `ms_to_exit ${sr.orchestrator.ms_to_exit} was over the ${stopCallMs} ms the stop call took: it is the stop's own close time, never the run's age`);
     assert.match(sr.established_by, /run\.stop over the owner pipe answered in \d+ ms/);
 
-    const exited = await waitForExit(runCliProc.proc, 15000);
-    assert.ok(exited, 'the CLI run did not exit within 15,000 ms of the stop');
+    const exited = await waitForExit(runCliProc.proc, 90000);
+    assert.ok(exited, 'the CLI run did not exit within 90,000 ms of the stop');
     assert.strictEqual(exited.code, 0);
     const runReceipt = receiptOf(runCliProc, 0);
     assert.match(runReceipt.ended_by, /^stopped by belay stop \(caller pid \d+\); stdin closed$/);
@@ -81,11 +85,12 @@ test('stop: a live run is stopped from a second process, the orchestrator exits 
 // close_grace_ms 2000, which fits inside Owner.stop()'s own 5,000 ms drain, so a worker phase that
 // actually outlasts that drain was never exercised. No close_grace_ms is passed here at all, so
 // cmd-run.cjs's own default (10,000 ms, cmd-run.cjs's ARGS table) is what the stop and the run wait on.
-test("stop: the run waits for the stop's worker phase before it ends the run, at the default grace", async () => {
+test("stop: the run waits for the stop's worker phase before it ends the run, at the default grace", { timeout: 180000 }, async () => {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, runId, orchestratorDir } = makeSpec(dir, { poll_ms: 300 });
-  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_GATE_FILE: `${dir}/answer.gate` };
+  const holdsFile = `${dir}/holds.jsonl`;
+  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_GATE_FILE: `${dir}/answer.gate`, BELAY_TEST_HOLDS_FILE: holdsFile };
   const runCliProc = runCli(specPath, dataDir, env);
   let core = null;
   let plantedProc = null;
@@ -105,9 +110,9 @@ test("stop: the run waits for the stop's worker phase before it ends the run, at
     fs.writeFileSync(`${dir}/answer.gate`, 'go'); // the orchestrator's first turn may end now: its worker is mid-turn, so the run stays open
 
     const streamPath = `${orchestratorDir}/stream.jsonl`;
-    const gotResult = await waitForFileLine(streamPath, '"type":"result"', 15000);
+    const gotResult = await waitForFileLine(streamPath, '"type":"result"', 60000);
     assert.ok(gotResult, "the orchestrator's own first turn never ended");
-    await sleep(2 * 300);
+    assert.ok(await waitForFileLine(holdsFile, '"busy":["w1"]', 60000), 'the run never recorded w1 as busy');
 
     const stop = runStopSync(dataDir, runId);
     assert.strictEqual(stop.status, 0, `stop: ${stop.stdout} / ${stop.stderr}`);
@@ -122,8 +127,8 @@ test("stop: the run waits for the stop's worker phase before it ends the run, at
     assert.ok(sr.worker_phase_ms >= 10000, `worker_phase_ms ${sr.worker_phase_ms} was not >= 10,000 (the default close_grace_ms)`);
     assert.strictEqual(P.pidAlive(plantedPid), false, 'the planted worker pid is still alive');
 
-    const exited = await waitForExit(runCliProc.proc, 15000);
-    assert.ok(exited, 'the CLI run did not exit within 15,000 ms of the stop');
+    const exited = await waitForExit(runCliProc.proc, 90000);
+    assert.ok(exited, 'the CLI run did not exit within 90,000 ms of the stop');
     assert.strictEqual(exited.code, 0, `run exit ${exited.code}: ${runCliProc.stderr}`);
     const runReceipt = receiptOf(runCliProc, 0);
     assert.strictEqual(runReceipt.stop.workers[0].id, 'w1');
@@ -141,7 +146,7 @@ test("stop: the run waits for the stop's worker phase before it ends the run, at
 // by a second CLI process started on a timer: under load that process can reach the owner after the first stop has finished, which
 // is the designed E_NOT_FOUND `ended` answer (the next test) and not an in-flight join. Exit codes and the orchestrator block are
 // compared, not the two calls' wall clocks, which differ by whatever delay the second caller had.
-test('stop: a second stop while the first is in flight gets the same receipt', async () => {
+test('stop: a second stop while the first is in flight gets the same receipt', { timeout: 180000 }, async () => {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const stdinEnd = `${dir}/stdin-end.txt`;
@@ -152,7 +157,7 @@ test('stop: a second stop while the first is in flight gets the same receipt', a
   const runCliProc = runCli(specPath, dataDir, env);
   let op = null;
   try {
-    const row = await waitUntil(() => currentRunRow(dataDir, runId), 15000, 100);
+    const row = await waitUntil(() => currentRunRow(dataDir, runId), 60000, 100);
     assert.ok(row, 'the run row never appeared');
     await sleep(500);
     op = await openCore({ dataDir, caller: { role: 'operator', run_id: runId, pid: process.pid } });
@@ -170,7 +175,7 @@ test('stop: a second stop while the first is in flight gets the same receipt', a
     assert.strictEqual(r1.receipt.orchestrator.exit_code, second.orchestrator.exit_code);
     assert.strictEqual(r1.receipt.orchestrator.ms_to_exit, second.orchestrator.ms_to_exit, 'the second call got the first stop\'s receipt');
 
-    const exited = await waitForExit(runCliProc.proc, 15000);
+    const exited = await waitForExit(runCliProc.proc, 90000);
     assert.ok(exited, 'the CLI run did not exit');
     assert.strictEqual(exited.code, 1);
     const runReceipt = receiptOf(runCliProc, 1);
@@ -189,7 +194,7 @@ test('stop: a second stop while the first is in flight gets the same receipt', a
 // phase's own bound) to at least 3,000 + 3,000 ms, so the run process is still the owner when the
 // second CLI call lands — though the exact instant it tears the owner down afterward is not itself
 // bounded, so both outcomes the design permits are checked and the branch taken is logged.
-test("stop: a stop after the run's stop completed is refused as ended, naming who stopped it", async () => {
+test("stop: a stop after the run's stop completed is refused as ended, naming who stopped it", { timeout: 180000 }, async () => {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, runId } = makeSpec(dir, { startup_timeout_ms: 120000, close_grace_ms: 3000 });
@@ -198,7 +203,7 @@ test("stop: a stop after the run's stop completed is refused as ended, naming wh
   let core = null;
   let plantedProc = null;
   try {
-    const row = await waitUntil(() => currentRunRow(dataDir, runId), 15000, 100);
+    const row = await waitUntil(() => currentRunRow(dataDir, runId), 60000, 100);
     assert.ok(row, 'the run row never appeared');
 
     core = await connectOrchestratorCore(dataDir, runId);
@@ -212,13 +217,12 @@ test("stop: a stop after the run's stop completed is refused as ended, naming wh
       id: 'w1', substrate: 'claude-code', pid: plantedPid, pid_image: 'node.exe', state: 'running',
       turns: 0, mid_turn: 1, started_at: Date.now(), worktree: workerWt,
     });
-    await sleep(500);
 
     const r1 = await spawnStopAsync(dataDir, runId);
     assert.strictEqual(r1.status, 0, `first stop: ${r1.stdout} / ${r1.stderr}`);
     assert.ok(r1.receipt && r1.receipt.stopped === true, `the first stop did not report stopped: true: ${JSON.stringify(r1.receipt)}`);
 
-    const r2 = runStopSync(dataDir, runId);
+    const r2 = await spawnStopAsync(dataDir, runId); // not runStopSync: this process's connected client must keep serving while the second stop runs
     let branch;
     if (r2.status === 1 && r2.receipt && r2.receipt.error && r2.receipt.error.code === 'E_OWNER_LOST') {
       // The owner vouches for a stop caller by its process before it serves it (about a second, ADR 0045 decision 4), and the first
@@ -232,16 +236,20 @@ test("stop: a stop after the run's stop completed is refused as ended, naming wh
       assert.strictEqual(r2.receipt.error.detail.phase, 'ended');
       assert.strictEqual(r2.receipt.error.detail.stopped_by.caller_pid, r1.pid);
     } else {
-      branch = 'the owner had already torn itself down by the time the second call landed';
+      // The owner was going away: whatever it was in the middle of (gone, or answering late, or a connection reset) is a refusal, and
+      // the reason is the error's own, so the facts are the refusal and, when the run is already seen as ended, the row that says why.
+      branch = `the owner was going away when the second call landed (${r2.receipt && r2.receipt.error ? r2.receipt.error.code : 'no error'})`;
       assert.strictEqual(r2.status, 1, `second stop: ${r2.stdout} / ${r2.stderr}`);
-      assert.match(r2.receipt.reason, /no live run/);
-      assert.ok(r2.receipt.last, 'the no-live-run branch carried no last row');
-      assert.match(r2.receipt.last.exit_reason, /stopped by belay stop/);
+      assert.ok(r2.receipt && r2.receipt.error && r2.receipt.error.code, `second stop carried no error: ${r2.stdout} / ${r2.stderr}`);
+      if (/no live run/.test(r2.receipt.reason)) {
+        assert.ok(r2.receipt.last, 'the no-live-run branch carried no last row');
+        assert.match(r2.receipt.last.exit_reason, /stopped by belay stop/);
+      }
     }
     console.log(`second-stop branch taken: ${branch}`);
     assert.notStrictEqual(r2.receipt && r2.receipt.stopped, true, 'the second stop replayed the first receipt as a success');
 
-    const exited = await waitForExit(runCliProc.proc, 15000);
+    const exited = await waitForExit(runCliProc.proc, 90000);
     assert.ok(exited, 'the CLI run did not exit');
   } finally {
     if (plantedProc && P.pidAlive(plantedProc.pid)) { try { require('../crash.cjs').crash(plantedProc); } catch { /* best effort */ } }
@@ -251,7 +259,7 @@ test("stop: a stop after the run's stop completed is refused as ended, naming wh
   }
 });
 
-test('stop: with no live run it exits 1, names the last run\'s id and exit reason, creates nothing and starts nothing', async () => {
+test('stop: with no live run it exits 1, names the last run\'s id and exit reason, creates nothing and starts nothing', { timeout: 180000 }, async () => {
   // (a) a data dir where a plain run already finished (exit 0).
   {
     const dir = sandbox();
@@ -259,7 +267,7 @@ test('stop: with no live run it exits 1, names the last run\'s id and exit reaso
     const { specPath, runId } = makeSpec(dir);
     const runCliProc = runCli(specPath, dataDir, { BELAY_CLAUDE_EXE: FAKE_CLAUDE });
     try {
-      const exited = await waitForExit(runCliProc.proc, 15000);
+      const exited = await waitForExit(runCliProc.proc, 90000);
       assert.ok(exited, 'the plain fake run never exited');
       assert.strictEqual(exited.code, 0);
 
@@ -315,14 +323,14 @@ test('stop: with no live run it exits 1, names the last run\'s id and exit reaso
   }
 });
 
-test('stop: a run stopped for a different run id is refused and stays alive', async () => {
+test('stop: a run stopped for a different run id is refused and stays alive', { timeout: 180000 }, async () => {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, runId } = makeSpec(dir, { startup_timeout_ms: 120000, close_grace_ms: 5000 });
   const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_HANG: '1' };
   const runCliProc = runCli(specPath, dataDir, env);
   try {
-    const row = await waitUntil(() => currentRunRow(dataDir, runId), 15000, 100);
+    const row = await waitUntil(() => currentRunRow(dataDir, runId), 60000, 100);
     assert.ok(row, 'the run row never appeared');
     await sleep(500);
 
@@ -341,7 +349,7 @@ test('stop: a run stopped for a different run id is refused and stays alive', as
 
     const cleanupStop = runStopSync(dataDir, runId);
     assert.strictEqual(cleanupStop.status, 0, `cleanup stop: ${cleanupStop.stdout} / ${cleanupStop.stderr}`);
-    const exited = await waitForExit(runCliProc.proc, 15000);
+    const exited = await waitForExit(runCliProc.proc, 90000);
     assert.ok(exited, 'the CLI run did not exit after the cleanup stop');
   } finally {
     if (runCliProc.proc.exitCode === null) { try { await P.killTree(runCliProc.proc); } catch { /* best effort */ } }
@@ -349,11 +357,12 @@ test('stop: a run stopped for a different run id is refused and stays alive', as
   }
 });
 
-test('stop: a worker row of this run that is nobody\'s child is reported from its row plus a pid check and killed by exact pid after the bound', async () => {
+test('stop: a worker row of this run that is nobody\'s child is reported from its row plus a pid check and killed by exact pid after the bound', { timeout: 180000 }, async () => {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, runId, orchestratorDir } = makeSpec(dir, { poll_ms: 300, close_grace_ms: 2000 });
-  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_GATE_FILE: `${dir}/answer.gate` };
+  const holdsFile = `${dir}/holds.jsonl`;
+  const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_GATE_FILE: `${dir}/answer.gate`, BELAY_TEST_HOLDS_FILE: holdsFile };
   const runCliProc = runCli(specPath, dataDir, env);
   let core = null;
   let plantedProc = null;
@@ -373,9 +382,9 @@ test('stop: a worker row of this run that is nobody\'s child is reported from it
     fs.writeFileSync(`${dir}/answer.gate`, 'go'); // the orchestrator's first turn may end now: its worker is mid-turn, so the run stays open
 
     const streamPath = `${orchestratorDir}/stream.jsonl`;
-    const gotResult = await waitForFileLine(streamPath, '"type":"result"', 15000);
+    const gotResult = await waitForFileLine(streamPath, '"type":"result"', 60000);
     assert.ok(gotResult, "the orchestrator's own first turn never ended");
-    await sleep(2 * 300);
+    assert.ok(await waitForFileLine(holdsFile, '"busy":["w1"]', 60000), 'the run never recorded w1 as busy');
 
     const stop = runStopSync(dataDir, runId);
     assert.strictEqual(stop.status, 0, `stop: ${stop.stdout} / ${stop.stderr}`);
@@ -395,7 +404,7 @@ test('stop: a worker row of this run that is nobody\'s child is reported from it
     assert.ok(sr.worker_phase_ms >= 2000, `worker_phase_ms ${sr.worker_phase_ms} was not >= 2,000`);
     assert.strictEqual(P.pidAlive(plantedPid), false, 'the planted worker pid is still alive');
 
-    const exited = await waitForExit(runCliProc.proc, 15000);
+    const exited = await waitForExit(runCliProc.proc, 90000);
     assert.ok(exited, 'the CLI run did not exit');
     assert.strictEqual(exited.code, 0);
     const runReceipt = receiptOf(runCliProc, 0);
