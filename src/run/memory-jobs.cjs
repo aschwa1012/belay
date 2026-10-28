@@ -104,7 +104,7 @@ function costOf(w, snap) {
   const t = jobsOf(w);
   const fresh = !t.seen && snap.turn > 1; // a first row seen late (not adopted) means the counter was not watched from zero
   const reset = fresh || snap.cost < t.lastCost;
-  const base = reset ? 0 : t.lastCost;
+  const base = reset ? (fresh ? 0 : snap.costBase || 0) : t.lastCost; // a restarted counter is the session's own total: the row's figure holds the earlier sessions' cost (cost_base) too
   const cost_basis = reset && (t.seen || snap.turn > 1) ? NEW_PROCESS : 'delta-of-cumulative';
   return { cost_usd: Math.max(0, snap.cost - base), cost_basis, advance: () => { t.pid = snap.pid; t.lastCost = snap.cost; t.seen = true; } };
 }

@@ -163,6 +163,18 @@ test('usage: a resume of the same session carries its total, so the new process 
   assert.deepStrictEqual(core.usageRows.map((r) => r.cost_basis), ['delta-of-cumulative', 'delta-of-cumulative', 'delta-of-cumulative']);
 });
 
+test('usage: a counter that restarts lower after a replace counts its own total, not the carried base again', async () => {
+  const core = spyCore();
+  const ctx = mkCtx(core, lv({ cost_ledger: true }));
+  const w = worker();
+  const turn = async (over) => { Object.assign(w, over); MJ.afterTurn(w, ctx, {}); await flush(w); };
+  await turn({ turns: 1, costUsd: 0.75 });
+  await turn({ turns: 2, costUsd: 0.85, costBase: 0.75, pid: 200 }); // a replace: the session's total 0.10 on top of the base
+  await turn({ turns: 3, costUsd: 0.80, costBase: 0.75, pid: 300 }); // a resume whose session did not carry: the counter restarts at 0.05
+  assert.deepStrictEqual(core.usageRows.map((r) => Number(r.cost_usd.toFixed(4))), [0.75, 0.1, 0.05]);
+  assert.strictEqual(core.usageRows[2].cost_basis, MJ.NEW_PROCESS);
+});
+
 test('usage: an adopted worker starts from the cost its row recorded, so the ledger does not take it again', async () => {
   const core = spyCore();
   const ctx = mkCtx(core, lv({ cost_ledger: true }));
