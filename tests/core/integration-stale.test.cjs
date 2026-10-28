@@ -8,6 +8,7 @@
 const { test, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { core, sandbox, cleanup, callerFor, startOwnerProcess, stopOwnerProcesses } = require('./helpers.cjs');
 const { makeRepo, git, write, commit, rejectsCode } = require('./worktree-helpers.cjs');
@@ -71,6 +72,9 @@ async function crashMidMerge(into) {
   const gitDir = git(left.worktree, 'rev-parse', '--absolute-git-dir');
   const end = Date.now() + 30000;
   while (fs.existsSync(path.join(gitDir, 'index.lock')) && Date.now() < end) await new Promise((r) => setTimeout(r, 50));
+  // The killed owner never reached the `finally` that removes its trace2 file (runTraced names it for the owner's pid), and git is
+  // done with it now: remove what that crash left in the temp dir.
+  for (const n of fs.readdirSync(os.tmpdir())) if (n.startsWith(`belay-trace-${ownerPid}-`)) fs.rmSync(path.join(os.tmpdir(), n), { force: true });
   return { orch, op, repo, hook, tasks, left, ownerPid };
 }
 
