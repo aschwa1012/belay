@@ -95,7 +95,7 @@ test("stop: the run waits for the stop's worker phase before it ends the run, at
   let core = null;
   let plantedProc = null;
   try {
-    core = await connectOrchestratorCore(dataDir, runId);
+    core = await connectOrchestratorCore(dataDir, runId, runCliProc);
 
     plantedProc = spawn(process.execPath, [FAKE_CLAUDE], {
       cwd: dir, env: { ...process.env, FAKE_HANG: '1' }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
@@ -206,7 +206,7 @@ test("stop: a stop after the run's stop completed is refused as ended, naming wh
     const row = await waitUntil(() => currentRunRow(dataDir, runId), 60000, 100);
     assert.ok(row, 'the run row never appeared');
 
-    core = await connectOrchestratorCore(dataDir, runId);
+    core = await connectOrchestratorCore(dataDir, runId, runCliProc);
     plantedProc = spawn(process.execPath, [FAKE_CLAUDE], {
       cwd: dir, env: { ...process.env, FAKE_HANG: '1' }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
     });
@@ -367,7 +367,7 @@ test('stop: a worker row of this run that is nobody\'s child is reported from it
   let core = null;
   let plantedProc = null;
   try {
-    core = await connectOrchestratorCore(dataDir, runId);
+    core = await connectOrchestratorCore(dataDir, runId, runCliProc);
 
     plantedProc = spawn(process.execPath, [FAKE_CLAUDE], {
       cwd: dir, env: { ...process.env, FAKE_HANG: '1' }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
