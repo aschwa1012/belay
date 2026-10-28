@@ -264,14 +264,23 @@ test('shutdown: a park in flight at shutdown completes as a park, the worker is 
   tcx.after(() => Promise.resolve().then(() => m.shutdown()));
   const pidFile = path.join(sb.data, 'child.pid');
   process.env.FAKE_CHILD_PID_FILE = pidFile;
+  // Hold the pause in flight on a gate, never on timing: the pause's first row ('stopping') is held inside the
+  // core write until shutdown has been called, so the shutdown is certain to meet a pause that has not finished.
+  let reached; const atWrite = new Promise((r) => { reached = r; });
+  let release; const gate = new Promise((r) => { release = r; });
+  const write = core.worker.write;
+  core.worker.write = async (r) => { if (r.state === 'stopping' && reached) { const f = reached; reached = null; f(); await gate; } return write(r); };
   try {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
     assert.ok(await pollUntil(() => fs.existsSync(pidFile), 5000), 'the fake never wrote its own child pid');
     const pauseP = m.pause({ worker_id: 'w1', by: 'operator:1', interrupt_timeout_ms: 500, exit_timeout_ms: 1500 });
-    assert.ok(await pollUntil(() => !!m._worker('w1').parkRequested, 2000), 'parkRequested was never set');
+    await atWrite;
+    assert.ok(m._worker('w1').parkRequested, 'parkRequested was never set');
     assert.strictEqual(m._worker('w1').op && m._worker('w1').op.name, 'pause', 'the pause must still be in flight when shutdown runs');
 
-    const receipt = await m.shutdown();
+    const shutdownP = m.shutdown();
+    release();
+    const receipt = await shutdownP;
     const paused = await pauseP;
     assert.strictEqual(paused.paused, true);
     assert.deepStrictEqual(receipt.left_parked, ['w1']);
