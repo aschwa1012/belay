@@ -258,6 +258,9 @@ test("stop: a stop after the run's stop completed is refused as ended, naming wh
 
     const exited = await waitForExit(runCliProc.proc, 90000);
     assert.ok(exited, 'the CLI run did not exit');
+    // Whichever branch the second stop took, the run itself ended because of the first stop, not from a crash that ECONNRESET could hide.
+    const endedRun = receiptOf(runCliProc, exited.code === 0 ? 0 : 1);
+    assert.match(endedRun.ended_by, /stopped by belay stop/, `the run ended some other way (exit ${exited.code}): ${endedRun.ended_by}`);
   } finally {
     if (plantedProc && P.pidAlive(plantedProc.pid)) { try { require('../crash.cjs').crash(plantedProc); } catch { /* best effort */ } }
     await releaseCore(core);

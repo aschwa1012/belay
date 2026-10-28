@@ -354,7 +354,7 @@ test('run: a throw between election and shutdown still exits, releases owner.loc
     assert.ok(exited, `the CLI never exited within 60,000 ms; a throw after election must not hang the process forever (stdout: ${runCliProc.stdout}, stderr: ${runCliProc.stderr})`);
     assert.strictEqual(exited.code, 1, `stdout: ${runCliProc.stdout}, stderr: ${runCliProc.stderr}`);
     const receipt = receiptOf(runCliProc, 1);
-    assert.ok(receipt.ended_by, 'a crash in the protected span must still return a receipt naming why');
+    assert.match(receipt.ended_by, /crashed before the orchestrator loop returned: .*EEXIST.*orch-is-a-file/, 'the receipt must name the injected throw, which also shows the run ended at the throw and not at a later timer');
     assert.ok(!fs.existsSync(`${dataDir}/owner.lock`), 'owner.lock must not survive a throw after election');
     assert.strictEqual(receipt.store.attach, null, 'no worker was ever attached before the crash');
     assert.notStrictEqual(receipt.store.shutdown, null, 'shutdownOwner() must still have run after the throw');
