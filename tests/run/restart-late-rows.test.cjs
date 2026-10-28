@@ -64,7 +64,8 @@ test('a restart of a worker whose dead row is still queued records that death fi
     // The creation-time read (about a second) restates the current state once when it lands (src/run/write-row.cjs).
     // Let it land and drain before the gate goes in, or that extra row is queued among the ones this test orders.
     await w.pidCreatedPromise; // its restate is queued when this settles
-    await waitFor(() => w.pidCreated != null || w.pidCreatedError, 'the creation-time read to resolve');
+    // In the retry path the error reads 'retrying' and a forced restate can still come; wait for a reading or a final error.
+    await waitFor(() => w.pidCreated != null || (w.pidCreatedError && !/retrying/.test(w.pidCreatedError)), 'the creation-time read to resolve');
     await w.queue;
     const baseline = diffWorkers({ prev: {}, rows: (await core.worker.list({})).workers, runId: 'run-lr', nowMs: 0, graceMs: 0 }).next;
     // The seam: another write holds the queue, so the death's own row is queued behind it.

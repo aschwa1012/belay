@@ -257,38 +257,54 @@ test('wait and shutdown: a stale record answers stale naming the row and the ada
 });
 
 // ---------------------------------------------------------------- (r6)
-test('shutdown: a park in flight at shutdown completes as a park, the worker is left parked and its row reads paused', async (tcx) => {
-  const sb = sandbox();
-  const core = createFakeCore();
-  const m = mgr(sb, core, FAKE_WITH_CHILD);
-  tcx.after(() => Promise.resolve().then(() => m.shutdown()));
-  const pidFile = path.join(sb.data, 'child.pid');
-  process.env.FAKE_CHILD_PID_FILE = pidFile;
-  // Hold the pause in flight on a gate, never on timing: the pause's first row ('stopping') is held inside the
-  // core write until shutdown has been called, so the shutdown is certain to meet a pause that has not finished.
-  let reached; const atWrite = new Promise((r) => { reached = r; });
-  let release; const gate = new Promise((r) => { release = r; });
-  const write = core.worker.write;
-  core.worker.write = async (r) => { if (r.state === 'stopping' && reached) { const f = reached; reached = null; f(); await gate; } return write(r); };
-  try {
-    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
-    assert.ok(await pollUntil(() => fs.existsSync(pidFile), 5000), 'the fake never wrote its own child pid');
-    const pauseP = m.pause({ worker_id: 'w1', by: 'operator:1', interrupt_timeout_ms: 500, exit_timeout_ms: 1500 });
-    await atWrite;
-    assert.ok(m._worker('w1').parkRequested, 'parkRequested was never set');
-    assert.strictEqual(m._worker('w1').op && m._worker('w1').op.name, 'pause', 'the pause must still be in flight when shutdown runs');
+// The pause is held at a named stage by a gate, never by timing, and shutdown is called while it is held. Stage
+// 'stopping-write' is the pause's first row (pause.cjs step 1b, before the interrupt); stage 'after-interrupt' is
+// step 3, after the interrupt and stop_task wait have run and interruptAt is set, before the graceful stop. The
+// gate is released in a finally, and the wait for the stage races the pause itself, so a failure cannot hang the
+// teardown's shutdown.
+for (const stage of ['stopping-write', 'after-interrupt']) {
+  test(`shutdown: a park in flight at shutdown (held at ${stage}) completes as a park, the worker is left parked and its row reads paused`, async (tcx) => {
+    const sb = sandbox();
+    const core = createFakeCore();
+    const m = mgr(sb, core, FAKE_WITH_CHILD);
+    tcx.after(() => Promise.resolve().then(() => m.shutdown()));
+    const pidFile = path.join(sb.data, 'child.pid');
+    process.env.FAKE_CHILD_PID_FILE = pidFile;
+    let reached; const atStage = new Promise((r) => { reached = r; });
+    let release; const gate = new Promise((r) => { release = r; });
+    const hold = async () => { if (reached) { const f = reached; reached = null; f(); await gate; } };
+    const write = core.worker.write;
+    const descendantTargets = P.descendantTargets;
+    if (stage === 'stopping-write') core.worker.write = async (r) => { if (r.state === 'stopping') await hold(); return write(r); };
+    else P.descendantTargets = async (...a) => { await hold(); return descendantTargets(...a); };
+    let pauseP = null;
+    try {
+      await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
+      assert.ok(await pollUntil(() => fs.existsSync(pidFile), 5000), 'the fake never wrote its own child pid');
+      pauseP = m.pause({ worker_id: 'w1', by: 'operator:1', interrupt_timeout_ms: 500, exit_timeout_ms: 1500 });
+      pauseP.catch(() => {}); // a pause that throws is reported below, not as an unhandled rejection
+      await Promise.race([atStage, pauseP.then(() => { throw new Error('the pause finished without reaching ' + stage); })]);
+      assert.ok(m._worker('w1').parkRequested, 'parkRequested was never set');
+      if (stage === 'after-interrupt') assert.ok(m._worker('w1').parkRequested.interruptAt, 'the interrupt stage had not been passed');
+      assert.strictEqual(m._worker('w1').op && m._worker('w1').op.name, 'pause', 'the pause must still be in flight when shutdown runs');
 
-    const shutdownP = m.shutdown();
-    release();
-    const receipt = await shutdownP;
-    const paused = await pauseP;
-    assert.strictEqual(paused.paused, true);
-    assert.deepStrictEqual(receipt.left_parked, ['w1']);
-    assert.deepStrictEqual(receipt.stopped, []);
-    const row = await core.worker.get({ worker_id: 'w1' });
-    assert.strictEqual(row.state, 'paused');
-  } finally { delete process.env.FAKE_CHILD_PID_FILE; await teardown({ m, sb }); }
-});
+      const shutdownP = m.shutdown();
+      release();
+      const receipt = await shutdownP;
+      const paused = await pauseP;
+      assert.strictEqual(paused.paused, true);
+      assert.deepStrictEqual(receipt.left_parked, ['w1']);
+      assert.deepStrictEqual(receipt.stopped, []);
+      const row = await core.worker.get({ worker_id: 'w1' });
+      assert.strictEqual(row.state, 'paused');
+    } finally {
+      release();
+      core.worker.write = write; P.descendantTargets = descendantTargets;
+      delete process.env.FAKE_CHILD_PID_FILE;
+      await teardown({ m, sb });
+    }
+  });
+}
 
 // ---------------------------------------------------------------- (worker.cjs:317 fix)
 // A Codex worker exits right after every turn by design; its own turn_end is queued behind onTurnEnd's

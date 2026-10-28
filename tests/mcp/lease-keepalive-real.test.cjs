@@ -79,11 +79,13 @@ test('keepalive: a real worker adapter with BELAY_KEEPALIVE_TICK_MS renews its w
 
     // The worker stops: its row says so, and the lease must now run out.
     clearInterval(fresh); fresh = null;
+    // Only log bytes written after this point count: 'not-running' is also logged when worker.get fails.
+    const logBefore = fs.statSync(log).size;
     await plant('stopped');
     // Wait on the real event: the adapter's tick that read the stopped row and logged it. Ticks are serial, so any
     // renewal that raced the plant has landed before this line, and none follows it. The bound is a hang guard.
     const sawStopped = Date.now() + 30000;
-    while (!/lease-keepalive .*"reason":"not-running"/.test(fs.readFileSync(log, 'utf8'))) {
+    while (!/lease-keepalive .*"reason":"not-running"/.test(fs.readFileSync(log).subarray(logBefore).toString('utf8'))) {
       assert.ok(Date.now() < sawStopped, 'the adapter never logged that it saw the stopped row');
       await sleep(100);
     }

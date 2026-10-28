@@ -133,6 +133,11 @@ test('two concurrent spawns with one worker_id and a task_id: one wins, the othe
     assert.ok(rows.slice(0, firstRunning).some((r) => r.pid > 0), 'the pid-carrying row exists before running');
     assert.ok(states.filter((st) => st === 'running').length >= 2, 'the turn end restated running');
     assert.strictEqual(states[states.length - 1], 'running');
+    // A pid_created restate after ready also adds a 'running' row, so the turn end is proved by the last row itself:
+    // idle between turns (mid_turn 0) with a turn counted. A dropped turn-end write would leave mid_turn 1.
+    const last = rows[rows.length - 1];
+    assert.strictEqual(last.mid_turn, 0, 'the last row is the turn end, not a mid-turn restate');
+    assert.ok(last.turns >= 1, 'the turn end counted a turn');
   } finally {
     try { await m.shutdown(); } finally {
       // A regressed reservation leaves a child the manager no longer tracks; stop each recorded pid by its exact pid.
