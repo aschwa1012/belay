@@ -59,7 +59,7 @@ export type World = {
   file?: boolean; runFile?: unknown; repoCli?: boolean; watchId?: string
   mode?: string | null; mod?: Record<string, string>; notices?: unknown
   failAgents?: boolean; transcriptFail?: boolean; orchDisplay?: string; noDisplay?: boolean; noRun?: boolean
-  extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number; memoryNotice?: boolean; orchNoCost?: boolean; orchBasis?: string; deadReview?: boolean; deadCoder?: boolean; orchTokensOnly?: boolean; orchCost?: number; awaitingFail?: boolean; awaitingHang?: boolean; agentIds?: string[]; footer?: unknown
+  extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; hardCap?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number; memoryNotice?: boolean; orchNoCost?: boolean; orchBasis?: string; deadReview?: boolean; deadCoder?: boolean; orchTokensOnly?: boolean; orchCost?: number; awaitingFail?: boolean; awaitingHang?: boolean; agentIds?: string[]; footer?: unknown
   /** Answers the dialogs give, in order (the reason, then the confirm); an empty queue dismisses. */
   awaitingList?: unknown
   settleReject?: string
@@ -162,7 +162,7 @@ export function world(on: any, w: World) {
     const body: Record<string, unknown> = {
       agents: {
         run_id: w.noRun ? null : (w.runId ?? RUN), mode: 'mode' in w ? w.mode : 'headless', mode_source: 'test', started_at_ms: T0 - (w.startedAgo ?? 42 * 60000), paused_at_ms: w.paused ?? null, ended_at_ms: w.ended ?? null,
-        tasks: { done: 1, total: 3 }, max_fix_rounds: 'maxFix' in w ? w.maxFix : 2, memory_notice: w.memoryNotice ? NOTICE : null, agents: w.noRun ? [] : [...agents, ...extra, ...named, ...dead], footer: 'footer' in w ? w.footer : FOOTER,
+        tasks: { done: 1, total: 3 }, max_fix_rounds: 'maxFix' in w ? w.maxFix : 2, fix_hard_cap: 'hardCap' in w ? w.hardCap : null, memory_notice: w.memoryNotice ? NOTICE : null, agents: w.noRun ? [] : [...agents, ...extra, ...named, ...dead], footer: 'footer' in w ? w.footer : FOOTER,
       },
       notices: w.notices ?? (w.longNotices ? LONG_NOTICES : NOTICES),
       transcript: w.nullTs ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.map(x => ({ ...x, ts: null })) } : w.manyTexts ? { run_id: RUN, entries: MANY } : w.toolsOnly ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.filter(x => x.kind !== 'text') } : w.longTranscript ? { run_id: RUN, entries: LONG_ENTRIES.slice(-Number(e.argv[e.argv.indexOf('--tail') + 1])) } : w.honorTail ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.slice(-Number(e.argv[e.argv.indexOf('--tail') + 1])) } : TRANSCRIPT,

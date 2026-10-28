@@ -22,7 +22,7 @@ async function ctx(levers) {
   const dir = sandbox();
   const repo = makeRepo(dir);
   const orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
-  await orch.run.attach({ adapter_pid: process.pid, project_dir: repo, ...levers });
+  await orch.run.attach({ adapter_pid: process.pid, project_dir: repo, fix_hard_cap: levers.max_fix_rounds, ...levers }); // the hard cap equals max_fix_rounds here, so the refusals these tests check still happen
   const workers = [];
   toClean.push(async () => { for (const c of workers) await c.close(); try { await orch.shutdownOwner(); } finally { await orch.close(); cleanup(dir); } });
   let k = 0;
@@ -75,7 +75,7 @@ test('a hold gives a follow-up in a tree of its own that is no fix round: no rep
   assert.doesNotMatch(f.spec, /would break the build|naming nit|bare string/, 'only the should-fix findings are quoted');
   // The work: still done, still holds, its fix rounds untouched; the follow-up is listed beside them.
   assert.strictEqual((await c.orch.task.get({ task_id: w.id })).state, 'done');
-  assert.deepStrictEqual(await c.reviewOf(w.id), { state: 'holds', review_id: r.id, rounds: 0, rounds_left: 2, follow_ups: [{ id: f.id, state: 'open' }], follow_ups_left: 0 });
+  assert.deepStrictEqual(await c.reviewOf(w.id), { state: 'holds', review_id: r.id, rounds: 0, rounds_left: 2, fix_rounds_used: 0, max_fix_rounds: 2, fix_hard_cap: 2, fix_hard_cap_source: null, follow_ups: [{ id: f.id, state: 'open' }], follow_ups_left: 0 });
   assert.strictEqual(await c.reviewOf(f.id), null, 'the follow-up has no review of its own yet');
   // The compact listing keeps both.
   const row = require('../../src/mcp/views.cjs').taskList(await c.orch.task.list({})).tasks;
@@ -166,7 +166,7 @@ test('a follow-up does not spend a fix round: with max_fix_rounds used up one is
     judged = fix;
   }
   const r3 = await c.review(judged, 'holds', [SHOULD]);
-  assert.deepStrictEqual(await c.reviewOf(w.id), { state: 'holds', review_id: r3.id, rounds: 2, rounds_left: 0 });
+  assert.deepStrictEqual(await c.reviewOf(w.id), { state: 'holds', review_id: r3.id, rounds: 2, rounds_left: 0, fix_rounds_used: 2, max_fix_rounds: 2, fix_hard_cap: 2, fix_hard_cap_source: null });
   const f = await c.orch.task.fixFromReview({ review_id: r3.id, follow_up: true });
   assert.deepStrictEqual(f.follows_up, { review_id: r3.id, review_ids: [r3.id], task_id: judged.id, root: w.id });
   const after = await c.reviewOf(w.id);

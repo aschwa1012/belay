@@ -8,6 +8,7 @@
 const C = require('./config.cjs');
 const { openCore } = require('../core/index.cjs');
 const { WORKER_STATES } = require('../core/schema.cjs');
+const RCK = require('./run-checks.cjs'); // ADR 0069: the integrate calls' own checks
 const CP = require('../run/compaction.cjs'); // fs and path only: summarize() reads a worker's compactions.jsonl
 
 const USAGE = 'usage: belay receipts [run-id] [--data <dir>] [--json]\n';
@@ -42,9 +43,9 @@ function checkView(c) {
   return { kind: c.kind, executable: nn(c.executable), passed: nn(c.passed), ms: nn(c.ms) };
 }
 
-function taskView(t) {
+function taskView(t, since = null, byId = null) {
   const checks = t.results && Array.isArray(t.results.checks) ? t.results.checks : [];
-  return { id: t.id, state: t.state, checks: checks.map(checkView) };
+  return { id: t.id, state: t.state, checks: checks.map(checkView), check_history: require('../core/check-history.cjs').forReceipt(t, since, t.repairs && byId ? byId.get(t.repairs) : null) }; // ADR 0069: the commands and their changes
 }
 
 function handoffView(h) {
@@ -74,14 +75,24 @@ function compactionsOf(dataDir, id) {
   return c ? { compactions: c } : {};
 }
 
-function workerView(w, tasksById, dataDir) {
+// cost_usd is what Claude Code reported. The estimate (messages no result line reported) is beside it, never inside it.
+function costParts(w) {
+  const e = w.cost_estimate && typeof w.cost_estimate === 'object' ? w.cost_estimate : null;
+  const est = e && typeof e.usd === 'number' ? e.usd : null;
+  return {
+    cost_estimate: nn(w.cost_estimate), cost_source: nn(w.cost_source), cost_estimated_usd: est,
+    cost_combined_usd: w.cost_usd == null && est == null ? null : Number(w.cost_usd || 0) + (est || 0),
+  };
+}
+
+function workerView(w, tasksById, dataDir, since = null) { // a task's check history is shown whole: a line is never clipped, only wrapped
   const t = w.task_id ? tasksById.get(w.task_id) : null;
-  const task = t ? { ...taskView(t), handoff: handoffView(t.handoff) } : null;
+  const task = t ? { ...taskView(t, since, tasksById), handoff: handoffView(t.handoff) } : null;
   return {
     id: w.id, substrate: nn(w.substrate), state: nn(w.state), model: nn(w.model), turns: nn(w.turns),
     input_tokens: nn(w.input_tokens), output_tokens: nn(w.output_tokens),
     cache_read_tokens: nn(w.cache_read_tokens), cache_creation_tokens: nn(w.cache_creation_tokens),
-    cost_usd: nn(w.cost_usd), tool_calls: nn(w.tool_calls),
+    cost_usd: nn(w.cost_usd), ...costParts(w), tool_calls: nn(w.tool_calls),
     ...wall(w.started_at, w.exited_at),
     exit_code: nn(w.exit_code), base_sha: nn(w.base_sha), head_sha: nn(w.head_sha), task,
     ...(compactionsOf(dataDir, w.id)), // ADR 0007 decision 7: only a worker with compactions carries the key
@@ -105,6 +116,11 @@ function totalsOf(orchestrator, workers) {
     totals[f] = sum;
     totals.not_recorded[f] = missing;
   }
+  // cost_usd above is the reported total. Dollars estimated from streams (messages no result line reported) are beside it, never inside it.
+  const est = workers.filter(w => w.cost_estimate && typeof w.cost_estimate.usd === 'number');
+  totals.cost_estimated_usd = est.length ? est.reduce((a, w) => a + w.cost_estimate.usd, 0) : null;
+  totals.cost_estimated_workers = est.length;
+  totals.cost_combined_usd = totals.cost_usd == null && totals.cost_estimated_usd == null ? null : (totals.cost_usd || 0) + (totals.cost_estimated_usd || 0);
   return totals;
 }
 
@@ -127,6 +143,16 @@ function clean(x, cap = 80) {
 const v = (x, cap) => (x === null || x === undefined ? 'not recorded' : clean(x, cap));
 const iso = (ms) => (ms == null ? 'not recorded' : new Date(Number(ms)).toISOString());
 const wallText = (a) => (a.live ? 'live' : (a.wall_ms === null ? 'not recorded' : `${a.wall_ms}ms`));
+
+// A worker with messages no result line reported shows reported, estimated and the sum, each labelled.
+function costNote(w) {
+  if (!w.cost_source) return '';
+  const e = w.cost_estimate;
+  const n = e && typeof e.messages === 'number' ? e.messages : 0;
+  if (e && e.truncated && !n) return ' (not estimated: stream tail over 16 MB)';
+  const est = w.cost_estimated_usd == null ? 'not priced' : money(w.cost_estimated_usd);
+  return ` + ${est} estimated from the stream (${n} message${n === 1 ? '' : 's'} no result line reported${e && e.truncated ? ', truncated' : ''}) = ${money(w.cost_combined_usd)}`;
+}
 
 // At most 4 decimals, trailing zeros trimmed; a value that rounds to zero prints 0.0000.
 function money(x) {
@@ -199,21 +225,26 @@ function renderText(rc) {
   ];
   for (const w of rc.workers) {
     lines.push(`worker ${v(w.id)}  ${w.substrate == null ? '' : clean(w.substrate)}  state ${v(w.state)}  exit ${v(w.exit_code)}`);
-    lines.push(`  model ${v(w.model)}  turns ${v(w.turns)}  wall ${wallText(w)}  cost ${money(w.cost_usd)}  tools ${v(w.tool_calls)}`);
+    lines.push(`  model ${v(w.model)}  turns ${v(w.turns)}  wall ${wallText(w)}  cost ${money(w.cost_usd)}${w.cost_source ? ' reported' : ''}${costNote(w)}  tools ${v(w.tool_calls)}`);
     lines.push(tokensLine(w));
     if (w.compactions) lines.push(`  compactions ${w.compactions.count} (harness ${w.compactions.harness}, auto ${w.compactions.auto})  last ${v(w.compactions.last_pre_tokens)} -> ${v(w.compactions.last_post_tokens)} tokens  max hook ${w.compactions.max_hook_bytes} B`);
     lines.push(`  base ${v(w.base_sha)}  head ${v(w.head_sha)}`);
     if (w.task) {
       lines.push(`  task ${v(w.task.id)} (${v(w.task.state)})`);
       lines.push(`  checks ${checksText(w.task.checks)}`);
+      if (w.task.check_history) lines.push(`  ${clean(require('../core/check-history.cjs').line(w.task.check_history), Infinity)}`);
       if (w.task.handoff) lines.push(...handoffLines(w.task.handoff)); else lines.push('  handoff none');
     } else lines.push('  task none');
   }
   if (!rc.workers.length) lines.push('(no workers)');
-  for (const t of rc.unassigned_tasks) lines.push(`unassigned task ${v(t.id)} (${v(t.state)})  checks ${checksText(t.checks)}`);
+  for (const t of rc.unassigned_tasks) {
+    lines.push(`unassigned task ${v(t.id)} (${v(t.state)})  checks ${checksText(t.checks)}`);
+    if (t.check_history) lines.push(`  ${clean(require('../core/check-history.cjs').line(t.check_history), Infinity)}`);
+  }
+  for (const i of rc.integrate_checks || []) lines.push(RCK.integrateLine(i));
   const t = rc.totals;
   const miss = SUM_FIELDS.filter(f => t.not_recorded[f] > 0).map(f => `${f} ${t.not_recorded[f]}`).join(', ');
-  lines.push(`totals over ${t.agents} agents  cost ${money(t.cost_usd)}  tools ${v(t.tool_calls)}`);
+  lines.push(`totals over ${t.agents} agents  cost ${money(t.cost_usd)}${t.cost_estimated_workers ? ' reported' : ''}${t.cost_estimated_workers ? `, ${money(t.cost_estimated_usd)} estimated from the streams of ${t.cost_estimated_workers} worker${t.cost_estimated_workers === 1 ? '' : 's'} (messages no result line reported), ${money(t.cost_combined_usd)} combined` : ''}  tools ${v(t.tool_calls)}`);
   lines.push(`  in ${v(t.input_tokens)}  out ${v(t.output_tokens)}  cache-read ${v(t.cache_read_tokens)}  cache-create ${v(t.cache_creation_tokens)}`);
   if (miss) lines.push(`  not recorded: ${miss}`);
   lines.push('');
@@ -257,14 +288,15 @@ async function run(ctx) {
     const { tasks: everyTask } = await core.task.list({});
     const tasks = everyTask.filter(t => t.run_id === chosen.id);
     const tasksById = new Map(tasks.map(t => [t.id, t]));
-    const workers = everyWorker.filter(w => w.run_id === chosen.id).map(w => workerView(w, tasksById, dataDir));
+    const workers = everyWorker.filter(w => w.run_id === chosen.id).map(w => workerView(w, tasksById, dataDir, chosen.started_at));
     const assigned = new Set(workers.filter(w => w.task).map(w => w.task.id));
     const orchestrator = orchestratorView(chosen);
     const receipt = {
       run_id: chosen.id, run_id_source: source,
       run: { started_at: nn(chosen.started_at), ended_at: nn(chosen.ended_at), exit_reason: nn(chosen.exit_reason), alive: !!chosen.alive, paused_at: nn(chosen.paused_at), paused_by: nn(chosen.paused_by) },
       orchestrator, workers,
-      unassigned_tasks: tasks.filter(t => !assigned.has(t.id)).map(taskView),
+      unassigned_tasks: tasks.filter(t => !assigned.has(t.id)).map((t) => taskView(t, chosen.started_at, tasksById)),
+      integrate_checks: RCK.integrateChecksOf(await core.integration.list({ run_id: chosen.id }).then((r) => r.integrations, () => []), chosen.id), // a read that fails leaves the block empty
       totals: totalsOf(orchestrator, workers), owner,
     };
     return { code: 0, text: renderText(receipt), json: receipt };
