@@ -97,9 +97,9 @@ test('handoff acceptance: a research task is done when its hand-back carries eac
   const none = await orch.task.evaluate({ task_id: t.id, worktree: dir });
   const check = (row) => row.results.checks.find((c) => c.kind === 'handoff');
   assert.deepStrictEqual([none.state, check(none).executable], ['open', false], 'no hand-back yet: not executable');
-  await handBack(t.id, 'r-1', { findings: [], summary: 'nothing found' });
-  const thin = await orch.task.evaluate({ task_id: t.id, worktree: dir });
-  assert.deepStrictEqual([thin.state, check(thin).executable, check(thin).passed, check(thin).detail.missing], ['released', true, false, ['findings']]);
+  await rejects(handBack(t.id, 'r-1', { findings: [], summary: 'nothing found' }), 'E_ARGS', /lacks findings/); // the release refuses it, naming the field
+  await worker('r-1');
+  await workers.get('r-1').lease.release({ lease_id: (await orch.task.get({ task_id: t.id })).lease.id, result: { findings: ['x'], summary: 'ok' } });
   // Reassigned, the old hand-back is stale until the new holder releases.
   await worker('r-2');
   await orch.task.assign({ task_id: t.id, worker_id: 'r-2' });

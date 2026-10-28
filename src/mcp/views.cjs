@@ -52,7 +52,7 @@ function compactCheck(c) {
 const leaseOf = (l) => (l && typeof l === 'object' ? Object.fromEntries(Object.entries({ id: l.id, holder: l.holder, holder_role: l.holder_role, expires_at: l.expires_at, expired: l.expired }).filter(([, v]) => v !== undefined)) : l);
 // `inherited_from` stays: it says a fix shares the tree of the work it fixes (task.fixFromReview), so its coder can be reused.
 const worktreeOf = (w) => (w && typeof w === 'object' ? { path: w.path, branch: w.branch, ...(w.inherited_from ? { inherited_from: w.inherited_from } : {}), ...(w.removed_at ? { removed_at: w.removed_at } : {}) } : w);
-const handoffFields = (h) => (h && typeof h === 'object' ? { by: h.by, at: h.at, fields: h.result && typeof h.result === 'object' ? Object.keys(h.result) : [] } : h);
+const handoffFields = (h) => (h && typeof h === 'object' ? { by: h.by, at: h.at, ...(h.stood_down ? { lease_id: h.lease_id, stood_down: h.stood_down } : {}), fields: h.result && typeof h.result === 'object' ? Object.keys(h.result) : [] } : h);
 
 // One task's detail gives a review's hand-back once, with the verdict beside its findings: the hand-back's result keeps
 // {verdict, summary, findings}, and the verdict check of the same hand-back (its lease), which carries the summary and the

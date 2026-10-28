@@ -76,3 +76,15 @@ test('the headless idle close holds for a watched evaluation of a live worker of
   assert.deepStrictEqual(RE.evaluatingHolds(seen, rows, 'r'), ['eval:t1']);
   assert.deepStrictEqual(RE.evaluatingHolds(new Map(), rows, 'r'), []);
 });
+
+test('a stand-down reaches the orchestrator once, on the worker\'s turn_end, and is never evaluated', async () => {
+  const task = { id: 't9', run_id: 'r', state: 'released', handoff: { result: null, by: 'w1', at: 5, lease_id: 'L', stood_down: 'cannot build here' } };
+  assert.ok(!RE.unevaluated(task, 'r', 'w1'), 'no release evaluation for a stand-down');
+  const core = { task: { list: async () => ({ tasks: [task] }) } };
+  const seen = new Map();
+  const [ev] = await RE.enrichWakes(core, 'r', [{ worker_id: 'w1', event: 'turn_end', turn: 2 }], seen);
+  assert.deepStrictEqual(ev.evaluated, [{ task_id: 't9', stood_down: 'cannot build here' }]);
+  assert.match(wakeText(ev), /task t9: the worker stood down with no result \(cannot build here\); nothing was evaluated\./);
+  const [again] = await RE.enrichWakes(core, 'r', [{ worker_id: 'w1', event: 'turn_end', turn: 3 }], seen);
+  assert.ok(!again.evaluated, 'said once');
+});

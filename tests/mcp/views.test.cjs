@@ -304,3 +304,9 @@ test('wording audit: task_assign shows the lease it took as a lease; fix_from_re
   assert.ok(Buffer.byteLength(JSON.stringify(fix)) < Buffer.byteLength(JSON.stringify(fixRow)) / 2);
   assert.strictEqual(await V.viewed('fix_from_review', { review_id: 'r1', view: 'debug' }, async () => fixRow), fixRow);
 });
+
+test('a stand-down shows in the listing row with its lease and reason, and no field names', () => {
+  const r = row();
+  const s = V.compactTask({ ...r, handoff: { result: null, by: 'w1', at: 9, lease_id: 'l3', stood_down: 'cannot build' } });
+  assert.deepStrictEqual(s.handoff, { by: 'w1', at: 9, lease_id: 'l3', stood_down: 'cannot build', fields: [] });
+});
