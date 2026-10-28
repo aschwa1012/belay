@@ -138,6 +138,19 @@ test('usage: a delta across turns, a new row per turn, and a fresh delta for a n
   assert.strictEqual(core.usageRows.length, 5);
 });
 
+test('usage: a fresh session after a restart writes its own cost, not the row total that carries the earlier sessions (cost_base)', async () => {
+  const core = spyCore();
+  const ctx = mkCtx(core, lv({ cost_ledger: true }));
+  const w = worker();
+  const turn = async (over) => { Object.assign(w, over); MJ.afterTurn(w, ctx, {}); await flush(w); };
+  await turn({ turns: 1, costUsd: 0.50 });
+  await turn({ turns: 2, costUsd: 0.75 });
+  await turn({ turns: 3, costUsd: 0.75 + 0.10, costBase: 0.75, pid: 200 }); // restart on the replace branch: the session's total restarts at zero, the row adds the base
+  await turn({ turns: 4, costUsd: 0.75 + 0.30, costBase: 0.75, pid: 200 });
+  assert.deepStrictEqual(core.usageRows.map((r) => Number(r.cost_usd.toFixed(4))), [0.5, 0.25, 0.1, 0.2]);
+  assert.strictEqual(Number(core.usageRows.reduce((n, r) => n + r.cost_usd, 0).toFixed(4)), 1.05, 'the ledger sums to the row cost, nothing twice');
+});
+
 test('usage: a snapshot is taken when the turn ends, so a later turn_end does not change the row', async () => {
   const core = spyCore();
   const ctx = mkCtx(core, lv({ cost_ledger: true }));

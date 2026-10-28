@@ -23,7 +23,7 @@ function runResumeBoundMs(n, T) { return 2 * n * resumeBoundMs(T) + 30000 + 5000
 function usageError(command, message) {
   const usage = command === 'pause'
     ? 'usage: belay pause <worker-id|run-id> [--data <dir>] [--json]\n'
-    : 'usage: belay resume <worker-id|run-id> [--message <text>] [--embedder keyword|off] [--budget <usd>|--task-budget <task-id> <usd>|--over-budget] [--data <dir>] [--json]\n\n  --budget, --task-budget, --over-budget  (run form, a run paused because an estimated budget was reached) resume with a raised run or task\n                          limit, or with the breached limit no longer enforced; the choice is recorded on the run row (operator only)\n  --embedder keyword|off  (run form, a run paused by an embedder failure) choose how the run goes on: keyword ranks by keywords only,\n                          off turns notes off; the choice is also written to the config file as memory.on_embedder_failure\n';
+    : 'usage: belay resume <worker-id|run-id> [--message <text>] [--embedder keyword|off] [--budget <usd>|--task-budget <task-id> <usd>|--over-budget] [--data <dir>] [--json]\n\n  --budget, --task-budget, --over-budget  (run form, a run paused because a budget was reached) resume with a raised run or task\n                          limit, or with the breached limit no longer enforced; the choice is recorded on the run row (operator only)\n  --embedder keyword|off  (run form, a run paused by an embedder failure) choose how the run goes on: keyword ranks by keywords only,\n                          off turns notes off; the choice is also written to the config file as memory.on_embedder_failure\n';
   return { code: 2, text: `belay ${command}: ${message}\n\n${usage}`, json: { error: message } };
 }
 
@@ -115,7 +115,7 @@ function renderRunResumeText(receipt) {
     const s = receipt.embedder_setting;
     lines.push(`embedder: the run goes on as ${receipt.embedder_choice}${receipt.embedder_choice === 'off' ? ' (notes are off for the run)' : ' (keyword-only ranking)'}; ${s && s.path ? `written to ${s.path} as memory.on_embedder_failure (was ${s.old || 'unset'})` : `NOT written to the config file: ${s && s.error ? s.error.message : 'unknown'}`}`);
   }
-  if (receipt.budget_choice) lines.push(`budget: ${receipt.budget_choice.over_budget ? 'the breached limit is no longer enforced for this run' : receipt.budget_choice.task_budget ? `task ${receipt.budget_choice.task_budget.task_id} limit raised to $${receipt.budget_choice.task_budget.usd} est.` : `run limit raised to $${receipt.budget_choice.budget} est.`}; recorded on the run row`);
+  if (receipt.budget_choice) lines.push(`budget: ${receipt.budget_choice.over_budget ? 'the breached limit is no longer enforced for this run' : receipt.budget_choice.task_budget ? `task ${receipt.budget_choice.task_budget.task_id} limit raised to $${receipt.budget_choice.task_budget.usd}` : `run limit raised to $${receipt.budget_choice.budget} est.`}; recorded on the run row`);
   for (const w of receipt.workers_resumed || []) lines.push(`worker ${w.worker_id}: resumed`);
   for (const w of receipt.left_parked || []) {
     // item 1 (ADR 0023 amendment 4 decision 3): two more reasons in their own words, alongside the two
@@ -166,7 +166,7 @@ async function runForm(core, command, run, msgText, embedder, cwd, budget = {}) 
     return { code: 2, text: renderRunResumeText(receipt), json: receipt };
   }
   if (Object.keys(budget).length && !/\[budget [(]/.test(run.paused_by || '')) {
-    const receipt = { run_id: run.id, resumed: false, reason: `the budget options are for a run paused because an estimated budget was reached, and this run was not (paused_by: ${run.paused_by || 'not paused'}); nothing was changed` };
+    const receipt = { run_id: run.id, resumed: false, reason: `the budget options are for a run paused because a budget was reached, and this run was not (paused_by: ${run.paused_by || 'not paused'}); nothing was changed` };
     return { code: 2, text: renderRunResumeText(receipt), json: receipt };
   }
   if (command === 'resume' && msgText != null) return usageError('resume', '--message is not an option of a run resume (ADR 0023 amendment 3 decision 6)');

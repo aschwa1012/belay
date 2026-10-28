@@ -52,7 +52,7 @@ function compactCheck(c) {
 const leaseOf = (l) => (l && typeof l === 'object' ? Object.fromEntries(Object.entries({ id: l.id, holder: l.holder, holder_role: l.holder_role, expires_at: l.expires_at, expired: l.expired }).filter(([, v]) => v !== undefined)) : l);
 // `inherited_from` stays: it says a fix shares the tree of the work it fixes (task.fixFromReview), so its coder can be reused.
 const worktreeOf = (w) => (w && typeof w === 'object' ? { path: w.path, branch: w.branch, ...(w.inherited_from ? { inherited_from: w.inherited_from } : {}), ...(w.removed_at ? { removed_at: w.removed_at } : {}) } : w);
-const handoffFields = (h) => (h && typeof h === 'object' ? { by: h.by, at: h.at, fields: h.result && typeof h.result === 'object' ? Object.keys(h.result) : [] } : h);
+const handoffFields = (h) => (h && typeof h === 'object' ? { by: h.by, at: h.at, ...(h.stood_down ? { lease_id: h.lease_id, stood_down: h.stood_down } : {}), fields: h.result && typeof h.result === 'object' ? Object.keys(h.result) : [] } : h);
 
 // One task's detail gives a review's hand-back once, with the verdict beside its findings: the hand-back's result keeps
 // {verdict, summary, findings}, and the verdict check of the same hand-back (its lease), which carries the summary and the
@@ -86,7 +86,9 @@ function handoffOnce(h, checks) {
 // The row keys a compact answer drops or replaces. Anything else the core adds passes through, so a new field is never lost here.
 const ROW_DROP = new Set(['acceptance', 'spec', 'results', 'handoff', 'lease', 'worktree']);
 // A listing row also leaves out what the task's own detail carries: its files, who wrote it, the reason for a hold.
-const SUMMARY_DROP = new Set(['run_id', 'written_at', 'written_by', 'files_owned', 'holds_reason']);
+// A listing the orchestrator scans for what to do next also leaves out the row version (`seq`, shown as `rev` in detail), the last
+// checkpoint's id and time, and an integration's id and time: no tool takes any of them.
+const SUMMARY_DROP = new Set(['seq', 'run_id', 'written_at', 'written_by', 'files_owned', 'holds_reason', 'last_checkpoint_id', 'last_checkpoint_at']);
 
 // A listing's results: the verdict facts (`flaky` and `timed_out` too, when the core sets them), the checks counted, the failing
 // ones named, and the passing ones marked flaky named apart, since `failing` does not list them.
@@ -132,6 +134,7 @@ function compactTask(row, { detail = false } = {}) {
     out.results = detail ? { ...facts, checks: checks.map(compactCheck) }
       : summaryResults(facts, checks);
   } else if (r !== undefined) out.results = r;
+  if (!detail && out.integration && typeof out.integration === 'object') { const { id: _i, at: _a, ...i } = out.integration; out.integration = i.head ? { ...i, head: String(i.head).slice(0, 10) } : i; }
   if (detail) { for (const k of Object.keys(out)) if (empty(out[k])) delete out[k]; return out; } // a null or an empty list says nothing; a false or a 0 stays
   return lean(out);
 }
@@ -155,7 +158,8 @@ function taskList(answer, { task_ids = null } = {}) {
 const taskEvaluate = (row) => compactTask(row, { detail: true });
 
 // integrate (compact, the default): what this call merged, a count of the tasks carried from earlier rows on the same branch, the
-// conflict, the checks (a passing one by name, a reused one marked with the row that ran it, a failing one whole), `forced` and
+// conflict, `task_checks` (a line for each task this call merged, and for any task on the branch whose checks changed: an amend or a
+// fix that differs from the task it repairs), the checks (a passing one by name, a reused one marked with the row that ran it, a failing one whole), `forced` and
 // `not_carried` when set. The repository path, the junctions and the base are the receipt (view debug: the whole row).
 const INTEGRATION_DROP = new Set(['repo', 'junctions', 'created_worktree', 'base_sha', 'written_at', 'written_by', 'run_id', 'owner_pid', 'owner_boot', 'reused_checks']);
 const checkName = (c) => (Array.isArray(c.argv) ? [c.argv[0] ? String(c.argv[0]).split(/[\\/]/).pop() : '', ...c.argv.slice(1, 4)].join(' ').slice(0, 80) : '');
@@ -177,9 +181,15 @@ function integrate(row) {
     out.merged = entries.filter((m) => m.carried_from == null).map(mergedEntry);
     if (carried.length) out.carried = carried.length;
   }
+  if (Array.isArray(row.task_checks)) {
+    const own = (Array.isArray(row.merged) ? row.merged : []).filter((m) => m && m.carried_from == null).map((m) => m.task_id);
+    const kept = row.task_checks.filter((l) => (row.task_checks_changed || []).some((id) => String(l).startsWith(`${id} checks`)) || own.some((id) => String(l).startsWith(`${id} checks`)));
+    if (kept.length) out.task_checks = kept; else delete out.task_checks;
+    delete out.task_checks_changed;
+  }
   if (Array.isArray(row.checks)) {
     out.checks = row.checks.map(({ cwd, ...c }) => {
-      if (c.passed === true) return { check: checkName(c), passed: true, ...(c.task_ids ? { task_ids: c.task_ids } : {}), ...(c.reused_from ? { reused_from: c.reused_from } : {}) };
+      if (c.passed === true) return { check: checkName(c), passed: true, ...(c.task_ids && c.task_ids.length ? { task_ids: c.task_ids } : {}), ...(c.source ? { source: c.source } : {}), ...(c.reused_from ? { reused_from: c.reused_from } : {}) };
       const k = { check: checkName(c) };
       for (const [f, v] of Object.entries(c)) if (!(v === null && f === 'spawn_error')) k[f] = v;
       return k;

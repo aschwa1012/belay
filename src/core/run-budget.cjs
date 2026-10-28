@@ -1,8 +1,8 @@
 'use strict';
-// run-budget.cjs — run and task budgets (estimated dollars, off unless a limit is set). The store half: limit checks, the
+// run-budget.cjs — run and task budgets (dollars reported by the substrate, off unless a limit is set). The store half: limit checks, the
 // spend sums over the usage ledger, the task a turn is charged to, the status block, and the two methods the run process
 // uses (run.setBudget, usage.spend). Pure of the run manager: the guard that pauses a run lives in src/run/budget-guard.cjs.
-// Every figure is an estimate: belay bills nothing, and a dollar is what the substrate reports at API rates.
+// Every figure is the cost the substrate reported for a turn, at API rates; belay bills nothing. A transcript estimate of a killed turn (cost_estimate on a worker row) is never added.
 
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
@@ -12,7 +12,7 @@ const SOFT_THRESHOLD = 0.9;
 
 const isLimit = (v) => typeof v === 'number' && Number.isFinite(v) && v > 0;
 function checkLimit(v, what) {
-  if (!isLimit(v)) throw err('E_ARGS', `${what} must be a positive number (estimated dollars)`, { [what]: v });
+  if (!isLimit(v)) throw err('E_ARGS', `${what} must be a positive number (dollars at API rates)`, { [what]: v });
   return v;
 }
 
@@ -121,16 +121,16 @@ function blockOf(runRow, s) {
   const overridden = !!(rec && rec.overrides && rec.overrides.run);
   const state = overridden ? 'overridden' : runRow.paused_by && /\[budget [(]/.test(runRow.paused_by) && runRow.paused_at != null ? 'paused' : 'under';
   return {
-    limit_usd: runRow.budget_usd, spent_usd: s.usd, unknown_turns: s.unknown_turns, state, estimate: true,
+    limit_usd: runRow.budget_usd, spent_usd: s.usd, unknown_turns: s.unknown_turns, state, basis: 'reported',
     orchestrator: rec && rec.orchestrator ? rec.orchestrator : { counted: 'headless runs only; an interactive session is not counted' },
   };
 }
 const statusBlock = (store, runRow) => blockOf(runRow, spendOf(store, runRow.id));
 
-// One line, every figure an estimate: "at least $4.10 of $20.00 est. (under); 6 turns report no dollars".
+// One line, every figure the reported cost per turn: "at least $4.10 of $20.00 reported (under); 6 turns report no dollars".
 function textOf(b) {
   const m = (n) => `$${(Math.round(n * 100) / 100).toFixed(2)}`;
-  return `${b.unknown_turns ? 'at least ' : ''}${m(b.spent_usd)} of ${m(b.limit_usd)} est. (${b.state})${b.unknown_turns ? `; ${b.unknown_turns} turn${b.unknown_turns === 1 ? '' : 's'} report no dollars` : ''}`;
+  return `${b.unknown_turns ? 'at least ' : ''}${m(b.spent_usd)} of ${m(b.limit_usd)} reported (${b.state})${b.unknown_turns ? `; ${b.unknown_turns} turn${b.unknown_turns === 1 ? '' : 's'} report no dollars` : ''}`;
 }
 
 module.exports = { SOFT_THRESHOLD, isLimit, checkLimit, ledgerOn, taskLimit, attachLimit, noteTask, turnTask, spendOf, detailOf, usageSpend, setBudget, statusBlock, blockOf, textOf };

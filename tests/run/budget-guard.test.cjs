@@ -35,17 +35,17 @@ test('the run pauses at 90 percent, with the reason, the detail and one unheld w
   assert.deepStrictEqual(o.s.pauses, [], 'under 90 percent');
   o.s.run = 9.2;
   await Promise.all([g.onUsage({}), g.onUsage({}), g.onUsage({})]);
-  assert.deepStrictEqual(o.s.pauses, ['budget (run, $9.20 of $10.00 est.)']);
+  assert.deepStrictEqual(o.s.pauses, ['budget (run, $9.20 of $10.00 reported)']);
   const ev = o.s.written.pop().events.find((e) => e.type === 'pause');
   assert.strictEqual(ev.scope, 'run');
-  assert.strictEqual(ev.estimate, true);
+  assert.strictEqual(ev.basis, 'reported');
   assert.strictEqual(ev.last_seq, 9);
   assert.strictEqual(ev.spent_after_parks, 9.2);
   assert.ok(ev.per_worker && ev.unknown_turns === 0);
   const wakes = g.takeWakes();
   assert.strictEqual(wakes.length, 1);
   assert.strictEqual(wakes[0].unheld, true);
-  assert.match(wakes[0].text, /run budget reached \(\$9\.20 of \$10\.00 est\.\)/);
+  assert.match(wakes[0].text, /run budget reached \(\$9\.20 of \$10\.00 reported\)/);
   assert.deepStrictEqual(g.takeWakes(), [], 'taken once');
 });
 
@@ -53,7 +53,7 @@ test('Codex turns make the figure "at least", and the wake text fits the interac
   const o = spy({ run: 9.5, unknown: 4 });
   const g = mk(o, { runLimit: 10 });
   await g.onUsage({});
-  assert.match(g.takeWakes()[0].text, /at least \$9\.50 of \$10\.00 est\./);
+  assert.match(g.takeWakes()[0].text, /at least \$9\.50 of \$10\.00 reported/);
   const long = wakeTextOf({ runId: 'a-very-long-run-identifier-0123456789', scope: 'task', taskId: 'task-with-a-long-id-0123456789', spent: 123.456, limit: 200, unknown: 1 });
   assert.ok(Buffer.byteLength(long) <= 221);
 });
@@ -65,7 +65,7 @@ test('a task breach pauses the whole run, naming the task', async () => {
   await g.onUsage({ task_id: 't2' });
   assert.deepStrictEqual(o.s.pauses, [], 'an unbudgeted task is not checked');
   await g.onUsage({ task_id: 't1' });
-  assert.deepStrictEqual(o.s.pauses, ['budget (task t1, $1.90 of $2.00 est.)']);
+  assert.deepStrictEqual(o.s.pauses, ['budget (task t1, $1.90 of $2.00 reported)']);
 });
 
 test('the orchestrator counts when headless, and never when interactive', async () => {
@@ -87,13 +87,13 @@ test('a pause someone else holds is not ours: no record, no wake', async () => {
 });
 
 test('a resume of a budget pause needs a raise above the spend or an override; each is recorded', async () => {
-  const paused = { paused_by: 'operator:1 [budget (run, $9.20 of $10.00 est.)]' };
+  const paused = { paused_by: 'operator:1 [budget (run, $9.20 of $10.00 reported)]' };
   const op = (extra) => ({ caller: { role: 'operator', pid: 7 }, ...extra });
   const fresh = async () => { const o = spy({ run: 9.2 }); const g = mk(o, { runLimit: 10 }); await g.onUsage({}); return { o, g }; };
   let { o, g } = await fresh();
   await assert.rejects(g.authorizeResume(paused, op({})), (e) => e.code === 'E_ARGS' && /--over-budget/.test(e.message));
   await assert.rejects(g.authorizeResume(paused, op({ budget: 9 })), (e) => /not above the current limit/.test(e.message));
-  await assert.rejects(g.authorizeResume(paused, op({ budget: 10.1 })), (e) => /below the estimated spend/.test(e.message));
+  await assert.rejects(g.authorizeResume(paused, op({ budget: 10.1 })), (e) => /below the reported spend/.test(e.message));
   await assert.rejects(g.authorizeResume(paused, op({ task_budget: { task_id: 't', usd: 50 } })), (e) => e.code === 'E_ARGS');
   const raise = await g.authorizeResume(paused, op({ budget: 20 }));
   assert.deepStrictEqual([raise.type, raise.old, raise.new, raise.by], ['raise', 10, 20, 'operator:7']);
@@ -138,7 +138,7 @@ test('a resume that is not a budget resume clears the guard belief, and the chec
 });
 
 test('the same raise sent again after a resume that failed afterwards succeeds', async () => {
-  const paused = { paused_by: 'operator:1 [budget (run, $9.50 of $10.00 est.)]' };
+  const paused = { paused_by: 'operator:1 [budget (run, $9.50 of $10.00 reported)]' };
   const op = (extra) => ({ caller: { role: 'operator', pid: 7 }, ...extra });
   const o = spy({ run: 9.5 });
   const g = mk(o, { runLimit: 10 });
@@ -166,7 +166,7 @@ test('a restarted run process loads the raised limit, the overrides and the task
   await g.onUsage({});
   assert.deepStrictEqual(o.s.pauses, [], '15 of the raised 20 is under 90 percent');
   await g.onUsage({ task_id: 't1' });
-  assert.deepStrictEqual(o.s.pauses, ['budget (task t1, $3.50 of $3.00 est.)'], 'the task limit survived the restart');
+  assert.deepStrictEqual(o.s.pauses, ['budget (task t1, $3.50 of $3.00 reported)'], 'the task limit survived the restart');
 });
 
 test('a run unreadable after the guard pause keeps the breach open and says so', async () => {
