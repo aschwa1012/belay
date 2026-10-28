@@ -44,7 +44,7 @@ function newWorkerRecord({ id, substrate, worktree, dataDir, taskId, model, allo
     streamPath: L.fwd(path.join(dir, 'stream.jsonl')), stderrPath: L.fwd(path.join(dir, 'stderr.txt')),
     parser: createParser(substrate), child: null, pid: null, sessionId: null, state: 'starting',
     startedAt: now(), readyAt: null, exitedAt: null, exitCode: null, exitSignal: null,
-    turns: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, lastEventAt: null, contextTokens: null,
+    turns: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, costBase: 0, lastEventAt: null, contextTokens: null,
     digest: [], filesTouched: new Set(), stderr: '', argvHash: null, lastAssistantText: '',
     lastCheckpointId: null, lastTurnUsage: null, turnEnded: false, stopRequested: false, settled: false,
     readyWaiters: [], turnWaiters: [], exitWaiters: [], queue: Promise.resolve(), launches: 0,
@@ -130,6 +130,7 @@ async function adopt({ core, workerId, dataDir }) {
   w.inputTokens = row.input_tokens || 0;
   w.outputTokens = row.output_tokens || 0;
   w.costUsd = row.cost_usd || 0;
+  w.costBase = row.cost_base || 0; // reported cost of the lives before this session (a fresh session's total starts at zero)
   w.exitedAt = row.exited_at || null;
   w.exitCode = row.exit_code == null ? null : row.exit_code;
   w.exitSignal = row.exit_signal == null ? null : row.exit_signal;
@@ -177,7 +178,7 @@ function rowOf(w, state, { runId, adapterPid }) {
     // An inherited started_at that is not a safe integer is left out, so the core keeps it rather than refusing this write (api.md: an inherited value is never checked).
     ...(Number.isSafeInteger(w.startedAt) ? { started_at: w.startedAt } : {}),
     exited_at: w.exitedAt, exit_code: w.exitCode, exit_signal: w.exitSignal,
-    turns: w.turns, input_tokens: w.inputTokens, output_tokens: w.outputTokens, cost_usd: w.costUsd,
+    turns: w.turns, input_tokens: w.inputTokens, output_tokens: w.outputTokens, cost_usd: w.costUsd, cost_base: w.costBase || 0,
     last_event_at: w.lastEventAt,
     // ADR 0021 decision 3: set only by a launch this record made, so an adopted record claims nothing.
     permission_mode_requested: w.permissionModeEffective ? w.permissionMode : null,
@@ -305,7 +306,7 @@ async function onTurnEnd(w, e, ctx) {
   }
   w.outputTokens += n(u.output_tokens);
   if (w.substrate === 'claude-code') {
-    if (typeof e.cost_usd === 'number') w.costUsd = e.cost_usd;
+    if (typeof e.cost_usd === 'number') w.costUsd = (w.costBase || 0) + e.cost_usd; // the session's cumulative total, on top of what earlier sessions reported
     w.iterationsLastTurn = typeof e.num_turns === 'number' ? e.num_turns : null;
   }
   w.lastTurnUsage = e.usage;

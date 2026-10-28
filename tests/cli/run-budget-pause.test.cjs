@@ -48,10 +48,10 @@ test('a budgeted run pauses at 90 percent, wakes the orchestrator once, and resu
     await record(core, 1.0);
     const row = await pausedRow(dataDir, runId);
     assert.ok(row, 'the run never paused');
-    assert.match(row.paused_by, /^operator:\d+ \[budget \(run, \$9\.50 of \$10\.00 est\.\)\]$/);
+    assert.match(row.paused_by, /^operator:\d+ \[budget \(run, \$9\.50 of \$10\.00 reported\)\]$/);
     const budget = JSON.parse(row.budget);
     const ev = budget.events.find((e) => e.type === 'pause');
-    assert.strictEqual(ev.estimate, true);
+    assert.strictEqual(ev.basis, 'reported');
     assert.ok(Math.abs(ev.spent_after_parks - 9.5) < 0.05, `about 9.5 (the headless orchestrator's own cost is counted): ${ev.spent_after_parks}`);
 
     const refused = await cli(['resume', runId], dataDir);

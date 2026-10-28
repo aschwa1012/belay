@@ -174,6 +174,8 @@ test('descendantsOf and rowTarget: the walk is leaves-first and a row with no pi
   assert.strictEqual(P.rowTarget({ pid: 7, pid_created: T, substrate: 'claude-code' }).created, T);
 });
 
+// src/run/kill-guard.cjs is exempt: its regexes match taskkill in a worker's command in order to refuse it; it runs nothing.
+const GUARD = 'src/run/kill-guard.cjs';
 test('src/ never runs a tree kill by taskkill: no /T argument to taskkill anywhere', () => {
   const offenders = [];
   const walk = (dir) => {
@@ -181,6 +183,7 @@ test('src/ never runs a tree kill by taskkill: no /T argument to taskkill anywhe
       const p = path.join(dir, e.name);
       if (e.isDirectory()) { if (e.name !== 'node_modules') walk(p); continue; }
       if (!/\.cjs$/.test(e.name)) continue;
+      if (path.relative(ROOT, p).split(path.sep).join('/') === GUARD) continue;
       fs.readFileSync(p, 'utf8').split(/\r?\n/).forEach((line, i) => {
         const code = line.replace(/\/\/.*$/, '');
         if (/taskkill/i.test(code)) offenders.push(`${path.relative(ROOT, p)}:${i + 1}: ${line.trim().slice(0, 100)}`);

@@ -31,7 +31,7 @@ function runRows(dataDir, runId) {
     for (const s of ['', '-wal', '-shm']) if (fs.existsSync(`${dataDir}/memory.db${s}`)) fs.copyFileSync(`${dataDir}/memory.db${s}`, `${tmp}/memory.db${s}`);
     const { DatabaseSync } = require('node:sqlite');
     const db = new DatabaseSync(`${tmp}/memory.db`);
-    try { return db.prepare('SELECT seq, epoch, max_fix_rounds FROM run WHERE id = ? ORDER BY seq').all(runId); }
+    try { return db.prepare('SELECT seq, epoch, max_fix_rounds, fix_hard_cap, fix_hard_cap_source FROM run WHERE id = ? ORDER BY seq').all(runId); }
     finally { db.close(); }
   } finally { cleanup(tmp); }
 }
@@ -54,5 +54,13 @@ test('run: the spec lever (or the default 2) reaches the run row through run.att
     assert.ok(one.length >= 1 && one.every((r) => r.max_fix_rounds === 1), JSON.stringify(one));
     const two = go('orch2', `cap-b-${Date.now()}`, {});
     assert.ok(two.length >= 1 && two.every((r) => r.max_fix_rounds === 2), `the default is 2: ${JSON.stringify(two)}`);
+    assert.ok(two.every((r) => r.fix_hard_cap === 5 && r.fix_hard_cap_source === 'default, no run timeout'), `a run with no timeout gets the default hard cap: ${JSON.stringify(two)}`);
+    assert.ok(one.every((r) => r.fix_hard_cap === 5), 'max_fix_rounds alone does not change it');
+    const timed = go('orch4', `cap-d-${Date.now()}`, { timeout_ms: 600000 });
+    assert.ok(timed.every((r) => r.fix_hard_cap === null && r.fix_hard_cap_source === null), `a run with a timeout is notice-only: ${JSON.stringify(timed)}`);
+    const none = go('orch5', `cap-e-${Date.now()}`, { fix_hard_cap: null });
+    assert.ok(none.every((r) => r.fix_hard_cap === null), 'an explicit null says no cap');
+    const three = go('orch3', `cap-c-${Date.now()}`, { fix_hard_cap: 5 });
+    assert.ok(three.length >= 1 && three.every((r) => r.fix_hard_cap === 5 && r.fix_hard_cap_source === 'run spec' && r.max_fix_rounds === 2), JSON.stringify(three));
   } finally { cleanup(dir); }
 });

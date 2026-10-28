@@ -62,7 +62,7 @@ function stubCore({ observations = [], failList = false } = {}) {
 const ctxWith = (core, over = {}) => ({ core, runId: 'r', memoryLevers: { ...DEFAULTS, bottle: true, ...over } });
 const resumeMd = (dir) => fs.readFileSync(path.join(dir, 'resume.md'), 'utf8');
 const names = (core) => core.calls.map((c) => c[0]);
-const TAIL = 'This is a fresh session replacing an interrupted one. Read resume.md in your worker directory, then continue.';
+const TAIL = 'This is a fresh session replacing an interrupted one. Read resume.md in your worker directory, then continue.' + require('../../src/run/task-body.cjs').PROCESS_LINE;
 
 test('lever off: resume.md is the resumeDoc text byte for byte, the text is unchanged, no bottle call is made', async () => {
   for (const ctx of [undefined, { runId: 'r', memoryLevers: { ...DEFAULTS } }, { runId: 'r', memoryLevers: { ...DEFAULTS, observations: true } }]) {
@@ -279,4 +279,14 @@ test('manager, lever off: a replace restart writes the resumeDoc text and no bot
     assert.deepStrictEqual(core.events, []);
     assert.ok(!fs.existsSync(path.join(sb.dir('w1'), 'sent.jsonl')));
   });
+});
+
+test('the standing process line follows a fresh restart and not a resume', async () => {
+  const PL = require('../../src/run/task-body.cjs').PROCESS_LINE;
+  const { dir, w } = workerDir();
+  try {
+    const core = stubCore();
+    assert.ok((await restartFirstText(w, 'replace', { core, ctx: undefined })).endsWith(PL));
+    assert.ok(!(await restartFirstText(w, 'resume', { core, ctx: undefined })).includes(PL));
+  } finally { cleanup(dir); }
 });

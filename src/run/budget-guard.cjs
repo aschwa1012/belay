@@ -3,7 +3,7 @@
 // usage.record hook (onUsageRecorded) and the headless orchestrator's turn ends feed it; a breach calls the run pause's own
 // pause with a reason, so `paused_by` reads `operator:<pid> [budget (...)]` on the run row and on every park.
 //
-// Every figure is an estimate (belay bills nothing). Codex turns report no dollars: they are counted as unknown and the text
+// Every figure is the cost the substrate reported (belay bills nothing). Codex turns report no dollars: they are counted as unknown and the text
 // says "at least". The guard pauses at SOFT_THRESHOLD of a limit because a turn's spend is seen only when the turn ends.
 // With no limit anywhere nothing here runs: no query, no write. A resume of a budget pause is refused unless it raises the
 // breached limit or overrides it; each is recorded on the run row's `budget` column (operator only: run.resume answers only the operator).
@@ -21,7 +21,7 @@ const argError = (message, detail) => Object.assign(new Error(message), { code: 
 // orchestrator is the user's own session: the text asks the user to decide and does not hand the session the raise command.
 function wakeTextOf({ runId, scope, taskId, spent, limit, unknown, interactive = false }, max = 221) {
   const where = scope === 'task' ? `task ${taskId}` : 'run';
-  const amount = `${unknown ? 'at least ' : ''}${usd(spent)} of ${usd(limit)} est.`;
+  const amount = `${unknown ? 'at least ' : ''}${usd(spent)} of ${usd(limit)} reported`;
   const forms = interactive ? [
     `belay: ${where} budget reached (${amount}); run ${runId} is paused. Ask your user to raise the budget or override it with belay resume ${runId}`,
     `belay: ${where} budget reached (${amount}); run paused. Ask your user to raise or override it`,
@@ -54,7 +54,7 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
   const ownPause = (row) => isBudgetPause(row && row.paused_by);
 
   async function flush() { await core.run.setBudget({ budget: rec }); }
-  if (limit != null && typeof warn === 'function') warn('belay: this run has an estimated budget. Codex turns report no dollars, so they count as unknown (shown as "at least"), never as free; the run budget cannot bind a Codex-only run.\n');
+  if (limit != null && typeof warn === 'function') warn('belay: this run has a budget. Codex turns report no dollars, so they count as unknown (shown as "at least"), never as free; the run budget cannot bind a Codex-only run.\n');
 
   // A re-attach of the same life: what an earlier run process recorded (a raised limit, overrides, task limits) is kept, not reset.
   // The task limits come first from the task rows (task.budget_usd, which can be stale after a raise), read once and only when the run's
@@ -88,7 +88,7 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
     if (!c.scope) return;
     open = { scope: c.scope, task_id: c.task_id || null };
     lastAuth = null;
-    const why = `budget (${c.scope === 'task' ? `task ${c.task_id}` : 'run'}, ${usd(c.spent)} of ${usd(c.limit)} est.)`;
+    const why = `budget (${c.scope === 'task' ? `task ${c.task_id}` : 'run'}, ${usd(c.spent)} of ${usd(c.limit)} reported)`;
     try { await pauseRun(why); } catch (e) { open = null; rec.events.push({ type: 'pause_failed', at: Date.now(), scope: c.scope, message: (e && e.message) || String(e) }); await flush().catch(() => {}); return; }
     // The pause is ours only if the row carries our reason. pause() hands back a pause already in flight, whoever started it; if that is
     // an operator's or the embedder guard's, it is theirs, the guard must not wait for a budget resume that will never come, and the
@@ -103,7 +103,7 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
       type: 'pause', at: Date.now(), scope: c.scope, ...(c.task_id ? { task_id: c.task_id } : {}), limit: c.limit, spent: c.spent, spent_after_parks: after,
       first_seq: detail.first_seq, last_seq: detail.last_seq, per_worker: detail.per_worker, per_task: detail.per_task, unknown_turns: detail.unknown_turns, unknown_workers: detail.unknown_workers,
       orchestrator: interactive ? { counted: false, why: 'an interactive session is not counted; belay agents prices its transcript' } : { counted: true, usd: orchSpend() },
-      estimate: true, ...(rowRead ? {} : { run_row_unreadable: true }),
+      basis: 'reported', ...(rowRead ? {} : { run_row_unreadable: true }),
     };
     rec.events.push(ev);
     await flush().catch(() => {});
@@ -148,7 +148,7 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
     const sameScope = (e) => e.scope === b.scope && (e.task_id || null) === (b.task_id || null);
     const hint = b.scope === 'task' ? `belay resume ${runId} --task-budget ${b.task_id} <usd>` : `belay resume ${runId} --budget <usd>`;
     const given = [p.budget != null, p.task_budget != null, p.over_budget === true].filter(Boolean).length;
-    if (given === 0) throw argError(`run ${runId} is paused because ${b.scope === 'task' ? `task ${b.task_id}` : 'the run'} reached its estimated budget; resume with a raised limit (${hint}) or with --over-budget (the limit is then no longer enforced for the rest of the run)`, { budget_pause: true, scope: b.scope });
+    if (given === 0) throw argError(`run ${runId} is paused because ${b.scope === 'task' ? `task ${b.task_id}` : 'the run'} reached its budget; resume with a raised limit (${hint}) or with --over-budget (the limit is then no longer enforced for the rest of the run)`, { budget_pause: true, scope: b.scope });
     if (given > 1) throw argError('give one of --budget, --task-budget and --over-budget', { budget_pause: true });
     const at = Date.now();
     const done = (ev) => { lastAuth = b; open = null; return ev; };
@@ -165,14 +165,14 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
     const tb = isTask ? p.task_budget : null;
     if (isTask && tb.task_id !== b.task_id) throw argError(`the budget that was reached is task ${b.task_id}'s, not ${tb.task_id}'s: ${hint}`, { budget_pause: true, scope: b.scope });
     const next = isTask ? tb.usd : p.budget;
-    if (typeof next !== 'number' || !Number.isFinite(next) || next <= 0) throw argError('the raised budget must be a positive number (estimated dollars)', { budget_pause: true });
+    if (typeof next !== 'number' || !Number.isFinite(next) || next <= 0) throw argError('the raised budget must be a positive number (dollars at API rates)', { budget_pause: true });
     const prior = [...rec.events].reverse().find((e) => e.type === 'raise' && sameScope(e));
     if (prior && lastAuth && prior.new === next) return done(prior); // the same raise again after a resume that failed: it already holds
     const spent = b.scope === 'task' ? (await core.usage.spend({ task_id: b.task_id })).usd : (await core.usage.spend({})).usd + orchSpend();
     const need = spent / SOFT_THRESHOLD;
     const old = isTask ? taskLimits.get(b.task_id) : limit;
     if (!(next > old)) throw argError(`the raised budget ${usd(next)} is not above the current limit ${usd(old)}`, { budget_pause: true, limit: old });
-    if (!(next > need)) throw argError(`the raised budget ${usd(next)} is below the estimated spend (${usd(spent)}) over the ${SOFT_THRESHOLD * 100}% threshold at which the run pauses; give more than ${usd(need)}`, { budget_pause: true, spent, minimum: need });
+    if (!(next > need)) throw argError(`the raised budget ${usd(next)} is below the reported spend (${usd(spent)}) over the ${SOFT_THRESHOLD * 100}% threshold at which the run pauses; give more than ${usd(need)}`, { budget_pause: true, spent, minimum: need });
     if (isTask) { taskLimits.set(b.task_id, next); rec.tasks = { ...(rec.tasks || {}), [b.task_id]: next }; }
     else { limit = next; await core.run.setBudget({ budget_usd: next }); }
     const ev = { type: 'raise', at, by: who, scope: b.scope, ...(b.task_id ? { task_id: b.task_id } : {}), old, new: next };

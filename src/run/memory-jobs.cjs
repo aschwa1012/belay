@@ -96,11 +96,12 @@ function tokensOf(snap) {
 function costOf(w, snap) {
   if (snap.substrate !== 'claude-code' || typeof snap.cost !== 'number' || !Number.isFinite(snap.cost)) return { cost_usd: null, cost_basis: 'none' };
   const t = w.memoryJobs || (w.memoryJobs = { pid: null, lastCost: 0, seen: false, lastTurn: 0 });
+  const total = Math.max(0, snap.cost - (snap.costBase || 0)); // this session's own total: the row's cost adds earlier sessions' reported cost (cost_base), which the ledger already holds
   const fresh = !t.seen ? snap.turn > 1 : t.pid !== snap.pid; // a first row seen late means the counter was not watched from zero
-  const reset = fresh || snap.cost < t.lastCost;
+  const reset = fresh || total < t.lastCost;
   const base = reset ? 0 : t.lastCost;
   const cost_basis = reset && (t.seen || snap.turn > 1) ? NEW_PROCESS : 'delta-of-cumulative';
-  return { cost_usd: Math.max(0, snap.cost - base), cost_basis, advance: () => { t.pid = snap.pid; t.lastCost = snap.cost; t.seen = true; } };
+  return { cost_usd: Math.max(0, total - base), cost_basis, advance: () => { t.pid = snap.pid; t.lastCost = total; t.seen = true; } };
 }
 async function usageJob(J, snap) {
   const w = J.w;

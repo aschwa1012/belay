@@ -48,7 +48,7 @@ test('a task limit is refused while the run writes no usage ledger, and nothing 
   assert.strictEqual(rows.currentAll(store, 'task').length, n);
 });
 
-test('with a run limit: attach records it, status shows the estimate, task limits are accepted and reported to the hook', async () => {
+test('with a run limit: attach records it, status shows the block, task limits are accepted and reported to the hook', async () => {
   await attach({ budget_usd: 10 });
   assert.strictEqual(rows.current(store, 'run', 'test-run').budget_usd, 10);
   await assert.rejects(attach({ budget_usd: -1 }), (e) => e.code === 'E_ARGS');
@@ -57,7 +57,7 @@ test('with a run limit: attach records it, status shows the estimate, task limit
   assert.deepStrictEqual(seen.tasks.map((x) => [x.task_id, x.budget_usd]), [['tb', 2]]);
   await assert.rejects(call('task.create', orch, { spec: 'bad', budget_usd: 0 }), (e) => e.code === 'E_ARGS');
   const st = (await call('status.get', operator, {})).run.budget;
-  assert.deepStrictEqual([st.limit_usd, st.spent_usd, st.state, st.estimate], [10, 0, 'under', true]);
+  assert.deepStrictEqual([st.limit_usd, st.spent_usd, st.state, st.basis], [10, 0, 'under', 'reported']);
 });
 
 test('the run hook sees each row; the sums count dollars and keep Codex turns as unknown, never free', async () => {
@@ -73,7 +73,7 @@ test('the run hook sees each row; the sums count dollars and keep Codex turns as
   assert.strictEqual(d.per_task.ta, 1.5);
   const st = (await call('status.get', operator, {})).run.budget;
   assert.strictEqual(st.unknown_turns, 1);
-  assert.match(RB.textOf(st), /^at least \$1\.50 of \$10\.00 est\. \(under\); 1 turn report no dollars$/);
+  assert.match(RB.textOf(st), /^at least \$1\.50 of \$10\.00 reported \(under\); 1 turn report no dollars$/);
 });
 
 test('a turn is charged to the task whose lease the worker held when it ended, one task per turn', async () => {
