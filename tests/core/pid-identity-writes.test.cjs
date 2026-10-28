@@ -82,3 +82,47 @@ test('no snapshot is taken for a pid that is gone or a row with no creation time
     assert.strictEqual(p.runsAs(process.pid, null), true);
   } finally { ID.processSnapshot = real; }
 });
+
+// A stalled snapshot stands in for the second it costs. Counting the snapshots a write takes tells who pays for the check.
+function stubSnapshot(gate) {
+  const real = ID.processSnapshot;
+  const calls = { n: 0 };
+  ID.processSnapshot = async (o) => { calls.n++; if (gate) await gate; return real(o); };
+  return { calls, restore: () => { ID.processSnapshot = real; } };
+}
+
+test('the adapter that holds the child restates a running row with no snapshot; any other caller pays one', WIN, async () => {
+  await orch.worker.write(worker('w-turn', { pid_created: created }));
+  const s = stubSnapshot();
+  try {
+    const a = await orch.worker.write({ id: 'w-turn', state: 'running', last_event_at: Date.now() }); // the bound adapter, pid unchanged
+    assert.strictEqual(a.state, 'running');
+    assert.strictEqual(s.calls.n, 0, 'the adapter\'s own write took a snapshot');
+    const op = await openCore({ dataDir: dir, caller: callerFor('orchestrator', { pid: process.ppid }), embed: false }); // not the run's bound adapter
+    try {
+      assert.strictEqual((await op.worker.write({ id: 'w-turn', state: 'running', last_event_at: Date.now() })).state, 'running');
+    } finally { await op.close(); }
+    assert.strictEqual(s.calls.n, 1, 'a write from another caller is checked');
+  } finally { s.restore(); }
+});
+
+test('worker.write: a run that ends while the write waits on the snapshot takes no worker row', WIN, async () => {
+  const d2 = sandbox();
+  const o2 = await openCore({ dataDir: d2, caller: callerFor('orchestrator'), embed: false });
+  const op2 = await openCore({ dataDir: d2, caller: { role: 'operator', run_id: 'test-run', pid: process.pid }, embed: false });
+  let release; const gate = new Promise((r) => { release = r; });
+  const s = stubSnapshot(gate);
+  try {
+    await o2.run.attach({ adapter_pid: process.pid });
+    const pending = o2.worker.write(worker('w-late', { state: 'running', pid_created: created })).then(() => null, (e) => e);
+    while (s.calls.n === 0) await new Promise((r) => setTimeout(r, 20)); // the write is waiting on the snapshot
+    await op2.run.end({ exit_reason: 'ended while a write waited' });
+    release();
+    const e = await pending;
+    assert.ok(e && e.code === 'E_ARGS' && /already ended/.test(e.message), `the write was not refused: ${e && e.message}`);
+    assert.strictEqual(await o2.worker.get({ worker_id: 'w-late' }).then((w) => w && w.state, () => null), null, 'no row was written');
+  } finally {
+    release(); s.restore();
+    await teardown(null, [() => op2.close(), () => o2.shutdownOwner(), () => o2.close(), () => cleanup(d2)]);
+  }
+});

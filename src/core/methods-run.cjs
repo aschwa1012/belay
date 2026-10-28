@@ -102,6 +102,10 @@ async function attach(E, caller, args) {
     throw err('E_ARGS', 'run.attach project must be null or match ^[a-z0-9][a-z0-9._-]{0,63}$', { project: args.project });
   }
   const runId = caller.run_id;
+  // A pid that is alive but whose creation time differs from the row's is another process (ADR 0039): one snapshot, taken only when
+  // a suspect row has a live pid and a recorded time, answers for all of them. It is awaited before the run row is read, so the
+  // await adds nothing between that read and the write.
+  const identity = await LA.prepare(rows.currentAll(E.store, 'worker').filter((w) => w.run_id === runId && ATTACH_SUSPECT.has(w.state)).map((w) => ({ pid: w.pid, created: w.pid_created })));
   const t = Date.now();
   const prev = rows.current(E.store, 'run', runId);
   // ADR 0041: the project is named by the spec and never derived, and it is named once. The run row's project column (what a caller's reach and the
@@ -143,12 +147,8 @@ async function attach(E, caller, args) {
   // that made it the one state a worker could survive in for ever: a stale pid, no adapter, and never
   // named in workers_marked_dead. The thread may still be resumable, but the worker is not running, and
   // the next epoch has no process to attach to.
-  // A pid that is alive but whose creation time differs from the row's is another process (ADR 0039): one snapshot, taken only
-  // when a suspect row has a live pid and a recorded time, answers for all of them.
   const marked = [];
   if (prev) {
-    const suspects = rows.currentAll(E.store, 'worker').filter((w) => w.run_id === runId && ATTACH_SUSPECT.has(w.state));
-    const identity = await LA.prepare(suspects.map((w) => ({ pid: w.pid, created: w.pid_created })));
     for (const w of rows.currentAll(E.store, 'worker')) {
       if (w.run_id !== runId) continue;
       if (!ATTACH_SUSPECT.has(w.state)) continue;
@@ -341,19 +341,24 @@ async function writeWorker(E, caller, args) {
   if (args.started_at != null && !Number.isSafeInteger(args.started_at)) {
     throw err('E_ARGS', `worker.write needs started_at for worker ${args.id} as a safe integer of epoch milliseconds, and this write carried ${typeof args.started_at === 'object' ? 'an object' : String(args.started_at).slice(0, 80)}`, { worker_id: args.id });
   }
+  // `running` is refused unless its pid runs as the process the row records (ADR 0039), so a pid another process now holds is
+  // not alive for it. The snapshot is taken here, before the read-then-append below, which has no await. It costs about a second,
+  // so the adapter that holds the child (the caller is the run's bound adapter) and restates a row whose pid is unchanged
+  // takes none: spawn already proved the identity, and its own turn writes would pay it every turn.
+  const createdOfPid = (row, pid) => (args.pid_created !== undefined ? args.pid_created : (row && row.pid === pid ? row.pid_created : null));
+  const peek = rows.current(E.store, 'worker', args.id);
+  const peekPid = args.pid !== undefined ? args.pid : (peek ? peek.pid : null);
+  const peekRun = caller.role === 'orchestrator' ? rows.current(E.store, 'run', caller.run_id) : null;
+  const holdsChild = !!(peek && peekRun && caller.pid != null && Number(peekRun.adapter_pid) === Number(caller.pid) && peek.pid === peekPid);
+  const identity = await LA.prepare(!holdsChild && (args.state === undefined || args.state === 'running') ? [{ pid: peekPid, created: createdOfPid(peek, peekPid) }] : []);
+  const prev = rows.current(E.store, 'worker', args.id);
   // ADR 0029 amendment 4 (proposed): an ended run takes no worker write from its orchestrator adapter. Whatever the adapter was
   // doing when the run closed (a worker_spawn in flight) writes nothing into it; run.end and the operator are not affected.
+  // Checked after the snapshot await above, so the check and the append are one step.
   if (caller.role === 'orchestrator') {
     const run = rows.current(E.store, 'run', caller.run_id);
     if (run && run.ended_at != null) throw err('E_ARGS', `run ${caller.run_id} has already ended; worker ${args.id} was not written`, { run_id: caller.run_id, ended_at: run.ended_at, worker_id: args.id });
   }
-  // `running` is refused unless its pid runs as the process the row records (ADR 0039), so a pid another process now holds is
-  // not alive for it. The snapshot is taken here, before the read-then-append below, which has no await.
-  const createdOfPid = (row, pid) => (args.pid_created !== undefined ? args.pid_created : (row && row.pid === pid ? row.pid_created : null));
-  const peek = rows.current(E.store, 'worker', args.id);
-  const peekPid = args.pid !== undefined ? args.pid : (peek ? peek.pid : null);
-  const identity = await LA.prepare(args.state === undefined || args.state === 'running' ? [{ pid: peekPid, created: createdOfPid(peek, peekPid) }] : []);
-  const prev = rows.current(E.store, 'worker', args.id);
   // The id is a directory under the data dir. A row that already exists is restated whatever its id (a store may hold an older one); a new row needs a valid id.
   if (!prev && !isPathId(args.id)) throw err('E_ARGS', `worker.write: ${pathIdMessage('worker id', args.id)}`, { worker_id: String(args.id).slice(0, 80), field: 'worker_id' });
   // W2-3 amendment 2 (B2): a restating write names the row it restates. This method has no await between this read
