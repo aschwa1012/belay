@@ -99,7 +99,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   const child = P.spawnWorker({ exe: command, args: fullArgs, cwd: worktree, env, stdin: 'pipe' });
 
   const state = {
-    sessionId: null, turns: 0, externallyTriggeredTurns: 0,
+    sessionId: null, turns: 0, skippedTurn: null, externallyTriggeredTurns: 0,
     readyVerified: false, readyGateStarted: false, readyMs: null, idle: false, laterInits: 0, surface: null, instructions: I.instructionsFields(instructions),
     holds: [], polls: 0, endedBy: null, finishing: false, boundStarted: false,
     killedAfterClose: false, exitCode: null, exitSignal: null,
@@ -262,13 +262,17 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   async function pollOnce() {
     if (state.finishing || pollInFlight) return;
     pollInFlight = true;
-    const turnAtCall = state.turns;
+    const turnAtStart = state.turns;
     let list = null;
     let failReason = null;
     try { list = await core.worker.list({}); }
     catch (e) { failReason = (e && (e.code || e.message)) || String(e); }
     state.polls += 1;
     pollInFlight = false;
+    // A turn end whose own poll was skipped because this read was in flight is the turn a hold from this read names, not the turn the
+    // read started at (stale) and not a later turn end in the same chunk.
+    const turnAtCall = state.skippedTurn == null ? turnAtStart : state.skippedTurn;
+    state.skippedTurn = null;
     if (state.finishing) return; // the run ended while this read was in flight
 
     if (failReason !== null) {
@@ -353,6 +357,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       // idle period, not to the whole run (ADR 0015's evidence table counts a hold at each turn end).
       holdRecorder.reset();
       if (pollHandle) { clearTimeout(pollHandle); pollHandle = null; }
+      if (pollInFlight && state.skippedTurn == null) state.skippedTurn = state.turns;
       pollOnce();
       return;
     }
