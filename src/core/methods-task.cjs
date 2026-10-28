@@ -59,6 +59,7 @@ async function create(E, caller, args, own = {}) {
   const AM = require('./methods-task-amend.cjs'); // ADR 0061: amend revises an existing task; tree_of gives a new one another's tree
   if (args.amend !== undefined && args.amend !== false) return AM.amend(E, caller, args);
   const runTop = args.tree_of != null ? await AM.runRepo(E, caller) : null; // the only await: everything below is one turn
+  if (args.tree_of != null && typeof args.tree_of === 'string') { const src = rows.current(E.store, 'task', args.tree_of); if (src) await require('./methods-worktree.cjs').assertTreeListed(src); } // a tree the sweep was cut inside is not handed out
   return require('./methods-task-new.cjs').one(E, caller, args, own, runTop);
 }
 
@@ -234,7 +235,7 @@ async function evaluate(E, caller, args, queued = null) {
   const cancel = EC ? EC.register(args.cancel_key) : null;
   const J = require('./judged.cjs'), judged = await J.stateOf(task, at.worktree); // ADR 0060 decisions 4 and 6: what integrate may merge
   let commandChecks;
-  try { commandChecks = await runAcceptance(task.acceptance, at.worktree, task.files_owned, { ...at, cancel, budgetMs: require('./evaluate-cancel.cjs').budgetAfter(queued && queued.waited_ms, ACCEPTANCE_BUDGET_MS), beside: (a, b) => require('./evaluate-cancel.cjs').during(task.id, a, b) }); } finally { if (cancel) EC.unregister(args.cancel_key, cancel); }
+  try { commandChecks = await runAcceptance(task.acceptance, at.worktree, task.files_owned, { ...at, cancel, budgetMs: require('./evaluate-cancel.cjs').budgetAfter(queued && queued.waited_ms, ACCEPTANCE_BUDGET_MS, args.trigger), beside: (a, b) => require('./evaluate-cancel.cjs').during(task.id, a, b) }); } finally { if (cancel) EC.unregister(args.cancel_key, cancel); }
   if (cancel && cancel.cancelled) throw EC.cancelled(task, cancel);
   // The commands can run for minutes, so the row is read again inside the transaction that writes it: a
   // release that landed meanwhile (its handoff, its state) is what the verdict check reads and what the
@@ -351,10 +352,9 @@ async function releaseNow(E, caller, args) {
     const task = rows.current(E.store, 'task', l.task_id);
     if (!task) throw err('E_NOT_FOUND', `lease ${l.id} names task ${l.task_id}, which has no row in this store`, { lease_id: l.id, task_id: l.task_id });
     // ADR 0025 amendment 1: a release never un-earns `done`, and cannot replace the verdict it rests on.
-    if (task.state === 'done' && args.result !== undefined) {
-      throw err('E_ARGS', `lease.release: task ${task.id} is done, so its hand-back cannot be replaced; release without a result`, { task_id: task.id });
-    }
+    if (task.state === 'done' && args.result !== undefined) throw err('E_ARGS', `lease.release: task ${task.id} is done, so its hand-back cannot be replaced; release without a result`, { task_id: task.id });
     const t = Date.now(), by = E.writtenBy(caller), late = LHD.isLateHandback(caller, l, task); // late: the holder's death released it first
+    const stood = caller.role === 'worker' && task.state !== 'done' && (l.released_at == null || late) ? require('./handoff-check.cjs').requireFields(task, args) : null; // the task's own declared fields, before anything is written; a stand-down's reason
     if (dropped && l.released_at != null && !late) {
       // A second call on a released lease carries only notes, and they are dropped: nothing is written.
       return { ...task, last_checkpoint_id: (rows.lastCheckpoint(E.store, l.task_id) || {}).id || null, released_reason: args.reason || null, ...dropped };
@@ -370,14 +370,14 @@ async function releaseNow(E, caller, args) {
     if (l.released_at != null && !late) {
       throw err('E_ARGS', `lease.release: lease ${l.id} was already released at ${l.released_at}, so a second release would replace its hand-back; nothing was written. The orchestrator can take a new hand-back by assigning this task to you again (task_assign)`, { lease_id: l.id, released_at: l.released_at });
     }
-    if (!late) rows.append(E.store, 'lease', { ...l, released_at: t }, by, t);
+    if (!late) rows.append(E.store, 'lease', { ...l, released_at: t, ...(stood ? { released_reason: stood } : {}) }, by, t);
     let handoff = task.handoff;
     if (args.result !== undefined) {
       handoff = { result: args.result, by: caller.worker_id, lease_id: l.id, at: t };
       const missing = missingCitations(E, args.result);
       if (missing !== null) handoff.memory_ids_missing = missing;
       if (l.tree || RT.isReview(task)) Object.assign(handoff, RT.handBack(E.dataDir, caller.run_id, caller.worker_id, l.tree, treeNow && treeNow.worktree === l.tree.worktree ? treeNow : null)); // the tree's change and the scratch size
-    }
+    } else if (stood) handoff = { result: null, by: caller.worker_id, lease_id: l.id, at: t, stood_down: stood }; // replaces any earlier hand-back: this lease handed back nothing
     const row = rows.append(E.store, 'task', { ...task, state: task.state === 'done' ? 'done' : 'released', handoff }, by, t);
     const ck = rows.lastCheckpoint(E.store, l.task_id);
     return { ...row, last_checkpoint_id: ck ? ck.id : null, released_reason: args.reason || null, ...(prep ? NM.commit(E, caller, prep, { task_id: task.id }) : {}), ...(dropped || {}), ...(late ? LHD.lateReceipt(l) : {}) };

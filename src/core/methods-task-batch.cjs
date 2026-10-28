@@ -107,7 +107,7 @@ async function removeMade(made, undone) {
     receipts.push({ task_id: m.task_id, path: m.rec.path, branch: m.rec.branch, ...r });
   }
   const kept = receipts.filter((r) => r.kept); // an add that made nothing: whatever is there is not belay's, so it is not "left"
-  const left = receipts.filter((r) => !r.kept && (!r.path_gone || r.error || r.junction_error));
+  const left = receipts.filter((r) => !r.kept && (!r.path_gone || r.error || r.junction_error || (r.worktree_removed && r.branch_deleted === false)));
   return { receipts, left, kept };
 }
 
@@ -118,6 +118,10 @@ async function createWithTrees(E, caller, args, own) {
   if (new Set(list.map((it) => it.id)).size !== list.length) throw err('E_ARGS', 'task.create tasks: two items have the same id');
   const needsRepo = wanted.length || list.some((it) => it.args.tree_of != null);
   const top = needsRepo ? await W.repoOf(E, caller, undefined, 'task.create') : null; // the first await: the rest of the checks are one turn
+  for (const it of list) { // a tree the sweep was cut inside is not handed out
+    const src = typeof it.args.tree_of === 'string' ? rows.current(E.store, 'task', it.args.tree_of) : null;
+    if (src) await W.assertTreeListed(src);
+  }
   const shape = (written) => (single ? written[0] : { tasks: written });
 
   if (!wanted.length) { // nothing to make: one transaction, all or nothing
@@ -150,6 +154,10 @@ async function createWithTrees(E, caller, args, own) {
         trees[i] = await makeTree(E, caller, top, list[i], checked[i], made, undone);
         slowest = Math.max(slowest, clock() - at);
         if (seamOn() && seam.afterTree) await seam.afterTree(i, trees[i]);
+      }
+      for (const it of list) { // the trees took time: a tree_of source the sweep removed meanwhile is not handed out
+        const src = typeof it.args.tree_of === 'string' ? rows.current(E.store, 'task', it.args.tree_of) : null;
+        if (src) await W.assertTreeListed(src);
       }
       // 4. every row, one transaction, every check again on the store as it now is.
       const out = E.store.tx(() => { E.assertRunOpen(caller, 'task.create'); return writeAll(E, caller, list, trees, top, own); });

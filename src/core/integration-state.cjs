@@ -3,6 +3,7 @@
 // never stored on the task (ADR 0053 amendment 2). A task's work state stays `done` (its own checks passed); whether that work
 // landed is this separate fact. No git and no write: task.list and task.get call it on whatever store they read.
 
+const path = require('node:path');
 const rows = require('./rows.cjs');
 const { pidAlive } = require('./lock.cjs');
 
@@ -35,11 +36,23 @@ function newestFirst(store) {
   }
 }
 
+const checkName = (c) => [path.basename(String(c.argv[0])), ...c.argv.slice(1, 4)].join(' ').slice(0, 80);
+
+// The checks that bear on one task: its own (those naming it), judged apart from the integrate-level `checks` of the call, which
+// get their own pair. `passed` is null when none of the task's own checks ran on that head (`evaluate: false`).
+function checksOf(r, id) {
+  const all = Array.isArray(r.checks) ? r.checks.filter((c) => c && Array.isArray(c.argv)) : [];
+  const own = all.filter((c) => Array.isArray(c.task_ids) && c.task_ids.includes(id));
+  const top = all.filter((c) => c.source === 'integrate');
+  const failing = top.filter((c) => !c.passed).map(checkName);
+  return { passed: own.length ? own.every((c) => c.passed) : null, ...(top.length ? { checks_passed: failing.length === 0, ...(failing.length ? { checks_failing: failing } : {}) } : {}) };
+}
+
 // What one integration says about one task, or null when it says nothing (the task was named but not tried).
 function factOf(r, id) {
   const base = { id: r.id, into: r.into_branch, at: r.written_at };
   const f = r.forced && Array.isArray(r.forced.task_ids) && r.forced.task_ids.includes(id) ? { forced: (r.forced.reasons && r.forced.reasons[id]) || r.forced.reason, failing: r.forced.failing } : {}; // merged past checks that failed or never passed
-  if ((r.merged || []).some((m) => m.task_id === id)) return { state: 'merged', ...base, head: r.head_sha, passed: r.passed == null ? null : !!r.passed, ...f };
+  if ((r.merged || []).some((m) => m.task_id === id)) return { state: 'merged', ...base, head: r.head_sha, ...checksOf(r, id), ...f };
   if (r.state === 'merging') return { state: 'merging', ...base, stale: stale(r) };
   if (r.state === 'abandoned') return { state: 'abandoned', ...base };
   const miss = (notMerged(r) || []).find((m) => m.task_id === id);
@@ -91,4 +104,4 @@ function ofTask(task, newest, peers = []) {
   return others.length ? { ...main, elsewhere: others } : main;
 }
 
-module.exports = { notMerged, stale, newestFirst, ofTask };
+module.exports = { checkName, notMerged, stale, newestFirst, ofTask };

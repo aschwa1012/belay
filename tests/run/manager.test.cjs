@@ -84,7 +84,7 @@ test('spawn returns the row only after ready, and every artefact is on disk', as
     // carries the ancestor-exclude/auto-memory hygiene block, computed the same way here.
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8')), {
       enabledPlugins: { 'example-plugin@example': false, 'example-extra@example': false, 'codex@openai-codex': false },
-      ...require('../../src/run/surface.cjs').hygieneSettings(sb.worktree),
+      ...require('../../src/run/surface.cjs').hygieneSettings(sb.worktree), hooks: require('../../src/run/kill-guard.cjs').hooksBlock(), // the kill guard
     });
 
     // Every stream line reached stream.jsonl as it arrived: at ready only the init is there, and by
