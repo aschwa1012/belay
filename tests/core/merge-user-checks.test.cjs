@@ -164,3 +164,36 @@ test('a throw after the branch moved records the move: the row says what is true
   assert.strictEqual(row.applied, 'ref');
   assert.strictEqual(trees(repo), 2, 'only the main checkout and the task tree remain');
 });
+
+test('a throw after the merge was kept under its prepared ref records the ref, and a branch moved by someone else is not recorded as belay\'s move', async () => {
+  const s = await scenario({ setting: 'allowed' });
+  const repo = makeRepo(dir);
+  const t = await doneTask(s, repo, { 'a.txt': 'a' });
+  const keepRun = G.run, keepAll = R.currentAll;
+  let kept = false;
+  G.run = async (cwd, args, ...rest) => { const r = await keepRun(cwd, args, ...rest); if (r.ok && args[0] === 'update-ref' && args.some((a) => String(a).startsWith('refs/belay/prepared/'))) kept = true; return r; };
+  R.currentAll = (...a) => { if (kept) { kept = false; throw new Error('injected store failure'); } return keepAll(...a); };
+  let e;
+  try { e = await s.orch.integration.merge({ task_ids: [t.id], into: 'main' }).then(() => null, (x) => x); } finally { G.run = keepRun; R.currentAll = keepAll; }
+  assert.ok(e, 'the call threw');
+  const row = (await s.op.integration.list({})).integrations.find((r) => r.state === 'failed');
+  assert.ok(row, 'a failed row was written');
+  assert.strictEqual(row.applied, 'prepared');
+  assert.ok(row.prepared && git(repo, 'rev-parse', row.prepared.ref) === row.prepared.sha, 'the row names the ref that exists');
+  assert.strictEqual(row.head_after, git(repo, 'rev-parse', 'main'), 'main itself did not move');
+});
+
+test('a task judged on nothing proves no branch: a same-named branch holding only its base asks', async () => {
+  const s = await scenario();
+  const repo = makeRepo(dir);
+  const empty = await s.orch.task.create({ spec: 'no change', acceptance: { commands: [ok] } });
+  const w = (await s.op.task.worktreeCreate({ task_id: empty.id, repo })).worktree;
+  const judged = await s.orch.task.evaluate({ task_id: empty.id });
+  assert.strictEqual(judged.state, 'done', JSON.stringify(judged.results));
+  const u = await doneTask(s, repo, { 'u.txt': 'u' });
+  git(repo, 'worktree', 'remove', '--force', w.path);
+  git(repo, 'branch', '-D', w.branch);
+  git(repo, 'branch', w.branch, 'main');
+  const re = await s.orch.integration.merge({ task_ids: [u.id], into: w.branch });
+  assert.strictEqual(re.state, 'awaiting_approval');
+});

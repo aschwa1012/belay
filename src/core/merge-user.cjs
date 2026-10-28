@@ -50,7 +50,7 @@ async function mergeIntoUser(E, caller, args, c) {
   const start = place.head || place.base;
   const id = rows.newId();
   const tree = await addTree(repo, id, start);
-  let treeGone = false, wrote = null;
+  let treeGone = false, wrote = null, mergedSha = null;
   try {
   const base = {
     id, run_id: caller.run_id, repo, into_branch: into, worktree: tree.path, created_worktree: true, base_sha: start, head_sha: start,
@@ -89,6 +89,7 @@ async function mergeIntoUser(E, caller, args, c) {
   }
   const head = await G.run(tree.path, ['rev-parse', 'HEAD']);
   const merged = head.ok ? head.stdout.trim() : start;
+  mergedSha = merged;
   out.head_sha = merged;
   const stop = out.conflict || out.error;
   const unapplied = () => entries.map(({ task_id, sha, head_sha }) => ({ task_id, sha, head_sha }));
@@ -153,10 +154,10 @@ async function mergeIntoUser(E, caller, args, c) {
         const kept = pr.ok ? pr.stdout.trim() : null;
         const moved = now !== (place.head || null);
         const facts = {
-          head_after: now, applied: kept ? 'prepared' : moved ? 'ref' : 'none',
+          head_after: now, applied: kept ? 'prepared' : moved && now === mergedSha ? 'ref' : 'none',
           ...(kept ? { prepared: { sha: kept, ref: `refs/belay/prepared/${id}`, checkout: null, ff_command: `git merge --ff-only ${kept}`, task_ids: [...args.task_ids], merge_commits: [], into_head: place.head } } : {}),
         };
-        E.store.tx(() => rows.append(E.store, 'integration', { ...wrote, ...facts, state: 'failed', error: { code: e.code || 'E_INTERNAL', message: `${e.message}${moved || kept ? ` (after ${kept ? 'the merge was kept under its prepared ref' : `${into} moved`})` : ''}` } }, by, Date.now()));
+        E.store.tx(() => rows.append(E.store, 'integration', { ...wrote, ...facts, state: 'failed', error: { code: e.code || 'E_INTERNAL', message: `${e.message}${kept ? ' (after the merge was kept under its prepared ref)' : moved ? (now === mergedSha ? ` (after ${into} was moved to the merge)` : ` (${into} had moved to ${now} by other means)`) : ''}` } }, by, Date.now()));
       } catch (_) { /* the store may be closing */ }
     }
     throw e;
