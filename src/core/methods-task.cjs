@@ -161,7 +161,7 @@ async function assign(E, caller, args) {
   // on a task still `assigned`, is a state the contract has no name for (ADR 0002 §4).
   // The worker's pid must run as the process its row records (ADR 0039), so a pid another process now holds is not a live worker.
   // The transaction below is synchronous, so the snapshot is taken first, for the row as it reads now.
-  const peekWorker = checkOnly ? null : rows.current(E.store, 'worker', args.worker_id);
+  const peekWorker = checkOnly ? null : E.store.tx(() => rows.current(E.store, 'worker', args.worker_id)); // a transaction of its own: no read of this method is outside one
   const identity = await require('./live-as.cjs').prepare(peekWorker && peekWorker.pid != null ? [{ pid: peekWorker.pid, created: peekWorker.pid_created }] : []);
   const out = E.store.tx(() => {
     const task = rows.current(E.store, 'task', args.task_id);

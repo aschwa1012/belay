@@ -4,6 +4,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup
 const { spawn } = require('node:child_process');
 const { deadPid, FLOOR, CEILING } = require('../helpers/dead-pid.cjs');
 const { pidAlive } = require('../../src/core/lock.cjs');
