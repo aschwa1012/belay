@@ -42,7 +42,8 @@ test('two turn ends in one chunk behind a stalled read: the hold names turn 1', 
     const limit = Date.now() + 40000;
     while (resultLines(streamPath) < 2 && Date.now() < limit) await new Promise((r) => setTimeout(r, 25));
     const seen = resultLines(streamPath);
-    await new Promise((r) => setTimeout(r, 300)); // the chunk's events have been dispatched; the next polls run
+    // No margin is needed: the stream line is written and its events are handled in one synchronous data handler, so a timer that sees both
+    // results in the file runs after the chunk's events were dispatched.
     release();
     // the hold is recorded by a later poll; once it is, the worker is no longer busy and the run may close
     const until = Date.now() + 20000;

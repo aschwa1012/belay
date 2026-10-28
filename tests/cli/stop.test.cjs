@@ -31,6 +31,7 @@ test('stop: a live run is stopped from a second process, the orchestrator exits 
   const dataDir = `${dir}/.belay`;
   const { specPath, runId } = makeSpec(dir, { startup_timeout_ms: 120000, close_grace_ms: 5000 });
   const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_HANG: '1' };
+  const spawnedAt = Date.now();
   const runCliProc = runCli(specPath, dataDir, env);
   try {
     const row = await waitUntil(() => currentRunRow(dataDir, runId), 60000, 100);
@@ -40,9 +41,12 @@ test('stop: a live run is stopped from a second process, the orchestrator exits 
     // run process happened to be under 5,000 ms old" (should-fix, reviewer round 1: with the prior bug,
     // ms_to_exit was facts.ms, the orchestrator's whole lifetime, so a hold this long alone reproduced
     // ms_to_exit ~6,000+ and turned the very assertion below red against otherwise-correct code).
+    // This sleep is load-bearing, not a wait for an event: it is what makes the run older than the stop call, which the ms_to_exit check
+    // below needs to tell the stop's own close time from the run's age. The check says so, loudly, when the stop call outlasted that age.
     await sleep(6000);
 
     const stopT0 = Date.now();
+    const runAgeAtStop = stopT0 - spawnedAt;
     const stop = runStopSync(dataDir, runId);
     const stopCallMs = Date.now() - stopT0;
     assert.strictEqual(stop.status, 0, `stop: ${stop.stdout} / ${stop.stderr}`);
@@ -54,8 +58,9 @@ test('stop: a live run is stopped from a second process, the orchestrator exits 
     assert.deepStrictEqual(sr.workers, []);
     assert.strictEqual(sr.orchestrator.exit_code, 0);
     assert.strictEqual(sr.orchestrator.graceful, true);
-    // A fact, not a clock: the stop's own close time cannot exceed the call that waited for it. The run was held for 6,000 ms before this
-    // stop was issued, so a value that was the run's age instead would be over the call's length whenever the call was quicker than that.
+    // A fact, not a clock: the stop's own close time cannot exceed the call that waited for it. A value that was the run's age instead
+    // would be over the call's length only while the call was quicker than the run is old, so a slower call makes this check blind: fail loudly.
+    assert.ok(stopCallMs < runAgeAtStop, `the stop call took ${stopCallMs} ms and the run was ${runAgeAtStop} ms old: the ms_to_exit check cannot tell the stop's close time from the run's age on this host right now; re-run (the exit speed itself is gated in tests/budgets/run-budgets.test.cjs)`);
     assert.ok(sr.orchestrator.ms_to_exit <= stopCallMs, `ms_to_exit ${sr.orchestrator.ms_to_exit} was over the ${stopCallMs} ms the stop call took: it is the stop's own close time, never the run's age`);
     assert.match(sr.established_by, /run\.stop over the owner pipe answered in \d+ ms/);
 
@@ -159,7 +164,7 @@ test('stop: a second stop while the first is in flight gets the same receipt', {
   try {
     const row = await waitUntil(() => currentRunRow(dataDir, runId), 60000, 100);
     assert.ok(row, 'the run row never appeared');
-    await sleep(500);
+    await sleep(500); // no event shows the run's stop hook is installed (the fake hangs and writes nothing); the hook goes in once the spawn is confirmed, after the row
     op = await openCore({ dataDir, caller: { role: 'operator', run_id: runId, pid: process.pid } });
 
     const c1 = spawnStopAsync(dataDir, runId);
@@ -240,7 +245,9 @@ test("stop: a stop after the run's stop completed is refused as ended, naming wh
       // the reason is the error's own, so the facts are the refusal and, when the run is already seen as ended, the row that says why.
       branch = `the owner was going away when the second call landed (${r2.receipt && r2.receipt.error ? r2.receipt.error.code : 'no error'})`;
       assert.strictEqual(r2.status, 1, `second stop: ${r2.stdout} / ${r2.stderr}`);
-      assert.ok(r2.receipt && r2.receipt.error && r2.receipt.error.code, `second stop carried no error: ${r2.stdout} / ${r2.stderr}`);
+      // Only the codes of an owner going away are accepted here; any other code is a different failure and is named.
+      const GOING_AWAY = ['E_NO_OWNER', 'E_TIMEOUT', 'ECONNRESET'];
+      assert.ok(r2.receipt && r2.receipt.error && GOING_AWAY.includes(r2.receipt.error.code), `second stop failed with a code that is not an owner going away (${r2.receipt && r2.receipt.error ? r2.receipt.error.code : 'none'}): ${r2.stdout} / ${r2.stderr}`);
       if (/no live run/.test(r2.receipt.reason)) {
         assert.ok(r2.receipt.last, 'the no-live-run branch carried no last row');
         assert.match(r2.receipt.last.exit_reason, /stopped by belay stop/);
@@ -332,7 +339,7 @@ test('stop: a run stopped for a different run id is refused and stays alive', { 
   try {
     const row = await waitUntil(() => currentRunRow(dataDir, runId), 60000, 100);
     assert.ok(row, 'the run row never appeared');
-    await sleep(500);
+    await sleep(500); // as above: no event shows the stop hook is installed; this stop is refused for its run id whatever the answer's timing, the sleep only keeps it off the before-spawn window
 
     const r = runStopSync(dataDir, 'a-different-run-id');
     assert.strictEqual(r.status, 1, `stop: ${r.stdout} / ${r.stderr}`);

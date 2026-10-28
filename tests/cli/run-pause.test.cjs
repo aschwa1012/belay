@@ -338,7 +338,8 @@ test('run pause: the timeout clock stops while paused and resume re-arms what re
     assert.ok(r.receipt.timeout && Number.isInteger(r.receipt.timeout.armed_ms), JSON.stringify(r.receipt.timeout));
     assert.ok(r.receipt.timeout.armed_ms <= p.receipt.timeout.remaining_ms + 50, 'resume must re-arm no more than what remained');
 
-    const exited = await waitForExit(ctx.cliProc.proc, 20000);
+    // A hang guard derived from the event: the re-armed timeout fires within what remained, then the run closes.
+    const exited = await waitForExit(ctx.cliProc.proc, p.receipt.timeout.remaining_ms + 90000);
     assert.ok(exited, 'the re-armed timeout never ended the run');
     const receipt = receiptOf(ctx.cliProc, exited.code === 0 ? 0 : 1);
     assert.match(receipt.ended_by, /timeout/);

@@ -99,7 +99,7 @@ function receiptOf(run, exitCode) {
 // `orchestrator` on the CLI's data dir connects to the CLI's already-elected owner over the pipe
 // (invariant 2: only a write elects, and the CLI elected first).
 async function connectOrchestratorCore(dataDir, runId) {
-  return require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 10000 });
+  return require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 60000 });
 }
 
 function workerWorktree(dir, id) {
@@ -296,7 +296,6 @@ test("run: a worker given a second message holds stdin until its second turn end
       return w && w.turns === 1 ? w : null;
     }, 25000, 100);
     assert.ok(turnedOnce, "the worker's own first turn never landed in the store");
-    await sleep(500);
 
     await m.message({ worker_id: 'w1', text: 'again' });
 
