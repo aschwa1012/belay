@@ -366,6 +366,7 @@ async function writeWorker(E, caller, args) {
   if (merged.state === 'running' && !pidAlive(merged.pid)) {
     throw err('E_WORKER_NOT_LIVE', `worker ${args.id} cannot be written as ${merged.state} because pid ${merged.pid} is not alive`, { worker_id: args.id, pid: merged.pid == null ? null : merged.pid });
   }
+  require('./cost-estimate.cjs').apply(E.dataDir, prev, merged, args); // a stopped or dead row's unreported last turn, from its stream
   const t = Date.now();
   // ADR 0026 amendment 1 (proposed): a first dead row releases the worker's leases unless a restart keeps them (keep_leases).
   const firstDead = merged.state === 'dead' && !(prev && prev.state === 'dead');

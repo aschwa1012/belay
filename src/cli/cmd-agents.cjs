@@ -242,7 +242,7 @@ function workerRow(w, tasksById, dataDir, { now, pending, leaseTaskOf = new Map(
     model: w.model != null ? w.model : ctx.model_seen, model_seen: ctx.model_seen, effort: nn(w.effort_requested), effort_is: 'requested',
     state: nn(w.state), context_tokens: ctx.context_tokens, context_window: ctx.context_window, context_pct: ctx.context_pct,
     window_source: ctx.context_window != null ? 'own result line' : null,
-    cost_usd: rowCost, cost_source: rowCost != null ? 'worker row cost_usd' : null,
+    cost_estimated: !!w.cost_source, cost_usd: rowCost, cost_source: rowCost == null ? null : w.cost_source ? `worker row cost_usd (${w.cost_source === 'transcript_estimate' ? 'estimated from the stream: no result event' : 'reported, plus an estimate from the stream after the last result'})` : 'worker row cost_usd',
     ...D.workerDisplay(w, { pending: pending.has(w.id), stall: stallAge(w, dataDir, now) }), cache: D.cacheOf(scan, now),
     stream_path: streamPath, stream_exists: !!scan.exists, stream_error: scan.error, result_ts_ms: scan.result_ts_ms,
   };
@@ -267,6 +267,7 @@ function footerOf(agents) {
     agents: agents.length,
     total_cost_usd: costed.length ? costed.reduce((s, a) => s + a.cost_usd, 0) : null,
     cost_not_recorded: agents.length - costed.length,
+    cost_estimated_agents: agents.filter((a) => a.cost_estimated).length,
     as_of_ms: stamped.length ? Math.max(...stamped) : null,
     as_of_source: 'timestamp of the last stream line before the newest result line counted; a result line carries none of its own',
     highest_context_pct: agents.reduce((m, a) => (a.context_pct != null && (m == null || a.context_pct > m) ? a.context_pct : m), null),
@@ -297,7 +298,7 @@ function renderText(rc) {
   if (!rc.agents.length) return '(no agents)\n';
   const f = rc.footer;
   const total = f.total_cost_usd == null ? 'not recorded' : P.money(f.total_cost_usd);
-  lines.push(`run cost ${total} over ${f.agents} agents, ${f.cost_not_recorded} with cost not recorded, as of ${P.iso(f.as_of_ms)}`);
+  lines.push(`run cost ${total} over ${f.agents} agents, ${f.cost_not_recorded} with cost not recorded${f.cost_estimated_agents ? `, ${f.cost_estimated_agents} with cost estimated from the stream` : ''}, as of ${P.iso(f.as_of_ms)}`);
   lines.push('');
   return lines.join('\n');
 }

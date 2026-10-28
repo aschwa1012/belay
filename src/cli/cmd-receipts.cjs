@@ -81,7 +81,7 @@ function workerView(w, tasksById, dataDir) {
     id: w.id, substrate: nn(w.substrate), state: nn(w.state), model: nn(w.model), turns: nn(w.turns),
     input_tokens: nn(w.input_tokens), output_tokens: nn(w.output_tokens),
     cache_read_tokens: nn(w.cache_read_tokens), cache_creation_tokens: nn(w.cache_creation_tokens),
-    cost_usd: nn(w.cost_usd), tool_calls: nn(w.tool_calls),
+    cost_usd: nn(w.cost_usd), cost_source: nn(w.cost_source), cost_estimate: nn(w.cost_estimate), tool_calls: nn(w.tool_calls),
     ...wall(w.started_at, w.exited_at),
     exit_code: nn(w.exit_code), base_sha: nn(w.base_sha), head_sha: nn(w.head_sha), task,
     ...(compactionsOf(dataDir, w.id)), // ADR 0007 decision 7: only a worker with compactions carries the key
@@ -105,6 +105,10 @@ function totalsOf(orchestrator, workers) {
     totals[f] = sum;
     totals.not_recorded[f] = missing;
   }
+  // Dollars of the cost total that were estimated from a stream (a worker whose life ended with no result event), never reported.
+  const est = workers.filter(w => w.cost_estimate && typeof w.cost_estimate.usd === 'number');
+  totals.cost_estimated_usd = est.length ? est.reduce((a, w) => a + w.cost_estimate.usd, 0) : null;
+  totals.cost_estimated_workers = est.length;
   return totals;
 }
 
@@ -127,6 +131,14 @@ function clean(x, cap = 80) {
 const v = (x, cap) => (x === null || x === undefined ? 'not recorded' : clean(x, cap));
 const iso = (ms) => (ms == null ? 'not recorded' : new Date(Number(ms)).toISOString());
 const wallText = (a) => (a.live ? 'live' : (a.wall_ms === null ? 'not recorded' : `${a.wall_ms}ms`));
+
+// A worker whose cost was not all reported says so on its own line.
+function costNote(w) {
+  if (!w.cost_source) return '';
+  const e = w.cost_estimate;
+  const part = e && typeof e.usd === 'number' ? `${money(e.usd)} of it ` : '';
+  return ` (${part}${w.cost_source === 'transcript_estimate' ? 'estimated from the stream: no result event' : 'estimated from the stream after the last result'})`;
+}
 
 // At most 4 decimals, trailing zeros trimmed; a value that rounds to zero prints 0.0000.
 function money(x) {
@@ -199,7 +211,7 @@ function renderText(rc) {
   ];
   for (const w of rc.workers) {
     lines.push(`worker ${v(w.id)}  ${w.substrate == null ? '' : clean(w.substrate)}  state ${v(w.state)}  exit ${v(w.exit_code)}`);
-    lines.push(`  model ${v(w.model)}  turns ${v(w.turns)}  wall ${wallText(w)}  cost ${money(w.cost_usd)}  tools ${v(w.tool_calls)}`);
+    lines.push(`  model ${v(w.model)}  turns ${v(w.turns)}  wall ${wallText(w)}  cost ${money(w.cost_usd)}${costNote(w)}  tools ${v(w.tool_calls)}`);
     lines.push(tokensLine(w));
     if (w.compactions) lines.push(`  compactions ${w.compactions.count} (harness ${w.compactions.harness}, auto ${w.compactions.auto})  last ${v(w.compactions.last_pre_tokens)} -> ${v(w.compactions.last_post_tokens)} tokens  max hook ${w.compactions.max_hook_bytes} B`);
     lines.push(`  base ${v(w.base_sha)}  head ${v(w.head_sha)}`);
@@ -213,7 +225,7 @@ function renderText(rc) {
   for (const t of rc.unassigned_tasks) lines.push(`unassigned task ${v(t.id)} (${v(t.state)})  checks ${checksText(t.checks)}`);
   const t = rc.totals;
   const miss = SUM_FIELDS.filter(f => t.not_recorded[f] > 0).map(f => `${f} ${t.not_recorded[f]}`).join(', ');
-  lines.push(`totals over ${t.agents} agents  cost ${money(t.cost_usd)}  tools ${v(t.tool_calls)}`);
+  lines.push(`totals over ${t.agents} agents  cost ${money(t.cost_usd)}${t.cost_estimated_workers ? ` (${money(t.cost_estimated_usd)} of it estimated from the streams of ${t.cost_estimated_workers} worker${t.cost_estimated_workers === 1 ? '' : 's'}, no result event)` : ''}  tools ${v(t.tool_calls)}`);
   lines.push(`  in ${v(t.input_tokens)}  out ${v(t.output_tokens)}  cache-read ${v(t.cache_read_tokens)}  cache-create ${v(t.cache_creation_tokens)}`);
   if (miss) lines.push(`  not recorded: ${miss}`);
   lines.push('');

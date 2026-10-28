@@ -111,8 +111,12 @@ async function adopt({ core, workerId, dataDir }) {
   // W2-3: every receipt column comes from the row; head_sha is asked of git again if the adopted worker later settles (SF1).
   w.indexQueries = Array.isArray(row.memory_queries) ? row.memory_queries : [];
   w.initModel = row.model || null;
-  w.cacheReadTokens = row.cache_read_tokens || 0;
-  w.cacheCreationTokens = row.cache_creation_tokens || 0;
+  // A stopped or dead row may carry an estimate for a turn that never reported (ADR 0062, proposed): this record counts only
+  // what was reported, so the core can add the estimate again, once, to the next terminal row.
+  const est = require('../core/cost-estimate.cjs').estimateOf(row) || {};
+  const less = (x, k) => Math.max(0, (x || 0) - (typeof est[k] === 'number' ? est[k] : 0));
+  w.cacheReadTokens = less(row.cache_read_tokens, 'cache_read_tokens');
+  w.cacheCreationTokens = less(row.cache_creation_tokens, 'cache_creation_tokens');
   w.toolCalls = row.tool_calls || 0;
   w.baseSha = row.base_sha || null;
   w.baseError = row.base_error || null;
@@ -127,9 +131,9 @@ async function adopt({ core, workerId, dataDir }) {
   w.startedAt = row.started_at || w.startedAt;
   w.lastEventAt = row.last_event_at || null;
   w.turns = row.turns || 0;
-  w.inputTokens = row.input_tokens || 0;
-  w.outputTokens = row.output_tokens || 0;
-  w.costUsd = row.cost_usd || 0;
+  w.inputTokens = less(row.input_tokens, 'input_tokens');
+  w.outputTokens = less(row.output_tokens, 'output_tokens');
+  w.costUsd = less(row.cost_usd, 'usd');
   w.exitedAt = row.exited_at || null;
   w.exitCode = row.exit_code == null ? null : row.exit_code;
   w.exitSignal = row.exit_signal == null ? null : row.exit_signal;
