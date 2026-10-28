@@ -93,7 +93,7 @@ test('interactive prompt: both lever placeholders are present and substituteLeve
   assert.strictEqual(r.substituted.max_fix_rounds, 2);
   assert.strictEqual(r.substituted.fix_cutoff_rule, 1);
   assert.ok(!/\{\{[a-z_]+\}\}/.test(r.text), 'no placeholder left');
-  assert.match(r.text, /refuted after 3\s+fix rounds/);
+  assert.match(r.text, /after 3 fix rounds belay still creates the fix/);
 });
 
 test('interactive prompt: apart from three named ranges the twin equals orchestrator.md section for section', () => {
@@ -120,7 +120,7 @@ test('interactive prompt: apart from three named ranges the twin equals orchestr
   const checking = swap(hs.get('## Checking the work')), review = swap(hs.get('## Review tasks'));
   assert.strictEqual(checking.concat(review).filter((l, i) => l !== hs.get('## Checking the work').concat(hs.get('## Review tasks'))[i]).length, WAKE_PHRASES.length, 'each phrase replaced once');
   assert.deepStrictEqual(ts.get('## Checking the work'), checking);
-  const cut = (L) => L.findIndex((l) => l.startsWith('     {{max_fix_rounds}} fix rounds per work task'));
+  const cut = (L) => L.findIndex((l) => l.startsWith('     {{max_fix_rounds}} per work task'));
   const iH = cut(review), iT = cut(ts.get('## Review tasks'));
   assert.ok(iH > 0 && iH === iT, 'the cutoff sentence starts at the same line');
   assert.deepStrictEqual(ts.get('## Review tasks').slice(0, iT), review.slice(0, iH), 'Review tasks up to the cutoff sentence');
@@ -162,15 +162,15 @@ test('interactive prompt: the sentence test can fail (the twin rendered in headl
 
 test('headless substitution output is pinned byte for byte (the default mode is unchanged)', () => {
   const lv = { max_fix_rounds: 2, fix_cutoff: 'orchestrator' };
-  const common = 'You may stop fix rounds before the cap, only towards stop-and-surface (end the run and name the open blocking findings for the human), '
+  const common = 'You may stop fix rounds before the fix-round limit, only towards stop-and-surface (end the run and name the open blocking findings for the human), '
     + 'and only when one of these holds: the same blocking finding survived a fix round; a fix round introduced a new regression; '
     + 'the fix needs files outside the task\'s owned set';
-  const tail = '. Name the condition and its evidence when you close. Never extend past the cap and never report a refuted step as passing or mark it done.';
+  const tail = '. Name the condition and its evidence when you close. Never report a refuted step as passing or mark it done.';
   const want0 = `${common}${tail} The run has no time bound.`;
   const wantT = `${common}; the run's time bound (600000 ms from its start) is near, judged from the waited_ms your worker_wait answers report${tail}`;
   assert.strictEqual(cutoffRule('orchestrator', 0), want0);
   assert.strictEqual(cutoffRule('orchestrator', 600000), wantT);
-  assert.strictEqual(cutoffRule('cap-only', 0), 'Do not stop fix rounds before the cap.');
+  assert.strictEqual(cutoffRule('cap-only', 0), 'Do not stop fix rounds before the fix-round limit.');
   for (const call of [(t, l, n) => substituteLevers(t, l, n), (t, l, n) => substituteLevers(t, l, n, {}), (t, l, n) => substituteLevers(t, l, n, { mode: 'headless' })]) {
     assert.deepStrictEqual(call('{{fix_cutoff_rule}}|{{max_fix_rounds}}', lv, 0), { text: `${want0}|2`, substituted: { max_fix_rounds: 1, fix_cutoff_rule: 1 } });
     assert.strictEqual(call('{{fix_cutoff_rule}}', lv, 600000).text, wantT);

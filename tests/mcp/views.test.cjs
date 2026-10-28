@@ -304,3 +304,19 @@ test('wording audit: task_assign shows the lease it took as a lease; fix_from_re
   assert.ok(Buffer.byteLength(JSON.stringify(fix)) < Buffer.byteLength(JSON.stringify(fixRow)) / 2);
   assert.strictEqual(await V.viewed('fix_from_review', { review_id: 'r1', view: 'debug' }, async () => fixRow), fixRow);
 });
+
+test('fix_notice reaches the orchestrator through task_create and fix_from_review (compact view), and a debug view keeps it', async () => {
+  const fixRow = { ...row({ id: 'fix3', state: 'open', results: null, handoff: null }), seq: 2, repairs: 't1', depends_on: ['t1'], files_owned: ['a.js'], fix_notice: 'task t1 now has 3 fix tasks in this run, past max_fix_rounds 2' };
+  for (const tool of ['task_create', 'fix_from_review']) {
+    const out = await V.viewed(tool, tool === 'task_create' ? { spec: 's', repairs: 't1' } : { review_id: 'r1' }, async () => fixRow);
+    assert.strictEqual(out.fix_notice, fixRow.fix_notice, tool);
+  }
+  const plain = await V.viewed('task_create', { spec: 's' }, async () => ({ ...fixRow, fix_notice: undefined }));
+  assert.ok(!('fix_notice' in JSON.parse(JSON.stringify(plain))));
+});
+
+test('a stand-down shows in the listing row with its lease and reason, and no field names', () => {
+  const r = row();
+  const s = V.compactTask({ ...r, handoff: { result: null, by: 'w1', at: 9, lease_id: 'l3', stood_down: 'cannot build' } });
+  assert.deepStrictEqual(s.handoff, { by: 'w1', at: 9, lease_id: 'l3', stood_down: 'cannot build', fields: [] });
+});

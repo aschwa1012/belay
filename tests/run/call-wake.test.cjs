@@ -31,7 +31,6 @@ test('the headless run stays open while a detached task_evaluate runs, and the o
   let reads = 0;
   core.memory = { ...(core.memory || {}), events: async () => {
     reads += 1;
-    if (reads < 2) return { events: [] };
     return { events: reads < 6 ? [detached('k1', 'task_evaluate', ['t1'], startedAt)] : [detached('k1', 'task_evaluate', ['t1'], startedAt), ended('k1', ['t1'])] };
   } };
   core.task = { ...(core.task || {}), list: async () => ({ tasks: [] }), get: async () => ({ id: 't1', run_id: RUN, state: 'open', results: { evaluated_at: startedAt + 5, passed: false, executable: true, checks: [{ kind: 'command', argv: ['npm', 'test'], passed: false, exit_code: 1 }] } }) };

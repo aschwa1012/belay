@@ -20,7 +20,7 @@ before(async () => {
   dir = sandbox();
   repo = makeRepo(dir);
   orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
-  await orch.run.attach({ adapter_pid: process.pid, project_dir: repo, max_fix_rounds: 3 });
+  await orch.run.attach({ adapter_pid: process.pid, project_dir: repo, fix_hard_cap: 3 });
 });
 
 after(async () => {
@@ -102,7 +102,7 @@ test('three fix rounds in a tree: each fix is worked in the work\'s tree, on its
     fixes.push(f);
     judged = f;
   }
-  // The last fix, too, is taken by the same coder and judged in the shared tree; a fourth fix is past max_fix_rounds 3.
+  // The last fix, too, is taken by the same coder and judged in the shared tree; a fourth fix is past fix_hard_cap 3.
   await rejectsCode(orch.task.fixFromReview({ review_id: (await round(judged, 4)).id }), 'E_FIX_ROUNDS');
 });
 

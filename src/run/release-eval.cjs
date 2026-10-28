@@ -14,7 +14,7 @@
 const crypto = require('node:crypto');
 
 const WAKE_TEXT_MAX = 221;
-const PENDING_MAX_MS = 900000; // a watched evaluation that never lands (cancelled, or the owner gone) is forgotten after this
+const PENDING_MAX_MS = 900000; // a watched evaluation that never lands (cancelled, or the owner gone) is forgotten after this, unless its worker is live: a release evaluation may queue for a slot and then run 540 s
 // ADR 0058 amendment 4: how long a turn_end wake waits for its hand-backs' evaluation; BELAY_RELEASE_WAKE_HOLD_MS (ms) overrides it.
 const RELEASE_WAKE_HOLD_MS = 30000;
 const holdMs = () => (/^\d+$/.test(String(process.env.BELAY_RELEASE_WAKE_HOLD_MS || '').trim()) ? Number(process.env.BELAY_RELEASE_WAKE_HOLD_MS) : RELEASE_WAKE_HOLD_MS);
@@ -24,12 +24,29 @@ const beside = (c) => { const n = Array.isArray(c.concurrent) ? c.concurrent.len
 const failedKinds = (row) => ((row.results && row.results.checks) || []).filter((c) => !c.passed)
   .map((c) => (c.kind === 'command' ? `command ${Array.isArray(c.argv) ? c.argv.slice(0, 3).join(' ') : '?'}${c.exit_code != null ? ` exit ${c.exit_code}` : ''}${beside(c)}` : c.kind));
 
-function summaryOf(row) {
+// A refuted review's wake names the fix rounds the reviewed work has used in this run and the run's max_fix_rounds, read from the work's derived `review` (facts, so the orchestrator sees the count before it asks for another fix).
+function fixRoundsOf(row, byId) {
   const r = row.results || {};
-  return { task_id: row.id, state: row.state, passed: !!r.passed, executable: !!r.executable, checks: ((r.checks) || []).length, failing: failedKinds(row), ...(r.flaky ? { flaky: true } : {}), ...(r.uncommitted ? { uncommitted: true } : {}), ...(r.queued ? { queued: r.queued } : {}) };
+  const dep = byId && Array.isArray(row.depends_on) && row.depends_on.length === 1 ? byId.get(row.depends_on[0]) : null;
+  const rv = dep && dep.review;
+  if (!rv || r.passed || !r.executable || !(r.checks || []).some((c) => c.kind === 'verdict') || rv.max_fix_rounds == null) return null;
+  return { work: dep.id, used: rv.fix_rounds_used, max: rv.max_fix_rounds, hard: rv.fix_hard_cap == null ? null : rv.fix_hard_cap };
 }
 
-const unevaluated = (t, runId, workerId) => t.run_id === runId && t.state === 'released' && t.handoff && t.handoff.by === workerId
+// The work a refuted review judged, read for the turn's own summary (worker_wait): a Map of that one task, or null.
+async function workOf(core, row) {
+  const r = row.results || {};
+  if (r.passed || !r.executable || !Array.isArray(row.depends_on) || row.depends_on.length !== 1 || typeof core.task.get !== 'function') return null;
+  try { const t = await core.task.get({ task_id: row.depends_on[0] }); return t ? new Map([[t.id, t]]) : null; } catch { return null; }
+}
+
+function summaryOf(row, byId) {
+  const r = row.results || {};
+  const fr = fixRoundsOf(row, byId);
+  return { task_id: row.id, state: row.state, passed: !!r.passed, executable: !!r.executable, checks: ((r.checks) || []).length, failing: failedKinds(row), ...(r.flaky ? { flaky: true } : {}), ...(r.uncommitted ? { uncommitted: true } : {}), ...(r.queued ? { queued: r.queued } : {}), ...(fr ? { fix_rounds: fr } : {}) };
+}
+
+const unevaluated = (t, runId, workerId) => t.run_id === runId && t.state === 'released' && t.handoff && t.handoff.by === workerId && !t.handoff.stood_down
   && !(t.results && Number(t.results.evaluated_at) >= Number(t.handoff.at));
 
 // Why a hand-back's evaluation may not start: a lifecycle operation, a park or a stop holds the worker, or the run manager closes.
@@ -53,21 +70,32 @@ async function notePending(w, ctx) {
   return w.releaseIds;
 }
 
+// A release evaluation that ends without writing a result leaves the hand-back released and unevaluated. The run process polls from
+// another process and cannot see that, so the end is a ledger event (kind release_failed, ok 0, the code), the same cross-process
+// path call_detached/call_ended use; enrichWakes reads it, drops the watched entry and tells the orchestrator. Best effort: a write
+// that fails is dropped, and the entry is then forgotten by age once its worker is not live.
+function recordFailure(ctx, w, taskId, code, message, turn) {
+  const rec = ctx.core && ctx.core.memory && ctx.core.memory.recordEvent;
+  if (typeof rec !== 'function') return Promise.resolve();
+  return Promise.resolve().then(() => rec({ kind: 'release_failed', ok: 0, code: String(code || 'E_INTERNAL'), worker_id: w.id, task_id: taskId, message: JSON.stringify({ turn, by: String(message || '').slice(0, 150) }) })).catch(() => {});
+}
+
 async function run(w, ctx, ev) {
   const core = ctx.core;
   const out = [];
   // One evaluation at a time per worker, in order: a hand-back released while this runs joins ev.task_ids (startRelease).
   for (ev.next = 0; ev.next < ev.task_ids.length; ev.next += 1) {
     const t = { id: ev.task_ids[ev.next] };
-    if (ev.cancelled) { out.push({ task_id: t.id, cancelled: true, by: ev.cancelled }); continue; }
+    if (ev.cancelled) { out.push({ task_id: t.id, cancelled: true, by: ev.cancelled }); recordFailure(ctx, w, t.id, 'E_CANCELLED', ev.cancelled, ev.turn); continue; }
     try {
       const row = await core.task.evaluate({ task_id: t.id, worktree: w.worktree, trigger: 'release', cancel_key: ev.key });
-      out.push(summaryOf(row));
+      out.push(summaryOf(row, await workOf(core, row)));
       // ADR 0058 decision 8: the stop waits for the worker's queue itself, and this is not on it.
       if (row.state === 'done' && ctx.stopIdleOnDone && ctx.manager && !ev.cancelled) { out[out.length - 1].stop_idle_on_done = true; w.idleStopping = ctx.manager.idleStop(row).then((r) => { if (r) w.idleStop = r; }, () => {}); }
     } catch (e) {
+      recordFailure(ctx, w, t.id, e && e.detail && e.detail.cancelled ? 'E_CANCELLED' : (e && e.code) || 'E_INTERNAL', (e && e.message) || e, ev.turn);
       out.push(e && e.detail && e.detail.cancelled ? { task_id: t.id, cancelled: true, by: e.detail.by || ev.cancelled }
-        : { task_id: t.id, error: (e && e.code) || 'E_INTERNAL', ...(e && e.detail && e.detail.queued ? { queued_refused: true } : {}), message: String((e && e.message) || e).slice(0, 200) });
+        : { task_id: t.id, error: (e && e.code) || 'E_INTERNAL', message: String((e && e.message) || e).slice(0, 200) });
     }
   }
   ev.done = true; // in the same tick the loop ends: from here a later hand-back starts a new chain instead of joining this one
@@ -126,10 +154,10 @@ function clause(evs, room) {
   // An evaluation that waited for a slot (max_parallel_evaluations) says so: queued behind `ahead` others, `waited_ms` before it ran.
   const waited = (e) => (e.queued ? ` (queued behind ${e.queued.ahead}, waited ${Math.round(e.queued.waited_ms / 1000)} s)` : '');
   const parts = evs.map((e) => `${one(e)}${waited(e)}`);
-  function one(e) { return (e.queued_refused ? `task ${e.task_id} not evaluated at release: it waited too long for a slot (max_parallel_evaluations); call task_evaluate once the running evaluations finish`
+  function one(e) { return (e.stood_down ? `task ${e.task_id}: the worker stood down with no result (${e.stood_down}); nothing was evaluated`
     : e.error === 'E_BUSY' ? `task ${e.task_id} not evaluated at release: another evaluation of it is running`
-    : e.error ? `task ${e.task_id} could not be evaluated at release (${e.error})`
-    : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}` : `not done; failing: ${e.failing.join(', ') || 'no executable check'}`}`); }
+    : e.error ? `task ${e.task_id} could not be evaluated at release (${e.error}); call task_evaluate to run it`
+    : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}` : `not done${e.fix_rounds ? `; fix rounds ${e.fix_rounds.used} of max ${e.fix_rounds.max}${e.fix_rounds.hard == null ? '' : `, hard cap ${e.fix_rounds.hard}`}` : ''}; failing: ${e.failing.join(', ') || 'no executable check'}`}`); }
   return cut(` ${parts.join('; ')}.`, room);
 }
 
@@ -151,7 +179,9 @@ function turnEndText(head, tail, evs, evaluating) {
 // rides on that one wake instead of a second; past `holdMs` it goes out saying `evaluating`, and one `evaluated` wake follows when
 // the result lands, so the result never waits on a call the orchestrator may not make. Any other event about the worker sends its
 // held wake first, so a worker's wakes keep their order. `holdMs` 0 holds nothing. `now` is the clock, for a test to set.
-async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.now } = {}) {
+// `workers` (the poll's worker rows, optional): a watched evaluation whose worker is live is not forgotten by age, because a queued release
+// evaluation waits for its slot without bound (ADR 0061 amendment); it leaves `pending` when it lands, is no longer awaiting evaluation, or its worker is gone.
+async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.now, workers = null } = {}) {
   const pending = seen.pending || (seen.pending = new Map());
   const held = seen.held || (seen.held = new Map());
   if (!events.some((e) => e.event === 'turn_end') && !pending.size && !held.size) return events;
@@ -160,13 +190,21 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
   if (!tasks) { const flushed = [...held.values()].map((h) => h.ev); held.clear(); return flushed.concat(events); }
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const landed = (t) => t.results && t.results.trigger === 'release' && seen.get(t.id) !== t.results.evaluated_at && (!t.handoff || Number(t.results.evaluated_at) >= Number(t.handoff.at));
+  const fails = await releaseFailures(core, runId, seen, pending, held, events, tasks);
+  // A failure ends the attempt of its own turn: a hand-back gets a new attempt after every cancel or error, so a failure from an earlier turn
+  // (stale, not yet read) is not this attempt's. `turn` is the turn_end turn the attempt belongs to.
+  const failedOf = (t, turn) => t.handoff && fails.find((f) => f.task_id === t.id && !seen.failedIds.has(f.id) && Number(f.written_at) >= Number(t.handoff.at) && !(Number(f.turn) < Number(turn)));
+  const failure = (f) => { seen.failedIds.add(f.id); return f.code === 'E_CANCELLED' ? null : { task_id: f.task_id, error: f.code, seq: Number(f.seq) || 0 }; }; // a cancel is the lifecycle call's own doing: no wake
   const t0 = now();
+  const liveWorkers = workers ? new Set(workers.filter((r) => r.run_id === runId && r.pid_alive === true && !["stopped", "dead", "paused"].includes(r.state)).map((r) => r.id)) : null;
   const out = [];
   // A held wake takes what has landed since; a hand-back no longer awaiting evaluation (cancelled, re-assigned) is dropped from it.
   const settle = (h) => {
     h.ids = h.ids.filter((id) => {
       const t = byId.get(id);
-      if (t && landed(t)) { seen.set(id, t.results.evaluated_at); pending.delete(id); h.evs.push(summaryOf(t)); return false; }
+      if (t && landed(t)) { seen.set(id, t.results.evaluated_at); pending.delete(id); h.evs.push(summaryOf(t, byId)); return false; }
+      const f = t && unevaluated(t, runId, h.ev.worker_id) && failedOf(t, h.ev.turn);
+      if (f) { pending.delete(id); const s = failure(f); if (s) h.evs.push(s); return false; }
       if (!t || !unevaluated(t, runId, h.ev.worker_id)) { pending.delete(id); return false; }
       return true;
     });
@@ -185,7 +223,8 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     const evs = []; const ing = [];
     for (const t of tasks) {
       if (t.run_id !== runId || !t.handoff || t.handoff.by !== ev.worker_id) continue;
-      if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); evs.push(summaryOf(t)); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: t0 }); ing.push(t.id); }
+      if (t.handoff.stood_down) { const key = `${t.id}:${t.handoff.at}`; if (!(seen.stood = seen.stood || new Set()).has(key) && t.state === 'released') { seen.stood.add(key); evs.push({ task_id: t.id, stood_down: t.handoff.stood_down }); } continue; } // a stand-down is a fact for the wake, once
+      if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); evs.push(summaryOf(t, byId)); } else if (unevaluated(t, runId, ev.worker_id) && failedOf(t, ev.turn)) { const s = failure(failedOf(t, ev.turn)); if (s) evs.push(s); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: t0, turn: ev.turn }); ing.push(t.id); }
     }
     if (ing.length && holdMs > 0) { held.set(ev.worker_id, { ev, evs, ids: ing, since: t0 }); continue; }
     if (evs.length) ev.evaluated = evs;
@@ -203,15 +242,27 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     if (t && landed(t)) {
       seen.set(id, t.results.evaluated_at); pending.delete(id);
       if (!follow.has(p.worker_id)) follow.set(p.worker_id, []);
-      follow.get(p.worker_id).push(summaryOf(t));
-    } else if (!t || !unevaluated(t, runId, p.worker_id) || t0 - p.since > PENDING_MAX_MS) pending.delete(id);
+      follow.get(p.worker_id).push(summaryOf(t, byId));
+    } else if (t && unevaluated(t, runId, p.worker_id) && failedOf(t, p.turn)) {
+      pending.delete(id);
+      const s = failure(failedOf(t, p.turn));
+      if (s) { if (!follow.has(p.worker_id)) follow.set(p.worker_id, []); follow.get(p.worker_id).push(s); }
+    } else if (!t || !unevaluated(t, runId, p.worker_id) || (t0 - p.since > PENDING_MAX_MS && !(liveWorkers && liveWorkers.has(p.worker_id)))) pending.delete(id);
   }
   for (const [wid, evs] of follow) {
     const text = cut(`belay: worker ${wid}'s hand-back:${clause(evs, WAKE_TEXT_MAX)}`, WAKE_TEXT_MAX);
-    const seq = Math.max(...evs.map((e) => Number(seen.get(e.task_id)) || 0));
+    const seq = Math.max(...evs.map((e) => Number(seen.get(e.task_id)) || Number(e.seq) || 0));
     out.push({ event: 'evaluated', worker_id: `eval:${evs[0].task_id}`, turn: 0, seq, task_id: evs[0].task_id, ...(evs.length > 1 ? { task_ids: evs.map((e) => e.task_id) } : {}), text });
   }
   return out;
+}
+
+// The release_failed events of this run, read only when a hand-back is awaiting its evaluation (nothing is read otherwise).
+async function releaseFailures(core, runId, seen, pending, held, events, tasks) {
+  if (!seen.failedIds) seen.failedIds = new Set();
+  const awaiting = pending.size || held.size || (events.some((e) => e.event === 'turn_end') && tasks.some((t) => t.run_id === runId && t.state === 'released' && t.handoff));
+  if (!awaiting || !core.memory || typeof core.memory.events !== 'function') return [];
+  try { return (((await core.memory.events({ run_id: runId, kinds: ['release_failed'] })) || {}).events || []).filter((e) => e.kind === 'release_failed').map((e) => { let m = {}; try { m = JSON.parse(e.message) || {}; } catch { /* no turn */ } return { ...e, turn: m.turn !== undefined ? m.turn : e.turn }; }); } catch { return []; }
 }
 
 // The headless idle close (orchestrator.cjs) holds while a watched evaluation runs for a worker of this run that is still live:
