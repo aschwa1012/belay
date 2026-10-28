@@ -12,6 +12,7 @@ const path = require('node:path');
 
 const { createRunManager } = require('../../src/run/index.cjs');
 const CP = require('../../src/run/compaction.cjs');
+const { PROCESS_LINE } = require('../../src/run/task-body.cjs');
 const { createFakeCore } = require('./fake-core.cjs');
 const { cleanup } = require('../core/helpers.cjs');
 
@@ -90,7 +91,7 @@ test('BL1, ADR 0058: a message during a harness /compact is queued, written nowh
       const res = await m.wait({ worker_ids: ['wb'], timeout_ms: 20000 });
       assert.deepStrictEqual([res.event, res.turn], ['turn_end', 2]);
       assert.strictEqual(records(sb, 'wb').length >= 1, true);
-      assert.deepStrictEqual(lines(recv).map((r) => r.text).filter((t) => !t.startsWith('/compact')).slice(0, 2), ['one', 'two\n\nthree'], 'delivered as one turn, in order');
+      assert.deepStrictEqual(lines(recv).map((r) => r.text).filter((t) => !t.startsWith('/compact')).slice(0, 2), ['one' + PROCESS_LINE, 'two\n\nthree'], 'delivered as one turn, in order (a spawn ends its first message with the process line)');
       const log = lines(`${sb.data}/workers/wb/queued-messages.jsonl`).map((r) => r.event);
       assert.deepStrictEqual(log, ['queued', 'queued', 'delivered']);
     });

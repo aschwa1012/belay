@@ -41,6 +41,12 @@ async function facts(getTask, assigned) {
   return lines.length ? `\n\n${lines.join('\n')}` : '';
 }
 
+// The fields the task's acceptance requires in the hand-back's result, as one short true line, or ''.
+function requiredLine(task) {
+  const req = task && task.acceptance && task.acceptance.handoff && task.acceptance.handoff.required;
+  return Array.isArray(req) && req.length ? ` The result must carry ${req.join(', ')}, each non-empty; lease_release refuses it otherwise.` : '';
+}
+
 // The rule for the task in this assign answer, or '' when there is no lease to name. A coder or fixer in the task's own belay
 // worktree commits before it hands back (integrate merges a commit of what was judged); a reviewer never commits in the tree it
 // judges, and hands back a verdict.
@@ -49,10 +55,10 @@ function rule(assigned, fact = '') {
   if (!lease) return '';
   const task = assigned.task || {};
   if (isVerdict(task)) {
-    return `\n\nWhen you are finished, call lease_release with lease_id ${lease} and result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [...] }.${fact}\n\n${reviewStandard()}`;
+    return `\n\nWhen you are finished, call lease_release with lease_id ${lease} and result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [...] }.${requiredLine(task)}${fact}\n\n${reviewStandard()}`;
   }
   const commits = !!(task.worktree && task.worktree.path && !task.worktree.removed_at);
-  return `\n\nWhen you are finished, ${commits ? 'commit your work in your worktree, then ' : ''}call lease_release with lease_id ${lease} and a result object (branch, head, tests, findings).`;
+  return `\n\nWhen you are finished, ${commits ? 'commit your work in your worktree, then ' : ''}call lease_release with lease_id ${lease} and a result object (branch, head, tests, findings).${requiredLine(task)}`;
 }
 
 module.exports = { rule, facts, reviewStandard, isVerdict, STANDARD_FILE };

@@ -76,3 +76,44 @@ test('the headless idle close holds for a watched evaluation of a live worker of
   assert.deepStrictEqual(RE.evaluatingHolds(seen, rows, 'r'), ['eval:t1']);
   assert.deepStrictEqual(RE.evaluatingHolds(new Map(), rows, 'r'), []);
 });
+
+test('a refuted review wakes and the worker_wait answer carry the work fix rounds; with UUID ids and a long worker id the fact survives the cut', async () => {
+  const { capText, byteLength } = await mod();
+  const verdict = { kind: 'verdict', executable: true, passed: false };
+  const WORK = '1c2d3e4f-0000-4000-8000-aaaaaaaaaaaa';
+  const WID = 'T01-reviewer-1';
+  const review = { id: UUID, run_id: 'r', state: 'released', depends_on: [WORK], handoff: { by: WID, at: 1 }, results: { trigger: 'release', evaluated_at: 2, passed: false, executable: true, checks: [verdict, ...failing(3).map((x) => ({ kind: 'command', passed: false, argv: ['node', x], exit_code: 1 }))] } };
+  const work = { id: WORK, run_id: 'r', state: 'done', review: { state: 'refuted', rounds: 2, fix_rounds_used: 2, max_fix_rounds: 2 } };
+  const core = { task: { list: async () => ({ tasks: [review, work] }) } };
+  const seen = new Map(); seen.pending = new Map([[review.id, { worker_id: WID, since: Date.now() }]]);
+  const text = wakeText((await RE.enrichWakes(core, 'r', [], seen))[0]);
+  assert.match(text, /not done; fix rounds 2 of max 2; failing: /, text);
+  assert.ok(byteLength(text) <= RE.WAKE_TEXT_MAX && capText(text) === text, text);
+  const capped = { ...work, review: { ...work.review, fix_hard_cap: 5 } };
+  const s3 = new Map(); s3.pending = new Map([[review.id, { worker_id: WID, since: Date.now() }]]);
+  const withCap = wakeText((await RE.enrichWakes({ task: { list: async () => ({ tasks: [review, capped] }) } }, 'r', [], s3))[0]);
+  assert.match(withCap, /fix rounds 2 of max 2, hard cap 5; failing: /, withCap);
+  assert.ok(byteLength(withCap) <= RE.WAKE_TEXT_MAX && capText(withCap) === withCap);
+  // a run that sets no max_fix_rounds says nothing about rounds
+  const none = { ...work, review: { ...work.review, max_fix_rounds: null } };
+  const s2 = new Map(); s2.pending = new Map([[review.id, { worker_id: WID, since: Date.now() }]]);
+  assert.ok(!/fix rounds/.test(wakeText((await RE.enrichWakes({ task: { list: async () => ({ tasks: [review, none] }) } }, 'r', [], s2))[0])));
+  // worker_wait: the turn's own evaluated summary (evalOf, which wait.cjs spreads into its answer) carries the count
+  const w = { id: WID, turns: 1, op: null, parkRequested: false, stopRequested: false, worktree: 'C:/x', releaseIds: { turn: 1, ids: [review.id] } };
+  const ctx = { runId: 'r', core: { task: { list: async () => ({ tasks: [] }), get: async () => work, evaluate: async () => review } } };
+  const ev = RE.startRelease(w, ctx);
+  await ev.promise;
+  assert.deepStrictEqual(RE.evalOf(w).evaluated[0].fix_rounds, { work: WORK, used: 2, max: 2, hard: null });
+});
+
+test('a stand-down reaches the orchestrator once, on the worker\'s turn_end, and is never evaluated', async () => {
+  const task = { id: 't9', run_id: 'r', state: 'released', handoff: { result: null, by: 'w1', at: 5, lease_id: 'L', stood_down: 'cannot build here' } };
+  assert.ok(!RE.unevaluated(task, 'r', 'w1'), 'no release evaluation for a stand-down');
+  const core = { task: { list: async () => ({ tasks: [task] }) } };
+  const seen = new Map();
+  const [ev] = await RE.enrichWakes(core, 'r', [{ worker_id: 'w1', event: 'turn_end', turn: 2 }], seen);
+  assert.deepStrictEqual(ev.evaluated, [{ task_id: 't9', stood_down: 'cannot build here' }]);
+  assert.match(wakeText(ev), /task t9: the worker stood down with no result \(cannot build here\); nothing was evaluated\./);
+  const [again] = await RE.enrichWakes(core, 'r', [{ worker_id: 'w1', event: 'turn_end', turn: 3 }], seen);
+  assert.ok(!again.evaluated, 'said once');
+});

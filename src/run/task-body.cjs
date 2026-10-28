@@ -6,4 +6,6 @@ function body(spec, prompt) {
   const p = typeof prompt === 'string' && prompt.trim() ? prompt : '';
   return s && p ? `${s}\n\n${p}` : s || p;
 }
-module.exports = { body };
+// The one standing line every worker's first message carries (a spawn and a fresh restart, which start a new session; a resume, a park-resume and a task_assign to a running worker do not repeat it).
+const PROCESS_LINE = '\n\nOther processes on this machine are not yours: stop a process only by its exact pid.';
+module.exports = { body, PROCESS_LINE };

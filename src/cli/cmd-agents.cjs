@@ -242,7 +242,7 @@ function workerRow(w, tasksById, dataDir, { now, pending, leaseTaskOf = new Map(
     model: w.model != null ? w.model : ctx.model_seen, model_seen: ctx.model_seen, effort: nn(w.effort_requested), effort_is: 'requested',
     state: nn(w.state), context_tokens: ctx.context_tokens, context_window: ctx.context_window, context_pct: ctx.context_pct,
     window_source: ctx.context_window != null ? 'own result line' : null,
-    cost_usd: rowCost, cost_source: rowCost != null ? 'worker row cost_usd' : null,
+    cost_estimated: !!w.cost_source, cost_usd: rowCost, cost_source: rowCost == null ? null : 'worker row cost_usd', ...estimatedCost(w, rowCost),
     ...D.workerDisplay(w, { pending: pending.has(w.id), stall: stallAge(w, dataDir, now) }), cache: D.cacheOf(scan, now),
     stream_path: streamPath, stream_exists: !!scan.exists, stream_error: scan.error, result_ts_ms: scan.result_ts_ms,
   };
@@ -260,6 +260,17 @@ function leaseTasksOf(tasks) {
   return out;
 }
 
+// The estimate for messages no result line reported, beside the reported cost and never inside it.
+function estimatedCost(w, rowCost) {
+  const e = w.cost_estimate && typeof w.cost_estimate === 'object' ? w.cost_estimate : null;
+  const est = e && typeof e.usd === 'number' ? e.usd : null;
+  return {
+    cost_estimated_usd: est, cost_estimated_source: w.cost_source ? 'estimated from the worker stream: messages no result line reported' : null,
+    cost_estimate_truncated: !!(e && e.truncated), cost_estimate_empty: !!(e && e.truncated && !e.messages),
+    cost_combined_usd: rowCost == null && est == null ? null : (rowCost || 0) + (est || 0),
+  };
+}
+
 function footerOf(agents) {
   const costed = agents.filter((a) => a.cost_usd != null);
   const stamped = agents.map((a) => a.result_ts_ms).filter((t) => t != null);
@@ -267,6 +278,9 @@ function footerOf(agents) {
     agents: agents.length,
     total_cost_usd: costed.length ? costed.reduce((s, a) => s + a.cost_usd, 0) : null,
     cost_not_recorded: agents.length - costed.length,
+    cost_estimated_agents: agents.filter((a) => a.cost_estimated).length,
+    total_cost_estimated_usd: agents.some((a) => a.cost_estimated_usd != null) ? agents.reduce((s, a) => s + (a.cost_estimated_usd || 0), 0) : null,
+    total_cost_combined_usd: agents.some((a) => a.cost_combined_usd != null) ? agents.reduce((s, a) => s + (a.cost_combined_usd || 0), 0) : null,
     as_of_ms: stamped.length ? Math.max(...stamped) : null,
     as_of_source: 'timestamp of the last stream line before the newest result line counted; a result line carries none of its own',
     highest_context_pct: agents.reduce((m, a) => (a.context_pct != null && (m == null || a.context_pct > m) ? a.context_pct : m), null),
@@ -292,12 +306,13 @@ function renderText(rc) {
     lines.push(...P.wrapLine('', head));
     lines.push(...P.wrapLine('  ', `task ${task}  cache ${D.cacheText(a.cache)}`));
     const cost = a.cost_usd == null ? (a.cost_note ? `cost not priced (${P.v(a.cost_note, 80)})` : 'cost not recorded') : `cost ${P.money(a.cost_usd)} (${a.cost_source})`;
-    lines.push(...P.wrapLine('  ', `${contextText(a)}  ${cost}`));
+    const estNote = a.cost_estimate_empty ? ' (not estimated: stream tail over 16 MB)' : a.cost_estimated ? ` + ${a.cost_estimated_usd == null ? 'not priced' : P.money(a.cost_estimated_usd)} estimated (${a.cost_estimated_source}${a.cost_estimate_truncated ? ', truncated' : ''}) = ${P.money(a.cost_combined_usd)}` : '';
+    lines.push(...P.wrapLine('  ', `${contextText(a)}  ${cost}${estNote}`));
   }
   if (!rc.agents.length) return '(no agents)\n';
   const f = rc.footer;
   const total = f.total_cost_usd == null ? 'not recorded' : P.money(f.total_cost_usd);
-  lines.push(`run cost ${total} over ${f.agents} agents, ${f.cost_not_recorded} with cost not recorded, as of ${P.iso(f.as_of_ms)}`);
+  lines.push(`run cost ${total}${f.cost_estimated_agents ? ' reported' : ''} over ${f.agents} agents, ${f.cost_not_recorded} with cost not recorded${f.cost_estimated_agents ? `, ${f.cost_estimated_agents} with an estimate from the stream (${f.total_cost_estimated_usd == null ? 'not priced' : P.money(f.total_cost_estimated_usd)}; combined ${P.money(f.total_cost_combined_usd)})` : ''}, as of ${P.iso(f.as_of_ms)}`);
   lines.push('');
   return lines.join('\n');
 }
@@ -319,7 +334,7 @@ async function run(ctx) {
       if (!chosen) {
         const message = parsed.runId ? `no run row exists for ${parsed.runId}` : 'no run rows exist';
         if (!parsed.runId) {
-          const empty = { run_id: null, run_id_source: source, mode: null, mode_source: 'no run', started_at_ms: null, paused_at_ms: null, ended_at_ms: null, tasks: { done: 0, total: 0 }, max_fix_rounds: null, agents: [], footer: footerOf([]) };
+          const empty = { run_id: null, run_id_source: source, mode: null, mode_source: 'no run', started_at_ms: null, paused_at_ms: null, ended_at_ms: null, tasks: { done: 0, total: 0 }, max_fix_rounds: null, fix_hard_cap: null, fix_hard_cap_source: null, agents: [], footer: footerOf([]) };
           return { code: 0, text: renderText(empty), json: empty };
         }
         return { code: 1, text: `belay agents: ${P.clean(message)}\n`, json: { error: { code: 'E_NOT_FOUND', message, run_id: parsed.runId } } };
@@ -342,6 +357,7 @@ async function run(ctx) {
         started_at_ms: nn(chosen.started_at), paused_at_ms: nn(chosen.paused_at), ended_at_ms: nn(chosen.ended_at),
         tasks: { done: runTasks.filter((t) => t.state === 'done').length, total: runTasks.length },
         max_fix_rounds: nn(chosen.max_fix_rounds), // the run row records the limit, not the rounds used
+        fix_hard_cap: nn(chosen.fix_hard_cap), fix_hard_cap_source: nn(chosen.fix_hard_cap_source),
         memory_notice: require('../core/memory-notice.cjs').noticeForRun(chosen, null), // this run's own notice (or null): the panel shows it, never the config's
         agents, footer: footerOf(agents), owner: core.ownerInfo(),
       };

@@ -43,12 +43,14 @@ async function closeEpochWorkers(E, runId, by, lifeClaiming) {
     if (!cur || cur.seq !== w.seq || (!codexIdle && pidAlive(cur.pid))) continue;
     // The head the row carries: git's answer, else the head the row already had (never overwritten with null).
     const headSha = head.sha == null ? (cur.head_sha == null ? null : cur.head_sha) : head.sha;
-    const { released } = appendDead(E, {
+    const values = {
       ...cur, state: 'dead', exited_at: cur.exited_at == null ? t : cur.exited_at,
       death_established_by: codexIdle ? CODEX_IDLE_BY
         : `run.end: pid ${cur.pid} not alive when the run ended; no adapter wrote its exit (ADR 0029)`,
       head_sha: headSha, head_error: headSha != null ? null : (cur.head_error == null ? null : cur.head_error), paused_at: null, paused_by: null,
-    }, by, t);
+    };
+    require('./cost-estimate.cjs').apply(E.dataDir, values); // no adapter wrote this life's end: its unreported last turn comes from the stream
+    const { released } = appendDead(E, values, by, t);
     marked.push({ worker_id: w.id, from_state: w.state, head_sha: headSha, ...(head.error ? { head_error: head.error } : {}), ...(released.length ? { leases_released: released } : {}) });
   }
   return marked;

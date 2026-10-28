@@ -16,6 +16,7 @@ const { createFakeCore } = require('./fake-core.cjs');
 const { cleanup } = require('../core/helpers.cjs');
 
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/\\/g, '/');
+const PL = require('../../src/run/task-body.cjs').PROCESS_LINE; // the standing process line, after the prompt
 const STANDARD = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'run', 'prompts', 'review-standard.md'), 'utf8').replace(/\r\n/g, '\n').replace(/\s+$/, '');
 const TREE = { path: 'C:/r.worktrees/t1', branch: 'belay/t1' };
 const assigned = (task, lease = 'L1') => ({ task, new_lease: { id: lease } });
@@ -69,8 +70,8 @@ async function firstMessage(task, spawnArgs = {}) {
 test('a spawn with a task sends its spec after the resume line, then the prompt as added instructions, then the rule; no prompt is fine', async () => {
   const task = { id: 't1', spec: 'rename the frobnicator', acceptance: { commands: [{ argv: ['x'] }] } };
   const RULE = 'When you are finished, call lease_release with lease_id lease-1 and a result object (branch, head, tests, findings).';
-  assert.strictEqual(await firstMessage(task), `task t1 lease=lease-1.\n\nTask: rename the frobnicator\n\nthe brief\n\n${RULE}`);
-  assert.strictEqual(await firstMessage(task, { prompt: undefined }), `task t1 lease=lease-1.\n\nTask: rename the frobnicator\n\n${RULE}`);
+  assert.strictEqual(await firstMessage(task), `task t1 lease=lease-1.\n\nTask: rename the frobnicator\n\nthe brief${PL}\n\n${RULE}`);
+  assert.strictEqual(await firstMessage(task, { prompt: undefined }), `task t1 lease=lease-1.\n\nTask: rename the frobnicator${PL}\n\n${RULE}`);
   const sb = sandbox();
   const m = createRunManager({ core: createFakeCore(), dataDir: sb.data, runId: 'run-hb', paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
   try {
@@ -80,7 +81,7 @@ test('a spawn with a task sends its spec after the resume line, then the prompt 
 
 test('a spawn ends the first message with the rule: the resume line, the prompt, then the hand-back rule', async () => {
   assert.strictEqual(await firstMessage({ id: 't1', acceptance: { commands: [{ argv: ['x'] }] } }),
-    'task t1 lease=lease-1.\n\nthe brief\n\nWhen you are finished, call lease_release with lease_id lease-1 and a result object (branch, head, tests, findings).');
+    'task t1 lease=lease-1.\n\nthe brief' + PL + '\n\nWhen you are finished, call lease_release with lease_id lease-1 and a result object (branch, head, tests, findings).');
   const own = await firstMessage({ id: 't1', worktree: TREE });
   assert.ok(own.endsWith('When you are finished, commit your work in your worktree, then call lease_release with lease_id lease-1 and a result object (branch, head, tests, findings).'));
 });
@@ -98,7 +99,7 @@ test('a spawn with no task has no lease and so no rule', async () => {
   const m = createRunManager({ core: createFakeCore(), dataDir: sb.data, runId: 'run-hb', paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
   try {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'just this', worker_id: 'w2' });
-    assert.strictEqual(m._worker('w2').firstMessage, 'just this');
+    assert.strictEqual(m._worker('w2').firstMessage, 'just this' + PL);
   } finally { await m.shutdown(); cleanup(sb.data); }
 });
 
@@ -130,4 +131,13 @@ test('a worker spawned in a run with the permission_prompt lever on is launched 
       assert.strictEqual(mcp.mcpServers.belay.args.includes('--permit'), want, 'the worker adapter is launched with --permit exactly then');
     } finally { await m.shutdown(); cleanup(sb.data); }
   }
+});
+
+test('a task that declares required hand-back fields says so in the rule, at a spawn and from the rule alone; none declared, no line', async () => {
+  const acceptance = { handoff: { required: ['head', 'tests', 'summary'] } };
+  const line = ' The result must carry head, tests, summary, each non-empty; lease_release refuses it otherwise.';
+  assert.ok(HB.rule(assigned({ id: 't1', acceptance })).endsWith(`(branch, head, tests, findings).${line}`));
+  assert.ok(HB.rule(assigned({ id: 'r1', acceptance: { verdict: true, handoff: { required: ['head', 'tests', 'summary'] } } })).includes(`"findings": [...] }.${line}\n\n## Review standard`));
+  assert.ok(!HB.rule(assigned({ id: 't1', acceptance: { commands: [] } })).includes('must carry'));
+  assert.ok((await firstMessage({ id: 't1', acceptance })).endsWith(line), 'the spawn\'s first message carries it');
 });
