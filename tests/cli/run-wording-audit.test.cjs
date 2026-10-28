@@ -18,7 +18,7 @@ const template = (f) => fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), '
 const LINE = '- Answer permission requests (`mcp__belay__permission_list`, `mcp__belay__permission_decide`) only when the request is inside the plan.';
 
 test('permission_prompt is a boolean run lever, absent from the levers unless on', () => {
-  assert.deepStrictEqual(parseLevers({}), { max_fix_rounds: 2, fix_cutoff: 'orchestrator', on_embedder_failure: 'required' });
+  assert.deepStrictEqual(parseLevers({}), { max_fix_rounds: 2, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', on_embedder_failure: 'required' });
   assert.strictEqual(parseLevers({ permission_prompt: false }).permission_prompt, undefined);
   assert.strictEqual(parseLevers({ permission_prompt: true }).permission_prompt, true);
   assert.match(parseLevers({ permission_prompt: 'yes' }).error, /permission_prompt must be true or false/);
