@@ -273,3 +273,45 @@ test('an add that failed and made nothing is reported as kept_foreign, never as 
   assert.strictEqual(e.detail.left, undefined);
   assert.deepStrictEqual([trees(), branches(), await rowCount()], before0);
 });
+
+test('a rollback whose branch delete fails is incomplete and names the branch left behind', async () => {
+  const lock = path.join(repo, '.git', 'refs', 'heads', 'belay', 'bl-1.lock');
+  BATCH.seam.afterTree = async (i) => {
+    if (i === 0) fs.writeFileSync(lock, ''); // git cannot lock the ref, so `branch -D` fails after the tree is removed
+    if (i === 1) throw Object.assign(new Error('injected after tree 2'), { code: 'E_INTERNAL' });
+  };
+  let e;
+  try { e = await rejectsCode(orch.task.create({ tasks: ['bl-1', 'bl-2'].map((id) => ({ ...spec(), id, worktree: true })) }), 'E_INTERNAL'); } finally { BATCH.seam.afterTree = null; }
+  try {
+    const one = e.detail.rollback.find((r) => r.task_id === 'bl-1');
+    assert.ok(one.worktree_removed && !one.branch_deleted, JSON.stringify(one));
+    assert.strictEqual(e.detail.rollback_incomplete, true);
+    assert.deepStrictEqual(e.detail.left, [one.path]);
+    assert.ok(branches().includes('belay/bl-1'), 'the branch is still there, and the receipt says so');
+  } finally { fs.rmSync(lock, { force: true }); git(repo, 'branch', '-D', 'belay/bl-1'); }
+});
+
+test('a batch of two fixes of one work task: the second carries fix_notice past the notice, and fix_hard_cap refuses', async () => {
+  const run0 = await orch.run.attach({ adapter_pid: process.pid, project_dir: repo, max_fix_rounds: 1, fix_hard_cap: 2 });
+  assert.ok(run0);
+  try {
+    const work = await orch.task.create({ ...spec(), files_owned: ['fx/a'] });
+    const r = await orch.task.create({ tasks: [{ ...spec(), repairs: work.id, files_owned: ['fx/b'] }, { ...spec(), repairs: work.id, files_owned: ['fx/c'] }] });
+    assert.strictEqual(r.tasks[0].fix_notice, undefined);
+    assert.match(r.tasks[1].fix_notice, /past max_fix_rounds 1/);
+    const before0 = await rowCount();
+    await rejectsCode(orch.task.create({ tasks: [{ ...spec(), repairs: work.id }] }), 'E_FIX_ROUNDS');
+    assert.strictEqual(await rowCount(), before0);
+  } finally {
+    await orch.run.attach({ adapter_pid: process.pid, project_dir: repo, max_fix_rounds: 1, fix_hard_cap: 1 });
+  }
+});
+
+test('a batch item with tree_of takes the source task\'s tree and spends no fix round', async () => {
+  const src = await orch.task.create({ ...spec(), id: 'tof-src', worktree: true });
+  const r = await orch.task.create({ tasks: [{ ...spec(), id: 'tof-a', tree_of: src.id }, { ...spec(), id: 'tof-b', worktree: true }] });
+  assert.strictEqual(r.tasks[0].worktree.path, src.worktree.path);
+  assert.strictEqual(r.tasks[0].worktree.inherited_from, src.id);
+  assert.notStrictEqual(r.tasks[1].worktree.path, src.worktree.path);
+  assert.strictEqual(r.tasks[0].repairs, null);
+});
