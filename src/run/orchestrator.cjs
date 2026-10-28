@@ -118,7 +118,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
 
   let pollHandle = null;
   let pollInFlight = false; // 5a-2: at most one store read at a time, guard not a queue
-  const holdRecorder = createHoldRecorder(); // wake.cjs (design item 9): moved out of this file
+  const holdRecorder = createHoldRecorder(), preClose = require('./pre-close-wake.cjs').createPreCloseNotice({ core, runId }); // wake.cjs (design item 9): moved out of this file
   const callWatcher = require('./call-wake.cjs').createCallWatcher({ core, runId }); const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId, enabled: !!spec.notes }); // wave 4: a refuted note wakes the orchestrator (notes runs only)
   let readyTimer = null;
   let sigintHandler = null;
@@ -231,7 +231,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     const rec = {
       at_ms: Date.now() - t0, worker_id: ev.worker_id, event: ev.event, turn: ev.turn,
       bytes: Buffer.byteLength(text, 'utf8'), orchestrator_idle_at_write: state.idle,
-      established_by: ev.event === 'note_refuted' || ev.event === 'scrub_alarm' ? `${ev.event} receipt seq ${ev.seq}` : ev.event === 'evaluated' ? `task ${ev.task_id} results at ${ev.seq}` : `worker.list row seq ${ev.seq} for the run`,
+      established_by: ev.event === 'note_refuted' || ev.event === 'scrub_alarm' ? `${ev.event} receipt seq ${ev.seq}` : ev.event === 'evaluated' ? `task ${ev.task_id} results at ${ev.seq}` : ev.event === 'pre_close' ? 'task.worktreeSweep dry run' : `worker.list row seq ${ev.seq} for the run`,
     };
     if (ev.event === 'death') {
       rec.exit_code = ev.exit_code; rec.exit_signal = ev.exit_signal; rec.death_established_by = ev.death_established_by;
@@ -303,8 +303,8 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       if (hold.isPaused()) { // 6f design item 2: never closed by the idle rule while paused
         recordHold(turnAtCall, busy, awaiting, 'run paused', pendingIds, parked, live);
       } else if (busy.length === 0 && state.pendingWrites.length === 0 && pendingIds.length === 0 && parked.length === 0 && live.length === 0) {
-        closeThenKillOnDeadline('orchestrator ended a turn with no worker mid-turn; stdin closed');
-        return;
+        const preNote = await preClose.notice(); if (state.finishing) return; // ADR 0065 amendment 1: once, the trees the close would keep
+        if (preNote) writeWake(preNote); else if (state.idle) { closeThenKillOnDeadline('orchestrator ended a turn with no worker mid-turn; stdin closed'); return; }
       } else if (pendingIds.length) {
         recordHold(turnAtCall, busy, awaiting, "worker.list; pid dead, awaiting the detector's row", pendingIds, parked, live);
       } else {
