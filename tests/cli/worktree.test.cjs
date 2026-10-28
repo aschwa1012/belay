@@ -127,23 +127,20 @@ test('the operator sees unchecked and not merged work: in merge output and in be
   assert.strictEqual(listed.code, 0, listed.err);
   const text = (await belay(['tasks', '--all', '--data', data], repo)).out;
   const line = (id) => text.split('\n').find((l) => l.startsWith(id)) || '';
-  assert.match(line(a.id), /merged:belay/integrate/cli-stop2:passed/, 'the newest merge of a leads');
-  assert.match(line(b.id), /conflict:belay/integrate/cli-stop2/);
+  assert.match(line(a.id), /merged:belay\/integrate\/cli-stop2:passed/, 'the newest merge of a leads');
+  assert.match(line(b.id), /conflict:belay\/integrate\/cli-stop2/);
   const ia = listed.json.tasks.find((t) => t.id === a.id).integration;
   assert.deepStrictEqual(ia.elsewhere, [{ into: 'belay/integrate/cli-stop', state: 'merged' }]);
 });
 
 test('the operator sees failed and unchecked merges in belay tasks', async () => {
   const notBoth = { argv: [process.execPath, '-e', "const f=require('fs');process.exit(f.existsSync('x.txt')&&f.existsSync('y.txt')?1:0)"] };
-  const x = await doneTask({ 'x.txt': 'x
-' }, [notBoth]);
-  const y = await doneTask({ 'y.txt': 'y
-' }, [notBoth]);
+  const x = await doneTask({ 'x.txt': 'x\n' }, [notBoth]);
+  const y = await doneTask({ 'y.txt': 'y\n' }, [notBoth]);
   const failed = await belay(['worktree', 'merge', x.id, y.id, '--into', 'belay/integrate/cli-fail', '--data', data], repo);
   assert.strictEqual(failed.code, 1);
   const text = (await belay(['tasks', '--all', '--data', data], repo)).out;
-  assert.match(text.split('
-').find((l) => l.startsWith(x.id)) || '', /merged:belay/integrate/cli-fail:failed/);
+  assert.match(text.split('\n').find((l) => l.startsWith(x.id)) || '', /merged:belay\/integrate\/cli-fail:failed/);
   // A merge made with --no-evaluate was never checked: belay tasks says so when that is the newest merge.
   const solo = await doneTask({ 'solo.txt': 's\n' }, [keep]);
   await belay(['worktree', 'merge', solo.id, '--into', 'belay/integrate/cli-solo', '--no-evaluate', '--data', data], repo);
