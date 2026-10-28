@@ -2,12 +2,11 @@
 // memory-jobs.cjs — the memory work that follows a turn and the work that closes a run (ADR 0041 decisions
 // 4 to 6, ADR 0043 decision 2): a mechanical summary once per (task, worker), the worker's own rows moved to the project, usage rows from
 // the turn's own numbers, and a bounded wrap-up per task and per run.
-//
-// Every entry point reads the lever first and returns before it touches the core when the lever is off, so a
-// run with the levers at their defaults makes no call here. Whatever runs is queued on the worker's existing
-// `memoryQueue` and never awaited on the turn path. A failed write is a `memory_event` with ok 0 and the
-// code, never silence and never a silent retry. Summaries are stored as generated, labelled as such, and
-// never as the worker's own words; the wrap-up text goes in `memory_event.message` (`belay notices` shows it).
+// Every entry point reads the lever first and returns before it touches the core when the lever is off, so a run with the levers at
+// their defaults makes no call here. Whatever runs is queued on the worker's existing `memoryQueue` and never awaited on the turn path
+// (a ledger run's usage row starts ahead of that queue, usage-early.cjs). A failed write is a `memory_event` with ok 0 and the code,
+// never silence and never a silent retry. Summaries are stored as generated, labelled as such, and never as the worker's own words;
+// the wrap-up text goes in `memory_event.message` (`belay notices` shows it).
 
 const crypto = require('node:crypto');
 const { fit } = require('../core/fit-budget.cjs');
@@ -60,9 +59,8 @@ async function leversOf(ctx, w) {
 }
 
 // J: the job context. `gate.aborted` is set when atRunEnd gives up, so a step that has not started never does.
-// `turnPath` marks a turn's jobs: once shutdown has closed the flag they send nothing, because the owner may
-// already be gone and a write would elect a new one in this process. The run-end jobs run after the flag is
-// closed and before the owner stops (lifecycle.cjs), so they are not turn-path work and are not gated on it.
+// `turnPath` marks a turn's jobs: once shutdown has closed the flag they send nothing, because the owner may already be gone and a write would
+// elect a new one in this process. The run-end jobs run after the flag is closed and before the owner stops (lifecycle.cjs), so they are not gated.
 function jobCtx(ctx, lv, w, gate, turnPath = false) { return { ctx, core: ctx.core, lv, w, gate: gate || { aborted: false }, s: stateOf(ctx), turnPath }; }
 const SHUT = 'E_SHUTDOWN';
 // `paired` is the receipt of a row already sent: it waits for the owner going, not the closed flag.
@@ -95,24 +93,30 @@ function tokensOf(snap) {
   }
   return { input_tokens: num(u.input_tokens), output_tokens: num(u.output_tokens), cache_read_tokens: num(u.cache_read_input_tokens), cache_creation_tokens: num(u.cache_creation_input_tokens) };
 }
+// The ledger's state for a worker. An adopted worker starts from the cost and turn its row recorded: the ledger holds those already.
+const jobsOf = (w) => w.memoryJobs || (w.memoryJobs = w.adoptedLedger
+  ? { pid: null, lastCost: w.adoptedLedger.cost, seen: true, lastTurn: w.adoptedLedger.turns }
+  : { pid: null, lastCost: 0, seen: false, lastTurn: 0 });
+// snap.cost is the row's reported total: earlier sessions' cost (cost_base) plus this session's, so it only goes up across a --resume (the
+// session and its total carry) and across a fresh session (the base takes the earlier total). A lower figure is a counter that restarted.
 function costOf(w, snap) {
   if (snap.substrate !== 'claude-code' || typeof snap.cost !== 'number' || !Number.isFinite(snap.cost)) return { cost_usd: null, cost_basis: 'none' };
-  const t = w.memoryJobs || (w.memoryJobs = { pid: null, lastCost: 0, seen: false, lastTurn: 0 });
-  const fresh = !t.seen ? snap.turn > 1 : t.pid !== snap.pid; // a first row seen late means the counter was not watched from zero
+  const t = jobsOf(w);
+  const fresh = !t.seen && snap.turn > 1; // a first row seen late (not adopted) means the counter was not watched from zero
   const reset = fresh || snap.cost < t.lastCost;
-  const base = reset ? 0 : t.lastCost;
+  const base = reset ? (fresh ? 0 : snap.costBase || 0) : t.lastCost; // a restarted counter is the session's own total: the row's figure holds the earlier sessions' cost (cost_base) too
   const cost_basis = reset && (t.seen || snap.turn > 1) ? NEW_PROCESS : 'delta-of-cumulative';
   return { cost_usd: Math.max(0, snap.cost - base), cost_basis, advance: () => { t.pid = snap.pid; t.lastCost = snap.cost; t.seen = true; } };
 }
 async function usageJob(J, snap) {
   const w = J.w;
-  const t = w.memoryJobs || (w.memoryJobs = { pid: null, lastCost: 0, seen: false, lastTurn: 0 });
-  if (snap.turn <= t.lastTurn) return; // one row per turn
+  const t = jobsOf(w);
+  if (snap.turn <= t.lastTurn || snap.turn === t.tried) return; t.tried = snap.turn; // one attempt and one row per turn, never a silent retry
   const c = costOf(w, snap);
   let sent = false;
   try {
     await call(J, () => { sent = true; return J.core.usage.record({
-      worker_id: snap.workerId, task_id: snap.taskId || undefined, turn: snap.turn, substrate: snap.substrate,
+      worker_id: snap.workerId, ...(snap.until ? { turn_window: { since: snap.since || 0, until: snap.until }, at: snap.until } : { task_id: snap.taskId || undefined }), turn: snap.turn, substrate: snap.substrate, // the task is the lease the worker held at the turn's end (core)
       model: snap.model || undefined, ...tokensOf(snap), cost_usd: c.cost_usd, cost_basis: c.cost_basis,
     }); });
     t.lastTurn = snap.turn;
@@ -496,4 +500,4 @@ async function runEndJobs({ core, runId, levers, boundMs = null, modules = null,
   return ctx.runEndError ? { ...got, error: ctx.runEndError } : got;
 }
 
-module.exports = { afterTurn, atRunEnd, runEndJobs, RUN_END_BOUND_MS, WRAPUP_MAX, SUMMARY_LABEL, NEW_PROCESS, ENDED_TASK };
+module.exports = { usageJob, jobCtx, afterTurn, atRunEnd, runEndJobs, RUN_END_BOUND_MS, WRAPUP_MAX, SUMMARY_LABEL, NEW_PROCESS, ENDED_TASK };
