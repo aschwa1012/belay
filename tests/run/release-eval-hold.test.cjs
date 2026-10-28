@@ -217,3 +217,19 @@ test('the run manager records an event naming the code when a release evaluation
   await ev.promise;
   assert.deepStrictEqual(recorded.map((a) => [a.kind, a.ok, a.code, a.task_id, a.worker_id]), [['release_failed', 0, 'E_OWNER_LOST', 't1', 'w1'], ['release_failed', 0, 'E_OWNER_LOST', 't2', 'w1']]);
 });
+
+test('a stale cancel event of an earlier attempt does not end the next attempt: the re-run is held, watched, waked and holds the idle close', async () => {
+  const s = { tasks: [released('t1')], t: 1000, fails: [{ ...failedEv('t1', 'E_CANCELLED', 12, 1), turn: 1 }] }; // the restart's cancel of turn 1's attempt, unread
+  const seen = new Map();
+  const poll = (events = []) => RE.enrichWakes(coreWithFails(s), 'r', events, seen, { holdMs: HOLD, now: () => s.t, workers: liveW });
+  assert.deepStrictEqual(await poll([turnEnd('w1', 2)]), [], 'turn 2 ended before the poll read the cancel: held for its own attempt');
+  assert.ok(RE.evaluatingHolds(seen, liveW, 'r').includes('wake:w1'));
+  s.t += HOLD;
+  const first = await poll();
+  assert.deepStrictEqual(first.map((e) => e.event), ['turn_end']);
+  assert.deepStrictEqual(RE.evaluatingHolds(seen, liveW, 'r'), ['eval:t1'], 'still watched');
+  s.tasks = [evaluated('t1', 'done', 'w1', 40)];
+  const out = await poll();
+  assert.deepStrictEqual(out.map((e) => e.event), ['evaluated'], 'the re-run lands and is waked');
+  assert.deepStrictEqual(RE.evaluatingHolds(seen, liveW, 'r'), []);
+});
