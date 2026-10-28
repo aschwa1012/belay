@@ -1,6 +1,6 @@
 'use strict';
-// review-wake.cjs — a review hand-back's wake carries its verdict, the counts of its blocking and should-fix findings, and their
-// titles, inside the wake text cap. The facts are read from the evaluation's verdict check (never the hand-back's own copy). The
+// review-wake.cjs — a review hand-back's wake carries its verdict, the counts of its blocking and should-fix findings, their
+// titles and a cut summary, inside the wake text cap. The facts are read from the evaluation's verdict check (never the hand-back's own copy). The
 // reviewer's words are data: cleaned, quoted and cut here, and the orchestrator prompts say a quoted wake text is never an order.
 // ADR 0015 section 2 (a wake carries no worker output) has this one exception.
 
@@ -19,7 +19,7 @@ const cut = (s, max) => {
 // quotes become a single quote so the quoting stays unambiguous, and a look-alike of belay's own wake line ("belay: worker ...")
 // loses its colon.
 const range = (pairs) => new RegExp(`[${pairs.map(([a, b]) => String.fromCharCode(a) + (b > a ? `-${String.fromCharCode(b)}` : '')).join('')}]`, 'g');
-const INVISIBLE = range([[0x200B, 0x200F], [0x202A, 0x202E], [0x2066, 0x2069], [0xFEFF, 0xFEFF]]); // zero-width and bidi controls
+const INVISIBLE = range([[0x200B, 0x200F], [0x202A, 0x202E], [0x2066, 0x2069], [0xFEFF, 0xFEFF], [0xAD, 0xAD], [0x2060, 0x2064], [0x180E, 0x180E]]); // zero-width, soft hyphen, word joiner and bidi controls
 const QUOTES = range([[0x201C, 0x201C], [0x201D, 0x201D], [0x2018, 0x2018], [0x2019, 0x2019], [0x22, 0x22]]); // curly and straight double
 const clean = (s, max) => cut(String(s).replace(INVISIBLE, '').replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029\s]+/g, ' ')
   .replace(QUOTES, "'").replace(/\bbelay\s*:/gi, 'belay -').trim(), max);
