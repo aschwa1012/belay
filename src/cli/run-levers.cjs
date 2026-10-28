@@ -11,6 +11,7 @@ const MN = require('../core/memory-notice.cjs'); // pure; the shared wording of 
 
 const FIX_CUTOFFS = ['orchestrator', 'cap-only'];
 const DEFAULT_MAX_FIX_ROUNDS = 2;
+const DEFAULT_MAX_FOLLOW_UPS = 1; // ADR 0064 decision 5; 0 refuses every follow-up
 const DEFAULT_FIX_HARD_CAP = 5; // ADR 0031 amendment 3: the safety net of a run with no time bound; a run with a timeout is notice-only
 const HARD_CAP_DEFAULT_SOURCE = 'default, no run timeout';
 const DEFAULT_FIX_CUTOFF = 'orchestrator';
@@ -123,6 +124,12 @@ function parseLevers(spec, opts = {}) {
     }
     maxFixRounds = v;
   }
+  let maxFollowUps = DEFAULT_MAX_FOLLOW_UPS;
+  if (spec.max_follow_ups !== undefined) {
+    const v = spec.max_follow_ups;
+    if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0) return { error: 'max_follow_ups must be a non-negative integer' };
+    maxFollowUps = v;
+  }
   // ADR 0031 amendment 3: the user's fix_hard_cap wins (null says no cap); unset, a run with no time bound (timeout_ms 0, the default) gets
   // DEFAULT_FIX_HARD_CAP and a run with a timeout gets none. The source is recorded beside the cap.
   // The time bound is run-spec.cjs's parsed number when it is given (a numeric string counts), else the raw key, 0 when absent.
@@ -153,7 +160,7 @@ function parseLevers(spec, opts = {}) {
   } else if (spec.memory !== null && opts.config && opts.config.memory && opts.config.memory.on_embedder_failure !== undefined) { // an explicit `memory: null` inherits nothing from the config
     onEmbedderFailure = EM.normalize(opts.config.memory.on_embedder_failure) || DEFAULT_ON_EMBEDDER_FAILURE; // a bad config value is refused by parseMemoryBlock below
   }
-  const out = { max_fix_rounds: maxFixRounds, fix_cutoff: fixCutoff, on_embedder_failure: onEmbedderFailure };
+  const out = { max_fix_rounds: maxFixRounds, max_follow_ups: maxFollowUps, fix_cutoff: fixCutoff, on_embedder_failure: onEmbedderFailure };
   out.fix_hard_cap = fixHardCap; out.fix_hard_cap_source = fixHardCapSource; // null: no cap
   const ca = CP.parseCompactAt(spec.compact_at_tokens);
   if (ca.error) return { error: ca.error };
