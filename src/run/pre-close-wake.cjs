@@ -17,12 +17,12 @@ function clip(s, max = NAME_BYTES) {
 
 const describe = (k) => {
   const paths = k.paths || [];
-  const why = k.reason === 'dirty' ? `uncommitted: ${paths.slice(0, PATHS).map((p) => clip(p)).join(', ')}${paths.length > PATHS ? ', and more' : ''}` : k.detail;
+  const why = k.reason === 'dirty' ? `uncommitted: ${paths.slice(0, PATHS).map((p) => clip(p)).join(', ')}${paths.length > PATHS ? ', and more' : ''}` : clip(k.detail, 120);
   return `${clip(k.path, 120)} (task ${k.task_ids.join(', ')}; ${why})`;
 };
 
 // The wake text for a dry-run answer, or null when no tree would be kept for either reason. Paths and names are chosen by a
-// worker, so they are quoted by clip and the whole text is held to MAX_BYTES by naming fewer trees.
+// worker, so each is cut and marked by clip (never quoted whole) and the whole text is held to MAX_BYTES by naming fewer trees.
 function textOf(plan) {
   const kept = ((plan && plan.kept) || []).filter((k) => REASONS.has(k.reason));
   if (!kept.length) return null;

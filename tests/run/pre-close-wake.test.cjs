@@ -122,3 +122,11 @@ test('a pause that arrives during a stalled dry run keeps the run open until it 
   const out = await run;
   assert.ok(out, 'the run closed after the resume');
 });
+
+test('a long ref in a head_off_branch detail is cut and the text stays under 600 bytes', () => {
+  const ref = `refs/heads/${'y'.repeat(400)}`;
+  const t = textOf({ kept: [{ ...OFF, detail: `HEAD is ${ref}` }, { ...OFF, task_ids: ['t9'], detail: `HEAD is ${ref}` }, { ...OFF, task_ids: ['t8'], detail: `HEAD is ${ref}` }] });
+  assert.ok(Buffer.byteLength(t) <= 600, `${Buffer.byteLength(t)} bytes`);
+  assert.ok(!t.includes(ref));
+  assert.match(t, /\.\.\./);
+});
