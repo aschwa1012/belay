@@ -207,6 +207,7 @@ test('a merging row whose pid names a process created 3 s after the row owner_bo
   const op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
   opened.push({ dir, cores: [orch, op] });
   await orch.run.attach({ adapter_pid: process.pid });
+  await stageRuns(`${dir}/data`, ["near"]);
   const repo = makeRepo(dir);
   const t = await orch.task.create({ spec: 'a', acceptance: { commands: [exists('a.txt')] } });
   const w = (await op.task.worktreeCreate({ task_id: t.id, repo })).worktree;
@@ -222,10 +223,10 @@ test('a merging row whose pid names a process created 3 s after the row owner_bo
     const s = new Store(`${dir}/data/memory.db`);
     let stale;
     try {
-      stale = rows.append(s, 'integration', { id: rows.newId(), run_id: 'test-run', repo, into_branch: 'int/near', worktree: `${repo}.worktrees/integrate-int-near`, created_worktree: true, base_sha: w.base_sha, head_sha: w.base_sha, state: 'merging', task_ids: [t.id], merged: [], junctions: [], owner_pid: holder.pid, owner_boot: c.created - 3000 }, 'owner', Date.now());
+      stale = rows.append(s, 'integration', { id: rows.newId(), run_id: 'test-run', repo, into_branch: 'belay/integrate/near', worktree: `${repo}.worktrees/integrate-belay-integrate-near`, created_worktree: true, base_sha: w.base_sha, head_sha: w.base_sha, state: 'merging', task_ids: [t.id], merged: [], junctions: [], owner_pid: holder.pid, owner_boot: c.created - 3000 }, 'owner', Date.now());
     } finally { s.close(); }
     ID.createdOf = async (pid, o) => (pid === holder.pid ? { created: c.created, image: c.image } : realCreatedOf(pid, o));
-    const row = await orch.integration.merge({ task_ids: [t.id], into: 'int/near' });
+    const row = await orch.integration.merge({ task_ids: [t.id], into: 'belay/integrate/near' });
     assert.strictEqual(row.state, 'evaluated', JSON.stringify(row.error));
     assert.strictEqual((await orch.integration.get({ id: stale.id })).state, 'abandoned');
   } finally {
