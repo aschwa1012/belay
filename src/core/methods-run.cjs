@@ -35,7 +35,7 @@ const ATTACH_SUSPECT = LIFE_CLAIMING_STATES;
 // Fix round for 6f (diff-scope): `rows.cjs` (unowned) lacks paused_at/paused_by in COLUMNS.run, so
 // rows.append would drop both. This local insert (its own shape, via exported bind/parseRow) adds them.
 function appendRun(E, values, writtenBy, at = Date.now()) {
-  const cols = [...rows.COLUMNS.run, 'paused_at', 'paused_by', 'pause_parks', 'memory_levers', 'project', 'project_dir', 'embedder_mode', 'revived_epoch', 'memory_notice']; // item 1: 6th local column; ADR 0041 decision 1: the memory levers and the project
+  const cols = [...rows.COLUMNS.run, 'paused_at', 'paused_by', 'pause_parks', 'memory_levers', 'project', 'project_dir', 'embedder_mode', 'revived_epoch', 'memory_notice', 'budget']; // item 1: 6th local column; ADR 0041 decision 1: the memory levers and the project
   const all = [...cols, 'written_at', 'written_by'];
   const sql = `INSERT INTO run(${all.join(', ')}) VALUES (${all.map(() => '?').join(', ')})`;
   const params = cols.map(c => rows.bind(values[c]));
@@ -90,6 +90,7 @@ async function attach(E, caller, args) {
   if (noticeGiven && args.memory_notice !== null && !MN.CODES.includes(args.memory_notice)) {
     throw err('E_ARGS', `run.attach memory_notice must be null or one of ${MN.CODES.join(', ')}`, { memory_notice: args.memory_notice });
   }
+  if (args.budget_usd != null) require('./run-budget.cjs').checkLimit(args.budget_usd, 'budget_usd');
   const modeGiven = args.embedder_mode !== undefined;
   if (modeGiven && args.embedder_mode !== null && !require('./embedder-mode.cjs').normalize(args.embedder_mode)) throw err('E_ARGS', 'run.attach embedder_mode must be null, required, keyword or off', { embedder_mode: args.embedder_mode });
   const dirGiven = args.project_dir !== undefined;
@@ -197,6 +198,8 @@ async function attach(E, caller, args) {
     memory_notice: noticeGiven ? args.memory_notice : (carryPause ? prev.memory_notice : null), // same carry rule
     project_dir: dirGiven ? args.project_dir : (carryPause ? prev.project_dir : null),
     revived_epoch: revivedEpoch,
+    budget_usd: require('./run-budget.cjs').attachLimit(args, prev, carryPause), // dollar limit; a raised limit survives a re-attach of the same life
+    budget: carryPause ? prev.budget : null,
     embedder_mode: modeGiven ? (args.embedder_mode === null ? null : require('./embedder-mode.cjs').normalize(args.embedder_mode)) : (carryPause ? prev.embedder_mode : null),
   }, by, t);
   E.noteWrite();
@@ -472,4 +475,4 @@ async function forgetWorker(E, caller, args) {
   };
 }
 
-module.exports = { LIFE_CLAIMING_STATES, attach, end, getRun, listRuns, writeWorker, getWorker, listWorkers, forgetWorker, decorate, setPaused, setEmbedderMode };
+module.exports = { LIFE_CLAIMING_STATES, attach, end, getRun, listRuns, writeWorker, getWorker, listWorkers, forgetWorker, decorate, setPaused, setEmbedderMode, appendRunRow: appendRun };

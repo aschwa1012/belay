@@ -83,8 +83,8 @@ test('shutdown during the turn store: the in-flight observation keeps its paired
   await sleep(20);
   ctx.shutdownFlags.closed = true; // markClosed; the owner has not gone, so a row already sent still gets its event
   await drain(w);
-  assert.deepStrictEqual(c.calls.map((x) => x.m), ['store', 'recordEvent'], 'the observation already in flight and its event, nothing else');
-  assert.strictEqual(c.calls[0].closed, false, 'the store was sent before the flag closed');
+  assert.deepStrictEqual(c.calls.map((x) => x.m), ['usage', 'store', 'recordEvent'], 'the usage row (it starts at the turn end, ahead of the queue), the observation already in flight and its event, nothing else');
+  assert.strictEqual(c.calls[1].closed, false, 'the store was sent before the flag closed');
   assert.strictEqual(w.lastError.where, 'after-shutdown');
 });
 
@@ -96,7 +96,7 @@ test('shutdown during the turn store once the owner is gone: the paired event is
   ctx.shutdownFlags.closed = true;
   ctx.shutdownFlags.ownerGone = true; // a write now could elect a new owner
   await drain(w);
-  assert.deepStrictEqual(c.calls.map((x) => x.m), ['store'], 'only the observation store already in flight');
+  assert.deepStrictEqual(c.calls.map((x) => x.m), ['usage', 'store'], 'the usage row sent at the turn end and the observation store already in flight, nothing after');
   assert.strictEqual(w.lastError.where, 'after-shutdown');
 });
 
@@ -106,6 +106,6 @@ test('shutdown between the observation and the jobs: the jobs send nothing', asy
   w.turns = 1; w.lastTurnUsage = { output_tokens: 5 }; w.costUsd = 0.01;
   TR.queueMemory(w, { kind: 'turn_end', text: 'hello' }, ctx, 4000, null);
   await drain(w);
-  assert.deepStrictEqual(c.calls.map((x) => x.m), ['store', 'recordEvent'], 'no usage row after the flag closed');
+  assert.deepStrictEqual(c.calls.map((x) => x.m), ['usage', 'store', 'recordEvent'], 'the usage row went at the turn end, before the flag closed; no job after it');
   assert.deepStrictEqual(w.lastError, { where: 'after-shutdown', state: 'turn-memory-jobs' });
 });

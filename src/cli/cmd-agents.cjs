@@ -313,6 +313,7 @@ function renderText(rc) {
   const f = rc.footer;
   const total = f.total_cost_usd == null ? 'not recorded' : P.money(f.total_cost_usd);
   lines.push(`run cost ${total}${f.cost_estimated_agents ? ' reported' : ''} over ${f.agents} agents, ${f.cost_not_recorded} with cost not recorded${f.cost_estimated_agents ? `, ${f.cost_estimated_agents} with an estimate from the stream (${f.total_cost_estimated_usd == null ? 'not priced' : P.money(f.total_cost_estimated_usd)}; combined ${P.money(f.total_cost_combined_usd)})` : ''}, as of ${P.iso(f.as_of_ms)}`);
+  if (rc.budget) lines.push(`budget ${require('../core/run-budget.cjs').textOf(rc.budget)}`);
   lines.push('');
   return lines.join('\n');
 }
@@ -360,6 +361,7 @@ async function run(ctx) {
         fix_hard_cap: nn(chosen.fix_hard_cap), fix_hard_cap_source: nn(chosen.fix_hard_cap_source),
         memory_notice: require('../core/memory-notice.cjs').noticeForRun(chosen, null), // this run's own notice (or null): the panel shows it, never the config's
         agents, footer: footerOf(agents), owner: core.ownerInfo(),
+        ...(chosen.budget_usd != null ? { budget: require('../core/run-budget.cjs').blockOf(chosen, await core.usage.spend({ run_id: chosen.id })) } : {}), // reported spend beside its limit; no query for a run without one
       };
       return { code: 0, text: renderText(receipt), json: receipt };
     });

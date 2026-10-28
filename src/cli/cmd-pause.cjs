@@ -23,7 +23,7 @@ function runResumeBoundMs(n, T) { return 2 * n * resumeBoundMs(T) + 30000 + 5000
 function usageError(command, message) {
   const usage = command === 'pause'
     ? 'usage: belay pause <worker-id|run-id> [--data <dir>] [--json]\n'
-    : 'usage: belay resume <worker-id|run-id> [--message <text>] [--embedder keyword|off] [--data <dir>] [--json]\n\n  --embedder keyword|off  (run form, a run paused by an embedder failure) choose how the run goes on: keyword ranks by keywords only,\n                          off turns notes off; the choice is also written to the config file as memory.on_embedder_failure\n';
+    : 'usage: belay resume <worker-id|run-id> [--message <text>] [--embedder keyword|off] [--budget <usd>|--task-budget <task-id> <usd>|--over-budget] [--data <dir>] [--json]\n\n  --budget, --task-budget, --over-budget  (run form, a run paused because a budget was reached) resume with a raised run or task\n                          limit, or with the breached limit no longer enforced; the choice is recorded on the run row (operator only)\n  --embedder keyword|off  (run form, a run paused by an embedder failure) choose how the run goes on: keyword ranks by keywords only,\n                          off turns notes off; the choice is also written to the config file as memory.on_embedder_failure\n';
   return { code: 2, text: `belay ${command}: ${message}\n\n${usage}`, json: { error: message } };
 }
 
@@ -31,8 +31,16 @@ function parseArgs(command, argv) {
   const positionals = [];
   let message = null;
   let embedder = null;
+  const budget = {};
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
+    if (a === '--budget' || a === '--task-budget' || a === '--over-budget') {
+      if (command === 'pause') return { error: `${a} is not an option of belay pause` };
+      const r = require('./resume-budget.cjs').parseFlag(a, argv, i, budget);
+      if (r.error) return { error: r.error };
+      i = r.next;
+      continue;
+    }
     if (a === '--embedder') {
       if (command === 'pause') return { error: '--embedder is not an option of belay pause' };
       const v = argv[i + 1];
@@ -55,7 +63,8 @@ function parseArgs(command, argv) {
     positionals.push(a);
   }
   if (positionals.length !== 1) return { error: `belay ${command} needs exactly one argument, a worker or run id; got ${positionals.length}` };
-  return { id: positionals[0], message, embedder };
+  if (Object.keys(budget).length > 1) return { error: 'give one of --budget, --task-budget and --over-budget' };
+  return { id: positionals[0], message, embedder, budget };
 }
 
 function bgText(tasks) {
@@ -106,6 +115,7 @@ function renderRunResumeText(receipt) {
     const s = receipt.embedder_setting;
     lines.push(`embedder: the run goes on as ${receipt.embedder_choice}${receipt.embedder_choice === 'off' ? ' (notes are off for the run)' : ' (keyword-only ranking)'}; ${s && s.path ? `written to ${s.path} as memory.on_embedder_failure (was ${s.old || 'unset'})` : `NOT written to the config file: ${s && s.error ? s.error.message : 'unknown'}`}`);
   }
+  if (receipt.budget_choice) lines.push(`budget: ${receipt.budget_choice.over_budget ? 'the breached limit is no longer enforced for this run' : receipt.budget_choice.task_budget ? `task ${receipt.budget_choice.task_budget.task_id} limit raised to $${receipt.budget_choice.task_budget.usd}` : `run limit raised to $${receipt.budget_choice.budget} est.`}; recorded on the run row`);
   for (const w of receipt.workers_resumed || []) lines.push(`worker ${w.worker_id}: resumed`);
   for (const w of receipt.left_parked || []) {
     // item 1 (ADR 0023 amendment 4 decision 3): two more reasons in their own words, alongside the two
@@ -150,9 +160,13 @@ async function workerForm(core, dataDir, command, id, msgText) {
 }
 
 // build step 6f design item 7: `belay pause <run-id>`/`belay resume <run-id>` over the owner's pipe.
-async function runForm(core, command, run, msgText, embedder, cwd) {
+async function runForm(core, command, run, msgText, embedder, cwd, budget = {}) {
   if (embedder && command === 'resume' && !/embedder-failure [(]/.test(run.paused_by || '')) {
     const receipt = { run_id: run.id, resumed: false, reason: `--embedder is a choice for a run paused by an embedder failure, and this run was not (paused_by: ${run.paused_by || 'not paused'}); nothing was changed` };
+    return { code: 2, text: renderRunResumeText(receipt), json: receipt };
+  }
+  if (Object.keys(budget).length && !/\[budget [(]/.test(run.paused_by || '')) {
+    const receipt = { run_id: run.id, resumed: false, reason: `the budget options are for a run paused because a budget was reached, and this run was not (paused_by: ${run.paused_by || 'not paused'}); nothing was changed` };
     return { code: 2, text: renderRunResumeText(receipt), json: receipt };
   }
   if (command === 'resume' && msgText != null) return usageError('resume', '--message is not an option of a run resume (ADR 0023 amendment 3 decision 6)');
@@ -175,8 +189,8 @@ async function runForm(core, command, run, msgText, embedder, cwd) {
   const render = command === 'pause' ? renderRunPauseText : renderRunResumeText;
   const key = command === 'pause' ? 'paused' : 'resumed';
   try {
-    const result = await core.control(method, { run_id: run.id, ...(embedder ? { embedder } : {}) }, { timeoutMs: boundMs });
-    const receipt = { run_id: run.id, [key]: true, ...result };
+    const result = await core.control(method, { run_id: run.id, ...(embedder ? { embedder } : {}), ...budget }, { timeoutMs: boundMs });
+    const receipt = { run_id: run.id, [key]: true, ...result, ...(Object.keys(budget).length ? { budget_choice: budget } : {}) };
     // ADR 0034 amendment 1: the choice persists. It is written only after the run took it (the resume succeeded), to the config file's
     // memory.on_embedder_failure, so a later run starts in the same mode; a write that fails is named and does not undo the resume.
     if (embedder) {
@@ -218,7 +232,7 @@ async function run(ctx) {
   const command = ctx.command; // 'pause' or 'resume', per belay.cjs's COMMANDS table
   const parsed = parseArgs(command, ctx.argv);
   if (parsed.error) return usageError(command, parsed.error);
-  const { id, message: msgText, embedder } = parsed;
+  const { id, message: msgText, embedder, budget } = parsed;
   const key = command === 'pause' ? 'paused' : 'resumed';
   const renderWorker = command === 'pause' ? renderPauseText : renderResumeText;
 
@@ -245,8 +259,9 @@ async function run(ctx) {
       const { runs } = await core.run.list();
       runRow = runs.find((r) => r.id === id) || null;
     } catch { /* the run read itself failed; fall through to the worker's own refusal below */ }
-    if (runRow) return await runForm(core, command, runRow, msgText, embedder, ctx.cwd);
+    if (runRow) return await runForm(core, command, runRow, msgText, embedder, ctx.cwd, budget);
     if (embedder) return usageError(command, `--embedder names a run, and ${id} is not one`);
+    if (Object.keys(budget).length) return usageError(command, `the budget options name a run, and ${id} is not one`);
 
     // Neither a worker nor a run: design item 7's "naming both reads", built on the worker form's own
     // natural refusal (which already names the worker read) rather than a shape of its own.

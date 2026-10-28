@@ -200,6 +200,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     } = opts || {};
     const permission_prompt = permissionArg !== undefined ? permissionArg : (ctx.permissionPrompt === true && substrate === 'claude-code'); // the run lever is the default; an explicit spawn argument wins
     checkWorkerId(worker_id); // before anything else: the id is a path component
+    await require('./paused-gate.cjs').refuseSpawnIfPaused(ctx.core, ctx.runId); // a paused run starts no new work, whatever paused it
     // ADR 0054 decision 4: the agent type's tool list, narrowed by allowed_tools, is the surface (`--tools`); an explicit harness
     // `tools` wins. Checked first: a refusal writes nothing. A Codex worker takes only the six (it has no list to narrow).
     if (agent_type !== null && !AD.WORKER_TYPES.includes(agent_type)) fail('E_ARGS', `spawn agent_type must be one of ${AD.WORKER_TYPES.join(', ')}`, { agent_type });
@@ -400,6 +401,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   // relaunch carries on (the slot is released when it ends, and a failed one writes its own dead row), so the caller waits with
   // worker_wait as after a spawn. The CLI passes no budget and is unchanged.
   async function restart({ worker_id, first_turn_timeout_ms = 180000, mcp_budget_ms = null }) {
+    await require('./paused-gate.cjs').refuseSpawnIfPaused(ctx.core, ctx.runId); // a paused run starts no new work; a parked worker's resume is not a restart
     const bud = createBudget(mcp_budget_ms);
     const { budgeted, left, within } = bud;
     const w = await forWorker(worker_id);

@@ -151,7 +151,7 @@ async function usageRecord(E, caller, args) {
   const tok = TOKENS.map(f => optCount(args[f], f));
   const vals = [
     `us-${crypto.randomUUID()}`, optStr(args.run_id, 'run_id') || caller.run_id, optStr(args.worker_id, 'worker_id'),
-    optStr(args.task_id, 'task_id'), optCount(args.turn, 'turn'), substrate, optStr(args.model, 'model'), ...tok,
+    turnTaskId(E, caller, args), optCount(args.turn, 'turn'), substrate, optStr(args.model, 'model'), ...tok,
     cost, basis, optCount(args.at, 'at') ?? Date.now(), Date.now(), E.writtenBy(caller),
   ];
   const sql = `INSERT INTO usage(id, run_id, worker_id, task_id, turn, substrate, model, input_tokens, output_tokens,
@@ -159,7 +159,20 @@ async function usageRecord(E, caller, args) {
     VALUES (${vals.map(() => '?').join(', ')})`;
   const info = E.store.p(sql).run(...vals);
   E.noteWrite();
-  return E.store.p('SELECT * FROM usage WHERE seq = ?').get(Number(info.lastInsertRowid));
+  const row = E.store.p('SELECT * FROM usage WHERE seq = ?').get(Number(info.lastInsertRowid));
+  const hook = E.owner && E.owner.opts && E.owner.opts.onUsageRecorded; // the run's budget guard, when the run has a budget
+  if (typeof hook === 'function') { try { hook(row); } catch { /* the hook is the run's, never the caller's */ } }
+  return row;
+}
+
+// The task a turn is charged to. A caller that gives a turn window (`turn_window: { since, until }`, ms) is charged by the leases its
+// worker held (run-budget.cjs turnTask); otherwise the task_id given is taken as it is.
+function turnTaskId(E, caller, args) {
+  const w = args.turn_window;
+  if (w && typeof w === 'object' && isStr(args.worker_id) && Number.isFinite(w.until)) {
+    return require('./run-budget.cjs').turnTask(E.store, args.worker_id, optStr(args.run_id, 'run_id') || caller.run_id, Number.isFinite(w.since) ? w.since : 0, w.until);
+  }
+  return optStr(args.task_id, 'task_id');
 }
 
 const sum = (rows, f) => rows.reduce((n, r) => n + (r[f] || 0), 0);
