@@ -330,7 +330,7 @@ async function merge(E, caller, args) {
   // A branch the user owns (ADR 0067): approval first (read-only, and before any slot or tree), then belay merges on a detached HEAD.
   const fold = await MUG.folder(repo);
   await MUG.refuseVariant(repo, into, fold); // another spelling of an existing branch is that branch, on a host with case-insensitive refs
-  const userBranch = MUG.isUserBranch(E, repo, into, caller.run_id, fold);
+  const userBranch = await MUG.isUserBranch(E, repo, into, caller.run_id, fold);
   if (userBranch) {
     if (force) throw err('E_PRECONDITION', `force is not accepted for ${into}, a branch the user owns: work that is not done does not go onto it through belay`, { into });
     const g = MUG.authorize(E, caller, args, MUG.requestOf(repo, into, args.task_ids, targets, await MUG.placement(E, repo, into, args, tasks, fold), args, tasks));
@@ -348,7 +348,7 @@ async function merge(E, caller, args) {
       const place = await MUG.placement(E, repo, into, args, tasks, fold);
       const g = MUG.authorize(E, caller, args, MUG.requestOf(repo, into, args.task_ids, targets, place, args, tasks));
       if (g.response) return g.response;
-      return require('./merge-user.cjs').mergeIntoUser(E, caller, args, { repo, into, tasks, targets, place, approver: g.approver, takeOver, fold, view, mergeOne, rerun, abandonStale });
+      return require('./merge-user.cjs').mergeIntoUser(E, caller, args, { repo, into, tasks, targets, place, approver: g.approver, takeOver, fold, view, mergeOne, rerun, abandonStale, extra, until: t0call + ACCEPTANCE_BUDGET_MS });
     }
     const abandoned = await abandonStale(E, caller, repo, into, takeOver);
     const tree = await integrationTree(E, repo, into, args, tasks, abandoned);

@@ -33,7 +33,7 @@ function mergeOf(r) {
   if (r.kind !== 'merge') return null;
   try {
     const q = JSON.parse(r.input);
-    return { kind: 'merge', into: q.into, into_head: q.into_head, base: q.base, tasks: (q.tasks || []).map((t) => ({ id: t.id, sha: t.sha ? String(t.sha).slice(0, 12) : null })), evaluate: q.evaluate, checks: (q.checks || []).map((c) => ({ argv: c.argv, cwd: c.cwd })) };
+    return { kind: 'merge', into: q.into, into_head: q.into_head, base: q.base, tasks: (q.tasks || []).map((t) => ({ id: t.id, sha: t.sha ? String(t.sha).slice(0, 12) : null })), evaluate: q.evaluate, checks: (q.checks || []).map((c) => ({ argv: c.argv, cwd: c.cwd })), integrate_checks: (q.integrate_checks || []).map((c) => ({ argv: c.argv, cwd: c.cwd, timeout_ms: c.timeout_ms })) };
   } catch { return null; }
 }
 
@@ -43,7 +43,8 @@ function mergeLines(r) {
   return [`${r.id}  merge request, run ${r.run_id}`, `  kind: merge`, `  into: ${m.into}`, `  head before: ${m.into_head || `(new branch, from ${m.base})`}`,
     `  tasks: ${m.tasks.map((t) => `${t.id}@${t.sha}`).join(', ')}`,
     `  checks: ${m.evaluate ? (m.checks.length ? '' : 'none declared') : 'none (evaluate is false)'}`,
-    ...m.checks.map((c) => `    ${c.argv.join(' ')}${c.cwd ? `  (cwd ${c.cwd})` : ''}`)];
+    ...m.checks.map((c) => `    ${c.argv.join(' ')}${c.cwd ? `  (cwd ${c.cwd})` : ''}`),
+    ...(m.integrate_checks && m.integrate_checks.length ? ['  checks named by the call:', ...m.integrate_checks.map((c) => `    ${c.argv.join(' ')}${c.cwd ? `  (cwd ${c.cwd})` : ''}`)] : [])];
 }
 
 function digestOf(input, r) {

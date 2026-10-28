@@ -43,18 +43,21 @@ async function dropPrepared(repo, E, into, keepId, newHead, by, fold = (x) => x)
 // -> { row, ... } the row written, as the caller returns it. `c` carries what the caller has already settled.
 async function mergeIntoUser(E, caller, args, c) {
   const { repo, into, tasks, targets, place, approver, takeOver, view, mergeOne, rerun, abandonStale } = c;
+  const extra = c.extra || [], until = c.until === undefined ? Infinity : c.until;
   const fold = c.fold || ((x) => x);
   const by = E.writtenBy(caller);
   await abandonStale(E, caller, repo, into, takeOver);
   const start = place.head || place.base;
   const id = rows.newId();
   const tree = await addTree(repo, id, start);
+  let treeGone = false, wrote = null;
+  try {
   const base = {
     id, run_id: caller.run_id, repo, into_branch: into, worktree: tree.path, created_worktree: true, base_sha: start, head_sha: start,
     task_ids: [...args.task_ids], merged: [], conflict: null, error: null, checks: null, passed: null, junctions: tree.junctions, removed_at: null,
     owner_pid: process.pid, owner_boot: await W.ownBoot(E), target: 'user', head_before: place.head, head_after: place.head, applied: 'none', approver, prepared: null,
   };
-  E.store.tx(() => { E.assertRunOpen(caller, 'integration.merge'); rows.append(E.store, 'integration', { ...base, state: 'merging' }, by, Date.now()); });
+  E.store.tx(() => { E.assertRunOpen(caller, 'integration.merge'); wrote = rows.append(E.store, 'integration', { ...base, state: 'merging' }, by, Date.now()); });
   E.noteWrite();
   const out = { ...base, state: 'evaluated' };
   const entries = [];
@@ -90,11 +93,11 @@ async function mergeIntoUser(E, caller, args, c) {
   const stop = out.conflict || out.error;
   const unapplied = () => entries.map(({ task_id, sha, head_sha }) => ({ task_id, sha, head_sha }));
   let ran = false;
-  if (!stop && args.evaluate !== false && entries.length) {
+  if (!stop && (args.evaluate !== false || extra.length) && entries.length) {
     try {
       const reuse = INC.reuseFor(E, repo, into, merged, (await G.dirtyPaths(tree.path)).length === 0);
       const endSpan = EC.beginSpan(`integration ${id}`);
-      try { out.checks = await rerun(tasks.filter((t) => entries.some((m) => m.task_id === t.id)), tree.path, reuse, merged, (a, b) => EC.during(`integration ${id}`, a, b)); } finally { endSpan(); }
+      try { out.checks = await rerun(args.evaluate === false ? [] : tasks.filter((t) => entries.some((m) => m.task_id === t.id)), tree.path, reuse, merged, (a, b) => EC.during(`integration ${id}`, a, b), extra, until); } finally { endSpan(); }
       out.passed = out.checks.length > 0 ? out.checks.every((x) => x.passed) : null;
       ran = out.checks.length > 0;
     } catch (e) {
@@ -107,7 +110,7 @@ async function mergeIntoUser(E, caller, args, c) {
     if (ran && out.passed !== true) {
       out.error = { message: `a check failed on the merged head ${merged}; ${into} was not moved`, merge_head: merged, unapplied: unapplied() };
     } else {
-      if (!ran) out.error = { message: `applied unchecked: ${args.evaluate === false ? 'evaluate was false' : 'the merged tasks declare no acceptance commands'}, so nothing is proven` };
+      if (!ran) out.error = { message: `applied unchecked: ${args.evaluate === false ? 'evaluate was false and the call named no checks' : 'the merged tasks declare no acceptance commands'}, so nothing is proven` };
       // The last look before the move: the branch may have been checked out since the placement was read. What happens between this look and the update-ref is not closed by a lock (git has none for it); the compare-and-swap is what catches a branch that moved.
       const checkedOut = (await G.worktrees(repo)).find((w) => w.branch && fold(w.branch) === fold(into));
       if (checkedOut) {
@@ -129,6 +132,7 @@ async function mergeIntoUser(E, caller, args, c) {
   if (out.conflict) out.conflict = { ...out.conflict, unapplied: unapplied() };
   if (out.applied !== 'none') await dropPrepared(repo, E, into, id, merged, by, fold); // earlier prepared merges this head contains
   let removal = null, removedAt = null;
+  treeGone = true; // removeTree below owns the tree from here
   try {
     removal = await W.removeTree(E, { repo, path: tree.path, junctions: tree.junctions, branch: null }, { force: true }, `integration ${id}`);
     removedAt = removal.leftover ? null : Date.now();
@@ -139,6 +143,11 @@ async function mergeIntoUser(E, caller, args, c) {
   const row = E.store.tx(() => { const o = rows.append(E.store, 'integration', out, by, Date.now()); return removedAt ? rows.append(E.store, 'integration', { ...o, removed_at: removedAt }, by, Date.now()) : o; });
   E.noteWrite();
   return { ...view(row), checked: ran, ...(ran ? {} : { note: 'no checks ran' }), merge_commits: entries.map((m) => m.head_sha).filter(Boolean), ...(removal ? { removal } : {}) };
+  } catch (e) { // a throw outside the guarded steps: the temporary tree and the open `merging` row do not outlive the call
+    if (!treeGone) { try { await W.removeTree(E, { repo, path: tree.path, junctions: tree.junctions, branch: null }, { force: true }, `integration ${id}`); } catch (_) { /* the error below is the one reported */ } }
+    if (wrote) { try { E.store.tx(() => rows.append(E.store, 'integration', { ...wrote, state: 'failed', error: { code: e.code || 'E_INTERNAL', message: e.message } }, by, Date.now())); } catch (_) { /* the store may be closing */ } }
+    throw e;
+  }
 }
 
 module.exports = { mergeIntoUser, dropPrepared };
