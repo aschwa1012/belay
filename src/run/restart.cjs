@@ -82,7 +82,7 @@ async function writeBottle(w, ctx, core, lv) {
 }
 
 // `ctx` is optional: without it (or with `memory.bottle` off) the replace branch is exactly what it was.
-async function restartFirstText(w, branch, { core, ctx }) {
+async function restartFirstText(w, branch, { core, ctx, hold }) {
   if (branch === 'resume') {
     const rl = w.taskId ? await core.continuity.resumeLine({ task_id: w.taskId }).catch(() => null) : null;
     return 'You were interrupted and resumed. Continue from where you left off.' + (rl && rl.text ? '\n\n' + rl.text : '');
@@ -102,7 +102,24 @@ async function restartFirstText(w, branch, { core, ctx }) {
   }
   const rl = await core.continuity.resumeLine(key).catch(() => null);
   return (rl && rl.text ? rl.text + '\n\n' : '') +
-    'This is a fresh session replacing an interrupted one. Read resume.md in your worker directory, then continue.' + require('./task-body.cjs').PROCESS_LINE + (w.handbackRule || ''); // a new session has not seen the standing line or the hand-back rule (and its required fields)
+    'This is a fresh session replacing an interrupted one. Read resume.md in your worker directory, then continue.' + require('./task-body.cjs').PROCESS_LINE + (await currentRule(w, core, hold)); // a new session has not seen the standing line or the hand-back rule (and its required fields)
+}
+
+// The hand-back rule for the task this worker holds now, rebuilt from the core: the spawn's rule names the spawn task's lease, which a
+// death, a hand-back or a task_assign since has changed. Empty unless a lease on the task is unreleased and held by this worker and the
+// relaunch did not report it lost. The held task is found among the run's tasks (a task_assign moves it; `w.taskId` stays the spawn's).
+async function currentRule(w, core, hold) {
+  if (!w.taskId || (hold && hold.reason === 'lease_lost')) return '';
+  try {
+    const mine = (t) => t && t.lease && t.lease.holder === w.id && t.lease.holder_role === 'worker' && !t.lease.released_at;
+    let task = null;
+    if (core.task && typeof core.task.list === 'function') task = (((await core.task.list({})) || {}).tasks || []).filter(mine).pop() || null;
+    if (!task) { const t = await core.task.get({ task_id: w.taskId }); task = mine(t) ? t : null; }
+    if (!task) return '';
+    const full = (await core.task.get({ task_id: task.id })) || task;
+    const HB = require('./handback.cjs'), assigned = { task: full, new_lease: full.lease };
+    return HB.rule(assigned, await HB.facts((id) => core.task.get({ task_id: id }), assigned));
+  } catch { return ''; }
 }
 
 // ADR 0046 decision 1: a worker launched again (restart, resume, a Codex turn) may have been adopted from a run that has

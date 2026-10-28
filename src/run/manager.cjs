@@ -345,7 +345,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       w.stopRequested = false;
 
       const overridden = firstTextOverride ? await firstTextOverride(d.branch) : undefined;
-      let firstText = overridden !== undefined ? overridden : await restartFirstText(w, d.branch, { core, ctx });
+      let firstText = overridden !== undefined ? overridden : await restartFirstText(w, d.branch, { core, ctx, hold });
       firstText = (await MP.relaunch(w, ctx, firstText, { fresh: d.branch === 'replace', message: appendMessage })) + leaseNote(hold); // ADR 0042 decision 3: minus the rows already shown, only where that conversation still holds them
       if (d.branch === 'replace') {
         w.sessionId = null;
