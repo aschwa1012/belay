@@ -83,7 +83,7 @@ function renderText(receipt) {
     const rr = receipt.review_rounds === null ? `unknown (${receipt.review_rounds_reason})` : receipt.review_rounds;
     lines.push(`levers: max_fix_rounds ${receipt.levers.max_fix_rounds}, fix_cutoff ${receipt.levers.fix_cutoff}, on_embedder_failure ${receipt.levers.on_embedder_failure}${receipt.levers.max_parallel_evaluations ? `, max_parallel_evaluations ${receipt.levers.max_parallel_evaluations}` : ''}${memoryText(receipt.levers)}; review_rounds: ${rr}`);
   }
-  lines.push(...RI.embedderLines(receipt), ...require('../run/review-scratch.cjs').lines(receipt), ...require('./run-trees.cjs').lines(receipt)); // ADR 0054 amendment 1: what the close removed
+  lines.push(...RI.embedderLines(receipt), ...require('../run/review-scratch.cjs').lines(receipt), ...require('./run-trees.cjs').lines(receipt), ...require('./run-checks.cjs').lines(receipt)); // ADR 0054 amendment 1: what the close removed
   if (receipt.receipt_path) lines.push(`receipt: ${receipt.receipt_path}`);
   lines.push('');
   return lines.join('\n');
@@ -339,7 +339,7 @@ async function run(ctx) {
   let shutdown = null, reviewWait = null;
   let stopReceipt = null;
   let closed = null;
-  let memoryEnd = null, treesClosed = null;
+  let memoryEnd = null, treesClosed = null, taskChecks = null;
   let closeStages = null;
   let reviewRounds = { value: null, reason: 'the run was never attached, so no tasks were read' };
   // ADR 0039 follow-up: one worker close (ADR 0029); a fast close runs it inside the loop, before the gate collect.
@@ -414,7 +414,7 @@ async function run(ctx) {
         else if (!crashedBy) crashedBy = `belay run crashed while ending the run: ${x.msg}`;
       }
       // The adapter has closed and run.end has settled the rows; this process still owns the store.
-      memoryEnd = await memoryRunEnd({ core, runId: parsed.runId, levers: parsed.levers, ce, late: (m) => { postFailure = chain(postFailure, 'fast close', m); } }); treesClosed = await require('./run-trees.cjs').closeTrees({ core, runId: parsed.runId, endedRow, closed, ce, late, deps: process.env.BELAY_TEST_MODE === '1' ? ctx.treesDeps : undefined }); // ADR 0065: the clean task trees, before the review wait
+      memoryEnd = await memoryRunEnd({ core, runId: parsed.runId, levers: parsed.levers, ce, late: (m) => { postFailure = chain(postFailure, 'fast close', m); } }); treesClosed = await require('./run-trees.cjs').closeTrees({ core, runId: parsed.runId, endedRow, closed, ce, late, deps: process.env.BELAY_TEST_MODE === '1' ? ctx.treesDeps : undefined }); taskChecks = await require('./run-checks.cjs').collect({ core, runId: parsed.runId, startedAt: gotRun && gotRun.run ? gotRun.run.started_at : null }); // ADR 0065: the clean task trees, before the review wait; ADR 0069: each task's checks
     }
   } finally {
     // shutdownOwner() on every path this far, because becomeOwner's owner: true still stands.
@@ -486,7 +486,7 @@ async function run(ctx) {
     review_rounds: reviewRounds.value, review_rounds_reason: reviewRounds.reason,
     workers_closed: closed ? workersClosedBlock(closed, endedRow ? (endedRow.workers_marked_dead || []) : null) : null,
     ...(closeStages ? { close_stages: closeStages } : {}), // only with notes on
-    ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), ...(treesClosed ? { worktrees_closed: treesClosed } : {}), ...require('../run/review-scratch.cjs').closeRun(dataDir, parsed.runId, parsed.levers), // the run-end memory jobs; the reviewers' scratch removed (ADR 0054 amendment 1)
+    ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), ...(treesClosed ? { worktrees_closed: treesClosed } : {}), ...(taskChecks ? { task_checks: taskChecks } : {}), ...require('../run/review-scratch.cjs').closeRun(dataDir, parsed.runId, parsed.levers), // the run-end memory jobs; the reviewers' scratch removed (ADR 0054 amendment 1)
   };
   try {
     fs.writeFileSync(receiptPath, `${JSON.stringify({ ...receipt, receipt_path: receiptPath }, null, 2)}\n`);
