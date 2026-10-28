@@ -25,7 +25,7 @@ const ALL_NAMES = new Set(ALL_ON.concat(BASE).map((t) => t.name));
 // lease_release), a value (done), a branch name (main).
 const NOT_FIELDS = new Set(['done', 'lease_release', 'main']);
 // Per tool: the prompt names a result or a refusal detail beside the tool, not an input.
-const NOT_FIELDS_OF = { memory_store: new Set(['notes']), worker_message: new Set(['op', 'queued']), worker_spawn: new Set(['coder']), worker_wait: new Set(['already', 'evaluated', 'evaluating']), task_assign: new Set(['delivered']), task_create: new Set(['flaky']), integrate: new Set(['retries_on_fail', 'flaky']), memory_retrieve: new Set(['memory_ids']) };
+const NOT_FIELDS_OF = { memory_store: new Set(['notes']), worker_message: new Set(['op', 'queued']), worker_spawn: new Set(['coder']), worker_wait: new Set(['already', 'evaluated', 'evaluating']), task_assign: new Set(['delivered']), task_create: new Set(['flaky']), memory_retrieve: new Set(['memory_ids']) };
 
 // Marks: every `mcp__belay__<tool>` (the tool must exist) and every backticked bare name that is a listed tool.
 function marks(text) {
