@@ -19,7 +19,7 @@ before(async () => {
   dir = sandbox();
   repo = makeRepo(dir);
   orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
-  await orch.run.attach({ adapter_pid: process.pid, project_dir: repo, max_fix_rounds: 3 });
+  await orch.run.attach({ adapter_pid: process.pid, project_dir: repo, fix_hard_cap: 3 });
 });
 after(async () => { try { await orch.shutdownOwner(); } finally { await orch.close(); cleanup(dir); } });
 

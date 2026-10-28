@@ -310,7 +310,8 @@ export function Pane(c: Ctx) {
       tasksLine.push({ t: b.on, c: 'success' }, { t: b.off, dim: true }, { t: ` ${t.done ?? 0}/${t.total}` })
     } else tasksLine.push({ t: `${t.held} held by agents` })
   }
-  if (snap.maxFixRounds !== null) tasksLine.push({ t: '   fix rounds ', dim: true }, { t: `max ${snap.maxFixRounds}` }) // the rounds used are not recorded, so no used count
+  if (snap.maxFixRounds !== null) tasksLine.push({ t: '   fix rounds ', dim: true }, { t: `notice at ${snap.maxFixRounds}` }) // the rounds used are not recorded, so no used count
+  if (snap.fixHardCap !== null) tasksLine.push({ t: '   hard cap ', dim: true }, { t: String(snap.fixHardCap) })
   if (snap.embedder) tasksLine.push({ t: '   embedder ', dim: true }, { t: snap.embedder, c: snap.embedder === 'ok' ? 'success' : 'warning' })
   const f = snap.footer
   const costLine: Seg[] = f

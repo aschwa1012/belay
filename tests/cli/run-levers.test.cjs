@@ -56,13 +56,13 @@ test('levers: parseLevers defaults and validation', () => {
 test('levers: substituteLevers replaces every placeholder, counts them, and passes a plain prompt through', () => {
   const lv = { max_fix_rounds: 3, fix_cutoff: 'cap-only' };
   const out = substituteLevers('a {{max_fix_rounds}} b {{max_fix_rounds}} c {{fix_cutoff_rule}} d', lv, 0);
-  assert.strictEqual(out.text, 'a 3 b 3 c Do not stop fix rounds before the cap. d');
+  assert.strictEqual(out.text, 'a 3 b 3 c Do not stop fix rounds before the fix-round limit. d');
   assert.deepStrictEqual(out.substituted, { max_fix_rounds: 2, fix_cutoff_rule: 1 });
   const plain = substituteLevers('no placeholders here\n', lv, 0);
   assert.strictEqual(plain.text, 'no placeholders here\n');
   assert.deepStrictEqual(plain.substituted, { max_fix_rounds: 0, fix_cutoff_rule: 0 });
   const orch = substituteLevers('{{fix_cutoff_rule}}', { max_fix_rounds: 2, fix_cutoff: 'orchestrator' }, 600000).text;
-  for (const part of ['survived a fix round', 'new regression', 'outside the task', 'stop-and-surface', 'never report a refuted step as passing',
+  for (const part of ['survived a fix round', 'new regression', 'outside the task', 'stop-and-surface', 'report a refuted step as passing',
     'the run\'s time bound (600000 ms from its start) is near, judged from the waited_ms your worker_wait answers report']) {
     assert.ok(orch.includes(part), `the orchestrator rule names "${part}"`);
   }
@@ -93,14 +93,14 @@ test('run: the orchestrator receives the prompt with both placeholders substitut
   const a = go(tpl, { max_fix_rounds: 4, fix_cutoff: 'cap-only' });
   try {
     assert.strictEqual(a.status, 0, a.stderr.slice(-600));
-    assert.strictEqual(fs.readFileSync(`${a.orchDir}/prompt.txt`, 'utf8'), 'cap 4 rounds. Do not stop fix rounds before the cap. again 4\n');
+    assert.strictEqual(fs.readFileSync(`${a.orchDir}/prompt.txt`, 'utf8'), 'cap 4 rounds. Do not stop fix rounds before the fix-round limit. again 4\n');
   } finally { cleanup(a.dir); }
 
   const b = go(tpl, {});
   try {
     assert.strictEqual(b.status, 0, b.stderr.slice(-600));
     const text = fs.readFileSync(`${b.orchDir}/prompt.txt`, 'utf8');
-    assert.ok(text.startsWith('cap 2 rounds. You may stop fix rounds before the cap'), text);
+    assert.ok(text.startsWith('cap 2 rounds. You may stop fix rounds before the fix-round limit'), text);
     assert.ok(!text.includes('{{'), 'no placeholder is left');
     assert.deepStrictEqual(JSON.parse(b.stdout).levers, { max_fix_rounds: 2, fix_cutoff: 'orchestrator', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 2, fix_cutoff_rule: 1 } });
     assert.match(text, /The run has no time bound\./, 'timeout_ms defaults to 0');
@@ -164,7 +164,7 @@ test('template: the shipped orchestrator prompt has both placeholders and the fo
   assert.match(standard, /only if it has at least\s+one blocking finding/);
   assert.match(text, /belay appends the Review standard and the verdict hand-back rule to the reviewer's first message; do not repeat them/);
   assert.ok(!/verbatim, in the reviewer's prompt/.test(text), 'the orchestrator is not asked to copy it');
-  assert.match(text, /\(0: the first review\)/);
+  assert.match(text, /answer carries a\s+`fix_notice` with the count/);
   assert.match(text, /A failed acceptance check is not a fix round/); // ADR 0058: worded beside fix_from_review
   assert.ok(!/\bland\b/.test(text), 'no "land" wording');
   const done = substituteLevers(text, { max_fix_rounds: 2, fix_cutoff: 'orchestrator' }, 0);
@@ -308,3 +308,10 @@ test('run: a bad memory block exits 2 before anything is created; a good one run
 function adapterArgs(r) {
   return JSON.parse(fs.readFileSync(`${r.orchDir}/mcp.json`, 'utf8')).mcpServers.belay.args;
 }
+
+test('levers: fix_hard_cap is absent unless the spec sets it, and must be a non-negative integer', () => {
+  assert.ok(!('fix_hard_cap' in parseLevers({})));
+  assert.strictEqual(parseLevers({ fix_hard_cap: 4 }).fix_hard_cap, 4);
+  assert.strictEqual(parseLevers({ fix_hard_cap: 0 }).fix_hard_cap, 0);
+  for (const bad of [-1, 1.5, '3', null]) assert.match(parseLevers({ fix_hard_cap: bad }).error, /fix_hard_cap must be a non-negative integer/);
+});

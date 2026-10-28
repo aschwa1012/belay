@@ -99,7 +99,7 @@ export function parseRan(args: string[], r: { exitCode: number; stdout: string }
 export function fatalSnapshot(message: string, runId: string | null, now: number): BelayPanelSnap {
   return {
     fetchedAt: now, runId, mode: null, runState: null, stale: false, fatal: message, transcriptOk: false, transcriptAt: null,
-    startedAtMs: null, pausedAtMs: null, frozenAtMs: null, endedAtMs: null, tasks: null, maxFixRounds: null, embedder: null, agents: [], footer: null, notices: [], held: null, transcript: null,
+    startedAtMs: null, pausedAtMs: null, frozenAtMs: null, endedAtMs: null, tasks: null, maxFixRounds: null, fixHardCap: null, embedder: null, agents: [], footer: null, notices: [], held: null, transcript: null,
     settings: DEFAULT_SETTINGS, memoryNotice: null, errors: [], readIssues: [], goodAt: null,
   }
 }
@@ -193,6 +193,7 @@ export function buildSnapshot(p: Parts): BelayPanelSnap {
     endedAtMs: ag ? ag.endedAtMs : (prev?.endedAtMs ?? null),
     tasks: ag ? ag.tasks : (prev?.tasks ?? null),
     maxFixRounds: ag ? ag.maxFixRounds : (prev?.maxFixRounds ?? null),
+    fixHardCap: ag ? ag.fixHardCap : (prev?.fixHardCap ?? null),
     embedder: ag ? ag.embedder : (prev?.embedder ?? null),
     agents: ag ? ag.agents : (prev?.agents ?? []),
     footer: ag ? ag.footer : (prev?.footer ?? null),

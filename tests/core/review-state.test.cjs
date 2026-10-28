@@ -16,7 +16,7 @@ const PASS = { commands: [{ argv: [process.execPath, '-e', 'process.exit(0)'], t
 before(async () => {
   dir = sandbox();
   orch = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
-  await orch.run.attach({ adapter_pid: process.pid, max_fix_rounds: 2 });
+  await orch.run.attach({ adapter_pid: process.pid, fix_hard_cap: 2 });
 });
 
 after(async () => {
@@ -69,7 +69,7 @@ test('work with no review reads null; a review not yet judged reads pending; one
   assert.deepStrictEqual(await reviewOf(w.id), { state: 'holds', review_id: r.id, rounds: 0, rounds_left: 2 }, 'a cancelled later review judged nothing');
 });
 
-test('refuted three times with max_fix_rounds 2: the work stays done and reads refuted with no rounds left, on list and get alike', async () => {
+test('refuted three times with fix_hard_cap 2: the work stays done and reads refuted with no rounds left, on list and get alike', async () => {
   const w = await orch.task.create({ spec: 'work b', acceptance: PASS });
   await doneWork(w);
   let r = await judge(w, 'refuted');
@@ -142,7 +142,7 @@ test('rounds_left across runs: it is what the run of the newest fix would allow 
   // Another run, capped at 1, takes the next round: two rounds in all, none left in that run.
   const other = await openCore({ dataDir: dir, caller: callerFor('orchestrator', { run_id: 'run-b' }), embed: false });
   workers.set('run-b', other);
-  await other.run.attach({ adapter_pid: process.pid, max_fix_rounds: 1 });
+  await other.run.attach({ adapter_pid: process.pid, fix_hard_cap: 1 });
   await doneWork(f1);
   const r2 = await judge(f1, 'refuted');
   const f2 = await other.task.fixFromReview({ review_id: r2.id });

@@ -319,7 +319,7 @@ async function run(ctx) {
       if (!chosen) {
         const message = parsed.runId ? `no run row exists for ${parsed.runId}` : 'no run rows exist';
         if (!parsed.runId) {
-          const empty = { run_id: null, run_id_source: source, mode: null, mode_source: 'no run', started_at_ms: null, paused_at_ms: null, ended_at_ms: null, tasks: { done: 0, total: 0 }, max_fix_rounds: null, agents: [], footer: footerOf([]) };
+          const empty = { run_id: null, run_id_source: source, mode: null, mode_source: 'no run', started_at_ms: null, paused_at_ms: null, ended_at_ms: null, tasks: { done: 0, total: 0 }, max_fix_rounds: null, fix_hard_cap: null, agents: [], footer: footerOf([]) };
           return { code: 0, text: renderText(empty), json: empty };
         }
         return { code: 1, text: `belay agents: ${P.clean(message)}\n`, json: { error: { code: 'E_NOT_FOUND', message, run_id: parsed.runId } } };
@@ -342,6 +342,7 @@ async function run(ctx) {
         started_at_ms: nn(chosen.started_at), paused_at_ms: nn(chosen.paused_at), ended_at_ms: nn(chosen.ended_at),
         tasks: { done: runTasks.filter((t) => t.state === 'done').length, total: runTasks.length },
         max_fix_rounds: nn(chosen.max_fix_rounds), // the run row records the limit, not the rounds used
+        fix_hard_cap: nn(chosen.fix_hard_cap),
         memory_notice: require('../core/memory-notice.cjs').noticeForRun(chosen, null), // this run's own notice (or null): the panel shows it, never the config's
         agents, footer: footerOf(agents), owner: core.ownerInfo(),
       };

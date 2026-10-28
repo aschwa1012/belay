@@ -30,7 +30,7 @@ function index(store, tasks) {
       for (const d of t.depends_on || []) (reviewsOf.get(d) || reviewsOf.set(d, []).get(d)).push(t);
     } else if (t.repairs) (fixesOf.get(t.repairs) || fixesOf.set(t.repairs, []).get(t.repairs)).push(t);
   }
-  const caps = new Map(rows.currentAll(store, 'run').map((r) => [r.id, r.max_fix_rounds == null ? null : Number(r.max_fix_rounds)]));
+  const caps = new Map(rows.currentAll(store, 'run').map((r) => [r.id, r.fix_hard_cap == null ? null : Number(r.fix_hard_cap)]));
   return { born, reviewsOf, fixesOf, caps };
 }
 
@@ -71,7 +71,7 @@ function deciding(reviews, fixes, ix) {
 
 // `{ state: holds|refuted|pending, review_id, rounds, rounds_left }` for a work task or one of its fixes, from the review over the
 // chain that decides (deciding); null for work no review has named (a review task, unless something reviews it). `rounds` is the
-// fix tasks made for the work; `rounds_left` is what its run's max_fix_rounds allows beyond them (null with no cap), so
+// fix tasks made for the work; `rounds_left` is what its run's fix_hard_cap allows beyond them (null with no hard cap, the default), so
 // `refuted` with 0 left is work whose review failed with no fix round to spend.
 function ofTask(task, ix) {
   const root = task.repairs || task.id;

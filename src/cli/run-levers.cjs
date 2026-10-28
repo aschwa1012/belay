@@ -42,7 +42,7 @@ const MEMORY_QUERIES_LINE = ' Also give 1 to 3 `memory_queries`: task lines (eac
 // `mode` is 'headless' (the default, byte-identical to before) or 'interactive' (ADR 0037 decision 4: the run
 // does not end, so stop-and-surface is stop, store, tell the operator, then wait).
 function cutoffRule(fixCutoff, timeoutMs, mode = 'headless') {
-  if (fixCutoff === 'cap-only') return 'Do not stop fix rounds before the cap.';
+  if (fixCutoff === 'cap-only') return 'Do not stop fix rounds before the fix-round limit.';
   const timeCond = timeoutMs > 0
     ? `; the run's time bound (${timeoutMs} ms from its start) is near, judged from the waited_ms your worker_wait answers report`
     : '';
@@ -50,11 +50,11 @@ function cutoffRule(fixCutoff, timeoutMs, mode = 'headless') {
   const surface = interactive
     ? '(stop, record the outcome, tell the operator the open blocking findings, then wait for them)'
     : '(end the run and name the open blocking findings for the human)';
-  return `You may stop fix rounds before the cap, only towards stop-and-surface ${surface}, `
+  return `You may stop fix rounds before the fix-round limit, only towards stop-and-surface ${surface}, `
     + 'and only when one of these holds: the same blocking finding '
     + 'survived a fix round; a fix round introduced a new regression; the fix needs files outside the task\'s '
     + `owned set${timeCond}. Name the condition and its evidence when you ${interactive ? 'stop' : 'close'}. Never `
-    + 'extend past the cap and never report a refuted step as passing or mark it done.'
+    + 'report a refuted step as passing or mark it done.'
     + (timeoutMs > 0 ? '' : ' The run has no time bound.');
 }
 
@@ -110,7 +110,7 @@ function evalKeys(spec) {
   return { fold: Object.keys(fold).length ? fold : null };
 }
 
-// Returns { max_fix_rounds, fix_cutoff, on_embedder_failure[, compact_at_tokens] } or { error }. `compact_at_tokens` (ADR 0007 decision 3,
+// Returns { max_fix_rounds, fix_cutoff, on_embedder_failure[, fix_hard_cap, compact_at_tokens] } or { error }. `compact_at_tokens` (ADR 0007 decision 3,
 // null by default) is present only when set, so a run without it has the receipt it always had.
 function parseLevers(spec, opts = {}) {
   let maxFixRounds = DEFAULT_MAX_FIX_ROUNDS;
@@ -120,6 +120,13 @@ function parseLevers(spec, opts = {}) {
       return { error: 'max_fix_rounds must be a non-negative integer' };
     }
     maxFixRounds = v;
+  }
+  // ADR 0031 amendment 3: a refusal only where the user declares one. Unset, no fix task is refused.
+  let fixHardCap = null;
+  if (spec.fix_hard_cap !== undefined) {
+    const v = spec.fix_hard_cap;
+    if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0) return { error: 'fix_hard_cap must be a non-negative integer' };
+    fixHardCap = v;
   }
   let fixCutoff = DEFAULT_FIX_CUTOFF;
   if (spec.fix_cutoff !== undefined) {
@@ -142,6 +149,7 @@ function parseLevers(spec, opts = {}) {
     onEmbedderFailure = EM.normalize(opts.config.memory.on_embedder_failure) || DEFAULT_ON_EMBEDDER_FAILURE; // a bad config value is refused by parseMemoryBlock below
   }
   const out = { max_fix_rounds: maxFixRounds, fix_cutoff: fixCutoff, on_embedder_failure: onEmbedderFailure };
+  if (fixHardCap !== null) out.fix_hard_cap = fixHardCap; // absent unless set, so a run without it has the receipt it always had
   const ca = CP.parseCompactAt(spec.compact_at_tokens);
   if (ca.error) return { error: ca.error };
   if (ca.value !== null) out.compact_at_tokens = ca.value;

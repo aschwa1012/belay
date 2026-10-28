@@ -91,20 +91,20 @@ async function create(E, caller, args, own = {}) { // own: core-internal, task.f
     }
   }
 
-  // ADR 0031 decision 6: a fix task names the work it repairs, and core refuses one past the run's cap.
-  // A run row with no cap (an operator's own session, a pre-lever store) is not enforced.
+  // ADR 0031 amendment 3: a fix task names its work; core refuses one only past the user's fix_hard_cap (none by default), and past max_fix_rounds the row carries a fix_notice.
+  let fixNotice = null;
   if (repairs) {
     if (!rows.current(E.store, 'task', repairs)) {
       throw err('E_NOT_FOUND', `task ${id} would repair ${repairs}, which has no row in this store`, { task_id: id, missing_repairs: repairs });
     }
     const run = rows.current(E.store, 'run', caller.run_id);
+    const hard = run && run.fix_hard_cap != null ? Number(run.fix_hard_cap) : null;
     const cap = run && run.max_fix_rounds != null ? Number(run.max_fix_rounds) : null;
-    if (cap != null) {
-      const used = rows.currentAll(E.store, 'task').filter(o => o.repairs === repairs && o.run_id === caller.run_id).length;
-      if (used >= cap) {
-        throw err('E_FIX_ROUNDS', `task ${repairs} already has ${used} fix task${used === 1 ? '' : 's'} and this run's max_fix_rounds is ${cap}; nothing was written. End the run and name the open blocking findings for the human`, { task_id: id, repairs, fix_rounds_used: used, max_fix_rounds: cap });
-      }
+    const used = rows.currentAll(E.store, 'task').filter(o => o.repairs === repairs && o.run_id === caller.run_id).length;
+    if (hard != null && used >= hard) {
+      throw err('E_FIX_ROUNDS', `task ${repairs} already has ${used} fix task${used === 1 ? '' : 's'} and this run's fix_hard_cap is ${hard}; nothing was written`, { task_id: id, repairs, fix_rounds_used: used, fix_hard_cap: hard });
     }
+    if (cap != null && used >= cap) fixNotice = `task ${repairs} now has ${used + 1} fix tasks, past max_fix_rounds ${cap}`;
   }
 
   let overlaps = [];
@@ -124,7 +124,7 @@ async function create(E, caller, args, own = {}) { // own: core-internal, task.f
     results: null, depends_on: deps, repairs, ...(tree ? { worktree: tree } : {}), ...(own.answers ? { answers: own.answers } : {}), ...(args.base != null ? { base: require('./methods-worktree.cjs').baseArg(args.base) } : {}),
   }, E.writtenBy(caller), t);
   E.noteWrite();
-  return overlaps.length ? { ...row, overlaps } : row;
+  return overlaps.length || fixNotice ? { ...row, ...(overlaps.length ? { overlaps } : {}), ...(fixNotice ? { fix_notice: fixNotice } : {}) } : row;
 }
 
 // The dependency gate shared by task.assign and task.evaluate: only `done` opens it (ADR 0013 §1, ADR 0030 decision 2).

@@ -238,3 +238,10 @@ test('a dead review worker is not live; a dead coder is', () => {
   assert.strictEqual(M.isLive({ id: 'archreview-r-1-abc', state: 'running' }), true);
   assert.strictEqual(M.isLive({ id: 'coder-1', state: 'done' }), false);
 });
+
+test('normAgents: the fix-round notice threshold and the hard cap are read apart, and an unset hard cap is null', () => {
+  const a = M.normAgents({ max_fix_rounds: 2, fix_hard_cap: null, agents: [] });
+  assert.strictEqual(a.maxFixRounds, 2);
+  assert.strictEqual(a.fixHardCap, null);
+  assert.strictEqual(M.normAgents({ max_fix_rounds: 2, fix_hard_cap: 5, agents: [] }).fixHardCap, 5);
+});
