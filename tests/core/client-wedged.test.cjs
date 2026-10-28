@@ -67,6 +67,7 @@ test('a wedged owner: 8 reads in one process cost one dial and finish fast, each
     assert.ok(vias.every(v => /owner unresponsive \(answer timed out at 300 ms; pid \d+, .*\); read from copy until \d{4}-/.test(v)), JSON.stringify(vias));
     await c.close();
   } finally {
+    unresponsive.reset();
     if (child && child.exitCode === null) { try { process.kill(child.pid); } catch { /* gone */ } }
     cleanup(dir);
   }

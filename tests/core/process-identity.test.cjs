@@ -232,7 +232,9 @@ test('real: the creation time read from the snapshot is the identity that kills 
     assert.strictEqual(r.refused, null, JSON.stringify(r));
     assert.strictEqual(r.identity.via, 'created');
     assert.ok(r.tree.terminated >= 2, `the grandchild must go too: ${JSON.stringify(r.tree)}`);
-    await parentExit;
+    // The kill ends the parent; the bound is only a hang guard with a message.
+    let guard;
+    await Promise.race([parentExit, new Promise((_, rej) => { guard = setTimeout(() => rej(new Error('the parent did not exit within 30 s of the tree kill')), 30000); })]).finally(() => clearTimeout(guard));
     assert.strictEqual(exited(parent), true);
     assert.strictEqual(exited(bystander), false, 'a process outside the tree must survive');
   } finally { bystander.kill(); if (!exited(parent)) parent.kill(); }

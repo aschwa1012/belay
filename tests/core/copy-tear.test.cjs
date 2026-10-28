@@ -147,12 +147,13 @@ test('a writer that changes the store on every attempt until the retry budget en
 // host. The retries run on a time budget, so a writer that stops is waited out and the read answers.
 test('a writer that changes the store on the first copies and then stops is waited out, never E_BUSY', async () => {
   const st = makeStore();
+  const budget = hooks.budgetMs; hooks.budgetMs = 120000; // the count of copies is the subject, so a slow host cannot end it by the clock
   try {
     const r = await read(st, { file: 'db', chunk: 1 }, () => { bump(st, st.d); st.d.exec('PRAGMA wal_checkpoint(TRUNCATE)'); }, 5);
     assert.equal(r.fired, 5);
     assert.equal(r.value, last(st), r.error && r.error.message);
     assert.equal(r.copies, 6, 'five copies were discarded, the sixth was quiet');
-  } finally { done(st); }
+  } finally { hooks.budgetMs = budget; done(st); }
 });
 
 test('a store nothing writes to is copied once', async () => {
@@ -251,4 +252,19 @@ test('with no WAL a write between the window wait and the stamp does not hide a 
     assert.equal(gens, String(d.prepare('SELECT DISTINCT gen FROM t').get().gen));
     assert.equal(gens, '3');
   } finally { fs.statSync = origStat; try { d.close(); } catch { /* closed */ } fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// The wait between attempts must yield: a long-lived caller (an MCP adapter, the run process) answers a bounded
+// liveness request on its own pipe while its read retries, so a timer on its event loop has to fire during the retries.
+test('the retries between copies yield to the event loop', async () => {
+  const st = makeStore();
+  let ticks = 0;
+  const timer = setInterval(() => { ticks++; }, 1);
+  const budget = hooks.budgetMs; hooks.budgetMs = 120000;
+  try {
+    const r = await read(st, { file: 'db', chunk: 1 }, () => { bump(st, st.d); st.d.exec('PRAGMA wal_checkpoint(TRUNCATE)'); }, 4);
+    assert.equal(r.value, last(st), r.error && r.error.message);
+    assert.ok(r.copies >= 5, 'the read retried: ' + r.copies);
+    assert.ok(ticks >= 3, 'a timer fired while the read was retrying: ' + ticks);
+  } finally { clearInterval(timer); hooks.budgetMs = budget; done(st); }
 });

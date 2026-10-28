@@ -169,14 +169,25 @@ test('copy-then-read survives an owner that has the -shm file mapped', async (t)
   // A live owner holds -shm as a memory mapping, and on Windows copying a mapped file fails EBUSY often
   // enough to have made this intermittent rather than absent. A read must answer or raise a Core error;
   // throwing a filesystem errno out of the read path is neither. Repeated, because it is a race.
+  // A copy that stays over a changing store for the whole retry budget raises the Core error E_BUSY (copy-changed): that is an
+  // answer, counted here. Any other error, a filesystem errno above all, fails the test.
+  let busy = 0;
   for (let i = 0; i < 25; i++) {
-    const rows = await withCopy(dir, async (dbPath, establishedBy) => {
-      assert.strictEqual(establishedBy, 'copy');
-      const store = new Store(dbPath);
-      try { return store.list({ namespace: 'busy' }); } finally { store.close(); }
-    });
+    let rows;
+    try {
+      rows = await withCopy(dir, async (dbPath, establishedBy) => {
+        assert.strictEqual(establishedBy, 'copy');
+        const store = new Store(dbPath);
+        try { return store.list({ namespace: 'busy' }); } finally { store.close(); }
+      });
+    } catch (e) {
+      if (e.code !== 'E_BUSY' || !e.detail || e.detail.reason !== 'copy-changed') throw e;
+      busy++;
+      continue;
+    }
     assert.strictEqual(rows.length, 1, `copy ${i} lost the row the owner had committed`);
     assert.strictEqual(rows[0].text, 'written while an owner holds the mapping');
   }
+  assert.ok(busy < 25, `every read ended E_BUSY copy-changed (${busy} of 25)`);
   await c.close();
 });

@@ -67,6 +67,7 @@ class Owner {
     // the engine. `inFlightControls` tracks each call plus its flushed reply so `stop()` can wait.
     this.controls = opts.controls || {};
     this.inFlightControls = new Set();
+    this.inFlightCalls = new Set(); // engine calls served over the pipe, each with its reply write, so stop() can let them answer
   }
 
   // The lock is published before the pipe exists, and it has to be: a stale-lock takeover needs a pid to
@@ -393,7 +394,7 @@ class Owner {
       return;
     }
 
-    Promise.resolve()
+    const call = Promise.resolve()
       .then(() => this.engine.handle(req.method, decodeWire(req.params || {})))
       .then(result => { if (!c.destroyed) c.write(JSON.stringify({ id: req.id, result }) + '\n'); })
       .catch(e => {
@@ -401,6 +402,8 @@ class Owner {
         if (c.destroyed) return;
         c.write(JSON.stringify({ id: req.id, error: { code: e.code || 'E_INTERNAL', message: e.message, detail: e.detail } }) + '\n');
       });
+    this.inFlightCalls.add(call);
+    call.finally(() => this.inFlightCalls.delete(call));
   }
 
   // 5c: `run.stop` ahead of the engine, after `ping` and `shutdown` — operator only (the shape
@@ -475,6 +478,9 @@ class Owner {
     // before the timers are cleared and the connections destroyed, so every registered waiter resolves
     // (a settle marker, never a verdict) before the socket it would have answered over is torn down.
     try { if (this.engine) this.engine.settleWaiters(); } catch (e) { record(e); }
+    // A call already being served answers before its connection is destroyed (a committed write must not read as a lost owner);
+    // bounded at 5,000 ms like the controls above.
+    if (this.inFlightCalls.size) await new Promise((resolve) => { const timer = setTimeout(resolve, 5000); Promise.allSettled([...this.inFlightCalls]).then(() => { clearTimeout(timer); resolve(); }); });
     try { this.binds.close(); } catch (e) { record(e); } // ADR 0045: an owner takes its keys with it
     try { for (const t of this.timers || []) clearInterval(t); } catch (e) { record(e); }
     // MF1: the embedder child process ends with the owner, even mid-load or mid-embed: `close` over IPC,
