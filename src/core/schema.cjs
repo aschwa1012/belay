@@ -245,7 +245,7 @@ const MIGRATIONS = [
   // The worker's first dead row names the leases that death released (JSON array of { lease_id, task_id }), for the death wake.
   'ALTER TABLE lease ADD COLUMN released_reason TEXT',
   'ALTER TABLE worker ADD COLUMN leases_released TEXT',
-  // The estimated-spend budget (USD) of a run and of a task, and the run's budget record (JSON text: pauses, raises and overrides). Null when none.
+  // The spend budget (USD) of a run and of a task, and the run's budget record (JSON text: pauses, raises and overrides). Null when none.
   'ALTER TABLE run ADD COLUMN budget_usd REAL',
   'ALTER TABLE run ADD COLUMN budget TEXT',
   'ALTER TABLE task ADD COLUMN budget_usd REAL',

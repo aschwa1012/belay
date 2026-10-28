@@ -20,7 +20,7 @@ const KNOWN_KEYS = new Set([
   'worktree', 'prompt_file', 'brief_file', 'run_id', 'model', 'allowed_tools', 'orchestrator_dir',
   'startup_timeout_ms', 'timeout_ms', 'mcp_tool_timeout_ms', 'poll_ms', 'close_grace_ms',
   'max_fix_rounds', 'fix_hard_cap', 'fix_cutoff', 'on_embedder_failure', 'compact_at_tokens', 'stop_idle_on_done', 'max_parallel_evaluations', 'permission_prompt', 'keep_review_scratch', 'memory', 'mode', 'interactive_surface_ms', 'fullscreen',
-  'budget_usd', // the run's estimated-dollar limit (run-budget-levers.cjs)
+  'budget_usd', // the run's dollar limit (run-budget-levers.cjs)
   'native_memory', 'handback_question', // eval-only (0.3.2 memory eval); parseLevers folds them into the run's memory levers
 
 ]);

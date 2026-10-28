@@ -130,6 +130,7 @@ async function adopt({ core, workerId, dataDir }) {
   w.inputTokens = row.input_tokens || 0;
   w.outputTokens = row.output_tokens || 0;
   w.costUsd = row.cost_usd || 0;
+  w.adoptedLedger = { cost: w.costUsd, turns: w.turns }; // what the usage ledger already holds for this worker
   w.costBase = row.cost_base || 0; // reported cost of the lives before this session (a fresh session's total starts at zero)
   w.exitedAt = row.exited_at || null;
   w.exitCode = row.exit_code == null ? null : row.exit_code;

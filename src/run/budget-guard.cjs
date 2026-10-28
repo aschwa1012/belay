@@ -28,8 +28,8 @@ function wakeTextOf({ runId, scope, taskId, spent, limit, unknown, interactive =
     `belay: ${where} budget reached (${amount}); run paused. Ask your user`,
     'belay: budget reached; run paused. Ask your user',
   ] : [
-    `belay: ${where} budget reached (${amount}); run ${runId} is paused. Resume: belay resume ${runId} ${scope === 'task' ? '--task-budget <task> <usd>' : '--budget <usd>'} or --over-budget`,
-    `belay: ${where} budget reached (${amount}); run paused. belay resume ${runId} with a raised budget or --over-budget`,
+    `belay: ${where} budget reached (${amount}); run ${runId} is paused. Wait for the operator's resume, which raises the budget or overrides it`,
+    `belay: ${where} budget reached (${amount}); run paused. Wait for the operator's resume`,
     `belay: ${where} budget reached (${amount}); run paused`,
     'belay: budget reached; run paused',
   ];
@@ -50,6 +50,8 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
   let wakeSeq = 0;
 
   const orchSpend = () => (interactive ? 0 : orch.base + orch.last);
+  // What the run row's budget record says about the orchestrator's part, so status shows the figure the guard pauses on.
+  const orchRecord = () => (interactive ? { counted: false, why: 'an interactive session is not counted; belay agents prices its transcript' } : { counted: true, usd: orchSpend(), base: orch.base, last: orch.last });
   const active = () => limit != null || taskLimits.size > 0;
   const ownPause = (row) => isBudgetPause(row && row.paused_by);
 
@@ -67,6 +69,7 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
     const b = runRow.budget && typeof runRow.budget === 'object' ? runRow.budget : null;
     if (!b) return;
     Object.assign(rec, b);
+    if (!interactive && b.orchestrator && b.orchestrator.counted === true) { orch.base = (Number(b.orchestrator.base) || 0) + (Number(b.orchestrator.last) || 0); orch.last = 0; } // a new run process has a new orchestrator process: its own count starts over
     if (!Array.isArray(rec.events)) rec.events = [];
     if (runRow.budget_usd != null) limit = runRow.budget_usd;
     if (b.overrides) { overrides.run = !!b.overrides.run; for (const t of b.overrides.tasks || []) overrides.tasks.add(t); }
@@ -102,7 +105,7 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
     const ev = {
       type: 'pause', at: Date.now(), scope: c.scope, ...(c.task_id ? { task_id: c.task_id } : {}), limit: c.limit, spent: c.spent, spent_after_parks: after,
       first_seq: detail.first_seq, last_seq: detail.last_seq, per_worker: detail.per_worker, per_task: detail.per_task, unknown_turns: detail.unknown_turns, unknown_workers: detail.unknown_workers,
-      orchestrator: interactive ? { counted: false, why: 'an interactive session is not counted; belay agents prices its transcript' } : { counted: true, usd: orchSpend() },
+      orchestrator: orchRecord(),
       basis: 'reported', ...(rowRead ? {} : { run_row_unreadable: true }),
     };
     rec.events.push(ev);
@@ -132,6 +135,7 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
     if (interactive || typeof cost !== 'number' || !Number.isFinite(cost) || limit == null) return undefined;
     if (cost < orch.last) orch.base += orch.last;
     orch.last = cost;
+    rec.orchestrator = orchRecord(); Promise.resolve().then(flush).catch(() => {}); // the run row carries it for status and for a restarted run process
     return schedule(null);
   }
 

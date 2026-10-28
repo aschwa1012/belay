@@ -187,3 +187,22 @@ test('task limits are seeded from the task rows at attach, with the run record a
   await g.onUsage({ task_id: 't1' });
   assert.strictEqual(o.s.pauses.length, 1);
 });
+
+test('the orchestrator part is written to the budget record and survives a run process restart; the headless wake leaves the resume to the operator', async () => {
+  const a = spy({ run: 3 });
+  const g = mk(a, { runLimit: 10 });
+  await g.noteOrchestratorCost(4);
+  await g.settled(); await new Promise((r) => setImmediate(r));
+  const last = a.s.written[a.s.written.length - 1];
+  assert.deepStrictEqual(last.orchestrator, { counted: true, usd: 4, base: 0, last: 4 });
+  const b = spy({ run: 3 });
+  const g2 = mk(b, { runLimit: 10 });
+  await g2.loadAttach({ budget_usd: 10, budget: { source: 'spec', events: [], orchestrator: last.orchestrator } });
+  await g2.noteOrchestratorCost(1); // the new orchestrator process starts its own count
+  assert.strictEqual(g2.state().record.orchestrator.usd, 5);
+  const o = spy({ run: 9.2 });
+  await mk(o, { runLimit: 10 }).onUsage({ task_id: null });
+  const t = require('../../src/run/budget-guard.cjs').wakeTextOf({ runId: 'r1', scope: 'run', spent: 9.2, limit: 10, unknown: false });
+  assert.match(t, /operator's resume/);
+  assert.doesNotMatch(t, /belay resume|--over-budget/);
+});

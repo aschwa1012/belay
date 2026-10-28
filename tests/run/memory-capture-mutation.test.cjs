@@ -75,10 +75,10 @@ test('plan is null, not undefined, when no lever uses the capture, and a plan is
 test('the snapshot is taken at turn end: turn, usage, cost, pid, substrate, model, task, worker and final text', () => {
   const w = { turns: 4, lastTurnUsage: { input_tokens: 3 }, costUsd: 0.5, pid: 99, substrate: 'claude-code', initModel: 'claude-x', model: 'other', taskId: 't1', id: 'w1', lastAssistantText: 'earlier text' };
   assert.deepStrictEqual(MC.snapshotOf(w, { text: 'turn text' }), {
-    turn: 4, usage: { input_tokens: 3 }, cost: 0.5, pid: 99, substrate: 'claude-code', model: 'claude-x', taskId: 't1', workerId: 'w1', finalText: 'turn text',
+    turn: 4, usage: { input_tokens: 3 }, cost: 0.5, costBase: 0, pid: 99, substrate: 'claude-code', model: 'claude-x', taskId: 't1', workerId: 'w1', since: 0, until: 0, finalText: 'turn text',
   });
   const bare = MC.snapshotOf({ turns: 1, id: 'w2' }, null);
-  assert.deepStrictEqual(bare, { turn: 1, usage: null, cost: undefined, pid: undefined, substrate: undefined, model: null, taskId: null, workerId: 'w2', finalText: '' });
+  assert.deepStrictEqual(bare, { turn: 1, usage: null, cost: undefined, costBase: 0, pid: undefined, substrate: undefined, model: null, taskId: null, workerId: 'w2', since: 0, until: 0, finalText: '' });
   assert.strictEqual(MC.snapshotOf({ turns: 1, id: 'w2', model: 'm2', lastAssistantText: 'tail' }, { text: '' }).model, 'm2');
   assert.strictEqual(MC.snapshotOf({ turns: 1, id: 'w2', lastAssistantText: 'tail' }, { text: '' }).finalText, 'tail');
 });

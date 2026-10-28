@@ -141,3 +141,12 @@ test('run.assertNotPaused refuses the orchestrator while paused and lets the ope
   } finally { delete fakeOwner.opts.gateOnPause; await call('run.setPaused', operator, { paused: false }); }
   assert.deepStrictEqual(await call('run.assertNotPaused', orch, {}), { paused: false });
 });
+
+test('the status block shows the figure the guard pauses on: the ledger plus the headless orchestrator, named', () => {
+  const row = { budget_usd: 10, budget: JSON.stringify({ orchestrator: { counted: true, usd: 2.5 } }), paused_by: null, paused_at: null };
+  const b = RB.blockOf(row, { usd: 6, unknown_turns: 0 });
+  assert.deepStrictEqual([b.spent_usd, b.ledger_usd, b.orchestrator.usd], [8.5, 6, 2.5]);
+  assert.match(RB.textOf(b), /^\$8\.50 of \$10\.00 reported, \$2\.50 of it the orchestrator's \(under\)$/);
+  const i = RB.blockOf({ budget_usd: 10, budget: JSON.stringify({ orchestrator: { counted: false } }) }, { usd: 6, unknown_turns: 0 });
+  assert.strictEqual(i.spent_usd, 6);
+});
