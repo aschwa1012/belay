@@ -36,7 +36,8 @@ function index(store, tasks) {
   const capSource = new Map(runs.map((r) => [r.id, r.fix_hard_cap == null ? null : (r.fix_hard_cap_source || null)]));
   const notice = new Map(rows.currentAll(store, 'run').map((r) => [r.id, r.max_fix_rounds == null ? null : Number(r.max_fix_rounds)]));
   const followCaps = new Map(runs.map((r) => [r.id, r.max_follow_ups == null ? null : Number(r.max_follow_ups)]));
-  return { born, reviewsOf, fixesOf, followsOf, caps, capSource, notice, followCaps };
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  return { born, reviewsOf, fixesOf, followsOf, caps, capSource, notice, followCaps, byId };
 }
 
 const decidedAt = (r) => Number(r.results && r.results.evaluated_at) || 0;
@@ -78,6 +79,13 @@ function deciding(reviews, fixes, ix) {
 // chain that decides (deciding); null for work no review has named (a review task, unless something reviews it). `rounds` is the
 // fix tasks made for the work; `rounds_left` is what its run's fix_hard_cap allows beyond them (null with no hard cap), so
 // `refuted` with 0 left is work whose review failed with no fix round to spend.
+// The work a follow-up count belongs to: a follow-up's recorded root, reached through the repairs chain of a fix of it; else the task itself.
+function capRoot(task, ix) {
+  let t = task;
+  for (let n = 0; t.repairs && n < 100; n++) { const next = ix.byId.get(t.repairs); if (!next) break; t = next; }
+  return t.follows_up && t.follows_up.root ? t.follows_up.root : t.id;
+}
+
 function ofTask(task, ix) {
   const root = task.repairs || task.id;
   const fixes = (ix.fixesOf.get(root) || []).slice().sort((a, b) => ix.born.get(a.id).s - ix.born.get(b.id).s);
@@ -88,12 +96,17 @@ function ofTask(task, ix) {
   const cap = ix.caps.has(runId) ? ix.caps.get(runId) : null;
   const used = fixes.filter((f) => f.run_id === runId).length;
   const out = { state: verdictOf(last), review_id: last.id, rounds: fixes.length, rounds_left: cap == null ? null : Math.max(0, cap - used), fix_rounds_used: used, max_fix_rounds: ix.notice.has(runId) ? ix.notice.get(runId) : null, fix_hard_cap: cap, fix_hard_cap_source: ix.capSource ? ix.capSource.get(runId) || null : null };
-  const follows = ((ix.followsOf && ix.followsOf.get(root)) || []).slice().sort((a, b) => ix.born.get(a.id).s - ix.born.get(b.id).s);
-  if (follows.length) { // ADR 0064 decision 6: beside the fix rounds, never in them
-    const fCap = ix.followCaps && ix.followCaps.has(follows[follows.length - 1].run_id) ? ix.followCaps.get(follows[follows.length - 1].run_id) : null;
-    out.follow_ups = follows.map((f) => ({ id: f.id, state: f.state }));
-    out.follow_ups_left = fCap == null ? null : Math.max(0, fCap - follows.filter((f) => f.run_id === follows[follows.length - 1].run_id).length);
-  }
+  // ADR 0064 decision 6: follow-ups sit beside the fix rounds, never in them. They count against the root work's cap, so a follow-up's
+  // own view (and a fix of it) reads the same allowance as the work's.
+  const fRoot = capRoot(task, ix);
+  const follows = ((ix.followsOf && ix.followsOf.get(fRoot)) || []).slice().sort((a, b) => ix.born.get(a.id).s - ix.born.get(b.id).s);
+  const fRun = follows.length ? follows[follows.length - 1].run_id : runId;
+  const fCap = ix.followCaps && ix.followCaps.has(fRun) ? ix.followCaps.get(fRun) : null;
+  if (follows.length) out.follow_ups = follows.map((f) => ({ id: f.id, state: f.state }));
+  if (fCap != null || follows.length) out.follow_ups_left = fCap == null ? null : Math.max(0, fCap - follows.filter((f) => f.run_id === fRun).length);
+  if (fCap != null) out.max_follow_ups = fCap;
+  if (fRoot !== root) out.follow_ups_count_against = fRoot;
+
   return out;
 }
 

@@ -70,7 +70,8 @@ function planned(top, it) {
 // Every item's checks and append, in order, so a later item sees the earlier ones as rows. Call it inside a transaction.
 function writeAll(E, caller, list, trees, runTop, own = {}) {
   const N = require('./methods-task-new.cjs');
-  return list.map((it, i) => N.one(E, caller, { ...it.args, id: it.id }, { ...(own.follows_up && list.length === 1 ? { follows_up: own.follows_up } : {}), ...(trees[i] ? { worktree: trees[i] } : {}) }, runTop)); // own.follows_up: a follow-up with its own tree (ADR 0064)
+  if (own.follows_up && list.length !== 1) throw err('E_INTERNAL', 'a follow-up is one task; it cannot be written inside a batch', { items: list.length });
+  return list.map((it, i) => N.one(E, caller, { ...it.args, id: it.id }, { ...(own.follows_up ? { follows_up: own.follows_up } : {}), ...(trees[i] ? { worktree: trees[i] } : {}) }, runTop)); // own.follows_up: a follow-up with its own tree (ADR 0064)
 }
 
 // The steps of task.worktreeCreate up to and including the junctions, for a new task's tree. `made` gets the record as soon as

@@ -9,7 +9,6 @@ const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 
 const FINDINGS_MAX = 2000; // bytes of findings quoted into the default spec
-const LIVE = new Set(['open', 'assigned', 'released']);
 
 // A finding's severity, lower-cased with spaces, underscores and hyphens removed (the rule the review wake uses); only an object
 // that says should-fix counts. A bare string, or a finding with no severity, is not one.
@@ -42,8 +41,8 @@ function rootOf(E, judged) {
 }
 
 const reviewIdsOf = (t) => (Array.isArray(t.follows_up.review_ids) ? t.follows_up.review_ids : [t.follows_up.review_id]);
-// An open follow-up of this run for this judged task that already covers the review (the idempotency key).
-const openFor = (E, runId, taskId, reviewId) => rows.currentAll(E.store, 'task').find((t) => t.follows_up && t.follows_up.task_id === taskId && t.run_id === runId && LIVE.has(t.state) && reviewIdsOf(t).includes(reviewId)) || null;
+// A follow-up of this run, in any state but cancelled, for this judged task that already covers the review (the idempotency key).
+const openFor = (E, runId, taskId, reviewId) => rows.currentAll(E.store, 'task').find((t) => t.follows_up && t.follows_up.task_id === taskId && t.run_id === runId && t.state !== 'cancelled' && reviewIdsOf(t).includes(reviewId)) || null;
 
 // The tasks of this run that follow up `root`, cancelled ones included.
 const usedFor = (E, runId, root) => rows.currentAll(E.store, 'task').filter((t) => t.follows_up && t.follows_up.root === root && t.run_id === runId).length;
