@@ -58,6 +58,12 @@ async function joinOrRun(E, args, run) {
       { op: 'evaluate', task_id: task.id, running: { trigger: other.trigger || null, worktree: other.worktree, base: other.base || null } });
   }
   if (cur) {
+    const queuedRelease = args.trigger !== 'release' && BY_TASK.get(task.id) && BY_TASK.get(task.id).trigger === 'release' ? queuedFor(task.id) : null;
+    if (queuedRelease) { // a called evaluation never inherits a release evaluation's unbounded wait for a slot: its client gives up at 600 s with the outcome unknown
+      const run0 = BY_TASK.get(task.id);
+      throw err('E_BUSY', `the evaluation of task ${task.id} at release is queued for a slot (${queuedRelease.ahead} ahead; max_parallel_evaluations) and was not joined; it runs on its own and its result comes as a wake and in task_list, so nothing is run twice. Call task_evaluate again if it has not landed`,
+        { op: 'evaluate', task_id: task.id, queued: true, ahead: queuedRelease.ahead, running: { trigger: 'release', worktree: run0.worktree, base: run0.base } });
+    }
     try { return { ...(await cur), joined_evaluation: true }; } catch (e) {
       if (!(e && e.detail && e.detail.cancelled)) throw e; // the joined run's own refusal is this call's too
       return joinOrRun(E, args, run); // look again: another joiner may already have started the re-run

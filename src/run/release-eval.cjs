@@ -14,7 +14,7 @@
 const crypto = require('node:crypto');
 
 const WAKE_TEXT_MAX = 221;
-const PENDING_MAX_MS = 900000; // a watched evaluation that never lands (cancelled, or the owner gone) is forgotten after this
+const PENDING_MAX_MS = 900000; // a watched evaluation that never lands (cancelled, or the owner gone) is forgotten after this, unless its worker is live: a release evaluation may queue for a slot and then run 540 s
 // ADR 0058 amendment 4: how long a turn_end wake waits for its hand-backs' evaluation; BELAY_RELEASE_WAKE_HOLD_MS (ms) overrides it.
 const RELEASE_WAKE_HOLD_MS = 30000;
 const holdMs = () => (/^\d+$/.test(String(process.env.BELAY_RELEASE_WAKE_HOLD_MS || '').trim()) ? Number(process.env.BELAY_RELEASE_WAKE_HOLD_MS) : RELEASE_WAKE_HOLD_MS);
@@ -150,7 +150,9 @@ function turnEndText(head, tail, evs, evaluating) {
 // rides on that one wake instead of a second; past `holdMs` it goes out saying `evaluating`, and one `evaluated` wake follows when
 // the result lands, so the result never waits on a call the orchestrator may not make. Any other event about the worker sends its
 // held wake first, so a worker's wakes keep their order. `holdMs` 0 holds nothing. `now` is the clock, for a test to set.
-async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.now } = {}) {
+// `workers` (the poll's worker rows, optional): a watched evaluation whose worker is live is not forgotten by age, because a queued release
+// evaluation waits for its slot without bound (ADR 0061 amendment); it leaves `pending` when it lands, is no longer awaiting evaluation, or its worker is gone.
+async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.now, workers = null } = {}) {
   const pending = seen.pending || (seen.pending = new Map());
   const held = seen.held || (seen.held = new Map());
   if (!events.some((e) => e.event === 'turn_end') && !pending.size && !held.size) return events;
@@ -160,6 +162,7 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const landed = (t) => t.results && t.results.trigger === 'release' && seen.get(t.id) !== t.results.evaluated_at && (!t.handoff || Number(t.results.evaluated_at) >= Number(t.handoff.at));
   const t0 = now();
+  const liveWorkers = workers ? new Set(workers.filter((r) => r.run_id === runId && r.pid_alive === true && !["stopped", "dead", "paused"].includes(r.state)).map((r) => r.id)) : null;
   const out = [];
   // A held wake takes what has landed since; a hand-back no longer awaiting evaluation (cancelled, re-assigned) is dropped from it.
   const settle = (h) => {
@@ -203,7 +206,7 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
       seen.set(id, t.results.evaluated_at); pending.delete(id);
       if (!follow.has(p.worker_id)) follow.set(p.worker_id, []);
       follow.get(p.worker_id).push(summaryOf(t));
-    } else if (!t || !unevaluated(t, runId, p.worker_id) || t0 - p.since > PENDING_MAX_MS) pending.delete(id);
+    } else if (!t || !unevaluated(t, runId, p.worker_id) || (t0 - p.since > PENDING_MAX_MS && !(liveWorkers && liveWorkers.has(p.worker_id)))) pending.delete(id);
   }
   for (const [wid, evs] of follow) {
     const text = cut(`belay: worker ${wid}'s hand-back:${clause(evs, WAKE_TEXT_MAX)}`, WAKE_TEXT_MAX);

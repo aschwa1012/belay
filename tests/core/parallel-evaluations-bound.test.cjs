@@ -150,3 +150,40 @@ test('a span begun for an integration re-run is named by an evaluation that over
   end();
   assert.ok(seen.some((s) => s.task_id === 'integration x'));
 });
+
+test('a called evaluation beside a queued release evaluation of the same task is refused queued, not joined; nothing runs twice', async () => {
+  const a = await gatedTask(), b = await gatedTask();
+  const ra = a.evaluate();
+  await until(() => a.started());
+  const rb = b.evaluate({ trigger: 'release' });
+  await until(() => EC.GATE.waiting.length === 1);
+  const e = await rejectsCode(b.evaluate(), 'E_BUSY');
+  assert.deepStrictEqual([e.detail.op, e.detail.queued, e.detail.ahead, e.detail.running.trigger], ['evaluate', true, 1, 'release']);
+  assert.match(e.message, /result comes as a wake/);
+  assert.strictEqual(EC.GATE.waiting.length, 1, 'the release evaluation is still queued, untouched');
+  a.open();
+  await ra;
+  await until(() => b.started());
+  b.open();
+  assert.strictEqual((await rb).state, 'done');
+  assert.strictEqual(EC.GATE.active, 0);
+});
+
+test('a stop or run end cancels a queued release evaluation: it leaves the queue and no evaluation runs', async () => {
+  const a = await gatedTask(), b = await gatedTask();
+  const ra = a.evaluate();
+  await until(() => a.started());
+  const rb = b.evaluate({ trigger: 'release', cancel_key: 'release:wq:1' });
+  const refused = rejectsCode(rb, 'E_BUSY');
+  await until(() => EC.GATE.waiting.length === 1);
+  const res = await orch.task.evaluateCancel({ cancel_key: 'release:wq:1', by: 'stop' });
+  assert.deepStrictEqual([res.cancelled, res.queued], [true, true]);
+  const e = await refused;
+  assert.strictEqual(e.detail.cancelled, true);
+  assert.strictEqual(EC.GATE.waiting.length, 0, 'it left the queue');
+  assert.ok(!b.started(), 'its command never ran');
+  assert.strictEqual((await orch.task.get({ task_id: b.id })).results, null, 'and nothing was written');
+  a.open();
+  assert.strictEqual((await ra).state, 'done');
+  assert.strictEqual(EC.GATE.active, 0);
+});

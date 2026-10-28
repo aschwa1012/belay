@@ -137,3 +137,29 @@ test('the wake publisher sends one wake per release', async () => {
     await pub.stop();
   }
 });
+
+test('a watched release evaluation of a live worker outlives PENDING_MAX_MS while queued, holds the idle close, then lands and the wake is sent', async () => {
+  const h = harness([released('t1')]);
+  const live = [{ id: 'w1', run_id: 'r', state: 'idle', pid_alive: true }];
+  const poll = (events = []) => RE.enrichWakes(coreOf(h.s), 'r', events, h.seen, { holdMs: HOLD, now: () => h.s.t, workers: live });
+  await poll([turnEnd()]);
+  h.s.t += HOLD;
+  assert.deepStrictEqual((await poll()).map((e) => e.event), ['turn_end']);
+  h.s.t += RE.PENDING_MAX_MS * 3; // queued behind several 540 s runs
+  assert.deepStrictEqual(await poll(), []);
+  assert.deepStrictEqual(RE.evaluatingHolds(h.seen, live, 'r'), ['eval:t1'], 'the headless idle close is still held');
+  h.s.tasks = [evaluated('t1')];
+  const out = await poll();
+  assert.deepStrictEqual(out.map((e) => e.event), ['evaluated']);
+  assert.match(wakeText(out[0]), /task t1 evaluated at release: passed, done/);
+  assert.deepStrictEqual(RE.evaluatingHolds(h.seen, live, 'r'), []);
+});
+
+test('a watched hand-back whose worker is not live is still forgotten past PENDING_MAX_MS', async () => {
+  const h = harness([released('t1')]);
+  const dead = [{ id: 'w1', run_id: 'r', state: 'dead', pid_alive: false }];
+  await RE.enrichWakes(coreOf(h.s), 'r', [turnEnd()], h.seen, { holdMs: 0, now: () => h.s.t, workers: dead });
+  h.s.t += RE.PENDING_MAX_MS + 1;
+  await RE.enrichWakes(coreOf(h.s), 'r', [], h.seen, { holdMs: 0, now: () => h.s.t, workers: dead });
+  assert.strictEqual(h.seen.pending.size, 0);
+});
