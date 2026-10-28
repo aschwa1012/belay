@@ -376,8 +376,8 @@ test('the first merge in a fresh process never waits on a slow process snapshot:
   assert.strictEqual(r.status, 0, r.stderr);
   const receipt = JSON.parse(r.stdout.trim().split('\n').pop());
   assert.strictEqual(receipt.state, 'merged');
-  assert.strictEqual(receipt.owner_boot, null, 'the probe had not settled, so no start time is recorded');
-  assert.ok(receipt.merge_ms < 6000, `the merge took ${receipt.merge_ms} ms; it waited on the stalled snapshot`);
+  // The fact, not a clock: a merge that had awaited the stalled snapshot (it succeeds after 8 s) would have recorded the start time.
+  assert.strictEqual(receipt.owner_boot, null, `the probe had not settled, so no start time is recorded (the merge took ${receipt.merge_ms} ms)`);
 });
 
 test('a CLI write owner starts no snapshot probe: worktree create exits promptly with the snapshot stalled, and its merge records no start time', async () => {
@@ -391,7 +391,8 @@ test('a CLI write owner starts no snapshot probe: worktree create exits promptly
   await orch.shutdownOwner();
   await orch.close();
   opened.push({ dir, cores: [] });
-  const env = { ...process.env, BELAY_TEST_SNAPSHOT_STALL_MS: '8000' }; // every snapshot in it would take 8 s
+  const snapLog = `${dir}/snapshots.log`; // every snapshot a process takes appends a line (ADR 0048 decision 6)
+  const env = { ...process.env, BELAY_TEST_SNAPSHOT_STALL_MS: '8000', BELAY_SNAPSHOT_LOG: snapLog }; // every snapshot in it would take 8 s
   const run = (args) => new Promise((resolve) => {
     const t0 = Date.now();
     const child = spawn(process.execPath, [path.resolve(__dirname, '..', '..', 'src', 'cli', 'belay.cjs'), ...args, '--data', `${dir}/data`, '--json'], { cwd: repo, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -402,7 +403,7 @@ test('a CLI write owner starts no snapshot probe: worktree create exits promptly
   });
   const made = await run(['worktree', 'create', t.id]);
   assert.strictEqual(made.status, 0, made.stderr);
-  assert.ok(made.ms < 6000, `worktree create took ${made.ms} ms: it waited on the stalled snapshot`);
+  assert.ok(!fs.existsSync(snapLog), `worktree create took a process snapshot (${made.ms} ms): ${fs.existsSync(snapLog) && fs.readFileSync(snapLog, 'utf8')}`);
   const w = JSON.parse(made.stdout).worktree;
   write(w.path, 'a.txt', 'a\n');
   commit(w.path, 'a');
@@ -413,6 +414,6 @@ test('a CLI write owner starts no snapshot probe: worktree create exits promptly
   await c.close();
   const merged = await run(['worktree', 'merge', t.id, '--into', 'int/cli-owner']);
   assert.strictEqual(merged.status, 0, merged.stderr);
-  assert.ok(merged.ms < 6000, `worktree merge took ${merged.ms} ms`);
+  assert.ok(!fs.existsSync(snapLog), `worktree merge took a process snapshot (${merged.ms} ms)`);
   assert.strictEqual(JSON.parse(merged.stdout).owner_boot, null, 'a CLI owner records no start time');
 });
