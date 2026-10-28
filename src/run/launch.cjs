@@ -32,6 +32,7 @@ const { SCRUB_EXACT, SCRUB_PREFIXES, SCRUB_CWD, CODEX_RUST_LOG, buildEnv, fwd } 
 // build step 6d: moved verbatim to wire-log.cjs (the 500-line rule) and re-exported below unchanged.
 const { wireLogPath, wireLogHasToolsList, WIRE_LOG_NAME, TOOLS_LIST } = require('./wire-log.cjs');
 const S = require('./surface.cjs'); // ADR 0024: the tool list, setting-sources and cwd hygiene.
+const KG = require('./kill-guard.cjs'); // ADR 0024 amendment 7: the PreToolUse hook that refuses kill-by-name
 const CP = require('./compaction.cjs'); // ADR 0007 decision 3: the compact_at_tokens lever's hooks block
 
 
@@ -158,8 +159,8 @@ function writeWorkerFiles({ dir, workerId, runId, dataDir, mcpPath, settingsPath
     JSON.stringify(mcpConfig({ workerId, runId, dataDir, mcpPath, logPath, permit, permitWaitMs, notes, bind }), null, 2) + '\n'
   );
   const plugins = readPluginConfig(settingsPath);
-  const hooks = CP.hooksBlock({ dir, compactAt }); // null, and no `hooks` key at all, unless the lever is on
-  fs.writeFileSync(workerSettingsPath, JSON.stringify({ ...workerSettings(plugins.names, { cwd, nativeMemory }), ...(hooks ? { hooks } : {}) }, null, 2) + '\n');
+  const hooks = { ...(CP.hooksBlock({ dir, compactAt }) || {}), ...KG.hooksBlock() }; // the kill guard always; the compaction hooks only with the lever on
+  fs.writeFileSync(workerSettingsPath, JSON.stringify({ ...workerSettings(plugins.names, { cwd, nativeMemory }), hooks }, null, 2) + '\n');
   return { mcpJsonPath, settingsPath: workerSettingsPath, plugins };
 }
 
@@ -341,7 +342,7 @@ function assertOutsideDataDir(dir, dataDir) {
 
 // The adapter is told the run's worktree (`cwd`): the knowledge agent's cwd (ADR 0043 decision 1) and git_read's default
 // directory (ADR 0054 decision 2). `knowledgeAgent` is accepted from older callers and no longer changes the argv.
-function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, logPath = null, cwd = null, compactAt = null, agentDefaults = null, bind = null, stopIdleOnDone = false, permissionPrompt = false }) {
+function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, logPath = null, cwd = null, compactAt = null, agentDefaults = null, bind = null, stopIdleOnDone = false, permissionPrompt = false, killGuard = false }) {
   const outDir = assertOutsideDataDir(dir, dataDir);
   fs.mkdirSync(outDir, { recursive: true });
   const agentDefaultsPath = require('./agent-defaults.cjs').writeFile(outDir, agentDefaults); // null unless the config sets a worker type's default
@@ -356,7 +357,7 @@ function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, lo
   // context experiment that is not hygiene but the measurement itself — a plugin's hooks would
   // inject bytes into the very token series being compared.
   const plugins = readPluginConfig(settingsPath);
-  fs.writeFileSync(orchSettingsPath, JSON.stringify(workerSettings(plugins.names, { cwd }), null, 2) + '\n');
+  fs.writeFileSync(orchSettingsPath, JSON.stringify({ ...workerSettings(plugins.names, { cwd }), ...(killGuard ? { hooks: KG.hooksBlock() } : {}) }, null, 2) + '\n'); // headless only: the interactive orchestrator is the operator's own session
   return { mcpJsonPath, settingsPath: orchSettingsPath, plugins, dir: outDir };
 }
 

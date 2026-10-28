@@ -71,7 +71,7 @@ test('lever null: no hooks key, no hook files, no /compact however large the con
       await new Promise((r) => setTimeout(r, 300));
     });
     const settings = JSON.parse(fs.readFileSync(`${sb.data}/workers/wn/settings.json`, 'utf8'));
-    assert.ok(!('hooks' in settings), 'no hooks key at all');
+    assert.deepStrictEqual(Object.keys(settings.hooks), ['PreToolUse'], 'the kill guard only, no compaction hooks');
     assert.deepStrictEqual(lines(recv).map((r) => r.text), ['one', 'two'], 'only the two messages the caller sent');
     for (const f of [CP.RECORDS_LOG, CP.HOOKS_LOG, CP.RESUME_FILE]) assert.ok(!fs.existsSync(`${sb.data}/workers/wn/${f}`), f);
   } finally { await teardown(m, sb); }
@@ -184,17 +184,17 @@ test('a boundary without post_tokens falls back to the first post-compaction cal
   } finally { await teardown(m, sb); }
 });
 
-test('the lever puts three hooks in the worker settings file, and only with the lever', () => {
+test('the lever adds three hooks beside the kill guard in the worker settings file, and only with the lever', () => {
   const sb = sandbox();
   try {
     const on = L.writeWorkerFiles({ dir: `${sb.data}/w-on`, workerId: 'w-on', runId: 'r', dataDir: sb.data, mcpPath: MCP, settingsPath: null, cwd: sb.worktree, compactAt: 2000 });
     const hooks = JSON.parse(fs.readFileSync(on.settingsPath, 'utf8')).hooks;
-    assert.deepStrictEqual(Object.keys(hooks).sort(), ['PostCompact', 'PreCompact', 'SessionStart']);
+    assert.deepStrictEqual(Object.keys(hooks).sort(), ['PostCompact', 'PreCompact', 'PreToolUse', 'SessionStart']);
     assert.deepStrictEqual(hooks.PreCompact.map((h) => h.matcher), ['auto', 'manual']);
     assert.strictEqual(hooks.SessionStart[0].matcher, 'compact');
     assert.match(hooks.SessionStart[0].hooks[0].command, /compact-hook\.cjs" start /);
     const off = L.writeWorkerFiles({ dir: `${sb.data}/w-off`, workerId: 'w-off', runId: 'r', dataDir: sb.data, mcpPath: MCP, settingsPath: null, cwd: sb.worktree });
-    assert.ok(!('hooks' in JSON.parse(fs.readFileSync(off.settingsPath, 'utf8'))));
+    assert.deepStrictEqual(Object.keys(JSON.parse(fs.readFileSync(off.settingsPath, 'utf8')).hooks), ['PreToolUse'], 'without the lever only the kill guard');
   } finally { cleanup(sb.data); }
 });
 

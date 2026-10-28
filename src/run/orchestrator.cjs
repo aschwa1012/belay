@@ -80,7 +80,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   const bind = await require('./bind-launch.cjs').bindOrchestrator(core, runId); // ADR 0045 decision 2: the owner is this process's own, so the bind is in process
   const written = L.writeOrchestratorFiles({
     dir: orchestratorDir, runId, dataDir, mcpPath, settingsPath: L.userSettingsPath(), cwd: worktree, // ADR 0024
-    compactAt: compactAtTokens, agentDefaults: spec.agentDefaults || null, bind, stopIdleOnDone: !!spec.stopIdleOnDone, permissionPrompt: !!spec.permissionPrompt, // ADR 0007 decision 3; ADR 0058
+    compactAt: compactAtTokens, agentDefaults: spec.agentDefaults || null, bind, stopIdleOnDone: !!spec.stopIdleOnDone, permissionPrompt: !!spec.permissionPrompt, killGuard: true, // ADR 0007 decision 3; ADR 0058; ADR 0024 amendment 7
   });
   fs.writeFileSync(path.join(written.dir, 'prompt.txt'), promptText);
 
