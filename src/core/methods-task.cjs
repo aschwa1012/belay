@@ -416,10 +416,9 @@ async function releaseNow(E, caller, args) {
     const task = rows.current(E.store, 'task', l.task_id);
     if (!task) throw err('E_NOT_FOUND', `lease ${l.id} names task ${l.task_id}, which has no row in this store`, { lease_id: l.id, task_id: l.task_id });
     // ADR 0025 amendment 1: a release never un-earns `done`, and cannot replace the verdict it rests on.
-    if (task.state === 'done' && args.result !== undefined) {
-      throw err('E_ARGS', `lease.release: task ${task.id} is done, so its hand-back cannot be replaced; release without a result`, { task_id: task.id });
-    }
+    if (task.state === 'done' && args.result !== undefined) throw err('E_ARGS', `lease.release: task ${task.id} is done, so its hand-back cannot be replaced; release without a result`, { task_id: task.id });
     const t = Date.now(), by = E.writtenBy(caller), late = LHD.isLateHandback(caller, l, task); // late: the holder's death released it first
+    if (caller.role === 'worker' && task.state !== 'done' && (l.released_at == null || late)) require('./handoff-check.cjs').requireFields(task, args); // the task's own declared fields, before anything is written
     if (dropped && l.released_at != null && !late) {
       // A second call on a released lease carries only notes, and they are dropped: nothing is written.
       return { ...task, last_checkpoint_id: (rows.lastCheckpoint(E.store, l.task_id) || {}).id || null, released_reason: args.reason || null, ...dropped };

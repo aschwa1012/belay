@@ -5,6 +5,7 @@
 // or a boolean. Mechanical only: it proves the fields are there, not that they are right. Reads the task's current lease, nothing else.
 
 const rows = require('./rows.cjs');
+const { err } = require('./errors.cjs');
 
 const MAX_REQUIRED = 20;
 
@@ -23,6 +24,24 @@ const filled = (v) => (typeof v === 'string' ? v.trim().length > 0
     : v !== null && typeof v === 'object' ? Object.keys(v).length > 0
       : typeof v === 'number' ? Number.isFinite(v) : typeof v === 'boolean');
 
+// The fields of `required` that `result` does not carry (as `filled` judges it). One rule for the evaluation and for lease.release.
+const missingFields = (required, result) => {
+  const r = result && typeof result === 'object' && !Array.isArray(result) ? result : {};
+  return required.filter((k) => !filled(r[k]));
+};
+
+// ADR 0058 decision 6 (amendment): a release whose result lacks a field the task's `acceptance.handoff.required` declares is refused,
+// naming the fields, and nothing is written; the worker adds them and releases again. The same rule as the evaluation's handoff check.
+// A release with no result and a `reason` is a stand-down (the worker hands nothing back and says why) and is let through.
+function requireFields(task, args) {
+  const req = task.acceptance && task.acceptance.handoff && task.acceptance.handoff.required;
+  if (!Array.isArray(req) || !req.length) return;
+  if (args.result === undefined && typeof args.reason === 'string' && args.reason.trim()) return;
+  const missing = missingFields(req, args.result);
+  if (!missing.length) return;
+  throw err('E_ARGS', `lease.release: task ${task.id} requires a result carrying ${req.join(', ')} (each non-empty); yours lacks ${missing.join(', ')}. Nothing was released or written: call lease_release again with the missing fields${args.result === undefined ? ' in result' : ''}`, { task_id: task.id, required: req, missing });
+}
+
 // `store` is read for the task's current lease: only the hand-back of that lease, once released, counts (as for a verdict).
 function handoffCheck(store, task) {
   const started = Date.now();
@@ -33,8 +52,8 @@ function handoffCheck(store, task) {
   if (!r) return done(false, false, { reason: 'the task has no hand-back: no worker has released it with a result' });
   const lease = rows.currentLeaseForTask(store, task.id);
   if (!lease || lease.id !== h.lease_id || lease.released_at == null) return done(false, false, { reason: `the hand-back is from lease ${h.lease_id}, which is not the task's current released lease, so it is stale` });
-  const missing = required.filter((k) => !filled(r[k]));
+  const missing = missingFields(required, r);
   return done(true, missing.length === 0, { missing });
 }
 
-module.exports = { handoffCheck, shapeError, MAX_REQUIRED };
+module.exports = { handoffCheck, missingFields, requireFields, shapeError, MAX_REQUIRED };
