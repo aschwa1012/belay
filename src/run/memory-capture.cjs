@@ -58,7 +58,7 @@ function takeTurn(w, e) {
 // counter on the record; whatever the observation and the jobs say about this turn comes from here.
 function snapshotOf(w, e) {
   return {
-    turn: w.turns, usage: w.lastTurnUsage || null, cost: w.costUsd, costBase: w.costBase || 0, pid: w.pid, substrate: w.substrate,
+    turn: w.turns, usage: w.lastTurnUsage || null, cost: w.costUsd, pid: w.pid, substrate: w.substrate,
     model: w.initModel || w.model || null, taskId: w.taskId || null, workerId: w.id, since: w.turnSince || 0, until: w.lastTurnEndAt || 0, // the turn's window, for the task its lease names
     finalText: (e && e.text) || w.lastAssistantText || '',
   };

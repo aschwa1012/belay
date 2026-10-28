@@ -151,6 +151,26 @@ test('usage: a fresh session after a restart writes its own cost, not the row to
   assert.strictEqual(Number(core.usageRows.reduce((n, r) => n + r.cost_usd, 0).toFixed(4)), 1.05, 'the ledger sums to the row cost, nothing twice');
 });
 
+test('usage: a resume of the same session carries its total, so the new process writes only the difference', async () => {
+  const core = spyCore();
+  const ctx = mkCtx(core, lv({ cost_ledger: true }));
+  const w = worker();
+  const turn = async (over) => { Object.assign(w, over); MJ.afterTurn(w, ctx, {}); await flush(w); };
+  await turn({ turns: 1, costUsd: 0.50 });
+  await turn({ turns: 2, costUsd: 0.75 });
+  await turn({ turns: 3, costUsd: 0.85, pid: 200 }); // a park and resume: new process, same session, the reported total carries
+  assert.deepStrictEqual(core.usageRows.map((r) => Number(r.cost_usd.toFixed(4))), [0.5, 0.25, 0.1]);
+  assert.deepStrictEqual(core.usageRows.map((r) => r.cost_basis), ['delta-of-cumulative', 'delta-of-cumulative', 'delta-of-cumulative']);
+});
+
+test('usage: an adopted worker starts from the cost its row recorded, so the ledger does not take it again', async () => {
+  const core = spyCore();
+  const ctx = mkCtx(core, lv({ cost_ledger: true }));
+  const w = worker({ turns: 2, costUsd: 0.75, adoptedLedger: { cost: 0.75, turns: 2 }, pid: 300 });
+  await (async () => { Object.assign(w, { turns: 3, costUsd: 0.85 }); MJ.afterTurn(w, ctx, {}); await flush(w); })();
+  assert.deepStrictEqual(core.usageRows.map((r) => [r.turn, Number(r.cost_usd.toFixed(4)), r.cost_basis]), [[3, 0.1, 'delta-of-cumulative']]);
+});
+
 test('usage: a snapshot is taken when the turn ends, so a later turn_end does not change the row', async () => {
   const core = spyCore();
   const ctx = mkCtx(core, lv({ cost_ledger: true }));

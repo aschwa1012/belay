@@ -93,19 +93,24 @@ function tokensOf(snap) {
   }
   return { input_tokens: num(u.input_tokens), output_tokens: num(u.output_tokens), cache_read_tokens: num(u.cache_read_input_tokens), cache_creation_tokens: num(u.cache_creation_input_tokens) };
 }
+// The ledger's state for a worker. An adopted worker starts from the cost and turn its row recorded: the ledger holds those already.
+const jobsOf = (w) => w.memoryJobs || (w.memoryJobs = w.adoptedLedger
+  ? { pid: null, lastCost: w.adoptedLedger.cost, seen: true, lastTurn: w.adoptedLedger.turns }
+  : { pid: null, lastCost: 0, seen: false, lastTurn: 0 });
+// snap.cost is the row's reported total: earlier sessions' cost (cost_base) plus this session's, so it only goes up across a --resume (the
+// session and its total carry) and across a fresh session (the base takes the earlier total). A lower figure is a counter that restarted.
 function costOf(w, snap) {
   if (snap.substrate !== 'claude-code' || typeof snap.cost !== 'number' || !Number.isFinite(snap.cost)) return { cost_usd: null, cost_basis: 'none' };
-  const t = w.memoryJobs || (w.memoryJobs = { pid: null, lastCost: 0, seen: false, lastTurn: 0 });
-  const total = Math.max(0, snap.cost - (snap.costBase || 0)); // this session's own total: the row's cost adds earlier sessions' reported cost (cost_base), which the ledger already holds
-  const fresh = !t.seen ? snap.turn > 1 : t.pid !== snap.pid; // a first row seen late means the counter was not watched from zero
-  const reset = fresh || total < t.lastCost;
+  const t = jobsOf(w);
+  const fresh = !t.seen && snap.turn > 1; // a first row seen late (not adopted) means the counter was not watched from zero
+  const reset = fresh || snap.cost < t.lastCost;
   const base = reset ? 0 : t.lastCost;
   const cost_basis = reset && (t.seen || snap.turn > 1) ? NEW_PROCESS : 'delta-of-cumulative';
-  return { cost_usd: Math.max(0, total - base), cost_basis, advance: () => { t.pid = snap.pid; t.lastCost = total; t.seen = true; } };
+  return { cost_usd: Math.max(0, snap.cost - base), cost_basis, advance: () => { t.pid = snap.pid; t.lastCost = snap.cost; t.seen = true; } };
 }
 async function usageJob(J, snap) {
   const w = J.w;
-  const t = w.memoryJobs || (w.memoryJobs = { pid: null, lastCost: 0, seen: false, lastTurn: 0 });
+  const t = jobsOf(w);
   if (snap.turn <= t.lastTurn || snap.turn === t.tried) return; t.tried = snap.turn; // one attempt and one row per turn, never a silent retry
   const c = costOf(w, snap);
   let sent = false;
