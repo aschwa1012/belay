@@ -15,7 +15,7 @@ const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 
 const {
-  ROOT, CLI, sleep, sandbox, cleanup, waitUntil, waitForExit, makeSpec, runCli, receiptOf, connectOrchestratorCore, currentRunRow, releaseCore,
+  ROOT, CLI, sleep, sandbox, cleanup, waitUntil, waitForFileLine, waitForExit, makeSpec, runCli, receiptOf, connectOrchestratorCore, currentRunRow, releaseCore,
 } = require('./stop-helpers.cjs');
 const { createRunManager, createWorkerControl } = require('../../src/run/index.cjs');
 const { createRunPauseControl } = require('../../src/run/run-pause.cjs');
@@ -71,7 +71,7 @@ async function teardown({ m, core, control, cliProc, spawnedPids, dir, dataDir, 
 
 // ================================================================ (s1)
 
-test('run pause: the orchestrator is interrupted mid-turn, every live worker is parked over its adapter\'s pipe, and the run row carries paused_at and paused_by', async () => {
+test('run pause: the orchestrator is interrupted mid-turn, every live worker is parked over its adapter\'s pipe, and the run row carries paused_at and paused_by', { timeout: 180000 }, async () => {
   const dir = sandbox();
   const spawnedPids = [];
   let ctx;
@@ -106,7 +106,7 @@ test('run pause: the orchestrator is interrupted mid-turn, every live worker is 
 
 // ================================================================ (s2)
 
-test('run pause: a worker\'s turn ending while the run is paused is held, not written, and resume writes the resume line then the held wakes in order', async () => {
+test('run pause: a worker\'s turn ending while the run is paused is held, not written, and resume writes the resume line then the held wakes in order', { timeout: 180000 }, async () => {
   const dir = sandbox();
   const spawnedPids = [];
   let ctx;
@@ -115,18 +115,16 @@ test('run pause: a worker\'s turn ending while the run is paused is held, not wr
     // raced the spawn on a slow runner: the orchestrator went idle before w1 existed, and the idle rule closed
     // the run before the pause. Later answers (the resume line's) take the 400 ms delay.
     const gate = `${dir}/orchestrator-gate`;
-    ctx = await startRun(dir, {}, { FAKE_ANSWER_DELAY_MS: '400', FAKE_ANSWER_GATE_FILE: gate });
-    // Build step E1 (finding F): the worker's own stated 5,000 ms turn, inherited at spawn, so the pause
-    // lands mid-turn by construction. It used to land there only because the turn end waited on the turn
-    // text's memory write, which no longer sits on the turn path.
-    process.env.FAKE_ANSWER_DELAY_MS = '5000';
-    const row = await ctx.m.spawn({ substrate: 'claude-code', worktree: workerWorktree(dir, 'w1'), prompt: 'hello', worker_id: 'w1' });
-    process.env.FAKE_ANSWER_DELAY_MS = '400';
+    const holdsFile = `${dir}/holds.jsonl`;
+    ctx = await startRun(dir, {}, { FAKE_ANSWER_DELAY_MS: '400', FAKE_ANSWER_GATE_FILE: gate, BELAY_TEST_HOLDS_FILE: holdsFile });
+    // The worker's turn is held by a gate nothing writes, inherited at spawn, so the pause lands mid-turn by construction.
+    process.env.FAKE_ANSWER_GATE_FILE = `${dir}/worker.gate`;
+    let row;
+    try { row = await ctx.m.spawn({ substrate: 'claude-code', worktree: workerWorktree(dir, 'w1'), prompt: 'hello', worker_id: 'w1' }); }
+    finally { delete process.env.FAKE_ANSWER_GATE_FILE; }
     spawnedPids.push({ pid: row.pid, created: row.pid_created });
     fs.writeFileSync(gate, ''); // w1 is mid-turn, so the orchestrator may now go idle without closing the run
-    const idle = await waitUntil(() => {
-      try { return /"type":"result"/.test(fs.readFileSync(`${ctx.orchestratorDir}/stream.jsonl`, 'utf8')); } catch { return false; }
-    }, 4000, 25);
+    const idle = await waitUntil((() => { try { return (fs.readFileSync(`${ctx.orchestratorDir}/stream.jsonl`, 'utf8').match(/"type":"result"/g) || []).length >= 1; } catch { return false; } }), 60000, 25);
     assert.ok(idle, "the orchestrator's turn never ended once the gate opened");
     assert.strictEqual(ctx.m._worker('w1').turnEnded, false, 'precondition: w1 is mid-turn when the run is paused');
 
@@ -136,7 +134,8 @@ test('run pause: a worker\'s turn ending while the run is paused is held, not wr
     // A wake is held only when the run's own poll (poll_ms 300) sees w1's row while the run is paused; a fast host
     // ran pause and resume inside one poll interval and held nothing. Nothing outside the run shows a held wake,
     // so wait out several of its polls: its own fixed timer, not a guess at another process's speed.
-    await sleep(1200);
+    // The run's own idle poll has seen the park (its hold record names w1 as parked), after the wake events of that same poll were held.
+    assert.ok(await waitUntil(() => { try { return fs.readFileSync(holdsFile, 'utf8').includes('"parked":["w1"]'); } catch { return false; } }, 60000, 25), 'no idle poll saw w1 parked');
 
     const r = await cliAsync(['resume', ctx.runId], ctx.dataDir);
     assert.strictEqual(r.status, 0, `${r.stdout} / ${r.stderr}`);
@@ -150,8 +149,9 @@ test('run pause: a worker\'s turn ending while the run is paused is held, not wr
     assert.ok(heldForW1.every((w) => (w.event === 'turn_end' || w.event === 'paused') && Number.isInteger(w.held_ms) && w.held_ms >= 0), JSON.stringify(heldForW1));
     assert.deepStrictEqual(r.receipt.workers_resumed.map((w) => w.worker_id), ['w1']);
 
-    await sleep(600); // design item 5 (run-hold.cjs:133): lets the fake answer the resume line's own write
-    await cliAsync(['stop', ctx.runId], ctx.dataDir); await waitForExit(ctx.cliProc.proc, 15000);
+    // design item 5 (run-hold.cjs:133): the fake answers the resume line's own write, a second result in the stream
+    assert.ok(await waitUntil((() => { try { return (fs.readFileSync(`${ctx.orchestratorDir}/stream.jsonl`, 'utf8').match(/"type":"result"/g) || []).length >= 2; } catch { return false; } }), 60000, 25), "the resume line's write was never answered");
+    await cliAsync(['stop', ctx.runId], ctx.dataDir); await waitForExit(ctx.cliProc.proc, 90000);
     const receipt = receiptOf(ctx.cliProc, ctx.cliProc.proc.exitCode === 0 ? 0 : 1);
     const resumeWake = (receipt.wakes || []).find((w) => w.event === 'resume_line');
     assert.ok(resumeWake && resumeWake.answered_at_ms >= resumeWake.at_ms, JSON.stringify(resumeWake));
@@ -160,7 +160,7 @@ test('run pause: a worker\'s turn ending while the run is paused is held, not wr
 
 // ================================================================ (s3)
 
-test('run pause: a paused run is never closed by the idle rule, and resume lets the ordinary close end it once no worker is mid-turn or parked', async () => {
+test('run pause: a paused run is never closed by the idle rule, and resume lets the ordinary close end it once no worker is mid-turn or parked', { timeout: 180000 }, async () => {
   const dir = sandbox();
   let ctx;
   try {
@@ -168,14 +168,16 @@ test('run pause: a paused run is never closed by the idle rule, and resume lets 
     // nothing here races its natural idle-close (which the pause is what must prevent, not a lucky ordering). A fixed answer delay
     // did that only while this test's setup and the pause, each vouched for by the owner's operator check (ADR 0045), fitted in it.
     const gate = `${dir}/orch.gate`;
-    ctx = await startRun(dir, {}, { FAKE_ANSWER_DELAY_MS: '6000', FAKE_ANSWER_GATE_FILE: gate });
-    await sleep(300);
+    const holdsFile = `${dir}/holds.jsonl`;
+    ctx = await startRun(dir, {}, { FAKE_ANSWER_DELAY_MS: '6000', FAKE_ANSWER_GATE_FILE: gate, BELAY_TEST_HOLDS_FILE: holdsFile });
+    assert.ok(await waitForFileLine(`${ctx.orchestratorDir}/stream.jsonl`, '"subtype":"init"', 60000), "the orchestrator's prompt turn never began");
 
     const p = await cliAsync(['pause', ctx.runId], ctx.dataDir);
     assert.strictEqual(p.status, 0, `${p.stdout} / ${p.stderr}`);
     fs.writeFileSync(gate, ''); // the resume line's answer takes the ordinary delay
 
-    await sleep(1500); // several poll cycles: the idle rule must not close a paused run
+    // An idle poll of the paused run has run (its hold record says so): the idle rule is what must not close it.
+    assert.ok(await waitForFileLine(holdsFile, '"established_by":"run paused"', 60000), 'no idle poll of the paused run was recorded');
     assert.strictEqual(ctx.cliProc.proc.exitCode, null, 'a paused run must not have closed on its own');
 
     const r = await cliAsync(['resume', ctx.runId], ctx.dataDir);
@@ -191,7 +193,7 @@ test('run pause: a paused run is never closed by the idle rule, and resume lets 
 
 // ================================================================ (s4) — run-pause.cjs's own slot, fakes only
 
-test('run pause: a second pause shares the first, a resume during a pause is E_BUSY, a pause of a paused run is already, and a resume of a running run is E_ARGS', async () => {
+test('run pause: a second pause shares the first, a resume during a pause is E_BUSY, a pause of a paused run is already, and a resume of a running run is E_ARGS', { timeout: 180000 }, async () => {
   let runRow = { id: 'run-x', ended_at: null, paused_at: null, paused_by: null };
   let releasePause = null;
   let interruptCalls = 0;
@@ -244,7 +246,7 @@ test('run pause: a second pause shares the first, a resume during a pause is E_B
 
 // ================================================================ (s5)
 
-test('run pause: belay stop during a paused run ends it and names the parked workers under left_parked', async () => {
+test('run pause: belay stop during a paused run ends it and names the parked workers under left_parked', { timeout: 180000 }, async () => {
   const dir = sandbox();
   const spawnedPids = [];
   let ctx;
@@ -274,7 +276,7 @@ test('run pause: belay stop during a paused run ends it and names the parked wor
 
 // ================================================================ (s6)
 
-test('run pause: a worker parked before the run pause is named already_parked and left parked by the run resume', async () => {
+test('run pause: a worker parked before the run pause is named already_parked and left parked by the run resume', { timeout: 180000 }, async () => {
   const dir = sandbox();
   const spawnedPids = [];
   let ctx;
@@ -312,7 +314,7 @@ test('run pause: a worker parked before the run pause is named already_parked an
 
 // ================================================================ (s7)
 
-test('run pause: the timeout clock stops while paused and resume re-arms what remained', async () => {
+test('run pause: the timeout clock stops while paused and resume re-arms what remained', { timeout: 180000 }, async () => {
   const dir = sandbox();
   let ctx;
   try {
@@ -320,13 +322,13 @@ test('run pause: the timeout clock stops while paused and resume re-arms what re
     // steps, so the idle-close rule (not the timeout) never gets a chance to end the run first.
     // timeout_ms leaves a slow runner room to start the pause CLI before the clock runs out; the paused wait
     // below is sized from what remained, so the proof costs no more than that.
-    ctx = await startRun(dir, { timeout_ms: 10000 }, { FAKE_ANSWER_DELAY_MS: '60000' });
-    await sleep(300);
+    ctx = await startRun(dir, { timeout_ms: 20000 }, { FAKE_ANSWER_DELAY_MS: '60000' });
+    assert.ok(await waitForFileLine(`${ctx.orchestratorDir}/stream.jsonl`, '"subtype":"init"', 60000), "the orchestrator's prompt turn never began");
 
     const p = await cliAsync(['pause', ctx.runId], ctx.dataDir);
     assert.strictEqual(p.status, 0, `${p.stdout} / ${p.stderr}`);
     assert.ok(p.receipt.timeout && Number.isInteger(p.receipt.timeout.remaining_ms), JSON.stringify(p.receipt.timeout));
-    assert.ok(p.receipt.timeout.remaining_ms > 0 && p.receipt.timeout.remaining_ms <= 10000, JSON.stringify(p.receipt.timeout));
+    assert.ok(p.receipt.timeout.remaining_ms > 0 && p.receipt.timeout.remaining_ms <= 20000, JSON.stringify(p.receipt.timeout));
 
     await sleep(p.receipt.timeout.remaining_ms + 1000); // longer than what remained — proves the clock is stopped
     assert.strictEqual(ctx.cliProc.proc.exitCode, null, 'a paused run\'s timeout must not have fired');
@@ -345,7 +347,7 @@ test('run pause: the timeout clock stops while paused and resume re-arms what re
 
 // ================================================================ (s8)
 
-test('run pause: an interrupted orchestrator write is answered by its cancelled lifecycle, not the expiry', async () => {
+test('run pause: an interrupted orchestrator write is answered by its cancelled lifecycle, not the expiry', { timeout: 180000 }, async () => {
   const dir = sandbox();
   const spawnedPids = [];
   let ctx;
@@ -384,7 +386,7 @@ test('run pause: an interrupted orchestrator write is answered by its cancelled 
 
 // ================================================================ (s9)
 
-test('run pause and resume: an ended run, no owner, an owner with no run control and an unknown id each exit 1 naming the fact, and a run resume with --message exits 2', async () => {
+test('run pause and resume: an ended run, no owner, an owner with no run control and an unknown id each exit 1 naming the fact, and a run resume with --message exits 2', { timeout: 180000 }, async () => {
   const dir = sandbox();
   let ctx;
   try {
@@ -445,7 +447,7 @@ test('run pause and resume: an ended run, no owner, an owner with no run control
 
 // ================================================================ (s10) — design item 1, no run-level pause
 
-test('run: a worker parked alone holds the idle close, the hold names it as parked, and a stop of that worker lets the run end', async () => {
+test('run: a worker parked alone holds the idle close, the hold names it as parked, and a stop of that worker lets the run end', { timeout: 180000 }, async () => {
   const dir = sandbox();
   const spawnedPids = [];
   let ctx;
@@ -453,24 +455,24 @@ test('run: a worker parked alone holds the idle close, the hold names it as park
     // The orchestrator's prompt turn is held until w1 is mid-turn (as in s2): a fixed 300 ms answer could let
     // the idle rule close the run before a slow spawn landed.
     const gate = `${dir}/orchestrator-gate`;
-    ctx = await startRun(dir, {}, { FAKE_ANSWER_DELAY_MS: '300', FAKE_ANSWER_GATE_FILE: gate });
-    // Build step E1 (finding F): the worker's own stated 5,000 ms turn, so the pause lands mid-turn by
-    // construction rather than by a slow turn end.
-    process.env.FAKE_ANSWER_DELAY_MS = '5000';
-    const row = await ctx.m.spawn({ substrate: 'claude-code', worktree: workerWorktree(dir, 'w1'), prompt: 'hello', worker_id: 'w1' });
-    process.env.FAKE_ANSWER_DELAY_MS = '300';
+    const holdsFile = `${dir}/holds.jsonl`;
+    ctx = await startRun(dir, {}, { FAKE_ANSWER_DELAY_MS: '300', FAKE_ANSWER_GATE_FILE: gate, BELAY_TEST_HOLDS_FILE: holdsFile });
+    // The worker's turn is held by a gate nothing writes, so the pause lands mid-turn by construction.
+    process.env.FAKE_ANSWER_GATE_FILE = `${dir}/worker.gate`;
+    let row;
+    try { row = await ctx.m.spawn({ substrate: 'claude-code', worktree: workerWorktree(dir, 'w1'), prompt: 'hello', worker_id: 'w1' }); }
+    finally { delete process.env.FAKE_ANSWER_GATE_FILE; }
     spawnedPids.push({ pid: row.pid, created: row.pid_created });
     fs.writeFileSync(gate, '');
-    const idle = await waitUntil(() => {
-      try { return /"type":"result"/.test(fs.readFileSync(`${ctx.orchestratorDir}/stream.jsonl`, 'utf8')); } catch { return false; }
-    }, 4000, 25);
+    const idle = await waitUntil((() => { try { return (fs.readFileSync(`${ctx.orchestratorDir}/stream.jsonl`, 'utf8').match(/"type":"result"/g) || []).length >= 1; } catch { return false; } }), 60000, 25);
     assert.ok(idle, "the orchestrator's turn never ended once the gate opened");
     assert.strictEqual(ctx.m._worker('w1').turnEnded, false, 'precondition: w1 is mid-turn when it is paused');
 
     const p = await cliAsync(['pause', 'w1'], ctx.dataDir); // the worker form: no run-level pause at all
     assert.strictEqual(p.status, 0, `${p.stdout} / ${p.stderr}`);
 
-    await sleep(1500); // several poll cycles: the run must still be open, held by the parked worker alone
+    // an idle poll has seen the parked worker (the hold record names it): the run must still be open, held by that worker alone
+    assert.ok(await waitUntil(() => { try { return fs.readFileSync(holdsFile, 'utf8').includes('"parked":["w1"]'); } catch { return false; } }, 60000, 25), 'no idle poll saw w1 parked');
     assert.strictEqual(ctx.cliProc.proc.exitCode, null, 'a worker parked alone must hold the run open');
 
     const stop = await cliAsync(['worker', 'stop', 'w1'], ctx.dataDir);
