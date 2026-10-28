@@ -4,12 +4,13 @@
 // A task's work state stays `done`; whether it landed is `integration` on task.list and task.get, derived from the rows.
 // Throwaway repositories under the sandbox only.
 
-const { test, before, after } = require('node:test');
+const { test: nodeTest, before, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
-const { makeRepo, git, write, commit, rejectsCode } = require('./worktree-helpers.cjs');
+const { makeRepo, git, write, commit, rejectsCode, guarded } = require('./worktree-helpers.cjs');
+const test = guarded(nodeTest); // a longer hang guard than the runner's 60 s; see guarded
 
 const { openCore } = core('index.cjs');
 

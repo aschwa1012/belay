@@ -48,4 +48,10 @@ async function rejectsCode(promise, code) {
   return got;
 }
 
-module.exports = { git, write, commit, makeRepo, rejectsCode };
+// The runner's 60 s per-test cap (scripts/test.cjs) is a hang guard, not a budget. A test over real repositories costs 2 to 13 s alone
+// (git spawns, and a node spawn per check), so a loaded host reaches the cap with nothing wrong. `guarded(test)` gives each test this
+// longer guard instead; it asserts nothing about time.
+const HANG_GUARD_MS = 240000;
+const guarded = (nodeTest) => (name, fn) => nodeTest(name, { timeout: HANG_GUARD_MS }, fn);
+
+module.exports = { git, write, commit, makeRepo, rejectsCode, guarded, HANG_GUARD_MS };

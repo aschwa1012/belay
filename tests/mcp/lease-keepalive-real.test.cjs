@@ -33,9 +33,6 @@ test('keepalive: a real worker adapter with BELAY_KEEPALIVE_TICK_MS renews its w
     });
     await plant('running');
     const task = await core.task.create({ spec: 'a task whose lease must outlive its first length' });
-    const assigned = await core.task.assign({ task_id: task.id, worker_id: W, ttl_ms: 4000 });
-    const first = assigned.new_lease;
-    assert.strictEqual(first.expires_at - first.granted_at, 4000);
     // The worker's stream stays fresh for as long as the test says it is working.
     fresh = setInterval(() => { plant('running').catch(() => {}); }, 300);
 
@@ -53,6 +50,11 @@ test('keepalive: a real worker adapter with BELAY_KEEPALIVE_TICK_MS renews its w
       role: 'worker', run: RUN, data, workerId: W, fake: false, log, env: { BELAY_KEEPALIVE_TICK_MS: '500' },
     });
     await adapter.initialize();
+    // The lease is granted only now: a 4 s lease taken before the adapter's spawn and initialize could run out
+    // on a loaded host before the adapter's first tick, which is not what this test is about.
+    const assigned = await core.task.assign({ task_id: task.id, worker_id: W, ttl_ms: 4000 });
+    const first = assigned.new_lease;
+    assert.strictEqual(first.expires_at - first.granted_at, 4000);
 
     // Watch for 9 s, more than twice the lease's length: it must advance and never expire.
     const seen = new Set([first.expires_at]);
@@ -77,8 +79,16 @@ test('keepalive: a real worker adapter with BELAY_KEEPALIVE_TICK_MS renews its w
 
     // The worker stops: its row says so, and the lease must now run out.
     clearInterval(fresh); fresh = null;
+    // Only log bytes written after this point count: 'not-running' is also logged when worker.get fails.
+    const logBefore = fs.statSync(log).size;
     await plant('stopped');
-    await sleep(1300); // two ticks: any renewal that raced the plant has landed
+    // Wait on the real event: the adapter's tick that read the stopped row and logged it. Ticks are serial, so any
+    // renewal that raced the plant has landed before this line, and none follows it. The bound is a hang guard.
+    const sawStopped = Date.now() + 30000;
+    while (!/lease-keepalive .*"reason":"not-running"/.test(fs.readFileSync(log).subarray(logBefore).toString('utf8'))) {
+      assert.ok(Date.now() < sawStopped, 'the adapter never logged that it saw the stopped row');
+      await sleep(100);
+    }
     const settled = (await leaseOf(core, task.id)).expires_at;
     const deadline = Date.now() + 15000;
     let l = await leaseOf(core, task.id);
