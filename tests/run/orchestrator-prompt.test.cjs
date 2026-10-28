@@ -36,9 +36,8 @@ test('orchestrator prompt: every mcp__belay__ tool name the template mentions is
   assert.ok(text.indexOf('memory_search') < text.indexOf('mcp__belay__task_create'), 'the search instruction precedes task creation');
   // ADR 0054 amendment 2 (the operator, 2026-10-27): the orchestrator has its shell; the prompt prefers belay's tools and says nothing restricts it.
   assert.doesNotMatch(text, /no shell/i, 'the prompt no longer says the orchestrator has no shell');
-  assert.match(text, /^- You may edit files and run shell commands; real code work is best delegated to a worker\. Prefer belay's tools for belay's work: they leave receipts and carry the run's authority\./m, 'the shell rule, on one line');
-  assert.match(text, /`mcp__belay__git_read` \(status, log, diff, show\) reads git state/, "the git reads are belay's");
-  assert.match(text, /A belay CLI call from your shell is not the operator, and is refused as the operator\./, 'the headless template says its CLI calls are not the operator');
+  assert.match(text, /^- You may edit files and run shell commands; real code work is best delegated to a worker\. Prefer belay's tools for belay's work: they act as the orchestrator and leave receipts\. Judge the work by `task_evaluate` results and hand-backs\.$/m, 'the shell rule, on one line');
+  assert.doesNotMatch(text, /not the operator|carry the run's authority/, 'no claim about a shell CLI call or a run authority');
   const interactive = fs.readFileSync(path.join(ROOT, 'src/run/prompts/orchestrator-interactive.md'), 'utf8');
   assert.doesNotMatch(interactive, /no shell/i);
   assert.doesNotMatch(interactive, /not the operator/, "the interactive orchestrator is the operator's own session");
