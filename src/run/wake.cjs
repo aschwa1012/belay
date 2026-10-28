@@ -139,7 +139,7 @@ function deathText(event) {
   return full + POINTER;
 }
 
-// No worker output, ever: the id, the turn and (for a death) the exit facts are the whole of it.
+// No worker output, ever, except a review hand-back verdict, counts and finding titles (review-wake.cjs); otherwise ids and facts.
 // Both shapes stay comfortably under 400 bytes for any id this codebase generates.
 // A wake never names idle workers: worker_wait's answer does (idle-remind.cjs).
 function wakeText(event) {
