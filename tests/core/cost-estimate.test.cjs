@@ -159,3 +159,11 @@ test('a long stream is read from its end within the cap, and says when it stoppe
   const cut = estimateStream(q, undefined, 4 * 1024 * 1024); // the cap: one chunk, then stop
   assert.deepStrictEqual([cut.messages, cut.truncated], [1, true]);
 });
+
+test('a stream whose last result is followed by more than the scan cap of other lines is marked truncated, not left blank', () => {
+  const pad = JSON.stringify({ type: 'user', pad: 'x'.repeat(1024 * 1024) });
+  const e = estimate('l7', [init('s1'), msg('old'), result(1), ...Array(17).fill(pad)]);
+  assert.deepStrictEqual([e.truncated, e.messages, e.usd, e.lives], [true, 0, null, 0]);
+  // A result inside the window means the newest turn's tail is known to be empty: no estimate, no mark.
+  assert.strictEqual(estimate('l8', [init('s1'), ...Array(17).fill(pad), msg('old'), result(1)]), null);
+});

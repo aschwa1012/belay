@@ -148,8 +148,9 @@ function costNote(w) {
   if (!w.cost_source) return '';
   const e = w.cost_estimate;
   const n = e && typeof e.messages === 'number' ? e.messages : 0;
+  if (e && e.truncated && !n) return ' (not estimated: stream tail over 16 MB)';
   const est = w.cost_estimated_usd == null ? 'not priced' : money(w.cost_estimated_usd);
-  return ` + ${est} estimated from the stream (${n} message${n === 1 ? '' : 's'} no result line reported) = ${money(w.cost_combined_usd)}`;
+  return ` + ${est} estimated from the stream (${n} message${n === 1 ? '' : 's'} no result line reported${e && e.truncated ? ', truncated' : ''}) = ${money(w.cost_combined_usd)}`;
 }
 
 // At most 4 decimals, trailing zeros trimmed; a value that rounds to zero prints 0.0000.

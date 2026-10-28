@@ -266,6 +266,7 @@ function estimatedCost(w, rowCost) {
   const est = e && typeof e.usd === 'number' ? e.usd : null;
   return {
     cost_estimated_usd: est, cost_estimated_source: w.cost_source ? 'estimated from the worker stream: messages no result line reported' : null,
+    cost_estimate_truncated: !!(e && e.truncated), cost_estimate_empty: !!(e && e.truncated && !e.messages),
     cost_combined_usd: rowCost == null && est == null ? null : (rowCost || 0) + (est || 0),
   };
 }
@@ -305,7 +306,7 @@ function renderText(rc) {
     lines.push(...P.wrapLine('', head));
     lines.push(...P.wrapLine('  ', `task ${task}  cache ${D.cacheText(a.cache)}`));
     const cost = a.cost_usd == null ? (a.cost_note ? `cost not priced (${P.v(a.cost_note, 80)})` : 'cost not recorded') : `cost ${P.money(a.cost_usd)} (${a.cost_source})`;
-    const estNote = a.cost_estimated ? ` + ${a.cost_estimated_usd == null ? 'not priced' : P.money(a.cost_estimated_usd)} estimated (${a.cost_estimated_source}) = ${P.money(a.cost_combined_usd)}` : '';
+    const estNote = a.cost_estimate_empty ? ' (not estimated: stream tail over 16 MB)' : a.cost_estimated ? ` + ${a.cost_estimated_usd == null ? 'not priced' : P.money(a.cost_estimated_usd)} estimated (${a.cost_estimated_source}${a.cost_estimate_truncated ? ', truncated' : ''}) = ${P.money(a.cost_combined_usd)}` : '';
     lines.push(...P.wrapLine('  ', `${contextText(a)}  ${cost}${estNote}`));
   }
   if (!rc.agents.length) return '(no agents)\n';

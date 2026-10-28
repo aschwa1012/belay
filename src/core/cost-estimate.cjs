@@ -48,7 +48,9 @@ const parseOf = (line, type) => {
 };
 const newLife = () => ({ tail: [], resultSeen: false, lastTotal: null, firstTotal: null, session: null });
 
-// Feed whole lines, newest first. A life is the run of lines from one `system/init` to the next. Going backward, the assistant
+// Feed whole lines, newest first. A "life" is the run of lines from one `system/init` to the next. Claude Code emits an init at
+// every TURN within one process (par-1 t21-coder: 2 inits, 2 results, one session, one process, cumulative totals), so in practice
+// a life here is a turn; a relaunch (resume or fresh session) also starts one. Going backward, the assistant
 // lines before the first result met are the life's unreported tail; the result totals bound what the life reported.
 function walk(text, st) {
   let end = text.length;
@@ -156,7 +158,14 @@ function combine(scan, prices) {
     }
     if (life.lastTotal != null) carried = life.lastTotal;
   });
-  if (!sum.lives) return null;
+  if (!sum.lives) {
+    // Nothing to price. If the scan stopped before the newest turn's result was seen, its tail is unknown, not empty: say so.
+    const newest = scan.lives[scan.lives.length - 1];
+    if (scan.truncated && newest && !newest.resultSeen) {
+      return { messages: 0, usd: null, tokens: sum.tokens, unpriced_models: [], lives: 0, partial_lives: 0, truncated: true };
+    }
+    return null;
+  }
   return {
     messages: sum.messages, usd: sum.priced && !sum.unpriced.size ? sum.usd : null, tokens: sum.tokens,
     unpriced_models: [...sum.unpriced], lives: sum.lives, partial_lives: sum.partial, truncated: scan.truncated,
