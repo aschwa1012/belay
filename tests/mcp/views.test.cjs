@@ -314,3 +314,9 @@ test('fix_notice reaches the orchestrator through task_create and fix_from_revie
   const plain = await V.viewed('task_create', { spec: 's' }, async () => ({ ...fixRow, fix_notice: undefined }));
   assert.ok(!('fix_notice' in JSON.parse(JSON.stringify(plain))));
 });
+
+test('a stand-down shows in the listing row with its lease and reason, and no field names', () => {
+  const r = row();
+  const s = V.compactTask({ ...r, handoff: { result: null, by: 'w1', at: 9, lease_id: 'l3', stood_down: 'cannot build' } });
+  assert.deepStrictEqual(s.handoff, { by: 'w1', at: 9, lease_id: 'l3', stood_down: 'cannot build', fields: [] });
+});

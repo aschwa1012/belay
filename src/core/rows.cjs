@@ -15,7 +15,7 @@ const COLUMNS = {
     'permission_mode_requested', 'permission_mode_effective', 'claude_code_version',
     'paused_at', 'paused_by', 'park_turns',
     'model', 'cache_read_tokens', 'cache_creation_tokens', 'tool_calls', 'base_sha', 'head_sha',
-    'effort_requested', 'head_error', 'base_error', 'pid_created', 'pid_created_error', 'pid_image', 'memory_queries', 'native_memory', 'native_memory_auth', 'tools', 'max_budget_usd', 'model_requested', 'leases_released'],
+    'effort_requested', 'head_error', 'base_error', 'pid_created', 'pid_created_error', 'pid_image', 'memory_queries', 'native_memory', 'native_memory_auth', 'tools', 'max_budget_usd', 'model_requested', 'leases_released', 'cost_estimate', 'cost_source', 'cost_base'],
   task: ['id', 'run_id', 'spec', 'acceptance', 'files_owned', 'state', 'results', 'depends_on', 'handoff', 'repairs', 'worktree', 'answers', 'base', 'amended'],
   lease: ['id', 'task_id', 'run_id', 'holder', 'holder_role', 'granted_at', 'expires_at',
     'released_at', 'supersedes', 'ttl_ms', 'released_reason', 'tree'],
@@ -30,7 +30,7 @@ const COLUMNS = {
 
 // Text in SQLite, parsed objects on the wire (api.md §1).
 const JSON_COLUMNS = {
-  run: [], worker: ['memory_queries', 'tools', 'leases_released'], lease: ['tree'],
+  run: [], worker: ['memory_queries', 'tools', 'leases_released', 'cost_estimate'], lease: ['tree'],
   task: ['acceptance', 'files_owned', 'results', 'depends_on', 'handoff', 'worktree', 'answers', 'amended'],
   integration: ['task_ids', 'merged', 'conflict', 'error', 'checks', 'junctions', 'forced'],
   checkpoint: ['files_touched', 'tool_digest', 'stated'],

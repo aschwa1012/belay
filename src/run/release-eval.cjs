@@ -46,7 +46,7 @@ function summaryOf(row, byId) {
   return { task_id: row.id, state: row.state, passed: !!r.passed, executable: !!r.executable, checks: ((r.checks) || []).length, failing: failedKinds(row), ...(r.flaky ? { flaky: true } : {}), ...(r.uncommitted ? { uncommitted: true } : {}), ...(r.queued ? { queued: r.queued } : {}), ...(fr ? { fix_rounds: fr } : {}) };
 }
 
-const unevaluated = (t, runId, workerId) => t.run_id === runId && t.state === 'released' && t.handoff && t.handoff.by === workerId
+const unevaluated = (t, runId, workerId) => t.run_id === runId && t.state === 'released' && t.handoff && t.handoff.by === workerId && !t.handoff.stood_down
   && !(t.results && Number(t.results.evaluated_at) >= Number(t.handoff.at));
 
 // Why a hand-back's evaluation may not start: a lifecycle operation, a park or a stop holds the worker, or the run manager closes.
@@ -154,7 +154,8 @@ function clause(evs, room) {
   // An evaluation that waited for a slot (max_parallel_evaluations) says so: queued behind `ahead` others, `waited_ms` before it ran.
   const waited = (e) => (e.queued ? ` (queued behind ${e.queued.ahead}, waited ${Math.round(e.queued.waited_ms / 1000)} s)` : '');
   const parts = evs.map((e) => `${one(e)}${waited(e)}`);
-  function one(e) { return (e.error === 'E_BUSY' ? `task ${e.task_id} not evaluated at release: another evaluation of it is running`
+  function one(e) { return (e.stood_down ? `task ${e.task_id}: the worker stood down with no result (${e.stood_down}); nothing was evaluated`
+    : e.error === 'E_BUSY' ? `task ${e.task_id} not evaluated at release: another evaluation of it is running`
     : e.error ? `task ${e.task_id} could not be evaluated at release (${e.error}); call task_evaluate to run it`
     : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}` : `not done${e.fix_rounds ? `; fix rounds ${e.fix_rounds.used} of max ${e.fix_rounds.max}${e.fix_rounds.hard == null ? '' : `, hard cap ${e.fix_rounds.hard}`}` : ''}; failing: ${e.failing.join(', ') || 'no executable check'}`}`); }
   return cut(` ${parts.join('; ')}.`, room);
@@ -222,6 +223,7 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     const evs = []; const ing = [];
     for (const t of tasks) {
       if (t.run_id !== runId || !t.handoff || t.handoff.by !== ev.worker_id) continue;
+      if (t.handoff.stood_down) { const key = `${t.id}:${t.handoff.at}`; if (!(seen.stood = seen.stood || new Set()).has(key) && t.state === 'released') { seen.stood.add(key); evs.push({ task_id: t.id, stood_down: t.handoff.stood_down }); } continue; } // a stand-down is a fact for the wake, once
       if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); evs.push(summaryOf(t, byId)); } else if (unevaluated(t, runId, ev.worker_id) && failedOf(t, ev.turn)) { const s = failure(failedOf(t, ev.turn)); if (s) evs.push(s); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: t0, turn: ev.turn }); ing.push(t.id); }
     }
     if (ing.length && holdMs > 0) { held.set(ev.worker_id, { ev, evs, ids: ing, since: t0 }); continue; }
