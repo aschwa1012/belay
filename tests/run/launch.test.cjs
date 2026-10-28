@@ -244,7 +244,9 @@ test('writeWorkerFiles puts mcp.json and settings.json beside the worker', () =>
   fs.writeFileSync(userSettings, JSON.stringify({ enabledPlugins: { 'p@m': true } }));
   const wdir = path.join(dir, 'workers', 'w4');
   const r = L.writeWorkerFiles({ dir: wdir, workerId: 'w4', runId: 'run-1', dataDir: dir, settingsPath: userSettings });
-  assert.deepEqual(JSON.parse(fs.readFileSync(r.settingsPath, 'utf8')), { enabledPlugins: { 'p@m': false } });
+  const written = JSON.parse(fs.readFileSync(r.settingsPath, 'utf8'));
+  assert.deepEqual(written.enabledPlugins, { 'p@m': false });
+  assert.deepEqual(Object.keys(written.hooks), ['PreToolUse'], 'the kill guard is in every worker settings file');
   assert.equal(Object.keys(JSON.parse(fs.readFileSync(r.mcpJsonPath, 'utf8')).mcpServers)[0], 'belay');
   fs.rmSync(dir, { recursive: true, force: true });
 });

@@ -24,9 +24,11 @@ const row = (over = {}) => ({
   holder_pid_alive: true, last_checkpoint_id: 'c1', last_checkpoint_at: 4, ...over,
 });
 
-test('a listing row keeps id, state, rev, the spec head, depends_on, branch, lease, results counted and failing named, hand-back fields', () => {
+test('a listing row keeps id, state, the spec head, depends_on, branch, lease, results counted and failing named, hand-back fields', () => {
   const s = V.compactTask(row());
-  assert.deepStrictEqual([s.id, s.state, s.rev, s.depends_on, s.branch, s.holder_pid_alive, s.last_checkpoint_id], ['t1', 'released', 9, ['t0'], 'belay/t1', true, 'c1']);
+  assert.deepStrictEqual([s.id, s.state, s.depends_on, s.branch, s.holder_pid_alive], ['t1', 'released', ['t0'], 'belay/t1', true]);
+  for (const k of ['seq', 'last_checkpoint_id', 'last_checkpoint_at']) assert.ok(!(k in s), `${k} is not in a listing row`);
+  assert.strictEqual(V.compactTask(row(), { detail: true }).last_checkpoint_id, 'c1', 'the detail keeps it');
   assert.ok(s.spec_head.length <= V.SPEC_HEAD && SPEC.startsWith(s.spec_head.slice(0, -3)) && s.spec_head.endsWith('...'), s.spec_head);
   assert.deepStrictEqual(s.lease, { id: 'l2', holder: 'w1', holder_role: 'worker', expires_at: 600001, expired: false });
   assert.deepStrictEqual(s.results, { passed: false, executable: true, trigger: 'release', checks: 2, failing: ['command npm test exit 1'] });
@@ -135,7 +137,7 @@ test('eight evaluated tasks list in under a fifth of their full rows', () => {
 test('fields the views do not name pass through both shapes: integration and review, as another change may add them', () => {
   const integration = { state: 'merged', into: 'belay/integrate/r', id: 'i1' };
   const review = { task_id: 'rv1', verdict: 'holds' };
-  for (const shape of [V.compactTask(row({ integration, review })), V.compactTask(row({ integration, review }), { detail: true })]) {
+  for (const shape of [V.compactTask(row({ integration, review }), { detail: true })]) {
     assert.deepStrictEqual([shape.integration, shape.review], [integration, review]);
   }
 });
@@ -301,4 +303,20 @@ test('wording audit: task_assign shows the lease it took as a lease; fix_from_re
   for (const k of ['spec', 'acceptance', 'worktree', 'results', 'handoff', 'run_id', 'written_by']) assert.ok(!(k in fix), `${k} is left out`);
   assert.ok(Buffer.byteLength(JSON.stringify(fix)) < Buffer.byteLength(JSON.stringify(fixRow)) / 2);
   assert.strictEqual(await V.viewed('fix_from_review', { review_id: 'r1', view: 'debug' }, async () => fixRow), fixRow);
+});
+
+test('fix_notice reaches the orchestrator through task_create and fix_from_review (compact view), and a debug view keeps it', async () => {
+  const fixRow = { ...row({ id: 'fix3', state: 'open', results: null, handoff: null }), seq: 2, repairs: 't1', depends_on: ['t1'], files_owned: ['a.js'], fix_notice: 'task t1 now has 3 fix tasks in this run, past max_fix_rounds 2' };
+  for (const tool of ['task_create', 'fix_from_review']) {
+    const out = await V.viewed(tool, tool === 'task_create' ? { spec: 's', repairs: 't1' } : { review_id: 'r1' }, async () => fixRow);
+    assert.strictEqual(out.fix_notice, fixRow.fix_notice, tool);
+  }
+  const plain = await V.viewed('task_create', { spec: 's' }, async () => ({ ...fixRow, fix_notice: undefined }));
+  assert.ok(!('fix_notice' in JSON.parse(JSON.stringify(plain))));
+});
+
+test('a stand-down shows in the listing row with its lease and reason, and no field names', () => {
+  const r = row();
+  const s = V.compactTask({ ...r, handoff: { result: null, by: 'w1', at: 9, lease_id: 'l3', stood_down: 'cannot build' } });
+  assert.deepStrictEqual(s.handoff, { by: 'w1', at: 9, lease_id: 'l3', stood_down: 'cannot build', fields: [] });
 });

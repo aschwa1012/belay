@@ -17,6 +17,7 @@ const { cleanup } = require('../core/helpers.cjs');
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/\\/g, '/');
 const RL = 'task t1 state assigned; next step: (stated) none yet';
 const PROMPT = 'implement the thing';
+const PL = require('../../src/run/task-body.cjs').PROCESS_LINE; // the standing process line, after the prompt
 const HB = handback(); // belay ends a spawned worker's first message with the hand-back rule naming its lease
 
 function sandbox() {
@@ -89,7 +90,7 @@ test('levers off: the first message is the resume line then the prompt, byte for
         await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w1', task_id: 't1' });
         await m._waitTurn('w1', 8000);
       });
-      const expected = `${RL}\n\n${PROMPT}${HB}`;
+      const expected = `${RL}\n\n${PROMPT}${PL}${HB}`;
       assert.strictEqual(m._worker('w1').firstMessage, expected);
       assert.deepStrictEqual(received(recv), [expected], 'the bytes on stdin');
       assert.strictEqual(Buffer.byteLength(received(recv)[0]), Buffer.byteLength(expected));
@@ -102,7 +103,7 @@ test('levers off: a worker with no task is sent exactly its prompt', async () =>
   const core = memoryCore({ levers: null });
   await run(core, async (m, sb) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w2' });
-    assert.strictEqual(m._worker('w2').firstMessage, PROMPT);
+    assert.strictEqual(m._worker('w2').firstMessage, PROMPT + PL);
     assert.deepStrictEqual(memCalls(core), []);
   });
 });
@@ -115,7 +116,7 @@ test('levers on: the resume line, then the index, then the prompt, with an index
       await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w3', task_id: 't1' });
       await m._waitTurn('w3', 8000);
     });
-    const expected = `${RL}\n\nINDEX mem-a mem-b\n\n${PROMPT}${HB}`;
+    const expected = `${RL}\n\nINDEX mem-a mem-b\n\n${PROMPT}${PL}${HB}`;
     assert.strictEqual(m._worker('w3').firstMessage, expected);
     assert.deepStrictEqual(received(recv), [expected]);
     const idx = core.calls.find((c) => c.method === 'memory.index');
@@ -132,7 +133,7 @@ test('levers on, no rows: nothing is injected and the event records zero bytes',
   const core = memoryCore({ levers: { first_message_index: true }, rows: [] });
   await run(core, async (m, sb) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w4', task_id: 't1' });
-    assert.strictEqual(m._worker('w4').firstMessage, `${RL}\n\n${PROMPT}${HB}`);
+    assert.strictEqual(m._worker('w4').firstMessage, `${RL}\n\n${PROMPT}${PL}${HB}`);
     assert.strictEqual(core.events.length, 1);
     assert.strictEqual(core.events[0].bytes, 0);
     assert.strictEqual(core.events[0].ok, 1);
@@ -143,7 +144,7 @@ test('a failed index leaves the spawn as it would be with the lever off, plus an
   const core = memoryCore({ levers: { first_message_index: true }, rows: ['x'], failIndex: true });
   await run(core, async (m, sb) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w5', task_id: 't1' });
-    assert.strictEqual(m._worker('w5').firstMessage, `${RL}\n\n${PROMPT}${HB}`);
+    assert.strictEqual(m._worker('w5').firstMessage, `${RL}\n\n${PROMPT}${PL}${HB}`);
     assert.strictEqual(core.events.length, 1);
     assert.strictEqual(core.events[0].kind, 'index_injected');
     assert.strictEqual(core.events[0].ok, 0);
@@ -156,7 +157,7 @@ test('a failed read of the earlier events is also a failed index: nothing is inj
   const core = memoryCore({ levers: { first_message_index: true }, rows: ['x'], failEvents: true });
   await run(core, async (m, sb) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w6', task_id: 't1' });
-    assert.strictEqual(m._worker('w6').firstMessage, `${RL}\n\n${PROMPT}${HB}`);
+    assert.strictEqual(m._worker('w6').firstMessage, `${RL}\n\n${PROMPT}${PL}${HB}`);
     assert.strictEqual(core.calls.filter((c) => c.method === 'memory.index').length, 0);
     assert.strictEqual(core.events[0].ok, 0);
   });

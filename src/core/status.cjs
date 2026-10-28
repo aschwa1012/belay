@@ -1,4 +1,5 @@
 'use strict';
+const CE = require('./cost-estimate.cjs');
 // status.cjs — the truth ladder (api.md §4, ADR 0005 §6). Status is not a word: six rungs, each naming
 // what established it, and a dead system is a valid answer.
 //
@@ -160,7 +161,7 @@ async function get(E, caller, args = {}) {
       id: w.id, substrate: w.substrate, state: w.state, pid: w.pid, pid_alive: pidAlive(w.pid),
       session_id: w.session_id, task_id: workerTasks.has(w.id) ? workerTasks.get(w.id) : w.task_id,
       last_event_age_ms: w.last_event_at == null ? null : Date.now() - Number(w.last_event_at),
-      turns: w.turns, input_tokens: w.input_tokens, output_tokens: w.output_tokens, cost_usd: w.cost_usd,
+      turns: w.turns, input_tokens: w.input_tokens, output_tokens: w.output_tokens, cost_usd: w.cost_usd, ...CE.statusFigures(w), 
       // build step 4a: status.get's own projection lacked these two, though worker.list carried both.
       mid_turn: w.mid_turn, death_established_by: w.death_established_by,
     })),
