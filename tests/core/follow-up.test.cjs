@@ -345,3 +345,14 @@ test('a repeat after the follow-up is done returns it; the allowance shows befor
   const own = await c.reviewOf(f.id);
   assert.deepStrictEqual([own.follow_ups_count_against, own.follow_ups_left, own.max_follow_ups], [w.id, 1, 2]);
 });
+
+test('a follow-up can be written while the run is paused (a row starts no work); assigning it is what the pause refuses', async () => {
+  const c = await ctx({ max_fix_rounds: 2, max_follow_ups: 1 });
+  const w = await c.done('paused work', { tree: true });
+  const r = await c.review(w, 'holds', [SHOULD]);
+  await c.orch.run.setPaused({ paused: true });
+  const f = await c.orch.task.fixFromReview({ review_id: r.id, follow_up: true });
+  assert.strictEqual(f.state, 'open');
+  await assert.rejects(c.orch.task.assign({ task_id: f.id, worker_id: 'nobody' }), /paused/);
+  await c.orch.run.setPaused({ paused: false });
+});

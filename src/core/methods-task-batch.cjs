@@ -18,7 +18,7 @@ const MAX_ITEMS = 10;
 const MAX_BATCH_TREES = 4;
 const MARGIN_MS = 5000; // the least a further tree is assumed to need before its add is started
 const TOOL_BUDGET_MS = 120000 - 10000; // the adapter's default MCP tool timeout less 10 s
-const FIELDS = ['spec', 'acceptance', 'files_owned', 'depends_on', 'repairs', 'base', 'tree_of', 'id', 'worktree'];
+const FIELDS = ['spec', 'acceptance', 'files_owned', 'depends_on', 'repairs', 'base', 'tree_of', 'id', 'worktree', 'budget_usd'];
 
 // A test seam, honoured only when BELAY_TEST_SEAMS=1: afterTree is awaited after each tree is made (index, record), before the next
 // tree and before the transaction; now is the clock; budgetMs replaces the call's time budget.
@@ -127,7 +127,7 @@ async function createWithTrees(E, caller, args, own) {
 
   if (!wanted.length) { // nothing to make: one transaction, all or nothing
     const out = E.store.tx(() => { E.assertRunOpen(caller, 'task.create'); return writeAll(E, caller, list, list.map(() => null), top, own); });
-    E.noteWrite();
+    E.noteWrite(); require('./run-budget.cjs').noteRows(E, caller, out);
     return shape(out);
   }
 
@@ -162,7 +162,7 @@ async function createWithTrees(E, caller, args, own) {
       }
       // 4. every row, one transaction, every check again on the store as it now is.
       const out = E.store.tx(() => { E.assertRunOpen(caller, 'task.create'); return writeAll(E, caller, list, trees, top, own); });
-      E.noteWrite();
+      E.noteWrite(); require('./run-budget.cjs').noteRows(E, caller, out);
       return shape(out);
     } catch (e) {
       const { receipts, left, kept } = await removeMade(made, undone);
