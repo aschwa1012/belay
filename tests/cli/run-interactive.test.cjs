@@ -89,7 +89,7 @@ test('interactive run, claude exits 0: launch facts, receipt, run row closed, be
   assert.strictEqual(rc.orchestrator.exit_code, 0);
   assert.strictEqual(rc.orchestrator.interactive.tools.verified, 'unverified');
   // ADR 0054 decision 1: the receipt records the list the launch passed (the six), never the workers' list by assumption.
-  assert.deepStrictEqual(rc.orchestrator.interactive.tools.requested, ['Read', 'Glob', 'Grep', 'Edit', 'Write']);
+  assert.deepStrictEqual(rc.orchestrator.interactive.tools.requested, ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']);
   assert.deepStrictEqual(rc.orchestrator.interactive.tools.requested, require('../../src/run/surface.cjs').ORCHESTRATOR_TOOLS);
   assert.deepStrictEqual(rc.orchestrator.interactive.console_events, []);
   assert.strictEqual(rc.orchestrator.interactive.gate.debug.ok, true);
