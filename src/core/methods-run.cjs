@@ -58,6 +58,10 @@ async function attach(E, caller, args) {
   if (fixCapGiven && args.max_fix_rounds !== null && !(Number.isSafeInteger(args.max_fix_rounds) && args.max_fix_rounds >= 0)) {
     throw err('E_ARGS', 'run.attach max_fix_rounds must be null or a non-negative integer', { max_fix_rounds: args.max_fix_rounds });
   }
+  const followGiven = args.max_follow_ups !== undefined;
+  if (followGiven && args.max_follow_ups !== null && !(Number.isSafeInteger(args.max_follow_ups) && args.max_follow_ups >= 0)) {
+    throw err('E_ARGS', 'run.attach max_follow_ups must be null or a non-negative integer', { max_follow_ups: args.max_follow_ups });
+  }
   const hardCapGiven = args.fix_hard_cap !== undefined;
   if (hardCapGiven && args.fix_hard_cap !== null && !(Number.isSafeInteger(args.fix_hard_cap) && args.fix_hard_cap >= 0)) {
     throw err('E_ARGS', 'run.attach fix_hard_cap must be null or a non-negative integer', { fix_hard_cap: args.fix_hard_cap });
@@ -190,6 +194,7 @@ async function attach(E, caller, args) {
     orch_effort_requested: effortGiven ? args.orch_effort_requested : (carryPause ? prev.orch_effort_requested : null),
     // ADR 0031 decision 6: the fix-round cap `belay run` launched with, same carry rule as the effort.
     max_fix_rounds: fixCapGiven ? args.max_fix_rounds : (carryPause ? prev.max_fix_rounds : null),
+    max_follow_ups: followGiven ? args.max_follow_ups : (carryPause ? prev.max_follow_ups : null), // same carry rule
     fix_hard_cap_source: hardSrcGiven ? args.fix_hard_cap_source : (carryPause ? prev.fix_hard_cap_source : null),
     fix_hard_cap: hardCapGiven ? args.fix_hard_cap : (carryPause ? prev.fix_hard_cap : null), // same carry rule
     max_parallel_evaluations: parallelGiven ? args.max_parallel_evaluations : (carryPause ? prev.max_parallel_evaluations : null), // same carry rule
