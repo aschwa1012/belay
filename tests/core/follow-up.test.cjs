@@ -75,7 +75,7 @@ test('a hold gives a follow-up in a tree of its own that is no fix round: no rep
   assert.doesNotMatch(f.spec, /would break the build|naming nit|bare string/, 'only the should-fix findings are quoted');
   // The work: still done, still holds, its fix rounds untouched; the follow-up is listed beside them.
   assert.strictEqual((await c.orch.task.get({ task_id: w.id })).state, 'done');
-  assert.deepStrictEqual(await c.reviewOf(w.id), { state: 'holds', review_id: r.id, rounds: 0, rounds_left: 2, fix_rounds_used: 0, max_fix_rounds: 2, fix_hard_cap: 2, fix_hard_cap_source: null, max_follow_ups: 1, follow_ups: [{ id: f.id, state: 'open' }], follow_ups_left: 0 });
+  assert.deepStrictEqual(await c.reviewOf(w.id), { state: 'holds', review_id: r.id, rounds: 0, rounds_left: 2, fix_rounds_used: 0, max_fix_rounds: 2, fix_hard_cap: 2, fix_hard_cap_source: null, follow_ups: [{ id: f.id, state: 'open' }], follow_ups_left: 0 });
   assert.strictEqual(await c.reviewOf(f.id), null, 'the follow-up has no review of its own yet');
   // The compact listing keeps both.
   const row = require('../../src/mcp/views.cjs').taskList(await c.orch.task.list({})).tasks;
@@ -166,7 +166,7 @@ test('a follow-up does not spend a fix round: with max_fix_rounds used up one is
     judged = fix;
   }
   const r3 = await c.review(judged, 'holds', [SHOULD]);
-  assert.deepStrictEqual(await c.reviewOf(w.id), { state: 'holds', review_id: r3.id, rounds: 2, rounds_left: 0, fix_rounds_used: 2, max_fix_rounds: 2, fix_hard_cap: 2, fix_hard_cap_source: null, max_follow_ups: 1, follow_ups_left: 1 });
+  assert.deepStrictEqual(await c.reviewOf(w.id), { state: 'holds', review_id: r3.id, rounds: 2, rounds_left: 0, fix_rounds_used: 2, max_fix_rounds: 2, fix_hard_cap: 2, fix_hard_cap_source: null, follow_ups_left: 1 });
   const f = await c.orch.task.fixFromReview({ review_id: r3.id, follow_up: true });
   assert.deepStrictEqual(f.follows_up, { review_id: r3.id, review_ids: [r3.id], task_id: judged.id, root: w.id });
   const after = await c.reviewOf(w.id);
@@ -333,7 +333,7 @@ test('a repeat after the follow-up is done returns it; the allowance shows befor
   const w = await c.done('repeat work', { tree: true });
   const r = await c.review(w, 'holds', [SHOULD]);
   const before = await c.reviewOf(w.id);
-  assert.deepStrictEqual([before.follow_ups, before.follow_ups_left, before.max_follow_ups], [undefined, 2, 2], 'the allowance is visible before any follow-up exists');
+  assert.deepStrictEqual([before.follow_ups, before.follow_ups_left], [undefined, 2], 'the allowance is visible before any follow-up exists');
   const f = await c.orch.task.fixFromReview({ review_id: r.id, follow_up: true });
   write(f.worktree.path, w.files_owned[0], 'follow-up work\n');
   commit(f.worktree.path, 'follow-up work');
@@ -343,7 +343,7 @@ test('a repeat after the follow-up is done returns it; the allowance shows befor
   assert.deepStrictEqual([again.id, again.existing, again.follow_ups_left], [f.id, true, 1], 'a done follow-up is found, not duplicated');
   await c.review(f, 'holds', []);
   const own = await c.reviewOf(f.id);
-  assert.deepStrictEqual([own.follow_ups_count_against, own.follow_ups_left, own.max_follow_ups], [w.id, 1, 2]);
+  assert.deepStrictEqual([own.follow_ups_count_against, own.follow_ups_left], [w.id, 1]);
 });
 
 test('a follow-up can be written while the run is paused (a row starts no work); assigning it is what the pause refuses', async () => {
